@@ -22,7 +22,8 @@
 | LLM | 双 wire 格式：OpenAI chat completions + Anthropic Messages（`internal/llm`，从 local-myt-agent 整包继承——含 ChatAuto 分流策略：anthropic 恒流式，openai 带工具走非流式回放，依据是真机端点实测 openai 流式丢 tool_calls） |
 | 工具 | `internal/tools` 注册表 + 风险分级：低危自动执行，高危确认门 |
 | 会话 | JSONL append-only（`internal/store`），重启恢复最近会话，`/new` `/resume` 切换 |
-| 配置 | `internal/config` 模型注册表（models.json，原子写；default/vision 角色绑定） |
+| 配置 | `internal/config` 模型注册表（models.json，原子写；default/vision 角色绑定；**30s 热加载** + model.changed 广播） |
+| 服务化 | **Windows SCM 服务**（`scripts/service/{install,update,uninstall}.ps1`；开机自启 + 崩溃自动重启；`--probe` 验收；布局 `%ProgramData%\myt-harness\{bin,config,sessions,logs}`）；服务形态日志落文件（16MB 轮转 ×3） |
 | 桌面壳 | **规划中，Windows 优先**（Wails v3 beta vs Electron+Go sidecar 待选型）；后端可先于壳长期独立运行 |
 | 依赖 | gorilla/websocket（协议层必需）；其余零第三方依赖 |
 
@@ -59,19 +60,34 @@
 3. **同秒创建的会话文件名序不可靠**：恢复最近会话按 mtime，不按文件名（local-myt-agent 实测踩过）。
 4. **race detector 在本机需要 CGO**（无 gcc）：`go test -race` 不可用，并发正确性靠代码评审 + 事件互斥纪律（emit 持 REPL.mu，Session 状态持 s.mu）。
 5. **测试假流的中断契约**：error 事件须携带已生成部分（`Result`）——真实客户端（`llm.emitFinal`）如此，假流不带上会丢 partial（TestCancelPreservesPartial 踩过）。
+6. **手写 models.json 测试必须带 `"version": 1`**：Load 校验磁盘格式版本，缺了整份拒绝且只记日志（表现为"热加载广播没来"）。
+7. **PowerShell 脚本必须 UTF-8 带 BOM**：PS 5.1 对无 BOM 文件按 ANSI 读，中文注释乱码会**破坏语法**（ParseFile 实证）；而 Go/JSON 恰恰相反（BOM 会炸 json.Unmarshal）——两类文件的编码策略相反，别搞混。
+8. **http.Shutdown 不打断 WS 长连接**：服务优雅停机必须先 `closeAllClients()` 再 Shutdown（local-myt-agent 依赖 docker kill 兜底，SCM 等不了）。
 
-## 6. 与 local-myt-agent 的关系
+## 6. Windows 服务运维（对齐参考项目的部署形态）
+
+- **布局**（安装形态固定根，= 参考项目的 `/mmc/myt-agent/`）：
+  `%ProgramData%\myt-harness\`：`bin\myt-harness.exe`（二进制）、`config\models.json`（配置）、`sessions\`（会话）、`logs\myt-harness.log`（日志，16MB 轮转 ×3）。
+- **配置解析顺序**（内置了参考项目包装器的语义，免包装器）：`--config` > `MYT_HARNESS_CONFIG` > `.\config\models.json`（存在时，开发形态）> `%ProgramData%\myt-harness\config\models.json`（安装形态）。
+- **安装**（管理员 PowerShell，在仓库根）：`scripts\service\install.ps1 [-ExePath .\myt-harness.exe] [-ConfigPath .\config\local.json]`——端口预检 → 布置文件 → `sc create`（start=auto + 崩溃自动重启 5s/5s/60s）→ `--probe` 验收 → 失败自动回退（停服务 + 删除）。
+- **升级**：`scripts\service\update.ps1 -File <新二进制> [-Sha256 <hex>]`——停 → 校验 → 备份 → 替换 → 起 → 验收 → 失败自动回滚到 `.bak`。
+- **卸载**：`scripts\service\uninstall.ps1`（保留 config/sessions/logs）。
+- **验收探针**：`myt-harness --probe [addr]`——连接/ready/hello/model.list/session.list/history；退出码 0=全好、1=协议失败（服务死）、2=活着但没配模型（等热加载）。
+- **服务形态与控制台形态同一条装配路径**（`runServe`）：差异只在 ctx 取消信号来源（SCM Stop vs Ctrl+C）；服务里 `svc.Execute` 薄壳，`serviceName` 常量与 install.ps1 的 `sc create` 名字绑定（两处同步改）。
+- 详见 docs/02-windows-service.md。
+
+## 7. 与 local-myt-agent 的关系
 
 - 参考实现：`C:\Users\xzy\Desktop\gs\local-myt-agent`（设备端 agent，Docker 全权容器部署）；
 - 已继承：llm 双格式客户端（整包）、tools 注册表模式与六件工具、JSONL 会话存储、动态系统提示词、WS JSON-RPC 协议层与客户端库（protocol/wsclient 整体移植）、工程规范（AGENTS.md 奠基/中文注释/测试纪律）；
 - 有意不同：端口 7789（错开 7788）；协议扩展 todo 事件/历史带 todos；去 chat.reset（session.new 覆盖）；agent 哨兵错误供服务端映射错误码（结构化判断不做字符串匹配）；maxToolRounds 8→16（编码任务链路更长）；edit 低危自动执行（编程 agent 语义）；bash 按 OS 选 shell（Windows 优先 Git Bash）；无热加载（后端重启即可，桌面壳接入后再评估）。
 
-## 7. 待定决策
+## 8. 待定决策
 
 | 项 | 状态 |
 |---|---|
-| 桌面壳框架 | Wails v3 beta（Go 原生、单二进制）vs Electron + Go sidecar（复用 LX-DSH 经验与更新管线）——Windows 优先（用户已定方向），选型在壳动工前定 |
+| 桌面壳框架 | **已定 Tauri 2**（2026-09-10 用户拍板）——薄壳 + 前端直连 WS（React + aicss，设计语言 agent-console-v3）；动工时定细节 |
 | 项目正式名 | 工作名 myt-harness，用户保留命名权 |
 | 上下文管理 | 工具结果截断（8KB/条）已兜底；compaction/历史摘要未做 |
 | 语义记忆 | 未做（会话搜索先行；SQLite 嵌入式是倾向） |
-| 注册表热加载 | 未做（local-myt-agent 有 30s 热加载 + 广播；桌面壳设置页接入时再评估是否需要） |
+| 自更新 | 参考项目同样未实现（update.sh --check 地基）；方向 = 定时检查 + 人工确认 |

@@ -352,6 +352,9 @@ func (s *Server) broadcast(method string, params any) {
 }
 
 // Run 启动 HTTP 服务（阻塞）。addr 形如 127.0.0.1:7789。
+// ctx 取消即优雅退出：先强制关闭全部 WS 连接（http.Shutdown 只关监听、
+// 不打断长连接——WS 读循环会一直挂着，Shutdown 会无限等），
+// 再 Shutdown 等存量请求收尾。
 func (s *Server) Run(ctx context.Context, addr string) error {
 	mux := http.NewServeMux()
 	mux.Handle(protocol.Path, s.Handler())
@@ -361,6 +364,7 @@ func (s *Server) Run(ctx context.Context, addr string) error {
 	srv := &http.Server{Addr: addr, Handler: mux}
 	go func() {
 		<-ctx.Done()
+		s.closeAllClients()
 		_ = srv.Shutdown(context.Background())
 	}()
 	log.Printf("后端 WS 服务监听 %s%s", addr, protocol.Path)
@@ -368,4 +372,17 @@ func (s *Server) Run(ctx context.Context, addr string) error {
 		return err
 	}
 	return nil
+}
+
+// closeAllClients 强制断开全部连接（优雅停机/长连接不被 Shutdown 等待）。
+func (s *Server) closeAllClients() {
+	s.mu.Lock()
+	clients := make([]*wsClient, 0, len(s.clients))
+	for c := range s.clients {
+		clients = append(clients, c)
+	}
+	s.mu.Unlock()
+	for _, c := range clients {
+		_ = c.conn.Close()
+	}
 }

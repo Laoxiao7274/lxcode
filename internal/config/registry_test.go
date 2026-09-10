@@ -314,3 +314,38 @@ func TestAtomicWriteNoLeftovers(t *testing.T) {
 		t.Fatalf("落盘内容不符: version=%d models=%d", f.Version, len(f.Models))
 	}
 }
+
+func TestReload(t *testing.T) {
+	r, path := newTestRegistry(t)
+	if err := r.Add(sampleModel("m1")); err != nil {
+		t.Fatal(err)
+	}
+
+	// 模拟"手改文件"：m1 + m2 落盘
+	other, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := other.Add(sampleModel("m2")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reload 应看到外部变更
+	if err := r.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if len(r.List()) != 2 {
+		t.Fatalf("Reload 后应看到 2 个模型, got %d", len(r.List()))
+	}
+
+	// 文件损坏：Reload 报错且旧状态保留（降级可用）
+	if err := os.WriteFile(path, []byte("bad json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Reload(); err == nil {
+		t.Fatal("坏文件 Reload 应报错")
+	}
+	if len(r.List()) != 2 {
+		t.Fatalf("Reload 失败后应保留旧状态, got %d", len(r.List()))
+	}
+}

@@ -232,6 +232,22 @@ func (r *Registry) Save() error {
 	return r.saveLocked()
 }
 
+// Reload 从磁盘重新读入注册表并整体替换内存状态（保留实例身份与 path）。
+// 供长驻后端周期热加载（手改 models.json 后无需重启服务）。
+// 读入或校验失败时保留旧状态并返回错误——降级可用优先于清空。
+func (r *Registry) Reload() error {
+	nr, err := Load(r.path)
+	if err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.models = nr.models
+	r.order = nr.order
+	r.roles = nr.roles
+	return nil
+}
+
 // saveLocked 序列化 → 同目录临时文件 → rename 原子替换。调用方须持有写锁。
 // CreateTemp 默认 0600：文件含 api_key，仅属主可读（Linux 生效，Windows 忽略）。
 func (r *Registry) saveLocked() error {
