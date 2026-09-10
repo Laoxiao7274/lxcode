@@ -28,8 +28,20 @@ const (
 	maxToolResultBytes = 8 * 1024
 )
 
-// streamFn 是 LLM 调用的抽象缝（单测注入假实现，不碰网络）。
-type streamFn func(ctx context.Context, m config.ModelConfig, msgs []llm.Message, opts []llm.Option) (<-chan llm.StreamEvent, error)
+// StreamFn 是 LLM 调用的抽象缝（单测注入假实现，不碰网络）。
+type StreamFn func(ctx context.Context, m config.ModelConfig, msgs []llm.Message, opts []llm.Option) (<-chan llm.StreamEvent, error)
+
+// 哨兵错误：服务端按类别映射协议错误码（errors.Is 判断，不做字符串匹配）。
+var (
+	// ErrBusy 会话正在生成中（Send/切换会话被拒）。
+	ErrBusy = errors.New("会话正在生成中")
+	// ErrPendingConfirm 有挂起的确认未处理（切换会话被拒）。
+	ErrPendingConfirm = errors.New("有挂起的确认，先处理确认再切换会话")
+	// ErrNoDefaultModel default 角色未绑定模型。
+	ErrNoDefaultModel = errors.New("default 模型未配置")
+	// ErrModelDisabled default 模型已停用。
+	ErrModelDisabled = errors.New("default 模型已停用")
+)
 
 // Emitter 是事件出口：内核把类型化事件推给宿主（CLI 打印 / 壳渲染）。
 type Emitter func(ev Event)
@@ -39,7 +51,7 @@ type Emitter func(ev Event)
 type Session struct {
 	reg    *config.Registry
 	tools  *tools.Registry
-	stream streamFn
+	stream StreamFn
 	emit   Emitter
 
 	mu      sync.Mutex
@@ -84,6 +96,13 @@ func (s *Session) SetEmitter(emit Emitter) {
 	s.mu.Unlock()
 }
 
+// SetStream 替换 LLM 调用实现（测试注入假实现，不碰网络；须在 Send 前调用）。
+func (s *Session) SetStream(fn StreamFn) {
+	s.mu.Lock()
+	s.stream = fn
+	s.mu.Unlock()
+}
+
 // streamWithLLM 默认 LLM 调用：按 default 角色配置建客户端，经 ChatAuto
 // （anthropic 永远流式；openai 带工具走非流式回放，见 llm.ChatAuto 注释——
 // 该策略来自真机端点实测：部分 openai 兼容端点的流式会丢 tool_calls）。
@@ -101,23 +120,23 @@ func streamWithLLM(ctx context.Context, m config.ModelConfig, msgs []llm.Message
 }
 
 // Send 发起一轮对话（异步）：校验模型 → 入历史 → 后台跑工具循环。
-// 忙时返回 busy 错误；模型未绑定/停用返回配置错误。
+// 忙时返回 ErrBusy；模型未绑定/停用返回对应哨兵（服务端按类别映射错误码）。
 func (s *Session) Send(text string) error {
 	if text == "" {
 		return errors.New("text 不能为空")
 	}
 	m, err := s.reg.ModelForRole(config.RoleDefault)
 	if err != nil {
-		return fmt.Errorf("default 模型未配置: %w", err)
+		return fmt.Errorf("%w: %w", ErrNoDefaultModel, err)
 	}
 	if !m.Enabled {
-		return fmt.Errorf("default 模型 %s 已停用", m.ID)
+		return fmt.Errorf("%w: %s", ErrModelDisabled, m.ID)
 	}
 
 	s.mu.Lock()
 	if s.busy {
 		s.mu.Unlock()
-		return errors.New("会话正在生成中")
+		return ErrBusy
 	}
 	s.busy = true
 	userMsg := llm.Message{Role: "user", Content: text}
@@ -444,10 +463,9 @@ func (s *Session) Close() {
 // 生成中/有挂起确认时拒绝——切换会撕裂运行中的工具循环。
 func (s *Session) SwitchNew() (string, error) {
 	s.mu.Lock()
-	if s.busy || s.pending != nil {
-		busy := s.busy || s.pending != nil
+	if err := s.switchGuardLocked(); err != nil {
 		s.mu.Unlock()
-		return "", errors.New(busyText(busy))
+		return "", err
 	}
 	if s.file != nil {
 		_ = s.file.Close()
@@ -466,10 +484,9 @@ func (s *Session) SwitchTo(id string) error {
 		return errors.New("未启用会话存储")
 	}
 	s.mu.Lock()
-	if s.busy || s.pending != nil {
-		busy := s.busy || s.pending != nil
+	if err := s.switchGuardLocked(); err != nil {
 		s.mu.Unlock()
-		return errors.New(busyText(busy))
+		return err
 	}
 	msgs, err := s.st.Load(id)
 	if err != nil {
@@ -518,9 +535,14 @@ func (s *Session) AttachSessionSearch() {
 	})
 }
 
-func busyText(busy bool) string {
-	if busy {
-		return "生成中不能切换会话，请先取消（Cancel）"
+// switchGuardLocked 是切换会话的前置检查（调用方持锁）：
+// busy → ErrBusy；挂起确认 → ErrPendingConfirm。
+func (s *Session) switchGuardLocked() error {
+	if s.busy {
+		return fmt.Errorf("%w（先取消当前生成）", ErrBusy)
 	}
-	return "有挂起的确认，先处理确认再切换会话"
+	if s.pending != nil {
+		return ErrPendingConfirm
+	}
+	return nil
 }

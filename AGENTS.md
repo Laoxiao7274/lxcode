@@ -15,13 +15,16 @@
 
 | 项 | 决策 |
 |---|---|
-| 内核形态 | 纯 Go 包（`internal/agent`），无 UI/协议依赖；桌面壳 in-process 调用（typed Event + Emitter 回调 + Confirm 裁决） |
-| CLI | `cmd/myt-harness`：零依赖 REPL（验收面/调试入口，非最终 UI） |
+| 形态 | **前后台分离**（2026-09-10 用户拍板，对齐 local-myt-agent）：后端 `myt-harness --serve` 独立进程（WS JSON-RPC `127.0.0.1:7789/rpc` + 注册表 + 会话运行时 + 工具循环，`/health` 健康检查）；CLI / 桌面壳都是客户端 |
+| 协议 | `internal/protocol`：WS JSON-RPC 2.0（帧/方法/事件单处定义，客户端服务端共享）；扩展 `todo.updated` 事件与 `ChatHistoryResult.Todos`；端口 7789（与 local-myt-agent 的 7788 错开） |
+| 内核 | `internal/agent`：纯 Go 包（typed Event + Emitter + Confirm），被 server 包装广播；桌面壳将来也可 in-process 嵌入（包级零 UI 依赖保持不变） |
+| 客户端 | `internal/wsclient`：Backend 接口 + Dial（请求按 id 配对、事件 channel、断连 fast-fail、缓冲满丢最旧）；CLI 是第一个客户端，桌面壳复用同一协议 |
 | LLM | 双 wire 格式：OpenAI chat completions + Anthropic Messages（`internal/llm`，从 local-myt-agent 整包继承——含 ChatAuto 分流策略：anthropic 恒流式，openai 带工具走非流式回放，依据是真机端点实测 openai 流式丢 tool_calls） |
 | 工具 | `internal/tools` 注册表 + 风险分级：低危自动执行，高危确认门 |
 | 会话 | JSONL append-only（`internal/store`），重启恢复最近会话，`/new` `/resume` 切换 |
 | 配置 | `internal/config` 模型注册表（models.json，原子写；default/vision 角色绑定） |
-| 桌面壳 | **规划中**（Wails v3 beta vs Electron+Go sidecar 待选型）；内核已为此保持包级干净（agent 不 import cli） |
+| 桌面壳 | **规划中，Windows 优先**（Wails v3 beta vs Electron+Go sidecar 待选型）；后端可先于壳长期独立运行 |
+| 依赖 | gorilla/websocket（协议层必需）；其余零第三方依赖 |
 
 ## 3. 工具面（7 个）
 
@@ -43,9 +46,11 @@
 - Go，module `github.com/moyunteng/myt-harness`；提交前 `go build ./...` + `go vet ./...` + `gofmt -l .`（输出为空）+ `go test ./...` 全绿；
 - 注释解释"为什么"，用中文；提交信息 conventional commits（`feat(工具): …`）；
 - 测试就近放包内（`_test.go` 与源码同目录——Go 项目按包放测试是正确布局）；
-- 运行 CLI：`go run ./cmd/myt-harness`（配置默认 `./config/models.json`，`--config` / `MYT_HARNESS_CONFIG` 覆盖；会话目录默认 `<config 上级>/sessions`）；
-- 本地冒烟：`config/local.json`（gitignored，含 key）+ `node temp/smoke.mjs "消息"`（真实端点端到端：流式 + 工具循环）；
-- 系统提示词：工具清单从注册表动态生成（`agent.BuildSystemPrompt`），`TestSystemPromptListsAllTools` 钉住不漂移——加新工具忘了更新 `systemPromptTools` 映射会直接红。
+- 后端：`myt-harness --serve`（配置默认 `./config/models.json`，`--config` / `MYT_HARNESS_CONFIG` 覆盖；会话目录默认 `<config 上级>/sessions`；监听 `--addr`，默认 `127.0.0.1:7789`）；
+- CLI 客户端：`myt-harness`（连 `--backend`，默认取 `--addr`；连接失败会给启动指引）；
+- 本地冒烟：起后端 `myt-harness --serve --config config/local.json --sessions temp/smoke-sessions`（config/local.json gitignored，含 key），然后 `node temp/smoke.mjs "消息"`（端到端）或 `node temp/smoke-confirm.mjs`（确认门）；
+- 系统提示词：工具清单从注册表动态生成（`agent.BuildSystemPrompt`），`TestSystemPromptListsAllTools` 钉住不漂移——加新工具忘了更新 `systemPromptTools` 映射会直接红；
+- 协议改动跑 `internal/protocol` 帧契约测试（字段改名不编译报错、只静默丢字段——测试钉住载荷形状）。
 
 ## 5. 已知坑（改代码前先看）
 
@@ -58,15 +63,15 @@
 ## 6. 与 local-myt-agent 的关系
 
 - 参考实现：`C:\Users\xzy\Desktop\gs\local-myt-agent`（设备端 agent，Docker 全权容器部署）；
-- 已继承：llm 双格式客户端（整包）、tools 注册表模式与六件工具、JSONL 会话存储、动态系统提示词、工程规范（AGENTS.md 奠基/中文注释/测试纪律）；
-- 有意不同：无 WS JSON-RPC 层（桌面 in-process，typed Event 直调）；maxToolRounds 8→16（编码任务链路更长）；edit 低危自动执行（编程 agent 语义）；bash 按 OS 选 shell（Windows 优先 Git Bash）；无热加载（CLI 短生命周期，桌面壳后期再加）。
+- 已继承：llm 双格式客户端（整包）、tools 注册表模式与六件工具、JSONL 会话存储、动态系统提示词、WS JSON-RPC 协议层与客户端库（protocol/wsclient 整体移植）、工程规范（AGENTS.md 奠基/中文注释/测试纪律）；
+- 有意不同：端口 7789（错开 7788）；协议扩展 todo 事件/历史带 todos；去 chat.reset（session.new 覆盖）；agent 哨兵错误供服务端映射错误码（结构化判断不做字符串匹配）；maxToolRounds 8→16（编码任务链路更长）；edit 低危自动执行（编程 agent 语义）；bash 按 OS 选 shell（Windows 优先 Git Bash）；无热加载（后端重启即可，桌面壳接入后再评估）。
 
 ## 7. 待定决策
 
 | 项 | 状态 |
 |---|---|
-| 桌面壳框架 | Wails v3 beta（Go 原生、单二进制）vs Electron + Go sidecar（复用 LX-DSH 经验与更新管线）——内核稳定后选 |
+| 桌面壳框架 | Wails v3 beta（Go 原生、单二进制）vs Electron + Go sidecar（复用 LX-DSH 经验与更新管线）——Windows 优先（用户已定方向），选型在壳动工前定 |
 | 项目正式名 | 工作名 myt-harness，用户保留命名权 |
 | 上下文管理 | 工具结果截断（8KB/条）已兜底；compaction/历史摘要未做 |
 | 语义记忆 | 未做（会话搜索先行；SQLite 嵌入式是倾向） |
-| 依赖策略 | 零第三方依赖（gorilla/websocket 都不需要了）——保持到桌面壳选型为止 |
+| 注册表热加载 | 未做（local-myt-agent 有 30s 热加载 + 广播；桌面壳设置页接入时再评估是否需要） |

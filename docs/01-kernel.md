@@ -2,12 +2,19 @@
 
 > 2026-09-10。M1 交付：纯 Go agent 内核 + CLI REPL（验收面）。
 > 定位/架构基线见 AGENTS.md；本文记内核的分层与关键设计决策。
+> **2026-09-10 晚间架构调整**：前后台分离（用户拍板，对齐 local-myt-agent
+> 参考形态）——后端独立进程 + WS JSON-RPC，见 §1.1。
 
 ## 1. 分层
 
 ```
-cmd/myt-harness      入口：装配（config → store → agent → cli）
-internal/cli         REPL 宿主（零依赖、终端渲染、y/n 确认路由）
+cmd/myt-harness
+  ├─ --serve     后端进程：config → store → server（WS JSON-RPC :7789/rpc）
+  └─ (默认)      CLI 客户端：wsclient.Dial → cli REPL
+internal/cli         CLI 客户端 REPL（零依赖终端渲染、y/n 确认路由）
+internal/wsclient    WS JSON-RPC 客户端库（id 配对/事件流/断连 fast-fail）
+internal/server      WS 服务端：方法分发 + 事件广播（包裹 agent.Session）
+internal/protocol   协议契约（帧/方法/事件/载荷，两端共享 + 契约测试）
 internal/agent       内核核心：会话运行时（工具循环/确认门/todo 状态）
   ├ events.go        typed Event（sealed interface）+ Snapshot
   ├ prompt.go        系统提示词动态生成（工具清单来自注册表）
@@ -18,19 +25,40 @@ internal/tools       工具注册表 + 7 个内置工具（风险分级 + JSON �
 internal/llm         双格式 LLM 客户端（OpenAI/Anthropic、流式、ChatAuto）
 ```
 
-依赖方向单向：cli → agent → {config, store, tools} → llm → stdlib。
-agent 不 import cli（桌面壳后嵌入时零改动）；llm 不依赖任何本地包。
+依赖方向单向：cli → wsclient → protocol；server → agent → {config, store,
+tools} → llm → stdlib。agent 不 import protocol/cli（保持可嵌入性——桌面壳
+若选 in-process 形态也可直接用）；protocol 引 llm/tools 的类型做载荷（无环）。
+
+### 1.1 前后台分离（2026-09-10 定案）
+
+最初 M1 按"内核是包不是进程"交付（CLI 进程内直调）。用户明确定为前后台
+分离、后端独立运行（对齐参考项目 local-myt-agent 的双进程架构）、主做
+Windows。调整内容：
+
+- 协议层与客户端库从 local-myt-agent 移植（帧契约测试一并移植）；
+- server 包装 agent：typed 事件 → 协议事件广播（唯一映射点 emitEvent）；
+- agent 哨兵错误（ErrBusy/ErrNoDefaultModel/ErrModelDisabled/ErrPendingConfirm）
+  供服务端 errors.Is 映射协议错误码——不做字符串匹配；
+- CLI 从进程内直调改为 wsclient 客户端；busy/pending 状态由事件流同步
+  （后端是唯一事实来源，多客户端一致）。
+
+协议相对参考项目的差异：+todo.updated 事件、ChatHistoryResult 带 todos、
+去 chat.reset（session.new 语义覆盖）、端口 7789。
 
 ## 2. 关键设计决策
 
-### 2.1 内核是包不是进程（vs local-myt-agent 的 WS 服务）
+### 2.1 内核是包，宿主是进程（2026-09-10 晚调整为前后台分离）
 
 local-myt-agent 为远程设备 + TUI 客户端设计了 WS JSON-RPC 协议层。
-myt-harness 的宿主是本机桌面壳（in-process），协议层整体取消：
-事件改为 **typed Event（sealed interface）**，宿主 switch 编译期穷尽
-（漏处理新事件 = 编译错误，不是运行时漏渲染）；确认门从 RPC 往返变为
-`Confirm(id, allow)` 方法调用。将来若需要远程形态，加一个薄 server 包
-把 Event 序列化下发即可——内核不用动。
+myt-harness 最初按"桌面壳 in-process 直调"交付（typed Event，无协议层），
+当晚按用户决策调整为前后台分离——协议层从参考项目移植，server 包装
+agent.Session 做方法分发与事件广播。内核形态不变：agent 仍是纯 Go 包
+（typed Event + Confirm 方法），server 是它的第一个宿主；桌面壳将来既可
+走 WS（与后端同机或远程），也可 in-process 嵌入 agent 包——两条路都通。
+
+事件模型不变（typed Event → 协议事件的映射是 server.emitEvent 单点），
+确认门从进程内方法调用变为 RPC 往返（chat.confirmRequest 事件 +
+tool.confirm 方法）。
 
 ### 2.2 事件模型
 
@@ -70,11 +98,15 @@ todo 纪律、session_search 纪律）。`TestSystemPromptListsAllTools` 钉住
 ## 3. 验收记录（2026-09-10）
 
 - `go build ./...` / `go vet ./...` / `gofmt -l .`（空）全过；
-- `go test ./...`：**120 PASS / 2 SKIP**（Windows 跳过的 bash 只读用例）；
-- 真实端点冒烟（mytai.opencecs.com，anthropic 格式）：
-  - 纯对话：流式回包 1.15s，自我介绍正确读取 identity；
-  - 工具循环：`read_file config/local.json` → 低危自动执行 → 行号回填 →
-    二轮正确回答"default 绑定 my"，1.93s 收尾（[stop · 2503 tokens]）。
+- `go test ./...`：**146 PASS / 2 SKIP**（Windows 跳过的 bash 只读用例；
+  新增 protocol 帧契约 12、server 端到端 8、wsclient 10）；
+- 真实端点冒烟（mytai.opencecs.com，anthropic 格式，**经前后台分离链路**：
+  CLI 客户端 → WS → 后端进程 → LLM）：
+  - 纯对话：流式回包 1.08s，自我介绍正确读取 identity；
+  - 工具循环：`read_file config/local.json` → 低危自动执行 → 二轮正确
+    回答"default 绑定 my"，1.72s 收尾；客户端重连恢复会话（6 条消息）；
+  - 确认门：bash 高危 → 确认请求事件 → 客户端 y → tool.confirm RPC →
+    执行 → 结果回填 → 二轮作答，1.86s 端到端。
 
 ## 4. M2 方向（未开始）
 
