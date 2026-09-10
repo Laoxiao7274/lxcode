@@ -1,0 +1,4 @@
+# 统一 LF 存储：Go 源码与文档跨平台一致；二进制不参与 diff。
+* text=auto eol=lf
+*.png binary
+*.exe binary
