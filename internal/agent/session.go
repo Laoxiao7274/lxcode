@@ -1,0 +1,526 @@
+// Package agent 实现会话运行时：内存历史 + agent 工具循环 + 确认门 +
+// todo 状态。这是内核的核心循环——上层（CLI、桌面壳）通过 Send 发起一轮，
+// 经 Emitter 收到类型化事件流（流式增量、工具调用、确认请求……），
+// 经 Confirm 裁决高危操作。内核不依赖任何 UI 框架与网络协议。
+package agent
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"os"
+	"strings"
+	"sync"
+
+	"github.com/moyunteng/myt-harness/internal/config"
+	"github.com/moyunteng/myt-harness/internal/llm"
+	"github.com/moyunteng/myt-harness/internal/store"
+	"github.com/moyunteng/myt-harness/internal/tools"
+)
+
+const (
+	// maxToolRounds 单次用户消息的工具循环轮数上限——防小模型工具死循环。
+	maxToolRounds = 16
+	// maxToolResultBytes 工具结果进入对话历史的上限（执行层 32KB 全文上限，
+	// 历史层再收口——上下文有限）。编程 agent 的轮数上限比设备 agent 放宽
+	// （8→16）：真实编码任务里"读→搜→改→验证"链路常态就是十几个来回。
+	maxToolResultBytes = 8 * 1024
+)
+
+// streamFn 是 LLM 调用的抽象缝（单测注入假实现，不碰网络）。
+type streamFn func(ctx context.Context, m config.ModelConfig, msgs []llm.Message, opts []llm.Option) (<-chan llm.StreamEvent, error)
+
+// Emitter 是事件出口：内核把类型化事件推给宿主（CLI 打印 / 壳渲染）。
+type Emitter func(ev Event)
+
+// Session 是单会话 agent 运行时：内存历史 + 串行工具循环 + 确认门 + todo。
+// 会话级别的并发语义：同一时刻只有一轮生成（busy），Send 忙时拒绝。
+type Session struct {
+	reg    *config.Registry
+	tools  *tools.Registry
+	stream streamFn
+	emit   Emitter
+
+	mu      sync.Mutex
+	history []llm.Message
+	busy    bool
+	cancel  context.CancelFunc
+	pending *ConfirmRequest
+	confirm chan bool
+	todos   []tools.TodoItem
+
+	// 持久化（st 为 nil = 纯内存模式，兼容不接存储的调用方/单测）
+	st   *store.Store
+	id   string   // 当前会话 id（空 = 尚未创建文件）
+	file *os.File // 追加句柄（懒创建：首条消息才落盘，避免空会话文件）
+}
+
+// New 创建会话；emit 为 nil 时事件被丢弃（单测可只调方法）。
+func New(reg *config.Registry, toolReg *tools.Registry, emit Emitter) *Session {
+	if emit == nil {
+		emit = func(Event) {}
+	}
+	s := &Session{reg: reg, tools: toolReg, stream: streamWithLLM, emit: emit}
+	// todo 工具写清单时回写会话状态并广播（UI 的 TodoList 数据源）
+	toolReg.SetTodoSink(func(items []tools.TodoItem) {
+		s.mu.Lock()
+		s.todos = items
+		s.mu.Unlock()
+		s.emit(TodoUpdatedEvent{Items: items})
+	})
+	return s
+}
+
+// SetEmitter 替换事件出口（宿主构造晚于 Session 时接线用）。
+// 并发安全：emit 只在事件 goroutine 里读——替换发生在任何 Send 之前是
+// 期望用法；startEvents 的锁由宿主自己保证。
+func (s *Session) SetEmitter(emit Emitter) {
+	if emit == nil {
+		emit = func(Event) {}
+	}
+	s.mu.Lock()
+	s.emit = emit
+	s.mu.Unlock()
+}
+
+// streamWithLLM 默认 LLM 调用：按 default 角色配置建客户端，经 ChatAuto
+// （anthropic 永远流式；openai 带工具走非流式回放，见 llm.ChatAuto 注释——
+// 该策略来自真机端点实测：部分 openai 兼容端点的流式会丢 tool_calls）。
+func streamWithLLM(ctx context.Context, m config.ModelConfig, msgs []llm.Message, opts []llm.Option) (<-chan llm.StreamEvent, error) {
+	client, err := llm.New(llm.Config{
+		BaseURL: m.BaseURL,
+		APIKey:  m.APIKey,
+		Model:   m.Model,
+		Format:  m.EffectiveFormat(),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return client.ChatAuto(ctx, msgs, opts...)
+}
+
+// Send 发起一轮对话（异步）：校验模型 → 入历史 → 后台跑工具循环。
+// 忙时返回 busy 错误；模型未绑定/停用返回配置错误。
+func (s *Session) Send(text string) error {
+	if text == "" {
+		return errors.New("text 不能为空")
+	}
+	m, err := s.reg.ModelForRole(config.RoleDefault)
+	if err != nil {
+		return fmt.Errorf("default 模型未配置: %w", err)
+	}
+	if !m.Enabled {
+		return fmt.Errorf("default 模型 %s 已停用", m.ID)
+	}
+
+	s.mu.Lock()
+	if s.busy {
+		s.mu.Unlock()
+		return errors.New("会话正在生成中")
+	}
+	s.busy = true
+	userMsg := llm.Message{Role: "user", Content: text}
+	s.history = append(s.history, userMsg)
+	s.persistLocked(userMsg)
+	ctx, cancel := context.WithCancel(context.Background())
+	s.cancel = cancel
+	s.mu.Unlock()
+
+	s.emit(UserMsgEvent{Message: userMsg})
+	s.emit(BusyEvent{Busy: true})
+	go s.runTurn(ctx)
+	return nil
+}
+
+// Cancel 取消当前生成（aborted 语义：已生成部分保留入历史）。
+func (s *Session) Cancel() {
+	s.mu.Lock()
+	cancel := s.cancel
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+// Busy 返回当前忙闲状态。
+func (s *Session) Busy() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.busy
+}
+
+// History 返回会话快照（消息 + 忙闲 + 挂起的确认 + todo），供宿主初始化视图。
+func (s *Session) History() Snapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	msgs := append([]llm.Message(nil), s.history...)
+	var pending *ConfirmRequest
+	if s.pending != nil {
+		p := *s.pending
+		pending = &p
+	}
+	return Snapshot{
+		Messages: msgs, Busy: s.busy, Pending: pending,
+		SessionID: s.id, Todos: append([]tools.TodoItem(nil), s.todos...),
+	}
+}
+
+// Todos 返回当前任务清单（UI 渲染用）。
+func (s *Session) Todos() []tools.TodoItem {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]tools.TodoItem(nil), s.todos...)
+}
+
+// runTurn 跑完整一轮：流式生成 → 工具调用 → 确认 → 执行 → 回填续轮。
+func (s *Session) runTurn(ctx context.Context) {
+	defer func() {
+		s.mu.Lock()
+		s.busy = false
+		s.cancel = nil
+		s.pending = nil
+		s.confirm = nil
+		s.mu.Unlock()
+		s.emit(BusyEvent{Busy: false})
+	}()
+
+	for round := 0; round < maxToolRounds; round++ {
+		res, err := s.streamRound(ctx)
+		if err != nil {
+			aborted := errors.Is(err, context.Canceled) || ctx.Err() != nil
+			note := err.Error()
+			if aborted {
+				note = "已取消（保留已生成部分）"
+			}
+			// 中断也保留已生成的部分内容：入历史并随事件带给宿主
+			var partial *llm.Message
+			if res != nil {
+				s.append(res.Message)
+				m := res.Message
+				partial = &m
+			}
+			s.emit(TurnErrorEvent{Message: note, Aborted: aborted, Partial: partial})
+			return
+		}
+		s.append(res.Message)
+		s.emit(TurnDoneEvent{
+			Message: res.Message, UsageTokens: res.UsageTokens, FinishReason: res.FinishReason,
+		})
+		if len(res.Message.ToolCalls) == 0 {
+			return
+		}
+		if !s.runTools(ctx, res.Message.ToolCalls) {
+			return // 取消
+		}
+	}
+	s.emit(TurnErrorEvent{
+		Message: fmt.Sprintf("工具循环达上限（%d 轮），已停止", maxToolRounds),
+	})
+}
+
+// streamRound 跑一轮流式生成，把增量事件转发给宿主，返回最终结果。
+func (s *Session) streamRound(ctx context.Context) (*llm.ChatResult, error) {
+	m, err := s.reg.ModelForRole(config.RoleDefault)
+	if err != nil {
+		return nil, err
+	}
+	var opts []llm.Option
+	if m.MaxOutputTokens > 0 {
+		opts = append(opts, llm.WithMaxTokens(m.MaxOutputTokens))
+	}
+	// 快照：快照后新消息（若有）不影响本轮请求
+	s.mu.Lock()
+	msgs := append([]llm.Message{{Role: "system", Content: BuildSystemPrompt(s.tools)}}, s.history...)
+	s.mu.Unlock()
+
+	opts = append([]llm.Option{llm.WithTools(s.tools.LLMTools())}, opts...)
+	ch, err := s.stream(ctx, m, msgs, opts)
+	if err != nil {
+		return nil, err
+	}
+	var lastErr error
+	var liveContent, liveReasoning strings.Builder
+	var liveTools []llm.ToolCall
+	for ev := range ch {
+		switch ev.Type {
+		case llm.EventText:
+			liveContent.WriteString(ev.TextDelta)
+			s.emit(DeltaEvent{Kind: "text", Text: ev.TextDelta})
+		case llm.EventReasoning:
+			liveReasoning.WriteString(ev.TextDelta)
+			s.emit(DeltaEvent{Kind: "reasoning", Text: ev.TextDelta})
+		case llm.EventToolCall:
+			liveTools = append(liveTools, ev.ToolCall)
+			tc := ev.ToolCall
+			s.emit(ToolCallEvent{ID: tc.ID, Name: tc.Function.Name, Arguments: tc.Function.Arguments})
+		case llm.EventDone:
+			return ev.Result, nil
+		case llm.EventError:
+			if ev.Err != nil {
+				lastErr = ev.Err
+			} else {
+				lastErr = errors.New("流式错误")
+			}
+			if ev.Result != nil {
+				return ev.Result, lastErr
+			}
+			return nil, lastErr
+		}
+	}
+	// 流结束无 done 事件：可能是取消（ctx 已断流）——把已生成的部分作为
+	// partial 返回给 runTurn 的错误路径（保留部分内容的语义）。
+	if liveContent.Len() > 0 || liveReasoning.Len() > 0 || len(liveTools) > 0 {
+		partial := &llm.ChatResult{
+			Message: llm.Message{
+				Role: "assistant", Content: liveContent.String(),
+				ReasoningContent: liveReasoning.String(), ToolCalls: liveTools,
+			},
+		}
+		if lastErr == nil {
+			lastErr = errors.New("流意外结束（无 done 事件）")
+		}
+		return partial, lastErr
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, errors.New("流意外结束（无 done 事件）")
+}
+
+// runTools 执行本轮工具调用（高危先确认）；返回 false 表示被取消。
+func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall) bool {
+	for _, tc := range calls {
+		if ctx.Err() != nil {
+			return false
+		}
+		if prompt := s.tools.Confirm(tc); prompt != "" {
+			req := &ConfirmRequest{
+				ID: tc.ID, Name: tc.Function.Name, Arguments: tc.Function.Arguments, Prompt: prompt,
+			}
+			allow, ok := s.awaitConfirm(ctx, req)
+			if !ok {
+				return false // 取消
+			}
+			if !allow {
+				s.append(llm.Message{Role: "tool", ToolCallID: tc.ID,
+					Content: "用户拒绝了这次工具调用（未执行）。请改用其他方式完成任务，或向用户说明需要该操作的原因。"})
+				s.emit(ToolResultEvent{
+					ID: tc.ID, Name: tc.Function.Name, Content: "用户拒绝执行", IsError: true,
+				})
+				continue
+			}
+		}
+		result := s.tools.Execute(ctx, tc)
+		if r := []rune(result); len(r) > maxToolResultBytes {
+			result = string(r[:maxToolResultBytes]) +
+				fmt.Sprintf("\n…（结果过长已截断，全文共 %d 字符）", len(r))
+		}
+		s.append(llm.Message{Role: "tool", ToolCallID: tc.ID, Content: result})
+		s.emit(ToolResultEvent{ID: tc.ID, Name: tc.Function.Name, Content: result})
+	}
+	return true
+}
+
+// awaitConfirm 挂起等宿主裁决；取消返回 ok=false。
+func (s *Session) awaitConfirm(ctx context.Context, req *ConfirmRequest) (allow bool, ok bool) {
+	s.mu.Lock()
+	s.pending = req
+	s.confirm = make(chan bool, 1)
+	ch := s.confirm
+	s.mu.Unlock()
+
+	s.emit(ConfirmRequestEvent{Request: req})
+	select {
+	case a := <-ch:
+		s.mu.Lock()
+		s.pending, s.confirm = nil, nil
+		s.mu.Unlock()
+		return a, true
+	case <-ctx.Done():
+		s.mu.Lock()
+		s.pending, s.confirm = nil, nil
+		s.mu.Unlock()
+		return false, false
+	}
+}
+
+// Confirm 是确认门裁决；id 必须匹配当前挂起的调用。
+func (s *Session) Confirm(id string, allow bool) error {
+	s.mu.Lock()
+	pending := s.pending
+	ch := s.confirm
+	s.mu.Unlock()
+	if pending == nil || ch == nil {
+		return errors.New("没有待确认的工具调用")
+	}
+	if pending.ID != id {
+		return fmt.Errorf("确认 id 不匹配（当前挂起: %s）", pending.ID)
+	}
+	select {
+	case ch <- allow:
+	default: // 已投递过（重复确认）
+	}
+	return nil
+}
+
+func (s *Session) append(m llm.Message) {
+	s.mu.Lock()
+	s.history = append(s.history, m)
+	s.persistLocked(m)
+	s.mu.Unlock()
+}
+
+// persistLocked 落盘（调用方持锁；store 挂了才做，失败只记日志不回滚内存——
+// 内存才是运行真源，磁盘落后最多丢"最后几条"，比让整轮对话因 IO 抖动失败好）。
+func (s *Session) persistLocked(m llm.Message) {
+	if s.st == nil {
+		return
+	}
+	if s.ensureFileLocked() == nil && s.file != nil {
+		if err := s.st.AppendMsg(s.file, m); err != nil {
+			log.Printf("会话落盘失败（继续运行）: %v", err)
+		}
+	}
+}
+
+// ensureFileLocked 懒创建当前会话文件（首条消息才建，避免空文件）。调用方持锁。
+func (s *Session) ensureFileLocked() error {
+	if s.file != nil || s.st == nil {
+		return nil
+	}
+	id, f, err := s.st.Create()
+	if err != nil {
+		return err
+	}
+	s.id, s.file = id, f
+	return nil
+}
+
+// EnablePersistence 挂载磁盘存储并恢复最近会话（启动时调用）。
+// 目录里没有任何会话时保持空历史（全新开始）。幂等：重复调用是 no-op。
+func (s *Session) EnablePersistence(st *store.Store) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.st != nil {
+		return nil
+	}
+	s.st = st
+	id, msgs, err := st.Latest()
+	if err != nil {
+		return err
+	}
+	if id == "" {
+		return nil // 没有历史会话：空历史起步，文件首条消息时懒建
+	}
+	s.id = id
+	s.history = msgs
+	f, err := st.OpenForAppend(id)
+	if err != nil {
+		return fmt.Errorf("恢复会话 %s 失败: %w", id, err)
+	}
+	s.file = f
+	return nil
+}
+
+// SessionID 返回当前会话 id（无存储模式为空串）。
+func (s *Session) SessionID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.id
+}
+
+// Close 关闭会话文件句柄（进程退出/测试清理时调用；幂等）。
+func (s *Session) Close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.file != nil {
+		_ = s.file.Close()
+		s.file = nil
+	}
+}
+
+// SwitchNew 结束当前会话（文件保留，可后续 resume），从空历史开始。
+// 生成中/有挂起确认时拒绝——切换会撕裂运行中的工具循环。
+func (s *Session) SwitchNew() (string, error) {
+	s.mu.Lock()
+	if s.busy || s.pending != nil {
+		busy := s.busy || s.pending != nil
+		s.mu.Unlock()
+		return "", errors.New(busyText(busy))
+	}
+	if s.file != nil {
+		_ = s.file.Close()
+	}
+	s.file = nil // 新文件懒创建
+	s.id = ""
+	s.history = nil
+	s.todos = nil
+	s.mu.Unlock()
+	return "", nil
+}
+
+// SwitchTo 恢复指定会话：加载其历史并继续追加。当前会话文件保留。
+func (s *Session) SwitchTo(id string) error {
+	if s.st == nil {
+		return errors.New("未启用会话存储")
+	}
+	s.mu.Lock()
+	if s.busy || s.pending != nil {
+		busy := s.busy || s.pending != nil
+		s.mu.Unlock()
+		return errors.New(busyText(busy))
+	}
+	msgs, err := s.st.Load(id)
+	if err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	f, err := s.st.OpenForAppend(id)
+	if err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	if s.file != nil {
+		_ = s.file.Close()
+	}
+	s.file, s.id, s.history = f, id, msgs
+	s.mu.Unlock()
+	return nil
+}
+
+// SessionList 列出全部持久会话（无存储模式返回空）。
+func (s *Session) SessionList() []store.SessionMeta {
+	if s.st == nil {
+		return nil
+	}
+	metas, err := s.st.List()
+	if err != nil {
+		log.Printf("列出会话失败: %v", err)
+		return nil
+	}
+	return metas
+}
+
+// AttachSessionSearch 把会话搜索接进工具注册表（EnablePersistence 后调用）：
+// JSONL 格式归 store 包所有，工具层只拿函数——格式单源不漂移。
+func (s *Session) AttachSessionSearch() {
+	s.tools.SetSessionSearch(func(ctx context.Context, pattern string, max int) (string, error) {
+		if s.st == nil {
+			return "", errors.New("会话存储未启用，无法搜索历史")
+		}
+		hits, err := s.st.Search(pattern, max)
+		if err != nil {
+			return "", err
+		}
+		// Search 的 max 已被钳制；total 用同值（Search 不超发）
+		return store.FormatSearchHits(hits, len(hits)), nil
+	})
+}
+
+func busyText(busy bool) string {
+	if busy {
+		return "生成中不能切换会话，请先取消（Cancel）"
+	}
+	return "有挂起的确认，先处理确认再切换会话"
+}
