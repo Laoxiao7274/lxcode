@@ -17,6 +17,7 @@ export function PopoverMenu({
   title,
   align = "left",
   width = 240,
+  up = false,
 }: {
   /** 触发元素（菜单锚定其下方）。 */
   trigger: (open: boolean) => ReactNode;
@@ -24,6 +25,8 @@ export function PopoverMenu({
   title?: string;
   align?: "left" | "right";
   width?: number;
+  /** 向上弹（侧栏底部等场景）。 */
+  up?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -50,7 +53,7 @@ export function PopoverMenu({
         {trigger(open)}
       </span>
       {open && (
-        <div className="pop-menu" style={{ width, [align]: 0 }} role="menu">
+        <div className={"pop-menu" + (up ? " up" : "")} style={{ width, [align]: 0 }} role="menu">
           {title && <div className="pop-title">{title}</div>}
           {options.map((o) => (
             <button

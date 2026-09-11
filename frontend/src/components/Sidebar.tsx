@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { AgentSource } from "../agent/types";
-import { useSettings, EFFORTS } from "../settings";
+import { useSettings } from "../settings";
+import { PopoverMenu } from "./PopoverMenu";
 
 /** 侧栏：品牌 → 新建任务 → 搜索（过滤会话）→ 任务列表 → 底部设置。 */
 export function Sidebar({
@@ -79,31 +80,32 @@ export function Sidebar({
         <div className="sidebar-empty">没有匹配「{query.trim()}」的任务</div>
       )}
       <div className="sidebar-footer">
-        <div className="settings-row" onClick={() => set({ showThinking: !settings.showThinking })} role="button" tabIndex={0}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <circle cx="12" cy="12" r="3" />
-            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z" />
-          </svg>
-          思考链显示
-          <span className="ver">{settings.showThinking ? "开" : "关"}</span>
-        </div>
-        <div className="settings-row" role="button" tabIndex={0} onClick={() => {}}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-            <path d="m7 10 5 5 5-5" />
-            <path d="M12 15V3" />
-          </svg>
-          导出会话
-          <span className="ver">JSONL</span>
-        </div>
-        <div className="settings-row" role="button" tabIndex={0} onClick={() => {}}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <rect x="3" y="3" width="18" height="18" rx="2" />
-            <path d="M9 3v18M3 9h18" />
-          </svg>
-          管理
-          <span className="ver">eabc22c</span>
-        </div>
+        <PopoverMenu
+          width={230}
+          align="left"
+          up
+          trigger={() => (
+            <div className="settings-row" role="button" tabIndex={0}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="3" />
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z" />
+              </svg>
+              设置
+              <span className="ver">eabc22c</span>
+            </div>
+          )}
+          options={[
+            {
+              id: "thinking",
+              label: "思考链显示",
+              hint: settings.showThinking ? "开" : "关",
+              selected: settings.showThinking,
+              onSelect: () => set({ showThinking: !settings.showThinking }),
+            },
+            { id: "export", label: "导出会话", hint: "JSONL", onSelect: () => {} },
+            { id: "about", label: "关于 lxcode", hint: "0.1 · eabc22c", onSelect: () => {} },
+          ]}
+        />
       </div>
     </aside>
   );
