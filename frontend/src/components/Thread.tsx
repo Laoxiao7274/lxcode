@@ -57,12 +57,11 @@ export function Thread({
   const endRef = useRef<HTMLDivElement>(null);
   const emptyRef = useRef<HTMLDivElement>(null);
   // 跟随状态机：用户贴底 → sticky 跟随；上翻 → 解除；滚回底部 → 恢复。
-  // 判定基于滚动事件本身（用户意图），流式增量只做"已在 sticky 则置底"。
+  // 判定基于滚动事件本身（用户意图）；内容高度变化（流式增量、gsap
+  // 展开动画逐帧撑高）经 ResizeObserver 持续跟随——动画期间每帧置底。
   const stickyRef = useRef(true);
   const scrollRef = useRef<HTMLElement | null>(null);
 
-  // 注册滚动容器（App 把 .thread-scroll 作为 ref 传下来更干净——
-  // 这里从 endRef 反查 parent，容器层级是 .thread-scroll > .thread）
   useEffect(() => {
     scrollRef.current = endRef.current?.parentElement?.parentElement ?? null;
     const el = scrollRef.current;
@@ -72,18 +71,17 @@ export function Thread({
       stickyRef.current = atBottom;
     };
     el.addEventListener("scroll", onScroll, { passive: true });
-    return () => el.removeEventListener("scroll", onScroll);
+    // sticky 期间内容高度任何变化（含动画逐帧）都置底——工具卡弹出、
+    // 工作行展开（gsap 高度动画）、流式文本都覆盖
+    const ro = new ResizeObserver(() => {
+      if (stickyRef.current) el.scrollTop = el.scrollHeight;
+    });
+    ro.observe(el.firstElementChild ?? el);
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      ro.disconnect();
+    };
   }, []);
-
-  // 流式增量到达时：sticky 则直接置底（scrollTop 赋值，不用
-  // scrollIntoView——它带平滑滚动，和连续增量有竞态，会抖）
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    if (stickyRef.current) {
-      el.scrollTop = el.scrollHeight;
-    }
-  }, [state.blocks]);
 
   // 空态入场：标题 → 副文 → 卡片交错浮现
   useEffect(() => {
@@ -114,11 +112,11 @@ export function Thread({
 
   return (
     <div className="thread">
-      {groupBlocks(state.blocks, state.busy).map((item, i) =>
+      {groupBlocks(state.blocks, state.busy).map((item) =>
         item.kind === "single" ? (
-          <Block key={i} block={item.block} onConfirm={onConfirm} />
+          <Block key={item.block.uid} block={item.block} onConfirm={onConfirm} />
         ) : (
-          <WorkGroup key={i} item={item} onConfirm={onConfirm} />
+          <WorkGroup key={"work-" + item.blocks[0].uid} item={item} onConfirm={onConfirm} />
         ),
       )}
       {/* 进行中且还没有任何输出时显示思考 shimmer */}

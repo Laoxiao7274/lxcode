@@ -6,6 +6,7 @@ import type { AgentEvent, AgentSource, ConfirmRequest, SessionMeta, TodoItem } f
 
 export interface AssistantBlock {
   kind: "assistant";
+  uid: number;
   content: string;
   reasoning: string;
   streaming: boolean;
@@ -13,12 +14,12 @@ export interface AssistantBlock {
 }
 
 export type ThreadBlock =
-  | { kind: "user"; text: string }
+  | { kind: "user"; uid: number; text: string }
   | AssistantBlock
-  | { kind: "tool"; id: string; name: string; arguments: string; result?: string; isError?: boolean }
-  | { kind: "confirm"; request: ConfirmRequest; resolved?: "allow" | "deny" }
-  | { kind: "todo"; items: TodoItem[] }
-  | { kind: "error"; message: string; aborted: boolean };
+  | { kind: "tool"; uid: number; id: string; name: string; arguments: string; result?: string; isError?: boolean }
+  | { kind: "confirm"; uid: number; request: ConfirmRequest; resolved?: "allow" | "deny" }
+  | { kind: "todo"; uid: number; items: TodoItem[] }
+  | { kind: "error"; uid: number; message: string; aborted: boolean };
 
 export interface UIState {
   blocks: ThreadBlock[];
@@ -30,30 +31,46 @@ export interface UIState {
 
 const initial: UIState = { blocks: [], busy: false, pending: null, todos: [], sessionIds: [] };
 
+// 块的唯一序号——React 渲染的稳定 key（index 作 key 在插入新块时
+// 会错位复用组件实例，是重复渲染类怪象的根因）。
+let uidSeq = 0;
+const nextUid = () => ++uidSeq;
+
 function reduce(state: UIState, ev: AgentEvent): UIState {
   switch (ev.type) {
     case "userMessage":
       return {
         ...state,
-        blocks: [...state.blocks, { kind: "user", text: ev.text }],
+        blocks: [...state.blocks, { kind: "user", uid: nextUid(), text: ev.text }],
       };
     case "delta": {
-      // reasoning/text 增量写进最近的 assistant 块（没有则开一块）
+      // reasoning/text 增量写进最近的 assistant 块（没有则开一块）。
+      // 不可突变旧块对象——每条 delta 都以新对象替换，保证引用变化。
       const blocks = [...state.blocks];
-      let last = blocks[blocks.length - 1];
-      if (!last || last.kind !== "assistant" || !last.streaming) {
-        last = { kind: "assistant", content: "", reasoning: "", streaming: true };
-        blocks.push(last);
+      const last = blocks[blocks.length - 1];
+      let target: AssistantBlock;
+      if (last && last.kind === "assistant" && last.streaming) {
+        target = { ...last };
+        blocks[blocks.length - 1] = target;
+      } else {
+        target = { kind: "assistant", uid: nextUid(), content: "", reasoning: "", streaming: true };
+        blocks.push(target);
       }
-      if (ev.kind === "text") last.content += ev.text;
-      else last.reasoning += ev.text;
+      if (ev.kind === "text") target.content += ev.text;
+      else target.reasoning += ev.text;
       return { ...state, blocks };
     }
-    case "toolCall":
+    case "toolCall": {
+      // 工具调用打断流式中的 assistant 块——立刻定格（否则它永远挂着
+      // "思考中" shimmer，成为僵尸块；中间插工具/清单后再开新块续写）
+      const blocks = state.blocks.map((b) =>
+        b.kind === "assistant" && b.streaming ? { ...b, streaming: false } : b,
+      );
       return {
         ...state,
-        blocks: [...state.blocks, { kind: "tool", id: ev.id, name: ev.name, arguments: ev.arguments }],
+        blocks: [...blocks, { kind: "tool", uid: nextUid(), id: ev.id, name: ev.name, arguments: ev.arguments }],
       };
+    }
     case "toolResult": {
       const blocks = state.blocks.map((b) =>
         b.kind === "tool" && b.id === ev.id
@@ -66,20 +83,21 @@ function reduce(state: UIState, ev: AgentEvent): UIState {
       return {
         ...state,
         pending: ev.request,
-        blocks: [...state.blocks, { kind: "confirm", request: ev.request }],
+        blocks: [...state.blocks, { kind: "confirm", uid: nextUid(), request: ev.request }],
       };
     case "todoUpdated":
       return {
         ...state,
         todos: ev.items,
-        blocks: [...state.blocks, { kind: "todo", items: ev.items }],
+        blocks: [...state.blocks, { kind: "todo", uid: nextUid(), items: ev.items }],
       };
     case "done": {
-      const blocks = state.blocks.map((b, i) =>
-        b.kind === "assistant" && i === state.blocks.length - 1
-          ? { ...b, streaming: false, usageTokens: ev.usageTokens }
-          : b,
-      );
+      // 定格最后一个 assistant 块（按 uid 定位，不按 index——
+      // 工具/清单块可能插在 assistant 之后）
+      const lastA = [...state.blocks].reverse().find((b) => b.kind === "assistant") as AssistantBlock | undefined;
+      const blocks = lastA
+        ? state.blocks.map((b) => (b.kind === "assistant" && b.uid === lastA.uid ? { ...b, streaming: false, usageTokens: ev.usageTokens } : b))
+        : state.blocks;
       return { ...state, blocks };
     }
     case "error": {
@@ -89,7 +107,7 @@ function reduce(state: UIState, ev: AgentEvent): UIState {
       );
       return {
         ...state,
-        blocks: [...blocks, { kind: "error", message: ev.message, aborted: ev.aborted }],
+        blocks: [...blocks, { kind: "error", uid: nextUid(), message: ev.message, aborted: ev.aborted }],
       };
     }
     case "busy":
