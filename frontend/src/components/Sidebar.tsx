@@ -53,45 +53,51 @@ export function Sidebar({
           )}
         </div>
       </div>
-      {/* Codex 式两段隔离：THREADS（最近会话平铺）+ PROJECTS（工作区列表） */}
+      {/* Codex 式嵌套分组：项目（文件夹行）→ 组内会话（缩进 + 蓝点 + 相对时间），
+          超过 4 条折叠为 Show more（截图实证的 Directory 形态） */}
       {(() => {
-        // 搜索时只显示匹配的会话；平时显示最近会话 + 工作区两段
-        const workspaces = [...new Set(all.map((s) => s.workspace).filter(Boolean))] as string[];
-        return (
-          <>
-            <div className="sidebar-label">会话{list.length !== all.length ? ` · ${list.length}/${all.length}` : ""}</div>
-            {list.map((s) => (
-              <div
-                key={s.id}
-                className={"session-item" + (s.id === currentId ? " active" : "")}
-                onClick={() => !busy && source.resumeSession(s.id)}
-                title={s.title}
-              >
-                <span className="title">{s.title}</span>
-                {s.id === currentId && busy && <span className="live-dot" />}
-                <span className="time">{s.updatedAt}</span>
+        const SHOW = 4;
+        const groups = new Map<string, typeof all>();
+        for (const s of list) {
+          const w = s.workspace ?? "（未分组）";
+          if (!groups.has(w)) groups.set(w, []);
+          groups.get(w)!.push(s);
+        }
+        return [...groups.entries()].map(([ws, sessions]) => {
+          // 搜索时全部显示；平时每组最多 SHOW 条，超出折叠
+          const visible = query.trim() ? sessions : sessions.slice(0, SHOW);
+          const rest = sessions.length - visible.length;
+          return (
+            <div key={ws} className="ws-group">
+              <div className="ws-row" title={"~/" + ws}>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+                </svg>
+                <span className="ws-name">{ws}</span>
+                <span className="ws-count">{sessions.length}</span>
               </div>
-            ))}
-            {list.length === 0 && query.trim() && (
-              <div className="sidebar-empty">没有匹配「{query.trim()}」的任务</div>
-            )}
-            {!query.trim() && (
-              <>
-                <div className="sidebar-label ws-section">工作区</div>
-                {workspaces.map((ws) => (
-                  <div key={ws} className="ws-row" title={"~/" + ws}>
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                      <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
-                    </svg>
-                    <span className="ws-name">{ws}</span>
-                    <span className="ws-count">{all.filter((s) => s.workspace === ws).length}</span>
-                  </div>
-                ))}
-              </>
-            )}
-          </>
-        );
+              {visible.map((s) => (
+                <div
+                  key={s.id}
+                  className={"session-item" + (s.id === currentId ? " active" : "")}
+                  onClick={() => !busy && source.resumeSession(s.id)}
+                  title={s.title}
+                >
+                  <span className="title">{s.title}</span>
+                  {s.id === currentId && busy && <span className="live-dot" />}
+                  <span className="time">{s.updatedAt}</span>
+                </div>
+              ))}
+              {rest > 0 && (
+                <div className="ws-more">Show more（{rest}）</div>
+              )}
+            </div>
+          );
+        });
       })()}
+      {list.length === 0 && query.trim() && (
+        <div className="sidebar-empty">没有匹配「{query.trim()}」的任务</div>
+      )}
       <div className="sidebar-footer">
         <div className="settings-row" role="button" tabIndex={0} onClick={onOpenSettings}>
           <span className="settings-label">
