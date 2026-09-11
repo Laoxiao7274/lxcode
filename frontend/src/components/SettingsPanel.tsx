@@ -34,28 +34,30 @@ export function SettingsPanel({ open, onClose }: { open: boolean; onClose: () =>
 
   if (!open) return null;
   return (
-    <div className="settings-view" role="dialog" aria-label="设置">
-      {/* 左侧分区导航 */}
-      <nav className="settings-nav">
-        <button type="button" className="settings-back" onClick={onClose}>
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M19 12H5" />
-            <path d="m12 19-7-7 7-7" />
-          </svg>
-          返回应用
-        </button>
-        {SECTIONS.map((s) => (
-          <button
-            key={s.id}
-            type="button"
-            className={"settings-nav-item" + (section === s.id ? " active" : "")}
-            onClick={() => setSection(s.id)}
-          >
-            <span className="nav-icon">{s.icon}</span>
-            {s.label}
+    // 遮罩层：点击弹窗外关闭（弹窗体阻止冒泡）
+    <div className="settings-view" role="dialog" aria-label="设置" onClick={onClose}>
+      <div className="settings-dialog" onClick={(e) => e.stopPropagation()}>
+        {/* 左侧分区导航 */}
+        <nav className="settings-nav">
+          <button type="button" className="settings-back" onClick={onClose}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M19 12H5" />
+              <path d="m12 19-7-7 7-7" />
+            </svg>
+            返回应用
           </button>
-        ))}
-      </nav>
+          {SECTIONS.map((s) => (
+            <button
+              key={s.id}
+              type="button"
+              className={"settings-nav-item" + (section === s.id ? " active" : "")}
+              onClick={() => setSection(s.id)}
+            >
+              <span className="nav-icon">{s.icon}</span>
+              {s.label}
+            </button>
+          ))}
+        </nav>
 
       {/* 右侧内容区 */}
       <div className="settings-content">
@@ -159,6 +161,7 @@ export function SettingsPanel({ open, onClose }: { open: boolean; onClose: () =>
             </Section>
           )}
         </div>
+      </div>
       </div>
     </div>
   );
