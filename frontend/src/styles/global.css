@@ -1102,14 +1102,11 @@ body {
   bottom: calc(100% + 6px);
 }
 
-/* ===== 模型选择器（Codex 式双菜单：左强度 + 右模型，互跳） ===== */
-.model-picker {
+/* ===== 模型选择器（Codex 式：两个独立浮层面板，错位悬浮） ===== */
+.mp-panel {
   position: absolute;
-  bottom: calc(100% + 8px);
-  left: 0;
   z-index: 40;
-  display: flex;
-  gap: 4px;
+  width: 200px;
   padding: 5px;
   background: var(--surface);
   border: 1px solid var(--border-strong);
@@ -1117,11 +1114,15 @@ body {
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.06);
   animation: pop-in 160ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
-.mp-col {
-  width: 190px;
-  display: flex;
-  flex-direction: column;
-  padding: 3px;
+/* 左面板：锚定触发器上方 */
+.mp-left {
+  bottom: calc(100% + 8px);
+  left: 0;
+}
+/* 右面板：向右错开一个面板位 + 略低（Codex 的错位双菜单） */
+.mp-right {
+  bottom: calc(100% + 8px);
+  left: 208px;
 }
 .mp-title {
   font-size: 10px;

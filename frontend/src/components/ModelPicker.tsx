@@ -52,9 +52,9 @@ export function ModelPicker() {
         </button>
       </span>
       {open && (
-        <div className="model-picker" role="menu">
-          {/* 左菜单：推理强度（默认面板）+ 底部模型跳转 */}
-          <div className="mp-col">
+        <>
+          {/* 左面板：推理强度（独立浮层，锚定输入框上方） */}
+          <div className="mp-panel mp-left" role="menu">
             <div className="mp-title">推理强度</div>
             {EFFORTS.map((e) => (
               <button
@@ -78,9 +78,9 @@ export function ModelPicker() {
               <span className="mp-jump-arrow">{chevronRight}</span>
             </button>
           </div>
-          {/* 右菜单：模型列表（panel=model 时显示）+ 底部强度跳转 */}
+          {/* 右面板：模型列表（panel=model 时显示；独立浮层，向右错开） */}
           {panel === "model" && (
-            <div className="mp-col">
+            <div className="mp-panel mp-right" role="menu">
               <div className="mp-title">模型</div>
               {MODELS.map((m) => (
                 <button
@@ -106,7 +106,7 @@ export function ModelPicker() {
               </button>
             </div>
           )}
-        </div>
+        </>
       )}
     </div>
   );
