@@ -1119,11 +1119,22 @@ body {
   bottom: calc(100% + 8px);
   left: 0;
 }
-/* 右面板：向右错开 + 向下错一层（Codex 的错位：右面板明显低于左面板，
-   部分重叠左面板右下角） */
+/* 右面板：顶边对齐左面板中部（强度行展开的位置），向右紧贴左面板；
+   展开动画 = 从左侧滑入 + 淡入（transform-origin 左） */
 .mp-right {
-  bottom: calc(100% - 36px);
+  bottom: calc(100% + 8px);
   left: 208px;
+  animation: mp-slide-in 200ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes mp-slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 .mp-title {
   font-size: 10px;

@@ -105,11 +105,6 @@ export function ModelPicker() {
                   {settings.effort === e.id && <span className="mp-check">{check}</span>}
                 </button>
               ))}
-              <div className="mp-sep" />
-              <button type="button" className="mp-item mp-jump" onClick={() => setPanel("model")}>
-                <span className="mp-label">{model?.id ?? settings.model}</span>
-                <span className="mp-jump-arrow">{chevronRight}</span>
-              </button>
             </div>
           )}
         </>
