@@ -42,9 +42,9 @@ export const EFFORTS: { id: Settings["effort"]; label: string; hint: string }[] 
 ];
 
 export const APPROVALS: { id: Settings["approval"]; label: string; hint: string }[] = [
-  { id: "auto", label: "自动执行", hint: "低危直接跑，高危也放行" },
-  { id: "confirm", label: "确认后执行", hint: "高危操作先问你（推荐）" },
-  { id: "strict", label: "全部确认", hint: "每个工具都问" },
+  { id: "auto", label: "完全访问", hint: "高权限，几乎不打断；仅在可随时销毁的隔离环境用" },
+  { id: "confirm", label: "默认", hint: "工作区内自动改与跑命令，越界才询问（推荐）" },
+  { id: "strict", label: "只读", hint: "规划、审查、问答，不改文件、不联网" },
 ];
 
 const Ctx = createContext<{
