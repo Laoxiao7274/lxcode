@@ -1266,48 +1266,96 @@ body {
   color: var(--fg-faint);
 }
 
-/* 顶部图标行（Codex：侧栏切换 / 搜索 / 新建） */
-.sidebar-iconbar {
+/* 导航项（Codex 2026-05 版：图标 + 文字的纵向导航） */
+.nav-list {
+  display: flex;
+  flex-direction: column;
+  padding: 8px 8px 2px;
+}
+.nav-item {
   display: flex;
   align-items: center;
-  gap: 2px;
-  padding: 10px 12px 4px;
-}
-.ib-btn {
-  width: 28px;
-  height: 28px;
-  border-radius: 7px;
-  border: none;
-  background: transparent;
+  gap: 9px;
+  padding: 7px 10px;
+  font-size: 13px;
   color: var(--fg-muted);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: 7px;
   cursor: pointer;
+  text-align: left;
+  font-family: var(--font-sans);
+  transition: background 100ms, color 100ms;
 }
-.ib-btn:hover {
+.nav-item:hover {
   background: var(--border-soft);
   color: var(--fg);
 }
-.ib-btn.on {
-  color: var(--fg);
-  background: var(--border-soft);
+.nav-item svg {
+  color: var(--fg-faint);
+  flex: none;
 }
-/* Threads 标题行 + 三点 */
-.threads-label {
+.nav-item:hover svg {
+  color: var(--fg-muted);
+}
+.nav-kbd {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--fg-faint);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 4px;
+  line-height: 14px;
+}
+
+/* 项目行（上分组） */
+.proj-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 14px;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: background 100ms, color 100ms;
+}
+.proj-row:hover {
+  background: var(--border-soft);
+  color: var(--fg);
+}
+.proj-row svg {
+  color: var(--fg-faint);
+  flex: none;
+}
+.proj-name {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.proj-count {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--fg-faint);
+  flex: none;
+}
+
+/* 分组标题（带操作图标） */
+.group-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 14px 4px;
 }
-.threads-actions {
+.group-actions {
   color: var(--fg-faint);
   display: inline-flex;
   opacity: 0;
   transition: opacity 120ms;
   cursor: pointer;
 }
-.threads-label:hover .threads-actions {
+.group-head:hover .group-actions {
   opacity: 1;
 }
 /* 会话蓝点（Codex：每条会话前的状态点） */
