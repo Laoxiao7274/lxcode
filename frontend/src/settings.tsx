@@ -7,6 +7,10 @@ export interface Settings {
   effort: "low" | "medium" | "high";
   approval: "auto" | "confirm" | "strict";
   showThinking: boolean;
+  /** 生成时阻止休眠（Codex General 同款）。 */
+  keepAwake: boolean;
+  /** 回答语气（Codex Personalization：friendly/pragmatic/none）。 */
+  personality: "friendly" | "pragmatic" | "none";
 }
 
 const DEFAULTS: Settings = {
@@ -14,6 +18,8 @@ const DEFAULTS: Settings = {
   effort: "medium",
   approval: "confirm",
   showThinking: true,
+  keepAwake: false,
+  personality: "pragmatic",
 };
 
 export const MODELS = [

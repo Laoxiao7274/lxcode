@@ -523,7 +523,7 @@ body {
   left: 50%;
   transform: translate(-50%, -50%);
   z-index: 51;
-  width: min(440px, calc(100% - 48px));
+  width: min(520px, calc(100% - 48px));
   max-height: calc(100% - 80px);
   display: flex;
   flex-direction: column;
@@ -570,17 +570,37 @@ body {
   padding: 6px 16px 12px;
 }
 .panel-group {
-  padding: 12px 0;
+  padding: 14px 0 8px;
   border-bottom: 1px solid var(--border-soft);
 }
 .panel-group:last-child {
   border-bottom: none;
+}
+.panel-group-head {
+  margin-bottom: 4px;
+}
+.panel-group-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+  margin-bottom: 2px;
+}
+.panel-group-desc {
+  font-size: 11.5px;
+  color: var(--fg-faint);
+  line-height: 1.5;
+  margin-bottom: 6px;
 }
 .panel-label {
   font-size: 11px;
   font-weight: 600;
   color: var(--fg-muted);
   margin-bottom: 8px;
+}
+.panel-value {
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  flex: none;
 }
 .panel-row {
   display: flex;
@@ -630,12 +650,92 @@ body {
   background: var(--fg);
   border-color: var(--fg);
 }
+/* 开关（Codex 式 pill toggle，带选中勾） */
+.toggle {
+  position: relative;
+  width: 34px;
+  height: 20px;
+  border-radius: 999px;
+  background: var(--border-strong);
+  cursor: pointer;
+  flex: none;
+  transition: background 150ms;
+  display: inline-flex;
+  align-items: center;
+}
+.toggle.on {
+  background: var(--fg);
+}
+.toggle-knob {
+  position: absolute;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 160ms cubic-bezier(0.22, 1, 0.36, 1);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+.toggle.on .toggle-knob {
+  transform: translateX(14px);
+}
+.toggle-check {
+  position: absolute;
+  left: 7px;
+  color: #fff;
+  display: inline-flex;
+}
+/* 归档行 */
+.archived-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  margin-bottom: 6px;
+}
+.archived-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.archived-date {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--fg-faint);
+  flex: none;
+}
+.archived-restore {
+  padding: 3px 12px;
+  font-size: 11.5px;
+  color: var(--fg);
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  cursor: pointer;
+  font-family: var(--font-sans);
+  flex: none;
+}
+.archived-restore:hover {
+  background: var(--border-soft);
+}
 .panel-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   padding: 10px 16px;
   border-top: 1px solid var(--border);
   font-family: var(--font-mono);
   font-size: 10px;
   color: var(--fg-faint);
+}
+.panel-foot-hint {
+  font-family: var(--font-sans);
 }
 
 /* ===== 空态（Codex 式：居中的大标题 + 2×2 建议卡） ===== */
