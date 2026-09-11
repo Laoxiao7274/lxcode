@@ -13,6 +13,9 @@ temp/
 frontend/node_modules/
 frontend/dist/
 
+# Tauri（Rust 构建产物）
+frontend/src-tauri/target/
+
 # IDE
 .idea/
 .vscode/
