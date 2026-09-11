@@ -15,7 +15,7 @@ export function Sidebar({
     <aside className="sidebar">
       <div className="brand">
         <span className="brandMark">m</span>
-        <span className="brandName">myt-harness</span>
+        <span className="brandName">lxcode</span>
       </div>
       <div className="sidebar-pad">
         <button className="new-task-btn" onClick={() => !busy && source.newSession()}>

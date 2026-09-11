@@ -12,9 +12,9 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/moyunteng/myt-harness/internal/config"
-	"github.com/moyunteng/myt-harness/internal/server"
-	"github.com/moyunteng/myt-harness/internal/store"
+	"github.com/moyunteng/lxcode/internal/config"
+	"github.com/moyunteng/lxcode/internal/server"
+	"github.com/moyunteng/lxcode/internal/store"
 )
 
 // reloadInterval 是注册表热加载周期。抽成变量纯粹是为了测试能缩短它
@@ -23,9 +23,9 @@ var reloadInterval = 30 * time.Second
 
 // resolveConfigPath 决定配置文件路径。优先级：
 //  1. --config 显式指定
-//  2. MYT_HARNESS_CONFIG 环境变量
+//  2. LXCODE_CONFIG 环境变量
 //  3. .\config\models.json（存在时——开发仓库形态）
-//  4. %ProgramData%\myt-harness\config\models.json（安装形态的标准位置）
+//  4. %ProgramData%\lxcode\config\models.json（安装形态的标准位置）
 //
 // 3→4 的内置回退就是参考项目 /usr/local/bin/myt-agent 包装器的 Windows 等价物
 // （local-myt-agent 踩过配置分叉坑后用包装器强制路径；我们把规则做进解析顺序，
@@ -34,7 +34,7 @@ func resolveConfigPath(flagVal string) string {
 	if flagVal != "" {
 		return flagVal
 	}
-	if env := os.Getenv("MYT_HARNESS_CONFIG"); env != "" {
+	if env := os.Getenv("LXCODE_CONFIG"); env != "" {
 		return env
 	}
 	if _, err := os.Stat(filepath.Join("config", "models.json")); err == nil {
@@ -43,13 +43,13 @@ func resolveConfigPath(flagVal string) string {
 	return filepath.Join(programDataRoot(), "config", "models.json")
 }
 
-// programDataRoot 返回安装形态的根目录（%ProgramData%\myt-harness）。
+// programDataRoot 返回安装形态的根目录（%ProgramData%\lxcode）。
 func programDataRoot() string {
 	root := os.Getenv("ProgramData")
 	if root == "" {
 		root = `C:\ProgramData` // 服务会话里环境变量缺失的兜底（理论上不会）
 	}
-	return filepath.Join(root, "myt-harness")
+	return filepath.Join(root, "lxcode")
 }
 
 // runServe 运行后端：装配（config → store → server）+ 热加载 + 监听。
@@ -118,12 +118,12 @@ func orDash(s string) string {
 
 // resolveSessionsDir 决定会话目录：flag > 环境变量 > 从 config 路径推导
 // （config 在 X/config/ 下则会话在 X/sessions/——安装形态即
-// %ProgramData%\myt-harness\sessions\）。
+// %ProgramData%\lxcode\sessions\）。
 func resolveSessionsDir(flagVal, configPath string) string {
 	if flagVal != "" {
 		return flagVal
 	}
-	if env := os.Getenv("MYT_HARNESS_SESSIONS"); env != "" {
+	if env := os.Getenv("LXCODE_SESSIONS"); env != "" {
 		return env
 	}
 	return filepath.Join(filepath.Dir(filepath.Dir(configPath)), "sessions")

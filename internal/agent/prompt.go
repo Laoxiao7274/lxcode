@@ -3,14 +3,14 @@ package agent
 import (
 	"strings"
 
-	"github.com/moyunteng/myt-harness/internal/tools"
+	"github.com/moyunteng/lxcode/internal/tools"
 )
 
 // systemPromptHeader / systemPromptFooter 构成系统提示词的头尾；工具清单
 // 从注册表动态生成（BuildSystemPrompt），不手写——手写清单在工具增减后就是
 // 过时信息，模型不知道某个工具存在（local-myt-agent 的前车之鉴：清单在
 // 工具 4 个时过时成了 3 个）。
-const systemPromptHeader = `你是 myt-harness，运行在用户本机（Windows/类 Unix 桌面环境）上的个人智能体，
+const systemPromptHeader = `你是 lxcode，运行在用户本机（Windows/类 Unix 桌面环境）上的个人智能体，
 既是编程助手（读写代码、改文件、跑构建与测试），也处理日常事务。你直接为用户服务，
 工作目录就是用户启动你的目录。
 

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/moyunteng/myt-harness/internal/llm"
+	"github.com/moyunteng/lxcode/internal/llm"
 )
 
 func call(name, args string) llm.ToolCall {

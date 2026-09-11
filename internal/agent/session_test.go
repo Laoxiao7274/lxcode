@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/moyunteng/myt-harness/internal/config"
-	"github.com/moyunteng/myt-harness/internal/llm"
-	"github.com/moyunteng/myt-harness/internal/store"
-	"github.com/moyunteng/myt-harness/internal/tools"
+	"github.com/moyunteng/lxcode/internal/config"
+	"github.com/moyunteng/lxcode/internal/llm"
+	"github.com/moyunteng/lxcode/internal/store"
+	"github.com/moyunteng/lxcode/internal/tools"
 )
 
 // newTestSession 造测试用会话：空 config 注册表（不读磁盘）+ 可注入假 stream。

@@ -12,9 +12,9 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/moyunteng/myt-harness/internal/config"
-	"github.com/moyunteng/myt-harness/internal/protocol"
-	"github.com/moyunteng/myt-harness/internal/server"
+	"github.com/moyunteng/lxcode/internal/config"
+	"github.com/moyunteng/lxcode/internal/protocol"
+	"github.com/moyunteng/lxcode/internal/server"
 )
 
 // wsConn 是测试用的服务端连接封装：读请求、发响应/事件。
@@ -137,7 +137,7 @@ func TestCallOverRealBackend(t *testing.T) {
 	} else if err := json.Unmarshal(b, &hello); err != nil {
 		t.Fatalf("ready 载荷解析失败: %v", err)
 	}
-	if hello.Server != "myt-harness" || hello.Version != protocol.Version {
+	if hello.Server != "lxcode" || hello.Version != protocol.Version {
 		t.Fatalf("ready 载荷不符: %+v", hello)
 	}
 

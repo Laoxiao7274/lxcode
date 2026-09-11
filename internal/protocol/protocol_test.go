@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/moyunteng/myt-harness/internal/llm"
-	"github.com/moyunteng/myt-harness/internal/tools"
+	"github.com/moyunteng/lxcode/internal/llm"
+	"github.com/moyunteng/lxcode/internal/tools"
 )
 
 // TestFrameShapes 校验三种帧的线格式契约。
@@ -118,14 +118,14 @@ func TestEventPayloadRoundTrip(t *testing.T) {
 		params any
 		verify func(t *testing.T, raw []byte)
 	}{
-		{"ready", EventReady, HelloResult{Server: "myt-harness", Version: Version, Busy: true},
+		{"ready", EventReady, HelloResult{Server: "lxcode", Version: Version, Busy: true},
 			func(t *testing.T, raw []byte) {
 				var v Response
 				mustUnmarshal(t, raw, &v)
 				b := mustMarshal(t, v.Params)
 				var h HelloResult
 				mustUnmarshal(t, b, &h)
-				if h.Server != "myt-harness" || h.Version != Version || !h.Busy {
+				if h.Server != "lxcode" || h.Version != Version || !h.Busy {
 					t.Fatalf("ready 载荷不符: %+v", h)
 				}
 			}},

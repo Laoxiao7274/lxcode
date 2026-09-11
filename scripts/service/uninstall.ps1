@@ -1,9 +1,9 @@
 ﻿# uninstall.ps1 —— 卸载 Windows 服务（保留配置/会话/日志——对齐参考项目
-# rollback.sh 保留数据目录的做法；要彻底清掉手动删 %ProgramData%\myt-harness）。
+# rollback.sh 保留数据目录的做法；要彻底清掉手动删 %ProgramData%\lxcode）。
 param([string]$Addr = "127.0.0.1:7789")
 
 $ErrorActionPreference = "Stop"
-$svc = "myt-harness"
+$svc = "lxcode"
 $root = Join-Path $env:ProgramData $svc
 
 # Wait-Stopped 等服务真正停下（SCM stop 异步；没停就 delete 会失败）。

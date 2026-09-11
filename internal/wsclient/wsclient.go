@@ -9,7 +9,7 @@ import (
 	"sync"
 
 	"github.com/gorilla/websocket"
-	"github.com/moyunteng/myt-harness/internal/protocol"
+	"github.com/moyunteng/lxcode/internal/protocol"
 )
 
 // Backend 是客户端依赖的后端能力（WS 实现；单测注入假实现）。

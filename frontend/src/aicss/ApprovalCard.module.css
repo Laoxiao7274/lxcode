@@ -836,7 +836,7 @@
   }
 }
 
-/* ---- vendor 扩展：resolved 态徽标与补充说明（myt-harness 确认门） ---- */
+/* ---- vendor 扩展：resolved 态徽标与补充说明（lxcode 确认门） ---- */
 .resolvedBadge {
   margin-left: auto;
   font-family: var(--font-mono, ui-monospace, monospace);

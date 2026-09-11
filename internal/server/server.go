@@ -12,11 +12,11 @@ import (
 	"sync"
 
 	"github.com/gorilla/websocket"
-	"github.com/moyunteng/myt-harness/internal/agent"
-	"github.com/moyunteng/myt-harness/internal/config"
-	"github.com/moyunteng/myt-harness/internal/protocol"
-	"github.com/moyunteng/myt-harness/internal/store"
-	"github.com/moyunteng/myt-harness/internal/tools"
+	"github.com/moyunteng/lxcode/internal/agent"
+	"github.com/moyunteng/lxcode/internal/config"
+	"github.com/moyunteng/lxcode/internal/protocol"
+	"github.com/moyunteng/lxcode/internal/store"
+	"github.com/moyunteng/lxcode/internal/tools"
 )
 
 // Server 是 WebSocket JSON-RPC 服务端：持有会话与模型注册表，
@@ -122,7 +122,7 @@ func (s *Server) Handler() http.Handler {
 		}()
 		// 连接建立即告知服务端身份与忙闲（客户端据此决定初始状态）
 		_ = c.send(protocol.NewEvent(protocol.EventReady, protocol.HelloResult{
-			Server: "myt-harness", Version: protocol.Version, Busy: s.sess.Busy(),
+			Server: "lxcode", Version: protocol.Version, Busy: s.sess.Busy(),
 		}))
 		s.serve(c)
 	})
@@ -164,7 +164,7 @@ func (s *Server) dispatch(req *protocol.Request) *protocol.Response {
 			return nil
 		}
 		return protocol.NewResult(req.ID, protocol.HelloResult{
-			Server: "myt-harness", Version: protocol.Version, Busy: s.sess.Busy(),
+			Server: "lxcode", Version: protocol.Version, Busy: s.sess.Busy(),
 		})
 
 	case protocol.MethodModelList:

@@ -1,4 +1,4 @@
-// @aicss/react 0.1.3 (MIT) vendor 改造：只保留 command 变体（myt-harness
+// @aicss/react 0.1.3 (MIT) vendor 改造：只保留 command 变体（lxcode
 // 的确认门形态），lucide 图标换内联 SVG（v3 稿同款），中文标签，
 // 新增 resolved 态（裁决后卡片定格显示结果，不再可点）。
 import styles from "./ApprovalCard.module.css";

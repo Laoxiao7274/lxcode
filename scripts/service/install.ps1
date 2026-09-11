@@ -1,26 +1,26 @@
-﻿# install.ps1 —— 安装 myt-harness 后端为 Windows 服务（对齐参考项目
+﻿# install.ps1 —— 安装 lxcode 后端为 Windows 服务（对齐参考项目
 # scripts/container/deploy.sh 的形态：部署 → 健康验收 → 失败自动回退）。
 #
 # 布局（安装形态的固定根，等价于参考项目的 /mmc/myt-agent/）：
-#   %ProgramData%\myt-harness\
-#     ├─ bin\myt-harness.exe     二进制
+#   %ProgramData%\lxcode\
+#     ├─ bin\lxcode.exe     二进制
 #     ├─ config\models.json      配置（-ConfigPath 可预置；没有则写空模板，
 #     │                          服务起来后热加载手改即可）
 #     ├─ sessions\               会话存储（自动推导）
-#     └─ logs\myt-harness.log    日志（16MB 轮转 ×3）
+#     └─ logs\lxcode.log    日志（16MB 轮转 ×3）
 #
 # 用法（管理员 PowerShell）：
-#   .\install.ps1                                   # 用 .\myt-harness.exe 安装
-#   .\install.ps1 -ExePath C:\build\myt-harness.exe # 指定二进制
+#   .\install.ps1                                   # 用 .\lxcode.exe 安装
+#   .\install.ps1 -ExePath C:\build\lxcode.exe # 指定二进制
 #   .\install.ps1 -ConfigPath .\config\local.json   # 顺带预置配置（含 key 的那份）
 param(
-    [string]$ExePath = ".\myt-harness.exe",
+    [string]$ExePath = ".\lxcode.exe",
     [string]$ConfigPath = "",                # 可选：预置的 models.json
     [string]$Addr = "127.0.0.1:7789"
 )
 
 $ErrorActionPreference = "Stop"
-$svc = "myt-harness"
+$svc = "lxcode"
 $root = Join-Path $env:ProgramData $svc
 
 # Wait-Stopped 等服务真正停下（SCM stop 是异步的；没停就 delete 会失败）。
@@ -39,7 +39,7 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
     exit 1
 }
 if (-not (Test-Path $ExePath)) {
-    Write-Host "二进制不存在: $ExePath（先 go build -o myt-harness.exe ./cmd/myt-harness）" -ForegroundColor Red
+    Write-Host "二进制不存在: $ExePath（先 go build -o lxcode.exe ./cmd/lxcode）" -ForegroundColor Red
     exit 1
 }
 
@@ -81,10 +81,10 @@ if ($existing) {
 }
 
 # ---- 装服务 ----
-$exe = "$root\bin\myt-harness.exe"
+$exe = "$root\bin\lxcode.exe"
 Copy-Item $ExePath $exe -Force
 $binPath = "`"$exe`" --serve --config `"$cfg`" --addr $Addr"
-sc.exe create $svc binPath= $binPath start= auto DisplayName= "myt-harness 后端" | Out-Null
+sc.exe create $svc binPath= $binPath start= auto DisplayName= "lxcode 后端" | Out-Null
 if ($LASTEXITCODE -ne 0) {
     Write-Host "sc create 失败（退出码 $LASTEXITCODE）" -ForegroundColor Red
     exit 1
@@ -99,7 +99,7 @@ Start-Sleep -Seconds 2
 
 & $exe --probe $Addr
 if ($LASTEXITCODE -eq 0) {
-    Write-Host "`n安装完成：服务运行中（$Addr），日志 $root\logs\myt-harness.log" -ForegroundColor Green
+    Write-Host "`n安装完成：服务运行中（$Addr），日志 $root\logs\lxcode.log" -ForegroundColor Green
     exit 0
 } elseif ($LASTEXITCODE -eq 2) {
     Write-Host "`n安装完成：服务运行中（$Addr），但配置还没有可用模型——编辑 $cfg 后 30s 内热加载生效" -ForegroundColor Yellow
@@ -109,6 +109,6 @@ if ($LASTEXITCODE -eq 0) {
     sc.exe stop $svc | Out-Null
     Wait-Stopped $svc 10
     sc.exe delete $svc | Out-Null
-    Get-Content "$root\logs\myt-harness.log" -Tail 20 -ErrorAction SilentlyContinue
+    Get-Content "$root\logs\lxcode.log" -Tail 20 -ErrorAction SilentlyContinue
     exit 1
 }

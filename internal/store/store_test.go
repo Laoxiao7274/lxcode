@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/moyunteng/myt-harness/internal/llm"
+	"github.com/moyunteng/lxcode/internal/llm"
 )
 
 // TestRoundTrip：Create → AppendMsg → Load 往返。

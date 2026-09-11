@@ -1,8 +1,8 @@
 ﻿# update.ps1 —— 更新服务二进制（对齐参考项目 scripts/container/update.sh：
 # 停服务 → 校验 → 原子替换 → 起服务 → 健康验收 → 失败自动回滚）。
 # 用法（管理员 PowerShell）：
-#   .\update.ps1 -File .\myt-harness.exe                # 直接更新
-#   .\update.ps1 -File .\myt-harness.exe -Sha256 <hex>  # 先校验哈希再更新
+#   .\update.ps1 -File .\lxcode.exe                # 直接更新
+#   .\update.ps1 -File .\lxcode.exe -Sha256 <hex>  # 先校验哈希再更新
 param(
     [Parameter(Mandatory = $true)][string]$File,
     [string]$Sha256 = "",
@@ -10,10 +10,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$svc = "myt-harness"
+$svc = "lxcode"
 $root = Join-Path $env:ProgramData $svc
-$exe = "$root\bin\myt-harness.exe"
-$bak = "$root\bin\myt-harness.exe.bak"
+$exe = "$root\bin\lxcode.exe"
+$bak = "$root\bin\lxcode.exe.bak"
 
 # Wait-Stopped 等服务真正停下（SCM stop 异步；exe 还被占用时替换会失败）。
 function Wait-Stopped([string]$name, [int]$timeoutSec) {
@@ -78,6 +78,6 @@ Start-Sleep -Seconds 2
 if ($LASTEXITCODE -le 2) {
     Write-Host "已回滚到旧版本" -ForegroundColor Yellow
 } else {
-    Write-Host "回滚后验收也失败——查看日志: $root\logs\myt-harness.log" -ForegroundColor Red
+    Write-Host "回滚后验收也失败——查看日志: $root\logs\lxcode.log" -ForegroundColor Red
 }
 exit 1

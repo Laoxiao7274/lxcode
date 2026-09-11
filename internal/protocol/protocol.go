@@ -7,9 +7,9 @@ package protocol
 import (
 	"encoding/json"
 
-	"github.com/moyunteng/myt-harness/internal/config"
-	"github.com/moyunteng/myt-harness/internal/llm"
-	"github.com/moyunteng/myt-harness/internal/tools"
+	"github.com/moyunteng/lxcode/internal/config"
+	"github.com/moyunteng/lxcode/internal/llm"
+	"github.com/moyunteng/lxcode/internal/tools"
 )
 
 // Version 是协议版本（hello 握手交换；不兼容变更时递增）。

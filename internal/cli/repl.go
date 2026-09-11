@@ -16,8 +16,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/moyunteng/myt-harness/internal/protocol"
-	"github.com/moyunteng/myt-harness/internal/wsclient"
+	"github.com/moyunteng/lxcode/internal/protocol"
+	"github.com/moyunteng/lxcode/internal/wsclient"
 )
 
 // REPL 持有终端客户端的全部状态。busy/pending 从后端事件流同步——

@@ -13,10 +13,10 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/moyunteng/myt-harness/internal/config"
-	"github.com/moyunteng/myt-harness/internal/llm"
-	"github.com/moyunteng/myt-harness/internal/store"
-	"github.com/moyunteng/myt-harness/internal/tools"
+	"github.com/moyunteng/lxcode/internal/config"
+	"github.com/moyunteng/lxcode/internal/llm"
+	"github.com/moyunteng/lxcode/internal/store"
+	"github.com/moyunteng/lxcode/internal/tools"
 )
 
 const (

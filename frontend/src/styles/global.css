@@ -1,4 +1,4 @@
-/* myt-harness 控制台——布局与 token（Codex 视觉语言）
+/* lxcode 控制台——布局与 token（Codex 视觉语言）
    安静的中性风：白底近黑字、发丝边框、黑主按钮；绿色只作成功语义，
    不作通用强调色。命令执行块用暗色终端（浅色页面里的对比锚点）。
    组件视觉在 src/aicss/*.module.css（vendor）；这里只有页面骨架。 */

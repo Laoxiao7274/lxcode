@@ -8,7 +8,7 @@
 ## 1. 分层
 
 ```
-cmd/myt-harness
+cmd/lxcode
   ├─ --serve     后端进程：config → store → server（WS JSON-RPC :7789/rpc）
   └─ (默认)      CLI 客户端：wsclient.Dial → cli REPL
 internal/cli         CLI 客户端 REPL（零依赖终端渲染、y/n 确认路由）
@@ -50,7 +50,7 @@ Windows。调整内容：
 ### 2.1 内核是包，宿主是进程（2026-09-10 晚调整为前后台分离）
 
 local-myt-agent 为远程设备 + TUI 客户端设计了 WS JSON-RPC 协议层。
-myt-harness 最初按"桌面壳 in-process 直调"交付（typed Event，无协议层），
+lxcode 最初按"桌面壳 in-process 直调"交付（typed Event，无协议层），
 当晚按用户决策调整为前后台分离——协议层从参考项目移植，server 包装
 agent.Session 做方法分发与事件广播。内核形态不变：agent 仍是纯 Go 包
 （typed Event + Confirm 方法），server 是它的第一个宿主；桌面壳将来既可

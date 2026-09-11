@@ -1,11 +1,12 @@
-# AGENTS.md — myt-harness
+# AGENTS.md — lxcode
 
 > 本文件是本仓库的协作规范：任何 AI agent 或开发者在本仓库工作前，先读此文件。
-> 工作名 myt-harness（MYT + harness/智能体运行时）——改名只是 `go mod edit -module` + 目录重命名的事，用户拍板后执行。
+> 2026-09-11 定名 **lxcode**（用户拍板，接续 LX 品牌线）；原名 myt-harness，全仓已重命名
+> （module github.com/moyunteng/lxcode、目录、服务名、二进制、环境变量 LXCODE_*、协议身份）。
 
 ## 1. 项目定位
 
-**myt-harness 是用户自己的个人智能体：Go 内核 + 桌面壳（规划中）。**
+**lxcode 是用户自己的个人智能体：Go 内核 + 桌面壳（规划中）。**
 
 - 双定位：**编程助手**（读写代码、改文件、跑构建测试）+ **通用个人助理**（日常事务、检索、自动化）；
 - 跑在用户本机（Windows 开发机为主，兼容类 Unix），单用户；
@@ -15,7 +16,7 @@
 
 | 项 | 决策 |
 |---|---|
-| 形态 | **前后台分离**（2026-09-10 用户拍板，对齐 local-myt-agent）：后端 `myt-harness --serve` 独立进程（WS JSON-RPC `127.0.0.1:7789/rpc` + 注册表 + 会话运行时 + 工具循环，`/health` 健康检查）；CLI / 桌面壳都是客户端 |
+| 形态 | **前后台分离**（2026-09-10 用户拍板，对齐 local-myt-agent）：后端 `lxcode --serve` 独立进程（WS JSON-RPC `127.0.0.1:7789/rpc` + 注册表 + 会话运行时 + 工具循环，`/health` 健康检查）；CLI / 桌面壳都是客户端 |
 | 协议 | `internal/protocol`：WS JSON-RPC 2.0（帧/方法/事件单处定义，客户端服务端共享）；扩展 `todo.updated` 事件与 `ChatHistoryResult.Todos`；端口 7789（与 local-myt-agent 的 7788 错开） |
 | 内核 | `internal/agent`：纯 Go 包（typed Event + Emitter + Confirm），被 server 包装广播；桌面壳将来也可 in-process 嵌入（包级零 UI 依赖保持不变） |
 | 客户端 | `internal/wsclient`：Backend 接口 + Dial（请求按 id 配对、事件 channel、断连 fast-fail、缓冲满丢最旧）；CLI 是第一个客户端，桌面壳复用同一协议 |
@@ -23,7 +24,7 @@
 | 工具 | `internal/tools` 注册表 + 风险分级：低危自动执行，高危确认门 |
 | 会话 | JSONL append-only（`internal/store`），重启恢复最近会话，`/new` `/resume` 切换 |
 | 配置 | `internal/config` 模型注册表（models.json，原子写；default/vision 角色绑定；**30s 热加载** + model.changed 广播） |
-| 服务化 | **Windows SCM 服务**（`scripts/service/{install,update,uninstall}.ps1`；开机自启 + 崩溃自动重启；`--probe` 验收；布局 `%ProgramData%\myt-harness\{bin,config,sessions,logs}`）；服务形态日志落文件（16MB 轮转 ×3） |
+| 服务化 | **Windows SCM 服务**（`scripts/service/{install,update,uninstall}.ps1`；开机自启 + 崩溃自动重启；`--probe` 验收；布局 `%ProgramData%\lxcode\{bin,config,sessions,logs}`）；服务形态日志落文件（16MB 轮转 ×3） |
 | 桌面壳 | **规划中，Windows 优先**（Wails v3 beta vs Electron+Go sidecar 待选型）；后端可先于壳长期独立运行 |
 | 依赖 | gorilla/websocket（协议层必需）；其余零第三方依赖 |
 
@@ -44,12 +45,12 @@
 
 ## 4. 开发约定
 
-- Go，module `github.com/moyunteng/myt-harness`；提交前 `go build ./...` + `go vet ./...` + `gofmt -l .`（输出为空）+ `go test ./...` 全绿；
+- Go，module `github.com/moyunteng/lxcode`；提交前 `go build ./...` + `go vet ./...` + `gofmt -l .`（输出为空）+ `go test ./...` 全绿；
 - 注释解释"为什么"，用中文；提交信息 conventional commits（`feat(工具): …`）；
 - 测试就近放包内（`_test.go` 与源码同目录——Go 项目按包放测试是正确布局）；
-- 后端：`myt-harness --serve`（配置默认 `./config/models.json`，`--config` / `MYT_HARNESS_CONFIG` 覆盖；会话目录默认 `<config 上级>/sessions`；监听 `--addr`，默认 `127.0.0.1:7789`）；
-- CLI 客户端：`myt-harness`（连 `--backend`，默认取 `--addr`；连接失败会给启动指引）；
-- 本地冒烟：起后端 `myt-harness --serve --config config/local.json --sessions temp/smoke-sessions`（config/local.json gitignored，含 key），然后 `node temp/smoke.mjs "消息"`（端到端）或 `node temp/smoke-confirm.mjs`（确认门）；
+- 后端：`lxcode --serve`（配置默认 `./config/models.json`，`--config` / `LXCODE_CONFIG` 覆盖；会话目录默认 `<config 上级>/sessions`；监听 `--addr`，默认 `127.0.0.1:7789`）；
+- CLI 客户端：`lxcode`（连 `--backend`，默认取 `--addr`；连接失败会给启动指引）；
+- 本地冒烟：起后端 `lxcode --serve --config config/local.json --sessions temp/smoke-sessions`（config/local.json gitignored，含 key），然后 `node temp/smoke.mjs "消息"`（端到端）或 `node temp/smoke-confirm.mjs`（确认门）；
 - 系统提示词：工具清单从注册表动态生成（`agent.BuildSystemPrompt`），`TestSystemPromptListsAllTools` 钉住不漂移——加新工具忘了更新 `systemPromptTools` 映射会直接红；
 - 协议改动跑 `internal/protocol` 帧契约测试（字段改名不编译报错、只静默丢字段——测试钉住载荷形状）。
 
@@ -67,12 +68,12 @@
 ## 6. Windows 服务运维（对齐参考项目的部署形态）
 
 - **布局**（安装形态固定根，= 参考项目的 `/mmc/myt-agent/`）：
-  `%ProgramData%\myt-harness\`：`bin\myt-harness.exe`（二进制）、`config\models.json`（配置）、`sessions\`（会话）、`logs\myt-harness.log`（日志，16MB 轮转 ×3）。
-- **配置解析顺序**（内置了参考项目包装器的语义，免包装器）：`--config` > `MYT_HARNESS_CONFIG` > `.\config\models.json`（存在时，开发形态）> `%ProgramData%\myt-harness\config\models.json`（安装形态）。
-- **安装**（管理员 PowerShell，在仓库根）：`scripts\service\install.ps1 [-ExePath .\myt-harness.exe] [-ConfigPath .\config\local.json]`——端口预检 → 布置文件 → `sc create`（start=auto + 崩溃自动重启 5s/5s/60s）→ `--probe` 验收 → 失败自动回退（停服务 + 删除）。
+  `%ProgramData%\lxcode\`：`bin\lxcode.exe`（二进制）、`config\models.json`（配置）、`sessions\`（会话）、`logs\lxcode.log`（日志，16MB 轮转 ×3）。
+- **配置解析顺序**（内置了参考项目包装器的语义，免包装器）：`--config` > `LXCODE_CONFIG` > `.\config\models.json`（存在时，开发形态）> `%ProgramData%\lxcode\config\models.json`（安装形态）。
+- **安装**（管理员 PowerShell，在仓库根）：`scripts\service\install.ps1 [-ExePath .\lxcode.exe] [-ConfigPath .\config\local.json]`——端口预检 → 布置文件 → `sc create`（start=auto + 崩溃自动重启 5s/5s/60s）→ `--probe` 验收 → 失败自动回退（停服务 + 删除）。
 - **升级**：`scripts\service\update.ps1 -File <新二进制> [-Sha256 <hex>]`——停 → 校验 → 备份 → 替换 → 起 → 验收 → 失败自动回滚到 `.bak`。
 - **卸载**：`scripts\service\uninstall.ps1`（保留 config/sessions/logs）。
-- **验收探针**：`myt-harness --probe [addr]`——连接/ready/hello/model.list/session.list/history；退出码 0=全好、1=协议失败（服务死）、2=活着但没配模型（等热加载）。
+- **验收探针**：`lxcode --probe [addr]`——连接/ready/hello/model.list/session.list/history；退出码 0=全好、1=协议失败（服务死）、2=活着但没配模型（等热加载）。
 - **服务形态与控制台形态同一条装配路径**（`runServe`）：差异只在 ctx 取消信号来源（SCM Stop vs Ctrl+C）；服务里 `svc.Execute` 薄壳，`serviceName` 常量与 install.ps1 的 `sc create` 名字绑定（两处同步改）。
 - 详见 docs/02-windows-service.md。
 
@@ -87,7 +88,7 @@
 | 项 | 状态 |
 |---|---|
 | 桌面壳框架 | **已定 Tauri 2**（2026-09-10 用户拍板）——薄壳 + 前端直连 WS（React + aicss，设计语言 agent-console-v3）；动工时定细节 |
-| 项目正式名 | 工作名 myt-harness，用户保留命名权 |
+| 项目正式名 | 工作名 lxcode，用户保留命名权 |
 | 上下文管理 | 工具结果截断（8KB/条）已兜底；compaction/历史摘要未做 |
 | 语义记忆 | 未做（会话搜索先行；SQLite 嵌入式是倾向） |
 | 自更新 | 参考项目同样未实现（update.sh --check 地基）；方向 = 定时检查 + 人工确认 |

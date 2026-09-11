@@ -56,7 +56,7 @@ export class DemoAgent implements AgentSource {
   subscribe(listener: Listener): () => void {
     this.listeners.add(listener);
     // 接入即 ready（模拟 connection.ready）
-    this.emit({ type: "ready", server: "myt-harness", version: "1", busy: this.busy });
+    this.emit({ type: "ready", server: "lxcode", version: "1", busy: this.busy });
     return () => this.listeners.delete(listener);
   }
 
@@ -168,7 +168,7 @@ export class DemoAgent implements AgentSource {
         if (allow) {
           this.emit({
             type: "toolResult", id: "c2", name: "bash", isError: false,
-            content: "ok  github.com/moyunteng/myt-harness/internal/agent\t1.204s\nPASS",
+            content: "ok  github.com/moyunteng/lxcode/internal/agent\t1.204s\nPASS",
           });
           this.emit({ type: "todoUpdated", items: TODO_LATER });
           this.streamAnswer();

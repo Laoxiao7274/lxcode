@@ -61,7 +61,7 @@ export function Thread({
       {/* 进行中且还没有任何输出时显示思考 shimmer */}
       {state.busy && !lastIsStreamingAssistant(state.blocks) && (
         <div className="msg">
-          <div className="msg-role assistant">myt-harness</div>
+          <div className="msg-role assistant">lxcode</div>
           <ThinkingState text="正在处理…" />
         </div>
       )}
@@ -87,7 +87,7 @@ function Block({ block, onConfirm }: { block: ThreadBlock; onConfirm: (id: strin
     case "assistant":
       return (
         <div className="msg">
-          <div className="msg-role assistant">myt-harness</div>
+          <div className="msg-role assistant">lxcode</div>
           {block.reasoning && (
             <ThinkingReasoning
               sentences={block.reasoning.split("\n").filter(Boolean)}

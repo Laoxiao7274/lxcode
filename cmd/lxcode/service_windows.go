@@ -14,7 +14,7 @@ import (
 )
 
 // serviceName 与 install.ps1 里 sc create 的名字一致（改要两处同步）。
-const serviceName = "myt-harness"
+const serviceName = "lxcode"
 
 // isWindowsService 报告当前进程是否由 SCM 启动（服务形态 vs 控制台形态）。
 func isWindowsService() bool {

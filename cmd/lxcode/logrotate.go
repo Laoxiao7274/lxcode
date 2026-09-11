@@ -13,7 +13,7 @@ import (
 
 const (
 	logMaxBytes = 16 << 20 // 16MB
-	logKeep     = 3        // 保留 myt-harness.log.1/.2/.3
+	logKeep     = 3        // 保留 lxcode.log.1/.2/.3
 )
 
 // setupFileLogging 把标准 log 输出切到轮转文件。返回错误时（目录不可写）
@@ -25,7 +25,7 @@ func setupFileLogging(root string) error {
 		log.SetOutput(os.Stderr)
 		return fmt.Errorf("创建日志目录 %s 失败: %w", dir, err)
 	}
-	w := &rotatingWriter{path: filepath.Join(dir, "myt-harness.log")}
+	w := &rotatingWriter{path: filepath.Join(dir, "lxcode.log")}
 	log.SetOutput(w)
 	return nil
 }

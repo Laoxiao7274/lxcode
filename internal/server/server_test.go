@@ -11,11 +11,11 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/moyunteng/myt-harness/internal/agent"
-	"github.com/moyunteng/myt-harness/internal/config"
-	"github.com/moyunteng/myt-harness/internal/llm"
-	"github.com/moyunteng/myt-harness/internal/protocol"
-	"github.com/moyunteng/myt-harness/internal/store"
+	"github.com/moyunteng/lxcode/internal/agent"
+	"github.com/moyunteng/lxcode/internal/config"
+	"github.com/moyunteng/lxcode/internal/llm"
+	"github.com/moyunteng/lxcode/internal/protocol"
+	"github.com/moyunteng/lxcode/internal/store"
 )
 
 // wsTestClient 是测试用的最小 WS 客户端：请求-响应配对 + 事件收集。
@@ -176,7 +176,7 @@ func TestServerHello(t *testing.T) {
 	var h protocol.HelloResult
 	b, _ := json.Marshal(ev.Params)
 	json.Unmarshal(b, &h)
-	if h.Server != "myt-harness" || h.Version != protocol.Version {
+	if h.Server != "lxcode" || h.Version != protocol.Version {
 		t.Fatalf("ready 载荷不符: %+v", h)
 	}
 
@@ -187,7 +187,7 @@ func TestServerHello(t *testing.T) {
 	var r protocol.HelloResult
 	b, _ = json.Marshal(resp.Result)
 	json.Unmarshal(b, &r)
-	if r.Server != "myt-harness" || r.Version != protocol.Version {
+	if r.Server != "lxcode" || r.Version != protocol.Version {
 		t.Fatalf("hello 结果不符: %+v", r)
 	}
 	// model.list

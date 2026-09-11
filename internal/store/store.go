@@ -21,7 +21,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/moyunteng/myt-harness/internal/llm"
+	"github.com/moyunteng/lxcode/internal/llm"
 )
 
 // storeVersion 是会话文件格式版本；改行结构时递增。

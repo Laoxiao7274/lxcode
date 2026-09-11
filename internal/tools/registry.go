@@ -13,7 +13,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/moyunteng/myt-harness/internal/llm"
+	"github.com/moyunteng/lxcode/internal/llm"
 )
 
 // RiskLevel 工具风险等级。

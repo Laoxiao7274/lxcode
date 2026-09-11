@@ -1,8 +1,8 @@
 package agent
 
 import (
-	"github.com/moyunteng/myt-harness/internal/llm"
-	"github.com/moyunteng/myt-harness/internal/tools"
+	"github.com/moyunteng/lxcode/internal/llm"
+	"github.com/moyunteng/lxcode/internal/tools"
 )
 
 // Event 是内核推给宿主的类型化事件。宿主（CLI/桌面壳）按类型渲染：

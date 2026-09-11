@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/moyunteng/myt-harness/internal/config"
-	"github.com/moyunteng/myt-harness/internal/protocol"
-	"github.com/moyunteng/myt-harness/internal/wsclient"
+	"github.com/moyunteng/lxcode/internal/config"
+	"github.com/moyunteng/lxcode/internal/protocol"
+	"github.com/moyunteng/lxcode/internal/wsclient"
 )
 
 // freeAddr 预留一个临时端口（监听后关闭再返回——存在微小竞态，
@@ -134,11 +134,11 @@ func TestResolveConfigPath(t *testing.T) {
 		t.Fatalf("flag 应最优先: %s", got)
 	}
 	// env 次之
-	t.Setenv("MYT_HARNESS_CONFIG", `X:\env.json`)
+	t.Setenv("LXCODE_CONFIG", `X:\env.json`)
 	if got := resolveConfigPath(""); got != `X:\env.json` {
 		t.Fatalf("env 应次之: %s", got)
 	}
-	t.Setenv("MYT_HARNESS_CONFIG", "")
+	t.Setenv("LXCODE_CONFIG", "")
 
 	// ./config/models.json 存在时用本地（开发形态）
 	restore := chdirTemp(t)
@@ -151,7 +151,7 @@ func TestResolveConfigPath(t *testing.T) {
 
 	// 都没有 → ProgramData 安装形态
 	t.Setenv("ProgramData", `C:\PD`)
-	want := filepath.Join(`C:\PD`, "myt-harness", "config", "models.json")
+	want := filepath.Join(`C:\PD`, "lxcode", "config", "models.json")
 	if got := resolveConfigPath(""); got != want {
 		t.Fatalf("应回退 ProgramData: %s ≠ %s", got, want)
 	}

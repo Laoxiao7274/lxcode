@@ -9,33 +9,33 @@
 参考项目的托管形态是 Alpine OpenRC / Docker（`--restart unless-stopped`）。
 Windows 上的原生等价物是 SCM 服务：
 
-| 参考项目 | myt-harness Windows |
+| 参考项目 | lxcode Windows |
 |---|---|
-| OpenRC 服务 / Docker 容器 | `sc create myt-harness` |
+| OpenRC 服务 / Docker 容器 | `sc create lxcode` |
 | `rc-update add default`（开机自启） | `start= auto` |
 | `--restart unless-stopped`（崩溃自愈） | `sc failure ... actions= restart/5000/restart/5000/restart/60000` |
-| `/mmc/myt-agent/` 固定目录 | `%ProgramData%\myt-harness\` |
-| `/var/log/myt-agent.log` | `logs\myt-harness.log`（16MB 轮转 ×3） |
+| `/mmc/myt-agent/` 固定目录 | `%ProgramData%\lxcode\` |
+| `/var/log/myt-agent.log` | `logs\lxcode.log`（16MB 轮转 ×3） |
 | 30s 热加载 + model.changed | 同款（`reloadLoop`） |
 | deploy/update/rollback 脚本 | `scripts/service/*.ps1` |
-| wsprobe 验收 | `myt-harness --probe`（内置） |
+| wsprobe 验收 | `lxcode --probe`（内置） |
 
 ## 2. 布局与配置解析
 
 ```
-%ProgramData%\myt-harness\
-├── bin\myt-harness.exe      # 二进制（sc binPath 指向这里，显式 --config）
+%ProgramData%\lxcode\
+├── bin\lxcode.exe      # 二进制（sc binPath 指向这里，显式 --config）
 ├── config\models.json       # 配置（服务与 CLI 共享同一份）
 ├── sessions\                # 会话存储（从 config 路径推导）
-└── logs\myt-harness.log     # 日志（.1/.2/.3 轮转）
+└── logs\lxcode.log     # 日志（.1/.2/.3 轮转）
 ```
 
-配置解析顺序（`cmd/myt-harness/serve.go:resolveConfigPath`）：
+配置解析顺序（`cmd/lxcode/serve.go:resolveConfigPath`）：
 
 1. `--config` 显式指定
-2. `MYT_HARNESS_CONFIG` 环境变量
+2. `LXCODE_CONFIG` 环境变量
 3. `.\config\models.json`（存在时——开发仓库形态）
-4. `%ProgramData%\myt-harness\config\models.json`（安装形态）
+4. `%ProgramData%\lxcode\config\models.json`（安装形态）
 
 3→4 的内置回退等价于参考项目的 `/usr/local/bin/myt-agent` 包装器（它用包装器
 强制 `MYT_AGENT_CONFIG` 解决配置分叉；我们把规则做进解析顺序）。服务安装时
@@ -70,4 +70,4 @@ binPath 显式带 `--config`，服务侧不存在分叉可能。
   model.list/session.list/history）；脚本语法解析通过。
 - **待管理员环境验证**（本开发会话无管理员权限，用户一条命令即可）：
   `scripts\service\install.ps1 -ConfigPath .\config\local.json` → 观察 probe
-  输出 → `sc qc myt-harness` 核对 binPath → 重启机器验证开机自启（可选）。
+  输出 → `sc qc lxcode` 核对 binPath → 重启机器验证开机自启（可选）。

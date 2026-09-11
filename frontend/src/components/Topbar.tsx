@@ -4,7 +4,7 @@ import type { AgentSource } from "../agent/types";
 export function Topbar({ source, connected }: { source: AgentSource; connected: boolean }) {
   return (
     <header className="topbar">
-      <span className="logo">myt-harness</span>
+      <span className="logo">lxcode</span>
       <span className="sep">/</span>
       <span className="model">MYT</span>
       <span className="addr">127.0.0.1:7789</span>

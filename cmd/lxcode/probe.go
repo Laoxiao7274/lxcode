@@ -11,9 +11,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/moyunteng/myt-harness/internal/config"
-	"github.com/moyunteng/myt-harness/internal/protocol"
-	"github.com/moyunteng/myt-harness/internal/wsclient"
+	"github.com/moyunteng/lxcode/internal/config"
+	"github.com/moyunteng/lxcode/internal/protocol"
+	"github.com/moyunteng/lxcode/internal/wsclient"
 )
 
 // probe 退出码（脚本据此分支）：
@@ -49,7 +49,7 @@ func runProbe(addr string) int {
 		fmt.Printf("✗ hello 失败: %v\n", err)
 		return probeDead
 	}
-	if hello.Server != "myt-harness" || hello.Version != protocol.Version {
+	if hello.Server != "lxcode" || hello.Version != protocol.Version {
 		fmt.Printf("✗ 服务端身份不符: %+v\n", hello)
 		return probeDead
 	}
