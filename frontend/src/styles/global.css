@@ -220,23 +220,68 @@ body {
 .plusGlyph {
   font-size: 13px;
 }
-.sidebar-search {
+/* 搜索框（Codex 式常驻：细描边圆角 + focus 加深 + ⌘K 提示） */
+.search-box {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin: 6px 6px 8px;
+  gap: 7px;
+  margin-top: 8px;
   padding: 5px 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  transition: border-color 130ms, box-shadow 130ms;
+}
+.search-box:focus-within {
+  border-color: var(--fg-muted);
+  box-shadow: 0 0 0 2px rgba(13, 13, 13, 0.05);
+}
+.search-box .search-icon {
+  color: var(--fg-faint);
+  flex: none;
+}
+.search-box input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-family: var(--font-sans);
   font-size: 12.5px;
+  color: var(--fg);
+  line-height: 1.4;
+}
+.search-box input::placeholder {
+  color: var(--fg-faint);
+}
+.search-kbd {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--fg-faint);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 4px;
+  line-height: 14px;
+  background: var(--bg-side);
+}
+.search-clear {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   color: var(--fg-faint);
   background: transparent;
   border: none;
-  border-radius: 7px;
+  border-radius: 50%;
   cursor: pointer;
-  transition: background 120ms, color 120ms;
+  padding: 0;
 }
-.sidebar-search:hover {
+.search-clear:hover {
+  color: var(--fg);
   background: var(--border-soft);
-  color: var(--fg-muted);
 }
 .sidebar-label {
   font-size: 11px;
@@ -1109,31 +1154,6 @@ body {
   flex: none;
 }
 
-/* 侧栏搜索态（内联输入框） */
-.sidebar-searching {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 6px 6px 8px;
-  padding: 5px 8px;
-  background: var(--surface);
-  border-radius: 7px;
-  color: var(--fg-faint);
-  box-shadow: 0 0 0 1px var(--border-strong);
-}
-.sidebar-searching input {
-  flex: 1;
-  min-width: 0;
-  border: none;
-  outline: none;
-  background: transparent;
-  font-family: var(--font-sans);
-  font-size: 12.5px;
-  color: var(--fg);
-}
-.sidebar-searching input::placeholder {
-  color: var(--fg-faint);
-}
 .sidebar-empty {
   padding: 10px 14px;
   font-size: 11.5px;
@@ -1170,7 +1190,7 @@ body {
   }
   .suggest-card,
   .session-item,
-  .sidebar-search,
+  .search-box,
   .work-row,
   .work-row .work-chevron {
     transition: none;

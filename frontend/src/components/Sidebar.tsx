@@ -14,7 +14,6 @@ export function Sidebar({
   onOpenSettings: () => void;
 }) {
   const [query, setQuery] = useState("");
-  const [searching, setSearching] = useState(false);
   const all = source.sessions();
   const list = query.trim()
     ? all.filter((s) => s.title.toLowerCase().includes(query.trim().toLowerCase()))
@@ -26,37 +25,33 @@ export function Sidebar({
         <button className="new-task-btn" onClick={() => !busy && source.newSession()}>
           <span className="plusGlyph">＋</span> 新建任务
         </button>
-        {searching ? (
-          <div className="sidebar-searching">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <circle cx="11" cy="11" r="7" />
-              <path d="m20 20-3.5-3.5" />
-            </svg>
-            <input
-              autoFocus
-              value={query}
-              placeholder="搜索任务…"
-              onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Escape") {
-                  setQuery("");
-                  setSearching(false);
-                }
-              }}
-              onBlur={() => {
-                if (!query.trim()) setSearching(false);
-              }}
-            />
-          </div>
-        ) : (
-          <div className="sidebar-search" onClick={() => setSearching(true)}>
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <circle cx="11" cy="11" r="7" />
-              <path d="m20 20-3.5-3.5" />
-            </svg>
-            搜索
-          </div>
-        )}
+        <div className="search-box">
+          <svg className="search-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <circle cx="11" cy="11" r="7" />
+            <path d="m20 20-3.5-3.5" />
+          </svg>
+          <input
+            value={query}
+            placeholder="搜索"
+            aria-label="搜索任务"
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                setQuery("");
+                e.currentTarget.blur();
+              }
+            }}
+          />
+          {query ? (
+            <button type="button" className="search-clear" aria-label="清除" onClick={() => setQuery("")}>
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true">
+                <path d="M18 6 6 18M6 6l12 12" />
+              </svg>
+            </button>
+          ) : (
+            <span className="search-kbd">Ctrl K</span>
+          )}
+        </div>
       </div>
       <div className="sidebar-label">任务{list.length !== all.length ? ` · ${list.length}/${all.length}` : ""}</div>
       {list.map((s) => (
