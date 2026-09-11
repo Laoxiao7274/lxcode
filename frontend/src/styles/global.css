@@ -34,12 +34,17 @@ body,
 }
 
 body {
-  background: #e8e8ea;
+  background: var(--bg);
   color: var(--fg);
   font-family: var(--font-sans);
   font-size: 14px;
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
+}
+
+/* 浏览器模拟态的外层暗底（Tauri 模式不生效——.app 直接铺满） */
+body:has(.window-stage) {
+  background: #e8e8ea;
 }
 
 /* ===== 应用窗口（桌面应用尺寸：1440×900，小屏自适应缩小） ===== */

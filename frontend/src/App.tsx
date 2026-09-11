@@ -40,8 +40,28 @@ function AppBody() {
 
   const currentTitle = state.blocks.length === 0 ? "" : source.sessions().find((s) => s.id === currentId)?.title ?? "任务";
 
+  // Tauri 环境 = 真实窗口（不需要浏览器模拟壳）；浏览器 = 保留模拟壳
+  const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+  if (isTauri) {
+    // Tauri 模式：直接铺满窗口（无边框/暗底/投影——窗口本身就有）
+    return (
+      <div className="app">
+        <Topbar taskTitle={currentTitle} source={source} connected={false} />
+        <Sidebar source={source} currentId={currentId} busy={state.busy} onOpenSettings={() => setSettingsOpen(true)} />
+        <main className="main">
+          <div className="thread-scroll">
+            <Thread state={state} onConfirm={handleConfirm} onSuggestion={send} />
+          </div>
+          <Composer busy={state.busy} onSend={send} onCancel={() => source.cancel()} />
+        </main>
+        <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      </div>
+    );
+  }
+
   return (
-    // 应用窗口：桌面应用尺寸（1440×900 自适应），外层暗底
+    // 浏览器模式：应用窗口模拟（1440×900 自适应），外层暗底
     <div className="window-stage">
       <div className="app-window">
         <Topbar taskTitle={currentTitle} source={source} connected={false} />
