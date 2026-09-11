@@ -3,11 +3,10 @@
   flex-direction: column;
   width: 360px;
   max-width: 100%;
-  /* anchor the header: header (20) + viewport margin (6) + max viewport (180) */
-  min-height: 206px;
   font-family: "Inter", system-ui, sans-serif;
   /* soft fade-in on (re)mount */
   animation: tr-block-in 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  margin: 4px 0 10px;
 }
 @keyframes tr-block-in {
   from { opacity: 0; }
