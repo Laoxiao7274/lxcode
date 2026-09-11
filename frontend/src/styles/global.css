@@ -1119,9 +1119,10 @@ body {
   bottom: calc(100% + 8px);
   left: 0;
 }
-/* 右面板：向右错开一个面板位 + 略低（Codex 的错位双菜单） */
+/* 右面板：向右错开 + 向下错一层（Codex 的错位：右面板明显低于左面板，
+   部分重叠左面板右下角） */
 .mp-right {
-  bottom: calc(100% + 8px);
+  bottom: calc(100% - 36px);
   left: 208px;
 }
 .mp-title {
