@@ -1,14 +1,24 @@
 // 设置面板（Codex 式右侧滑出）：半透明遮罩 + 右侧圆角面板，
 // 含外观/行为两组设置。原型数据落 Settings context。
+import { useEffect } from "react";
 import { useSettings, MODELS, EFFORTS, APPROVALS, type Settings } from "../settings";
 
 export function SettingsPanel({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { settings, set } = useSettings();
+  // Escape 关闭（模态惯例）；打开时锁住背景滚动
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
   if (!open) return null;
   return (
     <>
       <div className="panel-mask" onClick={onClose} aria-hidden />
-      <aside className="settings-panel" role="dialog" aria-label="设置">
+      <aside className="settings-panel" role="dialog" aria-label="设置" aria-modal="true">
         <header className="panel-head">
           <span className="panel-title">设置</span>
           <button type="button" className="panel-close" onClick={onClose} aria-label="关闭设置">
