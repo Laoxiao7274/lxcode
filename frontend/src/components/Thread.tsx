@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { UIState, ThreadBlock } from "../agent/store";
 import { ThinkingReasoning } from "../aicss/ThinkingReasoning";
 import { ThinkingState } from "../aicss/ThinkingState";
@@ -8,11 +8,39 @@ import { TextResponse } from "../aicss/TextResponse";
 import { StreamingText } from "../aicss/StreamingText";
 
 const SUGGESTIONS = [
-  { icon: "构建功能", title: "把工具循环加上超时兜底", sub: "单工具卡死不再拖住整轮" },
-  { icon: "查看配置", title: "读 config/local.json", sub: "看 default 绑定的是哪个模型" },
-  { icon: "跑测试", title: "全量测试有红的修掉", sub: "go test ./… 一轮到绿" },
-  { icon: "解释代码", title: "讲讲 runTools 的设计", sub: "为什么高危要先确认" },
+  { icon: "构", title: "把工具循环加上超时兜底", sub: "单工具卡死不再拖住整轮" },
+  { icon: "查", title: "读 config/local.json", sub: "看 default 绑定的是哪个模型" },
+  { icon: "测", title: "全量测试有红的修掉", sub: "go test ./… 一轮到绿" },
+  { icon: "解", title: "讲讲 runTools 的设计", sub: "为什么高危要先确认" },
 ];
+
+type Item =
+  | { kind: "single"; block: ThreadBlock }
+  | { kind: "work"; blocks: ThreadBlock[]; live: boolean };
+
+/** 连续的工具/确认/清单块收进一个 work 组（Codex 的工作折叠行）。 */
+function groupBlocks(blocks: ThreadBlock[], busy: boolean): Item[] {
+  const items: Item[] = [];
+  let work: ThreadBlock[] | null = null;
+  const isWork = (b: ThreadBlock) => b.kind === "tool" || b.kind === "confirm" || b.kind === "todo";
+  for (const b of blocks) {
+    if (isWork(b)) {
+      (work ??= []).push(b);
+    } else {
+      if (work) {
+        items.push({ kind: "work", blocks: work, live: false });
+        work = null;
+      }
+      items.push({ kind: "single", block: b });
+    }
+  }
+  if (work) {
+    // 组尾还有进行中的块（无结果）→ live 态（"Working…"）
+    const live = busy && work.some((b) => b.kind === "tool" && b.result === undefined);
+    items.push({ kind: "work", blocks: work, live });
+  }
+  return items;
+}
 
 export function Thread({
   state,
@@ -40,8 +68,8 @@ export function Thread({
         <p>给智能体一个任务——它在本机读写代码、改文件、跑命令，高危操作会先征求你的同意。</p>
         <div className="suggest-grid">
           {SUGGESTIONS.map((s) => (
-            <button key={s.title} type="button" className="suggest-card" onClick={() => onSuggestion?.(s.title + "：" + s.sub)}>
-              <span className="suggest-icon" aria-hidden>{s.icon.slice(0, 1)}</span>
+            <button key={s.title} type="button" className="suggest-card" onClick={() => onSuggestion?.(s.title)}>
+              <span className="suggest-icon" aria-hidden>{s.icon}</span>
               <span className="suggest-text">
                 <span className="suggest-title">{s.title}</span>
                 <span className="suggest-sub">{s.sub}</span>
@@ -55,9 +83,13 @@ export function Thread({
 
   return (
     <div className="thread">
-      {state.blocks.map((b, i) => (
-        <Block key={i} block={b} onConfirm={onConfirm} />
-      ))}
+      {groupBlocks(state.blocks, state.busy).map((item, i) =>
+        item.kind === "single" ? (
+          <Block key={i} block={item.block} onConfirm={onConfirm} />
+        ) : (
+          <WorkGroup key={i} item={item} onConfirm={onConfirm} />
+        ),
+      )}
       {/* 进行中且还没有任何输出时显示思考 shimmer */}
       {state.busy && !lastIsStreamingAssistant(state.blocks) && (
         <div className="msg">
@@ -75,12 +107,54 @@ function lastIsStreamingAssistant(blocks: ThreadBlock[]): boolean {
   return last?.kind === "assistant" && last.streaming;
 }
 
+/** 工作组：折叠行（"读了文件、跑了命令 · 用时 8 秒"）+ 展开的工具块。 */
+function WorkGroup({ item, onConfirm }: { item: Extract<Item, { kind: "work" }>; onConfirm: (id: string, allow: boolean) => void }) {
+  const [open, setOpen] = useState(true);
+  const { blocks, live } = item;
+  // 工作摘要：动词归纳（读了文件 / 改了文件 / 跑了命令 / 等待确认…）
+  const names = blocks.map((b) => b.kind === "tool" ? b.name : b.kind);
+  const verbs = new Set(names.map((n) =>
+    n === "read_file" ? "读文件" : n === "search" ? "搜索" : n === "bash" ? "跑命令"
+    : n === "edit" || n === "write_file" ? "改文件" : n === "session_search" ? "查历史" : n,
+  ));
+  const summary = [...verbs].join("、");
+  const count = blocks.filter((b) => b.kind === "tool").length;
+  const seconds = Math.max(1, Math.round(count * 2.3));
+
+  return (
+    <div className="work-group">
+      <button type="button" className="work-row" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          {live ? (
+            <path d="M12 3a9 9 0 1 0 9 9" />
+          ) : (
+            <path d="M20 6 9 17l-5-5" />
+          )}
+        </svg>
+        {live ? (
+          <span className={undefined}>正在{summary}…</span>
+        ) : (
+          <span>{summary} · 用时 {seconds} 秒</span>
+        )}
+        <span className="work-chevron">{open ? "▾" : "▸"}</span>
+      </button>
+      {open && (
+        <div className="work-body">
+          {blocks.map((b, i) => (
+            <Block key={i} block={b} onConfirm={onConfirm} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Block({ block, onConfirm }: { block: ThreadBlock; onConfirm: (id: string, allow: boolean) => void }) {
   switch (block.kind) {
     case "user":
       return (
         <div className="msg user">
-          <div className="resp">{block.text}</div>
+          <div className="bubble">{block.text}</div>
         </div>
       );
 

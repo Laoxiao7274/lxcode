@@ -25,14 +25,21 @@ export default function App() {
     resolve(id, allow ? "allow" : "deny");
   };
 
+  const currentTitle = source.sessions().find((s) => s.id === currentId)?.title ?? "新任务";
+
   return (
-    <div className="app">
-      <Topbar source={source} connected={false} />
-      <Sidebar source={source} currentId={currentId} busy={state.busy} />
-      <main className="main">
-        <Thread state={state} onConfirm={handleConfirm} onSuggestion={send} />
-      </main>
-      <Composer busy={state.busy} onSend={send} onCancel={() => source.cancel()} />
+    // 应用窗口：桌面应用尺寸（1440×900 自适应），外层暗底
+    <div className="window-stage">
+      <div className="app-window">
+        <Topbar taskTitle={currentTitle} source={source} connected={false} />
+        <Sidebar source={source} currentId={currentId} busy={state.busy} />
+        <main className="main">
+          <div className="thread-scroll">
+            <Thread state={state} onConfirm={handleConfirm} onSuggestion={send} />
+          </div>
+          <Composer busy={state.busy} onSend={send} onCancel={() => source.cancel()} />
+        </main>
+      </div>
     </div>
   );
 }

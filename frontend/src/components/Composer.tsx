@@ -61,13 +61,23 @@ export function Composer({
               }}
             />
             <div className="piBar">
+              <button type="button" className="plus-btn" aria-label="添加" title="添加">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M12 5v14M5 12h14" />
+                </svg>
+              </button>
               <button type="button" className="perm-chip" title="高危操作会先征求你的同意">
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                   <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z" />
                 </svg>
                 确认后执行
               </button>
-              <span className="model-chip">MYT</span>
+              <button type="button" className="model-chip" title="模型与推理强度">
+                MYT · medium
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="m6 9 6 6 6-6" />
+                </svg>
+              </button>
               <span className="piTips">
                 <kbd>Enter</kbd> 发送
               </span>
