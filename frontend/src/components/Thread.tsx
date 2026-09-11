@@ -10,12 +10,11 @@ import { staggerIn, motionAllowed } from "../motion";
 import { gsap } from "gsap";
 import { useSettings } from "../settings";
 
-// 建议列表（Codex 形态：左侧图标 + 单行文字，细分隔线隔开）
 const SUGGESTIONS = [
-  { icon: "M12 2 2 7l10 5 10-5Z", title: "了解此代码库的结构" },
-  { icon: "M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z", title: "修复失败的测试或构建错误" },
-  { icon: "M8 6-6 6 6 6M16 6l6 6-6 6", title: "解释一段代码的作用" },
-  { icon: "M20 6 9 17l-5-5", title: "给最近的改动写提交信息" },
+  { icon: "构", title: "把工具循环加上超时兜底", sub: "单工具卡死不再拖住整轮" },
+  { icon: "查", title: "读 config/local.json", sub: "看 default 绑定的是哪个模型" },
+  { icon: "测", title: "全量测试有红的修掉", sub: "go test ./… 一轮到绿" },
+  { icon: "解", title: "讲讲 runTools 的设计", sub: "为什么高危要先确认" },
 ];
 
 type Item =
@@ -109,14 +108,16 @@ export function Thread({
   if (state.blocks.length === 0) {
     return (
       <div className="empty-state" ref={emptyRef}>
-        <h2>我们该做什么？</h2>
-        <div className="suggest-list">
+        <h2>我们做点什么？</h2>
+        <p>读写代码、改文件、跑命令——高危操作先过你这一关。</p>
+        <div className="suggest-grid">
           {SUGGESTIONS.map((s) => (
-            <button key={s.title} type="button" className="suggest-row" onClick={() => onSuggestion?.(s.title)}>
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <path d={s.icon} />
-              </svg>
-              <span className="suggest-text">{s.title}</span>
+            <button key={s.title} type="button" className="suggest-card" onClick={() => onSuggestion?.(s.title)}>
+              <span className="suggest-icon" aria-hidden>{s.icon}</span>
+              <span className="suggest-text">
+                <span className="suggest-title">{s.title}</span>
+                <span className="suggest-sub">{s.sub}</span>
+              </span>
             </button>
           ))}
         </div>

@@ -4,6 +4,12 @@ import { PopoverMenu } from "./PopoverMenu";
 import { ModelPicker } from "./ModelPicker";
 import { useSettings, APPROVALS, type Settings } from "../settings";
 
+const shieldIcon = (size = 11) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z" />
+  </svg>
+);
+
 /** 输入区（Codex 式）：busy 时输入框保留（可预输入），发送钮变停止。 */
 export function Composer({
   busy,
@@ -44,7 +50,7 @@ export function Composer({
           <textarea
             ref={taRef}
             className="piInput"
-            placeholder={busy ? "生成中… 可以先输入下一条（完成后发送）" : "可向智能体询问任何事。输入 @ 使用插件或提及文件"}
+            placeholder={busy ? "生成中… 可以先输入下一条（完成后发送）" : "让智能体构建、审查或解释点什么…"}
             rows={1}
             value={value}
             disabled={disabled}
@@ -58,25 +64,35 @@ export function Composer({
           />
           <div className="piBar">
             <PopoverMenu
+              width={230}
+              up
+              trigger={() => (
+                <button type="button" className="plus-btn" aria-label="添加" title="添加">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M12 5v14M5 12h14" />
+                  </svg>
+                </button>
+              )}
+              options={[
+                { id: "ctx", label: "引用当前项目", hint: "~/gs/lxcode", onSelect: () => {} },
+                { id: "file", label: "附加文件…", onSelect: () => {} },
+                { id: "shot", label: "附加截图…", onSelect: () => {} },
+              ]}
+            />
+            <PopoverMenu
               width={260}
               up
               trigger={() => (
-                <button type="button" className="perm-chip" title="权限模式">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-                    <circle cx="12" cy="12" r="10" />
-                    <path d="M12 16v-4" />
-                    <path d="M12 8h.01" />
-                  </svg>
+                <button type="button" className="perm-chip" title="高危操作确认模式">
+                  {shieldIcon()}
                   {approvalLabel}
-                  <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                    <path d="m6 9 6 6 6-6" />
-                  </svg>
                 </button>
               )}
               options={APPROVALS.map((a) => ({
                 id: a.id,
                 label: a.label,
                 hint: a.hint,
+                icon: shieldIcon(13),
                 selected: settings.approval === a.id,
                 onSelect: () => set({ approval: a.id as Settings["approval"] }),
               }))}
@@ -105,16 +121,6 @@ export function Composer({
             )}
           </div>
         </div>
-        {/* 项目横条（Codex：输入框下的浅灰衔接条） */}
-        <button type="button" className="proj-bar">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
-          </svg>
-          进入项目工作
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="m6 9 6 6 6-6" />
-          </svg>
-        </button>
       </div>
     </div>
   );
