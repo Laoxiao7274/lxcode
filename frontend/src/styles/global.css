@@ -301,12 +301,21 @@ body {
   color: var(--fg-muted);
   cursor: pointer;
   border-radius: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.settings-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 .settings-row:hover {
   background: var(--border-soft);
 }
 .settings-row .ver {
   margin-left: auto;
+  flex: none;
   font-family: var(--font-mono);
   font-size: 9px;
   color: var(--fg-faint);
