@@ -65,7 +65,7 @@ export function Thread({
     return (
       <div className="empty-state">
         <h2>我们做点什么？</h2>
-        <p>给智能体一个任务——它在本机读写代码、改文件、跑命令，高危操作会先征求你的同意。</p>
+        <p>读写代码、改文件、跑命令——高危操作先过你这一关。</p>
         <div className="suggest-grid">
           {SUGGESTIONS.map((s) => (
             <button key={s.title} type="button" className="suggest-card" onClick={() => onSuggestion?.(s.title)}>

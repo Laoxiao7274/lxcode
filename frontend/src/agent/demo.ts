@@ -52,6 +52,7 @@ export class DemoAgent implements AgentSource {
   private busy = false;
   private sessions_ = SESSIONS;
   private currentSession = SESSIONS[0].id;
+  private pendingNewId: string | null = null;
 
   subscribe(listener: Listener): () => void {
     this.listeners.add(listener);
@@ -63,6 +64,17 @@ export class DemoAgent implements AgentSource {
   send(text: string): void {
     if (this.busy) return;
     this.busy = true;
+    // 懒建会话：新会话在首条消息时才落进侧栏列表（Codex 惯例——
+    // 空会话不占列表位）
+    if (this.pendingNewId) {
+      const id = this.pendingNewId;
+      this.pendingNewId = null;
+      this.sessions_ = [
+        { id, title: text.length > 24 ? text.slice(0, 24) + "…" : text, updatedAt: "刚刚", messages: 1 },
+        ...this.sessions_,
+      ];
+      this.currentSession = id;
+    }
     this.emit({ type: "userMessage", text });
     this.emit({ type: "busy", busy: true });
     this.runTurn();
@@ -88,11 +100,9 @@ export class DemoAgent implements AgentSource {
   }
 
   newSession(): void {
+    // 只切到空态 + 记一个待定 id——首条消息时才建列表条目
     const id = "20260911-" + new Date().toTimeString().slice(0, 8).replaceAll(":", "") + "-n" + Math.floor(Math.random() * 90 + 10);
-    this.sessions_ = [
-      { id, title: "新会话", updatedAt: "刚刚", messages: 0 },
-      ...this.sessions_,
-    ];
+    this.pendingNewId = id;
     this.currentSession = id;
     this.emit({ type: "sessionChanged", id, reason: "new" });
   }

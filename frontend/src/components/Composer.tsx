@@ -78,9 +78,7 @@ export function Composer({
                   <path d="m6 9 6 6 6-6" />
                 </svg>
               </button>
-              <span className="piTips">
-                <kbd>Enter</kbd> 发送
-              </span>
+              <span className="piTips" />
               <button
                 type="button"
                 className="send-btn"

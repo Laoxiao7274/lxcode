@@ -11,7 +11,9 @@ export default function App() {
   // 真实模式（WSAgent 连 127.0.0.1:7789）接入时换这一行，UI 不动。
   const source = useMemo(() => new DemoAgent(), []);
   const { state, send, resolve } = useAgent(source);
-  const [currentId, setCurrentId] = useState("20260911-103024-a1b2");
+  // 初始无选中：空态起步（选中一个有历史的会话时 thread 才有内容——
+  // 演示模式 resume 不重放历史，避免"高亮有历史、主区空白"的不一致）
+  const [currentId, setCurrentId] = useState("");
 
   // 会话切换事件同步侧栏高亮（与 useAgent 的订阅并行，各管各的）
   useEffect(() => {
@@ -25,7 +27,7 @@ export default function App() {
     resolve(id, allow ? "allow" : "deny");
   };
 
-  const currentTitle = source.sessions().find((s) => s.id === currentId)?.title ?? "新任务";
+  const currentTitle = state.blocks.length === 0 ? "" : source.sessions().find((s) => s.id === currentId)?.title ?? "任务";
 
   return (
     // 应用窗口：桌面应用尺寸（1440×900 自适应），外层暗底
