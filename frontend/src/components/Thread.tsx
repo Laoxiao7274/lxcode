@@ -56,13 +56,33 @@ export function Thread({
 }) {
   const endRef = useRef<HTMLDivElement>(null);
   const emptyRef = useRef<HTMLDivElement>(null);
+  // 跟随状态机：用户贴底 → sticky 跟随；上翻 → 解除；滚回底部 → 恢复。
+  // 判定基于滚动事件本身（用户意图），流式增量只做"已在 sticky 则置底"。
+  const stickyRef = useRef(true);
+  const scrollRef = useRef<HTMLElement | null>(null);
 
-  // 流式期间跟随滚动（用户上翻时不硬拽——仅当已贴底时跟随）
+  // 注册滚动容器（App 把 .thread-scroll 作为 ref 传下来更干净——
+  // 这里从 endRef 反查 parent，容器层级是 .thread-scroll > .thread）
   useEffect(() => {
-    const el = endRef.current?.parentElement;
+    scrollRef.current = endRef.current?.parentElement?.parentElement ?? null;
+    const el = scrollRef.current;
     if (!el) return;
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 160;
-    if (atBottom) endRef.current?.scrollIntoView({ block: "end" });
+    const onScroll = () => {
+      const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 200;
+      stickyRef.current = atBottom;
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
+
+  // 流式增量到达时：sticky 则直接置底（scrollTop 赋值，不用
+  // scrollIntoView——它带平滑滚动，和连续增量有竞态，会抖）
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    if (stickyRef.current) {
+      el.scrollTop = el.scrollHeight;
+    }
   }, [state.blocks]);
 
   // 空态入场：标题 → 副文 → 卡片交错浮现
