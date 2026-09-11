@@ -945,13 +945,13 @@ body {
   font-size: 11px;
 }
 
-/* 输入框 */
+/* 输入框（不加 overflow:hidden——piBar 里的弹层菜单要向上弹出，
+   圆角裁剪交给内部元素：textarea 上圆角 + piBar 下圆角） */
 .pi {
   border-radius: 14px;
   background: var(--surface);
   box-shadow: 0 0 0 1px var(--border-strong), 0 1px 3px rgba(0, 0, 0, 0.04);
   border: none;
-  overflow: hidden;
   transition: box-shadow 150ms;
 }
 .pi:focus-within {
@@ -962,6 +962,7 @@ body {
   padding: 14px 16px 6px;
   font-family: var(--font-sans);
   font-size: 14px;
+  border-radius: 14px 14px 0 0;
   color: var(--fg);
   background: transparent;
   border: none;
@@ -983,6 +984,8 @@ body {
   align-items: center;
   gap: 8px;
   padding: 8px 12px 10px;
+  border-radius: 0 0 14px 14px;
+  background: var(--surface);
 }
 .plus-btn {
   width: 26px;

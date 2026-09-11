@@ -64,6 +64,7 @@ export function Composer({
           <div className="piBar">
             <PopoverMenu
               width={230}
+              up
               trigger={() => (
                 <button type="button" className="plus-btn" aria-label="添加" title="添加">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -79,6 +80,7 @@ export function Composer({
             />
             <PopoverMenu
               width={260}
+              up
               trigger={() => (
                 <button type="button" className="perm-chip" title="高危操作确认模式">
                   {shieldIcon()}
@@ -96,6 +98,7 @@ export function Composer({
             />
             <PopoverMenu
               width={280}
+              up
               title="模型与推理强度"
               trigger={() => (
                 <button type="button" className="model-chip" title="模型与推理强度">
