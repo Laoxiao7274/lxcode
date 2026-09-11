@@ -45,7 +45,7 @@ export function Composer({
             <textarea
               ref={taRef}
               className="piInput"
-              placeholder="给智能体发消息…"
+              placeholder="给智能体一个任务…"
               rows={1}
               value={value}
               disabled={disabled}

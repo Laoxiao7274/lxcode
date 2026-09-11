@@ -1,6 +1,6 @@
 import type { AgentSource } from "../agent/types";
 
-/** 侧栏：会话列表 + 新会话/恢复。 */
+/** 侧栏：任务列表（Codex 式）+ 新任务。 */
 export function Sidebar({
   source,
   currentId,
@@ -13,7 +13,7 @@ export function Sidebar({
   const list = source.sessions();
   return (
     <aside className="sidebar">
-      <div className="sidebar-label">会话</div>
+      <div className="sidebar-label">任务</div>
       {list.map((s) => (
         <div
           key={s.id}
@@ -26,8 +26,8 @@ export function Sidebar({
         </div>
       ))}
       <div className="sidebar-footer">
-        <button className="sidebar-btn" onClick={() => !busy && source.newSession()}>
-          ＋ 新会话
+        <button className="new-task-btn" onClick={() => !busy && source.newSession()}>
+          ＋ 新任务
         </button>
       </div>
     </aside>

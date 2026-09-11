@@ -30,7 +30,7 @@ export default function App() {
       <Topbar source={source} connected={false} />
       <Sidebar source={source} currentId={currentId} busy={state.busy} />
       <main className="main">
-        <Thread state={state} onConfirm={handleConfirm} />
+        <Thread state={state} onConfirm={handleConfirm} onSuggestion={send} />
       </main>
       <Composer busy={state.busy} onSend={send} onCancel={() => source.cancel()} />
     </div>

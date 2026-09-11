@@ -42,8 +42,9 @@
   color: #3b82f6;
 }
 .icon[data-variant="command"] {
-  background: color-mix(in srgb, #d98404 14%, #ffffff);
-  color: #d98404;
+  /* Codex 中性化：琥珀提示色退场，图标底灰、符号近黑 */
+  background: #f0f0f1;
+  color: #0d0d0d;
 }
 .icon[data-variant="plan"] {
   background: color-mix(in srgb, #15a06a 12%, #ffffff);

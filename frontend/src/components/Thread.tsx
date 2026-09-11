@@ -7,12 +7,20 @@ import { ApprovalCard } from "../aicss/ApprovalCard";
 import { TextResponse } from "../aicss/TextResponse";
 import { StreamingText } from "../aicss/StreamingText";
 
+const SUGGESTIONS = [
+  "把工具循环加上单工具超时兜底，超时不中断整轮",
+  "读 config/local.json，告诉我 default 绑定的模型",
+  "跑一遍全量测试，有红的修掉",
+];
+
 export function Thread({
   state,
   onConfirm,
+  onSuggestion,
 }: {
   state: UIState;
   onConfirm: (id: string, allow: boolean) => void;
+  onSuggestion?: (text: string) => void;
 }) {
   const endRef = useRef<HTMLDivElement>(null);
 
@@ -28,8 +36,15 @@ export function Thread({
     return (
       <div className="empty-state">
         <div className="glyph">myt-harness</div>
-        <h2>开始一段新工作</h2>
-        <p>让它读代码、改文件、跑测试，或者处理日常事务。高危操作会先征求你的同意。</p>
+        <h2>给智能体一个任务</h2>
+        <p>它在本机读写代码、改文件、跑命令；高危操作会先征求你的同意。</p>
+        <div className="suggest-row">
+          {SUGGESTIONS.map((s) => (
+            <button key={s} type="button" className="suggest-chip" onClick={() => onSuggestion?.(s)}>
+              {s}
+            </button>
+          ))}
+        </div>
       </div>
     );
   }
@@ -61,7 +76,6 @@ function Block({ block, onConfirm }: { block: ThreadBlock; onConfirm: (id: strin
     case "user":
       return (
         <div className="msg user">
-          <div className="msg-role user">你</div>
           <div className="resp">{block.text}</div>
         </div>
       );
@@ -85,7 +99,7 @@ function Block({ block, onConfirm }: { block: ThreadBlock; onConfirm: (id: strin
             </TextResponse>
           )}
           {!block.streaming && block.usageTokens ? (
-            <div className="usage-line">{block.usageTokens} tokens</div>
+            <div className="usage-line">已完成 · {block.usageTokens} tokens</div>
           ) : null}
         </div>
       );
@@ -94,11 +108,12 @@ function Block({ block, onConfirm }: { block: ThreadBlock; onConfirm: (id: strin
       return (
         <div className="tool-block">
           <div className="tool-head">
-            <span className="tname">🔧 {block.name}</span>{" "}
-            <span className="targs">{clip(block.arguments, 90)}</span>
+            <span className="tname">{block.name}</span>
+            <span className="targs">{clip(shortArgs(block), 72)}</span>
           </div>
           {block.result !== undefined ? (
             <pre className="tool-result" data-error={block.isError ? "true" : undefined}>
+              <span className="tool-cmdline">{prettyCmdline(block.name, block.arguments)}</span>
               {clip(block.result, 1400)}
             </pre>
           ) : (
@@ -157,6 +172,40 @@ function inlineCode(text: string) {
       <span key={i}>{s}</span>
     ),
   );
+}
+
+/** 工具头部的参数摘要（bash 显示命令，别的显示 path/pattern 等首字段）。 */
+function shortArgs(block: { name: string; arguments: string }): string {
+  try {
+    const a = JSON.parse(block.arguments);
+    const first = a.command ?? a.path ?? a.pattern ?? a.cwd ?? "";
+    return String(first);
+  } catch {
+    return block.arguments;
+  }
+}
+
+/** 终端块首行：还原"看起来像命令"的那一行（bash 原样，read_file 拼成 cat）。 */
+function prettyCmdline(name: string, args: string): string {
+  try {
+    const a = JSON.parse(args);
+    switch (name) {
+      case "bash":
+        return a.command ?? "";
+      case "read_file":
+        return "cat " + (a.path ?? "");
+      case "search":
+        return "grep " + (a.pattern ?? "") + " " + (a.path ?? ".");
+      case "write_file":
+        return "write " + (a.path ?? "");
+      case "edit":
+        return "edit " + (a.path ?? "");
+      default:
+        return name;
+    }
+  } catch {
+    return name;
+  }
 }
 
 function prettyCommand(req: { arguments: string }): string {
