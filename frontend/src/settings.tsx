@@ -6,9 +6,14 @@ export interface Settings {
   model: string;
   effort: "low" | "medium" | "high";
   approval: "auto" | "confirm" | "strict";
+  /** 思考链显示（对话里的推理过程折叠块）。 */
   showThinking: boolean;
+  /** 命令输出完整展示（Codex General 同款；关闭折叠为摘要）。 */
+  showFullOutput: boolean;
   /** 生成时阻止休眠（Codex General 同款）。 */
   keepAwake: boolean;
+  /** Enter 发送（关闭则 Cmd+Enter 多行——Codex General 同款）。 */
+  enterToSend: boolean;
   /** 回答语气（Codex Personalization：friendly/pragmatic/none）。 */
   personality: "friendly" | "pragmatic" | "none";
 }
@@ -18,9 +23,11 @@ const DEFAULTS: Settings = {
   effort: "medium",
   approval: "confirm",
   showThinking: true,
+  showFullOutput: true,
   keepAwake: false,
+  enterToSend: true,
   personality: "pragmatic",
-};
+};;
 
 export const MODELS = [
   { id: "MYT", desc: "本机网关 · 日常任务" },
