@@ -5,6 +5,7 @@ import { Topbar } from "./components/Topbar";
 import { Sidebar } from "./components/Sidebar";
 import { Thread } from "./components/Thread";
 import { Composer } from "./components/Composer";
+import { SettingsPanel } from "./components/SettingsPanel";
 import { SettingsProvider } from "./settings";
 
 export default function App() {
@@ -23,6 +24,7 @@ function AppBody() {
   // 初始无选中：空态起步（选中一个有历史的会话时 thread 才有内容——
   // 演示模式 resume 不重放历史，避免"高亮有历史、主区空白"的不一致）
   const [currentId, setCurrentId] = useState("");
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   // 会话切换事件同步侧栏高亮（与 useAgent 的订阅并行，各管各的）
   useEffect(() => {
@@ -43,13 +45,14 @@ function AppBody() {
     <div className="window-stage">
       <div className="app-window">
         <Topbar taskTitle={currentTitle} source={source} connected={false} />
-        <Sidebar source={source} currentId={currentId} busy={state.busy} />
+        <Sidebar source={source} currentId={currentId} busy={state.busy} onOpenSettings={() => setSettingsOpen(true)} />
         <main className="main">
           <div className="thread-scroll">
             <Thread state={state} onConfirm={handleConfirm} onSuggestion={send} />
           </div>
           <Composer busy={state.busy} onSend={send} onCancel={() => source.cancel()} />
         </main>
+        <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       </div>
     </div>
   );

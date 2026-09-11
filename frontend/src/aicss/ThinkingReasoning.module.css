@@ -76,7 +76,7 @@
 }
 .trSentence {
   margin: 0;
-  line-height: 20px;
+  line-height: 22px;
   font-size: 13px;
   font-weight: 425;
   color: var(--tre-sentence, #a1a1a1);

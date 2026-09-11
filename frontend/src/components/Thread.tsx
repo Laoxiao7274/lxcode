@@ -66,19 +66,34 @@ export function Thread({
     scrollRef.current = endRef.current?.parentElement?.parentElement ?? null;
     const el = scrollRef.current;
     if (!el) return;
-    const onScroll = () => {
+    // sticky 解除只认用户的主动滚动（滚轮/触摸拖拽/键盘）——程序置底
+    // 也会触发 scroll 事件，但那不是用户意图，不能据此解除跟随
+    // （否则点确认卡后内容长高把用户"顶离"底部 >200px，跟随就断了）。
+    const userIntent = () => {
       const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 200;
       stickyRef.current = atBottom;
     };
-    el.addEventListener("scroll", onScroll, { passive: true });
+    const onWheel = () => userIntent();
+    const onTouch = () => userIntent();
+    const onKey = (e: KeyboardEvent) => {
+      if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"].includes(e.key)) {
+        // 键盘滚动后延迟一帧再判定（滚动尚未发生）
+        requestAnimationFrame(userIntent);
+      }
+    };
+    el.addEventListener("wheel", onWheel, { passive: true });
+    el.addEventListener("touchmove", onTouch, { passive: true });
+    el.addEventListener("keydown", onKey);
     // sticky 期间内容高度任何变化（含动画逐帧）都置底——工具卡弹出、
-    // 工作行展开（gsap 高度动画）、流式文本都覆盖
+    // 工作行展开（gsap 高度动画）、流式文本、确认卡 resolve 都覆盖。
     const ro = new ResizeObserver(() => {
       if (stickyRef.current) el.scrollTop = el.scrollHeight;
     });
     ro.observe(el.firstElementChild ?? el);
     return () => {
-      el.removeEventListener("scroll", onScroll);
+      el.removeEventListener("wheel", onWheel);
+      el.removeEventListener("touchmove", onTouch);
+      el.removeEventListener("keydown", onKey);
       ro.disconnect();
     };
   }, []);
@@ -280,7 +295,8 @@ function Block({ block, onConfirm }: { block: ThreadBlock; onConfirm: (id: strin
   }
 }
 
-/** 极简 markdown 渲染：代码块/行内代码/换行（原型够用；生产换 markdown 引擎）。 */
+/** 极简 markdown 渲染：代码块/行内代码/段落（空行 = 段落间距，
+ *  而不是 pre-wrap 的连续换行——那会产生双倍行高的怪异空白）。 */
 function Markdownish({ text }: { text: string }) {
   const parts = text.split(/```/);
   return (
@@ -289,7 +305,23 @@ function Markdownish({ text }: { text: string }) {
         i % 2 === 1 ? (
           <pre key={i} className="tool-result">{part.replace(/^\w*\n/, "")}</pre>
         ) : (
-          <span key={i} style={{ whiteSpace: "pre-wrap" }}>{inlineCode(part)}</span>
+          <Paragraphs key={i} text={part} />
+        ),
+      )}
+    </>
+  );
+}
+
+/** 正文按空行分段：段间用 margin（0.5em 段距），段内单换行保留。 */
+function Paragraphs({ text }: { text: string }) {
+  const paras = text.split(/\n{2,}/);
+  return (
+    <>
+      {paras.map((p, i) =>
+        i === 0 ? (
+          <span key={i} className="md-text">{inlineCode(p)}</span>
+        ) : (
+          <span key={i} className="md-text md-para">{inlineCode(p)}</span>
         ),
       )}
     </>

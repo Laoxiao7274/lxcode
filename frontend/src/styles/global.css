@@ -495,6 +495,148 @@ body {
   margin-top: 14px;
 }
 
+/* 正文文本：段内换行保留，段落间距由 .md-para 提供（0.6em——
+   不是 pre-wrap 空行的整行高，Codex 的段距） */
+.md-text {
+  white-space: pre-wrap;
+  display: block;
+}
+.md-para {
+  margin-top: 0.6em;
+}
+
+/* ===== 设置面板（Codex 式右侧滑出） ===== */
+.panel-mask {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  background: rgba(0, 0, 0, 0.18);
+  animation: mask-in 180ms ease both;
+}
+@keyframes mask-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.settings-panel {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  bottom: 10px;
+  z-index: 51;
+  width: 340px;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  box-shadow: 0 16px 60px rgba(0, 0, 0, 0.18), 0 4px 16px rgba(0, 0, 0, 0.08);
+  animation: panel-in 240ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes panel-in {
+  from { opacity: 0; transform: translateX(16px); }
+  to { opacity: 1; transform: none; }
+}
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.panel-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+.panel-close {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.panel-close:hover {
+  background: var(--border-soft);
+  color: var(--fg);
+}
+.panel-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px 16px 12px;
+}
+.panel-group {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+.panel-group:last-child {
+  border-bottom: none;
+}
+.panel-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  margin-bottom: 8px;
+}
+.panel-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+  cursor: pointer;
+}
+.panel-row-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.panel-row-title {
+  font-size: 13px;
+  color: var(--fg);
+}
+.panel-row-sub {
+  font-size: 11px;
+  color: var(--fg-faint);
+}
+.panel-row input[type="radio"],
+.panel-row input[type="checkbox"] {
+  accent-color: var(--fg);
+  width: 15px;
+  height: 15px;
+  flex: none;
+}
+.panel-seg {
+  display: flex;
+  gap: 6px;
+}
+.seg-btn {
+  flex: 1;
+  padding: 6px 0;
+  font-size: 12px;
+  color: var(--fg-muted);
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  cursor: pointer;
+  font-family: var(--font-sans);
+}
+.seg-btn.on {
+  color: #fff;
+  background: var(--fg);
+  border-color: var(--fg);
+}
+.panel-foot {
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--fg-faint);
+}
+
 /* ===== 空态（Codex 式：居中的大标题 + 2×2 建议卡） ===== */
 .empty-state {
   padding: 72px 24px 0;
