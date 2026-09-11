@@ -1,4 +1,4 @@
-import type { AgentSource } from "../agent/types";
+import type { AgentSource } from "../../shared/types";
 
 /** 窗口标题栏：左 = 图标 + LxCode + 连接态；右 = 窗口控制（最小化/最大化/关闭）。
  *  data-tauri-drag-region = Tauri 原生拖拽区域；__LX__ 桥接窗口控制。 */

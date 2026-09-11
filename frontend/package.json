@@ -5,7 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:all": "node ../scripts/dev.mjs",
     "build": "tsc -b && vite build",
+    "build:all": "node ../scripts/build.mjs",
+    "build:nsis": "node ../scripts/build.mjs --nsis",
     "preview": "vite preview"
   },
   "dependencies": {

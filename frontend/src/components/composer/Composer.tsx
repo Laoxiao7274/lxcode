@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
-import { Orb } from "../aicss/Orb";
-import { PermPicker } from "./PermPicker";
-import { ModelPicker } from "./ModelPicker";
+import { Orb } from "../../aicss/Orb";
+import { PermPicker } from "../perm-picker";
+import { ModelPicker } from "../model-picker";
 
 /** 上下文用量（mock——真实接入 = chat.history 的 usageTokens / contextWindow）。 */
 function useContextUsage(): { used: number; total: number; pct: number } {

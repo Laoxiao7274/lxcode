@@ -1,14 +1,14 @@
 import { useEffect, useRef, useState } from "react";
-import type { UIState, ThreadBlock } from "../agent/store";
-import { ThinkingReasoning } from "../aicss/ThinkingReasoning";
-import { ThinkingState } from "../aicss/ThinkingState";
-import { TodoList } from "../aicss/TodoList";
-import { ApprovalCard } from "../aicss/ApprovalCard";
-import { TextResponse } from "../aicss/TextResponse";
-import { StreamingText } from "../aicss/StreamingText";
-import { staggerIn, motionAllowed } from "../motion";
+import type { UIState, ThreadBlock } from "../../shared/store";
+import { ThinkingReasoning } from "../../aicss/ThinkingReasoning";
+import { ThinkingState } from "../../aicss/ThinkingState";
+import { TodoList } from "../../aicss/TodoList";
+import { ApprovalCard } from "../../aicss/ApprovalCard";
+import { TextResponse } from "../../aicss/TextResponse";
+import { StreamingText } from "../../aicss/StreamingText";
+import { staggerIn, motionAllowed } from "../../shared/motion";
 import { gsap } from "gsap";
-import { useSettings } from "../settings";
+import { useSettings } from "../../shared/settings";
 
 const SUGGESTIONS = [
   { icon: "构", title: "把工具循环加上超时兜底", sub: "单工具卡死不再拖住整轮" },

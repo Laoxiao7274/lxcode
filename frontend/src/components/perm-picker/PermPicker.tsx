@@ -1,7 +1,7 @@
 // 权限选择器（Codex 式菜单）：左主菜单 + hover 侧边描述面板。
 // 菜单项带图标和标签（Codex 形态），hover 时右侧显示当前选项的完整描述。
 import { useEffect, useRef, useState } from "react";
-import { useSettings, type Settings } from "../settings";
+import { useSettings, type Settings } from "../../shared/settings";
 
 const PRESETS: {
   id: Settings["approval"];

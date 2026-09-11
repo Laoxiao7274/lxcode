@@ -1,7 +1,7 @@
 // 演示数据源：脚本化编排一轮完整交互，覆盖 UI 全部状态
 // （流式正文/思考链、低危工具自动执行、高危确认门两分支、任务清单、
 // 完成/取消/错误）。事件形状与后端协议 1:1——接线时换 WSAgent 即可。
-import type { AgentEvent, AgentSource, ConfirmRequest, SessionMeta, TodoItem } from "./types";
+import type { AgentEvent, AgentSource, ConfirmRequest, SessionMeta, TodoItem } from "../../shared/types";
 
 type Listener = (ev: AgentEvent) => void;
 

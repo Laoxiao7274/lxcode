@@ -1,7 +1,7 @@
 // 设置视图（Codex 式）：全屏覆盖 + 左侧分区导航（9 分区，Back to app
 // 返回条目）+ 右侧当前分区内容。截图证据：openai/codex issue #17596。
 import { useEffect, useState, type ReactElement, type ReactNode } from "react";
-import { useSettings, EFFORTS, APPROVALS, MODELS, type Settings } from "../settings";
+import { useSettings, EFFORTS, APPROVALS, MODELS, type Settings } from "../../shared/settings";
 
 type SectionId =
   | "general" | "appearance" | "configuration" | "personalization"

@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
-import { DemoAgent } from "./agent/demo";
-import { useAgent } from "./agent/store";
-import { Topbar } from "./components/Topbar";
-import { Sidebar } from "./components/Sidebar";
-import { Thread } from "./components/Thread";
-import { Composer } from "./components/Composer";
-import { SettingsPanel } from "./components/SettingsPanel";
-import { SettingsProvider } from "./settings";
+import { getAgentSource } from "./agent";
+import { useAgent } from "./shared/store";
+import { Topbar } from "./components/topbar";
+import { Sidebar } from "./components/sidebar";
+import { Thread } from "./components/thread";
+import { Composer } from "./components/composer";
+import { SettingsPanel } from "./components/settings";
+import { SettingsProvider } from "./shared/settings";
 
 export default function App() {
   return (
@@ -17,9 +17,8 @@ export default function App() {
 }
 
 function AppBody() {
-  // 数据源：演示模式（脚本编排一轮完整交互，覆盖全部 UI 状态）。
-  // 真实模式（WSAgent 连 127.0.0.1:7789）接入时换这一行，UI 不动。
-  const source = useMemo(() => new DemoAgent(), []);
+  // 数据源：工厂（Tauri/有后端 = WSAgent 真实模式；无后端 = DemoAgent 演示）
+  const source = useMemo(() => getAgentSource(), []);
   const { state, send, resolve } = useAgent(source);
   // 初始无选中：空态起步（选中一个有历史的会话时 thread 才有内容——
   // 演示模式 resume 不重放历史，避免"高亮有历史、主区空白"的不一致）
@@ -28,7 +27,7 @@ function AppBody() {
 
   // 会话切换事件同步侧栏高亮（与 useAgent 的订阅并行，各管各的）
   useEffect(() => {
-    return source.subscribe((ev) => {
+    return source.subscribe((ev: import("./shared/types").AgentEvent) => {
       if (ev.type === "sessionChanged") setCurrentId(ev.id);
     });
   }, [source]);
@@ -38,7 +37,7 @@ function AppBody() {
     resolve(id, allow ? "allow" : "deny");
   };
 
-  const currentTitle = state.blocks.length === 0 ? "" : source.sessions().find((s) => s.id === currentId)?.title ?? "任务";
+  const currentTitle = state.blocks.length === 0 ? "" : source.sessions().find((s: import("./shared/types").SessionMeta) => s.id === currentId)?.title ?? "任务";
 
   // Tauri 环境 = 真实窗口（不需要浏览器模拟壳）；浏览器 = 保留模拟壳
   const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;

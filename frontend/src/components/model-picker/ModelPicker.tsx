@@ -1,7 +1,7 @@
 // 模型选择器（Codex 式双面板）：打开先显示模型列表（左），
 // 点底部「推理强度 >」展开右面板调强度。两面板独立错位浮层。
 import { useEffect, useRef, useState } from "react";
-import { useSettings, MODELS, EFFORTS, type Settings } from "../settings";
+import { useSettings, MODELS, EFFORTS, type Settings } from "../../shared/settings";
 
 const check = (
   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

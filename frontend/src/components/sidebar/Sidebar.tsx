@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import type { AgentSource } from "../agent/types";
-import { staggerIn } from "../motion";
+import type { AgentSource } from "../../shared/types";
+import { staggerIn } from "../../shared/motion";
 
 /** 侧栏（Codex 2026-05 版形态，截图实证）：
  *  导航项（新对话/搜索/插件/自动化）→「项目」分组（上）→「对话」分组（下）。 */
