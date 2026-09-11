@@ -559,10 +559,10 @@ body {
 }
 /* 弹窗体：点导航外的遮罩关闭由外层承载；这里 grid 出导航+内容 */
 .settings-view > .settings-dialog {
-  width: min(780px, calc(100% - 48px));
-  height: min(560px, calc(100% - 64px));
+  width: min(880px, calc(100% - 48px));
+  height: min(640px, calc(100% - 56px));
   display: grid;
-  grid-template-columns: 210px 1fr;
+  grid-template-columns: 216px 1fr;
   background: var(--surface);
   border: 1px solid var(--border-strong);
   border-radius: 16px;
@@ -639,9 +639,9 @@ body {
   overflow-y: auto;
 }
 .settings-content-inner {
-  max-width: 520px;
+  max-width: 560px;
   margin: 0 auto;
-  padding: 28px 28px 48px;
+  padding: 32px 36px 56px;
 }
 .set-sec-title {
   font-size: 18px;

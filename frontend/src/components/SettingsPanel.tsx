@@ -34,9 +34,9 @@ export function SettingsPanel({ open, onClose }: { open: boolean; onClose: () =>
 
   if (!open) return null;
   return (
-    // 遮罩层：点击弹窗外关闭（弹窗体阻止冒泡）
-    <div className="settings-view" role="dialog" aria-label="设置" onClick={onClose}>
-      <div className="settings-dialog" onClick={(e) => e.stopPropagation()}>
+    // 遮罩层只挡点击（不关闭——误触退出很伤体验；退出走 Escape/返回应用）
+    <div className="settings-view" role="dialog" aria-label="设置" aria-modal="true">
+      <div className="settings-dialog">
         {/* 左侧分区导航 */}
         <nav className="settings-nav">
           <button type="button" className="settings-back" onClick={onClose}>
