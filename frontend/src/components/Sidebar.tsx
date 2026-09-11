@@ -53,30 +53,14 @@ export function Sidebar({
           )}
         </div>
       </div>
-      {/* 按工作区（项目）分组渲染会话 */}
+      {/* Codex 式两段隔离：THREADS（最近会话平铺）+ PROJECTS（工作区列表） */}
       {(() => {
-        const groups = new Map<string, typeof list>();
-        for (const s of list) {
-          const w = s.workspace ?? "";
-          if (!groups.has(w)) groups.set(w, []);
-          groups.get(w)!.push(s);
-        }
-        const entries = [...groups.entries()];
-        return entries.map(([ws, sessions]) => (
-          <div key={ws} className="ws-group">
-            {ws !== "" && (
-              <div className="ws-head" title={"~/" + ws}>
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
-                </svg>
-                <span className="ws-name">{ws}</span>
-                <span className="ws-count">{sessions.length}</span>
-              </div>
-            )}
-            {ws === "" && list.length !== all.length && (
-              <div className="sidebar-label">任务 · {list.length}/{all.length}</div>
-            )}
-            {sessions.map((s) => (
+        // 搜索时只显示匹配的会话；平时显示最近会话 + 工作区两段
+        const workspaces = [...new Set(all.map((s) => s.workspace).filter(Boolean))] as string[];
+        return (
+          <>
+            <div className="sidebar-label">会话{list.length !== all.length ? ` · ${list.length}/${all.length}` : ""}</div>
+            {list.map((s) => (
               <div
                 key={s.id}
                 className={"session-item" + (s.id === currentId ? " active" : "")}
@@ -88,12 +72,26 @@ export function Sidebar({
                 <span className="time">{s.updatedAt}</span>
               </div>
             ))}
-          </div>
-        ));
+            {list.length === 0 && query.trim() && (
+              <div className="sidebar-empty">没有匹配「{query.trim()}」的任务</div>
+            )}
+            {!query.trim() && (
+              <>
+                <div className="sidebar-label ws-section">工作区</div>
+                {workspaces.map((ws) => (
+                  <div key={ws} className="ws-row" title={"~/" + ws}>
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+                    </svg>
+                    <span className="ws-name">{ws}</span>
+                    <span className="ws-count">{all.filter((s) => s.workspace === ws).length}</span>
+                  </div>
+                ))}
+              </>
+            )}
+          </>
+        );
       })()}
-      {list.length === 0 && query.trim() && (
-        <div className="sidebar-empty">没有匹配「{query.trim()}」的任务</div>
-      )}
       <div className="sidebar-footer">
         <div className="settings-row" role="button" tabIndex={0} onClick={onOpenSettings}>
           <span className="settings-label">
