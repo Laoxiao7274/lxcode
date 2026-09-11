@@ -22,10 +22,6 @@ export function Sidebar({
 
   return (
     <aside className="sidebar">
-      <div className="brand">
-        <span className="brandMark">L</span>
-        <span className="brandName">lxcode</span>
-      </div>
       <div className="sidebar-pad">
         <button className="new-task-btn" onClick={() => !busy && source.newSession()}>
           <span className="plusGlyph">＋</span> 新建任务

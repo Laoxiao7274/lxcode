@@ -75,37 +75,48 @@ body {
   overflow: hidden;
 }
 
-/* ===== 顶栏（窗口标题栏：中置任务标题，右置操作） ===== */
+/* ===== 顶栏（窗口标题栏：左 = 品牌与状态，中 = 任务名，右 = 窗口控制） ===== */
 .topbar {
   grid-column: 1 / -1;
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 0 14px;
+  padding: 0 0 0 14px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-side);
+  /* 拖拽区（Tauri 阶段 data-tauri-drag-region；浏览器里无害） */
+  user-select: none;
 }
-.topbar .logo {
-  font-weight: 600;
-  font-size: 13px;
-  color: var(--fg);
-  letter-spacing: -0.01em;
+.tb-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
 }
-.topbar .task-title {
-  flex: 1;
-  text-align: center;
-  font-size: 12.5px;
-  font-weight: 500;
-  color: var(--fg);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  padding: 0 60px;
-}
-.topbar .project-path {
+.topbar .brandMark {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  background: var(--fg);
+  color: #fff;
   font-family: var(--font-mono);
-  font-size: 10px;
-  color: var(--fg-faint);
+  font-size: 11px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.topbar .brandName {
+  font-weight: 600;
+  font-size: 12.5px;
+  color: var(--fg);
+  letter-spacing: 0;
+}
+.tb-sep {
+  width: 1px;
+  height: 14px;
+  background: var(--border-strong);
+  margin: 0 2px;
 }
 .topbar .status {
   display: flex;
@@ -114,6 +125,47 @@ body {
   font-family: var(--font-mono);
   font-size: 10px;
   color: var(--fg-muted);
+}
+.topbar .task-title {
+  flex: 1;
+  text-align: center;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0 12px;
+}
+.tb-right {
+  display: flex;
+  align-items: stretch;
+  flex: none;
+  height: 100%;
+}
+.win-btn {
+  width: 46px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-muted);
+  background: transparent;
+  border: none;
+  cursor: default; /* 浏览器原型态：无系统窗口语义；Tauri 接管后 pointer */
+}
+.win-btn:hover {
+  background: var(--border-soft);
+  color: var(--fg);
+}
+.win-btn:active {
+  background: #e0e0e3;
+}
+.win-close:hover {
+  background: #e02e2a;
+  color: #fff;
+}
+.win-close:active {
+  background: #c62622;
 }
 .pulse-dot {
   width: 6px;
@@ -139,32 +191,8 @@ body {
   display: flex;
   flex-direction: column;
 }
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 14px 6px;
-}
-.brandMark {
-  width: 22px;
-  height: 22px;
-  border-radius: 6px;
-  background: var(--fg);
-  color: #fff;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  font-weight: 700;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-.brandName {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--fg);
-}
 .sidebar-pad {
-  padding: 6px 12px 10px;
+  padding: 12px 12px 10px;
 }
 .new-task-btn {
   display: flex;
@@ -522,10 +550,10 @@ body {
 }
 /* 弹窗体：点导航外的遮罩关闭由外层承载；这里 grid 出导航+内容 */
 .settings-view > .settings-dialog {
-  width: min(680px, calc(100% - 48px));
-  height: min(500px, calc(100% - 64px));
+  width: min(780px, calc(100% - 48px));
+  height: min(560px, calc(100% - 64px));
   display: grid;
-  grid-template-columns: 200px 1fr;
+  grid-template-columns: 210px 1fr;
   background: var(--surface);
   border: 1px solid var(--border-strong);
   border-radius: 16px;
