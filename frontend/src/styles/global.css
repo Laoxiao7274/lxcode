@@ -722,10 +722,13 @@ body {
 .panel-seg {
   display: flex;
   gap: 6px;
+  flex: 1;
+  max-width: 260px;
 }
 .seg-btn {
   flex: 1;
-  padding: 6px 12px;
+  min-width: 56px;
+  padding: 6px 10px;
   font-size: 12px;
   color: var(--fg-muted);
   background: transparent;
@@ -733,6 +736,7 @@ body {
   border-radius: 8px;
   cursor: pointer;
   font-family: var(--font-sans);
+  white-space: nowrap;
 }
 .seg-btn.on {
   color: #fff;
