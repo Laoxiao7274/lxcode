@@ -1,5 +1,6 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { AgentSource } from "../agent/types";
+import { staggerIn } from "../motion";
 
 /** 侧栏（Codex 2026-05 版形态，截图实证）：
  *  导航项（新对话/搜索/插件/自动化）→「项目」分组（上）→「对话」分组（下）。 */
@@ -16,6 +17,7 @@ export function Sidebar({
 }) {
   const [query, setQuery] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
+  const sideRef = useRef<HTMLElement>(null);
   const all = source.sessions();
   const list = query.trim()
     ? all.filter((s) => s.title.toLowerCase().includes(query.trim().toLowerCase()))
@@ -23,8 +25,16 @@ export function Sidebar({
   // 工作区去重（项目分组）
   const workspaces = [...new Set(all.map((s) => s.workspace).filter(Boolean))] as string[];
 
+  // 侧栏交错入场：导航项 → 搜索 → 分组标签 → 项目行 → 会话行
+  useEffect(() => {
+    const el = sideRef.current;
+    if (!el) return;
+    const items = el.querySelectorAll<HTMLElement>(".nav-item, .search-box, .sidebar-label, .proj-row, .session-item, .settings-row");
+    staggerIn(items, { each: 0.035 });
+  }, []);
+
   return (
-    <aside className="sidebar">
+    <aside className="sidebar" ref={sideRef}>
       {/* 导航项（图标 + 文字，Codex 同款四项） */}
       <nav className="nav-list">
         <button type="button" className="nav-item" onClick={() => !busy && source.newSession()}>

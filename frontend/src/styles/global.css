@@ -492,6 +492,16 @@ body {
 /* ===== 工具块（暗色终端） ===== */
 .tool-block {
   margin: 8px 0;
+  border-radius: 10px;
+  padding: 2px 4px;
+  margin-left: -4px;
+  transition: background 120ms;
+}
+.tool-block:hover {
+  background: rgba(0, 0, 0, 0.02);
+}
+.tool-block:hover .tool-result {
+  border-color: #3a3a3a;
 }
 .tool-head {
   display: flex;
@@ -530,6 +540,8 @@ body {
   white-space: pre-wrap;
   max-height: 240px;
   overflow-y: auto;
+  transition: border-color 140ms;
+  border: 1px solid transparent;
 }
 .tool-result::-webkit-scrollbar {
   width: 8px;
