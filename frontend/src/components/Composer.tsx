@@ -1,8 +1,15 @@
 import { useRef, useState } from "react";
 import { Orb } from "../aicss/Orb";
-import { PopoverMenu } from "./PopoverMenu";
+import { PermPicker } from "./PermPicker";
 import { ModelPicker } from "./ModelPicker";
-import { useSettings, APPROVALS, type Settings } from "../settings";
+
+/** 上下文用量（mock——真实接入 = chat.history 的 usageTokens / contextWindow）。 */
+function useContextUsage(): { used: number; total: number; pct: number } {
+  // 模拟：已用约 34k / 128k 窗口
+  const used = 34_200;
+  const total = 128_000;
+  return { used, total, pct: Math.round((used / total) * 100) };
+}
 
 /** 输入区（Codex 式）：busy 时输入框保留（可预输入），发送钮变停止。 */
 export function Composer({
@@ -18,7 +25,7 @@ export function Composer({
 }) {
   const [value, setValue] = useState("");
   const taRef = useRef<HTMLTextAreaElement>(null);
-  const { settings, set } = useSettings();
+  const ctx = useContextUsage();
   const canSend = value.trim().length > 0 && !busy && !disabled;
 
   const submit = () => {
@@ -27,8 +34,6 @@ export function Composer({
     setValue("");
     requestAnimationFrame(() => taRef.current?.focus());
   };
-
-  const approvalLabel = APPROVALS.find((a) => a.id === settings.approval)!.label;
 
   return (
     <div className="composer-zone">
@@ -57,31 +62,23 @@ export function Composer({
             }}
           />
           <div className="piBar">
-            <PopoverMenu
-              width={280}
-              up
-              trigger={() => (
-                <button type="button" className="perm-chip" title="权限模式">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-                    <circle cx="12" cy="12" r="10" />
-                    <path d="M12 16v-4" />
-                    <path d="M12 8h.01" />
-                  </svg>
-                  {approvalLabel}
-                  <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                    <path d="m6 9 6 6 6-6" />
-                  </svg>
-                </button>
-              )}
-              options={APPROVALS.map((a) => ({
-                id: a.id,
-                label: a.label,
-                hint: a.hint,
-                selected: settings.approval === a.id,
-                onSelect: () => set({ approval: a.id as Settings["approval"] }),
-              }))}
-            />
+            <PermPicker />
             <ModelPicker />
+            {/* 上下文用量指示器（Codex composer 同款） */}
+            <span className="ctx-indicator" title={`上下文窗口 ${ctx.used.toLocaleString()} / ${ctx.total.toLocaleString()} tokens`}>
+              <svg width="16" height="16" viewBox="0 0 20 20" aria-hidden="true">
+                <circle cx="10" cy="10" r="8" fill="none" stroke="var(--border-strong)" strokeWidth="2.5" />
+                <circle
+                  cx="10" cy="10" r="8" fill="none"
+                  stroke={ctx.pct > 80 ? "var(--danger)" : "var(--fg-muted)"}
+                  strokeWidth="2.5"
+                  strokeLinecap="round"
+                  strokeDasharray={`${(ctx.pct / 100) * 50.27} 50.27`}
+                  transform="rotate(-90 10 10)"
+                />
+              </svg>
+              <span className="ctx-pct">{ctx.pct}%</span>
+            </span>
             <span className="piTips" />
             {busy ? (
               <button type="button" className="send-btn stop" onClick={onCancel} aria-label="停止生成" title="停止生成">

@@ -1022,6 +1022,86 @@ body {
 .perm-chip:hover {
   background: rgba(194, 65, 12, 0.07);
 }
+
+/* 权限菜单（Codex 式：主菜单 + 侧边描述面板） */
+.perm-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 40;
+  display: flex;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.06);
+  animation: pop-in 160ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.perm-main {
+  width: 190px;
+  padding: 5px;
+}
+.perm-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 10px;
+  font-size: 12.5px;
+  color: var(--fg);
+  background: transparent;
+  border: none;
+  border-radius: 7px;
+  cursor: pointer;
+  text-align: left;
+  font-family: var(--font-sans);
+}
+.perm-item:hover {
+  background: var(--border-soft);
+}
+.perm-item.on {
+  font-weight: 500;
+}
+.perm-item svg:first-child {
+  color: var(--fg-faint);
+  flex: none;
+}
+.perm-item.on svg:first-child {
+  color: var(--fg);
+}
+.perm-item .perm-label {
+  flex: 1;
+  min-width: 0;
+}
+/* 侧边描述面板 */
+.perm-desc-panel {
+  width: 240px;
+  padding: 14px 16px;
+  border-left: 1px solid var(--border-soft);
+  background: var(--bg-side);
+  border-radius: 0 12px 12px 0;
+  display: flex;
+  align-items: center;
+}
+.perm-desc-panel p {
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--fg-muted);
+}
+
+/* 上下文用量指示器（Codex composer 同款：环形图 + 百分比） */
+.ctx-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 6px;
+  cursor: default;
+  flex: none;
+}
+.ctx-pct {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--fg-faint);
+}
 .model-chip {
   display: inline-flex;
   align-items: center;
