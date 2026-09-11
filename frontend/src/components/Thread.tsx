@@ -8,9 +8,10 @@ import { TextResponse } from "../aicss/TextResponse";
 import { StreamingText } from "../aicss/StreamingText";
 
 const SUGGESTIONS = [
-  "把工具循环加上单工具超时兜底，超时不中断整轮",
-  "读 config/local.json，告诉我 default 绑定的模型",
-  "跑一遍全量测试，有红的修掉",
+  { icon: "构建功能", title: "把工具循环加上超时兜底", sub: "单工具卡死不再拖住整轮" },
+  { icon: "查看配置", title: "读 config/local.json", sub: "看 default 绑定的是哪个模型" },
+  { icon: "跑测试", title: "全量测试有红的修掉", sub: "go test ./… 一轮到绿" },
+  { icon: "解释代码", title: "讲讲 runTools 的设计", sub: "为什么高危要先确认" },
 ];
 
 export function Thread({
@@ -35,13 +36,16 @@ export function Thread({
   if (state.blocks.length === 0) {
     return (
       <div className="empty-state">
-        <div className="glyph">myt-harness</div>
-        <h2>给智能体一个任务</h2>
-        <p>它在本机读写代码、改文件、跑命令；高危操作会先征求你的同意。</p>
-        <div className="suggest-row">
+        <h2>我们做点什么？</h2>
+        <p>给智能体一个任务——它在本机读写代码、改文件、跑命令，高危操作会先征求你的同意。</p>
+        <div className="suggest-grid">
           {SUGGESTIONS.map((s) => (
-            <button key={s} type="button" className="suggest-chip" onClick={() => onSuggestion?.(s)}>
-              {s}
+            <button key={s.title} type="button" className="suggest-card" onClick={() => onSuggestion?.(s.title + "：" + s.sub)}>
+              <span className="suggest-icon" aria-hidden>{s.icon.slice(0, 1)}</span>
+              <span className="suggest-text">
+                <span className="suggest-title">{s.title}</span>
+                <span className="suggest-sub">{s.sub}</span>
+              </span>
             </button>
           ))}
         </div>

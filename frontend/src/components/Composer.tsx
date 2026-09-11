@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { Orb } from "../aicss/Orb";
 
-/** 输入区：v3 简化形态（textarea + 快捷键提示 + 发送），busy 时让位给 orb。 */
+/** 输入区（Codex 式）：大输入框 + 左下权限徽标 + 模型名 + 圆形发送。 */
 export function Composer({
   busy,
   disabled,
@@ -33,10 +33,13 @@ export function Composer({
             <span style={{ flex: 1 }} />
             <button
               type="button"
-              className="sidebar-btn"
-              style={{ width: "auto", padding: "4px 12px", marginBottom: 0 }}
+              className="stop-btn"
               onClick={onCancel}
+              aria-label="停止生成"
             >
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <rect x="5" y="5" width="14" height="14" rx="2" />
+              </svg>
               停止
             </button>
           </div>
@@ -45,7 +48,7 @@ export function Composer({
             <textarea
               ref={taRef}
               className="piInput"
-              placeholder="给智能体一个任务…"
+              placeholder="让智能体构建、审查或解释点什么…"
               rows={1}
               value={value}
               disabled={disabled}
@@ -58,12 +61,27 @@ export function Composer({
               }}
             />
             <div className="piBar">
+              <button type="button" className="perm-chip" title="高危操作会先征求你的同意">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z" />
+                </svg>
+                确认后执行
+              </button>
+              <span className="model-chip">MYT</span>
               <span className="piTips">
                 <kbd>Enter</kbd> 发送
-                <kbd>Shift+Enter</kbd> 换行
               </span>
-              <button type="button" className="piSend" disabled={!canSend} onClick={submit}>
-                发送
+              <button
+                type="button"
+                className="send-btn"
+                disabled={!canSend}
+                onClick={submit}
+                aria-label="发送"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M12 19V5" />
+                  <path d="m5 12 7-7 7 7" />
+                </svg>
               </button>
             </div>
           </div>
