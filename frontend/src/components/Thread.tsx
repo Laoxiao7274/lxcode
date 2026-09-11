@@ -8,6 +8,7 @@ import { TextResponse } from "../aicss/TextResponse";
 import { StreamingText } from "../aicss/StreamingText";
 import { staggerIn, motionAllowed } from "../motion";
 import { gsap } from "gsap";
+import { useSettings } from "../settings";
 
 const SUGGESTIONS = [
   { icon: "构", title: "把工具循环加上超时兜底", sub: "单工具卡死不再拖住整轮" },
@@ -174,6 +175,7 @@ function WorkGroup({ item, onConfirm }: { item: Extract<Item, { kind: "work" }>;
 
 function Block({ block, onConfirm }: { block: ThreadBlock; onConfirm: (id: string, allow: boolean) => void }) {
   const bubbleRef = useRef<HTMLDivElement>(null);
+  const { settings } = useSettings();
 
   // 用户气泡入场：轻微回弹（比通用 block-in 更有"发送出去"的手感）
   useEffect(() => {
@@ -194,7 +196,7 @@ function Block({ block, onConfirm }: { block: ThreadBlock; onConfirm: (id: strin
       return (
         <div className="msg">
           <div className="msg-role assistant">lxcode</div>
-          {block.reasoning && (
+          {settings.showThinking && block.reasoning && (
             <ThinkingReasoning
               sentences={block.reasoning.split("\n").filter(Boolean)}
               phase={block.streaming ? "thinking" : "done"}

@@ -5,8 +5,17 @@ import { Topbar } from "./components/Topbar";
 import { Sidebar } from "./components/Sidebar";
 import { Thread } from "./components/Thread";
 import { Composer } from "./components/Composer";
+import { SettingsProvider } from "./settings";
 
 export default function App() {
+  return (
+    <SettingsProvider>
+      <AppBody />
+    </SettingsProvider>
+  );
+}
+
+function AppBody() {
   // 数据源：演示模式（脚本编排一轮完整交互，覆盖全部 UI 状态）。
   // 真实模式（WSAgent 连 127.0.0.1:7789）接入时换这一行，UI 不动。
   const source = useMemo(() => new DemoAgent(), []);
