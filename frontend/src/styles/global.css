@@ -196,17 +196,19 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin: 0 12px 8px;
-  padding: 5px 10px;
-  font-size: 12px;
+  margin: 6px 6px 8px;
+  padding: 5px 8px;
+  font-size: 12.5px;
   color: var(--fg-faint);
   background: transparent;
-  border: 1px solid var(--border-strong);
-  border-radius: 8px;
+  border: none;
+  border-radius: 7px;
   cursor: pointer;
+  transition: background 120ms, color 120ms;
 }
 .sidebar-search:hover {
-  background: var(--surface);
+  background: var(--border-soft);
+  color: var(--fg-muted);
 }
 .sidebar-label {
   font-size: 11px;
@@ -218,11 +220,16 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 5px 14px;
+  padding: 6px 10px;
+  margin: 1px 8px;
   font-size: 12.5px;
+  line-height: 1.4;
   color: var(--fg-muted);
   cursor: pointer;
   overflow: hidden;
+  border-radius: 7px;
+  border: none;
+  transition: background 120ms, color 120ms;
 }
 .session-item:hover {
   background: var(--border-soft);
@@ -374,12 +381,17 @@ body {
 }
 .work-row:hover {
   background: var(--surface);
+  border-color: var(--border-strong);
 }
 .work-row .work-chevron {
   margin-left: auto;
   font-size: 10px;
   color: var(--fg-faint);
   flex: none;
+  transition: transform 200ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.work-row[aria-expanded="false"] .work-chevron {
+  transform: rotate(-90deg);
 }
 .work-summary {
   margin: 8px 0 14px;
@@ -507,10 +519,15 @@ body {
   border-radius: 12px;
   cursor: pointer;
   font-family: var(--font-sans);
-  transition: background 120ms;
+  transition: background 140ms, transform 160ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 160ms;
 }
 .suggest-card:hover {
-  background: var(--border-soft);
+  background: var(--surface);
+  transform: translateY(-1.5px);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
+}
+.suggest-card:active {
+  transform: translateY(0) scale(0.99);
 }
 .suggest-icon {
   width: 26px;
@@ -717,5 +734,16 @@ body {
   }
   .thread-scroll {
     scroll-behavior: auto;
+  }
+  .suggest-card,
+  .session-item,
+  .sidebar-search,
+  .work-row,
+  .work-row .work-chevron {
+    transition: none;
+  }
+  .suggest-card:hover {
+    transform: none;
+    box-shadow: none;
   }
 }

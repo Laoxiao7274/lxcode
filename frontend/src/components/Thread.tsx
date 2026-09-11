@@ -6,6 +6,8 @@ import { TodoList } from "../aicss/TodoList";
 import { ApprovalCard } from "../aicss/ApprovalCard";
 import { TextResponse } from "../aicss/TextResponse";
 import { StreamingText } from "../aicss/StreamingText";
+import { staggerIn, motionAllowed } from "../motion";
+import { gsap } from "gsap";
 
 const SUGGESTIONS = [
   { icon: "构", title: "把工具循环加上超时兜底", sub: "单工具卡死不再拖住整轮" },
@@ -52,6 +54,7 @@ export function Thread({
   onSuggestion?: (text: string) => void;
 }) {
   const endRef = useRef<HTMLDivElement>(null);
+  const emptyRef = useRef<HTMLDivElement>(null);
 
   // 流式期间跟随滚动（用户上翻时不硬拽——仅当已贴底时跟随）
   useEffect(() => {
@@ -61,9 +64,16 @@ export function Thread({
     if (atBottom) endRef.current?.scrollIntoView({ block: "end" });
   }, [state.blocks]);
 
+  // 空态入场：标题 → 副文 → 卡片交错浮现
+  useEffect(() => {
+    if (state.blocks.length > 0 || !emptyRef.current) return;
+    const items = emptyRef.current.querySelectorAll<HTMLElement>(".empty-state > *, .suggest-card");
+    staggerIn(items, { each: 0.07 });
+  }, [state.blocks.length]);
+
   if (state.blocks.length === 0) {
     return (
-      <div className="empty-state">
+      <div className="empty-state" ref={emptyRef}>
         <h2>我们做点什么？</h2>
         <p>读写代码、改文件、跑命令——高危操作先过你这一关。</p>
         <div className="suggest-grid">
@@ -110,6 +120,7 @@ function lastIsStreamingAssistant(blocks: ThreadBlock[]): boolean {
 /** 工作组：折叠行（"读了文件、跑了命令 · 用时 8 秒"）+ 展开的工具块。 */
 function WorkGroup({ item, onConfirm }: { item: Extract<Item, { kind: "work" }>; onConfirm: (id: string, allow: boolean) => void }) {
   const [open, setOpen] = useState(true);
+  const bodyRef = useRef<HTMLDivElement>(null);
   const { blocks, live } = item;
   // 工作摘要：动词归纳（读了文件 / 改了文件 / 跑了命令 / 等待确认…）
   const names = blocks.map((b) => b.kind === "tool" ? b.name : b.kind);
@@ -121,9 +132,23 @@ function WorkGroup({ item, onConfirm }: { item: Extract<Item, { kind: "work" }>;
   const count = blocks.filter((b) => b.kind === "tool").length;
   const seconds = Math.max(1, Math.round(count * 2.3));
 
+  // 展开/收起：gsap 高度动画（grid-template-rows 技巧避免高度测量）
+  const toggle = () => {
+    const next = !open;
+    setOpen(next);
+    const el = bodyRef.current;
+    if (!el || !motionAllowed()) return;
+    if (next) {
+      gsap.fromTo(el, { height: 0, opacity: 0 }, { height: "auto", opacity: 1, duration: 0.32, ease: "power2.out", clearProps: "height,opacity" });
+    } else {
+      gsap.to(el, { height: 0, opacity: 0, duration: 0.24, ease: "power2.in", onComplete: () => { el.style.height = ""; } });
+      // 收起时立即渲染为隐藏态（React 条件渲染改为 CSS 控制）
+    }
+  };
+
   return (
     <div className="work-group">
-      <button type="button" className="work-row" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+      <button type="button" className="work-row" aria-expanded={open} onClick={toggle}>
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           {live ? (
             <path d="M12 3a9 9 0 1 0 9 9" />
@@ -138,23 +163,30 @@ function WorkGroup({ item, onConfirm }: { item: Extract<Item, { kind: "work" }>;
         )}
         <span className="work-chevron">{open ? "▾" : "▸"}</span>
       </button>
-      {open && (
-        <div className="work-body">
-          {blocks.map((b, i) => (
-            <Block key={i} block={b} onConfirm={onConfirm} />
-          ))}
-        </div>
-      )}
+      <div className="work-body" ref={bodyRef} style={open ? undefined : { height: 0, opacity: 0, overflow: "hidden" }}>
+        {blocks.map((b, i) => (
+          <Block key={i} block={b} onConfirm={onConfirm} />
+        ))}
+      </div>
     </div>
   );
 }
 
 function Block({ block, onConfirm }: { block: ThreadBlock; onConfirm: (id: string, allow: boolean) => void }) {
+  const bubbleRef = useRef<HTMLDivElement>(null);
+
+  // 用户气泡入场：轻微回弹（比通用 block-in 更有"发送出去"的手感）
+  useEffect(() => {
+    if (block.kind === "user" && bubbleRef.current && motionAllowed()) {
+      gsap.fromTo(bubbleRef.current, { y: 10, opacity: 0, scale: 0.97 }, { y: 0, opacity: 1, scale: 1, duration: 0.42, ease: "back.out(1.6)" });
+    }
+  }, [block.kind]);
+
   switch (block.kind) {
     case "user":
       return (
         <div className="msg user">
-          <div className="bubble">{block.text}</div>
+          <div className="bubble" ref={bubbleRef}>{block.text}</div>
         </div>
       );
 
