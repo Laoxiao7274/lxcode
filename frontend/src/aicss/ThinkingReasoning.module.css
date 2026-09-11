@@ -1,7 +1,7 @@
 .tr {
   display: flex;
   flex-direction: column;
-  width: 360px;
+  width: 100%;
   max-width: 100%;
   font-family: "Inter", system-ui, sans-serif;
   /* soft fade-in on (re)mount */
