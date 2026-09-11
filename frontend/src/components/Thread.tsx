@@ -248,7 +248,7 @@ function Block({ block, onConfirm }: { block: ThreadBlock; onConfirm: (id: strin
           </div>
           {block.result !== undefined ? (
             <pre className="tool-result" data-error={block.isError ? "true" : undefined}>
-              <span className="tool-cmdline">{prettyCmdline(block.name, block.arguments)}</span>
+              <span className="tool-cmdline">{prettyCmdline(block.name, block.arguments)}{"\n"}</span>
               {clip(block.result, 1400)}
             </pre>
           ) : (

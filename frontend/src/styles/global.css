@@ -358,10 +358,18 @@ body {
   margin: 6px 0 14px;
 }
 .work-body {
-  padding: 4px 0 0 4px;
+  padding: 6px 0 6px 4px;
   border-left: 1.5px solid var(--border);
   margin-left: 6px;
-  padding-left: 12px;
+  padding-left: 14px;
+}
+/* 组内块间距：卡片（todo/确认卡）与工具块上下分离 */
+.work-body > .tool-block,
+.work-body > * {
+  margin-bottom: 12px;
+}
+.work-body > *:last-child {
+  margin-bottom: 0;
 }
 .work-row {
   display: flex;
@@ -453,7 +461,8 @@ body {
 }
 .tool-cmdline {
   color: var(--term-dim);
-  margin-bottom: 6px;
+  margin-bottom: 8px;
+  display: block;
   user-select: none;
 }
 .tool-cmdline::before {

@@ -13,9 +13,7 @@ export interface ThinkingReasoningProps {
   elapsedMs?: number;
 }
 
-// 与 CSS 保持同步的几何参数（原组件注释同款）。
-const SENT_H = 40; // 2 行 × 20px
-const GAP = 4;
+// 视口几何参数（句子高度按实际测量，不再用固定公式——中文句子行数不一）。
 const MAX_H = 180; // 内容超高后进入滚动视口
 const FADE = 16; // 顶部/底部渐隐
 
@@ -26,8 +24,19 @@ export function ThinkingReasoning({ sentences, phase, elapsedMs = 0 }: ThinkingR
   const viewportRef = useRef<HTMLDivElement>(null);
 
   const expanded = done ? open : true;
-  const count = sentences.length;
-  const contentH = count > 0 ? count * SENT_H + (count - 1) * GAP : 0;
+  // 内容高度按实际句子测量（中文句子行数不一——原固定公式 40px/句
+  // 会裁掉超出两行的内容）。流式期间句子在变，随渲染重测。
+  const streamRef = useRef<HTMLDivElement>(null);
+  const [contentH, setContentH] = useState(0);
+  useEffect(() => {
+    const el = streamRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setContentH(el.offsetHeight));
+    ro.observe(el);
+    setContentH(el.offsetHeight);
+    return () => ro.disconnect();
+  }, [sentences.length]);
+
   const capped = contentH > MAX_H;
   const viewH = capped ? MAX_H : contentH;
   const scrollable = done && open;
@@ -90,7 +99,7 @@ export function ThinkingReasoning({ sentences, phase, elapsedMs = 0 }: ThinkingR
             style={{ height: `${viewH}px`, WebkitMaskImage: mask, maskImage: mask }}
             onScroll={scrollable ? onScroll : undefined}
           >
-            <div className={styles.trStream} style={{ transform: `translateY(${translate}px)` }}>
+            <div ref={streamRef} className={styles.trStream} style={{ transform: `translateY(${translate}px)` }}>
               {sentences.map((line, i) => (
                 <p key={i} className={styles.trSentence}>{line}</p>
               ))}
