@@ -1266,7 +1266,68 @@ body {
   color: var(--fg-faint);
 }
 
-/* 会话嵌套分组（Codex Directory：项目文件夹行 → 组内会话，Show more 折叠） */
+/* 顶部图标行（Codex：侧栏切换 / 搜索 / 新建） */
+.sidebar-iconbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 10px 12px 4px;
+}
+.ib-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  border: none;
+  background: transparent;
+  color: var(--fg-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.ib-btn:hover {
+  background: var(--border-soft);
+  color: var(--fg);
+}
+.ib-btn.on {
+  color: var(--fg);
+  background: var(--border-soft);
+}
+/* Threads 标题行 + 三点 */
+.threads-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px 4px;
+}
+.threads-actions {
+  color: var(--fg-faint);
+  display: inline-flex;
+  opacity: 0;
+  transition: opacity 120ms;
+  cursor: pointer;
+}
+.threads-label:hover .threads-actions {
+  opacity: 1;
+}
+/* 会话蓝点（Codex：每条会话前的状态点） */
+.s-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--fg-faint);
+  flex: none;
+  opacity: 0.5;
+}
+.session-item.active .s-dot {
+  background: #3b82f6;
+  opacity: 1;
+}
+.s-dot.live {
+  background: #3b82f6;
+  opacity: 1;
+  animation: pulse 2.4s ease-in-out infinite;
+}
 .ws-group {
   display: flex;
   flex-direction: column;
@@ -1298,11 +1359,23 @@ body {
   flex: 1;
   min-width: 0;
 }
-.ws-count {
-  font-family: var(--font-mono);
-  font-size: 9.5px;
+/* 项目行右侧操作（三点 + 铅笔，hover 显示——Codex 截图形态） */
+.ws-actions {
+  display: inline-flex;
+  gap: 4px;
   color: var(--fg-faint);
   flex: none;
+  opacity: 0;
+  transition: opacity 120ms;
+}
+.ws-row:hover .ws-actions {
+  opacity: 1;
+}
+.ws-actions svg {
+  cursor: pointer;
+}
+.ws-actions svg:hover {
+  color: var(--fg);
 }
 .ws-group .session-item {
   padding-left: 14px;

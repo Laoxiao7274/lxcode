@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { AgentSource } from "../agent/types";
 
 /** 侧栏：品牌 → 新建任务 → 搜索（过滤会话）→ 任务列表 → 底部设置。 */
@@ -14,6 +14,7 @@ export function Sidebar({
   onOpenSettings: () => void;
 }) {
   const [query, setQuery] = useState("");
+  const searchRef = useRef<HTMLInputElement>(null);
   const all = source.sessions();
   const list = query.trim()
     ? all.filter((s) => s.title.toLowerCase().includes(query.trim().toLowerCase()))
@@ -21,16 +22,34 @@ export function Sidebar({
 
   return (
     <aside className="sidebar">
-      <div className="sidebar-pad">
-        <button className="new-task-btn" onClick={() => !busy && source.newSession()}>
-          <span className="plusGlyph">＋</span> 新建任务
+      {/* 顶部图标行（Codex：侧栏切换 / 搜索 / 新建） */}
+      <div className="sidebar-iconbar">
+        <button type="button" className="ib-btn" aria-label="折叠侧栏" title="折叠侧栏">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <rect x="3" y="3" width="18" height="18" rx="2" />
+            <path d="M9 3v18" />
+          </svg>
         </button>
+        <button type="button" className={"ib-btn" + (query ? " on" : "")} aria-label="搜索" title="搜索" onClick={() => searchRef.current?.focus()}>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <circle cx="11" cy="11" r="7" />
+            <path d="m20 20-3.5-3.5" />
+          </svg>
+        </button>
+        <button type="button" className="ib-btn" aria-label="新建任务" title="新建任务" onClick={() => !busy && source.newSession()}>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M12 5v14M5 12h14" />
+          </svg>
+        </button>
+      </div>
+      <div className="sidebar-pad">
         <div className="search-box">
           <svg className="search-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <circle cx="11" cy="11" r="7" />
             <path d="m20 20-3.5-3.5" />
           </svg>
           <input
+            ref={searchRef}
             value={query}
             placeholder="搜索"
             aria-label="搜索任务"
@@ -53,8 +72,15 @@ export function Sidebar({
           )}
         </div>
       </div>
-      {/* Codex 式嵌套分组：项目（文件夹行）→ 组内会话（缩进 + 蓝点 + 相对时间），
-          超过 4 条折叠为 Show more（截图实证的 Directory 形态） */}
+      {/* 会话嵌套分组（Codex Directory 形态）+ Threads 标题行 */}
+      <div className="sidebar-label threads-label">
+        会话
+        <span className="threads-actions" aria-hidden>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <circle cx="5" cy="12" r="1.6" /><circle cx="12" cy="12" r="1.6" /><circle cx="19" cy="12" r="1.6" />
+          </svg>
+        </span>
+      </div>
       {(() => {
         const SHOW = 4;
         const groups = new Map<string, typeof all>();
@@ -74,7 +100,14 @@ export function Sidebar({
                   <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
                 </svg>
                 <span className="ws-name">{ws}</span>
-                <span className="ws-count">{sessions.length}</span>
+                <span className="ws-actions" aria-hidden>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <circle cx="5" cy="12" r="1.5" /><circle cx="12" cy="12" r="1.5" /><circle cx="19" cy="12" r="1.5" />
+                  </svg>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+                  </svg>
+                </span>
               </div>
               {visible.map((s) => (
                 <div
@@ -83,8 +116,8 @@ export function Sidebar({
                   onClick={() => !busy && source.resumeSession(s.id)}
                   title={s.title}
                 >
+                  <span className={"s-dot" + (s.id === currentId && busy ? " live" : "")} aria-hidden />
                   <span className="title">{s.title}</span>
-                  {s.id === currentId && busy && <span className="live-dot" />}
                   <span className="time">{s.updatedAt}</span>
                 </div>
               ))}
