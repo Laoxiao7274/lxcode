@@ -1,7 +1,8 @@
 import { useRef, useState } from "react";
 import { Orb } from "../aicss/Orb";
 import { PopoverMenu } from "./PopoverMenu";
-import { useSettings, MODELS, EFFORTS, APPROVALS, type Settings } from "../settings";
+import { ModelPicker } from "./ModelPicker";
+import { useSettings, APPROVALS, type Settings } from "../settings";
 
 const shieldIcon = (size = 11) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -96,35 +97,7 @@ export function Composer({
                 onSelect: () => set({ approval: a.id as Settings["approval"] }),
               }))}
             />
-            <PopoverMenu
-              width={280}
-              up
-              title="模型与推理强度"
-              trigger={() => (
-                <button type="button" className="model-chip" title="模型与推理强度">
-                  {settings.model} · {settings.effort === "low" ? "低" : settings.effort === "medium" ? "中" : "高"}
-                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                    <path d="m6 9 6 6 6-6" />
-                  </svg>
-                </button>
-              )}
-              options={[
-                ...MODELS.map((m) => ({
-                  id: m.id,
-                  label: m.id,
-                  hint: m.desc,
-                  selected: settings.model === m.id,
-                  onSelect: () => set({ model: m.id }),
-                })),
-                ...EFFORTS.map((e) => ({
-                  id: "effort-" + e.id,
-                  label: "推理强度 · " + e.label,
-                  hint: e.hint,
-                  selected: settings.effort === e.id,
-                  onSelect: () => set({ effort: e.id }),
-                })),
-              ]}
-            />
+            <ModelPicker />
             <span className="piTips" />
             {busy ? (
               <button type="button" className="send-btn stop" onClick={onCancel} aria-label="停止生成" title="停止生成">

@@ -53,19 +53,44 @@ export function Sidebar({
           )}
         </div>
       </div>
-      <div className="sidebar-label">任务{list.length !== all.length ? ` · ${list.length}/${all.length}` : ""}</div>
-      {list.map((s) => (
-        <div
-          key={s.id}
-          className={"session-item" + (s.id === currentId ? " active" : "")}
-          onClick={() => !busy && source.resumeSession(s.id)}
-          title={s.title}
-        >
-          <span className="title">{s.title}</span>
-          {s.id === currentId && busy && <span className="live-dot" />}
-          <span className="time">{s.updatedAt}</span>
-        </div>
-      ))}
+      {/* 按工作区（项目）分组渲染会话 */}
+      {(() => {
+        const groups = new Map<string, typeof list>();
+        for (const s of list) {
+          const w = s.workspace ?? "";
+          if (!groups.has(w)) groups.set(w, []);
+          groups.get(w)!.push(s);
+        }
+        const entries = [...groups.entries()];
+        return entries.map(([ws, sessions]) => (
+          <div key={ws} className="ws-group">
+            {ws !== "" && (
+              <div className="ws-head" title={"~/" + ws}>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+                </svg>
+                <span className="ws-name">{ws}</span>
+                <span className="ws-count">{sessions.length}</span>
+              </div>
+            )}
+            {ws === "" && list.length !== all.length && (
+              <div className="sidebar-label">任务 · {list.length}/{all.length}</div>
+            )}
+            {sessions.map((s) => (
+              <div
+                key={s.id}
+                className={"session-item" + (s.id === currentId ? " active" : "")}
+                onClick={() => !busy && source.resumeSession(s.id)}
+                title={s.title}
+              >
+                <span className="title">{s.title}</span>
+                {s.id === currentId && busy && <span className="live-dot" />}
+                <span className="time">{s.updatedAt}</span>
+              </div>
+            ))}
+          </div>
+        ));
+      })()}
       {list.length === 0 && query.trim() && (
         <div className="sidebar-empty">没有匹配「{query.trim()}」的任务</div>
       )}

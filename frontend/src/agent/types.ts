@@ -31,12 +31,14 @@ export type AgentEvent =
   | { type: "busy"; busy: boolean }
   | { type: "sessionChanged"; id: string; reason: string };
 
-/** 会话列表条目（对齐 protocol.SessionMeta）。 */
+/** 会话列表条目（对齐 protocol.SessionMeta；workspace 用于侧栏按工作区分组）。 */
 export interface SessionMeta {
   id: string;
   title: string;
   updatedAt: string;
   messages: number;
+  /** 所属工作区（项目路径的末段；空 = 未分组）。 */
+  workspace?: string;
 }
 
 /**
