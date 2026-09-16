@@ -290,7 +290,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       const p = byHost.get(host)!;
       p.models.push({
         id: m.id,
-        name: m.display_name || m.id,
+        name: m.display_name || m.model || m.id, // 展示名回退链：display_name → model（API 名）→ id
         desc: m.format === "anthropic" ? "Anthropic 格式" : "OpenAI 兼容",
         tags: [m.capabilities?.tools ? "工具" : "", m.capabilities?.vision ? "视觉" : ""].filter(Boolean),
         efforts: [], // 后端无档位概念——UI 隐藏档位
