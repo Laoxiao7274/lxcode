@@ -2,7 +2,7 @@
 // 一条 user 消息、一条 assistant 回复（含正文/思考链/流式态）、一次
 // 工具调用（含结果）、一张确认卡、一份任务清单、一条错误。
 import { useCallback, useEffect, useState } from "react";
-import type { AgentEvent, AgentSource, ConfirmRequest, TodoItem } from "./types";
+import type { AgentEvent, AgentSource, ConfirmRequest, FileChange, TodoItem } from "./types";
 
 export interface AssistantBlock {
   kind: "assistant";
@@ -19,6 +19,7 @@ export type ThreadBlock =
   | { kind: "tool"; uid: number; id: string; name: string; arguments: string; result?: string; isError?: boolean }
   | { kind: "confirm"; uid: number; request: ConfirmRequest; resolved?: "allow" | "deny" }
   | { kind: "todo"; uid: number; items: TodoItem[] }
+  | { kind: "files"; uid: number; files: FileChange[] }
   | { kind: "error"; uid: number; message: string; aborted: boolean };
 
 export interface UIState {
@@ -117,6 +118,11 @@ function reduce(state: UIState, ev: AgentEvent): UIState {
     case "sessionsChanged":
       // 列表变化不改 UI 状态本身——新对象触发重渲染（侧栏重读 sessions()）
       return { ...state };
+    case "projectsChanged":
+      return { ...state };
+    case "filesChanged":
+      // 一轮任务的产物汇总（验收视图——Codex 的 diff 中心形态）
+      return { ...state, blocks: [...state.blocks, { kind: "files", uid: nextUid(), files: ev.files }] };
     default:
       return state;
   }

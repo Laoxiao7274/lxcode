@@ -2,8 +2,9 @@
 // 工具卡 / 确认卡 / 任务清单 / 错误条。
 // Block 用 memo：reduce 只给变化的块换新引用，未动的兄弟块跳过协调；
 // 配合稳定的 onConfirm（useAgent/App 的 useCallback）生效。
-import { memo, useEffect, useMemo, useRef, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { ThreadBlock } from "../../shared/store";
+import type { FileChange } from "../../shared/types";
 import { ThinkingReasoning } from "../../aicss/ThinkingReasoning";
 import { TodoList } from "../../aicss/TodoList";
 import { ApprovalCard } from "../../aicss/ApprovalCard";
@@ -66,6 +67,9 @@ export const Block = memo(function Block({ block, onConfirm }: { block: ThreadBl
     case "tool":
       return <ToolBlock block={block} />;
 
+    case "files":
+      return <FilesCard files={block.files} />;
+
     case "confirm":
       return (
         <ApprovalCard
@@ -89,8 +93,8 @@ export const Block = memo(function Block({ block, onConfirm }: { block: ThreadBl
   }
 });
 
-/** 工具卡：挂载上浮淡入；结果到达（执行中→终端块）再淡入一次，
- *  不再瞬间顶出。 */
+/** 工具卡：挂载上浮淡入；结果到达（执行中→终端块）再淡入一次。
+ *  edit/write_file 渲染代码 diff（Codex 验收形态）；其他工具保持终端块。 */
 function ToolBlock({ block }: { block: Extract<ThreadBlock, { kind: "tool" }> }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const resultRef = useRef<HTMLPreElement>(null);
@@ -113,6 +117,43 @@ function ToolBlock({ block }: { block: Extract<ThreadBlock, { kind: "tool" }> })
     [block.name, block.arguments],
   );
 
+  // edit 工具：diff 视图（改动即所见——不再让用户读 JSON 参数）
+  const editDiff = useMemo((): { path: string; old_string: string; new_string: string } | null => {
+    if (block.name !== "edit" || !block.arguments) return null;
+    try {
+      const a = JSON.parse(block.arguments) as Partial<{ path: string; old_string: string; new_string: string }>;
+      if (!a.path || a.old_string === undefined || a.new_string === undefined) return null;
+      return { path: a.path, old_string: a.old_string, new_string: a.new_string };
+    } catch {
+      return null;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [block.arguments]);
+
+  if (editDiff && block.name === "edit") {
+    return (
+      <div className="tool-block diff-block" ref={rootRef}>
+        <div className="diff-file-head">
+          <span className="ticon" aria-hidden>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 20h9" />
+              <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+            </svg>
+          </span>
+          <span className="tname">{editDiff.path}</span>
+          <span className="diff-stats">
+            <span className="stat-del">-{editDiff.old_string.split("\n").length}</span>
+            <span className="stat-add">+{editDiff.new_string.split("\n").length}</span>
+          </span>
+          {block.result === undefined && <span className="tool-open-hint">执行中…</span>}
+        </div>
+        {block.result !== undefined && (
+          <DiffBody oldText={editDiff.old_string} newText={editDiff.new_string} />
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="tool-block" ref={rootRef}>
       <div className="tool-head">
@@ -132,6 +173,88 @@ function ToolBlock({ block }: { block: Extract<ThreadBlock, { kind: "tool" }> })
       ) : (
         <span className="tool-open-hint">执行中…</span>
       )}
+    </div>
+  );
+}
+
+/** diff 渲染：旧块红、新块绿（Codex 的改动可视化；行级上色）。 */
+function DiffBody({ oldText, newText }: { oldText: string; newText: string }) {
+  const oldLines = oldText.split("\n");
+  const newLines = newText.split("\n");
+  return (
+    <div className="diff-body">
+      {oldLines.map((l, i) => (
+        <div key={"o" + i} className="diff-line del">
+          <span className="ln" aria-hidden>-</span>
+          <span className="code">{l || " "}</span>
+        </div>
+      ))}
+      {newLines.map((l, i) => (
+        <div key={"n" + i} className="diff-line add">
+          <span className="ln" aria-hidden>+</span>
+          <span className="code">{l || " "}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** 产物汇总卡：一轮任务的改动文件列表 + 增删统计 + 展开看 diff
+ *  （Codex 的 artifact viewer——验收「做了什么」的终点视图）。 */
+function FilesCard({ files }: { files: FileChange[] }) {
+  const [open, setOpen] = useState<string | null>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    playEnter(rootRef.current);
+  }, []);
+
+  const added = files.reduce((n, f) => n + f.added, 0);
+  const deleted = files.reduce((n, f) => n + f.deleted, 0);
+
+  return (
+    <div className="files-card" ref={rootRef}>
+      <div className="files-head">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z" />
+          <path d="M13 2v7h7" />
+        </svg>
+        <span className="files-title">改动 {files.length} 个文件</span>
+        <span className="diff-stats">
+          <span className="stat-del">-{deleted}</span>
+          <span className="stat-add">+{added}</span>
+        </span>
+      </div>
+      {files.map((f) => (
+        <div key={f.path} className="files-row">
+          <button
+            type="button"
+            className="files-file"
+            aria-expanded={open === f.path}
+            onClick={() => setOpen(open === f.path ? null : f.path)}
+          >
+            <span className="files-chevron">{open === f.path ? "▾" : "▸"}</span>
+            <span className="files-path">{f.path}</span>
+            <span className="diff-stats">
+              <span className="stat-del">-{f.deleted}</span>
+              <span className="stat-add">+{f.added}</span>
+            </span>
+          </button>
+          {open === f.path && (
+            <div className="diff-body">
+              {f.diff.split("\n").map((l, i) => (
+                <div
+                  key={i}
+                  className={"diff-line" + (l.startsWith("+") ? " add" : l.startsWith("-") && !l.startsWith("---") ? " del" : "")}
+                >
+                  <span className="ln" aria-hidden>{l.startsWith("@") ? "@" : ""}</span>
+                  <span className="code">{l || " "}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      ))}
     </div>
   );
 }

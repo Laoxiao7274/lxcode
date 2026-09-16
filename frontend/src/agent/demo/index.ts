@@ -1,7 +1,7 @@
 // 演示数据源：脚本化编排一轮完整交互，覆盖 UI 全部状态
 // （流式正文/思考链、低危工具自动执行、高危确认门两分支、任务清单、
 // 完成/取消/错误）。事件形状与后端协议 1:1——接线时换 WSAgent 即可。
-import type { AgentEvent, AgentSource, ConfirmRequest, ProjectMeta, SessionMeta, TodoItem } from "../../shared/types";
+import type { AgentEvent, AgentSource, ConfirmRequest, FileChange, ProjectMeta, SessionMeta, TodoItem } from "../../shared/types";
 
 type Listener = (ev: AgentEvent) => void;
 
@@ -35,13 +35,24 @@ const TODO_LATER: TodoItem[] = [
   { content: "补回归测试并跑全量", status: "active" },
 ];
 
+/** 一轮任务的产物（filesChanged 事件数据——Codex 的验收视图）。 */
+const FILES_CHANGED: FileChange[] = [
+  {
+    path: "internal/agent/session.go", added: 4, deleted: 0,
+    diff: "@@ internal/agent/session.go:311 (runTools)\n \t\tif ctx.Err() != nil {\n \t\t\treturn false\n \t\t}\n+\t\t// per-tool 超时兜底：单工具卡死不让整轮挂住（tools 层超时不动，这层管循环）\n+\t\ttoolCtx, cancel := context.WithTimeout(ctx, 120*time.Second)\n+\t\tdefer cancel()\n+\t\t_ = toolCtx // 传入 Execute（演示数据省略）",
+  },
+  {
+    path: "internal/agent/session_test.go", added: 26, deleted: 1,
+    diff: "@@ internal/agent/session_test.go:402\n-func TestRunToolsCancel(t *testing.T) {\n+func TestRunToolsCancel(t *testing.T) {\n+\t// 原用例：取消传播（不变）\n+}\n+\n+// TestToolTimeout 超时兜底：假工具 sleep 超过阈值，断言回填超时错误而非死等。\n+func TestToolTimeout(t *testing.T) {\n+\ts := newTestSession(t)\n+\tif err := s.Send(\"跑个会卡死的工具\"); err != nil {\n+\t\tt.Fatal(err)\n+\t}\n+\twaitIdle(t, s)\n+\tsnapshot := s.History()\n+\tlast := snapshot.Messages[len(snapshot.Messages)-1]\n+\tif !strings.Contains(last.Content, \"超时\") {\n+\t\tt.Fatalf(\"应回填超时错误: %s\", last.Content)\n+\t}",
+  },
+];
+
 const SESSIONS: SessionMeta[] = [
-  // worktree 全状态演示：干活中（分支+未提交）/ 干净 / 已合并 / 冲突
-  { id: "20260911-103024-a1b2", title: "给工具循环加超时保护", updatedAt: "刚刚", messages: 9, workspace: "proj-demo-lxcode", branch: "lxcode/s-a1b2", dirty: 3 },
-  { id: "20260910-225918-0a9e", title: "前后台分离的协议层评审", updatedAt: "昨天", messages: 14, workspace: "proj-demo-lxcode", branch: "lxcode/s-0a9e", dirty: 0 },
-  { id: "20260910-164246-c3d4", title: "edit 工具的唯一匹配校验设计", updatedAt: "3 天前", messages: 22, workspace: "proj-demo-lxcode", merged: true },
+  { id: "20260911-103024-a1b2", title: "给工具循环加超时保护", updatedAt: "刚刚", messages: 9, workspace: "proj-demo-lxcode" },
+  { id: "20260910-225918-0a9e", title: "前后台分离的协议层评审", updatedAt: "昨天", messages: 14, workspace: "proj-demo-lxcode" },
+  { id: "20260910-164246-c3d4", title: "edit 工具的唯一匹配校验设计", updatedAt: "3 天前", messages: 22, workspace: "proj-demo-lxcode" },
   { id: "20260909-090102-e5f6", title: "选型：Tauri 壳的边界", updatedAt: "上周", messages: 8, workspace: "proj-demo-lxcode", archived: true },
-  { id: "20260908-151512-f7a8", title: "niubash 实测记录", updatedAt: "上周", messages: 6, workspace: "proj-demo-agent", branch: "lxcode/s-f7a8", dirty: 1, conflicts: 2 },
+  { id: "20260908-151512-f7a8", title: "niubash 实测记录", updatedAt: "上周", messages: 6, workspace: "proj-demo-agent" },
   { id: "20260907-112209-b9c0", title: "容器化部署演练", updatedAt: "2 周前", messages: 18, workspace: "proj-demo-agent", archived: true },
 ];
 
@@ -141,29 +152,6 @@ export class DemoAgent implements AgentSource {
     this.emit({ type: "sessionsChanged" });
   }
 
-  mergeSession(id: string): void {
-    // 演示剧本：合并——有冲突则进入冲突态，否则干净合并（dirty 清零 + merged）
-    const target = this.sessions_.find((s) => s.id === id);
-    if (!target) return;
-    if (target.conflicts && target.conflicts > 0) {
-      // 冲突剧本：保持冲突态，事件层给用户提示（真实实现由后端 merge 报错驱动）
-      this.emit({ type: "error", message: `合并冲突：${target.conflicts} 个文件需要解决后重试`, aborted: false });
-      return;
-    }
-    this.sessions_ = this.sessions_.map((s) =>
-      s.id === id ? { ...s, dirty: 0, merged: true, branch: undefined } : s,
-    );
-    this.emit({ type: "sessionsChanged" });
-  }
-
-  discardSession(id: string): void {
-    // 演示剧本：放弃——清掉 worktree 态（真实实现删 worktree 目录 + 分支保留）
-    this.sessions_ = this.sessions_.map((s) =>
-      s.id === id ? { ...s, dirty: 0, conflicts: 0, branch: undefined } : s,
-    );
-    this.emit({ type: "sessionsChanged" });
-  }
-
   sessions(): SessionMeta[] {
     return this.sessions_;
   }
@@ -228,8 +216,23 @@ export class DemoAgent implements AgentSource {
     // 阶段 3：任务清单更新
     this.at(t + 2200, () => this.emit({ type: "todoUpdated", items: TODO_INITIAL }));
 
+    // 阶段 3.5：低危工具（edit）——改动以代码 diff 呈现（Codex 验收形态）
+    this.at(t + 3200, () => {
+      this.emit({
+        type: "toolCall", id: "c1b", name: "edit",
+        arguments: JSON.stringify({
+          path: "internal/agent/session.go",
+          old_string: "func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall) bool {\n\tfor _, tc := range calls {\n\t\tif ctx.Err() != nil {\n\t\t\treturn false\n\t\t}",
+          new_string: "func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall) bool {\n\tfor _, tc := range calls {\n\t\tif ctx.Err() != nil {\n\t\t\treturn false\n\t\t}\n\t\t// per-tool 超时兜底：单工具卡死不让整轮挂住（tools 层超时不动，这层管循环）\n\t\ttoolCtx, cancel := context.WithTimeout(ctx, 120*time.Second)\n\t\tdefer cancel()",
+        }),
+      });
+    });
+    this.at(t + 4300, () => {
+      this.emit({ type: "toolResult", id: "c1b", name: "edit", isError: false, content: "已替换 internal/agent/session.go（1 处唯一匹配）" });
+    });
+
     // 阶段 4：高危工具（bash）→ 确认门
-    this.at(t + 3000, () => {
+    this.at(t + 5400, () => {
       const req: ConfirmRequest = {
         id: "c2",
         name: "bash",
@@ -267,7 +270,11 @@ export class DemoAgent implements AgentSource {
       this.at(t, () => this.emit({ type: "delta", kind: "text", text: (p === "" ? "\n" : p) + "\n" }));
       t += 260 + p.length * 6;
     });
+    // 回合完成：产物汇总（改动文件 + diff 统计——验收视图）
     this.at(t + 300, () => {
+      this.emit({ type: "filesChanged", files: FILES_CHANGED });
+    });
+    this.at(t + 800, () => {
       this.emit({ type: "done", usageTokens: 2545 + Math.floor(Math.random() * 400), finishReason: "stop" });
       this.finish();
     });

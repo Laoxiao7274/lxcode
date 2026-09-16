@@ -31,7 +31,9 @@ export type AgentEvent =
   /** 会话列表本身变了（重命名/归档/恢复）——UI 重读 sessions()。 */
   | { type: "sessionsChanged" }
   /** 项目列表变了（添加）——UI 重读 projects()。 */
-  | { type: "projectsChanged" };
+  | { type: "projectsChanged" }
+  /** 一轮任务的产物汇总（改动文件 + diff 统计——验收视图）。 */
+  | { type: "filesChanged"; files: FileChange[] };
 
 /** 会话列表条目（对齐 protocol.SessionMeta；workspace 用于侧栏按工作区分组）。 */
 export interface SessionMeta {
@@ -43,14 +45,16 @@ export interface SessionMeta {
   workspace?: string;
   /** 归档态——侧栏不显示，设置「归档任务」里可恢复。 */
   archived?: boolean;
-  /** worktree 分支名（如 lxcode/s-20260916-a3f2；空 = 无隔离）。 */
-  branch?: string;
-  /** 未提交文件数（worktree 里的脏状态——做了事看得见）。 */
-  dirty?: number;
-  /** 已合并回主线（任务完结态）。 */
-  merged?: boolean;
-  /** 合并冲突（冲突文件数 > 0 时进入冲突态）。 */
-  conflicts?: number;
+}
+
+/** 改动文件条目（一轮任务结束时的产物汇总——Codex 的 diff 中心形态）。 */
+export interface FileChange {
+  path: string;
+  /** 增加行数 / 删除行数（diff 统计）。 */
+  added: number;
+  deleted: number;
+  /** 精简 diff 文本（Codex 风格渲染：@ 文件头、- 红行、+ 绿行）。 */
+  diff: string;
 }
 
 /** 项目（侧栏「项目」分组的数据源；对应后端 projects 表）。 */
@@ -83,10 +87,6 @@ export interface AgentSource {
   archiveSession(id: string): void;
   /** 从归档恢复。 */
   unarchiveSession(id: string): void;
-  /** 合并会话的 worktree 分支回主线（完成态；冲突时后端报错文本给用户）。 */
-  mergeSession(id: string): void;
-  /** 放弃会话的 worktree（清理隔离副本；分支保留可恢复）。 */
-  discardSession(id: string): void;
   /** 会话列表。 */
   sessions(): SessionMeta[];
   /** 项目列表。 */

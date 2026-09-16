@@ -219,29 +219,17 @@ export function Sidebar({
           </svg>
         </span>
       </div>
-      {list.slice(0, 8).map((s) => {
-        // 列表保持干净（Codex 形态）：状态只用标题旁一个轻量符号；
-        // 完整分支/未提交/合并操作在输入区上方的 SessionContextBar
-        const merged = !!s.merged;
-        const dirty = s.dirty ?? 0;
-        const conflicts = s.conflicts ?? 0;
-        const isCurrent = s.id === currentId;
-        const cls =
-          "session-item" +
-          (isCurrent ? " active" : "") +
-          (conflicts > 0 ? " conflict" : "") +
-          (merged ? " merged" : "");
-        return (
+      {list.slice(0, 8).map((s) => (
         <div
           key={s.id}
           ref={enterRow}
-          className={cls}
+          className={"session-item" + (s.id === currentId ? " active" : "")}
           style={menuFor === s.id ? { zIndex: 30 } : undefined}
           onClick={() => !busy && renaming !== s.id && source.resumeSession(s.id)}
-          title={merged ? s.title + "（已合并回主线）" : s.title}
+          title={s.title}
         >
           <div className="session-line">
-            <span className={"s-dot" + (isCurrent && busy ? " live" : "")} aria-hidden />
+            <span className={"s-dot" + (s.id === currentId && busy ? " live" : "")} aria-hidden />
             {renaming === s.id ? (
               <input
                 className="session-rename"
@@ -263,12 +251,7 @@ export function Sidebar({
                 }}
               />
             ) : (
-              <span className="title">
-                {merged && <span className="merged-tick" aria-label="已合并">✓</span>}
-                {s.title}
-                {dirty > 0 && !merged && <span className="dirty-dot" title={`${dirty} 个文件未提交`} />}
-                {conflicts > 0 && <span className="conflict-dot" title={`${conflicts} 个文件合并冲突`} />}
-              </span>
+              <span className="title">{s.title}</span>
             )}
             <span className="time">{s.updatedAt}</span>
             {renaming !== s.id && (
@@ -297,24 +280,6 @@ export function Sidebar({
                 <IconPencil />
                 重命名
               </button>
-              {s.branch && !merged && (
-                <button type="button" role="menuitem" onClick={() => { closeMenu(); source.mergeSession(s.id); }}>
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                    <circle cx="18" cy="18" r="3" />
-                    <circle cx="6" cy="6" r="3" />
-                    <path d="M6 21V9a9 9 0 0 0 9 9" />
-                  </svg>
-                  合并回主线
-                </button>
-              )}
-              {s.branch && !merged && (
-                <button type="button" role="menuitem" className="menu-danger" onClick={() => { closeMenu(); source.discardSession(s.id); }}>
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                    <path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
-                  </svg>
-                  放弃并清理
-                </button>
-              )}
               <button type="button" role="menuitem" onClick={(e) => { closeMenu(); doArchive(e, s.id); }}>
                 <IconArchive />
                 归档
@@ -322,8 +287,7 @@ export function Sidebar({
             </div>
           )}
         </div>
-        );
-      })}
+      ))}
       {list.length > 8 && <div className="ws-more">Show more（{list.length - 8}）</div>}
       {list.length === 0 && query.trim() && (
         <div className="sidebar-empty">没有匹配「{query.trim()}」的对话</div>

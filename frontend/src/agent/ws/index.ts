@@ -217,15 +217,6 @@ export class WSAgent implements AgentSource {
     this.call("session.archive", { id, archived: false }).catch(() => {});
   }
 
-  mergeSession(_id: string): void {
-    // TODO(worktree Phase 1 后端)：session.merge 协议接入后替换
-    this.emit({ type: "error", message: "合并功能后端未接入（worktree 后端下轮实现）", aborted: false });
-  }
-
-  discardSession(_id: string): void {
-    this.emit({ type: "error", message: "放弃清理功能后端未接入（worktree 后端下轮实现）", aborted: false });
-  }
-
   sessions(): SessionMeta[] {
     return this.sessionsCache;
   }
