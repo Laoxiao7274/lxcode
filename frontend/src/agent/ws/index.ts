@@ -124,6 +124,13 @@ export class WSAgent implements AgentSource {
         break;
       case "chat.done":
         this.emit({ type: "done", usageTokens: Number(p.usage_tokens ?? 0), finishReason: String(p.finish_reason ?? "stop") });
+        // 轮结束——会话列表元数据（标题/时间/消息数）可能变了：重拉
+        this.call("session.list")
+          .then((r) => {
+            this.applySessionList(r);
+            this.emit({ type: "sessionsChanged" });
+          })
+          .catch(() => {});
         break;
       case "chat.error":
         this.emit({ type: "error", message: String(p.message ?? ""), aborted: Boolean(p.aborted) });

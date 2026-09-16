@@ -485,6 +485,8 @@ func (s *Session) ensureSessionLocked() error {
 		}
 		s.pendingWorkspace = ""
 	}
+	// 通知宿主：会话行已建（侧栏「发消息 → 新对话出现」的信号）
+	s.emit(SessionStartedEvent{ID: id})
 	return nil
 }
 

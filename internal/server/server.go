@@ -112,6 +112,9 @@ func (s *Server) emitEvent(ev agent.Event) {
 			params.Files[i] = protocol.FileChangeParams{Path: f.Path, Added: f.Added, Deleted: f.Deleted, Diff: f.Diff}
 		}
 		s.broadcast(protocol.EventFiles, params)
+	case agent.SessionStartedEvent:
+		// 会话行懒建（首条消息）——客户端重拉 session.list（新对话出现）
+		s.broadcastSessionChanged(e.ID, "new")
 	}
 }
 

@@ -76,6 +76,12 @@ type TodoUpdatedEvent struct {
 	Items []tools.TodoItem
 }
 
+// SessionStartedEvent：会话行懒建完成（首条消息落库时）——宿主据此刷新
+// 会话列表（「发消息 → 新对话出现在侧栏」的信号）。
+type SessionStartedEvent struct {
+	ID string
+}
+
 // FileChange 是一个文件的改动摘要（产物视图——验收「这轮改了什么」）。
 type FileChange struct {
 	Path    string `json:"path"`
@@ -100,6 +106,7 @@ func (TurnDoneEvent) isEvent()       {}
 func (TurnErrorEvent) isEvent()      {}
 func (TodoUpdatedEvent) isEvent()    {}
 func (FilesChangedEvent) isEvent()   {}
+func (SessionStartedEvent) isEvent() {}
 
 // Snapshot 是宿主初始化/重连时的会话同步载荷（History 的返回值）。
 type Snapshot struct {

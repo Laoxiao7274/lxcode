@@ -268,12 +268,13 @@ func TestServerChatFlow(t *testing.T) {
 	if resp == nil || resp.Error != nil {
 		t.Fatalf("chat.send 失败: %+v", resp)
 	}
-	// 等事件序列：userMessage → busy(true) → delta(reasoning) → delta(text) → done → busy(false)
+	// 等事件序列：userMessage → busy(true) → delta×2 → done → busy(false)
+	// （+ session.changed：首条消息懒建会话行的新广播——条数放宽到 7 容纳）
 	seq := []string{}
-	for i := 0; i < 6; i++ {
+	for i := 0; i < 7; i++ {
 		ev := client.waitEventAny()
 		if ev == nil {
-			t.Fatalf("事件不足（%d/6）: %v", i, seq)
+			t.Fatalf("事件不足（%d/7）: %v", i, seq)
 		}
 		seq = append(seq, ev.Method)
 	}
