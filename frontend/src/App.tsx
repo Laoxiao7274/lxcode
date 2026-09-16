@@ -17,7 +17,7 @@ export default function App() {
 }
 
 function AppBody() {
-  // 数据源：工厂（Tauri/有后端 = WSAgent 真实模式；无后端 = DemoAgent 演示）
+  // 数据源：工厂（Electron 壳 = WSAgent 真实模式连 7789；浏览器 = DemoAgent 演示）
   const source = useMemo(() => getAgentSource(), []);
   const { state, send, resolve } = useAgent(source);
   // 初始无选中：空态起步（选中一个有历史的会话时 thread 才有内容——
@@ -40,11 +40,11 @@ function AppBody() {
 
   const currentTitle = state.blocks.length === 0 ? "" : source.sessions().find((s: import("./shared/types").SessionMeta) => s.id === currentId)?.title ?? "任务";
 
-  // Tauri 环境 = 真实窗口（不需要浏览器模拟壳）；浏览器 = 保留模拟壳
-  const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+  // 壳环境（Electron）= 真实窗口（不需要浏览器模拟壳）；浏览器 = 保留模拟壳
+  const isShell = typeof navigator !== "undefined" && navigator.userAgent.includes("Electron");
 
-  if (isTauri) {
-    // Tauri 模式：直接铺满窗口（无边框/暗底/投影——窗口本身就有）
+  if (isShell) {
+    // 壳模式：直接铺满窗口（无边框/暗底/投影——窗口本身就有）
     return (
       <div className="app">
         <Topbar taskTitle={currentTitle} source={source} connected={false} />

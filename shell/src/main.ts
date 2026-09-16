@@ -58,7 +58,8 @@ if (!app.requestSingleInstanceLock()) {
       show: false, // 先就绪再显示，避免白窗
       frame: false, // 无系统标题栏——顶部栏由渲染层 Topbar 自绘（拖拽区 + 窗口控制按钮，经 preload 桥 __LX__）
       roundedCorners: true, // Win11 圆角（默认即 true，显式记录）
-      icon: join(__dirname, "..", "build", "icon.png"), // 开发态窗口图标；产线用 exe 内嵌图标
+      // 窗口图标：dev 用源文件（shell/build/icon.png）；产线 exe 自带内嵌图标，无需指定
+      ...(app.isPackaged ? {} : { icon: join(__dirname, "..", "build", "icon.png") }),
       webPreferences: {
         preload: join(__dirname, "preload.js"),
         // contextIsolation 开、node 集成关：渲染层无 Node 能力，只走 WS。
