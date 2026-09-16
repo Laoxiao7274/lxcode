@@ -60,6 +60,7 @@ type SessionMeta struct {
 	Title     string // 首条 user 消息截断（空会话为占位）
 	UpdatedAt string
 	Messages  int
+	Archived  bool
 }
 
 // Store 管理单个 SQLite 库（sessions 目录下的 sessions.db）。
@@ -230,11 +231,9 @@ func (s *Store) List() ([]SessionMeta, error) {
 		if err := rows.Scan(&meta.ID, &meta.Title, &meta.UpdatedAt, &archived, &meta.Messages); err != nil {
 			return nil, fmt.Errorf("读会话行失败: %w", err)
 		}
-		if archived == 1 {
-			meta.Title = "（已归档）" + meta.Title // List 的消费方按标题展示；归档态显式可见
-		}
-		if meta.Title == "" || meta.Title == "（已归档）" {
-			meta.Title += "（空会话）"
+		meta.Archived = archived == 1 // 结构化归档态（不再是标题前缀 hack）
+		if meta.Title == "" {
+			meta.Title = "（空会话）"
 		}
 		meta.UpdatedAt = fmtTime(meta.UpdatedAt)
 		out = append(out, meta)

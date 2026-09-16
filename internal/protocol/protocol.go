@@ -235,8 +235,9 @@ type SessionArchiveParams struct {
 type SessionMeta struct {
 	ID        string `json:"id"`
 	Title     string `json:"title"`      // 第一条 user 消息截断（空会话为占位）
-	UpdatedAt string `json:"updated_at"` // 最后修改时间（文件 mtime）
+	UpdatedAt string `json:"updated_at"` // 最后修改时间
 	Messages  int    `json:"messages"`
+	Archived  bool   `json:"archived"` // 归档态——侧栏不显示，设置归档区可恢复
 }
 
 // SessionChangedParams 是 session.changed 事件的载荷：客户端收到后重拉

@@ -47,15 +47,13 @@ export class WSAgent implements AgentSource {
 
     this.ws.onopen = () => {
       this.connected = true;
-      // 握手 + 拉初始状态
+      // 握手 + 拉初始状态：全量会话列表 + 当前会话历史
       this.call("connection.hello", { client: "lxcode-web", version: "1" })
-        .then(() => this.call("chat.history"))
+        .then(() => this.call("session.list"))
         .then((r) => {
-          const h = r as { session_id?: string; messages?: unknown[]; busy?: boolean; todos?: TodoItem[] };
-          if (h.session_id) {
-            this.sessionsCache = [{ id: h.session_id, title: "当前会话", updatedAt: "刚刚", messages: h.messages?.length ?? 0 }];
-          }
+          this.applySessionList(r);
         })
+        .then(() => this.call("chat.history"))
         .catch(() => {});
     };
 
@@ -122,6 +120,16 @@ export class WSAgent implements AgentSource {
         break;
       case "session.changed":
         this.emit({ type: "sessionChanged", id: String(p.id ?? ""), reason: String(p.reason ?? "") });
+        // 列表可能变了（新建/重命名/归档）：重拉全量（多客户端一致——
+        // 后端是唯一事实来源，本地不再维护列表状态）
+        if (String(p.reason ?? "") !== "resumed") {
+          this.call("session.list")
+            .then((r) => {
+              this.applySessionList(r);
+              this.emit({ type: "sessionsChanged" });
+            })
+            .catch(() => {});
+        }
         break;
       case "model.changed":
         // 模型变更——暂无 AgentEvent 对应（可扩展）
@@ -183,34 +191,33 @@ export class WSAgent implements AgentSource {
   renameSession(id: string, title: string): void {
     const t = title.trim();
     if (!t) return;
-    this.call("session.rename", { id, title: t })
-      .then(() => {
-        this.sessionsCache = this.sessionsCache.map((s) => (s.id === id ? { ...s, title: t, updatedAt: "刚刚" } : s));
-        this.emit({ type: "sessionsChanged" });
-      })
-      .catch(() => {});
+    // 列表更新走 session.changed 广播（后端事实源），这里只发请求
+    this.call("session.rename", { id, title: t }).catch(() => {});
   }
 
   archiveSession(id: string): void {
-    this.call("session.archive", { id, archived: true })
-      .then(() => {
-        this.sessionsCache = this.sessionsCache.map((s) => (s.id === id ? { ...s, archived: true } : s));
-        this.emit({ type: "sessionsChanged" });
-      })
-      .catch(() => {});
+    this.call("session.archive", { id, archived: true }).catch(() => {});
   }
 
   unarchiveSession(id: string): void {
-    this.call("session.archive", { id, archived: false })
-      .then(() => {
-        this.sessionsCache = this.sessionsCache.map((s) => (s.id === id ? { ...s, archived: false } : s));
-        this.emit({ type: "sessionsChanged" });
-      })
-      .catch(() => {});
+    this.call("session.archive", { id, archived: false }).catch(() => {});
   }
 
   sessions(): SessionMeta[] {
-    // 从缓存返回（连接时通过 chat.history 更新）
     return this.sessionsCache;
+  }
+
+  /** 后端 session.list 结果 → 缓存（协议 snake_case → 前端 camelCase 映射）。 */
+  private applySessionList(result: unknown) {
+    const list = result as Array<{ id: string; title: string; updated_at: string; messages: number; archived?: boolean }>;
+    if (!Array.isArray(list)) return;
+    this.sessionsCache = list.map((s) => ({
+      id: s.id,
+      title: s.title,
+      updatedAt: s.updated_at,
+      messages: s.messages,
+      archived: Boolean(s.archived),
+    }));
+    this.emit({ type: "sessionsChanged" });
   }
 }

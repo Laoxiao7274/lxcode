@@ -362,7 +362,10 @@ func (s *Server) NotifyModels() { s.broadcastModels() }
 func toProtocolSessionList(metas []store.SessionMeta) []protocol.SessionMeta {
 	out := make([]protocol.SessionMeta, len(metas))
 	for i, m := range metas {
-		out[i] = protocol.SessionMeta{ID: m.ID, Title: m.Title, UpdatedAt: m.UpdatedAt, Messages: m.Messages}
+		out[i] = protocol.SessionMeta{
+			ID: m.ID, Title: m.Title, UpdatedAt: m.UpdatedAt,
+			Messages: m.Messages, Archived: m.Archived,
+		}
 	}
 	return out
 }
