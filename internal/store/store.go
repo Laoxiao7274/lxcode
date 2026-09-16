@@ -31,6 +31,7 @@ import (
 
 // schema 是库结构（幂等建表）。seq 显式保序——JSONL 的行序语义显式化；
 // title 在写入时维护（首条 user 消息），List 不再逐行全读。
+// workspace 列经 ALTER 兼容追加（旧库升级不炸：已存在时忽略错误）。
 const schema = `
 CREATE TABLE IF NOT EXISTS sessions (
   id         TEXT PRIMARY KEY,
@@ -52,6 +53,12 @@ CREATE TABLE IF NOT EXISTS messages (
   FOREIGN KEY (session_id) REFERENCES sessions(id)
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at DESC, archived);
+CREATE TABLE IF NOT EXISTS projects (
+  id         TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  path       TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL
+);
 `
 
 // SessionMeta 是会话列表的条目（resume 选择器的数据源）。
@@ -61,6 +68,7 @@ type SessionMeta struct {
 	UpdatedAt string
 	Messages  int
 	Archived  bool
+	Workspace string // 归属项目 id（空 = 未分组）
 }
 
 // Store 管理单个 SQLite 库（sessions 目录下的 sessions.db）。
@@ -97,6 +105,14 @@ func Open(dir string) (*Store, error) {
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("初始化会话表失败: %w", err)
+	}
+	// 列级迁移（旧库升级）：sessions.workspace 追加列。重复执行报 duplicate
+	// column 是预期——忽略即可（幂等）。
+	if _, err := db.Exec(`ALTER TABLE sessions ADD COLUMN workspace TEXT NOT NULL DEFAULT ''`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column") {
+			db.Close()
+			return nil, fmt.Errorf("迁移会话表失败: %w", err)
+		}
 	}
 	return &Store{db: db}, nil
 }
@@ -216,7 +232,7 @@ func (s *Store) Load(id string) ([]llm.Message, error) {
 // List 列出全部会话（按更新时间倒序，归档的沉底；rowid 兜底保证确定性顺序）。
 func (s *Store) List() ([]SessionMeta, error) {
 	rows, err := s.db.Query(
-		`SELECT s.id, s.title, s.updated_at, s.archived,
+		`SELECT s.id, s.title, s.updated_at, s.archived, s.workspace,
 		        (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS n
 		 FROM sessions s
 		 ORDER BY s.archived ASC, s.updated_at DESC, s.rowid DESC`)
@@ -228,7 +244,7 @@ func (s *Store) List() ([]SessionMeta, error) {
 	for rows.Next() {
 		var meta SessionMeta
 		var archived int
-		if err := rows.Scan(&meta.ID, &meta.Title, &meta.UpdatedAt, &archived, &meta.Messages); err != nil {
+		if err := rows.Scan(&meta.ID, &meta.Title, &meta.UpdatedAt, &archived, &meta.Workspace, &meta.Messages); err != nil {
 			return nil, fmt.Errorf("读会话行失败: %w", err)
 		}
 		meta.Archived = archived == 1 // 结构化归档态（不再是标题前缀 hack）
@@ -284,6 +300,64 @@ func (s *Store) Archive(id string, archived bool) error {
 	res, err := s.db.Exec(`UPDATE sessions SET archived = ? WHERE id = ?`, v, id)
 	if err != nil {
 		return fmt.Errorf("归档失败: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("会话 %s 不存在", id)
+	}
+	return nil
+}
+
+// ProjectMeta 是项目列表条目（侧栏「项目」分组的数据源）。
+type ProjectMeta struct {
+	ID   string
+	Name string
+	Path string
+}
+
+// AddProject 注册项目（幂等：path 已注册返回既有条目）。
+func (s *Store) AddProject(name, path string) (ProjectMeta, error) {
+	// 已注册（按路径）→ 直接返回
+	var existing ProjectMeta
+	err := s.db.QueryRow(`SELECT id, name, path FROM projects WHERE path = ?`, path).
+		Scan(&existing.ID, &existing.Name, &existing.Path)
+	if err == nil {
+		return existing, nil
+	}
+	if err != sql.ErrNoRows {
+		return ProjectMeta{}, fmt.Errorf("查询项目失败: %w", err)
+	}
+	id := newSessionID() // 时间戳+随机，项目与会话共用 id 生成器（形态相同）
+	_, err = s.db.Exec(`INSERT INTO projects (id, name, path, created_at) VALUES (?, ?, ?, ?)`,
+		id, name, path, nowNano())
+	if err != nil {
+		return ProjectMeta{}, fmt.Errorf("写入项目失败: %w", err)
+	}
+	return ProjectMeta{ID: id, Name: name, Path: path}, nil
+}
+
+// ListProjects 列出全部项目（注册序）。
+func (s *Store) ListProjects() ([]ProjectMeta, error) {
+	rows, err := s.db.Query(`SELECT id, name, path FROM projects ORDER BY created_at DESC, rowid DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("列出项目失败: %w", err)
+	}
+	defer rows.Close()
+	var out []ProjectMeta
+	for rows.Next() {
+		var p ProjectMeta
+		if err := rows.Scan(&p.ID, &p.Name, &p.Path); err != nil {
+			return nil, fmt.Errorf("读项目行失败: %w", err)
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// SessionWorkspace 设置会话归属的项目（空串 = 未分组）。
+func (s *Store) SessionWorkspace(id, workspace string) error {
+	res, err := s.db.Exec(`UPDATE sessions SET workspace = ? WHERE id = ?`, workspace, id)
+	if err != nil {
+		return fmt.Errorf("设置归属失败: %w", err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return fmt.Errorf("会话 %s 不存在", id)

@@ -1,7 +1,7 @@
 // 演示数据源：脚本化编排一轮完整交互，覆盖 UI 全部状态
 // （流式正文/思考链、低危工具自动执行、高危确认门两分支、任务清单、
 // 完成/取消/错误）。事件形状与后端协议 1:1——接线时换 WSAgent 即可。
-import type { AgentEvent, AgentSource, ConfirmRequest, SessionMeta, TodoItem } from "../../shared/types";
+import type { AgentEvent, AgentSource, ConfirmRequest, ProjectMeta, SessionMeta, TodoItem } from "../../shared/types";
 
 type Listener = (ev: AgentEvent) => void;
 
@@ -36,12 +36,12 @@ const TODO_LATER: TodoItem[] = [
 ];
 
 const SESSIONS: SessionMeta[] = [
-  { id: "20260911-103024-a1b2", title: "给工具循环加超时保护", updatedAt: "刚刚", messages: 9, workspace: "lxcode" },
-  { id: "20260910-225918-0a9e", title: "前后台分离的协议层评审", updatedAt: "昨天", messages: 14, workspace: "lxcode" },
-  { id: "20260910-164246-c3d4", title: "edit 工具的唯一匹配校验设计", updatedAt: "3 天前", messages: 22, workspace: "lxcode" },
-  { id: "20260909-090102-e5f6", title: "选型：Tauri 壳的边界", updatedAt: "上周", messages: 8, workspace: "lxcode", archived: true },
-  { id: "20260908-151512-f7a8", title: "niubash 实测记录", updatedAt: "上周", messages: 6, workspace: "local-myt-agent" },
-  { id: "20260907-112209-b9c0", title: "容器化部署演练", updatedAt: "2 周前", messages: 18, workspace: "local-myt-agent", archived: true },
+  { id: "20260911-103024-a1b2", title: "给工具循环加超时保护", updatedAt: "刚刚", messages: 9, workspace: "proj-demo-lxcode" },
+  { id: "20260910-225918-0a9e", title: "前后台分离的协议层评审", updatedAt: "昨天", messages: 14, workspace: "proj-demo-lxcode" },
+  { id: "20260910-164246-c3d4", title: "edit 工具的唯一匹配校验设计", updatedAt: "3 天前", messages: 22, workspace: "proj-demo-lxcode" },
+  { id: "20260909-090102-e5f6", title: "选型：Tauri 壳的边界", updatedAt: "上周", messages: 8, workspace: "proj-demo-lxcode", archived: true },
+  { id: "20260908-151512-f7a8", title: "niubash 实测记录", updatedAt: "上周", messages: 6, workspace: "proj-demo-agent" },
+  { id: "20260907-112209-b9c0", title: "容器化部署演练", updatedAt: "2 周前", messages: 18, workspace: "proj-demo-agent", archived: true },
 ];
 
 export class DemoAgent implements AgentSource {
@@ -55,6 +55,11 @@ export class DemoAgent implements AgentSource {
   private sessions_ = SESSIONS;
   private currentSession = SESSIONS[0].id;
   private pendingNewId: string | null = null;
+  private pendingNewWorkspace = "";
+  private projects_: ProjectMeta[] = [
+    { id: "proj-demo-lxcode", name: "lxcode", path: "C:\\Users\\xzy\\Desktop\\my\\lxcode" },
+    { id: "proj-demo-agent", name: "local-myt-agent", path: "C:\\Users\\xzy\\Desktop\\gs\\local-myt-agent" },
+  ];
 
   subscribe(listener: Listener): () => void {
     this.listeners.add(listener);
@@ -70,9 +75,11 @@ export class DemoAgent implements AgentSource {
     // 空会话不占列表位）
     if (this.pendingNewId) {
       const id = this.pendingNewId;
+      const ws = this.pendingNewWorkspace;
       this.pendingNewId = null;
+      this.pendingNewWorkspace = "";
       this.sessions_ = [
-        { id, title: text.length > 24 ? text.slice(0, 24) + "…" : text, updatedAt: "刚刚", messages: 1, workspace: "lxcode" },
+        { id, title: text.length > 24 ? text.slice(0, 24) + "…" : text, updatedAt: "刚刚", messages: 1, workspace: ws },
         ...this.sessions_,
       ];
       this.currentSession = id;
@@ -101,10 +108,11 @@ export class DemoAgent implements AgentSource {
     this.finish();
   }
 
-  newSession(): void {
+  newSession(workspace?: string): void {
     // 只切到空态 + 记一个待定 id——首条消息时才建列表条目
     const id = "20260911-" + new Date().toTimeString().slice(0, 8).replaceAll(":", "") + "-n" + Math.floor(Math.random() * 90 + 10);
     this.pendingNewId = id;
+    this.pendingNewWorkspace = workspace ?? "";
     this.currentSession = id;
     this.emit({ type: "sessionChanged", id, reason: "new" });
   }
@@ -134,6 +142,19 @@ export class DemoAgent implements AgentSource {
 
   sessions(): SessionMeta[] {
     return this.sessions_;
+  }
+
+  projects(): ProjectMeta[] {
+    return this.projects_;
+  }
+
+  addProject(name: string, path: string): void {
+    // 演示模式：本地数组操作（浏览器样式可验；不真碰文件系统/git）
+    this.projects_ = [
+      { id: "proj-" + Math.random().toString(36).slice(2, 8), name, path },
+      ...this.projects_,
+    ];
+    this.emit({ type: "projectsChanged" });
   }
 
   get currentId(): string {

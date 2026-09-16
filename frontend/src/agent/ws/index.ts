@@ -1,6 +1,6 @@
 // WSAgent：真实后端对接（WS JSON-RPC :7789——协议与 Go 后端 internal/protocol 一致）。
 // 事件流 → AgentEvent 映射，与 DemoAgent 可互换（App.tsx 一行切换）。
-import type { AgentEvent, AgentSource, ConfirmRequest, SessionMeta, TodoItem } from "../../shared/types";
+import type { AgentEvent, AgentSource, ConfirmRequest, ProjectMeta, SessionMeta, TodoItem } from "../../shared/types";
 
 /** WS JSON-RPC 帧结构（与 Go internal/protocol 对齐）。 */
 interface WsRequest {
@@ -29,6 +29,7 @@ export class WSAgent implements AgentSource {
   private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
   private connected = false;
   private sessionsCache: SessionMeta[] = [];
+  private projectsCache: ProjectMeta[] = [];
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private addr = "127.0.0.1:7789") {}
@@ -47,8 +48,12 @@ export class WSAgent implements AgentSource {
 
     this.ws.onopen = () => {
       this.connected = true;
-      // 握手 + 拉初始状态：全量会话列表 + 当前会话历史
+      // 握手 + 拉初始状态：项目 + 全量会话列表 + 当前会话历史
       this.call("connection.hello", { client: "lxcode-web", version: "1" })
+        .then(() => this.call("project.list"))
+        .then((r) => {
+          this.applyProjectList(r);
+        })
         .then(() => this.call("session.list"))
         .then((r) => {
           this.applySessionList(r);
@@ -134,6 +139,15 @@ export class WSAgent implements AgentSource {
       case "model.changed":
         // 模型变更——暂无 AgentEvent 对应（可扩展）
         break;
+      case "project.changed":
+        // 项目增删 → 重拉项目列表（后端事实源）
+        this.call("project.list")
+          .then((r) => {
+            this.applyProjectList(r);
+            this.emit({ type: "projectsChanged" });
+          })
+          .catch(() => {});
+        break;
     }
   }
 
@@ -180,8 +194,8 @@ export class WSAgent implements AgentSource {
     this.call("chat.cancel").catch(() => {});
   }
 
-  newSession(): void {
-    this.call("session.new").catch(() => {});
+  newSession(workspace?: string): void {
+    this.call("session.new", workspace ? { workspace } : undefined).catch(() => {});
   }
 
   resumeSession(id: string): void {
@@ -207,9 +221,21 @@ export class WSAgent implements AgentSource {
     return this.sessionsCache;
   }
 
+  projects(): ProjectMeta[] {
+    return this.projectsCache;
+  }
+
+  addProject(name: string, path: string): void {
+    // project.changed 广播回来时刷新列表；错误就地报（对话框已关——
+    // 至少 UI 有项目区空态兜底，失败可从列表未见新行发现）
+    this.call("project.add", { name, path }).catch((e) => {
+      this.emit({ type: "error", message: `添加项目失败: ${e.message}`, aborted: false });
+    });
+  }
+
   /** 后端 session.list 结果 → 缓存（协议 snake_case → 前端 camelCase 映射）。 */
   private applySessionList(result: unknown) {
-    const list = result as Array<{ id: string; title: string; updated_at: string; messages: number; archived?: boolean }>;
+    const list = result as Array<{ id: string; title: string; updated_at: string; messages: number; archived?: boolean; workspace?: string }>;
     if (!Array.isArray(list)) return;
     this.sessionsCache = list.map((s) => ({
       id: s.id,
@@ -217,7 +243,16 @@ export class WSAgent implements AgentSource {
       updatedAt: s.updated_at,
       messages: s.messages,
       archived: Boolean(s.archived),
+      workspace: s.workspace ?? "",
     }));
     this.emit({ type: "sessionsChanged" });
+  }
+
+  /** 后端 project.list 结果 → 缓存。 */
+  private applyProjectList(result: unknown) {
+    const list = result as Array<{ id: string; name: string; path: string }>;
+    if (!Array.isArray(list)) return;
+    this.projectsCache = list.map((p) => ({ id: p.id, name: p.name, path: p.path }));
+    this.emit({ type: "projectsChanged" });
   }
 }

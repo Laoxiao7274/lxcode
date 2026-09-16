@@ -38,6 +38,10 @@ const (
 	MethodSessionResume  = "session.resume"
 	MethodSessionRename  = "session.rename"
 	MethodSessionArchive = "session.archive"
+
+	// 项目管理（workspace 分组）
+	MethodProjectAdd  = "project.add"
+	MethodProjectList = "project.list"
 )
 
 // 事件名（服务端 → 全部客户端广播；无 id 的 JSON-RPC 消息）。
@@ -219,6 +223,11 @@ type SessionResumeParams struct {
 	ID string `json:"id"`
 }
 
+// SessionNewParams 是 session.new 的可选参数（会话归属项目）。
+type SessionNewParams struct {
+	Workspace string `json:"workspace,omitempty"` // 归属项目 id（空 = 未分组）
+}
+
 // SessionRenameParams 是 session.rename 的参数。
 type SessionRenameParams struct {
 	ID    string `json:"id"`
@@ -231,13 +240,30 @@ type SessionArchiveParams struct {
 	Archived bool   `json:"archived"`
 }
 
+// ProjectAddParams 是 project.add 的参数（path 为本地目录绝对路径）。
+type ProjectAddParams struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
+}
+
+// ProjectMeta 是 project.list 的条目。
+type ProjectMeta struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Path string `json:"path"`
+}
+
+// EventProjectChanged 是项目增删时的事件名（客户端重拉 project.list）。
+const EventProjectChanged = "project.changed"
+
 // SessionMeta 是 session.list 的条目（resume 选择器的数据源）。
 type SessionMeta struct {
 	ID        string `json:"id"`
 	Title     string `json:"title"`      // 第一条 user 消息截断（空会话为占位）
 	UpdatedAt string `json:"updated_at"` // 最后修改时间
 	Messages  int    `json:"messages"`
-	Archived  bool   `json:"archived"` // 归档态——侧栏不显示，设置归档区可恢复
+	Archived  bool   `json:"archived"`            // 归档态——侧栏不显示，设置归档区可恢复
+	Workspace string `json:"workspace,omitempty"` // 归属项目 id（空 = 未分组）
 }
 
 // SessionChangedParams 是 session.changed 事件的载荷：客户端收到后重拉

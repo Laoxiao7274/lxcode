@@ -7,8 +7,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -259,8 +263,18 @@ func (s *Server) dispatch(req *protocol.Request) *protocol.Response {
 		return protocol.NewResult(req.ID, toProtocolSessionList(s.sess.SessionList()))
 
 	case protocol.MethodSessionNew:
+		var p protocol.SessionNewParams
+		if len(params) > 0 {
+			if err := json.Unmarshal(params, &p); err != nil {
+				return protocol.NewError(req.ID, protocol.CodeInvalidParams, "参数解析失败: "+err.Error())
+			}
+		}
 		if _, err := s.sess.SwitchNew(); err != nil {
 			return protocol.NewError(req.ID, errorCode(err), err.Error())
+		}
+		// 会话归属项目（新会话 id 懒生成：首条消息才建行，归属先记在册）
+		if p.Workspace != "" {
+			s.sess.SetWorkspace(p.Workspace)
 		}
 		// 新会话 id 懒生成（首条消息才建文件）：应答里给当前值即可
 		s.broadcastSessionChanged(s.sess.SessionID(), "new")
@@ -299,6 +313,36 @@ func (s *Server) dispatch(req *protocol.Request) *protocol.Response {
 		}
 		s.broadcast(protocol.EventSessionChanged, protocol.SessionChangedParams{ID: p.ID, Reason: "archived"})
 		return protocol.NewResult(req.ID, map[string]any{})
+
+	case protocol.MethodProjectAdd:
+		var p protocol.ProjectAddParams
+		if err := json.Unmarshal(params, &p); err != nil || p.Path == "" || strings.TrimSpace(p.Name) == "" {
+			return protocol.NewError(req.ID, protocol.CodeInvalidParams, "参数解析失败: 需要 name 与 path")
+		}
+		meta, err := ensureProjectRepo(p.Name, p.Path)
+		if err != nil {
+			return protocol.NewError(req.ID, protocol.CodeInvalidParams, err.Error())
+		}
+		saved, err := s.st.AddProject(meta.Name, meta.Path)
+		if err != nil {
+			return protocol.NewError(req.ID, protocol.CodeInvalidParams, err.Error())
+		}
+		s.broadcast(protocol.EventProjectChanged, map[string]any{})
+		// 协议映射（store 类型无 json tag——直接序列化会漏键名，session.list 踩过同款）
+		return protocol.NewResult(req.ID, protocol.ProjectMeta{
+			ID: saved.ID, Name: saved.Name, Path: saved.Path,
+		})
+
+	case protocol.MethodProjectList:
+		metas, err := s.st.ListProjects()
+		if err != nil {
+			return protocol.NewError(req.ID, protocol.CodeInternal, err.Error())
+		}
+		out := make([]protocol.ProjectMeta, len(metas))
+		for i, m := range metas {
+			out[i] = protocol.ProjectMeta{ID: m.ID, Name: m.Name, Path: m.Path}
+		}
+		return protocol.NewResult(req.ID, out)
 	}
 
 	return protocol.NewError(req.ID, protocol.CodeMethodNotFound, "未知方法: "+req.Method)
@@ -364,10 +408,43 @@ func toProtocolSessionList(metas []store.SessionMeta) []protocol.SessionMeta {
 	for i, m := range metas {
 		out[i] = protocol.SessionMeta{
 			ID: m.ID, Title: m.Title, UpdatedAt: m.UpdatedAt,
-			Messages: m.Messages, Archived: m.Archived,
+			Messages: m.Messages, Archived: m.Archived, Workspace: m.Workspace,
 		}
 	}
 	return out
+}
+
+// ensureProjectRepo 保证项目目录是 git 仓库：已存在 .git 直接用；
+// 目录存在但不是仓库 → git init；目录不存在 → 报错。用户规则：
+// 「本地仓库的创建——如果有了那就不用管」。
+func ensureProjectRepo(name, path string) (store.ProjectMeta, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return store.ProjectMeta{}, fmt.Errorf("路径无效: %w", err)
+	}
+	info, err := os.Stat(abs)
+	if err != nil || !info.IsDir() {
+		return store.ProjectMeta{}, fmt.Errorf("目录不存在或不是文件夹: %s", abs)
+	}
+	if _, err := os.Stat(filepath.Join(abs, ".git")); err == nil {
+		return store.ProjectMeta{Name: name, Path: abs}, nil // 已是仓库，不用管
+	}
+	// 不是仓库 → git init（exec git，参数数组传递避免引号问题）
+	cmd := exec.Command("git", "init")
+	cmd.Dir = abs
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return store.ProjectMeta{}, fmt.Errorf("git init 失败（git 未安装?）: %v: %s", err, truncate(string(out), 200))
+	}
+	return store.ProjectMeta{Name: name, Path: abs}, nil
+}
+
+// truncate 截断错误信息（自解释但不淹没）。
+func truncate(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
 }
 
 // broadcastSessionChanged 会话切换广播：所有客户端重拉 chat.history 同步视图。

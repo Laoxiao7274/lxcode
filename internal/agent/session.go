@@ -65,6 +65,10 @@ type Session struct {
 	// SQLite 版无句柄概念：会话 = sessions 表一行，按 s.id 追加写。
 	st *store.Store
 	id string // 当前会话 id（空 = 尚未创建行）
+	// pendingWorkspace 是「下一个新会话」的归属项目（session.new 时设置，
+	// 会话行首条消息懒建时落库并清空）。单会话架构下的过渡设计——
+	// 多会话并发时归属直接挂在会话对象上。
+	pendingWorkspace string
 }
 
 // New 创建会话；emit 为 nil 时事件被丢弃（单测可只调方法）。
@@ -412,7 +416,22 @@ func (s *Session) ensureSessionLocked() error {
 		return err
 	}
 	s.id = id
+	// 归属项目落库（session.new 时预约的）
+	if s.pendingWorkspace != "" {
+		if err := s.st.SessionWorkspace(id, s.pendingWorkspace); err != nil {
+			log.Printf("会话归属落库失败（继续运行）: %v", err)
+		}
+		s.pendingWorkspace = ""
+	}
 	return nil
+}
+
+// SetWorkspace 设置下一个新会话的归属项目（session.new 参数透传）。
+// 空串 = 未分组。当前会话已存在时会在 SwitchNew 后的新会话生效。
+func (s *Session) SetWorkspace(workspace string) {
+	s.mu.Lock()
+	s.pendingWorkspace = workspace
+	s.mu.Unlock()
 }
 
 // EnablePersistence 挂载磁盘存储并恢复最近会话（启动时调用）。

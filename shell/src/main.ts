@@ -3,7 +3,7 @@
 // React 应用，经 WS 直连 127.0.0.1:7789，与浏览器/CLI 客户端同权。
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { app, BrowserWindow, ipcMain, net, protocol } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, net, protocol } from "electron";
 import { ensureBackend, shutdownBackend } from "./sidecar";
 
 // userData 目录名与应用身份（单实例锁、任务栏、通知都吃这个）
@@ -79,6 +79,14 @@ if (!app.requestSingleInstanceLock()) {
       win.isMaximized() ? win.unmaximize() : win.maximize();
     });
     ipcMain.on("win:close", () => win?.close());
+
+    // 目录选择器（添加项目用）：只开系统选择框，返回路径字符串——
+    // 渲染层拿不到任何 fs 能力，只是「让用户自己选」的 UI 通道
+    ipcMain.handle("dialog:selectDirectory", async () => {
+      if (!win) return null;
+      const r = await dialog.showOpenDialog(win, { properties: ["openDirectory"] });
+      return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0];
+    });
 
     // 产线诊断通道：渲染层控制台与加载失败转发到主进程 stdout
     // （打包后无 DevTools 场景排查渲染层问题全靠它）

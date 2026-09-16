@@ -5,10 +5,12 @@ import { motionAllowed, staggerIn } from "../../shared/motion";
 import { collapseAway, playEnter } from "../../shared/anim";
 import { useDismissal } from "../../shared/popover";
 import { IconPencil, IconArchive } from "../icons";
+import { AddProjectDialog } from "./AddProjectDialog";
 
 /** 侧栏（Codex 2026-05 版形态，截图实证）：
  *  导航项（新对话/搜索/插件/自动化）→「项目」分组（上）→「对话」分组（下）。
- *  会话行 hover ⋯ 菜单：重命名（行内输入）/ 归档（收行动画后进设置归档区）。 */
+ *  项目区：+ 号添加（对话框：名称+路径，后端 git 仓库自动建）；点项目行
+ *  过滤对话列表（再点取消）。会话行 hover ⋯ 菜单：重命名/归档。 */
 export function Sidebar({
   source,
   currentId,
@@ -23,14 +25,28 @@ export function Sidebar({
   const [query, setQuery] = useState("");
   const [menuFor, setMenuFor] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
+  const [addOpen, setAddOpen] = useState(false);
+  const [activeProject, setActiveProject] = useState<string | null>(null); // 选中项目 id（过滤对话）
+  const [projectsTick, setProjectsTick] = useState(0); // projectsChanged 事件驱动重读
   const searchRef = useRef<HTMLInputElement>(null);
   const sideRef = useRef<HTMLElement>(null);
+
+  // projectsChanged → 重读 projects()（新对象触发重渲染）
+  useEffect(() => {
+    return source.subscribe((ev) => {
+      if (ev.type === "projectsChanged") setProjectsTick((n) => n + 1);
+    });
+  }, [source]);
+  void projectsTick;
+  const projects = source.projects();
+
   const all = source.sessions().filter((s) => !s.archived);
+  const projectFiltered = activeProject ? all.filter((s) => s.workspace === activeProject) : all;
   const list = query.trim()
-    ? all.filter((s) => s.title.toLowerCase().includes(query.trim().toLowerCase()))
-    : all;
-  // 工作区去重（项目分组）
-  const workspaces = [...new Set(all.map((s) => s.workspace).filter(Boolean))] as string[];
+    ? projectFiltered.filter((s) => s.title.toLowerCase().includes(query.trim().toLowerCase()))
+    : projectFiltered;
+  // 项目 id → 元数据（会话 workspace 指向项目 id，显示时取名）
+  const projectById = new Map(projects.map((p) => [p.id, p]));
 
   // 后出现的会话行（首轮消息建会话、归档区恢复）单独入场；
   // 首屏整列由 staggerIn 接管，boot 窗口内跳过避免双份动画打架。
@@ -84,7 +100,7 @@ export function Sidebar({
     <aside className="sidebar" ref={sideRef}>
       {/* 导航项（图标 + 文字，Codex 同款四项） */}
       <nav className="nav-list">
-        <button type="button" className="nav-item" onClick={() => !busy && source.newSession()}>
+        <button type="button" className="nav-item" onClick={() => !busy && source.newSession(activeProject ?? undefined)}>
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M12 20h9" />
             <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
@@ -149,24 +165,54 @@ export function Sidebar({
         </div>
       </div>
 
-      {/* 项目分组（上）——工作区列表 */}
-      <div className="sidebar-label">项目</div>
-      {workspaces.map((ws) => {
-        const count = all.filter((s) => s.workspace === ws).length;
+      {/* 项目分组（上）——注册项目列表 + 添加按钮；点行过滤对话 */}
+      <div className="sidebar-label project-head">
+        项目
+        <button type="button" className="proj-add-btn" aria-label="添加项目" title="添加项目" onClick={() => setAddOpen(true)}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+            <path d="M12 5v14M5 12h14" />
+          </svg>
+        </button>
+      </div>
+      {projects.map((p) => {
+        const count = all.filter((s) => s.workspace === p.id).length;
+        const active = activeProject === p.id;
         return (
-          <div key={ws} className="proj-row" title={"~/" + ws}>
+          <div
+            key={p.id}
+            className={"proj-row" + (active ? " active" : "")}
+            title={p.path}
+            role="button"
+            tabIndex={0}
+            onClick={() => setActiveProject(active ? null : p.id)}
+            onKeyDown={(e) => e.key === "Enter" && setActiveProject(active ? null : p.id)}
+          >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
             </svg>
-            <span className="proj-name">{ws}</span>
+            <span className="proj-name">{p.name}</span>
             <span className="proj-count">{count}</span>
           </div>
         );
       })}
+      {projects.length === 0 && (
+        <div className="proj-empty">还没有项目——点右上 + 添加</div>
+      )}
+      {addOpen && (
+        <AddProjectDialog
+          onAdd={(name, path) => source.addProject(name, path)}
+          onClose={() => setAddOpen(false)}
+        />
+      )}
 
-      {/* 对话分组（下）——历史会话列表（组头带筛选/新建图标） */}
+      {/* 对话分组（下）——历史会话列表（选中项目时过滤；组头带清除过滤） */}
       <div className="sidebar-label group-head">
         对话
+        {activeProject && (
+          <button type="button" className="group-filter" onClick={() => setActiveProject(null)} title="清除项目过滤">
+            {projectById.get(activeProject)?.name ?? "项目"} ✕
+          </button>
+        )}
         <span className="group-actions" aria-hidden>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
             <path d="M3 6h18M6 12h12M10 18h4" />
