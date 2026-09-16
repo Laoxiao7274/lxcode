@@ -293,7 +293,9 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
         name: m.display_name || m.model || m.id, // 展示名回退链：display_name → model（API 名）→ id
         desc: m.format === "anthropic" ? "Anthropic 格式" : "OpenAI 兼容",
         tags: [m.capabilities?.tools ? "工具" : "", m.capabilities?.vision ? "视觉" : ""].filter(Boolean),
-        efforts: [], // 后端无档位概念——UI 隐藏档位
+        // 后端注册表无档位概念——默认三档（low/medium/high）保持强度面板可用；
+        // 档位真正影响生成待 chat.send 传参（llm.WithThinking 映射）接入
+        efforts: ["low", "medium", "high"],
         contextWindow: m.context_window || 128_000,
         maxOutput: m.max_output_tokens || 8_000,
         visible: m.enabled,

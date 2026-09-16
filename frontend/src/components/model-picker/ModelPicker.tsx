@@ -52,7 +52,8 @@ export function ModelPicker() {
     <div className="pop-wrap" ref={rootRef}>
       <span className="pop-trigger" onClick={onToggle}>
         <button type="button" className="model-chip" title="模型与推理强度">
-          {settings.model}
+          {/* 芯片显示模型名（display_name→model→id 回退链），不裸显注册 id */}
+          {current?.name ?? settings.model}
           {effortSupported && <span className="chip-dim">· {effortLabel}</span>}
           <IconChevronDown />
         </button>
