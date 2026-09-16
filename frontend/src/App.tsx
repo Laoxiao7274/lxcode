@@ -4,6 +4,7 @@ import { useAgent } from "./shared/store";
 import { Topbar } from "./components/topbar";
 import { Sidebar } from "./components/sidebar";
 import { Thread } from "./components/thread";
+import { SessionContextBar } from "./components/thread/SessionContextBar";
 import { Composer } from "./components/composer";
 import { SettingsPanel } from "./components/settings";
 import { SettingsProvider } from "./shared/settings";
@@ -53,6 +54,7 @@ function AppBody() {
           <div className="thread-scroll">
             <Thread state={state} onConfirm={handleConfirm} onSuggestion={send} />
           </div>
+          <SessionContextBar source={source} currentId={currentId} />
           <Composer busy={state.busy} onSend={send} onCancel={() => source.cancel()} />
         </main>
         <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} source={source} />
@@ -70,6 +72,7 @@ function AppBody() {
           <div className="thread-scroll">
             <Thread state={state} onConfirm={handleConfirm} onSuggestion={send} />
           </div>
+          <SessionContextBar source={source} currentId={currentId} />
           <Composer busy={state.busy} onSend={send} onCancel={() => source.cancel()} />
         </main>
         <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} source={source} />

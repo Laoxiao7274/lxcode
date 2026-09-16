@@ -341,73 +341,7 @@ body:has(.window-stage) {
 .session-item.merged {
   opacity: 0.62;
 }
-/* 当前会话的分支上下文条（「现在在哪个分支干活」的家） */
-.session-meta {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 4px 10px;
-  margin: 2px 0 3px 18px;
-  padding: 5px 9px;
-  background: rgba(0, 0, 0, 0.028);
-  border-radius: 7px;
-  font-size: 10.5px;
-  line-height: 1.5;
-  animation: meta-in 160ms ease-out;
-}
-@keyframes meta-in {
-  from { opacity: 0; transform: translateY(-2px); }
-  to { opacity: 1; transform: none; }
-}
-.meta-branch {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-family: var(--font-mono);
-  color: var(--fg);
-  font-weight: 500;
-}
-.meta-branch svg {
-  color: var(--fg-muted);
-}
-.meta-dirty {
-  font-family: var(--font-mono);
-  color: #b45309;
-  font-weight: 600;
-}
-.meta-clean {
-  font-family: var(--font-mono);
-  color: var(--fg-faint);
-}
-.meta-conflict {
-  font-family: var(--font-mono);
-  color: #b91c1c;
-  font-weight: 600;
-}
-.meta-actions {
-  margin-left: auto;
-  display: inline-flex;
-  gap: 4px;
-}
-.meta-actions button {
-  border: 1px solid var(--border-strong);
-  background: transparent;
-  border-radius: 5px;
-  padding: 1.5px 8px;
-  font-size: 10px;
-  color: var(--fg-muted);
-  cursor: pointer;
-  transition: color 100ms, background 100ms, border-color 100ms;
-}
-.meta-actions button:hover {
-  color: var(--fg);
-  background: var(--bg);
-  border-color: var(--fg-faint);
-}
-.meta-actions .meta-discard:hover {
-  color: var(--danger);
-  border-color: var(--danger);
-}
+/* 当前会话的分支上下文条已移到输入区上方（.ctx-bar，见 Composer 区样式） */
 .session-item.conflict {
   box-shadow: inset 2.5px 0 0 #d97706;
 }
@@ -417,6 +351,56 @@ body:has(.window-stage) {
 }
 .session-menu .menu-danger:hover {
   background: #fdecec;
+}
+/* ===== 输入区上方的会话上下文条（当前分支/dirty/合并操作） ===== */
+.ctx-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 22px 6px;
+  font-size: 10.5px;
+  line-height: 1.6;
+  color: var(--fg-faint);
+}
+.ctx-branch {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-mono);
+  color: var(--fg-muted);
+}
+.ctx-dirty {
+  font-family: var(--font-mono);
+  color: #b45309;
+  font-weight: 600;
+}
+.ctx-clean {
+  font-family: var(--font-mono);
+}
+.ctx-conflict {
+  font-family: var(--font-mono);
+  color: #b91c1c;
+  font-weight: 600;
+}
+.ctx-actions {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 12px;
+}
+.ctx-actions button {
+  border: none;
+  background: transparent;
+  padding: 0;
+  font-size: 10.5px;
+  color: var(--fg-faint);
+  cursor: pointer;
+  transition: color 100ms;
+}
+.ctx-actions button:hover {
+  color: var(--fg);
+}
+.ctx-actions .ctx-discard:hover {
+  color: var(--danger);
 }
 /* 会话行 hover ⋯ 与操作菜单 */
 .session-more {

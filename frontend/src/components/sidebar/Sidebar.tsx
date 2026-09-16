@@ -220,19 +220,17 @@ export function Sidebar({
         </span>
       </div>
       {list.slice(0, 8).map((s) => {
-        // 行级状态只用极轻量指示（色点/对勾）；完整状态在当前会话的展开条里
+        // 列表保持干净（Codex 形态）：状态只用标题旁一个轻量符号；
+        // 完整分支/未提交/合并操作在输入区上方的 SessionContextBar
         const merged = !!s.merged;
         const dirty = s.dirty ?? 0;
         const conflicts = s.conflicts ?? 0;
         const isCurrent = s.id === currentId;
-        // 展开条：当前会话 + 有分支（未合并）——「现在在哪个分支干活」的家
-        const showMeta = isCurrent && !merged && !!s.branch;
         const cls =
           "session-item" +
           (isCurrent ? " active" : "") +
           (conflicts > 0 ? " conflict" : "") +
-          (merged ? " merged" : "") +
-          (showMeta ? " expanded" : "");
+          (merged ? " merged" : "");
         return (
         <div
           key={s.id}
@@ -266,7 +264,7 @@ export function Sidebar({
               />
             ) : (
               <span className="title">
-                {merged && <span className="merged-tick" aria-label="已合并" title="已合并回主线">✓</span>}
+                {merged && <span className="merged-tick" aria-label="已合并">✓</span>}
                 {s.title}
                 {dirty > 0 && !merged && <span className="dirty-dot" title={`${dirty} 个文件未提交`} />}
                 {conflicts > 0 && <span className="conflict-dot" title={`${conflicts} 个文件合并冲突`} />}
@@ -293,36 +291,6 @@ export function Sidebar({
               </button>
             )}
           </div>
-          {/* 当前会话的分支上下文条：在哪个分支、改了什么、干完了怎么处理 */}
-          {showMeta && (
-            <div className="session-meta" onPointerDown={(e) => e.stopPropagation()}>
-              <span className="meta-branch" title={`分支 ${s.branch}（改动隔离保存）`}>
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <circle cx="6" cy="6" r="2.6" />
-                  <circle cx="6" cy="18" r="2.6" />
-                  <circle cx="18" cy="8" r="2.6" />
-                  <path d="M6 8.6v6.8M8.6 6.5h4.9a4 4 0 0 1 3.9 3.1" />
-                </svg>
-                {s.branch}
-              </span>
-              {dirty > 0 && (
-                <span className="meta-dirty" title="改动在这个分支上，未提交也安全">● {dirty} 未提交</span>
-              )}
-              {dirty === 0 && <span className="meta-clean">无未提交改动</span>}
-              {conflicts > 0 && (
-                <span className="meta-conflict" title="合并回主线时撞车——让 AI 回到会话里解决">⚠ {conflicts} 冲突</span>
-              )}
-              <span className="meta-actions">
-                <button type="button" onClick={() => source.mergeSession(s.id)}>合并回主线</button>
-                <button type="button" className="meta-discard" onClick={() => source.discardSession(s.id)}>放弃</button>
-              </span>
-            </div>
-          )}
-          {merged && isCurrent && (
-            <div className="session-meta merged-meta" onPointerDown={(e) => e.stopPropagation()}>
-              <span className="meta-clean">✓ 已合并回主线</span>
-            </div>
-          )}
           {menuFor === s.id && (
             <div className="session-menu" role="menu" onPointerDown={(e) => e.stopPropagation()}>
               <button type="button" role="menuitem" onClick={() => { closeMenu(); setRenaming(s.id); }}>
