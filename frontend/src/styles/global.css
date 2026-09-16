@@ -265,9 +265,9 @@ body:has(.window-stage) {
 .session-item {
   position: relative;
   display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
+  flex-direction: column;
+  gap: 0;
+  padding: 4px 10px;
   margin: 1px 8px;
   font-size: 12.5px;
   line-height: 1.4;
@@ -306,83 +306,110 @@ body:has(.window-stage) {
   background: #3b82f6;
   flex: none;
 }
-/* ===== worktree 态可视化（分支徽标 / 未提交 / 已合并 / 冲突） ===== */
-.session-item .title {
+/* ===== 会话行结构：行内容 + 当前会话的分支展开条 ===== */
+.session-line {
   display: flex;
   align-items: center;
-  gap: 6px;
-  align-items: baseline;
+  gap: 8px;
+  min-height: 26px;
 }
-/* 分支徽标：mono 小标签 + 分支图标，跟在标题后 */
-.session-branch {
+/* 行级轻量状态（不做徽标——当前分支等信息在展开条里） */
+.session-item .title {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
+  gap: 5px;
+}
+.dirty-dot {
   flex: none;
-  font-family: var(--font-mono);
-  font-size: 9px;
-  color: var(--fg-faint);
-  background: var(--border-soft);
-  padding: 1px 5px;
-  border-radius: 5px;
-  line-height: 1.5;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #d97706;
 }
-.session-item:hover .session-branch,
-.session-item.active .session-branch {
-  background: #e7e7ea;
-}
-/* 未提交改动：琥珀色（做了事看得见——防「做了觉得没做」） */
-.branch-dirty {
-  color: #b45309;
-  font-weight: 600;
-  letter-spacing: -0.02em;
-}
-.session-item:hover .branch-dirty,
-.session-item.active .branch-dirty {
-  color: #92400e;
-}
-/* 已合并态：整体灰化 + 绿色徽章 */
-.session-item.merged {
-  opacity: 0.66;
-}
-.session-merged-badge {
+.conflict-dot {
   flex: none;
-  font-size: 9px;
-  font-weight: 600;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #dc2626;
+}
+.merged-tick {
   color: var(--success);
-  border: 1px solid color-mix(in srgb, var(--success) 35%, transparent);
-  padding: 0.5px 5px;
-  border-radius: 5px;
-  margin-left: 2px;
-  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 700;
 }
-/* 冲突态：左边框警示 + 行内警告条 */
-.session-item.conflict {
-  box-shadow: inset 2.5px 0 0 #d97706;
+.session-item.merged {
+  opacity: 0.62;
 }
-.session-conflict {
-  position: absolute;
-  left: 10px;
-  right: 10px;
-  bottom: -14px;
+/* 当前会话的分支上下文条（「现在在哪个分支干活」的家） */
+.session-meta {
   display: flex;
   align-items: center;
-  gap: 5px;
-  font-size: 10px;
-  font-family: var(--font-mono);
-  color: #92400e;
-  background: #fef3c7;
-  border: 1px solid #fde68a;
-  border-radius: 6px;
-  padding: 3px 8px;
-  z-index: 5;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin: 2px 0 3px 18px;
+  padding: 5px 9px;
+  background: rgba(0, 0, 0, 0.028);
+  border-radius: 7px;
+  font-size: 10.5px;
+  line-height: 1.5;
+  animation: meta-in 160ms ease-out;
 }
-/* 冲突行需要额外高度容纳警告条 */
+@keyframes meta-in {
+  from { opacity: 0; transform: translateY(-2px); }
+  to { opacity: 1; transform: none; }
+}
+.meta-branch {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono);
+  color: var(--fg);
+  font-weight: 500;
+}
+.meta-branch svg {
+  color: var(--fg-muted);
+}
+.meta-dirty {
+  font-family: var(--font-mono);
+  color: #b45309;
+  font-weight: 600;
+}
+.meta-clean {
+  font-family: var(--font-mono);
+  color: var(--fg-faint);
+}
+.meta-conflict {
+  font-family: var(--font-mono);
+  color: #b91c1c;
+  font-weight: 600;
+}
+.meta-actions {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 4px;
+}
+.meta-actions button {
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  border-radius: 5px;
+  padding: 1.5px 8px;
+  font-size: 10px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: color 100ms, background 100ms, border-color 100ms;
+}
+.meta-actions button:hover {
+  color: var(--fg);
+  background: var(--bg);
+  border-color: var(--fg-faint);
+}
+.meta-actions .meta-discard:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+}
 .session-item.conflict {
-  margin-bottom: 16px;
+  box-shadow: inset 2.5px 0 0 #d97706;
 }
 /* 菜单危险项（放弃并清理） */
 .session-menu .menu-danger {
