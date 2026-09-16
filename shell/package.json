@@ -1,0 +1,59 @@
+{
+  "name": "lxcode-shell",
+  "productName": "Lxcode",
+  "version": "0.1.0",
+  "description": "lxcode 桌面壳（Electron 薄壳，业务在 Go 后端）",
+  "main": "dist/main.js",
+  "author": "moyunteng",
+  "private": true,
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit",
+    "dist": "electron-builder --win --x64"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "electron": "40.10.2",
+    "electron-builder": "26.15.3",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.9.2"
+  },
+  "build": {
+    "appId": "com.moyunteng.lxcode",
+    "productName": "Lxcode",
+    "npmRebuild": false,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "renderer/**"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/bin",
+        "to": "bin"
+      }
+    ],
+    "win": {
+      "signtoolOptions": {
+        "certificateSubjectName": "CN=lxcode-selfsign",
+        "signingHashAlgorithms": ["sha256"]
+      },
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "runAfterFinish": true,
+      "differentialPackage": false
+    }
+  }
+}

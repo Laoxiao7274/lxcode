@@ -3,6 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- CSP：本地应用，零远程内容。script 的 'unsafe-inline' 供 dev 模式
+         @vitejs/plugin-react 的 RefreshRuntime inline preamble；style 的
+         'unsafe-inline' 是 React inline style + gsap 直接改元素样式所必需。
+         connect 的 ws://127.0.0.1:7789 是渲染层连后端的唯一外联。 -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' ws://127.0.0.1:7789" />
     <title>lxcode · 智能体工作台</title>
   </head>
   <body>

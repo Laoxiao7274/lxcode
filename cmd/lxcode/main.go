@@ -1,5 +1,5 @@
 // lxcode 入口：--serve 后端（控制台或 Windows 服务）/ --probe 验收 /
-// 默认 CLI 客户端。桌面壳（规划中：Tauri）经 WS 协议接入，与本 CLI 同权。
+// 默认 CLI 客户端。桌面壳（Electron）经 WS 协议接入，与本 CLI 同权。
 package main
 
 import (
@@ -14,6 +14,11 @@ import (
 	"github.com/moyunteng/lxcode/internal/wsclient"
 )
 
+// version 是应用版本号。唯一版本源是 shell/package.json（electron-builder
+// 原生读它出安装包名），scripts/build.mjs 构建时经 -ldflags 烙进来；
+// 开发形态（dev.mjs 无烙印）显示 "dev"。更新 manifest 用同一版本号。
+var version = "dev"
+
 func main() {
 	configPath := flag.String("config", "", "配置路径（--serve：后端读；默认 ./config/models.json，不存在则 %ProgramData%\\lxcode\\config\\models.json；或环境变量 LXCODE_CONFIG）")
 	serve := flag.Bool("serve", false, "后端模式：独立运行 WS JSON-RPC 服务（注册表 + 会话运行时 + 工具循环）；服务上下文里自动切 Windows 服务形态")
@@ -21,7 +26,13 @@ func main() {
 	addr := flag.String("addr", "127.0.0.1:7789", "后端监听地址（--serve/--probe）/ 连接地址（客户端，或 --backend）")
 	backendAddr := flag.String("backend", "", "客户端连接的后端地址（默认取 --addr）")
 	sessionsDir := flag.String("sessions", "", "会话存储目录（默认 <config 上级>/sessions，或环境变量 LXCODE_SESSIONS）")
+	showVersion := flag.Bool("version", false, "打印版本号并退出（构建时烙入，dev 构建显示 dev）")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(version)
+		return
+	}
 
 	if err := ensureRunnable(*serve, *probe); err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)

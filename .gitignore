@@ -17,3 +17,6 @@ frontend/tsconfig.tsbuildinfo
 # IDE
 .idea/
 .vscode/
+
+# Agent 私有会话状态（lxcode 自身的工作记忆）
+.lxcode/
