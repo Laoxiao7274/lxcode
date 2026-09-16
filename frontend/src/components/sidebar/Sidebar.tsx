@@ -219,14 +219,21 @@ export function Sidebar({
           </svg>
         </span>
       </div>
-      {list.slice(0, 8).map((s) => (
+      {list.slice(0, 8).map((s) => {
+        // worktree 态：冲突 > 未提交 > 已合并 > 干净，从左到右的视觉权重
+        const cls =
+          "session-item" +
+          (s.id === currentId ? " active" : "") +
+          (s.conflicts && s.conflicts > 0 ? " conflict" : "") +
+          (s.merged ? " merged" : "");
+        return (
         <div
           key={s.id}
           ref={enterRow}
-          className={"session-item" + (s.id === currentId ? " active" : "")}
+          className={cls}
           style={menuFor === s.id ? { zIndex: 30 } : undefined}
           onClick={() => !busy && renaming !== s.id && source.resumeSession(s.id)}
-          title={s.title}
+          title={s.merged ? s.title + "（已合并回主线）" : s.title}
         >
           <span className={"s-dot" + (s.id === currentId && busy ? " live" : "")} aria-hidden />
           {renaming === s.id ? (
@@ -250,7 +257,24 @@ export function Sidebar({
               }}
             />
           ) : (
-            <span className="title">{s.title}</span>
+            <span className="title">
+              {s.title}
+              {s.merged && <span className="session-merged-badge" title="已合并回主线">✓ 已合并</span>}
+              {s.branch && !s.merged && (
+                <span className="session-branch" title={`分支 ${s.branch}（worktree 隔离中）`}>
+                  <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <circle cx="6" cy="6" r="2.6" />
+                    <circle cx="6" cy="18" r="2.6" />
+                    <circle cx="18" cy="8" r="2.6" />
+                    <path d="M6 8.6v6.8M8.6 6.5h4.9a4 4 0 0 1 3.9 3.1" />
+                  </svg>
+                  {s.branch.split("-").pop()}
+                  {(s.dirty ?? 0) > 0 && (
+                    <span className="branch-dirty" title={`${s.dirty} 个文件未提交（改动保存在 worktree）`}>&#9679;{s.dirty}</span>
+                  )}
+                </span>
+              )}
+            </span>
           )}
           <span className="time">{s.updatedAt}</span>
           {renaming !== s.id && (
@@ -278,14 +302,42 @@ export function Sidebar({
                 <IconPencil />
                 重命名
               </button>
+              {s.branch && !s.merged && (
+                <button type="button" role="menuitem" onClick={() => { closeMenu(); source.mergeSession(s.id); }}>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <circle cx="18" cy="18" r="3" />
+                    <circle cx="6" cy="6" r="3" />
+                    <path d="M6 21V9a9 9 0 0 0 9 9" />
+                  </svg>
+                  合并回主线
+                </button>
+              )}
+              {s.branch && !s.merged && (
+                <button type="button" role="menuitem" className="menu-danger" onClick={() => { closeMenu(); source.discardSession(s.id); }}>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
+                  </svg>
+                  放弃并清理
+                </button>
+              )}
               <button type="button" role="menuitem" onClick={(e) => { closeMenu(); doArchive(e, s.id); }}>
                 <IconArchive />
                 归档
               </button>
             </div>
           )}
+          {(s.conflicts ?? 0) > 0 && !menuFor && (
+            <div className="session-conflict" role="alert">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="m21.73 18-8-14a2 2 0 0 0-3.46 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
+                <path d="M12 9v4M12 17h.01" />
+              </svg>
+              {s.conflicts} 个文件合并冲突——让 AI 帮你解决
+            </div>
+          )}
         </div>
-      ))}
+        );
+      })}
       {list.length > 8 && <div className="ws-more">Show more（{list.length - 8}）</div>}
       {list.length === 0 && query.trim() && (
         <div className="sidebar-empty">没有匹配「{query.trim()}」的对话</div>

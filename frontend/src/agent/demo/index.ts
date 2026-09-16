@@ -36,11 +36,12 @@ const TODO_LATER: TodoItem[] = [
 ];
 
 const SESSIONS: SessionMeta[] = [
-  { id: "20260911-103024-a1b2", title: "给工具循环加超时保护", updatedAt: "刚刚", messages: 9, workspace: "proj-demo-lxcode" },
-  { id: "20260910-225918-0a9e", title: "前后台分离的协议层评审", updatedAt: "昨天", messages: 14, workspace: "proj-demo-lxcode" },
-  { id: "20260910-164246-c3d4", title: "edit 工具的唯一匹配校验设计", updatedAt: "3 天前", messages: 22, workspace: "proj-demo-lxcode" },
+  // worktree 全状态演示：干活中（分支+未提交）/ 干净 / 已合并 / 冲突
+  { id: "20260911-103024-a1b2", title: "给工具循环加超时保护", updatedAt: "刚刚", messages: 9, workspace: "proj-demo-lxcode", branch: "lxcode/s-a1b2", dirty: 3 },
+  { id: "20260910-225918-0a9e", title: "前后台分离的协议层评审", updatedAt: "昨天", messages: 14, workspace: "proj-demo-lxcode", branch: "lxcode/s-0a9e", dirty: 0 },
+  { id: "20260910-164246-c3d4", title: "edit 工具的唯一匹配校验设计", updatedAt: "3 天前", messages: 22, workspace: "proj-demo-lxcode", merged: true },
   { id: "20260909-090102-e5f6", title: "选型：Tauri 壳的边界", updatedAt: "上周", messages: 8, workspace: "proj-demo-lxcode", archived: true },
-  { id: "20260908-151512-f7a8", title: "niubash 实测记录", updatedAt: "上周", messages: 6, workspace: "proj-demo-agent" },
+  { id: "20260908-151512-f7a8", title: "niubash 实测记录", updatedAt: "上周", messages: 6, workspace: "proj-demo-agent", branch: "lxcode/s-f7a8", dirty: 1, conflicts: 2 },
   { id: "20260907-112209-b9c0", title: "容器化部署演练", updatedAt: "2 周前", messages: 18, workspace: "proj-demo-agent", archived: true },
 ];
 
@@ -137,6 +138,29 @@ export class DemoAgent implements AgentSource {
 
   unarchiveSession(id: string): void {
     this.sessions_ = this.sessions_.map((s) => (s.id === id ? { ...s, archived: false } : s));
+    this.emit({ type: "sessionsChanged" });
+  }
+
+  mergeSession(id: string): void {
+    // 演示剧本：合并——有冲突则进入冲突态，否则干净合并（dirty 清零 + merged）
+    const target = this.sessions_.find((s) => s.id === id);
+    if (!target) return;
+    if (target.conflicts && target.conflicts > 0) {
+      // 冲突剧本：保持冲突态，事件层给用户提示（真实实现由后端 merge 报错驱动）
+      this.emit({ type: "error", message: `合并冲突：${target.conflicts} 个文件需要解决后重试`, aborted: false });
+      return;
+    }
+    this.sessions_ = this.sessions_.map((s) =>
+      s.id === id ? { ...s, dirty: 0, merged: true, branch: undefined } : s,
+    );
+    this.emit({ type: "sessionsChanged" });
+  }
+
+  discardSession(id: string): void {
+    // 演示剧本：放弃——清掉 worktree 态（真实实现删 worktree 目录 + 分支保留）
+    this.sessions_ = this.sessions_.map((s) =>
+      s.id === id ? { ...s, dirty: 0, conflicts: 0, branch: undefined } : s,
+    );
     this.emit({ type: "sessionsChanged" });
   }
 

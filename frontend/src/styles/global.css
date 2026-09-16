@@ -306,6 +306,91 @@ body:has(.window-stage) {
   background: #3b82f6;
   flex: none;
 }
+/* ===== worktree 态可视化（分支徽标 / 未提交 / 已合并 / 冲突） ===== */
+.session-item .title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  align-items: baseline;
+}
+/* 分支徽标：mono 小标签 + 分支图标，跟在标题后 */
+.session-branch {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--fg-faint);
+  background: var(--border-soft);
+  padding: 1px 5px;
+  border-radius: 5px;
+  line-height: 1.5;
+}
+.session-item:hover .session-branch,
+.session-item.active .session-branch {
+  background: #e7e7ea;
+}
+/* 未提交改动：琥珀色（做了事看得见——防「做了觉得没做」） */
+.branch-dirty {
+  color: #b45309;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.session-item:hover .branch-dirty,
+.session-item.active .branch-dirty {
+  color: #92400e;
+}
+/* 已合并态：整体灰化 + 绿色徽章 */
+.session-item.merged {
+  opacity: 0.66;
+}
+.session-merged-badge {
+  flex: none;
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--success);
+  border: 1px solid color-mix(in srgb, var(--success) 35%, transparent);
+  padding: 0.5px 5px;
+  border-radius: 5px;
+  margin-left: 2px;
+  white-space: nowrap;
+}
+/* 冲突态：左边框警示 + 行内警告条 */
+.session-item.conflict {
+  box-shadow: inset 2.5px 0 0 #d97706;
+}
+.session-conflict {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: -14px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: #92400e;
+  background: #fef3c7;
+  border: 1px solid #fde68a;
+  border-radius: 6px;
+  padding: 3px 8px;
+  z-index: 5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 冲突行需要额外高度容纳警告条 */
+.session-item.conflict {
+  margin-bottom: 16px;
+}
+/* 菜单危险项（放弃并清理） */
+.session-menu .menu-danger {
+  color: var(--danger);
+}
+.session-menu .menu-danger:hover {
+  background: #fdecec;
+}
 /* 会话行 hover ⋯ 与操作菜单 */
 .session-more {
   width: 18px;

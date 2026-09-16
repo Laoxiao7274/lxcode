@@ -43,6 +43,14 @@ export interface SessionMeta {
   workspace?: string;
   /** 归档态——侧栏不显示，设置「归档任务」里可恢复。 */
   archived?: boolean;
+  /** worktree 分支名（如 lxcode/s-20260916-a3f2；空 = 无隔离）。 */
+  branch?: string;
+  /** 未提交文件数（worktree 里的脏状态——做了事看得见）。 */
+  dirty?: number;
+  /** 已合并回主线（任务完结态）。 */
+  merged?: boolean;
+  /** 合并冲突（冲突文件数 > 0 时进入冲突态）。 */
+  conflicts?: number;
 }
 
 /** 项目（侧栏「项目」分组的数据源；对应后端 projects 表）。 */
@@ -75,6 +83,10 @@ export interface AgentSource {
   archiveSession(id: string): void;
   /** 从归档恢复。 */
   unarchiveSession(id: string): void;
+  /** 合并会话的 worktree 分支回主线（完成态；冲突时后端报错文本给用户）。 */
+  mergeSession(id: string): void;
+  /** 放弃会话的 worktree（清理隔离副本；分支保留可恢复）。 */
+  discardSession(id: string): void;
   /** 会话列表。 */
   sessions(): SessionMeta[];
   /** 项目列表。 */
