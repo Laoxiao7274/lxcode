@@ -5,12 +5,14 @@
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { ThreadBlock } from "../../shared/store";
 import type { FileChange } from "../../shared/types";
+import { gsap } from "gsap";
 import { ThinkingReasoning } from "../../aicss/ThinkingReasoning";
 import { TodoList } from "../../aicss/TodoList";
 import { ApprovalCard } from "../../aicss/ApprovalCard";
 import { TextResponse } from "../../aicss/TextResponse";
 import { useStreamReveal } from "../../shared/stream-reveal";
 import { playEnter } from "../../shared/anim";
+import { motionAllowed, staggerIn } from "../../shared/motion";
 import { useSettings } from "../../shared/settings";
 import { clip, shortArgs, prettyCmdline, prettyCommand, prettyCwd } from "./helpers";
 
@@ -142,8 +144,8 @@ function ToolBlock({ block }: { block: Extract<ThreadBlock, { kind: "tool" }> })
           </span>
           <span className="tname">{editDiff.path}</span>
           <span className="diff-stats">
-            <span className="stat-del">-{editDiff.old_string.split("\n").length}</span>
-            <span className="stat-add">+{editDiff.new_string.split("\n").length}</span>
+            <span className="stat-badge stat-del">−{editDiff.old_string.split("\n").length}</span>
+            <span className="stat-badge stat-add">+{editDiff.new_string.split("\n").length}</span>
           </span>
           {block.result === undefined && <span className="tool-open-hint">执行中…</span>}
         </div>
@@ -177,21 +179,33 @@ function ToolBlock({ block }: { block: Extract<ThreadBlock, { kind: "tool" }> })
   );
 }
 
-/** diff 渲染：旧块红、新块绿（Codex 的改动可视化；行级上色）。 */
+/** diff 渲染：GitHub 级视觉（行号列 + 左色条 + 淡底色 + hover）；
+ *  行交错淡入（gsap stagger，对齐 .md-seg 的逐块揭示节奏）。 */
 function DiffBody({ oldText, newText }: { oldText: string; newText: string }) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = rootRef.current;
+    if (!el || !motionAllowed()) return;
+    const rows = el.querySelectorAll<HTMLElement>(".diff-line");
+    gsap.fromTo(rows, { opacity: 0, x: -4 }, { opacity: 1, x: 0, duration: 0.26, ease: "power2.out", stagger: 0.018, clearProps: "transform,opacity" });
+  }, []);
+
   const oldLines = oldText.split("\n");
   const newLines = newText.split("\n");
+  let ln = 310; // 行号从演示剧本的上下文起（视觉真实感）
   return (
-    <div className="diff-body">
+    <div className="diff-body" ref={rootRef}>
       {oldLines.map((l, i) => (
         <div key={"o" + i} className="diff-line del">
-          <span className="ln" aria-hidden>-</span>
+          <span className="ln" aria-hidden>{ln + i}</span>
+          <span className="sign" aria-hidden>−</span>
           <span className="code">{l || " "}</span>
         </div>
       ))}
       {newLines.map((l, i) => (
         <div key={"n" + i} className="diff-line add">
-          <span className="ln" aria-hidden>+</span>
+          <span className="ln" aria-hidden>{ln + oldLines.length + i}</span>
+          <span className="sign" aria-hidden>+</span>
           <span className="code">{l || " "}</span>
         </div>
       ))}
@@ -200,13 +214,20 @@ function DiffBody({ oldText, newText }: { oldText: string; newText: string }) {
 }
 
 /** 产物汇总卡：一轮任务的改动文件列表 + 增删统计 + 展开看 diff
- *  （Codex 的 artifact viewer——验收「做了什么」的终点视图）。 */
+ *  （Codex 的 artifact viewer）。文件展开走 gsap 高度动画（WorkGroup 同款），
+ *  挂载 playEnter，行交错浮现。 */
 function FilesCard({ files }: { files: FileChange[] }) {
   const [open, setOpen] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  const headRowRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    playEnter(rootRef.current);
+    playEnter(rootRef.current, { y: 10, opacity: 0 }, { y: 0, opacity: 1, duration: 0.34, ease: "power2.out", clearProps: "transform,opacity" });
+    const rows = rootRef.current?.querySelectorAll<HTMLElement>(".files-file");
+    if (rows && motionAllowed()) {
+      gsap.fromTo(rows, { opacity: 0, y: 5 }, { opacity: 1, y: 0, duration: 0.24, ease: "power2.out", stagger: 0.05, delay: 0.08, clearProps: "transform,opacity" });
+    }
+    staggerIn(headRowRef.current ? [headRowRef.current] : [], {});
   }, []);
 
   const added = files.reduce((n, f) => n + f.added, 0);
@@ -214,47 +235,78 @@ function FilesCard({ files }: { files: FileChange[] }) {
 
   return (
     <div className="files-card" ref={rootRef}>
-      <div className="files-head">
+      <div className="files-head" ref={headRowRef}>
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z" />
           <path d="M13 2v7h7" />
         </svg>
         <span className="files-title">改动 {files.length} 个文件</span>
         <span className="diff-stats">
-          <span className="stat-del">-{deleted}</span>
-          <span className="stat-add">+{added}</span>
+          <span className="stat-badge stat-del">−{deleted}</span>
+          <span className="stat-badge stat-add">+{added}</span>
         </span>
       </div>
       {files.map((f) => (
-        <div key={f.path} className="files-row">
-          <button
-            type="button"
-            className="files-file"
-            aria-expanded={open === f.path}
-            onClick={() => setOpen(open === f.path ? null : f.path)}
-          >
-            <span className="files-chevron">{open === f.path ? "▾" : "▸"}</span>
-            <span className="files-path">{f.path}</span>
-            <span className="diff-stats">
-              <span className="stat-del">-{f.deleted}</span>
-              <span className="stat-add">+{f.added}</span>
-            </span>
-          </button>
-          {open === f.path && (
-            <div className="diff-body">
-              {f.diff.split("\n").map((l, i) => (
-                <div
-                  key={i}
-                  className={"diff-line" + (l.startsWith("+") ? " add" : l.startsWith("-") && !l.startsWith("---") ? " del" : "")}
-                >
-                  <span className="ln" aria-hidden>{l.startsWith("@") ? "@" : ""}</span>
-                  <span className="code">{l || " "}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+        <FilesRow key={f.path} file={f} open={open === f.path} onToggle={() => setOpen(open === f.path ? null : f.path)} />
       ))}
+    </div>
+  );
+}
+
+/** 单文件行 + 展开动画（gsap 高度补间，WorkGroup 同款纪律：
+ *  收起保持 height:0，展开收尾 clearProps 让内容自然伸展）。 */
+function FilesRow({ file, open, onToggle }: { file: FileChange; open: boolean; onToggle: () => void }) {
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const firstRun = useRef(true);
+
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (!el) return;
+    const first = firstRun.current;
+    firstRun.current = false;
+    const COLLAPSED = { height: 0, opacity: 0, overflow: "hidden" };
+    if (first || !motionAllowed()) {
+      if (!open) gsap.set(el, COLLAPSED);
+      else if (!first) gsap.set(el, { clearProps: "height,opacity,overflow" });
+      return;
+    }
+    if (open) {
+      gsap.set(el, { overflow: "hidden" });
+      gsap.fromTo(el, { height: 0, opacity: 0 }, {
+        height: "auto", opacity: 1, duration: 0.3, ease: "power2.out",
+        onComplete: () => gsap.set(el, { clearProps: "height,opacity,overflow" }),
+      });
+      const rows = el.querySelectorAll<HTMLElement>(".diff-line");
+      gsap.fromTo(rows, { opacity: 0, x: -4 }, { opacity: 1, x: 0, duration: 0.24, ease: "power2.out", stagger: 0.014, delay: 0.05, clearProps: "transform,opacity" });
+    } else {
+      gsap.to(el, { ...COLLAPSED, duration: 0.22, ease: "power2.in" });
+    }
+  }, [open]);
+
+  return (
+    <div className="files-row">
+      <button type="button" className="files-file" aria-expanded={open} onClick={onToggle}>
+        <span className="files-chevron">{open ? "▾" : "▸"}</span>
+        <span className="files-path">{file.path}</span>
+        <span className="diff-stats">
+          <span className="stat-badge stat-del">−{file.deleted}</span>
+          <span className="stat-badge stat-add">+{file.added}</span>
+        </span>
+      </button>
+      <div className="files-diff-wrap" ref={bodyRef}>
+        <div className="diff-body">
+          {file.diff.split("\n").map((l, i) => (
+            <div
+              key={i}
+              className={"diff-line" + (l.startsWith("+") ? " add" : l.startsWith("-") && !l.startsWith("---") ? " del" : "")}
+            >
+              <span className="ln" aria-hidden>{l.startsWith("@") ? "@" : ""}</span>
+              <span className="sign" aria-hidden>{l.startsWith("+") ? "+" : l.startsWith("-") ? "−" : ""}</span>
+              <span className="code">{l || " "}</span>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }

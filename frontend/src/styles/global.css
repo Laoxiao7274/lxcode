@@ -412,7 +412,7 @@ body:has(.window-stage) {
 .plan-item.done .plan-dot {
   background: var(--success);
 }
-/* ===== 代码 diff（edit 工具 + 产物卡的改动可视化） ===== */
+/* ===== 代码 diff（edit 工具 + 产物卡的改动可视化）——GitHub 级视觉 ===== */
 .diff-block .diff-file-head {
   display: flex;
   align-items: center;
@@ -420,87 +420,125 @@ body:has(.window-stage) {
 }
 .diff-stats {
   display: inline-flex;
-  gap: 6px;
+  gap: 4px;
   margin-left: auto;
-  font-family: var(--font-mono);
-  font-size: 9.5px;
   flex: none;
 }
-.stat-add { color: #15803d; font-weight: 600; }
-.stat-del { color: #b91c1c; font-weight: 600; }
+/* 统计徽章（aicss resolvedBadge 同款语言：胶囊底 + 色阶） */
+.stat-badge {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 99px;
+  letter-spacing: 0.01em;
+}
+.stat-add {
+  color: #059669;
+  background: color-mix(in srgb, #10a37f 10%, transparent);
+}
+.stat-del {
+  color: #b91c1c;
+  background: color-mix(in srgb, #ef4444 9%, transparent);
+}
 .diff-body {
-  margin-top: 4px;
-  border-radius: 6px;
+  margin-top: 5px;
+  border-radius: 10px;
   border: 1px solid var(--border);
   overflow: hidden;
   font-family: var(--font-mono);
   font-size: 11px;
-  line-height: 1.55;
+  line-height: 1.6;
+  background: var(--bg);
 }
 .diff-line {
   display: flex;
-  gap: 0;
-  padding: 0 8px 0 0;
+  align-items: stretch;
   white-space: pre-wrap;
   word-break: break-all;
+  position: relative;
 }
+/* 行号列：等宽右对齐，分色淡字 */
 .diff-line .ln {
   flex: none;
-  width: 20px;
-  text-align: center;
-  color: var(--fg-faint);
+  width: 34px;
+  text-align: right;
+  padding-right: 8px;
+  color: color-mix(in srgb, var(--fg-faint) 60%, transparent);
   user-select: none;
-  padding: 0 2px;
+  font-size: 9.5px;
+  line-height: inherit;
+  padding-top: 1px;
+}
+/* 符号列（− / +）：色字居中 */
+.diff-line .sign {
+  flex: none;
+  width: 16px;
+  text-align: center;
+  user-select: none;
+  font-weight: 700;
 }
 .diff-line .code {
   flex: 1;
   min-width: 0;
+  padding-right: 10px;
 }
-.diff-line.del { background: #fdf0ef; }
-.diff-line.del .ln { color: #b91c1c; }
-.diff-line.add { background: #eef7ef; }
-.diff-line.add .ln { color: #15803d; }
+/* 行底色 + 左色条（红/绿各两层：底色极淡 + 左边 2.5px 色条标识） */
+.diff-line.del {
+  background: color-mix(in srgb, #ef4444 5.5%, transparent);
+  box-shadow: inset 2.5px 0 0 color-mix(in srgb, #ef4444 55%, transparent);
+}
+.diff-line.del .sign { color: color-mix(in srgb, #b91c1c 85%, transparent); }
+.diff-line.add {
+  background: color-mix(in srgb, #10a37f 6.5%, transparent);
+  box-shadow: inset 2.5px 0 0 color-mix(in srgb, #10a37f 55%, transparent);
+}
+.diff-line.add .sign { color: color-mix(in srgb, #059669 85%, transparent); }
+.diff-line:hover { filter: brightness(0.985); }
+/* @@ 上下文行：更淡的分隔样式 */
+.diff-line:not(.add):not(.del) {
+  color: var(--fg-faint);
+  background: color-mix(in srgb, var(--fg) 2%, transparent);
+}
+.diff-line:not(.add):not(.del) .ln { visibility: hidden; }
 /* ===== 产物汇总卡（一轮任务的改动文件——Codex 的 artifact viewer） ===== */
 .files-card {
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 12px;
   overflow: hidden;
+  background: var(--surface);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
 }
 .files-head {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 7px 12px;
+  padding: 8px 13px;
   background: var(--bg-side);
   border-bottom: 1px solid var(--border);
   font-size: 11.5px;
   color: var(--fg-muted);
 }
-.files-title {
-  font-weight: 600;
-}
+.files-head svg { color: var(--fg-faint); }
+.files-title { font-weight: 600; color: var(--fg); }
 .files-row {
   border-bottom: 1px solid var(--border-soft);
 }
-.files-row:last-child {
-  border-bottom: none;
-}
+.files-row:last-child { border-bottom: none; }
 .files-file {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   width: 100%;
   border: none;
   background: transparent;
-  padding: 5.5px 12px;
+  padding: 6px 13px;
   font-size: 11px;
   cursor: pointer;
   text-align: left;
   transition: background 100ms;
 }
-.files-file:hover {
-  background: var(--border-soft);
-}
+.files-file:hover { background: var(--border-soft); }
 .files-chevron {
   flex: none;
   font-size: 9px;
@@ -515,7 +553,7 @@ body:has(.window-stage) {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.files-row .diff-body {
+.files-diff-wrap .diff-body {
   border-radius: 0;
   border-left: none;
   border-right: none;
