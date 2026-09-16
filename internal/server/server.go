@@ -113,8 +113,9 @@ func (s *Server) emitEvent(ev agent.Event) {
 		}
 		s.broadcast(protocol.EventFiles, params)
 	case agent.SessionStartedEvent:
-		// 会话行懒建（首条消息）——客户端重拉 session.list（新对话出现）
-		s.broadcastSessionChanged(e.ID, "new")
+		// 会话行懒建（首条消息）——客户端刷新列表但不切视图（区别于
+		// 显式 new：那是用户点「新对话」的清屏信号；懒建时对话正在进行）
+		s.broadcastSessionChanged(e.ID, "started")
 	}
 }
 

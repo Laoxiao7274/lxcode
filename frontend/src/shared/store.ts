@@ -2,7 +2,7 @@
 // 一条 user 消息、一条 assistant 回复（含正文/思考链/流式态）、一次
 // 工具调用（含结果）、一张确认卡、一份任务清单、一条错误。
 import { useCallback, useEffect, useState } from "react";
-import type { AgentEvent, AgentSource, ConfirmRequest, FileChange, TodoItem } from "./types";
+import type { AgentEvent, AgentSource, ConfirmRequest, FileChange, HistorySnapshot, TodoItem } from "./types";
 
 export interface AssistantBlock {
   kind: "assistant";
@@ -113,7 +113,9 @@ function reduce(state: UIState, ev: AgentEvent): UIState {
     case "busy":
       return { ...state, busy: ev.busy, pending: ev.busy ? state.pending : null };
     case "sessionChanged":
-      // 演示模式切会话：清空重排（真实模式由 chat.history 重放）
+      // reason 语义：new（用户点新对话——清屏）/ resumed（切会话——清屏后
+      // 等 historyLoaded 重放）/ started（懒建行——只刷新列表，对话进行中不清屏）
+      if (ev.reason === "started") return { ...state };
       return { ...initial };
     case "sessionsChanged":
       // 列表变化不改 UI 状态本身——新对象触发重渲染（侧栏重读 sessions()）
@@ -123,9 +125,58 @@ function reduce(state: UIState, ev: AgentEvent): UIState {
     case "filesChanged":
       // 一轮任务的产物汇总（验收视图——Codex 的 diff 中心形态）
       return { ...state, blocks: [...state.blocks, { kind: "files", uid: nextUid(), files: ev.files }] };
+    case "historyLoaded":
+      // 全量重建（连接/切会话后）：messages → blocks（工具调用与结果配对）
+      return { ...reduceHistory(ev.history), busy: ev.history.busy };
     default:
       return state;
   }
+}
+
+/** 历史快照 → UI 状态：消息序列重建 blocks。
+ *  配对规则：assistant 的 tool_calls 先开 tool 块；后续 role=tool 的消息
+ *  按 tool_call_id 回填对应块的 result（服务端的存储顺序保证可达）。 */
+function reduceHistory(h: HistorySnapshot): UIState {
+  const blocks: ThreadBlock[] = [];
+  let lastAssistant: AssistantBlock | null = null;
+  for (const m of h.messages) {
+    if (m.role === "user") {
+      blocks.push({ kind: "user", uid: nextUid(), text: m.content });
+      lastAssistant = null;
+    } else if (m.role === "assistant") {
+      const a: AssistantBlock = {
+        kind: "assistant", uid: nextUid(), content: m.content,
+        reasoning: m.reasoning_content ?? "", streaming: false,
+      };
+      blocks.push(a);
+      lastAssistant = a;
+      // assistant 携带的工具调用：紧跟工具块（保持原顺序）
+      for (const tc of m.tool_calls ?? []) {
+        blocks.push({
+          kind: "tool", uid: nextUid(), id: tc.id ?? "",
+          name: tc.function?.name ?? "", arguments: tc.function?.arguments ?? "",
+        });
+      }
+    } else if (m.role === "tool") {
+      // 工具结果回填（按 tool_call_id 找块；找不到则丢弃——防御坏数据）
+      const target = blocks.find((b) => b.kind === "tool" && b.id === m.tool_call_id) as
+        | Extract<ThreadBlock, { kind: "tool" }>
+        | undefined;
+      if (target && target.result === undefined) {
+        target.result = m.content;
+        target.isError = false;
+      }
+      // 工具结果后正文续写：新开 assistant 块（下一条 assistant 自然处理）
+      lastAssistant = null;
+    }
+  }
+  // 没有任何输出的进行中轮次不重现（streaming 重建成本高，历史里也少见）
+  return {
+    blocks,
+    busy: false,
+    pending: h.pending ?? null,
+    todos: h.todos ?? [],
+  };
 }
 
 /** useAgent：订阅 AgentSource 并归约成 UI 状态。

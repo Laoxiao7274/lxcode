@@ -33,7 +33,9 @@ export type AgentEvent =
   /** 项目列表变了（添加）——UI 重读 projects()。 */
   | { type: "projectsChanged" }
   /** 一轮任务的产物汇总（改动文件 + diff 统计——验收视图）。 */
-  | { type: "filesChanged"; files: FileChange[] };
+  | { type: "filesChanged"; files: FileChange[] }
+  /** 历史载入（连接/切会话后）——全量重建对话视图。 */
+  | { type: "historyLoaded"; history: HistorySnapshot };
 
 /** 会话列表条目（对齐 protocol.SessionMeta；workspace 用于侧栏按工作区分组）。 */
 export interface SessionMeta {
@@ -45,6 +47,27 @@ export interface SessionMeta {
   workspace?: string;
   /** 归档态——侧栏不显示，设置「归档任务」里可恢复。 */
   archived?: boolean;
+}
+
+/** 历史快照（chat.history 的载荷——重建视图用）。 */
+export interface HistorySnapshot {
+  sessionId: string;
+  messages: HistoryMessage[];
+  busy: boolean;
+  pending: ConfirmRequest | null;
+  todos: TodoItem[];
+}
+
+/** 历史消息（llm.Message 的 wire 形态）。 */
+export interface HistoryMessage {
+  role: string;
+  content: string;
+  reasoning_content?: string;
+  tool_calls?: Array<{
+    id?: string;
+    function?: { name: string; arguments?: string };
+  }>;
+  tool_call_id?: string;
 }
 
 /** 改动文件条目（一轮任务结束时的产物汇总——Codex 的 diff 中心形态）。 */

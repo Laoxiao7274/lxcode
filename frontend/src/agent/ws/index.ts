@@ -52,7 +52,7 @@ export class WSAgent implements AgentSource {
 
     this.ws.onopen = () => {
       this.connected = true;
-      // 握手 + 拉初始状态：模型 + 项目 + 全量会话列表 + 当前会话历史
+      // 握手 + 拉初始状态：模型 + 项目 + 全量会话列表 + 当前会话历史（重放视图）
       this.call("connection.hello", { client: "lxcode-web", version: "1" })
         .then(() => this.call("model.list"))
         .then((r) => {
@@ -66,7 +66,7 @@ export class WSAgent implements AgentSource {
         .then((r) => {
           this.applySessionList(r);
         })
-        .then(() => this.call("chat.history"))
+        .then(() => this.loadHistory())
         .catch(() => {});
     };
 
@@ -140,15 +140,19 @@ export class WSAgent implements AgentSource {
         break;
       case "session.changed":
         this.emit({ type: "sessionChanged", id: String(p.id ?? ""), reason: String(p.reason ?? "") });
-        // 列表可能变了（新建/重命名/归档）：重拉全量（多客户端一致——
-        // 后端是唯一事实来源，本地不再维护列表状态）
-        if (String(p.reason ?? "") !== "resumed") {
-          this.call("session.list")
-            .then((r) => {
-              this.applySessionList(r);
-              this.emit({ type: "sessionsChanged" });
-            })
-            .catch(() => {});
+        // started（懒建行）只刷列表——对话进行中，视图不动；new/resumed
+        // 已由 reducer 清屏，resumed 后重拉 chat.history 重放历史
+        if (String(p.reason ?? "") === "started" || String(p.reason ?? "") === "new") {
+          if (String(p.reason ?? "") === "started") {
+            this.call("session.list")
+              .then((r) => {
+                this.applySessionList(r);
+                this.emit({ type: "sessionsChanged" });
+              })
+              .catch(() => {});
+          }
+        } else {
+          this.loadHistory();
         }
         break;
       case "model.changed":
@@ -289,6 +293,37 @@ export class WSAgent implements AgentSource {
   }
 
   // ---- 模型管理（settings 面板的数据源；后端 model.* 方法直通） ----
+
+  /** 拉当前会话的历史并重放视图（连接建立/切换会话后调）。 */
+  private loadHistory(): Promise<void> {
+    return this.call("chat.history")
+      .then((r) => {
+        const h = r as {
+          session_id?: string;
+          messages?: Array<{
+            role: string;
+            content: string;
+            reasoning_content?: string;
+            tool_calls?: Array<{ id?: string; function?: { name: string; arguments?: string } }>;
+            tool_call_id?: string;
+          }>;
+          busy?: boolean;
+          pending?: ConfirmRequest | null;
+          todos?: TodoItem[];
+        };
+        this.emit({
+          type: "historyLoaded",
+          history: {
+            sessionId: h.session_id ?? "",
+            messages: h.messages ?? [],
+            busy: Boolean(h.busy),
+            pending: h.pending ?? null,
+            todos: h.todos ?? [],
+          },
+        });
+      })
+      .catch(() => {}) as Promise<void>;
+  }
 
   /** 模型注册表条目（与后端 config.ModelConfig 对齐）。 */
   models(): { models: WsModelEntry[]; roles: Record<string, string> } {
