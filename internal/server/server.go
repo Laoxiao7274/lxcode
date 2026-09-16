@@ -106,6 +106,12 @@ func (s *Server) emitEvent(ev agent.Event) {
 		})
 	case agent.TodoUpdatedEvent:
 		s.broadcast(protocol.EventTodo, protocol.TodoUpdatedParams{Items: e.Items})
+	case agent.FilesChangedEvent:
+		params := protocol.FilesChangedParams{Files: make([]protocol.FileChangeParams, len(e.Files))}
+		for i, f := range e.Files {
+			params.Files[i] = protocol.FileChangeParams{Path: f.Path, Added: f.Added, Deleted: f.Deleted, Diff: f.Diff}
+		}
+		s.broadcast(protocol.EventFiles, params)
 	}
 }
 

@@ -59,6 +59,8 @@ const (
 	EventTodo     = "todo.updated" // 任务清单变更（客户端渲染 TodoList）
 
 	EventSessionChanged = "session.changed" // 会话切换（new/resume）——客户端须重拉 chat.history
+	EventFiles          = "files.changed"   // 一轮的文件改动汇总（产物卡——验收视图）
+	EventProjectChanged = "project.changed" // 项目增删——客户端重拉 project.list
 )
 
 // 错误码：JSON-RPC 标准码 + 本应用码。
@@ -253,9 +255,6 @@ type ProjectMeta struct {
 	Path string `json:"path"`
 }
 
-// EventProjectChanged 是项目增删时的事件名（客户端重拉 project.list）。
-const EventProjectChanged = "project.changed"
-
 // SessionMeta 是 session.list 的条目（resume 选择器的数据源）。
 type SessionMeta struct {
 	ID        string `json:"id"`
@@ -271,4 +270,18 @@ type SessionMeta struct {
 type SessionChangedParams struct {
 	ID     string `json:"id"`
 	Reason string `json:"reason"` // new | resumed
+}
+
+// FileChangeParams 是 files.changed 事件的载荷：一轮的文件改动汇总
+// （产物卡——验收视图。前端 FileChange 结构 1:1 对应）。
+type FileChangeParams struct {
+	Path    string `json:"path"`
+	Added   int    `json:"added"`
+	Deleted int    `json:"deleted"`
+	Diff    string `json:"diff"`
+}
+
+// FilesChangedParams 是 files.changed 事件的载荷（文件改动数组）。
+type FilesChangedParams struct {
+	Files []FileChangeParams `json:"files"`
 }

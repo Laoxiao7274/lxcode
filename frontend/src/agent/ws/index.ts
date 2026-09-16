@@ -30,6 +30,10 @@ export class WSAgent implements AgentSource {
   private connected = false;
   private sessionsCache: SessionMeta[] = [];
   private projectsCache: ProjectMeta[] = [];
+  /** 模型注册表快照（model.changed 驱动刷新；settings 面板的数据源）。 */
+  private modelsCache: WsModelEntry[] = [];
+  private rolesCache: Record<string, string> = {};
+  private modelListeners = new Set<() => void>();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private addr = "127.0.0.1:7789") {}
@@ -48,8 +52,12 @@ export class WSAgent implements AgentSource {
 
     this.ws.onopen = () => {
       this.connected = true;
-      // 握手 + 拉初始状态：项目 + 全量会话列表 + 当前会话历史
+      // 握手 + 拉初始状态：模型 + 项目 + 全量会话列表 + 当前会话历史
       this.call("connection.hello", { client: "lxcode-web", version: "1" })
+        .then(() => this.call("model.list"))
+        .then((r) => {
+          this.applyModelList(r);
+        })
         .then(() => this.call("project.list"))
         .then((r) => {
           this.applyProjectList(r);
@@ -137,7 +145,24 @@ export class WSAgent implements AgentSource {
         }
         break;
       case "model.changed":
-        // 模型变更——暂无 AgentEvent 对应（可扩展）
+        // 模型注册表变更——重拉列表（settings 的 providers 数据源）
+        this.call("model.list")
+          .then((r) => {
+            this.applyModelList(r);
+          })
+          .catch(() => {});
+        break;
+      case "files.changed":
+        // 一轮的产物汇总（验收视图——后端按 edit/write_file 收集）
+        {
+          const p = params as { files?: Array<{ path: string; added: number; deleted: number; diff: string }> };
+          if (Array.isArray(p.files)) {
+            this.emit({
+              type: "filesChanged",
+              files: p.files.map((f) => ({ path: f.path, added: f.added, deleted: f.deleted, diff: f.diff })),
+            });
+          }
+        }
         break;
       case "project.changed":
         // 项目增删 → 重拉项目列表（后端事实源）
@@ -255,4 +280,61 @@ export class WSAgent implements AgentSource {
     this.projectsCache = list.map((p) => ({ id: p.id, name: p.name, path: p.path }));
     this.emit({ type: "projectsChanged" });
   }
+
+  // ---- 模型管理（settings 面板的数据源；后端 model.* 方法直通） ----
+
+  /** 模型注册表条目（与后端 config.ModelConfig 对齐）。 */
+  models(): { models: WsModelEntry[]; roles: Record<string, string> } {
+    return { models: this.modelsCache, roles: this.rolesCache };
+  }
+
+  /** 订阅模型列表变化（settings 用；返回退订）。 */
+  onModelsChanged(listener: () => void): () => void {
+    this.modelListeners.add(listener);
+    return () => this.modelListeners.delete(listener);
+  }
+
+  /** 连接时的模型注册表拉取（onopen 已接 model.list——applyModelList 供复用）。 */
+  addModel(entry: Partial<WsModelEntry> & { id: string }): Promise<void> {
+    return this.call("model.add", { ...entry, id: entry.id }).then(() => {}) as Promise<void>;
+  }
+
+  updateModel(entry: WsModelEntry): Promise<void> {
+    return this.call("model.update", entry).then(() => {}) as Promise<void>;
+  }
+
+  removeModel(id: string): Promise<void> {
+    return this.call("model.remove", { id }).then(() => {}) as Promise<void>;
+  }
+
+  setModelEnabled(id: string, enabled: boolean): Promise<void> {
+    return this.call("model.enable", { id, enabled }).then(() => {}) as Promise<void>;
+  }
+
+  setRole(role: string, modelId: string): Promise<void> {
+    return this.call("role.set", { role, model_id: modelId }).then(() => {}) as Promise<void>;
+  }
+
+  /** model.list 结果 → 缓存 + 通知（model.changed 事件也走这里）。 */
+  private applyModelList(result: unknown) {
+    const r = result as { models?: WsModelEntry[]; roles?: Record<string, string> };
+    if (!r || !Array.isArray(r.models)) return;
+    this.modelsCache = r.models;
+    this.rolesCache = r.roles ?? {};
+    this.modelListeners.forEach((l) => l());
+  }
+}
+
+/** 后端模型注册表条目（config.ModelConfig 的 wire 形态）。 */
+export interface WsModelEntry {
+  id: string;
+  display_name?: string;
+  base_url: string;
+  api_key?: string;
+  format?: string;
+  model: string;
+  context_window?: number;
+  max_output_tokens?: number;
+  capabilities?: { tools?: boolean; vision?: boolean; json_output?: boolean };
+  enabled: boolean;
 }

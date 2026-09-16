@@ -6,6 +6,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -196,7 +197,9 @@ func (s *Session) Todos() []tools.TodoItem {
 }
 
 // runTurn 跑完整一轮：流式生成 → 工具调用 → 确认 → 执行 → 回填续轮。
+// 文件改动（edit/write_file）被收集，轮末汇总发 FilesChangedEvent（产物视图）。
 func (s *Session) runTurn(ctx context.Context) {
+	var fileChanges []FileChange
 	defer func() {
 		s.mu.Lock()
 		s.busy = false
@@ -205,6 +208,9 @@ func (s *Session) runTurn(ctx context.Context) {
 		s.confirm = nil
 		s.mu.Unlock()
 		s.emit(BusyEvent{Busy: false})
+		if len(fileChanges) > 0 {
+			s.emit(FilesChangedEvent{Files: fileChanges})
+		}
 	}()
 
 	for round := 0; round < maxToolRounds; round++ {
@@ -232,7 +238,7 @@ func (s *Session) runTurn(ctx context.Context) {
 		if len(res.Message.ToolCalls) == 0 {
 			return
 		}
-		if !s.runTools(ctx, res.Message.ToolCalls) {
+		if !s.runTools(ctx, res.Message.ToolCalls, &fileChanges) {
 			return // 取消
 		}
 	}
@@ -311,7 +317,8 @@ func (s *Session) streamRound(ctx context.Context) (*llm.ChatResult, error) {
 }
 
 // runTools 执行本轮工具调用（高危先确认）；返回 false 表示被取消。
-func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall) bool {
+// fileChanges 收集文件改动（edit/write_file）供轮末产物汇总。
+func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChanges *[]FileChange) bool {
 	for _, tc := range calls {
 		if ctx.Err() != nil {
 			return false
@@ -334,6 +341,7 @@ func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall) bool {
 			}
 		}
 		result := s.tools.Execute(ctx, tc)
+		collectFileChange(fileChanges, tc, result)
 		if r := []rune(result); len(r) > maxToolResultBytes {
 			result = string(r[:maxToolResultBytes]) +
 				fmt.Sprintf("\n…（结果过长已截断，全文共 %d 字符）", len(r))
@@ -342,6 +350,60 @@ func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall) bool {
 		s.emit(ToolResultEvent{ID: tc.ID, Name: tc.Function.Name, Content: result})
 	}
 	return true
+}
+
+// collectFileChange 从 edit/write_file 调用提取改动摘要（同文件多次改动
+// 逐步合并——产物卡按文件聚合，行数累计，diff 追加最新块）。
+func collectFileChange(out *[]FileChange, tc llm.ToolCall, _ string) {
+	var path, oldStr, newStr string
+	switch tc.Function.Name {
+	case "edit":
+		var a struct {
+			Path      string `json:"path"`
+			OldString string `json:"old_string"`
+			NewString string `json:"new_string"`
+		}
+		if json.Unmarshal([]byte(tc.Function.Arguments), &a) != nil || a.Path == "" {
+			return
+		}
+		path, oldStr, newStr = a.Path, a.OldString, a.NewString
+	case "write_file":
+		var a struct {
+			Path    string `json:"path"`
+			Content string `json:"content"`
+		}
+		if json.Unmarshal([]byte(tc.Function.Arguments), &a) != nil || a.Path == "" {
+			return
+		}
+		path, newStr = a.Path, a.Content
+	default:
+		return
+	}
+	added, deleted := 0, 0
+	if oldStr != "" {
+		deleted = len(strings.Split(strings.TrimSuffix(oldStr, "\n"), "\n"))
+	}
+	if newStr != "" {
+		added = len(strings.Split(strings.TrimSuffix(newStr, "\n"), "\n"))
+	}
+	var diff strings.Builder
+	diff.WriteString("@@ " + path + "\n")
+	for _, l := range strings.Split(oldStr, "\n") {
+		diff.WriteString("-" + l + "\n")
+	}
+	for _, l := range strings.Split(newStr, "\n") {
+		diff.WriteString("+" + l + "\n")
+	}
+	// 同文件合并：行数累计 + diff 换块
+	for i := range *out {
+		if (*out)[i].Path == path {
+			(*out)[i].Added += added
+			(*out)[i].Deleted += deleted
+			(*out)[i].Diff += "\n" + diff.String()
+			return
+		}
+	}
+	*out = append(*out, FileChange{Path: path, Added: added, Deleted: deleted, Diff: diff.String()})
 }
 
 // awaitConfirm 挂起等宿主裁决；取消返回 ok=false。

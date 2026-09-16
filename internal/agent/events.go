@@ -76,6 +76,20 @@ type TodoUpdatedEvent struct {
 	Items []tools.TodoItem
 }
 
+// FileChange 是一个文件的改动摘要（产物视图——验收「这轮改了什么」）。
+type FileChange struct {
+	Path    string `json:"path"`
+	Added   int    `json:"added"`
+	Deleted int    `json:"deleted"`
+	Diff    string `json:"diff"`
+}
+
+// FilesChangedEvent：一轮里文件改动的汇总（轮结束时发一次；宿主渲染
+// 产物卡——Codex 的验收视图。纯读/纯聊的轮次不发）。
+type FilesChangedEvent struct {
+	Files []FileChange
+}
+
 func (UserMsgEvent) isEvent()        {}
 func (DeltaEvent) isEvent()          {}
 func (ToolCallEvent) isEvent()       {}
@@ -85,6 +99,7 @@ func (BusyEvent) isEvent()           {}
 func (TurnDoneEvent) isEvent()       {}
 func (TurnErrorEvent) isEvent()      {}
 func (TodoUpdatedEvent) isEvent()    {}
+func (FilesChangedEvent) isEvent()   {}
 
 // Snapshot 是宿主初始化/重连时的会话同步载荷（History 的返回值）。
 type Snapshot struct {

@@ -1,7 +1,10 @@
-// Mock 设置：模型 / 推理强度 / 高危确认模式 + 提供商目录（原型数据，后端接入时
-// 换成 model.list + 会话参数）。选中态存内存——刷新即复位，符合原型定位。
+// Mock 设置：模型 / 推理强度 / 高危确认模式 + 提供商目录。
+// 浏览器原型模式 = 本地 mock 数据；壳（WSAgent）模式 = 后端模型注册表
+// （model.list/model.changed 事实源；CRUD 调 model.* 方法）。
 // 提供商 + 模型两级结构参考 OpenCode Desktop（provider → models，可见性开关）。
-import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { getAgentSource } from "../agent";
+import { WSAgent } from "../agent/ws";
 
 export interface Settings {
   model: string;
@@ -244,21 +247,89 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   // 用 useMemo 锁定——否则 provider 每次渲染都新建 value，消费者全树重渲染。
   const set = useCallback((patch: Partial<Settings>) => setSettings((s) => ({ ...s, ...patch })), []);
 
+  // ---- 壳模式：后端模型注册表为事实源（model.list 拉取 + model.changed 刷新） ----
+  const source = getAgentSource();
+  const ws = source instanceof WSAgent ? source : null;
+  const [backendTick, setBackendTick] = useState(0);
+
+  // model.changed / 初始拉取 → 重算 providers（按 base_url host 聚合成 provider 分组）
+  useEffect(() => {
+    if (!ws) return;
+    const off = ws.onModelsChanged(() => setBackendTick((n) => n + 1));
+    // 连接建立后 model.list 到达（onModelsChanged 触发）也走这里——首次挂载
+    // 时列表可能还没到，tick 变化后重算即可
+    return off;
+  }, [ws]);
+
+  const effectiveProviders = useMemo(() => {
+    if (!ws) return providers; // 浏览器原型：本地 mock
+    void backendTick;
+    const { models, roles } = ws.models();
+    const byHost = new Map<string, ProviderMeta>();
+    for (const m of models) {
+      let host: string;
+      try {
+        host = new URL(m.base_url).host;
+      } catch {
+        host = m.base_url || "未知";
+      }
+      const tagline = new URL(m.base_url).protocol === "https:" ? host : host + "（本地）";
+      if (!byHost.has(host)) {
+        byHost.set(host, {
+          id: host,
+          name: host.split(".").length > 1 ? host.split(".")[0].replace(/^api-?/, "") : host,
+          tagline,
+          connected: true,
+          enabled: true,
+          color: "#615ced",
+          fetching: false,
+          fetchedAt: m.display_name ? "已配置" : "内置",
+          models: [],
+        });
+      }
+      const p = byHost.get(host)!;
+      p.models.push({
+        id: m.id,
+        name: m.display_name || m.id,
+        desc: m.format === "anthropic" ? "Anthropic 格式" : "OpenAI 兼容",
+        tags: [m.capabilities?.tools ? "工具" : "", m.capabilities?.vision ? "视觉" : ""].filter(Boolean),
+        efforts: [], // 后端无档位概念——UI 隐藏档位
+        contextWindow: m.context_window || 128_000,
+        maxOutput: m.max_output_tokens || 8_000,
+        visible: m.enabled,
+      });
+    }
+    // 当前默认模型（settings.model 指向后端 id；roles.default 是事实源）
+    const defaultId = roles["default"];
+    if (defaultId && settings.model !== defaultId) {
+      // 异步同步选中态（避免渲染中 setState）——下一轮渲染生效
+      setTimeout(() => set({ model: defaultId }), 0);
+    }
+    return [...byHost.values()];
+  }, [ws, backendTick, providers, settings.model, set]);
+
+  // ---- 原型模式操作（浏览器演示；壳模式下也被后端路径取代） ----
+
   const setProviderEnabled = useCallback(
     (id: string, on: boolean) => setProviders((ps) => ps.map((p) => (p.id === id ? { ...p, enabled: on } : p))),
     [],
   );
 
   const setModelVisible = useCallback(
-    (providerId: string, modelId: string, on: boolean) =>
+    (providerId: string, modelId: string, on: boolean) => {
+      if (ws) {
+        ws.setModelEnabled(modelId, on).catch(() => {});
+        return;
+      }
       setProviders((ps) =>
         ps.map((p) =>
           p.id === providerId
             ? { ...p, models: p.models.map((m) => (m.id === modelId ? { ...m, visible: on } : m)) }
             : p,
         ),
-      ),
-    [],
+      );
+    },
+    [ws],
   );
 
   const connectProvider = useCallback(
@@ -285,31 +356,51 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     }, 800);
   }, []);
 
-  const addModel = useCallback((providerId: string, modelId: string) => {
-    const trimmed = modelId.trim();
-    if (!trimmed) return false;
-    let ok = true;
-    setProviders((ps) =>
-      ps.map((p) => {
-        if (p.id !== providerId) return p;
-        if (p.models.some((m) => m.id === trimmed)) {
-          ok = false;
-          return p;
-        }
-        return {
-          ...p,
-          models: [...p.models, { ...model(trimmed, "手动添加", [], [], 128_000, 8_000), manual: true }],
-        };
-      }),
-    );
-    return ok;
-  }, []);
+  const addModel = useCallback(
+    (providerId: string, modelId: string) => {
+      const trimmed = modelId.trim();
+      if (!trimmed) return false;
+      if (ws) {
+        // 壳模式：后端注册表 add（host 推导 base_url 不可靠——沿用 provider 的
+        // 既有 base_url：从当前分组里取第一条的 base_url）
+        const prov = effectiveProviders.find((p) => p.id === providerId);
+        void prov; // 基础 add：模型 id 直接当 model 名（OpenAI 兼容惯例）
+        ws.addModel({ id: trimmed, model: trimmed }).catch(() => {});
+        return true;
+      }
+      let ok = true;
+      setProviders((ps) =>
+        ps.map((p) => {
+          if (p.id !== providerId) return p;
+          if (p.models.some((m) => m.id === trimmed)) {
+            ok = false;
+            return p;
+          }
+          return {
+            ...p,
+            models: [...p.models, { ...model(trimmed, "手动添加", [], [], 128_000, 8_000), manual: true }],
+          };
+        }),
+      );
+      return ok;
+    },
+    [ws, effectiveProviders],
+  );
 
   const updateModel = useCallback(
     (providerId: string, oldId: string, patch: ModelPatch) => {
       const newId = patch.id.trim();
       const name = patch.name.trim();
       if (!newId || !name) return false;
+      if (ws) {
+        // 后端更新：以现有条目为底，套 patch（保留 base_url/api_key 等）
+        const entry = ws.models().models.find((m) => m.id === oldId);
+        if (entry) {
+          ws.updateModel({ ...entry, id: newId, display_name: name }).catch(() => {});
+        }
+        if (settings.model === oldId) set({ model: newId });
+        return true;
+      }
       let ok = true;
       setProviders((ps) =>
         ps.map((p) => {
@@ -332,19 +423,31 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       if (ok && settings.model === oldId) set({ model: newId });
       return ok;
     },
-    [settings.model, set],
+    [settings.model, set, ws],
   );
 
   const removeModel = useCallback(
-    (providerId: string, modelId: string) =>
+    (providerId: string, modelId: string) => {
+      if (ws) {
+        ws.removeModel(modelId).catch(() => {});
+        return;
+      }
       setProviders((ps) =>
         ps.map((p) => (p.id === providerId ? { ...p, models: p.models.filter((m) => m.id !== modelId) } : p)),
-      ),
-    [],
+      );
+    },
+    [ws],
   );
 
   const addCustomProvider = useCallback(
-    ({ name, baseUrl, models }: { name: string; baseUrl: string; models: string[] }) =>
+    ({ name, baseUrl, models }: { name: string; baseUrl: string; models: string[] }) => {
+      if (ws) {
+        // 壳模式：逐条注册到后端（provider 概念由 base_url 分组自然涌现）
+        for (const m of models.map((x) => x.trim()).filter(Boolean)) {
+          ws.addModel({ id: m, model: m, base_url: baseUrl, display_name: name + " · " + m }).catch(() => {});
+        }
+        return;
+      }
       setProviders((ps) => [
         ...ps,
         {
@@ -362,25 +465,42 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
             .filter((m) => m.length > 0)
             .map((m) => ({ ...model(m, "自定义模型", ["工具"], [], 128_000, 8_000) })),
         },
-      ]),
-    [],
+      ]);
+    },
+    [ws],
   );
 
   const disconnectProvider = useCallback(
-    (id: string) =>
+    (id: string) => {
+      // 壳模式下断开 = 删除该 host 分组的全部模型（后端事实源）
+      if (ws) {
+        const prov = effectiveProviders.find((p) => p.id === id);
+        for (const m of prov?.models ?? []) ws.removeModel(m.id).catch(() => {});
+        return;
+      }
       setProviders((ps) => {
         const target = ps.find((p) => p.id === id);
         if (target?.custom) return ps.filter((p) => p.id !== id);
         return ps.map((p) =>
           p.id === id ? { ...p, connected: false, enabled: false, models: [], fetching: false, fetchedAt: undefined } : p,
         );
-      }),
-    [],
+      });
+    },
+    [ws, effectiveProviders],
   );
 
+  // 选中默认模型 → 同步后端角色绑定（壳模式）
+  useEffect(() => {
+    if (!ws || !settings.model) return;
+    const known = ws.models().models.some((m) => m.id === settings.model);
+    if (known && ws.models().roles["default"] !== settings.model) {
+      ws.setRole("default", settings.model).catch(() => {});
+    }
+  }, [ws, settings.model]);
+
   const value = useMemo(
-    () => ({ settings, set, providers, setProviderEnabled, setModelVisible, connectProvider, fetchModels, addModel, updateModel, removeModel, addCustomProvider, disconnectProvider }),
-    [settings, providers, set, setProviderEnabled, setModelVisible, connectProvider, fetchModels, addModel, updateModel, removeModel, addCustomProvider, disconnectProvider],
+    () => ({ settings, set, providers: effectiveProviders, setProviderEnabled, setModelVisible, connectProvider, fetchModels, addModel, updateModel, removeModel, addCustomProvider, disconnectProvider }),
+    [settings, effectiveProviders, set, setProviderEnabled, setModelVisible, connectProvider, fetchModels, addModel, updateModel, removeModel, addCustomProvider, disconnectProvider],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
