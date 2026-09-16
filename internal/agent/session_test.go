@@ -418,6 +418,7 @@ func newPersistSession(t *testing.T, dir string) *Session {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = st.Close() }) // SQLite 连接必须显式关（Windows 句柄挡 TempDir 删除）
 	if err := s.EnablePersistence(st); err != nil {
 		t.Fatal(err)
 	}
@@ -493,18 +494,12 @@ func TestSessionList(t *testing.T) {
 	dir := t.TempDir()
 	s := newPersistSession(t, dir)
 	s.append(llm.Message{Role: "user", Content: "第一个会话"})
-	firstID := s.SessionID()
 	if _, err := s.SwitchNew(); err != nil {
 		t.Fatal(err)
 	}
 	s.append(llm.Message{Role: "user", Content: "第二个会话"})
 
-	// 显式把第一个会话的 mtime 拨回过去——同秒创建的两个文件排序不确定
-	past := time.Now().Add(-2 * time.Hour)
-	if err := os.Chtimes(filepath.Join(dir, firstID+".jsonl"), past, past); err != nil {
-		t.Fatal(err)
-	}
-
+	// SQLite 版排序依据 updated_at（纳秒精度），无需文件版时代的 mtime 拨弄
 	list := s.SessionList()
 	if len(list) != 2 {
 		t.Fatalf("应列出 2 个会话: %+v", list)

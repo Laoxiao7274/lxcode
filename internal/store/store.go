@@ -1,17 +1,20 @@
-// Package store 实现会话的磁盘持久化：每会话一个 JSONL 文件，append-only。
+// Package store 实现会话的磁盘持久化：SQLite 单库（modernc.org/sqlite 纯 Go——
+// 无 CGO，符合仓库 FFI 禁令；性能足够且 WAL 模式下已提交事务断电不丢）。
 //
-// 为什么是 JSONL 而不是 SQLite：纯 Go 交叉编译不需要 CGO（SQLite 要 CGO 或
-// modernc 纯 Go 实现——后者给二进制加 ~10MB 和一个重依赖）；单用户的会话量级
-// （几百个文件、每个几 MB）用纯文本足够，且人类可读（cat 一下就能排障）、
-// 可整目录备份。语义记忆/向量检索是另一层的需求，不在这层解决。
+// 为什么从初版 JSONL 切到 SQLite（2026-12 用户拍板）：
+//   - compaction（历史摘要改写）在 append-only 格式上只能整文件重写；
+//   - 语义记忆/向量检索（FTS5/sqlite-vec）规划在同库扩展，避免会话与记忆
+//     两个存储并存的分裂；
+//   - List/Latest/Search 从全目录逐文件读降为 SQL 查询；
+//   - 会话重命名/归档是 UPDATE 而不是文件改名。
 //
-// 崩溃安全：append-only 天然容忍"最后一行写了一半"——加载时丢掉解析失败的
-// 尾行并记日志，服务不挂。
+// 崩溃安全：WAL 模式 + synchronous=NORMAL——已提交事务不丢；modernc 纯 Go
+// 实现无进程内崩溃面，进程被杀 = 连接断开 = WAL 回放，语义与文件版一致。
 package store
 
 import (
-	"bufio"
 	crand "crypto/rand"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -22,46 +25,85 @@ import (
 	"time"
 
 	"github.com/moyunteng/lxcode/internal/llm"
+
+	_ "modernc.org/sqlite" // 纯 Go SQLite 驱动（注册 database/sql 接口）
 )
 
-// storeVersion 是会话文件格式版本；改行结构时递增。
-const storeVersion = 1
-
-// record 是 JSONL 的一行：meta（会话头）或 msg（一条消息）。
-type record struct {
-	V         int          `json:"v"`
-	Type      string       `json:"type"` // "meta" | "msg"
-	ID        string       `json:"id,omitempty"`
-	CreatedAt string       `json:"created_at,omitempty"`
-	Message   *llm.Message `json:"message,omitempty"`
-}
+// schema 是库结构（幂等建表）。seq 显式保序——JSONL 的行序语义显式化；
+// title 在写入时维护（首条 user 消息），List 不再逐行全读。
+const schema = `
+CREATE TABLE IF NOT EXISTS sessions (
+  id         TEXT PRIMARY KEY,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  title      TEXT NOT NULL DEFAULT '',
+  archived   INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS messages (
+  session_id    TEXT NOT NULL,
+  seq           INTEGER NOT NULL,
+  role          TEXT NOT NULL,
+  content       TEXT NOT NULL DEFAULT '',
+  reasoning     TEXT NOT NULL DEFAULT '',
+  reasoning_sig TEXT NOT NULL DEFAULT '',
+  tool_calls    TEXT NOT NULL DEFAULT '[]', -- llm.ToolCall 数组 JSON
+  tool_call_id  TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (session_id, seq),
+  FOREIGN KEY (session_id) REFERENCES sessions(id)
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at DESC, archived);
+`
 
 // SessionMeta 是会话列表的条目（resume 选择器的数据源）。
 type SessionMeta struct {
 	ID        string
-	Title     string // 第一条 user 消息截断（空会话为占位）
-	UpdatedAt string // 最后修改时间（文件 mtime）
+	Title     string // 首条 user 消息截断（空会话为占位）
+	UpdatedAt string
 	Messages  int
 }
 
-// Store 管理一个目录下的所有会话文件。
+// Store 管理单个 SQLite 库（sessions 目录下的 sessions.db）。
 type Store struct {
-	dir string
-	mu  sync.Mutex // 文件创建/枚举互斥（追加写由各会话自己的句柄串行）
+	db *sql.DB
+	// mu 只保护 Create 的 id 生成竞态；数据库自身并发由
+	// 连接池 + WAL + busy_timeout 保证。
+	mu sync.Mutex
 }
 
-// Open 打开（必要时创建）会话目录。
+// Open 打开（必要时创建）会话库：建目录、建表、开 WAL。
 func Open(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("创建会话目录 %s 失败: %w", dir, err)
 	}
-	return &Store{dir: dir}, nil
+	// DSN 参数：WAL（读写不互斥、断电回放）；busy_timeout 防 SQLITE_BUSY
+	// （连接池多连接下的写争用）；_txlock=immediate 让事务开始即取写锁——
+	// 默认的延迟升级（deferred→写时升级）在两个事务同时升级时会立刻
+	// SQLITE_BUSY 不等 busy_timeout（实测 TestConcurrentAppend 踩过），
+	// immediate 模式下等待语义才真正生效。_pragma 每连接生效故写在 DSN 里。
+	dsn := "file:" + filepath.ToSlash(filepath.Join(dir, "sessions.db")) +
+		"?_txlock=immediate" +
+		"&_pragma=journal_mode(WAL)" +
+		"&_pragma=busy_timeout(5000)" +
+		"&_pragma=synchronous(NORMAL)" +
+		"&_pragma=foreign_keys(ON)"
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("打开会话库失败: %w", err)
+	}
+	// 连接池上限：SQLite 单写者——过多连接只会增加 BUSY 概率；
+	// 4 足够（读并发 + 一个写）。
+	db.SetMaxOpenConns(4)
+	if _, err := db.Exec(schema); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("初始化会话表失败: %w", err)
+	}
+	return &Store{db: db}, nil
 }
 
-// Dir 返回会话目录（CLI 提示用）。
-func (s *Store) Dir() string { return s.dir }
+// Close 关闭库连接（进程退出/测试清理时调用；幂等）。
+func (s *Store) Close() error { return s.db.Close() }
 
-// newSessionID 生成会话 id：时间戳前缀（文件名天然按时间排序）+ 随机后缀防碰撞。
+// newSessionID 生成会话 id：时间戳前缀 + 随机后缀防碰撞。
 func newSessionID() string {
 	return time.Now().Format("20060102-150405") + "-" + randomSuffix()
 }
@@ -74,166 +116,236 @@ func randomSuffix() string {
 	return fmt.Sprintf("%x", b)
 }
 
-// Create 开一个新会话文件并写入 meta 行，返回追加句柄。
-// 调用方负责 Close（agent 在切换/退出时关闭）。
-func (s *Store) Create() (id string, f *os.File, err error) {
+// Create 开一个新会话（INSERT sessions 行），返回会话 id。
+// 文件版返回追加句柄的概念已消失——写操作按 session id 走库。
+func (s *Store) Create() (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	id = newSessionID()
-	path := filepath.Join(s.dir, id+".jsonl")
-	f, err = os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	id := newSessionID()
+	now := nowNano()
+	_, err := s.db.Exec(
+		`INSERT INTO sessions (id, created_at, updated_at, title, archived) VALUES (?, ?, ?, '', 0)`,
+		id, now, now)
 	if err != nil {
-		return "", nil, fmt.Errorf("创建会话文件 %s 失败: %w", path, err)
+		return "", fmt.Errorf("创建会话失败: %w", err)
 	}
-	meta := record{V: storeVersion, Type: "meta", ID: id, CreatedAt: time.Now().Format(time.RFC3339)}
-	if err := writeRecord(f, meta); err != nil {
-		f.Close()
+	return id, nil
+}
+
+// nowNano 是库内时间戳格式（纳秒精度 + 时区）——排序依据 updated_at，
+// 秒级精度会在同秒创建/更新的会话间产生不可预测的顺序（文件版同秒
+// 文件名序不可靠的同族坑，SQL 版用精度根治）。
+func nowNano() string { return time.Now().Format(time.RFC3339Nano) }
+
+// AppendMsg 把一条消息追加到会话（事务：INSERT 消息 + UPDATE 会话时间戳）。
+func (s *Store) AppendMsg(id string, m llm.Message) error {
+	toolCalls, err := json.Marshal(m.ToolCalls)
+	if err != nil {
+		return fmt.Errorf("序列化工具调用失败: %w", err)
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("开事务失败: %w", err)
+	}
+	defer tx.Rollback() // 已提交时是 no-op
+	// seq = 当前会话最大 seq + 1（单会话写入串行，无竞态窗口）
+	var seq int
+	if err := tx.QueryRow(`SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE session_id = ?`, id).Scan(&seq); err != nil {
+		return fmt.Errorf("取序号失败: %w", err)
+	}
+	// 标题懒维护：首条 user 消息截断（写入时算好，List 零计算）
+	if m.Role == "user" {
+		var title string
+		if err := tx.QueryRow(`SELECT title FROM sessions WHERE id = ?`, id).Scan(&title); err != nil {
+			return fmt.Errorf("读标题失败: %w", err)
+		}
+		if title == "" {
+			if _, err := tx.Exec(`UPDATE sessions SET title = ? WHERE id = ?`, clipTitle(m.Content), id); err != nil {
+				return fmt.Errorf("写标题失败: %w", err)
+			}
+		}
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO messages (session_id, seq, role, content, reasoning, reasoning_sig, tool_calls, tool_call_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, seq, m.Role, m.Content, m.ReasoningContent, m.ReasoningSignature, string(toolCalls), m.ToolCallID,
+	); err != nil {
+		return fmt.Errorf("写消息失败: %w", err)
+	}
+	if _, err := tx.Exec(`UPDATE sessions SET updated_at = ? WHERE id = ?`, nowNano(), id); err != nil {
+		return fmt.Errorf("更新会话时间失败: %w", err)
+	}
+	return tx.Commit()
+}
+
+// Load 读出会话的全部消息（按 seq 升序）。会话不存在时报错
+// （调用方 SwitchTo 依赖此语义区分「空会话」与「不存在」）。
+func (s *Store) Load(id string) ([]llm.Message, error) {
+	var exists int
+	if err := s.db.QueryRow(`SELECT 1 FROM sessions WHERE id = ?`, id).Scan(&exists); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("会话 %s 不存在", id)
+		}
+		return nil, fmt.Errorf("查询会话 %s 失败: %w", id, err)
+	}
+	rows, err := s.db.Query(
+		`SELECT role, content, reasoning, reasoning_sig, tool_calls, tool_call_id
+		 FROM messages WHERE session_id = ? ORDER BY seq`, id)
+	if err != nil {
+		return nil, fmt.Errorf("查询会话 %s 失败: %w", id, err)
+	}
+	defer rows.Close()
+	var msgs []llm.Message
+	for rows.Next() {
+		var m llm.Message
+		var toolCalls string
+		if err := rows.Scan(&m.Role, &m.Content, &m.ReasoningContent, &m.ReasoningSignature, &toolCalls, &m.ToolCallID); err != nil {
+			return nil, fmt.Errorf("读消息行失败: %w", err)
+		}
+		if toolCalls != "" && toolCalls != "[]" {
+			if err := json.Unmarshal([]byte(toolCalls), &m.ToolCalls); err != nil {
+				return nil, fmt.Errorf("解析工具调用失败: %w", err)
+			}
+		}
+		msgs = append(msgs, m)
+	}
+	return msgs, rows.Err()
+}
+
+// List 列出全部会话（按更新时间倒序，归档的沉底；rowid 兜底保证确定性顺序）。
+func (s *Store) List() ([]SessionMeta, error) {
+	rows, err := s.db.Query(
+		`SELECT s.id, s.title, s.updated_at, s.archived,
+		        (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS n
+		 FROM sessions s
+		 ORDER BY s.archived ASC, s.updated_at DESC, s.rowid DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("列出会话失败: %w", err)
+	}
+	defer rows.Close()
+	var out []SessionMeta
+	for rows.Next() {
+		var meta SessionMeta
+		var archived int
+		if err := rows.Scan(&meta.ID, &meta.Title, &meta.UpdatedAt, &archived, &meta.Messages); err != nil {
+			return nil, fmt.Errorf("读会话行失败: %w", err)
+		}
+		if archived == 1 {
+			meta.Title = "（已归档）" + meta.Title // List 的消费方按标题展示；归档态显式可见
+		}
+		if meta.Title == "" || meta.Title == "（已归档）" {
+			meta.Title += "（空会话）"
+		}
+		meta.UpdatedAt = fmtTime(meta.UpdatedAt)
+		out = append(out, meta)
+	}
+	return out, rows.Err()
+}
+
+// Latest 找最近的会话（按 updated_at；无任何会话返回 ""——调用方走全新开始）。
+func (s *Store) Latest() (string, []llm.Message, error) {
+	var id string
+	err := s.db.QueryRow(
+		`SELECT id FROM sessions WHERE archived = 0 ORDER BY updated_at DESC, rowid DESC LIMIT 1`).Scan(&id)
+	if err == sql.ErrNoRows {
+		return "", nil, nil
+	}
+	if err != nil {
+		return "", nil, fmt.Errorf("查最近会话失败: %w", err)
+	}
+	msgs, err := s.Load(id)
+	if err != nil {
 		return "", nil, err
 	}
-	return id, f, nil
+	return id, msgs, nil
 }
 
-// AppendMsg 把一条消息追加到已打开的会话文件。
-func (s *Store) AppendMsg(f *os.File, m llm.Message) error {
-	return writeRecord(f, record{V: storeVersion, Type: "msg", Message: &m})
-}
-
-func writeRecord(f *os.File, r record) error {
-	b, err := json.Marshal(r)
-	if err != nil {
-		return fmt.Errorf("序列化会话记录失败: %w", err)
+// Rename 重命名会话（侧栏管理功能）。
+func (s *Store) Rename(id, title string) error {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return fmt.Errorf("标题不能为空")
 	}
-	// 单次 write 追加一行：对 O_APPEND 的单次 write 原子性足够
-	// （会话日志容忍断电丢最后一行，加载时丢坏行兜底）
-	if _, err := f.Write(append(b, '\n')); err != nil {
-		return fmt.Errorf("写会话文件失败: %w", err)
+	res, err := s.db.Exec(`UPDATE sessions SET title = ? WHERE id = ?`, title, id)
+	if err != nil {
+		return fmt.Errorf("重命名失败: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("会话 %s 不存在", id)
 	}
 	return nil
 }
 
-// OpenForAppend 打开既有会话文件继续追加（resume 后续写）。
-func (s *Store) OpenForAppend(id string) (*os.File, error) {
-	path := filepath.Join(s.dir, id+".jsonl")
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return nil, fmt.Errorf("打开会话文件 %s 失败: %w", path, err)
+// Archive 归档/取消归档会话。
+func (s *Store) Archive(id string, archived bool) error {
+	v := 0
+	if archived {
+		v = 1
 	}
-	return f, nil
+	res, err := s.db.Exec(`UPDATE sessions SET archived = ? WHERE id = ?`, v, id)
+	if err != nil {
+		return fmt.Errorf("归档失败: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("会话 %s 不存在", id)
+	}
+	return nil
 }
 
-// Load 读出会话的全部消息。最后一行解析失败（断电写了一半）时丢弃并记日志；
-// 中间的坏行也丢弃——会话日志不是账本，坏一行不该让整个会话不可用。
-func (s *Store) Load(id string) (msgs []llm.Message, err error) {
-	path := filepath.Join(s.dir, id+".jsonl")
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, fmt.Errorf("打开会话文件失败: %w", err)
-	}
-	defer f.Close()
+// SearchHit 是一条会话搜索命中。
+type SearchHit struct {
+	SessionID string
+	Index     int
+	Role      string
+	Content   string
+}
 
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 64*1024), 4*1024*1024) // 单行上限 4MB（工具结果入历史前已截到 4KB，这里留余量）
-	bad := 0
-	for sc.Scan() {
-		var r record
-		if err := json.Unmarshal(sc.Bytes(), &r); err != nil {
-			bad++
+// searchClip 是命中内容的展示截断长度。
+const searchClip = 120
+
+// Search 在全部会话的消息内容里按正则搜索，按会话更新时间从近到远。
+// 保持 Go 正则语义（与文件版行为一致）；FTS5 分词匹配留给语义记忆层。
+func (s *Store) Search(pattern string, max int) ([]SearchHit, error) {
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, fmt.Errorf("模式不是合法正则: %w", err)
+	}
+	if max <= 0 {
+		max = 30
+	}
+	if max > 100 {
+		max = 100
+	}
+	rows, err := s.db.Query(
+		`SELECT m.session_id, m.role, m.content
+		 FROM messages m
+		 JOIN (SELECT id, rowid AS srow FROM sessions WHERE archived = 0
+		       ORDER BY updated_at DESC, rowid DESC) s ON m.session_id = s.id
+		 ORDER BY s.srow DESC, m.seq`) // 会话从近到远（srow 大 = 近），会话内按 seq
+	if err != nil {
+		return nil, fmt.Errorf("搜索查询失败: %w", err)
+	}
+	defer rows.Close()
+	var hits []SearchHit
+	seqIn := map[string]int{} // 会话内消息序号（1 起）
+	for rows.Next() {
+		var sid, role, content string
+		if err := rows.Scan(&sid, &role, &content); err != nil {
+			return nil, fmt.Errorf("读搜索行失败: %w", err)
+		}
+		seqIn[sid]++
+		if !re.MatchString(content) {
 			continue
 		}
-		switch r.Type {
-		case "meta":
-			continue // 会话头：不是消息，也不是坏行
-		case "msg":
-			if r.Message != nil {
-				msgs = append(msgs, *r.Message)
-			} else {
-				bad++
-			}
-		default:
-			bad++
+		hits = append(hits, SearchHit{
+			SessionID: sid, Index: seqIn[sid], Role: role,
+			Content: clipStr(content, searchClip),
+		})
+		if len(hits) >= max {
+			break
 		}
 	}
-	if bad > 0 {
-		// 记日志但不失败：会话日志的可用性优先于完整性
-		fmt.Fprintf(os.Stderr, "[store] 会话 %s 有 %d 行损坏（已跳过）\n", id, bad)
-	}
-	return msgs, nil
-}
-
-// List 列出全部会话（按更新时间倒序），供 resume 选择器使用。
-// 会话量级小（本地几百个文件），逐文件全读是可接受的简单实现。
-func (s *Store) List() ([]SessionMeta, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	entries, err := os.ReadDir(s.dir)
-	if err != nil {
-		return nil, err
-	}
-	var out []SessionMeta
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
-			continue
-		}
-		id := strings.TrimSuffix(e.Name(), ".jsonl")
-		meta := readMeta(filepath.Join(s.dir, e.Name()), id)
-		if meta == nil {
-			continue // 非会话文件（无 meta 行）——跳过
-		}
-		out = append(out, *meta)
-	}
-	// 按更新时间倒序：最近的排最前
-	for i := 1; i < len(out); i++ {
-		for j := i; j > 0 && out[j].UpdatedAt > out[j-1].UpdatedAt; j-- {
-			out[j], out[j-1] = out[j-1], out[j]
-		}
-	}
-	return out, nil
-}
-
-// readMeta 读单个会话文件的元信息（标题取第一条 user 消息，更新时间取 mtime）。
-// 返回 nil 表示这不是一个有效会话文件（读失败或无 meta 行）。
-func readMeta(path, id string) *SessionMeta {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil
-	}
-	defer f.Close()
-
-	st, err := f.Stat()
-	if err != nil {
-		return nil
-	}
-	meta := &SessionMeta{
-		ID:        id,
-		UpdatedAt: st.ModTime().Format("2006-01-02 15:04"),
-	}
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 64*1024), 4*1024*1024)
-	hasMeta := false
-	for sc.Scan() {
-		var r record
-		if err := json.Unmarshal(sc.Bytes(), &r); err != nil {
-			continue // 坏行：计数但继续
-		}
-		switch r.Type {
-		case "meta":
-			if r.ID == id && r.V == storeVersion {
-				hasMeta = true
-			}
-		case "msg":
-			meta.Messages++
-			if r.Message != nil && r.Message.Role == "user" && meta.Title == "" {
-				meta.Title = clipTitle(r.Message.Content)
-			}
-		}
-	}
-	if !hasMeta {
-		return nil
-	}
-	if meta.Title == "" {
-		meta.Title = "（空会话）"
-	}
-	return meta
+	return hits, rows.Err()
 }
 
 // clipTitle 截标题：一行以内、40 个字符封顶（列表预览用）。
@@ -249,108 +361,23 @@ func clipTitle(s string) string {
 	return s
 }
 
-// Latest 找最近的会话（按 mtime——同一秒内创建的多个会话，文件名顺序不可靠），
-// 返回 id 与消息。没有任何会话时返回 ("", nil, nil)——调用方据此走"全新开始"。
-func (s *Store) Latest() (string, []llm.Message, error) {
-	s.mu.Lock()
-	entries, err := os.ReadDir(s.dir)
-	s.mu.Unlock()
-	if err != nil {
-		return "", nil, err
-	}
-	var bestID string
-	var bestMod time.Time
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
-			continue
-		}
-		info, err := e.Info()
-		if err != nil {
-			continue
-		}
-		if bestID == "" || info.ModTime().After(bestMod) {
-			id := strings.TrimSuffix(e.Name(), ".jsonl")
-			if readMeta(filepath.Join(s.dir, e.Name()), id) == nil {
-				continue // 非会话文件（无 meta 行）
-			}
-			bestID, bestMod = id, info.ModTime()
-		}
-	}
-	if bestID == "" {
-		return "", nil, nil
-	}
-	msgs, err := s.Load(bestID)
-	if err != nil {
-		return "", nil, err
-	}
-	return bestID, msgs, nil
-}
-
-// SearchHit 是一条会话搜索命中。
-type SearchHit struct {
-	SessionID string // 来源会话
-	Index     int    // 会话内第几条消息（1 起）
-	Role      string // user | assistant | tool
-	Content   string // 截断展示
-}
-
-// searchClip 是命中内容的展示截断长度——给模型看的是"判断相关性
-// 的片段"，需要完整内容时模型应引导用户 resume 该会话。
-const searchClip = 120
-
-// Search 在全部会话的消息内容里按正则搜索，按会话更新时间从近到远遍历
-// （用户说"上次"多半指最近的会话）。max 为命中上限。
-func (s *Store) Search(pattern string, max int) ([]SearchHit, error) {
-	re, err := regexp.Compile(pattern)
-	if err != nil {
-		return nil, fmt.Errorf("模式不是合法正则: %w", err)
-	}
-	if max <= 0 {
-		max = 30
-	}
-	if max > 100 {
-		max = 100
-	}
-	// List 已按更新时间倒序
-	metas, err := s.List()
-	if err != nil {
-		return nil, err
-	}
-	var hits []SearchHit
-	for _, meta := range metas {
-		if len(hits) >= max {
-			break
-		}
-		msgs, err := s.Load(meta.ID)
-		if err != nil {
-			continue // 单个会话读失败不挡整体
-		}
-		for i, m := range msgs {
-			if len(hits) >= max {
-				break
-			}
-			if !re.MatchString(m.Content) {
-				continue
-			}
-			hits = append(hits, SearchHit{
-				SessionID: meta.ID,
-				Index:     i + 1,
-				Role:      m.Role,
-				Content:   clipStr(m.Content, searchClip),
-			})
-		}
-	}
-	return hits, nil
-}
-
 // clipStr 截断到 n 个字符（rune 安全），尾部加省略号。
 func clipStr(s string, n int) string {
-	s = strings.ReplaceAll(s, "\n", " ") // 命中展示压成单行，多行消息不至于撑爆
+	s = strings.ReplaceAll(s, "\n", " ")
 	r := []rune(s)
 	if len(r) <= n {
 		return s
 	}
 	return string(r[:n]) + "…"
+}
+
+// fmtTime 把库内时间戳（RFC3339Nano）格式化为列表展示形态。
+func fmtTime(ts string) string {
+	t, err := time.Parse(time.RFC3339Nano, ts)
+	if err != nil {
+		return ts // 解析失败原样返回（新格式不该失败；旧数据无）
+	}
+	return t.Format("2006-01-02 15:04")
 }
 
 // FormatSearchHits 把命中渲染成给模型的文本（session_search 工具的输出）。

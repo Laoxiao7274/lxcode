@@ -33,9 +33,11 @@ const (
 	MethodToolConfirm = "tool.confirm"
 
 	// 会话管理（持久化 + 切换）
-	MethodSessionList   = "session.list"
-	MethodSessionNew    = "session.new"
-	MethodSessionResume = "session.resume"
+	MethodSessionList    = "session.list"
+	MethodSessionNew     = "session.new"
+	MethodSessionResume  = "session.resume"
+	MethodSessionRename  = "session.rename"
+	MethodSessionArchive = "session.archive"
 )
 
 // 事件名（服务端 → 全部客户端广播；无 id 的 JSON-RPC 消息）。
@@ -215,6 +217,18 @@ type TodoUpdatedParams struct {
 // SessionResumeParams 是 session.resume 的参数。
 type SessionResumeParams struct {
 	ID string `json:"id"`
+}
+
+// SessionRenameParams 是 session.rename 的参数。
+type SessionRenameParams struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+}
+
+// SessionArchiveParams 是 session.archive 的参数。
+type SessionArchiveParams struct {
+	ID       string `json:"id"`
+	Archived bool   `json:"archived"`
 }
 
 // SessionMeta 是 session.list 的条目（resume 选择器的数据源）。

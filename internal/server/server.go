@@ -9,6 +9,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/gorilla/websocket"
@@ -25,6 +26,7 @@ type Server struct {
 	reg  *config.Registry
 	sess *agent.Session
 	treg *tools.Registry // 保存引用：AttachSessionStore 时给它接会话搜索
+	st   *store.Store    // 保存引用：会话管理方法（rename/archive）直通存储
 
 	upgrader websocket.Upgrader
 
@@ -66,6 +68,7 @@ func (s *Server) Session() *agent.Session { return s.sess }
 // AttachSessionStore 挂载会话存储并恢复最近会话（main 装配时、监听前调用）。
 // 同时接线 session_search 工具——JSONL 格式归 store 包所有，工具层只拿函数。
 func (s *Server) AttachSessionStore(st *store.Store) error {
+	s.st = st
 	s.sess.AttachSessionSearch()
 	return s.sess.EnablePersistence(st)
 }
@@ -253,7 +256,7 @@ func (s *Server) dispatch(req *protocol.Request) *protocol.Response {
 		return protocol.NewResult(req.ID, map[string]any{})
 
 	case protocol.MethodSessionList:
-		return protocol.NewResult(req.ID, s.sess.SessionList())
+		return protocol.NewResult(req.ID, toProtocolSessionList(s.sess.SessionList()))
 
 	case protocol.MethodSessionNew:
 		if _, err := s.sess.SwitchNew(); err != nil {
@@ -273,6 +276,29 @@ func (s *Server) dispatch(req *protocol.Request) *protocol.Response {
 		}
 		s.broadcastSessionChanged(p.ID, "resumed")
 		return protocol.NewResult(req.ID, map[string]any{"id": p.ID})
+
+	case protocol.MethodSessionRename:
+		var p protocol.SessionRenameParams
+		if err := json.Unmarshal(params, &p); err != nil || p.ID == "" || strings.TrimSpace(p.Title) == "" {
+			return protocol.NewError(req.ID, protocol.CodeInvalidParams, "参数解析失败: 需要 id 与非空 title")
+		}
+		if err := s.st.Rename(p.ID, p.Title); err != nil {
+			return protocol.NewError(req.ID, protocol.CodeInvalidParams, err.Error())
+		}
+		// 会话列表变了：广播让客户端刷新侧栏
+		s.broadcast(protocol.EventSessionChanged, protocol.SessionChangedParams{ID: p.ID, Reason: "renamed"})
+		return protocol.NewResult(req.ID, map[string]any{})
+
+	case protocol.MethodSessionArchive:
+		var p protocol.SessionArchiveParams
+		if err := json.Unmarshal(params, &p); err != nil || p.ID == "" {
+			return protocol.NewError(req.ID, protocol.CodeInvalidParams, "参数解析失败: 缺少 id")
+		}
+		if err := s.st.Archive(p.ID, p.Archived); err != nil {
+			return protocol.NewError(req.ID, protocol.CodeInvalidParams, err.Error())
+		}
+		s.broadcast(protocol.EventSessionChanged, protocol.SessionChangedParams{ID: p.ID, Reason: "archived"})
+		return protocol.NewResult(req.ID, map[string]any{})
 	}
 
 	return protocol.NewError(req.ID, protocol.CodeMethodNotFound, "未知方法: "+req.Method)
@@ -329,6 +355,17 @@ func (s *Server) broadcastModels() {
 
 // NotifyModels 供外部（注册表变更）触发 model.changed 广播。
 func (s *Server) NotifyModels() { s.broadcastModels() }
+
+// toProtocolSessionList 把 store 的会话列表映射成协议载荷——store 层不 import
+// protocol（依赖单向），且 JSON 键名（id/title/updated_at/messages）只在协议
+// 契约有定义；直接序列化 store 类型会漏字段名（历史 bug：前端拿到全大写键）。
+func toProtocolSessionList(metas []store.SessionMeta) []protocol.SessionMeta {
+	out := make([]protocol.SessionMeta, len(metas))
+	for i, m := range metas {
+		out[i] = protocol.SessionMeta{ID: m.ID, Title: m.Title, UpdatedAt: m.UpdatedAt, Messages: m.Messages}
+	}
+	return out
+}
 
 // broadcastSessionChanged 会话切换广播：所有客户端重拉 chat.history 同步视图。
 func (s *Server) broadcastSessionChanged(id, reason string) {

@@ -71,6 +71,7 @@ func runServe(ctx context.Context, path, addr, sessionsDir string) error {
 	if err != nil {
 		return fmt.Errorf("会话存储初始化失败: %w", err)
 	}
+	defer st.Close() // 库连接随进程退出收尾（WAL 落盘）
 	if err := srv.AttachSessionStore(st); err != nil {
 		return fmt.Errorf("恢复会话失败: %w", err)
 	}

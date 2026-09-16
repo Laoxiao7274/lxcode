@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"os"
 	"strings"
 	"sync"
 
@@ -62,10 +61,10 @@ type Session struct {
 	confirm chan bool
 	todos   []tools.TodoItem
 
-	// 持久化（st 为 nil = 纯内存模式，兼容不接存储的调用方/单测）
-	st   *store.Store
-	id   string   // 当前会话 id（空 = 尚未创建文件）
-	file *os.File // 追加句柄（懒创建：首条消息才落盘，避免空会话文件）
+	// 持久化（st 为 nil = 纯内存模式，兼容不接存储的调用方/单测）。
+	// SQLite 版无句柄概念：会话 = sessions 表一行，按 s.id 追加写。
+	st *store.Store
+	id string // 当前会话 id（空 = 尚未创建行）
 }
 
 // New 创建会话；emit 为 nil 时事件被丢弃（单测可只调方法）。
@@ -396,28 +395,28 @@ func (s *Session) persistLocked(m llm.Message) {
 	if s.st == nil {
 		return
 	}
-	if s.ensureFileLocked() == nil && s.file != nil {
-		if err := s.st.AppendMsg(s.file, m); err != nil {
+	if s.ensureSessionLocked() == nil {
+		if err := s.st.AppendMsg(s.id, m); err != nil {
 			log.Printf("会话落盘失败（继续运行）: %v", err)
 		}
 	}
 }
 
-// ensureFileLocked 懒创建当前会话文件（首条消息才建，避免空文件）。调用方持锁。
-func (s *Session) ensureFileLocked() error {
-	if s.file != nil || s.st == nil {
+// ensureSessionLocked 懒创建当前会话行（首条消息才建，避免空会话记录）。调用方持锁。
+func (s *Session) ensureSessionLocked() error {
+	if s.id != "" || s.st == nil {
 		return nil
 	}
-	id, f, err := s.st.Create()
+	id, err := s.st.Create()
 	if err != nil {
 		return err
 	}
-	s.id, s.file = id, f
+	s.id = id
 	return nil
 }
 
 // EnablePersistence 挂载磁盘存储并恢复最近会话（启动时调用）。
-// 目录里没有任何会话时保持空历史（全新开始）。幂等：重复调用是 no-op。
+// 库里没有任何会话时保持空历史（全新开始）。幂等：重复调用是 no-op。
 func (s *Session) EnablePersistence(st *store.Store) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -430,15 +429,10 @@ func (s *Session) EnablePersistence(st *store.Store) error {
 		return err
 	}
 	if id == "" {
-		return nil // 没有历史会话：空历史起步，文件首条消息时懒建
+		return nil // 没有历史会话：空历史起步，会话行首条消息时懒建
 	}
 	s.id = id
 	s.history = msgs
-	f, err := st.OpenForAppend(id)
-	if err != nil {
-		return fmt.Errorf("恢复会话 %s 失败: %w", id, err)
-	}
-	s.file = f
 	return nil
 }
 
@@ -449,17 +443,12 @@ func (s *Session) SessionID() string {
 	return s.id
 }
 
-// Close 关闭会话文件句柄（进程退出/测试清理时调用；幂等）。
-func (s *Session) Close() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.file != nil {
-		_ = s.file.Close()
-		s.file = nil
-	}
-}
+// Close 关闭会话资源（进程退出/测试清理时调用；幂等）。
+// SQLite 版句柄概念消失，连接由 store 持有——这里保留空实现维持
+// 宿主的 defer Close() 调用面不变。
+func (s *Session) Close() {}
 
-// SwitchNew 结束当前会话（文件保留，可后续 resume），从空历史开始。
+// SwitchNew 结束当前会话（记录保留，可后续 resume），从空历史开始。
 // 生成中/有挂起确认时拒绝——切换会撕裂运行中的工具循环。
 func (s *Session) SwitchNew() (string, error) {
 	s.mu.Lock()
@@ -467,18 +456,14 @@ func (s *Session) SwitchNew() (string, error) {
 		s.mu.Unlock()
 		return "", err
 	}
-	if s.file != nil {
-		_ = s.file.Close()
-	}
-	s.file = nil // 新文件懒创建
-	s.id = ""
+	s.id = "" // 新会话行懒创建
 	s.history = nil
 	s.todos = nil
 	s.mu.Unlock()
 	return "", nil
 }
 
-// SwitchTo 恢复指定会话：加载其历史并继续追加。当前会话文件保留。
+// SwitchTo 恢复指定会话：加载其历史并继续追加。当前会话记录保留。
 func (s *Session) SwitchTo(id string) error {
 	if s.st == nil {
 		return errors.New("未启用会话存储")
@@ -493,15 +478,7 @@ func (s *Session) SwitchTo(id string) error {
 		s.mu.Unlock()
 		return err
 	}
-	f, err := s.st.OpenForAppend(id)
-	if err != nil {
-		s.mu.Unlock()
-		return err
-	}
-	if s.file != nil {
-		_ = s.file.Close()
-	}
-	s.file, s.id, s.history = f, id, msgs
+	s.id, s.history = id, msgs
 	s.mu.Unlock()
 	return nil
 }

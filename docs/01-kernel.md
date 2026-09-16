@@ -20,7 +20,7 @@ internal/agent       内核核心：会话运行时（工具循环/确认门/tod
   ├ prompt.go        系统提示词动态生成（工具清单来自注册表）
   └ session.go       Send/Cancel/Confirm + runTurn/streamRound/runTools
 internal/config      模型注册表（models.json 原子读写、角色绑定）
-internal/store       JSONL 会话持久化（append-only、坏行容忍、恢复最近）
+internal/store       SQLite 会话持久化（modernc.org/sqlite 纯 Go、WAL；2026-12 由 JSONL 切换，为 compaction/语义记忆铺路）
 internal/tools       工具注册表 + 7 个内置工具（风险分级 + JSON 修复）
 internal/llm         双格式 LLM 客户端（OpenAI/Anthropic、流式、ChatAuto）
 ```

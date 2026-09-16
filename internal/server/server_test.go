@@ -148,6 +148,7 @@ func newTestServer(t *testing.T, stream testStream) (*Server, *wsTestClient, *co
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = st.Close() }) // SQLite 连接必须显式关（Windows 句柄挡 TempDir 删除）
 	if err := srv.AttachSessionStore(st); err != nil {
 		t.Fatal(err)
 	}
