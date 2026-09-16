@@ -180,6 +180,35 @@ export class WSAgent implements AgentSource {
     this.call("session.resume", { id }).catch(() => {});
   }
 
+  renameSession(id: string, title: string): void {
+    const t = title.trim();
+    if (!t) return;
+    this.call("session.rename", { id, title: t })
+      .then(() => {
+        this.sessionsCache = this.sessionsCache.map((s) => (s.id === id ? { ...s, title: t, updatedAt: "刚刚" } : s));
+        this.emit({ type: "sessionsChanged" });
+      })
+      .catch(() => {});
+  }
+
+  archiveSession(id: string): void {
+    this.call("session.archive", { id, archived: true })
+      .then(() => {
+        this.sessionsCache = this.sessionsCache.map((s) => (s.id === id ? { ...s, archived: true } : s));
+        this.emit({ type: "sessionsChanged" });
+      })
+      .catch(() => {});
+  }
+
+  unarchiveSession(id: string): void {
+    this.call("session.archive", { id, archived: false })
+      .then(() => {
+        this.sessionsCache = this.sessionsCache.map((s) => (s.id === id ? { ...s, archived: false } : s));
+        this.emit({ type: "sessionsChanged" });
+      })
+      .catch(() => {});
+  }
+
   sessions(): SessionMeta[] {
     // 从缓存返回（连接时通过 chat.history 更新）
     return this.sessionsCache;

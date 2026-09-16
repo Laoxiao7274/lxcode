@@ -20,13 +20,23 @@
 | 协议 | `internal/protocol`：WS JSON-RPC 2.0（帧/方法/事件单处定义，客户端服务端共享）；扩展 `todo.updated` 事件与 `ChatHistoryResult.Todos`；端口 7789（与 local-myt-agent 的 7788 错开） |
 | 内核 | `internal/agent`：纯 Go 包（typed Event + Emitter + Confirm），被 server 包装广播；桌面壳将来也可 in-process 嵌入（包级零 UI 依赖保持不变） |
 | 客户端 | `internal/wsclient`：Backend 接口 + Dial（请求按 id 配对、事件 channel、断连 fast-fail、缓冲满丢最旧）；CLI 是第一个客户端，桌面壳复用同一协议 |
+| 前端 | **React 19 + TypeScript + Vite + gsap**，零 UI 库（手写 CSS 设计 token，设计语言 agent-console-v3）；`AgentSource` 双实现：WSAgent（连 7789 真实后端）/ DemoAgent（纯前端演示，无后端也能全量跑 UI）；渲染纪律：打字机行级 memo + memo(Block) 稳定回调 + motionAllowed 动效门控（reduced-motion/测试开关） |
+| 内核并发 | 单 Go 进程多会话（goroutine + context 贯穿全部等待点 + channel 传递状态）；多会话扩展见 §2.1（调速器 + 会话停车 + worktree），**不做每会话进程/微服务** |
 | LLM | 双 wire 格式：OpenAI chat completions + Anthropic Messages（`internal/llm`，从 local-myt-agent 整包继承——含 ChatAuto 分流策略：anthropic 恒流式，openai 带工具走非流式回放，依据是真机端点实测 openai 流式丢 tool_calls） |
 | 工具 | `internal/tools` 注册表 + 风险分级：低危自动执行，高危确认门 |
 | 会话 | JSONL append-only（`internal/store`），重启恢复最近会话，`/new` `/resume` 切换 |
 | 配置 | `internal/config` 模型注册表（models.json，原子写；default/vision 角色绑定；**30s 热加载** + model.changed 广播） |
 | 服务化 | **Windows SCM 服务**（`scripts/service/{install,update,uninstall}.ps1`；开机自启 + 崩溃自动重启；`--probe` 验收；布局 `%ProgramData%\lxcode\{bin,config,sessions,logs}`）；服务形态日志落文件（16MB 轮转 ×3） |
-| 桌面壳 | **规划中，Windows 优先**（Wails v3 beta vs Electron+Go sidecar 待选型）；后端可先于壳长期独立运行 |
+| 桌面壳 | **Electron + Go sidecar（2026-09-16 用户拍板，推翻 09-10 的 Tauri 2 初选，决策记录见 §2.1）**；后端可先于壳长期独立运行，壳是薄客户端（窗口/托盘/渲染层直连 7789） |
 | 依赖 | gorilla/websocket（协议层必需）；其余零第三方依赖 |
+
+### 2.1 语言栈与桌面壳决策记录（2026-09-16 拍板）
+
+- **桌面壳 = Electron + Go sidecar**（推翻 2026-09-10 的 Tauri 2 初选；`frontend/src-tauri` 骨架与 Tauri 构建脚本已于 2026-09-16 清理）。翻案理由：应用内嵌浏览器（人用面板）进入路线图，Electron 的 webContents（同窗口多视图 / session 隔离 / 请求拦截 / 内建 CDP）是唯一不将就的深度；Tauri/Wails 在 Windows 同用系统 WebView2（也是 Chromium），渲染无增益，省的只是占用（内存 ~100-200MB / 磁盘 ~100MB / 冷启动 +0.5s）——用占用换控制权与生态，且 LX-DSH 的 electron-builder/NSIS/自动更新管线原样平移、产品线栈统一。Electron 开销全在占用层，不在计算热路径（重活在 Go 内核；渲染器=你正在开发的同一个 Chromium 页面）。
+- **Rust 不重写内核**：后端负载 90%+ 是等 LLM/等子进程，唯一 CPU 密集点（search）已由"exec 外部二进制"覆盖。**FFI/cgo 严禁入仓**（链接地狱 / panic 边界 / 跨语言调试成本远超收益）；真要第二语言模块，须同时满足三门槛才升 sidecar 服务：占热路径 >30% / 自包含无共享状态 / Go 生态无等效品。
+- **Rust 的正确进入方式 = 进程边界**：ripgrep 这类外部 Rust 二进制直接接 tools 注册表（"Go 主刀，Rust 武器库"）；仓库零 Rust 工具链，"依赖只有两个"的基线不动。
+- **多会话并发 = 单进程 + 调速器**：瓶颈链 = LLM 限流 << 机器 CPU/磁盘 << 单进程容量（100+ 会话不撞）。方案 = 三档 governor（llmBudget 按供应商 token-bucket / toolPool 分池并发上限 / maxActiveTurns 公平 FIFO）+ 空闲会话停车（状态落 JSONL，内存跟活跃集走）+ **Git worktree 每任务隔离**（设置页已预留分区）。协议先行：事件/方法显式 sessionId + `turnQueued`/`budgetWait` 类事件，契约测试钉住。
+- **Electron 侧工程纪律**：单窗口 + WebContentsView 做浏览器面板（不开多 BrowserWindow）；contextIsolation 开、renderer 无 node 集成；主进程只做窗口/托盘/sidecar 生命周期，不放业务；后端仍是 SCM 服务优先（壳只是客户端，连不上给启动指引）。
 
 ## 3. 工具面（7 个）
 
@@ -87,7 +97,7 @@
 
 | 项 | 状态 |
 |---|---|
-| 桌面壳框架 | **已定 Tauri 2**（2026-09-10 用户拍板）——薄壳 + 前端直连 WS（React + aicss，设计语言 agent-console-v3）；动工时定细节 |
+| 桌面壳框架 | **已定 Electron + Go sidecar**（2026-09-16 用户拍板，决策记录 §2.1；推翻 09-10 的 Tauri 2 初选）——薄壳 + 前端直连 WS（React + aicss，设计语言 agent-console-v3）；动工时定细节；src-tauri 骨架已清理（2026-09-16） |
 | 项目正式名 | 工作名 lxcode，用户保留命名权 |
 | 上下文管理 | 工具结果截断（8KB/条）已兜底；compaction/历史摘要未做 |
 | 语义记忆 | 未做（会话搜索先行；SQLite 嵌入式是倾向） |

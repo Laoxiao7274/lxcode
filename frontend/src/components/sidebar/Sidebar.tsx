@@ -1,9 +1,14 @@
-import { useEffect, useRef, useState } from "react";
-import type { AgentSource } from "../../shared/types";
-import { staggerIn } from "../../shared/motion";
+import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { gsap } from "gsap";
+import type { AgentSource, SessionMeta } from "../../shared/types";
+import { motionAllowed, staggerIn } from "../../shared/motion";
+import { collapseAway, playEnter } from "../../shared/anim";
+import { useDismissal } from "../../shared/popover";
+import { IconPencil, IconArchive } from "../icons";
 
 /** 侧栏（Codex 2026-05 版形态，截图实证）：
- *  导航项（新对话/搜索/插件/自动化）→「项目」分组（上）→「对话」分组（下）。 */
+ *  导航项（新对话/搜索/插件/自动化）→「项目」分组（上）→「对话」分组（下）。
+ *  会话行 hover ⋯ 菜单：重命名（行内输入）/ 归档（收行动画后进设置归档区）。 */
 export function Sidebar({
   source,
   currentId,
@@ -16,14 +21,56 @@ export function Sidebar({
   onOpenSettings: () => void;
 }) {
   const [query, setQuery] = useState("");
+  const [menuFor, setMenuFor] = useState<string | null>(null);
+  const [renaming, setRenaming] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const sideRef = useRef<HTMLElement>(null);
-  const all = source.sessions();
+  const all = source.sessions().filter((s) => !s.archived);
   const list = query.trim()
     ? all.filter((s) => s.title.toLowerCase().includes(query.trim().toLowerCase()))
     : all;
   // 工作区去重（项目分组）
   const workspaces = [...new Set(all.map((s) => s.workspace).filter(Boolean))] as string[];
+
+  // 后出现的会话行（首轮消息建会话、归档区恢复）单独入场；
+  // 首屏整列由 staggerIn 接管，boot 窗口内跳过避免双份动画打架。
+  const bootAt = useRef(performance.now());
+  const enterRow = useCallback((el: HTMLDivElement | null) => {
+    if (el && performance.now() - bootAt.current >= 1500) {
+      playEnter(el, { opacity: 0, x: -6 }, { opacity: 1, x: 0, duration: 0.26, ease: "power2.out", clearProps: "transform,opacity" });
+    }
+  }, []);
+
+  // 菜单关闭走 gsap 退场再卸载（直接置 null 是瞬灭，开合不对称）
+  const menuClosingRef = useRef(false);
+  const closeMenu = useCallback(() => {
+    const els = sideRef.current ? Array.from(sideRef.current.querySelectorAll<HTMLElement>(".session-menu")) : [];
+    if (!els.length || !motionAllowed() || menuClosingRef.current) {
+      menuClosingRef.current = false;
+      setMenuFor(null);
+      return;
+    }
+    menuClosingRef.current = true;
+    // 入场 CSS fill:both 结束后仍占住样式，退场前先禁动画让 gsap 接管
+    gsap.set(els, { animation: "none", pointerEvents: "none" });
+    gsap.to(els, {
+      opacity: 0, y: -4, scale: 0.96, transformOrigin: "right top", duration: 0.16, ease: "power2.in", overwrite: true,
+      onComplete: () => { menuClosingRef.current = false; setMenuFor(null); },
+    });
+  }, []);
+
+  // ⋯ 菜单点外/Esc 关闭
+  useDismissal(sideRef, !!menuFor, closeMenu);
+
+  const commitRename = (s: SessionMeta, value: string) => {
+    const t = value.trim();
+    if (t && t !== s.title) source.renameSession(s.id, t);
+    setRenaming(null);
+  };
+
+  const doArchive = (e: ReactMouseEvent, id: string) => {
+    collapseAway((e.currentTarget as HTMLElement).closest(".session-item"), () => source.archiveSession(id));
+  };
 
   // 侧栏交错入场：导航项 → 搜索 → 分组标签 → 项目行 → 会话行
   useEffect(() => {
@@ -129,13 +176,68 @@ export function Sidebar({
       {list.slice(0, 8).map((s) => (
         <div
           key={s.id}
+          ref={enterRow}
           className={"session-item" + (s.id === currentId ? " active" : "")}
-          onClick={() => !busy && source.resumeSession(s.id)}
+          style={menuFor === s.id ? { zIndex: 30 } : undefined}
+          onClick={() => !busy && renaming !== s.id && source.resumeSession(s.id)}
           title={s.title}
         >
           <span className={"s-dot" + (s.id === currentId && busy ? " live" : "")} aria-hidden />
-          <span className="title">{s.title}</span>
+          {renaming === s.id ? (
+            <input
+              className="session-rename"
+              autoFocus
+              defaultValue={s.title}
+              aria-label="重命名会话"
+              onClick={(e) => e.stopPropagation()}
+              onPointerDown={(e) => e.stopPropagation()}
+              onBlur={(e) => commitRename(s, e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  commitRename(s, e.currentTarget.value);
+                }
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setRenaming(null);
+                }
+              }}
+            />
+          ) : (
+            <span className="title">{s.title}</span>
+          )}
           <span className="time">{s.updatedAt}</span>
+          {renaming !== s.id && (
+            <button
+              type="button"
+              className="session-more"
+              aria-label="会话操作"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                if (menuFor === s.id) closeMenu();
+                else setMenuFor(s.id);
+              }}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <circle cx="5" cy="12" r="1.7" />
+                <circle cx="12" cy="12" r="1.7" />
+                <circle cx="19" cy="12" r="1.7" />
+              </svg>
+            </button>
+          )}
+          {menuFor === s.id && (
+            <div className="session-menu" role="menu" onPointerDown={(e) => e.stopPropagation()}>
+              <button type="button" role="menuitem" onClick={() => { closeMenu(); setRenaming(s.id); }}>
+                <IconPencil />
+                重命名
+              </button>
+              <button type="button" role="menuitem" onClick={(e) => { closeMenu(); doArchive(e, s.id); }}>
+                <IconArchive />
+                归档
+              </button>
+            </div>
+          )}
         </div>
       ))}
       {list.length > 8 && <div className="ws-more">Show more（{list.length - 8}）</div>}

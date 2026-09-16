@@ -1,8 +1,13 @@
 // @aicss/react 0.1.3 (MIT) vendor 改造：只保留 command 变体（lxcode
 // 的确认门形态），lucide 图标换内联 SVG（v3 稿同款），中文标签，
 // 新增 resolved 态（裁决后卡片定格显示结果，不再可点）。
+// autoFocus 走 focus({preventScroll:true})——键盘可达但不抢滚动，
+// 贴底跟随由 Thread 的滚动状态机负责（原生 focus 滚动会打断上翻）。
+// 裁决徽标回弹入场（back.out），定格瞬间有确认感。
 import styles from "./ApprovalCard.module.css";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { gsap } from "gsap";
+import { motionAllowed } from "../shared/motion";
 
 export interface ApprovalCardProps {
   /** 命令文本（高危 bash 的 command）。 */
@@ -23,6 +28,19 @@ export function ApprovalCard({ command, cwd, note, onDecide, resolved, autoFocus
   const [local, setLocal] = useState<"allow" | "deny" | null>(resolved ?? null);
   const outcome = resolved ?? local;
   const decided = outcome !== null;
+  const runRef = useRef<HTMLButtonElement>(null);
+  const badgeRef = useRef<HTMLSpanElement>(null);
+
+  // 键盘可达但不抢滚动（原生 autoFocus 会把上翻阅读的用户拽到底部）
+  useEffect(() => {
+    if (autoFocus && !decided) runRef.current?.focus({ preventScroll: true });
+  }, [autoFocus, decided]);
+
+  // 裁决徽标回弹入场
+  useEffect(() => {
+    if (!decided || !badgeRef.current || !motionAllowed()) return;
+    gsap.fromTo(badgeRef.current, { opacity: 0, scale: 0.7 }, { opacity: 1, scale: 1, duration: 0.3, ease: "back.out(2)", clearProps: "transform,opacity" });
+  }, [decided]);
 
   const decide = (allow: boolean) => {
     if (decided) return;
@@ -43,7 +61,7 @@ export function ApprovalCard({ command, cwd, note, onDecide, resolved, autoFocus
           <div className={styles.title}>{decided ? (outcome === "allow" ? "已运行此命令" : "已跳过此命令") : "执行此命令？"}</div>
         </div>
         {decided && (
-          <span className={styles.resolvedBadge} data-outcome={outcome}>
+          <span className={styles.resolvedBadge} data-outcome={outcome} ref={badgeRef}>
             {outcome === "allow" ? "已批准" : "已拒绝"}
           </span>
         )}
@@ -63,7 +81,7 @@ export function ApprovalCard({ command, cwd, note, onDecide, resolved, autoFocus
             <button
               type="button"
               className={styles.btnPrimary}
-              autoFocus={autoFocus}
+              ref={runRef}
               onClick={() => decide(true)}
             >
               运行

@@ -39,9 +39,9 @@ const SESSIONS: SessionMeta[] = [
   { id: "20260911-103024-a1b2", title: "给工具循环加超时保护", updatedAt: "刚刚", messages: 9, workspace: "lxcode" },
   { id: "20260910-225918-0a9e", title: "前后台分离的协议层评审", updatedAt: "昨天", messages: 14, workspace: "lxcode" },
   { id: "20260910-164246-c3d4", title: "edit 工具的唯一匹配校验设计", updatedAt: "3 天前", messages: 22, workspace: "lxcode" },
-  { id: "20260909-090102-e5f6", title: "选型：Tauri 壳的边界", updatedAt: "上周", messages: 8, workspace: "lxcode" },
+  { id: "20260909-090102-e5f6", title: "选型：Tauri 壳的边界", updatedAt: "上周", messages: 8, workspace: "lxcode", archived: true },
   { id: "20260908-151512-f7a8", title: "niubash 实测记录", updatedAt: "上周", messages: 6, workspace: "local-myt-agent" },
-  { id: "20260907-112209-b9c0", title: "容器化部署演练", updatedAt: "2 周前", messages: 18, workspace: "local-myt-agent" },
+  { id: "20260907-112209-b9c0", title: "容器化部署演练", updatedAt: "2 周前", messages: 18, workspace: "local-myt-agent", archived: true },
 ];
 
 export class DemoAgent implements AgentSource {
@@ -112,6 +112,24 @@ export class DemoAgent implements AgentSource {
   resumeSession(id: string): void {
     this.currentSession = id;
     this.emit({ type: "sessionChanged", id, reason: "resumed" });
+  }
+
+  renameSession(id: string, title: string): void {
+    const t = title.trim();
+    if (!t) return;
+    this.sessions_ = this.sessions_.map((s) => (s.id === id ? { ...s, title: t, updatedAt: "刚刚" } : s));
+    this.emit({ type: "sessionsChanged" });
+  }
+
+  archiveSession(id: string): void {
+    this.sessions_ = this.sessions_.map((s) => (s.id === id ? { ...s, archived: true } : s));
+    if (this.currentSession === id) this.newSession();
+    this.emit({ type: "sessionsChanged" });
+  }
+
+  unarchiveSession(id: string): void {
+    this.sessions_ = this.sessions_.map((s) => (s.id === id ? { ...s, archived: false } : s));
+    this.emit({ type: "sessionsChanged" });
   }
 
   sessions(): SessionMeta[] {

@@ -12,9 +12,7 @@ temp/
 # 前端（node_modules 与构建产物）
 frontend/node_modules/
 frontend/dist/
-
-# Tauri（Rust 构建产物）
-frontend/src-tauri/target/
+frontend/tsconfig.tsbuildinfo
 
 # IDE
 .idea/

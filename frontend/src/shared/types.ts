@@ -1,8 +1,6 @@
 // UI 事件模型——字段语义与后端 internal/protocol 一一对应（demo 与 live
 // 两个 AgentSource 实现都发这套事件，UI 层不感知数据来源）。
 
-export type ChatRole = "user" | "assistant" | "tool";
-
 /** 任务清单项（对齐 tools.TodoItem）。 */
 export interface TodoItem {
   content: string;
@@ -29,7 +27,9 @@ export type AgentEvent =
   | { type: "done"; usageTokens: number; finishReason: string }
   | { type: "error"; message: string; aborted: boolean }
   | { type: "busy"; busy: boolean }
-  | { type: "sessionChanged"; id: string; reason: string };
+  | { type: "sessionChanged"; id: string; reason: string }
+  /** 会话列表本身变了（重命名/归档/恢复）——UI 重读 sessions()。 */
+  | { type: "sessionsChanged" };
 
 /** 会话列表条目（对齐 protocol.SessionMeta；workspace 用于侧栏按工作区分组）。 */
 export interface SessionMeta {
@@ -39,6 +39,8 @@ export interface SessionMeta {
   messages: number;
   /** 所属工作区（项目路径的末段；空 = 未分组）。 */
   workspace?: string;
+  /** 归档态——侧栏不显示，设置「归档任务」里可恢复。 */
+  archived?: boolean;
 }
 
 /**
@@ -58,6 +60,12 @@ export interface AgentSource {
   newSession(): void;
   /** 恢复会话。 */
   resumeSession(id: string): void;
+  /** 重命名会话。 */
+  renameSession(id: string, title: string): void;
+  /** 归档会话（当前会话被归档时自动切到新会话）。 */
+  archiveSession(id: string): void;
+  /** 从归档恢复。 */
+  unarchiveSession(id: string): void;
   /** 会话列表。 */
   sessions(): SessionMeta[];
   /** 显示名（顶栏徽标）。 */

@@ -2,14 +2,8 @@ import { useRef, useState } from "react";
 import { Orb } from "../../aicss/Orb";
 import { PermPicker } from "../perm-picker";
 import { ModelPicker } from "../model-picker";
-
-/** 上下文用量（mock——真实接入 = chat.history 的 usageTokens / contextWindow）。 */
-function useContextUsage(): { used: number; total: number; pct: number } {
-  // 模拟：已用约 34k / 128k 窗口
-  const used = 34_200;
-  const total = 128_000;
-  return { used, total, pct: Math.round((used / total) * 100) };
-}
+import { ContextIndicator } from "../context-indicator";
+import { useEnterRef } from "../../shared/anim";
 
 /** 输入区（Codex 式）：busy 时输入框保留（可预输入），发送钮变停止。 */
 export function Composer({
@@ -25,7 +19,8 @@ export function Composer({
 }) {
   const [value, setValue] = useState("");
   const taRef = useRef<HTMLTextAreaElement>(null);
-  const ctx = useContextUsage();
+  // 「生成中」状态行挂载即上浮淡入（busy 翻转时才挂载/卸载）
+  const busyRowRef = useEnterRef<HTMLDivElement>({ opacity: 0, y: 6 }, { opacity: 1, y: 0, duration: 0.26, ease: "power2.out", clearProps: "transform,opacity" });
   const canSend = value.trim().length > 0 && !busy && !disabled;
 
   const submit = () => {
@@ -40,7 +35,7 @@ export function Composer({
       <div className="composer-inner">
         {/* busy 状态行：浮在输入框上方（生成中 + 停止入口在按钮位） */}
         {busy && (
-          <div className="busy-row">
+          <div className="busy-row" ref={busyRowRef}>
             <Orb variant="S1" size={16} />
             <span className="busy-text">生成中</span>
           </div>
@@ -64,21 +59,7 @@ export function Composer({
           <div className="piBar">
             <PermPicker />
             <ModelPicker />
-            {/* 上下文用量指示器（Codex composer 同款） */}
-            <span className="ctx-indicator" title={`上下文窗口 ${ctx.used.toLocaleString()} / ${ctx.total.toLocaleString()} tokens`}>
-              <svg width="16" height="16" viewBox="0 0 20 20" aria-hidden="true">
-                <circle cx="10" cy="10" r="8" fill="none" stroke="var(--border-strong)" strokeWidth="2.5" />
-                <circle
-                  cx="10" cy="10" r="8" fill="none"
-                  stroke={ctx.pct > 80 ? "var(--danger)" : "var(--fg-muted)"}
-                  strokeWidth="2.5"
-                  strokeLinecap="round"
-                  strokeDasharray={`${(ctx.pct / 100) * 50.27} 50.27`}
-                  transform="rotate(-90 10 10)"
-                />
-              </svg>
-              <span className="ctx-pct">{ctx.pct}%</span>
-            </span>
+            <ContextIndicator />
             <span className="piTips" />
             {busy ? (
               <button type="button" className="send-btn stop" onClick={onCancel} aria-label="停止生成" title="停止生成">

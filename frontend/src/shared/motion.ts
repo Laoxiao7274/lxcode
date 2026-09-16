@@ -9,11 +9,12 @@ export function motionAllowed(): boolean {
 }
 
 /** 标准入场：上浮 + 淡入（Codex 的柔和节奏）。 */
-export const enter = { y: 8, opacity: 0 };
-export const enterTo = { y: 0, opacity: 1 };
+const enter = { y: 8, opacity: 0 };
+const enterTo = { y: 0, opacity: 1 };
 export const enterEase = "power2.out";
 
-/** 交错浮现（空态卡片/消息块）。 */
+/** 交错浮现（空态卡片/消息块）。收尾清掉内联 transform——残留的
+ *  translate(0,0) 会让每个元素自成 stacking context，把弹层 z-index 困住。 */
 export function staggerIn(targets: Element | Element[] | NodeListOf<Element> | string, opts: { delay?: number; each?: number } = {}) {
   if (!motionAllowed()) return;
   gsap.fromTo(targets as Element, enter, {
@@ -22,5 +23,6 @@ export function staggerIn(targets: Element | Element[] | NodeListOf<Element> | s
     ease: enterEase,
     delay: opts.delay ?? 0,
     stagger: opts.each ?? 0.06,
+    clearProps: "transform,opacity",
   });
 }

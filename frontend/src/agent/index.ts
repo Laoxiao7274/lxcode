@@ -12,14 +12,7 @@ export function getAgentSource(): AgentSource {
   if (cached) return cached;
 
   const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-  // Tauri 模式始终尝试后端（壳会 spawn）；浏览器模式也试（可能手动起了后端）
-  // 简单策略：先创建 WSAgent——连接失败时它会发出 error 事件，UI 自然降级。
-  // 后续可以加 ping 探测自动 fallback 到 DemoAgent。
-  if (isTauri) {
-    cached = new WSAgent("127.0.0.1:7789");
-  } else {
-    // 浏览器模式也试连后端（开发时后端可能跑着）
-    cached = new WSAgent("127.0.0.1:7789");
-  }
+  // Tauri 模式连后端（壳会 spawn）；浏览器 = 纯页面原型，跑 DemoAgent 演示数据
+  cached = isTauri ? new WSAgent("127.0.0.1:7789") : new DemoAgent();
   return cached;
 }

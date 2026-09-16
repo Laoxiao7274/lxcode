@@ -1,8 +1,8 @@
 // 事件流 → UI 状态的归约。Thread 的渲染单元是"块"（block）：
 // 一条 user 消息、一条 assistant 回复（含正文/思考链/流式态）、一次
 // 工具调用（含结果）、一张确认卡、一份任务清单、一条错误。
-import { useEffect, useState } from "react";
-import type { AgentEvent, AgentSource, ConfirmRequest, SessionMeta, TodoItem } from "./types";
+import { useCallback, useEffect, useState } from "react";
+import type { AgentEvent, AgentSource, ConfirmRequest, TodoItem } from "./types";
 
 export interface AssistantBlock {
   kind: "assistant";
@@ -26,10 +26,9 @@ export interface UIState {
   busy: boolean;
   pending: ConfirmRequest | null;
   todos: TodoItem[];
-  sessionIds: string[];
 }
 
-const initial: UIState = { blocks: [], busy: false, pending: null, todos: [], sessionIds: [] };
+const initial: UIState = { blocks: [], busy: false, pending: null, todos: [] };
 
 // 块的唯一序号——React 渲染的稳定 key（index 作 key 在插入新块时
 // 会错位复用组件实例，是重复渲染类怪象的根因）。
@@ -114,7 +113,10 @@ function reduce(state: UIState, ev: AgentEvent): UIState {
       return { ...state, busy: ev.busy, pending: ev.busy ? state.pending : null };
     case "sessionChanged":
       // 演示模式切会话：清空重排（真实模式由 chat.history 重放）
-      return { ...initial, sessionIds: [...state.sessionIds, ev.id] };
+      return { ...initial };
+    case "sessionsChanged":
+      // 列表变化不改 UI 状态本身——新对象触发重渲染（侧栏重读 sessions()）
+      return { ...state };
     default:
       return state;
   }
@@ -122,7 +124,8 @@ function reduce(state: UIState, ev: AgentEvent): UIState {
 
 /** useAgent：订阅 AgentSource 并归约成 UI 状态。
  * resolve：确认裁决后把对应卡片定格（allow/deny 徽标）——裁决是本地
- * UI 状态（后端事件流没有"卡片已裁决"事件，toolResult 才是回执）。 */
+ * UI 状态（后端事件流没有"卡片已裁决"事件，toolResult 才是回执）。
+ * send/resolve 身份稳定：下游 React.memo(Block) 依赖 onConfirm 稳定。 */
 export function useAgent(source: AgentSource): {
   state: UIState;
   send: AgentSource["send"];
@@ -133,14 +136,15 @@ export function useAgent(source: AgentSource): {
     setState(initial);
     return source.subscribe((ev) => setState((s) => reduce(s, ev)));
   }, [source]);
-  const resolve = (id: string, outcome: "allow" | "deny") => {
+  const send = useCallback((t: string) => source.send(t), [source]);
+  const resolve = useCallback((id: string, outcome: "allow" | "deny") => {
     setState((s) => resolveConfirm(s, id, outcome));
-  };
-  return { state, send: (t: string) => source.send(t), resolve };
+  }, []);
+  return { state, send, resolve };
 }
 
 /** 确认裁决后把对应卡片定格（allow/deny 徽标）。 */
-export function resolveConfirm(state: UIState, id: string, outcome: "allow" | "deny"): UIState {
+function resolveConfirm(state: UIState, id: string, outcome: "allow" | "deny"): UIState {
   return {
     ...state,
     pending: null,
@@ -149,5 +153,3 @@ export function resolveConfirm(state: UIState, id: string, outcome: "allow" | "d
     ),
   };
 }
-
-export type { AgentSource, SessionMeta };

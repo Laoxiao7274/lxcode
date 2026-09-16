@@ -15,64 +15,21 @@ export type HelixVariant = "G1" | "G2" | "G3" | "G4" | "G5";
 export type MorphVariant = "M1" | "M2" | "M3" | "M4" | "M5";
 export type OrbVariant = LatticeVariant | LensVariant | RingVariant | HelixVariant | MorphVariant;
 
-export const LATTICE_VARIANTS: LatticeVariant[] = ["S1", "S2", "S3", "S4", "S5"];
-
-export const LENS_VARIANTS: LensVariant[] = [
-  "B1",
-  "B2",
-  "B3",
-  "B4",
-  "B5",
-];
-
-export const RING_VARIANTS: RingVariant[] = ["C1", "C2", "C3", "C4", "C5"];
-
-export const HELIX_VARIANTS: HelixVariant[] = ["G1", "G2", "G3", "G4", "G5"];
-
-export const MORPH_VARIANTS: MorphVariant[] = ["M1", "M2", "M3", "M4", "M5"];
-
-export const ORB_TASKS: Record<OrbVariant, string> = {
-  S1: "Thinking",
-  S2: "Processing",
-  S3: "Working",
-  S4: "Searching",
-  S5: "Finalizing",
-  B1: "Thinking",
-  B2: "Searching",
-  B3: "Generating",
-  B4: "Solving",
-  B5: "Routing",
-  C1: "Loading",
-  C2: "Listening",
-  C3: "Streaming",
-  C4: "Analyzing",
-  C5: "Compiling",
-  G1: "Processing",
-  G2: "Sequencing",
-  G3: "Uploading",
-  G4: "Syncing",
-  G5: "Idling",
-  M1: "Shaping",
-  M2: "Expanding",
-  M3: "Unfolding",
-  M4: "Transforming",
-  M5: "Dispersing",
-};
-
+// 族别由变体 id 首字母决定（S/B/C/G/M），无需维护清单表
 function isLattice(v: OrbVariant): v is LatticeVariant {
-  return (LATTICE_VARIANTS as OrbVariant[]).includes(v);
+  return v.startsWith("S");
 }
 
 function isRing(v: OrbVariant): v is RingVariant {
-  return (RING_VARIANTS as OrbVariant[]).includes(v);
+  return v.startsWith("C");
 }
 
 function isHelix(v: OrbVariant): v is HelixVariant {
-  return (HELIX_VARIANTS as OrbVariant[]).includes(v);
+  return v.startsWith("G");
 }
 
 function isMorph(v: OrbVariant): v is MorphVariant {
-  return (MORPH_VARIANTS as OrbVariant[]).includes(v);
+  return v.startsWith("M");
 }
 
 const N = 3; // lattice is N×N
@@ -567,7 +524,7 @@ export function Orb({
   className,
   style,
 }: OrbProps) {
-  const text = label ?? ORB_TASKS[variant] + "…";
+  const text = label ?? "生成中";
   return (
     <span
       className={styles.root + (className ? " " + className : "")}

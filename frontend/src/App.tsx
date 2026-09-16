@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { getAgentSource } from "./agent";
 import { useAgent } from "./shared/store";
 import { Topbar } from "./components/topbar";
@@ -32,10 +32,11 @@ function AppBody() {
     });
   }, [source]);
 
-  const handleConfirm = (id: string, allow: boolean) => {
+  // 稳定身份：Thread 的 Block 用 memo，onConfirm 每次新建会击穿它
+  const handleConfirm = useCallback((id: string, allow: boolean) => {
     source.confirm(id, allow);
     resolve(id, allow ? "allow" : "deny");
-  };
+  }, [source, resolve]);
 
   const currentTitle = state.blocks.length === 0 ? "" : source.sessions().find((s: import("./shared/types").SessionMeta) => s.id === currentId)?.title ?? "任务";
 
@@ -54,7 +55,7 @@ function AppBody() {
           </div>
           <Composer busy={state.busy} onSend={send} onCancel={() => source.cancel()} />
         </main>
-        <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+        <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} source={source} />
       </div>
     );
   }
@@ -71,7 +72,7 @@ function AppBody() {
           </div>
           <Composer busy={state.busy} onSend={send} onCancel={() => source.cancel()} />
         </main>
-        <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+        <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} source={source} />
       </div>
     </div>
   );
