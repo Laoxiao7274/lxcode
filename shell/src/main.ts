@@ -3,7 +3,7 @@
 // React 应用，经 WS 直连 127.0.0.1:7789，与浏览器/CLI 客户端同权。
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { app, BrowserWindow, net, protocol } from "electron";
+import { app, BrowserWindow, ipcMain, net, protocol } from "electron";
 import { ensureBackend, shutdownBackend } from "./sidecar";
 
 // userData 目录名与应用身份（单实例锁、任务栏、通知都吃这个）
@@ -56,7 +56,11 @@ if (!app.requestSingleInstanceLock()) {
       title: "Lxcode",
       backgroundColor: "#101014", // 对齐前端暗色主题，避免白闪
       show: false, // 先就绪再显示，避免白窗
+      frame: false, // 无系统标题栏——顶部栏由渲染层 Topbar 自绘（拖拽区 + 窗口控制按钮，经 preload 桥 __LX__）
+      roundedCorners: true, // Win11 圆角（默认即 true，显式记录）
+      icon: join(__dirname, "..", "build", "icon.png"), // 开发态窗口图标；产线用 exe 内嵌图标
       webPreferences: {
+        preload: join(__dirname, "preload.js"),
         // contextIsolation 开、node 集成关：渲染层无 Node 能力，只走 WS。
         // （sandbox 名义上 true，但被上面的 --no-sandbox 命令行开关整体
         // 关闭——见文件头注释的理由与安全权衡。）
@@ -66,6 +70,14 @@ if (!app.requestSingleInstanceLock()) {
       },
     });
     win.once("ready-to-show", () => win?.show());
+
+    // 窗口控制 IPC（preload 的 __LX__ 桥 → Topbar 按钮）
+    ipcMain.on("win:minimize", () => win?.minimize());
+    ipcMain.on("win:toggleMaximize", () => {
+      if (!win) return;
+      win.isMaximized() ? win.unmaximize() : win.maximize();
+    });
+    ipcMain.on("win:close", () => win?.close());
 
     // 产线诊断通道：渲染层控制台与加载失败转发到主进程 stdout
     // （打包后无 DevTools 场景排查渲染层问题全靠它）

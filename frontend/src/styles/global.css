@@ -81,7 +81,8 @@ body:has(.window-stage) {
   padding: 0 0 0 14px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-side);
-  /* 拖拽区（Tauri 阶段 data-tauri-drag-region；浏览器里无害） */
+  /* 窗口拖拽区（Electron：无系统标题栏，顶栏代劳；浏览器里该属性被忽略，无害） */
+  -webkit-app-region: drag;
   user-select: none;
 }
 .tb-left {
@@ -148,7 +149,9 @@ body:has(.window-stage) {
   color: var(--fg-muted);
   background: transparent;
   border: none;
-  cursor: pointer; /* Tauri 已接管（__LX__ 桥） */
+  cursor: pointer;
+  /* 按钮要从拖拽区里豁免出来（.topbar 是 drag，这里必须 no-drag 才可点击） */
+  -webkit-app-region: no-drag;
 }
 .win-btn:hover {
   background: var(--border-soft);
