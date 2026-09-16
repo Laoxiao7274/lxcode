@@ -14,8 +14,6 @@ export function PlanBar({ todos }: { todos: TodoItem[] }) {
   const detailRef = useRef<HTMLDivElement>(null);
   const prevDone = useRef(-1);
 
-  if (todos.length === 0) return null;
-
   const done = todos.filter((t) => t.status === "done").length;
   const active = todos.find((t) => t.status === "active");
   const total = todos.length;
@@ -46,6 +44,10 @@ export function PlanBar({ todos }: { todos: TodoItem[] }) {
       gsap.fromTo(items, { opacity: 0, x: -5 }, { opacity: 1, x: 0, duration: 0.22, ease: "power2.out", stagger: 0.035, clearProps: "transform,opacity" });
     }
   }, [open]);
+
+  // hooks 全部执行完才允许 early return（Rules of Hooks——todos 空→非空
+  // 时 hook 数量不能变）
+  if (todos.length === 0) return null;
 
   return (
     <div className="plan-bar" role="status" ref={rootRef}>
