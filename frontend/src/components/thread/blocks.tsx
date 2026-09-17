@@ -2,7 +2,7 @@
 // 工具卡 / 确认卡 / 任务清单 / 错误条。
 // Block 用 memo：reduce 只给变化的块换新引用，未动的兄弟块跳过协调；
 // 配合稳定的 onConfirm（useAgent/App 的 useCallback）生效。
-import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { ThreadBlock } from "../../shared/store";
 import type { FileChange } from "../../shared/types";
 import { gsap } from "gsap";
@@ -96,17 +96,57 @@ export const Block = memo(function Block({ block, onConfirm }: { block: ThreadBl
   }
 });
 
-/** 工具卡（DSH ToolRow 形态）：折叠摘要行 + 点击展开结果终端块。
- *  行结构：[状态点] 工具名 · 参数摘要——运行中蓝点+扫光，完成→灰点，
- *  出错→红点。edit 走 diff 卡（几何对齐 DSH DiffBlock）。 */
+/** 工具行（lx-dsh ui-tool 的 ToolRow/DisclosureRow/TerminalBlock 逐项对齐）：
+ *  折叠行 [leading 16px] 6 [标题 13/24] [sep 2px] [摘要 ellipsis] [chevron]；
+ *  leading：空闲=工具图标（hover 淡出换 chevron），运行/出错=StateDot；
+ *  展开体 = TerminalBlock（浅色代码卡 + 左 gutter 状态点 + 命令 banner +
+ *  输出 22px 行高 max 224px）；gsap 高度补间 0.22s/0.16s。
+ *  edit 工具走 diff 卡（DSH DiffBlock 同款语言）。 */
+const TOOL_TITLES: Record<string, string> = {
+  read_file: "读文件",
+  search: "搜索",
+  session_search: "查历史",
+  edit: "改文件",
+  write_file: "写文件",
+  bash: "跑命令",
+  todo: "任务清单",
+};
+
 function ToolBlock({ block }: { block: Extract<ThreadBlock, { kind: "tool" }> }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
+  const [bodyMounted, setBodyMounted] = useState(false);
+  const bodyRef = useRef<HTMLDivElement>(null);
   const running = block.result === undefined;
+  const expandable = !running;
 
   useEffect(() => {
     playEnter(rootRef.current);
   }, []);
+
+  // 展开/收起（DSH DisclosureRow 同款节奏：开 0.22s power2.out 补高度，
+  // 关 0.16s power2.in 压到 0 再卸载 body——收起动画完整可见）。
+  // useLayoutEffect：挂载帧前就位起始态，无闪烁。
+  useLayoutEffect(() => {
+    const el = bodyRef.current;
+    if (!el || !motionAllowed()) return;
+    if (open) {
+      gsap.fromTo(el, { height: 0, opacity: 0 }, {
+        height: "auto", opacity: 1, duration: 0.22, ease: "power2.out", overwrite: true,
+        onComplete: () => gsap.set(el, { clearProps: "height,opacity,overflow" }),
+      });
+      gsap.set(el, { overflow: "hidden" });
+    } else if (bodyMounted) {
+      gsap.to(el, {
+        height: 0, opacity: 0, duration: 0.16, ease: "power2.in", overwrite: true,
+        onComplete: () => setBodyMounted(false),
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, bodyMounted]);
+  useEffect(() => {
+    if (open) setBodyMounted(true);
+  }, [open]);
 
   // JSON 解析只做一次/参数变化（memo(Block) 已挡掉大部分重渲染）
   const { argsSummary, cmdline } = useMemo(
@@ -152,32 +192,62 @@ function ToolBlock({ block }: { block: Extract<ThreadBlock, { kind: "tool" }> })
     );
   }
 
-  // 摘要行：工具名 · 参数摘要（运行中/错误态有专属文案与配色）
-  const summary = running ? "执行中…" : block.isError ? clip(block.result ?? "", 90) : argsSummary;
+  const title = TOOL_TITLES[block.name] ?? block.name;
+  // 出错：错误输出的首行（DSH 的 errorSummary = firstLine(output)）
+  const errorSummary = !running && block.isError ? (block.result ?? "").split("\n")[0] : null;
+  const summary = errorSummary ?? (running ? "执行中…" : argsSummary);
+
   return (
-    <div className={"tool-row" + (running ? " running" : "") + (block.isError ? " failed" : "")} ref={rootRef}>
-      <button
-        type="button"
-        className="tool-row-head"
-        onClick={() => setOpen(!open)}
-        aria-expanded={open}
-        disabled={running}
+    <div
+      className={"trow" + (running ? " trow-running" : "") + (block.isError ? " trow-error" : "") + (open ? " trow-open" : "")}
+      ref={rootRef}
+    >
+      <div
+        className="trow-row"
+        role={expandable ? "button" : undefined}
+        tabIndex={expandable ? 0 : undefined}
+        aria-expanded={expandable ? open : undefined}
+        onClick={expandable ? () => setOpen((o) => !o) : undefined}
+        onKeyDown={(e) => {
+          if (expandable && (e.key === "Enter" || e.key === " ")) {
+            e.preventDefault();
+            setOpen((o) => !o);
+          }
+        }}
       >
-        <span className={"tool-dot" + (running ? " run" : block.isError ? " err" : "")} aria-hidden />
-        <span className="tname">{block.name}</span>
-        <span className="tool-sep" aria-hidden />
-        <span className={"tool-summary" + (block.isError ? " err" : "")}>{summary}</span>
-        {!running && (
-          <svg className="tool-chev" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-            <path d="m9 6 6 6-6 6" />
-          </svg>
-        )}
-      </button>
-      {open && !running && (
-        <pre className="tool-result" data-error={block.isError ? "true" : undefined}>
-          <span className="tool-cmdline">{cmdline}{"\n"}</span>
-          {clip(block.result ?? "", 1400)}
-        </pre>
+        {/* leading：运行/出错 = StateDot；空闲 = 图标（hover 淡出换 chevron 提示可展开） */}
+        <span className="trow-leading" aria-hidden>
+          {running || block.isError ? (
+            <span className={"sdot" + (running ? " run" : " err")} />
+          ) : (
+            <>
+              <svg className="trow-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
+              </svg>
+              <svg className="trow-chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <path d="m6 9 6 6 6-6" />
+              </svg>
+            </>
+          )}
+        </span>
+        <span className="trow-title">{title}</span>
+        <span className="trow-sep" aria-hidden />
+        <span className={"trow-summary" + (errorSummary ? " err" : "")}>{summary}</span>
+      </div>
+      {/* 展开体：TerminalBlock 形态（浅色代码卡 + 左 gutter 状态点 + 命令 banner +
+          输出）——banner 的状态点与行 leading 同步（DSH 的 runState） */}
+      {bodyMounted && (
+        <div className="trow-body" ref={bodyRef}>
+          <div className="tterm" data-running={running ? "true" : undefined}>
+            <div className="tterm-banner">
+              {running && <span className="sdot run" aria-hidden />}
+              <span className="tterm-cmd">{cmdline}</span>
+            </div>
+            <pre className="tterm-out" data-error={block.isError ? "true" : undefined}>
+              {clip(block.result ?? "", 1400) || <span className="tterm-empty">（无输出）</span>}
+            </pre>
+          </div>
+        </div>
       )}
     </div>
   );

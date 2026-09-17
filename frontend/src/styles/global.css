@@ -713,115 +713,129 @@ body:has(.window-stage) {
   margin-bottom: 6px;
   color: var(--fg-muted);
 }
-/* 工作折叠行（Codex 的 "Edited a file and ran commands · Worked for 8s"） */
-.work-group {
-  margin: 6px 0 14px;
+/* 工具行排在正文流里（DSH 形态）：与上下文块呼吸 4px */
+.thread > .trow {
+  margin: 4px 0;
 }
-.work-body {
-  padding: 6px 0 6px 4px;
-  border-left: 1.5px solid var(--border);
-  margin-left: 6px;
-  padding-left: 14px;
-}
-/* 组内块间距：卡片（todo/确认卡）与工具块上下分离 */
-.work-body > .tool-block,
-.work-body > * {
-  margin-bottom: 12px;
-}
-.work-body > *:last-child {
-  margin-bottom: 0;
-}
-.work-row {
+/* ===== 工具行（lx-dsh ui-tool 逐项对齐：ToolRow/DisclosureRow/StateDot/TerminalBlock） ===== */
+/* 根：纵向 flex（行 + 展开体） */
+.trow {
   display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 7px 10px;
-  margin: 6px 0;
-  font-size: 12.5px;
-  color: var(--fg-muted);
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  cursor: pointer;
-  width: 100%;
-  text-align: left;
-  font-family: var(--font-sans);
+  flex-direction: column;
 }
-.work-row:hover {
-  background: var(--surface);
-  border-color: var(--border-strong);
-}
-.work-row .work-chevron {
-  margin-left: auto;
-  font-size: 10px;
-  color: var(--fg-faint);
-  flex: none;
-  transition: transform 200ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-.work-row[aria-expanded="false"] .work-chevron {
-  transform: rotate(-90deg);
-}
-/* ===== 工具块（暗色终端） ===== */
-.tool-block {
-  margin: 8px 0;
-  border-radius: 10px;
-  padding: 2px 4px;
-  margin-left: -4px;
-  transition: background 120ms;
-}
-/* ===== 工具行（DSH ToolRow 形态）：折叠摘要行 + 展开结果 ===== */
-.tool-row {
-  margin: 2px 0;
-}
-.tool-row-head {
+/* 行：24px 高（DSH DisclosureRow 的行高）；运行中扫光在 ::after */
+.trow-row {
   position: relative;
   overflow: hidden;
   display: flex;
   align-items: center;
-  gap: 8px;
-  width: 100%;
-  height: 30px;
-  padding: 0 2px;
-  background: transparent;
-  border: none;
-  border-radius: 7px;
-  cursor: pointer;
-  text-align: left;
-  font-family: var(--font-sans);
-  transition: background 100ms;
-}
-.tool-row-head:hover {
-  background: var(--border-soft);
-}
-.tool-row-head:disabled {
+  height: 24px;
+  min-width: 0;
   cursor: default;
 }
-/* 运行中：蓝色光带从左到右扫过（DSH 的 dsh-tool-row-sweep） */
-.tool-row.running .tool-row-head::after {
+.trow-row[role="button"] {
+  cursor: pointer;
+}
+.trow-row[role="button"]:hover {
+  background: rgba(0, 0, 0, 0.03);
+  border-radius: 6px;
+}
+/* 运行中：光带扫过（DSH sweep——bg-base 60% 混色的横带） */
+.trow-running .trow-row::after {
   content: "";
+  background: linear-gradient(90deg, transparent 0%, rgba(59, 130, 246, 0.06) 55%, transparent 100%);
+  pointer-events: none;
+  width: 300px;
+  animation: trow-sweep 2.6s ease-out infinite;
   position: absolute;
   top: 0;
   bottom: 0;
-  left: -300px;
-  width: 300px;
-  background: linear-gradient(90deg, transparent 0%, rgba(59, 130, 246, 0.07) 55%, transparent 100%);
-  pointer-events: none;
-  animation: tool-row-sweep 2.6s ease-out infinite;
+  left: 0;
 }
-@keyframes tool-row-sweep {
+@keyframes trow-sweep {
   0% { left: -300px; }
-  90%, 100% { left: 100%; }
+  90%, to { left: 100%; }
 }
-/* 状态点：DSH StateDot——10% 光晕 + 实心核（默认=完成，灰）; */
-.tool-dot {
+/* leading：16px 盒（DSH leading——图标/状态点/chevron 的家） */
+.trow-leading {
   position: relative;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 6px;
+  color: var(--fg-faint);
+}
+/* 空闲图标（hover 淡出换 chevron——DSH 的 iconIdle/chevronHover 语义） */
+.trow-icon {
+  display: inline-flex;
+  opacity: 1;
+  transition: opacity 100ms ease;
+}
+.trow-chev {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  opacity: 0;
+  transition: opacity 100ms ease;
+  color: var(--fg-muted);
+}
+.trow-row:hover .trow-icon {
+  opacity: 0;
+}
+.trow-row:hover .trow-chev {
+  opacity: 1;
+}
+/* 展开态：chevron 常驻（leading 就是它） */
+.trow-open .trow-leading .trow-icon {
+  display: none;
+}
+.trow-open .trow-leading .trow-chev {
+  opacity: 1;
+  transform: none;
+}
+/* 标题（DSH title：13px/24 weight 400） */
+.trow-title {
+  flex: none;
+  font-size: 13px;
+  line-height: 24px;
+  font-weight: 400;
+  color: var(--fg-muted);
+}
+/* 2px 分隔点（DSH sep） */
+.trow-sep {
+  background: var(--fg-faint);
+  border-radius: 1px;
+  flex: none;
+  width: 2px;
+  height: 2px;
+  margin: 0 8px;
+}
+/* 摘要（DSH summary：13/24 tertiary + ellipsis） */
+.trow-summary {
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 24px;
+  color: var(--fg-faint);
+  flex: auto;
+  overflow: hidden;
+}
+.trow-summary.err {
+  color: var(--danger);
+}
+/* 状态点（DSH StateDot：10% 光晕 ::before + 20% 内缩实心核 ::after） */
+.sdot {
+  position: relative;
+  display: inline-block;
   flex: none;
   width: 14px;
   height: 14px;
-  display: inline-block;
-  color: var(--fg-faint);
 }
-.tool-dot::before {
+.sdot::before {
   content: "";
   position: absolute;
   inset: 0;
@@ -829,70 +843,100 @@ body:has(.window-stage) {
   background: currentColor;
   opacity: 0.1;
 }
-.tool-dot::after {
+.sdot::after {
   content: "";
   position: absolute;
-  inset: 22%;
+  inset: 20%;
   border-radius: 50%;
   background: currentColor;
 }
-.tool-dot.run {
+.sdot.run {
   color: #3b82f6;
-  animation: tool-dot-pulse 2.4s ease-in-out infinite;
+  animation: sdot-pulse 1.6s ease-in-out infinite;
 }
-.tool-dot.err {
+.sdot.err {
   color: var(--danger);
 }
-@keyframes tool-dot-pulse {
-  50% { opacity: 0.45; }
+@keyframes sdot-pulse {
+  50% { opacity: 0.4; }
 }
-/* 工具名（mono 恒定） */
-.tool-row-head .tname {
+/* 展开体（高度动画由 gsap 驱动；收起保持 height:0） */
+.trow-body {
+  overflow: hidden;
+}
+.trow-body:not(.trow-open .trow-body) {
+  /* gsap inline 接管；此规则只是首帧兜底 */
+}
+/* ===== 终端块（DSH TerminalBlock：浅色代码卡 + 左 gutter + banner + 输出） ===== */
+.tterm {
+  position: relative;
+  margin: 4px 0 4px 4px;
+  padding-left: 30px; /* 左 gutter：状态点的一列之地（DSH --dsl-terminal-gutter） */
+  background: var(--code-bg, #f4f5f7);
+  border: 0.5px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+/* banner：命令行（跨全宽——负 margin 拉回 gutter） */
+.tterm-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-left: -30px;
+  padding: 9px 14px 9px 30px;
+  max-height: 150px;
+  overflow-y: auto;
+}
+.tterm:not([data-running]) .tterm-banner {
+  border-bottom: 0.5px solid var(--border);
+}
+.tterm-cmd {
+  min-width: 0;
+  flex: 1;
   font-family: var(--font-mono);
   font-size: 12px;
+  line-height: 22px;
   color: var(--fg);
-  font-weight: 500;
-  flex: none;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
-/* 2px 分隔点（DSH 的 sep） */
-.tool-sep {
-  flex: none;
-  width: 2px;
-  height: 2px;
-  border-radius: 1px;
-  background: var(--fg-faint);
-  opacity: 0.6;
+.tterm-banner .sdot {
+  position: absolute;
+  left: 8px;
+  top: 14px;
 }
-/* 摘要（ellipsis） */
-.tool-summary {
-  flex: 1;
-  min-width: 0;
-  font-size: 12.5px;
+/* 输出（max-height 224px = DSH 的 --dsl-terminal-output-max-height） */
+.tterm-out {
+  margin: 0;
+  padding: 12px 14px 12px 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 22px;
   color: var(--fg-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 224px;
+  overflow-y: auto;
 }
-.tool-summary.err {
+.tterm-out[data-error="true"] {
   color: var(--danger);
 }
-/* 展开箭头 */
-.tool-chev {
-  flex: none;
+.tterm-out::-webkit-scrollbar {
+  width: 8px;
+}
+.tterm-out::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  background-color: var(--border-strong);
+  border-radius: 6px;
+}
+.tterm-out::-webkit-scrollbar-track {
+  margin: 6px;
+}
+.tterm-empty {
   color: var(--fg-faint);
-  transition: transform 140ms ease;
 }
-.tool-row-head[aria-expanded="true"] .tool-chev {
-  transform: rotate(90deg);
-}
-.tool-row .tool-result {
-  margin: 2px 0 4px 22px;
-}
-/* edit 工具的 diff 卡头部（沿用） */
-.tool-block.diff-block .diff-file-head .tname {
-  font-family: var(--font-mono);
-}
-/* 展开后的终端块（沿用 .tool-result 底层样式，见下） */
+/* ===== 代码围栏块（markdown 正文里的 ``` 终端卡，暗色沿用） ===== */
 .tool-result {
   font-family: var(--font-mono);
   font-size: 11px;
@@ -915,23 +959,21 @@ body:has(.window-stage) {
   background: #3a3a3a;
   border-radius: 4px;
 }
-.tool-result[data-error="true"] {
-  color: #ff8f8a;
-}
-.tool-cmdline {
-  color: var(--term-dim);
-  margin-bottom: 8px;
-  display: block;
-  user-select: none;
-}
-.tool-cmdline::before {
-  content: "$ ";
-  color: var(--success);
+/* ===== edit 工具的 diff 卡（沿用） ===== */
+.tool-block {
+  margin: 8px 0;
+  border-radius: 10px;
+  padding: 2px 4px;
+  margin-left: -4px;
+  transition: background 120ms;
 }
 .tool-open-hint {
   font-family: var(--font-mono);
   font-size: 10px;
   color: var(--fg-faint);
+}
+.tool-block.diff-block .diff-file-head .tname {
+  font-family: var(--font-mono);
 }
 /* 错误条 */
 .error-block {
@@ -2308,9 +2350,7 @@ body:has(.window-stage) {
   }
   .suggest-card,
   .session-item,
-  .search-box,
-  .work-row,
-  .work-row .work-chevron {
+  .search-box {
     transition: none;
   }
   .suggest-card:hover {

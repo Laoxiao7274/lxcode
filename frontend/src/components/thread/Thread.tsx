@@ -1,10 +1,12 @@
-// 对话流：块分组（工作折叠组）、滚动跟随状态机、空态。
+// 对话流：滚动跟随状态机、空态。
+// 工具行直接平铺（DSH 形态——每个工具一个独立可折叠的 trow，见
+// blocks.tsx 的 ToolBlock；原 WorkGroup「读文件 · 用时 N 秒」外层摘要行
+// 是 Codex 语言，已随 DSH 对齐移除）。
 // 单块渲染在 ./blocks，纯函数在 ./helpers。
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import type { UIState, ThreadBlock } from "../../shared/store";
 import { ThinkingState } from "../../aicss/ThinkingState";
 import { staggerIn, motionAllowed } from "../../shared/motion";
-import { playEnter } from "../../shared/anim";
 import { gsap } from "gsap";
 import { Block } from "./blocks";
 
@@ -14,39 +16,6 @@ const SUGGESTIONS = [
   { icon: "测", title: "全量测试有红的修掉", sub: "go test ./… 一轮到绿" },
   { icon: "解", title: "讲讲 runTools 的设计", sub: "为什么高危要先确认" },
 ];
-
-/** 工作组收起态的定格样式（收起后保持 height:0，不能 clear 成 auto——
- *  否则内容 opacity 0 隐身但占位还在）。 */
-const COLLAPSED = { height: 0, opacity: 0, overflow: "hidden", paddingTop: 0, paddingBottom: 0 } as const;
-const EXPANDED_CLEAR = "height,opacity,overflow,paddingTop,paddingBottom";
-
-type Item =
-  | { kind: "single"; block: ThreadBlock }
-  | { kind: "work"; blocks: ThreadBlock[]; live: boolean };
-
-/** 连续的工具/确认/清单块收进一个 work 组（Codex 的工作折叠行）。 */
-function groupBlocks(blocks: ThreadBlock[], busy: boolean): Item[] {
-  const items: Item[] = [];
-  let work: ThreadBlock[] | null = null;
-  const isWork = (b: ThreadBlock) => b.kind === "tool" || b.kind === "confirm" || b.kind === "todo";
-  for (const b of blocks) {
-    if (isWork(b)) {
-      (work ??= []).push(b);
-    } else {
-      if (work) {
-        items.push({ kind: "work", blocks: work, live: false });
-        work = null;
-      }
-      items.push({ kind: "single", block: b });
-    }
-  }
-  if (work) {
-    // 组尾还有进行中的块（无结果）→ live 态（"Working…"）
-    const live = busy && work.some((b) => b.kind === "tool" && b.result === undefined);
-    items.push({ kind: "work", blocks: work, live });
-  }
-  return items;
-}
 
 export function Thread({
   state,
@@ -62,8 +31,8 @@ export function Thread({
   // 跟随状态机：用户贴底 → sticky 跟随；上翻 → 解除；滚回底部 → 恢复。
   // 用户意图 = wheel/touch/keydown（程序置底绝不触发）+ scroll 兜底
   // （覆盖滚动条拖动；prog 时间窗跳过程序置底自身的事件，防自激）。
-  // 内容增高（流式增量、工具/确认卡挂载、gsap 展开逐帧撑高、工作组收起）
-  // 全走 ResizeObserver → 每帧置底——只要 sticky 还在。
+  // 内容增高（流式增量、工具/确认卡挂载、gsap 展开逐帧撑高）全走
+  // ResizeObserver → 每帧置底——只要 sticky 还在。
   // 依赖 [empty]：空态↔会话切换会替换 endRef 所在子树与滚动容器首个子
   // 节点，effect 必须随边界重装——[] 会在空态挂载时因 endRef 为空
   // 而永不安装跟随（页面加载即失效的根因）。
@@ -94,7 +63,6 @@ export function Thread({
     const onTouch = () => userIntent();
     const onKey = (e: KeyboardEvent) => {
       if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"].includes(e.key)) {
-        // 键盘滚动后延迟一帧再判定（滚动尚未发生）
         requestAnimationFrame(userIntent);
       }
     };
@@ -125,7 +93,7 @@ export function Thread({
     };
   }, [empty]);
 
-  // 用户发出新消息 → 恢复跟随并**缓动滚底**（瞬跳是发送生硬感的来源之一）。
+  // 用户消息挂载 → 缓动滚底（发出「已发送」的手感；贴底跟随由 RO 接管）
   const prevBlocksRef = useRef(state.blocks);
   useEffect(() => {
     const prev = prevBlocksRef.current;
@@ -134,7 +102,8 @@ export function Thread({
       stickyRef.current = true;
       const el = scrollRef.current;
       if (!el) return;
-      if (!motionAllowed()) {
+      const motion = motionAllowed();
+      if (!motion) {
         el.scrollTop = el.scrollHeight;
         return;
       }
@@ -187,13 +156,9 @@ export function Thread({
 
   return (
     <div className="thread">
-      {groupBlocks(state.blocks, state.busy).map((item) =>
-        item.kind === "single" ? (
-          <Block key={item.block.uid} block={item.block} onConfirm={onConfirm} />
-        ) : (
-          <WorkGroup key={"work-" + item.blocks[0].uid} item={item} busy={state.busy} onConfirm={onConfirm} />
-        ),
-      )}
+      {state.blocks.map((block) => (
+        <Block key={block.uid} block={block} onConfirm={onConfirm} />
+      ))}
       {/* 进行中且还没有任何输出时显示思考 shimmer */}
       {state.busy && !lastIsStreamingAssistant(state.blocks) && (
         <div className="msg">
@@ -209,93 +174,4 @@ export function Thread({
 function lastIsStreamingAssistant(blocks: ThreadBlock[]): boolean {
   const last = blocks[blocks.length - 1];
   return last?.kind === "assistant" && last.streaming;
-}
-
-/** 工作组：折叠行（"读了文件、跑了命令 · 用时 8 秒"）+ 展开的工具块。
- *  整个回合没结束（busy=true）绝不自动收起——工具确认卡就藏在这段过程里；
- *  回合结束（busy true→false）自动收起成摘要行一次，用户可再展开。 */
-function WorkGroup({ item, busy, onConfirm }: { item: Extract<Item, { kind: "work" }>; busy: boolean; onConfirm: (id: string, allow: boolean) => void }) {
-  const [open, setOpen] = useState(busy);
-  const bodyRef = useRef<HTMLDivElement>(null);
-  const rowRef = useRef<HTMLButtonElement>(null);
-  const { blocks, live } = item;
-  // 回合结束翻转 → 自动收起（一次性；只收不回弹，用户再展开后不再打扰）。
-  // 不能用 live：它只盯"有没有工具在等结果"，确认卡到达时已经 false，
-  // 收起会把待裁决的确认卡整个藏掉。
-  const prevBusy = useRef(busy);
-  useEffect(() => {
-    if (prevBusy.current && !busy) setOpen(false);
-    prevBusy.current = busy;
-  }, [busy]);
-
-  // 工作组行挂载淡入
-  useEffect(() => {
-    playEnter(rowRef.current, { opacity: 0 }, { opacity: 1, duration: 0.3, ease: "power2.out", clearProps: "opacity" });
-  }, []);
-
-  // 工作摘要：动词归纳（读了文件 / 改了文件 / 跑了命令 / 等待确认…）
-  const names = blocks.map((b) => b.kind === "tool" ? b.name : b.kind);
-  const verbs = new Set(names.map((n) =>
-    n === "read_file" ? "读文件" : n === "search" ? "搜索" : n === "bash" ? "跑命令"
-    : n === "edit" || n === "write_file" ? "改文件" : n === "session_search" ? "查历史" : n,
-  ));
-  const summary = [...verbs].join("、");
-  const count = blocks.filter((b) => b.kind === "tool").length;
-  const seconds = Math.max(1, Math.round(count * 2.3));
-
-  // 展开/收起：gsap 高度动画。状态由 effect 单向驱动（不用 style prop——
-  // React 内联样式和 gsap 补间会互相覆写；收起后保持 height:0，不能 clear
-  // 成 auto，否则内容 opacity 0 隐身但占位还在）。
-  const toggle = () => setOpen((o) => !o);
-  const firstRun = useRef(true);
-  useEffect(() => {
-    const el = bodyRef.current;
-    if (!el) return;
-    const first = firstRun.current;
-    firstRun.current = false;
-    // 卸载时杀补间（会话切换可能撞上动画中途）；完成的补间自行回收
-    const kill = () => gsap.killTweensOf(el);
-    if (first || !motionAllowed()) {
-      if (!open) gsap.set(el, COLLAPSED);
-      else if (!first) gsap.set(el, { clearProps: EXPANDED_CLEAR });
-      return kill;
-    }
-    if (open) {
-      gsap.set(el, { overflow: "hidden" });
-      gsap.fromTo(el, { height: 0, opacity: 0, paddingTop: 0, paddingBottom: 0 }, {
-        height: "auto", opacity: 1, paddingTop: 6, paddingBottom: 6, duration: 0.32, ease: "power2.out",
-        // 收尾清内联——padding 回归 CSS 值，height 回 auto（后续内容增减自然伸展）
-        onComplete: () => gsap.set(el, { clearProps: EXPANDED_CLEAR }),
-      });
-    } else {
-      // border-box 下 height:0 压不掉 padding——COLLAPSED 一起归零，否则留 12px 占位
-      gsap.to(el, { ...COLLAPSED, duration: 0.24, ease: "power2.in" });
-    }
-    return kill;
-  }, [open]);
-
-  return (
-    <div className="work-group">
-      <button type="button" className="work-row" aria-expanded={open} onClick={toggle} ref={rowRef}>
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          {live ? (
-            <path d="M12 3a9 9 0 1 0 9 9" />
-          ) : (
-            <path d="M20 6 9 17l-5-5" />
-          )}
-        </svg>
-        {live ? (
-          <span>正在{summary}…</span>
-        ) : (
-          <span>{summary} · 用时 {seconds} 秒</span>
-        )}
-        <span className="work-chevron">{open ? "▾" : "▸"}</span>
-      </button>
-      <div className="work-body" ref={bodyRef}>
-        {blocks.map((b, i) => (
-          <Block key={i} block={b} onConfirm={onConfirm} />
-        ))}
-      </div>
-    </div>
-  );
 }
