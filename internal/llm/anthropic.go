@@ -20,6 +20,15 @@ const (
 	anthropicDefaultMaxTokens = 4096
 )
 
+// effortBudget 档位 → thinking budget（token）。API 硬约束：≥1024 且
+// < max_tokens；budget 抬高时 max_tokens 不足会自动补（见 convertToAnthropic）。
+var effortBudget = map[string]int{
+	"minimal": 1024,
+	"low":     4096,
+	"medium":  16384,
+	"high":    32768,
+}
+
 // anthropicRequest 是 /v1/messages 请求体。
 type anthropicRequest struct {
 	Model       string             `json:"model"`
@@ -29,6 +38,10 @@ type anthropicRequest struct {
 	Tools       []anthropicToolDef `json:"tools,omitempty"`
 	Stream      bool               `json:"stream,omitempty"`
 	Temperature *float64           `json:"temperature,omitempty"`
+	Thinking    *struct {
+		Type         string `json:"type"`
+		BudgetTokens int    `json:"budget_tokens"`
+	} `json:"thinking,omitempty"` // 推理强度档位映射的思考预算（仅推理模型——调用方负责能力门控）
 }
 
 type anthropicMessage struct {
@@ -103,6 +116,22 @@ func convertToAnthropic(model string, msgs []Message, o requestOpts, stream bool
 	}
 	if o.temperature > 0 {
 		req.Temperature = &o.temperature
+	}
+	if o.effort != "" {
+		// thinking 开启时 API 硬约束 budget < max_tokens：预算盖过输出上限时
+		// 抬高 max_tokens（给正文留 4096）。模型真实上限不足会以 400 显式报错，
+		// 不静默截断档位。
+		budget := effortBudget[o.effort]
+		if budget == 0 {
+			budget = effortBudget["medium"] // 未知档位（防御）回落中档
+		}
+		if req.MaxTokens <= budget {
+			req.MaxTokens = budget + 4096
+		}
+		req.Thinking = &struct {
+			Type         string `json:"type"`
+			BudgetTokens int    `json:"budget_tokens"`
+		}{Type: "enabled", BudgetTokens: budget}
 	}
 	for _, t := range o.tools {
 		req.Tools = append(req.Tools, anthropicToolDef{

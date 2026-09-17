@@ -20,6 +20,15 @@ function setup(t) {
   return { agent, events, ws: FakeSocket.latest, off };
 }
 const flush = () => new Promise((resolve) => setImmediate(resolve));
+test('send carries effort and approval only when provided (omitempty wire shape)', async (t) => {
+  const { agent, ws } = setup(t);
+  agent.send('hi');
+  assert.deepEqual(ws.sent.at(-1).params, { text: 'hi' });
+  agent.send('hi', { effort: 'high', approval: 'strict' });
+  assert.deepEqual(ws.sent.at(-1).params, { text: 'hi', effort: 'high', approval: 'strict' });
+  agent.send('hi', { approval: 'auto' });
+  assert.deepEqual(ws.sent.at(-1).params, { text: 'hi', approval: 'auto' });
+});
 test('JSON-RPC errors reject model changes and do not fake cache updates', async (t) => {
   const { agent, ws } = setup(t);
   const request = agent.modelAdmin.addModel({ id: 'a', base_url: 'http://test', model: 'a' });

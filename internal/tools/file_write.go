@@ -39,6 +39,7 @@ func writeFileDef() *Def {
 		Description: "把内容写入本地文件（全量覆盖，父目录自动创建；写入是原子替换）。注意 content 必须是完整文件内容，不能只给改动片段。修改已有文件优先用 edit 工具（只替换匹配片段，无需整体重写）。",
 		Parameters:  schema,
 		Risk:        RiskHigh,
+		Mutates:     true, // 全量覆盖写文件（strict 只读模式拒绝）
 		Confirm: func(ctx context.Context, args json.RawMessage) string {
 			var a struct {
 				Path    string `json:"path"`

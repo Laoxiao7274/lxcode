@@ -89,6 +89,14 @@ export interface ProjectMeta {
   path: string;
 }
 
+/** 发送选项：随消息携带的请求级参数（不传 = 后端默认）。 */
+export interface SendOptions {
+  /** 推理强度（仅对声明 reasoning 能力的模型生效）。 */
+  effort?: string;
+  /** 权限模式：auto 高危自动 / confirm 高危确认（默认）/ strict 只读。 */
+  approval?: "auto" | "confirm" | "strict";
+}
+
 /**
  * AgentSource 是数据源抽象：demo（脚本编排）与 live（WS 连后端）实现
  * 同一接口。浏览器与 Electron 渲染层复用相同 JSON-RPC 适配器。
@@ -96,8 +104,8 @@ export interface ProjectMeta {
 export interface AgentSource {
   /** 订阅事件流（返回退订函数）。 */
   subscribe(listener: (ev: AgentEvent) => void): () => void;
-  /** 发送消息（一轮开始）。 */
-  send(text: string): void;
+  /** 发送消息（一轮开始；opts 携带 effort/approval，缺省 = 后端默认）。 */
+  send(text: string, opts?: SendOptions): void;
   /** 裁决确认门。 */
   confirm(id: string, allow: boolean): Promise<void>;
   /** 取消当前生成。 */
@@ -134,7 +142,7 @@ export interface ModelEntry {
   model: string;
   context_window?: number;
   max_output_tokens?: number;
-  capabilities?: { tools?: boolean; vision?: boolean; json_output?: boolean };
+  capabilities?: { tools?: boolean; vision?: boolean; json_output?: boolean; reasoning?: boolean };
   enabled: boolean;
 }
 

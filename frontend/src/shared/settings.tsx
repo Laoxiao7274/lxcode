@@ -13,8 +13,20 @@ export interface Settings {
 }
 const DEFAULTS: Settings = { model: "MYT", effort: "medium", approval: "confirm", showThinking: true,
   showFullOutput: true, keepAwake: false, enterToSend: true, personality: "pragmatic" };
-export const EFFORTS: { id: EffortId; label: string; hint: string }[] = [];
-export const APPROVALS = [{ id: "confirm", label: "固定确认策略", hint: "低危自动执行；高危需确认，模式切换未实现" }];
+// 档位目录（后端协议值域——chat.send 的 effort 参数；仅对声明 reasoning
+// 能力的模型生效，选择器在 ModelPicker 里按模型能力显隐）
+export const EFFORTS: { id: EffortId; label: string; hint: string }[] = [
+  { id: "minimal", label: "极低", hint: "几乎不思考，最快响应" },
+  { id: "low", label: "低", hint: "轻度思考，速度优先" },
+  { id: "medium", label: "中", hint: "均衡（默认）" },
+  { id: "high", label: "高", hint: "深入思考，质量优先" },
+];
+// 权限模式目录（后端工具执行三档策略——chat.send 的 approval 参数）
+export const APPROVALS = [
+  { id: "confirm", label: "默认", hint: "低危自动执行，高危需确认" },
+  { id: "auto", label: "完全访问", hint: "全部自动执行，几乎不打断；仅隔离环境用" },
+  { id: "strict", label: "只读", hint: "只读取和搜索，不改文件、不执行命令" },
+] as const;
 interface ContextValue {
   settings: Settings; set(patch: Partial<Settings>): void; providers: ProviderMeta[];
   live: boolean; error: string | null;
@@ -47,8 +59,9 @@ export function SettingsProvider({ source, children }: { source: AgentSource; ch
     catch (e) { setError(e instanceof Error ? e.message : String(e)); return false; }
   }, []);
   const set = useCallback((patch: Partial<Settings>) => {
-    // 未接通的设置在状态入口也禁用，避免其它调用方绕过 UI。
-    const { effort: _e, approval: _a, keepAwake: _k, personality: _p, model, ...supported } = patch;
+    // 仍未接通的设置在状态入口禁用（keepAwake/personality）；effort 与
+    // approval 已随 chat.send 生效，随发送携带。
+    const { keepAwake: _k, personality: _p, model, ...supported } = patch;
     setLocal((s) => ({ ...s, ...supported, ...(!admin && model ? { model } : {}) }));
     if (admin && model) void run(() => admin.setRole("default", model));
   }, [admin, run]);

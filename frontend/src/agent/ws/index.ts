@@ -6,7 +6,7 @@
 // 不动 blocks/pending。
 import type {
   AgentEvent, AgentSource, ConfirmRequest, ModelAdminSource, ModelEntry,
-  ProjectMeta, SessionMeta, TodoItem,
+  ProjectMeta, SendOptions, SessionMeta, TodoItem,
 } from "../../shared/types";
 
 /** WS JSON-RPC 帧结构（与 Go internal/protocol 对齐）。 */
@@ -287,9 +287,13 @@ export class WSAgent implements AgentSource, ModelAdminSource {
 
   // ---- AgentSource 接口 ----
 
-  send(text: string): void {
+  send(text: string, opts?: SendOptions): void {
     if (!text.trim()) return;
-    this.call("chat.send", { text }).catch((e) => {
+    // effort/approval 只在显式携带时进帧（omitempty 语义——旧请求形状不变）
+    const params: Record<string, unknown> = { text };
+    if (opts?.effort) params.effort = opts.effort;
+    if (opts?.approval) params.approval = opts.approval;
+    this.call("chat.send", params).catch((e) => {
       this.opError(`发送失败: ${e.message}`);
     });
   }

@@ -1,6 +1,8 @@
 import type { ModelEntry } from "./types";
 
-export type EffortId = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+export type EffortId = "minimal" | "low" | "medium" | "high";
+/** 全部推理档位（固定 4 档——后端协议值域：minimal/low/medium/high）。 */
+export const EFFORT_IDS: EffortId[] = ["minimal", "low", "medium", "high"];
 export interface ModelMeta {
   id: string; name: string; desc: string; tags: string[]; efforts: EffortId[];
   contextWindow: number; maxOutput: number; visible: boolean; manual?: boolean;
@@ -10,7 +12,7 @@ export interface ProviderMeta {
   color: string; models: ModelMeta[]; fetching: boolean; fetchedAt?: string; custom?: boolean;
 }
 export interface ModelPatch {
-  id: string; name: string; desc: string; tags: string[]; efforts: EffortId[];
+  id: string; name: string; desc: string; tags: string[];
   contextWindow: number; maxOutput: number;
 }
 
@@ -33,8 +35,12 @@ export function mapModels(models: ModelEntry[]): ProviderMeta[] {
     }
     p.models.push({ id: m.id, name: m.display_name || m.model || m.id,
       desc: m.format === "anthropic" ? "Anthropic 格式" : "OpenAI 兼容",
-      tags: [m.capabilities?.tools ? "工具" : "", m.capabilities?.vision ? "视觉" : ""].filter(Boolean),
-      efforts: [], contextWindow: m.context_window || 128_000,
+      tags: [m.capabilities?.tools ? "工具" : "", m.capabilities?.vision ? "视觉" : "",
+        m.capabilities?.reasoning ? "推理" : ""].filter(Boolean),
+      // 档位派生自能力声明：未声明 reasoning 的模型整个强度入口隐藏——
+      // 对非推理端点传 effort 参数会 400，选择器只在真实生效处出现。
+      efforts: m.capabilities?.reasoning ? [...EFFORT_IDS] : [],
+      contextWindow: m.context_window || 128_000,
       maxOutput: m.max_output_tokens || 8_000, visible: m.enabled });
   }
   return [...groups.values()];
@@ -55,5 +61,6 @@ export function applyModelPatch(entry: ModelEntry, patch: ModelPatch): ModelEntr
   if (patch.id.trim() !== entry.id) throw new Error("后端不支持修改模型 ID，请新增模型");
   return { ...entry, display_name: patch.name.trim(), context_window: patch.contextWindow,
     max_output_tokens: patch.maxOutput, capabilities: { ...entry.capabilities,
-      tools: patch.tags.includes("工具"), vision: patch.tags.includes("视觉") } };
+      tools: patch.tags.includes("工具"), vision: patch.tags.includes("视觉"),
+      reasoning: patch.tags.includes("推理") } };
 }

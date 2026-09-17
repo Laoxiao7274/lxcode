@@ -2,7 +2,7 @@
 // 一条 user 消息、一条 assistant 回复（含正文/思考链/流式态）、一次
 // 工具调用（含结果）、一张确认卡、一份任务清单、一条错误。
 import { useCallback, useEffect, useState } from "react";
-import type { AgentEvent, AgentSource, ConfirmRequest, FileChange, HistorySnapshot, TodoItem } from "./types";
+import type { AgentEvent, AgentSource, ConfirmRequest, FileChange, HistorySnapshot, SendOptions, TodoItem } from "./types";
 
 export interface AssistantBlock {
   kind: "assistant";
@@ -193,7 +193,7 @@ export function useAgent(source: AgentSource): {
     setState(initial);
     return source.subscribe((ev) => setState((s) => reduce(s, ev)));
   }, [source]);
-  const send = useCallback((t: string) => source.send(t), [source]);
+  const send = useCallback((t: string, opts?: SendOptions) => source.send(t, opts), [source]);
   const resolve = useCallback((id: string, outcome: "allow" | "deny") => {
     setState((s) => resolveConfirm(s, id, outcome));
   }, []);

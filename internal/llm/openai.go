@@ -19,6 +19,7 @@ type openaiRequest struct {
 	} `json:"stream_options,omitempty"`
 	Temperature        *float64 `json:"temperature,omitempty"` // 0 值不传（云端版教训）
 	MaxTokens          *int     `json:"max_tokens,omitempty"`
+	ReasoningEffort    string   `json:"reasoning_effort,omitempty"` // 思考强度（仅推理模型支持——调用方负责能力门控）
 	ChatTemplateKwargs *struct {
 		EnableThinking bool `json:"enable_thinking"`
 	} `json:"chat_template_kwargs,omitempty"` // vLLM Qwen3 thinking 开关
@@ -92,6 +93,14 @@ func buildOpenAIRequest(model string, msgs []Message, o requestOpts, stream bool
 		req.ChatTemplateKwargs = &struct {
 			EnableThinking bool `json:"enable_thinking"`
 		}{EnableThinking: *o.thinking}
+	}
+	if o.effort != "" {
+		// canonical 4 档直传；超集值（xhigh/max 等历史遗留）防御性收敛——
+		// OpenAI 值域只有 minimal/low/medium/high，传别的直接 400。
+		req.ReasoningEffort = o.effort
+		if req.ReasoningEffort == "xhigh" || req.ReasoningEffort == "max" {
+			req.ReasoningEffort = "high"
+		}
 	}
 	return req
 }

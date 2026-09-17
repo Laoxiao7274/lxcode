@@ -104,6 +104,7 @@ func bashDef() *Def {
 			shellSyntaxHint(shellDisp),
 		Parameters: schema,
 		Risk:       RiskHigh,
+		Mutates:    true, // 执行命令即变更外部世界（strict 只读模式拒绝）
 		Confirm: func(ctx context.Context, args json.RawMessage) string {
 			var a struct {
 				Command string `json:"command"`

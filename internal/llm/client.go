@@ -92,7 +92,8 @@ type requestOpts struct {
 	tools       []Tool
 	temperature float64
 	maxTokens   int
-	thinking    *bool // tri-state：nil = 不传（Qwen3 chat_template_kwargs，仅 openai/vLLM 生效）
+	thinking    *bool  // tri-state：nil = 不传（Qwen3 chat_template_kwargs，仅 openai/vLLM 生效）
+	effort      string // 推理强度档位（空 = 不传）；openai → reasoning_effort，anthropic → thinking budget
 }
 
 // Option 是 Chat/ChatStream 的请求级选项。
@@ -111,6 +112,13 @@ func WithMaxTokens(n int) Option { return func(o *requestOpts) { o.maxTokens = n
 // WithThinking 控制 Qwen3 类模型的思考链（vLLM chat_template_kwargs.enable_thinking，
 // 仅 openai 格式生效；anthropic 侧忽略）。
 func WithThinking(on bool) Option { return func(o *requestOpts) { o.thinking = &on } }
+
+// WithEffort 推理强度（minimal/low/medium/high）。调用方负责能力门控——
+// 只对声明了 reasoning 能力的模型附加（对不支持的端点传参会直接 400）。
+// openai 格式 → reasoning_effort；anthropic 格式 → thinking budget_tokens
+// （minimal=1024 … high=32768，budget ≥ max_tokens 时自动抬高 max_tokens）。
+// 空串是 no-op。
+func WithEffort(e string) Option { return func(o *requestOpts) { o.effort = e } }
 
 func applyOpts(opts []Option) requestOpts {
 	var o requestOpts

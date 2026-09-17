@@ -36,6 +36,7 @@ func editDef() *Def {
 			"要么补充上下文使其唯一，要么显式 replace_all=true）。修改文件优先用本工具，别用 write_file 重写全文。",
 		Parameters: schema,
 		Risk:       RiskLow,
+		Mutates:    true, // 低危（唯一匹配+原子写）但变更文件——strict 只读模式按此拒绝
 		Exec: func(ctx context.Context, args json.RawMessage) (string, error) {
 			var a struct {
 				Path       string `json:"path"`

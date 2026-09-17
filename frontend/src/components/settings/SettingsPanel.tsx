@@ -129,12 +129,12 @@ export function SettingsPanel({ open, onClose, source }: { open: boolean; onClos
             )}
 
             {section === "configuration" && (
-              <Section title="配置" desc="模型、推理强度与高危操作确认模式。推理强度与确认策略切换尚未接通。">
+              <Section title="配置" desc="模型、推理强度与高危操作确认模式。推理强度仅对声明推理能力的模型显示，随消息发送生效。">
                 <ValueRow label="模型" value={settings.model} hint={providers.flatMap((p) => p.models).find((m) => m.id === settings.model)?.desc} />
                 {(() => {
                   const cur = providers.flatMap((p) => p.models).find((m) => m.id === settings.model);
                   const opts = EFFORTS.filter((e) => cur?.efforts.includes(e.id));
-                  if (opts.length === 0) return null;
+                  if (opts.length === 0) return <ValueRow label="推理强度" value="模型默认" hint="当前模型未声明推理能力（在模型配置里勾选「推理」标签开启）" />;
                   return (
                     <SegRow label="推理强度">
                       <div className="panel-seg">
@@ -148,7 +148,6 @@ export function SettingsPanel({ open, onClose, source }: { open: boolean; onClos
                   );
                 })()}
                 <ValueRow label="高危操作" value={APPROVALS.find((a) => a.id === settings.approval)?.label ?? ""} hint={APPROVALS.find((a) => a.id === settings.approval)?.hint} />
-                <ValueRow label="推理强度" value="尚未接通" hint="当前使用后端默认行为" />
                 <ValueRow label="配置文件" value="models.json" hint="路径由后端启动参数决定" />
               </Section>
             )}

@@ -1,7 +1,7 @@
 // 演示数据源：脚本化编排一轮完整交互，覆盖 UI 全部状态
 // （流式正文/思考链、低危工具自动执行、高危确认门两分支、任务清单、
 // 完成/取消/错误）。事件形状与后端协议 1:1——接线时换 WSAgent 即可。
-import type { AgentEvent, AgentSource, ConfirmRequest, FileChange, ProjectMeta, SessionMeta, TodoItem } from "../../shared/types";
+import type { AgentEvent, AgentSource, ConfirmRequest, FileChange, ProjectMeta, SendOptions, SessionMeta, TodoItem } from "../../shared/types";
 
 type Listener = (ev: AgentEvent) => void;
 
@@ -80,7 +80,7 @@ export class DemoAgent implements AgentSource {
     return () => this.listeners.delete(listener);
   }
 
-  send(text: string): void {
+  send(text: string, _opts?: SendOptions): void {
     if (this.busy) return;
     this.busy = true;
     // 懒建会话：新会话在首条消息时才落进侧栏列表（Codex 惯例——

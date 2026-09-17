@@ -2,7 +2,7 @@
 // 最大输出 / 能力标签，附删除与设为默认。弹窗语言复用连接提供商那套。
 import { useEffect, useRef, useState } from "react";
 import { gsap } from "gsap";
-import { useSettings, EFFORTS, type EffortId, type ModelMeta, type ProviderMeta } from "../../shared/settings";
+import { useSettings, type ModelMeta, type ProviderMeta } from "../../shared/settings";
 import { motionAllowed } from "../../shared/motion";
 import { useEscape } from "../../shared/popover";
 import { kfmtTokens } from "../../shared/format";
@@ -27,7 +27,6 @@ export function ModelEditDialog({ provider, model, onClose }: { provider: Provid
     contextWindow: kfmtTokens(model.contextWindow),
     maxOutput: kfmtTokens(model.maxOutput),
     tags: [...model.tags],
-    efforts: [...model.efforts] as EffortId[],
   });
   const [err, setErr] = useState<string | null>(null);
   const formRef = useRef<HTMLFormElement>(null);
@@ -71,7 +70,6 @@ export function ModelEditDialog({ provider, model, onClose }: { provider: Provid
         name: draft.name,
         desc: draft.desc.trim(),
         tags: draft.tags,
-        efforts: draft.efforts,
         contextWindow: ctx,
         maxOutput: out,
       })
@@ -134,24 +132,10 @@ export function ModelEditDialog({ provider, model, onClose }: { provider: Provid
                 type="button"
                 className={"mset-tag-toggle" + (draft.tags.includes(t) ? " on" : "")}
                 aria-pressed={draft.tags.includes(t)}
+                title={t === "推理" ? "声明后模型选择器出现推理强度档位（minimal/low/medium/high）" : undefined}
                 onClick={() => patch({ tags: draft.tags.includes(t) ? draft.tags.filter((x) => x !== t) : [...draft.tags, t] })}
               >
                 {t}
-              </button>
-            ))}
-          </div>
-          <div className="mset-edit-tags">
-            <span className="mset-chip-label">推理档位尚未接通</span>
-            {EFFORTS.map((e) => (
-              <button
-                key={e.id}
-                type="button"
-                className={"mset-tag-toggle" + (draft.efforts.includes(e.id) ? " on" : "")}
-                aria-pressed={draft.efforts.includes(e.id)}
-                title={e.hint}
-                onClick={() => patch({ efforts: draft.efforts.includes(e.id) ? draft.efforts.filter((x) => x !== e.id) : [...draft.efforts, e.id] })}
-              >
-                {e.label}
               </button>
             ))}
           </div>

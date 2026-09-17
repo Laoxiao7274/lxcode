@@ -151,8 +151,48 @@ type RoleSetParams struct {
 	ModelID string `json:"model_id"` // 空串 = 解绑
 }
 
+// 推理强度档位（chat.send 可选参数；空 = 模型默认）。
+// 值域对齐 OpenAI reasoning_effort（minimal/low/medium/high）；Anthropic 侧
+// 由 llm 层映射为 thinking budget（见 llm.WithEffort）。
+const (
+	EffortMinimal = "minimal"
+	EffortLow     = "low"
+	EffortMedium  = "medium"
+	EffortHigh    = "high"
+)
+
+// 权限模式（chat.send 可选参数；空 = confirm）。
+// 工具执行的三档策略——auto 高危自动执行（仅隔离环境）、confirm 低危自动
+// + 高危确认（默认，AGENTS.md §3 的现行语义）、strict 只读（变更类工具直接
+// 拒绝，错误回填模型）。
+const (
+	ApprovalAuto    = "auto"
+	ApprovalConfirm = "confirm"
+	ApprovalStrict  = "strict"
+)
+
 type ChatSendParams struct {
-	Text string `json:"text"`
+	Text     string `json:"text"`
+	Effort   string `json:"effort,omitempty"`   // 推理强度（可选；模型须声明 reasoning 能力才生效）
+	Approval string `json:"approval,omitempty"` // 权限模式（可选；空 = confirm）
+}
+
+// ValidateEffort 校验 effort 值域（空串合法 = 不指定）。
+func ValidateEffort(e string) bool {
+	switch e {
+	case "", EffortMinimal, EffortLow, EffortMedium, EffortHigh:
+		return true
+	}
+	return false
+}
+
+// ValidateApproval 校验 approval 值域（空串合法 = 默认 confirm）。
+func ValidateApproval(a string) bool {
+	switch a {
+	case "", ApprovalAuto, ApprovalConfirm, ApprovalStrict:
+		return true
+	}
+	return false
 }
 
 type ToolConfirmParams struct {

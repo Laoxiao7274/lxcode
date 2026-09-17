@@ -128,9 +128,23 @@ func streamWithLLM(ctx context.Context, m config.ModelConfig, msgs []llm.Message
 	return client.ChatAuto(ctx, msgs, opts...)
 }
 
+// SendOpt 是 Send 的请求级选项（变参——现有调用点零改动）。
+type SendOpt func(*sendConfig)
+
+type sendConfig struct {
+	effort   string // 推理强度（空 = 模型默认）
+	approval string // 权限模式（空 = confirm）
+}
+
+// WithEffort 指定本轮推理强度（模型须声明 reasoning 能力才真正生效）。
+func WithEffort(e string) SendOpt { return func(c *sendConfig) { c.effort = e } }
+
+// WithApproval 指定本轮工具执行的权限模式（空/未指定 = confirm）。
+func WithApproval(a string) SendOpt { return func(c *sendConfig) { c.approval = a } }
+
 // Send 发起一轮对话（异步）：校验模型 → 入历史 → 后台跑工具循环。
 // 忙时返回 ErrBusy；模型未绑定/停用返回对应哨兵（服务端按类别映射错误码）。
-func (s *Session) Send(text string) error {
+func (s *Session) Send(text string, opts ...SendOpt) error {
 	if text == "" {
 		return errors.New("text 不能为空")
 	}
@@ -142,6 +156,11 @@ func (s *Session) Send(text string) error {
 		return fmt.Errorf("%w: %s", ErrModelDisabled, m.ID)
 	}
 
+	var cfg sendConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
+
 	s.mu.Lock()
 	if s.busy {
 		s.mu.Unlock()
@@ -151,13 +170,16 @@ func (s *Session) Send(text string) error {
 	userMsg := llm.Message{Role: "user", Content: text}
 	s.history = append(s.history, userMsg)
 	s.persistLocked(userMsg)
+	// 权限模式随轮携带（ctx 注入，一轮内不变）；effort 走 sendConfig
+	// 传给 streamRound（由模型能力决定是否转成 llm 选项）。
 	ctx, cancel := context.WithCancel(context.Background())
+	ctx = tools.WithApproval(ctx, tools.Approval(cfg.approval))
 	s.cancel = cancel
 	s.mu.Unlock()
 
 	s.emit(UserMsgEvent{Message: userMsg})
 	s.emit(BusyEvent{Busy: true})
-	go s.runTurn(ctx)
+	go s.runTurn(ctx, cfg)
 	return nil
 }
 
@@ -203,7 +225,7 @@ func (s *Session) Todos() []tools.TodoItem {
 
 // runTurn 跑完整一轮：流式生成 → 工具调用 → 确认 → 执行 → 回填续轮。
 // 文件改动（edit/write_file）被收集，轮末汇总发 FilesChangedEvent（产物视图）。
-func (s *Session) runTurn(ctx context.Context) {
+func (s *Session) runTurn(ctx context.Context, cfg sendConfig) {
 	// 快照工作目录并注入工具执行（busy 期间不可变——切换与归属入口
 	// 都有 busy 守卫，这是单会话架构下的一致性来源）：项目会话的相对
 	// 路径、bash 默认目录、确认门解析基准全部对齐项目根。
@@ -227,7 +249,7 @@ func (s *Session) runTurn(ctx context.Context) {
 	}()
 
 	for round := 0; round < maxToolRounds; round++ {
-		res, err := s.streamRound(ctx, workDir)
+		res, err := s.streamRound(ctx, workDir, cfg.effort)
 		if err != nil {
 			aborted := errors.Is(err, context.Canceled) || ctx.Err() != nil
 			note := err.Error()
@@ -262,7 +284,9 @@ func (s *Session) runTurn(ctx context.Context) {
 
 // streamRound 跑一轮流式生成，把增量事件转发给宿主，返回最终结果。
 // workDir 是本轮快照的会话工作目录（系统提示词里的工作目录说明用它）。
-func (s *Session) streamRound(ctx context.Context, workDir string) (*llm.ChatResult, error) {
+// effort 是本轮请求的推理强度（模型须声明 reasoning 能力才转成 LLM 选项——
+// 对不支持的端点传参会直接 400，能力门控是硬需求）。
+func (s *Session) streamRound(ctx context.Context, workDir, effort string) (*llm.ChatResult, error) {
 	m, err := s.reg.ModelForRole(config.RoleDefault)
 	if err != nil {
 		return nil, err
@@ -270,6 +294,9 @@ func (s *Session) streamRound(ctx context.Context, workDir string) (*llm.ChatRes
 	var opts []llm.Option
 	if m.MaxOutputTokens > 0 {
 		opts = append(opts, llm.WithMaxTokens(m.MaxOutputTokens))
+	}
+	if effort != "" && m.Capabilities.Reasoning {
+		opts = append(opts, llm.WithEffort(effort))
 	}
 	// 快照：快照后新消息（若有）不影响本轮请求
 	s.mu.Lock()
@@ -330,14 +357,29 @@ func (s *Session) streamRound(ctx context.Context, workDir string) (*llm.ChatRes
 	return nil, errors.New("流意外结束（无 done 事件）")
 }
 
-// runTools 执行本轮工具调用（高危先确认）；返回 false 表示被取消。
-// fileChanges 收集文件改动（edit/write_file）供轮末产物汇总。
+// runTools 执行本轮工具调用，按权限模式门控：
+//   - strict 只读：变更类工具（IsMutating）直接拒绝，错误回填模型
+//   - auto 完全访问：高危跳过确认门
+//   - confirm（默认）：高危先确认（现行语义）
+//
+// 返回 false 表示被取消。fileChanges 收集文件改动供轮末产物汇总。
 func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChanges *[]FileChange) bool {
+	policy := tools.ApprovalFrom(ctx)
 	for _, tc := range calls {
 		if ctx.Err() != nil {
 			return false
 		}
-		if prompt := s.tools.Confirm(ctx, tc); prompt != "" {
+		// strict：变更类工具拒绝（不进确认门——只读模式没有"确认放行"语义；
+		// 错误信息自解释，模型可换读取类工具或向用户说明）。
+		if policy == tools.ApprovalStrict && s.tools.IsMutating(tc.Function.Name) {
+			reject := fmt.Sprintf(
+				"错误: 当前为只读模式（strict），已禁用 %s。请改用 read_file / search 等读取类工具，或提示用户切换权限模式。",
+				tc.Function.Name)
+			s.append(llm.Message{Role: "tool", ToolCallID: tc.ID, Content: reject})
+			s.emit(ToolResultEvent{ID: tc.ID, Name: tc.Function.Name, Content: reject, IsError: true})
+			continue
+		}
+		if prompt := s.tools.Confirm(ctx, tc); prompt != "" && policy != tools.ApprovalAuto {
 			req := &ConfirmRequest{
 				ID: tc.ID, Name: tc.Function.Name, Arguments: tc.Function.Arguments, Prompt: prompt,
 			}

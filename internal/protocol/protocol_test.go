@@ -339,6 +339,43 @@ func TestProtocolConstants(t *testing.T) {
 	}
 }
 
+// TestChatSendParamsRoundTrip：effort/approval 新字段的往返与 omitempty 语义——
+// 不带新字段的旧客户端（CLI/旧前端）请求形状必须与扩展前完全一致。
+func TestChatSendParamsRoundTrip(t *testing.T) {
+	t.Run("旧形状（不带新字段）不产生 effort/approval 键", func(t *testing.T) {
+		b := mustMarshal(t, ChatSendParams{Text: "你好"})
+		if strings.Contains(string(b), "effort") || strings.Contains(string(b), "approval") {
+			t.Fatalf("omitempty 失效（旧客户端兼容被破坏）: %s", b)
+		}
+	})
+	t.Run("新字段往返", func(t *testing.T) {
+		b := mustMarshal(t, ChatSendParams{Text: "你好", Effort: EffortHigh, Approval: ApprovalStrict})
+		var got ChatSendParams
+		mustUnmarshal(t, b, &got)
+		if got.Text != "你好" || got.Effort != EffortHigh || got.Approval != ApprovalStrict {
+			t.Fatalf("往返丢字段: %+v", got)
+		}
+	})
+	t.Run("值域校验", func(t *testing.T) {
+		for _, ok := range []string{"", EffortMinimal, EffortLow, EffortMedium, EffortHigh} {
+			if !ValidateEffort(ok) {
+				t.Fatalf("合法 effort 被拒: %q", ok)
+			}
+		}
+		if ValidateEffort("xhigh") || ValidateEffort("extreme") {
+			t.Fatal("非法 effort 应被拒（档位收敛为 4 档，防拼错静默无效果）")
+		}
+		for _, ok := range []string{"", ApprovalAuto, ApprovalConfirm, ApprovalStrict} {
+			if !ValidateApproval(ok) {
+				t.Fatalf("合法 approval 被拒: %q", ok)
+			}
+		}
+		if ValidateApproval("yolo") {
+			t.Fatal("非法 approval 应被拒")
+		}
+	})
+}
+
 func mustMarshal(t *testing.T, v any) []byte {
 	t.Helper()
 	b, err := json.Marshal(v)

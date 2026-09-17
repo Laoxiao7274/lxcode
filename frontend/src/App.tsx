@@ -7,7 +7,8 @@ import { Thread } from "./components/thread";
 import { PlanBar } from "./components/thread/PlanBar";
 import { Composer } from "./components/composer";
 import { SettingsPanel } from "./components/settings";
-import { SettingsProvider } from "./shared/settings";
+import { SettingsProvider, useSettings } from "./shared/settings";
+import type { SendOptions } from "./shared/types";
 
 export default function App() {
   const source = useMemo(() => getAgentSource(), []);
@@ -21,6 +22,7 @@ export default function App() {
 function AppBody({ source }: { source: import("./shared/types").AgentSource }) {
   const [operationError, setOperationError] = useState<string | null>(null);
   const { state, send, resolve } = useAgent(source);
+  const { settings, providers } = useSettings();
   // 初始无选中：空态起步（选中一个有历史的会话时 thread 才有内容——
   // 演示模式 resume 不重放历史，避免"高亮有历史、主区空白"的不一致）
   const [currentId, setCurrentId] = useState("");
@@ -33,6 +35,15 @@ function AppBody({ source }: { source: import("./shared/types").AgentSource }) {
       if (ev.type === "operationError") setOperationError(ev.message);
     });
   }, [source]);
+
+  // 发送时携带请求级参数：effort 只在当前模型声明推理能力时上帧（后端
+  // 能力门控会丢弃不匹配档位，不带上帧更诚实）；approval 恒带当前设置。
+  const sendWithOptions = useCallback((text: string) => {
+    const current = providers.flatMap((p) => p.models).find((m) => m.id === settings.model);
+    const opts: SendOptions = { approval: settings.approval };
+    if (current && current.efforts.length > 0) opts.effort = settings.effort;
+    send(text, opts);
+  }, [providers, settings.model, settings.effort, settings.approval, send]);
 
   // 稳定身份：Thread 的 Block 用 memo，onConfirm 每次新建会击穿它
   const handleConfirm = useCallback((id: string, allow: boolean) => {
@@ -59,7 +70,7 @@ function AppBody({ source }: { source: import("./shared/types").AgentSource }) {
             <Thread state={state} onConfirm={handleConfirm} onSuggestion={send} />
           </div>
           <PlanBar todos={state.todos} />
-          <Composer busy={state.busy} onSend={send} onCancel={() => source.cancel()} />
+          <Composer busy={state.busy} onSend={sendWithOptions} onCancel={() => source.cancel()} />
         </main>
         <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} source={source} />
       </div>
@@ -78,7 +89,7 @@ function AppBody({ source }: { source: import("./shared/types").AgentSource }) {
             <Thread state={state} onConfirm={handleConfirm} onSuggestion={send} />
           </div>
           <PlanBar todos={state.todos} />
-          <Composer busy={state.busy} onSend={send} onCancel={() => source.cancel()} />
+          <Composer busy={state.busy} onSend={sendWithOptions} onCancel={() => source.cancel()} />
         </main>
         <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} source={source} />
       </div>

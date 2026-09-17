@@ -30,6 +30,10 @@ type Def struct {
 	Description string
 	Parameters  json.RawMessage // JSON Schema（透传给模型）
 	Risk        RiskLevel
+	// Mutates 标记工具是否变更外部世界（文件/命令执行）。与 Risk 正交：
+	// edit 是低危（old_string 唯一匹配约束 + 原子写兜底）但变更文件——
+	// strict 只读模式按本字段拒绝，而不是按 Risk（否则 edit 会漏网）。
+	Mutates bool
 	// Confirm 返回需人工确认的提示文本；空串 = 本组参数无需确认。
 	// 高危工具不一定每次都确认（如 write_file 只在覆盖已有文件时）。
 	// ctx 携带会话工作目录——确认门必须与执行层解析同一个文件
@@ -124,6 +128,13 @@ func (r *Registry) Confirm(ctx context.Context, call llm.ToolCall) string {
 		return ""
 	}
 	return d.Confirm(ctx, []byte(call.Function.Arguments))
+}
+
+// IsMutating 报告工具是否变更外部世界（strict 只读模式的拒绝依据）。
+// 未知工具返回 true（保守：不认识的变更面按危险处理）。
+func (r *Registry) IsMutating(name string) bool {
+	d, ok := r.defs[name]
+	return !ok || d.Mutates
 }
 
 // Execute 校验并执行工具调用，返回给模型的结果文本。

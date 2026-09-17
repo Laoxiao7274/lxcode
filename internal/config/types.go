@@ -29,10 +29,14 @@ var Roles = []string{RoleDefault, RoleVision}
 
 // Capabilities 是模型能力的用户声明：只是路由参考，不是探测缓存——
 // 真实能力以 model test 实测为准（AGENTS.md §4.1 本地模型能力约束）。
+// Reasoning 声明支持推理强度档位（OpenAI reasoning_effort / Anthropic
+// thinking budget）——未声明时 chat.send 的 effort 参数对该模型不生效
+// （对不支持的端点传参会直接 400，能力门控是硬需求不是优化）。
 type Capabilities struct {
-	Tools   bool `json:"tools"`
-	Vision  bool `json:"vision"`
-	JSONOut bool `json:"json_output"`
+	Tools     bool `json:"tools"`
+	Vision    bool `json:"vision"`
+	JSONOut   bool `json:"json_output"`
+	Reasoning bool `json:"reasoning"`
 }
 
 // ModelConfig 是注册表中一个模型条目的完整配置（models.json 单条）。

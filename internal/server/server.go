@@ -244,7 +244,23 @@ func (s *Server) dispatch(req *protocol.Request) *protocol.Response {
 		if err := json.Unmarshal(params, &p); err != nil {
 			return protocol.NewError(req.ID, protocol.CodeInvalidParams, "参数解析失败: "+err.Error())
 		}
-		if err := s.sess.Send(p.Text); err != nil {
+		// 值域校验前置（拼错档位/模式静默无效果是最难排查的失败形态）
+		if !protocol.ValidateEffort(p.Effort) {
+			return protocol.NewError(req.ID, protocol.CodeInvalidParams,
+				"effort 必须是 minimal/low/medium/high 之一（空 = 模型默认）")
+		}
+		if !protocol.ValidateApproval(p.Approval) {
+			return protocol.NewError(req.ID, protocol.CodeInvalidParams,
+				"approval 必须是 auto/confirm/strict 之一（空 = confirm）")
+		}
+		var sendOpts []agent.SendOpt
+		if p.Effort != "" {
+			sendOpts = append(sendOpts, agent.WithEffort(p.Effort))
+		}
+		if p.Approval != "" {
+			sendOpts = append(sendOpts, agent.WithApproval(p.Approval))
+		}
+		if err := s.sess.Send(p.Text, sendOpts...); err != nil {
 			return protocol.NewError(req.ID, errorCode(err), err.Error())
 		}
 		return protocol.NewResult(req.ID, map[string]any{"accepted": true})
