@@ -1,16 +1,15 @@
-// 工具行（lx-dsh ui-tool 的 ToolRow/DisclosureRow/TerminalBlock 逐项对齐）：
-// 折叠行 [leading 16px] 6 [标题 13/24] [sep 2px] [摘要 ellipsis] [chevron]；
-// leading：空闲=工具图标（hover 淡出换 chevron），运行/出错=StateDot；
-// 展开体 = TerminalBlock（浅色代码卡 + 左 gutter 状态点 + 命令 banner +
-// 输出 22px 行高 max 224px）；gsap 高度补间 0.22s/0.16s。
-// edit 工具走 diff 卡（DSH DiffBlock 同款语言）。
+// 工具行（lx-dsh ui-tool 的 ToolRow/DisclosureRow 逐项对齐）+ 展开体
+// TerminalBlock（primitives/TerminalBlock 全量对齐：$ 提示符 + cwd 段名 +
+// 状态标签 + 退出码 pill + 复制按钮 + ANSI 颜色输出 + head-tail 折叠）。
+// edit 工具走 DiffBody（DSH DiffBlock 同款：双行号列 + footer 统计）。
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ThreadBlock } from "../../../shared/store";
 import { gsap } from "gsap";
 import { playEnter } from "../../../shared/anim";
 import { motionAllowed } from "../../../shared/motion";
-import { clip, shortArgs, prettyCmdline } from "../helpers";
+import { clip, shortArgs } from "../helpers";
 import { DiffBody } from "./DiffBody";
+import { TerminalCard } from "./TerminalCard";
 
 const TOOL_TITLES: Record<string, string> = {
   read_file: "读文件",
@@ -58,12 +57,16 @@ export function ToolBlock({ block }: { block: Extract<ThreadBlock, { kind: "tool
     if (open) setBodyMounted(true);
   }, [open]);
 
-  // JSON 解析只做一次/参数变化（memo(Block) 已挡掉大部分重渲染）
-  const { argsSummary, cmdline } = useMemo(
-    () => ({ argsSummary: clip(shortArgs(block), 72), cmdline: prettyCmdline(block.name, block.arguments) }),
+  // 工具参数解析只做一次（memo(Block) 已挡掉大部分重渲染）
+  const args = useMemo(() => {
+    try {
+      return JSON.parse(block.arguments) as Partial<{ command: string; cwd: string; path: string; pattern: string }>;
+    } catch {
+      return {};
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [block.name, block.arguments],
-  );
+  }, [block.arguments]);
+  const argsSummary = clip(shortArgs(block), 72);
 
   // edit 工具：diff 视图（改动即所见——不再让用户读 JSON 参数）
   const editDiff = useMemo((): { path: string; old_string: string; new_string: string } | null => {
@@ -144,19 +147,17 @@ export function ToolBlock({ block }: { block: Extract<ThreadBlock, { kind: "tool
         <span className="trow-sep" aria-hidden />
         <span className={"trow-summary" + (errorSummary ? " err" : "")}>{summary}</span>
       </div>
-      {/* 展开体：TerminalBlock 形态（浅色代码卡 + 左 gutter 状态点 + 命令 banner +
-          输出）——banner 的状态点与行 leading 同步（DSH 的 runState） */}
       {bodyMounted && (
         <div className="trow-body" ref={bodyRef}>
-          <div className="tterm" data-running={running ? "true" : undefined}>
-            <div className="tterm-banner">
-              {running && <span className="sdot run" aria-hidden />}
-              <span className="tterm-cmd">{cmdline}</span>
-            </div>
-            <pre className="tterm-out" data-error={block.isError ? "true" : undefined}>
-              {clip(block.result ?? "", 1400) || <span className="tterm-empty">（无输出）</span>}
-            </pre>
-          </div>
+          <TerminalCard
+            command={args.command ?? ""}
+            cwd={args.cwd}
+            toolName={block.name}
+            toolArgs={block.arguments}
+            output={block.result}
+            running={running}
+            isError={block.isError}
+          />
         </div>
       )}
     </div>

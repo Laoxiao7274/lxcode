@@ -441,66 +441,102 @@ body:has(.window-stage) {
   color: #b91c1c;
   background: color-mix(in srgb, #ef4444 9%, transparent);
 }
-.diff-body {
-  margin-top: 5px;
-  border-radius: 10px;
-  border: 1px solid var(--border);
+/* ===== diff 卡（DSH DiffBlock 对齐：四列网格 + 复制 + footer 统计） ===== */
+.diff-block-card {
+  position: relative;
+  margin: 5px 0 0;
+  border-radius: 12px;
+  border: 0.5px solid var(--border);
+  background: var(--code-bg, #f4f5f7);
   overflow: hidden;
+}
+/* 复制按钮：右上角浮动（DSH copyButton） */
+.diff-copy {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  z-index: 1;
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
+  color: var(--fg-muted);
+  cursor: pointer;
+  font-size: 11px;
+}
+.diff-copy:hover {
+  color: var(--fg);
+}
+.diff-body {
+  padding: 12px 14px;
   font-family: var(--font-mono);
   font-size: 11px;
-  line-height: 1.6;
-  background: var(--bg);
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  margin: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
+/* 四列网格：旧行号 / 新行号 / 符号 / 内容（DSH line 的 grid 模板） */
 .diff-line {
-  display: flex;
-  align-items: stretch;
-  white-space: pre-wrap;
-  word-break: break-all;
-  position: relative;
+  display: grid;
+  grid-template-columns: 3.5ch 3.5ch 1ch 1fr;
+  align-items: baseline;
+  column-gap: 4px;
+  min-height: 22px;
+  line-height: 22px;
+  white-space: pre;
 }
-/* 行号列：等宽右对齐，分色淡字 */
+/* 行号列：等宽右对齐，tabular（DSH lineNo） */
 .diff-line .ln {
-  flex: none;
-  width: 34px;
-  text-align: right;
-  padding-right: 8px;
-  color: color-mix(in srgb, var(--fg-faint) 60%, transparent);
+  color: color-mix(in srgb, var(--fg-faint) 75%, transparent);
+  text-align: end;
+  font-variant-numeric: tabular-nums;
   user-select: none;
-  font-size: 9.5px;
-  line-height: inherit;
-  padding-top: 1px;
+  font-size: 10px;
 }
-/* 符号列（− / +）：色字居中 */
+/* 符号列（− / +）：分色（DSH signDel/signAdd） */
 .diff-line .sign {
-  flex: none;
-  width: 16px;
-  text-align: center;
   user-select: none;
-  font-weight: 700;
+  text-align: center;
+  font-size: 11px;
 }
+.diff-line .sign.del { color: var(--danger); }
+.diff-line .sign.add { color: var(--success); }
 .diff-line .code {
-  flex: 1;
   min-width: 0;
-  padding-right: 10px;
+  padding-right: 52px; /* 让出右上角复制按钮的位（DSH path 行同款） */
 }
-/* 行底色 + 左色条（红/绿各两层：底色极淡 + 左边 2.5px 色条标识） */
-.diff-line.del {
-  background: color-mix(in srgb, #ef4444 5.5%, transparent);
-  box-shadow: inset 2.5px 0 0 color-mix(in srgb, #ef4444 55%, transparent);
-}
-.diff-line.del .sign { color: color-mix(in srgb, #b91c1c 85%, transparent); }
-.diff-line.add {
-  background: color-mix(in srgb, #10a37f 6.5%, transparent);
-  box-shadow: inset 2.5px 0 0 color-mix(in srgb, #10a37f 55%, transparent);
-}
-.diff-line.add .sign { color: color-mix(in srgb, #059669 85%, transparent); }
-.diff-line:hover { filter: brightness(0.985); }
-/* @@ 上下文行：更淡的分隔样式 */
-.diff-line:not(.add):not(.del) {
+/* 行文字分色（DSH del/add lineText） */
+.diff-line.del .code { color: var(--danger); }
+.diff-line.add .code { color: var(--success); }
+/* 展开按钮（head-tail 折叠） */
+.diff-expand {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
   color: var(--fg-faint);
-  background: color-mix(in srgb, var(--fg) 2%, transparent);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  line-height: 22px;
 }
-.diff-line:not(.add):not(.del) .ln { visibility: hidden; }
+.diff-expand:hover {
+  color: var(--fg-muted);
+}
+/* footer 统计（+N −M，DSH footer） */
+.diff-footer {
+  padding: 0 14px 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-faint);
+}
+.diff-footer .stat-add { color: var(--success); font-variant-numeric: tabular-nums; }
+.diff-footer .stat-del { color: var(--danger); font-variant-numeric: tabular-nums; }
 /* ===== 产物汇总卡（一轮任务的改动文件——Codex 的 artifact viewer） ===== */
 .files-card {
   border: 1px solid var(--border);
@@ -873,7 +909,7 @@ body:has(.window-stage) {
 .trow-body:not(.trow-open .trow-body) {
   /* gsap inline 接管；此规则只是首帧兜底 */
 }
-/* ===== 终端块（DSH TerminalBlock：浅色代码卡 + 左 gutter + banner + 输出） ===== */
+/* ===== 终端卡（DSH TerminalBlock 全量对齐：banner + 状态 + 复制 + 折叠） ===== */
 .tterm {
   position: relative;
   margin: 4px 0 4px 4px;
@@ -883,8 +919,8 @@ body:has(.window-stage) {
   border-radius: 12px;
   overflow: hidden;
 }
-/* banner：命令行（跨全宽——负 margin 拉回 gutter） */
-.tterm-banner {
+/* banner：[状态点+命令行] [退出码 pill] [复制按钮]——跨全宽拉回 gutter */
+.tterm-header {
   display: flex;
   align-items: flex-start;
   gap: 12px;
@@ -893,53 +929,112 @@ body:has(.window-stage) {
   max-height: 150px;
   overflow-y: auto;
 }
-.tterm:not([data-running]) .tterm-banner {
+.tterm:not([data-running]) .tterm-header {
   border-bottom: 0.5px solid var(--border);
 }
-.tterm-cmd {
+/* 命令区：多行命令逐行渲染（DSH prompt/promptLine） */
+.tterm-prompt {
+  display: flex;
+  flex-direction: column;
   min-width: 0;
   flex: 1;
   font-family: var(--font-mono);
   font-size: 12px;
+}
+.tterm-prompt-line {
+  position: relative;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
   line-height: 22px;
-  color: var(--fg);
-  white-space: pre-wrap;
-  word-break: break-word;
 }
-.tterm-banner .sdot {
+/* 状态点：首行行内（吃 gutter 的位） */
+.tterm-prompt-line .sdot {
   position: absolute;
-  left: 8px;
-  top: 14px;
+  left: -22px;
+  top: 50%;
+  transform: translateY(-50%);
 }
-/* 输出（max-height 224px = DSH 的 --dsl-terminal-output-max-height） */
-.tterm-out {
+.tterm-prompt-line .sdot.ok {
+  color: var(--success);
+}
+.tterm-cwd {
+  flex: none;
+  color: var(--fg-faint);
+}
+.tterm-command {
+  min-width: 0;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: pre;
+}
+/* 退出码 pill（非零退出红底） */
+.tterm-pill {
+  flex: none;
+  position: sticky;
+  top: 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  padding: 2px 8px;
+  border-radius: 99px;
+  line-height: 16px;
+}
+.tterm-pill.err {
+  background: rgba(224, 46, 42, 0.08);
+  color: var(--danger);
+}
+/* 复制按钮（banner 右侧 sticky） */
+.tterm-copy {
+  flex: none;
+  position: sticky;
+  top: 0;
+  background: var(--code-bg, #f4f5f7);
+  border: none;
+  padding: 0;
   margin: 0;
+  color: var(--fg-muted);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 22px;
+}
+.tterm-copy:hover {
+  color: var(--fg);
+}
+/* 输出：行式渲染（ANSI 色 + head-tail 折叠） */
+.tterm-output {
   padding: 12px 14px 12px 0;
   font-family: var(--font-mono);
   font-size: 11px;
-  line-height: 22px;
   color: var(--fg-muted);
+}
+.tterm-line {
+  min-height: 22px;
+  line-height: 22px;
   white-space: pre-wrap;
   word-break: break-word;
-  max-height: 224px;
-  overflow-y: auto;
 }
-.tterm-out[data-error="true"] {
-  color: var(--danger);
+.tterm-expand {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--fg-faint);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  line-height: 22px;
 }
-.tterm-out::-webkit-scrollbar {
-  width: 8px;
-}
-.tterm-out::-webkit-scrollbar-thumb {
-  border: 2px solid transparent;
-  background-clip: padding-box;
-  background-color: var(--border-strong);
-  border-radius: 6px;
-}
-.tterm-out::-webkit-scrollbar-track {
-  margin: 6px;
+.tterm-expand:hover {
+  color: var(--fg-muted);
 }
 .tterm-empty {
+  padding: 12px 14px 12px 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
   color: var(--fg-faint);
 }
 /* ===== 代码围栏块（markdown 正文里的 ``` 终端卡，暗色沿用） ===== */
