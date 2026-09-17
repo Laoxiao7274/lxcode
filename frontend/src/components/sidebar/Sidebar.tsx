@@ -7,10 +7,13 @@ import { useDismissal } from "../../shared/popover";
 import { IconPencil, IconArchive } from "../icons";
 import { AddProjectDialog } from "./AddProjectDialog";
 
-/** 侧栏（Codex 2026-05 版形态，截图实证）：
+/** 「未分组」过滤目标（无归属会话的家——不依赖真实项目 id）。 */
+const LOOSE = "";
+
+/** 侧栏（Codex 2026-05 版形态）：
  *  导航项（新对话/搜索/插件/自动化）→「项目」分组（上）→「对话」分组（下）。
- *  项目区：+ 号添加（对话框：名称+路径，后端 git 仓库自动建）；点项目行
- *  过滤对话列表（再点取消）。会话行 hover ⋯ 菜单：重命名/归档。 */
+ *  项目区：+ 号添加；点项目行过滤对话（再点取消）；未绑定项目的会话
+ *  归入「未分组」行。选中项目后「新对话」按钮带归属提示。 */
 export function Sidebar({
   source,
   currentId,
@@ -26,7 +29,9 @@ export function Sidebar({
   const [menuFor, setMenuFor] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
-  const [activeProject, setActiveProject] = useState<string | null>(null); // 选中项目 id（过滤对话）
+  /** 对话过滤目标：项目 id / LOOSE（未分组）/ null（全部）。
+   *  「新对话」的归属上下文 = 选中项目（LOOSE/全部 = 无归属新会话）。 */
+  const [filter, setFilter] = useState<string | null>(null);
   const [projectsTick, setProjectsTick] = useState(0); // projectsChanged 事件驱动重读
   const searchRef = useRef<HTMLInputElement>(null);
   const sideRef = useRef<HTMLElement>(null);
@@ -41,12 +46,17 @@ export function Sidebar({
   const projects = source.projects();
 
   const all = source.sessions().filter((s) => !s.archived);
-  const projectFiltered = activeProject ? all.filter((s) => s.workspace === activeProject) : all;
+  const loose = all.filter((s) => !s.workspace);
+  // 过滤语义：项目 id → 该项目会话；LOOSE → 未绑定；null → 全部
+  const projectFiltered =
+    filter === null ? all : filter === LOOSE ? loose : all.filter((s) => s.workspace === filter);
   const list = query.trim()
     ? projectFiltered.filter((s) => s.title.toLowerCase().includes(query.trim().toLowerCase()))
     : projectFiltered;
   // 项目 id → 元数据（会话 workspace 指向项目 id，显示时取名）
   const projectById = new Map(projects.map((p) => [p.id, p]));
+  /** 当前过滤的显示名（新对话归属提示 + 过滤 chip）。 */
+  const filterName = filter === null ? null : filter === LOOSE ? "未分组" : projectById.get(filter)?.name ?? "项目";
 
   // 后出现的会话行（首轮消息建会话、归档区恢复）单独入场；
   // 首屏整列由 staggerIn 接管，boot 窗口内跳过避免双份动画打架。
@@ -98,14 +108,15 @@ export function Sidebar({
 
   return (
     <aside className="sidebar" ref={sideRef}>
-      {/* 导航项（图标 + 文字，Codex 同款四项） */}
+      {/* 导航项（图标 + 文字，Codex 同款四项）——新对话归属当前选中项目 */}
       <nav className="nav-list">
-        <button type="button" className="nav-item" onClick={() => !busy && source.newSession(activeProject ?? undefined)}>
+        <button type="button" className="nav-item" onClick={() => !busy && source.newSession(filter === null || filter === LOOSE ? undefined : filter)}>
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M12 20h9" />
             <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
           </svg>
           新对话
+          {filterName && filter !== LOOSE && <span className="nav-ctx" title={`新会话归属 ${filterName}`}>{filterName}</span>}
         </button>
         <button type="button" className="nav-item" onClick={() => searchRef.current?.focus()}>
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -176,7 +187,7 @@ export function Sidebar({
       </div>
       {projects.map((p) => {
         const count = all.filter((s) => s.workspace === p.id).length;
-        const active = activeProject === p.id;
+        const active = filter === p.id;
         return (
           <div
             key={p.id}
@@ -184,8 +195,9 @@ export function Sidebar({
             title={p.path}
             role="button"
             tabIndex={0}
-            onClick={() => setActiveProject(active ? null : p.id)}
-            onKeyDown={(e) => e.key === "Enter" && setActiveProject(active ? null : p.id)}
+            aria-pressed={active}
+            onClick={() => setFilter(active ? null : p.id)}
+            onKeyDown={(e) => e.key === "Enter" && setFilter(active ? null : p.id)}
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
@@ -195,7 +207,26 @@ export function Sidebar({
           </div>
         );
       })}
-      {projects.length === 0 && (
+      {/* 未分组：无归属会话的家（空则不占位；虚线文件夹 + 灰计数） */}
+      {loose.length > 0 && (
+        <div
+          className={"proj-row loose" + (filter === LOOSE ? " active" : "")}
+          title="未归属项目的对话"
+          role="button"
+          tabIndex={0}
+          aria-pressed={filter === LOOSE}
+          onClick={() => setFilter(filter === LOOSE ? null : LOOSE)}
+          onKeyDown={(e) => e.key === "Enter" && setFilter(filter === LOOSE ? null : LOOSE)}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+            <path d="M9 13.5h6" strokeDasharray="1.5 2.2" />
+          </svg>
+          <span className="proj-name">未分组</span>
+          <span className="proj-count">{loose.length}</span>
+        </div>
+      )}
+      {projects.length === 0 && loose.length === 0 && (
         <div className="proj-empty">还没有项目——点右上 + 添加</div>
       )}
       {addOpen && (
@@ -205,12 +236,15 @@ export function Sidebar({
         />
       )}
 
-      {/* 对话分组（下）——历史会话列表（选中项目时过滤；组头带清除过滤） */}
+      {/* 对话分组（下）——选中项目/未分组时过滤；组头显示当前范围（可清除） */}
       <div className="sidebar-label group-head">
         对话
-        {activeProject && (
-          <button type="button" className="group-filter" onClick={() => setActiveProject(null)} title="清除项目过滤">
-            {projectById.get(activeProject)?.name ?? "项目"} ✕
+        {filterName && (
+          <button type="button" className="group-filter" onClick={() => setFilter(null)} title="显示全部对话">
+            {filterName}
+            <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" aria-hidden="true">
+              <path d="M18 6 6 18M6 6l12 12" />
+            </svg>
           </button>
         )}
         <span className="group-actions" aria-hidden>

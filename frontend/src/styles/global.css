@@ -2148,6 +2148,20 @@ body:has(.window-stage) {
   padding: 0 4px;
   line-height: 14px;
 }
+/* 「新对话」的归属上下文标签（选中项目时显示目标） */
+.nav-ctx {
+  margin-left: auto;
+  max-width: 110px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 9.5px;
+  color: var(--fg-faint);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 4px;
+  line-height: 14px;
+}
 /* 项目行（上分组） */
 .proj-row {
   display: flex;
@@ -2167,6 +2181,10 @@ body:has(.window-stage) {
   color: var(--fg-faint);
   flex: none;
 }
+/* 未分组行：虚线文件夹已表意，文字再淡一档 */
+.proj-row.loose {
+  color: var(--fg-faint);
+}
 .proj-name {
   flex: 1;
   min-width: 0;
@@ -2179,12 +2197,15 @@ body:has(.window-stage) {
   font-size: 9.5px;
   color: var(--fg-faint);
   flex: none;
+  min-width: 12px;
+  text-align: right;
 }
-/* 项目行选中态（点击过滤对话列表） */
+/* 项目行选中态（点击过滤对话列表）：左侧指示条 + 选中色 */
 .proj-row.active {
   background: var(--border-soft);
   color: var(--fg);
   font-weight: 600;
+  box-shadow: inset 2px 0 0 var(--fg-muted);
 }
 .proj-row.active svg {
   color: var(--fg);
@@ -2217,20 +2238,35 @@ body:has(.window-stage) {
   font-size: 11px;
   color: var(--fg-faint);
 }
-/* 对话组头的项目过滤 chip（点击清除） */
+/* 对话组头的范围 chip（选中项目/未分组时显示，点击清除全部过滤） */
 .group-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   border: none;
-  background: var(--border-soft);
+  background: transparent;
   color: var(--fg-muted);
-  font-size: 10px;
-  font-family: var(--font-mono);
-  padding: 2px 7px;
-  border-radius: 99px;
+  font-size: 10.5px;
+  font-family: var(--font-sans);
+  padding: 1px 6px;
+  border-radius: 6px;
   cursor: pointer;
-  transition: color 100ms;
+  transition: background 100ms, color 100ms;
+  max-width: 130px;
+}
+.group-filter span,
+.group-filter {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .group-filter:hover {
+  background: var(--border-soft);
   color: var(--fg);
+}
+.group-filter svg {
+  flex: none;
+  opacity: 0.6;
 }
 /* ===== 添加项目对话框 ===== */
 .proj-add-mask {
