@@ -1,4 +1,4 @@
-// 对话渲染块：user 气泡 / assistant 回复（打字机 + 轻量 markdown）/
+// 对话渲染块：user 气泡 / assistant 回复（打字机 + 完整 markdown）/
 // 工具卡 / 确认卡 / 任务清单 / 错误条。
 // Block 用 memo：reduce 只给变化的块换新引用，未动的兄弟块跳过协调；
 // 配合稳定的 onConfirm（useAgent/App 的 useCallback）生效。
@@ -11,6 +11,7 @@ import { TodoList } from "../../aicss/TodoList";
 import { ApprovalCard } from "../../aicss/ApprovalCard";
 import { TextResponse } from "../../aicss/TextResponse";
 import { useStreamReveal } from "../../shared/stream-reveal";
+import { Markdown } from "../../shared/markdown";
 import { playEnter } from "../../shared/anim";
 import { motionAllowed, staggerIn } from "../../shared/motion";
 import { useSettings } from "../../shared/settings";
@@ -313,73 +314,14 @@ function FilesRow({ file, open, onToggle }: { file: FileChange; open: boolean; o
 
 /** 正文输出：DSH 同款打字机缓冲（useStreamReveal）——新到字符按 0.35s
  *  浇注窗口匀速流出（30~1000 字/秒自适应积压），done 后缓冲继续排空。
- *  揭示前缀实时走 Markdownish：围栏/行内代码跟着逐块淡入。 */
+ *  揭示前缀实时走完整 markdown（shared/markdown）：标题/表格/列表/行内
+ *  语法逐块淡入，逐行到达即渲染（不等闭合——见 markdown.tsx 流式纪律）。 */
 function AnswerBody({ text, streaming }: { text: string; streaming: boolean }) {
   const shown = useStreamReveal(text);
   return (
     <TextResponse>
-      <Markdownish text={shown} />
+      <Markdown text={shown} />
       {streaming && <span className="md-caret" aria-hidden />}
     </TextResponse>
-  );
-}
-
-/** 轻量 markdown 渲染（流式期间同样实时）：``` 围栏→暗色终端块；
- *  每行一个块级段落——与思考句同款的逐块挂载 420ms 淡入（.md-seg）。
- *  打字机每帧只有尾行文本变化：行/代码段全部 memo 化，稳定块跳过解析与协调。 */
-function Markdownish({ text }: { text: string }) {
-  const parts = text.split(/```/);
-  return (
-    <>
-      {parts.map((part, i) =>
-        i % 2 === 1 ? (
-          <CodeSeg key={i} text={part} />
-        ) : (
-          <Paragraphs key={i} text={part} />
-        ),
-      )}
-    </>
-  );
-}
-
-const CodeSeg = memo(function CodeSeg({ text }: { text: string }) {
-  return <pre className="tool-result md-seg">{text.replace(/^\w*\n/, "")}</pre>;
-});
-
-/** 正文逐行成块：空行=段距（md-para），行内代码照常解析。
- *  每块首次挂载播放 md-seg-in——已有行只是文本增长，不重挂载，不会重复动画。 */
-function Paragraphs({ text }: { text: string }) {
-  const lines = text.split("\n");
-  const out: ReactNode[] = [];
-  let gap = false;
-  let any = false;
-  lines.forEach((line, i) => {
-    if (line.trim() === "") {
-      gap = true;
-      return;
-    }
-    out.push(<Line key={i} text={line} para={any && gap} />);
-    any = true;
-    gap = false;
-  });
-  return <>{out}</>;
-}
-
-const Line = memo(function Line({ text, para }: { text: string; para: boolean }) {
-  return <p className={"md-text md-seg" + (para ? " md-para" : "")}>{inlineCode(text)}</p>;
-});
-
-const CODE_STYLE = { fontFamily: "var(--font-mono)", fontSize: 12.5, background: "#f4f4f5", padding: "2px 5px", borderRadius: 4 } as const;
-
-function inlineCode(text: string) {
-  const segs = text.split(/`([^`]+)`/);
-  return segs.map((s, i) =>
-    i % 2 === 1 ? (
-      <code key={i} style={CODE_STYLE}>
-        {s}
-      </code>
-    ) : (
-      <span key={i}>{s}</span>
-    ),
   );
 }

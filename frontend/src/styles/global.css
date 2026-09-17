@@ -888,6 +888,95 @@ body:has(.window-stage) {
 @keyframes md-blink {
   50% { opacity: 0; }
 }
+/* ===== markdown 块级元素（标题/列表/引用/分割线/表格） ===== */
+.md-h {
+  margin: 12px 0 4px;
+  font-weight: 650;
+  line-height: 1.35;
+  color: var(--fg);
+}
+.md-h1 { font-size: 16.5px; }
+.md-h2 { font-size: 15px; }
+.md-h3 { font-size: 13.5px; }
+.md-h4, .md-h5, .md-h6 { font-size: 12.5px; }
+.md-hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 10px 0;
+}
+.md-quote {
+  margin: 6px 0;
+  padding: 2px 0 2px 10px;
+  border-left: 2.5px solid var(--border-strong);
+  color: var(--fg-muted);
+}
+.md-quote-line {
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.md-list {
+  margin: 4px 0;
+}
+.md-li {
+  display: flex;
+  gap: 7px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  padding: 1px 0;
+}
+.md-li-marker {
+  color: var(--fg-faint);
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  padding-top: 2.5px;
+  min-width: 16px;
+}
+.md-li-text {
+  min-width: 0;
+}
+/* 表格：横向可滚（宽表不撑破布局），对齐由 inline style 提供 */
+.md-table-wrap {
+  overflow-x: auto;
+  margin: 8px 0;
+}
+.md-table {
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.md-table th,
+.md-table td {
+  border: 1px solid var(--border);
+  padding: 4.5px 11px;
+  text-align: left;
+  max-width: 380px;
+}
+.md-table th {
+  background: var(--border-soft);
+  font-weight: 600;
+}
+/* ===== markdown 行内元素 ===== */
+.md-strong {
+  font-weight: 650;
+}
+.md-em {
+  font-style: italic;
+}
+.md-del {
+  opacity: 0.55;
+}
+.md-code {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  background: var(--border-soft);
+  padding: 1.5px 5px;
+  border-radius: 4px;
+}
+.md-a {
+  color: #3b82f6;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
 /* ===== 设置弹窗（Codex 式：居中模态 + 内部左侧分区导航 + 右侧内容） ===== */
 .settings-view {
   position: absolute;
