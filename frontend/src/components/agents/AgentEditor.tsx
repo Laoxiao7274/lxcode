@@ -6,7 +6,6 @@ import { useEffect, useRef, useState } from "react";
 import {
   AGENT_COLORS,
   BUILTIN_TOOLS,
-  CONTEXT_MODULES,
   MAIN_TOOL,
   THIRD_PARTY_TOOLS,
   useAgents,
@@ -36,7 +35,8 @@ function DetailPanel({ focus, onOpen }: { focus: Focus | null; onOpen: () => voi
     { opacity: 0, y: 6 },
     { opacity: 1, y: 0, duration: 0.26, ease: "power2.out", clearProps: "transform,opacity" },
   );
-  const mod = focus?.kind === "module" ? CONTEXT_MODULES.find((m) => m.id === focus.id) : undefined;
+  const { modules } = useAgents();
+  const mod = focus?.kind === "module" ? modules.find((m) => m.id === focus.id) : undefined;
   const tool = focus?.kind === "tool" ? ALL_TOOLS().find((t) => t.id === focus.id) : undefined;
 
   if (tool) {
@@ -146,7 +146,7 @@ export function AgentEditor({
   const [def, setDef] = useState<AgentDef>(initial);
   const [focus, setFocus] = useState<Focus | null>(null);
   const [docOpen, setDocOpen] = useState(false);
-  const { agents } = useAgents();
+  const { agents, modules } = useAgents();
   const { providers } = useSettings();
   const modelLabel = useModelLabel(def.model);
   const formRef = useRef<HTMLDivElement>(null);
@@ -187,14 +187,14 @@ export function AgentEditor({
     desc: `${t.desc}（${t.risk === "high" ? "高危" : "低危"}）`,
     highRisk: t.risk === "high",
   }));
-  // 上下文模块 chips 载荷（流程单选 / 技能多选——见 上下文 节）
+  // 上下文模块 chips 载荷（目录状态——自建条目即时出现在这里）
   const toModuleChip = (m: { id: string; desc: string; kind: "process" | "skill" }) => ({
     value: m.id,
     label: m.id,
-    desc: `${m.desc}（${m.kind === "process" ? "流程" : "技能"}）`,
+    desc: `${m.desc}（${m.kind === "process" ? "模板" : "技能"}）`,
   });
-  const processChips = CONTEXT_MODULES.filter((m) => m.kind === "process").map(toModuleChip);
-  const skillChips = CONTEXT_MODULES.filter((m) => m.kind === "skill").map(toModuleChip);
+  const processChips = modules.filter((m) => m.kind === "process").map(toModuleChip);
+  const skillChips = modules.filter((m) => m.kind === "skill").map(toModuleChip);
 
   // 委派名单载荷（仅主 Agent 用）：全部子 Agent，停用的在 tooltip 标注
   const subAgents = agents.filter((a) => !a.isMain);

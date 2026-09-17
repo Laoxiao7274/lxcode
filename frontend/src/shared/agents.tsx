@@ -206,10 +206,12 @@ export interface ContextModuleSpec {
   kind: "process" | "skill";
   /** 模块正文（markdown——实际注入 Agent 上下文的内容）。 */
   body: string;
+  /** 用户自建条目（可编辑/删除）；内置条目只读。 */
+  custom?: boolean;
 }
 
-/** 上下文模块目录（流程在前——主 Agent 常用的工作方式规范）。 */
-export const CONTEXT_MODULES: ContextModuleSpec[] = [
+/** 内置目录（种子——运行时名单是 Provider 状态，用户可增删自定义条目）。 */
+const CONTEXT_MODULES: ContextModuleSpec[] = [
   {
     id: "plan-execute-verify",
     kind: "process",
@@ -437,6 +439,12 @@ interface AgentsValue {
   sessionDelegates: string[] | null;
   setSessionDelegates: (list: string[] | null) => void;
   resetSessionDelegates: () => void;
+  /** 上下文模块目录（运行时状态：内置种子 + 用户自建条目）。
+   *  Agent 组装的 chips 与目录页都读这里——单一事实源。 */
+  modules: ContextModuleSpec[];
+  addModule: (mod: ContextModuleSpec) => void;
+  updateModule: (mod: ContextModuleSpec) => void;
+  removeModule: (id: string) => void;
 }
 
 const Ctx = createContext<AgentsValue | null>(null);
@@ -445,6 +453,7 @@ export function AgentsProvider({ children }: { children: ReactNode }) {
   const [agents, setAgents] = useState<AgentDef[]>(seedAgents);
   const [activeAgentId, setActiveAgentId] = useState("main");
   const [sessionDelegates, setSessionDelegates] = useState<string[] | null>(null);
+  const [modules, setModules] = useState<ContextModuleSpec[]>(CONTEXT_MODULES);
 
   const addAgent = useCallback((def: AgentDef) => setAgents((list) => [...list, def]), []);
   const updateAgent = useCallback(
@@ -457,14 +466,28 @@ export function AgentsProvider({ children }: { children: ReactNode }) {
     setActiveAgentId((cur) => (cur === id ? "main" : cur));
   }, []);
   const resetSessionDelegates = useCallback(() => setSessionDelegates(null), []);
+  const addModule = useCallback((mod: ContextModuleSpec) => setModules((list) => [...list, mod]), []);
+  const updateModule = useCallback(
+    (mod: ContextModuleSpec) => setModules((list) => list.map((x) => (x.id === mod.id ? mod : x))),
+    [],
+  );
+  const removeModule = useCallback(
+    (id: string) => setModules((list) => list.filter((x) => x.id !== id)),
+    [],
+  );
 
   const value = useMemo(
     () => ({
       agents, addAgent, updateAgent, removeAgent,
       activeAgentId, setActiveAgentId,
       sessionDelegates, setSessionDelegates, resetSessionDelegates,
+      modules, addModule, updateModule, removeModule,
     }),
-    [agents, addAgent, updateAgent, removeAgent, activeAgentId, sessionDelegates, resetSessionDelegates],
+    [
+      agents, addAgent, updateAgent, removeAgent,
+      activeAgentId, sessionDelegates, resetSessionDelegates,
+      modules, addModule, updateModule, removeModule,
+    ],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
@@ -480,6 +503,11 @@ export function useModelLabel(modelId: string): string {
   const { providers } = useSettings();
   const m = providers.flatMap((p) => p.models).find((x) => x.id === modelId);
   return m ? m.name : modelId || "未绑定模型";
+}
+
+/** 新建目录条目的空白起点：kind 取所在页签的默认（模板/技能）。 */
+export function blankModule(kind: "process" | "skill"): ContextModuleSpec {
+  return { id: "", desc: "", kind, body: "" };
 }
 
 /** 组装新 Agent 的空白起点：色板取未占用色，模型沿用主 Agent 的绑定。 */

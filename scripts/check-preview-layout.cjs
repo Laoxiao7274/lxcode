@@ -263,6 +263,61 @@ app.whenReady().then(async () => {
     const catTpl = await win.webContents.executeJavaScript(`document.querySelectorAll(".cg-card").length`);
     log("catalog-templates", catTpl);
     assert.strictEqual(catTpl, 3, "catalog: 模板页签应有 3 个条目");
+    // 自建模板全链路：新建 → 编写器 → 填 id → 保存 → 列表出现 → 两步删除（插桩：错误带回）
+    const newClick = await win.webContents.executeJavaScript(`(() => {
+      try {
+        const btn = document.querySelector('[data-cg="new"]');
+        if (!btn) return { err: "no-btn", tab: document.querySelector(".cg-tabs .seg-btn.on")?.textContent };
+        btn.click();
+        return { ok: true };
+      } catch (e) {
+        return { threw: String(e && e.stack || e).slice(0, 400) };
+      }
+    })()`);
+    log("module-new-click", JSON.stringify(newClick));
+    assert.ok(newClick.ok, "catalog: 新建入口应可点击 " + JSON.stringify(newClick));
+    const modEd = await win.webContents.executeJavaScript(`(() => {
+      return {
+        form: !!document.querySelector(".ag-form"),
+        idInput: !!document.querySelector("#cg-mod-id"),
+        save: !!document.querySelector('[data-cg="save"]'),
+      };
+    })()`);
+    log("module-editor", JSON.stringify(modEd));
+    assert.ok(modEd.form && modEd.idInput && modEd.save, "catalog: 新建应打开模块编写器");
+    await win.webContents.executeJavaScript(`(() => {
+      const el = document.querySelector("#cg-mod-id");
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+      setter.call(el, "smoke-template");
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    })()`);
+    // 摘要也是必填（chips 的 tooltip——Agent 靠它判断何时用）
+    await win.webContents.executeJavaScript(`(() => {
+      const el = [...document.querySelectorAll("input.fd-input")].find((i) => i.placeholder.includes("摘要"));
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+      setter.call(el, "冒烟模板——校验自建链路");
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    })()`);
+    await win.webContents.executeJavaScript(`document.querySelector('[data-cg="save"]').click()`);
+    const afterCreate = await win.webContents.executeJavaScript(`(() => {
+      return {
+        cards: document.querySelectorAll(".cg-card").length,
+        hasCustom: !!document.querySelector('.cg-card [data-cg="del"]'),
+      };
+    })()`);
+    log("module-created", JSON.stringify(afterCreate));
+    assert.strictEqual(afterCreate.cards, 4, "catalog: 保存后模板应有 4 个条目");
+    assert.ok(afterCreate.hasCustom, "catalog: 自建条目应有删除入口");
+    await win.webContents.executeJavaScript(`(() => {
+      const del = document.querySelector('[data-cg="del"]');
+      if (!del) throw new Error("删除入口缺失");
+      del.click();
+    })()`);
+    // 两步确认必须分两个任务（同步双击会被 React 批成一次更新——第二次点击看不到 confirming）
+    await win.webContents.executeJavaScript(`document.querySelector('[data-cg="del"]').click()`);
+    const afterDelete = await win.webContents.executeJavaScript(`document.querySelectorAll(".cg-card").length`);
+    log("module-deleted", afterDelete);
+    assert.strictEqual(afterDelete, 3, "catalog: 两步删除后应回到 3 个条目");
 
     assert.deepEqual(errors, [], '页面不应出现控制台错误');
     log('PASS: desktop / mobile / shell layout');

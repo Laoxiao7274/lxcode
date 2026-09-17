@@ -4050,8 +4050,7 @@ body:has(.window-stage) {
 .cg-card:hover {
   border-color: #d4d4d8;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.03);
-}
-.cg-card-top {
+}.cg-card-top {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -4085,6 +4084,35 @@ body:has(.window-stage) {
   font-family: var(--font-mono);
   font-size: 10.5px;
   color: var(--fg-faint);
+}
+.cg-card-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 2px;
+}
+.cg-new-note {
+  font-size: 11.5px;
+  color: var(--fg-faint);
+  margin: -6px 0 14px;
+}
+/* 模块编写器：id 等宽、正文加高、预览盒 */
+.cg-id-input {
+  font-family: var(--font-mono);
+}
+.cg-body-input {
+  min-height: 300px;
+}
+.cg-preview-box {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  background: var(--surface);
+}
+.cg-preview-box .ag-detail-md {
+  max-height: none;
+  overflow: visible;
+  -webkit-mask-image: none;
+  mask-image: none;
 }
 @media (max-width: 640px) {
   .cg-grid {
