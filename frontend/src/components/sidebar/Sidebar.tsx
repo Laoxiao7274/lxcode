@@ -23,6 +23,8 @@ export function Sidebar({
   agentsActive,
   onOpenAgents,
   onOpenChat,
+  catalogActive,
+  onOpenCatalog,
 }: {
   source: AgentSource;
   currentId: string;
@@ -36,6 +38,9 @@ export function Sidebar({
   onOpenAgents: () => void;
   /** 一切回到对话的操作（新对话/恢复会话）都要离开名单视图。 */
   onOpenChat: () => void;
+  /** 目录视图当前激活（工具/技能/模板管理）。 */
+  catalogActive: boolean;
+  onOpenCatalog: () => void;
 }) {
   const [query, setQuery] = useState("");
   const [menuFor, setMenuFor] = useState<string | null>(null);
@@ -119,22 +124,21 @@ export function Sidebar({
           </svg>
           Agents
         </button>
-        <button type="button" className="nav-item" onClick={() => searchRef.current?.focus()}>
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <circle cx="11" cy="11" r="7" />
-            <path d="m20 20-3.5-3.5" />
-          </svg>
-          搜索
-          <span className="nav-kbd">⌘K</span>
-        </button>
-        <button type="button" className="nav-item">
+        <button
+          type="button"
+          className={"nav-item" + (catalogActive ? " on" : "")}
+          data-nav="catalog"
+          onClick={onOpenCatalog}
+          title="工具、技能与模板的目录"
+          aria-pressed={catalogActive}
+        >
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <rect x="3" y="3" width="7" height="7" rx="1" />
             <rect x="14" y="3" width="7" height="7" rx="1" />
             <rect x="3" y="14" width="7" height="7" rx="1" />
             <rect x="14" y="14" width="7" height="7" rx="1" />
           </svg>
-          插件
+          目录
         </button>
         <button type="button" className="nav-item">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -145,7 +149,7 @@ export function Sidebar({
         </button>
       </nav>
 
-      {/* 搜索框（聚焦「搜索」时展开） */}
+      {/* 搜索框（常驻——搜索会话与项目） */}
       <div className="sidebar-pad">
         <div className="search-box">
           <svg className="search-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

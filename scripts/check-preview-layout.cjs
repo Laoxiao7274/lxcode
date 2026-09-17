@@ -226,6 +226,44 @@ app.whenReady().then(async () => {
     );
     assert.ok(backToRoster, "agents: 取消应回到名单");
 
+    // 目录管理页：导航进入 → 页签与条目卡 → 点卡片开文档弹窗 → 切页签
+    await win.webContents.executeJavaScript(`document.querySelector('[data-nav="catalog"]').click()`);
+    const cat = await win.webContents.executeJavaScript(`(() => {
+      const r = (s) => {
+        const el = document.querySelector(s);
+        if (!el) return null;
+        const b = el.getBoundingClientRect();
+        return { w: b.width, h: b.height };
+      };
+      return {
+        page: r(".cg-page"),
+        grid: r(".cg-grid"),
+        cards: document.querySelectorAll(".cg-card").length,
+        navOn: !!document.querySelector('.nav-item.on[data-nav="catalog"]'),
+      };
+    })()`);
+    log("catalog-page", JSON.stringify(cat));
+    assert.ok(cat.page && cat.page.h > 300, "catalog: 目录页应可见");
+    assert.ok(cat.cards >= 10, "catalog: 工具页签应有 10 个条目");
+    assert.ok(cat.navOn, "catalog: 导航应高亮");
+    await win.webContents.executeJavaScript(`document.querySelector(".cg-card").click()`);
+    const catDoc = await win.webContents.executeJavaScript(`(() => {
+      const el = document.querySelector(".ag-doc");
+      return el ? { h: el.getBoundingClientRect().height, params: el.querySelectorAll(".ag-param").length } : null;
+    })()`);
+    log("catalog-doc", JSON.stringify(catDoc));
+    assert.ok(catDoc && catDoc.h > 150, "catalog: 点卡片应开文档弹窗");
+    await win.webContents.executeJavaScript(`document.querySelector(".ag-doc-close").click()`);
+    // 切到模板页签：条目数变化 + 重播交错入场
+    await win.webContents.executeJavaScript(`(() => {
+      const btns = document.querySelectorAll(".cg-tabs .seg-btn");
+      if (btns.length < 3) throw new Error("目录页签缺失");
+      btns[2].click();
+    })()`);
+    const catTpl = await win.webContents.executeJavaScript(`document.querySelectorAll(".cg-card").length`);
+    log("catalog-templates", catTpl);
+    assert.strictEqual(catTpl, 3, "catalog: 模板页签应有 3 个条目");
+
     assert.deepEqual(errors, [], '页面不应出现控制台错误');
     log('PASS: desktop / mobile / shell layout');
     finish(0);

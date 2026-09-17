@@ -3,6 +3,7 @@ import { getAgentSource } from "./agent";
 import { useAgent } from "./shared/store";
 import { AgentsProvider, useAgents } from "./shared/agents";
 import { AgentsPage } from "./components/agents/AgentsPage";
+import { CatalogPage } from "./components/catalog/CatalogPage";
 import { Topbar } from "./components/topbar";
 import { Sidebar } from "./components/sidebar";
 import { Thread, PlanBar } from "./components/thread";
@@ -31,13 +32,14 @@ function AppBody({ source }: { source: AgentSource }) {
   // 演示模式 resume 不重放历史，避免"高亮有历史、主区空白"的不一致）
   const [currentId, setCurrentId] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
-  /** 主区视图：对话 / Agent 名单（组装与注册）。 */
-  const [view, setView] = useState<"chat" | "agents">("chat");
+  /** 主区视图：对话 / Agent 名单 / 目录（工具·技能·模板）。 */
+  const [view, setView] = useState<"chat" | "agents" | "catalog">("chat");
   /** 对话过滤目标（项目 id / ""=未分组 / null=全部）——App 持有：
    *  侧栏过滤、「新对话」归属、空态项目标签三处共用。 */
   const [filter, setFilter] = useState<string | null>(null);
 
   const openAgents = () => setView((v) => (v === "agents" ? "chat" : "agents"));
+  const openCatalog = () => setView((v) => (v === "catalog" ? "chat" : "catalog"));
   const backToChat = () => setView("chat");
 
   // 会话切换事件同步侧栏高亮（与 useAgent 的订阅并行，各管各的）；
@@ -79,9 +81,29 @@ function AppBody({ source }: { source: AgentSource }) {
   const isShell = typeof navigator !== "undefined" && navigator.userAgent.includes("Electron");
   const errorNotice = operationError && <div className="error-block" role="alert">{operationError}<button type="button" onClick={() => setOperationError(null)}>关闭</button></div>;
 
+  const mainView =
+    view === "chat" ? (
+      <>
+        {errorNotice}
+        <div className="thread-scroll">
+          <Thread state={state} onConfirm={handleConfirm} onSuggestion={send} projectName={filterProjectName} />
+        </div>
+        <PlanBar todos={state.todos} />
+        <Composer busy={state.busy} onSend={sendWithOptions} onCancel={() => source.cancel()} />
+      </>
+    ) : view === "agents" ? (
+      <AgentsPage />
+    ) : (
+      <CatalogPage />
+    );
+
   const app = (
     <div className="app">
-      <Topbar taskTitle={view === "agents" ? "Agent 名单" : currentTitle} source={source} connected={false} />
+      <Topbar
+        taskTitle={view === "agents" ? "Agent 名单" : view === "catalog" ? "目录" : currentTitle}
+        source={source}
+        connected={false}
+      />
       <Sidebar
         source={source}
         currentId={currentId}
@@ -92,21 +114,10 @@ function AppBody({ source }: { source: AgentSource }) {
         agentsActive={view === "agents"}
         onOpenAgents={openAgents}
         onOpenChat={backToChat}
+        catalogActive={view === "catalog"}
+        onOpenCatalog={openCatalog}
       />
-      <main className="main">
-        {view === "chat" ? (
-          <>
-            {errorNotice}
-            <div className="thread-scroll">
-              <Thread state={state} onConfirm={handleConfirm} onSuggestion={send} projectName={filterProjectName} />
-            </div>
-            <PlanBar todos={state.todos} />
-            <Composer busy={state.busy} onSend={sendWithOptions} onCancel={() => source.cancel()} />
-          </>
-        ) : (
-          <AgentsPage />
-        )}
-      </main>
+      <main className="main">{mainView}</main>
       <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} source={source} />
     </div>
   );

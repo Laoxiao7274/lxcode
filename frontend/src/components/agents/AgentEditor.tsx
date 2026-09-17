@@ -1,6 +1,6 @@
 // 组装编辑器：紧凑分节表单（身份/模型/工具/上下文/委派/权限）+ 右侧
 // 「预览卡 + 紧凑详情面板」。chip 点击 = 选中 + 焦点（面板跟随）；
-// 点面板整卡打开完整文档弹窗（长文舒适阅读）。表单控件一律用
+// 点面板整卡打开完整文档弹窗（DocDialog 复用组件）。表单控件一律用
 // components/form 套件；gsap 分节交错入场（motionAllowed 门控）。
 import { useEffect, useRef, useState } from "react";
 import {
@@ -15,10 +15,10 @@ import {
 } from "../../shared/agents";
 import { useSettings } from "../../shared/settings";
 import { Markdown } from "../../shared/markdown";
-import { useEscape } from "../../shared/popover";
 import { useEnterRef } from "../../shared/anim";
 import { staggerIn } from "../../shared/motion";
 import { Button, Chips, ColorPicker, Select, Segmented, Textarea, TextInput, type SelectGroup } from "../form";
+import { DocDialog, type Focus } from "../catalog/DocDialog";
 import { AgentCard } from "./AgentCard";
 
 const APPROVAL_OPTS = [
@@ -26,9 +26,6 @@ const APPROVAL_OPTS = [
   { value: "auto" as const, label: "自动", hint: "高危也自动执行——仅隔离环境使用" },
   { value: "strict" as const, label: "只读", hint: "变更类工具直接拒绝，错误回填模型" },
 ];
-
-/** 详情焦点的指向（点击 chip 设置——右侧紧凑面板跟随）。 */
-type Focus = { kind: "tool" | "module"; id: string };
 
 const ALL_TOOLS = () => [MAIN_TOOL, ...BUILTIN_TOOLS, ...THIRD_PARTY_TOOLS];
 
@@ -100,7 +97,7 @@ function DetailPanel({ focus, onOpen }: { focus: Focus | null; onOpen: () => voi
       >
         <div className="ag-detail-title">{mod.id}</div>
         <div className="ag-detail-pills">
-          <span className="ag-pill src">{mod.kind === "process" ? "流程模块" : "技能模块"}</span>
+          <span className="ag-pill src">{mod.kind === "process" ? "模板" : "技能"}</span>
         </div>
         <div className="ag-detail-desc">{mod.desc}</div>
         <div className="ag-detail-md">
@@ -134,82 +131,6 @@ function OpenHint() {
   );
 }
 
-/** 文档弹窗：模块正文 / 工具文档的完整阅读视图（640px 舒适排版，
- *  遮罩 + Esc + 点外关闭——应用对话框语言）。 */
-function DocDialog({ focus, onClose }: { focus: Focus; onClose: () => void }) {
-  useEscape(true, onClose);
-  const mod = focus.kind === "module" ? CONTEXT_MODULES.find((m) => m.id === focus.id) : undefined;
-  const tool = focus.kind === "tool" ? ALL_TOOLS().find((t) => t.id === focus.id) : undefined;
-
-  return (
-    <div
-      className="ag-doc-mask"
-      role="dialog"
-      aria-modal="true"
-      aria-label={tool ? `工具文档 ${tool.id}` : mod ? `模块文档 ${mod.id}` : "文档"}
-      onPointerDown={(e) => e.target === e.currentTarget && onClose()}
-    >
-      <div className="ag-doc">
-        <div className="ag-doc-head">
-          <span className="ag-doc-title">{tool ? tool.id : mod ? mod.id : ""}</span>
-          <div className="ag-detail-pills">
-            {tool ? (
-              <>
-                <span className={"ag-pill " + (tool.risk === "high" ? "risk-high" : "risk-low")}>
-                  {tool.risk === "high" ? "高危" : "低危"}
-                </span>
-                <span className="ag-pill src">
-                  {tool.source === "builtin" ? "内置" : tool.source === "binary" ? "外部二进制" : "MCP"}
-                </span>
-              </>
-            ) : mod ? (
-              <span className="ag-pill src">{mod.kind === "process" ? "流程模块" : "技能模块"}</span>
-            ) : null}
-          </div>
-          <button type="button" className="ag-doc-close" onClick={onClose} aria-label="关闭">
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-              <path d="M18 6 6 18M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-        <div className="ag-doc-body">
-          {tool ? (
-            <>
-              <div className="ag-detail-desc">{tool.desc}</div>
-              {tool.params && tool.params.length > 0 && (
-                <div className="ag-detail-params">
-                  <div className="ag-detail-params-label">参数</div>
-                  {tool.params.map((p) => (
-                    <div className="ag-param" key={p.name} title={p.desc ?? ""}>
-                      <span className="ag-param-name">{p.name}</span>
-                      <span className="ag-param-type">{p.type}</span>
-                      {p.required && <span className="ag-param-req">必填</span>}
-                    </div>
-                  ))}
-                </div>
-              )}
-              {tool.doc && (
-                <div className="ag-detail-md">
-                  <Markdown text={tool.doc} />
-                </div>
-              )}
-            </>
-          ) : mod ? (
-            <>
-              <div className="ag-detail-desc">{mod.desc}</div>
-              <div className="ag-detail-md">
-                <Markdown text={mod.body} />
-              </div>
-              <div className="ag-detail-note">注入上下文——不授予工具权限</div>
-            </>
-          ) : (
-            <div className="ag-detail-note">条目不存在（目录可能已变化）</div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
 
 export function AgentEditor({
   initial,
@@ -391,7 +312,7 @@ export function AgentEditor({
                   : "按任务执行、受工具白名单约束、结果如实回传（工具清单随白名单动态生成）。协议不可编辑。"}
               </span>
             </div>
-            <div className="ag-chip-label">流程模块</div>
+            <div className="ag-chip-label">模板</div>
             <Chips
               exclusive
               options={processChips}
@@ -399,17 +320,17 @@ export function AgentEditor({
               onChange={(v) => set("workflow", v[0] ?? "")}
               focusedValue={focus?.kind === "module" ? focus.id : null}
               onFocus={(id) => setFocus({ kind: "module", id })}
-              ariaLabel="流程模块（单选）"
+              ariaLabel="模板（单选）"
             />
-            <div className="ag-hint">单选——工作方式是完整单元；缺合适的流程就补一个流程模块，不靠多个拼装。</div>
-            <div className="ag-chip-label">技能模块</div>
+            <div className="ag-hint">单选——工作方式是完整单元；缺合适的模板就补一个，不靠多个拼装。</div>
+            <div className="ag-chip-label">技能</div>
             <Chips
               options={skillChips}
               value={def.skills}
               onChange={(skills) => set("skills", skills)}
               focusedValue={focus?.kind === "module" ? focus.id : null}
               onFocus={(id) => setFocus({ kind: "module", id })}
-              ariaLabel="技能模块"
+              ariaLabel="技能"
             />
             <div className="ag-chip-label">自定义段</div>
             <Textarea
