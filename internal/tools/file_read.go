@@ -70,7 +70,10 @@ func readFileDef() *Def {
 				a.Limit = readMaxLines
 			}
 
-			st, err := os.Stat(a.Path)
+			// 相对路径按会话工作目录解析（项目会话 = 项目根；未注入时
+			// 行为同旧版——由 OS 按进程目录解析）
+			path := resolveToolPath(ctx, a.Path)
+			st, err := os.Stat(path)
 			if err != nil {
 				return "", fmt.Errorf("读取 %s 失败: %w", a.Path, err)
 			}
@@ -79,7 +82,7 @@ func readFileDef() *Def {
 				return "", fmt.Errorf("%s 是目录不是文件；列目录请用 bash 执行 ls", a.Path)
 			}
 
-			head, err := readHead(a.Path)
+			head, err := readHead(path)
 			if err != nil {
 				return "", fmt.Errorf("读取 %s 失败: %w", a.Path, err)
 			}
@@ -88,7 +91,7 @@ func readFileDef() *Def {
 					"请用 bash 的 file/xxd/od 等命令按需查看）", a.Path, st.Size()), nil
 			}
 
-			return readLines(a.Path, a.Offset, a.Limit)
+			return readLines(path, a.Offset, a.Limit)
 		},
 	}
 }

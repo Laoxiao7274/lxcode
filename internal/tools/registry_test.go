@@ -91,11 +91,11 @@ func TestConfirmWriteNewAndExisting(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 新文件：无需确认
-	if got := r.Confirm(call("write_file", `{"path":`+quote(filepath.Join(t.TempDir(), "new.txt"))+`,"content":"x"}`)); got != "" {
+	if got := r.Confirm(context.Background(), call("write_file", `{"path":`+quote(filepath.Join(t.TempDir(), "new.txt"))+`,"content":"x"}`)); got != "" {
 		t.Fatalf("新文件不应确认: %q", got)
 	}
 	// 覆盖已有文件：需确认且提示包含文件名
-	got := r.Confirm(call("write_file", `{"path":`+quote(path)+`,"content":"x"}`))
+	got := r.Confirm(context.Background(), call("write_file", `{"path":`+quote(path)+`,"content":"x"}`))
 	if !strings.Contains(got, "覆盖") || !strings.Contains(got, "exists.txt") {
 		t.Fatalf("覆盖应确认: %q", got)
 	}
@@ -103,7 +103,7 @@ func TestConfirmWriteNewAndExisting(t *testing.T) {
 
 func TestConfirmBashAlways(t *testing.T) {
 	r := New()
-	got := r.Confirm(call("bash", `{"command":"ls -la"}`))
+	got := r.Confirm(context.Background(), call("bash", `{"command":"ls -la"}`))
 	if !strings.Contains(got, "ls -la") {
 		t.Fatalf("bash 应一律确认并显示命令: %q", got)
 	}
@@ -111,7 +111,7 @@ func TestConfirmBashAlways(t *testing.T) {
 
 func TestConfirmReadNever(t *testing.T) {
 	r := New()
-	if got := r.Confirm(call("read_file", `{"path":"/etc/passwd"}`)); got != "" {
+	if got := r.Confirm(context.Background(), call("read_file", `{"path":"/etc/passwd"}`)); got != "" {
 		t.Fatalf("read 低危不应确认: %q", got)
 	}
 }

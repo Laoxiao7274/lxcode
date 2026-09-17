@@ -509,11 +509,141 @@ func TestSessionList(t *testing.T) {
 	}
 }
 
+// ---------- 工作目录（项目归属 → 工具执行目录） ----------
+
+// TestSetWorkspaceResolvesWorkDir：session.new 带项目 id 时，工作目录
+// 解析为项目根（侧栏分组之外的实际语义）。
+func TestSetWorkspaceResolvesWorkDir(t *testing.T) {
+	s := newPersistSession(t, t.TempDir())
+	dir := t.TempDir()
+	saved, err := s.st.AddProject("demo", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SetWorkspace(saved.ID)
+	if s.WorkDir() != dir {
+		t.Fatalf("工作目录应为项目根: got %q want %q", s.WorkDir(), dir)
+	}
+	// 未知项目：分组照记（落库用），工作目录回退默认
+	s.SetWorkspace("不存在的项目")
+	if s.WorkDir() != "" {
+		t.Fatalf("未知项目应回退默认目录: %q", s.WorkDir())
+	}
+}
+
+// TestSwitchNewClearsWorkDir：不带 workspace 的 session.new 回到未分组
+// （默认目录）——上一个项目的归属不得残留。
+func TestSwitchNewClearsWorkDir(t *testing.T) {
+	s := newPersistSession(t, t.TempDir())
+	dir := t.TempDir()
+	saved, err := s.st.AddProject("demo", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SetWorkspace(saved.ID)
+	if _, err := s.SwitchNew(); err != nil {
+		t.Fatal(err)
+	}
+	if s.WorkDir() != "" {
+		t.Fatalf("SwitchNew 应清空工作目录: %q", s.WorkDir())
+	}
+}
+
+// TestSwitchToRestoresWorkDir：resume 项目会话时工作目录跟随恢复。
+func TestSwitchToRestoresWorkDir(t *testing.T) {
+	s := newPersistSession(t, t.TempDir())
+	dir := t.TempDir()
+	saved, err := s.st.AddProject("demo", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 项目会话：落一行消息（建会话行）→ 归属落库
+	s.SetWorkspace(saved.ID)
+	s.append(llm.Message{Role: "user", Content: "项目里的问题"})
+	id := s.SessionID()
+	// 新会话（默认目录）→ resume 回项目会话
+	if _, err := s.SwitchNew(); err != nil {
+		t.Fatal(err)
+	}
+	if s.WorkDir() != "" {
+		t.Fatal("新会话应为默认目录")
+	}
+	if err := s.SwitchTo(id); err != nil {
+		t.Fatal(err)
+	}
+	if s.WorkDir() != dir {
+		t.Fatalf("resume 应恢复项目工作目录: got %q want %q", s.WorkDir(), dir)
+	}
+}
+
+// TestRestartRestoresWorkDir：重启恢复最近会话时，项目归属的工作目录
+// 一并恢复（EnablePersistence 路径）。
+func TestRestartRestoresWorkDir(t *testing.T) {
+	dir := t.TempDir()
+	dbDir := t.TempDir()
+	s1 := newPersistSession(t, dbDir)
+	proj, err := s1.st.AddProject("demo", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s1.SetWorkspace(proj.ID)
+	s1.append(llm.Message{Role: "user", Content: "重启前的项目会话"})
+
+	// 模拟重启：全新 Session 挂同一存储（恢复最近会话 + 归属）
+	s2 := newPersistSession(t, dbDir)
+	if s2.WorkDir() != dir {
+		t.Fatalf("重启应恢复项目工作目录: got %q want %q", s2.WorkDir(), dir)
+	}
+}
+
+// TestTurnToolsRunInWorkDir：项目会话的工具循环里，相对路径落在项目根
+// （用户可感知的端到端行为：模型在项目目录里干活）。
+func TestTurnToolsRunInWorkDir(t *testing.T) {
+	s := newPersistSession(t, t.TempDir())
+	dir := t.TempDir()
+	proj, err := s.st.AddProject("demo", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "hello.txt"), []byte("项目里的文件"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s.SetWorkspace(proj.ID)
+
+	// 假流第一轮回一个 read_file 调用（相对路径），第二轮收尾
+	fake := &fakeStream{script: [][]llm.StreamEvent{
+		toolCallResult("read_file", `{"path":"hello.txt"}`),
+		textResult("读到了"),
+	}}
+	s.stream = fake.stream
+
+	var mu sync.Mutex
+	var toolResult string
+	s.emit = func(ev Event) {
+		if r, ok := ev.(ToolResultEvent); ok {
+			mu.Lock()
+			toolResult = r.Content
+			mu.Unlock()
+		}
+	}
+	if err := s.Send("读一下 hello.txt"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return !s.Busy() })
+	if !strings.Contains(toolResult, "项目里的文件") {
+		t.Fatalf("read_file 相对路径应落在项目根: %q", toolResult)
+	}
+	// 会话行已建且归属落库
+	if ws, err := s.st.WorkspaceOf(s.SessionID()); err != nil || ws != proj.ID {
+		t.Fatalf("归属应落库: %q %v", ws, err)
+	}
+}
+
 // ---------- 系统提示词 ----------
 
 func TestSystemPromptListsAllTools(t *testing.T) {
 	s, _ := newTestSession(t)
-	prompt := BuildSystemPrompt(s.tools)
+	prompt := BuildSystemPrompt(s.tools, "")
 	for _, name := range s.tools.Order() {
 		// 清单行形如 "- read_file：…"（中文冒号分隔）
 		if !strings.Contains(prompt, name+"：") {
@@ -528,9 +658,24 @@ func TestSystemPromptListsAllTools(t *testing.T) {
 
 func TestSystemPromptDeterministic(t *testing.T) {
 	s, _ := newTestSession(t)
-	a, b := BuildSystemPrompt(s.tools), BuildSystemPrompt(s.tools)
+	a, b := BuildSystemPrompt(s.tools, ""), BuildSystemPrompt(s.tools, "")
 	if a != b {
 		t.Fatal("提示词应确定性生成")
+	}
+}
+
+// TestSystemPromptWorkDir：项目会话的提示词必须写明工作目录（模型
+// 按它解析相对路径、决定在哪跑命令）。
+func TestSystemPromptWorkDir(t *testing.T) {
+	s, _ := newTestSession(t)
+	prompt := BuildSystemPrompt(s.tools, `C:\proj\demo`)
+	for _, want := range []string{`C:\proj\demo`, "项目根目录即工作目录", "相对路径"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("项目会话提示词应含 %q", want)
+		}
+	}
+	if strings.Contains(BuildSystemPrompt(s.tools, ""), "项目根") {
+		t.Fatal("未分组会话不应有项目根话术")
 	}
 }
 

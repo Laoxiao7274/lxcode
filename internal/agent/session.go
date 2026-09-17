@@ -70,6 +70,10 @@ type Session struct {
 	// 会话行首条消息懒建时落库并清空）。单会话架构下的过渡设计——
 	// 多会话并发时归属直接挂在会话对象上。
 	pendingWorkspace string
+	// workDir 是当前会话的工作目录（归属项目的根目录；空 = 后端进程
+	// 目录）。工具的相对路径、bash 默认目录与系统提示词的工作目录说明
+	// 都以它为准——每轮开始时快照进 ctx（tools.WithWorkDir）。
+	workDir string
 }
 
 // New 创建会话；emit 为 nil 时事件被丢弃（单测可只调方法）。
@@ -199,6 +203,14 @@ func (s *Session) Todos() []tools.TodoItem {
 // runTurn 跑完整一轮：流式生成 → 工具调用 → 确认 → 执行 → 回填续轮。
 // 文件改动（edit/write_file）被收集，轮末汇总发 FilesChangedEvent（产物视图）。
 func (s *Session) runTurn(ctx context.Context) {
+	// 快照工作目录并注入工具执行（busy 期间不可变——切换与归属入口
+	// 都有 busy 守卫，这是单会话架构下的一致性来源）：项目会话的相对
+	// 路径、bash 默认目录、确认门解析基准全部对齐项目根。
+	s.mu.Lock()
+	workDir := s.workDir
+	s.mu.Unlock()
+	ctx = tools.WithWorkDir(ctx, workDir)
+
 	var fileChanges []FileChange
 	defer func() {
 		s.mu.Lock()
@@ -214,7 +226,7 @@ func (s *Session) runTurn(ctx context.Context) {
 	}()
 
 	for round := 0; round < maxToolRounds; round++ {
-		res, err := s.streamRound(ctx)
+		res, err := s.streamRound(ctx, workDir)
 		if err != nil {
 			aborted := errors.Is(err, context.Canceled) || ctx.Err() != nil
 			note := err.Error()
@@ -248,7 +260,8 @@ func (s *Session) runTurn(ctx context.Context) {
 }
 
 // streamRound 跑一轮流式生成，把增量事件转发给宿主，返回最终结果。
-func (s *Session) streamRound(ctx context.Context) (*llm.ChatResult, error) {
+// workDir 是本轮快照的会话工作目录（系统提示词里的工作目录说明用它）。
+func (s *Session) streamRound(ctx context.Context, workDir string) (*llm.ChatResult, error) {
 	m, err := s.reg.ModelForRole(config.RoleDefault)
 	if err != nil {
 		return nil, err
@@ -259,7 +272,7 @@ func (s *Session) streamRound(ctx context.Context) (*llm.ChatResult, error) {
 	}
 	// 快照：快照后新消息（若有）不影响本轮请求
 	s.mu.Lock()
-	msgs := append([]llm.Message{{Role: "system", Content: BuildSystemPrompt(s.tools)}}, s.history...)
+	msgs := append([]llm.Message{{Role: "system", Content: BuildSystemPrompt(s.tools, workDir)}}, s.history...)
 	s.mu.Unlock()
 
 	opts = append([]llm.Option{llm.WithTools(s.tools.LLMTools())}, opts...)
@@ -323,7 +336,7 @@ func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChange
 		if ctx.Err() != nil {
 			return false
 		}
-		if prompt := s.tools.Confirm(tc); prompt != "" {
+		if prompt := s.tools.Confirm(ctx, tc); prompt != "" {
 			req := &ConfirmRequest{
 				ID: tc.ID, Name: tc.Function.Name, Arguments: tc.Function.Arguments, Prompt: prompt,
 			}
@@ -490,12 +503,40 @@ func (s *Session) ensureSessionLocked() error {
 	return nil
 }
 
-// SetWorkspace 设置下一个新会话的归属项目（session.new 参数透传）。
-// 空串 = 未分组。当前会话已存在时会在 SwitchNew 后的新会话生效。
+// SetWorkspace 设置下一个新会话的归属项目（session.new 参数透传），同时把
+// 项目根目录设为会话工作目录——工具的相对路径、bash 默认目录与系统提示词
+// 全部对齐项目根（侧栏分组之外的实际语义）。项目查不到（无存储/不存在）
+// 时只记分组，工作目录保持默认。
 func (s *Session) SetWorkspace(workspace string) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.pendingWorkspace = workspace
-	s.mu.Unlock()
+	s.workDir = s.resolveWorkspaceDirLocked(workspace)
+}
+
+// resolveWorkspaceDirLocked 把项目 id 解析成项目根目录（查不到返回空串 =
+// 默认目录）。调用方持锁；查询短且并发由 store 连接池保证。
+func (s *Session) resolveWorkspaceDirLocked(id string) string {
+	if id == "" || s.st == nil {
+		return ""
+	}
+	meta, found, err := s.st.ProjectByID(id)
+	if err != nil {
+		log.Printf("查询项目 %s 失败（工作目录回退默认）: %v", id, err)
+		return ""
+	}
+	if !found {
+		log.Printf("项目 %s 不存在（工作目录回退默认）", id)
+		return ""
+	}
+	return meta.Path
+}
+
+// WorkDir 返回当前会话的工作目录（空 = 后端进程目录）。
+func (s *Session) WorkDir() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.workDir
 }
 
 // EnablePersistence 挂载磁盘存储并恢复最近会话（启动时调用）。
@@ -516,6 +557,13 @@ func (s *Session) EnablePersistence(st *store.Store) error {
 	}
 	s.id = id
 	s.history = msgs
+	// 恢复最近会话的项目归属：工作目录跟随（重启后项目会话不漂移到
+	// 后端进程目录）
+	if ws, err := st.WorkspaceOf(id); err != nil {
+		log.Printf("读取会话归属失败（工作目录回退默认）: %v", err)
+	} else {
+		s.workDir = s.resolveWorkspaceDirLocked(ws)
+	}
 	return nil
 }
 
@@ -542,6 +590,12 @@ func (s *Session) SwitchNew() (string, error) {
 	s.id = "" // 新会话行懒创建
 	s.history = nil
 	s.todos = nil
+	// 归属与工作目录随会话清空：不带 workspace 的 session.new 回到未分组
+	//（默认目录）。server 的顺序是先 SwitchNew 再按参数 SetWorkspace，
+	// 带归属的 session.new 会随后设回——顺带修掉「上一个项目的归属
+	// 残留到下一个未分组会话」的泄漏。
+	s.pendingWorkspace = ""
+	s.workDir = ""
 	s.mu.Unlock()
 	return "", nil
 }
@@ -562,6 +616,15 @@ func (s *Session) SwitchTo(id string) error {
 		return err
 	}
 	s.id, s.history = id, msgs
+	// 恢复归属：工作目录跟随会话的项目根（会话行已存在，懒建路径不会
+	// 再走，pendingWorkspace 清零）
+	ws, err := s.st.WorkspaceOf(id)
+	if err != nil {
+		log.Printf("读取会话归属失败（工作目录回退默认）: %v", err)
+		ws = ""
+	}
+	s.pendingWorkspace = ""
+	s.workDir = s.resolveWorkspaceDirLocked(ws)
 	s.mu.Unlock()
 	return nil
 }

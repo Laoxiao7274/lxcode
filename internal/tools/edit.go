@@ -56,11 +56,13 @@ func editDef() *Def {
 				return "", fmt.Errorf("new_string 与 old_string 相同——这次编辑不会产生任何改动")
 			}
 
-			data, err := os.ReadFile(a.Path)
+			// 相对路径按会话工作目录解析（项目会话 = 项目根）
+			path := resolveToolPath(ctx, a.Path)
+			data, err := os.ReadFile(path)
 			if err != nil {
 				return "", fmt.Errorf("读取 %s 失败: %w", a.Path, err)
 			}
-			st, err := os.Stat(a.Path)
+			st, err := os.Stat(path)
 			if err == nil && st.IsDir() {
 				return "", fmt.Errorf("%s 是目录，edit 只能改文件", a.Path)
 			}
@@ -81,7 +83,7 @@ func editDef() *Def {
 			} else {
 				out = strings.Replace(string(data), a.OldString, a.NewString, 1)
 			}
-			if err := atomicWriteFile(a.Path, []byte(out)); err != nil {
+			if err := atomicWriteFile(path, []byte(out)); err != nil {
 				return "", fmt.Errorf("写入 %s 失败: %w", a.Path, err)
 			}
 			if n > 1 && a.ReplaceAll {

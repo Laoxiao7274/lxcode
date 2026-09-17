@@ -91,7 +91,7 @@ func bashDef() *Def {
 		"type": "object",
 		"properties": {
 			"command": {"type": "string", "description": "要执行的 shell 命令；多行脚本建议用 stdin 传入"},
-			"cwd": {"type": "string", "description": "工作目录（绝对或相对工作区，可选）；默认进程当前目录"},
+			"cwd": {"type": "string", "description": "工作目录（绝对或相对会话工作目录，可选）；默认会话工作目录（无则为进程当前目录）"},
 			"stdin": {"type": "string", "description": "喂给命令的标准输入（可选，上限 64KB）：可写多行脚本或 heredoc 体，避免引号转义"},
 			"timeout_sec": {"type": "integer", "description": "超时秒数，默认 60，上限 300"}
 		},
@@ -104,7 +104,7 @@ func bashDef() *Def {
 			shellSyntaxHint(shellDisp),
 		Parameters: schema,
 		Risk:       RiskHigh,
-		Confirm: func(args json.RawMessage) string {
+		Confirm: func(ctx context.Context, args json.RawMessage) string {
 			var a struct {
 				Command string `json:"command"`
 				Cwd     string `json:"cwd"`
@@ -115,7 +115,8 @@ func bashDef() *Def {
 			}
 			prompt := "将执行命令: " + a.Command
 			if a.Cwd != "" {
-				prompt += "\n工作目录: " + a.Cwd
+				// 确认卡展示解析后的真实目录（相对路径按会话工作目录）
+				prompt += "\n工作目录: " + resolveToolPath(ctx, a.Cwd)
 			}
 			if a.Stdin != "" {
 				prompt += fmt.Sprintf("\n标准输入: %d 字节\n%s", len(a.Stdin), clip(a.Stdin, 300))
@@ -135,9 +136,10 @@ func bashDef() *Def {
 			if a.Command == "" {
 				return "", fmt.Errorf("command 不能为空")
 			}
-			// 系统层硬校验：cwd 必须解析为存在的目录（相对路径按工作区解析），别让模型靠 sh 报错猜
+			// 系统层硬校验：cwd 必须解析为存在的目录（相对路径按会话工作
+			// 目录解析），别让模型靠 sh 报错猜
 			if a.Cwd != "" {
-				cwd := a.Cwd
+				cwd := resolveToolPath(ctx, a.Cwd)
 				if !filepath.IsAbs(cwd) {
 					var err error
 					cwd, err = filepath.Abs(cwd)
@@ -153,6 +155,10 @@ func bashDef() *Def {
 					return "", fmt.Errorf("cwd 不是目录: %s", cwd)
 				}
 				a.Cwd = cwd
+			} else if wd := WorkDir(ctx); wd != "" {
+				// 模型未指定目录：默认会话工作目录（项目会话 = 项目根），
+				// 免得每条命令都塞绝对路径或 cd 前缀
+				a.Cwd = wd
 			}
 			if len(a.Stdin) > bashMaxStdin {
 				return "", fmt.Errorf("stdin 超过 %dKB 上限（当前 %d 字节）；大文件请分块或用 read_file/write_file",

@@ -39,7 +39,7 @@ func writeFileDef() *Def {
 		Description: "把内容写入本地文件（全量覆盖，父目录自动创建；写入是原子替换）。注意 content 必须是完整文件内容，不能只给改动片段。修改已有文件优先用 edit 工具（只替换匹配片段，无需整体重写）。",
 		Parameters:  schema,
 		Risk:        RiskHigh,
-		Confirm: func(args json.RawMessage) string {
+		Confirm: func(ctx context.Context, args json.RawMessage) string {
 			var a struct {
 				Path    string `json:"path"`
 				Content string `json:"content"`
@@ -47,7 +47,10 @@ func writeFileDef() *Def {
 			if err := json.Unmarshal(args, &a); err != nil || a.Path == "" {
 				return "写入文件（参数不完整，建议拒绝）"
 			}
-			st, err := os.Stat(a.Path)
+			// 与执行层解析同一个文件（相对路径按会话工作目录）——
+			// 两边各解析各的会把项目里的既有文件误判成新文件，确认门失效
+			path := resolveToolPath(ctx, a.Path)
+			st, err := os.Stat(path)
 			if err != nil || st.IsDir() {
 				return "" // 新文件：无需确认
 			}
@@ -55,10 +58,10 @@ func writeFileDef() *Def {
 			if st.Size() > 0 && float64(newSize) < float64(st.Size())*shrinkRatio {
 				return fmt.Sprintf("⚠ 覆盖 %s：内容将显著变短（%d 字节 → %d 字节，减少 %d 字节）。"+
 					"若模型只回填了部分内容，同意后会丢失原有数据，建议拒绝并要求它读全文后重写",
-					a.Path, st.Size(), newSize, st.Size()-int64(newSize))
+					path, st.Size(), newSize, st.Size()-int64(newSize))
 			}
 			return fmt.Sprintf("将覆盖已有文件 %s（现 %d 字节 → 新 %d 字节，内容会被整体替换）",
-				a.Path, st.Size(), newSize)
+				path, st.Size(), newSize)
 		},
 		Exec: func(ctx context.Context, args json.RawMessage) (string, error) {
 			var a struct {
@@ -71,12 +74,14 @@ func writeFileDef() *Def {
 			if a.Path == "" {
 				return "", fmt.Errorf("path 不能为空")
 			}
-			if dir := filepath.Dir(a.Path); dir != "" {
+			// 相对路径按会话工作目录解析（项目会话 = 项目根）
+			path := resolveToolPath(ctx, a.Path)
+			if dir := filepath.Dir(path); dir != "" {
 				if err := os.MkdirAll(dir, 0o755); err != nil {
 					return "", fmt.Errorf("创建目录失败: %w", err)
 				}
 			}
-			if err := atomicWriteFile(a.Path, []byte(a.Content)); err != nil {
+			if err := atomicWriteFile(path, []byte(a.Content)); err != nil {
 				return "", fmt.Errorf("写入 %s 失败: %w", a.Path, err)
 			}
 			return fmt.Sprintf("已写入 %s（%d 字节）", a.Path, len(a.Content)), nil

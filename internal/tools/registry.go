@@ -32,7 +32,9 @@ type Def struct {
 	Risk        RiskLevel
 	// Confirm 返回需人工确认的提示文本；空串 = 本组参数无需确认。
 	// 高危工具不一定每次都确认（如 write_file 只在覆盖已有文件时）。
-	Confirm func(args json.RawMessage) string
+	// ctx 携带会话工作目录——确认门必须与执行层解析同一个文件
+	//（相对路径在两边各自解析会 stat 错目录，把覆盖误判成新文件）。
+	Confirm func(ctx context.Context, args json.RawMessage) string
 	// Exec 执行工具，返回给模型的结果文本。错误不 panic——
 	// 由 Execute 转成自解释文本回填模型（三层错误的 L1，模型可自行纠正）。
 	Exec func(ctx context.Context, args json.RawMessage) (string, error)
@@ -116,12 +118,12 @@ func (r *Registry) LLMTools() []llm.Tool {
 
 // Confirm 返回需人工确认的提示；空串 = 无需确认。未知工具返回空串
 // （Execute 会把未知工具报给模型）。
-func (r *Registry) Confirm(call llm.ToolCall) string {
+func (r *Registry) Confirm(ctx context.Context, call llm.ToolCall) string {
 	d, ok := r.defs[call.Function.Name]
 	if !ok || d.Confirm == nil {
 		return ""
 	}
-	return d.Confirm([]byte(call.Function.Arguments))
+	return d.Confirm(ctx, []byte(call.Function.Arguments))
 }
 
 // Execute 校验并执行工具调用，返回给模型的结果文本。

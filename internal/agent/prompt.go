@@ -1,21 +1,30 @@
 package agent
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/moyunteng/lxcode/internal/tools"
 )
 
-// systemPromptHeader / systemPromptFooter 构成系统提示词的头尾；工具清单
-// 从注册表动态生成（BuildSystemPrompt），不手写——手写清单在工具增减后就是
-// 过时信息，模型不知道某个工具存在（local-myt-agent 的前车之鉴：清单在
-// 工具 4 个时过时成了 3 个）。
+// systemPromptHeader 是系统提示词的开头；工具清单从注册表动态生成
+// （BuildSystemPrompt），不手写——手写清单在工具增减后就是过时信息，
+// 模型不知道某个工具存在（local-myt-agent 的前车之鉴：清单在工具
+// 4 个时过时成了 3 个）。
 const systemPromptHeader = `你是 lxcode，运行在用户本机（Windows/类 Unix 桌面环境）上的个人智能体，
-既是编程助手（读写代码、改文件、跑构建与测试），也处理日常事务。你直接为用户服务，
-工作目录就是用户启动你的目录。
-
-可用工具：
+既是编程助手（读写代码、改文件、跑构建与测试），也处理日常事务。你直接为用户服务。
 `
+
+// workdirLine 是工作目录说明：模型必须知道相对路径与 bash 默认目录的
+// 解析基准，否则会按自己的猜测编路径。项目会话显式给出项目根
+// （session.new 带 workspace 注入），未分组会话是后端进程目录。
+func workdirLine(workDir string) string {
+	if workDir == "" {
+		return "工作目录就是用户启动后端的目录。\n"
+	}
+	return fmt.Sprintf("当前会话归属一个项目，项目根目录即工作目录：%s\n"+
+		"相对路径一律按此目录解析，bash 未指定 cwd 时也在此目录执行；项目外的文件用绝对路径访问。\n", workDir)
+}
 
 const systemPromptFooter = `
 工作守则：
@@ -44,11 +53,15 @@ var systemPromptTools = map[string]string{
 	"todo":           "todo：维护任务清单（全量写入），低危自动执行",
 }
 
-// BuildSystemPrompt 组装完整系统提示词：头 + 动态工具清单 + 尾。
-// 从注册表生成——加新工具时不需要改这里（忘了改清单 = 模型不知道工具存在）。
-func BuildSystemPrompt(toolReg *tools.Registry) string {
+// BuildSystemPrompt 组装完整系统提示词：头 + 工作目录说明 + 动态工具清单 + 尾。
+// workDir 是会话工作目录（项目会话 = 项目根，空 = 后端进程目录）——相对路径
+// 的解析基准必须告诉模型。工具清单从注册表生成——加新工具时不需要改这里
+// （忘了改清单 = 模型不知道工具存在）。
+func BuildSystemPrompt(toolReg *tools.Registry, workDir string) string {
 	var b strings.Builder
 	b.WriteString(systemPromptHeader)
+	b.WriteString(workdirLine(workDir))
+	b.WriteString("\n可用工具：\n")
 	for _, name := range toolReg.Order() {
 		if desc, ok := systemPromptTools[name]; ok {
 			b.WriteString("- " + desc + "\n")

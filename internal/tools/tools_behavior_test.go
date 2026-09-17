@@ -192,7 +192,7 @@ func TestWriteShrinkGuard(t *testing.T) {
 	}
 
 	// 缩到不足一半 → 必须弹确认，且提示里写明字节变化
-	prompt := r.Confirm(call("write_file", `{"path":`+quote(path)+`,"content":"{}"}`))
+	prompt := r.Confirm(context.Background(), call("write_file", `{"path":`+quote(path)+`,"content":"{}"}`))
 	if prompt == "" {
 		t.Fatal("内容显著变短必须要求确认")
 	}
@@ -203,7 +203,7 @@ func TestWriteShrinkGuard(t *testing.T) {
 	}
 
 	// 正常增减（保持在 50% 以上）→ 仍需确认（覆盖），但不是缩水告警
-	prompt = r.Confirm(call("write_file",
+	prompt = r.Confirm(context.Background(), call("write_file",
 		`{"path":`+quote(path)+`,"content":"`+strings.Repeat("y", 4000)+`"}`))
 	if prompt == "" {
 		t.Fatal("覆盖已有文件仍应确认")
@@ -213,7 +213,7 @@ func TestWriteShrinkGuard(t *testing.T) {
 	}
 
 	// 新建文件 → 无需确认
-	prompt = r.Confirm(call("write_file",
+	prompt = r.Confirm(context.Background(), call("write_file",
 		`{"path":`+quote(filepath.Join(dir, "new.txt"))+`,"content":"x"}`))
 	if prompt != "" {
 		t.Fatalf("新文件不应确认: %q", prompt)
@@ -289,7 +289,7 @@ func TestBashStdinTooLarge(t *testing.T) {
 func TestBashConfirmShowsStdinAndCwd(t *testing.T) {
 	r := New()
 	dir := t.TempDir()
-	prompt := r.Confirm(call("bash",
+	prompt := r.Confirm(context.Background(), call("bash",
 		`{"command":"run.sh","cwd":`+quote(dir)+`,"stdin":"hello-script\n"}`))
 	for _, want := range []string{"run.sh", dir, "hello-script"} {
 		if !strings.Contains(prompt, want) {

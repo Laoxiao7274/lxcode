@@ -229,6 +229,45 @@ func TestSearchExcludesArchived(t *testing.T) {
 	}
 }
 
+// TestProjectByID 按项目 id 查询（归属 → 项目根目录的解析源）。
+func TestProjectByID(t *testing.T) {
+	s := openTestStore(t)
+	saved, err := s.AddProject("lxcode", `C:\proj\lxcode`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, found, err := s.ProjectByID(saved.ID)
+	if err != nil || !found {
+		t.Fatalf("应查到项目: found=%v err=%v", found, err)
+	}
+	if meta.Path != `C:\proj\lxcode` || meta.Name != "lxcode" {
+		t.Fatalf("项目字段不符: %+v", meta)
+	}
+	// 不存在是 found=false 而不是错误
+	_, found, err = s.ProjectByID("不存在")
+	if err != nil || found {
+		t.Fatalf("不存在的项目应 found=false 无错: found=%v err=%v", found, err)
+	}
+}
+
+// TestWorkspaceOf 查会话归属项目 id（resume/重启恢复工作目录的来源）。
+func TestWorkspaceOf(t *testing.T) {
+	s := openTestStore(t)
+	id, _ := s.Create()
+	if ws, err := s.WorkspaceOf(id); err != nil || ws != "" {
+		t.Fatalf("未分组会话应返回空串: %q %v", ws, err)
+	}
+	if err := s.SessionWorkspace(id, "proj-1"); err != nil {
+		t.Fatal(err)
+	}
+	if ws, err := s.WorkspaceOf(id); err != nil || ws != "proj-1" {
+		t.Fatalf("归属应往返: %q %v", ws, err)
+	}
+	if _, err := s.WorkspaceOf("不存在"); err == nil {
+		t.Fatal("不存在的会话应报错")
+	}
+}
+
 // TestConcurrentAppend 并发写：WAL + busy_timeout 下多 goroutine 追加不炸、不丢。
 // （单会话的写入在 agent 层由 s.mu 串行；这里是存储层自身的并发面。）
 func TestConcurrentAppend(t *testing.T) {

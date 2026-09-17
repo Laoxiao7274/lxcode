@@ -353,6 +353,35 @@ func (s *Store) ListProjects() ([]ProjectMeta, error) {
 	return out, rows.Err()
 }
 
+// ProjectByID 按项目 id 查项目——会话归属 → 项目根目录的解析源
+// （agent 把项目根设为会话工作目录时调用）。found=false 表示项目不存在
+// （不是错误，调用方据此回退默认目录）。
+func (s *Store) ProjectByID(id string) (meta ProjectMeta, found bool, err error) {
+	err = s.db.QueryRow(`SELECT id, name, path FROM projects WHERE id = ?`, id).
+		Scan(&meta.ID, &meta.Name, &meta.Path)
+	if err == sql.ErrNoRows {
+		return ProjectMeta{}, false, nil
+	}
+	if err != nil {
+		return ProjectMeta{}, false, fmt.Errorf("查询项目失败: %w", err)
+	}
+	return meta, true, nil
+}
+
+// WorkspaceOf 返回会话归属的项目 id（空串 = 未分组）。会话不存在时报错
+// （与 Load 的语义一致，调用方先 Load 过再查这里）。
+func (s *Store) WorkspaceOf(sessionID string) (string, error) {
+	var ws string
+	err := s.db.QueryRow(`SELECT workspace FROM sessions WHERE id = ?`, sessionID).Scan(&ws)
+	if err == sql.ErrNoRows {
+		return "", fmt.Errorf("会话 %s 不存在", sessionID)
+	}
+	if err != nil {
+		return "", fmt.Errorf("查询会话归属失败: %w", err)
+	}
+	return ws, nil
+}
+
 // SessionWorkspace 设置会话归属的项目（空串 = 未分组）。
 func (s *Store) SessionWorkspace(id, workspace string) error {
 	res, err := s.db.Exec(`UPDATE sessions SET workspace = ? WHERE id = ?`, workspace, id)

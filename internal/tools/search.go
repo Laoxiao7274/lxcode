@@ -46,7 +46,7 @@ func searchDef() *Def {
 		"type": "object",
 		"properties": {
 			"pattern": {"type": "string", "description": "搜索模式。mode=files 时是文件名的通配（如 *.log）；mode=content/count 时是正则（如 timeout|ERROR）"},
-			"path": {"type": "string", "description": "要搜索的目录或文件（默认当前目录）"},
+			"path": {"type": "string", "description": "要搜索的目录或文件（默认会话工作目录；相对路径按它解析）"},
 			"mode": {"type": "string", "description": "files=只列匹配的文件路径（默认，最省上下文）；content=列出匹配行（带行号）；count=只给每个文件的命中数"},
 			"all": {"type": "boolean", "description": "true=连隐藏文件、.git、二进制文件一起搜（默认 false）"},
 			"max": {"type": "integer", "description": "最多返回条数，默认 50，上限 500"}
@@ -99,8 +99,16 @@ func runSearch(ctx context.Context, pattern, path, mode string, all bool, max in
 	if pattern == "" {
 		return "", fmt.Errorf("pattern 不能为空")
 	}
+	// 根路径：默认会话工作目录（项目会话 = 项目根；未注入时 "." 与旧版
+	// 一致）；显式相对路径也按工作目录解析
 	if path == "" {
-		path = "."
+		if wd := WorkDir(ctx); wd != "" {
+			path = wd
+		} else {
+			path = "."
+		}
+	} else {
+		path = resolveToolPath(ctx, path)
 	}
 	if mode == "" {
 		mode = "files"
