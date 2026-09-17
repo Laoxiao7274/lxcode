@@ -24,7 +24,7 @@
 | 内核并发 | 单 Go 进程多会话（goroutine + context 贯穿全部等待点 + channel 传递状态）；多会话扩展见 §2.1（调速器 + 会话停车 + worktree），**不做每会话进程/微服务** |
 | LLM | 双 wire 格式：OpenAI chat completions + Anthropic Messages（`internal/llm`，从 local-myt-agent 整包继承——含 ChatAuto 分流策略：anthropic 恒流式，openai 带工具走非流式回放，依据是真机端点实测 openai 流式丢 tool_calls） |
 | 工具 | `internal/tools` 注册表 + 风险分级：低危自动执行，高危确认门 |
-| 会话 | **SQLite**（modernc.org/sqlite 纯 Go，WAL；2026-12 用户拍板，替换初版 JSONL——为 compaction/语义记忆/多会话并发铺路），重启恢复最近会话，`/new` `/resume` 切换 |
+| 会话 | **SQLite**（modernc.org/sqlite 纯 Go，WAL；2026-12 用户拍板，替换初版 JSONL——为 compaction/语义记忆/多会话并发铺路），重启恢复最近会话，`/new` `/resume` 切换；**项目归属即工作目录**（sessions.workspace → 项目根：工具相对路径、bash 默认目录、系统提示词全对齐，经 ctx 注入 tools 层——`tools.WithWorkDir`） |
 | 配置 | `internal/config` 模型注册表（models.json，原子写；default/vision 角色绑定；**30s 热加载** + model.changed 广播） |
 | 服务化 | **Windows SCM 服务**（`scripts/service/{install,update,uninstall}.ps1`；开机自启 + 崩溃自动重启；`--probe` 验收；布局 `%ProgramData%\lxcode\{bin,config,sessions,logs}`）；服务形态日志落文件（16MB 轮转 ×3） |
 | 桌面壳 | **Electron + Go sidecar（2026-09-16 用户拍板，推翻 09-10 的 Tauri 2 初选，决策记录见 §2.1；打包定案仅 Windows，2026-12）**；后端可先于壳长期独立运行，壳是薄客户端（窗口/托盘/渲染层直连 7789） |
