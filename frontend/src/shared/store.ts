@@ -46,6 +46,9 @@ export function reduce(state: UIState, ev: AgentEvent): UIState {
     case "delta": {
       // reasoning/text 增量写进最近的 assistant 块（没有则开一块）。
       // 不可突变旧块对象——每条 delta 都以新对象替换，保证引用变化。
+      // 开新块 = 前一块已定格：中间轮的 usage 一并清（tokens 只在整轮
+      // 的最终 assistant 显示——工具行上方的「已完成 · N tokens」是
+      // 错位的中间轮统计，DSH 的 stats 在轮末）。
       const blocks = [...state.blocks];
       const last = blocks[blocks.length - 1];
       let target: AssistantBlock;
@@ -54,6 +57,12 @@ export function reduce(state: UIState, ev: AgentEvent): UIState {
         blocks[blocks.length - 1] = target;
       } else {
         target = { kind: "assistant", uid: nextUid(), content: "", reasoning: "", streaming: true };
+        for (let i = 0; i < blocks.length; i++) {
+          const b = blocks[i];
+          if (b.kind === "assistant" && b.usageTokens !== undefined) {
+            blocks[i] = { ...b, usageTokens: undefined };
+          }
+        }
         blocks.push(target);
       }
       if (ev.kind === "text") target.content += ev.text;

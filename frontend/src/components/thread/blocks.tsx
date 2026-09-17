@@ -50,9 +50,10 @@ export const Block = memo(function Block({ block, onConfirm }: { block: ThreadBl
       );
 
     case "assistant":
+      // DSH 形态：无角色标签行（对话流 = user 气泡 + assistant 内容；
+      // 「lxcode」名字行是 Codex 残留，删）。思考链 + 正文 + 轮末 usage。
       return (
         <div className="msg">
-          <div className="msg-role assistant">lxcode</div>
           {settings.showThinking && sentences && (
             <ThinkingReasoning
               sentences={sentences}

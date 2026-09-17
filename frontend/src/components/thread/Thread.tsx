@@ -159,10 +159,9 @@ export function Thread({
       {state.blocks.map((block) => (
         <Block key={block.uid} block={block} onConfirm={onConfirm} />
       ))}
-      {/* 进行中且还没有任何输出时显示思考 shimmer */}
+      {/* 进行中且还没有任何输出时显示思考 shimmer（无角色标签——DSH 形态） */}
       {state.busy && !lastIsStreamingAssistant(state.blocks) && (
         <div className="msg">
-          <div className="msg-role assistant">lxcode</div>
           <ThinkingState text="正在处理…" />
         </div>
       )}
