@@ -102,7 +102,18 @@
 - 已继承：llm 双格式客户端（整包）、tools 注册表模式与六件工具、JSONL 会话存储（lxcode 后于 2026-12 切 SQLite）、动态系统提示词、WS JSON-RPC 协议层与客户端库（protocol/wsclient 整体移植）、工程规范（AGENTS.md 奠基/中文注释/测试纪律）；
 - 有意不同：端口 7789（错开 7788）；协议扩展 todo 事件/历史带 todos；去 chat.reset（session.new 覆盖）；agent 哨兵错误供服务端映射错误码（结构化判断不做字符串匹配）；maxToolRounds 8→16（编码任务链路更长）；edit 低危自动执行（编程 agent 语义）；bash 按 OS 选 shell（Windows 优先 Git Bash）；模型注册表已有 30s 热加载（代码变更仍需重启后端）。
 
-## 8. 待定决策
+## 8. 可组装 Agent（2026-09-17 设计定案，前端原型已落地）
+
+Harness 的目标形态：**主 Agent 只做决策与分派，子 Agent 是用户组装的执行单元**。前端原型已完成（内存态，`frontend/src/shared/agents.tsx` + `components/agents/`），后端化路线见 §9 待定。设计决策：
+
+- **两类制**：主 Agent = 唯一调度者（不可被委派）；子 Agent = 纯执行者（不可委派）。委派深度恒为 1——环、成本爆炸、借手提权从结构上消失（未来要局部协作需显式引入新类，不静默改回白名单）。
+- **Agent 上下文四层组合**：① 协议层（Harness 固定，主=调度协议/子=执行协议，锁定展示）② 模块层（**上下文模块目录**，可插拔：流程模块**单选**——工作方式是完整单元，缺流程就补一个，不拼装；技能模块多选）③ 自定义段（每个 Agent 私有的自由文本）④ 动态注入（主 Agent 的可委派名单 + 会话上下文）。主 Agent 的提示词不是用户写的——用户通过数据控制调度（子 Agent 的职责描述 = 主 Agent 的选人信号）。
+- **委派两层配置**：名单默认（主 Agent 的 `delegates`，编辑器勾选）+ 会话覆盖（输入区 Agent 菜单二级面板，新会话/切换会话自动回落默认）。有效名单 = 覆盖 ?? 默认 ∩ 启用的子 Agent（`shared/agent-delegation.ts` 纯函数，有测试钉住）。
+- **目录条目 = 短摘要 + 完整 markdown 文档**（类 SKILL.md）：工具带参数表与扩展文档，模块带正文；编辑器两级详情（右侧紧凑面板跟随 chip 焦点，点面板开 640px 文档弹窗）。
+- **表单组件套件**（`components/form/`，`.fd-` 命名空间）：Button/TextInput/Textarea/Select/Segmented/ColorPicker/Chips/Toggle——项目内表单一律用套件，不再裸写原生控件（chips 有 `exclusive` 单选模式承载流程原子语义）。
+- 字段命名注意：AgentDef 的流程模块字段叫 `workflow` 不叫 `process`——与 Node 全局 `process` 撞形会让边界守卫（scripts/check-boundaries.mjs）误报，属性读取与 `process.env` 结构上无法区分。
+
+## 9. 待定决策
 
 | 项 | 状态 |
 |---|---|

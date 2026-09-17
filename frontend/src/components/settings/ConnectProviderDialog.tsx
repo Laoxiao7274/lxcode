@@ -6,6 +6,7 @@ import { gsap } from "gsap";
 import { CONNECTABLE_PROVIDERS, useSettings } from "../../shared/settings";
 import { motionAllowed } from "../../shared/motion";
 import { useEscape } from "../../shared/popover";
+import { TextInput } from "../form";
 
 const backArrow = (
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -168,12 +169,12 @@ function KeyForm({ name, onSubmit }: { name: string; onSubmit: () => void }) {
       <p className="mset-form-desc">粘贴 {name} 的 API Key。此页仅演示，不验证或保存密钥。</p>
       <label className="mset-field">
         <span>API Key</span>
-        <input
-          ref={inputRef}
+        <TextInput
+          inputRef={inputRef}
           type="password"
           value={key}
-          onChange={(e) => {
-            setKey(e.target.value);
+          onChange={(v) => {
+            setKey(v);
             setErr(null);
           }}
           placeholder="sk-…"
@@ -208,26 +209,26 @@ function CustomForm({ onSubmit }: { onSubmit: (input: { name: string; baseUrl: s
       <p className="mset-form-desc">接入任意 OpenAI 兼容接口（vLLM / 网关 / 中转）。</p>
       <label className="mset-field">
         <span>名称</span>
-        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="我的网关" spellCheck={false} />
+        <TextInput value={name} onChange={setName} placeholder="我的网关" spellCheck={false} />
       </label>
       {err.name && <div className="mset-field-err" role="alert">{err.name}</div>}
       <label className="mset-field">
         <span>Base URL</span>
-        <input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://api.example.com/v1" spellCheck={false} />
+        <TextInput value={baseUrl} onChange={setBaseUrl} placeholder="https://api.example.com/v1" spellCheck={false} />
       </label>
       {err.baseUrl && <div className="mset-field-err" role="alert">{err.baseUrl}</div>}
       <label className="mset-field">
         <span>API Key（可选）</span>
-        <input type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder="sk-…" spellCheck={false} />
+        <TextInput type="password" value={key} onChange={setKey} placeholder="sk-…" spellCheck={false} />
       </label>
       <div className="mset-field">
         <span>模型 ID</span>
         {models.map((m, i) => (
-          <input
+          <TextInput
             key={i}
             className="mset-model-input"
             value={m}
-            onChange={(e) => setModels((ms) => ms.map((x, j) => (j === i ? e.target.value : x)))}
+            onChange={(v) => setModels((ms) => ms.map((x, j) => (j === i ? v : x)))}
             placeholder={i === 0 ? "例如 deepseek-v3.2" : ""}
             spellCheck={false}
           />

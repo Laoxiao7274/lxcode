@@ -19,6 +19,17 @@ export function checkFrontendSource(name, source) {
     const line = file.getLineAndCharacterOfPosition(node.getStart(file)).line + 1;
     errors.push(`${name}:${line}: ${message}`);
   }
+  /** 声明位置的标识符（{ process: 1 } / process?: string / 类成员）不是
+   *  全局引用——领域模型叫 process 的字段不该被 Node API 检查命中。
+   *  属性访问位置（obj.fetch / obj.process）不排除：那是真实使用形态
+   *  （window.fetch、process.env），与领域字段读取结构上无法区分。 */
+  function isDeclaredName(node) {
+    const p = node.parent;
+    if (!p) return false;
+    return (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p) || ts.isPropertyDeclaration(p)
+      || ts.isPropertySignature(p) || ts.isMethodDeclaration(p)
+      || ts.isNamedTupleMember(p) || ts.isEnumMember(p)) && p.name === node;
+  }
   function checkImport(node, spec) {
     if (spec.startsWith('.')) {
       const target = resolve(sourceRoot, dirname(name), spec);
@@ -41,7 +52,7 @@ export function checkFrontendSource(name, source) {
       if (spec && ts.isStringLiteral(spec)) checkImport(node, spec.text);
       else reject(node, '禁止无法静态校验的动态模块加载');
     }
-    if (ts.isIdentifier(node)) {
+    if (ts.isIdentifier(node) && !isDeclaredName(node)) {
       if (['WebSocket', 'fetch', 'XMLHttpRequest', 'EventSource', 'sendBeacon', 'WebTransport'].includes(node.text) && !isTransport) {
         reject(node, '网络通信必须封装在 agent/ws 适配层');
       }

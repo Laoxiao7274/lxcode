@@ -6,6 +6,7 @@ import { useSettings, type ModelMeta, type ProviderMeta } from "../../shared/set
 import { motionAllowed } from "../../shared/motion";
 import { useEscape } from "../../shared/popover";
 import { kfmtTokens } from "../../shared/format";
+import { Chips, TextInput } from "../form";
 
 const TAG_CHOICES = ["推理", "工具", "视觉"];
 
@@ -105,39 +106,37 @@ export function ModelEditDialog({ provider, model, onClose }: { provider: Provid
           <div className="mset-edit-fields">
             <label className="mset-edit-field">
               <span>模型 ID</span>
-              <input className="mono" autoFocus disabled={live} title={live ? "后端不支持改 ID，请新增模型" : undefined} value={draft.id} onChange={(e) => patch({ id: e.target.value })} spellCheck={false} />
+              <TextInput className="mono" autoFocus disabled={live} title={live ? "后端不支持改 ID，请新增模型" : undefined} value={draft.id} onChange={(v) => patch({ id: v })} spellCheck={false} />
             </label>
             <label className="mset-edit-field">
               <span>显示名称</span>
-              <input value={draft.name} onChange={(e) => patch({ name: e.target.value })} spellCheck={false} />
+              <TextInput value={draft.name} onChange={(v) => patch({ name: v })} spellCheck={false} />
             </label>
             <label className="mset-edit-field wide">
               <span>描述（真实模式由协议格式派生）</span>
-              <input disabled={live} value={draft.desc} onChange={(e) => patch({ desc: e.target.value })} placeholder="例如：通用对话" spellCheck={false} />
+              <TextInput disabled={live} value={draft.desc} onChange={(v) => patch({ desc: v })} placeholder="例如：通用对话" spellCheck={false} />
             </label>
             <label className="mset-edit-field">
               <span>上下文窗口</span>
-              <input className="mono" value={draft.contextWindow} onChange={(e) => patch({ contextWindow: e.target.value })} placeholder="128k" spellCheck={false} />
+              <TextInput className="mono" value={draft.contextWindow} onChange={(v) => patch({ contextWindow: v })} placeholder="128k" spellCheck={false} />
             </label>
             <label className="mset-edit-field">
               <span>最大输出</span>
-              <input className="mono" value={draft.maxOutput} onChange={(e) => patch({ maxOutput: e.target.value })} placeholder="8k" spellCheck={false} />
+              <TextInput className="mono" value={draft.maxOutput} onChange={(v) => patch({ maxOutput: v })} placeholder="8k" spellCheck={false} />
             </label>
           </div>
           <div className="mset-edit-tags">
             <span className="mset-chip-label">能力</span>
-            {TAG_CHOICES.map((t) => (
-              <button
-                key={t}
-                type="button"
-                className={"mset-tag-toggle" + (draft.tags.includes(t) ? " on" : "")}
-                aria-pressed={draft.tags.includes(t)}
-                title={t === "推理" ? "声明后模型选择器出现推理强度档位（minimal/low/medium/high）" : undefined}
-                onClick={() => patch({ tags: draft.tags.includes(t) ? draft.tags.filter((x) => x !== t) : [...draft.tags, t] })}
-              >
-                {t}
-              </button>
-            ))}
+            <Chips
+              options={TAG_CHOICES.map((t) => ({
+                value: t,
+                label: t,
+                desc: t === "推理" ? "声明后模型选择器出现推理强度档位（minimal/low/medium/high）" : undefined,
+              }))}
+              value={draft.tags}
+              onChange={(tags) => patch({ tags })}
+              ariaLabel="能力标签"
+            />
           </div>
           {(error || err) && <div className="mset-edit-err" role="alert">{error || err}</div>}
           <div className="mset-medit-foot">

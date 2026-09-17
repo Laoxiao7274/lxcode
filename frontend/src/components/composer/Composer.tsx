@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import { Orb } from "../../aicss/Orb";
+import { AgentPicker } from "../agents/AgentPicker";
 import { PermPicker } from "../perm-picker";
 import { ModelPicker } from "../model-picker";
 import { ContextIndicator } from "../context-indicator";
@@ -57,6 +58,7 @@ export function Composer({
             }}
           />
           <div className="piBar">
+            <AgentPicker />
             <PermPicker />
             <ModelPicker />
             <ContextIndicator />

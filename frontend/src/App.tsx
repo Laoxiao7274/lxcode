@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { getAgentSource } from "./agent";
 import { useAgent } from "./shared/store";
+import { AgentsProvider, useAgents } from "./shared/agents";
+import { AgentsPage } from "./components/agents/AgentsPage";
 import { Topbar } from "./components/topbar";
 import { Sidebar } from "./components/sidebar";
 import { Thread, PlanBar } from "./components/thread";
@@ -13,7 +15,9 @@ export default function App() {
   const source = useMemo(() => getAgentSource(), []);
   return (
     <SettingsProvider source={source}>
-      <AppBody source={source} />
+      <AgentsProvider>
+        <AppBody source={source} />
+      </AgentsProvider>
     </SettingsProvider>
   );
 }
@@ -22,21 +26,29 @@ function AppBody({ source }: { source: AgentSource }) {
   const [operationError, setOperationError] = useState<string | null>(null);
   const { state, send, resolve } = useAgent(source);
   const { settings, providers } = useSettings();
+  const { resetSessionDelegates } = useAgents();
   // 初始无选中：空态起步（选中一个有历史的会话时 thread 才有内容——
   // 演示模式 resume 不重放历史，避免"高亮有历史、主区空白"的不一致）
   const [currentId, setCurrentId] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  /** 主区视图：对话 / Agent 名单（组装与注册）。 */
+  const [view, setView] = useState<"chat" | "agents">("chat");
   /** 对话过滤目标（项目 id / ""=未分组 / null=全部）——App 持有：
    *  侧栏过滤、「新对话」归属、空态项目标签三处共用。 */
   const [filter, setFilter] = useState<string | null>(null);
 
-  // 会话切换事件同步侧栏高亮（与 useAgent 的订阅并行，各管各的）
+  const openAgents = () => setView((v) => (v === "agents" ? "chat" : "agents"));
+  const backToChat = () => setView("chat");
+
+  // 会话切换事件同步侧栏高亮（与 useAgent 的订阅并行，各管各的）；
+  // 新会话/切换会话 → 本次会话的委派覆盖清掉，回到名单默认
   useEffect(() => {
     return source.subscribe((ev: AgentEvent) => {
       if (ev.type === "sessionChanged" && ["new", "resumed", "started"].includes(ev.reason)) setCurrentId(ev.id);
       if (ev.type === "operationError") setOperationError(ev.message);
+      if (ev.type === "sessionChanged" && (ev.reason === "new" || ev.reason === "resumed")) resetSessionDelegates();
     });
-  }, [source]);
+  }, [source, resetSessionDelegates]);
 
   // 当前过滤的项目名（""=未分组 → 空态不标——无归属不需要声明）
   const filterProjectName =
@@ -69,15 +81,31 @@ function AppBody({ source }: { source: AgentSource }) {
 
   const app = (
     <div className="app">
-      <Topbar taskTitle={currentTitle} source={source} connected={false} />
-      <Sidebar source={source} currentId={currentId} busy={state.busy} filter={filter} setFilter={setFilter} onOpenSettings={() => setSettingsOpen(true)} />
+      <Topbar taskTitle={view === "agents" ? "Agent 名单" : currentTitle} source={source} connected={false} />
+      <Sidebar
+        source={source}
+        currentId={currentId}
+        busy={state.busy}
+        filter={filter}
+        setFilter={setFilter}
+        onOpenSettings={() => setSettingsOpen(true)}
+        agentsActive={view === "agents"}
+        onOpenAgents={openAgents}
+        onOpenChat={backToChat}
+      />
       <main className="main">
-        {errorNotice}
-        <div className="thread-scroll">
-          <Thread state={state} onConfirm={handleConfirm} onSuggestion={send} projectName={filterProjectName} />
-        </div>
-        <PlanBar todos={state.todos} />
-        <Composer busy={state.busy} onSend={sendWithOptions} onCancel={() => source.cancel()} />
+        {view === "chat" ? (
+          <>
+            {errorNotice}
+            <div className="thread-scroll">
+              <Thread state={state} onConfirm={handleConfirm} onSuggestion={send} projectName={filterProjectName} />
+            </div>
+            <PlanBar todos={state.todos} />
+            <Composer busy={state.busy} onSend={sendWithOptions} onCancel={() => source.cancel()} />
+          </>
+        ) : (
+          <AgentsPage />
+        )}
       </main>
       <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} source={source} />
     </div>

@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { gsap } from "gsap";
 import { motionAllowed } from "../../shared/motion";
 import { useEscape } from "../../shared/popover";
+import { TextInput } from "../form";
 
 /** 壳桥（preload 注入；浏览器模式无）。 */
 const shell = (window as unknown as {
@@ -76,13 +77,13 @@ export function AddProjectDialog({
           <label className="proj-field">
             <span className="proj-field-label">目录</span>
             <div className="proj-path-row">
-              <input
+              <TextInput
                 value={path}
                 placeholder="D:\path\to\repo"
                 spellCheck={false}
-                onChange={(e) => {
-                  setPath(e.target.value);
-                  if (!name.trim()) setName(basename(e.target.value));
+                onChange={(v) => {
+                  setPath(v);
+                  if (!name.trim()) setName(basename(v));
                 }}
                 onKeyDown={(e) => e.key === "Enter" && submit()}
               />
@@ -96,12 +97,12 @@ export function AddProjectDialog({
           </label>
           <label className="proj-field">
             <span className="proj-field-label">项目名</span>
-            <input
-              ref={nameRef}
+            <TextInput
+              inputRef={nameRef}
               value={name}
               placeholder="从目录名自动带出"
               spellCheck={false}
-              onChange={(e) => setName(e.target.value)}
+              onChange={setName}
               onKeyDown={(e) => e.key === "Enter" && submit()}
             />
           </label>

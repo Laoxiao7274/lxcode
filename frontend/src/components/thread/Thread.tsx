@@ -5,16 +5,55 @@
 // 单块渲染在 ./blocks，纯函数在 ./helpers。
 import { useEffect, useRef } from "react";
 import type { UIState, ThreadBlock } from "../../shared/store";
+import { useAgents } from "../../shared/agents";
+import { effectiveDelegates } from "../../shared/agent-delegation";
 import { ThinkingState } from "../../aicss/ThinkingState";
 import { staggerIn, motionAllowed } from "../../shared/motion";
 import { gsap } from "gsap";
 import { Block } from "./blocks";
 
+/** 建议卡图标：应用图标语言（线性描边，无字符圆圈——OS 感重）。 */
 const SUGGESTIONS = [
-  { icon: "构", title: "把工具循环加上超时兜底", sub: "单工具卡死不再拖住整轮" },
-  { icon: "查", title: "读 config/local.json", sub: "看 default 绑定的是哪个模型" },
-  { icon: "测", title: "全量测试有红的修掉", sub: "go test ./… 一轮到绿" },
-  { icon: "解", title: "讲讲 runTools 的设计", sub: "为什么高危要先确认" },
+  {
+    icon: (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M12 20h9" />
+        <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+      </svg>
+    ),
+    title: "把工具循环加上超时兜底",
+    sub: "单工具卡死不再拖住整轮",
+  },
+  {
+    icon: (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" />
+        <path d="M14 2v6h6" />
+        <path d="M9 13h6M9 17h4" />
+      </svg>
+    ),
+    title: "读 config/local.json",
+    sub: "看 default 绑定的是哪个模型",
+  },
+  {
+    icon: (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="9" />
+        <path d="m8.5 12.5 2.5 2.5 5-6" />
+      </svg>
+    ),
+    title: "全量测试有红的修掉",
+    sub: "go test ./… 一轮到绿",
+  },
+  {
+    icon: (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M21 15a2 2 0 0 1-2 2H8l-5 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z" />
+      </svg>
+    ),
+    title: "讲讲 runTools 的设计",
+    sub: "为什么高危要先确认",
+  },
 ];
 
 export function Thread({
@@ -47,6 +86,10 @@ export function Thread({
   const smoothUntilRef = useRef(-1e9);
   const scrollTweenRef = useRef<gsap.core.Tween | null>(null);
   const empty = state.blocks.length === 0;
+  // 空态的身份芯片：当前 Agent（谁来干活）+ 归属项目；主 Agent 带有效委派计数
+  const { agents, activeAgentId, sessionDelegates } = useAgents();
+  const activeAgent = agents.find((a) => a.id === activeAgentId) ?? agents.find((a) => a.isMain);
+  const delegateCount = activeAgent?.isMain ? effectiveDelegates(agents, sessionDelegates).length : 0;
   useEffect(() => {
     const el = endRef.current?.parentElement?.parentElement ?? null;
     scrollRef.current = el;
@@ -137,15 +180,28 @@ export function Thread({
     staggerIn(items, { each: 0.07 });
   }, [state.blocks.length]);
 
-  if (state.blocks.length === 0) {
+  if (empty) {
     return (
       <div className="empty-state" ref={emptyRef}>
-        {projectName && (
-          <div className="empty-project" title={`新会话归属 ${projectName}`}>
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
-            </svg>
-            {projectName}
+        {(activeAgent || projectName) && (
+          <div className="empty-meta">
+            {activeAgent && (
+              <span className="empty-agent" title="当前干活的 Agent——输入区可切换；主 Agent 的可委派名单在菜单里调整">
+                <span className="ag-dot" style={{ background: activeAgent.color }} />
+                {activeAgent.name}
+                {activeAgent.isMain && (
+                  <span className="empty-agent-sub">· 可委派 {delegateCount}</span>
+                )}
+              </span>
+            )}
+            {projectName && (
+              <span className="empty-project" title={`新会话归属 ${projectName}`}>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+                </svg>
+                {projectName}
+              </span>
+            )}
           </div>
         )}
         <h2>我们做点什么？</h2>

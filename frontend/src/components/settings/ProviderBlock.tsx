@@ -5,6 +5,7 @@ import { useSettings, type ProviderMeta } from "../../shared/settings";
 import { motionAllowed, staggerIn, enterEase } from "../../shared/motion";
 import { collapseAway, playEnter } from "../../shared/anim";
 import { kfmtTokens } from "../../shared/format";
+import { TextInput, Toggle } from "../form";
 import { IconChevronRight, IconPencil, IconTrash } from "../icons";
 
 function ProviderBlock({ provider, onEditModel }: { provider: ProviderMeta; onEditModel: (modelId: string) => void }) {
@@ -167,17 +168,11 @@ function ProviderBlock({ provider, onEditModel }: { provider: ProviderMeta; onEd
                   设为默认
                 </button>
               )}
-              <span
-                className={"toggle" + (m.visible ? " on" : "")}
-                role="switch"
-                aria-checked={m.visible}
-                aria-label={`在模型选择器中显示 ${m.name}`}
-                tabIndex={0}
-                onClick={() => setModelVisible(provider.id, m.id, !m.visible)}
-                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); (e.target as HTMLElement).click(); } }}
-              >
-                <span className="toggle-knob" />
-              </span>
+              <Toggle
+                on={m.visible}
+                onChange={() => setModelVisible(provider.id, m.id, !m.visible)}
+                ariaLabel={`在模型选择器中显示 ${m.name}`}
+              />
               <button type="button" className="mset-model-edit" title="模型配置" aria-label={`配置 ${m.name}`} onClick={() => onEditModel(m.id)}>
                 <IconPencil strokeWidth={2} />
               </button>
@@ -189,10 +184,10 @@ function ProviderBlock({ provider, onEditModel }: { provider: ProviderMeta; onEd
           {provider.models.length > 0 && (
             adding ? (
               <div className="mset-add-row" ref={addRef}>
-                <input
+                <TextInput
                   autoFocus
                   value={draft}
-                  onChange={(e) => { setDraft(e.target.value); setDraftErr(null); }}
+                  onChange={(v) => { setDraft(v); setDraftErr(null); }}
                   onKeyDown={(e) => {
                     if (e.key === "Enter") { e.preventDefault(); commitAdd(); }
                     if (e.key === "Escape") { setAdding(false); setDraft(""); setDraftErr(null); }

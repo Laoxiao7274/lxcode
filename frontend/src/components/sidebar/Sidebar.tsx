@@ -20,6 +20,9 @@ export function Sidebar({
   filter,
   setFilter,
   onOpenSettings,
+  agentsActive,
+  onOpenAgents,
+  onOpenChat,
 }: {
   source: AgentSource;
   currentId: string;
@@ -28,6 +31,11 @@ export function Sidebar({
   filter: string | null;
   setFilter: (f: string | null) => void;
   onOpenSettings: () => void;
+  /** Agent 名单视图当前激活（导航项高亮；再点返回对话）。 */
+  agentsActive: boolean;
+  onOpenAgents: () => void;
+  /** 一切回到对话的操作（新对话/恢复会话）都要离开名单视图。 */
+  onOpenChat: () => void;
 }) {
   const [query, setQuery] = useState("");
   const [menuFor, setMenuFor] = useState<string | null>(null);
@@ -89,13 +97,27 @@ export function Sidebar({
     <aside className="sidebar" ref={sideRef}>
       {/* 导航项（图标 + 文字，Codex 同款四项）——新对话归属当前选中项目 */}
       <nav className="nav-list">
-        <button type="button" className="nav-item" onClick={() => !busy && source.newSession(filter === null || filter === LOOSE ? undefined : filter)}>
+        <button type="button" className="nav-item" onClick={() => { if (!busy) { source.newSession(filter === null || filter === LOOSE ? undefined : filter); onOpenChat(); } }}>
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M12 20h9" />
             <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
           </svg>
           新对话
           {filterName && filter !== LOOSE && <span className="nav-ctx" title={`新会话归属 ${filterName}`}>{filterName}</span>}
+        </button>
+        <button
+          type="button"
+          className={"nav-item" + (agentsActive ? " on" : "")}
+          data-nav="agents"
+          onClick={onOpenAgents}
+          title="组装、注册与调度 Agent"
+          aria-pressed={agentsActive}
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <rect x="7" y="7" width="10" height="10" rx="2" />
+            <path d="M4 10v4M20 10v4M10 4h4M10 20h4" />
+          </svg>
+          Agents
         </button>
         <button type="button" className="nav-item" onClick={() => searchRef.current?.focus()}>
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -245,7 +267,7 @@ export function Sidebar({
           onStartRename={setRenaming}
           onRename={commitRename}
           onArchive={(id) => source.archiveSession(id)}
-          onResume={(id) => source.resumeSession(id)}
+          onResume={(id) => { source.resumeSession(id); onOpenChat(); }}
           enterRow={enterRow}
         />
       ))}

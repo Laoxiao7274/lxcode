@@ -1,0 +1,474 @@
+// 组装编辑器：紧凑分节表单（身份/模型/工具/上下文/委派/权限）+ 右侧
+// 「预览卡 + 紧凑详情面板」。chip 点击 = 选中 + 焦点（面板跟随）；
+// 点面板整卡打开完整文档弹窗（长文舒适阅读）。表单控件一律用
+// components/form 套件；gsap 分节交错入场（motionAllowed 门控）。
+import { useEffect, useRef, useState } from "react";
+import {
+  AGENT_COLORS,
+  BUILTIN_TOOLS,
+  CONTEXT_MODULES,
+  MAIN_TOOL,
+  THIRD_PARTY_TOOLS,
+  useAgents,
+  useModelLabel,
+  type AgentDef,
+} from "../../shared/agents";
+import { useSettings } from "../../shared/settings";
+import { Markdown } from "../../shared/markdown";
+import { useEscape } from "../../shared/popover";
+import { useEnterRef } from "../../shared/anim";
+import { staggerIn } from "../../shared/motion";
+import { Button, Chips, ColorPicker, Select, Segmented, Textarea, TextInput, type SelectGroup } from "../form";
+import { AgentCard } from "./AgentCard";
+
+const APPROVAL_OPTS = [
+  { value: "confirm" as const, label: "确认", hint: "低危自动执行，高危弹确认门（默认）" },
+  { value: "auto" as const, label: "自动", hint: "高危也自动执行——仅隔离环境使用" },
+  { value: "strict" as const, label: "只读", hint: "变更类工具直接拒绝，错误回填模型" },
+];
+
+/** 详情焦点的指向（点击 chip 设置——右侧紧凑面板跟随）。 */
+type Focus = { kind: "tool" | "module"; id: string };
+
+const ALL_TOOLS = () => [MAIN_TOOL, ...BUILTIN_TOOLS, ...THIRD_PARTY_TOOLS];
+
+/** 紧凑详情面板：跟随 chip 焦点（选中与查看的快速通道）；
+ *  点整卡打开完整文档弹窗——预览截断，长文进弹窗。 */
+function DetailPanel({ focus, onOpen }: { focus: Focus | null; onOpen: () => void }) {
+  const enterRef = useEnterRef<HTMLDivElement>(
+    { opacity: 0, y: 6 },
+    { opacity: 1, y: 0, duration: 0.26, ease: "power2.out", clearProps: "transform,opacity" },
+  );
+  const mod = focus?.kind === "module" ? CONTEXT_MODULES.find((m) => m.id === focus.id) : undefined;
+  const tool = focus?.kind === "tool" ? ALL_TOOLS().find((t) => t.id === focus.id) : undefined;
+
+  if (tool) {
+    return (
+      <div
+        className="ag-detail"
+        key={"t" + tool.id}
+        ref={enterRef}
+        role="button"
+        tabIndex={0}
+        title="点击查看完整文档"
+        onClick={onOpen}
+        onKeyDown={(e) => e.key === "Enter" && onOpen()}
+      >
+        <div className="ag-detail-title">{tool.id}</div>
+        <div className="ag-detail-pills">
+          <span className={"ag-pill " + (tool.risk === "high" ? "risk-high" : "risk-low")}>
+            {tool.risk === "high" ? "高危" : "低危"}
+          </span>
+          <span className="ag-pill src">
+            {tool.source === "builtin" ? "内置" : tool.source === "binary" ? "外部二进制" : "MCP"}
+          </span>
+        </div>
+        <div className="ag-detail-desc">{tool.desc}</div>
+        {tool.params && tool.params.length > 0 && (
+          <div className="ag-detail-params">
+            <div className="ag-detail-params-label">参数</div>
+            {tool.params.map((p) => (
+              <div className="ag-param" key={p.name} title={p.desc ?? ""}>
+                <span className="ag-param-name">{p.name}</span>
+                <span className="ag-param-type">{p.type}</span>
+                {p.required && <span className="ag-param-req">必填</span>}
+              </div>
+            ))}
+          </div>
+        )}
+        {tool.doc && (
+          <div className="ag-detail-md">
+            <Markdown text={tool.doc} />
+          </div>
+        )}
+        <OpenHint />
+      </div>
+    );
+  }
+
+  if (mod) {
+    return (
+      <div
+        className="ag-detail"
+        key={"m" + mod.id}
+        ref={enterRef}
+        role="button"
+        tabIndex={0}
+        title="点击查看完整文档"
+        onClick={onOpen}
+        onKeyDown={(e) => e.key === "Enter" && onOpen()}
+      >
+        <div className="ag-detail-title">{mod.id}</div>
+        <div className="ag-detail-pills">
+          <span className="ag-pill src">{mod.kind === "process" ? "流程模块" : "技能模块"}</span>
+        </div>
+        <div className="ag-detail-desc">{mod.desc}</div>
+        <div className="ag-detail-md">
+          <Markdown text={mod.body} />
+        </div>
+        <OpenHint />
+      </div>
+    );
+  }
+
+  return (
+    <div className="ag-detail empty">
+      <div className="ag-detail-title">详情</div>
+      <div className="ag-detail-note">点击左侧的工具 / 模块查看详情</div>
+    </div>
+  );
+}
+
+/** 面板底部的展开提示（hover 点亮）。 */
+function OpenHint() {
+  return (
+    <div className="ag-detail-open-hint">
+      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M15 3h6v6" />
+        <path d="M21 3l-9 9" />
+        <path d="M9 21H3v-6" />
+        <path d="M3 21l9-9" />
+      </svg>
+      点击查看完整文档
+    </div>
+  );
+}
+
+/** 文档弹窗：模块正文 / 工具文档的完整阅读视图（640px 舒适排版，
+ *  遮罩 + Esc + 点外关闭——应用对话框语言）。 */
+function DocDialog({ focus, onClose }: { focus: Focus; onClose: () => void }) {
+  useEscape(true, onClose);
+  const mod = focus.kind === "module" ? CONTEXT_MODULES.find((m) => m.id === focus.id) : undefined;
+  const tool = focus.kind === "tool" ? ALL_TOOLS().find((t) => t.id === focus.id) : undefined;
+
+  return (
+    <div
+      className="ag-doc-mask"
+      role="dialog"
+      aria-modal="true"
+      aria-label={tool ? `工具文档 ${tool.id}` : mod ? `模块文档 ${mod.id}` : "文档"}
+      onPointerDown={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div className="ag-doc">
+        <div className="ag-doc-head">
+          <span className="ag-doc-title">{tool ? tool.id : mod ? mod.id : ""}</span>
+          <div className="ag-detail-pills">
+            {tool ? (
+              <>
+                <span className={"ag-pill " + (tool.risk === "high" ? "risk-high" : "risk-low")}>
+                  {tool.risk === "high" ? "高危" : "低危"}
+                </span>
+                <span className="ag-pill src">
+                  {tool.source === "builtin" ? "内置" : tool.source === "binary" ? "外部二进制" : "MCP"}
+                </span>
+              </>
+            ) : mod ? (
+              <span className="ag-pill src">{mod.kind === "process" ? "流程模块" : "技能模块"}</span>
+            ) : null}
+          </div>
+          <button type="button" className="ag-doc-close" onClick={onClose} aria-label="关闭">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+              <path d="M18 6 6 18M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+        <div className="ag-doc-body">
+          {tool ? (
+            <>
+              <div className="ag-detail-desc">{tool.desc}</div>
+              {tool.params && tool.params.length > 0 && (
+                <div className="ag-detail-params">
+                  <div className="ag-detail-params-label">参数</div>
+                  {tool.params.map((p) => (
+                    <div className="ag-param" key={p.name} title={p.desc ?? ""}>
+                      <span className="ag-param-name">{p.name}</span>
+                      <span className="ag-param-type">{p.type}</span>
+                      {p.required && <span className="ag-param-req">必填</span>}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {tool.doc && (
+                <div className="ag-detail-md">
+                  <Markdown text={tool.doc} />
+                </div>
+              )}
+            </>
+          ) : mod ? (
+            <>
+              <div className="ag-detail-desc">{mod.desc}</div>
+              <div className="ag-detail-md">
+                <Markdown text={mod.body} />
+              </div>
+              <div className="ag-detail-note">注入上下文——不授予工具权限</div>
+            </>
+          ) : (
+            <div className="ag-detail-note">条目不存在（目录可能已变化）</div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function AgentEditor({
+  initial,
+  isNew,
+  onSave,
+  onCancel,
+}: {
+  initial: AgentDef;
+  isNew: boolean;
+  onSave: (def: AgentDef) => void;
+  onCancel: () => void;
+}) {
+  const [def, setDef] = useState<AgentDef>(initial);
+  const [focus, setFocus] = useState<Focus | null>(null);
+  const [docOpen, setDocOpen] = useState(false);
+  const { agents } = useAgents();
+  const { providers } = useSettings();
+  const modelLabel = useModelLabel(def.model);
+  const formRef = useRef<HTMLDivElement>(null);
+
+  // 分节交错入场（编辑器每次挂载播一次——取消/保存返回再进会重播）
+  useEffect(() => {
+    const el = formRef.current;
+    if (!el) return;
+    staggerIn(el.querySelectorAll(".ag-sec"), { each: 0.05 });
+  }, []);
+
+  const set = <K extends keyof AgentDef>(key: K, value: AgentDef[K]) =>
+    setDef((d) => ({ ...d, [key]: value }));
+
+  // 模型选项与输入区 ModelPicker 同源：已连接且启用提供商下的可见模型
+  const modelGroups = providers
+    .filter((p) => p.connected && p.enabled)
+    .map((p) => ({ name: p.name, models: p.models.filter((m) => m.visible) }))
+    .filter((g) => g.models.length > 0);
+  const modelInList = modelGroups.some((g) => g.models.some((m) => m.id === def.model));
+
+  // Select 的分组载荷：提供商名做组标题；当前绑定不在列表时置顶一组保留它
+  const selectGroups: SelectGroup[] = modelGroups.map((g) => ({
+    group: g.name,
+    options: g.models.map((m) => ({ value: m.id, label: m.name, desc: m.desc })),
+  }));
+  if (!modelInList && def.model) {
+    selectGroups.unshift({
+      group: "当前绑定",
+      options: [{ value: def.model, label: modelLabel, desc: "不在可用列表——可改选" }],
+    });
+  }
+
+  // Chips 的载荷（工具/上下文模块——名称在面上，说明进 tooltip）
+  const toolChips = [...BUILTIN_TOOLS, ...THIRD_PARTY_TOOLS].map((t) => ({
+    value: t.id,
+    label: t.id,
+    desc: `${t.desc}（${t.risk === "high" ? "高危" : "低危"}）`,
+    highRisk: t.risk === "high",
+  }));
+  // 上下文模块 chips 载荷（流程单选 / 技能多选——见 上下文 节）
+  const toModuleChip = (m: { id: string; desc: string; kind: "process" | "skill" }) => ({
+    value: m.id,
+    label: m.id,
+    desc: `${m.desc}（${m.kind === "process" ? "流程" : "技能"}）`,
+  });
+  const processChips = CONTEXT_MODULES.filter((m) => m.kind === "process").map(toModuleChip);
+  const skillChips = CONTEXT_MODULES.filter((m) => m.kind === "skill").map(toModuleChip);
+
+  // 委派名单载荷（仅主 Agent 用）：全部子 Agent，停用的在 tooltip 标注
+  const subAgents = agents.filter((a) => !a.isMain);
+  const subAgentChips = subAgents.map((a) => ({
+    value: a.id,
+    label: a.name,
+    desc: a.enabled ? a.desc : `${a.desc}（已停用）`,
+    dot: a.color,
+  }));
+
+  const savable = def.name.trim().length > 0;
+
+  return (
+    <div className="ag-page">
+      <div className="ag-edit-head">
+        <button type="button" className="ag-back" onClick={onCancel}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M15 18l-6-6 6-6" />
+          </svg>
+          返回名单
+        </button>
+        <div className="ag-edit-actions">
+          <Button variant="ghost" data-ag="cancel" onClick={onCancel}>
+            取消
+          </Button>
+          <Button
+            variant="primary"
+            disabled={!savable}
+            onClick={() => onSave({ ...def, name: def.name.trim(), desc: def.desc.trim() })}
+          >
+            {isNew ? "保存并注册" : "保存"}
+          </Button>
+        </div>
+      </div>
+
+      <div className="ag-edit">
+        <div className="ag-form" ref={formRef}>
+          <section className="ag-sec">
+            <div className="ag-sec-title">身份</div>
+            <div className="ag-id-row">
+              <TextInput
+                id="ag-name"
+                className="ag-name-input"
+                value={def.name}
+                onChange={(v) => set("name", v)}
+                placeholder="名称（如：代码 Agent）"
+              />
+              {!def.isMain && (
+                <ColorPicker colors={AGENT_COLORS} value={def.color} onChange={(c) => set("color", c)} ariaLabel="标识色" />
+              )}
+            </div>
+            <TextInput
+              className="ag-desc-input"
+              value={def.desc}
+              onChange={(v) => set("desc", v)}
+              placeholder="职责描述——这个 Agent 擅长什么、边界在哪"
+            />
+          </section>
+
+          <section className="ag-sec">
+            <div className="ag-sec-title">模型</div>
+            <Select
+              value={def.model}
+              onChange={(v) => set("model", v)}
+              groups={selectGroups}
+              placeholder="选择模型"
+              ariaLabel="选择模型"
+            />
+            {!modelInList && def.model && (
+              <div className="ag-warn">当前绑定「{modelLabel}」不在可用列表——可改选。</div>
+            )}
+          </section>
+
+          <section className="ag-sec">
+            <div className="ag-sec-title">
+              工具<span className="ag-count">{def.tools.length}</span>
+            </div>
+            {def.isMain ? (
+              <div className="ag-locked">
+                <span className="ag-lock-name">{MAIN_TOOL.id}</span>
+                <span className="ag-lock-desc">{MAIN_TOOL.desc}——主 Agent 不直接执行任务。</span>
+              </div>
+            ) : (
+              <>
+                <Chips
+                  options={toolChips.slice(0, BUILTIN_TOOLS.length)}
+                  value={def.tools}
+                  onChange={(tools) => set("tools", tools)}
+                  focusedValue={focus?.kind === "tool" ? focus.id : null}
+                  onFocus={(id) => setFocus({ kind: "tool", id })}
+                  ariaLabel="内置工具"
+                />
+                <div className="ag-chip-label">第三方 / 插件</div>
+                <Chips
+                  options={toolChips.slice(BUILTIN_TOOLS.length)}
+                  value={def.tools}
+                  onChange={(tools) => set("tools", tools)}
+                  focusedValue={focus?.kind === "tool" ? focus.id : null}
+                  onFocus={(id) => setFocus({ kind: "tool", id })}
+                  ariaLabel="第三方工具"
+                />
+              </>
+            )}
+          </section>
+
+          <section className="ag-sec">
+            <div className="ag-sec-title">
+              上下文<span className="ag-count">{(def.workflow ? 1 : 0) + def.skills.length}</span>
+            </div>
+            <div className="ag-locked">
+              <span className="ag-lock-name">{def.isMain ? "调度协议 · Harness 固定" : "执行协议 · Harness 固定"}</span>
+              <span className="ag-lock-desc">
+                {def.isMain
+                  ? "意图判断 → 名单选人 → 下发（任务描述含验收标准）→ 验收子结果 → 汇总答复；无可用人选时说明缺口。协议不可编辑。"
+                  : "按任务执行、受工具白名单约束、结果如实回传（工具清单随白名单动态生成）。协议不可编辑。"}
+              </span>
+            </div>
+            <div className="ag-chip-label">流程模块</div>
+            <Chips
+              exclusive
+              options={processChips}
+              value={def.workflow ? [def.workflow] : []}
+              onChange={(v) => set("workflow", v[0] ?? "")}
+              focusedValue={focus?.kind === "module" ? focus.id : null}
+              onFocus={(id) => setFocus({ kind: "module", id })}
+              ariaLabel="流程模块（单选）"
+            />
+            <div className="ag-hint">单选——工作方式是完整单元；缺合适的流程就补一个流程模块，不靠多个拼装。</div>
+            <div className="ag-chip-label">技能模块</div>
+            <Chips
+              options={skillChips}
+              value={def.skills}
+              onChange={(skills) => set("skills", skills)}
+              focusedValue={focus?.kind === "module" ? focus.id : null}
+              onFocus={(id) => setFocus({ kind: "module", id })}
+              ariaLabel="技能模块"
+            />
+            <div className="ag-chip-label">自定义段</div>
+            <Textarea
+              value={def.prompt}
+              onChange={(v) => set("prompt", v)}
+              placeholder="这个 Agent 私有的补充约定——特殊流程、边界、口吻（拼在协议与模块之后）"
+              ariaLabel="自定义上下文"
+            />
+          </section>
+
+          <section className="ag-sec">
+            <div className="ag-sec-title">
+              委派<span className="ag-count">{def.isMain ? def.delegates.length : 0}</span>
+            </div>
+            {def.isMain ? (
+              subAgents.length === 0 ? (
+                <div className="ag-empty-inline">名单里还没有子 Agent——先组装一个</div>
+              ) : (
+                <>
+                  <Chips
+                    options={subAgentChips}
+                    value={def.delegates}
+                    onChange={(delegates) => set("delegates", delegates)}
+                    ariaLabel="默认委派名单"
+                  />
+                  <div className="ag-hint">
+                    默认可分派给勾选的子 Agent（停用的不参与）。会话里可临时收窄——输入区 Agent 菜单的「可委派」。
+                  </div>
+                </>
+              )
+            ) : (
+              <div className="ag-locked">
+                <span className="ag-lock-name">不可委派</span>
+                <span className="ag-lock-desc">子 Agent 是纯执行者——调度权只在主 Agent，委派深度恒为一级。</span>
+              </div>
+            )}
+          </section>
+
+          <section className="ag-sec">
+            <div className="ag-sec-title">权限默认</div>
+            <Segmented
+              options={APPROVAL_OPTS}
+              value={def.approval}
+              onChange={(v) => set("approval", v)}
+              ariaLabel="权限默认"
+            />
+          </section>
+        </div>
+
+        <aside className="ag-preview">
+          <div className="ag-preview-label">预览</div>
+          <AgentCard agent={def} preview />
+          <DetailPanel focus={focus} onOpen={() => setDocOpen(true)} />
+          <div className="ag-preview-prompt">{def.prompt || "（自定义上下文预览——左侧填写后展示）"}</div>
+          <div className="ag-preview-hint">保存后进入名单；输入区可选择它干活。</div>
+        </aside>
+      </div>
+
+      {focus && docOpen && <DocDialog focus={focus} onClose={() => setDocOpen(false)} />}
+    </div>
+  );
+}

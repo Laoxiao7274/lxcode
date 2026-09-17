@@ -19,3 +19,10 @@ test('宿主桥限制在两个宿主 UI 入口', () => {
   assert.ok(checkFrontendSource('agent/ws/index.ts', 'window.__LX__.execute();').length);
   assert.deepEqual(checkFrontendSource('components/topbar/Topbar.tsx', 'window.__LX__.close();'), []);
 });
+test('声明位置的属性名不触发 Node API 检查，表达式位置仍然拦截', () => {
+  // 领域声明叫 process（{ process: x } / interface 字段）是合法命名
+  assert.deepEqual(checkFrontendSource('shared/agents.tsx', 'const b = { process: "x" }; interface D { process: string; }'), []);
+  // 全局引用与访问位置仍在拦截范围（window.fetch / process.env）
+  assert.ok(checkFrontendSource('components/Test.tsx', 'const env = process.env;').length, 'process.env');
+  assert.ok(checkFrontendSource('components/Test.tsx', 'window.fetch("/rpc");').length, 'window.fetch');
+});
