@@ -26,6 +26,8 @@ export type AgentEvent =
   | { type: "todoUpdated"; items: TodoItem[] }
   | { type: "done"; usageTokens: number; finishReason: string }
   | { type: "error"; message: string; aborted: boolean }
+  /** 请求失败不代表生成失败：不得清空会话、定格正文或解除确认卡。 */
+  | { type: "operationError"; message: string }
   | { type: "busy"; busy: boolean }
   | { type: "sessionChanged"; id: string; reason: string }
   /** 会话列表本身变了（重命名/归档/恢复）——UI 重读 sessions()。 */
@@ -89,7 +91,7 @@ export interface ProjectMeta {
 
 /**
  * AgentSource 是数据源抽象：demo（脚本编排）与 live（WS 连后端）实现
- * 同一接口。将来 Tauri 壳接入真实后端时只换实现，UI 不动。
+ * 同一接口。浏览器与 Electron 渲染层复用相同 JSON-RPC 适配器。
  */
 export interface AgentSource {
   /** 订阅事件流（返回退订函数）。 */
@@ -97,7 +99,7 @@ export interface AgentSource {
   /** 发送消息（一轮开始）。 */
   send(text: string): void;
   /** 裁决确认门。 */
-  confirm(id: string, allow: boolean): void;
+  confirm(id: string, allow: boolean): Promise<void>;
   /** 取消当前生成。 */
   cancel(): void;
   /** 新会话（可选归属项目 id——会话挂在项目分组下）。 */
@@ -118,4 +120,39 @@ export interface AgentSource {
   addProject(name: string, path: string): void;
   /** 显示名（顶栏徽标）。 */
   label: string;
+  /** 模型注册表管理；缺省时设置面板使用独立的本地演示目录。 */
+  modelAdmin?: ModelAdminSource;
+}
+
+/** 后端模型注册表（config.ModelConfig 的 wire 形态，snake_case）。 */
+export interface ModelEntry {
+  id: string;
+  display_name?: string;
+  base_url: string;
+  api_key?: string;
+  format?: string;
+  model: string;
+  context_window?: number;
+  max_output_tokens?: number;
+  capabilities?: { tools?: boolean; vision?: boolean; json_output?: boolean };
+  enabled: boolean;
+}
+
+/** ModelAdminSource：模型注册表的查看与管理（后端 model.* 直通）。
+ * 独立能力接口——UI 面板依赖它而非具体 WSAgent；Demo 不实现。 */
+export interface ModelAdminSource {
+  /** 当前快照（model.list 结果缓存）。 */
+  models(): { models: ModelEntry[]; roles: Record<string, string> };
+  /** 订阅注册表变化（连接建立/model.changed；返回退订）。 */
+  onModelsChanged(listener: () => void): () => void;
+  /** 新增注册表条目；校验失败以 rejected Promise 返回。 */
+  addModel(entry: Partial<Omit<ModelEntry, "id">> & { id: string; base_url?: string }): Promise<void>;
+  /** 更新（以现有条目为底套 patch）。 */
+  updateModel(entry: ModelEntry): Promise<void>;
+  /** 删除。 */
+  removeModel(id: string): Promise<void>;
+  /** 可见性开关。 */
+  setModelEnabled(id: string, enabled: boolean): Promise<void>;
+  /** 角色绑定（default/vision）。 */
+  setRole(role: string, modelId: string): Promise<void>;
 }

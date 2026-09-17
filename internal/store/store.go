@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/moyunteng/lxcode/internal/llm"
+	"github.com/moyunteng/lxcode/internal/sessiondata"
 
 	_ "modernc.org/sqlite" // 纯 Go SQLite 驱动（注册 database/sql 接口）
 )
@@ -62,14 +63,7 @@ CREATE TABLE IF NOT EXISTS projects (
 `
 
 // SessionMeta 是会话列表的条目（resume 选择器的数据源）。
-type SessionMeta struct {
-	ID        string
-	Title     string // 首条 user 消息截断（空会话为占位）
-	UpdatedAt string
-	Messages  int
-	Archived  bool
-	Workspace string // 归属项目 id（空 = 未分组）
-}
+type SessionMeta = sessiondata.SessionMeta
 
 // Store 管理单个 SQLite 库（sessions 目录下的 sessions.db）。
 type Store struct {
@@ -308,11 +302,7 @@ func (s *Store) Archive(id string, archived bool) error {
 }
 
 // ProjectMeta 是项目列表条目（侧栏「项目」分组的数据源）。
-type ProjectMeta struct {
-	ID   string
-	Name string
-	Path string
-}
+type ProjectMeta = sessiondata.ProjectMeta
 
 // AddProject 注册项目（幂等：path 已注册返回既有条目）。
 func (s *Store) AddProject(name, path string) (ProjectMeta, error) {
@@ -395,12 +385,7 @@ func (s *Store) SessionWorkspace(id, workspace string) error {
 }
 
 // SearchHit 是一条会话搜索命中。
-type SearchHit struct {
-	SessionID string
-	Index     int
-	Role      string
-	Content   string
-}
+type SearchHit = sessiondata.SearchHit
 
 // searchClip 是命中内容的展示截断长度。
 const searchClip = 120
@@ -484,15 +469,5 @@ func fmtTime(ts string) string {
 
 // FormatSearchHits 把命中渲染成给模型的文本（session_search 工具的输出）。
 func FormatSearchHits(hits []SearchHit, total int) string {
-	if len(hits) == 0 {
-		return "没有匹配的历史消息。"
-	}
-	var b strings.Builder
-	for _, h := range hits {
-		fmt.Fprintf(&b, "[%s #%d %s] %s\n", h.SessionID, h.Index, h.Role, h.Content)
-	}
-	if total > len(hits) {
-		fmt.Fprintf(&b, "\n…（共 %d 条命中，显示前 %d 条：缩小 pattern 或提高 max）", total, len(hits))
-	}
-	return b.String()
+	return sessiondata.FormatSearchHits(hits, total)
 }

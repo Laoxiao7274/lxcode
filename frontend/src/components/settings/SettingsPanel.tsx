@@ -31,7 +31,7 @@ const SECTIONS: { id: SectionId; label: string; icon: ReactElement }[] = [
 ];
 
 export function SettingsPanel({ open, onClose, source }: { open: boolean; onClose: () => void; source: AgentSource }) {
-  const { settings, set, providers } = useSettings();
+  const { settings, set, providers, error } = useSettings();
   const [section, setSection] = useState<SectionId>("general");
   const [connectOpen, setConnectOpen] = useState(false);
   const [modelEdit, setModelEdit] = useState<{ providerId: string; modelId: string } | null>(null);
@@ -95,12 +95,7 @@ export function SettingsPanel({ open, onClose, source }: { open: boolean; onClos
                   checked={settings.showFullOutput}
                   onChange={(v) => set({ showFullOutput: v })}
                 />
-                <ToggleRow
-                  label="生成时阻止休眠"
-                  hint="有任务运行时保持屏幕常亮"
-                  checked={settings.keepAwake}
-                  onChange={(v) => set({ keepAwake: v })}
-                />
+                <ValueRow label="生成时阻止休眠" value="尚未实现" hint="当前不会阻止系统休眠" />
                 <ToggleRow
                   label="Enter 发送（关闭则 Cmd+Enter 多行）"
                   hint="单行输入模式"
@@ -120,6 +115,7 @@ export function SettingsPanel({ open, onClose, source }: { open: boolean; onClos
 
             {section === "models" && (
               <Section title="模型与提供商" desc="连接提供商、管理模型可见性与默认模型。模型选择器只显示启用的模型。">
+                {error && <div className="error-block" role="alert">{error}</div>}
                 <div className="mset-toolbar">
                   <span className="mset-count">{providers.filter((p) => p.connected).length} 个已连接</span>
                   <button type="button" className="mset-connect-btn" onClick={() => setConnectOpen(true)}>
@@ -133,7 +129,7 @@ export function SettingsPanel({ open, onClose, source }: { open: boolean; onClos
             )}
 
             {section === "configuration" && (
-              <Section title="配置" desc="模型、推理强度与高危操作确认模式。高级选项编辑 config.toml。">
+              <Section title="配置" desc="模型、推理强度与高危操作确认模式。推理强度与确认策略切换尚未接通。">
                 <ValueRow label="模型" value={settings.model} hint={providers.flatMap((p) => p.models).find((m) => m.id === settings.model)?.desc} />
                 {(() => {
                   const cur = providers.flatMap((p) => p.models).find((m) => m.id === settings.model);
@@ -152,20 +148,21 @@ export function SettingsPanel({ open, onClose, source }: { open: boolean; onClos
                   );
                 })()}
                 <ValueRow label="高危操作" value={APPROVALS.find((a) => a.id === settings.approval)?.label ?? ""} hint={APPROVALS.find((a) => a.id === settings.approval)?.hint} />
-                <ValueRow label="配置文件" value="config.toml" hint="高级选项（超时/上下文上限等）" />
+                <ValueRow label="推理强度" value="尚未接通" hint="当前使用后端默认行为" />
+                <ValueRow label="配置文件" value="models.json" hint="路径由后端启动参数决定" />
               </Section>
             )}
 
             {section === "personalization" && (
               <Section title="个性化" desc="回答的默认语气；自定义指令写入 AGENTS.md。">
-                <SegRow label="语气">
+                <SegRow label="语气（尚未实现）">
                   <div className="panel-seg">
                     {([
                       { id: "friendly", label: "友好" },
                       { id: "pragmatic", label: "务实" },
                       { id: "none", label: "无" },
                     ] as const).map((p) => (
-                      <button key={p.id} type="button" className={"seg-btn" + (settings.personality === p.id ? " on" : "")} onClick={() => set({ personality: p.id })}>
+                      <button key={p.id} type="button" disabled className={"seg-btn" + (settings.personality === p.id ? " on" : "")} onClick={() => set({ personality: p.id })}>
                         {p.label}
                       </button>
                     ))}

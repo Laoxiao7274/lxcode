@@ -101,8 +101,8 @@ export class DemoAgent implements AgentSource {
     this.runTurn();
   }
 
-  confirm(id: string, allow: boolean): void {
-    if (this.pendingConfirm?.id !== id) return;
+  async confirm(id: string, allow: boolean): Promise<void> {
+    if (this.pendingConfirm?.id !== id) throw new Error("确认请求已失效");
     const cb = this.confirmCb;
     this.pendingConfirm = null;
     this.confirmCb = null;

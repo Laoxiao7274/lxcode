@@ -36,7 +36,7 @@ const initial: UIState = { blocks: [], busy: false, pending: null, todos: [] };
 let uidSeq = 0;
 const nextUid = () => ++uidSeq;
 
-function reduce(state: UIState, ev: AgentEvent): UIState {
+export function reduce(state: UIState, ev: AgentEvent): UIState {
   switch (ev.type) {
     case "userMessage":
       return {
@@ -115,7 +115,7 @@ function reduce(state: UIState, ev: AgentEvent): UIState {
     case "sessionChanged":
       // reason 语义：new（用户点新对话——清屏）/ resumed（切会话——清屏后
       // 等 historyLoaded 重放）/ started（懒建行——只刷新列表，对话进行中不清屏）
-      if (ev.reason === "started") return { ...state };
+      if (ev.reason !== "new" && ev.reason !== "resumed") return { ...state };
       return { ...initial };
     case "sessionsChanged":
       // 列表变化不改 UI 状态本身——新对象触发重渲染（侧栏重读 sessions()）

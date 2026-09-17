@@ -1,6 +1,13 @@
-// WSAgent：真实后端对接（WS JSON-RPC :7789——协议与 Go 后端 internal/protocol 一致）。
-// 事件流 → AgentEvent 映射，与 DemoAgent 可互换（App.tsx 一行切换）。
-import type { AgentEvent, AgentSource, ConfirmRequest, ProjectMeta, SessionMeta, TodoItem } from "../../shared/types";
+// WSAgent：真实后端对接（WS JSON-RPC，默认 127.0.0.1:7789——协议与 Go
+// internal/protocol 一致）。AgentSource + ModelAdminSource 双能力实现。
+// 事件 → AgentEvent 映射与 DemoAgent 可互换（工厂一行切换）。
+// 错误纪律：生成类失败（chat.error）走 error 事件（会话状态由 reducer
+// 收敛）；请求类失败（拒绝/断连/超时）走 operationError 事件——UI 只提示，
+// 不动 blocks/pending。
+import type {
+  AgentEvent, AgentSource, ConfirmRequest, ModelAdminSource, ModelEntry,
+  ProjectMeta, SessionMeta, TodoItem,
+} from "../../shared/types";
 
 /** WS JSON-RPC 帧结构（与 Go internal/protocol 对齐）。 */
 interface WsRequest {
@@ -21,65 +28,86 @@ interface WsResponse {
 
 type Listener = (ev: AgentEvent) => void;
 
-export class WSAgent implements AgentSource {
-  label = "已连接";
+interface PendingCall {
+  resolve: (v: unknown) => void;
+  reject: (e: Error) => void;
+  timeout: ReturnType<typeof setTimeout>;
+}
+
+const WS_READY_STATE_OPEN = 1;
+
+const RECONNECT_MS = 5000;
+const REQUEST_TIMEOUT_MS = 10_000;
+
+export class WSAgent implements AgentSource, ModelAdminSource {
+  label = "真实后端";
+  readonly modelAdmin: ModelAdminSource = this;
+  private readonly addr: string;
   private ws: WebSocket | null = null;
   private listeners = new Set<Listener>();
   private nextId = 1;
-  private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
-  private connected = false;
+  private pending = new Map<number, PendingCall>();
   private sessionsCache: SessionMeta[] = [];
   private projectsCache: ProjectMeta[] = [];
   /** 模型注册表快照（model.changed 驱动刷新；settings 面板的数据源）。 */
-  private modelsCache: WsModelEntry[] = [];
+  private modelsCache: ModelEntry[] = [];
   private rolesCache: Record<string, string> = {};
   private modelListeners = new Set<() => void>();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /** 订阅时惰性建连（构造不再触网——测试可先插桩再连接）。 */
+  private started = false;
 
-  constructor(private addr = "127.0.0.1:7789") {}
+  constructor(addr = "127.0.0.1:7789") {
+    this.addr = addr;
+  }
 
   subscribe(listener: Listener): () => void {
     this.listeners.add(listener);
-    this.connect();
-    return () => this.listeners.delete(listener);
+    if (!this.started) {
+      this.started = true;
+      this.connect();
+    }
+    return () => {
+      this.listeners.delete(listener);
+      // 最后一个订阅者退订：停重连并断开（演示/测试挂载卸载不留后台连接）
+      if (this.listeners.size === 0) this.disposeSocket();
+    };
   }
 
   /** 连接 WS（自动重连）。 */
   private connect() {
-    if (this.ws?.readyState === WebSocket.OPEN || this.ws?.readyState === WebSocket.CONNECTING) return;
+    if (this.ws && (this.ws.readyState === WS_READY_STATE_OPEN || this.ws.readyState === 0)) return;
     const url = `ws://${this.addr}/rpc`;
-    this.ws = new WebSocket(url);
+    const ws = new WebSocket(url);
+    this.ws = ws;
 
-    this.ws.onopen = () => {
-      this.connected = true;
-      // 握手 + 拉初始状态：模型 + 项目 + 全量会话列表 + 当前会话历史（重放视图）
+    ws.onopen = () => {
+      // 握手失败则不继续调用；旧连接的初始化链不得串入重连后的连接。
       this.call("connection.hello", { client: "lxcode-web", version: "1" })
-        .then(() => this.call("model.list"))
-        .then((r) => {
-          this.applyModelList(r);
+        .then(async () => {
+          const refresh = async (method: string, apply: (r: unknown) => void) => {
+            if (this.ws !== ws) return;
+            try { const r = await this.call(method); if (this.ws === ws) apply(r); }
+            catch (e) { if (this.ws === ws) this.opError(`${method}: ${String(e)}`); }
+          };
+          await refresh("model.list", (r) => this.applyModelList(r));
+          await refresh("project.list", (r) => this.applyProjectList(r));
+          await refresh("session.list", (r) => this.applySessionList(r));
+          if (this.ws === ws) await this.loadHistory();
         })
-        .then(() => this.call("project.list"))
-        .then((r) => {
-          this.applyProjectList(r);
-        })
-        .then(() => this.call("session.list"))
-        .then((r) => {
-          this.applySessionList(r);
-        })
-        .then(() => this.loadHistory())
-        .catch(() => {});
+        .catch((e) => { if (this.ws === ws) this.opError(`初始化失败: ${e.message}`); });
     };
 
-    this.ws.onmessage = (e) => {
-      const msg: WsResponse = JSON.parse(e.data);
+    ws.onmessage = (e) => {
+      let msg: WsResponse;
+      try {
+        msg = JSON.parse(String(e.data));
+      } catch {
+        return; // 非 JSON 帧直接忽略（防坏数据炸监听器）
+      }
       // 应答帧（有 id）
       if (msg.id !== undefined && msg.id !== null) {
-        const p = this.pending.get(msg.id);
-        if (p) {
-          this.pending.delete(msg.id);
-          if (msg.error) p.reject(new Error(msg.error.message));
-          else p.resolve(msg.result);
-        }
+        this.settlePending(Number(msg.id), msg);
         return;
       }
       // 事件帧（无 id）
@@ -88,22 +116,59 @@ export class WSAgent implements AgentSource {
       }
     };
 
-    this.ws.onclose = () => {
-      this.connected = false;
+    ws.onclose = () => {
+      this.ws = null;
+      // 断连：所有挂起请求立刻失败（不等 10s 超时——后端已死，等是骗人）
+      this.rejectAllPending("后端连接已断开");
       this.emit({ type: "error", message: "后端连接断开", aborted: true });
       // 5s 重连
-      this.reconnectTimer = setTimeout(() => this.connect(), 5000);
+      this.reconnectTimer = setTimeout(() => this.connect(), RECONNECT_MS);
     };
 
-    this.ws.onerror = () => {
+    ws.onerror = () => {
       // onclose 会跟着触发
     };
   }
 
+  /** 断开并停止重连（测试/卸载用）。 */
+  private disposeSocket() {
+    this.started = false;
+    if (this.ws) this.ws.onclose = null;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.rejectAllPending("后端连接已断开");
+    this.ws?.close();
+    this.ws = null;
+  }
+
+  /** 应答帧落地：resolve/reject 并清掉超时计时器。 */
+  private settlePending(id: number, msg: WsResponse) {
+    const p = this.pending.get(id);
+    if (!p) return;
+    this.pending.delete(id);
+    clearTimeout(p.timeout);
+    if (msg.error) p.reject(new Error(msg.error.message));
+    else p.resolve(msg.result);
+  }
+
+  /** 断连时统一拒绝全部挂起请求。 */
+  private rejectAllPending(reason: string) {
+    for (const [, p] of this.pending) {
+      clearTimeout(p.timeout);
+      p.reject(new Error(reason));
+    }
+    this.pending.clear();
+  }
+
   /** 后端事件 → AgentEvent 映射。 */
   private handleEvent(method: string, params: unknown) {
-    const p = params as Record<string, unknown>;
+    const p = (params ?? {}) as Record<string, unknown>;
     switch (method) {
+      case "connection.ready":
+        this.emit({ type: "ready", server: String(p.server ?? ""), version: String(p.version ?? ""), busy: Boolean(p.busy) });
+        break;
       case "chat.userMessage":
         this.emit({ type: "userMessage", text: String(p.text ?? "") });
         break;
@@ -130,7 +195,7 @@ export class WSAgent implements AgentSource {
             this.applySessionList(r);
             this.emit({ type: "sessionsChanged" });
           })
-          .catch(() => {});
+          .catch((e) => this.opError(`刷新会话列表失败: ${e.message}`));
         break;
       case "chat.error":
         this.emit({ type: "error", message: String(p.message ?? ""), aborted: Boolean(p.aborted) });
@@ -142,35 +207,34 @@ export class WSAgent implements AgentSource {
         this.emit({ type: "sessionChanged", id: String(p.id ?? ""), reason: String(p.reason ?? "") });
         // started（懒建行）只刷列表——对话进行中，视图不动；new/resumed
         // 已由 reducer 清屏，resumed 后重拉 chat.history 重放历史
-        if (String(p.reason ?? "") === "started" || String(p.reason ?? "") === "new") {
-          if (String(p.reason ?? "") === "started") {
-            this.call("session.list")
-              .then((r) => {
-                this.applySessionList(r);
-                this.emit({ type: "sessionsChanged" });
-              })
-              .catch(() => {});
-          }
-        } else {
-          this.loadHistory();
+        if (String(p.reason ?? "") === "started") {
+          this.call("session.list")
+            .then((r) => {
+              this.applySessionList(r);
+              this.emit({ type: "sessionsChanged" });
+            })
+            .catch((e) => this.opError(`刷新会话列表失败: ${e.message}`));
+        } else if (String(p.reason ?? "") === "resumed") {
+          void this.loadHistory().catch((e) => this.opError(`加载历史失败: ${e.message}`));
+        } else if (String(p.reason ?? "") !== "new") {
+          this.call("session.list").then((r) => this.applySessionList(r))
+            .catch((e) => this.opError(`刷新会话列表失败: ${e.message}`));
         }
         break;
       case "model.changed":
         // 模型注册表变更——重拉列表（settings 的 providers 数据源）
         this.call("model.list")
-          .then((r) => {
-            this.applyModelList(r);
-          })
-          .catch(() => {});
+          .then((r) => this.applyModelList(r))
+          .catch((e) => this.opError(`刷新模型列表失败: ${e.message}`));
         break;
       case "files.changed":
         // 一轮的产物汇总（验收视图——后端按 edit/write_file 收集）
         {
-          const p = params as { files?: Array<{ path: string; added: number; deleted: number; diff: string }> };
-          if (Array.isArray(p.files)) {
+          const f = params as { files?: Array<{ path: string; added: number; deleted: number; diff: string }> };
+          if (Array.isArray(f.files)) {
             this.emit({
               type: "filesChanged",
-              files: p.files.map((f) => ({ path: f.path, added: f.added, deleted: f.deleted, diff: f.diff })),
+              files: f.files.map((x) => ({ path: x.path, added: x.added, deleted: x.deleted, diff: x.diff })),
             });
           }
         }
@@ -182,30 +246,33 @@ export class WSAgent implements AgentSource {
             this.applyProjectList(r);
             this.emit({ type: "projectsChanged" });
           })
-          .catch(() => {});
+          .catch((e) => this.opError(`刷新项目列表失败: ${e.message}`));
         break;
     }
   }
 
-  /** 发 JSON-RPC 请求并等应答。 */
+  /** 发 JSON-RPC 请求并等应答（10s 超时；超时/断连都会清理挂起表）。 */
   private call(method: string, params?: unknown): Promise<unknown> {
     return new Promise((resolve, reject) => {
-      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      if (!this.ws || this.ws.readyState !== WS_READY_STATE_OPEN) {
         reject(new Error("后端未连接"));
         return;
       }
       const id = this.nextId++;
-      this.pending.set(id, { resolve, reject });
+      const timeout = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error("请求超时"));
+      }, REQUEST_TIMEOUT_MS);
+      this.pending.set(id, { resolve, reject, timeout });
       const req: WsRequest = { jsonrpc: "2.0", id, method };
       if (params !== undefined) req.params = params;
-      this.ws.send(JSON.stringify(req));
-      // 10s 超时
-      setTimeout(() => {
-        if (this.pending.has(id)) {
-          this.pending.delete(id);
-          reject(new Error("请求超时"));
-        }
-      }, 10_000);
+      try {
+        this.ws.send(JSON.stringify(req));
+      } catch (e) {
+        clearTimeout(timeout);
+        this.pending.delete(id);
+        reject(e instanceof Error ? e : new Error(String(e)));
+      }
     });
   }
 
@@ -213,44 +280,63 @@ export class WSAgent implements AgentSource {
     this.listeners.forEach((l) => l(ev));
   }
 
+  /** 请求级失败（不影响生成状态）→ operationError 事件。 */
+  private opError(message: string) {
+    this.emit({ type: "operationError", message });
+  }
+
   // ---- AgentSource 接口 ----
 
   send(text: string): void {
     if (!text.trim()) return;
     this.call("chat.send", { text }).catch((e) => {
-      this.emit({ type: "error", message: `发送失败: ${e.message}`, aborted: false });
+      this.opError(`发送失败: ${e.message}`);
     });
   }
 
-  confirm(id: string, allow: boolean): void {
-    this.call("tool.confirm", { id, allow }).catch(() => {});
+  /** 裁决确认门。resolve = 后端确认成功（结果随后以 toolResult 到达）；
+   *  reject（确认丢失/已终结/断连）向上抛——调用方决定卡片回退与否。 */
+  confirm(id: string, allow: boolean): Promise<void> {
+    return this.call("tool.confirm", { id, allow }).then(() => undefined);
   }
 
   cancel(): void {
-    this.call("chat.cancel").catch(() => {});
+    this.call("chat.cancel").catch((e) => {
+      this.opError(`取消失败: ${e.message}`);
+    });
   }
 
   newSession(workspace?: string): void {
-    this.call("session.new", workspace ? { workspace } : undefined).catch(() => {});
+    this.call("session.new", workspace ? { workspace } : undefined)
+      .then(() => undefined)
+      .catch((e) => this.opError(`新建会话失败: ${e.message}`));
   }
 
   resumeSession(id: string): void {
-    this.call("session.resume", { id }).catch(() => {});
+    this.call("session.resume", { id })
+      .then(() => undefined)
+      .catch((e) => this.opError(`恢复会话失败: ${e.message}`));
   }
 
   renameSession(id: string, title: string): void {
     const t = title.trim();
     if (!t) return;
     // 列表更新走 session.changed 广播（后端事实源），这里只发请求
-    this.call("session.rename", { id, title: t }).catch(() => {});
+    this.call("session.rename", { id, title: t })
+      .then(() => undefined)
+      .catch((e) => this.opError(`重命名失败: ${e.message}`));
   }
 
   archiveSession(id: string): void {
-    this.call("session.archive", { id, archived: true }).catch(() => {});
+    this.call("session.archive", { id, archived: true })
+      .then(() => undefined)
+      .catch((e) => this.opError(`归档失败: ${e.message}`));
   }
 
   unarchiveSession(id: string): void {
-    this.call("session.archive", { id, archived: false }).catch(() => {});
+    this.call("session.archive", { id, archived: false })
+      .then(() => undefined)
+      .catch((e) => this.opError(`恢复归档失败: ${e.message}`));
   }
 
   sessions(): SessionMeta[] {
@@ -262,11 +348,10 @@ export class WSAgent implements AgentSource {
   }
 
   addProject(name: string, path: string): void {
-    // project.changed 广播回来时刷新列表；错误就地报（对话框已关——
-    // 至少 UI 有项目区空态兜底，失败可从列表未见新行发现）
-    this.call("project.add", { name, path }).catch((e) => {
-      this.emit({ type: "error", message: `添加项目失败: ${e.message}`, aborted: false });
-    });
+    // project.changed 广播回来时刷新列表（后端事实源）
+    this.call("project.add", { name, path })
+      .then(() => undefined)
+      .catch((e) => this.opError(`添加项目失败: ${e.message}`));
   }
 
   /** 后端 session.list 结果 → 缓存（协议 snake_case → 前端 camelCase 映射）。 */
@@ -292,7 +377,7 @@ export class WSAgent implements AgentSource {
     this.emit({ type: "projectsChanged" });
   }
 
-  // ---- 模型管理（settings 面板的数据源；后端 model.* 方法直通） ----
+  // ---- ModelAdminSource（模型注册表直通；settings 面板数据源） ----
 
   /** 拉当前会话的历史并重放视图（连接建立/切换会话后调）。 */
   private loadHistory(): Promise<void> {
@@ -321,62 +406,45 @@ export class WSAgent implements AgentSource {
             todos: h.todos ?? [],
           },
         });
-      })
-      .catch(() => {}) as Promise<void>;
+      }) as Promise<void>;
   }
 
-  /** 模型注册表条目（与后端 config.ModelConfig 对齐）。 */
-  models(): { models: WsModelEntry[]; roles: Record<string, string> } {
+  models(): { models: ModelEntry[]; roles: Record<string, string> } {
     return { models: this.modelsCache, roles: this.rolesCache };
   }
 
-  /** 订阅模型列表变化（settings 用；返回退订）。 */
+  /** 订阅模型列表变化（返回退订）。 */
   onModelsChanged(listener: () => void): () => void {
     this.modelListeners.add(listener);
     return () => this.modelListeners.delete(listener);
   }
 
-  /** 连接时的模型注册表拉取（onopen 已接 model.list——applyModelList 供复用）。 */
-  addModel(entry: Partial<WsModelEntry> & { id: string }): Promise<void> {
-    return this.call("model.add", { ...entry, id: entry.id }).then(() => {}) as Promise<void>;
+  addModel(entry: Partial<Omit<ModelEntry, "id">> & { id: string; base_url?: string }): Promise<void> {
+    return this.call("model.add", { ...entry, id: entry.id }).then(() => undefined);
   }
 
-  updateModel(entry: WsModelEntry): Promise<void> {
-    return this.call("model.update", entry).then(() => {}) as Promise<void>;
+  updateModel(entry: ModelEntry): Promise<void> {
+    return this.call("model.update", entry).then(() => undefined);
   }
 
   removeModel(id: string): Promise<void> {
-    return this.call("model.remove", { id }).then(() => {}) as Promise<void>;
+    return this.call("model.remove", { id }).then(() => undefined);
   }
 
   setModelEnabled(id: string, enabled: boolean): Promise<void> {
-    return this.call("model.enable", { id, enabled }).then(() => {}) as Promise<void>;
+    return this.call("model.enable", { id, enabled }).then(() => undefined);
   }
 
   setRole(role: string, modelId: string): Promise<void> {
-    return this.call("role.set", { role, model_id: modelId }).then(() => {}) as Promise<void>;
+    return this.call("role.set", { role, model_id: modelId }).then(() => undefined);
   }
 
   /** model.list 结果 → 缓存 + 通知（model.changed 事件也走这里）。 */
   private applyModelList(result: unknown) {
-    const r = result as { models?: WsModelEntry[]; roles?: Record<string, string> };
+    const r = result as { models?: ModelEntry[]; roles?: Record<string, string> };
     if (!r || !Array.isArray(r.models)) return;
     this.modelsCache = r.models;
     this.rolesCache = r.roles ?? {};
     this.modelListeners.forEach((l) => l());
   }
-}
-
-/** 后端模型注册表条目（config.ModelConfig 的 wire 形态）。 */
-export interface WsModelEntry {
-  id: string;
-  display_name?: string;
-  base_url: string;
-  api_key?: string;
-  format?: string;
-  model: string;
-  context_window?: number;
-  max_output_tokens?: number;
-  capabilities?: { tools?: boolean; vision?: boolean; json_output?: boolean };
-  enabled: boolean;
 }

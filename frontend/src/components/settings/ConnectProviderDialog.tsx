@@ -1,6 +1,6 @@
 // 连接提供商（OpenCode Desktop 式二级流程）：
 // picker（搜索 + 推荐/其他分组 + 自定义入口）→ key（API Key 表单）/ custom（自定义提供商表单）。
-// 全 mock：Key 只做非空校验，连接即落进设置里的提供商列表。
+// 演示目录不连接远端；真实模式通过自定义表单注册后端模型。
 import { useEffect, useMemo, useRef, useState } from "react";
 import { gsap } from "gsap";
 import { CONNECTABLE_PROVIDERS, useSettings } from "../../shared/settings";
@@ -23,8 +23,8 @@ const searchIcon = (
 type Page = { kind: "picker" } | { kind: "key"; provider: string } | { kind: "custom" };
 
 export function ConnectProviderDialog({ onClose }: { onClose: () => void }) {
-  const { providers, connectProvider, addCustomProvider } = useSettings();
-  const [page, setPage] = useState<Page>({ kind: "picker" });
+  const { providers, connectProvider, addCustomProvider, live } = useSettings();
+  const [page, setPage] = useState<Page>({ kind: live ? "custom" : "picker" });
   const [query, setQuery] = useState("");
   const rootRef = useRef<HTMLDivElement>(null);
   const prevKind = useRef<Page["kind"] | null>(null);
@@ -72,7 +72,7 @@ export function ConnectProviderDialog({ onClose }: { onClose: () => void }) {
     <div className="mset-connect-mask" role="dialog" aria-label="连接提供商" aria-modal="true">
       <div className="mset-connect" ref={rootRef}>
         <div className="mset-connect-head">
-          {page.kind !== "picker" ? (
+          {page.kind !== "picker" && !live ? (
             <button type="button" className="mset-connect-back" onClick={() => setPage({ kind: "picker" })} aria-label="返回">
               {backArrow}
             </button>
@@ -165,7 +165,7 @@ function KeyForm({ name, onSubmit }: { name: string; onSubmit: () => void }) {
         onSubmit();
       }}
     >
-      <p className="mset-form-desc">粘贴 {name} 的 API Key。密钥只保存在本机，不会上传。</p>
+      <p className="mset-form-desc">粘贴 {name} 的 API Key。此页仅演示，不验证或保存密钥。</p>
       <label className="mset-field">
         <span>API Key</span>
         <input
@@ -186,7 +186,7 @@ function KeyForm({ name, onSubmit }: { name: string; onSubmit: () => void }) {
   );
 }
 
-function CustomForm({ onSubmit }: { onSubmit: (input: { name: string; baseUrl: string; models: string[] }) => void }) {
+function CustomForm({ onSubmit }: { onSubmit: (input: { name: string; baseUrl: string; models: string[]; apiKey?: string }) => void }) {
   const [name, setName] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [key, setKey] = useState("");
@@ -202,7 +202,7 @@ function CustomForm({ onSubmit }: { onSubmit: (input: { name: string; baseUrl: s
         if (!/^https?:\/\//.test(baseUrl.trim())) next.baseUrl = "需以 http(s):// 开头";
         setErr(next);
         if (next.name || next.baseUrl) return;
-        onSubmit({ name: name.trim(), baseUrl: baseUrl.trim(), models: models.filter((m) => m.trim()) });
+        onSubmit({ name: name.trim(), baseUrl: baseUrl.trim(), models: models.filter((m) => m.trim()), apiKey: key });
       }}
     >
       <p className="mset-form-desc">接入任意 OpenAI 兼容接口（vLLM / 网关 / 中转）。</p>

@@ -7,18 +7,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log"
 	"net/http"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 
 	"github.com/gorilla/websocket"
 	"github.com/moyunteng/lxcode/internal/agent"
 	"github.com/moyunteng/lxcode/internal/config"
+	"github.com/moyunteng/lxcode/internal/project"
 	"github.com/moyunteng/lxcode/internal/protocol"
 	"github.com/moyunteng/lxcode/internal/store"
 	"github.com/moyunteng/lxcode/internal/tools"
@@ -279,16 +276,13 @@ func (s *Server) dispatch(req *protocol.Request) *protocol.Response {
 				return protocol.NewError(req.ID, protocol.CodeInvalidParams, "参数解析失败: "+err.Error())
 			}
 		}
-		if _, err := s.sess.SwitchNew(); err != nil {
+		id, err := s.sess.SwitchNew(p.Workspace)
+		if err != nil {
 			return protocol.NewError(req.ID, errorCode(err), err.Error())
 		}
-		// 会话归属项目（新会话 id 懒生成：首条消息才建行，归属先记在册）
-		if p.Workspace != "" {
-			s.sess.SetWorkspace(p.Workspace)
-		}
-		// 新会话 id 懒生成（首条消息才建文件）：应答里给当前值即可
-		s.broadcastSessionChanged(s.sess.SessionID(), "new")
-		return protocol.NewResult(req.ID, map[string]any{"id": s.sess.SessionID()})
+		// 使用此次操作的结果，避免并发 Send 懒建后串入另一时刻的 id。
+		s.broadcastSessionChanged(id, "new")
+		return protocol.NewResult(req.ID, map[string]any{"id": id})
 
 	case protocol.MethodSessionResume:
 		var p protocol.SessionResumeParams
@@ -329,11 +323,7 @@ func (s *Server) dispatch(req *protocol.Request) *protocol.Response {
 		if err := json.Unmarshal(params, &p); err != nil || p.Path == "" || strings.TrimSpace(p.Name) == "" {
 			return protocol.NewError(req.ID, protocol.CodeInvalidParams, "参数解析失败: 需要 name 与 path")
 		}
-		meta, err := ensureProjectRepo(p.Name, p.Path)
-		if err != nil {
-			return protocol.NewError(req.ID, protocol.CodeInvalidParams, err.Error())
-		}
-		saved, err := s.st.AddProject(meta.Name, meta.Path)
+		saved, err := project.Add(s.st, p.Name, p.Path)
 		if err != nil {
 			return protocol.NewError(req.ID, protocol.CodeInvalidParams, err.Error())
 		}
@@ -422,39 +412,6 @@ func toProtocolSessionList(metas []store.SessionMeta) []protocol.SessionMeta {
 		}
 	}
 	return out
-}
-
-// ensureProjectRepo 保证项目目录是 git 仓库：已存在 .git 直接用；
-// 目录存在但不是仓库 → git init；目录不存在 → 报错。用户规则：
-// 「本地仓库的创建——如果有了那就不用管」。
-func ensureProjectRepo(name, path string) (store.ProjectMeta, error) {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return store.ProjectMeta{}, fmt.Errorf("路径无效: %w", err)
-	}
-	info, err := os.Stat(abs)
-	if err != nil || !info.IsDir() {
-		return store.ProjectMeta{}, fmt.Errorf("目录不存在或不是文件夹: %s", abs)
-	}
-	if _, err := os.Stat(filepath.Join(abs, ".git")); err == nil {
-		return store.ProjectMeta{Name: name, Path: abs}, nil // 已是仓库，不用管
-	}
-	// 不是仓库 → git init（exec git，参数数组传递避免引号问题）
-	cmd := exec.Command("git", "init")
-	cmd.Dir = abs
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return store.ProjectMeta{}, fmt.Errorf("git init 失败（git 未安装?）: %v: %s", err, truncate(string(out), 200))
-	}
-	return store.ProjectMeta{Name: name, Path: abs}, nil
-}
-
-// truncate 截断错误信息（自解释但不淹没）。
-func truncate(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	return string(r[:n]) + "…"
 }
 
 // broadcastSessionChanged 会话切换广播：所有客户端重拉 chat.history 同步视图。

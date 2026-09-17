@@ -66,13 +66,13 @@ function ProviderBlock({ provider, onEditModel }: { provider: ProviderMeta; onEd
     playEnter(addRef.current, { opacity: 0, y: -6 }, { opacity: 1, y: 0, duration: 0.22, ease: enterEase, clearProps: "transform,opacity" });
   }, [adding]);
 
-  const commitAdd = () => {
+  const commitAdd = async () => {
     if (!draft.trim()) {
       setDraftErr("模型 ID 不能为空");
       return;
     }
-    if (!addModel(provider.id, draft)) {
-      setDraftErr("模型 ID 已存在");
+    if (!(await addModel(provider.id, draft))) {
+      setDraftErr("添加失败，请检查模型 ID 或上方错误提示");
       return;
     }
     setDraft("");

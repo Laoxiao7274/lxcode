@@ -475,7 +475,7 @@ func TestSwitchNewArchivesOld(t *testing.T) {
 	s.append(llm.Message{Role: "user", Content: "旧会话内容"})
 	oldID := s.SessionID()
 
-	if _, err := s.SwitchNew(); err != nil {
+	if _, err := s.SwitchNew(""); err != nil {
 		t.Fatal(err)
 	}
 	if s.SessionID() != "" || len(s.History().Messages) != 0 {
@@ -494,7 +494,7 @@ func TestSessionList(t *testing.T) {
 	dir := t.TempDir()
 	s := newPersistSession(t, dir)
 	s.append(llm.Message{Role: "user", Content: "第一个会话"})
-	if _, err := s.SwitchNew(); err != nil {
+	if _, err := s.SwitchNew(""); err != nil {
 		t.Fatal(err)
 	}
 	s.append(llm.Message{Role: "user", Content: "第二个会话"})
@@ -511,23 +511,27 @@ func TestSessionList(t *testing.T) {
 
 // ---------- 工作目录（项目归属 → 工具执行目录） ----------
 
-// TestSetWorkspaceResolvesWorkDir：session.new 带项目 id 时，工作目录
-// 解析为项目根（侧栏分组之外的实际语义）。
-func TestSetWorkspaceResolvesWorkDir(t *testing.T) {
+// TestSwitchNewResolvesWorkDir：session.new 带项目 id 时，工作目录
+// 解析为项目根（侧栏分组之外的实际语义）；未知项目显式失败且保留原状。
+func TestSwitchNewResolvesWorkDir(t *testing.T) {
 	s := newPersistSession(t, t.TempDir())
 	dir := t.TempDir()
-	saved, err := s.st.AddProject("demo", dir)
+	saved, err := s.st.(*store.Store).AddProject("demo", dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.SetWorkspace(saved.ID)
+	if _, err := s.SwitchNew(saved.ID); err != nil {
+		t.Fatal(err)
+	}
 	if s.WorkDir() != dir {
 		t.Fatalf("工作目录应为项目根: got %q want %q", s.WorkDir(), dir)
 	}
-	// 未知项目：分组照记（落库用），工作目录回退默认
-	s.SetWorkspace("不存在的项目")
-	if s.WorkDir() != "" {
-		t.Fatalf("未知项目应回退默认目录: %q", s.WorkDir())
+	// 未知项目必须失败且保留已有目录，不能悄悄去进程目录执行。
+	if _, err := s.SwitchNew("不存在的项目"); err == nil {
+		t.Fatal("未知项目应被拒绝")
+	}
+	if s.WorkDir() != dir {
+		t.Fatalf("失败应保留目录: %q", s.WorkDir())
 	}
 }
 
@@ -536,12 +540,14 @@ func TestSetWorkspaceResolvesWorkDir(t *testing.T) {
 func TestSwitchNewClearsWorkDir(t *testing.T) {
 	s := newPersistSession(t, t.TempDir())
 	dir := t.TempDir()
-	saved, err := s.st.AddProject("demo", dir)
+	saved, err := s.st.(*store.Store).AddProject("demo", dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.SetWorkspace(saved.ID)
-	if _, err := s.SwitchNew(); err != nil {
+	if _, err := s.SwitchNew(saved.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SwitchNew(""); err != nil {
 		t.Fatal(err)
 	}
 	if s.WorkDir() != "" {
@@ -553,16 +559,18 @@ func TestSwitchNewClearsWorkDir(t *testing.T) {
 func TestSwitchToRestoresWorkDir(t *testing.T) {
 	s := newPersistSession(t, t.TempDir())
 	dir := t.TempDir()
-	saved, err := s.st.AddProject("demo", dir)
+	saved, err := s.st.(*store.Store).AddProject("demo", dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// 项目会话：落一行消息（建会话行）→ 归属落库
-	s.SetWorkspace(saved.ID)
+	if _, err := s.SwitchNew(saved.ID); err != nil {
+		t.Fatal(err)
+	}
 	s.append(llm.Message{Role: "user", Content: "项目里的问题"})
 	id := s.SessionID()
 	// 新会话（默认目录）→ resume 回项目会话
-	if _, err := s.SwitchNew(); err != nil {
+	if _, err := s.SwitchNew(""); err != nil {
 		t.Fatal(err)
 	}
 	if s.WorkDir() != "" {
@@ -582,11 +590,13 @@ func TestRestartRestoresWorkDir(t *testing.T) {
 	dir := t.TempDir()
 	dbDir := t.TempDir()
 	s1 := newPersistSession(t, dbDir)
-	proj, err := s1.st.AddProject("demo", dir)
+	proj, err := s1.st.(*store.Store).AddProject("demo", dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s1.SetWorkspace(proj.ID)
+	if _, err := s1.SwitchNew(proj.ID); err != nil {
+		t.Fatal(err)
+	}
 	s1.append(llm.Message{Role: "user", Content: "重启前的项目会话"})
 
 	// 模拟重启：全新 Session 挂同一存储（恢复最近会话 + 归属）
@@ -601,14 +611,16 @@ func TestRestartRestoresWorkDir(t *testing.T) {
 func TestTurnToolsRunInWorkDir(t *testing.T) {
 	s := newPersistSession(t, t.TempDir())
 	dir := t.TempDir()
-	proj, err := s.st.AddProject("demo", dir)
+	proj, err := s.st.(*store.Store).AddProject("demo", dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "hello.txt"), []byte("项目里的文件"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	s.SetWorkspace(proj.ID)
+	if _, err := s.SwitchNew(proj.ID); err != nil {
+		t.Fatal(err)
+	}
 
 	// 假流第一轮回一个 read_file 调用（相对路径），第二轮收尾
 	fake := &fakeStream{script: [][]llm.StreamEvent{

@@ -19,7 +19,7 @@ const parseK = (s: string): number | null => {
 };
 
 export function ModelEditDialog({ provider, model, onClose }: { provider: ProviderMeta; model: ModelMeta; onClose: () => void }) {
-  const { settings, set, updateModel, removeModel } = useSettings();
+  const { settings, set, updateModel, removeModel, live, error } = useSettings();
   const [draft, setDraft] = useState({
     id: model.id,
     name: model.name,
@@ -46,7 +46,7 @@ export function ModelEditDialog({ provider, model, onClose }: { provider: Provid
     );
   }, []);
 
-  const save = () => {
+  const save = async () => {
     if (!draft.id.trim()) {
       setErr("模型 ID 不能为空");
       return;
@@ -66,7 +66,7 @@ export function ModelEditDialog({ provider, model, onClose }: { provider: Provid
       return;
     }
     if (
-      !updateModel(provider.id, model.id, {
+      !await updateModel(provider.id, model.id, {
         id: draft.id,
         name: draft.name,
         desc: draft.desc.trim(),
@@ -76,7 +76,7 @@ export function ModelEditDialog({ provider, model, onClose }: { provider: Provid
         maxOutput: out,
       })
     ) {
-      setErr("模型 ID 已存在");
+      setErr("保存失败，请检查输入或后端错误");
       return;
     }
     onClose();
@@ -107,15 +107,15 @@ export function ModelEditDialog({ provider, model, onClose }: { provider: Provid
           <div className="mset-edit-fields">
             <label className="mset-edit-field">
               <span>模型 ID</span>
-              <input className="mono" autoFocus value={draft.id} onChange={(e) => patch({ id: e.target.value })} spellCheck={false} />
+              <input className="mono" autoFocus disabled={live} title={live ? "后端不支持改 ID，请新增模型" : undefined} value={draft.id} onChange={(e) => patch({ id: e.target.value })} spellCheck={false} />
             </label>
             <label className="mset-edit-field">
               <span>显示名称</span>
               <input value={draft.name} onChange={(e) => patch({ name: e.target.value })} spellCheck={false} />
             </label>
             <label className="mset-edit-field wide">
-              <span>描述（选择器里显示的那行灰字）</span>
-              <input value={draft.desc} onChange={(e) => patch({ desc: e.target.value })} placeholder="例如：通用对话" spellCheck={false} />
+              <span>描述（真实模式由协议格式派生）</span>
+              <input disabled={live} value={draft.desc} onChange={(e) => patch({ desc: e.target.value })} placeholder="例如：通用对话" spellCheck={false} />
             </label>
             <label className="mset-edit-field">
               <span>上下文窗口</span>
@@ -141,7 +141,7 @@ export function ModelEditDialog({ provider, model, onClose }: { provider: Provid
             ))}
           </div>
           <div className="mset-edit-tags">
-            <span className="mset-chip-label">档位</span>
+            <span className="mset-chip-label">推理档位尚未接通</span>
             {EFFORTS.map((e) => (
               <button
                 key={e.id}
@@ -155,7 +155,7 @@ export function ModelEditDialog({ provider, model, onClose }: { provider: Provid
               </button>
             ))}
           </div>
-          {err && <div className="mset-edit-err" role="alert">{err}</div>}
+          {(error || err) && <div className="mset-edit-err" role="alert">{error || err}</div>}
           <div className="mset-medit-foot">
             <button
               type="button"

@@ -15,7 +15,8 @@ import (
 
 	"github.com/moyunteng/lxcode/internal/config"
 	"github.com/moyunteng/lxcode/internal/llm"
-	"github.com/moyunteng/lxcode/internal/store"
+	"github.com/moyunteng/lxcode/internal/project"
+	"github.com/moyunteng/lxcode/internal/sessiondata"
 	"github.com/moyunteng/lxcode/internal/tools"
 )
 
@@ -64,7 +65,7 @@ type Session struct {
 
 	// 持久化（st 为 nil = 纯内存模式，兼容不接存储的调用方/单测）。
 	// SQLite 版无句柄概念：会话 = sessions 表一行，按 s.id 追加写。
-	st *store.Store
+	st Persistence
 	id string // 当前会话 id（空 = 尚未创建行）
 	// pendingWorkspace 是「下一个新会话」的归属项目（session.new 时设置，
 	// 会话行首条消息懒建时落库并清空）。单会话架构下的过渡设计——
@@ -503,33 +504,22 @@ func (s *Session) ensureSessionLocked() error {
 	return nil
 }
 
-// SetWorkspace 设置下一个新会话的归属项目（session.new 参数透传），同时把
-// 项目根目录设为会话工作目录——工具的相对路径、bash 默认目录与系统提示词
-// 全部对齐项目根（侧栏分组之外的实际语义）。项目查不到（无存储/不存在）
-// 时只记分组，工作目录保持默认。
-func (s *Session) SetWorkspace(workspace string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.pendingWorkspace = workspace
-	s.workDir = s.resolveWorkspaceDirLocked(workspace)
-}
-
-// resolveWorkspaceDirLocked 把项目 id 解析成项目根目录（查不到返回空串 =
-// 默认目录）。调用方持锁；查询短且并发由 store 连接池保证。
-func (s *Session) resolveWorkspaceDirLocked(id string) string {
-	if id == "" || s.st == nil {
-		return ""
+// resolveWorkspaceDir 区分未分组与失效项目：只有未分组才允许默认目录。
+func resolveWorkspaceDir(st Persistence, id string) (string, error) {
+	if id == "" {
+		return "", nil
 	}
-	meta, found, err := s.st.ProjectByID(id)
+	if st == nil {
+		return "", errors.New("未启用项目存储")
+	}
+	meta, found, err := st.ProjectByID(id)
 	if err != nil {
-		log.Printf("查询项目 %s 失败（工作目录回退默认）: %v", id, err)
-		return ""
+		return "", fmt.Errorf("查询项目 %s: %w", id, err)
 	}
 	if !found {
-		log.Printf("项目 %s 不存在（工作目录回退默认）", id)
-		return ""
+		return "", fmt.Errorf("项目 %s 不存在", id)
 	}
-	return meta.Path
+	return project.ValidateDirectory(meta.Path)
 }
 
 // WorkDir 返回当前会话的工作目录（空 = 后端进程目录）。
@@ -541,29 +531,36 @@ func (s *Session) WorkDir() string {
 
 // EnablePersistence 挂载磁盘存储并恢复最近会话（启动时调用）。
 // 库里没有任何会话时保持空历史（全新开始）。幂等：重复调用是 no-op。
-func (s *Session) EnablePersistence(st *store.Store) error {
+func (s *Session) EnablePersistence(st Persistence) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.st != nil {
 		return nil
 	}
-	s.st = st
+	if st == nil {
+		return errors.New("持久化实现为空")
+	}
+	if err := s.switchGuardLocked(); err != nil {
+		return err
+	}
 	id, msgs, err := st.Latest()
 	if err != nil {
 		return err
 	}
-	if id == "" {
-		return nil // 没有历史会话：空历史起步，会话行首条消息时懒建
+	var dir string
+	if id != "" {
+		ws, err := st.WorkspaceOf(id)
+		if err != nil {
+			return err
+		}
+		dir, err = resolveWorkspaceDir(st, ws)
+		if err != nil {
+			return err
+		}
 	}
-	s.id = id
-	s.history = msgs
-	// 恢复最近会话的项目归属：工作目录跟随（重启后项目会话不漂移到
-	// 后端进程目录）
-	if ws, err := st.WorkspaceOf(id); err != nil {
-		log.Printf("读取会话归属失败（工作目录回退默认）: %v", err)
-	} else {
-		s.workDir = s.resolveWorkspaceDirLocked(ws)
-	}
+	// 全部读取和校验成功后才提交，失败可修复存储后重试。
+	s.st, s.id, s.history, s.workDir = st, id, msgs, dir
+	s.todos, s.pendingWorkspace = nil, ""
 	return nil
 }
 
@@ -581,56 +578,52 @@ func (s *Session) Close() {}
 
 // SwitchNew 结束当前会话（记录保留，可后续 resume），从空历史开始。
 // 生成中/有挂起确认时拒绝——切换会撕裂运行中的工具循环。
-func (s *Session) SwitchNew() (string, error) {
+func (s *Session) SwitchNew(workspace string) (string, error) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := s.switchGuardLocked(); err != nil {
-		s.mu.Unlock()
 		return "", err
 	}
-	s.id = "" // 新会话行懒创建
-	s.history = nil
-	s.todos = nil
-	// 归属与工作目录随会话清空：不带 workspace 的 session.new 回到未分组
-	//（默认目录）。server 的顺序是先 SwitchNew 再按参数 SetWorkspace，
-	// 带归属的 session.new 会随后设回——顺带修掉「上一个项目的归属
-	// 残留到下一个未分组会话」的泄漏。
-	s.pendingWorkspace = ""
-	s.workDir = ""
-	s.mu.Unlock()
+	dir, err := resolveWorkspaceDir(s.st, workspace)
+	if err != nil {
+		return "", err
+	}
+	// 历史、todo 和项目归属必须在同一锁内提交，Send 不能插入两步之间。
+	s.id, s.history, s.todos = "", nil, nil
+	s.pendingWorkspace, s.workDir = workspace, dir
 	return "", nil
 }
 
 // SwitchTo 恢复指定会话：加载其历史并继续追加。当前会话记录保留。
 func (s *Session) SwitchTo(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.st == nil {
 		return errors.New("未启用会话存储")
 	}
-	s.mu.Lock()
 	if err := s.switchGuardLocked(); err != nil {
-		s.mu.Unlock()
 		return err
 	}
 	msgs, err := s.st.Load(id)
 	if err != nil {
-		s.mu.Unlock()
 		return err
 	}
-	s.id, s.history = id, msgs
-	// 恢复归属：工作目录跟随会话的项目根（会话行已存在，懒建路径不会
-	// 再走，pendingWorkspace 清零）
 	ws, err := s.st.WorkspaceOf(id)
 	if err != nil {
-		log.Printf("读取会话归属失败（工作目录回退默认）: %v", err)
-		ws = ""
+		return err
 	}
-	s.pendingWorkspace = ""
-	s.workDir = s.resolveWorkspaceDirLocked(ws)
-	s.mu.Unlock()
+	dir, err := resolveWorkspaceDir(s.st, ws)
+	if err != nil {
+		return err
+	}
+	// 校验完成再提交；todo 尚未持久化，不能沿用上一会话的内存清单。
+	s.id, s.history, s.workDir = id, msgs, dir
+	s.todos, s.pendingWorkspace = nil, ""
 	return nil
 }
 
 // SessionList 列出全部持久会话（无存储模式返回空）。
-func (s *Session) SessionList() []store.SessionMeta {
+func (s *Session) SessionList() []sessiondata.SessionMeta {
 	if s.st == nil {
 		return nil
 	}
@@ -654,7 +647,7 @@ func (s *Session) AttachSessionSearch() {
 			return "", err
 		}
 		// Search 的 max 已被钳制；total 用同值（Search 不超发）
-		return store.FormatSearchHits(hits, len(hits)), nil
+		return sessiondata.FormatSearchHits(hits, len(hits)), nil
 	})
 }
 
