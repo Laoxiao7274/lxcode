@@ -109,7 +109,7 @@ const TOOL_TITLES: Record<string, string> = {
   session_search: "查历史",
   edit: "改文件",
   write_file: "写文件",
-  bash: "跑命令",
+  bash: "bash",
   todo: "任务清单",
 };
 

@@ -713,9 +713,15 @@ body:has(.window-stage) {
   margin-bottom: 6px;
   color: var(--fg-muted);
 }
-/* 工具行排在正文流里（DSH 形态）：与上下文块呼吸 4px */
+/* 工具行排在正文流里（DSH 形态）：与上下文块呼吸——DSH 的 AssistantMarkdown
+ * body 是 gap:16px flex，工具行对齐这个节奏 */
 .thread > .trow {
-  margin: 4px 0;
+  margin: 8px 0 8px;
+}
+/* 思考折叠行（ThinkingReasoning）底部与后续内容的间距收紧——它自带
+ * 4px 0 10px，工具行再有 margin 会叠加出怪异空隙 */
+.thread > .msg:has(+ .trow) {
+  margin-bottom: 6px;
 }
 /* ===== 工具行（lx-dsh ui-tool 逐项对齐：ToolRow/DisclosureRow/StateDot/TerminalBlock） ===== */
 /* 根：纵向 flex（行 + 展开体） */
