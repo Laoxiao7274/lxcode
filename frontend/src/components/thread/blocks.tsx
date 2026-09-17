@@ -96,22 +96,17 @@ export const Block = memo(function Block({ block, onConfirm }: { block: ThreadBl
   }
 });
 
-/** 工具卡：挂载上浮淡入；结果到达（执行中→终端块）再淡入一次。
- *  edit/write_file 渲染代码 diff（Codex 验收形态）；其他工具保持终端块。 */
+/** 工具卡（DSH ToolRow 形态）：折叠摘要行 + 点击展开结果终端块。
+ *  行结构：[状态点] 工具名 · 参数摘要——运行中蓝点+扫光，完成→灰点，
+ *  出错→红点。edit 走 diff 卡（几何对齐 DSH DiffBlock）。 */
 function ToolBlock({ block }: { block: Extract<ThreadBlock, { kind: "tool" }> }) {
   const rootRef = useRef<HTMLDivElement>(null);
-  const resultRef = useRef<HTMLPreElement>(null);
+  const [open, setOpen] = useState(false);
+  const running = block.result === undefined;
 
   useEffect(() => {
     playEnter(rootRef.current);
   }, []);
-
-  const hadResult = useRef(block.result !== undefined);
-  useEffect(() => {
-    if (hadResult.current || block.result === undefined) return;
-    hadResult.current = true;
-    playEnter(resultRef.current, { opacity: 0 }, { opacity: 1, duration: 0.3, ease: "power2.out", clearProps: "opacity" });
-  }, [block.result]);
 
   // JSON 解析只做一次/参数变化（memo(Block) 已挡掉大部分重渲染）
   const { argsSummary, cmdline } = useMemo(
@@ -148,33 +143,41 @@ function ToolBlock({ block }: { block: Extract<ThreadBlock, { kind: "tool" }> })
             <span className="stat-badge stat-del">−{editDiff.old_string.split("\n").length}</span>
             <span className="stat-badge stat-add">+{editDiff.new_string.split("\n").length}</span>
           </span>
-          {block.result === undefined && <span className="tool-open-hint">执行中…</span>}
+          {running && <span className="tool-open-hint">执行中…</span>}
         </div>
-        {block.result !== undefined && (
+        {!running && (
           <DiffBody oldText={editDiff.old_string} newText={editDiff.new_string} />
         )}
       </div>
     );
   }
 
+  // 摘要行：工具名 · 参数摘要（运行中/错误态有专属文案与配色）
+  const summary = running ? "执行中…" : block.isError ? clip(block.result ?? "", 90) : argsSummary;
   return (
-    <div className="tool-block" ref={rootRef}>
-      <div className="tool-head">
-        <span className="ticon" aria-hidden>
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
-          </svg>
-        </span>
+    <div className={"tool-row" + (running ? " running" : "") + (block.isError ? " failed" : "")} ref={rootRef}>
+      <button
+        type="button"
+        className="tool-row-head"
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+        disabled={running}
+      >
+        <span className={"tool-dot" + (running ? " run" : block.isError ? " err" : "")} aria-hidden />
         <span className="tname">{block.name}</span>
-        <span className="targs">{argsSummary}</span>
-      </div>
-      {block.result !== undefined ? (
-        <pre ref={resultRef} className="tool-result" data-error={block.isError ? "true" : undefined}>
+        <span className="tool-sep" aria-hidden />
+        <span className={"tool-summary" + (block.isError ? " err" : "")}>{summary}</span>
+        {!running && (
+          <svg className="tool-chev" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <path d="m9 6 6 6-6 6" />
+          </svg>
+        )}
+      </button>
+      {open && !running && (
+        <pre className="tool-result" data-error={block.isError ? "true" : undefined}>
           <span className="tool-cmdline">{cmdline}{"\n"}</span>
-          {clip(block.result, 1400)}
+          {clip(block.result ?? "", 1400)}
         </pre>
-      ) : (
-        <span className="tool-open-hint">执行中…</span>
       )}
     </div>
   );

@@ -768,37 +768,130 @@ body:has(.window-stage) {
   margin-left: -4px;
   transition: background 120ms;
 }
-.tool-block:hover {
-  background: rgba(0, 0, 0, 0.02);
+/* ===== 工具行（DSH ToolRow 形态）：折叠摘要行 + 展开结果 ===== */
+.tool-row {
+  margin: 2px 0;
 }
-.tool-block:hover .tool-result {
-  border-color: #3a3a3a;
-}
-.tool-head {
+.tool-row-head {
+  position: relative;
+  overflow: hidden;
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--fg-muted);
-  margin-bottom: 4px;
+  gap: 8px;
+  width: 100%;
+  height: 30px;
+  padding: 0 2px;
+  background: transparent;
+  border: none;
+  border-radius: 7px;
+  cursor: pointer;
+  text-align: left;
+  font-family: var(--font-sans);
+  transition: background 100ms;
 }
-.tool-head .ticon {
-  display: inline-flex;
-  color: var(--fg-faint);
+.tool-row-head:hover {
+  background: var(--border-soft);
+}
+.tool-row-head:disabled {
+  cursor: default;
+}
+/* 运行中：蓝色光带从左到右扫过（DSH 的 dsh-tool-row-sweep） */
+.tool-row.running .tool-row-head::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -300px;
+  width: 300px;
+  background: linear-gradient(90deg, transparent 0%, rgba(59, 130, 246, 0.07) 55%, transparent 100%);
+  pointer-events: none;
+  animation: tool-row-sweep 2.6s ease-out infinite;
+}
+@keyframes tool-row-sweep {
+  0% { left: -300px; }
+  90%, 100% { left: 100%; }
+}
+/* 状态点：DSH StateDot——10% 光晕 + 实心核（默认=完成，灰）; */
+.tool-dot {
+  position: relative;
   flex: none;
+  width: 14px;
+  height: 14px;
+  display: inline-block;
+  color: var(--fg-faint);
 }
-.tool-head .tname {
+.tool-dot::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.1;
+}
+.tool-dot::after {
+  content: "";
+  position: absolute;
+  inset: 22%;
+  border-radius: 50%;
+  background: currentColor;
+}
+.tool-dot.run {
+  color: #3b82f6;
+  animation: tool-dot-pulse 2.4s ease-in-out infinite;
+}
+.tool-dot.err {
+  color: var(--danger);
+}
+@keyframes tool-dot-pulse {
+  50% { opacity: 0.45; }
+}
+/* 工具名（mono 恒定） */
+.tool-row-head .tname {
+  font-family: var(--font-mono);
+  font-size: 12px;
   color: var(--fg);
   font-weight: 500;
+  flex: none;
 }
-.tool-head .targs {
-  color: var(--fg-faint);
+/* 2px 分隔点（DSH 的 sep） */
+.tool-sep {
+  flex: none;
+  width: 2px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--fg-faint);
+  opacity: 0.6;
+}
+/* 摘要（ellipsis） */
+.tool-summary {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--fg-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  min-width: 0;
 }
+.tool-summary.err {
+  color: var(--danger);
+}
+/* 展开箭头 */
+.tool-chev {
+  flex: none;
+  color: var(--fg-faint);
+  transition: transform 140ms ease;
+}
+.tool-row-head[aria-expanded="true"] .tool-chev {
+  transform: rotate(90deg);
+}
+.tool-row .tool-result {
+  margin: 2px 0 4px 22px;
+}
+/* edit 工具的 diff 卡头部（沿用） */
+.tool-block.diff-block .diff-file-head .tname {
+  font-family: var(--font-mono);
+}
+/* 展开后的终端块（沿用 .tool-result 底层样式，见下） */
 .tool-result {
   font-family: var(--font-mono);
   font-size: 11px;
@@ -857,14 +950,18 @@ body:has(.window-stage) {
   color: var(--fg-faint);
   margin-top: 14px;
 }
-/* 正文文本：段内换行保留，段落间距由 .md-para 提供（0.6em——
-   不是 pre-wrap 空行的整行高，Codex 的段距） */
+/* 正文文本：段内换行保留，段落间距由 .md-para 提供。
+   中文字体的舒适行高约 1.65（DSH 的 19px 是拉丁优化，中文太挤——
+   用户反馈「字太紧凑」后的校准）；字号跟 .prose 容器 14px。 */
 .md-text {
   white-space: pre-wrap;
   display: block;
+  font-size: 14px;
+  line-height: 1.68;
+  margin-bottom: 2px;
 }
 .md-para {
-  margin-top: 0.6em;
+  margin-top: 0.75em;
 }
 /* 正文逐块淡入：与思考句 tr-sentence-in 同参数（420ms 同曲线），
    每块只在首次挂载播放——已有块文本增长不重挂载。 */
@@ -888,49 +985,51 @@ body:has(.window-stage) {
 @keyframes md-blink {
   50% { opacity: 0; }
 }
-/* ===== markdown 块级元素（标题/列表/引用/分割线/表格） ===== */
+/* ===== markdown 块级元素（标题/列表/引用/分割线/表格） =====
+   字号体系对齐正文 14px：块级元素不再缩小（原来 12.5px 是「紧凑」的主因），
+   层级用字重与尺寸微差表达。 */
 .md-h {
-  margin: 12px 0 4px;
+  margin: 16px 0 6px;
   font-weight: 650;
-  line-height: 1.35;
+  line-height: 1.4;
   color: var(--fg);
 }
-.md-h1 { font-size: 16.5px; }
-.md-h2 { font-size: 15px; }
-.md-h3 { font-size: 13.5px; }
-.md-h4, .md-h5, .md-h6 { font-size: 12.5px; }
+.md-h1 { font-size: 17.5px; }
+.md-h2 { font-size: 16px; }
+.md-h3 { font-size: 14.5px; }
+.md-h4, .md-h5, .md-h6 { font-size: 14px; }
 .md-hr {
   border: none;
   border-top: 1px solid var(--border);
-  margin: 10px 0;
+  margin: 14px 0;
 }
 .md-quote {
-  margin: 6px 0;
-  padding: 2px 0 2px 10px;
+  margin: 8px 0;
+  padding: 4px 0 4px 12px;
   border-left: 2.5px solid var(--border-strong);
   color: var(--fg-muted);
 }
 .md-quote-line {
-  font-size: 12.5px;
-  line-height: 1.5;
+  font-size: 14px;
+  line-height: 1.68;
 }
 .md-list {
-  margin: 4px 0;
+  margin: 6px 0;
 }
 .md-li {
   display: flex;
-  gap: 7px;
-  font-size: 12.5px;
-  line-height: 1.55;
-  padding: 1px 0;
+  gap: 8px;
+  font-size: 14px;
+  line-height: 1.68;
+  padding: 1.5px 0;
 }
 .md-li-marker {
   color: var(--fg-faint);
   flex: none;
   font-family: var(--font-mono);
-  font-size: 10.5px;
-  padding-top: 2.5px;
-  min-width: 16px;
+  font-size: 11.5px;
+  padding-top: 3.5px;
+  min-width: 18px;
 }
 .md-li-text {
   min-width: 0;
@@ -938,18 +1037,19 @@ body:has(.window-stage) {
 /* 表格：横向可滚（宽表不撑破布局），对齐由 inline style 提供 */
 .md-table-wrap {
   overflow-x: auto;
-  margin: 8px 0;
+  margin: 10px 0;
 }
 .md-table {
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: 13px;
 }
 .md-table th,
 .md-table td {
   border: 1px solid var(--border);
-  padding: 4.5px 11px;
+  padding: 6px 12px;
   text-align: left;
   max-width: 380px;
+  line-height: 1.55;
 }
 .md-table th {
   background: var(--border-soft);
@@ -967,9 +1067,9 @@ body:has(.window-stage) {
 }
 .md-code {
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: 12.5px;
   background: var(--border-soft);
-  padding: 1.5px 5px;
+  padding: 2px 5px;
   border-radius: 4px;
 }
 .md-a {
