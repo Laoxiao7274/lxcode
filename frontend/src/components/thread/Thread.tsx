@@ -21,10 +21,13 @@ export function Thread({
   state,
   onConfirm,
   onSuggestion,
+  projectName,
 }: {
   state: UIState;
   onConfirm: (id: string, allow: boolean) => void;
   onSuggestion?: (text: string) => void;
+  /** 新对话空态的归属项目名（选中项目时显示——新会话将建在该项目下）。 */
+  projectName?: string;
 }) {
   const endRef = useRef<HTMLDivElement>(null);
   const emptyRef = useRef<HTMLDivElement>(null);
@@ -137,6 +140,14 @@ export function Thread({
   if (state.blocks.length === 0) {
     return (
       <div className="empty-state" ref={emptyRef}>
+        {projectName && (
+          <div className="empty-project" title={`新会话归属 ${projectName}`}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+            </svg>
+            {projectName}
+          </div>
+        )}
         <h2>我们做点什么？</h2>
         <p>读写代码、改文件、跑命令——高危操作先过你这一关。</p>
         <div className="suggest-grid">

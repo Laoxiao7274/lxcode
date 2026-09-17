@@ -26,6 +26,9 @@ function AppBody({ source }: { source: AgentSource }) {
   // 演示模式 resume 不重放历史，避免"高亮有历史、主区空白"的不一致）
   const [currentId, setCurrentId] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  /** 对话过滤目标（项目 id / ""=未分组 / null=全部）——App 持有：
+   *  侧栏过滤、「新对话」归属、空态项目标签三处共用。 */
+  const [filter, setFilter] = useState<string | null>(null);
 
   // 会话切换事件同步侧栏高亮（与 useAgent 的订阅并行，各管各的）
   useEffect(() => {
@@ -34,6 +37,12 @@ function AppBody({ source }: { source: AgentSource }) {
       if (ev.type === "operationError") setOperationError(ev.message);
     });
   }, [source]);
+
+  // 当前过滤的项目名（""=未分组 → 空态不标——无归属不需要声明）
+  const filterProjectName =
+    filter === null || filter === ""
+      ? undefined
+      : source.projects().find((p) => p.id === filter)?.name;
 
   // 发送时携带请求级参数：effort 只在当前模型声明推理能力时上帧（后端
   // 能力门控会丢弃不匹配档位，不带上帧更诚实）；approval 恒带当前设置。
@@ -61,11 +70,11 @@ function AppBody({ source }: { source: AgentSource }) {
   const app = (
     <div className="app">
       <Topbar taskTitle={currentTitle} source={source} connected={false} />
-      <Sidebar source={source} currentId={currentId} busy={state.busy} onOpenSettings={() => setSettingsOpen(true)} />
+      <Sidebar source={source} currentId={currentId} busy={state.busy} filter={filter} setFilter={setFilter} onOpenSettings={() => setSettingsOpen(true)} />
       <main className="main">
         {errorNotice}
         <div className="thread-scroll">
-          <Thread state={state} onConfirm={handleConfirm} onSuggestion={send} />
+          <Thread state={state} onConfirm={handleConfirm} onSuggestion={send} projectName={filterProjectName} />
         </div>
         <PlanBar todos={state.todos} />
         <Composer busy={state.busy} onSend={sendWithOptions} onCancel={() => source.cancel()} />

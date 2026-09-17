@@ -18,20 +18,22 @@ export function Sidebar({
   source,
   currentId,
   busy,
+  filter,
+  setFilter,
   onOpenSettings,
 }: {
   source: AgentSource;
   currentId: string;
   busy: boolean;
+  /** 对话过滤目标（App 持有——新对话归属提示与空态标签共用）。 */
+  filter: string | null;
+  setFilter: (f: string | null) => void;
   onOpenSettings: () => void;
 }) {
   const [query, setQuery] = useState("");
   const [menuFor, setMenuFor] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
-  /** 对话过滤目标：项目 id / LOOSE（未分组）/ null（全部）。
-   *  「新对话」的归属上下文 = 选中项目（LOOSE/全部 = 无归属新会话）。 */
-  const [filter, setFilter] = useState<string | null>(null);
   const [projectsTick, setProjectsTick] = useState(0); // projectsChanged 事件驱动重读
   const searchRef = useRef<HTMLInputElement>(null);
   const sideRef = useRef<HTMLElement>(null);
