@@ -691,17 +691,18 @@ body:has(.window-stage) {
   from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: none; }
 }
-/* 用户消息：右侧浅灰气泡（Codex webui 的布局语言） */
+/* 用户消息：右侧气泡（DSH MessageItem 同款几何：22px 圆角、10/16 内距、
+ *  70% 最大宽） */
 .msg.user {
   display: flex;
   justify-content: flex-end;
   margin-bottom: 14px;
 }
 .msg.user .bubble {
-  max-width: 78%;
+  max-width: 70%;
   background: #f1f1f3;
-  border-radius: 14px;
-  padding: 9px 14px;
+  border-radius: 22px;
+  padding: 10px 16px;
   font-size: 14px;
   white-space: pre-wrap;
 }
@@ -950,18 +951,19 @@ body:has(.window-stage) {
   color: var(--fg-faint);
   margin-top: 14px;
 }
-/* 正文文本：段内换行保留，段落间距由 .md-para 提供。
-   中文字体的舒适行高约 1.65（DSH 的 19px 是拉丁优化，中文太挤——
-   用户反馈「字太紧凑」后的校准）；字号跟 .prose 容器 14px。 */
+/* 正文文本：段内换行保留。DSH markdown 规范：14px/24px 行高（1.71），
+ * 段落上下 margin 16px（块间呼吸感是它「好看」的核心）。
+ * 流式逐行成块的形态保留（每行一个 p），段距由 .md-para 提供。 */
 .md-text {
   white-space: pre-wrap;
   display: block;
   font-size: 14px;
-  line-height: 1.68;
-  margin-bottom: 2px;
+  line-height: 1.71;
+  margin-bottom: 0;
 }
+/* 连续段落后出现的段落（视觉段距 ≈ DSH 的 16px 段 margin） */
 .md-para {
-  margin-top: 0.75em;
+  margin-top: 1em;
 }
 /* 正文逐块淡入：与思考句 tr-sentence-in 同参数（420ms 同曲线），
    每块只在首次挂载播放——已有块文本增长不重挂载。 */
@@ -985,79 +987,110 @@ body:has(.window-stage) {
 @keyframes md-blink {
   50% { opacity: 0; }
 }
-/* ===== markdown 块级元素（标题/列表/引用/分割线/表格） =====
-   字号体系对齐正文 14px：块级元素不再缩小（原来 12.5px 是「紧凑」的主因），
-   层级用字重与尺寸微差表达。 */
+/* ===== markdown 块级元素（DSH markdown 规范，提取自 lx-dsh 主题 token） =====
+ * 标题：h1 21px/700 · h2 19px/700 · h3 18px/700 · h4 14px/600；
+ * 块间 margin 32px 上 16px 下（标题推开上下文）；表格无线框只有底线
+ * hairline（DSH 表格语言）；列表真实 marker。 */
 .md-h {
-  margin: 16px 0 6px;
-  font-weight: 650;
-  line-height: 1.4;
+  margin: 24px 0 12px;
+  font-weight: 700;
+  line-height: 1.45;
   color: var(--fg);
 }
-.md-h1 { font-size: 17.5px; }
-.md-h2 { font-size: 16px; }
-.md-h3 { font-size: 14.5px; }
-.md-h4, .md-h5, .md-h6 { font-size: 14px; }
+.md-h:first-child {
+  margin-top: 0;
+}
+.md-h1 { font-size: 21px; line-height: 1.43; }
+.md-h2 { font-size: 19px; }
+.md-h3 { font-size: 18px; }
+.md-h4, .md-h5, .md-h6 { font-size: 14px; font-weight: 600; margin: 16px 0 8px; }
 .md-hr {
   border: none;
-  border-top: 1px solid var(--border);
-  margin: 14px 0;
+  height: 0.5px;
+  background: var(--border-strong);
+  margin: 24px 0;
 }
 .md-quote {
-  margin: 8px 0;
-  padding: 4px 0 4px 12px;
-  border-left: 2.5px solid var(--border-strong);
+  margin: 16px 0 0;
+  padding: 0 0 0 14px;
+  border-left: 2px solid var(--fg-faint);
   color: var(--fg-muted);
 }
 .md-quote-line {
   font-size: 14px;
-  line-height: 1.68;
+  line-height: 1.71;
 }
 .md-list {
-  margin: 6px 0;
+  margin: 12px 0;
+  padding-left: 18px;
+  list-style: none;
 }
 .md-li {
   display: flex;
-  gap: 8px;
+  align-items: baseline;
+  gap: 2px;
   font-size: 14px;
-  line-height: 1.68;
-  padding: 1.5px 0;
+  line-height: 1.71;
+  padding: 0 0 0 0;
+}
+.md-li + .md-li {
+  margin-top: 5px;
 }
 .md-li-marker {
-  color: var(--fg-faint);
+  color: var(--fg-muted);
   flex: none;
   font-family: var(--font-mono);
-  font-size: 11.5px;
-  padding-top: 3.5px;
-  min-width: 18px;
+  font-size: 12.5px;
+  padding-right: 7px;
+  min-width: 14px;
+  text-align: right;
 }
 .md-li-text {
   min-width: 0;
 }
-/* 表格：横向可滚（宽表不撑破布局），对齐由 inline style 提供 */
+/* 表格（DSH 语言）：无线框——只有行底 hairline；表头 500 字重无底色；
+ * 首列去左内距（对齐正文左缘）；单元格 max-width 防溢出。 */
 .md-table-wrap {
   overflow-x: auto;
-  margin: 10px 0;
+  margin: 12px 0 16px;
 }
 .md-table {
   border-collapse: collapse;
-  font-size: 13px;
 }
 .md-table th,
 .md-table td {
-  border: 1px solid var(--border);
-  padding: 6px 12px;
+  padding: 9px 14px;
   text-align: left;
-  max-width: 380px;
+  max-width: 320px;
+  border-top: none;
+  border-bottom: 0.5px solid var(--border);
   line-height: 1.55;
 }
+.md-table tr:first-child th {
+  border-top: none;
+}
 .md-table th {
-  background: var(--border-soft);
-  font-weight: 600;
+  font-weight: 500;
+  color: var(--fg);
+}
+.md-table th:first-child,
+.md-table td:first-child {
+  padding-left: 0;
+}
+.md-table td:last-child,
+.md-table th:last-child {
+  padding-right: 0;
+}
+.md-table tbody tr:last-child td {
+  border-bottom: none;
+}
+.md-table td {
+  font-size: 13px;
+  color: var(--fg);
 }
 /* ===== markdown 行内元素 ===== */
 .md-strong {
-  font-weight: 650;
+  font-weight: 600;
 }
 .md-em {
   font-style: italic;
@@ -1067,15 +1100,16 @@ body:has(.window-stage) {
 }
 .md-code {
   font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-size: 0.875em;
   background: var(--border-soft);
-  padding: 2px 5px;
-  border-radius: 4px;
+  border: 0.5px solid var(--border);
+  padding: 0 5px;
+  border-radius: 6px;
 }
 .md-a {
   color: #3b82f6;
   text-decoration: underline;
-  text-underline-offset: 2px;
+  text-underline-offset: 3px;
 }
 /* ===== 设置弹窗（Codex 式：居中模态 + 内部左侧分区导航 + 右侧内容） ===== */
 .settings-view {
