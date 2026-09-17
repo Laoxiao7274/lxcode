@@ -299,13 +299,6 @@ body:has(.window-stage) {
   color: var(--fg-faint);
   flex: none;
 }
-.session-item .live-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #3b82f6;
-  flex: none;
-}
 /* ===== 会话行结构：行内容 + 当前会话的分支展开条 ===== */
 .session-line {
   display: flex;
@@ -315,9 +308,6 @@ body:has(.window-stage) {
 }
 /* 行级轻量状态：无（列表保持干净——完整状态在主区视图） */
 /* 当前会话的分支上下文条已移到输入区上方（.ctx-bar，见 Composer 区样式） */
-.session-item.conflict {
-  box-shadow: inset 2.5px 0 0 #d97706;
-}
 /* ===== 输入区上方的任务计划条（Codex 的 plan 暴露） ===== */
 .plan-bar {
   padding: 0 22px 6px;
@@ -589,13 +579,6 @@ body:has(.window-stage) {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.files-diff-wrap .diff-body {
-  border-radius: 0;
-  border-left: none;
-  border-right: none;
-  border-bottom: none;
-  margin-top: 0;
-}
 /* 会话行 hover ⋯ 与操作菜单 */
 .session-more {
   width: 18px;
@@ -741,13 +724,6 @@ body:has(.window-stage) {
   padding: 10px 16px;
   font-size: 14px;
   white-space: pre-wrap;
-}
-/* 助手消息：左侧普通文本 */
-.msg-role {
-  font-size: 11px;
-  font-weight: 600;
-  margin-bottom: 6px;
-  color: var(--fg-muted);
 }
 /* 工具行排在正文流里（DSH 形态）：与上下文块呼吸——DSH 的 AssistantMarkdown
  * body 是 gap:16px flex，工具行对齐这个节奏 */
@@ -1947,22 +1923,6 @@ body:has(.window-stage) {
 .pop-trigger {
   display: inline-flex;
 }
-.pop-menu {
-  position: absolute;
-  top: calc(100% + 6px);
-  z-index: 40;
-  background: var(--surface);
-  border: 1px solid var(--border-strong);
-  border-radius: 12px;
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.06);
-  padding: 5px;
-  animation: pop-in 160ms cubic-bezier(0.22, 1, 0.36, 1) both;
-}
-/* 向上弹（侧栏底部场景） */
-.pop-menu.up {
-  top: auto;
-  bottom: calc(100% + 6px);
-}
 /* ===== 模型选择器（Codex 式：两个独立浮层面板，错位悬浮） ===== */
 .mp-panel {
   position: absolute;
@@ -2076,49 +2036,6 @@ body:has(.window-stage) {
   text-transform: uppercase;
   letter-spacing: 0.08em;
   padding: 6px 10px 4px;
-}
-.pop-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 7px 10px;
-  font-size: 12.5px;
-  color: var(--fg);
-  background: transparent;
-  border: none;
-  border-radius: 7px;
-  cursor: pointer;
-  text-align: left;
-  font-family: var(--font-sans);
-}
-.pop-item:hover {
-  background: var(--border-soft);
-}
-.pop-item.selected {
-  color: var(--fg);
-  font-weight: 500;
-}
-.pop-item .pop-icon {
-  color: var(--fg-muted);
-  display: inline-flex;
-  flex: none;
-}
-.pop-item .pop-label {
-  flex: 1;
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.pop-item .pop-hint {
-  font-size: 10.5px;
-  color: var(--fg-faint);
-  white-space: nowrap;
-}
-.pop-item .pop-check {
-  color: var(--fg);
-  flex: none;
 }
 .sidebar-empty {
   padding: 10px 14px;
@@ -2458,9 +2375,6 @@ body:has(.window-stage) {
   background: #3b82f6;
   opacity: 1;
   animation: pulse 2.4s ease-in-out infinite;
-}
-.ws-group .session-item {
-  padding-left: 14px;
 }
 .ws-more {
   padding: 4px 14px 4px 32px;

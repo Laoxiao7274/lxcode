@@ -1,11 +1,10 @@
-import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
-import { gsap } from "gsap";
-import type { AgentSource, SessionMeta } from "../../shared/types";
-import { motionAllowed, staggerIn } from "../../shared/motion";
-import { collapseAway, playEnter } from "../../shared/anim";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { staggerIn } from "../../shared/motion";
+import { playEnter } from "../../shared/anim";
 import { useDismissal } from "../../shared/popover";
-import { IconPencil, IconArchive } from "../icons";
+import type { AgentSource } from "../../shared/types";
 import { AddProjectDialog } from "./AddProjectDialog";
+import { SessionRow } from "./SessionRow";
 
 /** 「未分组」过滤目标（无归属会话的家——不依赖真实项目 id）。 */
 const LOOSE = "";
@@ -69,35 +68,13 @@ export function Sidebar({
     }
   }, []);
 
-  // 菜单关闭走 gsap 退场再卸载（直接置 null 是瞬灭，开合不对称）
-  const menuClosingRef = useRef(false);
-  const closeMenu = useCallback(() => {
-    const els = sideRef.current ? Array.from(sideRef.current.querySelectorAll<HTMLElement>(".session-menu")) : [];
-    if (!els.length || !motionAllowed() || menuClosingRef.current) {
-      menuClosingRef.current = false;
-      setMenuFor(null);
-      return;
-    }
-    menuClosingRef.current = true;
-    // 入场 CSS fill:both 结束后仍占住样式，退场前先禁动画让 gsap 接管
-    gsap.set(els, { animation: "none", pointerEvents: "none" });
-    gsap.to(els, {
-      opacity: 0, y: -4, scale: 0.96, transformOrigin: "right top", duration: 0.16, ease: "power2.in", overwrite: true,
-      onComplete: () => { menuClosingRef.current = false; setMenuFor(null); },
-    });
-  }, []);
+  // ⋯ 菜单点外/Esc 关闭（退场动画在 SessionRow 内部）
+  useDismissal(sideRef, !!menuFor, () => setMenuFor(null));
 
-  // ⋯ 菜单点外/Esc 关闭
-  useDismissal(sideRef, !!menuFor, closeMenu);
-
-  const commitRename = (s: SessionMeta, value: string) => {
+  const commitRename = (s: { id: string; title: string }, value: string) => {
     const t = value.trim();
     if (t && t !== s.title) source.renameSession(s.id, t);
     setRenaming(null);
-  };
-
-  const doArchive = (e: ReactMouseEvent, id: string) => {
-    collapseAway((e.currentTarget as HTMLElement).closest(".session-item"), () => source.archiveSession(id));
   };
 
   // 侧栏交错入场：导航项 → 搜索 → 分组标签 → 项目行 → 会话行
@@ -256,73 +233,21 @@ export function Sidebar({
         </span>
       </div>
       {list.slice(0, 8).map((s) => (
-        <div
+        <SessionRow
           key={s.id}
-          ref={enterRow}
-          className={"session-item" + (s.id === currentId ? " active" : "")}
-          style={menuFor === s.id ? { zIndex: 30 } : undefined}
-          onClick={() => !busy && renaming !== s.id && source.resumeSession(s.id)}
-          title={s.title}
-        >
-          <div className="session-line">
-            <span className={"s-dot" + (s.id === currentId && busy ? " live" : "")} aria-hidden />
-            {renaming === s.id ? (
-              <input
-                className="session-rename"
-                autoFocus
-                defaultValue={s.title}
-                aria-label="重命名会话"
-                onClick={(e) => e.stopPropagation()}
-                onPointerDown={(e) => e.stopPropagation()}
-                onBlur={(e) => commitRename(s, e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    commitRename(s, e.currentTarget.value);
-                  }
-                  if (e.key === "Escape") {
-                    e.preventDefault();
-                    setRenaming(null);
-                  }
-                }}
-              />
-            ) : (
-              <span className="title">{s.title}</span>
-            )}
-            <span className="time">{s.updatedAt}</span>
-            {renaming !== s.id && (
-              <button
-                type="button"
-                className="session-more"
-                aria-label="会话操作"
-                onPointerDown={(e) => e.stopPropagation()}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  if (menuFor === s.id) closeMenu();
-                  else setMenuFor(s.id);
-                }}
-              >
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                  <circle cx="5" cy="12" r="1.7" />
-                  <circle cx="12" cy="12" r="1.7" />
-                  <circle cx="19" cy="12" r="1.7" />
-                </svg>
-              </button>
-            )}
-          </div>
-          {menuFor === s.id && (
-            <div className="session-menu" role="menu" onPointerDown={(e) => e.stopPropagation()}>
-              <button type="button" role="menuitem" onClick={() => { closeMenu(); setRenaming(s.id); }}>
-                <IconPencil />
-                重命名
-              </button>
-              <button type="button" role="menuitem" onClick={(e) => { closeMenu(); doArchive(e, s.id); }}>
-                <IconArchive />
-                归档
-              </button>
-            </div>
-          )}
-        </div>
+          session={s}
+          current={s.id === currentId}
+          busy={busy}
+          renaming={renaming === s.id}
+          menuOpen={menuFor === s.id}
+          onOpenMenu={setMenuFor}
+          onCloseMenu={() => setMenuFor(null)}
+          onStartRename={setRenaming}
+          onRename={commitRename}
+          onArchive={(id) => source.archiveSession(id)}
+          onResume={(id) => source.resumeSession(id)}
+          enterRow={enterRow}
+        />
       ))}
       {list.length > 8 && <div className="ws-more">Show more（{list.length - 8}）</div>}
       {list.length === 0 && query.trim() && (
