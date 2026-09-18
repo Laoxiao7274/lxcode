@@ -1,9 +1,10 @@
 // 网页搜索分区（设置）：多渠道 + apikey 配置 + 主渠道。
-// 渠道卡 = 状态（已配置/未配置）+ key 遮罩（内联展开配置/替换）+
-// 主渠道切换；预设渠道不可删；自定义渠道（自建端点）可加可删。
-// 语义：搜索工具默认走主渠道，失败自动降级其它已配置渠道（后端化）。
+// 渠道卡 = 状态（已配置/未配置）+ key 遮罩（内联展开配置/替换——展开
+// 有 gsap 入场）+ 主渠道切换；预设渠道不可删；自定义渠道（自建端点）
+// 可加可删。语义：搜索工具默认走主渠道，失败自动降级其它已配置渠道。
 import { useState } from "react";
 import { isConfigured, maskToken, useSearchProviders, type SearchProvider } from "../../shared/search-providers";
+import { useEnterRef } from "../../shared/anim";
 import { Button, TextInput } from "../form";
 import { IconTrash } from "../icons";
 import { Section } from "./rows";
@@ -15,6 +16,7 @@ function ProviderCard({ p, primary, onSetPrimary }: { p: SearchProvider; primary
   const [keyDraft, setKeyDraft] = useState("");
   const [urlDraft, setUrlDraft] = useState("");
   const [confirming, setConfirming] = useState(false);
+  const editEnter = useEnterRef<HTMLDivElement>();
   const configured = isConfigured(p);
 
   const startEdit = () => {
@@ -70,7 +72,7 @@ function ProviderCard({ p, primary, onSetPrimary }: { p: SearchProvider; primary
         </div>
       )}
       {editing && (
-        <div className="sp-edit">
+        <div className="sp-edit" ref={editEnter}>
           {p.needsKey ? (
             <div className="cg-field">
               <span className="cg-field-label">API Key</span>
@@ -107,15 +109,16 @@ function ProviderCard({ p, primary, onSetPrimary }: { p: SearchProvider; primary
   );
 }
 
-/** 添加自定义渠道表单（自建端点）。 */
+/** 添加自定义渠道表单（自建端点）——挂载入场（useEnterRef）。 */
 function AddCustomForm({ onDone }: { onDone: () => void }) {
   const { addCustom } = useSearchProviders();
   const [name, setName] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
+  const formEnter = useEnterRef<HTMLDivElement>();
   const savable = name.trim() !== "" && baseUrl.trim() !== "";
   return (
-    <div className="sp-card sp-add-form">
+    <div className="sp-card sp-add-form" ref={formEnter}>
       <div className="cg-field">
         <span className="cg-field-label">名称</span>
         <TextInput value={name} onChange={setName} placeholder="如：公司自建搜索" aria-label="渠道名称" />

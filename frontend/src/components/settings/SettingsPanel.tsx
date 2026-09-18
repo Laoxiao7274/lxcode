@@ -42,7 +42,7 @@ export function SettingsPanel({ open, onClose, source }: { open: boolean; onClos
   // 二级弹窗在场时 Escape 归弹窗自己处理
   useEscape(open && !connectOpen && !modelEdit, onClose);
 
-  // 分区切换：内容上浮淡入；模型/归档分区的行列表交错浮现
+  // 分区切换：内容上浮淡入；模型/搜索/归档分区的行列表交错浮现
   useEffect(() => {
     if (!open || !contentRef.current) return;
     const el = contentRef.current;
@@ -50,6 +50,9 @@ export function SettingsPanel({ open, onClose, source }: { open: boolean; onClos
     gsap.fromTo(el, { opacity: 0, y: 10 }, { opacity: 1, y: 0, duration: 0.28, ease: enterEase, clearProps: "transform,opacity" });
     if (section === "models") {
       staggerIn([...el.querySelectorAll(".mset-provider")], { each: 0.06, delay: 0.06 });
+    }
+    if (section === "search") {
+      staggerIn([...el.querySelectorAll(".sp-card")], { each: 0.05, delay: 0.06 });
     }
     if (section === "archived") {
       staggerIn([...el.querySelectorAll(".archived-row")], { each: 0.05, delay: 0.06 });
