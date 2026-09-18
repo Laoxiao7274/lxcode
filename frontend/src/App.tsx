@@ -10,6 +10,7 @@ import { Thread, PlanBar } from "./components/thread";
 import { Composer } from "./components/composer";
 import { SettingsPanel } from "./components/settings";
 import { SettingsProvider, useSettings } from "./shared/settings";
+import { ConnectionsProvider } from "./shared/connections";
 import type { AgentEvent, AgentSource, SendOptions, SessionMeta } from "./shared/types";
 
 export default function App() {
@@ -17,7 +18,9 @@ export default function App() {
   return (
     <SettingsProvider source={source}>
       <AgentsProvider>
-        <AppBody source={source} />
+        <ConnectionsProvider>
+          <AppBody source={source} />
+        </ConnectionsProvider>
       </AgentsProvider>
     </SettingsProvider>
   );

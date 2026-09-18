@@ -1,6 +1,10 @@
+import { useState } from "react";
 import type { AgentSource } from "../../shared/types";
+import { useConnections } from "../../shared/connections";
+import { ConnectionManager } from "../connections/ConnectionManager";
 
-/** 窗口标题栏：左 = 图标 + LxCode + 连接态；右 = 窗口控制（最小化/最大化/关闭）。
+/** 窗口标题栏：左 = 图标 + LxCode + 连接指示器（点击管理连接）；
+ *  右 = 窗口控制（最小化/最大化/关闭）。
  *  拖拽区 = CSS -webkit-app-region: drag（global.css 的 .topbar/.win-btn）；
  *  窗口控制经 Electron preload 桥 __LX__（浏览器模式无桥，按钮无害空操作）。 */
 export function Topbar({
@@ -14,6 +18,9 @@ export function Topbar({
 }) {
   const win = (window as unknown as { __LX__?: { minimize: () => void; toggleMaximize: () => void; close: () => void } }).__LX__;
   const ctrl = (fn?: () => void) => () => fn?.();
+  const { active, remotes } = useConnections();
+  const [mgrOpen, setMgrOpen] = useState(false);
+  const activeName = active === "local" ? "本机" : remotes.find((c) => c.id === active)?.name ?? "远程";
 
   return (
     <header className="topbar">
@@ -21,10 +28,21 @@ export function Topbar({
         <span className="brandMark">L</span>
         <span className="brandName">LxCode</span>
         <span className="tb-sep" />
-        <span className="status">
+        <button
+          type="button"
+          className="conn-pill"
+          data-conn="pill"
+          onClick={() => setMgrOpen(true)}
+          title="连接管理（本机 / 远程后端）"
+          aria-label={`当前连接：${activeName}，打开连接管理`}
+        >
           <span className="pulse-dot" data-off={!connected ? "true" : undefined} />
-          <span>{connected ? "已连接" : source.label}</span>
-        </span>
+          <span className="conn-pill-name">{activeName}</span>
+          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="m6 9 6 6 6-6" />
+          </svg>
+        </button>
+        {!connected && <span className="conn-off-hint">{source.label}</span>}
       </div>
       <span className="task-title">{taskTitle}</span>
       <div className="tb-right">
@@ -44,6 +62,7 @@ export function Topbar({
           </svg>
         </button>
       </div>
+      {mgrOpen && <ConnectionManager onClose={() => setMgrOpen(false)} />}
     </header>
   );
 }

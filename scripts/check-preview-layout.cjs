@@ -515,6 +515,73 @@ app.whenReady().then(async () => {
     log("mc-import-deleted", mcDeleted);
     assert.strictEqual(mcDeleted, 4, "catalog: 删除导入服务器后应回到 4 个");
 
+    // 连接管理：顶栏指示器 → 弹窗 → 远程访问开关 → 地址/token 展示 → 切换远程 → 添加表单
+    const connPill = await win.webContents.executeJavaScript(`(() => {
+      const pill = document.querySelector('[data-conn="pill"]');
+      if (!pill) return { err: "no-pill" };
+      return { ok: true, name: pill.textContent.trim() };
+    })()`);
+    log("conn-pill", JSON.stringify(connPill));
+    assert.ok(connPill.ok, "topbar: 连接指示器应存在 " + JSON.stringify(connPill));
+    assert.ok(connPill.name.includes("本机"), "topbar: 默认连接应显示本机");
+    await win.webContents.executeJavaScript(`document.querySelector('[data-conn="pill"]').click()`);
+    const connMgr = await win.webContents.executeJavaScript(`(() => {
+      const doc = document.querySelector(".ag-doc");
+      if (!doc) return { err: "no-dialog" };
+      return {
+        title: doc.querySelector(".ag-doc-title")?.textContent,
+        local: doc.textContent.includes("127.0.0.1:7789"),
+        ra: !!doc.querySelector(".toggle"),
+      };
+    })()`);
+    log("conn-dialog", JSON.stringify(connMgr));
+    assert.ok(connMgr.title === "连接" && connMgr.local, "topbar: 连接弹窗应含本机 " + JSON.stringify(connMgr));
+    // 开启远程访问 → 地址与 token 展示（遮罩）
+    await win.webContents.executeJavaScript(`(() => {
+      const t = document.querySelector(".ag-doc .toggle");
+      if (t) t.click();
+    })()`);
+    const ra = await win.webContents.executeJavaScript(`(() => {
+      const panel = document.querySelector(".conn-ra-panel");
+      return panel ? {
+        addr: panel.textContent.includes("192.168.1.105:7789"),
+        tokenMasked: !!panel.textContent.match(/[0-9a-f]{4}••••[0-9a-f]{4}/),
+        copyBtns: panel.querySelectorAll(".conn-copy").length,
+      } : { err: "no-panel" };
+    })()`);
+    log("conn-remote-access", JSON.stringify(ra));
+    assert.ok(!ra.err && ra.addr && ra.tokenMasked && ra.copyBtns >= 2, "topbar: 远程访问应展示地址与遮罩 token " + JSON.stringify(ra));
+    // 切换到远程连接（演示种子「公司开发机」）→ 指示器名称跟随
+    const connSwitch = await win.webContents.executeJavaScript(`(() => {
+      const btn = document.querySelector('[data-conn="connect"]');
+      if (!btn) return { err: "no-connect-btn", text: document.querySelector(".ag-doc")?.textContent.slice(0, 80) };
+      btn.click();
+      return { ok: true };
+    })()`);
+    log("conn-switch-click", JSON.stringify(connSwitch));
+    assert.ok(connSwitch.ok, "topbar: 远程连接应有连接按钮 " + JSON.stringify(connSwitch));
+    const pillAfter = await win.webContents.executeJavaScript(`(() => {
+      return {
+        name: document.querySelector('[data-conn="pill"]')?.textContent.trim(),
+        dialogTag: !!document.querySelector(".ag-doc .conn-tag"),
+      };
+    })()`);
+    log("conn-switched", JSON.stringify(pillAfter));
+    assert.ok(pillAfter.name.includes("公司开发机"), "topbar: 指示器应显示当前连接名 " + JSON.stringify(pillAfter));
+    assert.ok(pillAfter.dialogTag, "topbar: 当前连接条目应有标记");
+    // 断开回落本机 → 添加表单（名称/地址/token 三字段）
+    await win.webContents.executeJavaScript(`document.querySelector('[data-conn="disconnect"]').click()`);
+    await win.webContents.executeJavaScript(`document.querySelector('[data-conn="add"]').click()`);
+    const connForm = await win.webContents.executeJavaScript(`(() => {
+      return {
+        fields: document.querySelectorAll(".ag-doc .fd-input").length,
+        save: !!document.querySelector(".ag-doc [data-cg=save], .ag-doc .fd-btn-p"),
+      };
+    })()`);
+    log("conn-add-form", JSON.stringify(connForm));
+    assert.ok(connForm.fields >= 3, "topbar: 添加连接表单应有名称/地址/token 字段");
+    await win.webContents.executeJavaScript(`document.querySelector(".ag-doc-close").click()`);
+
     assert.deepEqual(errors, [], '页面不应出现控制台错误');
     log('PASS: desktop / mobile / shell layout');
     finish(0);
