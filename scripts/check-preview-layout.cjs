@@ -582,6 +582,60 @@ app.whenReady().then(async () => {
     assert.ok(connForm.fields >= 3, "topbar: 添加连接表单应有名称/地址/token 字段");
     await win.webContents.executeJavaScript(`document.querySelector(".ag-doc-close").click()`);
 
+    // 樱花frp 公网穿透：登录（访问密钥）→ 账户流量展示 → 创建隧道 → 公网地址 → 断开 → 删除
+    // （重新打开连接弹窗——remoteAccess 是 Provider 状态，前一步已开启，面板常驻）
+    await win.webContents.executeJavaScript(`document.querySelector('[data-conn="pill"]').click()`);
+    await new Promise((r) => setTimeout(r, 250));
+    const skBefore = await win.webContents.executeJavaScript(`(() => {
+      const doc = document.querySelector(".ag-doc");
+      return doc ? { has: !!doc.querySelector(".conn-sakura") } : { err: "no-dialog" };
+    })()`);
+    log("sakura-block", JSON.stringify(skBefore));
+    assert.ok(skBefore.has, "conn: 远程访问面板应含樱花frp 块");
+    await win.webContents.executeJavaScript(`(() => {
+      const input = document.querySelector(".conn-key-input");
+      if (input) {
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+        setter.call(input, "demo-access-key");
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+    })()`);
+    await win.webContents.executeJavaScript(`document.querySelector('[data-conn="sakura-login"]').click()`);
+    const skLogged = await win.webContents.executeJavaScript(`(() => {
+      const blk = document.querySelector(".conn-sakura");
+      return {
+        loggedIn: blk?.getAttribute("data-on") === "true",
+        traffic: !!blk?.textContent.match(/今日 .+ · 剩余 .+/),
+      };
+    })()`);
+    log("sakura-logged", JSON.stringify(skLogged));
+    assert.ok(skLogged.loggedIn && skLogged.traffic, "conn: 登录后应展示账户流量 " + JSON.stringify(skLogged));
+    await win.webContents.executeJavaScript(`document.querySelector('[data-conn="tunnel-new"]').click()`);
+    const skTunnel = await win.webContents.executeJavaScript(`(() => {
+      const t = document.querySelector(".conn-tunnel");
+      return t ? {
+        name: t.querySelector(".conn-tunnel-name")?.textContent,
+        addr: !!t.querySelector(".conn-cred-value.mono")?.textContent.match(/[a-z0-9.-]+[.]natfrp[.]io:\\d+/),
+        online: t.getAttribute("data-online") === "true",
+      } : { err: "no-tunnel" };
+    })()`);
+    log("sakura-tunnel", JSON.stringify(skTunnel));
+    assert.ok(!skTunnel.err && skTunnel.addr && skTunnel.online, "conn: 创建后应有公网地址与在线态 " + JSON.stringify(skTunnel));
+    await win.webContents.executeJavaScript(`document.querySelector('[data-conn="tunnel-toggle"]').click()`);
+    const skOff = await win.webContents.executeJavaScript(`(() => {
+      const t = document.querySelector(".conn-tunnel");
+      return { online: t.getAttribute("data-online") === "true", label: t.querySelector('[data-conn="tunnel-toggle"]')?.textContent.trim() };
+    })()`);
+    log("sakura-tunnel-off", JSON.stringify(skOff));
+    assert.ok(!skOff.online, "conn: 断开后隧道应离线");
+    await win.webContents.executeJavaScript(`document.querySelector('[data-conn="tunnel-del"]').click()`);
+    await win.webContents.executeJavaScript(`document.querySelector('[data-conn="tunnel-del"]').click()`);
+    const skDeleted = await win.webContents.executeJavaScript(`(() => {
+      return { empty: !!document.querySelector(".conn-sakura-empty") };
+    })()`);
+    log("sakura-tunnel-deleted", JSON.stringify(skDeleted));
+    assert.ok(skDeleted.empty, "conn: 删除后应回到空态");
+
     assert.deepEqual(errors, [], '页面不应出现控制台错误');
     log('PASS: desktop / mobile / shell layout');
     finish(0);

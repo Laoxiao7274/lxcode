@@ -1,9 +1,11 @@
 // 连接管理弹窗：本机（回落默认 + 远程访问开关）+ 远程连接列表 + 添加。
 // 壳的身份 = 连的谁：本机 127.0.0.1:7789 内置；远程连接（地址 + token）
 // 可增删改、一键切换；本机被连 = 开启远程访问后展示地址与 token
-// （遮罩显示，复制/重新生成）。
+// （遮罩显示，复制/重新生成）。公网穿透（樱花frp）：登录 → 自动建
+// 隧道 → 公网连接地址 + 流量/隧道信息（实现文档见
+// docs/sakurafrp-integration.md——原型假数据，API 层后接 v4）。
 import { useRef, useState } from "react";
-import { maskToken, useConnections, type RemoteConn } from "../../shared/connections";
+import { humanBytes, maskToken, useConnections, type RemoteConn } from "../../shared/connections";
 import { useEscape } from "../../shared/popover";
 import { staggerIn } from "../../shared/motion";
 import { useEnterRef } from "../../shared/anim";
@@ -30,6 +32,109 @@ function CopyBtn({ value, label }: { value: string; label: string }) {
     >
       {done ? "已复制" : "复制"}
     </button>
+  );
+}
+
+/** 公网穿透（樱花frp）块：登录（访问密钥）→ 隧道列表（地址/状态/用量）
+ *  + 账户流量。实现文档 docs/sakurafrp-integration.md。 */
+function SakuraBlock() {
+  const { sakura, loginSakura, logoutSakura, tunnels, createTunnel, toggleTunnel, removeTunnel } = useConnections();
+  const [key, setKey] = useState("");
+  const [confirmId, setConfirmId] = useState<number | null>(null);
+  const panelEnter = useEnterRef<HTMLDivElement>();
+
+  // 未登录：密钥输入（用户中心获取访问密钥）
+  if (!sakura) {
+    return (
+      <div className="conn-sakura">
+        <div className="conn-ra-row">
+          <div className="conn-ra-text">
+            <div className="conn-name">公网穿透 · 樱花frp</div>
+            <div className="conn-sub">把后端暴露到公网——任何设备可连（隧道流量双向计费）</div>
+          </div>
+        </div>
+        <div className="conn-sakura-login">
+          <TextInput
+            className="conn-key-input"
+            value={key}
+            onChange={setKey}
+            placeholder="访问密钥（在 natfrp.com 用户中心生成）"
+            aria-label="樱花frp 访问密钥"
+          />
+          <Button variant="primary" data-conn="sakura-login" disabled={key.trim() === ""} onClick={() => loginSakura(key)}>
+            登录
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  const [today, remaining] = sakura.traffic;
+  return (
+    <div className="conn-sakura" data-on="true">
+      <div className="conn-ra-row">
+        <div className="conn-ra-text">
+          <div className="conn-name">
+            公网穿透 · 樱花frp
+            <span className="conn-sakura-user">{sakura.name} · {sakura.group} · {sakura.speed}</span>
+          </div>
+          <div className="conn-sub">
+            今日 {humanBytes(today)} · 剩余 <span className="conn-traffic-left">{humanBytes(remaining)}</span>（隧道流量双向计费）
+          </div>
+        </div>
+        <button type="button" className="conn-copy" data-conn="sakura-logout" onClick={logoutSakura} title="退出登录（清除本机密钥）">
+          退出
+        </button>
+      </div>
+      <div className="conn-ra-panel" ref={panelEnter}>
+        {tunnels.length === 0 ? (
+          <div className="conn-sakura-empty">
+            还没有公网隧道——创建一条，远程设备即可通过公网地址连这个后端。
+          </div>
+        ) : (
+          tunnels.map((t) => (
+            <div className="conn-tunnel" key={t.id} data-online={t.online ? "true" : undefined}>
+              <div className="conn-tunnel-head">
+                <span className="conn-tunnel-name mono">{t.name}</span>
+                <span className={"ag-pill " + (t.online ? "risk-low" : "src")}>{t.online ? "在线" : "已断开"}</span>
+              </div>
+              <div className="conn-cred">
+                <span className="conn-cred-label">地址</span>
+                <span className="conn-cred-value mono">{t.addr}</span>
+                <CopyBtn value={t.addr} label="公网地址" />
+              </div>
+              <div className="conn-cred">
+                <span className="conn-cred-label">节点</span>
+                <span className="conn-cred-value">{t.nodeName} · 负载 {t.load}%</span>
+              </div>
+              <div className="conn-cred">
+                <span className="conn-cred-label">用量</span>
+                <span className="conn-cred-value">{humanBytes(t.used)}</span>
+                <Button variant="ghost" className="conn-tunnel-btn" data-conn="tunnel-toggle" onClick={() => toggleTunnel(t.id)}>
+                  {t.online ? "断开" : "启动"}
+                </Button>
+                <button
+                  type="button"
+                  className={"conn-copy danger" + (confirmId === t.id ? " confirm" : "")}
+                  data-conn="tunnel-del"
+                  onClick={() => {
+                    if (confirmId === t.id) removeTunnel(t.id);
+                    else setConfirmId(t.id);
+                  }}
+                  onBlur={() => setConfirmId(null)}
+                >
+                  {confirmId === t.id ? "确认删除" : "删除"}
+                </button>
+              </div>
+            </div>
+          ))
+        )}
+        <button type="button" className="conn-add" data-conn="tunnel-new" onClick={createTunnel}>
+          + 创建公网隧道
+        </button>
+        <div className="conn-ra-hint">创建 = 自动选节点（负载最低）并分配端口，本地指向 127.0.0.1:7789；删除不连带本机地址。</div>
+      </div>
+    </div>
   );
 }
 
@@ -76,6 +181,7 @@ function RemoteAccessBlock() {
             </button>
           </div>
           <div className="conn-ra-hint">把地址和 Token 给要连你的设备；重置后旧 Token 立即失效。</div>
+          <SakuraBlock />
         </div>
       )}
     </div>

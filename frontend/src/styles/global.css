@@ -352,6 +352,78 @@ body:has(.window-stage) {
   margin-top: 12px;
   line-height: 1.5;
 }
+/* ===== 公网穿透 · 樱花frp（.conn-sakura） ===== */
+.conn-sakura {
+  border-top: 1px dashed var(--border-soft);
+  margin-top: 12px;
+  padding-top: 12px;
+}
+.conn-sakura-login {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+.conn-key-input.fd-input {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.conn-sakura[data-on="true"] .conn-ra-row {
+  margin-bottom: 10px;
+}
+.conn-sakura-user {
+  font-size: 10.5px;
+  font-weight: 400;
+  color: var(--fg-faint);
+}
+.conn-traffic-left {
+  color: var(--success);
+  font-weight: 500;
+}
+.conn-sakura-empty {
+  font-size: 11.5px;
+  color: var(--fg-faint);
+  padding: 6px 0 10px;
+  line-height: 1.5;
+}
+.conn-tunnel {
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  padding: 9px 11px;
+  margin-bottom: 8px;
+  background: var(--surface);
+}
+.conn-tunnel[data-online="true"] {
+  border-color: rgba(16, 163, 127, 0.35);
+}
+.conn-tunnel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.conn-tunnel-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.conn-tunnel-btn.fd-btn-g {
+  padding: 3px 10px;
+  font-size: 10.5px;
+  flex: none;
+}
+.conn-copy.danger {
+  color: var(--danger);
+  border-color: rgba(224, 46, 42, 0.3);
+}
+.conn-copy.danger:hover {
+  border-color: var(--danger);
+}
+.conn-copy.danger.confirm {
+  background: var(--danger);
+  color: #fff;
+  border-color: var(--danger);
+}
 /* ===== 侧栏（Codex 式：品牌 → 新建 → 搜索 → 项目分组 → 底部设置） ===== */
 .sidebar {
   border-right: 1px solid var(--border);
