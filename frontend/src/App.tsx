@@ -37,7 +37,7 @@ export default function App() {
 function AppBody({ source }: { source: AgentSource }) {
   const { state, send, resolve, clearError, reportError } = useAgent(source);
   const { settings, providers } = useSettings();
-  const { resetSessionDelegates } = useAgents();
+  const { resetSessionDelegates, activeAgentId } = useAgents();
   /** 主区视图：对话 / Agent 名单 / 拓展（工具·技能·模板·MCP）。 */
   const [view, setView] = useState<"chat" | "agents" | "catalog">("chat");
   /** 对话过滤目标（项目 id / ""=未分组 / null=全部）——App 持有：
@@ -73,13 +73,14 @@ function AppBody({ source }: { source: AgentSource }) {
       : source.projects().find((p) => p.id === filter)?.name;
 
   // 发送时携带请求级参数：effort 只在当前模型声明推理能力时上帧（后端
-  // 能力门控会丢弃不匹配档位，不带上帧更诚实）；approval 恒带当前设置。
+  // 能力门控会丢弃不匹配档位，不带上帧更诚实）；approval 恒带当前设置；
+  // agent = 当前选用的 Agent（主 Agent 也显式携带——后端按名单语境跑）。
   const sendWithOptions = useCallback((text: string) => {
     const current = providers.flatMap((p) => p.models).find((m) => m.id === settings.model);
-    const opts: SendOptions = { approval: settings.approval };
+    const opts: SendOptions = { approval: settings.approval, agent: activeAgentId };
     if (current && current.efforts.length > 0) opts.effort = settings.effort;
     send(text, opts);
-  }, [providers, settings.model, settings.effort, settings.approval, send]);
+  }, [providers, settings.model, settings.effort, settings.approval, send, activeAgentId]);
 
   // 稳定身份：Thread 的 Block 用 memo，onConfirm 每次新建会击穿它
   const handleConfirm = useCallback((id: string, allow: boolean) => {
@@ -102,7 +103,7 @@ function AppBody({ source }: { source: AgentSource }) {
       <>
         {errorNotice}
         <div className="thread-scroll">
-          <Thread state={state} onConfirm={handleConfirm} onSuggestion={send} projectName={filterProjectName} />
+          <Thread state={state} onConfirm={handleConfirm} onSuggestion={(t) => sendWithOptions(t)} projectName={filterProjectName} />
         </div>
         <PlanBar todos={state.todos} />
         <Composer busy={state.busy} onSend={sendWithOptions} onCancel={() => source.cancel()} />

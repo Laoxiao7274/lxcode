@@ -349,11 +349,16 @@ func TestChatSendParamsRoundTrip(t *testing.T) {
 		}
 	})
 	t.Run("新字段往返", func(t *testing.T) {
-		b := mustMarshal(t, ChatSendParams{Text: "你好", Effort: EffortHigh, Approval: ApprovalStrict})
+		b := mustMarshal(t, ChatSendParams{Text: "你好", Effort: EffortHigh, Approval: ApprovalStrict, Agent: "coder"})
 		var got ChatSendParams
 		mustUnmarshal(t, b, &got)
-		if got.Text != "你好" || got.Effort != EffortHigh || got.Approval != ApprovalStrict {
+		if got.Text != "你好" || got.Effort != EffortHigh || got.Approval != ApprovalStrict || got.Agent != "coder" {
 			t.Fatalf("往返丢字段: %+v", got)
+		}
+		// 旧形状（不带 agent）不产生键
+		b2 := mustMarshal(t, ChatSendParams{Text: "你好"})
+		if strings.Contains(string(b2), `"agent"`) {
+			t.Fatalf("agent 空时不应产生键: %s", b2)
 		}
 	})
 	t.Run("值域校验", func(t *testing.T) {

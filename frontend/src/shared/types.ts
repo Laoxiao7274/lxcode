@@ -95,6 +95,9 @@ export interface SendOptions {
   effort?: string;
   /** 权限模式：auto 高危自动 / confirm 高危确认（默认）/ strict 只读。 */
   approval?: "auto" | "confirm" | "strict";
+  /** 执行 Agent 的名单 id（空 = 主 Agent——后端按 Agent 四层组合提示词、
+   *  模型绑定与工具白名单跑这一轮）。 */
+  agent?: string;
 }
 
 /**

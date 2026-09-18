@@ -32,6 +32,13 @@ const (
 // StreamFn 是 LLM 调用的抽象缝（单测注入假实现，不碰网络）。
 type StreamFn func(ctx context.Context, m config.ModelConfig, msgs []llm.Message, opts []llm.Option) (<-chan llm.StreamEvent, error)
 
+// AgentResolver 按名单 id 解析 Agent 装配载荷（四层组合的输入）。
+// 消费方定义的接口（server 从 store 注入——agent 不 import store，
+// 分层规则同 Persistence）。返回 ok=false 表示名单里没有该 id。
+type AgentResolver interface {
+	Resolve(agentID string) (*sessiondata.AgentContext, bool)
+}
+
 // 哨兵错误：服务端按类别映射协议错误码（errors.Is 判断，不做字符串匹配）。
 var (
 	// ErrBusy 会话正在生成中（Send/切换会话被拒）。
@@ -42,6 +49,10 @@ var (
 	ErrNoDefaultModel = errors.New("default 模型未配置")
 	// ErrModelDisabled default 模型已停用。
 	ErrModelDisabled = errors.New("default 模型已停用")
+	// ErrAgentNotFound 指定的 Agent 不在名单中。
+	ErrAgentNotFound = errors.New("Agent 不存在")
+	// ErrAgentDisabled 指定的 Agent 已停用（不可选用）。
+	ErrAgentDisabled = errors.New("Agent 已停用")
 )
 
 // Emitter 是事件出口：内核把类型化事件推给宿主（CLI 打印 / 壳渲染）。
@@ -75,6 +86,9 @@ type Session struct {
 	// 目录）。工具的相对路径、bash 默认目录与系统提示词的工作目录说明
 	// 都以它为准——每轮开始时快照进 ctx（tools.WithWorkDir）。
 	workDir string
+	// agents 是名单解析器（M2 上下文组装——nil = 无 Agent 语境，走
+	// 全局默认提示词；server 装配时从 store 注入）。
+	agents AgentResolver
 }
 
 // New 创建会话；emit 为 nil 时事件被丢弃（单测可只调方法）。
@@ -91,6 +105,40 @@ func New(reg *config.Registry, toolReg *tools.Registry, emit Emitter) *Session {
 		s.emit(TodoUpdatedEvent{Items: items})
 	})
 	return s
+}
+
+// SetAgentResolver 挂载名单解析器（M2 上下文组装；server 装配时注入，
+// nil 已挂时是 no-op——幂等）。挂载后 Send 默认走主 Agent 语境。
+func (s *Session) SetAgentResolver(r AgentResolver) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.agents == nil {
+		s.agents = r
+	}
+}
+
+// agentToolsOf 取 Agent 的工具白名单（nil = 无白名单语义——不过滤）。
+func agentToolsOf(ac *sessiondata.AgentContext) []string {
+	if ac == nil {
+		return nil
+	}
+	return ac.Def.Tools
+}
+
+// llmToolsFiltered 按白名单过滤 wire 声明（nil = 全量——旧语境）。
+func llmToolsFiltered(toolReg *tools.Registry, allow []string) []llm.Tool {
+	all := toolReg.LLMTools()
+	if allow == nil {
+		return all
+	}
+	allowed := toolSet(allow)
+	out := make([]llm.Tool, 0, len(allow))
+	for _, t := range all {
+		if allowed[t.Name] {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // SetEmitter 替换事件出口（宿主构造晚于 Session 时接线用）。
@@ -134,6 +182,7 @@ type SendOpt func(*sendConfig)
 type sendConfig struct {
 	effort   string // 推理强度（空 = 模型默认）
 	approval string // 权限模式（空 = confirm）
+	agentID  string // Agent 名单 id（空 = 主语境——无 resolver 时旧语义）
 }
 
 // WithEffort 指定本轮推理强度（模型须声明 reasoning 能力才真正生效）。
@@ -142,23 +191,100 @@ func WithEffort(e string) SendOpt { return func(c *sendConfig) { c.effort = e } 
 // WithApproval 指定本轮工具执行的权限模式（空/未指定 = confirm）。
 func WithApproval(a string) SendOpt { return func(c *sendConfig) { c.approval = a } }
 
+// WithAgent 指定本轮的执行 Agent（名单 id；空 = 旧语境——全局默认
+// 提示词与 default 角色模型，兼容不接名单的调用方/单测）。
+func WithAgent(id string) SendOpt { return func(c *sendConfig) { c.agentID = id } }
+
+// resolveAgent 解析本轮 Agent 载荷。agentID 空 + 无 resolver = nil
+// （旧语境）；agentID 空 + 有 resolver = 主 Agent；agentID 非空但
+// 名单没有 = 哨兵错误。停用的 Agent 不可选用。
+// 过渡护栏（M3 前）：主 Agent 的白名单是 agent.dispatch——工具还没
+// 注册时上下文退化为旧语境（全局默认提示词），否则白名单会拒绝一切。
+func (s *Session) resolveAgent(agentID string) (*sessiondata.AgentContext, error) {
+	if s.agents == nil {
+		return nil, nil // 无名单语境（旧调用方/单测——全部旧语义）
+	}
+	if agentID == "" {
+		agentID = "main" // 默认主 Agent（名单语境下空 = 主）
+	}
+	ac, ok := s.agents.Resolve(agentID)
+	if !ok {
+		return nil, fmt.Errorf("%w: %s", ErrAgentNotFound, agentID)
+	}
+	if !ac.Def.Enabled {
+		return nil, fmt.Errorf("%w: %s", ErrAgentDisabled, ac.Def.Name)
+	}
+	if whitelistInert(s.tools, ac.Def.Tools) {
+		return nil, nil // 主 Agent 白名单全未注册（M3 前）——旧语境过渡
+	}
+	return ac, nil
+}
+
+// whitelistInert 白名单是否完全不含已注册工具（M3 前 agent.dispatch
+// 未落地时主 Agent 的白名单就是这种——按旧语境跑，不拒绝一切）。
+func whitelistInert(toolReg *tools.Registry, allow []string) bool {
+	if allow == nil {
+		return false
+	}
+	for _, n := range allow {
+		if _, ok := toolReg.Get(n); ok {
+			return false
+		}
+	}
+	return true
+}
+
+// modelFor 按 Agent 绑定取模型（绑定优先，回落 default 角色）；
+// 无 Agent 语境走 default 角色（旧语义）。
+func (s *Session) modelFor(ac *sessiondata.AgentContext) (config.ModelConfig, error) {
+	if ac != nil && ac.Def.Model != "" {
+		m, ok := s.reg.Get(ac.Def.Model)
+		if !ok {
+			return config.ModelConfig{}, fmt.Errorf("Agent 绑定的模型 %s 不存在（编辑该 Agent 换绑或先在设置里添加模型）", ac.Def.Model)
+		}
+		if !m.Enabled {
+			return config.ModelConfig{}, fmt.Errorf("%w: %s（Agent 绑定）", ErrModelDisabled, m.ID)
+		}
+		return m, nil
+	}
+	m, err := s.reg.ModelForRole(config.RoleDefault)
+	if err != nil {
+		return config.ModelConfig{}, fmt.Errorf("%w: %w", ErrNoDefaultModel, err)
+	}
+	if !m.Enabled {
+		return config.ModelConfig{}, fmt.Errorf("%w: %s", ErrModelDisabled, m.ID)
+	}
+	return m, nil
+}
+
+// effectiveApproval 权限取严：请求级 > Agent 默认 > confirm。
+// 子 Agent 的执行面不大于请求方的授权面（M3 dispatch 会再取严一层）。
+func effectiveApproval(requested, agentDefault string) string {
+	if requested != "" {
+		return requested
+	}
+	if agentDefault != "" {
+		return agentDefault
+	}
+	return "confirm"
+}
+
 // Send 发起一轮对话（异步）：校验模型 → 入历史 → 后台跑工具循环。
 // 忙时返回 ErrBusy；模型未绑定/停用返回对应哨兵（服务端按类别映射错误码）。
 func (s *Session) Send(text string, opts ...SendOpt) error {
 	if text == "" {
 		return errors.New("text 不能为空")
 	}
-	m, err := s.reg.ModelForRole(config.RoleDefault)
-	if err != nil {
-		return fmt.Errorf("%w: %w", ErrNoDefaultModel, err)
-	}
-	if !m.Enabled {
-		return fmt.Errorf("%w: %s", ErrModelDisabled, m.ID)
-	}
-
 	var cfg sendConfig
 	for _, o := range opts {
 		o(&cfg)
+	}
+	ac, err := s.resolveAgent(cfg.agentID)
+	if err != nil {
+		return err
+	}
+	if _, err := s.modelFor(ac); err != nil {
+		return err // 快速失败（模型缺失在入历史前拒绝——不留半截轮次）
 	}
 
 	s.mu.Lock()
@@ -170,17 +296,26 @@ func (s *Session) Send(text string, opts ...SendOpt) error {
 	userMsg := llm.Message{Role: "user", Content: text}
 	s.history = append(s.history, userMsg)
 	s.persistLocked(userMsg)
-	// 权限模式随轮携带（ctx 注入，一轮内不变）；effort 走 sendConfig
-	// 传给 streamRound（由模型能力决定是否转成 llm 选项）。
+	// 权限模式随轮携带（请求级 > Agent 默认 > confirm——取严语义）；
+	// Agent 载荷与白名单进 runTurn（每轮快照，busy 期间不可变）。
+	approval := effectiveApproval(cfg.approval, agentDefaultOf(ac))
 	ctx, cancel := context.WithCancel(context.Background())
-	ctx = tools.WithApproval(ctx, tools.Approval(cfg.approval))
+	ctx = tools.WithApproval(ctx, tools.Approval(approval))
 	s.cancel = cancel
 	s.mu.Unlock()
 
 	s.emit(UserMsgEvent{Message: userMsg})
 	s.emit(BusyEvent{Busy: true})
-	go s.runTurn(ctx, cfg)
+	go s.runTurn(ctx, cfg, ac)
 	return nil
+}
+
+// agentDefaultOf 取 Agent 的权限默认（nil 安全）。
+func agentDefaultOf(ac *sessiondata.AgentContext) string {
+	if ac == nil {
+		return ""
+	}
+	return ac.Def.Approval
 }
 
 // Cancel 取消当前生成（aborted 语义：已生成部分保留入历史）。
@@ -225,7 +360,8 @@ func (s *Session) Todos() []tools.TodoItem {
 
 // runTurn 跑完整一轮：流式生成 → 工具调用 → 确认 → 执行 → 回填续轮。
 // 文件改动（edit/write_file）被收集，轮末汇总发 FilesChangedEvent（产物视图）。
-func (s *Session) runTurn(ctx context.Context, cfg sendConfig) {
+// ac 是本轮 Agent 载荷（nil = 旧语境——全局默认提示词与 default 模型）。
+func (s *Session) runTurn(ctx context.Context, cfg sendConfig, ac *sessiondata.AgentContext) {
 	// 快照工作目录并注入工具执行（busy 期间不可变——切换与归属入口
 	// 都有 busy 守卫，这是单会话架构下的一致性来源）：项目会话的相对
 	// 路径、bash 默认目录、确认门解析基准全部对齐项目根。
@@ -249,7 +385,7 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig) {
 	}()
 
 	for round := 0; round < maxToolRounds; round++ {
-		res, err := s.streamRound(ctx, workDir, cfg.effort)
+		res, err := s.streamRound(ctx, workDir, cfg.effort, ac)
 		if err != nil {
 			aborted := errors.Is(err, context.Canceled) || ctx.Err() != nil
 			note := err.Error()
@@ -273,7 +409,7 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig) {
 		if len(res.Message.ToolCalls) == 0 {
 			return
 		}
-		if !s.runTools(ctx, res.Message.ToolCalls, &fileChanges) {
+		if !s.runTools(ctx, res.Message.ToolCalls, &fileChanges, ac) {
 			return // 取消
 		}
 	}
@@ -286,8 +422,10 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig) {
 // workDir 是本轮快照的会话工作目录（系统提示词里的工作目录说明用它）。
 // effort 是本轮请求的推理强度（模型须声明 reasoning 能力才转成 LLM 选项——
 // 对不支持的端点传参会直接 400，能力门控是硬需求）。
-func (s *Session) streamRound(ctx context.Context, workDir, effort string) (*llm.ChatResult, error) {
-	m, err := s.reg.ModelForRole(config.RoleDefault)
+// ac 是本轮 Agent 载荷（nil = 旧语境）：模型绑定优先 + 四层组合提示词
+// + 工具白名单过滤。
+func (s *Session) streamRound(ctx context.Context, workDir, effort string, ac *sessiondata.AgentContext) (*llm.ChatResult, error) {
+	m, err := s.modelFor(ac)
 	if err != nil {
 		return nil, err
 	}
@@ -298,12 +436,20 @@ func (s *Session) streamRound(ctx context.Context, workDir, effort string) (*llm
 	if effort != "" && m.Capabilities.Reasoning {
 		opts = append(opts, llm.WithEffort(effort))
 	}
-	// 快照：快照后新消息（若有）不影响本轮请求
+	// 快照：快照后新消息（若有）不影响本轮请求。提示词按 Agent 四层
+	// 组合（nil = 全局默认）；工具 wire 声明按白名单过滤。
+	allow := agentToolsOf(ac)
 	s.mu.Lock()
-	msgs := append([]llm.Message{{Role: "system", Content: BuildSystemPrompt(s.tools, workDir)}}, s.history...)
+	var prompt string
+	if ac != nil {
+		prompt = ComposeSystemPrompt(s.tools, workDir, ac, allow)
+	} else {
+		prompt = BuildSystemPrompt(s.tools, workDir)
+	}
+	msgs := append([]llm.Message{{Role: "system", Content: prompt}}, s.history...)
 	s.mu.Unlock()
 
-	opts = append([]llm.Option{llm.WithTools(s.tools.LLMTools())}, opts...)
+	opts = append([]llm.Option{llm.WithTools(llmToolsFiltered(s.tools, allow))}, opts...)
 	ch, err := s.stream(ctx, m, msgs, opts)
 	if err != nil {
 		return nil, err
@@ -362,12 +508,24 @@ func (s *Session) streamRound(ctx context.Context, workDir, effort string) (*llm
 //   - auto 完全访问：高危跳过确认门
 //   - confirm（默认）：高危先确认（现行语义）
 //
+// Agent 白名单之外的调用直接拒绝（错误自解释——模型看到的工具清单
+// 已按白名单过滤，正常不会越界；这里是防御层）。
 // 返回 false 表示被取消。fileChanges 收集文件改动供轮末产物汇总。
-func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChanges *[]FileChange) bool {
+func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChanges *[]FileChange, ac *sessiondata.AgentContext) bool {
 	policy := tools.ApprovalFrom(ctx)
+	allowed := toolSet(agentToolsOf(ac))
 	for _, tc := range calls {
 		if ctx.Err() != nil {
 			return false
+		}
+		// 白名单防御：清单外的工具拒绝（ac 非 nil 才有白名单语义）
+		if allowed != nil && !allowed[tc.Function.Name] {
+			reject := fmt.Sprintf(
+				"错误: 工具 %s 不在本 Agent 的白名单内（可用: %s）。如需该能力，请让用户在 Agent 组装里勾选。",
+				tc.Function.Name, strings.Join(agentToolsOf(ac), ", "))
+			s.append(llm.Message{Role: "tool", ToolCallID: tc.ID, Content: reject})
+			s.emit(ToolResultEvent{ID: tc.ID, Name: tc.Function.Name, Content: reject, IsError: true})
+			continue
 		}
 		// strict：变更类工具拒绝（不进确认门——只读模式没有"确认放行"语义；
 		// 错误信息自解释，模型可换读取类工具或向用户说明）。

@@ -100,6 +100,8 @@ const (
 	CodeModelDisabled  = 1002 // default 模型已停用
 	CodeBusy           = 1003 // 会话正在生成中
 	CodeNoPending      = 1004 // 没有待确认的工具调用
+	CodeAgentNotFound  = 1005 // Agent 不在名单中
+	CodeAgentDisabled  = 1006 // Agent 已停用
 )
 
 // Request / Response 是 JSON-RPC 2.0 帧。
@@ -198,7 +200,8 @@ const (
 type ChatSendParams struct {
 	Text     string `json:"text"`
 	Effort   string `json:"effort,omitempty"`   // 推理强度（可选；模型须声明 reasoning 能力才生效）
-	Approval string `json:"approval,omitempty"` // 权限模式（可选；空 = confirm）
+	Approval string `json:"approval,omitempty"` // 权限模式（可选；空 = Agent 默认/confirm）
+	Agent    string `json:"agent,omitempty"`    // 执行 Agent 的名单 id（可选；空 = 主 Agent/旧语境）
 }
 
 // ValidateEffort 校验 effort 值域（空串合法 = 不指定）。

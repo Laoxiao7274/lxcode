@@ -17,6 +17,7 @@ import (
 	"github.com/moyunteng/lxcode/internal/config"
 	"github.com/moyunteng/lxcode/internal/project"
 	"github.com/moyunteng/lxcode/internal/protocol"
+	"github.com/moyunteng/lxcode/internal/sessiondata"
 	"github.com/moyunteng/lxcode/internal/store"
 	"github.com/moyunteng/lxcode/internal/tools"
 )
@@ -68,10 +69,66 @@ func (s *Server) Session() *agent.Session { return s.sess }
 
 // AttachSessionStore 挂载会话存储并恢复最近会话（main 装配时、监听前调用）。
 // 同时接线 session_search 工具——JSONL 格式归 store 包所有，工具层只拿函数。
+// M2：同时挂载 Agent 名单解析器（四层组合的输入——server 从 store 解析
+// AgentContext：名单条目 + workflow/skills 模块 + 有效委派名单）。
 func (s *Server) AttachSessionStore(st *store.Store) error {
 	s.st = st
 	s.sess.AttachSessionSearch()
+	s.sess.SetAgentResolver(&storeAgentResolver{st: st})
 	return s.sess.EnablePersistence(st)
+}
+
+// storeAgentResolver 实现 agent.AgentResolver：从 store 解析四层组合的
+// 全部输入（分层规则：agent 不 import store——经接口注入）。
+type storeAgentResolver struct {
+	st *store.Store
+}
+
+func (r *storeAgentResolver) Resolve(agentID string) (*sessiondata.AgentContext, bool) {
+	agents, err := r.st.ListAgents()
+	if err != nil {
+		return nil, false
+	}
+	var def *sessiondata.AgentDef
+	for i := range agents {
+		if agents[i].ID == agentID {
+			def = &agents[i]
+			break
+		}
+	}
+	if def == nil {
+		return nil, false
+	}
+	mods, _ := r.st.ListModules()
+	ac := &sessiondata.AgentContext{Def: *def}
+	for i := range mods {
+		if def.Workflow == mods[i].ID {
+			m := mods[i]
+			ac.Workflow = &m
+		}
+		if containsStr(def.Skills, mods[i].ID) {
+			ac.Skills = append(ac.Skills, mods[i])
+		}
+	}
+	// 主 Agent 的默认委派名单（有效 = 默认 ∩ 启用；会话级覆盖是前端
+	// UI 态——协议接入时覆盖名单随 chat.send 计算，M3 dispatch 前够用）
+	if def.IsMain {
+		for i := range agents {
+			if containsStr(def.Delegates, agents[i].ID) && agents[i].Enabled {
+				ac.Delegates = append(ac.Delegates, agents[i])
+			}
+		}
+	}
+	return ac, true
+}
+
+func containsStr(list []string, s string) bool {
+	for _, x := range list {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }
 
 // emitEvent 把内核 typed 事件映射成协议事件并广播。
@@ -260,6 +317,9 @@ func (s *Server) dispatch(req *protocol.Request) *protocol.Response {
 		if p.Approval != "" {
 			sendOpts = append(sendOpts, agent.WithApproval(p.Approval))
 		}
+		if p.Agent != "" {
+			sendOpts = append(sendOpts, agent.WithAgent(p.Agent))
+		}
 		if err := s.sess.Send(p.Text, sendOpts...); err != nil {
 			return protocol.NewError(req.ID, errorCode(err), err.Error())
 		}
@@ -380,6 +440,10 @@ func errorCode(err error) int {
 		return protocol.CodeModelDisabled
 	case errors.Is(err, agent.ErrPendingConfirm):
 		return protocol.CodeBusy // 挂起确认占着会话，语义同忙
+	case errors.Is(err, agent.ErrAgentNotFound):
+		return protocol.CodeAgentNotFound
+	case errors.Is(err, agent.ErrAgentDisabled):
+		return protocol.CodeAgentDisabled
 	default:
 		return protocol.CodeInvalidParams
 	}

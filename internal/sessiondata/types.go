@@ -97,3 +97,15 @@ type McServerSpec struct {
 	Enabled   bool
 	Custom    bool
 }
+
+// AgentContext 是一次对话的 Agent 装配载荷（M2 上下文组装的输入）：
+// 四层组合所需的全部数据由消费方（server 从 store）解析好传入——
+// agent 内核不 import store（分层规则）。
+type AgentContext struct {
+	Def      AgentDef     // 名单条目（含模型绑定/工具白名单/审批默认/提示词）
+	Workflow *ModuleSpec  // 流程模块（单选；nil = 无）
+	Skills   []ModuleSpec // 技能模块（多选注入）
+	// Delegates 是有效委派名单（主 Agent 的动态注入层：会话覆盖 ?? 默认
+	// ∩ 启用——取严逻辑在服务端解析，内核只拿结果）。
+	Delegates []AgentDef
+}
