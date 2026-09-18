@@ -1,16 +1,19 @@
 // 目录管理页：工具 / 技能 / 模板 三类可插拔目录的浏览、查看与自建。
-// 技能/模板：新建/编辑走弹窗（ModuleEditor）+ 导入（固定格式 v1）+
-// 导出下载（自建条目分享）；工具：导入（粘贴/选文件）——可执行承载
-// 随后端化接插件机制。页签切目录（Segmented），条目卡网格；
+// 三类统一：新建/编辑走表单弹窗（不让人写 JSON）+ 导入（固定格式 v1
+// 的文件/粘贴——分发通道）+ 导出下载（自建条目分享）。工具的可执行
+// 承载随后端化接插件机制。页签切目录（Segmented），条目卡网格；
 // 点卡片开文档弹窗。
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { blankModule, useAgents, type ContextModuleSpec, type ToolSpec } from "../../shared/agents";
-import { downloadJson, serializeModuleExport } from "../../shared/module-import";
+import { downloadJson } from "../../shared/download";
+import { serializeModuleExport } from "../../shared/module-import";
+import { serializeToolExport } from "../../shared/tool-import";
 import { staggerIn } from "../../shared/motion";
 import { Button, Segmented } from "../form";
 import { DocDialog, type Focus } from "./DocDialog";
 import { ModuleEditor } from "./ModuleEditor";
 import { ModuleImportDialog } from "./ModuleImportDialog";
+import { ToolEditor } from "./ToolEditor";
 import { ToolImportDialog } from "./ToolImportDialog";
 import { IconDownload, IconPencil, IconTrash } from "../icons";
 
@@ -80,9 +83,10 @@ function EntryCard({
   );
 }
 
-function ToolCard({ tool, onOpen, onDelete }: {
+function ToolCard({ tool, onOpen, onEdit, onDelete }: {
   tool: ToolSpec;
   onOpen: () => void;
+  onEdit?: () => void;
   onDelete?: () => void;
 }) {
   return (
@@ -102,6 +106,7 @@ function ToolCard({ tool, onOpen, onDelete }: {
         </>
       }
       meta={tool.params && tool.params.length > 0 ? `${tool.params.length} 参数` : undefined}
+      onEdit={onEdit}
       onDelete={onDelete}
     />
   );
@@ -131,10 +136,11 @@ function ModuleCard({ mod, onOpen, onEdit, onDelete }: {
 }
 
 export function CatalogPage() {
-  const { modules, addModule, updateModule, removeModule, tools, addTools, removeTool } = useAgents();
+  const { modules, addModule, updateModule, removeModule, tools, addTools, updateTool, removeTool } = useAgents();
   const [tab, setTab] = useState<Tab>("tools");
   const [focus, setFocus] = useState<Focus | null>(null);
   const [editing, setEditing] = useState<{ mod: ContextModuleSpec; isNew: boolean } | null>(null);
+  const [editingTool, setEditingTool] = useState<{ tool: ToolSpec; isNew: boolean } | null>(null);
   const [importing, setImporting] = useState<"tools" | "modules" | null>(null);
   const gridRef = useRef<HTMLDivElement>(null);
 
@@ -150,6 +156,7 @@ export function CatalogPage() {
   const moduleTabKind = tab === "templates" ? "process" : "skill";
   const customOfTab = (tab === "templates" ? templates : skills).filter((m) => m.custom);
   const moduleTabName = tab === "templates" ? "模板" : "技能";
+  const customTools = tools.filter((t) => t.custom);
 
   const tabs = [
     { value: "tools" as const, label: `工具 · ${tools.length}`, hint: "内置与第三方工具" },
@@ -161,6 +168,10 @@ export function CatalogPage() {
     if (customOfTab.length === 0) return;
     downloadJson(`lxcode-${tab}.json`, serializeModuleExport(customOfTab));
   };
+  const exportTools = () => {
+    if (customTools.length === 0) return;
+    downloadJson("lxcode-tools.json", serializeToolExport(customTools));
+  };
 
   return (
     <div className="cg-page">
@@ -171,14 +182,32 @@ export function CatalogPage() {
         </div>
         <div className="cg-head-actions">
           {tab === "tools" ? (
-            <Button variant="primary" data-cg="import" onClick={() => setImporting("tools")}>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <path d="M12 3v12" />
-                <path d="m7 10 5 5 5-5" />
-                <path d="M5 21h14" />
-              </svg>
-              导入工具
-            </Button>
+            <>
+              {customTools.length > 0 && (
+                <Button variant="ghost" data-cg="export-tools" onClick={exportTools} title={`下载 ${customTools.length} 个自定义工具（v1 JSON——可分享导入）`}>
+                  <IconDownload />
+                  导出
+                </Button>
+              )}
+              <Button variant="ghost" data-cg="import" onClick={() => setImporting("tools")}>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M12 3v12" />
+                  <path d="m7 10 5 5 5-5" />
+                  <path d="M5 21h14" />
+                </svg>
+                导入
+              </Button>
+              <Button
+                variant="primary"
+                data-cg="new"
+                onClick={() => setEditingTool({ tool: { id: "", desc: "", risk: "low", source: "binary" }, isNew: true })}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true">
+                  <path d="M12 5v14M5 12h14" />
+                </svg>
+                新建工具
+              </Button>
+            </>
           ) : (
             <>
               {customOfTab.length > 0 && (
@@ -210,7 +239,7 @@ export function CatalogPage() {
         </div>
       </div>
       {tab === "tools" && (
-        <div className="cg-new-note">导入 = 粘贴或选择文件（固定格式 v1 的 JSON，弹窗内有示例）；自定义工具的可执行承载随后端化接插件机制。</div>
+        <div className="cg-new-note">单个工具用「新建工具」表单；导入/导出是分发通道（固定格式 v1 的 JSON 文件）；自定义工具的可执行承载随后端化接插件机制。</div>
       )}
       <div className="cg-tabs">
         <Segmented options={tabs} value={tab} onChange={setTab} ariaLabel="目录页签" />
@@ -221,6 +250,7 @@ export function CatalogPage() {
             key={t.id}
             tool={t}
             onOpen={() => setFocus({ kind: "tool", id: t.id })}
+            onEdit={t.custom ? () => setEditingTool({ tool: t, isNew: false }) : undefined}
             onDelete={t.custom ? () => removeTool(t.id) : undefined}
           />
         ))}
@@ -244,6 +274,19 @@ export function CatalogPage() {
         ))}
       </div>
       {focus && <DocDialog focus={focus} onClose={() => setFocus(null)} />}
+      {editingTool && (
+        <ToolEditor
+          key={editingTool.tool.id || "new"}
+          initial={editingTool.tool}
+          isNew={editingTool.isNew}
+          onCancel={() => setEditingTool(null)}
+          onSave={(saved) => {
+            if (editingTool.isNew) addTools([saved]);
+            else updateTool(saved);
+            setEditingTool(null);
+          }}
+        />
+      )}
       {editing && (
         <ModuleEditor
           key={editing.mod.id || "new"}

@@ -447,10 +447,11 @@ interface AgentsValue {
   addModule: (mod: ContextModuleSpec) => void;
   updateModule: (mod: ContextModuleSpec) => void;
   removeModule: (id: string) => void;
-  /** 工具目录（运行时状态：内置+第三方种子 + 导入条目）。
+  /** 工具目录（运行时状态：内置+第三方种子 + 导入/表单创建条目）。
    *  导入走固定格式 v1（shared/tool-import.ts 的 parseToolImport 校验）。 */
   tools: ToolSpec[];
   addTools: (tools: ToolSpec[]) => void;
+  updateTool: (tool: ToolSpec) => void;
   removeTool: (id: string) => void;
 }
 
@@ -484,6 +485,10 @@ export function AgentsProvider({ children }: { children: ReactNode }) {
     [],
   );
   const addTools = useCallback((list: ToolSpec[]) => setTools((cur) => [...cur, ...list]), []);
+  const updateTool = useCallback(
+    (tool: ToolSpec) => setTools((cur) => cur.map((t) => (t.id === tool.id ? tool : t))),
+    [],
+  );
   const removeTool = useCallback(
     (id: string) => setTools((cur) => cur.filter((t) => t.id !== id)),
     [],
@@ -495,13 +500,13 @@ export function AgentsProvider({ children }: { children: ReactNode }) {
       activeAgentId, setActiveAgentId,
       sessionDelegates, setSessionDelegates, resetSessionDelegates,
       modules, addModule, updateModule, removeModule,
-      tools, addTools, removeTool,
+      tools, addTools, updateTool, removeTool,
     }),
     [
       agents, addAgent, updateAgent, removeAgent,
       activeAgentId, sessionDelegates, resetSessionDelegates,
       modules, addModule, updateModule, removeModule,
-      tools, addTools, removeTool,
+      tools, addTools, updateTool, removeTool,
     ],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

@@ -68,20 +68,9 @@ export function ToolImportDialog({
         </div>
         <div className="ag-doc-body">
           <div className="ti-note">
-            固定格式 v1 · id 目录内唯一 · risk 取 low/high · source 取 builtin/binary/mcp——校验通过后作为「自定义」条目入目录。
+            单个工具用「新建工具」表单；导入用于批量/分发——固定格式 v1，选择文件或在下方粘贴。
           </div>
-          <Textarea
-            className="ti-input"
-            value={text}
-            onChange={(v) => {
-              setText(v);
-              setError(null);
-            }}
-            placeholder='粘贴 JSON…（{"version":1,"tools":[…]}）'
-            ariaLabel="导入内容"
-          />
-          {error && <div className="ag-warn" role="alert">{error}</div>}
-          <div className="ti-actions">
+          <div className="ti-actions ti-actions-lead">
             <input
               ref={fileRef}
               type="file"
@@ -93,7 +82,7 @@ export function ToolImportDialog({
                 e.target.value = "";
               }}
             />
-            <Button variant="ghost" data-cg="pick-file" onClick={() => fileRef.current?.click()}>
+            <Button variant="primary" data-cg="pick-file" onClick={() => fileRef.current?.click()}>
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M13 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V10Z" />
                 <path d="M13 3v7h7" />
@@ -116,6 +105,17 @@ export function ToolImportDialog({
               <pre>{FORMAT_EXAMPLE}</pre>
             </div>
           )}
+          <Textarea
+            className="ti-input"
+            value={text}
+            onChange={(v) => {
+              setText(v);
+              setError(null);
+            }}
+            placeholder="选择文件后在此预览——也可直接粘贴 JSON"
+            ariaLabel="导入内容"
+          />
+          {error && <div className="ag-warn" role="alert">{error}</div>}
           <div className="ag-edit-actions ti-foot">
             <Button variant="ghost" onClick={onClose}>
               取消

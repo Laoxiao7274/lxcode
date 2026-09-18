@@ -82,3 +82,23 @@ export function parseToolImport(text: string, existingIds: Set<string>): ToolImp
   }
   return { ok: true, tools: out };
 }
+
+/** 序列化为导出文件（v1 固定格式；只导出用户自建条目——内置是种子）。
+ *  与 parseToolImport 对称——导出的文件可直接再导入（分发通道）。 */
+export function serializeToolExport(tools: ToolSpec[]): string {
+  return JSON.stringify(
+    {
+      version: 1,
+      tools: tools.map((t) => ({
+        id: t.id,
+        desc: t.desc,
+        risk: t.risk,
+        source: t.source,
+        ...(t.params && t.params.length > 0 ? { params: t.params } : {}),
+        ...(t.doc ? { doc: t.doc } : {}),
+      })),
+    },
+    null,
+    2,
+  );
+}

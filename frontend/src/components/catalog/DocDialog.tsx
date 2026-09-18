@@ -1,12 +1,39 @@
 // 文档弹窗：目录条目（工具/上下文模块）完整文档的阅读视图。
 // 从组装编辑器抽出复用——目录管理页点条目直接开弹窗（浏览场景没有
 // 侧栏紧凑预览，两级详情是编辑器的组装语境）。
-import { useAgents } from "../../shared/agents";
+import { useAgents, type ToolSpec } from "../../shared/agents";
 import { Markdown } from "../../shared/markdown";
 import { useEscape } from "../../shared/popover";
 
 /** 文档焦点的指向（工具 / 上下文模块）。 */
 export type Focus = { kind: "tool" | "module"; id: string };
+
+/** 工具文档体（详情摘要 + 参数表 + markdown 文档）——DocDialog 与
+ *  工具编写器的实时预览共用同一渲染。 */
+export function ToolDocBody({ tool }: { tool: ToolSpec }) {
+  return (
+    <>
+      <div className="ag-detail-desc">{tool.desc}</div>
+      {tool.params && tool.params.length > 0 && (
+        <div className="ag-detail-params">
+          <div className="ag-detail-params-label">参数</div>
+          {tool.params.map((p) => (
+            <div className="ag-param" key={p.name} title={p.desc ?? ""}>
+              <span className="ag-param-name">{p.name}</span>
+              <span className="ag-param-type">{p.type}</span>
+              {p.required && <span className="ag-param-req">必填</span>}
+            </div>
+          ))}
+        </div>
+      )}
+      {tool.doc && (
+        <div className="ag-detail-md">
+          <Markdown text={tool.doc} />
+        </div>
+      )}
+    </>
+  );
+}
 
 export function DocDialog({ focus, onClose }: { focus: Focus; onClose: () => void }) {
   useEscape(true, onClose);
@@ -47,26 +74,7 @@ export function DocDialog({ focus, onClose }: { focus: Focus; onClose: () => voi
         </div>
         <div className="ag-doc-body">
           {tool ? (
-            <>
-              <div className="ag-detail-desc">{tool.desc}</div>
-              {tool.params && tool.params.length > 0 && (
-                <div className="ag-detail-params">
-                  <div className="ag-detail-params-label">参数</div>
-                  {tool.params.map((p) => (
-                    <div className="ag-param" key={p.name} title={p.desc ?? ""}>
-                      <span className="ag-param-name">{p.name}</span>
-                      <span className="ag-param-type">{p.type}</span>
-                      {p.required && <span className="ag-param-req">必填</span>}
-                    </div>
-                  ))}
-                </div>
-              )}
-              {tool.doc && (
-                <div className="ag-detail-md">
-                  <Markdown text={tool.doc} />
-                </div>
-              )}
-            </>
+            <ToolDocBody tool={tool} />
           ) : mod ? (
             <>
               <div className="ag-detail-desc">{mod.desc}</div>

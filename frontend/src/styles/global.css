@@ -4120,10 +4120,99 @@ body:has(.window-stage) {
   gap: 12px;
   margin-top: 10px;
 }
+/* 主导动作行（导入弹窗顶部——选择文件是主路径，粘贴只是兜底） */
+.ti-actions-lead {
+  margin-top: 0;
+  margin-bottom: 10px;
+}
 .ti-file-hidden {
   display: none;
 }
-/* 模块编写器：id 等宽、正文加高、预览盒 */
+/* 工具编写器：参数动态行 + 文档输入 */
+.te-param {
+  margin-bottom: 8px;
+  padding: 8px 10px 9px;
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  background: var(--bg-side);
+}
+.te-param-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.te-param-name {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 6px 8px;
+}
+.te-param-type {
+  width: 84px;
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 6px 8px;
+}
+.te-param-req {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  flex: none;
+  cursor: pointer;
+  user-select: none;
+}
+.te-param-req input {
+  accent-color: var(--fg);
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  cursor: pointer;
+}
+.te-param-del {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex: none;
+  color: var(--fg-faint);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.te-param-del:hover {
+  color: var(--danger);
+  background: rgba(224, 46, 42, 0.08);
+}
+.te-param-desc {
+  margin-top: 6px;
+  font-size: 12px;
+  padding: 6px 8px;
+}
+.te-param-add {
+  align-self: flex-start;
+  font-size: 12px;
+  color: var(--fg-muted);
+  background: transparent;
+  border: 1px dashed var(--border-strong);
+  border-radius: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-family: var(--font-sans);
+  margin-top: 2px;
+}
+.te-param-add:hover {
+  color: var(--fg);
+  border-color: var(--fg-muted);
+}
+.te-doc {
+  min-height: 150px;
+}
 .cg-id-input {
   font-family: var(--font-mono);
 }

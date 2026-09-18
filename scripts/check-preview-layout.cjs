@@ -388,6 +388,53 @@ app.whenReady().then(async () => {
     log("module-import-deleted", afterModDel);
     assert.strictEqual(afterModDel, 3, "catalog: 删除导入模块后应回到 3 个条目");
 
+    // 工具编写器（表单生成，不写 JSON）：切回工具页签 → 新建 → 表单 → 保存（10→11）→ 删除回 10
+    await win.webContents.executeJavaScript(`(() => {
+      const btns = document.querySelectorAll(".cg-tabs .seg-btn");
+      btns[0].click();
+    })()`);
+    await win.webContents.executeJavaScript(`(() => {
+      const btn = document.querySelector('[data-cg="new"]');
+      if (!btn) throw new Error("新建工具入口缺失");
+      btn.click();
+    })()`);
+    const toolEd = await win.webContents.executeJavaScript(`(() => {
+      return {
+        form: !!document.querySelector(".ag-form"),
+        idInput: !!document.querySelector("#cg-tool-id"),
+        save: !!document.querySelector('[data-cg="save"]'),
+      };
+    })()`);
+    log("tool-editor", JSON.stringify(toolEd));
+    assert.ok(toolEd.form && toolEd.idInput && toolEd.save, "catalog: 新建应打开工具编写器");
+    await win.webContents.executeJavaScript(`(() => {
+      const el = document.querySelector("#cg-tool-id");
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+      setter.call(el, "smoke-form-tool");
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    })()`);
+    await win.webContents.executeJavaScript(`(() => {
+      const el = [...document.querySelectorAll("input.fd-input")].find((i) => i.placeholder.includes("一句话说明"));
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+      setter.call(el, "表单生成的冒烟工具");
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    })()`);
+    await win.webContents.executeJavaScript(`document.querySelector('[data-cg="save"]').click()`);
+    const afterToolCreate = await win.webContents.executeJavaScript(`(() => {
+      return {
+        cards: document.querySelectorAll(".cg-card").length,
+        dlgClosed: !document.querySelector(".ag-doc"),
+      };
+    })()`);
+    log("tool-form-created", JSON.stringify(afterToolCreate));
+    assert.strictEqual(afterToolCreate.cards, 11, "catalog: 表单保存后工具应有 11 个条目");
+    assert.ok(afterToolCreate.dlgClosed, "catalog: 保存后编写器应收起");
+    await win.webContents.executeJavaScript(`document.querySelector('[data-cg="del"]').click()`);
+    await win.webContents.executeJavaScript(`document.querySelector('[data-cg="del"]').click()`);
+    const afterToolFormDel = await win.webContents.executeJavaScript(`document.querySelectorAll(".cg-card").length`);
+    log("tool-form-deleted", afterToolFormDel);
+    assert.strictEqual(afterToolFormDel, 10, "catalog: 删除表单工具后应回到 10 个条目");
+
     assert.deepEqual(errors, [], '页面不应出现控制台错误');
     log('PASS: desktop / mobile / shell layout');
     finish(0);
