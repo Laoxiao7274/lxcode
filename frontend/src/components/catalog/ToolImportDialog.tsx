@@ -5,6 +5,7 @@ import { useAgents, type ToolSpec } from "../../shared/agents";
 import { parseToolImport } from "../../shared/tool-import";
 import { useEscape } from "../../shared/popover";
 import { Button, Textarea } from "../form";
+import { IconChevronDown } from "../icons";
 
 const FORMAT_EXAMPLE = `{
   "version": 1,
@@ -28,6 +29,7 @@ export function ToolImportDialog({
   useEscape(true, onClose);
   const [text, setText] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [showFormat, setShowFormat] = useState(true);
   const { tools } = useAgents();
 
   const submit = () => {
@@ -57,12 +59,8 @@ export function ToolImportDialog({
           </button>
         </div>
         <div className="ag-doc-body">
-          <div className="ag-detail-note">
-            固定格式 v1——id 目录内唯一；risk 取 low/high；source 取 builtin/binary/mcp。
-            导入条目作为「自定义」加入目录（Agent 组装即时可选），后端化后同一格式做插件分发。
-          </div>
-          <div className="ti-format">
-            <pre>{FORMAT_EXAMPLE}</pre>
+          <div className="ti-note">
+            固定格式 v1 · id 目录内唯一 · risk 取 low/high · source 取 builtin/binary/mcp——校验通过后作为「自定义」条目入目录。
           </div>
           <Textarea
             className="ti-input"
@@ -71,10 +69,25 @@ export function ToolImportDialog({
               setText(v);
               setError(null);
             }}
-            placeholder="粘贴 JSON…"
+            placeholder='粘贴 JSON…（{"version":1,"tools":[…]}）'
             ariaLabel="导入内容"
           />
           {error && <div className="ag-warn" role="alert">{error}</div>}
+          <button
+            type="button"
+            className="ti-format-toggle"
+            data-open={showFormat}
+            aria-expanded={showFormat}
+            onClick={() => setShowFormat((v) => !v)}
+          >
+            格式示例
+            <IconChevronDown size={10} />
+          </button>
+          {showFormat && (
+            <div className="ti-format">
+              <pre>{FORMAT_EXAMPLE}</pre>
+            </div>
+          )}
           <div className="ag-edit-actions ti-foot">
             <Button variant="ghost" onClick={onClose}>
               取消

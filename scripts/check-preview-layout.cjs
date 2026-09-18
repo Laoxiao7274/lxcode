@@ -333,7 +333,7 @@ app.whenReady().then(async () => {
     })()`);
     // 摘要也是必填（chips 的 tooltip——Agent 靠它判断何时用）
     await win.webContents.executeJavaScript(`(() => {
-      const el = [...document.querySelectorAll("input.fd-input")].find((i) => i.placeholder.includes("摘要"));
+      const el = [...document.querySelectorAll("input.fd-input")].find((i) => i.placeholder.includes("Agent 靠它"));
       const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
       setter.call(el, "冒烟模板——校验自建链路");
       el.dispatchEvent(new Event("input", { bubbles: true }));

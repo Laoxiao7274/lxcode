@@ -9,8 +9,8 @@ import { Markdown } from "../../shared/markdown";
 import { Button, TextInput, Textarea } from "../form";
 
 const KIND_LABEL: Record<ContextModuleSpec["kind"], { name: string; hint: string }> = {
-  process: { name: "模板", hint: "工作方式——Agent 单选注入（缺合适的就补一个完整模板，不拼装）" },
-  skill: { name: "技能", hint: "领域知识与方法——Agent 多选注入" },
+  process: { name: "模板", hint: "工作方式 · Agent 单选注入" },
+  skill: { name: "技能", hint: "领域知识与方法 · Agent 多选注入" },
 };
 
 export function ModuleEditor({
@@ -62,29 +62,34 @@ export function ModuleEditor({
         <div className="ag-form">
           <section className="ag-sec">
             <div className="ag-sec-title">基本信息</div>
-            <div className="ag-id-row">
+            <div className="cg-field">
+              <span className="cg-field-label">id</span>
               <TextInput
                 id="cg-mod-id"
                 className="cg-id-input"
                 value={mod.id}
                 onChange={(v) => set("id", v)}
-                placeholder="id（如：deploy-checklist）"
+                placeholder="如：deploy-checklist（目录内唯一）"
                 aria-label="模块 id"
               />
+              {idTaken && <div className="ag-warn">id 已存在——目录条目的 id 必须唯一。</div>}
             </div>
-            {idTaken && <div className="ag-warn">id 已存在——目录条目的 id 必须唯一。</div>}
-            <div className="ag-chip-label">类型</div>
-            <div className="ag-locked">
-              <span className="ag-lock-name">{KIND_LABEL[mod.kind].name}</span>
-              <span className="ag-lock-desc">{KIND_LABEL[mod.kind].hint}——类型由入口定死，创建模板/技能分开口。</span>
+            <div className="cg-field">
+              <span className="cg-field-label">摘要</span>
+              <TextInput
+                value={mod.desc}
+                onChange={(v) => set("desc", v)}
+                placeholder="Agent 靠它判断何时用——chips 的 tooltip 与卡片副文"
+                aria-label="摘要"
+              />
             </div>
-            <div className="ag-chip-label">摘要</div>
-            <TextInput
-              value={mod.desc}
-              onChange={(v) => set("desc", v)}
-              placeholder="一句话摘要（chips 的 tooltip 与卡片副文——Agent 靠它判断何时用）"
-              aria-label="摘要"
-            />
+            <div className="cg-field">
+              <span className="cg-field-label">类型</span>
+              <div className="cg-type-row">
+                <span className="ag-pill src">{KIND_LABEL[mod.kind].name}</span>
+                <span className="cg-type-hint">{KIND_LABEL[mod.kind].hint}</span>
+              </div>
+            </div>
           </section>
 
           <section className="ag-sec">
