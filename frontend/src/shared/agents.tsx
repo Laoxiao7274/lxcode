@@ -196,6 +196,28 @@ export const THIRD_PARTY_TOOLS: ToolSpec[] = [
     ],
     doc: "MCP 文件系统服务（跨进程）。\n\nop 枚举 read / list / write；写操作高危——走确认门。",
   },
+  {
+    id: "mcp:web-search",
+    desc: "MCP 网页检索服务——公网搜索与摘要",
+    risk: "low",
+    source: "mcp",
+    params: [
+      { name: "query", type: "string", required: true, desc: "检索词" },
+      { name: "limit", type: "int", desc: "结果条数上限" },
+    ],
+    doc: "MCP 网页检索服务。\n\n公网搜索 + 结果摘要；只读无副作用——低危自动执行。",
+  },
+  {
+    id: "mcp:sqlite",
+    desc: "MCP SQLite 服务——会话库之外的独立数据查询",
+    risk: "low",
+    source: "mcp",
+    params: [
+      { name: "db", type: "string", required: true, desc: "数据库文件路径" },
+      { name: "sql", type: "string", required: true, desc: "只读查询" },
+    ],
+    doc: "MCP SQLite 服务。\n\n只读查询通道（SELECT）；写操作走后端自己的存储——不共用。",
+  },
 ];
 
 /** 上下文模块目录条目：可插拔的上下文块——流程（工作方式规范，如

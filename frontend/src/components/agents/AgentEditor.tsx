@@ -176,16 +176,19 @@ export function AgentEditor({
     });
   }
 
-  // Chips 的载荷（工具/上下文模块——名称在面上，说明进 tooltip；
-  // 工具来自目录状态——导入条目即时出现在这里，自定义单独分组）
-  const customToolIds = new Set(tools.filter((t) => t.custom).map((t) => t.id));
-  const toolChips = tools.map((t) => ({
+  // Chips 的载荷（工具/上下文模块——名称在面上，说明进 tooltip）；
+  // 工具按来源分组（内置 / 第三方 / MCP / 自定义）——MCP 是独立接入通道，
+  // 与外部二进制分开展示；组内操作同一个白名单（def.tools）
+  const toToolChip = (t: { id: string; desc: string; risk: "low" | "high" }) => ({
     value: t.id,
     label: t.id,
     desc: `${t.desc}（${t.risk === "high" ? "高危" : "低危"}）`,
     highRisk: t.risk === "high",
-  }));
-  const customToolChips = toolChips.filter((c) => customToolIds.has(c.value));
+  });
+  const builtinToolChips = tools.filter((t) => !t.custom && t.source === "builtin").map(toToolChip);
+  const binaryToolChips = tools.filter((t) => !t.custom && t.source === "binary").map(toToolChip);
+  const mcpToolChips = tools.filter((t) => !t.custom && t.source === "mcp").map(toToolChip);
+  const customToolChips = tools.filter((t) => t.custom).map(toToolChip);
   // 上下文模块 chips 载荷（目录状态——自建条目即时出现在这里）
   const toModuleChip = (m: { id: string; desc: string; kind: "process" | "skill" }) => ({
     value: m.id,
@@ -279,13 +282,39 @@ export function AgentEditor({
             ) : (
               <>
                 <Chips
-                  options={toolChips.filter((c) => !customToolIds.has(c.value))}
+                  options={builtinToolChips}
                   value={def.tools}
                   onChange={(tools) => set("tools", tools)}
                   focusedValue={focus?.kind === "tool" ? focus.id : null}
                   onFocus={(id) => setFocus({ kind: "tool", id })}
-                  ariaLabel="内置与第三方工具"
+                  ariaLabel="内置工具"
                 />
+                {binaryToolChips.length > 0 && (
+                  <>
+                    <div className="ag-chip-label">第三方 / 插件</div>
+                    <Chips
+                      options={binaryToolChips}
+                      value={def.tools}
+                      onChange={(tools) => set("tools", tools)}
+                      focusedValue={focus?.kind === "tool" ? focus.id : null}
+                      onFocus={(id) => setFocus({ kind: "tool", id })}
+                      ariaLabel="第三方工具"
+                    />
+                  </>
+                )}
+                {mcpToolChips.length > 0 && (
+                  <>
+                    <div className="ag-chip-label">MCP</div>
+                    <Chips
+                      options={mcpToolChips}
+                      value={def.tools}
+                      onChange={(tools) => set("tools", tools)}
+                      focusedValue={focus?.kind === "tool" ? focus.id : null}
+                      onFocus={(id) => setFocus({ kind: "tool", id })}
+                      ariaLabel="MCP 工具"
+                    />
+                  </>
+                )}
                 {customToolChips.length > 0 && (
                   <>
                     <div className="ag-chip-label">自定义</div>

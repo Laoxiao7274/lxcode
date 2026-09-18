@@ -244,7 +244,7 @@ app.whenReady().then(async () => {
     })()`);
     log("catalog-page", JSON.stringify(cat));
     assert.ok(cat.page && cat.page.h > 300, "catalog: 目录页应可见");
-    assert.ok(cat.cards >= 10, "catalog: 工具页签应有 10 个条目");
+    assert.ok(cat.cards >= 12, "catalog: 工具页签应有 12 个条目");
     assert.ok(cat.navOn, "catalog: 导航应高亮");
     // 工具导入：坏 JSON → 错误内联；合法 JSON → 入目录（10→11）→ 两步删除回 10
     await win.webContents.executeJavaScript(`document.querySelector('[data-cg="import"]').click()`);
@@ -279,13 +279,13 @@ app.whenReady().then(async () => {
       };
     })()`);
     log("tool-imported", JSON.stringify(afterImport));
-    assert.strictEqual(afterImport.cards, 11, "catalog: 导入后工具应有 11 个条目");
+    assert.strictEqual(afterImport.cards, 13, "catalog: 导入后工具应有 13 个条目");
     assert.ok(afterImport.del, "catalog: 导入条目应有删除入口");
     await win.webContents.executeJavaScript(`document.querySelector('[data-cg="del"]').click()`);
     await win.webContents.executeJavaScript(`document.querySelector('[data-cg="del"]').click()`);
     const afterToolDel = await win.webContents.executeJavaScript(`document.querySelectorAll(".cg-card").length`);
     log("tool-import-deleted", afterToolDel);
-    assert.strictEqual(afterToolDel, 10, "catalog: 删除导入条目后应回到 10 个");
+    assert.strictEqual(afterToolDel, 12, "catalog: 删除导入条目后应回到 12 个");
     await win.webContents.executeJavaScript(`document.querySelector(".cg-card").click()`);
     const catDoc = await win.webContents.executeJavaScript(`(() => {
       const el = document.querySelector(".ag-doc");
@@ -427,13 +427,13 @@ app.whenReady().then(async () => {
       };
     })()`);
     log("tool-form-created", JSON.stringify(afterToolCreate));
-    assert.strictEqual(afterToolCreate.cards, 11, "catalog: 表单保存后工具应有 11 个条目");
+    assert.strictEqual(afterToolCreate.cards, 13, "catalog: 表单保存后工具应有 13 个条目");
     assert.ok(afterToolCreate.dlgClosed, "catalog: 保存后编写器应收起");
     await win.webContents.executeJavaScript(`document.querySelector('[data-cg="del"]').click()`);
     await win.webContents.executeJavaScript(`document.querySelector('[data-cg="del"]').click()`);
     const afterToolFormDel = await win.webContents.executeJavaScript(`document.querySelectorAll(".cg-card").length`);
     log("tool-form-deleted", afterToolFormDel);
-    assert.strictEqual(afterToolFormDel, 10, "catalog: 删除表单工具后应回到 10 个条目");
+    assert.strictEqual(afterToolFormDel, 12, "catalog: 删除表单工具后应回到 12 个条目");
 
     assert.deepEqual(errors, [], '页面不应出现控制台错误');
     log('PASS: desktop / mobile / shell layout');

@@ -159,7 +159,7 @@ export function CatalogPage() {
   const customTools = tools.filter((t) => t.custom);
 
   const tabs = [
-    { value: "tools" as const, label: `工具 · ${tools.length}`, hint: "内置与第三方工具" },
+    { value: "tools" as const, label: `工具 · ${tools.length}`, hint: "内置、第三方与 MCP 工具" },
     { value: "skills" as const, label: `技能 · ${skills.length}`, hint: "领域知识与方法（多选注入）" },
     { value: "templates" as const, label: `模板 · ${templates.length}`, hint: "工作方式模板（单选注入）" },
   ];
