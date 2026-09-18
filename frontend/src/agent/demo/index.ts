@@ -249,15 +249,54 @@ export class DemoAgent implements AgentSource {
             content: "ok  github.com/moyunteng/lxcode/internal/agent\t1.204s\nPASS",
           });
           this.emit({ type: "todoUpdated", items: TODO_LATER });
+          this.runDispatch();
           this.streamAnswer();
         } else {
           this.emit({
             type: "toolResult", id: "c2", name: "bash", isError: true,
             content: "用户拒绝执行。已改用读测试源码核对的方式验证。",
           });
+          this.runDispatch();
           this.streamAnswer(true);
         }
       };
+    });
+  }
+
+  /** 主 Agent 调度子 Agent 的演示轮（agent.dispatch——M3 形态）：
+   *  主 Agent 说了句「派代码 Agent 去做」→ dispatch 卡（子上下文隔离——
+   *  子执行的思考/工具行/回复全部挂在卡内）→ 结果回填。 */
+  private runDispatch() {
+    const d = "d1";
+    // 主 Agent 的调度话术（主时间线先说一句——「我派代码 Agent 去做」）
+    this.at(200, () => this.emit({ type: "delta", kind: "text", text: "我派**代码 Agent**去收尾验证，稍等。\n\n" }));
+    this.at(900, () => {
+      this.emit({
+        type: "dispatchStart", dispatchId: d, agentId: "coder", agentName: "代码 Agent",
+        agentColor: "#3b82f6",
+        task: "跑 internal/agent 的测试并确认超时兜底改动没有回归（验收：全绿或列出失败项）",
+      });
+    });
+    // 子 Agent 执行（子上下文——全部带 dispatchId，挂进卡内）
+    this.at(2100, () => this.emit({ type: "delta", kind: "reasoning", text: "测试刚才已经跑过一轮是绿的……直接跑包全量确认。\n", dispatchId: d }));
+    this.at(3000, () => {
+      this.emit({
+        type: "toolCall", dispatchId: d, id: "d-c1", name: "bash",
+        arguments: JSON.stringify({ command: "go test ./internal/agent/ -count=1" }),
+      });
+    });
+    this.at(4400, () => {
+      this.emit({
+        type: "toolResult", dispatchId: d, id: "d-c1", name: "bash", isError: false,
+        content: "ok  github.com/moyunteng/lxcode/internal/agent\t2.081s\nPASS",
+      });
+    });
+    this.at(5200, () => this.emit({ type: "delta", kind: "text", text: "全量绿了，没有回归。", dispatchId: d }));
+    this.at(6100, () => {
+      this.emit({
+        type: "dispatchEnd", dispatchId: d, isError: false, usageTokens: 730,
+        result: "internal/agent 全量测试通过（2.081s，无回归）——超时兜底改动安全。",
+      });
     });
   }
 

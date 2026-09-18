@@ -9,10 +9,12 @@ import { TodoList } from "../../../aicss/TodoList";
 import { ApprovalCard } from "../../../aicss/ApprovalCard";
 import { playEnter } from "../../../shared/anim";
 import { useSettings } from "../../../shared/settings";
+import { Markdown } from "../../../shared/markdown";
 import { prettyCommand, prettyCwd } from "../helpers";
 import { ToolBlock } from "./ToolBlock";
 import { FilesCard } from "./FilesCard";
 import { AnswerBody } from "./AnswerBody";
+import { DispatchCard } from "./DispatchCard";
 
 export const Block = memo(function Block({ block, onConfirm }: { block: ThreadBlock; onConfirm: (id: string, allow: boolean) => void }) {
   const bubbleRef = useRef<HTMLDivElement>(null);
@@ -70,6 +72,9 @@ export const Block = memo(function Block({ block, onConfirm }: { block: ThreadBl
 
     case "files":
       return <FilesCard files={block.files} />;
+
+    case "dispatch":
+      return <DispatchCard block={block} onConfirm={onConfirm} />;
 
     case "confirm":
       return (

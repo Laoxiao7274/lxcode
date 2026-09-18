@@ -12,7 +12,8 @@ const assert = require('node:assert/strict');
 const url = process.env.LXCODE_PREVIEW_URL || 'http://127.0.0.1:5190/?mode=demo';
 const log = (...a) => process.stderr.write(a.join(' ') + '\n');
 
-const timeout = setTimeout(() => { log('预览布局检查超时'); app.exit(1); }, 30000);
+// 全局兜底超时（含 dispatch 全链路冒烟 ~40s——纯结构检查时代是 30s）
+const timeout = setTimeout(() => { log('预览布局检查超时'); app.exit(1); }, 120000);
 // 结束前给 stderr 一点冲刷时间再退（app.exit 立断管道会吞输出）
 function finish(code) { clearTimeout(timeout); setTimeout(() => app.exit(code), 150); }
 
@@ -112,6 +113,71 @@ app.whenReady().then(async () => {
     log("agent-delegate-toggle", JSON.stringify(afterToggle));
     assert.ok(afterToggle.stillOpen, "chat: 切换委派不应关闭面板");
     assert.ok(afterToggle.checked === apPanel.checked - 1, "chat: 切换应改变委派计数");
+
+    // 主 Agent 调度子 Agent（dispatch 卡——M3 形态）：发消息 → 确认门放行
+    // → dispatchStart → 子执行挂卡内 → dispatchEnd 定格（demo 时间轴全程 ~22s）
+    await win.webContents.executeJavaScript(`(() => {
+      const ta = document.querySelector(".piInput");
+      if (!ta) throw new Error("输入框缺失");
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
+      setter.call(ta, "给会话历史加个超时兜底");
+      ta.dispatchEvent(new Event("input", { bubbles: true }));
+    })()`);
+    await win.webContents.executeJavaScript(`document.querySelector(".send-btn").click()`);
+    // 发送后的状态探针（8s：reasoning/工具应已出现——确认门 ~10.4s）
+    await new Promise((r) => setTimeout(r, 8000));
+    const sentState = await win.webContents.executeJavaScript(`(() => ({
+      userMsg: !!document.querySelector(".msg.user .bubble"),
+      busy: !!document.querySelector(".busy-row"),
+      trows: document.querySelectorAll(".trow").length,
+      reasoning: document.querySelectorAll(".msg").length,
+    }))()`);
+    log("dispatch-send-state", JSON.stringify(sentState));
+    // 等确认卡（demo ~10.4s 到 bash 确认门）→ 点允许（CSS module 类名
+    // 是哈希——定位用 data-variant 语义锚点；按钮组内第二个 = 允许）
+    let confirmBtn = null;
+    for (let i = 0; i < 120 && !confirmBtn; i++) {
+      await new Promise((r) => setTimeout(r, 250));
+      confirmBtn = await win.webContents.executeJavaScript(`document.querySelector('[data-variant="command"]:not([data-resolved]) button:nth-of-type(2)')`);
+    }
+    log("dispatch-confirm-shown", !!confirmBtn);
+    if (confirmBtn) await win.webContents.executeJavaScript(`(() => {
+      const btn = document.querySelector('[data-variant="command"]:not([data-resolved]) button:nth-of-type(2)');
+      if (btn) btn.click();
+    })()`);
+    // 等 dispatch 卡（确认后 ~7s）
+    let dispatch = null;
+    for (let i = 0; i < 60 && !dispatch; i++) {
+      await new Promise((r) => setTimeout(r, 250));
+      dispatch = await win.webContents.executeJavaScript(`(() => {
+        const card = document.querySelector(".dispatch-card");
+        return card ? { agent: card.querySelector(".dispatch-agent")?.textContent, running: card.getAttribute("data-done") !== "true" } : null;
+      })()`);
+    }
+    log("dispatch-card", JSON.stringify(dispatch));
+    assert.ok(dispatch && dispatch.agent === "代码 Agent", "chat: 主 Agent 应派发 dispatch 卡（代码 Agent）");
+    // 等 dispatchEnd（卡定格带结果）
+    let done = null;
+    for (let i = 0; i < 60 && !done; i++) {
+      await new Promise((r) => setTimeout(r, 250));
+      done = await win.webContents.executeJavaScript(`(() => {
+        const card = document.querySelector('.dispatch-card[data-done="true"]');
+        return card ? { result: !!card.querySelector(".dispatch-result"), subBlocks: card.querySelectorAll(".dispatch-body > *").length } : null;
+      })()`);
+    }
+    log("dispatch-done", JSON.stringify(done));
+    assert.ok(done && done.result && done.subBlocks >= 2, "chat: dispatch 完成应带结果与子执行块");
+    // 等本轮完全结束（streamAnswer + done——demo 计时器不停，中途清屏会串台）
+    for (let i = 0; i < 80; i++) {
+      const idle = await win.webContents.executeJavaScript(`!document.querySelector(".busy-row")`);
+      if (idle) break;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    // 回到空态（新会话清屏——后续场景不受本轮影响）
+    await win.webContents.executeJavaScript(`(() => {
+      const btn = document.querySelector(".nav-item");
+      if (btn) btn.click();
+    })()`);
     // Agents 视图点击路径（桌面，浏览器 UA）：选择器在对话视图 → 进名单 → 开组装 → 取消回名单
     win.setContentSize(1440, 900);
     win.webContents.setUserAgent(browserUA);

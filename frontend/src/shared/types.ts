@@ -19,13 +19,15 @@ export interface ConfirmRequest {
 export type AgentEvent =
   | { type: "ready"; server: string; version: string; busy: boolean }
   | { type: "userMessage"; text: string }
-  | { type: "delta"; kind: "text" | "reasoning"; text: string }
-  | { type: "toolCall"; id: string; name: string; arguments: string }
-  | { type: "toolResult"; id: string; name: string; content: string; isError: boolean }
+  | { type: "delta"; kind: "text" | "reasoning"; text: string; dispatchId?: string }
+  | { type: "toolCall"; id: string; name: string; arguments: string; dispatchId?: string }
+  | { type: "toolResult"; id: string; name: string; content: string; isError: boolean; dispatchId?: string }
   | { type: "confirmRequest"; request: ConfirmRequest }
   | { type: "todoUpdated"; items: TodoItem[] }
-  | { type: "done"; usageTokens: number; finishReason: string }
+  | { type: "done"; usageTokens: number; finishReason: string; dispatchId?: string }
   | { type: "error"; message: string; aborted: boolean }
+  | { type: "dispatchStart"; dispatchId: string; agentId: string; agentName: string; agentColor: string; task: string }
+  | { type: "dispatchEnd"; dispatchId: string; result: string; isError: boolean; usageTokens?: number }
   /** 请求失败不代表生成失败：不得清空会话、定格正文或解除确认卡。 */
   | { type: "operationError"; message: string }
   | { type: "busy"; busy: boolean }

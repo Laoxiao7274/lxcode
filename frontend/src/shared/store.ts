@@ -20,7 +20,27 @@ export type ThreadBlock =
   | { kind: "confirm"; uid: number; request: ConfirmRequest; resolved?: "allow" | "deny" }
   | { kind: "todo"; uid: number; items: TodoItem[] }
   | { kind: "files"; uid: number; files: FileChange[] }
-  | { kind: "error"; uid: number; message: string; aborted: boolean };
+  | { kind: "error"; uid: number; message: string; aborted: boolean }
+  | {
+      kind: "dispatch";
+      uid: number;
+      /** dispatch 调用 id（子事件归属键）。 */
+      id: string;
+      agentId: string;
+      agentName: string;
+      agentColor: string;
+      /** 下发的任务描述（主 Agent 的验收标准在这里）。 */
+      task: string;
+      /** running | done（done 带 result——子 Agent 的最终回复）。 */
+      status: "running" | "done";
+      /** 子 Agent 的最终回复（dispatchEnd 回填——验收视图）。 */
+      result?: string;
+      /** 子执行过程的块（子上下文隔离——delta/工具行挂在这里，不进主时间线）。 */
+      subBlocks: ThreadBlock[];
+      /** 子 Agent 用量（轮末）。 */
+      usageTokens?: number;
+      isError?: boolean;
+    };
 
 export interface UIState {
   blocks: ThreadBlock[];
@@ -58,6 +78,8 @@ export function reduce(state: UIState, ev: AgentEvent): UIState {
         blocks: [...state.blocks, { kind: "user", uid: nextUid(), text: ev.text }],
       };
     case "delta": {
+      // dispatch 归属：子执行的事件路由进 dispatch 块（子上下文隔离）
+      if (ev.dispatchId) return applyToDispatch(state, ev.dispatchId, (sub) => reduceSub(sub, ev));
       // reasoning/text 增量写进最近的 assistant 块（没有则开一块）。
       // 不可突变旧块对象——每条 delta 都以新对象替换，保证引用变化。
       // 开新块 = 前一块已定格：中间轮的 usage 一并清（tokens 只在整轮
@@ -84,6 +106,7 @@ export function reduce(state: UIState, ev: AgentEvent): UIState {
       return { ...state, blocks };
     }
     case "toolCall": {
+      if (ev.dispatchId) return applyToDispatch(state, ev.dispatchId, (sub) => reduceSub(sub, ev));
       // 工具调用打断流式中的 assistant 块——立刻定格（否则它永远挂着
       // "思考中" shimmer，成为僵尸块；中间插工具/清单后再开新块续写）
       const blocks = state.blocks.slice();
@@ -97,12 +120,17 @@ export function reduce(state: UIState, ev: AgentEvent): UIState {
       };
     }
     case "toolResult": {
-      const idx = state.blocks.findIndex((b) => b.kind === "tool" && b.id === ev.id);
-      if (idx < 0) return state;
-      const blocks = state.blocks.slice();
-      const b = blocks[idx] as Extract<ThreadBlock, { kind: "tool" }>;
-      blocks[idx] = { ...b, result: ev.content, isError: ev.isError };
-      return { ...state, blocks };
+      const route = (blocks: ThreadBlock[]) => {
+        const idx = blocks.findIndex((b) => b.kind === "tool" && b.id === ev.id);
+        if (idx < 0) return null;
+        const next = blocks.slice();
+        const b = next[idx] as Extract<ThreadBlock, { kind: "tool" }>;
+        next[idx] = { ...b, result: ev.content, isError: ev.isError };
+        return next;
+      };
+      if (ev.dispatchId) return applyToDispatch(state, ev.dispatchId, (sub) => route(sub) ?? sub);
+      const next = route(state.blocks);
+      return next ? { ...state, blocks: next } : state;
     }
     case "confirmRequest":
       return {
@@ -117,6 +145,20 @@ export function reduce(state: UIState, ev: AgentEvent): UIState {
         blocks: [...state.blocks, { kind: "todo", uid: nextUid(), items: ev.items }],
       };
     case "done": {
+      // dispatch 归属：子轮的 done 定格子时间线里最后一个 assistant
+      if (ev.dispatchId) {
+        return applyToDispatch(state, ev.dispatchId, (sub) => {
+          for (let i = sub.length - 1; i >= 0; i--) {
+            const b = sub[i];
+            if (b.kind === "assistant") {
+              const next = sub.slice();
+              next[i] = { ...b, streaming: false, usageTokens: ev.usageTokens };
+              return next;
+            }
+          }
+          return sub;
+        });
+      }
       // 定格最后一个 assistant 块（按 uid 定位，不按 index——
       // 工具/清单块可能插在 assistant 之后）
       let lastA: AssistantBlock | undefined;
@@ -142,6 +184,27 @@ export function reduce(state: UIState, ev: AgentEvent): UIState {
         blocks: [...blocks, { kind: "error", uid: nextUid(), message: ev.message, aborted: ev.aborted }],
       };
     }
+    case "dispatchStart":
+      // 主 Agent 调度子 Agent：dispatch 卡挂进主时间线（子上下文隔离——
+      // 子执行的事件按 dispatchId 归属进 subBlocks，不进主时间线）
+      return {
+        ...state,
+        blocks: [...state.blocks, {
+          kind: "dispatch", uid: nextUid(), id: ev.dispatchId,
+          agentId: ev.agentId, agentName: ev.agentName, agentColor: ev.agentColor,
+          task: ev.task, status: "running", subBlocks: [],
+        }],
+      };
+    case "dispatchEnd": {
+      // 子 Agent 最终回复作为结果回填（卡定格——结果在卡内展示，
+      // 主会话后续由主 Agent 继续汇总会话）
+      const idx = state.blocks.findIndex((b) => b.kind === "dispatch" && b.id === ev.dispatchId);
+      if (idx < 0) return state;
+      const blocks = state.blocks.slice();
+      const b = blocks[idx] as Extract<ThreadBlock, { kind: "dispatch" }>;
+      blocks[idx] = { ...b, status: "done", result: ev.result, isError: ev.isError, usageTokens: ev.usageTokens };
+      return { ...state, blocks };
+    }
     case "busy":
       return { ...state, busy: ev.busy, pending: ev.busy ? state.pending : null };
     case "sessionChanged":
@@ -164,6 +227,50 @@ export function reduce(state: UIState, ev: AgentEvent): UIState {
       return { ...reduceHistory(state, ev.history), busy: ev.history.busy };
     default:
       return state;
+  }
+}
+
+/** 把子事件应用进 dispatch 块的 subBlocks（子上下文隔离的归属路由）。
+ *  fn 拿到当前 subBlocks 返回新的；dispatch 块不存在时原样返回。 */
+function applyToDispatch(state: UIState, dispatchId: string, fn: (subBlocks: ThreadBlock[]) => ThreadBlock[] | null): UIState {
+  const idx = state.blocks.findIndex((b) => b.kind === "dispatch" && b.id === dispatchId);
+  if (idx < 0) return state;
+  const blocks = state.blocks.slice();
+  const b = blocks[idx] as Extract<ThreadBlock, { kind: "dispatch" }>;
+  const next = fn(b.subBlocks);
+  blocks[idx] = next ? { ...b, subBlocks: next } : b;
+  return { ...state, blocks };
+}
+
+/** 子事件在子时间线上的归约（与主时间线同款语义，作用域是 subBlocks）。 */
+function reduceSub(blocks: ThreadBlock[], ev: AgentEvent): ThreadBlock[] | null {
+  switch (ev.type) {
+    case "delta": {
+      const next = blocks.slice();
+      const last = next[next.length - 1];
+      let target: AssistantBlock;
+      if (last && last.kind === "assistant" && last.streaming) {
+        target = { ...last };
+        next[next.length - 1] = target;
+      } else {
+        target = { kind: "assistant", uid: nextUid(), content: "", reasoning: "", streaming: true };
+        next.push(target);
+      }
+      if (ev.kind === "text") target.content += ev.text;
+      else target.reasoning += ev.text;
+      return next;
+    }
+    case "toolCall": {
+      const next = blocks.slice();
+      for (let i = 0; i < next.length; i++) {
+        const b = next[i];
+        if (b.kind === "assistant" && b.streaming) next[i] = { ...b, streaming: false };
+      }
+      next.push({ kind: "tool", uid: nextUid(), id: ev.id, name: ev.name, arguments: ev.arguments });
+      return next;
+    }
+    default:
+      return null;
   }
 }
 
