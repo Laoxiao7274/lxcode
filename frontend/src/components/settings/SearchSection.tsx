@@ -2,14 +2,14 @@
 // 渠道卡 = 状态（已配置/未配置）+ key 遮罩（内联展开配置/替换——展开
 // 有 gsap 入场）+ 主渠道切换；预设渠道不可删；自定义渠道（自建端点）
 // 可加可删。语义：搜索工具默认走主渠道，失败自动降级其它已配置渠道。
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { isConfigured, maskToken, useSearchProviders, type SearchProvider } from "../../shared/search-providers";
-import { useEnterRef } from "../../shared/anim";
+import { collapseAway, useEnterRef } from "../../shared/anim";
 import { Button, TextInput } from "../form";
 import { IconTrash } from "../icons";
 import { Section } from "./rows";
 
-/** 单个渠道卡：状态 + key 展示/内联配置 + 主渠道操作。 */
+/** 单个渠道卡：状态 + key 展示/内联配置（展开入场 + 收拢退场）+ 主渠道操作。 */
 function ProviderCard({ p, primary, onSetPrimary }: { p: SearchProvider; primary: boolean; onSetPrimary: () => void }) {
   const { updateProvider, removeCustom } = useSearchProviders();
   const [editing, setEditing] = useState(false);
@@ -17,8 +17,19 @@ function ProviderCard({ p, primary, onSetPrimary }: { p: SearchProvider; primary
   const [urlDraft, setUrlDraft] = useState("");
   const [confirming, setConfirming] = useState(false);
   const editEnter = useEnterRef<HTMLDivElement>();
+  const editElRef = useRef<HTMLDivElement | null>(null);
+  const closingRef = useRef(false);
   const configured = isConfigured(p);
 
+  // 收拢退场（高度归零 + 淡出）后再卸载——取消/保存都不是瞬灭
+  const closeEdit = () => {
+    if (closingRef.current) return;
+    closingRef.current = true;
+    collapseAway(editElRef.current, () => {
+      closingRef.current = false;
+      setEditing(false);
+    });
+  };
   const startEdit = () => {
     setKeyDraft(p.apiKey);
     setUrlDraft(p.baseUrl ?? "");
@@ -26,7 +37,7 @@ function ProviderCard({ p, primary, onSetPrimary }: { p: SearchProvider; primary
   };
   const save = () => {
     updateProvider(p.id, { apiKey: keyDraft.trim(), baseUrl: urlDraft.trim() });
-    setEditing(false);
+    closeEdit();
   };
 
   return (
@@ -72,7 +83,13 @@ function ProviderCard({ p, primary, onSetPrimary }: { p: SearchProvider; primary
         </div>
       )}
       {editing && (
-        <div className="sp-edit" ref={editEnter}>
+        <div
+          className="sp-edit"
+          ref={(el) => {
+            editElRef.current = el;
+            editEnter(el);
+          }}
+        >
           {p.needsKey ? (
             <div className="cg-field">
               <span className="cg-field-label">API Key</span>
@@ -100,7 +117,7 @@ function ProviderCard({ p, primary, onSetPrimary }: { p: SearchProvider; primary
             </div>
           )}
           <div className="sp-edit-actions">
-            <Button variant="ghost" onClick={() => setEditing(false)}>取消</Button>
+            <Button variant="ghost" onClick={closeEdit}>取消</Button>
             <Button variant="primary" data-sp="save" onClick={save}>保存</Button>
           </div>
         </div>
