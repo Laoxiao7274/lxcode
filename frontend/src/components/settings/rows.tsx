@@ -39,13 +39,13 @@ export function ValueRow({ label, value, hint }: { label: string; value: string;
   );
 }
 
+/** 分段选择行：标签在上、分段占满行宽（窄行内挤 3-4 个选项会把按钮
+ *  压到文字宽度以下——溢出；占满行后每个按钮有充足空间）。 */
 export function SegRow({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className="set-row">
-      <div className="set-row-text">
-        <div className="set-row-label">{label}</div>
-      </div>
-      {children}
+    <div className="set-row set-row-block">
+      <div className="set-row-label">{label}</div>
+      <div className="set-row-seg">{children}</div>
     </div>
   );
 }

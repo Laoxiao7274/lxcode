@@ -1548,6 +1548,16 @@ body:has(.window-stage) {
   color: var(--fg-muted);
   flex: none;
 }
+/* 块状行（分段选择）：标签在上、控件占满行宽——行内右置会把按钮
+ *  挤到文字宽度以下（溢出不居中） */
+.set-row.set-row-block {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+.set-row-seg .fd-seg {
+  max-width: none;
+}
 /* 设置行的可配置控件宽度（套件控件——TextInput/Select 的行内尺寸） */
 .set-row-select {
   width: 230px;
@@ -1604,6 +1614,9 @@ body:has(.window-stage) {
   cursor: pointer;
   font-family: var(--font-sans);
   white-space: nowrap;
+  /* 窄容器兜底：按钮被压到文字宽度以下时截断，不溢出边界 */
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .seg-btn.on {
   color: #fff;
