@@ -12,6 +12,7 @@ import { serializeToolExport } from "../../shared/tool-import";
 import { staggerIn } from "../../shared/motion";
 import { Button, Segmented, Toggle } from "../form";
 import { DocDialog, type Focus } from "./DocDialog";
+import { McConfigImportDialog } from "./McConfigImportDialog";
 import { McServerEditor } from "./McServerEditor";
 import { ModuleEditor } from "./ModuleEditor";
 import { ModuleImportDialog } from "./ModuleImportDialog";
@@ -63,13 +64,14 @@ function McServerCard({ server, toolCount, onEdit, onToggle, onDelete }: {
       {interactive && (
         <div className="cg-card-actions">
           {onEdit && (
-            <button type="button" className="ag-mini-btn" onClick={(e) => { e.stopPropagation(); onEdit(); }}>
+            <button type="button" className="ag-mini-btn" data-cg="edit" onClick={(e) => { e.stopPropagation(); onEdit(); }}>
               <IconPencil /> 编辑
             </button>
           )}
           {onDelete && server.custom && (
             <button
               type="button"
+              data-cg="del"
               className={"ag-mini-btn danger" + (confirming ? " confirm" : "")}
               onClick={(e) => {
                 e.stopPropagation();
@@ -210,6 +212,7 @@ export function CatalogPage() {
   const [editing, setEditing] = useState<{ mod: ContextModuleSpec; isNew: boolean } | null>(null);
   const [editingTool, setEditingTool] = useState<{ tool: ToolSpec; isNew: boolean } | null>(null);
   const [editingServer, setEditingServer] = useState<{ server: McServerSpec; isNew: boolean } | null>(null);
+  const [importingMc, setImportingMc] = useState(false);
   const [importing, setImporting] = useState<"tools" | "modules" | null>(null);
   const gridRef = useRef<HTMLDivElement>(null);
 
@@ -280,19 +283,29 @@ export function CatalogPage() {
               </Button>
             </>
           ) : tab === "mcp" ? (
-            <Button
-              variant="primary"
-              data-cg="new-server"
-              onClick={() => setEditingServer({
-                server: { id: "", desc: "", transport: "stdio", command: "", args: [], env: {}, url: "", enabled: true, custom: true },
-                isNew: true,
-              })}
-            >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true">
-                <path d="M12 5v14M5 12h14" />
-              </svg>
-              添加服务器
-            </Button>
+            <>
+              <Button variant="ghost" data-cg="import-mc" onClick={() => setImportingMc(true)}>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M12 3v12" />
+                  <path d="m7 10 5 5 5-5" />
+                  <path d="M5 21h14" />
+                </svg>
+                导入配置
+              </Button>
+              <Button
+                variant="primary"
+                data-cg="new-server"
+                onClick={() => setEditingServer({
+                  server: { id: "", desc: "", transport: "stdio", command: "", args: [], env: {}, url: "", enabled: true, custom: true },
+                  isNew: true,
+                })}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true">
+                  <path d="M12 5v14M5 12h14" />
+                </svg>
+                添加服务器
+              </Button>
+            </>
           ) : (
             <>
               {customOfTab.length > 0 && (
@@ -385,6 +398,12 @@ export function CatalogPage() {
             else updateMcServer(saved);
             setEditingServer(null);
           }}
+        />
+      )}
+      {importingMc && (
+        <McConfigImportDialog
+          onClose={() => setImportingMc(false)}
+          onImport={(imported) => imported.forEach(addMcServer)}
         />
       )}
       {editingTool && (

@@ -442,6 +442,79 @@ app.whenReady().then(async () => {
     log("tool-form-deleted", afterToolFormDel);
     assert.strictEqual(afterToolFormDel, 12, "catalog: 删除表单工具后应回到 12 个条目");
 
+    // MCP 配置导入：MCP 页签 → 导入配置 → 粘贴 YAML → 导入（4→5）→ 删除回 4
+    const mcTab = await win.webContents.executeJavaScript(`(() => {
+      const btns = document.querySelectorAll(".cg-tabs .seg-btn");
+      if (btns.length < 4) return { err: "seg-不足", n: btns.length };
+      btns[3].click();
+      return { ok: true, tab: btns[3].textContent };
+    })()`);
+    log("mc-tab", JSON.stringify(mcTab));
+    assert.ok(mcTab.ok, "catalog: MCP 页签应存在 " + JSON.stringify(mcTab));
+    const mcBtn = await win.webContents.executeJavaScript(`(() => {
+      const btn = document.querySelector('[data-cg="import-mc"]');
+      if (!btn) return { err: "no-btn" };
+      btn.click();
+      return { ok: true };
+    })()`);
+    log("mc-import-open", JSON.stringify(mcBtn));
+    assert.ok(mcBtn.ok, "catalog: 导入配置入口应可点击");
+    const mcDlg = await win.webContents.executeJavaScript(`(() => {
+      const doc = document.querySelector(".ag-doc");
+      if (!doc) return { err: "no-dialog" };
+      return {
+        dlg: true,
+        input: !!doc.querySelector(".ti-input"),
+        file: !!doc.querySelector('[data-cg="pick-file"]'),
+      };
+    })()`);
+    log("mc-import-dialog", JSON.stringify(mcDlg));
+    assert.ok(mcDlg.dlg && mcDlg.input && mcDlg.file, "catalog: 配置导入弹窗应有粘贴区与文件选择 " + JSON.stringify(mcDlg));
+    const mcFill = await win.webContents.executeJavaScript(`(() => {
+      const el = document.querySelector(".ag-doc .ti-input");
+      if (!el) return { err: "no-input" };
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
+      setter.call(el, "mcpServers:\\n  smoke-mcp:\\n    command: node\\n    args: [\\"server.js\\"]");
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      return { ok: true, len: el.value.length };
+    })()`);
+    log("mc-fill", JSON.stringify(mcFill));
+    assert.ok(mcFill.ok, "catalog: 粘贴区应可填充 " + JSON.stringify(mcFill));
+    const mcDo = await win.webContents.executeJavaScript(`(() => {
+      const b = document.querySelector('.ag-doc [data-cg="do-import"]');
+      if (!b) return { err: "no-btn" };
+      if (b.disabled) return { err: "disabled" };
+      b.click();
+      return { ok: true };
+    })()`);
+    log("mc-do", JSON.stringify(mcDo));
+    assert.ok(mcDo.ok, "catalog: 导入按钮应可点击 " + JSON.stringify(mcDo));
+    const mcImported = await win.webContents.executeJavaScript(`(() => {
+      return {
+        cards: document.querySelectorAll(".cg-card").length,
+        dlgClosed: !document.querySelector(".ag-doc"),
+      };
+    })()`);
+    log("mc-imported", JSON.stringify(mcImported));
+    assert.strictEqual(mcImported.cards, 5, "catalog: 配置导入后 MCP 应有 5 个服务器");
+    assert.ok(mcImported.dlgClosed, "catalog: 全新导入（无跳过）应直接收起");
+    const mcDeleted0 = await win.webContents.executeJavaScript(`document.querySelectorAll(".cg-card").length`);
+    log("mc-import-check", mcDeleted0);
+    // React 提交 + gsap 入场后的短暂间隔（与探针一致——立即查询偶发取不到操作区）
+    await new Promise((r) => setTimeout(r, 250));
+    const mcDel1 = await win.webContents.executeJavaScript(`(() => {
+      const del = document.querySelector('[data-cg="del"]');
+      if (!del) return { err: "no-del", customs: [...document.querySelectorAll(".cg-card-title")].map((t) => t.textContent).join(",") };
+      del.click();
+      return { ok: true };
+    })()`);
+    log("mc-del-1", JSON.stringify(mcDel1));
+    assert.ok(mcDel1.ok, "catalog: 导入条目应有删除入口 " + JSON.stringify(mcDel1));
+    await win.webContents.executeJavaScript(`document.querySelector('[data-cg="del"]').click()`);
+    const mcDeleted = await win.webContents.executeJavaScript(`document.querySelectorAll(".cg-card").length`);
+    log("mc-import-deleted", mcDeleted);
+    assert.strictEqual(mcDeleted, 4, "catalog: 删除导入服务器后应回到 4 个");
+
     assert.deepEqual(errors, [], '页面不应出现控制台错误');
     log('PASS: desktop / mobile / shell layout');
     finish(0);

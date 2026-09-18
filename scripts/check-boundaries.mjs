@@ -39,7 +39,7 @@ export function checkFrontendSource(name, source) {
       if (!isTransport && !isFactory && (normalized === 'agent/ws' || normalized.startsWith('agent/ws/'))) {
         reject(node, '消费者应依赖能力接口，而不是具体 WS 适配器');
       }
-    } else if (!['react', 'react-dom', 'gsap', '@fontsource-variable'].some((pkg) => spec === pkg || spec.startsWith(`${pkg}/`))) {
+    } else if (!['react', 'react-dom', 'gsap', 'yaml', '@fontsource-variable'].some((pkg) => spec === pkg || spec.startsWith(`${pkg}/`))) {
       reject(node, `未经边界声明的运行时依赖: ${spec}`);
     }
   }
