@@ -3645,6 +3645,17 @@ body:has(.window-stage) {
   overflow-y: auto;
   padding: 16px 20px 20px;
 }
+/* 宽版（模块编写器：正文编辑要空间——左表单右预览） */
+.ag-doc.ag-doc-wide {
+  width: min(860px, calc(100% - 48px));
+  max-height: min(760px, calc(100% - 64px));
+}
+.ag-doc-wide .ag-edit {
+  align-items: start;
+}
+.ag-doc-wide .ag-form {
+  max-width: 460px;
+}
 .ag-detail-pills {
   display: flex;
   gap: 6px;
@@ -4095,6 +4106,23 @@ body:has(.window-stage) {
   color: var(--fg-faint);
   margin: -6px 0 14px;
 }
+/* 目录页头部动作行（多按钮时右侧成组） */
+.cg-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+/* 导入弹窗的粘贴区下方动作行（选择文件 + 格式示例） */
+.ti-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+}
+.ti-file-hidden {
+  display: none;
+}
 /* 模块编写器：id 等宽、正文加高、预览盒 */
 .cg-id-input {
   font-family: var(--font-mono);
@@ -4125,7 +4153,7 @@ body:has(.window-stage) {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  margin: 10px 0 6px;
+  margin: 0;
   font-size: 11px;
   font-weight: 500;
   color: var(--fg-faint);

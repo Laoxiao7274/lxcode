@@ -70,3 +70,13 @@ export function IconTrash({ size = 12, strokeWidth = 2 }: IconProps) {
     </svg>
   );
 }
+
+export function IconDownload({ size = 12, strokeWidth = 2 }: IconProps) {
+  return (
+    <svg {...base(size)} strokeWidth={strokeWidth}>
+      <path d="M12 3v12" />
+      <path d="m7 10 5 5 5-5" />
+      <path d="M5 21h14" />
+    </svg>
+  );
+}

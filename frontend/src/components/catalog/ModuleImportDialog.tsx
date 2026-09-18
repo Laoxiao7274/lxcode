@@ -1,45 +1,48 @@
-// 工具导入弹窗：粘贴或选择文件（固定格式 v1 的 JSON）→ 校验 → 入目录（自定义标记）。
-// 格式契约见 shared/tool-import.ts 头注释——后端化时同一格式做插件分发。
+// 模块导入弹窗：粘贴或选择文件（固定格式 v1 的 JSON）→ 校验 → 入目录。
+// 与工具导入同款形态；文件上传走隐藏 input[type=file] 读文本。
 import { useRef, useState } from "react";
-import { useAgents, type ToolSpec } from "../../shared/agents";
-import { parseToolImport } from "../../shared/tool-import";
+import { useAgents, type ContextModuleSpec } from "../../shared/agents";
+import { parseModuleImport } from "../../shared/module-import";
 import { useEscape } from "../../shared/popover";
 import { Button, Textarea } from "../form";
 import { IconChevronDown } from "../icons";
 
 const FORMAT_EXAMPLE = `{
   "version": 1,
-  "tools": [{
-    "id": "my-tool",
-    "desc": "一句话说明",
-    "risk": "low",
-    "source": "binary",
-    "params": [{ "name": "path", "type": "string", "required": true }],
-    "doc": "markdown 扩展文档（可选）"
+  "modules": [{
+    "id": "deploy-checklist",
+    "desc": "一句话摘要",
+    "kind": "process",
+    "body": "# 标题\\n\\n正文（markdown）"
   }]
 }`;
 
-export function ToolImportDialog({
+const KIND_HINT = { process: "模板（process）", skill: "技能（skill）" } as const;
+
+export function ModuleImportDialog({
+  kind,
   onClose,
   onImport,
 }: {
+  /** 入口页签的默认类型（与新建同源：模板页签导入默认 process）。 */
+  kind: ContextModuleSpec["kind"];
   onClose: () => void;
-  onImport: (tools: ToolSpec[]) => void;
+  onImport: (mods: ContextModuleSpec[]) => void;
 }) {
   useEscape(true, onClose);
   const [text, setText] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [showFormat, setShowFormat] = useState(true);
   const fileRef = useRef<HTMLInputElement>(null);
-  const { tools } = useAgents();
+  const { modules } = useAgents();
 
   const submit = () => {
-    const parsed = parseToolImport(text, new Set(tools.map((t) => t.id)));
+    const parsed = parseModuleImport(text, new Set(modules.map((m) => m.id)));
     if (!parsed.ok) {
       setError(parsed.error ?? "导入失败");
       return;
     }
-    onImport(parsed.tools ?? []);
+    onImport(parsed.modules ?? []);
   };
 
   const onFile = (file: File) => {
@@ -54,12 +57,12 @@ export function ToolImportDialog({
       className="ag-doc-mask"
       role="dialog"
       aria-modal="true"
-      aria-label="导入工具"
+      aria-label={`导入${KIND_HINT[kind]}`}
       onPointerDown={(e) => e.target === e.currentTarget && onClose()}
     >
       <div className="ag-doc">
         <div className="ag-doc-head">
-          <span className="ag-doc-title">导入工具</span>
+          <span className="ag-doc-title">导入{KIND_HINT[kind]}</span>
           <button type="button" className="ag-doc-close" onClick={onClose} aria-label="关闭">
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
               <path d="M18 6 6 18M6 6l12 12" />
@@ -68,7 +71,7 @@ export function ToolImportDialog({
         </div>
         <div className="ag-doc-body">
           <div className="ti-note">
-            固定格式 v1 · id 目录内唯一 · risk 取 low/high · source 取 builtin/binary/mcp——校验通过后作为「自定义」条目入目录。
+            固定格式 v1 · id 目录内唯一 · kind 取 process（模板）/ skill（技能）——校验通过后作为「自定义」条目入目录。
           </div>
           <Textarea
             className="ti-input"
@@ -77,7 +80,7 @@ export function ToolImportDialog({
               setText(v);
               setError(null);
             }}
-            placeholder='粘贴 JSON…（{"version":1,"tools":[…]}）'
+            placeholder='粘贴 JSON…（{"version":1,"modules":[…]}）'
             ariaLabel="导入内容"
           />
           {error && <div className="ag-warn" role="alert">{error}</div>}

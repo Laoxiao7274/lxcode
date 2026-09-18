@@ -358,6 +358,35 @@ app.whenReady().then(async () => {
     const afterDelete = await win.webContents.executeJavaScript(`document.querySelectorAll(".cg-card").length`);
     log("module-deleted", afterDelete);
     assert.strictEqual(afterDelete, 3, "catalog: 两步删除后应回到 3 个条目");
+    // 模块导入：入口 → 弹窗 → 填 JSON → 导入 → 列表出现（3→4）→ 删除回 3
+    await win.webContents.executeJavaScript(`document.querySelector('[data-cg="import-modules"]').click()`);
+    const modImportDlg = await win.webContents.executeJavaScript(`(() => {
+      const dlg = document.querySelector(".ag-doc");
+      return dlg ? { title: dlg.querySelector(".ag-doc-title")?.textContent, input: !!dlg.querySelector(".ti-input"), file: !!dlg.querySelector('[data-cg="pick-file"]') } : null;
+    })()`);
+    log("module-import-dialog", JSON.stringify(modImportDlg));
+    assert.ok(modImportDlg && modImportDlg.input && modImportDlg.file, "catalog: 模块导入弹窗应有粘贴区与文件选择");
+    await win.webContents.executeJavaScript(`(() => {
+      const el = document.querySelector(".ag-doc .ti-input");
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
+      setter.call(el, '{"version":1,"modules":[{"id":"smoke-module","desc":"冒烟导入","kind":"process","body":"# 冒烟"}]}');
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    })()`);
+    await win.webContents.executeJavaScript(`document.querySelector(".ag-doc [data-cg=\\"do-import\\"]").click()`);
+    const afterModImport = await win.webContents.executeJavaScript(`(() => {
+      return {
+        cards: document.querySelectorAll(".cg-card").length,
+        dlgClosed: !document.querySelector(".ag-doc"),
+      };
+    })()`);
+    log("module-imported", JSON.stringify(afterModImport));
+    assert.strictEqual(afterModImport.cards, 4, "catalog: 模块导入后应有 4 个条目");
+    assert.ok(afterModImport.dlgClosed, "catalog: 导入后弹窗应收起");
+    await win.webContents.executeJavaScript(`document.querySelector('[data-cg="del"]').click()`);
+    await win.webContents.executeJavaScript(`document.querySelector('[data-cg="del"]').click()`);
+    const afterModDel = await win.webContents.executeJavaScript(`document.querySelectorAll(".cg-card").length`);
+    log("module-import-deleted", afterModDel);
+    assert.strictEqual(afterModDel, 3, "catalog: 删除导入模块后应回到 3 个条目");
 
     assert.deepEqual(errors, [], '页面不应出现控制台错误');
     log('PASS: desktop / mobile / shell layout');

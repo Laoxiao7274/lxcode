@@ -1,16 +1,18 @@
 // 目录管理页：工具 / 技能 / 模板 三类可插拔目录的浏览、查看与自建。
-// 技能/模板是纯内容（markdown）——用户可创建/编辑/删除（Provider 状态）；
-// 工具走导入（固定格式 v1，粘贴 JSON 校验入目录）——自定义工具的
-// 可执行承载随后端化接插件机制。
-// 页签切目录（Segmented），条目卡网格；点卡片开文档弹窗。
+// 技能/模板：新建/编辑走弹窗（ModuleEditor）+ 导入（固定格式 v1）+
+// 导出下载（自建条目分享）；工具：导入（粘贴/选文件）——可执行承载
+// 随后端化接插件机制。页签切目录（Segmented），条目卡网格；
+// 点卡片开文档弹窗。
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { blankModule, useAgents, type ContextModuleSpec, type ToolSpec } from "../../shared/agents";
+import { downloadJson, serializeModuleExport } from "../../shared/module-import";
 import { staggerIn } from "../../shared/motion";
 import { Button, Segmented } from "../form";
 import { DocDialog, type Focus } from "./DocDialog";
 import { ModuleEditor } from "./ModuleEditor";
+import { ModuleImportDialog } from "./ModuleImportDialog";
 import { ToolImportDialog } from "./ToolImportDialog";
-import { IconPencil, IconTrash } from "../icons";
+import { IconDownload, IconPencil, IconTrash } from "../icons";
 
 type Tab = "tools" | "skills" | "templates";
 
@@ -133,42 +135,32 @@ export function CatalogPage() {
   const [tab, setTab] = useState<Tab>("tools");
   const [focus, setFocus] = useState<Focus | null>(null);
   const [editing, setEditing] = useState<{ mod: ContextModuleSpec; isNew: boolean } | null>(null);
-  const [importing, setImporting] = useState(false);
+  const [importing, setImporting] = useState<"tools" | "modules" | null>(null);
   const gridRef = useRef<HTMLDivElement>(null);
 
-  // 页签切换重播条目交错入场（编辑子视图下网格节点不存在——跳过）
+  // 页签切换重播条目交错入场
   useEffect(() => {
-    if (editing) return;
     const el = gridRef.current;
     if (!el) return;
     staggerIn(el.querySelectorAll(".cg-card"), { each: 0.028 });
-  }, [tab, editing]);
-
-  // 编辑子视图（页内子路由——与 AgentEditor 同款模式）
-  if (editing) {
-    return (
-      <ModuleEditor
-        key={editing.mod.id || "new"}
-        initial={editing.mod}
-        isNew={editing.isNew}
-        onCancel={() => setEditing(null)}
-        onSave={(saved) => {
-          if (editing.isNew) addModule(saved);
-          else updateModule(saved);
-          setEditing(null);
-        }}
-      />
-    );
-  }
+  }, [tab]);
 
   const skills = modules.filter((m) => m.kind === "skill");
   const templates = modules.filter((m) => m.kind === "process");
+  const moduleTabKind = tab === "templates" ? "process" : "skill";
+  const customOfTab = (tab === "templates" ? templates : skills).filter((m) => m.custom);
+  const moduleTabName = tab === "templates" ? "模板" : "技能";
 
   const tabs = [
     { value: "tools" as const, label: `工具 · ${tools.length}`, hint: "内置与第三方工具" },
     { value: "skills" as const, label: `技能 · ${skills.length}`, hint: "领域知识与方法（多选注入）" },
     { value: "templates" as const, label: `模板 · ${templates.length}`, hint: "工作方式模板（单选注入）" },
   ];
+
+  const exportModules = () => {
+    if (customOfTab.length === 0) return;
+    downloadJson(`lxcode-${tab}.json`, serializeModuleExport(customOfTab));
+  };
 
   return (
     <div className="cg-page">
@@ -177,30 +169,48 @@ export function CatalogPage() {
           <div className="ag-title">目录</div>
           <div className="ag-sub">可插拔的能力目录——工具、技能与模板；Agent 组装时从这里勾选注入</div>
         </div>
-        {tab === "tools" ? (
-          <Button variant="primary" data-cg="import" onClick={() => setImporting(true)}>
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M12 3v12" />
-              <path d="m7 10 5 5 5-5" />
-              <path d="M5 21h14" />
-            </svg>
-            导入工具
-          </Button>
-        ) : (
-          <Button
-            variant="primary"
-            data-cg="new"
-            onClick={() => setEditing({ mod: blankModule(tab === "templates" ? "process" : "skill"), isNew: true })}
-          >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true">
-              <path d="M12 5v14M5 12h14" />
-            </svg>
-            新建{tab === "templates" ? "模板" : "技能"}
-          </Button>
-        )}
+        <div className="cg-head-actions">
+          {tab === "tools" ? (
+            <Button variant="primary" data-cg="import" onClick={() => setImporting("tools")}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M12 3v12" />
+                <path d="m7 10 5 5 5-5" />
+                <path d="M5 21h14" />
+              </svg>
+              导入工具
+            </Button>
+          ) : (
+            <>
+              {customOfTab.length > 0 && (
+                <Button variant="ghost" data-cg="export" onClick={exportModules} title={`下载 ${customOfTab.length} 个自定义${moduleTabName}（v1 JSON——可分享导入）`}>
+                  <IconDownload />
+                  导出
+                </Button>
+              )}
+              <Button variant="ghost" data-cg="import-modules" onClick={() => setImporting("modules")}>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M12 3v12" />
+                  <path d="m7 10 5 5 5-5" />
+                  <path d="M5 21h14" />
+                </svg>
+                导入
+              </Button>
+              <Button
+                variant="primary"
+                data-cg="new"
+                onClick={() => setEditing({ mod: blankModule(moduleTabKind), isNew: true })}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true">
+                  <path d="M12 5v14M5 12h14" />
+                </svg>
+                新建{moduleTabName}
+              </Button>
+            </>
+          )}
+        </div>
       </div>
       {tab === "tools" && (
-        <div className="cg-new-note">导入 = 固定格式 v1 的 JSON（弹窗内有示例）；自定义工具的可执行承载随后端化接插件机制。</div>
+        <div className="cg-new-note">导入 = 粘贴或选择文件（固定格式 v1 的 JSON，弹窗内有示例）；自定义工具的可执行承载随后端化接插件机制。</div>
       )}
       <div className="cg-tabs">
         <Segmented options={tabs} value={tab} onChange={setTab} ariaLabel="目录页签" />
@@ -234,12 +244,35 @@ export function CatalogPage() {
         ))}
       </div>
       {focus && <DocDialog focus={focus} onClose={() => setFocus(null)} />}
-      {importing && (
+      {editing && (
+        <ModuleEditor
+          key={editing.mod.id || "new"}
+          initial={editing.mod}
+          isNew={editing.isNew}
+          onCancel={() => setEditing(null)}
+          onSave={(saved) => {
+            if (editing.isNew) addModule(saved);
+            else updateModule(saved);
+            setEditing(null);
+          }}
+        />
+      )}
+      {importing === "tools" && (
         <ToolImportDialog
-          onClose={() => setImporting(false)}
+          onClose={() => setImporting(null)}
           onImport={(imported) => {
             addTools(imported);
-            setImporting(false);
+            setImporting(null);
+          }}
+        />
+      )}
+      {importing === "modules" && (
+        <ModuleImportDialog
+          kind={moduleTabKind}
+          onClose={() => setImporting(null)}
+          onImport={(imported) => {
+            imported.forEach(addModule);
+            setImporting(null);
           }}
         />
       )}
