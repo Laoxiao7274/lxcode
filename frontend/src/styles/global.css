@@ -3542,12 +3542,35 @@ body:has(.window-stage) {
   gap: 6px;
   max-width: 300px;
 }
-/* 编辑器领域：chip 组上方的小标签（第三方 / 插件） */
+/* 编辑器领域：chip 组上方的小标签（第三方 / 插件 / 协议） */
 .ag-chip-label {
+  display: flex;
+  align-items: center;
   font-size: 10.5px;
   font-weight: 600;
   color: var(--fg-faint);
   margin: 10px 0 6px;
+}
+/* 协议字段：可编辑的第一层（预填默认 + 恢复默认入口） */
+.ag-protocol-input {
+  min-height: 170px;
+  font-size: 12px;
+}
+.ag-protocol-reset {
+  margin-left: auto;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--fg-faint);
+  background: none;
+  border: 1px solid var(--border-soft);
+  border-radius: 5px;
+  padding: 1px 7px;
+  cursor: pointer;
+  font-family: var(--font-sans);
+}
+.ag-protocol-reset:hover {
+  color: var(--danger);
+  border-color: rgba(224, 46, 42, 0.3);
 }
 /* 紧凑详情面板（跟随 chip 焦点）：点整卡打开完整文档弹窗 */
 .ag-detail {

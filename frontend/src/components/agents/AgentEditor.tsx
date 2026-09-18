@@ -11,6 +11,7 @@ import {
   type AgentDef,
 } from "../../shared/agents";
 import { useSettings } from "../../shared/settings";
+import { defaultProtocol } from "../../shared/agent-protocol";
 import { Markdown } from "../../shared/markdown";
 import { useEnterRef } from "../../shared/anim";
 import { staggerIn } from "../../shared/motion";
@@ -225,7 +226,18 @@ export function AgentEditor({
           <Button
             variant="primary"
             disabled={!savable}
-            onClick={() => onSave({ ...def, name: def.name.trim(), desc: def.desc.trim() })}
+            onClick={() =>
+              onSave({
+                ...def,
+                name: def.name.trim(),
+                desc: def.desc.trim(),
+                // 协议与内置默认相同（或被清空）→ 不存拷贝，运行时用默认
+                protocol:
+                  def.protocol !== undefined && def.protocol.trim() !== "" && def.protocol.trim() !== defaultProtocol(def.isMain === true).trim()
+                    ? def.protocol.trim()
+                    : undefined,
+              })
+            }
           >
             {isNew ? "保存并注册" : "保存"}
           </Button>
@@ -336,13 +348,29 @@ export function AgentEditor({
             <div className="ag-sec-title">
               上下文<span className="ag-count">{(def.workflow ? 1 : 0) + def.skills.length}</span>
             </div>
-            <div className="ag-locked">
-              <span className="ag-lock-name">{def.isMain ? "调度协议 · Harness 固定" : "执行协议 · Harness 固定"}</span>
-              <span className="ag-lock-desc">
-                {def.isMain
-                  ? "意图判断 → 名单选人 → 下发（任务描述含验收标准）→ 验收子结果 → 汇总答复；无可用人选时说明缺口。协议不可编辑。"
-                  : "按任务执行、受工具白名单约束、结果如实回传（工具清单随白名单动态生成）。协议不可编辑。"}
-              </span>
+            <div className="ag-chip-label">
+              协议{def.protocol ? " · 已定制" : ""}
+              {def.protocol !== undefined && def.protocol.trim() !== "" && (
+                <button
+                  type="button"
+                  className="ag-protocol-reset"
+                  title="清掉定制，回到内置默认协议"
+                  onClick={() => set("protocol", undefined)}
+                >
+                  恢复默认
+                </button>
+              )}
+            </div>
+            <Textarea
+              className="ag-protocol-input"
+              value={def.protocol ?? defaultProtocol(def.isMain === true)}
+              onChange={(v) => set("protocol", v)}
+              placeholder="调度/执行的底层规则……"
+              ariaLabel="协议"
+            />
+            <div className="ag-hint">
+              协议是上下文的第一层（拼在模板、技能与自定义段之前）——预填内置默认，可整段定制；
+              改动前先看清默认规则在承担什么。
             </div>
             <div className="ag-chip-label">模板</div>
             <Chips
