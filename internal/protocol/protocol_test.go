@@ -385,6 +385,85 @@ func mustMarshal(t *testing.T, v any) []byte {
 	return b
 }
 
+// TestAgentCatalogPayloads：agent.*/catalog.* 载荷的 wire 形状契约
+// （M1——前端 AgentAdminSource 按这些键名消费；字段改名不编译报错、
+// 只静默丢字段，测试钉住形状）。
+func TestAgentCatalogPayloads(t *testing.T) {
+	t.Run("AgentEntry 全字段往返（snake_case 键名）", func(t *testing.T) {
+		a := AgentEntry{
+			ID: "coder", Name: "代码 Agent", Desc: "写代码", Color: "#3b82f6",
+			Model: "myt", Tools: []string{"read_file"}, Workflow: "minimal-change",
+			Skills: []string{"gsap"}, Delegates: []string{}, Approval: "confirm",
+			Enabled: true, Prompt: "你是代码 Agent", Custom: true,
+		}
+		b := mustMarshal(t, a)
+		var m map[string]any
+		mustUnmarshal(t, b, &m)
+		for _, key := range []string{"id", "name", "desc", "color", "model", "tools", "workflow", "skills", "delegates", "approval", "enabled", "prompt", "protocol", "custom"} {
+			if _, ok := m[key]; !ok {
+				t.Fatalf("AgentEntry 缺键 %s: %s", key, b)
+			}
+		}
+		var got AgentEntry
+		mustUnmarshal(t, b, &got)
+		if got.ID != a.ID || len(got.Tools) != 1 || got.Tools[0] != "read_file" || got.Workflow != a.Workflow {
+			t.Fatalf("AgentEntry 往返丢字段: %+v", got)
+		}
+	})
+
+	t.Run("AgentAddParams 包 agent 键（add/update 同形）", func(t *testing.T) {
+		b := mustMarshal(t, AgentAddParams{Agent: AgentEntry{ID: "x", Name: "n"}})
+		var m map[string]any
+		mustUnmarshal(t, b, &m)
+		if _, ok := m["agent"]; !ok {
+			t.Fatalf("应包裹 agent 键: %s", b)
+		}
+	})
+
+	t.Run("ToolEntry 键名与 omitempty（params/doc/command 空时不出现）", func(t *testing.T) {
+		b := mustMarshal(t, ToolEntry{ID: "bash", Desc: "d", Risk: "high", Source: "builtin", Custom: false})
+		s := string(b)
+		for _, key := range []string{"params", "doc", "server", "command", "example", "package_file"} {
+			if strings.Contains(s, `"`+key+`"`) {
+				t.Fatalf("空字段应 omitempty: %s", b)
+			}
+		}
+		full := mustMarshal(t, ToolEntry{ID: "x", Desc: "d", Risk: "low", Source: "binary",
+			Params:  []ToolParamEntry{{Name: "input", Type: "string", Required: true, Desc: "输入"}},
+			Command: "x {input}", Example: "x foo", PackageFile: "x.zip", Custom: true})
+		var got ToolEntry
+		mustUnmarshal(t, full, &got)
+		if len(got.Params) != 1 || !got.Params[0].Required || got.Params[0].Desc != "输入" {
+			t.Fatalf("ToolEntry params 往返失真: %+v", got.Params)
+		}
+	})
+
+	t.Run("McServerEntry 键名（stdio/sse 双形态）", func(t *testing.T) {
+		stdio := mustMarshal(t, McServerEntry{ID: "fs", Transport: "stdio", Command: "npx",
+			Args: []string{"-y", "@mcp/fs"}, Env: map[string]string{"K": "V"}, Enabled: true, Custom: true})
+		var got McServerEntry
+		mustUnmarshal(t, stdio, &got)
+		if got.Transport != "stdio" || len(got.Args) != 2 || got.Env["K"] != "V" {
+			t.Fatalf("McServer stdio 往返失真: %+v", got)
+		}
+		sse := mustMarshal(t, McServerEntry{ID: "r", Transport: "sse", URL: "https://x/sse", Enabled: false, Custom: true})
+		var got2 McServerEntry
+		mustUnmarshal(t, sse, &got2)
+		if got2.Transport != "sse" || got2.URL != "https://x/sse" {
+			t.Fatalf("McServer sse 往返失真: %+v", got2)
+		}
+	})
+
+	t.Run("CatalogChangedParams 标 kind（客户端只重拉对应目录）", func(t *testing.T) {
+		b := mustMarshal(t, CatalogChangedParams{Kind: "tools", Reason: "add"})
+		var m map[string]any
+		mustUnmarshal(t, b, &m)
+		if m["kind"] != "tools" || m["reason"] != "add" {
+			t.Fatalf("载荷不符: %s", b)
+		}
+	})
+}
+
 func mustUnmarshal(t *testing.T, b []byte, v any) {
 	t.Helper()
 	if err := json.Unmarshal(b, v); err != nil {

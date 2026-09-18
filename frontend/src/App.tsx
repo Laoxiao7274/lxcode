@@ -20,7 +20,7 @@ export default function App() {
   const source = useMemo(() => getAgentSource(), []);
   return (
     <SettingsProvider source={source}>
-      <AgentsProvider>
+      <AgentsProvider source={source}>
         <ConnectionsProvider>
           <UpdateProvider>
             <SearchProvidersProvider>
@@ -56,6 +56,13 @@ function AppBody({ source }: { source: AgentSource }) {
       if (ev.type === "sessionChanged" && (ev.reason === "new" || ev.reason === "resumed")) resetSessionDelegates();
     });
   }, [source, resetSessionDelegates]);
+
+  // live 写失败桥（AgentsProvider 的乐观更新 WS 调用失败 → 一次性提示）
+  useEffect(() => {
+    const on = (e: Event) => reportError(String((e as CustomEvent<string>).detail ?? ""));
+    window.addEventListener("lx-operation-error", on);
+    return () => window.removeEventListener("lx-operation-error", on);
+  }, [reportError]);
 
   const currentId = state.currentId;
 

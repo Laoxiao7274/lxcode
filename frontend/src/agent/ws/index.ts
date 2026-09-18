@@ -1,10 +1,11 @@
 // WSAgent：真实后端对接（WS JSON-RPC，默认 127.0.0.1:7789——协议与 Go
-// internal/protocol 一致）。AgentSource + ModelAdminSource 双能力实现。
-// 事件 → AgentEvent 映射与 DemoAgent 可互换（工厂一行切换）。
+// internal/protocol 一致）。AgentSource + ModelAdminSource + AgentAdminSource
+// 三能力实现。事件 → AgentEvent 映射与 DemoAgent 可互换（工厂一行切换）。
 // 错误纪律：生成类失败（chat.error）走 error 事件（会话状态由 reducer
 // 收敛）；请求类失败（拒绝/断连/超时）走 operationError 事件——UI 只提示，
 // 不动 blocks/pending。
 import type {
+  AgentAdminEntry, AgentAdminMcServer, AgentAdminModule, AgentAdminSource, AgentAdminTool,
   AgentEvent, AgentSource, ConfirmRequest, ModelAdminSource, ModelEntry,
   ProjectMeta, SendOptions, SessionMeta, TodoItem,
 } from "../../shared/types";
@@ -39,9 +40,10 @@ const WS_READY_STATE_OPEN = 1;
 const RECONNECT_MS = 5000;
 const REQUEST_TIMEOUT_MS = 10_000;
 
-export class WSAgent implements AgentSource, ModelAdminSource {
+export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource {
   label = "真实后端";
   readonly modelAdmin: ModelAdminSource = this;
+  readonly agentAdmin: AgentAdminSource = this;
   private readonly addr: string;
   private ws: WebSocket | null = null;
   private listeners = new Set<Listener>();
@@ -53,6 +55,12 @@ export class WSAgent implements AgentSource, ModelAdminSource {
   private modelsCache: ModelEntry[] = [];
   private rolesCache: Record<string, string> = {};
   private modelListeners = new Set<() => void>();
+  /** Agent 名单与拓展目录快照（agent.changed/catalog.changed 驱动刷新）。 */
+  private agentsCache: AgentAdminEntry[] = [];
+  private agentModulesCache: AgentAdminModule[] = [];
+  private agentToolsCache: AgentAdminTool[] = [];
+  private agentMcpCache: AgentAdminMcServer[] = [];
+  private agentListeners = new Set<() => void>();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   /** 订阅时惰性建连（构造不再触网——测试可先插桩再连接）。 */
   private started = false;
@@ -93,6 +101,10 @@ export class WSAgent implements AgentSource, ModelAdminSource {
           await refresh("model.list", (r) => this.applyModelList(r));
           await refresh("project.list", (r) => this.applyProjectList(r));
           await refresh("session.list", (r) => this.applySessionList(r));
+          await refresh("agent.list", (r) => this.applyAgentList(r));
+          await refresh("catalog.modules.list", (r) => this.applyAgentModules(r));
+          await refresh("catalog.tools.list", (r) => this.applyAgentTools(r));
+          await refresh("catalog.mcp.list", (r) => this.applyAgentMcp(r));
           if (this.ws === ws) await this.loadHistory();
         })
         .catch((e) => { if (this.ws === ws) this.opError(`初始化失败: ${e.message}`); });
@@ -248,6 +260,27 @@ export class WSAgent implements AgentSource, ModelAdminSource {
           })
           .catch((e) => this.opError(`刷新项目列表失败: ${e.message}`));
         break;
+      case "agent.changed":
+        // Agent 名单变更 → 重拉（后端事实源）
+        this.call("agent.list")
+          .then((r) => this.applyAgentList(r))
+          .catch((e) => this.opError(`刷新 Agent 名单失败: ${e.message}`));
+        break;
+      case "catalog.changed": {
+        // 目录变更（kind 标明哪个目录）→ 只重拉对应列表
+        const kind = String(p.kind ?? "");
+        const method = kind === "modules" ? "catalog.modules.list" : kind === "tools" ? "catalog.tools.list" : kind === "mcp" ? "catalog.mcp.list" : "";
+        if (method) {
+          this.call(method)
+            .then((r) => {
+              if (kind === "modules") this.applyAgentModules(r);
+              else if (kind === "tools") this.applyAgentTools(r);
+              else this.applyAgentMcp(r);
+            })
+            .catch((e) => this.opError(`刷新目录失败: ${e.message}`));
+        }
+        break;
+      }
     }
   }
 
@@ -450,5 +483,102 @@ export class WSAgent implements AgentSource, ModelAdminSource {
     this.modelsCache = r.models;
     this.rolesCache = r.roles ?? {};
     this.modelListeners.forEach((l) => l());
+  }
+
+  // ---- AgentAdminSource（Agent 名单与拓展目录——M1） ----
+
+  agents(): AgentAdminEntry[] {
+    return this.agentsCache;
+  }
+
+  modules(): AgentAdminModule[] {
+    return this.agentModulesCache;
+  }
+
+  tools(): AgentAdminTool[] {
+    return this.agentToolsCache;
+  }
+
+  mcpServers(): AgentAdminMcServer[] {
+    return this.agentMcpCache;
+  }
+
+  /** 订阅名单/目录变化（连接建立/agent.changed/catalog.changed）。 */
+  onChanged(listener: () => void): () => void {
+    this.agentListeners.add(listener);
+    return () => this.agentListeners.delete(listener);
+  }
+
+  addAgent(agent: AgentAdminEntry): Promise<void> {
+    return this.call("agent.add", { agent }).then(() => undefined);
+  }
+
+  updateAgent(agent: AgentAdminEntry): Promise<void> {
+    return this.call("agent.update", { agent }).then(() => undefined);
+  }
+
+  removeAgent(id: string): Promise<void> {
+    return this.call("agent.remove", { id }).then(() => undefined);
+  }
+
+  addModule(module: AgentAdminModule): Promise<void> {
+    return this.call("catalog.modules.add", { module }).then(() => undefined);
+  }
+
+  updateModule(module: AgentAdminModule): Promise<void> {
+    return this.call("catalog.modules.update", { module }).then(() => undefined);
+  }
+
+  removeModule(id: string): Promise<void> {
+    return this.call("catalog.modules.remove", { id }).then(() => undefined);
+  }
+
+  addTool(tool: AgentAdminTool): Promise<void> {
+    return this.call("catalog.tools.add", { tool }).then(() => undefined);
+  }
+
+  updateTool(tool: AgentAdminTool): Promise<void> {
+    return this.call("catalog.tools.update", { tool }).then(() => undefined);
+  }
+
+  removeTool(id: string): Promise<void> {
+    return this.call("catalog.tools.remove", { id }).then(() => undefined);
+  }
+
+  addMcServer(server: AgentAdminMcServer): Promise<void> {
+    return this.call("catalog.mcp.add", { server }).then(() => undefined);
+  }
+
+  updateMcServer(server: AgentAdminMcServer): Promise<void> {
+    return this.call("catalog.mcp.update", { server }).then(() => undefined);
+  }
+
+  removeMcServer(id: string): Promise<void> {
+    return this.call("catalog.mcp.remove", { id }).then(() => undefined);
+  }
+
+  /** agent.list 结果 → 缓存 + 通知（agent.changed 事件也走这里）。 */
+  private applyAgentList(result: unknown) {
+    if (!Array.isArray(result)) return;
+    this.agentsCache = result as AgentAdminEntry[];
+    this.agentListeners.forEach((l) => l());
+  }
+
+  private applyAgentModules(result: unknown) {
+    if (!Array.isArray(result)) return;
+    this.agentModulesCache = result as AgentAdminModule[];
+    this.agentListeners.forEach((l) => l());
+  }
+
+  private applyAgentTools(result: unknown) {
+    if (!Array.isArray(result)) return;
+    this.agentToolsCache = result as AgentAdminTool[];
+    this.agentListeners.forEach((l) => l());
+  }
+
+  private applyAgentMcp(result: unknown) {
+    if (!Array.isArray(result)) return;
+    this.agentMcpCache = result as AgentAdminMcServer[];
+    this.agentListeners.forEach((l) => l());
   }
 }

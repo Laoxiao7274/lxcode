@@ -361,6 +361,11 @@ func (s *Server) dispatch(req *protocol.Request) *protocol.Response {
 		return protocol.NewResult(req.ID, out)
 	}
 
+	// agent.*/catalog.*（M1——独立分发函数，未命中回落 unknown）
+	if resp := s.dispatchAgentCatalog(req.ID, req.Method, params); resp != nil {
+		return resp
+	}
+
 	return protocol.NewError(req.ID, protocol.CodeMethodNotFound, "未知方法: "+req.Method)
 }
 

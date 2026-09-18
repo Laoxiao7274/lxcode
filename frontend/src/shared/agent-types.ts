@@ -92,6 +92,8 @@ export interface AgentDef {
    *  「宪法修正案」，拼在模块与自定义段之前）。保存时与默认文本相同
    *  则不存（避免每个 Agent 带一份拷贝）。 */
   protocol?: string;
+  /** 用户自建（可删）；主 Agent 是结构成员（后端 custom=0）。 */
+  custom?: boolean;
 }
 
 /** 上下文模块拓展条目：可插拔的上下文块——流程（工作方式规范）与

@@ -108,7 +108,13 @@ func Open(dir string) (*Store, error) {
 			return nil, fmt.Errorf("迁移会话表失败: %w", err)
 		}
 	}
-	return &Store{db: db}, nil
+	st := &Store{db: db}
+	// Agent 注册表与拓展目录（M1——四张表 + 首次种子，幂等）
+	if err := st.initAgents(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return st, nil
 }
 
 // Close 关闭库连接（进程退出/测试清理时调用；幂等）。

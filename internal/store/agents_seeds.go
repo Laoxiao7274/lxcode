@@ -1,0 +1,111 @@
+// 种子数据（首次建库注入；内容与前端 agent-seeds.ts 的目录部分对齐——
+// 演示 Agent 名单后端只给主 + 代码 Agent 两个，其余是前端演示专属，
+// 真实后端不替用户预置）。
+package store
+
+import "github.com/moyunteng/lxcode/internal/sessiondata"
+
+var seedTools = []sessiondata.ToolSpec{
+	{
+		ID: "read_file", Desc: "按行读取文件（分页、256KB 上限）", Risk: "low", Source: "builtin", Custom: false,
+		Params: []sessiondata.ToolParam{{Name: "path", Type: "string", Required: true, Desc: "文件路径（相对会话工作目录）"}, {Name: "offset", Type: "int", Desc: "起始行号（1 起）"}, {Name: "limit", Type: "int", Desc: "行数上限"}},
+		Doc:    "按行输出（`行号→` 前缀）。\n\n- 256KB 上限，超出建议用 search 定位再分段读\n- 二进制文件拒绝（避免乱码进上下文）",
+	},
+	{
+		ID: "search", Desc: "按正则检索文件内容与文件名", Risk: "low", Source: "builtin", Custom: false,
+		Params: []sessiondata.ToolParam{{Name: "pattern", Type: "regex", Required: true}, {Name: "path", Type: "string", Desc: "检索根目录"}, {Name: "mode", Type: "enum", Desc: "files / content / count"}},
+		Doc:    "纯 Go RE2 检索，不经过 shell。\n\n- files 模式列文件名；content 列命中行；count 只给计数\n- 大仓库先 files 缩小范围再 content",
+	},
+	{
+		ID: "edit", Desc: "精确替换文件内容（old_string 唯一匹配）", Risk: "low", Source: "builtin", Custom: false,
+		Params: []sessiondata.ToolParam{{Name: "path", Type: "string", Required: true}, {Name: "old_string", Type: "string", Required: true}, {Name: "new_string", Type: "string", Required: true}},
+		Doc:    "精确替换——old_string 必须在文件中唯一匹配（0 或 >1 都报错）。\n\n原子写；这是编程任务的主编辑通道。",
+	},
+	{
+		ID: "write_file", Desc: "全量写文件（新建或覆盖）", Risk: "high", Source: "builtin", Custom: false,
+		Params: []sessiondata.ToolParam{{Name: "path", Type: "string", Required: true}, {Name: "content", Type: "string", Required: true}},
+		Doc:    "全量覆盖：覆盖已有文件需确认；缩水守卫（覆盖后 <50% 会告警）。",
+	},
+	{
+		ID: "bash", Desc: "执行 shell 命令（超时兜底）", Risk: "high", Source: "builtin", Custom: false,
+		Params: []sessiondata.ToolParam{{Name: "command", Type: "string", Required: true}, {Name: "timeout_ms", Type: "int", Desc: "毫秒（默认 60000）"}, {Name: "stdin", Type: "string", Desc: "标准输入（≤64KB）"}},
+		Doc:    "超时 60s/上限 300s、输出 32KB、stdin ≤64KB。\n\nWindows 下自动选 Git Bash；高危走确认门。",
+	},
+	{
+		ID: "todo", Desc: "任务清单全量写入", Risk: "low", Source: "builtin", Custom: false,
+		Params: []sessiondata.ToolParam{{Name: "items", Type: "array", Required: true, Desc: "[{content, status: pending|active|done}]"}},
+		Doc:    "多步任务的过程对齐——每完成一步更新状态，清单是唯一事实源；active 项唯一。",
+	},
+	{
+		ID: "session_search", Desc: "搜历史会话内容", Risk: "low", Source: "builtin", Custom: false,
+		Params: []sessiondata.ToolParam{{Name: "pattern", Type: "regex", Required: true}},
+		Doc:    "跨全部会话的消息内容检索（含当前）。",
+	},
+	{
+		ID: "ripgrep", Desc: "Rust 检索二进制——大仓库全文搜索", Risk: "low", Source: "binary", Custom: false,
+		Params: []sessiondata.ToolParam{{Name: "pattern", Type: "regex", Required: true}, {Name: "path", Type: "string", Desc: "检索根目录"}, {Name: "glob", Type: "string", Desc: "文件名过滤"}, {Name: "max_results", Type: "int", Desc: "结果条数上限"}},
+		Doc:    "Rust 检索二进制，经进程边界接入（Go 主刀、Rust 武器库）。\n\n大仓库全文搜索比内置 search 快一个量级；参数与 rg CLI 对齐。",
+	},
+	{
+		ID: "browser", Desc: "Chromium 面板驱动（页面勘察与截图）", Risk: "low", Source: "binary", Custom: false,
+		Params: []sessiondata.ToolParam{{Name: "url", Type: "string", Required: true}, {Name: "action", Type: "enum", Desc: "navigate / snapshot / click"}},
+		Doc:    "Chromium 面板驱动。\n\n三段式：navigate 导航 → snapshot 快照定位 → click 操作。",
+	},
+}
+
+var seedModules = []sessiondata.ModuleSpec{
+	{
+		ID: "plan-execute-verify", Kind: "process", Custom: false,
+		Desc: "规划 → 执行 → 验证：先出方案再动手，完成后验证再交付",
+		Body: "# 规划 → 执行 → 验证\n\n任何非平凡任务先出**方案**再动手，完成后**验证**再交付。\n\n## 规划\n- 理解目标与边界（输入、期望产物、约束）\n- 列出改动面与风险点\n\n## 执行\n- 按方案推进；偏离即停下重新评估\n- 长任务维护 todo\n\n## 验证\n- 构建与测试通过才算完成\n- 结果如实报告：做了什么、输出是什么、有什么问题",
+	},
+	{
+		ID: "minimal-change", Kind: "process", Custom: false,
+		Desc: "最小改动——只动达成目标所必需的部分",
+		Body: "# 最小改动\n\n只动达成目标所必需的部分。\n\n- 不顺手重构、不顺手清理\n- 发现范围外的问题：记录，不顺手修\n- 改动范围与目标偏差时先停下重新对齐",
+	},
+	{
+		ID: "research-first", Kind: "process", Custom: false,
+		Desc: "先查证再断言——不确定的就先检索",
+		Body: "# 先查证再断言\n\n不确定的就先检索，检索不到就明说。\n\n- 结论必须给依据（代码行号 / 文档链接 / 命令输出）\n- 查不到 ≠ 不存在——如实报告「未找到」而不是编造\n- 引用别人的结论先验证",
+	},
+	{
+		ID: "frontend-design", Kind: "skill", Custom: false,
+		Desc: "前端视觉设计——排版、留白与层级",
+		Body: "# 前端视觉设计\n\n- 排版优先：字号/行高/字重构成层级，不靠颜色堆\n- 留白是设计的一部分——拥挤是偷懒\n- 少即是多：每个装饰都要能说出为什么存在",
+	},
+	{
+		ID: "gsap", Kind: "skill", Custom: false,
+		Desc: "GSAP 动效——时间线与缓动",
+		Body: "# GSAP\n\n- 时间线（timeline）组织序列；标签定位关键帧\n- 缓动 ease 是性格：power2.out 通用，back.out 弹性\n- 入场动画收尾 clearProps——残留 transform 会困住弹层 z-index",
+	},
+	{
+		ID: "windows-app-forensics", Kind: "skill", Custom: false,
+		Desc: "Windows 桌面应用排障——进程/更新器/安装残留",
+		Body: "# Windows 桌面应用排障\n\n- 安装器卡「应用运行中」：查进程树（父子关系），路径前缀匹配比名字可靠\n- 更新器报错：证据三件套——文件头字节 / 哈希 / 在线 URL 探活\n- 扩展名缺失的缓存文件：读头字节辨类型",
+	},
+	{
+		ID: "shadcn", Kind: "skill", Custom: false,
+		Desc: "组件库工程与注册表",
+		Body: "# shadcn/ui\n\n组件库工程与注册表。\n\n- 组件按 registry 分发，不整包引入\n- 主题走 CSS 变量，不 fork 组件改样式\n- 升级以 diff 合并，不锁定版本",
+	},
+}
+
+var seedAgents = []sessiondata.AgentDef{
+	{
+		ID: "main", Name: "主 Agent", IsMain: true, Enabled: true, Color: "#0d0d0d", Model: "",
+		Desc:     "决策与分派中枢：理解意图、拆解任务、调用名单中的 Agent 并验收汇总。不直接执行任务。",
+		Tools:    []string{"agent.dispatch"},
+		Prompt:   "",
+		Workflow: "plan-execute-verify", Skills: []string{},
+		Delegates: []string{"coder"}, Approval: "confirm",
+	},
+	{
+		ID: "coder", Name: "代码 Agent", Enabled: true, Color: "#3b82f6", Model: "",
+		Desc:     "编码实现与重构：读写代码、跑构建测试，产出可验证的改动。",
+		Prompt:   "你是代码 Agent。改动前先读相关代码，遵守仓库规范；每步改动可解释、可回退，构建测试通过才算完成。",
+		Tools:    []string{"read_file", "search", "edit", "write_file", "bash", "todo"},
+		Workflow: "minimal-change", Skills: []string{"frontend-design", "gsap"},
+		Delegates: []string{}, Approval: "confirm",
+	},
+}

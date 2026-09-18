@@ -42,6 +42,28 @@ const (
 	// 项目管理（workspace 分组）
 	MethodProjectAdd  = "project.add"
 	MethodProjectList = "project.list"
+
+	// ---- Agent 注册表与拓展目录（M1——docs/backend-roadmap.md）----
+
+	MethodAgentList   = "agent.list"
+	MethodAgentAdd    = "agent.add"
+	MethodAgentUpdate = "agent.update"
+	MethodAgentRemove = "agent.remove"
+
+	MethodCatalogModuleList   = "catalog.modules.list"
+	MethodCatalogModuleAdd    = "catalog.modules.add"
+	MethodCatalogModuleUpdate = "catalog.modules.update"
+	MethodCatalogModuleRemove = "catalog.modules.remove"
+
+	MethodCatalogToolList   = "catalog.tools.list"
+	MethodCatalogToolAdd    = "catalog.tools.add"
+	MethodCatalogToolUpdate = "catalog.tools.update"
+	MethodCatalogToolRemove = "catalog.tools.remove"
+
+	MethodCatalogMcpList   = "catalog.mcp.list"
+	MethodCatalogMcpAdd    = "catalog.mcp.add"
+	MethodCatalogMcpUpdate = "catalog.mcp.update"
+	MethodCatalogMcpRemove = "catalog.mcp.remove"
 )
 
 // 事件名（服务端 → 全部客户端广播；无 id 的 JSON-RPC 消息）。
@@ -61,6 +83,8 @@ const (
 	EventSessionChanged = "session.changed" // 会话切换（new/resume）——客户端须重拉 chat.history
 	EventFiles          = "files.changed"   // 一轮的文件改动汇总（产物卡——验收视图）
 	EventProjectChanged = "project.changed" // 项目增删——客户端重拉 project.list
+	EventAgentChanged   = "agent.changed"   // Agent 名单变更——客户端重拉 agent.list
+	EventCatalogChanged = "catalog.changed" // 拓展目录变更——客户端重拉对应 kind 的 catalog.*.list
 )
 
 // 错误码：JSON-RPC 标准码 + 本应用码。
@@ -324,4 +348,124 @@ type FileChangeParams struct {
 // FilesChangedParams 是 files.changed 事件的载荷（文件改动数组）。
 type FilesChangedParams struct {
 	Files []FileChangeParams `json:"files"`
+}
+
+// ---- Agent 注册表与拓展目录（M1）----
+// 协议载荷是 store/sessiondata 类型的 wire 形态（snake_case JSON tag；
+// 映射在 server 层——store 类型过协议边界必须经映射，历史 bug 两次踩过）。
+
+// AgentEntry 是 agent.list 的条目（AgentDef 的 wire 形态）。
+type AgentEntry struct {
+	ID        string   `json:"id"`
+	Name      string   `json:"name"`
+	Desc      string   `json:"desc"`
+	Color     string   `json:"color"`
+	Model     string   `json:"model"`
+	Tools     []string `json:"tools"`
+	Workflow  string   `json:"workflow"`
+	Skills    []string `json:"skills"`
+	Delegates []string `json:"delegates"`
+	Approval  string   `json:"approval"`
+	Enabled   bool     `json:"enabled"`
+	IsMain    bool     `json:"is_main,omitempty"`
+	Prompt    string   `json:"prompt"`
+	Protocol  string   `json:"protocol"`
+	Custom    bool     `json:"custom"`
+}
+
+// AgentAddParams 是 agent.add 的载荷（也是 agent.update——全量替换语义）。
+type AgentAddParams struct {
+	Agent AgentEntry `json:"agent"`
+}
+
+// AgentRemoveParams 是 agent.remove 的参数。
+type AgentRemoveParams struct {
+	ID string `json:"id"`
+}
+
+// ModuleEntry 是 catalog.modules.list 的条目。
+type ModuleEntry struct {
+	ID     string `json:"id"`
+	Desc   string `json:"desc"`
+	Kind   string `json:"kind"` // process（模板） | skill（技能）
+	Body   string `json:"body"`
+	Custom bool   `json:"custom"`
+}
+
+// ModuleAddParams 是 catalog.modules.add/update 的载荷。
+type ModuleAddParams struct {
+	Module ModuleEntry `json:"module"`
+}
+
+// ModuleRemoveParams 是 catalog.modules.remove 的参数。
+type ModuleRemoveParams struct {
+	ID string `json:"id"`
+}
+
+// ToolParamEntry 是工具参数的 wire 形态。
+type ToolParamEntry struct {
+	Name     string `json:"name"`
+	Type     string `json:"type"`
+	Required bool   `json:"required,omitempty"`
+	Desc     string `json:"desc,omitempty"`
+}
+
+// ToolEntry 是 catalog.tools.list 的条目。
+type ToolEntry struct {
+	ID          string           `json:"id"`
+	Desc        string           `json:"desc"`
+	Risk        string           `json:"risk"`   // low | high
+	Source      string           `json:"source"` // builtin | binary | mcp
+	Params      []ToolParamEntry `json:"params,omitempty"`
+	Doc         string           `json:"doc,omitempty"`
+	Server      string           `json:"server,omitempty"`  // source=mcp 的来源服务器
+	Command     string           `json:"command,omitempty"` // binary：{param} 占位模板
+	Example     string           `json:"example,omitempty"`
+	PackageFile string           `json:"package_file,omitempty"`
+	Custom      bool             `json:"custom"`
+}
+
+// ToolAddParams 是 catalog.tools.add/update 的载荷。
+type ToolAddParams struct {
+	Tool ToolEntry `json:"tool"`
+}
+
+// ToolRemoveParams 是 catalog.tools.remove 的参数。
+type ToolRemoveParams struct {
+	ID string `json:"id"`
+}
+
+// McServerEntry 是 catalog.mcp.list 的条目。
+type McServerEntry struct {
+	ID        string            `json:"id"`
+	Desc      string            `json:"desc"`
+	Transport string            `json:"transport"` // stdio | sse
+	Command   string            `json:"command,omitempty"`
+	Args      []string          `json:"args,omitempty"`
+	Env       map[string]string `json:"env,omitempty"`
+	URL       string            `json:"url,omitempty"`
+	Enabled   bool              `json:"enabled"`
+	Custom    bool              `json:"custom"`
+}
+
+// McServerAddParams 是 catalog.mcp.add/update 的载荷。
+type McServerAddParams struct {
+	Server McServerEntry `json:"server"`
+}
+
+// McServerRemoveParams 是 catalog.mcp.remove 的参数。
+type McServerRemoveParams struct {
+	ID string `json:"id"`
+}
+
+// AgentChangedParams 是 agent.changed 事件的载荷（客户端重拉 agent.list）。
+type AgentChangedParams struct {
+	Reason string `json:"reason"` // add | update | remove
+}
+
+// CatalogChangedParams 是 catalog.changed 事件的载荷：kind 标明哪个目录
+// 变了（modules/tools/mcp），客户端只重拉对应列表。
+type CatalogChangedParams struct {
+	Kind   string `json:"kind"`   // modules | tools | mcp
+	Reason string `json:"reason"` // add | update | remove
 }
