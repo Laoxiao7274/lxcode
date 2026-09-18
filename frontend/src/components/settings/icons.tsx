@@ -28,6 +28,9 @@ export function ShieldIcon({ size = 15 }: IconProps) {
 export function ClockIcon({ size = 15 }: IconProps) {
   return <svg {...base(size)}><circle cx="12" cy="12" r="10" /><path d="M12 6v6l4 2" /></svg>;
 }
+export function SearchIcon({ size = 15 }: IconProps) {
+  return <svg {...base(size)}><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></svg>;
+}
 export function LinkIcon({ size = 15 }: IconProps) {
   return <svg {...base(size)}><path d="M9 17H7A5 5 0 0 1 7 7h2" /><path d="M15 7h2a5 5 0 1 1 0 10h-2" /><path d="M8 12h8" /></svg>;
 }

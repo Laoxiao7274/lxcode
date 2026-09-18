@@ -688,6 +688,102 @@ app.whenReady().then(async () => {
     assert.ok(suLatest.latest, "settings: 重启后设置应显示已是最新");
     await win.webContents.executeJavaScript(`document.querySelector(".settings-back").click()`);
 
+    // 网页搜索：设置分区 → 渠道卡（Tavily 已配置为主渠道）→ Brave 配置
+    // key（内联表单）→ 设为主渠道 → 添加自定义渠道
+    await win.webContents.executeJavaScript(`document.querySelector(".settings-row").click()`);
+    await new Promise((r) => setTimeout(r, 350));
+    await win.webContents.executeJavaScript(`(() => {
+      const btn = [...document.querySelectorAll(".settings-nav-item")].find((b) => b.textContent.trim() === "网页搜索");
+      if (btn) btn.click();
+    })()`);
+    await new Promise((r) => setTimeout(r, 250));
+    const spInit = await win.webContents.executeJavaScript(`(() => {
+      const cards = [...document.querySelectorAll(".sp-card")];
+      const tavily = cards.find((c) => c.textContent.includes("Tavily"));
+      return {
+        count: cards.length,
+        tavilyPrimary: tavily?.getAttribute("data-primary") === "true",
+        summary: document.querySelector(".sp-summary")?.textContent ?? "",
+      };
+    })()`);
+    log("search-init", JSON.stringify(spInit));
+    assert.ok(spInit.count >= 4 && spInit.tavilyPrimary, "settings: 搜索分区应有预设渠道且 Tavily 为主 " + JSON.stringify(spInit));
+    // Brave 未配置 → 点「配置」→ 内联表单填 key → 保存 → 已配置
+    await win.webContents.executeJavaScript(`(() => {
+      const brave = [...document.querySelectorAll(".sp-card")].find((c) => c.textContent.includes("Brave"));
+      const btn = brave?.querySelector('[data-sp="configure"]');
+      if (btn) btn.click();
+    })()`);
+    const spEdit = await win.webContents.executeJavaScript(`(() => {
+      const brave = [...document.querySelectorAll(".sp-card")].find((c) => c.textContent.includes("Brave"));
+      return { form: !!brave?.querySelector(".sp-edit") };
+    })()`);
+    log("search-edit-open", JSON.stringify(spEdit));
+    assert.ok(spEdit.form, "settings: 未配置渠道应可展开配置表单");
+    await win.webContents.executeJavaScript(`(() => {
+      const brave = [...document.querySelectorAll(".sp-card")].find((c) => c.textContent.includes("Brave"));
+      const input = brave?.querySelector(".sp-edit .fd-input");
+      if (input) {
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+        setter.call(input, "BSA-demo-key-12345");
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+    })()`);
+    await win.webContents.executeJavaScript(`(() => {
+      const brave = [...document.querySelectorAll(".sp-card")].find((c) => c.textContent.includes("Brave"));
+      brave?.querySelector('[data-sp="save"]')?.click();
+    })()`);
+    const spSaved = await win.webContents.executeJavaScript(`(() => {
+      const brave = [...document.querySelectorAll(".sp-card")].find((c) => c.textContent.includes("Brave"));
+      return {
+        configured: brave?.getAttribute("data-configured") === "true",
+        masked: !!brave?.querySelector(".sp-cred"),
+        setPrimary: !!brave?.querySelector('[data-sp="set-primary"]'),
+      };
+    })()`);
+    log("search-saved", JSON.stringify(spSaved));
+    assert.ok(spSaved.configured && spSaved.masked && spSaved.setPrimary, "settings: 配置后应显示遮罩 key 与设为主渠道入口");
+    // 设为主渠道 → Brave 变主渠道
+    await win.webContents.executeJavaScript(`(() => {
+      const brave = [...document.querySelectorAll(".sp-card")].find((c) => c.textContent.includes("Brave"));
+      brave?.querySelector('[data-sp="set-primary"]')?.click();
+    })()`);
+    const spPrimary = await win.webContents.executeJavaScript(`(() => {
+      const brave = [...document.querySelectorAll(".sp-card")].find((c) => c.textContent.includes("Brave"));
+      return {
+        primary: brave?.getAttribute("data-primary") === "true",
+        summary: document.querySelector(".sp-summary-primary")?.textContent,
+      };
+    })()`);
+    log("search-primary", JSON.stringify(spPrimary));
+    assert.ok(spPrimary.primary && spPrimary.summary.includes("Brave"), "settings: 设为主渠道后摘要应跟随");
+    // 添加自定义渠道
+    await win.webContents.executeJavaScript(`document.querySelector('[data-sp="add"]').click()`);
+    await win.webContents.executeJavaScript(`(() => {
+      const form = document.querySelector(".sp-add-form");
+      const inputs = form ? form.querySelectorAll(".fd-input") : [];
+      if (inputs.length >= 2) {
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+        setter.call(inputs[0], "公司自建");
+        inputs[0].dispatchEvent(new Event("input", { bubbles: true }));
+        setter.call(inputs[1], "https://search.corp.example.com/api");
+        inputs[1].dispatchEvent(new Event("input", { bubbles: true }));
+      }
+    })()`);
+    await win.webContents.executeJavaScript(`document.querySelector('[data-sp="save-custom"]').click()`);
+    const spCustom = await win.webContents.executeJavaScript(`(() => {
+      const cards = [...document.querySelectorAll(".sp-card")];
+      const corp = cards.find((c) => c.textContent.includes("公司自建"));
+      return {
+        added: !!corp,
+        configured: corp?.getAttribute("data-configured") === "true",
+        del: !!corp?.querySelector('[data-sp="del"]'),
+      };
+    })()`);
+    log("search-custom", JSON.stringify(spCustom));
+    assert.ok(spCustom.added && spCustom.configured && spCustom.del, "settings: 自定义渠道应可添加并带删除入口");
+    await win.webContents.executeJavaScript(`document.querySelector(".settings-back").click()`);
+
     assert.deepEqual(errors, [], '页面不应出现控制台错误');
     log('PASS: desktop / mobile / shell layout');
     finish(0);

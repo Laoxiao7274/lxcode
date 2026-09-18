@@ -12,6 +12,7 @@ import { SettingsPanel } from "./components/settings";
 import { SettingsProvider, useSettings } from "./shared/settings";
 import { ConnectionsProvider } from "./shared/connections";
 import { UpdateProvider } from "./shared/update";
+import { SearchProvidersProvider } from "./shared/search-providers";
 import { UpdateToast } from "./components/update/UpdateToast";
 import type { AgentEvent, AgentSource, SendOptions, SessionMeta } from "./shared/types";
 
@@ -22,8 +23,10 @@ export default function App() {
       <AgentsProvider>
         <ConnectionsProvider>
           <UpdateProvider>
-            <AppBody source={source} />
-            <UpdateToast />
+            <SearchProvidersProvider>
+              <AppBody source={source} />
+              <UpdateToast />
+            </SearchProvidersProvider>
           </UpdateProvider>
         </ConnectionsProvider>
       </AgentsProvider>

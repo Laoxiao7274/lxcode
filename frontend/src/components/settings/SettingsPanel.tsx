@@ -11,18 +11,20 @@ import { useEscape } from "../../shared/popover";
 import { ConnectProviderDialog } from "./ConnectProviderDialog";
 import { ModelEditDialog } from "./ModelEditDialog";
 import { ProviderBlock } from "./ProviderBlock";
+import { SearchSection } from "./SearchSection";
 import { UpdateBlock } from "./UpdateBlock";
 import { ArchivedRow, PlaceholderRow, Section, SegRow, SelectRow, InputRow, ToggleRow, ValueRow } from "./rows";
-import { BoxIcon, BranchIcon, ClockIcon, CubeIcon, GearIcon, GitIcon, SunIcon, WinIcon } from "./icons";
+import { BoxIcon, BranchIcon, ClockIcon, CubeIcon, GearIcon, GitIcon, SearchIcon, SunIcon, WinIcon } from "./icons";
 
 type SectionId =
-  | "general" | "appearance" | "models" | "personalization"
+  | "general" | "appearance" | "models" | "search" | "personalization"
   | "git" | "environments" | "worktrees" | "archived";
 
 const SECTIONS: { id: SectionId; label: string; icon: ReactElement }[] = [
   { id: "general", label: "通用", icon: <GearIcon /> },
   { id: "appearance", label: "外观", icon: <SunIcon /> },
   { id: "models", label: "模型", icon: <CubeIcon /> },
+  { id: "search", label: "网页搜索", icon: <SearchIcon /> },
   { id: "personalization", label: "个性化", icon: <ClockIcon /> },
   { id: "git", label: "Git", icon: <GitIcon /> },
   { id: "environments", label: "环境", icon: <WinIcon /> },
@@ -173,6 +175,8 @@ export function SettingsPanel({ open, onClose, source }: { open: boolean; onClos
                 ))}
               </Section>
             )}
+
+            {section === "search" && <SearchSection />}
 
             {section === "personalization" && (
               <Section title="个性化" desc="回答的默认语气；自定义指令写入 AGENTS.md。">
