@@ -107,7 +107,7 @@
 Harness 的目标形态：**主 Agent 只做决策与分派，子 Agent 是用户组装的执行单元**。前端原型已完成（内存态，`frontend/src/shared/agents.tsx` + `components/agents/`），后端化路线见 §9 待定。设计决策：
 
 - **两类制**：主 Agent = 唯一调度者（不可被委派）；子 Agent = 纯执行者（不可委派）。委派深度恒为 1——环、成本爆炸、借手提权从结构上消失（未来要局部协作需显式引入新类，不静默改回白名单）。
-- **Agent 上下文四层组合**：① 协议层（Harness 固定，主=调度协议/子=执行协议，锁定展示）② 模块层（**上下文模块目录**，可插拔：流程模块**单选**——工作方式是完整单元，缺流程就补一个，不拼装；技能模块多选）③ 自定义段（每个 Agent 私有的自由文本）④ 动态注入（主 Agent 的可委派名单 + 会话上下文）。主 Agent 的提示词不是用户写的——用户通过数据控制调度（子 Agent 的职责描述 = 主 Agent 的选人信号）。
+- **Agent 上下文四层组合**：① 协议层（**可定制**——预填内置默认，用户可整段替换「宪法修正案」；主=调度协议/子=执行协议）② 模块层（**上下文模块目录**，可插拔：流程模块**单选**——工作方式是完整单元，缺流程就补一个，不拼装；技能模块多选）③ 自定义段（每个 Agent 私有的自由文本）④ 动态注入（主 Agent 的可委派名单 + 会话上下文）。主 Agent 的提示词不是用户写的——用户通过数据控制调度（子 Agent 的职责描述 = 主 Agent 的选人信号）。
 - **委派两层配置**：名单默认（主 Agent 的 `delegates`，编辑器勾选）+ 会话覆盖（输入区 Agent 菜单二级面板，新会话/切换会话自动回落默认）。有效名单 = 覆盖 ?? 默认 ∩ 启用的子 Agent（`shared/agent-delegation.ts` 纯函数，有测试钉住）。
 - **目录条目 = 短摘要 + 完整 markdown 文档**（类 SKILL.md）：工具带参数表与扩展文档，模块带正文；编辑器两级详情（右侧紧凑面板跟随 chip 焦点，点面板开 640px 文档弹窗）。
 - **目录可自建**：技能/模板是纯内容（markdown），用户可创建/编辑/删除（目录管理页 + 模块编写器带实时预览，Provider 状态单源——Agent 组装 chips 即时可选）；模板/技能创建分开口（类型由入口页签定死，不表内切换）。工具走**导入**：固定格式 v1 的 JSON 契约（`shared/tool-import.ts` 的 `parseToolImport` 校验，有测试钉住）——`{"version":1,"tools":[{"id","desc","risk":"low|high","source":"builtin|binary","params"?:[{"name","type","required"?,"desc"?}],"doc"?}]}`，id 目录内唯一，source 只 builtin/binary——**MCP 工具不手动创建/导入**（由 MCP 服务器注册后自动暴露）；后端化后同一格式做插件的分发载荷。**MCP 是目录第四版块**：服务器（`McServerSpec`——id/名称/命令/启停）是接入单元，能力以工具形式进工具目录（`source=mcp` + `server` 字段指回来源），停用服务器 = 能力挂起。
@@ -122,4 +122,5 @@ Harness 的目标形态：**主 Agent 只做决策与分派，子 Agent 是用�
 | 项目正式名 | 工作名 lxcode，用户保留命名权 |
 | 上下文管理 | 工具结果截断（8KB/条）已兜底；compaction/历史摘要未做 |
 | 语义记忆 | 未做（会话搜索先行）；**存储底座已定（2026-12）：会话已切 SQLite（modernc 纯 Go）——语义记忆/向量检索（FTS5/sqlite-vec）将在同库扩展，不再单独立项选型** |
-| 自更新 | 方向 = 定时检查 + 人工确认；机制已定（2026-12）：**自建 zip 更新**（manifest.json + update-\<version\>.zip，两级：后端热替换 / asar 冷替换，Electron 升级走全量安装包；electron-updater 方案作废）——**产物侧已实现**（build.mjs 产出 zip+manifest），**客户端更新器未实现**（待做：检查/下载/校验/替换编排）；服务形态走 scripts\service\update.ps1 |
+| 自更新 | 方向 = 定时检查 + 人工确认；机制已定（2026-12）：**自建 zip 更新**（manifest.json + update-\<version\>.zip，两级：后端热替换 / asar 冷替换，Electron 升级走全量安装包；electron-updater 方案作废）——**产物侧已实现**（build.mjs 产出 zip+manifest），**客户端更新器未实现**（待做：检查/下载/校验/替换编排，路线图 M5）；服务形态走 scripts\service\update.ps1 |
+| **后端化路线** | **已定**（2026-09-18，docs/backend-roadmap.md）：M1 注册表与目录（四张表+agent.\*/catalog.\* 协议+前端接线）→ M2 上下文组装+Agent 直选（chat.send 带 agentId）→ M3 agent.dispatch（**子上下文隔离已拍板**——dispatch 开独立执行上下文，结果回填主会话；复用现有事件流+dispatchId 归属标记）→ M4 拓展执行面（自定义工具 spawn/MCP stdio/网页搜索）→ M5 远程访问+更新器。子 Agent 再委派/多活跃会话/worktree 明确出界 |
