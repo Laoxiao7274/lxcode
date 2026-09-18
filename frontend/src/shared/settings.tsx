@@ -10,9 +10,14 @@ export interface Settings {
   model: string; effort: EffortId; approval: "auto" | "confirm" | "strict";
   showThinking: boolean; showFullOutput: boolean; keepAwake: boolean;
   enterToSend: boolean; personality: "friendly" | "pragmatic" | "none";
+  /** 主题（浅色/深色/跟随系统——前端态，后端化时落配置）。 */
+  theme: "light" | "dark" | "system";
+  /** Git 新任务默认分支名。 */
+  gitBranch: string;
 }
 const DEFAULTS: Settings = { model: "MYT", effort: "medium", approval: "confirm", showThinking: true,
-  showFullOutput: true, keepAwake: false, enterToSend: true, personality: "pragmatic" };
+  showFullOutput: true, keepAwake: false, enterToSend: true, personality: "pragmatic",
+  theme: "light", gitBranch: "main" };
 // 档位目录（后端协议值域——chat.send 的 effort 参数；仅对声明 reasoning
 // 能力的模型生效，选择器在 ModelPicker 里按模型能力显隐）
 export const EFFORTS: { id: EffortId; label: string; hint: string }[] = [
@@ -59,9 +64,9 @@ export function SettingsProvider({ source, children }: { source: AgentSource; ch
     catch (e) { setError(e instanceof Error ? e.message : String(e)); return false; }
   }, []);
   const set = useCallback((patch: Partial<Settings>) => {
-    // 仍未接通的设置在状态入口禁用（keepAwake/personality）；effort 与
-    // approval 已随 chat.send 生效，随发送携带。
-    const { keepAwake: _k, personality: _p, model, ...supported } = patch;
+    // 全部设置本地生效（keepAwake/theme/personality 前端态；模型在
+    // live 模式走后端角色绑定——后端是事实源）
+    const { model, ...supported } = patch;
     setLocal((s) => ({ ...s, ...supported, ...(!admin && model ? { model } : {}) }));
     if (admin && model) void run(() => admin.setRole("default", model));
   }, [admin, run]);

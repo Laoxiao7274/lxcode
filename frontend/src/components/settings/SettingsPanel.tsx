@@ -10,18 +10,17 @@ import { useEscape } from "../../shared/popover";
 import { ConnectProviderDialog } from "./ConnectProviderDialog";
 import { ModelEditDialog } from "./ModelEditDialog";
 import { ProviderBlock } from "./ProviderBlock";
-import { ArchivedRow, PlaceholderRow, Section, SegRow, ToggleRow, ValueRow } from "./rows";
-import { BoxIcon, BranchIcon, ClockIcon, CubeIcon, GearIcon, GitIcon, LinkIcon, ShieldIcon, SunIcon, WinIcon } from "./icons";
+import { ArchivedRow, PlaceholderRow, Section, SegRow, SelectRow, InputRow, ToggleRow, ValueRow } from "./rows";
+import { BoxIcon, BranchIcon, ClockIcon, CubeIcon, GearIcon, GitIcon, LinkIcon, SunIcon, WinIcon } from "./icons";
 
 type SectionId =
-  | "general" | "appearance" | "models" | "configuration" | "personalization"
+  | "general" | "appearance" | "models" | "personalization"
   | "mcp" | "git" | "environments" | "worktrees" | "archived";
 
 const SECTIONS: { id: SectionId; label: string; icon: ReactElement }[] = [
   { id: "general", label: "通用", icon: <GearIcon /> },
   { id: "appearance", label: "外观", icon: <SunIcon /> },
   { id: "models", label: "模型", icon: <CubeIcon /> },
-  { id: "configuration", label: "配置", icon: <ShieldIcon /> },
   { id: "personalization", label: "个性化", icon: <ClockIcon /> },
   { id: "mcp", label: "MCP 服务器", icon: <LinkIcon /> },
   { id: "git", label: "Git", icon: <GitIcon /> },
@@ -88,26 +87,89 @@ export function SettingsPanel({ open, onClose, source }: { open: boolean; onClos
         <div className="settings-content">
           <div className="settings-content-inner" ref={contentRef}>
             {section === "general" && (
-              <Section title="通用" desc="命令输出在对话里的展示量与生成时的电源行为。">
+              <Section title="通用" desc="模型、推理强度与权限模式随消息发送；输出展示与输入行为即时生效。">
+                <SelectRow
+                  label="模型"
+                  value={settings.model}
+                  onChange={(v) => set({ model: v })}
+                  options={(() => {
+                    const opts = providers
+                      .flatMap((p) => p.models.filter((m) => m.visible))
+                      .map((m) => ({ value: m.id, label: m.name }));
+                    if (settings.model && !opts.some((o) => o.value === settings.model)) {
+                      opts.unshift({ value: settings.model, label: settings.model });
+                    }
+                    return opts;
+                  })()}
+                  hint="默认模型（模型管理在「模型」分区）"
+                />
+                {(() => {
+                  const cur = providers.flatMap((p) => p.models).find((m) => m.id === settings.model);
+                  const opts = EFFORTS.filter((e) => cur?.efforts.includes(e.id));
+                  if (opts.length === 0) return <ValueRow label="推理强度" value="模型默认" hint="当前模型未声明推理能力（在模型配置里勾选「推理」标签开启）" />;
+                  return (
+                    <SegRow label="推理强度">
+                      <div className="panel-seg">
+                        {opts.map((e) => (
+                          <button key={e.id} type="button" className={"seg-btn" + (settings.effort === e.id ? " on" : "")} onClick={() => set({ effort: e.id })}>
+                            {e.label}
+                          </button>
+                        ))}
+                      </div>
+                    </SegRow>
+                  );
+                })()}
+                <SegRow label="高危操作">
+                  <div className="panel-seg">
+                    {APPROVALS.map((a) => (
+                      <button key={a.id} type="button" title={a.hint} className={"seg-btn" + (settings.approval === a.id ? " on" : "")} onClick={() => set({ approval: a.id })}>
+                        {a.label}
+                      </button>
+                    ))}
+                  </div>
+                </SegRow>
                 <ToggleRow
                   label="命令输出完整展示"
                   hint="关闭时工具结果默认折叠为摘要行"
                   checked={settings.showFullOutput}
                   onChange={(v) => set({ showFullOutput: v })}
                 />
-                <ValueRow label="生成时阻止休眠" value="尚未实现" hint="当前不会阻止系统休眠" />
+                <ToggleRow
+                  label="生成时阻止休眠"
+                  hint="生成期间保持唤醒（壳接管后完全生效）"
+                  checked={settings.keepAwake}
+                  onChange={(v) => set({ keepAwake: v })}
+                />
                 <ToggleRow
                   label="Enter 发送（关闭则 Cmd+Enter 多行）"
                   hint="单行输入模式"
                   checked={settings.enterToSend}
                   onChange={(v) => set({ enterToSend: v })}
                 />
+                <ValueRow label="配置文件" value="models.json" hint="路径由后端启动参数决定" />
               </Section>
             )}
 
             {section === "appearance" && (
               <Section title="外观" desc="主题与界面字体。字体选择作用于全局，含终端块。">
-                <ValueRow label="主题" value="浅色" hint="跟随系统 / 浅色 / 深色" />
+                <SegRow label="主题">
+                  <div className="panel-seg">
+                    {([
+                      { id: "light", label: "浅色" },
+                      { id: "dark", label: "深色" },
+                      { id: "system", label: "跟随系统" },
+                    ] as const).map((t) => (
+                      <button
+                        key={t.id}
+                        type="button"
+                        className={"seg-btn" + (settings.theme === t.id ? " on" : "")}
+                        onClick={() => set({ theme: t.id })}
+                      >
+                        {t.label}
+                      </button>
+                    ))}
+                  </div>
+                </SegRow>
                 <ValueRow label="界面字体" value="Inter" hint="13px" />
                 <ValueRow label="代码字体" value="JetBrains Mono" hint="11px" />
               </Section>
@@ -128,40 +190,16 @@ export function SettingsPanel({ open, onClose, source }: { open: boolean; onClos
               </Section>
             )}
 
-            {section === "configuration" && (
-              <Section title="配置" desc="模型、推理强度与高危操作确认模式。推理强度仅对声明推理能力的模型显示，随消息发送生效。">
-                <ValueRow label="模型" value={settings.model} hint={providers.flatMap((p) => p.models).find((m) => m.id === settings.model)?.desc} />
-                {(() => {
-                  const cur = providers.flatMap((p) => p.models).find((m) => m.id === settings.model);
-                  const opts = EFFORTS.filter((e) => cur?.efforts.includes(e.id));
-                  if (opts.length === 0) return <ValueRow label="推理强度" value="模型默认" hint="当前模型未声明推理能力（在模型配置里勾选「推理」标签开启）" />;
-                  return (
-                    <SegRow label="推理强度">
-                      <div className="panel-seg">
-                        {opts.map((e) => (
-                          <button key={e.id} type="button" className={"seg-btn" + (settings.effort === e.id ? " on" : "")} onClick={() => set({ effort: e.id })}>
-                            {e.label}
-                          </button>
-                        ))}
-                      </div>
-                    </SegRow>
-                  );
-                })()}
-                <ValueRow label="高危操作" value={APPROVALS.find((a) => a.id === settings.approval)?.label ?? ""} hint={APPROVALS.find((a) => a.id === settings.approval)?.hint} />
-                <ValueRow label="配置文件" value="models.json" hint="路径由后端启动参数决定" />
-              </Section>
-            )}
-
             {section === "personalization" && (
               <Section title="个性化" desc="回答的默认语气；自定义指令写入 AGENTS.md。">
-                <SegRow label="语气（尚未实现）">
+                <SegRow label="语气">
                   <div className="panel-seg">
                     {([
                       { id: "friendly", label: "友好" },
                       { id: "pragmatic", label: "务实" },
                       { id: "none", label: "无" },
                     ] as const).map((p) => (
-                      <button key={p.id} type="button" disabled className={"seg-btn" + (settings.personality === p.id ? " on" : "")} onClick={() => set({ personality: p.id })}>
+                      <button key={p.id} type="button" className={"seg-btn" + (settings.personality === p.id ? " on" : "")} onClick={() => set({ personality: p.id })}>
                         {p.label}
                       </button>
                     ))}
@@ -179,7 +217,14 @@ export function SettingsPanel({ open, onClose, source }: { open: boolean; onClos
 
             {section === "git" && (
               <Section title="Git" desc="分支命名与提交信息生成方式。">
-                <ValueRow label="默认分支" value="main" hint="新任务的初始分支" />
+                <InputRow
+                  label="默认分支"
+                  hint="新任务的初始分支"
+                  value={settings.gitBranch}
+                  onChange={(v) => set({ gitBranch: v })}
+                  placeholder="main"
+                  mono
+                />
                 <ValueRow label="提交信息提示词" value="默认" hint="生成 commit message 的指令" />
               </Section>
             )}

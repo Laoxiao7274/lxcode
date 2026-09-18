@@ -55,6 +55,53 @@ export function SegRow({ label, children }: { label: string; children: ReactNode
   );
 }
 
+/** 文本输入行（可配置的字符串——如 Git 默认分支）。 */
+export function InputRow({ label, hint, value, onChange, placeholder, mono }: {
+  label: string; hint?: string; value: string; onChange: (v: string) => void;
+  placeholder?: string; mono?: boolean;
+}) {
+  return (
+    <div className="set-row">
+      <div className="set-row-text">
+        <div className="set-row-label">{label}</div>
+        {hint && <div className="set-row-hint">{hint}</div>}
+      </div>
+      <input
+        className={"set-row-input" + (mono ? " mono" : "")}
+        value={value}
+        placeholder={placeholder}
+        onChange={(e) => onChange(e.target.value)}
+        aria-label={label}
+      />
+    </div>
+  );
+}
+
+/** 下拉选择行（可配置的枚举——如默认模型）。 */
+export function SelectRow({ label, hint, value, onChange, options, ariaLabel }: {
+  label: string; hint?: string; value: string; onChange: (v: string) => void;
+  options: { value: string; label: string; desc?: string }[]; ariaLabel?: string;
+}) {
+  return (
+    <div className="set-row">
+      <div className="set-row-text">
+        <div className="set-row-label">{label}</div>
+        {hint && <div className="set-row-hint">{hint}</div>}
+      </div>
+      <select
+        className="set-row-select"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        aria-label={ariaLabel ?? label}
+      >
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>{o.label}</option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
 export function PlaceholderRow({ label, hint }: { label: string; hint?: string }) {
   return (
     <div className="set-row">
