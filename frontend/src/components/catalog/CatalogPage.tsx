@@ -4,20 +4,82 @@
 // 承载随后端化接插件机制。页签切目录（Segmented），条目卡网格；
 // 点卡片开文档弹窗。
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { blankModule, useAgents, type ContextModuleSpec, type ToolSpec } from "../../shared/agents";
+import { blankModule, useAgents, type ContextModuleSpec, type McServerSpec, type ToolSpec } from "../../shared/agents";
 import { downloadJson } from "../../shared/download";
 import { serializeModuleExport } from "../../shared/module-import";
 import { serializeToolExport } from "../../shared/tool-import";
 import { staggerIn } from "../../shared/motion";
-import { Button, Segmented } from "../form";
+import { Button, Segmented, Toggle } from "../form";
 import { DocDialog, type Focus } from "./DocDialog";
+import { McServerEditor } from "./McServerEditor";
 import { ModuleEditor } from "./ModuleEditor";
 import { ModuleImportDialog } from "./ModuleImportDialog";
 import { ToolEditor } from "./ToolEditor";
 import { ToolImportDialog } from "./ToolImportDialog";
 import { IconDownload, IconPencil, IconTrash } from "../icons";
 
-type Tab = "tools" | "skills" | "templates";
+type Tab = "tools" | "skills" | "templates" | "mcp";
+
+/** MCP 服务器卡：名称 + 命令（mono）+ 暴露工具数 + 启停开关。 */
+function McServerCard({ server, toolCount, onEdit, onToggle, onDelete }: {
+  server: McServerSpec;
+  toolCount: number;
+  onEdit?: () => void;
+  onToggle?: () => void;
+  onDelete?: () => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const interactive = !!onEdit || !!onDelete;
+  return (
+    <div
+      className="cg-card"
+      role={interactive ? "button" : undefined}
+      tabIndex={interactive ? 0 : undefined}
+      title={server.desc}
+      onClick={onEdit}
+      onKeyDown={interactive && onEdit ? (e) => e.key === "Enter" && onEdit() : undefined}
+    >
+      <div className="cg-card-top">
+        <span className="cg-card-title">{server.name}</span>
+        <span className="cg-card-pills">
+          <span className={"ag-pill " + (server.enabled ? "risk-low" : "src")}>
+            {server.enabled ? "已连接" : "未连接"}
+          </span>
+          {server.custom && <span className="ag-pill src">自定义</span>}
+          {onToggle && (
+            <Toggle on={server.enabled} onChange={onToggle} ariaLabel={server.enabled ? "断开" : "连接"} />
+          )}
+        </span>
+      </div>
+      <div className="cg-card-desc">{server.desc}</div>
+      <div className="cg-card-meta" title={server.command}>{server.command}</div>
+      <div className="cg-card-meta">{toolCount} 个工具 · {server.enabled ? "能力可用" : "能力挂起"}</div>
+      {interactive && (
+        <div className="cg-card-actions">
+          {onEdit && (
+            <button type="button" className="ag-mini-btn" onClick={(e) => { e.stopPropagation(); onEdit(); }}>
+              <IconPencil /> 编辑
+            </button>
+          )}
+          {onDelete && server.custom && (
+            <button
+              type="button"
+              className={"ag-mini-btn danger" + (confirming ? " confirm" : "")}
+              onClick={(e) => {
+                e.stopPropagation();
+                if (confirming) onDelete();
+                else setConfirming(true);
+              }}
+              onBlur={() => setConfirming(false)}
+            >
+              <IconTrash /> {confirming ? "确认删除" : "删除"}
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 /** 条目卡：标题行（mono id + pills）+ 摘要；自建条目带编辑/删除（两步确认）。 */
 function EntryCard({
@@ -136,11 +198,12 @@ function ModuleCard({ mod, onOpen, onEdit, onDelete }: {
 }
 
 export function CatalogPage() {
-  const { modules, addModule, updateModule, removeModule, tools, addTools, updateTool, removeTool } = useAgents();
+  const { modules, addModule, updateModule, removeModule, tools, addTools, updateTool, removeTool, mcpServers, addMcServer, updateMcServer, removeMcServer } = useAgents();
   const [tab, setTab] = useState<Tab>("tools");
   const [focus, setFocus] = useState<Focus | null>(null);
   const [editing, setEditing] = useState<{ mod: ContextModuleSpec; isNew: boolean } | null>(null);
   const [editingTool, setEditingTool] = useState<{ tool: ToolSpec; isNew: boolean } | null>(null);
+  const [editingServer, setEditingServer] = useState<{ server: McServerSpec; isNew: boolean } | null>(null);
   const [importing, setImporting] = useState<"tools" | "modules" | null>(null);
   const gridRef = useRef<HTMLDivElement>(null);
 
@@ -157,11 +220,13 @@ export function CatalogPage() {
   const customOfTab = (tab === "templates" ? templates : skills).filter((m) => m.custom);
   const moduleTabName = tab === "templates" ? "模板" : "技能";
   const customTools = tools.filter((t) => t.custom);
+  const mcpTools = tools.filter((t) => t.source === "mcp");
 
   const tabs = [
     { value: "tools" as const, label: `工具 · ${tools.length}`, hint: "内置、第三方与 MCP 工具" },
     { value: "skills" as const, label: `技能 · ${skills.length}`, hint: "领域知识与方法（多选注入）" },
     { value: "templates" as const, label: `模板 · ${templates.length}`, hint: "工作方式模板（单选注入）" },
+    { value: "mcp" as const, label: `MCP · ${mcpServers.length}`, hint: "MCP 服务器接入（能力以工具进目录）" },
   ];
 
   const exportModules = () => {
@@ -178,7 +243,7 @@ export function CatalogPage() {
       <div className="ag-head">
         <div>
           <div className="ag-title">目录</div>
-          <div className="ag-sub">可插拔的能力目录——工具、技能与模板；Agent 组装时从这里勾选注入</div>
+          <div className="ag-sub">可插拔的能力目录——工具、技能、模板与 MCP 服务器；Agent 组装时从这里勾选注入</div>
         </div>
         <div className="cg-head-actions">
           {tab === "tools" ? (
@@ -208,6 +273,17 @@ export function CatalogPage() {
                 新建工具
               </Button>
             </>
+          ) : tab === "mcp" ? (
+            <Button
+              variant="primary"
+              data-cg="new-server"
+              onClick={() => setEditingServer({ server: { id: "", name: "", desc: "", command: "", enabled: true, custom: true }, isNew: true })}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true">
+                <path d="M12 5v14M5 12h14" />
+              </svg>
+              添加服务器
+            </Button>
           ) : (
             <>
               {customOfTab.length > 0 && (
@@ -272,8 +348,34 @@ export function CatalogPage() {
             onDelete={m.custom ? () => removeModule(m.id) : undefined}
           />
         ))}
+        {tab === "mcp" && mcpServers.map((s) => (
+          <McServerCard
+            key={s.id}
+            server={s}
+            toolCount={mcpTools.filter((t) => t.server === s.id).length}
+            onEdit={() => setEditingServer({ server: s, isNew: false })}
+            onToggle={() => updateMcServer({ ...s, enabled: !s.enabled })}
+            onDelete={s.custom ? () => removeMcServer(s.id) : undefined}
+          />
+        ))}
       </div>
+      {tab === "mcp" && (
+        <div className="cg-new-note">MCP 服务器是接入单元——注册后暴露的能力以工具形式进工具目录（source=MCP）；停用服务器 = 能力挂起（工具保留）。</div>
+      )}
       {focus && <DocDialog focus={focus} onClose={() => setFocus(null)} />}
+      {editingServer && (
+        <McServerEditor
+          key={editingServer.server.id || "new"}
+          initial={editingServer.server}
+          isNew={editingServer.isNew}
+          onCancel={() => setEditingServer(null)}
+          onSave={(saved) => {
+            if (editingServer.isNew) addMcServer(saved);
+            else updateMcServer(saved);
+            setEditingServer(null);
+          }}
+        />
+      )}
       {editingTool && (
         <ToolEditor
           key={editingTool.tool.id || "new"}

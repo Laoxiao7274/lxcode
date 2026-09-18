@@ -29,6 +29,21 @@ export interface ToolSpec {
   doc?: string;
   /** 用户导入条目（可删除）；内置条目只读。导入格式见 shared/tool-import.ts。 */
   custom?: boolean;
+  /** MCP 工具的来源服务器 id（source=mcp 时有——MCP 版块按服务器聚合）。 */
+  server?: string;
+}
+
+/** MCP 服务器（目录第四版块的条目）：接入单元——服务器注册后暴露的
+ *  能力（工具）进工具目录（source=mcp + server 指回）。 */
+export interface McServerSpec {
+  id: string;
+  name: string;
+  desc: string;
+  /** 启动命令或 URL（stdio / SSE——后端化时的真实接入面）。 */
+  command: string;
+  enabled: boolean;
+  /** 用户自建（可编辑/删除）；演示种子只读。 */
+  custom?: boolean;
 }
 
 /** 组装出的 Agent 定义（名单条目；运行实例是后续内核的事）。 */
@@ -190,17 +205,19 @@ export const THIRD_PARTY_TOOLS: ToolSpec[] = [
     desc: "MCP 文件系统服务（跨进程文件操作）",
     risk: "high",
     source: "mcp",
+    server: "filesystem",
     params: [
       { name: "op", type: "enum", required: true, desc: "read / list / write" },
       { name: "path", type: "string", required: true },
     ],
-    doc: "MCP 文件系统服务（跨进程）。\n\nop 枚举 read / list / write；写操作高危——走确认门。",
+    doc: "MCP 文件系统服务。\n\nop 枚举 read / list / write；写操作高危——走确认门。",
   },
   {
     id: "mcp:web-search",
     desc: "MCP 网页检索服务——公网搜索与摘要",
     risk: "low",
     source: "mcp",
+    server: "web-search",
     params: [
       { name: "query", type: "string", required: true, desc: "检索词" },
       { name: "limit", type: "int", desc: "结果条数上限" },
@@ -212,11 +229,37 @@ export const THIRD_PARTY_TOOLS: ToolSpec[] = [
     desc: "MCP SQLite 服务——会话库之外的独立数据查询",
     risk: "low",
     source: "mcp",
+    server: "sqlite",
     params: [
       { name: "db", type: "string", required: true, desc: "数据库文件路径" },
       { name: "sql", type: "string", required: true, desc: "只读查询" },
     ],
     doc: "MCP SQLite 服务。\n\n只读查询通道（SELECT）；写操作走后端自己的存储——不共用。",
+  },
+];
+
+/** MCP 服务器目录（第四版块的种子——与 mcp: 工具的 server 字段对应）。 */
+const MC_SERVERS: McServerSpec[] = [
+  {
+    id: "filesystem",
+    name: "filesystem",
+    desc: "官方文件系统服务——读写/list 跨进程文件操作",
+    command: "npx -y @modelcontextprotocol/server-filesystem /",
+    enabled: true,
+  },
+  {
+    id: "web-search",
+    name: "web-search",
+    desc: "网页检索服务——公网搜索与摘要",
+    command: "npx -y @mcp/web-search-server",
+    enabled: true,
+  },
+  {
+    id: "sqlite",
+    name: "sqlite",
+    desc: "独立数据只读查询（SELECT 通道）",
+    command: "uvx mcp-server-sqlite",
+    enabled: false,
   },
 ];
 
@@ -475,6 +518,11 @@ interface AgentsValue {
   addTools: (tools: ToolSpec[]) => void;
   updateTool: (tool: ToolSpec) => void;
   removeTool: (id: string) => void;
+  /** MCP 服务器目录（第四版块——接入单元；能力以 source=mcp 工具进工具目录）。 */
+  mcpServers: McServerSpec[];
+  addMcServer: (server: McServerSpec) => void;
+  updateMcServer: (server: McServerSpec) => void;
+  removeMcServer: (id: string) => void;
 }
 
 const Ctx = createContext<AgentsValue | null>(null);
@@ -515,6 +563,16 @@ export function AgentsProvider({ children }: { children: ReactNode }) {
     (id: string) => setTools((cur) => cur.filter((t) => t.id !== id)),
     [],
   );
+  const [mcpServers, setMcServers] = useState<McServerSpec[]>(MC_SERVERS);
+  const addMcServer = useCallback((s: McServerSpec) => setMcServers((list) => [...list, s]), []);
+  const updateMcServer = useCallback(
+    (s: McServerSpec) => setMcServers((list) => list.map((x) => (x.id === s.id ? s : x))),
+    [],
+  );
+  const removeMcServer = useCallback(
+    (id: string) => setMcServers((list) => list.filter((x) => x.id !== id)),
+    [],
+  );
 
   const value = useMemo(
     () => ({
@@ -523,12 +581,14 @@ export function AgentsProvider({ children }: { children: ReactNode }) {
       sessionDelegates, setSessionDelegates, resetSessionDelegates,
       modules, addModule, updateModule, removeModule,
       tools, addTools, updateTool, removeTool,
+      mcpServers, addMcServer, updateMcServer, removeMcServer,
     }),
     [
       agents, addAgent, updateAgent, removeAgent,
       activeAgentId, sessionDelegates, resetSessionDelegates,
       modules, addModule, updateModule, removeModule,
       tools, addTools, updateTool, removeTool,
+      mcpServers, addMcServer, updateMcServer, removeMcServer,
     ],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
