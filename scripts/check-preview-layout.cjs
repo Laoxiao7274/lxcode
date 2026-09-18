@@ -636,6 +636,63 @@ app.whenReady().then(async () => {
     log("sakura-tunnel-deleted", JSON.stringify(skDeleted));
     assert.ok(skDeleted.empty, "conn: 删除后应回到空态");
 
+    // 软件更新：设置 → 通用 → 检查更新 → 新版本+说明 → 下载（进度）→ 就绪 → 重启回最新
+    await win.webContents.executeJavaScript(`document.querySelector(".settings-row").click()`);
+    await new Promise((r) => setTimeout(r, 400));
+    const suIdle = await win.webContents.executeJavaScript(`(() => {
+      const blk = document.querySelector(".set-update");
+      return blk ? {
+        ver: blk.textContent.includes("0.1.0"),
+        checkBtn: !!blk.querySelector('[data-su="check"]'),
+      } : { err: "no-block" };
+    })()`);
+    log("update-idle", JSON.stringify(suIdle));
+    assert.ok(!suIdle.err && suIdle.ver && suIdle.checkBtn, "settings: 通用分区应有版本号与检查入口 " + JSON.stringify(suIdle));
+    await win.webContents.executeJavaScript(`document.querySelector('[data-su="check"]').click()`);
+    const suChecking = await win.webContents.executeJavaScript(`(() => {
+      return { spinner: !!document.querySelector(".set-update .mset-spinner") };
+    })()`);
+    log("update-checking", JSON.stringify(suChecking));
+    assert.ok(suChecking.spinner, "settings: 检查中应有 spinner");
+    await new Promise((r) => setTimeout(r, 1200));
+    const suAvail = await win.webContents.executeJavaScript(`(() => {
+      const blk = document.querySelector(".set-update");
+      return {
+        newVer: blk.textContent.includes("0.2.0"),
+        notes: blk.querySelectorAll(".set-update-notes li").length,
+        dl: !!blk.querySelector('[data-su="download"]'),
+      };
+    })()`);
+    log("update-available", JSON.stringify(suAvail));
+    assert.ok(suAvail.newVer && suAvail.notes >= 3 && suAvail.dl, "settings: 应展示新版本与更新内容 " + JSON.stringify(suAvail));
+    await win.webContents.executeJavaScript(`document.querySelector('[data-su="download"]').click()`);
+    await new Promise((r) => setTimeout(r, 400));
+    const suDl = await win.webContents.executeJavaScript(`(() => {
+      return {
+        bar: !!document.querySelector(".set-update-progress-bar"),
+        pct: document.querySelector(".set-update-progress-row .mono")?.textContent,
+      };
+    })()`);
+    log("update-downloading", JSON.stringify(suDl));
+    assert.ok(suDl.bar, "settings: 下载中应有进度条");
+    // 等下载完成（模拟 2.5s 内）
+    await new Promise((r) => setTimeout(r, 3000));
+    const suReady = await win.webContents.executeJavaScript(`(() => {
+      return {
+        ready: !!document.querySelector(".set-update-status.ok"),
+        restart: !!document.querySelector('[data-su="restart"]'),
+      };
+    })()`);
+    log("update-ready", JSON.stringify(suReady));
+    assert.ok(suReady.ready && suReady.restart, "settings: 下载完成应进入就绪态");
+    await win.webContents.executeJavaScript(`document.querySelector('[data-su="restart"]').click()`);
+    const suLatest = await win.webContents.executeJavaScript(`(() => {
+      return { latest: document.querySelector(".set-update")?.textContent.includes("已是最新版本") };
+    })()`);
+    log("update-restarted", JSON.stringify(suLatest));
+    assert.ok(suLatest.latest, "settings: 重启后应显示已是最新");
+    await win.webContents.executeJavaScript(`document.querySelector(".settings-back").click()`);
+
     assert.deepEqual(errors, [], '页面不应出现控制台错误');
     log('PASS: desktop / mobile / shell layout');
     finish(0);

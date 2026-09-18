@@ -11,6 +11,7 @@ import { useEscape } from "../../shared/popover";
 import { ConnectProviderDialog } from "./ConnectProviderDialog";
 import { ModelEditDialog } from "./ModelEditDialog";
 import { ProviderBlock } from "./ProviderBlock";
+import { UpdateBlock } from "./UpdateBlock";
 import { ArchivedRow, PlaceholderRow, Section, SegRow, SelectRow, InputRow, ToggleRow, ValueRow } from "./rows";
 import { BoxIcon, BranchIcon, ClockIcon, CubeIcon, GearIcon, GitIcon, SunIcon, WinIcon } from "./icons";
 
@@ -135,6 +136,7 @@ export function SettingsPanel({ open, onClose, source }: { open: boolean; onClos
                   onChange={(v) => set({ enterToSend: v })}
                 />
                 <ValueRow label="配置文件" value="models.json" hint="路径由后端启动参数决定" />
+                <UpdateBlock />
               </Section>
             )}
 

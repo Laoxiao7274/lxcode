@@ -3099,6 +3099,107 @@ body:has(.window-stage) {
 @keyframes mset-spin {
   to { transform: rotate(360deg); }
 }
+/* ===== 软件更新（设置 · 通用底部 .set-update） ===== */
+.set-update {
+  margin-top: 4px;
+}
+.set-update-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.set-update-ver {
+  font-size: 11px;
+  color: var(--fg-faint);
+}
+.set-update-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  padding: 6px 0;
+}
+.set-update-status.ok {
+  color: var(--success);
+}
+.set-update-panel {
+  background: var(--bg-side);
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-top: 8px;
+}
+.set-update-new {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.set-update-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--success);
+  animation: pulse 2.4s ease-in-out infinite;
+}
+.set-update-size {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--fg-faint);
+}
+.set-update-notes {
+  margin: 8px 0 0;
+  padding: 0 0 0 16px;
+  list-style: none;
+}
+.set-update-notes li {
+  font-size: 12px;
+  color: var(--fg-muted);
+  line-height: 1.7;
+  position: relative;
+}
+.set-update-notes li::before {
+  content: "";
+  position: absolute;
+  left: -12px;
+  top: 0.7em;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--border-strong);
+}
+.set-update-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+.set-update-progress-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.set-update-progress {
+  flex: 1;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--border-soft);
+  overflow: hidden;
+}
+.set-update-progress-bar {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--fg);
+  transition: width 80ms linear;
+}
+.set-update-hint {
+  font-size: 10.5px;
+  color: var(--fg-faint);
+  margin-top: 6px;
+}
 .mset-empty {
   display: flex;
   align-items: center;
