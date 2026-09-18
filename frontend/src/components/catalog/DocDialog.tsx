@@ -10,12 +10,21 @@ import { useEscape } from "../../shared/popover";
 /** 文档焦点的指向（工具 / 上下文模块）。 */
 export type Focus = { kind: "tool" | "module"; id: string };
 
-/** 工具文档体（lede 摘要 + 盒装参数表 + markdown 文档）——DocDialog 与
- *  工具编写器的实时预览共用同一渲染（尺寸由上下文作用域分档）。 */
+/** 工具文档体（lede 摘要 + 执行声明 + 盒装参数表 + markdown 文档）——
+ *  DocDialog 与工具编写器的实时预览共用同一渲染（尺寸由上下文作用域分档）。 */
 export function ToolDocBody({ tool }: { tool: ToolSpec }) {
   return (
     <>
       <div className="ag-detail-desc">{tool.desc}</div>
+      {tool.command && (
+        <>
+          <div className="ag-sec-label">执行</div>
+          <div className="dd-cmd">
+            <span className="dd-cmd-main" title={tool.command}>{tool.command}</span>
+            {tool.example && <span className="dd-cmd-eg" title={tool.example}># {tool.example}</span>}
+          </div>
+        </>
+      )}
       {tool.params && tool.params.length > 0 && (
         <>
           <div className="ag-sec-label">参数 · {tool.params.length}</div>

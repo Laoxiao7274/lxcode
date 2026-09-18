@@ -419,6 +419,13 @@ app.whenReady().then(async () => {
       setter.call(el, "表单生成的冒烟工具");
       el.dispatchEvent(new Event("input", { bubbles: true }));
     })()`);
+    // 运行命令必填（可执行载体）——按占位符匹配
+    await win.webContents.executeJavaScript(`(() => {
+      const el = [...document.querySelectorAll("input.fd-input")].find((i) => i.placeholder.includes("参数用 {名称} 占位"));
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+      setter.call(el, "smoke-tool {input}");
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    })()`);
     await win.webContents.executeJavaScript(`document.querySelector('[data-cg="save"]').click()`);
     const afterToolCreate = await win.webContents.executeJavaScript(`(() => {
       return {

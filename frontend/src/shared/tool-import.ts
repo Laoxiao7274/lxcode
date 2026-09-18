@@ -8,7 +8,9 @@
 //       "risk": "low" | "high",        // 必填（风险分级）
 //       "source": "builtin" | "binary",  // 必填（来源——MCP 工具不在此列：
 //                                       //   由 MCP 服务器注册后自动暴露）
-//       "params": [{ "name": "path", "type": "string", "required": true, "desc": "…" }],
+//       "command": "my-tool {input} --json",  // binary 的执行声明：参数占位 {name}
+//       "example": "my-tool foo.json --json", // 可选：命令示例
+//       "params": [{ "name": "input", "type": "string", "required": true, "desc": "…" }],
 //       "doc": "markdown 扩展文档（可选）"
 //     }]
 //   }
@@ -51,6 +53,8 @@ export function parseToolImport(text: string, existingIds: Set<string>): ToolImp
       return { ok: false, error: `${at}.source 必须是 builtin / binary（MCP 工具由服务器注册生成，不走此格式）` };
     }
     if (e.doc !== undefined && typeof e.doc !== "string") return { ok: false, error: `${at}.doc 必须是字符串` };
+    if (e.command !== undefined && typeof e.command !== "string") return { ok: false, error: `${at}.command 必须是字符串` };
+    if (e.example !== undefined && typeof e.example !== "string") return { ok: false, error: `${at}.example 必须是字符串` };
 
     let params: ToolSpec["params"];
     if (e.params !== undefined) {
@@ -78,6 +82,8 @@ export function parseToolImport(text: string, existingIds: Set<string>): ToolImp
       source: e.source,
       ...(params ? { params } : {}),
       ...(typeof e.doc === "string" && e.doc ? { doc: e.doc } : {}),
+      ...(typeof e.command === "string" && e.command.trim() ? { command: e.command.trim() } : {}),
+      ...(typeof e.example === "string" && e.example.trim() ? { example: e.example.trim() } : {}),
       custom: true,
     });
   }
@@ -95,6 +101,8 @@ export function serializeToolExport(tools: ToolSpec[]): string {
         desc: t.desc,
         risk: t.risk,
         source: t.source,
+        ...(t.command ? { command: t.command } : {}),
+        ...(t.example ? { example: t.example } : {}),
         ...(t.params && t.params.length > 0 ? { params: t.params } : {}),
         ...(t.doc ? { doc: t.doc } : {}),
       })),

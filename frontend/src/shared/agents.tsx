@@ -31,6 +31,14 @@ export interface ToolSpec {
   custom?: boolean;
   /** MCP 工具的来源服务器 id（source=mcp 时有——MCP 版块按服务器聚合）。 */
   server?: string;
+  /** 运行命令（source=binary 的自定义工具——参数占位 {name}，
+   *  如 `rg {pattern} {path}`；后端化时按模板填充后 spawn）。 */
+  command?: string;
+  /** 运行命令的固定示例参数（调用演示——后端化时给模型看的用法）。 */
+  example?: string;
+  /** 程序包文件名（zip/exe 上传——原型存声明；后端化时落盘
+   *  plugins/ 目录并解压找入口）。 */
+  packageFile?: string;
 }
 
 /** MCP 服务器（目录第四版块的条目）：接入单元——服务器注册后暴露的

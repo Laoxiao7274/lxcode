@@ -35,6 +35,7 @@ export function ToolEditor({
   const [tool, setTool] = useState<ToolSpec>(initial);
   // 参数面独立编辑（行级增删改），保存时清洗合并
   const [params, setParams] = useState<ToolParam[]>(initial.params ?? []);
+  const packageRef = useRef<HTMLInputElement>(null);
   const { tools } = useAgents();
   const formRef = useRef<HTMLDivElement>(null);
 
@@ -49,7 +50,8 @@ export function ToolEditor({
 
   const id = tool.id.trim();
   const idTaken = id !== "" && tools.some((t) => t.id === id && t.id !== initial.id);
-  const savable = id !== "" && !idTaken && tool.desc.trim() !== "";
+  // 工具要有可执行载体：运行命令必填（程序包可选——不上传则要求命令在 PATH）
+  const savable = id !== "" && !idTaken && tool.desc.trim() !== "" && (tool.command ?? "").trim() !== "";
 
   const set = <K extends keyof ToolSpec>(key: K, value: ToolSpec[K]) =>
     setTool((d) => ({ ...d, [key]: value }));
@@ -116,6 +118,69 @@ export function ToolEditor({
                 <div className="cg-field">
                   <span className="cg-field-label">风险</span>
                   <Segmented options={RISK_OPTS} value={tool.risk} onChange={(v) => set("risk", v)} ariaLabel="风险" />
+                </div>
+              </section>
+
+              <section className="ag-sec">
+                <div className="ag-sec-title">执行</div>
+                <div className="cg-field">
+                  <span className="cg-field-label">运行命令</span>
+                  <TextInput
+                    className="cg-id-input"
+                    value={tool.command ?? ""}
+                    onChange={(v) => set("command", v)}
+                    placeholder="如：rg {pattern} {path}——参数用 {名称} 占位"
+                    aria-label="运行命令"
+                  />
+                  <div className="cg-field-hint">
+                    调用时按参数填充模板后执行（后端化时 spawn 进程）；
+                    命令在 PATH 或程序包内。
+                  </div>
+                </div>
+                <div className="cg-field">
+                  <span className="cg-field-label">命令示例</span>
+                  <TextInput
+                    className="cg-id-input"
+                    value={tool.example ?? ""}
+                    onChange={(v) => set("example", v)}
+                    placeholder="如：rg {pattern} --json {path}"
+                    aria-label="命令示例"
+                  />
+                </div>
+                <div className="cg-field">
+                  <span className="cg-field-label">程序包（可选）</span>
+                  <div className="te-package-row">
+                    <input
+                      ref={packageRef}
+                      type="file"
+                      accept=".zip,.exe,.tar.gz,.tgz"
+                      className="ti-file-hidden"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        set("packageFile", f ? f.name : "");
+                        e.target.value = "";
+                      }}
+                    />
+                    <Button variant="ghost" data-cg="pick-package" onClick={() => packageRef.current?.click()}>
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d="M13 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V10Z" />
+                        <path d="M13 3v7h7" />
+                      </svg>
+                      选择文件
+                    </Button>
+                    {tool.packageFile ? (
+                      <span className="te-package-name" title={tool.packageFile}>
+                        {tool.packageFile}
+                        <button type="button" className="te-package-clear" onClick={() => set("packageFile", "")} aria-label="移除程序包">
+                          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true">
+                            <path d="M18 6 6 18M6 6l12 12" />
+                          </svg>
+                        </button>
+                      </span>
+                    ) : (
+                      <span className="te-package-hint">zip / exe——不上传则要求命令在 PATH</span>
+                    )}
+                  </div>
                 </div>
               </section>
 
@@ -194,6 +259,8 @@ export function ToolEditor({
                       desc: tool.desc.trim(),
                       custom: true,
                       source: isNew ? FORM_SOURCE : tool.source,
+                      command: (tool.command ?? "").trim(),
+                      example: (tool.example ?? "").trim(),
                       ...(cleaned.length > 0 ? { params: cleaned } : {}),
                     })
                   }

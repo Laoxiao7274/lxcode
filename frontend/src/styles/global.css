@@ -3738,6 +3738,32 @@ body:has(.window-stage) {
   padding-top: 10px;
   border-top: 1px dashed var(--border-soft);
 }
+/* 执行声明块（运行命令 + 示例）——终端风格 */
+.dd-cmd {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: var(--term-bg);
+  border-radius: 9px;
+  padding: 10px 13px;
+  overflow: hidden;
+}
+.dd-cmd-main {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: #d4d4d4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dd-cmd-eg {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: #8e8e96;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 /* 宽版（模块编写器：正文编辑要空间——左表单右预览） */
 .ag-doc.ag-doc-wide {
   width: min(860px, calc(100% - 48px));
@@ -4328,6 +4354,45 @@ body:has(.window-stage) {
 .te-doc {
   min-height: 150px;
 }
+/* 工具编写器：程序包行（选择 + 文件名/提示） */
+.te-package-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.te-package-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  background: var(--bg-side);
+  border: 1px solid var(--border-soft);
+  border-radius: 7px;
+  padding: 4px 8px;
+  max-width: 280px;
+  overflow: hidden;
+}
+.te-package-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-faint);
+  background: none;
+  border: none;
+  padding: 2px;
+  cursor: pointer;
+  flex: none;
+}
+.te-package-clear:hover {
+  color: var(--danger);
+}
+.te-package-hint {
+  font-size: 11px;
+  color: var(--fg-faint);
+}
 .cg-id-input {
   font-family: var(--font-mono);
 }
@@ -4410,6 +4475,12 @@ body:has(.window-stage) {
   font-size: 12px;
   font-weight: 500;
   color: var(--fg);
+}
+/* 字段下的小字说明（运行命令的语义等） */
+.cg-field-hint {
+  font-size: 11px;
+  color: var(--fg-faint);
+  line-height: 1.5;
 }
 .cg-type-row {
   display: flex;

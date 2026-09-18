@@ -14,7 +14,8 @@ const FORMAT_EXAMPLE = `{
     "desc": "一句话说明",
     "risk": "low",
     "source": "binary",
-    "params": [{ "name": "path", "type": "string", "required": true }],
+    "command": "my-tool {input} --json",
+    "params": [{ "name": "input", "type": "string", "required": true }],
     "doc": "markdown 扩展文档（可选）"
   }]
 }`;
