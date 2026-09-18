@@ -246,6 +246,46 @@ app.whenReady().then(async () => {
     assert.ok(cat.page && cat.page.h > 300, "catalog: 目录页应可见");
     assert.ok(cat.cards >= 10, "catalog: 工具页签应有 10 个条目");
     assert.ok(cat.navOn, "catalog: 导航应高亮");
+    // 工具导入：坏 JSON → 错误内联；合法 JSON → 入目录（10→11）→ 两步删除回 10
+    await win.webContents.executeJavaScript(`document.querySelector('[data-cg="import"]').click()`);
+    const importDlg = await win.webContents.executeJavaScript(`(() => {
+      return { dialog: !!document.querySelector(".ag-doc"), input: !!document.querySelector(".ti-input") };
+    })()`);
+    log("tool-import-dialog", JSON.stringify(importDlg));
+    assert.ok(importDlg.dialog && importDlg.input, "catalog: 导入弹窗应有粘贴区");
+    await win.webContents.executeJavaScript(`(() => {
+      const el = document.querySelector(".ti-input");
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
+      setter.call(el, '{"version": 1, "tools": []}');
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    })()`);
+    await win.webContents.executeJavaScript(`document.querySelector('[data-cg="do-import"]').click()`);
+    const importErr = await win.webContents.executeJavaScript(`(() => {
+      return { warn: !!document.querySelector(".ag-doc-body .ag-warn") };
+    })()`);
+    log("tool-import-invalid", JSON.stringify(importErr));
+    assert.ok(importErr.warn, "catalog: 空 tools 数组应报错");
+    await win.webContents.executeJavaScript(`(() => {
+      const el = document.querySelector(".ti-input");
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
+      setter.call(el, '{"version":1,"tools":[{"id":"smoke-tool","desc":"冒烟导入工具","risk":"low","source":"binary"}]}');
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    })()`);
+    await win.webContents.executeJavaScript(`document.querySelector('[data-cg="do-import"]').click()`);
+    const afterImport = await win.webContents.executeJavaScript(`(() => {
+      return {
+        cards: document.querySelectorAll(".cg-card").length,
+        del: !!document.querySelector('[data-cg="del"]'),
+      };
+    })()`);
+    log("tool-imported", JSON.stringify(afterImport));
+    assert.strictEqual(afterImport.cards, 11, "catalog: 导入后工具应有 11 个条目");
+    assert.ok(afterImport.del, "catalog: 导入条目应有删除入口");
+    await win.webContents.executeJavaScript(`document.querySelector('[data-cg="del"]').click()`);
+    await win.webContents.executeJavaScript(`document.querySelector('[data-cg="del"]').click()`);
+    const afterToolDel = await win.webContents.executeJavaScript(`document.querySelectorAll(".cg-card").length`);
+    log("tool-import-deleted", afterToolDel);
+    assert.strictEqual(afterToolDel, 10, "catalog: 删除导入条目后应回到 10 个");
     await win.webContents.executeJavaScript(`document.querySelector(".cg-card").click()`);
     const catDoc = await win.webContents.executeJavaScript(`(() => {
       const el = document.querySelector(".ag-doc");

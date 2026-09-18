@@ -5,9 +5,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   AGENT_COLORS,
-  BUILTIN_TOOLS,
   MAIN_TOOL,
-  THIRD_PARTY_TOOLS,
   useAgents,
   useModelLabel,
   type AgentDef,
@@ -26,18 +24,16 @@ const APPROVAL_OPTS = [
   { value: "strict" as const, label: "只读", hint: "变更类工具直接拒绝，错误回填模型" },
 ];
 
-const ALL_TOOLS = () => [MAIN_TOOL, ...BUILTIN_TOOLS, ...THIRD_PARTY_TOOLS];
-
 /** 紧凑详情面板：跟随 chip 焦点（选中与查看的快速通道）；
  *  点整卡打开完整文档弹窗——预览截断，长文进弹窗。 */
 function DetailPanel({ focus, onOpen }: { focus: Focus | null; onOpen: () => void }) {
   const enterRef = useEnterRef<HTMLDivElement>(
-    { opacity: 0, y: 6 },
-    { opacity: 1, y: 0, duration: 0.26, ease: "power2.out", clearProps: "transform,opacity" },
+    { opacity: 0, y: 4 },
+    { opacity: 1, y: 0, duration: 0.2, ease: "power2.out", clearProps: "transform,opacity" },
   );
-  const { modules } = useAgents();
+  const { modules, tools } = useAgents();
   const mod = focus?.kind === "module" ? modules.find((m) => m.id === focus.id) : undefined;
-  const tool = focus?.kind === "tool" ? ALL_TOOLS().find((t) => t.id === focus.id) : undefined;
+  const tool = focus?.kind === "tool" ? tools.find((t) => t.id === focus.id) : undefined;
 
   if (tool) {
     return (
@@ -146,7 +142,7 @@ export function AgentEditor({
   const [def, setDef] = useState<AgentDef>(initial);
   const [focus, setFocus] = useState<Focus | null>(null);
   const [docOpen, setDocOpen] = useState(false);
-  const { agents, modules } = useAgents();
+  const { agents, modules, tools } = useAgents();
   const { providers } = useSettings();
   const modelLabel = useModelLabel(def.model);
   const formRef = useRef<HTMLDivElement>(null);
@@ -155,7 +151,7 @@ export function AgentEditor({
   useEffect(() => {
     const el = formRef.current;
     if (!el) return;
-    staggerIn(el.querySelectorAll(".ag-sec"), { each: 0.05 });
+    staggerIn(el.querySelectorAll(".ag-sec"), { each: 0.03 });
   }, []);
 
   const set = <K extends keyof AgentDef>(key: K, value: AgentDef[K]) =>
@@ -180,13 +176,16 @@ export function AgentEditor({
     });
   }
 
-  // Chips 的载荷（工具/上下文模块——名称在面上，说明进 tooltip）
-  const toolChips = [...BUILTIN_TOOLS, ...THIRD_PARTY_TOOLS].map((t) => ({
+  // Chips 的载荷（工具/上下文模块——名称在面上，说明进 tooltip；
+  // 工具来自目录状态——导入条目即时出现在这里，自定义单独分组）
+  const customToolIds = new Set(tools.filter((t) => t.custom).map((t) => t.id));
+  const toolChips = tools.map((t) => ({
     value: t.id,
     label: t.id,
     desc: `${t.desc}（${t.risk === "high" ? "高危" : "低危"}）`,
     highRisk: t.risk === "high",
   }));
+  const customToolChips = toolChips.filter((c) => customToolIds.has(c.value));
   // 上下文模块 chips 载荷（目录状态——自建条目即时出现在这里）
   const toModuleChip = (m: { id: string; desc: string; kind: "process" | "skill" }) => ({
     value: m.id,
@@ -280,22 +279,26 @@ export function AgentEditor({
             ) : (
               <>
                 <Chips
-                  options={toolChips.slice(0, BUILTIN_TOOLS.length)}
+                  options={toolChips.filter((c) => !customToolIds.has(c.value))}
                   value={def.tools}
                   onChange={(tools) => set("tools", tools)}
                   focusedValue={focus?.kind === "tool" ? focus.id : null}
                   onFocus={(id) => setFocus({ kind: "tool", id })}
-                  ariaLabel="内置工具"
+                  ariaLabel="内置与第三方工具"
                 />
-                <div className="ag-chip-label">第三方 / 插件</div>
-                <Chips
-                  options={toolChips.slice(BUILTIN_TOOLS.length)}
-                  value={def.tools}
-                  onChange={(tools) => set("tools", tools)}
-                  focusedValue={focus?.kind === "tool" ? focus.id : null}
-                  onFocus={(id) => setFocus({ kind: "tool", id })}
-                  ariaLabel="第三方工具"
-                />
+                {customToolChips.length > 0 && (
+                  <>
+                    <div className="ag-chip-label">自定义</div>
+                    <Chips
+                      options={customToolChips}
+                      value={def.tools}
+                      onChange={(tools) => set("tools", tools)}
+                      focusedValue={focus?.kind === "tool" ? focus.id : null}
+                      onFocus={(id) => setFocus({ kind: "tool", id })}
+                      ariaLabel="自定义工具"
+                    />
+                  </>
+                )}
               </>
             )}
           </section>

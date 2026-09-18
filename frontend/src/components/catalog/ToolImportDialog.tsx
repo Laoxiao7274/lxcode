@@ -1,0 +1,90 @@
+// 工具导入弹窗：粘贴固定格式 v1 的 JSON → 校验 → 入目录（自定义标记）。
+// 格式契约见 shared/tool-import.ts 头注释——后端化时同一格式做插件分发。
+import { useState } from "react";
+import { useAgents, type ToolSpec } from "../../shared/agents";
+import { parseToolImport } from "../../shared/tool-import";
+import { useEscape } from "../../shared/popover";
+import { Button, Textarea } from "../form";
+
+const FORMAT_EXAMPLE = `{
+  "version": 1,
+  "tools": [{
+    "id": "my-tool",
+    "desc": "一句话说明",
+    "risk": "low",
+    "source": "binary",
+    "params": [{ "name": "path", "type": "string", "required": true }],
+    "doc": "markdown 扩展文档（可选）"
+  }]
+}`;
+
+export function ToolImportDialog({
+  onClose,
+  onImport,
+}: {
+  onClose: () => void;
+  onImport: (tools: ToolSpec[]) => void;
+}) {
+  useEscape(true, onClose);
+  const [text, setText] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const { tools } = useAgents();
+
+  const submit = () => {
+    const parsed = parseToolImport(text, new Set(tools.map((t) => t.id)));
+    if (!parsed.ok) {
+      setError(parsed.error ?? "导入失败");
+      return;
+    }
+    onImport(parsed.tools ?? []);
+  };
+
+  return (
+    <div
+      className="ag-doc-mask"
+      role="dialog"
+      aria-modal="true"
+      aria-label="导入工具"
+      onPointerDown={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div className="ag-doc">
+        <div className="ag-doc-head">
+          <span className="ag-doc-title">导入工具</span>
+          <button type="button" className="ag-doc-close" onClick={onClose} aria-label="关闭">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+              <path d="M18 6 6 18M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+        <div className="ag-doc-body">
+          <div className="ag-detail-note">
+            固定格式 v1——id 目录内唯一；risk 取 low/high；source 取 builtin/binary/mcp。
+            导入条目作为「自定义」加入目录（Agent 组装即时可选），后端化后同一格式做插件分发。
+          </div>
+          <div className="ti-format">
+            <pre>{FORMAT_EXAMPLE}</pre>
+          </div>
+          <Textarea
+            className="ti-input"
+            value={text}
+            onChange={(v) => {
+              setText(v);
+              setError(null);
+            }}
+            placeholder="粘贴 JSON…"
+            ariaLabel="导入内容"
+          />
+          {error && <div className="ag-warn" role="alert">{error}</div>}
+          <div className="ag-edit-actions ti-foot">
+            <Button variant="ghost" onClick={onClose}>
+              取消
+            </Button>
+            <Button variant="primary" data-cg="do-import" disabled={!text.trim()} onClick={submit}>
+              导入
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

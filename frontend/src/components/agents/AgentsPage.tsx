@@ -19,7 +19,7 @@ export function AgentsPage() {
     if (editing) return;
     const el = rootRef.current;
     if (!el) return;
-    staggerIn(el.querySelectorAll(".ag-head, .ag-card, .ag-grid-label, .ag-empty-inline"), { each: 0.05 });
+    staggerIn(el.querySelectorAll(".ag-head, .ag-card, .ag-grid-label, .ag-empty-inline"), { each: 0.03 });
   }, [editing]);
 
   if (editing) {

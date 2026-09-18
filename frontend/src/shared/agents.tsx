@@ -27,6 +27,8 @@ export interface ToolSpec {
   params?: ToolParam[];
   /** 扩展文档（markdown——工具的完整说明；详情层渲染）。 */
   doc?: string;
+  /** 用户导入条目（可删除）；内置条目只读。导入格式见 shared/tool-import.ts。 */
+  custom?: boolean;
 }
 
 /** 组装出的 Agent 定义（名单条目；运行实例是后续内核的事）。 */
@@ -445,6 +447,11 @@ interface AgentsValue {
   addModule: (mod: ContextModuleSpec) => void;
   updateModule: (mod: ContextModuleSpec) => void;
   removeModule: (id: string) => void;
+  /** 工具目录（运行时状态：内置+第三方种子 + 导入条目）。
+   *  导入走固定格式 v1（shared/tool-import.ts 的 parseToolImport 校验）。 */
+  tools: ToolSpec[];
+  addTools: (tools: ToolSpec[]) => void;
+  removeTool: (id: string) => void;
 }
 
 const Ctx = createContext<AgentsValue | null>(null);
@@ -454,6 +461,7 @@ export function AgentsProvider({ children }: { children: ReactNode }) {
   const [activeAgentId, setActiveAgentId] = useState("main");
   const [sessionDelegates, setSessionDelegates] = useState<string[] | null>(null);
   const [modules, setModules] = useState<ContextModuleSpec[]>(CONTEXT_MODULES);
+  const [tools, setTools] = useState<ToolSpec[]>(() => [...BUILTIN_TOOLS, ...THIRD_PARTY_TOOLS]);
 
   const addAgent = useCallback((def: AgentDef) => setAgents((list) => [...list, def]), []);
   const updateAgent = useCallback(
@@ -475,6 +483,11 @@ export function AgentsProvider({ children }: { children: ReactNode }) {
     (id: string) => setModules((list) => list.filter((x) => x.id !== id)),
     [],
   );
+  const addTools = useCallback((list: ToolSpec[]) => setTools((cur) => [...cur, ...list]), []);
+  const removeTool = useCallback(
+    (id: string) => setTools((cur) => cur.filter((t) => t.id !== id)),
+    [],
+  );
 
   const value = useMemo(
     () => ({
@@ -482,11 +495,13 @@ export function AgentsProvider({ children }: { children: ReactNode }) {
       activeAgentId, setActiveAgentId,
       sessionDelegates, setSessionDelegates, resetSessionDelegates,
       modules, addModule, updateModule, removeModule,
+      tools, addTools, removeTool,
     }),
     [
       agents, addAgent, updateAgent, removeAgent,
       activeAgentId, sessionDelegates, resetSessionDelegates,
       modules, addModule, updateModule, removeModule,
+      tools, addTools, removeTool,
     ],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

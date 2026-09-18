@@ -4114,6 +4114,30 @@ body:has(.window-stage) {
   -webkit-mask-image: none;
   mask-image: none;
 }
+/* 工具导入弹窗：格式示例 + 粘贴区 + 动作行 */
+.ti-format {
+  margin: 10px 0 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--bg-side);
+  padding: 10px 12px;
+  overflow-x: auto;
+}
+.ti-format pre {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.6;
+  color: var(--fg-muted);
+  white-space: pre;
+}
+.ti-input {
+  min-height: 180px;
+  font-size: 12px;
+}
+.ti-foot {
+  margin-top: 14px;
+  justify-content: flex-end;
+}
 @media (max-width: 640px) {
   .cg-grid {
     grid-template-columns: 1fr;

@@ -1,20 +1,18 @@
 // 文档弹窗：目录条目（工具/上下文模块）完整文档的阅读视图。
 // 从组装编辑器抽出复用——目录管理页点条目直接开弹窗（浏览场景没有
 // 侧栏紧凑预览，两级详情是编辑器的组装语境）。
-import { BUILTIN_TOOLS, MAIN_TOOL, THIRD_PARTY_TOOLS, useAgents } from "../../shared/agents";
+import { useAgents } from "../../shared/agents";
 import { Markdown } from "../../shared/markdown";
 import { useEscape } from "../../shared/popover";
 
 /** 文档焦点的指向（工具 / 上下文模块）。 */
 export type Focus = { kind: "tool" | "module"; id: string };
 
-const ALL_TOOLS = () => [MAIN_TOOL, ...BUILTIN_TOOLS, ...THIRD_PARTY_TOOLS];
-
 export function DocDialog({ focus, onClose }: { focus: Focus; onClose: () => void }) {
   useEscape(true, onClose);
-  const { modules } = useAgents();
+  const { modules, tools } = useAgents();
   const mod = focus.kind === "module" ? modules.find((m) => m.id === focus.id) : undefined;
-  const tool = focus.kind === "tool" ? ALL_TOOLS().find((t) => t.id === focus.id) : undefined;
+  const tool = focus.kind === "tool" ? tools.find((t) => t.id === focus.id) : undefined;
 
   return (
     <div

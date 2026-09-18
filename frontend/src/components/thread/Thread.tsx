@@ -177,7 +177,7 @@ export function Thread({
   useEffect(() => {
     if (state.blocks.length > 0 || !emptyRef.current) return;
     const items = emptyRef.current.querySelectorAll<HTMLElement>(".empty-state > *, .suggest-card");
-    staggerIn(items, { each: 0.07 });
+    staggerIn(items, { each: 0.045 });
   }, [state.blocks.length]);
 
   if (empty) {

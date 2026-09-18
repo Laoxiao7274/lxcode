@@ -14,15 +14,20 @@ const enterTo = { y: 0, opacity: 1 };
 export const enterEase = "power2.out";
 
 /** 交错浮现（空态卡片/消息块）。收尾清掉内联 transform——残留的
- *  translate(0,0) 会让每个元素自成 stacking context，把弹层 z-index 困住。 */
+ *  translate(0,0) 会让每个元素自成 stacking context，把弹层 z-index 困住。
+ *  2026-09-17 收紧：0.3s/0.04（0.5s 的原档位用户反馈发卡），且交错总量
+ *  封顶 ~0.36s——几十个条目时不再拖出长尾。 */
 export function staggerIn(targets: Element | Element[] | NodeListOf<Element> | string, opts: { delay?: number; each?: number } = {}) {
   if (!motionAllowed()) return;
-  gsap.fromTo(targets as Element, enter, {
+  const items = gsap.utils.toArray(targets as Element);
+  if (items.length === 0) return;
+  const each = Math.min(opts.each ?? 0.04, 0.36 / items.length);
+  gsap.fromTo(items, enter, {
     ...enterTo,
-    duration: 0.5,
+    duration: 0.3,
     ease: enterEase,
     delay: opts.delay ?? 0,
-    stagger: opts.each ?? 0.06,
+    stagger: each,
     clearProps: "transform,opacity",
   });
 }

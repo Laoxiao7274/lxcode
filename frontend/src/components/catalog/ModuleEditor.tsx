@@ -1,15 +1,17 @@
 // 模块编写器：自定义技能/模板的创建与编辑——「缺流程就补一个」的作者面。
 // 正文 markdown 实时预览（与注入 Agent 上下文的最终形态一致）。
-// 工具不在此列：自定义工具需要可执行的后端承载，先不撒谎。
+// 类型由入口页签定死（新建模板/新建技能分开口）——两类语义不同
+// （模板单选注入、技能多选注入），不在表单里切换。
+// 工具不在此列：工具走导入（固定格式 v1），见 ToolImportDialog。
 import { useState } from "react";
 import { useAgents, type ContextModuleSpec } from "../../shared/agents";
 import { Markdown } from "../../shared/markdown";
-import { Button, Segmented, TextInput, Textarea } from "../form";
+import { Button, TextInput, Textarea } from "../form";
 
-const KIND_OPTS = [
-  { value: "skill" as const, label: "技能", hint: "领域知识与方法（Agent 多选注入）" },
-  { value: "process" as const, label: "模板", hint: "工作方式（Agent 单选注入）" },
-];
+const KIND_LABEL: Record<ContextModuleSpec["kind"], { name: string; hint: string }> = {
+  process: { name: "模板", hint: "工作方式——Agent 单选注入（缺合适的就补一个完整模板，不拼装）" },
+  skill: { name: "技能", hint: "领域知识与方法——Agent 多选注入" },
+};
 
 export function ModuleEditor({
   initial,
@@ -72,7 +74,10 @@ export function ModuleEditor({
             </div>
             {idTaken && <div className="ag-warn">id 已存在——目录条目的 id 必须唯一。</div>}
             <div className="ag-chip-label">类型</div>
-            <Segmented options={KIND_OPTS} value={mod.kind} onChange={(k) => set("kind", k)} ariaLabel="类型" />
+            <div className="ag-locked">
+              <span className="ag-lock-name">{KIND_LABEL[mod.kind].name}</span>
+              <span className="ag-lock-desc">{KIND_LABEL[mod.kind].hint}——类型由入口定死，创建模板/技能分开口。</span>
+            </div>
             <div className="ag-chip-label">摘要</div>
             <TextInput
               value={mod.desc}
