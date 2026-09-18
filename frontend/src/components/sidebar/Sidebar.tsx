@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { staggerIn } from "../../shared/motion";
 import { playEnter } from "../../shared/anim";
 import { useDismissal } from "../../shared/popover";
+import { useUpdate } from "../../shared/update";
 import type { AgentSource } from "../../shared/types";
 import { AddProjectDialog } from "./AddProjectDialog";
 import { SessionRow } from "./SessionRow";
@@ -48,6 +49,8 @@ export function Sidebar({
   const [addOpen, setAddOpen] = useState(false);
   const [projectsTick, setProjectsTick] = useState(0); // projectsChanged 事件驱动重读
   const searchRef = useRef<HTMLInputElement>(null);
+  const { phase: updPhase } = useUpdate();
+  const hasUpdate = updPhase === "available" || updPhase === "downloading" || updPhase === "ready";
   const sideRef = useRef<HTMLElement>(null);
 
   // projectsChanged → 重读 projects()（新对象触发重渲染）
@@ -288,8 +291,9 @@ export function Sidebar({
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z" />
             </svg>
             设置
+            {hasUpdate && <span className="settings-upd-dot" title="有新版本可用" aria-label="有新版本可用" />}
           </span>
-          <span className="ver">eabc22c</span>
+          <span className="ver">{hasUpdate ? "可更新" : "eabc22c"}</span>
         </div>
       </div>
     </aside>
