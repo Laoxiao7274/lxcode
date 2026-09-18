@@ -324,6 +324,9 @@ export function CatalogPage() {
       {tab === "tools" && (
         <div className="cg-new-note">单个工具用「新建工具」表单；导入/导出是分发通道（固定格式 v1 的 JSON 文件）；自定义工具的可执行承载随后端化接插件机制。</div>
       )}
+      {tab === "mcp" && (
+        <div className="cg-new-note">注册 = 贴配置片段（mcpServers 标准形态：stdio = 命令 + 参数 + 环境变量；SSE = 端点 URL）；注册后暴露的能力以工具形式进工具拓展；停用 = 能力挂起（工具保留）。</div>
+      )}
       <div className="cg-tabs">
         <Segmented options={tabs} value={tab} onChange={setTab} ariaLabel="拓展页签" />
       </div>
@@ -366,11 +369,6 @@ export function CatalogPage() {
           />
         ))}
       </div>
-      {tab === "mcp" && (
-        <div className="cg-new-note">
-          MCP 服务器是接入单元（mcpServers 标准形态：stdio = 命令 + 参数 + 环境变量；SSE = 端点 URL）——注册后暴露的能力以工具形式进工具拓展；停用 = 能力挂起（工具保留）。
-        </div>
-      )}
       {focus && <DocDialog focus={focus} onClose={() => setFocus(null)} />}
       {editingServer && (
         <McServerEditor
