@@ -1,6 +1,9 @@
 // 工具编写器弹窗：自定义工具的创建与编辑——表单生成，不让人写 JSON。
 // 固定格式 v1 的 JSON 只是分发通道（导入/导出文件）；手工创建走表单。
 // 参数面是动态行（名称/类型/必填/说明）；右侧实时预览复用 ToolDocBody。
+// 来源不让用户选：来源是系统级事实（执行通道声明——导入按文件声明、
+// MCP 由服务器生成、表单创建固定走外部接入通道），选了没有后果的
+// 字段是伪配置。
 import { useEffect, useRef, useState } from "react";
 import { useAgents, type ToolParam, type ToolSpec } from "../../shared/agents";
 import { useEscape } from "../../shared/popover";
@@ -12,14 +15,11 @@ const RISK_OPTS = [
   { value: "low" as const, label: "低危", hint: "自动执行" },
   { value: "high" as const, label: "高危", hint: "确认门" },
 ];
-// 来源只两个：MCP 工具不手动创建——由 MCP 服务器注册后自动暴露（MCP 版块）。
-const SOURCE_OPTS = [
-  { value: "builtin" as const, label: "内置", hint: "内置注册表形态" },
-  { value: "binary" as const, label: "外部二进制", hint: "进程边界接入" },
-];
+
+/** 表单创建的工具固定走外部接入通道（进程边界——后端化时插件机制）。 */
+const FORM_SOURCE: ToolSpec["source"] = "binary";
 
 const blankParam = (): ToolParam => ({ name: "", type: "string" });
-const blankTool = (): ToolSpec => ({ id: "", desc: "", risk: "low", source: "binary" });
 
 export function ToolEditor({
   initial,
@@ -117,10 +117,6 @@ export function ToolEditor({
                   <span className="cg-field-label">风险</span>
                   <Segmented options={RISK_OPTS} value={tool.risk} onChange={(v) => set("risk", v)} ariaLabel="风险" />
                 </div>
-                <div className="cg-field">
-                  <span className="cg-field-label">来源</span>
-                  <Segmented options={SOURCE_OPTS} value={tool.source} onChange={(v) => set("source", v)} ariaLabel="来源" />
-                </div>
               </section>
 
               <section className="ag-sec">
@@ -197,6 +193,7 @@ export function ToolEditor({
                       id,
                       desc: tool.desc.trim(),
                       custom: true,
+                      source: isNew ? FORM_SOURCE : tool.source,
                       ...(cleaned.length > 0 ? { params: cleaned } : {}),
                     })
                   }
