@@ -59,7 +59,7 @@ function DetailPanel({ focus, onOpen }: { focus: Focus | null; onOpen: () => voi
         <div className="ag-detail-desc">{tool.desc}</div>
         {tool.params && tool.params.length > 0 && (
           <div className="ag-detail-params">
-            <div className="ag-detail-params-label">参数</div>
+            <div className="ag-sec-label">参数 · {tool.params.length}</div>
             {tool.params.map((p) => (
               <div className="ag-param" key={p.name} title={p.desc ?? ""}>
                 <span className="ag-param-name">{p.name}</span>

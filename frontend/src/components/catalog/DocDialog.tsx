@@ -8,28 +8,34 @@ import { useEscape } from "../../shared/popover";
 /** 文档焦点的指向（工具 / 上下文模块）。 */
 export type Focus = { kind: "tool" | "module"; id: string };
 
-/** 工具文档体（详情摘要 + 参数表 + markdown 文档）——DocDialog 与
- *  工具编写器的实时预览共用同一渲染。 */
+/** 工具文档体（lede 摘要 + 盒装参数表 + markdown 文档）——DocDialog 与
+ *  工具编写器的实时预览共用同一渲染（尺寸由上下文作用域分档）。 */
 export function ToolDocBody({ tool }: { tool: ToolSpec }) {
   return (
     <>
       <div className="ag-detail-desc">{tool.desc}</div>
       {tool.params && tool.params.length > 0 && (
-        <div className="ag-detail-params">
-          <div className="ag-detail-params-label">参数</div>
-          {tool.params.map((p) => (
-            <div className="ag-param" key={p.name} title={p.desc ?? ""}>
-              <span className="ag-param-name">{p.name}</span>
-              <span className="ag-param-type">{p.type}</span>
-              {p.required && <span className="ag-param-req">必填</span>}
-            </div>
-          ))}
-        </div>
+        <>
+          <div className="ag-sec-label">参数 · {tool.params.length}</div>
+          <div className="ag-params-table">
+            {tool.params.map((p) => (
+              <div className="ag-param" key={p.name} title={p.desc ?? ""}>
+                <span className="ag-param-name">{p.name}</span>
+                <span className="ag-param-type">{p.type}</span>
+                {p.desc && <span className="ag-param-note">{p.desc}</span>}
+                {p.required && <span className="ag-param-req">必填</span>}
+              </div>
+            ))}
+          </div>
+        </>
       )}
       {tool.doc && (
-        <div className="ag-detail-md">
-          <Markdown text={tool.doc} />
-        </div>
+        <>
+          <div className="ag-sec-label">文档</div>
+          <div className="ag-detail-md">
+            <Markdown text={tool.doc} />
+          </div>
+        </>
       )}
     </>
   );
@@ -78,6 +84,7 @@ export function DocDialog({ focus, onClose }: { focus: Focus; onClose: () => voi
           ) : mod ? (
             <>
               <div className="ag-detail-desc">{mod.desc}</div>
+              <div className="ag-sec-label">正文</div>
               <div className="ag-detail-md">
                 <Markdown text={mod.body} />
               </div>
