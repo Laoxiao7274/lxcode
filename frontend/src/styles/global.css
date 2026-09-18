@@ -3685,6 +3685,59 @@ body:has(.window-stage) {
 .ag-doc-body .ag-detail-note {
   margin-top: 16px;
 }
+/* ===== 文档阅读器形态（详情弹窗 ag-doc-reader） =====
+ * 灰底画布 + 纸面内容卡（GitHub README 式的文档质感）+ 头部来源图标 +
+ * 区块标签竖条 + 参数表斑马纹——正文不再是一片纯白。 */
+.ag-doc-reader .ag-doc-body {
+  background: var(--bg-side);
+  padding: 14px 16px 16px;
+}
+.dd-paper {
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  padding: 18px 22px 20px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
+}
+/* 头部来源图标：黑底白线（内置=扳手 / 二进制=终端 / MCP=六边 / 模块=文档） */
+.dd-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: var(--fg);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+/* 区块标签：竖条强调（文档站的节标形态） */
+.ag-doc-reader .ag-sec-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.ag-doc-reader .ag-sec-label::before {
+  content: "";
+  width: 3px;
+  height: 11px;
+  border-radius: 2px;
+  background: var(--fg);
+  opacity: 0.75;
+}
+/* 参数表：边框加深 + 斑马纹——纸面上要压得住 */
+.ag-doc-reader .ag-params-table {
+  border-color: var(--border-strong);
+}
+.ag-doc-reader .ag-param:nth-child(even) {
+  background: #fafafa;
+}
+/* 模块尾注：纸面页脚（虚线分隔） */
+.ag-doc-reader .ag-detail-note {
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border-soft);
+}
 /* 宽版（模块编写器：正文编辑要空间——左表单右预览） */
 .ag-doc.ag-doc-wide {
   width: min(860px, calc(100% - 48px));
