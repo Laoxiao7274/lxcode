@@ -35,33 +35,29 @@ export default function App() {
 }
 
 function AppBody({ source }: { source: AgentSource }) {
-  const [operationError, setOperationError] = useState<string | null>(null);
-  const { state, send, resolve } = useAgent(source);
+  const { state, send, resolve, clearError, reportError } = useAgent(source);
   const { settings, providers } = useSettings();
   const { resetSessionDelegates } = useAgents();
-  // 初始无选中：空态起步（选中一个有历史的会话时 thread 才有内容——
-  // 演示模式 resume 不重放历史，避免"高亮有历史、主区空白"的不一致）
-  const [currentId, setCurrentId] = useState("");
-  const [settingsOpen, setSettingsOpen] = useState(false);
   /** 主区视图：对话 / Agent 名单 / 拓展（工具·技能·模板·MCP）。 */
   const [view, setView] = useState<"chat" | "agents" | "catalog">("chat");
   /** 对话过滤目标（项目 id / ""=未分组 / null=全部）——App 持有：
    *  侧栏过滤、「新对话」归属、空态项目标签三处共用。 */
   const [filter, setFilter] = useState<string | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const openAgents = () => setView((v) => (v === "agents" ? "chat" : "agents"));
   const openCatalog = () => setView((v) => (v === "catalog" ? "chat" : "catalog"));
   const backToChat = () => setView("chat");
 
-  // 会话切换事件同步侧栏高亮（与 useAgent 的订阅并行，各管各的）；
-  // 新会话/切换会话 → 本次会话的委派覆盖清掉，回到名单默认
+  // 新会话/切换会话 → 本次会话的委派覆盖清掉，回到名单默认（会话 id 与
+  // 操作错误已并入 useAgent 的单一归约——不再有第二份订阅）
   useEffect(() => {
     return source.subscribe((ev: AgentEvent) => {
-      if (ev.type === "sessionChanged" && ["new", "resumed", "started"].includes(ev.reason)) setCurrentId(ev.id);
-      if (ev.type === "operationError") setOperationError(ev.message);
       if (ev.type === "sessionChanged" && (ev.reason === "new" || ev.reason === "resumed")) resetSessionDelegates();
     });
   }, [source, resetSessionDelegates]);
+
+  const currentId = state.currentId;
 
   // 当前过滤的项目名（""=未分组 → 空态不标——无归属不需要声明）
   const filterProjectName =
@@ -82,15 +78,17 @@ function AppBody({ source }: { source: AgentSource }) {
   const handleConfirm = useCallback((id: string, allow: boolean) => {
     void source.confirm(id, allow)
       .then(() => resolve(id, allow ? "allow" : "deny"))
-      .catch((e) => setOperationError(e instanceof Error ? e.message : String(e)));
-  }, [source, resolve]);
+      .catch((e) => reportError(e instanceof Error ? e.message : String(e)));
+  }, [source, resolve, reportError]);
 
   const currentTitle = state.blocks.length === 0 ? "" : source.sessions().find((s: SessionMeta) => s.id === currentId)?.title ?? "任务";
 
   // 壳环境（Electron）= 真实窗口；浏览器 = 保留模拟壳（窗口模拟一层的差异，
   // 内部布局完全一致——同组件，不再两份 JSX）
   const isShell = typeof navigator !== "undefined" && navigator.userAgent.includes("Electron");
-  const errorNotice = operationError && <div className="error-block" role="alert">{operationError}<button type="button" onClick={() => setOperationError(null)}>关闭</button></div>;
+  const errorNotice = state.operationError && (
+    <div className="error-block" role="alert">{state.operationError}<button type="button" onClick={clearError}>关闭</button></div>
+  );
 
   const mainView =
     view === "chat" ? (

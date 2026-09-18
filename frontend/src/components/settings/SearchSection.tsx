@@ -5,6 +5,7 @@
 import { useRef, useState } from "react";
 import { isConfigured, maskToken, useSearchProviders, type SearchProvider } from "../../shared/search-providers";
 import { collapseAway, useEnterRef } from "../../shared/anim";
+import { useConfirmClick } from "../../shared/confirm-click";
 import { Button, TextInput } from "../form";
 import { IconTrash } from "../icons";
 import { Section } from "./rows";
@@ -15,7 +16,7 @@ function ProviderCard({ p, primary, onSetPrimary }: { p: SearchProvider; primary
   const [editing, setEditing] = useState(false);
   const [keyDraft, setKeyDraft] = useState("");
   const [urlDraft, setUrlDraft] = useState("");
-  const [confirming, setConfirming] = useState(false);
+  const del = useConfirmClick(() => removeCustom(p.id));
   const editEnter = useEnterRef<HTMLDivElement>();
   const editElRef = useRef<HTMLDivElement | null>(null);
   const closingRef = useRef(false);
@@ -63,15 +64,12 @@ function ProviderCard({ p, primary, onSetPrimary }: { p: SearchProvider; primary
           {!p.preset && (
             <button
               type="button"
-              className={"ag-mini-btn danger" + (confirming ? " confirm" : "")}
+              className={"ag-mini-btn danger" + (del.confirming ? " confirm" : "")}
               data-sp="del"
-              onClick={() => {
-                if (confirming) removeCustom(p.id);
-                else setConfirming(true);
-              }}
-              onBlur={() => setConfirming(false)}
+              onClick={del.onClick}
+              onBlur={del.onBlur}
             >
-              <IconTrash /> {confirming ? "确认" : "删除"}
+              <IconTrash /> {del.confirming ? "确认" : "删除"}
             </button>
           )}
         </div>

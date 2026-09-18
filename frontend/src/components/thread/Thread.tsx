@@ -1,9 +1,9 @@
-// 对话流：滚动跟随状态机、空态。
+// 对话流：滚动跟随状态机、窗口化渲染、空态（EmptyState）。
 // 工具行直接平铺（DSH 形态——每个工具一个独立可折叠的 trow，见
 // blocks.tsx 的 ToolBlock；原 WorkGroup「读文件 · 用时 N 秒」外层摘要行
 // 是 Codex 语言，已随 DSH 对齐移除）。
-// 单块渲染在 ./blocks，纯函数在 ./helpers。
-import { useEffect, useRef } from "react";
+// 单块渲染在 ./blocks，纯函数在 ./helpers，空态在 ./EmptyState。
+import { useEffect, useRef, useState } from "react";
 import type { UIState, ThreadBlock } from "../../shared/store";
 import { useAgents } from "../../shared/agents";
 import { effectiveDelegates } from "../../shared/agent-delegation";
@@ -11,50 +11,7 @@ import { ThinkingState } from "../../aicss/ThinkingState";
 import { staggerIn, motionAllowed } from "../../shared/motion";
 import { gsap } from "gsap";
 import { Block } from "./blocks";
-
-/** 建议卡图标：应用图标语言（线性描边，无字符圆圈——OS 感重）。 */
-const SUGGESTIONS = [
-  {
-    icon: (
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d="M12 20h9" />
-        <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
-      </svg>
-    ),
-    title: "把工具循环加上超时兜底",
-    sub: "单工具卡死不再拖住整轮",
-  },
-  {
-    icon: (
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" />
-        <path d="M14 2v6h6" />
-        <path d="M9 13h6M9 17h4" />
-      </svg>
-    ),
-    title: "读 config/local.json",
-    sub: "看 default 绑定的是哪个模型",
-  },
-  {
-    icon: (
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <circle cx="12" cy="12" r="9" />
-        <path d="m8.5 12.5 2.5 2.5 5-6" />
-      </svg>
-    ),
-    title: "全量测试有红的修掉",
-    sub: "go test ./… 一轮到绿",
-  },
-  {
-    icon: (
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d="M21 15a2 2 0 0 1-2 2H8l-5 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z" />
-      </svg>
-    ),
-    title: "讲讲 runTools 的设计",
-    sub: "为什么高危要先确认",
-  },
-];
+import { EmptyState } from "./EmptyState";
 
 export function Thread({
   state,
@@ -86,6 +43,11 @@ export function Thread({
   const smoothUntilRef = useRef(-1e9);
   const scrollTweenRef = useRef<gsap.core.Tween | null>(null);
   const empty = state.blocks.length === 0;
+  // 渲染窗口：底部 windowSize 块（会话切换重置回初始窗口）
+  const [windowSize, setWindowSize] = useState<number>(WINDOW_INITIAL);
+  useEffect(() => { setWindowSize(WINDOW_INITIAL); }, [empty]);
+  const hidden = Math.max(0, state.blocks.length - windowSize);
+  const visible = hidden > 0 ? state.blocks.slice(hidden) : state.blocks;
   // 空态的身份芯片：当前 Agent（谁来干活）+ 归属项目；主 Agent 带有效委派计数
   const { agents, activeAgentId, sessionDelegates } = useAgents();
   const activeAgent = agents.find((a) => a.id === activeAgentId) ?? agents.find((a) => a.isMain);
@@ -182,48 +144,23 @@ export function Thread({
 
   if (empty) {
     return (
-      <div className="empty-state" ref={emptyRef}>
-        {(activeAgent || projectName) && (
-          <div className="empty-meta">
-            {activeAgent && (
-              <span className="empty-agent" title="当前干活的 Agent——输入区可切换；主 Agent 的可委派名单在菜单里调整">
-                <span className="ag-dot" style={{ background: activeAgent.color }} />
-                {activeAgent.name}
-                {activeAgent.isMain && (
-                  <span className="empty-agent-sub">· 可委派 {delegateCount}</span>
-                )}
-              </span>
-            )}
-            {projectName && (
-              <span className="empty-project" title={`新会话归属 ${projectName}`}>
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
-                </svg>
-                {projectName}
-              </span>
-            )}
-          </div>
-        )}
-        <h2>我们做点什么？</h2>
-        <p>读写代码、改文件、跑命令——高危操作先过你这一关。</p>
-        <div className="suggest-grid">
-          {SUGGESTIONS.map((s) => (
-            <button key={s.title} type="button" className="suggest-card" onClick={() => onSuggestion?.(s.title)}>
-              <span className="suggest-icon" aria-hidden>{s.icon}</span>
-              <span className="suggest-text">
-                <span className="suggest-title">{s.title}</span>
-                <span className="suggest-sub">{s.sub}</span>
-              </span>
-            </button>
-          ))}
-        </div>
-      </div>
+      <EmptyState
+        emptyRef={emptyRef}
+        agent={activeAgent ? { name: activeAgent.name, color: activeAgent.color, isMain: activeAgent.isMain === true } : null}
+        delegateCount={delegateCount}
+        projectName={projectName}
+        onSuggestion={onSuggestion}
+      />
     );
   }
 
   return (
     <div className="thread">
-      {state.blocks.map((block) => (
+      {/* 窗口化渲染：只渲染底部 window 块 + 顶部哨兵（进入视口前插一批）。
+       *  上翻不回收（回收会跳滚动位置）；新块追加在窗口内自然出现。
+       *  「很多会话×长会话」的前提——见 docs/frontend-review.md §四-①。 */}
+      {hidden > 0 && <WindowSentinel onExpand={() => setWindowSize((n) => n + WINDOW_BATCH)} label={`前面还有 ${hidden} 条…`} />}
+      {visible.map((block) => (
         <Block key={block.uid} block={block} onConfirm={onConfirm} />
       ))}
       {/* 进行中且还没有任何输出时显示思考 shimmer（无角色标签——DSH 形态） */}
@@ -233,6 +170,30 @@ export function Thread({
         </div>
       )}
       <div ref={endRef} />
+    </div>
+  );
+}
+
+/** 首屏窗口与每批前插的块数（视口内块数远小于此——含工具行展开态）。 */
+const WINDOW_INITIAL = 40;
+const WINDOW_BATCH = 40;
+
+/** 顶部哨兵：进入视口即请求扩大窗口（IntersectionObserver——比滚动
+ *  位置判断便宜且不与跟随状态机打架）。 */
+function WindowSentinel({ onExpand, label }: { onExpand: () => void; label: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const io = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) onExpand();
+    }, { rootMargin: "600px 0px" });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [onExpand]);
+  return (
+    <div className="window-more" ref={ref} onClick={onExpand} role="button" tabIndex={0} onKeyDown={(e) => e.key === "Enter" && onExpand()}>
+      {label}
     </div>
   );
 }

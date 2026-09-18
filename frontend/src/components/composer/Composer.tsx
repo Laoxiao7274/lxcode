@@ -1,5 +1,4 @@
 import { useRef, useState } from "react";
-import { Orb } from "../../aicss/Orb";
 import { AgentPicker } from "../agents/AgentPicker";
 import { PermPicker } from "../perm-picker";
 import { ModelPicker } from "../model-picker";
@@ -37,7 +36,7 @@ export function Composer({
         {/* busy 状态行：浮在输入框上方（生成中 + 停止入口在按钮位） */}
         {busy && (
           <div className="busy-row" ref={busyRowRef}>
-            <Orb variant="S1" size={16} />
+            <span className="mset-spinner" aria-hidden />
             <span className="busy-text">生成中</span>
           </div>
         )}

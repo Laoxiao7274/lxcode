@@ -970,6 +970,18 @@ body:has(.window-stage) {
   margin: 0 auto;
   padding: 0 24px;
 }
+/* 窗口化渲染的顶部哨兵（进入视口自动前插，也可点击） */
+.window-more {
+  text-align: center;
+  font-size: 11px;
+  color: var(--fg-faint);
+  padding: 10px 0 14px;
+  cursor: pointer;
+  user-select: none;
+}
+.window-more:hover {
+  color: var(--fg-muted);
+}
 /* ===== 消息块 ===== */
 .msg {
   margin-bottom: 18px;

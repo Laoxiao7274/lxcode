@@ -27,14 +27,28 @@ export interface UIState {
   busy: boolean;
   pending: ConfirmRequest | null;
   todos: TodoItem[];
+  /** 当前会话 id（sessionChanged/new|resumed|started 同步——侧栏高亮与
+   *  标题的唯一事实源；并入 store 消灭 App 的第二份订阅与双渲染）。 */
+  currentId: string;
+  /** 请求类失败的一次性提示（operationError——App 之前自持的状态）。 */
+  operationError: string | null;
 }
 
-const initial: UIState = { blocks: [], busy: false, pending: null, todos: [] };
+const initial: UIState = { blocks: [], busy: false, pending: null, todos: [], currentId: "", operationError: null };
 
 // 块的唯一序号——React 渲染的稳定 key（index 作 key 在插入新块时
 // 会错位复用组件实例，是重复渲染类怪象的根因）。
 let uidSeq = 0;
 const nextUid = () => ++uidSeq;
+
+/** shell 拷贝 + 单点替换（map 变体的免回调版——toolResult/resolve 这类
+ *  「只改个别块」的路径，O(n) 指针拷贝无逐元素闭包）。 */
+function withBlock(state: UIState, uid: number, patch: (b: never) => ThreadBlock): UIState {
+  const blocks = state.blocks.slice();
+  const idx = blocks.findIndex((b) => b.uid === uid);
+  if (idx >= 0) blocks[idx] = patch(blocks[idx] as never);
+  return { ...state, blocks };
+}
 
 export function reduce(state: UIState, ev: AgentEvent): UIState {
   switch (ev.type) {
@@ -49,7 +63,7 @@ export function reduce(state: UIState, ev: AgentEvent): UIState {
       // 开新块 = 前一块已定格：中间轮的 usage 一并清（tokens 只在整轮
       // 的最终 assistant 显示——工具行上方的「已完成 · N tokens」是
       // 错位的中间轮统计，DSH 的 stats 在轮末）。
-      const blocks = [...state.blocks];
+      const blocks = state.blocks.slice();
       const last = blocks[blocks.length - 1];
       let target: AssistantBlock;
       if (last && last.kind === "assistant" && last.streaming) {
@@ -72,20 +86,22 @@ export function reduce(state: UIState, ev: AgentEvent): UIState {
     case "toolCall": {
       // 工具调用打断流式中的 assistant 块——立刻定格（否则它永远挂着
       // "思考中" shimmer，成为僵尸块；中间插工具/清单后再开新块续写）
-      const blocks = state.blocks.map((b) =>
-        b.kind === "assistant" && b.streaming ? { ...b, streaming: false } : b,
-      );
+      const blocks = state.blocks.slice();
+      for (let i = 0; i < blocks.length; i++) {
+        const b = blocks[i];
+        if (b.kind === "assistant" && b.streaming) blocks[i] = { ...b, streaming: false };
+      }
       return {
         ...state,
         blocks: [...blocks, { kind: "tool", uid: nextUid(), id: ev.id, name: ev.name, arguments: ev.arguments }],
       };
     }
     case "toolResult": {
-      const blocks = state.blocks.map((b) =>
-        b.kind === "tool" && b.id === ev.id
-          ? { ...b, result: ev.content, isError: ev.isError }
-          : b,
-      );
+      const idx = state.blocks.findIndex((b) => b.kind === "tool" && b.id === ev.id);
+      if (idx < 0) return state;
+      const blocks = state.blocks.slice();
+      const b = blocks[idx] as Extract<ThreadBlock, { kind: "tool" }>;
+      blocks[idx] = { ...b, result: ev.content, isError: ev.isError };
       return { ...state, blocks };
     }
     case "confirmRequest":
@@ -103,17 +119,24 @@ export function reduce(state: UIState, ev: AgentEvent): UIState {
     case "done": {
       // 定格最后一个 assistant 块（按 uid 定位，不按 index——
       // 工具/清单块可能插在 assistant 之后）
-      const lastA = [...state.blocks].reverse().find((b) => b.kind === "assistant") as AssistantBlock | undefined;
-      const blocks = lastA
-        ? state.blocks.map((b) => (b.kind === "assistant" && b.uid === lastA.uid ? { ...b, streaming: false, usageTokens: ev.usageTokens } : b))
-        : state.blocks;
-      return { ...state, blocks };
+      let lastA: AssistantBlock | undefined;
+      for (let i = state.blocks.length - 1; i >= 0; i--) {
+        const b = state.blocks[i];
+        if (b.kind === "assistant") { lastA = b; break; }
+      }
+      if (!lastA) return state;
+      return withBlock(state, lastA.uid, (b) => {
+        const a = b as AssistantBlock;
+        return { ...a, streaming: false, usageTokens: ev.usageTokens };
+      });
     }
     case "error": {
       // 中断保留已生成部分：把进行中的 assistant 块定格
-      const blocks = state.blocks.map((b) =>
-        b.kind === "assistant" && b.streaming ? { ...b, streaming: false } : b,
-      );
+      const blocks = state.blocks.slice();
+      for (let i = 0; i < blocks.length; i++) {
+        const b = blocks[i];
+        if (b.kind === "assistant" && b.streaming) blocks[i] = { ...b, streaming: false };
+      }
       return {
         ...state,
         blocks: [...blocks, { kind: "error", uid: nextUid(), message: ev.message, aborted: ev.aborted }],
@@ -124,19 +147,21 @@ export function reduce(state: UIState, ev: AgentEvent): UIState {
     case "sessionChanged":
       // reason 语义：new（用户点新对话——清屏）/ resumed（切会话——清屏后
       // 等 historyLoaded 重放）/ started（懒建行——只刷新列表，对话进行中不清屏）
-      if (ev.reason !== "new" && ev.reason !== "resumed") return { ...state };
-      return { ...initial };
+      if (ev.reason !== "new" && ev.reason !== "resumed") return { ...state, currentId: ev.id };
+      return { ...initial, currentId: ev.id };
     case "sessionsChanged":
       // 列表变化不改 UI 状态本身——新对象触发重渲染（侧栏重读 sessions()）
       return { ...state };
     case "projectsChanged":
       return { ...state };
+    case "operationError":
+      return { ...state, operationError: ev.message };
     case "filesChanged":
       // 一轮任务的产物汇总（验收视图——Codex 的 diff 中心形态）
       return { ...state, blocks: [...state.blocks, { kind: "files", uid: nextUid(), files: ev.files }] };
     case "historyLoaded":
       // 全量重建（连接/切会话后）：messages → blocks（工具调用与结果配对）
-      return { ...reduceHistory(ev.history), busy: ev.history.busy };
+      return { ...reduceHistory(state, ev.history), busy: ev.history.busy };
     default:
       return state;
   }
@@ -145,7 +170,7 @@ export function reduce(state: UIState, ev: AgentEvent): UIState {
 /** 历史快照 → UI 状态：消息序列重建 blocks。
  *  配对规则：assistant 的 tool_calls 先开 tool 块；后续 role=tool 的消息
  *  按 tool_call_id 回填对应块的 result（服务端的存储顺序保证可达）。 */
-function reduceHistory(h: HistorySnapshot): UIState {
+function reduceHistory(state: UIState, h: HistorySnapshot): UIState {
   const blocks: ThreadBlock[] = [];
   let lastAssistant: AssistantBlock | null = null;
   for (const m of h.messages) {
@@ -181,6 +206,7 @@ function reduceHistory(h: HistorySnapshot): UIState {
   }
   // 没有任何输出的进行中轮次不重现（streaming 重建成本高，历史里也少见）
   return {
+    ...state,
     blocks,
     busy: false,
     pending: h.pending ?? null,
@@ -188,7 +214,8 @@ function reduceHistory(h: HistorySnapshot): UIState {
   };
 }
 
-/** useAgent：订阅 AgentSource 并归约成 UI 状态。
+/** useAgent：订阅 AgentSource 并归约成 UI 状态（会话 id 与操作错误也在
+ *  这里——单一事实源，消灭 App 的并行订阅）。
  * resolve：确认裁决后把对应卡片定格（allow/deny 徽标）——裁决是本地
  * UI 状态（后端事件流没有"卡片已裁决"事件，toolResult 才是回执）。
  * send/resolve 身份稳定：下游 React.memo(Block) 依赖 onConfirm 稳定。 */
@@ -196,6 +223,10 @@ export function useAgent(source: AgentSource): {
   state: UIState;
   send: AgentSource["send"];
   resolve: (id: string, outcome: "allow" | "deny") => void;
+  /** 关闭一次性错误提示。 */
+  clearError: () => void;
+  /** 请求类失败进一次性提示（同一归约域——App/确认流的 catch 调这里）。 */
+  reportError: (message: string) => void;
 } {
   const [state, setState] = useState<UIState>(initial);
   useEffect(() => {
@@ -206,16 +237,17 @@ export function useAgent(source: AgentSource): {
   const resolve = useCallback((id: string, outcome: "allow" | "deny") => {
     setState((s) => resolveConfirm(s, id, outcome));
   }, []);
-  return { state, send, resolve };
+  const clearError = useCallback(() => setState((s) => (s.operationError ? { ...s, operationError: null } : s)), []);
+  const reportError = useCallback((message: string) => setState((s) => ({ ...s, operationError: message })), []);
+  return { state, send, resolve, clearError, reportError };
 }
 
 /** 确认裁决后把对应卡片定格（allow/deny 徽标）。 */
 function resolveConfirm(state: UIState, id: string, outcome: "allow" | "deny"): UIState {
-  return {
-    ...state,
-    pending: null,
-    blocks: state.blocks.map((b) =>
-      b.kind === "confirm" && b.request.id === id ? { ...b, resolved: outcome } : b,
-    ),
-  };
+  const idx = state.blocks.findIndex((b) => b.kind === "confirm" && b.request.id === id);
+  if (idx < 0) return { ...state, pending: null };
+  const blocks = state.blocks.slice();
+  const b = blocks[idx] as Extract<ThreadBlock, { kind: "confirm" }>;
+  blocks[idx] = { ...b, resolved: outcome };
+  return { ...state, pending: null, blocks };
 }
