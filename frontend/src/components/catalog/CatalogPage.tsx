@@ -211,7 +211,7 @@ export function CatalogPage() {
   const [focus, setFocus] = useState<Focus | null>(null);
   const [editing, setEditing] = useState<{ mod: ContextModuleSpec; isNew: boolean } | null>(null);
   const [editingTool, setEditingTool] = useState<{ tool: ToolSpec; isNew: boolean } | null>(null);
-  const [editingServer, setEditingServer] = useState<{ server: McServerSpec; isNew: boolean } | null>(null);
+  const [editingServer, setEditingServer] = useState<{ server: McServerSpec } | null>(null);
   const [importingMc, setImportingMc] = useState(false);
   const [importing, setImporting] = useState<"tools" | "modules" | null>(null);
   const gridRef = useRef<HTMLDivElement>(null);
@@ -283,29 +283,14 @@ export function CatalogPage() {
               </Button>
             </>
           ) : tab === "mcp" ? (
-            <>
-              <Button variant="ghost" data-cg="import-mc" onClick={() => setImportingMc(true)}>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <path d="M12 3v12" />
-                  <path d="m7 10 5 5 5-5" />
-                  <path d="M5 21h14" />
-                </svg>
-                导入配置
-              </Button>
-              <Button
-                variant="primary"
-                data-cg="new-server"
-                onClick={() => setEditingServer({
-                  server: { id: "", desc: "", transport: "stdio", command: "", args: [], env: {}, url: "", enabled: true, custom: true },
-                  isNew: true,
-                })}
-              >
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true">
-                  <path d="M12 5v14M5 12h14" />
-                </svg>
-                添加服务器
-              </Button>
-            </>
+            <Button variant="primary" data-cg="import-mc" onClick={() => setImportingMc(true)}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M12 3v12" />
+                <path d="m7 10 5 5 5-5" />
+                <path d="M5 21h14" />
+              </svg>
+              添加服务器
+            </Button>
           ) : (
             <>
               {customOfTab.length > 0 && (
@@ -375,7 +360,7 @@ export function CatalogPage() {
             key={s.id}
             server={s}
             toolCount={mcpTools.filter((t) => t.server === s.id).length}
-            onEdit={() => setEditingServer({ server: s, isNew: false })}
+            onEdit={() => setEditingServer({ server: s })}
             onToggle={() => updateMcServer({ ...s, enabled: !s.enabled })}
             onDelete={s.custom ? () => removeMcServer(s.id) : undefined}
           />
@@ -389,13 +374,11 @@ export function CatalogPage() {
       {focus && <DocDialog focus={focus} onClose={() => setFocus(null)} />}
       {editingServer && (
         <McServerEditor
-          key={editingServer.server.id || "new"}
+          key={editingServer.server.id || "edit"}
           initial={editingServer.server}
-          isNew={editingServer.isNew}
           onCancel={() => setEditingServer(null)}
           onSave={(saved) => {
-            if (editingServer.isNew) addMcServer(saved);
-            else updateMcServer(saved);
+            updateMcServer(saved);
             setEditingServer(null);
           }}
         />

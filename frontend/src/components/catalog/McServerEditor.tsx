@@ -1,9 +1,8 @@
-// MCP 服务器编写器弹窗：自定义服务器的创建与编辑。
+// MCP 服务器编辑器弹窗：既有服务器的编辑（命令/参数/环境变量/端点）。
+// 注册不在这里——走「添加服务器」的配置粘贴（贴合事实工作流）。
 // 建模对齐 MCP 事实标准（mcpServers 配置形态）：
 //   stdio = command + args（逐个参数，不经 shell）+ env（API key 等）
 //   sse   = url（远程事件流端点）
-// 服务器是接入单元——能力（工具）在后端化时由 MCP 协议握手生成，
-// 原型阶段工具拓展的 mcp: 条目手工/导入关联（server 字段指回）。
 import { useEffect, useRef, useState } from "react";
 import { useAgents, type McServerSpec } from "../../shared/agents";
 import { useEscape } from "../../shared/popover";
@@ -30,12 +29,10 @@ const textToEnv = (text: string): Record<string, string> => {
 
 export function McServerEditor({
   initial,
-  isNew,
   onSave,
   onCancel,
 }: {
   initial: McServerSpec;
-  isNew: boolean;
   onSave: (server: McServerSpec) => void;
   onCancel: () => void;
 }) {
@@ -67,7 +64,7 @@ export function McServerEditor({
       className="ag-doc-mask"
       role="dialog"
       aria-modal="true"
-      aria-label={isNew ? "添加 MCP 服务器" : `编辑 ${server.id}`}
+      aria-label={`编辑 ${server.id}`}
       onPointerDown={(e) => e.target === e.currentTarget && onCancel()}
     >
       <div className="ag-doc">
@@ -77,7 +74,7 @@ export function McServerEditor({
               <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
             </svg>
           </span>
-          <span className="ag-doc-title">{isNew ? "添加 MCP 服务器" : `编辑 · ${server.id}`}</span>
+          <span className="ag-doc-title">编辑 · {server.id}</span>
           <button type="button" className="ag-doc-close" onClick={onCancel} aria-label="关闭">
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
               <path d="M18 6 6 18M6 6l12 12" />
@@ -180,7 +177,7 @@ export function McServerEditor({
                 })
               }
             >
-              {isNew ? "保存并添加" : "保存"}
+              保存
             </Button>
           </div>
         </div>

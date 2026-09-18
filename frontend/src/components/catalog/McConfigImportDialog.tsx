@@ -1,6 +1,7 @@
-// MCP 配置导入弹窗：粘贴或选择文件（YAML / JSON）→ 校验 → 入拓展。
-// 与工具/模块导入同款形态；mcpServers 事实形态直接贴（Claude Desktop /
-// Cursor 的 JSON、常见 YAML 片段）；已存在的服务器跳过并汇总展示。
+// MCP 服务器添加弹窗：粘贴或选择文件（YAML / JSON）→ 校验 → 入拓展。
+// 注册的唯一入口（贴合事实工作流——从 README 抄 mcpServers 片段贴进来）；
+// 编辑既有服务器走卡片上的编辑（McServerEditor 表单）。与工具/模块导入
+// 同款形态；已存在的服务器跳过并汇总展示。
 import { useRef, useState } from "react";
 import { useAgents, type McServerSpec } from "../../shared/agents";
 import { parseMcpConfig } from "../../shared/mcp-config";
@@ -60,12 +61,12 @@ export function McConfigImportDialog({
       className="ag-doc-mask"
       role="dialog"
       aria-modal="true"
-      aria-label="导入 MCP 配置"
+      aria-label="添加 MCP 服务器"
       onPointerDown={(e) => e.target === e.currentTarget && onClose()}
     >
       <div className="ag-doc">
         <div className="ag-doc-head">
-          <span className="ag-doc-title">导入 MCP 配置</span>
+          <span className="ag-doc-title">添加 MCP 服务器</span>
           <button type="button" className="ag-doc-close" onClick={onClose} aria-label="关闭">
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
               <path d="M18 6 6 18M6 6l12 12" />
@@ -75,9 +76,9 @@ export function McConfigImportDialog({
         <div className="ag-doc-body">
           {result ? (
             <>
-              <div className="ag-detail-desc">已导入 {result.added} 个服务器。</div>
+              <div className="ag-detail-desc">已添加 {result.added} 个服务器。</div>
               <div className="ag-warn">
-                跳过 {result.skipped.length} 个已存在：{result.skipped.join("、")}——重贴配置不会覆盖，需要更新请编辑该服务器。
+                跳过 {result.skipped.length} 个已存在：{result.skipped.join("、")}——重复添加不覆盖，需要更新请编辑该服务器。
               </div>
               <div className="ag-edit-actions ti-foot">
                 <Button variant="primary" data-cg="done" onClick={onClose}>
@@ -88,7 +89,7 @@ export function McConfigImportDialog({
           ) : (
             <>
               <div className="ti-note">
-                YAML 或 JSON（mcpServers 事实形态——Claude Desktop / Cursor 配置直接贴）；传输按字段推断（command = stdio / url = sse）。
+                贴配置片段（YAML 或 JSON——Claude Desktop / Cursor 配置直接贴）；传输按字段推断（command = stdio / url = sse）。
               </div>
               <Textarea
                 className="ti-input"
@@ -141,7 +142,7 @@ export function McConfigImportDialog({
                   取消
                 </Button>
                 <Button variant="primary" data-cg="do-import" disabled={!text.trim()} onClick={submit}>
-                  导入
+                  添加
                 </Button>
               </div>
             </>
