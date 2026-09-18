@@ -1,5 +1,9 @@
 // 设置分区通用行组件（标题块 / 开关行 / 值行 / 分段行 / 占位行 / 归档行）。
+// 控件一律走表单套件（components/form——.fd- 命名空间）：Toggle /
+// TextInput / Select / Button——本文件只做「行布局」（标签左、控件右）
+// 与行内尺寸，不再裸写原生控件。
 import type { ReactNode } from "react";
+import { Button, Select, TextInput, Toggle, type SelectGroup } from "../form";
 
 export function Section({ title, desc, children }: { title: string; desc: string; children: ReactNode }) {
   return (
@@ -18,16 +22,7 @@ export function ToggleRow({ label, hint, checked, onChange }: { label: string; h
         <div className="set-row-label">{label}</div>
         {hint && <div className="set-row-hint">{hint}</div>}
       </div>
-      <span
-        className={"toggle" + (checked ? " on" : "")}
-        role="switch"
-        aria-checked={checked}
-        tabIndex={0}
-        onClick={() => onChange(!checked)}
-        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onChange(!checked); } }}
-      >
-        <span className="toggle-knob" />
-      </span>
+      <Toggle on={checked} onChange={onChange} ariaLabel={label} />
     </div>
   );
 }
@@ -66,21 +61,22 @@ export function InputRow({ label, hint, value, onChange, placeholder, mono }: {
         <div className="set-row-label">{label}</div>
         {hint && <div className="set-row-hint">{hint}</div>}
       </div>
-      <input
+      <TextInput
         className={"set-row-input" + (mono ? " mono" : "")}
         value={value}
+        onChange={onChange}
         placeholder={placeholder}
-        onChange={(e) => onChange(e.target.value)}
         aria-label={label}
       />
     </div>
   );
 }
 
-/** 下拉选择行（可配置的枚举——如默认模型）。 */
+/** 下拉选择行（可配置的枚举——如默认模型）。控件走套件自绘 Select，
+ *  行内只负责宽度约束（.set-row-select 定宽 230px）。 */
 export function SelectRow({ label, hint, value, onChange, options, ariaLabel }: {
   label: string; hint?: string; value: string; onChange: (v: string) => void;
-  options: { value: string; label: string; desc?: string }[]; ariaLabel?: string;
+  options: SelectGroup["options"]; ariaLabel?: string;
 }) {
   return (
     <div className="set-row">
@@ -88,16 +84,9 @@ export function SelectRow({ label, hint, value, onChange, options, ariaLabel }: 
         <div className="set-row-label">{label}</div>
         {hint && <div className="set-row-hint">{hint}</div>}
       </div>
-      <select
-        className="set-row-select"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        aria-label={ariaLabel ?? label}
-      >
-        {options.map((o) => (
-          <option key={o.value} value={o.value}>{o.label}</option>
-        ))}
-      </select>
+      <div className="set-row-select">
+        <Select value={value} onChange={onChange} groups={[{ options }]} ariaLabel={ariaLabel ?? label} />
+      </div>
     </div>
   );
 }
@@ -118,7 +107,7 @@ export function ArchivedRow({ title, date, onRestore }: { title: string; date: s
     <div className="archived-row">
       <span className="archived-title">{title}</span>
       <span className="archived-date">{date}</span>
-      <button type="button" className="archived-restore" onClick={onRestore}>恢复</button>
+      <Button variant="ghost" className="archived-restore" onClick={onRestore}>恢复</Button>
     </div>
   );
 }

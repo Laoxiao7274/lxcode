@@ -1548,35 +1548,20 @@ body:has(.window-stage) {
   color: var(--fg-muted);
   flex: none;
 }
-/* 设置行的可配置控件（文本输入 / 下拉——与值行同位） */
-.set-row-input,
+/* 设置行的可配置控件宽度（套件控件——TextInput/Select 的行内尺寸） */
 .set-row-select {
   width: 230px;
   flex: none;
-  font-family: var(--font-sans);
-  font-size: 12.5px;
-  color: var(--fg);
-  background: var(--surface);
-  border: 1px solid var(--border-strong);
-  border-radius: 8px;
+}
+.set-row-input.fd-input {
+  width: 230px;
+  flex: none;
   padding: 6px 10px;
-  outline: none;
+  font-size: 12.5px;
 }
 .set-row-input.mono {
   font-family: var(--font-mono);
   font-size: 12px;
-}
-.set-row-input:focus,
-.set-row-select:focus {
-  border-color: var(--fg-muted);
-}
-.set-row-select {
-  cursor: pointer;
-  appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2.4' stroke-linecap='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 9px center;
-  padding-right: 26px;
 }
 /* pill toggle */
 .toggle {
@@ -1606,12 +1591,6 @@ body:has(.window-stage) {
 }
 .toggle.on .toggle-knob {
   transform: translateX(14px);
-}
-.panel-seg {
-  display: flex;
-  gap: 6px;
-  flex: 1;
-  max-width: 260px;
 }
 .seg-btn {
   flex: 1;
@@ -1656,18 +1635,13 @@ body:has(.window-stage) {
   color: var(--fg-faint);
   flex: none;
 }
-.archived-restore {
+.archived-restore.fd-btn-g {
   padding: 3px 12px;
   font-size: 11.5px;
-  color: var(--fg);
-  background: transparent;
-  border: 1px solid var(--border-strong);
   border-radius: 999px;
-  cursor: pointer;
-  font-family: var(--font-sans);
   flex: none;
 }
-.archived-restore:hover {
+.archived-restore.fd-btn-g:hover {
   background: var(--border-soft);
 }
 /* ===== 空态（Codex 式：居中的大标题 + 2×2 建议卡） ===== */
@@ -2696,20 +2670,10 @@ body:has(.window-stage) {
   font-size: 12px;
   color: var(--fg-faint);
 }
-.mset-connect-btn {
-  font-size: 12.5px;
-  font-weight: 500;
-  color: #fff;
-  background: var(--fg);
-  border: none;
+.mset-connect-btn.fd-btn-p {
   border-radius: 999px;
   padding: 6px 14px;
-  cursor: pointer;
-  font-family: var(--font-sans);
-  transition: opacity 120ms;
-}
-.mset-connect-btn:hover {
-  opacity: 0.82;
+  font-size: 12.5px;
 }
 .mset-provider {
   border: 1px solid var(--border);

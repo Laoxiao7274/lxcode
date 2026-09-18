@@ -4,6 +4,7 @@
 import { useEffect, useRef, useState, type ReactElement } from "react";
 import { gsap } from "gsap";
 import { useSettings, EFFORTS, APPROVALS } from "../../shared/settings";
+import { Button, Segmented } from "../form";
 import type { AgentSource, SessionMeta } from "../../shared/types";
 import { motionAllowed, staggerIn, enterEase } from "../../shared/motion";
 import { useEscape } from "../../shared/popover";
@@ -108,24 +109,12 @@ export function SettingsPanel({ open, onClose, source }: { open: boolean; onClos
                   if (opts.length === 0) return <ValueRow label="推理强度" value="模型默认" hint="当前模型未声明推理能力（在模型配置里勾选「推理」标签开启）" />;
                   return (
                     <SegRow label="推理强度">
-                      <div className="panel-seg">
-                        {opts.map((e) => (
-                          <button key={e.id} type="button" className={"seg-btn" + (settings.effort === e.id ? " on" : "")} onClick={() => set({ effort: e.id })}>
-                            {e.label}
-                          </button>
-                        ))}
-                      </div>
+                      <Segmented options={opts.map((e) => ({ value: e.id, label: e.label, hint: e.hint }))} value={settings.effort} onChange={(v) => set({ effort: v })} ariaLabel="推理强度" />
                     </SegRow>
                   );
                 })()}
                 <SegRow label="高危操作">
-                  <div className="panel-seg">
-                    {APPROVALS.map((a) => (
-                      <button key={a.id} type="button" title={a.hint} className={"seg-btn" + (settings.approval === a.id ? " on" : "")} onClick={() => set({ approval: a.id })}>
-                        {a.label}
-                      </button>
-                    ))}
-                  </div>
+                  <Segmented options={APPROVALS.map((a) => ({ value: a.id, label: a.label, hint: a.hint }))} value={settings.approval} onChange={(v) => set({ approval: v })} ariaLabel="高危操作" />
                 </SegRow>
                 <ToggleRow
                   label="命令输出完整展示"
@@ -152,22 +141,16 @@ export function SettingsPanel({ open, onClose, source }: { open: boolean; onClos
             {section === "appearance" && (
               <Section title="外观" desc="主题与界面字体。字体选择作用于全局，含终端块。">
                 <SegRow label="主题">
-                  <div className="panel-seg">
-                    {([
-                      { id: "light", label: "浅色" },
-                      { id: "dark", label: "深色" },
-                      { id: "system", label: "跟随系统" },
-                    ] as const).map((t) => (
-                      <button
-                        key={t.id}
-                        type="button"
-                        className={"seg-btn" + (settings.theme === t.id ? " on" : "")}
-                        onClick={() => set({ theme: t.id })}
-                      >
-                        {t.label}
-                      </button>
-                    ))}
-                  </div>
+                  <Segmented
+                    options={[
+                      { value: "light", label: "浅色" },
+                      { value: "dark", label: "深色" },
+                      { value: "system", label: "跟随系统" },
+                    ]}
+                    value={settings.theme}
+                    onChange={(v) => set({ theme: v })}
+                    ariaLabel="主题"
+                  />
                 </SegRow>
                 <ValueRow label="界面字体" value="Inter" hint="13px" />
                 <ValueRow label="代码字体" value="JetBrains Mono" hint="11px" />
@@ -179,9 +162,9 @@ export function SettingsPanel({ open, onClose, source }: { open: boolean; onClos
                 {error && <div className="error-block" role="alert">{error}</div>}
                 <div className="mset-toolbar">
                   <span className="mset-count">{providers.filter((p) => p.connected).length} 个已连接</span>
-                  <button type="button" className="mset-connect-btn" onClick={() => setConnectOpen(true)}>
+                  <Button variant="primary" data-cg="connect-provider" className="mset-connect-btn" onClick={() => setConnectOpen(true)}>
                     + 连接提供商
-                  </button>
+                  </Button>
                 </div>
                 {providers.filter((p) => p.connected).map((p) => (
                   <ProviderBlock key={p.id} provider={p} onEditModel={(modelId) => setModelEdit({ providerId: p.id, modelId })} />
@@ -192,17 +175,16 @@ export function SettingsPanel({ open, onClose, source }: { open: boolean; onClos
             {section === "personalization" && (
               <Section title="个性化" desc="回答的默认语气；自定义指令写入 AGENTS.md。">
                 <SegRow label="语气">
-                  <div className="panel-seg">
-                    {([
-                      { id: "friendly", label: "友好" },
-                      { id: "pragmatic", label: "务实" },
-                      { id: "none", label: "无" },
-                    ] as const).map((p) => (
-                      <button key={p.id} type="button" className={"seg-btn" + (settings.personality === p.id ? " on" : "")} onClick={() => set({ personality: p.id })}>
-                        {p.label}
-                      </button>
-                    ))}
-                  </div>
+                  <Segmented
+                    options={[
+                      { value: "friendly", label: "友好" },
+                      { value: "pragmatic", label: "务实" },
+                      { value: "none", label: "无" },
+                    ]}
+                    value={settings.personality}
+                    onChange={(v) => set({ personality: v })}
+                    ariaLabel="语气"
+                  />
                 </SegRow>
                 <ValueRow label="自定义指令" value="AGENTS.md" hint="仓库根目录的守则文件" />
               </Section>
