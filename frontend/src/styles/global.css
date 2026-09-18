@@ -4535,6 +4535,19 @@ body:has(.window-stage) {
   color: var(--fg-faint);
   line-height: 1.5;
 }
+/* MCP 服务器编写器：参数与环境变量的文本区（每行一项） */
+.mc-args-input {
+  min-height: 110px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.7;
+}
+.mc-env-input {
+  min-height: 70px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.7;
+}
 .cg-type-row {
   display: flex;
   align-items: center;

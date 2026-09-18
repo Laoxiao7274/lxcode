@@ -21,7 +21,7 @@ import { IconDownload, IconPencil, IconTrash } from "../icons";
 
 type Tab = "tools" | "skills" | "templates" | "mcp";
 
-/** MCP 服务器卡：名称 + 命令（mono）+ 暴露工具数 + 启停开关。 */
+/** MCP 服务器卡：服务器名 + 连接状态 + 启停 + 接入命令/URL + 暴露工具数。 */
 function McServerCard({ server, toolCount, onEdit, onToggle, onDelete }: {
   server: McServerSpec;
   toolCount: number;
@@ -31,6 +31,7 @@ function McServerCard({ server, toolCount, onEdit, onToggle, onDelete }: {
 }) {
   const [confirming, setConfirming] = useState(false);
   const interactive = !!onEdit || !!onDelete;
+  const launch = server.transport === "stdio" ? [server.command, ...server.args].filter(Boolean).join(" ") : server.url;
   return (
     <div
       className="cg-card"
@@ -41,11 +42,12 @@ function McServerCard({ server, toolCount, onEdit, onToggle, onDelete }: {
       onKeyDown={interactive && onEdit ? (e) => e.key === "Enter" && onEdit() : undefined}
     >
       <div className="cg-card-top">
-        <span className="cg-card-title">{server.name}</span>
+        <span className="cg-card-title">{server.id}</span>
         <span className="cg-card-pills">
           <span className={"ag-pill " + (server.enabled ? "risk-low" : "src")}>
             {server.enabled ? "已连接" : "未连接"}
           </span>
+          <span className="ag-pill src">{server.transport === "stdio" ? "stdio" : "SSE"}</span>
           {server.custom && <span className="ag-pill src">自定义</span>}
           {onToggle && (
             <Toggle on={server.enabled} onChange={onToggle} ariaLabel={server.enabled ? "断开" : "连接"} />
@@ -53,8 +55,11 @@ function McServerCard({ server, toolCount, onEdit, onToggle, onDelete }: {
         </span>
       </div>
       <div className="cg-card-desc">{server.desc}</div>
-      <div className="cg-card-meta" title={server.command}>{server.command}</div>
-      <div className="cg-card-meta">{toolCount} 个工具 · {server.enabled ? "能力可用" : "能力挂起"}</div>
+      <div className="cg-card-meta" title={launch}>{launch}</div>
+      <div className="cg-card-meta">
+        {toolCount} 个工具 · {server.enabled ? "能力可用" : "能力挂起"}
+        {server.transport === "stdio" && Object.keys(server.env).length > 0 ? ` · ${Object.keys(server.env).length} 个环境变量` : ""}
+      </div>
       {interactive && (
         <div className="cg-card-actions">
           {onEdit && (
@@ -278,7 +283,10 @@ export function CatalogPage() {
             <Button
               variant="primary"
               data-cg="new-server"
-              onClick={() => setEditingServer({ server: { id: "", name: "", desc: "", command: "", enabled: true, custom: true }, isNew: true })}
+              onClick={() => setEditingServer({
+                server: { id: "", desc: "", transport: "stdio", command: "", args: [], env: {}, url: "", enabled: true, custom: true },
+                isNew: true,
+              })}
             >
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true">
                 <path d="M12 5v14M5 12h14" />
@@ -361,7 +369,9 @@ export function CatalogPage() {
         ))}
       </div>
       {tab === "mcp" && (
-        <div className="cg-new-note">MCP 服务器是接入单元——注册后暴露的能力以工具形式进工具拓展（source=MCP）；停用服务器 = 能力挂起（工具保留）。</div>
+        <div className="cg-new-note">
+          MCP 服务器是接入单元（mcpServers 标准形态：stdio = 命令 + 参数 + 环境变量；SSE = 端点 URL）——注册后暴露的能力以工具形式进工具拓展；停用 = 能力挂起（工具保留）。
+        </div>
       )}
       {focus && <DocDialog focus={focus} onClose={() => setFocus(null)} />}
       {editingServer && (

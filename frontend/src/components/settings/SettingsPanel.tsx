@@ -11,18 +11,17 @@ import { ConnectProviderDialog } from "./ConnectProviderDialog";
 import { ModelEditDialog } from "./ModelEditDialog";
 import { ProviderBlock } from "./ProviderBlock";
 import { ArchivedRow, PlaceholderRow, Section, SegRow, SelectRow, InputRow, ToggleRow, ValueRow } from "./rows";
-import { BoxIcon, BranchIcon, ClockIcon, CubeIcon, GearIcon, GitIcon, LinkIcon, SunIcon, WinIcon } from "./icons";
+import { BoxIcon, BranchIcon, ClockIcon, CubeIcon, GearIcon, GitIcon, SunIcon, WinIcon } from "./icons";
 
 type SectionId =
   | "general" | "appearance" | "models" | "personalization"
-  | "mcp" | "git" | "environments" | "worktrees" | "archived";
+  | "git" | "environments" | "worktrees" | "archived";
 
 const SECTIONS: { id: SectionId; label: string; icon: ReactElement }[] = [
   { id: "general", label: "通用", icon: <GearIcon /> },
   { id: "appearance", label: "外观", icon: <SunIcon /> },
   { id: "models", label: "模型", icon: <CubeIcon /> },
   { id: "personalization", label: "个性化", icon: <ClockIcon /> },
-  { id: "mcp", label: "MCP 服务器", icon: <LinkIcon /> },
   { id: "git", label: "Git", icon: <GitIcon /> },
   { id: "environments", label: "环境", icon: <WinIcon /> },
   { id: "worktrees", label: "工作树", icon: <BranchIcon /> },
@@ -206,12 +205,6 @@ export function SettingsPanel({ open, onClose, source }: { open: boolean; onClos
                   </div>
                 </SegRow>
                 <ValueRow label="自定义指令" value="AGENTS.md" hint="仓库根目录的守则文件" />
-              </Section>
-            )}
-
-            {section === "mcp" && (
-              <Section title="MCP 服务器" desc="经 Model Context Protocol 接入外部工具。配置对 CLI 与 IDE 扩展同样生效。">
-                <PlaceholderRow label="尚无已连接的服务器" hint="接入后在此管理（推荐服务器 / OAuth 授权）" />
               </Section>
             )}
 

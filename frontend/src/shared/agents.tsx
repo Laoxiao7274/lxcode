@@ -41,14 +41,24 @@ export interface ToolSpec {
   packageFile?: string;
 }
 
-/** MCP 服务器（目录第四版块的条目）：接入单元——服务器注册后暴露的
- *  能力（工具）进工具目录（source=mcp + server 指回）。 */
+/** MCP 服务器（拓展第四版块的条目）：接入单元——服务器注册后暴露的
+ *  能力（工具）进工具拓展（source=mcp + server 字段指回）。
+ *  建模对齐 MCP 事实标准（Claude Desktop / Codex 的 mcpServers 形态）：
+ *  stdio = command + args + env（进程直起，不经 shell）；sse = url。 */
 export interface McServerSpec {
+  /** 服务器名（唯一——也是工具 server 字段的指向）。 */
   id: string;
-  name: string;
   desc: string;
-  /** 启动命令或 URL（stdio / SSE——后端化时的真实接入面）。 */
+  /** 传输：stdio（本地命令起进程）/ sse（远程事件流端点）。 */
+  transport: "stdio" | "sse";
+  /** stdio：可执行文件（npx / uvx / node …）。 */
   command: string;
+  /** stdio：命令参数（逐个——不经 shell，无引号语义）。 */
+  args: string[];
+  /** stdio：环境变量（API key 等常见注入位）。 */
+  env: Record<string, string>;
+  /** sse：服务端点 URL。 */
+  url: string;
   enabled: boolean;
   /** 用户自建（可编辑/删除）；演示种子只读。 */
   custom?: boolean;
@@ -251,27 +261,47 @@ export const THIRD_PARTY_TOOLS: ToolSpec[] = [
   },
 ];
 
-/** MCP 服务器目录（第四版块的种子——与 mcp: 工具的 server 字段对应）。 */
+/** MCP 服务器拓展（第四版块的种子——与 mcp: 工具的 server 字段对应；
+ *  形态对齐 mcpServers 事实标准：command + args + env / url）。 */
 const MC_SERVERS: McServerSpec[] = [
   {
     id: "filesystem",
-    name: "filesystem",
     desc: "官方文件系统服务——读写/list 跨进程文件操作",
-    command: "npx -y @modelcontextprotocol/server-filesystem /",
+    transport: "stdio",
+    command: "npx",
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/"],
+    env: {},
+    url: "",
     enabled: true,
   },
   {
     id: "web-search",
-    name: "web-search",
     desc: "网页检索服务——公网搜索与摘要",
-    command: "npx -y @mcp/web-search-server",
+    transport: "stdio",
+    command: "npx",
+    args: ["-y", "@mcp/web-search-server"],
+    env: {},
+    url: "",
     enabled: true,
   },
   {
     id: "sqlite",
-    name: "sqlite",
     desc: "独立数据只读查询（SELECT 通道）",
-    command: "uvx mcp-server-sqlite",
+    transport: "stdio",
+    command: "uvx",
+    args: ["mcp-server-sqlite"],
+    env: {},
+    url: "",
+    enabled: false,
+  },
+  {
+    id: "remote-demo",
+    desc: "远程 SSE 服务示例（演示 sse 传输形态）",
+    transport: "sse",
+    command: "",
+    args: [],
+    env: {},
+    url: "https://example.com/mcp/sse",
     enabled: false,
   },
 ];
