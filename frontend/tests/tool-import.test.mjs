@@ -36,14 +36,15 @@ test('id 查重：与现有目录冲突、批次内重复都拒绝', () => {
   assert.match(r.error, /已存在/);
 });
 
-test('枚举字段与参数形状的定位报错', () => {
+test('枚举字段与参数形状的定位报错；mcp 来源被拒（服务器注册生成，不走此格式）', () => {
   const base = { id: "t", desc: "x" };
   assert.match(parseToolImport(doc([{ ...base, risk: "mid", source: "builtin" }]), new Set()).error, /risk/);
   assert.match(parseToolImport(doc([{ ...base, risk: "low", source: "exe" }]), new Set()).error, /source/);
-  assert.match(parseToolImport(doc([{ ...base, risk: "low", source: "mcp", params: [{}] }]), new Set()).error, /params\[0\].name/);
+  assert.match(parseToolImport(doc([{ ...base, risk: "low", source: "mcp" }]), new Set()).error, /source/);
+  assert.match(parseToolImport(doc([{ ...base, risk: "low", source: "builtin", params: [{}] }]), new Set()).error, /params\[0\].name/);
 });
 
 test('缺必填字段报错到条目下标', () => {
-  assert.match(parseToolImport(doc([{ risk: "low", source: "mcp" }]), new Set()).error, /tools\[0\].id/);
-  assert.match(parseToolImport(doc([{ id: "t", risk: "low", source: "mcp" }]), new Set()).error, /desc/);
+  assert.match(parseToolImport(doc([{ risk: "low", source: "builtin" }]), new Set()).error, /tools\[0\].id/);
+  assert.match(parseToolImport(doc([{ id: "t", risk: "low", source: "builtin" }]), new Set()).error, /desc/);
 });

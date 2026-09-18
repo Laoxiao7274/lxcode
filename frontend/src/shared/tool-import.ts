@@ -6,7 +6,8 @@
 //       "id": "my-tool",              // 必填，目录内唯一
 //       "desc": "一句话说明",           // 必填
 //       "risk": "low" | "high",        // 必填（风险分级）
-//       "source": "builtin" | "binary" | "mcp",  // 必填（来源）
+//       "source": "builtin" | "binary",  // 必填（来源——MCP 工具不在此列：
+//                                       //   由 MCP 服务器注册后自动暴露）
 //       "params": [{ "name": "path", "type": "string", "required": true, "desc": "…" }],
 //       "doc": "markdown 扩展文档（可选）"
 //     }]
@@ -46,8 +47,8 @@ export function parseToolImport(text: string, existingIds: Set<string>): ToolImp
     if (seen.has(e.id)) return { ok: false, error: `${at}.id 已存在: ${e.id}（目录内唯一）` };
     if (typeof e.desc !== "string" || !e.desc.trim()) return { ok: false, error: `${at}.desc 不能为空` };
     if (e.risk !== "low" && e.risk !== "high") return { ok: false, error: `${at}.risk 必须是 low 或 high` };
-    if (e.source !== "builtin" && e.source !== "binary" && e.source !== "mcp") {
-      return { ok: false, error: `${at}.source 必须是 builtin / binary / mcp` };
+    if (e.source !== "builtin" && e.source !== "binary") {
+      return { ok: false, error: `${at}.source 必须是 builtin / binary（MCP 工具由服务器注册生成，不走此格式）` };
     }
     if (e.doc !== undefined && typeof e.doc !== "string") return { ok: false, error: `${at}.doc 必须是字符串` };
 

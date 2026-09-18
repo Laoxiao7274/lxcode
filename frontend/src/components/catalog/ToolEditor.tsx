@@ -12,10 +12,10 @@ const RISK_OPTS = [
   { value: "low" as const, label: "低危", hint: "自动执行" },
   { value: "high" as const, label: "高危", hint: "确认门" },
 ];
+// 来源只两个：MCP 工具不手动创建——由 MCP 服务器注册后自动暴露（MCP 版块）。
 const SOURCE_OPTS = [
   { value: "builtin" as const, label: "内置", hint: "内置注册表形态" },
   { value: "binary" as const, label: "外部二进制", hint: "进程边界接入" },
-  { value: "mcp" as const, label: "MCP", hint: "MCP 服务" },
 ];
 
 const blankParam = (): ToolParam => ({ name: "", type: "string" });

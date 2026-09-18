@@ -68,7 +68,7 @@ export function ToolImportDialog({
         </div>
         <div className="ag-doc-body">
           <div className="ti-note">
-            单个工具用「新建工具」表单；导入用于批量/分发——固定格式 v1，选择文件或在下方粘贴。
+            单个工具用「新建工具」表单；导入用于批量/分发——固定格式 v1（source 取 builtin/binary——MCP 能力走 MCP 版块的服务器注册）。
           </div>
           <div className="ti-actions ti-actions-lead">
             <input
