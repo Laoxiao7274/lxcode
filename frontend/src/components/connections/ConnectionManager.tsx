@@ -188,32 +188,63 @@ function RemoteAccessBlock() {
   );
 }
 
-/** 添加/编辑远程连接表单。 */
+/** 从地址带出显示名（host 部分——名称留空时的兜底）。 */
+function nameFromAddr(addr: string): string {
+  try {
+    const u = addr.includes("://") ? new URL(addr) : new URL(`http://${addr}`);
+    return u.hostname;
+  } catch {
+    return addr;
+  }
+}
+
+/** 添加/编辑远程连接表单：地址格式校验 + 名称自动带出 + 凭证引导。 */
 function RemoteForm({ initial, onSave, onCancel }: { initial: RemoteConn; onSave: (c: RemoteConn) => void; onCancel: () => void }) {
   const [draft, setDraft] = useState(initial);
   const set = <K extends keyof RemoteConn>(k: K, v: RemoteConn[K]) => setDraft((d) => ({ ...d, [k]: v }));
-  const savable = draft.name.trim() !== "" && draft.addr.trim() !== "" && draft.token.trim() !== "";
+  const addr = draft.addr.trim();
+  // 地址格式：host:port 或 https://host（host 可为域名/IP）
+  const addrOk = addr === "" || /^(https?:\/\/)?[a-zA-Z0-9.-]+(:\d{1,5})(\/.*)?$/.test(addr);
+  const savable = addr !== "" && addrOk && draft.token.trim() !== "" && (draft.name.trim() !== "" || nameFromAddr(addr) !== addr);
   return (
     <div className="conn-form">
       <div className="cg-field">
-        <span className="cg-field-label">名称</span>
-        <TextInput value={draft.name} onChange={(v) => set("name", v)} placeholder="如：公司开发机" aria-label="名称" />
+        <span className="cg-field-label">地址</span>
+        <TextInput
+          className="cg-id-input"
+          value={draft.addr}
+          onChange={(v) => set("addr", v)}
+          placeholder="host:port（如 10.0.0.8:7789）或 https://api.example.com"
+          aria-label="地址"
+        />
+        {!addrOk && <div className="ag-warn">地址格式应为 host:port（如 10.0.0.8:7789）或 https://host。</div>}
       </div>
       <div className="cg-field">
-        <span className="cg-field-label">地址</span>
-        <TextInput className="cg-id-input" value={draft.addr} onChange={(v) => set("addr", v)} placeholder="host:port（如 10.0.0.8:7789）" aria-label="地址" />
+        <span className="cg-field-label">名称</span>
+        <TextInput
+          value={draft.name}
+          onChange={(v) => set("name", v)}
+          placeholder={`显示名（留空自动取 ${addr ? nameFromAddr(addr) : "地址主机名"}）`}
+          aria-label="名称"
+        />
       </div>
       <div className="cg-field">
         <span className="cg-field-label">Token</span>
-        <TextInput className="cg-id-input" value={draft.token} onChange={(v) => set("token", v)} placeholder="连接凭证（服务端生成）" aria-label="Token" />
-        <div className="cg-field-hint">问后端管理员要，或看「远程访问」面板里展示的 Token。</div>
+        <TextInput
+          className="cg-id-input"
+          value={draft.token}
+          onChange={(v) => set("token", v)}
+          placeholder="连接凭证（服务端生成）"
+          aria-label="Token"
+        />
+        <div className="cg-field-hint">对方机器「连接 → 远程访问」面板里展示的 Token；或问管理员要。</div>
       </div>
       <div className="ag-edit-actions ti-foot">
         <Button variant="ghost" onClick={onCancel}>取消</Button>
         <Button
           variant="primary"
           disabled={!savable}
-          onClick={() => onSave({ ...draft, name: draft.name.trim(), addr: draft.addr.trim(), token: draft.token.trim() })}
+          onClick={() => onSave({ ...draft, name: draft.name.trim() || nameFromAddr(addr), addr, token: draft.token.trim() })}
         >
           保存
         </Button>
@@ -261,7 +292,7 @@ export function ConnectionManager({ onClose }: { onClose: () => void }) {
             />
           ) : (
             <>
-              {/* 本机：内置回落默认 + 远程访问（被连） */}
+              {/* 后端列表（连谁）：本机内置回落默认 + 远程后端 */}
               <div className="conn-item" data-active={active === "local" ? "true" : undefined}>
                 <div className="conn-ra-row">
                   <div className="conn-ra-text">
@@ -274,10 +305,8 @@ export function ConnectionManager({ onClose }: { onClose: () => void }) {
                     <Button variant="ghost" data-conn="connect-local" onClick={() => setActive("local")}>连接</Button>
                   )}
                 </div>
-                <RemoteAccessBlock />
               </div>
 
-              {/* 远程连接列表 */}
               {remotes.map((c) => (
                 <div className="conn-item" key={c.id} data-active={active === c.id ? "true" : undefined}>
                   <div className="conn-ra-row">
@@ -316,9 +345,15 @@ export function ConnectionManager({ onClose }: { onClose: () => void }) {
               ))}
 
               <button type="button" className="conn-add" data-conn="add" onClick={() => setAdding(true)}>
-                + 添加连接
+                + 添加远程后端
               </button>
-              <div className="conn-foot-hint">连接信息保存在本机；Token 由服务端生成与校验，切换连接即重连后端。</div>
+
+              {/* 远程访问（被连）：局域网凭证 + 公网穿透——独立分区，
+               *  与「连谁」的后端列表分开 */}
+              <div className="conn-sec-title">远程访问<span className="conn-sec-sub">被连——把这台机器的后端暴露给其它设备</span></div>
+              <div className="conn-item conn-ra-item">
+                <RemoteAccessBlock />
+              </div>
             </>
           )}
         </div>

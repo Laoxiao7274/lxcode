@@ -353,6 +353,33 @@ body:has(.window-stage) {
   line-height: 1.5;
 }
 /* ===== 公网穿透 · 樱花frp（.conn-sakura） ===== */
+/* 分区标题（连接弹窗内：后端列表 / 远程访问两区） */
+.conn-sec-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  margin: 18px 0 10px;
+}
+.conn-sec-title:first-child {
+  margin-top: 0;
+}
+.conn-sec-sub {
+  font-size: 10.5px;
+  font-weight: 400;
+  color: var(--fg-faint);
+}
+/* 远程访问独立分区卡（不再嵌套在本机卡内） */
+.conn-ra-item {
+  padding: 4px 14px 12px;
+}
+.conn-ra-item .conn-ra {
+  border-top: none;
+  margin-top: 0;
+  padding-top: 8px;
+}
 .conn-sakura {
   border-top: 1px dashed var(--border-soft);
   margin-top: 12px;
