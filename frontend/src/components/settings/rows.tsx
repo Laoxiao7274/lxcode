@@ -91,17 +91,6 @@ export function SelectRow({ label, hint, value, onChange, options, ariaLabel }: 
   );
 }
 
-export function PlaceholderRow({ label, hint }: { label: string; hint?: string }) {
-  return (
-    <div className="set-row">
-      <div className="set-row-text">
-        <div className="set-row-label">{label}</div>
-        {hint && <div className="set-row-hint">{hint}</div>}
-      </div>
-    </div>
-  );
-}
-
 export function ArchivedRow({ title, date, onRestore }: { title: string; date: string; onRestore: () => void }) {
   return (
     <div className="archived-row">

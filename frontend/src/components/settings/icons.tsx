@@ -37,12 +37,6 @@ export function LinkIcon({ size = 15 }: IconProps) {
 export function GitIcon({ size = 15 }: IconProps) {
   return <svg {...base(size)}><line x1="6" x2="6" y1="3" y2="15" /><circle cx="18" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M18 9a9 9 0 0 1-9 9" /></svg>;
 }
-export function WinIcon({ size = 15 }: IconProps) {
-  return <svg {...base(size)}><rect x="3" y="4" width="18" height="14" rx="2" /><path d="M7 14h4" /></svg>;
-}
-export function BranchIcon({ size = 15 }: IconProps) {
-  return <svg {...base(size)}><path d="M6 3v12" /><circle cx="18" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M18 9a9 9 0 0 1-9 9" /></svg>;
-}
 export function BoxIcon({ size = 15 }: IconProps) {
   return <svg {...base(size)}><path d="M21 8v13H3V8" /><path d="M1 3h22v5H1z" /><path d="M10 12h4" /></svg>;
 }

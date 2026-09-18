@@ -13,12 +13,12 @@ import { ModelEditDialog } from "./ModelEditDialog";
 import { ProviderBlock } from "./ProviderBlock";
 import { SearchSection } from "./SearchSection";
 import { UpdateBlock } from "./UpdateBlock";
-import { ArchivedRow, PlaceholderRow, Section, SegRow, SelectRow, InputRow, ToggleRow, ValueRow } from "./rows";
-import { BoxIcon, BranchIcon, ClockIcon, CubeIcon, GearIcon, GitIcon, SearchIcon, SunIcon, WinIcon } from "./icons";
+import { ArchivedRow, Section, SegRow, SelectRow, InputRow, ToggleRow, ValueRow } from "./rows";
+import { BoxIcon, ClockIcon, CubeIcon, GearIcon, GitIcon, SearchIcon, SunIcon } from "./icons";
 
 type SectionId =
   | "general" | "appearance" | "models" | "search" | "personalization"
-  | "git" | "environments" | "worktrees" | "archived";
+  | "git" | "archived";
 
 const SECTIONS: { id: SectionId; label: string; icon: ReactElement }[] = [
   { id: "general", label: "通用", icon: <GearIcon /> },
@@ -27,8 +27,6 @@ const SECTIONS: { id: SectionId; label: string; icon: ReactElement }[] = [
   { id: "search", label: "网页搜索", icon: <SearchIcon /> },
   { id: "personalization", label: "个性化", icon: <ClockIcon /> },
   { id: "git", label: "Git", icon: <GitIcon /> },
-  { id: "environments", label: "环境", icon: <WinIcon /> },
-  { id: "worktrees", label: "工作树", icon: <BranchIcon /> },
   { id: "archived", label: "归档任务", icon: <BoxIcon /> },
 ];
 
@@ -210,18 +208,6 @@ export function SettingsPanel({ open, onClose, source }: { open: boolean; onClos
                   mono
                 />
                 <ValueRow label="提交信息提示词" value="默认" hint="生成 commit message 的指令" />
-              </Section>
-            )}
-
-            {section === "environments" && (
-              <Section title="环境" desc="任务运行的本地/远程环境。">
-                <PlaceholderRow label="本机（默认）" hint="~/gs/lxcode · 直接执行" />
-              </Section>
-            )}
-
-            {section === "worktrees" && (
-              <Section title="工作树" desc="并行任务使用隔离的 Git 工作树。">
-                <PlaceholderRow label="未启用" hint="并行任务各自的干净检出" />
               </Section>
             )}
 
