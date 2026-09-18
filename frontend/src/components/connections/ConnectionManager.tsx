@@ -2,9 +2,11 @@
 // 壳的身份 = 连的谁：本机 127.0.0.1:7789 内置；远程连接（地址 + token）
 // 可增删改、一键切换；本机被连 = 开启远程访问后展示地址与 token
 // （遮罩显示，复制/重新生成）。
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { maskToken, useConnections, type RemoteConn } from "../../shared/connections";
 import { useEscape } from "../../shared/popover";
+import { staggerIn } from "../../shared/motion";
+import { useEnterRef } from "../../shared/anim";
 import { Button, TextInput, Toggle } from "../form";
 import { IconPencil, IconTrash } from "../icons";
 
@@ -31,10 +33,13 @@ function CopyBtn({ value, label }: { value: string; label: string }) {
   );
 }
 
-/** 远程访问（被连）设置块：开关 + 地址/token 展示。 */
+/** 远程访问（被连）设置块：开关 + 地址/token 展示——面板展开有
+ *  gsap 入场（上浮淡入 + 凭证行交错）。 */
 function RemoteAccessBlock() {
   const { remoteAccess, setRemoteAccess, remoteAddr, remoteToken, regenerateRemoteToken } = useConnections();
   const [reveal, setReveal] = useState(false);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const panelEnter = useEnterRef<HTMLDivElement>();
   return (
     <div className="conn-ra">
       <div className="conn-ra-row">
@@ -45,7 +50,15 @@ function RemoteAccessBlock() {
         <Toggle on={remoteAccess} onChange={setRemoteAccess} ariaLabel="远程访问" />
       </div>
       {remoteAccess && (
-        <div className="conn-ra-panel">
+        <div
+          className="conn-ra-panel"
+          ref={(el) => {
+            panelRef.current = el;
+            panelEnter(el);
+            // 凭证行交错浮现（地址/Token/hint）
+            if (el) staggerIn(el.querySelectorAll(".conn-cred, .conn-ra-hint"), { each: 0.05 });
+          }}
+        >
           <div className="conn-cred">
             <span className="conn-cred-label">地址</span>
             <span className="conn-cred-value mono">{remoteAddr}</span>
