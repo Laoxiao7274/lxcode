@@ -4173,6 +4173,7 @@ body:has(.window-stage) {
   transform: rotate(180deg);
 }
 .ti-format {
+  margin-top: 10px;
   border: 1px solid var(--border-soft);
   border-radius: 8px;
   background: var(--bg-side);
