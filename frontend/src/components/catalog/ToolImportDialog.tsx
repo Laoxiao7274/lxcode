@@ -1,4 +1,4 @@
-// 工具导入弹窗：粘贴或选择文件（固定格式 v1 的 JSON）→ 校验 → 入目录（自定义标记）。
+// 工具导入弹窗：粘贴或选择文件（固定格式 v1 的 JSON）→ 校验 → 入拓展（自定义标记）。
 // 格式契约见 shared/tool-import.ts 头注释——后端化时同一格式做插件分发。
 import { useRef, useState } from "react";
 import { useAgents, type ToolSpec } from "../../shared/agents";

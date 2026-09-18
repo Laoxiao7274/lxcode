@@ -38,7 +38,7 @@ export function Sidebar({
   onOpenAgents: () => void;
   /** 一切回到对话的操作（新对话/恢复会话）都要离开名单视图。 */
   onOpenChat: () => void;
-  /** 目录视图当前激活（工具/技能/模板管理）。 */
+  /** 拓展视图当前激活（工具/技能/模板/MCP 管理）。 */
   catalogActive: boolean;
   onOpenCatalog: () => void;
 }) {
@@ -129,7 +129,7 @@ export function Sidebar({
           className={"nav-item" + (catalogActive ? " on" : "")}
           data-nav="catalog"
           onClick={onOpenCatalog}
-          title="工具、技能与模板的目录"
+          title="工具、技能、模板与 MCP 的拓展"
           aria-pressed={catalogActive}
         >
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -138,7 +138,7 @@ export function Sidebar({
             <rect x="3" y="14" width="7" height="7" rx="1" />
             <rect x="14" y="14" width="7" height="7" rx="1" />
           </svg>
-          目录
+          拓展
         </button>
         <button type="button" className="nav-item">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

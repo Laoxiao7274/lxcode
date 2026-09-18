@@ -71,7 +71,7 @@ export function ModuleImportDialog({
         </div>
         <div className="ag-doc-body">
           <div className="ti-note">
-            固定格式 v1 · id 目录内唯一 · kind 取 process（模板）/ skill（技能）——校验通过后作为「自定义」条目入目录。
+            固定格式 v1 · id 拓展内唯一 · kind 取 process（模板）/ skill（技能）——校验通过后作为「自定义」条目入拓展。
           </div>
           <Textarea
             className="ti-input"

@@ -79,10 +79,10 @@ export function ModuleEditor({
                     className="cg-id-input"
                     value={mod.id}
                     onChange={(v) => set("id", v)}
-                    placeholder="如：deploy-checklist（目录内唯一）"
+                    placeholder="如：deploy-checklist（拓展内唯一）"
                     aria-label="模块 id"
                   />
-                  {idTaken && <div className="ag-warn">id 已存在——目录条目的 id 必须唯一。</div>}
+                  {idTaken && <div className="ag-warn">id 已存在——拓展条目的 id 必须唯一。</div>}
                 </div>
                 <div className="cg-field">
                   <span className="cg-field-label">摘要</span>
@@ -141,7 +141,7 @@ export function ModuleEditor({
                   <Markdown text={mod.body || "（正文预览——左侧编写后展示）"} />
                 </div>
               </div>
-              <div className="ag-preview-hint">保存后进入目录；Agent 组装的 chips 里即时可选。</div>
+              <div className="ag-preview-hint">保存后进入拓展；Agent 组装的 chips 里即时可选。</div>
             </aside>
           </div>
         </div>

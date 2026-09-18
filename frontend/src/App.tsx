@@ -32,7 +32,7 @@ function AppBody({ source }: { source: AgentSource }) {
   // 演示模式 resume 不重放历史，避免"高亮有历史、主区空白"的不一致）
   const [currentId, setCurrentId] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
-  /** 主区视图：对话 / Agent 名单 / 目录（工具·技能·模板）。 */
+  /** 主区视图：对话 / Agent 名单 / 拓展（工具·技能·模板·MCP）。 */
   const [view, setView] = useState<"chat" | "agents" | "catalog">("chat");
   /** 对话过滤目标（项目 id / ""=未分组 / null=全部）——App 持有：
    *  侧栏过滤、「新对话」归属、空态项目标签三处共用。 */
@@ -100,7 +100,7 @@ function AppBody({ source }: { source: AgentSource }) {
   const app = (
     <div className="app">
       <Topbar
-        taskTitle={view === "agents" ? "Agent 名单" : view === "catalog" ? "目录" : currentTitle}
+        taskTitle={view === "agents" ? "Agent 名单" : view === "catalog" ? "拓展" : currentTitle}
         source={source}
         connected={false}
       />

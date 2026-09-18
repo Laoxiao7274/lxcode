@@ -1,6 +1,6 @@
 // MCP 服务器编写器弹窗：自定义服务器的创建与编辑（名称/命令/描述）。
 // 服务器是接入单元——能力（工具）在后端化时由 MCP 协议握手生成，
-// 原型阶段工具目录的 mcp: 条目手工/导入关联（server 字段指回）。
+// 原型阶段工具拓展的 mcp: 条目手工/导入关联（server 字段指回）。
 import { useEffect, useRef, useState } from "react";
 import { useAgents, type McServerSpec } from "../../shared/agents";
 import { useEscape } from "../../shared/popover";
@@ -68,7 +68,7 @@ export function McServerEditor({
                 className="cg-id-input"
                 value={server.id}
                 onChange={(v) => set("id", v)}
-                placeholder="如：github（目录内唯一，工具 server 字段指向它）"
+                placeholder="如：github（拓展内唯一，工具 server 字段指向它）"
                 aria-label="服务器 id"
               />
               {idTaken && <div className="ag-warn">id 已存在——服务器 id 必须唯一。</div>}

@@ -1,4 +1,5 @@
-// 目录管理页：工具 / 技能 / 模板 三类可插拔目录的浏览、查看与自建。
+// 拓展管理页：工具 / 技能 / 模板 / MCP 服务器 四类可插拔拓展的浏览、
+// 查看与自建。
 // 三类统一：新建/编辑走表单弹窗（不让人写 JSON）+ 导入（固定格式 v1
 // 的文件/粘贴——分发通道）+ 导出下载（自建条目分享）。工具的可执行
 // 承载随后端化接插件机制。页签切目录（Segmented），条目卡网格；
@@ -226,7 +227,7 @@ export function CatalogPage() {
     { value: "tools" as const, label: `工具 · ${tools.length}`, hint: "内置、第三方与 MCP 工具" },
     { value: "skills" as const, label: `技能 · ${skills.length}`, hint: "领域知识与方法（多选注入）" },
     { value: "templates" as const, label: `模板 · ${templates.length}`, hint: "工作方式模板（单选注入）" },
-    { value: "mcp" as const, label: `MCP · ${mcpServers.length}`, hint: "MCP 服务器接入（能力以工具进目录）" },
+    { value: "mcp" as const, label: `MCP · ${mcpServers.length}`, hint: "MCP 服务器接入（能力以工具进拓展）" },
   ];
 
   const exportModules = () => {
@@ -242,8 +243,8 @@ export function CatalogPage() {
     <div className="cg-page">
       <div className="ag-head">
         <div>
-          <div className="ag-title">目录</div>
-          <div className="ag-sub">可插拔的能力目录——工具、技能、模板与 MCP 服务器；Agent 组装时从这里勾选注入</div>
+          <div className="ag-title">拓展</div>
+          <div className="ag-sub">可插拔的能力拓展——工具、技能、模板与 MCP 服务器；Agent 组装时从这里勾选注入</div>
         </div>
         <div className="cg-head-actions">
           {tab === "tools" ? (
@@ -318,7 +319,7 @@ export function CatalogPage() {
         <div className="cg-new-note">单个工具用「新建工具」表单；导入/导出是分发通道（固定格式 v1 的 JSON 文件）；自定义工具的可执行承载随后端化接插件机制。</div>
       )}
       <div className="cg-tabs">
-        <Segmented options={tabs} value={tab} onChange={setTab} ariaLabel="目录页签" />
+        <Segmented options={tabs} value={tab} onChange={setTab} ariaLabel="拓展页签" />
       </div>
       <div className="cg-grid" ref={gridRef}>
         {tab === "tools" && tools.map((t) => (
@@ -360,7 +361,7 @@ export function CatalogPage() {
         ))}
       </div>
       {tab === "mcp" && (
-        <div className="cg-new-note">MCP 服务器是接入单元——注册后暴露的能力以工具形式进工具目录（source=MCP）；停用服务器 = 能力挂起（工具保留）。</div>
+        <div className="cg-new-note">MCP 服务器是接入单元——注册后暴露的能力以工具形式进工具拓展（source=MCP）；停用服务器 = 能力挂起（工具保留）。</div>
       )}
       {focus && <DocDialog focus={focus} onClose={() => setFocus(null)} />}
       {editingServer && (

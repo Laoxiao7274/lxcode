@@ -190,7 +190,7 @@ export function AgentEditor({
   const binaryToolChips = tools.filter((t) => !t.custom && t.source === "binary").map(toToolChip);
   const mcpToolChips = tools.filter((t) => !t.custom && t.source === "mcp").map(toToolChip);
   const customToolChips = tools.filter((t) => t.custom).map(toToolChip);
-  // 上下文模块 chips 载荷（目录状态——自建条目即时出现在这里）
+  // 上下文模块 chips 载荷（拓展状态——自建条目即时出现在这里）
   const toModuleChip = (m: { id: string; desc: string; kind: "process" | "skill" }) => ({
     value: m.id,
     label: m.id,

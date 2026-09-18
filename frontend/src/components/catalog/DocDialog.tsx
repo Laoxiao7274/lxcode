@@ -1,5 +1,5 @@
-// 文档弹窗：目录条目（工具/上下文模块）完整文档的阅读视图。
-// 从组装编辑器抽出复用——目录管理页点条目直接开弹窗（浏览场景没有
+// 文档弹窗：拓展条目（工具/上下文模块）完整文档的阅读视图。
+// 从组装编辑器抽出复用——拓展管理页点条目直接开弹窗（浏览场景没有
 // 侧栏紧凑预览，两级详情是编辑器的组装语境）。阅读器形态（ag-doc-reader）：
 // 灰底画布 + 纸面内容卡 + 头部来源图标——文档就该有文档的质感。
 import type { ReactNode } from "react";
@@ -130,7 +130,7 @@ export function DocDialog({ focus, onClose }: { focus: Focus; onClose: () => voi
                 <div className="ag-detail-note">注入上下文——不授予工具权限</div>
               </>
             ) : (
-              <div className="ag-detail-note">条目不存在（目录可能已变化）</div>
+              <div className="ag-detail-note">条目不存在（拓展可能已变化）</div>
             )}
           </div>
         </div>
