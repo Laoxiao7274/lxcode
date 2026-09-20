@@ -37,6 +37,8 @@ type StreamFn func(ctx context.Context, m config.ModelConfig, msgs []llm.Message
 // 分层规则同 Persistence）。返回 ok=false 表示名单里没有该 id。
 type AgentResolver interface {
 	Resolve(agentID string) (*sessiondata.AgentContext, bool)
+	// ResolveByName 按名字解析（容错：模型把名字当 id 传时兜底）。
+	ResolveByName(name string) (*sessiondata.AgentContext, bool)
 }
 
 // 哨兵错误：服务端按类别映射协议错误码（errors.Is 判断，不做字符串匹配）。
@@ -86,6 +88,9 @@ type Session struct {
 	// 目录）。工具的相对路径、bash 默认目录与系统提示词的工作目录说明
 	// 都以它为准——每轮开始时快照进 ctx（tools.WithWorkDir）。
 	workDir string
+	// dispatchRoot 是本轮主 Agent 载荷（dispatch 委派名单校验的依据——
+	// runDispatch 在工具执行位读它；busy 期间与 ac 同生命周期）。
+	dispatchRoot *sessiondata.AgentContext
 	// agents 是名单解析器（M2 上下文组装——nil = 无 Agent 语境，走
 	// 全局默认提示词；server 装配时从 store 注入）。
 	agents AgentResolver
@@ -104,6 +109,9 @@ func New(reg *config.Registry, toolReg *tools.Registry, emit Emitter) *Session {
 		s.mu.Unlock()
 		s.emit(TodoUpdatedEvent{Items: items})
 	})
+	// agent.dispatch 的执行体（M3）：子上下文循环在 Session——工具层
+	// 只拿声明（Exec 是未装配的兜底）。注意 SetDispatchSink 保留在
+	// Registry 上的接口不必要——调用位直连 s.runDispatch，这里不再接线。
 	return s
 }
 
@@ -196,10 +204,10 @@ func WithApproval(a string) SendOpt { return func(c *sendConfig) { c.approval = 
 func WithAgent(id string) SendOpt { return func(c *sendConfig) { c.agentID = id } }
 
 // resolveAgent 解析本轮 Agent 载荷。agentID 空 + 无 resolver = nil
-// （旧语境）；agentID 空 + 有 resolver = 主 Agent；agentID 非空但
-// 名单没有 = 哨兵错误。停用的 Agent 不可选用。
-// 过渡护栏（M3 前）：主 Agent 的白名单是 agent.dispatch——工具还没
-// 注册时上下文退化为旧语境（全局默认提示词），否则白名单会拒绝一切。
+// （旧语境）；agentID 空 + 有 resolver = 主 Agent（调度中枢——M3 后
+// agent.dispatch 已注册，主语境完整生效：不带 agent 的消息默认走
+// 主 Agent，它只派活不亲自执行）；agentID 非空但名单没有 = 哨兵
+// 错误。停用的 Agent 不可选用。
 func (s *Session) resolveAgent(agentID string) (*sessiondata.AgentContext, error) {
 	if s.agents == nil {
 		return nil, nil // 无名单语境（旧调用方/单测——全部旧语义）
@@ -209,29 +217,17 @@ func (s *Session) resolveAgent(agentID string) (*sessiondata.AgentContext, error
 	}
 	ac, ok := s.agents.Resolve(agentID)
 	if !ok {
-		return nil, fmt.Errorf("%w: %s", ErrAgentNotFound, agentID)
+		// 容错：模型可能把名字当 id 传（提示词已列 id，但弱模型仍会
+		// 拿名字填参数）——按名字再解析一次。
+		ac, ok = s.agents.ResolveByName(agentID)
+	}
+	if !ok {
+		return nil, fmt.Errorf("%w: %s（提示词「可委派名单」里括号前的就是 id）", ErrAgentNotFound, agentID)
 	}
 	if !ac.Def.Enabled {
 		return nil, fmt.Errorf("%w: %s", ErrAgentDisabled, ac.Def.Name)
 	}
-	if whitelistInert(s.tools, ac.Def.Tools) {
-		return nil, nil // 主 Agent 白名单全未注册（M3 前）——旧语境过渡
-	}
 	return ac, nil
-}
-
-// whitelistInert 白名单是否完全不含已注册工具（M3 前 agent.dispatch
-// 未落地时主 Agent 的白名单就是这种——按旧语境跑，不拒绝一切）。
-func whitelistInert(toolReg *tools.Registry, allow []string) bool {
-	if allow == nil {
-		return false
-	}
-	for _, n := range allow {
-		if _, ok := toolReg.Get(n); ok {
-			return false
-		}
-	}
-	return true
 }
 
 // modelFor 按 Agent 绑定取模型（绑定优先，回落 default 角色）；
@@ -367,6 +363,7 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig, ac *sessiondata.A
 	// 路径、bash 默认目录、确认门解析基准全部对齐项目根。
 	s.mu.Lock()
 	workDir := s.workDir
+	s.dispatchRoot = ac // 主 Agent 载荷（dispatch 的委派名校验读它）
 	s.mu.Unlock()
 	ctx = tools.WithWorkDir(ctx, workDir)
 
@@ -387,6 +384,7 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig, ac *sessiondata.A
 		s.cancel = nil
 		s.pending = nil
 		s.confirm = nil
+		s.dispatchRoot = nil
 		s.mu.Unlock()
 		s.emit(BusyEvent{Busy: false})
 		if len(fileChanges) > 0 {
@@ -395,7 +393,11 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig, ac *sessiondata.A
 	}()
 
 	for round := 0; round < maxToolRounds; round++ {
-		res, err := s.streamRound(ctx, workDir, cfg.effort, ac)
+		// 历史快照（锁内取副本）：主轮写回 s.history（s.append）
+		s.mu.Lock()
+		histSnap := append([]llm.Message(nil), s.history...)
+		s.mu.Unlock()
+		res, err := s.streamRound(ctx, workDir, cfg.effort, ac, histSnap, "")
 		if err != nil {
 			aborted := errors.Is(err, context.Canceled) || ctx.Err() != nil
 			note := err.Error()
@@ -419,7 +421,7 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig, ac *sessiondata.A
 		if len(res.Message.ToolCalls) == 0 {
 			return
 		}
-		if !s.runTools(ctx, res.Message.ToolCalls, &fileChanges, ac) {
+		if !s.runTools(ctx, res.Message.ToolCalls, &fileChanges, ac, "", s.append) {
 			return // 取消
 		}
 	}
@@ -434,7 +436,10 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig, ac *sessiondata.A
 // 对不支持的端点传参会直接 400，能力门控是硬需求）。
 // ac 是本轮 Agent 载荷（nil = 旧语境）：模型绑定优先 + 四层组合提示词
 // + 工具白名单过滤。
-func (s *Session) streamRound(ctx context.Context, workDir, effort string, ac *sessiondata.AgentContext) (*llm.ChatResult, error) {
+// history 是这轮的消息序列（主轮 = s.history 快照；子轮 = 子上下文的
+// 独立历史——隔离的核心）。dispatchID 非空 = 子 Agent 执行（事件带
+// 归属标记，前端挂 dispatch 卡）。
+func (s *Session) streamRound(ctx context.Context, workDir, effort string, ac *sessiondata.AgentContext, history []llm.Message, dispatchID string) (*llm.ChatResult, error) {
 	m, err := s.modelFor(ac)
 	if err != nil {
 		return nil, err
@@ -449,15 +454,13 @@ func (s *Session) streamRound(ctx context.Context, workDir, effort string, ac *s
 	// 快照：快照后新消息（若有）不影响本轮请求。提示词按 Agent 四层
 	// 组合（nil = 全局默认）；工具 wire 声明按白名单过滤。
 	allow := agentToolsOf(ac)
-	s.mu.Lock()
 	var prompt string
 	if ac != nil {
 		prompt = ComposeSystemPrompt(s.tools, workDir, ac, allow)
 	} else {
 		prompt = BuildSystemPrompt(s.tools, workDir)
 	}
-	msgs := append([]llm.Message{{Role: "system", Content: prompt}}, s.history...)
-	s.mu.Unlock()
+	msgs := append([]llm.Message{{Role: "system", Content: prompt}}, history...)
 
 	opts = append([]llm.Option{llm.WithTools(llmToolsFiltered(s.tools, allow))}, opts...)
 	ch, err := s.stream(ctx, m, msgs, opts)
@@ -471,14 +474,14 @@ func (s *Session) streamRound(ctx context.Context, workDir, effort string, ac *s
 		switch ev.Type {
 		case llm.EventText:
 			liveContent.WriteString(ev.TextDelta)
-			s.emit(DeltaEvent{Kind: "text", Text: ev.TextDelta})
+			s.emit(DeltaEvent{Kind: "text", Text: ev.TextDelta, DispatchID: dispatchID})
 		case llm.EventReasoning:
 			liveReasoning.WriteString(ev.TextDelta)
-			s.emit(DeltaEvent{Kind: "reasoning", Text: ev.TextDelta})
+			s.emit(DeltaEvent{Kind: "reasoning", Text: ev.TextDelta, DispatchID: dispatchID})
 		case llm.EventToolCall:
 			liveTools = append(liveTools, ev.ToolCall)
 			tc := ev.ToolCall
-			s.emit(ToolCallEvent{ID: tc.ID, Name: tc.Function.Name, Arguments: tc.Function.Arguments})
+			s.emit(ToolCallEvent{ID: tc.ID, Name: tc.Function.Name, Arguments: tc.Function.Arguments, DispatchID: dispatchID})
 		case llm.EventDone:
 			return ev.Result, nil
 		case llm.EventError:
@@ -520,21 +523,25 @@ func (s *Session) streamRound(ctx context.Context, workDir, effort string, ac *s
 //
 // Agent 白名单之外的调用直接拒绝（错误自解释——模型看到的工具清单
 // 已按白名单过滤，正常不会越界；这里是防御层）。
+// dispatchID 非空 = 子 Agent 执行（事件带归属）；写目标经 sink 抽象
+// （主轮 = s.append 进会话历史并落库；子轮 = 写局部历史，隔离）。
 // 返回 false 表示被取消。fileChanges 收集文件改动供轮末产物汇总。
-func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChanges *[]FileChange, ac *sessiondata.AgentContext) bool {
+func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChanges *[]FileChange, ac *sessiondata.AgentContext, dispatchID string, sink func(llm.Message)) bool {
 	policy := tools.ApprovalFrom(ctx)
 	allowed := toolSet(agentToolsOf(ac))
 	for _, tc := range calls {
 		if ctx.Err() != nil {
 			return false
 		}
-		// 白名单防御：清单外的工具拒绝（ac 非 nil 才有白名单语义）
+		// 白名单防御：清单外的工具拒绝（ac 非 nil 才有白名单语义）。
+		// agent.dispatch 在子语境天然被挡（子 Agent 白名单不含它——
+		// 两类制深度恒 1 的运行时保证）。
 		if allowed != nil && !allowed[tc.Function.Name] {
 			reject := fmt.Sprintf(
 				"错误: 工具 %s 不在本 Agent 的白名单内（可用: %s）。如需该能力，请让用户在 Agent 组装里勾选。",
 				tc.Function.Name, strings.Join(agentToolsOf(ac), ", "))
-			s.append(llm.Message{Role: "tool", ToolCallID: tc.ID, Content: reject})
-			s.emit(ToolResultEvent{ID: tc.ID, Name: tc.Function.Name, Content: reject, IsError: true})
+			sink(llm.Message{Role: "tool", ToolCallID: tc.ID, Content: reject})
+			s.emit(ToolResultEvent{ID: tc.ID, Name: tc.Function.Name, Content: reject, IsError: true, DispatchID: dispatchID})
 			continue
 		}
 		// strict：变更类工具拒绝（不进确认门——只读模式没有"确认放行"语义；
@@ -543,8 +550,8 @@ func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChange
 			reject := fmt.Sprintf(
 				"错误: 当前为只读模式（strict），已禁用 %s。请改用 read_file / search 等读取类工具，或提示用户切换权限模式。",
 				tc.Function.Name)
-			s.append(llm.Message{Role: "tool", ToolCallID: tc.ID, Content: reject})
-			s.emit(ToolResultEvent{ID: tc.ID, Name: tc.Function.Name, Content: reject, IsError: true})
+			sink(llm.Message{Role: "tool", ToolCallID: tc.ID, Content: reject})
+			s.emit(ToolResultEvent{ID: tc.ID, Name: tc.Function.Name, Content: reject, IsError: true, DispatchID: dispatchID})
 			continue
 		}
 		if prompt := s.tools.Confirm(ctx, tc); prompt != "" && policy != tools.ApprovalAuto {
@@ -556,22 +563,42 @@ func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChange
 				return false // 取消
 			}
 			if !allow {
-				s.append(llm.Message{Role: "tool", ToolCallID: tc.ID,
+				sink(llm.Message{Role: "tool", ToolCallID: tc.ID,
 					Content: "用户拒绝了这次工具调用（未执行）。请改用其他方式完成任务，或向用户说明需要该操作的原因。"})
 				s.emit(ToolResultEvent{
-					ID: tc.ID, Name: tc.Function.Name, Content: "用户拒绝执行", IsError: true,
+					ID: tc.ID, Name: tc.Function.Name, Content: "用户拒绝执行", IsError: true, DispatchID: dispatchID,
 				})
 				continue
 			}
 		}
-		result := s.tools.Execute(ctx, tc)
+		// agent.dispatch 走内核直连（工具声明的 Exec 是未接线兜底）：
+		// 子循环需要 tc.ID 做事件归属 + 委派名单校验，Exec 的入参形状
+		//（json.RawMessage）给不了——在调用位展开。
+		var result string
+		if tc.Function.Name == "agent.dispatch" {
+			var p struct {
+				Agent   string `json:"agent"`
+				Task    string `json:"task"`
+				Context string `json:"context"`
+			}
+			if err := json.Unmarshal([]byte(tc.Function.Arguments), &p); err != nil {
+				result = fmt.Sprintf("错误: agent.dispatch 参数解析失败: %v", err)
+			} else {
+				res := s.runDispatch(ctx, tools.DispatchCall{
+					DispatchID: tc.ID, Agent: p.Agent, Task: p.Task, Context: p.Context,
+				})
+				result = res.Output
+			}
+		} else {
+			result = s.tools.Execute(ctx, tc)
+		}
 		collectFileChange(fileChanges, tc, result)
 		if r := []rune(result); len(r) > maxToolResultBytes {
 			result = string(r[:maxToolResultBytes]) +
 				fmt.Sprintf("\n…（结果过长已截断，全文共 %d 字符）", len(r))
 		}
-		s.append(llm.Message{Role: "tool", ToolCallID: tc.ID, Content: result})
-		s.emit(ToolResultEvent{ID: tc.ID, Name: tc.Function.Name, Content: result})
+		sink(llm.Message{Role: "tool", ToolCallID: tc.ID, Content: result})
+		s.emit(ToolResultEvent{ID: tc.ID, Name: tc.Function.Name, Content: result, DispatchID: dispatchID})
 	}
 	return true
 }

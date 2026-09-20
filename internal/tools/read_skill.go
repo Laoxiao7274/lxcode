@@ -27,14 +27,18 @@ type SkillSourceFn func(ctx context.Context) []SkillEntry
 var skillMu sync.Mutex
 var skillSource SkillSourceFn
 
-// SetSkillSource 注入技能目录实现（server 装配时调用）。
-func (r *Registry) SetSkillSource(fn SkillSourceFn) {
+// SetSkillSource 注入技能目录实现（server/内核装配时调用）。返回先前
+// 的实现（dispatch 子语境临时切换后恢复主语境目录用）。
+func (r *Registry) SetSkillSource(fn SkillSourceFn) SkillSourceFn {
 	skillMu.Lock()
+	prev := skillSource
 	skillSource = fn
 	skillMu.Unlock()
+	return prev
 }
 
-func getSkillSource() SkillSourceFn {
+// GetSkillSource 读当前目录（快照/恢复用）。
+func GetSkillSource() SkillSourceFn {
 	skillMu.Lock()
 	defer skillMu.Unlock()
 	return skillSource
@@ -60,7 +64,7 @@ func readSkillDef(r *Registry) *Def {
 			if err := json.Unmarshal(args, &p); err != nil {
 				return "", fmt.Errorf("参数解析失败: %w", err)
 			}
-			src := getSkillSource()
+			src := GetSkillSource()
 			if src == nil {
 				return "错误: 当前会话没有技能目录（Agent 未配置技能）。", nil
 			}

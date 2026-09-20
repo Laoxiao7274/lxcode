@@ -85,13 +85,22 @@ type storeAgentResolver struct {
 }
 
 func (r *storeAgentResolver) Resolve(agentID string) (*sessiondata.AgentContext, bool) {
+	return r.resolve(func(a sessiondata.AgentDef) bool { return a.ID == agentID })
+}
+
+// ResolveByName 按名字解析（模型把名字当 id 传的容错兜底）。
+func (r *storeAgentResolver) ResolveByName(name string) (*sessiondata.AgentContext, bool) {
+	return r.resolve(func(a sessiondata.AgentDef) bool { return a.Name == name })
+}
+
+func (r *storeAgentResolver) resolve(match func(sessiondata.AgentDef) bool) (*sessiondata.AgentContext, bool) {
 	agents, err := r.st.ListAgents()
 	if err != nil {
 		return nil, false
 	}
 	var def *sessiondata.AgentDef
 	for i := range agents {
-		if agents[i].ID == agentID {
+		if match(agents[i]) {
 			def = &agents[i]
 			break
 		}
@@ -137,14 +146,14 @@ func (s *Server) emitEvent(ev agent.Event) {
 	case agent.UserMsgEvent:
 		s.broadcast(protocol.EventUserMsg, e.Message)
 	case agent.DeltaEvent:
-		s.broadcast(protocol.EventDelta, protocol.DeltaParams{Kind: e.Kind, Text: e.Text})
+		s.broadcast(protocol.EventDelta, protocol.DeltaParams{Kind: e.Kind, Text: e.Text, DispatchID: e.DispatchID})
 	case agent.ToolCallEvent:
 		s.broadcast(protocol.EventToolCall, protocol.ToolCallParams{
-			ID: e.ID, Name: e.Name, Arguments: e.Arguments,
+			ID: e.ID, Name: e.Name, Arguments: e.Arguments, DispatchID: e.DispatchID,
 		})
 	case agent.ToolResultEvent:
 		s.broadcast(protocol.EventToolRslt, protocol.ToolResultParams{
-			ID: e.ID, Name: e.Name, Content: e.Content, IsError: e.IsError,
+			ID: e.ID, Name: e.Name, Content: e.Content, IsError: e.IsError, DispatchID: e.DispatchID,
 		})
 	case agent.ConfirmRequestEvent:
 		s.broadcast(protocol.EventConfirm, toProtocolConfirm(e.Request))
@@ -153,10 +162,20 @@ func (s *Server) emitEvent(ev agent.Event) {
 	case agent.TurnDoneEvent:
 		s.broadcast(protocol.EventDone, protocol.DoneParams{
 			Message: e.Message, UsageTokens: e.UsageTokens, FinishReason: e.FinishReason,
+			DispatchID: e.DispatchID,
 		})
 	case agent.TurnErrorEvent:
 		s.broadcast(protocol.EventError, protocol.ErrorParams{
 			Message: e.Message, Aborted: e.Aborted, Partial: e.Partial,
+		})
+	case agent.DispatchStartEvent:
+		s.broadcast(protocol.EventDispatchStart, protocol.DispatchStartParams{
+			DispatchID: e.DispatchID, AgentID: e.AgentID, AgentName: e.AgentName,
+			AgentColor: e.AgentColor, Task: e.Task,
+		})
+	case agent.DispatchEndEvent:
+		s.broadcast(protocol.EventDispatchEnd, protocol.DispatchEndParams{
+			DispatchID: e.DispatchID, Result: e.Result, IsError: e.IsError, UsageTokens: e.UsageTokens,
 		})
 	case agent.TodoUpdatedEvent:
 		s.broadcast(protocol.EventTodo, protocol.TodoUpdatedParams{Items: e.Items})

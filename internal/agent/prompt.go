@@ -52,6 +52,7 @@ var systemPromptTools = map[string]string{
 	"write_file":     "write_file：全量写入文件，覆盖已有文件时用户会收到确认提示",
 	"bash":           "bash：执行 shell 命令，每次执行前用户会收到确认提示",
 	"todo":           "todo：维护任务清单（全量写入），低危自动执行",
+	"agent.dispatch": "agent.dispatch：把任务派给名单中的子 Agent（任务的完整执行在子上下文里，结果回传验收），低危自动执行",
 }
 
 // BuildSystemPrompt 组装完整系统提示词：头 + 工作目录说明 + 动态工具清单 + 尾。

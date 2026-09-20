@@ -80,11 +80,13 @@ const (
 	EventModels   = "model.changed"
 	EventTodo     = "todo.updated" // 任务清单变更（客户端渲染 TodoList）
 
-	EventSessionChanged = "session.changed" // 会话切换（new/resume）——客户端须重拉 chat.history
-	EventFiles          = "files.changed"   // 一轮的文件改动汇总（产物卡——验收视图）
-	EventProjectChanged = "project.changed" // 项目增删——客户端重拉 project.list
-	EventAgentChanged   = "agent.changed"   // Agent 名单变更——客户端重拉 agent.list
-	EventCatalogChanged = "catalog.changed" // 拓展目录变更——客户端重拉对应 kind 的 catalog.*.list
+	EventSessionChanged = "session.changed"    // 会话切换（new/resume）——客户端须重拉 chat.history
+	EventFiles          = "files.changed"      // 一轮的文件改动汇总（产物卡——验收视图）
+	EventProjectChanged = "project.changed"    // 项目增删——客户端重拉 project.list
+	EventAgentChanged   = "agent.changed"      // Agent 名单变更——客户端重拉 agent.list
+	EventCatalogChanged = "catalog.changed"    // 拓展目录变更——客户端重拉对应 kind 的 catalog.*.list
+	EventDispatchStart  = "chat.dispatchStart" // 主 Agent 派发子 Agent——客户端渲染 dispatch 卡
+	EventDispatchEnd    = "chat.dispatchEnd"   // 子 Agent 执行收尾——dispatch 卡定格带结果
 )
 
 // 错误码：JSON-RPC 标准码 + 本应用码。
@@ -239,21 +241,24 @@ type ChatHistoryResult struct {
 // 事件载荷。
 
 type DeltaParams struct {
-	Kind string `json:"kind"` // text | reasoning
-	Text string `json:"text"`
+	Kind       string `json:"kind"` // text | reasoning
+	Text       string `json:"text"`
+	DispatchID string `json:"dispatch_id,omitempty"` // 非空 = 子 Agent 的增量（归属 dispatch 卡）
 }
 
 type ToolCallParams struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"`
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Arguments  string `json:"arguments"`
+	DispatchID string `json:"dispatch_id,omitempty"`
 }
 
 type ToolResultParams struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	Content string `json:"content"`
-	IsError bool   `json:"is_error"`
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Content    string `json:"content"`
+	IsError    bool   `json:"is_error"`
+	DispatchID string `json:"dispatch_id,omitempty"`
 }
 
 // ConfirmRequest 是需要人工确认的工具调用（确认门）；客户端须回 tool.confirm。
@@ -268,6 +273,7 @@ type DoneParams struct {
 	Message      llm.Message `json:"message"`
 	UsageTokens  int         `json:"usage_tokens"`
 	FinishReason string      `json:"finish_reason"`
+	DispatchID   string      `json:"dispatch_id,omitempty"` // 非空 = 子 Agent 轮完成
 }
 
 type ErrorParams struct {
@@ -471,4 +477,23 @@ type AgentChangedParams struct {
 type CatalogChangedParams struct {
 	Kind   string `json:"kind"`   // modules | tools | mcp
 	Reason string `json:"reason"` // add | update | remove
+}
+
+// DispatchStartParams 是 chat.dispatchStart 的载荷（M3——主 Agent 派发
+// 子 Agent；前端渲染 dispatch 卡，后续带 dispatch_id 的事件归属进卡）。
+type DispatchStartParams struct {
+	DispatchID string `json:"dispatch_id"`
+	AgentID    string `json:"agent_id"`
+	AgentName  string `json:"agent_name"`
+	AgentColor string `json:"agent_color"`
+	Task       string `json:"task"`
+}
+
+// DispatchEndParams 是 chat.dispatchEnd 的载荷（子 Agent 收尾——结果
+// 是主 Agent 的验收输入）。
+type DispatchEndParams struct {
+	DispatchID  string `json:"dispatch_id"`
+	Result      string `json:"result"`
+	IsError     bool   `json:"is_error"`
+	UsageTokens int    `json:"usage_tokens,omitempty"`
 }

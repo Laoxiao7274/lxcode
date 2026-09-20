@@ -334,7 +334,9 @@ func TestServerConfirmFlow(t *testing.T) {
 		return ch, nil
 	})
 
-	resp := client.call(protocol.MethodChatSend, protocol.ChatSendParams{Text: "跑个命令"})
+	// M3 语义：不带 agent 的消息走主 Agent（只有 dispatch 工具）——
+	// bash 确认门测试直选 coder（白名单含 bash）
+	resp := client.call(protocol.MethodChatSend, protocol.ChatSendParams{Text: "跑个命令", Agent: "coder"})
 	if resp == nil || resp.Error != nil {
 		t.Fatalf("chat.send 失败: %+v", resp)
 	}
@@ -425,7 +427,8 @@ func TestServerTodoFlow(t *testing.T) {
 		return ch, nil
 	})
 
-	client.call(protocol.MethodChatSend, protocol.ChatSendParams{Text: "建个清单"})
+	// M3 语义：todo 在 coder 的白名单里（主 Agent 只有 dispatch）
+	client.call(protocol.MethodChatSend, protocol.ChatSendParams{Text: "建个清单", Agent: "coder"})
 	ev := client.waitEvent(protocol.EventTodo)
 	if ev == nil {
 		t.Fatal("todo 工具应触发 todo.updated 事件")

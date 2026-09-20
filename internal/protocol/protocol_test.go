@@ -469,6 +469,50 @@ func TestAgentCatalogPayloads(t *testing.T) {
 	})
 }
 
+// TestDispatchPayloads：M3 dispatch 事件的 wire 形状（dispatch_id 归属
+// 键 + Start/End 载荷——前端 DispatchCard 按这些键消费）。
+func TestDispatchPayloads(t *testing.T) {
+	t.Run("子事件 dispatch_id omitempty（主时间线无键——旧客户端形状不变）", func(t *testing.T) {
+		b := mustMarshal(t, DeltaParams{Kind: "text", Text: "hi"})
+		if strings.Contains(string(b), "dispatch_id") {
+			t.Fatalf("主时间线的 delta 不应带 dispatch_id: %s", b)
+		}
+		b2 := mustMarshal(t, DeltaParams{Kind: "text", Text: "hi", DispatchID: "d1"})
+		var got DeltaParams
+		mustUnmarshal(t, b2, &got)
+		if got.DispatchID != "d1" {
+			t.Fatalf("dispatch_id 往返失真: %+v", got)
+		}
+	})
+
+	t.Run("DispatchStartParams 全键（dispatch_id/agent_id/agent_name/agent_color/task）", func(t *testing.T) {
+		b := mustMarshal(t, DispatchStartParams{
+			DispatchID: "d1", AgentID: "coder", AgentName: "代码 Agent", AgentColor: "#3b82f6", Task: "跑测试",
+		})
+		var m map[string]any
+		mustUnmarshal(t, b, &m)
+		for _, key := range []string{"dispatch_id", "agent_id", "agent_name", "agent_color", "task"} {
+			if _, ok := m[key]; !ok {
+				t.Fatalf("DispatchStartParams 缺键 %s: %s", key, b)
+			}
+		}
+	})
+
+	t.Run("DispatchEndParams（result/is_error/usage_tokens）", func(t *testing.T) {
+		b := mustMarshal(t, DispatchEndParams{DispatchID: "d1", Result: "全绿", UsageTokens: 730})
+		var got DispatchEndParams
+		mustUnmarshal(t, b, &got)
+		if got.Result != "全绿" || got.UsageTokens != 730 || got.IsError {
+			t.Fatalf("DispatchEnd 往返失真: %+v", got)
+		}
+		// usage_tokens omitempty（0 不产生键——错误收尾通常没有用量）
+		b2 := mustMarshal(t, DispatchEndParams{DispatchID: "d1", Result: "失败", IsError: true})
+		if strings.Contains(string(b2), "usage_tokens") {
+			t.Fatalf("0 用量不应产生键: %s", b2)
+		}
+	})
+}
+
 func mustUnmarshal(t *testing.T, b []byte, v any) {
 	t.Helper()
 	if err := json.Unmarshal(b, v); err != nil {

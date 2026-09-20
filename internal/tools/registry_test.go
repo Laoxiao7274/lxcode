@@ -22,8 +22,8 @@ func call(name, args string) llm.ToolCall {
 func TestLLMToolsShape(t *testing.T) {
 	r := New()
 	toolsWire := r.LLMTools()
-	if len(toolsWire) != 8 {
-		t.Fatalf("应有 8 个工具（read_file / search / session_search / read_skill / edit / write_file / bash / todo）, got %d", len(toolsWire))
+	if len(toolsWire) != 9 {
+		t.Fatalf("应有 9 个工具（read_file / search / session_search / read_skill / edit / write_file / bash / todo / agent.dispatch）, got %d", len(toolsWire))
 	}
 	for _, tw := range toolsWire {
 		if tw.Name == "" || tw.Description == "" || !json.Valid(tw.Parameters) {

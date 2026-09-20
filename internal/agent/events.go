@@ -19,24 +19,30 @@ type UserMsgEvent struct {
 }
 
 // DeltaEvent：流式增量。Kind = "text"（正文）| "reasoning"（思考链）。
+// DispatchID 非空 = 子 Agent 执行的增量（前端归属进 dispatch 卡）。
 type DeltaEvent struct {
-	Kind string
-	Text string
+	Kind       string
+	Text       string
+	DispatchID string
 }
 
 // ToolCallEvent：模型发起了工具调用（执行前；确认门在其后）。
+// DispatchID 非空 = 子 Agent 的调用。
 type ToolCallEvent struct {
-	ID        string
-	Name      string
-	Arguments string
+	ID         string
+	Name       string
+	Arguments  string
+	DispatchID string
 }
 
 // ToolResultEvent：工具执行完成（IsError = 拒绝/失败）。
+// DispatchID 非空 = 子 Agent 的结果。
 type ToolResultEvent struct {
-	ID      string
-	Name    string
-	Content string
-	IsError bool
+	ID         string
+	Name       string
+	Content    string
+	IsError    bool
+	DispatchID string
 }
 
 // ConfirmRequestEvent：高危工具等待人工裁决（宿主弹确认卡并回 Confirm）。
@@ -58,10 +64,12 @@ type BusyEvent struct {
 }
 
 // TurnDoneEvent：一轮生成的最终消息（含 usage/finish）。
+// DispatchID 非空 = 子 Agent 轮完成（主轮的 busy 不翻转）。
 type TurnDoneEvent struct {
 	Message      llm.Message
 	UsageTokens  int
 	FinishReason string
+	DispatchID   string
 }
 
 // TurnErrorEvent：一轮以错误收尾（Aborted = 用户取消，已生成部分在 Partial）。
@@ -96,6 +104,25 @@ type FilesChangedEvent struct {
 	Files []FileChange
 }
 
+// DispatchStartEvent：主 Agent 把任务派给子 Agent（M3——子上下文隔离
+// 的开端）。宿主渲染 dispatch 卡（子执行的事件按 DispatchID 归属进卡）。
+type DispatchStartEvent struct {
+	DispatchID string
+	AgentID    string
+	AgentName  string
+	AgentColor string
+	Task       string
+}
+
+// DispatchEndEvent：子 Agent 执行收尾（Result = 最终回复——主 Agent 的
+// 验收输入；IsError = 子执行以错误收尾）。
+type DispatchEndEvent struct {
+	DispatchID  string
+	Result      string
+	IsError     bool
+	UsageTokens int
+}
+
 func (UserMsgEvent) isEvent()        {}
 func (DeltaEvent) isEvent()          {}
 func (ToolCallEvent) isEvent()       {}
@@ -107,6 +134,8 @@ func (TurnErrorEvent) isEvent()      {}
 func (TodoUpdatedEvent) isEvent()    {}
 func (FilesChangedEvent) isEvent()   {}
 func (SessionStartedEvent) isEvent() {}
+func (DispatchStartEvent) isEvent()  {}
+func (DispatchEndEvent) isEvent()    {}
 
 // Snapshot 是宿主初始化/重连时的会话同步载荷（History 的返回值）。
 type Snapshot struct {

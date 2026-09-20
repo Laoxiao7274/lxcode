@@ -79,7 +79,8 @@ func (r *Registry) getSessionSearch() SessionSearchFn {
 
 // New 创建注册表并注册内置工具。顺序即系统提示词里工具清单的顺序：
 // 读取类在前（read/search/session_search/read_skill），变更类在后
-// （edit/write/bash），todo 收尾（规划状态，非文件操作）。
+// （edit/write/bash），todo 收尾；agent.dispatch 是主 Agent 的调度
+// 通道（子 Agent 白名单不含它——两类制深度恒 1）。
 func New() *Registry {
 	r := &Registry{defs: map[string]*Def{}}
 	r.register(readFileDef())
@@ -90,6 +91,7 @@ func New() *Registry {
 	r.register(writeFileDef())
 	r.register(bashDef())
 	r.register(todoDef(r))
+	r.register(dispatchDef(r))
 	return r
 }
 

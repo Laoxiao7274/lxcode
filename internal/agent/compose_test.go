@@ -25,6 +25,15 @@ func (r *stubResolver) Resolve(id string) (*sessiondata.AgentContext, bool) {
 	return ac, ok
 }
 
+func (r *stubResolver) ResolveByName(name string) (*sessiondata.AgentContext, bool) {
+	for _, ac := range r.entries {
+		if ac.Def.Name == name {
+			return ac, true
+		}
+	}
+	return nil, false
+}
+
 func newAgentSession(t *testing.T) *Session {
 	t.Helper()
 	reg, err := config.Load(filepath.Join(t.TempDir(), "config", "models.json"))
@@ -110,8 +119,8 @@ func TestComposeMainAgentDelegatesInjection(t *testing.T) {
 		},
 	}
 	prompt := ComposeSystemPrompt(s.tools, "", ac, ac.Def.Tools)
-	if !strings.Contains(prompt, "可委派名单") || !strings.Contains(prompt, "代码 Agent：写代码") {
-		t.Fatal("委派名单未注入（第四层动态注入）")
+	if !strings.Contains(prompt, "可委派名单") || !strings.Contains(prompt, "- coder（代码 Agent）：写代码") {
+		t.Fatal("委派名单未注入（第四层动态注入——id（名字）：描述）")
 	}
 	if !strings.Contains(prompt, "已停用——不可分派") {
 		t.Fatal("停用的子 Agent 应标注不可分派")

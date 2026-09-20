@@ -177,6 +177,8 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource 
   /** 后端事件 → AgentEvent 映射。 */
   private handleEvent(method: string, params: unknown) {
     const p = (params ?? {}) as Record<string, unknown>;
+    // dispatch_id 归属（子 Agent 执行的事件——store 挂 dispatch 卡）
+    const dispatchId = p.dispatch_id ? String(p.dispatch_id) : undefined;
     switch (method) {
       case "connection.ready":
         this.emit({ type: "ready", server: String(p.server ?? ""), version: String(p.version ?? ""), busy: Boolean(p.busy) });
@@ -185,13 +187,32 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource 
         this.emit({ type: "userMessage", text: String(p.text ?? "") });
         break;
       case "chat.delta":
-        this.emit({ type: "delta", kind: String(p.kind) as "text" | "reasoning", text: String(p.text ?? "") });
+        this.emit({ type: "delta", kind: String(p.kind) as "text" | "reasoning", text: String(p.text ?? ""), dispatchId });
         break;
       case "chat.toolCall":
-        this.emit({ type: "toolCall", id: String(p.id), name: String(p.name), arguments: String(p.arguments ?? "") });
+        this.emit({ type: "toolCall", id: String(p.id), name: String(p.name), arguments: String(p.arguments ?? ""), dispatchId });
         break;
       case "chat.toolResult":
-        this.emit({ type: "toolResult", id: String(p.id), name: String(p.name), content: String(p.content ?? ""), isError: Boolean(p.is_error) });
+        this.emit({ type: "toolResult", id: String(p.id), name: String(p.name), content: String(p.content ?? ""), isError: Boolean(p.is_error), dispatchId });
+        break;
+      case "chat.dispatchStart":
+        this.emit({
+          type: "dispatchStart",
+          dispatchId: String(p.dispatch_id ?? ""),
+          agentId: String(p.agent_id ?? ""),
+          agentName: String(p.agent_name ?? ""),
+          agentColor: String(p.agent_color ?? "#3b82f6"),
+          task: String(p.task ?? ""),
+        });
+        break;
+      case "chat.dispatchEnd":
+        this.emit({
+          type: "dispatchEnd",
+          dispatchId: String(p.dispatch_id ?? ""),
+          result: String(p.result ?? ""),
+          isError: Boolean(p.is_error),
+          usageTokens: Number(p.usage_tokens ?? 0),
+        });
         break;
       case "chat.confirmRequest":
         this.emit({ type: "confirmRequest", request: p as unknown as ConfirmRequest });
@@ -200,14 +221,17 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource 
         this.emit({ type: "todoUpdated", items: (p.items as TodoItem[]) ?? [] });
         break;
       case "chat.done":
-        this.emit({ type: "done", usageTokens: Number(p.usage_tokens ?? 0), finishReason: String(p.finish_reason ?? "stop") });
-        // 轮结束——会话列表元数据（标题/时间/消息数）可能变了：重拉
-        this.call("session.list")
-          .then((r) => {
-            this.applySessionList(r);
-            this.emit({ type: "sessionsChanged" });
-          })
-          .catch((e) => this.opError(`刷新会话列表失败: ${e.message}`));
+        this.emit({ type: "done", usageTokens: Number(p.usage_tokens ?? 0), finishReason: String(p.finish_reason ?? "stop"), dispatchId });
+        // 主轮结束——会话列表元数据（标题/时间/消息数）可能变了：重拉
+        //（子轮的 done 不触发——dispatchId 归属时不刷列表）
+        if (!dispatchId) {
+          this.call("session.list")
+            .then((r) => {
+              this.applySessionList(r);
+              this.emit({ type: "sessionsChanged" });
+            })
+            .catch((e) => this.opError(`刷新会话列表失败: ${e.message}`));
+        }
         break;
       case "chat.error":
         this.emit({ type: "error", message: String(p.message ?? ""), aborted: Boolean(p.aborted) });
