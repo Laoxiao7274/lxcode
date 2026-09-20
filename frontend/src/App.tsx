@@ -8,6 +8,7 @@ import { Topbar } from "./components/topbar";
 import { Sidebar } from "./components/sidebar";
 import { Thread, PlanBar } from "./components/thread";
 import { Composer } from "./components/composer";
+import type { SlashCommand } from "./components/composer/SlashPalette";
 import { SettingsPanel } from "./components/settings";
 import { SettingsProvider, useSettings } from "./shared/settings";
 import { ConnectionsProvider } from "./shared/connections";
@@ -98,6 +99,15 @@ function AppBody({ source }: { source: AgentSource }) {
     <div className="error-block" role="alert">{state.operationError}<button type="button" onClick={clearError}>关闭</button></div>
   );
 
+  // 斜杠命令集（命令面板）：页面导航。后端化时同一面板接会话/工具域
+  // 命令（/resume /compact …）与选择器聚焦。
+  const slashCommands: SlashCommand[] = useMemo(() => [
+    { name: "new", desc: "开始新对话", run: () => { source.newSession(filter === null || filter === undefined ? undefined : filter); backToChat(); } },
+    { name: "agents", desc: "打开 Agent 名单与组装", run: openAgents },
+    { name: "catalog", desc: "打开拓展（工具/技能/模板/MCP）", run: openCatalog },
+    { name: "settings", desc: "打开设置", run: () => setSettingsOpen(true) },
+  ], [source, filter, openAgents, openCatalog]);
+
   const mainView =
     view === "chat" ? (
       <>
@@ -106,7 +116,7 @@ function AppBody({ source }: { source: AgentSource }) {
           <Thread state={state} onConfirm={handleConfirm} onSuggestion={(t) => sendWithOptions(t)} projectName={filterProjectName} />
         </div>
         <PlanBar todos={state.todos} />
-        <Composer busy={state.busy} onSend={sendWithOptions} onCancel={() => source.cancel()} />
+        <Composer busy={state.busy} onSend={sendWithOptions} onCancel={() => source.cancel()} commands={slashCommands} />
       </>
     ) : view === "agents" ? (
       <AgentsPage />

@@ -84,6 +84,60 @@ app.whenReady().then(async () => {
     assert.ok(empty && empty.cards === 4, "chat: 空态应有 4 张建议卡");
     assert.ok(empty && empty.agentChip, "chat: 空态应显示当前 Agent 芯片");
     assert.ok(empty && empty.top > 100 && empty.bottom < 900, "chat: 空态应纵向居中（不贴顶）");
+    // 斜杠命令面板：输入 / → 弹出 → 过滤（/set）→ 键盘导航 → 选中进设置 → 回来
+    await win.webContents.executeJavaScript(`(() => {
+      const ta = document.querySelector(".piInput");
+      if (!ta) throw new Error("输入框缺失");
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
+      setter.call(ta, "/");
+      ta.dispatchEvent(new Event("input", { bubbles: true }));
+    })()`);
+    const slashAll = await win.webContents.executeJavaScript(`(() => ({
+      palette: !!document.querySelector(".slash-palette"),
+      items: document.querySelectorAll(".cmd-item").length,
+      first: document.querySelector(".cmd-item .cmd-name")?.textContent,
+    }))()`);
+    log("slash-open", JSON.stringify(slashAll));
+    assert.ok(slashAll.palette && slashAll.items >= 4 && slashAll.first === "/new", "chat: 输入 / 应弹出命令面板（含 /new）");
+    // 关键字过滤
+    await win.webContents.executeJavaScript(`(() => {
+      const ta = document.querySelector(".piInput");
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
+      setter.call(ta, "/set");
+      ta.dispatchEvent(new Event("input", { bubbles: true }));
+    })()`);
+    const slashFilter = await win.webContents.executeJavaScript(`(() => ({
+      items: document.querySelectorAll(".cmd-item").length,
+      onlySettings: [...document.querySelectorAll(".cmd-item .cmd-name")].every((n) => n.textContent.includes("settings")),
+    }))()`);
+    log("slash-filter", JSON.stringify(slashFilter));
+    assert.ok(slashFilter.items === 1 && slashFilter.onlySettings, "chat: /set 应只匹配 settings");
+    // 键盘：Enter 选中 → 设置面板打开
+    await win.webContents.executeJavaScript(`(() => {
+      const ev = new KeyboardEvent("keydown", { key: "Enter", bubbles: true });
+      window.dispatchEvent(ev);
+    })()`);
+    const settingsOpened = await win.webContents.executeJavaScript(`!!document.querySelector(".settings-view")`);
+    log("slash-picked", settingsOpened);
+    assert.ok(settingsOpened, "chat: Enter 应选中命令（打开设置）");
+    await win.webContents.executeJavaScript(`document.querySelector(".settings-back").click()`);
+    // Esc 关闭路径：再开面板 → 清空关闭
+    await win.webContents.executeJavaScript(`(() => {
+      const ta = document.querySelector(".piInput");
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
+      setter.call(ta, "/");
+      ta.dispatchEvent(new Event("input", { bubbles: true }));
+    })()`);
+    await win.webContents.executeJavaScript(`(() => {
+      const ev = new KeyboardEvent("keydown", { key: "Escape", bubbles: true });
+      window.dispatchEvent(ev);
+    })()`);
+    const slashClosed = await win.webContents.executeJavaScript(`(() => ({
+      palette: !!document.querySelector(".slash-palette"),
+      input: document.querySelector(".piInput")?.value,
+    }))()`);
+    log("slash-escaped", JSON.stringify(slashClosed));
+    assert.ok(!slashClosed.palette && slashClosed.input === "", "chat: Esc 应关闭面板并清输入");
     // Agent 选择器 + 委派面板：打开菜单 → 可委派入口 → 面板 → 切换（会话级）
     await win.webContents.executeJavaScript(`(() => {
       const btn = document.querySelector(".agent-chip");
