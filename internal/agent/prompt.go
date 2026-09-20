@@ -47,6 +47,7 @@ var systemPromptTools = map[string]string{
 	"read_file":      "read_file：读取文件，低危自动执行，支持分页与行号",
 	"search":         "search：搜索文件内容/文件名，低危自动执行，不经过 shell",
 	"session_search": "session_search：搜索历史会话内容（含当前会话），低危自动执行",
+	"read_skill":     "read_skill：读取技能的完整内容（提示词里只有索引），低危自动执行",
 	"edit":           "edit：精确修改文件片段（唯一匹配替换），低危自动执行",
 	"write_file":     "write_file：全量写入文件，覆盖已有文件时用户会收到确认提示",
 	"bash":           "bash：执行 shell 命令，每次执行前用户会收到确认提示",

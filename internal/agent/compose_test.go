@@ -50,11 +50,11 @@ func TestComposeSystemPromptFourLayers(t *testing.T) {
 	ac := &sessiondata.AgentContext{
 		Def: sessiondata.AgentDef{
 			ID: "coder", Name: "代码 Agent", IsMain: false,
-			Tools: []string{"read_file", "edit"}, Approval: "strict", Prompt: "你是代码 Agent。改动前先读。",
+			Tools: []string{"read_file", "edit", "read_skill"}, Approval: "strict", Prompt: "你是代码 Agent。改动前先读。",
 			Protocol: "定制协议：只写 Go。",
 		},
-		Workflow: &sessiondata.ModuleSpec{ID: "mc", Kind: "process", Body: "# 最小改动\n\n只动必需的部分。"},
-		Skills:   []sessiondata.ModuleSpec{{ID: "gsap", Kind: "skill", Body: "# GSAP\n\n入场收尾 clearProps。"}},
+		Workflow: &sessiondata.ModuleSpec{ID: "mc", Kind: "process", Desc: "最小改动", Body: "# 最小改动\n\n只动必需的部分。"},
+		Skills:   []sessiondata.ModuleSpec{{ID: "gsap", Kind: "skill", Desc: "GSAP 动效", Body: "# GSAP\n\n入场收尾 clearProps。"}},
 	}
 	prompt := ComposeSystemPrompt(s.tools, "/proj/demo", ac, ac.Def.Tools)
 
@@ -65,9 +65,19 @@ func TestComposeSystemPromptFourLayers(t *testing.T) {
 	if strings.Contains(prompt, "你是执行 Agent") {
 		t.Fatal("定制协议应整段替换内置默认")
 	}
-	// ② 模块层
-	if !strings.Contains(prompt, "只动必需的部分") || !strings.Contains(prompt, "clearProps") {
-		t.Fatal("流程/技能模块未注入（第二层）")
+	// ② 流程模块全文注入（原子单元）
+	if !strings.Contains(prompt, "只动必需的部分") {
+		t.Fatal("流程模块正文未注入（第二层）")
+	}
+	// ② 技能 = 渐进披露：索引（id+摘要）进提示词，正文不进
+	if !strings.Contains(prompt, "- gsap：GSAP 动效") {
+		t.Fatal("技能索引（id+摘要）应出现在提示词")
+	}
+	if strings.Contains(prompt, "clearProps") {
+		t.Fatal("技能正文不应注入提示词（渐进披露——read_skill 按需取）")
+	}
+	if !strings.Contains(prompt, "read_skill 取完整内容") {
+		t.Fatal("应告知获取方式（read_skill）")
 	}
 	// ③ 自定义段
 	if !strings.Contains(prompt, "改动前先读") {

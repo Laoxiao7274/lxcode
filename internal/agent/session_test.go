@@ -662,9 +662,9 @@ func TestSystemPromptListsAllTools(t *testing.T) {
 			t.Fatalf("提示词应列出工具 %s（清单与注册表不漂移）", name)
 		}
 	}
-	// 七个工具的清单行数
-	if got := strings.Count(prompt, "\n- "); got != 7 {
-		t.Fatalf("工具清单应 7 行, got %d", got)
+	// 八个工具的清单行数（read_skill 加入——渐进披露的取数工具）
+	if got := strings.Count(prompt, "\n- "); got != 8 {
+		t.Fatalf("工具清单应 8 行, got %d", got)
 	}
 }
 

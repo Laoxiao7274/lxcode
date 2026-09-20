@@ -78,13 +78,14 @@ func (r *Registry) getSessionSearch() SessionSearchFn {
 }
 
 // New 创建注册表并注册内置工具。顺序即系统提示词里工具清单的顺序：
-// 读取类在前（read/search/session_search），变更类在后（edit/write/bash），
-// todo 收尾（规划状态，非文件操作）。
+// 读取类在前（read/search/session_search/read_skill），变更类在后
+// （edit/write/bash），todo 收尾（规划状态，非文件操作）。
 func New() *Registry {
 	r := &Registry{defs: map[string]*Def{}}
 	r.register(readFileDef())
 	r.register(searchDef())
 	r.register(sessionSearchDef(r))
+	r.register(readSkillDef(r))
 	r.register(editDef())
 	r.register(writeFileDef())
 	r.register(bashDef())

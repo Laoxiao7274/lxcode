@@ -370,6 +370,16 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig, ac *sessiondata.A
 	s.mu.Unlock()
 	ctx = tools.WithWorkDir(ctx, workDir)
 
+	// 本轮技能目录注入 read_skill（渐进披露的取数源）：模型按 id 取
+	// 完整正文，只暴露白名单内的——没在 ac.Skills 里的它当没有。
+	if ac != nil {
+		entries := make([]tools.SkillEntry, 0, len(ac.Skills))
+		for i := range ac.Skills {
+			entries = append(entries, tools.SkillEntry{ID: ac.Skills[i].ID, Desc: ac.Skills[i].Desc, Body: ac.Skills[i].Body})
+		}
+		s.tools.SetSkillSource(func(context.Context) []tools.SkillEntry { return entries })
+	}
+
 	var fileChanges []FileChange
 	defer func() {
 		s.mu.Lock()

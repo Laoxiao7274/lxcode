@@ -47,7 +47,8 @@ func DefaultProtocol(isMain bool) string {
 }
 
 // ComposeSystemPrompt 组装完整系统提示词：协议层（定制 ?? 内置默认）
-// + 流程模块（单选注入）+ 技能模块（多选注入）+ 自定义段 + 动态注入
+// + 流程模块（单选注入）+ 技能索引（名称 + 一句话——渐进披露，模型
+// 需要时经 read_skill 取全文，没注入的它当没有）+ 自定义段 + 动态注入
 // （主 Agent 的有效委派名单）+ 工作目录说明 + 工具清单（按白名单过滤）
 // + 工作守则。ac 为 nil = 无 Agent 语境（兼容旧路径：全局默认提示词）。
 func ComposeSystemPrompt(toolReg *tools.Registry, workDir string, ac *sessiondata.AgentContext, allowTools []string) string {
@@ -64,13 +65,16 @@ func ComposeSystemPrompt(toolReg *tools.Registry, workDir string, ac *sessiondat
 	b.WriteString(protocol)
 	b.WriteString("\n")
 
-	// ② 模块层：流程单选 + 技能多选（markdown 正文直接拼入）
+	// ② 模块层：流程单选（工作方式是原子单元——正文直接注入）+ 技能索引
+	//（渐进披露：只注入名称与摘要，正文经 read_skill 按需获取——上下文
+	// 不被没在用的技能撑爆）。
 	if ac.Workflow != nil {
 		b.WriteString("\n" + strings.TrimSpace(ac.Workflow.Body) + "\n")
 	}
-	for i := range ac.Skills {
-		if body := strings.TrimSpace(ac.Skills[i].Body); body != "" {
-			b.WriteString("\n" + body + "\n")
+	if len(ac.Skills) > 0 {
+		b.WriteString("\n可用技能（按需用 read_skill 取完整内容）：\n")
+		for i := range ac.Skills {
+			b.WriteString(fmt.Sprintf("- %s：%s\n", ac.Skills[i].ID, ac.Skills[i].Desc))
 		}
 	}
 
