@@ -184,7 +184,8 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource 
         this.emit({ type: "ready", server: String(p.server ?? ""), version: String(p.version ?? ""), busy: Boolean(p.busy) });
         break;
       case "chat.userMessage":
-        this.emit({ type: "userMessage", text: String(p.text ?? "") });
+        // 载荷是 llm.Message 形态（content 键——历史坑：按 text 读永远空）
+        this.emit({ type: "userMessage", text: String(p.content ?? p.text ?? "") });
         break;
       case "chat.delta":
         this.emit({ type: "delta", kind: String(p.kind) as "text" | "reasoning", text: String(p.text ?? ""), dispatchId });

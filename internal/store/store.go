@@ -149,6 +149,21 @@ func (s *Store) Create() (string, error) {
 	return id, nil
 }
 
+// CreateWithID 按指定 id 建会话（带初始标题）——演示数据注入用。
+// id 冲突报错（幂等由调用方保证——重复注入前先清库）。
+func (s *Store) CreateWithID(id, title string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := nowNano()
+	_, err := s.db.Exec(
+		`INSERT INTO sessions (id, created_at, updated_at, title, archived) VALUES (?, ?, ?, ?, 0)`,
+		id, now, now, title)
+	if err != nil {
+		return "", fmt.Errorf("创建会话 %s 失败: %w", id, err)
+	}
+	return id, nil
+}
+
 // nowNano 是库内时间戳格式（纳秒精度 + 时区）——排序依据 updated_at，
 // 秒级精度会在同秒创建/更新的会话间产生不可预测的顺序（文件版同秒
 // 文件名序不可靠的同族坑，SQL 版用精度根治）。

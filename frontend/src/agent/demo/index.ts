@@ -1,66 +1,15 @@
-// 演示数据源：脚本化编排一轮完整交互，覆盖 UI 全部状态
-// （流式正文/思考链、低危工具自动执行、高危确认门两分支、任务清单、
-// 完成/取消/错误）。事件形状与后端协议 1:1——接线时换 WSAgent 即可。
-import type { AgentEvent, AgentSource, ConfirmRequest, FileChange, ProjectMeta, SendOptions, SessionMeta, TodoItem } from "../../shared/types";
+// 演示数据源（M3 叙事）：主 Agent 只调度——思考选人 → agent.dispatch →
+// dispatch 卡（子 Agent 全套执行：思考/读码/改码/确认门/跑测试）→ 验收
+// 汇总。覆盖 UI 全部状态。事件形状与后端协议 1:1——接线换 WSAgent 即可。
+import type { AgentEvent, AgentSource, ConfirmRequest, ProjectMeta, SendOptions, SessionMeta, TodoItem } from "../../shared/types";
+import { MAIN_REASONING, SUB_REASONING, SUB_RESULT, MAIN_ANSWER, TODO_INITIAL, TODO_LATER, FILES_CHANGED, SESSIONS } from "./data";
 
 type Listener = (ev: AgentEvent) => void;
-
-const REASONING = [
-  "用户想给工具循环加个超时保护，先看一下现在的 session.go 是怎么跑工具的。",
-  "工具循环在 runTools 里串行执行，每次调用用 ctx 控制取消——但单工具卡死会让整轮挂住。",
-  "方案：在 Execute 外再包一层 per-tool 超时（默认 120s），超时视为工具错误回填模型，不取消整轮。",
-  "还需要一个回归用例：假工具 sleep 超过超时，断言回填的是超时错误而不是死等。",
-  "计划清晰了：改 session.go、补测试、跑全量。开始动手。",
-];
-
-const ANSWER = [
-  "已经加上了：runTools 里每个工具调用现在有独立的 120 秒超时（tools 层的 bash 超时逻辑不动，这层是兜底）。",
-  "",
-  "改动两处：",
-  "1. `internal/agent/session.go` 的 runTools 包了 per-tool ctx，超时回填自解释错误文本给模型，整轮不中断；",
-  "2. 新增 `TestToolTimeout` 用假工具验证超时回填路径。",
-  "",
-  "全量测试 152 通过（新增 2 个），门禁全绿。旧的 bash 工具超时行为不受影响——那层管命令执行，这层管模型循环的兜底。",
-];
-
-const TODO_INITIAL: TodoItem[] = [
-  { content: "读 session.go 的工具循环现状", status: "done" },
-  { content: "加 per-tool 超时兜底", status: "active" },
-  { content: "补回归测试并跑全量", status: "pending" },
-];
-
-const TODO_LATER: TodoItem[] = [
-  { content: "读 session.go 的工具循环现状", status: "done" },
-  { content: "加 per-tool 超时兜底", status: "done" },
-  { content: "补回归测试并跑全量", status: "active" },
-];
-
-/** 一轮任务的产物（filesChanged 事件数据——Codex 的验收视图）。 */
-const FILES_CHANGED: FileChange[] = [
-  {
-    path: "internal/agent/session.go", added: 4, deleted: 0,
-    diff: "@@ internal/agent/session.go:311 (runTools)\n \t\tif ctx.Err() != nil {\n \t\t\treturn false\n \t\t}\n+\t\t// per-tool 超时兜底：单工具卡死不让整轮挂住（tools 层超时不动，这层管循环）\n+\t\ttoolCtx, cancel := context.WithTimeout(ctx, 120*time.Second)\n+\t\tdefer cancel()\n+\t\t_ = toolCtx // 传入 Execute（演示数据省略）",
-  },
-  {
-    path: "internal/agent/session_test.go", added: 26, deleted: 1,
-    diff: "@@ internal/agent/session_test.go:402\n-func TestRunToolsCancel(t *testing.T) {\n+func TestRunToolsCancel(t *testing.T) {\n+\t// 原用例：取消传播（不变）\n+}\n+\n+// TestToolTimeout 超时兜底：假工具 sleep 超过阈值，断言回填超时错误而非死等。\n+func TestToolTimeout(t *testing.T) {\n+\ts := newTestSession(t)\n+\tif err := s.Send(\"跑个会卡死的工具\"); err != nil {\n+\t\tt.Fatal(err)\n+\t}\n+\twaitIdle(t, s)\n+\tsnapshot := s.History()\n+\tlast := snapshot.Messages[len(snapshot.Messages)-1]\n+\tif !strings.Contains(last.Content, \"超时\") {\n+\t\tt.Fatalf(\"应回填超时错误: %s\", last.Content)\n+\t}",
-  },
-];
-
-const SESSIONS: SessionMeta[] = [
-  { id: "20260911-103024-a1b2", title: "给工具循环加超时保护", updatedAt: "刚刚", messages: 9, workspace: "proj-demo-lxcode" },
-  { id: "20260910-225918-0a9e", title: "前后台分离的协议层评审", updatedAt: "昨天", messages: 14, workspace: "proj-demo-lxcode" },
-  { id: "20260910-164246-c3d4", title: "edit 工具的唯一匹配校验设计", updatedAt: "3 天前", messages: 22, workspace: "proj-demo-lxcode" },
-  { id: "20260909-090102-e5f6", title: "选型：Tauri 壳的边界", updatedAt: "上周", messages: 8, workspace: "proj-demo-lxcode", archived: true },
-  { id: "20260908-151512-f7a8", title: "niubash 实测记录", updatedAt: "上周", messages: 6, workspace: "proj-demo-agent" },
-  { id: "20260907-112209-b9c0", title: "容器化部署演练", updatedAt: "2 周前", messages: 18, workspace: "proj-demo-agent", archived: true },
-];
 
 export class DemoAgent implements AgentSource {
   label = "演示模式";
   private listeners = new Set<Listener>();
   private timers: ReturnType<typeof setTimeout>[] = [];
-  private reasoningIdx = 0;
   private confirmCb: ((allow: boolean) => void) | null = null;
   private pendingConfirm: ConfirmRequest | null = null;
   private busy = false;
@@ -173,7 +122,7 @@ export class DemoAgent implements AgentSource {
     return this.currentSession;
   }
 
-  // ---- 编排 ----
+  // ---- 编排（M3：主 Agent 调度叙事） ----
 
   private emit(ev: AgentEvent) {
     this.listeners.forEach((l) => l(ev));
@@ -190,36 +139,52 @@ export class DemoAgent implements AgentSource {
 
   private finish() {
     this.busy = false;
-    this.reasoningIdx = 0;
     this.emit({ type: "busy", busy: false });
   }
 
   private runTurn() {
-    // 阶段 1：思考链逐句流出（reasoning delta）
+    // ---- 主 Agent：思考（选人与拟任务）----
     let t = 300;
-    REASONING.forEach((line) => {
+    MAIN_REASONING.forEach((line) => {
       this.at(t, () => this.emit({ type: "delta", kind: "reasoning", text: line + "\n" }));
-      t += 520 + Math.random() * 300;
+      t += 480 + Math.random() * 260;
     });
 
-    // 阶段 2：低危工具（read_file）自动执行
-    this.at(t + 400, () => {
-      this.emit({ type: "toolCall", id: "c1", name: "read_file", arguments: JSON.stringify({ path: "internal/agent/session.go", offset: 296, limit: 40 }) });
-    });
-    this.at(t + 1400, () => {
+    // ---- 主 Agent：任务清单（调度视角）----
+    this.at(t + 300, () => this.emit({ type: "todoUpdated", items: TODO_INITIAL }));
+
+    // ---- 主 Agent：派发（dispatch 卡开）----
+    this.at(t + 900, () => this.emit({ type: "delta", kind: "text", text: "这个任务边界清晰，我派**代码 Agent**去做，稍等。\n\n" }));
+    this.at(t + 1600, () => {
       this.emit({
-        type: "toolResult", id: "c1", name: "read_file", isError: false,
+        type: "dispatchStart", dispatchId: "d1", agentId: "coder", agentName: "代码 Agent",
+        agentColor: "#3b82f6",
+        task: "给 internal/agent 的工具循环加 per-tool 120s 超时兜底（超时回填错误不中断整轮；bash 超时逻辑不动）。验收：新增回归用例 + 全量测试绿。",
+      });
+    });
+
+    // ---- 子 Agent：思考（挂卡内）----
+    let s = t + 2800;
+    SUB_REASONING.forEach((line) => {
+      this.at(s, () => this.emit({ type: "delta", kind: "reasoning", text: line + "\n", dispatchId: "d1" }));
+      s += 460 + Math.random() * 240;
+    });
+
+    // ---- 子 Agent：读代码（低危自动）----
+    this.at(s + 300, () => {
+      this.emit({ type: "toolCall", dispatchId: "d1", id: "d-c1", name: "read_file", arguments: JSON.stringify({ path: "internal/agent/session.go", offset: 296, limit: 40 }) });
+    });
+    this.at(s + 1300, () => {
+      this.emit({
+        type: "toolResult", dispatchId: "d1", id: "d-c1", name: "read_file", isError: false,
         content: "296→// runTools 执行本轮工具调用（高危先确认）；返回 false 表示被取消。\n297→func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall) bool {\n…（共 548 行，已显示 296-335 行）",
       });
     });
 
-    // 阶段 3：任务清单更新
-    this.at(t + 2200, () => this.emit({ type: "todoUpdated", items: TODO_INITIAL }));
-
-    // 阶段 3.5：低危工具（edit）——改动以代码 diff 呈现（Codex 验收形态）
-    this.at(t + 3200, () => {
+    // ---- 子 Agent：改代码（edit，低危自动——diff 呈现）----
+    this.at(s + 2300, () => {
       this.emit({
-        type: "toolCall", id: "c1b", name: "edit",
+        type: "toolCall", dispatchId: "d1", id: "d-c2", name: "edit",
         arguments: JSON.stringify({
           path: "internal/agent/session.go",
           old_string: "func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall) bool {\n\tfor _, tc := range calls {\n\t\tif ctx.Err() != nil {\n\t\t\treturn false\n\t\t}",
@@ -227,89 +192,57 @@ export class DemoAgent implements AgentSource {
         }),
       });
     });
-    this.at(t + 4300, () => {
-      this.emit({ type: "toolResult", id: "c1b", name: "edit", isError: false, content: "已替换 internal/agent/session.go（1 处唯一匹配）" });
+    this.at(s + 3400, () => {
+      this.emit({ type: "toolResult", dispatchId: "d1", id: "d-c2", name: "edit", isError: false, content: "已替换 internal/agent/session.go（1 处唯一匹配）" });
     });
 
-    // 阶段 4：高危工具（bash）→ 确认门
-    this.at(t + 5400, () => {
+    // ---- 子 Agent：跑测试（高危 → 确认门）----
+    this.at(s + 4400, () => {
       const req: ConfirmRequest = {
-        id: "c2",
+        id: "d-c3",
         name: "bash",
-        arguments: JSON.stringify({ command: "go test ./internal/agent/ -run TestToolTimeout -count=1" }),
-        prompt: "将执行命令: go test ./internal/agent/ -run TestToolTimeout -count=1",
+        arguments: JSON.stringify({ command: "go test ./internal/agent/ -count=1" }),
+        prompt: "将执行命令: go test ./internal/agent/ -count=1",
       };
       this.pendingConfirm = req;
       this.emit({ type: "confirmRequest", request: req });
       // 等用户裁决（confirm 回调里续播）；演示模式不设自动超时
       this.confirmCb = (allow) => {
         if (allow) {
-          this.emit({
-            type: "toolResult", id: "c2", name: "bash", isError: false,
-            content: "ok  github.com/moyunteng/lxcode/internal/agent\t1.204s\nPASS",
-          });
-          this.emit({ type: "todoUpdated", items: TODO_LATER });
-          this.runDispatch();
-          this.streamAnswer();
+          this.emit({ type: "toolResult", dispatchId: "d1", id: "d-c3", name: "bash", isError: false, content: "ok  github.com/moyunteng/lxcode/internal/agent\t2.081s\nPASS" });
+          this.finishDispatch(true);
         } else {
           this.emit({
-            type: "toolResult", id: "c2", name: "bash", isError: true,
-            content: "用户拒绝执行。已改用读测试源码核对的方式验证。",
+            type: "toolResult", dispatchId: "d1", id: "d-c3", name: "bash", isError: true,
+            content: "用户拒绝执行。改用读测试源码核对的方式验证。",
           });
-          this.runDispatch();
-          this.streamAnswer(true);
+          this.finishDispatch(false);
         }
       };
     });
   }
 
-  /** 主 Agent 调度子 Agent 的演示轮（agent.dispatch——M3 形态）：
-   *  主 Agent 说了句「派代码 Agent 去做」→ dispatch 卡（子上下文隔离——
-   *  子执行的思考/工具行/回复全部挂在卡内）→ 结果回填。 */
-  private runDispatch() {
-    const d = "d1";
-    // 主 Agent 的调度话术（主时间线先说一句——「我派代码 Agent 去做」）
-    this.at(200, () => this.emit({ type: "delta", kind: "text", text: "我派**代码 Agent**去收尾验证，稍等。\n\n" }));
-    this.at(900, () => {
+  /** dispatch 收尾 → 主 Agent 验收汇总（allow = 测试是否真跑了）。 */
+  private finishDispatch(allow: boolean) {
+    // 子 Agent 最终回复 + dispatchEnd（结果回填）
+    this.at(600, () => this.emit({ type: "delta", kind: "text", text: allow ? "全量绿了，没有回归。" : "按源码核对，改动路径正确。", dispatchId: "d1" }));
+    this.at(1400, () => {
+      this.emit({ type: "done", usageTokens: 730, finishReason: "stop", dispatchId: "d1" });
       this.emit({
-        type: "dispatchStart", dispatchId: d, agentId: "coder", agentName: "代码 Agent",
-        agentColor: "#3b82f6",
-        task: "跑 internal/agent 的测试并确认超时兜底改动没有回归（验收：全绿或列出失败项）",
+        type: "dispatchEnd", dispatchId: "d1", isError: false, usageTokens: 730,
+        result: allow ? SUB_RESULT : "已完成（源码核对版）：改动与回归用例如上；测试未执行——用户拒绝了 bash，需要时可以说一声我再跑。",
       });
+      this.emit({ type: "todoUpdated", items: TODO_LATER });
     });
-    // 子 Agent 执行（子上下文——全部带 dispatchId，挂进卡内）
-    this.at(2100, () => this.emit({ type: "delta", kind: "reasoning", text: "测试刚才已经跑过一轮是绿的……直接跑包全量确认。\n", dispatchId: d }));
-    this.at(3000, () => {
-      this.emit({
-        type: "toolCall", dispatchId: d, id: "d-c1", name: "bash",
-        arguments: JSON.stringify({ command: "go test ./internal/agent/ -count=1" }),
-      });
-    });
-    this.at(4400, () => {
-      this.emit({
-        type: "toolResult", dispatchId: d, id: "d-c1", name: "bash", isError: false,
-        content: "ok  github.com/moyunteng/lxcode/internal/agent\t2.081s\nPASS",
-      });
-    });
-    this.at(5200, () => this.emit({ type: "delta", kind: "text", text: "全量绿了，没有回归。", dispatchId: d }));
-    this.at(6100, () => {
-      this.emit({
-        type: "dispatchEnd", dispatchId: d, isError: false, usageTokens: 730,
-        result: "internal/agent 全量测试通过（2.081s，无回归）——超时兜底改动安全。",
-      });
-    });
-  }
 
-  private streamAnswer(denied = false) {
-    const parts = denied
-      ? ["好的，不跑测试了。我从测试源码层面核对了改动路径：", "", "`TestToolTimeout` 覆盖了超时回填的两个断言（错误文本 + 整轮不中断），与实现一致。", "", "需要我稍后再跑全量验证的话，随时说。"]
-      : ANSWER;
-    let t = 400;
-    parts.forEach((p) => {
+    // ---- 主 Agent：验收汇总 ----
+    this.at(2600, () => this.emit({ type: "delta", kind: "text", text: "代码 Agent 完成了，我核对过结果：\n\n" }));
+    let t = 3200;
+    MAIN_ANSWER.forEach((p) => {
       this.at(t, () => this.emit({ type: "delta", kind: "text", text: (p === "" ? "\n" : p) + "\n" }));
-      t += 260 + p.length * 6;
+      t += 240 + p.length * 6;
     });
-    // 回合完成：产物汇总（改动文件 + diff 统计——验收视图）
+    // 产物汇总（子 Agent 的改动——验收视图）+ 轮完成
     this.at(t + 300, () => {
       this.emit({ type: "filesChanged", files: FILES_CHANGED });
     });

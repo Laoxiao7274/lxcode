@@ -9,6 +9,7 @@ import { Sidebar } from "./components/sidebar";
 import { Thread, PlanBar } from "./components/thread";
 import { Composer } from "./components/composer";
 import type { SlashCommand } from "./components/composer/SlashPalette";
+import { TabBar } from "./components/topbar/TabBar";
 import { SettingsPanel } from "./components/settings";
 import { SettingsProvider, useSettings } from "./shared/settings";
 import { ConnectionsProvider } from "./shared/connections";
@@ -130,6 +131,12 @@ function AppBody({ source }: { source: AgentSource }) {
         taskTitle={view === "agents" ? "Agent 名单" : view === "catalog" ? "拓展" : currentTitle}
         source={source}
         connected={false}
+      />
+      <TabBar
+        source={source}
+        currentId={currentId}
+        busy={state.busy}
+        onNewChat={() => { if (!state.busy) { source.newSession(filter === null || filter === undefined ? undefined : filter); backToChat(); } }}
       />
       <Sidebar
         source={source}
