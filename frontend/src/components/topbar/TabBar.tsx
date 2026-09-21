@@ -48,15 +48,15 @@ export function TabBar({
     .map((id) => ({ id, meta: sessions.find((s) => s.id === id) }))
     .filter(({ id, meta }) => id === currentId || (meta && !meta.archived && !closed.has(id)));
 
-  // 没有任何标签（首次启动）也不显示条——空条占位
-  if (tabs.length === 0) return null;
-
   // 关闭 = 从标签条隐藏（会话保留；关掉当前会话 → 切到新对话）
   const close = (id: string) => {
     if (busy) return;
     if (id === currentId) onNewChat();
     setClosed((prev) => new Set(prev).add(id));
   };
+
+  // 注意：即使一个标签都没有也**照常渲染**这条 bar（只留「+」新建钮）——
+  // 空条消失会让下方内容整体上跳 36px，观感像布局崩了。
 
   return (
     <div className="tabbar" data-tabs={String(tabs.length)}>
