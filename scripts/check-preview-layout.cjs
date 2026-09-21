@@ -204,16 +204,25 @@ app.whenReady().then(async () => {
       reasoning: document.querySelectorAll(".msg").length,
     }))()`);
     log("dispatch-send-state", JSON.stringify(sentState));
-    // 等确认卡（demo ~10.4s 到 bash 确认门）→ 点允许（CSS module 类名
-    // 是哈希——定位用 data-variant 语义锚点；按钮组内第二个 = 允许）
-    let confirmBtn = null;
-    for (let i = 0; i < 120 && !confirmBtn; i++) {
+    // 等确认卡（demo ~12.2s 到 bash 确认门）→ 点允许（CSS module 类名
+    // 是哈希——定位用 data-variant 语义锚点；按钮组内第二个 = 允许）。
+    // 断言「卡在 dispatch 卡内」是本段的核心回归守卫：子 Agent 的确认若落到
+    // 外层时间线（旧后端不发 dispatch_id / 归属逻辑坏），全局选择器照样点得到，
+    // 测试会假绿——必须用 closest('.dispatch-card') 判作用域。
+    let confirmScope = null;
+    for (let i = 0; i < 120 && !confirmScope; i++) {
       await new Promise((r) => setTimeout(r, 250));
-      confirmBtn = await win.webContents.executeJavaScript(`document.querySelector('[data-variant="command"]:not([data-resolved]) button:nth-of-type(2)')`);
+      confirmScope = await win.webContents.executeJavaScript(`(() => {
+        const card = document.querySelector('[data-variant="command"]:not([data-resolved])');
+        if (!card) return null;
+        return { inDispatch: !!card.closest('.dispatch-card'), scope: card.closest('.dispatch-card') ? 'dispatch' : 'main' };
+      })()`);
     }
-    log("dispatch-confirm-shown", !!confirmBtn);
-    if (confirmBtn) await win.webContents.executeJavaScript(`(() => {
-      const btn = document.querySelector('[data-variant="command"]:not([data-resolved]) button:nth-of-type(2)');
+    log("dispatch-confirm-shown", JSON.stringify(confirmScope));
+    assert.ok(confirmScope && confirmScope.inDispatch, `chat: 子 Agent 的确认卡必须落在 dispatch 卡内（实际 ${JSON.stringify(confirmScope)}）`);
+    await win.webContents.executeJavaScript(`(() => {
+      const card = document.querySelector('.dispatch-card');
+      const btn = card && card.querySelector('[data-variant="command"]:not([data-resolved]) button:nth-of-type(2)');
       if (btn) btn.click();
     })()`);
     // 等 dispatch 卡（确认后 ~7s）
@@ -227,17 +236,40 @@ app.whenReady().then(async () => {
     }
     log("dispatch-card", JSON.stringify(dispatch));
     assert.ok(dispatch && dispatch.agent === "代码 Agent", "chat: 主 Agent 应派发 dispatch 卡（代码 Agent）");
-    // 等 dispatchEnd（卡定格带结果）
+    // 等 dispatchEnd（卡定格带结果）。完成后卡自动折叠（只留结果）——子块要
+    // 展开才在 DOM 里（.dispatch-body 仅在 expanded 时渲染），故先点卡头展开
+    // 再断言：结果 + 子执行块 + **无僵尸行**（result 未回填的工具行 = 用户报的
+    // 「一直执行中」——toolResult 按 id 只回填第一条，同 id 重复行会残留）
     let done = null;
     for (let i = 0; i < 60 && !done; i++) {
       await new Promise((r) => setTimeout(r, 250));
       done = await win.webContents.executeJavaScript(`(() => {
         const card = document.querySelector('.dispatch-card[data-done="true"]');
-        return card ? { result: !!card.querySelector(".dispatch-result"), subBlocks: card.querySelectorAll(".dispatch-body > *").length } : null;
+        return card ? { result: !!card.querySelector(".dispatch-result") } : null;
       })()`);
     }
     log("dispatch-done", JSON.stringify(done));
-    assert.ok(done && done.result && done.subBlocks >= 2, "chat: dispatch 完成应带结果与子执行块");
+    assert.ok(done && done.result, `chat: dispatch 完成应带结果（${JSON.stringify(done)}）`);
+    await win.webContents.executeJavaScript(`(() => {
+      const card = document.querySelector('.dispatch-card[data-done="true"]');
+      const head = card && card.querySelector('.dispatch-head');
+      if (card && !card.querySelector('.dispatch-body') && head) head.click();
+    })()`);
+    await new Promise((r) => setTimeout(r, 400));
+    const subs = await win.webContents.executeJavaScript(`(() => {
+      const card = document.querySelector('.dispatch-card[data-done="true"]');
+      if (!card) return null;
+      const body = card.querySelector('.dispatch-body');
+      return {
+        subBlocks: body ? body.children.length : 0,
+        tools: card.querySelectorAll('.dispatch-body .trow').length,
+        running: card.querySelectorAll('.dispatch-body .trow-running').length,
+      };
+    })()`);
+    log("dispatch-subs", JSON.stringify(subs));
+    assert.ok(subs && subs.subBlocks >= 2, `chat: dispatch 展开后应见子执行块（${JSON.stringify(subs)}）`);
+    assert.equal(subs.running, 0, `chat: dispatch 完成后不应有「执行中」僵尸行（${JSON.stringify(subs)}）`);
+    assert.ok(subs.tools >= 1, `chat: 子执行应含工具行（${JSON.stringify(subs)}）`);
     // 等本轮完全结束（streamAnswer + done——demo 计时器不停，中途清屏会串台）
     for (let i = 0; i < 80; i++) {
       const idle = await win.webContents.executeJavaScript(`!document.querySelector(".busy-row")`);

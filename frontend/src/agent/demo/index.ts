@@ -197,6 +197,13 @@ export class DemoAgent implements AgentSource {
     });
 
     // ---- 子 Agent：跑测试（高危 → 确认门，带 dispatchId 归属卡内）----
+    // 注意：confirmRequest 之前必须先发配对的 toolCall——真实后端就是这样
+    //（streamRound 先发 toolCall，runTools 的确认门再发 confirmRequest）。
+    // 早期 demo 只为 d-c3 发 confirmRequest，掩盖了「确认卡与工具行同 id 并存」
+    // 导致的重复行（批准后一条永远停在"执行中…"），故此处还原真实顺序。
+    this.at(s + 4000, () => {
+      this.emit({ type: "toolCall", dispatchId: "d1", id: "d-c3", name: "bash", arguments: JSON.stringify({ command: "go test ./internal/agent/ -count=1" }) });
+    });
     this.at(s + 4400, () => {
       const req: ConfirmRequest = {
         id: "d-c3",
@@ -207,18 +214,23 @@ export class DemoAgent implements AgentSource {
       };
       this.pendingConfirm = req;
       this.emit({ type: "confirmRequest", request: req });
-      // 等用户裁决（confirm 回调里续播）；演示模式不设自动超时
+      // 等用户裁决（confirm 回调里续播）；演示模式不设自动超时。
+      // 结果**延迟**发出：真实后端是 ack 返回 → 工具真跑（bash 起进程）→ 才发
+      // toolResult，所以正常顺序是「卡先定格成工具行、结果随后回填」。同步 emit
+      // 会把顺序倒过来（结果早于 ack），那是竞态而非正常路径。
       this.confirmCb = (allow) => {
-        if (allow) {
-          this.emit({ type: "toolResult", dispatchId: "d1", id: "d-c3", name: "bash", isError: false, content: "ok  github.com/moyunteng/lxcode/internal/agent\t2.081s\nPASS" });
-          this.finishDispatch(true);
-        } else {
-          this.emit({
-            type: "toolResult", dispatchId: "d1", id: "d-c3", name: "bash", isError: true,
-            content: "用户拒绝执行。改用读测试源码核对的方式验证。",
-          });
-          this.finishDispatch(false);
-        }
+        this.at(500, () => {
+          if (allow) {
+            this.emit({ type: "toolResult", dispatchId: "d1", id: "d-c3", name: "bash", isError: false, content: "ok  github.com/moyunteng/lxcode/internal/agent\t2.081s\nPASS" });
+            this.finishDispatch(true);
+          } else {
+            this.emit({
+              type: "toolResult", dispatchId: "d1", id: "d-c3", name: "bash", isError: true,
+              content: "用户拒绝执行。改用读测试源码核对的方式验证。",
+            });
+            this.finishDispatch(false);
+          }
+        });
       };
     });
   }

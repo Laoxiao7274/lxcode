@@ -119,12 +119,33 @@ export function reduce(state: UIState, ev: AgentEvent): UIState {
       };
     }
     case "toolResult": {
+      // 结果按 id 回填。两级查找：工具行 → **未裁决的确认卡**。
+      // 后者不能少：App.tsx 是「confirm 成功后」才把卡定格成工具行（避免确认失败
+      // 却已定格），而后端的 ack 响应与工具执行是并发的——工具跑得快时结果先到，
+      // 此时还没有工具行，只找工具行就会把结果静默丢弃，卡随后转成工具行却永远
+      // 停在「执行中…」（用户报的僵尸行；demo 同步 emit 结果必然触发，真实后端
+      // 也非绝对有序）。结果到达即证明该工具已有结论（放行执行 / 用户拒绝 /
+      // 只读拒绝都会回填结果），就地转工具行带上结果是唯一不会丢的处置。
       const route = (blocks: ThreadBlock[]) => {
-        const idx = blocks.findIndex((b) => b.kind === "tool" && b.id === ev.id);
+        let idx = blocks.findIndex((b) => b.kind === "tool" && b.id === ev.id);
+        if (idx < 0) {
+          // 已裁决为 deny 的卡不动：它的结论是「已跳过」，不被后到的拒绝结果覆盖
+          idx = blocks.findIndex((b) => b.kind === "confirm" && b.request.id === ev.id && !b.resolved);
+        }
         if (idx < 0) return null;
         const next = blocks.slice();
-        const b = next[idx] as Extract<ThreadBlock, { kind: "tool" }>;
-        next[idx] = { ...b, result: ev.content, isError: ev.isError };
+        const b = next[idx];
+        if (b.kind === "tool") {
+          next[idx] = { ...b, result: ev.content, isError: ev.isError };
+        } else if (b.kind === "confirm") {
+          next[idx] = {
+            kind: "tool", uid: b.uid, id: b.request.id,
+            name: b.request.name, arguments: b.request.arguments,
+            result: ev.content, isError: ev.isError,
+          };
+        } else {
+          return null; // 两级查找只认这两种，其余不可达
+        }
         return next;
       };
       if (ev.dispatchId) return applyToDispatch(state, ev.dispatchId, (sub) => route(sub) ?? sub);
@@ -132,17 +153,16 @@ export function reduce(state: UIState, ev: AgentEvent): UIState {
       return next ? { ...state, blocks: next } : state;
     }
     case "confirmRequest": {
-      // 子 Agent 的确认归属进 dispatch 卡（与它的工具行同层）
+      // 子 Agent 的确认归属进 dispatch 卡（与它的工具行同层）。卡不在
+      //（刷新后丢卡、或事件早于 dispatchStart）则回落主时间线——宁可在
+      // 主时间线可见可批准，也不能静默丢弃：pending 被设置却没有任何
+      // 组件渲染它 = 会话卡在忙态且无法裁决（死锁）。
       const did = ev.request.dispatch_id;
-      if (did) {
-        const next = applyToDispatch(state, did, (sub) => [...sub, { kind: "confirm", uid: nextUid(), request: ev.request }]);
+      if (did && hasDispatch(state, did)) {
+        const next = applyToDispatch(state, did, (sub) => placeConfirm(sub, ev.request));
         return { ...next, pending: ev.request };
       }
-      return {
-        ...state,
-        pending: ev.request,
-        blocks: [...state.blocks, { kind: "confirm", uid: nextUid(), request: ev.request }],
-      };
+      return { ...state, pending: ev.request, blocks: placeConfirm(state.blocks, ev.request) };
     }
     case "todoUpdated":
       // 任务清单不进对话流（用户拍板：只做输入框上方的计划条——
@@ -252,6 +272,28 @@ function applyToDispatch(state: UIState, dispatchId: string, fn: (subBlocks: Thr
   return { ...state, blocks };
 }
 
+/** dispatch 卡是否已在时间线里（确认卡归属的前置检查——卡不在就回落，
+ *  否则 applyToDispatch 静默丢弃该确认）。 */
+function hasDispatch(state: UIState, dispatchId: string): boolean {
+  return state.blocks.some((b) => b.kind === "dispatch" && b.id === dispatchId);
+}
+
+/** 确认卡落位：同 id 的工具行（toolCall 已建）就地换成确认卡——uid 不变。
+ *  不能"追加一张卡"：那样工具行与确认卡两行并存，批准时 confirm 卡又转
+ *  成工具行，同一 id 出现两条工具行，而 toolResult 的 findIndex 只回填
+ *  第一条——第二条永远停在"执行中…"且不可展开（running 时 expandable=false）。
+ *  没有对应工具行（如确认先于 toolCall 到达）才追加新卡。 */
+function placeConfirm(blocks: ThreadBlock[], request: ConfirmRequest): ThreadBlock[] {
+  const idx = blocks.findIndex((b) => b.kind === "tool" && b.id === request.id);
+  const next = blocks.slice();
+  if (idx >= 0) {
+    next[idx] = { kind: "confirm", uid: next[idx].uid, request };
+    return next;
+  }
+  next.push({ kind: "confirm", uid: nextUid(), request });
+  return next;
+}
+
 /** 子事件在子时间线上的归约（与主时间线同款语义，作用域是 subBlocks）。 */
 function reduceSub(blocks: ThreadBlock[], ev: AgentEvent): ThreadBlock[] | null {
   switch (ev.type) {
@@ -321,12 +363,19 @@ function reduceHistory(state: UIState, h: HistorySnapshot): UIState {
       lastAssistant = null;
     }
   }
-  // 没有任何输出的进行中轮次不重现（streaming 重建成本高，历史里也少见）
+  // 没有任何输出的进行中轮次不重现（streaming 重建成本高，历史里也少见）。
+  // 挂起的确认必须重建：刷新/切会话后待裁决的确认卡不能只留在 state.pending
+  //（没有任何组件渲染 pending——只有 blocks 里的 confirm 块才会画出来），
+  // 否则会话卡在 busy=true 且用户无从批准（死锁）。
+  // 用 placeConfirm 就地替换：后端在确认门挂起前已把 assistant 的 tool_calls
+  // 落库，所以历史里必然有一行同 id 的工具行——若直接追加会重现"两行同 id"。
+  const pending = h.pending ?? null;
+  const withPending = pending ? placeConfirm(blocks, pending) : blocks;
   return {
     ...state,
-    blocks,
+    blocks: withPending,
     busy: false,
-    pending: h.pending ?? null,
+    pending,
     todos: h.todos ?? [],
   };
 }
@@ -362,8 +411,10 @@ export function useAgent(source: AgentSource): {
 /** 确认裁决后：允许 → 卡片就地变成工具行（后续 toolResult 填结果——
  *  与 DSH 同款：授权后看的是工具执行，不是审批表单）；拒绝 → 卡片
  *  定格为「已跳过」（没有工具执行可展示）。主时间线与 dispatch 卡内
- *  的确认都走这里（按 request.id 定位）。 */
-function resolveConfirm(state: UIState, id: string, outcome: "allow" | "deny"): UIState {
+ *  的确认都走这里（按 request.id 定位）。
+ *  导出供测试直接驱动真实现——测试若复刻一份逻辑，断言的是副本，
+ *  真实现漂移时不会红（假绿）。 */
+export function resolveConfirm(state: UIState, id: string, outcome: "allow" | "deny"): UIState {
   const convert = (blocks: ThreadBlock[]): ThreadBlock[] | null => {
     const idx = blocks.findIndex((b) => b.kind === "confirm" && b.request.id === id);
     if (idx < 0) return null;
@@ -381,10 +432,12 @@ function resolveConfirm(state: UIState, id: string, outcome: "allow" | "deny"): 
     }
     return next;
   };
-  // dispatch 卡内的确认（子 Agent）优先——按 id 遍历两级
+  // dispatch 卡内的确认（子 Agent）优先——按 id 遍历两级。
+  // 两条分支都清 pending：裁决完就不该再有挂起确认（不清会留一个无人渲染的
+  // 陈旧 pending，将来一旦有组件消费它就会显示过期的待确认态）。
   for (const b of state.blocks) {
     if (b.kind === "dispatch" && b.subBlocks.some((s) => s.kind === "confirm" && s.request.id === id)) {
-      return applyToDispatch(state, b.id, (sub) => convert(sub) ?? sub);
+      return { ...applyToDispatch(state, b.id, (sub) => convert(sub) ?? sub), pending: null };
     }
   }
   const next = convert(state.blocks);

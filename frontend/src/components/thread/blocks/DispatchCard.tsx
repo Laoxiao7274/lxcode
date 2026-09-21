@@ -12,11 +12,17 @@ export function DispatchCard({ block, onConfirm }: {
   block: Extract<ThreadBlock, { kind: "dispatch" }>;
   onConfirm: (id: string, allow: boolean) => void;
 }) {
-  // 子过程可折叠（默认展开——运行中盯着进度；完成后自动折叠留结果）
-  const [expanded, setExpanded] = useState(block.status === "running");
+  // 子过程可折叠：运行中默认展开（盯着进度），完成后默认折叠（只留结果）。
+  // 用派生 + 手动覆盖的写法，不能用 useState(初值)——useState 初值只在
+  // 挂载时求值一次，卡从 running 变 done 不会跟随；又因线程是窗口化渲染
+  // （Thread 的 visible 切片），滑出窗口再回来的卡会重挂并重新按 done
+  // 初始化，于是卡与卡之间收缩状态不一致（"没有全部收缩"）。
+  // userSet === null = 用户未干预，跟随状态自动；干预后以用户为准。
+  const [userSet, setUserSet] = useState<boolean | null>(null);
+  const done = block.status === "done";
+  const expanded = userSet ?? !done;
   const cardRef = useEnterRef<HTMLDivElement>();
   const bodyRef = useRef<HTMLDivElement | null>(null);
-  const done = block.status === "done";
   const subCount = block.subBlocks.length;
 
   return (
@@ -24,7 +30,7 @@ export function DispatchCard({ block, onConfirm }: {
       <button
         type="button"
         className="dispatch-head"
-        onClick={() => setExpanded((v) => !v)}
+        onClick={() => setUserSet(!expanded)}
         aria-expanded={expanded}
       >
         <span className="dispatch-dot" style={{ background: block.agentColor }} aria-hidden />
