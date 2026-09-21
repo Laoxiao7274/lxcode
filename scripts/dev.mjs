@@ -12,6 +12,7 @@ import { spawn, spawnSync, execSync } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import net from "node:net";
+import { readHead } from "./check-stack.mjs";
 
 const ROOT = process.cwd();
 const SHELL = join(ROOT, "shell");
@@ -30,6 +31,11 @@ try {
   console.error("Go 后端编译失败");
   process.exit(1);
 }
+// 打印编译所用的提交：实测事故（前端热的、后端不热——栈里跑着几天前的后端）
+// 的全部代价就在「当前栈是哪个提交」不可答。一行日志把它变成可见事实；
+// 事后核对用 node scripts/check-stack.mjs（比较二进制内嵌版本与 HEAD）。
+const rev = readHead();
+console.log(`    后端编译于 ${rev ? rev.slice(0, 8) : "(未知——非 git 仓库)"}`);
 
 // 2. 壳模式下编译壳主进程（electron 依赖必须先 npm install 过）
 let electron = null;

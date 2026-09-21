@@ -69,6 +69,7 @@
 - 系统提示词：工具清单从注册表动态生成（`agent.BuildSystemPrompt`），`TestSystemPromptListsAllTools` 钉住不漂移——加新工具忘了更新 `systemPromptTools` 映射会直接红；
 - 协议改动跑 `internal/protocol` 帧契约测试（字段改名不编译报错、只静默丢字段——测试钉住载荷形状）；
 - **前后端分离边界（静态守卫，CI 同款）**：`node scripts/check-boundaries.mjs`（TS AST 检查 frontend/src：无 Node/Electron API、网络通信只在 `agent/ws`、`WSAgent` 只许 `agent/index.ts` 工厂引用、`__LX__` 宿主桥只在 Topbar/AddProjectDialog）+ `go test ./internal/architecture`（go/ast 检查 Go 侧：后端不 import frontend/shell；agent 不 import store/server/protocol；store 不 import agent/server/protocol）。改完跑 `node --test scripts/check-boundaries.test.mjs` 验证守卫自身。前端纯函数测试 `cd frontend && npm test`（node:test + 就地 TS 转译，无构建产物）；
+- **栈版本自检（排查协议类诡异 bug 的第一步）**：`node scripts/check-stack.mjs`——比对 `bin/lxcode.exe` 内嵌的 buildvcs 提交与当前 HEAD，落后则退出码 1 并报出落后几个提交（改完跑 `node --test scripts/check-stack.test.mjs` 验证它自身）。判定用 Go 构建元数据而非字节搜索：链接器会去重字符串，字节搜索连正对照都能搜不到（2026-09-21 实测）。`dev.mjs` 启动时也会打印后端编译提交；
 - **分层规则**：`sessiondata`（中立业务类型）← `store`/`agent`；`agent.Persistence` 是消费者定义的最小接口（agent 不见 SQL/连接/事务）；`project` 包持目录校验与 git init 业务（server 只是协议转发）；设置面板依赖 `ModelAdminSource` 能力接口而非具体 WSAgent——UI 永远不知道数据来自 WS 还是 Demo。
 
 ## 5. 已知坑（改代码前先看）
@@ -83,6 +84,7 @@
 8. **http.Shutdown 不打断 WS 长连接**：服务优雅停机必须先 `closeAllClients()` 再 Shutdown（local-myt-agent 依赖 docker kill 兜底，SCM 等不了）。
 9. **vite 产物不能直接 file:// 加载**：`<script type="module" crossorigin>` 在不透明源（file:// 的 origin 是 null）下被 CORS 拒绝——React 不挂载、页面空白且**无任何报错**（did-fail-load 只管主帧导航，资源级失败静默）。壳产线用 `app://` 特权协议从 asar 提供渲染层（`shell/src/main.ts` 的 protocol.handle）。
 10. **从被 Job Object 包住的宿主拉起 Electron 时必须 `--no-sandbox`**：Chromium 子进程沙箱与外层 Job Object 冲突，GPU 子进程 STATUS_BREAKPOINT（0x80000003）崩溃循环直至整个应用 FATAL（实测：DSH 后台 job 里拉起必崩，交互式启动正常）。本应用渲染层零远程内容，安全面可接受；引入远程内容渲染前必须重新评估。
+11. **后端二进制不会热重载——前端热的、后端可能是几天前的**：dev 栈只在 `dev.mjs` 启动那一刻编译一次 Go 后端，之后 vite 热重载前端、后端进程纹丝不动。**症状是「前端诡异 bug」**：协议新增字段（如 `ConfirmRequest.dispatch_id`）在旧后端里不存在，于是新前端收到的事件缺字段，表现为子 Agent 的确认卡跑到外层时间线、卡片永远「执行中…」，而四层映射代码全都是对的（2026-09-21 实测事故，排查代价极大）。**先跑 `node scripts/check-stack.mjs`**（比较二进制内嵌 buildvcs 提交与 HEAD）再动前端代码；处置 = 重启 dev 栈（Windows 下运行中的 exe 被锁，必须先停栈才能重新 `go build`）。
 
 ## 6. Windows 服务运维（对齐参考项目的部署形态）
 
