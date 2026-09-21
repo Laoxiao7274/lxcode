@@ -3,7 +3,7 @@ import { AgentPicker } from "../agents/AgentPicker";
 import { PermPicker } from "../perm-picker";
 import { ModelPicker } from "../model-picker";
 import { ContextIndicator } from "../context-indicator";
-import { PlanBar } from "../thread/PlanBar";
+import { TodoList } from "../../aicss/TodoList";
 import { SlashPalette, type SlashCommand } from "./SlashPalette";
 import { useEnterRef } from "../../shared/anim";
 import type { TodoItem } from "../../shared/types";
@@ -11,8 +11,8 @@ import type { TodoItem } from "../../shared/types";
 /** 输入区（Codex 式）：busy 时输入框保留（可预输入），发送钮变停止。
  *  斜杠命令：输入以 / 开头时上方弹命令面板（关键字过滤 + 键盘导航 +
  *  Enter/Tab 补全——面板开着时 Enter 不发送）。
- *  任务计划条浮在输入框正上方（与 busy 行同层——都在 composer 浮层内，
- *  不会被绝对定位的输入区遮挡）。 */
+ *  任务清单卡浮在输入框正上方（与 busy 行同层——都在 composer 浮层内，
+ *  不会被绝对定位的输入区遮挡；清单不进对话流）。 */
 export function Composer({
   busy,
   disabled,
@@ -23,7 +23,7 @@ export function Composer({
 }: {
   busy: boolean;
   disabled?: boolean;
-  /** 任务清单（PlanBar 数据源——空数组不渲染计划条）。 */
+  /** 任务清单（空数组不渲染卡片）。 */
   todos?: TodoItem[];
   onSend: (text: string) => void;
   onCancel: () => void;
@@ -66,8 +66,12 @@ export function Composer({
   return (
     <div className="composer-zone">
       <div className="composer-inner">
-        {/* 任务计划条：输入框正上方（与 busy 行同层——浮层内，不被遮挡） */}
-        <PlanBar todos={todos} />
+        {/* 任务清单卡：输入框正上方（与 busy 行同层——浮层内不被遮挡） */}
+        {todos.length > 0 && (
+          <div className="composer-plan">
+            <TodoList items={todos} />
+          </div>
+        )}
         {/* busy 状态行：浮在输入框上方（生成中 + 停止入口在按钮位） */}
         {busy && (
           <div className="busy-row" ref={busyRowRef}>

@@ -687,101 +687,15 @@ body:has(.window-stage) {
   min-height: 26px;
 }
 /* 行级轻量状态：无（列表保持干净——完整状态在主区视图） */
-/* ===== 输入区上方的任务计划条（Codex 的 plan 暴露） =====
+/* ===== 输入区上方的任务清单卡（aicss TodoList——卡片形态） =====
  * 位置：composer 浮层内、输入框正上方（与 busy 行同层——之前放在线程
- * 流内被绝对定位的输入区遮挡）。 */
-.plan-bar {
+ * 流内被绝对定位的输入区遮挡；也不进对话流）。 */
+.composer-plan {
   padding: 0 4px 8px;
 }
-.plan-summary {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  width: 100%;
-  border: none;
-  background: transparent;
-  padding: 0;
-  font-size: 10.5px;
-  line-height: 1.6;
-  color: var(--fg-faint);
-  cursor: pointer;
-  text-align: left;
-}
-.plan-count {
-  font-family: var(--font-mono);
-  color: var(--fg-muted);
-  flex: none;
-}
-.plan-progress {
-  flex: none;
-  width: 64px;
-  height: 3px;
-  border-radius: 2px;
-  background: var(--border-soft);
-  overflow: hidden;
-}
-.plan-progress-fill {
-  display: block;
-  height: 100%;
-  background: var(--fg-muted);
-  border-radius: 2px;
-  transition: width 400ms ease;
-}
-.plan-active {
-  color: var(--fg-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  flex: 1;
-  min-width: 0;
-}
-.plan-done {
-  color: var(--success);
-}
-.plan-chevron {
-  flex: none;
-  font-size: 9px;
-  color: var(--fg-faint);
-}
-.plan-detail {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin: 4px 0 0;
-  padding: 6px 0 2px 2px;
-  border-left: 2px solid var(--border-soft);
-}
-.plan-item {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 10.5px;
-  color: var(--fg-faint);
-}
-.plan-item.done {
-  color: var(--fg-faint);
-  text-decoration: line-through;
-  text-decoration-color: var(--border-strong);
-}
-.plan-item.active {
-  color: var(--fg);
-  font-weight: 500;
-}
-.plan-item.pending {
-  color: var(--fg-faint);
-}
-.plan-dot {
-  flex: none;
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--border-strong);
-}
-.plan-item.active .plan-dot {
-  background: #3b82f6;
-}
-.plan-item.done .plan-dot {
-  background: var(--success);
+.composer-plan .todo,
+.composer-plan > div {
+  box-shadow: 0 0 0 1px var(--border-soft), 0 2px 8px rgba(0, 0, 0, 0.04);
 }
 /* ===== 代码 diff（edit 工具 + 产物卡的改动可视化）——GitHub 级视觉 ===== */
 .diff-block .diff-file-head {
