@@ -90,7 +90,11 @@ body:has(.window-stage) {
   align-items: center;
   gap: 5px;
   padding: 0 8px;
+  /* 只横向滚动：overflow-x:auto 会让 overflow-y 计算成 auto——一旦出现
+   * 滚动条，24px 的标签可能被纵向滚/裁（字形顶部缺失的另一种成因）。
+   * 显式 hidden 锁死纵向，滚动条本身也隐藏。 */
   overflow-x: auto;
+  overflow-y: hidden;
   scrollbar-width: none;
 }
 .tab-strip::-webkit-scrollbar { display: none; }
@@ -129,7 +133,9 @@ body:has(.window-stage) {
 .tab:not(.on) .tab-main { padding-right: 11px; }
 .tab-title {
   font-size: 11.5px;
-  line-height: 1;
+  /* 行高必须容下中文字形墨迹（CJK 约 1.3em）——line-height:1 时行盒
+   * 只有 11.5px，overflow:hidden 会把字的上半截裁掉（实测踩过）。 */
+  line-height: 16px;
   color: var(--fg-muted);
   overflow: hidden;
   text-overflow: ellipsis;
