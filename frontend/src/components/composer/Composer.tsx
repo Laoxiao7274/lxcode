@@ -3,21 +3,28 @@ import { AgentPicker } from "../agents/AgentPicker";
 import { PermPicker } from "../perm-picker";
 import { ModelPicker } from "../model-picker";
 import { ContextIndicator } from "../context-indicator";
+import { PlanBar } from "../thread/PlanBar";
 import { SlashPalette, type SlashCommand } from "./SlashPalette";
 import { useEnterRef } from "../../shared/anim";
+import type { TodoItem } from "../../shared/types";
 
 /** 输入区（Codex 式）：busy 时输入框保留（可预输入），发送钮变停止。
  *  斜杠命令：输入以 / 开头时上方弹命令面板（关键字过滤 + 键盘导航 +
- *  Enter/Tab 补全——面板开着时 Enter 不发送）。 */
+ *  Enter/Tab 补全——面板开着时 Enter 不发送）。
+ *  任务计划条浮在输入框正上方（与 busy 行同层——都在 composer 浮层内，
+ *  不会被绝对定位的输入区遮挡）。 */
 export function Composer({
   busy,
   disabled,
+  todos = [],
   onSend,
   onCancel,
   commands = [],
 }: {
   busy: boolean;
   disabled?: boolean;
+  /** 任务清单（PlanBar 数据源——空数组不渲染计划条）。 */
+  todos?: TodoItem[];
   onSend: (text: string) => void;
   onCancel: () => void;
   /** 斜杠命令集（App 注入——页面导航；选择器聚焦命令由 piBar 控件自身
@@ -59,6 +66,8 @@ export function Composer({
   return (
     <div className="composer-zone">
       <div className="composer-inner">
+        {/* 任务计划条：输入框正上方（与 busy 行同层——浮层内，不被遮挡） */}
+        <PlanBar todos={todos} />
         {/* busy 状态行：浮在输入框上方（生成中 + 停止入口在按钮位） */}
         {busy && (
           <div className="busy-row" ref={busyRowRef}>

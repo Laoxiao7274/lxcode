@@ -6,7 +6,7 @@ import { AgentsPage } from "./components/agents/AgentsPage";
 import { CatalogPage } from "./components/catalog/CatalogPage";
 import { Topbar } from "./components/topbar";
 import { Sidebar } from "./components/sidebar";
-import { Thread, PlanBar } from "./components/thread";
+import { Thread } from "./components/thread";
 import { Composer } from "./components/composer";
 import type { SlashCommand } from "./components/composer/SlashPalette";
 import { TabBar } from "./components/topbar/TabBar";
@@ -116,8 +116,7 @@ function AppBody({ source }: { source: AgentSource }) {
         <div className="thread-scroll">
           <Thread state={state} onConfirm={handleConfirm} onSuggestion={(t) => sendWithOptions(t)} projectName={filterProjectName} />
         </div>
-        <PlanBar todos={state.todos} />
-        <Composer busy={state.busy} onSend={sendWithOptions} onCancel={() => source.cancel()} commands={slashCommands} />
+        <Composer busy={state.busy} todos={state.todos} onSend={sendWithOptions} onCancel={() => source.cancel()} commands={slashCommands} />
       </>
     ) : view === "agents" ? (
       <AgentsPage />

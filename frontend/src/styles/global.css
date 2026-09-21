@@ -687,10 +687,11 @@ body:has(.window-stage) {
   min-height: 26px;
 }
 /* 行级轻量状态：无（列表保持干净——完整状态在主区视图） */
-/* 当前会话的分支上下文条已移到输入区上方（.ctx-bar，见 Composer 区样式） */
-/* ===== 输入区上方的任务计划条（Codex 的 plan 暴露） ===== */
+/* ===== 输入区上方的任务计划条（Codex 的 plan 暴露） =====
+ * 位置：composer 浮层内、输入框正上方（与 busy 行同层——之前放在线程
+ * 流内被绝对定位的输入区遮挡）。 */
 .plan-bar {
-  padding: 0 22px 6px;
+  padding: 0 4px 8px;
 }
 .plan-summary {
   display: flex;
