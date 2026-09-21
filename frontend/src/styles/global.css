@@ -75,6 +75,7 @@ body:has(.window-stage) {
  * 形态：紧凑药丸（对齐 .trow/.fd- 的扁平语言——不用文件夹式 3D 标签）。
  * 活动 = surface 实底 + 描边环；关闭钮 hover 出现（活动标签常驻可见）。 */
 .tabbar {
+  grid-row: 2;
   grid-column: 1 / -1;
   display: flex;
   align-items: center;
@@ -190,6 +191,7 @@ body:has(.window-stage) {
 }
 /* ===== 顶栏（窗口标题栏：左 = 品牌与状态，中 = 任务名，右 = 窗口控制） ===== */
 .topbar {
+  grid-row: 1;
   grid-column: 1 / -1;
   display: flex;
   align-items: center;
@@ -570,6 +572,10 @@ body:has(.window-stage) {
 }
 /* ===== 侧栏（Codex 式：品牌 → 新建 → 搜索 → 项目分组 → 底部设置） ===== */
 .sidebar {
+  /* 显式定位（不靠自动排布）：标签条在无会话时不渲染（TabBar 返回
+   * null），自动排布会让侧栏/主区往前顶一格、落进 auto 行导致主区塌陷。 */
+  grid-row: 3;
+  grid-column: 1;
   border-right: 1px solid var(--border);
   background: var(--bg-side);
   overflow-y: auto;
@@ -986,6 +992,9 @@ body:has(.window-stage) {
 }
 /* ===== 主区（对话线程，居中窄栏 + 顶部任务头） ===== */
 .main {
+  /* 显式定位（同 .sidebar——不靠自动排布，标签条缺席时不会顶格） */
+  grid-row: 3;
+  grid-column: 2;
   position: relative;
   overflow: hidden;
   display: flex;

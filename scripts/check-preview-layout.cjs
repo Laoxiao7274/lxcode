@@ -73,11 +73,28 @@ app.whenReady().then(async () => {
       const el = document.querySelector(".empty-state");
       if (!el) return null;
       const r = el.getBoundingClientRect();
+      const ts = document.querySelector(".thread-scroll");
+      const main = document.querySelector(".main");
+      const cz = document.querySelector(".composer-zone");
+      const bar = document.querySelector(".tabbar");
+      const app = document.querySelector(".app");
+      const r2 = (s) => { const e = document.querySelector(s); if (!e) return null; const b = e.getBoundingClientRect(); return { top: Math.round(b.top), bottom: Math.round(b.bottom), h: Math.round(b.height) }; };
       return {
         top: Math.round(r.top),
         bottom: Math.round(r.bottom),
         cards: document.querySelectorAll(".suggest-card").length,
         agentChip: !!document.querySelector(".empty-agent"),
+        // 诊断：空态居中依赖线程区 padding-bottom（= 输入区实测高度）
+        win: { w: window.innerWidth, h: window.innerHeight },
+        app: r2(".app"),
+        topbar: r2(".topbar"),
+        main: r2(".main"),
+        mainChildren: main ? [...main.children].map((c) => c.className) : null,
+        tsH: ts ? Math.round(ts.getBoundingClientRect().height) : null,
+        tsPadBottom: ts ? getComputedStyle(ts).paddingBottom : null,
+        composerH: cz ? Math.round(cz.getBoundingClientRect().height) : null,
+        composerVar: main ? main.style.getPropertyValue("--composer-h") : null,
+        barTop: bar ? Math.round(bar.getBoundingClientRect().top) : null,
       };
     })()`);
     log("empty-state", JSON.stringify(empty));
