@@ -58,6 +58,20 @@ export function sameCommit(a, b) {
   return a.slice(0, n) === b.slice(0, n);
 }
 
+/** 二进制编译点之后被改动的 **Go 侧** 文件（*.go / go.mod / go.sum）。
+ *  仓库无 go:embed，后端二进制完全由这些文件决定；纯前端/脚本提交不影响它——
+ *  只比 commit 会把「仅前端提交」误报成后端落后（实测踩到），于是这里再判一层。
+ *  取不到（非法 revision / 非 git）返回 null = 无法判定。 */
+export function goChangedSince(revision, cwd = root) {
+  try {
+    const out = execFileSync('git', ['diff', '--name-only', revision, 'HEAD', '--', '*.go', 'go.mod', 'go.sum'],
+      { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    return out.trim().split('\n').filter(Boolean);
+  } catch {
+    return null;
+  }
+}
+
 export function checkStack() {
   const exe = CANDIDATES.find((p) => existsSync(p)) ?? null;
   if (!exe) return { status: 'no-binary', exe: null };
@@ -66,10 +80,11 @@ export function checkStack() {
   const head = readHead();
   if (!head) return { status: 'unknown', exe, info };
   const same = sameCommit(info.revision, head);
-  return {
-    status: same === false ? 'stale' : same === true ? 'ok' : 'unknown',
-    exe, info, head,
-  };
+  if (same === true) return { status: 'ok', exe, info, head, goFiles: [] };
+  // 版本不同：只有 Go 侧代码变了才需要重建后端（纯前端提交改了 commit 但不改后端行为）
+  const goFiles = goChangedSince(info.revision);
+  if (goFiles === null) return { status: 'unknown', exe, info, head, goFiles: null };
+  return { status: goFiles.length > 0 ? 'stale' : 'ok', exe, info, head, goFiles };
 }
 
 // 作为脚本直接运行时报告（被 import 时不执行——便于测试）
@@ -86,7 +101,12 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
     process.exit(0);
   }
   if (r.status === 'ok') {
-    if (!quiet) console.log(`栈版本一致: 后端 ${short(r.info.revision)} = HEAD ${short(r.head)}`);
+    if (!quiet) {
+      const same = sameCommit(r.info.revision, r.head) === true;
+      console.log(same
+        ? `栈版本一致: 后端 ${short(r.info.revision)} = HEAD ${short(r.head)}`
+        : `栈版本一致（后端行为未落后）: 后端编译于 ${short(r.info.revision)}，其后的 ${short(r.head)} 无 Go 文件改动——后端无需重建`);
+    }
     process.exit(0);
   }
 
@@ -95,6 +115,9 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
   console.error(`    后端编译于提交: ${short(r.info.revision)}`);
   console.error(`    当前 HEAD:      ${short(r.head)}`);
   if (r.info.modified) console.error('    且编译时工作区有未提交改动（vcs.modified=true）');
+  console.error(`    有 ${r.goFiles.length} 个 Go 侧文件在此之后被改过：`);
+  for (const f of r.goFiles.slice(0, 5)) console.error(`      ${f}`);
+  if (r.goFiles.length > 5) console.error(`      …等共 ${r.goFiles.length} 个`);
   console.error('    影响：前端是最新的、后端是旧的——协议字段缺失会表现为');
   console.error('          前端诡异 bug（如确认卡跑到外层、卡片永远"执行中"）。');
   console.error('    修复：重启 dev 栈（node scripts/dev.mjs --electron）会重新编译后端。');

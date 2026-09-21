@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
-import { sameCommit, readBuildInfo, readHead, checkStack } from './check-stack.mjs';
+import { sameCommit, readBuildInfo, readHead, checkStack, goChangedSince } from './check-stack.mjs';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 
@@ -36,6 +36,24 @@ test('readHead：仓库内取到 40 位 hash，非仓库路径取不到（返回
   assert.equal(readHead(resolve(ROOT, 'no-such-dir-xyz')), null);
 });
 
+test('goChangedSince：只认 Go 侧改动，取不到时返回 null', () => {
+  // HEAD 与 HEAD 比 → 无改动（空数组，不是 null）
+  assert.deepEqual(goChangedSince(readHead()), []);
+  // 非法 revision → git 报错 → null（不能抛，否则诊断工具自己崩）
+  assert.equal(goChangedSince('0000000000000000000000000000000000000000'), null);
+});
+
+test('checkStack：版本不同但只有非 Go 改动时不算落后（纯前端提交不误报）', () => {
+  const r = checkStack();
+  if (r.status === 'no-binary' || r.status === 'unknown') return; // 环境不满足，跳过
+  assert.ok(Array.isArray(r.goFiles), 'ok/stale 必须给出 Go 侧改动清单');
+  // 状态必须与 Go 侧改动清单一致——「不同 commit 但 Go 侧没变」= ok（假警报的根治点）
+  const same = sameCommit(r.info.revision, r.head);
+  if (same !== true) {
+    assert.equal(r.status === 'stale', r.goFiles.length > 0);
+  }
+});
+
 test('checkStack：状态取值合法，且带状态自洽的字段', () => {
   const r = checkStack();
   assert.ok(
@@ -51,7 +69,7 @@ test('checkStack：状态取值合法，且带状态自洽的字段', () => {
   if (r.status === 'ok' || r.status === 'stale') {
     assert.match(r.info.revision, /^[0-9a-f]{7,40}$/);
     assert.match(r.head, /^[0-9a-f]{40}$/);
-    // 状态必须与 hash 比对一致（防止判定分支写反）
-    assert.equal(sameCommit(r.info.revision, r.head), r.status === 'ok');
+    // stale ⟺ 版本不同**且**有 Go 侧改动；ok 覆盖「同提交」与「仅非 Go 改动」两种
+    assert.equal(r.status === 'stale', sameCommit(r.info.revision, r.head) === false && r.goFiles.length > 0);
   }
 });
