@@ -13,6 +13,8 @@ export interface ConfirmRequest {
   name: string;
   arguments: string;
   prompt: string;
+  /** 非空 = 子 Agent 的确认（归属 dispatch 卡内）。 */
+  dispatch_id?: string;
 }
 
 /** AgentSource 推给 UI 的事件流（对齐服务端广播事件）。 */

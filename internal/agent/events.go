@@ -46,16 +46,18 @@ type ToolResultEvent struct {
 }
 
 // ConfirmRequestEvent：高危工具等待人工裁决（宿主弹确认卡并回 Confirm）。
+// Request.DispatchID 非空 = 子 Agent 的确认（前端把卡放进 dispatch 卡内）。
 type ConfirmRequestEvent struct {
 	Request *ConfirmRequest
 }
 
 // ConfirmRequest 是挂起等待裁决的工具调用。
 type ConfirmRequest struct {
-	ID        string
-	Name      string
-	Arguments string
-	Prompt    string
+	ID         string
+	Name       string
+	Arguments  string
+	Prompt     string
+	DispatchID string // 非空 = 子 Agent 执行的确认（归属 dispatch 卡）
 }
 
 // BusyEvent：忙闲翻转（一轮开始/结束）。

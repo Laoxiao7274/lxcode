@@ -557,6 +557,7 @@ func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChange
 		if prompt := s.tools.Confirm(ctx, tc); prompt != "" && policy != tools.ApprovalAuto {
 			req := &ConfirmRequest{
 				ID: tc.ID, Name: tc.Function.Name, Arguments: tc.Function.Arguments, Prompt: prompt,
+				DispatchID: dispatchID, // 子 Agent 的确认归属（前端挂 dispatch 卡内）
 			}
 			allow, ok := s.awaitConfirm(ctx, req)
 			if !ok {

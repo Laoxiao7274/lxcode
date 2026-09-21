@@ -263,10 +263,11 @@ type ToolResultParams struct {
 
 // ConfirmRequest 是需要人工确认的工具调用（确认门）；客户端须回 tool.confirm。
 type ConfirmRequest struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"`
-	Prompt    string `json:"prompt"`
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Arguments  string `json:"arguments"`
+	Prompt     string `json:"prompt"`
+	DispatchID string `json:"dispatch_id,omitempty"` // 非空 = 子 Agent 的确认（归属 dispatch 卡）
 }
 
 type DoneParams struct {

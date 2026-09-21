@@ -489,6 +489,7 @@ func toProtocolConfirm(r *agent.ConfirmRequest) *protocol.ConfirmRequest {
 	}
 	return &protocol.ConfirmRequest{
 		ID: r.ID, Name: r.Name, Arguments: r.Arguments, Prompt: r.Prompt,
+		DispatchID: r.DispatchID,
 	}
 }
 

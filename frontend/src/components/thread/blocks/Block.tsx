@@ -5,7 +5,6 @@
 import { memo, useEffect, useMemo, useRef } from "react";
 import type { ThreadBlock } from "../../../shared/store";
 import { ThinkingReasoning } from "../../../aicss/ThinkingReasoning";
-import { TodoList } from "../../../aicss/TodoList";
 import { ApprovalCard } from "../../../aicss/ApprovalCard";
 import { playEnter } from "../../../shared/anim";
 import { useSettings } from "../../../shared/settings";
@@ -86,9 +85,6 @@ export const Block = memo(function Block({ block, onConfirm }: { block: ThreadBl
           onDecide={(allow) => onConfirm(block.request.id, allow)}
         />
       );
-
-    case "todo":
-      return <TodoList items={block.items} />;
 
     case "error":
       return (

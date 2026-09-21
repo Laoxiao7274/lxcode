@@ -196,13 +196,14 @@ export class DemoAgent implements AgentSource {
       this.emit({ type: "toolResult", dispatchId: "d1", id: "d-c2", name: "edit", isError: false, content: "已替换 internal/agent/session.go（1 处唯一匹配）" });
     });
 
-    // ---- 子 Agent：跑测试（高危 → 确认门）----
+    // ---- 子 Agent：跑测试（高危 → 确认门，带 dispatchId 归属卡内）----
     this.at(s + 4400, () => {
       const req: ConfirmRequest = {
         id: "d-c3",
         name: "bash",
         arguments: JSON.stringify({ command: "go test ./internal/agent/ -count=1" }),
         prompt: "将执行命令: go test ./internal/agent/ -count=1",
+        dispatch_id: "d1",
       };
       this.pendingConfirm = req;
       this.emit({ type: "confirmRequest", request: req });

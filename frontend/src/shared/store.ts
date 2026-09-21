@@ -18,7 +18,6 @@ export type ThreadBlock =
   | AssistantBlock
   | { kind: "tool"; uid: number; id: string; name: string; arguments: string; result?: string; isError?: boolean }
   | { kind: "confirm"; uid: number; request: ConfirmRequest; resolved?: "allow" | "deny" }
-  | { kind: "todo"; uid: number; items: TodoItem[] }
   | { kind: "files"; uid: number; files: FileChange[] }
   | { kind: "error"; uid: number; message: string; aborted: boolean }
   | {
@@ -132,18 +131,23 @@ export function reduce(state: UIState, ev: AgentEvent): UIState {
       const next = route(state.blocks);
       return next ? { ...state, blocks: next } : state;
     }
-    case "confirmRequest":
+    case "confirmRequest": {
+      // 子 Agent 的确认归属进 dispatch 卡（与它的工具行同层）
+      const did = ev.request.dispatch_id;
+      if (did) {
+        const next = applyToDispatch(state, did, (sub) => [...sub, { kind: "confirm", uid: nextUid(), request: ev.request }]);
+        return { ...next, pending: ev.request };
+      }
       return {
         ...state,
         pending: ev.request,
         blocks: [...state.blocks, { kind: "confirm", uid: nextUid(), request: ev.request }],
       };
+    }
     case "todoUpdated":
-      return {
-        ...state,
-        todos: ev.items,
-        blocks: [...state.blocks, { kind: "todo", uid: nextUid(), items: ev.items }],
-      };
+      // 任务清单不进对话流（用户拍板：只做输入框上方的计划条——
+      // 消息流里再插一份是重复呈现；历史回放同样不重建清单卡）
+      return { ...state, todos: ev.items };
     case "done": {
       // dispatch 归属：子轮的 done 定格子时间线里最后一个 assistant
       if (ev.dispatchId) {
@@ -184,17 +188,23 @@ export function reduce(state: UIState, ev: AgentEvent): UIState {
         blocks: [...blocks, { kind: "error", uid: nextUid(), message: ev.message, aborted: ev.aborted }],
       };
     }
-    case "dispatchStart":
-      // 主 Agent 调度子 Agent：dispatch 卡挂进主时间线（子上下文隔离——
-      // 子执行的事件按 dispatchId 归属进 subBlocks，不进主时间线）
+    case "dispatchStart": {
+      // 派发打断流式中的 assistant 块——立刻定格（否则主 Agent 那句
+      // 「我派 X 去做」后面永远挂着闪烁光标，直到整轮结束）
+      const blocks = state.blocks.slice();
+      for (let i = 0; i < blocks.length; i++) {
+        const b = blocks[i];
+        if (b.kind === "assistant" && b.streaming) blocks[i] = { ...b, streaming: false };
+      }
       return {
         ...state,
-        blocks: [...state.blocks, {
+        blocks: [...blocks, {
           kind: "dispatch", uid: nextUid(), id: ev.dispatchId,
           agentId: ev.agentId, agentName: ev.agentName, agentColor: ev.agentColor,
           task: ev.task, status: "running", subBlocks: [],
         }],
       };
+    }
     case "dispatchEnd": {
       // 子 Agent 最终回复作为结果回填（卡定格——结果在卡内展示，
       // 主会话后续由主 Agent 继续汇总会话）
@@ -349,12 +359,34 @@ export function useAgent(source: AgentSource): {
   return { state, send, resolve, clearError, reportError };
 }
 
-/** 确认裁决后把对应卡片定格（allow/deny 徽标）。 */
+/** 确认裁决后：允许 → 卡片就地变成工具行（后续 toolResult 填结果——
+ *  与 DSH 同款：授权后看的是工具执行，不是审批表单）；拒绝 → 卡片
+ *  定格为「已跳过」（没有工具执行可展示）。主时间线与 dispatch 卡内
+ *  的确认都走这里（按 request.id 定位）。 */
 function resolveConfirm(state: UIState, id: string, outcome: "allow" | "deny"): UIState {
-  const idx = state.blocks.findIndex((b) => b.kind === "confirm" && b.request.id === id);
-  if (idx < 0) return { ...state, pending: null };
-  const blocks = state.blocks.slice();
-  const b = blocks[idx] as Extract<ThreadBlock, { kind: "confirm" }>;
-  blocks[idx] = { ...b, resolved: outcome };
-  return { ...state, pending: null, blocks };
+  const convert = (blocks: ThreadBlock[]): ThreadBlock[] | null => {
+    const idx = blocks.findIndex((b) => b.kind === "confirm" && b.request.id === id);
+    if (idx < 0) return null;
+    const next = blocks.slice();
+    const b = next[idx] as Extract<ThreadBlock, { kind: "confirm" }>;
+    if (outcome === "allow") {
+      // 就地转成工具行：uid 不变（React key 稳定——卡片不重挂），
+      // id = 工具调用 id（toolResult 按它回填结果）
+      next[idx] = {
+        kind: "tool", uid: b.uid, id: b.request.id,
+        name: b.request.name, arguments: b.request.arguments,
+      };
+    } else {
+      next[idx] = { ...b, resolved: outcome };
+    }
+    return next;
+  };
+  // dispatch 卡内的确认（子 Agent）优先——按 id 遍历两级
+  for (const b of state.blocks) {
+    if (b.kind === "dispatch" && b.subBlocks.some((s) => s.kind === "confirm" && s.request.id === id)) {
+      return applyToDispatch(state, b.id, (sub) => convert(sub) ?? sub);
+    }
+  }
+  const next = convert(state.blocks);
+  return next ? { ...state, pending: null, blocks: next } : { ...state, pending: null };
 }
