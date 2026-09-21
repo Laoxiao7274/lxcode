@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AgentPicker } from "../agents/AgentPicker";
 import { PermPicker } from "../perm-picker";
 import { ModelPicker } from "../model-picker";
@@ -33,6 +33,7 @@ export function Composer({
 }) {
   const [value, setValue] = useState("");
   const taRef = useRef<HTMLTextAreaElement>(null);
+  const zoneRef = useRef<HTMLDivElement>(null);
   // 「生成中」状态行挂载即上浮淡入（busy 翻转时才挂载/卸载）
   const busyRowRef = useEnterRef<HTMLDivElement>({ opacity: 0, y: 6 }, { opacity: 1, y: 0, duration: 0.26, ease: "power2.out", clearProps: "transform,opacity" });
   const canSend = value.trim().length > 0 && !busy && !disabled && !value.startsWith("/");
@@ -63,8 +64,24 @@ export function Composer({
     }
   };
 
+  // 输入区（含清单卡）的真实高度发布给 .main——线程区按它预留底部空间，
+  // 清单展开多高就留多少：浮层永远不遮挡对话内容（把清单当输入区的一部分）。
+  useEffect(() => {
+    const el = zoneRef.current;
+    const main = el?.closest(".main") as HTMLElement | null;
+    if (!el || !main) return;
+    const publish = () => main.style.setProperty("--composer-h", el.offsetHeight + "px");
+    const ro = new ResizeObserver(publish);
+    ro.observe(el);
+    publish();
+    return () => {
+      ro.disconnect();
+      main.style.removeProperty("--composer-h");
+    };
+  }, []);
+
   return (
-    <div className="composer-zone">
+    <div className="composer-zone" ref={zoneRef}>
       <div className="composer-inner">
         {/* 任务清单卡：输入框正上方（与 busy 行同层——浮层内不被遮挡） */}
         {todos.length > 0 && (

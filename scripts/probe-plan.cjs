@@ -1,9 +1,9 @@
-// 探针：任务清单卡（aicss TodoList）在输入框上方的几何与可见性
+// 探针：清单卡展开/折叠时线程区预留是否跟随（不遮挡对话）
 const { app, BrowserWindow } = require("electron");
 const log = (...a) => process.stderr.write(a.join(" ") + "\n");
 const url = process.env.LXCODE_PREVIEW_URL || "http://127.0.0.1:5190/?mode=demo";
 app.whenReady().then(async () => {
-  const win = new BrowserWindow({ width: 1440, height: 900, show: false });
+  const win = new BrowserWindow({ width: 1440, height: 900, show: true });
   try {
     await win.loadURL(url);
     await win.webContents.executeJavaScript("window.__LX_TEST_MOTION_OFF__ = true");
@@ -14,28 +14,36 @@ app.whenReady().then(async () => {
       ta.dispatchEvent(new Event("input", { bubbles: true }));
       document.querySelector(".send-btn").click();
     })()`);
-    // 等清单卡（demo ~5s）
-    let has = false;
-    for (let i = 0; i < 40 && !has; i++) {
+    for (let i = 0; i < 40; i++) {
       await new Promise((r) => setTimeout(r, 300));
-      has = await win.webContents.executeJavaScript(`!!document.querySelector(".composer-plan")`);
+      const has = await win.webContents.executeJavaScript(`!!document.querySelector(".composer-plan")`);
+      if (has) break;
     }
-    const geo = await win.webContents.executeJavaScript(`(() => {
-      const box = (s) => { const el = document.querySelector(s); if (!el) return null; const b = el.getBoundingClientRect(); return { top: Math.round(b.top), bottom: Math.round(b.bottom), left: Math.round(b.left), w: Math.round(b.width), h: Math.round(b.height) }; };
+    const measure = () => win.webContents.executeJavaScript(`(() => {
+      const ts = document.querySelector(".thread-scroll");
+      const cz = document.querySelector(".composer-zone");
       const card = document.querySelector(".composer-plan > div");
+      const main = document.querySelector(".main");
       return {
-        composerPlan: box(".composer-plan"),
-        card: box(".composer-plan > div"),
-        pi: box(".pi"),
-        threadScroll: box(".thread-scroll"),
-        cardBg: card ? getComputedStyle(card).backgroundColor : null,
-        cardRadius: card ? getComputedStyle(card).borderRadius : null,
-        cardText: card ? card.textContent.slice(0, 60) : null,
-        cardAboveInput: (() => { const c = document.querySelector(".composer-plan > div"), i = document.querySelector(".pi"); return c && i ? c.getBoundingClientRect().bottom <= i.getBoundingClientRect().top + 2 : null; })(),
-        todoInThread: document.querySelectorAll(".thread-scroll .todo").length,
+        composerH: cz ? Math.round(cz.getBoundingClientRect().height) : null,
+        cardH: card ? Math.round(card.getBoundingClientRect().height) : null,
+        varValue: main ? main.style.getPropertyValue("--composer-h") : null,
+        padBottom: ts ? getComputedStyle(ts).paddingBottom : null,
+        threadInnerBottom: (() => {
+          const inner = document.querySelector(".thread");
+          return inner ? Math.round(inner.getBoundingClientRect().bottom) : null;
+        })(),
+        composerTop: cz ? Math.round(cz.getBoundingClientRect().top) : null,
       };
     })()`);
-    log("GEO " + JSON.stringify(geo, null, 1));
+    log("EXPANDED " + JSON.stringify(await measure()));
+    // 折叠清单卡（点头部）
+    await win.webContents.executeJavaScript(`(() => {
+      const head = document.querySelector(".composer-plan button");
+      if (head) head.click();
+    })()`);
+    await new Promise((r) => setTimeout(r, 800));
+    log("COLLAPSED " + JSON.stringify(await measure()));
     process.exit(0);
   } catch (e) {
     log("FAIL " + e.message);

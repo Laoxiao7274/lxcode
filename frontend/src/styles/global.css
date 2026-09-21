@@ -989,7 +989,10 @@ body:has(.window-stage) {
 .thread-scroll {
   flex: 1;
   overflow-y: auto;
-  padding: 20px 0 170px;
+  /* 底部预留 = 输入区真实高度（Composer 经 ResizeObserver 发布
+   * --composer-h）——清单卡展开多高就留多少，浮层永不遮挡对话内容
+   * （把清单当输入区的一部分）。170px 是无 JS 时的兜底。 */
+  padding: 20px 0 calc(var(--composer-h, 170px) + 14px);
 }
 .thread {
   max-width: 720px;
