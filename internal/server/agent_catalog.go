@@ -192,6 +192,8 @@ func (s *Server) dispatchAgentCatalog(id json.RawMessage, method string, params 
 		if err != nil {
 			return protocol.NewError(id, protocol.CodeInvalidParams, err.Error())
 		}
+		// M4：目录变了，注册表跟着变（新建的 binary 工具立刻可被 Agent 调用）
+		s.syncDynamicTools()
 		s.broadcast(protocol.EventCatalogChanged, protocol.CatalogChangedParams{Kind: "tools", Reason: "update"})
 		return protocol.NewResult(id, map[string]any{})
 
@@ -203,6 +205,8 @@ func (s *Server) dispatchAgentCatalog(id json.RawMessage, method string, params 
 		if err := s.st.RemoveTool(p.ID); err != nil {
 			return protocol.NewError(id, protocol.CodeInvalidParams, err.Error())
 		}
+		// M4：注销——删掉的工具必须从注册表消失（否则模型还会去调它）
+		s.syncDynamicTools()
 		s.broadcast(protocol.EventCatalogChanged, protocol.CatalogChangedParams{Kind: "tools", Reason: "remove"})
 		return protocol.NewResult(id, map[string]any{})
 

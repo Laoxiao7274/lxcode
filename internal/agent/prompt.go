@@ -55,6 +55,34 @@ var systemPromptTools = map[string]string{
 	"agent.dispatch": "agent.dispatch：把任务派给名单中的子 Agent（任务的完整执行在子上下文里，结果回传验收），低危自动执行",
 }
 
+// toolLine 生成工具清单的一行。
+//
+// 内置工具用 systemPromptTools 的摘要（写死的"有什么、风险等级"）；目录里的
+// 自定义工具没有摘要，回落到 Def.Description 首行 + 风险说明——不回落的后果是
+// **静默漏掉**：模型不知道这个工具存在，白名单勾了也白勾。
+func toolLine(d *tools.Def) string {
+	if desc, ok := systemPromptTools[d.Name]; ok {
+		return "- " + desc + "\n"
+	}
+	return fmt.Sprintf("- %s：%s（%s）\n", d.Name, firstLine(d.Description), riskPhrase(d.Risk))
+}
+
+// riskPhrase 是风险等级的自然语言说明（与 systemPromptTools 里的措辞一致）。
+func riskPhrase(r tools.RiskLevel) string {
+	if r == tools.RiskHigh {
+		return "高危——每次执行前用户会收到确认提示"
+	}
+	return "低危——自动执行"
+}
+
+// firstLine 取首行（清单一行一条；Description 可能带示例等后续行）。
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return strings.TrimSpace(s[:i])
+	}
+	return strings.TrimSpace(s)
+}
+
 // BuildSystemPrompt 组装完整系统提示词：头 + 工作目录说明 + 动态工具清单 + 尾。
 // workDir 是会话工作目录（项目会话 = 项目根，空 = 后端进程目录）——相对路径
 // 的解析基准必须告诉模型。工具清单从注册表生成——加新工具时不需要改这里
@@ -65,8 +93,8 @@ func BuildSystemPrompt(toolReg *tools.Registry, workDir string) string {
 	b.WriteString(workdirLine(workDir))
 	b.WriteString("\n可用工具：\n")
 	for _, name := range toolReg.Order() {
-		if desc, ok := systemPromptTools[name]; ok {
-			b.WriteString("- " + desc + "\n")
+		if d, ok := toolReg.Get(name); ok {
+			b.WriteString(toolLine(d))
 		}
 	}
 	b.WriteString(systemPromptFooter)

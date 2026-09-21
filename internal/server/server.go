@@ -75,6 +75,9 @@ func (s *Server) AttachSessionStore(st *store.Store) error {
 	s.st = st
 	s.sess.AttachSessionSearch()
 	s.sess.SetAgentResolver(&storeAgentResolver{st: st})
+	// M4：工具目录里的自定义工具（binary）注册进工具注册表——启动时就位，
+	// 之后的目录变更由 catalog.tools.* 分支触发同步
+	s.syncDynamicTools()
 	return s.sess.EnablePersistence(st)
 }
 

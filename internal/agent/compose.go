@@ -6,6 +6,7 @@ package agent
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/moyunteng/lxcode/internal/sessiondata"
@@ -106,12 +107,33 @@ func ComposeSystemPrompt(toolReg *tools.Registry, workDir string, ac *sessiondat
 		if allowed != nil && !allowed[name] {
 			continue
 		}
-		if desc, ok := systemPromptTools[name]; ok {
-			b.WriteString("- " + desc + "\n")
+		if d, ok := toolReg.Get(name); ok {
+			b.WriteString(toolLine(d))
 		}
+	}
+	// 白名单里勾了但注册表里没有的工具：如实告知，别让模型以为它有
+	//（自定义工具没配 command、MCP 服务器没启用都会落到这里）
+	if missing := missingTools(toolReg, allowTools); len(missing) > 0 {
+		b.WriteString("注意：白名单里的 " + strings.Join(missing, "、") +
+			" 当前不可用（自定义工具需先配置 command，MCP 工具需先启用服务器）——不要调用它们。\n")
 	}
 	b.WriteString(systemPromptFooter)
 	return b.String()
+}
+
+// missingTools 返回白名单里未注册的工具名（稳定顺序）。
+func missingTools(toolReg *tools.Registry, allow []string) []string {
+	if len(allow) == 0 {
+		return nil
+	}
+	var out []string
+	for _, name := range allow {
+		if _, ok := toolReg.Get(name); !ok {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // toolSet 把白名单转为集合（nil = 不过滤——兼容无 Agent 语境）。

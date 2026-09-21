@@ -45,9 +45,17 @@ type Def struct {
 }
 
 // Registry 是工具注册表。
+//
+// 两段式：内置段（New 时注册，进程生命周期内不变）与动态段（目录里的
+// 自定义工具——M4 起由 SetDynamic 按工具目录整体替换）。mu 保护两段：
+// 目录变更可能发生在生成中的工具循环里（另一个客户端正在改目录），
+// 而执行工具时不持锁（自定义工具可能跑几十秒）。
 type Registry struct {
-	defs  map[string]*Def
-	order []string // 注册顺序，工具列表输出稳定
+	mu      sync.RWMutex
+	defs    map[string]*Def
+	order   []string        // 内置注册顺序，工具列表输出稳定
+	dyn     []string        // 动态段顺序（SetDynamic 维护）
+	builtin map[string]bool // 内置名集合（动态段不可覆盖它们）
 
 	// sessionSearch 是注入的会话搜索实现（agent 挂载会话存储时接线）。
 	// 工具本身无状态——JSONL 格式归 agent 所有，这里只持有函数避免重复定义格式。
@@ -82,7 +90,7 @@ func (r *Registry) getSessionSearch() SessionSearchFn {
 // （edit/write/bash），todo 收尾；agent.dispatch 是主 Agent 的调度
 // 通道（子 Agent 白名单不含它——两类制深度恒 1）。
 func New() *Registry {
-	r := &Registry{defs: map[string]*Def{}}
+	r := &Registry{defs: map[string]*Def{}, builtin: map[string]bool{}}
 	r.register(readFileDef())
 	r.register(searchDef())
 	r.register(sessionSearchDef(r))
@@ -95,26 +103,75 @@ func New() *Registry {
 	return r
 }
 
+// register 注册内置工具（只在 New 里调用——单线程，无需持锁）。
 func (r *Registry) register(d *Def) {
 	r.defs[d.Name] = d
 	r.order = append(r.order, d.Name)
+	r.builtin[d.Name] = true
 }
 
-// Order 返回注册顺序的工具名列表（backend 生成系统提示词的工具清单用）。
+// SetDynamic 用工具目录里的自定义工具整体替换动态段（内置段不动）。
+// 返回被跳过的名字（与内置同名——内置实现优先，目录条目只是元数据）。
+//
+// 整体替换而非增量注册：目录是事实源，删除/改名/停用都必须在注册表里
+// 同步消失——增量注册会让删掉的自定义工具继续对模型可见。
+func (r *Registry) SetDynamic(defs []*Def) []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, name := range r.dyn {
+		delete(r.defs, name)
+	}
+	r.dyn = nil
+	var skipped []string
+	for _, d := range defs {
+		if d == nil || strings.TrimSpace(d.Name) == "" {
+			continue
+		}
+		if r.builtin[d.Name] {
+			skipped = append(skipped, d.Name)
+			continue
+		}
+		if _, dup := r.defs[d.Name]; dup {
+			skipped = append(skipped, d.Name)
+			continue
+		}
+		r.defs[d.Name] = d
+		r.dyn = append(r.dyn, d.Name)
+	}
+	return skipped
+}
+
+// namesLocked 返回两段的名字（内置在前）。调用方须持锁。
+func (r *Registry) namesLocked() []string {
+	out := make([]string, 0, len(r.order)+len(r.dyn))
+	out = append(out, r.order...)
+	out = append(out, r.dyn...)
+	return out
+}
+
+// Order 返回注册顺序的工具名列表（内置段在前，动态段在后；backend 生成
+// 系统提示词的工具清单用）。
 func (r *Registry) Order() []string {
-	return append([]string(nil), r.order...)
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.namesLocked()
 }
 
 // Get 按名取工具。
 func (r *Registry) Get(name string) (*Def, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	d, ok := r.defs[name]
 	return d, ok
 }
 
 // LLMTools 返回 wire 声明（给 llm.WithTools）。
 func (r *Registry) LLMTools() []llm.Tool {
-	out := make([]llm.Tool, 0, len(r.order))
-	for _, name := range r.order {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	names := r.namesLocked()
+	out := make([]llm.Tool, 0, len(names))
+	for _, name := range names {
 		d := r.defs[name]
 		out = append(out, llm.Tool{
 			Name: d.Name, Description: d.Description, Parameters: d.Parameters,
@@ -126,25 +183,26 @@ func (r *Registry) LLMTools() []llm.Tool {
 // Confirm 返回需人工确认的提示；空串 = 无需确认。未知工具返回空串
 // （Execute 会把未知工具报给模型）。
 func (r *Registry) Confirm(ctx context.Context, call llm.ToolCall) string {
-	d, ok := r.defs[call.Function.Name]
+	d, ok := r.Get(call.Function.Name)
 	if !ok || d.Confirm == nil {
 		return ""
 	}
+	// 不持锁执行：确认回调会 stat 文件系统（可能与目录变更并发，无妨）
 	return d.Confirm(ctx, []byte(call.Function.Arguments))
 }
 
 // IsMutating 报告工具是否变更外部世界（strict 只读模式的拒绝依据）。
 // 未知工具返回 true（保守：不认识的变更面按危险处理）。
 func (r *Registry) IsMutating(name string) bool {
-	d, ok := r.defs[name]
+	d, ok := r.Get(name)
 	return !ok || d.Mutates
 }
 
 // Execute 校验并执行工具调用，返回给模型的结果文本。
 func (r *Registry) Execute(ctx context.Context, call llm.ToolCall) string {
-	d, ok := r.defs[call.Function.Name]
+	d, ok := r.Get(call.Function.Name)
 	if !ok {
-		return fmt.Sprintf("错误: 未知工具 %q（可用: %v）", call.Function.Name, r.order)
+		return fmt.Sprintf("错误: 未知工具 %q（可用: %v）", call.Function.Name, r.Order())
 	}
 	raw := call.Function.Arguments
 	// 系统层硬校验 + 一次保守修复：本地小模型的 arguments 偶发不是合法 JSON

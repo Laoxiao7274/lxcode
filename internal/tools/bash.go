@@ -184,27 +184,34 @@ func bashDef() *Def {
 				result = result[:bashMaxOutput] + "\n…（输出超 32KB 已截断）"
 			}
 			// 非零退出码与超时是"结果"不是执行错误——回填文本让模型自行判断
-			note := ""
-			switch {
-			case err == nil:
-			case cctx.Err() == context.DeadlineExceeded:
-				// 只杀得掉直接子进程（sh），它拉起的后台子进程可能还在跑——如实告知模型
-				note = fmt.Sprintf("\n[超时：命令超过 %s 被终止；被它拉起的后台子进程可能仍在运行]",
-					timeout)
-			default:
-				var exitErr *exec.ExitError
-				if errors.As(err, &exitErr) {
-					note = fmt.Sprintf("\n[退出码 %d]", exitErr.ExitCode())
-				} else {
-					// 启动失败（如 Windows 无 sh）：自解释报错
-					return result + "\n[启动失败: " + err.Error() + "]", nil
-				}
-			}
+			note := execNote(cctx, err, timeout)
 			if result == "" && note == "" {
 				return "（无输出，退出码 0）", nil
 			}
 			return result + note, nil
 		},
+	}
+}
+
+// execNote 把执行错误翻译成回填模型的说明文本（bash 与自定义工具共用，
+// 两者的失败语义必须一致——否则模型对同一个退出码要学两套说法）。
+//
+// 非零退出码与超时是"结果"不是执行错误：回填文本让模型自行判断。
+// 启动失败（可执行文件不存在/无权限）才是真错误，同样以文本回填——
+// 模型能据此换方法，比抛错中断整轮更有用。
+func execNote(cctx context.Context, err error, timeout time.Duration) string {
+	switch {
+	case err == nil:
+		return ""
+	case cctx.Err() == context.DeadlineExceeded:
+		// 只杀得掉直接子进程（sh/exe），它拉起的后台子进程可能还在跑——如实告知模型
+		return fmt.Sprintf("\n[超时：命令超过 %s 被终止；被它拉起的后台子进程可能仍在运行]", timeout)
+	default:
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return fmt.Sprintf("\n[退出码 %d]", exitErr.ExitCode())
+		}
+		return "\n[启动失败: " + err.Error() + "]"
 	}
 }
 

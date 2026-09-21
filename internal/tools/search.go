@@ -400,7 +400,9 @@ func formatSearchResult(mode, pattern, path string, hits []searchHit, total int,
 	return b.String()
 }
 
-func sortedKeys(m map[string]int) []string {
+// sortedKeys 返回 map 的键（字典序）——search 的统计与自定义工具的参数
+// 校验共用（泛型：值的类型与排序无关）。
+func sortedKeys[V any](m map[string]V) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)

@@ -149,8 +149,9 @@ catalog.changed {kind}
 ## M4 — 拓展执行面
 
 - **自定义工具执行**（tools 包）：`command` 模板 + `{param}` 填充（参数值来自工具调用的 arguments）→ spawn（无 shell——模板按空格切分 + 参数值原样单参，引号无语义）；workDir 继承会话；超时/输出上限对齐 bash 工具；风险等级进注册表（高危走确认门——确认文本含完整命令）
-- **MCP 客户端**（新 internal/mcp）：stdio（spawn mcp 服务器进程，MCP 协议握手）→ tools/list 发现 → 以 `source=mcp, server=<id>` 注册进注册表（id 冲突加前缀）；服务器启停 = 注册/注销其工具；停用 = 工具挂起（保留目录条目）
-- **网页搜索工具**（`web_search`）：读搜索渠道配置（渠道表复用 tools 表? **拍板：渠道配置存 config 目录的 search.json**——它是环境配置不是拓展目录）+ 主渠道优先失败降级
+  - **已落地（2026-09-21）**：`internal/tools/custom.go`（`CustomDef`：params→JSON Schema、模板渲染、spawn）+ `Registry.SetDynamic`（动态段整体替换，内置段不动，注册表加 RWMutex）+ `internal/server/tools_sync.go`（启动与 `catalog.tools.*` 变更后同步；未配 command 的条目跳过并记日志）+ 提示词层回落 `Def.Description`（原先只认 `systemPromptTools` 固定名 → 自定义工具会被静默漏掉）与「白名单里未注册的工具」点名。真链路冒烟 `temp/smoke-m4.mjs` 4/4（真模型调用自定义工具 → 真实 `go version` 输出回填）。
+- **MCP 客户端**（新 internal/mcp）：stdio（spawn mcp 服务器进程，MCP 协议握手）→ tools/list 发现 → 以 `source=mcp, server=<id>` 注册进注册表（id 冲突加前缀）；服务器启停 = 注册/注销其工具；停用 = 工具挂起（保留目录条目）——**未做**
+- **网页搜索工具**（`web_search`）：读搜索渠道配置（渠道表复用 tools 表? **拍板：渠道配置存 config 目录的 search.json**——它是环境配置不是拓展目录）+ 主渠道优先失败降级——**未做**（前端设置面板的渠道配置已就绪）
 - 验收：拓展页建的自定义工具/MCP 工具真的能被 Agent 调用并出结果
 
 ## M5 — 远程访问与更新
