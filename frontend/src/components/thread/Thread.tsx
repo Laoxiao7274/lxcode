@@ -88,6 +88,11 @@ export function Thread({
       if (stickyRef.current) toBottom();
     });
     ro.observe(el.firstElementChild ?? el);
+    // 输入区（含任务清单卡）高度变化也要跟随：它只改线程区的
+    // padding-bottom（不留心观察不到——内容尺寸没变），贴底时若不让位，
+    // 清单展开就会压住对话内容（对话该整体上移，收缩时下移回来）。
+    const composerZone = el.closest(".main")?.querySelector<HTMLElement>(".composer-zone");
+    if (composerZone) ro.observe(composerZone);
     // 装上先贴一次底：首条消息挂载早于任何 RO 回调，先对齐
     toBottom();
     return () => {
