@@ -73,8 +73,8 @@ CREATE TABLE IF NOT EXISTS mcp_servers (
 );
 `
 
-// initAgents 建表 + 首次种子（库空时；幂等——有数据不覆盖）。
-// Open 调用（store.go 的 schema 之外追加，避免混在一起）。
+// initAgents 建表 + 种子：库空时整套注入；库非空时**种子同步**（幂等，见
+// syncCatalogSeeds——代码修好了种子，老库必须也能吃到）。Open 调用。
 func (s *Store) initAgents() error {
 	if _, err := s.db.Exec(agentSchema); err != nil {
 		return fmt.Errorf("初始化目录表失败: %w", err)
@@ -83,12 +83,14 @@ func (s *Store) initAgents() error {
 	if err := s.db.QueryRow(`SELECT COUNT(*) FROM agents`).Scan(&n); err != nil {
 		return fmt.Errorf("查 agents 行数失败: %w", err)
 	}
-	if n > 0 {
-		return nil // 已有数据（含旧种子）——不覆盖用户改动
-	}
-	// 种子（内容对齐前端 agent-seeds.ts 的目录部分；演示 Agent 名单
-	// 只给主 Agent + 一个子 Agent——真实后端不该替用户预置一堆）
 	now := nowNano()
+	if n > 0 {
+		// 老库：只同步目录种子（不碰 Agent 名单——主 Agent 的委派名单等
+		// 字段用户可改，覆盖就是吃掉用户的配置）
+		return s.syncCatalogSeeds(now)
+	}
+	// 首次：整套种子（内容对齐前端 agent-seeds.ts 的目录部分；演示 Agent 名单
+	// 只给主 Agent + 一个子 Agent——真实后端不该替用户预置一堆）
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("开种子事务失败: %w", err)
@@ -110,6 +112,80 @@ func (s *Store) initAgents() error {
 		}
 	}
 	return tx.Commit()
+}
+
+// syncCatalogSeeds 把种子目录同步进已有库（每次 Open 跑一次，幂等）。
+//
+// 为什么必须做：种子只在库空时注入，于是**代码修好了种子，老库永远吃不到**。
+// 用户报告过「给了 ripgrep，模型答『注册表没有』」正是这一类：种子里那条
+// command 为空的承诺，代码补上真实命令后老库仍是空的——而种子行 custom=0，
+// 目录页原先又不给编辑入口，用户连手动补都做不到。
+//
+// 边界（只动代码拥有的行）：
+//   - custom=0 的条目：按代码更新（command/params/desc/doc 等全字段）；
+//   - custom=1 的条目：用户自建或改过的（保存时会置 1）——一律不碰；
+//   - 不删除：种子删掉的条目留在库里（可能已被白名单引用），不制造悬空引用。
+func (s *Store) syncCatalogSeeds(now string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("开种子同步事务失败: %w", err)
+	}
+	defer tx.Rollback()
+	for _, t := range seedTools {
+		if err := upsertSeedTool(tx, t, now); err != nil {
+			return err
+		}
+	}
+	for _, m := range seedModules {
+		if err := upsertSeedModule(tx, m, now); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// upsertSeedTool 按 id 同步一个种子工具：缺失则插入，custom=0 则按代码更新。
+func upsertSeedTool(exec execer, t sessiondata.ToolSpec, now string) error {
+	var custom int
+	err := exec.QueryRow(`SELECT custom FROM tools WHERE id = ?`, t.ID).Scan(&custom)
+	if err == sql.ErrNoRows {
+		return insertTool(exec, t, now)
+	}
+	if err != nil {
+		return fmt.Errorf("查种子工具 %s 失败: %w", t.ID, err)
+	}
+	if custom != 0 {
+		return nil // 用户自建或改过的行：不碰
+	}
+	params, err := json.Marshal(t.Params)
+	if err != nil {
+		return fmt.Errorf("序列化工具参数失败: %w", err)
+	}
+	if _, err := exec.Exec(`UPDATE tools SET desc=?, risk=?, source=?, params=?, doc=?, server=?, command=?, example=?, package_file=?, updated_at=? WHERE id=?`,
+		t.Desc, t.Risk, t.Source, string(params), t.Doc, t.Server, t.Command, t.Example, t.PackageFile, now, t.ID); err != nil {
+		return fmt.Errorf("同步种子工具 %s 失败: %w", t.ID, err)
+	}
+	return nil
+}
+
+// upsertSeedModule 按 id 同步一个种子模块（语义同 upsertSeedTool）。
+func upsertSeedModule(exec execer, m sessiondata.ModuleSpec, now string) error {
+	var custom int
+	err := exec.QueryRow(`SELECT custom FROM modules WHERE id = ?`, m.ID).Scan(&custom)
+	if err == sql.ErrNoRows {
+		return insertModule(exec, m, now)
+	}
+	if err != nil {
+		return fmt.Errorf("查种子模块 %s 失败: %w", m.ID, err)
+	}
+	if custom != 0 {
+		return nil
+	}
+	if _, err := exec.Exec(`UPDATE modules SET desc=?, kind=?, body=?, updated_at=? WHERE id=?`,
+		m.Desc, m.Kind, m.Body, now, m.ID); err != nil {
+		return fmt.Errorf("同步种子模块 %s 失败: %w", m.ID, err)
+	}
+	return nil
 }
 
 func insertAgent(exec execer, a sessiondata.AgentDef, now string) error {
@@ -169,9 +245,10 @@ func insertTool(exec execer, t sessiondata.ToolSpec, now string) error {
 	return nil
 }
 
-// execer 抽象 tx 与 db（增删改共用）。
+// execer 抽象 tx 与 db（增删改查共用）。
 type execer interface {
 	Exec(query string, args ...any) (sql.Result, error)
+	QueryRow(query string, args ...any) *sql.Row
 }
 
 // ---- agents ----

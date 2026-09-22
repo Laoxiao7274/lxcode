@@ -3,6 +3,8 @@ package store
 import (
 	"strings"
 	"testing"
+
+	"github.com/moyunteng/lxcode/internal/sessiondata"
 )
 
 // TestSeedToolsRunnable：种子目录里的外部二进制工具必须**可执行**——
@@ -52,6 +54,56 @@ func TestSeedToolsRunnable(t *testing.T) {
 
 	if b, ok := byID["browser"]; ok && strings.TrimSpace(b.command) != "" {
 		t.Fatal("browser 还没有对应实现，command 应留空（目录标「未配置」）——别给它一个跑不起来的承诺")
+	}
+}
+
+// TestSyncCatalogSeedsBackfillsOldDB：老库的种子行必须被同步——代码修好了种子
+// （给 ripgrep 补上命令、加 read_skill），老库不能永远吃不到（用户报告过：
+// 「给了 ripgrep，模型答『注册表没有』」，而种子行 custom=0 又没编辑入口）。
+// 边界：用户自建（custom=1）的行一律不碰。
+func TestSyncCatalogSeedsBackfillsOldDB(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	// 模拟老库：种子行的 command 被清空、种子条目缺失、外加一条用户自建行
+	if _, err := st.db.Exec(`UPDATE tools SET command='' WHERE id='ripgrep'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec(`DELETE FROM tools WHERE id='read_skill'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec(`INSERT INTO tools
+		(id, desc, risk, source, params, doc, server, command, example, package_file, custom, created_at, updated_at)
+		VALUES ('mine', '我的工具', 'low', 'binary', '[]', '', '', 'echo {x}', '', '', 1, 't', 't')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(dir)
+	if err != nil {
+		t.Fatalf("重开 Open: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() }) // Windows：句柄挡 TempDir 删除
+	list, err := reopened.ListTools()
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	byID := map[string]sessiondata.ToolSpec{}
+	for _, x := range list {
+		byID[x.ID] = x
+	}
+	if strings.TrimSpace(byID["ripgrep"].Command) == "" {
+		t.Fatal("老库的种子行未被同步：ripgrep 的 command 仍为空（模型仍会说「注册表没有」）")
+	}
+	if _, ok := byID["read_skill"]; !ok {
+		t.Fatal("缺失的种子条目未被补进老库：read_skill")
+	}
+	if got := byID["mine"]; got.Command != "echo {x}" {
+		t.Fatalf("用户自建行被同步动了（custom=1 必须不碰）: %+v", got)
 	}
 }
 

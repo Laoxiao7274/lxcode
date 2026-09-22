@@ -42,6 +42,13 @@ var seedTools = []sessiondata.ToolSpec{
 		Doc:    "跨全部会话的消息内容检索（含当前）。",
 	},
 	{
+		// 内置的渐进披露读取口：目录里没有它，子 Agent 就「拿到技能索引却没法取正文」
+		// （技能多选注入因此形同虚设）——用户拍板顺手补上。
+		ID: "read_skill", Desc: "读取技能模块的完整内容（提示词只列索引）", Risk: "low", Source: "builtin", Custom: false,
+		Params: []sessiondata.ToolParam{{Name: "id", Type: "string", Required: true, Desc: "技能 id（提示词「可用技能」清单里的名字）"}},
+		Doc:    "渐进披露：提示词只注入技能索引（id + 摘要），需要完整方法论时按 id 取全文。\n\n没在白名单里的技能读不到（提示词里看不到 = 不存在）。",
+	},
+	{
 		// 外部 Rust 二进制的接入样板（AGENTS.md §2.1「Go 主刀、Rust 武器库」）：
 		// command 必须是**可运行**的模板——空 command 的工具进不了注册表，
 		// 模型会如实回答「注册表没有」（用户报告过的原始现象）。
