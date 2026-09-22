@@ -101,6 +101,51 @@ app.whenReady().then(async () => {
     assert.ok(empty && empty.cards === 4, "chat: 空态应有 4 张建议卡");
     assert.ok(empty && empty.agentChip, "chat: 空态应显示当前 Agent 芯片");
     assert.ok(empty && empty.top > 100 && empty.bottom < 900, "chat: 空态应纵向居中（不贴顶）");
+    // 侧栏范围与归属：启动态（无当前会话 → 范围未定 = 全部）下每条会话行
+    // 必须显示归属项目——「展示所有会话看不出是哪个项目」是用户报告的原始问题。
+    // 点项目行后范围唯一，标签应消失（同一信息不重复）；清过滤后标签回来。
+    // 注意：这一段只点项目行与筛选 chip，不打开会话（后面的空态/建议卡用例
+    // 依赖对话区仍是空态）。
+    const sidebarBoot = await win.webContents.executeJavaScript(`(() => {
+      const subs = [...document.querySelectorAll(".session-item .session-sub")];
+      return {
+        rows: document.querySelectorAll(".session-item").length,
+        subs: subs.length,
+        first: subs[0] ? subs[0].textContent.trim() : "",
+      };
+    })()`);
+    log("sidebar-scope", JSON.stringify(sidebarBoot));
+    assert.ok(sidebarBoot.rows >= 1, "sidebar: 启动态应有会话行");
+    assert.equal(sidebarBoot.subs, sidebarBoot.rows, "sidebar: 全部视图下每行都应显示归属项目");
+    assert.ok(sidebarBoot.first.length > 0, "sidebar: 归属标签不应为空");
+
+    const sidebarScoped = await win.webContents.executeJavaScript(`(() => {
+      const proj = document.querySelector(".proj-row:not(.loose)");
+      if (proj) proj.click();
+      return new Promise((res) => setTimeout(() => res({
+        subs: document.querySelectorAll(".session-item .session-sub").length,
+        rows: document.querySelectorAll(".session-item").length,
+        active: document.querySelectorAll(".proj-row.active").length,
+        chip: !!document.querySelector(".group-filter"),
+      }), 250));
+    })()`);
+    log("sidebar-scoped", JSON.stringify(sidebarScoped));
+    assert.equal(sidebarScoped.active, 1, "sidebar: 点项目行后应恰好一个项目选中");
+    assert.ok(sidebarScoped.chip, "sidebar: 过滤后组头应显示当前范围 chip");
+    assert.equal(sidebarScoped.subs, 0, "sidebar: 已按项目过滤时不再重复显示归属");
+
+    const sidebarAll = await win.webContents.executeJavaScript(`(() => {
+      const chip = document.querySelector(".group-filter");
+      if (chip) chip.click();
+      return new Promise((res) => setTimeout(() => res({
+        subs: document.querySelectorAll(".session-item .session-sub").length,
+        rows: document.querySelectorAll(".session-item").length,
+        active: document.querySelectorAll(".proj-row.active").length,
+      }), 250));
+    })()`);
+    log("sidebar-all", JSON.stringify(sidebarAll));
+    assert.ok(sidebarAll.subs >= 1, "sidebar: 清过滤回全部视图后归属标签应回来");
+    assert.equal(sidebarAll.active, 0, "sidebar: 全部视图下不应有项目被选中");
     // 斜杠命令面板：输入 / → 弹出 → 过滤（/set）→ 键盘导航 → 选中进设置 → 回来
     await win.webContents.executeJavaScript(`(() => {
       const ta = document.querySelector(".piInput");

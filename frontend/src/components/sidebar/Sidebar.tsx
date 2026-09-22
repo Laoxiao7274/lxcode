@@ -7,8 +7,9 @@ import type { AgentSource } from "../../shared/types";
 import { AddProjectDialog } from "./AddProjectDialog";
 import { SessionRow } from "./SessionRow";
 
-/** 「未分组」过滤目标（无归属会话的家——不依赖真实项目 id）。 */
-const LOOSE = "";
+/** 「未分组」过滤目标（无归属会话的家——不依赖真实项目 id）。
+ *  导出给 App 用：启动时的默认范围可能落在「未分组」（App 的自动选中）。 */
+export const LOOSE = "";
 
 /** 侧栏（Codex 2026-05 版形态）：
  *  导航项（新对话/搜索/插件/自动化）→「项目」分组（上）→「对话」分组（下）。
@@ -269,6 +270,8 @@ export function Sidebar({
           busy={busy}
           renaming={renaming === s.id}
           menuOpen={menuFor === s.id}
+          // 只有「全部」视图的范围不唯一——此时才需要逐行声明归属
+          projectName={filter === null && s.workspace ? projectById.get(s.workspace)?.name : undefined}
           onOpenMenu={setMenuFor}
           onCloseMenu={() => setMenuFor(null)}
           onStartRename={setRenaming}

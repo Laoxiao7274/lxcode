@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getAgentSource } from "./agent";
 import { useAgent } from "./shared/store";
 import { AgentsProvider, useAgents } from "./shared/agents";
 import { AgentsPage } from "./components/agents/AgentsPage";
 import { CatalogPage } from "./components/catalog/CatalogPage";
 import { Topbar } from "./components/topbar";
-import { Sidebar } from "./components/sidebar";
+import { Sidebar, LOOSE } from "./components/sidebar";
 import { Thread } from "./components/thread";
 import { Composer } from "./components/composer";
 import type { SlashCommand } from "./components/composer/SlashPalette";
@@ -65,6 +65,36 @@ function AppBody({ source }: { source: AgentSource }) {
     window.addEventListener("lx-operation-error", on);
     return () => window.removeEventListener("lx-operation-error", on);
   }, [reportError]);
+
+  // 启动后把侧栏范围落在一个具体项目上（用户拍板：项目区必须恒有一个选中
+  // ——「都不选」时列表把各项目的会话混在一起，看不出归属）。
+  // 落定顺序：当前会话所属项目 → 当前会话未分组则「未分组」→ 确实没有任何
+  // 会话时第一个项目 → 都没有则「未分组」。**只做一次**：之后用户在侧栏点选的
+  // 范围不被打架。会话元数据是 WS 异步拉来的，所以未落定前订阅事件重试。
+  const scopedOnce = useRef(false);
+  useEffect(() => {
+    const tryScope = () => {
+      if (scopedOnce.current) return;
+      const projects = source.projects();
+      const sessions = source.sessions();
+      const cur = sessions.find((s) => s.id === state.currentId);
+      if (cur) {
+        scopedOnce.current = true;
+        if (!cur.workspace) { setFilter(LOOSE); return; }
+        // 项目已不在名单（被删）→ 不猜：保持「全部」，至少当前会话可见
+        if (projects.some((p) => p.id === cur.workspace)) setFilter(cur.workspace);
+        return;
+      }
+      // 有会话但还没有当前会话（后端恢复/首次打开的会话还没到）→ 等事件，
+      // 抢跑会把范围钉在错误的项目上
+      if (sessions.length > 0) return;
+      scopedOnce.current = true;
+      setFilter(projects.length > 0 ? projects[0].id : LOOSE);
+    };
+    tryScope();
+    if (scopedOnce.current) return;
+    return source.subscribe(tryScope);
+  }, [source, state.currentId]);
 
   const currentId = state.currentId;
 
