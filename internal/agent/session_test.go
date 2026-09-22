@@ -655,7 +655,7 @@ func TestTurnToolsRunInWorkDir(t *testing.T) {
 
 func TestSystemPromptListsAllTools(t *testing.T) {
 	s, _ := newTestSession(t)
-	prompt := BuildSystemPrompt(s.tools, "")
+	prompt := BuildSystemPrompt(s.tools, "", ProjectDocs{})
 	for _, name := range s.tools.Order() {
 		// 清单行形如 "- read_file：…"（中文冒号分隔）
 		if !strings.Contains(prompt, name+"：") {
@@ -670,7 +670,7 @@ func TestSystemPromptListsAllTools(t *testing.T) {
 
 func TestSystemPromptDeterministic(t *testing.T) {
 	s, _ := newTestSession(t)
-	a, b := BuildSystemPrompt(s.tools, ""), BuildSystemPrompt(s.tools, "")
+	a, b := BuildSystemPrompt(s.tools, "", ProjectDocs{}), BuildSystemPrompt(s.tools, "", ProjectDocs{})
 	if a != b {
 		t.Fatal("提示词应确定性生成")
 	}
@@ -680,13 +680,13 @@ func TestSystemPromptDeterministic(t *testing.T) {
 // 按它解析相对路径、决定在哪跑命令）。
 func TestSystemPromptWorkDir(t *testing.T) {
 	s, _ := newTestSession(t)
-	prompt := BuildSystemPrompt(s.tools, `C:\proj\demo`)
+	prompt := BuildSystemPrompt(s.tools, `C:\proj\demo`, ProjectDocs{})
 	for _, want := range []string{`C:\proj\demo`, "项目根目录即工作目录", "相对路径"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("项目会话提示词应含 %q", want)
 		}
 	}
-	if strings.Contains(BuildSystemPrompt(s.tools, ""), "项目根") {
+	if strings.Contains(BuildSystemPrompt(s.tools, "", ProjectDocs{}), "项目根") {
 		t.Fatal("未分组会话不应有项目根话术")
 	}
 }

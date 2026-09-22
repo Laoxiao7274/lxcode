@@ -61,7 +61,17 @@ func NewServer(reg *config.Registry) *Server {
 	}
 	// 内核 typed 事件 → 协议事件广播（唯一出口接线）
 	s.sess = agent.New(reg, s.treg, s.emitEvent)
+	// 项目守则（项目根 AGENTS.md）读取器：每轮组装提示词时按会话工作目录读。
+	// 未分组会话的 workDir 为空 → 内核侧直接不注入（严格项目级）。
+	s.sess.SetProjectDocs(projectDocsReader)
 	return s
+}
+
+// projectDocsReader 读项目根的守则文件并转成内核的注入载荷。
+// 读不到/超大只体现在 Note 上，不打断生成（规则见 project.LoadInstructions）。
+func projectDocsReader(workDir string) agent.ProjectDocs {
+	f := project.LoadInstructions(workDir)
+	return agent.ProjectDocs{Path: f.Path, Content: f.Content, Note: f.Note}
 }
 
 // Session 暴露会话（单测/探针直接驱动）。

@@ -94,6 +94,9 @@ type Session struct {
 	// agents 是名单解析器（M2 上下文组装——nil = 无 Agent 语境，走
 	// 全局默认提示词；server 装配时从 store 注入）。
 	agents AgentResolver
+	// projectDocs 是项目守则读取器（项目根 AGENTS.md——server 装配时注入；
+	// nil = 不注入）。agent 不碰文件系统：读取实现由消费方提供。
+	projectDocs ProjectDocsFunc
 }
 
 // New 创建会话；emit 为 nil 时事件被丢弃（单测可只调方法）。
@@ -123,6 +126,29 @@ func (s *Session) SetAgentResolver(r AgentResolver) {
 	if s.agents == nil {
 		s.agents = r
 	}
+}
+
+// SetProjectDocs 挂载项目守则读取器（项目根 AGENTS.md；server 装配时注入）。
+// 每轮组装提示词时调用一次——守则改了立刻生效（长命会话里「我刚改了
+// AGENTS.md 它却不知道」是更糟的体验）。
+func (s *Session) SetProjectDocs(fn ProjectDocsFunc) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.projectDocs = fn
+}
+
+// projectDocsFor 取会话工作目录对应的项目守则（未注入或未分组 → 空）。
+func (s *Session) projectDocsFor(workDir string) ProjectDocs {
+	s.mu.Lock()
+	fn := s.projectDocs
+	s.mu.Unlock()
+	if fn == nil || workDir == "" {
+		// 空 workDir = 未分组会话（无项目）：严格项目级——不注入，
+		// 也绝不退化成读后端进程目录的 AGENTS.md（那会把 lxcode 自己的
+		// 仓库守则塞进用户无关的对话）
+		return ProjectDocs{}
+	}
+	return fn(workDir)
 }
 
 // agentToolsOf 取 Agent 的工具白名单（nil = 无白名单语义——不过滤）。
@@ -454,11 +480,12 @@ func (s *Session) streamRound(ctx context.Context, workDir, effort string, ac *s
 	// 快照：快照后新消息（若有）不影响本轮请求。提示词按 Agent 四层
 	// 组合（nil = 全局默认）；工具 wire 声明按白名单过滤。
 	allow := agentToolsOf(ac)
+	docs := s.projectDocsFor(workDir)
 	var prompt string
 	if ac != nil {
-		prompt = ComposeSystemPrompt(s.tools, workDir, ac, allow)
+		prompt = ComposeSystemPrompt(s.tools, workDir, ac, allow, docs)
 	} else {
-		prompt = BuildSystemPrompt(s.tools, workDir)
+		prompt = BuildSystemPrompt(s.tools, workDir, docs)
 	}
 	msgs := append([]llm.Message{{Role: "system", Content: prompt}}, history...)
 

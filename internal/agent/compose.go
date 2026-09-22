@@ -50,11 +50,15 @@ func DefaultProtocol(isMain bool) string {
 // ComposeSystemPrompt 组装完整系统提示词：协议层（定制 ?? 内置默认）
 // + 流程模块（单选注入）+ 技能索引（名称 + 一句话——渐进披露，模型
 // 需要时经 read_skill 取全文，没注入的它当没有）+ 自定义段 + 动态注入
-// （主 Agent 的有效委派名单）+ 工作目录说明 + 工具清单（按白名单过滤）
-// + 工作守则。ac 为 nil = 无 Agent 语境（兼容旧路径：全局默认提示词）。
-func ComposeSystemPrompt(toolReg *tools.Registry, workDir string, ac *sessiondata.AgentContext, allowTools []string) string {
+// （主 Agent 的有效委派名单）+ 项目约定（项目根 AGENTS.md）+ 工作目录说明
+// + 工具清单（按白名单过滤）+ 工作守则。ac 为 nil = 无 Agent 语境（兼容旧路径：
+// 全局默认提示词）。
+//
+// 项目约定的位置即优先级（2026-09-21 用户拍板「项目约定比 Agent 自己的低」）：
+// 排在 Agent 四层组合之后、环境与工具清单之前，并在段内显式声明。
+func ComposeSystemPrompt(toolReg *tools.Registry, workDir string, ac *sessiondata.AgentContext, allowTools []string, docs ProjectDocs) string {
 	if ac == nil {
-		return BuildSystemPrompt(toolReg, workDir)
+		return BuildSystemPrompt(toolReg, workDir, docs)
 	}
 	var b strings.Builder
 
@@ -98,6 +102,9 @@ func ComposeSystemPrompt(toolReg *tools.Registry, workDir string, ac *sessiondat
 			b.WriteString(fmt.Sprintf("- %s（%s）：%s%s\n", d.ID, d.Name, d.Desc, status))
 		}
 	}
+
+	// ⑤ 项目约定（项目根 AGENTS.md）——低于上面四层，高于环境与工具清单
+	b.WriteString(projectDocsSection(docs))
 
 	// 环境说明 + 工具清单（白名单过滤）+ 守则
 	b.WriteString("\n" + workdirLine(workDir))

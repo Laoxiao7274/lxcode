@@ -65,7 +65,7 @@ func TestComposeSystemPromptFourLayers(t *testing.T) {
 		Workflow: &sessiondata.ModuleSpec{ID: "mc", Kind: "process", Desc: "最小改动", Body: "# 最小改动\n\n只动必需的部分。"},
 		Skills:   []sessiondata.ModuleSpec{{ID: "gsap", Kind: "skill", Desc: "GSAP 动效", Body: "# GSAP\n\n入场收尾 clearProps。"}},
 	}
-	prompt := ComposeSystemPrompt(s.tools, "/proj/demo", ac, ac.Def.Tools)
+	prompt := ComposeSystemPrompt(s.tools, "/proj/demo", ac, ac.Def.Tools, ProjectDocs{})
 
 	// ① 协议层（定制替换内置默认）
 	if !strings.Contains(prompt, "定制协议：只写 Go。") {
@@ -118,7 +118,7 @@ func TestComposeMainAgentDelegatesInjection(t *testing.T) {
 			{ID: "ops", Name: "运维 Agent", Desc: "跑命令", Enabled: false},
 		},
 	}
-	prompt := ComposeSystemPrompt(s.tools, "", ac, ac.Def.Tools)
+	prompt := ComposeSystemPrompt(s.tools, "", ac, ac.Def.Tools, ProjectDocs{})
 	if !strings.Contains(prompt, "可委派名单") || !strings.Contains(prompt, "- coder（代码 Agent）：写代码") {
 		t.Fatal("委派名单未注入（第四层动态注入——id（名字）：描述）")
 	}
