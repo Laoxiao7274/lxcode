@@ -506,6 +506,15 @@ app.whenReady().then(async () => {
     assert.ok(cat.page && cat.page.h > 300, "catalog: 目录页应可见");
     assert.ok(cat.cards >= 12, "catalog: 工具页签应有 12 个条目");
     assert.ok(cat.navOn, "catalog: 导航应高亮");
+    // 外部二进制工具缺 command 必须标「未配置」——否则用户勾进 Agent 白名单后
+    // 只会从模型那里听到「注册表没有」（用户报告过的原始现象）
+    const unconfigured = await win.webContents.executeJavaScript(`(() => {
+      const cards = [...document.querySelectorAll(".cg-card")];
+      const hit = cards.find((c) => (c.textContent || "").includes("未配置"));
+      return { count: cards.filter((c) => (c.textContent || "").includes("未配置")).length, has: !!hit };
+    })()`);
+    log("catalog-unconfigured", JSON.stringify(unconfigured));
+    assert.ok(unconfigured.has, `catalog: 缺 command 的外部二进制应标「未配置」（${JSON.stringify(unconfigured)}）`);
     // 工具导入：坏 JSON → 错误内联；合法 JSON → 入目录（10→11）→ 两步删除回 10
     await win.webContents.executeJavaScript(`document.querySelector('[data-cg="import"]').click()`);
     const importDlg = await win.webContents.executeJavaScript(`(() => {

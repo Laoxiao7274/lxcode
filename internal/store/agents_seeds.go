@@ -42,14 +42,25 @@ var seedTools = []sessiondata.ToolSpec{
 		Doc:    "跨全部会话的消息内容检索（含当前）。",
 	},
 	{
+		// 外部 Rust 二进制的接入样板（AGENTS.md §2.1「Go 主刀、Rust 武器库」）：
+		// command 必须是**可运行**的模板——空 command 的工具进不了注册表，
+		// 模型会如实回答「注册表没有」（用户报告过的原始现象）。
+		// rg 未安装时调用会回填「[启动失败: ...]」，自解释。
 		ID: "ripgrep", Desc: "Rust 检索二进制——大仓库全文搜索", Risk: "low", Source: "binary", Custom: false,
-		Params: []sessiondata.ToolParam{{Name: "pattern", Type: "regex", Required: true}, {Name: "path", Type: "string", Desc: "检索根目录"}, {Name: "glob", Type: "string", Desc: "文件名过滤"}, {Name: "max_results", Type: "int", Desc: "结果条数上限"}},
-		Doc:    "Rust 检索二进制，经进程边界接入（Go 主刀、Rust 武器库）。\n\n大仓库全文搜索比内置 search 快一个量级；参数与 rg CLI 对齐。",
+		Command: "rg -n --no-heading --color=never --glob={glob} {pattern} {path}",
+		Params: []sessiondata.ToolParam{
+			{Name: "pattern", Type: "regex", Required: true, Desc: "检索正则（RE2 语法）"},
+			{Name: "path", Type: "string", Desc: "检索根目录（默认会话工作目录）"},
+			{Name: "glob", Type: "string", Desc: "文件名过滤（如 *.go）"},
+		},
+		Doc: "Rust 检索二进制，经进程边界接入（Go 主刀、Rust 武器库）。\n\n大仓库全文搜索比内置 search 快一个量级；参数与 rg CLI 对齐（path/glob 可选——不给就搜会话工作目录）。\n\n未安装 rg 时调用会报「启动失败」：装法 `winget install BurntSushi.ripgrep.MSVC`（或 `cargo install ripgrep`）。",
 	},
 	{
+		// 声明了但没实现（浏览器面板在路线图上）：command 留空 = 目录里可见但
+		// **不进注册表**，模型会被告知「当前不可用」；等接入真实驱动再填 command。
 		ID: "browser", Desc: "Chromium 面板驱动（页面勘察与截图）", Risk: "low", Source: "binary", Custom: false,
 		Params: []sessiondata.ToolParam{{Name: "url", Type: "string", Required: true}, {Name: "action", Type: "enum", Desc: "navigate / snapshot / click"}},
-		Doc:    "Chromium 面板驱动。\n\n三段式：navigate 导航 → snapshot 快照定位 → click 操作。",
+		Doc:    "Chromium 面板驱动。\n\n三段式：navigate 导航 → snapshot 快照定位 → click 操作。\n\n**未配置**：还没有对应的驱动二进制——先在拓展页把 command 填上（或删掉这条）才会进注册表。",
 	},
 }
 

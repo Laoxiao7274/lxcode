@@ -98,6 +98,47 @@ func TestCustomDefRejectsBadSpec(t *testing.T) {
 	}
 }
 
+// TestRenderCommandOptionalParams：可选参数缺省时**丢掉整个 token**——
+// `rg -n --glob={glob} {pattern} {path}` 不给 path/glob 就退化成 `rg -n {pattern}`
+// （默认搜会话工作目录），而不是报错；必填缺省才报错（模型必须给出）。
+func TestRenderCommandOptionalParams(t *testing.T) {
+	spec := binarySpec("rg -n --glob={glob} {pattern} {path}")
+	spec.Params = []sessiondata.ToolParam{
+		{Name: "pattern", Type: "regex", Required: true},
+		{Name: "path", Type: "string"},
+		{Name: "glob", Type: "string"},
+	}
+	cases := []struct {
+		name    string
+		args    string
+		want    []string
+		wantErr string
+	}{
+		{"只给必填", `{"pattern":"x"}`, []string{"rg", "-n", "x"}, ""},
+		{"给全部", `{"pattern":"x","path":"src","glob":"*.go"}`, []string{"rg", "-n", "--glob=*.go", "x", "src"}, ""},
+		{"只给 glob", `{"pattern":"x","glob":"*.go"}`, []string{"rg", "-n", "--glob=*.go", "x"}, ""},
+		{"只给 path", `{"pattern":"x","path":"src"}`, []string{"rg", "-n", "x", "src"}, ""},
+		{"必填缺省", `{"path":"src"}`, nil, "缺少参数 {pattern}"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			argv, err := renderCommand(spec, spec.Command, json.RawMessage(c.args))
+			if c.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), c.wantErr) {
+					t.Fatalf("应报含 %q 的错误，实际: %v", c.wantErr, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("渲染失败: %v", err)
+			}
+			if strings.Join(argv, "\x00") != strings.Join(c.want, "\x00") {
+				t.Fatalf("argv = %q，应为 %q", argv, c.want)
+			}
+		})
+	}
+}
+
 // TestRenderCommand：模板渲染是自定义工具的安全核心——值原样单参（含空格不切分）、
 // 支持 --flag={p} 内联、缺参/未知参/非标量都自解释报错。
 func TestRenderCommand(t *testing.T) {

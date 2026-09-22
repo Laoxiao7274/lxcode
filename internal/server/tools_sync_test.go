@@ -57,15 +57,16 @@ func TestCatalogToolsSyncRegistry(t *testing.T) {
 	}
 }
 
-// TestCatalogToolsSeedSkipped：种子里 source=binary 但没配 command 的条目
-// （ripgrep/browser 是「声明了没装」的形态）必须被跳过而不是让同步失败——
-// 内置 9 个工具照常在。
+// TestCatalogToolsSeedSkipped：种子里的外部二进制工具按「有没有配 command」分流——
+// 配了命令的（ripgrep）必须进注册表且真的能跑；没配的（browser 是「声明了但
+// 没实现」的形态）跳过而不是让同步失败。内置 9 个工具照常在。
 func TestCatalogToolsSeedSkipped(t *testing.T) {
 	srv, _, _ := newTestServer(t, nil)
-	for _, name := range []string{"ripgrep", "browser"} {
-		if _, ok := srv.treg.Get(name); ok {
-			t.Fatalf("%s 未配置 command，不该被注册（跳过即可，注册了模型会去调一个跑不起来的工具）", name)
-		}
+	if _, ok := srv.treg.Get("ripgrep"); !ok {
+		t.Fatal("ripgrep 已配 command，必须进注册表（用户报告过：勾进白名单却只听到「注册表没有」）")
+	}
+	if _, ok := srv.treg.Get("browser"); ok {
+		t.Fatal("browser 未配置 command，不该被注册（跳过即可，注册了模型会去调一个跑不起来的工具）")
 	}
 	for _, name := range []string{"read_file", "search", "session_search", "read_skill", "edit", "write_file", "bash", "todo", "agent.dispatch"} {
 		if _, ok := srv.treg.Get(name); !ok {

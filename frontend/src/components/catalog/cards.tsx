@@ -73,6 +73,9 @@ export function ToolCard({ tool, onOpen, onEdit, onDelete }: {
   onEdit?: () => void;
   onDelete?: () => void;
 }) {
+  // 外部二进制工具必须配 command 才能进注册表——没配的如实标「未配置」，
+  // 否则用户勾进 Agent 白名单后只会从模型那里听到「注册表没有」（用户报告过）。
+  const unconfigured = tool.source === "binary" && !(tool.command ?? "").trim();
   return (
     <EntryCard
       onClick={onOpen}
@@ -86,6 +89,7 @@ export function ToolCard({ tool, onOpen, onEdit, onDelete }: {
           <span className="ag-pill src">
             {tool.source === "builtin" ? "内置" : tool.source === "binary" ? "外部二进制" : "MCP"}
           </span>
+          {unconfigured && <span className="ag-pill warn" title="缺 command——不会进注册表，模型看不到它；点开填上 command 即可">未配置</span>}
           {tool.custom && <span className="ag-pill src">自定义</span>}
         </>
       }

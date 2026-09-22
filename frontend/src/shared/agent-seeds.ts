@@ -106,11 +106,13 @@ export const THIRD_PARTY_TOOLS: ToolSpec[] = [
     desc: "Rust 检索二进制——大仓库全文搜索",
     risk: "low",
     source: "binary",
+    // 与后端种子一致：command 是可运行的模板（{param} 占位，可选参数缺省就丢
+    // 掉整个 token）——空 command 的工具不会进注册表，模型只会说「注册表没有」
+    command: "rg -n --no-heading --color=never --glob={glob} {pattern} {path}",
     params: [
       { name: "pattern", type: "regex", required: true },
-      { name: "path", type: "string", desc: "检索根目录" },
+      { name: "path", type: "string", desc: "检索根目录（默认会话工作目录）" },
       { name: "glob", type: "string", desc: "文件名过滤" },
-      { name: "max_results", type: "int", desc: "结果条数上限" },
     ],
     doc: "Rust 检索二进制，经进程边界接入（Go 主刀、Rust 武器库）。\n\n大仓库全文搜索比内置 search 快一个量级；参数与 rg CLI 对齐。",
   },
@@ -123,7 +125,7 @@ export const THIRD_PARTY_TOOLS: ToolSpec[] = [
       { name: "url", type: "string", required: true },
       { name: "action", type: "enum", desc: "navigate / snapshot / click" },
     ],
-    doc: "Chromium 面板驱动。\n\n三段式：navigate 导航 → snapshot 快照定位 → click 操作。",
+    doc: "Chromium 面板驱动。\n\n三段式：navigate 导航 → snapshot 快照定位 → click 操作。\n\n**未配置**：还没有对应的驱动二进制——填上 command 才会进注册表。",
   },
   {
     id: "mcp:filesystem",

@@ -188,14 +188,23 @@ func placeholders(template string) []string {
 // {name} 就替换成参数值——整个 token 就是一个占位符时，值原样成为单个 argv
 // （值里的空格不会被再切分，这就是"值原样单参"）；否则做前缀/后缀拼接
 // （如 --path={p}）。
+//
+// 可选参数（Required=false）缺省时**丢掉整个 token**——`rg {pattern} {path}`
+// 这类模板里 path 不给就退化成 `rg {pattern}`（默认搜当前目录），而不是报错；
+// 必填参数缺省才报错（错误信息列出可用参数，模型可自行纠正）。
 func renderCommand(spec sessiondata.ToolSpec, template string, args json.RawMessage) ([]string, error) {
 	vals, err := scalarArgs(args)
 	if err != nil {
 		return nil, err
 	}
+	required := make(map[string]bool, len(spec.Params))
 	known := make(map[string]bool, len(spec.Params))
 	for _, p := range spec.Params {
-		known[strings.TrimSpace(p.Name)] = true
+		name := strings.TrimSpace(p.Name)
+		known[name] = true
+		if p.Required {
+			required[name] = true
+		}
 	}
 	// 未知参数直接报错：静默忽略会让"模型传错参数名却拿到正常结果"，
 	// 更难查（错误信息列出可用参数，模型可自行纠正）
@@ -210,20 +219,26 @@ func renderCommand(spec sessiondata.ToolSpec, template string, args json.RawMess
 	}
 	argv := make([]string, 0, len(tokens))
 	for _, tok := range tokens {
-		out, err := substitute(tok, vals)
+		out, missing, err := substitute(tok, vals, required)
 		if err != nil {
 			return nil, fmt.Errorf("工具 %s: %w", spec.ID, err)
 		}
+		if missing != "" {
+			// 可选参数缺省：整个 token 丢掉（如 --glob={glob} / 单独的 {path}）
+			continue
+		}
 		argv = append(argv, out)
 	}
-	if argv[0] == "" {
-		return nil, fmt.Errorf("工具 %s 的可执行文件名渲染为空", spec.ID)
+	if len(argv) == 0 || argv[0] == "" {
+		return nil, fmt.Errorf("工具 %s 的可执行文件名渲染为空（command 模板缺了必填参数？）", spec.ID)
 	}
 	return argv, nil
 }
 
 // substitute 把单个 token 里的 {name} 全部替换为参数值。
-func substitute(tok string, vals map[string]string) (string, error) {
+// 返回 missing 非空 = 该 token 引用了缺省的可选参数，调用方丢掉整个 token；
+// 缺的是必填参数则直接报错（模型必须给出）。
+func substitute(tok string, vals map[string]string, required map[string]bool) (out, missing string, err error) {
 	var b strings.Builder
 	for i := 0; i < len(tok); {
 		if tok[i] != '{' {
@@ -240,12 +255,15 @@ func substitute(tok string, vals map[string]string) (string, error) {
 		name := tok[i+1 : i+j]
 		v, ok := vals[name]
 		if !ok {
-			return "", fmt.Errorf("缺少参数 {%s}（必填参数必须由模型给出）", name)
+			if required[name] {
+				return "", "", fmt.Errorf("缺少参数 {%s}（必填参数必须由模型给出）", name)
+			}
+			return "", name, nil
 		}
 		b.WriteString(v)
 		i += j + 1
 	}
-	return b.String(), nil
+	return b.String(), "", nil
 }
 
 // scalarArgs 解析工具调用参数为标量文本表。非标量（数组/对象）与 null 直接

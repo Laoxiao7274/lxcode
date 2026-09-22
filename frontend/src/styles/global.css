@@ -4582,6 +4582,11 @@ body:has(.window-stage) {
   color: var(--fg-faint);
   background: var(--border-soft);
 }
+/* 「未配置」警示（外部二进制缺 command——不会进注册表，模型看不到它） */
+.ag-pill.warn {
+  color: #9a6400;
+  background: rgba(230, 162, 60, 0.14);
+}
 .ag-detail-desc {
   font-size: 12px;
   color: var(--fg-muted);

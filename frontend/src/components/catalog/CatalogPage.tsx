@@ -154,7 +154,10 @@ export function CatalogPage() {
             key={t.id}
             tool={t}
             onOpen={() => setFocus({ kind: "tool", id: t.id })}
-            onEdit={t.custom ? () => setEditingTool({ tool: t, isNew: false }) : undefined}
+            // 内置工具只读（实现就在注册表里）；外部二进制可编辑——种子里的
+            // ripgrep/browser 是「声明了但没配 command」的形态，不给编辑入口
+            // 等于把用户卡死（用户报告：模型答「注册表没有」，却无处可改）
+            onEdit={t.source === "builtin" ? undefined : () => setEditingTool({ tool: t, isNew: false })}
             onDelete={t.custom ? () => removeTool(t.id) : undefined}
           />
         ))}
