@@ -698,27 +698,6 @@ body:has(.window-stage) {
   gap: 8px;
   min-height: 26px;
 }
-/* 归属行（仅「全部」视图出现）：第二行小字，不挤标题。比时间再弱一级，
-   且与时间分处两行——不会并排混成一个信息。 */
-.session-item .session-sub {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding-left: 14px; /* 与标题左缘对齐（蓝点宽度 + 行内 gap） */
-  font-size: 10px;
-  color: var(--fg-faint);
-  min-width: 0;
-}
-.session-item .session-sub svg {
-  flex: none;
-  opacity: 0.75;
-}
-.session-item .session-sub-name {
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
 /* 行级轻量状态：无（列表保持干净——完整状态在主区视图） */
 /* ===== 输入区上方的任务清单卡（aicss TodoList——卡片形态） =====
  * 位置：composer 浮层内、输入框正上方（与 busy 行同层——之前放在线程

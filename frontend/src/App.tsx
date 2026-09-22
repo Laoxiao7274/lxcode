@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { getAgentSource } from "./agent";
 import { useAgent } from "./shared/store";
 import { AgentsProvider, useAgents } from "./shared/agents";
@@ -42,9 +42,10 @@ function AppBody({ source }: { source: AgentSource }) {
   const { resetSessionDelegates, activeAgentId } = useAgents();
   /** 主区视图：对话 / Agent 名单 / 拓展（工具·技能·模板·MCP）。 */
   const [view, setView] = useState<"chat" | "agents" | "catalog">("chat");
-  /** 对话过滤目标（项目 id / ""=未分组 / null=全部）——App 持有：
-   *  侧栏过滤、「新对话」归属、空态项目标签三处共用。 */
-  const [filter, setFilter] = useState<string | null>(null);
+  /** 对话范围（项目 id / ""=未分组）——App 持有：侧栏过滤、「新对话」归属、
+   *  空态项目标签三处共用。用户拍板：**恒有范围**（启动即「未分组」，点项目行
+   *  切换且不可取消——没有「全部」视图）。 */
+  const [filter, setFilter] = useState<string>(LOOSE);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   const openAgents = () => setView((v) => (v === "agents" ? "chat" : "agents"));
@@ -66,43 +67,11 @@ function AppBody({ source }: { source: AgentSource }) {
     return () => window.removeEventListener("lx-operation-error", on);
   }, [reportError]);
 
-  // 启动后把侧栏范围落在一个具体项目上（用户拍板：项目区必须恒有一个选中
-  // ——「都不选」时列表把各项目的会话混在一起，看不出归属）。
-  // 落定顺序：当前会话所属项目 → 当前会话未分组则「未分组」→ 确实没有任何
-  // 会话时第一个项目 → 都没有则「未分组」。**只做一次**：之后用户在侧栏点选的
-  // 范围不被打架。会话元数据是 WS 异步拉来的，所以未落定前订阅事件重试。
-  const scopedOnce = useRef(false);
-  useEffect(() => {
-    const tryScope = () => {
-      if (scopedOnce.current) return;
-      const projects = source.projects();
-      const sessions = source.sessions();
-      const cur = sessions.find((s) => s.id === state.currentId);
-      if (cur) {
-        scopedOnce.current = true;
-        if (!cur.workspace) { setFilter(LOOSE); return; }
-        // 项目已不在名单（被删）→ 不猜：保持「全部」，至少当前会话可见
-        if (projects.some((p) => p.id === cur.workspace)) setFilter(cur.workspace);
-        return;
-      }
-      // 有会话但还没有当前会话（后端恢复/首次打开的会话还没到）→ 等事件，
-      // 抢跑会把范围钉在错误的项目上
-      if (sessions.length > 0) return;
-      scopedOnce.current = true;
-      setFilter(projects.length > 0 ? projects[0].id : LOOSE);
-    };
-    tryScope();
-    if (scopedOnce.current) return;
-    return source.subscribe(tryScope);
-  }, [source, state.currentId]);
-
   const currentId = state.currentId;
 
-  // 当前过滤的项目名（""=未分组 → 空态不标——无归属不需要声明）
+  // 当前范围的项目名（「未分组」→ 空态不标——无归属不需要声明）
   const filterProjectName =
-    filter === null || filter === ""
-      ? undefined
-      : source.projects().find((p) => p.id === filter)?.name;
+    filter === LOOSE ? undefined : source.projects().find((p) => p.id === filter)?.name;
 
   // 发送时携带请求级参数：effort 只在当前模型声明推理能力时上帧（后端
   // 能力门控会丢弃不匹配档位，不带上帧更诚实）；approval 恒带当前设置；
@@ -133,7 +102,7 @@ function AppBody({ source }: { source: AgentSource }) {
   // 斜杠命令集（命令面板）：页面导航。后端化时同一面板接会话/工具域
   // 命令（/resume /compact …）与选择器聚焦。
   const slashCommands: SlashCommand[] = useMemo(() => [
-    { name: "new", desc: "开始新对话", run: () => { source.newSession(filter === null || filter === undefined ? undefined : filter); backToChat(); } },
+    { name: "new", desc: "开始新对话", run: () => { source.newSession(filter); backToChat(); } },
     { name: "agents", desc: "打开 Agent 名单与组装", run: openAgents },
     { name: "catalog", desc: "打开拓展（工具/技能/模板/MCP）", run: openCatalog },
     { name: "settings", desc: "打开设置", run: () => setSettingsOpen(true) },
@@ -165,7 +134,7 @@ function AppBody({ source }: { source: AgentSource }) {
         source={source}
         currentId={currentId}
         busy={state.busy}
-        onNewChat={() => { if (!state.busy) { source.newSession(filter === null || filter === undefined ? undefined : filter); backToChat(); } }}
+        onNewChat={() => { if (!state.busy) { source.newSession(filter); backToChat(); } }}
       />
       <Sidebar
         source={source}

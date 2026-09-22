@@ -80,3 +80,40 @@ test('renamed event refreshes list without reloading active generation history',
   assert.equal(agent.sessions()[0].workspace, 'p');
   assert.equal(events.some((e) => e.type === 'historyLoaded'), false);
 });
+
+/** 逐条应答初始化链（hello → 各 list → 可选 session.new → chat.history）。
+ *  初始化链是 await 串行的，所以每轮只应答"最后一条未应答"的请求即可。 */
+async function driveInit(socket) {
+  const seen = new Set();
+  const methods = [];
+  for (let i = 0; i < 40; i++) {
+    await flush();
+    const last = socket.sent.at(-1);
+    if (!last || seen.has(last.id)) break; // 没有新请求 → 链已跑完或卡住
+    seen.add(last.id);
+    methods.push(last.method);
+    socket.reply({});
+  }
+  return methods;
+}
+
+test('boot opens a fresh session once (session.new before chat.history), never on reconnect', async (t) => {
+  const { agent, ws } = setup(t);
+  ws.onopen(); // 首次连接
+  const methods = await driveInit(ws);
+  assert.ok(methods.includes('session.new'), '首次连接应先切到新会话（打开软件即空会话）');
+  assert.ok(
+    methods.indexOf('session.new') < methods.indexOf('chat.history'),
+    `session.new 必须在 chat.history 之前（否则会先闪出上次的对话）: ${methods.join(',')}`,
+  );
+  assert.equal(methods.filter((m) => m === 'session.new').length, 1, '初始化链里只应切一次会话');
+
+  // 重连（同实例再次 onopen）：不能再切一次会话，否则把用户正在聊的会话吃掉
+  ws.close();
+  const reconnected = FakeSocket.latest;
+  reconnected.onopen();
+  const again = await driveInit(reconnected);
+  assert.equal(again.includes('session.new'), false, '重连不应再新建会话');
+  assert.ok(again.includes('chat.history'), '重连仍应重放历史');
+  void agent;
+});

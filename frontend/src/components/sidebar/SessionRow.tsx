@@ -15,9 +15,6 @@ export interface SessionRowProps {
   busy: boolean;
   renaming: boolean;
   menuOpen: boolean;
-  /** 归属项目名——仅「全部」视图下传（范围不唯一时才知道要声明归属）；
-   *  已按项目/未分组过滤时不传，避免同一信息重复。 */
-  projectName?: string;
   /** 打开菜单 / 关闭菜单（Sidebar 持有 menuFor 单值状态）。 */
   onOpenMenu: (id: string) => void;
   onCloseMenu: () => void;
@@ -37,7 +34,6 @@ export const SessionRow = memo(function SessionRow({
   busy,
   renaming,
   menuOpen,
-  projectName,
   onOpenMenu,
   onCloseMenu,
   onStartRename,
@@ -123,16 +119,6 @@ export const SessionRow = memo(function SessionRow({
           </button>
         )}
       </div>
-      {/* 归属行：仅「全部」视图下出现（范围唯一时这行是冗余信息）。
-          放第二行而不是挤在标题行——侧栏窄，标签会把标题压成省略号。 */}
-      {projectName && (
-        <div className="session-sub" title={projectName}>
-          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
-          </svg>
-          <span className="session-sub-name">{projectName}</span>
-        </div>
-      )}
       {menuOpen && (
         <div className="session-menu" role="menu" onPointerDown={(e) => e.stopPropagation()}>
           <button type="button" role="menuitem" onClick={() => { closeMenu(); onStartRename(s.id); }}>

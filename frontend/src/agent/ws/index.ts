@@ -64,6 +64,9 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource 
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   /** 订阅时惰性建连（构造不再触网——测试可先插桩再连接）。 */
   private started = false;
+  /** 首次连接是否已完成「开机即空会话」（用户拍板：打开软件就是空会话，
+   *  不恢复上次对话）。**只做首次**：重连再清一次会把用户正在聊的会话吃掉。 */
+  private booted = false;
 
   constructor(addr = "127.0.0.1:7789") {
     this.addr = addr;
@@ -105,6 +108,13 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource 
           await refresh("catalog.modules.list", (r) => this.applyAgentModules(r));
           await refresh("catalog.tools.list", (r) => this.applyAgentTools(r));
           await refresh("catalog.mcp.list", (r) => this.applyAgentMcp(r));
+          // 开机即空会话（用户拍板）：首次连接先切到新会话，再拉历史——顺序
+          // 决定不会先闪出上次的对话。后端启动时恢复了最近会话，这里显式开新
+          // 会话把它换掉（空会话不落库：发第一条消息才建行）。
+          if (!this.booted && this.ws === ws) {
+            this.booted = true;
+            await refresh("session.new", () => {});
+          }
           if (this.ws === ws) await this.loadHistory();
         })
         .catch((e) => { if (this.ws === ws) this.opError(`初始化失败: ${e.message}`); });

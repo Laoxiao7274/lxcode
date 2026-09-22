@@ -31,9 +31,11 @@ export function Sidebar({
   source: AgentSource;
   currentId: string;
   busy: boolean;
-  /** 对话过滤目标（App 持有——新对话归属提示与空态标签共用）。 */
-  filter: string | null;
-  setFilter: (f: string | null) => void;
+  /** 对话范围（项目 id / ""=未分组）——App 持有：新对话归属提示与空态标签共用。
+   *  用户拍板：**恒有范围**（启动即「未分组」；点项目行切换且不可再点取消——
+   *  没有「全部」视图，列表永远只属于一个具体范围）。 */
+  filter: string;
+  setFilter: (f: string) => void;
   onOpenSettings: () => void;
   /** Agent 名单视图当前激活（导航项高亮；再点返回对话）。 */
   agentsActive: boolean;
@@ -65,16 +67,15 @@ export function Sidebar({
 
   const all = source.sessions().filter((s) => !s.archived);
   const loose = all.filter((s) => !s.workspace);
-  // 过滤语义：项目 id → 该项目会话；LOOSE → 未绑定；null → 全部
-  const projectFiltered =
-    filter === null ? all : filter === LOOSE ? loose : all.filter((s) => s.workspace === filter);
+  // 过滤语义：项目 id → 该项目会话；LOOSE（默认）→ 未绑定会话
+  const projectFiltered = filter === LOOSE ? loose : all.filter((s) => s.workspace === filter);
   const list = query.trim()
     ? projectFiltered.filter((s) => s.title.toLowerCase().includes(query.trim().toLowerCase()))
     : projectFiltered;
   // 项目 id → 元数据（会话 workspace 指向项目 id，显示时取名）
   const projectById = new Map(projects.map((p) => [p.id, p]));
-  /** 当前过滤的显示名（新对话归属提示 + 过滤 chip）。 */
-  const filterName = filter === null ? null : filter === LOOSE ? "未分组" : projectById.get(filter)?.name ?? "项目";
+  /** 当前范围的显示名（新对话归属提示用）。 */
+  const filterName = filter === LOOSE ? "未分组" : projectById.get(filter)?.name ?? "项目";
 
   // 后出现的会话行（首轮消息建会话、归档区恢复）单独入场；
   // 首屏整列由 staggerIn 接管，boot 窗口内跳过避免双份动画打架。
@@ -106,7 +107,7 @@ export function Sidebar({
     <aside className="sidebar" ref={sideRef}>
       {/* 导航项（图标 + 文字，Codex 同款四项）——新对话归属当前选中项目 */}
       <nav className="nav-list">
-        <button type="button" className="nav-item" onClick={() => { if (!busy) { source.newSession(filter === null || filter === LOOSE ? undefined : filter); onOpenChat(); } }}>
+        <button type="button" className="nav-item" onClick={() => { if (!busy) { source.newSession(filter); onOpenChat(); } }}>
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M12 20h9" />
             <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
@@ -205,8 +206,8 @@ export function Sidebar({
             role="button"
             tabIndex={0}
             aria-pressed={active}
-            onClick={() => { setFilter(active ? null : p.id); onOpenChat(); }}
-            onKeyDown={(e) => { if (e.key === "Enter") { setFilter(active ? null : p.id); onOpenChat(); } }}
+            onClick={() => { if (!active) setFilter(p.id); onOpenChat(); }}
+            onKeyDown={(e) => { if (e.key === "Enter") { if (!active) setFilter(p.id); onOpenChat(); } }}
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
@@ -216,25 +217,24 @@ export function Sidebar({
           </div>
         );
       })}
-      {/* 未分组：无归属会话的家（空则不占位；虚线文件夹 + 灰计数） */}
-      {loose.length > 0 && (
-        <div
-          className={"proj-row loose" + (filter === LOOSE ? " active" : "")}
-          title="未归属项目的对话"
-          role="button"
-          tabIndex={0}
-          aria-pressed={filter === LOOSE}
-          onClick={() => { setFilter(filter === LOOSE ? null : LOOSE); onOpenChat(); }}
-          onKeyDown={(e) => { if (e.key === "Enter") { setFilter(filter === LOOSE ? null : LOOSE); onOpenChat(); } }}
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
-            <path d="M9 13.5h6" strokeDasharray="1.5 2.2" />
-          </svg>
-          <span className="proj-name">未分组</span>
-          <span className="proj-count">{loose.length}</span>
-        </div>
-      )}
+      {/* 未分组：无归属会话的家。**常驻显示**（它是启动时的默认范围——
+          范围恒有选中，没有「全部」可退；会话为 0 时它仍代表当前范围）。 */}
+      <div
+        className={"proj-row loose" + (filter === LOOSE ? " active" : "")}
+        title="未归属项目的对话"
+        role="button"
+        tabIndex={0}
+        aria-pressed={filter === LOOSE}
+        onClick={() => { if (filter !== LOOSE) setFilter(LOOSE); onOpenChat(); }}
+        onKeyDown={(e) => { if (e.key === "Enter") { if (filter !== LOOSE) setFilter(LOOSE); onOpenChat(); } }}
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+          <path d="M9 13.5h6" strokeDasharray="1.5 2.2" />
+        </svg>
+        <span className="proj-name">未分组</span>
+        <span className="proj-count">{loose.length}</span>
+      </div>
       {projects.length === 0 && loose.length === 0 && (
         <div className="proj-empty">还没有项目——点右上 + 添加</div>
       )}
@@ -245,17 +245,10 @@ export function Sidebar({
         />
       )}
 
-      {/* 对话分组（下）——选中项目/未分组时过滤；组头显示当前范围（可清除） */}
+      {/* 对话分组（下）——列表恒属于当前范围（项目 / 未分组）；范围在项目区
+          用选中态表达，这里不再放可清除的 chip（没有「全部」可退） */}
       <div className="sidebar-label group-head">
         对话
-        {filterName && (
-          <button type="button" className="group-filter" onClick={() => setFilter(null)} title="显示全部对话">
-            {filterName}
-            <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" aria-hidden="true">
-              <path d="M18 6 6 18M6 6l12 12" />
-            </svg>
-          </button>
-        )}
         <span className="group-actions" aria-hidden>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
             <path d="M3 6h18M6 12h12M10 18h4" />
@@ -270,8 +263,6 @@ export function Sidebar({
           busy={busy}
           renaming={renaming === s.id}
           menuOpen={menuFor === s.id}
-          // 只有「全部」视图的范围不唯一——此时才需要逐行声明归属
-          projectName={filter === null && s.workspace ? projectById.get(s.workspace)?.name : undefined}
           onOpenMenu={setMenuFor}
           onCloseMenu={() => setMenuFor(null)}
           onStartRename={setRenaming}

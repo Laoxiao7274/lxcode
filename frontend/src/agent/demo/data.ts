@@ -64,5 +64,8 @@ export const SESSIONS: SessionMeta[] = [
   { id: "20260910-164246-c3d4", title: "edit 工具的唯一匹配校验设计", updatedAt: "3 天前", messages: 22, workspace: "proj-demo-lxcode" },
   { id: "20260909-090102-e5f6", title: "选型：Tauri 壳的边界", updatedAt: "上周", messages: 8, workspace: "proj-demo-lxcode", archived: true },
   { id: "20260908-151512-f7a8", title: "niubash 实测记录", updatedAt: "上周", messages: 6, workspace: "proj-demo-agent" },
+  // 未分组会话：侧栏启动范围就是「未分组」（用户拍板）——演示数据里必须有
+  // 一条无归属会话，否则启动态的对话列表是空的
+  { id: "20260906-141230-c7d8", title: "随手记：容器里跑个 ffmpeg 试试", updatedAt: "3 周前", messages: 3 },
   { id: "20260907-112209-b9c0", title: "容器化部署演练", updatedAt: "2 周前", messages: 18, workspace: "proj-demo-agent", archived: true },
 ];

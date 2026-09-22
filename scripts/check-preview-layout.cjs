@@ -101,51 +101,63 @@ app.whenReady().then(async () => {
     assert.ok(empty && empty.cards === 4, "chat: 空态应有 4 张建议卡");
     assert.ok(empty && empty.agentChip, "chat: 空态应显示当前 Agent 芯片");
     assert.ok(empty && empty.top > 100 && empty.bottom < 900, "chat: 空态应纵向居中（不贴顶）");
-    // 侧栏范围与归属：启动态（无当前会话 → 范围未定 = 全部）下每条会话行
-    // 必须显示归属项目——「展示所有会话看不出是哪个项目」是用户报告的原始问题。
-    // 点项目行后范围唯一，标签应消失（同一信息不重复）；清过滤后标签回来。
-    // 注意：这一段只点项目行与筛选 chip，不打开会话（后面的空态/建议卡用例
-    // 依赖对话区仍是空态）。
+    // 侧栏范围：启动即「未分组」（用户拍板——打开软件就是空会话，没有「全部」
+    // 视图），点项目行切换且**不可再点取消**（再点仍是该项目）。
+    // 注意：这一段只点项目行，不打开会话（后面的空态/建议卡用例依赖对话区仍空）。
     const sidebarBoot = await win.webContents.executeJavaScript(`(() => {
-      const subs = [...document.querySelectorAll(".session-item .session-sub")];
+      const rows = [...document.querySelectorAll(".session-item")];
       return {
-        rows: document.querySelectorAll(".session-item").length,
-        subs: subs.length,
-        first: subs[0] ? subs[0].textContent.trim() : "",
+        rows: rows.length,
+        looseActive: !!document.querySelector(".proj-row.loose.active"),
+        projActive: document.querySelectorAll(".proj-row.active:not(.loose)").length,
+        chip: !!document.querySelector(".group-filter"),
+        subs: document.querySelectorAll(".session-item .session-sub").length,
       };
     })()`);
     log("sidebar-scope", JSON.stringify(sidebarBoot));
-    assert.ok(sidebarBoot.rows >= 1, "sidebar: 启动态应有会话行");
-    assert.equal(sidebarBoot.subs, sidebarBoot.rows, "sidebar: 全部视图下每行都应显示归属项目");
-    assert.ok(sidebarBoot.first.length > 0, "sidebar: 归属标签不应为空");
+    assert.ok(sidebarBoot.looseActive, "sidebar: 启动态应选中「未分组」");
+    assert.equal(sidebarBoot.projActive, 0, "sidebar: 启动态不应有项目被选中");
+    assert.ok(!sidebarBoot.chip, "sidebar: 不应再有可清除的范围 chip（没有「全部」）");
+    assert.equal(sidebarBoot.subs, 0, "sidebar: 会话行不应再带归属标签（范围恒唯一）");
 
     const sidebarScoped = await win.webContents.executeJavaScript(`(() => {
       const proj = document.querySelector(".proj-row:not(.loose)");
       if (proj) proj.click();
       return new Promise((res) => setTimeout(() => res({
-        subs: document.querySelectorAll(".session-item .session-sub").length,
-        rows: document.querySelectorAll(".session-item").length,
         active: document.querySelectorAll(".proj-row.active").length,
-        chip: !!document.querySelector(".group-filter"),
+        looseActive: !!document.querySelector(".proj-row.loose.active"),
+        rows: document.querySelectorAll(".session-item").length,
       }), 250));
     })()`);
     log("sidebar-scoped", JSON.stringify(sidebarScoped));
-    assert.equal(sidebarScoped.active, 1, "sidebar: 点项目行后应恰好一个项目选中");
-    assert.ok(sidebarScoped.chip, "sidebar: 过滤后组头应显示当前范围 chip");
-    assert.equal(sidebarScoped.subs, 0, "sidebar: 已按项目过滤时不再重复显示归属");
+    assert.equal(sidebarScoped.active, 1, "sidebar: 点项目行后应恰好一个范围选中");
+    assert.ok(!sidebarScoped.looseActive, "sidebar: 选中项目后「未分组」不再选中");
 
-    const sidebarAll = await win.webContents.executeJavaScript(`(() => {
-      const chip = document.querySelector(".group-filter");
-      if (chip) chip.click();
+    // 再点同一个项目行：不允许取消（仍是该项目选中）
+    const sidebarAgain = await win.webContents.executeJavaScript(`(() => {
+      const proj = document.querySelector(".proj-row.active:not(.loose)") || document.querySelector(".proj-row:not(.loose)");
+      if (proj) proj.click();
       return new Promise((res) => setTimeout(() => res({
-        subs: document.querySelectorAll(".session-item .session-sub").length,
-        rows: document.querySelectorAll(".session-item").length,
-        active: document.querySelectorAll(".proj-row.active").length,
+        active: document.querySelectorAll(".proj-row.active:not(.loose)").length,
+        looseActive: !!document.querySelector(".proj-row.loose.active"),
       }), 250));
     })()`);
-    log("sidebar-all", JSON.stringify(sidebarAll));
-    assert.ok(sidebarAll.subs >= 1, "sidebar: 清过滤回全部视图后归属标签应回来");
-    assert.equal(sidebarAll.active, 0, "sidebar: 全部视图下不应有项目被选中");
+    log("sidebar-again", JSON.stringify(sidebarAgain));
+    assert.equal(sidebarAgain.active, 1, "sidebar: 再点已选中的项目行不应取消（必须仍有选中）");
+    assert.ok(!sidebarAgain.looseActive, "sidebar: 再点项目行不应退回未分组");
+
+    // 回到「未分组」范围（点未分组行，同样是单向选择）
+    const sidebarLoose = await win.webContents.executeJavaScript(`(() => {
+      const loose = document.querySelector(".proj-row.loose");
+      if (loose) loose.click();
+      return new Promise((res) => setTimeout(() => res({
+        looseActive: !!document.querySelector(".proj-row.loose.active"),
+        projActive: document.querySelectorAll(".proj-row.active:not(.loose)").length,
+      }), 250));
+    })()`);
+    log("sidebar-loose", JSON.stringify(sidebarLoose));
+    assert.ok(sidebarLoose.looseActive, "sidebar: 点未分组行应选中未分组");
+    assert.equal(sidebarLoose.projActive, 0, "sidebar: 选未分组后项目不再选中");
     // 斜杠命令面板：输入 / → 弹出 → 过滤（/set）→ 键盘导航 → 选中进设置 → 回来
     await win.webContents.executeJavaScript(`(() => {
       const ta = document.querySelector(".piInput");
