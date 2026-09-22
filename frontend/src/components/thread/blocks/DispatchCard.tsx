@@ -24,6 +24,9 @@ export function DispatchCard({ block, onConfirm }: {
   const cardRef = useEnterRef<HTMLDivElement>();
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const subCount = block.subBlocks.length;
+  // 可展开 = 有子过程，或有最终结果（结果也在折叠区内——用户报告
+  // 「自动收缩和手动都收不掉最终结果」，根因是结果原本渲染在折叠区之外）
+  const expandable = subCount > 0 || Boolean(done && block.result);
 
   return (
     <div className="dispatch-card" data-done={done ? "true" : undefined} data-error={block.isError ? "true" : undefined} ref={cardRef}>
@@ -49,7 +52,7 @@ export function DispatchCard({ block, onConfirm }: {
             </>
           )}
         </span>
-        {subCount > 0 && (
+        {expandable && (
           <svg
             className={"dispatch-chev" + (expanded ? " open" : "")}
             width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden
@@ -59,17 +62,17 @@ export function DispatchCard({ block, onConfirm }: {
         )}
       </button>
 
-      {done && block.result && (
-        <div className="dispatch-result">
-          <Markdown text={block.result} />
-        </div>
-      )}
-
-      {subCount > 0 && expanded && (
+      {/* 折叠区：子执行过程 + 最终结果。结果必须在这里面——否则卡片永远收不短 */}
+      {expanded && expandable && (
         <div className="dispatch-body" ref={bodyRef}>
           {block.subBlocks.map((sub) => (
             <Block key={sub.uid} block={sub} onConfirm={onConfirm} />
           ))}
+          {done && block.result && (
+            <div className="dispatch-result">
+              <Markdown text={block.result} />
+            </div>
+          )}
         </div>
       )}
     </div>

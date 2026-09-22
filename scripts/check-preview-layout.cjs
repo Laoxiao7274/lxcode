@@ -302,15 +302,49 @@ app.whenReady().then(async () => {
       await new Promise((r) => setTimeout(r, 250));
       done = await win.webContents.executeJavaScript(`(() => {
         const card = document.querySelector('.dispatch-card[data-done="true"]');
-        return card ? { result: !!card.querySelector(".dispatch-result") } : null;
+        if (!card) return null;
+        // 完成后默认收起（含最终结果——结果也在折叠区内，卡片必须收短）
+        return {
+          result: !!card.querySelector(".dispatch-result"),
+          body: !!card.querySelector(".dispatch-body"),
+          chev: !!card.querySelector(".dispatch-chev"),
+        };
       })()`);
     }
     log("dispatch-done", JSON.stringify(done));
-    assert.ok(done && done.result, `chat: dispatch 完成应带结果（${JSON.stringify(done)}）`);
+    assert.ok(done && done.chev, `chat: dispatch 完成后应可展开（有结果就有箭头）（${JSON.stringify(done)}）`);
+    assert.ok(!done.body && !done.result, `chat: dispatch 完成后应默认收起（结果与子过程都在折叠区内）（${JSON.stringify(done)}）`);
+    // 展开：子过程与最终结果都要出现（用户报告「自动收缩和手动都收不掉最终结果」）
+    const expanded = await win.webContents.executeJavaScript(`(() => {
+      const card = document.querySelector('.dispatch-card[data-done="true"]');
+      const head = card && card.querySelector('.dispatch-head');
+      if (head) head.click();
+      return new Promise((res) => setTimeout(() => res({
+        body: !!card.querySelector(".dispatch-body"),
+        result: !!card.querySelector(".dispatch-result"),
+        resultText: (card.querySelector(".dispatch-result")?.textContent ?? "").trim().length,
+      }), 400));
+    })()`);
+    log("dispatch-expanded", JSON.stringify(expanded));
+    assert.ok(expanded.body && expanded.result, `chat: 展开后应见子过程与最终结果（${JSON.stringify(expanded)}）`);
+    assert.ok(expanded.resultText > 0, "chat: 展开后的最终结果不应为空");
+    // 手动再收起：结果必须跟着收掉（这就是用户报告的那个 bug）
+    const recollapsed = await win.webContents.executeJavaScript(`(() => {
+      const card = document.querySelector('.dispatch-card[data-done="true"]');
+      const head = card && card.querySelector('.dispatch-head');
+      if (head) head.click();
+      return new Promise((res) => setTimeout(() => res({
+        body: !!card.querySelector(".dispatch-body"),
+        result: !!card.querySelector(".dispatch-result"),
+      }), 400));
+    })()`);
+    log("dispatch-recollapsed", JSON.stringify(recollapsed));
+    assert.ok(!recollapsed.body && !recollapsed.result, `chat: 手动收起必须把结果一起收掉（${JSON.stringify(recollapsed)}）`);
+    // 再展开回展开态，供后面的子块断言使用
     await win.webContents.executeJavaScript(`(() => {
       const card = document.querySelector('.dispatch-card[data-done="true"]');
       const head = card && card.querySelector('.dispatch-head');
-      if (card && !card.querySelector('.dispatch-body') && head) head.click();
+      if (head) head.click();
     })()`);
     await new Promise((r) => setTimeout(r, 400));
     const subs = await win.webContents.executeJavaScript(`(() => {
