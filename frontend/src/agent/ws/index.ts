@@ -7,7 +7,7 @@
 import type {
   AgentAdminEntry, AgentAdminMcServer, AgentAdminModule, AgentAdminSource, AgentAdminTool,
   AgentEvent, AgentSource, ConfirmRequest, ModelAdminSource, ModelEntry,
-  ProjectMeta, SendOptions, SessionMeta, TodoItem,
+  ProjectInstructions, ProjectMeta, SendOptions, SessionMeta, TodoItem,
 } from "../../shared/types";
 
 /** WS JSON-RPC 帧结构（与 Go internal/protocol 对齐）。 */
@@ -425,6 +425,24 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource 
     this.call("project.add", { name, path })
       .then(() => undefined)
       .catch((e) => this.opError(`添加项目失败: ${e.message}`));
+  }
+
+  /** 读项目守则（项目根 AGENTS.md——项目级「自定义指令」）。 */
+  async readInstructions(projectId: string): Promise<ProjectInstructions> {
+    const r = (await this.call("project.instructions.get", { project_id: projectId })) as {
+      path?: string; content?: string; exists?: boolean; note?: string;
+    };
+    return {
+      path: r.path ?? "",
+      content: r.content ?? "",
+      exists: Boolean(r.exists),
+      note: r.note ?? "",
+    };
+  }
+
+  /** 写项目守则（后端原子写；下一轮提示词就会读到新内容）。 */
+  async saveInstructions(projectId: string, content: string): Promise<void> {
+    await this.call("project.instructions.save", { project_id: projectId, content });
   }
 
   /** 后端 session.list 结果 → 缓存（协议 snake_case → 前端 camelCase 映射）。 */

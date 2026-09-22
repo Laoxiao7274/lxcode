@@ -42,6 +42,10 @@ const (
 	// 项目管理（workspace 分组）
 	MethodProjectAdd  = "project.add"
 	MethodProjectList = "project.list"
+	// 项目守则（项目根 AGENTS.md）读写：**只按项目 id 寻址**，客户端不传路径——
+	// 越权面在结构上为零（固定文件名 + 项目根由服务端解析）。
+	MethodProjectInstructionsGet  = "project.instructions.get"
+	MethodProjectInstructionsSave = "project.instructions.save"
 
 	// ---- Agent 注册表与拓展目录（M1——docs/backend-roadmap.md）----
 
@@ -327,6 +331,23 @@ type ProjectMeta struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 	Path string `json:"path"`
+}
+
+// ProjectInstructionsParams 是 project.instructions.get/save 的参数：只给项目 id，
+// 文件由服务端定位（项目根 + 固定文件名 AGENTS.md）。
+type ProjectInstructionsParams struct {
+	ProjectID string `json:"project_id"`
+	// Content 只在 save 时使用（get 忽略）。
+	Content string `json:"content,omitempty"`
+}
+
+// ProjectInstructionsResult 是 project.instructions.get 的结果。
+// Exists=false = 该项目还没有守则文件（正常态，不是错误）；Note 非空 = 读取异常说明。
+type ProjectInstructionsResult struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
+	Exists  bool   `json:"exists"`
+	Note    string `json:"note,omitempty"`
 }
 
 // SessionMeta 是 session.list 的条目（resume 选择器的数据源）。

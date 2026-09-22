@@ -80,3 +80,47 @@ func TestLoadInstructionsStates(t *testing.T) {
 		}
 	})
 }
+
+// TestWriteInstructionsRoundtrip：写入 → 读回一致；覆盖已有文件（Windows 的
+// rename 不覆盖语义走的是备份回退，必须真的换掉内容）；目录不存在时显式报错。
+func TestWriteInstructionsRoundtrip(t *testing.T) {
+	dir := t.TempDir()
+	path, err := WriteInstructions(dir, "第一版\n")
+	if err != nil {
+		t.Fatalf("写入失败: %v", err)
+	}
+	if path != filepath.Join(dir, InstructionFileName) {
+		t.Fatalf("路径应为项目根下的 %s: %s", InstructionFileName, path)
+	}
+	if got := LoadInstructions(dir); got.Content != "第一版\n" {
+		t.Fatalf("读回不一致: %q", got.Content)
+	}
+	// 覆盖写（已存在文件）——这是 Windows rename 语义的关键路径
+	if _, err := WriteInstructions(dir, "第二版\n"); err != nil {
+		t.Fatalf("覆盖写失败: %v", err)
+	}
+	if got := LoadInstructions(dir); got.Content != "第二版\n" {
+		t.Fatalf("覆盖后读回不一致: %q", got.Content)
+	}
+	// 临时文件不留残骸
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != InstructionFileName {
+		names := []string{}
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("目录里应只有守则文件，实际: %v", names)
+	}
+	// 失效项目目录：显式报错，不凭空造目录
+	if _, err := WriteInstructions(filepath.Join(dir, "not-exist"), "x"); err == nil {
+		t.Fatal("目录不存在时应报错")
+	}
+	// 超大内容拒绝（与读取上限一致）
+	big := strings.Repeat("a", maxInstructionWriteBytes+1)
+	if _, err := WriteInstructions(dir, big); err == nil {
+		t.Fatal("超过上限的内容应被拒绝")
+	}
+}

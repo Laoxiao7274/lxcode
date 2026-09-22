@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/moyunteng/lxcode/internal/atomicfile"
 )
 
 // editDef：edit，风险等级 低危——编程 agent 的主编辑通道，每次改动都是
@@ -84,7 +86,7 @@ func editDef() *Def {
 			} else {
 				out = strings.Replace(string(data), a.OldString, a.NewString, 1)
 			}
-			if err := atomicWriteFile(path, []byte(out)); err != nil {
+			if err := atomicfile.Write(path, []byte(out)); err != nil {
 				return "", fmt.Errorf("写入 %s 失败: %w", a.Path, err)
 			}
 			if n > 1 && a.ReplaceAll {

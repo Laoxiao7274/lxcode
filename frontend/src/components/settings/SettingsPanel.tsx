@@ -180,7 +180,7 @@ export function SettingsPanel({ open, onClose, source }: { open: boolean; onClos
             {section === "search" && <SearchSection />}
 
             {section === "personalization" && (
-              <Section title="个性化" desc="回答的默认语气；自定义指令写入 AGENTS.md。">
+              <Section title="个性化" desc="回答的默认语气。（项目级自定义指令在侧栏项目行的「守则」入口——写进项目根 AGENTS.md）">
                 <SegRow label="语气">
                   <Segmented
                     options={[
@@ -193,7 +193,6 @@ export function SettingsPanel({ open, onClose, source }: { open: boolean; onClos
                     ariaLabel="语气"
                   />
                 </SegRow>
-                <ValueRow label="自定义指令" value="AGENTS.md" hint="仓库根目录的守则文件" />
               </Section>
             )}
 

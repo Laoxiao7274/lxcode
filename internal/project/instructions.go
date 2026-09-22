@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/moyunteng/lxcode/internal/atomicfile"
 )
 
 // 项目守则文件（项目根的 AGENTS.md）——「项目约定」进入会话上下文的唯一来源。
@@ -26,6 +28,33 @@ type Instructions struct {
 	Content string // 原文；Exists=false 或 Note 非空时为空
 	Exists  bool   // 文件是否存在（不存在是正常态，不是错误）
 	Note    string // 读取异常/跳过的说明（空 = 正常）——注入侧据此如实告知模型
+}
+
+// maxInstructionWriteBytes 是写入上限（与读取上限同源：守则文件是给人读的
+// markdown，超过 1MB 不是守则而是事故——写进去只会把上下文顶爆）。
+const maxInstructionWriteBytes = maxInstructionSourceBytes
+
+// WriteInstructions 写项目根的守则文件（原子写），返回写入的绝对路径。
+//
+// 语义：
+//   - 只认项目根下的 InstructionFileName（调用方给项目根，不给文件路径——
+//     越权面在结构上为零）；
+//   - 目录必须已存在（项目目录失效时显式报错，而不是凭空造目录）；
+//   - 超过 1MB 拒绝（与读取上限一致）；
+//   - 原子写：写坏一半的守则会污染每轮提示词，必须要么旧内容要么新内容。
+func WriteInstructions(projectRoot, content string) (string, error) {
+	abs, err := ValidateDirectory(projectRoot)
+	if err != nil {
+		return "", err
+	}
+	if len(content) > maxInstructionWriteBytes {
+		return "", fmt.Errorf("内容 %d 字节超过 %d 字节上限", len(content), maxInstructionWriteBytes)
+	}
+	path := filepath.Join(abs, InstructionFileName)
+	if err := atomicfile.Write(path, []byte(content)); err != nil {
+		return "", fmt.Errorf("写入守则失败: %w", err)
+	}
+	return path, nil
 }
 
 // LoadInstructions 读项目根的守则文件。

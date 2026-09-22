@@ -97,6 +97,25 @@ async function driveInit(socket) {
   return methods;
 }
 
+test('project instructions round-trip over the wire (project_id only, no path)', async (t) => {
+  const { agent, ws } = setup(t);
+  const reading = agent.readInstructions('proj-1');
+  assert.equal(ws.sent.at(-1).method, 'project.instructions.get');
+  assert.deepEqual(ws.sent.at(-1).params, { project_id: 'proj-1' });
+  ws.reply({ path: 'C:\\proj\\AGENTS.md', content: '# 守则\n', exists: true });
+  const got = await reading;
+  assert.equal(got.path, 'C:\\proj\\AGENTS.md');
+  assert.equal(got.content, '# 守则\n');
+  assert.equal(got.exists, true);
+
+  const saving = agent.saveInstructions('proj-1', '新守则\n');
+  assert.equal(ws.sent.at(-1).method, 'project.instructions.save');
+  // 客户端只传项目 id 与内容——路径由服务端解析（越权面为零）
+  assert.deepEqual(ws.sent.at(-1).params, { project_id: 'proj-1', content: '新守则\n' });
+  ws.reply({ path: 'C:\\proj\\AGENTS.md', content: '新守则\n', exists: true });
+  await saving;
+});
+
 test('boot opens a fresh session once (session.new before chat.history), never on reconnect', async (t) => {
   const { agent, ws } = setup(t);
   ws.onopen(); // 首次连接

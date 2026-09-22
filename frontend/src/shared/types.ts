@@ -133,12 +133,27 @@ export interface AgentSource {
   projects(): ProjectMeta[];
   /** 添加项目（注册目录为 git 仓库——已有仓库不动，没有则 init）。 */
   addProject(name: string, path: string): void;
+  /** 读项目守则（项目根 AGENTS.md——项目级「自定义指令」，每轮现读进提示词）。 */
+  readInstructions(projectId: string): Promise<ProjectInstructions>;
+  /** 写项目守则（项目根 AGENTS.md，原子写）。 */
+  saveInstructions(projectId: string, content: string): Promise<void>;
   /** 显示名（顶栏徽标）。 */
   label: string;
   /** 模型注册表管理；缺省时设置面板使用独立的本地演示目录。 */
   modelAdmin?: ModelAdminSource;
   /** Agent 名单与拓展目录管理（M1）；缺省时前端用内存种子自管（demo）。 */
   agentAdmin?: AgentAdminSource;
+}
+
+/** 项目守则（项目根 AGENTS.md）的读取结果——项目级「自定义指令」。 */
+export interface ProjectInstructions {
+  /** 守则文件绝对路径（服务端解析：项目根 + 固定文件名）。 */
+  path: string;
+  content: string;
+  /** 文件是否存在（false = 该项目还没写守则，不是错误）。 */
+  exists: boolean;
+  /** 读取异常说明（如超大跳过）；空 = 正常。 */
+  note?: string;
 }
 
 /** 后端模型注册表（config.ModelConfig 的 wire 形态，snake_case）。 */

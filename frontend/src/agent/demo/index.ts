@@ -1,7 +1,7 @@
 // 演示数据源（M3 叙事）：主 Agent 只调度——思考选人 → agent.dispatch →
 // dispatch 卡（子 Agent 全套执行：思考/读码/改码/确认门/跑测试）→ 验收
 // 汇总。覆盖 UI 全部状态。事件形状与后端协议 1:1——接线换 WSAgent 即可。
-import type { AgentEvent, AgentSource, ConfirmRequest, ProjectMeta, SendOptions, SessionMeta, TodoItem } from "../../shared/types";
+import type { AgentEvent, AgentSource, ConfirmRequest, ProjectInstructions, ProjectMeta, SendOptions, SessionMeta, TodoItem } from "../../shared/types";
 import { MAIN_REASONING, SUB_REASONING, SUB_RESULT, MAIN_ANSWER, TODO_INITIAL, TODO_LATER, FILES_CHANGED, SESSIONS } from "./data";
 
 type Listener = (ev: AgentEvent) => void;
@@ -109,6 +109,9 @@ export class DemoAgent implements AgentSource {
     return this.projects_;
   }
 
+  /** 演示模式的项目守则（内存态：项目 id → 内容）。 */
+  private instructions_ = new Map<string, string>();
+
   addProject(name: string, path: string): void {
     // 演示模式：本地数组操作（浏览器样式可验；不真碰文件系统/git）
     this.projects_ = [
@@ -116,6 +119,19 @@ export class DemoAgent implements AgentSource {
       ...this.projects_,
     ];
     this.emit({ type: "projectsChanged" });
+  }
+
+  /** 读项目守则（演示模式：内存态——可编辑可保存，刷新即失）。 */
+  async readInstructions(projectId: string): Promise<ProjectInstructions> {
+    const p = this.projects_.find((x) => x.id === projectId);
+    const path = p ? `${p.path}\\AGENTS.md` : "AGENTS.md";
+    const content = this.instructions_.get(projectId) ?? "";
+    return { path, content, exists: content !== "" };
+  }
+
+  /** 写项目守则（演示模式：内存态）。 */
+  async saveInstructions(projectId: string, content: string): Promise<void> {
+    this.instructions_.set(projectId, content);
   }
 
   get currentId(): string {

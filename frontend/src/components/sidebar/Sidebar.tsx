@@ -3,8 +3,9 @@ import { staggerIn } from "../../shared/motion";
 import { playEnter } from "../../shared/anim";
 import { useDismissal } from "../../shared/popover";
 import { useUpdate } from "../../shared/update";
-import type { AgentSource } from "../../shared/types";
+import type { AgentSource, ProjectMeta } from "../../shared/types";
 import { AddProjectDialog } from "./AddProjectDialog";
+import { ProjectInstructionsDialog } from "./ProjectInstructionsDialog";
 import { SessionRow } from "./SessionRow";
 
 /** 「未分组」过滤目标（无归属会话的家——不依赖真实项目 id）。
@@ -50,6 +51,8 @@ export function Sidebar({
   const [menuFor, setMenuFor] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
+  /** 项目守则编辑器（项目行「守则」入口打开；null = 关闭）。 */
+  const [insFor, setInsFor] = useState<ProjectMeta | null>(null);
   const [projectsTick, setProjectsTick] = useState(0); // projectsChanged 事件驱动重读
   const searchRef = useRef<HTMLInputElement>(null);
   const { phase: updPhase } = useUpdate();
@@ -213,6 +216,17 @@ export function Sidebar({
               <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
             </svg>
             <span className="proj-name">{p.name}</span>
+            {/* 项目守则入口（hover 出现）：项目级「自定义指令」= 项目根 AGENTS.md */}
+            <button
+              type="button"
+              className="proj-ins-btn"
+              data-ins={p.id}
+              title="项目守则（AGENTS.md）——该项目的每个会话每轮现读进提示词"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => { e.stopPropagation(); setInsFor(p); }}
+            >
+              守则
+            </button>
             <span className="proj-count">{count}</span>
           </div>
         );
@@ -242,6 +256,13 @@ export function Sidebar({
         <AddProjectDialog
           onAdd={(name, path) => source.addProject(name, path)}
           onClose={() => setAddOpen(false)}
+        />
+      )}
+      {insFor && (
+        <ProjectInstructionsDialog
+          source={source}
+          project={insFor}
+          onClose={() => setInsFor(null)}
         />
       )}
 

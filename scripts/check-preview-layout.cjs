@@ -158,6 +158,55 @@ app.whenReady().then(async () => {
     log("sidebar-loose", JSON.stringify(sidebarLoose));
     assert.ok(sidebarLoose.looseActive, "sidebar: 点未分组行应选中未分组");
     assert.equal(sidebarLoose.projActive, 0, "sidebar: 选未分组后项目不再选中");
+
+    // 项目守则（项目级自定义指令）：项目行 hover 入口 → 弹窗 → 编辑保存 → 读回一致。
+    // 这是「设置里那张 AGENTS.md 空头支票」的项目级落点——入口必须在项目行上。
+    const insOpen = await win.webContents.executeJavaScript(`(() => {
+      const btn = document.querySelector(".proj-ins-btn");
+      if (!btn) return { err: "no-entry" };
+      btn.click();
+      return new Promise((res) => setTimeout(() => {
+        const dlg = document.querySelector(".proj-ins");
+        res({
+          dlg: !!dlg,
+          path: (dlg?.querySelector(".proj-ins-path")?.textContent ?? "").includes("AGENTS.md"),
+          state: dlg?.querySelector(".proj-ins-state")?.textContent ?? "",
+          textarea: !!dlg?.querySelector(".fd-textarea"),
+          save: !!dlg?.querySelector('[data-ins="save"]'),
+        });
+      }, 300));
+    })()`);
+    log("proj-instructions", JSON.stringify(insOpen));
+    assert.ok(insOpen.dlg && insOpen.textarea && insOpen.save, `sidebar: 项目行应能打开守则编辑器（${JSON.stringify(insOpen)}）`);
+    assert.ok(insOpen.path, "sidebar: 守则编辑器应显示项目根 AGENTS.md 路径");
+    assert.equal(insOpen.state, "新建", "sidebar: 尚未写过守则时应标「新建」");
+    // 写入 → 保存 → 重开读回（demo 内存态，验的是「保存确实进了数据源」）
+    const insSaved = await win.webContents.executeJavaScript(`(() => {
+      const dlg = document.querySelector(".proj-ins");
+      const ta = dlg.querySelector(".fd-textarea");
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
+      setter.call(ta, "# 项目守则\\n\\n提交信息一律用中文。\\n");
+      ta.dispatchEvent(new Event("input", { bubbles: true }));
+      dlg.querySelector('[data-ins="save"]').click();
+      return new Promise((res) => setTimeout(() => res({
+        state: dlg.querySelector(".proj-ins-state")?.textContent ?? "",
+        tip: dlg.querySelector(".proj-ins-tip")?.textContent ?? "",
+      }), 400));
+    })()`);
+    log("proj-instructions-saved", JSON.stringify(insSaved));
+    assert.equal(insSaved.state, "已存在", "sidebar: 保存后状态应变为「已存在」");
+    await win.webContents.executeJavaScript(`document.querySelector(".proj-add-close").click()`);
+    await new Promise((r) => setTimeout(r, 250));
+    const insReopen = await win.webContents.executeJavaScript(`(() => {
+      document.querySelector(".proj-ins-btn")?.click();
+      return new Promise((res) => setTimeout(() => res({
+        text: document.querySelector(".proj-ins .fd-textarea")?.value ?? "",
+      }), 300));
+    })()`);
+    log("proj-instructions-reopen", JSON.stringify(insReopen));
+    assert.ok(insReopen.text.includes("提交信息一律用中文"), `sidebar: 守则保存后重开应读回同一内容（${JSON.stringify(insReopen)}）`);
+    await win.webContents.executeJavaScript(`document.querySelector(".proj-add-close").click()`);
+    await new Promise((r) => setTimeout(r, 250));
     // 斜杠命令面板：输入 / → 弹出 → 过滤（/set）→ 键盘导航 → 选中进设置 → 回来
     await win.webContents.executeJavaScript(`(() => {
       const ta = document.querySelector(".piInput");

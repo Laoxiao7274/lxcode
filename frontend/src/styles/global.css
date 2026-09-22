@@ -2719,35 +2719,67 @@ body:has(.window-stage) {
   font-size: 11px;
   color: var(--fg-faint);
 }
-/* 对话组头的范围 chip（选中项目/未分组时显示，点击清除全部过滤） */
-.group-filter {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
+/* 项目行 hover 出现的「守则」入口（项目级自定义指令 = 项目根 AGENTS.md）。
+   平时不占视觉重量：只在行 hover / 键盘聚焦时出现（同 session-more 的纪律）。 */
+.proj-ins-btn {
+  flex: none;
+  display: none;
   border: none;
   background: transparent;
-  color: var(--fg-muted);
-  font-size: 10.5px;
+  color: var(--fg-faint);
+  font-size: 10px;
   font-family: var(--font-sans);
-  padding: 1px 6px;
-  border-radius: 6px;
+  padding: 1px 5px;
+  border-radius: 5px;
   cursor: pointer;
   transition: background 100ms, color 100ms;
-  max-width: 130px;
 }
-.group-filter span,
-.group-filter {
+.proj-row:hover .proj-ins-btn,
+.proj-ins-btn:focus-visible {
+  display: inline-flex;
+}
+.proj-ins-btn:hover {
+  background: var(--border);
+  color: var(--fg);
+}
+/* ===== 项目守则编辑器 ===== */
+.proj-ins {
+  width: 560px;
+  max-width: calc(100vw - 40px);
+}
+.proj-ins-path {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--fg-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.group-filter:hover {
-  background: var(--border-soft);
-  color: var(--fg);
-}
-.group-filter svg {
+.proj-ins-state {
   flex: none;
-  opacity: 0.6;
+  font-family: var(--font-sans);
+  font-size: 9.5px;
+  padding: 1px 6px;
+  border-radius: 5px;
+  color: #9a6400;
+  background: rgba(230, 162, 60, 0.14);
+}
+.proj-ins-state.on {
+  color: #0f7a5c;
+  background: rgba(16, 163, 127, 0.1);
+}
+.proj-ins .fd-textarea {
+  min-height: 240px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.proj-ins-tip {
+  flex: 1;
+  font-size: 10.5px;
+  color: var(--fg-faint);
 }
 /* ===== 添加项目对话框 ===== */
 .proj-add-mask {
