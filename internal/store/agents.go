@@ -125,6 +125,10 @@ func (s *Store) initAgents() error {
 //   - custom=0 的条目：按代码更新（command/params/desc/doc 等全字段）；
 //   - custom=1 的条目：用户自建或改过的（保存时会置 1）——一律不碰；
 //   - 不删除：种子删掉的条目留在库里（可能已被白名单引用），不制造悬空引用。
+//
+// Agent 名单是同一件事的另一半，但边界更严（见两个辅助函数的注释）：
+// ensureSeedAgents 只插缺失的种子 Agent（已有行一律不碰），
+// topUpMainDelegates 只在主 Agent 的委派名单没被用户动过时才补新增的子 Agent。
 func (s *Store) syncCatalogSeeds(now string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -141,7 +145,112 @@ func (s *Store) syncCatalogSeeds(now string) error {
 			return err
 		}
 	}
+	if err := ensureSeedAgents(tx, now); err != nil {
+		return err
+	}
+	if err := topUpMainDelegates(tx, now); err != nil {
+		return err
+	}
 	return tx.Commit()
+}
+
+// seedDelegatesBaseline 是**上一版**种子主 Agent 的委派名单快照：只用来判断
+// 用户的名单是否被动过（新增种子子 Agent 时，把上一版的值留在这里）。
+//
+// 为什么需要它：主 Agent 的 delegates 是用户可改的字段，库里没有"改没改过"的
+// 标记（UpdateAgent 刻意不碰 custom，见其注释），所以只能拿上一版种子值当基线：
+// 名单仍包含基线的全部 id → 没被动过；少了一个 → 用户删过 → 一律不碰。
+var seedDelegatesBaseline = []string{"coder"}
+
+// ensureSeedAgents 把种子里**新增**的 Agent 补进已有库：只插入缺失的 id，
+// 已有行一律不 UPDATE、绝不 DELETE。
+//
+// 为什么需要：Agent 种子原先只在库空时整套注入，于是「代码加了新 Agent，
+// 老库永远吃不到」——与工具/模块同一类问题（见上面的注释）。
+// 为什么不能像工具/模块那样按 custom=0 全字段更新：子 Agent 种子插入时是
+// custom=1（insertAgent——用户可在 Agents 页自由改它，真实库里就有被用户加过
+// 工具的 coder 行），主 Agent 的 delegates 更是用户配置——更新就是吃掉用户的
+// 编辑。所以这里只做"缺失才插入"。
+//
+// 已知代价：用户若**删掉**过某个种子 Agent，下次 Open 会把它插回来（工具/模块
+// 的种子同步本来就有同一性质——种子是代码拥有的目录条目，不想要应该停用而不是
+// 删除）。
+func ensureSeedAgents(exec execer, now string) error {
+	for _, a := range seedAgents {
+		var n int
+		if err := exec.QueryRow(`SELECT COUNT(*) FROM agents WHERE id = ?`, a.ID).Scan(&n); err != nil {
+			return fmt.Errorf("查种子 Agent %s 失败: %w", a.ID, err)
+		}
+		if n > 0 {
+			continue // 已有行：用户可能改过（名字/工具/提示词/权限），一律不碰
+		}
+		if err := insertAgent(exec, a, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// topUpMainDelegates 给主 Agent 的委派名单补上本版**新增**的种子子 Agent。
+//
+// 为什么需要：只插行不改名单的话，主 Agent 的提示词里没有它们（compose 的
+// 可委派名单来自这里），agent.dispatch 的名单校验也会拒绝（server 的有效名单
+// = 默认 ∩ 启用）——「加了却派不出去」。
+// 为什么不是无条件追加：用户删过某个种子子 Agent 时，无条件追加会把它反复塞
+// 回去（每次 Open 都塞）——那就是吃掉用户的编辑。所以只在名单仍含上一版种子的
+// 全部子 Agent（= 没被动过）时才补；用户动过就完全不碰。
+func topUpMainDelegates(exec execer, now string) error {
+	var delegates string
+	err := exec.QueryRow(`SELECT delegates FROM agents WHERE is_main = 1`).Scan(&delegates)
+	if err == sql.ErrNoRows {
+		return nil // 没有主 Agent（半截库）：不制造结构，交给正常写路径
+	}
+	if err != nil {
+		return fmt.Errorf("查主 Agent 委派名单失败: %w", err)
+	}
+	current := decodeStrList(delegates)
+	if !containsAll(current, seedDelegatesBaseline) {
+		return nil // 用户动过这份名单（删过种子子 Agent）：一律不碰
+	}
+	added := false
+	for _, a := range seedAgents {
+		if a.IsMain || containsStr(current, a.ID) {
+			continue
+		}
+		current = append(current, a.ID)
+		added = true
+	}
+	if !added {
+		return nil // 已是最新：幂等，不写库（也不动 updated_at）
+	}
+	next, err := json.Marshal(current)
+	if err != nil {
+		return fmt.Errorf("序列化委派名单失败: %w", err)
+	}
+	if _, err := exec.Exec(`UPDATE agents SET delegates=?, updated_at=? WHERE is_main = 1`, string(next), now); err != nil {
+		return fmt.Errorf("补主 Agent 委派名单失败: %w", err)
+	}
+	return nil
+}
+
+// containsStr 判断列表里有没有 s。
+func containsStr(list []string, s string) bool {
+	for _, x := range list {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
+
+// containsAll 判断 list 是否包含 want 的全部元素（want 为空恒真）。
+func containsAll(list, want []string) bool {
+	for _, w := range want {
+		if !containsStr(list, w) {
+			return false
+		}
+	}
+	return true
 }
 
 // upsertSeedTool 按 id 同步一个种子工具：缺失则插入，custom=0 则按代码更新。

@@ -79,10 +79,12 @@ func (s *Session) runDispatch(ctx context.Context, call tools.DispatchCall) tool
 		Task: call.Task,
 	})
 
-	// 跑子会话那一轮并等它结束：审批模式继承父轮（取严语义——子执行面不大于
-	// 请求方），模型/提示词/工具白名单由子会话按自己的 Agent 载荷组装。
+	// 跑子会话那一轮并等它结束：审批模式**取严**——父轮授权面与子 Agent 自己
+	// 的默认取更严的一档（子 Agent 没声明默认 = 继承父轮），子执行面因此不大于
+	// 请求方；模型/提示词/工具白名单由子会话按自己的 Agent 载荷组装。
+	approval := stricterApproval(string(tools.ApprovalFrom(ctx)), ac.Def.Approval)
 	err = child.SendWait(ctx, composeTaskMessage(call),
-		WithAgent(ac.Def.ID), WithApproval(string(tools.ApprovalFrom(ctx))))
+		WithAgent(ac.Def.ID), WithApproval(approval))
 	if err != nil {
 		note := err.Error()
 		if ctx.Err() != nil {

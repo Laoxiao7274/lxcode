@@ -298,7 +298,9 @@ func (s *Session) modelFor(ac *sessiondata.AgentContext) (config.ModelConfig, er
 }
 
 // effectiveApproval 权限取严：请求级 > Agent 默认 > confirm。
-// 子 Agent 的执行面不大于请求方的授权面（M3 dispatch 会再取严一层）。
+// 注意它只解决"这一轮用哪一档"：请求级是用户的显式选择（UI 里选了 auto 就
+// 是这一轮不要确认），所以它优先，不在这里取严——取严发生在派发子 Agent 那
+// 一层（见 stricterApproval 与 runDispatch）。
 func effectiveApproval(requested, agentDefault string) string {
 	if requested != "" {
 		return requested
@@ -307,6 +309,42 @@ func effectiveApproval(requested, agentDefault string) string {
 		return agentDefault
 	}
 	return "confirm"
+}
+
+// stricterApproval 取两档权限中更严的一档（auto < confirm < strict）——派发子
+// Agent 时用父轮的授权面与子 Agent 自己的默认取严：子执行面不大于请求方。
+//
+// 为什么要单独做这一步：effectiveApproval 是"请求级优先"，而派发时请求级就是
+// 父轮的审批（runDispatch 透传），于是子 Agent 自己更严的默认（如调研 Agent 的
+// strict、测试 Agent 的 confirm）会被父轮的 auto 放大——代码注释写着"取严"而实现
+// 不是，是自相矛盾的。
+//
+// 空值 = 未声明该档：按"继承请求方"处理（返回另一档），与 effectiveApproval
+// 的空值语义一致。
+func stricterApproval(requested, agentDefault string) string {
+	if agentDefault == "" {
+		return requested
+	}
+	if requested == "" {
+		return agentDefault
+	}
+	if approvalRank(agentDefault) > approvalRank(requested) {
+		return agentDefault
+	}
+	return requested
+}
+
+// approvalRank 是权限档位的严格度（越大越严）。未知值按 confirm 同档——与运行期
+// 行为一致：只有精确等于 strict 才走"只读拒绝"，其余值都走确认门。
+func approvalRank(a string) int {
+	switch tools.Approval(a) {
+	case tools.ApprovalAuto:
+		return 0
+	case tools.ApprovalStrict:
+		return 2
+	default:
+		return 1
+	}
 }
 
 // Send 发起一轮对话（异步）：校验模型 → 入历史 → 后台跑工具循环。

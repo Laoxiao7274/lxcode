@@ -4,9 +4,11 @@ package server
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/moyunteng/lxcode/internal/protocol"
+	"github.com/moyunteng/lxcode/internal/sessiondata"
 )
 
 func TestAgentCatalogOverWS(t *testing.T) {
@@ -88,6 +90,29 @@ func TestAgentCatalogOverWS(t *testing.T) {
 		client.call(protocol.MethodAgentUpdate, protocol.AgentAddParams{Agent: list[0]})
 		if resp := client.call(protocol.MethodAgentRemove, protocol.AgentRemoveParams{ID: "t1"}); resp.Error != nil {
 			t.Fatalf("解除引用后删除应成功: %v", resp.Error)
+		}
+	})
+
+	t.Run("种子名单含调研/测试 Agent（主 Agent 的有效委派名单）", func(t *testing.T) {
+		srv, _, _ := newTestServer(t, nil)
+		// 有效委派名单 = 主 Agent 的 delegates ∩ 启用子 Agent（server 解析）
+		ac, ok := (&storeAgentResolver{st: srv.st}).Resolve("main")
+		if !ok {
+			t.Fatal("应能解析主 Agent")
+		}
+		byID := map[string]sessiondata.AgentDef{}
+		for _, d := range ac.Delegates {
+			byID[d.ID] = d
+		}
+		for _, want := range []string{"coder", "researcher", "tester"} {
+			d, ok := byID[want]
+			if !ok {
+				t.Fatalf("主 Agent 的有效委派名单缺 %s（agent.dispatch 会拒）: %v", want, ac.Delegates)
+			}
+			// 职责描述进主 Agent 的提示词（选人信号）——不能是空的
+			if strings.TrimSpace(d.Desc) == "" {
+				t.Fatalf("%s 缺职责描述（主 Agent 无从选人）", want)
+			}
 		}
 	})
 

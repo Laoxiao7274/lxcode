@@ -1,6 +1,8 @@
 // 种子数据（首次建库注入；内容与前端 agent-seeds.ts 的目录部分对齐——
-// 演示 Agent 名单后端只给主 + 代码 Agent 两个，其余是前端演示专属，
-// 真实后端不替用户预置）。
+// 演示 Agent 名单后端给主 + 代码 + 调研 + 测试四个（覆盖「实现 / 勘察 / 验证」
+// 三种执行面），其余（审查、运维）是前端演示专属，真实后端不替用户预置）。
+// 新增种子 Agent 的落地纪律见 agents.go 的 syncCatalogSeeds：缺失才插入，
+// 已有行一律不碰——老库因此也能吃到，而用户的编辑不会被覆盖。
 package store
 
 import "github.com/moyunteng/lxcode/internal/sessiondata"
@@ -116,7 +118,7 @@ var seedAgents = []sessiondata.AgentDef{
 		Tools:    []string{"agent.dispatch"},
 		Prompt:   "",
 		Workflow: "plan-execute-verify", Skills: []string{},
-		Delegates: []string{"coder"}, Approval: "confirm",
+		Delegates: []string{"coder", "researcher", "tester"}, Approval: "confirm",
 	},
 	{
 		ID: "coder", Name: "代码 Agent", Enabled: true, Color: "#3b82f6", Model: "",
@@ -124,6 +126,27 @@ var seedAgents = []sessiondata.AgentDef{
 		Prompt:   "你是代码 Agent。改动前先读相关代码，遵守仓库规范；每步改动可解释、可回退，构建测试通过才算完成。",
 		Tools:    []string{"read_file", "search", "edit", "write_file", "bash", "todo"},
 		Workflow: "minimal-change", Skills: []string{"frontend-design", "gsap"},
+		Delegates: []string{}, Approval: "confirm",
+	},
+	{
+		// 调研面：只读工具集（无 edit/write_file/bash），所以「不改任何文件」是
+		// 结构保证而不是靠提示词自觉；approval=strict 是同一件事的第二道保险
+		//（将来有人给它的白名单加了写工具，运行期直接拒绝）。
+		ID: "researcher", Name: "调研 Agent", Enabled: true, Color: "#10a37f", Model: "",
+		Desc:     "代码库与资料勘察：全文检索、历史会话与跨文件脉络梳理，只给结论与出处。",
+		Prompt:   "你是调研 Agent。只做检索与信息整理：结论必须带依据（文件路径 + 行号、命令输出或文档链接）；查不到就如实说「未找到」，不编造也不推测。不修改任何文件。",
+		Tools:    []string{"read_file", "search", "session_search", "ripgrep"},
+		Workflow: "research-first", Skills: []string{},
+		Delegates: []string{}, Approval: "strict",
+	},
+	{
+		// 验证面：bash 是它的核心能力（不跑就无从验证），edit/write_file 留给
+		// 「按验收标准补用例」；提示词把项目的测试纪律写进职责（不许为绿灯弱化断言）。
+		ID: "tester", Name: "测试 Agent", Enabled: true, Color: "#0ea5e9", Model: "",
+		Desc:     "验证与测试：跑构建与测试、按验收标准补用例，如实回传失败与复现命令。",
+		Prompt:   "你是测试 Agent。跑构建与测试，断言行为与契约而不是实现细节；失败如实回传（关键输出 + 复现命令）。绝不为了让测试变绿而删除、跳过或弱化断言——测试与实现冲突时先判断谁对：实现错了改实现，需求变了先改方案。",
+		Tools:    []string{"read_file", "search", "edit", "write_file", "bash", "todo"},
+		Workflow: "plan-execute-verify", Skills: []string{},
 		Delegates: []string{}, Approval: "confirm",
 	},
 }

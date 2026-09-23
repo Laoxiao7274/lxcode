@@ -86,7 +86,7 @@
 - **`ChildrenOf(parent)`** 按父查子（对账/将来的子会话视图）。
 
 **运行时**（`internal/agent/dispatch.go`）：
-- `runDispatch` = 解析目标 → 校验有效委派名单 → `openChildSession`（新建或按 `call.Session` 续跑）→ 包一层 emitter → `child.SendWait(ctx, task, WithAgent, WithApproval(父的审批))` → 取子会话最后一条有正文的 assistant 消息作为结论回填；
+- `runDispatch` = 解析目标 → 校验有效委派名单 → `openChildSession`（新建或按 `call.Session` 续跑）→ 包一层 emitter → `child.SendWait(ctx, task, WithAgent, WithApproval(取严后的审批))` → 取子会话最后一条有正文的 assistant 消息作为结论回填；
 - **子会话是一个真 `*agent.Session`**（自己的 history/id/st/context），所以**压缩、溢出兜底、确认门、工具循环全部免费继承**（不再有子循环特例：`dispatchMaxRounds` 与手写子循环已删除）；
 - **`Session.AttachTo(st, id)`**：按 id 精确附着（子会话新建后历史为空；续跑时历史在库里）——与 `EnablePersistence`（走 Latest 恢复）分工明确；
 - **`Session.SendWait(ctx, ...)`**：跑一轮并等它结束（派发要等子会话给出结论）；ctx 取消 → `child.Cancel()` 并等它真正收尾；
@@ -124,7 +124,7 @@
 - `Mutates=true`（strict 只读模式拒绝）；`risk=high` 走确认门，确认文本含**渲染后的完整命令**；
 - 未配置 `command` 的 binary 条目（种子里 `browser` 是「声明了没实现」的形态）跳过并记日志，不影响其余目录；目录页对它标**「未配置」**（amber pill），外部二进制条目**可编辑**（内置只读）——用户勾进白名单前就能看见、也能自己补 command；
 - 白名单勾了但注册表里没有的工具，会在该 Agent 的系统提示词里被点名「当前不可用」——不让模型去调一个不存在的工具。
-- **种子同步（`initAgents` 每次 Open 都跑）**：种子只在库空时整套注入会有一个致命后果——**代码修好了种子，老库永远吃不到**（用户报告过「给了 ripgrep，模型答注册表没有」）。所以库非空时跑 `syncCatalogSeeds`：按 id 同步种子行（缺失插入、`custom=0` 按代码更新全字段），**`custom=1`（用户自建或改过的行）一律不碰**，**不删除**（避免动到白名单可能引用的行）。Agent 名单**不同步**——主 Agent 的 `delegates` 等字段用户可改，覆盖就是吃掉用户的配置。
+- **种子同步（`initAgents` 每次 Open 都跑）**：种子只在库空时整套注入会有一个致命后果——**代码修好了种子，老库永远吃不到**（用户报告过「给了 ripgrep，模型答注册表没有」）。所以库非空时跑 `syncCatalogSeeds`：按 id 同步种子行（缺失插入、`custom=0` 按代码更新全字段），**`custom=1`（用户自建或改过的行）一律不碰**，**不删除**（避免动到白名单可能引用的行）。Agent 名单走**更严**的同步（只插缺失、绝不改已有行），见 §8「种子同步」。
 
 - **edit 为何低危**：编程 agent 的主编辑通道，确认门会让它不可用；破坏面受 old_string 唯一匹配约束 + 原子写 + 版本控制兜底（与 write_file 的全量覆盖破坏面不同类）。
 - **权限模式三档**（chat.send 的 approval 参数，随消息携带）：`confirm`（默认）= 低危自动 + 高危确认；`auto` = 高危也自动执行（仅隔离环境）；`strict` = 只读——变更类工具（`Def.Mutates`：edit/write_file/bash，与风险等级正交）直接拒绝、错误回填模型。风险等级管"要不要确认"，Mutates 管"只读模式禁不禁"——edit 低危但变更文件，strict 下必须拒。
@@ -191,6 +191,12 @@ Harness 的目标形态：**主 Agent 只做决策与分派，子 Agent 是用�
 - **目录可自建**：技能/模板是纯内容（markdown），用户可创建/编辑/删除（目录管理页 + 模块编写器带实时预览，Provider 状态单源——Agent 组装 chips 即时可选）；模板/技能创建分开口（类型由入口页签定死，不表内切换）。工具走**导入**：固定格式 v1 的 JSON 契约（`shared/tool-import.ts` 的 `parseToolImport` 校验，有测试钉住）——`{"version":1,"tools":[{"id","desc","risk":"low|high","source":"builtin|binary","params"?:[{"name","type","required"?,"desc"?}],"doc"?}]}`，id 目录内唯一，source 只 builtin/binary——**MCP 工具不手动创建/导入**（由 MCP 服务器注册后自动暴露）；后端化后同一格式做插件的分发载荷。**MCP 是目录第四版块**：服务器（`McServerSpec`——id/名称/命令/启停）是接入单元，能力以工具形式进工具目录（`source=mcp` + `server` 字段指回来源），停用服务器 = 能力挂起。
 - **表单组件套件**（`components/form/`，`.fd-` 命名空间）：Button/TextInput/Textarea/Select/Segmented/ColorPicker/Chips/Toggle——项目内表单一律用套件，不再裸写原生控件（chips 有 `exclusive` 单选模式承载流程原子语义）。
 - 字段命名注意：AgentDef 的流程模块字段叫 `workflow` 不叫 `process`——与 Node 全局 `process` 撞形会让边界守卫（scripts/check-boundaries.mjs）误报，属性读取与 `process.env` 结构上无法区分。
+- **种子名单（2026-09-23）**：后端种子 = 主 Agent + 三个执行面 Agent——`coder`（代码，实现）、`researcher`（调研，只读勘察）、`tester`（测试，验证与跑命令）；主 Agent 的 `delegates` = 这三个 id。前端 `agent-seeds.ts` 的演示名单（main/coder/researcher/reviewer/ops）是**演示专属**，live 模式下后端是事实源（`shared/agents.tsx`）。三条种子纪律：
+  - **执行面即白名单**：调研 Agent 的 `tools` 不含 edit/write_file/bash（"不改文件"是结构保证），`approval=strict` 是第二道保险；测试 Agent 必须含 `bash`（不跑就无从验证）；
+  - **子 Agent 种子不含 `agent.dispatch`**（两类制，深度恒 1）；白名单也不含"声明了没实现"的工具（如 `browser`——注册表里没有它，提示词会点名「当前不可用」）；
+  - **种子必须自洽**：`workflow`/`skills`/`tools` 引用的 id 必须真实存在——server 按 id 解析时**缺失静默跳过**，打错就是一份空提示词且不报任何错（`TestSeedAgentsSelfConsistent` 钉住这条）。
+- **种子同步（Agent 侧，2026-09-23）**：工具/模块按 `custom` 全字段同步（见 §3），Agent 名单**更严**——`ensureSeedAgents` 只插入缺失的 id（已有行一律不 UPDATE、绝不 DELETE：子 Agent 种子插入即 `custom=1`＝用户所有，主 Agent 的 `delegates` 更是用户配置），`topUpMainDelegates` 只在主 Agent 的委派名单仍含**上一版**种子子 Agent（`seedDelegatesBaseline`）时才补新增的。代价：用户删过的种子 Agent 下次 Open 会回来（工具/模块的种子同步本来同性质——不想要应停用而不是删除）。
+- **审批取严（2026-09-23）**：`effectiveApproval` 是"请求级 > Agent 默认 > confirm"（请求级是用户的显式选择，**不在这里取严**）；取严发生在**派发**这一层——`runDispatch` 用 `stricterApproval(父轮审批, 子 Agent 默认)`（auto < confirm < strict；子 Agent 未声明默认 = 继承请求方），子执行面因此不大于请求方。
 
 ## 9. 待定决策
 

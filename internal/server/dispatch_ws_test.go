@@ -100,3 +100,88 @@ func TestDispatchOverWS(t *testing.T) {
 		t.Fatalf("调用数不符 main=%d sub=%d", mainCalls, subCalls)
 	}
 }
+
+// TestDispatchChildConfirmOverWS：子会话的高危调用在父轮 auto 下仍走确认门
+// （派发取严：子执行面不大于请求方），确认请求经协议带 dispatch_id 归属进卡。
+//
+// 为什么在这一层钉：agent 侧的单测只到内核事件（ConfirmRequestEvent），
+// 协议映射漏 DispatchID 的后果是确认卡跑到外层时间线（AGENTS.md §5 坑 11 的
+// 同款症状）——线上载荷这一端必须有断言。
+func TestDispatchChildConfirmOverWS(t *testing.T) {
+	var mainCalls, subCalls int
+	_, client, _ := newTestServer(t, func(ctx context.Context, m config.ModelConfig, msgs []llm.Message, opts []llm.Option) (<-chan llm.StreamEvent, error) {
+		ch := make(chan llm.StreamEvent, 4)
+		if strings.Contains(msgs[0].Content, "主 Agent（调度中枢）") {
+			mainCalls++
+			go func() {
+				defer close(ch)
+				if mainCalls > 1 {
+					ch <- llm.StreamEvent{Type: llm.EventDone, Result: &llm.ChatResult{
+						Message: llm.Message{Role: "assistant", Content: "已验收。"}, FinishReason: llm.FinishStop}}
+					return
+				}
+				tc := llm.ToolCall{ID: "call-c1"}
+				tc.Function.Name = "agent.dispatch"
+				tc.Function.Arguments = `{"agent":"coder","task":"跑一条命令"}`
+				ch <- llm.StreamEvent{Type: llm.EventToolCall, ToolCall: tc}
+				ch <- llm.StreamEvent{Type: llm.EventDone, Result: &llm.ChatResult{
+					Message: llm.Message{Role: "assistant", ToolCalls: []llm.ToolCall{tc}}, FinishReason: llm.FinishToolCalls}}
+			}()
+			return ch, nil
+		}
+		// 子会话语境：第一轮调 bash（高危，种子 coder 的白名单里有它）
+		subCalls++
+		go func() {
+			defer close(ch)
+			if subCalls > 1 {
+				ch <- llm.StreamEvent{Type: llm.EventDone, Result: &llm.ChatResult{
+					Message: llm.Message{Role: "assistant", Content: "命令跑完了。"}, FinishReason: llm.FinishStop}}
+				return
+			}
+			tc := llm.ToolCall{ID: "sub-c1"}
+			tc.Function.Name = "bash"
+			tc.Function.Arguments = `{"command":"echo child-confirm-ok"}`
+			ch <- llm.StreamEvent{Type: llm.EventToolCall, ToolCall: tc}
+			ch <- llm.StreamEvent{Type: llm.EventDone, Result: &llm.ChatResult{
+				Message: llm.Message{Role: "assistant", ToolCalls: []llm.ToolCall{tc}}, FinishReason: llm.FinishToolCalls}}
+		}()
+		return ch, nil
+	})
+
+	// 父轮 auto：子 Agent 自己的默认是 confirm（种子 coder）——取严后仍是 confirm
+	resp := client.call(protocol.MethodChatSend, protocol.ChatSendParams{Text: "派个活", Approval: protocol.ApprovalAuto})
+	if resp == nil || resp.Error != nil {
+		t.Fatalf("chat.send 失败: %+v", resp)
+	}
+
+	var confirm protocol.ConfirmRequest
+	var sawConfirm bool
+	for i := 0; i < 500 && !sawConfirm; i++ {
+		ev := client.waitEventAny()
+		if ev == nil {
+			break
+		}
+		if ev.Method != protocol.EventConfirm {
+			continue
+		}
+		b, _ := json.Marshal(ev.Params)
+		json.Unmarshal(b, &confirm)
+		sawConfirm = true
+		// 放行（真实用户在 UI 裁决的位置）
+		if r := client.call(protocol.MethodToolConfirm, protocol.ToolConfirmParams{ID: confirm.ID, Allow: true}); r.Error != nil {
+			t.Fatalf("tool.confirm 失败: %v", r.Error)
+		}
+	}
+	if !sawConfirm {
+		t.Fatal("父轮 auto 下子 Agent 的高危调用仍应走确认门（派发取严）")
+	}
+	if confirm.Name != "bash" {
+		t.Fatalf("确认的应是子会话的 bash: %+v", confirm)
+	}
+	if confirm.DispatchID != "call-c1" {
+		t.Fatalf("子会话的确认请求应带 dispatch_id（否则确认卡会跑到外层时间线）: %+v", confirm)
+	}
+	// 放行后子会话继续收尾、主轮验收
+	_ = client.waitEvent(protocol.EventDispatchEnd)
+	_ = client.waitEvent(protocol.EventDone)
+}
