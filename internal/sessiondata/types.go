@@ -41,7 +41,7 @@ type AgentDef struct {
 	Desc      string
 	Color     string   // 标识色（名单卡与选择器圆点）
 	Model     string   // 绑定模型（注册表 id；空 = 未绑定回落 default 角色）
-	Tools     []string // 工具白名单（目录 id；主 Agent 恒只含 agent.dispatch——M3 落地，M1 仅存）
+	Tools     []string // 工具白名单（目录 id；主 Agent 恒只含 agent_dispatch——M3 落地，M1 仅存）
 	Workflow  string   // 流程模块 id（单选；空 = 无）
 	Skills    []string // 技能模块 id（多选注入）
 	Delegates []string // 主 Agent 的默认委派名单（子 Agent 恒空）

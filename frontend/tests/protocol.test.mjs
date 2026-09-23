@@ -6,7 +6,8 @@ import { defaultProtocol } from '../src/shared/agent-protocol.ts';
 test('主 Agent 默认协议包含调度语义', () => {
   const p = defaultProtocol(true);
   assert.match(p, /主 Agent/);
-  assert.match(p, /agent\.dispatch/);
+  // 提示词里点名的调度工具 id 必须与注册表/前端判定一致（改名点号事故的后遗症）
+  assert.match(p, /agent_dispatch/);
   assert.match(p, /验收/);
 });
 

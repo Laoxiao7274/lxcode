@@ -1,4 +1,4 @@
-// M3 agent.dispatch 的 WS 集成测试：主 Agent 直发消息 → 派发 →
+// M3 agent_dispatch 的 WS 集成测试：主 Agent 直发消息 → 派发 →
 // chat.dispatchStart/End + 子事件带 dispatch_id → 前端 store 的数据面。
 package server
 
@@ -29,7 +29,7 @@ func TestDispatchOverWS(t *testing.T) {
 				return ch, nil
 			}
 			tc := llm.ToolCall{ID: "call-d1"}
-			tc.Function.Name = "agent.dispatch"
+			tc.Function.Name = "agent_dispatch"
 			tc.Function.Arguments = `{"agent":"coder","task":"跑测试（验收：通过）"}`
 			go func() {
 				defer close(ch)
@@ -121,7 +121,7 @@ func TestDispatchChildConfirmOverWS(t *testing.T) {
 					return
 				}
 				tc := llm.ToolCall{ID: "call-c1"}
-				tc.Function.Name = "agent.dispatch"
+				tc.Function.Name = "agent_dispatch"
 				tc.Function.Arguments = `{"agent":"coder","task":"跑一条命令"}`
 				ch <- llm.StreamEvent{Type: llm.EventToolCall, ToolCall: tc}
 				ch <- llm.StreamEvent{Type: llm.EventDone, Result: &llm.ChatResult{

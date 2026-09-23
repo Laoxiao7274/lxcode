@@ -64,7 +64,7 @@ func newApprovalDispatchSession(t *testing.T, childApproval string) (*Session, *
 	s.SetAgentResolver(&stubResolver{entries: map[string]*sessiondata.AgentContext{
 		"main": {
 			Def: sessiondata.AgentDef{ID: "main", Name: "主 Agent", IsMain: true, Enabled: true,
-				Tools: []string{"agent.dispatch"}, Delegates: []string{"coder"}},
+				Tools: []string{"agent_dispatch"}, Delegates: []string{"coder"}},
 			Delegates: []sessiondata.AgentDef{
 				{ID: "coder", Name: "代码 Agent", Desc: "跑命令", Enabled: true},
 			},
@@ -95,7 +95,7 @@ func approvalDispatchStream(t *testing.T) StreamFn {
 					return
 				}
 				tc := llm.ToolCall{ID: "call-a1"}
-				tc.Function.Name = "agent.dispatch"
+				tc.Function.Name = "agent_dispatch"
 				tc.Function.Arguments = `{"agent":"coder","task":"跑一条命令"}`
 				ch <- llm.StreamEvent{Type: llm.EventToolCall, ToolCall: tc}
 				ch <- llm.StreamEvent{Type: llm.EventDone, Result: &llm.ChatResult{

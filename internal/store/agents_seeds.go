@@ -115,7 +115,7 @@ var seedAgents = []sessiondata.AgentDef{
 	{
 		ID: "main", Name: "主 Agent", IsMain: true, Enabled: true, Color: "#0d0d0d", Model: "",
 		Desc:     "决策与分派中枢：理解意图、拆解任务、调用名单中的 Agent 并验收汇总。不直接执行任务。",
-		Tools:    []string{"agent.dispatch"},
+		Tools:    []string{"agent_dispatch"},
 		Prompt:   "",
 		Workflow: "plan-execute-verify", Skills: []string{},
 		Delegates: []string{"coder", "researcher", "tester"}, Approval: "confirm",

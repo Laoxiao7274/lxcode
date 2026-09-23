@@ -92,7 +92,7 @@ func TestRepairGivesUpOnInvalidEscape(t *testing.T) {
 }
 
 // TestRepairRealTruncatedDispatch 用**线上真实事故数据**做回归夹具：
-// 2026-09-23 dev 会话里一条被 max_tokens 截断的 agent.dispatch 参数（892 字节，
+// 2026-09-23 dev 会话里一条被 max_tokens 截断的 agent_dispatch 参数（892 字节，
 // 截断点在 task 的代码块中间，字符串与对象都没闭合）。它当时以非法 JSON 进了
 // 历史，导致该会话之后每一次请求都在 anthropic 适配器组装时失败（会话永久锁死）。
 //

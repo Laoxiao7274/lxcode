@@ -1,4 +1,4 @@
-// 演示数据源（M3 叙事）：主 Agent 只调度——思考选人 → agent.dispatch →
+// 演示数据源（M3 叙事）：主 Agent 只调度——思考选人 → agent_dispatch →
 // dispatch 卡（子 Agent 全套执行：思考/读码/改码/确认门/跑测试）→ 验收
 // 汇总。覆盖 UI 全部状态。事件形状与后端协议 1:1——接线换 WSAgent 即可。
 import type { AgentEvent, AgentSource, CompactOutcome, ConfirmRequest, ContextUsage, ProjectInstructions, ProjectMeta, SendOptions, SessionMeta, TodoItem } from "../../shared/types";
@@ -200,12 +200,12 @@ export class DemoAgent implements AgentSource {
 
     // ---- 主 Agent：派发（dispatch 卡开）----
     this.at(t + 900, () => this.emit({ type: "delta", kind: "text", text: "这个任务边界清晰，我派**代码 Agent**去做，稍等。\n\n" }));
-    // 事件序与真实后端一致：模型先发工具调用（agent.dispatch），内核再开
-    // 子上下文。store 对 agent.dispatch 不建工具行（卡才是它的渲染形态）
+    // 事件序与真实后端一致：模型先发工具调用（agent_dispatch），内核再开
+    // 子上下文。store 对 agent_dispatch 不建工具行（卡才是它的渲染形态）
     // ——这里照发，保证 demo 复现真实链路的事件序（重复渲染类回归可测）。
     this.at(t + 1500, () => {
       this.emit({
-        type: "toolCall", id: "d1", name: "agent.dispatch",
+        type: "toolCall", id: "d1", name: "agent_dispatch",
         arguments: JSON.stringify({ agent: "coder", task: "给 internal/agent 的工具循环加 per-tool 120s 超时兜底" }),
       });
     });
@@ -300,11 +300,11 @@ export class DemoAgent implements AgentSource {
         result: allow ? SUB_RESULT : "已完成（源码核对版）：改动与回归用例如上；测试未执行——用户拒绝了 bash，需要时可以说一声我再跑。",
       });
       // 真实后端在子上下文收尾后还会回填一条工具结果（id = 主轮的
-      // agent.dispatch 调用 id）。store 对 agent.dispatch 不建工具行，
+      // agent_dispatch 调用 id）。store 对 agent_dispatch 不建工具行，
       // 这条结果会被安全丢弃（卡的结果来自 dispatchEnd）——照发以保证
       // demo 与真实链路的事件序完全一致。
       this.emit({
-        type: "toolResult", id: "d1", name: "agent.dispatch", isError: false,
+        type: "toolResult", id: "d1", name: "agent_dispatch", isError: false,
         content: allow ? SUB_RESULT : "已完成（源码核对版）",
       });
       this.emit({ type: "todoUpdated", items: TODO_LATER });

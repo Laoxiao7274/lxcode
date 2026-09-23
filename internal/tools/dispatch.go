@@ -1,4 +1,4 @@
-// agent.dispatch 工具（M3——主 Agent 的唯一调度通道）：把任务派给名单
+// agent_dispatch 工具（M3——主 Agent 的唯一调度通道）：把任务派给名单
 // 中的子 Agent。执行体是 agent.Session.runDispatch（runTools 调用位
 // 直连——子循环需要工具调用 id 做事件归属，走通用 Exec 的入参形状
 // 给不了）；这里的 Exec 是未装配路径的兜底。
@@ -30,15 +30,24 @@ type DispatchResult struct {
 	SessionID string
 }
 
-// dispatchDef 返回 agent.dispatch 的注册声明。
+// DispatchToolName 是调度工具的 id。
+//
+// **必须匹配 `^[a-zA-Z0-9_-]{1,64}$`**——OpenAI 与 Anthropic 都按这个字符集校验
+// 工具名，严格的网关会对带点号的 id 直接 400 拒收**整轮**（2026-09-23 实测：
+// 原名 `agent.dispatch` 让主 Agent 每一轮都失败，改成下划线即通过；见 AGENTS.md
+// §5 坑 13）。内核判定与提示词都用这个常量，别再写字面量——`tools` 的测试会校验
+// 全部内置工具 id 的字符集。
+const DispatchToolName = "agent_dispatch"
+
+// dispatchDef 返回 agent_dispatch 的注册声明。
 // 风险定级：低危、不变更（Mutates=false）——工具本身只发起调度；子
 // Agent 的工具执行有各自的确认门与权限门（取严继承），不存在借手
 // 提权：子 Agent 看到的权限面 ≤ 主会话授权面。
-// 两类制：子 Agent 的白名单不含 agent.dispatch——注册表有它但子语境
+// 两类制：子 Agent 的白名单不含 agent_dispatch——注册表有它但子语境
 // 的白名单过滤天然挡掉（深度恒 1）。
 func dispatchDef(r *Registry) *Def {
 	return &Def{
-		Name:        "agent.dispatch",
+		Name:        DispatchToolName,
 		Description: "把任务派给名单中的子 Agent 执行。任务描述必须自包含（目标、约束、验收标准）——子 Agent 看不到当前对话历史；需要背景时放进 context。适合有明确边界且值得独立执行的任务。子 Agent 在**独立会话**里执行（有自己的历史与压缩），返回值里带子会话 id：要接着上次的进度继续，把该 id 填进 session。",
 		Parameters: json.RawMessage(`{
 			"type": "object",

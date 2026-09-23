@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -19,15 +20,24 @@ func call(name, args string) llm.ToolCall {
 	return c
 }
 
+// toolNameOK 是工具名的合法字符集（OpenAI 与 Anthropic 同一条约束）。
+var toolNameOK = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
+
 func TestLLMToolsShape(t *testing.T) {
 	r := New()
 	toolsWire := r.LLMTools()
 	if len(toolsWire) != 9 {
-		t.Fatalf("应有 9 个工具（read_file / search / session_search / read_skill / edit / write_file / bash / todo / agent.dispatch）, got %d", len(toolsWire))
+		t.Fatalf("应有 9 个工具（read_file / search / session_search / read_skill / edit / write_file / bash / todo / agent_dispatch）, got %d", len(toolsWire))
 	}
 	for _, tw := range toolsWire {
 		if tw.Name == "" || tw.Description == "" || !json.Valid(tw.Parameters) {
 			t.Fatalf("工具声明不完整: %+v", tw)
+		}
+		// 工具名必须匹配 ^[a-zA-Z0-9_-]{1,64}$（OpenAI 与 Anthropic 同一约束）：
+		// 带点号的 id 会被严格网关 400 拒收**整轮**（2026-09-23 实测 agent.dispatch
+		// 让主 Agent 每轮都失败，见 AGENTS.md §5 坑 13）
+		if !toolNameOK.MatchString(tw.Name) {
+			t.Fatalf("工具名 %q 不匹配 ^[a-zA-Z0-9_-]{1,64}$——严格网关会 400 拒收整轮", tw.Name)
 		}
 		// schema 必须是对象类型且带 required
 		var s map[string]any

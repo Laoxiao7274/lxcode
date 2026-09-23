@@ -112,7 +112,7 @@ func TestComposeMainAgentDelegatesInjection(t *testing.T) {
 	s := newAgentSession(t)
 	ac := &sessiondata.AgentContext{
 		Def: sessiondata.AgentDef{ID: "main", Name: "主 Agent", IsMain: true,
-			Tools: []string{"agent.dispatch"}},
+			Tools: []string{"agent_dispatch"}},
 		Delegates: []sessiondata.AgentDef{
 			{ID: "coder", Name: "代码 Agent", Desc: "写代码", Enabled: true},
 			{ID: "ops", Name: "运维 Agent", Desc: "跑命令", Enabled: false},

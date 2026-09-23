@@ -232,7 +232,7 @@ func TestSyncSeedAgentsKeepsUserEditedDelegates(t *testing.T) {
 // 没有任何报错），并守住两类制与执行面边界。
 //
 // 工具面的判据 = 目录种子（command 非空的，能进注册表）∪ 注册表内置工具：
-// agent.dispatch 是内置工具、**不在目录里**（目录是拓展目录，内置工具由代码注册），
+// agent_dispatch 是内置工具、**不在目录里**（目录是拓展目录，内置工具由代码注册），
 // 所以只查目录会把主 Agent 误判成引用了不存在的工具。测试引 tools 包拿内置清单
 // 是允许的（架构守卫只查非测试文件；tools 不反向依赖 store，不成环）。
 func TestSeedAgentsSelfConsistent(t *testing.T) {
@@ -289,10 +289,10 @@ func TestSeedAgentsSelfConsistent(t *testing.T) {
 			}
 		}
 		if !a.IsMain {
-			// 两类制：子 Agent 是纯执行者——白名单不含 agent.dispatch，
+			// 两类制：子 Agent 是纯执行者——白名单不含 agent_dispatch，
 			// 也没有委派名单（深度恒 1）
-			if containsStr(a.Tools, "agent.dispatch") {
-				t.Fatalf("子 Agent %s 的白名单不该含 agent.dispatch（两类制）", a.ID)
+			if containsStr(a.Tools, "agent_dispatch") {
+				t.Fatalf("子 Agent %s 的白名单不该含 agent_dispatch（两类制）", a.ID)
 			}
 			if len(a.Delegates) != 0 {
 				t.Fatalf("子 Agent %s 不该有委派名单（两类制深度恒 1）: %v", a.ID, a.Delegates)

@@ -44,15 +44,15 @@ const systemPromptFooter = `
 // 写在这里而不是工具的 Description——Description 面向"怎么用"（给模型的
 // 参数级指导），这里要的是"有什么、风险等级"（给守则层的全局观）。
 var systemPromptTools = map[string]string{
-	"read_file":      "read_file：读取文件，低危自动执行，支持分页与行号",
-	"search":         "search：搜索文件内容/文件名，低危自动执行，不经过 shell",
-	"session_search": "session_search：搜索历史会话内容（含当前会话），低危自动执行",
-	"read_skill":     "read_skill：读取技能的完整内容（提示词里只有索引），低危自动执行",
-	"edit":           "edit：精确修改文件片段（唯一匹配替换），低危自动执行",
-	"write_file":     "write_file：全量写入文件，覆盖已有文件时用户会收到确认提示",
-	"bash":           "bash：执行 shell 命令，每次执行前用户会收到确认提示",
-	"todo":           "todo：维护任务清单（全量写入），低危自动执行",
-	"agent.dispatch": "agent.dispatch：把任务派给名单中的子 Agent（任务的完整执行在子上下文里，结果回传验收），低危自动执行",
+	"read_file":            "read_file：读取文件，低危自动执行，支持分页与行号",
+	"search":               "search：搜索文件内容/文件名，低危自动执行，不经过 shell",
+	"session_search":       "session_search：搜索历史会话内容（含当前会话），低危自动执行",
+	"read_skill":           "read_skill：读取技能的完整内容（提示词里只有索引），低危自动执行",
+	"edit":                 "edit：精确修改文件片段（唯一匹配替换），低危自动执行",
+	"write_file":           "write_file：全量写入文件，覆盖已有文件时用户会收到确认提示",
+	"bash":                 "bash：执行 shell 命令，每次执行前用户会收到确认提示",
+	"todo":                 "todo：维护任务清单（全量写入），低危自动执行",
+	tools.DispatchToolName: tools.DispatchToolName + "：把任务派给名单中的子 Agent（任务的完整执行在子上下文里，结果回传验收），低危自动执行",
 }
 
 // ProjectDocs 是注入提示词的项目守则（项目根的 AGENTS.md）。

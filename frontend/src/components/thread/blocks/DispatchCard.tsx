@@ -1,4 +1,4 @@
-// 主 Agent 调度子 Agent 的卡（agent.dispatch 的渲染形态——M3 语义的
+// 主 Agent 调度子 Agent 的卡（agent_dispatch 的渲染形态——M3 语义的
 // 前端部分）：Agent 身份头（色点 + 名 + 任务摘要）+ 状态（运行中 spinner/
 // 已完成）+ 子执行过程（嵌套块缩进——子上下文隔离）+ 最终结果（验收）。
 // 子块的事件流已按 dispatchId 归属到 subBlocks（store 的归属路由）。

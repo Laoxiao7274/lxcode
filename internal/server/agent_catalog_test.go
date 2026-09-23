@@ -107,7 +107,7 @@ func TestAgentCatalogOverWS(t *testing.T) {
 		for _, want := range []string{"coder", "researcher", "tester"} {
 			d, ok := byID[want]
 			if !ok {
-				t.Fatalf("主 Agent 的有效委派名单缺 %s（agent.dispatch 会拒）: %v", want, ac.Delegates)
+				t.Fatalf("主 Agent 的有效委派名单缺 %s（agent_dispatch 会拒）: %v", want, ac.Delegates)
 			}
 			// 职责描述进主 Agent 的提示词（选人信号）——不能是空的
 			if strings.TrimSpace(d.Desc) == "" {

@@ -10,7 +10,7 @@ export function defaultProtocol(isMain: boolean): string {
         "",
         "收到用户请求后：",
         "1. 判断意图，从「可委派名单」选最合适的 Agent",
-        "2. 通过 agent.dispatch 下发——任务描述必须自带验收标准",
+        "2. 通过 agent_dispatch 下发——任务描述必须自带验收标准",
         "3. 验收子任务结果（不合格的带着理由重派或自己说明）",
         "4. 汇总答复用户；没有合适人选时说明缺口，不硬派",
       ].join("\n")

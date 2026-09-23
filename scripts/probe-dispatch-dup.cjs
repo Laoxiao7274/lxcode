@@ -1,4 +1,4 @@
-// 探针：dispatch 不重复渲染——主时间线无 agent.dispatch 工具行，卡只有一张
+// 探针：dispatch 不重复渲染——主时间线无 agent_dispatch 工具行，卡只有一张
 const { app, BrowserWindow } = require("electron");
 const fs = require("fs");
 const log = (...a) => process.stderr.write(a.join(" ") + "\n");

@@ -20,7 +20,7 @@ func mainProtocol() string {
 		"",
 		"收到用户请求后：",
 		"1. 判断意图，从「可委派名单」选最合适的 Agent",
-		"2. 通过 agent.dispatch 下发——任务描述必须自带验收标准",
+		"2. 通过 agent_dispatch 下发——任务描述必须自带验收标准",
 		"3. 验收子任务结果（不合格的带着理由重派或自己说明）",
 		"4. 汇总答复用户；没有合适人选时说明缺口，不硬派",
 	}, "\n")
@@ -89,10 +89,10 @@ func ComposeSystemPrompt(toolReg *tools.Registry, workDir string, ac *sessiondat
 	}
 
 	// ④ 动态注入：主 Agent 的有效委派名单（子 Agent 的职责描述 =
-	// 主 Agent 的选人信号）。id 必须在场——agent.dispatch 的入参是
+	// 主 Agent 的选人信号）。id 必须在场——agent_dispatch 的入参是
 	// id 不是名字（真实模型实测：只给名字会把名字当 id 传）。
 	if ac.Def.IsMain && len(ac.Delegates) > 0 {
-		b.WriteString("\n可委派名单（agent.dispatch 的 agent 参数填下面的 id）：\n")
+		b.WriteString("\n可委派名单（agent_dispatch 的 agent 参数填下面的 id）：\n")
 		for i := range ac.Delegates {
 			d := ac.Delegates[i]
 			status := ""

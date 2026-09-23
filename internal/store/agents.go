@@ -85,8 +85,11 @@ func (s *Store) initAgents() error {
 	}
 	now := nowNano()
 	if n > 0 {
-		// 老库：只同步目录种子（不碰 Agent 名单——主 Agent 的委派名单等
-		// 字段用户可改，覆盖就是吃掉用户的配置）
+		// 老库：先把改过名的工具 id 迁过来（幂等，见 migration.go），再同步目录种子
+		//（不碰 Agent 名单——主 Agent 的委派名单等字段用户可改，覆盖就是吃掉用户的配置）
+		if err := s.migrateDispatchToolID(); err != nil {
+			return err
+		}
 		return s.syncCatalogSeeds(now)
 	}
 	// 首次：整套种子（内容对齐前端 agent-seeds.ts 的目录部分；演示 Agent 名单
@@ -194,7 +197,7 @@ func ensureSeedAgents(exec execer, now string) error {
 // topUpMainDelegates 给主 Agent 的委派名单补上本版**新增**的种子子 Agent。
 //
 // 为什么需要：只插行不改名单的话，主 Agent 的提示词里没有它们（compose 的
-// 可委派名单来自这里），agent.dispatch 的名单校验也会拒绝（server 的有效名单
+// 可委派名单来自这里），agent_dispatch 的名单校验也会拒绝（server 的有效名单
 // = 默认 ∩ 启用）——「加了却派不出去」。
 // 为什么不是无条件追加：用户删过某个种子子 Agent 时，无条件追加会把它反复塞
 // 回去（每次 Open 都塞）——那就是吃掉用户的编辑。所以只在名单仍含上一版种子的

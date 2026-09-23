@@ -68,7 +68,7 @@ func TestCatalogToolsSeedSkipped(t *testing.T) {
 	if _, ok := srv.treg.Get("browser"); ok {
 		t.Fatal("browser 未配置 command，不该被注册（跳过即可，注册了模型会去调一个跑不起来的工具）")
 	}
-	for _, name := range []string{"read_file", "search", "session_search", "read_skill", "edit", "write_file", "bash", "todo", "agent.dispatch"} {
+	for _, name := range []string{"read_file", "search", "session_search", "read_skill", "edit", "write_file", "bash", "todo", "agent_dispatch"} {
 		if _, ok := srv.treg.Get(name); !ok {
 			t.Fatalf("内置工具 %s 丢失", name)
 		}

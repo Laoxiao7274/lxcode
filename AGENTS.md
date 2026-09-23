@@ -96,7 +96,7 @@
 
 **每会话注入态（`internal/tools/sessionstate.go`）**：`todo` 的清单写回口与 `read_skill` 的技能目录**经 ctx 注入**（`tools.WithTodoSink` / `WithSkillSource`），不再挂注册表全局——注册表是进程级单例，而这两者都是**会话级**状态；子 Agent 变独立会话后，注册表级全局态会让父子互相踩（子会话一建就把父的 sink 顶掉、子会话的技能目录污染父会话——原来的 save/restore hack 就是被这件事逼出来的补丁）。与 `tools.WithWorkDir` 同一套机制与理由。
 
-**续跑（S4）**：`agent.dispatch` 加可选 `session` 参数（续跑既有子会话）；工具结果里回带 `[子会话 id: …]`，主 Agent 下一轮就能显式接着它跑（真链路实测：主 Agent 自发这么做了——它读到工具结果里的子会话 id 后，在下一轮把该 id 填进 `session` 续跑）。
+**续跑（S4）**：`agent_dispatch` 加可选 `session` 参数（续跑既有子会话）；工具结果里回带 `[子会话 id: …]`，主 Agent 下一轮就能显式接着它跑（真链路实测：主 Agent 自发这么做了——它读到工具结果里的子会话 id 后，在下一轮把该 id 填进 `session` 续跑）。
 
 **协议**：`chat.dispatchStart/End` 带 `session_id`（子会话 id 上卡，前端显示 + 续跑依据）；`chat.compacted` 带 `dispatch_id`（子会话自己的压缩归属进卡内，不插主时间线）；前端 `DispatchCard` 显示子会话 id 徽标，`reduceSub` 处理 `compacted`。
 
@@ -114,7 +114,7 @@
 | `write_file` | 高危 | 全量覆盖：覆盖已有文件需确认 + 缩水守卫（<50% 告警） |
 | `bash` | 高危 | 超时 60s/上限 300s、输出 32KB、stdin ≤64KB；**Windows shell 选择见 §5 坑** |
 | `todo` | 低危 | 任务清单全量写入（active 唯一性硬校验）；会话持有状态 + TodoUpdated 事件 |
-| `agent.dispatch` | 低危 | 主 Agent 唯一工具：把任务派给名单里的子 Agent（**子 Agent = 独立会话**，见 §2.3；深度恒 1） |
+| `agent_dispatch` | 低危 | 主 Agent 唯一工具：把任务派给名单里的子 Agent（**子 Agent = 独立会话**，见 §2.3；深度恒 1） |
 
 **自定义工具（M4-1 执行面，2026-09-21）**：目录里 `source=binary` 的条目由 server 在启动与每次 `catalog.tools.*` 变更后经 `syncDynamicTools()` 注册进注册表（`tools.Registry.SetDynamic` 整体替换动态段；内置段不动，同名跳过并记日志）。执行语义：
 
@@ -130,7 +130,7 @@
 - **权限模式三档**（chat.send 的 approval 参数，随消息携带）：`confirm`（默认）= 低危自动 + 高危确认；`auto` = 高危也自动执行（仅隔离环境）；`strict` = 只读——变更类工具（`Def.Mutates`：edit/write_file/bash，与风险等级正交）直接拒绝、错误回填模型。风险等级管"要不要确认"，Mutates 管"只读模式禁不禁"——edit 低危但变更文件，strict 下必须拒。
 - 参数坏 JSON 先走保守修复（`internal/jsonrepair`：裸换行/尾逗号/单引号/截断补括号），修复成功注明——弱模型坏参数是高频失败形态。
 - **工具调用参数必须在写边界就合法**（2026-09-23 线上事故，见 §5 坑 12）：三道防线——① `agent.sanitizeToolCallArgs` 在 `s.append` 前清洗（正常轮次与流失败保留 partial 两条路径都走）；② `llm.repairToolArgsForWire` 组装请求时兜底（保守修复，修不动发 `{}`，**绝不报错**）；③ `tools.Execute` 执行前再试一次。三者共用 `jsonrepair` 一份实现。
-- **工具 id 必须匹配 `^[a-zA-Z0-9_-]{1,64}$`**（OpenAI 与 Anthropic 的同一条约束）：内置的 `agent.dispatch` **带点号，违反这条**，宽松网关过去放过、严格的会 400 拒收整轮（见 §5 坑 13）。新增内置工具或导入目录条目时不要用点号。
+- **工具 id 必须匹配 `^[a-zA-Z0-9_-]{1,64}$`**（OpenAI 与 Anthropic 的同一条约束）：违反它会被严格网关 400 拒收整轮——原名 `agent.dispatch` 的点号就栽在这上面（2026-09-23 改成 `agent_dispatch` 并配老库迁移，见 §5 坑 13）。`tools` 的 `TestLLMToolsShape` 已按这条字符集校验全部内置工具 id；新增内置工具或导入目录条目时不要用点号。
 
 ## 4. 开发约定
 
@@ -164,7 +164,7 @@
 10. **从被 Job Object 包住的宿主拉起 Electron 时必须 `--no-sandbox`**：Chromium 子进程沙箱与外层 Job Object 冲突，GPU 子进程 STATUS_BREAKPOINT（0x80000003）崩溃循环直至整个应用 FATAL（实测：DSH 后台 job 里拉起必崩，交互式启动正常）。本应用渲染层零远程内容，安全面可接受；引入远程内容渲染前必须重新评估。
 11. **后端二进制不会热重载——前端热的、后端可能是几天前的**：dev 栈只在 `dev.mjs` 启动那一刻编译一次 Go 后端，之后 vite 热重载前端、后端进程纹丝不动。**症状是「前端诡异 bug」**：协议新增字段（如 `ConfirmRequest.dispatch_id`）在旧后端里不存在，于是新前端收到的事件缺字段，表现为子 Agent 的确认卡跑到外层时间线、卡片永远「执行中…」，而四层映射代码全都是对的（2026-09-21 实测事故，排查代价极大）。**先跑 `node scripts/check-stack.mjs`**（比较二进制内嵌 buildvcs 提交与 HEAD）再动前端代码；处置 = 重启 dev 栈（Windows 下运行中的 exe 被锁，必须先停栈才能重新 `go build`）。
 12. **历史里一条参数非法的 tool call 会让会话永久发不出请求**（2026-09-23 线上事故，排查代价极大）：模型输出被 max_tokens 截断时 `arguments` 是半截 JSON，旧实现把它原样写进历史；此后**每一次**请求都在 anthropic 适配器组装阶段硬失败（`工具 X 的 arguments 不是合法 JSON: …`），用户连发三条消息全部无响应，只能新开会话。**症状**：那条报错的 100 字节前缀与历史里某条 tool call 的参数逐字节相同（用只读探针把 `messages.tool_calls` 抠出来比对即可定性）。**处置**：写边界清洗 + 读侧兜底（见 §3）。**教训**：畸形历史条目要么在写边界拦住、要么在读侧兜底，"硬校验 + 无修复路径"会把单个坏数据放大成会话级故障（与坑 5 的配对不变量同类）。
-13. **工具名里的点号会被严格网关 400 拒收**（2026-09-23 实测）：OpenAI 与 Anthropic 都把工具名约束为 `^[a-zA-Z0-9_-]{1,64}$`，内置的 `agent.dispatch` 带点号**违反这条**；宽松网关（旧的 LiteLLM 配置等）过去放过，严格化之后即 `Invalid 'tools[0].name': string does not match pattern` + `No fallback model group found`，**每一个带工具的主 Agent 轮次全部失败**（子 Agent 白名单无点号，仍可用——这也是一条应急旁路）。判定方法：拿同一端点直发两次最小请求（`read_file` 与 `agent.dispatch`）对比状态码。新增工具/目录条目一律避开点号。
+13. **工具名里的点号会被严格网关 400 拒收**（2026-09-23 实测，已修）：OpenAI 与 Anthropic 都把工具名约束为 `^[a-zA-Z0-9_-]{1,64}$`——调度工具原名 `agent.dispatch` 的点号**违反这条**；宽松网关（旧的 LiteLLM 配置等）过去放过，网关严格化之后即 `Invalid 'tools[0].name': string does not match pattern` + `No fallback model group found`，**每一个带工具的主 Agent 轮次全部失败**（子 Agent 白名单全是下划线名，仍可用——应急旁路）。**修法**：改名 `agent_dispatch`（内核判定 / 提示词表 / 前端渲染判定 / 种子同步全改，`tools.DispatchToolName` 是唯一字面量）+ `Open` 时幂等迁移老库（白名单与历史里的旧名，`internal/store/migration.go`）。**排查手法**：拿同一端点直发两次最小请求（一个带点号名、一个下划线名）对比状态码，一眼定性。新增工具/目录条目一律避开点号。
 
 ## 6. Windows 服务运维（对齐参考项目的部署形态）
 
@@ -197,10 +197,11 @@ Harness 的目标形态：**主 Agent 只做决策与分派，子 Agent 是用�
 - 字段命名注意：AgentDef 的流程模块字段叫 `workflow` 不叫 `process`——与 Node 全局 `process` 撞形会让边界守卫（scripts/check-boundaries.mjs）误报，属性读取与 `process.env` 结构上无法区分。
 - **种子名单（2026-09-23）**：后端种子 = 主 Agent + 三个执行面 Agent——`coder`（代码，实现）、`researcher`（调研，只读勘察）、`tester`（测试，验证与跑命令）；主 Agent 的 `delegates` = 这三个 id。前端 `agent-seeds.ts` 的演示名单（main/coder/researcher/reviewer/ops）是**演示专属**，live 模式下后端是事实源（`shared/agents.tsx`）。三条种子纪律：
   - **执行面即白名单**：调研 Agent 的 `tools` 不含 edit/write_file/bash（"不改文件"是结构保证），`approval=strict` 是第二道保险；测试 Agent 必须含 `bash`（不跑就无从验证）；
-  - **子 Agent 种子不含 `agent.dispatch`**（两类制，深度恒 1）；白名单也不含"声明了没实现"的工具（如 `browser`——注册表里没有它，提示词会点名「当前不可用」）；
+  - **子 Agent 种子不含 `agent_dispatch`**（两类制，深度恒 1）；白名单也不含"声明了没实现"的工具（如 `browser`——注册表里没有它，提示词会点名「当前不可用」）；
   - **种子必须自洽**：`workflow`/`skills`/`tools` 引用的 id 必须真实存在——server 按 id 解析时**缺失静默跳过**，打错就是一份空提示词且不报任何错（`TestSeedAgentsSelfConsistent` 钉住这条）。
 - **种子同步（Agent 侧，2026-09-23）**：工具/模块按 `custom` 全字段同步（见 §3），Agent 名单**更严**——`ensureSeedAgents` 只插入缺失的 id（已有行一律不 UPDATE、绝不 DELETE：子 Agent 种子插入即 `custom=1`＝用户所有，主 Agent 的 `delegates` 更是用户配置），`topUpMainDelegates` 只在主 Agent 的委派名单仍含**上一版**种子子 Agent（`seedDelegatesBaseline`）时才补新增的。代价：用户删过的种子 Agent 下次 Open 会回来（工具/模块的种子同步本来同性质——不想要应停用而不是删除）。
 - **审批取严（2026-09-23）**：`effectiveApproval` 是"请求级 > Agent 默认 > confirm"（请求级是用户的显式选择，**不在这里取严**）；取严发生在**派发**这一层——`runDispatch` 用 `stricterApproval(父轮审批, 子 Agent 默认)`（auto < confirm < strict；子 Agent 未声明默认 = 继承请求方），子执行面因此不大于请求方。
+- **改名迁移是「不碰用户数据」的唯一例外（2026-09-23）**：调度工具 id 从 `agent.dispatch` 改成 `agent_dispatch`（点号违反工具名字符集，见 §5 坑 13）时，`Open` 会跑一次**幂等**迁移，把**白名单**（`agents.tools`）与**历史**（`messages.tool_calls` 的 `function.name`）里的旧名一起改掉——包括 `custom=1` 的用户行（不迁的话白名单就指着不存在的工具，主 Agent 的派发直接不可用）。这是唯一一处刻意碰用户数据的地方（"种子同步不碰 custom=1"的纪律仍然成立）；只改标识符本身，用 **JSON 层改写而非字符串替换**（正文里完全可能恰好出现同名字面量），`internal/store/migration_test.go` 钉住幂等 + "只改名字、id/参数/正文一律不动"。
 
 ## 9. 待定决策
 
@@ -211,4 +212,4 @@ Harness 的目标形态：**主 Agent 只做决策与分派，子 Agent 是用�
 | 上下文管理 | **已落地（2026-09-22，P1~P5 + 子会话头部保护，见 §2.2/§2.3）**：计账（真实 prompt_tokens 锚定 + 分类归一）、工具配对不变量、摘要压缩（自动三条触发路径 + 手动 `/compact` + 影子区间落库，区间可为前缀也可为中间段）、取消/失败路径的配对补齐（P5——不挂 LLM 的确定性补齐）、子会话任务说明书的头部保护（`protectHead`）、前端「已压缩历史」块与指示器入口。**未做**：P3 确定性裁剪；工具结果截断（8KB/条）继续兜底 |
 | 语义记忆 | 未做（会话搜索先行）；**存储底座已定（2026-12）：会话已切 SQLite（modernc 纯 Go）——语义记忆/向量检索（FTS5/sqlite-vec）将在同库扩展，不再单独立项选型** |
 | 自更新 | 方向 = 定时检查 + 人工确认；机制已定（2026-12）：**自建 zip 更新**（manifest.json + update-\<version\>.zip，两级：后端热替换 / asar 冷替换，Electron 升级走全量安装包；electron-updater 方案作废）——**产物侧已实现**（build.mjs 产出 zip+manifest），**客户端更新器未实现**（待做：检查/下载/校验/替换编排，路线图 M5）；服务形态走 scripts\service\update.ps1 |
-| **后端化路线** | **已定**（2026-09-18，docs/backend-roadmap.md）：M1 注册表与目录（四张表+agent.\*/catalog.\* 协议+前端接线）→ M2 上下文组装+Agent 直选（chat.send 带 agentId）→ M3 agent.dispatch（**2026-09-22 升级：子 Agent = 独立会话**——见 §2.3；原「子上下文隔离」的取舍是"子上下文随主会话轮次结束丢弃"，现已改为独立持久会话，可续跑、压缩同款）→ M4 拓展执行面（自定义工具 spawn/MCP stdio/网页搜索）→ M5 远程访问+更新器。子 Agent 再委派/多活跃会话/worktree 明确出界 |
+| **后端化路线** | **已定**（2026-09-18，docs/backend-roadmap.md）：M1 注册表与目录（四张表+agent.\*/catalog.\* 协议+前端接线）→ M2 上下文组装+Agent 直选（chat.send 带 agentId）→ M3 agent_dispatch（**2026-09-22 升级：子 Agent = 独立会话**——见 §2.3；原「子上下文隔离」的取舍是"子上下文随主会话轮次结束丢弃"，现已改为独立持久会话，可续跑、压缩同款）→ M4 拓展执行面（自定义工具 spawn/MCP stdio/网页搜索）→ M5 远程访问+更新器。子 Agent 再委派/多活跃会话/worktree 明确出界 |

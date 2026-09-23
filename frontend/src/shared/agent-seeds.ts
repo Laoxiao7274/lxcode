@@ -4,7 +4,7 @@ import type { AgentDef, ContextModuleSpec, McServerSpec, ToolSpec } from "./agen
 
 /** 主 Agent 的唯一工具：调用名单中的其他 Agent。 */
 export const MAIN_TOOL: ToolSpec = {
-  id: "agent.dispatch",
+  id: "agent_dispatch",
   desc: "调用名单中的其他 Agent 执行子任务（主 Agent 唯一的调度通道）",
   risk: "low",
   source: "builtin",

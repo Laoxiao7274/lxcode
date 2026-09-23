@@ -1066,7 +1066,7 @@ body:has(.window-stage) {
   display: flex;
   flex-direction: column;
 }
-/* ===== 主 Agent 调度子 Agent 的卡（agent.dispatch——M3 语义） ===== */
+/* ===== 主 Agent 调度子 Agent 的卡（agent_dispatch——M3 语义） ===== */
 .dispatch-card {
   border: 1px solid var(--border-soft);
   border-radius: 12px;

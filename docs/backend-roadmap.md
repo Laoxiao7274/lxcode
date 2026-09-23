@@ -20,7 +20,7 @@ CREATE TABLE agents (
   desc TEXT NOT NULL DEFAULT '',
   color TEXT NOT NULL DEFAULT '#3b82f6',
   model TEXT NOT NULL DEFAULT '',          -- 绑定模型（模型注册表 id；空 = 未绑定）
-  tools TEXT NOT NULL DEFAULT '[]',        -- JSON: 工具白名单 id 数组（主 Agent 恒 ["agent.dispatch"]）
+  tools TEXT NOT NULL DEFAULT '[]',        -- JSON: 工具白名单 id 数组（主 Agent 恒 ["agent_dispatch"]）
   workflow TEXT NOT NULL DEFAULT '',       -- 流程模块 id（单选；空 = 无）
   skills TEXT NOT NULL DEFAULT '[]',      -- JSON: 技能模块 id 数组（多选）
   delegates TEXT NOT NULL DEFAULT '[]',   -- JSON: 主 Agent 的默认委派名单（子 Agent 恒空）
@@ -132,16 +132,16 @@ catalog.changed {kind}
 - 前端：chat.send 带 activeAgentId（SendOptions 扩展）；空态/AgentPicker 语义不变
 - 验收：对话真的按选中 Agent 的人格/工具面/模型跑（真模型冒烟：选不同 Agent 发消息，行为可辨）
 
-## M3 — agent.dispatch 运行时（子上下文隔离）
+## M3 — agent_dispatch 运行时（子上下文隔离）
 
-- 新工具 `agent.dispatch`（主 Agent 唯一工具——`Def.Risk=low`、params: agent/task/context）：
+- 新工具 `agent_dispatch`（主 Agent 唯一工具——`Def.Risk=low`、params: agent/task/context）：
   1. 校验目标在有效委派名单内（不在则错误回填模型自解释）
   2. **开子上下文**：`SubSession{ def, task, context }`——不含主会话历史（隔离拍板）
   3. 子 Agent 的四层组合 + 模型绑定 + 工具白名单 + **权限取严**（子 Agent 默认 approval 与主 Agent 的会话级请求取更严者）
   4. 跑完整工具循环（复用 Session 的循环结构——抽出可复用的 runLoop）
   5. 最终 assistant 回复作为 dispatch 的工具结果回填主会话
 - 事件流（前端 Thread 的 dispatch 块渲染依据）：
-  - `chat.toolCall`（现有，name=agent.dispatch）+ **新增 `chat.dispatch` 事件**（携带 agentId/任务摘要/状态）——前端把 dispatch 块渲染为「Agent 卡片 + 展开的子执行过程」
+  - `chat.toolCall`（现有，name=agent_dispatch）+ **新增 `chat.dispatch` 事件**（携带 agentId/任务摘要/状态）——前端把 dispatch 块渲染为「Agent 卡片 + 展开的子执行过程」
   - 子执行的事件流：**复用现有 delta/toolCall/toolResult**（带 dispatchId 标记归属，前端按归属挂到 dispatch 块下）——**拍板：M3 用现有事件 + dispatchId 字段扩展，不另起一套子事件流**
 - 并发与预算：v1 **顺序执行**（主 Agent 等 dispatch 返回再继续——会话本来就是单 busy）；子执行共享主会话的取消（ctx 派生）
 - 验收：真链路「让主 Agent 派代码 Agent 干活」——子 Agent 的工具调用在前端 dispatch 卡内可见；中途取消主会话，子执行同步停

@@ -1,4 +1,4 @@
-// M3 agent.dispatch 的内核测试：主 Agent 派发 → 子上下文隔离执行 →
+// M3 agent_dispatch 的内核测试：主 Agent 派发 → 子上下文隔离执行 →
 // 结果回填主历史；委派名单校验；事件归属标记。
 package agent
 
@@ -57,7 +57,7 @@ func newDispatchSession(t *testing.T, stream StreamFn) *dispatchEnv {
 	s.SetAgentResolver(&stubResolver{entries: map[string]*sessiondata.AgentContext{
 		"main": {
 			Def: sessiondata.AgentDef{ID: "main", Name: "主 Agent", IsMain: true, Enabled: true,
-				Tools: []string{"agent.dispatch"}, Delegates: []string{"coder"}},
+				Tools: []string{"agent_dispatch"}, Delegates: []string{"coder"}},
 			Delegates: []sessiondata.AgentDef{
 				{ID: "coder", Name: "代码 Agent", Desc: "写代码", Enabled: true},
 			},
@@ -92,7 +92,7 @@ func TestDispatchSubContextIsolation(t *testing.T) {
 			mainCalls++
 			if mainCalls == 1 {
 				tc := llm.ToolCall{ID: "call-1"}
-				tc.Function.Name = "agent.dispatch"
+				tc.Function.Name = "agent_dispatch"
 				tc.Function.Arguments = `{"agent":"coder","task":"读 README 并总结","context":"项目根在当前目录"}`
 				go func() {
 					defer close(ch)
@@ -201,7 +201,7 @@ func TestDispatchGuards(t *testing.T) {
 			ch := make(chan llm.StreamEvent, 4)
 			if strings.Contains(msgs[0].Content, "调度中枢") {
 				tc := llm.ToolCall{ID: "c1"}
-				tc.Function.Name = "agent.dispatch"
+				tc.Function.Name = "agent_dispatch"
 				tc.Function.Arguments = `{"agent":"` + target + `","task":"x"}`
 				go func() {
 					defer close(ch)

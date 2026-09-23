@@ -47,7 +47,7 @@ func newChildSessionEnv(t *testing.T) (*dispatchEnv, *store.Store) {
 	s.SetAgentResolver(&stubResolver{entries: map[string]*sessiondata.AgentContext{
 		"main": {
 			Def: sessiondata.AgentDef{ID: "main", Name: "主 Agent", IsMain: true, Enabled: true,
-				Tools: []string{"agent.dispatch"}, Delegates: []string{"coder"}},
+				Tools: []string{"agent_dispatch"}, Delegates: []string{"coder"}},
 			Delegates: []sessiondata.AgentDef{
 				{ID: "coder", Name: "代码 Agent", Desc: "写代码", Enabled: true},
 			},
@@ -65,7 +65,7 @@ func newChildSessionEnv(t *testing.T) (*dispatchEnv, *store.Store) {
 }
 
 // dispatchStream 造"主 Agent 派发一次 + 子会话给出结论"的假流。
-// taskJSON 是 agent.dispatch 的参数；subText 是子会话的最终回复。
+// taskJSON 是 agent_dispatch 的参数；subText 是子会话的最终回复。
 // mainRounds 控制主轮数（第一轮派发，之后收尾）。
 func dispatchStream(t *testing.T, taskJSON, subText string) StreamFn {
 	t.Helper()
@@ -84,7 +84,7 @@ func dispatchStream(t *testing.T, taskJSON, subText string) StreamFn {
 				return ch, nil
 			}
 			tc := llm.ToolCall{ID: "call-d1"}
-			tc.Function.Name = "agent.dispatch"
+			tc.Function.Name = "agent_dispatch"
 			tc.Function.Arguments = taskJSON
 			go func() {
 				defer close(ch)

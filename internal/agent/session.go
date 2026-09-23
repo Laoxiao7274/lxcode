@@ -250,7 +250,7 @@ func WithAgent(id string) SendOpt { return func(c *sendConfig) { c.agentID = id 
 
 // resolveAgent 解析本轮 Agent 载荷。agentID 空 + 无 resolver = nil
 // （旧语境）；agentID 空 + 有 resolver = 主 Agent（调度中枢——M3 后
-// agent.dispatch 已注册，主语境完整生效：不带 agent 的消息默认走
+// agent_dispatch 已注册，主语境完整生效：不带 agent 的消息默认走
 // 主 Agent，它只派活不亲自执行）；agentID 非空但名单没有 = 哨兵
 // 错误。停用的 Agent 不可选用。
 func (s *Session) resolveAgent(agentID string) (*sessiondata.AgentContext, error) {
@@ -752,7 +752,7 @@ func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChange
 			return false
 		}
 		// 白名单防御：清单外的工具拒绝（ac 非 nil 才有白名单语义）。
-		// agent.dispatch 在子语境天然被挡（子 Agent 白名单不含它——
+		// agent_dispatch 在子语境天然被挡（子 Agent 白名单不含它——
 		// 两类制深度恒 1 的运行时保证）。
 		if allowed != nil && !allowed[tc.Function.Name] {
 			reject := fmt.Sprintf(
@@ -792,11 +792,11 @@ func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChange
 				continue
 			}
 		}
-		// agent.dispatch 走内核直连（工具声明的 Exec 是未接线兜底）：
+		// agent_dispatch 走内核直连（工具声明的 Exec 是未接线兜底）：
 		// 子循环需要 tc.ID 做事件归属 + 委派名单校验，Exec 的入参形状
 		//（json.RawMessage）给不了——在调用位展开。
 		var result string
-		if tc.Function.Name == "agent.dispatch" {
+		if tc.Function.Name == tools.DispatchToolName {
 			var p struct {
 				Agent   string `json:"agent"`
 				Task    string `json:"task"`
@@ -804,7 +804,7 @@ func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChange
 				Session string `json:"session"`
 			}
 			if err := json.Unmarshal([]byte(tc.Function.Arguments), &p); err != nil {
-				result = fmt.Sprintf("错误: agent.dispatch 参数解析失败: %v", err)
+				result = fmt.Sprintf("错误: %s 参数解析失败: %v", tools.DispatchToolName, err)
 			} else {
 				res := s.runDispatch(ctx, tools.DispatchCall{
 					DispatchID: tc.ID, Agent: p.Agent, Task: p.Task, Context: p.Context,

@@ -132,10 +132,10 @@ export function reduce(state: UIState, ev: AgentEvent): UIState {
         const b = blocks[i];
         if (b.kind === "assistant" && b.streaming) blocks[i] = { ...b, streaming: false };
       }
-      // agent.dispatch 不建工具行：它的渲染形态就是 dispatch 卡
+      // agent_dispatch 不建工具行：它的渲染形态就是 dispatch 卡
       //（随后 dispatchStart 挂卡）。两处都建 = 同一个调度渲染两遍——
       // 外面一个工具行、卡里一份执行过程（用户报的「重复」）。
-      if (ev.name === "agent.dispatch") return { ...state, blocks };
+      if (ev.name === "agent_dispatch") return { ...state, blocks };
       return {
         ...state,
         blocks: [...blocks, { kind: "tool", uid: nextUid(), id: ev.id, name: ev.name, arguments: ev.arguments }],

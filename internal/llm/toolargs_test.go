@@ -44,7 +44,7 @@ func TestAnthropicRequestSurvivesBadHistoryArgs(t *testing.T) {
 	msgs := []Message{
 		{Role: "user", Content: "派活"},
 		// 真实事故形态：截断 + 非法转义（C:\Users 的 \U）
-		{Role: "assistant", ToolCalls: []ToolCall{badCall("agent.dispatch", `{"agent":"coder","task":"在 C:\Users\xzy 的「主机"`)}},
+		{Role: "assistant", ToolCalls: []ToolCall{badCall("agent_dispatch", `{"agent":"coder","task":"在 C:\Users\xzy 的「主机"`)}},
 		{Role: "tool", ToolCallID: "call-bad", Content: "本轮生成失败，该调用未执行。"},
 	}
 	req, err := convertToAnthropic("m", msgs, requestOpts{}, false)
