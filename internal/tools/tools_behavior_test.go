@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -298,72 +297,7 @@ func TestBashConfirmShowsStdinAndCwd(t *testing.T) {
 	}
 }
 
-// ---------- JSON 修复 ----------
-
-func TestRepairJSON(t *testing.T) {
-	cases := []struct {
-		name string
-		in   string
-		want string // 期望修复后解析出的 command 字段
-	}{
-		{"字符串内裸换行", "{\"command\": \"echo a\necho b\"}", "echo a\necho b"},
-		{"字符串内裸制表符", "{\"command\": \"echo\ta\"}", "echo\ta"},
-		{"对象尾逗号", "{\"command\": \"ls\",}", "ls"},
-		{"CRLF 归一", "{\"command\": \"echo a\r\necho b\"}", "echo a\necho b"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			fixed, ok := repairJSON(tc.in)
-			if !ok {
-				t.Fatalf("应可修复: %q", tc.in)
-			}
-			var v struct {
-				Command string `json:"command"`
-			}
-			if err := json.Unmarshal([]byte(fixed), &v); err != nil {
-				t.Fatalf("修复结果仍非法: %q (%v)", fixed, err)
-			}
-			if v.Command != tc.want {
-				t.Fatalf("修复后字段不符: got %q want %q", v.Command, tc.want)
-			}
-		})
-	}
-}
-
-func TestRepairJSONTruncated(t *testing.T) {
-	in := `{"path": "/tmp/x.txt", "content": "line1
-line2`
-	fixed, ok := repairJSON(in)
-	if !ok {
-		t.Fatalf("截断的 JSON 应可补齐: %q", in)
-	}
-	var v struct {
-		Path    string `json:"path"`
-		Content string `json:"content"`
-	}
-	if err := json.Unmarshal([]byte(fixed), &v); err != nil {
-		t.Fatalf("补齐结果仍非法: %q (%v)", fixed, err)
-	}
-	if v.Path != "/tmp/x.txt" || !strings.Contains(v.Content, "line2") {
-		t.Fatalf("补齐内容不符: %+v", v)
-	}
-}
-
-func TestRepairJSONLeavesValidAloneAndGivesUpOnGarbage(t *testing.T) {
-	valid := `{"command":"ls -la"}`
-	if !json.Valid([]byte(valid)) {
-		t.Fatal("用例本身应为合法 JSON")
-	}
-	if _, ok := repairJSON(valid); ok {
-		t.Log("说明：合法 JSON 也能被修复路径返回（不影响正确性，Execute 会先试原样）")
-	}
-	if _, ok := repairJSON("not json at all"); ok {
-		t.Fatal("纯文本不应被硬修复成 JSON")
-	}
-	if _, ok := repairJSON(""); ok {
-		t.Fatal("空串不应被修复")
-	}
-}
+// ---------- JSON 修复（实现与单测在 internal/jsonrepair） ----------
 
 func TestExecuteUsesRepairedArgsAndFlagsIt(t *testing.T) {
 	r := New()

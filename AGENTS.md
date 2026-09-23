@@ -128,7 +128,9 @@
 
 - **edit 为何低危**：编程 agent 的主编辑通道，确认门会让它不可用；破坏面受 old_string 唯一匹配约束 + 原子写 + 版本控制兜底（与 write_file 的全量覆盖破坏面不同类）。
 - **权限模式三档**（chat.send 的 approval 参数，随消息携带）：`confirm`（默认）= 低危自动 + 高危确认；`auto` = 高危也自动执行（仅隔离环境）；`strict` = 只读——变更类工具（`Def.Mutates`：edit/write_file/bash，与风险等级正交）直接拒绝、错误回填模型。风险等级管"要不要确认"，Mutates 管"只读模式禁不禁"——edit 低危但变更文件，strict 下必须拒。
-- 参数坏 JSON 先走保守修复（裸换行/尾逗号/单引号/截断补括号），修复成功注明——弱模型坏参数是高频失败形态。
+- 参数坏 JSON 先走保守修复（`internal/jsonrepair`：裸换行/尾逗号/单引号/截断补括号），修复成功注明——弱模型坏参数是高频失败形态。
+- **工具调用参数必须在写边界就合法**（2026-09-23 线上事故，见 §5 坑 12）：三道防线——① `agent.sanitizeToolCallArgs` 在 `s.append` 前清洗（正常轮次与流失败保留 partial 两条路径都走）；② `llm.repairToolArgsForWire` 组装请求时兜底（保守修复，修不动发 `{}`，**绝不报错**）；③ `tools.Execute` 执行前再试一次。三者共用 `jsonrepair` 一份实现。
+- **工具 id 必须匹配 `^[a-zA-Z0-9_-]{1,64}$`**（OpenAI 与 Anthropic 的同一条约束）：内置的 `agent.dispatch` **带点号，违反这条**，宽松网关过去放过、严格的会 400 拒收整轮（见 §5 坑 13）。新增内置工具或导入目录条目时不要用点号。
 
 ## 4. 开发约定
 
@@ -146,7 +148,7 @@
 - 协议改动跑 `internal/protocol` 帧契约测试（字段改名不编译报错、只静默丢字段——测试钉住载荷形状）；
 - **前后端分离边界（静态守卫，CI 同款）**：`node scripts/check-boundaries.mjs`（TS AST 检查 frontend/src：无 Node/Electron API、网络通信只在 `agent/ws`、`WSAgent` 只许 `agent/index.ts` 工厂引用、`__LX__` 宿主桥只在 Topbar/AddProjectDialog）+ `go test ./internal/architecture`（go/ast 检查 Go 侧：后端不 import frontend/shell；agent 不 import store/server/protocol；store 不 import agent/server/protocol）。改完跑 `node --test scripts/check-boundaries.test.mjs` 验证守卫自身。前端纯函数测试 `cd frontend && npm test`（node:test + 就地 TS 转译，无构建产物）；
 - **栈版本自检（排查协议类诡异 bug 的第一步）**：`node scripts/check-stack.mjs`——比对 `bin/lxcode.exe` 内嵌的 buildvcs 提交与当前 HEAD，**且只把 Go 侧改动（`*.go` / `go.mod` / `go.sum`）算作落后**（纯前端提交改了 commit 但不改后端行为，不算落后——否则会误导人白重启栈）；落后则退出码 1 并列出改过的 Go 文件（改完跑 `node --test scripts/check-stack.test.mjs` 验证它自身）。判定用 Go 构建元数据而非字节搜索：链接器会去重字符串，字节搜索连正对照都能搜不到（2026-09-21 实测）。`dev.mjs` 启动时也会打印后端编译提交；
-- **分层规则**：`sessiondata`（中立业务类型）← `store`/`agent`；`agent.Persistence` 是消费者定义的最小接口（agent 不见 SQL/连接/事务）；`project` 包持目录校验与 git init 业务（server 只是协议转发）；设置面板依赖 `ModelAdminSource` 能力接口而非具体 WSAgent——UI 永远不知道数据来自 WS 还是 Demo。
+- **分层规则**：`sessiondata`（中立业务类型）← `store`/`agent`；`agent.Persistence` 是消费者定义的最小接口（agent 不见 SQL/连接/事务）；`project` 包持目录校验与 git init 业务（server 只是协议转发）；设置面板依赖 `ModelAdminSource` 能力接口而非具体 WSAgent——UI 永远不知道数据来自 WS 还是 Demo；`jsonrepair`（保守修复模型给的坏 JSON 参数）是只依赖标准库的叶子包，`tools`/`agent`/`llm` 三方共用同一份实现（tools 依赖 llm，所以实现不能放 tools 里被 llm 反向引用）。
 
 ## 5. 已知坑（改代码前先看）
 
@@ -161,6 +163,8 @@
 9. **vite 产物不能直接 file:// 加载**：`<script type="module" crossorigin>` 在不透明源（file:// 的 origin 是 null）下被 CORS 拒绝——React 不挂载、页面空白且**无任何报错**（did-fail-load 只管主帧导航，资源级失败静默）。壳产线用 `app://` 特权协议从 asar 提供渲染层（`shell/src/main.ts` 的 protocol.handle）。
 10. **从被 Job Object 包住的宿主拉起 Electron 时必须 `--no-sandbox`**：Chromium 子进程沙箱与外层 Job Object 冲突，GPU 子进程 STATUS_BREAKPOINT（0x80000003）崩溃循环直至整个应用 FATAL（实测：DSH 后台 job 里拉起必崩，交互式启动正常）。本应用渲染层零远程内容，安全面可接受；引入远程内容渲染前必须重新评估。
 11. **后端二进制不会热重载——前端热的、后端可能是几天前的**：dev 栈只在 `dev.mjs` 启动那一刻编译一次 Go 后端，之后 vite 热重载前端、后端进程纹丝不动。**症状是「前端诡异 bug」**：协议新增字段（如 `ConfirmRequest.dispatch_id`）在旧后端里不存在，于是新前端收到的事件缺字段，表现为子 Agent 的确认卡跑到外层时间线、卡片永远「执行中…」，而四层映射代码全都是对的（2026-09-21 实测事故，排查代价极大）。**先跑 `node scripts/check-stack.mjs`**（比较二进制内嵌 buildvcs 提交与 HEAD）再动前端代码；处置 = 重启 dev 栈（Windows 下运行中的 exe 被锁，必须先停栈才能重新 `go build`）。
+12. **历史里一条参数非法的 tool call 会让会话永久发不出请求**（2026-09-23 线上事故，排查代价极大）：模型输出被 max_tokens 截断时 `arguments` 是半截 JSON，旧实现把它原样写进历史；此后**每一次**请求都在 anthropic 适配器组装阶段硬失败（`工具 X 的 arguments 不是合法 JSON: …`），用户连发三条消息全部无响应，只能新开会话。**症状**：那条报错的 100 字节前缀与历史里某条 tool call 的参数逐字节相同（用只读探针把 `messages.tool_calls` 抠出来比对即可定性）。**处置**：写边界清洗 + 读侧兜底（见 §3）。**教训**：畸形历史条目要么在写边界拦住、要么在读侧兜底，"硬校验 + 无修复路径"会把单个坏数据放大成会话级故障（与坑 5 的配对不变量同类）。
+13. **工具名里的点号会被严格网关 400 拒收**（2026-09-23 实测）：OpenAI 与 Anthropic 都把工具名约束为 `^[a-zA-Z0-9_-]{1,64}$`，内置的 `agent.dispatch` 带点号**违反这条**；宽松网关（旧的 LiteLLM 配置等）过去放过，严格化之后即 `Invalid 'tools[0].name': string does not match pattern` + `No fallback model group found`，**每一个带工具的主 Agent 轮次全部失败**（子 Agent 白名单无点号，仍可用——这也是一条应急旁路）。判定方法：拿同一端点直发两次最小请求（`read_file` 与 `agent.dispatch`）对比状态码。新增工具/目录条目一律避开点号。
 
 ## 6. Windows 服务运维（对齐参考项目的部署形态）
 

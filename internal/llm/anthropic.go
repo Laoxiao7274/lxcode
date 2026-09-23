@@ -147,11 +147,7 @@ func convertToAnthropic(model string, msgs []Message, o requestOpts, stream bool
 			req.Messages = append(req.Messages, anthropicMessage{Role: "user",
 				Content: []anthropicContentBlock{{Type: "text", Text: m.Content}}})
 		case "assistant":
-			blocks, err := assistantToBlocks(m)
-			if err != nil {
-				return nil, err
-			}
-			req.Messages = append(req.Messages, anthropicMessage{Role: "assistant", Content: blocks})
+			req.Messages = append(req.Messages, anthropicMessage{Role: "assistant", Content: assistantToBlocks(m)})
 		case "tool":
 			req.Messages = append(req.Messages, anthropicMessage{Role: "user",
 				Content: []anthropicContentBlock{{Type: "tool_result", ToolUseID: m.ToolCallID, Content: m.Content}}})
@@ -164,7 +160,9 @@ func convertToAnthropic(model string, msgs []Message, o requestOpts, stream bool
 }
 
 // assistantToBlocks：assistant 消息 → thinking/text/tool_use 块序列。
-func assistantToBlocks(m Message) ([]anthropicContentBlock, error) {
+// 不返回错误：工具参数已经过读侧兜底（repairToolArgsForWire），不会因为一条坏
+// 参数让整轮请求失败——那条路径曾经把会话永久锁死。
+func assistantToBlocks(m Message) []anthropicContentBlock {
 	var blocks []anthropicContentBlock
 	if m.ReasoningContent != "" {
 		// 签名原样透传（真实 Anthropic 校验签名；llama.cpp 本地端点宽松）
@@ -176,29 +174,24 @@ func assistantToBlocks(m Message) ([]anthropicContentBlock, error) {
 		blocks = append(blocks, anthropicContentBlock{Type: "text", Text: m.Content})
 	}
 	for _, tc := range m.ToolCalls {
-		input, err := argumentsToInput(tc.Function.Arguments)
-		if err != nil {
-			return nil, fmt.Errorf("工具 %s 的 %w", tc.Function.Name, err)
-		}
 		blocks = append(blocks, anthropicContentBlock{
-			Type: "tool_use", ID: tc.ID, Name: tc.Function.Name, Input: input,
+			Type: "tool_use", ID: tc.ID, Name: tc.Function.Name,
+			Input: argumentsToInput(tc.Function.Arguments),
 		})
 	}
 	if len(blocks) == 0 {
 		blocks = append(blocks, anthropicContentBlock{Type: "text"})
 	}
-	return blocks, nil
+	return blocks
 }
 
 // argumentsToInput：Arguments 字符串 → input 对象（空串 → 空对象）。
-func argumentsToInput(args string) (json.RawMessage, error) {
+// 坏参数不报错而是兜底修复或降级成空对象（见 toolargs.go 的事故说明）。
+func argumentsToInput(args string) json.RawMessage {
 	if strings.TrimSpace(args) == "" {
-		return json.RawMessage("{}"), nil
+		return json.RawMessage("{}")
 	}
-	if !json.Valid([]byte(args)) {
-		return nil, fmt.Errorf("arguments 不是合法 JSON: %.100s", args)
-	}
-	return json.RawMessage(args), nil
+	return json.RawMessage(repairToolArgsForWire(args))
 }
 
 // anthropicResult：内容块 → 统一消息；stop_reason 映射。

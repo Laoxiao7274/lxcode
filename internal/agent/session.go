@@ -14,6 +14,7 @@ import (
 	"sync"
 
 	"github.com/moyunteng/lxcode/internal/config"
+	"github.com/moyunteng/lxcode/internal/jsonrepair"
 	"github.com/moyunteng/lxcode/internal/llm"
 	"github.com/moyunteng/lxcode/internal/project"
 	"github.com/moyunteng/lxcode/internal/sessiondata"
@@ -591,6 +592,9 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig, ac *sessiondata.A
 			// 中断也保留已生成的部分内容：入历史并随事件带给宿主
 			var partial *llm.Message
 			if res != nil {
+				// 半截 JSON 的调用参数（流被打断、输出被截断）绝不能进历史——
+				// 一条坏参数会让这个会话之后每次请求都发不出去，见 sanitizeToolCallArgs
+				sanitizeToolCallArgs(res.Message.ToolCalls, "流中断保留的部分内容")
 				s.append(res.Message)
 				// 这条 assistant 消息可能已经声明了工具调用，而流在这里断了——
 				// 那些调用永远不会有执行结果。补上配对结果，否则历史里留下没有
@@ -608,6 +612,9 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig, ac *sessiondata.A
 			s.emit(TurnErrorEvent{Message: note, Aborted: aborted, Partial: partial})
 			return
 		}
+		// 调用参数可能是半截 JSON（输出被 max_tokens 截断）：先修好再入历史，
+		// 落库的参数与随后执行用的参数保持一致（tools 执行前修的是同一份实现）
+		sanitizeToolCallArgs(res.Message.ToolCalls, "本轮工具调用")
 		s.append(res.Message)
 		s.emit(TurnDoneEvent{
 			Message: res.Message, UsageTokens: res.UsageTokens, FinishReason: res.FinishReason,
@@ -844,6 +851,34 @@ func (s *Session) sinkSkippedToolResults(sink func(llm.Message), calls []llm.Too
 		s.emit(ToolResultEvent{
 			ID: tc.ID, Name: tc.Function.Name, Content: note, IsError: true, DispatchID: dispatchID,
 		})
+	}
+}
+
+// sanitizeToolCallArgs 保证写进历史的工具调用参数是合法 JSON。
+//
+// 为什么必须在写边界做（2026-09-23 线上事故）：模型输出被 max_tokens 截断时，
+// arguments 会是半截 JSON（字符串与括号都没闭合）。这种消息一旦落进历史，之后
+// **每一次**请求都会在组装阶段被端点适配器拒绝（anthropic 适配器对此是硬校验：
+// `工具 X 的 arguments 不是合法 JSON`）——整个会话永久发不出请求，用户只能新开
+// 会话。与「取消时补配对」是同一类不变量：历史必须始终良构。
+//
+// 策略：先保守修复（internal/jsonrepair，与 tools / llm 适配器同一份实现），
+// 修不动就降级成 "{}"。**不删调用**——删掉会让它的结果变成孤儿 tool 消息（配对
+// 不变量更硬），降级成空参数至少保住结构合法，模型也能看出参数丢了。where 只用于
+// 日志（说明是哪条路径修的）。
+func sanitizeToolCallArgs(calls []llm.ToolCall, where string) {
+	for i := range calls {
+		args := calls[i].Function.Arguments
+		if strings.TrimSpace(args) == "" || json.Valid([]byte(args)) {
+			continue
+		}
+		next, how := "{}", "降级为空参数"
+		if repaired, ok := jsonrepair.Repair(args); ok {
+			next, how = repaired, "保守补全"
+		}
+		calls[i].Function.Arguments = next
+		log.Printf("工具调用参数不是合法 JSON，写历史前已%s：%s（%s，原参数 %d 字节）",
+			how, calls[i].Function.Name, where, len(args))
 	}
 }
 

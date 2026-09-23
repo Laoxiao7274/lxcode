@@ -73,7 +73,8 @@ func (c *Client) openaiChat(ctx context.Context, msgs []Message, o requestOpts) 
 
 // buildOpenAIRequest 组装请求体。
 func buildOpenAIRequest(model string, msgs []Message, o requestOpts, stream bool) openaiRequest {
-	req := openaiRequest{Model: model, Messages: msgs, Stream: stream}
+	// 消息里的工具调用参数过一遍读侧兜底（历史里的坏参数曾让端点 400 拒收整轮）
+	req := openaiRequest{Model: model, Messages: sanitizeMessagesForWire(msgs), Stream: stream}
 	if stream {
 		// 让 vLLM 等在最后一个 chunk 带回 usage
 		req.StreamOptions = &struct {
