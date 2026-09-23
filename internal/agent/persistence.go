@@ -15,10 +15,11 @@ type Persistence interface {
 	// 从父会话继承——agent 层不需要记住 workspace id。
 	CreateChild(parentID, agentID, dispatchID string) (string, error)
 	AppendMsg(string, llm.Message) error
-	// AppendCheckpoint 追加一条压缩检查点：它替换（影子）紧邻其前的 shadowed
-	// 条历史。调用方按"历史条数"说话——seq 归实现所有（agent 不见 seq），
-	// 实现负责把它解析成库内序号区间并记录，回放时跳过被影子的行。
-	AppendCheckpoint(sessionID string, m llm.Message, shadowed int) error
+	// AppendCheckpoint 追加一条压缩检查点：它替换（影子）当前历史里从第 skip 条
+	// 起的 count 条。调用方按"历史下标"说话——seq 归实现所有（agent 不见 seq），
+	// 实现负责把它解析成库内序号区间并记录，回放时跳过被影子的行、并把检查点放回
+	// 被影子段原本占据的位置（主会话 skip=0 即前缀，子会话 skip=1 以保护头部任务）。
+	AppendCheckpoint(sessionID string, m llm.Message, skip, count int) error
 	Load(string) ([]llm.Message, error)
 	Latest() (string, []llm.Message, error)
 	List() ([]sessiondata.SessionMeta, error)

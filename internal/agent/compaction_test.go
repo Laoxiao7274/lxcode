@@ -22,7 +22,7 @@ func TestSelectCompactRangeKeepsTailBudget(t *testing.T) {
 		{Role: "assistant", Content: strings.Repeat("d", 400)},
 		{Role: "user", Content: strings.Repeat("e", 400)},
 	}
-	start, end, ok := selectCompactRange(history, 100)
+	start, end, ok := selectCompactRange(history, 100, false)
 	if !ok {
 		t.Fatal("应可选出一个区间")
 	}
@@ -34,7 +34,7 @@ func TestSelectCompactRangeKeepsTailBudget(t *testing.T) {
 		t.Fatalf("应只保留最后一条（预算 100 tokens）：end=%d", end)
 	}
 	// 预算为 0（手动/溢出）：同样至少留一条
-	_, end0, ok0 := selectCompactRange(history, 0)
+	_, end0, ok0 := selectCompactRange(history, 0, false)
 	if !ok0 || end0 != len(history)-2 {
 		t.Fatalf("预算 0 应保留最后一条: end=%d ok=%v", end0, ok0)
 	}
@@ -50,7 +50,7 @@ func TestSelectCompactRangeRespectsToolPairing(t *testing.T) {
 	}
 	// 保留预算 200：天然切点落在 tool 结果上（前两条 ≈104，加它才够 200），
 	// 那里不配对（声明还没回填）→ 必须往前回退到 user 之后
-	_, end, ok := selectCompactRange(history, 200)
+	_, end, ok := selectCompactRange(history, 200, false)
 	if !ok {
 		t.Fatal("应可选区间")
 	}
@@ -65,11 +65,11 @@ func TestSelectCompactRangeRespectsToolPairing(t *testing.T) {
 }
 
 func TestSelectCompactRangeNothingWhenTooShort(t *testing.T) {
-	if _, _, ok := selectCompactRange(nil, 100); ok {
+	if _, _, ok := selectCompactRange(nil, 100, false); ok {
 		t.Fatal("空历史不可压")
 	}
 	// 只有一条消息：区间会空掉（keepFrom <= firstIdx）
-	if _, _, ok := selectCompactRange([]llm.Message{{Role: "user", Content: "x"}}, 0); ok {
+	if _, _, ok := selectCompactRange([]llm.Message{{Role: "user", Content: "x"}}, 0, false); ok {
 		t.Fatal("只剩一条时不可压")
 	}
 	// 历史以未配对调用收尾（用户中断过）：可以压前缀，但**绝不能切开那一对**——
@@ -78,12 +78,45 @@ func TestSelectCompactRangeNothingWhenTooShort(t *testing.T) {
 		{Role: "user", Content: strings.Repeat("x", 400)},
 		{Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "c1"}}},
 	}
-	_, end, ok := selectCompactRange(unpaired, 0)
+	_, end, ok := selectCompactRange(unpaired, 0, false)
 	if !ok {
 		t.Fatal("前缀仍可压")
 	}
 	if end != 0 {
 		t.Fatalf("切点不能切开未配对的调用（end=0），实际 %d", end)
+	}
+}
+
+// 头部保护（protectHead）：子会话压缩不碰历史第 0 条——那是派发的任务说明书，
+// 子 Agent 唯一的任务依据。主会话没有这条头部，区间起点仍是 0。
+func TestSelectCompactRangeProtectsHead(t *testing.T) {
+	history := []llm.Message{
+		{Role: "user", Content: strings.Repeat("任务说明书", 100)},
+		{Role: "assistant", Content: strings.Repeat("b", 400)},
+		{Role: "user", Content: strings.Repeat("c", 400)},
+		{Role: "assistant", Content: strings.Repeat("d", 400)},
+		{Role: "user", Content: strings.Repeat("e", 400)},
+	}
+	start, end, ok := selectCompactRange(history, 0, true)
+	if !ok {
+		t.Fatal("应可选出一个区间")
+	}
+	if start != 1 {
+		t.Fatalf("保护头部时区间应从第 1 条开始（任务说明书留下）: %d", start)
+	}
+	if end != len(history)-2 {
+		t.Fatalf("预算 0 应只保留最后一条：end=%d", end)
+	}
+	// 主会话（不保护）：起点仍是 0——压缩前缀，行为与旧版一致
+	if s0, _, ok0 := selectCompactRange(history, 0, false); !ok0 || s0 != 0 {
+		t.Fatalf("主会话区间起点应为 0: ok=%v start=%d", ok0, s0)
+	}
+	// 只有头部一条（或头部之后无内容可压）时：不可压
+	if _, _, ok1 := selectCompactRange(history[:1], 0, true); ok1 {
+		t.Fatal("只剩任务说明书一条时不可压")
+	}
+	if _, _, ok2 := selectCompactRange(history[:2], 0, true); ok2 {
+		t.Fatal("头部 + 一条尾部（区间会空掉）时不可压")
 	}
 }
 

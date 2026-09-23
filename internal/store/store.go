@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -130,7 +131,9 @@ func Open(dir string) (*Store, error) {
 		return nil, fmt.Errorf("建子会话索引失败: %w", err)
 	}
 	// 压缩检查点的影子区间（2026-09-22）：checkpoint=1 的行是一条摘要检查点，
-	// 它替换（影子）库里 seq ∈ [shadow_start_seq, shadow_end_seq] 的那些行。
+	// 它替换（影子）当前历史里的一段——权威判定是 `shadowed_seqs`（被影子行的 seq
+	// 集合）；`shadow_start_seq/shadow_end_seq` 只记这段在**历史位置**上的首尾，供对账，
+	// 回放不读它们（中间段影子的 seq 集合可以是不连续的，区间形式表达不了）。
 	// 被影子的原文**不删**——翻旧账仍可查（Search 照旧搜全量日志），
 	// 只是历史回放（Load/Latest）跳过它们。
 	for _, col := range []string{
@@ -322,34 +325,18 @@ func (s *Store) Load(id string) ([]llm.Message, error) {
 }
 
 // loadSurface 读会话的**当前历史**：跳过被压缩检查点影子覆盖的行，并把历史
-// 顺序还原成"检查点在前、其余按 seq 升序"。
+// 顺序还原成 surface 顺序（见 surfaceRows）。
 //
-// 为什么要还原顺序：检查点行是**追加在末尾**的（seq 最大），但它顶替的是被影子
-// 那一段在历史里的位置（DSH 的 surface position）。压缩区间恒为历史**前缀**，
-// 所以检查点永远落在历史第一位——这就是"检查点在前"这条顺序规则的来源。若将来
-// 允许压缩中间段，这条规则必须同步改（agent 侧的 selectCompactRange 起点也变了）。
+// 与 surfaceRows 共用同一份实现：这两条路径（回放 / 落库时算存活集）必须
+// 逐字一致——判定漂移的代价是「写进去的影子区间与读出来的历史对不上」。
 func (s *Store) loadSurface(id string) ([]llm.Message, error) {
 	rows, err := s.readRows(id)
 	if err != nil {
 		return nil, err
 	}
-	shadowed := shadowSet(rows)
-	var checkpoints, others []rowData
-	for _, r := range rows {
-		if _, hit := shadowed[r.seq]; hit {
-			continue
-		}
-		if r.checkpoint {
-			checkpoints = append(checkpoints, r)
-		} else {
-			others = append(others, r)
-		}
-	}
-	msgs := make([]llm.Message, 0, len(checkpoints)+len(others))
-	for _, r := range checkpoints {
-		msgs = append(msgs, r.msg)
-	}
-	for _, r := range others {
+	surface := surfaceRows(rows)
+	msgs := make([]llm.Message, 0, len(surface))
+	for _, r := range surface {
 		msgs = append(msgs, r.msg)
 	}
 	return msgs, nil
@@ -412,8 +399,15 @@ func shadowSet(rows []rowData) map[int]struct{} {
 	return set
 }
 
-// surfaceRows 返回当前历史（存活行）**按历史顺序**：检查点在前（它们顶替了
-// 被影子段的位置），其余按 seq 升序。
+// surfaceRows 返回当前历史（存活行）**按历史顺序**：检查点落在它影子段原本占据
+// 的位置上，其余按 seq 升序。
+//
+// 为什么检查点不是"一律排最前"：检查点行是**追加在末尾**的（seq 最大），但它顶替
+// 的是被影子那一段在历史里的位置（DSH 的 surface position）。插入锚点 = 影子集合
+// 里的最小 seq（被影子段的第一条）；无影子集合（count=0 的退化检查点）时回落自身
+// seq，即落尾。压缩区间是 [skip, skip+count)——主会话恒为前缀（skip=0）所以锚点落
+// 在库内最小 seq 上、检查点仍在第一位（与"一律排最前"的老行为逐字节一致）；子会话
+// 保护了头部的任务说明书（skip=1）时，检查点就落在任务消息之后。
 func surfaceRows(rows []rowData) []rowData {
 	shadowed := shadowSet(rows)
 	var checkpoints, others []rowData
@@ -427,16 +421,56 @@ func surfaceRows(rows []rowData) []rowData {
 			others = append(others, r)
 		}
 	}
-	return append(checkpoints, others...)
+	if len(checkpoints) == 0 {
+		return others
+	}
+	// 按**锚点**排序（不是自身 seq）：检查点行总是追加在末尾，而它顶替的是被影子
+	// 段的位置——两次压缩可以"后来的替换更靠前的一段"（先压中间、再回头压头部），
+	// 那时按 seq 排会把两份摘要的先后搞反。同锚点（影子同一段起点的多次压缩）按
+	// 自身 seq 升序，即更晚写的那份排后。
+	slices.SortStableFunc(checkpoints, func(a, b rowData) int {
+		if d := checkpointAnchor(a) - checkpointAnchor(b); d != 0 {
+			return d
+		}
+		return a.seq - b.seq
+	})
+	out := make([]rowData, 0, len(checkpoints)+len(others))
+	ci := 0
+	for _, r := range others {
+		for ci < len(checkpoints) && checkpointAnchor(checkpoints[ci]) < r.seq {
+			out = append(out, checkpoints[ci])
+			ci++
+		}
+		out = append(out, r)
+	}
+	return append(out, checkpoints[ci:]...)
 }
 
-// AppendCheckpoint 追加一条压缩检查点：它替换（影子）当前历史**最前面的**
-// shadowed 条。shadowed 条不足时报错——那说明落盘落后于内存（某次写入失败过），
-// 此时写一个错的影子区间会让回放丢掉不该丢的历史；压缩必须失败而不是写错数据。
+// checkpointAnchor 是检查点在历史里的插入锚点：它影子段的第一条 seq。被影子的行
+// 都在它之后（或就是它本身），所以"插在第一个 seq 更大的存活行之前"就是把检查点
+// 放回被替换段原本的位置。无影子集合时回落自身 seq（落尾）。
+func checkpointAnchor(r rowData) int {
+	if len(r.shadowed) == 0 {
+		return r.seq
+	}
+	anchor := r.shadowed[0]
+	for _, seq := range r.shadowed[1:] {
+		if seq < anchor {
+			anchor = seq
+		}
+	}
+	return anchor
+}
+
+// AppendCheckpoint 追加一条压缩检查点：它替换（影子）当前历史里从第 skip 条起的
+// count 条。区间越界时报错——那说明落盘落后于内存（某次写入失败过），此时写一个
+// 错的影子区间会让回放丢掉不该丢的历史；压缩必须失败而不是写错数据。
 //
-// 为什么是"最前面"：压缩区间恒为历史**前缀**（agent 的 selectCompactRange 起点
-// 恒为 0——历史里没有 system 消息），所以被替换的是当前历史的前 shadowed 条。
-func (s *Store) AppendCheckpoint(id string, m llm.Message, shadowed int) error {
+// 为什么按"存活集里的位置"说话（而不是 seq 区间）：agent 层不见 seq，它只知道
+// 自己的历史下标；skip/count 就是它选出的可压区间 [skip, skip+count)。主会话恒为
+// skip=0（压缩区间是前缀，见 selectCompactRange）；子会话保护了头部的任务说明书，
+// 于是 skip=1（那条任务消息留在历史里，摘要从它之后开始）。
+func (s *Store) AppendCheckpoint(id string, m llm.Message, skip, count int) error {
 	toolCalls, err := json.Marshal(m.ToolCalls)
 	if err != nil {
 		return fmt.Errorf("序列化工具调用失败: %w", err)
@@ -454,17 +488,17 @@ func (s *Store) AppendCheckpoint(id string, m llm.Message, shadowed int) error {
 	surface := surfaceRows(rows)
 	var shadowedSeqs []int
 	var shadStart, shadEnd int
-	if shadowed > 0 {
-		if len(surface) < shadowed {
-			return fmt.Errorf("落盘落后于内存：当前历史只有 %d 条，需要影子 %d 条（拒绝写错的影子区间）",
-				len(surface), shadowed)
+	if count > 0 {
+		if skip < 0 || skip+count > len(surface) {
+			return fmt.Errorf("落盘落后于内存：当前历史只有 %d 条，需要影子 [%d, %d)（拒绝写错的影子区间）",
+				len(surface), skip, skip+count)
 		}
-		shadowedSeqs = make([]int, 0, shadowed)
-		for _, r := range surface[:shadowed] {
+		shadowedSeqs = make([]int, 0, count)
+		for _, r := range surface[skip : skip+count] {
 			shadowedSeqs = append(shadowedSeqs, r.seq)
 		}
 		// 区间边界按"历史位置"记：起点 = 被替换段的第一条，终点 = 被替换段的最后一条
-		shadStart, shadEnd = surface[0].seq, surface[shadowed-1].seq
+		shadStart, shadEnd = surface[skip].seq, surface[skip+count-1].seq
 	}
 
 	var seq int

@@ -108,6 +108,12 @@ type Session struct {
 	// 父会话）：全应用只有"同时一个挂起确认"这条不变式，子会话自己持
 	// pending 的话服务端的 tool.confirm 找不到它。
 	confirmProxy func(ctx context.Context, req *ConfirmRequest) (allow bool, ok bool)
+	// protectHead 为真时压缩不碰历史第 0 条——子会话的任务说明书（派发时那条
+	// user 任务消息，子 Agent 的全部依据）。它一旦被压进摘要，续跑/长任务里
+	// 子 Agent 就再也看不到原始任务，只能看到一份自己越写越远的转述。
+	// 主会话为假（没有这条头部，压缩前缀从 0 开始）；由 dispatch.openChildSession
+	// 置位（新建与续跑同一入口）。
+	protectHead bool
 }
 
 // New 创建会话；emit 为 nil 时事件被丢弃（单测可只调方法）。
@@ -139,6 +145,14 @@ func (s *Session) SetProjectDocs(fn ProjectDocsFunc) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.projectDocs = fn
+}
+
+// SetProtectHead 声明本会话压缩时是否保护历史第 0 条（子会话的任务说明书）。
+// 只该在会话开始跑之前调用一次——dispatch 开子会话时置位，主会话保持默认 false。
+func (s *Session) SetProtectHead(protect bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.protectHead = protect
 }
 
 // projectDocsFor 取会话工作目录对应的项目守则（未注入或未分组 → 空）。

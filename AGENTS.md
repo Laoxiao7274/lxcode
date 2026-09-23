@@ -40,7 +40,7 @@
 - **壳打包定案（2026-12 调研+实测，仅 Windows）**：electron-builder + NSIS（one-click、per-user、免管理员）+ **自建 zip 更新机制**（2026-12 用户拍板，替代原定的 electron-updater——重跑完整安装器的更新路径被否；服务端 = 纯静态目录 `manifest.json + update-<version>.zip`，zip 内路径=安装目录相对路径，只含 `resources/app.asar` 与 `resources/bin/lxcode.exe`；两级更新：后端热替换（壳不退）、asar 冷替换（退出时换）；Electron/Chromium 升级走全量安装包不进 zip；客户端更新器未实现，产物契约已定）+ 壳主进程 **esbuild 单入口直构**（不用 vite-plugin-electron：薄壳无主进程 HMR 价值，且保持 frontend vite 配置与 Electron 零耦合、浏览器模式零条件分支）；Go 后端二进制走 extraResources（asar 归档内不能 spawn 二进制）。本机实测：打包 44~148s（受后台负载影响），安装包 ~87-95MB、更新包 ~12MB。sidecar 生命周期纪律：单实例锁 → 先探测 7789（SCM 服务或旧实例在跑则直连，不 spawn）→ 离线才拉起 bundled exe，且**必须显式传 `--config`/`--sessions` 指向 userData**（否则后端配置解析顺序会落到 `%ProgramData%` 安装形态配置，两形态数据串台）→ 优雅退出 before-quit kill；崩溃兜底 = Electron 主进程 Windows Job Object（`KILL_ON_JOB_CLOSE`，壳被强杀也不留孤儿后端）。版本兼容用协议 hello 的 Version 握手。范围：壳仅 Windows（2026-12 用户拍板；Linux/macOS 不做壳，Linux 上后端二进制独立跑 + CLI/浏览器即可）。
 - **版本号机制（2026-12）**：唯一版本源 = `shell/package.json` 的 `version`（electron-builder 原生读它出安装包名）；`scripts/build.mjs` 构建时经 `-ldflags "-X main.version=<版本>"` 烙进 Go 二进制（`lxcode --version` 可查；dev.mjs 无烙印显示 `dev`）；manifest.json 用同一版本——安装包/二进制/更新清单三方同源。发版流程 = 改 shell/package.json version → build → 产物目录全量上传。
 
-### 2.2 上下文计账与压缩（compaction）（2026-09-22：P1~P5 已落地）
+### 2.2 上下文计账与压缩（compaction）（2026-09-22：P1~P5 + 子会话头部保护已落地）
 
 **计账（P1，`internal/agent/context_usage.go`）**：`agent.ContextUsage` 是上下文占用的唯一事实源（压缩触发与 UI 指示器共用它，不各算一遍）：
 
@@ -57,22 +57,22 @@
 - `NearestBalancedAtOrBefore` 是选区间用的回退（保留预算边界往前退到最近的平衡切点）；
 - **取消与失败路径必须补齐配对**（P5，`Session.sinkSkippedToolResults`）：`runTools` 的两个取消出口（循环中发现 ctx 已断 / 确认门等待期间取消）与 `runTurn` 的流式失败分支，都要给**不会执行**的调用补一条合成 tool 结果（「已取消，未执行」/「本轮生成失败」）——与白名单拒绝、strict 拒绝、用户拒绝三处是同款写法、同一个理由。不补的代价不是"不好看"：严格端点 400 拒收整轮，而且游标在缺配对处之后再不平衡 → **压缩切点永久卡在它之前，那个会话从此再也压不动**（`TestPairingRepairUnfreezesCompaction` 钉住这条；子会话走同一条路径，见 §2.3）。
 
-**压缩（P3/P4，`internal/agent/compaction.go` + `compaction_prompt.go`）**：把历史的一段（**永远是前缀**）替换成一份摘要检查点。对齐 DSH compaction-basic：
+**压缩（P3/P4，`internal/agent/compaction.go` + `compaction_prompt.go`）**：把历史的一段替换成一份摘要检查点。对齐 DSH compaction-basic：
 
 - **触发三条路**：① 轮与轮之间（`runTurn` 的 `round > 0`）按上一次请求的**真实 prompt_tokens** 判压力（阈值 0.8×窗口、保留尾部 0.16×窗口——那时它就是精确值，不用估算）；② 端点报超长（`llm.IsContextOverflow`：4xx + 特征串，字符串匹配关在 llm 层）时强制压一次（保留预算归零）再重试**同一轮**，只重试一次；③ 手动 `chat.compact`（`Session.Compact`）不受阈值约束，空闲才允许（busy → `ErrBusy`）；
 - **窗口未知（模型没配 `context_window`）时不压**——算不出阈值就不猜（单测钉住）；
-- **选区间**：从尾部往前累加到保留预算，再回退到最近的**配对平衡切点**（P2 的不变量）；区间起点恒为 0（历史里没有 system 消息），即压缩永远替换前缀；
+- **选区间**：从尾部往前累加到保留预算，再回退到最近的**配对平衡切点**（P2 的不变量）；区间起点通常为 0（主会话压缩前缀），**子会话保护头部任务说明书时从 1 开始**（`Session.protectHead`，见 §2.3）；
 - **摘要调用**：指令作为**最后一条 user 消息**追加在重放历史之后（复用 KV 缓存），八段结构 + 工具声明照发；摘要是**一段文本**，落回历史时包成一条 **user 消息**（`<compacted-summary>` + 前言）——不用 system：anthropic 适配器会把所有 system 消息提到顶层，中途插会语义错位；
 - **缩水检查**：比的是**被压段**与摘要（保留尾部两边都在，抵消）——不是整段历史。摘要不小于被压段就是「没有收益」：回 `compacted=false + reason`（`ErrNothingToCompact` 包装人话原因），**不是错误码**；
 - **fail-closed**：摘要失败、缩水不通过、落库失败，都不改历史（落库失败还把内存回滚）；
-- **落库（影子区间，用户拍板对齐 DSH）**：检查点行记 `shadowed_seqs`（影子掉的 seq 集合，**权威**）+ `shadow_start_seq/shadow_end_seq`（历史位置边界）；被影子的原文**不删**（`Search` 照旧搜全量日志），只是回放（`Load`/`Latest`）跳过它们；
-- **`AppendCheckpoint(shadowed)` 的 `shadowed` 是「当前历史最前面的 N 条」**（不是 seq 区间，也不是最后 N 条）——压缩区间恒为前缀，所以被替换的是最前面 N 条；存活条数不足时报错（那说明落盘落后于内存，写错的影子区间会让回放丢掉不该丢的历史）；
-- **历史顺序按「检查点在前、其余按 seq 升序」重建**（检查点行是追加在末尾的，但它顶替被影子段在历史里的位置 = DSH 的 surface position）。压缩区间恒为前缀所以检查点永远落第一位；**若将来允许压缩中间段，这条规则必须同步改**；
+- **落库（影子区间，用户拍板对齐 DSH）**：检查点行记 `shadowed_seqs`（影子掉的 seq 集合，**权威**）+ `shadow_start_seq/shadow_end_seq`（历史位置边界，只写不读——回放只认 `shadowed_seqs`）；被影子的原文**不删**（`Search` 照旧搜全量日志），只是回放（`Load`/`Latest`）跳过它们；
+- **`AppendCheckpoint(skip, count)` 说的是「当前历史里从第 skip 条起的 count 条」**（不是 seq 区间）：`skip/count` 就是 agent 选出的可压区间 `[skip, skip+count)`——主会话 skip=0（前缀），子会话 skip=1（跳过头部任务说明书）。区间越界时报错（那说明落盘落后于内存，写错的影子区间会让回放丢掉不该丢的历史）；
+- **历史顺序按「检查点落在它影子段原本占据的位置上、其余按 seq 升序」重建**（检查点行是追加在末尾的，但它顶替被影子段在历史里的位置 = DSH 的 surface position）：插入锚点 = 影子集合里的最小 seq，无影子集合时回落自身 seq（落尾）；多个检查点按锚点升序（**不是自身 seq**——两次压缩可以「后写的替换更靠前的一段」，按 seq 排会把两份摘要的先后搞反）。skip=0 时锚点就是库内最小 seq → 检查点仍落第一位，**与旧的「一律排最前」逐字节一致**（老库里的检查点行影子集合都是前缀，`TestCheckpointShadowsPrefix` 是这条兼容性的钉子）；
 - **落库口径**：`Load`/`Latest`/`List` 的消息数都按当前历史算（`List` 在 Go 侧复用同一套存活判定——SQL 表达不了 seq 集合）；
 - **压缩后必须更新占用测量**（锚定算术：新占用 = 旧真实占用 − 被压段估算 + 检查点估算）——不更新的话指示器停在压缩前的数字（真链路实测抓到过）；
 - wire：`chat.compact`（方法，参数 `agent` 可选）+ `chat.compacted` 事件（before/after/shadowed/summary/manual）+ `ChatHistoryResult.Checkpoints`（检查点下标，前端渲染「已压缩历史」块而不是用户气泡）；前端入口 = 输入区指示器里的「立即压缩」+ `/compact` 斜杠命令。
 
-**剩余（未做）**：① 子会话「任务说明书」的头部保护——`selectCompactRange` 的 `firstIdx` 恒为 0，子会话第一条任务消息会被一起压进摘要（DSH 的 `systemHead` 只保护 **system** 头部，我们的子会话头部是 **user** 任务消息，所以这是自研扩展而非移植）；要做得同步改 store 的两条前缀假设（`AppendCheckpoint` 的「最前面 N 条」+ `loadSurface` 的「检查点排最前」），属高风险；便宜替代 = 在 `compactionInstruction` 里要求逐字引用任务原文。② P3 的确定性裁剪（工具结果写入时已截到 8KB，将来加裁剪接在选区间之前，顺序对齐 DSH）。参考实现 = DSH 的 `dsh-compaction`（引擎接缝 + 配对不变量 + 检查点溯源）/`dsh-compaction-basic`（阈值与选区间策略）/`dsh-compaction-tool-result-pruner`（无模型裁剪）/`dsh-token-meter`（计账），路径 `C:\Users\xzy\AppData\Local\Programs\lx-dsh\resources\dsh\node_modules\@deepseek-ai\`（打包形态；`dsh-compaction` 带 TS 源码 `src/`）。
+**剩余（未做）**：① P3 的确定性裁剪（工具结果写入时已截到 8KB，将来加裁剪接在选区间之前，顺序对齐 DSH）。参考实现 = DSH 的 `dsh-compaction`（引擎接缝 + 配对不变量 + 检查点溯源）/`dsh-compaction-basic`（阈值与选区间策略）/`dsh-compaction-tool-result-pruner`（无模型裁剪）/`dsh-token-meter`（计账），路径 `C:\Users\xzy\AppData\Local\Programs\lx-dsh\resources\dsh\node_modules\@deepseek-ai\`（打包形态；`dsh-compaction` 带 TS 源码 `src/`）。
 
 ### 2.3 子会话：子 Agent = 独立会话（2026-09-22 用户拍板）
 
@@ -100,7 +100,7 @@
 
 **协议**：`chat.dispatchStart/End` 带 `session_id`（子会话 id 上卡，前端显示 + 续跑依据）；`chat.compacted` 带 `dispatch_id`（子会话自己的压缩归属进卡内，不插主时间线）；前端 `DispatchCard` 显示子会话 id 徽标，`reduceSub` 处理 `compacted`。
 
-**为什么这个设计省事**：子会话是会话 → 压缩/检查点/影子区间**零特例**（`runCompaction` 只要一个有 st/id/history 的 Session）；子会话的 system 提示词同样每轮现组装（不在历史里），所以 `selectCompactRange` 的 `firstIdx = 0` 不用改（**不需要给子上下文加 system 头部保护特例**）。注意区分：**任务消息**（`history[0]`，**user** 角色）不享受这个豁免——它落在可压区间内，会被一起压进摘要；这是已知取舍，见 §2.2 剩余。
+**为什么这个设计省事**：子会话是会话 → 压缩/检查点/影子区间**零特例**（`runCompaction` 只要一个有 st/id/history 的 Session）；子会话的 system 提示词同样每轮现组装（不在历史里），所以**不需要给子上下文加 system 头部保护特例**。注意区分：**任务消息**（`history[0]`，**user** 角色）是另一回事——它确实在历史里，所以需要显式的头部保护：`openChildSession` 给子会话置 `protectHead`（压缩区间起点从 1 开始），任务说明书永远留在 `history[0]`，摘要落在它之后；store 侧配合支持中间段影子（见 §2.2）。
 
 ## 3. 工具面（内置 9 个 + 目录动态注入）
 
@@ -198,7 +198,7 @@ Harness 的目标形态：**主 Agent 只做决策与分派，子 Agent 是用�
 |---|---|
 | 桌面壳框架 | **已定 Electron + Go sidecar**（2026-09-16 用户拍板，决策记录 §2.1；推翻 09-10 的 Tauri 2 初选）——薄壳 + 前端直连 WS（React + aicss，设计语言 agent-console-v3）；**打包与更新机制已定（2026-12，electron-builder + NSIS + 自建 zip 更新，仅 Windows，见 §2.1）**；src-tauri 骨架已清理（2026-09-16） |
 | 项目正式名 | 工作名 lxcode，用户保留命名权 |
-| 上下文管理 | **已落地（2026-09-22，P1~P5，见 §2.2）**：计账（真实 prompt_tokens 锚定 + 分类归一）、工具配对不变量、摘要压缩（自动三条触发路径 + 手动 `/compact` + 影子区间落库）、取消/失败路径的配对补齐（P5——不挂 LLM 的确定性补齐）、前端「已压缩历史」块与指示器入口。**未做**：子会话任务消息的头部保护（见 §2.2 剩余）、P3 确定性裁剪；工具结果截断（8KB/条）继续兜底 |
+| 上下文管理 | **已落地（2026-09-22，P1~P5 + 子会话头部保护，见 §2.2/§2.3）**：计账（真实 prompt_tokens 锚定 + 分类归一）、工具配对不变量、摘要压缩（自动三条触发路径 + 手动 `/compact` + 影子区间落库，区间可为前缀也可为中间段）、取消/失败路径的配对补齐（P5——不挂 LLM 的确定性补齐）、子会话任务说明书的头部保护（`protectHead`）、前端「已压缩历史」块与指示器入口。**未做**：P3 确定性裁剪；工具结果截断（8KB/条）继续兜底 |
 | 语义记忆 | 未做（会话搜索先行）；**存储底座已定（2026-12）：会话已切 SQLite（modernc 纯 Go）——语义记忆/向量检索（FTS5/sqlite-vec）将在同库扩展，不再单独立项选型** |
 | 自更新 | 方向 = 定时检查 + 人工确认；机制已定（2026-12）：**自建 zip 更新**（manifest.json + update-\<version\>.zip，两级：后端热替换 / asar 冷替换，Electron 升级走全量安装包；electron-updater 方案作废）——**产物侧已实现**（build.mjs 产出 zip+manifest），**客户端更新器未实现**（待做：检查/下载/校验/替换编排，路线图 M5）；服务形态走 scripts\service\update.ps1 |
 | **后端化路线** | **已定**（2026-09-18，docs/backend-roadmap.md）：M1 注册表与目录（四张表+agent.\*/catalog.\* 协议+前端接线）→ M2 上下文组装+Agent 直选（chat.send 带 agentId）→ M3 agent.dispatch（**2026-09-22 升级：子 Agent = 独立会话**——见 §2.3；原「子上下文隔离」的取舍是"子上下文随主会话轮次结束丢弃"，现已改为独立持久会话，可续跑、压缩同款）→ M4 拓展执行面（自定义工具 spawn/MCP stdio/网页搜索）→ M5 远程访问+更新器。子 Agent 再委派/多活跃会话/worktree 明确出界 |

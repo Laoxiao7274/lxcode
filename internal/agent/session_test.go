@@ -543,7 +543,7 @@ func TestPairingRepairUnfreezesCompaction(t *testing.T) {
 		{Role: "user", Content: "第二段"},
 		{Role: "assistant", Content: "回复"},
 	}
-	_, endBad, okBad := selectCompactRange(dangling, 1)
+	_, endBad, okBad := selectCompactRange(dangling, 1, false)
 	if !okBad || endBad != 0 {
 		t.Fatalf("缺配对时切点应退到调用之前（只能压 1 条）: ok=%v end=%d", okBad, endBad)
 	}
@@ -552,7 +552,7 @@ func TestPairingRepairUnfreezesCompaction(t *testing.T) {
 		{Role: "tool", ToolCallID: "c1", Content: skippedCancelNote},
 		dangling[2], dangling[3],
 	}
-	_, endGood, okGood := selectCompactRange(repaired, 1)
+	_, endGood, okGood := selectCompactRange(repaired, 1, false)
 	if !okGood || endGood < 2 {
 		t.Fatalf("补齐配对后区间应能覆盖该调用: ok=%v end=%d", okGood, endGood)
 	}

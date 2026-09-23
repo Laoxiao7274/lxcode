@@ -118,6 +118,10 @@ func (s *Session) openChildSession(call tools.DispatchCall, ac *sessiondata.Agen
 	st, parentID, stream := s.st, s.id, s.stream
 	s.mu.Unlock()
 	child := New(s.reg, s.tools, s.emit)
+	// 子会话压缩时保护历史第 0 条 = 派发的那条任务说明书（见 Session.protectHead）：
+	// 这是子 Agent 唯一的任务依据，被压进摘要后长任务就会跑偏。
+	// 在 st == nil 的提前返回之前置位——内存子会话同样有这条头部。
+	child.SetProtectHead(true)
 	// 继承父会话的 LLM 调用实现：生产是 streamWithLLM（同一份），测试是注入的假流——
 	// 不继承的话子会话会绕开宿主注入的流去连真实端点（单测直接炸）。
 	child.SetStream(stream)

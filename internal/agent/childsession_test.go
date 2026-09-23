@@ -292,3 +292,63 @@ func TestChildSessionEventAttribution(t *testing.T) {
 		t.Fatalf("busy 只应来自主轮（1 真 1 假），实际 true=%d false=%d", busyTrue, busyFalse)
 	}
 }
+
+// 子会话压缩保护任务说明书：openChildSession 是开子会话的唯一入口（新建与续跑同一条
+// 路），它置位 protectHead——压缩后历史第 0 条仍是派发的那条任务原文，摘要落在它之后；
+// 库里回放同一顺序（检查点按影子锚点插回被替换段的位置，不是一律排最前）。
+func TestChildSessionCompactionKeepsTaskBrief(t *testing.T) {
+	env, st := newChildSessionEnv(t)
+	// 先让父会话落一行（行是懒建的：父会话必须先有过消息，子会话才有父可挂）
+	env.s.SetStream((&fakeStream{script: [][]llm.StreamEvent{textResult("好")}}).stream)
+	if err := env.s.Send("先建父会话"); err != nil {
+		t.Fatal(err)
+	}
+	waitDispatchIdle(t, env.s)
+
+	// 走真实入口开子会话（runDispatch 用的就是它）
+	call := tools.DispatchCall{Agent: "coder", Task: "跑一遍测试", DispatchID: "call-x"}
+	child, childID, err := env.s.openChildSession(call,
+		&sessiondata.AgentContext{Def: sessiondata.AgentDef{ID: "coder"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if childID == "" {
+		t.Fatal("前置条件：子会话应落库")
+	}
+	if !child.protectHead {
+		t.Fatal("子会话应保护头部任务说明书（openChildSession 置位）")
+	}
+	// 历史第 0 条 = 派发的任务说明书；其后是子会话自己跑出来的长历史
+	task := composeTaskMessage(call)
+	child.append(llm.Message{Role: "user", Content: task})
+	for _, m := range bigHistory(6) {
+		child.append(m)
+	}
+	child.SetStream(compactionStream(t, nil, nil, summaryText, false))
+
+	res, err := child.Compact("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Shadowed != 5 {
+		t.Fatalf("被压的应是任务消息之后的 5 条（任务说明书不参与，尾部留一条）: %+v", res)
+	}
+	msgs := child.History().Messages
+	if len(msgs) != 3 || msgs[0].Content != task {
+		t.Fatalf("任务说明书必须留在历史首条: %+v", msgs)
+	}
+	if !isCheckpointContent(msgs[1].Content) {
+		t.Fatalf("摘要应落在任务消息之后: %q", msgs[1].Content)
+	}
+	if msgs[2].Content != bigHistory(6)[5].Content {
+		t.Fatalf("尾部一条应保留原文: %q", msgs[2].Content)
+	}
+	// 压缩后子会话仍在自己的行上，且库里回放的顺序与内存一致
+	stored, err := st.Load(childID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored) != len(msgs) || stored[0].Content != task || !isCheckpointContent(stored[1].Content) {
+		t.Fatalf("库里回放应与内存一致（任务说明书在前、摘要在后）: %+v", stored)
+	}
+}

@@ -11,19 +11,21 @@ import (
 	"github.com/moyunteng/lxcode/internal/sessiondata"
 )
 
-// 压缩（compaction）：把历史的一段（永远是前缀）替换成一份摘要检查点，
-// 让长会话能继续跑而不撞模型窗口。设计对齐 DSH 的 compaction-basic：
+// 压缩（compaction）：把历史的一段替换成一份摘要检查点，让长会话能继续跑而不撞
+// 模型窗口。设计对齐 DSH 的 compaction-basic：
 //
 //   - **触发**：轮与轮之间用上一次请求的真实 prompt_tokens 判压力（那时它就是
 //     精确值，不用估算）；端点报超长时强制压一次再重试该轮；用户手动 /compact
 //     不受阈值约束（空闲即可）；
 //   - **选区间**：从尾部往前累加到"保留预算"，再回退到最近的**配对平衡**切点
 //     （tool-pairing 不变量——切开 assistant 的 tool_calls 与它的 tool 结果就是
-//     畸形历史，严格端点会 400）；
+//     畸形历史，严格端点会 400）；区间起点通常是 0（主会话压缩前缀），子会话
+//     保护头部的任务说明书时从 1 开始（见 Session.protectHead）；
 //   - **fail-closed**：摘要失败、摘要没缩水、落库失败，都不改历史——半截压缩
 //     比不压缩更糟（历史被截断却没有任何解释）；
-//   - **落库**：检查点行记**影子区间**（`shadow_start_seq`/`shadow_end_seq`），
-//     被影子的原文行**不删**——翻旧账仍可查，只是历史回放时跳过它们。
+//   - **落库**：检查点行记**影子区间**（`shadow_start_seq`/`shadow_end_seq` +
+//     `shadowed_seqs`），被影子的原文行**不删**——翻旧账仍可查，只是历史回放时
+//     跳过它们，并把检查点放回被影子段原本占据的位置。
 const (
 	// compactionThresholdRatio 压力阈值占窗口比例（0.8——对齐 DSH 默认）。
 	compactionThresholdRatio = 0.8
@@ -63,14 +65,18 @@ func compactionBudgets(window int) (threshold, retain int, ok bool) {
 // selectCompactRange 选可压缩区间：从尾部往前累加到保留预算，再回退到最近的
 // 配对平衡切点。返回 [start, end] 闭区间下标与是否可选。
 //
-// 我们的历史里没有 system 消息（系统提示词每轮现组装，不进历史），所以区间
-// 起点恒为 0——即压缩永远替换一个**前缀**。这也是落库用"影子区间"却不需要
-// 通用 surface 替换的原因。
-func selectCompactRange(history []llm.Message, retainTokens int) (start, end int, ok bool) {
+// protectHead 为真时区间起点从 1 开始——历史第 0 条是**子会话的任务说明书**
+// （派发时那条 user 任务消息，子 Agent 的全部依据：它看不到主对话历史），压进摘要
+// 就等于让子 Agent 在续跑/长任务里逐渐忘掉自己在干什么。主会话没有这条，所以
+// 起点仍是 0（系统提示词每轮现组装、不在历史里，两种情形都不需要保护）。
+func selectCompactRange(history []llm.Message, retainTokens int, protectHead bool) (start, end int, ok bool) {
 	if len(history) == 0 {
 		return 0, 0, false
 	}
-	const firstIdx = 0
+	firstIdx := 0
+	if protectHead {
+		firstIdx = 1
+	}
 	accumulated := 0
 	keepFrom := len(history)
 	for i := len(history) - 1; i >= firstIdx; i-- {
@@ -175,9 +181,10 @@ func (s *Session) runCompaction(ctx context.Context, ac *sessiondata.AgentContex
 	s.mu.Lock()
 	snapshot := append([]llm.Message(nil), s.history...)
 	id := s.id
+	protectHead := s.protectHead
 	s.mu.Unlock()
 
-	start, end, ok := selectCompactRange(snapshot, retainTokens)
+	start, end, ok := selectCompactRange(snapshot, retainTokens, protectHead)
 	if !ok {
 		// 没有可压区间（历史还太短 / 配对回退把整段吃掉）——不是错误
 		return CompactResult{}, fmt.Errorf("%w（历史还太短）", ErrNothingToCompact)
@@ -216,9 +223,15 @@ func (s *Session) runCompaction(ctx context.Context, ac *sessiondata.AgentContex
 		s.mu.Unlock()
 		return CompactResult{}, errors.New("会话在压缩期间被改动，已放弃（历史未改动）")
 	}
-	s.history = append([]llm.Message{checkpoint}, s.history[end+1:]...)
+	// 检查点顶替被压段的位置：区间起点为 0 时它就是历史首条；保护头部（子会话
+	// 的任务说明书）时落在任务消息之后——与 store 回放时的锚点插入同一套语义。
+	replaced := make([]llm.Message, 0, len(s.history)-shadowed+1)
+	replaced = append(replaced, s.history[:start]...)
+	replaced = append(replaced, checkpoint)
+	replaced = append(replaced, s.history[end+1:]...)
+	s.history = replaced
 	if s.st != nil && id != "" {
-		if err := s.st.AppendCheckpoint(id, checkpoint, shadowed); err != nil {
+		if err := s.st.AppendCheckpoint(id, checkpoint, start, shadowed); err != nil {
 			s.history = snapshot // 回滚：内存与库必须一致
 			s.mu.Unlock()
 			return CompactResult{}, fmt.Errorf("检查点落库失败（历史未改动）: %w", err)
