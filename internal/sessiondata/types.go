@@ -1,7 +1,9 @@
 // Package sessiondata 定义会话与存储共享的业务数据，不依赖数据库或传输层。
 package sessiondata
 
-// SessionMeta 是会话列表摘要。
+// SessionMeta 是会话列表摘要。ParentID/AgentID 非空 = 子会话（派发给子 Agent 开的
+// 独立会话）：自己的消息历史与压缩检查点，挂在父会话下；不进侧栏列表，但可被
+// 续跑（附着同一个 id 继续）与按父查询。
 type SessionMeta struct {
 	ID        string
 	Title     string
@@ -9,6 +11,8 @@ type SessionMeta struct {
 	Messages  int
 	Archived  bool
 	Workspace string
+	ParentID  string // 父会话 id（空 = 顶层会话）
+	AgentID   string // 该会话运行的 Agent（子会话续跑时按同一套四层组合组装）
 }
 
 // ProjectMeta 是注册项目的身份与根目录。

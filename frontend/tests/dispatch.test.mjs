@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { reduce } from '../src/shared/store.ts';
-const base = { blocks: [], busy: true, pending: null, todos: [], currentId: '', operationError: null };
+const base = { blocks: [], busy: true, pending: null, todos: [], currentId: '', operationError: null, context: null };
 
 test('dispatchStart 开卡 → 子事件按 dispatchId 挂进 subBlocks', () => {
   let s = reduce(base, { type: 'dispatchStart', dispatchId: 'd1', agentId: 'coder', agentName: '代码 Agent', agentColor: '#3b82f6', task: '跑测试' });

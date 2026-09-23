@@ -21,20 +21,9 @@ var validTodoStatus = map[string]bool{"pending": true, "active": true, "done": t
 // TodoWriteFn 是 todo 状态写入的注入接缝（agent.Session 接线）：
 // 会话持有清单状态才能在 UI 上渲染（桌面壳的 TodoList 卡片），
 // 工具层只做校验与格式化，状态归属不出工具包边界。
+// 经 ctx 注入（见 sessionstate.go）——父会话与子会话各有自己的清单，
+// 注册表级全局会让子 Agent 的清单覆盖主会话的。
 type TodoWriteFn func(items []TodoItem)
-
-// TodoSink 的注册与读取（与 sessionSearch 同一注入模式）。
-func (r *Registry) SetTodoSink(fn TodoWriteFn) {
-	r.todoMu.Lock()
-	r.todoSink = fn
-	r.todoMu.Unlock()
-}
-
-func (r *Registry) getTodoSink() TodoWriteFn {
-	r.todoMu.Lock()
-	defer r.todoMu.Unlock()
-	return r.todoSink
-}
 
 // todoDef：todo，风险等级 低危（只写会话内的规划状态，不碰文件系统）。
 //
@@ -96,7 +85,7 @@ func todoDef(r *Registry) *Def {
 				return "", fmt.Errorf("active 状态有 %d 项——同一时刻只能有一项进行中，请先完成或改回 pending", active)
 			}
 
-			if fn := r.getTodoSink(); fn != nil {
+			if fn := todoSinkFrom(ctx); fn != nil {
 				fn(a.Items)
 			}
 			return formatTodoResult(a.Items), nil

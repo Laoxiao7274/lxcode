@@ -97,6 +97,68 @@ async function driveInit(socket) {
   return methods;
 }
 
+// P1：上下文占用随 chat.done（主轮）与 chat.history 过 wire——映射后进 store。
+test('context usage rides chat.done and chat.history (main turn only)', async (t) => {
+  const { agent, ws, events } = setup(t);
+  const ctx = { used: 777, window: 32768, system: 300, tool_results: 200, messages: 277 };
+  ws.receive({ method: 'chat.done', params: { usage_tokens: 12, finish_reason: 'stop', context: ctx } });
+  const done = events.find((e) => e.type === 'done');
+  assert.deepEqual(done.context, ctx, '主轮 done 的 context 应原样映射');
+
+  // 子轮的 done 不带 context（后端已按 dispatch 归属收口）
+  ws.receive({ method: 'chat.done', params: { usage_tokens: 730, finish_reason: 'stop', dispatch_id: 'd1' } });
+  const subs = events.filter((e) => e.type === 'done' && e.dispatchId === 'd1');
+  assert.equal(subs.at(-1).context, undefined, '子轮 done 不应带 context');
+});
+
+test('historyLoaded carries the measured context (absent stays undefined)', async (t) => {
+  const { agent, events } = setup(t);
+  const p = agent['loadHistory']();
+  const last = FakeSocket.latest.sent.at(-1);
+  assert.equal(last.method, 'chat.history');
+  FakeSocket.latest.reply({ session_id: 's1', messages: [], busy: false, context: { used: 100, window: 8192 } });
+  await p;
+  assert.deepEqual(events.at(-1).history.context, { used: 100, window: 8192 });
+
+  // 未知占用（后端刚重启）：整键缺席 → undefined，指示器据此显示中性态
+  const q = agent['loadHistory']();
+  FakeSocket.latest.reply({ session_id: 's1', messages: [], busy: false });
+  await q;
+  assert.equal(events.at(-1).history.context, undefined);
+  assert.deepEqual(events.at(-1).history.checkpoints, [], '无检查点时为空列表（与 todos 同款）');
+});
+
+// P3：压缩事件过 wire + 历史检查点下标 + 手动压缩调用。
+test('compacted event and history checkpoints ride the wire', async (t) => {
+  const { agent, ws, events } = setup(t);
+  ws.receive({ method: 'chat.compacted', params: { before: 8000, after: 2400, shadowed: 12, summary: '摘要', manual: true } });
+  const ev = events.find((e) => e.type === 'compacted');
+  assert.deepEqual(ev, { type: 'compacted', before: 8000, after: 2400, shadowed: 12, summary: '摘要', manual: true, dispatchId: undefined });
+
+  // 子会话自己的压缩带 dispatch_id（归属进卡内，不插主时间线）
+  ws.receive({ method: 'chat.compacted', params: { before: 100, after: 40, shadowed: 3, summary: '子摘要', dispatch_id: 'd1' } });
+  const sub = events.filter((e) => e.type === 'compacted').at(-1);
+  assert.equal(sub.dispatchId, 'd1');
+
+  // 子会话 id 随 dispatchStart/End 过 wire（前端显示 + 续跑依据）
+  ws.receive({ method: 'chat.dispatchStart', params: { dispatch_id: 'd1', session_id: 'child-1', agent_id: 'coder', agent_name: '代码 Agent', agent_color: '#000', task: 't' } });
+  assert.equal(events.find((e) => e.type === 'dispatchStart').sessionId, 'child-1');
+  ws.receive({ method: 'chat.dispatchEnd', params: { dispatch_id: 'd1', session_id: 'child-1', result: 'r' } });
+  assert.equal(events.filter((e) => e.type === 'dispatchEnd').at(-1).sessionId, 'child-1');
+
+  // 历史里的检查点下标（渲染标记块的依据）
+  const p = agent['loadHistory']();
+  FakeSocket.latest.reply({ session_id: 's1', messages: [{ role: 'user', content: 'x' }], busy: false, checkpoints: [0] });
+  await p;
+  assert.deepEqual(events.at(-1).history.checkpoints, [0]);
+
+  // 手动压缩：无参数调用；应答原样回给调用方（compacted=false 不是错误）
+  const compacting = agent.compact();
+  assert.equal(ws.sent.at(-1).method, 'chat.compact');
+  ws.reply({ compacted: false });
+  assert.deepEqual(await compacting, { compacted: false });
+});
+
 test('project instructions round-trip over the wire (project_id only, no path)', async (t) => {
   const { agent, ws } = setup(t);
   const reading = agent.readInstructions('proj-1');

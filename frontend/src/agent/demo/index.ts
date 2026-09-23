@@ -1,10 +1,20 @@
 // 演示数据源（M3 叙事）：主 Agent 只调度——思考选人 → agent.dispatch →
 // dispatch 卡（子 Agent 全套执行：思考/读码/改码/确认门/跑测试）→ 验收
 // 汇总。覆盖 UI 全部状态。事件形状与后端协议 1:1——接线换 WSAgent 即可。
-import type { AgentEvent, AgentSource, ConfirmRequest, ProjectInstructions, ProjectMeta, SendOptions, SessionMeta, TodoItem } from "../../shared/types";
+import type { AgentEvent, AgentSource, CompactOutcome, ConfirmRequest, ContextUsage, ProjectInstructions, ProjectMeta, SendOptions, SessionMeta, TodoItem } from "../../shared/types";
 import { MAIN_REASONING, SUB_REASONING, SUB_RESULT, MAIN_ANSWER, TODO_INITIAL, TODO_LATER, FILES_CHANGED, SESSIONS } from "./data";
 
 type Listener = (ev: AgentEvent) => void;
+
+/** 演示用的上下文占用（与真实后端同形状：used 优先真实用量，分类是估算拆分
+ *  且之和 == used）。演示不接模型注册表，窗口按 128k 假定。 */
+function demoContext(used: number): ContextUsage {
+  const window = 128_000;
+  const system = Math.round(used * 0.22);
+  const toolResults = Math.round(used * 0.34);
+  const reasoning = Math.round(used * 0.06);
+  return { used, window, system, tool_results: toolResults, reasoning, messages: used - system - toolResults - reasoning };
+}
 
 export class DemoAgent implements AgentSource {
   label = "演示模式";
@@ -17,6 +27,8 @@ export class DemoAgent implements AgentSource {
   private currentSession = SESSIONS[0].id;
   private pendingNewId: string | null = null;
   private pendingNewWorkspace = "";
+  /** 演示态的轮次计数（compact 用：累计过几轮就当作有可压区间）。 */
+  private turns = 0;
   private projects_: ProjectMeta[] = [
     { id: "proj-demo-lxcode", name: "lxcode", path: "C:\\Users\\xzy\\Desktop\\my\\lxcode" },
     { id: "proj-demo-agent", name: "local-myt-agent", path: "C:\\Users\\xzy\\Desktop\\gs\\local-myt-agent" },
@@ -67,6 +79,22 @@ export class DemoAgent implements AgentSource {
       aborted: true,
     });
     this.finish();
+  }
+
+  /** 手动压缩（演示）：按真实后端语义回一条 compacted=false 或一条压缩事件。
+   *  演示态不真压历史（内存块是 UI 真源），只演示「事件 → 标记块」这条链路。 */
+  async compact(): Promise<CompactOutcome> {
+    if (this.busy) throw new Error("生成中不能压缩（先停止）");
+    // 演示：累计过几轮就当作"有可压区间"
+    const rounds = this.turns++;
+    if (rounds < 1) return { compacted: false };
+    const before = 38_400 + rounds * 900;
+    const after = Math.round(before * 0.3);
+    this.emit({
+      type: "compacted", before, after, shadowed: rounds * 4, manual: true,
+      summary: "## 主要请求与意图\n- 演示：压缩早期历史\n\n## 当前工作\n- 演示模式的压缩标记块",
+    });
+    return { compacted: true, before, after, shadowed: rounds * 4 };
   }
 
   newSession(workspace?: string): void {
@@ -155,6 +183,7 @@ export class DemoAgent implements AgentSource {
 
   private finish() {
     this.busy = false;
+    this.turns++;
     this.emit({ type: "busy", busy: false });
   }
 
@@ -293,7 +322,8 @@ export class DemoAgent implements AgentSource {
       this.emit({ type: "filesChanged", files: FILES_CHANGED });
     });
     this.at(t + 800, () => {
-      this.emit({ type: "done", usageTokens: 2545 + Math.floor(Math.random() * 400), finishReason: "stop" });
+      const usage = 2545 + Math.floor(Math.random() * 400);
+      this.emit({ type: "done", usageTokens: usage, finishReason: "stop", context: demoContext(38_400 + usage) });
       this.finish();
     });
   }

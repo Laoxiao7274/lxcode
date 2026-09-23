@@ -14,6 +14,7 @@ import { ToolBlock } from "./ToolBlock";
 import { FilesCard } from "./FilesCard";
 import { AnswerBody } from "./AnswerBody";
 import { DispatchCard } from "./DispatchCard";
+import { CompactionCard } from "./CompactionCard";
 
 export const Block = memo(function Block({ block, onConfirm }: { block: ThreadBlock; onConfirm: (id: string, allow: boolean) => void }) {
   const bubbleRef = useRef<HTMLDivElement>(null);
@@ -74,6 +75,9 @@ export const Block = memo(function Block({ block, onConfirm }: { block: ThreadBl
 
     case "dispatch":
       return <DispatchCard block={block} onConfirm={onConfirm} />;
+
+    case "compacted":
+      return <CompactionCard block={block} />;
 
     case "confirm":
       return (

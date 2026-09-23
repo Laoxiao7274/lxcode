@@ -108,6 +108,42 @@ func Open(dir string) (*Store, error) {
 			return nil, fmt.Errorf("迁移会话表失败: %w", err)
 		}
 	}
+	// 子会话（2026-09-22）：派发给子 Agent 的任务开一个**独立会话**——自己的行 +
+	// 自己的消息历史 + 自己的压缩检查点，靠 parent_id 挂回父会话。于是：
+	//   - 子 Agent 的进度天然可续（历史在库里，续跑附着同一个 id 继续跑）；
+	//   - 压缩同款（子会话就是会话，走同一套检查点/影子区间）；
+	//   - parent_id = '' 的是顶层会话（用户自己的会话），List/Latest 只认它们，
+	//     否则重启会恢复到子会话、侧栏会被子会话淹没。
+	for _, col := range []string{
+		`ALTER TABLE sessions ADD COLUMN parent_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE sessions ADD COLUMN agent_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE sessions ADD COLUMN dispatch_id TEXT NOT NULL DEFAULT ''`,
+	} {
+		if _, err := db.Exec(col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			db.Close()
+			return nil, fmt.Errorf("迁移会话表失败: %w", err)
+		}
+	}
+	// 子会话索引：按父查子（归档级联、将来的子会话列表）
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_id)`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("建子会话索引失败: %w", err)
+	}
+	// 压缩检查点的影子区间（2026-09-22）：checkpoint=1 的行是一条摘要检查点，
+	// 它替换（影子）库里 seq ∈ [shadow_start_seq, shadow_end_seq] 的那些行。
+	// 被影子的原文**不删**——翻旧账仍可查（Search 照旧搜全量日志），
+	// 只是历史回放（Load/Latest）跳过它们。
+	for _, col := range []string{
+		`ALTER TABLE messages ADD COLUMN checkpoint INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE messages ADD COLUMN shadow_start_seq INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE messages ADD COLUMN shadow_end_seq INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE messages ADD COLUMN shadowed_seqs TEXT NOT NULL DEFAULT '[]'`,
+	} {
+		if _, err := db.Exec(col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			db.Close()
+			return nil, fmt.Errorf("迁移消息表失败: %w", err)
+		}
+	}
 	st := &Store{db: db}
 	// Agent 注册表与拓展目录（M1——四张表 + 首次种子，幂等）
 	if err := st.initAgents(); err != nil {
@@ -162,6 +198,68 @@ func (s *Store) CreateWithID(id, title string) (string, error) {
 		return "", fmt.Errorf("创建会话 %s 失败: %w", id, err)
 	}
 	return id, nil
+}
+
+// CreateChild 开一个子会话（派发给子 Agent 的任务 = 一个独立会话）：
+// parent_id 指回派发方，agent_id 记住它是哪个 Agent（续跑时按同一套四层组合
+// 组装），dispatch_id 是哪次调度开的（对账用）；**workspace 直接继承父会话的行**
+// （子会话的工具相对路径与 bash 默认目录必须与父一致——在 SQL 里 SELECT 过来，
+// 免得 agent 层还要记住 workspace id）。
+func (s *Store) CreateChild(parentID, agentID, dispatchID string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id := newSessionID()
+	now := nowNano()
+	res, err := s.db.Exec(
+		`INSERT INTO sessions (id, created_at, updated_at, title, archived, parent_id, agent_id, dispatch_id, workspace)
+		 SELECT ?, ?, ?, '', 0, id, ?, ?, workspace FROM sessions WHERE id = ?`,
+		id, now, now, agentID, dispatchID, parentID)
+	if err != nil {
+		return "", fmt.Errorf("创建子会话失败: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		// SELECT 没选到行 = 父会话不存在（插入 0 行）——不能默默开一个孤儿
+		return "", fmt.Errorf("父会话 %s 不存在", parentID)
+	}
+	return id, nil
+}
+
+// ChildrenOf 列出某会话的子会话（按创建序）——归档级联与将来的子会话视图用。
+func (s *Store) ChildrenOf(parentID string) ([]SessionMeta, error) {
+	rows, err := s.db.Query(
+		`SELECT id, title, updated_at, archived, workspace, parent_id, agent_id
+		 FROM sessions WHERE parent_id = ? ORDER BY created_at ASC, rowid ASC`, parentID)
+	if err != nil {
+		return nil, fmt.Errorf("列出子会话失败: %w", err)
+	}
+	defer rows.Close()
+	var out []SessionMeta
+	for rows.Next() {
+		var meta SessionMeta
+		var archived int
+		if err := rows.Scan(&meta.ID, &meta.Title, &meta.UpdatedAt, &archived, &meta.Workspace,
+			&meta.ParentID, &meta.AgentID); err != nil {
+			return nil, fmt.Errorf("读子会话行失败: %w", err)
+		}
+		meta.Archived = archived == 1
+		if meta.Title == "" {
+			meta.Title = "（空子会话）"
+		}
+		meta.UpdatedAt = fmtTime(meta.UpdatedAt)
+		out = append(out, meta)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// 消息数与 List 同口径（按当前历史算——压缩后不能显示原始条数）
+	counts, err := s.surfaceCounts()
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		out[i].Messages = counts[out[i].ID]
+	}
+	return out, nil
 }
 
 // nowNano 是库内时间戳格式（纳秒精度 + 时区）——排序依据 updated_at，
@@ -220,36 +318,222 @@ func (s *Store) Load(id string) ([]llm.Message, error) {
 		}
 		return nil, fmt.Errorf("查询会话 %s 失败: %w", id, err)
 	}
+	return s.loadSurface(id)
+}
+
+// loadSurface 读会话的**当前历史**：跳过被压缩检查点影子覆盖的行，并把历史
+// 顺序还原成"检查点在前、其余按 seq 升序"。
+//
+// 为什么要还原顺序：检查点行是**追加在末尾**的（seq 最大），但它顶替的是被影子
+// 那一段在历史里的位置（DSH 的 surface position）。压缩区间恒为历史**前缀**，
+// 所以检查点永远落在历史第一位——这就是"检查点在前"这条顺序规则的来源。若将来
+// 允许压缩中间段，这条规则必须同步改（agent 侧的 selectCompactRange 起点也变了）。
+func (s *Store) loadSurface(id string) ([]llm.Message, error) {
+	rows, err := s.readRows(id)
+	if err != nil {
+		return nil, err
+	}
+	shadowed := shadowSet(rows)
+	var checkpoints, others []rowData
+	for _, r := range rows {
+		if _, hit := shadowed[r.seq]; hit {
+			continue
+		}
+		if r.checkpoint {
+			checkpoints = append(checkpoints, r)
+		} else {
+			others = append(others, r)
+		}
+	}
+	msgs := make([]llm.Message, 0, len(checkpoints)+len(others))
+	for _, r := range checkpoints {
+		msgs = append(msgs, r.msg)
+	}
+	for _, r := range others {
+		msgs = append(msgs, r.msg)
+	}
+	return msgs, nil
+}
+
+// rowData 是一行消息（含压缩检查点的影子信息）。
+type rowData struct {
+	seq        int
+	msg        llm.Message
+	checkpoint bool
+	shadowed   []int // 检查点影子掉的 seq 集合（权威；空 = 不是检查点）
+}
+
+// readRows 读会话全部消息行（按 seq 升序）。
+func (s *Store) readRows(id string) ([]rowData, error) {
 	rows, err := s.db.Query(
-		`SELECT role, content, reasoning, reasoning_sig, tool_calls, tool_call_id
+		`SELECT seq, role, content, reasoning, reasoning_sig, tool_calls, tool_call_id,
+		        checkpoint, shadowed_seqs
 		 FROM messages WHERE session_id = ? ORDER BY seq`, id)
 	if err != nil {
 		return nil, fmt.Errorf("查询会话 %s 失败: %w", id, err)
 	}
 	defer rows.Close()
-	var msgs []llm.Message
+	var out []rowData
 	for rows.Next() {
-		var m llm.Message
-		var toolCalls string
-		if err := rows.Scan(&m.Role, &m.Content, &m.ReasoningContent, &m.ReasoningSignature, &toolCalls, &m.ToolCallID); err != nil {
+		var r rowData
+		var toolCalls, shadowedSeqs string
+		var cp int
+		if err := rows.Scan(&r.seq, &r.msg.Role, &r.msg.Content, &r.msg.ReasoningContent,
+			&r.msg.ReasoningSignature, &toolCalls, &r.msg.ToolCallID, &cp, &shadowedSeqs); err != nil {
 			return nil, fmt.Errorf("读消息行失败: %w", err)
 		}
 		if toolCalls != "" && toolCalls != "[]" {
-			if err := json.Unmarshal([]byte(toolCalls), &m.ToolCalls); err != nil {
+			if err := json.Unmarshal([]byte(toolCalls), &r.msg.ToolCalls); err != nil {
 				return nil, fmt.Errorf("解析工具调用失败: %w", err)
 			}
 		}
-		msgs = append(msgs, m)
+		r.checkpoint = cp == 1
+		if r.checkpoint && shadowedSeqs != "" && shadowedSeqs != "[]" {
+			if err := json.Unmarshal([]byte(shadowedSeqs), &r.shadowed); err != nil {
+				return nil, fmt.Errorf("解析影子区间失败: %w", err)
+			}
+		}
+		out = append(out, r)
 	}
-	return msgs, rows.Err()
+	return out, rows.Err()
 }
 
-// List 列出全部会话（按更新时间倒序，归档的沉底；rowid 兜底保证确定性顺序）。
+// shadowSet 把所有检查点的影子区间取并集（权威判定：seq 在集合里 = 已被压缩掉）。
+func shadowSet(rows []rowData) map[int]struct{} {
+	set := make(map[int]struct{})
+	for _, r := range rows {
+		if !r.checkpoint {
+			continue
+		}
+		for _, seq := range r.shadowed {
+			set[seq] = struct{}{}
+		}
+	}
+	return set
+}
+
+// surfaceRows 返回当前历史（存活行）**按历史顺序**：检查点在前（它们顶替了
+// 被影子段的位置），其余按 seq 升序。
+func surfaceRows(rows []rowData) []rowData {
+	shadowed := shadowSet(rows)
+	var checkpoints, others []rowData
+	for _, r := range rows {
+		if _, hit := shadowed[r.seq]; hit {
+			continue
+		}
+		if r.checkpoint {
+			checkpoints = append(checkpoints, r)
+		} else {
+			others = append(others, r)
+		}
+	}
+	return append(checkpoints, others...)
+}
+
+// AppendCheckpoint 追加一条压缩检查点：它替换（影子）当前历史**最前面的**
+// shadowed 条。shadowed 条不足时报错——那说明落盘落后于内存（某次写入失败过），
+// 此时写一个错的影子区间会让回放丢掉不该丢的历史；压缩必须失败而不是写错数据。
+//
+// 为什么是"最前面"：压缩区间恒为历史**前缀**（agent 的 selectCompactRange 起点
+// 恒为 0——历史里没有 system 消息），所以被替换的是当前历史的前 shadowed 条。
+func (s *Store) AppendCheckpoint(id string, m llm.Message, shadowed int) error {
+	toolCalls, err := json.Marshal(m.ToolCalls)
+	if err != nil {
+		return fmt.Errorf("序列化工具调用失败: %w", err)
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("开事务失败: %w", err)
+	}
+	defer tx.Rollback() // 已提交时是 no-op
+
+	rows, err := s.readRowsTx(tx, id)
+	if err != nil {
+		return err
+	}
+	surface := surfaceRows(rows)
+	var shadowedSeqs []int
+	var shadStart, shadEnd int
+	if shadowed > 0 {
+		if len(surface) < shadowed {
+			return fmt.Errorf("落盘落后于内存：当前历史只有 %d 条，需要影子 %d 条（拒绝写错的影子区间）",
+				len(surface), shadowed)
+		}
+		shadowedSeqs = make([]int, 0, shadowed)
+		for _, r := range surface[:shadowed] {
+			shadowedSeqs = append(shadowedSeqs, r.seq)
+		}
+		// 区间边界按"历史位置"记：起点 = 被替换段的第一条，终点 = 被替换段的最后一条
+		shadStart, shadEnd = surface[0].seq, surface[shadowed-1].seq
+	}
+
+	var seq int
+	if err := tx.QueryRow(`SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE session_id = ?`, id).Scan(&seq); err != nil {
+		return fmt.Errorf("取序号失败: %w", err)
+	}
+	seqJSON, err := json.Marshal(shadowedSeqs)
+	if err != nil {
+		return fmt.Errorf("序列化影子区间失败: %w", err)
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO messages (session_id, seq, role, content, reasoning, reasoning_sig, tool_calls, tool_call_id,
+		                       checkpoint, shadow_start_seq, shadow_end_seq, shadowed_seqs)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, '', 1, ?, ?, ?)`,
+		id, seq, m.Role, m.Content, m.ReasoningContent, m.ReasoningSignature, string(toolCalls),
+		shadStart, shadEnd, string(seqJSON),
+	); err != nil {
+		return fmt.Errorf("写检查点失败: %w", err)
+	}
+	if _, err := tx.Exec(`UPDATE sessions SET updated_at = ? WHERE id = ?`, nowNano(), id); err != nil {
+		return fmt.Errorf("更新会话时间失败: %w", err)
+	}
+	return tx.Commit()
+}
+
+// readRowsTx 是 readRows 的事务版（落库要在同一事务里读存活集）。
+func (s *Store) readRowsTx(tx *sql.Tx, id string) ([]rowData, error) {
+	rows, err := tx.Query(
+		`SELECT seq, role, content, reasoning, reasoning_sig, tool_calls, tool_call_id,
+		        checkpoint, shadowed_seqs
+		 FROM messages WHERE session_id = ? ORDER BY seq`, id)
+	if err != nil {
+		return nil, fmt.Errorf("查询会话 %s 失败: %w", id, err)
+	}
+	defer rows.Close()
+	var out []rowData
+	for rows.Next() {
+		var r rowData
+		var toolCalls, shadowedSeqs string
+		var cp int
+		if err := rows.Scan(&r.seq, &r.msg.Role, &r.msg.Content, &r.msg.ReasoningContent,
+			&r.msg.ReasoningSignature, &toolCalls, &r.msg.ToolCallID, &cp, &shadowedSeqs); err != nil {
+			return nil, fmt.Errorf("读消息行失败: %w", err)
+		}
+		if toolCalls != "" && toolCalls != "[]" {
+			if err := json.Unmarshal([]byte(toolCalls), &r.msg.ToolCalls); err != nil {
+				return nil, fmt.Errorf("解析工具调用失败: %w", err)
+			}
+		}
+		r.checkpoint = cp == 1
+		if r.checkpoint && shadowedSeqs != "" && shadowedSeqs != "[]" {
+			if err := json.Unmarshal([]byte(shadowedSeqs), &r.shadowed); err != nil {
+				return nil, fmt.Errorf("解析影子区间失败: %w", err)
+			}
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// List 列出全部**顶层**会话（按更新时间倒序，归档的沉底；rowid 兜底保证确定性顺序）。
+// 子会话（parent_id 非空）不进侧栏——它们是派发的产物，在 dispatch 卡里可见；
+// 列进来会把用户的会话列表淹掉。消息数按**当前历史**算（跳过被压缩检查点影子掉的
+// 行）——与 Load 同口径，否则压缩后侧栏条数与用户看到的历史对不上。
 func (s *Store) List() ([]SessionMeta, error) {
 	rows, err := s.db.Query(
-		`SELECT s.id, s.title, s.updated_at, s.archived, s.workspace,
-		        (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS n
+		`SELECT s.id, s.title, s.updated_at, s.archived, s.workspace, s.parent_id, s.agent_id
 		 FROM sessions s
+		 WHERE s.parent_id = ''
 		 ORDER BY s.archived ASC, s.updated_at DESC, s.rowid DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("列出会话失败: %w", err)
@@ -259,7 +543,8 @@ func (s *Store) List() ([]SessionMeta, error) {
 	for rows.Next() {
 		var meta SessionMeta
 		var archived int
-		if err := rows.Scan(&meta.ID, &meta.Title, &meta.UpdatedAt, &archived, &meta.Workspace, &meta.Messages); err != nil {
+		if err := rows.Scan(&meta.ID, &meta.Title, &meta.UpdatedAt, &archived, &meta.Workspace,
+			&meta.ParentID, &meta.AgentID); err != nil {
 			return nil, fmt.Errorf("读会话行失败: %w", err)
 		}
 		meta.Archived = archived == 1 // 结构化归档态（不再是标题前缀 hack）
@@ -269,14 +554,60 @@ func (s *Store) List() ([]SessionMeta, error) {
 		meta.UpdatedAt = fmtTime(meta.UpdatedAt)
 		out = append(out, meta)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// 消息数：按当前历史算（复用回放的同一套存活判定）
+	counts, err := s.surfaceCounts()
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		out[i].Messages = counts[out[i].ID]
+	}
+	return out, nil
 }
 
-// Latest 找最近的会话（按 updated_at；无任何会话返回 ""——调用方走全新开始）。
+// surfaceCounts 统计每个会话当前历史的条数（跳过被影子掉的行）。
+func (s *Store) surfaceCounts() (map[string]int, error) {
+	rows, err := s.db.Query(`SELECT session_id, seq, checkpoint, shadowed_seqs FROM messages ORDER BY session_id, seq`)
+	if err != nil {
+		return nil, fmt.Errorf("统计消息数失败: %w", err)
+	}
+	defer rows.Close()
+	bySession := make(map[string][]rowData)
+	for rows.Next() {
+		var r rowData
+		var id, shadowedSeqs string
+		var cp int
+		if err := rows.Scan(&id, &r.seq, &cp, &shadowedSeqs); err != nil {
+			return nil, fmt.Errorf("统计消息数失败: %w", err)
+		}
+		r.checkpoint = cp == 1
+		if r.checkpoint && shadowedSeqs != "" && shadowedSeqs != "[]" {
+			if err := json.Unmarshal([]byte(shadowedSeqs), &r.shadowed); err != nil {
+				return nil, fmt.Errorf("解析影子区间失败: %w", err)
+			}
+		}
+		bySession[id] = append(bySession[id], r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	counts := make(map[string]int, len(bySession))
+	for id, rs := range bySession {
+		counts[id] = len(surfaceRows(rs))
+	}
+	return counts, nil
+}
+
+// Latest 找最近的**顶层**会话（按 updated_at；无任何会话返回 ""——调用方走全新开始）。
+// 子会话不参与：否则重启会把用户恢复到某个子 Agent 的会话上。
 func (s *Store) Latest() (string, []llm.Message, error) {
 	var id string
 	err := s.db.QueryRow(
-		`SELECT id FROM sessions WHERE archived = 0 ORDER BY updated_at DESC, rowid DESC LIMIT 1`).Scan(&id)
+		`SELECT id FROM sessions WHERE archived = 0 AND parent_id = ''
+		 ORDER BY updated_at DESC, rowid DESC LIMIT 1`).Scan(&id)
 	if err == sql.ErrNoRows {
 		return "", nil, nil
 	}
@@ -307,19 +638,30 @@ func (s *Store) Rename(id, title string) error {
 }
 
 // Archive 归档/取消归档会话。
+// Archive 归档/恢复会话。**级联到子会话**：子会话不进侧栏，用户没法单独操作它们，
+// 父会话归档后把子会话留在列表外会让库里长期堆积孤儿；恢复时一并恢复（子会话的
+// 历史与检查点都还在，dispatch 卡回放不受影响）。
 func (s *Store) Archive(id string, archived bool) error {
 	v := 0
 	if archived {
 		v = 1
 	}
-	res, err := s.db.Exec(`UPDATE sessions SET archived = ? WHERE id = ?`, v, id)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("归档失败: %w", err)
+	}
+	defer tx.Rollback() // 已提交时是 no-op
+	res, err := tx.Exec(`UPDATE sessions SET archived = ? WHERE id = ?`, v, id)
 	if err != nil {
 		return fmt.Errorf("归档失败: %w", err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return fmt.Errorf("会话 %s 不存在", id)
 	}
-	return nil
+	if _, err := tx.Exec(`UPDATE sessions SET archived = ? WHERE parent_id = ?`, v, id); err != nil {
+		return fmt.Errorf("归档子会话失败: %w", err)
+	}
+	return tx.Commit()
 }
 
 // ProjectMeta 是项目列表条目（侧栏「项目」分组的数据源）。

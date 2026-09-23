@@ -513,6 +513,120 @@ func TestDispatchPayloads(t *testing.T) {
 	})
 }
 
+// TestContextUsagePayloads：P1 计账的 wire 形状（done 与 history 携带
+// context——前端指示器按这些键消费；未知时整块缺席，不是 used=0）。
+func TestContextUsagePayloads(t *testing.T) {
+	t.Run("DoneParams 带 context（子轮的 done 不带——omitempty）", func(t *testing.T) {
+		b := mustMarshal(t, DoneParams{
+			Message: llm.Message{Role: "assistant", Content: "好"}, UsageTokens: 12, FinishReason: "stop",
+			Context: &ContextUsage{Used: 777, Window: 32768, System: 300, ToolResults: 200, Messages: 277},
+		})
+		var m map[string]any
+		mustUnmarshal(t, b, &m)
+		ctx, ok := m["context"].(map[string]any)
+		if !ok {
+			t.Fatalf("主轮 done 应带 context: %s", b)
+		}
+		for _, key := range []string{"used", "window", "system", "tool_results", "messages"} {
+			if _, ok := ctx[key]; !ok {
+				t.Fatalf("context 缺键 %s: %s", key, b)
+			}
+		}
+		if ctx["used"].(float64) != 777 || ctx["window"].(float64) != 32768 {
+			t.Fatalf("context 数值失真: %s", b)
+		}
+
+		// 子轮 done：不带 context 键（子上下文占用不进主指示器）
+		b2 := mustMarshal(t, DoneParams{Message: llm.Message{Role: "assistant"}, DispatchID: "d1"})
+		if strings.Contains(string(b2), "context") {
+			t.Fatalf("子轮 done 不应带 context: %s", b2)
+		}
+	})
+
+	t.Run("ChatHistoryResult 带 context（未知时整键缺席）", func(t *testing.T) {
+		b := mustMarshal(t, ChatHistoryResult{SessionID: "s1", Context: &ContextUsage{Used: 100, Window: 8192}})
+		var got ChatHistoryResult
+		mustUnmarshal(t, b, &got)
+		if got.Context == nil || got.Context.Used != 100 || got.Context.Window != 8192 {
+			t.Fatalf("history context 往返失真: %+v", got.Context)
+		}
+		b2 := mustMarshal(t, ChatHistoryResult{SessionID: "s1"})
+		if strings.Contains(string(b2), "context") {
+			t.Fatalf("未知占用应整键缺席（客户端显示中性态）: %s", b2)
+		}
+	})
+}
+
+// TestCompactionPayloads：P3 压缩的 wire 形状（手动方法/事件/历史检查点下标）。
+func TestCompactionPayloads(t *testing.T) {
+	t.Run("chat.compact 方法名与 chat.compacted 事件名不同名", func(t *testing.T) {
+		if MethodChatCompact == EventCompacted {
+			t.Fatal("方法名与事件名不得重名（dispatch 与事件处理会撞车）")
+		}
+		if MethodChatCompact != "chat.compact" || EventCompacted != "chat.compacted" {
+			t.Fatalf("命名漂移: %s / %s", MethodChatCompact, EventCompacted)
+		}
+	})
+
+	t.Run("CompactParams agent omitempty（空 = 主 Agent）", func(t *testing.T) {
+		b := mustMarshal(t, CompactParams{})
+		if strings.Contains(string(b), "agent") {
+			t.Fatalf("空 agent 不应产生键: %s", b)
+		}
+		b2 := mustMarshal(t, CompactParams{Agent: "coder"})
+		var got CompactParams
+		mustUnmarshal(t, b2, &got)
+		if got.Agent != "coder" {
+			t.Fatalf("agent 往返失真: %+v", got)
+		}
+	})
+
+	t.Run("CompactResult（compacted=false 时无统计键）", func(t *testing.T) {
+		b := mustMarshal(t, CompactResult{Compacted: true, Before: 8000, After: 2400, Shadowed: 12})
+		var m map[string]any
+		mustUnmarshal(t, b, &m)
+		for _, key := range []string{"compacted", "before", "after", "shadowed"} {
+			if _, ok := m[key]; !ok {
+				t.Fatalf("CompactResult 缺键 %s: %s", key, b)
+			}
+		}
+		b2 := mustMarshal(t, CompactResult{})
+		if !strings.Contains(string(b2), `"compacted":false`) {
+			t.Fatalf("无区间应显式回 compacted=false: %s", b2)
+		}
+		if strings.Contains(string(b2), "shadowed") {
+			t.Fatalf("无区间不应带统计键: %s", b2)
+		}
+	})
+
+	t.Run("CompactedParams（before/after/shadowed/summary + manual omitempty）", func(t *testing.T) {
+		b := mustMarshal(t, CompactedParams{Before: 8000, After: 2400, Shadowed: 12, Summary: "摘要"})
+		var m map[string]any
+		mustUnmarshal(t, b, &m)
+		for _, key := range []string{"before", "after", "shadowed", "summary"} {
+			if _, ok := m[key]; !ok {
+				t.Fatalf("CompactedParams 缺键 %s: %s", key, b)
+			}
+		}
+		if strings.Contains(string(b), "manual") {
+			t.Fatalf("自动压缩不应带 manual 键: %s", b)
+		}
+	})
+
+	t.Run("ChatHistoryResult.Checkpoints（下标数组；空时整键缺席）", func(t *testing.T) {
+		b := mustMarshal(t, ChatHistoryResult{SessionID: "s1", Checkpoints: []int{0}})
+		var got ChatHistoryResult
+		mustUnmarshal(t, b, &got)
+		if len(got.Checkpoints) != 1 || got.Checkpoints[0] != 0 {
+			t.Fatalf("检查点下标往返失真: %+v", got.Checkpoints)
+		}
+		b2 := mustMarshal(t, ChatHistoryResult{SessionID: "s1"})
+		if strings.Contains(string(b2), "checkpoints") {
+			t.Fatalf("无检查点应整键缺席: %s", b2)
+		}
+	})
+}
+
 func mustUnmarshal(t *testing.T, b []byte, v any) {
 	t.Helper()
 	if err := json.Unmarshal(b, v); err != nil {

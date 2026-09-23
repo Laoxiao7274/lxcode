@@ -90,6 +90,17 @@ function AppBody({ source }: { source: AgentSource }) {
       .catch((e) => reportError(e instanceof Error ? e.message : String(e)));
   }, [source, resolve, reportError]);
 
+  // 手动压缩：请求类失败进一次性提示（不动 blocks）；没有可压收益时给一句人话
+  // 原因（不是错误——历史还太短是正常态）。压缩成功由 chat.compacted 事件渲染标记块。
+  const handleCompact = useCallback(async () => {
+    try {
+      const res = await source.compact();
+      if (!res.compacted) reportError(res.reason ?? "没有可压缩的历史");
+    } catch (e) {
+      reportError(`压缩失败: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }, [source, reportError]);
+
   const currentTitle = state.blocks.length === 0 ? "" : source.sessions().find((s: SessionMeta) => s.id === currentId)?.title ?? "任务";
 
   // 壳环境（Electron）= 真实窗口；浏览器 = 保留模拟壳（窗口模拟一层的差异，
@@ -103,10 +114,11 @@ function AppBody({ source }: { source: AgentSource }) {
   // 命令（/resume /compact …）与选择器聚焦。
   const slashCommands: SlashCommand[] = useMemo(() => [
     { name: "new", desc: "开始新对话", run: () => { source.newSession(filter); backToChat(); } },
+    { name: "compact", desc: "压缩早期历史（腾出上下文）", run: () => { void handleCompact(); } },
     { name: "agents", desc: "打开 Agent 名单与组装", run: openAgents },
     { name: "catalog", desc: "打开拓展（工具/技能/模板/MCP）", run: openCatalog },
     { name: "settings", desc: "打开设置", run: () => setSettingsOpen(true) },
-  ], [source, filter, openAgents, openCatalog]);
+  ], [source, filter, openAgents, openCatalog, handleCompact]);
 
   const mainView =
     view === "chat" ? (
@@ -115,7 +127,7 @@ function AppBody({ source }: { source: AgentSource }) {
         <div className="thread-scroll">
           <Thread state={state} onConfirm={handleConfirm} onSuggestion={(t) => sendWithOptions(t)} projectName={filterProjectName} />
         </div>
-        <Composer busy={state.busy} todos={state.todos} onSend={sendWithOptions} onCancel={() => source.cancel()} commands={slashCommands} />
+        <Composer busy={state.busy} todos={state.todos} context={state.context} onSend={sendWithOptions} onCancel={() => source.cancel()} onCompact={() => { void handleCompact(); }} commands={slashCommands} />
       </>
     ) : view === "agents" ? (
       <AgentsPage />

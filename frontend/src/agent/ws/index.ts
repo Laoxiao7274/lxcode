@@ -6,7 +6,7 @@
 // 不动 blocks/pending。
 import type {
   AgentAdminEntry, AgentAdminMcServer, AgentAdminModule, AgentAdminSource, AgentAdminTool,
-  AgentEvent, AgentSource, ConfirmRequest, ModelAdminSource, ModelEntry,
+  AgentEvent, AgentSource, CompactOutcome, ConfirmRequest, ContextUsage, ModelAdminSource, ModelEntry,
   ProjectInstructions, ProjectMeta, SendOptions, SessionMeta, TodoItem,
 } from "../../shared/types";
 
@@ -210,6 +210,7 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource 
         this.emit({
           type: "dispatchStart",
           dispatchId: String(p.dispatch_id ?? ""),
+          sessionId: p.session_id ? String(p.session_id) : undefined,
           agentId: String(p.agent_id ?? ""),
           agentName: String(p.agent_name ?? ""),
           agentColor: String(p.agent_color ?? "#3b82f6"),
@@ -220,9 +221,23 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource 
         this.emit({
           type: "dispatchEnd",
           dispatchId: String(p.dispatch_id ?? ""),
+          sessionId: p.session_id ? String(p.session_id) : undefined,
           result: String(p.result ?? ""),
           isError: Boolean(p.is_error),
           usageTokens: Number(p.usage_tokens ?? 0),
+        });
+        break;
+      case "chat.compacted":
+        // 历史被压缩（可能是别的客户端触发的——广播给所有端）。
+        // 子会话自己的压缩带 dispatch_id：归属进卡内，不插到主时间线。
+        this.emit({
+          type: "compacted",
+          before: Number(p.before ?? 0),
+          after: Number(p.after ?? 0),
+          shadowed: Number(p.shadowed ?? 0),
+          summary: String(p.summary ?? ""),
+          manual: Boolean(p.manual),
+          dispatchId: p.dispatch_id ? String(p.dispatch_id) : undefined,
         });
         break;
       case "chat.confirmRequest":
@@ -232,7 +247,14 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource 
         this.emit({ type: "todoUpdated", items: (p.items as TodoItem[]) ?? [] });
         break;
       case "chat.done":
-        this.emit({ type: "done", usageTokens: Number(p.usage_tokens ?? 0), finishReason: String(p.finish_reason ?? "stop"), dispatchId });
+        this.emit({
+          type: "done",
+          usageTokens: Number(p.usage_tokens ?? 0),
+          finishReason: String(p.finish_reason ?? "stop"),
+          dispatchId,
+          // 上下文占用只随主轮来（子轮的 done 不带——后端已按 dispatch 归属收口）
+          context: (p.context as ContextUsage | undefined) ?? undefined,
+        });
         // 主轮结束——会话列表元数据（标题/时间/消息数）可能变了：重拉
         //（子轮的 done 不触发——dispatchId 归属时不刷列表）
         if (!dispatchId) {
@@ -379,6 +401,11 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource 
     });
   }
 
+  /** 手动压缩历史（空闲才允许；没有可压区间返回 compacted=false——不是错误）。 */
+  compact(): Promise<CompactOutcome> {
+    return this.call("chat.compact").then((r) => (r ?? { compacted: false }) as CompactOutcome);
+  }
+
   newSession(workspace?: string): void {
     this.call("session.new", workspace ? { workspace } : undefined)
       .then(() => undefined)
@@ -486,6 +513,8 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource 
           busy?: boolean;
           pending?: ConfirmRequest | null;
           todos?: TodoItem[];
+          context?: ContextUsage;
+          checkpoints?: number[];
         };
         this.emit({
           type: "historyLoaded",
@@ -495,6 +524,8 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource 
             busy: Boolean(h.busy),
             pending: h.pending ?? null,
             todos: h.todos ?? [],
+            context: h.context,
+            checkpoints: h.checkpoints ?? [],
           },
         });
       }) as Promise<void>;

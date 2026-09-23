@@ -110,8 +110,9 @@ func TestEditPreservesLineEndings(t *testing.T) {
 func TestTodoWriteAndSink(t *testing.T) {
 	r := New()
 	var got []TodoItem
-	r.SetTodoSink(func(items []TodoItem) { got = items })
-	out := r.Execute(context.Background(), call("todo",
+	// 清单写回口经 ctx 注入（每会话独立——父/子会话各有自己的清单）
+	ctx := WithTodoSink(context.Background(), func(items []TodoItem) { got = items })
+	out := r.Execute(ctx, call("todo",
 		`{"items":[{"content":"盘点现状","status":"done"},{"content":"写实现","status":"active"},{"content":"验证","status":"pending"}]}`))
 	if !strings.Contains(out, "done 1") || !strings.Contains(out, "写实现") {
 		t.Fatalf("todo 应回显清单摘要: %q", out)
@@ -146,10 +147,33 @@ func TestTodoRejectsMultipleActive(t *testing.T) {
 func TestTodoEmptyList(t *testing.T) {
 	r := New()
 	var sinkCalled bool
-	r.SetTodoSink(func(items []TodoItem) { sinkCalled = true })
-	got := r.Execute(context.Background(), call("todo", `{"items":[]}`))
+	ctx := WithTodoSink(context.Background(), func(items []TodoItem) { sinkCalled = true })
+	got := r.Execute(ctx, call("todo", `{"items":[]}`))
 	if !strings.Contains(got, "清空") || !sinkCalled {
 		t.Fatalf("空清单 = 清空（合法收敛态）: %q sink=%v", got, sinkCalled)
+	}
+}
+
+// 清单写回口是每会话状态：两个 ctx 各自的清单互不影响（父/子会话不串）。
+func TestTodoSinkIsPerContext(t *testing.T) {
+	r := New()
+	var parent, child []TodoItem
+	parentCtx := WithTodoSink(context.Background(), func(items []TodoItem) { parent = items })
+	childCtx := WithTodoSink(context.Background(), func(items []TodoItem) { child = items })
+	r.Execute(childCtx, call("todo", `{"items":[{"content":"子任务","status":"active"}]}`))
+	if len(child) != 1 || child[0].Content != "子任务" {
+		t.Fatalf("子上下文应写自己的清单: %+v", child)
+	}
+	if len(parent) != 0 {
+		t.Fatalf("子会话写清单不应污染父会话: %+v", parent)
+	}
+	// 反向：父上下文写清单也不影响子上下文
+	r.Execute(parentCtx, call("todo", `{"items":[{"content":"父任务","status":"active"}]}`))
+	if len(parent) != 1 || parent[0].Content != "父任务" {
+		t.Fatalf("父上下文应写自己的清单: %+v", parent)
+	}
+	if len(child) != 1 || child[0].Content != "子任务" {
+		t.Fatalf("父会话写清单不应污染子会话: %+v", child)
 	}
 }
 

@@ -52,6 +52,11 @@ export function DispatchCard({ block, onConfirm }: {
             </>
           )}
         </span>
+        {block.sessionId && (
+          <span className="dispatch-session mono" title={`子会话 ${block.sessionId}（独立会话：自己的历史与压缩，可续跑）`}>
+            {block.sessionId.slice(0, 8)}
+          </span>
+        )}
         {expandable && (
           <svg
             className={"dispatch-chev" + (expanded ? " open" : "")}

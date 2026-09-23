@@ -17,7 +17,7 @@
 | 项 | 决策 |
 |---|---|
 | 形态 | **前后台分离**（2026-09-10 用户拍板，对齐 local-myt-agent）：后端 `lxcode --serve` 独立进程（WS JSON-RPC `127.0.0.1:7789/rpc` + 注册表 + 会话运行时 + 工具循环，`/health` 健康检查）；CLI / 桌面壳都是客户端 |
-| 协议 | `internal/protocol`：WS JSON-RPC 2.0（帧/方法/事件单处定义，客户端服务端共享）；扩展 `todo.updated` 事件与 `ChatHistoryResult.Todos`；`chat.send` 可选参数 `effort`（minimal/low/medium/high，仅声明 reasoning 能力的模型生效）与 `approval`（auto/confirm/strict 工具执行三档，空 = confirm）；端口 7789（与 local-myt-agent 的 7788 错开） |
+| 协议 | `internal/protocol`：WS JSON-RPC 2.0（帧/方法/事件单处定义，客户端服务端共享）；扩展 `todo.updated` 事件与 `ChatHistoryResult.Todos`；`chat.send` 可选参数 `effort`（minimal/low/medium/high，仅声明 reasoning 能力的模型生效）与 `approval`（auto/confirm/strict 工具执行三档，空 = confirm）；`chat.done` 与 `ChatHistoryResult` 携带 `context`（上下文占用测量，见 §2.2；未知时整键缺席）；端口 7789（与 local-myt-agent 的 7788 错开） |
 | 内核 | `internal/agent`：纯 Go 包（typed Event + Emitter + Confirm），由 server 包装广播；客户端不得绕过 JSON-RPC 直接调用内核 |
 | 客户端 | `internal/wsclient`：Backend 接口 + Dial（请求按 id 配对、事件 channel、断连 fast-fail、缓冲满丢最旧）；CLI 是第一个客户端，桌面壳复用同一协议 |
 | 前端 | **React 19 + TypeScript + Vite + gsap**，零 UI 库（手写 CSS 设计 token，设计语言 agent-console-v3）；`AgentSource` 双实现：WSAgent（连 7789 真实后端）/ DemoAgent（纯前端演示，无后端也能全量跑 UI）；渲染纪律：打字机行级 memo + memo(Block) 稳定回调 + motionAllowed 动效门控（reduced-motion/测试开关） |
@@ -40,6 +40,67 @@
 - **壳打包定案（2026-12 调研+实测，仅 Windows）**：electron-builder + NSIS（one-click、per-user、免管理员）+ **自建 zip 更新机制**（2026-12 用户拍板，替代原定的 electron-updater——重跑完整安装器的更新路径被否；服务端 = 纯静态目录 `manifest.json + update-<version>.zip`，zip 内路径=安装目录相对路径，只含 `resources/app.asar` 与 `resources/bin/lxcode.exe`；两级更新：后端热替换（壳不退）、asar 冷替换（退出时换）；Electron/Chromium 升级走全量安装包不进 zip；客户端更新器未实现，产物契约已定）+ 壳主进程 **esbuild 单入口直构**（不用 vite-plugin-electron：薄壳无主进程 HMR 价值，且保持 frontend vite 配置与 Electron 零耦合、浏览器模式零条件分支）；Go 后端二进制走 extraResources（asar 归档内不能 spawn 二进制）。本机实测：打包 44~148s（受后台负载影响），安装包 ~87-95MB、更新包 ~12MB。sidecar 生命周期纪律：单实例锁 → 先探测 7789（SCM 服务或旧实例在跑则直连，不 spawn）→ 离线才拉起 bundled exe，且**必须显式传 `--config`/`--sessions` 指向 userData**（否则后端配置解析顺序会落到 `%ProgramData%` 安装形态配置，两形态数据串台）→ 优雅退出 before-quit kill；崩溃兜底 = Electron 主进程 Windows Job Object（`KILL_ON_JOB_CLOSE`，壳被强杀也不留孤儿后端）。版本兼容用协议 hello 的 Version 握手。范围：壳仅 Windows（2026-12 用户拍板；Linux/macOS 不做壳，Linux 上后端二进制独立跑 + CLI/浏览器即可）。
 - **版本号机制（2026-12）**：唯一版本源 = `shell/package.json` 的 `version`（electron-builder 原生读它出安装包名）；`scripts/build.mjs` 构建时经 `-ldflags "-X main.version=<版本>"` 烙进 Go 二进制（`lxcode --version` 可查；dev.mjs 无烙印显示 `dev`）；manifest.json 用同一版本——安装包/二进制/更新清单三方同源。发版流程 = 改 shell/package.json version → build → 产物目录全量上传。
 
+### 2.2 上下文计账与压缩（compaction）（2026-09-22：P1~P4 已落地；P5 待做）
+
+**计账（P1，`internal/agent/context_usage.go`）**：`agent.ContextUsage` 是上下文占用的唯一事实源（压缩触发与 UI 指示器共用它，不各算一遍）：
+
+- **used 优先取 provider 真实用量**（`llm.ChatResult.PromptTokens`——用户真实端点实测会回报），拿不到才回落固定密度估算（`字节数/4 + 每块 4 + 每消息 4`，DSH token-meter 同款）。**按字节算对中文是低估的**（一个汉字 3 字节 ≈ 0.75 token），所以估算值只服务「端点不回报 usage」的回落与分类拆分，不要拿它做精确预算；
+- **分类拆分按 used 归一**（`anchoredTo`）——分类之和恒等于 used。不归一的后果是同一屏两个数字互相矛盾（环形来自真实用量、占比条来自估算）；
+- **只有主轮写这个值**（`streamRound` 的 `dispatchID == ""`）——子上下文有自己的窗口，写进主指示器就是错的；
+- **新会话/切会话清零**——沿用上一会话的占用会误导压力判定；`Snapshot.Context` 零值 = 未知，wire 上整键缺席，前端显示中性态「—」而不是编一个数（`ContextIndicator` 的冷态断言钉住这点）；
+- wire：`chat.done`（仅主轮）与 `ChatHistoryResult` 的 `context` 键。
+
+**工具配对不变量（P2，`internal/agent/toolpair.go`）**：`AnalyzeToolPairing` 扫一遍历史得出每个切点的平衡性——`assistant` 带 N 个 tool_call 则游标 +N，`tool` 结果则 −1，**游标为 0 的切点才是安全切割点**。压缩选区间（P3）与「取消时补配对」（P5）共用这一份判定——判定漂移的代价是静默产生畸形历史（严格端点会 400：assistant 的 tool_calls 必须有配对 tool 消息）。三条纪律：
+
+- **畸形数据不抛异常**（我们的历史来自 SQLite，残缺记录是既成事实，加载路径抛异常会让老会话直接打不开）：游标钳到 0，异常另记诊断（`Unpaired` 未等到结果的调用 id / `Orphans` 无前置调用的结果下标）；
+- **两条判定刻意分开**：`Cuts` 用计数（对端点改写 id 鲁棒——它只回答「能不能在这里切」），`Unpaired` 用 id（精确回答「哪一个调用没等到结果」）。二者在 id 错配时会分叉，这不是 bug；
+- `NearestBalancedAtOrBefore` 是选区间用的回退（保留预算边界往前退到最近的平衡切点）。
+
+**压缩（P3/P4，`internal/agent/compaction.go` + `compaction_prompt.go`）**：把历史的一段（**永远是前缀**）替换成一份摘要检查点。对齐 DSH compaction-basic：
+
+- **触发三条路**：① 轮与轮之间（`runTurn` 的 `round > 0`）按上一次请求的**真实 prompt_tokens** 判压力（阈值 0.8×窗口、保留尾部 0.16×窗口——那时它就是精确值，不用估算）；② 端点报超长（`llm.IsContextOverflow`：4xx + 特征串，字符串匹配关在 llm 层）时强制压一次（保留预算归零）再重试**同一轮**，只重试一次；③ 手动 `chat.compact`（`Session.Compact`）不受阈值约束，空闲才允许（busy → `ErrBusy`）；
+- **窗口未知（模型没配 `context_window`）时不压**——算不出阈值就不猜（单测钉住）；
+- **选区间**：从尾部往前累加到保留预算，再回退到最近的**配对平衡切点**（P2 的不变量）；区间起点恒为 0（历史里没有 system 消息），即压缩永远替换前缀；
+- **摘要调用**：指令作为**最后一条 user 消息**追加在重放历史之后（复用 KV 缓存），八段结构 + 工具声明照发；摘要是**一段文本**，落回历史时包成一条 **user 消息**（`<compacted-summary>` + 前言）——不用 system：anthropic 适配器会把所有 system 消息提到顶层，中途插会语义错位；
+- **缩水检查**：比的是**被压段**与摘要（保留尾部两边都在，抵消）——不是整段历史。摘要不小于被压段就是「没有收益」：回 `compacted=false + reason`（`ErrNothingToCompact` 包装人话原因），**不是错误码**；
+- **fail-closed**：摘要失败、缩水不通过、落库失败，都不改历史（落库失败还把内存回滚）；
+- **落库（影子区间，用户拍板对齐 DSH）**：检查点行记 `shadowed_seqs`（影子掉的 seq 集合，**权威**）+ `shadow_start_seq/shadow_end_seq`（历史位置边界）；被影子的原文**不删**（`Search` 照旧搜全量日志），只是回放（`Load`/`Latest`）跳过它们；
+- **`AppendCheckpoint(shadowed)` 的 `shadowed` 是「当前历史最前面的 N 条」**（不是 seq 区间，也不是最后 N 条）——压缩区间恒为前缀，所以被替换的是最前面 N 条；存活条数不足时报错（那说明落盘落后于内存，写错的影子区间会让回放丢掉不该丢的历史）；
+- **历史顺序按「检查点在前、其余按 seq 升序」重建**（检查点行是追加在末尾的，但它顶替被影子段在历史里的位置 = DSH 的 surface position）。压缩区间恒为前缀所以检查点永远落第一位；**若将来允许压缩中间段，这条规则必须同步改**；
+- **落库口径**：`Load`/`Latest`/`List` 的消息数都按当前历史算（`List` 在 Go 侧复用同一套存活判定——SQL 表达不了 seq 集合）；
+- **压缩后必须更新占用测量**（锚定算术：新占用 = 旧真实占用 − 被压段估算 + 检查点估算）——不更新的话指示器停在压缩前的数字（真链路实测抓到过）；
+- wire：`chat.compact`（方法，参数 `agent` 可选）+ `chat.compacted` 事件（before/after/shadowed/summary/manual）+ `ChatHistoryResult.Checkpoints`（检查点下标，前端渲染「已压缩历史」块而不是用户气泡）；前端入口 = 输入区指示器里的「立即压缩」+ `/compact` 斜杠命令。
+
+**剩余（未做）**：P5 子 Agent 中断检查点（复用 P3 的检查点形状，停止路径用确定性抽取，不挂 LLM 调用）；P3 的确定性裁剪（工具结果写入时已截到 8KB，将来加裁剪接在选区间之前，顺序对齐 DSH）。参考实现 = DSH 的 `dsh-compaction`（引擎接缝 + 配对不变量 + 检查点溯源）/`dsh-compaction-basic`（阈值与选区间策略）/`dsh-compaction-tool-result-pruner`（无模型裁剪）/`dsh-token-meter`（计账），路径 `C:\Users\xzy\AppData\Local\Programs\lx-dsh\resources\dsh\node_modules\@deepseek-ai\`（打包形态；`dsh-compaction` 带 TS 源码 `src/`）。
+
+### 2.3 子会话：子 Agent = 独立会话（2026-09-22 用户拍板）
+
+**一句话**：派发给子 Agent 的任务**不是**内存里的一段临时上下文，而是**一个独立会话**——自己的 `sessions` 行 + 自己的 `messages` 历史 + 自己的压缩检查点。于是进度天然可续（历史在库里，续跑附着同一个 id 接着跑）、压缩同款（子会话就是会话）、子过程可回放/可对账。
+
+**存储**（`sessions` 表加三列，幂等 ALTER）：`parent_id`（派发方；空 = 顶层会话）、`agent_id`（它是哪个 Agent——续跑时按同一套四层组合组装）、`dispatch_id`（哪次调度开的）。`Store.CreateChild(parentID, agentID, dispatchID)` 用 `INSERT ... SELECT ... FROM sessions WHERE id = 父` **在 SQL 里继承父的 workspace**（子会话的工具相对路径与 bash 默认目录必须与父一致，agent 层不需要记住 workspace id）；父不存在时插入 0 行 → 报错（不开孤儿）。
+
+**三条硬纪律**：
+- **`List()`/`Latest()` 只认 `parent_id = ''`**——子会话不进侧栏、不参与「重启恢复最近会话」；漏了这条，重启会把用户恢复到某个子 Agent 的会话上，侧栏也会被子会话淹掉；
+- **归档级联**：子会话不进侧栏、用户没法单独操作，父归档时一并归档（否则库里长期堆积孤儿）；恢复父时子会话一并恢复；
+- **`ChildrenOf(parent)`** 按父查子（对账/将来的子会话视图）。
+
+**运行时**（`internal/agent/dispatch.go`）：
+- `runDispatch` = 解析目标 → 校验有效委派名单 → `openChildSession`（新建或按 `call.Session` 续跑）→ 包一层 emitter → `child.SendWait(ctx, task, WithAgent, WithApproval(父的审批))` → 取子会话最后一条有正文的 assistant 消息作为结论回填；
+- **子会话是一个真 `*agent.Session`**（自己的 history/id/st/context），所以**压缩、溢出兜底、确认门、工具循环全部免费继承**（不再有子循环特例：`dispatchMaxRounds` 与手写子循环已删除）；
+- **`Session.AttachTo(st, id)`**：按 id 精确附着（子会话新建后历史为空；续跑时历史在库里）——与 `EnablePersistence`（走 Latest 恢复）分工明确；
+- **`Session.SendWait(ctx, ...)`**：跑一轮并等它结束（派发要等子会话给出结论）；ctx 取消 → `child.Cancel()` 并等它真正收尾；
+- **事件归属**（`childEmitter`）：Delta/ToolCall/ToolResult/TurnDone/Compacted 打上 `dispatch_id` 归属进卡；**BusyEvent 不上抛**（子会话的忙闲不是主会话的）、**TodoUpdatedEvent 不上抛**（清单归子会话自己）、**SessionStartedEvent 不上抛**（子会话不进侧栏）、**TurnErrorEvent 转成 DispatchEndEvent**（卡内呈现，不跑到主时间线当独立错误）；
+- **确认门代理**（`SetConfirmProxy`）：子会话的确认请求交给父会话裁决并打上 dispatch_id——全应用只有"同时一个挂起确认"这条不变式，子会话自己持 pending 的话服务端的 `tool.confirm` 找不到它（会话会卡在 busy）；
+- **无存储时退化成内存子会话**（`st == nil`）：仍是一个独立会话（自己的历史与压缩），只是不落库、不能续跑——纯内存模式/未挂 store 的调用方照旧能派发。
+
+**每会话注入态（`internal/tools/sessionstate.go`）**：`todo` 的清单写回口与 `read_skill` 的技能目录**经 ctx 注入**（`tools.WithTodoSink` / `WithSkillSource`），不再挂注册表全局——注册表是进程级单例，而这两者都是**会话级**状态；子 Agent 变独立会话后，注册表级全局态会让父子互相踩（子会话一建就把父的 sink 顶掉、子会话的技能目录污染父会话——原来的 save/restore hack 就是被这件事逼出来的补丁）。与 `tools.WithWorkDir` 同一套机制与理由。
+
+**续跑（S4）**：`agent.dispatch` 加可选 `session` 参数（续跑既有子会话）；工具结果里回带 `[子会话 id: …]`，主 Agent 下一轮就能显式接着它跑（真链路实测：主 Agent 自发这么做了——它读到工具结果里的子会话 id 后，在下一轮把该 id 填进 `session` 续跑）。
+
+**协议**：`chat.dispatchStart/End` 带 `session_id`（子会话 id 上卡，前端显示 + 续跑依据）；`chat.compacted` 带 `dispatch_id`（子会话自己的压缩归属进卡内，不插主时间线）；前端 `DispatchCard` 显示子会话 id 徽标，`reduceSub` 处理 `compacted`。
+
+**为什么这个设计省事**：子会话是会话 → 压缩/检查点/影子区间**零特例**（`runCompaction` 只要一个有 st/id/history 的 Session）；子会话的 system 提示词同样每轮现组装（不在历史里），所以 `selectCompactRange` 的 `firstIdx = 0` 不用改（**不需要给子上下文加 protectHead 特例**）。
+
 ## 3. 工具面（内置 9 个 + 目录动态注入）
 
 | 工具 | 风险 | 说明 |
@@ -52,7 +113,7 @@
 | `write_file` | 高危 | 全量覆盖：覆盖已有文件需确认 + 缩水守卫（<50% 告警） |
 | `bash` | 高危 | 超时 60s/上限 300s、输出 32KB、stdin ≤64KB；**Windows shell 选择见 §5 坑** |
 | `todo` | 低危 | 任务清单全量写入（active 唯一性硬校验）；会话持有状态 + TodoUpdated 事件 |
-| `agent.dispatch` | 低危 | 主 Agent 唯一工具：把任务派给名单里的子 Agent（子上下文隔离，深度恒 1） |
+| `agent.dispatch` | 低危 | 主 Agent 唯一工具：把任务派给名单里的子 Agent（**子 Agent = 独立会话**，见 §2.3；深度恒 1） |
 
 **自定义工具（M4-1 执行面，2026-09-21）**：目录里 `source=binary` 的条目由 server 在启动与每次 `catalog.tools.*` 变更后经 `syncDynamicTools()` 注册进注册表（`tools.Registry.SetDynamic` 整体替换动态段；内置段不动，同名跳过并记日志）。执行语义：
 
@@ -136,7 +197,7 @@ Harness 的目标形态：**主 Agent 只做决策与分派，子 Agent 是用�
 |---|---|
 | 桌面壳框架 | **已定 Electron + Go sidecar**（2026-09-16 用户拍板，决策记录 §2.1；推翻 09-10 的 Tauri 2 初选）——薄壳 + 前端直连 WS（React + aicss，设计语言 agent-console-v3）；**打包与更新机制已定（2026-12，electron-builder + NSIS + 自建 zip 更新，仅 Windows，见 §2.1）**；src-tauri 骨架已清理（2026-09-16） |
 | 项目正式名 | 工作名 lxcode，用户保留命名权 |
-| 上下文管理 | 工具结果截断（8KB/条）已兜底；compaction/历史摘要未做 |
+| 上下文管理 | **已落地（2026-09-22，P1~P4，见 §2.2）**：计账（真实 prompt_tokens 锚定 + 分类归一）、工具配对不变量、摘要压缩（自动三条触发路径 + 手动 `/compact` + 影子区间落库）、前端「已压缩历史」块与指示器入口。**P5 子 Agent 中断检查点未做**（复用检查点形状，停止路径用确定性抽取）；工具结果截断（8KB/条）继续兜底 |
 | 语义记忆 | 未做（会话搜索先行）；**存储底座已定（2026-12）：会话已切 SQLite（modernc 纯 Go）——语义记忆/向量检索（FTS5/sqlite-vec）将在同库扩展，不再单独立项选型** |
 | 自更新 | 方向 = 定时检查 + 人工确认；机制已定（2026-12）：**自建 zip 更新**（manifest.json + update-\<version\>.zip，两级：后端热替换 / asar 冷替换，Electron 升级走全量安装包；electron-updater 方案作废）——**产物侧已实现**（build.mjs 产出 zip+manifest），**客户端更新器未实现**（待做：检查/下载/校验/替换编排，路线图 M5）；服务形态走 scripts\service\update.ps1 |
-| **后端化路线** | **已定**（2026-09-18，docs/backend-roadmap.md）：M1 注册表与目录（四张表+agent.\*/catalog.\* 协议+前端接线）→ M2 上下文组装+Agent 直选（chat.send 带 agentId）→ M3 agent.dispatch（**子上下文隔离已拍板**——dispatch 开独立执行上下文，结果回填主会话；复用现有事件流+dispatchId 归属标记）→ M4 拓展执行面（自定义工具 spawn/MCP stdio/网页搜索）→ M5 远程访问+更新器。子 Agent 再委派/多活跃会话/worktree 明确出界 |
+| **后端化路线** | **已定**（2026-09-18，docs/backend-roadmap.md）：M1 注册表与目录（四张表+agent.\*/catalog.\* 协议+前端接线）→ M2 上下文组装+Agent 直选（chat.send 带 agentId）→ M3 agent.dispatch（**2026-09-22 升级：子 Agent = 独立会话**——见 §2.3；原「子上下文隔离」的取舍是"子上下文随主会话轮次结束丢弃"，现已改为独立持久会话，可续跑、压缩同款）→ M4 拓展执行面（自定义工具 spawn/MCP stdio/网页搜索）→ M5 远程访问+更新器。子 Agent 再委派/多活跃会话/worktree 明确出界 |

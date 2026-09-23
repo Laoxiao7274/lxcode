@@ -175,7 +175,7 @@ func (s *Server) emitEvent(ev agent.Event) {
 	case agent.TurnDoneEvent:
 		s.broadcast(protocol.EventDone, protocol.DoneParams{
 			Message: e.Message, UsageTokens: e.UsageTokens, FinishReason: e.FinishReason,
-			DispatchID: e.DispatchID,
+			DispatchID: e.DispatchID, Context: toProtocolContext(e.Context),
 		})
 	case agent.TurnErrorEvent:
 		s.broadcast(protocol.EventError, protocol.ErrorParams{
@@ -183,12 +183,21 @@ func (s *Server) emitEvent(ev agent.Event) {
 		})
 	case agent.DispatchStartEvent:
 		s.broadcast(protocol.EventDispatchStart, protocol.DispatchStartParams{
-			DispatchID: e.DispatchID, AgentID: e.AgentID, AgentName: e.AgentName,
+			DispatchID: e.DispatchID, SessionID: e.SessionID, AgentID: e.AgentID, AgentName: e.AgentName,
 			AgentColor: e.AgentColor, Task: e.Task,
 		})
 	case agent.DispatchEndEvent:
 		s.broadcast(protocol.EventDispatchEnd, protocol.DispatchEndParams{
-			DispatchID: e.DispatchID, Result: e.Result, IsError: e.IsError, UsageTokens: e.UsageTokens,
+			DispatchID: e.DispatchID, SessionID: e.SessionID,
+			Result: e.Result, IsError: e.IsError, UsageTokens: e.UsageTokens,
+		})
+	case agent.CompactedEvent:
+		// 压缩收尾：广播给全部客户端（前端插「已压缩历史」标记块 + 刷新指示器）。
+		// 摘要正文一并带上——标记块要能展开看摘要。子会话的压缩带 dispatch_id
+		// 归属进卡内（不进主时间线）。
+		s.broadcast(protocol.EventCompacted, protocol.CompactedParams{
+			Before: e.Result.Before, After: e.Result.After, Shadowed: e.Result.Shadowed,
+			Summary: e.Result.Summary, Manual: e.Manual, DispatchID: e.DispatchID,
 		})
 	case agent.TodoUpdatedEvent:
 		s.broadcast(protocol.EventTodo, protocol.TodoUpdatedParams{Items: e.Items})
@@ -364,6 +373,29 @@ func (s *Server) dispatch(req *protocol.Request) *protocol.Response {
 	case protocol.MethodChatHistory:
 		return protocol.NewResult(req.ID, s.history())
 
+	case protocol.MethodChatCompact:
+		var p protocol.CompactParams
+		if len(params) > 0 {
+			if err := json.Unmarshal(params, &p); err != nil {
+				return protocol.NewError(req.ID, protocol.CodeInvalidParams, "参数解析失败: "+err.Error())
+			}
+		}
+		res, err := s.sess.Compact(p.Agent)
+		if err != nil {
+			// 没有可压的收益不是错误（历史还短 / 摘要不缩水）：回
+			// compacted=false + 原因，客户端直接显示给人看。
+			if errors.Is(err, agent.ErrNothingToCompact) {
+				return protocol.NewResult(req.ID, protocol.CompactResult{Compacted: false, Reason: err.Error()})
+			}
+			return protocol.NewError(req.ID, errorCode(err), err.Error())
+		}
+		// 压缩改变了历史与上下文占用：广播 session.changed 让所有客户端重拉
+		// chat.history（多客户端同步——不只发起方那一端要重放）
+		s.broadcastSessionChanged(s.sess.SessionID(), "compacted")
+		return protocol.NewResult(req.ID, protocol.CompactResult{
+			Compacted: true, Before: res.Before, After: res.After, Shadowed: res.Shadowed,
+		})
+
 	case protocol.MethodToolConfirm:
 		var p protocol.ToolConfirmParams
 		if err := json.Unmarshal(params, &p); err != nil {
@@ -531,6 +563,20 @@ func (s *Server) history() protocol.ChatHistoryResult {
 	return protocol.ChatHistoryResult{
 		Messages: snap.Messages, Busy: snap.Busy, Pending: pending,
 		SessionID: snap.SessionID, Todos: snap.Todos,
+		Context:     toProtocolContext(snap.Context),
+		Checkpoints: snap.Checkpoints,
+	}
+}
+
+// toProtocolContext 把内核的上下文测量转成协议载荷；未知（Used=0）时返回 nil
+// ——客户端据此显示中性态，而不是把 0 当成「用满了 0%」。
+func toProtocolContext(u agent.ContextUsage) *protocol.ContextUsage {
+	if u.Used <= 0 {
+		return nil
+	}
+	return &protocol.ContextUsage{
+		Used: u.Used, Window: u.Window, System: u.System,
+		ToolResults: u.ToolResults, Messages: u.Messages, Reasoning: u.Reasoning,
 	}
 }
 

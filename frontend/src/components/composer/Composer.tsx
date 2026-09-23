@@ -6,7 +6,7 @@ import { ContextIndicator } from "../context-indicator";
 import { TodoList } from "../../aicss/TodoList";
 import { SlashPalette, type SlashCommand } from "./SlashPalette";
 import { useEnterRef } from "../../shared/anim";
-import type { TodoItem } from "../../shared/types";
+import type { ContextUsage, TodoItem } from "../../shared/types";
 
 /** 输入区（Codex 式）：busy 时输入框保留（可预输入），发送钮变停止。
  *  斜杠命令：输入以 / 开头时上方弹命令面板（关键字过滤 + 键盘导航 +
@@ -17,16 +17,22 @@ export function Composer({
   busy,
   disabled,
   todos = [],
+  context = null,
   onSend,
   onCancel,
+  onCompact,
   commands = [],
 }: {
   busy: boolean;
   disabled?: boolean;
   /** 任务清单（空数组不渲染卡片）。 */
   todos?: TodoItem[];
+  /** 上下文占用（后端测量；null = 未知——指示器显示中性态）。 */
+  context?: ContextUsage | null;
   onSend: (text: string) => void;
   onCancel: () => void;
+  /** 手动压缩历史（空闲才可用；不传 = 指示器不显示入口）。 */
+  onCompact?: () => void;
   /** 斜杠命令集（App 注入——页面导航；选择器聚焦命令由 piBar 控件自身
    *  的打开态承载，/model 等 = 聚焦后打开对应选择器的实现放命令集里）。 */
   commands?: SlashCommand[];
@@ -119,7 +125,7 @@ export function Composer({
             <AgentPicker />
             <PermPicker />
             <ModelPicker />
-            <ContextIndicator />
+            <ContextIndicator usage={context} onCompact={onCompact} busy={busy} />
             <span className="piTips" />
             {busy ? (
               <button type="button" className="send-btn stop" onClick={onCancel} aria-label="停止生成" title="停止生成">

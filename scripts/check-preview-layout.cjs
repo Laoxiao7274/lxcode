@@ -101,6 +101,14 @@ app.whenReady().then(async () => {
     assert.ok(empty && empty.cards === 4, "chat: 空态应有 4 张建议卡");
     assert.ok(empty && empty.agentChip, "chat: 空态应显示当前 Agent 芯片");
     assert.ok(empty && empty.top > 100 && empty.bottom < 900, "chat: 空态应纵向居中（不贴顶）");
+    // 上下文指示器：还没跑过任何一轮 → 必须是中性态「—」。
+    // 这条才是「假数据被换掉」的硬守卫——mock 数据在任何时刻都会给出百分比，
+    // 只有真接线才会在测量前显示「—」。
+    const ctxCold = await win.webContents.executeJavaScript(
+      `(document.querySelector(".ctx-pct")?.textContent ?? "").trim()`,
+    );
+    log("context-cold", ctxCold);
+    assert.equal(ctxCold, "—", `chat: 未测量时指示器应显示中性态「—」（实际 ${ctxCold}）`);
     // 侧栏范围：启动即「未分组」（用户拍板——打开软件就是空会话，没有「全部」
     // 视图），点项目行切换且**不可再点取消**（再点仍是该项目）。
     // 注意：这一段只点项目行，不打开会话（后面的空态/建议卡用例依赖对话区仍空）。
@@ -416,6 +424,29 @@ app.whenReady().then(async () => {
       if (idle) break;
       await new Promise((r) => setTimeout(r, 250));
     }
+    // 上下文指示器（P1）：一轮跑完必须显示真实占用，而不是中性态「—」。
+    // 这是「mock 数据换成后端测量」的渲染守卫——回落到假数据/不接线都会红。
+    const ctx = await win.webContents.executeJavaScript(`(() => {
+      const chip = document.querySelector(".ctx-chip");
+      if (!chip) return { err: "no-chip" };
+      chip.click();
+      return new Promise((res) => setTimeout(() => {
+        const pop = document.querySelector(".ctx-pop");
+        res({
+          pct: (document.querySelector(".ctx-pct")?.textContent ?? "").trim(),
+          pop: !!pop,
+          segs: document.querySelectorAll(".ctx-bar-seg").length,
+          legend: document.querySelectorAll(".ctx-legend-row").length,
+          foot: (document.querySelector(".ctx-foot")?.textContent ?? "").replace(/\\s+/g, " ").trim(),
+        });
+      }, 300));
+    })()`);
+    log("context-indicator", JSON.stringify(ctx));
+    assert.ok(/^\d+%$/.test(ctx.pct), `chat: 上下文指示器应显示真实百分比（不是中性态「—」）（${JSON.stringify(ctx)}）`);
+    assert.ok(ctx.pop && ctx.segs >= 2, `chat: 点开应见分类占比条（${JSON.stringify(ctx)}）`);
+    assert.ok(/窗口上限/.test(ctx.foot), `chat: 弹层应显示真实窗口上限（${JSON.stringify(ctx)}）`);
+    await win.webContents.executeJavaScript(`document.querySelector(".ctx-chip").click()`);
+    await new Promise((r) => setTimeout(r, 250));
     // 回到空态（新会话清屏——后续场景不受本轮影响）
     await win.webContents.executeJavaScript(`(() => {
       const btn = document.querySelector(".nav-item");

@@ -97,6 +97,17 @@ type Session struct {
 	// projectDocs 是项目守则读取器（项目根 AGENTS.md——server 装配时注入；
 	// nil = 不注入）。agent 不碰文件系统：读取实现由消费方提供。
 	projectDocs ProjectDocsFunc
+	// context 是最近一次主轮请求的上下文占用（P1 计账）：Used 优先取
+	// provider 回报的真实 prompt_tokens，拿不到才用估算。压缩触发与 UI
+	// 指示器都读它——单一事实源，避免两处各算一遍而互相矛盾。
+	context ContextUsage
+	// turnDone 是本轮的收尾信号（SendWait 用）：Send 时新建，runTurn 的
+	// defer 关闭。派发要等子会话给出结论——异步 Send 满足不了这个需求。
+	turnDone chan struct{}
+	// confirmProxy 非空时本会话的确认请求交给它裁决（子会话把确认门代理给
+	// 父会话）：全应用只有"同时一个挂起确认"这条不变式，子会话自己持
+	// pending 的话服务端的 tool.confirm 找不到它。
+	confirmProxy func(ctx context.Context, req *ConfirmRequest) (allow bool, ok bool)
 }
 
 // New 创建会话；emit 为 nil 时事件被丢弃（单测可只调方法）。
@@ -105,16 +116,9 @@ func New(reg *config.Registry, toolReg *tools.Registry, emit Emitter) *Session {
 		emit = func(Event) {}
 	}
 	s := &Session{reg: reg, tools: toolReg, stream: streamWithLLM, emit: emit}
-	// todo 工具写清单时回写会话状态并广播（UI 的 TodoList 数据源）
-	toolReg.SetTodoSink(func(items []tools.TodoItem) {
-		s.mu.Lock()
-		s.todos = items
-		s.mu.Unlock()
-		s.emit(TodoUpdatedEvent{Items: items})
-	})
-	// agent.dispatch 的执行体（M3）：子上下文循环在 Session——工具层
-	// 只拿声明（Exec 是未装配的兜底）。注意 SetDispatchSink 保留在
-	// Registry 上的接口不必要——调用位直连 s.runDispatch，这里不再接线。
+	// 注意：todo 清单的写回口与技能目录都**不进注册表**（进程级单例），
+	// 而是每轮经 ctx 注入（runTurn 里 WithTodoSink / WithSkillSource）——
+	// 子 Agent 是独立会话后，注册表级全局态会让父子互相踩（见 tools/sessionstate.go）。
 	return s
 }
 
@@ -350,6 +354,38 @@ func (s *Session) Cancel() {
 	}
 }
 
+// SendWait 跑一轮并**等它结束**（派发给子会话时用：主 Agent 要拿子会话的结论）。
+// ctx 取消 → 取消这一轮并等它真正收尾（取消是异步的，不等会读到半截历史）。
+// 与 Send 的差别只有"等"：事件流、历史写入、压缩触发全部走同一条路径。
+func (s *Session) SendWait(ctx context.Context, text string, opts ...SendOpt) error {
+	done := make(chan struct{})
+	s.mu.Lock()
+	s.turnDone = done
+	s.mu.Unlock()
+
+	if err := s.Send(text, opts...); err != nil {
+		s.mu.Lock()
+		s.turnDone = nil
+		s.mu.Unlock()
+		return err
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		s.Cancel()
+		<-done // 等它真正收尾（取消是异步的）——否则父会话会读到半截历史
+		return ctx.Err()
+	}
+}
+
+// SetConfirmProxy 挂确认门代理（子会话 → 父会话；见 confirmProxy 字段注释）。
+func (s *Session) SetConfirmProxy(fn func(ctx context.Context, req *ConfirmRequest) (bool, bool)) {
+	s.mu.Lock()
+	s.confirmProxy = fn
+	s.mu.Unlock()
+}
+
 // Busy 返回当前忙闲状态。
 func (s *Session) Busy() bool {
 	s.mu.Lock()
@@ -370,7 +406,20 @@ func (s *Session) History() Snapshot {
 	return Snapshot{
 		Messages: msgs, Busy: s.busy, Pending: pending,
 		SessionID: s.id, Todos: append([]tools.TodoItem(nil), s.todos...),
+		Context: s.context, Checkpoints: checkpointIndexes(msgs),
 	}
+}
+
+// checkpointIndexes 标出历史里的压缩检查点下标（前端渲染成「已压缩历史」块）。
+// 按内容标记识别：历史就是普通 llm.Message，没有类型字段可依赖。
+func checkpointIndexes(msgs []llm.Message) []int {
+	var out []int
+	for i, m := range msgs {
+		if isCheckpointContent(m.Content) {
+			out = append(out, i)
+		}
+	}
+	return out
 }
 
 // Todos 返回当前任务清单（UI 渲染用）。
@@ -378,6 +427,28 @@ func (s *Session) Todos() []tools.TodoItem {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]tools.TodoItem(nil), s.todos...)
+}
+
+// ContextUsage 返回最近一次主轮请求的上下文占用（零值 = 本会话还没跑过主轮，
+// 或刚切过会话——那时真实用量未知，UI 应显示中性态而不是编一个数）。
+func (s *Session) ContextUsage() ContextUsage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.context
+}
+
+// recordContextUsage 记录一次主轮请求的占用：res 带 prompt_tokens 就用真实值
+// 锚定（分类等比归一），否则保留估算值。
+func (s *Session) recordContextUsage(window int, est ContextUsage, res *llm.ChatResult) {
+	used := 0
+	if res != nil {
+		used = res.PromptTokens
+	}
+	u := est.anchoredTo(used)
+	u.Window = window
+	s.mu.Lock()
+	s.context = u
+	s.mu.Unlock()
 }
 
 // runTurn 跑完整一轮：流式生成 → 工具调用 → 确认 → 执行 → 回填续轮。
@@ -395,13 +466,21 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig, ac *sessiondata.A
 
 	// 本轮技能目录注入 read_skill（渐进披露的取数源）：模型按 id 取
 	// 完整正文，只暴露白名单内的——没在 ac.Skills 里的它当没有。
+	// 经 ctx 注入（不是注册表）：父会话与子会话各有自己的白名单。
 	if ac != nil {
 		entries := make([]tools.SkillEntry, 0, len(ac.Skills))
 		for i := range ac.Skills {
 			entries = append(entries, tools.SkillEntry{ID: ac.Skills[i].ID, Desc: ac.Skills[i].Desc, Body: ac.Skills[i].Body})
 		}
-		s.tools.SetSkillSource(func(context.Context) []tools.SkillEntry { return entries })
+		ctx = tools.WithSkillSource(ctx, func(context.Context) []tools.SkillEntry { return entries })
 	}
+	// 本轮 todo 清单的写回口（清单状态归会话，UI 的 TodoList 数据源）
+	ctx = tools.WithTodoSink(ctx, func(items []tools.TodoItem) {
+		s.mu.Lock()
+		s.todos = items
+		s.mu.Unlock()
+		s.emit(TodoUpdatedEvent{Items: items})
+	})
 
 	var fileChanges []FileChange
 	defer func() {
@@ -411,20 +490,47 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig, ac *sessiondata.A
 		s.pending = nil
 		s.confirm = nil
 		s.dispatchRoot = nil
+		done := s.turnDone
+		s.turnDone = nil
 		s.mu.Unlock()
 		s.emit(BusyEvent{Busy: false})
 		if len(fileChanges) > 0 {
 			s.emit(FilesChangedEvent{Files: fileChanges})
 		}
+		// 阻塞式跑一轮（SendWait）的收尾信号——放在最后：宿主等到它就知道
+		// 本轮（含事件广播）已经结束。
+		if done != nil {
+			close(done)
+		}
 	}()
 
+	overflowRetried := false
 	for round := 0; round < maxToolRounds; round++ {
+		// 轮与轮之间是压缩的天然时机：上一轮的真实 prompt_tokens 已记录，
+		// 超阈值就先压——否则下一轮请求可能直接撞窗口。
+		if round > 0 {
+			s.maybeCompact(ctx, ac, workDir)
+		}
 		// 历史快照（锁内取副本）：主轮写回 s.history（s.append）
 		s.mu.Lock()
 		histSnap := append([]llm.Message(nil), s.history...)
 		s.mu.Unlock()
 		res, err := s.streamRound(ctx, workDir, cfg.effort, ac, histSnap, "")
 		if err != nil {
+			// 端点报超长：强制压一次（保留预算归零）再重试同一轮——这是
+			// 会话已经长到发不出去时的唯一出路。只重试一次（压不动就报错，
+			// 不做无谓的循环）。
+			if !overflowRetried && llm.IsContextOverflow(err) {
+				overflowRetried = true
+				if r, cerr := s.runCompaction(ctx, ac, workDir, 0); cerr == nil {
+					log.Printf("端点报上下文超长：已压缩 %d 条历史（%d → %d tokens），重试本轮",
+						r.Shadowed, r.Before, r.After)
+					s.emit(CompactedEvent{Result: r})
+					continue
+				} else {
+					log.Printf("端点报上下文超长，但压缩失败: %v", cerr)
+				}
+			}
 			aborted := errors.Is(err, context.Canceled) || ctx.Err() != nil
 			note := err.Error()
 			if aborted {
@@ -443,6 +549,7 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig, ac *sessiondata.A
 		s.append(res.Message)
 		s.emit(TurnDoneEvent{
 			Message: res.Message, UsageTokens: res.UsageTokens, FinishReason: res.FinishReason,
+			Context: s.ContextUsage(),
 		})
 		if len(res.Message.ToolCalls) == 0 {
 			return
@@ -465,7 +572,7 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig, ac *sessiondata.A
 // history 是这轮的消息序列（主轮 = s.history 快照；子轮 = 子上下文的
 // 独立历史——隔离的核心）。dispatchID 非空 = 子 Agent 执行（事件带
 // 归属标记，前端挂 dispatch 卡）。
-func (s *Session) streamRound(ctx context.Context, workDir, effort string, ac *sessiondata.AgentContext, history []llm.Message, dispatchID string) (*llm.ChatResult, error) {
+func (s *Session) streamRound(ctx context.Context, workDir, effort string, ac *sessiondata.AgentContext, history []llm.Message, dispatchID string) (res *llm.ChatResult, err error) {
 	m, err := s.modelFor(ac)
 	if err != nil {
 		return nil, err
@@ -489,7 +596,19 @@ func (s *Session) streamRound(ctx context.Context, workDir, effort string, ac *s
 	}
 	msgs := append([]llm.Message{{Role: "system", Content: prompt}}, history...)
 
-	opts = append([]llm.Option{llm.WithTools(llmToolsFiltered(s.tools, allow))}, opts...)
+	wireTools := llmToolsFiltered(s.tools, allow)
+	// 本轮请求的上下文占用（估算）：provider 回报了真实用量就以它为准，
+	// 估算只用于分类拆分（anchoredTo 归一）与「端点不回报 usage」的回落。
+	est := estimateContextUsage(prompt, wireTools, history)
+	// 记录统一放出口（done / error / 断流多个 return 点）——子轮的占用不是
+	// 主会话的压力（子上下文有自己的窗口与预算），跳过。
+	defer func() {
+		if dispatchID == "" {
+			s.recordContextUsage(m.ContextWindow, est, res)
+		}
+	}()
+
+	opts = append([]llm.Option{llm.WithTools(wireTools)}, opts...)
 	ch, err := s.stream(ctx, m, msgs, opts)
 	if err != nil {
 		return nil, err
@@ -608,14 +727,20 @@ func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChange
 				Agent   string `json:"agent"`
 				Task    string `json:"task"`
 				Context string `json:"context"`
+				Session string `json:"session"`
 			}
 			if err := json.Unmarshal([]byte(tc.Function.Arguments), &p); err != nil {
 				result = fmt.Sprintf("错误: agent.dispatch 参数解析失败: %v", err)
 			} else {
 				res := s.runDispatch(ctx, tools.DispatchCall{
 					DispatchID: tc.ID, Agent: p.Agent, Task: p.Task, Context: p.Context,
+					Session: p.Session,
 				})
 				result = res.Output
+				if res.SessionID != "" {
+					// 把子会话 id 交给主 Agent：下一轮要接着它跑就填进 session 参数
+					result += fmt.Sprintf("\n\n[子会话 id: %s —— 需要接着这次进度继续时，把它填进 session 参数重派]", res.SessionID)
+				}
 			}
 		} else {
 			result = s.tools.Execute(ctx, tc)
@@ -686,7 +811,17 @@ func collectFileChange(out *[]FileChange, tc llm.ToolCall, _ string) {
 }
 
 // awaitConfirm 挂起等宿主裁决；取消返回 ok=false。
+// 挂了确认门代理（子会话）时交给代理——全应用只有"同时一个挂起确认"，
+// 子会话自己持 pending 的话服务端的 tool.confirm 找不到它（会话卡死）。
+// 代理路径由代理方发事件（这里不再发，否则确认卡会重复出现）。
 func (s *Session) awaitConfirm(ctx context.Context, req *ConfirmRequest) (allow bool, ok bool) {
+	s.mu.Lock()
+	proxy := s.confirmProxy
+	s.mu.Unlock()
+	if proxy != nil {
+		return proxy(ctx, req)
+	}
+
 	s.mu.Lock()
 	s.pending = req
 	s.confirm = make(chan bool, 1)
@@ -826,6 +961,7 @@ func (s *Session) EnablePersistence(st Persistence) error {
 	// 全部读取和校验成功后才提交，失败可修复存储后重试。
 	s.st, s.id, s.history, s.workDir = st, id, msgs, dir
 	s.todos, s.pendingWorkspace = nil, ""
+	s.context = ContextUsage{} // 占用随会话走：换了历史就得重新测量
 	return nil
 }
 
@@ -834,6 +970,40 @@ func (s *Session) SessionID() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.id
+}
+
+// AttachTo 把会话挂到指定存储与**既有会话 id**（子会话创建/续跑用）。
+// 与 EnablePersistence 的区别：那个走"恢复最近会话"的路径（Latest），这个按 id
+// 精确附着——派发开的子会话刚建好行（历史为空）或要续跑（历史在库里）。
+// 校验全部成功后才提交，失败保留原状态。
+func (s *Session) AttachTo(st Persistence, id string) error {
+	if st == nil {
+		return errors.New("持久化实现为空")
+	}
+	if id == "" {
+		return errors.New("会话 id 不能为空")
+	}
+	msgs, err := st.Load(id) // 会话不存在时报错
+	if err != nil {
+		return err
+	}
+	ws, err := st.WorkspaceOf(id)
+	if err != nil {
+		return err
+	}
+	dir, err := resolveWorkspaceDir(st, ws)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.busy {
+		return fmt.Errorf("%w（不能附着到别的会话）", ErrBusy)
+	}
+	s.st, s.id, s.history, s.workDir = st, id, msgs, dir
+	s.todos, s.pendingWorkspace = nil, ""
+	s.context = ContextUsage{} // 占用随会话走：换了历史就得重新测量
+	return nil
 }
 
 // Close 关闭会话资源（进程退出/测试清理时调用；幂等）。
@@ -856,6 +1026,7 @@ func (s *Session) SwitchNew(workspace string) (string, error) {
 	// 历史、todo 和项目归属必须在同一锁内提交，Send 不能插入两步之间。
 	s.id, s.history, s.todos = "", nil, nil
 	s.pendingWorkspace, s.workDir = workspace, dir
+	s.context = ContextUsage{} // 新会话：占用清零（下一轮重新测量）
 	return "", nil
 }
 
@@ -884,6 +1055,7 @@ func (s *Session) SwitchTo(id string) error {
 	// 校验完成再提交；todo 尚未持久化，不能沿用上一会话的内存清单。
 	s.id, s.history, s.workDir = id, msgs, dir
 	s.todos, s.pendingWorkspace = nil, ""
+	s.context = ContextUsage{} // 换会话：占用重新测量（沿用旧值会误导压力判定）
 	return nil
 }
 

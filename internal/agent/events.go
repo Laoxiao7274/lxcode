@@ -67,11 +67,13 @@ type BusyEvent struct {
 
 // TurnDoneEvent：一轮生成的最终消息（含 usage/finish）。
 // DispatchID 非空 = 子 Agent 轮完成（主轮的 busy 不翻转）。
+// Context 是本轮请求后的上下文占用测量（主轮才有——子轮的占用不进主指示器）。
 type TurnDoneEvent struct {
 	Message      llm.Message
 	UsageTokens  int
 	FinishReason string
 	DispatchID   string
+	Context      ContextUsage
 }
 
 // TurnErrorEvent：一轮以错误收尾（Aborted = 用户取消，已生成部分在 Partial）。
@@ -108,8 +110,10 @@ type FilesChangedEvent struct {
 
 // DispatchStartEvent：主 Agent 把任务派给子 Agent（M3——子上下文隔离
 // 的开端）。宿主渲染 dispatch 卡（子执行的事件按 DispatchID 归属进卡）。
+// SessionID = 子会话 id（2026-09-22 起子 Agent 是独立会话：可续跑、可回放）。
 type DispatchStartEvent struct {
 	DispatchID string
+	SessionID  string
 	AgentID    string
 	AgentName  string
 	AgentColor string
@@ -117,12 +121,22 @@ type DispatchStartEvent struct {
 }
 
 // DispatchEndEvent：子 Agent 执行收尾（Result = 最终回复——主 Agent 的
-// 验收输入；IsError = 子执行以错误收尾）。
+// 验收输入；IsError = 子执行以错误收尾）。SessionID = 子会话 id（续跑用）。
 type DispatchEndEvent struct {
 	DispatchID  string
+	SessionID   string
 	Result      string
 	IsError     bool
 	UsageTokens int
+}
+
+// CompactedEvent：一次压缩事务收尾（历史的前缀已被摘要检查点替换）。
+// 宿主广播给客户端（前端插一条「已压缩历史」标记），Manual = 用户主动触发。
+// DispatchID 非空 = **子会话自己的压缩**（归属进 dispatch 卡，不进主时间线）。
+type CompactedEvent struct {
+	Result     CompactResult
+	Manual     bool
+	DispatchID string
 }
 
 func (UserMsgEvent) isEvent()        {}
@@ -138,6 +152,7 @@ func (FilesChangedEvent) isEvent()   {}
 func (SessionStartedEvent) isEvent() {}
 func (DispatchStartEvent) isEvent()  {}
 func (DispatchEndEvent) isEvent()    {}
+func (CompactedEvent) isEvent()      {}
 
 // Snapshot 是宿主初始化/重连时的会话同步载荷（History 的返回值）。
 type Snapshot struct {
@@ -146,4 +161,11 @@ type Snapshot struct {
 	Pending   *ConfirmRequest
 	SessionID string
 	Todos     []tools.TodoItem
+	// Context 是最近一次主轮请求的上下文占用（零值 = 未知——刚切会话或
+	// 后端刚重启，客户端应显示中性态）。
+	Context ContextUsage
+	// Checkpoints 是压缩检查点在 Messages 里的下标（前端把这些消息渲染成
+	// 「已压缩历史」块，而不是用户气泡——检查点内容是普通 user 消息，
+	// 没有类型字段可依赖，所以按内容标记识别）。
+	Checkpoints []int
 }

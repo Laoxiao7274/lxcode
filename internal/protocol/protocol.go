@@ -31,6 +31,9 @@ const (
 	MethodChatCancel  = "chat.cancel"
 	MethodChatHistory = "chat.history"
 	MethodToolConfirm = "tool.confirm"
+	// MethodChatCompact 手动压缩历史（空闲才允许——服务端返回 ErrBusy 映射的
+	// 错误码）。参数可带 agent（与 chat.send 同语义：空 = 主 Agent）。
+	MethodChatCompact = "chat.compact"
 
 	// 会话管理（持久化 + 切换）
 	MethodSessionList    = "session.list"
@@ -91,6 +94,7 @@ const (
 	EventCatalogChanged = "catalog.changed"    // 拓展目录变更——客户端重拉对应 kind 的 catalog.*.list
 	EventDispatchStart  = "chat.dispatchStart" // 主 Agent 派发子 Agent——客户端渲染 dispatch 卡
 	EventDispatchEnd    = "chat.dispatchEnd"   // 子 Agent 执行收尾——dispatch 卡定格带结果
+	EventCompacted      = "chat.compacted"     // 历史被压缩（前缀替换成摘要检查点）——客户端插标记块
 )
 
 // 错误码：JSON-RPC 标准码 + 本应用码。
@@ -240,6 +244,22 @@ type ChatHistoryResult struct {
 	Pending   *ConfirmRequest  `json:"pending,omitempty"`
 	SessionID string           `json:"session_id,omitempty"` // 当前会话 id（session.changed 后重拉可拿到新值）
 	Todos     []tools.TodoItem `json:"todos,omitempty"`      // 任务清单（客户端渲染 TodoList）
+	Context   *ContextUsage    `json:"context,omitempty"`    // 上下文占用（无 = 未知——刚切会话/后端刚重启）
+	// Checkpoints 是压缩检查点在 Messages 里的下标：这些消息要渲染成
+	// 「已压缩历史」块，而不是用户气泡（内容是摘要正文，不是用户说的话）。
+	Checkpoints []int `json:"checkpoints,omitempty"`
+}
+
+// ContextUsage 是上下文占用的 wire 形态（agent.ContextUsage 的映射——内核类型
+// 不过协议边界）。used/window 是压力与环形依据（used 优先真实 prompt_tokens），
+// 四个分类是估算拆分（已归一：分类之和 == used）。
+type ContextUsage struct {
+	Used        int `json:"used"`
+	Window      int `json:"window,omitempty"`
+	System      int `json:"system,omitempty"`
+	ToolResults int `json:"tool_results,omitempty"`
+	Messages    int `json:"messages,omitempty"`
+	Reasoning   int `json:"reasoning,omitempty"`
 }
 
 // 事件载荷。
@@ -279,6 +299,8 @@ type DoneParams struct {
 	UsageTokens  int         `json:"usage_tokens"`
 	FinishReason string      `json:"finish_reason"`
 	DispatchID   string      `json:"dispatch_id,omitempty"` // 非空 = 子 Agent 轮完成
+	// Context 是本轮之后的上下文占用（仅主轮携带——子轮的占用不进主指示器）。
+	Context *ContextUsage `json:"context,omitempty"`
 }
 
 type ErrorParams struct {
@@ -289,6 +311,34 @@ type ErrorParams struct {
 
 type BusyParams struct {
 	Busy bool `json:"busy"`
+}
+
+// CompactParams 是 chat.compact 的参数（与 chat.send 同语义：agent 空 = 主 Agent）。
+type CompactParams struct {
+	Agent string `json:"agent,omitempty"`
+}
+
+// CompactResult 是 chat.compact 的结果：Compacted=false 表示没有可压的收益
+// （历史太短，或摘要并不比被压缩段更小）——不是错误，Reason 说明为什么没压，
+// 客户端直接显示给人看。
+type CompactResult struct {
+	Compacted bool   `json:"compacted"`
+	Reason    string `json:"reason,omitempty"`
+	Before    int    `json:"before,omitempty"`   // 压缩前上下文占用（估算）
+	After     int    `json:"after,omitempty"`    // 压缩后
+	Shadowed  int    `json:"shadowed,omitempty"` // 被替换的历史条数
+}
+
+// CompactedParams 是 chat.compacted 事件的载荷：宿主据此插一条「已压缩历史」
+// 标记块（Summary 供展开查看），并刷新上下文指示器。DispatchID 非空 = 子会话
+// 自己的压缩（归属进 dispatch 卡，不进主时间线）。
+type CompactedParams struct {
+	Before     int    `json:"before"`
+	After      int    `json:"after"`
+	Shadowed   int    `json:"shadowed"`
+	Summary    string `json:"summary"`
+	Manual     bool   `json:"manual,omitempty"`
+	DispatchID string `json:"dispatch_id,omitempty"`
 }
 
 // TodoUpdatedParams 是 todo.updated 事件的载荷：完整清单（全量替换语义）。
@@ -503,8 +553,10 @@ type CatalogChangedParams struct {
 
 // DispatchStartParams 是 chat.dispatchStart 的载荷（M3——主 Agent 派发
 // 子 Agent；前端渲染 dispatch 卡，后续带 dispatch_id 的事件归属进卡）。
+// SessionID = 子会话 id（子 Agent 是独立会话：可续跑、可回放）。
 type DispatchStartParams struct {
 	DispatchID string `json:"dispatch_id"`
+	SessionID  string `json:"session_id,omitempty"`
 	AgentID    string `json:"agent_id"`
 	AgentName  string `json:"agent_name"`
 	AgentColor string `json:"agent_color"`
@@ -512,9 +564,10 @@ type DispatchStartParams struct {
 }
 
 // DispatchEndParams 是 chat.dispatchEnd 的载荷（子 Agent 收尾——结果
-// 是主 Agent 的验收输入）。
+// 是主 Agent 的验收输入）。SessionID = 子会话 id（主 Agent 可据此续跑）。
 type DispatchEndParams struct {
 	DispatchID  string `json:"dispatch_id"`
+	SessionID   string `json:"session_id,omitempty"`
 	Result      string `json:"result"`
 	IsError     bool   `json:"is_error"`
 	UsageTokens int    `json:"usage_tokens,omitempty"`

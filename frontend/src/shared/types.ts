@@ -7,6 +7,29 @@ export interface TodoItem {
   status: "pending" | "active" | "done";
 }
 
+/** 上下文占用（对齐 protocol.ContextUsage）：used/window 是压力与环形依据
+ *  （used 优先真实 prompt_tokens），四个分类是估算拆分（已归一：分类之和 == used）。 */
+export interface ContextUsage {
+  used: number;
+  /** 模型窗口上限（0/缺省 = 未知——不画环形百分比）。 */
+  window?: number;
+  system?: number;
+  tool_results?: number;
+  messages?: number;
+  reasoning?: number;
+}
+
+/** 手动压缩的结果（chat.compact 的应答）。 */
+export interface CompactOutcome {
+  /** false = 没有可压的收益（历史太短 / 摘要不缩水）——不是错误。 */
+  compacted: boolean;
+  /** 为什么没压（人话，直接显示）。 */
+  reason?: string;
+  before?: number;
+  after?: number;
+  shadowed?: number;
+}
+
 /** 确认请求（对齐 protocol.ConfirmRequest）。 */
 export interface ConfirmRequest {
   id: string;
@@ -26,10 +49,10 @@ export type AgentEvent =
   | { type: "toolResult"; id: string; name: string; content: string; isError: boolean; dispatchId?: string }
   | { type: "confirmRequest"; request: ConfirmRequest }
   | { type: "todoUpdated"; items: TodoItem[] }
-  | { type: "done"; usageTokens: number; finishReason: string; dispatchId?: string }
+  | { type: "done"; usageTokens: number; finishReason: string; dispatchId?: string; context?: ContextUsage }
   | { type: "error"; message: string; aborted: boolean }
-  | { type: "dispatchStart"; dispatchId: string; agentId: string; agentName: string; agentColor: string; task: string }
-  | { type: "dispatchEnd"; dispatchId: string; result: string; isError: boolean; usageTokens?: number }
+  | { type: "dispatchStart"; dispatchId: string; sessionId?: string; agentId: string; agentName: string; agentColor: string; task: string }
+  | { type: "dispatchEnd"; dispatchId: string; sessionId?: string; result: string; isError: boolean; usageTokens?: number }
   /** 请求失败不代表生成失败：不得清空会话、定格正文或解除确认卡。 */
   | { type: "operationError"; message: string }
   | { type: "busy"; busy: boolean }
@@ -40,6 +63,9 @@ export type AgentEvent =
   | { type: "projectsChanged" }
   /** 一轮任务的产物汇总（改动文件 + diff 统计——验收视图）。 */
   | { type: "filesChanged"; files: FileChange[] }
+  /** 历史被压缩（前缀替换成摘要检查点）——UI 插一条「已压缩历史」标记块。
+   *  dispatchId 非空 = 子会话自己的压缩（归属进 dispatch 卡内，不进主时间线）。 */
+  | { type: "compacted"; before: number; after: number; shadowed: number; summary: string; manual?: boolean; dispatchId?: string }
   /** 历史载入（连接/切会话后）——全量重建对话视图。 */
   | { type: "historyLoaded"; history: HistorySnapshot };
 
@@ -62,6 +88,10 @@ export interface HistorySnapshot {
   busy: boolean;
   pending: ConfirmRequest | null;
   todos: TodoItem[];
+  /** 上下文占用（缺省 = 未知——刚切会话/后端刚重启，指示器显示中性态）。 */
+  context?: ContextUsage;
+  /** 压缩检查点在 messages 里的下标（这些消息渲染成「已压缩历史」块，不是用户气泡）。 */
+  checkpoints?: number[];
 }
 
 /** 历史消息（llm.Message 的 wire 形态）。 */
@@ -117,6 +147,8 @@ export interface AgentSource {
   confirm(id: string, allow: boolean): Promise<void>;
   /** 取消当前生成。 */
   cancel(): void;
+  /** 手动压缩历史（空闲才允许；没有可压区间时返回 compacted=false——不是错误）。 */
+  compact(): Promise<CompactOutcome>;
   /** 新会话（可选归属项目 id——会话挂在项目分组下）。 */
   newSession(workspace?: string): void;
   /** 恢复会话。 */

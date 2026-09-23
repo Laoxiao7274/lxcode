@@ -322,6 +322,24 @@ func (r *REPL) runCommand(line string) bool {
 			fmt.Printf("[%v]\n", err)
 			return false
 		}
+	case "compact":
+		// 手动压缩：不受阈值约束（空闲即可）——长会话撞窗口前的主动手段
+		if err := r.requireIdle(); err != nil {
+			fmt.Printf("[%v]\n", err)
+			return false
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		var res protocol.CompactResult
+		if err := r.be.Call(ctx, protocol.MethodChatCompact, protocol.CompactParams{}, &res); err != nil {
+			fmt.Printf("[%v]\n", err)
+			return false
+		}
+		if !res.Compacted {
+			fmt.Printf("[%s]\n", orDash(res.Reason))
+			return false
+		}
+		fmt.Printf("[已压缩 %d 条历史：%d → %d tokens]\n", res.Shadowed, res.Before, res.After)
 	case "model":
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -347,6 +365,7 @@ func (r *REPL) runCommand(line string) bool {
   /new            开新会话（旧的保留可 resume）
   /sessions       列出历史会话
   /resume <n|id>  恢复历史会话
+  /compact        压缩早期历史（长会话撞窗口前主动压一次）
   /model          查看模型与角色绑定
   /think          切换思考链显示（默认隐藏）
   /quit           退出

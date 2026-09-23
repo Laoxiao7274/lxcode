@@ -61,11 +61,6 @@ type Registry struct {
 	// 工具本身无状态——JSONL 格式归 agent 所有，这里只持有函数避免重复定义格式。
 	searchMu      sync.Mutex
 	sessionSearch SessionSearchFn
-
-	// todoSink 是注入的 todo 状态写入（agent.Session 接线）：会话持有清单
-	// 状态供 UI 渲染，工具层只做校验与格式化。
-	todoMu   sync.Mutex
-	todoSink TodoWriteFn
 }
 
 // SessionSearchFn 是会话搜索的实现约定：在全部会话（含当前）的消息内容里

@@ -2,7 +2,7 @@
 // 一条 user 消息、一条 assistant 回复（含正文/思考链/流式态）、一次
 // 工具调用（含结果）、一张确认卡、一份任务清单、一条错误。
 import { useCallback, useEffect, useState } from "react";
-import type { AgentEvent, AgentSource, ConfirmRequest, FileChange, HistorySnapshot, SendOptions, TodoItem } from "./types";
+import type { AgentEvent, AgentSource, ConfirmRequest, ContextUsage, FileChange, HistorySnapshot, SendOptions, TodoItem } from "./types";
 
 export interface AssistantBlock {
   kind: "assistant";
@@ -21,10 +21,26 @@ export type ThreadBlock =
   | { kind: "files"; uid: number; files: FileChange[] }
   | { kind: "error"; uid: number; message: string; aborted: boolean }
   | {
+      /** 历史压缩的标记块（前缀被摘要检查点替换）——可展开看摘要正文。 */
+      kind: "compacted";
+      uid: number;
+      /** 压缩前后的上下文占用（估算 token）。 */
+      before: number;
+      after: number;
+      /** 被替换的历史条数。 */
+      shadowed: number;
+      /** 摘要正文（markdown）。 */
+      summary: string;
+      /** 用户主动触发（/compact 或指示器入口）。 */
+      manual: boolean;
+    }
+  | {
       kind: "dispatch";
       uid: number;
       /** dispatch 调用 id（子事件归属键）。 */
       id: string;
+      /** 子会话 id（子 Agent 是独立会话：自己的历史/压缩/可续跑）。 */
+      sessionId?: string;
       agentId: string;
       agentName: string;
       agentColor: string;
@@ -51,9 +67,12 @@ export interface UIState {
   currentId: string;
   /** 请求类失败的一次性提示（operationError——App 之前自持的状态）。 */
   operationError: string | null;
+  /** 上下文占用（后端测量；null = 未知——刚切会话/后端刚重启，指示器显示
+   *  中性态而不是编一个数）。 */
+  context: ContextUsage | null;
 }
 
-const initial: UIState = { blocks: [], busy: false, pending: null, todos: [], currentId: "", operationError: null };
+const initial: UIState = { blocks: [], busy: false, pending: null, todos: [], currentId: "", operationError: null, context: null };
 
 // 块的唯一序号——React 渲染的稳定 key（index 作 key 在插入新块时
 // 会错位复用组件实例，是重复渲染类怪象的根因）。
@@ -189,13 +208,16 @@ export function reduce(state: UIState, ev: AgentEvent): UIState {
       }
       // 定格最后一个 assistant 块（按 uid 定位，不按 index——
       // 工具/清单块可能插在 assistant 之后）
+      // 上下文占用随主轮更新：与块定格解耦（没有 assistant 块的轮次也要
+      // 更新指示器，否则它会停在旧值上骗人）
+      const withCtx = ev.context ? { ...state, context: ev.context } : state;
       let lastA: AssistantBlock | undefined;
-      for (let i = state.blocks.length - 1; i >= 0; i--) {
-        const b = state.blocks[i];
+      for (let i = withCtx.blocks.length - 1; i >= 0; i--) {
+        const b = withCtx.blocks[i];
         if (b.kind === "assistant") { lastA = b; break; }
       }
-      if (!lastA) return state;
-      return withBlock(state, lastA.uid, (b) => {
+      if (!lastA) return withCtx;
+      return withBlock(withCtx, lastA.uid, (b) => {
         const a = b as AssistantBlock;
         return { ...a, streaming: false, usageTokens: ev.usageTokens };
       });
@@ -223,7 +245,7 @@ export function reduce(state: UIState, ev: AgentEvent): UIState {
       return {
         ...state,
         blocks: [...blocks, {
-          kind: "dispatch", uid: nextUid(), id: ev.dispatchId,
+          kind: "dispatch", uid: nextUid(), id: ev.dispatchId, sessionId: ev.sessionId,
           agentId: ev.agentId, agentName: ev.agentName, agentColor: ev.agentColor,
           task: ev.task, status: "running", subBlocks: [],
         }],
@@ -236,7 +258,10 @@ export function reduce(state: UIState, ev: AgentEvent): UIState {
       if (idx < 0) return state;
       const blocks = state.blocks.slice();
       const b = blocks[idx] as Extract<ThreadBlock, { kind: "dispatch" }>;
-      blocks[idx] = { ...b, status: "done", result: ev.result, isError: ev.isError, usageTokens: ev.usageTokens };
+      blocks[idx] = {
+        ...b, status: "done", result: ev.result, isError: ev.isError,
+        usageTokens: ev.usageTokens, sessionId: ev.sessionId ?? b.sessionId,
+      };
       return { ...state, blocks };
     }
     case "busy":
@@ -256,6 +281,17 @@ export function reduce(state: UIState, ev: AgentEvent): UIState {
     case "filesChanged":
       // 一轮任务的产物汇总（验收视图——Codex 的 diff 中心形态）
       return { ...state, blocks: [...state.blocks, { kind: "files", uid: nextUid(), files: ev.files }] };
+    case "compacted": {
+      const block = {
+        kind: "compacted" as const, uid: nextUid(), before: ev.before, after: ev.after,
+        shadowed: ev.shadowed, summary: ev.summary, manual: Boolean(ev.manual),
+      };
+      // 子会话自己的压缩：归属进 dispatch 卡（主时间线只标主会话的压缩）
+      if (ev.dispatchId) return applyToDispatch(state, ev.dispatchId, (sub) => [...sub, block]);
+      // 历史被压缩：插一条标记块（摘要可展开查看）。压缩不改动已有块——
+      // 被压缩的那些消息本来就不在 UI 里（它们是更早的轮次，早已滚出视图）
+      return { ...state, blocks: [...state.blocks, block] };
+    }
     case "historyLoaded":
       // 全量重建（连接/切会话后）：messages → blocks（工具调用与结果配对）
       return { ...reduceHistory(state, ev.history), busy: ev.history.busy };
@@ -325,9 +361,31 @@ function reduceSub(blocks: ThreadBlock[], ev: AgentEvent): ThreadBlock[] | null 
       next.push({ kind: "tool", uid: nextUid(), id: ev.id, name: ev.name, arguments: ev.arguments });
       return next;
     }
+    case "compacted":
+      // 子会话自己的压缩：卡内插一条标记块（与主时间线同一个组件）
+      return [...blocks, {
+        kind: "compacted" as const, uid: nextUid(), before: ev.before, after: ev.after,
+        shadowed: ev.shadowed, summary: ev.summary, manual: Boolean(ev.manual),
+      }];
     default:
       return null;
   }
+}
+
+/** 压缩检查点的定界标记（对齐后端 agent/compaction_prompt.go）。 */
+const CHECKPOINT_OPEN = "<compacted-summary>";
+const CHECKPOINT_CLOSE = "</compacted-summary>";
+
+/**
+ * 从检查点消息内容里剥出摘要正文：后端把摘要包成「前言 + 定界标记 + 正文」，
+ * 前端只该展示正文（前言是给模型看的，不该出现在界面上）。
+ * 标记缺失时原样返回——历史坏数据不该让界面渲染空白。
+ */
+export function checkpointBody(content: string): string {
+  const start = content.indexOf(CHECKPOINT_OPEN);
+  const end = content.lastIndexOf(CHECKPOINT_CLOSE);
+  if (start < 0 || end <= start) return content;
+  return content.slice(start + CHECKPOINT_OPEN.length, end).trim();
 }
 
 /** 历史快照 → UI 状态：消息序列重建 blocks。
@@ -335,10 +393,18 @@ function reduceSub(blocks: ThreadBlock[], ev: AgentEvent): ThreadBlock[] | null 
  *  按 tool_call_id 回填对应块的 result（服务端的存储顺序保证可达）。 */
 function reduceHistory(state: UIState, h: HistorySnapshot): UIState {
   const blocks: ThreadBlock[] = [];
+  const checkpoints = new Set(h.checkpoints ?? []);
   let lastAssistant: AssistantBlock | null = null;
-  for (const m of h.messages) {
+  for (let i = 0; i < h.messages.length; i++) {
+    const m = h.messages[i];
     if (m.role === "user") {
-      blocks.push({ kind: "user", uid: nextUid(), text: m.content });
+      // 压缩检查点不是用户说的话：渲染成标记块（否则会变成一个巨大的用户气泡，
+      // 把真正的用户消息淹没——这是回放路径与实时路径必须一致的地方）
+      if (checkpoints.has(i)) {
+        blocks.push({ kind: "compacted", uid: nextUid(), before: 0, after: 0, shadowed: 0, summary: checkpointBody(m.content), manual: false });
+      } else {
+        blocks.push({ kind: "user", uid: nextUid(), text: m.content });
+      }
       lastAssistant = null;
     } else if (m.role === "assistant") {
       const a: AssistantBlock = {
@@ -381,6 +447,9 @@ function reduceHistory(state: UIState, h: HistorySnapshot): UIState {
     busy: false,
     pending,
     todos: h.todos ?? [],
+    // 未知占用（后端刚重启/刚切会话）置 null —— 指示器显示中性态，
+    // 不沿用上一会话的数字（那是别人的窗口占用）
+    context: h.context ?? null,
   };
 }
 

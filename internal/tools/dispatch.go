@@ -16,12 +16,18 @@ type DispatchCall struct {
 	Agent      string // 目标 Agent 的名单 id
 	Task       string // 任务描述（应自带验收标准）
 	Context    string // 可选背景（主会话的关键约束，不是完整历史）
+	// Session 非空 = **续跑既有子会话**（2026-09-22）：子 Agent 的进度在库里，
+	// 附着同一个 id 接着跑；空 = 新开一个子会话。
+	Session string
 }
 
 // DispatchResult 是调度执行的结果（回填主会话的工具结果）。
 type DispatchResult struct {
 	Output  string // 给主 Agent 的结果文本（子 Agent 最终回复或错误说明）
 	IsError bool
+	// SessionID 是这次调度用的子会话 id（回填给主 Agent——它下一轮可以显式
+	// 传 session 参数续跑；也是"子过程可回放/可对账"的钥匙）。
+	SessionID string
 }
 
 // dispatchDef 返回 agent.dispatch 的注册声明。
@@ -33,13 +39,14 @@ type DispatchResult struct {
 func dispatchDef(r *Registry) *Def {
 	return &Def{
 		Name:        "agent.dispatch",
-		Description: "把任务派给名单中的子 Agent 执行。任务描述必须自包含（目标、约束、验收标准）——子 Agent 看不到当前对话历史；需要背景时放进 context。适合有明确边界且值得独立执行的任务。",
+		Description: "把任务派给名单中的子 Agent 执行。任务描述必须自包含（目标、约束、验收标准）——子 Agent 看不到当前对话历史；需要背景时放进 context。适合有明确边界且值得独立执行的任务。子 Agent 在**独立会话**里执行（有自己的历史与压缩），返回值里带子会话 id：要接着上次的进度继续，把该 id 填进 session。",
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"properties": {
 				"agent": { "type": "string", "description": "目标 Agent 的名单 id（提示词「可委派名单」里列出的）" },
 				"task": { "type": "string", "description": "任务描述——目标 + 约束 + 验收标准（子 Agent 据此独立完成并回传结果）" },
-				"context": { "type": "string", "description": "可选背景：当前对话的关键约束/已尝试的路径（不是完整历史）" }
+				"context": { "type": "string", "description": "可选背景：当前对话的关键约束/已尝试的路径（不是完整历史）" },
+				"session": { "type": "string", "description": "可选：续跑既有子会话的 id（上一次 dispatch 结果里带的子会话 id）。填了就接着那个子会话的进度继续，不填则新开一个" }
 			},
 			"required": ["agent", "task"]
 		}`),
@@ -49,6 +56,7 @@ func dispatchDef(r *Registry) *Def {
 				Agent   string `json:"agent"`
 				Task    string `json:"task"`
 				Context string `json:"context"`
+				Session string `json:"session"`
 			}
 			if err := json.Unmarshal(args, &p); err != nil {
 				return "", fmt.Errorf("参数解析失败: %w", err)

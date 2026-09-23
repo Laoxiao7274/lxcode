@@ -7,7 +7,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { reduce, resolveConfirm } from '../src/shared/store.ts';
 
-const base = { blocks: [], busy: true, pending: null, todos: [], currentId: '', operationError: null };
+const base = { blocks: [], busy: true, pending: null, todos: [], currentId: '', operationError: null, context: null };
 
 /** 所有时间线（主 + 卡内）里 result 仍为 undefined 的工具行 = 僵尸行。 */
 function zombies(state) {

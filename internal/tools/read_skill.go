@@ -1,13 +1,15 @@
 // read_skill 工具（渐进披露——M2 上下文组装的配套）：提示词只注入
 // 技能索引（id + 摘要），模型需要完整内容时按 id 读取。没注入的技能
 // 它当没有（提示词里看不到 = 不存在），挂再多技能也不撑上下文。
+//
+// 技能目录经 ctx 注入（见 sessionstate.go）：父会话与子会话各有自己的
+// 白名单，注册表级的全局目录会让父子互相污染。
 package tools
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"sync"
 )
 
 // SkillEntry 是注入给工具层的技能目录条目（id + 摘要 + 正文——
@@ -21,28 +23,6 @@ type SkillEntry struct {
 // SkillSourceFn 是技能目录的实现约定：返回当前 Agent 白名单内的技能
 // （server 装配时按会话选用的 Agent 解析注入）。
 type SkillSourceFn func(ctx context.Context) []SkillEntry
-
-// skillMu/skillSource 同 sessionSearch 的注入模式：工具无状态，
-// 目录数据经接线注入（谁在跑这轮，谁白名单里的技能可读）。
-var skillMu sync.Mutex
-var skillSource SkillSourceFn
-
-// SetSkillSource 注入技能目录实现（server/内核装配时调用）。返回先前
-// 的实现（dispatch 子语境临时切换后恢复主语境目录用）。
-func (r *Registry) SetSkillSource(fn SkillSourceFn) SkillSourceFn {
-	skillMu.Lock()
-	prev := skillSource
-	skillSource = fn
-	skillMu.Unlock()
-	return prev
-}
-
-// GetSkillSource 读当前目录（快照/恢复用）。
-func GetSkillSource() SkillSourceFn {
-	skillMu.Lock()
-	defer skillMu.Unlock()
-	return skillSource
-}
 
 // readSkillDef 返回 read_skill 的注册声明。
 func readSkillDef(r *Registry) *Def {
@@ -64,7 +44,7 @@ func readSkillDef(r *Registry) *Def {
 			if err := json.Unmarshal(args, &p); err != nil {
 				return "", fmt.Errorf("参数解析失败: %w", err)
 			}
-			src := GetSkillSource()
+			src := skillSourceFrom(ctx)
 			if src == nil {
 				return "错误: 当前会话没有技能目录（Agent 未配置技能）。", nil
 			}
