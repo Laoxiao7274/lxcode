@@ -540,6 +540,16 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig, ac *sessiondata.A
 			var partial *llm.Message
 			if res != nil {
 				s.append(res.Message)
+				// 这条 assistant 消息可能已经声明了工具调用，而流在这里断了——
+				// 那些调用永远不会有执行结果。补上配对结果，否则历史里留下没有
+				// 回应的喊话：严格端点会 400，压缩的切点也会永久卡在它之前。
+				if len(res.Message.ToolCalls) > 0 {
+					skipNote := skippedCancelNote
+					if !aborted {
+						skipNote = skippedFailureNote
+					}
+					s.sinkSkippedToolResults(s.append, res.Message.ToolCalls, "", skipNote)
+				}
 				m := res.Message
 				partial = &m
 			}
@@ -675,8 +685,11 @@ func (s *Session) streamRound(ctx context.Context, workDir, effort string, ac *s
 func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChanges *[]FileChange, ac *sessiondata.AgentContext, dispatchID string, sink func(llm.Message)) bool {
 	policy := tools.ApprovalFrom(ctx)
 	allowed := toolSet(agentToolsOf(ac))
-	for _, tc := range calls {
+	for i, tc := range calls {
 		if ctx.Err() != nil {
+			// 取消：本批剩下的调用都不会执行了，但它们的声明已经进了历史——
+			// 补上配对结果再走（见 sinkSkippedToolResults）
+			s.sinkSkippedToolResults(sink, calls[i:], dispatchID, skippedCancelNote)
 			return false
 		}
 		// 白名单防御：清单外的工具拒绝（ac 非 nil 才有白名单语义）。
@@ -707,6 +720,8 @@ func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChange
 			}
 			allow, ok := s.awaitConfirm(ctx, req)
 			if !ok {
+				// 等待确认期间被取消：本调用与它后面的调用都没执行
+				s.sinkSkippedToolResults(sink, calls[i:], dispatchID, skippedCancelNote)
 				return false // 取消
 			}
 			if !allow {
@@ -754,6 +769,30 @@ func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChange
 		s.emit(ToolResultEvent{ID: tc.ID, Name: tc.Function.Name, Content: result, DispatchID: dispatchID})
 	}
 	return true
+}
+
+// 未执行调用的合成结果文案（取消与流式失败两条路径的口径）。写成常量是为了
+// 单测能按语义断言，而不是按某处拼出来的字符串。
+const (
+	skippedCancelNote  = "已取消，未执行——用户中断了这次生成。需要时请重新发起该调用。"
+	skippedFailureNote = "本轮生成失败，该调用未执行。需要时请重新发起。"
+)
+
+// sinkSkippedToolResults 给「不会执行」的调用补上合成结果。
+//
+// 为什么必须补：历史里 assistant 声明的每个 tool_call 都要有配对的 tool 结果。
+// 缺配对不只是"不好看"——严格端点会直接 400 拒收整轮（assistant 的 tool_calls
+// 必须有配对结果），而且 AnalyzeToolPairing 的游标在缺配对处之后再不平衡，
+// 压缩的切点会永久卡在它之前：那个会话从此再也压不动，上下文一路涨到撞窗口。
+// 取消（用户点停止）与流式失败两条路径共用这一份补齐逻辑——理由与「工具被拒绝
+// 也要回填结果」完全相同（见上面白名单/strict/用户拒绝三处的同款写法）。
+func (s *Session) sinkSkippedToolResults(sink func(llm.Message), calls []llm.ToolCall, dispatchID, note string) {
+	for _, tc := range calls {
+		sink(llm.Message{Role: "tool", ToolCallID: tc.ID, Content: note})
+		s.emit(ToolResultEvent{
+			ID: tc.ID, Name: tc.Function.Name, Content: note, IsError: true, DispatchID: dispatchID,
+		})
+	}
 }
 
 // collectFileChange 从 edit/write_file 调用提取改动摘要（同文件多次改动

@@ -373,6 +373,191 @@ func TestCancelPreservesPartial(t *testing.T) {
 	}
 }
 
+// ---------- 取消/失败必须补齐工具配对 ----------
+//
+// 缺配对不是"不好看"：严格端点会 400 拒收整轮，而且压缩的切点会永久卡在缺配对
+// 处之前（那个会话再也压不动）。所以取消与流式失败两条路径都要给未执行的调用
+// 补上合成结果。
+
+// twoToolCallResult 造一条声明两个工具调用的 assistant 回合（取消补齐测试用）。
+func twoToolCallResult(name1, args1, name2, args2 string) []llm.StreamEvent {
+	var a, b llm.ToolCall
+	a.ID, a.Function.Name, a.Function.Arguments = "call-a", name1, args1
+	b.ID, b.Function.Name, b.Function.Arguments = "call-b", name2, args2
+	calls := []llm.ToolCall{a, b}
+	return []llm.StreamEvent{
+		{Type: llm.EventToolCall, ToolCall: a},
+		{Type: llm.EventToolCall, ToolCall: b},
+		{Type: llm.EventDone, Result: &llm.ChatResult{
+			Message:      llm.Message{Role: "assistant", Content: "我读两个文件", ToolCalls: calls},
+			FinishReason: llm.FinishToolCalls,
+		}},
+	}
+}
+
+// toolResultsByID 把历史里的 tool 结果按调用 id 收起来（断言用）。
+func toolResultsByID(msgs []llm.Message) map[string]string {
+	got := make(map[string]string)
+	for _, m := range msgs {
+		if m.Role == "tool" {
+			got[m.ToolCallID] = m.Content
+		}
+	}
+	return got
+}
+
+// TestCancelInToolBatchFillsResults：一批工具跑到一半取消——没执行的调用也必须
+// 拿到结果（否则历史里留下没有回应的喊话）。
+func TestCancelInToolBatchFillsResults(t *testing.T) {
+	s, reg := newTestSession(t)
+	bindDefault(t, reg)
+	dir := t.TempDir()
+	p1 := filepath.Join(dir, "a.txt")
+	p2 := filepath.Join(dir, "b.txt")
+	_ = os.WriteFile(p1, []byte("内容A"), 0o644)
+	_ = os.WriteFile(p2, []byte("内容B"), 0o644)
+
+	s.stream = (&fakeStream{script: [][]llm.StreamEvent{
+		twoToolCallResult("read_file", `{"path":`+jsonQuote(p1)+`}`, "read_file", `{"path":`+jsonQuote(p2)+`}`),
+	}}).stream
+
+	// 第一个工具的结果一出来就取消：第二个调用的执行位会发现 ctx 已断。
+	// 这条路径同时验证「在 emit 回调里取消会话」不会死锁（emit 在锁外调用）。
+	s.emit = func(ev Event) {
+		if _, ok := ev.(ToolResultEvent); ok {
+			s.Cancel()
+		}
+	}
+
+	if err := s.Send("读两个文件"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return !s.Busy() })
+
+	msgs := s.History().Messages
+	if p := AnalyzeToolPairing(msgs); len(p.Unpaired) != 0 {
+		t.Fatalf("取消后不应留下未配对的调用: %v（历史 %+v）", p.Unpaired, msgs)
+	}
+	got := toolResultsByID(msgs)
+	if len(got) != 2 {
+		t.Fatalf("两个调用都应有结果: %+v（历史 %+v）", got, msgs)
+	}
+	if !strings.Contains(got["call-a"], "内容A") {
+		t.Fatalf("已执行的调用应保留真实结果: %q", got["call-a"])
+	}
+	if !strings.Contains(got["call-b"], "取消") {
+		t.Fatalf("未执行的调用应有取消说明: %q", got["call-b"])
+	}
+}
+
+// TestCancelWhileConfirmPendingFillsResults：确认门等待期间取消——该调用与它
+// 后面的调用都没执行，必须都补上结果（这是最容易踩的一条：用户在确认框前点了停止）。
+func TestCancelWhileConfirmPendingFillsResults(t *testing.T) {
+	s, reg := newTestSession(t)
+	bindDefault(t, reg)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "exists.txt")
+	_ = os.WriteFile(path, []byte("旧内容"), 0o644)
+
+	s.stream = (&fakeStream{script: [][]llm.StreamEvent{
+		toolCallResult("write_file", `{"path":`+jsonQuote(path)+`,"content":"新内容"}`),
+	}}).stream
+
+	var mu sync.Mutex
+	var pending *ConfirmRequest
+	s.emit = func(ev Event) {
+		if e, ok := ev.(ConfirmRequestEvent); ok {
+			mu.Lock()
+			pending = e.Request
+			mu.Unlock()
+		}
+	}
+
+	if err := s.Send("覆盖那个文件"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return pending != nil
+	})
+	s.Cancel()
+	waitFor(t, func() bool { return !s.Busy() })
+
+	msgs := s.History().Messages
+	if p := AnalyzeToolPairing(msgs); len(p.Unpaired) != 0 {
+		t.Fatalf("确认门取消后不应留下未配对调用: %v（历史 %+v）", p.Unpaired, msgs)
+	}
+	if got := toolResultsByID(msgs); !strings.Contains(got["call-1"], "取消") {
+		t.Fatalf("被取消的调用应有取消说明: %+v", got)
+	}
+	// 工具确实没执行
+	if data, _ := os.ReadFile(path); string(data) != "旧内容" {
+		t.Fatalf("取消后不应执行写入: %q", data)
+	}
+}
+
+// TestStreamFailureFillsToolResults：流式失败（非用户取消）时，已经声明的工具
+// 调用同样不能悬空——失败路径与取消路径共用同一份补齐逻辑。
+func TestStreamFailureFillsToolResults(t *testing.T) {
+	s, reg := newTestSession(t)
+	bindDefault(t, reg)
+
+	var tc llm.ToolCall
+	tc.ID, tc.Function.Name, tc.Function.Arguments = "call-x", "read_file", `{"path":"x"}`
+	s.stream = func(ctx context.Context, m config.ModelConfig, msgs []llm.Message, opts []llm.Option) (<-chan llm.StreamEvent, error) {
+		ch := make(chan llm.StreamEvent, 2)
+		ch <- llm.StreamEvent{Type: llm.EventToolCall, ToolCall: tc}
+		// 端点报错，但已生成的调用声明随 Result 带回（llm.emitFinal 的中断契约）
+		ch <- llm.StreamEvent{Type: llm.EventError, Err: errors.New("端点 500"),
+			Result: &llm.ChatResult{Message: llm.Message{
+				Role: "assistant", Content: "我先看一下", ToolCalls: []llm.ToolCall{tc},
+			}}}
+		close(ch)
+		return ch, nil
+	}
+
+	if err := s.Send("读文件"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return !s.Busy() })
+
+	msgs := s.History().Messages
+	if p := AnalyzeToolPairing(msgs); len(p.Unpaired) != 0 {
+		t.Fatalf("流式失败后不应留下未配对调用: %v（历史 %+v）", p.Unpaired, msgs)
+	}
+	if got := toolResultsByID(msgs); !strings.Contains(got["call-x"], "失败") {
+		t.Fatalf("失败路径的合成结果应说明生成失败: %+v", got)
+	}
+}
+
+// TestPairingRepairUnfreezesCompaction 钉住"一次取消锁死压缩"这件事本身：缺配对的
+// 调用落在历史中间时，可压区间被永久卡在它之前；补齐配对后区间就能覆盖它。
+// （既有的 TestSelectCompactRangeNothingWhenTooShort 只覆盖"未配对调用在结尾"。）
+func TestPairingRepairUnfreezesCompaction(t *testing.T) {
+	var call llm.ToolCall
+	call.ID, call.Function.Name = "c1", "read_file"
+	dangling := []llm.Message{
+		{Role: "user", Content: "第一段"},
+		{Role: "assistant", Content: "我先看一下", ToolCalls: []llm.ToolCall{call}},
+		{Role: "user", Content: "第二段"},
+		{Role: "assistant", Content: "回复"},
+	}
+	_, endBad, okBad := selectCompactRange(dangling, 1)
+	if !okBad || endBad != 0 {
+		t.Fatalf("缺配对时切点应退到调用之前（只能压 1 条）: ok=%v end=%d", okBad, endBad)
+	}
+	repaired := []llm.Message{
+		dangling[0], dangling[1],
+		{Role: "tool", ToolCallID: "c1", Content: skippedCancelNote},
+		dangling[2], dangling[3],
+	}
+	_, endGood, okGood := selectCompactRange(repaired, 1)
+	if !okGood || endGood < 2 {
+		t.Fatalf("补齐配对后区间应能覆盖该调用: ok=%v end=%d", okGood, endGood)
+	}
+}
+
 // ---------- todo ----------
 
 func TestTodoSinkWired(t *testing.T) {
