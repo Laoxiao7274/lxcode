@@ -117,7 +117,7 @@ func (s *Session) runDispatch(ctx context.Context, call tools.DispatchCall) tool
 // （历史在库里，接着跑）；否则新开一个（自己的行 + 自己的历史）。
 func (s *Session) openChildSession(call tools.DispatchCall, ac *sessiondata.AgentContext) (*Session, string, error) {
 	s.mu.Lock()
-	st, parentID, stream := s.st, s.id, s.stream
+	st, parentID, stream, workDir := s.st, s.id, s.stream, s.workDir
 	s.mu.Unlock()
 	child := New(s.reg, s.tools, s.emit)
 	// 子会话压缩时保护历史第 0 条 = 派发的那条任务说明书（见 Session.protectHead）：
@@ -132,6 +132,9 @@ func (s *Session) openChildSession(call tools.DispatchCall, ac *sessiondata.Agen
 	// 无存储（纯内存模式/未挂 store 的调用方）：退化成内存子会话——它仍是一个
 	// 独立会话（自己的历史、自己的压缩），只是不落库、不能续跑。生产永远有存储。
 	if st == nil {
+		if err := child.SetWorkDir(workDir); err != nil {
+			return nil, "", err
+		}
 		return child, "", nil
 	}
 	childID := call.Session
@@ -143,6 +146,9 @@ func (s *Session) openChildSession(call tools.DispatchCall, ac *sessiondata.Agen
 		childID = id
 	}
 	if err := child.AttachTo(st, childID); err != nil {
+		return nil, "", err
+	}
+	if err := child.SetWorkDir(workDir); err != nil {
 		return nil, "", err
 	}
 	return child, childID, nil

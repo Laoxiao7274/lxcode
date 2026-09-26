@@ -41,6 +41,8 @@ app.whenReady().then(async () => {
       topbar: box('.topbar'),
       sidebar: box('.sidebar'),
       main: box('.main'),
+      workspaceTabs: box('.workspace-tab-strip'),
+      sessionTabs: box('.session-tab-strip'),
       input: box('textarea'),
     };
   })()`);
@@ -64,6 +66,8 @@ app.whenReady().then(async () => {
       assert.ok(result.app.height >= bounds.height - 3, `${name}: 应用应填满窗口高度`);
       assert.ok(result.topbar && result.topbar.height >= 40, `${name}: 顶栏应存在`);
       assert.ok(result.main && result.main.width > 200 && result.main.height > 200, `${name}: 主区应可见`);
+      assert.ok(result.workspaceTabs?.width > 0 && result.sessionTabs?.width > 0, `${name}: 工作区与会话标签区都应可见`);
+      assert.ok(result.sessionTabs.x >= result.workspaceTabs.right, `${name}: 两类标签区不得重叠`);
       assert.ok(result.input && result.input.height > 0 && result.input.bottom <= bounds.bottom + 1, `${name}: 输入框应在窗口内`);
       assert.ok(result.main.right <= bounds.right + 1, `${name}: 主区不应水平溢出`);
       assert.equal(result.sidebar ? result.sidebar.display === 'none' : true, width <= 768, `${name}: 侧栏响应式`);
@@ -140,6 +144,33 @@ app.whenReady().then(async () => {
     log("sidebar-scoped", JSON.stringify(sidebarScoped));
     assert.equal(sidebarScoped.active, 1, "sidebar: 点项目行后应恰好一个范围选中");
     assert.ok(!sidebarScoped.looseActive, "sidebar: 选中项目后「未分组」不再选中");
+
+    const releaseMenu = await win.webContents.executeJavaScript(`(() => {
+      document.querySelector(".session-item .session-more")?.click();
+      return new Promise((resolve) => setTimeout(() => {
+        const menu = document.querySelector(".session-menu");
+        const action = [...(menu?.querySelectorAll('[role="menuitem"]') ?? [])].find((item) => item.textContent.includes("释放工作区"));
+        resolve({ menu: !!menu, action: !!action, label: action?.textContent.trim() ?? "" });
+      }, 100));
+    })()`);
+    log("worktree-release-menu", JSON.stringify(releaseMenu));
+    assert.ok(releaseMenu.menu && releaseMenu.action, "sidebar: 项目会话菜单应提供释放工作区操作");
+    await win.webContents.executeJavaScript(`(() => {
+      [...document.querySelectorAll('.session-menu [role="menuitem"]')].find((item) => item.textContent.includes("释放工作区"))?.click();
+    })()`);
+    const releaseDialog = await win.webContents.executeJavaScript(`(() => new Promise((resolve) => setTimeout(() => {
+      const dialog = document.querySelector('[role="alertdialog"][aria-label="释放工作区"]');
+      resolve({
+        open: !!dialog,
+        title: dialog?.querySelector(".proj-add-title")?.textContent ?? "",
+        explainsBranch: dialog?.textContent.includes("Git 分支会保留") ?? false,
+        warnsIgnored: dialog?.textContent.includes("忽略文件") ?? false,
+      });
+    }, 100)))()`);
+    log("worktree-release-dialog", JSON.stringify(releaseDialog));
+    assert.ok(releaseDialog.open && releaseDialog.explainsBranch && releaseDialog.warnsIgnored, "sidebar: 释放确认应解释保留分支与目录删除范围");
+    await win.webContents.executeJavaScript(`document.querySelector(".session-release .proj-add-cancel")?.click()`);
+    assert.equal(await win.webContents.executeJavaScript(`!!document.querySelector('[role="alertdialog"][aria-label="释放工作区"]')`), false, "sidebar: 取消应关闭释放确认且不执行操作");
 
     // 再点同一个项目行：不允许取消（仍是该项目选中）
     const sidebarAgain = await win.webContents.executeJavaScript(`(() => {
@@ -481,6 +512,9 @@ app.whenReady().then(async () => {
         cards: document.querySelectorAll(".ag-card").length,
         main: !!document.querySelector(".ag-card.main"),
         navOn: !!document.querySelector(".nav-item.on"),
+        workspaceTabs: [...document.querySelectorAll(".workspace-tab")].map((tab) => tab.getAttribute("data-workspace-tab")),
+        workspaceLabels: [...document.querySelectorAll(".workspace-tab .tab-title")].map((title) => title.textContent.trim()),
+        sessionTabs: document.querySelectorAll('[data-cg="tab"]').length,
       };
     })()`);
     log("agents-roster", JSON.stringify(roster));
@@ -489,6 +523,9 @@ app.whenReady().then(async () => {
     assert.ok(roster.cards >= 5, "agents: 演示名单应有至少 5 张卡");
     assert.ok(roster.main, "agents: 主 Agent 卡应存在");
     assert.ok(roster.navOn, "agents: 侧栏导航应高亮");
+    assert.ok(roster.workspaceTabs.includes("chat") && roster.workspaceTabs.includes("agents"), "agents: 页面导航应进入独立工作区标签");
+    assert.deepEqual(roster.workspaceLabels, ["聊天", "Agent"], "agents: 工作区标签应显示页面名，不应显示新会话");
+    assert.ok(roster.sessionTabs > 0, "agents: 会话标签区应与工作区标签区并存");
     await win.webContents.executeJavaScript(`(() => {
       const btn = document.querySelector('[data-ag="new"]');
       if (!btn) throw new Error("组装入口缺失");
@@ -566,6 +603,212 @@ app.whenReady().then(async () => {
     );
     assert.ok(backToRoster, "agents: 取消应回到名单");
 
+    // 从 Agents 视图点击顶部另一个会话标签，应恢复会话并返回聊天视图。
+    const tabSwitch = await win.webContents.executeJavaScript(`(() => {
+      const tab = document.querySelector('.tab[data-cg="tab"]:not(.on) .tab-main');
+      if (!tab) throw new Error("没有可切换的非当前会话标签");
+      tab.click();
+      return new Promise((res) => setTimeout(() => res({
+        chat: !!document.querySelector('[data-workspace-view="chat"]:not([hidden]) .thread-scroll'),
+        agents: !!document.querySelector('[data-workspace-view="agents"]:not([hidden]) .ag-page'),
+        activeTab: document.querySelector('.tab[data-cg="tab"].on .tab-title')?.textContent ?? "",
+      }), 100));
+    })()`);
+    log("agents-session-tab-switch", JSON.stringify(tabSwitch));
+    assert.ok(tabSwitch.chat && !tabSwitch.agents, `agents: 点击会话标签应返回聊天视图（${JSON.stringify(tabSwitch)}）`);
+    await win.webContents.executeJavaScript(`document.querySelector('[data-nav="agents"]').click()`);
+
+    // Git 工作台：入口 → 项目仓库 → 暂存/模拟提交 → 分支与工作树 → 移动布局
+    await win.webContents.executeJavaScript(`document.querySelector('[data-nav="git"]').click()`);
+    await new Promise((r) => setTimeout(r, 120));
+    const gitInitial = await win.webContents.executeJavaScript(`(() => ({
+      page: !!document.querySelector('[data-git-page]'),
+      navOn: !!document.querySelector('.nav-item.on[data-nav="git"]'),
+      demo: document.querySelector('.git-demo-banner')?.textContent.includes('不会执行 Git 命令'),
+      projectPicker: !!document.querySelector('.git-project-select .fd-trigger'),
+      files: document.querySelectorAll('.git-file-row').length,
+      diff: !!document.querySelector('.git-diff-content'),
+      workspaceLabels: [...document.querySelectorAll('.workspace-tab .tab-title')].map((title) => title.textContent.trim()),
+    }))()`);
+    log("git-workbench-initial", JSON.stringify(gitInitial));
+    assert.ok(gitInitial.page && gitInitial.navOn, "git: 导航应打开并高亮工作台");
+    assert.ok(gitInitial.workspaceLabels.includes("Git") && !gitInitial.workspaceLabels.some((label) => label.includes("新会话") || label.includes("新对话")), "git: 工作区标签应显示页面名，实际标签: " + JSON.stringify(gitInitial.workspaceLabels));
+    assert.ok(gitInitial.demo, "git: 页面应声明原型数据不会执行真实命令");
+    assert.ok(gitInitial.projectPicker && gitInitial.files >= 3 && gitInitial.diff, "git: 项目选择器、变更与 diff 应可见");
+
+    await win.webContents.executeJavaScript(`(() => {
+      const stage = document.querySelector('.git-stage-toggle[aria-label^="暂存"]');
+      if (!stage) throw new Error("未暂存文件的暂存按钮缺失");
+      stage.click();
+    })()`);
+    await new Promise((r) => setTimeout(r, 70));
+    await win.webContents.executeJavaScript(`(() => {
+      const input = document.querySelector('.git-commit-input');
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+      setter.call(input, 'Prototype commit smoke');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+    await new Promise((r) => setTimeout(r, 70));
+    await win.webContents.executeJavaScript(`document.querySelector('.git-commit-button').click()`);
+    await new Promise((r) => setTimeout(r, 100));
+    const gitCommitted = await win.webContents.executeJavaScript(`(() => ({
+      remaining: document.querySelectorAll('.git-file-row').length,
+      commitEnabled: !document.querySelector('.git-commit-button')?.disabled,
+      messageCleared: document.querySelector('.git-commit-input')?.value === '',
+    }))()`);
+    log("git-workbench-commit", JSON.stringify(gitCommitted));
+    assert.strictEqual(gitCommitted.remaining, 1, "git: 模拟提交只应移除已暂存文件");
+    assert.ok(gitCommitted.messageCleared, "git: 成功模拟提交后应清空说明");
+    assert.ok(!gitCommitted.commitEnabled, "git: 没有已暂存文件时提交按钮应禁用");
+
+    await win.webContents.executeJavaScript(`document.querySelector('[data-git-tab="history"]').click()`);
+    await new Promise((r) => setTimeout(r, 70));
+    const gitHistory = await win.webContents.executeJavaScript(`(() => ({
+      count: document.querySelectorAll('.git-history-item').length,
+      first: document.querySelector('.git-history-item strong')?.textContent,
+    }))()`);
+    log("git-workbench-history", JSON.stringify(gitHistory));
+    assert.strictEqual(gitHistory.count, 4, "git: 模拟提交应增加一条历史记录");
+    assert.strictEqual(gitHistory.first, "Prototype commit smoke", "git: 新提交应置顶");
+
+    await win.webContents.executeJavaScript(`document.querySelector('[data-git-tab="branches"]').click()`);
+    await new Promise((r) => setTimeout(r, 50));
+    const gitSessionBranches = await win.webContents.executeJavaScript(`(() => {
+      const rows = [...document.querySelectorAll('.git-branch-session-row')];
+      const row = rows[0];
+      return {
+        count: rows.length,
+        id: row?.getAttribute('data-git-session-branch'),
+        name: row?.querySelector('.git-branch-name')?.textContent,
+        title: row?.querySelector('.git-branch-session-title')?.textContent,
+        openId: row?.querySelector('.git-branch-open')?.getAttribute('data-git-branch-session'),
+      };
+    })()`);
+    log("git-session-branch-map", JSON.stringify(gitSessionBranches));
+    assert.ok(
+      gitSessionBranches.count >= 1 &&
+      gitSessionBranches.name === `lxcode/session-${gitSessionBranches.id}` &&
+      gitSessionBranches.title?.includes("会话：") &&
+      gitSessionBranches.openId === gitSessionBranches.id,
+      "git: 会话分支应显示完整会话归属并复用同一 ID 跳转",
+    );
+    await win.webContents.executeJavaScript(`document.querySelector('.git-branch-open').click()`);
+    await new Promise((r) => setTimeout(r, 100));
+    const branchSessionOpened = await win.webContents.executeJavaScript(`!!document.querySelector('[data-workspace-view="chat"]:not([hidden]) .thread-scroll') && !document.querySelector('[data-workspace-view="git"]:not([hidden])')`);
+    assert.ok(branchSessionOpened, "git: 会话分支入口应打开对应聊天会话");
+    await win.webContents.executeJavaScript(`document.querySelector('[data-nav="git"]').click()`);
+    await new Promise((r) => setTimeout(r, 100));
+    await win.webContents.executeJavaScript(`document.querySelector('[data-git-tab="branches"]').click()`);
+    await new Promise((r) => setTimeout(r, 50));
+    await win.webContents.executeJavaScript(`(() => {
+      const branch = [...document.querySelectorAll('.git-branch-row')].find((row) => row.textContent.includes('feature/git-workbench'));
+      if (!branch) throw new Error("演示分支缺失");
+      branch.click();
+    })()`);
+    await new Promise((r) => setTimeout(r, 70));
+    const gitBranch = await win.webContents.executeJavaScript(`document.querySelector('.git-current-branch strong')?.textContent`);
+    assert.strictEqual(gitBranch, "feature/git-workbench", "git: 普通分支仍可更新原型当前分支");
+    win.setContentSize(600, 800);
+    await new Promise((r) => setTimeout(r, 80));
+    const gitBranchMobile = await win.webContents.executeJavaScript(`(() => ({
+      viewport: document.documentElement.clientWidth,
+      scrollWidth: document.documentElement.scrollWidth,
+      rows: [...document.querySelectorAll('.git-branch-session-row')].length,
+    }))()`);
+    log("git-branch-mobile", JSON.stringify(gitBranchMobile));
+    assert.ok(gitBranchMobile.rows > 0 && gitBranchMobile.scrollWidth <= gitBranchMobile.viewport + 1, "git: 窄屏分支映射不应横向溢出");
+    win.setContentSize(1440, 900);
+    await new Promise((r) => setTimeout(r, 80));
+
+    await win.webContents.executeJavaScript(`document.querySelector('[data-git-tab="worktrees"]').click()`);
+    await new Promise((r) => setTimeout(r, 70));
+    const gitWorktrees = await win.webContents.executeJavaScript(`!!document.querySelector('[data-git="worktrees"]')`);
+    assert.ok(gitWorktrees, "git: 应可打开会话工作树视图");
+    const worktreeLink = await win.webContents.executeJavaScript(`!!document.querySelector('.git-worktree-foot button')`);
+    assert.ok(worktreeLink, "git: 会话工作树应提供打开会话入口");
+    await win.webContents.executeJavaScript(`document.querySelector('.git-worktree-foot button').click()`);
+    await new Promise((r) => setTimeout(r, 100));
+    const sessionOpened = await win.webContents.executeJavaScript(`!!document.querySelector('[data-workspace-view="chat"]:not([hidden]) .thread-scroll') && !document.querySelector('[data-workspace-view="git"]:not([hidden])')`);
+    assert.ok(sessionOpened, "git: 打开工作树会话应返回聊天视图");
+    await win.webContents.executeJavaScript(`document.querySelector('[data-nav="git"]').click()`);
+    await new Promise((r) => setTimeout(r, 100));
+
+    await win.webContents.executeJavaScript(`document.querySelector('.git-project-select .fd-trigger').click()`);
+    await new Promise((r) => setTimeout(r, 70));
+    await win.webContents.executeJavaScript(`(() => {
+      const option = [...document.querySelectorAll('.git-project-select .fd-item')].find((item) => item.textContent.includes('local-myt-agent'));
+      if (!option) throw new Error("第二个 Git 项目选项缺失");
+      option.click();
+    })()`);
+    await new Promise((r) => setTimeout(r, 120));
+    const gitProjectChanged = await win.webContents.executeJavaScript(`(() => ({
+      label: document.querySelector('.git-project-select .fd-trigger')?.textContent.trim(),
+      reset: document.querySelector('[data-git-tab="changes"]')?.getAttribute('aria-pressed') === 'true',
+    }))()`);
+    assert.strictEqual(gitProjectChanged.label, "local-myt-agent", "git: 仓库选择应切到所选项目");
+    assert.ok(gitProjectChanged.reset, "git: 切换仓库应重置本地原型视图状态");
+
+    // 工作区页签保活：Git 内部视图与项目选择在切到聊天后仍应保留。
+    await win.webContents.executeJavaScript(`document.querySelector('[data-git-tab="branches"]').click()`);
+    await win.webContents.executeJavaScript(`document.querySelector('[data-workspace-tab="chat"] .workspace-tab-main').click()`);
+    await new Promise((r) => setTimeout(r, 60));
+    const chatWorkspaceVisible = await win.webContents.executeJavaScript(`!!document.querySelector('[data-workspace-view="chat"]:not([hidden]) .thread-scroll')`);
+    assert.ok(chatWorkspaceVisible, "workspace: 固定聊天标签应切回聊天面板");
+    await win.webContents.executeJavaScript(`document.querySelector('[data-workspace-tab="git"] .workspace-tab-main').click()`);
+    await new Promise((r) => setTimeout(r, 60));
+    const gitWorkspaceRetained = await win.webContents.executeJavaScript(`(() => ({
+      active: document.querySelector('[data-workspace-view]:not([hidden])')?.getAttribute('data-workspace-view'),
+      tabPanel: document.querySelector('[data-git-tab-panel]')?.getAttribute('data-git-tab-panel'),
+      project: document.querySelector('.git-project-select .fd-trigger')?.textContent.trim(),
+    }))()`);
+    assert.strictEqual(gitWorkspaceRetained.active, "git", "workspace: 点击 Git 工作区标签应恢复页面");
+    assert.strictEqual(gitWorkspaceRetained.tabPanel, "branches", "workspace: Git 内部页签切换状态应保留");
+    assert.strictEqual(gitWorkspaceRetained.project, "local-myt-agent", "workspace: 项目选择状态应保留");
+
+    // 关闭当前 Git 标签应回退到最近的工作区 Agent，而不是关闭会话。
+    await win.webContents.executeJavaScript(`document.querySelector('[data-workspace-tab="agents"] .workspace-tab-main').click()`);
+    await win.webContents.executeJavaScript(`document.querySelector('[data-workspace-tab="git"] .workspace-tab-main').click()`);
+    const beforeWorkspaceClose = await win.webContents.executeJavaScript(`(() => ({
+      sessions: document.querySelector('.tabbar')?.getAttribute('data-tabs'),
+      sessionTitle: document.querySelector('.tab[data-cg="tab"].on .tab-title')?.textContent,
+    }))()`);
+    await win.webContents.executeJavaScript(`document.querySelector('[data-workspace-tab="git"] .tab-close').click()`);
+    await new Promise((r) => setTimeout(r, 60));
+    const afterWorkspaceClose = await win.webContents.executeJavaScript(`(() => ({
+      activeTab: document.querySelector('.workspace-tab.on')?.getAttribute('data-workspace-tab'),
+      activeView: document.querySelector('[data-workspace-view]:not([hidden])')?.getAttribute('data-workspace-view'),
+      gitTab: !!document.querySelector('[data-workspace-tab="git"]'),
+      agentGrid: !!document.querySelector('[data-workspace-view="agents"]:not([hidden]) .ag-grid'),
+      sessions: document.querySelector('.tabbar')?.getAttribute('data-tabs'),
+      sessionTitle: document.querySelector('.tab[data-cg="tab"].on .tab-title')?.textContent,
+      focusTab: document.activeElement?.closest('[data-workspace-tab]')?.getAttribute('data-workspace-tab'),
+    }))()`);
+    assert.strictEqual(afterWorkspaceClose.activeTab, "agents", "workspace: 关闭当前页应回到最近的工作区标签");
+    assert.strictEqual(afterWorkspaceClose.activeView, "agents", "workspace: 回退页面应实际可见");
+    assert.strictEqual(afterWorkspaceClose.focusTab, "agents", "workspace: 关闭标签后键盘焦点应回到回退标签");
+    assert.ok(!afterWorkspaceClose.gitTab && afterWorkspaceClose.agentGrid, "workspace: Git 标签关闭、Agent 标签仍打开");
+    assert.strictEqual(afterWorkspaceClose.sessions, beforeWorkspaceClose.sessions, "workspace: 关闭工作区页不得关闭会话标签");
+    assert.strictEqual(afterWorkspaceClose.sessionTitle, beforeWorkspaceClose.sessionTitle, "workspace: 关闭工作区页不得切换当前会话");
+
+    await win.webContents.executeJavaScript(`document.querySelector('[data-nav="git"]').click()`);
+    await new Promise((r) => setTimeout(r, 60));
+    const gitReopened = await win.webContents.executeJavaScript(`({
+      page: !!document.querySelector('[data-workspace-view="git"]:not([hidden]) [data-git-page]'),
+      tabCount: document.querySelectorAll('[data-workspace-tab="git"]').length,
+    })`);
+    assert.ok(gitReopened.page && gitReopened.tabCount === 1, "workspace: 侧栏应能重新打开唯一 Git 标签");
+
+    win.setContentSize(600, 800);
+    await new Promise((r) => setTimeout(r, 80));
+    const gitMobile = await win.webContents.executeJavaScript(`(() => ({
+      viewport: document.documentElement.clientWidth,
+      page: document.querySelector('.git-page')?.getBoundingClientRect().width ?? 0,
+      scrollWidth: document.documentElement.scrollWidth,
+    }))()`);
+    log("git-workbench-mobile", JSON.stringify(gitMobile));
+    assert.ok(gitMobile.page > 0 && gitMobile.scrollWidth <= gitMobile.viewport + 1, "git: 600px 布局不应横向溢出");
+    win.setContentSize(1440, 900);
+
     // 目录管理页：导航进入 → 页签与条目卡 → 点卡片开文档弹窗 → 切页签
     await win.webContents.executeJavaScript(`document.querySelector('[data-nav="catalog"]').click()`);
     const cat = await win.webContents.executeJavaScript(`(() => {
@@ -580,12 +823,14 @@ app.whenReady().then(async () => {
         grid: r(".cg-grid"),
         cards: document.querySelectorAll(".cg-card").length,
         navOn: !!document.querySelector('.nav-item.on[data-nav="catalog"]'),
+        workspaceLabels: [...document.querySelectorAll(".workspace-tab .tab-title")].map((title) => title.textContent.trim()),
       };
     })()`);
     log("catalog-page", JSON.stringify(cat));
     assert.ok(cat.page && cat.page.h > 300, "catalog: 目录页应可见");
     assert.ok(cat.cards >= 12, "catalog: 工具页签应有 12 个条目");
     assert.ok(cat.navOn, "catalog: 导航应高亮");
+    assert.ok(cat.workspaceLabels.includes("拓展") && !cat.workspaceLabels.some((label) => label.includes("新会话") || label.includes("新对话")), "catalog: 工作区标签应显示页面名，实际标签: " + JSON.stringify(cat.workspaceLabels));
     // 外部二进制工具缺 command 必须标「未配置」——否则用户勾进 Agent 白名单后
     // 只会从模型那里听到「注册表没有」（用户报告过的原始现象）
     const unconfigured = await win.webContents.executeJavaScript(`(() => {

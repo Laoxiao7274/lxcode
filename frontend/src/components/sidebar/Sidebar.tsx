@@ -19,7 +19,7 @@ export const LOOSE = "";
 export function Sidebar({
   source,
   currentId,
-  busy,
+  busyBySession,
   filter,
   setFilter,
   onOpenSettings,
@@ -28,24 +28,29 @@ export function Sidebar({
   onOpenChat,
   catalogActive,
   onOpenCatalog,
+  gitActive,
+  onOpenGit,
 }: {
   source: AgentSource;
   currentId: string;
-  busy: boolean;
+  busyBySession: Record<string, boolean>;
   /** 对话范围（项目 id / ""=未分组）——App 持有：新对话归属提示与空态标签共用。
    *  用户拍板：**恒有范围**（启动即「未分组」；点项目行切换且不可再点取消——
    *  没有「全部」视图，列表永远只属于一个具体范围）。 */
   filter: string;
   setFilter: (f: string) => void;
   onOpenSettings: () => void;
-  /** Agent 名单视图当前激活（导航项高亮；再点返回对话）。 */
+  /** Agent 工作区标签当前激活（侧栏仅负责聚焦，不负责关闭标签）。 */
   agentsActive: boolean;
   onOpenAgents: () => void;
-  /** 一切回到对话的操作（新对话/恢复会话）都要离开名单视图。 */
+  /** 新对话/恢复会话回到固定的「聊天」工作区标签。 */
   onOpenChat: () => void;
-  /** 拓展视图当前激活（工具/技能/模板/MCP 管理）。 */
+  /** 拓展工作区标签当前激活（工具/技能/模板/MCP 管理）。 */
   catalogActive: boolean;
   onOpenCatalog: () => void;
+  /** Git 项目工作台当前激活。 */
+  gitActive: boolean;
+  onOpenGit: () => void;
 }) {
   const [query, setQuery] = useState("");
   const [menuFor, setMenuFor] = useState<string | null>(null);
@@ -108,9 +113,9 @@ export function Sidebar({
 
   return (
     <aside className="sidebar" ref={sideRef}>
-      {/* 导航项（图标 + 文字，Codex 同款四项）——新对话归属当前选中项目 */}
+      {/* 主导航（图标 + 文字）——新对话归属当前选中项目 */}
       <nav className="nav-list">
-        <button type="button" className="nav-item" onClick={() => { if (!busy) { source.newSession(filter); onOpenChat(); } }}>
+        <button type="button" className="nav-item" onClick={() => { void source.newSession(filter); onOpenChat(); }}>
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M12 20h9" />
             <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
@@ -124,7 +129,7 @@ export function Sidebar({
           data-nav="agents"
           onClick={onOpenAgents}
           title="组装、注册与调度 Agent"
-          aria-pressed={agentsActive}
+          aria-current={agentsActive ? "page" : undefined}
         >
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <rect x="7" y="7" width="10" height="10" rx="2" />
@@ -138,7 +143,7 @@ export function Sidebar({
           data-nav="catalog"
           onClick={onOpenCatalog}
           title="工具、技能、模板与 MCP 的拓展"
-          aria-pressed={catalogActive}
+          aria-current={catalogActive ? "page" : undefined}
         >
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <rect x="3" y="3" width="7" height="7" rx="1" />
@@ -147,6 +152,22 @@ export function Sidebar({
             <rect x="14" y="14" width="7" height="7" rx="1" />
           </svg>
           拓展
+        </button>
+        <button
+          type="button"
+          className={"nav-item" + (gitActive ? " on" : "")}
+          data-nav="git"
+          onClick={onOpenGit}
+          title="项目分支、变更与会话工作树"
+          aria-current={gitActive ? "page" : undefined}
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <circle cx="6" cy="6" r="2" />
+            <circle cx="18" cy="6" r="2" />
+            <circle cx="6" cy="18" r="2" />
+            <path d="M6 8v8M18 8a6 6 0 0 1-6 6H8" />
+          </svg>
+          Git 管理
         </button>
         <button type="button" className="nav-item">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -281,7 +302,7 @@ export function Sidebar({
           key={s.id}
           session={s}
           current={s.id === currentId}
-          busy={busy}
+          busy={Boolean(busyBySession[s.id])}
           renaming={renaming === s.id}
           menuOpen={menuFor === s.id}
           onOpenMenu={setMenuFor}
@@ -289,7 +310,12 @@ export function Sidebar({
           onStartRename={setRenaming}
           onRename={commitRename}
           onArchive={(id) => source.archiveSession(id)}
-          onResume={(id) => { source.resumeSession(id); onOpenChat(); }}
+          onReleaseWorktree={(id) => source.releaseWorktree(id)}
+          onResume={(id) => {
+            setFilter(source.sessions().find((session) => session.id === id)?.workspace ?? LOOSE);
+            void source.resumeSession(id);
+            onOpenChat();
+          }}
           enterRow={enterRow}
         />
       ))}

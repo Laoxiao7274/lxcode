@@ -139,9 +139,9 @@ func newTestServer(t *testing.T, stream testStream) (*Server, *wsTestClient, *co
 		t.Fatal(err)
 	}
 	srv := NewServer(reg)
-	t.Cleanup(srv.Session().Close) // Windows：句柄开着会挡住 TempDir 删除
+	t.Cleanup(srv.CloseSessions) // Windows：句柄开着会挡住 TempDir 删除
 	if stream != nil {
-		srv.Session().SetStream(stream)
+		srv.SetStream(stream)
 	}
 	// 会话存储：SessionOps 用例需要（临时目录，测完即弃）
 	st, err := openStore(t.TempDir())
@@ -181,7 +181,7 @@ func TestServerHello(t *testing.T) {
 		t.Fatalf("ready 载荷不符: %+v", h)
 	}
 
-	resp := client.call(protocol.MethodHello, protocol.HelloParams{Client: "test", Version: "1"})
+	resp := client.call(protocol.MethodHello, protocol.HelloParams{Client: "test", Version: protocol.Version})
 	if resp == nil || resp.Error != nil {
 		t.Fatalf("hello 失败: %+v", resp)
 	}
@@ -190,6 +190,10 @@ func TestServerHello(t *testing.T) {
 	json.Unmarshal(b, &r)
 	if r.Server != "lxcode" || r.Version != protocol.Version {
 		t.Fatalf("hello 结果不符: %+v", r)
+	}
+	resp = client.call(protocol.MethodHello, protocol.HelloParams{Client: "old-client", Version: "1"})
+	if resp == nil || resp.Error == nil || resp.Error.Code != protocol.CodeVersionMismatch {
+		t.Fatalf("旧协议版本应被显式拒绝: %+v", resp)
 	}
 	// model.list
 	resp = client.call(protocol.MethodModelList, nil)
@@ -268,13 +272,12 @@ func TestServerChatFlow(t *testing.T) {
 	if resp == nil || resp.Error != nil {
 		t.Fatalf("chat.send 失败: %+v", resp)
 	}
-	// 等事件序列：userMessage → busy(true) → delta×2 → done → busy(false)
-	// （+ session.changed：首条消息懒建会话行的新广播——条数放宽到 7 容纳）
+	// 等事件序列：userMessage → busy(true) → delta×2 → done → busy(false)。
 	seq := []string{}
-	for i := 0; i < 7; i++ {
+	for i := 0; i < 6; i++ {
 		ev := client.waitEventAny()
 		if ev == nil {
-			t.Fatalf("事件不足（%d/7）: %v", i, seq)
+			t.Fatalf("事件不足（%d/6）: %v", i, seq)
 		}
 		seq = append(seq, ev.Method)
 	}
@@ -567,7 +570,12 @@ func TestServerSessionOps(t *testing.T) {
 		t.Fatalf("session.new 失败: %+v", resp)
 	}
 	if client.waitEvent(protocol.EventSessionChanged) == nil {
-		t.Fatal("应广播 session.changed")
+		t.Fatal("创建会话应广播 session.changed 以刷新列表")
+	}
+	var created protocol.SessionResult
+	b, _ := json.Marshal(resp.Result)
+	if err := json.Unmarshal(b, &created); err != nil || created.SessionID == "" {
+		t.Fatalf("session.new 应返回稳定 session_id: %+v, %v", created, err)
 	}
 
 	// session.list 应有 1 条
@@ -576,7 +584,7 @@ func TestServerSessionOps(t *testing.T) {
 		t.Fatalf("session.list 失败: %+v", resp)
 	}
 	var list []protocol.SessionMeta
-	b, _ := json.Marshal(resp.Result)
+	b, _ = json.Marshal(resp.Result)
 	json.Unmarshal(b, &list)
 	if len(list) != 1 {
 		t.Fatalf("应列出 1 个会话: %+v", list)
@@ -587,9 +595,7 @@ func TestServerSessionOps(t *testing.T) {
 	if resp == nil || resp.Error != nil {
 		t.Fatalf("session.resume 失败: %+v", resp)
 	}
-	if client.waitEvent(protocol.EventSessionChanged) == nil {
-		t.Fatal("resume 应广播 session.changed")
-	}
+	// resume 只切换当前连接焦点，不向其他客户端广播全局焦点变化。
 	// history 恢复
 	resp = client.call(protocol.MethodChatHistory, nil)
 	var hist protocol.ChatHistoryResult

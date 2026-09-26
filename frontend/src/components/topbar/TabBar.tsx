@@ -1,26 +1,44 @@
-// 会话标签条（浏览器式 tab）：最近会话快速切换 + 新建 + 关闭。
-// 顺序语义对齐浏览器：**打开顺序固定**——点标签只切焦点，绝不重排
-//（之前把当前会话强制排到首位，点谁谁跳到最前，与浏览器直觉相悖）。
-// 新会话/从侧栏点进来的会话追加到右侧（像开新标签），容量满丢最老的。
-// 架构对齐（AGENTS.md §2 内核并发）：单活跃会话——tab 是「快速切换的
-// 会话历史」而非并行执行。关闭 = 只从标签条隐藏（会话本体与侧栏不动，
-// 刷新恢复）。
-import { useEffect, useRef, useState } from "react";
+// 顶部标签栏：左侧工作区页面（聊天固定、Agent/拓展/Git 可关闭），右侧会话标签。
+// 会话标签顺序语义对齐浏览器：**打开顺序固定**——点标签只切焦点，绝不重排；
+// 新会话/从侧栏点进来的会话追加到右侧，容量满丢最老的。
+// 每个会话标签是独立并发 Session；切焦点不取消后台轮次。关闭会话标签只隐藏标签，
+// 会话本体仍留在侧栏并在刷新时恢复。
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { gsap } from "gsap";
+import { motionAllowed } from "../../shared/motion";
 import type { AgentSource } from "../../shared/types";
+import type { WorkspacePage, WorkspaceView } from "../../shared/workspace-tabs";
 
 /** 标签条容量：最多同时显示的标签数（超出丢最老的——浏览器同款）。 */
 const TAB_LIMIT = 8;
+const WORKSPACE_LABELS: Record<WorkspacePage, string> = {
+  agents: "Agent",
+  catalog: "拓展",
+  git: "Git",
+};
 
 export function TabBar({
   source,
   currentId,
-  busy,
+  busyBySession,
   onNewChat,
+  onFocusSession,
+  workspaceTabs,
+  activeWorkspaceView,
+  onFocusChat,
+  onFocusWorkspacePage,
+  onCloseWorkspacePage,
 }: {
   source: AgentSource;
   currentId: string;
-  busy: boolean;
+  busyBySession: Record<string, boolean>;
   onNewChat: () => void;
+  onFocusSession: (id: string) => void;
+  workspaceTabs: WorkspacePage[];
+  activeWorkspaceView: WorkspaceView;
+  onFocusChat: () => void;
+  onFocusWorkspacePage: (page: WorkspacePage) => void;
+  onCloseWorkspacePage: (page: WorkspacePage) => WorkspaceView;
 }) {
   const sessions = source.sessions();
   // 打开顺序（标签 id 列表）；closed = 用户关掉的（纯 UI 态，刷新恢复）
@@ -50,34 +68,61 @@ export function TabBar({
 
   // 关闭 = 从标签条隐藏（会话保留；关掉当前会话 → 切到新对话）
   const close = (id: string) => {
-    if (busy) return;
     if (id === currentId) onNewChat();
     setClosed((prev) => new Set(prev).add(id));
   };
 
-  // 注意：即使一个标签都没有也**照常渲染**这条 bar（只留「+」新建钮）——
-  // 空条消失会让下方内容整体上跳 36px，观感像布局崩了。
+  // 工作区的「聊天」固定保留；会话区即使为空也保留「+」按钮，保证标签栏高度稳定。
 
   return (
-    <div className="tabbar" data-tabs={String(tabs.length)}>
-      <div className="tab-strip">
+    <div className="tabbar" data-tabs={String(tabs.length)} data-workspace-tabs={String(workspaceTabs.length + 1)}>
+      <nav className="workspace-tab-strip" aria-label="工作区标签">
+        <div className={"tab workspace-tab" + (activeWorkspaceView === "chat" ? " on" : "")} data-workspace-tab="chat">
+          <button
+            type="button"
+            className="tab-main workspace-tab-main"
+            aria-current={activeWorkspaceView === "chat" ? "page" : undefined}
+            onClick={onFocusChat}
+          >
+            <span className="tab-title">聊天</span>
+          </button>
+        </div>
+        {workspaceTabs.map((page) => (
+          <WorkspacePageTab
+            key={page}
+            page={page}
+            active={activeWorkspaceView === page}
+            onFocus={onFocusWorkspacePage}
+            onClose={onCloseWorkspacePage}
+          />
+        ))}
+      </nav>
+      <span className="tabbar-divider" aria-hidden="true" />
+      <div className="tab-strip session-tab-strip" role="group" aria-label="会话标签">
         {tabs.map(({ id, meta }) => {
           const on = id === currentId;
+          const busy = Boolean(busyBySession[id]);
           const title = meta?.title || "新对话";
           return (
             <div
               key={id}
               className={"tab" + (on ? " on" : "")}
               data-cg="tab"
-              data-busy={on && busy ? "true" : undefined}
+              data-busy={busy ? "true" : undefined}
               title={title}
             >
               <button
                 type="button"
                 className="tab-main"
-                onClick={() => { if (!busy && !on) source.resumeSession(id); }}
+                aria-current={on ? "page" : undefined}
+                aria-label={`${title}${busy ? "（生成中）" : ""}`}
+                onClick={() => {
+                  if (!on) {
+                    onFocusSession(id);
+                  }
+                }}
               >
-                {on && busy && <span className="mset-spinner tab-spinner" aria-hidden />}
+                {busy && <span className="mset-spinner tab-spinner" aria-hidden />}
                 <span className="tab-title">{title}</span>
               </button>
               <button
@@ -100,6 +145,96 @@ export function TabBar({
           </svg>
         </button>
       </div>
+    </div>
+  );
+}
+
+function WorkspacePageTab({
+  page,
+  active,
+  onFocus,
+  onClose,
+}: {
+  page: WorkspacePage;
+  active: boolean;
+  onFocus: (page: WorkspacePage) => void;
+  onClose: (page: WorkspacePage) => WorkspaceView;
+}) {
+  const tabRef = useRef<HTMLDivElement>(null);
+  const closeTweenRef = useRef<gsap.core.Tween | null>(null);
+  const closingRef = useRef(false);
+  const [closing, setClosing] = useState(false);
+  const title = WORKSPACE_LABELS[page];
+
+  useLayoutEffect(() => {
+    const element = tabRef.current;
+    if (!element || !motionAllowed()) return;
+    const context = gsap.context(() => {
+      gsap.fromTo(element, { opacity: 0, y: 5, scale: 0.97 }, {
+        opacity: 1,
+        y: 0,
+        scale: 1,
+        duration: 0.2,
+        ease: "power2.out",
+        clearProps: "transform,opacity",
+      });
+    }, element);
+    return () => { context.revert(); };
+  }, []);
+
+  useEffect(() => {
+    return () => { closeTweenRef.current?.kill(); };
+  }, []);
+
+  const finishClose = () => {
+    const fallback = onClose(page);
+    window.setTimeout(() => {
+      document.querySelector<HTMLButtonElement>(`[data-workspace-tab="${fallback}"] .workspace-tab-main`)?.focus();
+    }, 0);
+  };
+
+  const close = () => {
+    if (closingRef.current) return;
+    closingRef.current = true;
+    setClosing(true);
+    const element = tabRef.current;
+    if (!element || !motionAllowed()) {
+      finishClose();
+      return;
+    }
+    closeTweenRef.current = gsap.to(element, {
+      opacity: 0,
+      y: -4,
+      scale: 0.96,
+      duration: 0.14,
+      ease: "power1.in",
+      onComplete: finishClose,
+    });
+  };
+
+  return (
+    <div ref={tabRef} className={"tab workspace-tab" + (active ? " on" : "")} data-workspace-tab={page}>
+      <button
+        type="button"
+        className="tab-main workspace-tab-main"
+        disabled={closing}
+        aria-current={active ? "page" : undefined}
+        onClick={() => onFocus(page)}
+      >
+        <span className="tab-title">{title}</span>
+      </button>
+      <button
+        type="button"
+        className="tab-close"
+        disabled={closing}
+        onClick={close}
+        aria-label={`关闭工作区标签「${title}」`}
+        title={`关闭${title}工作区标签`}
+      >
+        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true">
+          <path d="M18 6 6 18M6 6l12 12" />
+        </svg>
+      </button>
     </div>
   );
 }

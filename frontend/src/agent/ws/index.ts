@@ -36,6 +36,7 @@ interface PendingCall {
 }
 
 const WS_READY_STATE_OPEN = 1;
+const PROTOCOL_VERSION = "2";
 
 const RECONNECT_MS = 5000;
 const REQUEST_TIMEOUT_MS = 10_000;
@@ -64,9 +65,9 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource 
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   /** 订阅时惰性建连（构造不再触网——测试可先插桩再连接）。 */
   private started = false;
-  /** 首次连接是否已完成「开机即空会话」（用户拍板：打开软件就是空会话，
-   *  不恢复上次对话）。**只做首次**：重连再清一次会把用户正在聊的会话吃掉。 */
+  /** 首次连接是否已为本连接建立焦点 Session；重连恢复原焦点，不清空运行态。 */
   private booted = false;
+  private currentSessionId = "";
 
   constructor(addr = "127.0.0.1:7789") {
     this.addr = addr;
@@ -94,11 +95,15 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource 
 
     ws.onopen = () => {
       // 握手失败则不继续调用；旧连接的初始化链不得串入重连后的连接。
-      this.call("connection.hello", { client: "lxcode-web", version: "1" })
-        .then(async () => {
-          const refresh = async (method: string, apply: (r: unknown) => void) => {
+      this.call("connection.hello", { client: "lxcode-web", version: PROTOCOL_VERSION })
+        .then(async (result) => {
+          const serverVersion = (result as { version?: string } | null)?.version;
+          if (serverVersion !== PROTOCOL_VERSION) {
+            throw new Error(`协议版本不兼容（客户端 ${PROTOCOL_VERSION}，服务端 ${serverVersion ?? "未知"}）`);
+          }
+          const refresh = async (method: string, apply: (r: unknown) => void, params?: unknown) => {
             if (this.ws !== ws) return;
-            try { const r = await this.call(method); if (this.ws === ws) apply(r); }
+            try { const r = await this.call(method, params); if (this.ws === ws) apply(r); }
             catch (e) { if (this.ws === ws) this.opError(`${method}: ${String(e)}`); }
           };
           await refresh("model.list", (r) => this.applyModelList(r));
@@ -108,14 +113,23 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource 
           await refresh("catalog.modules.list", (r) => this.applyAgentModules(r));
           await refresh("catalog.tools.list", (r) => this.applyAgentTools(r));
           await refresh("catalog.mcp.list", (r) => this.applyAgentMcp(r));
-          // 开机即空会话（用户拍板）：首次连接先切到新会话，再拉历史——顺序
-          // 决定不会先闪出上次的对话。后端启动时恢复了最近会话，这里显式开新
-          // 会话把它换掉（空会话不落库：发第一条消息才建行）。
+          // 首次连接开一个空会话；重连则恢复该连接原焦点。所有后续操作都显式带
+          // session_id，因此连接焦点只为兼容旧客户端与首屏 UI 服务。
           if (!this.booted && this.ws === ws) {
             this.booted = true;
-            await refresh("session.new", () => {});
+            try {
+              const result = await this.call("session.new") as { session_id?: string };
+              if (this.ws === ws && result?.session_id) this.focusSession(result.session_id);
+            } catch (e) {
+              if (this.ws === ws) {
+                this.booted = false;
+                this.opError(`新建会话失败: ${String(e)}`);
+              }
+            }
+          } else if (this.ws === ws && this.currentSessionId) {
+            await refresh("session.resume", () => {}, { id: this.currentSessionId });
           }
-          if (this.ws === ws) await this.loadHistory();
+          if (this.ws === ws && this.currentSessionId) await this.loadHistory(this.currentSessionId);
         })
         .catch((e) => { if (this.ws === ws) this.opError(`初始化失败: ${e.message}`); });
     };
@@ -142,7 +156,7 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource 
       this.ws = null;
       // 断连：所有挂起请求立刻失败（不等 10s 超时——后端已死，等是骗人）
       this.rejectAllPending("后端连接已断开");
-      this.emit({ type: "error", message: "后端连接断开", aborted: true });
+      this.opError("后端连接断开，正在重连");
       // 5s 重连
       this.reconnectTimer = setTimeout(() => this.connect(), RECONNECT_MS);
     };
@@ -187,30 +201,34 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource 
   /** 后端事件 → AgentEvent 映射。 */
   private handleEvent(method: string, params: unknown) {
     const p = (params ?? {}) as Record<string, unknown>;
+    const sessionId = String(p.session_id ?? "");
     // dispatch_id 归属（子 Agent 执行的事件——store 挂 dispatch 卡）
     const dispatchId = p.dispatch_id ? String(p.dispatch_id) : undefined;
     switch (method) {
       case "connection.ready":
         this.emit({ type: "ready", server: String(p.server ?? ""), version: String(p.version ?? ""), busy: Boolean(p.busy) });
         break;
-      case "chat.userMessage":
-        // 载荷是 llm.Message 形态（content 键——历史坑：按 text 读永远空）
-        this.emit({ type: "userMessage", text: String(p.content ?? p.text ?? "") });
+      case "chat.userMessage": {
+        // 协议载荷把消息包在 message 对象里；兼容早期扁平形状。
+        const message = (p.message ?? {}) as Record<string, unknown>;
+        this.emit({ type: "userMessage", sessionId, text: String(message.content ?? p.content ?? p.text ?? "") });
         break;
+      }
       case "chat.delta":
-        this.emit({ type: "delta", kind: String(p.kind) as "text" | "reasoning", text: String(p.text ?? ""), dispatchId });
+        this.emit({ type: "delta", sessionId, kind: String(p.kind) as "text" | "reasoning", text: String(p.text ?? ""), dispatchId });
         break;
       case "chat.toolCall":
-        this.emit({ type: "toolCall", id: String(p.id), name: String(p.name), arguments: String(p.arguments ?? ""), dispatchId });
+        this.emit({ type: "toolCall", sessionId, id: String(p.id), name: String(p.name), arguments: String(p.arguments ?? ""), dispatchId });
         break;
       case "chat.toolResult":
-        this.emit({ type: "toolResult", id: String(p.id), name: String(p.name), content: String(p.content ?? ""), isError: Boolean(p.is_error), dispatchId });
+        this.emit({ type: "toolResult", sessionId, id: String(p.id), name: String(p.name), content: String(p.content ?? ""), isError: Boolean(p.is_error), dispatchId });
         break;
       case "chat.dispatchStart":
         this.emit({
           type: "dispatchStart",
+          sessionId: String(p.owner_session_id ?? ""),
           dispatchId: String(p.dispatch_id ?? ""),
-          sessionId: p.session_id ? String(p.session_id) : undefined,
+          childSessionId: p.session_id ? String(p.session_id) : undefined,
           agentId: String(p.agent_id ?? ""),
           agentName: String(p.agent_name ?? ""),
           agentColor: String(p.agent_color ?? "#3b82f6"),
@@ -220,8 +238,9 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource 
       case "chat.dispatchEnd":
         this.emit({
           type: "dispatchEnd",
+          sessionId: String(p.owner_session_id ?? ""),
           dispatchId: String(p.dispatch_id ?? ""),
-          sessionId: p.session_id ? String(p.session_id) : undefined,
+          childSessionId: p.session_id ? String(p.session_id) : undefined,
           result: String(p.result ?? ""),
           isError: Boolean(p.is_error),
           usageTokens: Number(p.usage_tokens ?? 0),
@@ -232,6 +251,7 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource 
         // 子会话自己的压缩带 dispatch_id：归属进卡内，不插到主时间线。
         this.emit({
           type: "compacted",
+          sessionId,
           before: Number(p.before ?? 0),
           after: Number(p.after ?? 0),
           shadowed: Number(p.shadowed ?? 0),
@@ -241,14 +261,15 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource 
         });
         break;
       case "chat.confirmRequest":
-        this.emit({ type: "confirmRequest", request: p as unknown as ConfirmRequest });
+        this.emit({ type: "confirmRequest", sessionId, request: p as unknown as ConfirmRequest });
         break;
       case "todo.updated":
-        this.emit({ type: "todoUpdated", items: (p.items as TodoItem[]) ?? [] });
+        this.emit({ type: "todoUpdated", sessionId, items: (p.items as TodoItem[]) ?? [] });
         break;
       case "chat.done":
         this.emit({
           type: "done",
+          sessionId,
           usageTokens: Number(p.usage_tokens ?? 0),
           finishReason: String(p.finish_reason ?? "stop"),
           dispatchId,
@@ -267,28 +288,20 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource 
         }
         break;
       case "chat.error":
-        this.emit({ type: "error", message: String(p.message ?? ""), aborted: Boolean(p.aborted) });
+        this.emit({ type: "error", sessionId, message: String(p.message ?? ""), aborted: Boolean(p.aborted) });
         break;
       case "chat.busy":
-        this.emit({ type: "busy", busy: Boolean(p.busy) });
+        this.emit({ type: "busy", sessionId, busy: Boolean(p.busy) });
         break;
       case "session.changed":
         this.emit({ type: "sessionChanged", id: String(p.id ?? ""), reason: String(p.reason ?? "") });
-        // started（懒建行）只刷列表——对话进行中，视图不动；new/resumed
-        // 已由 reducer 清屏，resumed 后重拉 chat.history 重放历史
-        if (String(p.reason ?? "") === "started") {
-          this.call("session.list")
-            .then((r) => {
-              this.applySessionList(r);
-              this.emit({ type: "sessionsChanged" });
-            })
-            .catch((e) => this.opError(`刷新会话列表失败: ${e.message}`));
-        } else if (String(p.reason ?? "") === "resumed") {
-          void this.loadHistory().catch((e) => this.opError(`加载历史失败: ${e.message}`));
-        } else if (String(p.reason ?? "") !== "new") {
-          this.call("session.list").then((r) => this.applySessionList(r))
-            .catch((e) => this.opError(`刷新会话列表失败: ${e.message}`));
-        }
+        // 元数据变化不切焦点或重载历史；列表缓存更新后显式通知 UI 重读。
+        this.call("session.list")
+          .then((r) => {
+            this.applySessionList(r);
+            this.emit({ type: "sessionsChanged" });
+          })
+          .catch((e) => this.opError(`刷新会话列表失败: ${e.message}`));
         break;
       case "model.changed":
         // 模型注册表变更——重拉列表（settings 的 providers 数据源）
@@ -303,6 +316,7 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource 
           if (Array.isArray(f.files)) {
             this.emit({
               type: "filesChanged",
+              sessionId,
               files: f.files.map((x) => ({ path: x.path, added: x.added, deleted: x.deleted, diff: x.diff })),
             });
           }
@@ -377,10 +391,10 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource 
 
   // ---- AgentSource 接口 ----
 
-  send(text: string, opts?: SendOptions): void {
-    if (!text.trim()) return;
-    // effort/approval/agent 只在显式携带时进帧（omitempty 语义——旧请求形状不变）
-    const params: Record<string, unknown> = { text };
+  send(sessionId: string, text: string, opts?: SendOptions): void {
+    if (!sessionId || !text.trim()) return;
+    // 每个请求都标明目标 Session；连接焦点只是旧客户端兼容回退。
+    const params: Record<string, unknown> = { session_id: sessionId, text };
     if (opts?.effort) params.effort = opts.effort;
     if (opts?.approval) params.approval = opts.approval;
     if (opts?.agent) params.agent = opts.agent;
@@ -391,31 +405,50 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource 
 
   /** 裁决确认门。resolve = 后端确认成功（结果随后以 toolResult 到达）；
    *  reject（确认丢失/已终结/断连）向上抛——调用方决定卡片回退与否。 */
-  confirm(id: string, allow: boolean): Promise<void> {
-    return this.call("tool.confirm", { id, allow }).then(() => undefined);
+  confirm(sessionId: string, id: string, allow: boolean): Promise<void> {
+    return this.call("tool.confirm", { session_id: sessionId, id, allow }).then(() => undefined);
   }
 
-  cancel(): void {
-    this.call("chat.cancel").catch((e) => {
+  cancel(sessionId: string): void {
+    this.call("chat.cancel", { session_id: sessionId }).catch((e) => {
       this.opError(`取消失败: ${e.message}`);
     });
   }
 
-  /** 手动压缩历史（空闲才允许；没有可压区间返回 compacted=false——不是错误）。 */
-  compact(): Promise<CompactOutcome> {
-    return this.call("chat.compact").then((r) => (r ?? { compacted: false }) as CompactOutcome);
+  compact(sessionId: string): Promise<CompactOutcome> {
+    return this.call("chat.compact", { session_id: sessionId }).then((r) => (r ?? { compacted: false }) as CompactOutcome);
   }
 
-  newSession(workspace?: string): void {
-    this.call("session.new", workspace ? { workspace } : undefined)
-      .then(() => undefined)
-      .catch((e) => this.opError(`新建会话失败: ${e.message}`));
+  async newSession(workspace?: string): Promise<string> {
+    try {
+      const result = await this.call("session.new", workspace ? { workspace } : undefined) as { session_id?: string };
+      const id = String(result?.session_id ?? "");
+      if (!id) throw new Error("服务端未返回 session_id");
+      this.focusSession(id);
+      return id;
+    } catch (e) {
+      this.opError(`新建会话失败: ${e instanceof Error ? e.message : String(e)}`);
+      return "";
+    }
   }
 
-  resumeSession(id: string): void {
-    this.call("session.resume", { id })
-      .then(() => undefined)
-      .catch((e) => this.opError(`恢复会话失败: ${e.message}`));
+  async releaseWorktree(id: string): Promise<void> {
+    await this.call("session.worktree.release", { id });
+  }
+
+  async resumeSession(id: string): Promise<void> {
+    try {
+      await this.call("session.resume", { id });
+      this.focusSession(id);
+      await this.loadHistory(id);
+    } catch (e) {
+      this.opError(`恢复会话失败: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  private focusSession(id: string) {
+    this.currentSessionId = id;
+    this.emit({ type: "sessionFocused", id });
   }
 
   renameSession(id: string, title: string): void {
@@ -498,8 +531,8 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource 
   // ---- ModelAdminSource（模型注册表直通；settings 面板数据源） ----
 
   /** 拉当前会话的历史并重放视图（连接建立/切换会话后调）。 */
-  private loadHistory(): Promise<void> {
-    return this.call("chat.history")
+  private loadHistory(sessionId: string): Promise<void> {
+    return this.call("chat.history", { session_id: sessionId })
       .then((r) => {
         const h = r as {
           session_id?: string;
@@ -518,6 +551,7 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource 
         };
         this.emit({
           type: "historyLoaded",
+          sessionId,
           history: {
             sessionId: h.session_id ?? "",
             messages: h.messages ?? [],

@@ -13,7 +13,7 @@ import (
 )
 
 // Version 是协议版本（hello 握手交换；不兼容变更时递增）。
-const Version = "1"
+const Version = "2"
 
 // Path 是 WS 端点路径。
 const Path = "/rpc"
@@ -36,11 +36,12 @@ const (
 	MethodChatCompact = "chat.compact"
 
 	// 会话管理（持久化 + 切换）
-	MethodSessionList    = "session.list"
-	MethodSessionNew     = "session.new"
-	MethodSessionResume  = "session.resume"
-	MethodSessionRename  = "session.rename"
-	MethodSessionArchive = "session.archive"
+	MethodSessionList            = "session.list"
+	MethodSessionNew             = "session.new"
+	MethodSessionResume          = "session.resume"
+	MethodSessionRename          = "session.rename"
+	MethodSessionArchive         = "session.archive"
+	MethodSessionWorktreeRelease = "session.worktree.release"
 
 	// 项目管理（workspace 分组）
 	MethodProjectAdd  = "project.add"
@@ -87,7 +88,7 @@ const (
 	EventModels   = "model.changed"
 	EventTodo     = "todo.updated" // 任务清单变更（客户端渲染 TodoList）
 
-	EventSessionChanged = "session.changed"    // 会话切换（new/resume）——客户端须重拉 chat.history
+	EventSessionChanged = "session.changed"    // 会话元数据变化（created/started/renamed/archived/compacted）
 	EventFiles          = "files.changed"      // 一轮的文件改动汇总（产物卡——验收视图）
 	EventProjectChanged = "project.changed"    // 项目增删——客户端重拉 project.list
 	EventAgentChanged   = "agent.changed"      // Agent 名单变更——客户端重拉 agent.list
@@ -106,12 +107,13 @@ const (
 	CodeInternal       = -32603
 
 	// 应用错误码
-	CodeNoDefaultModel = 1001 // 未绑定 default 角色模型
-	CodeModelDisabled  = 1002 // default 模型已停用
-	CodeBusy           = 1003 // 会话正在生成中
-	CodeNoPending      = 1004 // 没有待确认的工具调用
-	CodeAgentNotFound  = 1005 // Agent 不在名单中
-	CodeAgentDisabled  = 1006 // Agent 已停用
+	CodeNoDefaultModel  = 1001 // 未绑定 default 角色模型
+	CodeModelDisabled   = 1002 // default 模型已停用
+	CodeBusy            = 1003 // 会话正在生成中
+	CodeNoPending       = 1004 // 没有待确认的工具调用
+	CodeAgentNotFound   = 1005 // Agent 不在名单中
+	CodeAgentDisabled   = 1006 // Agent 已停用
+	CodeVersionMismatch = 1007 // 客户端与服务端协议版本不兼容
 )
 
 // Request / Response 是 JSON-RPC 2.0 帧。
@@ -208,10 +210,19 @@ const (
 )
 
 type ChatSendParams struct {
-	Text     string `json:"text"`
-	Effort   string `json:"effort,omitempty"`   // 推理强度（可选；模型须声明 reasoning 能力才生效）
-	Approval string `json:"approval,omitempty"` // 权限模式（可选；空 = Agent 默认/confirm）
-	Agent    string `json:"agent,omitempty"`    // 执行 Agent 的名单 id（可选；空 = 主 Agent/旧语境）
+	SessionID string `json:"session_id"`
+	Text      string `json:"text"`
+	Effort    string `json:"effort,omitempty"`   // 推理强度（可选；模型须声明 reasoning 能力才生效）
+	Approval  string `json:"approval,omitempty"` // 权限模式（可选；空 = Agent 默认/confirm）
+	Agent     string `json:"agent,omitempty"`    // 执行 Agent 的名单 id（可选；空 = 主 Agent/旧语境）
+}
+
+type ChatSessionParams struct {
+	SessionID string `json:"session_id"`
+}
+
+type SessionResult struct {
+	SessionID string `json:"session_id"`
 }
 
 // ValidateEffort 校验 effort 值域（空串合法 = 不指定）。
@@ -233,11 +244,17 @@ func ValidateApproval(a string) bool {
 }
 
 type ToolConfirmParams struct {
-	ID    string `json:"id"`
-	Allow bool   `json:"allow"`
+	SessionID string `json:"session_id"`
+	ID        string `json:"id"`
+	Allow     bool   `json:"allow"`
 }
 
-// ChatHistoryResult 是客户端接入/重连时的会话同步载荷。
+// ChatHistoryParams 指定要读取的会话；客户端焦点不属于服务端全局状态。
+type ChatHistoryParams struct {
+	SessionID string `json:"session_id"`
+}
+
+// ChatHistoryResult 是指定会话的同步载荷。
 type ChatHistoryResult struct {
 	Messages  []llm.Message    `json:"messages"`
 	Busy      bool             `json:"busy"`
@@ -264,13 +281,20 @@ type ContextUsage struct {
 
 // 事件载荷。
 
+type UserMessageParams struct {
+	SessionID string      `json:"session_id"`
+	Message   llm.Message `json:"message"`
+}
+
 type DeltaParams struct {
+	SessionID  string `json:"session_id"`
 	Kind       string `json:"kind"` // text | reasoning
 	Text       string `json:"text"`
 	DispatchID string `json:"dispatch_id,omitempty"` // 非空 = 子 Agent 的增量（归属 dispatch 卡）
 }
 
 type ToolCallParams struct {
+	SessionID  string `json:"session_id"`
 	ID         string `json:"id"`
 	Name       string `json:"name"`
 	Arguments  string `json:"arguments"`
@@ -278,6 +302,7 @@ type ToolCallParams struct {
 }
 
 type ToolResultParams struct {
+	SessionID  string `json:"session_id"`
 	ID         string `json:"id"`
 	Name       string `json:"name"`
 	Content    string `json:"content"`
@@ -287,6 +312,7 @@ type ToolResultParams struct {
 
 // ConfirmRequest 是需要人工确认的工具调用（确认门）；客户端须回 tool.confirm。
 type ConfirmRequest struct {
+	SessionID  string `json:"session_id"`
 	ID         string `json:"id"`
 	Name       string `json:"name"`
 	Arguments  string `json:"arguments"`
@@ -295,6 +321,7 @@ type ConfirmRequest struct {
 }
 
 type DoneParams struct {
+	SessionID    string      `json:"session_id"`
 	Message      llm.Message `json:"message"`
 	UsageTokens  int         `json:"usage_tokens"`
 	FinishReason string      `json:"finish_reason"`
@@ -304,18 +331,21 @@ type DoneParams struct {
 }
 
 type ErrorParams struct {
-	Message string       `json:"message"`
-	Aborted bool         `json:"aborted"`
-	Partial *llm.Message `json:"partial,omitempty"` // 中断时已生成的部分内容（客户端应入历史）
+	SessionID string       `json:"session_id"`
+	Message   string       `json:"message"`
+	Aborted   bool         `json:"aborted"`
+	Partial   *llm.Message `json:"partial,omitempty"` // 中断时已生成的部分内容（客户端应入历史）
 }
 
 type BusyParams struct {
-	Busy bool `json:"busy"`
+	SessionID string `json:"session_id"`
+	Busy      bool   `json:"busy"`
 }
 
 // CompactParams 是 chat.compact 的参数（与 chat.send 同语义：agent 空 = 主 Agent）。
 type CompactParams struct {
-	Agent string `json:"agent,omitempty"`
+	SessionID string `json:"session_id"`
+	Agent     string `json:"agent,omitempty"`
 }
 
 // CompactResult 是 chat.compact 的结果：Compacted=false 表示没有可压的收益
@@ -333,6 +363,7 @@ type CompactResult struct {
 // 标记块（Summary 供展开查看），并刷新上下文指示器。DispatchID 非空 = 子会话
 // 自己的压缩（归属进 dispatch 卡，不进主时间线）。
 type CompactedParams struct {
+	SessionID  string `json:"session_id"`
 	Before     int    `json:"before"`
 	After      int    `json:"after"`
 	Shadowed   int    `json:"shadowed"`
@@ -343,7 +374,8 @@ type CompactedParams struct {
 
 // TodoUpdatedParams 是 todo.updated 事件的载荷：完整清单（全量替换语义）。
 type TodoUpdatedParams struct {
-	Items []tools.TodoItem `json:"items"`
+	SessionID string           `json:"session_id"`
+	Items     []tools.TodoItem `json:"items"`
 }
 
 // ---- 会话管理（持久化 + 切换）----
@@ -368,6 +400,16 @@ type SessionRenameParams struct {
 type SessionArchiveParams struct {
 	ID       string `json:"id"`
 	Archived bool   `json:"archived"`
+}
+
+// SessionWorktreeReleaseParams 是 session.worktree.release 的参数。
+type SessionWorktreeReleaseParams struct {
+	ID string `json:"id"`
+}
+
+// SessionWorktreeReleaseResult 表明工作区目录是否已释放。
+type SessionWorktreeReleaseResult struct {
+	Released bool `json:"released"`
 }
 
 // ProjectAddParams 是 project.add 的参数（path 为本地目录绝对路径）。
@@ -410,11 +452,11 @@ type SessionMeta struct {
 	Workspace string `json:"workspace,omitempty"` // 归属项目 id（空 = 未分组）
 }
 
-// SessionChangedParams 是 session.changed 事件的载荷：客户端收到后重拉
-// chat.history 完成视图同步（多客户端一致性）。
+// SessionChangedParams 是会话元数据变化通知；它不代表客户端焦点变化，
+// 也不要求重载某个会话的生成状态。
 type SessionChangedParams struct {
 	ID     string `json:"id"`
-	Reason string `json:"reason"` // new | resumed
+	Reason string `json:"reason"` // created | started | renamed | archived | compacted
 }
 
 // FileChangeParams 是 files.changed 事件的载荷：一轮的文件改动汇总
@@ -428,7 +470,8 @@ type FileChangeParams struct {
 
 // FilesChangedParams 是 files.changed 事件的载荷（文件改动数组）。
 type FilesChangedParams struct {
-	Files []FileChangeParams `json:"files"`
+	SessionID string             `json:"session_id"`
+	Files     []FileChangeParams `json:"files"`
 }
 
 // ---- Agent 注册表与拓展目录（M1）----
@@ -551,24 +594,25 @@ type CatalogChangedParams struct {
 	Reason string `json:"reason"` // add | update | remove
 }
 
-// DispatchStartParams 是 chat.dispatchStart 的载荷（M3——主 Agent 派发
-// 子 Agent；前端渲染 dispatch 卡，后续带 dispatch_id 的事件归属进卡）。
-// SessionID = 子会话 id（子 Agent 是独立会话：可续跑、可回放）。
+// DispatchStartParams 是 chat.dispatchStart 的载荷。OwnerSessionID 是派发者
+// （时间线持有者），SessionID 是子 Agent 的独立会话 id（可续跑、可回放）。
 type DispatchStartParams struct {
-	DispatchID string `json:"dispatch_id"`
-	SessionID  string `json:"session_id,omitempty"`
-	AgentID    string `json:"agent_id"`
-	AgentName  string `json:"agent_name"`
-	AgentColor string `json:"agent_color"`
-	Task       string `json:"task"`
+	OwnerSessionID string `json:"owner_session_id"`
+	DispatchID     string `json:"dispatch_id"`
+	SessionID      string `json:"session_id,omitempty"` // 子会话 id
+	AgentID        string `json:"agent_id"`
+	AgentName      string `json:"agent_name"`
+	AgentColor     string `json:"agent_color"`
+	Task           string `json:"task"`
 }
 
-// DispatchEndParams 是 chat.dispatchEnd 的载荷（子 Agent 收尾——结果
-// 是主 Agent 的验收输入）。SessionID = 子会话 id（主 Agent 可据此续跑）。
+// DispatchEndParams 是 chat.dispatchEnd 的载荷。OwnerSessionID 标明结果归属
+// 的父会话；SessionID 标明子会话（主 Agent 可据此续跑）。
 type DispatchEndParams struct {
-	DispatchID  string `json:"dispatch_id"`
-	SessionID   string `json:"session_id,omitempty"`
-	Result      string `json:"result"`
-	IsError     bool   `json:"is_error"`
-	UsageTokens int    `json:"usage_tokens,omitempty"`
+	OwnerSessionID string `json:"owner_session_id"`
+	DispatchID     string `json:"dispatch_id"`
+	SessionID      string `json:"session_id,omitempty"` // 子会话 id
+	Result         string `json:"result"`
+	IsError        bool   `json:"is_error"`
+	UsageTokens    int    `json:"usage_tokens,omitempty"`
 }

@@ -22,12 +22,18 @@ function setup(t) {
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 test('send carries effort and approval only when provided (omitempty wire shape)', async (t) => {
   const { agent, ws } = setup(t);
-  agent.send('hi');
-  assert.deepEqual(ws.sent.at(-1).params, { text: 'hi' });
-  agent.send('hi', { effort: 'high', approval: 'strict' });
-  assert.deepEqual(ws.sent.at(-1).params, { text: 'hi', effort: 'high', approval: 'strict' });
-  agent.send('hi', { approval: 'auto' });
-  assert.deepEqual(ws.sent.at(-1).params, { text: 'hi', approval: 'auto' });
+  agent.send('s1', 'hi');
+  assert.deepEqual(ws.sent.at(-1).params, { session_id: 's1', text: 'hi' });
+  agent.send('s1', 'hi', { effort: 'high', approval: 'strict' });
+  assert.deepEqual(ws.sent.at(-1).params, { session_id: 's1', text: 'hi', effort: 'high', approval: 'strict' });
+  agent.send('s2', 'hi', { approval: 'auto' });
+  assert.deepEqual(ws.sent.at(-1).params, { session_id: 's2', text: 'hi', approval: 'auto' });
+});
+test('broadcast user messages retain the payload session and nested content', async (t) => {
+  const { agent, ws, events } = setup(t);
+  ws.receive({ method: 'chat.userMessage', params: { session_id: 's2', message: { role: 'user', content: 'target session' } } });
+  assert.deepEqual(events, [{ type: 'userMessage', sessionId: 's2', text: 'target session' }]);
+  void agent;
 });
 test('JSON-RPC errors reject model changes and do not fake cache updates', async (t) => {
   const { agent, ws } = setup(t);
@@ -46,6 +52,15 @@ test('session failure emits operationError rather than terminating a chat', asyn
   await flush();
   assert.deepEqual(events, [{ type: 'operationError', message: '新建会话失败: busy' }]);
 });
+test('releasing a session worktree calls the scoped protocol method', async (t) => {
+  const { agent, ws } = setup(t);
+  const release = agent.releaseWorktree('s-worktree');
+  assert.equal(ws.sent.at(-1).method, 'session.worktree.release');
+  assert.deepEqual(ws.sent.at(-1).params, { id: 's-worktree' });
+  ws.reply({ released: true });
+  await release;
+});
+
 test('disconnect immediately rejects pending and unsubscribe stops reconnection', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const { agent, ws, off } = setup(t);
@@ -60,11 +75,11 @@ test('disconnect immediately rejects pending and unsubscribe stops reconnection'
 test('successful response clears deadline; late response after timeout is ignored', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const { agent, ws } = setup(t);
-  const first = agent.confirm('confirm-id', true);
+  const first = agent.confirm('s1', 'confirm-id', true);
   assert.equal(ws.sent.at(-1).method, 'tool.confirm');
   ws.reply({ ok: true });
   await first;
-  const second = agent.confirm('next', false);
+  const second = agent.confirm('s1', 'next', false);
   const failed = assert.rejects(second, /超时/);
   t.mock.timers.tick(10_000);
   await failed;
@@ -78,7 +93,16 @@ test('renamed event refreshes list without reloading active generation history',
   await flush();
   assert.equal(agent.sessions()[0].updatedAt, 'today');
   assert.equal(agent.sessions()[0].workspace, 'p');
+  assert.ok(events.some((e) => e.type === 'sessionsChanged'));
   assert.equal(events.some((e) => e.type === 'historyLoaded'), false);
+});
+test('created metadata event signals the session list after refreshing its cache', async (t) => {
+  const { agent, ws, events } = setup(t);
+  ws.receive({ method: 'session.changed', params: { id: 's2', reason: 'created' } });
+  ws.reply([{ id: 's2', title: '新会话', updated_at: 'now', messages: 1, archived: false }]);
+  await flush();
+  assert.equal(agent.sessions()[0].id, 's2');
+  assert.ok(events.some((e) => e.type === 'sessionsChanged'));
 });
 
 /** 逐条应答初始化链（hello → 各 list → 可选 session.new → chat.history）。
@@ -92,7 +116,10 @@ async function driveInit(socket) {
     if (!last || seen.has(last.id)) break; // 没有新请求 → 链已跑完或卡住
     seen.add(last.id);
     methods.push(last.method);
-    socket.reply({});
+    if (last.method === 'connection.hello') socket.reply({ version: '2' });
+    else if (last.method === 'session.new') socket.reply({ session_id: 'boot-session' });
+    else if (last.method === 'session.resume') socket.reply({ session_id: 'boot-session' });
+    else socket.reply({});
   }
   return methods;
 }
@@ -113,7 +140,7 @@ test('context usage rides chat.done and chat.history (main turn only)', async (t
 
 test('historyLoaded carries the measured context (absent stays undefined)', async (t) => {
   const { agent, events } = setup(t);
-  const p = agent['loadHistory']();
+  const p = agent['loadHistory']('s1');
   const last = FakeSocket.latest.sent.at(-1);
   assert.equal(last.method, 'chat.history');
   FakeSocket.latest.reply({ session_id: 's1', messages: [], busy: false, context: { used: 100, window: 8192 } });
@@ -131,30 +158,33 @@ test('historyLoaded carries the measured context (absent stays undefined)', asyn
 // P3：压缩事件过 wire + 历史检查点下标 + 手动压缩调用。
 test('compacted event and history checkpoints ride the wire', async (t) => {
   const { agent, ws, events } = setup(t);
-  ws.receive({ method: 'chat.compacted', params: { before: 8000, after: 2400, shadowed: 12, summary: '摘要', manual: true } });
+  ws.receive({ method: 'chat.compacted', params: { session_id: 's1', before: 8000, after: 2400, shadowed: 12, summary: '摘要', manual: true } });
   const ev = events.find((e) => e.type === 'compacted');
-  assert.deepEqual(ev, { type: 'compacted', before: 8000, after: 2400, shadowed: 12, summary: '摘要', manual: true, dispatchId: undefined });
+  assert.deepEqual(ev, { type: 'compacted', sessionId: 's1', before: 8000, after: 2400, shadowed: 12, summary: '摘要', manual: true, dispatchId: undefined });
 
   // 子会话自己的压缩带 dispatch_id（归属进卡内，不插主时间线）
-  ws.receive({ method: 'chat.compacted', params: { before: 100, after: 40, shadowed: 3, summary: '子摘要', dispatch_id: 'd1' } });
+  ws.receive({ method: 'chat.compacted', params: { session_id: 'parent-1', before: 100, after: 40, shadowed: 3, summary: '子摘要', dispatch_id: 'd1' } });
   const sub = events.filter((e) => e.type === 'compacted').at(-1);
   assert.equal(sub.dispatchId, 'd1');
 
   // 子会话 id 随 dispatchStart/End 过 wire（前端显示 + 续跑依据）
-  ws.receive({ method: 'chat.dispatchStart', params: { dispatch_id: 'd1', session_id: 'child-1', agent_id: 'coder', agent_name: '代码 Agent', agent_color: '#000', task: 't' } });
-  assert.equal(events.find((e) => e.type === 'dispatchStart').sessionId, 'child-1');
-  ws.receive({ method: 'chat.dispatchEnd', params: { dispatch_id: 'd1', session_id: 'child-1', result: 'r' } });
-  assert.equal(events.filter((e) => e.type === 'dispatchEnd').at(-1).sessionId, 'child-1');
+  ws.receive({ method: 'chat.dispatchStart', params: { owner_session_id: 'parent-1', dispatch_id: 'd1', session_id: 'child-1', agent_id: 'coder', agent_name: '代码 Agent', agent_color: '#000', task: 't' } });
+  assert.equal(events.find((e) => e.type === 'dispatchStart').sessionId, 'parent-1');
+  assert.equal(events.find((e) => e.type === 'dispatchStart').childSessionId, 'child-1');
+  ws.receive({ method: 'chat.dispatchEnd', params: { owner_session_id: 'parent-1', dispatch_id: 'd1', session_id: 'child-1', result: 'r' } });
+  assert.equal(events.filter((e) => e.type === 'dispatchEnd').at(-1).sessionId, 'parent-1');
+  assert.equal(events.filter((e) => e.type === 'dispatchEnd').at(-1).childSessionId, 'child-1');
 
   // 历史里的检查点下标（渲染标记块的依据）
-  const p = agent['loadHistory']();
+  const p = agent['loadHistory']('s1');
   FakeSocket.latest.reply({ session_id: 's1', messages: [{ role: 'user', content: 'x' }], busy: false, checkpoints: [0] });
   await p;
   assert.deepEqual(events.at(-1).history.checkpoints, [0]);
 
   // 手动压缩：无参数调用；应答原样回给调用方（compacted=false 不是错误）
-  const compacting = agent.compact();
+  const compacting = agent.compact('s1');
   assert.equal(ws.sent.at(-1).method, 'chat.compact');
+  assert.deepEqual(ws.sent.at(-1).params, { session_id: 's1' });
   ws.reply({ compacted: false });
   assert.deepEqual(await compacting, { compacted: false });
 });
@@ -178,6 +208,18 @@ test('project instructions round-trip over the wire (project_id only, no path)',
   await saving;
 });
 
+test('hello sends protocol v2 and stops initialization against an incompatible server', async (t) => {
+  const { agent, events, ws } = setup(t);
+  ws.onopen();
+  assert.equal(ws.sent[0].method, 'connection.hello');
+  assert.deepEqual(ws.sent[0].params, { client: 'lxcode-web', version: '2' });
+  ws.reply({ version: '1' });
+  await flush();
+  assert.equal(ws.sent.length, 1, '协议不匹配时不能继续请求模型/会话列表');
+  assert.ok(events.some((e) => e.type === 'operationError' && /协议版本不兼容/.test(e.message)));
+  void agent;
+});
+
 test('boot opens a fresh session once (session.new before chat.history), never on reconnect', async (t) => {
   const { agent, ws } = setup(t);
   ws.onopen(); // 首次连接
@@ -191,10 +233,12 @@ test('boot opens a fresh session once (session.new before chat.history), never o
 
   // 重连（同实例再次 onopen）：不能再切一次会话，否则把用户正在聊的会话吃掉
   ws.close();
+  agent['connect']();
   const reconnected = FakeSocket.latest;
   reconnected.onopen();
   const again = await driveInit(reconnected);
   assert.equal(again.includes('session.new'), false, '重连不应再新建会话');
+  assert.ok(again.includes('session.resume'), '重连恢复原焦点会话');
   assert.ok(again.includes('chat.history'), '重连仍应重放历史');
   void agent;
 });

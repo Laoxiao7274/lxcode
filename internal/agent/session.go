@@ -1055,6 +1055,18 @@ func (s *Session) WorkDir() string {
 	return s.workDir
 }
 
+// SetWorkDir 覆盖当前会话的工具工作目录；运行中的轮次不能改目录。
+// server 在挂载独立 Git worktree 后调用，子 Agent 也用它继承父目录。
+func (s *Session) SetWorkDir(dir string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.busy {
+		return ErrBusy
+	}
+	s.workDir = dir
+	return nil
+}
+
 // EnablePersistence 挂载磁盘存储并恢复最近会话（启动时调用）。
 // 库里没有任何会话时保持空历史（全新开始）。幂等：重复调用是 no-op。
 func (s *Session) EnablePersistence(st Persistence) error {

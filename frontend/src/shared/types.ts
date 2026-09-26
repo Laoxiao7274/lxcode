@@ -43,31 +43,32 @@ export interface ConfirmRequest {
 /** AgentSource 推给 UI 的事件流（对齐服务端广播事件）。 */
 export type AgentEvent =
   | { type: "ready"; server: string; version: string; busy: boolean }
-  | { type: "userMessage"; text: string }
-  | { type: "delta"; kind: "text" | "reasoning"; text: string; dispatchId?: string }
-  | { type: "toolCall"; id: string; name: string; arguments: string; dispatchId?: string }
-  | { type: "toolResult"; id: string; name: string; content: string; isError: boolean; dispatchId?: string }
-  | { type: "confirmRequest"; request: ConfirmRequest }
-  | { type: "todoUpdated"; items: TodoItem[] }
-  | { type: "done"; usageTokens: number; finishReason: string; dispatchId?: string; context?: ContextUsage }
-  | { type: "error"; message: string; aborted: boolean }
-  | { type: "dispatchStart"; dispatchId: string; sessionId?: string; agentId: string; agentName: string; agentColor: string; task: string }
-  | { type: "dispatchEnd"; dispatchId: string; sessionId?: string; result: string; isError: boolean; usageTokens?: number }
+  | { type: "sessionFocused"; id: string }
+  | { type: "userMessage"; sessionId: string; text: string }
+  | { type: "delta"; sessionId: string; kind: "text" | "reasoning"; text: string; dispatchId?: string }
+  | { type: "toolCall"; sessionId: string; id: string; name: string; arguments: string; dispatchId?: string }
+  | { type: "toolResult"; sessionId: string; id: string; name: string; content: string; isError: boolean; dispatchId?: string }
+  | { type: "confirmRequest"; sessionId: string; request: ConfirmRequest }
+  | { type: "todoUpdated"; sessionId: string; items: TodoItem[] }
+  | { type: "done"; sessionId: string; usageTokens: number; finishReason: string; dispatchId?: string; context?: ContextUsage }
+  | { type: "error"; sessionId: string; message: string; aborted: boolean }
+  | { type: "dispatchStart"; sessionId: string; dispatchId: string; childSessionId?: string; agentId: string; agentName: string; agentColor: string; task: string }
+  | { type: "dispatchEnd"; sessionId: string; dispatchId: string; childSessionId?: string; result: string; isError: boolean; usageTokens?: number }
   /** 请求失败不代表生成失败：不得清空会话、定格正文或解除确认卡。 */
   | { type: "operationError"; message: string }
-  | { type: "busy"; busy: boolean }
+  | { type: "busy"; sessionId: string; busy: boolean }
   | { type: "sessionChanged"; id: string; reason: string }
   /** 会话列表本身变了（重命名/归档/恢复）——UI 重读 sessions()。 */
   | { type: "sessionsChanged" }
   /** 项目列表变了（添加）——UI 重读 projects()。 */
   | { type: "projectsChanged" }
   /** 一轮任务的产物汇总（改动文件 + diff 统计——验收视图）。 */
-  | { type: "filesChanged"; files: FileChange[] }
+  | { type: "filesChanged"; sessionId: string; files: FileChange[] }
   /** 历史被压缩（前缀替换成摘要检查点）——UI 插一条「已压缩历史」标记块。
    *  dispatchId 非空 = 子会话自己的压缩（归属进 dispatch 卡内，不进主时间线）。 */
-  | { type: "compacted"; before: number; after: number; shadowed: number; summary: string; manual?: boolean; dispatchId?: string }
+  | { type: "compacted"; sessionId: string; before: number; after: number; shadowed: number; summary: string; manual?: boolean; dispatchId?: string }
   /** 历史载入（连接/切会话后）——全量重建对话视图。 */
-  | { type: "historyLoaded"; history: HistorySnapshot };
+  | { type: "historyLoaded"; sessionId: string; history: HistorySnapshot };
 
 /** 会话列表条目（对齐 protocol.SessionMeta；workspace 用于侧栏按工作区分组）。 */
 export interface SessionMeta {
@@ -142,17 +143,19 @@ export interface AgentSource {
   /** 订阅事件流（返回退订函数）。 */
   subscribe(listener: (ev: AgentEvent) => void): () => void;
   /** 发送消息（一轮开始；opts 携带 effort/approval，缺省 = 后端默认）。 */
-  send(text: string, opts?: SendOptions): void;
-  /** 裁决确认门。 */
-  confirm(id: string, allow: boolean): Promise<void>;
-  /** 取消当前生成。 */
-  cancel(): void;
-  /** 手动压缩历史（空闲才允许；没有可压区间时返回 compacted=false——不是错误）。 */
-  compact(): Promise<CompactOutcome>;
+  send(sessionId: string, text: string, opts?: SendOptions): void;
+  /** 裁决确认门（目标会话显式传入，避免切换焦点后误投）。 */
+  confirm(sessionId: string, id: string, allow: boolean): Promise<void>;
+  /** 取消指定会话的生成。 */
+  cancel(sessionId: string): void;
+  /** 手动压缩指定会话的历史。 */
+  compact(sessionId: string): Promise<CompactOutcome>;
   /** 新会话（可选归属项目 id——会话挂在项目分组下）。 */
-  newSession(workspace?: string): void;
+  newSession(workspace?: string): Promise<string>;
+  /** 释放干净项目会话的 worktree 目录，保留分支与会话数据。 */
+  releaseWorktree(id: string): Promise<void>;
   /** 恢复会话。 */
-  resumeSession(id: string): void;
+  resumeSession(id: string): Promise<void>;
   /** 重命名会话。 */
   renameSession(id: string, title: string): void;
   /** 归档会话（当前会话被归档时自动切到新会话）。 */

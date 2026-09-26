@@ -308,14 +308,14 @@ func TestProtocolConstants(t *testing.T) {
 	if Path != "/rpc" {
 		t.Fatalf("WS 端点路径被改动: %s（客户端都硬编码了它）", Path)
 	}
-	if Version == "" {
-		t.Fatal("协议版本不能为空（hello 握手要交换）")
+	if Version != "2" {
+		t.Fatalf("多会话路由与事件载荷的破坏性变更须使用协议版本 2，实际 %q", Version)
 	}
 	// 方法名与事件名不得重名，否则 dispatch 与事件处理会撞车
 	methods := []string{MethodHello, MethodModelList, MethodModelAdd, MethodModelUpdate,
 		MethodModelRemove, MethodModelEnable, MethodRoleSet, MethodChatSend,
 		MethodChatCancel, MethodChatHistory, MethodToolConfirm,
-		MethodSessionList, MethodSessionNew, MethodSessionResume}
+		MethodSessionList, MethodSessionNew, MethodSessionResume, MethodSessionWorktreeRelease}
 	events := []string{EventReady, EventUserMsg, EventDelta, EventToolCall, EventToolRslt,
 		EventConfirm, EventDone, EventError, EventBusy, EventModels, EventTodo, EventSessionChanged}
 	seen := map[string]bool{}
@@ -339,10 +339,26 @@ func TestProtocolConstants(t *testing.T) {
 	}
 }
 
-// TestChatSendParamsRoundTrip：effort/approval 新字段的往返与 omitempty 语义——
-// 不带新字段的旧客户端（CLI/旧前端）请求形状必须与扩展前完全一致。
+func TestSessionWorktreeReleaseProtocolShape(t *testing.T) {
+	params := mustMarshal(t, SessionWorktreeReleaseParams{ID: "session-1"})
+	if string(params) != `{"id":"session-1"}` {
+		t.Fatalf("release params JSON = %s", params)
+	}
+	var got SessionWorktreeReleaseParams
+	mustUnmarshal(t, params, &got)
+	if got.ID != "session-1" {
+		t.Fatalf("release params round-trip = %+v", got)
+	}
+	result := mustMarshal(t, SessionWorktreeReleaseResult{Released: true})
+	if string(result) != `{"released":true}` {
+		t.Fatalf("release result JSON = %s", result)
+	}
+}
+
+// TestChatSendParamsRoundTrip：session_id 显式路由；effort/approval 仍可省略，
+// 旧客户端缺 session_id 时由服务端连接焦点回退兼容。
 func TestChatSendParamsRoundTrip(t *testing.T) {
-	t.Run("旧形状（不带新字段）不产生 effort/approval 键", func(t *testing.T) {
+	t.Run("省略可选 effort/approval", func(t *testing.T) {
 		b := mustMarshal(t, ChatSendParams{Text: "你好"})
 		if strings.Contains(string(b), "effort") || strings.Contains(string(b), "approval") {
 			t.Fatalf("omitempty 失效（旧客户端兼容被破坏）: %s", b)
@@ -485,24 +501,29 @@ func TestDispatchPayloads(t *testing.T) {
 		}
 	})
 
-	t.Run("DispatchStartParams 全键（dispatch_id/agent_id/agent_name/agent_color/task）", func(t *testing.T) {
+	t.Run("DispatchStartParams 有独立的 owner 与 child session 字段", func(t *testing.T) {
 		b := mustMarshal(t, DispatchStartParams{
-			DispatchID: "d1", AgentID: "coder", AgentName: "代码 Agent", AgentColor: "#3b82f6", Task: "跑测试",
+			OwnerSessionID: "parent-1", DispatchID: "d1", SessionID: "child-1", AgentID: "coder", AgentName: "代码 Agent", AgentColor: "#3b82f6", Task: "跑测试",
 		})
 		var m map[string]any
 		mustUnmarshal(t, b, &m)
-		for _, key := range []string{"dispatch_id", "agent_id", "agent_name", "agent_color", "task"} {
+		for _, key := range []string{"owner_session_id", "session_id", "dispatch_id", "agent_id", "agent_name", "agent_color", "task"} {
 			if _, ok := m[key]; !ok {
 				t.Fatalf("DispatchStartParams 缺键 %s: %s", key, b)
 			}
 		}
+		var got DispatchStartParams
+		mustUnmarshal(t, b, &got)
+		if got.OwnerSessionID != "parent-1" || got.SessionID != "child-1" {
+			t.Fatalf("owner 与 child session 混淆: %+v", got)
+		}
 	})
 
 	t.Run("DispatchEndParams（result/is_error/usage_tokens）", func(t *testing.T) {
-		b := mustMarshal(t, DispatchEndParams{DispatchID: "d1", Result: "全绿", UsageTokens: 730})
+		b := mustMarshal(t, DispatchEndParams{OwnerSessionID: "parent-1", SessionID: "child-1", DispatchID: "d1", Result: "全绿", UsageTokens: 730})
 		var got DispatchEndParams
 		mustUnmarshal(t, b, &got)
-		if got.Result != "全绿" || got.UsageTokens != 730 || got.IsError {
+		if got.Result != "全绿" || got.UsageTokens != 730 || got.IsError || got.OwnerSessionID != "parent-1" || got.SessionID != "child-1" {
 			t.Fatalf("DispatchEnd 往返失真: %+v", got)
 		}
 		// usage_tokens omitempty（0 不产生键——错误收尾通常没有用量）
@@ -623,6 +644,54 @@ func TestCompactionPayloads(t *testing.T) {
 		b2 := mustMarshal(t, ChatHistoryResult{SessionID: "s1"})
 		if strings.Contains(string(b2), "checkpoints") {
 			t.Fatalf("无检查点应整键缺席: %s", b2)
+		}
+	})
+}
+
+func TestSessionScopedWireFields(t *testing.T) {
+	requestCases := []struct {
+		name   string
+		params any
+	}{
+		{"chat.send", ChatSendParams{SessionID: "s1", Text: "hello"}},
+		{"chat.cancel", ChatSessionParams{SessionID: "s1"}},
+		{"chat.history", ChatHistoryParams{SessionID: "s1"}},
+		{"chat.compact", CompactParams{SessionID: "s1"}},
+		{"tool.confirm", ToolConfirmParams{SessionID: "s1", ID: "c1", Allow: true}},
+	}
+	for _, tc := range requestCases {
+		t.Run(tc.name, func(t *testing.T) {
+			var params map[string]any
+			mustUnmarshal(t, mustMarshal(t, tc.params), &params)
+			if params["session_id"] != "s1" {
+				t.Fatalf("request missing explicit session_id: %v", params)
+			}
+		})
+	}
+
+	t.Run("普通事件带所属 session_id", func(t *testing.T) {
+		for _, params := range []any{
+			UserMessageParams{SessionID: "s1"}, DeltaParams{SessionID: "s1"},
+			BusyParams{SessionID: "s1"}, CompactedParams{SessionID: "s1"},
+		} {
+			var payload map[string]any
+			mustUnmarshal(t, mustMarshal(t, params), &payload)
+			if payload["session_id"] != "s1" {
+				t.Fatalf("event missing session_id: %v", payload)
+			}
+		}
+	})
+
+	t.Run("dispatch 同时保留 owner 与 child session", func(t *testing.T) {
+		for _, params := range []any{
+			DispatchStartParams{OwnerSessionID: "parent", SessionID: "child"},
+			DispatchEndParams{OwnerSessionID: "parent", SessionID: "child"},
+		} {
+			var payload map[string]any
+			mustUnmarshal(t, mustMarshal(t, params), &payload)
+			if payload["owner_session_id"] != "parent" || payload["session_id"] != "child" {
+				t.Fatalf("dispatch owner/child ids are ambiguous: %v", payload)
+			}
 		}
 	})
 }

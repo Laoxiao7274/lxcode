@@ -40,7 +40,9 @@ func New(be wsclient.Backend) *REPL {
 
 // Run 进入主循环（阻塞直至退出）。返回值固定 nil（错误就地打印）。
 func (r *REPL) Run() error {
-	// 初始同步：chat.history（后端可能已在服务（别的客户端聊过/恢复的会话））
+	if err := r.openInitialSession(); err != nil {
+		fmt.Printf("[打开会话失败] %v\n", err)
+	}
 	if err := r.syncHistory(); err != nil {
 		fmt.Printf("[同步会话失败] %v\n", err)
 	}
@@ -55,7 +57,7 @@ func (r *REPL) Run() error {
 			if r.isBusy() {
 				fmt.Printf("\n[取消当前生成…]\n")
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				_ = r.be.Call(ctx, protocol.MethodChatCancel, nil, nil)
+				_ = r.be.Call(ctx, protocol.MethodChatCancel, protocol.ChatSessionParams{SessionID: r.currentSessionID()}, nil)
 				cancel()
 			} else {
 				fmt.Printf("\n再见。\n")
@@ -73,7 +75,7 @@ func (r *REPL) Run() error {
 			if r.isBusy() {
 				fmt.Println("\n[输入结束，等待在途生成收尾…]")
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				_ = r.be.Call(ctx, protocol.MethodChatCancel, nil, nil)
+				_ = r.be.Call(ctx, protocol.MethodChatCancel, protocol.ChatSessionParams{SessionID: r.currentSessionID()}, nil)
 				cancel()
 				for r.isBusy() {
 					time.Sleep(50 * time.Millisecond)
@@ -130,10 +132,42 @@ func (r *REPL) startEvents() {
 	}()
 }
 
+func eventOwnerSession(ev protocol.Response) (string, bool) {
+	switch ev.Method {
+	case protocol.EventUserMsg, protocol.EventDelta, protocol.EventToolCall, protocol.EventToolRslt,
+		protocol.EventConfirm, protocol.EventDone, protocol.EventError, protocol.EventBusy,
+		protocol.EventTodo, protocol.EventCompacted, protocol.EventDispatchStart, protocol.EventDispatchEnd:
+		var p struct {
+			SessionID      string `json:"session_id"`
+			OwnerSessionID string `json:"owner_session_id"`
+		}
+		if unmarshalParams(ev.Params, &p) != nil {
+			return "", true
+		}
+		if p.OwnerSessionID != "" {
+			return p.OwnerSessionID, true
+		}
+		return p.SessionID, true
+	default:
+		return "", false
+	}
+}
+
 // render 渲染单个协议事件（持锁防与主循环抢屏）。
 func (r *REPL) render(ev protocol.Response) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if ev.Method == protocol.EventSessionChanged {
+		var p protocol.SessionChangedParams
+		if unmarshalParams(ev.Params, &p) != nil || p.ID != r.session {
+			return
+		}
+		fmt.Printf("\n[当前会话状态已变更（%s）]\n", p.Reason)
+		return
+	}
+	if sessionID, scoped := eventOwnerSession(ev); scoped && sessionID != r.session {
+		return
+	}
 	switch ev.Method {
 	case protocol.EventUserMsg:
 		// 用户消息回显在 busy 提示前打过了，这里不再重复打印
@@ -200,14 +234,6 @@ func (r *REPL) render(ev protocol.Response) {
 			mark := map[string]string{"done": "✓", "active": "▶", "pending": "·"}[it.Status]
 			fmt.Printf("  %s %s\n", mark, it.Content)
 		}
-	case protocol.EventSessionChanged:
-		// 会话被切换（本端或另一客户端）：重拉历史同步视图
-		var p protocol.SessionChangedParams
-		if unmarshalParams(ev.Params, &p) != nil {
-			return
-		}
-		fmt.Printf("\n[会话已切换（%s）]\n", p.Reason)
-		_ = r.syncHistory()
 	case protocol.EventModels:
 		fmt.Println("\n[模型配置已变更，/model 查看]")
 	case protocol.EventReady:
@@ -219,16 +245,59 @@ func (r *REPL) render(ev protocol.Response) {
 func (r *REPL) send(text string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return r.be.Call(ctx, protocol.MethodChatSend, protocol.ChatSendParams{Text: text}, nil)
+	return r.be.Call(ctx, protocol.MethodChatSend, protocol.ChatSendParams{SessionID: r.currentSessionID(), Text: text}, nil)
 }
 
 // confirm 裁决确认门。
 func (r *REPL) confirm(id string, allow bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := r.be.Call(ctx, protocol.MethodToolConfirm, protocol.ToolConfirmParams{ID: id, Allow: allow}, nil); err != nil {
+	if err := r.be.Call(ctx, protocol.MethodToolConfirm, protocol.ToolConfirmParams{SessionID: r.currentSessionID(), ID: id, Allow: allow}, nil); err != nil {
 		fmt.Printf("[%v]\n", err)
 	}
+}
+
+// openInitialSession 恢复最近的非归档会话；没有历史时创建空会话。
+func (r *REPL) openInitialSession() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var sessions []protocol.SessionMeta
+	if err := r.be.Call(ctx, protocol.MethodSessionList, nil, &sessions); err != nil {
+		return err
+	}
+	for _, session := range sessions {
+		if session.Archived || session.Messages == 0 {
+			continue
+		}
+		if err := r.be.Call(ctx, protocol.MethodSessionResume, protocol.SessionResumeParams{ID: session.ID}, nil); err != nil {
+			return err
+		}
+		r.setCurrentSession(session.ID)
+		return nil
+	}
+	var result protocol.SessionResult
+	if err := r.be.Call(ctx, protocol.MethodSessionNew, protocol.SessionNewParams{}, &result); err != nil {
+		return err
+	}
+	if result.SessionID == "" {
+		return fmt.Errorf("后端未返回新会话 id")
+	}
+	r.setCurrentSession(result.SessionID)
+	return nil
+}
+
+func (r *REPL) currentSessionID() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.session
+}
+
+func (r *REPL) setCurrentSession(id string) {
+	r.mu.Lock()
+	r.session = id
+	r.busy = false
+	r.pending = nil
+	r.mu.Unlock()
 }
 
 // syncHistory 拉取会话快照并同步本地状态。
@@ -236,7 +305,7 @@ func (r *REPL) syncHistory() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	var hist protocol.ChatHistoryResult
-	if err := r.be.Call(ctx, protocol.MethodChatHistory, nil, &hist); err != nil {
+	if err := r.be.Call(ctx, protocol.MethodChatHistory, protocol.ChatHistoryParams{SessionID: r.currentSessionID()}, &hist); err != nil {
 		return err
 	}
 	r.mu.Lock()
@@ -263,15 +332,16 @@ func (r *REPL) runCommand(line string) bool {
 	case "quit", "exit", "q":
 		return true
 	case "new":
-		if err := r.requireIdle(); err != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		var result protocol.SessionResult
+		if err := r.be.Call(ctx, protocol.MethodSessionNew, protocol.SessionNewParams{}, &result); err != nil {
 			fmt.Printf("[%v]\n", err)
 			return false
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := r.be.Call(ctx, protocol.MethodSessionNew, nil, nil); err != nil {
-			fmt.Printf("[%v]\n", err)
-			return false
+		r.setCurrentSession(result.SessionID)
+		if err := r.syncHistory(); err != nil {
+			fmt.Printf("[同步会话失败] %v\n", err)
 		}
 		fmt.Println("[新会话已开始]")
 	case "sessions":
@@ -298,10 +368,6 @@ func (r *REPL) runCommand(line string) bool {
 		}
 		fmt.Println("[/resume <序号或id> 恢复]")
 	case "resume":
-		if err := r.requireIdle(); err != nil {
-			fmt.Printf("[%v]\n", err)
-			return false
-		}
 		if rest == "" {
 			fmt.Println("[用法: /resume <序号或会话id>；先用 /sessions 查看]")
 			return false
@@ -322,6 +388,10 @@ func (r *REPL) runCommand(line string) bool {
 			fmt.Printf("[%v]\n", err)
 			return false
 		}
+		r.setCurrentSession(id)
+		if err := r.syncHistory(); err != nil {
+			fmt.Printf("[同步会话失败] %v\n", err)
+		}
 	case "compact":
 		// 手动压缩：不受阈值约束（空闲即可）——长会话撞窗口前的主动手段
 		if err := r.requireIdle(); err != nil {
@@ -331,7 +401,7 @@ func (r *REPL) runCommand(line string) bool {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
 		var res protocol.CompactResult
-		if err := r.be.Call(ctx, protocol.MethodChatCompact, protocol.CompactParams{}, &res); err != nil {
+		if err := r.be.Call(ctx, protocol.MethodChatCompact, protocol.CompactParams{SessionID: r.currentSessionID()}, &res); err != nil {
 			fmt.Printf("[%v]\n", err)
 			return false
 		}

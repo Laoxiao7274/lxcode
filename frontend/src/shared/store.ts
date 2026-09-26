@@ -70,9 +70,11 @@ export interface UIState {
   /** 上下文占用（后端测量；null = 未知——刚切会话/后端刚重启，指示器显示
    *  中性态而不是编一个数）。 */
   context: ContextUsage | null;
+  /** 该会话至少完成过一次 history 回放，后续忙碌快照才可保留本地实时块。 */
+  historyReady: boolean;
 }
 
-const initial: UIState = { blocks: [], busy: false, pending: null, todos: [], currentId: "", operationError: null, context: null };
+const initial: UIState = { blocks: [], busy: false, pending: null, todos: [], currentId: "", operationError: null, context: null, historyReady: false };
 
 // 块的唯一序号——React 渲染的稳定 key（index 作 key 在插入新块时
 // 会错位复用组件实例，是重复渲染类怪象的根因）。
@@ -245,7 +247,7 @@ export function reduce(state: UIState, ev: AgentEvent): UIState {
       return {
         ...state,
         blocks: [...blocks, {
-          kind: "dispatch", uid: nextUid(), id: ev.dispatchId, sessionId: ev.sessionId,
+          kind: "dispatch", uid: nextUid(), id: ev.dispatchId, sessionId: ev.childSessionId,
           agentId: ev.agentId, agentName: ev.agentName, agentColor: ev.agentColor,
           task: ev.task, status: "running", subBlocks: [],
         }],
@@ -260,17 +262,12 @@ export function reduce(state: UIState, ev: AgentEvent): UIState {
       const b = blocks[idx] as Extract<ThreadBlock, { kind: "dispatch" }>;
       blocks[idx] = {
         ...b, status: "done", result: ev.result, isError: ev.isError,
-        usageTokens: ev.usageTokens, sessionId: ev.sessionId ?? b.sessionId,
+        usageTokens: ev.usageTokens, sessionId: ev.childSessionId ?? b.sessionId,
       };
       return { ...state, blocks };
     }
     case "busy":
       return { ...state, busy: ev.busy, pending: ev.busy ? state.pending : null };
-    case "sessionChanged":
-      // reason 语义：new（用户点新对话——清屏）/ resumed（切会话——清屏后
-      // 等 historyLoaded 重放）/ started（懒建行——只刷新列表，对话进行中不清屏）
-      if (ev.reason !== "new" && ev.reason !== "resumed") return { ...state, currentId: ev.id };
-      return { ...initial, currentId: ev.id };
     case "sessionsChanged":
       // 列表变化不改 UI 状态本身——新对象触发重渲染（侧栏重读 sessions()）
       return { ...state };
@@ -292,9 +289,20 @@ export function reduce(state: UIState, ev: AgentEvent): UIState {
       // 被压缩的那些消息本来就不在 UI 里（它们是更早的轮次，早已滚出视图）
       return { ...state, blocks: [...state.blocks, block] };
     }
-    case "historyLoaded":
-      // 全量重建（连接/切会话后）：messages → blocks（工具调用与结果配对）
+    case "historyLoaded": {
+      // 当前会话仍在生成且此前已完成过历史回放时，后端快照只含已追加消息；
+      // 全量重建会抹掉本地实时流。冷恢复/首次载入则必须重建确认卡等历史状态。
+      if (ev.history.busy && state.busy && state.historyReady) {
+        return {
+          ...state,
+          pending: ev.history.pending ?? state.pending,
+          todos: ev.history.todos ?? state.todos,
+          context: ev.history.context ?? state.context,
+        };
+      }
+      // 冷恢复/空闲会话：messages → blocks（工具调用与结果配对）
       return { ...reduceHistory(state, ev.history), busy: ev.history.busy };
+    }
     default:
       return state;
   }
@@ -450,7 +458,16 @@ function reduceHistory(state: UIState, h: HistorySnapshot): UIState {
     // 未知占用（后端刚重启/刚切会话）置 null —— 指示器显示中性态，
     // 不沿用上一会话的数字（那是别人的窗口占用）
     context: h.context ?? null,
+    historyReady: true,
   };
+}
+
+/** 将一条服务端事件只归约进它所属的 Session；导出供并发隔离测试直接验证。 */
+export function reduceSessionStates(states: Record<string, UIState>, ev: AgentEvent): Record<string, UIState> {
+  if (!("sessionId" in ev) || !ev.sessionId) return states;
+  const id = ev.sessionId;
+  const previous = states[id] ?? { ...initial, currentId: id };
+  return { ...states, [id]: { ...reduce(previous, ev), currentId: id } };
 }
 
 /** useAgent：订阅 AgentSource 并归约成 UI 状态（会话 id 与操作错误也在
@@ -460,25 +477,54 @@ function reduceHistory(state: UIState, h: HistorySnapshot): UIState {
  * send/resolve 身份稳定：下游 React.memo(Block) 依赖 onConfirm 稳定。 */
 export function useAgent(source: AgentSource): {
   state: UIState;
+  sessionStates: Record<string, UIState>;
   send: AgentSource["send"];
-  resolve: (id: string, outcome: "allow" | "deny") => void;
-  /** 关闭一次性错误提示。 */
+  resolve: (sessionId: string, id: string, outcome: "allow" | "deny") => void;
   clearError: () => void;
-  /** 请求类失败进一次性提示（同一归约域——App/确认流的 catch 调这里）。 */
   reportError: (message: string) => void;
 } {
-  const [state, setState] = useState<UIState>(initial);
+  const [sessionStates, setSessionStates] = useState<Record<string, UIState>>({});
+  const [currentId, setCurrentId] = useState("");
+  const [operationError, setOperationError] = useState<string | null>(null);
+  const [, setRevision] = useState(0);
+
   useEffect(() => {
-    setState(initial);
-    return source.subscribe((ev) => setState((s) => reduce(s, ev)));
+    setSessionStates({});
+    setCurrentId("");
+    setOperationError(null);
+    return source.subscribe((ev) => {
+      if (ev.type === "sessionFocused") {
+        setCurrentId(ev.id);
+        setSessionStates((all) => all[ev.id] ? all : { ...all, [ev.id]: { ...initial, currentId: ev.id } });
+        return;
+      }
+      if (ev.type === "operationError") {
+        setOperationError(ev.message);
+        return;
+      }
+      if (ev.type === "sessionsChanged" || ev.type === "projectsChanged" || ev.type === "sessionChanged" || ev.type === "ready") {
+        setRevision((n) => n + 1);
+        return;
+      }
+      if ("sessionId" in ev) setSessionStates((all) => reduceSessionStates(all, ev));
+    });
   }, [source]);
-  const send = useCallback((t: string, opts?: SendOptions) => source.send(t, opts), [source]);
-  const resolve = useCallback((id: string, outcome: "allow" | "deny") => {
-    setState((s) => resolveConfirm(s, id, outcome));
+
+  const state = {
+    ...(sessionStates[currentId] ?? initial),
+    currentId,
+    operationError,
+  };
+  const send = useCallback((sessionId: string, text: string, opts?: SendOptions) => source.send(sessionId, text, opts), [source]);
+  const resolve = useCallback((sessionId: string, id: string, outcome: "allow" | "deny") => {
+    setSessionStates((all) => {
+      const current = all[sessionId] ?? { ...initial, currentId: sessionId };
+      return { ...all, [sessionId]: resolveConfirm(current, id, outcome) };
+    });
   }, []);
-  const clearError = useCallback(() => setState((s) => (s.operationError ? { ...s, operationError: null } : s)), []);
-  const reportError = useCallback((message: string) => setState((s) => ({ ...s, operationError: message })), []);
-  return { state, send, resolve, clearError, reportError };
+  const clearError = useCallback(() => setOperationError(null), []);
+  const reportError = useCallback((message: string) => setOperationError(message), []);
+  return { state, sessionStates, send, resolve, clearError, reportError };
 }
 
 /** 确认裁决后：允许 → 卡片就地变成工具行（后续 toolResult 填结果——

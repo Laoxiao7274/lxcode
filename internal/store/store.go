@@ -68,7 +68,8 @@ type SessionMeta = sessiondata.SessionMeta
 
 // Store 管理单个 SQLite 库（sessions 目录下的 sessions.db）。
 type Store struct {
-	db *sql.DB
+	db  *sql.DB
+	dir string // 会话数据库所在目录；worktree 工作目录放在其独立子目录
 	// mu 只保护 Create 的 id 生成竞态；数据库自身并发由
 	// 连接池 + WAL + busy_timeout 保证。
 	mu sync.Mutex
@@ -78,6 +79,10 @@ type Store struct {
 func Open(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("创建会话目录 %s 失败: %w", dir, err)
+	}
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, fmt.Errorf("解析会话目录失败: %w", err)
 	}
 	// DSN 参数：WAL（读写不互斥、断电回放）；busy_timeout 防 SQLITE_BUSY
 	// （连接池多连接下的写争用）；_txlock=immediate 让事务开始即取写锁——
@@ -119,6 +124,9 @@ func Open(dir string) (*Store, error) {
 		`ALTER TABLE sessions ADD COLUMN parent_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE sessions ADD COLUMN agent_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE sessions ADD COLUMN dispatch_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE sessions ADD COLUMN worktree_path TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE sessions ADD COLUMN worktree_branch TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE sessions ADD COLUMN worktree_base TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := db.Exec(col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			db.Close()
@@ -147,7 +155,7 @@ func Open(dir string) (*Store, error) {
 			return nil, fmt.Errorf("迁移消息表失败: %w", err)
 		}
 	}
-	st := &Store{db: db}
+	st := &Store{db: db, dir: absDir}
 	// Agent 注册表与拓展目录（M1——四张表 + 首次种子，幂等）
 	if err := st.initAgents(); err != nil {
 		db.Close()
@@ -596,10 +604,15 @@ func (s *Store) List() ([]SessionMeta, error) {
 	if err != nil {
 		return nil, err
 	}
+	visible := out[:0]
 	for i := range out {
 		out[i].Messages = counts[out[i].ID]
+		// 空白草稿与旧版懒建语义一致：未发过消息的 Session 不进入历史列表。
+		if out[i].Messages > 0 {
+			visible = append(visible, out[i])
+		}
 	}
-	return out, nil
+	return visible, nil
 }
 
 // surfaceCounts 统计每个会话当前历史的条数（跳过被影子掉的行）。

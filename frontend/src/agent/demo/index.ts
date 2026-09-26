@@ -5,6 +5,10 @@ import type { AgentEvent, AgentSource, CompactOutcome, ConfirmRequest, ContextUs
 import { MAIN_REASONING, SUB_REASONING, SUB_RESULT, MAIN_ANSWER, TODO_INITIAL, TODO_LATER, FILES_CHANGED, SESSIONS } from "./data";
 
 type Listener = (ev: AgentEvent) => void;
+type SessionScopedEvent = Extract<AgentEvent, { sessionId: string }>;
+type DemoEvent = AgentEvent | {
+  [E in SessionScopedEvent as E["type"]]: Omit<E, "sessionId">;
+}[SessionScopedEvent["type"]];
 
 /** 演示用的上下文占用（与真实后端同形状：used 优先真实用量，分类是估算拆分
  *  且之和 == used）。演示不接模型注册表，窗口按 128k 假定。 */
@@ -19,16 +23,16 @@ function demoContext(used: number): ContextUsage {
 export class DemoAgent implements AgentSource {
   label = "演示模式";
   private listeners = new Set<Listener>();
-  private timers: ReturnType<typeof setTimeout>[] = [];
-  private confirmCb: ((allow: boolean) => void) | null = null;
-  private pendingConfirm: ConfirmRequest | null = null;
-  private busy = false;
+  private timers = new Map<string, ReturnType<typeof setTimeout>[]>();
+  private confirmCallbacks = new Map<string, (allow: boolean) => void>();
+  private pendingConfirms = new Map<string, ConfirmRequest>();
+  private busySessions = new Set<string>();
   private sessions_ = SESSIONS;
   private currentSession = SESSIONS[0].id;
-  private pendingNewId: string | null = null;
-  private pendingNewWorkspace = "";
-  /** 演示态的轮次计数（compact 用：累计过几轮就当作有可压区间）。 */
-  private turns = 0;
+  private pendingNew = new Map<string, string>();
+  private emittingSession = "";
+  /** 演示态每个会话独立计轮（compact 用：累计过几轮就当作有可压区间）。 */
+  private turns = new Map<string, number>();
   private projects_: ProjectMeta[] = [
     { id: "proj-demo-lxcode", name: "lxcode", path: "C:\\Users\\xzy\\Desktop\\my\\lxcode" },
     { id: "proj-demo-agent", name: "local-myt-agent", path: "C:\\Users\\xzy\\Desktop\\gs\\local-myt-agent" },
@@ -36,79 +40,75 @@ export class DemoAgent implements AgentSource {
 
   subscribe(listener: Listener): () => void {
     this.listeners.add(listener);
-    // 接入即 ready（模拟 connection.ready）
-    this.emit({ type: "ready", server: "lxcode", version: "1", busy: this.busy });
+    this.emit({ type: "ready", server: "lxcode", version: "2", busy: this.busySessions.has(this.currentSession) });
+    this.emit({ type: "sessionFocused", id: this.currentSession });
     return () => this.listeners.delete(listener);
   }
 
-  send(text: string, _opts?: SendOptions): void {
-    if (this.busy) return;
-    this.busy = true;
-    // 懒建会话：新会话在首条消息时才落进侧栏列表（Codex 惯例——
-    // 空会话不占列表位）
-    if (this.pendingNewId) {
-      const id = this.pendingNewId;
-      const ws = this.pendingNewWorkspace;
-      this.pendingNewId = null;
-      this.pendingNewWorkspace = "";
+  send(sessionId: string, text: string, _opts?: SendOptions): void {
+    if (!sessionId || !text.trim() || this.busySessions.has(sessionId)) return;
+    this.busySessions.add(sessionId);
+    if (this.pendingNew.has(sessionId)) {
+      const ws = this.pendingNew.get(sessionId) ?? "";
+      this.pendingNew.delete(sessionId);
       this.sessions_ = [
-        { id, title: text.length > 24 ? text.slice(0, 24) + "…" : text, updatedAt: "刚刚", messages: 1, workspace: ws },
+        { id: sessionId, title: text.length > 24 ? text.slice(0, 24) + "…" : text, updatedAt: "刚刚", messages: 1, workspace: ws },
         ...this.sessions_,
       ];
-      this.currentSession = id;
+      this.emit({ type: "sessionsChanged" });
     }
-    this.emit({ type: "userMessage", text });
-    this.emit({ type: "busy", busy: true });
-    this.runTurn();
+    this.emit({ type: "userMessage", sessionId, text });
+    this.emit({ type: "busy", sessionId, busy: true });
+    this.runTurn(sessionId);
   }
 
-  async confirm(id: string, allow: boolean): Promise<void> {
-    if (this.pendingConfirm?.id !== id) throw new Error("确认请求已失效");
-    const cb = this.confirmCb;
-    this.pendingConfirm = null;
-    this.confirmCb = null;
+  async confirm(sessionId: string, id: string, allow: boolean): Promise<void> {
+    if (this.pendingConfirms.get(sessionId)?.id !== id) throw new Error("确认请求已失效");
+    const cb = this.confirmCallbacks.get(sessionId);
+    this.pendingConfirms.delete(sessionId);
+    this.confirmCallbacks.delete(sessionId);
     cb?.(allow);
   }
 
-  cancel(): void {
-    if (!this.busy) return;
-    this.clearTimers();
-    this.emit({
-      type: "error",
-      message: "已取消（保留已生成部分）",
-      aborted: true,
-    });
-    this.finish();
+  cancel(sessionId: string): void {
+    if (!this.busySessions.has(sessionId)) return;
+    this.clearTimers(sessionId);
+    this.pendingConfirms.delete(sessionId);
+    this.confirmCallbacks.delete(sessionId);
+    this.emit({ type: "error", sessionId, message: "已取消（保留已生成部分）", aborted: true });
+    this.finish(sessionId);
   }
 
-  /** 手动压缩（演示）：按真实后端语义回一条 compacted=false 或一条压缩事件。
-   *  演示态不真压历史（内存块是 UI 真源），只演示「事件 → 标记块」这条链路。 */
-  async compact(): Promise<CompactOutcome> {
-    if (this.busy) throw new Error("生成中不能压缩（先停止）");
-    // 演示：累计过几轮就当作"有可压区间"
-    const rounds = this.turns++;
+  /** 手动压缩（演示）：每会话独立的轮次与压缩事件。 */
+  async compact(sessionId: string): Promise<CompactOutcome> {
+    if (this.busySessions.has(sessionId)) throw new Error("生成中不能压缩（先停止）");
+    const rounds = this.turns.get(sessionId) ?? 0;
+    this.turns.set(sessionId, rounds + 1);
     if (rounds < 1) return { compacted: false };
     const before = 38_400 + rounds * 900;
     const after = Math.round(before * 0.3);
     this.emit({
-      type: "compacted", before, after, shadowed: rounds * 4, manual: true,
+      type: "compacted", sessionId, before, after, shadowed: rounds * 4, manual: true,
       summary: "## 主要请求与意图\n- 演示：压缩早期历史\n\n## 当前工作\n- 演示模式的压缩标记块",
     });
     return { compacted: true, before, after, shadowed: rounds * 4 };
   }
 
-  newSession(workspace?: string): void {
-    // 只切到空态 + 记一个待定 id——首条消息时才建列表条目
+  async newSession(workspace?: string): Promise<string> {
     const id = "20260911-" + new Date().toTimeString().slice(0, 8).replaceAll(":", "") + "-n" + Math.floor(Math.random() * 90 + 10);
-    this.pendingNewId = id;
-    this.pendingNewWorkspace = workspace ?? "";
+    this.pendingNew.set(id, workspace ?? "");
     this.currentSession = id;
-    this.emit({ type: "sessionChanged", id, reason: "new" });
+    this.emit({ type: "sessionFocused", id });
+    return id;
   }
 
-  resumeSession(id: string): void {
+  async releaseWorktree(_id: string): Promise<void> {
+    // 演示源没有真实文件系统；只提供与 live 模式一致的能力接口。
+  }
+
+  async resumeSession(id: string): Promise<void> {
     this.currentSession = id;
-    this.emit({ type: "sessionChanged", id, reason: "resumed" });
+    this.emit({ type: "sessionFocused", id });
   }
 
   renameSession(id: string, title: string): void {
@@ -168,48 +168,60 @@ export class DemoAgent implements AgentSource {
 
   // ---- 编排（M3：主 Agent 调度叙事） ----
 
-  private emit(ev: AgentEvent) {
-    this.listeners.forEach((l) => l(ev));
+  private emit(ev: DemoEvent) {
+    const global = ["ready", "sessionFocused", "operationError", "sessionChanged", "sessionsChanged", "projectsChanged"].includes(ev.type);
+    const scoped = "sessionId" in ev || !this.emittingSession || global
+      ? ev
+      : { ...ev, sessionId: this.emittingSession };
+    this.listeners.forEach((l) => l(scoped as unknown as AgentEvent));
   }
 
-  private at(ms: number, fn: () => void) {
-    this.timers.push(setTimeout(fn, ms));
+  private at(sessionId: string, ms: number, fn: () => void) {
+    const timers = this.timers.get(sessionId) ?? [];
+    const timer = setTimeout(() => {
+      this.timers.set(sessionId, (this.timers.get(sessionId) ?? []).filter((item) => item !== timer));
+      const previous = this.emittingSession;
+      this.emittingSession = sessionId;
+      try { fn(); } finally { this.emittingSession = previous; }
+    }, ms);
+    timers.push(timer);
+    this.timers.set(sessionId, timers);
   }
 
-  private clearTimers() {
-    this.timers.forEach(clearTimeout);
-    this.timers = [];
+  private clearTimers(sessionId: string) {
+    for (const timer of this.timers.get(sessionId) ?? []) clearTimeout(timer);
+    this.timers.delete(sessionId);
   }
 
-  private finish() {
-    this.busy = false;
-    this.turns++;
-    this.emit({ type: "busy", busy: false });
+  private finish(sessionId: string) {
+    this.busySessions.delete(sessionId);
+    this.turns.set(sessionId, (this.turns.get(sessionId) ?? 0) + 1);
+    this.emit({ type: "busy", sessionId, busy: false });
   }
 
-  private runTurn() {
+  private runTurn(sessionId: string) {
     // ---- 主 Agent：思考（选人与拟任务）----
     let t = 300;
     MAIN_REASONING.forEach((line) => {
-      this.at(t, () => this.emit({ type: "delta", kind: "reasoning", text: line + "\n" }));
+      this.at(sessionId, t, () => this.emit({ type: "delta", kind: "reasoning", text: line + "\n" }));
       t += 480 + Math.random() * 260;
     });
 
     // ---- 主 Agent：任务清单（调度视角）----
-    this.at(t + 300, () => this.emit({ type: "todoUpdated", items: TODO_INITIAL }));
+    this.at(sessionId, t + 300, () => this.emit({ type: "todoUpdated", items: TODO_INITIAL }));
 
     // ---- 主 Agent：派发（dispatch 卡开）----
-    this.at(t + 900, () => this.emit({ type: "delta", kind: "text", text: "这个任务边界清晰，我派**代码 Agent**去做，稍等。\n\n" }));
+    this.at(sessionId, t + 900, () => this.emit({ type: "delta", kind: "text", text: "这个任务边界清晰，我派**代码 Agent**去做，稍等。\n\n" }));
     // 事件序与真实后端一致：模型先发工具调用（agent_dispatch），内核再开
     // 子上下文。store 对 agent_dispatch 不建工具行（卡才是它的渲染形态）
     // ——这里照发，保证 demo 复现真实链路的事件序（重复渲染类回归可测）。
-    this.at(t + 1500, () => {
+    this.at(sessionId, t + 1500, () => {
       this.emit({
         type: "toolCall", id: "d1", name: "agent_dispatch",
         arguments: JSON.stringify({ agent: "coder", task: "给 internal/agent 的工具循环加 per-tool 120s 超时兜底" }),
       });
     });
-    this.at(t + 1600, () => {
+    this.at(sessionId, t + 1600, () => {
       this.emit({
         type: "dispatchStart", dispatchId: "d1", agentId: "coder", agentName: "代码 Agent",
         agentColor: "#3b82f6",
@@ -220,15 +232,15 @@ export class DemoAgent implements AgentSource {
     // ---- 子 Agent：思考（挂卡内）----
     let s = t + 2800;
     SUB_REASONING.forEach((line) => {
-      this.at(s, () => this.emit({ type: "delta", kind: "reasoning", text: line + "\n", dispatchId: "d1" }));
+      this.at(sessionId, s, () => this.emit({ type: "delta", kind: "reasoning", text: line + "\n", dispatchId: "d1" }));
       s += 460 + Math.random() * 240;
     });
 
     // ---- 子 Agent：读代码（低危自动）----
-    this.at(s + 300, () => {
+    this.at(sessionId, s + 300, () => {
       this.emit({ type: "toolCall", dispatchId: "d1", id: "d-c1", name: "read_file", arguments: JSON.stringify({ path: "internal/agent/session.go", offset: 296, limit: 40 }) });
     });
-    this.at(s + 1300, () => {
+    this.at(sessionId, s + 1300, () => {
       this.emit({
         type: "toolResult", dispatchId: "d1", id: "d-c1", name: "read_file", isError: false,
         content: "296→// runTools 执行本轮工具调用（高危先确认）；返回 false 表示被取消。\n297→func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall) bool {\n…（共 548 行，已显示 296-335 行）",
@@ -236,7 +248,7 @@ export class DemoAgent implements AgentSource {
     });
 
     // ---- 子 Agent：改代码（edit，低危自动——diff 呈现）----
-    this.at(s + 2300, () => {
+    this.at(sessionId, s + 2300, () => {
       this.emit({
         type: "toolCall", dispatchId: "d1", id: "d-c2", name: "edit",
         arguments: JSON.stringify({
@@ -246,7 +258,7 @@ export class DemoAgent implements AgentSource {
         }),
       });
     });
-    this.at(s + 3400, () => {
+    this.at(sessionId, s + 3400, () => {
       this.emit({ type: "toolResult", dispatchId: "d1", id: "d-c2", name: "edit", isError: false, content: "已替换 internal/agent/session.go（1 处唯一匹配）" });
     });
 
@@ -255,10 +267,10 @@ export class DemoAgent implements AgentSource {
     //（streamRound 先发 toolCall，runTools 的确认门再发 confirmRequest）。
     // 早期 demo 只为 d-c3 发 confirmRequest，掩盖了「确认卡与工具行同 id 并存」
     // 导致的重复行（批准后一条永远停在"执行中…"），故此处还原真实顺序。
-    this.at(s + 4000, () => {
+    this.at(sessionId, s + 4000, () => {
       this.emit({ type: "toolCall", dispatchId: "d1", id: "d-c3", name: "bash", arguments: JSON.stringify({ command: "go test ./internal/agent/ -count=1" }) });
     });
-    this.at(s + 4400, () => {
+    this.at(sessionId, s + 4400, () => {
       const req: ConfirmRequest = {
         id: "d-c3",
         name: "bash",
@@ -266,34 +278,34 @@ export class DemoAgent implements AgentSource {
         prompt: "将执行命令: go test ./internal/agent/ -count=1",
         dispatch_id: "d1",
       };
-      this.pendingConfirm = req;
+      this.pendingConfirms.set(sessionId, req);
       this.emit({ type: "confirmRequest", request: req });
       // 等用户裁决（confirm 回调里续播）；演示模式不设自动超时。
       // 结果**延迟**发出：真实后端是 ack 返回 → 工具真跑（bash 起进程）→ 才发
       // toolResult，所以正常顺序是「卡先定格成工具行、结果随后回填」。同步 emit
       // 会把顺序倒过来（结果早于 ack），那是竞态而非正常路径。
-      this.confirmCb = (allow) => {
-        this.at(500, () => {
+      this.confirmCallbacks.set(sessionId, (allow) => {
+        this.at(sessionId, 500, () => {
           if (allow) {
             this.emit({ type: "toolResult", dispatchId: "d1", id: "d-c3", name: "bash", isError: false, content: "ok  github.com/moyunteng/lxcode/internal/agent\t2.081s\nPASS" });
-            this.finishDispatch(true);
+            this.finishDispatch(sessionId, true);
           } else {
             this.emit({
               type: "toolResult", dispatchId: "d1", id: "d-c3", name: "bash", isError: true,
               content: "用户拒绝执行。改用读测试源码核对的方式验证。",
             });
-            this.finishDispatch(false);
+            this.finishDispatch(sessionId, false);
           }
         });
-      };
+      });
     });
   }
 
   /** dispatch 收尾 → 主 Agent 验收汇总（allow = 测试是否真跑了）。 */
-  private finishDispatch(allow: boolean) {
+  private finishDispatch(sessionId: string, allow: boolean) {
     // 子 Agent 最终回复 + dispatchEnd（结果回填）
-    this.at(600, () => this.emit({ type: "delta", kind: "text", text: allow ? "全量绿了，没有回归。" : "按源码核对，改动路径正确。", dispatchId: "d1" }));
-    this.at(1400, () => {
+    this.at(sessionId, 600, () => this.emit({ type: "delta", kind: "text", text: allow ? "全量绿了，没有回归。" : "按源码核对，改动路径正确。", dispatchId: "d1" }));
+    this.at(sessionId, 1400, () => {
       this.emit({ type: "done", usageTokens: 730, finishReason: "stop", dispatchId: "d1" });
       this.emit({
         type: "dispatchEnd", dispatchId: "d1", isError: false, usageTokens: 730,
@@ -311,20 +323,20 @@ export class DemoAgent implements AgentSource {
     });
 
     // ---- 主 Agent：验收汇总 ----
-    this.at(2600, () => this.emit({ type: "delta", kind: "text", text: "代码 Agent 完成了，我核对过结果：\n\n" }));
+    this.at(sessionId, 2600, () => this.emit({ type: "delta", kind: "text", text: "代码 Agent 完成了，我核对过结果：\n\n" }));
     let t = 3200;
     MAIN_ANSWER.forEach((p) => {
-      this.at(t, () => this.emit({ type: "delta", kind: "text", text: (p === "" ? "\n" : p) + "\n" }));
+      this.at(sessionId, t, () => this.emit({ type: "delta", kind: "text", text: (p === "" ? "\n" : p) + "\n" }));
       t += 240 + p.length * 6;
     });
     // 产物汇总（子 Agent 的改动——验收视图）+ 轮完成
-    this.at(t + 300, () => {
+    this.at(sessionId, t + 300, () => {
       this.emit({ type: "filesChanged", files: FILES_CHANGED });
     });
-    this.at(t + 800, () => {
+    this.at(sessionId, t + 800, () => {
       const usage = 2545 + Math.floor(Math.random() * 400);
       this.emit({ type: "done", usageTokens: usage, finishReason: "stop", context: demoContext(38_400 + usage) });
-      this.finish();
+      this.finish(sessionId);
     });
   }
 }

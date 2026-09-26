@@ -111,12 +111,31 @@ const Ctx = createContext<AgentsValue | null>(null);
 
 export function AgentsProvider({ source, children }: { source: AgentSource; children: ReactNode }) {
   const [agents, setAgents] = useState<AgentDef[]>(seedAgents);
-  const [activeAgentId, setActiveAgentId] = useState("main");
-  const [sessionDelegates, setSessionDelegates] = useState<string[] | null>(null);
+  const [currentSessionId, setCurrentSessionId] = useState("");
+  const [activeAgents, setActiveAgents] = useState<Record<string, string>>({});
+  const [delegatesBySession, setDelegatesBySession] = useState<Record<string, string[]>>({});
+  const activeAgentId = activeAgents[currentSessionId] ?? "main";
+  const sessionDelegates = delegatesBySession[currentSessionId] ?? null;
+  const setActiveAgentId = useCallback((id: string) => {
+    setActiveAgents((all) => ({ ...all, [currentSessionId]: id }));
+  }, [currentSessionId]);
+  const setSessionDelegates = useCallback((list: string[] | null) => {
+    setDelegatesBySession((all) => {
+      const next = { ...all };
+      if (list === null) delete next[currentSessionId];
+      else next[currentSessionId] = list;
+      return next;
+    });
+  }, [currentSessionId]);
+  const resetSessionDelegates = useCallback(() => setSessionDelegates(null), [setSessionDelegates]);
   const [modules, setModules] = useState<ContextModuleSpec[]>(CONTEXT_MODULES);
   const [tools, setTools] = useState<ToolSpec[]>(() => [...BUILTIN_TOOLS, ...THIRD_PARTY_TOOLS]);
   const [mcpServers, setMcServers] = useState<McServerSpec[]>(MC_SERVERS);
   const admin = source.agentAdmin;
+
+  useEffect(() => source.subscribe((ev) => {
+    if (ev.type === "sessionFocused") setCurrentSessionId(ev.id);
+  }), [source]);
 
   // live 模式：后端是事实源——初始拉取 + changed 事件重同步（网络错误
   // 只 opError 提示，不打断 UI——种子兜底显示）。
@@ -145,11 +164,10 @@ export function AgentsProvider({ source, children }: { source: AgentSource; chil
   );
   const removeAgent = useCallback((id: string) => {
     setAgents((list) => list.filter((a) => a.id !== id));
-    // 删的是当前选用 → 回落主 Agent（入口永远存在）
-    setActiveAgentId((cur) => (cur === id ? "main" : cur));
+    // 删的是某会话选用的 Agent → 仅那些会话回落主 Agent。
+    setActiveAgents((all) => Object.fromEntries(Object.entries(all).map(([session, active]) => [session, active === id ? "main" : active])));
     void admin?.removeAgent(id).catch((e) => sourceError(source, `删除 Agent 失败: ${e.message}`));
   }, [admin, source]);
-  const resetSessionDelegates = useCallback(() => setSessionDelegates(null), []);
   const addModule = useCallback((mod: ContextModuleSpec) => {
     setModules((list) => [...list, mod]);
     void admin?.addModule({ id: mod.id, desc: mod.desc, kind: mod.kind, body: mod.body, custom: mod.custom !== false })
@@ -220,7 +238,7 @@ export function AgentsProvider({ source, children }: { source: AgentSource; chil
     }),
     [
       agents, addAgent, updateAgent, removeAgent,
-      activeAgentId, sessionDelegates, resetSessionDelegates,
+      activeAgentId, setActiveAgentId, sessionDelegates, setSessionDelegates, resetSessionDelegates,
       modules, addModule, updateModule, removeModule,
       tools, addTools, updateTool, removeTool,
       mcpServers, addMcServer, updateMcServer, removeMcServer,
