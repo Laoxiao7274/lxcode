@@ -710,16 +710,22 @@ func (s *Store) UpdateTool(t sessiondata.ToolSpec) error {
 
 // RemoveTool 删除工具（内置 custom=0 只读；被 Agent 的 tools 引用时
 // 拒绝并列出引用方）。
+//
+// **MCP 物化条目是例外**：它们也是 custom=0（不是用户建的），但它们是
+// **系统投影**——服务器停用/删除时物化层必须能把它们撤下来。只读守卫的本意是
+// 「种子行不许用户删」（删了会被下一次种子同步加回来，且内置实现还在注册表里），
+// 而 MCP 行的生命周期归连接所有。所以判据是 source 而不只是 custom。
 func (s *Store) RemoveTool(id string) error {
 	var custom int
-	err := s.db.QueryRow(`SELECT custom FROM tools WHERE id = ?`, id).Scan(&custom)
+	var source string
+	err := s.db.QueryRow(`SELECT custom, source FROM tools WHERE id = ?`, id).Scan(&custom, &source)
 	if err == sql.ErrNoRows {
 		return fmt.Errorf("工具 %s 不存在", id)
 	}
 	if err != nil {
 		return fmt.Errorf("查询工具失败: %w", err)
 	}
-	if custom == 0 {
+	if custom == 0 && source != "mcp" {
 		return fmt.Errorf("内置工具不可删除（只读条目）")
 	}
 	rows, err := s.db.Query(`SELECT id, tools FROM agents WHERE tools LIKE ?`, "%"+`"`+id+`"`+"%")
@@ -760,6 +766,14 @@ func validateTool(t sessiondata.ToolSpec) error {
 	if strings.TrimSpace(t.ID) == "" {
 		return fmt.Errorf("工具 id 不能为空")
 	}
+	// 工具 id 的字符集是**硬约束**，不是风格问题：OpenAI 与 Anthropic 都
+	// 要求 ^[a-zA-Z0-9_-]{1,64}$，违反它会被严格网关 400 拒收**整轮**请求
+	// （2026-09-23 线上事故：agent.dispatch 的点号让每个带工具的主 Agent
+	// 轮次全部失败，见 AGENTS.md §5 坑 13）。拦在写边界：用户导入的目录
+	// 条目与 MCP 物化出来的条目都走这里，坏 id 进不了库就传不到模型面前。
+	if !validToolID(t.ID) {
+		return fmt.Errorf("工具 id 只能含字母/数字/下划线/连字符且不超过 64 字符: %s", t.ID)
+	}
 	if strings.TrimSpace(t.Desc) == "" {
 		return fmt.Errorf("工具说明不能为空")
 	}
@@ -770,6 +784,22 @@ func validateTool(t sessiondata.ToolSpec) error {
 		return fmt.Errorf("source 必须是 builtin/binary/mcp 之一")
 	}
 	return nil
+}
+
+// validToolID 校验工具 id 字符集（与 tools 包 TestLLMToolsShape 同一条规则，
+// 与 mcp.ExposedName 的净化结果对齐）。
+func validToolID(id string) bool {
+	if id == "" || len(id) > 64 {
+		return false
+	}
+	for _, r := range id {
+		ok := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '_' || r == '-'
+		if !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // ---- mcp_servers ----

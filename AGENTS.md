@@ -25,7 +25,7 @@
 | LLM | 双 wire 格式：OpenAI chat completions + Anthropic Messages（`internal/llm`，从 local-myt-agent 整包继承——含 ChatAuto 分流策略：anthropic 恒流式，openai 带工具走非流式回放，依据是真机端点实测 openai 流式丢 tool_calls） |
 | 工具 | `internal/tools` 注册表 + 风险分级：低危自动执行，高危确认门 |
 | 会话 | **SQLite**（modernc.org/sqlite 纯 Go，WAL；2026-12 用户拍板，替换初版 JSONL——为 compaction/语义记忆/多会话并发铺路），重启恢复最近会话，`/new` `/resume` 切换；项目会话由 `sessions.workspace` 解析项目根，并在首次发送时绑定独立 Git worktree（见 §2.1）；工具相对路径、bash 默认目录、系统提示词经会话级 workDir 与 `tools.WithWorkDir` 对齐 |
-| 配置 | `internal/config` 模型注册表（models.json，原子写；default/vision 角色绑定；**30s 热加载** + model.changed 广播） |
+| 配置 | `internal/config` 模型注册表（models.json，原子写；default/vision 角色绑定；**30s 热加载** + model.changed 广播）；`internal/websearch` 网页搜索渠道（search.json，同目录，同一套 30s 热加载 + search.changed 广播，见 §3.2） |
 | 服务化 | **Windows SCM 服务**（`scripts/service/{install,update,uninstall}.ps1`；开机自启 + 崩溃自动重启；`--probe` 验收；布局 `%ProgramData%\lxcode\{bin,config,sessions,logs}`）；服务形态日志落文件（16MB 轮转 ×3） |
 | 桌面壳 | **Electron + Go sidecar（2026-09-16 用户拍板，推翻 09-10 的 Tauri 2 初选，决策记录见 §2.1；打包定案仅 Windows，2026-12）**；后端可先于壳长期独立运行，壳是薄客户端（窗口/托盘/渲染层直连 7789） |
 | Go 直接依赖 | gorilla/websocket（WS）、golang.org/x/sys（平台接口）、modernc.org/sqlite（纯 Go 存储）；传递依赖以 go.mod 为准 |
@@ -102,13 +102,14 @@
 
 **为什么这个设计省事**：子会话是会话 → 压缩/检查点/影子区间**零特例**（`runCompaction` 只要一个有 st/id/history 的 Session）；子会话的 system 提示词同样每轮现组装（不在历史里），所以**不需要给子上下文加 system 头部保护特例**。注意区分：**任务消息**（`history[0]`，**user** 角色）是另一回事——它确实在历史里，所以需要显式的头部保护：`openChildSession` 给子会话置 `protectHead`（压缩区间起点从 1 开始），任务说明书永远留在 `history[0]`，摘要落在它之后；store 侧配合支持中间段影子（见 §2.2）。
 
-## 3. 工具面（内置 9 个 + 目录动态注入）
+## 3. 工具面（内置 10 个 + 目录动态注入）
 
 | 工具 | 风险 | 说明 |
 |---|---|---|
 | `read_file` | 低危 | 按行输出（`行号→` 前缀），offset/limit 分页，256KB 上限，二进制拒绝 |
 | `search` | 低危 | 纯 Go RE2 检索（files/content/count 三模式），不经过 shell |
 | `session_search` | 低危 | 搜历史会话内容（注入接线：格式归 store 包） |
+| `web_search` | 低危 | 联网搜索（多渠道，主渠道失败自动降级；渠道与配置见 §3.2） |
 | `read_skill` | 低危 | 读技能模块全文（提示词只注入技能索引——渐进披露） |
 | `edit` | 低危 | **精确替换**：old_string 唯一匹配硬校验（0/>1 报错自解释），原子写 |
 | `write_file` | 高危 | 全量覆盖：覆盖已有文件需确认 + 缩水守卫（<50% 告警） |
@@ -131,6 +132,47 @@
 - 参数坏 JSON 先走保守修复（`internal/jsonrepair`：裸换行/尾逗号/单引号/截断补括号），修复成功注明——弱模型坏参数是高频失败形态。
 - **工具调用参数必须在写边界就合法**（2026-09-23 线上事故，见 §5 坑 12）：三道防线——① `agent.sanitizeToolCallArgs` 在 `s.append` 前清洗（正常轮次与流失败保留 partial 两条路径都走）；② `llm.repairToolArgsForWire` 组装请求时兜底（保守修复，修不动发 `{}`，**绝不报错**）；③ `tools.Execute` 执行前再试一次。三者共用 `jsonrepair` 一份实现。
 - **工具 id 必须匹配 `^[a-zA-Z0-9_-]{1,64}$`**（OpenAI 与 Anthropic 的同一条约束）：违反它会被严格网关 400 拒收整轮——原名 `agent.dispatch` 的点号就栽在这上面（2026-09-23 改成 `agent_dispatch` 并配老库迁移，见 §5 坑 13）。`tools` 的 `TestLLMToolsShape` 已按这条字符集校验全部内置工具 id；新增内置工具或导入目录条目时不要用点号。
+
+### 3.2 网页搜索渠道（`internal/websearch`，2026-09-27）
+
+`web_search` 工具背后是一个**多渠道 + 失败自动降级**的检索层，移植自 pi-web-access（MIT，仅作设计参考、**不是依赖**）。设计要点：
+
+- **代码持元数据，磁盘持用户配置**：渠道的 label/desc/docURL/envVar/needsKey/needsBaseURL/optIn/category/options 全在代码里（各适配器的 `base` 字面量 + `provider.go` 的分类表），`config/search.json` 只存用户填的 `api_key`/`base_url`/`options`/`disabled`——**新增渠道零迁移**，老配置文件照常能读。
+- **渠道私有设置项 = `OptionSpec` 声明 + `ChannelConfig.Options` 取值**（2026-09-27）：渠道除通用凭据外还有各自私有的设置（Brightdata 的 SERP zone、Mistral 的模型与档位、Firecrawl 的 API 版本），此前只能靠环境变量配——**设置面板配不出一个能用的 Brightdata 渠道**。现在：适配器声明 `Options() []OptionSpec`（key/label/placeholder/hint/envVar/required/default/choices），磁盘存 `options` 对象，设置面板**按声明渲染输入项**（`choices` 非空 → 下拉，`required` → 红星标）。三条纪律：
+  - **`effectiveChannel` 是唯一解析点**（配置 → `spec.EnvVar` 环境变量 → `spec.Default`），适配器只认 `ch.Options`、**不许再碰 `os.Getenv`**（否则各文件自行决定读哪个变量，行为不可预测也无法测试）；`readyIn`/`channelsOf` 都传 `effectiveChannel(p, raw)`，所以必填项的就绪判定与环境变量回退**零改调用点**就生效；
+  - **只解析声明过的键**（磁盘上多出来的键不往适配器传）——手写配置里一个拼错的键名不该被当成有效设置悄悄生效（用户以为配上了）；
+  - **环境变量回退是兼容承诺**：这些项在加 UI 之前只能靠环境变量配，去掉回退等于让老用户升级后渠道突然失效；
+  - 摘要里的设置项**值只进哈希**（键名进明文）：`snapshot()` 只用于变更检测，而它可能被打印，值可能是凭据（`TestSnapshotDetectsOptionChangeWithoutLeaking` 钉住「能察觉变化」+「不泄漏明文」两头）；`clone()` 必须**深拷贝** Options（map 是引用类型，浅拷贝让读侧与写侧共享同一份）。
+  - 渲染侧：`ChannelView` 把 `OptionSpecs`（声明）与 `Options`（已解析取值）一起给前端，**所以给渠道加设置项不需要改前端**；`choices` 渲染成下拉是因为手打错了要么被后端硬校验拦下（白填一次）、要么静默改变计费（如 Mistral 的 premium 档）。
+- **`presetProviders()` 是唯一登记点**（`internal/websearch/provider.go`）：漏登记 = 渠道在 UI 与工具里都不可见（静默失效）。`provider_test.go` 钉住 id 字符集/唯一性/元数据齐备/分类存在/数量下限，并新增 `TestOptionSpecsContract`（键名/EnvVar 字符集、Choices 必须含 Default、有设置项的渠道不能是零配置）+ `TestRequiredOptionGatesReadiness`（必填项必须真的挡住就绪判定，否则「必填」只是个 UI 装饰）。改渠道清单先看它们。
+- **降级语义只认错误分类，不做字符串匹配**：`FallbackKinds`（transient/quota/network/invalid-response/unsupported）才降级；credential/config/auth/invalid-request **不降级**（换渠道只会把配置错误掩盖成搜索成功）。空结果集是**成功**，不是降级理由。
+- **渠道自身超时必须可降级**（2026-09-27 修的缺陷）：`ClassifyTransport` 必须收到**调用方**的 ctx——拿 `withTimeout` 派生出来的那份会让「渠道太慢」被判成「用户取消」（`KindAborted`），主渠道一慢整次搜索直接失败。判据是「调用方 ctx 是否已结束」：结束了 = 真取消（不降级），没结束 = 渠道侧问题（降级）。`TestChannelTimeoutFallsBack` 钉住这条。
+- **`optIn` 是零配置渠道的门闩**：DuckDuckGo 这类既不需要 key 也不需要地址的渠道，若不标 `optIn` 就会**默认就绪**并悄悄参与降级（上游把它列为 explicit-only 正是这个理由）。`channelReady(p, ch, present)` 是唯一的就绪判定（`ChannelView`/`Ready`/`firstReadyLocked`/`chainOrder`/`SearchWith` 全走它），「配置文件里存在该条目」这件事只有 Service 知道，所以 `present` 必须由 Service 传入。
+- **与上游 explicit-only 的偏离是刻意的**：lxcode 没有上游 `all` 那种「一次打全部渠道」的扇出，只有顺序降级，而渠道只有在用户配置过之后才进链——配置行为本身就是显式意图（`chainOrder` 里有完整注释）。
+- **key 脱敏是硬要求**：渠道常在错误体里回显请求内容（含 key），`Redact` 在 `NewProviderError` 里统一做。**测试夹具的假 key 必须够长**——`Redact` 会把 key 及其前 8 字符在消息里整串替换，用 `"k"` 会把 `"invalid api key"` 打成 `"invalid api ***ey"`，精确匹配断言随之失效（多批适配器都踩过）。
+- **未移植的渠道**（上游共 32 个）：需 MCP 客户端的（parallel-mcp/baizhi）、需浏览器 Cookie 或 ADC 的（gemini-web/gemini-adc，不建议移植）、复用宿主模型凭据的（openai/gemini/kimi/xai，等模型注册表凭据复用落地）。
+- 协议：`search.channels.list` / `search.channel.save` / `search.channel.remove` / `search.primary.set` / `search.test` + `search.changed` 事件（载荷即快照）。**`search.test` 只测单渠道、不降级**——降级会把「这个渠道坏了」测成「搜索正常」。前端走 `SearchAdminSource` 能力接口（与 `ModelAdminSource` 同模式，UI 不知道数据来自 WS 还是 Demo）。
+- 适配器测试一律用 `httptest` 假服务器，**绝不打真渠道**（不花钱、不依赖网络）。
+- **Exa 是唯一「开箱即用」的默认渠道（2026-09-27）**：免配置路径 = 直连官方 MCP 端点 `https://mcp.exa.ai/mcp?tools=<tool>` 打**裸 JSON-RPC `tools/call`**（无 initialize、无会话 id，响应是 SSE 的 `data:` 行），**不需要通用 MCP 客户端**（stdlib 就够）。三条旗标各管一件事：`needsKey` = 就绪是否必须 key（Exa false）；`acceptsKey` = 面板是否给 key 输入框（默认回落 `needsKey`——Exa 缺 key 也就绪、有 key 走直连 API，只看 `needsKey` 会把输入框藏掉，用户永远进不了直连路径）；`defaultReady` = **刻意**的零配置就绪（「零配置渠道必须 optIn」那道守卫的显式例外，`optIn && defaultReady` 自相矛盾、测试禁止）。`base.AcceptsKey()` = `needsKey || acceptsKey`，另外 25 个渠道行为逐字节不变；wire 加 `accepts_key`（恒发）/`default_ready`（omitempty），**加法变更不递增协议 Version**。
+- **`ChannelView.Stored` 是「配置文件里是否真有该条目」**（不是「值非空」）：后端给的是**已解析**取值（配置 → 环境变量 → 默认值），Exa 的 `mcp_url` 不填也有默认值——拿「options 有值」判断「用户配过」会让「清除」按钮出现在空卡片上（CDP 截图自查抓到的真 bug）。前端 `hasStoredConfig` 优先用 `stored`，老后端回落「值存在且 ≠ 声明默认值」。
+- **Exa 的默认地位零接线**：`firstReadyLocked` 按 `presetProviders()` 顺序找首个就绪渠道，空配置下 searxng/duckduckgo/jina/tavily 都不就绪 → Exa 即首个就绪；`chainOrder` 同理排最前。`TestExaIsTheDefaultReadyChannel` 钉住「恰好一个 defaultReady 且是 exa」。
+
+### 3.3 MCP 执行面（`internal/mcp` + `tools/mcp.go`，2026-09-27）
+
+**只依赖标准库**的 MCP 客户端：服务器注册后暴露的能力以工具形式进目录（`source=mcp` + `server` 指回），与 `source=binary` 同一段动态注册（`SetDynamic` 整体替换）。
+
+- **两种传输**：`stdio`（起子进程 + **换行分隔** JSON-RPC，故编码必须紧凑——带缩进的 JSON 破坏分帧）与 `sse`（= **Streamable HTTP**：单端点 POST、`Accept: application/json, text/event-stream`、响应可能是 JSON 或 SSE 的 `data:` 行、回带 `Mcp-Session-Id`/`MCP-Protocol-Version`）。磁盘 `transport` 取值 `stdio|sse` 受 SQLite CHECK 约束，**把 sse 实现成 Streamable HTTP 正好让老配置直接可用，不必改表**。
+- **握手顺序固定**：`initialize` → `notifications/initialized` → `tools/list` → `tools/call`。`initialize` 结果形状是 `{protocolVersion, capabilities, serverInfo:{name,version}}`——`name`/`version` **嵌套**，按扁平结构解析会静默拿到空名字（单测抓到过）。
+- **同连接串行**（`Client.mu` 覆盖整个往返）：MCP 允许并发（靠 id 配对），但使用面是「启动列举一次 + 调用」，串行换来实现简单且不会两处同读 stdout。
+- **stdout 噪音跳过而不是判死**：规范要求 stdout 只写协议、日志走 stderr，但现实有服务器混写。`decodeResponse` 对非 JSON 行/无 id 通知/别人的响应一律返回「不是我的」让调用方继续读，**不报错**。
+- **对账而非增量**（`Manager.Sync` 唯一入口，幂等）：传「当前应该连哪些」整份清单，自己算要连/要断/要保持。三条硬纪律：① 配置没变**保持原连接**（重连打断在途调用）；② 配置变了必须重连（沿用旧连接 = 配置没生效）；③ **上次没连上的必须重试**——`connect` 失败时 `client` 为 nil，按「指纹相同就保持」处理会让启动时连不上的服务器**永远**不再尝试（用户修好命令也没用），最难排查的一类问题。清理一律走 nil-safe 的 `entry.close()`。
+- **工具名净化必须做**（`ExposedName` = `<server>_<tool>`，非 `[A-Za-z0-9_-]` 换 `_`，截到 64）：MCP 允许点号（`web.search`），网关约束 `^[a-zA-Z0-9_-]{1,64}$`——不净化会被 400 拒收**整轮**（§5 坑 13 的事故）。净化后撞名**报错**而非悄悄加后缀（名字必须稳定，否则模型上轮学到的名字下轮就不存在）。
+- **风险一律高危 + `Mutates=true`，不采信服务器自报注解**（`readOnlyHint` 等）：MCP 规范明说「clients MUST consider tool annotations to be untrusted unless they come from trusted servers」——服务器可自称只读换自动执行。放宽只能靠用户显式选 `auto` 档；`Annotations` 只作展示，**不参与定级**。
+- **三处状态缺一处就是半截功能**：① 连接（`mcp.Manager`）② 目录（`tools` 表里 `source=mcp` 的条目 = 服务器的事实投影，`materializeMCPTools` 整份重建：删多的、补缺的、更描述变了的）③ 注册表（`syncDynamicTools` 的动态段）。`mcpDefs()` 的数据源是 **manager 而不是目录**（从目录反推 MCP 原名是绕远路——目录里只有净化后的名字）。
+- **停用 = 能力挂起**：断开 + 撤下目录条目。**MCP 物化条目是 `custom=0` 但可删**（`RemoveTool` 只读守卫的判据是 `source` 而不只是 `custom`：只看 `custom` 会让 MCP 工具永远删不掉，能力挂起变成假的——真链路探针抓到的真 bug）。
+- **运行期状态与磁盘形状分开**：`McServerEntry` 的 `status`/`tool_count`/`last_error`/`stderr` 由 `mcpServerViews` 应答时合成（不往 `McServerSpec` 塞运行期字段）。前端 **`enabled ≠ 已连接`**：`enabled` 是用户意图，连不上时仍为 true——拿它显示「已连接」等于骗用户（`mcp-status.ts` 的 `mcpStatusPill` 纯函数 + 测试钉住，缺状态字段时回落按 `enabled` 显示）；失败原因必须显示出来。
+- **`tools` 包不 import `mcp`**（用扁平 `MCPToolSpec` 构造，依赖方向保持「装配在 server」——映射在 `server/mcp.go`）；**MCP 工具 id 也走 §5 坑 13 的字符集硬校验**（`store.validateTool` 拦在写边界）。
+- **验收**：`internal/mcp` 用「测试二进制自我 re-exec」当假 stdio 服务器（`TestMain` 看 `MCP_FAKE_SERVER`，不引外部依赖），HTTP 用 `httptest`；`internal/server/mcp_test.go` 走完整装配链（加服务器 → 物化 → 注册 → 执行 → 状态 → 停用 → 删除）；**真链路**探针 `node temp/ws-mcp-live.mjs` 打真实 Exa MCP 端点。
 
 ## 4. 开发约定
 
@@ -166,6 +208,9 @@
 11. **后端二进制不会热重载——前端热的、后端可能是几天前的**：dev 栈只在 `dev.mjs` 启动那一刻编译一次 Go 后端，之后 vite 热重载前端、后端进程纹丝不动。**症状是「前端诡异 bug」**：协议新增字段（如 `ConfirmRequest.dispatch_id`）在旧后端里不存在，于是新前端收到的事件缺字段，表现为子 Agent 的确认卡跑到外层时间线、卡片永远「执行中…」，而四层映射代码全都是对的（2026-09-21 实测事故，排查代价极大）。**先跑 `node scripts/check-stack.mjs`**（比较二进制内嵌 buildvcs 提交与 HEAD）再动前端代码；处置 = 重启 dev 栈（Windows 下运行中的 exe 被锁，必须先停栈才能重新 `go build`）。**反向坑**：buildvcs 戳记的是**最后一次提交**，不是工作树——改完代码还没提交就重启栈，戳会停在旧提交而代码其实是最新的，`check-stack` 因此**误报落后**（2026-09-23 实测）；判据是"落后"列出的文件是否已经在你手上改完，是就先提交或再重启一次栈。
 12. **历史里一条参数非法的 tool call 会让会话永久发不出请求**（2026-09-23 线上事故，排查代价极大）：模型输出被 max_tokens 截断时 `arguments` 是半截 JSON，旧实现把它原样写进历史；此后**每一次**请求都在 anthropic 适配器组装阶段硬失败（`工具 X 的 arguments 不是合法 JSON: …`），用户连发三条消息全部无响应，只能新开会话。**症状**：那条报错的 100 字节前缀与历史里某条 tool call 的参数逐字节相同（用只读探针把 `messages.tool_calls` 抠出来比对即可定性）。**处置**：写边界清洗 + 读侧兜底（见 §3）。**教训**：畸形历史条目要么在写边界拦住、要么在读侧兜底，"硬校验 + 无修复路径"会把单个坏数据放大成会话级故障（与坑 5 的配对不变量同类）。
 13. **工具名里的点号会被严格网关 400 拒收**（2026-09-23 实测，已修）：OpenAI 与 Anthropic 都把工具名约束为 `^[a-zA-Z0-9_-]{1,64}$`——调度工具原名 `agent.dispatch` 的点号**违反这条**；宽松网关（旧的 LiteLLM 配置等）过去放过，网关严格化之后即 `Invalid 'tools[0].name': string does not match pattern` + `No fallback model group found`，**每一个带工具的主 Agent 轮次全部失败**（子 Agent 白名单全是下划线名，仍可用——应急旁路）。**修法**：改名 `agent_dispatch`（内核判定 / 提示词表 / 前端渲染判定 / 种子同步全改，`tools.DispatchToolName` 是唯一字面量）+ `Open` 时幂等迁移老库（白名单与历史里的旧名，`internal/store/migration.go`）。**排查手法**：拿同一端点直发两次最小请求（一个带点号名、一个下划线名）对比状态码，一眼定性。新增工具/目录条目一律避开点号。
+14. **分发域守卫必须只作用于自己的方法域**（2026-09-27 实测，已修）：`dispatch` 是按方法前缀依次问各域处理器的链式分发，而 `dispatchAgentCatalog` 早期版本把「未挂会话存储」这道守卫写在了**方法匹配之前**——于是 `--sessions` 缺省时它会**吞掉它之后的所有方法域**（新加的 `search.*` 全部返回「会话存储未挂载」这种驴唇不对马嘴的错误，而 `search.*` 根本不需要存储）。**修法**：每个域处理器**先按方法前缀判「是不是我的」，不是就直接返回 nil 让给下一个**，再做自己的前置校验（`isAgentCatalogMethod`）。新增方法域时照这个顺序写。
+15. **文件编辑工具的原子写会炸运行中的 vite**（2026-09-27 实测两次）：写入器在目标目录建瞬时目录 `.name.<pid>.<uuid>.tmpdir/`，写完即删；vite 的 chokidar 恰好在这个窗口里对它建 watch → `EBUSY: resource busy or locked` → **vite 抛未捕获的 FSWatcher error，整个 dev 栈死掉**（前端热更失效、窗口白屏，而报错里只有一串临时目录路径，极易误判成源码问题）。**修法**：`frontend/vite.config.ts` 的 `server.watch.ignored` 必须含 `**/.*.tmpdir/**` 与 `**/*.tmp`。同类坑：vite watcher 也必须排除 `src-tauri/**` 这类被构建进程锁住的目录。
+16. **含密钥的配置文件必须进 .gitignore**（2026-09-27）：`config/search.json` 存各渠道 apikey，与 `config/local.json` 同性质——新增任何「会落盘凭据」的配置文件时，同步加 .gitignore，否则一次测试写入就变成待提交文件。
 
 ## 6. Windows 服务运维（对齐参考项目的部署形态）
 
@@ -206,11 +251,10 @@ Harness 的目标形态：**主 Agent 只做决策与分派，子 Agent 是用�
 
 ## 9. 待定决策
 
-| 项 | 状态 |
-|---|---|
-| 桌面壳框架 | **已定 Electron + Go sidecar**（2026-09-16 用户拍板，决策记录 §2.1；推翻 09-10 的 Tauri 2 初选）——薄壳 + 前端直连 WS（React + aicss，设计语言 agent-console-v3）；**打包与更新机制已定（2026-12，electron-builder + NSIS + 自建 zip 更新，仅 Windows，见 §2.1）**；src-tauri 骨架已清理（2026-09-16） |
-| 项目正式名 | 工作名 lxcode，用户保留命名权 |
-| 上下文管理 | **已落地（2026-09-22，P1~P5 + 子会话头部保护，见 §2.2/§2.3）**：计账（真实 prompt_tokens 锚定 + 分类归一）、工具配对不变量、摘要压缩（自动三条触发路径 + 手动 `/compact` + 影子区间落库，区间可为前缀也可为中间段）、取消/失败路径的配对补齐（P5——不挂 LLM 的确定性补齐）、子会话任务说明书的头部保护（`protectHead`）、前端「已压缩历史」块与指示器入口。**未做**：P3 确定性裁剪；工具结果截断（8KB/条）继续兜底 |
-| 语义记忆 | 未做（会话搜索先行）；**存储底座已定（2026-12）：会话已切 SQLite（modernc 纯 Go）——语义记忆/向量检索（FTS5/sqlite-vec）将在同库扩展，不再单独立项选型** |
-| 自更新 | 方向 = 定时检查 + 人工确认；机制已定（2026-12）：**自建 zip 更新**（manifest.json + update-\<version\>.zip，两级：后端热替换 / asar 冷替换，Electron 升级走全量安装包；electron-updater 方案作废）——**产物侧已实现**（build.mjs 产出 zip+manifest），**客户端更新器未实现**（待做：检查/下载/校验/替换编排，路线图 M5）；服务形态走 scripts\service\update.ps1 |
-| **后端化路线** | **已定**（2026-09-18，docs/backend-roadmap.md）：M1 注册表与目录（四张表+agent.\*/catalog.\* 协议+前端接线）→ M2 上下文组装+Agent 直选（chat.send 带 agentId）→ M3 agent_dispatch（**2026-09-22 升级：子 Agent = 独立会话**——见 §2.3；原「子上下文隔离」的取舍是"子上下文随主会话轮次结束丢弃"，现已改为独立持久会话，可续跑、压缩同款）→ M4 拓展执行面（自定义工具 spawn/MCP stdio/网页搜索）→ M5 远程访问+更新器。子 Agent 再委派与供应商预算/公平调度器明确出界；顶层多活跃会话与项目 worktree 已落地（§2.1），未分组会话仍无文件系统隔离 |
+**已定项不在本节重复**（本节只留「还没定/还没做」的事实）：桌面壳框架与打包更新机制见 §2.1；上下文管理 P1~P5 的落地范围与「未做」见 §2.2/§2.3；后端化路线的逐步验收标准见 `docs/backend-roadmap.md`。
+
+- **后端化路线**：已定（2026-09-18），**M1~M4 已落地**（M4 = 自定义工具 spawn / MCP / 网页搜索），M5（远程访问 + 客户端更新器）待做；子 Agent 再委派与供应商预算/公平调度器**明确出界**（见 roadmap「明确不做」）。
+- **自更新**：机制已定（自建 zip 更新，两级替换）且**产物侧已实现**（build.mjs 出 zip + manifest）；**客户端更新器未实现**——待做检查/下载/校验/替换编排；服务形态走 `scripts\service\update.ps1`。
+- **语义记忆**：未做（会话搜索先行）；**存储底座已定**——会话已切 SQLite（modernc 纯 Go），语义记忆/向量检索（FTS5/sqlite-vec）将在同库扩展，不再单独立项选型。
+- **项目正式名**：工作名 lxcode，用户保留命名权。
+- **未分组会话无文件系统隔离**：顶层多活跃会话与项目 worktree 已落地（§2.1），未分组会话仍共用后端默认工作目录。

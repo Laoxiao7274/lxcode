@@ -325,6 +325,30 @@ func TestSeedAgentsSelfConsistent(t *testing.T) {
 	}
 }
 
+// TestBuiltinToolsPresentInCatalog：**每个注册表内置工具都必须在目录种子里有条目**。
+//
+// 为什么需要这条（自洽性测试抓不到）：TestSeedAgentsSelfConsistent 的工具面判据是
+// 「目录种子 ∪ 注册表内置」，所以一个内置工具即使目录里没有条目，白名单引用它照样
+// 通过校验——运行期也确实可用（注册表有实现）。但**前端 Agent 编辑器渲染 chip 只读
+// 目录**（AgentEditor 的 builtinToolChips = 目录里 source=builtin 的条目），目录里
+// 没有 = 用户在界面上勾不到它 = 这个工具谁都授权不了。
+//
+// 实际发生过：web_search 与 agent_dispatch 都不在目录里，而默认会话用的主 Agent
+// 白名单只有 agent_dispatch —— web_search 做完了却没有任何入口能用上它。
+func TestBuiltinToolsPresentInCatalog(t *testing.T) {
+	inCatalog := map[string]bool{}
+	for _, tl := range seedTools {
+		if tl.Source == "builtin" {
+			inCatalog[tl.ID] = true
+		}
+	}
+	for _, name := range tools.New().Order() {
+		if !inCatalog[name] {
+			t.Errorf("内置工具 %s 不在目录种子里——Agent 编辑器渲染不出它的 chip，用户无法授权（只加白名单没用）", name)
+		}
+	}
+}
+
 // TestSeedAgentsCoverExecutionSurfaces：名单要覆盖三种执行面（实现 / 勘察 / 验证）
 // ——调研 Agent 只读（无变更类工具），测试 Agent 能跑命令（bash）。
 func TestSeedAgentsCoverExecutionSurfaces(t *testing.T) {

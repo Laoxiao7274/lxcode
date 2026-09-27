@@ -2,8 +2,9 @@
 // EntryCard（工具/技能/模板通用条目卡）+ ToolCard / ModuleCard /
 // McServerCard（载荷装配）。两步删除确认统一走 useConfirmClick。
 import type { ReactNode } from "react";
-import { useAgents, type ContextModuleSpec, type McServerSpec, type ToolSpec } from "../../shared/agents";
+import { useAgents, type ContextModuleSpec, type McpRuntime, type McServerSpec, type ToolSpec } from "../../shared/agents";
 import { useConfirmClick } from "../../shared/confirm-click";
+import { mcpStatusPill } from "../../shared/mcp-status";
 import { Toggle } from "../form";
 import { IconPencil, IconTrash } from "../icons";
 
@@ -124,9 +125,11 @@ export function ModuleCard({ mod, onOpen, onEdit, onDelete }: {
 }
 
 /** MCP 服务器卡：服务器名 + 连接状态 + 启停 + 接入命令/URL + 暴露工具数。 */
-export function McServerCard({ server, toolCount, onEdit, onToggle, onDelete }: {
+export function McServerCard({ server, toolCount, runtime, onEdit, onToggle, onDelete }: {
   server: McServerSpec;
   toolCount: number;
+  /** 运行期状态（后端报的）。缺省 = 演示态/老后端，回落到按 enabled 显示。 */
+  runtime?: McpRuntime;
   onEdit?: () => void;
   onToggle?: () => void;
   onDelete?: () => void;
@@ -134,6 +137,9 @@ export function McServerCard({ server, toolCount, onEdit, onToggle, onDelete }: 
   const del = useConfirmClick(onDelete ?? (() => {}));
   const interactive = !!onEdit || !!onDelete;
   const launch = server.transport === "stdio" ? [server.command, ...server.args].filter(Boolean).join(" ") : server.url;
+  // 状态标签：**有运行期状态就以它为准**——enabled 只说「用户想开」，
+  // 连不上时它仍是 true，拿它显示「已连接」等于骗用户（本轮之前就是这样）。
+  const pill = mcpStatusPill(server.enabled, runtime);
   return (
     <div
       className="cg-card"
@@ -146,9 +152,7 @@ export function McServerCard({ server, toolCount, onEdit, onToggle, onDelete }: 
       <div className="cg-card-top">
         <span className="cg-card-title">{server.id}</span>
         <span className="cg-card-pills">
-          <span className={"ag-pill " + (server.enabled ? "risk-low" : "src")}>
-            {server.enabled ? "已连接" : "未连接"}
-          </span>
+          <span className={"ag-pill " + pill.cls}>{pill.text}</span>
           <span className="ag-pill src">{server.transport === "stdio" ? "stdio" : "SSE"}</span>
           {server.custom && <span className="ag-pill src">自定义</span>}
           {onToggle && (
@@ -159,9 +163,14 @@ export function McServerCard({ server, toolCount, onEdit, onToggle, onDelete }: 
       <div className="cg-card-desc">{server.desc}</div>
       <div className="cg-card-meta" title={launch}>{launch}</div>
       <div className="cg-card-meta">
-        {toolCount} 个工具 · {server.enabled ? "能力可用" : "能力挂起"}
+        {toolCount} 个工具 · {pill.note}
         {server.transport === "stdio" && Object.keys(server.env).length > 0 ? ` · ${Object.keys(server.env).length} 个环境变量` : ""}
       </div>
+      {/* 失败原因要显示出来（只说「连接失败」用户无从下手——是命令不对、
+          网络不通还是缺凭据，得让原因自己说话） */}
+      {runtime?.status === "error" && runtime.lastError !== "" && (
+        <div className="cg-card-error" title={runtime.lastError}>{runtime.lastError}</div>
+      )}
       {interactive && (
         <div className="cg-card-actions">
           {onEdit && (
@@ -186,12 +195,22 @@ export function McServerCard({ server, toolCount, onEdit, onToggle, onDelete }: 
   );
 }
 
-/** MCP 工具计数（server id → 暴露的工具数——McServerCard 的载荷）。 */
+/** MCP 运行期状态查询（server id → 状态）。缺条目 = 后端没报（演示态/
+ *  老后端），卡片回落到按 enabled 显示。 */
+export function useMcpRuntime(): (serverId: string) => McpRuntime | undefined {
+  const { mcpRuntime } = useAgents();
+  return (serverId: string) => mcpRuntime[serverId];
+}
+
+/** MCP 工具计数（server id → 暴露的工具数——McServerCard 的载荷）。
+ *
+ * 优先用后端报的 tool_count（运行期事实），没有才回落到按目录里 source=mcp
+ * 的条目数——演示态与老后端走回落，行为与加状态之前一致。 */
 export function useMcpToolCounts(): (serverId: string) => number {
-  const { tools } = useAgents();
+  const { tools, mcpRuntime } = useAgents();
   const counts = new Map<string, number>();
   for (const t of tools) {
     if (t.source === "mcp" && t.server) counts.set(t.server, (counts.get(t.server) ?? 0) + 1);
   }
-  return (serverId: string) => counts.get(serverId) ?? 0;
+  return (serverId: string) => mcpRuntime[serverId]?.toolCount ?? counts.get(serverId) ?? 0;
 }

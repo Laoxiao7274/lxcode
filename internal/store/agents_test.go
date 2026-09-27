@@ -275,7 +275,9 @@ func TestMcServerCRUDAndCascade(t *testing.T) {
 		t.Fatal("sse 缺 url 应拒绝")
 	}
 	// 挂一个工具到该服务器 → 级联删除带走它
-	if err := s.AddTool(sessiondata.ToolSpec{ID: "mcp:fs-read", Desc: "fs 读", Risk: "low", Source: "mcp", Server: "filesystem", Custom: true}); err != nil {
+	// （id 形状用 mcp.ExposedName 的真实产物 <server>_<tool>：工具 id 的字符集
+	// 是网关硬约束，`mcp:fs-read` 这种带冒号的名字根本到不了模型面前）
+	if err := s.AddTool(sessiondata.ToolSpec{ID: "filesystem_fs-read", Desc: "fs 读", Risk: "low", Source: "mcp", Server: "filesystem", Custom: true}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.RemoveMcServer("filesystem"); err != nil {
@@ -283,7 +285,7 @@ func TestMcServerCRUDAndCascade(t *testing.T) {
 	}
 	tools, _ := s.ListTools()
 	for _, x := range tools {
-		if x.ID == "mcp:fs-read" {
+		if x.ID == "filesystem_fs-read" {
 			t.Fatal("级联删除应带走服务器的工具")
 		}
 	}
@@ -291,13 +293,13 @@ func TestMcServerCRUDAndCascade(t *testing.T) {
 	if err := s.AddMcServer(m); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AddTool(sessiondata.ToolSpec{ID: "mcp:fs-read", Desc: "fs 读", Risk: "low", Source: "mcp", Server: "filesystem", Custom: true}); err != nil {
+	if err := s.AddTool(sessiondata.ToolSpec{ID: "filesystem_fs-read", Desc: "fs 读", Risk: "low", Source: "mcp", Server: "filesystem", Custom: true}); err != nil {
 		t.Fatal(err)
 	}
 	agents, _ := s.ListAgents()
 	for i, a := range agents {
 		if a.ID == "coder" {
-			agents[i].Tools = append(agents[i].Tools, "mcp:fs-read")
+			agents[i].Tools = append(agents[i].Tools, "filesystem_fs-read")
 			if err := s.UpdateAgent(agents[i]); err != nil {
 				t.Fatal(err)
 			}
@@ -305,5 +307,57 @@ func TestMcServerCRUDAndCascade(t *testing.T) {
 	}
 	if err := s.RemoveMcServer("filesystem"); err == nil || !strings.Contains(err.Error(), "coder") {
 		t.Fatalf("被引用工具的服务器删除应拒绝: %v", err)
+	}
+}
+
+// MCP 物化条目（custom=0 + source=mcp）必须可被**系统**撤下——它们不是
+// 用户建的（所以 custom=0），但也不是种子（生命周期归连接所有）。只读守卫的
+// 判据因此是 source 而不只是 custom：只看 custom 会让 MCP 工具永远删不掉
+// （停用服务器后工具仍留在目录里，能力挂起变成假的）。
+func TestMCPProjectedToolIsRemovable(t *testing.T) {
+	s := openTestStore(t)
+	// 内置种子行仍然只读
+	if err := s.RemoveTool("read_file"); err == nil {
+		t.Error("内置工具不该可删")
+	}
+	// MCP 投影行可删
+	spec := sessiondata.ToolSpec{
+		ID: "exa_web_search", Desc: "联网搜索", Risk: "high",
+		Source: "mcp", Server: "exa", Custom: false,
+	}
+	if err := s.AddTool(spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RemoveTool("exa_web_search"); err != nil {
+		t.Fatalf("MCP 投影条目应可被系统撤下: %v", err)
+	}
+	tools, _ := s.ListTools()
+	for _, x := range tools {
+		if x.ID == "exa_web_search" {
+			t.Fatal("撤下后不该还在目录里")
+		}
+	}
+}
+
+// 工具 id 的字符集是硬约束（网关会 400 拒收整轮，见 AGENTS.md §5 坑 13）——
+// 拦在写边界：用户导入的目录条目与 MCP 物化的条目都走这里。
+func TestToolIDCharsetEnforcedAtWriteBoundary(t *testing.T) {
+	s := openTestStore(t)
+	base := sessiondata.ToolSpec{Desc: "x", Risk: "low", Source: "binary", Command: "echo {q}"}
+	bad := []string{"mcp:fs-read", "agent.dispatch", "a b", "工具", strings.Repeat("x", 65), ""}
+	for _, id := range bad {
+		spec := base
+		spec.ID = id
+		if err := s.AddTool(spec); err == nil {
+			t.Errorf("非法 id %q 应被拒", id)
+		}
+	}
+	good := []string{"fs_read", "fs-read", "web_search_exa", strings.Repeat("x", 64)}
+	for _, id := range good {
+		spec := base
+		spec.ID = id
+		if err := s.AddTool(spec); err != nil {
+			t.Errorf("合法 id %q 不该被拒: %v", id, err)
+		}
 	}
 }

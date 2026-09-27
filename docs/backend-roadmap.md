@@ -1,7 +1,6 @@
 # 后端化路线图（2026-09-18 定稿）
 
-> 状态：M1–M4 已实现，M5（远程访问与客户端更新器）待做；已实现范围与剩余决策在本文同步维护。
-> 依据：前端原型（`frontend/src/shared/agents.tsx` + `agent-types.ts`/`agent-seeds.ts`）定义 Agent 数据模型；当前后端按 session_id 持有独立运行时，存储使用 SQLite（sessions/messages/projects/worktrees）。
+> 状态：M1–M4 已实现，M5（远程访问与客户端更新器）待做；已实现范围与剩余决策在本文同步维护。> 依据：前端原型（`frontend/src/shared/agents.tsx` + `agent-types.ts`/`agent-seeds.ts`）定义 Agent 数据模型；当前后端按 session_id 持有独立运行时，存储使用 SQLite（sessions/messages/projects/worktrees）。
 
 ## 拍板记录
 
@@ -157,8 +156,17 @@ catalog.changed {kind}
 
 - **自定义工具执行**（tools 包）：`command` 模板 + `{param}` 填充（参数值来自工具调用的 arguments）→ spawn（无 shell——模板按空格切分 + 参数值原样单参，引号无语义）；workDir 继承会话；超时/输出上限对齐 bash 工具；风险等级进注册表（高危走确认门——确认文本含完整命令）
   - **已落地（2026-09-21）**：`internal/tools/custom.go`（`CustomDef`：params→JSON Schema、模板渲染、spawn）+ `Registry.SetDynamic`（动态段整体替换，内置段不动，注册表加 RWMutex）+ `internal/server/tools_sync.go`（启动与 `catalog.tools.*` 变更后同步；未配 command 的条目跳过并记日志）+ 提示词层回落 `Def.Description`（原先只认 `systemPromptTools` 固定名 → 自定义工具会被静默漏掉）与「白名单里未注册的工具」点名。真链路冒烟 `temp/smoke-m4.mjs` 4/4（真模型调用自定义工具 → 真实 `go version` 输出回填）。
-- **MCP 客户端**（新 internal/mcp）：stdio（spawn mcp 服务器进程，MCP 协议握手）→ tools/list 发现 → 以 `source=mcp, server=<id>` 注册进注册表（id 冲突加前缀）；服务器启停 = 注册/注销其工具；停用 = 工具挂起（保留目录条目）——**未做**
-- **网页搜索工具**（`web_search`）：读搜索渠道配置（渠道表复用 tools 表? **拍板：渠道配置存 config 目录的 search.json**——它是环境配置不是拓展目录）+ 主渠道优先失败降级——**未做**（前端设置面板的渠道配置已就绪）
+- **MCP 客户端**（新 internal/mcp）：stdio（spawn mcp 服务器进程，MCP 协议握手）→ tools/list 发现 → 以 `source=mcp, server=<id>` 注册进注册表（id 冲突加前缀）；服务器启停 = 注册/注销其工具；停用 = 工具挂起（保留目录条目）
+  - **已落地（2026-09-27）**：`internal/mcp`（只依赖标准库——JSON-RPC 编解码 + **两种传输**：stdio 子进程换行分隔、sse 走 **Streamable HTTP** 语义 + `Client` 握手/列举/调用 + `Manager` 对账式 Sync）+ `internal/tools/mcp.go`（`MCPToolSpec` → `Def`，**一律 RiskHigh + Mutates**，不采信服务器自报的 `readOnlyHint`）+ `internal/server/mcp.go`（`syncMCPServers` 编排：连接 → `materializeMCPTools` 把能力投影进 tools 表 → `syncDynamicTools` 注册；`mcpServerViews` 合成运行期状态）+ 前端服务器卡显示**真实连接状态**（`enabled ≠ 已连接`）。
+  - **偏离原计划的两处（都是刻意的）**：① 原写「id 冲突加前缀」——实现改为**净化后撞名报错**（`ExposedName` = `<server>_<tool>`，非 `[A-Za-z0-9_-]` 换 `_`；名字必须稳定，静默加后缀会让模型上轮学到的名字下轮不存在）；② 原写「停用保留目录条目」——实现是**撤下条目**（目录是服务器的事实投影，停用后留着条目会让模型以为还能调）。
+  - **顺带修的真 bug**：`RemoveTool` 的只读守卫原先只看 `custom`，而 MCP 物化条目也是 `custom=0`（非用户创建）→ 工具永远删不掉、停用变成假的；判据改为 `source != "mcp"`。
+  - **验收**：`internal/mcp` 20 个单测（假 stdio 服务器用测试二进制自我 re-exec，HTTP 用 httptest）+ `internal/server/mcp_test.go` 端到端装配链 + **真链路**探针 `node temp/ws-mcp-live.mjs`（打真实 Exa MCP 端点：握手 + 列举 2 工具 + 物化 + 挂起 + 删除）。
+- **网页搜索工具**（`web_search`）：读搜索渠道配置（渠道表复用 tools 表? **拍板：渠道配置存 config 目录的 search.json**——它是环境配置不是拓展目录）+ 主渠道优先失败降级
+  - **已落地（2026-09-27）**：`internal/websearch`（渠道适配器 + 错误分类驱动的降级链 + 配置/凭据解析 + 原子写）+ `internal/tools/websearch.go`（第 10 个内置工具，低危只读）+ 协议 5 方法（`search.channels.list`/`search.channel.save`/`search.channel.remove`/`search.primary.set`/`search.test`）+ `search.changed` 事件 + 前端设置面板「网页搜索」分区（按分类分组、筛选、内联配置、单渠道测试）。
+  - **渠道**：移植 pi-web-access（MIT，仅设计参考）**26 个**——自建/零配置（SearXNG、DuckDuckGo、Jina）、通用 API（Tavily、Exa、Brave、Perplexity、Kagi、Valyu、AnySearch、Search1API、Querit、Parallel、TinyFish、SearchInfinity、Ollama、Mistral、Firecrawl）、中文（博查）、SERP 代理（Serper、SerpApi、SerpBase、Serply、SerpDive、Brightdata、Xcrawl）。**未移植**：需 MCP 客户端的（parallel-mcp/baizhi，等 M4 MCP 客户端）、需浏览器 Cookie 或 ADC 的（gemini-web/gemini-adc，不建议移植）、复用宿主模型凭据的（openai/gemini/kimi/xai，等模型注册表凭据复用）。
+  - **降级语义**：只认错误分类（transient/quota/network/invalid-response/unsupported 才降级），不做字符串匹配；渠道自身超时归 network（可降级）；空结果集是成功不是降级理由；`search.test` 只测单渠道不降级。
+  - **渠道私有设置项（2026-09-27 补齐，原「已知缺口」已消除）**：`OptionSpec` 声明 + `ChannelConfig.Options` 取值——适配器声明设置项（key/label/hint/envVar/required/default/choices），设置面板**按声明渲染输入项**（choices → 下拉、required → 红星标），解析单点在 `effectiveChannel`（配置 → 环境变量 → 默认值），所以老用户的环境变量配置（`BRIGHTDATA_SERP_ZONE`/`MISTRAL_SEARCH_MODEL`/`MISTRAL_SEARCH_TOOL`/`FIRECRAWL_API_VERSION`）继续有效。必填项缺一即不就绪（Brightdata 的 zone），面板状态标签直接点名缺哪一项。
+  - **未做**：`fetch_content`（网页正文抓取），其 SSRF 校验随之一并推迟。
 - 验收：拓展页建的自定义工具/MCP 工具真的能被 Agent 调用并出结果
 
 ## M5 — 远程访问与更新
@@ -172,4 +180,3 @@ catalog.changed {kind}
 - 顶层多活跃会话与项目 worktree 已实现（见下节）；仍未做供应商预算/公平调度器
 - 子 Agent 再委派（两类制结构性禁止——深度恒 1）
 - 多层 Agent 会话树/子 Agent 再委派（两类制从结构上限制 dispatch 深度为 1）
-- MCP 的 HTTP/SSE 传输（stdio 先行——桌面场景主流）

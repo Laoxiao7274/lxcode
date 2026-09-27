@@ -35,6 +35,35 @@ test('broadcast user messages retain the payload session and nested content', as
   assert.deepEqual(events, [{ type: 'userMessage', sessionId: 's2', text: 'target session' }]);
   void agent;
 });
+// 渠道私有设置（options）必须原样上车，且未给时按现值回填——
+// 后端是整体覆盖语义，不回填的话「只改 key」会把已存的 zone 抹掉。
+test('saveChannel forwards options and back-fills them from the cached snapshot', async (t) => {
+  const { agent, ws } = setup(t);
+  ws.receive({
+    method: 'search.changed',
+    params: {
+      channels: [
+        { id: 'brightdata', label: 'BD', desc: 'd', needs_key: true, needs_url: false,
+          category: 'serp', category_label: 'SERP 代理', enabled: true, primary: false, configured: true,
+          option_specs: [{ key: 'zone', label: 'SERP zone', required: true }],
+          options: { zone: 'cached-zone' } },
+      ],
+      primary: 'brightdata', ready: true,
+    },
+  });
+  // 显式给 options：原样上车。
+  const first = agent.searchAdmin.saveChannel('brightdata', { apiKey: 'k', options: { zone: 'new-zone' } });
+  assert.deepEqual(ws.sent.at(-1).params, {
+    id: 'brightdata', api_key: 'k', base_url: '', options: { zone: 'new-zone' }, enabled: true,
+  });
+  ws.reply({});
+  await first;
+  // 不给 options（只改 key）：按缓存回填，不能把 zone 抹成空。
+  const second = agent.searchAdmin.saveChannel('brightdata', { apiKey: 'k2' });
+  assert.deepEqual(ws.sent.at(-1).params.options, { zone: 'cached-zone' });
+  ws.reply({});
+  await second;
+});
 test('JSON-RPC errors reject model changes and do not fake cache updates', async (t) => {
   const { agent, ws } = setup(t);
   const request = agent.modelAdmin.addModel({ id: 'a', base_url: 'http://test', model: 'a' });

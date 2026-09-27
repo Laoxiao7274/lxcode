@@ -1,13 +1,15 @@
 // WSAgent：真实后端对接（WS JSON-RPC，默认 127.0.0.1:7789——协议与 Go
-// internal/protocol 一致）。AgentSource + ModelAdminSource + AgentAdminSource
-// 三能力实现。事件 → AgentEvent 映射与 DemoAgent 可互换（工厂一行切换）。
+// internal/protocol 一致）。AgentSource + ModelAdminSource + AgentAdminSource +
+// SearchAdminSource 四能力实现。事件 → AgentEvent 映射与 DemoAgent 可互换
+// （工厂一行切换）。
 // 错误纪律：生成类失败（chat.error）走 error 事件（会话状态由 reducer
 // 收敛）；请求类失败（拒绝/断连/超时）走 operationError 事件——UI 只提示，
 // 不动 blocks/pending。
 import type {
   AgentAdminEntry, AgentAdminMcServer, AgentAdminModule, AgentAdminSource, AgentAdminTool,
   AgentEvent, AgentSource, CompactOutcome, ConfirmRequest, ContextUsage, ModelAdminSource, ModelEntry,
-  ProjectInstructions, ProjectMeta, SendOptions, SessionMeta, TodoItem,
+  ProjectInstructions, ProjectMeta, SearchAdminSource, SearchChannel, SearchChannelsSnapshot,
+  SearchTestResult, SendOptions, SessionMeta, TodoItem,
 } from "../../shared/types";
 
 /** WS JSON-RPC 帧结构（与 Go internal/protocol 对齐）。 */
@@ -41,10 +43,11 @@ const PROTOCOL_VERSION = "2";
 const RECONNECT_MS = 5000;
 const REQUEST_TIMEOUT_MS = 10_000;
 
-export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource {
+export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource, SearchAdminSource {
   label = "真实后端";
   readonly modelAdmin: ModelAdminSource = this;
   readonly agentAdmin: AgentAdminSource = this;
+  readonly searchAdmin: SearchAdminSource = this;
   private readonly addr: string;
   private ws: WebSocket | null = null;
   private listeners = new Set<Listener>();
@@ -62,6 +65,9 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource 
   private agentToolsCache: AgentAdminTool[] = [];
   private agentMcpCache: AgentAdminMcServer[] = [];
   private agentListeners = new Set<() => void>();
+  /** 搜索渠道快照（search.changed 驱动刷新；设置面板网页搜索区的数据源）。 */
+  private searchCache: SearchChannelsSnapshot = { channels: [], ready: false };
+  private searchListeners = new Set<() => void>();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   /** 订阅时惰性建连（构造不再触网——测试可先插桩再连接）。 */
   private started = false;
@@ -113,6 +119,7 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource 
           await refresh("catalog.modules.list", (r) => this.applyAgentModules(r));
           await refresh("catalog.tools.list", (r) => this.applyAgentTools(r));
           await refresh("catalog.mcp.list", (r) => this.applyAgentMcp(r));
+          await refresh("search.channels.list", (r) => this.applySearchChannels(r));
           // 首次连接开一个空会话；重连则恢复该连接原焦点。所有后续操作都显式带
           // session_id，因此连接焦点只为兼容旧客户端与首屏 UI 服务。
           if (!this.booted && this.ws === ws) {
@@ -352,6 +359,11 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource 
         }
         break;
       }
+      case "search.changed":
+        // 搜索渠道配置变更——载荷就是快照，直接采用（不必再往返一次
+        // search.channels.list：后端广播时已经把它算好了）。
+        this.applySearchChannels(p);
+        break;
     }
   }
 
@@ -699,5 +711,58 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource 
     if (!Array.isArray(result)) return;
     this.agentMcpCache = result as AgentAdminMcServer[];
     this.agentListeners.forEach((l) => l());
+  }
+
+  // ---- SearchAdminSource（网页搜索渠道——M4） ----
+
+  channels(): SearchChannelsSnapshot {
+    return this.searchCache;
+  }
+
+  onChannelsChanged(listener: () => void): () => void {
+    this.searchListeners.add(listener);
+    return () => this.searchListeners.delete(listener);
+  }
+
+  saveChannel(
+    id: string,
+    patch: { apiKey?: string; baseUrl?: string; options?: Record<string, string>; enabled?: boolean },
+  ): Promise<void> {
+    // 未给的字段按现值回填：后端是 upsert 语义（缺省即清空），
+    // 不回填的话「只改 base_url」会把已存的 key 抹掉。
+    const cur = this.searchCache.channels.find((c) => c.id === id);
+    return this.call("search.channel.save", {
+      id,
+      api_key: patch.apiKey ?? cur?.api_key ?? "",
+      base_url: patch.baseUrl ?? cur?.base_url ?? "",
+      // options 同样按现值回填：它是整体覆盖而非增量合并，
+      // 不回填的话「只改 key」会把已存的 zone/档位抹掉。
+      options: patch.options ?? cur?.options ?? {},
+      enabled: patch.enabled ?? cur?.enabled ?? true,
+    }).then(() => undefined);
+  }
+
+  removeChannel(id: string): Promise<void> {
+    return this.call("search.channel.remove", { id }).then(() => undefined);
+  }
+
+  setPrimary(id: string): Promise<void> {
+    return this.call("search.primary.set", { id }).then(() => undefined);
+  }
+
+  testChannel(id: string, query?: string): Promise<SearchTestResult> {
+    return this.call("search.test", { id, query: query ?? "" }) as Promise<SearchTestResult>;
+  }
+
+  /** search.channels.list 结果 / search.changed 载荷 → 缓存 + 通知。 */
+  private applySearchChannels(result: unknown) {
+    const r = result as Partial<SearchChannelsSnapshot> | null;
+    if (!r || !Array.isArray(r.channels)) return;
+    this.searchCache = {
+      channels: r.channels as SearchChannel[],
+      primary: r.primary,
+      ready: r.ready === true,
+    };
+    this.searchListeners.forEach((l) => l());
   }
 }

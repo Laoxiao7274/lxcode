@@ -1,5 +1,5 @@
 // Package tools 实现 agent 的工具体系：注册表 + 内置工具（read_file /
-// edit / write_file / bash / search / session_search / todo）+ 风险分级执行。
+// search / web_search / session_search / todo）+ 风险分级执行。
 // 风险分级是硬约束（AGENTS.md §4）：低危自动执行；高危须经调用方的
 // 人工确认门（CLI 的 y/n）。执行层硬校验：参数必须是合法 JSON（坏 JSON 先走
 // 一次保守修复——本地/小模型坏参数是高频失败形态）、bash 有超时与输出上限、
@@ -62,6 +62,10 @@ type Registry struct {
 	// 工具本身无状态——JSONL 格式归 agent 所有，这里只持有函数避免重复定义格式。
 	searchMu      sync.Mutex
 	sessionSearch SessionSearchFn
+	// webSearch 是注入的网页搜索实现（server 装配搜索渠道时接线）。
+	// 与 sessionSearch 共用一把锁：两者都是「装配期写一次、运行期只读」的
+	// 注入点，各配一把锁只是多一处可能忘记加锁的地方。
+	webSearch WebSearchFn
 }
 
 // SessionSearchFn 是会话搜索的实现约定：在全部会话（含当前）的消息内容里
@@ -82,13 +86,14 @@ func (r *Registry) getSessionSearch() SessionSearchFn {
 }
 
 // New 创建注册表并注册内置工具。顺序即系统提示词里工具清单的顺序：
-// 读取类在前（read/search/session_search/read_skill），变更类在后
+// 读取类在前（read/search/web_search/session_search/read_skill），变更类在后
 // （edit/write/bash），todo 收尾；agent_dispatch 是主 Agent 的调度
 // 通道（子 Agent 白名单不含它——两类制深度恒 1）。
 func New() *Registry {
 	r := &Registry{defs: map[string]*Def{}, builtin: map[string]bool{}}
 	r.register(readFileDef())
 	r.register(searchDef())
+	r.register(webSearchDef(r))
 	r.register(sessionSearchDef(r))
 	r.register(readSkillDef(r))
 	r.register(editDef())

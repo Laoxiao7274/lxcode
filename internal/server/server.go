@@ -17,11 +17,13 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/moyunteng/lxcode/internal/agent"
 	"github.com/moyunteng/lxcode/internal/config"
+	"github.com/moyunteng/lxcode/internal/mcp"
 	"github.com/moyunteng/lxcode/internal/project"
 	"github.com/moyunteng/lxcode/internal/protocol"
 	"github.com/moyunteng/lxcode/internal/sessiondata"
 	"github.com/moyunteng/lxcode/internal/store"
 	"github.com/moyunteng/lxcode/internal/tools"
+	"github.com/moyunteng/lxcode/internal/websearch"
 )
 
 // Server 是 WebSocket JSON-RPC 服务端：持有会话与模型注册表，
@@ -30,6 +32,18 @@ type Server struct {
 	reg  *config.Registry
 	treg *tools.Registry // 保存引用：AttachSessionStore 时接动态工具与会话搜索
 	st   *store.Store    // 保存引用：会话管理方法（rename/archive）直通存储
+	// search 是网页搜索渠道服务（AttachSearch 装配；nil = 未装配）。
+	search *websearch.Service
+	// mcpMgr 是 MCP 客户端管理器（NewServer 时建；生命周期内不换）。
+	// mcpMu 保护这一个字段（对账可能在协议请求路径上并发触发）。
+	mcpMu  sync.Mutex
+	mcpMgr *mcp.Manager
+
+	// baseCtx 是服务运行期的基上下文（Run 时设置）。
+	// 请求分发出在 WS 读循环里，没有请求级 ctx 可传——而搜索要打网络。
+	// 没有它，停机时在途的搜索请求只能干等自己的超时（最长 20s）才收尾。
+	ctxMu   sync.RWMutex
+	baseCtx context.Context
 
 	sessionsMu    sync.RWMutex
 	sessions      map[string]*agent.Session
@@ -44,6 +58,24 @@ type Server struct {
 
 	mu      sync.Mutex
 	clients map[*wsClient]struct{}
+}
+
+// Ctx 返回请求处理用的基上下文（未运行时退化为 Background——
+// 单测直接调 dispatch 时不会 panic）。
+func (s *Server) Ctx() context.Context {
+	s.ctxMu.RLock()
+	defer s.ctxMu.RUnlock()
+	if s.baseCtx == nil {
+		return context.Background()
+	}
+	return s.baseCtx
+}
+
+// setBaseCtx 记录运行期基上下文（Run 调用）。
+func (s *Server) setBaseCtx(ctx context.Context) {
+	s.ctxMu.Lock()
+	s.baseCtx = ctx
+	s.ctxMu.Unlock()
 }
 
 // wsClient 是一条客户端连接（每个连接一个写锁：gorilla 不允许并发写）。
@@ -64,6 +96,7 @@ func NewServer(reg *config.Registry) *Server {
 	return &Server{
 		reg:           reg,
 		treg:          tools.New(),
+		mcpMgr:        mcp.NewManager(),
 		sessions:      map[string]*agent.Session{},
 		worktreeLocks: map[string]*sync.Mutex{},
 		upgrader: websocket.Upgrader{
@@ -120,7 +153,19 @@ func (s *Server) AttachSessionStore(st *store.Store) error {
 	// M4：工具目录里的自定义工具（binary）注册进工具注册表——启动时就位，
 	// 之后的目录变更由 catalog.tools.* 分支触发同步。
 	s.syncDynamicTools()
+	// M4 后半段：MCP 服务器连接 + 工具物化（同样是启动就位）。
+	// 放在 syncDynamicTools 之后：对账内部会再同步一次注册表（那时 MCP 工具
+	// 才在目录里），所以这里的顺序只影响首次启动的日志顺序。
+	s.syncMCPServers()
 	return nil
+}
+
+// CloseMCP 断开全部 MCP 连接（停机时调用——stdio 服务器是子进程，
+// 不关就会留下孤儿进程）。
+func (s *Server) CloseMCP() {
+	if mgr := s.mcpManager(); mgr != nil {
+		mgr.Close()
+	}
 }
 
 func (s *Server) newRuntime(id string) (*agent.Session, error) {
@@ -839,6 +884,11 @@ func (s *Server) dispatch(c *wsClient, req *protocol.Request) *protocol.Response
 		return resp
 	}
 
+	// search.*（M4 网页搜索渠道——独立分发函数，未命中回落 unknown）
+	if resp := s.handleSearch(req, params); resp != nil {
+		return resp
+	}
+
 	return protocol.NewError(req.ID, protocol.CodeMethodNotFound, "未知方法: "+req.Method)
 }
 
@@ -967,6 +1017,7 @@ func (s *Server) broadcast(method string, params any) {
 // 不打断长连接——WS 读循环会一直挂着，Shutdown 会无限等），
 // 再 Shutdown 等存量请求收尾。
 func (s *Server) Run(ctx context.Context, addr string) error {
+	s.setBaseCtx(ctx)
 	mux := http.NewServeMux()
 	mux.Handle(protocol.Path, s.Handler())
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -976,6 +1027,9 @@ func (s *Server) Run(ctx context.Context, addr string) error {
 	go func() {
 		<-ctx.Done()
 		s.closeAllClients()
+		// MCP stdio 服务器是**子进程**：不显式关就会留下孤儿进程
+		//（进程退出不会自动带走它们——Windows 上尤其如此）。
+		s.CloseMCP()
 		_ = srv.Shutdown(context.Background())
 	}()
 	log.Printf("后端 WS 服务监听 %s%s", addr, protocol.Path)

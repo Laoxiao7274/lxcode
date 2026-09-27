@@ -11,7 +11,7 @@ import { serializeModuleExport } from "../../shared/module-import";
 import { serializeToolExport } from "../../shared/tool-import";
 import { staggerIn } from "../../shared/motion";
 import { Button, Segmented } from "../form";
-import { McServerCard, ModuleCard, ToolCard, useMcpToolCounts } from "./cards";
+import { McServerCard, ModuleCard, ToolCard, useMcpRuntime, useMcpToolCounts } from "./cards";
 import { DocDialog, type Focus } from "./DocDialog";
 import { McConfigImportDialog } from "./McConfigImportDialog";
 import { McServerEditor } from "./McServerEditor";
@@ -26,6 +26,7 @@ type Tab = "tools" | "skills" | "templates" | "mcp";
 export function CatalogPage() {
   const { modules, addModule, updateModule, removeModule, tools, addTools, updateTool, removeTool, mcpServers, addMcServer, updateMcServer, removeMcServer } = useAgents();
   const toolCountOf = useMcpToolCounts();
+  const runtimeOf = useMcpRuntime();
   const [tab, setTab] = useState<Tab>("tools");
   const [focus, setFocus] = useState<Focus | null>(null);
   const [editing, setEditing] = useState<{ mod: ContextModuleSpec; isNew: boolean } | null>(null);
@@ -156,8 +157,10 @@ export function CatalogPage() {
             onOpen={() => setFocus({ kind: "tool", id: t.id })}
             // 内置工具只读（实现就在注册表里）；外部二进制可编辑——种子里的
             // ripgrep/browser 是「声明了但没配 command」的形态，不给编辑入口
-            // 等于把用户卡死（用户报告：模型答「注册表没有」，却无处可改）
-            onEdit={t.source === "builtin" ? undefined : () => setEditingTool({ tool: t, isNew: false })}
+            // 等于把用户卡死（用户报告：模型答「注册表没有」，却无处可改）。
+            // **MCP 工具也不给编辑**：它是服务器列举结果的投影，改完会在下次
+            // 物化时被静默覆盖（要改就去改服务器，别让用户白改一遍）。
+            onEdit={t.source === "builtin" || t.source === "mcp" ? undefined : () => setEditingTool({ tool: t, isNew: false })}
             onDelete={t.custom ? () => removeTool(t.id) : undefined}
           />
         ))}
@@ -184,6 +187,7 @@ export function CatalogPage() {
             key={s.id}
             server={s}
             toolCount={toolCountOf(s.id)}
+            runtime={runtimeOf(s.id)}
             onEdit={() => setEditingServer({ server: s })}
             onToggle={() => updateMcServer({ ...s, enabled: !s.enabled })}
             onDelete={s.custom ? () => removeMcServer(s.id) : undefined}

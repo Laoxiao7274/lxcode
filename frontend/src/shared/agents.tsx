@@ -12,8 +12,8 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useSettings } from "./settings";
 import type { AgentDef, ContextModuleSpec, McServerSpec, ToolSpec } from "./agent-types";
-import { BUILTIN_TOOLS, CONTEXT_MODULES, MC_SERVERS, THIRD_PARTY_TOOLS, seedAgents } from "./agent-seeds";
-import type { AgentAdminEntry, AgentAdminMcServer, AgentAdminModule, AgentAdminTool, AgentSource } from "./types";
+import { BUILTIN_TOOLS, CONTEXT_MODULES, MC_RUNTIME, MC_SERVERS, THIRD_PARTY_TOOLS, seedAgents } from "./agent-seeds";
+import type { AgentAdminEntry, AgentAdminMcServer, AgentAdminModule, AgentAdminTool, AgentSource, McpRuntimeStatus } from "./types";
 
 // 消费方兼容 re-export（原 26KB 单文件的类型/工厂出口不变）
 export type { AgentDef, ContextModuleSpec, McServerSpec, ToolParam, ToolSpec } from "./agent-types";
@@ -75,6 +75,27 @@ function toWireMcServer(m: McServerSpec): AgentAdminMcServer {
   };
 }
 
+/** McpRuntime 是 MCP 服务器的**运行期**状态（与配置分开：配置是用户写的，
+ *  运行期是后端报的——连不上时 enabled 仍为 true，两者不能混为一谈）。 */
+export interface McpRuntime {
+  status: McpRuntimeStatus;
+  toolCount: number;
+  lastError: string;
+  stderr: string;
+}
+
+/** fromWireMcRuntime 从后端条目抽出运行期状态（缺字段 = 老后端/演示态，
+ *  返回 null 让调用方回落到「按 enabled 显示」的旧行为——AGENTS.md §5 坑 11）。 */
+function fromWireMcRuntime(m: AgentAdminMcServer): McpRuntime | null {
+  if (m.status === undefined) return null;
+  return {
+    status: m.status,
+    toolCount: m.tool_count ?? 0,
+    lastError: m.last_error ?? "",
+    stderr: m.stderr ?? "",
+  };
+}
+
 interface AgentsValue {
   agents: AgentDef[];
   addAgent: (def: AgentDef) => void;
@@ -102,6 +123,9 @@ interface AgentsValue {
   removeTool: (id: string) => void;
   /** MCP 服务器拓展（第四版块——接入单元；能力以 source=mcp 工具进工具拓展）。 */
   mcpServers: McServerSpec[];
+  /** MCP 服务器的运行期状态（server id → 状态）。缺条目 = 后端没报
+   *  （演示态/老后端），调用方回落到「按 enabled 显示」。 */
+  mcpRuntime: Record<string, McpRuntime>;
   addMcServer: (server: McServerSpec) => void;
   updateMcServer: (server: McServerSpec) => void;
   removeMcServer: (id: string) => void;
@@ -131,6 +155,9 @@ export function AgentsProvider({ source, children }: { source: AgentSource; chil
   const [modules, setModules] = useState<ContextModuleSpec[]>(CONTEXT_MODULES);
   const [tools, setTools] = useState<ToolSpec[]>(() => [...BUILTIN_TOOLS, ...THIRD_PARTY_TOOLS]);
   const [mcpServers, setMcServers] = useState<McServerSpec[]>(MC_SERVERS);
+  const [mcpRuntime, setMcpRuntime] = useState<Record<string, McpRuntime>>(
+    () => MC_RUNTIME as Record<string, McpRuntime>,
+  );
   const admin = source.agentAdmin;
 
   useEffect(() => source.subscribe((ev) => {
@@ -145,7 +172,16 @@ export function AgentsProvider({ source, children }: { source: AgentSource; chil
       setAgents(admin.agents().map(fromWireAgent));
       setModules(admin.modules().map(fromWireModule));
       setTools(admin.tools().map(fromWireTool));
-      setMcServers(admin.mcpServers().map(fromWireMcServer));
+      const wire = admin.mcpServers();
+      setMcServers(wire.map(fromWireMcServer));
+      // 运行期状态与配置分开存：老后端不返回这些字段 → 整键留空，
+      // 卡片回落到「按 enabled 显示」的旧行为（坑 11 的兼容姿势）。
+      const runtime: Record<string, McpRuntime> = {};
+      for (const m of wire) {
+        const rt = fromWireMcRuntime(m);
+        if (rt) runtime[m.id] = rt;
+      }
+      setMcpRuntime(runtime);
     };
     pull();
     return admin.onChanged(pull);
@@ -234,14 +270,14 @@ export function AgentsProvider({ source, children }: { source: AgentSource; chil
       sessionDelegates, setSessionDelegates, resetSessionDelegates,
       modules, addModule, updateModule, removeModule,
       tools, addTools, updateTool, removeTool,
-      mcpServers, addMcServer, updateMcServer, removeMcServer,
+      mcpServers, mcpRuntime, addMcServer, updateMcServer, removeMcServer,
     }),
     [
       agents, addAgent, updateAgent, removeAgent,
       activeAgentId, setActiveAgentId, sessionDelegates, setSessionDelegates, resetSessionDelegates,
       modules, addModule, updateModule, removeModule,
       tools, addTools, updateTool, removeTool,
-      mcpServers, addMcServer, updateMcServer, removeMcServer,
+      mcpServers, mcpRuntime, addMcServer, updateMcServer, removeMcServer,
     ],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

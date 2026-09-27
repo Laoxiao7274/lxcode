@@ -19,6 +19,21 @@ var seedTools = []sessiondata.ToolSpec{
 		Doc:    "纯 Go RE2 检索，不经过 shell。\n\n- files 模式列文件名；content 列命中行；count 只给计数\n- 大仓库先 files 缩小范围再 content",
 	},
 	{
+		// 网页搜索（M4）：**必须在目录里**，否则 Agent 编辑器渲染不出它的
+		// chip（内置 chips 来自目录，见 AgentEditor 的 builtinToolChips），
+		// 用户就没法把 web_search 勾给任何 Agent —— 而默认会话用的就是
+		// 主 Agent（白名单只有 agent_dispatch），结果是这个工具做完了却
+		// 谁也用不上。
+		ID: "web_search", Desc: "联网搜索网页（多渠道，主渠道失败自动降级）", Risk: "low", Source: "builtin", Custom: false,
+		Params: []sessiondata.ToolParam{
+			{Name: "query", Type: "string", Required: true, Desc: "搜索查询词（自然语言问题即可）"},
+			{Name: "num_results", Type: "int", Desc: "结果条数（默认 5，上限 20）"},
+			{Name: "recency", Type: "enum", Desc: "时间范围：day / week / month / year"},
+			{Name: "domains", Type: "array", Desc: "限定域名；前缀 - 表示排除"},
+		},
+		Doc: "查最新信息、文档、报错、API 用法等可能过时的事实。\n\n- 不要用它搜本仓库代码（那用 search）\n- 多个渠道按主渠道优先自动降级；失败会说明是哪个渠道出的错\n- 「搜到 0 条」和「搜索失败」是两种结论——前者换关键词，后者如实报告\n\n渠道配置见「设置 → 网页搜索」。",
+	},
+	{
 		ID: "edit", Desc: "精确替换文件内容（old_string 唯一匹配）", Risk: "low", Source: "builtin", Custom: false,
 		Params: []sessiondata.ToolParam{{Name: "path", Type: "string", Required: true}, {Name: "old_string", Type: "string", Required: true}, {Name: "new_string", Type: "string", Required: true}},
 		Doc:    "精确替换——old_string 必须在文件中唯一匹配（0 或 >1 都报错）。\n\n原子写；这是编程任务的主编辑通道。",
@@ -49,6 +64,19 @@ var seedTools = []sessiondata.ToolSpec{
 		ID: "read_skill", Desc: "读取技能模块的完整内容（提示词只列索引）", Risk: "low", Source: "builtin", Custom: false,
 		Params: []sessiondata.ToolParam{{Name: "id", Type: "string", Required: true, Desc: "技能 id（提示词「可用技能」清单里的名字）"}},
 		Doc:    "渐进披露：提示词只注入技能索引（id + 摘要），需要完整方法论时按 id 取全文。\n\n没在白名单里的技能读不到（提示词里看不到 = 不存在）。",
+	},
+	{
+		// 调度通道（主 Agent 的唯一工具）。与 web_search 同理必须在目录里：
+		// 主 Agent 的种子白名单直接写着它，但编辑器渲染 chip 也要靠目录
+		//（否则界面上看不到自己有哪些工具）。
+		ID: "agent_dispatch", Desc: "把任务派给名单中的子 Agent（子 Agent = 独立会话）", Risk: "low", Source: "builtin", Custom: false,
+		Params: []sessiondata.ToolParam{
+			{Name: "agent", Type: "string", Required: true, Desc: "目标 Agent 的名单 id"},
+			{Name: "task", Type: "string", Required: true, Desc: "任务描述（目标 + 约束 + 验收标准）"},
+			{Name: "context", Type: "string", Desc: "可选背景（不是完整历史）"},
+			{Name: "session", Type: "string", Desc: "可选：续跑既有子会话的 id"},
+		},
+		Doc: "主 Agent 只做决策与分派，不直接执行任务。\n\n- 任务描述必须**自包含**——子 Agent 看不到当前对话历史\n- 子 Agent 在独立会话里执行（有自己的历史与压缩），返回值带子会话 id\n- 要接着上次进度继续：把子会话 id 填进 session\n- 两类制：子 Agent 的白名单不含它（委派深度恒 1）",
 	},
 	{
 		// 外部 Rust 二进制的接入样板（AGENTS.md §2.1「Go 主刀、Rust 武器库」）：
@@ -132,10 +160,12 @@ var seedAgents = []sessiondata.AgentDef{
 		// 调研面：只读工具集（无 edit/write_file/bash），所以「不改任何文件」是
 		// 结构保证而不是靠提示词自觉；approval=strict 是同一件事的第二道保险
 		//（将来有人给它的白名单加了写工具，运行期直接拒绝）。
+		// web_search 是调研的核心能力之一（本仓库代码之外的资料都靠它），
+		// 且它是只读工具——strict 档下照样可用（Mutates=false）。
 		ID: "researcher", Name: "调研 Agent", Enabled: true, Color: "#10a37f", Model: "",
 		Desc:     "代码库与资料勘察：全文检索、历史会话与跨文件脉络梳理，只给结论与出处。",
 		Prompt:   "你是调研 Agent。只做检索与信息整理：结论必须带依据（文件路径 + 行号、命令输出或文档链接）；查不到就如实说「未找到」，不编造也不推测。不修改任何文件。",
-		Tools:    []string{"read_file", "search", "session_search", "ripgrep"},
+		Tools:    []string{"read_file", "search", "session_search", "ripgrep", "web_search"},
 		Workflow: "research-first", Skills: []string{},
 		Delegates: []string{}, Approval: "strict",
 	},

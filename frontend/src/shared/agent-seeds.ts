@@ -210,6 +210,24 @@ export const MC_SERVERS: McServerSpec[] = [
   },
 ];
 
+/** 演示态的 MCP 运行期状态（live 模式下后端是事实源）。
+ *
+ * 演示三种形态各一，让界面状态可被看见：连上（filesystem）、连不上
+ * （web-search——命令不存在，这正是真实世界的常见形态）、已停止（停用的那些）。
+ * 类型用宽松形状而不是 McpRuntime：本文件不 import agents.tsx（那会成环——
+ * agents.tsx 从这里取种子）。 */
+export const MC_RUNTIME: Record<string, { status: string; toolCount: number; lastError: string; stderr: string }> = {
+  filesystem: { status: "connected", toolCount: 4, lastError: "", stderr: "" },
+  "web-search": {
+    status: "error",
+    toolCount: 0,
+    lastError: "MCP web-search initialize 失败: 启动 MCP 服务器进程失败: exec: \"npx\": executable file not found in %PATH%",
+    stderr: "",
+  },
+  sqlite: { status: "stopped", toolCount: 0, lastError: "", stderr: "" },
+  "remote-demo": { status: "stopped", toolCount: 0, lastError: "", stderr: "" },
+};
+
 /** 内置拓展（种子——运行时名单是 Provider 状态，用户可增删自定义条目）。 */
 export const CONTEXT_MODULES: ContextModuleSpec[] = [
   {

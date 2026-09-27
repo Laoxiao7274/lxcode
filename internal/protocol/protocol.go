@@ -10,6 +10,7 @@ import (
 	"github.com/moyunteng/lxcode/internal/config"
 	"github.com/moyunteng/lxcode/internal/llm"
 	"github.com/moyunteng/lxcode/internal/tools"
+	"github.com/moyunteng/lxcode/internal/websearch"
 )
 
 // Version 是协议版本（hello 握手交换；不兼容变更时递增）。
@@ -72,6 +73,21 @@ const (
 	MethodCatalogMcpAdd    = "catalog.mcp.add"
 	MethodCatalogMcpUpdate = "catalog.mcp.update"
 	MethodCatalogMcpRemove = "catalog.mcp.remove"
+
+	// ---- 网页搜索渠道（M4——渠道配置存 config/search.json，见 docs/backend-roadmap.md）----
+	//
+	// 渠道是**环境配置**不是拓展目录：它描述这台机器能连哪些搜索服务，
+	// 与「有哪些工具」是两件事（拍板记录见路线图 M4）。所以方法名用 search.*
+	// 而不是 catalog.search.*。
+	MethodSearchChannelsList = "search.channels.list"
+	MethodSearchChannelSave  = "search.channel.save"
+	// MethodSearchChannelRemove 删除渠道配置（回到未配置状态）。
+	MethodSearchChannelRemove = "search.channel.remove"
+	// MethodSearchPrimarySet 设主渠道（降级链的第一个）。
+	MethodSearchPrimarySet = "search.primary.set"
+	// MethodSearchTest 只测一个渠道、不降级——用户点「测试」就是想验证这一个，
+	// 降级会把「这个渠道坏了」测成「搜索正常」。
+	MethodSearchTest = "search.test"
 )
 
 // 事件名（服务端 → 全部客户端广播；无 id 的 JSON-RPC 消息）。
@@ -96,6 +112,7 @@ const (
 	EventDispatchStart  = "chat.dispatchStart" // 主 Agent 派发子 Agent——客户端渲染 dispatch 卡
 	EventDispatchEnd    = "chat.dispatchEnd"   // 子 Agent 执行收尾——dispatch 卡定格带结果
 	EventCompacted      = "chat.compacted"     // 历史被压缩（前缀替换成摘要检查点）——客户端插标记块
+	EventSearchChanged  = "search.changed"     // 搜索渠道配置变更——客户端重拉 search.channels.list
 )
 
 // 错误码：JSON-RPC 标准码 + 本应用码。
@@ -560,6 +577,10 @@ type ToolRemoveParams struct {
 }
 
 // McServerEntry 是 catalog.mcp.list 的条目。
+//
+// Status/ToolCount/LastError/Stderr 是**运行期**信息（由服务端在应答时合成，
+// 不是磁盘形状）：界面据此显示「已连接 / 连接失败 + 原因 / 已停止」。
+// 新增字段是加法变更，不递增协议 Version。
 type McServerEntry struct {
 	ID        string            `json:"id"`
 	Desc      string            `json:"desc"`
@@ -570,6 +591,15 @@ type McServerEntry struct {
 	URL       string            `json:"url,omitempty"`
 	Enabled   bool              `json:"enabled"`
 	Custom    bool              `json:"custom"`
+
+	// Status：connected | error | stopped（停用或未对账到）。
+	Status string `json:"status,omitempty"`
+	// ToolCount 是已列举到的工具数（未连接时为 0）。
+	ToolCount int `json:"tool_count,omitempty"`
+	// LastError 是最近一次连接/列举失败的原因（成功时为空）。
+	LastError string `json:"last_error,omitempty"`
+	// Stderr 是 stdio 子进程 stderr 的尾部（诊断用，可能为空）。
+	Stderr string `json:"stderr,omitempty"`
 }
 
 // McServerAddParams 是 catalog.mcp.add/update 的载荷。
@@ -615,4 +645,61 @@ type DispatchEndParams struct {
 	Result         string `json:"result"`
 	IsError        bool   `json:"is_error"`
 	UsageTokens    int    `json:"usage_tokens,omitempty"`
+}
+
+// ---- 网页搜索渠道 ----
+
+// SearchChannelsResult 是渠道快照（也是 search.changed 事件的载荷，
+// 与 ModelListResult 同款：一次拉全，客户端不需要增量合并）。
+//
+// Channels 含**全部内置渠道**（含未配置的）——前端要能列出可配置的渠道，
+// 只回已配置的话用户永远看不到「还能配什么」。
+type SearchChannelsResult struct {
+	Channels []websearch.Channel `json:"channels"`
+	// Primary 是主渠道 id（空 = 未指定，按预设顺序降级）。
+	Primary string `json:"primary,omitempty"`
+	// Ready 报告是否存在至少一个就绪渠道——前端据此决定要不要提示去配置。
+	Ready bool `json:"ready"`
+}
+
+// SearchChannelSaveParams 保存（upsert）一个渠道的配置。
+//
+// APIKey 为空表示**清空**该渠道的 key（用户主动删 key 的场景）；
+// 想「只改 base_url 不动 key」请先把现有 key 回填（前端本来就拿着快照）。
+//
+// Options 是渠道私有设置（键名见该渠道的 option_specs）；整体覆盖而非增量合并
+// ——与 APIKey/BaseURL 同款语义：提交的载荷就是该渠道配置的完整新状态。
+type SearchChannelSaveParams struct {
+	ID      string            `json:"id"`
+	APIKey  string            `json:"api_key"`
+	BaseURL string            `json:"base_url"`
+	Options map[string]string `json:"options,omitempty"`
+	Enabled bool              `json:"enabled"`
+}
+
+// SearchChannelRefParams 按 id 定位一个渠道（删除用）。
+type SearchChannelRefParams struct {
+	ID string `json:"id"`
+}
+
+// SearchPrimarySetParams 设主渠道（空 id = 清空，回落预设顺序第一个就绪渠道）。
+type SearchPrimarySetParams struct {
+	ID string `json:"id"`
+}
+
+// SearchTestParams 测试单个渠道（不降级）。
+type SearchTestParams struct {
+	ID string `json:"id"`
+	// Query 测试查询词；空 = 用一个默认词（用户点测试时通常不想先想关键词）。
+	Query string `json:"query,omitempty"`
+}
+
+// SearchTestResult 是 search.test 的结果：把渠道真实返回的摘要回给前端，
+// 让用户当场看到「这个 key 到底能不能用」。
+type SearchTestResult struct {
+	Provider string             `json:"provider"`
+	Answer   string             `json:"answer,omitempty"`
+	Results  []websearch.Result `json:"results"`
+	// ElapsedMS 是耗时（用户判断渠道快慢的依据）。
+	ElapsedMS int `json:"elapsed_ms"`
 }

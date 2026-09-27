@@ -72,20 +72,27 @@ func fromProtocolTool(e protocol.ToolEntry) sessiondata.ToolSpec {
 	}
 }
 
-func toProtocolMcServers(list []sessiondata.McServerSpec) []protocol.McServerEntry {
-	out := make([]protocol.McServerEntry, len(list))
-	for i, m := range list {
-		out[i] = protocol.McServerEntry{
-			ID: m.ID, Desc: m.Desc, Transport: m.Transport, Command: m.Command, Args: m.Args,
-			Env: m.Env, URL: m.URL, Enabled: m.Enabled, Custom: m.Custom,
-		}
+// toProtocolMcServer 把磁盘形状转成协议条目（**不含运行期状态**——
+// 状态由 mcpServerViews 在应答时合成，见 server/mcp.go）。
+func toProtocolMcServer(m sessiondata.McServerSpec) protocol.McServerEntry {
+	return protocol.McServerEntry{
+		ID: m.ID, Desc: m.Desc, Transport: m.Transport, Command: m.Command, Args: m.Args,
+		Env: m.Env, URL: m.URL, Enabled: m.Enabled, Custom: m.Custom,
 	}
-	return out
 }
 
 // dispatchAgentCatalog 处理 agent.*/catalog.* 方法（store 未挂载时拒绝——
 // 无持久化形态没有注册表可言）。
+//
+// 归属判定必须在 store 守卫**之前**：本函数是主分发的回落链一环，
+// 「不属于本域」的唯一正确答复是 nil（交回主分发继续找）。守卫写在最前面
+// 会把排在后面的方法域一并吞掉——store 未挂载时 search.*/后续任何域
+// 都只会收到「会话存储未挂载」，而真正的原因与它们毫无关系
+// （2026-09-27 加 search.* 时实测踩到）。
 func (s *Server) dispatchAgentCatalog(id json.RawMessage, method string, params json.RawMessage) *protocol.Response {
+	if !isAgentCatalogMethod(method) {
+		return nil
+	}
 	if s.st == nil {
 		return protocol.NewError(id, protocol.CodeInvalidParams, "会话存储未挂载（--sessions）——Agent 注册表不可用")
 	}
@@ -216,7 +223,8 @@ func (s *Server) dispatchAgentCatalog(id json.RawMessage, method string, params 
 		if err != nil {
 			return protocol.NewError(id, protocol.CodeInternal, err.Error())
 		}
-		return protocol.NewResult(id, toProtocolMcServers(list))
+		// 条目上合成**运行期状态**（连接/工具数/最近错误）——磁盘形状里没有它们。
+		return protocol.NewResult(id, s.mcpServerViews(list))
 
 	case protocol.MethodCatalogMcpAdd, protocol.MethodCatalogMcpUpdate:
 		var p protocol.McServerAddParams
@@ -236,6 +244,9 @@ func (s *Server) dispatchAgentCatalog(id json.RawMessage, method string, params 
 		if err != nil {
 			return protocol.NewError(id, protocol.CodeInvalidParams, err.Error())
 		}
+		// M4：连接与目录一起对账——新增/改配置要真连上、工具要物化出来，
+		// 否则用户保存成功却什么也没发生。
+		s.syncMCPServers()
 		s.broadcast(protocol.EventCatalogChanged, protocol.CatalogChangedParams{Kind: "mcp", Reason: "update"})
 		return protocol.NewResult(id, map[string]any{})
 
@@ -247,8 +258,19 @@ func (s *Server) dispatchAgentCatalog(id json.RawMessage, method string, params 
 		if err := s.st.RemoveMcServer(p.ID); err != nil {
 			return protocol.NewError(id, protocol.CodeInvalidParams, err.Error())
 		}
+		// 断开连接 + 撤下工具（能力随服务器一起消失）
+		s.syncMCPServers()
 		s.broadcast(protocol.EventCatalogChanged, protocol.CatalogChangedParams{Kind: "mcp", Reason: "remove"})
 		return protocol.NewResult(id, map[string]any{})
 	}
 	return nil // 未命中（调用方回落 unknown method）
+}
+
+// isAgentCatalogMethod 判定方法是否属于本域。
+//
+// 用前缀而不是把方法名再列一遍：方法名常量表已经有 12 个，两处列举必然漂移
+// （新增方法只改一处 → 要么被守卫误拒、要么漏掉 store 检查）。
+// agent./catalog. 是协议里保留给本域的前缀（见 protocol.go 的方法名分区）。
+func isAgentCatalogMethod(method string) bool {
+	return strings.HasPrefix(method, "agent.") || strings.HasPrefix(method, "catalog.")
 }

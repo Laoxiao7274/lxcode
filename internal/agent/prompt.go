@@ -46,6 +46,7 @@ const systemPromptFooter = `
 var systemPromptTools = map[string]string{
 	"read_file":            "read_file：读取文件，低危自动执行，支持分页与行号",
 	"search":               "search：搜索文件内容/文件名，低危自动执行，不经过 shell",
+	"web_search":           "web_search：联网搜索网页（多渠道自动降级），低危自动执行",
 	"session_search":       "session_search：搜索历史会话内容（含当前会话），低危自动执行",
 	"read_skill":           "read_skill：读取技能的完整内容（提示词里只有索引），低危自动执行",
 	"edit":                 "edit：精确修改文件片段（唯一匹配替换），低危自动执行",

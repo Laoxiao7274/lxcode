@@ -15,6 +15,7 @@ import (
 	"github.com/moyunteng/lxcode/internal/config"
 	"github.com/moyunteng/lxcode/internal/server"
 	"github.com/moyunteng/lxcode/internal/store"
+	"github.com/moyunteng/lxcode/internal/websearch"
 )
 
 // reloadInterval 是注册表热加载周期。抽成变量纯粹是为了测试能缩短它
@@ -76,13 +77,35 @@ func runServe(ctx context.Context, path, addr, sessionsDir string) error {
 		return fmt.Errorf("恢复会话失败: %w", err)
 	}
 
-	go reloadLoop(ctx, reg, srv)
+	// 网页搜索渠道（config/search.json，与 models.json 同目录）。
+	// 加载失败不拒绝启动（与空注册表同一条理由：服务形态崩溃重启循环
+	// 比明确报错更糟）——搜索不可用不影响对话，日志里说清原因即可。
+	searchSvc, err := websearch.LoadService(resolveSearchPath(path))
+	if err != nil {
+		log.Printf("警告: 搜索渠道配置加载失败（web_search 将不可用）: %v", err)
+	} else {
+		srv.AttachSearch(searchSvc)
+		log.Printf("搜索渠道配置: %s（就绪=%v）", searchSvc.Path(), searchSvc.Ready())
+	}
+
+	go reloadLoop(ctx, reg, searchSvc, srv)
 	return srv.Run(ctx, addr)
 }
 
-// reloadLoop 周期热加载注册表：手改 models.json 后无需重启服务。
-// 变更才广播（model.changed）；失败保留旧状态（降级可用）。
-func reloadLoop(ctx context.Context, reg *config.Registry, srv *server.Server) {
+// resolveSearchPath 决定搜索渠道配置路径：与 models.json 同目录。
+//
+// 不放 CLI flag 的理由：它是同一份部署配置的一部分，拆成两个 flag 只会
+// 让安装脚本多传一个参数、多一个可以写错的地方。
+func resolveSearchPath(modelsPath string) string {
+	if env := os.Getenv("LXCODE_SEARCH_CONFIG"); env != "" {
+		return env
+	}
+	return filepath.Join(filepath.Dir(modelsPath), "search.json")
+}
+
+// reloadLoop 周期热加载注册表与搜索渠道配置：手改 models.json /
+// search.json 后无需重启服务。变更才广播；失败保留旧状态（降级可用）。
+func reloadLoop(ctx context.Context, reg *config.Registry, searchSvc *websearch.Service, srv *server.Server) {
 	ticker := time.NewTicker(reloadInterval)
 	defer ticker.Stop()
 	last := snapshot(reg)
@@ -93,12 +116,17 @@ func reloadLoop(ctx context.Context, reg *config.Registry, srv *server.Server) {
 		case <-ticker.C:
 			if err := reg.Reload(); err != nil {
 				log.Printf("注册表热加载失败（保留旧状态）: %v", err)
-				continue
-			}
-			if now := snapshot(reg); now != last {
+			} else if now := snapshot(reg); now != last {
 				last = now
 				srv.NotifyModels()
 				log.Printf("注册表变更已广播: %s", now)
+			}
+			// 搜索渠道：变更广播由 Service 自己的回调触发（AttachSearch 挂的），
+			// 这里只负责让它重读磁盘。
+			if searchSvc != nil {
+				if _, err := searchSvc.Reload(); err != nil {
+					log.Printf("搜索渠道配置热加载失败（保留旧状态）: %v", err)
+				}
 			}
 		}
 	}

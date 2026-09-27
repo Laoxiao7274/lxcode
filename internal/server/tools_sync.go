@@ -16,7 +16,7 @@ import (
 //   - binary：命令模板经进程边界执行 → 注册（未配置 command 的跳过并记日志：
 //     种子里的 ripgrep/browser 是「声明了但没装」的形态，不该让它们把
 //     整份目录带下水）
-//   - mcp：能力由 MCP 服务器注册时提供（M4 后半段），此处不同步
+//   - mcp：执行面是 MCP 客户端 → 注册（数据源是 manager 而不是目录，见 mcpDefs）
 func (s *Server) syncDynamicTools() {
 	if s.st == nil {
 		return
@@ -38,6 +38,8 @@ func (s *Server) syncDynamicTools() {
 		}
 		defs = append(defs, def)
 	}
+	// MCP 段：来源是 manager（当前连着的工具），不是目录条目。
+	defs = append(defs, s.mcpDefs()...)
 	if skipped := s.treg.SetDynamic(defs); len(skipped) > 0 {
 		log.Printf("自定义工具与内置工具同名，已跳过（内置实现优先）: %s", strings.Join(skipped, "、"))
 	}
