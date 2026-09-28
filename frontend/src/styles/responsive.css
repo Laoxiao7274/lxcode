@@ -1,0 +1,44 @@
+/* 响应式与动效减免（覆盖，必须在被覆盖的规则之后）。 */
+
+/* ===== 响应式（小屏：窗口贴边） ===== */
+@media (max-width: 768px) {
+  .window-stage {
+    padding: 0;
+  }
+  .app-window {
+    border-radius: 0;
+    border: none;
+    box-shadow: none;
+  }
+  .app {
+    grid-template-columns: 1fr;
+  }
+  .sidebar {
+    display: none;
+  }
+}
+/* ===== 动效减免 ===== */
+@media (prefers-reduced-motion: reduce) {
+  .pulse-dot,
+  .msg {
+    animation: none;
+  }
+  .md-caret {
+    animation: none;
+  }
+  .md-seg {
+    animation: none;
+  }
+  .thread-scroll {
+    scroll-behavior: auto;
+  }
+  .suggest-card,
+  .session-item,
+  .search-box {
+    transition: none;
+  }
+  .suggest-card:hover {
+    transform: none;
+    box-shadow: none;
+  }
+}

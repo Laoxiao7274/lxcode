@@ -271,3 +271,27 @@ test('boot opens a fresh session once (session.new before chat.history), never o
   assert.ok(again.includes('chat.history'), '重连仍应重放历史');
   void agent;
 });
+
+// 切会话与 boot 同一条纪律：**历史先到、焦点后切**。
+// 焦点一换，UI 立刻按该会话的状态渲染，而它的历史还在路上——渲染出来的是
+// 空会话（EmptyState「我们做点什么？」），一个 WS 往返后再被真历史顶掉。
+// 帧级实测（点击会话后采样 DOM）：+20ms 整块对话消失、空态出现，+48ms 空态
+// 消失、内容回来——用户报的「进入会话闪两下」。所以断言的是**事件顺序**，
+// 不是"有没有发过 chat.history"。
+test('resume reads history before switching focus (no empty-state flash)', async (t) => {
+  const { agent, ws, events } = setup(t);
+  const resuming = agent.resumeSession('s-target');
+  assert.equal(ws.sent.at(-1).method, 'session.resume');
+  ws.reply({ session_id: 's-target' });
+  await flush();
+  assert.equal(ws.sent.at(-1).method, 'chat.history', 'session.resume 之后应立刻读历史');
+
+  ws.reply({ session_id: 's-target', messages: [{ role: 'user', content: 'hi' }], busy: false });
+  await resuming;
+
+  const order = events.map((e) => e.type);
+  assert.ok(
+    order.indexOf('historyLoaded') < order.indexOf('sessionFocused'),
+    `historyLoaded 必须先于 sessionFocused（否则先渲染空会话再被顶掉）: ${order.join(',')}`,
+  );
+});

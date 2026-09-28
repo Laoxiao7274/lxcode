@@ -1,0 +1,383 @@
+/* 顶栏（自绘拖拽区 + 窗口控制）、连接域、公网穿透。 */
+
+/* ===== 顶栏（窗口标题栏：左 = 品牌与状态，中 = 任务名，右 = 窗口控制） ===== */
+.topbar {
+  grid-row: 1;
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 0 0 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-side);
+  /* 窗口拖拽区（Electron：无系统标题栏，顶栏代劳；浏览器里该属性被忽略，无害） */
+  -webkit-app-region: drag;
+  user-select: none;
+}
+.tb-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+.topbar .brandMark {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  background: var(--fg);
+  color: #fff;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.topbar .brandName {
+  font-weight: 600;
+  font-size: 12.5px;
+  color: var(--fg);
+  letter-spacing: 0;
+}
+.tb-sep {
+  width: 1px;
+  height: 14px;
+  background: var(--border-strong);
+  margin: 0 2px;
+}
+.topbar .task-title {
+  flex: 1;
+  text-align: center;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0 12px;
+}
+.tb-right {
+  display: flex;
+  align-items: stretch;
+  flex: none;
+  height: 100%;
+}
+.win-btn {
+  width: 46px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-muted);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  /* 按钮要从拖拽区里豁免出来（.topbar 是 drag，这里必须 no-drag 才可点击） */
+  -webkit-app-region: no-drag;
+}
+.win-btn:hover {
+  background: var(--border-soft);
+  color: var(--fg);
+}
+.win-btn:active {
+  background: #e0e0e3;
+}
+.win-close:hover {
+  background: #e02e2a;
+  color: #fff;
+}
+.win-close:active {
+  background: #c62622;
+}
+.pulse-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--success);
+  animation: pulse 2.4s ease-in-out infinite;
+}
+.pulse-dot[data-off="true"] {
+  background: var(--fg-faint);
+  animation: none;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+/* ===== 连接域（.conn-*）===== */
+/* 顶栏连接指示器（点击开管理弹窗）——拖拽区内的可点岛 */
+.conn-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px 4px 8px;
+  border-radius: 999px;
+  border: none;
+  background: transparent;
+  color: var(--fg-muted);
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+  transition: background 120ms, color 120ms;
+}
+.conn-pill:hover {
+  background: var(--border-soft);
+  color: var(--fg);
+}
+.conn-pill-name {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.conn-pill svg {
+  opacity: 0.55;
+}
+.conn-off-hint {
+  font-size: 11px;
+  color: var(--fg-faint);
+}
+/* 连接管理弹窗的条目与凭证 */
+.conn-item {
+  border: 1px solid var(--border-soft);
+  border-radius: 11px;
+  padding: 12px 14px;
+  margin-bottom: 10px;
+}
+.conn-item[data-active="true"] {
+  border-color: var(--fg-muted);
+  background: var(--surface);
+}
+.conn-ra-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.conn-ra-text {
+  flex: 1;
+  min-width: 0;
+}
+.conn-name {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.conn-sub {
+  font-size: 11.5px;
+  color: var(--fg-faint);
+  margin-top: 2px;
+}
+.conn-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--border-strong);
+  flex: none;
+}
+.conn-dot.on {
+  background: var(--success);
+}
+.conn-tag {
+  font-size: 9.5px;
+  font-weight: 600;
+  color: var(--fg-invert, #fff);
+  background: var(--fg);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+.conn-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+.conn-ra {
+  border-top: 1px solid var(--border-soft);
+  margin-top: 12px;
+  padding-top: 12px;
+}
+.conn-ra-panel {
+  margin-top: 10px;
+  background: var(--bg-side);
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  padding: 10px 12px;
+}
+.conn-cred {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}
+.conn-cred-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-faint);
+  width: 44px;
+  flex: none;
+}
+.conn-cred-value {
+  font-size: 12px;
+  color: var(--fg);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.conn-cred-value.mono,
+.mono {
+  font-family: var(--font-mono);
+}
+.conn-copy {
+  flex: none;
+  font-size: 10.5px;
+  font-weight: 500;
+  font-family: var(--font-sans);
+  color: var(--fg-faint);
+  background: transparent;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  padding: 3px 9px;
+  cursor: pointer;
+}
+.conn-copy:hover {
+  color: var(--fg);
+  border-color: var(--fg-muted);
+}
+.conn-copy[data-copied="true"] {
+  color: var(--success);
+  border-color: var(--success);
+}
+.conn-ra-hint {
+  font-size: 10.5px;
+  color: var(--fg-faint);
+  margin-top: 8px;
+  line-height: 1.5;
+}
+.conn-add {
+  width: 100%;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--fg-muted);
+  background: transparent;
+  border: 1px dashed var(--border-strong);
+  border-radius: 9px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-family: var(--font-sans);
+  margin-top: 4px;
+}
+.conn-add:hover {
+  color: var(--fg);
+  border-color: var(--fg-muted);
+}
+.conn-foot-hint {
+  font-size: 10.5px;
+  color: var(--fg-faint);
+  margin-top: 12px;
+  line-height: 1.5;
+}
+/* ===== 公网穿透 · 樱花frp（.conn-sakura） ===== */
+/* 分区标题（连接弹窗内：后端列表 / 远程访问两区） */
+.conn-sec-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  margin: 18px 0 10px;
+}
+.conn-sec-title:first-child {
+  margin-top: 0;
+}
+.conn-sec-sub {
+  font-size: 10.5px;
+  font-weight: 400;
+  color: var(--fg-faint);
+}
+/* 远程访问独立分区卡（不再嵌套在本机卡内） */
+.conn-ra-item {
+  padding: 4px 14px 12px;
+}
+.conn-ra-item .conn-ra {
+  border-top: none;
+  margin-top: 0;
+  padding-top: 8px;
+}
+.conn-sakura {
+  border-top: 1px dashed var(--border-soft);
+  margin-top: 12px;
+  padding-top: 12px;
+}
+.conn-sakura-login {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+.conn-key-input.fd-input {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.conn-sakura[data-on="true"] .conn-ra-row {
+  margin-bottom: 10px;
+}
+.conn-sakura-user {
+  font-size: 10.5px;
+  font-weight: 400;
+  color: var(--fg-faint);
+}
+.conn-traffic-left {
+  color: var(--success);
+  font-weight: 500;
+}
+.conn-sakura-empty {
+  font-size: 11.5px;
+  color: var(--fg-faint);
+  padding: 6px 0 10px;
+  line-height: 1.5;
+}
+.conn-tunnel {
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  padding: 9px 11px;
+  margin-bottom: 8px;
+  background: var(--surface);
+}
+.conn-tunnel[data-online="true"] {
+  border-color: rgba(16, 163, 127, 0.35);
+}
+.conn-tunnel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.conn-tunnel-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.conn-tunnel-btn.fd-btn-g {
+  padding: 3px 10px;
+  font-size: 10.5px;
+  flex: none;
+}
+.conn-copy.danger {
+  color: var(--danger);
+  border-color: rgba(224, 46, 42, 0.3);
+}
+.conn-copy.danger:hover {
+  border-color: var(--danger);
+}
+.conn-copy.danger.confirm {
+  background: var(--danger);
+  color: #fff;
+  border-color: var(--danger);
+}

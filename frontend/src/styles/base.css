@@ -1,0 +1,232 @@
+/* 设计 token（:root）、应用窗口尺寸、布局骨架。token 必须最先加载。 */
+
+/* lxcode 控制台——布局与 token（Codex 视觉语言，对照 codexui/codex-webui 开源复刻截图精修）
+   安静的中性风：白底近黑字、发丝边框、黑主按钮；绿色只作成功语义。
+   页面以「桌面应用窗口」呈现：1440×900 自适应居中，外层暗底。 */
+:root {
+  --bg: #ffffff;
+  --bg-side: #f9f9f9;
+  --surface: #ffffff;
+  --fg: #0d0d0d;
+  --fg-muted: #6e6e80;
+  --fg-faint: #8e8ea0;
+  --border: #ececec;
+  --border-strong: #e5e5e5;
+  --border-soft: #f4f4f5;
+  --success: #10a37f;
+  --danger: #e02e2a;
+  --term-bg: #1a1a1a;
+  --term-fg: #d4d4d4;
+  --term-dim: #8e8e96;
+  --font-sans: "Inter Variable", -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, "Cascadia Code", monospace;
+}
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+html,
+body,
+#root {
+  height: 100%;
+}
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+/* 浏览器模拟态的外层暗底（Tauri 模式不生效——.app 直接铺满） */
+body:has(.window-stage) {
+  background: #e8e8ea;
+}
+/* ===== 应用窗口（桌面应用尺寸：1440×900，小屏自适应缩小） ===== */
+.window-stage {
+  height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 14px;
+}
+.app-window {
+  width: min(1440px, 100%);
+  height: min(900px, 100%);
+  background: var(--bg);
+  border-radius: 12px;
+  border: 1px solid #d8d8db;
+  box-shadow:
+    0 0 0 0.5px rgba(0, 0, 0, 0.04),
+    0 24px 70px rgba(0, 0, 0, 0.16),
+    0 4px 18px rgba(0, 0, 0, 0.08);
+  overflow: hidden;
+  /* 只做窗口外观（尺寸/圆角/投影），内部网格归 .app 自己定义——
+     这里再定义一份会把 .app 钉进第一个格子（252×44），整页被裁 */
+}
+/* ===== 布局骨架 ===== */
+.app {
+  display: grid;
+  grid-template-columns: 252px 1fr;
+  grid-template-rows: 44px auto 1fr;
+  height: 100%;
+  overflow: hidden;
+}
+/* ===== 会话标签条（浏览器式 tab——Topbar 与侧栏/主区之间） =====
+ * 形态：紧凑药丸（对齐 .trow/.fd- 的扁平语言——不用文件夹式 3D 标签）。
+ * 活动 = surface 实底 + 描边环；关闭钮 hover 出现（活动标签常驻可见）。 */
+.tabbar {
+  grid-row: 2;
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  height: 36px;
+  min-width: 0; /* grid item 的 min-width:auto 会让滚动内容撑破（移动端溢出） */
+  overflow: hidden;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-side);
+  user-select: none;
+}
+.workspace-tab-strip {
+  display: flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 48%;
+  padding: 0 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+.workspace-tab-strip::-webkit-scrollbar { display: none; }
+.workspace-tab {
+  max-width: 132px;
+}
+.workspace-tab-main {
+  min-width: 0;
+  padding-right: 4px;
+}
+.workspace-tab:not(.on) .workspace-tab-main {
+  padding-right: 4px;
+}
+.tabbar-divider {
+  width: 1px;
+  height: 18px;
+  flex: 0 0 auto;
+  margin: 0 3px;
+  background: var(--border);
+}
+.tab-strip {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px;
+  /* 只横向滚动：overflow-x:auto 会让 overflow-y 计算成 auto——一旦出现
+   * 滚动条，24px 的标签可能被纵向滚/裁（字形顶部缺失的另一种成因）。
+   * 显式 hidden 锁死纵向，滚动条本身也隐藏。 */
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+.tab-strip::-webkit-scrollbar { display: none; }
+.tab {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  max-width: 176px;
+  border: 1px solid transparent;
+  border-radius: 12px; /* 药丸 */
+  background: none;
+  font-family: var(--font-sans);
+  flex: none;
+  transition: background 120ms, border-color 120ms;
+}
+.tab:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+.tab.on {
+  background: var(--surface);
+  border-color: var(--border-soft);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+.tab-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 100%;
+  padding: 0 4px 0 11px;
+  border: none;
+  background: none;
+  font-family: var(--font-sans);
+  cursor: pointer;
+}
+.tab:not(.on) .tab-main { padding-right: 11px; }
+.workspace-tab:not(.on) .workspace-tab-main { padding-right: 4px; }
+.tab-title {
+  font-size: 11.5px;
+  /* 行高必须容下中文字形墨迹（CJK 约 1.3em）——line-height:1 时行盒
+   * 只有 11.5px，overflow:hidden 会把字的上半截裁掉（实测踩过）。 */
+  line-height: 16px;
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tab.on .tab-title { color: var(--fg); font-weight: 550; }
+.tab-spinner {
+  width: 9px;
+  height: 9px;
+  border-width: 1.2px;
+  flex: none;
+}
+.tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-right: 3px;
+  border: none;
+  border-radius: 50%;
+  background: none;
+  color: var(--fg-faint);
+  cursor: pointer;
+  flex: none;
+  opacity: 0; /* hover 才见——浏览器的惯例（活动标签常驻） */
+  transition: opacity 120ms, background 120ms, color 120ms;
+}
+.tab:hover .tab-close,
+.tab.on .tab-close,
+.tab:focus-within .tab-close { opacity: 1; }
+.tab-close:hover {
+  background: rgba(0, 0, 0, 0.08);
+  color: var(--fg);
+}
+.workspace-tab-main:focus-visible,
+.workspace-tab .tab-close:focus-visible {
+  outline: 2px solid var(--fg-muted);
+  outline-offset: 1px;
+}
+.tab-new {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 7px;
+  background: none;
+  color: var(--fg-faint);
+  cursor: pointer;
+  flex: none;
+  transition: background 120ms, color 120ms;
+}
+.tab-new:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--fg);
+}

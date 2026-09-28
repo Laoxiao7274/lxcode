@@ -11,6 +11,7 @@ import type {
   ProjectInstructions, ProjectMeta, SearchAdminSource, SearchChannel, SearchChannelsSnapshot,
   SearchTestResult, SendOptions, SessionMeta, TodoItem,
 } from "../../shared/types";
+import { mapEvent } from "./events";
 
 /** WS JSON-RPC 帧结构（与 Go internal/protocol 对齐）。 */
 interface WsRequest {
@@ -205,110 +206,28 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
     this.pending.clear();
   }
 
-  /** 后端事件 → AgentEvent 映射。 */
+  /** 后端事件 → 前端事件（纯映射在 events.ts）+ 副作用（重拉事实源）。 */
   private handleEvent(method: string, params: unknown) {
+    // ① 纯映射：绝大多数事件就是「载荷 → AgentEvent」
+    const ev = mapEvent(method, params);
+    if (ev) this.emit(ev);
+    // ② 副作用：后端是事实源，元数据类事件要重拉列表 / 写缓存
+    this.reactTo(method, params, ev);
+  }
+
+  /** 事件带来的副作用（重拉事实源 / 写缓存）。
+   *  与映射分开的理由见 events.ts 头注——映射是纯函数，这里全是 I/O。 */
+  private reactTo(method: string, params: unknown, ev: AgentEvent | null) {
     const p = (params ?? {}) as Record<string, unknown>;
-    const sessionId = String(p.session_id ?? "");
-    // dispatch_id 归属（子 Agent 执行的事件——store 挂 dispatch 卡）
-    const dispatchId = p.dispatch_id ? String(p.dispatch_id) : undefined;
     switch (method) {
-      case "connection.ready":
-        this.emit({ type: "ready", server: String(p.server ?? ""), version: String(p.version ?? ""), busy: Boolean(p.busy) });
-        break;
-      case "chat.userMessage": {
-        // 协议载荷把消息包在 message 对象里；兼容早期扁平形状。
-        const message = (p.message ?? {}) as Record<string, unknown>;
-        this.emit({ type: "userMessage", sessionId, text: String(message.content ?? p.content ?? p.text ?? "") });
-        break;
-      }
-      case "chat.delta":
-        this.emit({ type: "delta", sessionId, kind: String(p.kind) as "text" | "reasoning", text: String(p.text ?? ""), dispatchId });
-        break;
-      case "chat.toolCall":
-        this.emit({ type: "toolCall", sessionId, id: String(p.id), name: String(p.name), arguments: String(p.arguments ?? ""), dispatchId });
-        break;
-      case "chat.toolResult":
-        this.emit({ type: "toolResult", sessionId, id: String(p.id), name: String(p.name), content: String(p.content ?? ""), isError: Boolean(p.is_error), dispatchId });
-        break;
-      case "chat.dispatchStart":
-        this.emit({
-          type: "dispatchStart",
-          sessionId: String(p.owner_session_id ?? ""),
-          dispatchId: String(p.dispatch_id ?? ""),
-          childSessionId: p.session_id ? String(p.session_id) : undefined,
-          agentId: String(p.agent_id ?? ""),
-          agentName: String(p.agent_name ?? ""),
-          agentColor: String(p.agent_color ?? "#3b82f6"),
-          task: String(p.task ?? ""),
-        });
-        break;
-      case "chat.dispatchEnd":
-        this.emit({
-          type: "dispatchEnd",
-          sessionId: String(p.owner_session_id ?? ""),
-          dispatchId: String(p.dispatch_id ?? ""),
-          childSessionId: p.session_id ? String(p.session_id) : undefined,
-          result: String(p.result ?? ""),
-          isError: Boolean(p.is_error),
-          usageTokens: Number(p.usage_tokens ?? 0),
-        });
-        break;
-      case "chat.compacted":
-        // 历史被压缩（可能是别的客户端触发的——广播给所有端）。
-        // 子会话自己的压缩带 dispatch_id：归属进卡内，不插到主时间线。
-        this.emit({
-          type: "compacted",
-          sessionId,
-          before: Number(p.before ?? 0),
-          after: Number(p.after ?? 0),
-          shadowed: Number(p.shadowed ?? 0),
-          summary: String(p.summary ?? ""),
-          manual: Boolean(p.manual),
-          dispatchId: p.dispatch_id ? String(p.dispatch_id) : undefined,
-        });
-        break;
-      case "chat.confirmRequest":
-        this.emit({ type: "confirmRequest", sessionId, request: p as unknown as ConfirmRequest });
-        break;
-      case "todo.updated":
-        this.emit({ type: "todoUpdated", sessionId, items: (p.items as TodoItem[]) ?? [] });
-        break;
       case "chat.done":
-        this.emit({
-          type: "done",
-          sessionId,
-          usageTokens: Number(p.usage_tokens ?? 0),
-          finishReason: String(p.finish_reason ?? "stop"),
-          dispatchId,
-          // 上下文占用只随主轮来（子轮的 done 不带——后端已按 dispatch 归属收口）
-          context: (p.context as ContextUsage | undefined) ?? undefined,
-        });
         // 主轮结束——会话列表元数据（标题/时间/消息数）可能变了：重拉
         //（子轮的 done 不触发——dispatchId 归属时不刷列表）
-        if (!dispatchId) {
-          this.call("session.list")
-            .then((r) => {
-              this.applySessionList(r);
-              this.emit({ type: "sessionsChanged" });
-            })
-            .catch((e) => this.opError(`刷新会话列表失败: ${e.message}`));
-        }
-        break;
-      case "chat.error":
-        this.emit({ type: "error", sessionId, message: String(p.message ?? ""), aborted: Boolean(p.aborted) });
-        break;
-      case "chat.busy":
-        this.emit({ type: "busy", sessionId, busy: Boolean(p.busy) });
+        if (ev?.type === "done" && !ev.dispatchId) this.refreshSessionList();
         break;
       case "session.changed":
-        this.emit({ type: "sessionChanged", id: String(p.id ?? ""), reason: String(p.reason ?? "") });
-        // 元数据变化不切焦点或重载历史；列表缓存更新后显式通知 UI 重读。
-        this.call("session.list")
-          .then((r) => {
-            this.applySessionList(r);
-            this.emit({ type: "sessionsChanged" });
-          })
-          .catch((e) => this.opError(`刷新会话列表失败: ${e.message}`));
+        // 元数据变化不切焦点或重载历史；列表缓存更新后通知 UI 重读
+        this.refreshSessionList();
         break;
       case "model.changed":
         // 模型注册表变更——重拉列表（settings 的 providers 数据源）
@@ -316,26 +235,10 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
           .then((r) => this.applyModelList(r))
           .catch((e) => this.opError(`刷新模型列表失败: ${e.message}`));
         break;
-      case "files.changed":
-        // 一轮的产物汇总（验收视图——后端按 edit/write_file 收集）
-        {
-          const f = params as { files?: Array<{ path: string; added: number; deleted: number; diff: string }> };
-          if (Array.isArray(f.files)) {
-            this.emit({
-              type: "filesChanged",
-              sessionId,
-              files: f.files.map((x) => ({ path: x.path, added: x.added, deleted: x.deleted, diff: x.diff })),
-            });
-          }
-        }
-        break;
       case "project.changed":
         // 项目增删 → 重拉项目列表（后端事实源）
         this.call("project.list")
-          .then((r) => {
-            this.applyProjectList(r);
-            this.emit({ type: "projectsChanged" });
-          })
+          .then((r) => this.applyProjectList(r))
           .catch((e) => this.opError(`刷新项目列表失败: ${e.message}`));
         break;
       case "agent.changed":
@@ -347,9 +250,9 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
       case "catalog.changed": {
         // 目录变更（kind 标明哪个目录）→ 只重拉对应列表
         const kind = String(p.kind ?? "");
-        const method = kind === "modules" ? "catalog.modules.list" : kind === "tools" ? "catalog.tools.list" : kind === "mcp" ? "catalog.mcp.list" : "";
-        if (method) {
-          this.call(method)
+        const m = kind === "modules" ? "catalog.modules.list" : kind === "tools" ? "catalog.tools.list" : kind === "mcp" ? "catalog.mcp.list" : "";
+        if (m) {
+          this.call(m)
             .then((r) => {
               if (kind === "modules") this.applyAgentModules(r);
               else if (kind === "tools") this.applyAgentTools(r);
@@ -365,6 +268,15 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
         this.applySearchChannels(p);
         break;
     }
+  }
+
+  /** 重拉会话列表（chat.done / session.changed 共用）。
+   *  applySessionList 自己会广播 sessionsChanged——这里不重复发（原先发两遍，
+   *  同一 tick 里让 store 的 revision 跳两次，是拆分时顺手去掉的冗余）。 */
+  private refreshSessionList() {
+    this.call("session.list")
+      .then((r) => this.applySessionList(r))
+      .catch((e) => this.opError(`刷新会话列表失败: ${e.message}`));
   }
 
   /** 发 JSON-RPC 请求并等应答（10s 超时；超时/断连都会清理挂起表）。 */
@@ -451,11 +363,23 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
   async resumeSession(id: string): Promise<void> {
     try {
       await this.call("session.resume", { id });
-      this.focusSession(id);
-      await this.loadHistory(id);
     } catch (e) {
       this.opError(`恢复会话失败: ${e instanceof Error ? e.message : String(e)}`);
+      return;
     }
+    // **历史先到、焦点后切**。焦点一换，UI 渲染的就是这个会话的状态，而它的
+    // 历史还在路上——先渲染出的是"空会话"（EmptyState「我们做点什么？」），
+    // 一个 WS 往返后再被真历史顶掉。帧级实测（点击会话后采样）：+20ms 整块
+    // 对话消失、空态出现，+48ms 空态消失、内容回来——用户看到的就是
+    // 「进入会话闪两下」。焦点推迟到历史之后，这个中间态根本不会出现。
+    // 与 boot 链同一条纪律（session.new 必须先于 chat.history，见 ws.test.mjs）。
+    // 历史读失败也照切焦点：点了会话没反应，比闪一下更糟。
+    try {
+      await this.loadHistory(id);
+    } catch (e) {
+      this.opError(`读取会话历史失败: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    this.focusSession(id);
   }
 
   private focusSession(id: string) {

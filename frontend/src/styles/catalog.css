@@ -1,0 +1,539 @@
+/* 表单组件（.fd-）与目录管理页（.cg-）。 */
+
+/* ===== 表单组件（.fd- 命名空间：Select 自绘下拉——原生 select 的 OS 皮肤不搭） ===== */
+.fd-select {
+  position: relative;
+  display: block;
+  width: 100%;
+}
+.fd-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  color: var(--fg);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  padding: 8px 10px;
+  cursor: pointer;
+  transition: border-color 120ms;
+  text-align: left;
+}
+.fd-trigger:hover {
+  border-color: #c2c2c8;
+}
+.fd-trigger.open {
+  border-color: #a8a8b0;
+}
+.fd-trigger:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.fd-trigger-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fd-trigger-value.placeholder {
+  color: var(--fg-faint);
+}
+.fd-chevron {
+  flex: none;
+  display: inline-flex;
+  color: var(--fg-faint);
+  transition: transform 160ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.fd-trigger.open .fd-chevron {
+  transform: rotate(180deg);
+}
+.fd-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 40;
+  width: 100%;
+  min-width: 220px;
+  max-height: 280px;
+  overflow-y: auto;
+  padding: 5px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.06);
+  animation: pop-in 160ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.fd-group-title {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--fg-faint);
+  padding: 6px 9px 3px;
+}
+.fd-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 9px;
+  font-size: 12.5px;
+  color: var(--fg);
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-family: var(--font-sans);
+  text-align: left;
+}
+.fd-item:hover {
+  background: var(--border-soft);
+}
+.fd-item.on {
+  font-weight: 500;
+}
+.fd-item-label {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.fd-item-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fd-item-desc {
+  font-size: 11px;
+  color: var(--fg-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fd-empty {
+  padding: 10px 9px;
+  font-size: 12px;
+  color: var(--fg-faint);
+}
+/* ===== 目录管理页（工具 / 技能 / 模板——.cg- 命名空间） ===== */
+.cg-page {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px 30px 64px;
+}
+.cg-tabs {
+  margin: 4px 0 18px;
+}
+.cg-tabs .fd-seg {
+  max-width: 380px;
+}
+.cg-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
+  gap: 12px;
+}
+.cg-card {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 13px 15px;
+  text-align: left;
+  color: var(--fg-muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  cursor: pointer;
+  font-family: var(--font-sans);
+  transition: border-color 120ms, box-shadow 120ms;
+}
+.cg-card:hover {
+  border-color: #d4d4d8;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.03);
+}.cg-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+.cg-card-title {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cg-card-pills {
+  display: flex;
+  gap: 5px;
+  flex: none;
+}
+.cg-card-desc {
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--fg-muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.cg-card-meta {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--fg-faint);
+}
+/* MCP 连接失败的原因（只说「连接失败」用户无从下手——原因要自己说话）。
+   单行截断 + title 悬浮给全文：失败原因可能很长（进程启动失败会带完整命令）。 */
+.cg-card-error {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--danger);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cg-card-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 2px;
+}
+.cg-new-note {
+  font-size: 11.5px;
+  color: var(--fg-faint);
+  margin: -6px 0 14px;
+}
+/* 目录页头部动作行（多按钮时右侧成组） */
+.cg-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+/* 导入弹窗的粘贴区下方动作行（选择文件 + 格式示例） */
+.ti-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+}
+/* 主导动作行（导入弹窗顶部——选择文件是主路径，粘贴只是兜底） */
+.ti-actions-lead {
+  margin-top: 0;
+  margin-bottom: 10px;
+}
+.ti-file-hidden {
+  display: none;
+}
+/* 工具编写器：参数动态行 + 文档输入 */
+.te-param {
+  margin-bottom: 8px;
+  padding: 8px 10px 9px;
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  background: var(--bg-side);
+}
+.te-param-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.te-param-name {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 6px 8px;
+}
+.te-param-type {
+  width: 84px;
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 6px 8px;
+}
+.te-param-req {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  flex: none;
+  cursor: pointer;
+  user-select: none;
+}
+.te-param-req input {
+  accent-color: var(--fg);
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  cursor: pointer;
+}
+.te-param-del {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex: none;
+  color: var(--fg-faint);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.te-param-del:hover {
+  color: var(--danger);
+  background: rgba(224, 46, 42, 0.08);
+}
+.te-param-desc {
+  margin-top: 6px;
+  font-size: 12px;
+  padding: 6px 8px;
+}
+.te-param-add {
+  align-self: flex-start;
+  font-size: 12px;
+  color: var(--fg-muted);
+  background: transparent;
+  border: 1px dashed var(--border-strong);
+  border-radius: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-family: var(--font-sans);
+  margin-top: 2px;
+}
+.te-param-add:hover {
+  color: var(--fg);
+  border-color: var(--fg-muted);
+}
+.te-doc {
+  min-height: 150px;
+}
+/* 工具编写器：程序包行（选择 + 文件名/提示） */
+.te-package-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.te-package-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  background: var(--bg-side);
+  border: 1px solid var(--border-soft);
+  border-radius: 7px;
+  padding: 4px 8px;
+  max-width: 280px;
+  overflow: hidden;
+}
+.te-package-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-faint);
+  background: none;
+  border: none;
+  padding: 2px;
+  cursor: pointer;
+  flex: none;
+}
+.te-package-clear:hover {
+  color: var(--danger);
+}
+.te-package-hint {
+  font-size: 11px;
+  color: var(--fg-faint);
+}
+.cg-id-input {
+  font-family: var(--font-mono);
+}
+.cg-body-input {
+  min-height: 300px;
+}
+.cg-preview-box {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  background: var(--surface);
+}
+.cg-preview-box .ag-detail-md {
+  max-height: none;
+  overflow: visible;
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+/* 工具导入弹窗：格式示例 + 粘贴区 + 动作行 */
+.ti-note {
+  font-size: 11.5px;
+  color: var(--fg-faint);
+  margin-bottom: 10px;
+  line-height: 1.5;
+}
+.ti-format-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--fg-faint);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-family: var(--font-sans);
+}
+.ti-format-toggle:hover {
+  color: var(--fg-muted);
+}
+.ti-format-toggle svg {
+  transition: transform 140ms;
+}
+.ti-format-toggle[data-open="true"] svg {
+  transform: rotate(180deg);
+}
+.ti-format {
+  margin-top: 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--bg-side);
+  padding: 10px 12px;
+  overflow-x: auto;
+}
+.ti-format pre {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.6;
+  color: var(--fg-muted);
+  white-space: pre;
+}
+.ti-input {
+  min-height: 180px;
+  font-size: 12px;
+}
+.ti-foot {
+  margin-top: 14px;
+  justify-content: flex-end;
+}
+/* 模块编写器的字段布局（label 在上——对齐设置对话框的表单语言） */
+.cg-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-bottom: 14px;
+}
+.cg-field-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--fg);
+}
+/* 字段下的小字说明（运行命令的语义等） */
+.cg-field-hint {
+  font-size: 11px;
+  color: var(--fg-faint);
+  line-height: 1.5;
+}
+/* MCP 服务器编写器：参数与环境变量的文本区（每行一项） */
+.mc-args-input {
+  min-height: 110px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.7;
+}
+.mc-env-input {
+  min-height: 70px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.7;
+}
+.cg-type-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0 1px;
+}
+.cg-type-hint {
+  font-size: 11.5px;
+  color: var(--fg-faint);
+}
+@media (max-width: 640px) {
+  .cg-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ---- 历史压缩标记块（compaction）：一行分隔条 + 摘要可展开 ---- */
+.compact-card {
+  margin: 14px 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-subtle, rgba(0, 0, 0, 0.02));
+  overflow: hidden;
+}
+.compact-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.compact-head:disabled {
+  cursor: default;
+}
+.compact-icon {
+  display: inline-flex;
+  color: var(--fg-faint);
+}
+.compact-title {
+  flex: 0 0 auto;
+  font-weight: 500;
+}
+.compact-stats {
+  flex: 1 1 auto;
+  color: var(--fg-faint);
+  font-size: 11.5px;
+}
+.compact-chev {
+  flex: 0 0 auto;
+  color: var(--fg-faint);
+  transition: transform 0.16s ease;
+}
+.compact-chev.open {
+  transform: rotate(180deg);
+}
+.compact-body {
+  padding: 2px 12px 12px;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+  color: var(--fg-muted);
+  max-height: 320px;
+  overflow: auto;
+}
+.compact-card[data-manual="true"] {
+  border-color: var(--border-strong);
+}
+/* 子会话 id 徽标（dispatch 卡头：子 Agent 是独立会话——自己的历史与压缩，可续跑） */
+.dispatch-session {
+  flex: 0 0 auto;
+  margin-left: 6px;
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-size: 10.5px;
+  color: var(--fg-faint);
+}
