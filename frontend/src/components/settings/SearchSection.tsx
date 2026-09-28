@@ -6,11 +6,12 @@
 //
 // 语义：搜索工具默认走主渠道，失败自动降级其它就绪渠道；零配置渠道
 // （opt_in）必须手动启用——「技术上能跑」不等于「想用它」。
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { groupByCategory, readyCount, useSearchAdmin } from "../../shared/search-admin";
 import { acceptsKey, hasStoredConfig } from "../../shared/search-channels";
 import type { SearchChannel, SearchTestResult } from "../../shared/types";
 import { collapseAway, useEnterRef } from "../../shared/anim";
+import { staggerIn } from "../../shared/motion";
 import { useConfirmClick } from "../../shared/confirm-click";
 import { maskToken } from "../../shared/connections";
 import { Button, Select, TextInput } from "../form";
@@ -248,6 +249,76 @@ function ChannelCard({ c, busy, onTested }: {
   );
 }
 
+/** 分组：可收拢的渠道清单。展开/收起与模型分区的 ProviderBlock 同款——
+ *  收起先播高度收拢 + 淡出再卸载（直接卸载是瞬灭），展开时子卡自上交错浮现。
+ *  首挂载不播入场（分区自己有入场，两套一起放会打架）。
+ *  折叠状态由父级持有（按分组 id），这样筛选时切走再切回来不会丢折叠状态。 */
+function ChannelGroup({
+  group, collapsed, onToggle, busy, onTested,
+}: {
+  group: { id: string; label: string; items: SearchChannel[] };
+  collapsed: boolean;
+  onToggle: () => void;
+  busy: boolean;
+  onTested: (c: SearchChannel, r: SearchTestResult | null) => void;
+}) {
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const collapsingRef = useRef(false);
+  const firstRender = useRef(true);
+
+  useEffect(() => {
+    if (firstRender.current) {
+      firstRender.current = false;
+      return;
+    }
+    if (collapsed || !bodyRef.current) return;
+    staggerIn([...bodyRef.current.children], { each: 0.04 });
+  }, [collapsed]);
+
+  const toggle = () => {
+    if (collapsed) {
+      onToggle(); // 展开：先切状态，入场交给上面的 effect
+      return;
+    }
+    if (collapsingRef.current) return;
+    collapsingRef.current = true;
+    collapseAway(bodyRef.current, () => {
+      collapsingRef.current = false;
+      onToggle();
+    });
+  };
+
+  return (
+    <div className="sp-group">
+      <button
+        type="button"
+        className="sp-group-head"
+        data-sp="group"
+        aria-expanded={!collapsed}
+        onClick={toggle}
+      >
+        <span className={"sp-group-caret" + (collapsed ? "" : " open")}>
+          <IconChevronRight />
+        </span>
+        <span className="sp-group-label">{group.label}</span>
+        <span className="sp-group-count">{group.items.filter((c) => c.configured).length}/{group.items.length}</span>
+      </button>
+      {!collapsed && (
+        <div className="sp-group-body" ref={bodyRef}>
+          {group.items.map((c) => (
+            <ChannelCard
+              key={c.id}
+              c={c}
+              busy={busy}
+              onTested={(r) => onTested(c, r)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** 测试结果块：把渠道真实返回的内容摊给用户看（凭据能不能用一眼可知）。 */
 function TestResultBox({ name, result, onClose }: { name: string; result: SearchTestResult; onClose: () => void }) {
   const boxEnter = useEnterRef<HTMLDivElement>();
@@ -325,29 +396,14 @@ export function SearchSection() {
       )}
       {groups.length === 0 && <div className="sp-desc">没有匹配的渠道。</div>}
       {groups.map((g) => (
-        <div className="sp-group" key={g.id}>
-          <button
-            type="button"
-            className="sp-group-head"
-            data-sp="group"
-            aria-expanded={!collapsed[g.id]}
-            onClick={() => setCollapsed((s) => ({ ...s, [g.id]: !s[g.id] }))}
-          >
-            <span className={"sp-group-caret" + (collapsed[g.id] ? "" : " open")}>
-              <IconChevronRight />
-            </span>
-            <span className="sp-group-label">{g.label}</span>
-            <span className="sp-group-count">{g.items.filter((c) => c.configured).length}/{g.items.length}</span>
-          </button>
-          {!collapsed[g.id] && g.items.map((c) => (
-            <ChannelCard
-              key={c.id}
-              c={c}
-              busy={testing}
-              onTested={(r) => (r ? setResult({ id: c.id, name: c.label, r }) : setResult(null))}
-            />
-          ))}
-        </div>
+        <ChannelGroup
+          key={g.id}
+          group={g}
+          collapsed={Boolean(collapsed[g.id])}
+          onToggle={() => setCollapsed((s) => ({ ...s, [g.id]: !s[g.id] }))}
+          busy={testing}
+          onTested={(c, r) => setResult(r ? { id: c.id, name: c.label, r } : null)}
+        />
       ))}
     </Section>
   );

@@ -6,11 +6,16 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { gsap } from "gsap";
 import { motionAllowed } from "../../shared/motion";
+import {
+  appendSessionTab,
+  pruneSessionTabs,
+  seedSessionTabs,
+  sessionTabFallback,
+  visibleSessionTabs,
+} from "../../shared/session-tabs";
 import type { AgentSource } from "../../shared/types";
 import type { WorkspacePage, WorkspaceView } from "../../shared/workspace-tabs";
 
-/** 标签条容量：最多同时显示的标签数（超出丢最老的——浏览器同款）。 */
-const TAB_LIMIT = 8;
 const WORKSPACE_LABELS: Record<WorkspacePage, string> = {
   agents: "Agent",
   catalog: "拓展",
@@ -44,6 +49,11 @@ export function TabBar({
   // 打开顺序（标签 id 列表）；closed = 用户关掉的（纯 UI 态，刷新恢复）
   const [order, setOrder] = useState<string[]>([]);
   const [closed, setClosed] = useState<Set<string>>(new Set());
+  // 关掉当前标签后"焦点要去的那个"：resumeSession 是一个 WS 往返（项目会话还要先校验
+  // 工作树），这期间 store 里的 currentId 还没动。标签条是用户刚操作的地方，不能在这段
+  // 时间里一个高亮都没有（实测：标签 12ms 就消失了，但高亮要等 229ms 才落下来，
+  // 中间整条标签栏没有"你在哪"的指示）。所以这里先记下目的地，currentId 追上后清掉。
+  const [pendingFocus, setPendingFocus] = useState("");
   const seededRef = useRef(false);
 
   // 首次拿到会话列表铺开标签：后端序是最近在前 → 反转成「新的在右」
@@ -51,25 +61,58 @@ export function TabBar({
   useEffect(() => {
     if (seededRef.current || sessions.length === 0) return;
     seededRef.current = true;
-    setOrder(sessions.filter((s) => !s.archived).slice(0, TAB_LIMIT).map((s) => s.id).reverse());
+    setOrder(seedSessionTabs(sessions));
   }, [sessions]);
 
   // 切到不在标签条里的会话（侧栏点进来 / 新建）→ 追加到右侧。
   // 已在列表里则不动（点标签不重排——浏览器语义）。
   useEffect(() => {
     if (!currentId) return;
-    setOrder((prev) => (prev.includes(currentId) ? prev : [...prev.slice(-(TAB_LIMIT - 1)), currentId]));
+    setOrder((prev) => appendSessionTab(prev, currentId));
   }, [currentId]);
 
-  // 渲染集合：按打开顺序，剔除已归档/已关闭的（当前会话恒显示）
-  const tabs = order
-    .map((id) => ({ id, meta: sessions.find((s) => s.id === id) }))
-    .filter(({ id, meta }) => id === currentId || (meta && !meta.archived && !closed.has(id)));
+  // 焦点回到一个被关过的会话（从侧栏点进来）→ 该标签重新出现。
+  // 关闭只是标签条上的 UI 状态，不是"这个会话不许再开"。
+  useEffect(() => {
+    if (!currentId) return;
+    setClosed((prev) => {
+      if (!prev.has(currentId)) return prev;
+      const next = new Set(prev);
+      next.delete(currentId);
+      return next;
+    });
+  }, [currentId]);
 
-  // 关闭 = 从标签条隐藏（会话保留；关掉当前会话 → 切到新对话）
+  // 死标签不占容量：归档/关闭后从 order 剔掉，否则它们会顶掉下次追加时的活标签。
+  // prune 在无变化时返回同一个数组引用，所以不会引起重渲染循环。
+  useEffect(() => {
+    setOrder((prev) => pruneSessionTabs(prev, sessions, closed, currentId));
+  }, [sessions, closed, currentId]);
+
+  // currentId 追上目的地 → 交还高亮（目的地在焦点移过去之前可能已被用户关掉，也要清）
+  useEffect(() => {
+    if (!pendingFocus) return;
+    if (pendingFocus === currentId || closed.has(pendingFocus)) setPendingFocus("");
+  }, [pendingFocus, currentId, closed]);
+
+  // 渲染集合：按打开顺序，剔除已归档/已关闭的（当前会话恒显示）
+  const tabIds = visibleSessionTabs(order, sessions, closed, currentId);
+  const tabs = tabIds.map((id) => ({ id, meta: sessions.find((s) => s.id === id) }));
+  // 高亮：目的地优先——关标签后立刻指出"接下来是哪个"，不必等历史读回来
+  const activeId = pendingFocus && tabIds.includes(pendingFocus) ? pendingFocus : currentId;
+
+  // 关闭 = 从标签条隐藏（会话本体留在侧栏，刷新仍在）。
+  // 关掉**当前**标签时把焦点让给最近打开的另一个标签——**绝不新建会话**：
+  // 原来这里调 onNewChat()，那会真的在后端建一个会话，于是"关一个冒一个"，
+  // 而新会话又被追加进 order 顶掉最老的标签，看起来就是"关掉新会话，
+  // 别的标签也一起没了"。只剩一个标签时没有可让的对象，就保持现状（关不掉）。
   const close = (id: string) => {
-    if (id === currentId) onNewChat();
     setClosed((prev) => new Set(prev).add(id));
+    if (id !== currentId) return;
+    const fallback = sessionTabFallback(tabIds, id);
+    if (!fallback) return;
+    setPendingFocus(fallback); // 先把高亮挪过去，内容随后到（历史读回来才切焦点）
+    onFocusSession(fallback);
   };
 
   // 工作区的「聊天」固定保留；会话区即使为空也保留「+」按钮，保证标签栏高度稳定。
@@ -100,7 +143,7 @@ export function TabBar({
       <span className="tabbar-divider" aria-hidden="true" />
       <div className="tab-strip session-tab-strip" role="group" aria-label="会话标签">
         {tabs.map(({ id, meta }) => {
-          const on = id === currentId;
+          const on = id === activeId;
           const busy = Boolean(busyBySession[id]);
           const title = meta?.title || "新对话";
           return (
@@ -125,17 +168,22 @@ export function TabBar({
                 {busy && <span className="mset-spinner tab-spinner" aria-hidden />}
                 <span className="tab-title">{title}</span>
               </button>
-              <button
-                type="button"
-                className="tab-close"
-                onClick={() => close(id)}
-                aria-label={`关闭标签「${title}」`}
-                title="关闭标签（会话保留在侧栏）"
-              >
-                <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true">
-                  <path d="M18 6 6 18M6 6l12 12" />
-                </svg>
-              </button>
+              {/* 最后一个标签不显示关闭按钮：关掉它没有可回退的标签，而这个应用
+                  的对话区恒需要一条当前会话（不能靠新建来"补位"——那正是原来的缺陷）。
+                  会话本体仍在侧栏，要清理会话请用侧栏的归档。 */}
+              {tabs.length > 1 && (
+                <button
+                  type="button"
+                  className="tab-close"
+                  onClick={() => close(id)}
+                  aria-label={`关闭标签「${title}」`}
+                  title="关闭标签（会话保留在侧栏）"
+                >
+                  <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true">
+                    <path d="M18 6 6 18M6 6l12 12" />
+                  </svg>
+                </button>
+              )}
             </div>
           );
         })}

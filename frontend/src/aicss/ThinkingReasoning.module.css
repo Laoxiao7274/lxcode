@@ -33,6 +33,11 @@
   letter-spacing: -0.005em;
 }
 .trVerb { color: var(--tre-verb, #a1a1a1); }
+/* 前置图标：给它自己的 token——语义上它不属于 chevron（虽然同色）。 */
+.trIcon {
+  flex-shrink: 0;
+  color: var(--tre-icon, #a1a1a1);
+}
 .trChevron {
   color: var(--tre-chevron, #a1a1a1);
   transition: transform 280ms cubic-bezier(0.22, 1, 0.36, 1);
@@ -112,7 +117,7 @@
 }
 :global(:root),
 :global([data-theme="light"]) {
-  --tre-label: color-mix(in srgb, #a1a1a1 68%, transparent);
+  --tre-icon: color-mix(in srgb, #a1a1a1 68%, transparent);
   --tre-verb: #a1a1a1;
   --tre-chevron: #a1a1a1;
   --tre-sentence: #a1a1a1;
@@ -120,7 +125,7 @@
 }
 :global([data-theme="dark"]),
 :global(.dark) {
-  --tre-label: #737373;
+  --tre-icon: #737373;
   --tre-verb: #a3a3a3;
   --tre-chevron: #737373;
   --tre-sentence: #737373;
@@ -128,7 +133,7 @@
 }
 @media (prefers-color-scheme: dark) {
   :global(:root:not([data-theme])) {
-    --tre-label: #737373;
+    --tre-icon: #737373;
     --tre-verb: #a3a3a3;
     --tre-chevron: #737373;
     --tre-sentence: #737373;
