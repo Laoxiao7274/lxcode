@@ -13,7 +13,7 @@ export const MAIN_TOOL: ToolSpec = {
     { name: "task", type: "string", required: true, desc: "子任务描述与验收标准" },
     { name: "context", type: "string", desc: "给子 Agent 的背景信息" },
   ],
-  doc: "主 Agent 唯一工具——调度通道。\n\n- task 描述必须自带**验收标准**：没有验收标准的任务不可验收\n- 一次一个子任务；并行需求拆成多次 dispatch\n- 结果回来先验收再汇总，不合格的带着理由重派或自己说明",
+  doc: "主 Agent 唯一工具——调度通道。\n\n- task 描述必须自带**验收标准**：没有验收标准的任务不可验收\n- **并行**：一条消息里发多个 dispatch 调用，它们**真的并行跑**（子会话各自独立）；有前后依赖的才分多轮串行\n- 结果回来先验收再汇总，不合格的带着理由重派或自己说明",
 };
 
 /** 内置工具目录（与后端 tools 注册表对应）。 */
@@ -44,6 +44,19 @@ export const BUILTIN_TOOLS: ToolSpec[] = [
     doc: "纯 Go RE2，不经过 shell——无注入面。\n\n- files 模式：找文件名\n- content 模式：带上下文行\n- count 模式：只要计数",
   },
   {
+    id: "web_search",
+    desc: "联网搜索网页（多渠道，主渠道失败自动降级）",
+    risk: "low",
+    source: "builtin",
+    params: [
+      { name: "query", type: "string", required: true, desc: "搜索查询词（自然语言问题即可）" },
+      { name: "num_results", type: "int", desc: "结果条数（默认 5，上限 20）" },
+      { name: "recency", type: "enum", desc: "时间范围：day / week / month / year" },
+      { name: "domains", type: "array", desc: "限定域名；前缀 - 表示排除" },
+    ],
+    doc: "查最新信息、文档、报错、API 用法等可能过时的事实。\n\n- 不要用它搜本仓库代码（那用 search）\n- 多个渠道按主渠道优先自动降级；失败会说明是哪个渠道出的错\n- 「搜到 0 条」和「搜索失败」是两种结论——前者换关键词，后者如实报告\n\n渠道配置见「设置 → 网页搜索」。",
+  },
+  {
     id: "session_search",
     desc: "搜索历史会话内容",
     risk: "low",
@@ -53,6 +66,14 @@ export const BUILTIN_TOOLS: ToolSpec[] = [
       { name: "limit", type: "int", desc: "结果条数上限" },
     ],
     doc: "搜历史会话内容，命中带会话标题与时间。\n\n给「之前怎么处理过这类问题」提供依据——先查旧账再开新方。",
+  },
+  {
+    id: "read_skill",
+    desc: "读取技能模块的完整内容（提示词只列索引）",
+    risk: "low",
+    source: "builtin",
+    params: [{ name: "id", type: "string", required: true, desc: "技能 id（提示词「可用技能」清单里的名字）" }],
+    doc: "渐进披露：提示词只注入技能索引（id + 摘要），需要完整方法论时按 id 取全文。\n\n没在白名单里的技能读不到（提示词里看不到 = 不存在）。",
   },
   {
     id: "edit",
@@ -401,9 +422,11 @@ export function seedAgents(): AgentDef[] {
       name: "调研 Agent",
       color: "#10a37f",
       model: "MYT",
-      desc: "代码库与资料勘察：全文检索、历史会话与跨文件脉络梳理，只给结论与出处。",
+      // desc 是**主 Agent 的选人信号**（可委派名单按它逐字生成）：漏写「联网搜索」，
+      // 主 Agent 就不知道「查外部资料」该派给谁——工具与白名单都到位，能力照样等于不存在。
+      desc: "代码库与资料勘察：全文检索、历史会话、联网搜索与跨文件脉络梳理，只给结论与出处。",
       prompt: "你是调研 Agent。只做检索与信息整理：结论必须带依据（文件路径 + 行号、命令输出或文档链接）；查不到就如实说「未找到」，不编造也不推测。不修改任何文件。",
-      tools: ["read_file", "search", "session_search", "ripgrep"],
+      tools: ["read_file", "search", "session_search", "web_search", "ripgrep"],
       workflow: "research-first",
       skills: [],
       delegates: [],

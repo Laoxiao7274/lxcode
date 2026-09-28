@@ -76,7 +76,7 @@ var seedTools = []sessiondata.ToolSpec{
 			{Name: "context", Type: "string", Desc: "可选背景（不是完整历史）"},
 			{Name: "session", Type: "string", Desc: "可选：续跑既有子会话的 id"},
 		},
-		Doc: "主 Agent 只做决策与分派，不直接执行任务。\n\n- 任务描述必须**自包含**——子 Agent 看不到当前对话历史\n- 子 Agent 在独立会话里执行（有自己的历史与压缩），返回值带子会话 id\n- 要接着上次进度继续：把子会话 id 填进 session\n- 两类制：子 Agent 的白名单不含它（委派深度恒 1）",
+		Doc: "主 Agent 只做决策与分派，不直接执行任务。\n\n- 任务描述必须**自包含**——子 Agent 看不到当前对话历史\n- **并行**：一条消息里发多个 dispatch 调用，它们**真的并行跑**（子会话各自独立）；有前后依赖的才分多轮串行\n- 子 Agent 在独立会话里执行（有自己的历史与压缩），返回值带子会话 id\n- 要接着上次进度继续：把子会话 id 填进 session\n- 两类制：子 Agent 的白名单不含它（委派深度恒 1）",
 	},
 	{
 		// 外部 Rust 二进制的接入样板（AGENTS.md §2.1「Go 主刀、Rust 武器库」）：
@@ -163,7 +163,10 @@ var seedAgents = []sessiondata.AgentDef{
 		// web_search 是调研的核心能力之一（本仓库代码之外的资料都靠它），
 		// 且它是只读工具——strict 档下照样可用（Mutates=false）。
 		ID: "researcher", Name: "调研 Agent", Enabled: true, Color: "#10a37f", Model: "",
-		Desc:     "代码库与资料勘察：全文检索、历史会话与跨文件脉络梳理，只给结论与出处。",
+		// Desc 是**主 Agent 的选人信号**（可委派名单按它逐字生成，见 compose.go 的 ④）：
+		// 漏写「联网搜索」的后果是主 Agent 不知道「查外部资料」该派给谁——工具给了、
+		// 白名单勾了，但选人那一步没有信号，这个能力等于不存在。
+		Desc:     "代码库与资料勘察：全文检索、历史会话、联网搜索与跨文件脉络梳理，只给结论与出处。",
 		Prompt:   "你是调研 Agent。只做检索与信息整理：结论必须带依据（文件路径 + 行号、命令输出或文档链接）；查不到就如实说「未找到」，不编造也不推测。不修改任何文件。",
 		Tools:    []string{"read_file", "search", "session_search", "ripgrep", "web_search"},
 		Workflow: "research-first", Skills: []string{},

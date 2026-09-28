@@ -1,6 +1,8 @@
 package store
 
 import (
+	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -152,13 +154,13 @@ func TestSyncSeedAgentsBackfillsOldDB(t *testing.T) {
 		}
 	}
 	// 用户改过的行不碰：coder 的 ripgrep 还在，且没有被重复追加
-	if got := byID["coder"].Tools; !containsStr(got, "ripgrep") || len(got) != 7 {
+	if got := byID["coder"].Tools; !slices.Contains(got, "ripgrep") || len(got) != 7 {
 		t.Fatalf("用户改过的 coder 行被同步动了: %v", got)
 	}
 	// 主 Agent 的委派名单（老库仍是上一版种子的值）补上新增的两个
 	main := byID["main"]
 	for _, want := range []string{"coder", "researcher", "tester"} {
-		if !containsStr(main.Delegates, want) {
+		if !slices.Contains(main.Delegates, want) {
 			t.Fatalf("主 Agent 的委派名单未补上 %s: %v", want, main.Delegates)
 		}
 	}
@@ -291,7 +293,7 @@ func TestSeedAgentsSelfConsistent(t *testing.T) {
 		if !a.IsMain {
 			// 两类制：子 Agent 是纯执行者——白名单不含 agent_dispatch，
 			// 也没有委派名单（深度恒 1）
-			if containsStr(a.Tools, "agent_dispatch") {
+			if slices.Contains(a.Tools, "agent_dispatch") {
 				t.Fatalf("子 Agent %s 的白名单不该含 agent_dispatch（两类制）", a.ID)
 			}
 			if len(a.Delegates) != 0 {
@@ -314,7 +316,7 @@ func TestSeedAgentsSelfConsistent(t *testing.T) {
 		if a.IsMain {
 			continue
 		}
-		if !containsStr(main.Delegates, a.ID) {
+		if !slices.Contains(main.Delegates, a.ID) {
 			t.Fatalf("主 Agent 的委派名单缺种子子 Agent %s: %v", a.ID, main.Delegates)
 		}
 	}
@@ -372,9 +374,211 @@ func TestSeedAgentsCoverExecutionSurfaces(t *testing.T) {
 	if !ok {
 		t.Fatal("种子缺测试 Agent")
 	}
-	if !containsStr(tester.Tools, "bash") {
+	if !slices.Contains(tester.Tools, "bash") {
 		t.Fatalf("测试 Agent 必须能跑命令（否则无从验证）: %v", tester.Tools)
 	}
+}
+
+// agentToolsOf 读回某个 Agent 的白名单（补种的断言口径）。
+func agentToolsOf(t *testing.T, s *Store, id string) []string {
+	t.Helper()
+	var raw string
+	if err := s.db.QueryRow(`SELECT tools FROM agents WHERE id = ?`, id).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	return decodeStrList(raw)
+}
+
+// agentDescOf 读回某个 Agent 的职责描述（主 Agent 的选人信号，补种断言口径）。
+func agentDescOf(t *testing.T, s *Store, id string) string {
+	t.Helper()
+	var desc string
+	if err := s.db.QueryRow(`SELECT desc FROM agents WHERE id = ?`, id).Scan(&desc); err != nil {
+		t.Fatal(err)
+	}
+	return desc
+}
+
+// setAgentDescOf 把某个 Agent 的职责描述改成给定值（造"老库"或"用户改过"场景用）。
+func setAgentDescOf(t *testing.T, s *Store, id, desc string) {
+	t.Helper()
+	if _, err := s.db.Exec(`UPDATE agents SET desc=? WHERE id=?`, desc, id); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// setAgentToolsOf 把某个 Agent 的白名单改成给定值（造"老库"场景用）。
+func setAgentToolsOf(t *testing.T, s *Store, id string, tools []string) {
+	t.Helper()
+	raw, err := json.Marshal(tools)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`UPDATE agents SET tools=? WHERE id=?`, string(raw), id); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestSeedResearcherHasWebSearch：调研 Agent 的白名单必须含 web_search。
+//
+// 它是调研的核心能力之一（本仓库代码之外的资料都靠它），而且是只读工具——
+// approval=strict 的调研面照样能用（Mutates=false）。新装的库由种子直接写入，
+// 已有库靠 topUpSeedAgents 补（见下面的测试）。
+func TestSeedResearcherHasWebSearch(t *testing.T) {
+	s := openTestStore(t)
+	got := agentToolsOf(t, s, "researcher")
+	if !slices.Contains(got, "web_search") {
+		t.Fatalf("调研 Agent 的白名单缺 web_search（调研的一半资料靠它）: %v", got)
+	}
+}
+
+// TestSeedResearcherDescMentionsWebSearch：调研 Agent 的**职责描述**必须点明联网搜索。
+//
+// 描述不只是给人看的说明——它是**主 Agent 的选人信号**：可委派名单按 desc 逐字
+// 生成（compose.go 的 ④），主 Agent 只看描述决定把任务派给谁。所以描述里漏掉
+// 「联网搜索」，主 Agent 就不知道该把「查外部资料」派给谁——工具给了、白名单也
+// 勾了，选人那一步没有信号，这个能力照样等于不存在（用户实测反馈）。
+func TestSeedResearcherDescMentionsWebSearch(t *testing.T) {
+	byID := map[string]sessiondata.AgentDef{}
+	for _, a := range seedAgents {
+		byID[a.ID] = a
+	}
+	got := byID["researcher"].Desc
+	if !strings.Contains(got, "联网搜索") {
+		t.Fatalf("调研 Agent 的职责描述没提联网搜索——主 Agent 的选人信号里就没有这个能力: %q", got)
+	}
+}
+
+// TestTopUpSeedAgentsBackfillsUntouchedWhitelist：老库升级的补种（白名单）。
+//
+// 场景：库里那行是上一版种子写的（白名单没有 web_search），而 Agent 名单的种子
+// 同步只插缺失行、不 UPDATE 已有行——不补种的话，代码给种子白名单加了工具，
+// 已有库永远吃不到：目录里有它、编辑器里能勾，但没有任何 Agent 勾着它，
+// 工具做完了没人用得上（web_search 的实际遭遇）。
+func TestTopUpSeedAgentsBackfillsUntouchedWhitelist(t *testing.T) {
+	s := openTestStore(t)
+	base := seedAgentBaselines["researcher"]
+	setAgentToolsOf(t, s, "researcher", base.Tools) // 回到"上一版"
+	if err := s.syncCatalogSeeds("2026-09-28T00:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	got := agentToolsOf(t, s, "researcher")
+	if !slices.Contains(got, "web_search") {
+		t.Fatalf("没动过的白名单应该被补上 web_search，实际: %v", got)
+	}
+	// 补种只加不减：基线里的工具一个都不能丢
+	if !containsAll(got, base.Tools) {
+		t.Fatalf("补种弄丢了原有工具: %v", got)
+	}
+	// 幂等：再同步一次不该有任何变化（也不该动 updated_at）
+	before := strings.Join(got, ",")
+	if err := s.syncCatalogSeeds("2026-09-28T00:00:01Z"); err != nil {
+		t.Fatal(err)
+	}
+	if after := strings.Join(agentToolsOf(t, s, "researcher"), ","); after != before {
+		t.Fatalf("补种不幂等: %s → %s", before, after)
+	}
+}
+
+// TestTopUpSeedAgentsLeavesEditedWhitelistAlone：用户删过种子工具就完全不碰白名单。
+//
+// 无条件追加会把用户删掉的工具每次 Open 都塞回去——那就是吃掉用户的编辑。
+func TestTopUpSeedAgentsLeavesEditedWhitelistAlone(t *testing.T) {
+	s := openTestStore(t)
+	edited := []string{"read_file", "search", "session_search"} // 用户删了 ripgrep
+	setAgentToolsOf(t, s, "researcher", edited)
+	if err := s.syncCatalogSeeds("2026-09-28T00:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	got := agentToolsOf(t, s, "researcher")
+	if strings.Join(got, ",") != strings.Join(edited, ",") {
+		t.Fatalf("用户动过的白名单被改了（补种越界）: %v", got)
+	}
+}
+
+// TestTopUpSeedAgentsBackfillsUntouchedDesc：老库升级的补种（职责描述）。
+//
+// 场景同上，但坏的是选人信号那一半：库里的描述还是上一版的，而主 Agent
+// 只按描述选人——描述不补，主 Agent 就不知道「查外部资料」该派给谁。
+func TestTopUpSeedAgentsBackfillsUntouchedDesc(t *testing.T) {
+	s := openTestStore(t)
+	base := seedAgentBaselines["researcher"]
+	setAgentDescOf(t, s, "researcher", base.Desc) // 回到"上一版"
+	if err := s.syncCatalogSeeds("2026-09-28T00:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	got := agentDescOf(t, s, "researcher")
+	if got != seedResearcherDesc(t) {
+		t.Fatalf("没改过的描述应该被更新成本版，实际: %q", got)
+	}
+	if !strings.Contains(got, "联网搜索") {
+		t.Fatalf("补种后的描述仍没有联网搜索——主 Agent 的选人信号还是缺的: %q", got)
+	}
+}
+
+// TestTopUpSeedAgentsLeavesEditedDescAlone：用户改过职责描述就完全不碰。
+func TestTopUpSeedAgentsLeavesEditedDescAlone(t *testing.T) {
+	s := openTestStore(t)
+	edited := "我自己写的调研 Agent 说明"
+	setAgentDescOf(t, s, "researcher", edited)
+	if err := s.syncCatalogSeeds("2026-09-28T00:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	if got := agentDescOf(t, s, "researcher"); got != edited {
+		t.Fatalf("用户改过的描述被覆盖了（补种越界）: %q", got)
+	}
+}
+
+// TestTopUpSeedAgentsSkipsMainAgent：主 Agent 的工具是结构性的，不参与补种。
+func TestTopUpSeedAgentsSkipsMainAgent(t *testing.T) {
+	s := openTestStore(t)
+	if err := s.syncCatalogSeeds("2026-09-28T00:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	if got := agentToolsOf(t, s, "main"); strings.Join(got, ",") != "agent_dispatch" {
+		t.Fatalf("主 Agent 的工具应恒为 agent_dispatch（唯一调度通道）: %v", got)
+	}
+}
+
+// TestSeedAgentBaselinesIsMeaningful：基线表引用的 id 必须是真的种子子 Agent，
+// 且基线必须是当前种子白名单的**真子集**、描述必须与当前种子**不同**——
+// 否则那条目没有任何补种作用（拼错 id、忘了留旧值、或描述没改过都会静默失效，
+// 补种等于没写）。
+func TestSeedAgentBaselinesIsMeaningful(t *testing.T) {
+	byID := map[string]sessiondata.AgentDef{}
+	for _, a := range seedAgents {
+		byID[a.ID] = a
+	}
+	for id, base := range seedAgentBaselines {
+		a, ok := byID[id]
+		if !ok {
+			t.Fatalf("seedAgentBaselines 引用了不存在的种子 Agent: %s", id)
+		}
+		if a.IsMain {
+			t.Fatalf("seedAgentBaselines 不该含主 Agent（工具是结构性的）: %s", id)
+		}
+		if !containsAll(a.Tools, base.Tools) {
+			t.Fatalf("%s 的工具基线不是当前种子白名单的子集（留错了旧值）: 基线 %v / 种子 %v", id, base.Tools, a.Tools)
+		}
+		if len(a.Tools) == len(base.Tools) {
+			t.Fatalf("%s 的工具基线与当前种子白名单等长——没有新增工具可补，这条目是多余的", id)
+		}
+		if base.Desc == "" || base.Desc == a.Desc {
+			t.Fatalf("%s 的描述基线与当前种子相同——没有新描述可补，这条目是多余的", id)
+		}
+	}
+}
+
+// seedResearcherDesc 取调研 Agent 的当前种子描述（断言口径）。
+func seedResearcherDesc(t *testing.T) string {
+	t.Helper()
+	for _, a := range seedAgents {
+		if a.ID == "researcher" {
+			return a.Desc
+		}
+	}
+	t.Fatal("种子缺调研 Agent")
+	return ""
 }
 
 // placeholdersOf 提取模板里的 {name}（与 tools 包的校验同语义——这里只需
