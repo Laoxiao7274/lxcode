@@ -27,6 +27,16 @@ export function Thread({
 }) {
   const endRef = useRef<HTMLDivElement>(null);
   const emptyRef = useRef<HTMLDivElement>(null);
+  // 换会话（含冷启动 "" → id）= 整块历史回放，不是「刚发出」：这一帧挂载的块
+  // 不播发送动效（气泡回弹 + 缓动滚底）。不区分的话，点开一条项目会话会白跑一次
+  // 0.4s 的滚底动画——CDP 采样实测它就是这次点击里最大的一块主线程开销
+  // （gsap _getComputedProperty 11%+ Thread onUpdate 5%，合计约占非空闲样本六成），
+  // 用户感觉就是「卡一下」。同一会话内追加新消息（发送）currentId 不变，照常播。
+  const prevSessionRef = useRef(state.currentId);
+  const replayed = prevSessionRef.current !== state.currentId;
+  useEffect(() => {
+    prevSessionRef.current = state.currentId;
+  });
   // 跟随状态机：用户贴底 → sticky 跟随；上翻 → 解除；滚回底部 → 恢复。
   // 用户意图 = wheel/touch/keydown（程序置底绝不触发）+ scroll 兜底
   // （覆盖滚动条拖动；prog 时间窗跳过程序置底自身的事件，防自激）。
@@ -111,6 +121,8 @@ export function Thread({
   useEffect(() => {
     const prev = prevBlocksRef.current;
     prevBlocksRef.current = state.blocks;
+    // 回放的一屏不做发送缓动：挂载时的 toBottom() 已经贴底，动画只会白白占主线程
+    if (replayed) return;
     if (state.blocks.length > prev.length && state.blocks[prev.length]?.kind === "user") {
       stickyRef.current = true;
       const el = scrollRef.current;
@@ -166,7 +178,7 @@ export function Thread({
        *  「很多会话×长会话」的前提——见 docs/frontend-review.md §四-①。 */}
       {hidden > 0 && <WindowSentinel onExpand={() => setWindowSize((n) => n + WINDOW_BATCH)} label={`前面还有 ${hidden} 条…`} />}
       {visible.map((block) => (
-        <Block key={block.uid} block={block} onConfirm={onConfirm} />
+        <Block key={block.uid} block={block} onConfirm={onConfirm} replayed={replayed} />
       ))}
       {/* 进行中且还没有任何输出时显示思考 shimmer（无角色标签——DSH 形态） */}
       {state.busy && !lastIsStreamingAssistant(state.blocks) && (
