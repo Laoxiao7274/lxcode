@@ -75,9 +75,40 @@ func runProbe(addr string) int {
 	}
 	fmt.Printf("✓ session.list（%d 个会话）\n", len(sessions))
 
-	// chat.history
+	// 会话面：显式开一个探针会话 → 读它的历史 → 归档。
+	//
+	// chat.history 按 session_id 寻址，服务端**没有**"当前会话"这种全局焦点
+	// （server.go 的 lastSessionID 注释明说协议请求绝不读它），空 session_id
+	// 会被 server.session() 直接拒绝。所以只发 hello/model.list/session.list
+	// 的探针拿不到历史——它必须像真客户端一样先开一个会话。
+	//
+	// 不这么做过的代价（2026-09-28 实测）：探针恒返回 1（= 协议失败），而
+	// install.ps1 把非 0/2 当验收失败并"停服务 + 删除"、update.ps1 直接回滚
+	// ——健康的服务被判成坏的。
+	var sn protocol.SessionResult
+	if err := call(be, protocol.MethodSessionNew, protocol.SessionNewParams{}, &sn); err != nil {
+		fmt.Printf("✗ session.new 失败: %v\n", err)
+		return probeDead
+	}
+	if sn.SessionID == "" {
+		fmt.Println("✗ session.new 未返回会话 id")
+		return probeDead
+	}
+	// 归档是**清理**而不是验收面。为什么必须归档：探针会话是空会话，
+	// 空会话不进 session.list（store.List 刻意滤掉空白草稿），所以它不会
+	// 出现在侧栏或归档区——但 Latest() 只滤 archived、不滤空白草稿，
+	// 一条没归档的探针会话就是"最近的会话"，**后端重启会把用户恢复到
+	// 探针会话上**。归档失败只提示、不改退出码：为一条清理失败把健康的
+	// 服务判成坏的，正是上面那个缺陷的同类错误。
+	defer func() {
+		params := protocol.SessionArchiveParams{ID: sn.SessionID, Archived: true}
+		if err := call(be, protocol.MethodSessionArchive, params, nil); err != nil {
+			fmt.Printf("⚠ 探针会话归档失败（归档区可能多出一条空会话）: %v\n", err)
+		}
+	}()
+
 	var hist protocol.ChatHistoryResult
-	if err := call(be, protocol.MethodChatHistory, nil, &hist); err != nil {
+	if err := call(be, protocol.MethodChatHistory, protocol.ChatHistoryParams{SessionID: sn.SessionID}, &hist); err != nil {
 		fmt.Printf("✗ chat.history 失败: %v\n", err)
 		return probeDead
 	}
