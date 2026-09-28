@@ -92,6 +92,7 @@
 - **`Session.SendWait(ctx, ...)`**：跑一轮并等它结束（派发要等子会话给出结论）；ctx 取消 → `child.Cancel()` 并等它真正收尾；
 - **事件归属**（`childEmitter`）：Delta/ToolCall/ToolResult/TurnDone/Compacted 打上 `dispatch_id` 归属进卡；**BusyEvent 不上抛**（子会话的忙闲不是主会话的）、**TodoUpdatedEvent 不上抛**（清单归子会话自己）、**SessionStartedEvent 不上抛**（子会话不进侧栏）、**TurnErrorEvent 转成 DispatchEndEvent**（卡内呈现，不跑到主时间线当独立错误）；
 - **确认门代理**（`SetConfirmProxy`）：子会话的确认请求交给父会话裁决并打上 dispatch_id——全应用只有"同时一个挂起确认"这条不变式，子会话自己持 pending 的话服务端的 `tool.confirm` 找不到它（会话会卡在 busy）；
+- **一轮多个 dispatch 并行跑**（`runTools` 三段式：权限门顺序 → dispatch 并行 → 按原下标回填历史）；确认门 `confirmMu` 串行化。
 - **无存储时退化成内存子会话**（`st == nil`）：仍是一个独立会话（自己的历史与压缩），只是不落库、不能续跑——纯内存模式/未挂 store 的调用方照旧能派发。
 
 **每会话注入态（`internal/tools/sessionstate.go`）**：`todo` 的清单写回口与 `read_skill` 的技能目录**经 ctx 注入**（`tools.WithTodoSink` / `WithSkillSource`），不再挂注册表全局——注册表是进程级单例，而这两者都是**会话级**状态；子 Agent 变独立会话后，注册表级全局态会让父子互相踩（子会话一建就把父的 sink 顶掉、子会话的技能目录污染父会话——原来的 save/restore hack 就是被这件事逼出来的补丁）。与 `tools.WithWorkDir` 同一套机制与理由。
@@ -182,7 +183,7 @@
 - 测试就近放包内（`_test.go` 与源码同目录——Go 项目按包放测试是正确布局）；
 - 后端：`lxcode --serve`（配置默认 `./config/models.json`，`--config` / `LXCODE_CONFIG` 覆盖；会话目录默认 `<config 上级>/sessions`；监听 `--addr`，默认 `127.0.0.1:7789`）；
 - CLI 客户端：`lxcode`（连 `--backend`，默认取 `--addr`；连接失败会给启动指引）；
-- 本地冒烟：起后端 `lxcode --serve --config config/local.json --sessions temp/smoke-sessions`（config/local.json gitignored，含 key），然后 `node temp/smoke.mjs "消息"`（端到端）或 `node temp/smoke-confirm.mjs`（确认门）；
+- 本地冒烟：起后端 `lxcode --serve --config config/local.json --sessions %LOCALAPPDATA%\lxcode-dev\sessions`（config/local.json gitignored，含 key；dev 会话目录必须在仓库外——会话的项目工作树是别的项目的完整检出，落进仓库会污染 `go build ./...` 与 `gofmt -l .`），然后 `node temp/smoke.mjs "消息"`（端到端）或 `node temp/smoke-confirm.mjs`（确认门）；
 - 壳开发：`node scripts/dev.mjs --electron`（或 frontend 下 `npm run dev:electron`，或仓库根 `./dev.sh`——无参默认壳模式，bash 薄包装）——Go + 壳 TS（esbuild，秒级）→ 后端 → vite → 自动拉起 Electron 连 dev URL；纯浏览器模式 `node scripts/dev.mjs` 不变（首跑需 shell/ 与 frontend/ 各 `npm install` 一次）；
 - 壳打包：`node scripts/build.mjs`（或 `./build.sh`）——Go → 渲染层 → stage 进 shell/ → electron-builder 出 NSIS（shell/release/，one-click per-user，Go 后端在 extraResources；无原生模块故 npmRebuild:false 省 rebuild 开销）；
 - 系统提示词：工具清单从注册表动态生成（`agent.BuildSystemPrompt` / `ComposeSystemPrompt`）——内置工具用 `systemPromptTools` 的手写摘要，目录里的动态工具回落 `Def.Description` 首行 + 风险说明（**没有回落 = 自定义工具被静默漏掉**，模型不知道它存在）。两条测试钉住：`TestSystemPromptListsAllTools`（清单与注册表不漂移）+ `TestBuiltinToolsHaveCuratedLine`（内置工具不许落到回落上——那等于丢了风险等级表述）；
@@ -246,7 +247,7 @@ Harness 的目标形态：**主 Agent 只做决策与分派，子 Agent 是用�
   - **执行面即白名单**：调研 Agent 的 `tools` 不含 edit/write_file/bash（"不改文件"是结构保证），`approval=strict` 是第二道保险；测试 Agent 必须含 `bash`（不跑就无从验证）；
   - **子 Agent 种子不含 `agent_dispatch`**（两类制，深度恒 1）；白名单也不含"声明了没实现"的工具（如 `browser`——注册表里没有它，提示词会点名「当前不可用」）；
   - **种子必须自洽**：`workflow`/`skills`/`tools` 引用的 id 必须真实存在——server 按 id 解析时**缺失静默跳过**，打错就是一份空提示词且不报任何错（`TestSeedAgentsSelfConsistent` 钉住这条）。
-- **种子同步（Agent 侧，2026-09-23）**：工具/模块按 `custom` 全字段同步（见 §3），Agent 名单**更严**——`ensureSeedAgents` 只插入缺失的 id（已有行一律不 UPDATE、绝不 DELETE：子 Agent 种子插入即 `custom=1`＝用户所有，主 Agent 的 `delegates` 更是用户配置），`topUpMainDelegates` 只在主 Agent 的委派名单仍含**上一版**种子子 Agent（`seedDelegatesBaseline`）时才补新增的。代价：用户删过的种子 Agent 下次 Open 会回来（工具/模块的种子同步本来同性质——不想要应停用而不是删除）。
+- **种子同步（Agent 侧，2026-09-23）**：工具/模块按 `custom` 全字段同步（见 §3），Agent 名单**更严**——`ensureSeedAgents` 只插缺失 id（已有行不 UPDATE、不 DELETE：子 Agent 插入即 `custom=1`＝用户所有）；补种只在字段仍等于上一版基线时才补：`topUpMainDelegates` 补主 Agent 委派名单（`seedDelegatesBaseline`），`topUpSeedAgents` 补子 Agent 白名单与职责描述（`seedAgentBaselines`——两者都要补：白名单漏了没人勾得上，描述漏了主 Agent 不知道派给谁，web_search 就栽过）。代价：删过的种子 Agent 下次 Open 会回来（不想要应停用而非删除）。
 - **审批取严（2026-09-23）**：`effectiveApproval` 是"请求级 > Agent 默认 > confirm"（请求级是用户的显式选择，**不在这里取严**）；取严发生在**派发**这一层——`runDispatch` 用 `stricterApproval(父轮审批, 子 Agent 默认)`（auto < confirm < strict；子 Agent 未声明默认 = 继承请求方），子执行面因此不大于请求方。
 - **改名迁移是「不碰用户数据」的唯一例外（2026-09-23）**：调度工具 id 从 `agent.dispatch` 改成 `agent_dispatch`（点号违反工具名字符集，见 §5 坑 13）时，`Open` 会跑一次**幂等**迁移，把**白名单**（`agents.tools`）与**历史**（`messages.tool_calls` 的 `function.name`）里的旧名一起改掉——包括 `custom=1` 的用户行（不迁的话白名单就指着不存在的工具，主 Agent 的派发直接不可用）。这是唯一一处刻意碰用户数据的地方（"种子同步不碰 custom=1"的纪律仍然成立）；只改标识符本身，用 **JSON 层改写而非字符串替换**（正文里完全可能恰好出现同名字面量），`internal/store/migration_test.go` 钉住幂等 + "只改名字、id/参数/正文一律不动"。
 
