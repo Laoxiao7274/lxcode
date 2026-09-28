@@ -3,13 +3,14 @@
 //   node scripts/dev.mjs --electron 壳开发模式（再加 Electron 窗口加载 dev server）
 // 流程：1. 编译 Go 后端 → bin/lxcode.exe（bin/ 已 gitignore）
 //      2. 壳模式下编译壳主进程 TS → shell/dist/main.js（esbuild，秒级）
-//      3. 启动后端 --serve（config/local.json + temp/smoke-sessions，127.0.0.1:7789）
+//      3. 启动后端 --serve（config/local.json + OS 应用数据目录下的 dev 会话，127.0.0.1:7789）
 //      4. 启动 vite dev server（:5190）；壳模式等它就绪后拉起 Electron
 // 渲染层 getAgentSource() 探测环境：壳里 WSAgent 连真实后端；浏览器跑 DemoAgent。
 // 进程纪律：vite/electron 都用 node 直启其 cli.js（不经 npx.cmd/cmd 包装——
 // kill 包装层会留下孙进程孤儿，冒烟实测踩过）；退出统一 taskkill /T 杀整棵树。
 import { spawn, spawnSync, execSync } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import net from "node:net";
 import { readHead } from "./check-stack.mjs";
@@ -19,6 +20,21 @@ const SHELL = join(ROOT, "shell");
 const FRONTEND = join(ROOT, "frontend");
 const ELECTRON = process.argv.includes("--electron");
 const VITE_PORT = 5190;
+
+// 开发态会话目录必须落在**仓库之外**。会话的项目工作树是
+// <sessions>/worktrees/<项目>/<会话>——那是别的项目的**完整检出**，一旦落在
+// lxcode 仓库里就混进了本模块：go build ./... 会去编译它们的散文件
+// （报 expected 'package', found 'EOF'），gofmt -l . 会列出上千个外来文件
+// （2026-09-28 实测 1730 个）。gofmt 既不认 Go 模块边界、也不跳下划线/点号
+// 前缀目录（实测都试过），所以唯一稳的解法是让这些文件根本不在树里。
+// 放 OS 应用数据目录，与壳的 userData 同一条纪律；LXCODE_DEV_SESSIONS 可覆盖。
+function devSessionsDir() {
+  if (process.env.LXCODE_DEV_SESSIONS) return process.env.LXCODE_DEV_SESSIONS;
+  const base = process.platform === "win32"
+    ? process.env.LOCALAPPDATA || join(homedir(), "AppData", "Local")
+    : process.env.XDG_DATA_HOME || join(homedir(), ".local", "share");
+  return join(base, "lxcode-dev", "sessions");
+}
 
 console.log(`=== lxcode dev 启动${ELECTRON ? "（壳模式）" : ""} ===\n`);
 
@@ -56,10 +72,13 @@ if (ELECTRON) {
 // 3. 启动后端（本地配置优先——含 API key，gitignored）
 console.log(`[${ELECTRON ? 3 : 2}] 启动后端 127.0.0.1:7789...`);
 const useLocal = existsSync(join(ROOT, "config", "local.json"));
+const sessionsDir = devSessionsDir();
+mkdirSync(sessionsDir, { recursive: true });
+console.log(`    会话目录 ${sessionsDir}`);
 const backend = spawn(join(ROOT, "bin", "lxcode.exe"), [
   "--serve",
   ...(useLocal ? ["--config", "config/local.json"] : []),
-  "--sessions", "temp/smoke-sessions",
+  "--sessions", sessionsDir,
 ], { cwd: ROOT, stdio: "inherit" });
 
 // 4. 启动 vite（前台挂着，Ctrl+C 全体收尾；node 直启 cli.js，不经 cmd 包装）
