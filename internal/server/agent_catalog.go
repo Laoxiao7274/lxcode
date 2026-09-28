@@ -96,8 +96,24 @@ func (s *Server) dispatchAgentCatalog(id json.RawMessage, method string, params 
 	if s.st == nil {
 		return protocol.NewError(id, protocol.CodeInvalidParams, "会话存储未挂载（--sessions）——Agent 注册表不可用")
 	}
-	switch method {
+	// 再按域分（与 dispatch_*.go 同一套纪律：先判「是不是我的方法」，不是就返回 nil 让给下一个）
+	if resp := s.dispatchAgents(id, method, params); resp != nil {
+		return resp
+	}
+	if resp := s.dispatchCatalogModules(id, method, params); resp != nil {
+		return resp
+	}
+	if resp := s.dispatchCatalogTools(id, method, params); resp != nil {
+		return resp
+	}
+	if resp := s.dispatchCatalogMCP(id, method, params); resp != nil {
+		return resp
+	}
+	return nil // 未命中（调用方回落 unknown method）
+}
 
+func (s *Server) dispatchAgents(id json.RawMessage, method string, params json.RawMessage) *protocol.Response {
+	switch method {
 	// ---- agents ----
 	case protocol.MethodAgentList:
 		list, err := s.st.ListAgents()
@@ -138,7 +154,12 @@ func (s *Server) dispatchAgentCatalog(id json.RawMessage, method string, params 
 		}
 		s.broadcast(protocol.EventAgentChanged, protocol.AgentChangedParams{Reason: "remove"})
 		return protocol.NewResult(id, map[string]any{})
+	}
+	return nil // 不是本域的方法
+}
 
+func (s *Server) dispatchCatalogModules(id json.RawMessage, method string, params json.RawMessage) *protocol.Response {
+	switch method {
 	// ---- catalog.modules ----
 	case protocol.MethodCatalogModuleList:
 		list, err := s.st.ListModules()
@@ -175,7 +196,12 @@ func (s *Server) dispatchAgentCatalog(id json.RawMessage, method string, params 
 		}
 		s.broadcast(protocol.EventCatalogChanged, protocol.CatalogChangedParams{Kind: "modules", Reason: "remove"})
 		return protocol.NewResult(id, map[string]any{})
+	}
+	return nil // 不是本域的方法
+}
 
+func (s *Server) dispatchCatalogTools(id json.RawMessage, method string, params json.RawMessage) *protocol.Response {
+	switch method {
 	// ---- catalog.tools ----
 	case protocol.MethodCatalogToolList:
 		list, err := s.st.ListTools()
@@ -216,7 +242,12 @@ func (s *Server) dispatchAgentCatalog(id json.RawMessage, method string, params 
 		s.syncDynamicTools()
 		s.broadcast(protocol.EventCatalogChanged, protocol.CatalogChangedParams{Kind: "tools", Reason: "remove"})
 		return protocol.NewResult(id, map[string]any{})
+	}
+	return nil // 不是本域的方法
+}
 
+func (s *Server) dispatchCatalogMCP(id json.RawMessage, method string, params json.RawMessage) *protocol.Response {
+	switch method {
 	// ---- catalog.mcp ----
 	case protocol.MethodCatalogMcpList:
 		list, err := s.st.ListMcServers()
@@ -263,7 +294,7 @@ func (s *Server) dispatchAgentCatalog(id json.RawMessage, method string, params 
 		s.broadcast(protocol.EventCatalogChanged, protocol.CatalogChangedParams{Kind: "mcp", Reason: "remove"})
 		return protocol.NewResult(id, map[string]any{})
 	}
-	return nil // 未命中（调用方回落 unknown method）
+	return nil // 不是本域的方法
 }
 
 // isAgentCatalogMethod 判定方法是否属于本域。

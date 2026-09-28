@@ -263,6 +263,61 @@ func TestBusyProjectSessionCannotReleaseWorktree(t *testing.T) {
 	}
 }
 
+// 工作树校验在进程内缓存（prepareWorktreeLocked 的快路径：校验过一次之后只做一次
+// os.Stat）——这条测试钉住快路径**没有**把「目录被删掉」也当成「已校验」：
+// 外部删掉工作树目录后，下一次读历史必须把它按记录的分支重建回来。
+// 少了 os.Stat 守卫，快路径会一直放行，会话就永久停在一个不存在的 workDir 上。
+func TestWorktreeCacheStillRecoversDeletedDirectory(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "project")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitServerTest(t, repo, "init")
+	gitServerTest(t, repo, "config", "user.name", "Test")
+	gitServerTest(t, repo, "config", "user.email", "test@example.invalid")
+	if err := os.WriteFile(filepath.Join(repo, "base.txt"), []byte("committed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitServerTest(t, repo, "add", "base.txt")
+	gitServerTest(t, repo, "commit", "-m", "base")
+
+	srv, client, _ := newTestServer(t, func(_ context.Context, _ config.ModelConfig, _ []llm.Message, _ []llm.Option) (<-chan llm.StreamEvent, error) {
+		ch := make(chan llm.StreamEvent, 1)
+		ch <- llm.StreamEvent{Type: llm.EventDone, Result: &llm.ChatResult{Message: llm.Message{Role: "assistant", Content: "ok"}}}
+		close(ch)
+		return ch, nil
+	})
+	projectResp := client.call(protocol.MethodProjectAdd, protocol.ProjectAddParams{Name: "cache-test", Path: repo})
+	if projectResp == nil || projectResp.Error != nil {
+		t.Fatalf("project.add failed: %+v", projectResp)
+	}
+	var projectMeta protocol.ProjectMeta
+	decodeServerResult(t, projectResp.Result, &projectMeta)
+	id := createTestSession(t, client, projectMeta.ID)
+	if resp := client.call(protocol.MethodChatSend, protocol.ChatSendParams{SessionID: id, Text: "work"}); resp == nil || resp.Error != nil {
+		t.Fatalf("chat.send failed: %+v", resp)
+	}
+	waitSessionEvent(t, client, protocol.EventDone, id)
+	meta, err := srv.st.WorktreeOf(id)
+	if err != nil || meta.Path == "" {
+		t.Fatalf("worktree not created: %+v err=%v", meta, err)
+	}
+	// 再读一次历史：这次走快路径（已校验过、目录还在），不该重建。
+	readTestHistory(t, client, id)
+	// 外部删掉整个工作树目录（模拟用户手工清理 / 盘符变化）。
+	if err := os.RemoveAll(meta.Path); err != nil {
+		t.Fatal(err)
+	}
+	// 再读历史：必须把工作树按记录的分支重建回来，而不是拿缓存当「已校验」。
+	readTestHistory(t, client, id)
+	if _, err := os.Stat(filepath.Join(meta.Path, "base.txt")); err != nil {
+		t.Fatalf("worktree was not rebuilt after external deletion: %v", err)
+	}
+	if got := strings.TrimSpace(gitServerTest(t, repo, "rev-parse", meta.Branch)); got == "" {
+		t.Fatal("session branch went missing")
+	}
+}
+
 func createTestSession(t *testing.T, client *wsTestClient, workspace string) string {
 	t.Helper()
 	resp := client.call(protocol.MethodSessionNew, protocol.SessionNewParams{Workspace: workspace})

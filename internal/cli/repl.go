@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -132,115 +131,6 @@ func (r *REPL) startEvents() {
 	}()
 }
 
-func eventOwnerSession(ev protocol.Response) (string, bool) {
-	switch ev.Method {
-	case protocol.EventUserMsg, protocol.EventDelta, protocol.EventToolCall, protocol.EventToolRslt,
-		protocol.EventConfirm, protocol.EventDone, protocol.EventError, protocol.EventBusy,
-		protocol.EventTodo, protocol.EventCompacted, protocol.EventDispatchStart, protocol.EventDispatchEnd:
-		var p struct {
-			SessionID      string `json:"session_id"`
-			OwnerSessionID string `json:"owner_session_id"`
-		}
-		if unmarshalParams(ev.Params, &p) != nil {
-			return "", true
-		}
-		if p.OwnerSessionID != "" {
-			return p.OwnerSessionID, true
-		}
-		return p.SessionID, true
-	default:
-		return "", false
-	}
-}
-
-// render 渲染单个协议事件（持锁防与主循环抢屏）。
-func (r *REPL) render(ev protocol.Response) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if ev.Method == protocol.EventSessionChanged {
-		var p protocol.SessionChangedParams
-		if unmarshalParams(ev.Params, &p) != nil || p.ID != r.session {
-			return
-		}
-		fmt.Printf("\n[当前会话状态已变更（%s）]\n", p.Reason)
-		return
-	}
-	if sessionID, scoped := eventOwnerSession(ev); scoped && sessionID != r.session {
-		return
-	}
-	switch ev.Method {
-	case protocol.EventUserMsg:
-		// 用户消息回显在 busy 提示前打过了，这里不再重复打印
-	case protocol.EventDelta:
-		var p protocol.DeltaParams
-		if unmarshalParams(ev.Params, &p) != nil {
-			return
-		}
-		if p.Kind == "text" {
-			fmt.Print(p.Text)
-		} else if r.showThink {
-			fmt.Print("\x1b[2m" + p.Text + "\x1b[0m")
-		}
-	case protocol.EventToolCall:
-		var p protocol.ToolCallParams
-		if unmarshalParams(ev.Params, &p) != nil {
-			return
-		}
-		fmt.Printf("\n→ %s %s\n", p.Name, clipStr(p.Arguments, 120))
-	case protocol.EventToolRslt:
-		var p protocol.ToolResultParams
-		if unmarshalParams(ev.Params, &p) != nil {
-			return
-		}
-		fmt.Printf("↳ %s\n", clipStr(p.Content, 200))
-	case protocol.EventConfirm:
-		var p protocol.ConfirmRequest
-		if unmarshalParams(ev.Params, &p) != nil {
-			return
-		}
-		r.pending = &p
-		fmt.Printf("\n⚠ 需要确认：%s\n[y/n] ", p.Prompt)
-	case protocol.EventDone:
-		var p protocol.DoneParams
-		if unmarshalParams(ev.Params, &p) != nil {
-			return
-		}
-		fmt.Println()
-		if p.UsageTokens > 0 {
-			fmt.Printf("[%s · %d tokens]\n", p.FinishReason, p.UsageTokens)
-		}
-	case protocol.EventError:
-		var p protocol.ErrorParams
-		if unmarshalParams(ev.Params, &p) != nil {
-			return
-		}
-		fmt.Printf("\n[错误] %s\n", p.Message)
-	case protocol.EventBusy:
-		var p protocol.BusyParams
-		if unmarshalParams(ev.Params, &p) != nil {
-			return
-		}
-		r.busy = p.Busy
-		if !p.Busy {
-			r.pending = nil // 轮次收尾：清确认态（取消也走这）
-		}
-	case protocol.EventTodo:
-		var p protocol.TodoUpdatedParams
-		if unmarshalParams(ev.Params, &p) != nil {
-			return
-		}
-		fmt.Printf("📋 清单（%d 项）\n", len(p.Items))
-		for _, it := range p.Items {
-			mark := map[string]string{"done": "✓", "active": "▶", "pending": "·"}[it.Status]
-			fmt.Printf("  %s %s\n", mark, it.Content)
-		}
-	case protocol.EventModels:
-		fmt.Println("\n[模型配置已变更，/model 查看]")
-	case protocol.EventReady:
-		// 连接时单发，初始同步已处理
-	}
-}
-
 // send 发送一条消息。
 func (r *REPL) send(text string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -323,129 +213,6 @@ func (r *REPL) syncHistory() error {
 }
 
 // runCommand 处理斜杠命令；返回 true 表示退出。
-func (r *REPL) runCommand(line string) bool {
-	fields := strings.Fields(line)
-	cmd := strings.TrimPrefix(fields[0], "/")
-	rest := strings.TrimSpace(strings.TrimPrefix(line, fields[0]))
-
-	switch cmd {
-	case "quit", "exit", "q":
-		return true
-	case "new":
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		var result protocol.SessionResult
-		if err := r.be.Call(ctx, protocol.MethodSessionNew, protocol.SessionNewParams{}, &result); err != nil {
-			fmt.Printf("[%v]\n", err)
-			return false
-		}
-		r.setCurrentSession(result.SessionID)
-		if err := r.syncHistory(); err != nil {
-			fmt.Printf("[同步会话失败] %v\n", err)
-		}
-		fmt.Println("[新会话已开始]")
-	case "sessions":
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		var list []protocol.SessionMeta
-		if err := r.be.Call(ctx, protocol.MethodSessionList, nil, &list); err != nil {
-			fmt.Printf("[%v]\n", err)
-			return false
-		}
-		if len(list) == 0 {
-			fmt.Println("[没有历史会话]")
-			return false
-		}
-		r.mu.Lock()
-		cur := r.session
-		r.mu.Unlock()
-		for i, m := range list {
-			current := ""
-			if m.ID == cur {
-				current = " ←当前"
-			}
-			fmt.Printf("  %d. %s  %s  %d条  %s%s\n", i+1, m.ID, m.UpdatedAt, m.Messages, m.Title, current)
-		}
-		fmt.Println("[/resume <序号或id> 恢复]")
-	case "resume":
-		if rest == "" {
-			fmt.Println("[用法: /resume <序号或会话id>；先用 /sessions 查看]")
-			return false
-		}
-		id := rest
-		// 序号 → id（重拉列表做映射）
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		var list []protocol.SessionMeta
-		if err := r.be.Call(ctx, protocol.MethodSessionList, nil, &list); err == nil {
-			if n, err := strconv.Atoi(rest); err == nil && n >= 1 && n <= len(list) {
-				id = list[n-1].ID
-			}
-		}
-		cancel()
-		ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := r.be.Call(ctx, protocol.MethodSessionResume, protocol.SessionResumeParams{ID: id}, nil); err != nil {
-			fmt.Printf("[%v]\n", err)
-			return false
-		}
-		r.setCurrentSession(id)
-		if err := r.syncHistory(); err != nil {
-			fmt.Printf("[同步会话失败] %v\n", err)
-		}
-	case "compact":
-		// 手动压缩：不受阈值约束（空闲即可）——长会话撞窗口前的主动手段
-		if err := r.requireIdle(); err != nil {
-			fmt.Printf("[%v]\n", err)
-			return false
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-		defer cancel()
-		var res protocol.CompactResult
-		if err := r.be.Call(ctx, protocol.MethodChatCompact, protocol.CompactParams{SessionID: r.currentSessionID()}, &res); err != nil {
-			fmt.Printf("[%v]\n", err)
-			return false
-		}
-		if !res.Compacted {
-			fmt.Printf("[%s]\n", orDash(res.Reason))
-			return false
-		}
-		fmt.Printf("[已压缩 %d 条历史：%d → %d tokens]\n", res.Shadowed, res.Before, res.After)
-	case "model":
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		var ml protocol.ModelListResult
-		if err := r.be.Call(ctx, protocol.MethodModelList, nil, &ml); err != nil {
-			fmt.Printf("[%v]\n", err)
-			return false
-		}
-		fmt.Printf("default → %s\n", orDash(ml.Roles["default"]))
-		fmt.Printf("vision  → %s\n", orDash(ml.Roles["vision"]))
-		for _, m := range ml.Models {
-			mark := " "
-			if ml.Roles["default"] == m.ID {
-				mark = "*"
-			}
-			fmt.Printf(" %s %s  %s  %s  %s\n", mark, m.ID, m.Model, m.EffectiveFormat(), enabledText(m.Enabled))
-		}
-	case "think":
-		r.showThink = !r.showThink
-		fmt.Printf("[思考链显示: %v]\n", r.showThink)
-	case "help", "":
-		fmt.Print(`命令：
-  /new            开新会话（旧的保留可 resume）
-  /sessions       列出历史会话
-  /resume <n|id>  恢复历史会话
-  /compact        压缩早期历史（长会话撞窗口前主动压一次）
-  /model          查看模型与角色绑定
-  /think          切换思考链显示（默认隐藏）
-  /quit           退出
-生成中 Ctrl+C 取消当前轮；空闲 Ctrl+C 退出。
-`)
-	default:
-		fmt.Printf("[未知命令 /%s；/help 查看可用命令]\n", cmd)
-	}
-	return false
-}
 
 // requireIdle 切换会话前置检查（busy/挂起确认时拒绝）。
 func (r *REPL) requireIdle() error {
@@ -480,8 +247,8 @@ func (r *REPL) printPrompt() {
 	}
 }
 
-// clipStr 截断展示（首行优先，rune 安全）。
-func clipStr(s string, max int) string {
+// clipFirstLine 截断展示（首行优先，rune 安全）。
+func clipFirstLine(s string, max int) string {
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
 		s = s[:i]
 	}
