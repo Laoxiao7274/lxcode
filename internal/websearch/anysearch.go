@@ -43,13 +43,9 @@ type anysearchProvider struct{ base }
 // 但同一文件里的 getApiKey 仍会解析凭据——没有 key 时拿不到有效响应。
 // 我们按 needsKey=true 处理（缺 key 早报 KindCredential，比发出请求再吃 401 清楚）。
 func (p *anysearchProvider) Search(ctx context.Context, ch ChannelConfig, query string, opts Options) (Response, error) {
-	if ch.APIKey == "" {
-		return Response{}, NewProviderError(p.id, KindCredential, 0,
-			"未配置 API key（获取地址: "+p.docURL+"）", "", nil)
-	}
-	base := ch.BaseURL
-	if base == "" {
-		base = anysearchDefaultBase
+	base, err := p.resolveBase(ch, anysearchDefaultBase)
+	if err != nil {
+		return Response{}, err
 	}
 	num := NormalizeNumResults(opts.NumResults)
 	// AnySearch 只有 query/max_results 两个字段：域名过滤拼查询串 + 二次过滤；

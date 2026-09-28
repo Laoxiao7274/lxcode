@@ -42,13 +42,9 @@ type ollamaProvider struct{ base }
 // 这里照搬——Ollama 的这个端点在出问题时会返回结构诡异的 JSON，
 // 静默跳过坏条目会把「渠道坏了」显示成「搜到几条」。
 func (p *ollamaProvider) Search(ctx context.Context, ch ChannelConfig, query string, opts Options) (Response, error) {
-	if ch.APIKey == "" {
-		return Response{}, NewProviderError(p.id, KindCredential, 0,
-			"未配置 API key（获取地址: "+p.docURL+"）", "", nil)
-	}
-	base := ch.BaseURL
-	if base == "" {
-		base = ollamaDefaultBase
+	base, err := p.resolveBase(ch, ollamaDefaultBase)
+	if err != nil {
+		return Response{}, err
 	}
 	num := ollamaClampNumResults(opts.NumResults)
 	// Ollama 的 web_search 只接受 query/max_results，没有域名与时间范围参数

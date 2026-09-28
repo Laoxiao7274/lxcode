@@ -54,13 +54,9 @@ type searchInfinityProvider struct{ base }
 // 该渠道用 HTTP 200 + 业务错误码表达失败，所以除 requestJSON 的状态码分类外
 // 还要单独认一遍 ResponseMetadata.Error（见 searchInfinityBusinessStatus）。
 func (p *searchInfinityProvider) Search(ctx context.Context, ch ChannelConfig, query string, opts Options) (Response, error) {
-	if ch.APIKey == "" {
-		return Response{}, NewProviderError(p.id, KindCredential, 0,
-			"未配置 API key（获取地址: "+p.docURL+"）", "", nil)
-	}
-	base := ch.BaseURL
-	if base == "" {
-		base = searchInfinityDefaultBase
+	base, err := p.resolveBase(ch, searchInfinityDefaultBase)
+	if err != nil {
+		return Response{}, err
 	}
 	num := NormalizeNumResults(opts.NumResults)
 	include, exclude := DomainFilterParts(opts.DomainFilter)

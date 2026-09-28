@@ -37,13 +37,9 @@ type xcrawlProvider struct{ base }
 // （上游注释明说「has no server-side domain filter」，xcrawl.ts:97-98），
 // 域名过滤只能在结果上做——所以这里不把 site: 拼进查询串。
 func (p *xcrawlProvider) Search(ctx context.Context, ch ChannelConfig, query string, opts Options) (Response, error) {
-	if ch.APIKey == "" {
-		return Response{}, NewProviderError(p.id, KindCredential, 0,
-			"未配置 API key（获取地址: "+p.docURL+"）", "", nil)
-	}
-	base := ch.BaseURL
-	if base == "" {
-		base = xcrawlDefaultBase
+	base, err := p.resolveBase(ch, xcrawlDefaultBase)
+	if err != nil {
+		return Response{}, err
 	}
 	endpoint := base + "/v1/serp"
 	num := NormalizeNumResults(opts.NumResults)

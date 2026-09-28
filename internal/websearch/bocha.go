@@ -47,13 +47,9 @@ type bochaProvider struct{ base }
 // 拼进查询串（bocha.ts:200 只在结果上 filter）。这里照上游，不额外改写查询——
 // 给一个不保证支持 Google 语法的中文引擎塞 site: 只会换来更差的结果集。
 func (p *bochaProvider) Search(ctx context.Context, ch ChannelConfig, query string, opts Options) (Response, error) {
-	if ch.APIKey == "" {
-		return Response{}, NewProviderError(p.id, KindCredential, 0,
-			"未配置 API key（获取地址: "+p.docURL+"）", "", nil)
-	}
-	base := ch.BaseURL
-	if base == "" {
-		base = bochaDefaultBase
+	base, err := p.resolveBase(ch, bochaDefaultBase)
+	if err != nil {
+		return Response{}, err
 	}
 	num := NormalizeNumResults(opts.NumResults)
 	include, exclude := DomainFilterParts(opts.DomainFilter)

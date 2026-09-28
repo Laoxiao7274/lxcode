@@ -139,6 +139,24 @@ func (b base) AcceptsKey() bool { return b.needsKey || b.acceptsKey }
 
 func (b base) Options() []OptionSpec { return b.options }
 
+// resolveBase 统一「必填凭据校验 + base_url 兜底」这段开头——20 个适配器逐字
+// 重复它。为什么要提出来：漏了凭据校验的渠道会在缺 key 时照发请求，后端回
+// 401/403，分类从 credential 掉成 invalid-request，而**这一档不降级**（见
+// FallbackKinds）——用户看到的是「搜索失败」，而不是「去配 key」。
+//
+// defaultBase 是渠道私有的默认根（各文件一个 const），所以由调用方传入：
+// 「默认根各不相同」正是这段没能整体内联进 base 的唯一原因。
+func (b base) resolveBase(ch ChannelConfig, defaultBase string) (string, error) {
+	if ch.APIKey == "" {
+		return "", NewProviderError(b.id, KindCredential, 0,
+			"未配置 API key（获取地址: "+b.docURL+"）", "", nil)
+	}
+	if ch.BaseURL != "" {
+		return ch.BaseURL, nil
+	}
+	return defaultBase, nil
+}
+
 // presetProviders 返回全部内置渠道适配器。顺序即降级链的优先级：
 // 免 key / 自建在前（开箱可用、不花钱），付费 API 在后。
 //

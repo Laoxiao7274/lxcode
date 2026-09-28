@@ -45,13 +45,9 @@ type queritProvider struct{ base }
 //
 // 与 Searchinfinity 同类：HTTP 200 也可能带业务错误码，需单独认 error_code。
 func (p *queritProvider) Search(ctx context.Context, ch ChannelConfig, query string, opts Options) (Response, error) {
-	if ch.APIKey == "" {
-		return Response{}, NewProviderError(p.id, KindCredential, 0,
-			"未配置 API key（获取地址: "+p.docURL+"）", "", nil)
-	}
-	base := ch.BaseURL
-	if base == "" {
-		base = queritDefaultBase
+	base, err := p.resolveBase(ch, queritDefaultBase)
+	if err != nil {
+		return Response{}, err
 	}
 	num := NormalizeNumResults(opts.NumResults)
 	include, exclude := DomainFilterParts(opts.DomainFilter)

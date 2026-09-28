@@ -36,13 +36,9 @@ type braveProvider struct{ base }
 // GET {base}/web/search?q=&count=&freshness=，头 X-Subscription-Token。
 // Brave 没有域名参数，过滤拼进查询串后仍需二次过滤（上游同款）。
 func (p *braveProvider) Search(ctx context.Context, ch ChannelConfig, query string, opts Options) (Response, error) {
-	if ch.APIKey == "" {
-		return Response{}, NewProviderError(p.id, KindCredential, 0,
-			"未配置 API key（获取地址: "+p.docURL+"）", "", nil)
-	}
-	base := ch.BaseURL
-	if base == "" {
-		base = braveDefaultBase
+	base, err := p.resolveBase(ch, braveDefaultBase)
+	if err != nil {
+		return Response{}, err
 	}
 	num := NormalizeNumResults(opts.NumResults)
 	include, exclude := DomainFilterParts(opts.DomainFilter)

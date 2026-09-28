@@ -33,13 +33,9 @@ type jinaProvider struct{ base }
 //   - 响应可能是信封 {code,data[]} 也可能是裸数组，两种都要认
 //     （上游 parseItems 同款；信封 code≠200 视为渠道侧失败）。
 func (p *jinaProvider) Search(ctx context.Context, ch ChannelConfig, query string, opts Options) (Response, error) {
-	if ch.APIKey == "" {
-		return Response{}, NewProviderError(p.id, KindCredential, 0,
-			"未配置 API key（获取地址: "+p.docURL+"）", "", nil)
-	}
-	base := ch.BaseURL
-	if base == "" {
-		base = jinaDefaultBase
+	base, err := p.resolveBase(ch, jinaDefaultBase)
+	if err != nil {
+		return Response{}, err
 	}
 	if !strings.HasSuffix(base, "/") {
 		base += "/"

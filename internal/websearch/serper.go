@@ -83,13 +83,9 @@ type serperProvider struct{ base }
 // 域名过滤：Serper 没有原生域名参数，site: 子句拼进 q 之后**仍要**本地
 // 二次过滤（上游 serper.ts:179 同款）——搜索引擎对 site:/OR 的解析不可依赖。
 func (p *serperProvider) Search(ctx context.Context, ch ChannelConfig, query string, opts Options) (Response, error) {
-	if ch.APIKey == "" {
-		return Response{}, NewProviderError(p.id, KindCredential, 0,
-			"未配置 API key（获取地址: "+p.docURL+"）", "", nil)
-	}
-	base := ch.BaseURL
-	if base == "" {
-		base = serperDefaultBase
+	base, err := p.resolveBase(ch, serperDefaultBase)
+	if err != nil {
+		return Response{}, err
 	}
 	num := NormalizeNumResults(opts.NumResults)
 	include, exclude := DomainFilterParts(opts.DomainFilter)

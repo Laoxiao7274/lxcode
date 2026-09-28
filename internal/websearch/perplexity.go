@@ -51,13 +51,9 @@ const perplexityMaxCitations = 20
 //     对齐」——否则答案里的 [7] 会在结果列表里找不到对应项，模型拿着角标
 //     却查不到来源（perplexity.ts:111-118）。
 func (p *perplexityProvider) Search(ctx context.Context, ch ChannelConfig, query string, opts Options) (Response, error) {
-	if ch.APIKey == "" {
-		return Response{}, NewProviderError(p.id, KindCredential, 0,
-			"未配置 API key（获取地址: "+p.docURL+"）", "", nil)
-	}
-	base := ch.BaseURL
-	if base == "" {
-		base = perplexityDefaultBase
+	base, err := p.resolveBase(ch, perplexityDefaultBase)
+	if err != nil {
+		return Response{}, err
 	}
 	num := NormalizeNumResults(opts.NumResults)
 

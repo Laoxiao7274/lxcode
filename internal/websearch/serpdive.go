@@ -58,13 +58,9 @@ type serpdiveProvider struct{ base }
 // POST {base}/search，头 Authorization: Bearer，body {query,model,max_results}，
 // 响应 {answer,results:[{url,title,content}]}。
 func (p *serpdiveProvider) Search(ctx context.Context, ch ChannelConfig, query string, opts Options) (Response, error) {
-	if ch.APIKey == "" {
-		return Response{}, NewProviderError(p.id, KindCredential, 0,
-			"未配置 API key（获取地址: "+p.docURL+"）", "", nil)
-	}
-	base := ch.BaseURL
-	if base == "" {
-		base = serpdiveDefaultBase
+	base, err := p.resolveBase(ch, serpdiveDefaultBase)
+	if err != nil {
+		return Response{}, err
 	}
 	num := NormalizeNumResults(opts.NumResults)
 	include, exclude := DomainFilterParts(opts.DomainFilter)

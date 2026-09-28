@@ -49,13 +49,9 @@ func serpbaseStatusText(raw json.RawMessage) string {
 // 鉴权走 **query 参数 api_key**（serpbase.ts:163 明确注释了这是该端点的设计），
 // 所以 key 会出现在 URL 里；错误消息仍由 requestJSON 统一脱敏。
 func (p *serpbaseProvider) Search(ctx context.Context, ch ChannelConfig, query string, opts Options) (Response, error) {
-	if ch.APIKey == "" {
-		return Response{}, NewProviderError(p.id, KindCredential, 0,
-			"未配置 API key（获取地址: "+p.docURL+"）", "", nil)
-	}
-	base := ch.BaseURL
-	if base == "" {
-		base = serpbaseDefaultBase
+	base, err := p.resolveBase(ch, serpbaseDefaultBase)
+	if err != nil {
+		return Response{}, err
 	}
 	num := NormalizeNumResults(opts.NumResults)
 	include, exclude := DomainFilterParts(opts.DomainFilter)

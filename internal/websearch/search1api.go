@@ -36,13 +36,9 @@ type search1APIProvider struct{ base }
 // {query, max_results, crawl_results, include_sites?, exclude_sites?, time_range?}；
 // 响应：{results:[{title, link, snippet, content}]}。
 func (p *search1APIProvider) Search(ctx context.Context, ch ChannelConfig, query string, opts Options) (Response, error) {
-	if ch.APIKey == "" {
-		return Response{}, NewProviderError(p.id, KindCredential, 0,
-			"未配置 API key（获取地址: "+p.docURL+"）", "", nil)
-	}
-	base := ch.BaseURL
-	if base == "" {
-		base = search1apiDefaultBase
+	base, err := p.resolveBase(ch, search1apiDefaultBase)
+	if err != nil {
+		return Response{}, err
 	}
 	num := NormalizeNumResults(opts.NumResults)
 	include, exclude := DomainFilterParts(opts.DomainFilter)

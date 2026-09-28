@@ -27,13 +27,9 @@ type tavilyProvider struct{ base }
 // POST {base}/search，body 带 search_depth/include_answer/max_results，
 // 响应 {answer, results[{title,url,content}]}。
 func (p *tavilyProvider) Search(ctx context.Context, ch ChannelConfig, query string, opts Options) (Response, error) {
-	if ch.APIKey == "" {
-		return Response{}, NewProviderError(p.id, KindCredential, 0,
-			"未配置 API key（获取地址: "+p.docURL+"）", "", nil)
-	}
-	base := ch.BaseURL
-	if base == "" {
-		base = tavilyDefaultBase
+	base, err := p.resolveBase(ch, tavilyDefaultBase)
+	if err != nil {
+		return Response{}, err
 	}
 	num := NormalizeNumResults(opts.NumResults)
 	include, exclude := DomainFilterParts(opts.DomainFilter)

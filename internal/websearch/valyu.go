@@ -52,13 +52,9 @@ var valyuDomainPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$`)
 //   - 结果条目的四个字段都可能缺席或类型不对，上游逐个 text() 归一化
 //     （valyu.ts:95-97：折叠空白 + 截断），坏条目跳过而不是整体失败。
 func (p *valyuProvider) Search(ctx context.Context, ch ChannelConfig, query string, opts Options) (Response, error) {
-	if ch.APIKey == "" {
-		return Response{}, NewProviderError(p.id, KindCredential, 0,
-			"未配置 API key（获取地址: "+p.docURL+"）", "", nil)
-	}
-	base := ch.BaseURL
-	if base == "" {
-		base = valyuDefaultBase
+	base, err := p.resolveBase(ch, valyuDefaultBase)
+	if err != nil {
+		return Response{}, err
 	}
 	num := NormalizeNumResults(opts.NumResults)
 	include, exclude := valyuDomainFilter(opts.DomainFilter)

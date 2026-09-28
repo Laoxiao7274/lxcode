@@ -52,13 +52,9 @@ type tinyFishProvider struct{ base }
 // 单页只有 10 条，所以条数需求 > 10 时要再翻一页（上游同款）；两页的结果
 // 按 URL 去重后再截到需求条数——翻页会带回重复项，不去重会白占上下文。
 func (p *tinyFishProvider) Search(ctx context.Context, ch ChannelConfig, query string, opts Options) (Response, error) {
-	if ch.APIKey == "" {
-		return Response{}, NewProviderError(p.id, KindCredential, 0,
-			"未配置 API key（获取地址: "+p.docURL+"）", "", nil)
-	}
-	base := ch.BaseURL
-	if base == "" {
-		base = tinyFishDefaultBase
+	base, err := p.resolveBase(ch, tinyFishDefaultBase)
+	if err != nil {
+		return Response{}, err
 	}
 	num := NormalizeNumResults(opts.NumResults)
 	include, exclude := DomainFilterParts(opts.DomainFilter)

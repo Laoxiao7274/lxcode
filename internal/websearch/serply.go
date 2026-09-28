@@ -30,13 +30,9 @@ type serplyProvider struct{ base }
 // GET {base}/search?q=&num=&tbs=，头 X-Api-Key，
 // 响应 {results:[{title,link,description}]}。
 func (p *serplyProvider) Search(ctx context.Context, ch ChannelConfig, query string, opts Options) (Response, error) {
-	if ch.APIKey == "" {
-		return Response{}, NewProviderError(p.id, KindCredential, 0,
-			"未配置 API key（获取地址: "+p.docURL+"）", "", nil)
-	}
-	base := ch.BaseURL
-	if base == "" {
-		base = serplyDefaultBase
+	base, err := p.resolveBase(ch, serplyDefaultBase)
+	if err != nil {
+		return Response{}, err
 	}
 	num := NormalizeNumResults(opts.NumResults)
 	include, exclude := DomainFilterParts(opts.DomainFilter)

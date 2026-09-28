@@ -46,13 +46,9 @@ type parallelProvider struct{ base }
 // 用的是两种取法（上游 buildAnswerFromExcerpts vs mapSearchResults）：
 // snippet 只取第一条摘录并截断，答案把所有摘录连起来——两者的信息量刻意不同。
 func (p *parallelProvider) Search(ctx context.Context, ch ChannelConfig, query string, opts Options) (Response, error) {
-	if ch.APIKey == "" {
-		return Response{}, NewProviderError(p.id, KindCredential, 0,
-			"未配置 API key（获取地址: "+p.docURL+"）", "", nil)
-	}
-	base := ch.BaseURL
-	if base == "" {
-		base = parallelDefaultBase
+	base, err := p.resolveBase(ch, parallelDefaultBase)
+	if err != nil {
+		return Response{}, err
 	}
 	num := NormalizeNumResults(opts.NumResults)
 	include, exclude := DomainFilterParts(opts.DomainFilter)

@@ -38,13 +38,9 @@ type kagiProvider struct{ base }
 //   - 信封里的 errors 数组表示渠道侧报错（HTTP 仍是 200），必须当失败处理，
 //     否则会被当成「搜到 0 条」（kagi.ts:104-120）。
 func (p *kagiProvider) Search(ctx context.Context, ch ChannelConfig, query string, opts Options) (Response, error) {
-	if ch.APIKey == "" {
-		return Response{}, NewProviderError(p.id, KindCredential, 0,
-			"未配置 API key（获取地址: "+p.docURL+"）", "", nil)
-	}
-	base := ch.BaseURL
-	if base == "" {
-		base = kagiDefaultBase
+	base, err := p.resolveBase(ch, kagiDefaultBase)
+	if err != nil {
+		return Response{}, err
 	}
 	num := NormalizeNumResults(opts.NumResults)
 	include, exclude := DomainFilterParts(opts.DomainFilter)
