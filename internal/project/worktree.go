@@ -112,11 +112,21 @@ func validateExistingWorktree(repo, path, branch string) error {
 	if !info.IsDir() {
 		return fmt.Errorf("worktree 路径不是目录: %s", path)
 	}
-	root, err := gitOutput(path, "rev-parse", "--show-toplevel")
+	// 一次 git 调用取回三项：rev-parse 支持多选项，按给出顺序逐行输出
+	// （--show-toplevel / --git-common-dir / --abbrev-ref HEAD）。
+	// Windows 上每个 git 子进程实测约 35ms（进程创建占大头）：分开问三次是
+	// 158ms，合成一次是 33ms。这段校验在每次读历史、恢复会话时都会跑
+	// （见 server.prepareWorktreeLocked），所以这个差值每次切会话都要付一遍。
+	out, err := gitOutput(path, "rev-parse", "--show-toplevel", "--git-common-dir", "--abbrev-ref", "HEAD")
 	if err != nil {
 		return fmt.Errorf("worktree 路径存在但不是有效 Git 工作树: %w", err)
 	}
-	gotRoot, err := filepath.Abs(strings.TrimSpace(root))
+	// SplitN(…, 3)：路径里理论上可以有换行（分支名不行），第三段整体收尾更稳
+	lines := strings.SplitN(strings.TrimRight(out, "\r\n"), "\n", 3)
+	if len(lines) < 3 {
+		return fmt.Errorf("worktree 校验输出不完整: %q", truncate(strings.TrimSpace(out), 200))
+	}
+	gotRoot, err := filepath.Abs(strings.TrimSpace(lines[0]))
 	if err != nil {
 		return fmt.Errorf("解析 worktree 根目录失败: %w", err)
 	}
@@ -127,20 +137,26 @@ func validateExistingWorktree(repo, path, branch string) error {
 	if !samePath(gotRoot, wantRoot) {
 		return fmt.Errorf("worktree 路径指向其他目录: %s", gotRoot)
 	}
-	repoCommon, err := gitCommonDir(repo)
+	worktreeCommon, err := resolveCommonDir(path, lines[1])
 	if err != nil {
 		return err
 	}
-	worktreeCommon, err := gitCommonDir(path)
+	// 仓库侧的公共目录仍然照旧问 git（不能拿 filepath.Join(repo, ".git") 顶替）：
+	// 仓库自身是子模块或链接工作树时 .git 是文件，而且 git 报出的路径可能已经
+	// 解析过符号链接（sessions 目录被重定向的机器上很常见）——拿文件系统拼出来
+	// 的路径去比会把这些机器误判成「不属于预期项目仓库」。
+	repoCommon, err := gitCommonDir(repo)
 	if err != nil {
 		return err
 	}
 	if !samePath(repoCommon, worktreeCommon) {
 		return fmt.Errorf("worktree 不属于预期项目仓库: %s", worktreeCommon)
 	}
-	gotBranch, err := gitOutput(path, "branch", "--show-current")
-	if err != nil || strings.TrimSpace(gotBranch) != branch {
-		return fmt.Errorf("worktree 分支不匹配（期望 %s，实际 %s）", branch, strings.TrimSpace(gotBranch))
+	// --abbrev-ref HEAD 与 branch --show-current 的差别只在游离 HEAD：前者回
+	// "HEAD"，后者回空串。两者都不等于期望分支，错误信息里说"实际 HEAD"更准确。
+	gotBranch := strings.TrimSpace(lines[2])
+	if gotBranch != branch {
+		return fmt.Errorf("worktree 分支不匹配（期望 %s，实际 %s）", branch, gotBranch)
 	}
 	return nil
 }
@@ -243,6 +259,13 @@ func gitCommonDir(dir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return resolveCommonDir(dir, common)
+}
+
+// resolveCommonDir 把 git 报出的公共目录解析成绝对路径。
+// 普通仓库里 git 报的是相对路径（".git"），链接工作树里报的是绝对路径，两种都要吃下
+// ——校验路径与合并调用共用这一份实现，不复制第二份。
+func resolveCommonDir(dir, common string) (string, error) {
 	common = strings.TrimSpace(common)
 	if !filepath.IsAbs(common) {
 		common = filepath.Join(dir, common)

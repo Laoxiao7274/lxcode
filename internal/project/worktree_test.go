@@ -63,6 +63,53 @@ func TestWorktreeFromHEADAndRestore(t *testing.T) {
 	}
 }
 
+// validateExistingWorktree 的三条拒绝路径。它被重写成「一次 rev-parse 取三项」，
+// 行序即字段序，所以必须钉住：目录不是工作树、工作树属于别的仓库、工作树在别的分支上。
+func TestRestoreWorktreeRejectsForeignRepoBranchAndPlainDir(t *testing.T) {
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo")
+	other := filepath.Join(root, "other")
+	worktreeRoot := filepath.Join(root, "sessions", "worktrees")
+	for _, dir := range []string{repo, other} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		gitTest(t, dir, "init")
+		gitTest(t, dir, "config", "user.name", "Test")
+		gitTest(t, dir, "config", "user.email", "test@example.invalid")
+		if err := os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		gitTest(t, dir, "add", "base.txt")
+		gitTest(t, dir, "commit", "-m", "base")
+	}
+	// ① 工作树属于别的仓库：公共目录对不上 → 必须拒绝（否则会在别人的仓库里干活）
+	foreign, err := CreateWorktree(other, worktreeRoot, "project-1", "session-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := RestoreWorktree(repo, foreign.Path, foreign.Branch); err == nil || !strings.Contains(err.Error(), "不属于预期项目仓库") {
+		t.Fatalf("foreign worktree accepted: %v", err)
+	}
+	// ② 本项目的工作树但分支被切走 → 必须拒绝（否则用户改动会落到别的分支上）
+	mine, err := CreateWorktree(repo, worktreeRoot, "project-1", "session-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, mine.Path, "checkout", "-b", "moved-away")
+	if err := RestoreWorktree(repo, mine.Path, mine.Branch); err == nil || !strings.Contains(err.Error(), "分支不匹配") {
+		t.Fatalf("branch mismatch accepted: %v", err)
+	}
+	// ③ 目录存在但不是 Git 工作树 → 必须拒绝
+	plain := filepath.Join(root, "plain")
+	if err := os.MkdirAll(plain, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := RestoreWorktree(repo, plain, "lxcode/session-x"); err == nil || !strings.Contains(err.Error(), "不是有效 Git 工作树") {
+		t.Fatalf("plain directory accepted: %v", err)
+	}
+}
+
 func TestReleaseWorktreeKeepsBranchAndCanRestore(t *testing.T) {
 	root := t.TempDir()
 	repo := filepath.Join(root, "repo")
