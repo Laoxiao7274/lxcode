@@ -6,11 +6,14 @@ import { useRef, useState } from "react";
 import type { ThreadBlock } from "../../../shared/store";
 import { useEnterRef } from "../../../shared/anim";
 import { Markdown } from "../../../shared/markdown";
+import { Button } from "../../form";
 import { Block } from "./Block";
 
-export function DispatchCard({ block, onConfirm }: {
+export function DispatchCard({ block, onConfirm, "data-uid": dataUid }: {
   block: Extract<ThreadBlock, { kind: "dispatch" }>;
   onConfirm: (id: string, allow: boolean) => void;
+  /** 块锚点（右侧大纲按 data-uid 精确寻址——不许按文本找元素）。 */
+  "data-uid"?: number;
 }) {
   // 子过程可折叠：运行中默认展开（盯着进度），完成后默认折叠（只留结果）。
   // 用派生 + 手动覆盖的写法，不能用 useState(初值)——useState 初值只在
@@ -29,7 +32,7 @@ export function DispatchCard({ block, onConfirm }: {
   const expandable = subCount > 0 || Boolean(done && block.result);
 
   return (
-    <div className="dispatch-card" data-done={done ? "true" : undefined} data-error={block.isError ? "true" : undefined} ref={cardRef}>
+    <div className="dispatch-card" data-uid={dataUid} data-done={done ? "true" : undefined} data-error={block.isError ? "true" : undefined} ref={cardRef}>
       <button
         type="button"
         className="dispatch-head"
@@ -78,6 +81,13 @@ export function DispatchCard({ block, onConfirm }: {
               <Markdown text={block.result} />
             </div>
           )}
+          {/* 底部收起：长展开卡（子 Agent 的过程 + 结果）滚到底后不必再回到卡片顶部
+           *  找那个 chevron。走表单套件的 Button——裸写 <button> 就是 OS 默认灰皮。 */}
+          <div className="dispatch-foot">
+            <Button className="dispatch-collapse" onClick={() => setUserSet(!expanded)}>
+              收起
+            </Button>
+          </div>
         </div>
       )}
     </div>

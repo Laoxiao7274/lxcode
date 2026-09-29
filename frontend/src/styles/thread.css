@@ -511,6 +511,25 @@
 .dispatch-body .msg {
   padding: 0;
 }
+/* 展开体底部的「收起」：长展开卡（子 Agent 的过程 + 结果）滚到底后不必再回到卡片
+ * 顶部找 chevron——用户原话「应该在最下面也有收起的东西，不然很不方便」。
+ * 走表单套件的 Button（.fd-btn-g）：裸写 <button> 就是 OS 默认灰皮。
+ * 放 thread.css 而不是 panels.css 的理由：它是卡片自身视觉语言的一部分，与
+ * .dispatch-body / .dispatch-chev 同处一节（panels.css 是右栏工作区结构）；
+ * thread.css 又先于 panels.css 加载，卡片内部规则集中一处不会有级联顺序意外。 */
+.dispatch-foot {
+  display: flex;
+  justify-content: center;
+}
+.dispatch-collapse.fd-btn-g {
+  padding: 3px 16px;
+  font-size: 11px;
+  border-radius: 7px;
+  background: var(--surface);
+}
+.dispatch-collapse.fd-btn-g:hover {
+  color: var(--fg);
+}
 /* 行：24px 高（DSH DisclosureRow 的行高）；运行中扫光在 ::after */
 .trow-row {
   position: relative;

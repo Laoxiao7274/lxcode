@@ -24,6 +24,8 @@ import type { SlashCommand } from "./components/composer/SlashPalette";
 import { TabBar } from "./components/topbar/TabBar";
 import { SettingsPanel } from "./components/settings";
 import { Button } from "./components/form";
+import { OutlinePanel } from "./components/panels/OutlinePanel";
+import { outlineItems } from "./components/panels/outline";
 import { SettingsProvider, useSettings } from "./shared/settings";
 import { ConnectionsProvider } from "./shared/connections";
 import { UpdateProvider } from "./shared/update";
@@ -68,6 +70,9 @@ function AppBody({ source }: { source: AgentSource }) {
   const [filter, setFilter] = useState<string>(LOOSE);
   const [gitProjectId, setGitProjectId] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  /** 右侧「已发送消息」大纲的开合：**纯 UI 状态**（不进会话历史、不落库、切会话不
+   *  清——它只是当前窗口的查看方式）。 */
+  const [outlineOpen, setOutlineOpen] = useState(true);
 
   const openWorkspace = useCallback((page: WorkspacePage) => {
     const next = focusWorkspacePage(workspaceStateRef.current, page);
@@ -226,6 +231,27 @@ function AppBody({ source }: { source: AgentSource }) {
       });
   }, [editDraft, source, currentId, sendWithOptions, reportError, injectDraft]);
 
+  // ---- 右侧「已发送消息」大纲 ----
+  // 条目来自纯函数（只取 user 块——提示条 notice 在历史里也是 user 角色消息，但它
+  // 不是用户说的话，列进「我发过的消息」是错的）。判定与截断都在 panels/outline.ts。
+  const outline = useMemo(() => outlineItems(state.blocks), [state.blocks]);
+  /** 最近跳转的那条（高亮跟随点击）。它可能已经不在列表里（撤回/切会话），
+   *  所以取用时再确认一次存在性。 */
+  const [jumpedUid, setJumpedUid] = useState<number | null>(null);
+  const lastUserUid = outline.length > 0 ? outline[outline.length - 1].uid : null;
+  const activeOutlineUid = jumpedUid !== null && outline.some((item) => item.uid === jumpedUid) ? jumpedUid : lastUserUid;
+  const targetTimerRef = useRef<number | null>(null);
+  /** 跳到某条已发送消息：这里**只记目标**，滚动与高亮交给 Thread。
+   *
+   *  为什么不在 App 里滚：线程是**窗口化渲染**（只挂底部若干块），目标可能根本没
+   *  挂上 DOM——在这里按 data-uid 找不到元素就静默变成 no-op，而长会话恰恰是最需要
+   *  跳转的场景（用户点大纲第一条却毫无反应）。扩窗要改 Thread 自己的 windowSize，
+   *  所以整跳归它：先撑窗到包含目标，等元素真的挂上再滚 + 高亮。
+   *  寻址仍按 data-uid **精确匹配**——不许按文本找元素（同一句话发两次会命中错的那条）。 */
+  const handleOutlineJump = useCallback((uid: number) => {
+    setJumpedUid(uid);
+  }, []);
+
   const currentTitle = state.blocks.length === 0 ? "" : source.sessions().find((s: SessionMeta) => s.id === currentId)?.title ?? "任务";
 
   // 壳环境（Electron）= 真实窗口；浏览器 = 保留模拟壳（窗口模拟一层的差异，
@@ -262,25 +288,47 @@ function AppBody({ source }: { source: AgentSource }) {
 
   const renderView = (activeView: WorkspaceView): ReactNode => {
     if (activeView === "chat") {
+      // 左聊天列 + 右大纲栏。分栏而不是把面板浮在时间线上：面板要独立滚动，
+      // 且不许把聊天列挤成 0 宽（聊天列 flex:1，面板固定宽度——见 panels.css）。
       return (
-        <>
-          {errorNotice}
-          <div className="thread-scroll">
-            <Thread state={state} onConfirm={handleConfirm} onSuggestion={handleSend} projectName={filterProjectName} onEdit={handleEdit} onRewind={handleRewind} />
+        <div className="chat-split">
+          <div className="chat-main">
+            {errorNotice}
+            <div className="thread-scroll">
+              <Thread state={state} onConfirm={handleConfirm} onSuggestion={handleSend} projectName={filterProjectName} onEdit={handleEdit} onRewind={handleRewind} revealUid={jumpedUid} />
+            </div>
+            <Composer
+              busy={state.busy}
+              todos={state.todos}
+              context={state.context}
+              onSend={handleSend}
+              onCancel={() => source.cancel(currentId)}
+              onCompact={() => { void handleCompact(); }}
+              commands={slashCommands}
+              draft={draft}
+              editing={editDraft !== null}
+              onCancelEdit={handleCancelEdit}
+            />
           </div>
-          <Composer
-            busy={state.busy}
-            todos={state.todos}
-            context={state.context}
-            onSend={handleSend}
-            onCancel={() => source.cancel(currentId)}
-            onCompact={() => { void handleCompact(); }}
-            commands={slashCommands}
-            draft={draft}
-            editing={editDraft !== null}
-            onCancelEdit={handleCancelEdit}
-          />
-        </>
+          <aside className="outline-aside" data-open={outlineOpen ? "true" : "false"}>
+            <div className="outline-head">
+              {outlineOpen && <span className="outline-title">已发送消息</span>}
+              {/* 开合按钮走表单套件（裸 button = OS 默认灰皮） */}
+              <Button
+                className="outline-toggle"
+                aria-expanded={outlineOpen}
+                aria-label={outlineOpen ? "收起大纲" : "展开大纲"}
+                title={outlineOpen ? "收起大纲" : "展开大纲"}
+                onClick={() => setOutlineOpen((open) => !open)}
+              >
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                  <path d="m15 18-6-6 6-6" />
+                </svg>
+              </Button>
+            </div>
+            {outlineOpen && <OutlinePanel items={outline} activeUid={activeOutlineUid} onJump={handleOutlineJump} />}
+          </aside>
+        </div>
       );
     }
     if (activeView === "agents") return <AgentsPage />;

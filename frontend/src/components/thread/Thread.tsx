@@ -20,6 +20,7 @@ export function Thread({
   projectName,
   onEdit,
   onRewind,
+  revealUid,
 }: {
   state: UIState;
   onConfirm: (id: string, allow: boolean) => void;
@@ -30,6 +31,14 @@ export function Thread({
    *  全在 App 与 shared/blocks 的纯函数里（这一层不碰历史）。 */
   onEdit?: (block: ThreadBlock) => void;
   onRewind?: (block: ThreadBlock) => void;
+  /** 大纲跳转的目标块 uid（null = 没有待处理的跳转）。
+   *
+   *  为什么由 Thread 而不是 App 做滚动：线程是**窗口化渲染**（只挂底部 windowSize
+   *  块），目标块可能根本没挂上 DOM——App 那边按 data-uid 找不到元素，跳转就静默
+   *  变成 no-op，而长会话恰恰是最需要跳转的场景（用户点大纲第一条却毫无反应）。
+   *  扩窗要改 Thread 自己的 windowSize 状态，所以这一跳归它管：先把窗口撑到包含
+   *  目标，等它真的挂上 DOM 再滚动 + 高亮。 */
+  revealUid?: number | null;
 }) {
   const endRef = useRef<HTMLDivElement>(null);
   const emptyRef = useRef<HTMLDivElement>(null);
@@ -64,6 +73,27 @@ export function Thread({
   useEffect(() => { setWindowSize(WINDOW_INITIAL); }, [empty]);
   const hidden = Math.max(0, state.blocks.length - windowSize);
   const visible = hidden > 0 ? state.blocks.slice(hidden) : state.blocks;
+  // 大纲跳转：目标可能在窗口外（没挂 DOM）——先把窗口撑到包含它，下一帧再滚。
+  // handledRef 防重入：扩窗会改 windowSize → 本 effect 重跑，不记「这一跳已处理」就会
+  // 每次都重新滚一遍（用户手动滚动会被立刻拽回去）。
+  const handledJumpRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (revealUid === null || revealUid === undefined) { handledJumpRef.current = null; return; }
+    if (handledJumpRef.current === revealUid) return;
+    const idx = state.blocks.findIndex((b) => b.uid === revealUid);
+    if (idx < 0) return;
+    if (idx < hidden) {
+      // 一次撑够（含一批余量）：逐批 40 个会让长会话连点多次才到位
+      setWindowSize(state.blocks.length - idx + WINDOW_BATCH);
+      return; // 元素这一帧还不在 DOM 里，扩窗后本 effect 会再跑一次
+    }
+    const el = document.querySelector<HTMLElement>(`[data-uid="${revealUid}"]`);
+    if (!el) return;
+    handledJumpRef.current = revealUid;
+    el.scrollIntoView({ block: "center" });
+    el.classList.add("outline-target");
+    window.setTimeout(() => el.classList.remove("outline-target"), 1200);
+  }, [revealUid, hidden, state.blocks, windowSize]);
   // 空态的身份芯片：当前 Agent（谁来干活）+ 归属项目；主 Agent 带有效委派计数
   const { agents, activeAgentId, sessionDelegates } = useAgents();
   const activeAgent = agents.find((a) => a.id === activeAgentId) ?? agents.find((a) => a.isMain);
@@ -184,7 +214,7 @@ export function Thread({
        *  「很多会话×长会话」的前提——见 docs/frontend-review.md §四-①。 */}
       {hidden > 0 && <WindowSentinel onExpand={() => setWindowSize((n) => n + WINDOW_BATCH)} label={`前面还有 ${hidden} 条…`} />}
       {visible.map((block) => (
-        <Block key={block.uid} block={block} onConfirm={onConfirm} replayed={replayed} onEdit={onEdit} onRewind={onRewind} />
+        <Block key={block.uid} block={block} onConfirm={onConfirm} replayed={replayed} onEdit={onEdit} onRewind={onRewind} data-uid={block.uid} />
       ))}
       {/* 进行中且还没有任何输出时显示思考 shimmer（无角色标签——DSH 形态） */}
       {state.busy && !lastIsStreamingAssistant(state.blocks) && (

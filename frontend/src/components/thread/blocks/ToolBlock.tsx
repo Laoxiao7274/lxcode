@@ -21,7 +21,7 @@ const TOOL_TITLES: Record<string, string> = {
   todo: "任务清单",
 };
 
-export function ToolBlock({ block }: { block: Extract<ThreadBlock, { kind: "tool" }> }) {
+export function ToolBlock({ block, "data-uid": dataUid }: { block: Extract<ThreadBlock, { kind: "tool" }>; "data-uid"?: number }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
   const [bodyMounted, setBodyMounted] = useState(false);
@@ -83,7 +83,7 @@ export function ToolBlock({ block }: { block: Extract<ThreadBlock, { kind: "tool
 
   if (editDiff && block.name === "edit") {
     return (
-      <div className="tool-block diff-block" ref={rootRef}>
+      <div className="tool-block diff-block" data-uid={dataUid} ref={rootRef}>
         <div className="diff-file-head">
           <span className="ticon" aria-hidden>
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
@@ -113,6 +113,7 @@ export function ToolBlock({ block }: { block: Extract<ThreadBlock, { kind: "tool
   return (
     <div
       className={"trow" + (running ? " trow-running" : "") + (block.isError ? " trow-error" : "") + (open ? " trow-open" : "")}
+      data-uid={dataUid}
       ref={rootRef}
     >
       <div

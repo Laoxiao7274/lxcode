@@ -1,0 +1,144 @@
+/* 右侧面板（大纲等）与聊天工作区的分栏布局。
+ * 单独一个文件而不是塞进 thread.css：右栏是与时间线并列的工作区结构，
+ * 不是时间线内部的东西；global.css 里放在 @import 列表末尾（覆盖关系最安全）。 */
+
+/* ===== 聊天工作区：左聊天列 + 右大纲栏 ===== */
+.chat-split {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+.chat-main {
+  /* 必须 position: relative：输入区（.composer-zone）是 absolute 定位，它要锚在
+   * **聊天列**上而不是整个 .main——否则输入区会横跨到大纲栏底下（右边多出一条
+   * 输入框背景压在面板上）。 */
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* ===== 大纲栏：固定宽度 + 可收起 ===== */
+/* 收起后保留一条窄轨（不是 0 宽）：收成 0 用户就找不到把它拉回来的入口了。 */
+.outline-aside {
+  flex: none;
+  width: 240px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-left: 1px solid var(--border-soft);
+  background: var(--bg-side);
+  transition: width 160ms ease;
+}
+.outline-aside[data-open="false"] {
+  width: 34px;
+}
+.outline-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  padding: 8px 8px 8px 11px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.outline-aside[data-open="false"] .outline-head {
+  padding: 8px 7px;
+  justify-content: center;
+}
+.outline-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+}
+/* 开合按钮：走表单套件（.fd-btn-g），这里只给紧凑档的布局——套件只给外观，
+ * 布局归使用方（与 .msg-action.fd-btn-g / .job-kill.fd-btn-g 同款做法）。 */
+.outline-toggle.fd-btn-g {
+  flex: none;
+  padding: 2px 5px;
+  border-radius: 6px;
+}
+.outline-toggle svg {
+  transition: transform 160ms;
+}
+/* 展开态箭头翻向：闭合时指左（拉出来），展开时指右（收回去） */
+.outline-toggle[aria-expanded="true"] svg {
+  transform: rotate(180deg);
+}
+/* 列表本体可滚动（条目多时面板不撑高整个工作区） */
+.outline-panel {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px;
+}
+.outline-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+/* 条目：套件按钮的皮在这里被拆掉——它是列表行，不是按钮（无边框、无按钮底色、
+ * 整行可点、左对齐、单行截断）。 */
+.outline-item.fd-btn-g {
+  display: block;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 7px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--fg-muted);
+  background: transparent;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.outline-item.fd-btn-g:hover {
+  color: var(--fg);
+  background: rgba(0, 0, 0, 0.045);
+}
+.outline-item.fd-btn-g.active {
+  color: var(--fg);
+  background: rgba(16, 163, 127, 0.11);
+}
+.outline-empty {
+  padding: 8px 4px;
+  font-size: 11.5px;
+  color: var(--fg-faint);
+}
+
+/* 跳转命中：短暂高亮（App 加 class，1.2s 后移除）。
+ * 用外圈 ring 而不是改背景色：卡片（dispatch/job/compaction）自带底色，
+ * 改背景会被它们自己的规则盖住——ring 画在盒子外面，对所有块形态都可见。 */
+.outline-target {
+  animation: outline-target-flash 1.2s ease-out;
+  border-radius: 10px;
+}
+@keyframes outline-target-flash {
+  0% {
+    box-shadow: 0 0 0 3px rgba(16, 163, 127, 0.45);
+  }
+  100% {
+    box-shadow: 0 0 0 3px rgba(16, 163, 127, 0);
+  }
+}
+/* 动效减免：关掉闪烁，ring 在 class 被移除时消失（高亮本身是信息，不是装饰） */
+@media (prefers-reduced-motion: reduce) {
+  .outline-target {
+    animation: none;
+    box-shadow: 0 0 0 2px rgba(16, 163, 127, 0.5);
+  }
+}
+/* 小屏：与侧栏同策略——窄屏放不下第三栏，直接不显示（否则聊天列被压成一条） */
+@media (max-width: 768px) {
+  .outline-aside {
+    display: none;
+  }
+}

@@ -7,7 +7,7 @@ import { gsap } from "gsap";
 import { playEnter } from "../../../shared/anim";
 import { motionAllowed, staggerIn } from "../../../shared/motion";
 
-export function FilesCard({ files }: { files: FileChange[] }) {
+export function FilesCard({ files, "data-uid": dataUid }: { files: FileChange[]; "data-uid"?: number }) {
   const [open, setOpen] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const headRowRef = useRef<HTMLDivElement>(null);
@@ -25,7 +25,7 @@ export function FilesCard({ files }: { files: FileChange[] }) {
   const deleted = files.reduce((n, f) => n + f.deleted, 0);
 
   return (
-    <div className="files-card" ref={rootRef}>
+    <div className="files-card" data-uid={dataUid} ref={rootRef}>
       <div className="files-head" ref={headRowRef}>
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z" />

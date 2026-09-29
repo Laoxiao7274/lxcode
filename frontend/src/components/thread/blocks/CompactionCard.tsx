@@ -6,7 +6,7 @@ import type { ThreadBlock } from "../../../shared/store";
 import { useEnterRef } from "../../../shared/anim";
 import { Markdown } from "../../../shared/markdown";
 
-export function CompactionCard({ block }: { block: Extract<ThreadBlock, { kind: "compacted" }> }) {
+export function CompactionCard({ block, "data-uid": dataUid }: { block: Extract<ThreadBlock, { kind: "compacted" }>; "data-uid"?: number }) {
   const [open, setOpen] = useState(false);
   const cardRef = useEnterRef<HTMLDivElement>();
   const bodyRef = useRef<HTMLDivElement | null>(null);
@@ -15,7 +15,7 @@ export function CompactionCard({ block }: { block: Extract<ThreadBlock, { kind: 
   const hasStats = block.before > 0 || block.shadowed > 0;
 
   return (
-    <div className="compact-card" data-manual={block.manual ? "true" : undefined} ref={cardRef}>
+    <div className="compact-card" data-uid={dataUid} data-manual={block.manual ? "true" : undefined} ref={cardRef}>
       <button
         type="button"
         className="compact-head"

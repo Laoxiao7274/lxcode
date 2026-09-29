@@ -8,10 +8,10 @@
 import type { ThreadBlock } from "../../../shared/store";
 import { useEnterRef } from "../../../shared/anim";
 
-export function NoticeBar({ block }: { block: Extract<ThreadBlock, { kind: "notice" }> }) {
+export function NoticeBar({ block, "data-uid": dataUid }: { block: Extract<ThreadBlock, { kind: "notice" }>; "data-uid"?: number }) {
   const barRef = useEnterRef<HTMLDivElement>();
   return (
-    <div className="job-notice" ref={barRef} role="note">
+    <div className="job-notice" data-uid={dataUid} ref={barRef} role="note">
       <span className="job-notice-icon" aria-hidden>
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <path d="M12 8v5" />

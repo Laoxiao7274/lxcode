@@ -14,14 +14,14 @@ import { useJobClock } from "../../../shared/jobs-admin";
 import { JobKillButton } from "../../jobs/JobKillButton";
 import { JobOutput } from "../../jobs/JobOutput";
 
-export function JobCard({ block }: { block: Extract<ThreadBlock, { kind: "job" }> }) {
+export function JobCard({ block, "data-uid": dataUid }: { block: Extract<ThreadBlock, { kind: "job" }>; "data-uid"?: number }) {
   const job = block.job;
   const active = isJobActive(job);
   const now = useJobClock(active);
   const cardRef = useEnterRef<HTMLDivElement>();
 
   return (
-    <div className="job-card" data-state={jobTone(job)} ref={cardRef}>
+    <div className="job-card" data-uid={dataUid} data-state={jobTone(job)} ref={cardRef}>
       <div className="job-head">
         <span className="job-dot" aria-hidden />
         <span className="job-label mono" title={job.label}>{job.label}</span>

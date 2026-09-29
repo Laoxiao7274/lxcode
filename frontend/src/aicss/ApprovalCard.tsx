@@ -22,9 +22,11 @@ export interface ApprovalCardProps {
   resolved?: "allow" | "deny" | null;
   /** 卡片出现时自动聚焦运行按钮（当前挂起的确认）。 */
   autoFocus?: boolean;
+  /** 块锚点（右侧大纲按 data-uid 精确寻址）。 */
+  "data-uid"?: number;
 }
 
-export function ApprovalCard({ command, cwd, note, onDecide, resolved, autoFocus }: ApprovalCardProps) {
+export function ApprovalCard({ command, cwd, note, onDecide, resolved, autoFocus, "data-uid": dataUid }: ApprovalCardProps) {
   const [local, setLocal] = useState<"allow" | "deny" | null>(resolved ?? null);
   const outcome = resolved ?? local;
   const decided = outcome !== null;
@@ -49,7 +51,7 @@ export function ApprovalCard({ command, cwd, note, onDecide, resolved, autoFocus
   };
 
   return (
-    <div className={styles.card} data-variant="command" data-resolved={outcome ?? undefined}>
+    <div className={styles.card} data-uid={dataUid} data-variant="command" data-resolved={outcome ?? undefined}>
       <div className={styles.head}>
         <span className={styles.icon}>
           <svg className={styles.iconSvg} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

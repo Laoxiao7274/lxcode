@@ -25,10 +25,14 @@ import { NoticeBar } from "./NoticeBar";
 const NO_SEQ_HINT = "这条消息来自旧版后端（没有 seq），无法定位要撤回的位置";
 
 export const Block = memo(
-  function Block({ block, onConfirm, replayed, onEdit, onRewind }: {
+  function Block({ block, onConfirm, replayed, onEdit, onRewind, "data-uid": dataUid }: {
     block: ThreadBlock;
     onConfirm: (id: string, allow: boolean) => void;
     replayed?: boolean;
+    /** 块锚点（右侧大纲按 data-uid 精确寻址——不许按文本找元素）。Thread 对每个块
+     *  都传，这里落到各渲染器的根元素上：子组件不一定会透传未知 props，所以逐层
+     *  显式带下去（宿主元素才会把它写成 DOM 属性）。 */
+    "data-uid"?: number;
     /** 用户气泡的撤回/编辑（复制在组件内自足，不必上抛）。回调由 App 用
      *  useCallback 固定身份——每次新建会击穿 memo（见文件末尾的比较器）。 */
     onEdit?: (block: ThreadBlock) => void;
@@ -71,7 +75,7 @@ export const Block = memo(
       // 绝对定位在气泡**上方**（right:0 与气泡右缘对齐）——进流会给每条用户消息
       // 永久多留一行高度，hover 显隐还会顶动下方内容（长会话里整屏位移）。
       return (
-        <div className="msg user">
+        <div className="msg user" data-uid={dataUid}>
           <div className="bubble" ref={bubbleRef}>{block.text}</div>
           <MessageActions block={block} onEdit={onEdit} onRewind={onRewind} />
         </div>
@@ -81,7 +85,7 @@ export const Block = memo(
       // DSH 形态：无角色标签行（对话流 = user 气泡 + assistant 内容）。
       // 思考链 + 正文 + 轮末 usage。
       return (
-        <div className="msg">
+        <div className="msg" data-uid={dataUid}>
           {settings.showThinking && sentences && (
             <ThinkingReasoning
               sentences={sentences}
@@ -97,22 +101,22 @@ export const Block = memo(
       );
 
     case "tool":
-      return <ToolBlock block={block} />;
+      return <ToolBlock block={block} data-uid={dataUid} />;
 
     case "files":
-      return <FilesCard files={block.files} />;
+      return <FilesCard files={block.files} data-uid={dataUid} />;
 
     case "dispatch":
-      return <DispatchCard block={block} onConfirm={onConfirm} />;
+      return <DispatchCard block={block} onConfirm={onConfirm} data-uid={dataUid} />;
 
     case "compacted":
-      return <CompactionCard block={block} />;
+      return <CompactionCard block={block} data-uid={dataUid} />;
 
     case "job":
-      return <JobCard block={block} />;
+      return <JobCard block={block} data-uid={dataUid} />;
 
     case "notice":
-      return <NoticeBar block={block} />;
+      return <NoticeBar block={block} data-uid={dataUid} />;
 
     case "confirm":
       return (
@@ -122,12 +126,13 @@ export const Block = memo(
           resolved={block.resolved ?? null}
           autoFocus={!block.resolved}
           onDecide={(allow) => onConfirm(block.request.id, allow)}
+          data-uid={dataUid}
         />
       );
 
     case "error":
       return (
-        <div className="error-block" data-aborted={block.aborted ? "true" : undefined}>
+        <div className="error-block" data-uid={dataUid} data-aborted={block.aborted ? "true" : undefined}>
           {block.message}
         </div>
       );
