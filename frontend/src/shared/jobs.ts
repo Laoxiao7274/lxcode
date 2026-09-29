@@ -12,7 +12,19 @@ import type { JobEndedBy, JobInfo, JobStatus } from "./types";
  *  用户自己说的话渲染成气泡）。 */
 export const JOB_NOTICE_PREFIX = "[后台任务通告] ";
 
-/** 这条 user 消息是不是后台任务的唤醒通告（前缀匹配，不看角色）。 */
+/** 重复调用提醒的文本前缀——与后端 `agent.RepeatNoticePrefix` **逐字一致**（含尾
+ *  空格）。它与后台任务通告是同一类东西：在历史里都是**真实 user 角色消息**（模型
+ *  要把它当用户回合才会回应），所以识别只能靠文本前缀，见 shared/notices.ts 的表。
+ *
+ *  常量留在本文件而不是 notices.ts：本文件是协议层通告前缀的历史归属地，而 notices.ts
+ *  反向 import 这里的常量——若这里再 import 它取表，两个模块互相 import，NOTICE_KINDS
+ *  会在常量初始化之前求值（const 的 TDZ 直接抛错）。 */
+export const REPEAT_NOTICE_PREFIX = "[重复调用提醒] ";
+
+/** 这条 user 消息是不是后台任务的唤醒通告（前缀匹配，不看角色）。
+ *
+ *  刻意不委托给 notices.ts 的 noticeLabel：那会与上面的理由同样成环。行为与泛化前
+ *  逐字一致（jobNoticeBody 是它唯一的消费者）。 */
 export function isJobNotice(text: string): boolean {
   return text.startsWith(JOB_NOTICE_PREFIX);
 }

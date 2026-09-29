@@ -3,7 +3,7 @@
 import type { AgentEvent, ConfirmRequest, JobInfo } from "./types";
 import { type AssistantBlock, type ThreadBlock, type UIState, initial, nextUid, withBlock, placeConfirm } from "./blocks";
 import { reduceHistory } from "./history";
-import { isJobNotice, jobNoticeBody } from "./jobs";
+import { noticeBody, noticeLabel } from "./notices";
 
 /** 单个事件类型的窄化类型（reduce 的每个分支提取成函数后，参数类型要收窄到那一个变体）。 */
 type Ev<T extends AgentEvent["type"]> = Extract<AgentEvent, { type: T }>;
@@ -56,14 +56,16 @@ export function reduce(state: UIState, ev: AgentEvent): UIState {
   }
 }
 
-/** userMessage 事件的处理（从 reduce 的 switch 里提出来——通告识别要读前缀）。
+/** userMessage 事件的处理（从 reduce 的 switch 里提出来——提示条识别要读前缀）。
  *
- * 后台任务的唤醒通告在**历史里与实时流里都是真实 user 角色消息**（模型必须把它
- * 当用户回合才能回应），但它不是用户说的话——按**文本前缀**识别（不能按角色），
- * 渲染成通告条而不是用户气泡，否则用户会以为是自己发的。 */
+ * 系统提示条（后台任务通告 / 重复调用提醒）在**历史里与实时流里都是真实 user 角色
+ * 消息**（模型必须把它当用户回合才能回应），但它不是用户说的话——按**文本前缀**识别
+ *（不能按角色，种类表见 shared/notices.ts），渲染成提示条而不是用户气泡，否则用户
+ * 会以为是自己发的。 */
 function reduceUserMessage(state: UIState, ev: Ev<"userMessage">): UIState {
-  const block: ThreadBlock = isJobNotice(ev.text)
-    ? { kind: "notice", uid: nextUid(), text: jobNoticeBody(ev.text) }
+  const label = noticeLabel(ev.text);
+  const block: ThreadBlock = label
+    ? { kind: "notice", uid: nextUid(), label, text: noticeBody(ev.text) }
     : { kind: "user", uid: nextUid(), text: ev.text };
   return { ...state, blocks: [...state.blocks, block] };
 }
