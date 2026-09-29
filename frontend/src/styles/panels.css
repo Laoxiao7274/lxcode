@@ -136,6 +136,116 @@
     box-shadow: 0 0 0 2px rgba(16, 163, 127, 0.5);
   }
 }
+/* ===== 子 Agent 执行面板（与大纲同栏，分隔线分节） ===== */
+/* 分节线：两个面板同栏并列，用一条发丝线分开——不做页签系统（页签会让两个面板
+ * 互斥可见，而用户恰恰要同时看「我说过什么」与「子 Agent 跑到哪」）。 */
+.aside-sep {
+  flex: none;
+  height: 1px;
+  background: var(--border-soft);
+}
+/* 第二段的标题：与 .outline-head 同排版，但不再画下边框（上面已有分节线） */
+.aside-sub-head {
+  border-bottom: none;
+}
+.subagent-panel {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px;
+}
+.subagent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+/* 条目：与 .outline-item 同款——套件按钮的皮在这里被拆掉（它是列表行，不是按钮）。
+ * 分两排：上排 = 身份（色点 + 名字）与状态，下排 = 任务摘要。
+ * 240px 的栏宽放不下「色点 + 名字 + 任务 + 状态」一行，硬塞只会让每样都看不清。 */
+.subagent-item.fd-btn-g {
+  display: block;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 7px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--fg-muted);
+  background: transparent;
+  text-align: left;
+}
+.subagent-item.fd-btn-g:hover {
+  color: var(--fg);
+  background: rgba(0, 0, 0, 0.045);
+}
+.subagent-item.fd-btn-g.active {
+  color: var(--fg);
+  background: rgba(16, 163, 127, 0.11);
+}
+.subagent-top {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+/* 色点：与时间线卡片同一个视觉语言（agentColor 由内联样式给；老数据缺席时用中性灰，
+ * 不许留一个看不见的空洞） */
+.subagent-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--fg-faint);
+}
+.subagent-agent {
+  flex: none;
+  max-width: 45%;
+  font-weight: 600;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 状态三态一眼分开：运行中（中性）/ 完成（成功色）/ 失败（危险色）——与 .dispatch-state
+ * 同一套色（data-state 由组件按 status + isError 给出）。 */
+.subagent-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  flex: none;
+  font-size: 10.5px;
+  color: var(--fg-muted);
+}
+.subagent-item.fd-btn-g[data-state="done"] .subagent-state {
+  color: var(--success);
+}
+.subagent-item.fd-btn-g[data-state="error"] .subagent-state {
+  color: var(--danger);
+}
+.subagent-state .mset-spinner {
+  width: 10px;
+  height: 10px;
+  border-width: 1.2px;
+}
+.subagent-tokens {
+  font-size: 10px;
+  color: var(--fg-faint);
+}
+/* 任务摘要：单行截断（完整原文在 title 里） */
+.subagent-task {
+  display: block;
+  color: var(--fg-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.subagent-empty {
+  padding: 8px 4px;
+  font-size: 11.5px;
+  color: var(--fg-faint);
+}
+
 /* 小屏：与侧栏同策略——窄屏放不下第三栏，直接不显示（否则聊天列被压成一条） */
 @media (max-width: 768px) {
   .outline-aside {

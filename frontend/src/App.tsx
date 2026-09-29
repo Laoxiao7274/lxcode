@@ -26,6 +26,8 @@ import { SettingsPanel } from "./components/settings";
 import { Button } from "./components/form";
 import { OutlinePanel } from "./components/panels/OutlinePanel";
 import { outlineItems } from "./components/panels/outline";
+import { SubAgentPanel } from "./components/panels/SubAgentPanel";
+import { dispatchItems } from "./components/panels/dispatch-list";
 import { SettingsProvider, useSettings } from "./shared/settings";
 import { ConnectionsProvider } from "./shared/connections";
 import { UpdateProvider } from "./shared/update";
@@ -240,6 +242,14 @@ function AppBody({ source }: { source: AgentSource }) {
   const [jumpedUid, setJumpedUid] = useState<number | null>(null);
   const lastUserUid = outline.length > 0 ? outline[outline.length - 1].uid : null;
   const activeOutlineUid = jumpedUid !== null && outline.some((item) => item.uid === jumpedUid) ? jumpedUid : lastUserUid;
+
+  // ---- 右侧「子 Agent 执行」面板 ----
+  // 与大纲**共用同一个 jumpedUid**：两个面板都只是「跳到时间线某张卡」的入口，
+  // 高亮跟随最近一次跳转（条目可能已被撤回/切会话清掉，所以取用时再确认一次存在性）。
+  // 默认高亮最近一次派发——用户最关心的通常是刚发出去那一个跑到哪了。
+  const dispatches = useMemo(() => dispatchItems(state.blocks), [state.blocks]);
+  const lastDispatchUid = dispatches.length > 0 ? dispatches[dispatches.length - 1].uid : null;
+  const activeDispatchUid = jumpedUid !== null && dispatches.some((item) => item.uid === jumpedUid) ? jumpedUid : lastDispatchUid;
   const targetTimerRef = useRef<number | null>(null);
   /** 跳到某条已发送消息：这里**只记目标**，滚动与高亮交给 Thread。
    *
@@ -327,6 +337,18 @@ function AppBody({ source }: { source: AgentSource }) {
               </Button>
             </div>
             {outlineOpen && <OutlinePanel items={outline} activeUid={activeOutlineUid} onJump={handleOutlineJump} />}
+            {/* 第二个面板（子 Agent 执行）与大纲同栏、一条分隔线分节——不做页签系统：
+             *  两个面板各自独立滚动，用户扫一眼就能同时看到「我说过什么」与「子 Agent 跑到哪」。
+             *  跳转复用同一个 handleOutlineJump（扩窗 + 滚 + 高亮都在 Thread 里，面板不碰 DOM）。 */}
+            {outlineOpen && (
+              <>
+                <div className="aside-sep" />
+                <div className="outline-head aside-sub-head">
+                  <span className="outline-title">子 Agent 执行</span>
+                </div>
+                <SubAgentPanel items={dispatches} activeUid={activeDispatchUid} onJump={handleOutlineJump} />
+              </>
+            )}
           </aside>
         </div>
       );
