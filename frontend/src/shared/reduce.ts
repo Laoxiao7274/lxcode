@@ -1,7 +1,7 @@
 // 事件流 → UI 状态的归约（纯函数，无 React——可直接单测）。
 
 import type { AgentEvent, ConfirmRequest, JobInfo } from "./types";
-import { type AssistantBlock, type ThreadBlock, type UIState, initial, nextUid, withBlock, placeConfirm, planRewind } from "./blocks";
+import { type AssistantBlock, type ThreadBlock, type UIState, DISPATCH_TOOL_NAME, initial, nextUid, withBlock, placeConfirm, planRewind } from "./blocks";
 import { reduceHistory } from "./history";
 import { noticeBody, noticeLabel } from "./notices";
 
@@ -135,10 +135,12 @@ for (let i = 0; i < blocks.length; i++) {
   const b = blocks[i];
   if (b.kind === "assistant" && b.streaming) blocks[i] = { ...b, streaming: false };
 }
-// agent_dispatch 不建工具行：它的渲染形态就是 dispatch 卡
+// 调度工具不建工具行：它的渲染形态就是 dispatch 卡
 //（随后 dispatchStart 挂卡）。两处都建 = 同一个调度渲染两遍——
 // 外面一个工具行、卡里一份执行过程（用户报的「重复」）。
-if (ev.name === "agent_dispatch") return { ...state, blocks };
+// 判定用 blocks.ts 的**唯一字面量**：回放路径（history.ts）必须与这里一致，
+// 否则刷新之后同一张卡换一张脸（见 DISPATCH_TOOL_NAME 的注释）。
+if (ev.name === DISPATCH_TOOL_NAME) return { ...state, blocks };
 return {
   ...state,
   blocks: [...blocks, { kind: "tool", uid: nextUid(), id: ev.id, name: ev.name, arguments: ev.arguments }],

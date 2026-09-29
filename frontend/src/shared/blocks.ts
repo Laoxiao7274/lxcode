@@ -76,6 +76,20 @@ export type ThreadBlock =
       isError?: boolean;
     };
 
+/** 调度工具的 id（后端 tools.DispatchToolName 的前端对应物）——**唯一字面量**。
+ *
+ *  它是唯一一个「渲染形态不是工具行」的工具：实时路径（reduce.ts 的 toolCall）
+ *  不为它建 tool 块（它的形态是 dispatch 卡，随后由 dispatchStart 挂卡），
+ *  回放路径（history.ts 的 reduceHistory）为它建 dispatch 块。两条路径必须用
+ *  同一个判定字符串——写第二份字面量的代价是两条路径静默分叉：刷新之后所有
+ *  子 Agent 卡退化成一行光秃秃的 `agent_dispatch` 工具行（卡片、Agent 名、
+ *  任务、结论全没了），而实时路径看起来一切正常（用户实测报的就是这个）。
+ *
+ *  必须匹配 `^[a-zA-Z0-9_-]{1,64}$`（点号会被严格网关 400 拒收整轮，
+ *  见 AGENTS.md §5 坑 13）；tests/dispatch-tool-id.test.mjs 与
+ *  tests/history-dispatch.test.mjs 各钉一处。 */
+export const DISPATCH_TOOL_NAME = "agent_dispatch";
+
 export interface UIState {
   blocks: ThreadBlock[];
   busy: boolean;

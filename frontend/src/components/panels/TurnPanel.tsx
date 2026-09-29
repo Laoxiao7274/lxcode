@@ -10,6 +10,7 @@
 // 分工一致）。
 import { useEffect, useRef } from "react";
 import { Button } from "../form";
+import { AGENT_COLORS, useAgents } from "../../shared/agents";
 import { outlineLabel } from "./outline";
 import type { TurnGroup } from "./turns";
 
@@ -26,6 +27,10 @@ export function TurnPanel({
   onJump: (uid: number) => void;
 }) {
   const listRef = useRef<HTMLDivElement>(null);
+  // Agent 注册表：回放出的 dispatch 块 **agentName 是空串**（父会话历史里只有 tool_call 的
+  // arguments，没有展示名——那是注册表的知识）。所以在这里按 agentId 回落，与 DispatchCard
+  // 同款、同一个理由：名字空白的面板行等于没有信息。
+  const { agents } = useAgents();
   // 当前轮：activeUid 落在组头或组内任一子 Agent 上，都算「这一轮是当前轮」——高亮与
   // 滚动跟随必须按组判定，否则点了组内的子 Agent 只有那一行亮、侧栏不知道该滚到哪。
   const activeTurn = (() => {
@@ -85,6 +90,10 @@ export function TurnPanel({
               {group.agents.map((item) => {
                 // 三态 → 一个 data-state（CSS 按它上色）：运行中 / 完成 / 失败
                 const state = item.status === "running" ? "running" : item.isError ? "error" : "done";
+                // 名字/颜色回落：注册表 → id 本身 → 「未知 Agent」（**不许空白**）
+                const known = agents.find((a) => a.id === item.agentId);
+                const agentName = item.agentName || known?.name || item.agentId || "未知 Agent";
+                const agentColor = item.agentColor || known?.color || AGENT_COLORS[0];
                 return (
                   <Button
                     key={item.uid}
@@ -96,8 +105,8 @@ export function TurnPanel({
                     onClick={() => onJump(item.uid)}
                   >
                     {/* 色点：与时间线卡片同款（agentColor 内联，缺席时用 CSS 的中性色） */}
-                    <span className="turn-dot" style={item.agentColor ? { background: item.agentColor } : undefined} aria-hidden />
-                    <span className="turn-agent-name">{item.agentName}</span>
+                    <span className="turn-dot" style={{ background: agentColor }} aria-hidden />
+                    <span className="turn-agent-name">{agentName}</span>
                     {/* 状态：颜色 + 形状 + 文字三通道（颜色不能是唯一的信息通道——色盲/灰度屏
                      *  下「执行中/完成/失败」靠脉冲点、对勾、叉号仍然分得开） */}
                     <span className="turn-state">

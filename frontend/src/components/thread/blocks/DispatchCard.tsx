@@ -4,10 +4,15 @@
 // 子块的事件流已按 dispatchId 归属到 subBlocks（store 的归属路由）。
 import { useRef, useState } from "react";
 import type { ThreadBlock } from "../../../shared/store";
+import { AGENT_COLORS, useAgents } from "../../../shared/agents";
 import { useEnterRef } from "../../../shared/anim";
 import { Markdown } from "../../../shared/markdown";
 import { Button } from "../../form";
 import { Block } from "./Block";
+
+/** agentId 也查不到时的名字（历史里参数坏了——比如 arguments 是截断的 JSON）。
+ *  **不许留空白**：空白的卡头让用户不知道是谁在干活，比一个明确的"未知"更糟。 */
+const UNKNOWN_AGENT = "未知 Agent";
 
 export function DispatchCard({ block, onConfirm, "data-uid": dataUid }: {
   block: Extract<ThreadBlock, { kind: "dispatch" }>;
@@ -22,6 +27,20 @@ export function DispatchCard({ block, onConfirm, "data-uid": dataUid }: {
   // 初始化，于是卡与卡之间收缩状态不一致（"没有全部收缩"）。
   // userSet === null = 用户未干预，跟随状态自动；干预后以用户为准。
   const [userSet, setUserSet] = useState<boolean | null>(null);
+  // Agent 身份（名字 + 颜色）的回落：实时路径由 chat.dispatchStart 直接带
+  //（事件里有 agent_name/agent_color），**回放路径没有**——历史里只有
+  // agent_dispatch 的 arguments（{agent, task}），名字与颜色要 Agent 注册表，
+  // 而纯函数（history.ts）里没有注册表。所以在这里按 agentId 查：
+  //   注册表里有 → 用注册表的名字与颜色（改过名/换过色也能对上）；
+  //   查不到 → 显示 agentId 本身（它至少能对上 Agent 名单）；
+  //   agentId 也是空（参数坏了）→ 明确的"未知 Agent"（不许空白）。
+  // 颜色同理回落：空 background 会让色点整个消失（老历史里 agentColor 是 ""）。
+  // 注册表是**上下文**（不是 props）：AgentsProvider 的值变了，memo 拦不住
+  // 上下文更新——卡片会跟着重新解析，不会停在旧名字上。
+  const { agents } = useAgents();
+  const known = agents.find((a) => a.id === block.agentId);
+  const agentName = block.agentName || known?.name || block.agentId || UNKNOWN_AGENT;
+  const agentColor = block.agentColor || known?.color || AGENT_COLORS[0];
   const done = block.status === "done";
   const expanded = userSet ?? !done;
   const cardRef = useEnterRef<HTMLDivElement>();
@@ -39,8 +58,8 @@ export function DispatchCard({ block, onConfirm, "data-uid": dataUid }: {
         onClick={() => setUserSet(!expanded)}
         aria-expanded={expanded}
       >
-        <span className="dispatch-dot" style={{ background: block.agentColor }} aria-hidden />
-        <span className="dispatch-agent">{block.agentName}</span>
+        <span className="dispatch-dot" style={{ background: agentColor }} aria-hidden />
+        <span className="dispatch-agent">{agentName}</span>
         <span className="dispatch-task" title={block.task}>{clipTask(block.task)}</span>
         <span className="dispatch-state">
           {done ? (

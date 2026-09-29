@@ -13,8 +13,12 @@ import type { ThreadBlock } from "../../shared/blocks";
 export interface DispatchItem {
   /** 块的唯一序号——跳转锚点（Thread 给每张卡挂 data-uid，按它扩窗 + 滚 + 高亮）。 */
   uid: number;
-  /** Agent 名字（用 agentColor 上色——与时间线卡片同一个视觉语言）。 */
+  /** Agent 名字（用 agentColor 上色——与时间线卡片同一个视觉语言）。
+   *  **回放路径下可能是空串**：父会话历史里只有 tool_call 的 arguments，没有 Agent 的展示名
+   *  （那是注册表的知识）。所以面板层要按 agentId 回落，不留空白。 */
   agentName: string;
+  /** 目标 Agent 的名单 id（回落名字/颜色的键——回放块唯一能拿到的身份）。 */
+  agentId: string;
   /** Agent 身份色。老后端 / 更早落库的历史可能没带——没带就交给 CSS 的中性色。 */
   agentColor?: string;
   /** 下发的任务描述（**不截断**：展示宽度是渲染层的事，纯函数不预设侧栏有多宽）。 */
@@ -38,6 +42,7 @@ export function dispatchItems(blocks: ThreadBlock[]): DispatchItem[] {
     items.push({
       uid: block.uid,
       agentName: block.agentName,
+      agentId: block.agentId ?? "",
       agentColor: block.agentColor,
       task: block.task,
       // 状态归一到两态：残缺事件/老后端可能给出别的字符串，除 done 之外一律按运行中呈现
