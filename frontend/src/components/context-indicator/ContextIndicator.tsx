@@ -6,6 +6,7 @@
 // 归一，分类之和 == used）。未知（后端刚重启/刚切会话）显示中性态「—」，
 // 不编数字——假数据比没有数据更坏。
 import { usePopover } from "../../shared/popover";
+import { Button } from "../form";
 import { kfmtTokens } from "../../shared/format";
 import type { ContextUsage } from "../../shared/types";
 
@@ -112,16 +113,17 @@ export function ContextIndicator({ usage, onCompact, busy = false }: {
           )}
           {onCompact && (
             <div className="ctx-actions">
-              <button
-                type="button"
-                className="ctx-compact-btn"
+              {/* 走表单套件的 Button（.fd-btn-g），不裸写原生 button——
+                  裸写就是 OS 默认皮肤（这条曾经漏了 CSS，渲染成灰色系统按钮） */}
+              <Button
+                className="ctx-compact"
                 data-ctx="compact"
                 onClick={onCompact}
                 disabled={busy}
                 title={busy ? "生成中不能压缩（先停止）" : "把早期历史压成一份摘要，腾出上下文"}
               >
                 立即压缩历史
-              </button>
+              </Button>
             </div>
           )}
         </div>
