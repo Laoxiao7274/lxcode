@@ -461,12 +461,22 @@ func TestListFiltersByOwner(t *testing.T) {
 	if got := m.List("s-other"); len(got) != 0 {
 		t.Fatalf("别的会话不该看到，得到 %d: %+v", len(got), got)
 	}
+	// 父会话看得到子 Agent 起的那个（归属生效，不是"父会话只看见自己起的"）。
+	// 断言**在不在**而不是排第几：两张卡启动时刻相同，顺序由 seq 兜底、不是契约。
+	seen := false
+	for _, s := range m.List("s-owner") {
+		if s.ID == childJob.ID() {
+			seen = true
+		}
+	}
+	if !seen {
+		t.Fatalf("父会话应看到子 Agent 起的那个任务: %+v", m.List("s-owner"))
+	}
 	// 子会话**不是**一条时间线：按子会话 id 过滤看不到东西。这是对的——
 	// 子会话自己的 job_list 走的是 OwnerSessionID(ctx)（= 父会话），不传自己的 id。
 	if got := m.List("s-child"); len(got) != 0 {
 		t.Fatalf("子会话不是时间线，按它过滤应为空: %+v", got)
 	}
-	_ = childJob
 	// 快照里 owner 恒非空（Start 时定稿）
 	for _, s := range m.List("s-owner") {
 		if s.OwnerSessionID == "" {
