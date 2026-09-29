@@ -17,7 +17,7 @@
 | 项 | 决策 |
 |---|---|
 | 形态 | **前后台分离**（2026-09-10 用户拍板，对齐 local-myt-agent）：后端 `lxcode --serve` 独立进程（WS JSON-RPC `127.0.0.1:7789/rpc` + 注册表 + 会话运行时 + 工具循环，`/health` 健康检查）；CLI / 桌面壳都是客户端 |
-| 协议 | `internal/protocol`：WS JSON-RPC 2.0（应用协议 Version=2；帧/方法/事件单处定义，客户端服务端共享，不兼容变更递增版本并拒绝握手不匹配的客户端）；扩展 `todo.updated` 事件与 `ChatHistoryResult.Todos`；`chat.send` 可选参数 `effort`（minimal/low/medium/high，仅声明 reasoning 能力的模型生效）与 `approval`（auto/confirm/strict 工具执行三档，空 = confirm）；`chat.done` 与 `ChatHistoryResult` 携带 `context`（上下文占用测量，见 §2.2；未知时整键缺席）；端口 7789（与 local-myt-agent 的 7788 错开） |
+| 协议 | `internal/protocol`：WS JSON-RPC 2.0（应用协议 Version=2；帧/方法/事件单处定义，客户端服务端共享，不兼容变更递增版本并拒绝握手不匹配的客户端）；扩展 `todo.updated` 事件与 `ChatHistoryResult.Todos`；`chat.send` 可选参数 `effort`（minimal/low/medium/high，仅声明 reasoning 能力的模型生效）与 `approval`（auto/confirm/strict 工具执行三档，空 = confirm；**会话级实时状态**——`chat.approval` 可中途改，跑着的一轮立刻生效）；`chat.done` 与 `ChatHistoryResult` 携带 `context`（上下文占用测量，见 §2.2；未知时整键缺席）；端口 7789（与 local-myt-agent 的 7788 错开） |
 | 内核 | `internal/agent`：纯 Go 包（typed Event + Emitter + Confirm），由 server 包装广播；客户端不得绕过 JSON-RPC 直接调用内核 |
 | 客户端 | `internal/wsclient`：Backend 接口 + Dial（请求按 id 配对、事件 channel、断连 fast-fail、缓冲满丢最旧）；CLI 是第一个客户端，桌面壳复用同一协议 |
 | 前端 | **React 19 + TypeScript + Vite + gsap**，零 UI 库（手写 CSS 设计 token，设计语言 agent-console-v3）；`AgentSource` 双实现：WSAgent（连 7789 真实后端）/ DemoAgent（纯前端演示，无后端也能全量跑 UI）；渲染纪律：打字机行级 memo + memo(Block) 稳定回调 + motionAllowed 动效门控（reduced-motion/测试开关） |
@@ -135,7 +135,7 @@
 - **种子同步**：库非空时跑 `syncCatalogSeeds` 按 id 同步种子行（缺失插入、`custom=0` 全字段更新、`custom=1` 不碰、不删除）——种子只在库空时整套注入会让**代码修好的种子老库永远吃不到**（「给了 ripgrep，模型答注册表没有」）。Agent 名单更严，见 §8。
 
 - **edit 为何低危**：编程 agent 的主编辑通道，确认门会让它不可用；破坏面受 old_string 唯一匹配约束 + 原子写 + 版本控制兜底（与 write_file 的全量覆盖破坏面不同类）。
-- **权限模式三档**（chat.send 的 approval 参数，随消息携带）：`confirm`（默认）= 低危自动 + 高危确认；`auto` = 高危也自动执行（仅隔离环境）；`strict` = 只读——变更类工具（`Def.Mutates`：edit/write_file/bash，与风险等级正交）直接拒绝、错误回填模型。
+- **权限模式三档**（会话级实时状态，`chat.approval` 可中途改）：`confirm`（默认）= 低危自动 + 高危确认；`auto` = 高危也自动执行（仅隔离环境）；`strict` = 只读——变更类工具（`Def.Mutates`：edit/write_file/bash，与风险等级正交）直接拒绝、错误回填模型。
 - 参数坏 JSON 先走保守修复（`internal/jsonrepair`：裸换行/尾逗号/单引号/截断补括号），修复成功注明——弱模型坏参数是高频失败形态。
 - **工具调用参数必须在写边界就合法**（2026-09-23 线上事故，见 §5 坑 12）：三道防线——① `agent.sanitizeToolCallArgs` 在 `s.append` 前清洗（正常轮次与流失败保留 partial 两条路径都走）；② `llm.repairToolArgsForWire` 组装请求时兜底（保守修复，修不动发 `{}`，**绝不报错**）；③ `tools.Execute` 执行前再试一次。三者共用 `jsonrepair` 一份实现。
 - **工具 id 必须匹配 `^[a-zA-Z0-9_-]{1,64}$`**（OpenAI 与 Anthropic 的同一条约束）：违反它会被严格网关 400 拒收整轮——原名 `agent.dispatch` 的点号就栽在这上面（2026-09-23 改成 `agent_dispatch` 并配老库迁移，见 §5 坑 13）。`tools` 的 `TestLLMToolsShape` 已按这条字符集校验全部内置工具 id；新增内置工具或导入目录条目时不要用点号。
