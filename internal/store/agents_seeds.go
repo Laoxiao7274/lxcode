@@ -34,6 +34,16 @@ var seedTools = []sessiondata.ToolSpec{
 		Doc: "查最新信息、文档、报错、API 用法等可能过时的事实。\n\n- 不要用它搜本仓库代码（那用 search）\n- 多个渠道按主渠道优先自动降级；失败会说明是哪个渠道出的错\n- 「搜到 0 条」和「搜索失败」是两种结论——前者换关键词，后者如实报告\n\n渠道配置见「设置 → 网页搜索」。",
 	},
 	{
+		// 与 web_search 同理必须在目录里：编辑器渲染内置 chips 靠目录，
+		// 不在目录里用户就勾不上它（web_search 的实际遭遇，见上面那条注释）。
+		ID: "web_fetch", Desc: "抓取网页正文（HTML 转文本，禁内网）", Risk: "low", Source: "builtin", Custom: false,
+		Params: []sessiondata.ToolParam{
+			{Name: "url", Type: "string", Required: true, Desc: "http/https 地址（先用 web_search 找到它）"},
+			{Name: "max_chars", Type: "int", Desc: "正文上限（默认 20000，上限 80000）"},
+		},
+		Doc: "web_search 只回标题与摘要，**要看全文用这个**。\n\n- 先用 web_search 找到地址，再抓正文\n- 只支持 http/https，**禁止访问本机与内网地址**（环回/私有网段/云元数据端点）\n- 正文超上限会截断（可调 max_chars）；纯 JS 渲染的页面可能抓不到正文\n- 二进制内容（图片/PDF）如实报类型，不灌乱码进上下文",
+	},
+	{
 		ID: "edit", Desc: "精确替换文件内容（old_string 唯一匹配）", Risk: "low", Source: "builtin", Custom: false,
 		Params: []sessiondata.ToolParam{{Name: "path", Type: "string", Required: true}, {Name: "old_string", Type: "string", Required: true}, {Name: "new_string", Type: "string", Required: true}},
 		Doc:    "精确替换——old_string 必须在文件中唯一匹配（0 或 >1 都报错）。\n\n原子写；这是编程任务的主编辑通道。",
@@ -54,9 +64,14 @@ var seedTools = []sessiondata.ToolSpec{
 		Doc:    "多步任务的过程对齐——每完成一步更新状态，清单是唯一事实源；active 项唯一。",
 	},
 	{
-		ID: "session_search", Desc: "搜历史会话内容", Risk: "low", Source: "builtin", Custom: false,
-		Params: []sessiondata.ToolParam{{Name: "pattern", Type: "regex", Required: true}},
-		Doc:    "跨全部会话的消息内容检索（含当前）。",
+		ID: "session_search", Desc: "搜历史会话内容（带标题、时间与上下文）", Risk: "low", Source: "builtin", Custom: false,
+		Params: []sessiondata.ToolParam{
+			{Name: "pattern", Type: "regex", Required: true},
+			{Name: "max", Type: "int", Desc: "最多返回条数（默认 30，上限 100）"},
+			{Name: "context", Type: "int", Desc: "每条命中前后各带几条相邻消息（默认 2，上限 5）"},
+			{Name: "role", Type: "enum", Desc: "只搜某个角色：user / assistant / tool"},
+		},
+		Doc: "跨全部会话的消息内容检索（含当前），按会话时间从近到远。\n\n- 命中带**会话标题与时间**（判断是哪个会话的事）\n- 默认附前后各 2 条相邻消息：「怎么修的」通常就在命中后面几条\n- role 过滤只作用于命中判定，上下文里仍能看到其它角色\n- 命中数超过 max 时会提示总数——据此缩小 pattern",
 	},
 	{
 		// 内置的渐进披露读取口：目录里没有它，子 Agent 就「拿到技能索引却没法取正文」
@@ -166,9 +181,9 @@ var seedAgents = []sessiondata.AgentDef{
 		// Desc 是**主 Agent 的选人信号**（可委派名单按它逐字生成，见 compose.go 的 ④）：
 		// 漏写「联网搜索」的后果是主 Agent 不知道「查外部资料」该派给谁——工具给了、
 		// 白名单勾了，但选人那一步没有信号，这个能力等于不存在。
-		Desc:     "代码库与资料勘察：全文检索、历史会话、联网搜索与跨文件脉络梳理，只给结论与出处。",
+		Desc:     "代码库与资料勘察：全文检索、历史会话、联网搜索与抓取网页正文、跨文件脉络梳理，只给结论与出处。",
 		Prompt:   "你是调研 Agent。只做检索与信息整理：结论必须带依据（文件路径 + 行号、命令输出或文档链接）；查不到就如实说「未找到」，不编造也不推测。不修改任何文件。",
-		Tools:    []string{"read_file", "search", "session_search", "ripgrep", "web_search"},
+		Tools:    []string{"read_file", "search", "session_search", "ripgrep", "web_search", "web_fetch"},
 		Workflow: "research-first", Skills: []string{},
 		Delegates: []string{}, Approval: "strict",
 	},

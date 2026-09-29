@@ -149,10 +149,13 @@ type seedAgentBaseline struct {
 }
 
 var seedAgentBaselines = map[string]seedAgentBaseline{
-	// 本版给调研 Agent 补了 web_search：白名单加一项，职责描述里点明「联网搜索」。
+	// 本版给调研 Agent 补了 web_fetch：白名单加一项，职责描述里点明「抓取网页正文」。
+	// 基线随之上移到上一版（含 web_search、不含 web_fetch）——基线的语义就是
+	// 「上一版长什么样」，留在更早的版本上会让「用户删掉 web_search」被误判成
+	// 「没动过」，每次 Open 都把它塞回去。
 	"researcher": {
-		Tools: []string{"read_file", "search", "session_search", "ripgrep"},
-		Desc:  "代码库与资料勘察：全文检索、历史会话与跨文件脉络梳理，只给结论与出处。",
+		Tools: []string{"read_file", "search", "session_search", "ripgrep", "web_search"},
+		Desc:  "代码库与资料勘察：全文检索、历史会话、联网搜索与跨文件脉络梳理，只给结论与出处。",
 	},
 }
 

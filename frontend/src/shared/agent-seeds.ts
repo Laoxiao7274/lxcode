@@ -57,15 +57,28 @@ export const BUILTIN_TOOLS: ToolSpec[] = [
     doc: "查最新信息、文档、报错、API 用法等可能过时的事实。\n\n- 不要用它搜本仓库代码（那用 search）\n- 多个渠道按主渠道优先自动降级；失败会说明是哪个渠道出的错\n- 「搜到 0 条」和「搜索失败」是两种结论——前者换关键词，后者如实报告\n\n渠道配置见「设置 → 网页搜索」。",
   },
   {
+    id: "web_fetch",
+    desc: "抓取网页正文（HTML 转文本，禁内网）",
+    risk: "low",
+    source: "builtin",
+    params: [
+      { name: "url", type: "string", required: true, desc: "http/https 地址（先用 web_search 找到它）" },
+      { name: "max_chars", type: "int", desc: "正文上限（默认 20000，上限 80000）" },
+    ],
+    doc: "web_search 只回标题与摘要，**要看全文用这个**。\n\n- 先用 web_search 找到地址，再抓正文\n- 只支持 http/https，**禁止访问本机与内网地址**（环回/私有网段/云元数据端点）\n- 正文超上限会截断（可调 max_chars）；纯 JS 渲染的页面可能抓不到正文\n- 二进制内容（图片/PDF）如实报类型，不灌乱码进上下文",
+  },
+  {
     id: "session_search",
     desc: "搜索历史会话内容",
     risk: "low",
     source: "builtin",
     params: [
-      { name: "query", type: "string", required: true },
-      { name: "limit", type: "int", desc: "结果条数上限" },
+      { name: "pattern", type: "string", required: true, desc: "搜索模式（正则）" },
+      { name: "max", type: "int", desc: "最多返回条数（默认 30，上限 100）" },
+      { name: "context", type: "int", desc: "每条命中前后各带几条相邻消息（默认 2，上限 5）" },
+      { name: "role", type: "enum", desc: "只搜某个角色：user / assistant / tool" },
     ],
-    doc: "搜历史会话内容，命中带会话标题与时间。\n\n给「之前怎么处理过这类问题」提供依据——先查旧账再开新方。",
+    doc: "搜历史会话内容，命中带**会话标题与时间**，并默认附前后各 2 条相邻消息。\n\n- 给「之前怎么处理过这类问题」提供依据——先查旧账再开新方\n- 带上下文是因为：命中行常常只是提问，「怎么修的」在它后面几条\n- role 过滤只作用于命中判定，上下文里仍能看到其它角色的行",
   },
   {
     id: "read_skill",
@@ -424,9 +437,9 @@ export function seedAgents(): AgentDef[] {
       model: "MYT",
       // desc 是**主 Agent 的选人信号**（可委派名单按它逐字生成）：漏写「联网搜索」，
       // 主 Agent 就不知道「查外部资料」该派给谁——工具与白名单都到位，能力照样等于不存在。
-      desc: "代码库与资料勘察：全文检索、历史会话、联网搜索与跨文件脉络梳理，只给结论与出处。",
+      desc: "代码库与资料勘察：全文检索、历史会话、联网搜索与抓取网页正文、跨文件脉络梳理，只给结论与出处。",
       prompt: "你是调研 Agent。只做检索与信息整理：结论必须带依据（文件路径 + 行号、命令输出或文档链接）；查不到就如实说「未找到」，不编造也不推测。不修改任何文件。",
-      tools: ["read_file", "search", "session_search", "web_search", "ripgrep"],
+      tools: ["read_file", "search", "session_search", "web_search", "web_fetch", "ripgrep"],
       workflow: "research-first",
       skills: [],
       delegates: [],

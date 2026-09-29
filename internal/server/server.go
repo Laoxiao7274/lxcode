@@ -136,12 +136,12 @@ func (s *Server) AttachSessionStore(st *store.Store) error {
 		return errors.New("会话存储为空")
 	}
 	s.st = st
-	s.treg.SetSessionSearch(func(ctx context.Context, pattern string, max int) (string, error) {
-		hits, err := st.Search(pattern, max)
+	s.treg.SetSessionSearch(func(_ context.Context, q sessiondata.SearchQuery) (string, error) {
+		hits, total, err := st.Search(q)
 		if err != nil {
 			return "", err
 		}
-		return sessiondata.FormatSearchHits(hits, len(hits)), nil
+		return sessiondata.FormatSearchHits(hits, total), nil
 	})
 	// M4：工具目录里的自定义工具（binary）注册进工具注册表——启动时就位，
 	// 之后的目录变更由 catalog.tools.* 分支触发同步。

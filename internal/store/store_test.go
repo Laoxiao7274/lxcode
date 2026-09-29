@@ -186,7 +186,7 @@ func TestSearch(t *testing.T) {
 	if err := s.AppendMsg(id2, llm.Message{Role: "user", Content: "聊聊 Go 的并发"}); err != nil {
 		t.Fatal(err)
 	}
-	hits, err := s.Search("Go", 10)
+	hits, _, err := s.Search(SearchQuery{Pattern: "Go", Max: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,16 +198,16 @@ func TestSearch(t *testing.T) {
 		t.Fatalf("命中排序/序号不符: %+v", hits[0])
 	}
 	// 坏正则报错
-	if _, err := s.Search("[", 10); err == nil {
+	if _, _, err := s.Search(SearchQuery{Pattern: "[", Max: 10}); err == nil {
 		t.Fatal("坏正则应报错")
 	}
 	// 无命中
-	hits, _ = s.Search("不存在的词", 10)
+	hits, _, _ = s.Search(SearchQuery{Pattern: "不存在的词", Max: 10})
 	if len(hits) != 0 {
 		t.Fatalf("无命中: %d", len(hits))
 	}
 	// max 钳制
-	hits, _ = s.Search("Go", 1)
+	hits, _, _ = s.Search(SearchQuery{Pattern: "Go", Max: 1})
 	if len(hits) != 1 {
 		t.Fatalf("max=1: %d", len(hits))
 	}
@@ -223,9 +223,93 @@ func TestSearchExcludesArchived(t *testing.T) {
 	if err := s.Archive(id, true); err != nil {
 		t.Fatal(err)
 	}
-	hits, _ := s.Search("唯一关键词", 10)
+	hits, _, _ := s.Search(SearchQuery{Pattern: "唯一关键词", Max: 10})
 	if len(hits) != 0 {
 		t.Fatalf("归档会话不应被搜到: %+v", hits)
+	}
+}
+
+// TestSearchContextAndRole：命中上下文的组装、role 过滤、总命中数。
+//
+// 三件事各自的价值：
+//
+//	① 上下文——命中行常常只是「提问」，「怎么修的」在它后面几条；只给一行
+//	   的话模型还得再搜一次才拼得出前因后果；
+//	② role 过滤只作用于命中判定、不作用于上下文——过滤掉的行仍要出现在上下文里
+//	   （否则 role=user 时上下文里只剩用户自己的话，恰好丢掉最该看的助手答复）；
+//	③ total 要数全部命中而不是 len(命中)——否则「还有更多，缩小 pattern」那句
+//	   提示永远不会出现。
+func TestSearchContextAndRole(t *testing.T) {
+	s := openTestStore(t)
+	id, _ := s.Create()
+	for _, m := range []llm.Message{
+		{Role: "user", Content: "第一句 开场"},
+		{Role: "assistant", Content: "第二句 回应"},
+		{Role: "tool", Content: "第三句 工具输出"},
+		{Role: "user", Content: "第四句 关键词在这里"},
+		{Role: "assistant", Content: "第五句 修好了"},
+		{Role: "user", Content: "第六句 收尾"},
+	} {
+		if err := s.AppendMsg(id, m); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// ① 上下文：命中第 4 条，前后各 1 条 → 应含 #3 #4 #5，按时间顺序
+	hits, total, err := s.Search(SearchQuery{Pattern: "关键词", Max: 10, Context: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 || total != 1 {
+		t.Fatalf("应 1 条命中: hits=%d total=%d", len(hits), total)
+	}
+	got := hits[0].Context
+	if len(got) != 3 {
+		t.Fatalf("前后各 1 条应得 3 行（含命中自身）: %+v", got)
+	}
+	for i, wantIdx := range []int{3, 4, 5} {
+		if got[i].Index != wantIdx {
+			t.Fatalf("上下文顺序错（应 #3 #4 #5）: %+v", got)
+		}
+	}
+	if got[1].Role != "user" || got[2].Role != "assistant" {
+		t.Fatalf("命中/后文角色不符: %+v", got)
+	}
+	// 会话标题与时间要带出来（模型据此判断是哪个会话）
+	if hits[0].SessionTitle == "" || hits[0].UpdatedAt == "" {
+		t.Fatalf("命中应带会话标题与时间: %+v", hits[0])
+	}
+
+	// ② role 过滤只作用于命中判定：role=user 命中两条（#1 与 #4），
+	//    但上下文里仍应看得到 assistant/tool 的行。
+	hits, total, err = s.Search(SearchQuery{Pattern: "句", Max: 10, Role: "user", Context: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 3 {
+		t.Fatalf("role=user 应命中 3 条（#1 #4 #6），实际 %d", total)
+	}
+	if len(hits) != 3 {
+		t.Fatalf("应返回 3 条: %d", len(hits))
+	}
+	roles := map[string]bool{}
+	for _, c := range hits[0].Context {
+		roles[c.Role] = true
+	}
+	if !roles["assistant"] {
+		t.Fatalf("上下文不该被 role 过滤掉（否则丢掉最该看的答复）: %+v", hits[0].Context)
+	}
+
+	// ③ 总数不受 max 限制：max=1 时只回 1 条，但 total 仍是全部命中数。
+	hits, total, err = s.Search(SearchQuery{Pattern: "句", Max: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("max=1 应只回 1 条: %d", len(hits))
+	}
+	if total != 6 {
+		t.Fatalf("total 应数全部命中（否则「还有更多」提示是死的）: %d", total)
 	}
 }
 

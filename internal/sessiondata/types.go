@@ -22,12 +22,36 @@ type ProjectMeta struct {
 	Path string
 }
 
+// SearchQuery 是历史检索的查询参数。
+type SearchQuery struct {
+	Pattern string // 正则（RE2）
+	Max     int    // 最多返回条数
+	Role    string // 只搜某个角色（user/assistant/tool）；空 = 全部
+	Context int    // 每条命中前后各带 N 条相邻消息；0 = 只给命中本身
+}
+
 // SearchHit 是历史消息检索结果。
+//
+// SessionTitle/UpdatedAt 是**给模型的定位信息**：只有会话 id 的话，模型
+// 无法回答「这是哪个会话里的事」——标题才是人（与模型）认得的东西。
 type SearchHit struct {
-	SessionID string
-	Index     int
-	Role      string
-	Content   string
+	SessionID    string
+	SessionTitle string
+	UpdatedAt    string
+	Index        int
+	Role         string
+	Content      string
+	// Context 是命中前后各 N 条消息（含命中自身，按时间顺序）。
+	// 为什么要它：命中那一行常常只说明「问过什么」，「怎么修的」在它后面
+	// 几条——只给一行的话模型还得再搜一次才能拼出前因后果。
+	Context []SearchLine
+}
+
+// SearchLine 是命中上下文里的一条相邻消息。
+type SearchLine struct {
+	Index   int
+	Role    string
+	Content string
 }
 
 // ---- 可组装 Agent 域（M1 注册表与目录——类型对齐前端 agent-types.ts，

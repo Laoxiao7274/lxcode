@@ -76,16 +76,15 @@ func (s *Session) SessionList() []sessiondata.SessionMeta {
 // AttachSessionSearch 把会话搜索接进工具注册表（EnablePersistence 后调用）：
 // JSONL 格式归 store 包所有，工具层只拿函数——格式单源不漂移。
 func (s *Session) AttachSessionSearch() {
-	s.tools.SetSessionSearch(func(ctx context.Context, pattern string, max int) (string, error) {
+	s.tools.SetSessionSearch(func(_ context.Context, q sessiondata.SearchQuery) (string, error) {
 		if s.st == nil {
 			return "", errors.New("会话存储未启用，无法搜索历史")
 		}
-		hits, err := s.st.Search(pattern, max)
+		hits, total, err := s.st.Search(q)
 		if err != nil {
 			return "", err
 		}
-		// Search 的 max 已被钳制；total 用同值（Search 不超发）
-		return sessiondata.FormatSearchHits(hits, len(hits)), nil
+		return sessiondata.FormatSearchHits(hits, total), nil
 	})
 }
 

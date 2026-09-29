@@ -15,6 +15,7 @@ import (
 
 	"github.com/moyunteng/lxcode/internal/jsonrepair"
 	"github.com/moyunteng/lxcode/internal/llm"
+	"github.com/moyunteng/lxcode/internal/sessiondata"
 )
 
 // RiskLevel 工具风险等级。
@@ -69,8 +70,12 @@ type Registry struct {
 }
 
 // SessionSearchFn 是会话搜索的实现约定：在全部会话（含当前）的消息内容里
-// 按正则搜索，返回给模型的结果文本。max 为命中上限（≤0 取默认）。
-type SessionSearchFn func(ctx context.Context, pattern string, max int) (string, error)
+// 按正则搜索，返回给模型的结果文本。
+//
+// 参数用 sessiondata.SearchQuery（而不是 pattern+max 两个标量）：查询参数会
+// 随能力增长（已加 role/context），每加一个就改一次函数签名会让注入方
+// （server 与 agent 两处）与所有测试桩一起返工。
+type SessionSearchFn func(ctx context.Context, q sessiondata.SearchQuery) (string, error)
 
 // SetSessionSearch 注入会话搜索实现（backend.AttachSessionStore 时调用）。
 func (r *Registry) SetSessionSearch(fn SessionSearchFn) {
@@ -86,7 +91,7 @@ func (r *Registry) getSessionSearch() SessionSearchFn {
 }
 
 // New 创建注册表并注册内置工具。顺序即系统提示词里工具清单的顺序：
-// 读取类在前（read/search/web_search/session_search/read_skill），变更类在后
+// 读取类在前（read/search/web_search/web_fetch/session_search/read_skill），变更类在后
 // （edit/write/bash），todo 收尾；agent_dispatch 是主 Agent 的调度
 // 通道（子 Agent 白名单不含它——两类制深度恒 1）。
 func New() *Registry {
@@ -94,6 +99,7 @@ func New() *Registry {
 	r.register(readFileDef())
 	r.register(searchDef())
 	r.register(webSearchDef(r))
+	r.register(webFetchDef())
 	r.register(sessionSearchDef(r))
 	r.register(readSkillDef(r))
 	r.register(editDef())

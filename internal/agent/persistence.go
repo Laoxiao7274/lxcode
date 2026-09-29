@@ -26,5 +26,6 @@ type Persistence interface {
 	SessionWorkspace(string, string) error
 	WorkspaceOf(string) (string, error)
 	ProjectByID(string) (sessiondata.ProjectMeta, bool, error)
-	Search(string, int) ([]sessiondata.SearchHit, error)
+	// Search 按查询参数检索历史消息，返回 (命中, 总命中数, 错误)。
+	Search(sessiondata.SearchQuery) ([]sessiondata.SearchHit, int, error)
 }

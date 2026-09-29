@@ -432,6 +432,33 @@ func TestSeedResearcherHasWebSearch(t *testing.T) {
 	}
 }
 
+// TestSeedResearcherHasWebFetch：调研 Agent 的白名单必须含 web_fetch。
+//
+// 与 web_search 同一条纪律的另一半：搜索只回标题与摘要，**正文靠抓取**。
+// 调研 Agent 拿不到 web_fetch 就只能凭摘要猜——工具做完了没人用得上，
+// 正是 web_search 栽过的那一跤。
+func TestSeedResearcherHasWebFetch(t *testing.T) {
+	s := openTestStore(t)
+	got := agentToolsOf(t, s, "researcher")
+	if !slices.Contains(got, "web_fetch") {
+		t.Fatalf("调研 Agent 的白名单缺 web_fetch（搜索只给摘要，正文要靠它）: %v", got)
+	}
+}
+
+// TestSeedResearcherDescMentionsWebFetch：职责描述必须点明抓正文。
+//
+// 与联网搜索同理：描述是主 Agent 的选人信号，漏了「抓取网页正文」，
+// 主 Agent 就不知道「去读那篇文档的全文」该派给谁。
+func TestSeedResearcherDescMentionsWebFetch(t *testing.T) {
+	byID := map[string]sessiondata.AgentDef{}
+	for _, a := range seedAgents {
+		byID[a.ID] = a
+	}
+	if got := byID["researcher"].Desc; !strings.Contains(got, "抓取网页正文") {
+		t.Fatalf("调研 Agent 的职责描述没提抓取网页正文——主 Agent 的选人信号里缺这项能力: %q", got)
+	}
+}
+
 // TestSeedResearcherDescMentionsWebSearch：调研 Agent 的**职责描述**必须点明联网搜索。
 //
 // 描述不只是给人看的说明——它是**主 Agent 的选人信号**：可委派名单按 desc 逐字

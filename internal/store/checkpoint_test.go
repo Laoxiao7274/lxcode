@@ -53,7 +53,7 @@ func TestCheckpointShadowsPrefix(t *testing.T) {
 	}
 
 	// 被影子的原文留在库里（翻旧账可查）：搜索仍能命中
-	hits, err := s.Search("消息A", 10)
+	hits, _, err := s.Search(SearchQuery{Pattern: "消息A", Max: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +232,7 @@ func TestCheckpointMiddleSpanKeepsHeadFirst(t *testing.T) {
 		}
 	}
 	// 被影子的原文仍在库里（翻旧账可查）
-	if hits, err := s.Search("消息B", 10); err != nil || len(hits) == 0 {
+	if hits, _, err := s.Search(SearchQuery{Pattern: "消息B", Max: 10}); err != nil || len(hits) == 0 {
 		t.Fatalf("被影子的原文应留在库里: err=%v hits=%d", err, len(hits))
 	}
 }
