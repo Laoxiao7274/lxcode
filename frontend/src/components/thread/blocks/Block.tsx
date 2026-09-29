@@ -2,8 +2,10 @@
 // 任务清单 / 产物卡 / 错误条——各渲染器分文件实现（blocks/ 目录）。
 // Block 用 memo：reduce 只给变化的块换新引用，未动的兄弟块跳过协调；
 // 配合稳定的 onConfirm（useAgent/App 的 useCallback）生效。
-import { memo, useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ThreadBlock } from "../../../shared/store";
+import { canRewind } from "../../../shared/blocks";
+import { Button } from "../../form";
 import { ThinkingReasoning } from "../../../aicss/ThinkingReasoning";
 import { ApprovalCard } from "../../../aicss/ApprovalCard";
 import { playEnter } from "../../../shared/anim";
@@ -18,8 +20,20 @@ import { CompactionCard } from "./CompactionCard";
 import { JobCard } from "./JobCard";
 import { NoticeBar } from "./NoticeBar";
 
+/** 没有 seq 的块（老后端 / 更早落库的历史）不能撤回/编辑时的说明——禁用按钮上
+ *  的 title。写清楚原因而不是默默点不动：用户至少知道为什么。 */
+const NO_SEQ_HINT = "这条消息来自旧版后端（没有 seq），无法定位要撤回的位置";
+
 export const Block = memo(
-  function Block({ block, onConfirm, replayed }: { block: ThreadBlock; onConfirm: (id: string, allow: boolean) => void; replayed?: boolean }) {
+  function Block({ block, onConfirm, replayed, onEdit, onRewind }: {
+    block: ThreadBlock;
+    onConfirm: (id: string, allow: boolean) => void;
+    replayed?: boolean;
+    /** 用户气泡的撤回/编辑（复制在组件内自足，不必上抛）。回调由 App 用
+     *  useCallback 固定身份——每次新建会击穿 memo（见文件末尾的比较器）。 */
+    onEdit?: (block: ThreadBlock) => void;
+    onRewind?: (block: ThreadBlock) => void;
+  }) {
   const bubbleRef = useRef<HTMLDivElement>(null);
   const { settings } = useSettings();
 
@@ -53,9 +67,13 @@ export const Block = memo(
 
   switch (block.kind) {
     case "user":
+      // 动作条与气泡**并列**（不进流）：.msg.user 是 flex 容器且右对齐，动作条
+      // 绝对定位在气泡**上方**（right:0 与气泡右缘对齐）——进流会给每条用户消息
+      // 永久多留一行高度，hover 显隐还会顶动下方内容（长会话里整屏位移）。
       return (
         <div className="msg user">
           <div className="bubble" ref={bubbleRef}>{block.text}</div>
+          <MessageActions block={block} onEdit={onEdit} onRewind={onRewind} />
         </div>
       );
 
@@ -118,5 +136,56 @@ export const Block = memo(
   // 比较器**故意不看 replayed**：它只在挂载那一刻有意义（见上面的 layout effect），
   // 而进会话后它就从 true 翻成 false——默认的浅比较会让整屏几十个块为此重渲染一遍
   // （markdown 重解析 + 协调），而这次翻转不表达任何新内容。
-  (prev, next) => prev.block === next.block && prev.onConfirm === next.onConfirm,
+  (prev, next) =>
+    prev.block === next.block &&
+    prev.onConfirm === next.onConfirm &&
+    prev.onEdit === next.onEdit &&
+    prev.onRewind === next.onRewind,
 );
+
+/** 用户气泡上的三个动作（hover 出现）：复制 / 编辑 / 撤回。
+ *
+ *  单独一个子组件是为了**在 switch 的分支之外合法地用 useState**——复制的「已复制」
+ *  反馈要组件态，而 Block 的 switch 里不能按分支调 hook。
+ *
+ *  复制走与 DiffBody / TerminalCard / CopyBtn 同一套写法（navigator.clipboard 的
+ *  可选链 + 1.2s 文案反馈，不弹 toast）。没有 seq 的块把撤回/编辑**禁用**并给出
+ *  原因（title）：老后端 + 新前端不许炸（AGENTS.md §5 坑 11）——复制照常可用。 */
+function MessageActions({ block, onEdit, onRewind }: {
+  block: ThreadBlock;
+  onEdit?: (block: ThreadBlock) => void;
+  onRewind?: (block: ThreadBlock) => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  const rewindable = canRewind(block);
+  const text = block.kind === "user" ? block.text : "";
+  const copy = () => {
+    if (copied) return;
+    // 可选链会短路整条链：navigator.clipboard 缺席时不会去调 undefined.then
+    void navigator.clipboard?.writeText(text).then(() => {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1200);
+    });
+  };
+  return (
+    <div className="msg-actions">
+      <Button className="msg-action" onClick={copy}>{copied ? "已复制" : "复制"}</Button>
+      <Button
+        className="msg-action"
+        disabled={!rewindable}
+        title={rewindable ? "编辑这条消息（发送时才会撤回它及其之后的对话）" : NO_SEQ_HINT}
+        onClick={() => onEdit?.(block)}
+      >
+        编辑
+      </Button>
+      <Button
+        className="msg-action"
+        disabled={!rewindable}
+        title={rewindable ? "撤回这条及其之后的全部对话，原文回到输入框" : NO_SEQ_HINT}
+        onClick={() => onRewind?.(block)}
+      >
+        撤回
+      </Button>
+    </div>
+  );
+}

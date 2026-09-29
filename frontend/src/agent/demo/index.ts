@@ -1,7 +1,7 @@
 // 演示数据源（M3 叙事）：主 Agent 只调度——思考选人 → agent_dispatch →
 // dispatch 卡（子 Agent 全套执行：思考/读码/改码/确认门/跑测试）→ 验收
 // 汇总。覆盖 UI 全部状态。事件形状与后端协议 1:1——接线换 WSAgent 即可。
-import type { AgentEvent, AgentSource, ApprovalMode, CompactOutcome, ConfirmRequest, ContextUsage, JobAdminSource, JobInfo, JobLogResult, ProjectInstructions, ProjectMeta, SendOptions, SessionMeta, TodoItem } from "../../shared/types";
+import type { AgentEvent, AgentSource, ApprovalMode, CompactOutcome, ConfirmRequest, ContextUsage, JobAdminSource, JobInfo, JobLogResult, ProjectInstructions, ProjectMeta, RewindOutcome, SendOptions, SessionMeta, TodoItem } from "../../shared/types";
 import { JOB_NOTICE_PREFIX, sortJobs, upsertJob } from "../../shared/jobs";
 import { normalizeApproval } from "../../shared/approval";
 import { MAIN_REASONING, SUB_REASONING, SUB_RESULT, MAIN_ANSWER, TODO_INITIAL, TODO_LATER, FILES_CHANGED, SESSIONS } from "./data";
@@ -47,6 +47,9 @@ export class DemoAgent implements AgentSource, JobAdminSource {
   private emittingSession = "";
   /** 演示态每个会话独立计轮（compact 用：累计过几轮就当作有可压区间）。 */
   private turns = new Map<string, number>();
+  /** 演示态的 seq 分配器（每会话独立自增）：撤回锚点必须由**产生消息的那一方**
+   *  给号，前端不自己编号——真后端也一样（seq 是库里的序号，客户端编不出）。 */
+  private seqBySession = new Map<string, number>();
   /** 演示的后台任务（内存态：与真实后端同一形状的 JobInfo 快照）。 */
   private jobs_: JobInfo[] = [];
   /** 每会话当前的后台任务 id（runTurn 起、finishDispatch 收尾——中间隔着
@@ -79,9 +82,17 @@ export class DemoAgent implements AgentSource, JobAdminSource {
       ];
       this.emit({ type: "sessionsChanged" });
     }
-    this.emit({ type: "userMessage", sessionId, text });
+    this.emit({ type: "userMessage", sessionId, text, seq: this.nextSeq(sessionId) });
     this.emit({ type: "busy", sessionId, busy: true });
     this.runTurn(sessionId);
+  }
+
+  /** 下一条消息的 seq（每会话自增——与真后端的库内序号同语义：只要求同一会话内
+   *  唯一且递增，撤回按它锚定）。 */
+  private nextSeq(sessionId: string): number {
+    const n = (this.seqBySession.get(sessionId) ?? 0) + 1;
+    this.seqBySession.set(sessionId, n);
+    return n;
   }
 
   /** 中途改权限档（演示模式没有后端）：本地记下 + 广播同形状的事件。
@@ -125,6 +136,16 @@ export class DemoAgent implements AgentSource, JobAdminSource {
       summary: "## 主要请求与意图\n- 演示：压缩早期历史\n\n## 当前工作\n- 演示模式的压缩标记块",
     });
     return { compacted: true, before, after, shadowed: rounds * 4 };
+  }
+
+  /** 会话回退（演示模式没有后端）：本地截断 + 广播同形状事件——UI 走的是与真实
+   *  链路**完全同一条**归约路径（发 rewound → 归约器 planRewind 截断）。
+   *
+   *  演示不落库，所以「后端对齐」退化成"内存里本来就只有这一份时间线"，没有
+   *  失败路径可对齐（真后端那份对齐见 agent/ws/index.ts 的 rewind）。 */
+  async rewind(sessionId: string, seq: number): Promise<RewindOutcome> {
+    this.emit({ type: "rewound", sessionId, seq, removed: 0 });
+    return { removed: 0 };
   }
 
   async newSession(workspace?: string): Promise<string> {
@@ -481,6 +502,9 @@ export class DemoAgent implements AgentSource, JobAdminSource {
         this.emit({
           type: "userMessage",
           sessionId,
+          // 通告在历史里是**真实 user 角色消息**（模型要当用户回合才能回应），
+          // 所以它同样占一个 seq——撤回一条更早的消息会把它一起带走。
+          seq: this.nextSeq(sessionId),
           text: JOB_NOTICE_PREFIX + (settled.ended_by === "user"
             ? `用户主动结束了后台任务 ${settled.label}。这不是失败，不要重启它；等用户指示。`
             : `后台任务 ${settled.label} 结束（退出码 0）。用 job_output 读输出。`),

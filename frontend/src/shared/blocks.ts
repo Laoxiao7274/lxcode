@@ -13,7 +13,10 @@ export interface AssistantBlock {
 }
 
 export type ThreadBlock =
-  | { kind: "user"; uid: number; text: string }
+  /** 用户气泡。seq = 撤回锚点（后端 ChatMessage 上的序号，历史回放与实时事件
+   *  同一个类型）——**没有它就不能撤回/编辑**：老后端与更早落库的历史都不带
+   *  seq，锚不住就不能动历史（AGENTS.md §5 坑 11：老后端 + 新前端不许炸）。 */
+  | { kind: "user"; uid: number; text: string; seq?: number }
   | AssistantBlock
   | { kind: "tool"; uid: number; id: string; name: string; arguments: string; result?: string; isError?: boolean }
   | { kind: "confirm"; uid: number; request: ConfirmRequest; resolved?: "allow" | "deny" }
@@ -125,6 +128,72 @@ export function placeConfirm(blocks: ThreadBlock[], request: ConfirmRequest): Th
 /** 压缩检查点的定界标记（对齐后端 agent/compaction_prompt.go）。 */
 const CHECKPOINT_OPEN = "<compacted-summary>";
 const CHECKPOINT_CLOSE = "</compacted-summary>";
+
+// ===== 用户气泡的三个动作：复制 / 编辑 / 撤回 =====
+//
+// 判定全部抽成这里的纯函数（而不是埋在 Block 组件里）：撤回的锚点语义是
+// 「这条及其之后的全部历史一起消失」——写错一个下标只会**静默丢历史**，
+// 编译器和类型系统都拦不住，而这正是用户最不能接受的一类 bug（"我撤回了上一条，
+// 结果下面三条也没了 / 没删干净"）。tests/message-actions.test.mjs 钉住这几点。
+
+/** chat.rewind 的参数形状（与 Go internal/protocol 逐字一致）。
+ *
+ *  单独一个构造器而不是各处手写对象字面量：这个项目的协议坑是「字段名错一个
+ *  不编译报错、只静默丢字段」——后端收到 `seq_no` 只会当作 seq 缺失，撤回
+ *  "成功"返回 removed=0 而历史一条没删。参数只有这一处来源，测试钉住它。 */
+export function rewindParams(sessionId: string, seq: number): { session_id: string; seq: number } {
+  return { session_id: sessionId, seq };
+}
+
+/** 撤回锚点：seq 命中的那条 user 块下标（-1 = 时间线里没有它）。
+ *
+ *  只认 user 块：提示条（notice）在历史里也是 user 角色消息，但它不是用户说的
+ *  话——给它挂撤回动作等于让用户能"撤回"一句自己没说过的话。 */
+export function rewindIndex(blocks: ThreadBlock[], seq: number): number {
+  return blocks.findIndex((b) => b.kind === "user" && b.seq === seq);
+}
+
+/** 撤回计划：**锚点及其之后的块全部消失**（含锚点自己），锚点的文本回到输入框。
+ *
+ *  返回 null = 这个 seq 不在时间线里，调用方必须当"没撤"处理并给明确反馈。两种
+ *  情形都会走到这里：① 老后端/演示历史没有 seq；② 已经撤过了（后端广播重复
+ *  到达）——后者原样返回才是幂等，猜一个位置截断会误删更早的消息。 */
+export function planRewind(blocks: ThreadBlock[], seq: number): { blocks: ThreadBlock[]; text: string } | null {
+  const idx = rewindIndex(blocks, seq);
+  if (idx < 0) return null;
+  const anchor = blocks[idx];
+  if (anchor.kind !== "user") return null; // 类型收窄（rewindIndex 已保证，无运行时分支）
+  // slice 保留的是**原块对象**（引用相等）：重建会丢掉展开态这类本地状态
+  return { blocks: blocks.slice(0, idx), text: anchor.text };
+}
+
+/** 这条块能不能挂撤回/编辑动作：老后端与更早落库的历史没有 seq——锚不住就不能
+ *  动历史。类型守卫：调用方拿到 true 之后可以安全读 block.seq。 */
+export function canRewind(block: ThreadBlock): block is Extract<ThreadBlock, { kind: "user" }> & { seq: number } {
+  return block.kind === "user" && typeof block.seq === "number";
+}
+
+/** 编辑态：只记锚点与原文本——**一个字的历史都不动**。
+ *
+ *  这是「编辑」与「撤回」的分界：编辑是"我可能改主意"，一点就把后面的对话毁掉
+ *  是不可接受的；真正的撤回推迟到下次发送前（先 chat.rewind 再 chat.send）。
+ *  撤回则相反——点下去历史立刻清空，用户要的就是"重来"。 */
+export interface EditDraft {
+  seq: number;
+  text: string;
+}
+
+/** 进入编辑态（没有 seq 的块返回 null——调用方给明确反馈，不静默）。 */
+export function beginEdit(block: ThreadBlock): EditDraft | null {
+  if (!canRewind(block)) return null;
+  return { seq: block.seq, text: block.text };
+}
+
+/** 取消编辑：回到无编辑态。历史一个字都不动——取消 = 当作没编辑过。
+ *  刻意不接收也不返回 blocks：这个函数**没有能改历史的手**，取消不可能误删。 */
+export function cancelEdit(): null {
+  return null;
+}
 
 /**
  * 从检查点消息内容里剥出摘要正文：后端把摘要包成「前言 + 定界标记 + 正文」，

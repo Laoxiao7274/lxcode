@@ -30,6 +30,15 @@ export interface CompactOutcome {
   shadowed?: number;
 }
 
+/** 会话回退的结果（chat.rewind 的应答）。
+ *
+ *  **不用于渲染**——时间线的截断由 rewound 事件驱动（本地乐观 + 后端广播走
+ *  同一条归约路径）。它只回答「后端真删了几条」，供提示与诊断用。 */
+export interface RewindOutcome {
+  /** 被删除的消息条数（锚点那条 + 它之后的全部）。 */
+  removed: number;
+}
+
 /** 后台任务的运行状态（对齐 protocol/jobs.Status）。 */
 export type JobStatus = "running" | "stopping" | "completed" | "killed" | "failed";
 
@@ -106,7 +115,9 @@ export interface ConfirmRequest {
 export type AgentEvent =
   | { type: "ready"; server: string; version: string; busy: boolean }
   | { type: "sessionFocused"; id: string }
-  | { type: "userMessage"; sessionId: string; text: string }
+  /** seq = 撤回锚点（ChatMessage 上的字段；历史回放与实时事件是**同一个类型**，
+   *  所以两条路径都读 message.seq）。老后端没有它 → 块不可撤回，但绝不炸。 */
+  | { type: "userMessage"; sessionId: string; text: string; seq?: number }
   | { type: "delta"; sessionId: string; kind: "text" | "reasoning"; text: string; dispatchId?: string }
   | { type: "toolCall"; sessionId: string; id: string; name: string; arguments: string; dispatchId?: string }
   | { type: "toolResult"; sessionId: string; id: string; name: string; content: string; isError: boolean; dispatchId?: string }
@@ -132,6 +143,12 @@ export type AgentEvent =
   /** 历史被压缩（前缀替换成摘要检查点）——UI 插一条「已压缩历史」标记块。
    *  dispatchId 非空 = 子会话自己的压缩（归属进 dispatch 卡内，不进主时间线）。 */
   | { type: "compacted"; sessionId: string; before: number; after: number; shadowed: number; summary: string; manual?: boolean; dispatchId?: string }
+  /** 会话回退（chat.rewound）：seq 这条用户消息及其之后的全部历史已被删除。
+   *
+   *  归约是**幂等**的：本地乐观截断（发起撤回时立刻清空时间线）已经把锚点删掉了，
+   *  后端广播随后到达时找不到锚点就原样返回——不幂等的话重复到达会再切一刀，
+   *  把更早的消息也一起删掉。 */
+  | { type: "rewound"; sessionId: string; seq: number; removed: number }
   /** 历史载入（连接/切会话后）——全量重建对话视图。 */
   | { type: "historyLoaded"; sessionId: string; history: HistorySnapshot }
   /** 后台任务起了（时间线插一张任务卡）。sessionId = 任务归属会话——
@@ -170,6 +187,9 @@ export interface HistorySnapshot {
 export interface HistoryMessage {
   role: string;
   content: string;
+  /** 撤回锚点（后端 ChatMessage 的字段，与实时 chat.userMessage 的载荷是同一个
+   *  类型）。老后端没有它 → 块不可撤回（动作禁用），绝不炸（AGENTS.md §5 坑 11）。 */
+  seq?: number;
   reasoning_content?: string;
   tool_calls?: Array<{
     id?: string;
@@ -227,6 +247,11 @@ export interface AgentSource {
   cancel(sessionId: string): void;
   /** 手动压缩指定会话的历史。 */
   compact(sessionId: string): Promise<CompactOutcome>;
+  /** 会话回退：删掉 seq 这条用户消息及其之后的全部历史（内存 + 库）并重算上下文
+   *  占用。时间线截断由 rewound 事件驱动（本地乐观 + 后端广播同一条归约路径）；
+   *  实现负责在调用失败时用后端真相对齐（重放历史）——本地删了而后端没删，
+   *  用户会以为撤回了、刷新又全回来。 */
+  rewind(sessionId: string, seq: number): Promise<RewindOutcome>;
   /** 新会话（可选归属项目 id——会话挂在项目分组下）。 */
   newSession(workspace?: string): Promise<string>;
   /** 释放干净项目会话的 worktree 目录，保留分支与会话数据。 */

@@ -18,12 +18,18 @@ export function Thread({
   onConfirm,
   onSuggestion,
   projectName,
+  onEdit,
+  onRewind,
 }: {
   state: UIState;
   onConfirm: (id: string, allow: boolean) => void;
   onSuggestion?: (text: string) => void;
   /** 新对话空态的归属项目名（选中项目时显示——新会话将建在该项目下）。 */
   projectName?: string;
+  /** 用户气泡的动作（复制在 Block 内自足）——Thread 只做透传，判定与副作用
+   *  全在 App 与 shared/blocks 的纯函数里（这一层不碰历史）。 */
+  onEdit?: (block: ThreadBlock) => void;
+  onRewind?: (block: ThreadBlock) => void;
 }) {
   const endRef = useRef<HTMLDivElement>(null);
   const emptyRef = useRef<HTMLDivElement>(null);
@@ -178,7 +184,7 @@ export function Thread({
        *  「很多会话×长会话」的前提——见 docs/frontend-review.md §四-①。 */}
       {hidden > 0 && <WindowSentinel onExpand={() => setWindowSize((n) => n + WINDOW_BATCH)} label={`前面还有 ${hidden} 条…`} />}
       {visible.map((block) => (
-        <Block key={block.uid} block={block} onConfirm={onConfirm} replayed={replayed} />
+        <Block key={block.uid} block={block} onConfirm={onConfirm} replayed={replayed} onEdit={onEdit} onRewind={onRewind} />
       ))}
       {/* 进行中且还没有任何输出时显示思考 shimmer（无角色标签——DSH 形态） */}
       {state.busy && !lastIsStreamingAssistant(state.blocks) && (

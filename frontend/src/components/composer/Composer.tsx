@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Button } from "../form";
 import { AgentPicker } from "../agents/AgentPicker";
 import { PermPicker } from "../perm-picker";
 import { ModelPicker } from "../model-picker";
@@ -13,6 +14,15 @@ import type { ContextUsage, TodoItem } from "../../shared/types";
  *  Enter/Tab 补全——面板开着时 Enter 不发送）。
  *  任务清单卡浮在输入框正上方（与 busy 行同层——都在 composer 浮层内，
  *  不会被绝对定位的输入区遮挡；清单不进对话流）。 */
+/** 外部注入输入框的草稿（撤回/编辑把原文放回输入框）。
+ *
+ *  **用单调递增的 id 而不是按文本比较**：同一条消息连续撤回两次（或撤回后再编辑
+ *  同一条）文本一模一样，按文本判重的话第二次是 no-op——用户看到"点了没反应"。 */
+export interface ComposerDraft {
+  id: number;
+  text: string;
+}
+
 export function Composer({
   busy,
   disabled,
@@ -22,6 +32,9 @@ export function Composer({
   onCancel,
   onCompact,
   commands = [],
+  draft = null,
+  editing = false,
+  onCancelEdit,
 }: {
   busy: boolean;
   disabled?: boolean;
@@ -36,10 +49,17 @@ export function Composer({
   /** 斜杠命令集（App 注入——页面导航；选择器聚焦命令由 piBar 控件自身
    *  的打开态承载，/model 等 = 聚焦后打开对应选择器的实现放命令集里）。 */
   commands?: SlashCommand[];
+  /** 撤回/编辑把原文放回输入框（null = 没有待注入的草稿）。 */
+  draft?: ComposerDraft | null;
+  /** 编辑态（正在编辑某条历史消息）——发送时会先撤回那条及其之后的对话。 */
+  editing?: boolean;
+  onCancelEdit?: () => void;
 }) {
   const [value, setValue] = useState("");
   const taRef = useRef<HTMLTextAreaElement>(null);
   const zoneRef = useRef<HTMLDivElement>(null);
+  /** 已注入的草稿 id（按 id 判重，不按文本——见 ComposerDraft 的注释）。 */
+  const draftIdRef = useRef(0);
   // 「生成中」状态行挂载即上浮淡入（busy 翻转时才挂载/卸载）
   const busyRowRef = useEnterRef<HTMLDivElement>({ opacity: 0, y: 6 }, { opacity: 1, y: 0, duration: 0.26, ease: "power2.out", clearProps: "transform,opacity" });
   const canSend = value.trim().length > 0 && !busy && !disabled && !value.startsWith("/");
@@ -70,6 +90,20 @@ export function Composer({
     }
   };
 
+  // 外部注入草稿（撤回/编辑把原文放回输入框）：写入 + 聚焦 + 光标停在末尾。
+  // 光标必须到末尾——用户接着改的是这句话，停在开头或全选都别扭。
+  useEffect(() => {
+    if (!draft || draft.id === draftIdRef.current) return;
+    draftIdRef.current = draft.id;
+    setValue(draft.text);
+    requestAnimationFrame(() => {
+      const ta = taRef.current;
+      if (!ta) return;
+      ta.focus();
+      ta.setSelectionRange(ta.value.length, ta.value.length);
+    });
+  }, [draft]);
+
   // 输入区（含清单卡）的真实高度发布给 .main——线程区按它预留底部空间，
   // 清单展开多高就留多少：浮层永远不遮挡对话内容（把清单当输入区的一部分）。
   useEffect(() => {
@@ -93,6 +127,14 @@ export function Composer({
         {todos.length > 0 && (
           <div className="composer-plan">
             <TodoList items={todos} />
+          </div>
+        )}
+        {/* 编辑态提示行：必须说清"发送会先撤回它及其之后的对话"——不写清楚
+            用户会以为编辑只是改字，而历史会被清掉 */}
+        {editing && (
+          <div className="edit-row">
+            <span className="edit-text">正在编辑这条消息 · 发送时会先撤回它及其之后的对话</span>
+            <Button className="edit-cancel" onClick={onCancelEdit}>取消编辑</Button>
           </div>
         )}
         {/* busy 状态行：浮在输入框上方（生成中 + 停止入口在按钮位） */}

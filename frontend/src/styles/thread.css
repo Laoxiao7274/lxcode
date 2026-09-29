@@ -346,6 +346,9 @@
   display: flex;
   justify-content: flex-end;
   margin-bottom: 14px;
+  /* 动作条（复制/编辑/撤回）的定位锚：气泡右对齐到容器右缘，动作条 right:0
+     与气泡右缘对齐——不必再套一层 wrapper 去量气泡宽度 */
+  position: relative;
 }
 .msg.user .bubble {
   max-width: 70%;
@@ -354,6 +357,37 @@
   padding: 10px 16px;
   font-size: 14px;
   white-space: pre-wrap;
+}
+/* 用户气泡动作条（hover / 键盘聚焦时出现——与项目既有的 hover 显露同款）。
+ * **绝对定位在气泡上方**：进流会给每条用户消息永久多留一行高度，hover 显隐还会
+ * 顶动下方内容（长会话里整屏位移，是比"多占 20px"严重得多的观感问题）。
+ * 上方而非下方：下方会压住紧接着的下一条消息（margin 只有 14px）。 */
+.msg-actions {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 3px);
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+.msg.user:hover .msg-actions,
+.msg-actions:focus-within {
+  opacity: 1;
+  pointer-events: auto;
+}
+/* 紧凑档的套件按钮（套件只给外观，布局归这里——与 .job-kill.fd-btn-g 同款做法） */
+.msg-action.fd-btn-g {
+  padding: 2px 8px;
+  font-size: 11px;
+  border-radius: 7px;
+  background: var(--surface);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+.msg-action.fd-btn-g:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 /* 工具行排在正文流里（DSH 形态）：与上下文块呼吸——DSH 的 AssistantMarkdown
  * body 是 gap:16px flex，工具行对齐这个节奏 */

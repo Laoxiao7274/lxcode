@@ -162,6 +162,30 @@
   font-family: var(--font-mono);
   font-size: 11px;
 }
+/* 编辑态提示行（浮在输入框上方，与 busy-row 同层）。
+ * 文案必须点明"发送会先撤回它及其之后的对话"——只说"正在编辑"的话，用户会以为
+ * 改的是字，而历史会被清掉（那是撤回，不是编辑）。 */
+.edit-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 4px 8px;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+}
+.edit-row .edit-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 紧凑档的套件按钮（与 .msg-action.fd-btn-g 同款做法） */
+.edit-cancel.fd-btn-g {
+  padding: 2px 9px;
+  font-size: 11px;
+  border-radius: 7px;
+  margin-left: auto;
+  flex: none;
+}
 /* 输入框（不加 overflow:hidden——piBar 里的弹层菜单要向上弹出，
    圆角裁剪交给内部元素：textarea 上圆角 + piBar 下圆角） */
 .pi {

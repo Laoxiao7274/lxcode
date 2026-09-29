@@ -1,7 +1,7 @@
 // 事件流 → UI 状态的归约（纯函数，无 React——可直接单测）。
 
 import type { AgentEvent, ConfirmRequest, JobInfo } from "./types";
-import { type AssistantBlock, type ThreadBlock, type UIState, initial, nextUid, withBlock, placeConfirm } from "./blocks";
+import { type AssistantBlock, type ThreadBlock, type UIState, initial, nextUid, withBlock, placeConfirm, planRewind } from "./blocks";
 import { reduceHistory } from "./history";
 import { noticeBody, noticeLabel } from "./notices";
 
@@ -49,6 +49,8 @@ export function reduce(state: UIState, ev: AgentEvent): UIState {
     case "jobStarted":
     case "jobSettled":
       return upsertJobBlock(state, ev.job);
+    case "rewound":
+      return reduceRewound(state, ev);
     case "historyLoaded":
       return reduceHistoryLoaded(state, ev);
     default:
@@ -64,10 +66,31 @@ export function reduce(state: UIState, ev: AgentEvent): UIState {
  * 会以为是自己发的。 */
 function reduceUserMessage(state: UIState, ev: Ev<"userMessage">): UIState {
   const label = noticeLabel(ev.text);
+  // seq 只在真的给了时才写进块：`seq: undefined` 会让既有断言多出一个键，
+  // 而 canRewind 判的是 typeof === "number"，两种写法行为完全一致。
   const block: ThreadBlock = label
     ? { kind: "notice", uid: nextUid(), label, text: noticeBody(ev.text) }
-    : { kind: "user", uid: nextUid(), text: ev.text };
+    : typeof ev.seq === "number"
+      ? { kind: "user", uid: nextUid(), text: ev.text, seq: ev.seq }
+      : { kind: "user", uid: nextUid(), text: ev.text };
   return { ...state, blocks: [...state.blocks, block] };
+}
+
+/** 会话回退（chat.rewound）：时间线截断到锚点之前（锚点自己也消失）。
+ *
+ *  **与本地乐观截断共用 planRewind 一份判定**——两条路径分头实现的话，
+ *  "乐观删的"与"广播删的"迟早不一致。
+ *
+ *  **幂等**：乐观路径已经先把锚点删了，后端广播随后到达时找不到锚点 → 原样返回
+ *  （连对象都不换——没有变化就不该触发重渲染）。
+ *
+ *  **context 置 null**：删掉历史之后旧占用一定是错的，而 chat.rewound 不带重算
+ *  后的占用（协议只有 session_id/seq/removed）。编一个数不如显示中性态「—」，
+ *  下一轮 chat.done 会把真值带回来。 */
+function reduceRewound(state: UIState, ev: Ev<"rewound">): UIState {
+  const plan = planRewind(state.blocks, ev.seq);
+  if (!plan) return state;
+  return { ...state, blocks: plan.blocks, context: null };
 }
 
 /** delta 事件的处理（从 reduce 的 switch 里提出来——原来 213 行的 switch

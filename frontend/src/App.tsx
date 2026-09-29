@@ -10,7 +10,8 @@ import {
   type WorkspaceView,
 } from "./shared/workspace-tabs";
 import { getAgentSource } from "./agent";
-import { useAgent } from "./shared/store";
+import { useAgent, type ThreadBlock } from "./shared/store";
+import { beginEdit, canRewind, planRewind, type EditDraft } from "./shared/blocks";
 import { AgentsProvider, useAgents } from "./shared/agents";
 import { AgentsPage } from "./components/agents/AgentsPage";
 import { CatalogPage } from "./components/catalog/CatalogPage";
@@ -18,7 +19,7 @@ import { GitWorkbenchPage } from "./components/git/GitWorkbenchPage";
 import { Topbar } from "./components/topbar";
 import { Sidebar, LOOSE } from "./components/sidebar";
 import { Thread } from "./components/thread";
-import { Composer } from "./components/composer";
+import { Composer, type ComposerDraft } from "./components/composer";
 import type { SlashCommand } from "./components/composer/SlashPalette";
 import { TabBar } from "./components/topbar/TabBar";
 import { SettingsPanel } from "./components/settings";
@@ -146,6 +147,85 @@ function AppBody({ source }: { source: AgentSource }) {
     }
   }, [source, reportError, currentId]);
 
+  // ---- 用户气泡的三个动作（复制在 Block 内自足；这里管编辑与撤回）----
+
+  /** 输入框草稿注入（撤回/编辑把原文放回输入框）。id 单调递增——同一条消息连续
+   *  注入两次也要重新写入（按文本比较的话第二次是 no-op，用户看到"点了没反应"）。 */
+  const [draft, setDraft] = useState<ComposerDraft | null>(null);
+  const draftIdRef = useRef(0);
+  const injectDraft = useCallback((text: string) => {
+    draftIdRef.current += 1;
+    setDraft({ id: draftIdRef.current, text });
+  }, []);
+  /** 编辑态：只记锚点，**历史一个字都不动**——真正的撤回推迟到下次发送前。 */
+  const [editDraft, setEditDraft] = useState<EditDraft | null>(null);
+  /** 最新时间线的引用（撤回要按锚点取原文）。**刻意用 ref 而不是把 state.blocks
+   *  写进 handleRewind 的依赖**：依赖它 = 每个流式 delta 都换一次回调身份，而
+   *  Block 是 memo 的（onRewind 变了 → 整屏用户气泡每帧重渲染一遍）。 */
+  const blocksRef = useRef(state.blocks);
+  blocksRef.current = state.blocks;
+
+  // 撤回：历史立刻清空（由 source 的乐观 rewound 事件驱动归约器截断——两个实现
+  // 走同一条路径），原文回到输入框。**失败时 source 已经用后端真相对齐**（重放
+  // 历史把被乐观删掉的块拿回来），这里只负责把失败说给用户听。
+  const handleRewind = useCallback((block: ThreadBlock) => {
+    if (!canRewind(block)) {
+      reportError("这条消息来自旧版后端（没有 seq），无法撤回");
+      return;
+    }
+    // 文本取自纯函数给出的撤回计划（与归约器同一份判定）——文本与截断不可能对不上
+    const plan = planRewind(blocksRef.current, block.seq);
+    if (!plan) {
+      reportError("这条消息已经不在当前对话里了（可能已被撤回）");
+      return;
+    }
+    injectDraft(plan.text);
+    setEditDraft(null); // 撤回之后没有"编辑中"这回事：历史已经清了，没什么可取消
+    void source.rewind(currentId, block.seq).catch((e) => {
+      reportError(`撤回失败: ${e instanceof Error ? e.message : String(e)}`);
+    });
+  }, [source, currentId, injectDraft, reportError]);
+
+  // 编辑：只把原文放回输入框并进入编辑态——**不动历史**。编辑是"我可能改主意"，
+  // 一点就把后面的对话毁掉是不可接受的；真正的撤回推迟到下次发送前。
+  const handleEdit = useCallback((block: ThreadBlock) => {
+    const d = beginEdit(block);
+    if (!d) {
+      reportError("这条消息来自旧版后端（没有 seq），无法编辑");
+      return;
+    }
+    setEditDraft(d);
+    injectDraft(d.text);
+  }, [injectDraft, reportError]);
+
+  // 取消编辑：退出编辑态。输入框里的文本**留着**（用户可能还想发）——取消只是
+  // 撤回"这条是编辑"的语义，下次发送就是一条普通的新消息。
+  const handleCancelEdit = useCallback(() => setEditDraft(null), []);
+
+  // 切会话必须退出编辑态：编辑锚点（seq）只在它所属的那个会话里有意义，带着它
+  // 切走再发送会去撤回**另一个会话**的那条消息（静默删错历史——比不生效坏得多）。
+  useEffect(() => {
+    setEditDraft(null);
+  }, [currentId]);
+
+  // 发送：编辑态下**先撤回再发**（这是"编辑"真正生效的时刻）。撤回失败就不发——
+  // 历史没清干净就发，新消息会接在被编辑那条的后面，等于改了个寂寞；文本还给
+  // 用户重试（Composer 的 submit 已经先清了输入框）。
+  const handleSend = useCallback((text: string) => {
+    const editing = editDraft;
+    setEditDraft(null);
+    if (!editing) {
+      sendWithOptions(text);
+      return;
+    }
+    void source.rewind(currentId, editing.seq)
+      .then(() => sendWithOptions(text))
+      .catch((e) => {
+        reportError(`撤回失败，未发送: ${e instanceof Error ? e.message : String(e)}`);
+        injectDraft(text);
+      });
+  }, [editDraft, source, currentId, sendWithOptions, reportError, injectDraft]);
+
   const currentTitle = state.blocks.length === 0 ? "" : source.sessions().find((s: SessionMeta) => s.id === currentId)?.title ?? "任务";
 
   // 壳环境（Electron）= 真实窗口；浏览器 = 保留模拟壳（窗口模拟一层的差异，
@@ -186,9 +266,20 @@ function AppBody({ source }: { source: AgentSource }) {
         <>
           {errorNotice}
           <div className="thread-scroll">
-            <Thread state={state} onConfirm={handleConfirm} onSuggestion={(t) => sendWithOptions(t)} projectName={filterProjectName} />
+            <Thread state={state} onConfirm={handleConfirm} onSuggestion={handleSend} projectName={filterProjectName} onEdit={handleEdit} onRewind={handleRewind} />
           </div>
-          <Composer busy={state.busy} todos={state.todos} context={state.context} onSend={sendWithOptions} onCancel={() => source.cancel(currentId)} onCompact={() => { void handleCompact(); }} commands={slashCommands} />
+          <Composer
+            busy={state.busy}
+            todos={state.todos}
+            context={state.context}
+            onSend={handleSend}
+            onCancel={() => source.cancel(currentId)}
+            onCompact={() => { void handleCompact(); }}
+            commands={slashCommands}
+            draft={draft}
+            editing={editDraft !== null}
+            onCancelEdit={handleCancelEdit}
+          />
         </>
       );
     }

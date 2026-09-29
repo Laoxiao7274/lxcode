@@ -9,9 +9,10 @@ import type {
   AgentAdminEntry, AgentAdminMcServer, AgentAdminModule, AgentAdminSource, AgentAdminTool,
   AgentEvent, AgentSource, ApprovalMode, CompactOutcome, ConfirmRequest, ContextUsage, JobAdminSource, JobInfo,
   JobLogResult, ModelAdminSource, ModelEntry,
-  ProjectInstructions, ProjectMeta, SearchAdminSource, SearchChannel, SearchChannelsSnapshot,
+  ProjectInstructions, ProjectMeta, RewindOutcome, SearchAdminSource, SearchChannel, SearchChannelsSnapshot,
   SearchTestResult, SendOptions, SessionMeta, TodoItem,
 } from "../../shared/types";
+import { rewindParams } from "../../shared/blocks";
 import { jobFromWire, sortJobs, upsertJob } from "../../shared/jobs";
 import { mapEvent } from "./events";
 
@@ -371,6 +372,27 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
     return this.call("chat.compact", { session_id: sessionId }).then((r) => (r ?? { compacted: false }) as CompactOutcome);
   }
 
+  /** 会话回退（chat.rewind）：删掉 seq 这条用户消息及其之后的全部历史。
+   *
+   *  **先本地乐观截断**：等 WS 往返再清，用户会看到一段"点了没反应"。本地发一条
+   *  rewound 事件 → 归约器 planRewind 立刻截断；后端广播 chat.rewound 到达时锚点
+   *  已不在，是幂等重放（no-op）。乐观回声不知道条数（removed=0）——归约器不拿
+   *  它渲染，真值随后端广播到达。
+   *
+   *  **失败必须用后端真相对齐**：本地已截断而后端没删 = 用户以为撤回了、下次刷新
+   *  又全回来（比"点了没反应"更坏，是"骗过一次刷新"）。重放历史是唯一的真相来源。
+   *  老后端没有 chat.rewind 方法时走的正是这条路径——报错 + 时间线复原。 */
+  async rewind(sessionId: string, seq: number): Promise<RewindOutcome> {
+    this.emit({ type: "rewound", sessionId, seq, removed: 0 });
+    try {
+      const r = (await this.call("chat.rewind", rewindParams(sessionId, seq))) as { removed?: number } | null;
+      return { removed: Number(r?.removed ?? 0) };
+    } catch (e) {
+      await this.loadHistory(sessionId).catch(() => undefined);
+      throw e;
+    }
+  }
+
   async newSession(workspace?: string): Promise<string> {
     try {
       const result = await this.call("session.new", workspace ? { workspace } : undefined) as { session_id?: string };
@@ -503,6 +525,8 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
           messages?: Array<{
             role: string;
             content: string;
+            /** 撤回锚点（ChatMessage 上的字段）——老后端没有，整键缺席。 */
+            seq?: number;
             reasoning_content?: string;
             tool_calls?: Array<{ id?: string; function?: { name: string; arguments?: string } }>;
             tool_call_id?: string;

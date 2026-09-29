@@ -19,7 +19,14 @@ export function mapEvent(method: string, params: unknown): AgentEvent | null {
     case "chat.userMessage": {
       // 协议载荷把消息包在 message 对象里；兼容早期扁平形状。
       const message = (p.message ?? {}) as Record<string, unknown>;
-      return { type: "userMessage", sessionId, text: String(message.content ?? p.content ?? p.text ?? "") };
+      const text = String(message.content ?? p.content ?? p.text ?? "");
+      // seq = 撤回锚点（ChatMessage 上的字段，与历史回放是同一个类型——两条路径
+      // 都读 message.seq，不另立字段名）。老后端没有它 → 键**缺席**（不是
+      // undefined 值的键）：块不可撤回，但绝不炸（AGENTS.md §5 坑 11）。
+      const seq = message.seq;
+      return typeof seq === "number"
+        ? { type: "userMessage", sessionId, text, seq }
+        : { type: "userMessage", sessionId, text };
     }
     case "chat.delta":
       return { type: "delta", sessionId, kind: String(p.kind) as "text" | "reasoning", text: String(p.text ?? ""), dispatchId };
@@ -72,6 +79,11 @@ export function mapEvent(method: string, params: unknown): AgentEvent | null {
       if (method === "job.started") return { type: "jobStarted", sessionId: owner, job };
       return { type: "jobSettled", sessionId: owner, job };
     }
+    case "chat.rewound":
+      // 会话回退：seq 这条用户消息及其之后的全部历史被后端删掉了。这个事件既是
+      // 「别的客户端撤回了」的同步，也是本地乐观截断的权威确认——归约器按同一份
+      // 判定处理，重复到达是幂等 no-op（见 reduce.ts 的 reduceRewound）。
+      return { type: "rewound", sessionId, seq: Number(p.seq ?? 0), removed: Number(p.removed ?? 0) };
     case "chat.confirmRequest":
       return { type: "confirmRequest", sessionId, request: p as unknown as ConfirmRequest };
     case "todo.updated":

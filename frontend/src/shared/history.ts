@@ -26,7 +26,15 @@ export function reduceHistory(state: UIState, h: HistorySnapshot): UIState {
         if (label) {
           blocks.push({ kind: "notice", uid: nextUid(), label, text: noticeBody(m.content) });
         } else {
-          blocks.push({ kind: "user", uid: nextUid(), text: m.content });
+          // seq = 撤回锚点（后端 ChatMessage 上的字段）。**回放路径与实时路径
+          // 都读它**——少一条的话刷新之后同一条消息就再也撤不回（而界面上看起来
+          // 一切正常）。只在真的给了时才写这个键：`seq: undefined` 会让既有断言
+          // 多出一个键，而 canRewind 判的是 typeof === "number"，行为完全一致。
+          blocks.push(
+            typeof m.seq === "number"
+              ? { kind: "user", uid: nextUid(), text: m.content, seq: m.seq }
+              : { kind: "user", uid: nextUid(), text: m.content },
+          );
         }
       }
       lastAssistant = null;
