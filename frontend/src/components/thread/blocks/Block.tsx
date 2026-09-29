@@ -15,6 +15,8 @@ import { FilesCard } from "./FilesCard";
 import { AnswerBody } from "./AnswerBody";
 import { DispatchCard } from "./DispatchCard";
 import { CompactionCard } from "./CompactionCard";
+import { JobCard } from "./JobCard";
+import { NoticeBar } from "./NoticeBar";
 
 export const Block = memo(
   function Block({ block, onConfirm, replayed }: { block: ThreadBlock; onConfirm: (id: string, allow: boolean) => void; replayed?: boolean }) {
@@ -87,6 +89,12 @@ export const Block = memo(
 
     case "compacted":
       return <CompactionCard block={block} />;
+
+    case "job":
+      return <JobCard block={block} />;
+
+    case "notice":
+      return <NoticeBar block={block} />;
 
     case "confirm":
       return (

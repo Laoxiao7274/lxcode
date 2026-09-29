@@ -1,8 +1,9 @@
 // 事件流 → UI 状态的归约（纯函数，无 React——可直接单测）。
 
-import type { AgentEvent, ConfirmRequest } from "./types";
+import type { AgentEvent, ConfirmRequest, JobInfo } from "./types";
 import { type AssistantBlock, type ThreadBlock, type UIState, initial, nextUid, withBlock, placeConfirm } from "./blocks";
 import { reduceHistory } from "./history";
+import { isJobNotice, jobNoticeBody } from "./jobs";
 
 /** 单个事件类型的窄化类型（reduce 的每个分支提取成函数后，参数类型要收窄到那一个变体）。 */
 type Ev<T extends AgentEvent["type"]> = Extract<AgentEvent, { type: T }>;
@@ -10,10 +11,7 @@ type Ev<T extends AgentEvent["type"]> = Extract<AgentEvent, { type: T }>;
 export function reduce(state: UIState, ev: AgentEvent): UIState {
   switch (ev.type) {
     case "userMessage":
-      return {
-        ...state,
-        blocks: [...state.blocks, { kind: "user", uid: nextUid(), text: ev.text }],
-      };
+      return reduceUserMessage(state, ev);
     case "delta":
       return reduceDelta(state, ev);
     case "toolCall":
@@ -48,11 +46,26 @@ export function reduce(state: UIState, ev: AgentEvent): UIState {
       return { ...state, blocks: [...state.blocks, { kind: "files", uid: nextUid(), files: ev.files }] };
     case "compacted":
       return reduceCompacted(state, ev);
+    case "jobStarted":
+    case "jobSettled":
+      return upsertJobBlock(state, ev.job);
     case "historyLoaded":
       return reduceHistoryLoaded(state, ev);
     default:
       return state;
   }
+}
+
+/** userMessage 事件的处理（从 reduce 的 switch 里提出来——通告识别要读前缀）。
+ *
+ * 后台任务的唤醒通告在**历史里与实时流里都是真实 user 角色消息**（模型必须把它
+ * 当用户回合才能回应），但它不是用户说的话——按**文本前缀**识别（不能按角色），
+ * 渲染成通告条而不是用户气泡，否则用户会以为是自己发的。 */
+function reduceUserMessage(state: UIState, ev: Ev<"userMessage">): UIState {
+  const block: ThreadBlock = isJobNotice(ev.text)
+    ? { kind: "notice", uid: nextUid(), text: jobNoticeBody(ev.text) }
+    : { kind: "user", uid: nextUid(), text: ev.text };
+  return { ...state, blocks: [...state.blocks, block] };
 }
 
 /** delta 事件的处理（从 reduce 的 switch 里提出来——原来 213 行的 switch
@@ -271,8 +284,35 @@ if (ev.history.busy && state.busy && state.historyReady) {
     context: ev.history.context ?? state.context,
   };
 }
-// 冷恢复/空闲会话：messages → blocks（工具调用与结果配对）
-return { ...reduceHistory(state, ev.history), busy: ev.history.busy };
+// 冷恢复/空闲会话：messages → blocks（工具调用与结果配对）。
+// **任务卡不在历史里**（契约只把后台任务定义成 job.started/settled 事件，
+// ChatHistoryResult 不带 jobs）——整块重建会把它们一起丢掉：切走再切回一个正在
+// 跑 dev server 的会话，卡片不该凭空消失（它还在跑，顶栏面板里也还看得见）。
+// 保留的是本会话状态里的卡（state 本就按会话隔离），位置接在重建后的历史之后。
+const jobs = state.blocks.filter((b) => b.kind === "job");
+const rebuilt = reduceHistory(state, ev.history);
+return {
+  ...rebuilt,
+  busy: ev.history.busy,
+  blocks: jobs.length ? [...rebuilt.blocks, ...jobs] : rebuilt.blocks,
+};
+}
+
+/** jobStarted / jobSettled 共用：同一个任务只留一张卡（就地更新快照）。
+ *
+ * 两个事件都 upsert 而不是「started 建卡、settled 改卡」：刷新/重连后
+ * 只剩 settled 可收（后端不重放历史事件），那时若没有卡，用户就永远看不到
+ * 这个任务发生过——补一张已结束的卡比静默丢弃诚实。
+ * 块对象必须换新引用（Block 是 memo 的，原地改 job 字段不会触发重渲染）。 */
+function upsertJobBlock(state: UIState, job: JobInfo): UIState {
+  const idx = state.blocks.findIndex((b) => b.kind === "job" && b.job.id === job.id);
+  if (idx < 0) {
+    return { ...state, blocks: [...state.blocks, { kind: "job", uid: nextUid(), job }] };
+  }
+  const blocks = state.blocks.slice();
+  const prev = blocks[idx] as Extract<ThreadBlock, { kind: "job" }>;
+  blocks[idx] = { ...prev, job };
+  return { ...state, blocks };
 }
 
 /** 把子事件应用进 dispatch 块的 subBlocks（子上下文隔离的归属路由）。

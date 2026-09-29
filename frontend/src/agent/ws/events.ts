@@ -4,6 +4,7 @@
 // 「要不要重拉后端事实源」留在 reactTo。混在一起就没法单独测映射——
 // 而映射恰恰是最容易写错、也最值得钉住的一层（字段名、默认值、归属）。
 import type { AgentEvent, ConfirmRequest, ContextUsage, TodoItem } from "../../shared/types";
+import { jobFromWire } from "../../shared/jobs";
 
 /** 返回 null = 这个事件不产出前端事件（由 reactTo 的副作用分支处理，或与前端无关）。 */
 export function mapEvent(method: string, params: unknown): AgentEvent | null {
@@ -59,6 +60,12 @@ export function mapEvent(method: string, params: unknown): AgentEvent | null {
         manual: Boolean(p.manual),
         dispatchId: p.dispatch_id ? String(p.dispatch_id) : undefined,
       };
+    // 后台任务：载荷**就是 JobInfo 本身**（不是包一层），归属会话取
+    // session_id——空 = 无归属（只进顶栏全局面板，不进任何会话时间线）。
+    case "job.started":
+      return { type: "jobStarted", sessionId, job: jobFromWire(p) };
+    case "job.settled":
+      return { type: "jobSettled", sessionId, job: jobFromWire(p) };
     case "chat.confirmRequest":
       return { type: "confirmRequest", sessionId, request: p as unknown as ConfirmRequest };
     case "todo.updated":

@@ -16,11 +16,25 @@
   .sidebar {
     display: none;
   }
+  /* 小屏只有一列，而 .main 显式写着 grid-column: 2（桌面两列布局）——
+     那会在唯一显式列之外**凭空造出一个隐式列**，主区被塞进一个按内容宽度
+     的窄条里（第一列有多宽由顶栏/标签栏的 min-content 决定，主区只剩零头）。
+     小屏必须让主区回到那一列。 */
+  .main {
+    grid-column: 1 / -1;
+  }
+  /* 顶栏面板在小屏占满可用宽度（400px 固定宽在 600px 窗口里贴边太紧） */
+  .job-pop {
+    width: min(400px, calc(100vw - 24px));
+  }
 }
 /* ===== 动效减免 ===== */
 @media (prefers-reduced-motion: reduce) {
   .pulse-dot,
-  .msg {
+  .job-dot,
+  .msg,
+  .job-card,
+  .job-pop {
     animation: none;
   }
   .md-caret {

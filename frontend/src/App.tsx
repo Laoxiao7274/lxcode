@@ -26,6 +26,7 @@ import { SettingsProvider, useSettings } from "./shared/settings";
 import { ConnectionsProvider } from "./shared/connections";
 import { UpdateProvider } from "./shared/update";
 import { SearchAdminProvider } from "./shared/search-admin";
+import { JobsProvider } from "./shared/jobs-admin";
 import { UpdateToast } from "./components/update/UpdateToast";
 import type { AgentSource, SendOptions, SessionMeta } from "./shared/types";
 
@@ -37,8 +38,11 @@ export default function App() {
         <ConnectionsProvider>
           <UpdateProvider>
             <SearchAdminProvider source={source}>
-              <AppBody source={source} />
-              <UpdateToast />
+              {/* 后台任务域：时间线卡片与顶栏面板共用同一份任务清单 */}
+              <JobsProvider source={source}>
+                <AppBody source={source} />
+                <UpdateToast />
+              </JobsProvider>
             </SearchAdminProvider>
           </UpdateProvider>
         </ConnectionsProvider>

@@ -1,8 +1,18 @@
 // 演示数据源（M3 叙事）：主 Agent 只调度——思考选人 → agent_dispatch →
 // dispatch 卡（子 Agent 全套执行：思考/读码/改码/确认门/跑测试）→ 验收
 // 汇总。覆盖 UI 全部状态。事件形状与后端协议 1:1——接线换 WSAgent 即可。
-import type { AgentEvent, AgentSource, CompactOutcome, ConfirmRequest, ContextUsage, ProjectInstructions, ProjectMeta, SendOptions, SessionMeta, TodoItem } from "../../shared/types";
+import type { AgentEvent, AgentSource, CompactOutcome, ConfirmRequest, ContextUsage, JobAdminSource, JobInfo, JobLogResult, ProjectInstructions, ProjectMeta, SendOptions, SessionMeta, TodoItem } from "../../shared/types";
+import { JOB_NOTICE_PREFIX, sortJobs, upsertJob } from "../../shared/jobs";
 import { MAIN_REASONING, SUB_REASONING, SUB_RESULT, MAIN_ANSWER, TODO_INITIAL, TODO_LATER, FILES_CHANGED, SESSIONS } from "./data";
+
+/** 演示的后台任务输出（逐行追加——模拟 go test 的进度）。 */
+const DEMO_JOB_LINES = [
+  "?   \tgithub.com/moyunteng/lxcode/internal/jobs\t[no test files]",
+  "ok  \tgithub.com/moyunteng/lxcode/internal/protocol\t0.412s",
+  "ok  \tgithub.com/moyunteng/lxcode/internal/store\t3.882s",
+  "ok  \tgithub.com/moyunteng/lxcode/internal/agent\t4.106s",
+  "ok  \tgithub.com/moyunteng/lxcode/internal/server\t19.204s",
+];
 
 type Listener = (ev: AgentEvent) => void;
 type SessionScopedEvent = Extract<AgentEvent, { sessionId: string }>;
@@ -20,8 +30,9 @@ function demoContext(used: number): ContextUsage {
   return { used, window, system, tool_results: toolResults, reasoning, messages: used - system - toolResults - reasoning };
 }
 
-export class DemoAgent implements AgentSource {
+export class DemoAgent implements AgentSource, JobAdminSource {
   label = "演示模式";
+  readonly jobAdmin: JobAdminSource = this;
   private listeners = new Set<Listener>();
   private timers = new Map<string, ReturnType<typeof setTimeout>[]>();
   private confirmCallbacks = new Map<string, (allow: boolean) => void>();
@@ -33,6 +44,14 @@ export class DemoAgent implements AgentSource {
   private emittingSession = "";
   /** 演示态每个会话独立计轮（compact 用：累计过几轮就当作有可压区间）。 */
   private turns = new Map<string, number>();
+  /** 演示的后台任务（内存态：与真实后端同一形状的 JobInfo 快照）。 */
+  private jobs_: JobInfo[] = [];
+  /** 每会话当前的后台任务 id（runTurn 起、finishDispatch 收尾——中间隔着
+   *  确认门，拿不到局部变量）。 */
+  private jobBySession_ = new Map<string, string>();
+  private jobListeners = new Set<() => void>();
+  /** 任务输出（逐行累积——readJobLog 返回「此刻的全量」，与真后端落盘日志同语义）。 */
+  private jobOutput_ = new Map<string, string[]>();
   private projects_: ProjectMeta[] = [
     { id: "proj-demo-lxcode", name: "lxcode", path: "C:\\Users\\xzy\\Desktop\\my\\lxcode" },
     { id: "proj-demo-agent", name: "local-myt-agent", path: "C:\\Users\\xzy\\Desktop\\gs\\local-myt-agent" },
@@ -166,6 +185,93 @@ export class DemoAgent implements AgentSource {
     return this.currentSession;
   }
 
+  // ---- JobAdminSource（后台任务——演示也要能全量跑 UI） ----
+
+  jobs(): JobInfo[] {
+    return this.jobs_;
+  }
+
+  onJobsChanged(listener: () => void): () => void {
+    this.jobListeners.add(listener);
+    return () => this.jobListeners.delete(listener);
+  }
+
+  async listJobs(sessionId?: string): Promise<JobInfo[]> {
+    return sessionId ? this.jobs_.filter((j) => j.session_id === sessionId) : this.jobs_;
+  }
+
+  /** 用户点「结束」：与真后端同语义（Manager.Kill(id, EndedUser)）——
+   *  置 killed/ended_by=user 并广播 settled，唤醒语义由后端负责（演示不唤醒）。 */
+  async killJob(id: string): Promise<JobInfo> {
+    const job = this.jobs_.find((j) => j.id === id);
+    if (!job) throw new Error("任务不存在（可能已结束）");
+    return this.settleDemoJob(id, "killed", "user", "用户请求结束");
+  }
+
+  /** 读全量输出（演示：内存里累积到此刻的行）。 */
+  async readJobLog(id: string): Promise<JobLogResult> {
+    const job = this.jobs_.find((j) => j.id === id);
+    if (!job) throw new Error("任务不存在（可能已结束）");
+    return { data: (this.jobOutput_.get(id) ?? []).join("\n"), truncated: false };
+  }
+
+  /** 起一个演示后台任务（runTurn 里调用——UI 的「运行中卡片 + 顶栏角标」由此点亮）。 */
+  private startDemoJob(sessionId: string): string {
+    const id = "job-demo-" + Math.random().toString(36).slice(2, 7);
+    this.jobOutput_.set(id, []);
+    const job: JobInfo = {
+      id,
+      kind: "bash",
+      label: "go test ./... -count=1",
+      status: "running",
+      ended_by: "",
+      detail: "",
+      session_id: sessionId,
+      started_at: new Date().toISOString(),
+      finished_at: "",
+      output_tail: "",
+      output_path: `sessions/jobs/${id}.log`,
+    };
+    this.applyJob(job);
+    this.emit({ type: "jobStarted", sessionId, job });
+    return id;
+  }
+
+  /** 追加一行输出（时间线卡片与面板都不轮询——点「查看输出」拉此刻的全量）。 */
+  private appendDemoJobOutput(id: string, line: string) {
+    const lines = this.jobOutput_.get(id);
+    if (!lines) return;
+    lines.push(line);
+  }
+
+  /** 收尾（定时收尾与用户点「结束」共用一条路径——与后端一致）。
+   *  **已结束的任务不再被改写**：契约里 Settle 重复调用是 no-op，用户先点了
+   *  「结束」之后脚本的定时收尾不能把它改回「正常结束」（否则「你停的」会
+   *  在几秒后自己变成「正常结束」，用户会以为按钮没生效）。 */
+  private settleDemoJob(id: string, status: JobInfo["status"], by: JobInfo["ended_by"], detail: string): JobInfo {
+    const job = this.jobs_.find((j) => j.id === id);
+    if (!job) throw new Error("任务不存在（可能已结束）");
+    if (job.status !== "running" && job.status !== "stopping") return job;
+    const lines = this.jobOutput_.get(id) ?? [];
+    const next: JobInfo = {
+      ...job,
+      status,
+      ended_by: by,
+      detail,
+      finished_at: new Date().toISOString(),
+      output_tail: lines.join("\n"),
+    };
+    this.applyJob(next);
+    this.emit({ type: "jobSettled", sessionId: next.session_id, job: next });
+    return next;
+  }
+
+  /** 任务快照 → 缓存 + 通知（与 WSAgent 的 applyJob 同款：面板订阅这份缓存）。 */
+  private applyJob(job: JobInfo) {
+    this.jobs_ = sortJobs(upsertJob(this.jobs_, job));
+    this.jobListeners.forEach((l) => l());
+  }
+
   // ---- 编排（M3：主 Agent 调度叙事） ----
 
   private emit(ev: DemoEvent) {
@@ -227,6 +333,20 @@ export class DemoAgent implements AgentSource {
         agentColor: "#3b82f6",
         task: "给 internal/agent 的工具循环加 per-tool 120s 超时兜底（超时回填错误不中断整轮；bash 超时逻辑不动）。验收：新增回归用例 + 全量测试绿。",
       });
+    });
+
+    // ---- 后台任务（jobs）：长命令走 run_in_background，不占这一轮 ----
+    // 起任务挂在时间轴上（与真实链路一致：工具返回 job id 是在那一轮的中段，
+    // 不是轮一开始就凭空多出一个任务），输出随进程推进逐行增长——点「查看输出」
+    // 能拉到此刻的全量。用户点「结束」也能提前收尾。
+    this.at(sessionId, t + 2000, () => {
+      const id = this.startDemoJob(sessionId);
+      this.jobBySession_.set(sessionId, id);
+      let jt = 400;
+      for (const line of DEMO_JOB_LINES) {
+        this.at(sessionId, jt, () => this.appendDemoJobOutput(id, line));
+        jt += 320 + Math.random() * 260;
+      }
     });
 
     // ---- 子 Agent：思考（挂卡内）----
@@ -334,6 +454,22 @@ export class DemoAgent implements AgentSource {
       this.emit({ type: "filesChanged", files: FILES_CHANGED });
     });
     this.at(sessionId, t + 800, () => {
+      // 后台任务收尾（与真后端一致：进程退出 → settle → 广播 job.settled）。
+      // 用户若已经点过「结束」，这里是 no-op——不会把「你停的」改写成「正常结束」。
+      const jobId = this.jobBySession_.get(sessionId);
+      if (jobId) {
+        const settled = this.settleDemoJob(jobId, "completed", "self", "退出码 0");
+        // 唤醒通告：后端在 settle 后把通告作为**真实 user 角色消息**投进归属会话
+        //（模型要当作用户回合才能回应），前端按文本前缀渲染成通告条——不是气泡。
+        // 措辞对齐契约 §5：EndedBy=self → 结束通告；EndedBy=user → 「不要重启」。
+        this.emit({
+          type: "userMessage",
+          sessionId,
+          text: JOB_NOTICE_PREFIX + (settled.ended_by === "user"
+            ? `用户主动结束了后台任务 ${settled.label}。这不是失败，不要重启它；等用户指示。`
+            : `后台任务 ${settled.label} 结束（退出码 0）。用 job_output 读输出。`),
+        });
+      }
       const usage = 2545 + Math.floor(Math.random() * 400);
       this.emit({ type: "done", usageTokens: usage, finishReason: "stop", context: demoContext(38_400 + usage) });
       this.finish(sessionId);

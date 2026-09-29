@@ -4,3 +4,5 @@ export { ToolBlock } from "./ToolBlock";
 export { DiffBody } from "./DiffBody";
 export { FilesCard } from "./FilesCard";
 export { AnswerBody } from "./AnswerBody";
+export { JobCard } from "./JobCard";
+export { NoticeBar } from "./NoticeBar";

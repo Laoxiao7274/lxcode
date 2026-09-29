@@ -7,10 +7,12 @@
 // 不动 blocks/pending。
 import type {
   AgentAdminEntry, AgentAdminMcServer, AgentAdminModule, AgentAdminSource, AgentAdminTool,
-  AgentEvent, AgentSource, CompactOutcome, ConfirmRequest, ContextUsage, ModelAdminSource, ModelEntry,
+  AgentEvent, AgentSource, CompactOutcome, ConfirmRequest, ContextUsage, JobAdminSource, JobInfo,
+  JobLogResult, ModelAdminSource, ModelEntry,
   ProjectInstructions, ProjectMeta, SearchAdminSource, SearchChannel, SearchChannelsSnapshot,
   SearchTestResult, SendOptions, SessionMeta, TodoItem,
 } from "../../shared/types";
+import { jobFromWire, sortJobs, upsertJob } from "../../shared/jobs";
 import { mapEvent } from "./events";
 
 /** WS JSON-RPC 帧结构（与 Go internal/protocol 对齐）。 */
@@ -44,11 +46,12 @@ const PROTOCOL_VERSION = "2";
 const RECONNECT_MS = 5000;
 const REQUEST_TIMEOUT_MS = 10_000;
 
-export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource, SearchAdminSource {
+export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource, SearchAdminSource, JobAdminSource {
   label = "真实后端";
   readonly modelAdmin: ModelAdminSource = this;
   readonly agentAdmin: AgentAdminSource = this;
   readonly searchAdmin: SearchAdminSource = this;
+  readonly jobAdmin: JobAdminSource = this;
   private readonly addr: string;
   private ws: WebSocket | null = null;
   private listeners = new Set<Listener>();
@@ -69,6 +72,9 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
   /** 搜索渠道快照（search.changed 驱动刷新；设置面板网页搜索区的数据源）。 */
   private searchCache: SearchChannelsSnapshot = { channels: [], ready: false };
   private searchListeners = new Set<() => void>();
+  /** 后台任务快照（job.list 结果 + job.started/settled 增量；顶栏面板的数据源）。 */
+  private jobsCache: JobInfo[] = [];
+  private jobListeners = new Set<() => void>();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   /** 订阅时惰性建连（构造不再触网——测试可先插桩再连接）。 */
   private started = false;
@@ -121,6 +127,9 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
           await refresh("catalog.tools.list", (r) => this.applyAgentTools(r));
           await refresh("catalog.mcp.list", (r) => this.applyAgentMcp(r));
           await refresh("search.channels.list", (r) => this.applySearchChannels(r));
+          // 后台任务：重连/刷新后事件不会重放，必须主动拉一次清单
+          // （在跑的任务在面板里不能因为重连而消失）
+          await refresh("job.list", (r) => this.applyJobList(r));
           // 首次连接开一个空会话；重连则恢复该连接原焦点。所有后续操作都显式带
           // session_id，因此连接焦点只为兼容旧客户端与首屏 UI 服务。
           if (!this.booted && this.ws === ws) {
@@ -262,6 +271,12 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
         }
         break;
       }
+      case "job.started":
+      case "job.settled":
+        // 任务事件同时是面板缓存的增量：事件载荷即最新快照，直接 upsert
+        //（不再往返 job.list——后端广播时已经把它算好了，与 search.changed 同款）
+        if (ev?.type === "jobStarted" || ev?.type === "jobSettled") this.applyJob(ev.job);
+        break;
       case "search.changed":
         // 搜索渠道配置变更——载荷就是快照，直接采用（不必再往返一次
         // search.channels.list：后端广播时已经把它算好了）。
@@ -688,5 +703,53 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
       ready: r.ready === true,
     };
     this.searchListeners.forEach((l) => l());
+  }
+
+  // ---- JobAdminSource（后台任务——job.*） ----
+
+  jobs(): JobInfo[] {
+    return this.jobsCache;
+  }
+
+  onJobsChanged(listener: () => void): () => void {
+    this.jobListeners.add(listener);
+    return () => this.jobListeners.delete(listener);
+  }
+
+  async listJobs(sessionId?: string): Promise<JobInfo[]> {
+    const r = await this.call("job.list", sessionId ? { session_id: sessionId } : undefined);
+    const list = (Array.isArray(r) ? r : (r as { jobs?: unknown[] } | null)?.jobs ?? []).map(jobFromWire);
+    // 按会话过滤的请求不覆盖全局缓存（顶栏面板看的是跨会话全量）。
+    if (!sessionId) this.applyJobList({ jobs: list });
+    return list;
+  }
+
+  async killJob(id: string): Promise<JobInfo> {
+    const r = (await this.call("job.kill", { id })) as { job?: unknown } | null;
+    // 应答里的 JobInfo 是请求后的即时快照（stopping）；真正的 settle 随后由
+    // job.settled 事件补上——两条路都 upsert，重复更新是幂等的。
+    const job = jobFromWire(r?.job ?? r);
+    this.applyJob(job);
+    return job;
+  }
+
+  async readJobLog(id: string): Promise<JobLogResult> {
+    const r = (await this.call("job.log", { id })) as { data?: string; truncated?: boolean } | null;
+    return { data: r?.data ?? "", truncated: Boolean(r?.truncated) };
+  }
+
+  /** job.list 结果 → 缓存 + 通知（重连后的全量对齐）。 */
+  private applyJobList(result: unknown) {
+    const list = Array.isArray(result) ? result : (result as { jobs?: unknown[] } | null)?.jobs;
+    if (!Array.isArray(list)) return;
+    this.jobsCache = sortJobs(list.map(jobFromWire));
+    this.jobListeners.forEach((l) => l());
+  }
+
+  /** 单个任务快照 → 缓存 + 通知（job.started/settled 与 kill 的应答共用）。 */
+  private applyJob(job: JobInfo) {
+    if (!job.id) return;
+    this.jobsCache = sortJobs(upsertJob(this.jobsCache, job));
+    this.jobListeners.forEach((l) => l());
   }
 }

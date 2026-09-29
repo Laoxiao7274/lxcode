@@ -1,7 +1,7 @@
 // 块与 UI 状态的定义 + 纯工具函数（不含事件归约——那是 reduce.ts）。
 // 单独一个文件：组件只依赖类型与这几个 helper，不必把整个 reducer 拖进依赖图。
 
-import type { ConfirmRequest, ContextUsage, FileChange, TodoItem } from "./types";
+import type { ConfirmRequest, ContextUsage, FileChange, JobInfo, TodoItem } from "./types";
 
 export interface AssistantBlock {
   kind: "assistant";
@@ -32,6 +32,21 @@ export type ThreadBlock =
       summary: string;
       /** 用户主动触发（/compact 或指示器入口）。 */
       manual: boolean;
+    }
+  | {
+      /** 后台任务的唤醒通告条（**在历史里是真实 user 角色消息**——模型要把它
+       *  当用户回合才能回应；但它不是用户说的话，所以渲染成通告条而不是气泡）。
+       *  text 是去掉前缀后的正文（前缀由渲染层作为标签显示）。 */
+      kind: "notice";
+      uid: number;
+      text: string;
+    }
+  | {
+      /** 后台任务卡（本次对话起的任务：命令摘要 + 计时 + 输出 tail + 结束）。
+       *  job 直接是后端快照（JobInfo）——started/settled 都是它，卡就地更新。 */
+      kind: "job";
+      uid: number;
+      job: JobInfo;
     }
   | {
       kind: "dispatch";

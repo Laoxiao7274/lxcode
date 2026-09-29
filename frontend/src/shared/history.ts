@@ -2,6 +2,7 @@
 
 import type { HistorySnapshot } from "./types";
 import { type AssistantBlock, type ThreadBlock, type UIState, nextUid, checkpointBody, placeConfirm } from "./blocks";
+import { isJobNotice, jobNoticeBody } from "./jobs";
 
 /** 历史快照 → UI 状态：消息序列重建 blocks。
  *  配对规则：assistant 的 tool_calls 先开 tool 块；后续 role=tool 的消息
@@ -17,6 +18,11 @@ export function reduceHistory(state: UIState, h: HistorySnapshot): UIState {
       // 把真正的用户消息淹没——这是回放路径与实时路径必须一致的地方）
       if (checkpoints.has(i)) {
         blocks.push({ kind: "compacted", uid: nextUid(), before: 0, after: 0, shadowed: 0, summary: checkpointBody(m.content), manual: false });
+      } else if (isJobNotice(m.content)) {
+        // 后台任务的唤醒通告是 **user 角色**消息（模型要当作用户回合才能回应），
+        // 但它不是用户说的话——按前缀识别并渲染成通告条（回放路径与实时路径
+        // 必须一致，否则刷新之后同一句话换了张脸）
+        blocks.push({ kind: "notice", uid: nextUid(), text: jobNoticeBody(m.content) });
       } else {
         blocks.push({ kind: "user", uid: nextUid(), text: m.content });
       }

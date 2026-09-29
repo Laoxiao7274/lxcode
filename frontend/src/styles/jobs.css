@@ -1,0 +1,381 @@
+/* 后台任务（jobs）：顶栏角标 + 跨会话面板 + 时间线任务卡。
+ *
+ * 形态对齐既有语言：角标与 .conn-pill/.win-btn 同款（顶栏 chrome 的自绘按钮，
+ * 不走表单套件）；卡片与 .dispatch-card 同款（发丝边框 + surface 底 + 圆角 12）；
+ * 输出区与 .tterm 同款（等宽 + 末尾行）。
+ * 颜色只用 token；状态色三档：run=蓝（进行中）/ ok=绿 / err=红 / off=灰。 */
+
+/* ===== 顶栏角标（全局入口：跨会话的常驻任务） ===== */
+.jobs-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: none;
+  /* 顶栏整体是拖拽区，可点岛必须豁免（与 .conn-pill/.win-btn 同款） */
+  -webkit-app-region: no-drag;
+}
+.jobs-badge {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: background 120ms, color 120ms;
+}
+.jobs-badge:hover,
+.jobs-badge.on {
+  background: var(--border-soft);
+  color: var(--fg);
+}
+/* 运行中时图标本身染色——不看数字也能一眼看出「有东西在跑」 */
+.jobs-badge[data-active="true"] {
+  color: #3b82f6;
+}
+.jobs-count {
+  min-width: 14px;
+  height: 14px;
+  margin-left: 3px;
+  padding: 0 3px;
+  border-radius: 7px;
+  background: var(--border-strong);
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  line-height: 14px;
+  text-align: center;
+}
+.jobs-count[data-active="true"] {
+  background: #3b82f6;
+  color: #fff;
+}
+/* 面板：从角标向下展开（右对齐——角标在顶栏最右，向左铺开） */
+.job-pop {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 45;
+  width: 400px;
+  max-height: 62vh;
+  overflow-y: auto;
+  padding: 12px 14px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.06);
+  animation: pop-in 160ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.job-pop-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.job-pop-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.job-pop-sub {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-faint);
+}
+.job-pop-empty {
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: var(--fg-faint);
+}
+.job-pop-empty code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+.job-pop-hint {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-soft);
+  font-size: 10.5px;
+  color: var(--fg-faint);
+}
+.job-pop-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.job-row {
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  padding: 8px 10px 9px;
+  background: var(--bg-side);
+}
+.job-row[data-state="run"] {
+  border-color: rgba(59, 130, 246, 0.3);
+}
+.job-row[data-state="err"] {
+  border-color: rgba(224, 46, 42, 0.3);
+}
+.job-row-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.job-row-label {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.job-row-state {
+  flex: none;
+  font-size: 10.5px;
+  color: var(--fg-muted);
+}
+.job-row[data-state="run"] .job-row-state {
+  color: #3b82f6;
+}
+.job-row[data-state="ok"] .job-row-state {
+  color: var(--success);
+}
+.job-row[data-state="err"] .job-row-state {
+  color: var(--danger);
+}
+.job-row-time {
+  flex: none;
+  font-size: 10.5px;
+  color: var(--fg-faint);
+  font-variant-numeric: tabular-nums;
+}
+.job-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 3px;
+  font-size: 10.5px;
+  color: var(--fg-faint);
+}
+.job-row-session {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: var(--border-soft);
+}
+.job-row-detail {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ===== 唤醒通告条（后台任务 settle 后投进归属会话的用户角色消息） =====
+ * 刻意**不是气泡**：它挂在时间线全宽上，左缘一道竖线 + 一枚标签，
+ * 一眼看出「这是系统的通告，不是我说的话」。 */
+.job-notice {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 10px 0;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--fg-muted);
+  border-radius: 8px;
+  background: var(--bg-side);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--fg-muted);
+}
+.job-notice-icon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  color: var(--fg-faint);
+  transform: translateY(1px);
+}
+.job-notice-label {
+  flex: none;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  letter-spacing: 0.01em;
+}
+.job-notice-text {
+  min-width: 0;
+  color: var(--fg-muted);
+  word-break: break-word;
+}
+/* ===== 时间线任务卡（本次对话起的任务） ===== */
+.thread > .job-card {
+  margin: 8px 0;
+}
+.job-card {
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  background: var(--surface);
+  overflow: hidden;
+  animation: block-in 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.job-card[data-state="run"] {
+  border-color: rgba(59, 130, 246, 0.3);
+}
+.job-card[data-state="ok"] {
+  border-color: rgba(16, 163, 127, 0.3);
+}
+.job-card[data-state="err"] {
+  border-color: rgba(224, 46, 42, 0.32);
+}
+.job-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 13px;
+}
+/* 状态点：运行中呼吸（reduced-motion 下由 responsive.css 关掉） */
+.job-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--fg-faint);
+}
+[data-state="run"] > .job-head > .job-dot,
+[data-state="run"] > .job-row-head > .job-dot {
+  background: #3b82f6;
+  animation: job-pulse 1.6s ease-in-out infinite;
+}
+[data-state="ok"] > .job-head > .job-dot,
+[data-state="ok"] > .job-row-head > .job-dot {
+  background: var(--success);
+}
+[data-state="err"] > .job-head > .job-dot,
+[data-state="err"] > .job-row-head > .job-dot {
+  background: var(--danger);
+}
+@keyframes job-pulse {
+  50% { opacity: 0.35; }
+}
+.job-label {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.job-state {
+  flex: none;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+.job-card[data-state="run"] .job-state {
+  color: #3b82f6;
+}
+.job-card[data-state="ok"] .job-state {
+  color: var(--success);
+}
+.job-card[data-state="err"] .job-state {
+  color: var(--danger);
+}
+.job-detail {
+  flex: none;
+  font-size: 10.5px;
+  color: var(--fg-faint);
+}
+.job-time {
+  flex: none;
+  font-size: 10.5px;
+  color: var(--fg-faint);
+  font-variant-numeric: tabular-nums;
+}
+/* 「结束」：紧凑档的套件按钮（与 .sp-btn.fd-btn-g 同款覆盖），hover 才转危险色
+ * ——它不是破坏性操作（任务随时能重起），常驻红字会让整张卡显得紧张 */
+.job-kill-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+.job-kill.fd-btn-g {
+  padding: 2px 9px;
+  font-size: 10.5px;
+  border-radius: 7px;
+}
+.job-kill.fd-btn-g:hover:not(:disabled) {
+  color: var(--danger);
+  border-color: rgba(224, 46, 42, 0.4);
+}
+.job-kill.fd-btn-g:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.job-kill-err {
+  font-size: 10.5px;
+  color: var(--danger);
+}
+
+/* ===== 输出（折叠 = 末尾几行；展开 = 全量，可滚动） ===== */
+.job-output {
+  border-top: 1px solid var(--border-soft);
+  background: var(--bg-side);
+  padding: 8px 13px 8px;
+}
+.job-out-lines {
+  max-height: 150px;
+  overflow-y: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--fg-muted);
+}
+.job-output[data-open="true"] .job-out-lines {
+  max-height: 340px;
+}
+.job-out-line {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.job-out-more,
+.job-out-empty {
+  font-family: var(--font-sans);
+  font-size: 10.5px;
+  color: var(--fg-faint);
+}
+.job-out-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+.job-out-btn.fd-btn-g {
+  padding: 2px 9px;
+  font-size: 10.5px;
+  border-radius: 7px;
+}
+.job-out-note {
+  font-size: 10.5px;
+  color: var(--fg-faint);
+}
+.job-out-path {
+  flex: 1;
+  min-width: 0;
+  font-size: 10px;
+  color: var(--fg-faint);
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.job-out-err {
+  margin-top: 5px;
+  font-size: 10.5px;
+  color: var(--danger);
+}
