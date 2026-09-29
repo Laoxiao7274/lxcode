@@ -122,7 +122,7 @@
 | `todo` | 低危 | 任务清单全量写入（active 唯一性硬校验）；会话持有状态 + TodoUpdated 事件 |
 | `agent_dispatch` | 低危 | 主 Agent 唯一工具：把任务派给名单里的子 Agent（**子 Agent = 独立会话**，见 §2.3；深度恒 1） |
 
-后台任务的完整契约（内核 API / 工具 schema / 协议方法事件 / 唤醒投递语义 / 边界）见 **docs/jobs.md**——细节留在那里，本文件只留指针。
+后台任务的完整契约（内核 API / 工具 schema / 协议方法事件 / 唤醒投递语义 / 边界 / **实测坑**）见 **docs/jobs.md**——细节留在那里，本文件只留指针。**动进程启停代码前必读 §8**（取消必须杀整棵进程树）。
 
 **自定义工具（M4-1 执行面，2026-09-21）**：目录里 `source=binary` 的条目由 server 在启动与每次 `catalog.tools.*` 变更后经 `syncDynamicTools()` 注册进注册表（`tools.Registry.SetDynamic` 整体替换动态段；内置段不动，同名跳过并记日志）。执行语义：
 

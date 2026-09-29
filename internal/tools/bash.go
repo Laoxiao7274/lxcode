@@ -190,6 +190,11 @@ func bashDef(r *Registry) *Def {
 			cctx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
 			cmd := exec.CommandContext(cctx, shellName, shellFlag, a.Command)
+			// 取消 = 杀**整棵进程树**：默认的 Cancel 只 Process.Kill 直接子进程，
+			// 而 sh -c 拉起的孙进程会活下来（见 proctree_*.go 的实测记录）
+			configureProcTree(cmd)
+			cmd.Cancel = func() error { return killProcessTree(cmd.Process) }
+			cmd.WaitDelay = procKillGrace
 			if a.Cwd != "" {
 				cmd.Dir = a.Cwd
 			}
@@ -222,8 +227,13 @@ func execNote(cctx context.Context, err error, timeout time.Duration) string {
 	case err == nil:
 		return ""
 	case cctx.Err() == context.DeadlineExceeded:
-		// 只杀得掉直接子进程（sh/exe），它拉起的后台子进程可能还在跑——如实告知模型
-		return fmt.Sprintf("\n[超时：命令超过 %s 被终止；被它拉起的后台子进程可能仍在运行]", timeout)
+		// 取消走的是整棵进程树（见 proctree_*.go），所以不必再提示
+		// 「后台子进程可能还在跑」——消灭那个情形正是这次修复的目的
+		return fmt.Sprintf("\n[超时：命令超过 %s 被终止（含它拉起的子进程）]", timeout)
+	case errors.Is(err, exec.ErrWaitDelay):
+		// 进程已退出，但某个逃逸的孙进程还攥着输出管道：WaitDelay 兜底收尾。
+		// 这不是命令失败，如实说明比报「启动失败」有用
+		return "\n[输出管道被残留子进程占用，已停止读取]"
 	default:
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
@@ -265,6 +275,10 @@ func startBackground(r *Registry, parent context.Context, shellName, shellFlag, 
 			time.Duration(min(timeoutSec, int(bashMaxTimeout/time.Second)))*time.Second)
 	}
 	cmd := exec.CommandContext(cctx, shellName, shellFlag, command)
+	// 与前台同款：取消要杀掉整棵树，且给 I/O 一个兜底期限
+	configureProcTree(cmd)
+	cmd.Cancel = func() error { return killProcessTree(cmd.Process) }
+	cmd.WaitDelay = procKillGrace
 	if cwd != "" {
 		cmd.Dir = cwd
 	}
@@ -288,7 +302,7 @@ func startBackground(r *Registry, parent context.Context, shellName, shellFlag, 
 		// 「超时」与「被 kill」就分不出来了
 		ctxErr := cctx.Err()
 		cancel()
-		settleBackground(j, ctxErr, werr)
+		settleBackground(j, ctxErr, normalizeWaitErr(cmd, werr))
 	}()
 	return backgroundStartedText(j.ID(), command), nil
 }
@@ -312,6 +326,26 @@ func settleBackground(j jobs.Job, ctxErr, waitErr error) {
 		} else {
 			j.Settle(jobs.StatusFailed, jobs.EndedSelf, "启动失败: "+waitErr.Error())
 		}
+	}
+}
+
+// normalizeWaitErr 把 exec.ErrWaitDelay 还原成进程的真实退出状态。
+//
+// ErrWaitDelay 说的是「I/O 管道没在期限内关掉」，**不是**「进程失败了」：一个
+// 成功退出、但留下了攥着管道的孙进程的命令也会拿到它。不还原的话，一个正常结束
+// 的后台任务会被记成 StatusFailed（真实退出码丢失），结束通告的措辞跟着错。
+func normalizeWaitErr(cmd *exec.Cmd, err error) error {
+	if !errors.Is(err, exec.ErrWaitDelay) {
+		return err
+	}
+	ps := cmd.ProcessState
+	switch {
+	case ps == nil:
+		return err
+	case ps.Success():
+		return nil
+	default:
+		return &exec.ExitError{ProcessState: ps}
 	}
 }
 

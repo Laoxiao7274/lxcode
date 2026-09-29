@@ -196,3 +196,40 @@ settle 后投递给**归属会话**（`Spec.SessionID`）：
 - **后端退出即全杀**（`Manager.Shutdown` → `EndedBy=backend`），不留孤儿进程。
 - **会话归档不杀**（你可能还想看输出）；job 与日志留着。
 - **不自动重启**：用户停掉的东西 agent 不许自己再起——通告里明说，且这是提示词层的硬约束。
+
+## 8. 实测坑：取消必须杀**整棵进程树**（2026-09-29）
+
+真链路验收时抓到的缺陷。**它让本功能对最典型的场景完全失效**，动进程启停代码前先读这节。
+
+**现象**：用户点「结束」，任务状态变成 `stopping` 然后**永远停在那里**；结束通告
+永远发不出去（agent 什么都不知道，用户以为停了其实没停）。实测：kill 一个 `sleep 600`
+之后 30 秒仍未 settle，而 `sleep.exe` 还在跑。
+
+**根因**（两条叠在一起，缺一条都还是坏的）：
+
+1. **默认取消只杀直接子进程**。`exec.CommandContext` 的默认 `Cancel` 是
+   `cmd.Process.Kill()`，在 Windows 上只 `TerminateProcess` **直接子进程**。而后台
+   任务的形态恒为 `sh -c "<命令>"`——真正干活的是**孙进程**（`npm run dev` → node）。
+   于是 sh 死了、node 活着：dev server 继续占着端口。
+2. **`cmd.Wait` 要等 stdout 管道写端全部关闭**。`cmd.Stdout` 是任务句柄
+   （`io.Writer`），`os/exec` 会建管道 + 拷贝 goroutine；只要还有一个进程攥着那个
+   写端，`Wait` 就一直阻塞。孤儿正是那个攥着写端的进程 → `Wait` 不返回 →
+   **任务永远不 settle → 结束通告永远发不出去**。对一个永不退出的 dev server，
+   `stopping` 就是终态，用户看到的是「点了结束，什么都没发生」。
+
+**修法**（`internal/tools/proctree*.go`；bash 前台、bash 后台、自定义工具三条路都接）：
+
+- `cmd.Cancel = killProcessTree`：Windows 用 `taskkill /T /F /PID`（必须在父进程
+  还活着时调用——父死了就找不到子进程），Unix 让命令自成进程组后 `kill(-pid, SIGKILL)`；
+  失败退回 `Process.Kill`，至少把直接子进程杀掉。
+- `cmd.WaitDelay = procKillGrace`（5s）兜底：即使真有进程逃逸出树，`Wait` 也一定在
+  期限内返回，**结束通告一定送得出去**。它**不是任务寿命上限**——计时器只在「ctx 结束」
+  或「进程已退出」时启动（`os/exec.Cmd.WaitDelay` 文档），健康的 dev server 不会被它杀掉。
+- `normalizeWaitErr` 把 `exec.ErrWaitDelay` 还原成进程的真实退出状态：它说的是
+  「I/O 管道没关掉」，不是「进程失败了」，不还原会把正常结束的任务记成 `StatusFailed`。
+
+**判据**（`internal/tools/proctree_test.go`）：起 `(sleep 2; echo SURVIVED > marker) & wait`，
+杀掉后断言 marker **写不出来**（孙进程真死了）+ 任务在期限内 settle 且归属仍是 `user`；
+另有一条**正对照**（不杀则 marker 必须写得出来），否则「marker 不存在」可能只是因为命令
+压根没跑起来，断言就变成了空断言。
+

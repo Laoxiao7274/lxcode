@@ -313,6 +313,11 @@ func runArgv(ctx context.Context, argv []string) (string, error) {
 	cctx, cancel := context.WithTimeout(ctx, customTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(cctx, argv[0], argv[1:]...)
+	// 自定义工具虽不经过 shell，但它照样可能拉起子进程；取消时杀整棵树，
+	// 免得留下孤儿攥着输出管道把这次调用拖到超时之外（见 proctree_*.go）
+	configureProcTree(cmd)
+	cmd.Cancel = func() error { return killProcessTree(cmd.Process) }
+	cmd.WaitDelay = procKillGrace
 	if wd := WorkDir(ctx); wd != "" {
 		cmd.Dir = wd
 	}
