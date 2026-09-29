@@ -77,6 +77,18 @@ type Session struct {
 	pending *ConfirmRequest
 	confirm chan bool
 	todos   []tools.TodoItem
+	// approval 是本会话**当前**的权限档（会话级实时状态，不是一轮的快照）：
+	// 用户中途改档要立刻作用于正在跑的那一轮（runTools 每个工具调用现读
+	// LiveApproval）。空 = confirm（与 tools.ApprovalFrom 的缺省语义一致）。
+	approval string
+	// approvalSource 非 nil = 本会话是子会话：档位不自己说了算，而是
+	// 「父会话**此刻**的档位」与 approvalDefault 取严（子执行面不大于请求方）。
+	// 为什么是回调而不是派发那一刻算好的死值：父会话中途改档必须传得到
+	// **正在跑的**子会话——用户实测「跑 dev 的是子 Agent」正是这条。
+	approvalSource func() string
+	// approvalDefault 是子 Agent 自己的权限默认（取严用；空 = 未声明，按
+	// 「继承父会话」处理）。只在 approvalSource 非 nil 时有意义。
+	approvalDefault string
 	// notices 是待投递的自动通告队列（后台任务唤醒）：Notify 忙时排队，
 	// runTurn 在**轮边界**并入历史（见 notify.go）。与 history 同一把锁——
 	// 否则 injectNotices 与 append 会交错。
@@ -207,6 +219,75 @@ func (s *Session) SetStream(fn StreamFn) {
 	s.mu.Unlock()
 }
 
+// SetApprovalSource 声明本会话的权限档来源（子会话 = 父会话的实时档位）。
+// 传回调而不是值：父会话中途改档必须传得到正在跑的子会话。只该在会话开始跑
+// 之前调用一次——dispatch 开子会话时置位，主会话保持 nil（自己说了算）。
+func (s *Session) SetApprovalSource(src func() string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.approvalSource = src
+}
+
+// SetApprovalDefault 声明子 Agent 自己的权限默认（取严用；空 = 未声明）。
+// 与 SetApprovalSource 配套，只该在会话开始跑之前调用一次。
+func (s *Session) SetApprovalDefault(mode string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.approvalDefault = mode
+}
+
+// LiveApproval 返回本会话**此刻**的权限档（每个工具调用现读，不是开轮时的快照）。
+//
+// 为什么要有它（2026-09-29 用户实测）：权限档原先在 Send 里快照进这一轮的 ctx、
+// runTools 每轮读那份快照——用户跑到一半把权限放开，正在跑的那一轮完全不知道，
+// 该弹确认还是弹。改成会话级实时状态后，中途改档立刻作用于运行中的一轮。
+//
+// 子会话：stricterApproval(父会话此刻的档位, 子 Agent 自己的默认)——取严语义
+// （子执行面不大于请求方）保持不变，只是从「派发那一刻」改成「每次现算」。
+//
+// 锁纪律：approvalSource 会回调父会话（父会话要拿自己的 s.mu），**绝不能在持
+// s.mu 时调它**——同锁重入会死锁。所以先把三个字段取出来、解锁，再调。
+func (s *Session) LiveApproval() string {
+	s.mu.Lock()
+	src, def, cur := s.approvalSource, s.approvalDefault, s.approval
+	s.mu.Unlock()
+	if src != nil {
+		return stricterApproval(src(), def)
+	}
+	// 顶层会话：空 = 未指定 → confirm（沿用 effectiveApproval 的缺省单点）。
+	return effectiveApproval(cur, "")
+}
+
+// SetApproval 设置本会话当前的权限档（中途改档立刻生效于运行中的一轮）。
+// 空串 = 未指定（回落 confirm）。返回规范化后的档位。
+//
+// 切到 auto 时顺带放行挂起的确认：用户已经说了「别问我」，留一张卡堵着等于
+// 「说了没用」——那正是这次要修的东西。裁决走**既有的确认通道**（往 s.confirm
+// 投递，与 Confirm 完全同一条路径）：在锁里直接写 channel 会死锁，而绕开通道
+// 另造一条放行路径会让「同时一个挂起确认」这条不变式多出一个出口。
+func (s *Session) SetApproval(mode string) string {
+	norm := mode
+	if norm == "" {
+		norm = string(tools.ApprovalConfirm)
+	}
+	s.mu.Lock()
+	s.approval = norm
+	// 只在切到 auto 且确实有挂起确认时取通道；非阻塞投递（缓冲已满 =
+	// 这次挂起已被裁决过，重复投递没有意义）。
+	var ch chan bool
+	if norm == string(tools.ApprovalAuto) && s.pending != nil {
+		ch = s.confirm
+	}
+	s.mu.Unlock()
+	if ch != nil {
+		select {
+		case ch <- true:
+		default:
+		}
+	}
+	return norm
+}
+
 // Send 发起一轮对话（异步）：校验模型 → 入历史 → 后台跑工具循环。
 // 忙时返回 ErrBusy；模型未绑定/停用返回对应哨兵（服务端按类别映射错误码）。
 func (s *Session) Send(text string, opts ...SendOpt) error {
@@ -234,13 +315,21 @@ func (s *Session) Send(text string, opts ...SendOpt) error {
 	userMsg := llm.Message{Role: "user", Content: text}
 	s.history = append(s.history, userMsg)
 	s.persistLocked(userMsg)
-	// 权限模式随轮携带（请求级 > Agent 默认 > confirm——取严语义）；
-	// Agent 载荷与白名单进 runTurn（每轮快照，busy 期间不可变）。
-	approval := effectiveApproval(cfg.approval, agentDefaultOf(ac))
+	// 权限模式**存进会话**（会话级实时状态，runTools 每次现读——见 LiveApproval）：
+	// 显式给了就按请求级覆盖（chat.send 的参数语义不变，请求级优先），没给则
+	// 只在还没定过时回落 Agent 默认——CLI 路径不带参数，别把用户中途选的档位
+	// 重置掉。Agent 载荷与白名单仍进 runTurn（每轮快照，busy 期间不可变）。
+	if cfg.approval != "" {
+		s.approval = effectiveApproval(cfg.approval, agentDefaultOf(ac))
+	} else if s.approval == "" {
+		s.approval = effectiveApproval("", agentDefaultOf(ac))
+	}
 	ctx, cancel := context.WithCancel(context.Background())
-	ctx = tools.WithApproval(ctx, tools.Approval(approval))
 	s.cancel = cancel
 	s.mu.Unlock()
+	// ctx 里这份是「开轮时的请求级档位」——判定来源已改成 LiveApproval（实时），
+	// 这份保留给仍按 ctx 取档的调用方（tools.ApprovalFrom，见契约 E）。
+	ctx = tools.WithApproval(ctx, tools.Approval(s.LiveApproval()))
 
 	s.emit(UserMsgEvent{Message: userMsg})
 	s.emit(BusyEvent{Busy: true})

@@ -1,6 +1,9 @@
 // 权限选择器（Codex 式）：单项菜单——每项 = 图标 + 名称 + 一行说明，选中打勾。
-// 三档策略随消息发送（chat.send 的 approval 参数）：默认 = 低危自动 + 高危
-// 确认；完全访问 = 全部自动（仅隔离环境）；只读 = 变更类工具直接拒绝。
+// 三档策略：默认 = 低危自动 + 高危确认；完全访问 = 全部自动（仅隔离环境）；
+// 只读 = 变更类工具直接拒绝。
+//
+// 改档走 applyApproval：本地持久化 + **立刻发给后端**（chat.approval）。两者缺一
+// 不可——只改本地设置的话，正在跑的那一轮还在按开轮时的档位弹确认（用户实测）。
 import { useSettings, APPROVALS } from "../../shared/settings";
 import { usePopover } from "../../shared/popover";
 import { IconCheck, IconChevronDown } from "../icons";
@@ -12,7 +15,7 @@ const ICONS: Record<string, string> = {
 };
 
 export function PermPicker() {
-  const { settings, set } = useSettings();
+  const { settings, applyApproval } = useSettings();
   const { open, toggle, requestClose, rootRef } = usePopover();
 
   const current = APPROVALS.find((p) => p.id === settings.approval) ?? APPROVALS[0];
@@ -40,7 +43,7 @@ export function PermPicker() {
               role="menuitem"
               title={p.hint}
               onClick={() => {
-                set({ approval: p.id });
+                applyApproval(p.id);
                 requestClose();
               }}
             >

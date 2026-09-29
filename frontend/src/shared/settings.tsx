@@ -1,13 +1,14 @@
 // React 设置组合层：模型注册表通过注入能力获取；纯映射与演示目录独立。
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import type { AgentSource } from "./types";
+import type { AgentSource, ApprovalMode } from "./types";
+import { subscribeApprovalSync } from "./approval";
 import { applyModelPatch, mapModels, modelForProvider, type ModelPatch, type ProviderMeta, type EffortId } from "./settings-models";
 import { demoModel, demoProviders, CONNECTABLE_PROVIDERS } from "./settings-catalog";
 export type { ModelMeta, ModelPatch, ProviderMeta, EffortId } from "./settings-models";
 export { CONNECTABLE_PROVIDERS } from "./settings-catalog";
 
 export interface Settings {
-  model: string; effort: EffortId; approval: "auto" | "confirm" | "strict";
+  model: string; effort: EffortId; approval: ApprovalMode;
   showThinking: boolean; showFullOutput: boolean; keepAwake: boolean;
   enterToSend: boolean; personality: "friendly" | "pragmatic" | "none";
   /** 主题（浅色/深色/跟随系统——前端态，后端化时落配置）。 */
@@ -33,7 +34,12 @@ export const APPROVALS = [
   { id: "strict", label: "只读", hint: "只读取和搜索，不改文件、不执行命令" },
 ] as const;
 interface ContextValue {
-  settings: Settings; set(patch: Partial<Settings>): void; providers: ProviderMeta[];
+  settings: Settings; set(patch: Partial<Settings>): void;
+  /** 改权限档：本地持久化 + **立刻发给后端**（运行中的一轮即刻生效）。
+   *  与 set({approval}) 的区别就是后半句——只改本地设置要等下一次 chat.send
+   *  才到后端，那时运行中的那一轮早按旧档位跑完了。 */
+  applyApproval(mode: ApprovalMode): void;
+  providers: ProviderMeta[];
   live: boolean; error: string | null;
   setProviderEnabled(id: string, on: boolean): void;
   setModelVisible(providerId: string, modelId: string, on: boolean): void;
@@ -70,6 +76,16 @@ export function SettingsProvider({ source, children }: { source: AgentSource; ch
     setLocal((s) => ({ ...s, ...supported, ...(!admin && model ? { model } : {}) }));
     if (admin && model) void run(() => admin.setRole("default", model));
   }, [admin, run]);
+  // 反向同步：后端广播的权限档变更落到本地设置（多客户端/壳+浏览器同时开着时
+  // 两边一致）。当前会话从事件流里跟——sessionFocused 是它的唯一事实源。
+  useEffect(() => subscribeApprovalSync(source, (mode) => {
+    setLocal((s) => (s.approval === mode ? s : { ...s, approval: mode }));
+  }), [source]);
+  const applyApproval = useCallback((mode: ApprovalMode) => {
+    setLocal((s) => (s.approval === mode ? s : { ...s, approval: mode }));
+    // 两件事都要做：本地持久化管下次开应用，这次调用管**当前**这一轮。
+    void run(() => source.setApproval(mode));
+  }, [source, run]);
   const setModelVisible = (pid: string, id: string, on: boolean) => {
     if (admin) { void run(() => admin.setModelEnabled(id, on)); return; }
     setDemo((ps) => ps.map((p) => p.id === pid ? { ...p, models: p.models.map((m) => m.id === id ? { ...m, visible: on } : m) } : p));
@@ -123,7 +139,7 @@ export function SettingsProvider({ source, children }: { source: AgentSource; ch
     if (admin) { void run(async () => { for (const m of providers.find((p) => p.id === id)?.models ?? []) await admin.removeModel(m.id); }); return; }
     setDemo((ps) => ps.map((p) => p.id === id ? { ...p, connected: false, models: [] } : p));
   };
-  return <Ctx.Provider value={{ settings, set, providers, live: Boolean(admin), error, setProviderEnabled,
+  return <Ctx.Provider value={{ settings, set, applyApproval, providers, live: Boolean(admin), error, setProviderEnabled,
     setModelVisible, connectProvider, fetchModels, addModel, updateModel, removeModel, addCustomProvider, disconnectProvider }}>{children}</Ctx.Provider>;
 }
 export function useSettings() {

@@ -1,8 +1,9 @@
 // 演示数据源（M3 叙事）：主 Agent 只调度——思考选人 → agent_dispatch →
 // dispatch 卡（子 Agent 全套执行：思考/读码/改码/确认门/跑测试）→ 验收
 // 汇总。覆盖 UI 全部状态。事件形状与后端协议 1:1——接线换 WSAgent 即可。
-import type { AgentEvent, AgentSource, CompactOutcome, ConfirmRequest, ContextUsage, JobAdminSource, JobInfo, JobLogResult, ProjectInstructions, ProjectMeta, SendOptions, SessionMeta, TodoItem } from "../../shared/types";
+import type { AgentEvent, AgentSource, ApprovalMode, CompactOutcome, ConfirmRequest, ContextUsage, JobAdminSource, JobInfo, JobLogResult, ProjectInstructions, ProjectMeta, SendOptions, SessionMeta, TodoItem } from "../../shared/types";
 import { JOB_NOTICE_PREFIX, sortJobs, upsertJob } from "../../shared/jobs";
+import { normalizeApproval } from "../../shared/approval";
 import { MAIN_REASONING, SUB_REASONING, SUB_RESULT, MAIN_ANSWER, TODO_INITIAL, TODO_LATER, FILES_CHANGED, SESSIONS } from "./data";
 
 /** 演示的后台任务输出（逐行追加——模拟 go test 的进度）。 */
@@ -41,6 +42,8 @@ export class DemoAgent implements AgentSource, JobAdminSource {
   private sessions_ = SESSIONS;
   private currentSession = SESSIONS[0].id;
   private pendingNew = new Map<string, string>();
+  /** 演示态每会话的权限档（真后端持在会话上；这里只记「用户改过什么」）。 */
+  private approvals_ = new Map<string, ApprovalMode>();
   private emittingSession = "";
   /** 演示态每个会话独立计轮（compact 用：累计过几轮就当作有可压区间）。 */
   private turns = new Map<string, number>();
@@ -79,6 +82,17 @@ export class DemoAgent implements AgentSource, JobAdminSource {
     this.emit({ type: "userMessage", sessionId, text });
     this.emit({ type: "busy", sessionId, busy: true });
     this.runTurn(sessionId);
+  }
+
+  /** 中途改权限档（演示模式没有后端）：本地记下 + 广播同形状的事件。
+   *
+   *  广播这一步是刻意的——真后端改档会广播给所有端，演示里照做，那条
+   *  「广播 → 设置反向同步」的路径才在演示模式里也走得到（无后端也能验 UI）。 */
+  async setApproval(mode: ApprovalMode): Promise<void> {
+    const sessionId = this.currentSession;
+    const approval = normalizeApproval(mode);
+    this.approvals_.set(sessionId, approval);
+    this.emit({ type: "approvalChanged", sessionId, approval });
   }
 
   async confirm(sessionId: string, id: string, allow: boolean): Promise<void> {

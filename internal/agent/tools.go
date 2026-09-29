@@ -22,13 +22,17 @@ import (
 //   - auto 完全访问：高危跳过确认门
 //   - confirm（默认）：高危先确认（现行语义）
 //
+// 权限档**每个工具调用现读**（s.LiveApproval），不是开轮时的快照：用户中途
+// 改档要立刻作用于正在跑的这一轮。读在循环体内而不是函数开头，是因为同一批
+// 调用里前一条挂起确认被"切到 auto"放行后，本批后续调用必须已经按新档判定——
+// 否则用户会看到「刚点了完全放开，它又弹一张」。
+//
 // Agent 白名单之外的调用直接拒绝（错误自解释——模型看到的工具清单
 // 已按白名单过滤，正常不会越界；这里是防御层）。
 // dispatchID 非空 = 子 Agent 执行（事件带归属）；写目标经 sink 抽象
 // （主轮 = s.append 进会话历史并落库；子轮 = 写局部历史，隔离）。
 // 返回 false 表示被取消。fileChanges 收集文件改动供轮末产物汇总。
 func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChanges *[]FileChange, ac *sessiondata.AgentContext, dispatchID string, sink func(llm.Message)) bool {
-	policy := tools.ApprovalFrom(ctx)
 	allowed := toolSet(agentToolsOf(ac))
 	// finished 标记哪些调用已经落了结果：取消时剩下的（含已登记但还没跑的 dispatch）
 	// 都要补合成结果，配对不变量不能破（见 sinkSkippedToolResults）。
@@ -46,6 +50,7 @@ func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChange
 	// 必须能立刻停住本批剩下的工具，推迟落结果就等于"取消也照样跑完"。
 	// dispatch 只登记参数，攒到阶段二一起并行跑（见下面的注释）。
 	for i, tc := range calls {
+		policy := tools.Approval(s.LiveApproval())
 		if ctx.Err() != nil {
 			s.sinkSkippedToolResults(sink, pendingCalls(calls, finished), dispatchID, skippedCancelNote)
 			return false

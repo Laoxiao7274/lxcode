@@ -5,6 +5,7 @@
 // 而映射恰恰是最容易写错、也最值得钉住的一层（字段名、默认值、归属）。
 import type { AgentEvent, ConfirmRequest, ContextUsage, TodoItem } from "../../shared/types";
 import { jobFromWire } from "../../shared/jobs";
+import { normalizeApproval } from "../../shared/approval";
 
 /** 返回 null = 这个事件不产出前端事件（由 reactTo 的副作用分支处理，或与前端无关）。 */
 export function mapEvent(method: string, params: unknown): AgentEvent | null {
@@ -89,6 +90,10 @@ export function mapEvent(method: string, params: unknown): AgentEvent | null {
       return { type: "error", sessionId, message: String(p.message ?? ""), aborted: Boolean(p.aborted) };
     case "chat.busy":
       return { type: "busy", sessionId, busy: Boolean(p.busy) };
+    case "chat.approvalChanged":
+      // 某会话的权限档被改了（多客户端同步）。落到设置的反向同步在设置层
+      //（shared/approval.ts 的 subscribeApprovalSync）——这里只管形状。
+      return { type: "approvalChanged", sessionId, approval: normalizeApproval(p.approval) };
     case "session.changed":
       return { type: "sessionChanged", id: String(p.id ?? ""), reason: String(p.reason ?? "") };
     case "files.changed": {

@@ -79,12 +79,17 @@ func (s *Session) runDispatch(ctx context.Context, call tools.DispatchCall) tool
 		Task: call.Task,
 	})
 
-	// 跑子会话那一轮并等它结束：审批模式**取严**——父轮授权面与子 Agent 自己
-	// 的默认取更严的一档（子 Agent 没声明默认 = 继承父轮），子执行面因此不大于
-	// 请求方；模型/提示词/工具白名单由子会话按自己的 Agent 载荷组装。
-	approval := stricterApproval(string(tools.ApprovalFrom(ctx)), ac.Def.Approval)
-	err = child.SendWait(ctx, composeTaskMessage(call),
-		WithAgent(ac.Def.ID), WithApproval(approval))
+	// 子会话的权限档**不在派发这一刻算死值**：把父会话的实时档位以回调形式交给
+	// 子会话，子会话每次工具调用现算 stricterApproval(父此刻, 子 Agent 默认)。
+	//
+	// 为什么（2026-09-29 用户实测）：原先算好再 WithApproval 传进去，父会话中途
+	// 改档传不到**正在跑的**子会话——而"跑 dev 的是子 Agent"，那正是用户看到的
+	// 现象。取严语义（子执行面不大于请求方）不变，只是从"派发那一刻"改成"每次
+	// 现算"。闭包里现调 s.LiveApproval()，不是闭包外的变量。
+	// 模型/提示词/工具白名单仍由子会话按自己的 Agent 载荷组装。
+	child.SetApprovalSource(func() string { return s.LiveApproval() })
+	child.SetApprovalDefault(ac.Def.Approval)
+	err = child.SendWait(ctx, composeTaskMessage(call), WithAgent(ac.Def.ID))
 	if err != nil {
 		note := err.Error()
 		if ctx.Err() != nil {

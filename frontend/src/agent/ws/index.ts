@@ -7,7 +7,7 @@
 // 不动 blocks/pending。
 import type {
   AgentAdminEntry, AgentAdminMcServer, AgentAdminModule, AgentAdminSource, AgentAdminTool,
-  AgentEvent, AgentSource, CompactOutcome, ConfirmRequest, ContextUsage, JobAdminSource, JobInfo,
+  AgentEvent, AgentSource, ApprovalMode, CompactOutcome, ConfirmRequest, ContextUsage, JobAdminSource, JobInfo,
   JobLogResult, ModelAdminSource, ModelEntry,
   ProjectInstructions, ProjectMeta, SearchAdminSource, SearchChannel, SearchChannelsSnapshot,
   SearchTestResult, SendOptions, SessionMeta, TodoItem,
@@ -277,6 +277,10 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
         //（不再往返 job.list——后端广播时已经把它算好了，与 search.changed 同款）
         if (ev?.type === "jobStarted" || ev?.type === "jobSettled") this.applyJob(ev.job);
         break;
+      case "chat.approvalChanged":
+        // 权限档变更（多客户端同步）：纯映射已产出 approvalChanged 事件，
+        // 落到本地设置由设置层订阅完成（shared/approval.ts）——本层不做 I/O。
+        break;
       case "search.changed":
         // 搜索渠道配置变更——载荷就是快照，直接采用（不必再往返一次
         // search.channels.list：后端广播时已经把它算好了）。
@@ -340,6 +344,15 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
     this.call("chat.send", params).catch((e) => {
       this.opError(`发送失败: ${e.message}`);
     });
+  }
+
+  /** 中途改权限档（chat.approval）：**立刻生效于运行中的那一轮**。
+   *
+   *  与 chat.send 的 approval 参数分工明确：后者是请求级、要等下一轮才到后端，
+   *  用户实测的 bug 正是「改完档还在弹确认」——那一轮早就开跑了，读不到新档。
+   *  会话 id 取连接焦点（UI 的操作永远发生在某个已聚焦的会话上）。 */
+  setApproval(mode: ApprovalMode): Promise<void> {
+    return this.call("chat.approval", { session_id: this.currentSessionId, approval: mode }).then(() => undefined);
   }
 
   /** 裁决确认门。resolve = 后端确认成功（结果随后以 toolResult 到达）；

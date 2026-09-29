@@ -314,11 +314,11 @@ func TestProtocolConstants(t *testing.T) {
 	// 方法名与事件名不得重名，否则 dispatch 与事件处理会撞车
 	methods := []string{MethodHello, MethodModelList, MethodModelAdd, MethodModelUpdate,
 		MethodModelRemove, MethodModelEnable, MethodRoleSet, MethodChatSend,
-		MethodChatCancel, MethodChatHistory, MethodToolConfirm,
+		MethodChatCancel, MethodChatHistory, MethodToolConfirm, MethodChatApproval,
 		MethodSessionList, MethodSessionNew, MethodSessionResume, MethodSessionWorktreeRelease,
 		MethodJobList, MethodJobKill, MethodJobLog}
 	events := []string{EventReady, EventUserMsg, EventDelta, EventToolCall, EventToolRslt,
-		EventConfirm, EventDone, EventError, EventBusy, EventModels, EventTodo, EventSessionChanged,
+		EventConfirm, EventDone, EventError, EventBusy, EventApproval, EventModels, EventTodo, EventSessionChanged,
 		EventJobStarted, EventJobSettled}
 	seen := map[string]bool{}
 	for _, m := range methods {
@@ -650,6 +650,66 @@ func TestCompactionPayloads(t *testing.T) {
 	})
 }
 
+// TestChatApprovalPayloads：chat.approval 的 wire 形状（参数/结果/事件键名与往返）。
+// 字段改名不编译报错、只静默丢字段——所以形状必须由测试钉住。
+func TestChatApprovalPayloads(t *testing.T) {
+	t.Run("方法名与事件名不同名且命名不漂移", func(t *testing.T) {
+		if MethodChatApproval == EventApproval {
+			t.Fatal("方法名与事件名不得重名（dispatch 与事件处理会撞车）")
+		}
+		if MethodChatApproval != "chat.approval" || EventApproval != "chat.approvalChanged" {
+			t.Fatalf("命名漂移: %s / %s", MethodChatApproval, EventApproval)
+		}
+	})
+
+	t.Run("ChatApprovalParams 键名与往返", func(t *testing.T) {
+		b := mustMarshal(t, ChatApprovalParams{SessionID: "s1", Approval: ApprovalAuto})
+		var m map[string]any
+		mustUnmarshal(t, b, &m)
+		if m["session_id"] != "s1" || m["approval"] != ApprovalAuto {
+			t.Fatalf("参数键名不符: %s", b)
+		}
+		var got ChatApprovalParams
+		mustUnmarshal(t, b, &got)
+		if got.SessionID != "s1" || got.Approval != ApprovalAuto {
+			t.Fatalf("参数往返丢字段: %+v", got)
+		}
+		// approval 不是 omitempty：空串也要显式发出去（服务端据此规范化成 confirm）
+		b2 := mustMarshal(t, ChatApprovalParams{SessionID: "s1"})
+		if !strings.Contains(string(b2), `"approval"`) {
+			t.Fatalf("approval 应恒发（空 = 回落 confirm）: %s", b2)
+		}
+	})
+
+	t.Run("ChatApprovalResult 键名与往返", func(t *testing.T) {
+		b := mustMarshal(t, ChatApprovalResult{Approval: ApprovalStrict})
+		var m map[string]any
+		mustUnmarshal(t, b, &m)
+		if m["approval"] != ApprovalStrict {
+			t.Fatalf("结果键名不符: %s", b)
+		}
+		var got ChatApprovalResult
+		mustUnmarshal(t, b, &got)
+		if got.Approval != ApprovalStrict {
+			t.Fatalf("结果往返丢字段: %+v", got)
+		}
+	})
+
+	t.Run("ApprovalChangedParams 键名与往返", func(t *testing.T) {
+		b := mustMarshal(t, ApprovalChangedParams{SessionID: "s1", Approval: ApprovalConfirm})
+		var m map[string]any
+		mustUnmarshal(t, b, &m)
+		if m["session_id"] != "s1" || m["approval"] != ApprovalConfirm {
+			t.Fatalf("事件键名不符: %s", b)
+		}
+		var got ApprovalChangedParams
+		mustUnmarshal(t, b, &got)
+		if got.SessionID != "s1" || got.Approval != ApprovalConfirm {
+			t.Fatalf("事件往返丢字段: %+v", got)
+		}
+	})
+}
+
 func TestSessionScopedWireFields(t *testing.T) {
 	requestCases := []struct {
 		name   string
@@ -659,6 +719,7 @@ func TestSessionScopedWireFields(t *testing.T) {
 		{"chat.cancel", ChatSessionParams{SessionID: "s1"}},
 		{"chat.history", ChatHistoryParams{SessionID: "s1"}},
 		{"chat.compact", CompactParams{SessionID: "s1"}},
+		{"chat.approval", ChatApprovalParams{SessionID: "s1", Approval: ApprovalAuto}},
 		{"tool.confirm", ToolConfirmParams{SessionID: "s1", ID: "c1", Allow: true}},
 	}
 	for _, tc := range requestCases {
@@ -675,6 +736,7 @@ func TestSessionScopedWireFields(t *testing.T) {
 		for _, params := range []any{
 			UserMessageParams{SessionID: "s1"}, DeltaParams{SessionID: "s1"},
 			BusyParams{SessionID: "s1"}, CompactedParams{SessionID: "s1"},
+			ApprovalChangedParams{SessionID: "s1"},
 		} {
 			var payload map[string]any
 			mustUnmarshal(t, mustMarshal(t, params), &payload)

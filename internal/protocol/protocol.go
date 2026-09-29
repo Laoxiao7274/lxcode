@@ -35,6 +35,10 @@ const (
 	// MethodChatCompact 手动压缩历史（空闲才允许——服务端返回 ErrBusy 映射的
 	// 错误码）。参数可带 agent（与 chat.send 同语义：空 = 主 Agent）。
 	MethodChatCompact = "chat.compact"
+	// MethodChatApproval 中途改本会话的权限档（立刻生效于**运行中的**一轮）。
+	// 与 chat.send 的 approval 参数的区别：那个是「这一轮用哪一档」，这个是
+	// 「从现在起这个会话用哪一档」——用户的当前意图是会话级实时状态。
+	MethodChatApproval = "chat.approval"
 
 	// 会话管理（持久化 + 切换）
 	MethodSessionList            = "session.list"
@@ -111,6 +115,9 @@ const (
 	EventDone     = "chat.done"  // 一轮 assistant 消息完成
 	EventError    = "chat.error" // 出错或中断（aborted=true 表示用户取消）
 	EventBusy     = "chat.busy"  // 忙闲状态变化（多客户端同步）
+	// EventApproval 权限档变化（多客户端同步，与 chat.busy 同款）：壳与浏览器
+	// 同时开着时两边的档位必须一致，否则用户在一侧改成 auto、另一侧还显示 confirm。
+	EventApproval = "chat.approvalChanged"
 	EventModels   = "model.changed"
 	EventTodo     = "todo.updated" // 任务清单变更（客户端渲染 TodoList）
 
@@ -407,6 +414,25 @@ type CompactedParams struct {
 type TodoUpdatedParams struct {
 	SessionID string           `json:"session_id"`
 	Items     []tools.TodoItem `json:"items"`
+}
+
+// ChatApprovalParams 是 chat.approval 的参数（中途改权限档）。
+// Approval 空 = 未指定（服务端按 confirm 规范化后回填）。
+type ChatApprovalParams struct {
+	SessionID string `json:"session_id"`
+	Approval  string `json:"approval"` // auto/confirm/strict（空 = 回落 confirm）
+}
+
+// ChatApprovalResult 是 chat.approval 的结果：回**规范化后**的档位，客户端据此
+// 对齐本地设置（不自己再猜一遍空值该落哪一档）。
+type ChatApprovalResult struct {
+	Approval string `json:"approval"`
+}
+
+// ApprovalChangedParams 是 chat.approvalChanged 事件的载荷（多客户端同步）。
+type ApprovalChangedParams struct {
+	SessionID string `json:"session_id"`
+	Approval  string `json:"approval"`
 }
 
 // ---- 会话管理（持久化 + 切换）----

@@ -31,7 +31,7 @@ const SECTIONS: { id: SectionId; label: string; icon: ReactElement }[] = [
 ];
 
 export function SettingsPanel({ open, onClose, source }: { open: boolean; onClose: () => void; source: AgentSource }) {
-  const { settings, set, providers, error } = useSettings();
+  const { settings, set, applyApproval, providers, error } = useSettings();
   const [section, setSection] = useState<SectionId>("general");
   const [connectOpen, setConnectOpen] = useState(false);
   const [modelEdit, setModelEdit] = useState<{ providerId: string; modelId: string } | null>(null);
@@ -118,7 +118,8 @@ export function SettingsPanel({ open, onClose, source }: { open: boolean; onClos
                   );
                 })()}
                 <SegRow label="高危操作">
-                  <Segmented options={APPROVALS.map((a) => ({ value: a.id, label: a.label, hint: a.hint }))} value={settings.approval} onChange={(v) => set({ approval: v })} ariaLabel="高危操作" />
+                  {/* 与输入区的权限选择器同一个入口语义：改档立刻发给后端（运行中的一轮即刻生效），不是只存本地等下一次发送 */}
+                  <Segmented options={APPROVALS.map((a) => ({ value: a.id, label: a.label, hint: a.hint }))} value={settings.approval} onChange={applyApproval} ariaLabel="高危操作" />
                 </SegRow>
                 <ToggleRow
                   label="命令输出完整展示"
