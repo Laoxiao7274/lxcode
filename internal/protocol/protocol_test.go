@@ -315,9 +315,11 @@ func TestProtocolConstants(t *testing.T) {
 	methods := []string{MethodHello, MethodModelList, MethodModelAdd, MethodModelUpdate,
 		MethodModelRemove, MethodModelEnable, MethodRoleSet, MethodChatSend,
 		MethodChatCancel, MethodChatHistory, MethodToolConfirm,
-		MethodSessionList, MethodSessionNew, MethodSessionResume, MethodSessionWorktreeRelease}
+		MethodSessionList, MethodSessionNew, MethodSessionResume, MethodSessionWorktreeRelease,
+		MethodJobList, MethodJobKill, MethodJobLog}
 	events := []string{EventReady, EventUserMsg, EventDelta, EventToolCall, EventToolRslt,
-		EventConfirm, EventDone, EventError, EventBusy, EventModels, EventTodo, EventSessionChanged}
+		EventConfirm, EventDone, EventError, EventBusy, EventModels, EventTodo, EventSessionChanged,
+		EventJobStarted, EventJobSettled}
 	seen := map[string]bool{}
 	for _, m := range methods {
 		if seen[m] {
@@ -692,6 +694,79 @@ func TestSessionScopedWireFields(t *testing.T) {
 			if payload["owner_session_id"] != "parent" || payload["session_id"] != "child" {
 				t.Fatalf("dispatch owner/child ids are ambiguous: %v", payload)
 			}
+		}
+	})
+}
+
+// TestJobPayloads：后台任务的 wire 形状（docs/jobs.md §4）。前端按这些键名
+// 消费（JobInfo 一份形状同时服务 job.list 与两个事件）；改名不编译报错、只静默
+// 丢字段，所以必须有测试钉住。
+func TestJobPayloads(t *testing.T) {
+	t.Run("JobInfo 全字段往返（snake_case 键名）", func(t *testing.T) {
+		b := mustMarshal(t, JobInfo{
+			ID: "job-1", Kind: "bash", Label: "go test ./...", Status: "running",
+			SessionID: "s1", StartedAt: "2026-09-29T10:00:00Z",
+			OutputTail: "ok\n", OutputPath: "/x/jobs/job-1.log",
+		})
+		var m map[string]any
+		mustUnmarshal(t, b, &m)
+		for _, key := range []string{"id", "kind", "label", "status", "session_id", "started_at", "output_tail", "output_path"} {
+			if _, ok := m[key]; !ok {
+				t.Fatalf("JobInfo 缺键 %s: %s", key, b)
+			}
+		}
+		// 未结束 / 未归属时不产生键（前端据此判断"还在跑"）
+		if strings.Contains(string(b), "finished_at") || strings.Contains(string(b), "ended_by") {
+			t.Fatalf("未结束不该有 finished_at/ended_by: %s", b)
+		}
+		var got JobInfo
+		mustUnmarshal(t, b, &got)
+		if got.ID != "job-1" || got.Label != "go test ./..." || got.Status != "running" {
+			t.Fatalf("JobInfo 往返失真: %+v", got)
+		}
+		settled := mustMarshal(t, JobInfo{
+			ID: "job-1", Status: "killed", EndedBy: "user", Detail: "已取消",
+			FinishedAt: "2026-09-29T10:00:05Z",
+		})
+		var got2 JobInfo
+		mustUnmarshal(t, settled, &got2)
+		if got2.EndedBy != "user" || got2.FinishedAt == "" || got2.Detail != "已取消" {
+			t.Fatalf("结束归属往返失真（前端据此显示「你停的」）: %+v", got2)
+		}
+	})
+
+	t.Run("job.list / job.kill / job.log 参数与结果键名", func(t *testing.T) {
+		if b := mustMarshal(t, JobListParams{}); strings.Contains(string(b), "session_id") {
+			t.Fatalf("空 session_id 应省略（默认列全部）: %s", b)
+		}
+		var gotList JobListResult
+		mustUnmarshal(t, mustMarshal(t, JobListResult{Jobs: []JobInfo{{ID: "job-1"}}}), &gotList)
+		if len(gotList.Jobs) != 1 || gotList.Jobs[0].ID != "job-1" {
+			t.Fatalf("JobListResult 往返失真: %+v", gotList)
+		}
+		b := mustMarshal(t, JobKillParams{ID: "job-1"})
+		if string(b) != `{"id":"job-1"}` {
+			t.Fatalf("JobKillParams JSON = %s", b)
+		}
+		var gotKill JobKillResult
+		mustUnmarshal(t, mustMarshal(t, JobKillResult{Job: JobInfo{ID: "job-1", Status: "stopping", EndedBy: "user"}}), &gotKill)
+		if gotKill.Job.Status != "stopping" || gotKill.Job.EndedBy != "user" {
+			t.Fatalf("JobKillResult 往返失真: %+v", gotKill.Job)
+		}
+		var gotLog JobLogResult
+		mustUnmarshal(t, mustMarshal(t, JobLogResult{Data: "out", Truncated: true}), &gotLog)
+		if gotLog.Data != "out" || !gotLog.Truncated {
+			t.Fatalf("JobLogResult 往返失真: %+v", gotLog)
+		}
+		// 恒发 truncated（false 也显式发）：前端不必区分"键缺席"与"没截断"两种状态
+		if b := mustMarshal(t, JobLogResult{Data: "out"}); !strings.Contains(string(b), `"truncated":false`) {
+			t.Fatalf("truncated 应恒发（false 也显式）: %s", b)
+		}
+	})
+
+	t.Run("通告前缀（前端据此区别于用户气泡）", func(t *testing.T) {
+		if JobNoticePrefix == "" || !strings.HasSuffix(JobNoticePrefix, " ") {
+			t.Fatalf("通告前缀应非空且以空格结尾（拼接文本时不会粘连）: %q", JobNoticePrefix)
 		}
 	})
 }

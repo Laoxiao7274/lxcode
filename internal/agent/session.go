@@ -77,6 +77,13 @@ type Session struct {
 	pending *ConfirmRequest
 	confirm chan bool
 	todos   []tools.TodoItem
+	// notices 是待投递的自动通告队列（后台任务唤醒）：Notify 忙时排队，
+	// runTurn 在**轮边界**并入历史（见 notify.go）。与 history 同一把锁——
+	// 否则 injectNotices 与 append 会交错。
+	notices []llm.Message
+	// wakeGate 是「能不能开新一轮」的判定（server 侧的连续唤醒预算；
+	// nil = 不限制）。只约束空闲开新轮，不管轮边界注入。
+	wakeGate func() bool
 
 	// 持久化（st 为 nil = 纯内存模式，兼容不接存储的调用方/单测）。
 	// SQLite 版无句柄概念：会话 = sessions 表一行，按 s.id 追加写。

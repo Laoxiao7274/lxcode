@@ -54,6 +54,9 @@ var systemPromptTools = map[string]string{
 	"write_file":           "write_file：全量写入文件，覆盖已有文件时用户会收到确认提示",
 	"bash":                 "bash：执行 shell 命令，每次执行前用户会收到确认提示",
 	"todo":                 "todo：维护任务清单（全量写入），低危自动执行",
+	"job_output":           "job_output：读后台任务的增量输出（可 wait 等它结束），低危自动执行",
+	"job_list":             "job_list：列后台任务（新的在前，可按会话过滤），低危自动执行",
+	"job_kill":             "job_kill：停止一个后台任务（归属记为 agent），低危自动执行",
 	tools.DispatchToolName: tools.DispatchToolName + "：把任务派给名单中的子 Agent（任务的完整执行在子上下文里，结果回传验收），低危自动执行",
 }
 

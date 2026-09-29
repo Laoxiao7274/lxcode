@@ -40,6 +40,9 @@ func (s *Server) dispatchChat(c *wsClient, req *protocol.Request, params json.Ra
 			if err := s.sendSession(id, sess, p.Text, chatSendOptions(p)...); err != nil {
 				return protocol.NewError(req.ID, errorCode(err), err.Error())
 			}
+			// 用户消息重置连续唤醒预算（契约 §5：用户交互本身就是交互，
+			// 不该被自己的操作耗掉预算）
+			s.resetWakes(id)
 			return protocol.NewResult(req.ID, map[string]any{"accepted": true, "session_id": id})
 		}
 		sess, err := s.session(id)
@@ -49,6 +52,8 @@ func (s *Server) dispatchChat(c *wsClient, req *protocol.Request, params json.Ra
 		if err := s.sendSession(id, sess, p.Text, chatSendOptions(p)...); err != nil {
 			return protocol.NewError(req.ID, errorCode(err), err.Error())
 		}
+		// 用户消息重置连续唤醒预算（契约 §5）
+		s.resetWakes(id)
 		return protocol.NewResult(req.ID, map[string]any{"accepted": true, "session_id": id})
 
 	case protocol.MethodChatCancel:

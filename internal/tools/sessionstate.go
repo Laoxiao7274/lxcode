@@ -37,6 +37,30 @@ func todoSinkFrom(ctx context.Context) TodoWriteFn {
 	return fn
 }
 
+// sessionIDKey 是会话 id 的 ctx 键。
+type sessionIDKey struct{}
+
+// WithSessionID 把当前会话 id 放进 ctx（agent 每轮开始时快照挂上）。
+//
+// 为什么也走 ctx 而不是注册表：后台任务要记**归属会话**（Spec.SessionID），
+// 唤醒投递按它找回会话；注册表是进程级单例，多会话并发时"最后一个设置的人赢"，
+// 任务会被记到别的会话名下——与 workdir/todo sink 同一条理由。
+func WithSessionID(ctx context.Context, id string) context.Context {
+	if id == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, sessionIDKey{}, id)
+}
+
+// SessionID 取 ctx 里的会话 id；空串 = 未注入（无存储模式或单测直调）。
+func SessionID(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	id, _ := ctx.Value(sessionIDKey{}).(string)
+	return id
+}
+
 // WithSkillSource 把技能目录放进 ctx（本轮 Agent 白名单内的技能）。
 func WithSkillSource(ctx context.Context, fn SkillSourceFn) context.Context {
 	if fn == nil {

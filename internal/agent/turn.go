@@ -58,6 +58,10 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig, ac *sessiondata.A
 	s.dispatchRoot = ac // 主 Agent 载荷（dispatch 的委派名校验读它）
 	s.mu.Unlock()
 	ctx = tools.WithWorkDir(ctx, workDir)
+	// 会话 id 也进 ctx：后台任务（bash 的 run_in_background）要记**归属会话**，
+	// 唤醒投递按它找回会话。注册表是进程级单例，多会话并发时不能把归属
+	// 挂在注册表上（与 workdir / todo sink 同一条理由）。
+	ctx = tools.WithSessionID(ctx, s.SessionID())
 
 	// 本轮技能目录注入 read_skill（渐进披露的取数源）：模型按 id 取
 	// 完整正文，只暴露白名单内的——没在 ac.Skills 里的它当没有。
@@ -97,10 +101,18 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig, ac *sessiondata.A
 		if done != nil {
 			close(done)
 		}
+		// 收尾后若还有排队的自动通告：开新一轮（空闲 → 开一轮）。
+		// 放在 close(done) **之后**：SendWait 等的是它那一轮，不该被新一轮拖住；
+		// Send 是非阻塞的（忙检查 + 入历史 + 起 goroutine），不会嵌套轮次。
+		s.flushNotices()
 	}()
 
 	overflowRetried := false
 	for round := 0; round < maxToolRounds; round++ {
+		// 轮边界是**唯一安全**的历史插入点：上一轮所有工具结果此时已全部
+		// 落进历史，插一条 user 消息不会把 assistant 的 tool_calls 与它的
+		// 结果拆开（配对不变量——拆开会 400，还会让压缩切点永久卡死）。
+		s.injectNotices()
 		// 轮与轮之间是压缩的天然时机：上一轮的真实 prompt_tokens 已记录，
 		// 超阈值就先压——否则下一轮请求可能直接撞窗口。
 		if round > 0 {

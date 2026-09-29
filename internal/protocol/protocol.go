@@ -88,6 +88,16 @@ const (
 	// MethodSearchTest 只测一个渠道、不降级——用户点「测试」就是想验证这一个，
 	// 降级会把「这个渠道坏了」测成「搜索正常」。
 	MethodSearchTest = "search.test"
+
+	// ---- 后台任务（jobs——docs/jobs.md §4）----
+	//
+	// 三个方法 + 两个事件。job.kill 就是**用户点「结束」**：后端走
+	// Manager.Kill(id, EndedUser)，与 agent 的 job_kill 工具是同一条路径，
+	// 只有 by 不同——两条路径的行为永远一致，不会出现「工具杀不唤醒、
+	// 按钮杀唤醒」这种分叉。
+	MethodJobList = "job.list"
+	MethodJobKill = "job.kill"
+	MethodJobLog  = "job.log"
 )
 
 // 事件名（服务端 → 全部客户端广播；无 id 的 JSON-RPC 消息）。
@@ -113,6 +123,10 @@ const (
 	EventDispatchEnd    = "chat.dispatchEnd"   // 子 Agent 执行收尾——dispatch 卡定格带结果
 	EventCompacted      = "chat.compacted"     // 历史被压缩（前缀替换成摘要检查点）——客户端插标记块
 	EventSearchChanged  = "search.changed"     // 搜索渠道配置变更——客户端重拉 search.channels.list
+	// EventJobStarted / EventJobSettled 是后台任务的状态广播（载荷 = JobInfo）：
+	// settled 带 EndedBy，前端据此显示「你停的 / 它挂了 / 超时 / 后端重启中断」。
+	EventJobStarted = "job.started"
+	EventJobSettled = "job.settled"
 )
 
 // 错误码：JSON-RPC 标准码 + 本应用码。
@@ -702,4 +716,69 @@ type SearchTestResult struct {
 	Results  []websearch.Result `json:"results"`
 	// ElapsedMS 是耗时（用户判断渠道快慢的依据）。
 	ElapsedMS int `json:"elapsed_ms"`
+}
+
+// ---- 后台任务（jobs——docs/jobs.md §4）----
+//
+// JobNoticePrefix 标注「这条消息是后台任务通告，不是用户说的」。
+//
+// 唤醒投递往归属会话发一条消息（契约 §5），前端据此把气泡渲染成通告而不是
+// 用户气泡——没有这个标记，用户会以为那句话是自己说的。常量放协议包而不是
+// agent 包：agent 不 import protocol（分层守卫），服务端组装文本时拼上它。
+const JobNoticePrefix = "[后台任务通告] "
+
+// JobInfo 是后台任务的对外快照（job.list 的条目与 job.started/job.settled
+// 事件的载荷同款——一份形状，前端只需一套解析）。
+//
+// 时间字段是 RFC3339 字符串；FinishedAt 为空 = 未结束。
+type JobInfo struct {
+	ID         string `json:"id"`
+	Kind       string `json:"kind"`
+	Label      string `json:"label"`
+	Status     string `json:"status"`
+	EndedBy    string `json:"ended_by,omitempty"`
+	Detail     string `json:"detail,omitempty"`
+	SessionID  string `json:"session_id,omitempty"`
+	StartedAt  string `json:"started_at"`
+	FinishedAt string `json:"finished_at,omitempty"`
+	// OutputTail 是最近 64KB 输出（面板直接显示，不必再拉一次 job.log）。
+	OutputTail string `json:"output_tail,omitempty"`
+	// OutputPath 是落盘日志路径（「查看输出」用它；降级为纯内存时为空）。
+	OutputPath string `json:"output_path,omitempty"`
+}
+
+// JobListParams 是 job.list 的参数：SessionID 为空 = 全部会话。
+//
+// 与 job_list 工具的 session_only 同语义：默认列全部——跨会话常驻的
+// dev server 在别的会话里也该看得见。
+type JobListParams struct {
+	SessionID string `json:"session_id,omitempty"`
+}
+
+// JobListResult 是任务列表（新的在前）。
+type JobListResult struct {
+	Jobs []JobInfo `json:"jobs"`
+}
+
+// JobKillParams 是 job.kill 的参数。
+type JobKillParams struct {
+	ID string `json:"id"`
+}
+
+// JobKillResult 回取消请求后的快照（状态通常是 stopping——真正的 settle
+// 由 producer 收尾时定稿，随后的 job.settled 事件才是终态）。
+type JobKillResult struct {
+	Job JobInfo `json:"job"`
+}
+
+// JobLogParams 是 job.log 的参数（读全量落盘日志）。
+type JobLogParams struct {
+	ID string `json:"id"`
+}
+
+// JobLogResult 是全量日志：超上限时回**尾部**并置 Truncated
+// （日志的尾部信息量最大——用户想知道的通常是"它最后报了什么"）。
+type JobLogResult struct {
+	Data      string `json:"data"`
+	Truncated bool   `json:"truncated"`
 }

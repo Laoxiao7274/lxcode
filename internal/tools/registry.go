@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/moyunteng/lxcode/internal/jobs"
 	"github.com/moyunteng/lxcode/internal/jsonrepair"
 	"github.com/moyunteng/lxcode/internal/llm"
 	"github.com/moyunteng/lxcode/internal/sessiondata"
@@ -67,6 +68,14 @@ type Registry struct {
 	// 与 sessionSearch 共用一把锁：两者都是「装配期写一次、运行期只读」的
 	// 注入点，各配一把锁只是多一处可能忘记加锁的地方。
 	webSearch WebSearchFn
+
+	// jobsMgr 是注入的后台任务管理器（server 装配时接线；nil = 未装配）。
+	// jobCursors 是 job_output 的读游标，键是「会话 id + 任务 id」——游标是
+	// **会话级**状态：注册表是进程级单例，只按任务 id 存会让两个会话互相
+	// 吃掉对方的输出（一个会话读过，另一个就看不到）。
+	jobsMu     sync.Mutex
+	jobsMgr    *jobs.Manager
+	jobCursors map[string]int64
 }
 
 // SessionSearchFn 是会话搜索的实现约定：在全部会话（含当前）的消息内容里
@@ -100,11 +109,17 @@ func New() *Registry {
 	r.register(searchDef())
 	r.register(webSearchDef(r))
 	r.register(webFetchDef())
+	// 后台任务三件套（docs/jobs.md §3）：读输出 / 列任务 / 停任务。
+	// 放在 web_fetch 之后、session_search 之前——清单顺序即系统提示词的顺序，
+	// 读取类在前、调度类收尾。
+	r.register(jobOutputDef(r))
+	r.register(jobListDef(r))
+	r.register(jobKillDef(r))
 	r.register(sessionSearchDef(r))
 	r.register(readSkillDef(r))
 	r.register(editDef())
 	r.register(writeFileDef())
-	r.register(bashDef())
+	r.register(bashDef(r))
 	r.register(todoDef(r))
 	r.register(dispatchDef(r))
 	return r

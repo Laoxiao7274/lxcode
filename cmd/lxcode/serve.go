@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/moyunteng/lxcode/internal/config"
+	"github.com/moyunteng/lxcode/internal/jobs"
 	"github.com/moyunteng/lxcode/internal/server"
 	"github.com/moyunteng/lxcode/internal/store"
 	"github.com/moyunteng/lxcode/internal/websearch"
@@ -76,6 +77,12 @@ func runServe(ctx context.Context, path, addr, sessionsDir string) error {
 	if err := srv.AttachSessionStore(st); err != nil {
 		return fmt.Errorf("恢复会话失败: %w", err)
 	}
+
+	// 后台任务（jobs——docs/jobs.md）：日志落 <sessions>/jobs/，注册表是进程级
+	// 单例（工具面与协议面共用）。defer Shutdown = 后端退出即全杀，不留孤儿进程。
+	jobsMgr := jobs.NewManager(sessionsDir)
+	srv.AttachJobs(jobsMgr)
+	defer jobsMgr.Shutdown()
 
 	// 网页搜索渠道（config/search.json，与 models.json 同目录）。
 	// 加载失败不拒绝启动（与空注册表同一条理由：服务形态崩溃重启循环

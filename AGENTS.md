@@ -34,7 +34,7 @@
 
 - **桌面壳 = Electron + Go sidecar**（推翻 2026-09-10 的 Tauri 2 初选；`frontend/src-tauri` 骨架与 Tauri 构建脚本已于 2026-09-16 清理）。翻案理由：应用内嵌浏览器（人用面板）进入路线图，Electron 的 webContents（同窗口多视图 / session 隔离 / 请求拦截 / 内建 CDP）是唯一不将就的深度；Tauri/Wails 在 Windows 同用系统 WebView2（也是 Chromium），渲染无增益，省的只是占用（内存 ~100-200MB / 磁盘 ~100MB / 冷启动 +0.5s）——用占用换控制权与生态。Electron 开销全在占用层，不在计算热路径（重活在 Go 内核；渲染器=你正在开发的同一个 Chromium 页面）。
 - **Rust 不重写内核**：后端负载 90%+ 是等 LLM/等子进程，唯一 CPU 密集点（search）已由"exec 外部二进制"覆盖。**FFI/cgo 严禁入仓**（链接地狱 / panic 边界 / 跨语言调试成本远超收益）；真要第二语言模块，须同时满足三门槛才升 sidecar 服务：占热路径 >30% / 自包含无共享状态 / Go 生态无等效品。
-- **Rust 的正确进入方式 = 进程边界**：ripgrep 这类外部 Rust 二进制直接接 tools 注册表（"Go 主刀，Rust 武器库"）；仓库零 Rust 工具链。依赖基线：原「只有两个」（gorilla/websocket + x/sys）——**2026-12 用户拍板存储切 SQLite 追加第三个 `modernc.org/sqlite`（纯 Go 无 CGO，符合 FFI 禁令），此后新增依赖仍须从严评估**。
+- **Rust 的正确进入方式 = 进程边界**：ripgrep 这类外部 Rust 二进制直接接 tools 注册表（"Go 主刀，Rust 武器库"）；仓库零 Rust 工具链。依赖基线见 §2 表，**新增依赖须从严评估**。
 - **多活跃会话与 worktree（已实现）**：单进程内每个顶层 session_id 独立持有 `agent.Session`，可并发运行且没有全局上限；单个会话最多一轮。协议请求与广播事件按 session_id 隔离，dispatch 事件用 `owner_session_id` 标明时间线归属并保留子会话 id。项目会话首次发送时从当时的 Git `HEAD` 建 `lxcode/session-<session-id>` 分支与独立工作树，路径在 `<sessions>/worktrees/<project-id>/<session-id>`；元数据入 SQLite，重启/目录丢失时恢复同一分支，不自动合并。用户可显式释放空闲且干净的 worktree：只移除检出目录，保留会话记录、元数据和分支；脏/未跟踪改动会拒绝释放，Git 忽略文件（如依赖缓存）随目录一起删除。恢复会话时从原分支重建；归档不触发清理。创建基线不包含主工作树未提交改动。未分组会话仍共用后端默认工作目录，不能声称文件系统隔离。当前无供应商预算/公平队列/全局调速器；若以后增加，必须保留 session-scoped 状态与取消语义。
 - **Electron 侧工程纪律**：单窗口 + WebContentsView 做浏览器面板（不开多 BrowserWindow）；contextIsolation 开、renderer 无 node 集成；主进程只做窗口/托盘/sidecar 生命周期，不放业务；后端仍是 SCM 服务优先（壳只是客户端，连不上给启动指引）。窗口 `frame:false`（无系统标题栏，Topbar 自绘拖拽区+窗口控制，经 preload 的 `window.__LX__` IPC 桥）；应用图标 = `shell/build/icon.png`（electron-builder 自动转 ico）。
 - **壳打包定案（2026-12 调研+实测，仅 Windows）**：electron-builder + NSIS（one-click、per-user、免管理员）+ **自建 zip 更新机制**（2026-12 用户拍板，替代原定的 electron-updater——重跑完整安装器的更新路径被否；服务端 = 纯静态目录 `manifest.json + update-<version>.zip`，zip 内路径=安装目录相对路径，只含 `resources/app.asar` 与 `resources/bin/lxcode.exe`；两级更新：后端热替换（壳不退）、asar 冷替换（退出时换）；Electron/Chromium 升级走全量安装包不进 zip；客户端更新器未实现，产物契约已定）+ 壳主进程 **esbuild 单入口直构**（不用 vite-plugin-electron：薄壳无主进程 HMR 价值，且保持 frontend vite 配置与 Electron 零耦合、浏览器模式零条件分支）；Go 后端二进制走 extraResources（asar 归档内不能 spawn 二进制）。本机实测：打包 44~148s（受后台负载影响），安装包 ~87-95MB、更新包 ~12MB。sidecar 生命周期纪律：单实例锁 → 先探测 7789（SCM 服务或旧实例在跑则直连，不 spawn）→ 离线才拉起 bundled exe，且**必须显式传 `--config`/`--sessions` 指向 userData**（否则后端配置解析顺序会落到 `%ProgramData%` 安装形态配置，两形态数据串台）→ 优雅退出 before-quit kill；崩溃兜底 = Electron 主进程 Windows Job Object（`KILL_ON_JOB_CLOSE`，壳被强杀也不留孤儿后端）。版本兼容用协议 hello 的 Version 握手。范围：壳仅 Windows（2026-12 用户拍板；Linux/macOS 不做壳，Linux 上后端二进制独立跑 + CLI/浏览器即可）。
@@ -103,7 +103,7 @@
 
 **为什么这个设计省事**：子会话是会话 → 压缩/检查点/影子区间**零特例**（`runCompaction` 只要一个有 st/id/history 的 Session）；子会话的 system 提示词同样每轮现组装（不在历史里），所以**不需要给子上下文加 system 头部保护特例**。注意区分：**任务消息**（`history[0]`，**user** 角色）是另一回事——它确实在历史里，所以需要显式的头部保护：`openChildSession` 给子会话置 `protectHead`（压缩区间起点从 1 开始），任务说明书永远留在 `history[0]`，摘要落在它之后；store 侧配合支持中间段影子（见 §2.2）。
 
-## 3. 工具面（内置 11 个 + 目录动态注入）
+## 3. 工具面（内置 14 个 + 目录动态注入）
 
 | 工具 | 风险 | 说明 |
 |---|---|---|
@@ -112,12 +112,17 @@
 | `session_search` | 低危 | 搜历史会话（带标题/时间/上下文；格式归 store 包） |
 | `web_search` | 低危 | 联网搜索（多渠道降级；渠道与配置见 §3.2） |
 | `web_fetch` | 低危 | 抓取网页正文（HTML 转文本；禁内网地址） |
+| `job_output` | 低危 | 读后台任务输出（增量；`wait` 阻塞等结束，strict 只读可用） |
+| `job_list` | 低危 | 列后台任务（新的在前；跨会话常驻任务也看得见） |
+| `job_kill` | 低危 | 停止一个后台任务（非阻塞；归属记 `agent`，用户点结束记 `user`） |
 | `read_skill` | 低危 | 读技能模块全文（提示词只注入技能索引——渐进披露） |
 | `edit` | 低危 | **精确替换**：old_string 唯一匹配硬校验（0/>1 报错自解释），原子写 |
 | `write_file` | 高危 | 全量覆盖：覆盖已有文件需确认 + 缩水守卫（<50% 告警） |
-| `bash` | 高危 | 超时 60s/上限 300s、输出 32KB、stdin ≤64KB；**Windows shell 选择见 §5 坑** |
+| `bash` | 高危 | 超时 60s/上限 300s、输出 32KB、stdin ≤64KB；**`run_in_background=true` 起后台任务**（见 docs/jobs.md）；**Windows shell 选择见 §5 坑** |
 | `todo` | 低危 | 任务清单全量写入（active 唯一性硬校验）；会话持有状态 + TodoUpdated 事件 |
 | `agent_dispatch` | 低危 | 主 Agent 唯一工具：把任务派给名单里的子 Agent（**子 Agent = 独立会话**，见 §2.3；深度恒 1） |
+
+后台任务的完整契约（内核 API / 工具 schema / 协议方法事件 / 唤醒投递语义 / 边界）见 **docs/jobs.md**——细节留在那里，本文件只留指针。
 
 **自定义工具（M4-1 执行面，2026-09-21）**：目录里 `source=binary` 的条目由 server 在启动与每次 `catalog.tools.*` 变更后经 `syncDynamicTools()` 注册进注册表（`tools.Registry.SetDynamic` 整体替换动态段；内置段不动，同名跳过并记日志）。执行语义：
 
@@ -127,10 +132,10 @@
 - `Mutates=true`（strict 只读模式拒绝）；`risk=high` 走确认门，确认文本含**渲染后的完整命令**；
 - 未配置 `command` 的 binary 条目（种子里 `browser` 是「声明了没实现」的形态）跳过并记日志，不影响其余目录；目录页对它标**「未配置」**（amber pill），外部二进制条目**可编辑**（内置只读）——用户勾进白名单前就能看见、也能自己补 command；
 - 白名单勾了但注册表里没有的工具，会在该 Agent 的系统提示词里被点名「当前不可用」——不让模型去调一个不存在的工具。
-- **种子同步（`initAgents` 每次 Open 都跑）**：种子只在库空时整套注入会有一个致命后果——**代码修好了种子，老库永远吃不到**（用户报告过「给了 ripgrep，模型答注册表没有」）。所以库非空时跑 `syncCatalogSeeds`：按 id 同步种子行（缺失插入、`custom=0` 按代码更新全字段），**`custom=1`（用户自建或改过的行）一律不碰**，**不删除**（避免动到白名单可能引用的行）。Agent 名单走**更严**的同步（只插缺失、绝不改已有行），见 §8「种子同步」。
+- **种子同步**：库非空时跑 `syncCatalogSeeds` 按 id 同步种子行（缺失插入、`custom=0` 全字段更新、`custom=1` 不碰、不删除）——种子只在库空时整套注入会让**代码修好的种子老库永远吃不到**（「给了 ripgrep，模型答注册表没有」）。Agent 名单更严，见 §8。
 
 - **edit 为何低危**：编程 agent 的主编辑通道，确认门会让它不可用；破坏面受 old_string 唯一匹配约束 + 原子写 + 版本控制兜底（与 write_file 的全量覆盖破坏面不同类）。
-- **权限模式三档**（chat.send 的 approval 参数，随消息携带）：`confirm`（默认）= 低危自动 + 高危确认；`auto` = 高危也自动执行（仅隔离环境）；`strict` = 只读——变更类工具（`Def.Mutates`：edit/write_file/bash，与风险等级正交）直接拒绝、错误回填模型。风险等级管"要不要确认"，Mutates 管"只读模式禁不禁"——edit 低危但变更文件，strict 下必须拒。
+- **权限模式三档**（chat.send 的 approval 参数，随消息携带）：`confirm`（默认）= 低危自动 + 高危确认；`auto` = 高危也自动执行（仅隔离环境）；`strict` = 只读——变更类工具（`Def.Mutates`：edit/write_file/bash，与风险等级正交）直接拒绝、错误回填模型。
 - 参数坏 JSON 先走保守修复（`internal/jsonrepair`：裸换行/尾逗号/单引号/截断补括号），修复成功注明——弱模型坏参数是高频失败形态。
 - **工具调用参数必须在写边界就合法**（2026-09-23 线上事故，见 §5 坑 12）：三道防线——① `agent.sanitizeToolCallArgs` 在 `s.append` 前清洗（正常轮次与流失败保留 partial 两条路径都走）；② `llm.repairToolArgsForWire` 组装请求时兜底（保守修复，修不动发 `{}`，**绝不报错**）；③ `tools.Execute` 执行前再试一次。三者共用 `jsonrepair` 一份实现。
 - **工具 id 必须匹配 `^[a-zA-Z0-9_-]{1,64}$`**（OpenAI 与 Anthropic 的同一条约束）：违反它会被严格网关 400 拒收整轮——原名 `agent.dispatch` 的点号就栽在这上面（2026-09-23 改成 `agent_dispatch` 并配老库迁移，见 §5 坑 13）。`tools` 的 `TestLLMToolsShape` 已按这条字符集校验全部内置工具 id；新增内置工具或导入目录条目时不要用点号。
@@ -173,7 +178,7 @@
 - **三处状态缺一处就是半截功能**：① 连接（`mcp.Manager`）② 目录（`tools` 表里 `source=mcp` 的条目 = 服务器的事实投影，`materializeMCPTools` 整份重建：删多的、补缺的、更描述变了的）③ 注册表（`syncDynamicTools` 的动态段）。`mcpDefs()` 的数据源是 **manager 而不是目录**（从目录反推 MCP 原名是绕远路——目录里只有净化后的名字）。
 - **停用 = 能力挂起**：断开 + 撤下目录条目。**MCP 物化条目是 `custom=0` 但可删**（`RemoveTool` 只读守卫的判据是 `source` 而不只是 `custom`：只看 `custom` 会让 MCP 工具永远删不掉，能力挂起变成假的——真链路探针抓到的真 bug）。
 - **运行期状态与磁盘形状分开**：`McServerEntry` 的 `status`/`tool_count`/`last_error`/`stderr` 由 `mcpServerViews` 应答时合成（不往 `McServerSpec` 塞运行期字段）。前端 **`enabled ≠ 已连接`**：`enabled` 是用户意图，连不上时仍为 true——拿它显示「已连接」等于骗用户（`mcp-status.ts` 的 `mcpStatusPill` 纯函数 + 测试钉住，缺状态字段时回落按 `enabled` 显示）；失败原因必须显示出来。
-- **`tools` 包不 import `mcp`**（用扁平 `MCPToolSpec` 构造，依赖方向保持「装配在 server」——映射在 `server/mcp.go`）；**MCP 工具 id 也走 §5 坑 13 的字符集硬校验**（`store.validateTool` 拦在写边界）。
+- **`tools` 包不 import `mcp`**（用扁平 `MCPToolSpec` 构造，依赖方向保持「装配在 server」——映射在 `server/mcp.go`）（MCP 工具 id 同受这条约束）。
 - **验收**：`internal/mcp` 用「测试二进制自我 re-exec」当假 stdio 服务器（`TestMain` 看 `MCP_FAKE_SERVER`，不引外部依赖），HTTP 用 `httptest`；`internal/server/mcp_test.go` 走完整装配链（加服务器 → 物化 → 注册 → 执行 → 状态 → 停用 → 删除）；**真链路**探针 `node temp/ws-mcp-live.mjs` 打真实 Exa MCP 端点。
 
 ## 4. 开发约定

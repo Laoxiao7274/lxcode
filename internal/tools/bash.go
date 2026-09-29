@@ -11,6 +11,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/moyunteng/lxcode/internal/jobs"
 )
 
 const (
@@ -84,7 +86,12 @@ func shellSyntaxHint(shellName string) string {
 //
 // 平台差异（selectShell）：Windows 优先 Git Bash（bash.exe），退 cmd.exe——
 // 描述与语法提示按实际选中的 shell 生成，模型不会拿着 bash 语法去撞 cmd。
-func bashDef() *Def {
+//
+// run_in_background=true 时走后台任务（docs/jobs.md §3）：起进程后**立刻返回**
+// job id，输出接进 jobs.Manager，收尾由 producer settle。确认门与前台完全一致
+// ——它由 agent 的权限门在 Exec 之前调用，批准了才走到这里；跑起来之后不再弹
+// 确认（后台任务没有"当前轮"可挂，这是 auto 档的语义边界）。
+func bashDef(r *Registry) *Def {
 	shellName, shellFlag := selectShell()
 	shellDisp := filepath.Base(shellName)
 	schema := json.RawMessage(`{
@@ -93,7 +100,8 @@ func bashDef() *Def {
 			"command": {"type": "string", "description": "要执行的 shell 命令；多行脚本建议用 stdin 传入"},
 			"cwd": {"type": "string", "description": "工作目录（绝对或相对会话工作目录，可选）；默认会话工作目录（无则为进程当前目录）"},
 			"stdin": {"type": "string", "description": "喂给命令的标准输入（可选，上限 64KB）：可写多行脚本或 heredoc 体，避免引号转义"},
-			"timeout_sec": {"type": "integer", "description": "超时秒数，默认 60，上限 300"}
+			"timeout_sec": {"type": "integer", "description": "超时秒数，默认 60，上限 300"},
+			"run_in_background": {"type": "boolean", "description": "true 时立刻返回 job id（长命令：构建、测试、dev server）"}
 		},
 		"required": ["command"]
 	}`)
@@ -107,9 +115,10 @@ func bashDef() *Def {
 		Mutates:    true, // 执行命令即变更外部世界（strict 只读模式拒绝）
 		Confirm: func(ctx context.Context, args json.RawMessage) string {
 			var a struct {
-				Command string `json:"command"`
-				Cwd     string `json:"cwd"`
-				Stdin   string `json:"stdin"`
+				Command         string `json:"command"`
+				Cwd             string `json:"cwd"`
+				Stdin           string `json:"stdin"`
+				RunInBackground bool   `json:"run_in_background"`
 			}
 			if err := json.Unmarshal(args, &a); err != nil || a.Command == "" {
 				return "执行 shell 命令（参数不完整，建议拒绝）"
@@ -122,14 +131,18 @@ func bashDef() *Def {
 			if a.Stdin != "" {
 				prompt += fmt.Sprintf("\n标准输入: %d 字节\n%s", len(a.Stdin), clip(a.Stdin, 300))
 			}
+			if a.RunInBackground {
+				prompt += "\n（后台运行：批准后立即返回任务 id，不再有后续确认）"
+			}
 			return prompt
 		},
 		Exec: func(ctx context.Context, args json.RawMessage) (string, error) {
 			var a struct {
-				Command    string `json:"command"`
-				Cwd        string `json:"cwd"`
-				Stdin      string `json:"stdin"`
-				TimeoutSec int    `json:"timeout_sec"`
+				Command         string `json:"command"`
+				Cwd             string `json:"cwd"`
+				Stdin           string `json:"stdin"`
+				TimeoutSec      int    `json:"timeout_sec"`
+				RunInBackground bool   `json:"run_in_background"`
 			}
 			if err := json.Unmarshal(args, &a); err != nil {
 				return "", fmt.Errorf("参数解析失败: %w", err)
@@ -164,6 +177,11 @@ func bashDef() *Def {
 			if len(a.Stdin) > bashMaxStdin {
 				return "", fmt.Errorf("stdin 超过 %dKB 上限（当前 %d 字节）；大文件请分块或用 read_file/write_file",
 					bashMaxStdin/1024, len(a.Stdin))
+			}
+			// 后台任务走独立路径：不等它、不跟本轮 ctx 的生命周期（后台任务
+			// 的意义就是活过这一轮）
+			if a.RunInBackground {
+				return startBackground(r, ctx, shellName, shellFlag, a.Command, a.Cwd, a.Stdin, a.TimeoutSec)
 			}
 			timeout := bashDefaultTimeout
 			if a.TimeoutSec > 0 {
@@ -213,6 +231,115 @@ func execNote(cctx context.Context, err error, timeout time.Duration) string {
 		}
 		return "\n[启动失败: " + err.Error() + "]"
 	}
+}
+
+// startBackground 起一个后台任务并**立刻**返回（docs/jobs.md §3）。
+//
+// 与前台路径的差别只有"不等"：同一个 shell 选择、同样的 cwd 解析、同样的
+// stdin 限制。确认门在 Exec 之前已经走完（批准了才走到这里）。
+//
+// 三条纪律：
+//  1. 用 context.Background() 而不是父轮的 ctx——后台任务的意义就是**活过这一轮**，
+//     跟着轮次的取消一起死等于白起（用户按停止不该杀掉 dev server）；
+//  2. 默认**不设超时**（长构建 / dev server 正是它存在的理由）；模型显式给
+//     timeout_sec 时才加限制，超时按"被杀"收尾且 Detail=jobs.TimeoutDetail——
+//     唤醒投递据此说「超时」而不是「失败」；
+//  3. 归属由 producer 定稿：进程正常退出 = EndedSelf，Kill 已请求过则沿用
+//     Manager 记下的 by（user/agent/backend）——这正是契约要修的 DSH 缺陷
+//     （谁结束的在数据里必须可区分）。
+func startBackground(r *Registry, parent context.Context, shellName, shellFlag, command, cwd, stdin string, timeoutSec int) (string, error) {
+	mgr := r.getJobs()
+	if mgr == nil {
+		return "", fmt.Errorf("后台任务未装配（后端未初始化任务管理器）")
+	}
+	j, err := mgr.Start(jobs.Spec{
+		Kind: "bash", Label: commandLabel(command), SessionID: SessionID(parent),
+	})
+	if err != nil {
+		return "", fmt.Errorf("启动后台任务失败: %w", err)
+	}
+	base := context.Background()
+	cctx, cancel := context.WithCancel(base)
+	if timeoutSec > 0 {
+		cctx, cancel = context.WithTimeout(base,
+			time.Duration(min(timeoutSec, int(bashMaxTimeout/time.Second)))*time.Second)
+	}
+	cmd := exec.CommandContext(cctx, shellName, shellFlag, command)
+	if cwd != "" {
+		cmd.Dir = cwd
+	}
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
+	}
+	// stdout 与 stderr 都进同一个任务句柄：合并输出与前台 bash 的
+	// CombinedOutput 语义一致（模型读到的顺序就是它真实发生的顺序）。
+	cmd.Stdout, cmd.Stderr = j, j
+	if cr, ok := j.(jobs.CancelRegistrar); ok {
+		cr.SetCancel(cancel)
+	}
+	if err := cmd.Start(); err != nil {
+		cancel()
+		j.Settle(jobs.StatusFailed, jobs.EndedSelf, "启动失败: "+err.Error())
+		return "", fmt.Errorf("后台任务启动失败: %w", err)
+	}
+	go func() {
+		werr := cmd.Wait()
+		// 先取 ctx.Err 再 cancel：cancel 之后它恒为 Canceled，
+		// 「超时」与「被 kill」就分不出来了
+		ctxErr := cctx.Err()
+		cancel()
+		settleBackground(j, ctxErr, werr)
+	}()
+	return backgroundStartedText(j.ID(), command), nil
+}
+
+// settleBackground 给后台任务定稿（producer 是唯一知道退出码的人）。
+func settleBackground(j jobs.Job, ctxErr, waitErr error) {
+	by := j.Snapshot().EndedBy
+	switch {
+	case ctxErr == context.DeadlineExceeded:
+		j.Settle(jobs.StatusKilled, jobs.EndedSelf, jobs.TimeoutDetail)
+	case by != "":
+		// Kill 已被请求（用户/agent/后端）：归属**保持原样**，只把状态定稿。
+		// 这里若写 EndedSelf 就把"谁结束的"抹平了——那正是本功能要修的缺陷。
+		j.Settle(jobs.StatusKilled, by, "已取消")
+	case waitErr == nil:
+		j.Settle(jobs.StatusCompleted, jobs.EndedSelf, "退出码 0")
+	default:
+		var exitErr *exec.ExitError
+		if errors.As(waitErr, &exitErr) {
+			j.Settle(jobs.StatusFailed, jobs.EndedSelf, fmt.Sprintf("退出码 %d", exitErr.ExitCode()))
+		} else {
+			j.Settle(jobs.StatusFailed, jobs.EndedSelf, "启动失败: "+waitErr.Error())
+		}
+	}
+}
+
+// backgroundStartedText 是立刻返回给模型的文本：job id + 怎么读输出。
+// 必须显式说「不要在这里等」——否则模型会立刻 job_output(wait=true)，
+// 把后台任务当同步命令用（那就白起了）。
+func backgroundStartedText(id, command string) string {
+	return fmt.Sprintf("后台任务已启动: %s\n命令: %s\n"+
+		"它是异步的——现在不要等它，可以继续做别的事；结束后系统会通知你结果。\n"+
+		"  job_output(job_id=%q)             读增量输出（无新输出回 (no new output)）\n"+
+		"  job_output(job_id=%q, wait=true)  阻塞等它结束（默认 30s，上限 600s）\n"+
+		"  job_list                         看全部任务；job_kill(job_id=%q) 停止它",
+		id, commandLabel(command), id, id, id)
+}
+
+// commandLabel 生成任务的一行摘要（UI 卡片与唤醒通告都用它）。
+func commandLabel(command string) string {
+	s := strings.TrimSpace(command)
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = strings.TrimSpace(s[:i]) + " …"
+	}
+	if s == "" {
+		return "(空命令)"
+	}
+	if len(s) > 120 {
+		s = s[:120] + "…"
+	}
+	return s
 }
 
 // clip 截断文本用于确认卡展示（保留前若干字节，便于人读）。

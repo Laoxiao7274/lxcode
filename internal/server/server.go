@@ -18,6 +18,7 @@ import (
 
 	"github.com/moyunteng/lxcode/internal/agent"
 	"github.com/moyunteng/lxcode/internal/config"
+	"github.com/moyunteng/lxcode/internal/jobs"
 	"github.com/moyunteng/lxcode/internal/mcp"
 	"github.com/moyunteng/lxcode/internal/project"
 	"github.com/moyunteng/lxcode/internal/protocol"
@@ -33,6 +34,14 @@ type Server struct {
 	st   *store.Store    // 保存引用：会话管理方法（rename/archive）直通存储
 	// search 是网页搜索渠道服务（AttachSearch 装配；nil = 未装配）。
 	search *websearch.Service
+	// jobs 是后台任务管理器（AttachJobs 装配；nil = 未装配）。任务注册表是
+	// 进程级单例——工具面与协议面共用同一个实例。
+	jobsMu sync.Mutex
+	jobs   *jobs.Manager
+	// wakes 是连续唤醒预算表（契约 §5）：settle 投递在任务 goroutine 上，
+	// 用户消息与 job.kill 在 WS 读循环上——两处并发读写同一张表。
+	wakeMu sync.Mutex
+	wakes  map[string]int
 	// mcpMgr 是 MCP 客户端管理器（NewServer 时建；生命周期内不换）。
 	// mcpMu 保护这一个字段（对账可能在协议请求路径上并发触发）。
 	mcpMu  sync.Mutex
