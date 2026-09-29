@@ -48,8 +48,9 @@ func (s *Server) dispatchJobs(req *protocol.Request, params json.RawMessage) *pr
 		if err != nil {
 			return protocol.NewError(req.ID, protocol.CodeInvalidParams, err.Error())
 		}
-		// 用户交互（哪怕只是点「结束」）重置唤醒预算（契约 §5）
-		s.resetWakes(snap.SessionID)
+		// 用户交互（哪怕只是点「结束」）重置唤醒预算（契约 §5）。
+		// 按**时间线归属**重置——通告投给的是它，预算也该按它算。
+		s.resetWakes(snap.OwnerSessionID)
 		return protocol.NewResult(req.ID, protocol.JobKillResult{Job: s.jobInfo(snap)})
 
 	case protocol.MethodJobLog:

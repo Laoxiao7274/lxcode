@@ -427,3 +427,50 @@ func TestSnapshotTimes(t *testing.T) {
 		t.Fatalf("Detail 应保留退出码: %q", snap.Detail)
 	}
 }
+
+// TestOwnerOfFallsBackToSession：时间线归属的唯一判定点——没设 owner 时回落执行
+// 会话本身（顶层会话起的任务，owner 就是它自己）。回落逻辑只此一处，免得事件路由、
+// 唤醒投递、job.list 过滤三处各写一遍而漂移。
+func TestOwnerOfFallsBackToSession(t *testing.T) {
+	if got := OwnerOf(Spec{SessionID: "s-1"}); got != "s-1" {
+		t.Fatalf("未设 owner 时应回落 SessionID，得到 %q", got)
+	}
+	if got := OwnerOf(Spec{SessionID: "s-1", OwnerSessionID: "s-root"}); got != "s-root" {
+		t.Fatalf("设了 owner 时应以它为准，得到 %q", got)
+	}
+}
+
+// TestListFiltersByOwner：List 的按会话过滤走**时间线归属**——父会话要看得见子
+// Agent 起的任务（那正是它自己时间线上的卡）；别的会话看不到。
+func TestListFiltersByOwner(t *testing.T) {
+	m := NewManager("")
+	defer m.Shutdown()
+	childJob, err := m.Start(Spec{Kind: "bash", Label: "子 Agent 起的", SessionID: "s-child", OwnerSessionID: "s-owner"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Start(Spec{Kind: "bash", Label: "顶层自己起的", SessionID: "s-owner"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 父会话看到两张（子 Agent 起的 + 自己起的）
+	if got := m.List("s-owner"); len(got) != 2 {
+		t.Fatalf("父会话应看到 2 张卡，得到 %d: %+v", len(got), got)
+	}
+	// 别的会话看不到
+	if got := m.List("s-other"); len(got) != 0 {
+		t.Fatalf("别的会话不该看到，得到 %d: %+v", len(got), got)
+	}
+	// 子会话**不是**一条时间线：按子会话 id 过滤看不到东西。这是对的——
+	// 子会话自己的 job_list 走的是 OwnerSessionID(ctx)（= 父会话），不传自己的 id。
+	if got := m.List("s-child"); len(got) != 0 {
+		t.Fatalf("子会话不是时间线，按它过滤应为空: %+v", got)
+	}
+	_ = childJob
+	// 快照里 owner 恒非空（Start 时定稿）
+	for _, s := range m.List("s-owner") {
+		if s.OwnerSessionID == "" {
+			t.Fatalf("快照的 owner 应已定稿: %+v", s)
+		}
+	}
+}

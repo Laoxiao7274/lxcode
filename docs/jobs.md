@@ -61,9 +61,17 @@ const (
 type Spec struct {
     Kind      string // "bash"（将来：其他 producer）
     Label     string // 一行摘要（命令截断，UI 与通告都用它）
-    SessionID string // 归属会话（事件路由 + 唤醒投递）
+    SessionID string // 执行会话（谁起的——producer 视角的归属）
+    // OwnerSessionID 是**时间线归属**（顶层会话）：子 Agent 是独立会话，它起的
+    // 任务挂在子会话上；但用户在**父会话**里看着这条时间线，唤醒通告也只有投给
+    // 父会话才有人能行动。空 = 与 SessionID 同（顶层会话起的任务）。
+    OwnerSessionID string
     OutputLimit int  // 内存保留字节数（0 = 默认 64KB）
 }
+
+// OwnerOf 是时间线归属的**唯一判定点**（显式给了就用，否则回落 SessionID）——
+// 事件路由、唤醒投递、job.list 过滤三处都走它，免得各写一遍回落逻辑而漂移。
+func OwnerOf(spec Spec) string
 
 // Snapshot 是一个任务的对外快照（工具与协议共用）。
 type Snapshot struct {
@@ -73,7 +81,8 @@ type Snapshot struct {
     Status     Status
     EndedBy    EndedBy
     Detail     string // 退出码 / 信号 / 超时 / 重启
-    SessionID  string
+    SessionID  string // 执行会话（谁起的）
+    OwnerSessionID string // 时间线归属（见 Spec；Start 时定稿，恒非空）
     StartedAt  time.Time
     FinishedAt time.Time // 零值 = 未结束
     OutputPath string    // 落盘日志路径；**落盘失败降级为纯内存时为空串**
@@ -158,6 +167,9 @@ job.settled  JobInfo   // 带 EndedBy —— 前端据此显示「你停的 / �
 // JobInfo（对外快照）
 type JobInfo struct {
     ID, Kind, Label, Status, EndedBy, Detail, SessionID string
+    // OwnerSessionID 是**时间线归属**（顶层会话）：子 Agent 起的任务挂在父会话上，
+    // 前端据此把它放进父会话的时间线、后端据此把唤醒通告投给父会话。空 = 回落 SessionID。
+    OwnerSessionID string
     StartedAt, FinishedAt string  // RFC3339；FinishedAt 空 = 未结束
     OutputTail string             // 最近 64KB（面板直接显示）
     OutputPath string
@@ -170,7 +182,11 @@ type JobInfo struct {
 
 ## 5. 唤醒投递（本设计的关键）
 
-settle 后投递给**归属会话**（`Spec.SessionID`）：
+settle 后投递给**时间线归属**（`Spec.OwnerSessionID`，见 §2 的 `OwnerOf`）——
+**不是执行会话**。子 Agent 是独立会话、不进侧栏：投给执行会话等于投给一个没人看的
+会话，用户在主对话里什么都看不到，主 Agent 也永远不知道用户已经把它停了，于是自己
+脑补下一步（用户实测的原话：「它跑了个 dev，我关掉了，他又跑去接着思考新的」）。
+唤醒预算也按时间线归属算（用户点 `job.kill` 重置的也是它）。
 
 | EndedBy / Status | 投递？ | 通告措辞 |
 |---|---|---|
@@ -187,7 +203,10 @@ settle 后投递给**归属会话**（`Spec.SessionID`）：
 
 ## 6. 前端
 
-- **时间线卡片**：本次对话起的任务（命令摘要 + 计时 + 输出 tail + 「结束」按钮）。
+- **时间线卡片**：本次对话时间线上的任务（命令摘要 + 计时 + 输出 tail + 「结束」按钮）。
+  **上卡位置按 `owner_session_id`**（空才回落 `session_id`）——子 Agent 起的任务要挂在
+  **父会话**的时间线上，与后端的通告投递同一个归属（两处不一致就会出现「通告进了主会话、
+  卡却在别处」的错位）。
 - **全局入口**：顶栏角标 + 面板（跨会话的常驻任务——dev server 你在别的会话里也想看到、也想停）。
 - 结束后：状态 + `EndedBy` 文案（「你停的」/「它挂了」/「超时」/「后端重启中断」）+ 「查看输出」（`job.log`）。
 

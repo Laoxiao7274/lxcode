@@ -42,6 +42,7 @@ export function jobFromWire(raw: unknown): JobInfo {
     ended_by: str(p, "ended_by", "endedBy") as JobEndedBy,
     detail: str(p, "detail"),
     session_id: str(p, "session_id", "sessionId"),
+    owner_session_id: str(p, "owner_session_id", "ownerSessionId"),
     started_at: str(p, "started_at", "startedAt"),
     finished_at: str(p, "finished_at", "finishedAt"),
     output_tail: str(p, "output_tail", "outputTail"),

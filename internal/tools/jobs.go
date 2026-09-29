@@ -195,7 +195,12 @@ func jobListDef(r *Registry) *Def {
 			}
 			sessionID := ""
 			if a.SessionOnly {
-				sessionID = SessionID(ctx)
+				// 按**时间线归属**过滤（不是执行会话）：主 Agent 要看得见它派出去
+				// 的子 Agent 起的任务——那正是它自己时间线上的卡
+				sessionID = OwnerSessionID(ctx)
+				if sessionID == "" {
+					sessionID = SessionID(ctx)
+				}
 				if sessionID == "" {
 					return "", fmt.Errorf("当前会话没有 id，无法只列本会话的任务（改用 session_only=false）")
 				}

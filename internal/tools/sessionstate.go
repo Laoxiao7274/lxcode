@@ -61,6 +61,30 @@ func SessionID(ctx context.Context) string {
 	return id
 }
 
+// ownerSessionIDKey 是时间线归属的 ctx 键。
+type ownerSessionIDKey struct{}
+
+// WithOwnerSessionID 把**时间线归属**（顶层会话 id）放进 ctx。
+//
+// 为什么需要它：子 Agent 是独立会话，它起的后台任务记的归属会话是子会话；但用户
+// 在父会话里看着那条时间线，唤醒通告也只有投给父会话才有人能行动（子会话不进侧栏，
+// 投给它等于投给一个没人看的会话）。与 WithSessionID 同一套 ctx 注入理由。
+func WithOwnerSessionID(ctx context.Context, id string) context.Context {
+	if id == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, ownerSessionIDKey{}, id)
+}
+
+// OwnerSessionID 取 ctx 里的时间线归属；空串 = 未注入（调用方回落 SessionID）。
+func OwnerSessionID(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	id, _ := ctx.Value(ownerSessionIDKey{}).(string)
+	return id
+}
+
 // WithSkillSource 把技能目录放进 ctx（本轮 Agent 白名单内的技能）。
 func WithSkillSource(ctx context.Context, fn SkillSourceFn) context.Context {
 	if fn == nil {

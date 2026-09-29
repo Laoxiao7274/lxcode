@@ -436,3 +436,117 @@ func mustJSON(t *testing.T, b []byte, v any) {
 		t.Fatalf("解析失败: %v (%s)", err, b)
 	}
 }
+
+// waitNoticeInSession 等通告出现在指定会话的历史里（唤醒是异步的）。
+func waitNoticeInSession(t *testing.T, srv *Server, id, want string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if sess, err := srv.session(id); err == nil {
+			for _, m := range sess.History().Messages {
+				if strings.Contains(m.Content, want) {
+					return
+				}
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("会话 %s 的历史里没等到通告 %q", id, want)
+}
+
+// sessionHasPrefix 报告指定会话的历史里有没有带该前缀的消息。
+func sessionHasPrefix(srv *Server, id, prefix string) bool {
+	sess, err := srv.session(id)
+	if err != nil {
+		return false
+	}
+	for _, m := range sess.History().Messages {
+		if strings.Contains(m.Content, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestChildJobNoticeGoesToOwner：子 Agent 起的后台任务，结束通告必须投给**父会话**
+// （时间线归属），不是执行它的子会话。
+//
+// 为什么这是硬要求：子 Agent 是独立会话，它起的任务记的归属会话是子会话；而子会话
+// 不进侧栏、用户根本看不到它——通告投给子会话等于投给一个没人看的会话：用户在**主
+// 对话**里什么都看不到，主 Agent 也永远不知道用户已经把它停了，于是自己脑补下一步
+// （用户实测的原话：「它跑了个 dev，我关掉了，他又跑去接着思考新的」）。
+func TestChildJobNoticeGoesToOwner(t *testing.T) {
+	rec := &serverRecorder{}
+	srv, client, mgr := newJobTestServer(t, rec.stream)
+	owner := newSessionViaChatSend(t, srv, client) // 父会话（用户看着的那条时间线）
+	child, _, err := srv.createSession("")         // 子会话（假装是派发开的）
+	if err != nil {
+		t.Fatal(err)
+	}
+	if child == owner {
+		t.Fatal("测试前提不成立：子会话与父会话不该是同一个")
+	}
+
+	j, err := mgr.Start(jobs.Spec{
+		Kind: "bash", Label: "npm run dev",
+		SessionID: child, OwnerSessionID: owner,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.Kill(j.ID(), jobs.EndedUser); err != nil {
+		t.Fatal(err)
+	}
+	j.Settle(jobs.StatusKilled, jobs.EndedUser, "已取消")
+
+	// 正面对照：通告落在**父会话**的历史里
+	waitNoticeInSession(t, srv, owner, "用户主动结束了后台任务 npm run dev")
+	// 反面对照：子会话**不该**收到它——归属改了就是改了，不是两边都投
+	if sessionHasPrefix(srv, child, protocol.JobNoticePrefix) {
+		t.Fatal("通告投给了子会话：归属没生效（子会话不进侧栏，用户看不到）")
+	}
+}
+
+// TestChildJobListFiltersByOwner：job.list 的按会话过滤走**时间线归属**——
+// 父会话要看得见子 Agent 起的任务（那正是它自己时间线上的卡）。
+func TestChildJobListFiltersByOwner(t *testing.T) {
+	srv, client, mgr := newJobTestServer(t, nil)
+	owner := newSessionViaChatSend(t, srv, client)
+	child, _, err := srv.createSession("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.Start(jobs.Spec{
+		Kind: "bash", Label: "子 Agent 的任务",
+		SessionID: child, OwnerSessionID: owner,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := client.call(protocol.MethodJobList, protocol.JobListParams{SessionID: owner})
+	if resp == nil || resp.Error != nil {
+		t.Fatalf("job.list 失败: %+v", resp)
+	}
+	b, err := json.Marshal(resp.Result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res protocol.JobListResult
+	mustJSON(t, b, &res)
+	if len(res.Jobs) != 1 || res.Jobs[0].Label != "子 Agent 的任务" {
+		t.Fatalf("父会话应看到子 Agent 起的任务: %+v", res.Jobs)
+	}
+	if res.Jobs[0].OwnerSessionID != owner {
+		t.Fatalf("JobInfo 应带时间线归属: %+v", res.Jobs[0])
+	}
+	resp2 := client.call(protocol.MethodJobList, protocol.JobListParams{SessionID: "s-other"})
+	b2, err := json.Marshal(resp2.Result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res2 protocol.JobListResult
+	mustJSON(t, b2, &res2)
+	if len(res2.Jobs) != 0 {
+		t.Fatalf("别的会话不该看到这个任务: %+v", res2.Jobs)
+	}
+}

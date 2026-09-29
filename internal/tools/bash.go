@@ -264,6 +264,10 @@ func startBackground(r *Registry, parent context.Context, shellName, shellFlag, 
 	}
 	j, err := mgr.Start(jobs.Spec{
 		Kind: "bash", Label: commandLabel(command), SessionID: SessionID(parent),
+		// 时间线归属：子 Agent 起的任务挂在父会话上（通告投给父会话才有人能
+		// 行动）。OwnerOf 会在为空时回落 SessionID——顶层会话起的任务 owner
+		// 就是它自己，行为与以前逐字节一致。
+		OwnerSessionID: OwnerSessionID(parent),
 	})
 	if err != nil {
 		return "", fmt.Errorf("启动后台任务失败: %w", err)

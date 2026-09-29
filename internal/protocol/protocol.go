@@ -732,15 +732,18 @@ const JobNoticePrefix = "[后台任务通告] "
 //
 // 时间字段是 RFC3339 字符串；FinishedAt 为空 = 未结束。
 type JobInfo struct {
-	ID         string `json:"id"`
-	Kind       string `json:"kind"`
-	Label      string `json:"label"`
-	Status     string `json:"status"`
-	EndedBy    string `json:"ended_by,omitempty"`
-	Detail     string `json:"detail,omitempty"`
-	SessionID  string `json:"session_id,omitempty"`
-	StartedAt  string `json:"started_at"`
-	FinishedAt string `json:"finished_at,omitempty"`
+	ID        string `json:"id"`
+	Kind      string `json:"kind"`
+	Label     string `json:"label"`
+	Status    string `json:"status"`
+	EndedBy   string `json:"ended_by,omitempty"`
+	Detail    string `json:"detail,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
+	// OwnerSessionID 是**时间线归属**（顶层会话）：子 Agent 起的任务挂在父会话上，
+	// 前端据此把它放进父会话的时间线、后端据此把唤醒通告投给父会话。
+	OwnerSessionID string `json:"owner_session_id,omitempty"`
+	StartedAt      string `json:"started_at"`
+	FinishedAt     string `json:"finished_at,omitempty"`
 	// OutputTail 是最近 64KB 输出（面板直接显示，不必再拉一次 job.log）。
 	OutputTail string `json:"output_tail,omitempty"`
 	// OutputPath 是落盘日志路径（「查看输出」用它；降级为纯内存时为空）。

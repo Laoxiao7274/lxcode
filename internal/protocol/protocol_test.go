@@ -744,6 +744,16 @@ func TestJobPayloads(t *testing.T) {
 		if len(gotList.Jobs) != 1 || gotList.Jobs[0].ID != "job-1" {
 			t.Fatalf("JobListResult 往返失真: %+v", gotList)
 		}
+		// owner_session_id 是**时间线归属**（子 Agent 起的任务挂在父会话上，前端
+		// 据此把它放进父会话的时间线）；与执行会话 session_id 是两回事，都要发。
+		var gotOwner JobInfo
+		mustUnmarshal(t, mustMarshal(t, JobInfo{ID: "job-1", SessionID: "s-child", OwnerSessionID: "s-owner"}), &gotOwner)
+		if gotOwner.SessionID != "s-child" || gotOwner.OwnerSessionID != "s-owner" {
+			t.Fatalf("owner_session_id 往返失真: %+v", gotOwner)
+		}
+		if b := mustMarshal(t, JobInfo{ID: "job-1"}); strings.Contains(string(b), "owner_session_id") {
+			t.Fatalf("空 owner_session_id 应省略: %s", b)
+		}
 		b := mustMarshal(t, JobKillParams{ID: "job-1"})
 		if string(b) != `{"id":"job-1"}` {
 			t.Fatalf("JobKillParams JSON = %s", b)

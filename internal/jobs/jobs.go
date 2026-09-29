@@ -63,28 +63,46 @@ const TimeoutDetail = "timeout"
 // ShutdownDetail 是后端退出时统一写进 Detail 的说明。
 const ShutdownDetail = "后端重启"
 
+// OwnerOf 返回任务的时间线归属：Spec 显式给了就用它，否则回落执行会话本身
+// （顶层会话起的任务，owner 就是它自己）。唯一判定点——事件路由、唤醒投递、
+// job.list 的按会话过滤都走它，免得三处各写一遍回落逻辑而漂移。
+func OwnerOf(spec Spec) string {
+	if spec.OwnerSessionID != "" {
+		return spec.OwnerSessionID
+	}
+	return spec.SessionID
+}
+
 // DefaultOutputLimit 是内存尾缓冲的默认上限（64KB）。
 const DefaultOutputLimit = 64 * 1024
 
 // Spec 是一次后台任务的启动参数。
 type Spec struct {
-	Kind        string // "bash"（将来：其他 producer）
-	Label       string // 一行摘要（命令截断，UI 与通告都用它）
-	SessionID   string // 归属会话（事件路由 + 唤醒投递）
-	OutputLimit int    // 内存保留字节数（0 = 默认 64KB）
+	Kind      string // "bash"（将来：其他 producer）
+	Label     string // 一行摘要（命令截断，UI 与通告都用它）
+	SessionID string // 执行会话（谁起的——producer 视角的归属）
+	// OwnerSessionID 是**时间线归属**（顶层会话）。子 Agent 是独立会话，它起的
+	// 任务挂在子会话上；而用户在**父会话**里看着这条时间线，唤醒通告也只有投给
+	// 父会话才有人能行动（子会话不进侧栏，投给它等于投给一个没人看的
+	// 会话）。空 = 与 SessionID 同（顶层会话起的任务，owner 就是它自己）。
+	OwnerSessionID string
+	OutputLimit    int // 内存保留字节数（0 = 默认 64KB）
 }
 
 // Snapshot 是一个任务的对外快照（工具与协议共用）。
 type Snapshot struct {
-	ID         string
-	Kind       string
-	Label      string
-	Status     Status
-	EndedBy    EndedBy
-	Detail     string // 退出码 / 超时 / 重启
-	SessionID  string
-	StartedAt  time.Time
-	FinishedAt time.Time // 零值 = 未结束
+	ID        string
+	Kind      string
+	Label     string
+	Status    Status
+	EndedBy   EndedBy
+	Detail    string // 退出码 / 超时 / 重启
+	SessionID string // 执行会话（谁起的）
+	// OwnerSessionID 是时间线归属（见 Spec.OwnerSessionID）：事件路由、唤醒
+	// 投递、job.list 的按会话过滤都按它，不按 SessionID。
+	OwnerSessionID string
+	StartedAt      time.Time
+	FinishedAt     time.Time // 零值 = 未结束
 	// OutputPath 是落盘日志路径；**落盘失败降级为纯内存时为空串**
 	//（契约里写的是「恒有」，但那与「落盘失败不能让任务起不来」冲突——
 	// 实现按后者：降级后这里为空，消费方据此判断有无全量日志）。
@@ -239,8 +257,8 @@ func (j *job) snapshotLocked() Snapshot {
 	return Snapshot{
 		ID: j.id, Kind: j.spec.Kind, Label: j.spec.Label,
 		Status: j.status, EndedBy: j.endedBy, Detail: j.detail,
-		SessionID: j.spec.SessionID, StartedAt: j.startedAt,
-		FinishedAt: j.finishedAt, OutputPath: j.logPath,
+		SessionID: j.spec.SessionID, OwnerSessionID: OwnerOf(j.spec),
+		StartedAt: j.startedAt, FinishedAt: j.finishedAt, OutputPath: j.logPath,
 	}
 }
 
@@ -274,6 +292,7 @@ func (m *Manager) Start(spec Spec) (Job, error) {
 	if limit <= 0 {
 		limit = DefaultOutputLimit
 	}
+	spec.OwnerSessionID = OwnerOf(spec) // 定稿：快照里 owner 恒非空（SessionID 非空时）
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
@@ -354,11 +373,14 @@ func (m *Manager) Read(id string, from int64, maxBytes int) (string, int64, Snap
 }
 
 // List 列任务（sessionID 为空 = 全部，按开始时间倒序）。
+//
+// 过滤按**时间线归属**（OwnerSessionID）而不是执行会话：父会话要看得见子 Agent
+// 起的任务（那正是它自己时间线上的卡），子会话看父会话的任务也无害（只读列表）。
 func (m *Manager) List(sessionID string) []Snapshot {
 	m.mu.Lock()
 	out := make([]*job, 0, len(m.jobs))
 	for _, j := range m.jobs {
-		if sessionID != "" && j.spec.SessionID != sessionID {
+		if sessionID != "" && OwnerOf(j.spec) != sessionID {
 			continue
 		}
 		out = append(out, j)

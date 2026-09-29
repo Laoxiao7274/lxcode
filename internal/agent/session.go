@@ -128,6 +128,11 @@ type Session struct {
 	// 主会话为假（没有这条头部，压缩前缀从 0 开始）；由 dispatch.openChildSession
 	// 置位（新建与续跑同一入口）。
 	protectHead bool
+	// ownerID 是本会话的**时间线归属**（顶层会话 id）。子 Agent 是独立会话，它起的
+	// 后台任务要挂在父会话的时间线上——唤醒通告投给父会话才有人能行动（子会话不进
+	// 侧栏）。空 = 自己就是顶层（OwnerSessionID 回落自身 id）。
+	// 由 dispatch.openChildSession 置位。
+	ownerID string
 }
 
 // New 创建会话；emit 为 nil 时事件被丢弃（单测可只调方法）。
@@ -340,6 +345,24 @@ func (s *Session) SetWorkDir(dir string) error {
 func (s *Session) SessionID() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.id
+}
+
+// SetOwner 声明本会话的时间线归属（顶层会话 id）。只该在会话开始跑之前调用一次——
+// dispatch 开子会话时置位，主会话保持空（自己就是顶层）。
+func (s *Session) SetOwner(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ownerID = id
+}
+
+// OwnerSessionID 返回时间线归属：未设（本会话就是顶层）时回落自身 id。
+func (s *Session) OwnerSessionID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ownerID != "" {
+		return s.ownerID
+	}
 	return s.id
 }
 

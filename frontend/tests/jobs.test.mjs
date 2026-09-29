@@ -19,7 +19,7 @@ const base = { blocks: [], busy: false, pending: null, todos: [], currentId: '',
 /** 后端 JobInfo 的 wire 形状（snake_case，见 docs/jobs.md §4）。 */
 const WIRE = {
   id: 'j1', kind: 'bash', label: 'go test ./... -count=1',
-  status: 'running', ended_by: '', detail: '', session_id: 's1',
+  status: 'running', ended_by: '', detail: '', session_id: 's1', owner_session_id: 's1',
   started_at: '2026-09-29T10:00:00Z', finished_at: '',
   output_tail: 'ok  internal/agent\t4.106s', output_path: 'C:/sessions/jobs/j1.log',
 };
@@ -30,16 +30,17 @@ test('jobFromWire 逐字读契约字段（snake_case）', () => {
   const job = jobFromWire(WIRE);
   assert.deepEqual(job, {
     id: 'j1', kind: 'bash', label: 'go test ./... -count=1',
-    status: 'running', ended_by: '', detail: '', session_id: 's1',
+    status: 'running', ended_by: '', detail: '', session_id: 's1', owner_session_id: 's1',
     started_at: '2026-09-29T10:00:00Z', finished_at: '',
     output_tail: 'ok  internal/agent\t4.106s', output_path: 'C:/sessions/jobs/j1.log',
   });
 });
 
 test('jobFromWire 容忍 camelCase（并行实现期 tag 分叉不至于静默成空串）', () => {
-  const job = jobFromWire({ id: 'j2', endedBy: 'user', sessionId: 's9', startedAt: 'T', outputTail: 'x' });
+  const job = jobFromWire({ id: 'j2', endedBy: 'user', sessionId: 's9', ownerSessionId: 's-root', startedAt: 'T', outputTail: 'x' });
   assert.equal(job.ended_by, 'user');
   assert.equal(job.session_id, 's9');
+  assert.equal(job.owner_session_id, 's-root');
   assert.equal(job.started_at, 'T');
   assert.equal(job.output_tail, 'x');
 });
@@ -183,8 +184,24 @@ test('job.started / job.settled 映射成前端事件（载荷就是 JobInfo）'
 });
 
 test('无归属会话的任务事件 sessionId 为空（只进全局面板，不进任何时间线）', () => {
-  const ev = mapEvent('job.started', { ...WIRE, session_id: '' });
+  const ev = mapEvent('job.started', { ...WIRE, session_id: '', owner_session_id: '' });
   assert.equal(ev.sessionId, '');
+});
+
+test('子 Agent 起的任务按 owner_session_id 上**父会话**的时间线', () => {
+  // 子会话不进侧栏：按执行会话（session_id）上卡等于用户在主对话里什么都看不到，
+  // 所以归属必须取 owner_session_id。
+  const child = { ...WIRE, session_id: 's-child', owner_session_id: 's-parent' };
+  const started = mapEvent('job.started', child);
+  assert.equal(started.sessionId, 's-parent', '任务卡应挂在父会话上');
+  assert.equal(started.job.session_id, 's-child', '执行会话仍要如实保留');
+  const settled = mapEvent('job.settled', { ...child, status: 'killed', ended_by: 'user' });
+  assert.equal(settled.sessionId, 's-parent');
+});
+
+test('owner_session_id 缺席时回落 session_id（老后端/顶层会话起的任务）', () => {
+  const ev = mapEvent('job.started', { ...WIRE, session_id: 's1', owner_session_id: '' });
+  assert.equal(ev.sessionId, 's1');
 });
 
 // ---------- 归约（reduce.ts） ----------

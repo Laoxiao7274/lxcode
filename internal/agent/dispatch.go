@@ -124,6 +124,9 @@ func (s *Session) openChildSession(call tools.DispatchCall, ac *sessiondata.Agen
 	// 这是子 Agent 唯一的任务依据，被压进摘要后长任务就会跑偏。
 	// 在 st == nil 的提前返回之前置位——内存子会话同样有这条头部。
 	child.SetProtectHead(true)
+	// 时间线归属 = 父会话的时间线：子会话起的后台任务要挂在父会话上（通告投给
+	// 父会话才有人能行动——子会话不进侧栏，见 Session.ownerID）
+	child.SetOwner(s.OwnerSessionID())
 	// 继承父会话的 LLM 调用实现：生产是 streamWithLLM（同一份），测试是注入的假流——
 	// 不继承的话子会话会绕开宿主注入的流去连真实端点（单测直接炸）。
 	child.SetStream(stream)

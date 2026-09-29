@@ -227,6 +227,8 @@ export class DemoAgent implements AgentSource, JobAdminSource {
       ended_by: "",
       detail: "",
       session_id: sessionId,
+      // 演示没有派发（没有子会话），时间线归属就是当前会话
+      owner_session_id: sessionId,
       started_at: new Date().toISOString(),
       finished_at: "",
       output_tail: "",

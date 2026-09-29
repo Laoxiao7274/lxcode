@@ -62,6 +62,9 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig, ac *sessiondata.A
 	// 唤醒投递按它找回会话。注册表是进程级单例，多会话并发时不能把归属
 	// 挂在注册表上（与 workdir / todo sink 同一条理由）。
 	ctx = tools.WithSessionID(ctx, s.SessionID())
+	// 时间线归属也进 ctx：子会话起的后台任务要记在**父会话**名下（通告投给父
+	// 会话才有人能行动），job 事件也按它路由到父会话的时间线。
+	ctx = tools.WithOwnerSessionID(ctx, s.OwnerSessionID())
 
 	// 本轮技能目录注入 read_skill（渐进披露的取数源）：模型按 id 取
 	// 完整正文，只暴露白名单内的——没在 ac.Skills 里的它当没有。

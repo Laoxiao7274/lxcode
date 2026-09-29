@@ -69,8 +69,9 @@ func (s *Server) jobInfo(snap jobs.Snapshot) protocol.JobInfo {
 	info := protocol.JobInfo{
 		ID: snap.ID, Kind: snap.Kind, Label: snap.Label,
 		Status: string(snap.Status), EndedBy: string(snap.EndedBy), Detail: snap.Detail,
-		SessionID: snap.SessionID, OutputPath: snap.OutputPath,
-		StartedAt: snap.StartedAt.UTC().Format(time.RFC3339),
+		SessionID: snap.SessionID, OwnerSessionID: snap.OwnerSessionID,
+		OutputPath: snap.OutputPath,
+		StartedAt:  snap.StartedAt.UTC().Format(time.RFC3339),
 	}
 	if !snap.FinishedAt.IsZero() {
 		info.FinishedAt = snap.FinishedAt.UTC().Format(time.RFC3339)
@@ -97,13 +98,22 @@ func (s *Server) deliverJobNotice(snap jobs.Snapshot) {
 	if !ok {
 		return // agent 自己杀的 / 后端重启：不投递（契约 §5 的表）
 	}
-	if snap.SessionID == "" {
+	// 投给**时间线归属**（顶层会话），不是执行会话：子 Agent 起的任务挂在父会话
+	// 的时间线上，而子会话不进侧栏——投给子会话等于投给一个没人看的会话，用户
+	// 在主对话里什么都看不到，主 Agent 也永远不知道用户已经把它停了（那正是
+	// 「我关掉了，他又跑去接着思考新的」那一类问题的根）。OwnerSessionID 在
+	// Start 时已定稿（为空才回落 SessionID）。
+	owner := snap.OwnerSessionID
+	if owner == "" {
+		owner = snap.SessionID
+	}
+	if owner == "" {
 		log.Printf("后台任务 %s 结束通告未投递：任务没有归属会话", snap.ID)
 		return
 	}
-	sess, err := s.session(snap.SessionID)
+	sess, err := s.session(owner)
 	if err != nil {
-		log.Printf("后台任务 %s 的归属会话 %s 不可用（通告丢弃）: %v", snap.ID, snap.SessionID, err)
+		log.Printf("后台任务 %s 的归属会话 %s 不可用（通告丢弃）: %v", snap.ID, owner, err)
 		return
 	}
 	if sess.Busy() {
@@ -112,14 +122,14 @@ func (s *Server) deliverJobNotice(snap jobs.Snapshot) {
 		}
 		return
 	}
-	if !s.consumeWake(snap.SessionID) {
+	if !s.consumeWake(owner) {
 		// 预算耗尽：通告留在队列里（绝不丢弃）——等下一次轮边界或
 		// 用户下次说话时投递
 		if err := sess.QueueNotice(text); err != nil {
 			log.Printf("后台任务 %s 的通告入队失败: %v", snap.ID, err)
 		}
 		log.Printf("后台任务 %s 结束：会话 %s 连续唤醒已达上限 %d，通告改为排队等待",
-			snap.ID, snap.SessionID, maxConsecutiveWakes)
+			snap.ID, owner, maxConsecutiveWakes)
 		return
 	}
 	if err := sess.Notify(text); err != nil {

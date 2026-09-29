@@ -60,12 +60,17 @@ export function mapEvent(method: string, params: unknown): AgentEvent | null {
         manual: Boolean(p.manual),
         dispatchId: p.dispatch_id ? String(p.dispatch_id) : undefined,
       };
-    // 后台任务：载荷**就是 JobInfo 本身**（不是包一层），归属会话取
-    // session_id——空 = 无归属（只进顶栏全局面板，不进任何会话时间线）。
+    // 后台任务：载荷**就是 JobInfo 本身**（不是包一层）。时间线归属取
+    // owner_session_id（子 Agent 起的任务挂在**父会话**的时间线上——子会话不进
+    // 侧栏，按执行会话上卡等于用户在主对话里什么都看不到），空才回落
+    // session_id；两者都空 = 无归属（只进顶栏全局面板）。
     case "job.started":
-      return { type: "jobStarted", sessionId, job: jobFromWire(p) };
-    case "job.settled":
-      return { type: "jobSettled", sessionId, job: jobFromWire(p) };
+    case "job.settled": {
+      const job = jobFromWire(p);
+      const owner = job.owner_session_id || job.session_id;
+      if (method === "job.started") return { type: "jobStarted", sessionId: owner, job };
+      return { type: "jobSettled", sessionId: owner, job };
+    }
     case "chat.confirmRequest":
       return { type: "confirmRequest", sessionId, request: p as unknown as ConfirmRequest };
     case "todo.updated":

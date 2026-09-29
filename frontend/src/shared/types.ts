@@ -52,8 +52,12 @@ export interface JobInfo {
   ended_by: JobEndedBy;
   /** 退出码 / 信号 / 超时 / 重启（人话，直接显示）。 */
   detail: string;
-  /** 归属会话（空 = 不属于任何会话，只进全局面板）。 */
+  /** 执行会话（谁起的任务；空 = 不属于任何会话，只进全局面板）。 */
   session_id: string;
+  /** **时间线归属**（顶层会话）：子 Agent 起的任务挂在父会话上，前端据此把它
+   *  放进**父会话**的时间线——子会话不进侧栏，按执行会话上卡等于用户在主对话里
+   *  什么都看不到。空 = 回落 session_id。 */
+  owner_session_id: string;
   /** RFC3339；finished_at 空 = 未结束。 */
   started_at: string;
   finished_at: string;
