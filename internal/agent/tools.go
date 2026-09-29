@@ -139,8 +139,11 @@ func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChange
 				res := s.runDispatch(ctx, j.call)
 				out := res.Output
 				if res.SessionID != "" {
-					// 把子会话 id 交给主 Agent：下一轮要接着它跑就填进 session 参数
-					out += fmt.Sprintf("\n\n[子会话 id: %s —— 需要接着这次进度继续时，把它填进 session 参数重派]", res.SessionID)
+					// 把子会话 id 交给主 Agent：**只在这次没做完时**用它续跑。
+					// 措辞刻意区分「续跑」与「重派」：写「重派」会让模型以为要再派
+					// 一遍同样的任务（2026-09-29 用户实测：子 Agent 没返回结论时，
+					// 主 Agent 拿这个 id 把活重做了一遍）。
+					out += fmt.Sprintf("\n\n[子会话 id: %s —— 只在这次**没做完**时填进 session 参数续跑；已经给出结论就别再派]", res.SessionID)
 				}
 				dispatched[j.idx] = toolOutcome{result: out, isError: res.IsError, executed: true}
 			}(j)

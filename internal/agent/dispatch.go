@@ -90,8 +90,19 @@ func (s *Session) runDispatch(ctx context.Context, call tools.DispatchCall) tool
 	child.SetApprovalSource(func() string { return s.LiveApproval() })
 	child.SetApprovalDefault(ac.Def.Approval)
 	err = child.SendWait(ctx, composeTaskMessage(call), WithAgent(ac.Def.ID))
-	if err != nil {
-		note := err.Error()
+	// 子会话这一轮的错误**不能只看 SendWait 的返回值**：SendWait 在 done 关闭时恒
+	// 返回 nil（即使这一轮以错误收尾——比如工具循环达上限），真正的错误记在 tap.err 里。
+	//
+	// 只看 err 的后果（2026-09-29 用户实测「第一个子 Agent 没有返回结果，主 Agent
+	// 拿它的会话 id 重新做了一遍」）：达上限那种收尾静默走进结论分支，而结论取到的是
+	// 中间轮的**开场白**（"I'll start by …"）——一句没兑现的承诺被当成结果回填，
+	// 主 Agent 既不知道子 Agent 没做完，又看到"需要接着这次进度继续时把它填进 session
+	// 参数重派"，于是自己又派了一遍。
+	if err != nil || tap.err != nil {
+		note := "（子 Agent 没有产出结论）"
+		if err != nil {
+			note = err.Error()
+		}
 		if ctx.Err() != nil {
 			note = "已取消（子会话中断）"
 		} else if tap.err != nil {
@@ -162,13 +173,19 @@ func (s *Session) openChildSession(call tools.DispatchCall, ac *sessiondata.Agen
 	return child, childID, nil
 }
 
-// lastAssistantText 取历史里最后一条有正文的 assistant 消息（子会话的结论）。
+// lastAssistantText 取子会话的结论：**最后一条 assistant 消息**的正文。
+//
+// 为什么不能往回扫到"最近一条有正文的"（2026-09-29 用户实测）：多轮工具循环里模型
+// 每轮都会先写一句开场白再发工具调用（"I'll start by …"），那些中间轮的开场白**不是
+// 结论**。往回扫会把一句没兑现的承诺当成结论回填——主 Agent 既不知道子 Agent 没做完，
+// 又看到"接着这次进度继续时填 session 参数重派"，于是自己又派了一遍（用户实测：第一个
+// 子 Agent 没返回结果，主 Agent 拿它的会话 id 重新做了一遍）。
+// 最后一条是工具调用轮（正文为空）时如实返回空串：调用方据此报"没有产出结论"，而不是
+// 拿一句开场白冒充结果。
 func lastAssistantText(msgs []llm.Message) string {
 	for i := len(msgs) - 1; i >= 0; i-- {
 		if msgs[i].Role == "assistant" {
-			if t := strings.TrimSpace(msgs[i].Content); t != "" {
-				return t
-			}
+			return strings.TrimSpace(msgs[i].Content)
 		}
 	}
 	return ""
