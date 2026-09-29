@@ -22,6 +22,7 @@ import { Composer } from "./components/composer";
 import type { SlashCommand } from "./components/composer/SlashPalette";
 import { TabBar } from "./components/topbar/TabBar";
 import { SettingsPanel } from "./components/settings";
+import { Button } from "./components/form";
 import { SettingsProvider, useSettings } from "./shared/settings";
 import { ConnectionsProvider } from "./shared/connections";
 import { UpdateProvider } from "./shared/update";
@@ -150,8 +151,23 @@ function AppBody({ source }: { source: AgentSource }) {
   // 壳环境（Electron）= 真实窗口；浏览器 = 保留模拟壳（窗口模拟一层的差异，
   // 内部布局完全一致——同组件，不再两份 JSX）
   const isShell = typeof navigator !== "undefined" && navigator.userAgent.includes("Electron");
+  // 操作提示条：请求级失败的一次性提示。**不复用 .error-block**——那条是
+  // 时间线内的行内文本（Block/SettingsPanel 也在用），给它加底色会连带改掉
+  // 那两处的排版。这里要的是一条独立的、可关闭的提示条（与 .job-notice 同款
+  // 形态：左缘竖线 + 圆角 + 全宽），只是走危险色。
   const errorNotice = state.operationError && (
-    <div className="error-block" role="alert">{state.operationError}<button type="button" onClick={clearError}>关闭</button></div>
+    <div className="op-notice" role="alert">
+      <span className="op-notice-icon" aria-hidden>
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
+          <path d="M12 9v4" />
+          <path d="M12 17h.01" />
+        </svg>
+      </span>
+      <span className="op-notice-text">{state.operationError}</span>
+      {/* 关闭走表单套件（.fd-btn-g），不裸写原生 button——裸写就是 OS 默认皮肤 */}
+      <Button className="op-notice-close" onClick={clearError}>关闭</Button>
+    </div>
   );
 
   // 斜杠命令集（命令面板）：页面导航。后端化时同一面板接会话/工具域

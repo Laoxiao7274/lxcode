@@ -799,6 +799,40 @@
 .error-block[data-aborted="true"] {
   color: var(--fg-muted);
 }
+/* 操作提示条（请求级失败的一次性提示）：与 .job-notice 同款形态（左缘竖线 +
+ * 圆角 8 + 全宽），但走危险色——它是「刚才那件事没做成」，不是系统通告。
+ * 刻意**不复用 .error-block**：那条是时间线内的行内文本（Block 与 SettingsPanel
+ * 也在用），给它加底色/圆角会连带改掉那两处的排版。 */
+.op-notice {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 10px 0;
+  padding: 8px 10px 8px 12px;
+  border: 1px solid rgba(224, 46, 42, 0.25);
+  border-left: 2px solid var(--danger);
+  border-radius: 8px;
+  background: rgba(224, 46, 42, 0.05);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--danger);
+}
+.op-notice-icon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+}
+.op-notice-text {
+  flex: 1;
+  min-width: 0;
+  word-break: break-word;
+}
+.op-notice-close.fd-btn-g {
+  flex: none;
+  padding: 2px 9px;
+  font-size: 10.5px;
+  border-radius: 7px;
+}
 /* usage 行 */
 .usage-line {
   font-family: var(--font-mono);
