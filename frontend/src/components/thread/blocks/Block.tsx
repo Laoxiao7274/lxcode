@@ -148,14 +148,22 @@ export const Block = memo(
     prev.onRewind === next.onRewind,
 );
 
-/** 用户气泡上的三个动作（hover 出现）：复制 / 编辑 / 撤回。
+/** 用户气泡**下方**的三个动作（图标）：复制 / 编辑 / 撤回。
  *
  *  单独一个子组件是为了**在 switch 的分支之外合法地用 useState**——复制的「已复制」
  *  反馈要组件态，而 Block 的 switch 里不能按分支调 hook。
  *
- *  复制走与 DiffBody / TerminalCard / CopyBtn 同一套写法（navigator.clipboard 的
- *  可选链 + 1.2s 文案反馈，不弹 toast）。没有 seq 的块把撤回/编辑**禁用**并给出
- *  原因（title）：老后端 + 新前端不许炸（AGENTS.md §5 坑 11）——复制照常可用。 */
+ *  为什么是图标而不是文字：三个动作是**高频、语义固定**的（复制/编辑/撤回各一个约定俗成的
+ *  图标），文字按钮在每条消息下面重复三遍"复制 编辑 撤回"，视觉噪音盖过了消息本身。
+ *  这是 ChatGPT / Claude 等同类产品的既有做法（复制/重试一类的动作收成一行小图标）。
+ *
+ *  为什么常驻而不是 hover 才出现：纯 hover 交互对键盘与触屏用户不可达（UI/UX 规范把
+ *  "Reliance on hover only" 列为反模式），而 hover 显隐又会顶动下方内容（长会话里整屏位移，
+ *  比多占 24px 难看得多）。所以它**在流里常驻、低对比度**，悬停/聚焦时才提亮。
+ *
+ *  复制走与 DiffBody / TerminalCard 同一套写法（navigator.clipboard 的可选链 + 1.2s 反馈，
+ *  不弹 toast）。没有 seq 的块把撤回/编辑**禁用**并给出原因（title）：老后端 + 新前端不许炸
+ *  （AGENTS.md §5 坑 11）——复制照常可用。 */
 function MessageActions({ block, onEdit, onRewind }: {
   block: ThreadBlock;
   onEdit?: (block: ThreadBlock) => void;
@@ -172,25 +180,49 @@ function MessageActions({ block, onEdit, onRewind }: {
       window.setTimeout(() => setCopied(false), 1200);
     });
   };
+  // 图标按钮没有可见文字，无障碍名只能靠 aria-label（UI/UX 规范：图标按钮必须有
+  // 可访问名）。title 同时充当鼠标悬停提示。
   return (
     <div className="msg-actions">
-      <Button className="msg-action" onClick={copy}>{copied ? "已复制" : "复制"}</Button>
+      <Button className="msg-action" aria-label={copied ? "已复制" : "复制"} title={copied ? "已复制" : "复制"}
+        onClick={copy}>
+        {copied ? <IconCheck /> : <IconCopy />}
+      </Button>
       <Button
         className="msg-action"
+        aria-label="编辑"
         disabled={!rewindable}
         title={rewindable ? "编辑这条消息（发送时才会撤回它及其之后的对话）" : NO_SEQ_HINT}
         onClick={() => onEdit?.(block)}
       >
-        编辑
+        <IconEdit />
       </Button>
       <Button
         className="msg-action"
+        aria-label="撤回"
         disabled={!rewindable}
         title={rewindable ? "撤回这条及其之后的全部对话，原文回到输入框" : NO_SEQ_HINT}
         onClick={() => onRewind?.(block)}
       >
-        撤回
+        <IconUndo />
       </Button>
     </div>
   );
+}
+
+/* 内联描边图标（与 Topbar / App 里的窗口按钮同款：零图标库、currentColor 描边）。
+ * 尺寸固定 14，线宽 1.8——与 13px 正文的视觉重量相称；换 size 会与套件按钮的
+ * 内边距打架（图标是按钮的唯一内容，尺寸即按钮的视觉中心）。 */
+const ICON = { width: 14, height: 14, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": true } as const;
+function IconCopy() {
+  return (<svg {...ICON}><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>);
+}
+function IconCheck() {
+  return (<svg {...ICON}><path d="M20 6 9 17l-5-5" /></svg>);
+}
+function IconEdit() {
+  return (<svg {...ICON}><path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" /></svg>);
+}
+function IconUndo() {
+  return (<svg {...ICON}><path d="M3 7v6h6" /><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13" /></svg>);
 }

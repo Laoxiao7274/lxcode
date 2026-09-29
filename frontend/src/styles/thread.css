@@ -358,35 +358,52 @@
   font-size: 14px;
   white-space: pre-wrap;
 }
-/* 用户气泡动作条（hover / 键盘聚焦时出现——与项目既有的 hover 显露同款）。
- * **绝对定位在气泡上方**：进流会给每条用户消息永久多留一行高度，hover 显隐还会
- * 顶动下方内容（长会话里整屏位移，是比"多占 20px"严重得多的观感问题）。
- * 上方而非下方：下方会压住紧接着的下一条消息（margin 只有 14px）。 */
+/* 用户气泡**下方**的图标动作条（复制 / 编辑 / 撤回）。
+ *
+ *  **在流里**（不再绝对定位在气泡上方）：图标要贴着气泡下沿排一行，用户明确要求
+ *  "做到消息的下面"；绝对定位到下方又会压住紧接着的下一条消息。代价是每条用户消息
+ *  多占一行（24px + 3px 间距）。
+ *
+ *  **常驻低对比度**而不是 hover 才出现：① 纯 hover 交互对键盘/触屏用户不可达
+ *  （UI/UX 规范把 "Reliance on hover only" 列为反模式）；② hover 显隐会让下方内容
+ *  上下顶动——长会话里整屏位移，比稳定多占 24px 难看得多。所以它一直在，只是淡；
+ *  鼠标移入气泡或键盘聚焦时才提亮。
+ *
+ *  右对齐：用户气泡本身右对齐，动作条跟着贴同一条右边线。 */
 .msg-actions {
-  position: absolute;
-  right: 0;
-  bottom: calc(100% + 3px);
   display: flex;
-  gap: 4px;
-  opacity: 0;
-  pointer-events: none;
+  justify-content: flex-end;
+  gap: 2px;
+  margin-top: 3px;
+  opacity: 0.5;
   transition: opacity 120ms ease;
 }
 .msg.user:hover .msg-actions,
 .msg-actions:focus-within {
   opacity: 1;
-  pointer-events: auto;
 }
-/* 紧凑档的套件按钮（套件只给外观，布局归这里——与 .job-kill.fd-btn-g 同款做法） */
+/* 图标按钮：正方形、无边框、透明底，悬停才给底色（图标是唯一内容，尺寸即视觉中心）。
+ * 26px 是桌面密集界面的折中——UI/UX 规范给触屏的 44px 在这里会让每条消息多占近一倍
+ * 高度，而本应用的输入设备是鼠标/触控板（Electron 桌面壳）。 */
 .msg-action.fd-btn-g {
-  padding: 2px 8px;
-  font-size: 11px;
-  border-radius: 7px;
-  background: var(--surface);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--fg-faint);
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: none;
+}
+.msg-action.fd-btn-g:hover:not(:disabled) {
+  background: var(--border-soft);
+  color: var(--fg);
 }
 .msg-action.fd-btn-g:disabled {
-  opacity: 0.45;
+  opacity: 0.35;
   cursor: default;
 }
 /* 工具行排在正文流里（DSH 形态）：与上下文块呼吸——DSH 的 AssistantMarkdown
