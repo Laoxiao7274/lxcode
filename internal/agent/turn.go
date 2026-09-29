@@ -6,7 +6,6 @@ package agent
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log"
 	"strings"
 
@@ -111,11 +110,23 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig, ac *sessiondata.A
 	}()
 
 	overflowRetried := false
-	for round := 0; round < maxToolRounds; round++ {
+	// 死循环判据 = 同参数重复调用（见 repeat.go）。**刻意不设轮数上限**：
+	// 轮数区分不了「卡住」与「任务本来就长」（2026-09-29 用户拍板去掉 maxToolRounds）。
+	guard := &repeatGuard{}
+	var repeatHint string
+	for round := 0; ; round++ {
 		// 轮边界是**唯一安全**的历史插入点：上一轮所有工具结果此时已全部
 		// 落进历史，插一条 user 消息不会把 assistant 的 tool_calls 与它的
 		// 结果拆开（配对不变量——拆开会 400，还会让压缩切点永久卡死）。
 		s.injectNotices()
+		// 重复调用提醒也在**轮边界**注入——与 injectNotices 同一个理由（唯一安全的
+		// 历史插入点：上一轮工具结果已全部落进历史，见 notify.go 与 toolpair.go）。
+		if repeatHint != "" {
+			m := llm.Message{Role: "user", Content: repeatHint}
+			s.append(m)
+			s.emit(UserMsgEvent{Message: m})
+			repeatHint = ""
+		}
 		// 轮与轮之间是压缩的天然时机：上一轮的真实 prompt_tokens 已记录，
 		// 超阈值就先压——否则下一轮请求可能直接撞窗口。
 		if round > 0 {
@@ -183,10 +194,15 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig, ac *sessiondata.A
 		if !s.runTools(ctx, res.Message.ToolCalls, &fileChanges, ac, "", s.append) {
 			return // 取消
 		}
+		// 这一轮的调用是不是在原地打转（同工具 + 同参数）？提醒留到**下一个轮边界**
+		// 注入——此刻工具结果还没落进历史，插 user 消息会把 tool_calls 与结果拆开。
+		hint, stop := guard.observe(res.Message.ToolCalls)
+		if stop {
+			s.emit(TurnErrorEvent{Message: hint})
+			return
+		}
+		repeatHint = hint
 	}
-	s.emit(TurnErrorEvent{
-		Message: fmt.Sprintf("工具循环达上限（%d 轮），已停止", maxToolRounds),
-	})
 }
 
 // streamRound 跑一轮流式生成，把增量事件转发给宿主，返回最终结果。
