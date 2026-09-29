@@ -44,6 +44,33 @@ var seedTools = []sessiondata.ToolSpec{
 		Doc: "web_search 只回标题与摘要，**要看全文用这个**。\n\n- 先用 web_search 找到地址，再抓正文\n- 只支持 http/https，**禁止访问本机与内网地址**（环回/私有网段/云元数据端点）\n- 正文超上限会截断（可调 max_chars）；纯 JS 渲染的页面可能抓不到正文\n- 二进制内容（图片/PDF）如实报类型，不灌乱码进上下文",
 	},
 	{
+		// 后台任务三件套（docs/jobs.md §3）：bash 的 run_in_background 起任务，
+		// 这三个读输出/列任务/停任务。同样必须在目录里——编辑器渲染 chip 只读目录，
+		// 目录里没有 = 用户在界面上勾不到它（web_search 栽过的那一跤）。
+		ID: "job_output", Desc: "读后台任务的输出（增量；可阻塞等结束）", Risk: "low", Source: "builtin", Custom: false,
+		Params: []sessiondata.ToolParam{
+			{Name: "job_id", Type: "string", Required: true, Desc: "任务 id（run_in_background 返回或 job_list 里的）"},
+			{Name: "wait", Type: "bool", Desc: "true = 阻塞等它结束（默认 30s，上限 600s）"},
+			{Name: "timeout_ms", Type: "int", Desc: "wait 的等待上限毫秒数（默认 30000，上限 600000）"},
+			{Name: "max_bytes", Type: "int", Desc: "单次读取字节上限（默认 32768）"},
+		},
+		Doc: "默认只回**上次读过之后的新增输出**（无新输出回 (no new output)）。\n\n- wait=true 阻塞等它结束：适合「等构建/测试跑完再继续」\n- 超时返回当前输出 + [status: running]，据此判断它还在跑\n- 任务结束后仍可读（完整日志落在 OutputPath，可用 read_file 看全文）",
+	},
+	{
+		ID: "job_list", Desc: "列后台任务（新的在前）", Risk: "low", Source: "builtin", Custom: false,
+		Params: []sessiondata.ToolParam{
+			{Name: "session_only", Type: "bool", Desc: "true = 只列本会话（默认全部会话）"},
+		},
+		Doc: "列出任务 id、状态、命令摘要与结束方。\n\n- 默认列**全部会话**的任务：跨会话常驻的 dev server 也该看得见\n- 结束方（self/user/agent/backend）区分「它自己退的 / 用户停的 / 我停的 / 后端重启中断」",
+	},
+	{
+		ID: "job_kill", Desc: "停止一个后台任务（归属记为 agent）", Risk: "low", Source: "builtin", Custom: false,
+		Params: []sessiondata.ToolParam{
+			{Name: "job_id", Type: "string", Required: true, Desc: "要停止的任务 id"},
+		},
+		Doc: "非阻塞：立刻回「已请求取消」，真正的结束由进程收尾时定稿。\n\n- 归属记为 agent：唤醒通告据此措辞，不会把自己停的任务当成「它挂了」\n- 自己停掉的任务**不要**自己重启，要等用户指示",
+	},
+	{
 		ID: "edit", Desc: "精确替换文件内容（old_string 唯一匹配）", Risk: "low", Source: "builtin", Custom: false,
 		Params: []sessiondata.ToolParam{{Name: "path", Type: "string", Required: true}, {Name: "old_string", Type: "string", Required: true}, {Name: "new_string", Type: "string", Required: true}},
 		Doc:    "精确替换——old_string 必须在文件中唯一匹配（0 或 >1 都报错）。\n\n原子写；这是编程任务的主编辑通道。",
