@@ -136,9 +136,10 @@
     box-shadow: 0 0 0 2px rgba(16, 163, 127, 0.5);
   }
 }
-/* ===== 子 Agent 执行面板（与大纲同栏，分隔线分节） ===== */
-/* 分节线：两个面板同栏并列，用一条发丝线分开——不做页签系统（页签会让两个面板
- * 互斥可见，而用户恰恰要同时看「我说过什么」与「子 Agent 跑到哪」）。 */
+/* ===== 子 Agent 执行面板（已不再挂载：右栏换成了轮次树 TurnPanel） =====
+ * 这一节的规则与 .aside-sep / .aside-sub-head 一起保留：OutlinePanel / SubAgentPanel 两个
+ * 组件文件也还在（回退用），它们一旦重新挂载就必须有配套样式，删了等于给回退挖坑。 */
+/* 分节线：两个面板同栏并列时用一条发丝线分开（历史形态，见上）。 */
 .aside-sep {
   flex: none;
   height: 1px;
@@ -250,5 +251,207 @@
 @media (max-width: 768px) {
   .outline-aside {
     display: none;
+  }
+}
+
+/* ===== 轮次面板（右栏唯一的面板：把「我说过什么」与「子 Agent 跑到哪」并成一棵按轮次分组的树） =====
+ * 为什么合并：原先并排两个平铺列表，子 Agent 列表里看不出某次派发属于哪一轮（用户原话
+ * 「不方便找到对应的子 Agent」）。分组把「哪一轮」变成结构（组头 + 组内行），而不是靠时间顺序猜。
+ * 为什么是左侧一条竖向导轨线：缩进也能表达层级，但看不出「一组到哪里为止」——导轨线把一组在
+ * 视觉上圈起来，且与「轮次」这个序列语义一致（组头与组内的行都挂在这条线上）。 */
+.turn-panel {
+  /* 运行中的琥珀色没有 :root token（--success / --danger 之外没有语义色 token）。就地声明成
+   * 局部变量：base.css 的 :root 不在本次改动范围，且这个色只属于本面板的运行中状态。 */
+  --turn-run: #d97706;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 8px 8px;
+}
+.turn-list {
+  display: flex;
+  flex-direction: column;
+}
+/* 一轮 = 一个分组：左侧导轨线（::before）串起组头与其下的子 Agent；组间用发丝线分隔
+ * （分组靠线，不靠间距堆叠——十轮以上时纯间距分不出组界）。 */
+.turn-group {
+  position: relative;
+  padding: 2px 0 2px 22px;
+}
+.turn-group + .turn-group {
+  border-top: 1px solid var(--border-soft);
+}
+.turn-group::before {
+  content: "";
+  position: absolute;
+  left: 8px;
+  top: 2px;
+  bottom: 2px;
+  width: 1px;
+  background: var(--border);
+}
+/* 行（组头与组内的子 Agent 共用一套皮）：套件按钮的外观在这里被拆掉——它是列表行不是
+ * 按钮（无边框、无按钮底色、整行可点、左对齐）。行高紧凑：这是导航面板，不是阅读面板。 */
+.turn-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  padding: 4px 6px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--fg-muted);
+  text-align: left;
+}
+.turn-row.fd-btn-g {
+  border: none;
+  background: transparent;
+}
+.turn-row.fd-btn-g:hover {
+  color: var(--fg);
+  background: rgba(0, 0, 0, 0.035);
+}
+/* 键盘可达：Tab 到哪一行要看得见（沿用仓库既有的 focus-visible 描边做法） */
+.turn-row.fd-btn-g:focus-visible {
+  outline: 2px solid var(--fg-muted);
+  outline-offset: 1px;
+}
+/* 当前项：一条左侧高亮条，而不是整块变色——整块变色会与 hover 抢同一份视觉重量，
+ * 而「点过的行」与「正在跑的行」在面板里是两种并存的状态，不该共用一个底色。 */
+.turn-row[data-active="true"]::before {
+  content: "";
+  position: absolute;
+  /* 导轨线在行的左外侧 14px 处（.turn-group 的 padding-left 22px − 导轨 left 8px）：
+   * 高亮条压在导轨上，读起来就是「当前轮/当前行」这个节点。 */
+  left: -14px;
+  top: 3px;
+  bottom: 3px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--success);
+}
+/* 轮次序号：小号等宽徽标（muted）——它是导航用的位置索引，不做成抢注意力的大色块 */
+.turn-badge {
+  flex: none;
+  min-width: 16px;
+  padding: 0 3px;
+  border-radius: 4px;
+  background: var(--border-soft);
+  color: var(--fg-faint);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 15px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+/* 组头正文 = 用户说的话：比组内的行重一档（这一轮的身份） */
+.turn-label {
+  flex: 1;
+  min-width: 0;
+  color: var(--fg);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 「会话开始」组头（第一条 user 之前的派发）：没有可跳的锚点 → 不可点，样式上也与可点的
+ * 组头区分开（muted、无 hover 反馈），否则用户会以为点了没反应是坏了 */
+.turn-head-pre .turn-label {
+  color: var(--fg-faint);
+  font-weight: 400;
+}
+/* 色点：与时间线卡片同一个视觉语言（agentColor 由内联样式给；老数据缺席时用中性灰，
+ * 不许留一个看不见的空洞） */
+.turn-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--fg-faint);
+}
+.turn-agent-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 34%;
+  font-weight: 600;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 状态：颜色 + 形状 + 文字三通道。颜色不能是唯一的信息通道（色盲/灰度屏下「执行中 / 完成 /
+ * 失败」靠脉冲点、对勾、叉号仍然分得开）——这是 UI/UX 规范的硬要求，不是可选项。 */
+.turn-state {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  color: var(--fg-muted);
+}
+.turn-agent[data-state="running"] .turn-state {
+  color: var(--turn-run);
+}
+.turn-agent[data-state="done"] .turn-state {
+  color: var(--success);
+}
+.turn-agent[data-state="error"] .turn-state {
+  color: var(--danger);
+}
+/* 运行中的呼吸点：节奏与 .job-dot / .sdot 一致（1.6s——全应用只有一种「在跑」的节奏） */
+.turn-pulse {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: turn-breathe 1.6s ease-in-out infinite;
+}
+@keyframes turn-breathe {
+  50% { opacity: 0.35; }
+}
+/* 任务摘要：单行截断（完整原文在 title 里） */
+.turn-task {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--fg-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.turn-empty {
+  padding: 8px 4px;
+  font-size: 11.5px;
+  color: var(--fg-faint);
+}
+/* 面板头：标题 + 轮次数竖排（240px 宽横排放不下「轮次」与「共 7 轮 · 12 次派发」两段文字） */
+.turn-head-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+/* 竖排里必须收回 .outline-title 的 flex:1：那是给横排（标题占满、按钮靠右）写的，
+ * 在纵向 flex 容器里 flex-basis 是**高度**——标题会被压成 0 高，整行看不见字。 */
+.turn-head-text .outline-title {
+  flex: none;
+}
+.turn-count {
+  flex: none;
+  font-size: 10.5px;
+  color: var(--fg-faint);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* 动效减免：运行中的呼吸点必须静止。信息不靠动效承载——点还在、文字「执行中」还在、
+ * 颜色与形状都没变，静止同样读得出来。这条减免只能写在本文件内：panels.css 在
+ * responsive.css 之后加载，写在那边的 animation:none 会被这里的 animation 覆盖回去。 */
+@media (prefers-reduced-motion: reduce) {
+  .turn-pulse {
+    animation: none;
   }
 }

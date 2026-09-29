@@ -24,10 +24,10 @@ import type { SlashCommand } from "./components/composer/SlashPalette";
 import { TabBar } from "./components/topbar/TabBar";
 import { SettingsPanel } from "./components/settings";
 import { Button } from "./components/form";
-import { OutlinePanel } from "./components/panels/OutlinePanel";
-import { outlineItems } from "./components/panels/outline";
-import { SubAgentPanel } from "./components/panels/SubAgentPanel";
-import { dispatchItems } from "./components/panels/dispatch-list";
+// 右栏面板：轮次树（TurnPanel）取代了原先并排的 OutlinePanel + SubAgentPanel——
+// 那两个组件与它们的测试仍在（回退用），只是不再挂载。
+import { TurnPanel } from "./components/panels/TurnPanel";
+import { turnGroups } from "./components/panels/turns";
 import { SettingsProvider, useSettings } from "./shared/settings";
 import { ConnectionsProvider } from "./shared/connections";
 import { UpdateProvider } from "./shared/update";
@@ -233,23 +233,25 @@ function AppBody({ source }: { source: AgentSource }) {
       });
   }, [editDraft, source, currentId, sendWithOptions, reportError, injectDraft]);
 
-  // ---- 右侧「已发送消息」大纲 ----
-  // 条目来自纯函数（只取 user 块——提示条 notice 在历史里也是 user 角色消息，但它
-  // 不是用户说的话，列进「我发过的消息」是错的）。判定与截断都在 panels/outline.ts。
-  const outline = useMemo(() => outlineItems(state.blocks), [state.blocks]);
-  /** 最近跳转的那条（高亮跟随点击）。它可能已经不在列表里（撤回/切会话），
+  // ---- 右侧「轮次」面板 ----
+  // 分组来自纯函数：一条 user 块开一轮，其后的派发都归入该轮（判定与摘要都在
+  // panels/turns.ts——提示条 notice 在历史里也是 user 角色消息，但它不开新轮）。
+  const groups = useMemo(() => turnGroups(state.blocks), [state.blocks]);
+  /** 面板头的轮次数（如「共 7 轮 · 12 次派发」）。 */
+  const dispatchCount = groups.reduce((n, group) => n + group.agents.length, 0);
+  /** 最近跳转的那个块（高亮跟随点击）。它可能已经不在列表里（撤回/切会话），
    *  所以取用时再确认一次存在性。 */
   const [jumpedUid, setJumpedUid] = useState<number | null>(null);
-  const lastUserUid = outline.length > 0 ? outline[outline.length - 1].uid : null;
-  const activeOutlineUid = jumpedUid !== null && outline.some((item) => item.uid === jumpedUid) ? jumpedUid : lastUserUid;
-
-  // ---- 右侧「子 Agent 执行」面板 ----
-  // 与大纲**共用同一个 jumpedUid**：两个面板都只是「跳到时间线某张卡」的入口，
-  // 高亮跟随最近一次跳转（条目可能已被撤回/切会话清掉，所以取用时再确认一次存在性）。
-  // 默认高亮最近一次派发——用户最关心的通常是刚发出去那一个跑到哪了。
-  const dispatches = useMemo(() => dispatchItems(state.blocks), [state.blocks]);
-  const lastDispatchUid = dispatches.length > 0 ? dispatches[dispatches.length - 1].uid : null;
-  const activeDispatchUid = jumpedUid !== null && dispatches.some((item) => item.uid === jumpedUid) ? jumpedUid : lastDispatchUid;
+  /** 默认高亮最后一轮的组头（最近发的那条用户消息）——沿用原大纲的算法。
+   *
+   *  存在性判据必须**同时**覆盖组头与组内的子 Agent：点组内某个子 Agent 时 jumpedUid
+   *  是那条派发卡的 uid，只在组头里找会把它判成「不存在」而回落到最后一轮——点谁谁不亮。
+   *  最后一条 user 之前的「会话开始」组没有锚点（uid: null），跳过它继续往前找。 */
+  const lastTurnUid = groups.reduce<number | null>((acc, group) => (group.uid !== null ? group.uid : acc), null);
+  const activeUid =
+    jumpedUid !== null && groups.some((group) => group.uid === jumpedUid || group.agents.some((agent) => agent.uid === jumpedUid))
+      ? jumpedUid
+      : lastTurnUid;
   const targetTimerRef = useRef<number | null>(null);
   /** 跳到某条已发送消息：这里**只记目标**，滚动与高亮交给 Thread。
    *
@@ -322,13 +324,23 @@ function AppBody({ source }: { source: AgentSource }) {
           </div>
           <aside className="outline-aside" data-open={outlineOpen ? "true" : "false"}>
             <div className="outline-head">
-              {outlineOpen && <span className="outline-title">已发送消息</span>}
+              {/* 标题与轮次数竖排：240px 宽横排放不下「轮次」与「共 7 轮 · 12 次派发」两段字 */}
+              {outlineOpen && (
+                <div className="turn-head-text">
+                  <span className="outline-title">轮次</span>
+                  {groups.length > 0 && (
+                    <span className="turn-count">
+                      共 {groups.length} 轮 · {dispatchCount} 次派发
+                    </span>
+                  )}
+                </div>
+              )}
               {/* 开合按钮走表单套件（裸 button = OS 默认灰皮） */}
               <Button
                 className="outline-toggle"
                 aria-expanded={outlineOpen}
-                aria-label={outlineOpen ? "收起大纲" : "展开大纲"}
-                title={outlineOpen ? "收起大纲" : "展开大纲"}
+                aria-label={outlineOpen ? "收起轮次面板" : "展开轮次面板"}
+                title={outlineOpen ? "收起轮次面板" : "展开轮次面板"}
                 onClick={() => setOutlineOpen((open) => !open)}
               >
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
@@ -336,19 +348,9 @@ function AppBody({ source }: { source: AgentSource }) {
                 </svg>
               </Button>
             </div>
-            {outlineOpen && <OutlinePanel items={outline} activeUid={activeOutlineUid} onJump={handleOutlineJump} />}
-            {/* 第二个面板（子 Agent 执行）与大纲同栏、一条分隔线分节——不做页签系统：
-             *  两个面板各自独立滚动，用户扫一眼就能同时看到「我说过什么」与「子 Agent 跑到哪」。
+            {/* 唯一的右栏面板：按轮次分组的树（一条用户消息一轮，其下的子 Agent 挂在组内）。
              *  跳转复用同一个 handleOutlineJump（扩窗 + 滚 + 高亮都在 Thread 里，面板不碰 DOM）。 */}
-            {outlineOpen && (
-              <>
-                <div className="aside-sep" />
-                <div className="outline-head aside-sub-head">
-                  <span className="outline-title">子 Agent 执行</span>
-                </div>
-                <SubAgentPanel items={dispatches} activeUid={activeDispatchUid} onJump={handleOutlineJump} />
-              </>
-            )}
+            {outlineOpen && <TurnPanel groups={groups} activeUid={activeUid} onJump={handleOutlineJump} />}
           </aside>
         </div>
       );
