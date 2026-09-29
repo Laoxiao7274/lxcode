@@ -148,7 +148,7 @@ export type AgentEvent =
    *  归约是**幂等**的：本地乐观截断（发起撤回时立刻清空时间线）已经把锚点删掉了，
    *  后端广播随后到达时找不到锚点就原样返回——不幂等的话重复到达会再切一刀，
    *  把更早的消息也一起删掉。 */
-  | { type: "rewound"; sessionId: string; seq: number; removed: number }
+  | { type: "rewound"; sessionId: string; seq: number; removed: number; context?: ContextUsage }
   /** 历史载入（连接/切会话后）——全量重建对话视图。 */
   | { type: "historyLoaded"; sessionId: string; history: HistorySnapshot }
   /** 后台任务起了（时间线插一张任务卡）。sessionId = 任务归属会话——

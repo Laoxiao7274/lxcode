@@ -32,12 +32,19 @@ func repairToolArgsForWire(args string) string {
 	return "{}"
 }
 
-// sanitizeMessagesForWire 复制出一份可发出的消息：含工具调用的消息逐条复制再修
-// 参数，**不就地改写调用方的历史**（内存历史是会话的共享状态，请求组装不该改它）。
+// sanitizeMessagesForWire 复制出一份可发出的消息：清掉会话簿记字段、含工具调用的
+// 消息逐条复制再修参数，**不就地改写调用方的历史**（内存历史是会话的共享状态，
+// 请求组装不该改它）。
+//
+// 为什么连 Seq 一起清：它是会话内的序号（前端拿它当撤回锚点），模型看不见也不需要，
+// 发出去只会给严格网关多一个未知字段（AGENTS.md §5 坑 13 的同类：多一个字段就被
+// 400 拒收整轮）。anthropic 那条路径另建 anthropicMessage 结构体，本来就不受影响——
+// 这里守住的是唯一直接序列化 Message 的 openai 路径。
 func sanitizeMessagesForWire(msgs []Message) []Message {
 	out := make([]Message, len(msgs))
 	copy(out, msgs)
 	for i := range out {
+		out[i].Seq = 0
 		if len(out[i].ToolCalls) == 0 {
 			continue
 		}

@@ -26,22 +26,32 @@ func checkpointIndexes(msgs []llm.Message) []int {
 
 func (s *Session) append(m llm.Message) {
 	s.mu.Lock()
+	// 序号归 store：先落盘拿到号再入内存历史，两边同号（前端按 seq 撤回时
+	// 内存与库必须指向同一条消息）
+	m.Seq = s.persistLocked(m)
 	s.history = append(s.history, m)
-	s.persistLocked(m)
 	s.mu.Unlock()
 }
 
-// persistLocked 落盘（调用方持锁；store 挂了才做，失败只记日志不回滚内存——
-// 内存才是运行真源，磁盘落后最多丢"最后几条"，比让整轮对话因 IO 抖动失败好）。
-func (s *Session) persistLocked(m llm.Message) {
+// persistLocked 落盘并返回 store 分配的序号（调用方持锁；store 挂了才做，
+// 失败只记日志不回滚内存——内存才是运行真源，磁盘落后最多丢"最后几条"，
+// 比让整轮对话因 IO 抖动失败好）。
+//
+// 返回 0 = 没有存储或落盘失败：那条消息在内存里没有序号，前端拿不到撤回锚点
+// （它本来就没进库，撤回它也删不掉库里的东西——不编一个假号是唯一诚实的做法）。
+func (s *Session) persistLocked(m llm.Message) int64 {
 	if s.st == nil {
-		return
+		return 0
 	}
-	if s.ensureSessionLocked() == nil {
-		if err := s.st.AppendMsg(s.id, m); err != nil {
-			log.Printf("会话落盘失败（继续运行）: %v", err)
-		}
+	if s.ensureSessionLocked() != nil {
+		return 0
 	}
+	seq, err := s.st.AppendMsg(s.id, m)
+	if err != nil {
+		log.Printf("会话落盘失败（继续运行）: %v", err)
+		return 0
+	}
+	return seq
 }
 
 // ensureSessionLocked 懒创建当前会话行（首条消息才建，避免空会话记录）。调用方持锁。

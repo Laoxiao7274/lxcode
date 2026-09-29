@@ -313,9 +313,12 @@ func (s *Session) Send(text string, opts ...SendOpt) error {
 		return ErrBusy
 	}
 	s.busy = true
+	// 先落盘拿序号再入历史：chat.userMessage 实时事件要带 seq（前端拿它当撤回
+	// 锚点），只让"刷新后的历史"有序号等于这条消息当场就撤不了——用户点撤回时
+	// 前端手里没有锚点。
 	userMsg := llm.Message{Role: "user", Content: text}
+	userMsg.Seq = s.persistLocked(userMsg)
 	s.history = append(s.history, userMsg)
-	s.persistLocked(userMsg)
 	// 权限模式**存进会话**（会话级实时状态，runTools 每次现读——见 LiveApproval）：
 	// 显式给了就按请求级覆盖（chat.send 的参数语义不变，请求级优先），没给则
 	// 只在还没定过时回落 Agent 默认——CLI 路径不带参数，别把用户中途选的档位

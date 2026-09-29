@@ -650,6 +650,93 @@ func TestCompactionPayloads(t *testing.T) {
 	})
 }
 
+// TestChatRewindPayloads：chat.rewind 的 wire 形状（参数/结果/事件键名与往返），以及
+// seq 必须**同时**出现在两条给前端的路径上（chat.history 的 messages[] 与
+// chat.userMessage 的 message）。字段改名不编译报错、只静默丢字段——所以形状由测试钉住。
+func TestChatRewindPayloads(t *testing.T) {
+	t.Run("方法名与事件名不同名且命名不漂移", func(t *testing.T) {
+		if MethodChatRewind == EventRewound {
+			t.Fatal("方法名与事件名不得重名（dispatch 与事件处理会撞车）")
+		}
+		if MethodChatRewind != "chat.rewind" || EventRewound != "chat.rewound" {
+			t.Fatalf("命名漂移: %s / %s", MethodChatRewind, EventRewound)
+		}
+	})
+
+	t.Run("ChatRewindParams（session_id + seq 键名与往返）", func(t *testing.T) {
+		b := mustMarshal(t, ChatRewindParams{SessionID: "s1", Seq: 7})
+		var m map[string]any
+		mustUnmarshal(t, b, &m)
+		if m["session_id"] != "s1" || m["seq"].(float64) != 7 {
+			t.Fatalf("参数键名不符: %s", b)
+		}
+		var got ChatRewindParams
+		mustUnmarshal(t, b, &got)
+		if got.SessionID != "s1" || got.Seq != 7 {
+			t.Fatalf("参数往返丢字段: %+v", got)
+		}
+	})
+
+	t.Run("ChatRewindResult（removed 恒发，0 也要有键）", func(t *testing.T) {
+		b := mustMarshal(t, ChatRewindResult{Removed: 3})
+		var m map[string]any
+		mustUnmarshal(t, b, &m)
+		if m["removed"].(float64) != 3 {
+			t.Fatalf("结果键名不符: %s", b)
+		}
+		// 幂等空操作（removed=0）也要显式回 0：客户端据此确认"确实没有东西可删"，
+		// 整键缺席会被当成服务端没实现这个字段
+		b0 := mustMarshal(t, ChatRewindResult{})
+		if !strings.Contains(string(b0), `"removed":0`) {
+			t.Fatalf("removed 应恒发: %s", b0)
+		}
+	})
+
+	t.Run("ChatRewoundParams（seq/removed + context 未知时整键缺席）", func(t *testing.T) {
+		b := mustMarshal(t, ChatRewoundParams{
+			SessionID: "s1", Seq: 7, Removed: 3,
+			Context: &ContextUsage{Used: 900, Window: 32768, Messages: 900},
+		})
+		var m map[string]any
+		mustUnmarshal(t, b, &m)
+		if m["session_id"] != "s1" || m["seq"].(float64) != 7 || m["removed"].(float64) != 3 {
+			t.Fatalf("事件键名不符: %s", b)
+		}
+		// context 用的是**同一个** ContextUsage 形状（前端不必认第二个结构）
+		ctx, ok := m["context"].(map[string]any)
+		if !ok || ctx["used"].(float64) != 900 || ctx["window"].(float64) != 32768 {
+			t.Fatalf("context 应为同一个 ContextUsage 形状: %s", b)
+		}
+		// 未知（本会话还没跑过主轮 / 纯内存模式）时整键缺席——发零值等于显示 0%，
+		// 那是编出来的假信息（前端显示中性态）
+		b2 := mustMarshal(t, ChatRewoundParams{SessionID: "s1", Seq: 7})
+		if strings.Contains(string(b2), "context") {
+			t.Fatalf("未知占用应整键缺席: %s", b2)
+		}
+	})
+
+	t.Run("seq 在历史消息与实时用户消息上都在（同一个字段名）", func(t *testing.T) {
+		b := mustMarshal(t, ChatHistoryResult{Messages: []llm.Message{{Role: "user", Content: "hi", Seq: 3}}})
+		var hist map[string]any
+		mustUnmarshal(t, b, &hist)
+		msgs, ok := hist["messages"].([]any)
+		if !ok || len(msgs) != 1 || msgs[0].(map[string]any)["seq"].(float64) != 3 {
+			t.Fatalf("chat.history 的 messages[].seq 丢了: %s", b)
+		}
+		b2 := mustMarshal(t, UserMessageParams{SessionID: "s1", Message: llm.Message{Role: "user", Content: "hi", Seq: 4}})
+		var ev map[string]any
+		mustUnmarshal(t, b2, &ev)
+		if ev["message"].(map[string]any)["seq"].(float64) != 4 {
+			t.Fatalf("chat.userMessage 的 message.seq 丢了: %s", b2)
+		}
+		// 序号 0 = 还没落库的消息：不发键，不能编一个 0 号让前端当撤回锚点
+		b3 := mustMarshal(t, llm.Message{Role: "assistant", Content: "没落库"})
+		if strings.Contains(string(b3), "seq") {
+			t.Fatalf("未落库的消息不应带 seq: %s", b3)
+		}
+	})
+}
+
 // TestChatApprovalPayloads：chat.approval 的 wire 形状（参数/结果/事件键名与往返）。
 // 字段改名不编译报错、只静默丢字段——所以形状必须由测试钉住。
 func TestChatApprovalPayloads(t *testing.T) {
@@ -720,6 +807,7 @@ func TestSessionScopedWireFields(t *testing.T) {
 		{"chat.history", ChatHistoryParams{SessionID: "s1"}},
 		{"chat.compact", CompactParams{SessionID: "s1"}},
 		{"chat.approval", ChatApprovalParams{SessionID: "s1", Approval: ApprovalAuto}},
+		{"chat.rewind", ChatRewindParams{SessionID: "s1", Seq: 1}},
 		{"tool.confirm", ToolConfirmParams{SessionID: "s1", ID: "c1", Allow: true}},
 	}
 	for _, tc := range requestCases {
@@ -737,6 +825,7 @@ func TestSessionScopedWireFields(t *testing.T) {
 			UserMessageParams{SessionID: "s1"}, DeltaParams{SessionID: "s1"},
 			BusyParams{SessionID: "s1"}, CompactedParams{SessionID: "s1"},
 			ApprovalChangedParams{SessionID: "s1"},
+			ChatRewoundParams{SessionID: "s1"},
 		} {
 			var payload map[string]any
 			mustUnmarshal(t, mustMarshal(t, params), &payload)

@@ -90,7 +90,7 @@ function reduceUserMessage(state: UIState, ev: Ev<"userMessage">): UIState {
 function reduceRewound(state: UIState, ev: Ev<"rewound">): UIState {
   const plan = planRewind(state.blocks, ev.seq);
   if (!plan) return state;
-  return { ...state, blocks: plan.blocks, context: null };
+  return { ...state, blocks: plan.blocks, context: ev.context ?? null };
 }
 
 /** delta 事件的处理（从 reduce 的 switch 里提出来——原来 213 行的 switch

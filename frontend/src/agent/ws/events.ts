@@ -83,7 +83,9 @@ export function mapEvent(method: string, params: unknown): AgentEvent | null {
       // 会话回退：seq 这条用户消息及其之后的全部历史被后端删掉了。这个事件既是
       // 「别的客户端撤回了」的同步，也是本地乐观截断的权威确认——归约器按同一份
       // 判定处理，重复到达是幂等 no-op（见 reduce.ts 的 reduceRewound）。
-      return { type: "rewound", sessionId, seq: Number(p.seq ?? 0), removed: Number(p.removed ?? 0) };
+      // context：后端重算后的占用（撤回删掉一截历史，旧数字一定是错的）。未知时
+      // 整键缺席——那时归约器回落中性态「—」，不编一个数。
+      return { type: "rewound", sessionId, seq: Number(p.seq ?? 0), removed: Number(p.removed ?? 0), context: (p.context as ContextUsage | undefined) ?? undefined };
     case "chat.confirmRequest":
       return { type: "confirmRequest", sessionId, request: p as unknown as ConfirmRequest };
     case "todo.updated":

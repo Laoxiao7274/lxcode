@@ -39,6 +39,11 @@ const (
 	// 与 chat.send 的 approval 参数的区别：那个是「这一轮用哪一档」，这个是
 	// 「从现在起这个会话用哪一档」——用户的当前意图是会话级实时状态。
 	MethodChatApproval = "chat.approval"
+	// MethodChatRewind 撤回（rewind）：把 seq 那条消息**及其之后的全部历史**
+	// 从会话里删掉（那条消息的正文由客户端自己留在输入框里，用户改完重发）。
+	// 空闲才允许——正在跑的一轮手里握着历史快照，抽掉它等于让模型按一份
+	// 已经不存在的上下文继续（与 chat.compact 同款纪律，服务端回 ErrBusy）。
+	MethodChatRewind = "chat.rewind"
 
 	// 会话管理（持久化 + 切换）
 	MethodSessionList            = "session.list"
@@ -129,6 +134,7 @@ const (
 	EventDispatchStart  = "chat.dispatchStart" // 主 Agent 派发子 Agent——客户端渲染 dispatch 卡
 	EventDispatchEnd    = "chat.dispatchEnd"   // 子 Agent 执行收尾——dispatch 卡定格带结果
 	EventCompacted      = "chat.compacted"     // 历史被压缩（前缀替换成摘要检查点）——客户端插标记块
+	EventRewound        = "chat.rewound"       // 会话被撤回（seq 及其之后的历史已删除）——客户端截断时间线
 	EventSearchChanged  = "search.changed"     // 搜索渠道配置变更——客户端重拉 search.channels.list
 	// EventJobStarted / EventJobSettled 是后台任务的状态广播（载荷 = JobInfo）：
 	// settled 带 EndedBy，前端据此显示「你停的 / 它挂了 / 超时 / 后端重启中断」。
@@ -410,6 +416,43 @@ type CompactedParams struct {
 	DispatchID string `json:"dispatch_id,omitempty"`
 }
 
+// ChatRewindParams 是 chat.rewind 的参数：seq 是要撤回的那条消息的序号
+// （= chat.history 的 messages[].seq，也是 chat.userMessage 的 params.message.seq）。
+// 前端把自己那条消息的 seq 当锚点发回来——服务端不需要正文（撤回不改内容，
+// 那条消息的文本本来就在用户的输入框里）。
+type ChatRewindParams struct {
+	SessionID string `json:"session_id"`
+	Seq       int64  `json:"seq"`
+}
+
+// ChatRewindResult 是 chat.rewind 的结果：Removed = 从会话历史里删掉的条数
+// （那条消息及其之后的全部历史）。重复撤回同一条返回 removed=0——那是幂等空操作，
+// 不是错误（客户端重试/两个客户端同时点撤回都不该报错）。
+type ChatRewindResult struct {
+	Removed int `json:"removed"`
+}
+
+// ChatRewoundParams 是 chat.rewound 事件的载荷：宿主据此**截断时间线**
+// （seq 之前的保留、seq 及其之后的丢弃）并刷新上下文指示器。
+//
+// 为什么是广播事件而不是「让客户端收到结果后自己重拉历史」：撤回是一个
+// **多客户端可见的状态变更**（壳与浏览器同时开着时两边必须一致），广播让每个
+// 客户端都在同一时刻收到同一份事实；而「重拉」要求每个客户端自己知道去拉、
+// 并且在与流式增量交错时自己算清该丢哪一段（重拉与增量并发时会闪回旧内容）。
+// 载荷带 seq/removed 而不是只给一个"变了"的信号：客户端本地就能精确截断，
+// 一次网络往返都不需要。
+type ChatRewoundParams struct {
+	SessionID string `json:"session_id"`
+	Seq       int64  `json:"seq"`
+	Removed   int    `json:"removed"`
+	// Context 是**重算后**的上下文占用，与 chat.done / ChatHistoryResult.context
+	// 同一个结构与同一套语义（撤回删了一段历史，撤回前的数字一定是错的——
+	// 客户端拿它直接刷新指示器，不必等下一轮，也不必自己按 -removed 猜）。
+	// 未知（纯内存模式 / 本会话还没跑过主轮）时整键缺席：发零值等于显示 0%，
+	// 那是编出来的假信息（本仓库既有纪律：未知就显示中性态）。
+	Context *ContextUsage `json:"context,omitempty"`
+}
+
 // TodoUpdatedParams 是 todo.updated 事件的载荷：完整清单（全量替换语义）。
 type TodoUpdatedParams struct {
 	SessionID string           `json:"session_id"`
@@ -513,7 +556,7 @@ type SessionMeta struct {
 // 也不要求重载某个会话的生成状态。
 type SessionChangedParams struct {
 	ID     string `json:"id"`
-	Reason string `json:"reason"` // created | started | renamed | archived | compacted
+	Reason string `json:"reason"` // created | started | renamed | archived | compacted | rewound
 }
 
 // FileChangeParams 是 files.changed 事件的载荷：一轮的文件改动汇总

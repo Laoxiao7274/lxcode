@@ -139,6 +139,19 @@ type CompactedEvent struct {
 	DispatchID string
 }
 
+// RewoundEvent：一次撤回收尾（历史里 seq 及其之后的消息已从内存与库中删除）。
+// 宿主广播给客户端（前端据此截断时间线、刷新上下文指示器）——与 CompactedEvent
+// 同款：这是一次**改变历史**的事务收尾，客户端必须收到通知而不是自己猜。
+type RewoundEvent struct {
+	Seq     int64
+	Removed int
+	// Context 是**重算后**的上下文占用：撤回删掉了一段历史，旧数字一定是错的，
+	// 客户端拿它直接刷新指示器而不必等下一轮。零值 = 未知（纯内存模式 / 本会话
+	// 还没跑过主轮），wire 上整键缺席——客户端显示中性态而不是编一个数
+	//（与 chat.done / ChatHistoryResult 的 context 同一套语义）。
+	Context ContextUsage
+}
+
 func (UserMsgEvent) isEvent()        {}
 func (DeltaEvent) isEvent()          {}
 func (ToolCallEvent) isEvent()       {}
@@ -153,6 +166,7 @@ func (SessionStartedEvent) isEvent() {}
 func (DispatchStartEvent) isEvent()  {}
 func (DispatchEndEvent) isEvent()    {}
 func (CompactedEvent) isEvent()      {}
+func (RewoundEvent) isEvent()        {}
 
 // Snapshot 是宿主初始化/重连时的会话同步载荷（History 的返回值）。
 type Snapshot struct {

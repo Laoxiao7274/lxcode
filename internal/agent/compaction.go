@@ -231,38 +231,24 @@ func (s *Session) runCompaction(ctx context.Context, ac *sessiondata.AgentContex
 	replaced = append(replaced, s.history[end+1:]...)
 	s.history = replaced
 	if s.st != nil && id != "" {
-		if err := s.st.AppendCheckpoint(id, checkpoint, start, shadowed); err != nil {
+		seq, err := s.st.AppendCheckpoint(id, checkpoint, start, shadowed)
+		if err != nil {
 			s.history = snapshot // 回滚：内存与库必须一致
 			s.mu.Unlock()
 			return CompactResult{}, fmt.Errorf("检查点落库失败（历史未改动）: %w", err)
 		}
+		// 检查点的序号也要进内存那一条（chat.history 直接回放内存历史）：
+		// 不写的话"刷新后"与"不刷新"的同一条摘要有两个不同的号
+		s.history[start].Seq = seq
 	}
 	after := 0
 	for _, m := range s.history {
 		after += estimateMessageTokens(m)
 	}
 	// 占用测量要跟着压缩走：不更新的话指示器会一直停在压缩前的数字
-	//（实测踩过——压缩成功了但环里还是旧占用）。用锚定算术：新占用 =
-	// 旧真实占用 − 被压段估算 + 检查点估算（真实锚点保留，只调整差值）。
-	if prev.Used > 0 {
-		used := prev.Used - regionTokens + summaryTokens
-		if used < 0 {
-			used = 0
-		}
-		hist := estimateContextUsage("", nil, s.history)
-		u := ContextUsage{
-			System: prev.System, ToolResults: hist.ToolResults,
-			Messages: hist.Messages, Reasoning: hist.Reasoning,
-		}
-		u = u.anchoredTo(used)
-		u.Window = prev.Window
-		s.context = u
-	} else {
-		// 还没有真实锚点（本会话没跑过主轮）：按估算重建，窗口沿用旧值
-		u := estimateContextUsage("", nil, s.history)
-		u.Window = prev.Window
-		s.context = u
-	}
+	//（实测踩过——压缩成功了但环里还是旧占用）。锚定算术见 reanchoredUsage：
+	// 被压段换成摘要，差值 = 被压段估算 − 摘要估算。
+	s.context = reanchoredUsage(prev, regionTokens-summaryTokens, s.history)
 	s.mu.Unlock()
 
 	return CompactResult{Before: beforeTotal, After: after, Shadowed: shadowed, Summary: summary}, nil

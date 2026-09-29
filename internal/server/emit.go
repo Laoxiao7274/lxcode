@@ -50,6 +50,13 @@ func (s *Server) emitEvent(sessionID string, ev agent.Event) {
 			SessionID: sessionID, Before: e.Result.Before, After: e.Result.After, Shadowed: e.Result.Shadowed,
 			Summary: e.Result.Summary, Manual: e.Manual, DispatchID: e.DispatchID,
 		})
+	case agent.RewoundEvent:
+		// 撤回后前端据此截断时间线（seq 之前的保留、之后的丢弃），不必重拉历史
+		s.broadcast(protocol.EventRewound, protocol.ChatRewoundParams{
+			SessionID: sessionID, Seq: e.Seq, Removed: e.Removed,
+			// toProtocolContext 在未知（Used <= 0）时返回 nil → 整键缺席
+			Context: toProtocolContext(e.Context),
+		})
 	case agent.TodoUpdatedEvent:
 		s.broadcast(protocol.EventTodo, protocol.TodoUpdatedParams{SessionID: sessionID, Items: e.Items})
 	case agent.FilesChangedEvent:

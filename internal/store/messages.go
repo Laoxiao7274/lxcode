@@ -13,31 +13,37 @@ import (
 	"github.com/moyunteng/lxcode/internal/llm"
 )
 
-// AppendMsg 把一条消息追加到会话（事务：INSERT 消息 + UPDATE 会话时间戳）。
-func (s *Store) AppendMsg(id string, m llm.Message) error {
+// AppendMsg 把一条消息追加到会话（事务：INSERT 消息 + UPDATE 会话时间戳），
+// 返回 store 分配的序号（messages.seq，从 1 起）。
+//
+// 为什么要把序号回给调用方：前端要拿它当撤回锚点（chat.rewind 的 seq），而会话历史
+// 有两条给前端的路径（chat.history 回放 / chat.userMessage 实时）——序号必须由**同一个
+// 持有者**（这里）写进消息，两边各算一遍必然漂移（AGENTS.md §2.2 的同类教训：
+// 同一屏两个数字互相矛盾）。
+func (s *Store) AppendMsg(id string, m llm.Message) (int64, error) {
 	toolCalls, err := json.Marshal(m.ToolCalls)
 	if err != nil {
-		return fmt.Errorf("序列化工具调用失败: %w", err)
+		return 0, fmt.Errorf("序列化工具调用失败: %w", err)
 	}
 	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("开事务失败: %w", err)
+		return 0, fmt.Errorf("开事务失败: %w", err)
 	}
 	defer tx.Rollback() // 已提交时是 no-op
 	// seq = 当前会话最大 seq + 1（单会话写入串行，无竞态窗口）
 	var seq int
 	if err := tx.QueryRow(`SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE session_id = ?`, id).Scan(&seq); err != nil {
-		return fmt.Errorf("取序号失败: %w", err)
+		return 0, fmt.Errorf("取序号失败: %w", err)
 	}
 	// 标题懒维护：首条 user 消息截断（写入时算好，List 零计算）
 	if m.Role == "user" {
 		var title string
 		if err := tx.QueryRow(`SELECT title FROM sessions WHERE id = ?`, id).Scan(&title); err != nil {
-			return fmt.Errorf("读标题失败: %w", err)
+			return 0, fmt.Errorf("读标题失败: %w", err)
 		}
 		if title == "" {
 			if _, err := tx.Exec(`UPDATE sessions SET title = ? WHERE id = ?`, clipTitle(m.Content), id); err != nil {
-				return fmt.Errorf("写标题失败: %w", err)
+				return 0, fmt.Errorf("写标题失败: %w", err)
 			}
 		}
 	}
@@ -46,12 +52,15 @@ func (s *Store) AppendMsg(id string, m llm.Message) error {
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, seq, m.Role, m.Content, m.ReasoningContent, m.ReasoningSignature, string(toolCalls), m.ToolCallID,
 	); err != nil {
-		return fmt.Errorf("写消息失败: %w", err)
+		return 0, fmt.Errorf("写消息失败: %w", err)
 	}
 	if _, err := tx.Exec(`UPDATE sessions SET updated_at = ? WHERE id = ?`, nowNano(), id); err != nil {
-		return fmt.Errorf("更新会话时间失败: %w", err)
+		return 0, fmt.Errorf("更新会话时间失败: %w", err)
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return int64(seq), nil
 }
 
 // Load 读出会话的全部消息（按 seq 升序）。会话不存在时报错
@@ -112,6 +121,9 @@ func (s *Store) readRows(id string) ([]rowData, error) {
 			&r.msg.ReasoningSignature, &toolCalls, &r.msg.ToolCallID, &cp, &shadowedSeqs); err != nil {
 			return nil, fmt.Errorf("读消息行失败: %w", err)
 		}
+		// 序号随消息一起回给上层：前端拿它当撤回锚点（chat.rewind 的 seq），
+		// 而「刷新后的历史」与「内存里的历史」必须给出同一个号（否则撤回会打偏）
+		r.msg.Seq = int64(r.seq)
 		if toolCalls != "" && toolCalls != "[]" {
 			if err := json.Unmarshal([]byte(toolCalls), &r.msg.ToolCalls); err != nil {
 				return nil, fmt.Errorf("解析工具调用失败: %w", err)
@@ -213,27 +225,30 @@ func checkpointAnchor(r rowData) int {
 // 自己的历史下标；skip/count 就是它选出的可压区间 [skip, skip+count)。主会话恒为
 // skip=0（压缩区间是前缀，见 selectCompactRange）；子会话保护了头部的任务说明书，
 // 于是 skip=1（那条任务消息留在历史里，摘要从它之后开始）。
-func (s *Store) AppendCheckpoint(id string, m llm.Message, skip, count int) error {
+// 与 AppendMsg 一样把 store 分配的序号回给调用方：检查点也要进内存历史
+// （chat.history 直接回放内存），它在那份历史里的 seq 必须与库里一致——
+// 否则同一条摘要「刷新后」与「不刷新」的序号不同，前端按序号做的任何定位都会错位。
+func (s *Store) AppendCheckpoint(id string, m llm.Message, skip, count int) (int64, error) {
 	toolCalls, err := json.Marshal(m.ToolCalls)
 	if err != nil {
-		return fmt.Errorf("序列化工具调用失败: %w", err)
+		return 0, fmt.Errorf("序列化工具调用失败: %w", err)
 	}
 	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("开事务失败: %w", err)
+		return 0, fmt.Errorf("开事务失败: %w", err)
 	}
 	defer tx.Rollback() // 已提交时是 no-op
 
 	rows, err := s.readRowsTx(tx, id)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	surface := surfaceRows(rows)
 	var shadowedSeqs []int
 	var shadStart, shadEnd int
 	if count > 0 {
 		if skip < 0 || skip+count > len(surface) {
-			return fmt.Errorf("落盘落后于内存：当前历史只有 %d 条，需要影子 [%d, %d)（拒绝写错的影子区间）",
+			return 0, fmt.Errorf("落盘落后于内存：当前历史只有 %d 条，需要影子 [%d, %d)（拒绝写错的影子区间）",
 				len(surface), skip, skip+count)
 		}
 		shadowedSeqs = make([]int, 0, count)
@@ -246,11 +261,11 @@ func (s *Store) AppendCheckpoint(id string, m llm.Message, skip, count int) erro
 
 	var seq int
 	if err := tx.QueryRow(`SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE session_id = ?`, id).Scan(&seq); err != nil {
-		return fmt.Errorf("取序号失败: %w", err)
+		return 0, fmt.Errorf("取序号失败: %w", err)
 	}
 	seqJSON, err := json.Marshal(shadowedSeqs)
 	if err != nil {
-		return fmt.Errorf("序列化影子区间失败: %w", err)
+		return 0, fmt.Errorf("序列化影子区间失败: %w", err)
 	}
 	if _, err := tx.Exec(
 		`INSERT INTO messages (session_id, seq, role, content, reasoning, reasoning_sig, tool_calls, tool_call_id,
@@ -259,12 +274,15 @@ func (s *Store) AppendCheckpoint(id string, m llm.Message, skip, count int) erro
 		id, seq, m.Role, m.Content, m.ReasoningContent, m.ReasoningSignature, string(toolCalls),
 		shadStart, shadEnd, string(seqJSON),
 	); err != nil {
-		return fmt.Errorf("写检查点失败: %w", err)
+		return 0, fmt.Errorf("写检查点失败: %w", err)
 	}
 	if _, err := tx.Exec(`UPDATE sessions SET updated_at = ? WHERE id = ?`, nowNano(), id); err != nil {
-		return fmt.Errorf("更新会话时间失败: %w", err)
+		return 0, fmt.Errorf("更新会话时间失败: %w", err)
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return int64(seq), nil
 }
 
 // readRowsTx 是 readRows 的事务版（落库要在同一事务里读存活集）。
@@ -286,6 +304,9 @@ func (s *Store) readRowsTx(tx *sql.Tx, id string) ([]rowData, error) {
 			&r.msg.ReasoningSignature, &toolCalls, &r.msg.ToolCallID, &cp, &shadowedSeqs); err != nil {
 			return nil, fmt.Errorf("读消息行失败: %w", err)
 		}
+		// 序号随消息一起回给上层：前端拿它当撤回锚点（chat.rewind 的 seq），
+		// 而「刷新后的历史」与「内存里的历史」必须给出同一个号（否则撤回会打偏）
+		r.msg.Seq = int64(r.seq)
 		if toolCalls != "" && toolCalls != "[]" {
 			if err := json.Unmarshal([]byte(toolCalls), &r.msg.ToolCalls); err != nil {
 				return nil, fmt.Errorf("解析工具调用失败: %w", err)
@@ -300,4 +321,105 @@ func (s *Store) readRowsTx(tx *sql.Tx, id string) ([]rowData, error) {
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// Rewind 撤回：把 seq 那条消息**及其之后的全部历史**从会话里删掉，返回从当前历史里
+// 移除的条数。幂等：锚点已经不在当前历史里（重复撤回、序号不存在）返回 0，不报错——
+// 重复撤回与两个客户端同时点撤回都是正常交互，不该变成错误码。
+//
+// 为什么「seq >= N」不能直接套在检查点上：压缩检查点行是**追加在末尾**的（它的 seq 比
+// 它顶替的那段历史里任何一行都大），但它顶替的是那段历史在**历史顺序**里的位置。按行号
+// 一刀切会把一个位置在锚点**之前**的摘要一起删掉，被它影子掉的原文随即「复活」——磁盘
+// 回放（Load）就与内存历史分叉了（内存只做截断，不会让旧原文回来）。
+//
+// 所以检查点按**影子集合**判死活：引用已删行的项滤掉；滤空了说明它影子掉的整段都在锚点
+// 之后（没有影子可替了），整条删掉。检查点只可能引用**比自己更早**的行（影子集合取自创建
+// 那一刻的存活行），所以按 seq 降序遍历 + 扫到不动点即可覆盖级联（引用被删检查点）。
+func (s *Store) Rewind(id string, seq int64) (int, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("开事务失败: %w", err)
+	}
+	defer tx.Rollback() // 已提交时是 no-op
+
+	rows, err := s.readRowsTx(tx, id)
+	if err != nil {
+		return 0, err
+	}
+	// 锚点必须在**当前历史**里：被影子掉的原文不是历史（前端看不到它，也就无从撤回它）
+	surface := surfaceRows(rows)
+	idx := -1
+	for i, r := range surface {
+		if int64(r.seq) == seq {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return 0, nil
+	}
+	removed := len(surface) - idx
+
+	// 1) 锚点及其之后的**消息**行直接删（检查点不在此列——见上面的注释）
+	if _, err := tx.Exec(
+		`DELETE FROM messages WHERE session_id = ? AND seq >= ? AND checkpoint = 0`, id, seq); err != nil {
+		return 0, fmt.Errorf("撤回消息失败: %w", err)
+	}
+
+	// 2) 活下来的检查点收缩影子集合；影子全没了就整条删掉
+	deleted := make(map[int]struct{})
+	for _, r := range rows {
+		if !r.checkpoint && int64(r.seq) >= seq {
+			deleted[r.seq] = struct{}{}
+		}
+	}
+	// 反复扫到不动点：检查点 A 可能引用检查点 B，而 B 在这一趟里才被删掉（引用被删检查点
+	// 的项同样不许留）——一趟过后 A 的影子集合会变，所以必须扫到没有变化为止。
+	// 检查点数量极少（每次压缩一条），这个循环实际只跑一两趟。
+	for changed := true; changed; {
+		changed = false
+		for i := len(rows) - 1; i >= 0; i-- {
+			r := rows[i]
+			if !r.checkpoint || len(r.shadowed) == 0 {
+				continue // 非检查点行归上面那条 DELETE 管；无影子集合的退化检查点不受撤回影响
+			}
+			if _, gone := deleted[r.seq]; gone {
+				continue // 上一趟已经删掉了它（不跳过会永远"删"同一条，循环停不下来）
+			}
+			kept := make([]int, 0, len(r.shadowed))
+			for _, sh := range r.shadowed {
+				if _, gone := deleted[sh]; !gone {
+					kept = append(kept, sh)
+				}
+			}
+			if len(kept) == 0 {
+				if _, err := tx.Exec(`DELETE FROM messages WHERE session_id = ? AND seq = ?`, id, r.seq); err != nil {
+					return 0, fmt.Errorf("撤回检查点失败: %w", err)
+				}
+				deleted[r.seq] = struct{}{}
+				changed = true
+				continue
+			}
+			if len(kept) == len(r.shadowed) {
+				continue // 影子一个没少：不动它（省一次写，也免得把顺序写乱）
+			}
+			b, err := json.Marshal(kept)
+			if err != nil {
+				return 0, fmt.Errorf("序列化影子区间失败: %w", err)
+			}
+			if _, err := tx.Exec(`UPDATE messages SET shadowed_seqs = ? WHERE session_id = ? AND seq = ?`,
+				string(b), id, r.seq); err != nil {
+				return 0, fmt.Errorf("收缩影子区间失败: %w", err)
+			}
+			r.shadowed = kept
+			changed = true
+		}
+	}
+	if _, err := tx.Exec(`UPDATE sessions SET updated_at = ? WHERE id = ?`, nowNano(), id); err != nil {
+		return 0, fmt.Errorf("更新会话时间失败: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return removed, nil
 }

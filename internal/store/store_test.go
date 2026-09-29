@@ -39,7 +39,7 @@ func TestCreateAndLoad(t *testing.T) {
 		{Role: "tool", ToolCallID: "t1", Content: "内容"},
 	}
 	for _, m := range msgs {
-		if err := s.AppendMsg(id, m); err != nil {
+		if _, err := s.AppendMsg(id, m); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -82,12 +82,12 @@ func TestLatest(t *testing.T) {
 		t.Fatalf("空库应无最近会话, got %q", id)
 	}
 	id1, _ := s.Create()
-	if err := s.AppendMsg(id1, llm.Message{Role: "user", Content: "先"}); err != nil {
+	if _, err := s.AppendMsg(id1, llm.Message{Role: "user", Content: "先"}); err != nil {
 		t.Fatal(err)
 	}
 	// id2 更晚写入 → Latest 应指向 id2
 	id2, _ := s.Create()
-	if err := s.AppendMsg(id2, llm.Message{Role: "user", Content: "后"}); err != nil {
+	if _, err := s.AppendMsg(id2, llm.Message{Role: "user", Content: "后"}); err != nil {
 		t.Fatal(err)
 	}
 	got, msgs, err := s.Latest()
@@ -113,11 +113,11 @@ func TestLatest(t *testing.T) {
 func TestListOrderAndTitle(t *testing.T) {
 	s := openTestStore(t)
 	idA, _ := s.Create()
-	if err := s.AppendMsg(idA, llm.Message{Role: "user", Content: "标题来源\n第二行"}); err != nil {
+	if _, err := s.AppendMsg(idA, llm.Message{Role: "user", Content: "标题来源\n第二行"}); err != nil {
 		t.Fatal(err)
 	}
 	idB, _ := s.Create()
-	if err := s.AppendMsg(idB, llm.Message{Role: "user", Content: "更近的会话"}); err != nil {
+	if _, err := s.AppendMsg(idB, llm.Message{Role: "user", Content: "更近的会话"}); err != nil {
 		t.Fatal(err)
 	}
 	metas, err := s.List()
@@ -141,7 +141,7 @@ func TestListOrderAndTitle(t *testing.T) {
 func TestRenameAndArchive(t *testing.T) {
 	s := openTestStore(t)
 	id, _ := s.Create()
-	if err := s.AppendMsg(id, llm.Message{Role: "user", Content: "hello"}); err != nil {
+	if _, err := s.AppendMsg(id, llm.Message{Role: "user", Content: "hello"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Rename(id, "  新名字  "); err != nil {
@@ -176,14 +176,14 @@ func TestRenameAndArchive(t *testing.T) {
 func TestSearch(t *testing.T) {
 	s := openTestStore(t)
 	id1, _ := s.Create()
-	if err := s.AppendMsg(id1, llm.Message{Role: "user", Content: "Go 语言怎么样"}); err != nil {
+	if _, err := s.AppendMsg(id1, llm.Message{Role: "user", Content: "Go 语言怎么样"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AppendMsg(id1, llm.Message{Role: "assistant", Content: "很好"}); err != nil {
+	if _, err := s.AppendMsg(id1, llm.Message{Role: "assistant", Content: "很好"}); err != nil {
 		t.Fatal(err)
 	}
 	id2, _ := s.Create()
-	if err := s.AppendMsg(id2, llm.Message{Role: "user", Content: "聊聊 Go 的并发"}); err != nil {
+	if _, err := s.AppendMsg(id2, llm.Message{Role: "user", Content: "聊聊 Go 的并发"}); err != nil {
 		t.Fatal(err)
 	}
 	hits, _, err := s.Search(SearchQuery{Pattern: "Go", Max: 10})
@@ -217,7 +217,7 @@ func TestSearch(t *testing.T) {
 func TestSearchExcludesArchived(t *testing.T) {
 	s := openTestStore(t)
 	id, _ := s.Create()
-	if err := s.AppendMsg(id, llm.Message{Role: "user", Content: "唯一关键词"}); err != nil {
+	if _, err := s.AppendMsg(id, llm.Message{Role: "user", Content: "唯一关键词"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Archive(id, true); err != nil {
@@ -250,7 +250,7 @@ func TestSearchContextAndRole(t *testing.T) {
 		{Role: "assistant", Content: "第五句 修好了"},
 		{Role: "user", Content: "第六句 收尾"},
 	} {
-		if err := s.AppendMsg(id, m); err != nil {
+		if _, err := s.AppendMsg(id, m); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -364,7 +364,9 @@ func TestConcurrentAppend(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			errs <- s.AppendMsg(id, llm.Message{Role: "user", Content: fmt.Sprintf("m%d", i)})
+			if _, err := s.AppendMsg(id, llm.Message{Role: "user", Content: fmt.Sprintf("m%d", i)}); err != nil {
+				errs <- err
+			}
 		}(i)
 	}
 	wg.Wait()
@@ -391,7 +393,7 @@ func TestReopenPersistence(t *testing.T) {
 		t.Fatal(err)
 	}
 	id, _ := s1.Create()
-	if err := s1.AppendMsg(id, llm.Message{Role: "user", Content: "重启前的消息"}); err != nil {
+	if _, err := s1.AppendMsg(id, llm.Message{Role: "user", Content: "重启前的消息"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s1.Close(); err != nil {

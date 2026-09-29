@@ -12,14 +12,14 @@ import (
 func TestCreateChildAndListFilters(t *testing.T) {
 	s := openTestStore(t)
 	parent, _ := s.Create()
-	if err := s.AppendMsg(parent, llm.Message{Role: "user", Content: "父会话第一句"}); err != nil {
+	if _, err := s.AppendMsg(parent, llm.Message{Role: "user", Content: "父会话第一句"}); err != nil {
 		t.Fatal(err)
 	}
 	child, err := s.CreateChild(parent, "coder", "call-1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AppendMsg(child, llm.Message{Role: "user", Content: "子任务"}); err != nil {
+	if _, err := s.AppendMsg(child, llm.Message{Role: "user", Content: "子任务"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -46,7 +46,7 @@ func TestCreateChildAndListFilters(t *testing.T) {
 	}
 
 	// 重启恢复（Latest）不能被子会话抢走：先动子会话（更新 updated_at），Latest 仍应是父
-	if err := s.AppendMsg(child, llm.Message{Role: "assistant", Content: "子回复"}); err != nil {
+	if _, err := s.AppendMsg(child, llm.Message{Role: "assistant", Content: "子回复"}); err != nil {
 		t.Fatal(err)
 	}
 	lid, lmsgs, err := s.Latest()

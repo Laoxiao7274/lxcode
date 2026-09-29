@@ -105,3 +105,25 @@ func TestOpenAIRequestSanitizesWithoutMutatingHistory(t *testing.T) {
 		t.Fatalf("不该就地改写调用方持有的历史: %q", msgs[0].ToolCalls[0].Function.Arguments)
 	}
 }
+
+// TestOpenAIRequestDropsSessionSeq：会话序号（前端拿它当撤回锚点）是**我们自己的**
+// 簿记，绝不能出现在发给模型的请求体里——严格网关多一个未知字段就 400 拒收整轮
+// （AGENTS.md §5 坑 13 的同类）。openai 是唯一直接序列化 Message 的路径，所以钉在这里。
+func TestOpenAIRequestDropsSessionSeq(t *testing.T) {
+	msgs := []Message{
+		{Role: "user", Content: "你好", Seq: 3},
+		{Role: "assistant", Content: "在", Seq: 4},
+	}
+	req := buildOpenAIRequest("m", msgs, requestOpts{}, false)
+	b, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "seq") {
+		t.Fatalf("请求体不应带会话序号: %s", b)
+	}
+	// 同样不就地改写调用方持有的历史（内存历史是会话的共享状态）
+	if msgs[0].Seq != 3 || msgs[1].Seq != 4 {
+		t.Fatalf("不该清掉调用方历史里的序号: %+v", msgs)
+	}
+}

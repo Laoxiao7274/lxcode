@@ -56,12 +56,12 @@ func TestMigrateDispatchToolID(t *testing.T) {
 	call.ID, call.Type = "c1", "function"
 	call.Function.Name = oldDispatchToolID
 	call.Function.Arguments = `{"agent":"coder","task":"干活"}`
-	if err := s1.AppendMsg(sid, llm.Message{Role: "assistant", Content: "派活", ToolCalls: []llm.ToolCall{call}}); err != nil {
+	if _, err := s1.AppendMsg(sid, llm.Message{Role: "assistant", Content: "派活", ToolCalls: []llm.ToolCall{call}}); err != nil {
 		t.Fatal(err)
 	}
 
 	// 顺手放一条"正文里出现同名字面量"的消息：JSON 层改写不该动到它
-	if err := s1.AppendMsg(sid, llm.Message{Role: "user", Content: "记一下：" + oldDispatchToolID + " 这个名字要改"}); err != nil {
+	if _, err := s1.AppendMsg(sid, llm.Message{Role: "user", Content: "记一下：" + oldDispatchToolID + " 这个名字要改"}); err != nil {
 		t.Fatal(err)
 	}
 	var beforeRaw string

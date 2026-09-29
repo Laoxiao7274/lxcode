@@ -117,6 +117,36 @@ func (s *Server) dispatchChat(c *wsClient, req *protocol.Request, params json.Ra
 			Compacted: true, Before: res.Before, After: res.After, Shadowed: res.Shadowed,
 		})
 
+	case protocol.MethodChatRewind:
+		var p protocol.ChatRewindParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return protocol.NewError(req.ID, protocol.CodeInvalidParams, "参数解析失败: "+err.Error())
+		}
+		if p.Seq <= 0 {
+			return protocol.NewError(req.ID, protocol.CodeInvalidParams, "seq 必须是消息序号（正整数）")
+		}
+		id := p.SessionID
+		if id == "" {
+			id = c.sessionID
+		}
+		sess, err := s.session(id)
+		if err != nil {
+			return protocol.NewError(req.ID, protocol.CodeInvalidParams, err.Error())
+		}
+		res, err := sess.Rewind(p.Seq)
+		if err != nil {
+			return protocol.NewError(req.ID, errorCode(err), err.Error())
+		}
+		// 事件由内核发（RewoundEvent → chat.rewound，见 emit.go）：撤回改变了
+		// 时间线，所有客户端都要在同一时刻收到同一份事实。这里只回答请求方。
+		//
+		// 另外广播一次会话元数据变化（与 chat.compact 同款）：撤回让消息数变小了，
+		// 侧栏的条数得跟着刷新——客户端收到 session.changed 一律重拉会话列表。
+		if res.Removed > 0 {
+			s.broadcastSessionChanged(id, "rewound")
+		}
+		return protocol.NewResult(req.ID, protocol.ChatRewindResult{Removed: res.Removed})
+
 	case protocol.MethodChatApproval:
 		var p protocol.ChatApprovalParams
 		if err := json.Unmarshal(params, &p); err != nil {

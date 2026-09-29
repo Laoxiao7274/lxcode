@@ -43,9 +43,15 @@ test('chat.rewind 的参数与 Go 侧逐字一致（session_id / seq）', async 
   assert.deepEqual(out, { removed: 2 });
 });
 
-test('chat.rewound 的载荷映射成 rewound 事件（session_id / seq / removed）', () => {
+test('chat.rewound 的载荷映射成 rewound 事件（session_id / seq / removed / context）', () => {
+  // context：后端重算后的占用。未知时整键缺席——那时必须是 undefined（归约器回落中性态「—」），
+  // 不是 0 也不是 {}（编一个数会让指示器显示假的 0%）。
   assert.deepEqual(mapEvent('chat.rewound', { session_id: 's1', seq: 20, removed: 3 }), {
-    type: 'rewound', sessionId: 's1', seq: 20, removed: 3,
+    type: 'rewound', sessionId: 's1', seq: 20, removed: 3, context: undefined,
+  });
+  const usage = { used: 1200, window: 32768 };
+  assert.deepEqual(mapEvent('chat.rewound', { session_id: 's1', seq: 20, removed: 3, context: usage }), {
+    type: 'rewound', sessionId: 's1', seq: 20, removed: 3, context: usage,
   });
 });
 

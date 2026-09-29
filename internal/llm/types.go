@@ -53,6 +53,15 @@ type Message struct {
 	ReasoningSignature string     `json:"-"`                           // anthropic thinking 块签名，透传不解释
 	ToolCalls          []ToolCall `json:"tool_calls,omitempty"`        // assistant 发起
 	ToolCallID         string     `json:"tool_call_id,omitempty"`      // tool 消息回填对应关系
+	// Seq 是这条消息在会话里的**序号**（store 分配的 messages.seq，从 1 起；
+	// 0 = 还没有落库：模型刚产出、或纯内存模式）。它随消息一起流动，因为
+	// 「当前上下文」有三条路径要给前端同一份历史（chat.history 回放、
+	// chat.userMessage 实时、重启后 Load），序号必须由同一个持有者（store）
+	// 写在消息上——各算一遍必然漂移，而前端拿它当撤回锚点。
+	//
+	// 注意它是**我们自己的簿记**，不是模型该看见的字段：组装 provider 请求时
+	// 由 sanitizeMessagesForWire 清掉（见 toolargs.go）。
+	Seq int64 `json:"seq,omitempty"`
 }
 
 // ToolCall 是 assistant 消息携带的工具调用（OpenAI function calling 形态）。

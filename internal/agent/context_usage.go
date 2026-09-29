@@ -86,6 +86,33 @@ func estimateContextUsage(prompt string, tools []llm.Tool, history []llm.Message
 	return u
 }
 
+// reanchoredUsage 按锚定算术把"历史少了一段"这件事折算进占用测量：
+// 新占用 = 旧真实占用 − 被移除段的估算（真实锚点保留，只调整差值），分类按新历史
+// 重新估算后等比归一（分类之和恒等于 Used 这条不变式不能破）。旧占用没有真实锚点
+// （Used == 0，本会话还没跑过主轮）时按剩余历史重新估算，窗口沿用旧值。
+//
+// 压缩与撤回共用这一份：两处各写一遍必然漂移，而漂移的表现是"指示器停在改动前的
+// 数字"——压缩真链路实测踩过（AGENTS.md §2.2），撤回是同一个坑。
+func reanchoredUsage(prev ContextUsage, removedTokens int, history []llm.Message) ContextUsage {
+	if prev.Used > 0 {
+		used := prev.Used - removedTokens
+		if used < 0 {
+			used = 0
+		}
+		hist := estimateContextUsage("", nil, history)
+		u := ContextUsage{
+			System: prev.System, ToolResults: hist.ToolResults,
+			Messages: hist.Messages, Reasoning: hist.Reasoning,
+		}
+		u = u.anchoredTo(used)
+		u.Window = prev.Window
+		return u
+	}
+	u := estimateContextUsage("", nil, history)
+	u.Window = prev.Window
+	return u
+}
+
 // total 是四个分类之和。
 func (u ContextUsage) total() int {
 	return u.System + u.ToolResults + u.Messages + u.Reasoning

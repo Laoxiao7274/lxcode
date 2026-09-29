@@ -17,7 +17,7 @@ func appendN(t *testing.T, s *Store, id string, n int) []llm.Message {
 	var out []llm.Message
 	for i := 0; i < n; i++ {
 		m := llm.Message{Role: "user", Content: "消息" + string(rune('A'+i))}
-		if err := s.AppendMsg(id, m); err != nil {
+		if _, err := s.AppendMsg(id, m); err != nil {
 			t.Fatal(err)
 		}
 		out = append(out, m)
@@ -34,7 +34,7 @@ func TestCheckpointShadowsPrefix(t *testing.T) {
 	// 老库里的检查点行影子集合都是前缀，锚点因此落在库内最小 seq 上，回放顺序与
 	// 「检查点一律排最前」的旧规则逐字节一致。
 	checkpoint := llm.Message{Role: "user", Content: "这是压缩检查点"}
-	if err := s.AppendCheckpoint(id, checkpoint, 0, 3); err != nil {
+	if _, err := s.AppendCheckpoint(id, checkpoint, 0, 3); err != nil {
 		t.Fatal(err)
 	}
 
@@ -89,12 +89,12 @@ func TestCheckpointNestedMerges(t *testing.T) {
 	appendN(t, s, id, 4)
 
 	cp1 := llm.Message{Role: "user", Content: "第一份摘要"}
-	if err := s.AppendCheckpoint(id, cp1, 0, 2); err != nil {
+	if _, err := s.AppendCheckpoint(id, cp1, 0, 2); err != nil {
 		t.Fatal(err)
 	}
 	// 当前历史 = [cp1, C, D]；第二份摘要把这三条全影子掉
 	cp2 := llm.Message{Role: "user", Content: "合并后的摘要"}
-	if err := s.AppendCheckpoint(id, cp2, 0, 3); err != nil {
+	if _, err := s.AppendCheckpoint(id, cp2, 0, 3); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.Load(id)
@@ -113,12 +113,12 @@ func TestCheckpointShadowSkipsAlreadyShadowed(t *testing.T) {
 	appendN(t, s, id, 5) // A B C D E
 
 	// 影子存活集最前面 3 条 = A B C
-	if err := s.AppendCheckpoint(id, llm.Message{Role: "user", Content: "CP1"}, 0, 3); err != nil {
+	if _, err := s.AppendCheckpoint(id, llm.Message{Role: "user", Content: "CP1"}, 0, 3); err != nil {
 		t.Fatal(err)
 	}
 	// 存活集现在是 [CP1, D, E]；再影子最前面 2 条 = CP1、D（不是 A、B——
 	// 它们已被影子过，不该再被数一次）
-	if err := s.AppendCheckpoint(id, llm.Message{Role: "user", Content: "CP2"}, 0, 2); err != nil {
+	if _, err := s.AppendCheckpoint(id, llm.Message{Role: "user", Content: "CP2"}, 0, 2); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.Load(id)
@@ -136,7 +136,7 @@ func TestCheckpointRejectsWhenStoreBehind(t *testing.T) {
 	id, _ := s.Create()
 	appendN(t, s, id, 2)
 
-	err := s.AppendCheckpoint(id, llm.Message{Role: "user", Content: "摘要"}, 0, 5)
+	_, err := s.AppendCheckpoint(id, llm.Message{Role: "user", Content: "摘要"}, 0, 5)
 	if err == nil || !strings.Contains(err.Error(), "落盘落后") {
 		t.Fatalf("存活条数不足应拒绝: %v", err)
 	}
@@ -176,7 +176,7 @@ func TestCheckpointColumnsMigrateOldDB(t *testing.T) {
 	t.Cleanup(func() { _ = re.Close() })
 	id2, _ := re.Create()
 	appendN(t, re, id2, 3)
-	if err := re.AppendCheckpoint(id2, llm.Message{Role: "user", Content: "摘要"}, 0, 2); err != nil {
+	if _, err := re.AppendCheckpoint(id2, llm.Message{Role: "user", Content: "摘要"}, 0, 2); err != nil {
 		t.Fatal(err)
 	}
 	got, err := re.Load(id2)
@@ -197,7 +197,7 @@ func TestCheckpointMiddleSpanKeepsHeadFirst(t *testing.T) {
 
 	// 影子 [B, C]（存活集下标 1..2）——头部 A 不在区间里
 	cp := llm.Message{Role: "user", Content: "中间段摘要"}
-	if err := s.AppendCheckpoint(id, cp, 1, 2); err != nil {
+	if _, err := s.AppendCheckpoint(id, cp, 1, 2); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.Load(id)
@@ -246,11 +246,11 @@ func TestCheckpointLaterWriteCanAnchorEarlier(t *testing.T) {
 	msgs := appendN(t, s, id, 4) // A B C D
 
 	cp1 := llm.Message{Role: "user", Content: "中间摘要"}
-	if err := s.AppendCheckpoint(id, cp1, 1, 2); err != nil { // 影子 B C → [A, cp1, D]
+	if _, err := s.AppendCheckpoint(id, cp1, 1, 2); err != nil { // 影子 B C → [A, cp1, D]
 		t.Fatal(err)
 	}
 	cp2 := llm.Message{Role: "user", Content: "头部摘要"}
-	if err := s.AppendCheckpoint(id, cp2, 0, 1); err != nil { // 影子 A → [cp2, cp1, D]
+	if _, err := s.AppendCheckpoint(id, cp2, 0, 1); err != nil { // 影子 A → [cp2, cp1, D]
 		t.Fatal(err)
 	}
 	got, err := s.Load(id)
@@ -276,11 +276,11 @@ func TestCheckpointNestedMiddleSpan(t *testing.T) {
 	msgs := appendN(t, s, id, 4) // A B C D
 
 	cp1 := llm.Message{Role: "user", Content: "第一份摘要"}
-	if err := s.AppendCheckpoint(id, cp1, 1, 2); err != nil { // 影子 B C → [A, cp1, D]
+	if _, err := s.AppendCheckpoint(id, cp1, 1, 2); err != nil { // 影子 B C → [A, cp1, D]
 		t.Fatal(err)
 	}
 	cp2 := llm.Message{Role: "user", Content: "合并后的摘要"}
-	if err := s.AppendCheckpoint(id, cp2, 1, 2); err != nil { // 影子 cp1 与 D → [A, cp2]
+	if _, err := s.AppendCheckpoint(id, cp2, 1, 2); err != nil { // 影子 cp1 与 D → [A, cp2]
 		t.Fatal(err)
 	}
 	got, err := s.Load(id)
@@ -299,7 +299,7 @@ func TestCheckpointRejectsOutOfRangeSkip(t *testing.T) {
 	id, _ := s.Create()
 	appendN(t, s, id, 3)
 
-	err := s.AppendCheckpoint(id, llm.Message{Role: "user", Content: "摘要"}, 5, 1)
+	_, err := s.AppendCheckpoint(id, llm.Message{Role: "user", Content: "摘要"}, 5, 1)
 	if err == nil || !strings.Contains(err.Error(), "落盘落后") {
 		t.Fatalf("skip 越界应拒绝: %v", err)
 	}
