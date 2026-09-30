@@ -568,6 +568,8 @@
 .dispatch-foot {
   display: flex;
   justify-content: center;
+  /* 两个按钮（打开子会话 / 收起）并排——没有 gap 会贴在一起 */
+  gap: 8px;
 }
 .dispatch-collapse.fd-btn-g {
   padding: 3px 16px;
@@ -576,6 +578,17 @@
   background: var(--surface);
 }
 .dispatch-collapse.fd-btn-g:hover {
+  color: var(--fg);
+}
+/* 「打开子会话」：与「收起」同款（同一行里的两个次要动作），只是语义不同——
+ * 前者是导航（把这条子会话开成工作区标签），后者是收合。 */
+.dispatch-open-child.fd-btn-g {
+  padding: 3px 16px;
+  font-size: 11px;
+  border-radius: 7px;
+  background: var(--surface);
+}
+.dispatch-open-child.fd-btn-g:hover {
   color: var(--fg);
 }
 /* 行：24px 高（DSH DisclosureRow 的行高）；运行中扫光在 ::after */

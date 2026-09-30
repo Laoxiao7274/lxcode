@@ -25,7 +25,7 @@ import { NoticeBar } from "./NoticeBar";
 const NO_SEQ_HINT = "这条消息来自旧版后端（没有 seq），无法定位要撤回的位置";
 
 export const Block = memo(
-  function Block({ block, onConfirm, replayed, onEdit, onRewind, onLoadChild, "data-uid": dataUid }: {
+  function Block({ block, onConfirm, replayed, onEdit, onRewind, onLoadChild, onOpenChild, readOnly, "data-uid": dataUid }: {
     block: ThreadBlock;
     onConfirm: (id: string, allow: boolean) => void;
     replayed?: boolean;
@@ -39,6 +39,15 @@ export const Block = memo(
     onRewind?: (block: ThreadBlock) => void;
     /** 子会话历史的懒加载入口（只有 dispatch 卡用）——透传给 DispatchCard。 */
     onLoadChild?: (sessionId: string) => Promise<ThreadBlock[]>;
+    /** 把某张卡上的子会话作为独立工作区标签打开（只有 dispatch 卡用）——透传。 */
+    onOpenChild?: (sessionId: string) => void;
+    /** 只读视图（子会话标签页用）：**不渲染**用户气泡的动作条。
+     *
+     *  为什么是"不渲染"而不是"传 undefined 的 onEdit/onRewind"：那会让三个图标照常画出来、
+     *  点下去毫无反应（静默失效）——用户以为界面坏了。为什么不在这里禁用+说明：禁用按钮的
+     *  title 提示在多数浏览器里根本不弹（禁用的元素不派发鼠标事件），而整页一句只读说明
+     *  （ChildSessionPage 顶部）比每条消息重复一遍原因更清楚。 */
+    readOnly?: boolean;
   }) {
   const bubbleRef = useRef<HTMLDivElement>(null);
   const { settings } = useSettings();
@@ -79,7 +88,8 @@ export const Block = memo(
       return (
         <div className="msg user" data-uid={dataUid}>
           <div className="bubble" ref={bubbleRef}>{block.text}</div>
-          <MessageActions block={block} onEdit={onEdit} onRewind={onRewind} />
+          {/* 只读视图（子会话标签页）不画动作条：见 readOnly 的说明 */}
+          {!readOnly && <MessageActions block={block} onEdit={onEdit} onRewind={onRewind} />}
         </div>
       );
 
@@ -109,7 +119,7 @@ export const Block = memo(
       return <FilesCard files={block.files} data-uid={dataUid} />;
 
     case "dispatch":
-      return <DispatchCard block={block} onConfirm={onConfirm} onLoadChild={onLoadChild} data-uid={dataUid} />;
+      return <DispatchCard block={block} onConfirm={onConfirm} onLoadChild={onLoadChild} onOpenChild={onOpenChild} data-uid={dataUid} />;
 
     case "compacted":
       return <CompactionCard block={block} data-uid={dataUid} />;
@@ -148,9 +158,12 @@ export const Block = memo(
     prev.onConfirm === next.onConfirm &&
     prev.onEdit === next.onEdit &&
     prev.onRewind === next.onRewind &&
-    // onLoadChild 也必须比：App 用 useCallback 固定它的身份，漏比的话
+    // onLoadChild / onOpenChild 也必须比：App 用 useCallback 固定它们的身份，漏比的话
     // 一次身份变化（依赖数组变了）就会让整屏块全部重渲染一遍。
-    prev.onLoadChild === next.onLoadChild,
+    prev.onLoadChild === next.onLoadChild &&
+    prev.onOpenChild === next.onOpenChild &&
+    // readOnly 是布尔（只读视图恒定），漏比会让切换视图时留下上一种的渲染结果
+    prev.readOnly === next.readOnly,
 );
 
 /** 用户气泡**下方**的三个动作（图标）：复制 / 编辑 / 撤回。

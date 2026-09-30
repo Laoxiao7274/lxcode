@@ -18,9 +18,14 @@ import { Block } from "./Block";
  *  **不许留空白**：空白的卡头让用户不知道是谁在干活，比一个明确的"未知"更糟。 */
 const UNKNOWN_AGENT = "未知 Agent";
 
-export function DispatchCard({ block, onConfirm, onLoadChild, "data-uid": dataUid }: {
+export function DispatchCard({ block, onConfirm, onLoadChild, onOpenChild, "data-uid": dataUid }: {
   block: Extract<ThreadBlock, { kind: "dispatch" }>;
   onConfirm: (id: string, allow: boolean) => void;
+  /** 「打开子会话」——把这张卡的子会话作为**独立工作区标签**打开（App 接线到
+   *  focusChildTab）。子 Agent 是独立会话（AGENTS.md §2.3），卡内只显示摘要，
+   *  完整时间线（含它自己的压缩检查点）在它自己的标签页里看。
+   *  缺省（老调用方/测试）时不渲染这个按钮——不假装能打开。 */
+  onOpenChild?: (sessionId: string) => void;
   /** 懒加载子会话历史的入口（App 接线：source.childHistory + historyBlocks）。
    *  返回子时间线的块；**失败必须 reject**（卡里显示原因并允许重试）。
    *  缺省（老调用方/测试）时不做懒加载——卡片保持原来的诚实降级。 */
@@ -182,6 +187,14 @@ export function DispatchCard({ block, onConfirm, onLoadChild, "data-uid": dataUi
           {/* 底部收起：长展开卡（子 Agent 的过程 + 结果）滚到底后不必再回到卡片顶部
            *  找那个 chevron。走表单套件的 Button——裸写 <button> 就是 OS 默认灰皮。 */}
           <div className="dispatch-foot">
+            {/* 「打开子会话」：把子会话当**独立工作区标签**打开（卡内是摘要，标签里是
+             *  完整时间线——含子会话自己的压缩检查点）。按钮放在折叠区里而不是卡头：
+             *  卡头整体已经是一个 button，button 里再嵌 button 是非法 HTML。 */}
+            {sessionId !== "" && onOpenChild && (
+              <Button className="dispatch-open-child" onClick={() => onOpenChild(sessionId)}>
+                打开子会话
+              </Button>
+            )}
             <Button className="dispatch-collapse" onClick={() => setUserSet(!expanded)}>
               收起
             </Button>

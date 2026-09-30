@@ -1,4 +1,7 @@
-// 顶部标签栏：左侧工作区页面（聊天固定、Agent/拓展/Git 可关闭），右侧会话标签。
+// 顶部标签栏：左侧工作区标签（聊天固定，Agent/拓展/Git 与**子会话**可关闭），右侧会话标签。
+// 子会话标签是**带参数的标签**：键形如 child:<sessionId>（见 shared/workspace-tabs.ts），
+// 与固定页签共用同一个渲染件、同一套「关掉当前页回退到最近打开的页」语义——只有标题来源
+// 不同（App 用纯函数 childTabTitle 从主时间线那张 dispatch 块算出来，找不到就回落）。
 // 会话标签顺序语义对齐浏览器：**打开顺序固定**——点标签只切焦点，绝不重排；
 // 新会话/从侧栏点进来的会话追加到右侧，容量满丢最老的。
 // 每个会话标签是独立并发 Session；切焦点不取消后台轮次。关闭会话标签只隐藏标签，
@@ -14,7 +17,7 @@ import {
   visibleSessionTabs,
 } from "../../shared/session-tabs";
 import type { AgentSource } from "../../shared/types";
-import type { WorkspacePage, WorkspaceView } from "../../shared/workspace-tabs";
+import { childTabSession, type WorkspacePage, type WorkspaceTab, type WorkspaceView } from "../../shared/workspace-tabs";
 
 const WORKSPACE_LABELS: Record<WorkspacePage, string> = {
   agents: "Agent",
@@ -31,19 +34,25 @@ export function TabBar({
   workspaceTabs,
   activeWorkspaceView,
   onFocusChat,
-  onFocusWorkspacePage,
-  onCloseWorkspacePage,
+  onFocusWorkspaceTab,
+  onCloseWorkspaceTab,
+  childTabTitle,
 }: {
   source: AgentSource;
   currentId: string;
   busyBySession: Record<string, boolean>;
   onNewChat: () => void;
   onFocusSession: (id: string) => void;
-  workspaceTabs: WorkspacePage[];
+  /** 可关闭的工作区标签：固定页签 + 子会话标签（键形如 child:<sessionId>）。 */
+  workspaceTabs: WorkspaceTab[];
   activeWorkspaceView: WorkspaceView;
   onFocusChat: () => void;
-  onFocusWorkspacePage: (page: WorkspacePage) => void;
-  onCloseWorkspacePage: (page: WorkspacePage) => WorkspaceView;
+  onFocusWorkspaceTab: (tab: WorkspaceTab) => void;
+  onCloseWorkspaceTab: (tab: WorkspaceTab) => WorkspaceView;
+  /** 子会话标签的标题（App 用纯函数 childTabTitle 算：Agent 名 + 任务摘要）。
+   *  **必填**——固定页签走下面的 WORKSPACE_LABELS，子会话标签不在这里再写一份回落，
+   *  两份回落早晚分叉（标签栏显示「子会话 x」而顶栏显示别的名字）。 */
+  childTabTitle: (sessionId: string) => string;
 }) {
   const sessions = source.sessions();
   // 打开顺序（标签 id 列表）；closed = 用户关掉的（纯 UI 态，刷新恢复）
@@ -130,15 +139,23 @@ export function TabBar({
             <span className="tab-title">聊天</span>
           </button>
         </div>
-        {workspaceTabs.map((page) => (
-          <WorkspacePageTab
-            key={page}
-            page={page}
-            active={activeWorkspaceView === page}
-            onFocus={onFocusWorkspacePage}
-            onClose={onCloseWorkspacePage}
-          />
-        ))}
+        {workspaceTabs.map((tab) => {
+          // 标题在这里分流：固定页签查标签表，子会话标签问 App（childTabTitle 纯函数）。
+          // 渲染件是同一个——关闭动画与「关掉后焦点去哪」只有一份实现。
+          const sessionId = childTabSession(tab);
+          // sessionId 为 null 只可能是固定页签（tabs 里只有这两类键，见 workspace-tabs.ts）
+          const title = sessionId !== null ? childTabTitle(sessionId) : WORKSPACE_LABELS[tab as WorkspacePage];
+          return (
+            <WorkspaceTabView
+              key={tab}
+              tab={tab}
+              title={title}
+              active={activeWorkspaceView === tab}
+              onFocus={onFocusWorkspaceTab}
+              onClose={onCloseWorkspaceTab}
+            />
+          );
+        })}
       </nav>
       <span className="tabbar-divider" aria-hidden="true" />
       <div className="tab-strip session-tab-strip" role="group" aria-label="会话标签">
@@ -197,22 +214,25 @@ export function TabBar({
   );
 }
 
-function WorkspacePageTab({
-  page,
+/** 一个可关闭的工作区标签（固定页签与子会话标签共用——关闭动画、焦点回落只有一份）。 */
+function WorkspaceTabView({
+  tab,
+  title,
   active,
   onFocus,
   onClose,
 }: {
-  page: WorkspacePage;
+  tab: WorkspaceTab;
+  /** 显示标题（固定页签来自 WORKSPACE_LABELS，子会话标签来自 childTabTitle）。 */
+  title: string;
   active: boolean;
-  onFocus: (page: WorkspacePage) => void;
-  onClose: (page: WorkspacePage) => WorkspaceView;
+  onFocus: (tab: WorkspaceTab) => void;
+  onClose: (tab: WorkspaceTab) => WorkspaceView;
 }) {
   const tabRef = useRef<HTMLDivElement>(null);
   const closeTweenRef = useRef<gsap.core.Tween | null>(null);
   const closingRef = useRef(false);
   const [closing, setClosing] = useState(false);
-  const title = WORKSPACE_LABELS[page];
 
   useLayoutEffect(() => {
     const element = tabRef.current;
@@ -235,7 +255,7 @@ function WorkspacePageTab({
   }, []);
 
   const finishClose = () => {
-    const fallback = onClose(page);
+    const fallback = onClose(tab);
     window.setTimeout(() => {
       document.querySelector<HTMLButtonElement>(`[data-workspace-tab="${fallback}"] .workspace-tab-main`)?.focus();
     }, 0);
@@ -261,13 +281,13 @@ function WorkspacePageTab({
   };
 
   return (
-    <div ref={tabRef} className={"tab workspace-tab" + (active ? " on" : "")} data-workspace-tab={page}>
+    <div ref={tabRef} className={"tab workspace-tab" + (active ? " on" : "")} data-workspace-tab={tab}>
       <button
         type="button"
         className="tab-main workspace-tab-main"
         disabled={closing}
         aria-current={active ? "page" : undefined}
-        onClick={() => onFocus(page)}
+        onClick={() => onFocus(tab)}
       >
         <span className="tab-title">{title}</span>
       </button>

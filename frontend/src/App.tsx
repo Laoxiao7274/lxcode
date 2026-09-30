@@ -2,11 +2,17 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { gsap } from "gsap";
 import { motionAllowed } from "./shared/motion";
 import {
+  childTabSession,
+  childTabTitle,
   closeWorkspacePage,
   createWorkspaceTabs,
   focusChatTab,
+  focusChildTab,
   focusWorkspacePage,
+  focusWorkspaceTab,
+  isWorkspacePage,
   type WorkspacePage,
+  type WorkspaceTab,
   type WorkspaceView,
 } from "./shared/workspace-tabs";
 import { getAgentSource } from "./agent";
@@ -28,6 +34,7 @@ import { Button } from "./components/form";
 // 右栏面板：轮次树（TurnPanel）取代了原先并排的 OutlinePanel + SubAgentPanel——
 // 那两个组件与它们的测试仍在（回退用），只是不再挂载。
 import { TurnPanel } from "./components/panels/TurnPanel";
+import { ChildSessionPage } from "./components/panels/ChildSessionPage";
 import { turnGroups } from "./components/panels/turns";
 import { SettingsProvider, useSettings } from "./shared/settings";
 import { ConnectionsProvider } from "./shared/connections";
@@ -61,7 +68,8 @@ export default function App() {
 function AppBody({ source }: { source: AgentSource }) {
   const { state, sessionStates, send, resolve, clearError, reportError } = useAgent(source);
   const { settings, providers } = useSettings();
-  const { activeAgentId } = useAgents();
+  // agents：子会话标签的标题要按 agentId 回落显示名（回放块的 agentName 是空串）
+  const { agents, activeAgentId } = useAgents();
   /** 工作区页签与会话标签分开；未关闭的工作区页面保持挂载以保留表单/视图状态。 */
   const [workspaceState, setWorkspaceState] = useState(createWorkspaceTabs);
   const workspaceStateRef = useRef(workspaceState);
@@ -82,11 +90,30 @@ function AppBody({ source }: { source: AgentSource }) {
     workspaceStateRef.current = next;
     setWorkspaceState(next);
   }, []);
-  const closeWorkspace = useCallback((page: WorkspacePage): WorkspaceView => {
-    const next = closeWorkspacePage(workspaceStateRef.current, page);
+  // 关闭的工作区标签：固定页签（agents/catalog/git）与子会话标签（child:<id>）同一套语义
+  const closeWorkspace = useCallback((tab: WorkspaceTab): WorkspaceView => {
+    const next = closeWorkspacePage(workspaceStateRef.current, tab);
     workspaceStateRef.current = next;
     setWorkspaceState(next);
     return next.active;
+  }, []);
+  /** 标签栏点击一个工作区标签：固定页签走既有打开逻辑，子会话标签只是**聚焦**
+   *  （它的内容已经挂载并保活——见 WorkspaceViewPanels，重开不重新读历史）。 */
+  const openWorkspaceTab = useCallback((tab: WorkspaceTab) => {
+    if (isWorkspacePage(tab)) {
+      openWorkspace(tab);
+      return;
+    }
+    const next = focusWorkspaceTab(workspaceStateRef.current, tab);
+    workspaceStateRef.current = next;
+    setWorkspaceState(next);
+  }, [openWorkspace]);
+  /** 卡上的「打开子会话」→ 把子会话作为**独立工作区标签**打开（focusChildTab 去重：
+   *  重复打开同一个子会话回到同一个标签，不会并排长出两个）。 */
+  const openChildTab = useCallback((sessionId: string) => {
+    const next = focusChildTab(workspaceStateRef.current, sessionId);
+    workspaceStateRef.current = next;
+    setWorkspaceState(next);
   }, []);
   const openAgents = useCallback(() => openWorkspace("agents"), [openWorkspace]);
   const openCatalog = useCallback(() => openWorkspace("catalog"), [openWorkspace]);
@@ -282,6 +309,22 @@ function AppBody({ source }: { source: AgentSource }) {
 
   const currentTitle = state.blocks.length === 0 ? "" : source.sessions().find((s: SessionMeta) => s.id === currentId)?.title ?? "任务";
 
+  /** 子会话标签标题：Agent 名 + 任务摘要（如 `researcher · 通读 internal/agent`）。
+   *
+   *  数据来自**主时间线里那张 dispatch 块**（childTabTitle 纯函数按 sessionId 命中）；
+   *  回放块的 agentName 是空串（展示名是 Agent 注册表的知识），所以按 agentId 回落——
+   *  与 DispatchCard / TurnPanel 同款。找不到块时 childTabTitle 自己兜底
+   *  「子会话 <id 前 8 位>」，**不许空白**。 */
+  const childTabTitleOf = useCallback((sessionId: string) => {
+    return childTabTitle(state.blocks, sessionId, (agentId) => agents.find((a) => a.id === agentId)?.name ?? "");
+  }, [state.blocks, agents]);
+  // 顶栏标题与标签栏标题走**同一个**函数：各算一次早晚分叉（标签栏写着 researcher · …，
+  // 顶栏却写着另一个名字）
+  const activeChildId = childTabSession(view);
+  const viewTitle = activeChildId !== null
+    ? childTabTitleOf(activeChildId)
+    : view === "agents" ? "Agent 名单" : view === "catalog" ? "拓展" : view === "git" ? "Git 管理" : currentTitle;
+
   // 壳环境（Electron）= 真实窗口；浏览器 = 保留模拟壳（窗口模拟一层的差异，
   // 内部布局完全一致——同组件，不再两份 JSX）
   const isShell = typeof navigator !== "undefined" && navigator.userAgent.includes("Electron");
@@ -323,7 +366,7 @@ function AppBody({ source }: { source: AgentSource }) {
           <div className="chat-main">
             {errorNotice}
             <div className="thread-scroll">
-              <Thread state={state} onConfirm={handleConfirm} onSuggestion={handleSend} projectName={filterProjectName} onEdit={handleEdit} onRewind={handleRewind} onLoadChild={handleLoadChild} revealUid={jumpedUid} />
+              <Thread state={state} onConfirm={handleConfirm} onSuggestion={handleSend} projectName={filterProjectName} onEdit={handleEdit} onRewind={handleRewind} onLoadChild={handleLoadChild} onOpenChild={openChildTab} revealUid={jumpedUid} />
             </div>
             <Composer
               busy={state.busy}
@@ -373,22 +416,29 @@ function AppBody({ source }: { source: AgentSource }) {
     }
     if (activeView === "agents") return <AgentsPage />;
     if (activeView === "catalog") return <CatalogPage />;
-    return (
-      <GitWorkbenchPage
-        key={gitProjectId}
-        projects={projects}
-        projectId={gitProjectId}
-        sessions={source.sessions()}
-        onProjectChange={setGitProjectId}
-        onOpenSession={focusSession}
-      />
-    );
+    if (activeView === "git") {
+      return (
+        <GitWorkbenchPage
+          key={gitProjectId}
+          projects={projects}
+          projectId={gitProjectId}
+          sessions={source.sessions()}
+          onProjectChange={setGitProjectId}
+          onOpenSession={focusSession}
+        />
+      );
+    }
+    // 剩下的只可能是子会话标签（键 child:<sessionId>）：渲染子会话自己的完整时间线。
+    // key=childId：不同子会话各自一份实例（切标签不串历史，保活由 WorkspaceViewPanels 管）。
+    const childId = childTabSession(activeView);
+    if (childId === null) return null; // 坏键（不该出现）：不渲染，也不炸
+    return <ChildSessionPage key={childId} sessionId={childId} source={source} onBack={backToChat} />;
   };
 
   const app = (
     <div className="app">
       <Topbar
-        taskTitle={view === "agents" ? "Agent 名单" : view === "catalog" ? "拓展" : view === "git" ? "Git 管理" : currentTitle}
+        taskTitle={viewTitle}
         source={source}
         connected={false}
       />
@@ -401,8 +451,9 @@ function AppBody({ source }: { source: AgentSource }) {
         workspaceTabs={workspaceState.tabs}
         activeWorkspaceView={view}
         onFocusChat={backToChat}
-        onFocusWorkspacePage={openWorkspace}
-        onCloseWorkspacePage={closeWorkspace}
+        onFocusWorkspaceTab={openWorkspaceTab}
+        onCloseWorkspaceTab={closeWorkspace}
+        childTabTitle={childTabTitleOf}
       />
       <Sidebar
         source={source}
@@ -443,7 +494,7 @@ function WorkspaceViewPanels({
   renderView,
 }: {
   activeView: WorkspaceView;
-  openTabs: WorkspacePage[];
+  openTabs: WorkspaceTab[];
   renderView: (view: WorkspaceView) => ReactNode;
 }) {
   const [displayedView, setDisplayedView] = useState<WorkspaceView>(activeView);
@@ -488,7 +539,7 @@ function WorkspaceViewPanels({
     return () => { context.revert(); };
   }, [displayedView]);
 
-  const renderedPages: WorkspacePage[] = [...openTabs];
+  const renderedPages: WorkspaceTab[] = [...openTabs];
   if (displayedView !== "chat" && !renderedPages.includes(displayedView)) renderedPages.push(displayedView);
   const renderedViews: WorkspaceView[] = ["chat", ...renderedPages];
 
