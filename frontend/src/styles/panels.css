@@ -495,6 +495,21 @@
   background: var(--surface);
 }
 /* 只读说明：占满中间并单行截断（窄窗口下不与「返回主会话」抢位） */
+
+/* 子会话页头的模型徽标（子 Agent 可以有独立 model——AgentDef.Model 优先、否则 default 角色）。
+ * 与 .child-session-id 同款等宽小字，但用成功色区分「这是模型」而不是「这是 id」。 */
+.child-session-model {
+  font-size: 11px;
+  line-height: 16px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(16, 163, 127, 0.1);
+  color: #0b7a5e;
+  white-space: nowrap;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .child-session-readonly {
   flex: 1;
   min-width: 0;

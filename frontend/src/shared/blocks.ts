@@ -10,6 +10,11 @@ export interface AssistantBlock {
   reasoning: string;
   streaming: boolean;
   usageTokens?: number;
+  /** 每轮计时/模型（回放与实时两条路径都填——见 shared/turn-stats.ts 的口径说明）。
+   *  缺席表示后端没测到/老后端没有这些字段，显示层据此不渲染而不是显示 0。 */
+  firstTokenMs?: number;
+  durationMs?: number;
+  model?: string;
 }
 
 export type ThreadBlock =

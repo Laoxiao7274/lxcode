@@ -123,7 +123,12 @@ export type AgentEvent =
   | { type: "toolResult"; sessionId: string; id: string; name: string; content: string; isError: boolean; dispatchId?: string }
   | { type: "confirmRequest"; sessionId: string; request: ConfirmRequest }
   | { type: "todoUpdated"; sessionId: string; items: TodoItem[] }
-  | { type: "done"; sessionId: string; usageTokens: number; finishReason: string; dispatchId?: string; context?: ContextUsage }
+  | { type: "done"; sessionId: string; usageTokens: number; finishReason: string; dispatchId?: string; context?: ContextUsage;
+      /** 每轮计时（后端 internal/agent/timing.go）：首 token 延迟与本轮耗时。**工具轮/非流式
+       *  回放没有「首字」这个时刻 → 整键缺席**（不是 0——0 会被显示成「首字 0ms」的假数据）。 */
+      firstTokenMs?: number; durationMs?: number;
+      /** 本轮实际使用的模型 id（Agent 绑定优先、否则 default 角色）。 */
+      model?: string }
   | { type: "error"; sessionId: string; message: string; aborted: boolean }
   | { type: "dispatchStart"; sessionId: string; dispatchId: string; childSessionId?: string; agentId: string; agentName: string; agentColor: string; task: string }
   | { type: "dispatchEnd"; sessionId: string; dispatchId: string; childSessionId?: string; result: string; isError: boolean; usageTokens?: number }
@@ -181,6 +186,9 @@ export interface HistorySnapshot {
   context?: ContextUsage;
   /** 压缩检查点在 messages 里的下标（这些消息渲染成「已压缩历史」块，不是用户气泡）。 */
   checkpoints?: number[];
+  /** 该会话实际用的模型 id（子会话就是它自己 Agent 的模型）。未知 → 整键缺席，
+   *  显示中性态——不编一个模型名。 */
+  model?: string;
 }
 
 /** 历史消息（llm.Message 的 wire 形态）。 */
@@ -190,6 +198,13 @@ export interface HistoryMessage {
   /** 撤回锚点（后端 ChatMessage 的字段，与实时 chat.userMessage 的载荷是同一个
    *  类型）。老后端没有它 → 块不可撤回（动作禁用），绝不炸（AGENTS.md §5 坑 11）。 */
   seq?: number;
+  /** 每轮计时/用量/模型（后端 messages 表那四列）。**回放路径必须与实时路径给出同一组
+   *  数字**——只填实时不填回放的话，用户刷新一次这些数字就全没了（本仓库吃过三次亏的
+   *  那类 bug）。缺席的项不写这个键（不是 0——0 会被显示成「首字 0ms」的假数据）。 */
+  first_token_ms?: number;
+  duration_ms?: number;
+  model?: string;
+  usage_tokens?: number;
   reasoning_content?: string;
   tool_calls?: Array<{
     id?: string;

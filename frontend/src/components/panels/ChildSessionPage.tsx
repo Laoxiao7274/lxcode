@@ -11,6 +11,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { AgentSource } from "../../shared/types";
 import type { ThreadBlock } from "../../shared/store";
 import { historyBlocks } from "../../shared/history";
+import { ContextIndicator } from "../context-indicator/ContextIndicator";
+import type { ContextUsage } from "../../shared/types";
 import { Button } from "../form";
 import { Block } from "../thread/blocks/Block";
 import { ScrollToBottom } from "../thread/ScrollToBottom";
@@ -31,6 +33,10 @@ export function ChildSessionPage({
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  // 子会话**自己的**模型与上下文（AGENTS.md §2.2：子上下文有自己的窗口，只有主轮写主指示器）
+  // ——所以这里显示它自己的值是对的，绝不拿主会话的数字。
+  const [model, setModel] = useState("");
+  const [context, setContext] = useState<ContextUsage | null>(null);
   // 重试计数：失败后点「重试」要能重新触发 effect（状态没变也能再试一次）
   const [nonce, setNonce] = useState(0);
   // source 放 ref：App 重建回调身份不该重新发请求（与 DispatchCard 同款纪律）
@@ -47,6 +53,10 @@ export function ChildSessionPage({
         if (!alive) return;
         // **同一份映射**：与主时间线回放（reduceHistory）、DispatchCard 卡内子时间线共用
         setBlocks(historyBlocks(snapshot));
+        // 模型与占用取自**这个子会话的**快照（顶层 model / context）——缺席就是空串/中性态，
+        // 不编一个模型名、也不拿主会话的数字冒充。
+        setModel(snapshot.model ?? "");
+        setContext(snapshot.context ?? null);
         setStatus("ready");
       },
       (e: unknown) => {
@@ -73,9 +83,14 @@ export function ChildSessionPage({
       <div className="child-session-head">
         <span className="child-session-title">子会话</span>
         <span className="child-session-id mono" title={sessionId}>{sessionId}</span>
+        {/* 子会话自己的模型：缺席（老后端/未配置）就不渲染这一项，不显示假名字 */}
+        {model !== "" && <span className="child-session-model mono" title={`子会话用的模型：${model}`}>{model}</span>}
         {/* 只读语义说明一次（页头）——而不是在每条消息上重复禁用原因：
          *  禁用按钮的 title 提示在多数浏览器里不弹（禁用元素不派发鼠标事件）。 */}
         <span className="child-session-readonly">只读 · 这是子 Agent 自己的会话，不提供撤回/编辑</span>
+        {/* 子会话**自己的**上下文占用（它有自己的窗口）：复用主指示器组件，不新写一个。
+         *  context 缺席（老后端/刚建）时组件自己显示中性态「—」。 */}
+        <ContextIndicator usage={context} />
         <Button className="child-session-back" onClick={onBack}>返回主会话</Button>
       </div>
       {notice !== "" && (

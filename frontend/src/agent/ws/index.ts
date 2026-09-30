@@ -527,6 +527,11 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
         content: string;
         /** 撤回锚点（ChatMessage 上的字段）——老后端没有，整键缺席。 */
         seq?: number;
+        /** 每轮计时/用量/模型（与实时 chat.done 同名字段）——回放路径直接读它。 */
+        first_token_ms?: number;
+        duration_ms?: number;
+        model?: string;
+        usage_tokens?: number;
         reasoning_content?: string;
         tool_calls?: Array<{ id?: string; function?: { name: string; arguments?: string } }>;
         tool_call_id?: string;
@@ -536,6 +541,8 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
       todos?: TodoItem[];
       context?: ContextUsage;
       checkpoints?: number[];
+      /** 该会话实际用的模型 id（子会话就是它自己 Agent 的模型）。 */
+      model?: string;
     };
     return {
       sessionId: h.session_id ?? "",
@@ -545,6 +552,7 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
       todos: h.todos ?? [],
       context: h.context,
       checkpoints: h.checkpoints ?? [],
+      model: h.model,
     };
   }
 

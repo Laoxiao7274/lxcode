@@ -96,6 +96,10 @@ export function mapEvent(method: string, params: unknown): AgentEvent | null {
         sessionId,
         usageTokens: Number(p.usage_tokens ?? 0),
         finishReason: String(p.finish_reason ?? "stop"),
+        // 每轮计时/模型：缺席就是 undefined（**不填 0**——0 会被显示成「首字 0ms」的假数据）
+        firstTokenMs: typeof p.first_token_ms === "number" ? p.first_token_ms : undefined,
+        durationMs: typeof p.duration_ms === "number" ? p.duration_ms : undefined,
+        model: typeof p.model === "string" && p.model !== "" ? p.model : undefined,
         dispatchId,
         // 上下文占用只随主轮来（子轮的 done 不带——后端已按 dispatch 归属收口）
         context: (p.context as ContextUsage | undefined) ?? undefined,

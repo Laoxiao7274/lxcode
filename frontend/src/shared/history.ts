@@ -120,9 +120,16 @@ export function historyBlocks(h: HistorySnapshot): ThreadBlock[] {
       }
       lastAssistant = null;
     } else if (m.role === "assistant") {
+      // 每轮的计时/用量/模型随消息落库（后端 messages 表那四列）——**回放路径必须与实时
+      // 路径给出同一组数字**：只填实时不填回放的话，用户刷新一次这些数字就全没了。
+      // 缺席的项**不写这个键**（不是写 0——0 会被显示成「首字 0ms」的假数据）。
       const a: AssistantBlock = {
         kind: "assistant", uid: nextUid(), content: m.content,
         reasoning: m.reasoning_content ?? "", streaming: false,
+        ...(typeof m.usage_tokens === "number" ? { usageTokens: m.usage_tokens } : {}),
+        ...(typeof m.first_token_ms === "number" ? { firstTokenMs: m.first_token_ms } : {}),
+        ...(typeof m.duration_ms === "number" ? { durationMs: m.duration_ms } : {}),
+        ...(typeof m.model === "string" && m.model !== "" ? { model: m.model } : {}),
       };
       blocks.push(a);
       lastAssistant = a;

@@ -209,7 +209,7 @@ if (ev.dispatchId) {
       const b = sub[i];
       if (b.kind === "assistant") {
         const next = sub.slice();
-        next[i] = { ...b, streaming: false, usageTokens: ev.usageTokens };
+        next[i] = { ...b, streaming: false, usageTokens: ev.usageTokens, firstTokenMs: ev.firstTokenMs, durationMs: ev.durationMs, model: ev.model };
         return next;
       }
     }
@@ -229,7 +229,7 @@ for (let i = withCtx.blocks.length - 1; i >= 0; i--) {
 if (!lastA) return withCtx;
 return withBlock(withCtx, lastA.uid, (b) => {
   const a = b as AssistantBlock;
-  return { ...a, streaming: false, usageTokens: ev.usageTokens };
+  return { ...a, streaming: false, usageTokens: ev.usageTokens, firstTokenMs: ev.firstTokenMs, durationMs: ev.durationMs, model: ev.model };
 });
 }
 

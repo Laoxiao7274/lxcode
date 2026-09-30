@@ -5,6 +5,7 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ThreadBlock } from "../../../shared/store";
 import { canRewind } from "../../../shared/blocks";
+import { turnStatParts } from "../../../shared/turn-stats";
 import { Button } from "../../form";
 import { ThinkingReasoning } from "../../../aicss/ThinkingReasoning";
 import { ApprovalCard } from "../../../aicss/ApprovalCard";
@@ -95,7 +96,10 @@ export const Block = memo(
 
     case "assistant":
       // DSH 形态：无角色标签行（对话流 = user 气泡 + assistant 内容）。
-      // 思考链 + 正文 + 轮末 usage。
+      // 思考链 + 正文 + 轮末统计（模型 · 首字 · 吞吐 · tokens——缺席的项不显示）。
+      // 统计行由纯函数算出（口径只有一份，见 shared/turn-stats.ts）：判定埋在 JSX 里
+      // 就只能靠人肉点一遍才验得到。
+      const stats = turnStatParts(block);
       return (
         <div className="msg" data-uid={dataUid}>
           {settings.showThinking && sentences && (
@@ -106,8 +110,8 @@ export const Block = memo(
             />
           )}
           {block.content === "" ? null : <AnswerBody text={block.content} streaming={block.streaming} />}
-          {!block.streaming && block.usageTokens ? (
-            <div className="usage-line">已完成 · {block.usageTokens} tokens</div>
+          {!block.streaming && stats.length > 0 ? (
+            <div className="usage-line">{stats.join(" · ")}</div>
           ) : null}
         </div>
       );
