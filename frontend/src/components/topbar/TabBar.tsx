@@ -352,8 +352,12 @@ function WorkspaceTabView({
     });
   };
 
+  // 子会话标签要在视觉上与固定页签（Agent/拓展/Git）分开——用户报「子会话和主会话表明的
+  // 不明显」。三个通道一起用：① ↳ 前缀（形状，灰度/色盲下也分得开）② 左侧强调色条
+  // （颜色）③ data-child（样式挂点）。只靠颜色不够（UI/UX 规范：不能只用颜色传达信息）。
+  const childId = childTabSession(tab);
   return (
-    <div ref={tabRef} className={"tab workspace-tab" + (active ? " on" : "")} data-workspace-tab={tab}>
+    <div ref={tabRef} className={"tab workspace-tab" + (active ? " on" : "")} data-workspace-tab={tab} data-child={childId !== null ? "true" : undefined}>
       <button
         type="button"
         className="tab-main workspace-tab-main"
@@ -361,7 +365,13 @@ function WorkspaceTabView({
         aria-current={active ? "page" : undefined}
         onClick={() => onFocus(tab)}
       >
+        {/* 子会话标记：↳（形状）+ 「子会话」（文字）+ data-child（颜色）三通道一起用。
+         *  只靠颜色不够——UI/UX 规范：不能只用颜色传达信息（灰度/色盲下要分得开）。
+         *  固定页签（Agent/拓展/Git）是**页面**，子会话标签是**会话**：这两类混在一条
+         *  strip 里长得一模一样，就是用户报的「表明的不明显」。 */}
+        {childId !== null && <span className="tab-child-mark" aria-hidden>↳</span>}
         <span className="tab-title">{title}</span>
+        {childId !== null && <span className="tab-child-kind">子会话</span>}
       </button>
       <button
         type="button"

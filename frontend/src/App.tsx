@@ -321,8 +321,12 @@ function AppBody({ source }: { source: AgentSource }) {
   // 顶栏标题与标签栏标题走**同一个**函数：各算一次早晚分叉（标签栏写着 researcher · …，
   // 顶栏却写着另一个名字）
   const activeChildId = childTabSession(view);
+  // 子会话标题加「子会话 · 」前缀（用户报「子会话和主会话表明的不明显」）：标签栏那边靠
+  // ↳ + 「子会话」胶囊 + 淡成功色底三个通道区分，而**顶栏只有一行文字**，没有那些通道，
+  // 所以在这里补一个文字前缀。标题正文仍来自同一个 childTabTitleOf（不各算一次），
+  // 这里只是显示层加前缀——两处不会给出**不同的标题**，只会一个带前缀一个带图标。
   const viewTitle = activeChildId !== null
-    ? childTabTitleOf(activeChildId)
+    ? `子会话 · ${childTabTitleOf(activeChildId)}`
     : view === "agents" ? "Agent 名单" : view === "catalog" ? "拓展" : view === "git" ? "Git 管理" : currentTitle;
 
   // 壳环境（Electron）= 真实窗口；浏览器 = 保留模拟壳（窗口模拟一层的差异，

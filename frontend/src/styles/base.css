@@ -232,6 +232,43 @@ body:has(.window-stage) {
   background: rgba(0, 0, 0, 0.08);
   color: var(--fg);
 }
+
+/* ===== 子会话标签的视觉区分（用户报「子会话和主会话表明的不明显」） =====
+ * 固定页签（Agent/拓展/Git）是**页面**，子会话标签是**会话**；两类混在同一条 strip 里
+ * 长得一模一样 = 用户分不出哪个是子会话。三个通道一起用（UI/UX 规范：不能只用颜色
+ * 传达信息——灰度/色盲下要分得开）：
+ *   ① 形状：↳ 前缀（tab-child-mark，由 TS 渲染）
+ *   ② 文字：「子会话」小胶囊（tab-child-kind，由 TS 渲染）
+ *   ③ 颜色：整条标签淡成功色底 + 成功色描边（下面这条规则）
+ * min-width 比普通标签大：↳ + 标题 + 胶囊三样东西塞进 58px 会全被压成省略号。 */
+.workspace-tab[data-child="true"] {
+  min-width: 92px;
+  background: rgba(16, 163, 127, 0.05);
+  border-color: rgba(16, 163, 127, 0.16);
+}
+.workspace-tab[data-child="true"].on {
+  background: var(--surface);
+  border-color: rgba(16, 163, 127, 0.34);
+}
+.tab-child-mark {
+  flex: none;
+  font-size: 11px;
+  line-height: 16px; /* 与 .tab-title 同高：行盒容不下中文字形墨迹会裁掉上半截 */
+  color: var(--fg-faint);
+}
+.workspace-tab[data-child="true"].on .tab-child-mark {
+  color: var(--success);
+}
+.tab-child-kind {
+  flex: none;
+  font-size: 9.5px;
+  line-height: 15px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: rgba(16, 163, 127, 0.12);
+  color: #0b7a5e;
+  white-space: nowrap;
+}
 .workspace-tab-main:focus-visible,
 .workspace-tab .tab-close:focus-visible {
   outline: 2px solid var(--fg-muted);
