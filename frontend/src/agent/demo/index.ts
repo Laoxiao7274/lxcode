@@ -1,7 +1,7 @@
 // 演示数据源（M3 叙事）：主 Agent 只调度——思考选人 → agent_dispatch →
 // dispatch 卡（子 Agent 全套执行：思考/读码/改码/确认门/跑测试）→ 验收
 // 汇总。覆盖 UI 全部状态。事件形状与后端协议 1:1——接线换 WSAgent 即可。
-import type { AgentEvent, AgentSource, ApprovalMode, CompactOutcome, ConfirmRequest, ContextUsage, JobAdminSource, JobInfo, JobLogResult, ProjectInstructions, ProjectMeta, RewindOutcome, SendOptions, SessionMeta, TodoItem } from "../../shared/types";
+import type { AgentEvent, AgentSource, ApprovalMode, CompactOutcome, ConfirmRequest, ContextUsage, HistorySnapshot, JobAdminSource, JobInfo, JobLogResult, ProjectInstructions, ProjectMeta, RewindOutcome, SendOptions, SessionMeta, TodoItem } from "../../shared/types";
 import { JOB_NOTICE_PREFIX, sortJobs, upsertJob } from "../../shared/jobs";
 import { normalizeApproval } from "../../shared/approval";
 import { MAIN_REASONING, SUB_REASONING, SUB_RESULT, MAIN_ANSWER, TODO_INITIAL, TODO_LATER, FILES_CHANGED, SESSIONS } from "./data";
@@ -185,6 +185,17 @@ export class DemoAgent implements AgentSource, JobAdminSource {
 
   sessions(): SessionMeta[] {
     return this.sessions_;
+  }
+
+  /** 读子会话历史：**演示态没有子会话**——子 Agent = 独立会话（AGENTS.md §2.3）
+   *  是真实后端把历史落进库才有的东西；演示数据源不落库，派发过程走的是实时
+   *  事件（dispatchStart 之后的 delta/toolCall 由 store 按 dispatchId 归属进卡）。
+   *
+   *  所以这里返回**空快照**，而不是编一份"子执行过程"：卡会如实显示"子会话没有
+   *  可显示的历史"，这是实话——演示态真的没有那份库。（也不抛错：演示模式里
+   *  根本没有子会话，报错会把"演示没有后端"说成"读取失败"。） */
+  async childHistory(sessionId: string): Promise<HistorySnapshot> {
+    return { sessionId, messages: [], busy: false, pending: null, todos: [] };
   }
 
   projects(): ProjectMeta[] {

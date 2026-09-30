@@ -264,6 +264,14 @@ export interface AgentSource {
   archiveSession(id: string): void;
   /** 从归档恢复。 */
   unarchiveSession(id: string): void;
+  /** 读**子会话**的历史（子 Agent = 独立会话，AGENTS.md §2.3：它自己的 messages
+   *  与压缩检查点在库里另存一份，父会话历史里没有这些明细）。
+   *
+   *  用途：DispatchCard 展开时懒加载卡内子执行过程。**不落进 store**——它是那张卡
+   *  的只读补充，不参与主时间线归约（实时子事件照旧走 dispatchId 归属）。
+   *  失败必须向上抛（调用方显示明确原因，不许静默降级成"子会话本来就是空的"）：
+   *  子会话不存在 / 老后端没有 chat.history 的这个用法 / 断连超时都要看得见。 */
+  childHistory(sessionId: string): Promise<HistorySnapshot>;
   /** 会话列表。 */
   sessions(): SessionMeta[];
   /** 项目列表。 */

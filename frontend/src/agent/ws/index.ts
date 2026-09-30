@@ -7,7 +7,7 @@
 // 不动 blocks/pending。
 import type {
   AgentAdminEntry, AgentAdminMcServer, AgentAdminModule, AgentAdminSource, AgentAdminTool,
-  AgentEvent, AgentSource, ApprovalMode, CompactOutcome, ConfirmRequest, ContextUsage, JobAdminSource, JobInfo,
+  AgentEvent, AgentSource, ApprovalMode, CompactOutcome, ConfirmRequest, ContextUsage, HistorySnapshot, JobAdminSource, JobInfo,
   JobLogResult, ModelAdminSource, ModelEntry,
   ProjectInstructions, ProjectMeta, RewindOutcome, SearchAdminSource, SearchChannel, SearchChannelsSnapshot,
   SearchTestResult, SendOptions, SessionMeta, TodoItem,
@@ -516,41 +516,59 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
 
   // ---- ModelAdminSource（模型注册表直通；settings 面板数据源） ----
 
+  /** wire → HistorySnapshot：**唯一一份映射**（loadHistory 与 childHistory 共用）。
+   *  各写一份的代价是"子会话渲染的字段与主时间线悄悄不一致"——而两边渲染用的是
+   *  同一个 historyBlocks，形状一漂就是同一段历史两种画法。 */
+  private snapshotFromWire(r: unknown): HistorySnapshot {
+    const h = (r ?? {}) as {
+      session_id?: string;
+      messages?: Array<{
+        role: string;
+        content: string;
+        /** 撤回锚点（ChatMessage 上的字段）——老后端没有，整键缺席。 */
+        seq?: number;
+        reasoning_content?: string;
+        tool_calls?: Array<{ id?: string; function?: { name: string; arguments?: string } }>;
+        tool_call_id?: string;
+      }>;
+      busy?: boolean;
+      pending?: ConfirmRequest | null;
+      todos?: TodoItem[];
+      context?: ContextUsage;
+      checkpoints?: number[];
+    };
+    return {
+      sessionId: h.session_id ?? "",
+      messages: h.messages ?? [],
+      busy: Boolean(h.busy),
+      pending: h.pending ?? null,
+      todos: h.todos ?? [],
+      context: h.context,
+      checkpoints: h.checkpoints ?? [],
+    };
+  }
+
   /** 拉当前会话的历史并重放视图（连接建立/切换会话后调）。 */
   private loadHistory(sessionId: string): Promise<void> {
     return this.call("chat.history", { session_id: sessionId })
       .then((r) => {
-        const h = r as {
-          session_id?: string;
-          messages?: Array<{
-            role: string;
-            content: string;
-            /** 撤回锚点（ChatMessage 上的字段）——老后端没有，整键缺席。 */
-            seq?: number;
-            reasoning_content?: string;
-            tool_calls?: Array<{ id?: string; function?: { name: string; arguments?: string } }>;
-            tool_call_id?: string;
-          }>;
-          busy?: boolean;
-          pending?: ConfirmRequest | null;
-          todos?: TodoItem[];
-          context?: ContextUsage;
-          checkpoints?: number[];
-        };
-        this.emit({
-          type: "historyLoaded",
-          sessionId,
-          history: {
-            sessionId: h.session_id ?? "",
-            messages: h.messages ?? [],
-            busy: Boolean(h.busy),
-            pending: h.pending ?? null,
-            todos: h.todos ?? [],
-            context: h.context,
-            checkpoints: h.checkpoints ?? [],
-          },
-        });
+        this.emit({ type: "historyLoaded", sessionId, history: this.snapshotFromWire(r) });
       }) as Promise<void>;
+  }
+
+  /** 读子会话的历史（AGENTS.md §2.3：子 Agent = 独立会话，它自己的 messages 与
+   *  压缩检查点在库里另存一份，父会话历史里没有这些明细）。
+   *
+   *  与 loadHistory 走同一条协议方法（chat.history 按 session_id 寻址），但
+   *  **返回快照而不是发事件**：子会话历史是某张 dispatch 卡的只读补充，不进
+   *  store、不参与主时间线归约——发 historyLoaded 会把卡内的子历史当成主时间线
+   *  整块重建（"刷新之后整个对话被一段子 Agent 的过程顶掉"）。
+   *
+   *  失败原样抛（断连/超时/子会话不存在）：调用方（DispatchCard）必须把原因显示
+   *  出来——静默吞掉会让用户以为"子会话本来就是空的"。 */
+  async childHistory(sessionId: string): Promise<HistorySnapshot> {
+    const r = await this.call("chat.history", { session_id: sessionId });
+    return this.snapshotFromWire(r);
   }
 
   models(): { models: ModelEntry[]; roles: Record<string, string> } {

@@ -20,6 +20,7 @@ export function Thread({
   projectName,
   onEdit,
   onRewind,
+  onLoadChild,
   revealUid,
 }: {
   state: UIState;
@@ -31,6 +32,10 @@ export function Thread({
    *  全在 App 与 shared/blocks 的纯函数里（这一层不碰历史）。 */
   onEdit?: (block: ThreadBlock) => void;
   onRewind?: (block: ThreadBlock) => void;
+  /** 子会话历史的懒加载入口（DispatchCard 展开时调一次）——Thread **只做透传**，
+   *  与 onEdit/onRewind 同款：数据源与映射（source.childHistory + historyBlocks）
+   *  都在 App 那一层，渲染层不碰数据源。 */
+  onLoadChild?: (sessionId: string) => Promise<ThreadBlock[]>;
   /** 大纲跳转的目标块 uid（null = 没有待处理的跳转）。
    *
    *  为什么由 Thread 而不是 App 做滚动：线程是**窗口化渲染**（只挂底部 windowSize
@@ -214,7 +219,7 @@ export function Thread({
        *  「很多会话×长会话」的前提——见 docs/frontend-review.md §四-①。 */}
       {hidden > 0 && <WindowSentinel onExpand={() => setWindowSize((n) => n + WINDOW_BATCH)} label={`前面还有 ${hidden} 条…`} />}
       {visible.map((block) => (
-        <Block key={block.uid} block={block} onConfirm={onConfirm} replayed={replayed} onEdit={onEdit} onRewind={onRewind} data-uid={block.uid} />
+        <Block key={block.uid} block={block} onConfirm={onConfirm} replayed={replayed} onEdit={onEdit} onRewind={onRewind} onLoadChild={onLoadChild} data-uid={block.uid} />
       ))}
       {/* 进行中且还没有任何输出时显示思考 shimmer（无角色标签——DSH 形态） */}
       {state.busy && !lastIsStreamingAssistant(state.blocks) && (

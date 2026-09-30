@@ -25,7 +25,7 @@ import { NoticeBar } from "./NoticeBar";
 const NO_SEQ_HINT = "这条消息来自旧版后端（没有 seq），无法定位要撤回的位置";
 
 export const Block = memo(
-  function Block({ block, onConfirm, replayed, onEdit, onRewind, "data-uid": dataUid }: {
+  function Block({ block, onConfirm, replayed, onEdit, onRewind, onLoadChild, "data-uid": dataUid }: {
     block: ThreadBlock;
     onConfirm: (id: string, allow: boolean) => void;
     replayed?: boolean;
@@ -37,6 +37,8 @@ export const Block = memo(
      *  useCallback 固定身份——每次新建会击穿 memo（见文件末尾的比较器）。 */
     onEdit?: (block: ThreadBlock) => void;
     onRewind?: (block: ThreadBlock) => void;
+    /** 子会话历史的懒加载入口（只有 dispatch 卡用）——透传给 DispatchCard。 */
+    onLoadChild?: (sessionId: string) => Promise<ThreadBlock[]>;
   }) {
   const bubbleRef = useRef<HTMLDivElement>(null);
   const { settings } = useSettings();
@@ -107,7 +109,7 @@ export const Block = memo(
       return <FilesCard files={block.files} data-uid={dataUid} />;
 
     case "dispatch":
-      return <DispatchCard block={block} onConfirm={onConfirm} data-uid={dataUid} />;
+      return <DispatchCard block={block} onConfirm={onConfirm} onLoadChild={onLoadChild} data-uid={dataUid} />;
 
     case "compacted":
       return <CompactionCard block={block} data-uid={dataUid} />;
@@ -145,7 +147,10 @@ export const Block = memo(
     prev.block === next.block &&
     prev.onConfirm === next.onConfirm &&
     prev.onEdit === next.onEdit &&
-    prev.onRewind === next.onRewind,
+    prev.onRewind === next.onRewind &&
+    // onLoadChild 也必须比：App 用 useCallback 固定它的身份，漏比的话
+    // 一次身份变化（依赖数组变了）就会让整屏块全部重渲染一遍。
+    prev.onLoadChild === next.onLoadChild,
 );
 
 /** 用户气泡**下方**的三个动作（图标）：复制 / 编辑 / 撤回。

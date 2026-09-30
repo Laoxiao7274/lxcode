@@ -12,6 +12,7 @@ import {
 import { getAgentSource } from "./agent";
 import { useAgent, type ThreadBlock } from "./shared/store";
 import { beginEdit, canRewind, planRewind, type EditDraft } from "./shared/blocks";
+import { historyBlocks } from "./shared/history";
 import { AgentsProvider, useAgents } from "./shared/agents";
 import { AgentsPage } from "./components/agents/AgentsPage";
 import { CatalogPage } from "./components/catalog/CatalogPage";
@@ -142,6 +143,21 @@ function AppBody({ source }: { source: AgentSource }) {
       .then(() => resolve(currentId, id, allow ? "allow" : "deny"))
       .catch((e) => reportError(e instanceof Error ? e.message : String(e)));
   }, [source, resolve, reportError, currentId]);
+
+  /** 子会话历史的懒加载入口（DispatchCard 展开子 Agent 卡时调一次）。
+   *
+   *  两步都在这一层：① 向数据源要**子会话**快照（WSAgent 走 chat.history 按子会话
+   *  id 寻址——后端已支持；DemoAgent 返回空快照，演示态没有子会话，不编数据）；
+   *  ② 用 **historyBlocks** 把快照映射成子时间线的块——与主时间线回放（reduceHistory）
+   *  **共用同一份映射**。写第二份映射 = 两条路径分叉，那正是上一轮"刷新之后子 Agent
+   *  卡换一张脸"的成因。
+   *
+   *  失败**原样抛**：DispatchCard 显示"读不到子会话历史：<原因>"并允许重试——静默
+   *  失败会让用户以为子会话本来就是空的。useCallback 固定身份，否则 Block 的 memo
+   *  会被逐帧击穿（与 handleConfirm 同一条纪律）。 */
+  const handleLoadChild = useCallback(async (sessionId: string): Promise<ThreadBlock[]> => {
+    return historyBlocks(await source.childHistory(sessionId));
+  }, [source]);
 
   // 手动压缩：请求类失败进一次性提示（不动 blocks）；没有可压收益时给一句人话
   // 原因（不是错误——历史还太短是正常态）。压缩成功由 chat.compacted 事件渲染标记块。
@@ -307,7 +323,7 @@ function AppBody({ source }: { source: AgentSource }) {
           <div className="chat-main">
             {errorNotice}
             <div className="thread-scroll">
-              <Thread state={state} onConfirm={handleConfirm} onSuggestion={handleSend} projectName={filterProjectName} onEdit={handleEdit} onRewind={handleRewind} revealUid={jumpedUid} />
+              <Thread state={state} onConfirm={handleConfirm} onSuggestion={handleSend} projectName={filterProjectName} onEdit={handleEdit} onRewind={handleRewind} onLoadChild={handleLoadChild} revealUid={jumpedUid} />
             </div>
             <Composer
               busy={state.busy}

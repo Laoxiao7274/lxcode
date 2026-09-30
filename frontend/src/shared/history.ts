@@ -70,19 +70,30 @@ export const DISPATCH_INTERRUPTED = "这次派发在结束前中断了——历�
  *  与后端"（子 Agent 没有产出文本结论）"同款口径——是事实陈述，不是编的结论。 */
 export const DISPATCH_NO_TEXT = "（子 Agent 没有产出文本结论）";
 
-/** 历史快照 → UI 状态：消息序列重建 blocks。
+/** 消息序列 → blocks（**唯一一份映射**）。
+ *
+ *  两条路径共用它：① 回放路径 reduceHistory（刷新/切会话重建主时间线）；
+ *  ② 子会话历史的渲染（DispatchCard 展开时懒加载子会话快照，App 的
+ *  handleLoadChild 调它）。**不许写第二份映射**——分叉的代价是同一段历史在
+ *  两条路径上换一张脸（上一轮那个 bug 就是回放路径给 agent_dispatch 建了工具行，
+ *  刷新之后子 Agent 卡退化成一行光秃秃的 `agent_dispatch`）。
+ *  tests/child-history.test.mjs ① 逐字段钉住"两份产出完全一致"。
+ *
  *  配对规则：assistant 的 tool_calls 先开块；后续 role=tool 的消息
  *  按 tool_call_id 回填对应块的 result（服务端的存储顺序保证可达）。
  *  **调度调用（agent_dispatch）建的是 dispatch 卡，不是工具行**——与实时路径
- *  （reduce.ts 的 toolCall + dispatchStart）形态一致：回放建工具行的话，
- *  刷新之后所有子 Agent 卡就退化成一行光秃秃的 `agent_dispatch`（用户实测
- *  报的"重启之后变成 agent_dispatch"）。 */
-export function reduceHistory(state: UIState, h: HistorySnapshot): UIState {
+ *  （reduce.ts 的 toolCall + dispatchStart）形态一致。
+ *  压缩检查点（checkpoints 下标）渲染成 compacted 块——子会话也是会话，
+ *  它自己的压缩检查点走的就是这一条。 */
+export function historyBlocks(h: HistorySnapshot): ThreadBlock[] {
   const blocks: ThreadBlock[] = [];
   const checkpoints = new Set(h.checkpoints ?? []);
+  // 缺 messages 键的快照（老后端 / 演示快照）不许让加载路径抛异常——与
+  // 「畸形历史要么在写边界拦住、要么在读侧兜底」同一条纪律（AGENTS.md §5 坑 12）。
+  const messages = h.messages ?? [];
   let lastAssistant: AssistantBlock | null = null;
-  for (let i = 0; i < h.messages.length; i++) {
-    const m = h.messages[i];
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
     if (m.role === "user") {
       // 压缩检查点不是用户说的话：渲染成标记块（否则会变成一个巨大的用户气泡，
       // 把真正的用户消息淹没——这是回放路径与实时路径必须一致的地方）
@@ -196,10 +207,20 @@ export function reduceHistory(state: UIState, h: HistorySnapshot): UIState {
   // 用 placeConfirm 就地替换：后端在确认门挂起前已把 assistant 的 tool_calls
   // 落库，所以历史里必然有一行同 id 的工具行——若直接追加会重现"两行同 id"。
   const pending = h.pending ?? null;
-  const withPending = pending ? placeConfirm(blocks, pending) : blocks;
+  return pending ? placeConfirm(blocks, pending) : blocks;
+}
+
+/** 历史快照 → UI 状态（回放路径的入口）：块重建**复用 historyBlocks**，
+ *  这里只负责把它装进 UIState 并带上快照里的会话级状态。
+ *
+ *  单独一层的理由：子会话历史只需要块（它不参与主时间线的归约——卡内的
+ *  子时间线是**只读补充**），而主时间线需要 busy/pending/todos/context。
+ *  两份产出共用同一个 historyBlocks，映射不可能分叉。 */
+export function reduceHistory(state: UIState, h: HistorySnapshot): UIState {
+  const pending = h.pending ?? null;
   return {
     ...state,
-    blocks: withPending,
+    blocks: historyBlocks(h),
     busy: false,
     pending,
     todos: h.todos ?? [],
