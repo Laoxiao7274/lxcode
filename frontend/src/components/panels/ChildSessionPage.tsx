@@ -13,6 +13,7 @@ import type { ThreadBlock } from "../../shared/store";
 import { historyBlocks } from "../../shared/history";
 import { Button } from "../form";
 import { Block } from "../thread/blocks/Block";
+import { ScrollToBottom } from "../thread/ScrollToBottom";
 
 export function ChildSessionPage({
   sessionId,
@@ -92,14 +93,19 @@ export function ChildSessionPage({
           <div className="child-session-note">这个子会话没有可显示的历史（它可能还没开始执行，或历史已被清空）。</div>
         )}
         {status === "ready" && blocks.length > 0 && (
-          // 复用 .thread（主时间线的容器类：块间距、720px 居中、左右 24px 内边距）——
-          // 同一个视觉语言，不是第二套排版
-          <div className="thread">
-            {blocks.map((block) => (
-              // readOnly：不渲染用户气泡的动作条（撤回/编辑在这里没有意义，见 Block 的说明）
-              <Block key={block.uid} block={block} onConfirm={handleConfirm} readOnly />
-            ))}
-          </div>
+          <>
+            {/* 复用 .thread（主时间线的容器类：块间距、720px 居中、左右 24px 内边距）——
+             *  同一个视觉语言，不是第二套排版 */}
+            <div className="thread">
+              {blocks.map((block) => (
+                // readOnly：不渲染用户气泡的动作条（撤回/编辑在这里没有意义，见 Block 的说明）
+                <Block key={block.uid} block={block} onConfirm={handleConfirm} readOnly />
+              ))}
+            </div>
+            {/* 回到底部：与主时间线**共用同一份组件**（自己找滚动祖先 = 这里的
+             *  .child-session-body）。各写一份的下场是修了一处漏一处。 */}
+            <ScrollToBottom />
+          </>
         )}
       </div>
     </div>

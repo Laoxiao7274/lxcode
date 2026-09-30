@@ -9,9 +9,11 @@ import { useAgents } from "../../shared/agents";
 import { effectiveDelegates } from "../../shared/agent-delegation";
 import { ThinkingState } from "../../aicss/ThinkingState";
 import { staggerIn, motionAllowed } from "../../shared/motion";
+import { isNearBottom } from "../../shared/scroll-metrics";
 import { gsap } from "gsap";
 import { Block } from "./blocks";
 import { EmptyState } from "./EmptyState";
+import { ScrollToBottom } from "./ScrollToBottom";
 
 export function Thread({
   state,
@@ -119,8 +121,10 @@ export function Thread({
       el.scrollTop = el.scrollHeight;
     };
     const userIntent = () => {
-      const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 200;
-      stickyRef.current = atBottom;
+      // 贴底判定与「回到底部」按钮（ScrollToBottom）**同源**：同一个常量、同一个函数
+      // （shared/scroll-metrics）。在这里再写一个 200 就是分叉的开始——按钮会在
+      // "其实已经在底部"时还亮着。
+      stickyRef.current = isNearBottom(el);
     };
     const onWheel = () => userIntent();
     const onTouch = () => userIntent();
@@ -232,6 +236,9 @@ export function Thread({
         </div>
       )}
       <div ref={endRef} />
+      {/* 回到底部：与子会话页共用同一份实现（见 ScrollToBottom.tsx 的说明）。
+       *  自己找最近的滚动祖先（.thread-scroll），所以这里不需要传容器。 */}
+      <ScrollToBottom />
     </div>
   );
 }

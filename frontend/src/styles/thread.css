@@ -309,6 +309,8 @@
 .thread-scroll {
   flex: 1;
   overflow-y: auto;
+  /* 注意：这里不能加 position: relative——「回到底部」浮标（.scroll-to-bottom）靠
+   * "定位锚在滚动容器之外"才不跟着内容滚走，锚一进容器它就成了一条会滚出屏幕的装饰。 */
   /* 底部预留 = 输入区真实高度（Composer 经 ResizeObserver 发布
    * --composer-h）——清单卡展开多高就留多少，浮层永不遮挡对话内容
    * （把清单当输入区的一部分）。170px 是无 JS 时的兜底。 */
@@ -331,6 +333,54 @@
 .window-more:hover {
   color: var(--fg-muted);
 }
+
+/* ===== 回到底部浮标（主时间线 Thread 与子会话页共用一份组件） =====
+ * 锚在聊天列右下角：底部让出输入区的真实高度（--composer-h 由 Composer 发布），
+ * 所以既压不到输入框，也压不到消息的动作条——消息列是 720px 居中，宽窗口下
+ * 这个浮标落在右侧留白里。子会话页没有输入区，在那里改贴内容区底（见 panels.css）。
+ * z-index 40 = 与既有浮层同档（catalog 面板、输入区内部菜单都是 40）。 */
+.scroll-to-bottom {
+  position: absolute;
+  right: 18px;
+  bottom: calc(var(--composer-h, 170px) + 14px);
+  z-index: 40;
+  /* 浮层盒子不吃指针：消息 hover 才出现的动作条不能被它挡住 */
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 140ms, visibility 140ms;
+}
+.scroll-to-bottom[data-show="true"] {
+  opacity: 1;
+  visibility: visible;
+}
+/* 真按钮（表单套件 Button = .fd-btn-g）：圆形图标按钮，与 .msg-action.fd-btn-g 同款做法
+ * （套件只给外观，尺寸/圆角/底色归使用方）。 */
+.scroll-to-bottom-btn.fd-btn-g {
+  pointer-events: auto;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--fg-muted);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1), 0 0 0 1px var(--border-soft);
+}
+.scroll-to-bottom-btn.fd-btn-g:hover {
+  color: var(--fg);
+  border-color: #c9c9cf;
+}
+.scroll-to-bottom-btn.fd-btn-g:focus-visible {
+  outline: 2px solid var(--fg-muted);
+  outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .scroll-to-bottom {
+    transition: none;
+  }
+}
+
 /* ===== 消息块 ===== */
 .msg {
   margin-bottom: 18px;

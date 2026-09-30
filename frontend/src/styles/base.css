@@ -133,6 +133,27 @@ body:has(.window-stage) {
   scrollbar-width: none;
 }
 .tab-strip::-webkit-scrollbar { display: none; }
+/* ===== 标签条溢出渐隐（"还有更多"的提示） =====
+ * 两条 strip 都隐藏了滚动条（36px 的栏里塞滚动条更难看），所以溢出必须有别的提示：
+ * 在**还有内容的那一侧**把标签淡出。方向由 TS 按 scrollLeft/scrollWidth 算成
+ * data-overflow——CSS 读不到滚动位置，写死"两侧都渐隐"在没溢出时就是假提示。
+ * 用 mask 而不是伪元素：strip 是滚动容器，伪元素会跟着内容一起滚走。
+ * 默认（data-overflow="none"）不写规则 = 不渐隐。 */
+.workspace-tab-strip[data-overflow="left"],
+.tab-strip[data-overflow="left"] {
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 16px);
+  mask-image: linear-gradient(to right, transparent 0, #000 16px);
+}
+.workspace-tab-strip[data-overflow="right"],
+.tab-strip[data-overflow="right"] {
+  -webkit-mask-image: linear-gradient(to left, transparent 0, #000 16px);
+  mask-image: linear-gradient(to left, transparent 0, #000 16px);
+}
+.workspace-tab-strip[data-overflow="both"],
+.tab-strip[data-overflow="both"] {
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 16px, #000 calc(100% - 16px), transparent 100%);
+  mask-image: linear-gradient(to right, transparent 0, #000 16px, #000 calc(100% - 16px), transparent 100%);
+}
 .tab {
   display: inline-flex;
   align-items: center;

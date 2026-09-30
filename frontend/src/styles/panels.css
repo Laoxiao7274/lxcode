@@ -460,6 +460,9 @@
 /* 结构：整页 flex 列 + 固定页头 + 内容区自己滚（与 .git-page 同款职责分工：
  * 页面不撑高工作区，长历史只在内容区滚动）。 */
 .child-session-page {
+  /* position: relative 是「回到底部」浮标（.scroll-to-bottom，绝对定位）的定位锚：
+   * 它必须落在**滚动区之外**的祖先上——否则浮标会跟着历史内容一起滚走。 */
+  position: relative;
   display: flex;
   flex: 1;
   flex-direction: column;
@@ -518,6 +521,11 @@
   min-height: 0;
   overflow-y: auto;
   padding: 14px 0 24px;
+}
+/* 子会话页没有输入区，所以「回到底部」浮标贴内容区底部——
+ * --composer-h 是聊天列发布的（Composer 仍挂载着），在这里不适用，会让浮标凭空抬高。 */
+.child-session-page .scroll-to-bottom {
+  bottom: 18px;
 }
 /* 三态提示（加载中 / 读失败 / 空历史）：一行轻量说明。
  * 与 .dispatch-child-note 同款形态——同一件事（读子会话历史）在两处不该有两套长相。

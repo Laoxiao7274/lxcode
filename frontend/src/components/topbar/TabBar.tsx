@@ -7,8 +7,11 @@
 // 每个会话标签是独立并发 Session；切焦点不取消后台轮次。关闭会话标签只隐藏标签，
 // 会话本体仍留在侧栏并在刷新时恢复。
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import type { RefObject } from "react";
 import { gsap } from "gsap";
 import { motionAllowed } from "../../shared/motion";
+import { overflowAttr, overflowEdges, shouldInterceptWheel } from "../../shared/scroll-metrics";
+import type { OverflowAttr } from "../../shared/scroll-metrics";
 import {
   appendSessionTab,
   pruneSessionTabs,
@@ -24,6 +27,67 @@ const WORKSPACE_LABELS: Record<WorkspacePage, string> = {
   catalog: "拓展",
   git: "Git",
 };
+
+/** 活动标签滚进可视区（两条 strip 共用一份实现）。
+ *
+ *  这是用户报的「标签页超出窗口被遮住」的**主因**修复：新开的会话标签（尤其子会话标签，
+ *  它追加在最右）落在可视区外，而滚动条是隐藏的，用户看到的就是"被遮住一部分"。
+ *
+ *  inline: "nearest"（不是 center）：用户只是切标签时，center 会把整条 strip 拽来拽去，
+ *  连本来看得见的标签也跟着跑。block: "nearest"：标签纵向本来就完整可见，
+ *  不许把外层容器也拽一下（scrollIntoView 会连带滚动所有可滚祖先）。 */
+function useActiveTabVisible(ref: RefObject<HTMLElement | null>, activeKey: string, tabCount: number) {
+  useLayoutEffect(() => {
+    // 活动标签就是带 .on 的那个（两条 strip 的渲染件都用这个类，不再另起一套标记）
+    ref.current?.querySelector<HTMLElement>(".tab.on")?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    // tabCount 也要进依赖：标签是**渲染后**才挂上 DOM 的（首屏铺开标签时 key 并没有变），
+    // 只盯 key 的话，首屏那一次滚进可视区会被整个跳过。
+  }, [ref, activeKey, tabCount]);
+}
+
+/** 标签条横向溢出的两个附属行为（两条 strip 共用一份实现）。
+ *
+ *  ① 渐隐提示：方向由运行时 scrollLeft 决定，CSS 读不到（纯 CSS 只能"永远两侧都渐隐"，
+ *     那在没溢出时是假提示）——所以在这里算成 data-overflow，样式只负责按方向画。
+ *     不用常显滚动条：36px 的栏里塞滚动条更难看，但"还有更多"必须有提示。
+ *  ② 滚轮横向滚：overflow-x: auto 在多数浏览器里不吃纵向滚轮，把 deltaY 转到 scrollLeft。
+ *     只在真的溢出、且该方向还有余量时拦截——否则会吞掉页面自身的滚动。 */
+function useStripOverflow<T extends HTMLElement>() {
+  const ref = useRef<T | null>(null);
+  const [attr, setAttr] = useState<OverflowAttr>("none");
+  const syncRef = useRef<() => void>(() => {});
+  // 每次渲染后重算：标签增删改的是 scrollWidth 而不是容器的盒子宽，
+  // ResizeObserver 只盯容器本身，看不见"标签多了"。
+  useLayoutEffect(() => { syncRef.current(); });
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const sync = () => {
+      const next = overflowAttr(overflowEdges(el));
+      setAttr((prev) => (prev === next ? prev : next)); // 同值不 setState：否则每次渲染都多跑一轮
+    };
+    syncRef.current = sync;
+    sync();
+    const onScroll = () => sync();
+    const onWheel = (event: WheelEvent) => {
+      if (!shouldInterceptWheel(el, event.deltaY)) return; // 不溢出/该方向到头 → 让事件冒泡
+      event.preventDefault();
+      el.scrollLeft += event.deltaY;
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    // 要 preventDefault，监听器就不能是 passive
+    el.addEventListener("wheel", onWheel, { passive: false });
+    const ro = new ResizeObserver(sync);
+    ro.observe(el);
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      el.removeEventListener("wheel", onWheel);
+      ro.disconnect();
+      syncRef.current = () => {};
+    };
+  }, []);
+  return [ref, attr] as const;
+}
 
 export function TabBar({
   source,
@@ -110,6 +174,14 @@ export function TabBar({
   // 高亮：目的地优先——关标签后立刻指出"接下来是哪个"，不必等历史读回来
   const activeId = pendingFocus && tabIds.includes(pendingFocus) ? pendingFocus : currentId;
 
+  // 两条 strip 各自的溢出渐隐方向与滚轮横向滚（共用一份 hook）
+  const [workspaceStripRef, workspaceOverflow] = useStripOverflow<HTMLElement>();
+  const [sessionStripRef, sessionOverflow] = useStripOverflow<HTMLDivElement>();
+  // 活动标签滚进可视区：焦点变化（工作区视图 / 会话）时各来一次。
+  // 工作区那条的计数含固定「聊天」页签（+1），否则首屏铺开时那次滚动会被跳过。
+  useActiveTabVisible(workspaceStripRef, activeWorkspaceView, workspaceTabs.length + 1);
+  useActiveTabVisible(sessionStripRef, activeId, tabIds.length);
+
   // 关闭 = 从标签条隐藏（会话本体留在侧栏，刷新仍在）。
   // 关掉**当前**标签时把焦点让给最近打开的另一个标签——**绝不新建会话**：
   // 原来这里调 onNewChat()，那会真的在后端建一个会话，于是"关一个冒一个"，
@@ -128,7 +200,7 @@ export function TabBar({
 
   return (
     <div className="tabbar" data-tabs={String(tabs.length)} data-workspace-tabs={String(workspaceTabs.length + 1)}>
-      <nav className="workspace-tab-strip" aria-label="工作区标签">
+      <nav className="workspace-tab-strip" aria-label="工作区标签" ref={workspaceStripRef} data-overflow={workspaceOverflow}>
         <div className={"tab workspace-tab" + (activeWorkspaceView === "chat" ? " on" : "")} data-workspace-tab="chat">
           <button
             type="button"
@@ -158,7 +230,7 @@ export function TabBar({
         })}
       </nav>
       <span className="tabbar-divider" aria-hidden="true" />
-      <div className="tab-strip session-tab-strip" role="group" aria-label="会话标签">
+      <div className="tab-strip session-tab-strip" role="group" aria-label="会话标签" ref={sessionStripRef} data-overflow={sessionOverflow}>
         {tabs.map(({ id, meta }) => {
           const on = id === activeId;
           const busy = Boolean(busyBySession[id]);
