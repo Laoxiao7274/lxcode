@@ -13,6 +13,7 @@ import { useEnterRef } from "../../../shared/anim";
 import { Markdown } from "../../../shared/markdown";
 import { Button } from "../../form";
 import { Block } from "./Block";
+import { dispatchPrimaryAction, dispatchPrimaryTitle } from "./dispatch-primary";
 
 /** agentId 也查不到时的名字（历史里参数坏了——比如 arguments 是截断的 JSON）。
  *  **不许留空白**：空白的卡头让用户不知道是谁在干活，比一个明确的"未知"更糟。 */
@@ -120,44 +121,102 @@ export function DispatchCard({ block, onConfirm, onLoadChild, onOpenChild, "data
   // 或有子会话 id（展开才能触发懒加载——否则子会话永远读不出来）
   const expandable = subCount > 0 || Boolean(done && (block.result || block.sessionId));
 
+  // ---- 卡头主区点下去该干什么（纯判定在 dispatch-primary.ts，有单测钉住）----
+  // 用户实测报的「点击现在还是展开和收缩，并不是新标签页」：上一版把「打开子会话」放在
+  // 折叠区底部——不展开看不见、展开了还得滚到底，**主操作不可发现**。这一版把主操作搬到
+  // 卡头主区，展开降级成 chevron 小按钮（两个并列按钮，不嵌套——button 里套 button 是
+  // 非法 HTML，浏览器会把内层提出来）。
+  // canOpenChild 与 primaryAction 共用同一份判定（dispatchPrimaryAction），提示语也用
+  // 同一份（dispatchPrimaryTitle）——两处各判一遍的后果是"提示说打开、点下去是展开"。
+  const canOpenChild = sessionId !== "" && Boolean(onOpenChild);
+  const primaryAction = dispatchPrimaryAction(block, Boolean(onOpenChild));
+  const primaryTitle = dispatchPrimaryTitle(block, Boolean(onOpenChild));
+  const toggleExpanded = () => setUserSet(!expanded);
+  const onPrimaryClick = () => {
+    // 有子会话 id + 接了 onOpenChild → 打开独立会话；否则**回落成切换展开**
+    // （老数据/演示态点了没反应比"点开的是展开"更糟）。
+    if (primaryAction === "open") onOpenChild?.(sessionId);
+    else toggleExpanded();
+  };
+
   return (
     <div className="dispatch-card" data-uid={dataUid} data-done={done ? "true" : undefined} data-error={block.isError ? "true" : undefined} ref={cardRef}>
-      <button
-        type="button"
-        className="dispatch-head"
-        onClick={() => setUserSet(!expanded)}
-        aria-expanded={expanded}
-      >
-        <span className="dispatch-dot" style={{ background: agentColor }} aria-hidden />
-        <span className="dispatch-agent">{agentName}</span>
-        <span className="dispatch-task" title={block.task}>{clipTask(block.task)}</span>
-        <span className="dispatch-state">
-          {done ? (
-            <>
-              {block.isError ? "✗ 失败" : "✓ 完成"}
-              {block.usageTokens ? <span className="dispatch-tokens mono">{block.usageTokens} tk</span> : null}
-            </>
-          ) : (
-            <>
-              <span className="mset-spinner" aria-hidden />
-              执行中
-            </>
-          )}
-        </span>
-        {block.sessionId && (
-          <span className="dispatch-session mono" title={`子会话 ${block.sessionId}（独立会话：自己的历史与压缩，可续跑）`}>
-            {block.sessionId.slice(0, 8)}
+      {/* 卡头 = 一行里两个**并列**按钮（不是嵌套：button 里套 button 是非法 HTML，
+       *  浏览器会把内层提出来，React 也会警告）：
+       *    .dispatch-head      主区：dot + 名 + 任务摘要 + 状态 + 子会话 id 徽标
+       *                        —— 点它 = **打开子会话**（有 id 且接了 onOpenChild 时），
+       *                        否则回落成切换展开（老数据/演示态不许点了没反应）
+       *    .dispatch-chev-btn  chevron 小按钮：永远只做展开/收起
+       *  两个都是真 <button>，Tab 可到、Enter/Space 可触发（键盘可达）。
+       *  类名把 .dispatch-head 留给**主区按钮**而不是这一行的容器：脚本
+       *  scripts/check-preview-layout.cjs 按 .dispatch-head 点卡头验证展开/收起
+       *  （演示态的卡没有子会话 id，主区就是切换展开），沿用旧类名那个脚本一行都不用动。 */}
+      <div className="dispatch-head-row">
+        <button
+          type="button"
+          className="dispatch-head"
+          data-openable={canOpenChild ? "true" : undefined}
+          onClick={onPrimaryClick}
+          // 打开子会话是**导航**不是展开，此时不报 aria-expanded（那会告诉读屏用户
+          // "这里能展开/收起"）；只有回落成切换展开、且真的能展开时才报。
+          aria-expanded={primaryAction === "toggle" && expandable ? expanded : undefined}
+          aria-label={primaryTitle}
+          title={primaryTitle}
+        >
+          <span className="dispatch-dot" style={{ background: agentColor }} aria-hidden />
+          <span className="dispatch-agent">{agentName}</span>
+          <span className="dispatch-task" title={block.task}>{clipTask(block.task)}</span>
+          <span className="dispatch-state">
+            {done ? (
+              <>
+                {block.isError ? "✗ 失败" : "✓ 完成"}
+                {block.usageTokens ? <span className="dispatch-tokens mono">{block.usageTokens} tk</span> : null}
+              </>
+            ) : (
+              <>
+                <span className="mset-spinner" aria-hidden />
+                执行中
+              </>
+            )}
           </span>
-        )}
+          {/* 子会话 id 徽标：**可打开时**加一个向外的箭头（↗）与成功色——收起状态下
+           *  也让人一眼看出"点这里能进去"。不可打开（无 id / 未接线）时保持原来的
+           *  中性徽标：不许长出一个点了没反应的箭头。 */}
+          {sessionId !== "" && (
+            <span
+              className={"dispatch-session mono" + (canOpenChild ? " openable" : "")}
+              title={`子会话 ${sessionId}（独立会话：自己的历史与压缩，可续跑）`}
+            >
+              {sessionId.slice(0, 8)}
+              {canOpenChild && (
+                <svg
+                  className="dispatch-session-go" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden
+                >
+                  <path d="M7 17 17 7" />
+                  <path d="M8 7h9v9" />
+                </svg>
+              )}
+            </span>
+          )}
+        </button>
         {expandable && (
-          <svg
-            className={"dispatch-chev" + (expanded ? " open" : "")}
-            width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden
+          <button
+            type="button"
+            className="dispatch-chev-btn"
+            onClick={toggleExpanded}
+            aria-expanded={expanded}
+            aria-label={expanded ? "收起子过程" : "展开子过程"}
+            title={expanded ? "收起子过程" : "展开子过程"}
           >
-            <path d="m6 9 6 6 6-6" />
-          </svg>
+            <svg
+              className={"dispatch-chev" + (expanded ? " open" : "")}
+              width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden
+            >
+              <path d="m6 9 6 6 6-6" />
+            </svg>
+          </button>
         )}
-      </button>
+      </div>
 
       {/* 折叠区：子执行过程 + 最终结果。结果必须在这里面——否则卡片永远收不短 */}
       {expanded && expandable && (
@@ -184,18 +243,24 @@ export function DispatchCard({ block, onConfirm, onLoadChild, onOpenChild, "data
               <Markdown text={block.result} />
             </div>
           )}
-          {/* 底部收起：长展开卡（子 Agent 的过程 + 结果）滚到底后不必再回到卡片顶部
-           *  找那个 chevron。走表单套件的 Button——裸写 <button> 就是 OS 默认灰皮。 */}
+          {/* 底部两个按钮（**刻意保留**，与卡头主区形成两个入口——不是重复）：
+           *   「打开子会话」——读完了想进去：长展开卡（子 Agent 的过程 + 结果）滚到底后
+           *     不必再回到卡片顶部；用户明确要求过长展开在最下面也能收起来。
+           *   「收起」——同上，滚到底就能收，不用回卡头找 chevron。
+           *  两个入口对应两个真实场景：卡头主区是"我一看就想进去"（还没读，先跳进
+           *  独立会话），底部是"我读完了想进去"（在卡内扫完摘要，顺手进完整时间线）。
+           *  少任何一个都会让某一类用户多走一趟滚动或回顶部——所以刻意都留着。
+           *  走表单套件的 Button——裸写 <button> 就是 OS 默认灰皮。 */}
           <div className="dispatch-foot">
-            {/* 「打开子会话」：把子会话当**独立工作区标签**打开（卡内是摘要，标签里是
-             *  完整时间线——含子会话自己的压缩检查点）。按钮放在折叠区里而不是卡头：
-             *  卡头整体已经是一个 button，button 里再嵌 button 是非法 HTML。 */}
-            {sessionId !== "" && onOpenChild && (
-              <Button className="dispatch-open-child" onClick={() => onOpenChild(sessionId)}>
+            {/* 判据用 canOpenChild（与卡头主区**同一份**，见上）——这里再手写一遍
+             *  sessionId !== "" && onOpenChild 的话，两处判据将来会漂移成"卡头能开、
+             *  底部不显示"这种自相矛盾的卡。 */}
+            {canOpenChild && (
+              <Button className="dispatch-open-child" onClick={() => onOpenChild?.(sessionId)}>
                 打开子会话
               </Button>
             )}
-            <Button className="dispatch-collapse" onClick={() => setUserSet(!expanded)}>
+            <Button className="dispatch-collapse" onClick={toggleExpanded}>
               收起
             </Button>
           </div>

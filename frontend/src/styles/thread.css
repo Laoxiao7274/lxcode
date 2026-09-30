@@ -442,20 +442,70 @@
 .dispatch-card[data-error="true"] {
   border-color: rgba(224, 46, 42, 0.35);
 }
+/* 卡头 = 一行里**两个并列按钮**（不能嵌套 button：button 里套 button 是非法 HTML，
+ * 浏览器会把内层提出来，React 也会警告）。所以：
+ *   .dispatch-head-row  行容器（原来 .dispatch-head 的布局属性搬到这里）
+ *   .dispatch-head      主区按钮：打开子会话（没有子会话 id / 未接线时回落成切换展开）
+ *   .dispatch-chev-btn  chevron 小按钮：永远只做展开/收起
+ * 为什么把 .dispatch-head 这个类名留给**主区按钮**而不是行容器：脚本
+ * scripts/check-preview-layout.cjs 按 .dispatch-head 点卡头来验证展开/收起
+ * （演示态的卡没有子会话 id，主区就是切换展开）——沿用旧类名那个脚本一行都不用动。 */
+.dispatch-head-row {
+  display: flex;
+  align-items: stretch;
+  width: 100%;
+}
 .dispatch-head {
   display: flex;
   align-items: center;
   gap: 8px;
-  width: 100%;
-  padding: 10px 13px;
+  flex: 1;
+  min-width: 0;
+  padding: 10px 4px 10px 13px;
   background: none;
   border: none;
   cursor: pointer;
   font-family: var(--font-sans);
   text-align: left;
+  color: var(--fg);
 }
+/* 主区 hover 反馈（底色 + 光标）：它是这张卡的**主操作**，必须比原来的整头 hover
+ * 更明确。cursor 由 button 默认给 pointer，这里仍显式写死——将来给 button 加全局
+ * reset 时不至于把"可点"这个信号一起抹掉。
+ * 可打开（有子会话 id + 接了 onOpenChild）时用成功色微染：与"打开一个独立会话"
+ * 的语义对上，**收起状态下**也能一眼看出这里点得进去。 */
 .dispatch-head:hover {
-  background: rgba(0, 0, 0, 0.025);
+  background: rgba(0, 0, 0, 0.035);
+}
+.dispatch-head[data-openable="true"] {
+  cursor: pointer;
+}
+.dispatch-head[data-openable="true"]:hover {
+  background: rgba(16, 163, 127, 0.09);
+}
+/* 键盘可达：两个按钮都是真 <button>，focus-visible 必须看得见（用 outline-offset
+ * 负值把描边收进按钮盒内，卡片有 overflow: hidden，外描边会被裁掉）。 */
+.dispatch-head:focus-visible,
+.dispatch-chev-btn:focus-visible {
+  outline: 2px solid var(--success);
+  outline-offset: -2px;
+}
+/* chevron 小按钮：与主区**并列**（不是主区的一部分），所以它自己的 hover 反馈
+ * 必须独立——用户要点的是"只展开"，反馈要落在这个小按钮上而不是整行。 */
+.dispatch-chev-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  padding: 0 13px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--fg-faint);
+}
+.dispatch-chev-btn:hover {
+  background: rgba(0, 0, 0, 0.035);
+  color: var(--fg-muted);
 }
 .dispatch-dot {
   width: 8px;
@@ -502,12 +552,35 @@
   color: var(--fg-faint);
 }
 .dispatch-chev {
-  color: var(--fg-faint);
+  /* currentColor：颜色由外层 .dispatch-chev-btn 决定（hover 时要变深）——
+   * 这里写死 --fg-faint 的话 hover 反馈就断了。 */
+  color: currentColor;
   flex: none;
   transition: transform 160ms;
 }
 .dispatch-chev.open {
   transform: rotate(180deg);
+}
+/* 子会话 id 徽标（基础样式在 catalog.css：等宽 + 低对比度）——可打开时的"点得进去"
+ * 视觉：成功色 + 描边 + 一个**向外的箭头**（↗）+ 主区 hover 时加下划线。
+ * 只在真能打开时出现（.openable 由 DispatchCard 按 dispatchPrimaryAction 的同一份
+ * 判定挂上）：演示态/老数据不该长出一个点了没反应的箭头。
+ * 选择器带 .dispatch-head 前缀（specificity 高于 catalog.css 的单类规则）：
+ * 这样不必赌 thread.css 与 catalog.css 的加载顺序。 */
+.dispatch-head .dispatch-session {
+  display: inline-flex;
+  align-items: center;
+}
+.dispatch-head .dispatch-session.openable {
+  color: var(--success);
+  border-color: rgba(16, 163, 127, 0.45);
+}
+.dispatch-head:hover .dispatch-session.openable {
+  text-decoration: underline;
+}
+.dispatch-session-go {
+  margin-left: 3px;
+  flex: none;
 }
 .dispatch-result {
   padding: 2px 14px 12px;
@@ -559,8 +632,12 @@
 .dispatch-body .msg {
   padding: 0;
 }
-/* 展开体底部的「收起」：长展开卡（子 Agent 的过程 + 结果）滚到底后不必再回到卡片
- * 顶部找 chevron——用户原话「应该在最下面也有收起的东西，不然很不方便」。
+/* 展开体底部的两个按钮（打开子会话 / 收起）：长展开卡（子 Agent 的过程 + 结果）
+ * 滚到底后不必再回到卡片顶部找 chevron——用户原话「应该在最下面也有收起的东西，
+ * 不然很不方便」。
+ * **卡头主区与这里都留着「打开子会话」是刻意的**（不是重复）：卡头主区服务"我一看
+ * 就想进去"（还没读摘要，直接跳进独立会话），底部服务"我读完了想进去"（在卡内扫完
+ * 结果，顺手进完整时间线）。少任何一个都会让某一类用户多走一趟滚动或回顶部。
  * 走表单套件的 Button（.fd-btn-g）：裸写 <button> 就是 OS 默认灰皮。
  * 放 thread.css 而不是 panels.css 的理由：它是卡片自身视觉语言的一部分，与
  * .dispatch-body / .dispatch-chev 同处一节（panels.css 是右栏工作区结构）；
