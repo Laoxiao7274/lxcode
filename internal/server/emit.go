@@ -30,6 +30,10 @@ func (s *Server) emitEvent(sessionID string, ev agent.Event) {
 		s.broadcast(protocol.EventDone, protocol.DoneParams{
 			SessionID: sessionID, Message: e.Message, UsageTokens: e.UsageTokens, FinishReason: e.FinishReason,
 			DispatchID: e.DispatchID, Context: toProtocolContext(e.Context),
+			// 计时/模型从**同一条消息**取（不另算一遍）：chat.done 的这三个值必须与
+			// 随后 chat.history 回放出来的一模一样——两条路径各算一遍就会分叉
+			// （AGENTS.md §2.2 的教训）。零值原样带出去，wire 上整键缺席。
+			FirstTokenMs: e.Message.FirstTokenMs, DurationMs: e.Message.DurationMs, Model: e.Message.Model,
 		})
 	case agent.TurnErrorEvent:
 		s.broadcast(protocol.EventError, protocol.ErrorParams{

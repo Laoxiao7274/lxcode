@@ -62,6 +62,25 @@ type Message struct {
 	// 注意它是**我们自己的簿记**，不是模型该看见的字段：组装 provider 请求时
 	// 由 sanitizeMessagesForWire 清掉（见 toolargs.go）。
 	Seq int64 `json:"seq,omitempty"`
+
+	// 以下四个字段是**每轮生成的簿记**（计时 + 用量 + 模型），与 Seq 同一性质与
+	// 同一条纪律：随消息一起流动（chat.done 实时 / chat.history 回放 / 重启后
+	// Load 三条路径必须给出同一份数字——各算一遍必然漂移），并在
+	// sanitizeMessagesForWire 里清掉（模型不该看见，严格网关多一个未知字段就
+	// 400 拒收整轮，见 AGENTS.md §5 坑 13）。
+	//
+	// 零值一律表示**未知**，wire 上整键缺席（omitempty），前端显示中性态：
+	//   - FirstTokenMs：首 token 延迟（请求发出 → 第一个文字/思考增量到达）。
+	//     0 = 本轮没有增量（工具轮/空回），或这轮是**非流式回放**（openai 带工具
+	//     时 ChatAuto 走回放，根本没有"首字"这个时刻）——不填 0 冒充"0ms 首字"。
+	//   - DurationMs：本轮从请求发出到收尾的总耗时。
+	//   - Model：本轮实际使用的模型注册表 id（Agent 绑定优先、否则 default 角色）。
+	//   - UsageTokens：provider 回报的输出 token 数；拿不到就是 0（缺席），
+	//     绝不用估算值冒充——估算的 tok/s 是编数据。
+	FirstTokenMs int64  `json:"first_token_ms,omitempty"`
+	DurationMs   int64  `json:"duration_ms,omitempty"`
+	Model        string `json:"model,omitempty"`
+	UsageTokens  int    `json:"usage_tokens,omitempty"`
 }
 
 // ToolCall 是 assistant 消息携带的工具调用（OpenAI function calling 形态）。
@@ -99,4 +118,12 @@ type StreamEvent struct {
 	ToolCall  ToolCall
 	Result    *ChatResult
 	Err       error
+	// Replay 为真 = 本事件不是真流式产出，而是**非流式结果的回放**
+	// （ChatAuto 在 openai 格式带工具时走的那条路：部分端点流式会丢
+	// tool_calls，所以整份结果拿回来再按流事件形态回放）。
+	//
+	// 消费方（agent 的首 token 计时）据此知道"没有首 token 这个时刻"：
+	// 回放的增量与 done 是同一瞬间一起到达的，拿它当首字会报出"首字延迟 ==
+	// 整轮耗时"这种假数据。
+	Replay bool
 }

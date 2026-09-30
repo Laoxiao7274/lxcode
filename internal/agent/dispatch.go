@@ -148,6 +148,10 @@ func (s *Session) openChildSession(call tools.DispatchCall, ac *sessiondata.Agen
 	child.SetStream(stream)
 	child.SetAgentResolver(s.agents)
 	child.SetProjectDocs(s.projectDocs)
+	// 子会话归属它自己的 Agent（会话页显示模型时按它解析：子 Agent 可以绑自己的
+	// 模型，回落主 Agent 会显示错）。SendWait 的 WithAgent 也会记一遍，但那是
+	// "跑过一轮之后"才有——刷新后只读历史（chat.history）时也要能答出模型。
+	child.SetAgentID(ac.Def.ID)
 	// 无存储（纯内存模式/未挂 store 的调用方）：退化成内存子会话——它仍是一个
 	// 独立会话（自己的历史、自己的压缩），只是不落库、不能续跑。生产永远有存储。
 	if st == nil {

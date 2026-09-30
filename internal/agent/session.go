@@ -146,6 +146,14 @@ type Session struct {
 	// 侧栏）。空 = 自己就是顶层（OwnerSessionID 回落自身 id）。
 	// 由 dispatch.openChildSession 置位。
 	ownerID string
+	// agentID 是本会话运行的 Agent 名单 id（子会话 = 它自己的 Agent；主会话 = main）。
+	// 空 = 旧语境/未指定（resolveAgent 把空当主 Agent）。
+	//
+	// 为什么要记它：会话页要显示"这个会话用的是哪个模型"，而子 Agent 可以绑自己的
+	// 模型（AgentDef.Model）——不记归属 Agent 就只能回落主 Agent 的模型，把子会话的
+	// 模型显示错。来源有三处：Send 时解析出的 ac、dispatch 开子会话时显式置位、
+	// 服务端按会话 id 从库里读回（刷新后重新附着同一会话）。
+	agentID string
 }
 
 // New 创建会话；emit 为 nil 时事件被丢弃（单测可只调方法）。
@@ -319,6 +327,11 @@ func (s *Session) Send(text string, opts ...SendOpt) error {
 	userMsg := llm.Message{Role: "user", Content: text}
 	userMsg.Seq = s.persistLocked(userMsg)
 	s.history = append(s.history, userMsg)
+	// 记下本轮归属的 Agent（会话页显示的模型按它解析）：主会话空 id 解析出的是
+	// 主 Agent，这里存解析后的 id，之后 ModelID() 走同一条解析路径。
+	if ac != nil {
+		s.agentID = ac.Def.ID
+	}
 	// 权限模式**存进会话**（会话级实时状态，runTools 每次现读——见 LiveApproval）：
 	// 显式给了就按请求级覆盖（chat.send 的参数语义不变，请求级优先），没给则
 	// 只在还没定过时回落 Agent 默认——CLI 路径不带参数，别把用户中途选的档位
@@ -413,6 +426,39 @@ func (s *Session) ContextUsage() ContextUsage {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.context
+}
+
+// SetAgentID 声明本会话运行的 Agent 名单 id（空 = 旧语境/主 Agent）。
+// dispatch 开子会话时置位（子会话 = 它自己的 Agent），服务端在按 id 重建运行时
+// 从库里读回（刷新后打开子会话页仍要显示它自己的模型）。只该在会话开始跑之前
+// 或附着之后调用——它决定 ModelID() 的解析路径。
+func (s *Session) SetAgentID(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.agentID = id
+}
+
+// ModelID 返回本会话**实际使用**的模型注册表 id（走 resolve.go 那一套：Agent 绑定
+// AgentDef.Model 优先，否则 default 角色）。
+//
+// 空串 = 未知（名单里没这个 Agent / 模型被删或被停用 / 没有 default 角色）——wire 上
+// 整键缺席，前端显示中性态。**绝不**回落成"编一个模型名"：那会让子会话页显示一个
+// 它其实没在用的模型。
+func (s *Session) ModelID() string {
+	s.mu.Lock()
+	agentID := s.agentID
+	s.mu.Unlock()
+	// 锁外解析：resolveAgent/modelFor 读注册表，不碰会话锁（避免与注册表热加载
+	// 的写锁交叉持有）。
+	ac, err := s.resolveAgent(agentID)
+	if err != nil {
+		return ""
+	}
+	m, err := s.modelFor(ac)
+	if err != nil {
+		return ""
+	}
+	return m.ID
 }
 
 // WorkDir 返回当前会话的工作目录（空 = 后端进程目录）。

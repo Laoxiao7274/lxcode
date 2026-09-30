@@ -186,6 +186,27 @@ func TestCheckpointColumnsMigrateOldDB(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("升级后的库应能正常压缩: %+v", got)
 	}
+
+	// 同一次幂等 ALTER 也要把**每轮计时的四列**补上（首 token / 耗时 / 模型 / 输出
+	// token）：老库升级后必须能写入并读回它们，否则用户升级一次就永久看不到新数字。
+	id3, err := re.Create()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := re.AppendMsg(id3, llm.Message{
+		Role: "assistant", Content: "答",
+		FirstTokenMs: 210, DurationMs: 1500, Model: "m1", UsageTokens: 42,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	timed, err := re.Load(id3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(timed) != 1 || timed[0].FirstTokenMs != 210 || timed[0].DurationMs != 1500 ||
+		timed[0].Model != "m1" || timed[0].UsageTokens != 42 {
+		t.Fatalf("旧库迁移后应能写入并读回每轮计时: %+v", timed)
+	}
 }
 
 // 中间段影子（子会话保护头部任务说明书时就是 skip=1）：检查点落在被影子段原本占据

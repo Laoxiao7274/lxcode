@@ -139,5 +139,8 @@ func (s *Server) history(sessionID string, sess *agent.Session) protocol.ChatHis
 		SessionID: sessionID, Todos: snap.Todos,
 		Context:     toProtocolContext(snap.Context),
 		Checkpoints: snap.Checkpoints,
+		// 会话实际用的模型（子会话 = 它自己 Agent 的）：解析不出来时是空串 →
+		// wire 上整键缺席，前端显示中性态（不编一个模型名）。
+		Model: sess.ModelID(),
 	}
 }

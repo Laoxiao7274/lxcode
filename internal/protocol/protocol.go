@@ -309,6 +309,12 @@ type ChatHistoryResult struct {
 	// Checkpoints 是压缩检查点在 Messages 里的下标：这些消息要渲染成
 	// 「已压缩历史」块，而不是用户气泡（内容是摘要正文，不是用户说的话）。
 	Checkpoints []int `json:"checkpoints,omitempty"`
+	// Model 是该会话**实际使用**的模型注册表 id（子会话 = 它自己 Agent 的模型：
+	// AgentDef.Model 优先，否则 default 角色）。空 = 未知（Agent 没了/没绑模型/
+	// 没有 default）——整键缺席，前端显示中性态，**不编一个模型名**。
+	// 与 Messages[].model 的区别：那是**每轮**实际用的（历史事实），这是**此刻**
+	// 解析出来的（会话还没跑过任何一轮时也有值）。
+	Model string `json:"model,omitempty"`
 }
 
 // ContextUsage 是上下文占用的 wire 形态（agent.ContextUsage 的映射——内核类型
@@ -372,6 +378,13 @@ type DoneParams struct {
 	DispatchID   string      `json:"dispatch_id,omitempty"` // 非空 = 子 Agent 轮完成
 	// Context 是本轮之后的上下文占用（仅主轮携带——子轮的占用不进主指示器）。
 	Context *ContextUsage `json:"context,omitempty"`
+	// 本轮计时（口径见 llm.Message 的同名字段）。与 message 里那份是**同一组数字**
+	//（emit 时从同一条消息取，不另算一遍）：单独列出来只是让 chat.done 自解释——
+	// 前端不必从 message 里挖。零值 = 未知（工具轮没有首 token / provider 不回报
+	// 用量），wire 上整键缺席。usage_tokens 已在上面（那一版就有）。
+	FirstTokenMs int64  `json:"first_token_ms,omitempty"`
+	DurationMs   int64  `json:"duration_ms,omitempty"`
+	Model        string `json:"model,omitempty"`
 }
 
 type ErrorParams struct {

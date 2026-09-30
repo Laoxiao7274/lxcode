@@ -40,11 +40,19 @@ func repairToolArgsForWire(args string) string {
 // 发出去只会给严格网关多一个未知字段（AGENTS.md §5 坑 13 的同类：多一个字段就被
 // 400 拒收整轮）。anthropic 那条路径另建 anthropicMessage 结构体，本来就不受影响——
 // 这里守住的是唯一直接序列化 Message 的 openai 路径。
+//
+// 四个计时/用量/模型字段（FirstTokenMs / DurationMs / Model / UsageTokens）与 Seq
+// 同类：都是**我们自己的簿记**，模型不需要、也不该看见。漏清一个的代价不是"多传了
+// 点数据"——严格网关会拒收整轮（同一个坑）。这五个字段一起在这里清，别只清一部分。
 func sanitizeMessagesForWire(msgs []Message) []Message {
 	out := make([]Message, len(msgs))
 	copy(out, msgs)
 	for i := range out {
 		out[i].Seq = 0
+		out[i].FirstTokenMs = 0
+		out[i].DurationMs = 0
+		out[i].Model = ""
+		out[i].UsageTokens = 0
 		if len(out[i].ToolCalls) == 0 {
 			continue
 		}

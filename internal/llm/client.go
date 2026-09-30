@@ -257,16 +257,19 @@ func (c *Client) ChatAuto(ctx context.Context, msgs []Message, opts ...Option) (
 	ch := make(chan StreamEvent, 4)
 	go func() {
 		defer close(ch)
+		// 全部事件打 Replay 标记：这不是流式产出，是"结果拿回来再按事件形态
+		// 回放"。消费方据此知道本轮没有"首 token 到达"这个时刻——回放的增量
+		// 与 done 同一瞬间到达，拿它当首字只会报出"首字延迟 == 整轮耗时"。
 		if res.Message.Content != "" {
-			ch <- StreamEvent{Type: EventText, TextDelta: res.Message.Content}
+			ch <- StreamEvent{Type: EventText, TextDelta: res.Message.Content, Replay: true}
 		}
 		if res.Message.ReasoningContent != "" {
-			ch <- StreamEvent{Type: EventReasoning, TextDelta: res.Message.ReasoningContent}
+			ch <- StreamEvent{Type: EventReasoning, TextDelta: res.Message.ReasoningContent, Replay: true}
 		}
 		for _, tc := range res.Message.ToolCalls {
-			ch <- StreamEvent{Type: EventToolCall, ToolCall: tc}
+			ch <- StreamEvent{Type: EventToolCall, ToolCall: tc, Replay: true}
 		}
-		ch <- StreamEvent{Type: EventDone, Result: res}
+		ch <- StreamEvent{Type: EventDone, Result: res, Replay: true}
 	}()
 	return ch, nil
 }

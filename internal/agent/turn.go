@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/moyunteng/lxcode/internal/config"
 	"github.com/moyunteng/lxcode/internal/llm"
@@ -251,6 +252,20 @@ func (s *Session) streamRound(ctx context.Context, workDir, effort string, ac *s
 	}()
 
 	opts = append([]llm.Option{llm.WithTools(wireTools)}, opts...)
+	// 计时起点 = 请求**发出**前一刻（口径与"未知"的判定见 timing.go）。
+	start := time.Now()
+	var firstTokenMs int64
+	var sawFirstToken bool
+	// 计时统一放出口（done / error / 断流多个 return 点）：res 非空就盖章——
+	// 流中断保留的部分内容同样带上已测到的数字（"这轮跑到一半断了，首字花了多久"
+	// 也是有效观测）。res 为 nil（请求就没发出去）时什么都不写：那是"未知"。
+	defer func() {
+		if res == nil {
+			return
+		}
+		res.Message.UsageTokens = res.UsageTokens // provider 没回报就是 0（缺席），不估算
+		stampRoundTiming(&res.Message, m.ID, start, firstTokenMs)
+	}()
 	ch, err := s.stream(ctx, m, msgs, opts)
 	if err != nil {
 		return nil, err
@@ -259,6 +274,17 @@ func (s *Session) streamRound(ctx context.Context, workDir, effort string, ac *s
 	var liveContent, liveReasoning strings.Builder
 	var liveTools []llm.ToolCall
 	for ev := range ch {
+		// 首 token = 第一个**文字/思考增量**到达的时刻。刻意不算 tool_call 事件：
+		// 它在流里是聚合完成后才下发的（anthropic 要等 content_block_stop），拿它
+		// 当"首字"会把延迟报得偏大；而工具轮本来就没有"首字"可言——那时整键
+		// 缺席（0），不填 0 冒充"0ms 首字"。
+		//
+		// Replay（openai 带工具走的非流式回放）不记：那种增量与 done 同一瞬间
+		// 到达，记下来就是"首字延迟 == 整轮耗时"的假数据。
+		if !sawFirstToken && !ev.Replay && (ev.Type == llm.EventText || ev.Type == llm.EventReasoning) {
+			sawFirstToken = true
+			firstTokenMs = msSince(start)
+		}
 		switch ev.Type {
 		case llm.EventText:
 			liveContent.WriteString(ev.TextDelta)

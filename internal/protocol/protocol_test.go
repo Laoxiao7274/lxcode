@@ -932,6 +932,70 @@ func TestJobPayloads(t *testing.T) {
 	})
 }
 
+// TestRoundTimingPayloads：每轮计时/模型在 wire 上的形状（字段改名不编译报错、
+// 只静默丢字段——形状必须由测试钉住），以及"未知"时整键缺席。
+//
+// 两条路径必须同名同义：chat.done 的顶层三个键（live）与 message 里的同名字段
+// （chat.history 回放读的就是它）。前端只要认一套键名就能同时处理实时与刷新。
+func TestRoundTimingPayloads(t *testing.T) {
+	t.Run("chat.done 带 first_token_ms / duration_ms / model", func(t *testing.T) {
+		b := mustMarshal(t, DoneParams{
+			SessionID: "s1", Message: llm.Message{Role: "assistant", Content: "hi"},
+			UsageTokens: 12, FinishReason: llm.FinishStop,
+			FirstTokenMs: 210, DurationMs: 1500, Model: "m1",
+		})
+		var m map[string]any
+		mustUnmarshal(t, b, &m)
+		if m["first_token_ms"].(float64) != 210 || m["duration_ms"].(float64) != 1500 || m["model"] != "m1" {
+			t.Fatalf("chat.done 的计时键名不符: %s", b)
+		}
+		// 未知（工具轮没有首 token / provider 不回报用量）时整键缺席——发 0 会被
+		// 前端显示成"0ms 首字"，那是编出来的信息
+		b2 := mustMarshal(t, DoneParams{SessionID: "s1", Message: llm.Message{Role: "assistant", Content: "hi"}})
+		var m2 map[string]any
+		mustUnmarshal(t, b2, &m2)
+		for _, k := range []string{"first_token_ms", "duration_ms", "model"} {
+			if _, hit := m2[k]; hit {
+				t.Fatalf("未知的 %s 应整键缺席: %s", k, b2)
+			}
+		}
+	})
+
+	t.Run("历史消息上同名同义（回放路径）", func(t *testing.T) {
+		b := mustMarshal(t, llm.Message{
+			Role: "assistant", Content: "hi",
+			FirstTokenMs: 210, DurationMs: 1500, Model: "m1", UsageTokens: 12,
+		})
+		var m map[string]any
+		mustUnmarshal(t, b, &m)
+		if m["first_token_ms"].(float64) != 210 || m["duration_ms"].(float64) != 1500 ||
+			m["model"] != "m1" || m["usage_tokens"].(float64) != 12 {
+			t.Fatalf("消息上的计时字段不符: %s", b)
+		}
+		// 零值（未知）整键缺席：0 不是"很快"，是"没测到"
+		b2 := mustMarshal(t, llm.Message{Role: "assistant", Content: "hi"})
+		for _, k := range []string{"first_token_ms", "duration_ms", "model", "usage_tokens"} {
+			if strings.Contains(string(b2), "\""+k+"\"") {
+				t.Fatalf("未知的 %s 应整键缺席: %s", k, b2)
+			}
+		}
+	})
+
+	t.Run("chat.history 带 model（未知时整键缺席）", func(t *testing.T) {
+		b := mustMarshal(t, ChatHistoryResult{SessionID: "s1", Model: "m2"})
+		var m map[string]any
+		mustUnmarshal(t, b, &m)
+		if m["model"] != "m2" {
+			t.Fatalf("chat.history 的 model 键不符: %s", b)
+		}
+		// 解析不出模型（Agent 没了/没绑模型）时不编一个模型名
+		b2 := mustMarshal(t, ChatHistoryResult{SessionID: "s1"})
+		if strings.Contains(string(b2), "model") {
+			t.Fatalf("未知模型应整键缺席: %s", b2)
+		}
+	})
+}
+
 func mustUnmarshal(t *testing.T, b []byte, v any) {
 	t.Helper()
 	if err := json.Unmarshal(b, v); err != nil {

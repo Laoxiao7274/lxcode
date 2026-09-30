@@ -181,6 +181,14 @@ func (s *Server) newRuntime(id string) (*agent.Session, error) {
 		if err := sess.AttachTo(s.st, id); err != nil {
 			return nil, err
 		}
+		// 归属 Agent 记在库里（子会话 = 它自己的 Agent）：按 id 重建运行时（刷新后
+		// 打开会话页）时读回来，否则 ModelID() 只能回落主 Agent 的模型——子会话页
+		// 会显示一个它没用过的模型。读不到不打断建运行时（显示中性态即可）。
+		agentID, err := s.st.SessionAgentID(id)
+		if err != nil {
+			log.Printf("读会话归属 Agent 失败（模型显示回落主 Agent）: %v", err)
+		}
+		sess.SetAgentID(agentID)
 	}
 	return sess, nil
 }

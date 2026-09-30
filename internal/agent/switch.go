@@ -28,6 +28,9 @@ func (s *Session) SwitchNew(workspace string) (string, error) {
 	s.id, s.history, s.todos = "", nil, nil
 	s.pendingWorkspace, s.workDir = workspace, dir
 	s.context = ContextUsage{} // 新会话：占用清零（下一轮重新测量）
+	// 归属 Agent 同理清零（下一轮 Send 时解析出来）：留着上一会话的会让
+	// ModelID() 报一个这个会话没用过的模型。
+	s.agentID = ""
 	return "", nil
 }
 
@@ -57,6 +60,10 @@ func (s *Session) SwitchTo(id string) error {
 	s.id, s.history, s.workDir = id, msgs, dir
 	s.todos, s.pendingWorkspace = nil, ""
 	s.context = ContextUsage{} // 换会话：占用重新测量（沿用旧值会误导压力判定）
+	// 归属 Agent 同理清零：agent 层读不到库里的 sessions.agent_id（Persistence 是
+	// 最小契约），换过来的会话归哪个 Agent 由调用方置位（服务端 newRuntime 会读库）。
+	// 留旧值等于把上一个会话的模型报给这个会话。
+	s.agentID = ""
 	return nil
 }
 

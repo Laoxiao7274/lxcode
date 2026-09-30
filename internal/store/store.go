@@ -144,11 +144,20 @@ func Open(dir string) (*Store, error) {
 	// 回放不读它们（中间段影子的 seq 集合可以是不连续的，区间形式表达不了）。
 	// 被影子的原文**不删**——翻旧账仍可查（Search 照旧搜全量日志），
 	// 只是历史回放（Load/Latest）跳过它们。
+	// 每轮生成的簿记（2026-09-30）：首 token 延迟 / 总耗时 / 输出 token / 实际用的
+	// 模型。为什么落库而不是只放内存：用户刷新后这些数字不能消失——而本仓库已经为
+	// "live 与 replay 两条路径不一致"吃过三次亏（子 Agent 卡退化、两条路径分叉、seq
+	// 只在一条路径上）。落库后 chat.history 回放与 chat.done 实时是同一份数字。
+	// 零值 = 未知（工具轮没有首 token / provider 不回报用量），回读时原样保留。
 	for _, col := range []string{
 		`ALTER TABLE messages ADD COLUMN checkpoint INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE messages ADD COLUMN shadow_start_seq INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE messages ADD COLUMN shadow_end_seq INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE messages ADD COLUMN shadowed_seqs TEXT NOT NULL DEFAULT '[]'`,
+		`ALTER TABLE messages ADD COLUMN first_token_ms INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE messages ADD COLUMN duration_ms INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE messages ADD COLUMN model TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE messages ADD COLUMN usage_tokens INTEGER NOT NULL DEFAULT 0`,
 	} {
 		if _, err := db.Exec(col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			db.Close()

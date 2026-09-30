@@ -287,6 +287,24 @@ func (s *Store) WorkspaceOf(sessionID string) (string, error) {
 	return ws, nil
 }
 
+// SessionAgentID 返回会话运行的 Agent 名单 id（空 = 顶层会话/旧数据）。
+//
+// 为什么需要它：服务端为某个会话 id 建运行时（刷新后重新打开会话页）时要按归属
+// Agent 解析模型——子 Agent 可以绑自己的模型，不读这一列就只能回落主 Agent 的模型，
+// 于是子会话页显示一个它没用过的模型（编数据）。会话不存在时返回空串不报错：调用方
+// 只是要一个"能不能解析出模型"的答案。
+func (s *Store) SessionAgentID(id string) (string, error) {
+	var agentID string
+	err := s.db.QueryRow(`SELECT agent_id FROM sessions WHERE id = ?`, id).Scan(&agentID)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("查询会话 Agent 失败: %w", err)
+	}
+	return agentID, nil
+}
+
 // SessionWorkspace 设置会话归属的项目（空串 = 未分组）。
 func (s *Store) SessionWorkspace(id, workspace string) error {
 	res, err := s.db.Exec(`UPDATE sessions SET workspace = ? WHERE id = ?`, workspace, id)

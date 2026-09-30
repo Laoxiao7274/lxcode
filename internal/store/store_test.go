@@ -430,3 +430,56 @@ func TestOpenCreatesDir(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestRoundTimingRoundTrip：每轮计时/用量/模型随消息落库并**原样**读回。
+//
+// 为什么在 store 这一层单独钉一次：这是"刷新后数字还在"的物理保证——回放（Load）
+// 与实时（chat.done）是两条路径，本仓库为两条路径不一致吃过三次亏。零值（未知：
+// 工具轮没有首 token / provider 不回报用量）必须原样保留 0，回读不能变成别的值。
+func TestRoundTimingRoundTrip(t *testing.T) {
+	s := openTestStore(t)
+	id, err := s.Create()
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgs := []llm.Message{
+		{Role: "user", Content: "问"},
+		{Role: "assistant", Content: "答", FirstTokenMs: 210, DurationMs: 1500, Model: "m1", UsageTokens: 42},
+		// 未知形态：工具轮没有首 token、provider 没回报用量
+		{Role: "assistant", Content: "工具轮", DurationMs: 900, Model: "m1"},
+	}
+	for _, m := range msgs {
+		if _, err := s.AppendMsg(id, m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := s.Load(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(msgs) {
+		t.Fatalf("消息数: got %d want %d", len(got), len(msgs))
+	}
+	// 逐字段一致（含未知的 0 与空模型名——不能被"默认值"顶掉）
+	if got[1].FirstTokenMs != 210 || got[1].DurationMs != 1500 || got[1].Model != "m1" || got[1].UsageTokens != 42 {
+		t.Fatalf("计时/用量/模型未原样读回: %+v", got[1])
+	}
+	if got[2].FirstTokenMs != 0 || got[2].UsageTokens != 0 || got[2].DurationMs != 900 || got[2].Model != "m1" {
+		t.Fatalf("未知字段应保持 0/空（不是编出来的值）: %+v", got[2])
+	}
+
+	// 检查点行（压缩摘要）走同一张表：它没有每轮计时，字段必须是零值而不是垃圾
+	if _, err := s.AppendCheckpoint(id, llm.Message{Role: "user", Content: "<compacted-summary>摘要</compacted-summary>"}, 0, 3); err != nil {
+		t.Fatal(err)
+	}
+	got2, err := s.Load(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got2) != 1 {
+		t.Fatalf("压缩后历史应只剩检查点: %+v", got2)
+	}
+	if got2[0].FirstTokenMs != 0 || got2[0].DurationMs != 0 || got2[0].Model != "" || got2[0].UsageTokens != 0 {
+		t.Fatalf("检查点不该带每轮计时: %+v", got2[0])
+	}
+}

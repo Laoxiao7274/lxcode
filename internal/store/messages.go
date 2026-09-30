@@ -47,10 +47,15 @@ func (s *Store) AppendMsg(id string, m llm.Message) (int64, error) {
 			}
 		}
 	}
+	// 每轮生成的簿记（计时/用量/模型）随消息一起落库：刷新后 chat.history 回放的
+	// 必须是同一份数字（只放内存的话用户一刷新就没了，而 live 与 replay 分叉正是
+	// 本仓库反复踩过的坑）。
 	if _, err := tx.Exec(
-		`INSERT INTO messages (session_id, seq, role, content, reasoning, reasoning_sig, tool_calls, tool_call_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO messages (session_id, seq, role, content, reasoning, reasoning_sig, tool_calls, tool_call_id,
+		                       first_token_ms, duration_ms, model, usage_tokens)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, seq, m.Role, m.Content, m.ReasoningContent, m.ReasoningSignature, string(toolCalls), m.ToolCallID,
+		m.FirstTokenMs, m.DurationMs, m.Model, m.UsageTokens,
 	); err != nil {
 		return 0, fmt.Errorf("写消息失败: %w", err)
 	}
@@ -103,10 +108,13 @@ type rowData struct {
 }
 
 // readRows 读会话全部消息行（按 seq 升序）。
+//
+// SELECT 列表与 readRowsTx 必须逐字一致：两条路径各写一遍是本仓库的老坑（写进去的
+// 与读出来的对不上），计时字段同样在这两条路径上——漏一条就是"刷新后数字消失"。
 func (s *Store) readRows(id string) ([]rowData, error) {
 	rows, err := s.db.Query(
 		`SELECT seq, role, content, reasoning, reasoning_sig, tool_calls, tool_call_id,
-		        checkpoint, shadowed_seqs
+		        checkpoint, shadowed_seqs, first_token_ms, duration_ms, model, usage_tokens
 		 FROM messages WHERE session_id = ? ORDER BY seq`, id)
 	if err != nil {
 		return nil, fmt.Errorf("查询会话 %s 失败: %w", id, err)
@@ -118,7 +126,8 @@ func (s *Store) readRows(id string) ([]rowData, error) {
 		var toolCalls, shadowedSeqs string
 		var cp int
 		if err := rows.Scan(&r.seq, &r.msg.Role, &r.msg.Content, &r.msg.ReasoningContent,
-			&r.msg.ReasoningSignature, &toolCalls, &r.msg.ToolCallID, &cp, &shadowedSeqs); err != nil {
+			&r.msg.ReasoningSignature, &toolCalls, &r.msg.ToolCallID, &cp, &shadowedSeqs,
+			&r.msg.FirstTokenMs, &r.msg.DurationMs, &r.msg.Model, &r.msg.UsageTokens); err != nil {
 			return nil, fmt.Errorf("读消息行失败: %w", err)
 		}
 		// 序号随消息一起回给上层：前端拿它当撤回锚点（chat.rewind 的 seq），
@@ -286,10 +295,11 @@ func (s *Store) AppendCheckpoint(id string, m llm.Message, skip, count int) (int
 }
 
 // readRowsTx 是 readRows 的事务版（落库要在同一事务里读存活集）。
+// SELECT 列表与 readRows 逐字一致——两条路径各写一遍就会漂移（见 readRows 的注释）。
 func (s *Store) readRowsTx(tx *sql.Tx, id string) ([]rowData, error) {
 	rows, err := tx.Query(
 		`SELECT seq, role, content, reasoning, reasoning_sig, tool_calls, tool_call_id,
-		        checkpoint, shadowed_seqs
+		        checkpoint, shadowed_seqs, first_token_ms, duration_ms, model, usage_tokens
 		 FROM messages WHERE session_id = ? ORDER BY seq`, id)
 	if err != nil {
 		return nil, fmt.Errorf("查询会话 %s 失败: %w", id, err)
@@ -301,7 +311,8 @@ func (s *Store) readRowsTx(tx *sql.Tx, id string) ([]rowData, error) {
 		var toolCalls, shadowedSeqs string
 		var cp int
 		if err := rows.Scan(&r.seq, &r.msg.Role, &r.msg.Content, &r.msg.ReasoningContent,
-			&r.msg.ReasoningSignature, &toolCalls, &r.msg.ToolCallID, &cp, &shadowedSeqs); err != nil {
+			&r.msg.ReasoningSignature, &toolCalls, &r.msg.ToolCallID, &cp, &shadowedSeqs,
+			&r.msg.FirstTokenMs, &r.msg.DurationMs, &r.msg.Model, &r.msg.UsageTokens); err != nil {
 			return nil, fmt.Errorf("读消息行失败: %w", err)
 		}
 		// 序号随消息一起回给上层：前端拿它当撤回锚点（chat.rewind 的 seq），

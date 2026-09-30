@@ -127,3 +127,46 @@ func TestOpenAIRequestDropsSessionSeq(t *testing.T) {
 		t.Fatalf("不该清掉调用方历史里的序号: %+v", msgs)
 	}
 }
+
+// TestOpenAIRequestDropsSessionBookkeeping：会话簿记字段（序号 + 每轮计时/用量/模型）
+// 一个都不许出现在发给模型的请求体里——严格网关多一个未知字段就 400 拒收整轮
+// （AGENTS.md §5 坑 13）。openai 是唯一直接序列化 Message 的路径，所以钉在这里。
+//
+// 为什么按 JSON **键**逐个查，而不是在整份请求体里搜子串：请求体顶层本来就有
+// "model"（请求的模型名），搜子串"model"恒为真——那样的测试测不出任何东西。
+func TestOpenAIRequestDropsSessionBookkeeping(t *testing.T) {
+	msgs := []Message{
+		{Role: "user", Content: "你好", Seq: 3, FirstTokenMs: 120, DurationMs: 900, Model: "m1", UsageTokens: 42},
+		{Role: "assistant", Content: "在", Seq: 4, DurationMs: 500, Model: "m1", UsageTokens: 7},
+	}
+	req := buildOpenAIRequest("m", msgs, requestOpts{}, false)
+	b, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(b, &body); err != nil {
+		t.Fatal(err)
+	}
+	wire, ok := body["messages"].([]any)
+	if !ok || len(wire) != len(msgs) {
+		t.Fatalf("请求体里的消息数不符: %s", b)
+	}
+	forbidden := []string{"seq", "first_token_ms", "duration_ms", "model", "usage_tokens"}
+	for i, raw := range wire {
+		m, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("消息不是对象: %v", raw)
+		}
+		for _, k := range forbidden {
+			if v, hit := m[k]; hit {
+				t.Fatalf("第 %d 条消息带上了会话簿记字段 %q=%v: %s", i, k, v, b)
+			}
+		}
+	}
+	// 同样不就地改写调用方持有的历史（内存历史是会话的共享状态）
+	if msgs[0].Seq != 3 || msgs[0].FirstTokenMs != 120 || msgs[0].DurationMs != 900 ||
+		msgs[0].Model != "m1" || msgs[0].UsageTokens != 42 {
+		t.Fatalf("不该清掉调用方历史里的簿记字段: %+v", msgs[0])
+	}
+}
