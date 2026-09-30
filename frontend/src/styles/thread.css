@@ -399,10 +399,15 @@
  *  70% 最大宽） */
 .msg.user {
   display: flex;
-  justify-content: flex-end;
+  /* **纵向**：气泡与它下方的动作条要上下排（不是并排）。原来是 display:flex +
+   *  justify-content:flex-end 的**行**布局——气泡与动作条被排成一行，动作条跑到气泡
+   *  **右边**去了（用户报的「应该再消息下面不是右边」）。加 flex-direction: column
+   *  让两者上下叠，align-items: flex-end 让它们共用同一条右边线。 */
+  flex-direction: column;
+  align-items: flex-end;
   margin-bottom: 14px;
-  /* 动作条（复制/编辑/撤回）的定位锚：气泡右对齐到容器右缘，动作条 right:0
-     与气泡右缘对齐——不必再套一层 wrapper 去量气泡宽度 */
+  /* 动作条（复制/编辑/撤回）的定位锚（历史遗留：动作条曾在气泡上方绝对定位，
+   *  现在在流里，这个 relative 已无必需，但保留不影响任何布局）。 */
   position: relative;
 }
 .msg.user .bubble {
@@ -440,14 +445,18 @@
 /* 图标按钮：正方形、无边框、透明底，悬停才给底色（图标是唯一内容，尺寸即视觉中心）。
  * 26px 是桌面密集界面的折中——UI/UX 规范给触屏的 44px 在这里会让每条消息多占近一倍
  * 高度，而本应用的输入设备是鼠标/触控板（Electron 桌面壳）。 */
+/* 图标按钮几何对齐 DSH 的 MessageIconActions（我从它的打包代码里读到的原值）：
+ *  28×28、border-radius 28px（正圆）、padding 6px、图标 15px、透明底、hover 给底色。
+ *  为什么照它：动作行的尺寸/间距/圆度是**同一类产品的肌肉记忆**，自己另发明一套
+ *  会让用户觉得「这不是那种按钮」——而这一处本来就是在对齐它的形态（见 .msg-actions）。 */
 .msg-action.fd-btn-g {
-  width: 26px;
-  height: 26px;
-  padding: 0;
+  width: 28px;
+  height: 28px;
+  padding: 6px;
   border: none;
   background: transparent;
   color: var(--fg-faint);
-  border-radius: 6px;
+  border-radius: 28px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
