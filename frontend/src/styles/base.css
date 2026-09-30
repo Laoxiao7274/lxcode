@@ -163,7 +163,11 @@ body:has(.window-stage) {
   border-radius: 12px; /* 药丸 */
   background: none;
   font-family: var(--font-sans);
-  flex: none;
+  /* 可收缩：标签多了先按比例压窄（浏览器的做法），压到 min-width 才开始横向滚动。
+   * flex: none 会让每个标签都占满 max-width，几个标签就把栏撑爆——用户报的
+   * 「标签页还是没有自动变长度」就是这条。标题侧已有 min-width:0 + ellipsis，能跟着收窄。 */
+  flex: 0 1 auto;
+  min-width: 58px;
   transition: background 120ms, border-color 120ms;
 }
 .tab:hover {

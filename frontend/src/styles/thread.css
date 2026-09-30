@@ -341,7 +341,12 @@
  * z-index 40 = 与既有浮层同档（catalog 面板、输入区内部菜单都是 40）。 */
 .scroll-to-bottom {
   position: absolute;
-  right: 18px;
+  /* 水平居中（用户要求「放中间」）：left 50% + translateX(-50%)，不再靠右贴边。
+   * 32px 的圆钮只在离开底部时出现，压住的是消息列底部一小块——这是同类产品
+   * （ChatGPT/Claude）的既有做法。用 transform 居中而不是算宽度：宽度随内容变
+   * （按钮文案/图标换过一次），写死偏移会在改文案时错位。 */
+  left: 50%;
+  transform: translateX(-50%);
   bottom: calc(var(--composer-h, 170px) + 14px);
   z-index: 40;
   /* 浮层盒子不吃指针：消息 hover 才出现的动作条不能被它挡住 */
