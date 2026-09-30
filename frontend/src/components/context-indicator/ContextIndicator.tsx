@@ -3,11 +3,16 @@
 //
 // 数据来自后端测量（store 的 context——chat.done / chat.history 携带）：
 // used 优先是 provider 回报的真实 prompt_tokens，四个分类是估算拆分（后端已
-// 归一，分类之和 == used）。未知（后端刚重启/刚切会话）显示中性态「—」，
+// 归一，分类之和 == used）。未知（后端刚重启且库里没有测量/刚切会话）显示中性态「—」，
 // 不编数字——假数据比没有数据更坏。
+//
+// **估算与真实必须看得出区别**：后端 estimated 位为真时这个数字是按固定密度折算的
+//（对中文还是低估），所以百分比后面带「估」字、并给一句明说"不是真实用量"的说明——
+// 用户看不出区别就会拿它做预算判断。判定在 shared/context-usage.ts（纯函数，有测试钉住）。
 import { usePopover } from "../../shared/popover";
 import { Button } from "../form";
 import { kfmtTokens } from "../../shared/format";
+import { contextUsageDisplay } from "../../shared/context-usage";
 import type { ContextUsage } from "../../shared/types";
 
 /** 分类占比条的配色（与设计 token 对齐：越靠前的部分越"固定"）。 */
@@ -33,12 +38,13 @@ export function ContextIndicator({ usage, onCompact, busy = false }: {
 }) {
   const { open, toggle, rootRef } = usePopover();
 
+  const d = contextUsageDisplay(usage);
   const used = usage?.used ?? 0;
   const total = usage?.window ?? 0;
   // 窗口未知（模型没配 context_window）时不给百分比——编一个上限会让
   // 「还剩多少」变成假信息
-  const known = usage !== null && used > 0 && total > 0;
-  const pct = known ? Math.min(100, Math.round((used / total) * 100)) : 0;
+  const known = d.known;
+  const pct = d.pct;
   const remain = known ? Math.max(0, total - used) : 0;
   const segments = SEGMENT_LABELS
     .map(([key, label]) => ({ label, tokens: usage?.[key] ?? 0, color: SEGMENT_COLORS[key] }))
@@ -51,7 +57,8 @@ export function ContextIndicator({ usage, onCompact, busy = false }: {
         className={"ctx-chip" + (open ? " on" : "")}
         onClick={toggle}
         aria-expanded={open}
-        aria-label={known ? `上下文已用 ${pct}%` : "上下文用量未知"}
+        aria-label={d.title}
+        title={d.title}
       >
         <svg width="16" height="16" viewBox="0 0 20 20" aria-hidden="true">
           <circle cx="10" cy="10" r="8" fill="none" stroke="var(--border-strong)" strokeWidth="2.5" />
@@ -64,17 +71,19 @@ export function ContextIndicator({ usage, onCompact, busy = false }: {
             transform="rotate(-90 10 10)"
           />
         </svg>
-        <span className="ctx-pct">{known ? `${pct}%` : "—"}</span>
+        {/* 估算值带「估」后缀（contextUsageDisplay 定的口径）：这是用户唯一能在
+            不展开弹层时看到区别的地方 */}
+        <span className="ctx-pct">{d.pctText}</span>
       </button>
       {open && (
         <div className="ctx-pop" role="dialog" aria-label="上下文使用" data-pop>
           <div className="ctx-pop-head">
             <span className="ctx-pop-title">上下文使用</span>
-            <span className="ctx-pop-pct">{known ? `${pct}%` : "—"}</span>
+            <span className="ctx-pop-pct">{d.pctText}</span>
           </div>
           {known ? (
             <>
-              <div className="ctx-bar" role="img" aria-label={`已使用 ${pct}%`}>
+              <div className="ctx-bar" role="img" aria-label={d.estimated ? `已使用约 ${pct}%（估算）` : `已使用 ${pct}%`}>
                 {segments.map((s) => (
                   <span
                     key={s.label}
@@ -98,10 +107,12 @@ export function ContextIndicator({ usage, onCompact, busy = false }: {
                 </div>
               </div>
               <div className="ctx-foot">
-                已用 <b>{kfmtTokens(used)}</b> · 窗口上限 {kfmtTokens(total)} tokens
+                已用 <b>{kfmtTokens(used)}</b>{d.estimated ? "（估）" : ""} · 窗口上限 {kfmtTokens(total)} tokens
               </div>
               <div className="ctx-hint">
-                分类为估算拆分（后端按固定密度折算）；总量优先取上一次请求的真实用量
+                {d.estimated
+                  ? "总量是估算值（这次请求没拿到真实用量，或本会话没有真实测量）：按固定密度折算，对中文偏低——别拿它做精确预算"
+                  : "分类为估算拆分（后端按固定密度折算）；总量取上一次请求的真实用量"}
               </div>
             </>
           ) : (

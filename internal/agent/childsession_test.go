@@ -248,8 +248,8 @@ func TestChildSessionCompactionLandsOnChildRow(t *testing.T) {
 		}
 	}
 	// 子会话的占用测量跟着更新（子会话有自己的窗口）
-	if child.ContextUsage().Used == 0 {
-		t.Fatal("子会话压缩后应更新自己的占用测量")
+	if got := child.ContextUsage(); got.Used == 0 {
+		t.Fatalf("子会话压缩后应更新自己的占用测量: %+v", got)
 	}
 }
 

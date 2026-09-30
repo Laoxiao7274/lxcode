@@ -178,17 +178,21 @@ func (s *Server) newRuntime(id string) (*agent.Session, error) {
 		sess.SetStream(s.stream)
 	}
 	if s.st != nil {
-		if err := sess.AttachTo(s.st, id); err != nil {
-			return nil, err
-		}
 		// 归属 Agent 记在库里（子会话 = 它自己的 Agent）：按 id 重建运行时（刷新后
 		// 打开会话页）时读回来，否则 ModelID() 只能回落主 Agent 的模型——子会话页
 		// 会显示一个它没用过的模型。读不到不打断建运行时（显示中性态即可）。
+		//
+		// **先置位再附着**：附着时要把上下文占用恢复进内存（AttachTo →
+		// restoredUsage），而"库里没有占用"那条回落路要按**这个会话的**模型解析窗口
+		//（子 Agent 可以绑自己的模型）——顺序反了窗口就按主 Agent 算。
 		agentID, err := s.st.SessionAgentID(id)
 		if err != nil {
 			log.Printf("读会话归属 Agent 失败（模型显示回落主 Agent）: %v", err)
 		}
 		sess.SetAgentID(agentID)
+		if err := sess.AttachTo(s.st, id); err != nil {
+			return nil, err
+		}
 	}
 	return sess, nil
 }

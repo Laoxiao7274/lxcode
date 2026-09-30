@@ -82,6 +82,9 @@ func toProtocolContext(u agent.ContextUsage) *protocol.ContextUsage {
 	return &protocol.ContextUsage{
 		Used: u.Used, Window: u.Window, System: u.System,
 		ToolResults: u.ToolResults, Messages: u.Messages, Reasoning: u.Reasoning,
+		// 估算位跟着走：它是 UI 区分「真实用量」与「估算」的唯一依据，掉在这一层
+		// 就等于前端把估算当真实用量展示
+		Estimated: u.Estimated,
 	}
 }
 

@@ -127,6 +127,10 @@ func Open(dir string) (*Store, error) {
 		`ALTER TABLE sessions ADD COLUMN worktree_path TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE sessions ADD COLUMN worktree_branch TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE sessions ADD COLUMN worktree_base TEXT NOT NULL DEFAULT ''`,
+		// 上下文占用测量（2026-09-30）：每轮主轮的真实用量落在这里，后端重启后打开
+		// 旧会话仍能显示占用——原先只在内存里，重启后旧会话的指示器就是空的（用户实测）。
+		// 空串 = 从没跑过主轮（老会话）→ 调用方按已加载的历史回落估算，而不是当成 0。
+		`ALTER TABLE sessions ADD COLUMN context_usage TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := db.Exec(col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			db.Close()

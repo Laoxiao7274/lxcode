@@ -28,8 +28,8 @@ func TestEstimateContextUsageBreakdown(t *testing.T) {
 	if u.Messages <= 0 || u.ToolResults <= 0 || u.Reasoning <= 0 {
 		t.Fatalf("三个分类都应非零: %+v", u)
 	}
-	if u.Used != u.total() {
-		t.Fatalf("估算路径下 Used 应等于分类之和: used=%d total=%d", u.Used, u.total())
+	if u.Used != usageTotal(u) {
+		t.Fatalf("估算路径下 Used 应等于分类之和: used=%d total=%d", u.Used, usageTotal(u))
 	}
 	// 空历史只算 system（不该凭空产生分类）
 	empty := estimateContextUsage("x", nil, nil)
@@ -40,28 +40,28 @@ func TestEstimateContextUsageBreakdown(t *testing.T) {
 
 func TestContextUsageAnchoredToRealUsage(t *testing.T) {
 	est := ContextUsage{System: 100, ToolResults: 300, Messages: 500, Reasoning: 100}
-	est.Used = est.total() // 1000
+	est.Used = usageTotal(est) // 1000
 
 	// 真实用量替换总量，分类等比缩放且**之和恒等于 Used**（UI 环形与占比条
 	// 不能互相矛盾）
-	got := est.anchoredTo(2500)
+	got := anchoredUsage(est, 2500)
 	if got.Used != 2500 {
 		t.Fatalf("Used 应取真实值: %+v", got)
 	}
-	if got.total() != 2500 {
-		t.Fatalf("分类之和应归一到 Used: %+v（total=%d）", got, got.total())
+	if usageTotal(got) != 2500 {
+		t.Fatalf("分类之和应归一到 Used: %+v（total=%d）", got, usageTotal(got))
 	}
 	if got.System >= got.ToolResults || got.ToolResults >= got.Messages {
 		t.Fatalf("缩放应保持比例关系: %+v", got)
 	}
 
 	// provider 不回报用量：原样保留估算（Used 不变）
-	if same := est.anchoredTo(0); same.Used != 1000 {
+	if same := anchoredUsage(est, 0); same.Used != 1000 {
 		t.Fatalf("无真实用量时不应改动: %+v", same)
 	}
 	// 有真实总量但分类全零：全部记进 Messages，不为凑数编造分类
-	zero := ContextUsage{}.anchoredTo(42)
-	if zero.Messages != 42 || zero.total() != 42 {
+	zero := anchoredUsage(ContextUsage{}, 42)
+	if zero.Messages != 42 || usageTotal(zero) != 42 {
 		t.Fatalf("空分类应全部记入 Messages: %+v", zero)
 	}
 }
@@ -118,8 +118,8 @@ func TestSessionRecordsRealPromptTokens(t *testing.T) {
 	if got.Window != 32768 {
 		t.Fatalf("窗口应取自模型配置: %+v", got)
 	}
-	if got.total() != 777 {
-		t.Fatalf("分类之和应归一到真实总量: %+v（total=%d）", got, got.total())
+	if usageTotal(got) != 777 {
+		t.Fatalf("分类之和应归一到真实总量: %+v（total=%d）", got, usageTotal(got))
 	}
 	// 事件携带同一份测量（宿主据此实时更新指示器）
 	select {
@@ -151,7 +151,7 @@ func TestSessionContextUsageFallsBackToEstimate(t *testing.T) {
 	if got.Used <= 0 {
 		t.Fatalf("无真实用量时应回落到估算: %+v", got)
 	}
-	if got.total() != got.Used {
+	if usageTotal(got) != got.Used {
 		t.Fatalf("估算路径下分类之和应等于 Used: %+v", got)
 	}
 	if got.Window != 8192 {

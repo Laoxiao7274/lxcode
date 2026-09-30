@@ -307,7 +307,7 @@ func TestCompactUpdatesContextUsage(t *testing.T) {
 	if after.Window != 100000 {
 		t.Fatalf("窗口应保留: %+v", after)
 	}
-	if after.total() != after.Used {
+	if usageTotal(after) != after.Used {
 		t.Fatalf("分类之和应归一到新占用: %+v", after)
 	}
 	// 锚定算术的语义：新占用 = 旧真实占用 − 被压段 + 检查点（估算差值为正）

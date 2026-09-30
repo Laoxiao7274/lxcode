@@ -17,6 +17,11 @@ export interface ContextUsage {
   tool_results?: number;
   messages?: number;
   reasoning?: number;
+  /** used 是**估算值**（后端按固定密度折算）：端点没回报用量，或库里没有真实测量、
+   *  按已加载的历史回落（老会话/后端重启前跑过的会话）。UI 必须标注出来——用户
+   *  看不出区别就会拿它做预算判断。缺省/false = 真实用量（provider 回报的
+   *  prompt_tokens）。 */
+  estimated?: boolean;
 }
 
 /** 手动压缩的结果（chat.compact 的应答）。 */

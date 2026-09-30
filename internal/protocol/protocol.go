@@ -327,6 +327,11 @@ type ContextUsage struct {
 	ToolResults int `json:"tool_results,omitempty"`
 	Messages    int `json:"messages,omitempty"`
 	Reasoning   int `json:"reasoning,omitempty"`
+	// Estimated 为真 = 这个数字是**估算**（按固定密度折算），不是 provider 回报的真实用量：
+	// 端点没回报 usage，或库里没有真实测量、按已加载的历史回落估算（老会话）。客户端必须
+	// 把它和真实用量**在 UI 上区分开**（「估」标记）——用户看不出区别就会拿它做预算判断。
+	// 假值 omitempty（真实用量的常见情形不多一个键）。
+	Estimated bool `json:"estimated,omitempty"`
 }
 
 // 事件载荷。

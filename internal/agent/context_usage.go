@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 
 	"github.com/moyunteng/lxcode/internal/llm"
+	"github.com/moyunteng/lxcode/internal/sessiondata"
 )
 
 // 上下文占用的估算常量——DSH token-meter 同款固定密度启发式（不引 tokenizer：
@@ -21,17 +22,22 @@ const (
 
 // ContextUsage 是一次上下文测量：Used/Window 是压力判定与 UI 环形的依据
 // （Used 优先取 provider 回报的真实 prompt_tokens），四个分类是估算拆分
-// （已按 Used 归一，所以分类之和恒等于 Used）。
+// （已按 Used 归一，所以分类之和恒等于 Used）。Estimated 为真 = 这个数字是估算的
+// （端点不回报用量，或库里没有真实测量而按历史回落）——UI 必须标注，不许当真实用量展示。
+//
+// 为什么是 sessiondata 里那份定义的**别名**而不是在这里另立一份：占用现在要**落库**
+// （用户实测：重启前跑过的会话，打开时指示器是空的），而 store 必须能读写它、又不能
+// import agent（分层规则，AGENTS.md §4）。别名让三处（agent 测量 / store 落库 /
+// server 转 wire）共用同一份字段定义——各写一份必然漂移。
 //
 // 为什么分类要归一：真实总量与估算拆分来自两个来源，不归一的话 UI 上
 // 环形（真实）与占比条（估算）会对不上——同一屏两个数字互相矛盾。
-type ContextUsage struct {
-	Used        int // 已用 token（真实用量优先）
-	Window      int // 模型上下文窗口（models.json 的 context_window；0 = 未知）
-	System      int // 系统提示词 + 工具声明
-	ToolResults int // 工具结果
-	Messages    int // 用户/助手正文与工具调用声明
-	Reasoning   int // 思考链
+type ContextUsage = sessiondata.ContextUsage
+
+// usageTotal 是四个分类之和。写成自由函数而不是方法：ContextUsage 是别名类型，
+// Go 不允许给非本包定义的类型挂方法（别名不是新类型）。
+func usageTotal(u ContextUsage) int {
+	return u.System + u.ToolResults + u.Messages + u.Reasoning
 }
 
 // estimateText 按固定密度估算一段文本的 token 数（空串 = 0）。
@@ -66,9 +72,13 @@ func estimateMessageTokens(m llm.Message) int {
 
 // estimateContextUsage 估算一次请求的上下文占用（分类拆分）。
 // history 不含 system——system 由调用方按轮组装（prompt 参数）。
+//
+// 结果**一律**带 Estimated=true：这是估算出来的数，不是 provider 回报的用量。真实用量
+// 到了会走 anchoredUsage 把它清掉（那才是唯一能把 Estimated 变假的地方）。
 func estimateContextUsage(prompt string, tools []llm.Tool, history []llm.Message) ContextUsage {
 	u := ContextUsage{
-		System: blockOverhead + estimateText(prompt) + estimateToolsTokens(tools),
+		System:    blockOverhead + estimateText(prompt) + estimateToolsTokens(tools),
+		Estimated: true,
 	}
 	for _, m := range history {
 		t := estimateMessageTokens(m)
@@ -82,7 +92,7 @@ func estimateContextUsage(prompt string, tools []llm.Tool, history []llm.Message
 			u.Messages += t
 		}
 	}
-	u.Used = u.total()
+	u.Used = usageTotal(u)
 	return u
 }
 
@@ -93,6 +103,9 @@ func estimateContextUsage(prompt string, tools []llm.Tool, history []llm.Message
 //
 // 压缩与撤回共用这一份：两处各写一遍必然漂移，而漂移的表现是"指示器停在改动前的
 // 数字"——压缩真链路实测踩过（AGENTS.md §2.2），撤回是同一个坑。
+//
+// Estimated 跟着**旧值**走：旧值本来就是估算的（端点不回报用量），减去一段估算之后
+// 仍然是估算——anchoredUsage 会把标记清成 false，所以这里要还原回去。
 func reanchoredUsage(prev ContextUsage, removedTokens int, history []llm.Message) ContextUsage {
 	if prev.Used > 0 {
 		used := prev.Used - removedTokens
@@ -104,8 +117,9 @@ func reanchoredUsage(prev ContextUsage, removedTokens int, history []llm.Message
 			System: prev.System, ToolResults: hist.ToolResults,
 			Messages: hist.Messages, Reasoning: hist.Reasoning,
 		}
-		u = u.anchoredTo(used)
+		u = anchoredUsage(u, used)
 		u.Window = prev.Window
+		u.Estimated = prev.Estimated
 		return u
 	}
 	u := estimateContextUsage("", nil, history)
@@ -113,20 +127,19 @@ func reanchoredUsage(prev ContextUsage, removedTokens int, history []llm.Message
 	return u
 }
 
-// total 是四个分类之和。
-func (u ContextUsage) total() int {
-	return u.System + u.ToolResults + u.Messages + u.Reasoning
-}
-
-// anchoredTo 用真实总量（provider 回报的 prompt_tokens）替换 Used，并把分类
+// anchoredUsage 用真实总量（provider 回报的 prompt_tokens）替换 Used，并把分类
 // 等比缩放到该总量——保证「分类之和 == Used」这一不变式在两种来源混合时也成立。
-// used <= 0（provider 不回报用量）时原样返回（Used 保持估算值）。
-func (u ContextUsage) anchoredTo(used int) ContextUsage {
+// used <= 0（provider 不回报用量）时原样返回：那个数字是估算的，Estimated 保持为真。
+//
+// Estimated 为什么在这里定：这是「真实用量」与「估算用量」两条来源的**唯一汇合点**。
+// 放到别处判定就会出现同一份数字在一处标估算、在另一处标真实的分叉。
+func anchoredUsage(u ContextUsage, used int) ContextUsage {
 	if used <= 0 {
 		return u
 	}
-	sum := u.total()
+	sum := usageTotal(u)
 	u.Used = used
+	u.Estimated = false // provider 回报了真实用量
 	if sum == 0 {
 		// 有真实总量但分类全零（空历史/纯声明）：全部记进 Messages，
 		// 不为凑数编造分类

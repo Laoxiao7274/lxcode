@@ -28,6 +28,16 @@ type Persistence interface {
 	// 检查点的影子集合要跟着收缩（引用已删行的项滤掉、滤空则整条删掉）——
 	// 否则被删的原文会在回放时"复活"，内存与库分叉。
 	Rewind(sessionID string, seq int64) (int, error)
+	// SaveContextUsage 落库一次上下文占用测量（只有**主轮**写它——子上下文有自己
+	// 的窗口）。形状用 sessiondata.ContextUsage：store 与 agent 共享同一份定义
+	//（agent 侧是别名），否则 store 就得 import agent，违反分层规则。
+	//
+	// 失败不该打断一轮（占用是展示信息，不是业务不变量）：调用方只记日志。
+	SaveContextUsage(sessionID string, u sessiondata.ContextUsage) error
+	// ContextUsageOf 读回会话最近一次主轮落库的占用测量。ok=false = 库里没有
+	//（老会话/从没跑过主轮）——调用方据此**回落估算**，而不是把它当成 0（当成 0
+	// 就是"编一个数"：空历史显示 0% 比显示中性态更坏）。
+	ContextUsageOf(sessionID string) (sessiondata.ContextUsage, bool, error)
 	Load(string) ([]llm.Message, error)
 	Latest() (string, []llm.Message, error)
 	List() ([]sessiondata.SessionMeta, error)

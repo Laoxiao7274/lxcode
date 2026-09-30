@@ -33,17 +33,40 @@ func streamWithLLM(ctx context.Context, m config.ModelConfig, msgs []llm.Message
 }
 
 // recordContextUsage 记录一次主轮请求的占用：res 带 prompt_tokens 就用真实值
-// 锚定（分类等比归一），否则保留估算值。
+// 锚定（分类等比归一），否则保留估算值（Estimated=true）。
+//
+// 为什么顺带落库：占用原先**只在内存里**——后端一重启，重启前跑过的会话打开时
+// 指示器就是空的（用户实测「查看会话，他的上下文信息怎么是空的」）。占用是**已知事实**
+// （那条会话的历史就摆在那里），不该因为进程重启就变成未知。落库之后 chat.history 的
+// 回放与 chat.done 的实时是同一份数字（本仓库为"两条路径分叉"吃过三次亏）。
+//
+// 只有主轮走到这里（streamRound 里按 dispatchID 收口）：子上下文有自己的窗口。
 func (s *Session) recordContextUsage(window int, est ContextUsage, res *llm.ChatResult) {
 	used := 0
 	if res != nil {
 		used = res.PromptTokens
 	}
-	u := est.anchoredTo(used)
+	u := anchoredUsage(est, used)
 	u.Window = window
 	s.mu.Lock()
 	s.context = u
+	st, id := s.st, s.id
 	s.mu.Unlock()
+	persistContextUsage(st, id, u)
+}
+
+// persistContextUsage 把一次占用测量落库（调用方**不持锁**——写盘不该占着会话锁）。
+// st 为 nil（纯内存模式）或 id 为空（会话还没建行）时是 no-op。
+//
+// 失败只记日志：占用是展示信息，不是业务不变量——落库失败不该让整轮对话失败
+// （内存才是运行真源，最坏情况是重启后回落成估算值，而不是"这一轮白跑"）。
+func persistContextUsage(st Persistence, id string, u ContextUsage) {
+	if st == nil || id == "" {
+		return
+	}
+	if err := st.SaveContextUsage(id, u); err != nil {
+		log.Printf("上下文占用落库失败（继续运行）: %v", err)
+	}
 }
 
 // runTurn 跑完整一轮：流式生成 → 工具调用 → 确认 → 执行 → 回填续轮。

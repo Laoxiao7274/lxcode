@@ -26,6 +26,13 @@ func (p *persistenceStub) Load(string) ([]llm.Message, error) {
 	return []llm.Message{{Role: "user", Content: "saved"}}, nil
 }
 func (p *persistenceStub) WorkspaceOf(string) (string, error) { return "project", p.workspaceErr }
+
+// 占用相关：这个替身不模拟落库（ok=false = 库里没有 → 附着时走"按历史回落估算"），
+// 但方法必须实现——内嵌的 Persistence 是 nil，未实现的方法一调就 panic。
+func (p *persistenceStub) ContextUsageOf(string) (sessiondata.ContextUsage, bool, error) {
+	return sessiondata.ContextUsage{}, false, nil
+}
+func (p *persistenceStub) SaveContextUsage(string, sessiondata.ContextUsage) error { return nil }
 func (p *persistenceStub) ProjectByID(string) (sessiondata.ProjectMeta, bool, error) {
 	return sessiondata.ProjectMeta{ID: "project", Path: p.dir}, true, p.projectErr
 }

@@ -85,7 +85,13 @@ func (s *Session) Rewind(seq int64) (RewindResult, error) {
 	}
 	s.context = reanchoredUsage(s.context, removedTokens, s.history)
 	usage := s.context
+	st, id := s.st, s.id
 	s.mu.Unlock()
+
+	// 新占用落库（与 recordContextUsage 同款）：不落的话用户重启后会看到撤回**之前**
+	// 的数字——live（chat.rewound 带的 context）与 replay（chat.history）又分叉一次。
+	// 失败只记日志：撤回本身已经成功，占用是展示信息。
+	persistContextUsage(st, id, usage)
 
 	s.emit(RewoundEvent{Seq: seq, Removed: removed, Context: usage})
 	return RewindResult{Seq: seq, Removed: removed}, nil

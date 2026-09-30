@@ -578,6 +578,32 @@ func TestContextUsagePayloads(t *testing.T) {
 			t.Fatalf("未知占用应整键缺席（客户端显示中性态）: %s", b2)
 		}
 	})
+
+	// estimated 是「这个数字是估算的」的唯一 wire 依据：前端据此显示「估」标记。
+	// 假值必须**缺席**（omitempty）——否则老前端/老后端之间会多出一个恒 false 的键，
+	// 而且真实用量的常见情形不该多背一个字段。
+	t.Run("estimated 只在为真时出现（前端据此标注估算）", func(t *testing.T) {
+		b := mustMarshal(t, ChatHistoryResult{SessionID: "s1", Context: &ContextUsage{Used: 100, Window: 8192, Estimated: true}})
+		var m map[string]any
+		mustUnmarshal(t, b, &m)
+		ctx, ok := m["context"].(map[string]any)
+		if !ok {
+			t.Fatalf("应带 context: %s", b)
+		}
+		if est, ok := ctx["estimated"].(bool); !ok || !est {
+			t.Fatalf("估算值必须带 estimated=true（否则前端把估算当真实用量展示）: %s", b)
+		}
+		var got ChatHistoryResult
+		mustUnmarshal(t, b, &got)
+		if got.Context == nil || !got.Context.Estimated {
+			t.Fatalf("estimated 往返失真: %+v", got.Context)
+		}
+
+		b2 := mustMarshal(t, ChatHistoryResult{SessionID: "s1", Context: &ContextUsage{Used: 100, Window: 8192}})
+		if strings.Contains(string(b2), "estimated") {
+			t.Fatalf("真实用量不该带 estimated 键（omitempty）: %s", b2)
+		}
+	})
 }
 
 // TestCompactionPayloads：P3 压缩的 wire 形状（手动方法/事件/历史检查点下标）。

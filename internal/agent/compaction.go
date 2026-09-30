@@ -249,7 +249,13 @@ func (s *Session) runCompaction(ctx context.Context, ac *sessiondata.AgentContex
 	//（实测踩过——压缩成功了但环里还是旧占用）。锚定算术见 reanchoredUsage：
 	// 被压段换成摘要，差值 = 被压段估算 − 摘要估算。
 	s.context = reanchoredUsage(prev, regionTokens-summaryTokens, s.history)
+	updated, st := s.context, s.st
 	s.mu.Unlock()
+
+	// 新占用要落库（与 recordContextUsage 同款）：不落的话后端一重启，用户看到的是
+	// 压缩**之前**的数字——live（chat.compacted）与 replay（chat.history）又分叉一次。
+	// 落库失败只记日志：占用是展示信息，压缩本身已经成功，不能因此回滚历史。
+	persistContextUsage(st, id, updated)
 
 	return CompactResult{Before: beforeTotal, After: after, Shadowed: shadowed, Summary: summary}, nil
 }

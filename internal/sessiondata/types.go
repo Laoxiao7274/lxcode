@@ -15,6 +15,28 @@ type SessionMeta struct {
 	AgentID   string // 该会话运行的 Agent（子会话续跑时按同一套四层组合组装）
 }
 
+// ContextUsage 是一次上下文测量的**共享形状**：agent 测量、store 落库、server 转 wire
+// 三处用同一份定义（agent 侧是类型别名，见 internal/agent/context_usage.go）。
+//
+// 为什么定义在 sessiondata 而不是 agent：占用要**落库**才能在后端重启后仍然显示
+// （用户实测：重启前跑过的会话，打开时指示器是空的），而分层规则禁止 store import agent
+// （AGENTS.md §4）。sessiondata 正是这种"两侧共享的业务数据"的归处（SessionMeta 同理）。
+//
+// Used/Window 是压力判定与 UI 环形的依据（Used 优先取 provider 回报的真实 prompt_tokens），
+// 四个分类是估算拆分（已按 Used 归一，所以分类之和恒等于 Used）。
+type ContextUsage struct {
+	Used        int `json:"used"`                   // 已用 token（真实用量优先）
+	Window      int `json:"window,omitempty"`       // 模型上下文窗口（0 = 未知）
+	System      int `json:"system,omitempty"`       // 系统提示词 + 工具声明
+	ToolResults int `json:"tool_results,omitempty"` // 工具结果
+	Messages    int `json:"messages,omitempty"`     // 用户/助手正文与工具调用声明
+	Reasoning   int `json:"reasoning,omitempty"`    // 思考链
+	// Estimated 为真 = 这个数字是**估算**（按固定密度折算），不是 provider 回报的真实用量。
+	// 两种来源都会标：① 本轮端点没回报 usage；② 库里没有真实测量，按已加载的历史回落估算
+	//（老会话/重启前的会话）。UI 必须把它和真实用量区分开——用户看不到区别就会拿它做预算判断。
+	Estimated bool `json:"estimated,omitempty"`
+}
+
 // ProjectMeta 是注册项目的身份与根目录。
 type ProjectMeta struct {
 	ID   string

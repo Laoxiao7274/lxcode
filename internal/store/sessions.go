@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/moyunteng/lxcode/internal/llm"
+	"github.com/moyunteng/lxcode/internal/sessiondata"
 )
 
 // Create 开一个新会话（INSERT sessions 行），返回会话 id。
@@ -303,6 +304,56 @@ func (s *Store) SessionAgentID(id string) (string, error) {
 		return "", fmt.Errorf("查询会话 Agent 失败: %w", err)
 	}
 	return agentID, nil
+}
+
+// SaveContextUsage 落库一次上下文占用测量（只有**主轮**写它——子上下文有自己的窗口）。
+//
+// 为什么要落库：占用原先只在内存里，后端一重启，重启前跑过的会话打开时指示器就是空的
+// （用户实测「查看会话，他的上下文信息怎么是空的」）。占用是**已知事实**（那条会话的历史
+// 就摆在库里），不该因为进程重启变成未知。
+//
+// **刻意不动 updated_at**：那是侧栏排序与「重启恢复最近会话」的依据，占用测量是会话的
+// 附属信息、不是"用户刚用过这个会话"——写它把会话顶到列表最前面是错的。
+func (s *Store) SaveContextUsage(id string, u sessiondata.ContextUsage) error {
+	b, err := json.Marshal(u)
+	if err != nil {
+		return fmt.Errorf("序列化上下文占用失败: %w", err)
+	}
+	res, err := s.db.Exec(`UPDATE sessions SET context_usage = ? WHERE id = ?`, string(b), id)
+	if err != nil {
+		return fmt.Errorf("写上下文占用失败: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("会话 %s 不存在", id)
+	}
+	return nil
+}
+
+// ContextUsageOf 读回会话最近一次落库的占用测量。ok=false = 库里没有（老会话/从没跑过
+// 主轮）——调用方据此**回落估算**，绝不能把它当成 0：0 会被 UI 显示成 0%（一个编出来的
+// 数字比中性态更坏）。会话不存在时报错（与 Load/WorkspaceOf 的语义一致）。
+func (s *Store) ContextUsageOf(id string) (sessiondata.ContextUsage, bool, error) {
+	var raw string
+	err := s.db.QueryRow(`SELECT context_usage FROM sessions WHERE id = ?`, id).Scan(&raw)
+	if err == sql.ErrNoRows {
+		return sessiondata.ContextUsage{}, false, fmt.Errorf("会话 %s 不存在", id)
+	}
+	if err != nil {
+		return sessiondata.ContextUsage{}, false, fmt.Errorf("查询上下文占用失败: %w", err)
+	}
+	if strings.TrimSpace(raw) == "" {
+		return sessiondata.ContextUsage{}, false, nil
+	}
+	var u sessiondata.ContextUsage
+	if err := json.Unmarshal([]byte(raw), &u); err != nil {
+		return sessiondata.ContextUsage{}, false, fmt.Errorf("解析上下文占用失败: %w", err)
+	}
+	if u.Used <= 0 {
+		// 落了一个"没有测量"的记录（历史为空时的估算）：按"库里没有"处理，让调用方
+		// 走回落估算，而不是把 0 当成一个测量值
+		return sessiondata.ContextUsage{}, false, nil
+	}
+	return u, true, nil
 }
 
 // SessionWorkspace 设置会话归属的项目（空串 = 未分组）。

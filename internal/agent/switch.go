@@ -35,31 +35,49 @@ func (s *Session) SwitchNew(workspace string) (string, error) {
 }
 
 // SwitchTo 恢复指定会话：加载其历史并继续追加。当前会话记录保留。
+//
+// 锁纪律：读库与"算占用"在锁外做，只有提交那一刻持 s.mu（占用恢复要解析模型窗口，
+// 读注册表——见 EnablePersistence 的同一条理由）。
 func (s *Session) SwitchTo(id string) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.st == nil {
+		s.mu.Unlock()
 		return errors.New("未启用会话存储")
 	}
 	if err := s.switchGuardLocked(); err != nil {
+		s.mu.Unlock()
 		return err
 	}
-	msgs, err := s.st.Load(id)
+	st := s.st
+	s.mu.Unlock()
+
+	msgs, err := st.Load(id)
 	if err != nil {
 		return err
 	}
-	ws, err := s.st.WorkspaceOf(id)
+	ws, err := st.WorkspaceOf(id)
 	if err != nil {
 		return err
 	}
-	dir, err := resolveWorkspaceDir(s.st, ws)
+	dir, err := resolveWorkspaceDir(st, ws)
 	if err != nil {
 		return err
+	}
+	// 占用恢复成**这条会话自己的**测量（库里落的真实值优先；老会话回落估算）。
+	// 这与"切会话清零"不矛盾：清零针对的是**不许沿用上一条会话的数字**，而这里填的是
+	// 这条会话自己的事实——不填的话用户 resume 一条长会话会看到空的指示器（用户实测
+	// 报的就是这个现象）。
+	usage := s.restoredUsage(st, id, "", msgs)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.busy {
+		return fmt.Errorf("%w（不能切到别的会话）", ErrBusy)
 	}
 	// 校验完成再提交；todo 尚未持久化，不能沿用上一会话的内存清单。
 	s.id, s.history, s.workDir = id, msgs, dir
 	s.todos, s.pendingWorkspace = nil, ""
-	s.context = ContextUsage{} // 换会话：占用重新测量（沿用旧值会误导压力判定）
+	s.context = usage
 	// 归属 Agent 同理清零：agent 层读不到库里的 sessions.agent_id（Persistence 是
 	// 最小契约），换过来的会话归哪个 Agent 由调用方置位（服务端 newRuntime 会读库）。
 	// 留旧值等于把上一个会话的模型报给这个会话。
