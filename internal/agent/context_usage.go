@@ -34,10 +34,10 @@ const (
 // 环形（真实）与占比条（估算）会对不上——同一屏两个数字互相矛盾。
 type ContextUsage = sessiondata.ContextUsage
 
-// usageTotal 是四个分类之和。写成自由函数而不是方法：ContextUsage 是别名类型，
+// usageTotal 是五个分类之和。写成自由函数而不是方法：ContextUsage 是别名类型，
 // Go 不允许给非本包定义的类型挂方法（别名不是新类型）。
 func usageTotal(u ContextUsage) int {
-	return u.System + u.ToolResults + u.Messages + u.Reasoning
+	return u.System + u.Tools + u.ToolResults + u.Messages + u.Reasoning
 }
 
 // estimateText 按固定密度估算一段文本的 token 数（空串 = 0）。
@@ -73,11 +73,16 @@ func estimateMessageTokens(m llm.Message) int {
 // estimateContextUsage 估算一次请求的上下文占用（分类拆分）。
 // history 不含 system——system 由调用方按轮组装（prompt 参数）。
 //
+// 工具声明单列一类（Tools）：它与系统提示词是两样东西（一段是话，一段是 JSON Schema），
+// 而用户想知道的正是"工具占了窗口多少"——DSH 的 ContextMeter 也是这么分的
+// （system / tools / messages 三类）。混在一起就答不了这个问题。
+//
 // 结果**一律**带 Estimated=true：这是估算出来的数，不是 provider 回报的用量。真实用量
 // 到了会走 anchoredUsage 把它清掉（那才是唯一能把 Estimated 变假的地方）。
 func estimateContextUsage(prompt string, tools []llm.Tool, history []llm.Message) ContextUsage {
 	u := ContextUsage{
-		System:    blockOverhead + estimateText(prompt) + estimateToolsTokens(tools),
+		System:    blockOverhead + estimateText(prompt),
+		Tools:     estimateToolsTokens(tools),
 		Estimated: true,
 	}
 	for _, m := range history {
@@ -94,6 +99,50 @@ func estimateContextUsage(prompt string, tools []llm.Tool, history []llm.Message
 	}
 	u.Used = usageTotal(u)
 	return u
+}
+
+// historyTokens 估算**历史部分**的 token 数（不含 system 与工具声明——那两样每轮现组装，
+// 测量与展示两条路径都拿不到同一份，只有历史是两边都能算的）。
+//
+// 与 estimateContextUsage 的区别：那个是"一次请求的全量估算"（含 system/tools，用于分类
+// 拆分与端点不回报 usage 时的回落），这个是"只算历史"的尺子——投影要把"测量之后历史长了
+// 多少"减出来，两边必须用**同一把尺子**，否则量出来的差值里混着 system 的差。
+func historyTokens(history []llm.Message) int {
+	total := 0
+	for _, m := range history {
+		total += estimateMessageTokens(m)
+	}
+	return total
+}
+
+// projectedUsage 把"最后一次测量之后历史又长了多少"折进展示值——DSH 的
+// projectedTokens = pressureTokens + surfaceTokens − sampledSurfaceTokens。
+//
+// 为什么需要它：占用只在**每次请求发出前**才有真实值（provider 回报的 prompt_tokens）。
+// 请求之间历史照样在长——工具结果落进历史、后台任务通告被注入、助手回复自己也是一条——
+// 那段时间里指示器显示的是**测量那一刻**的数字，工具跑得越久（bash 60s、派发子 Agent
+// 几分钟）偏得越久。DSH 的做法是投影：压力值 + 表面积的变化量。
+//
+// 只做展示，**不进压缩压力判定**（maybeCompact 读的是 s.context 的真实值）：拿一个含估算
+// 增量的数去判阈值，会让压缩在"其实还没到"的时候触发。DSH 同样把两者分开
+// （pressureTokens 判定、projectedTokens 展示）。
+//
+// 三条不投影的情形（都是"算不出来"，不是"大约是 0"）：
+//   - Used <= 0：本会话还没跑过主轮，没有压力基准；
+//   - SampledTokens <= 0：那次测量没留下采样基线（老库里的值），算不出增量；
+//   - 历史没变：增量本来就是 0，原样返回省一次重算（也保证"没变就不动"这条可断言）。
+func projectedUsage(u ContextUsage, history []llm.Message) ContextUsage {
+	if u.Used <= 0 || u.SampledTokens <= 0 {
+		return u
+	}
+	now := historyTokens(history)
+	if now == u.SampledTokens {
+		return u
+	}
+	// 复用锚定算术：removedTokens 为负 = 历史变长（reanchoredUsage 只做减法，
+	// 负数天然就是加法），分类按当前历史重新估算后归一——分类之和恒等于 Used
+	// 这条不变式在投影之后同样成立。
+	return reanchoredUsage(u, u.SampledTokens-now, history)
 }
 
 // reanchoredUsage 按锚定算术把"历史少了一段"这件事折算进占用测量：
@@ -114,16 +163,20 @@ func reanchoredUsage(prev ContextUsage, removedTokens int, history []llm.Message
 		}
 		hist := estimateContextUsage("", nil, history)
 		u := ContextUsage{
-			System: prev.System, ToolResults: hist.ToolResults,
+			System: prev.System, Tools: prev.Tools, ToolResults: hist.ToolResults,
 			Messages: hist.Messages, Reasoning: hist.Reasoning,
 		}
 		u = anchoredUsage(u, used)
 		u.Window = prev.Window
 		u.Estimated = prev.Estimated
+		// 锚点换到了**当前**这段历史上：采样基线跟着重置，否则下一次投影会把
+		// 刚折进来的这段变化**再算一遍**（压缩后指示器虚高一截）。
+		u.SampledTokens = historyTokens(history)
 		return u
 	}
 	u := estimateContextUsage("", nil, history)
 	u.Window = prev.Window
+	u.SampledTokens = historyTokens(history)
 	return u
 }
 
@@ -152,8 +205,8 @@ func anchoredUsage(u ContextUsage, used int) ContextUsage {
 	// 缩放用向下取整，余数由 Messages 吸收——分类之和恒等于 Used，
 	// 且不会出现负值
 	scale := func(v int) int { return v * used / sum }
-	sys, tool, reason := scale(u.System), scale(u.ToolResults), scale(u.Reasoning)
-	u.System, u.ToolResults, u.Reasoning = sys, tool, reason
-	u.Messages = used - sys - tool - reason
+	sys, tools, tool, reason := scale(u.System), scale(u.Tools), scale(u.ToolResults), scale(u.Reasoning)
+	u.System, u.Tools, u.ToolResults, u.Reasoning = sys, tools, tool, reason
+	u.Messages = used - sys - tools - tool - reason
 	return u
 }

@@ -4,10 +4,11 @@ import { AgentPicker } from "../agents/AgentPicker";
 import { PermPicker } from "../perm-picker";
 import { ModelPicker } from "../model-picker";
 import { ContextIndicator } from "../context-indicator";
+import { StatsPills } from "../stats-pills";
 import { TodoList } from "../../aicss/TodoList";
 import { SlashPalette, type SlashCommand } from "./SlashPalette";
 import { useEnterRef } from "../../shared/anim";
-import type { ContextUsage, TodoItem } from "../../shared/types";
+import type { ContextUsage, SessionStats, TodoItem } from "../../shared/types";
 
 /** 输入区（Codex 式）：busy 时输入框保留（可预输入），发送钮变停止。
  *  斜杠命令：输入以 / 开头时上方弹命令面板（关键字过滤 + 键盘导航 +
@@ -28,6 +29,7 @@ export function Composer({
   disabled,
   todos = [],
   context = null,
+  stats = null,
   onSend,
   onCancel,
   onCompact,
@@ -42,6 +44,8 @@ export function Composer({
   todos?: TodoItem[];
   /** 上下文占用（后端测量；null = 未知——指示器显示中性态）。 */
   context?: ContextUsage | null;
+  /** 整段会话统计（后端折叠整段日志；null = 还没有任何一步——整行不渲染）。 */
+  stats?: SessionStats | null;
   onSend: (text: string) => void;
   onCancel: () => void;
   /** 手动压缩历史（空闲才可用；不传 = 指示器不显示入口）。 */
@@ -167,7 +171,10 @@ export function Composer({
             <AgentPicker />
             <PermPicker />
             <ModelPicker />
-            <ContextIndicator usage={context} onCompact={onCompact} busy={busy} />
+            <ContextIndicator usage={context} stats={stats} onCompact={onCompact} busy={busy} />
+            {/* 会话统计胶囊（时间）：紧挨上下文环（2026-09-30 用户拍板）。累计消耗那一半
+                并进了上下文环的「会话用量」弹层——输入条因此不再拥挤 */}
+            <StatsPills stats={stats} />
             <span className="piTips" />
             {busy ? (
               <button type="button" className="send-btn stop" onClick={onCancel} aria-label="停止生成" title="停止生成">

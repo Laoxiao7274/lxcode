@@ -33,21 +33,30 @@ func streamWithLLM(ctx context.Context, m config.ModelConfig, msgs []llm.Message
 }
 
 // recordContextUsage 记录一次主轮请求的占用：res 带 prompt_tokens 就用真实值
-// 锚定（分类等比归一），否则保留估算值（Estimated=true）。
+// 锚定（分类等比归一），否则保留估算值（Estimated=true）。history 是**这次请求实际
+// 发出去的那段历史**——它的估算量当采样基线存下来，供 projectedUsage 算"之后长了多少"。
 //
 // 为什么顺带落库：占用原先**只在内存里**——后端一重启，重启前跑过的会话打开时
 // 指示器就是空的（用户实测「查看会话，他的上下文信息怎么是空的」）。占用是**已知事实**
 // （那条会话的历史就摆在那里），不该因为进程重启就变成未知。落库之后 chat.history 的
 // 回放与 chat.done 的实时是同一份数字（本仓库为"两条路径分叉"吃过三次亏）。
 //
-// 只有主轮走到这里（streamRound 里按 dispatchID 收口）：子上下文有自己的窗口。
-func (s *Session) recordContextUsage(window int, est ContextUsage, res *llm.ChatResult) {
+// 每个会话记**自己**的占用：s 是这条会话自己的 Session（子会话是一个真 Session，
+// 见 AGENTS.md §2.3），所以子轮记进的是子会话自己的 s.context——主会话的指示器
+// 不会被它碰到（那是另一个 Session 对象）。落库也按 s.id（子会话自己的行）。
+//
+// 2026-09-30 修正：这里原先是 `dispatchID == ""` 才记，理由是"子上下文有自己的窗口"
+// ——但**跳过记录**并不能保护主会话（主会话本来就读不到子会话的 s.context），
+// 只是让子会话自己的指示器永远空着（用户报「子Agent的会话里…上下文 会话信息这些
+// 展示没有」）。正确的收口是"各记各的"，不是"子轮不记"。
+func (s *Session) recordContextUsage(window int, est ContextUsage, res *llm.ChatResult, history []llm.Message) {
 	used := 0
 	if res != nil {
 		used = res.PromptTokens
 	}
 	u := anchoredUsage(est, used)
 	u.Window = window
+	u.SampledTokens = historyTokens(history)
 	s.mu.Lock()
 	s.context = u
 	st, id := s.st, s.id
@@ -146,7 +155,9 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig, ac *sessiondata.A
 		// 重复调用提醒也在**轮边界**注入——与 injectNotices 同一个理由（唯一安全的
 		// 历史插入点：上一轮工具结果已全部落进历史，见 notify.go 与 toolpair.go）。
 		if repeatHint != "" {
-			m := llm.Message{Role: "user", Content: repeatHint}
+			// Notice=true：这是**注入的**提醒，不是用户说的话——会话统计的轮数
+			// 按它排除（否则每触发一次死循环提醒就凭空多一轮）
+			m := llm.Message{Role: "user", Content: repeatHint, Notice: true}
 			s.append(m)
 			s.emit(UserMsgEvent{Message: m})
 			repeatHint = ""
@@ -210,7 +221,7 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig, ac *sessiondata.A
 		s.append(res.Message)
 		s.emit(TurnDoneEvent{
 			Message: res.Message, UsageTokens: res.UsageTokens, FinishReason: res.FinishReason,
-			Context: s.ContextUsage(),
+			Context: s.ProjectedContextUsage(),
 		})
 		if len(res.Message.ToolCalls) == 0 {
 			return
@@ -266,12 +277,11 @@ func (s *Session) streamRound(ctx context.Context, workDir, effort string, ac *s
 	// 本轮请求的上下文占用（估算）：provider 回报了真实用量就以它为准，
 	// 估算只用于分类拆分（anchoredTo 归一）与「端点不回报 usage」的回落。
 	est := estimateContextUsage(prompt, wireTools, history)
-	// 记录统一放出口（done / error / 断流多个 return 点）——子轮的占用不是
-	// 主会话的压力（子上下文有自己的窗口与预算），跳过。
+	// 记录统一放出口（done / error / 断流多个 return 点）——**子轮也记**：
+	// s 是这条会话自己的 Session，记的是它自己的 s.context（主会话是另一个对象，
+	// 碰不到它）。不记的后果是子会话页的指示器永远空着（2026-09-30 用户报的）。
 	defer func() {
-		if dispatchID == "" {
-			s.recordContextUsage(m.ContextWindow, est, res)
-		}
+		s.recordContextUsage(m.ContextWindow, est, res, history)
 	}()
 
 	opts = append([]llm.Option{llm.WithTools(wireTools)}, opts...)
@@ -286,7 +296,10 @@ func (s *Session) streamRound(ctx context.Context, workDir, effort string, ac *s
 		if res == nil {
 			return
 		}
-		res.Message.UsageTokens = res.UsageTokens // provider 没回报就是 0（缺席），不估算
+		// 用量簿记从结果盖到消息上（**唯一**落点：output 走 UsageTokens，输入侧
+		// 三桶走 json:"-" 的字段）——provider 没回报就是 0（缺席），不估算。
+		// 落库与会话统计的折叠都读消息上这一份。
+		llm.StampUsage(&res.Message, res)
 		stampRoundTiming(&res.Message, m.ID, start, firstTokenMs)
 	}()
 	ch, err := s.stream(ctx, m, msgs, opts)

@@ -10,7 +10,7 @@ import type {
   AgentEvent, AgentSource, ApprovalMode, CompactOutcome, ConfirmRequest, ContextUsage, HistorySnapshot, JobAdminSource, JobInfo,
   JobLogResult, ModelAdminSource, ModelEntry,
   ProjectInstructions, ProjectMeta, RewindOutcome, SearchAdminSource, SearchChannel, SearchChannelsSnapshot,
-  SearchTestResult, SendOptions, SessionMeta, TodoItem,
+  SearchTestResult, SendOptions, SessionMeta, SessionStats, TodoItem,
 } from "../../shared/types";
 import { rewindParams } from "../../shared/blocks";
 import { jobFromWire, sortJobs, upsertJob } from "../../shared/jobs";
@@ -540,6 +540,8 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
       pending?: ConfirmRequest | null;
       todos?: TodoItem[];
       context?: ContextUsage;
+      /** 整段会话统计（缺省 = 还没有任何一步——不渲染统计胶囊）。 */
+      stats?: SessionStats;
       checkpoints?: number[];
       /** 该会话实际用的模型 id（子会话就是它自己 Agent 的模型）。 */
       model?: string;
@@ -551,6 +553,7 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
       pending: h.pending ?? null,
       todos: h.todos ?? [],
       context: h.context,
+      stats: h.stats,
       checkpoints: h.checkpoints ?? [],
       model: h.model,
     };
@@ -567,16 +570,24 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
   /** 读子会话的历史（AGENTS.md §2.3：子 Agent = 独立会话，它自己的 messages 与
    *  压缩检查点在库里另存一份，父会话历史里没有这些明细）。
    *
-   *  与 loadHistory 走同一条协议方法（chat.history 按 session_id 寻址），但
-   *  **返回快照而不是发事件**：子会话历史是某张 dispatch 卡的只读补充，不进
-   *  store、不参与主时间线归约——发 historyLoaded 会把卡内的子历史当成主时间线
-   *  整块重建（"刷新之后整个对话被一段子 Agent 的过程顶掉"）。
+   *  与 loadHistory 走同一条协议方法（chat.history 按 session_id 寻址），也**发
+   *  historyLoaded**（2026-09-30 用户拍板：子会话标签页要看到实时流，所以它得先有
+   *  自己的 state —— 历史是基线、随后的事件是增量）。
    *
-   *  失败原样抛（断连/超时/子会话不存在）：调用方（DispatchCard）必须把原因显示
-   *  出来——静默吞掉会让用户以为"子会话本来就是空的"。 */
+   *  与 loadHistory 的**关键差别是事件里的 sessionId 是子会话的那个**（快照的
+   *  session_id 就是按它查的）：store 按 sessionId 路由，重建的是**子会话自己**的
+   *  state，主时间线一个块都不动。早先不发这个事件是因为那时子会话没有自己的 state
+   *  （子历史只是卡内的只读补充），发它只会白白重建一份没人看的状态。
+   *
+   *  失败原样抛（断连/超时/子会话不存在）：调用方（App 打开标签、卡片的懒加载）
+   *  必须把原因显示出来——静默吞掉会让用户以为"子会话本来就是空的"。 */
   async childHistory(sessionId: string): Promise<HistorySnapshot> {
     const r = await this.call("chat.history", { session_id: sessionId });
-    return this.snapshotFromWire(r);
+    const snapshot = this.snapshotFromWire(r);
+    // 用快照自己的 session_id（后端回带；缺席时回落请求参数——两者不一致时以后端为准）
+    const id = snapshot.sessionId || sessionId;
+    this.emit({ type: "historyLoaded", sessionId: id, history: snapshot });
+    return snapshot;
   }
 
   models(): { models: ModelEntry[]; roles: Record<string, string> } {

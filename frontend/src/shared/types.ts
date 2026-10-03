@@ -8,12 +8,16 @@ export interface TodoItem {
 }
 
 /** 上下文占用（对齐 protocol.ContextUsage）：used/window 是压力与环形依据
- *  （used 优先真实 prompt_tokens），四个分类是估算拆分（已归一：分类之和 == used）。 */
+ *  （used 优先真实 prompt 总量），五个分类是估算拆分（已归一：分类之和 == used）。 */
 export interface ContextUsage {
   used: number;
   /** 模型窗口上限（0/缺省 = 未知——不画环形百分比）。 */
   window?: number;
+  /** 系统提示词。 */
   system?: number;
+  /** 工具声明（wire 上的 JSON Schema）——与 system 分开一类，因为"工具占了窗口多少"
+   *  是用户最想知道的其中一件事（DSH 的 ContextMeter 同样单列）。 */
+  tools?: number;
   tool_results?: number;
   messages?: number;
   reasoning?: number;
@@ -22,6 +26,39 @@ export interface ContextUsage {
    *  看不出区别就会拿它做预算判断。缺省/false = 真实用量（provider 回报的
    *  prompt_tokens）。 */
   estimated?: boolean;
+}
+
+/** 整段会话的统计（对齐 protocol.SessionStats / DSH 的 sessionStats + tokenUsage）。
+ *
+ *  与 ContextUsage 的分工：context 回答「此刻窗口里有多少」，stats 回答「这条会话
+ *  一共花了多少」。它折叠的是**整段日志**（含被压缩检查点影子掉的消息），所以压缩与
+ *  翻页都改不了这些数字；撤回真删了行，数字跟着变小才是对的。
+ *
+ *  整键缺席 = 还没有任何一步（新会话/纯内存模式）——UI 不渲染统计胶囊，
+ *  **不显示一排 0**（那是个假事实）。 */
+export interface SessionStats {
+  /** 轮数（用户发起的轮数，与右栏「轮次」面板同一口径）与步数（模型调用次数）。 */
+  turns: number;
+  steps: number;
+  /** 墙钟（毫秒）：llm_ms = 各步请求耗时之和；tool_ms = 工具执行耗时之和。 */
+  llm_ms: number;
+  tool_ms: number;
+  /** 首字：ttft_ms / ttft_steps = 均值（只有有首字可测的步才计入）。 */
+  ttft_ms: number;
+  ttft_steps: number;
+  /** 解码：decode_ms = 首字 → 收尾的纯生成耗时，decode_tokens = 同期输出 token。
+   *  生成速度 = decode_tokens / decode_ms（扣掉 prefill 才是"吐字速度"）。 */
+  decode_ms: number;
+  decode_tokens: number;
+  /** 计费四桶（provider 回报；未回报 = 0）：未缓存输入 / 缓存读 / 缓存写 / 输出。 */
+  input_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  output_tokens: number;
+  /** 早期记录（本功能上线前落库的消息）的 token 之和：那时的口径是 provider 的
+   *  total_tokens（输入+输出），与上面四桶不同——**单独给出、不混算**。
+   *  缺席（0）= 这条会话没有早期记录。UI 在明细里如实说明它是什么，不参与速度。 */
+  legacy_tokens?: number;
 }
 
 /** 手动压缩的结果（chat.compact 的应答）。 */
@@ -129,6 +166,9 @@ export type AgentEvent =
   | { type: "confirmRequest"; sessionId: string; request: ConfirmRequest }
   | { type: "todoUpdated"; sessionId: string; items: TodoItem[] }
   | { type: "done"; sessionId: string; usageTokens: number; finishReason: string; dispatchId?: string; context?: ContextUsage;
+      /** 整段会话统计（缺省 = 还没有任何一步 / 纯内存模式）。一轮里的每个 done 都带
+       *  一份最新的，取最后收到的那份即可（与 DSH 的投影随事件推进同语义）。 */
+      stats?: SessionStats;
       /** 每轮计时（后端 internal/agent/timing.go）：首 token 延迟与本轮耗时。**工具轮/非流式
        *  回放没有「首字」这个时刻 → 整键缺席**（不是 0——0 会被显示成「首字 0ms」的假数据）。 */
       firstTokenMs?: number; durationMs?: number;
@@ -158,7 +198,9 @@ export type AgentEvent =
    *  归约是**幂等**的：本地乐观截断（发起撤回时立刻清空时间线）已经把锚点删掉了，
    *  后端广播随后到达时找不到锚点就原样返回——不幂等的话重复到达会再切一刀，
    *  把更早的消息也一起删掉。 */
-  | { type: "rewound"; sessionId: string; seq: number; removed: number; context?: ContextUsage }
+  | { type: "rewound"; sessionId: string; seq: number; removed: number; context?: ContextUsage;
+      /** 重算后的整段统计（撤回真删了行，步数/token 跟着变小）。 */
+      stats?: SessionStats }
   /** 历史载入（连接/切会话后）——全量重建对话视图。 */
   | { type: "historyLoaded"; sessionId: string; history: HistorySnapshot }
   /** 后台任务起了（时间线插一张任务卡）。sessionId = 任务归属会话——
@@ -189,6 +231,8 @@ export interface HistorySnapshot {
   todos: TodoItem[];
   /** 上下文占用（缺省 = 未知——刚切会话/后端刚重启，指示器显示中性态）。 */
   context?: ContextUsage;
+  /** 整段会话统计（缺省 = 还没有任何一步——不渲染统计胶囊）。 */
+  stats?: SessionStats;
   /** 压缩检查点在 messages 里的下标（这些消息渲染成「已压缩历史」块，不是用户气泡）。 */
   checkpoints?: number[];
   /** 该会话实际用的模型 id（子会话就是它自己 Agent 的模型）。未知 → 整键缺席，

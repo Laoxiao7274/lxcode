@@ -162,6 +162,24 @@ func Open(dir string) (*Store, error) {
 		`ALTER TABLE messages ADD COLUMN duration_ms INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE messages ADD COLUMN model TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE messages ADD COLUMN usage_tokens INTEGER NOT NULL DEFAULT 0`,
+		// 输入侧用量三桶（2026-09-30）：会话统计的折叠输入——缓存命中率与计费口径
+		// 都要它们，而 usage_tokens 是**输出**（生成速度的分母）。老行恒 0（未知），
+		// 那正是诚实的值：那时候的适配器根本没解析缓存字段。
+		`ALTER TABLE messages ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE messages ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE messages ADD COLUMN cache_write_tokens INTEGER NOT NULL DEFAULT 0`,
+		// notice（2026-09-30）：这条 user 消息是**注入的提示条**（重复调用提醒 /
+		// 后台任务通告），不是用户说的话。会话统计的「轮数」按它排除——前缀匹配
+		// 在 Go 侧做不了（RepeatNoticePrefix 在 agent、JobNoticePrefix 在 protocol，
+		// 而 store 谁都不能 import：分层规则），所以把判定**记在写边界**。
+		`ALTER TABLE messages ADD COLUMN notice INTEGER NOT NULL DEFAULT 0`,
+		// usage_split（2026-09-30）：这一行的用量是**拆分口径**（usage_tokens 真的是
+		// 输出、输入侧三桶另记）。本功能上线前的行是另一种口径——那时 usage_tokens 装的是
+		// provider 的 total_tokens（输入+输出）——混算会把生成速度报得离谱（实测 687.8 tok/s）。
+		// 为什么用写边界的一位标记而不是"输入桶为 0"去猜：猜在"端点只报 completion_tokens
+		// 不报 prompt_tokens"时会把新行误判成老行（少显示）。ALTER 的 DEFAULT 0 正好把
+		// 所有**已存在的行**标成老口径（它们确实是旧二进制写的），新写入一律置 1。
+		`ALTER TABLE messages ADD COLUMN usage_split INTEGER NOT NULL DEFAULT 0`,
 	} {
 		if _, err := db.Exec(col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			db.Close()

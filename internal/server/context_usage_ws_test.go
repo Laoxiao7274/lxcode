@@ -82,6 +82,13 @@ func sendAndWaitDone(t *testing.T, client *wsTestClient, sessionID, text string)
 	return *p.Context
 }
 
+// replyEstimate 是假流那条助手回复（"好"）的估算量：4（消息结构开销）+ 1（"好" = 3 字节）。
+//
+// 为什么 wire 上的数字要加它：指示器显示的是**投影值**（真实测量 + 测量之后历史的变化量，
+// DSH 的 projectedTokens）——请求发出时量到 5180，回复随后进了历史，所以"下一次请求的
+// prompt 有多大"就是 5180 + 5。锚点（精确值）留在会话内存与库里，判定用它。
+const replyEstimate = 5
+
 // TestContextUsageSurvivesRestartOverWS：跑一轮 → 同进程的 chat.history 与 chat.done 一致
 // （live vs replay）→ 换一个服务端（同一份库 = 重启）→ chat.history 还是**同一份数字**。
 func TestContextUsageSurvivesRestartOverWS(t *testing.T) {
@@ -89,8 +96,8 @@ func TestContextUsageSurvivesRestartOverWS(t *testing.T) {
 	id := createTestSession(t, client, "")
 
 	live := sendAndWaitDone(t, client, id, "你好")
-	if live.Used != 5180 || live.Window != 8192 || live.Estimated {
-		t.Fatalf("chat.done 应带 provider 回报的真实用量: %+v", live)
+	if live.Used != 5180+replyEstimate || live.Window != 8192 || live.Estimated {
+		t.Fatalf("chat.done 应带锚定在 provider 真实用量上的投影值: %+v", live)
 	}
 	// 同进程回放：chat.history 读的是同一份内存测量
 	if got := readTestHistory(t, client, id).Context; got == nil || *got != live {
@@ -164,11 +171,13 @@ func TestContextUsageAbsentForEmptySession(t *testing.T) {
 
 // TestChildSessionContextOverWS：子会话也是会话——chat.history{子会话 id} 给的是**它自己的**
 // 占用，而且**不写主指示器**（AGENTS.md §2.2：只有主轮写主会话的值）。
+// 数字都带 replyEstimate（投影：每条助手回复进历史之后加上的那点估算量），
+// 两个会话的**区分度**（1111 vs 2222）才是这个测试要的东西。
 func TestChildSessionContextOverWS(t *testing.T) {
 	srv, client, reg := newTestServer(t, usageStream(1111, 2222))
 	mainID := createTestSession(t, client, "")
 	mainLive := sendAndWaitDone(t, client, mainID, "主会话的一轮")
-	if mainLive.Used != 1111 {
+	if mainLive.Used != 1111+replyEstimate {
 		t.Fatalf("主会话应记录它自己的用量: %+v", mainLive)
 	}
 
@@ -178,26 +187,26 @@ func TestChildSessionContextOverWS(t *testing.T) {
 		t.Fatal(err)
 	}
 	childLive := sendAndWaitDone(t, client, childID, "子任务")
-	if childLive.Used != 2222 {
+	if childLive.Used != 2222+replyEstimate {
 		t.Fatalf("子会话应记录它自己的用量: %+v", childLive)
 	}
 
 	// 子会话的 chat.history 给的是它自己的占用
 	childHist := readTestHistory(t, client, childID).Context
-	if childHist == nil || childHist.Used != 2222 {
+	if childHist == nil || childHist.Used != 2222+replyEstimate {
 		t.Fatalf("chat.history{子会话} 应给它自己的占用: %+v", childHist)
 	}
 	// 主指示器没有被那一轮改动
-	if got := readTestHistory(t, client, mainID).Context; got == nil || got.Used != 1111 {
+	if got := readTestHistory(t, client, mainID).Context; got == nil || got.Used != 1111+replyEstimate {
 		t.Fatalf("子会话的轮次不该写主指示器: %+v", got)
 	}
 
 	// 重启后两边各自恢复自己的值
 	_, client2 := newServerOnStore(t, srv.st, reg, nil)
-	if got := readTestHistory(t, client2, mainID).Context; got == nil || got.Used != 1111 {
+	if got := readTestHistory(t, client2, mainID).Context; got == nil || got.Used != 1111+replyEstimate {
 		t.Fatalf("重启后主会话应是它自己的值: %+v", got)
 	}
-	if got := readTestHistory(t, client2, childID).Context; got == nil || got.Used != 2222 {
+	if got := readTestHistory(t, client2, childID).Context; got == nil || got.Used != 2222+replyEstimate {
 		t.Fatalf("重启后子会话应是它自己的值: %+v", got)
 	}
 }

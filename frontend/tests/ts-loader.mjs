@@ -6,6 +6,11 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import ts from "typescript";
 
 const isTsLike = (s) => s.endsWith(".ts") || s.endsWith(".tsx");
+// CSS（含 CSS Modules）：生产侧由 vite 处理，node 不认这个扩展名。桩成空对象——
+// 组件里只把 styles 当 className 查表用，样式本身不是这些测试的断言对象；
+// 不打这个桩就**渲染不了任何 import 了 CSS 的组件**（Composer 因为 TodoList 而中招），
+// 于是"胶囊挂在哪一层"这种接线断言就只能在源码文本上做（脆且测不到真渲染）。
+const isCssLike = (s) => s.endsWith(".css");
 
 export async function resolve(specifier, context, next) {
   if (isTsLike(specifier)) {
@@ -30,6 +35,7 @@ export async function resolve(specifier, context, next) {
 }
 
 export async function load(url, context, next) {
+  if (isCssLike(url)) return { format: "module", shortCircuit: true, source: "export default {};" };
   if (!isTsLike(url)) return next(url, context);
   const source = readFileSync(new URL(url), "utf8");
   const { outputText } = ts.transpileModule(source, {

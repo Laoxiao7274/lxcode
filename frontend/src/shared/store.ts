@@ -9,11 +9,11 @@
 import { useCallback, useEffect, useState } from "react";
 import type { AgentSource, SendOptions } from "./types";
 import { type UIState, initial } from "./blocks";
-import { reduceSessionStates, resolveConfirm } from "./reduce";
+import { reduceSessionStates, resolveConfirm, resolveConfirmEverywhere } from "./reduce";
 
 export type { AssistantBlock, ThreadBlock, UIState } from "./blocks";
 export { checkpointBody } from "./blocks";
-export { reduce, reduceSessionStates, resolveConfirm } from "./reduce";
+export { reduce, reduceSessionStates, resolveConfirm, resolveConfirmEverywhere } from "./reduce";
 export function useAgent(source: AgentSource): {
   state: UIState;
   sessionStates: Record<string, UIState>;
@@ -56,9 +56,12 @@ export function useAgent(source: AgentSource): {
   };
   const send = useCallback((sessionId: string, text: string, opts?: SendOptions) => source.send(sessionId, text, opts), [source]);
   const resolve = useCallback((sessionId: string, id: string, outcome: "allow" | "deny") => {
+    // 裁决要**两处同时定格**：确认在父会话的卡里与子会话自己的时间线里各有一份
+    //（子事件双投的必然结果）——只定格用户点的那一处，另一处会永远挂着「待确认」。
+    // 先补上被裁决的那个会话（它可能还没有 state——确认卡在 blocks 里但 state 未建）。
     setSessionStates((all) => {
-      const current = all[sessionId] ?? { ...initial, currentId: sessionId };
-      return { ...all, [sessionId]: resolveConfirm(current, id, outcome) };
+      const base = all[sessionId] ? all : { ...all, [sessionId]: { ...initial, currentId: sessionId } };
+      return resolveConfirmEverywhere(base, id, outcome);
     });
   }, []);
   const clearError = useCallback(() => setOperationError(null), []);

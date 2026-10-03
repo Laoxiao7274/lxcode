@@ -12,7 +12,14 @@ import { reduce } from '../src/shared/store.ts';
 import { WSAgent } from '../src/agent/ws/index.ts';
 import { mapEvent } from '../src/agent/ws/events.ts';
 
-const base = { blocks: [], busy: false, pending: null, todos: [], currentId: 's1', operationError: null, context: null, historyReady: true };
+const base = { blocks: [], busy: false, pending: null, todos: [], currentId: 's1', operationError: null, context: null, stats: null, historyReady: true };
+
+/** 一份完整的整段会话统计（与 protocol.SessionStats 逐字同字段）。 */
+const statsFixture = () => ({
+  turns: 2, steps: 3, llm_ms: 6000, tool_ms: 2000,
+  ttft_ms: 900, ttft_steps: 2, decode_ms: 4100, decode_tokens: 300,
+  input_tokens: 1050, cache_read_tokens: 11000, cache_write_tokens: 100, output_tokens: 320,
+});
 
 /** 一串带 seq 的块：user/assistant/tool 混排——撤回必须把锚点之后的一切都带走，
  *  不只是后面的用户气泡（工具行、正文、确认卡都在历史里）。 */
@@ -43,15 +50,17 @@ test('chat.rewind 的参数与 Go 侧逐字一致（session_id / seq）', async 
   assert.deepEqual(out, { removed: 2 });
 });
 
-test('chat.rewound 的载荷映射成 rewound 事件（session_id / seq / removed / context）', () => {
+test('chat.rewound 的载荷映射成 rewound 事件（session_id / seq / removed / context / stats）', () => {
   // context：后端重算后的占用。未知时整键缺席——那时必须是 undefined（归约器回落中性态「—」），
   // 不是 0 也不是 {}（编一个数会让指示器显示假的 0%）。
+  // stats 同理：缺席 = 还没有任何一步，前端不渲染统计胶囊（不是显示一排 0）。
   assert.deepEqual(mapEvent('chat.rewound', { session_id: 's1', seq: 20, removed: 3 }), {
-    type: 'rewound', sessionId: 's1', seq: 20, removed: 3, context: undefined,
+    type: 'rewound', sessionId: 's1', seq: 20, removed: 3, context: undefined, stats: undefined,
   });
   const usage = { used: 1200, window: 32768 };
-  assert.deepEqual(mapEvent('chat.rewound', { session_id: 's1', seq: 20, removed: 3, context: usage }), {
-    type: 'rewound', sessionId: 's1', seq: 20, removed: 3, context: usage,
+  const stats = { turns: 2, steps: 3, llm_ms: 100, tool_ms: 50, ttft_ms: 10, ttft_steps: 1, decode_ms: 80, decode_tokens: 9, input_tokens: 5, cache_read_tokens: 6, cache_write_tokens: 0, output_tokens: 9 };
+  assert.deepEqual(mapEvent('chat.rewound', { session_id: 's1', seq: 20, removed: 3, context: usage, stats }), {
+    type: 'rewound', sessionId: 's1', seq: 20, removed: 3, context: usage, stats,
   });
 });
 
@@ -84,14 +93,26 @@ test('撤回计划里的文本就是锚点那条的原文（要回到输入框�
 // ---------- 3. 归约：chat.rewound 截断 + 幂等 ----------
 
 test('chat.rewound 归约：截断到锚点之前，且重复到达是幂等的', () => {
-  let s = { ...base, blocks: timeline(), context: { used: 999 } };
+  let s = { ...base, blocks: timeline(), context: { used: 999 }, stats: statsFixture() };
   s = reduce(s, { type: 'rewound', sessionId: 's1', seq: 20, removed: 3 });
   assert.deepEqual(uids(s.blocks), [1, 2, 3], '锚点(uid 4, seq 20)及其之后的 uid 5/6 都消失');
   // 删掉历史后旧占用一定是错的（协议不带重算后的占用）——中性态而不是编一个数
   assert.equal(s.context, null);
+  // 统计同理：撤回真删了行，旧数字一定是错的 → 清空（不显示统计胶囊），不编也不留
+  assert.equal(s.stats, null);
   // 后端广播重复到达（本地乐观截断已经把锚点删了）：不能再往下切一刀
   const again = reduce(s, { type: 'rewound', sessionId: 's1', seq: 20, removed: 3 });
   assert.strictEqual(again, s, '找不到锚点必须原样返回（不换对象、不改内容）');
+});
+
+test('chat.done 带 stats 时更新统计；不带时保持旧值（读不到 ≠ 没有）', () => {
+  const fresh = statsFixture();
+  let s = { ...base, stats: null };
+  s = reduce(s, { type: 'done', sessionId: 's1', usageTokens: 5, finishReason: 'stop', stats: fresh });
+  assert.deepEqual(s.stats, fresh);
+  // 后端读不到库（纯内存模式）时不带 stats：不许把已经显示的数字擦掉
+  const kept = reduce(s, { type: 'done', sessionId: 's1', usageTokens: 5, finishReason: 'stop' });
+  assert.deepEqual(kept.stats, fresh);
 });
 
 // ---------- 4. 两条路径都带 seq（回放 + 实时） ----------

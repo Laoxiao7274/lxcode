@@ -82,6 +82,10 @@ type anthropicResponse struct {
 	Usage      struct {
 		InputTokens  int `json:"input_tokens"`
 		OutputTokens int `json:"output_tokens"`
+		// 缓存两桶：anthropic 的 input_tokens **不含**缓存部分，命中/写入另计
+		// （prompt 侧总量 = 三者之和，见 llm.ChatResult 的字段分工）
+		CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+		CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 	} `json:"usage"`
 }
 
@@ -290,12 +294,10 @@ func anthropicResult(ar *anthropicResponse) *ChatResult {
 	if msg.Content == "" && msg.ReasoningContent != "" && len(msg.ToolCalls) == 0 {
 		msg.Content, msg.ReasoningContent = msg.ReasoningContent, ""
 	}
-	return &ChatResult{
-		Message:      msg,
-		UsageTokens:  ar.Usage.InputTokens + ar.Usage.OutputTokens,
-		PromptTokens: ar.Usage.InputTokens,
-		FinishReason: mapAnthropicStop(ar.StopReason),
-	}
+	res := &ChatResult{Message: msg, FinishReason: mapAnthropicStop(ar.StopReason)}
+	anthropicUsage(ar.Usage.InputTokens, ar.Usage.OutputTokens,
+		ar.Usage.CacheReadInputTokens, ar.Usage.CacheCreationInputTokens).applyTo(res)
+	return res
 }
 
 // mapAnthropicStop：end_turn→stop、max_tokens→length、tool_use→tool_calls。

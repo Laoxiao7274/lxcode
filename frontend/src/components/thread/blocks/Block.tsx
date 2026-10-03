@@ -26,7 +26,7 @@ import { NoticeBar } from "./NoticeBar";
 const NO_SEQ_HINT = "这条消息来自旧版后端（没有 seq），无法定位要撤回的位置";
 
 export const Block = memo(
-  function Block({ block, onConfirm, replayed, onEdit, onRewind, onLoadChild, onOpenChild, readOnly, "data-uid": dataUid }: {
+  function Block({ block, onConfirm, replayed, onEdit, onRewind, onOpenChild, readOnly, "data-uid": dataUid }: {
     block: ThreadBlock;
     onConfirm: (id: string, allow: boolean) => void;
     replayed?: boolean;
@@ -38,9 +38,9 @@ export const Block = memo(
      *  useCallback 固定身份——每次新建会击穿 memo（见文件末尾的比较器）。 */
     onEdit?: (block: ThreadBlock) => void;
     onRewind?: (block: ThreadBlock) => void;
-    /** 子会话历史的懒加载入口（只有 dispatch 卡用）——透传给 DispatchCard。 */
-    onLoadChild?: (sessionId: string) => Promise<ThreadBlock[]>;
-    /** 把某张卡上的子会话作为独立工作区标签打开（只有 dispatch 卡用）——透传。 */
+    /** 把某张卡上的子会话作为独立工作区标签打开（只有 dispatch 卡用）——透传。
+     *  子会话的**实时过程**在它自己的标签页里（store 把带 dispatch_id 的子事件同时
+     *  归约进子会话自己的 state），卡里只留摘要 + 结论，不再有卡内子时间线。 */
     onOpenChild?: (sessionId: string) => void;
     /** 只读视图（子会话标签页用）：**不渲染**用户气泡的动作条。
      *
@@ -123,7 +123,7 @@ export const Block = memo(
       return <FilesCard files={block.files} data-uid={dataUid} />;
 
     case "dispatch":
-      return <DispatchCard block={block} onConfirm={onConfirm} onLoadChild={onLoadChild} onOpenChild={onOpenChild} data-uid={dataUid} />;
+      return <DispatchCard block={block} onConfirm={onConfirm} onOpenChild={onOpenChild} data-uid={dataUid} />;
 
     case "compacted":
       return <CompactionCard block={block} data-uid={dataUid} />;
@@ -162,9 +162,8 @@ export const Block = memo(
     prev.onConfirm === next.onConfirm &&
     prev.onEdit === next.onEdit &&
     prev.onRewind === next.onRewind &&
-    // onLoadChild / onOpenChild 也必须比：App 用 useCallback 固定它们的身份，漏比的话
-    // 一次身份变化（依赖数组变了）就会让整屏块全部重渲染一遍。
-    prev.onLoadChild === next.onLoadChild &&
+    // onOpenChild 也必须比：App 用 useCallback 固定它的身份，漏比的话一次身份变化
+    // （依赖数组变了）就会让整屏块全部重渲染一遍。
     prev.onOpenChild === next.onOpenChild &&
     // readOnly 是布尔（只读视图恒定），漏比会让切换视图时留下上一种的渲染结果
     prev.readOnly === next.readOnly,

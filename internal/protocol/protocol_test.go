@@ -542,7 +542,7 @@ func TestContextUsagePayloads(t *testing.T) {
 	t.Run("DoneParams 带 context（子轮的 done 不带——omitempty）", func(t *testing.T) {
 		b := mustMarshal(t, DoneParams{
 			Message: llm.Message{Role: "assistant", Content: "好"}, UsageTokens: 12, FinishReason: "stop",
-			Context: &ContextUsage{Used: 777, Window: 32768, System: 300, ToolResults: 200, Messages: 277},
+			Context: &ContextUsage{Used: 777, Window: 32768, System: 300, Tools: 200, ToolResults: 200, Messages: 77},
 		})
 		var m map[string]any
 		mustUnmarshal(t, b, &m)
@@ -550,7 +550,7 @@ func TestContextUsagePayloads(t *testing.T) {
 		if !ok {
 			t.Fatalf("主轮 done 应带 context: %s", b)
 		}
-		for _, key := range []string{"used", "window", "system", "tool_results", "messages"} {
+		for _, key := range []string{"used", "window", "system", "tools", "tool_results", "messages"} {
 			if _, ok := ctx[key]; !ok {
 				t.Fatalf("context 缺键 %s: %s", key, b)
 			}
@@ -559,10 +559,24 @@ func TestContextUsagePayloads(t *testing.T) {
 			t.Fatalf("context 数值失真: %s", b)
 		}
 
-		// 子轮 done：不带 context 键（子上下文占用不进主指示器）
-		b2 := mustMarshal(t, DoneParams{Message: llm.Message{Role: "assistant"}, DispatchID: "d1"})
-		if strings.Contains(string(b2), "context") {
-			t.Fatalf("子轮 done 不应带 context: %s", b2)
+		// 子轮 done：**照样带 context**——那是子会话**自己**的占用（它有自己的窗口）。
+		// 2026-09-30 修正：原先这里断言"子轮不带 context 键"，理由是"子上下文占用不进主
+		// 指示器"——但前端按 session_id 路由（子事件另带 dispatch_id，进的是卡与子会话
+		// 自己的 state），所以带上它既不会污染主指示器，又是子会话页唯一能显示占用的来源
+		//（用户报「子Agent的会话里…上下文 会话信息这些展示没有」）。
+		b2 := mustMarshal(t, DoneParams{
+			Message: llm.Message{Role: "assistant"}, DispatchID: "d1",
+			Context: &ContextUsage{Used: 1234, Window: 32768},
+		})
+		var m2 map[string]any
+		mustUnmarshal(t, b2, &m2)
+		if _, ok := m2["context"].(map[string]any); !ok {
+			t.Fatalf("子轮 done 应带它自己的 context: %s", b2)
+		}
+		// 但**未知**时依然整键缺席（子会话刚建、还没跑过轮）：不许编一个 used=0
+		b3 := mustMarshal(t, DoneParams{Message: llm.Message{Role: "assistant"}, DispatchID: "d1"})
+		if strings.Contains(string(b3), "context") {
+			t.Fatalf("未知占用应整键缺席（客户端显示中性态）: %s", b3)
 		}
 	})
 
@@ -602,6 +616,75 @@ func TestContextUsagePayloads(t *testing.T) {
 		b2 := mustMarshal(t, ChatHistoryResult{SessionID: "s1", Context: &ContextUsage{Used: 100, Window: 8192}})
 		if strings.Contains(string(b2), "estimated") {
 			t.Fatalf("真实用量不该带 estimated 键（omitempty）: %s", b2)
+		}
+	})
+}
+
+// TestSessionStatsPayloads：会话统计的 wire 形状（chat.done / chat.history / chat.rewound
+// 三处携带同一份 SessionStats——前端统计胶囊按这些键消费；未知时整块缺席，不是一排 0）。
+func TestSessionStatsPayloads(t *testing.T) {
+	stats := &SessionStats{
+		Turns: 2, Steps: 3, LLMMs: 6000, ToolMs: 2000, TTFTMs: 900, TTFTSteps: 2,
+		DecodeMs: 4100, DecodeTokens: 300, InputTokens: 1050, CacheReadTokens: 11000,
+		CacheWriteTokens: 100, OutputTokens: 320,
+	}
+	// 逐字断言 snake_case 键名：字段改名不会编译失败，只会静默变成空值
+	//（前端的统计胶囊于是显示一排 0——本仓库最贵的一类协议坑）
+	keys := []string{"turns", "steps", "llm_ms", "tool_ms", "ttft_ms", "ttft_steps",
+		"decode_ms", "decode_tokens", "input_tokens", "cache_read_tokens",
+		"cache_write_tokens", "output_tokens"}
+
+	t.Run("chat.done 带 stats", func(t *testing.T) {
+		b := mustMarshal(t, DoneParams{
+			Message: llm.Message{Role: "assistant", Content: "好"}, UsageTokens: 12,
+			FinishReason: "stop", Stats: stats,
+		})
+		var m map[string]any
+		mustUnmarshal(t, b, &m)
+		st, ok := m["stats"].(map[string]any)
+		if !ok {
+			t.Fatalf("主轮 done 应带 stats: %s", b)
+		}
+		for _, key := range keys {
+			if _, ok := st[key]; !ok {
+				t.Fatalf("stats 缺键 %s: %s", key, b)
+			}
+		}
+		if st["turns"].(float64) != 2 || st["cache_read_tokens"].(float64) != 11000 {
+			t.Fatalf("stats 数值失真: %s", b)
+		}
+		var got DoneParams
+		mustUnmarshal(t, b, &got)
+		if got.Stats == nil || *got.Stats != *stats {
+			t.Fatalf("stats 往返失真: %+v", got.Stats)
+		}
+
+		// 未知（还没有任何一步）：整键缺席——前端不渲染统计胶囊，不显示一排 0
+		b2 := mustMarshal(t, DoneParams{Message: llm.Message{Role: "assistant"}})
+		if strings.Contains(string(b2), "stats") {
+			t.Fatalf("未知统计应整键缺席: %s", b2)
+		}
+	})
+
+	t.Run("ChatHistoryResult 带 stats（未知时整键缺席）", func(t *testing.T) {
+		b := mustMarshal(t, ChatHistoryResult{SessionID: "s1", Stats: stats})
+		var got ChatHistoryResult
+		mustUnmarshal(t, b, &got)
+		if got.Stats == nil || *got.Stats != *stats {
+			t.Fatalf("history stats 往返失真: %+v", got.Stats)
+		}
+		b2 := mustMarshal(t, ChatHistoryResult{SessionID: "s1"})
+		if strings.Contains(string(b2), "stats") {
+			t.Fatalf("未知统计应整键缺席（前端不渲染胶囊）: %s", b2)
+		}
+	})
+
+	t.Run("chat.rewound 带 stats（撤回真删了行，统计要重算）", func(t *testing.T) {
+		b := mustMarshal(t, ChatRewoundParams{SessionID: "s1", Seq: 20, Removed: 3, Stats: stats})
+		var got ChatRewoundParams
+		mustUnmarshal(t, b, &got)
+		if got.Stats == nil || got.Stats.Steps != 3 {
+			t.Fatalf("rewound stats 往返失真: %+v", got.Stats)
 		}
 	})
 }

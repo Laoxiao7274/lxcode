@@ -54,7 +54,7 @@ func parseAnthropicStream(ctx context.Context, body io.Reader, ch chan<- StreamE
 	blocks := map[int]*anthStreamBlock{}
 	var order []int // 块顺序，收尾组装用
 	stopReason := ""
-	var inputTok, outputTok int
+	var usage usageBuckets
 	stopped := false
 
 	getBlock := func(idx int) *anthStreamBlock {
@@ -89,12 +89,15 @@ func parseAnthropicStream(ctx context.Context, body io.Reader, ch chan<- StreamE
 					Usage struct {
 						InputTokens  int `json:"input_tokens"`
 						OutputTokens int `json:"output_tokens"`
+						// 缓存两桶（input_tokens 不含它们——见 llm.anthropicUsage）
+						CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+						CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 					} `json:"usage"`
 				} `json:"message"`
 			}
 			if json.Unmarshal([]byte(data), &ev) == nil {
-				inputTok = ev.Message.Usage.InputTokens
-				outputTok = ev.Message.Usage.OutputTokens
+				usage = anthropicUsage(ev.Message.Usage.InputTokens, ev.Message.Usage.OutputTokens,
+					ev.Message.Usage.CacheReadInputTokens, ev.Message.Usage.CacheCreationInputTokens)
 			}
 		case "content_block_start":
 			var ev struct {
@@ -174,7 +177,7 @@ func parseAnthropicStream(ctx context.Context, body io.Reader, ch chan<- StreamE
 					stopReason = ev.Delta.StopReason
 				}
 				if ev.Usage != nil {
-					outputTok = ev.Usage.OutputTokens
+					usage.output = ev.Usage.OutputTokens
 				}
 			}
 		case "message_stop":
@@ -191,7 +194,7 @@ func parseAnthropicStream(ctx context.Context, body io.Reader, ch chan<- StreamE
 			if json.Unmarshal([]byte(data), &ev) == nil && ev.Error.Message != "" {
 				msg = ev.Error.Message
 			}
-			res := assembleAnthropic(blocks, order, stopReason, inputTok, outputTok)
+			res := assembleAnthropic(blocks, order, stopReason, usage)
 			res.FinishReason = FinishError
 			emitFinal(ch, StreamEvent{Type: EventError, Err: fmt.Errorf("%s", msg), Result: res})
 			return
@@ -199,7 +202,7 @@ func parseAnthropicStream(ctx context.Context, body io.Reader, ch chan<- StreamE
 	}
 	// 读取错误（断流/取消）：error 事件 + 已生成部分
 	if err := sc.Err(); err != nil {
-		res := assembleAnthropic(blocks, order, stopReason, inputTok, outputTok)
+		res := assembleAnthropic(blocks, order, stopReason, usage)
 		if ctx.Err() != nil {
 			res.FinishReason = FinishAborted
 		} else {
@@ -209,11 +212,11 @@ func parseAnthropicStream(ctx context.Context, body io.Reader, ch chan<- StreamE
 		return
 	}
 	emitFinal(ch, StreamEvent{Type: EventDone,
-		Result: assembleAnthropic(blocks, order, stopReason, inputTok, outputTok)})
+		Result: assembleAnthropic(blocks, order, stopReason, usage)})
 }
 
 // assembleAnthropic 把聚合状态组装为最终 ChatResult。
-func assembleAnthropic(blocks map[int]*anthStreamBlock, order []int, stop string, inputTok, outputTok int) *ChatResult {
+func assembleAnthropic(blocks map[int]*anthStreamBlock, order []int, stop string, usage usageBuckets) *ChatResult {
 	msg := Message{Role: "assistant"}
 	var texts []string
 	for _, idx := range order {
@@ -240,10 +243,7 @@ func assembleAnthropic(blocks map[int]*anthStreamBlock, order []int, stop string
 	if msg.Content == "" && msg.ReasoningContent != "" && len(msg.ToolCalls) == 0 {
 		msg.Content, msg.ReasoningContent = msg.ReasoningContent, ""
 	}
-	return &ChatResult{
-		Message:      msg,
-		UsageTokens:  inputTok + outputTok,
-		PromptTokens: inputTok,
-		FinishReason: mapAnthropicStop(stop),
-	}
+	res := &ChatResult{Message: msg, FinishReason: mapAnthropicStop(stop)}
+	usage.applyTo(res)
+	return res
 }

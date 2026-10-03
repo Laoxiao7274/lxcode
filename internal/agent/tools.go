@@ -10,6 +10,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/moyunteng/lxcode/internal/jsonrepair"
 	"github.com/moyunteng/lxcode/internal/llm"
@@ -62,7 +63,7 @@ func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChange
 			reject := fmt.Sprintf(
 				"错误: 工具 %s 不在本 Agent 的白名单内（可用: %s）。如需该能力，请让用户在 Agent 组装里勾选。",
 				tc.Function.Name, strings.Join(agentToolsOf(ac), ", "))
-			s.finishToolCall(tc, reject, "", true, fileChanges, dispatchID, sink)
+			s.finishToolCall(tc, reject, "", true, 0, fileChanges, dispatchID, sink)
 			finished[i] = true
 			continue
 		}
@@ -72,7 +73,7 @@ func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChange
 			reject := fmt.Sprintf(
 				"错误: 当前为只读模式（strict），已禁用 %s。请改用 read_file / search 等读取类工具，或提示用户切换权限模式。",
 				tc.Function.Name)
-			s.finishToolCall(tc, reject, "", true, fileChanges, dispatchID, sink)
+			s.finishToolCall(tc, reject, "", true, 0, fileChanges, dispatchID, sink)
 			finished[i] = true
 			continue
 		}
@@ -90,7 +91,7 @@ func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChange
 			if !allow {
 				s.finishToolCall(tc,
 					"用户拒绝了这次工具调用（未执行）。请改用其他方式完成任务，或向用户说明需要该操作的原因。",
-					"用户拒绝执行", true, fileChanges, dispatchID, sink)
+					"用户拒绝执行", true, 0, fileChanges, dispatchID, sink)
 				finished[i] = true
 				continue
 			}
@@ -108,7 +109,7 @@ func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChange
 			if err := json.Unmarshal([]byte(tc.Function.Arguments), &p); err != nil {
 				s.finishToolCall(tc,
 					fmt.Sprintf("错误: %s 参数解析失败: %v", tools.DispatchToolName, err),
-					"", true, fileChanges, dispatchID, sink)
+					"", true, 0, fileChanges, dispatchID, sink)
 				finished[i] = true
 				continue
 			}
@@ -118,7 +119,11 @@ func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChange
 			}})
 			continue
 		}
-		s.finishToolCall(tc, s.tools.Execute(ctx, tc), "", false, fileChanges, dispatchID, sink)
+		// 工具耗时在这里测（会话统计的「工具时间」按它折叠）：起点 = 执行前一刻，
+		// 终点 = 结果回来那一刻。工具自己不知道被计了多久，也不该知道。
+		started := time.Now()
+		out := s.tools.Execute(ctx, tc)
+		s.finishToolCall(tc, out, "", false, msSince(started), fileChanges, dispatchID, sink)
 		finished[i] = true
 	}
 
@@ -136,7 +141,11 @@ func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChange
 			wg.Add(1)
 			go func(j dispatchJob) {
 				defer wg.Done()
+				// 子 Agent 的墙钟也算进「工具时间」：派发在模型眼里就是一次工具调用，
+				// 它的耗时属于工具侧而不是模型侧（llmMs 只算请求模型的那段）。
+				started := time.Now()
 				res := s.runDispatch(ctx, j.call)
+				elapsed := msSince(started)
 				out := res.Output
 				if res.SessionID != "" {
 					// 把子会话 id 交给主 Agent：**只在这次没做完时**用它续跑。
@@ -145,7 +154,7 @@ func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChange
 					// 主 Agent 拿这个 id 把活重做了一遍）。
 					out += fmt.Sprintf("\n\n[子会话 id: %s —— 只在这次**没做完**时填进 session 参数续跑；已经给出结论就别再派]", res.SessionID)
 				}
-				dispatched[j.idx] = toolOutcome{result: out, isError: res.IsError, executed: true}
+				dispatched[j.idx] = toolOutcome{result: out, isError: res.IsError, executed: true, durationMs: elapsed}
 			}(j)
 		}
 		wg.Wait()
@@ -158,7 +167,7 @@ func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChange
 			continue
 		}
 		s.finishToolCall(calls[j.idx], dispatched[j.idx].result, dispatched[j.idx].uiText,
-			dispatched[j.idx].isError, fileChanges, dispatchID, sink)
+			dispatched[j.idx].isError, dispatched[j.idx].durationMs, fileChanges, dispatchID, sink)
 		finished[j.idx] = true
 	}
 	return true
@@ -166,7 +175,9 @@ func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChange
 
 // finishToolCall 落一条工具结果：文件改动汇总 + 超长截断 + 写历史 + 发事件。
 // uiText 是事件里的短文案（空 = 用正文）——用户拒绝那种要落历史的正文比 UI 长。
-func (s *Session) finishToolCall(tc llm.ToolCall, result, uiText string, isError bool, fileChanges *[]FileChange, dispatchID string, sink func(llm.Message)) {
+// durationMs 是这次执行的耗时（0 = 没执行：拒绝/取消/解析失败——**不是**"0ms"，
+// 会话统计按 0 不计入，见 store.foldSessionStats）。
+func (s *Session) finishToolCall(tc llm.ToolCall, result, uiText string, isError bool, durationMs int64, fileChanges *[]FileChange, dispatchID string, sink func(llm.Message)) {
 	collectFileChange(fileChanges, tc, result)
 	if r := []rune(result); len(r) > maxToolResultBytes {
 		result = string(r[:maxToolResultBytes]) +
@@ -175,7 +186,7 @@ func (s *Session) finishToolCall(tc llm.ToolCall, result, uiText string, isError
 	if uiText == "" {
 		uiText = result
 	}
-	sink(llm.Message{Role: "tool", ToolCallID: tc.ID, Content: result})
+	sink(llm.Message{Role: "tool", ToolCallID: tc.ID, Content: result, DurationMs: durationMs})
 	s.emit(ToolResultEvent{
 		ID: tc.ID, Name: tc.Function.Name, Content: uiText,
 		IsError: isError, DispatchID: dispatchID,
@@ -195,12 +206,13 @@ func pendingCalls(calls []llm.ToolCall, finished []bool) []llm.ToolCall {
 }
 
 // toolOutcome 是一次工具调用的结果：正文落历史、短文案发事件（空 = 用正文）、
-// 是否错误、是否真的执行过（取消中断的没执行 → 补合成结果）。
+// 是否错误、是否真的执行过（取消中断的没执行 → 补合成结果）、执行耗时（会话统计用）。
 type toolOutcome struct {
-	result   string
-	uiText   string
-	isError  bool
-	executed bool
+	result     string
+	uiText     string
+	isError    bool
+	executed   bool
+	durationMs int64
 }
 
 // 未执行调用的合成结果文案（取消与流式失败两条路径的口径）。写成常量是为了

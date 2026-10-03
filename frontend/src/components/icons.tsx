@@ -26,6 +26,21 @@ export function IconCheck({ size = 13, strokeWidth = 2.2 }: IconProps) {
   );
 }
 
+/** 仪表盘（会话统计的「时间」胶囊——对齐 DSH 的 IconGaugeOutline16）。 */
+export function IconGauge({ size = 14, strokeWidth = 1.8 }: IconProps) {
+  return (
+    <svg {...base(size)} strokeWidth={strokeWidth}>
+      <path d="M12 14a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z" />
+      <path d="m13.4 12.6 4.1-4.1" />
+      <path d="M4.5 19a9 9 0 1 1 15 0" />
+    </svg>
+  );
+}
+
+/** 数据库（曾用于会话统计的「用量」胶囊；2026-09-30 那一半并进「会话用量」弹层后
+ *  它没有引用点了——按"不留死代码"的纪律删除。要对齐 DSH 的 IconDatabaseOutline16
+ *  时照这段 path 重新加回来即可（git 历史里也有）。 */
+
 export function IconChevronDown({ size = 10, strokeWidth = 2 }: IconProps) {
   return (
     <svg {...base(size)} strokeWidth={strokeWidth}>

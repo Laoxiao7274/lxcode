@@ -182,7 +182,7 @@ class FakeSocket {
   reply(result) { this.receive({ id: this.sent.at(-1).id, result }); }
 }
 
-test('⑥ WSAgent.childHistory：按 session_id 走 chat.history，返回快照且不发 historyLoaded', async (t) => {
+test('⑥ WSAgent.childHistory：按 session_id 走 chat.history，返回快照并**发 historyLoaded（带子会话 id）**', async (t) => {
   const original = globalThis.WebSocket;
   globalThis.WebSocket = FakeSocket;
   t.after(() => { globalThis.WebSocket = original; });
@@ -201,17 +201,24 @@ test('⑥ WSAgent.childHistory：按 session_id 走 chat.history，返回快照�
     busy: false,
     checkpoints: [0],
     context: { used: 1234, window: 8192 },
+    model: 'deepseek-chat',
   });
   const snap = await p;
   assert.equal(snap.messages.length, 1);
   assert.deepEqual(snap.checkpoints, [0]);
   assert.deepEqual(snap.context, { used: 1234, window: 8192 });
-  // **不发 historyLoaded**：子会话历史是卡内的只读补充，发它会把卡内历史当成
-  // 主时间线整块重建（整个对话被子 Agent 的过程顶掉）
-  assert.equal(events.some((e) => e.type === 'historyLoaded'), false,
-    'childHistory 不许触发主时间线的历史重建');
+  // **发 historyLoaded，但 sessionId 是子会话自己的**：store 按 sessionId 路由，重建的是
+  // 子会话自己的 state（子会话标签页要看到实时流，就得先有自己的 state —— 历史是基线、
+  // 随后的事件是增量）。主时间线一个块都不动：它按**父会话 id** 路由，而这个事件的
+  // sessionId 是子的。（早先不发这个事件，是因为那时子会话没有自己的 state，
+  // 子历史只是卡内的只读补充。）
+  const loaded = events.filter((e) => e.type === 'historyLoaded');
+  assert.equal(loaded.length, 1, 'childHistory 必须发一次 historyLoaded（子会话自己的 state 靠它建起来）');
+  assert.equal(loaded[0].sessionId, 's-child-1',
+    'historyLoaded 的 sessionId 必须是**子会话**的——写成父会话 id 会把子历史灌进主时间线');
+  assert.equal(loaded[0].history.model, 'deepseek-chat');
 
-  // 读失败（子会话不存在/老后端）必须向上抛——卡里要显示原因，不许静默
+  // 读失败（子会话不存在/老后端）必须向上抛——标签页要显示原因，不许静默
   const failing = agent.childHistory('s-missing');
   const last = FakeSocket.latest;
   last.receive({ id: last.sent.at(-1).id, error: { code: -32602, message: '会话不存在' } });

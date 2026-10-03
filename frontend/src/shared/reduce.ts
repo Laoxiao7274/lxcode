@@ -90,7 +90,7 @@ function reduceUserMessage(state: UIState, ev: Ev<"userMessage">): UIState {
 function reduceRewound(state: UIState, ev: Ev<"rewound">): UIState {
   const plan = planRewind(state.blocks, ev.seq);
   if (!plan) return state;
-  return { ...state, blocks: plan.blocks, context: ev.context ?? null };
+  return { ...state, blocks: plan.blocks, context: ev.context ?? null, stats: ev.stats ?? null };
 }
 
 /** delta 事件的处理（从 reduce 的 switch 里提出来——原来 213 行的 switch
@@ -220,14 +220,18 @@ if (ev.dispatchId) {
 // 工具/清单块可能插在 assistant 之后）
 // 上下文占用随主轮更新：与块定格解耦（没有 assistant 块的轮次也要
 // 更新指示器，否则它会停在旧值上骗人）
+// 整段统计同样随主轮更新，且**缺席时保持旧值**：后端读不到库（纯内存模式）
+// 或还没有任何一步时不带 stats，那不代表"统计清零了"——把它当成 null 会把
+// 用户已经看到的数字擦掉（读不到 ≠ 没有）。
 const withCtx = ev.context ? { ...state, context: ev.context } : state;
+const withStats = ev.stats ? { ...withCtx, stats: ev.stats } : withCtx;
 let lastA: AssistantBlock | undefined;
-for (let i = withCtx.blocks.length - 1; i >= 0; i--) {
-  const b = withCtx.blocks[i];
+for (let i = withStats.blocks.length - 1; i >= 0; i--) {
+  const b = withStats.blocks[i];
   if (b.kind === "assistant") { lastA = b; break; }
 }
-if (!lastA) return withCtx;
-return withBlock(withCtx, lastA.uid, (b) => {
+if (!lastA) return withStats;
+return withBlock(withStats, lastA.uid, (b) => {
   const a = b as AssistantBlock;
   return { ...a, streaming: false, usageTokens: ev.usageTokens, firstTokenMs: ev.firstTokenMs, durationMs: ev.durationMs, model: ev.model };
 });
@@ -309,6 +313,9 @@ if (ev.history.busy && state.busy && state.historyReady) {
     pending: ev.history.pending ?? state.pending,
     todos: ev.history.todos ?? state.todos,
     context: ev.history.context ?? state.context,
+    // 统计同样保持旧值：忙碌中的快照不带 stats 时（后端读不到库）不该把
+    // 已经显示的数字擦掉——读不到 ≠ 没有
+    stats: ev.history.stats ?? state.stats,
   };
 }
 // 冷恢复/空闲会话：messages → blocks（工具调用与结果配对）。
@@ -398,12 +405,95 @@ function reduceSub(blocks: ThreadBlock[], ev: AgentEvent): ThreadBlock[] | null 
   }
 }
 
-/** 将一条服务端事件只归约进它所属的 Session；导出供并发隔离测试直接验证。 */
+/** 将一条服务端事件只归约进它所属的 Session；导出供并发隔离测试直接验证。
+ *
+ *  **子事件要双投**（2026-09-30 用户拍板：子会话标签页也要看到实时流）：
+ *  子 Agent 的事件按**父会话 id** 广播（后端由父会话的 emitter 发出，带 dispatch_id
+ *  归属进卡），所以上面那一份进的是父会话的 dispatch 卡（摘要 + 状态）；
+ *  而子会话**自己**那个 id 的 state 也要拿到同一份（标签页里看到的就是它），
+ *  否则标签页只有一次性的历史快照——「点开之后他里面就没有接着思考」。
+ *
+ *  双投时把 dispatchId 清掉：对子会话自己的时间线来说，它就是一条普通事件
+ *  （delta 续写 assistant、toolCall 建工具行、confirmRequest 挂待裁决、compacted
+ *  插压缩标记）——带着 dispatchId 会被当成"进某张卡"而在子会话里找不到那张卡。
+ *
+ *  子会话自己的 state 还不存在（标签从没打开过）时不建：没有历史基线的话，
+ *  光靠实时增量拼出来的时间线是半截的；打开标签时用历史重建（见 ChildSessionPage
+ *  装载 + source.childHistory 发的 historyLoaded）。 */
 export function reduceSessionStates(states: Record<string, UIState>, ev: AgentEvent): Record<string, UIState> {
   if (!("sessionId" in ev) || !ev.sessionId) return states;
   const id = ev.sessionId;
   const previous = states[id] ?? { ...initial, currentId: id };
-  return { ...states, [id]: { ...reduce(previous, ev), currentId: id } };
+  const next = { ...states, [id]: { ...reduce(previous, ev), currentId: id } };
+  const did = eventDispatchId(ev);
+  const childId = did ? dispatchChildSession(states, did) : "";
+  if (did && childId && childId !== id && states[childId]) {
+    const child = states[childId];
+    next[childId] = { ...reduce(child, withoutDispatch(ev)), currentId: childId };
+  }
+  return next;
+}
+
+/** 事件归属的那个 dispatch id（子事件双投用的键）。
+ *
+ *  多数带归属的事件在**顶层** `dispatchId`（events.ts 的映射），而**确认请求是个
+ *  例外**：它的归属在 `request.dispatch_id` 里（协议 ConfirmRequest.dispatch_id，
+ *  与 toProtocolConfirm 一致）。漏了这一条，子 Agent 的确认卡就只落在父会话的卡里——
+ *  子会话标签页里看不到待裁决的确认（用户没开标签时反倒只能去主会话批）。 */
+function eventDispatchId(ev: AgentEvent): string {
+  if ("dispatchId" in ev && ev.dispatchId) return ev.dispatchId;
+  if (ev.type === "confirmRequest") return ev.request.dispatch_id ?? "";
+  return "";
+}
+
+/** 去掉 dispatchId 的事件副本（双投进子会话自己的时间线时用）。
+ *
+ *  类型上要一次断言：AgentEvent 是联合类型，只有 delta/toolCall/toolResult/done/
+ *  compacted 这几个变体声明了 dispatchId——`{ ...ev, dispatchId: undefined }` 在
+ *  "本来就没有这个键"的变体上会被 TS 判为多余属性。断言是安全的：这里只删一个键，
+ *  各分支的归约函数只读自己认识的字段（多余键一律忽略）。 */
+function withoutDispatch(ev: AgentEvent): AgentEvent {
+  const plain = { ...ev } as Record<string, unknown>;
+  delete plain.dispatchId;
+  return plain as unknown as AgentEvent;
+}
+
+/** dispatchId → 子会话 id（子事件双投用的归属键）。
+ *
+ *  子会话 id 记在**卡上**（实时 dispatchStart 的 childSessionId，或历史回放的
+ *  工具结果里那行 `[子会话 id: …]`——见 history.ts），两处都会把它写进
+ *  `block.sessionId`。所以这里扫所有会话的卡：命中就返回那个子会话 id，
+ *  没见过这张卡（应用刚起、dispatchStart 早于连接）时返回空串（不猜）。 */
+function dispatchChildSession(states: Record<string, UIState>, dispatchId: string): string {
+  for (const st of Object.values(states)) {
+    for (const b of st.blocks) {
+      if (b.kind === "dispatch" && b.id === dispatchId) return b.sessionId ?? "";
+    }
+  }
+  return "";
+}
+
+/** 裁决要**两处同时定格**：确认在父会话的卡里与子会话自己的时间线里各有一份
+ *  （双投的必然结果——只定格一边，另一边会永远挂着「待确认」）。
+ *
+ *  只对**真的有这个确认**的会话动手：没有它的会话原样返回（对象都不换），
+ *  否则每次裁决都会把所有会话的 pending 清掉（那是别人的挂起确认）。 */
+export function resolveConfirmEverywhere(
+  states: Record<string, UIState>,
+  id: string,
+  outcome: "allow" | "deny",
+): Record<string, UIState> {
+  const holds = (st: UIState): boolean =>
+    st.pending?.id === id ||
+    st.blocks.some((b) => (b.kind === "confirm" && b.request.id === id)
+      || (b.kind === "dispatch" && b.subBlocks.some((s) => s.kind === "confirm" && s.request.id === id)));
+  let next: Record<string, UIState> | null = null;
+  for (const [sid, st] of Object.entries(states)) {
+    if (!holds(st)) continue;
+    next = next ?? { ...states };
+    next[sid] = resolveConfirm(st, id, outcome);
+  }
+  return next ?? states;
 }
 
 /** 确认裁决后：允许 → 卡片就地变成工具行（后续 toolResult 填结果——

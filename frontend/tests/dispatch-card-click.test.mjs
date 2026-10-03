@@ -1,4 +1,5 @@
-// 卡头主区点击语义的钉子（用户实测报的「点击现在还是展开和收缩，并不是新标签页」）。
+// 卡头主区点击语义的钉子（用户实测报的「点击现在还是展开和收缩，并不是新标签页」，
+// 以及 2026-09-30 拍板的「主会话不应该有展开收缩」）。
 //
 // 为什么单独一个文件：这是**交互语义**，不是渲染细节——判定抽成了纯函数
 // （components/thread/blocks/dispatch-primary.ts，不 import React），所以这里不需要
@@ -19,52 +20,55 @@ const block = (overrides = {}) => ({
   ...overrides,
 });
 
-// ---------- ① 能打开就打开（主操作 = 进独立会话，不是展开） ----------
+// ---------- ① 能打开就打开（唯一的操作 = 进独立会话） ----------
 
-test('① 有 sessionId 且有 onOpenChild → open（点主区进独立会话，不再只是展开）', () => {
+test('① 有 sessionId 且有 onOpenChild → open（点主区进独立会话）', () => {
   assert.equal(dispatchPrimaryAction(block(), true), 'open');
   // 运行中的卡（status=running）同样能进——子会话从派发那一刻就存在
   assert.equal(dispatchPrimaryAction(block({ status: 'running' }), true), 'open');
 });
 
-// ---------- ② 没有子会话 id → 回落成切换展开（老数据/演示态） ----------
+// ---------- ② 进不去 → none（**没有**展开/收起可回落了） ----------
 
-test('② 没有 sessionId → toggle（回落到展开/收起，不许点了没反应）', () => {
+test('② 没有 sessionId → none（卡里没有折叠区，主区渲染成静态行）', () => {
   // 字段整个缺席（回放路径的历史块：sessionId 来自 childSessionId，老数据没有）
-  assert.equal(dispatchPrimaryAction({}, true), 'toggle');
-  assert.equal(dispatchPrimaryAction({ sessionId: undefined }, true), 'toggle');
-  assert.equal(dispatchPrimaryAction({ sessionId: null }, true), 'toggle');
+  assert.equal(dispatchPrimaryAction({}, true), 'none');
+  assert.equal(dispatchPrimaryAction({ sessionId: undefined }, true), 'none');
+  assert.equal(dispatchPrimaryAction({ sessionId: null }, true), 'none');
 });
 
-// ---------- ③ 有 id 但没接 onOpenChild → 也必须回落 ----------
+// ---------- ③ 有 id 但没接 onOpenChild → 同样进不去 ----------
 
-test('③ 有 sessionId 但没有 onOpenChild（演示态/未接线调用方）→ toggle', () => {
+test('③ 有 sessionId 但没有 onOpenChild（演示态/未接线调用方）→ none', () => {
   // 关键反例：**有 id 不等于能打开**——没有 onOpenChild 就没有"打开"这个能力，
-  // 此时返回 open 会让点击落进一个空实现里（用户点了没反应，比展开更糟）。
-  assert.equal(dispatchPrimaryAction(block(), false), 'toggle');
+  // 此时返回 open 会让点击落进一个空实现里（用户点了没反应）。
+  assert.equal(dispatchPrimaryAction(block(), false), 'none');
 });
 
 // ---------- ④ sessionId 是空串 → 与"没有 id"同一条路 ----------
 
-test('④ sessionId 是空串 → toggle（空串不是有效的子会话 id）', () => {
-  assert.equal(dispatchPrimaryAction({ sessionId: '' }, true), 'toggle');
-  // 空串 + 没接线，两条判据都要求回落，结果必须还是 toggle（不许两条判据互相顶）
-  assert.equal(dispatchPrimaryAction({ sessionId: '' }, false), 'toggle');
+test('④ sessionId 是空串 → none（空串不是有效的子会话 id）', () => {
+  assert.equal(dispatchPrimaryAction({ sessionId: '' }, true), 'none');
+  // 空串 + 没接线，两条判据都要求 none（不许两条判据互相顶）
+  assert.equal(dispatchPrimaryAction({ sessionId: '' }, false), 'none');
 });
 
 // ---------- ⑤ title / aria-label 与判定同源（提示语不许骗人） ----------
 
-test('⑤ 提示语与判定同源：可打开说"打开子会话 <id 前 8 位>"，否则如实说"展开/收起"', () => {
+test('⑤ 提示语与判定同源：可打开说"打开子会话 <id 前 8 位>"，否则如实说为什么进不去', () => {
   const openTitle = dispatchPrimaryTitle(block(), true);
   assert.match(openTitle, /^打开子会话 sess-123/);
   assert.match(openTitle, /独立会话/);
-  // 回落时**不许**还挂着"打开子会话"——那是在骗用户（点下去只会展开）
+  assert.match(openTitle, /实时/, '提示里要说清过程是实时的（这正是它比卡内折叠区强的地方）');
+  // 进不去时**不许**还挂着"打开子会话"——那是在骗用户（点下去只会没反应）
   for (const t of [
     dispatchPrimaryTitle({}, true),
     dispatchPrimaryTitle(block(), false),
     dispatchPrimaryTitle({ sessionId: '' }, true),
   ]) {
     assert.ok(!t.includes('打开子会话'), '不可打开时提示语不许说"打开子会话"：' + t);
-    assert.ok(t.includes('展开'), '回落时必须如实说展开/收起：' + t);
+    // 也不许再提"展开/收起"——卡里已经没有折叠区了（2026-09-30 拍板去掉）
+    assert.ok(!t.includes('展开') && !t.includes('收起'),
+      '不可打开时提示语不许提展开/收起（卡里没有折叠区了）：' + t);
   }
 });

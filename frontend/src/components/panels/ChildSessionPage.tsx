@@ -1,18 +1,24 @@
 // 子会话标签页：把一张 dispatch 卡上的子会话作为**独立工作区标签**打开的完整视图。
 //
 // 子 Agent = 独立会话（AGENTS.md §2.3）：它有自己的 messages、自己的压缩检查点。
-// 所以这一页读的就是**会话历史**——与 DispatchCard 卡内那段子时间线是同一份数据，
-// 两条路径都走 source.childHistory + **historyBlocks**（唯一一份映射）。
-// 在这里写第二份映射的代价是同一段历史在卡里与标签页里换一张脸——那正是前两个 bug 的成因。
+// 这一页读的就是**这个子会话在 store 里的 state**（`sessionStates[childId]`）——
+// 与主时间线共用同一份归约：历史由 store 的 historyLoaded 重建，之后的实时事件
+//（store 的**双投**：带 dispatch_id 的事件同时归约进子会话自己的 state）直接续上。
+//
+// **为什么不自己读一次历史**（2026-09-30 改）：那样只能看到打开那一刻的快照，
+// 子 Agent 之后继续思考、继续跑工具都不会出现在这一页——用户报的正是这个：
+// 「我点开之后他里面就没有接着思考」。历史由 store 装载（source.childHistory 发
+// historyLoaded，sessionId 是子会话自己的），这一页只负责画。
 //
 // 只读：这是子 Agent 自己的对话，用户没有要求改它。撤回/编辑**不是**"传 undefined 让它
 // 静默失效"，而是整条动作条不渲染（Block 的 readOnly），只读语义在页头说明一次。
+// 例外是**确认门**：子 Agent 的确认由父会话代理（AGENTS.md §2.3），用户在这一页看到
+// 待裁决的确认卡时必须能批（点了没反应比没有按钮更糟）。
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AgentSource } from "../../shared/types";
-import type { ThreadBlock } from "../../shared/store";
-import { historyBlocks } from "../../shared/history";
+import type { UIState } from "../../shared/store";
 import { ContextIndicator } from "../context-indicator/ContextIndicator";
-import type { ContextUsage } from "../../shared/types";
+import { StatsPills } from "../stats-pills/StatsPills";
 import { Button } from "../form";
 import { Block } from "../thread/blocks/Block";
 import { ScrollToBottom } from "../thread/ScrollToBottom";
@@ -20,45 +26,40 @@ import { ScrollToBottom } from "../thread/ScrollToBottom";
 export function ChildSessionPage({
   sessionId,
   source,
+  state,
+  onConfirm,
   onBack,
 }: {
   /** 子会话 id（标签键 child:<sessionId> 解析出来的那个）。 */
   sessionId: string;
   /** 数据源：childHistory 按子会话 id 寻址（后端 chat.history 已支持）。 */
   source: AgentSource;
+  /** 这个子会话在 store 里的 state（blocks 实时流 + 历史 + 它自己的模型/占用）。
+   *  还没装载（App 正在读历史）时是 undefined——显示加载态，不编一份空时间线。 */
+  state?: UIState;
+  /** 裁决这个子会话里挂起的确认（父会话代理确认门，AGENTS.md §2.3）。 */
+  onConfirm: (id: string, allow: boolean) => void;
   /** 返回主会话（标签栏的「聊天」标签）。 */
   onBack: () => void;
 }) {
-  const [blocks, setBlocks] = useState<ThreadBlock[]>([]);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
-  // 子会话**自己的**模型与上下文（AGENTS.md §2.2：子上下文有自己的窗口，只有主轮写主指示器）
-  // ——所以这里显示它自己的值是对的，绝不拿主会话的数字。
-  const [model, setModel] = useState("");
-  const [context, setContext] = useState<ContextUsage | null>(null);
   // 重试计数：失败后点「重试」要能重新触发 effect（状态没变也能再试一次）
   const [nonce, setNonce] = useState(0);
   // source 放 ref：App 重建回调身份不该重新发请求（与 DispatchCard 同款纪律）
   const sourceRef = useRef(source);
   sourceRef.current = source;
 
+  // 读这个子会话的历史——**通过数据源**读，让 store 按 sessionId 把它的 state 建起来
+  //（WSAgent.childHistory 发 historyLoaded，sessionId 是子会话自己的），随后的事件
+  // 由 store 的双投续上：所以这一页看到的是**实时流**，不是一张快照。
   useEffect(() => {
     // alive：切标签/卸载后迟到的应答不许再写 state（会画到别的子会话页上）
     let alive = true;
     setStatus("loading");
     setError("");
     sourceRef.current.childHistory(sessionId).then(
-      (snapshot) => {
-        if (!alive) return;
-        // **同一份映射**：与主时间线回放（reduceHistory）、DispatchCard 卡内子时间线共用
-        setBlocks(historyBlocks(snapshot));
-        // 模型与占用取自**这个子会话的**快照（顶层 model / context）——缺席就是空串/中性态，
-        // 不编一个模型名、也不拿主会话的数字冒充。
-        setModel(snapshot.model ?? "");
-        setContext(snapshot.context ?? null);
-        setStatus("ready");
-      },
+      () => { if (alive) setStatus("ready"); },
       (e: unknown) => {
         if (!alive) return;
         // 失败必须说话：静默降级成"空历史"是编结论（用户会以为子会话本来就是空的）
@@ -69,14 +70,14 @@ export function ChildSessionPage({
     return () => { alive = false; };
   }, [sessionId, nonce]);
 
-  /** 确认门：子会话的确认由父会话代理（AGENTS.md §2.3），这一页正常不该出现挂起确认；
-   *  万一出现，按钮必须真的能用——点了没反应比没有按钮更糟。ApprovalCard 自己会定格显示裁决。
-   *  失败进**独立的提示行**而不是把整页换成错误态：历史已经读出来了，不该被一次裁决失败抹掉。 */
   const handleConfirm = useCallback((id: string, allow: boolean) => {
-    void sourceRef.current.confirm(sessionId, id, allow).catch((e: unknown) => {
-      setNotice(`裁决失败: ${e instanceof Error ? e.message : String(e)}`);
-    });
-  }, [sessionId]);
+    onConfirm(id, allow);
+  }, [onConfirm]);
+
+  const blocks = state?.blocks ?? [];
+  const context = state?.context ?? null;
+  const stats = state?.stats ?? null;
+  const model = state?.model ?? "";
 
   return (
     <div className="child-session-page">
@@ -87,17 +88,19 @@ export function ChildSessionPage({
         {model !== "" && <span className="child-session-model mono" title={`子会话用的模型：${model}`}>{model}</span>}
         {/* 只读语义说明一次（页头）——而不是在每条消息上重复禁用原因：
          *  禁用按钮的 title 提示在多数浏览器里不弹（禁用元素不派发鼠标事件）。 */}
-        <span className="child-session-readonly">只读 · 这是子 Agent 自己的会话，不提供撤回/编辑</span>
-        {/* 子会话**自己的**上下文占用（它有自己的窗口）：复用主指示器组件，不新写一个。
-         *  context 缺席（老后端/刚建）时组件自己显示中性态「—」。 */}
-        <ContextIndicator usage={context} />
+        <span className="child-session-readonly">只读 · 这是子 Agent 自己的会话，不提供撤回/编辑（待裁决的确认可以在这里批）</span>
+        {/* 子会话**自己的**两条读数（2026-09-30 用户报「上下文 会话信息这些展示没有」）：
+         *  ① 会话统计 = 整条子会话一共花了多少（时间胶囊，与主会话同一个组件）；
+         *  ② 上下文用量 = 此刻它自己的窗口里有多少（它有自己的窗口，不是主会话那份）。
+         *  两个弹层都**向下开**（placement="down"）：页头在页面顶部，向上开会跑出视口被裁掉
+         *  （用户原话「上下文展示的下拉框跑上面去被遮住了」）。
+         *  数据缺席时组件自己收手：统计一步都没有整行不渲染、上下文未知显示中性态「—」。 */}
+        <StatsPills stats={stats} placement="down" />
+        <ContextIndicator usage={context} stats={stats} placement="down" />
         <Button className="child-session-back" onClick={onBack}>返回主会话</Button>
       </div>
-      {notice !== "" && (
-        <div className="child-session-note error" role="alert">{notice}</div>
-      )}
       <div className="child-session-body">
-        {status === "loading" && <div className="child-session-note">正在读取子会话历史…</div>}
+        {status === "loading" && blocks.length === 0 && <div className="child-session-note">正在读取子会话历史…</div>}
         {status === "error" && (
           <div className="child-session-note error" role="alert">
             <span className="child-session-msg">读不到子会话历史：{error}</span>
@@ -107,7 +110,7 @@ export function ChildSessionPage({
         {status === "ready" && blocks.length === 0 && (
           <div className="child-session-note">这个子会话没有可显示的历史（它可能还没开始执行，或历史已被清空）。</div>
         )}
-        {status === "ready" && blocks.length > 0 && (
+        {blocks.length > 0 && (
           <>
             {/* 复用 .thread（主时间线的容器类：块间距、720px 居中、左右 24px 内边距）——
              *  同一个视觉语言，不是第二套排版 */}

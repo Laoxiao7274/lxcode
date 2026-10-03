@@ -52,7 +52,14 @@ function withPreview(run) {
     });
     const electronUA = win.webContents.getUserAgent();
     const browserUA = electronUA.replace(/Electron\/\S+/g, "");
-    win.webContents.on("console-message", (ev) => { if (ev.level === 3) errors.push(ev.message); });
+    // 控制台错误：**立即打出来**再收进 errors。
+    // 只收集不打的话，后面任何一个断言失败都会先抛，控制台里那条真错误永远读不到——
+    // 而"Script failed to execute"这种话本身不说明任何原因（实测踩过）。
+    win.webContents.on("console-message", (ev) => {
+      if (ev.level !== 3) return;
+      errors.push(ev.message);
+      log("[console:error]", String(ev.message).slice(0, 800));
+    });
     const measure = () => win.webContents.executeJavaScript(measureScript);
     try {
       await run({ win, log, measure, errors, url, electronUA, browserUA });

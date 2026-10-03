@@ -306,6 +306,10 @@ type ChatHistoryResult struct {
 	SessionID string           `json:"session_id,omitempty"` // 当前会话 id（session.changed 后重拉可拿到新值）
 	Todos     []tools.TodoItem `json:"todos,omitempty"`      // 任务清单（客户端渲染 TodoList）
 	Context   *ContextUsage    `json:"context,omitempty"`    // 上下文占用（无 = 未知——刚切会话/后端刚重启）
+	// Stats 是整段会话的统计（无 = 还没有任何一步——新会话/纯内存模式）。
+	// 与 context 的区别：context 是**此刻窗口里有多少**，stats 是**这条会话一共花了多少**
+	//（压缩/翻页都改不了它，见 SessionStats 的说明）。
+	Stats *SessionStats `json:"stats,omitempty"`
 	// Checkpoints 是压缩检查点在 Messages 里的下标：这些消息要渲染成
 	// 「已压缩历史」块，而不是用户气泡（内容是摘要正文，不是用户说的话）。
 	Checkpoints []int `json:"checkpoints,omitempty"`
@@ -318,12 +322,13 @@ type ChatHistoryResult struct {
 }
 
 // ContextUsage 是上下文占用的 wire 形态（agent.ContextUsage 的映射——内核类型
-// 不过协议边界）。used/window 是压力与环形依据（used 优先真实 prompt_tokens），
-// 四个分类是估算拆分（已归一：分类之和 == used）。
+// 不过协议边界）。used/window 是压力与环形依据（used 优先真实 prompt 总量），
+// 五个分类是估算拆分（已归一：分类之和 == used）。
 type ContextUsage struct {
 	Used        int `json:"used"`
 	Window      int `json:"window,omitempty"`
 	System      int `json:"system,omitempty"`
+	Tools       int `json:"tools,omitempty"`
 	ToolResults int `json:"tool_results,omitempty"`
 	Messages    int `json:"messages,omitempty"`
 	Reasoning   int `json:"reasoning,omitempty"`
@@ -332,6 +337,39 @@ type ContextUsage struct {
 	// 把它和真实用量**在 UI 上区分开**（「估」标记）——用户看不出区别就会拿它做预算判断。
 	// 假值 omitempty（真实用量的常见情形不多一个键）。
 	Estimated bool `json:"estimated,omitempty"`
+}
+
+// SessionStats 是**整段会话**的统计 wire 形态（sessiondata.SessionStats 的映射）。
+//
+// 为什么整键缺席（指针 + omitempty）而不是发一排 0：零值 = 还没有任何一步（新会话/
+// 纯内存模式/读不到库），而「0 轮 0 步」在界面上是个**假事实**——客户端据整键缺席
+// 不渲染统计胶囊（DSH 同款：steps == 0 且没有 token 时不渲染）。本仓库既有纪律：
+// 未知就显示中性态，不编数字。
+//
+// 口径与 DSH 的 sessionStats + tokenUsage 两个投影一致：它折叠的是**整段日志**
+// （含被压缩检查点影子掉的消息），所以压缩、翻页都改不了这些数字；撤回真删了行，
+// 数字跟着变小才是对的。
+type SessionStats struct {
+	Turns int `json:"turns"`
+	Steps int `json:"steps"`
+	// 墙钟（毫秒）：llm_ms = 各步请求耗时之和；tool_ms = 工具执行耗时之和。
+	LLMMs  int64 `json:"llm_ms"`
+	ToolMs int64 `json:"tool_ms"`
+	// 首字：ttft_ms / ttft_steps = 均值（有首字可测的步才有值）。
+	TTFTMs    int64 `json:"ttft_ms"`
+	TTFTSteps int   `json:"ttft_steps"`
+	// 解码：decode_ms = 首字 → 收尾的纯生成耗时，decode_tokens = 同期输出 token。
+	// 生成速度 = decode_tokens / decode_ms（扣掉 prefill 才是"吐字速度"）。
+	DecodeMs     int64 `json:"decode_ms"`
+	DecodeTokens int   `json:"decode_tokens"`
+	// 计费四桶（provider 回报；未回报 = 0）：未缓存输入 / 缓存读 / 缓存写 / 输出。
+	InputTokens      int `json:"input_tokens"`
+	CacheReadTokens  int `json:"cache_read_tokens"`
+	CacheWriteTokens int `json:"cache_write_tokens"`
+	OutputTokens     int `json:"output_tokens"`
+	// 早期记录（本功能上线前落库的行）的 token 之和：那时的口径是 provider 的
+	// total_tokens（输入+输出），与上面四桶不同——单独给出，让 UI 如实说明而不是混算。
+	LegacyTokens int `json:"legacy_tokens,omitempty"`
 }
 
 // 事件载荷。
@@ -383,6 +421,10 @@ type DoneParams struct {
 	DispatchID   string      `json:"dispatch_id,omitempty"` // 非空 = 子 Agent 轮完成
 	// Context 是本轮之后的上下文占用（仅主轮携带——子轮的占用不进主指示器）。
 	Context *ContextUsage `json:"context,omitempty"`
+	// Stats 是**整段会话**的统计（仅主轮携带，口径见 SessionStats）。它是"到目前为止
+	// 一共花了多少"，所以每条 done 都带一份最新的：一轮里的中间步（工具轮）也会带，
+	// 客户端取最后收到的那份即可（与 DSH 的投影随事件推进同语义）。
+	Stats *SessionStats `json:"stats,omitempty"`
 	// 本轮计时（口径见 llm.Message 的同名字段）。与 message 里那份是**同一组数字**
 	//（emit 时从同一条消息取，不另算一遍）：单独列出来只是让 chat.done 自解释——
 	// 前端不必从 message 里挖。零值 = 未知（工具轮没有首 token / provider 不回报
@@ -469,6 +511,10 @@ type ChatRewoundParams struct {
 	// 未知（纯内存模式 / 本会话还没跑过主轮）时整键缺席：发零值等于显示 0%，
 	// 那是编出来的假信息（本仓库既有纪律：未知就显示中性态）。
 	Context *ContextUsage `json:"context,omitempty"`
+	// Stats 是**重算后**的整段会话统计：撤回真删了行，步数/token 会跟着变小，
+	// 客户端拿它直接刷新统计胶囊（与 Context 同一条理由：这是一次改写历史的事务，
+	// 客户端必须被通知而不是自己猜）。
+	Stats *SessionStats `json:"stats,omitempty"`
 }
 
 // TodoUpdatedParams 是 todo.updated 事件的载荷：完整清单（全量替换语义）。

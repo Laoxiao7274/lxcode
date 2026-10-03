@@ -44,7 +44,22 @@ type openaiResponse struct {
 		PromptTokens     int `json:"prompt_tokens"`
 		CompletionTokens int `json:"completion_tokens"`
 		TotalTokens      int `json:"total_tokens"`
+		// 缓存命中的 prompt 部分。OpenAI 官方放在 prompt_tokens_details.cached_tokens，
+		// deepseek 另有一个扁平的 prompt_cache_hit_tokens（两家都见过，两个都认）。
+		PromptTokensDetails struct {
+			CachedTokens int `json:"cached_tokens"`
+		} `json:"prompt_tokens_details"`
+		PromptCacheHitTokens int `json:"prompt_cache_hit_tokens"`
 	} `json:"usage"`
+}
+
+// cachedPromptTokens 取缓存命中的 prompt 数：优先 OpenAI 官方的嵌套字段，
+// 缺席时回落 deepseek 的扁平字段（0 = 端点不报缓存）。
+func (u openaiResponse) cachedPromptTokens() int {
+	if u.Usage.PromptTokensDetails.CachedTokens > 0 {
+		return u.Usage.PromptTokensDetails.CachedTokens
+	}
+	return u.Usage.PromptCacheHitTokens
 }
 
 // openaiChat 非流式调用（openai 格式）。
@@ -123,19 +138,19 @@ func openAIResult(or *openaiResponse) *ChatResult {
 	if msg.Content == "" && reasoning != "" && len(msg.ToolCalls) == 0 {
 		msg.Content, msg.ReasoningContent = reasoning, ""
 	}
-	return &ChatResult{
-		Message:      msg,
-		UsageTokens:  or.Usage.TotalTokens,
-		PromptTokens: or.Usage.PromptTokens,
-		FinishReason: ch.FinishReason,
-	}
+	res := &ChatResult{Message: msg, FinishReason: ch.FinishReason}
+	openAIUsage(or.Usage.PromptTokens, or.Usage.CompletionTokens, or.Usage.TotalTokens,
+		or.cachedPromptTokens()).applyTo(res)
+	return res
 }
 
 // openAIStreamResult 由流式聚合状态组装最终结果（流式解析共用）。
-func openAIStreamResult(content, reasoning string, toolCalls []ToolCall, finish string, usageTok, promptTok int) *ChatResult {
+func openAIStreamResult(content, reasoning string, toolCalls []ToolCall, finish string, u usageBuckets) *ChatResult {
 	msg := Message{Role: "assistant", Content: content, ReasoningContent: reasoning, ToolCalls: toolCalls}
 	if msg.Content == "" && reasoning != "" && len(toolCalls) == 0 {
 		msg.Content, msg.ReasoningContent = reasoning, ""
 	}
-	return &ChatResult{Message: msg, UsageTokens: usageTok, PromptTokens: promptTok, FinishReason: finish}
+	res := &ChatResult{Message: msg, FinishReason: finish}
+	u.applyTo(res)
+	return res
 }

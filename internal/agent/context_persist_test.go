@@ -80,11 +80,17 @@ func TestContextUsagePersistsAcrossRestart(t *testing.T) {
 
 	s2 := restartSession(t, s1.reg, st, id)
 	if got := s2.ContextUsage(); got != live {
-		t.Fatalf("重启后占用应与实时**逐字段一致**: live=%+v replay=%+v", live, got)
+		t.Fatalf("重启后**锚点**应与实时逐字段一致: live=%+v replay=%+v", live, got)
 	}
-	// chat.history 读的就是 Snapshot.Context（server 从这里转 wire）
-	if got := s2.History().Context; got != live {
-		t.Fatalf("快照里的占用应与实时一致: live=%+v snap=%+v", live, got)
+	// chat.history 读的就是 Snapshot.Context（server 从这里转 wire）。它是**投影值**
+	//（锚点 + 测量之后历史的变化量），所以要和重启前的同一份口径比——拿锚点比会
+	// 差出那条助手回复的估算量。
+	liveSnap := s1.History().Context
+	if got := s2.History().Context; got != liveSnap {
+		t.Fatalf("快照里的占用应与重启前一致（同一份投影口径）: live=%+v snap=%+v", liveSnap, got)
+	}
+	if liveSnap.Used <= live.Used {
+		t.Fatalf("前置条件：投影值应大于锚点（助手回复在测量之后才进历史）: 锚点=%+v 投影=%+v", live, liveSnap)
 	}
 }
 
@@ -161,10 +167,12 @@ func TestContextUsageSaveFailureDoesNotBreakTurn(t *testing.T) {
 		t.Fatal("前置条件：这一轮应真的尝试过落库（否则这个测试什么也没证明）")
 	}
 	if got := s.ContextUsage(); got.Used != 4321 {
-		t.Fatalf("落库失败不该影响内存里的测量: %+v", got)
+		t.Fatalf("落库失败不该影响内存里的测量（锚点 = 真实 prompt_tokens）: %+v", got)
 	}
-	if done.Used != 4321 {
-		t.Fatalf("这一轮应正常收尾（chat.done 带着测量）: %+v", done)
+	// 事件带的是**投影值**（锚点 + 助手回复那条的估算量）——判定用锚点、展示用投影，
+	// 两者都不该被落库失败影响
+	if want := 4321 + estimateMessageTokens(llm.Message{Role: "assistant", Content: "好"}); done.Used != want {
+		t.Fatalf("这一轮应正常收尾（chat.done 带投影后的测量，want used=%d）: %+v", want, done)
 	}
 	// 消息落库走的是另一条路径（AppendMsg），不该被占用落库失败牵连
 	msgs, err := st.Load(s.SessionID())

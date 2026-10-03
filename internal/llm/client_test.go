@@ -87,8 +87,12 @@ func TestOpenAIChat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Chat: %v", err)
 	}
-	if res.Message.Content != "你好" || res.FinishReason != "stop" || res.UsageTokens != 15 || res.PromptTokens != 10 {
-		t.Fatalf("结果不符: %+v", res)
+	// 用量语义（2026-09-30 对齐 DSH）：UsageTokens = **输出** token，PromptTokens =
+	// prompt 侧总量（未缓存输入 + 缓存读 + 缓存写），输入侧三桶分开给。
+	// 老实现把 UsageTokens 填成 total_tokens（含输入）——那会让 tok/s 把输入当输出算。
+	if res.UsageTokens != 5 || res.PromptTokens != 10 || res.InputTokens != 10 ||
+		res.CacheReadTokens != 0 || res.CacheWriteTokens != 0 {
+		t.Fatalf("usage 不符: %+v", res)
 	}
 	// 请求形态：路径 / 鉴权头 / 消息序列化
 	if cap.Path != "/v1/chat/completions" || cap.Method != "POST" {
@@ -262,7 +266,7 @@ func TestAnthropicChat(t *testing.T) {
 	if res.Message.Content != "你好" || res.FinishReason != "stop" {
 		t.Fatalf("结果不符: %+v", res)
 	}
-	if res.UsageTokens != 12 || res.PromptTokens != 8 {
+	if res.UsageTokens != 4 || res.PromptTokens != 8 || res.InputTokens != 8 {
 		t.Fatalf("usage 不符: %+v", res)
 	}
 	// 请求形态：路径 / 鉴权头 / system 顶层化 / max_tokens 必填

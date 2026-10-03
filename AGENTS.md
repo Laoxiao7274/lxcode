@@ -33,8 +33,7 @@
 ### 2.1 语言栈与桌面壳决策记录（2026-09-16 拍板）
 
 - **桌面壳 = Electron + Go sidecar**（推翻 2026-09-10 的 Tauri 2 初选；`frontend/src-tauri` 骨架与 Tauri 构建脚本已于 2026-09-16 清理）。翻案理由：应用内嵌浏览器（人用面板）进入路线图，Electron 的 webContents（同窗口多视图 / session 隔离 / 请求拦截 / 内建 CDP）是唯一不将就的深度；Tauri/Wails 在 Windows 同用系统 WebView2（也是 Chromium），渲染无增益，省的只是占用（内存 ~100-200MB / 磁盘 ~100MB / 冷启动 +0.5s）——用占用换控制权与生态。Electron 开销全在占用层，不在计算热路径（重活在 Go 内核；渲染器=你正在开发的同一个 Chromium 页面）。
-- **Rust 不重写内核**：后端负载 90%+ 是等 LLM/等子进程，唯一 CPU 密集点（search）已由"exec 外部二进制"覆盖。**FFI/cgo 严禁入仓**（链接地狱 / panic 边界 / 跨语言调试成本远超收益）；真要第二语言模块，须同时满足三门槛才升 sidecar 服务：占热路径 >30% / 自包含无共享状态 / Go 生态无等效品。
-- **Rust 的正确进入方式 = 进程边界**：ripgrep 这类外部 Rust 二进制直接接 tools 注册表（"Go 主刀，Rust 武器库"）；仓库零 Rust 工具链。依赖基线见 §2 表，**新增依赖须从严评估**。
+- **Rust 不重写内核、只从进程边界进入**：后端负载 90%+ 是等 LLM/等子进程，唯一 CPU 密集点（search）已由"exec 外部二进制"覆盖——ripgrep 这类外部 Rust 二进制直接接 tools 注册表（"Go 主刀，Rust 武器库"），仓库零 Rust 工具链。**FFI/cgo 严禁入仓**（链接地狱 / panic 边界 / 跨语言调试成本远超收益）；真要第二语言模块，须同时满足三门槛才升 sidecar 服务：占热路径 >30% / 自包含无共享状态 / Go 生态无等效品。依赖基线见 §2 表，**新增依赖须从严评估**。
 - **多活跃会话与 worktree（已实现）**：单进程内每个顶层 session_id 独立持有 `agent.Session`，可并发运行且没有全局上限；单个会话最多一轮。协议请求与广播事件按 session_id 隔离，dispatch 事件用 `owner_session_id` 标明时间线归属并保留子会话 id。项目会话首次发送时从当时的 Git `HEAD` 建 `lxcode/session-<session-id>` 分支与独立工作树，路径在 `<sessions>/worktrees/<project-id>/<session-id>`；元数据入 SQLite，重启/目录丢失时恢复同一分支，不自动合并。用户可显式释放空闲且干净的 worktree：只移除检出目录，保留会话记录、元数据和分支；脏/未跟踪改动会拒绝释放，Git 忽略文件（如依赖缓存）随目录一起删除。恢复会话时从原分支重建；归档不触发清理。创建基线不包含主工作树未提交改动。未分组会话仍共用后端默认工作目录，不能声称文件系统隔离。当前无供应商预算/公平队列/全局调速器；若以后增加，必须保留 session-scoped 状态与取消语义。
 - **Electron 侧工程纪律**：单窗口 + WebContentsView 做浏览器面板（不开多 BrowserWindow）；contextIsolation 开、renderer 无 node 集成；主进程只做窗口/托盘/sidecar 生命周期，不放业务；后端仍是 SCM 服务优先（壳只是客户端，连不上给启动指引）。窗口 `frame:false`（无系统标题栏，Topbar 自绘拖拽区+窗口控制，经 preload 的 `window.__LX__` IPC 桥）；应用图标 = `shell/build/icon.png`（electron-builder 自动转 ico）。
 - **壳打包定案（2026-12 调研+实测，仅 Windows）**：electron-builder + NSIS（one-click、per-user、免管理员）+ **自建 zip 更新机制**（2026-12 用户拍板，替代原定的 electron-updater——重跑完整安装器的更新路径被否；服务端 = 纯静态目录 `manifest.json + update-<version>.zip`，zip 内路径=安装目录相对路径，只含 `resources/app.asar` 与 `resources/bin/lxcode.exe`；两级更新：后端热替换（壳不退）、asar 冷替换（退出时换）；Electron/Chromium 升级走全量安装包不进 zip；客户端更新器未实现，产物契约已定）+ 壳主进程 **esbuild 单入口直构**（不用 vite-plugin-electron：薄壳无主进程 HMR 价值，且保持 frontend vite 配置与 Electron 零耦合、浏览器模式零条件分支）；Go 后端二进制走 extraResources（asar 归档内不能 spawn 二进制）。本机实测：打包 44~148s（受后台负载影响），安装包 ~87-95MB、更新包 ~12MB。sidecar 生命周期纪律：单实例锁 → 先探测 7789（SCM 服务或旧实例在跑则直连，不 spawn）→ 离线才拉起 bundled exe，且**必须显式传 `--config`/`--sessions` 指向 userData**（否则后端配置解析顺序会落到 `%ProgramData%` 安装形态配置，两形态数据串台）→ 优雅退出 before-quit kill；崩溃兜底 = Electron 主进程 Windows Job Object（`KILL_ON_JOB_CLOSE`，壳被强杀也不留孤儿后端）。版本兼容用协议 hello 的 Version 握手。范围：壳仅 Windows（2026-12 用户拍板；Linux/macOS 不做壳，Linux 上后端二进制独立跑 + CLI/浏览器即可）。
@@ -44,11 +43,13 @@
 
 **计账（P1，`internal/agent/context_usage.go`）**：`agent.ContextUsage` 是上下文占用的唯一事实源（压缩触发与 UI 指示器共用它，不各算一遍）：
 
-- **used 优先取 provider 真实用量**（`llm.ChatResult.PromptTokens`——用户真实端点实测会回报），拿不到才回落固定密度估算（`字节数/4 + 每块 4 + 每消息 4`，DSH token-meter 同款）。**按字节算对中文是低估的**（一个汉字 3 字节 ≈ 0.75 token），所以估算值只服务「端点不回报 usage」的回落与分类拆分，不要拿它做精确预算；
-- **分类拆分按 used 归一**（`anchoredTo`）——分类之和恒等于 used。不归一的后果是同一屏两个数字互相矛盾（环形来自真实用量、占比条来自估算）；
-- **只有主轮写这个值**（`streamRound` 的 `dispatchID == ""`）——子上下文有自己的窗口，写进主指示器就是错的；
+- **used 优先取 provider 真实用量**（`llm.ChatResult.PromptTokens` = **prompt 侧总量** = 未缓存输入 + 缓存读 + 缓存写；anthropic 的 `input_tokens` **不含**缓存那两桶，漏掉它们会把真实上下文报小一个数量级——2026-09-30 归一），拿不到才回落固定密度估算（`字节数/4 + 每块 4 + 每消息 4`，DSH token-meter 同款）。**按字节算对中文是低估的**（一个汉字 3 字节 ≈ 0.75 token），所以估算值只服务「端点不回报 usage」的回落与分类拆分，不要拿它做精确预算；
+- **分类拆分为五类且工具声明单列**（`system` / `tools` / `tool_results` / `messages` / `reasoning`）——工具声明原先并进 system，但「工具占了窗口多少」是用户最想知道的其中一件事，DSH 的 ContextMeter 同样单列；分类按 used 归一（`anchoredUsage`）——分类之和恒等于 used。不归一的后果是同一屏两个数字互相矛盾（环形来自真实用量、占比条来自估算）；
+- **展示值 = 真实测量 + 测量之后历史的变化量**（`projectedUsage`，DSH 的 `projectedTokens = pressureTokens + surfaceTokens − sampledSurfaceTokens`）：真实用量只在**请求发出前**才有（provider 回报的 prompt 总量），而请求之间历史照样在长（工具结果、注入的通告、助手回复自己）——不投影的话工具跑得越久指示器偏得越多。所以 `ContextUsage` 多一个 `SampledTokens`（采样基线 = 那次请求发出去的历史的估算量，落库随之持久化），展示路径按它把增量折进 `Used`；**判定路径（压缩阈值）读的仍是真实锚点**（`ContextUsage()` vs `ProjectedContextUsage()`）——拿含估算增量的数去比阈值会让压缩在"其实还没到"的时候触发（`TestProjectionDoesNotFeedCompaction` 钉住这条，含正对照）。没有基线（老库）或还没跑过主轮时不投影：算不出增量，编一个"大概长了一点"就是编数；
+- **每个会话记自己的占用**——子会话是真 Session，记它自己的 `s.context`（主会话是另一个对象，碰不到）；原先按 `dispatchID == ""` 收口，而真链路里该值恒为空串（归属由 `childEmitter` 事后盖），那道闸门从不生效。wire：子会话的 `chat.done` 也带它自己的 `context`（前端按 session_id 路由）；
 - **新会话/切会话清零**——沿用上一会话的占用会误导压力判定；`Snapshot.Context` 零值 = 未知，wire 上整键缺席，前端显示中性态「—」而不是编一个数（`ContextIndicator` 的冷态断言钉住这点）；
-- wire：`chat.done`（仅主轮）与 `ChatHistoryResult` 的 `context` 键。
+- **前端必须把估算与真实分得开**（`estimated` 位 → **悬停说明与无障碍标签**里明说"不是真实用量"；**可见记号只有 `~`**——2026-09-30 用户拍板去掉百分比后面的「估」字，与 DSH 的 ContextMeter 一致）且数字带 `~`（近似值不许看起来像精确读数）；弹层的分类行/读数由 `shared/context-usage.ts` 的纯函数给出（组件只负责画，口径与测试共用一份）；
+- wire：`chat.done`（主轮与子轮**各带自己那份**）与 `ChatHistoryResult` 的 `context` 键。
 
 **工具配对不变量（P2，`internal/agent/toolpair.go`）**：`AnalyzeToolPairing` 扫一遍历史得出每个切点的平衡性——`assistant` 带 N 个 tool_call 则游标 +N，`tool` 结果则 −1，**游标为 0 的切点才是安全切割点**。压缩选区间（P3）与「取消时补配对」（P5）共用这一份判定——判定漂移的代价是静默产生畸形历史（严格端点会 400：assistant 的 tool_calls 必须有配对 tool 消息）。三条纪律：
 
@@ -95,13 +96,24 @@
 - **一轮多个 dispatch 并行跑**（`runTools` 三段式：权限门顺序 → dispatch 并行 → 按原下标回填历史）；确认门 `confirmMu` 串行化。
 - **无存储时退化成内存子会话**（`st == nil`）：仍是一个独立会话（自己的历史与压缩），只是不落库、不能续跑——纯内存模式/未挂 store 的调用方照旧能派发。
 
-**每会话注入态（`internal/tools/sessionstate.go`）**：`todo` 的清单写回口与 `read_skill` 的技能目录**经 ctx 注入**（`tools.WithTodoSink` / `WithSkillSource`），不再挂注册表全局——注册表是进程级单例，而这两者都是**会话级**状态；子 Agent 变独立会话后，注册表级全局态会让父子互相踩（子会话一建就把父的 sink 顶掉、子会话的技能目录污染父会话——原来的 save/restore hack 就是被这件事逼出来的补丁）。与 `tools.WithWorkDir` 同一套机制与理由。
+**每会话注入态（`internal/tools/sessionstate.go`）**：`todo` 的清单写回口与 `read_skill` 的技能目录**经 ctx 注入**（`tools.WithTodoSink` / `WithSkillSource`），不再挂注册表全局——注册表是进程级单例，而这两者都是**会话级**状态；子 Agent 变独立会话后，注册表级全局态会让父子互相踩（子会话一建就把父的 sink 顶掉、子会话的技能目录污染父会话）。与 `tools.WithWorkDir` 同一套机制与理由。
 
 **续跑（S4）**：`agent_dispatch` 加可选 `session` 参数（续跑既有子会话）；工具结果里回带 `[子会话 id: …]`，主 Agent 下一轮就能显式接着它跑（真链路实测：主 Agent 自发这么做了——它读到工具结果里的子会话 id 后，在下一轮把该 id 填进 `session` 续跑）。
 
-**协议**：`chat.dispatchStart/End` 带 `session_id`（子会话 id 上卡，前端显示 + 续跑依据）；`chat.compacted` 带 `dispatch_id`（子会话自己的压缩归属进卡内，不插主时间线）；前端 `DispatchCard` 显示子会话 id 徽标，`reduceSub` 处理 `compacted`。
+**协议**：`chat.dispatchStart/End` 带 `session_id`（子会话 id 上卡，前端显示 + 续跑依据）；`chat.compacted` 带 `dispatch_id`（子会话自己的压缩归属进卡内，不插主时间线）。
+
+**前端（2026-09-30 用户拍板：子会话标签页看到**实时**流，主会话的卡就是**一行摘要**）**：`reduceSessionStates` **双投**——带 `dispatch_id` 的事件同时归约进子会话自己的 state（清掉 `dispatchId` 当普通事件走），于是标签页看到的是实时流而不是一张快照；配套三条（确认请求的归属键在 `request.dispatch_id` 里、子会话 state 不存在时不建而由 `source.childHistory` 装载历史、裁决两处同时定格 `resolveConfirmEverywhere`）与"卡 = 一行摘要（无折叠区 / 无卡内子时间线 / 无结论正文 / 无底部按钮，整行可点进子会话）"的完整契约见 **`docs/child-session-ui.md`**。
 
 **为什么这个设计省事**：子会话是会话 → 压缩/检查点/影子区间**零特例**（`runCompaction` 只要一个有 st/id/history 的 Session）；子会话的 system 提示词同样每轮现组装（不在历史里），所以**不需要给子上下文加 system 头部保护特例**。注意区分：**任务消息**（`history[0]`，**user** 角色）是另一回事——它确实在历史里，所以需要显式的头部保护：`openChildSession` 给子会话置 `protectHead`（压缩区间起点从 1 开始），任务说明书永远留在 `history[0]`，摘要落在它之后；store 侧配合支持中间段影子（见 §2.2）。
+
+### 2.4 会话统计（2026-09-30，对齐 DSH 的 sessionStats + tokenUsage）
+
+`sessiondata.SessionStats` 是「这条会话一共花了多少」的唯一事实源（轮/步数、模型时间、工具时间、首字、生成速度、计费四桶）；与 `ContextUsage` 的分工：**context 是「此刻窗口里有多少」，stats 是「整条会话一共花了多少」**。**完整契约（每条纪律与理由）见 `docs/session-stats.md`**，只留四条指针：
+
+- **折叠整段日志**（`store.SessionStatsOf`，**含被压缩影子掉的行**）——压缩与翻页都改不了这些数字（DSH 原话：paging and compaction cannot change），**撤回真删行**数字才变小；不做增量累加（撤回/压缩之后累加器就是错的）；
+- **用量语义归一**（`internal/llm`，四条解析路径共用一份）：`UsageTokens` = **输出** token（旧实现填 `total_tokens`，让 tok/s 虚高）、`PromptTokens` = prompt 侧总量（含缓存两桶，见 §2.2）；OpenAI 的 `prompt_tokens` **含**缓存、anthropic 的 `input_tokens` **不含**——差异只在 llm 层抹平一次；
+- **落库**：`messages` 加 `input_tokens`/`cache_read_tokens`/`cache_write_tokens`/`notice`/`usage_split` 五列（幂等 ALTER；老行恒 0 = 未知）；**`notice` 与 `usage_split` 都是写边界的一位标记**（两个前缀常量分别在 agent 与 protocol 包里，而折叠统计的 store 谁都不能 import）——`usage_split` 区分「本功能上线前的行」（那时 `usage_tokens` 装的是 provider 的 `total_tokens`，混算会把速度报得离谱）：那些行单独记 `LegacyTokens`，不进四桶、不进速度，只在明细里如实说明；tool 消息的 `duration_ms` 是工具耗时（`runTools` 计时，没执行的调用不写它）。**细节（含 `LegacyTokens` 的由来与判定）见 `docs/session-stats.md`**；
+- **wire**：`chat.done`（主轮与子轮各带**自己那份**——子会话的统计按它自己的 session_id 折叠）+ `ChatHistoryResult.stats` + `chat.rewound.stats`（重算后）；**零值 = 还没有任何一步 → 整键缺席**（前端不渲染统计胶囊，**不显示一排 0**）；前端三个名字必须分得开：「会话统计」= 时间胶囊（输入框那一行、紧挨上下文环）、「会话消耗」= 上下文环「会话用量」弹层里的那一节（总量 + 四桶 + 缓存命中，没有 token 时整节不渲染）、「会话用量」= 那个弹层（"此刻窗口里有多少" / "整条会话累计花了多少"）；**输入条永不折行**（控件 `flex:none`+`nowrap`，统计胶囊是唯一让位项）。
 
 ## 3. 工具面（内置 14 个 + 目录动态注入）
 
@@ -195,12 +207,12 @@
 8. **http.Shutdown 不打断 WS 长连接**：服务优雅停机必须先 `closeAllClients()` 再 Shutdown（local-myt-agent 依赖 docker kill 兜底，SCM 等不了）。
 9. **vite 产物不能直接 file:// 加载**：`<script type="module" crossorigin>` 在不透明源（file:// 的 origin 是 null）下被 CORS 拒绝——React 不挂载、页面空白且**无任何报错**（did-fail-load 只管主帧导航，资源级失败静默）。壳产线用 `app://` 特权协议从 asar 提供渲染层（`shell/src/main.ts` 的 protocol.handle）。
 10. **从被 Job Object 包住的宿主拉起 Electron 时必须 `--no-sandbox`**：Chromium 子进程沙箱与外层 Job Object 冲突，GPU 子进程 STATUS_BREAKPOINT（0x80000003）崩溃循环直至整个应用 FATAL（实测：DSH 后台 job 里拉起必崩，交互式启动正常）。本应用渲染层零远程内容，安全面可接受；引入远程内容渲染前必须重新评估。
-11. **后端二进制不会热重载——前端热的、后端可能是几天前的**：dev 栈只在 `dev.mjs` 启动那一刻编译一次 Go 后端，之后 vite 热重载前端、后端进程纹丝不动。**症状是「前端诡异 bug」**：协议新增字段（如 `ConfirmRequest.dispatch_id`）在旧后端里不存在，于是新前端收到的事件缺字段，表现为子 Agent 的确认卡跑到外层时间线、卡片永远「执行中…」，而四层映射代码全都是对的（2026-09-21 实测事故，排查代价极大）。**先跑 `node scripts/check-stack.mjs`**（比较二进制内嵌 buildvcs 提交与 HEAD）再动前端代码；处置 = 重启 dev 栈（Windows 下运行中的 exe 被锁，必须先停栈才能重新 `go build`）。**反向坑**：buildvcs 戳记的是**最后一次提交**，不是工作树——改完代码还没提交就重启栈，戳会停在旧提交而代码其实是最新的，`check-stack` 因此**误报落后**（2026-09-23 实测）；判据是"落后"列出的文件是否已经在你手上改完，是就先提交或再重启一次栈。
-12. **历史里一条参数非法的 tool call 会让会话永久发不出请求**（2026-09-23 线上事故，排查代价极大）：模型输出被 max_tokens 截断时 `arguments` 是半截 JSON，旧实现把它原样写进历史；此后**每一次**请求都在 anthropic 适配器组装阶段硬失败（`工具 X 的 arguments 不是合法 JSON: …`），用户连发三条消息全部无响应，只能新开会话。**症状**：那条报错的 100 字节前缀与历史里某条 tool call 的参数逐字节相同（用只读探针把 `messages.tool_calls` 抠出来比对即可定性）。**处置**：写边界清洗 + 读侧兜底（见 §3）。**教训**：畸形历史条目要么在写边界拦住、要么在读侧兜底，"硬校验 + 无修复路径"会把单个坏数据放大成会话级故障（与坑 5 的配对不变量同类）。
+11. **后端二进制不会热重载——前端热的、后端可能是几天前的**：dev 栈只在 `dev.mjs` 启动那一刻编译一次 Go 后端，之后 vite 热重载前端、后端进程纹丝不动。**症状是「前端诡异 bug」**：协议新增字段（如 `ConfirmRequest.dispatch_id`）在旧后端里不存在，新前端收到的事件就缺字段（子 Agent 的确认卡跑到外层时间线、卡片永远「执行中…」），而映射代码全是对的（2026-09-21 实测事故，排查代价极大）。**先跑 `node scripts/check-stack.mjs`**（比对二进制内嵌 buildvcs 提交与 HEAD）再动前端代码；处置 = 重启 dev 栈（Windows 下运行中的 exe 被锁，必须先停栈才能重新 `go build`）。**反向坑**：buildvcs 戳记的是**最后一次提交**而非工作树——改完没提交就重启，戳会停在旧提交而代码其实最新，`check-stack` 因此**误报落后**（2026-09-23 实测）；判据是「落后」列出的文件是否已在你手上改完。
+12. **历史里一条参数非法的 tool call 会让会话永久发不出请求**（2026-09-23 线上事故，排查代价极大）：模型输出被 max_tokens 截断时 `arguments` 是半截 JSON，旧实现把它原样写进历史；此后**每一次**请求都在 anthropic 适配器组装阶段硬失败（`工具 X 的 arguments 不是合法 JSON: …`），用户连发三条消息全部无响应，只能新开会话。**症状**：报错的 100 字节前缀与历史里某条 tool call 的参数逐字节相同（只读探针把 `messages.tool_calls` 抠出来比对即可定性）。**处置**：写边界清洗 + 读侧兜底（见 §3）。**教训**：畸形历史条目要么在写边界拦住、要么在读侧兜底，"硬校验 + 无修复路径"会把单个坏数据放大成会话级故障（与坑 5 的配对不变量同类）。
 13. **工具名里的点号会被严格网关 400 拒收**（2026-09-23 实测，已修）：OpenAI 与 Anthropic 都把工具名约束为 `^[a-zA-Z0-9_-]{1,64}$`——调度工具原名 `agent.dispatch` 的点号**违反这条**；宽松网关（旧的 LiteLLM 配置等）过去放过，网关严格化之后即 `Invalid 'tools[0].name': string does not match pattern` + `No fallback model group found`，**每一个带工具的主 Agent 轮次全部失败**（子 Agent 白名单全是下划线名，仍可用——应急旁路）。**修法**：改名 `agent_dispatch`（内核判定 / 提示词表 / 前端渲染判定 / 种子同步全改，`tools.DispatchToolName` 是唯一字面量）+ `Open` 时幂等迁移老库（白名单与历史里的旧名，`internal/store/migration.go`）。**排查手法**：拿同一端点直发两次最小请求（一个带点号名、一个下划线名）对比状态码，一眼定性。新增工具/目录条目一律避开点号。
 14. **分发域守卫必须只作用于自己的方法域**（2026-09-27 实测，已修）：`dispatch` 是按方法前缀依次问各域处理器的链式分发，而 `dispatchAgentCatalog` 早期版本把「未挂会话存储」这道守卫写在了**方法匹配之前**——于是 `--sessions` 缺省时它会**吞掉它之后的所有方法域**（新加的 `search.*` 全部返回「会话存储未挂载」这种驴唇不对马嘴的错误，而 `search.*` 根本不需要存储）。**修法**：每个域处理器**先按方法前缀判「是不是我的」，不是就直接返回 nil 让给下一个**，再做自己的前置校验（`isAgentCatalogMethod`）。新增方法域时照这个顺序写。
 15. **文件编辑工具的原子写会炸运行中的 vite**（2026-09-27 实测两次）：写入器在目标目录建瞬时目录 `.name.<pid>.<uuid>.tmpdir/`，写完即删；vite 的 chokidar 恰好在这个窗口里对它建 watch → `EBUSY: resource busy or locked` → **vite 抛未捕获的 FSWatcher error，整个 dev 栈死掉**（前端热更失效、窗口白屏，而报错里只有一串临时目录路径，极易误判成源码问题）。**修法**：`frontend/vite.config.ts` 的 `server.watch.ignored` 必须含 `**/.*.tmpdir/**` 与 `**/*.tmp`。同类坑：vite watcher 也必须排除 `src-tauri/**` 这类被构建进程锁住的目录。
-16. **vite 会静默供应「陈旧转换结果」——症状是「方法在磁盘上存在、运行时却是 is not a function」**（2026-09-29 实测，排查代价极大）：原子写（临时目录 + rename）让 chokidar 漏掉某次变更后，vite 的**转换缓存**不会失效，于是它继续把**旧版本**的模块发给浏览器——磁盘上的文件是对的、`tsc` 全绿、单元测试全绿，只有运行时炸（`source.childHistory is not a function`，而该方法明明在文件里）。**刷新页面没用**（浏览器重新请求到的还是那份陈旧转换结果）。**判据**：`curl http://127.0.0.1:5190/src/<模块路径>` 直接看 vite 实际供应的 JS 里有没有那个新符号（比读磁盘文件可靠——它测的是真正跑到浏览器里的东西）。**处置**：`(Get-Item <文件>).LastWriteTime = Get-Date` 碰一下 mtime 逼它重新转换，或重启 dev 栈。**教训**：改了源文件后如果新符号"运行时不存在"，先怀疑 vite 的转换缓存，别先怀疑代码——`tsc` 与单测都测不到这一层。
+16. **vite 会静默供应「陈旧转换结果」——症状是「方法在磁盘上存在、运行时却是 is not a function」**（2026-09-29 实测，排查代价极大）：原子写（临时目录 + rename）让 chokidar 漏掉某次变更后，vite 的**转换缓存**不失效，于是它继续把**旧版本**发给浏览器——磁盘文件是对的、`tsc` 与单测全绿，只有运行时炸（`source.childHistory is not a function`）。**刷新页面没用**（重新请求到的还是那份陈旧结果）。**判据**：`curl http://127.0.0.1:5190/src/<模块路径>` 看 vite 实际供应的 JS 里有没有那个新符号（比读磁盘可靠——它测的是真正跑到浏览器里的东西）。**处置**：碰一下 mtime（`(Get-Item <文件>).LastWriteTime = Get-Date`）逼它重新转换，或重启 dev 栈。**教训**：新符号"运行时不存在"时先怀疑转换缓存，别先怀疑代码——`tsc` 与单测都测不到这一层。
 17. **含密钥的配置文件必须进 .gitignore**（2026-09-27）：`config/search.json` 存各渠道 apikey，与 `config/local.json` 同性质——新增任何「会落盘凭据」的配置文件时，同步加 .gitignore，否则一次测试写入就变成待提交文件。
 
 ## 6. Windows 服务运维（对齐参考项目的部署形态）

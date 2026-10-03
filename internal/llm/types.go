@@ -63,7 +63,7 @@ type Message struct {
 	// 由 sanitizeMessagesForWire 清掉（见 toolargs.go）。
 	Seq int64 `json:"seq,omitempty"`
 
-	// 以下四个字段是**每轮生成的簿记**（计时 + 用量 + 模型），与 Seq 同一性质与
+	// 以下字段是**每轮生成的簿记**（计时 + 用量 + 模型），与 Seq 同一性质与
 	// 同一条纪律：随消息一起流动（chat.done 实时 / chat.history 回放 / 重启后
 	// Load 三条路径必须给出同一份数字——各算一遍必然漂移），并在
 	// sanitizeMessagesForWire 里清掉（模型不该看见，严格网关多一个未知字段就
@@ -73,14 +73,40 @@ type Message struct {
 	//   - FirstTokenMs：首 token 延迟（请求发出 → 第一个文字/思考增量到达）。
 	//     0 = 本轮没有增量（工具轮/空回），或这轮是**非流式回放**（openai 带工具
 	//     时 ChatAuto 走回放，根本没有"首字"这个时刻）——不填 0 冒充"0ms 首字"。
-	//   - DurationMs：本轮从请求发出到收尾的总耗时。
+	//   - DurationMs：本轮从请求发出到收尾的总耗时。**tool 角色消息上它是工具执行
+	//     耗时**（会话统计的「工具时间」按它折叠，口径见 sessiondata.SessionStats）。
 	//   - Model：本轮实际使用的模型注册表 id（Agent 绑定优先、否则 default 角色）。
-	//   - UsageTokens：provider 回报的输出 token 数；拿不到就是 0（缺席），
-	//     绝不用估算值冒充——估算的 tok/s 是编数据。
+	//   - UsageTokens：provider 回报的**输出** token 数（DSH 的 outputTokens 同款：
+	//     生成速度的分母口径）。拿不到就是 0（缺席），绝不用估算值冒充——估算的
+	//     tok/s 是编数据。注意它**不含**输入侧：输入按下面三个桶分开记（缓存命中率
+	//     与计费口径都靠它们，见 sessiondata.SessionStats）。
 	FirstTokenMs int64  `json:"first_token_ms,omitempty"`
 	DurationMs   int64  `json:"duration_ms,omitempty"`
 	Model        string `json:"model,omitempty"`
 	UsageTokens  int    `json:"usage_tokens,omitempty"`
+
+	// 输入侧用量分桶（provider 回报；未回报 = 0 = 未知）。json:"-"：它们是**落库
+	// 簿记**（会话统计的折叠输入），不是模型该看的字段，也不是每条消息都要发给
+	// 前端的载荷——会话统计由后端折叠好整份给前端，前端不必逐条重算。
+	// 与 ReasoningSignature 同一条处理（有自己的库列，但不上 wire）。
+	//
+	// 语义与 DSH token-meter 的四桶一致（prompt 侧三桶 + 输出一桶）：
+	//   - InputTokens：**未缓存**输入；
+	//   - CacheReadTokens：命中缓存的输入（anthropic 的 cache_read / openai 的
+	//     prompt_tokens_details.cached_tokens / deepseek 的 prompt_cache_hit_tokens）；
+	//   - CacheWriteTokens：写入缓存的输入（anthropic 的 cache_creation；openai
+	//     兼容端点不报，恒 0）。
+	InputTokens      int `json:"-"`
+	CacheReadTokens  int `json:"-"`
+	CacheWriteTokens int `json:"-"`
+
+	// Notice 为真 = 这条 user 消息是**注入的提示条**（重复调用提醒 / 后台任务通告），
+	// 不是用户说的话。前端按文本前缀渲染成提示条（见 agent.RepeatNoticePrefix），
+	// 后端这个位是给**会话统计**用的：轮数只数真实用户消息。
+	// 为什么要一个显式的位而不是在后端也做前缀匹配：两个前缀常量分别在 agent 与
+	// protocol 包里，而折叠统计的 store 谁都不能 import（分层规则，AGENTS.md §4）——
+	// 判定记在写边界（注入那两处），读侧就不必猜。
+	Notice bool `json:"-"`
 }
 
 // ToolCall 是 assistant 消息携带的工具调用（OpenAI function calling 形态）。
@@ -103,11 +129,95 @@ type Tool struct {
 }
 
 // ChatResult 是一次调用的结果汇总（流式的 done/error 事件也携带）。
+//
+// 用量三个字段的分工（DSH token-meter 的四桶口径，本仓库统一在这里归一——
+// 适配器只负责"把 provider 报的字段翻成这套语义"，消费方不再各猜一遍）：
+//   - PromptTokens：**prompt 侧总量** = 未缓存输入 + 缓存读 + 缓存写。上下文占用
+//     （压力）用它——命中缓存的 prompt 在 provider 眼里仍是 prompt，漏掉缓存那两桶
+//     会把真实上下文报小一个数量级（anthropic 的 input_tokens 就是不含缓存的）。
+//   - UsageTokens：**输出** token 数（生成速度的分母口径）。
+//   - Input/CacheRead/CacheWriteTokens：prompt 侧三桶的明细（计费与缓存命中率）。
+//
+// 全是 0 = provider 没回报用量（未知）——不估算，绝不编数字。
 type ChatResult struct {
-	Message      Message
-	UsageTokens  int
-	PromptTokens int
-	FinishReason string // stop | tool_calls | length | error | aborted
+	Message          Message
+	UsageTokens      int
+	PromptTokens     int
+	InputTokens      int
+	CacheReadTokens  int
+	CacheWriteTokens int
+	FinishReason     string // stop | tool_calls | length | error | aborted
+}
+
+// usageBuckets 是解析中途的用量分桶（适配器填好，经 normalized 落到 ChatResult）。
+// 单独一个类型是为了让"三处解析点（openai 非流式 / openai 流式 / anthropic 流式与非流式）
+// 归一成同一套语义"这件事只有一份实现——各写一遍必然漂移，而漂移的表现是
+// 「同一个端点的两条路径给出的用量不一样」。
+type usageBuckets struct {
+	input      int // 未缓存输入
+	cacheRead  int // 命中缓存的输入
+	cacheWrite int // 写入缓存的输入
+	output     int // 输出
+}
+
+// openAIUsage 把 OpenAI 兼容端点的 usage 归一成四桶。
+//
+// 口径差异（必须在这里抹平）：OpenAI 的 prompt_tokens **包含**缓存命中的部分，
+// 而 anthropic 的 input_tokens **不含**缓存——同一个字段名在两家的含义不同。
+// 所以 OpenAI 侧要减去缓存：未缓存输入 = prompt − cached（钳到 0，端点偶尔会报
+// cached > prompt 的脏数据）。
+//
+// completion_tokens 缺席（个别端点只报 total_tokens）时按 total − prompt 推，
+// 推不出来就是 0（未知）。
+func openAIUsage(promptTokens, completionTokens, totalTokens, cachedTokens int) usageBuckets {
+	if cachedTokens < 0 {
+		cachedTokens = 0
+	}
+	if cachedTokens > promptTokens {
+		cachedTokens = promptTokens
+	}
+	output := completionTokens
+	if output <= 0 && totalTokens > 0 && totalTokens > promptTokens {
+		output = totalTokens - promptTokens
+	}
+	return usageBuckets{
+		input:     promptTokens - cachedTokens,
+		cacheRead: cachedTokens,
+		output:    output,
+	}
+}
+
+// anthropicUsage 把 anthropic 的 usage 归一成四桶。
+// anthropic 的三个输入字段天然互斥（input_tokens 不含缓存那两项），直接搬运。
+func anthropicUsage(inputTokens, outputTokens, cacheRead, cacheWrite int) usageBuckets {
+	return usageBuckets{input: inputTokens, cacheRead: cacheRead, cacheWrite: cacheWrite, output: outputTokens}
+}
+
+// promptTotal 是 prompt 侧总量（未缓存 + 缓存读 + 缓存写）——上下文压力用它。
+func (u usageBuckets) promptTotal() int {
+	return u.input + u.cacheRead + u.cacheWrite
+}
+
+// applyTo 把分桶落到结果与消息上（**唯一**的落点：四个适配器路径共用，避免
+// 「有的路径写了桶、有的没写」这种半截状态）。
+func (u usageBuckets) applyTo(res *ChatResult) {
+	res.UsageTokens = u.output
+	res.PromptTokens = u.promptTotal()
+	res.InputTokens = u.input
+	res.CacheReadTokens = u.cacheRead
+	res.CacheWriteTokens = u.cacheWrite
+}
+
+// stampUsage 把结果里的用量簿记盖到消息上（落库与折叠都读消息上的这份）。
+// 输出 token 复用 UsageTokens（wire 上就是 usage_tokens），输入侧三桶走 json:"-" 的字段。
+//
+// 导出是因为落点必须在**适配器之外**（agent 的轮收尾）：各适配器自己盖一份的话，
+// 「有的路径盖了、有的没盖」就是半截状态——而会话统计的四桶正是读消息上的这份。
+func StampUsage(m *Message, res *ChatResult) {
+	m.UsageTokens = res.UsageTokens
+	m.InputTokens = res.InputTokens
+	m.CacheReadTokens = res.CacheReadTokens
+	m.CacheWriteTokens = res.CacheWriteTokens
 }
 
 // StreamEvent 是流式事件：text/reasoning 增量、聚合完成的 tool_call、

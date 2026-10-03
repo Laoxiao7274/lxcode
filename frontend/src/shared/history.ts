@@ -234,6 +234,11 @@ export function reduceHistory(state: UIState, h: HistorySnapshot): UIState {
     // 未知占用（后端刚重启/刚切会话）置 null —— 指示器显示中性态，
     // 不沿用上一会话的数字（那是别人的窗口占用）
     context: h.context ?? null,
+    // 整段会话统计同样随快照重建：它折叠的是**整段日志**（后端读库），
+    // 所以切走再切回、刷新之后都是同一组数字（不随前端可见的历史长短变）
+    stats: h.stats ?? null,
+    // 这个会话实际用的模型（子会话页头用它——缺席 = 未知，不拿主会话的冒充）
+    model: h.model ?? "",
     historyReady: true,
   };
 }

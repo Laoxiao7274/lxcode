@@ -346,74 +346,118 @@ withPreview(async (preview) => {
   }
   log("dispatch-card", JSON.stringify(dispatch));
   assert.ok(dispatch && dispatch.agent === "代码 Agent", "chat: 主 Agent 应派发 dispatch 卡（代码 Agent）");
-  // 等 dispatchEnd（卡定格带结果）。完成后卡自动折叠（只留结果）——子块要
-  // 展开才在 DOM 里（.dispatch-body 仅在 expanded 时渲染），故先点卡头展开
-  // 再断言：结果 + 子执行块 + **无僵尸行**（result 未回填的工具行 = 用户报的
-  // 「一直执行中」——toolResult 按 id 只回填第一条，同 id 重复行会残留）
+  // 等 dispatchEnd（卡定格）。
+  // **卡就是一行**（2026-09-30 用户拍板两轮收敛后的定案）：没有折叠区、没有卡内子
+  // 时间线、**没有结论正文**（用户原话「执行完了还是会展示整个子Agent会话展开」）、
+  // **没有底部按钮**（用户原话「打开子会话这个按钮太丑了，没必要」）——子 Agent 的
+  // 过程与结论都在它自己的标签页里看（而且是实时的）。
   let done = null;
   for (let i = 0; i < 60 && !done; i++) {
     await new Promise((r) => setTimeout(r, 250));
     done = await win.webContents.executeJavaScript(`(() => {
       const card = document.querySelector('.dispatch-card[data-done="true"]');
       if (!card) return null;
-      // 完成后默认收起（含最终结果——结果也在折叠区内，卡片必须收短）
       return {
-        result: !!card.querySelector(".dispatch-result"),
         body: !!card.querySelector(".dispatch-body"),
         chev: !!card.querySelector(".dispatch-chev"),
+        collapseBtn: !!card.querySelector(".dispatch-collapse"),
+        openBtn: !!card.querySelector(".dispatch-open-child"),
+        result: !!card.querySelector(".dispatch-result"),
+        headTag: card.querySelector(".dispatch-head")?.tagName,
+        headOpenable: card.querySelector(".dispatch-head")?.getAttribute("data-openable"),
+        rows: card.querySelectorAll(".dispatch-head").length,
       };
     })()`);
   }
   log("dispatch-done", JSON.stringify(done));
-  assert.ok(done && done.chev, `chat: dispatch 完成后应可展开（有结果就有箭头）（${JSON.stringify(done)}）`);
-  assert.ok(!done.body && !done.result, `chat: dispatch 完成后应默认收起（结果与子过程都在折叠区内）（${JSON.stringify(done)}）`);
-  // 展开：子过程与最终结果都要出现（用户报告「自动收缩和手动都收不掉最终结果」）
-  const expanded = await win.webContents.executeJavaScript(`(() => {
-    const card = document.querySelector('.dispatch-card[data-done="true"]');
-    const head = card && card.querySelector('.dispatch-head');
+  assert.ok(done, "chat: 主 Agent 应派发 dispatch 卡（代码 Agent）");
+  // 一行摘要：卡里**只有**这一行（没有折叠区 / 没有卡内子时间线 / 没有结论正文 / 没有按钮）
+  assert.ok(!done.chev, `chat: 卡里不该有 chevron（${JSON.stringify(done)}）`);
+  assert.ok(!done.body, `chat: 卡里不该有卡内子时间线 .dispatch-body（${JSON.stringify(done)}）`);
+  assert.ok(!done.collapseBtn, `chat: 卡里不该有「收起」按钮（${JSON.stringify(done)}）`);
+  assert.ok(!done.result, `chat: 卡里不该再铺结论正文（要看就进子会话）（${JSON.stringify(done)}）`);
+  assert.ok(!done.openBtn, `chat: 底部不该再有「打开子会话」按钮（整行就是入口）（${JSON.stringify(done)}）`);
+  assert.equal(done.rows, 1, `chat: 卡应只有一行（${JSON.stringify(done)}）`);
+  // 主区必须是**真按钮**（能进子会话：有子会话 id + 接了 onOpenChild）
+  assert.equal(done.headTag, "BUTTON", `chat: 有子会话 id 时整行应渲染成按钮（${JSON.stringify(done)}）`);
+  assert.equal(done.headOpenable, "true", `chat: 整行应标成可打开（${JSON.stringify(done)}）`);
+  // 点这一行 → **打开子会话标签页**：子会话自己的时间线在这一页里，
+  // 而且它是**实时**的（store 把带 dispatch_id 的子事件同时归约进子会话自己的 state）。
+  const child = await win.webContents.executeJavaScript(`(() => {
+    const head = document.querySelector('.dispatch-card[data-done="true"] .dispatch-head');
     if (head) head.click();
-    return new Promise((res) => setTimeout(() => res({
-      body: !!card.querySelector(".dispatch-body"),
-      result: !!card.querySelector(".dispatch-result"),
-      resultText: (card.querySelector(".dispatch-result")?.textContent ?? "").trim().length,
-    }), 400));
-  })()`);
-  log("dispatch-expanded", JSON.stringify(expanded));
-  assert.ok(expanded.body && expanded.result, `chat: 展开后应见子过程与最终结果（${JSON.stringify(expanded)}）`);
-  assert.ok(expanded.resultText > 0, "chat: 展开后的最终结果不应为空");
-  // 手动再收起：结果必须跟着收掉（这就是用户报告的那个 bug）
-  const recollapsed = await win.webContents.executeJavaScript(`(() => {
-    const card = document.querySelector('.dispatch-card[data-done="true"]');
-    const head = card && card.querySelector('.dispatch-head');
-    if (head) head.click();
-    return new Promise((res) => setTimeout(() => res({
-      body: !!card.querySelector(".dispatch-body"),
-      result: !!card.querySelector(".dispatch-result"),
-    }), 400));
-  })()`);
-  log("dispatch-recollapsed", JSON.stringify(recollapsed));
-  assert.ok(!recollapsed.body && !recollapsed.result, `chat: 手动收起必须把结果一起收掉（${JSON.stringify(recollapsed)}）`);
-  // 再展开回展开态，供后面的子块断言使用
-  await win.webContents.executeJavaScript(`(() => {
-    const card = document.querySelector('.dispatch-card[data-done="true"]');
-    const head = card && card.querySelector('.dispatch-head');
-    if (head) head.click();
-  })()`);
-  await new Promise((r) => setTimeout(r, 400));
-  const subs = await win.webContents.executeJavaScript(`(() => {
-    const card = document.querySelector('.dispatch-card[data-done="true"]');
-    if (!card) return null;
-    const body = card.querySelector('.dispatch-body');
+    return new Promise((res) => setTimeout(() => {
+      const page = document.querySelector('.child-session-page');
+      res({
+        page: !!page,
+        id: (page?.querySelector('.child-session-id')?.textContent ?? '').trim(),
+        blocks: page ? page.querySelectorAll('.child-session-body .thread > *').length : 0,
+        tools: page ? page.querySelectorAll('.child-session-body .trow').length : 0,
+        running: page ? page.querySelectorAll('.child-session-body .trow-running').length : 0,
+        // 卡里那条子时间线**不该**跟着出现（同一段过程不许在两个地方各画一遍）
+        bodyInMain: !!document.querySelector('.thread .dispatch-body'),
+      });
+    }, 600)) })()`);
+  log("dispatch-child-tab", JSON.stringify(child));
+  assert.ok(child && child.page, `chat: 点这一行应打开子会话标签页（${JSON.stringify(child)}）`);
+  assert.ok(child.id && child.id.length > 0, `chat: 子会话页头应显示子会话 id（${JSON.stringify(child)}）`);
+  assert.ok(child.blocks >= 3, `chat: 子会话标签页应看到子 Agent 的过程（历史 + 实时同一条时间线）（${JSON.stringify(child)}）`);
+  assert.ok(child.tools >= 2, `chat: 子会话里应看到子 Agent 的工具行（${JSON.stringify(child)}）`);
+  assert.equal(child.running, 0, `chat: 子 Agent 跑完后不该有「执行中」僵尸行（${JSON.stringify(child)}）`);
+  assert.ok(!child.bodyInMain, "chat: 卡内不许再画子时间线（折叠区已去掉）");
+  // 子会话页头的两条读数（2026-09-30 用户报「上下文 会话信息这些展示没有」）：
+  //   ① 会话统计胶囊（整条子会话花了多少）——它自己的数字，不是主会话那份；
+  //   ② 上下文环（此刻它自己的窗口里有多少）。
+  // 两个弹层都必须**向下开且在视口内**：页头在页面顶部，向上开会跑出视口被裁掉
+  //（用户原话「上下文展示的下拉框跑上面去被遮住了」）——所以这里量真实几何：
+  // 弹层顶边必须在触发器底边之下，且底边在视口内（被裁就是 bottom > 视口高）。
+  const childHead = await win.webContents.executeJavaScript(`(() => {
+    const head = document.querySelector('.child-session-head');
+    const pill = head && head.querySelector('.stats-pill');
+    const chip = head && head.querySelector('.ctx-chip');
     return {
-      subBlocks: body ? body.children.length : 0,
-      tools: card.querySelectorAll('.dispatch-body .trow').length,
-      running: card.querySelectorAll('.dispatch-body .trow-running').length,
+      statsPill: !!pill,
+      statsLabel: (pill?.querySelector('.stats-label')?.textContent ?? '').trim(),
+      ctxChip: !!chip,
+      ctxPct: (chip?.querySelector('.ctx-pct')?.textContent ?? '').trim(),
+      // 中性态「—」= 上下文未知（后端没给）：那说明读数链路没接上
+      ctxUnknown: (chip?.querySelector('.ctx-pct')?.textContent ?? '').trim() === '—',
     };
   })()`);
-  log("dispatch-subs", JSON.stringify(subs));
-  assert.ok(subs && subs.subBlocks >= 2, `chat: dispatch 展开后应见子执行块（${JSON.stringify(subs)}）`);
-  assert.equal(subs.running, 0, `chat: dispatch 完成后不应有「执行中」僵尸行（${JSON.stringify(subs)}）`);
-  assert.ok(subs.tools >= 1, `chat: 子执行应含工具行（${JSON.stringify(subs)}）`);
+  log("child-head-readouts", JSON.stringify(childHead));
+  assert.ok(childHead.statsPill, `chat: 子会话页头应有「会话统计」胶囊（${JSON.stringify(childHead)}）`);
+  assert.ok(childHead.statsLabel.length > 0, `chat: 统计胶囊应有读数（${JSON.stringify(childHead)}）`);
+  assert.ok(childHead.ctxChip, `chat: 子会话页头应有上下文环（${JSON.stringify(childHead)}）`);
+  assert.ok(!childHead.ctxUnknown, `chat: 子会话的上下文应是它自己的真实占用，不是中性态「—」（${JSON.stringify(childHead)}）`);
+  // 点开上下文环：弹层必须向下开（顶边 ≥ 触发器底边）且完整落在视口内
+  const popGeom = await win.webContents.executeJavaScript(`(() => {
+    const chip = document.querySelector('.child-session-head .ctx-chip');
+    if (chip) chip.click();
+    return new Promise((res) => setTimeout(() => {
+      const pop = document.querySelector('.child-session-head .ctx-pop');
+      const c = chip?.getBoundingClientRect();
+      const p = pop?.getBoundingClientRect();
+      res(pop && c && p ? {
+        open: true,
+        down: p.top >= c.bottom - 1,
+        topInView: p.top >= 0,
+        bottomInView: p.bottom <= window.innerHeight,
+        vh: window.innerHeight,
+      } : { open: false });
+    }, 400)) })()`);
+  log("child-ctx-pop", JSON.stringify(popGeom));
+  assert.ok(popGeom.open, `chat: 点上下文环应打开弹层（${JSON.stringify(popGeom)}）`);
+  assert.ok(popGeom.down, `chat: 子会话页的上下文弹层应**向下**开（页头在页面顶部，向上开会跑出视口）（${JSON.stringify(popGeom)}）`);
+  assert.ok(popGeom.topInView && popGeom.bottomInView, `chat: 弹层必须完整落在视口内（被裁掉就是用户报的「跑上面去被遮住」）（${JSON.stringify(popGeom)}）`);
+  // 关掉弹层（点外），免得影响后面的断言
+  await win.webContents.executeJavaScript(`document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))`);
+  await new Promise((r) => setTimeout(r, 400));
+  // 返回主会话（标签栏的「聊天」标签），后面的断言仍在主时间线上做
+  await win.webContents.executeJavaScript(`(() => {
+    const back = document.querySelector('.child-session-back');
+    if (back) back.click();
+  })()`);
+  await new Promise((r) => setTimeout(r, 400));
   // 等本轮完全结束（streamAnswer + done——demo 计时器不停，中途清屏会串台）
   for (let i = 0; i < 80; i++) {
     const idle = await win.webContents.executeJavaScript(`!document.querySelector(".busy-row")`);

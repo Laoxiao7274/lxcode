@@ -1,7 +1,7 @@
 // 块与 UI 状态的定义 + 纯工具函数（不含事件归约——那是 reduce.ts）。
 // 单独一个文件：组件只依赖类型与这几个 helper，不必把整个 reducer 拖进依赖图。
 
-import type { ConfirmRequest, ContextUsage, FileChange, JobInfo, TodoItem } from "./types";
+import type { ConfirmRequest, ContextUsage, FileChange, JobInfo, SessionStats, TodoItem } from "./types";
 
 export interface AssistantBlock {
   kind: "assistant";
@@ -108,11 +108,19 @@ export interface UIState {
   /** 上下文占用（后端测量；null = 未知——刚切会话/后端刚重启，指示器显示
    *  中性态而不是编一个数）。 */
   context: ContextUsage | null;
+  /** 整段会话统计（后端折叠整段日志得出；null = 还没有任何一步——不渲染统计胶囊，
+   *  不显示一排 0）。它与 context 的分工：context 是「此刻窗口里有多少」，
+   *  stats 是「这条会话一共花了多少」。 */
+  stats: SessionStats | null;
   /** 该会话至少完成过一次 history 回放，后续忙碌快照才可保留本地实时块。 */
   historyReady: boolean;
+  /** 该会话实际用的模型（回放快照里带；缺席 = 未知）。
+   *  子会话页头显示的是**它自己的**模型——子 Agent 可以用与主会话不同的模型
+   *  （AGENTS.md §2.3：子会话是独立会话），拿主会话的模型冒充是假数据。 */
+  model: string;
 }
 
-export const initial: UIState = { blocks: [], busy: false, pending: null, todos: [], currentId: "", operationError: null, context: null, historyReady: false };
+export const initial: UIState = { blocks: [], busy: false, pending: null, todos: [], currentId: "", operationError: null, context: null, stats: null, historyReady: false, model: "" };
 
 // 块的唯一序号——React 渲染的稳定 key（index 作 key 在插入新块时
 // 会错位复用组件实例，是重复渲染类怪象的根因）。

@@ -22,12 +22,13 @@ type SessionMeta struct {
 // （用户实测：重启前跑过的会话，打开时指示器是空的），而分层规则禁止 store import agent
 // （AGENTS.md §4）。sessiondata 正是这种"两侧共享的业务数据"的归处（SessionMeta 同理）。
 //
-// Used/Window 是压力判定与 UI 环形的依据（Used 优先取 provider 回报的真实 prompt_tokens），
-// 四个分类是估算拆分（已按 Used 归一，所以分类之和恒等于 Used）。
+// Used/Window 是压力判定与 UI 环形的依据（Used 优先取 provider 回报的真实 prompt 总量），
+// 五个分类是估算拆分（已按 Used 归一，所以分类之和恒等于 Used）。
 type ContextUsage struct {
 	Used        int `json:"used"`                   // 已用 token（真实用量优先）
 	Window      int `json:"window,omitempty"`       // 模型上下文窗口（0 = 未知）
-	System      int `json:"system,omitempty"`       // 系统提示词 + 工具声明
+	System      int `json:"system,omitempty"`       // 系统提示词
+	Tools       int `json:"tools,omitempty"`        // 工具声明（wire 上的 JSON Schema）
 	ToolResults int `json:"tool_results,omitempty"` // 工具结果
 	Messages    int `json:"messages,omitempty"`     // 用户/助手正文与工具调用声明
 	Reasoning   int `json:"reasoning,omitempty"`    // 思考链
@@ -35,7 +36,71 @@ type ContextUsage struct {
 	// 两种来源都会标：① 本轮端点没回报 usage；② 库里没有真实测量，按已加载的历史回落估算
 	//（老会话/重启前的会话）。UI 必须把它和真实用量区分开——用户看不到区别就会拿它做预算判断。
 	Estimated bool `json:"estimated,omitempty"`
+	// SampledTokens 是**采样基线**：那次测量发生时，历史部分（不含 system 与工具声明）
+	// 的估算 token 数。有了它才能算出「测量之后历史又长了多少」并把增量折进展示值
+	//（DSH 的 projectedTokens = pressureTokens + surfaceTokens − sampledSurfaceTokens）。
+	//
+	// 为什么是"历史部分"而不是总量：system 与工具声明每轮现组装、且**测量时未必在手里**
+	//（展示路径拿不到 prompt/tools），两边都只算历史才能相减——system 那部分在差值里抵消。
+	//
+	// 0 = 未知（老库里的测量没有这个字段/纯估算的回落值）→ **不投影**：没有基线就算不出
+	// 增量，编一个"大概长了一点"是编数字。
+	SampledTokens int `json:"sampled_tokens,omitempty"`
 }
+
+// SessionStats 是**整段会话**的统计（对齐 DSH 的 sessionStats + tokenUsage 两个投影）。
+//
+// 为什么要有它（DSH 的原始理由，逐字适用）：这是"这条会话一共花了多少"的答案，
+// 而它必须**不随历史被改写而变**——压缩把一段历史换成摘要、翻页只加载一段窗口，
+// 都不该让「跑了多少步、花了多少 token」跟着变。所以折叠的输入是**整段日志**
+// （store 里的全部消息行，含被压缩检查点影子掉的那些），而不是当前可见的历史。
+// 撤回是唯一的例外：它真的把行删了，统计跟着变小才是对的。
+//
+// 零值 = 未知/空会话（还没有任何一步）——wire 上整键缺席，前端不渲染统计胶囊
+// （DSH 同款：steps == 0 且没有 token 时不渲染，**不显示一排 0**）。
+type SessionStats struct {
+	// 轮数与步数：turns = 用户发起的轮数（一条用户消息开一轮，与右栏「轮次」面板
+	// 同一口径），steps = 模型调用次数（每条 assistant 消息 = 一次调用）。
+	Turns int `json:"turns"`
+	Steps int `json:"steps"`
+	// 墙钟时间（毫秒）：llmMs = 各步「请求发出 → 收尾」之和；toolMs = 工具执行之和
+	//（tool 消息的 DurationMs；未执行的调用——拒绝/取消——不计，那是"未知"不是"0ms"）。
+	LLMMs  int64 `json:"llm_ms"`
+	ToolMs int64 `json:"tool_ms"`
+	// 首字延迟：TTFTMs/TTFTSteps = 有首字可测的步数之和与计数（均值 = 两者相除）。
+	// 工具轮与非流式回放没有"首字"这个时刻（见 llm.Message.FirstTokenMs）——不计入。
+	TTFTMs    int64 `json:"ttft_ms"`
+	TTFTSteps int   `json:"ttft_steps"`
+	// 解码窗口与输出：DecodeMs = 首字 → 收尾的纯生成耗时之和，DecodeTokens = 同期
+	// 的输出 token 之和。生成速度 = DecodeTokens / DecodeMs（扣掉 prefill 才是"吐字速度"，
+	// 口径与 internal/agent/timing.go 的单轮 tok/s 一致）。
+	DecodeMs     int64 `json:"decode_ms"`
+	DecodeTokens int   `json:"decode_tokens"`
+	// 计费侧四桶（provider 回报；未回报 = 0）：未缓存输入 / 缓存读 / 缓存写 / 输出。
+	// 合计 = 这条会话一共过了多少 token（每一步的 prompt 都算一次，与 DSH 的
+	// tokenUsage 投影同口径：它是"累计消耗"，不是"当前占用"）。
+	InputTokens      int `json:"input_tokens"`
+	CacheReadTokens  int `json:"cache_read_tokens"`
+	CacheWriteTokens int `json:"cache_write_tokens"`
+	OutputTokens     int `json:"output_tokens"`
+	// LegacyTokens 是**早期记录**的 token 之和：单独记账，**不混进上面四桶**。
+	//
+	// 为什么要有它：本功能上线（2026-09-30）之前，适配器把 provider 的 `total_tokens`
+	//（输入+输出）写进了 `messages.usage_tokens` 那一列，而那时**没有**输入侧那三列。
+	// 那些行今天的口径是「总量已知、拆分未知」——把它当输出累加会把生成速度报得离谱
+	//（实测一条会话显示 687.8 tok/s，真值约 40），当输入累加又缺了输出。所以它们单独
+	// 累加在这里，只作如实说明（UI 明细里写明"早期记录的口径是输入+输出"），
+	// **不参与任何比值与速度**。
+	//
+	// 怎么认出来的（写侧启发式）：输入侧三列全 0 而 usage_tokens > 0。新代码写的行不会
+	// 这样——provider 不回报 prompt 时 `PromptTokens` 为 0，但**输出**仍然写的是
+	// completion_tokens（不会是总量）。代价如实说明：真有端点只报 completion_tokens、不报
+	// prompt_tokens 时，它的行会被当成早期记录——少显示，不编数。
+	LegacyTokens int `json:"legacy_tokens,omitempty"`
+}
+
+// Empty 判断统计是否还是零值（没有任何一步）——调用方据此决定 wire 上整键缺席。
+func (s SessionStats) Empty() bool { return s == SessionStats{} }
 
 // ProjectMeta 是注册项目的身份与根目录。
 type ProjectMeta struct {

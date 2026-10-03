@@ -862,6 +862,9 @@
   border-radius: 999px;
   cursor: pointer;
   font-family: var(--font-sans);
+  /* 挤窄了就是文字折成两行（图标被甩到第二行）——输入条里的控件一律不折行 */
+  flex: none;
+  white-space: nowrap;
 }
 .agent-chip:hover {
   background: var(--border-soft);
@@ -874,6 +877,7 @@
 .agent-chip-sub {
   color: var(--fg-faint);
   font-weight: 400;
+  white-space: nowrap;
 }
 /* Agent 选择器的委派子面板（mp-right 同语言，锚在菜单右侧） */
 .ap-panel {

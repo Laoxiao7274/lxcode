@@ -324,7 +324,9 @@ func (s *Session) Send(text string, opts ...SendOpt) error {
 	// 先落盘拿序号再入历史：chat.userMessage 实时事件要带 seq（前端拿它当撤回
 	// 锚点），只让"刷新后的历史"有序号等于这条消息当场就撤不了——用户点撤回时
 	// 前端手里没有锚点。
-	userMsg := llm.Message{Role: "user", Content: text}
+	// Notice 是**注入的提示条**标记（后台任务通告走 flushNotices → Send）：
+	// 它随消息落库，会话统计的轮数按它把注入消息排除在外（见 store.foldSessionStats）。
+	userMsg := llm.Message{Role: "user", Content: text, Notice: cfg.notice}
 	userMsg.Seq = s.persistLocked(userMsg)
 	s.history = append(s.history, userMsg)
 	// 记下本轮归属的 Agent（会话页显示的模型按它解析）：主会话空 id 解析出的是
@@ -409,8 +411,17 @@ func (s *Session) History() Snapshot {
 	return Snapshot{
 		Messages: msgs, Busy: s.busy, Pending: pending,
 		SessionID: s.id, Todos: append([]tools.TodoItem(nil), s.todos...),
-		Context: s.context, Checkpoints: checkpointIndexes(msgs),
+		Context: projectedUsage(s.context, msgs), Checkpoints: checkpointIndexes(msgs),
 	}
+}
+
+// projectedContext 是**展示用**的占用：真实测量 + 测量之后历史的变化量
+// （projectedUsage，见那里的注释）。调用方必须持锁（它读 s.history）。
+//
+// 与 ContextUsage() 的分工：那个是**判定用**的真实压力值（maybeCompact 拿它比阈值），
+// 这个是给 UI 看的投影值。两个不能混——判定用投影会在"其实还没到"的时候触发压缩。
+func (s *Session) projectedContext() ContextUsage {
+	return projectedUsage(s.context, s.history)
 }
 
 // Todos 返回当前任务清单（UI 渲染用）。
@@ -422,10 +433,22 @@ func (s *Session) Todos() []tools.TodoItem {
 
 // ContextUsage 返回最近一次主轮请求的上下文占用（零值 = 本会话还没跑过主轮，
 // 或刚切过会话——那时真实用量未知，UI 应显示中性态而不是编一个数）。
+//
+// **这是判定用的真实值**（压缩压力阈值比的就是它）。要展示给用户请用
+// ProjectedContextUsage——那个把"测量之后历史又长了多少"折进去了。
 func (s *Session) ContextUsage() ContextUsage {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.context
+}
+
+// ProjectedContextUsage 返回**展示用**的占用：真实测量 + 测量之后历史的变化量。
+// 事件（chat.done 的 context）与快照都走这个——用户看到的数字要跟着历史走，
+// 不能停在最后一次请求那一刻（工具跑得越久偏得越多）。
+func (s *Session) ProjectedContextUsage() ContextUsage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.projectedContext()
 }
 
 // SetAgentID 声明本会话运行的 Agent 名单 id（空 = 旧语境/主 Agent）。

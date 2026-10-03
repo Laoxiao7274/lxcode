@@ -1,10 +1,18 @@
 // 演示数据源（M3 叙事）：主 Agent 只调度——思考选人 → agent_dispatch →
 // dispatch 卡（子 Agent 全套执行：思考/读码/改码/确认门/跑测试）→ 验收
 // 汇总。覆盖 UI 全部状态。事件形状与后端协议 1:1——接线换 WSAgent 即可。
-import type { AgentEvent, AgentSource, ApprovalMode, CompactOutcome, ConfirmRequest, ContextUsage, HistorySnapshot, JobAdminSource, JobInfo, JobLogResult, ProjectInstructions, ProjectMeta, RewindOutcome, SendOptions, SessionMeta, TodoItem } from "../../shared/types";
+import type { AgentEvent, AgentSource, ApprovalMode, CompactOutcome, ConfirmRequest, ContextUsage, HistoryMessage, HistorySnapshot, JobAdminSource, JobInfo, JobLogResult, ProjectInstructions, ProjectMeta, RewindOutcome, SendOptions, SessionMeta, SessionStats, TodoItem } from "../../shared/types";
 import { JOB_NOTICE_PREFIX, sortJobs, upsertJob } from "../../shared/jobs";
 import { normalizeApproval } from "../../shared/approval";
 import { MAIN_REASONING, SUB_REASONING, SUB_RESULT, MAIN_ANSWER, TODO_INITIAL, TODO_LATER, FILES_CHANGED, SESSIONS } from "./data";
+
+/** 演示的子会话 id 与它的模型（子 Agent = 独立会话，AGENTS.md §2.3）。
+ *  卡上的子会话 id 徽标、子会话标签页、childHistory 三处共用这一个常量——
+ *  各写一份字面量的代价是标签页打开的是另一个 id（读不到历史）。 */
+const DEMO_CHILD_SESSION = "demo-child-d1";
+const DEMO_CHILD_MODEL = "deepseek-chat";
+/** 派给子 Agent 的任务说明书（= 子会话历史里的第一条 user 消息）。 */
+const SUB_TASK = "给 internal/agent 的工具循环加 per-tool 120s 超时兜底（超时回填错误不中断整轮；bash 超时逻辑不动）。验收：新增回归用例 + 全量测试绿。";
 
 /** 演示的后台任务输出（逐行追加——模拟 go test 的进度）。 */
 const DEMO_JOB_LINES = [
@@ -26,9 +34,41 @@ type DemoEvent = AgentEvent | {
 function demoContext(used: number): ContextUsage {
   const window = 128_000;
   const system = Math.round(used * 0.22);
+  const tools = Math.round(used * 0.05);
   const toolResults = Math.round(used * 0.34);
   const reasoning = Math.round(used * 0.06);
-  return { used, window, system, tool_results: toolResults, reasoning, messages: used - system - toolResults - reasoning };
+  return { used, window, system, tools, tool_results: toolResults, reasoning, messages: used - system - tools - toolResults - reasoning };
+}
+
+/** 演示用的整段会话统计累加（与真后端同一形状：后端读库折叠整段日志，这里按轮
+ *  累加内存里的演示事实）。
+ *
+ *  为什么演示也必须发它：**演示模式要能全量跑 UI**（AGENTS.md §2 前端一栏）——
+ *  真后端有统计胶囊而演示没有的话，演示模式就跑不出这个界面，改动它时也没有
+ *  可视的验收面。数字本身是演示事实（与 FILES_CHANGED 那些一样），不假装精确。 */
+function demoStats(prev: SessionStats | undefined, usage: number, llmMs: number, toolMs: number, ttftMs: number): SessionStats {
+  const base: SessionStats = prev ?? {
+    turns: 0, steps: 0, llm_ms: 0, tool_ms: 0, ttft_ms: 0, ttft_steps: 0,
+    decode_ms: 0, decode_tokens: 0, input_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, output_tokens: 0,
+  };
+  // 输入侧按输出量的固定倍数假造（演示不接 provider，没有真实分桶）：缓存读占大头，
+  // 这样「缓存命中」这一栏在演示里也有意义
+  const input = Math.round(usage * 1.2);
+  const cacheRead = Math.round(input * 0.72);
+  return {
+    turns: base.turns + 1,
+    steps: base.steps + 3,
+    llm_ms: base.llm_ms + llmMs,
+    tool_ms: base.tool_ms + toolMs,
+    ttft_ms: base.ttft_ms + ttftMs,
+    ttft_steps: base.ttft_steps + 3,
+    decode_ms: base.decode_ms + Math.max(0, llmMs - ttftMs),
+    decode_tokens: base.decode_tokens + usage,
+    input_tokens: base.input_tokens + input - cacheRead,
+    cache_read_tokens: base.cache_read_tokens + cacheRead,
+    cache_write_tokens: base.cache_write_tokens,
+    output_tokens: base.output_tokens + usage,
+  };
 }
 
 export class DemoAgent implements AgentSource, JobAdminSource {
@@ -45,8 +85,12 @@ export class DemoAgent implements AgentSource, JobAdminSource {
   /** 演示态每会话的权限档（真后端持在会话上；这里只记「用户改过什么」）。 */
   private approvals_ = new Map<string, ApprovalMode>();
   private emittingSession = "";
+  /** 子会话的消息（演示态的「子会话历史」，见 childEmit / childHistory）。 */
+  private childMsgs_: HistoryMessage[] = [];
   /** 演示态每个会话独立计轮（compact 用：累计过几轮就当作有可压区间）。 */
   private turns = new Map<string, number>();
+  /** 演示态的整段会话统计（每会话一份——与真后端"整段日志折叠"同形状）。 */
+  private stats_ = new Map<string, SessionStats>();
   /** 演示态的 seq 分配器（每会话独立自增）：撤回锚点必须由**产生消息的那一方**
    *  给号，前端不自己编号——真后端也一样（seq 是库里的序号，客户端编不出）。 */
   private seqBySession = new Map<string, number>();
@@ -187,15 +231,70 @@ export class DemoAgent implements AgentSource, JobAdminSource {
     return this.sessions_;
   }
 
-  /** 读子会话历史：**演示态没有子会话**——子 Agent = 独立会话（AGENTS.md §2.3）
-   *  是真实后端把历史落进库才有的东西；演示数据源不落库，派发过程走的是实时
-   *  事件（dispatchStart 之后的 delta/toolCall 由 store 按 dispatchId 归属进卡）。
+  /** 读子会话历史（演示态：由**录制的事件序**重建，见 childEmit）。
    *
-   *  所以这里返回**空快照**，而不是编一份"子执行过程"：卡会如实显示"子会话没有
-   *  可显示的历史"，这是实话——演示态真的没有那份库。（也不抛错：演示模式里
-   *  根本没有子会话，报错会把"演示没有后端"说成"读取失败"。） */
+   *  子 Agent = 独立会话（AGENTS.md §2.3）：真实后端把它的 messages 落进库，
+   *  演示数据源不落库——所以派发过程一边发事件一边记进 childMsgs_，这里按同一个
+   *  子会话 id 返回。经 historyBlocks 映射后与真实链路的回放**共用一份映射**。
+   *
+   *  别的 id（不存在/老调用方）返回**空快照**，不编内容；也不抛错：演示模式里
+   *  根本没有那个子会话，报错会把"演示没有后端"说成"读取失败"。 */
   async childHistory(sessionId: string): Promise<HistorySnapshot> {
-    return { sessionId, messages: [], busy: false, pending: null, todos: [] };
+    const snapshot: HistorySnapshot = sessionId !== DEMO_CHILD_SESSION
+      ? { sessionId, messages: [], busy: false, pending: null, todos: [] }
+      : {
+        sessionId,
+        messages: this.childMsgs_,
+        busy: false,
+        // 挂起确认挂在**父会话**（确认门代理，AGENTS.md §2.3）——子会话自己没有 pending，
+        // 所以这里如实报 null；子会话标签页里那张待裁决卡来自实时事件（store 的双投）。
+        pending: null,
+        todos: [],
+        model: DEMO_CHILD_MODEL,
+        // 子会话**自己的**两份读数（与真链路的 chat.history{子会话} 同契约）：
+        // 真后端按子会话自己的 id 折叠它的日志、并把子会话自己的 context 挂上
+        //（session_ops.go 的 history / emit.go 的 sessionStatsOf）。
+        // 缺席时子会话页会显示中性态（"—" / 不渲染统计胶囊）——演示要能跑出这个界面。
+        context: demoContext(9_800),
+        stats: this.stats_.get(sessionId) ?? demoStats(undefined, 730, 2_400, 1_100, 380),
+      };
+    // 与 WSAgent.childHistory **同一份契约**：发 historyLoaded（sessionId 是子会话自己的），
+    // 让 store 把子会话自己的 state 建起来——子会话标签页要看到实时流，就得先有它自己的
+    // state（历史是基线、随后的事件是增量）。漏了这一条的后果在真链路上就是用户报的
+    //「点开之后他里面就没有接着思考」；在演示态就是标签页永远显示"没有可显示的历史"。
+    this.emit({ type: "historyLoaded", sessionId, history: snapshot });
+    return snapshot;
+  }
+
+  /** 子会话消息的录制（演示态的「子会话历史」）。
+   *
+   *  录的时机就是事件发出的时机——记的是"子 Agent 真产出过什么"，不预先编一份：
+   *    delta(reasoning/text) → 续写当前 assistant 消息（reasoning_content / content）；
+   *    toolCall             → 新起一条带 tool_calls 的 assistant 消息；
+   *    toolResult           → 一条 tool 消息（按 tool_call_id 配对）。
+   *  其余事件（confirmRequest / done）不是消息，只发不记。 */
+  private childEmit(ev: DemoEvent) {
+    const last = this.childMsgs_[this.childMsgs_.length - 1];
+    if (ev.type === "delta") {
+      if (last && last.role === "assistant" && !last.tool_calls) {
+        if (ev.kind === "text") last.content += ev.text;
+        else last.reasoning_content = (last.reasoning_content ?? "") + ev.text;
+      } else {
+        this.childMsgs_.push({
+          role: "assistant",
+          content: ev.kind === "text" ? ev.text : "",
+          reasoning_content: ev.kind === "reasoning" ? ev.text : "",
+        });
+      }
+    } else if (ev.type === "toolCall") {
+      this.childMsgs_.push({
+        role: "assistant", content: "",
+        tool_calls: [{ id: ev.id, function: { name: ev.name, arguments: ev.arguments } }],
+      });
+    } else if (ev.type === "toolResult") {
+      this.childMsgs_.push({ role: "tool", tool_call_id: ev.id, content: ev.content });
+    }
+    this.emit(ev);
   }
 
   projects(): ProjectMeta[] {
@@ -376,10 +475,15 @@ export class DemoAgent implements AgentSource, JobAdminSource {
       });
     });
     this.at(sessionId, t + 1600, () => {
+      // 子会话的任务说明书 = 它历史里的第一条 **user** 消息（真实后端同样如此：
+      // openChildSession 把任务作为 history[0] 投进去）。先记再发——childHistory
+      // 打开标签页时要能读到它。
+      this.childMsgs_ = [{ role: "user", content: SUB_TASK }];
       this.emit({
-        type: "dispatchStart", dispatchId: "d1", agentId: "coder", agentName: "代码 Agent",
+        type: "dispatchStart", dispatchId: "d1", childSessionId: DEMO_CHILD_SESSION,
+        agentId: "coder", agentName: "代码 Agent",
         agentColor: "#3b82f6",
-        task: "给 internal/agent 的工具循环加 per-tool 120s 超时兜底（超时回填错误不中断整轮；bash 超时逻辑不动）。验收：新增回归用例 + 全量测试绿。",
+        task: SUB_TASK,
       });
     });
 
@@ -397,19 +501,19 @@ export class DemoAgent implements AgentSource, JobAdminSource {
       }
     });
 
-    // ---- 子 Agent：思考（挂卡内）----
+    // ---- 子 Agent：思考（进子会话自己的时间线；卡里只有状态摘要）----
     let s = t + 2800;
     SUB_REASONING.forEach((line) => {
-      this.at(sessionId, s, () => this.emit({ type: "delta", kind: "reasoning", text: line + "\n", dispatchId: "d1" }));
+      this.at(sessionId, s, () => this.childEmit({ type: "delta", kind: "reasoning", text: line + "\n", dispatchId: "d1" }));
       s += 460 + Math.random() * 240;
     });
 
     // ---- 子 Agent：读代码（低危自动）----
     this.at(sessionId, s + 300, () => {
-      this.emit({ type: "toolCall", dispatchId: "d1", id: "d-c1", name: "read_file", arguments: JSON.stringify({ path: "internal/agent/session.go", offset: 296, limit: 40 }) });
+      this.childEmit({ type: "toolCall", dispatchId: "d1", id: "d-c1", name: "read_file", arguments: JSON.stringify({ path: "internal/agent/session.go", offset: 296, limit: 40 }) });
     });
     this.at(sessionId, s + 1300, () => {
-      this.emit({
+      this.childEmit({
         type: "toolResult", dispatchId: "d1", id: "d-c1", name: "read_file", isError: false,
         content: "296→// runTools 执行本轮工具调用（高危先确认）；返回 false 表示被取消。\n297→func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall) bool {\n…（共 548 行，已显示 296-335 行）",
       });
@@ -417,7 +521,7 @@ export class DemoAgent implements AgentSource, JobAdminSource {
 
     // ---- 子 Agent：改代码（edit，低危自动——diff 呈现）----
     this.at(sessionId, s + 2300, () => {
-      this.emit({
+      this.childEmit({
         type: "toolCall", dispatchId: "d1", id: "d-c2", name: "edit",
         arguments: JSON.stringify({
           path: "internal/agent/session.go",
@@ -427,16 +531,16 @@ export class DemoAgent implements AgentSource, JobAdminSource {
       });
     });
     this.at(sessionId, s + 3400, () => {
-      this.emit({ type: "toolResult", dispatchId: "d1", id: "d-c2", name: "edit", isError: false, content: "已替换 internal/agent/session.go（1 处唯一匹配）" });
+      this.childEmit({ type: "toolResult", dispatchId: "d1", id: "d-c2", name: "edit", isError: false, content: "已替换 internal/agent/session.go（1 处唯一匹配）" });
     });
 
-    // ---- 子 Agent：跑测试（高危 → 确认门，带 dispatchId 归属卡内）----
+    // ---- 子 Agent：跑测试（高危 → 确认门，带 dispatchId 归属）----
     // 注意：confirmRequest 之前必须先发配对的 toolCall——真实后端就是这样
     //（streamRound 先发 toolCall，runTools 的确认门再发 confirmRequest）。
     // 早期 demo 只为 d-c3 发 confirmRequest，掩盖了「确认卡与工具行同 id 并存」
     // 导致的重复行（批准后一条永远停在"执行中…"），故此处还原真实顺序。
     this.at(sessionId, s + 4000, () => {
-      this.emit({ type: "toolCall", dispatchId: "d1", id: "d-c3", name: "bash", arguments: JSON.stringify({ command: "go test ./internal/agent/ -count=1" }) });
+      this.childEmit({ type: "toolCall", dispatchId: "d1", id: "d-c3", name: "bash", arguments: JSON.stringify({ command: "go test ./internal/agent/ -count=1" }) });
     });
     this.at(sessionId, s + 4400, () => {
       const req: ConfirmRequest = {
@@ -455,10 +559,10 @@ export class DemoAgent implements AgentSource, JobAdminSource {
       this.confirmCallbacks.set(sessionId, (allow) => {
         this.at(sessionId, 500, () => {
           if (allow) {
-            this.emit({ type: "toolResult", dispatchId: "d1", id: "d-c3", name: "bash", isError: false, content: "ok  github.com/moyunteng/lxcode/internal/agent\t2.081s\nPASS" });
+            this.childEmit({ type: "toolResult", dispatchId: "d1", id: "d-c3", name: "bash", isError: false, content: "ok  github.com/moyunteng/lxcode/internal/agent\t2.081s\nPASS" });
             this.finishDispatch(sessionId, true);
           } else {
-            this.emit({
+            this.childEmit({
               type: "toolResult", dispatchId: "d1", id: "d-c3", name: "bash", isError: true,
               content: "用户拒绝执行。改用读测试源码核对的方式验证。",
             });
@@ -471,10 +575,22 @@ export class DemoAgent implements AgentSource, JobAdminSource {
 
   /** dispatch 收尾 → 主 Agent 验收汇总（allow = 测试是否真跑了）。 */
   private finishDispatch(sessionId: string, allow: boolean) {
-    // 子 Agent 最终回复 + dispatchEnd（结果回填）
-    this.at(sessionId, 600, () => this.emit({ type: "delta", kind: "text", text: allow ? "全量绿了，没有回归。" : "按源码核对，改动路径正确。", dispatchId: "d1" }));
+    // 子 Agent 最终回复（进子会话自己的时间线）+ dispatchEnd（卡上的结果回填）
+    this.at(sessionId, 600, () => this.childEmit({ type: "delta", kind: "text", text: allow ? "全量绿了，没有回归。" : "按源码核对，改动路径正确。", dispatchId: "d1" }));
     this.at(sessionId, 1400, () => {
-      this.emit({ type: "done", usageTokens: 730, finishReason: "stop", dispatchId: "d1" });
+      // 子会话**自己的**统计 + 占用：真后端在子会话 done 时按它自己的 session_id 折叠
+      // 它的日志、并把子会话自己的 context 挂上（emit.go / turn.go），演示按同一契约在
+      // 它自己的 id 上记一份——子会话标签页的「会话统计」与上下文环读的就是这一份。
+      const childStats = demoStats(this.stats_.get(DEMO_CHILD_SESSION), 730, 2_400, 1_100, 380);
+      this.stats_.set(DEMO_CHILD_SESSION, childStats);
+      this.childEmit({
+        type: "done", usageTokens: 730, finishReason: "stop",
+        // dispatchId **必须带**：它是子事件的归属键（store 双投按它分流——带 dispatch_id
+        // 才同时进卡与子会话自己的 state；不带就会被当成主会话的事件，把主指示器写脏）
+        dispatchId: "d1",
+        context: demoContext(9_800),
+        stats: childStats,
+      });
       this.emit({
         type: "dispatchEnd", dispatchId: "d1", isError: false, usageTokens: 730,
         result: allow ? SUB_RESULT : "已完成（源码核对版）：改动与回归用例如上；测试未执行——用户拒绝了 bash，需要时可以说一声我再跑。",
@@ -522,7 +638,10 @@ export class DemoAgent implements AgentSource, JobAdminSource {
         });
       }
       const usage = 2545 + Math.floor(Math.random() * 400);
-      this.emit({ type: "done", usageTokens: usage, finishReason: "stop", context: demoContext(38_400 + usage) });
+      // 整段统计按轮累加（演示事实——与真后端的「读库折叠整段日志」同形状）
+      const stats = demoStats(this.stats_.get(sessionId), usage, 3_200, 1_100, 420);
+      this.stats_.set(sessionId, stats);
+      this.emit({ type: "done", usageTokens: usage, finishReason: "stop", context: demoContext(38_400 + usage), stats });
       this.finish(sessionId);
     });
   }

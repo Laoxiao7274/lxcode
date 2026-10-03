@@ -286,9 +286,19 @@
   display: flex;
   align-items: center;
   gap: 8px;
+  /* 一行到底，控件不许被压成两行（2026-09-30 用户实测：统计胶囊挤进来之后，
+     可收缩的控件文字折成了两行）。真正让位的是统计胶囊（下面 .stats-pills 允许收缩，
+     标签带 ellipsis 兜底）。 */
+  flex-wrap: nowrap;
   padding: 8px 12px 10px;
   border-radius: 0 0 14px 14px;
   background: var(--surface);
+}
+/* 这一行的**控件**一律不收缩、不折行：它们窄下去就是文字折成两行（工具名/模型名/
+  权限名都带 chevron，折行还会把图标甩到第二行）。 */
+.piBar > .pop-wrap,
+.piBar > .send-btn {
+  flex: none;
 }
 /* 权限选择器（Codex：橙色主题——当前模式高亮，圆圈感叹号 + 下拉箭头） */
 .perm-chip {
@@ -304,6 +314,9 @@
   border-radius: 999px;
   cursor: pointer;
   font-family: var(--font-sans);
+  /* 输入条里的控件一律不折行（挤窄了就是文字折成两行） */
+  flex: none;
+  white-space: nowrap;
 }
 .perm-chip:hover {
   background: rgba(194, 65, 12, 0.07);
@@ -415,6 +428,44 @@
   border-radius: 12px;
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.06);
   animation: pop-in 160ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  /* 弹层向上开、内容随会话变长（分类行 + 会话消耗一节）：窗口很矮时允许内部滚动，
+     绝不把顶部内容顶出屏幕（顶出去就点不到「立即压缩」了） */
+  max-height: min(70vh, 560px);
+  overflow-y: auto;
+}
+/* 向下开的变体（子会话页头在页面**顶部**，向上开会跑到视口外被裁掉——2026-09-30 用户报的
+ *  「上下文展示的下拉框跑上面去被遮住了」）。方向由调用方显式指定（ContextIndicator 的
+ *  placement），不做运行时测量：弹层高度渲染前未知，而触发器在页面的哪一头调用方知道。 */
+.ctx-pop.down {
+  top: calc(100% + 8px);
+  bottom: auto;
+}
+/* ===== 会话消耗（并进「会话用量」弹层的一节；2026-09-30 用户拍板） ===== */
+.ctx-usage {
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid var(--border-soft);
+}
+.ctx-usage-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 5px;
+}
+.ctx-usage-title {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.ctx-usage-total {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+.ctx-usage .ctx-hint {
+  margin-top: 5px;
 }
 .ctx-pop-head {
   display: flex;
@@ -432,6 +483,15 @@
   font-size: 12px;
   font-weight: 500;
   color: var(--fg-muted);
+}
+/* 弹层头部的「~used / window」读数（DSH 同款：近似值并排显示） */
+.ctx-pop-figures {
+  margin-left: auto;
+  margin-right: 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
 }
 /* 占比条：已用分类分色 + 剩余轨道 */
 .ctx-bar {
@@ -514,6 +574,119 @@
   padding: 6px 12px;
   font-size: 11.5px;
 }
+/* ===== 会话统计胶囊（输入框那一行，紧挨上下文环；对齐 DSH 的 StatsPills） =====
+   2026-09-30 用户拍板从"输入框上方一行"移进 .piBar：上下文环与统计胶囊都是"这条会话
+   花了多少"的读数，放一起看。这一行宽度被 `.composer-inner` 的 max-width:720px 卡住
+   （实际约 696px），控件都 flex:none——所以**统计胶囊是唯一让位的那个**：挤的时候它先
+   收缩、标签带 ellipsis 兜底，绝不把控件压成两行。 */
+.stats-pills {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  /* 0 1 auto：可以收缩（读数让位），但不主动长大 */
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.stats-anchor {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+}
+.stats-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  min-width: 0;
+  max-width: 100%;
+  background: transparent;
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+  color: var(--fg-faint);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  transition: background 120ms, color 120ms;
+}
+.stats-pill svg {
+  flex: none;
+  color: currentColor;
+}
+.stats-pill:hover,
+.stats-pill.on {
+  background: var(--border-soft);
+  color: var(--fg-muted);
+}
+.stats-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 弹层：向上开（胶囊在输入框上方——向下开会被输入框盖住） */
+.stats-pop {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 40;
+  width: 240px;
+  padding: 11px 13px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.06);
+  animation: pop-in 160ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+/* 向下开的变体：与 .ctx-pop.down 同一条理由（子会话页头在页面顶部，向上开会跑出视口被裁）。
+ * 水平仍然居中（left:50% + translateX(-50%) 由上面那条保留）——只翻转垂直方向。 */
+.stats-pop.down {
+  top: calc(100% + 8px);
+  bottom: auto;
+}
+.stats-pop-head {
+  margin-bottom: 7px;
+}
+.stats-pop-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--fg);
+}
+.stats-pop-sub {
+  display: block;
+  margin-top: 2px;
+  font-size: 10.5px;
+  color: var(--fg-faint);
+}
+.stats-rows {
+  margin: 0;
+}
+.stats-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 3px 0;
+  font-size: 11.5px;
+}
+.stats-row dt {
+  color: var(--fg-muted);
+}
+.stats-row dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+/* 弹层里"没有可测数据"的如实说明（不留空面板——空面板看起来像加载失败） */
+.stats-empty {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--fg-faint);
+}
 .model-chip {
   display: inline-flex;
   align-items: center;
@@ -527,6 +700,9 @@
   background: transparent;
   cursor: pointer;
   transition: border-color 120ms, background 120ms;
+  /* 输入条里的控件一律不折行（模型名可能很长，折行会把 chevron 甩到第二行） */
+  flex: none;
+  white-space: nowrap;
 }
 .model-chip:hover {
   border-color: #cfcfd4;
@@ -695,6 +871,7 @@
 .chip-dim {
   color: var(--fg-faint);
   font-weight: 400;
+  white-space: nowrap;
 }
 @keyframes pop-in {
   from { opacity: 0; transform: translateY(-4px) scale(0.98); }

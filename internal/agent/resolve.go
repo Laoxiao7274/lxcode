@@ -43,6 +43,7 @@ type sendConfig struct {
 	effort   string // 推理强度（空 = 模型默认）
 	approval string // 权限模式（空 = confirm）
 	agentID  string // Agent 名单 id（空 = 主语境——无 resolver 时旧语义）
+	notice   bool   // 这条 user 消息是**注入的提示条**（不是用户说的话——会话统计的轮数按它排除）
 }
 
 // WithEffort 指定本轮推理强度（模型须声明 reasoning 能力才真正生效）。
@@ -50,6 +51,11 @@ func WithEffort(e string) SendOpt { return func(c *sendConfig) { c.effort = e } 
 
 // WithApproval 指定本轮工具执行的权限模式（空/未指定 = confirm）。
 func WithApproval(a string) SendOpt { return func(c *sendConfig) { c.approval = a } }
+
+// WithNotice 声明这条消息是**注入的提示条**（后台任务通告——见 notify.go 的
+// flushNotices：空闲时它走 Send 开一轮，那条 user 消息不是用户说的话）。
+// 会话统计的「轮数」只数真实用户消息，所以这个标记必须从投递路径一路带到落库。
+func WithNotice() SendOpt { return func(c *sendConfig) { c.notice = true } }
 
 // WithAgent 指定本轮的执行 Agent（名单 id；空 = 旧语境——全局默认
 // 提示词与 default 角色模型，兼容不接名单的调用方/单测）。

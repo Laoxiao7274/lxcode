@@ -39,7 +39,7 @@ func (s *Session) Notify(text string) error {
 		return nil
 	}
 	s.mu.Unlock()
-	if err := s.Send(msg.Content); err != nil {
+	if err := s.Send(msg.Content, WithNotice()); err != nil {
 		if errors.Is(err, ErrBusy) {
 			// 竞态：查忙闲与 Send 之间别人起了一轮——退回队列，
 			// 那一轮会在它的轮边界把它并进历史（通告不丢）
@@ -84,7 +84,9 @@ func noticeMessage(text string) (llm.Message, error) {
 	if strings.TrimSpace(text) == "" {
 		return llm.Message{}, errors.New("通告内容不能为空")
 	}
-	return llm.Message{Role: "user", Content: text}, nil
+	// Notice=true：这不是用户说的话。它随消息落库，会话统计的轮数按它排除
+	//（否则「后台任务结束」会被算成用户发了一轮）。
+	return llm.Message{Role: "user", Content: text, Notice: true}, nil
 }
 
 // injectNotices 把排队通告并入历史（**轮边界**调用）。
@@ -140,7 +142,7 @@ func (s *Session) flushNotices() {
 		}
 		b.WriteString(m.Content)
 	}
-	if err := s.Send(b.String()); err != nil {
+	if err := s.Send(b.String(), WithNotice()); err != nil {
 		// 投不出去（模型缺失 / 又忙了）：放回队列等下一次唤醒
 		s.mu.Lock()
 		s.notices = append(msgs, s.notices...)

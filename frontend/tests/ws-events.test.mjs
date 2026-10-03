@@ -45,6 +45,19 @@ test("context 原样透传（含 estimated——估算标记不能在映射层�
   assert.deepEqual(mapEvent("chat.rewound", { session_id: "s", seq: 1, removed: 2, context: ctx }).context, ctx);
 });
 
+test("会话统计只在后端带了的时候才带（缺席 = 还没有任何一步，不编一排 0）", () => {
+  const stats = {
+    turns: 3, steps: 7, llm_ms: 12000, tool_ms: 800, ttft_ms: 900, ttft_steps: 3,
+    decode_ms: 6000, decode_tokens: 900, input_tokens: 100, cache_read_tokens: 5000,
+    cache_write_tokens: 0, output_tokens: 900,
+  };
+  assert.deepEqual(mapEvent("chat.done", { session_id: "s", stats }).stats, stats);
+  assert.deepEqual(mapEvent("chat.rewound", { session_id: "s", seq: 1, removed: 2, stats }).stats, stats);
+  // 后端读不到库 / 还没有任何一步时不带这个键——前端不渲染统计胶囊
+  assert.equal(mapEvent("chat.done", { session_id: "s" }).stats, undefined);
+  assert.equal(mapEvent("chat.rewound", { session_id: "s", seq: 1, removed: 2 }).stats, undefined);
+});
+
 test("files.changed 没有 files 数组时不产出事件", () => {
   assert.equal(mapEvent("files.changed", { session_id: "s" }), null);
   const ev = mapEvent("files.changed", { session_id: "s", files: [{ path: "a.go", added: 1, deleted: 2, diff: "@@" }] });

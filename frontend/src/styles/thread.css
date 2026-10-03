@@ -506,70 +506,42 @@
 .dispatch-card[data-error="true"] {
   border-color: rgba(224, 46, 42, 0.35);
 }
-/* 卡头 = 一行里**两个并列按钮**（不能嵌套 button：button 里套 button 是非法 HTML，
- * 浏览器会把内层提出来，React 也会警告）。所以：
- *   .dispatch-head-row  行容器（原来 .dispatch-head 的布局属性搬到这里）
- *   .dispatch-head      主区按钮：打开子会话（没有子会话 id / 未接线时回落成切换展开）
- *   .dispatch-chev-btn  chevron 小按钮：永远只做展开/收起
- * 为什么把 .dispatch-head 这个类名留给**主区按钮**而不是行容器：脚本
- * scripts/check-preview-layout.cjs 按 .dispatch-head 点卡头来验证展开/收起
- * （演示态的卡没有子会话 id，主区就是切换展开）——沿用旧类名那个脚本一行都不用动。 */
-.dispatch-head-row {
-  display: flex;
-  align-items: stretch;
-  width: 100%;
-}
+/* 卡 = **一行摘要**（2026-09-30 用户拍板两轮收敛后的定案）：卡里没有折叠区、没有
+ *  卡内子时间线、没有结论正文、没有底部按钮——子 Agent 的过程与结论都在它自己的
+ *  工作区标签页里看（而且是实时的），这一行只是"谁在干活 + 干到哪了 + 点它进去"。
+ *  整行两种形态（DispatchCard 按 dispatchPrimaryAction 同一份判定决定）：
+ *    有子会话 id 且接了 onOpenChild → <button>（点它打开独立会话，data-openable="true"）
+ *    否则                          → <div>（静态行：点了没反应的按钮比没有入口更糟）
+ *  所以 hover / cursor 反馈只挂在 [data-openable] 上——静态行不该看起来能点。
+ *  width: 100% + 左对齐：它是这张卡唯一的内容，必须铺满整行（button 默认居中且按内容收缩）。 */
 .dispatch-head {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex: 1;
+  width: 100%;
   min-width: 0;
-  padding: 10px 4px 10px 13px;
+  padding: 9px 12px;
   background: none;
   border: none;
-  cursor: pointer;
   font-family: var(--font-sans);
   text-align: left;
   color: var(--fg);
 }
-/* 主区 hover 反馈（底色 + 光标）：它是这张卡的**主操作**，必须比原来的整头 hover
- * 更明确。cursor 由 button 默认给 pointer，这里仍显式写死——将来给 button 加全局
- * reset 时不至于把"可点"这个信号一起抹掉。
- * 可打开（有子会话 id + 接了 onOpenChild）时用成功色微染：与"打开一个独立会话"
- * 的语义对上，**收起状态下**也能一眼看出这里点得进去。 */
-.dispatch-head:hover {
-  background: rgba(0, 0, 0, 0.035);
-}
+/* 主区 hover 反馈（底色 + 光标）：它是这张卡的**主操作**（进子会话），必须明确。
+ * cursor 由 button 默认给 pointer，这里仍显式写死——将来给 button 加全局 reset
+ * 时不至于把"可点"这个信号一起抹掉。
+ * 可打开时用成功色微染：与"打开一个独立会话"的语义对上。 */
 .dispatch-head[data-openable="true"] {
   cursor: pointer;
 }
 .dispatch-head[data-openable="true"]:hover {
   background: rgba(16, 163, 127, 0.09);
 }
-/* 键盘可达：两个按钮都是真 <button>，focus-visible 必须看得见（用 outline-offset
+/* 键盘可达：主区是真 <button>，focus-visible 必须看得见（用 outline-offset
  * 负值把描边收进按钮盒内，卡片有 overflow: hidden，外描边会被裁掉）。 */
-.dispatch-head:focus-visible,
-.dispatch-chev-btn:focus-visible {
+.dispatch-head:focus-visible {
   outline: 2px solid var(--success);
   outline-offset: -2px;
-}
-/* chevron 小按钮：与主区**并列**（不是主区的一部分），所以它自己的 hover 反馈
- * 必须独立——用户要点的是"只展开"，反馈要落在这个小按钮上而不是整行。 */
-.dispatch-chev-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: none;
-  padding: 0 13px;
-  background: none;
-  border: none;
-  cursor: pointer;
-  color: var(--fg-faint);
-}
-.dispatch-chev-btn:hover {
-  background: rgba(0, 0, 0, 0.035);
-  color: var(--fg-muted);
 }
 .dispatch-dot {
   width: 8px;
@@ -615,16 +587,6 @@
   font-size: 10px;
   color: var(--fg-faint);
 }
-.dispatch-chev {
-  /* currentColor：颜色由外层 .dispatch-chev-btn 决定（hover 时要变深）——
-   * 这里写死 --fg-faint 的话 hover 反馈就断了。 */
-  color: currentColor;
-  flex: none;
-  transition: transform 160ms;
-}
-.dispatch-chev.open {
-  transform: rotate(180deg);
-}
 /* 子会话 id 徽标（基础样式在 catalog.css：等宽 + 低对比度）——可打开时的"点得进去"
  * 视觉：成功色 + 描边 + 一个**向外的箭头**（↗）+ 主区 hover 时加下划线。
  * 只在真能打开时出现（.openable 由 DispatchCard 按 dispatchPrimaryAction 的同一份
@@ -639,98 +601,20 @@
   color: var(--success);
   border-color: rgba(16, 163, 127, 0.45);
 }
-.dispatch-head:hover .dispatch-session.openable {
+.dispatch-head[data-openable="true"]:hover .dispatch-session.openable {
   text-decoration: underline;
 }
 .dispatch-session-go {
   margin-left: 3px;
   flex: none;
 }
-.dispatch-result {
-  padding: 2px 14px 12px;
-  font-size: 12.5px;
-  color: var(--fg-muted);
-  line-height: 1.65;
-}
-/* 子会话历史的读取状态行（加载中 / 读失败 / 读到了但是空的）。
- * 刻意做成**一行轻量提示**而不是占位骨架或 spinner 块：子会话历史是卡内的补充内容，
- * 慢一点不该让整张卡看起来在加载；而失败与"真的空"必须一眼可辨——两者混在一起
- * 正是"用户以为子会话本来就是空的"的成因（静默失败）。
- * 用 --fg-faint 与卡头摘要同一档对比度：它是说明，不是内容。 */
-.dispatch-child-note {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 11.5px;
-  color: var(--fg-faint);
-  line-height: 1.5;
-}
-/* 读失败用危险色（与卡头 ✗ 失败同一套语义色），并且**必须带原因**——
- * 只给"读取失败"四个字等于把排查成本推给用户。 */
-.dispatch-child-note.error {
-  color: var(--danger);
-}
-.dispatch-child-msg {
-  min-width: 0;
-}
-.dispatch-child-retry.fd-btn-g {
-  flex: none;
-  padding: 2px 10px;
-  font-size: 11px;
-  border-radius: 7px;
-  background: var(--surface);
-}
-.dispatch-child-retry.fd-btn-g:hover {
-  color: var(--fg);
-}
-.dispatch-body {
-  border-top: 1px solid var(--border-soft);
-  background: var(--bg-side);
-  padding: 10px 14px 12px 22px;
-}
-/* 子块纵向呼吸：思考行/正文/工具行之间不贴（主时间线靠 .msg 自身
- * 间距；子时间线的块是裸挂——这里补间距） */
-.dispatch-body > * + * {
-  margin-top: 10px;
-}
-.dispatch-body .msg {
-  padding: 0;
-}
-/* 展开体底部的两个按钮（打开子会话 / 收起）：长展开卡（子 Agent 的过程 + 结果）
- * 滚到底后不必再回到卡片顶部找 chevron——用户原话「应该在最下面也有收起的东西，
- * 不然很不方便」。
- * **卡头主区与这里都留着「打开子会话」是刻意的**（不是重复）：卡头主区服务"我一看
- * 就想进去"（还没读摘要，直接跳进独立会话），底部服务"我读完了想进去"（在卡内扫完
- * 结果，顺手进完整时间线）。少任何一个都会让某一类用户多走一趟滚动或回顶部。
- * 走表单套件的 Button（.fd-btn-g）：裸写 <button> 就是 OS 默认灰皮。
- * 放 thread.css 而不是 panels.css 的理由：它是卡片自身视觉语言的一部分，与
- * .dispatch-body / .dispatch-chev 同处一节（panels.css 是右栏工作区结构）；
- * thread.css 又先于 panels.css 加载，卡片内部规则集中一处不会有级联顺序意外。 */
-.dispatch-foot {
-  display: flex;
-  justify-content: center;
-  /* 两个按钮（打开子会话 / 收起）并排——没有 gap 会贴在一起 */
-  gap: 8px;
-}
-.dispatch-collapse.fd-btn-g {
-  padding: 3px 16px;
-  font-size: 11px;
-  border-radius: 7px;
-  background: var(--surface);
-}
-.dispatch-collapse.fd-btn-g:hover {
-  color: var(--fg);
-}
-/* 「打开子会话」：与「收起」同款（同一行里的两个次要动作），只是语义不同——
- * 前者是导航（把这条子会话开成工作区标签），后者是收合。 */
-.dispatch-open-child.fd-btn-g {
-  padding: 3px 16px;
-  font-size: 11px;
-  border-radius: 7px;
-  background: var(--surface);
-}
-.dispatch-open-child.fd-btn-g:hover {
-  color: var(--fg);
+/* 卡里渲染的**待裁决确认卡**（子 Agent 的确认由父会话代理，AGENTS.md §2.3）：
+ *  双投之后卡里与子会话标签页里各有一份，这里留一点外边距把它与那一行分开——
+ *  它是**操作入口**（用户没开子会话标签也必须能批），不是过程展示。
+ *  钩子用 ApprovalCard 自己的 data-variant="command"（它的根类名是 CSS Module 哈希，
+ *  样式表里选不中——属性是稳定契约，scripts/check-preview-layout.cjs 也按它定位）。 */
+.dispatch-card [data-variant="command"] {
+  margin: 0 12px 10px;
 }
 /* 行：24px 高（DSH DisclosureRow 的行高）；运行中扫光在 ::after */
 .trow-row {

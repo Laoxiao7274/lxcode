@@ -18,7 +18,6 @@ import {
 import { getAgentSource } from "./agent";
 import { useAgent, type ThreadBlock } from "./shared/store";
 import { beginEdit, canRewind, planRewind, type EditDraft } from "./shared/blocks";
-import { historyBlocks } from "./shared/history";
 import { AgentsProvider, useAgents } from "./shared/agents";
 import { AgentsPage } from "./components/agents/AgentsPage";
 import { CatalogPage } from "./components/catalog/CatalogPage";
@@ -74,6 +73,11 @@ function AppBody({ source }: { source: AgentSource }) {
   const [workspaceState, setWorkspaceState] = useState(createWorkspaceTabs);
   const workspaceStateRef = useRef(workspaceState);
   workspaceStateRef.current = workspaceState;
+  // 各会话 state 的 ref：子会话裁决要按 dispatch_id 反查持有挂起确认的那个会话，
+  // 而回调身份必须稳定（Block 是 memo 的，每次新建回调会逐帧击穿它）——所以读 ref
+  // 而不是把 sessionStates 放进 useCallback 的依赖里。
+  const sessionStatesRef = useRef(sessionStates);
+  sessionStatesRef.current = sessionStates;
   const view = workspaceState.active;
   /** 对话范围（项目 id / ""=未分组）——App 持有：侧栏过滤、「新对话」归属、
    *  空态项目标签三处共用。用户拍板：**恒有范围**（启动即「未分组」，点项目行
@@ -171,20 +175,26 @@ function AppBody({ source }: { source: AgentSource }) {
       .catch((e) => reportError(e instanceof Error ? e.message : String(e)));
   }, [source, resolve, reportError, currentId]);
 
-  /** 子会话历史的懒加载入口（DispatchCard 展开子 Agent 卡时调一次）。
+  /** 子会话标签页里的裁决。
    *
-   *  两步都在这一层：① 向数据源要**子会话**快照（WSAgent 走 chat.history 按子会话
-   *  id 寻址——后端已支持；DemoAgent 返回空快照，演示态没有子会话，不编数据）；
-   *  ② 用 **historyBlocks** 把快照映射成子时间线的块——与主时间线回放（reduceHistory）
-   *  **共用同一份映射**。写第二份映射 = 两条路径分叉，那正是上一轮"刷新之后子 Agent
-   *  卡换一张脸"的成因。
+   *  **必须发到持有挂起确认的那个会话**：确认门由**父会话代理**（AGENTS.md §2.3——
+   *  子会话自己持 pending 的话服务端的 tool.confirm 找不到它，会话会卡在 busy），
+   *  而 `tool.confirm` 是按 session_id 找会话再找它那条挂起确认的（见 server 的
+   *  MethodToolConfirm）。所以这里按确认的 `dispatch_id` 反查**卡在哪条会话里**——
+   *  那张卡就是父会话，挂起确认就在它手上。
    *
-   *  失败**原样抛**：DispatchCard 显示"读不到子会话历史：<原因>"并允许重试——静默
-   *  失败会让用户以为子会话本来就是空的。useCallback 固定身份，否则 Block 的 memo
-   *  会被逐帧击穿（与 handleConfirm 同一条纪律）。 */
-  const handleLoadChild = useCallback(async (sessionId: string): Promise<ThreadBlock[]> => {
-    return historyBlocks(await source.childHistory(sessionId));
-  }, [source]);
+   *  查不到（老数据没记下 dispatch_id）时退回子会话 id：发出去顶多报一句
+   *  "没有挂起的确认"，而 store 侧的两处定格照旧生效——不会出现"点了没反应"。 */
+  const handleChildConfirm = useCallback((sessionId: string, id: string, allow: boolean) => {
+    const did = sessionStatesRef.current[sessionId]?.pending?.dispatch_id ?? "";
+    const owner = did
+      ? Object.entries(sessionStatesRef.current).find(([, st]) =>
+          st.blocks.some((b) => b.kind === "dispatch" && b.id === did))?.[0]
+      : undefined;
+    void source.confirm(owner ?? sessionId, id, allow)
+      .then(() => resolve(sessionId, id, allow ? "allow" : "deny"))
+      .catch((e) => reportError(e instanceof Error ? e.message : String(e)));
+  }, [source, resolve, reportError]);
 
   // 手动压缩：请求类失败进一次性提示（不动 blocks）；没有可压收益时给一句人话
   // 原因（不是错误——历史还太短是正常态）。压缩成功由 chat.compacted 事件渲染标记块。
@@ -370,12 +380,13 @@ function AppBody({ source }: { source: AgentSource }) {
           <div className="chat-main">
             {errorNotice}
             <div className="thread-scroll">
-              <Thread state={state} onConfirm={handleConfirm} onSuggestion={handleSend} projectName={filterProjectName} onEdit={handleEdit} onRewind={handleRewind} onLoadChild={handleLoadChild} onOpenChild={openChildTab} revealUid={jumpedUid} />
+              <Thread state={state} onConfirm={handleConfirm} onSuggestion={handleSend} projectName={filterProjectName} onEdit={handleEdit} onRewind={handleRewind} onOpenChild={openChildTab} revealUid={jumpedUid} />
             </div>
             <Composer
               busy={state.busy}
               todos={state.todos}
               context={state.context}
+              stats={state.stats}
               onSend={handleSend}
               onCancel={() => source.cancel(currentId)}
               onCompact={() => { void handleCompact(); }}
@@ -436,7 +447,19 @@ function AppBody({ source }: { source: AgentSource }) {
     // key=childId：不同子会话各自一份实例（切标签不串历史，保活由 WorkspaceViewPanels 管）。
     const childId = childTabSession(activeView);
     if (childId === null) return null; // 坏键（不该出现）：不渲染，也不炸
-    return <ChildSessionPage key={childId} sessionId={childId} source={source} onBack={backToChat} />;
+    // state 来自 store 的 sessionStates[childId]——**实时**（store 把带 dispatch_id 的
+    // 子事件同时归约进子会话自己的 state），历史由这一页装载（source.childHistory 发
+    // historyLoaded）。裁决走这个子会话自己的 session id（父会话代理确认门）。
+    return (
+      <ChildSessionPage
+        key={childId}
+        sessionId={childId}
+        source={source}
+        state={sessionStates[childId]}
+        onConfirm={(id, allow) => handleChildConfirm(childId, id, allow)}
+        onBack={backToChat}
+      />
+    );
   };
 
   const app = (

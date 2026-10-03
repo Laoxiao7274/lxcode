@@ -47,7 +47,7 @@ func (c *Client) parseOpenAIStream(ctx context.Context, body io.Reader, ch chan<
 	var content, reasoning strings.Builder
 	var toolCalls []ToolCall
 	finish := ""
-	var usageTok, promptTok int
+	var usage usageBuckets
 	prevBlank := false
 
 	for sc.Scan() {
@@ -74,8 +74,14 @@ func (c *Client) parseOpenAIStream(ctx context.Context, body io.Reader, ch chan<
 					FinishReason string `json:"finish_reason"`
 				} `json:"choices"`
 				Usage *struct {
-					PromptTokens int `json:"prompt_tokens"`
-					TotalTokens  int `json:"total_tokens"`
+					PromptTokens     int `json:"prompt_tokens"`
+					CompletionTokens int `json:"completion_tokens"`
+					TotalTokens      int `json:"total_tokens"`
+					// 缓存命中的 prompt 部分（两家字段都认，见 openaiResponse）
+					PromptTokensDetails struct {
+						CachedTokens int `json:"cached_tokens"`
+					} `json:"prompt_tokens_details"`
+					PromptCacheHitTokens int `json:"prompt_cache_hit_tokens"`
 				} `json:"usage"`
 			}
 			if err := json.Unmarshal([]byte(data), &delta); err != nil {
@@ -122,8 +128,14 @@ func (c *Client) parseOpenAIStream(ctx context.Context, body io.Reader, ch chan<
 				}
 			}
 			if delta.Usage != nil {
-				usageTok = delta.Usage.TotalTokens
-				promptTok = delta.Usage.PromptTokens
+				// 分桶归一与**非流式路径共用同一份** openAIUsage（两条路径各写一遍
+				// 必然漂移，而漂移的表现是同一条端点在流式/非流式下给出不一样的数字）
+				cached := delta.Usage.PromptTokensDetails.CachedTokens
+				if cached == 0 {
+					cached = delta.Usage.PromptCacheHitTokens
+				}
+				usage = openAIUsage(delta.Usage.PromptTokens, delta.Usage.CompletionTokens,
+					delta.Usage.TotalTokens, cached)
 			}
 		case line == "":
 			prevBlank = true
@@ -149,7 +161,7 @@ func (c *Client) parseOpenAIStream(ctx context.Context, body io.Reader, ch chan<
 done:
 	// 读取错误（断流/取消）：error 事件 + 已生成部分，aborted 与故障分开
 	if err := sc.Err(); err != nil {
-		res := openAIStreamResult(content.String(), reasoning.String(), toolCalls, finish, usageTok, promptTok)
+		res := openAIStreamResult(content.String(), reasoning.String(), toolCalls, finish, usage)
 		if ctx.Err() != nil {
 			res.FinishReason = FinishAborted
 		} else {
@@ -177,7 +189,7 @@ done:
 		}
 	}
 	emitFinal(ch, StreamEvent{Type: EventDone,
-		Result: openAIStreamResult(content.String(), reasoning.String(), toolCalls, finish, usageTok, promptTok)})
+		Result: openAIStreamResult(content.String(), reasoning.String(), toolCalls, finish, usage)})
 }
 
 // mergeToolCalls 按 Index 聚合流式 tool_call 片段：

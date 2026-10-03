@@ -3,7 +3,7 @@
 // 与 index.ts 的 reactTo 分工：这里只回答「这个事件在前端长什么样」，
 // 「要不要重拉后端事实源」留在 reactTo。混在一起就没法单独测映射——
 // 而映射恰恰是最容易写错、也最值得钉住的一层（字段名、默认值、归属）。
-import type { AgentEvent, ConfirmRequest, ContextUsage, TodoItem } from "../../shared/types";
+import type { AgentEvent, ConfirmRequest, ContextUsage, SessionStats, TodoItem } from "../../shared/types";
 import { jobFromWire } from "../../shared/jobs";
 import { normalizeApproval } from "../../shared/approval";
 
@@ -85,7 +85,9 @@ export function mapEvent(method: string, params: unknown): AgentEvent | null {
       // 判定处理，重复到达是幂等 no-op（见 reduce.ts 的 reduceRewound）。
       // context：后端重算后的占用（撤回删掉一截历史，旧数字一定是错的）。未知时
       // 整键缺席——那时归约器回落中性态「—」，不编一个数。
-      return { type: "rewound", sessionId, seq: Number(p.seq ?? 0), removed: Number(p.removed ?? 0), context: (p.context as ContextUsage | undefined) ?? undefined };
+      return { type: "rewound", sessionId, seq: Number(p.seq ?? 0), removed: Number(p.removed ?? 0), context: (p.context as ContextUsage | undefined) ?? undefined,
+        // 重算后的整段统计：撤回删了行，统计会变小——UI 拿它直接刷新统计胶囊
+        stats: (p.stats as SessionStats | undefined) ?? undefined };
     case "chat.confirmRequest":
       return { type: "confirmRequest", sessionId, request: p as unknown as ConfirmRequest };
     case "todo.updated":
@@ -103,6 +105,8 @@ export function mapEvent(method: string, params: unknown): AgentEvent | null {
         dispatchId,
         // 上下文占用只随主轮来（子轮的 done 不带——后端已按 dispatch 归属收口）
         context: (p.context as ContextUsage | undefined) ?? undefined,
+        // 整段会话统计同样只随主轮来（口径见 shared/types.ts 的 SessionStats）
+        stats: (p.stats as SessionStats | undefined) ?? undefined,
       };
     case "chat.error":
       return { type: "error", sessionId, message: String(p.message ?? ""), aborted: Boolean(p.aborted) };

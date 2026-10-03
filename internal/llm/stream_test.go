@@ -78,7 +78,10 @@ func TestOpenAIStreamText(t *testing.T) {
 	if text.String() != "你好" {
 		t.Fatalf("流式文本不符: %q", text.String())
 	}
-	if done == nil || done.Message.Content != "你好" || done.FinishReason != "stop" || done.UsageTokens != 8 {
+	// 端点只报了 prompt_tokens/total_tokens（没有 completion_tokens）：输出按
+	// total − prompt 推（8 − 3 = 5）。推不出来就是 0（未知），不估算。
+	if done == nil || done.Message.Content != "你好" || done.FinishReason != "stop" ||
+		done.UsageTokens != 5 || done.PromptTokens != 3 {
 		t.Fatalf("done 不符: %+v", done)
 	}
 }
@@ -276,7 +279,8 @@ func TestAnthropicStream(t *testing.T) {
 	if done.FinishReason != "tool_calls" {
 		t.Fatalf("stop_reason 映射不符: %s", done.FinishReason)
 	}
-	if done.UsageTokens != 17 || done.PromptTokens != 10 { // input 10 + output 7
+	// 输出 7（不再是 input+output 的 17）；prompt 侧总量 = 未缓存输入 10
+	if done.UsageTokens != 7 || done.PromptTokens != 10 {
 		t.Fatalf("usage 不符: %+v", done)
 	}
 }

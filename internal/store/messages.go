@@ -50,12 +50,18 @@ func (s *Store) AppendMsg(id string, m llm.Message) (int64, error) {
 	// 每轮生成的簿记（计时/用量/模型）随消息一起落库：刷新后 chat.history 回放的
 	// 必须是同一份数字（只放内存的话用户一刷新就没了，而 live 与 replay 分叉正是
 	// 本仓库反复踩过的坑）。
+	// usage_split 一律写 1：写这一行的是**认识拆分口径**的二进制（usage_tokens 真的是
+	// 输出、输入侧三桶另记）。旧二进制写的行走列默认值 0 = 老口径（那时 usage_tokens
+	// 是 provider 的 total_tokens）——折叠统计按这一位把两种口径分开（见 store.go 的
+	// ALTER 注释与 stats.go 的 legacyUsageRow）。
 	if _, err := tx.Exec(
 		`INSERT INTO messages (session_id, seq, role, content, reasoning, reasoning_sig, tool_calls, tool_call_id,
-		                       first_token_ms, duration_ms, model, usage_tokens)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		                       first_token_ms, duration_ms, model, usage_tokens,
+		                       input_tokens, cache_read_tokens, cache_write_tokens, notice, usage_split)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
 		id, seq, m.Role, m.Content, m.ReasoningContent, m.ReasoningSignature, string(toolCalls), m.ToolCallID,
 		m.FirstTokenMs, m.DurationMs, m.Model, m.UsageTokens,
+		m.InputTokens, m.CacheReadTokens, m.CacheWriteTokens, boolInt(m.Notice),
 	); err != nil {
 		return 0, fmt.Errorf("写消息失败: %w", err)
 	}
@@ -105,6 +111,8 @@ type rowData struct {
 	msg        llm.Message
 	checkpoint bool
 	shadowed   []int // 检查点影子掉的 seq 集合（权威；空 = 不是检查点）
+	notice     bool  // 注入的提示条（不是用户说的话——会话统计的轮数按它排除）
+	usageSplit bool  // 这行的用量是**拆分口径**（usage_tokens 是输出）——老行是 total_tokens
 }
 
 // readRows 读会话全部消息行（按 seq 升序）。
@@ -114,7 +122,8 @@ type rowData struct {
 func (s *Store) readRows(id string) ([]rowData, error) {
 	rows, err := s.db.Query(
 		`SELECT seq, role, content, reasoning, reasoning_sig, tool_calls, tool_call_id,
-		        checkpoint, shadowed_seqs, first_token_ms, duration_ms, model, usage_tokens
+		        checkpoint, shadowed_seqs, first_token_ms, duration_ms, model, usage_tokens,
+		        input_tokens, cache_read_tokens, cache_write_tokens, notice, usage_split
 		 FROM messages WHERE session_id = ? ORDER BY seq`, id)
 	if err != nil {
 		return nil, fmt.Errorf("查询会话 %s 失败: %w", id, err)
@@ -124,10 +133,12 @@ func (s *Store) readRows(id string) ([]rowData, error) {
 	for rows.Next() {
 		var r rowData
 		var toolCalls, shadowedSeqs string
-		var cp int
+		var cp, notice, usageSplit int
 		if err := rows.Scan(&r.seq, &r.msg.Role, &r.msg.Content, &r.msg.ReasoningContent,
 			&r.msg.ReasoningSignature, &toolCalls, &r.msg.ToolCallID, &cp, &shadowedSeqs,
-			&r.msg.FirstTokenMs, &r.msg.DurationMs, &r.msg.Model, &r.msg.UsageTokens); err != nil {
+			&r.msg.FirstTokenMs, &r.msg.DurationMs, &r.msg.Model, &r.msg.UsageTokens,
+			&r.msg.InputTokens, &r.msg.CacheReadTokens, &r.msg.CacheWriteTokens, &notice,
+			&usageSplit); err != nil {
 			return nil, fmt.Errorf("读消息行失败: %w", err)
 		}
 		// 序号随消息一起回给上层：前端拿它当撤回锚点（chat.rewind 的 seq），
@@ -139,6 +150,12 @@ func (s *Store) readRows(id string) ([]rowData, error) {
 			}
 		}
 		r.checkpoint = cp == 1
+		r.notice = notice == 1
+		r.usageSplit = usageSplit == 1
+		// 簿记位要**写回消息**（不只是留在 rowData 上）：Load 出来的历史必须与
+		// 写进去的那条逐字段一致——本仓库的老坑就是"写进去的与读出来的对不上"
+		//（漏这一行的表现是"内存里的历史少了这个位"，而库里其实有）
+		r.msg.Notice = r.notice
 		if r.checkpoint && shadowedSeqs != "" && shadowedSeqs != "[]" {
 			if err := json.Unmarshal([]byte(shadowedSeqs), &r.shadowed); err != nil {
 				return nil, fmt.Errorf("解析影子区间失败: %w", err)
@@ -299,7 +316,8 @@ func (s *Store) AppendCheckpoint(id string, m llm.Message, skip, count int) (int
 func (s *Store) readRowsTx(tx *sql.Tx, id string) ([]rowData, error) {
 	rows, err := tx.Query(
 		`SELECT seq, role, content, reasoning, reasoning_sig, tool_calls, tool_call_id,
-		        checkpoint, shadowed_seqs, first_token_ms, duration_ms, model, usage_tokens
+		        checkpoint, shadowed_seqs, first_token_ms, duration_ms, model, usage_tokens,
+		        input_tokens, cache_read_tokens, cache_write_tokens, notice, usage_split
 		 FROM messages WHERE session_id = ? ORDER BY seq`, id)
 	if err != nil {
 		return nil, fmt.Errorf("查询会话 %s 失败: %w", id, err)
@@ -309,10 +327,12 @@ func (s *Store) readRowsTx(tx *sql.Tx, id string) ([]rowData, error) {
 	for rows.Next() {
 		var r rowData
 		var toolCalls, shadowedSeqs string
-		var cp int
+		var cp, notice, usageSplit int
 		if err := rows.Scan(&r.seq, &r.msg.Role, &r.msg.Content, &r.msg.ReasoningContent,
 			&r.msg.ReasoningSignature, &toolCalls, &r.msg.ToolCallID, &cp, &shadowedSeqs,
-			&r.msg.FirstTokenMs, &r.msg.DurationMs, &r.msg.Model, &r.msg.UsageTokens); err != nil {
+			&r.msg.FirstTokenMs, &r.msg.DurationMs, &r.msg.Model, &r.msg.UsageTokens,
+			&r.msg.InputTokens, &r.msg.CacheReadTokens, &r.msg.CacheWriteTokens, &notice,
+			&usageSplit); err != nil {
 			return nil, fmt.Errorf("读消息行失败: %w", err)
 		}
 		// 序号随消息一起回给上层：前端拿它当撤回锚点（chat.rewind 的 seq），
@@ -324,6 +344,9 @@ func (s *Store) readRowsTx(tx *sql.Tx, id string) ([]rowData, error) {
 			}
 		}
 		r.checkpoint = cp == 1
+		r.notice = notice == 1
+		r.usageSplit = usageSplit == 1
+		r.msg.Notice = r.notice // 与 readRows 逐字一致（写进去的与读出来的必须对得上）
 		if r.checkpoint && shadowedSeqs != "" && shadowedSeqs != "[]" {
 			if err := json.Unmarshal([]byte(shadowedSeqs), &r.shadowed); err != nil {
 				return nil, fmt.Errorf("解析影子区间失败: %w", err)
