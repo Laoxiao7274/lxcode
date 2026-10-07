@@ -137,3 +137,16 @@ function focusView(state: WorkspaceTabsState, active: WorkspaceView, tabs: Works
     history: [state.active, ...state.history.filter((item) => item !== state.active && item !== active)],
   };
 }
+
+/** 浏览器历史（popstate）驱动的工作区聚焦：把一个历史条目恢复成当前页。
+ *
+ *  与鼠标侧键监听的历史方案的区别（2026-10-07 二轮）：硬件侧键在 Chromium 里是
+ *  **浏览器进程**处理的——不派发给页面，直接导航 WebContents 自己的历史栈。所以
+ *  「跟网页一样」的唯一实现 = 每次切页 pushState、popstate 时用本函数把条目落回
+ *  工作区。**已关闭的子会话标签在这里要重开**（浏览器后退到一页就是把它恢复出来，
+ *  不是跳过——页面内容由 ChildSessionPage 重新装载）。 */
+export function focusHistoryView(state: WorkspaceTabsState, target: WorkspaceView): WorkspaceTabsState {
+  if (target === "chat") return focusChatTab(state);
+  if (isWorkspacePage(target)) return focusWorkspacePage(state, target);
+  return focusChildTab(state, childTabSession(target) ?? "");
+}

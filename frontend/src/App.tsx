@@ -8,6 +8,7 @@ import {
   createWorkspaceTabs,
   focusChatTab,
   focusChildTab,
+  focusHistoryView,
   focusWorkspacePage,
   focusWorkspaceTab,
   isWorkspacePage,
@@ -16,7 +17,6 @@ import {
   type WorkspaceTabsState,
   type WorkspaceView,
 } from "./shared/workspace-tabs";
-import { initialViewHistory, pushView, stepView } from "./shared/view-history";
 import { getAgentSource } from "./agent";
 import { useAgent, type ThreadBlock } from "./shared/store";
 import { beginEdit, canRewind, planRewind, type EditDraft } from "./shared/blocks";
@@ -81,12 +81,14 @@ function AppBody({ source }: { source: AgentSource }) {
   const sessionStatesRef = useRef(sessionStates);
   sessionStatesRef.current = sessionStates;
   const view = workspaceState.active;
-  // 浏览器式导航历史（鼠标侧键后退/前进，shared/view-history）：所有工作区导航
-  // 都从下面的 pushWorkspace 走，条目才不会漏记。ref 供窗口级监听器读（监听器
-  // 只挂一次，不能把 history 放进它的依赖）。
-  const [viewHistory, setViewHistory] = useState(initialViewHistory());
-  const viewHistoryRef = useRef(viewHistory);
-  viewHistoryRef.current = viewHistory;
+  // ---- 工作区导航 = **真实浏览器历史**（History API；2026-10-07 二轮重写）----
+  //
+  // 一轮的教训：硬件侧键（和 Alt+←/→）在 Chromium 里由**浏览器进程**处理——不派发
+  // 给页面（页面收不到 button 3/4 的 mousedown），直接导航 WebContents 自己的历史栈
+  //（electron#22202；CDP 合成事件走另一条管线，所以页面监听方案在真机必然失效）。
+  // pushState 推的条目就在那个栈里（electron#22269 佐证）。所以「跟网页一样」的
+  // 唯一实现：每次切页 pushState 一个条目，popstate 时把视图读回来——浏览器历史
+  // 就是我们的栈，侧键/Alt+方向/浏览器后退全部原生生效。
   const [settingsOpen, setSettingsOpen] = useState(false);
   const settingsOpenRef = useRef(settingsOpen);
   settingsOpenRef.current = settingsOpen;
@@ -99,11 +101,43 @@ function AppBody({ source }: { source: AgentSource }) {
    *  清——它只是当前窗口的查看方式）。 */
   const [outlineOpen, setOutlineOpen] = useState(true);
 
-  /** 工作区导航的唯一收口：换状态 + 把落点压进浏览历史（连续同页去重在 pushView 里）。 */
+  /** 最后写进浏览器历史的那个视图：popstate 是异步事实，用它区分「UI 导航要 push」
+   *  与「历史条目已是它」（同页重复聚焦不该堆出重复条目）。 */
+  const pushedViewRef = useRef<WorkspaceView>("chat");
+
+  /** 工作区导航的唯一收口：换状态 + 把落点写进真实浏览器历史（侧键可退回的依据）。 */
   const pushWorkspace = useCallback((next: WorkspaceTabsState) => {
     workspaceStateRef.current = next;
     setWorkspaceState(next);
-    setViewHistory((h) => pushView(h, next.active));
+    if (next.active !== pushedViewRef.current) {
+      pushedViewRef.current = next.active;
+      try {
+        window.history.pushState({ lxView: next.active }, "");
+      } catch {
+        // app:// 自定义协议或极端环境下 pushState 可能被拒——退化为无历史（侧键无效），
+        // 应用功能不受影响。不能让导航历史炸掉一次 UI 导航。
+      }
+    }
+  }, []);
+
+  // 初始条目打上标记；popstate = 用户按了侧键/Alt+方向/浏览器后退——把条目落回工作区
+  //（state 为 null = 退到了首条 → 回聊天）。重开已关的子会话标签是**有意**的：
+  // 浏览器后退到一页就是把它恢复出来（focusHistoryView）。
+  useEffect(() => {
+    try {
+      window.history.replaceState({ lxView: pushedViewRef.current }, "");
+    } catch { /* 同上：没有历史就没有侧键，应用照常 */ }
+    const onPop = (e: PopStateEvent) => {
+      const target = (e.state?.lxView as WorkspaceView | undefined) ?? "chat";
+      const cur = workspaceStateRef.current;
+      if (cur.active === target) return;
+      const next = focusHistoryView(cur, target);
+      workspaceStateRef.current = next;
+      setWorkspaceState(next);
+      pushedViewRef.current = target;
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
   }, []);
 
   const openWorkspace = useCallback((page: WorkspacePage) => {
@@ -144,52 +178,6 @@ function AppBody({ source }: { source: AgentSource }) {
     void source.resumeSession(id);
     backToChat();
   };
-
-  // ---- 鼠标侧键 = 网页式后退/前进（button 3 = 后退，4 = 前进；2026-10-07 用户要求）----
-  // 监听挂在 capture 层：侧键不该触发页面上的任何交互（误按在消息上不该开始选择文本）。
-  // Chromium 在 Windows 上把侧键作为 button 3/4 的 mousedown/mouseup/auxclick 序列派发，
-  // 三处都 preventDefault——Electron 的 webContents 自带导航历史，不能让默认行为吞掉。
-  const jumpHistory = useCallback((dir: "back" | "forward") => {
-    const cur = workspaceStateRef.current;
-    // 可达性：chat 恒在、固定页签随时可重开；**子会话标签必须还在打开列表里**——
-    // 关掉的不悄悄复活（stepView 会跳过并丢弃死条目）。
-    const alive = (v: WorkspaceView) => v === "chat" || isWorkspacePage(v) || cur.tabs.includes(v);
-    const step = stepView(viewHistoryRef.current, dir, alive);
-    if (!step) return;
-    viewHistoryRef.current = step.history;
-    setViewHistory(step.history);
-    const target = step.view;
-    const next = target === "chat"
-      ? focusChatTab(cur)
-      : isWorkspacePage(target)
-        ? focusWorkspacePage(cur, target)
-        : focusWorkspaceTab(cur, target);
-    workspaceStateRef.current = next;
-    setWorkspaceState(next);
-  }, []);
-  useEffect(() => {
-    // 导航只在 **mousedown** 做：Chromium 把一次侧键按成 mousedown+mouseup(+auxclick)
-    // 三个事件，全程导航 = 一次按键跳两步（实测踩过）。
-    const onSide = (e: MouseEvent) => {
-      if (e.button !== 3 && e.button !== 4) return;
-      e.preventDefault();
-      // 设置是模态覆盖层，不进页历史——开着设置时侧键不动页面（关掉再退才是清晰语义）
-      if (settingsOpenRef.current) return;
-      jumpHistory(e.button === 3 ? "back" : "forward");
-    };
-    // mouseup/auxclick 只压默认行为（Electron 的 webContents 导航），不重复导航
-    const suppress = (e: MouseEvent) => {
-      if (e.button === 3 || e.button === 4) e.preventDefault();
-    };
-    window.addEventListener("mousedown", onSide, true);
-    window.addEventListener("mouseup", suppress, true);
-    window.addEventListener("auxclick", suppress, true);
-    return () => {
-      window.removeEventListener("mousedown", onSide, true);
-      window.removeEventListener("mouseup", suppress, true);
-      window.removeEventListener("auxclick", suppress, true);
-    };
-  }, [jumpHistory]);
 
   // live 写失败桥（AgentsProvider 的乐观更新 WS 调用失败 → 一次性提示）
   useEffect(() => {
