@@ -215,12 +215,63 @@ func TestReleaseWorktreeRefusesUncommittedAndUntrackedChanges(t *testing.T) {
 	}
 }
 
-func TestCreateWorktreeRequiresCommittedHEAD(t *testing.T) {
+// 零提交且完全干净的仓库：自动补一个空的初始提交做基线，会话照常建工作树。
+// 钉住两点：基线提交是空的（用户目录里什么都没被带进历史）；基线之后流程与普通仓库一致。
+func TestCreateWorktreeAutoBaselinesEmptyRepo(t *testing.T) {
 	repo := t.TempDir()
 	gitTest(t, repo, "init")
+	gitTest(t, repo, "config", "user.name", "Test")
+	gitTest(t, repo, "config", "user.email", "test@example.invalid")
+	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
+	wt, err := CreateWorktree(repo, worktreeRoot, "project", "session")
+	if err != nil {
+		t.Fatalf("empty repo should auto-baseline, got %v", err)
+	}
+	// 用户仓库历史里只有这一个空提交，且不含任何文件。
+	log := gitTest(t, repo, "log", "--oneline")
+	if n := len(strings.Fields(log)); n != 2 { // hash + 标题
+		t.Fatalf("baseline history = %q, want exactly one commit", log)
+	}
+	if !strings.Contains(log, "初始提交") {
+		t.Fatalf("baseline commit message unexpected: %q", log)
+	}
+	if files := gitTest(t, repo, "ls-tree", "-r", "HEAD"); strings.TrimSpace(files) != "" {
+		t.Fatalf("baseline commit must be empty, got files: %q", files)
+	}
+	if wt.BaseCommit != strings.TrimSpace(gitTest(t, repo, "rev-parse", "HEAD")) {
+		t.Fatalf("BaseCommit = %q, want current HEAD", wt.BaseCommit)
+	}
+	if _, err := os.Stat(wt.Path); err != nil {
+		t.Fatalf("worktree missing after baseline: %v", err)
+	}
+	// 幂等重入：第二次 ensure 走恢复路径，不再新建。
+	again, err := CreateWorktree(repo, worktreeRoot, "project", "session")
+	if err != nil || again != wt {
+		t.Fatalf("idempotent create = %+v, %v; want %+v", again, err, wt)
+	}
+}
+
+// 零提交但有未跟踪内容：拒绝自动建基线——绝不代用户提交他们的文件，给可执行指引。
+func TestCreateWorktreeRefusesUnbornWithUntrackedContent(t *testing.T) {
+	repo := t.TempDir()
+	gitTest(t, repo, "init")
+	gitTest(t, repo, "config", "user.name", "Test")
+	gitTest(t, repo, "config", "user.email", "test@example.invalid")
+	if err := os.WriteFile(filepath.Join(repo, "draft.txt"), []byte("not mine to commit\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	_, err := CreateWorktree(repo, filepath.Join(t.TempDir(), "worktrees"), "project", "session")
 	if err == nil || !strings.Contains(err.Error(), "HEAD") {
-		t.Fatalf("unborn repository should fail with actionable HEAD error, got %v", err)
+		t.Fatalf("unborn repo with content should fail with HEAD error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "自行创建一次提交") {
+		t.Fatalf("error should carry actionable guidance, got %v", err)
+	}
+	if log, logErr := runGit(repo, "log", "--oneline"); logErr == nil {
+		t.Fatalf("user repo must stay untouched, got commit: %s", log)
+	}
+	if got, readErr := os.ReadFile(filepath.Join(repo, "draft.txt")); readErr != nil || string(got) != "not mine to commit\n" {
+		t.Fatalf("user file damaged: %q, %v", got, readErr)
 	}
 }
 

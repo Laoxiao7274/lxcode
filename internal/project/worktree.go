@@ -48,7 +48,14 @@ func CreateWorktree(repoPath, worktreeRoot, projectID, sessionID string) (Worktr
 	}
 	base, err := gitOutput(repo, "rev-parse", "--verify", "HEAD")
 	if err != nil {
-		return Worktree{}, fmt.Errorf("项目仓库还没有可用的 HEAD；请先创建一次提交: %w", err)
+		// 零提交仓库没有 HEAD：补一个空的初始提交做基线，项目会话才能建工作树。
+		// 失败时把可执行的指引带回给用户，不静默吞掉。
+		if cerr := baselineEmptyRepoCommit(repo); cerr != nil {
+			return Worktree{}, fmt.Errorf("项目仓库还没有可用的 HEAD；请先创建一次提交: %w", cerr)
+		}
+		if base, err = gitOutput(repo, "rev-parse", "--verify", "HEAD"); err != nil {
+			return Worktree{}, fmt.Errorf("创建基线提交后仍读取不到 HEAD: %w", err)
+		}
 	}
 	base = strings.TrimSpace(base)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -250,6 +257,31 @@ func RemoveWorktree(repoPath string, wt Worktree) error {
 		if out, err := runGit(repo, "branch", "-D", wt.Branch); err != nil {
 			return fmt.Errorf("移除 worktree 分支失败: %v: %s", err, truncate(string(out), 300))
 		}
+	}
+	return nil
+}
+
+// baselineEmptyRepoCommit 给零提交仓库补一个空的初始提交，作为项目会话工作树的基线。
+// 三道守卫：① 确认仓库确实零提交（有提交但 HEAD 不可读 = 异常状态，不自动修）；
+// ② status 必须完全干净（空目录或只剩被忽略的文件）；③ 绝不 git add——用户的
+// 未提交内容不能被暗中写进他们的仓库历史（「创建基线不包含主工作树未提交改动」）。
+func baselineEmptyRepoCommit(repo string) error {
+	count, err := gitOutput(repo, "rev-list", "--all", "--count")
+	if err != nil {
+		return fmt.Errorf("确认仓库提交数失败: %w", err)
+	}
+	if strings.TrimSpace(count) != "0" {
+		return fmt.Errorf("仓库存在提交但 HEAD 不可读，请手动检查该仓库状态")
+	}
+	status, err := runGit(repo, "status", "--porcelain=v1")
+	if err != nil {
+		return fmt.Errorf("检查仓库状态失败: %s", truncate(strings.TrimSpace(string(status)), 200))
+	}
+	if strings.TrimSpace(string(status)) != "" {
+		return fmt.Errorf("仓库有未提交内容，不会代你提交；请先自行创建一次提交（git add -A && git commit -m \"初始提交\"）后重试")
+	}
+	if out, err := runGit(repo, "commit", "--allow-empty", "--no-verify", "-m", "初始提交"); err != nil {
+		return fmt.Errorf("创建初始提交失败（检查 git 身份配置 user.name / user.email）: %s", truncate(strings.TrimSpace(string(out)), 300))
 	}
 	return nil
 }
