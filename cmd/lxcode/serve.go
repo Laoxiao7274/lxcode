@@ -14,6 +14,7 @@ import (
 
 	"github.com/moyunteng/lxcode/internal/config"
 	"github.com/moyunteng/lxcode/internal/jobs"
+	"github.com/moyunteng/lxcode/internal/modelcatalog"
 	"github.com/moyunteng/lxcode/internal/server"
 	"github.com/moyunteng/lxcode/internal/store"
 	"github.com/moyunteng/lxcode/internal/websearch"
@@ -95,8 +96,31 @@ func runServe(ctx context.Context, path, addr, sessionsDir string) error {
 		log.Printf("搜索渠道配置: %s（就绪=%v）", searchSvc.Path(), searchSvc.Ready())
 	}
 
+	// 可选模型目录（缓存落 config/model-catalog.json）。它是**只读查询**服务：
+	// 加载不碰磁盘配置、失败不拒绝启动——拉不到就退化成「手工填模型 ID」，
+	// 而那正是没有它之前的行为。
+	catalogSvc := modelcatalog.LoadService(resolveCatalogPath(path))
+	srv.AttachModelCatalog(catalogSvc)
+	log.Printf("模型目录: %s（源 %s）", resolveCatalogPath(path), modelcatalog.SourceURL)
+	// 后台预热：首次拉取要几秒（实测 5 MB / ~5s），预热过设置面板一开就是热的。
+	// 失败只记日志——真正的错误会在用户打开设置时如实回报。
+	go func() {
+		if _, err := catalogSvc.Providers(ctx, false); err != nil {
+			log.Printf("模型目录预热失败（打开设置时会重试）: %v", err)
+		}
+	}()
+
 	go reloadLoop(ctx, reg, searchSvc, srv)
 	return srv.Run(ctx, addr)
+}
+
+// resolveCatalogPath 决定模型目录缓存的路径：与 models.json 同目录（同
+// resolveSearchPath 的理由——同一份部署配置的一部分，不另开 flag）。
+func resolveCatalogPath(modelsPath string) string {
+	if env := os.Getenv("LXCODE_MODEL_CATALOG"); env != "" {
+		return env
+	}
+	return filepath.Join(filepath.Dir(modelsPath), "model-catalog.json")
 }
 
 // resolveSearchPath 决定搜索渠道配置路径：与 models.json 同目录。

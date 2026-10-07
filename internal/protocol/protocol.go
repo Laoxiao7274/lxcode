@@ -28,10 +28,22 @@ const (
 	MethodModelRemove = "model.remove"
 	MethodModelEnable = "model.enable"
 	MethodRoleSet     = "role.set"
-	MethodChatSend    = "chat.send"
-	MethodChatCancel  = "chat.cancel"
-	MethodChatHistory = "chat.history"
-	MethodToolConfirm = "tool.confirm"
+
+	// ---- 模型目录与端点探测（models.dev 目录，与 pi-ai 的生成目录同源）----
+	//
+	// 目录回答「有哪些模型可选」（厂商 → 模型元数据：上下文窗口、能力位；免 key，
+	// 可用磁盘缓存离线服务）；探测回答「这个端点**实际**提供什么」（自建端点不在
+	// 目录里）。两者都**不改注册表**——注册表仍是唯一事实源，用户勾选后才写进去。
+	//
+	// 都在后端做：CSP 的 connect-src 不放行外域，且对外使用 API key 的位置只能
+	// 是后端（前端只传 provider id 或用户正在填的端点）。
+	MethodModelCatalogList   = "model.catalog.list"
+	MethodModelCatalogModels = "model.catalog.models"
+	MethodModelDiscover      = "model.discover"
+	MethodChatSend           = "chat.send"
+	MethodChatCancel         = "chat.cancel"
+	MethodChatHistory        = "chat.history"
+	MethodToolConfirm        = "tool.confirm"
 	// MethodChatCompact 手动压缩历史（空闲才允许——服务端返回 ErrBusy 映射的
 	// 错误码）。参数可带 agent（与 chat.send 同语义：空 = 主 Agent）。
 	MethodChatCompact = "chat.compact"
@@ -231,6 +243,30 @@ type ModelEnableParams struct {
 type RoleSetParams struct {
 	Role    string `json:"role"`
 	ModelID string `json:"model_id"` // 空串 = 解绑
+}
+
+// ModelCatalogListParams 是 model.catalog.list 的参数。
+// Refresh 忽略 TTL 强制重拉（用户点「刷新目录」时用）。
+type ModelCatalogListParams struct {
+	Refresh bool `json:"refresh,omitempty"`
+}
+
+// ModelCatalogModelsParams 是 model.catalog.models 的参数（按厂商取模型明细）。
+type ModelCatalogModelsParams struct {
+	Provider string `json:"provider"`
+	Refresh  bool   `json:"refresh,omitempty"`
+}
+
+// ModelDiscoverParams 是 model.discover 的参数（探测端点的模型清单）。
+//
+// 两种寻址方式，ID 优先：
+//   - ID：已注册模型条目的 id——复用它那条的连接配置（key 不必再过一遍 wire）；
+//   - BaseURL + APIKey + Format：还没进注册表的新端点（自定义提供商表单）。
+type ModelDiscoverParams struct {
+	ID      string `json:"id,omitempty"`
+	BaseURL string `json:"base_url,omitempty"`
+	APIKey  string `json:"api_key,omitempty"`
+	Format  string `json:"format,omitempty"`
 }
 
 // 推理强度档位（chat.send 可选参数；空 = 模型默认）。

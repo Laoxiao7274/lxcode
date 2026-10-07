@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/moyunteng/lxcode/internal/llm"
+	"github.com/moyunteng/lxcode/internal/modelcatalog"
 	"github.com/moyunteng/lxcode/internal/tools"
 )
 
@@ -1110,4 +1112,63 @@ func mustUnmarshal(t *testing.T, b []byte, v any) {
 	if err := json.Unmarshal(b, v); err != nil {
 		t.Fatalf("解析失败: %v (%s)", err, b)
 	}
+}
+
+// TestModelCatalogWireShapes 钉住目录/探测的线格式：前端按这些字段名读，
+// 改名不会编译报错、只会静默丢字段（正是帧契约测试存在的理由）。
+func TestModelCatalogWireShapes(t *testing.T) {
+	t.Run("参数用 snake_case", func(t *testing.T) {
+		b := mustMarshal(t, ModelDiscoverParams{ID: "m1", BaseURL: "https://x", APIKey: "k", Format: "openai"})
+		var m map[string]any
+		mustUnmarshal(t, b, &m)
+		if m["id"] != "m1" || m["base_url"] != "https://x" || m["api_key"] != "k" || m["format"] != "openai" {
+			t.Fatalf("探测参数形状不符: %s", b)
+		}
+		b = mustMarshal(t, ModelCatalogModelsParams{Provider: "deepseek", Refresh: true})
+		mustUnmarshal(t, b, &m)
+		if m["provider"] != "deepseek" || m["refresh"] != true {
+			t.Fatalf("模型清单参数形状不符: %s", b)
+		}
+		// refresh 是可选开关：不刷时整键缺席，别让对端以为「显式要刷新」
+		b = mustMarshal(t, ModelCatalogListParams{})
+		if strings.Contains(string(b), "refresh") {
+			t.Fatalf("未指定 refresh 应整键缺席: %s", b)
+		}
+	})
+
+	t.Run("结果载荷字段名", func(t *testing.T) {
+		b := mustMarshal(t, modelcatalog.ProviderList{
+			FetchedAt: time.Unix(0, 0).UTC(),
+			Stale:     true,
+			Providers: []modelcatalog.Provider{{ID: "deepseek", Name: "DeepSeek",
+				API: "https://api.deepseek.com", Format: "openai", ModelCount: 4}},
+		})
+		var m map[string]any
+		mustUnmarshal(t, b, &m)
+		if m["stale"] != true {
+			t.Fatalf("stale 位不符: %s", b)
+		}
+		p := m["providers"].([]any)[0].(map[string]any)
+		for _, k := range []string{"id", "name", "api", "format", "model_count"} {
+			if _, ok := p[k]; !ok {
+				t.Fatalf("厂商载荷缺 %s: %s", k, b)
+			}
+		}
+		// 列表载荷不带模型明细
+		if _, ok := p["models"]; ok {
+			t.Fatalf("厂商列表不该带模型明细: %s", b)
+		}
+
+		b = mustMarshal(t, modelcatalog.DiscoverResult{
+			Endpoint: "https://x/v1/models", Format: "openai",
+			Models: []modelcatalog.Discovered{{ID: "m1", Name: "M1"}},
+		})
+		mustUnmarshal(t, b, &m)
+		if m["endpoint"] != "https://x/v1/models" || m["format"] != "openai" {
+			t.Fatalf("探测结果形状不符: %s", b)
+		}
+		if m["models"].([]any)[0].(map[string]any)["id"] != "m1" {
+			t.Fatalf("探测模型形状不符: %s", b)
+		}
+	})
 }

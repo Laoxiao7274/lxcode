@@ -20,6 +20,7 @@ import (
 	"github.com/moyunteng/lxcode/internal/config"
 	"github.com/moyunteng/lxcode/internal/jobs"
 	"github.com/moyunteng/lxcode/internal/mcp"
+	"github.com/moyunteng/lxcode/internal/modelcatalog"
 	"github.com/moyunteng/lxcode/internal/project"
 	"github.com/moyunteng/lxcode/internal/protocol"
 	"github.com/moyunteng/lxcode/internal/sessiondata"
@@ -34,6 +35,10 @@ type Server struct {
 	st   *store.Store    // 保存引用：会话管理方法（rename/archive）直通存储
 	// search 是网页搜索渠道服务（AttachSearch 装配；nil = 未装配）。
 	search *websearch.Service
+	// catalog 是可选模型目录服务（AttachModelCatalog 装配；nil = 未装配，
+	// 目录与探测方法返回「未装配」）。与 search 不同，它是**无状态查询**：
+	// 不写配置、不广播事件，所以没有热加载与变更通知。
+	catalog *modelcatalog.Service
 	// jobs 是后台任务管理器（AttachJobs 装配；nil = 未装配）。任务注册表是
 	// 进程级单例——工具面与协议面共用同一个实例。
 	jobsMu sync.Mutex
