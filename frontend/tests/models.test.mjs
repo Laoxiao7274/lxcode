@@ -136,3 +136,19 @@ test('目录标签措辞与注册表行逐字一致', () => {
   const [p] = mapModels([{ ...entry, capabilities: { tools: true, vision: true, reasoning: true } }]);
   assert.deepEqual(p.models[0].tags, catalogTags({ id: 'x', tools: true, vision: true, reasoning: true }));
 });
+
+test('探测结果与目录模型同构：DiscoveredModel 直接复用 catalogMetadata 映射', () => {
+  // 后端探测时按 id 从目录回填了同款字段（best-effort，缺省 = 未知）；前端
+  // addDiscovered 拿同一份映射写注册表——结构化契约漂移了这里先炸。
+  const discovered = { id: 'glm-5.3-flash', name: 'GLM-5.3 Flash', context_window: 128_000, max_output_tokens: 8_192, tools: true, vision: true, reasoning: true };
+  const meta = catalogMetadata(discovered);
+  assert.equal(meta.context_window, 128_000);
+  assert.equal(meta.max_output_tokens, 8_192);
+  assert.deepEqual(meta.capabilities, { tools: true, vision: true, json_output: false, reasoning: true });
+
+  // 目录查不到的探测结果（自建端点自定义模型）：保持未知，一个数都不编。
+  const bare = catalogMetadata({ id: 'custom-local' });
+  assert.equal(bare.context_window, undefined);
+  assert.equal(bare.max_output_tokens, undefined);
+  assert.deepEqual(bare.capabilities, { tools: false, vision: false, json_output: false, reasoning: false });
+});

@@ -252,7 +252,12 @@ export function SettingsProvider({ source, children }: { source: AgentSource; ch
     if (models.length === 0) return false;
     if (admin) {
       const snapshot = admin.models().models;
-      return addBatch(models.map((m) => m.id), (id) => modelForProvider(snapshot, providerId, id));
+      return addBatch(models.map((m) => m.id), (id) => {
+        const found = models.find((m) => m.id === id)!;
+        // 元数据后端探测时已按 id 从目录回填：有就带上（catalogMetadata 里
+        // 带「输出≥窗口不填」的守卫），没有保持未知——绝不猜。
+        return { ...modelForProvider(snapshot, providerId, id), ...catalogMetadata(found) };
+      });
     }
     setDemo((ps) => ps.map((p) => p.id === providerId
       ? { ...p, models: [...p.models, ...models.map((m) => demoModel(m.id))] }

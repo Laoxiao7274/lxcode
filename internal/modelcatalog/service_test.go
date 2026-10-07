@@ -216,3 +216,93 @@ func TestFetchRemoteParsesAndRejectsStatus(t *testing.T) {
 		t.Fatal("非 200 必须报错")
 	}
 }
+
+// 探测结果按模型 id 从**内存**目录快照回填元数据；目录查不到的保持未知（不编数）。
+func TestDiscoverEnrichesFromCatalogSnapshot(t *testing.T) {
+	endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[{"id":"glm-5.3-flash"},{"id":"custom-local"}]}`))
+	}))
+	defer endpoint.Close()
+
+	s := testService(nil)
+	s.catalog = &Catalog{FetchedAt: time.Now(), Providers: []Provider{{
+		ID: "zhipu", Name: "Zhipu", API: "https://open.zhipu.com", Format: "openai",
+		Models: []Model{
+			{ID: "glm-5.3-flash", Name: "GLM-5.3 Flash", Context: 128000, MaxOutput: 8192, Tools: true, Vision: true, Reasoning: true},
+		},
+	}}}
+
+	res, err := s.Discover(context.Background(), DiscoverInput{BaseURL: endpoint.URL, Format: "openai"})
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	byID := map[string]Discovered{}
+	for _, m := range res.Models {
+		byID[m.ID] = m
+	}
+	got, ok := byID["glm-5.3-flash"]
+	if !ok {
+		t.Fatal("探测结果缺 glm-5.3-flash")
+	}
+	if got.Context != 128000 || got.MaxOutput != 8192 || !got.Tools || !got.Vision || !got.Reasoning {
+		t.Fatalf("目录元数据没回填: %+v", got)
+	}
+	if m := byID["custom-local"]; m.Context != 0 || m.Tools || m.Reasoning {
+		t.Fatalf("目录里没有的模型不该被编出元数据: %+v", m)
+	}
+}
+
+// 目录里「上限≥窗口」的坏行（数据源有 ~14%）：输出必须留空——照抄会被
+// config.validate 硬拒（输入+输出超限），模型整条加不进去；留空 = 未知。
+func TestDiscoverSkipsOutputThatWouldFailValidate(t *testing.T) {
+	endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[{"id":"bad-limits"}]}`))
+	}))
+	defer endpoint.Close()
+
+	s := testService(nil)
+	s.catalog = &Catalog{FetchedAt: time.Now(), Providers: []Provider{{
+		ID: "p", Name: "P", API: "https://p.example.com", Format: "openai",
+		Models: []Model{{ID: "bad-limits", Context: 8000, MaxOutput: 8000, Tools: true}},
+	}}}
+
+	res, err := s.Discover(context.Background(), DiscoverInput{BaseURL: endpoint.URL, Format: "openai"})
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if len(res.Models) != 1 {
+		t.Fatalf("模型数 = %d，期望 1", len(res.Models))
+	}
+	got := res.Models[0]
+	if got.Context != 8000 || got.MaxOutput != 0 {
+		t.Fatalf("上限≥窗口时输出必须留空: %+v", got)
+	}
+	if !got.Tools {
+		t.Fatalf("能力位应正常回填: %+v", got)
+	}
+}
+
+// 目录不在内存（未装配/没缓存）：探测照常工作，只是没元数据——绝不报错，
+// 也绝不为元数据触发一次目录网络拉取（探测是用户正在等的交互）。
+func TestDiscoverWorksWithoutCatalogSnapshot(t *testing.T) {
+	endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[{"id":"m"}]}`))
+	}))
+	defer endpoint.Close()
+
+	s := testService(func(context.Context) (*Catalog, error) {
+		t.Error("目录不在内存时不该联网刷新")
+		return nil, errors.New("不该联网")
+	})
+
+	res, err := s.Discover(context.Background(), DiscoverInput{BaseURL: endpoint.URL, Format: "openai"})
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if len(res.Models) != 1 || res.Models[0].ID != "m" {
+		t.Fatalf("探测结果不对: %+v", res.Models)
+	}
+	if res.Models[0].Context != 0 || res.Models[0].Tools {
+		t.Fatalf("没有目录时不该有元数据: %+v", res.Models[0])
+	}
+}

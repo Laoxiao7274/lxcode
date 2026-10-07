@@ -37,6 +37,7 @@
 - **鉴权约定与 `internal/llm` 一致**：openai → `Authorization: Bearer <key>`；anthropic → `x-api-key` + `anthropic-version: 2023-06-01`；**无 key 不发鉴权头**（自建端点常见）。
 - **不做 SSRF 守卫是刻意的**：探测目标就是用户自己的端点（局域网 / localhost 是主要场景），加内网拦截会把主要用途挡掉。`validateBaseURL` 只校验「是不是 http(s) 地址」。
 - **错误必须自解释**：401/403 → 「端点返回 HTTP 401（检查 API Key）」+ 端点回显的错误正文；404 → 「端点没有 /v1/models」。实测真 `api.deepseek.com` + 假 key 报 `HTTP 401（检查 API Key）: {"error":{"message":"Authentication Fails, Your api key: ****ance is invalid"...`——这条同时证明 key 真的被用上了。
+- **目录按 id 回填元数据（best-effort，2026-10-07）**：探测结果的每个模型带 `context_window`/`max_output_tokens`/能力位——探测出的裸 id 用户勾选后本要手填这些，目录里有就替他填了。三条边界：① **只用内存快照，绝不触发目录刷新**（探测是用户正在等的交互，不为锦上添花多等 15s）；② 同 id 多厂商取目录序第一个（稳定）；③ **输出≥窗口时输出留空**（与 `catalogMetadata` 同一守卫——照抄会被 validate 硬拒，模型整条加不进去）。目录查不到的保持未知，不编数。
 - 去重 + 按 id 排序；响应同时接受 `data`（OpenAI）与 `models`（部分网关）两个键。
 
 ## 协议
@@ -50,7 +51,7 @@
 
 ## 前端：三条路径收敛到同一条
 
-目录（免 key、带元数据）/ 探测（自建端点、只有 id/name）/ 手工填 ID（老路径，仍然保留）三条路**都收敛到「候选清单 → 用户勾选 → 写注册表」**：
+目录（免 key、带元数据）/ 探测（自建端点，**元数据由目录按 id 回填**，查不到的仍未知）/ 手工填 ID（老路径，仍然保留）三条路**都收敛到「候选清单 → 用户勾选 → 写注册表」**：
 
 - **绝不自动添加**：目录 6600+ 个模型，自动写入会把选择器淹掉；探测面板也**默认不预勾选**（预勾选在 3 个模型时方便、在 200 个时是灾难——可预期胜过聪明）。唯一例外是自定义表单探测后默认全选，因为那是用户刚亲手点的「列出这个端点有什么」。
 - **演示模式映射成同一套载荷形状**（`settings-catalog.ts` 的 `demoCatalogProviderList`/`demoCatalogModelList`）：好处是**连接对话框只有一条代码路径**，不必在 UI 里到处写 `live ? ... : ...`。

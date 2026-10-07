@@ -569,10 +569,16 @@ export interface CatalogModelList {
   models: CatalogModel[];
 }
 
-/** 探测到的一个模型。 */
+/** 探测到的一个模型。元数据由后端按 id 从目录回填（best-effort）；缺省 = 未知。 */
 export interface DiscoveredModel {
   id: string;
   name?: string;
+  context_window?: number;
+  max_output_tokens?: number;
+  tools?: boolean;
+  vision?: boolean;
+  json_output?: boolean;
+  reasoning?: boolean;
 }
 
 /** 端点探测结果。 */

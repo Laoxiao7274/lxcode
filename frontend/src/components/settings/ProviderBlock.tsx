@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState, type MouseEvent } from "react";
 import { gsap } from "gsap";
 import { useSettings, type ProviderMeta } from "../../shared/settings";
+import { catalogTags } from "../../shared/settings-models";
 import { motionAllowed, staggerIn, enterEase } from "../../shared/motion";
 import { collapseAway, playEnter } from "../../shared/anim";
 import { kfmtLimit } from "../../shared/format";
@@ -229,6 +230,12 @@ function ProviderBlock({ provider, onEditModel }: { provider: ProviderMeta; onEd
                     <span className="mset-model-name">{c.name || c.id}</span>
                     <span className="mset-model-meta">
                       <span className="mset-model-id">{c.id}</span>
+                      {((c.context_window ?? 0) > 0 || (c.max_output_tokens ?? 0) > 0) && (
+                        <span className="mset-model-ctx">上下文 {kfmtLimit(c.context_window ?? 0)} · 输出 {kfmtLimit(c.max_output_tokens ?? 0)}</span>
+                      )}
+                      {catalogTags(c).map((t) => (
+                        <span key={t} className="mset-model-tag">{t}</span>
+                      ))}
                       <span className="mset-model-tag">新发现</span>
                     </span>
                   </span>

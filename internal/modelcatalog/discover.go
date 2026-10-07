@@ -23,10 +23,19 @@ type DiscoverInput struct {
 	Format  string // 空 = openai
 }
 
-// Discovered 是探测到的一个模型。
+// Discovered 是探测到的一个模型。元数据字段由目录按 id 回填（best-effort）：
+// 目录里查不到就保持缺省 = 未知——探测的主价值是「这个端点有什么」，元数据
+// 只是让勾选添加后的注册表条目不用再手填，绝不为它编数。
 type Discovered struct {
 	ID   string `json:"id"`
 	Name string `json:"name,omitempty"`
+	// 以下回填自目录快照（models.dev）。缺省 = 目录里没有 / 目录服务未装配。
+	Context   int  `json:"context_window,omitempty"`
+	MaxOutput int  `json:"max_output_tokens,omitempty"`
+	Tools     bool `json:"tools,omitempty"`
+	Vision    bool `json:"vision,omitempty"`
+	JSONOut   bool `json:"json_output,omitempty"`
+	Reasoning bool `json:"reasoning,omitempty"`
 }
 
 // DiscoverResult 是探测结果载荷（model.discover 的结果）。
@@ -117,7 +126,49 @@ func (s *Service) Discover(ctx context.Context, in DiscoverInput) (DiscoverResul
 	}
 	// 端点给什么顺序都有（有的按 created 倒序、有的字典序），排一遍让 UI 稳定。
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	s.enrichFromCatalog(out)
 	return DiscoverResult{Endpoint: endpoint, Format: format, Models: out}, nil
+}
+
+// enrichFromCatalog 用**内存中的**目录快照按模型 id 给探测结果补元数据。
+//
+// 两条刻意的设计：
+//   - 只读内存快照（s.catalog），不触发目录刷新——探测是用户正在等的一个交互，
+//     为锦上添花的元数据多等一次 15s 的目录拉取不值；快照不在内存就跳过
+//     （服务启动时已尽力装缓存，实际命中率很高）。
+//   - 同一模型 id 可能出现在多个厂商（gpt-4o 在 openai 与 azure 都有）：取目录
+//     序第一个（厂商已按名称/ID 排序，结果稳定），不猜哪个更对。
+func (s *Service) enrichFromCatalog(models []Discovered) {
+	s.mu.RLock()
+	cat := s.catalog
+	s.mu.RUnlock()
+	if cat == nil {
+		return
+	}
+	index := make(map[string]Model)
+	for _, p := range cat.Providers {
+		for _, m := range p.Models {
+			if _, ok := index[m.ID]; !ok {
+				index[m.ID] = m
+			}
+		}
+	}
+	for i := range models {
+		cm, ok := index[models[i].ID]
+		if !ok {
+			continue
+		}
+		models[i].Context = cm.Context
+		models[i].Tools = cm.Tools
+		models[i].Vision = cm.Vision
+		models[i].JSONOut = cm.JSONOut
+		models[i].Reasoning = cm.Reasoning
+		// 上限不小于窗口时不填（与前端 catalogMetadata 同一守卫）：config.validate
+		// 硬拒这种组合（输入+输出会超限），照抄会让模型整条加不进去。留空 = 未知。
+		if cm.MaxOutput > 0 && (cm.Context == 0 || cm.MaxOutput < cm.Context) {
+			models[i].MaxOutput = cm.MaxOutput
+		}
+	}
 }
 
 // applyAuth 按格式挂鉴权头。无 key 不挂（自建端点常不鉴权，挂了反而被拒）。
