@@ -238,6 +238,9 @@ export interface HistorySnapshot {
   /** 该会话实际用的模型 id（子会话就是它自己 Agent 的模型）。未知 → 整键缺席，
    *  显示中性态——不编一个模型名。 */
   model?: string;
+  /** 该会话**此刻**的权限档（后端 LiveApproval）。缺省 = 后端没报（老后端/演示源）
+   *  ——显示端不猜，保持本地设置不动。主会话之间隔离的显示依据。 */
+  approval?: ApprovalMode;
 }
 
 /** 历史消息（llm.Message 的 wire 形态）。 */

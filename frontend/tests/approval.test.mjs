@@ -107,8 +107,7 @@ test('反向同步只认当前会话（多客户端不串台）', () => {
   assert.equal(approvalSyncTarget({ type: 'busy', sessionId: 's1', busy: true }, 's1'), null);
 });
 
-test('收到 chat.approvalChanged 同步设置（订阅路径：事件 → 设置写入）', (t) => {
-  const listeners = new Set();
+test('收到 chat.approvalChanged 同步设置（订阅路径：事件 → 设置写入）', (t) => {  const listeners = new Set();
   const fakeSource = { subscribe(l) { listeners.add(l); return () => listeners.delete(l); } };
   const applied = [];
   const off = subscribeApprovalSync(fakeSource, (mode) => applied.push(mode));
@@ -128,6 +127,31 @@ test('收到 chat.approvalChanged 同步设置（订阅路径：事件 → 设�
 
   deliver(mapEvent('chat.delta', { session_id: 's1', kind: 'text', text: 'x' }));
   assert.deepEqual(applied, ['auto', 'confirm'], '无关事件不触发设置写入');
+});
+
+// ---------- ②b 装载历史按该会话的真实档位对齐显示（主会话之间隔离） ----------
+
+test('切回主会话按 chat.history 的 approval 对齐显示（主会话之间隔离）', (t) => {
+  const listeners = new Set();
+  const fakeSource = { subscribe(l) { listeners.add(l); return () => listeners.delete(l); } };
+  const applied = [];
+  const off = subscribeApprovalSync(fakeSource, (mode) => applied.push(mode));
+  t.after(off);
+  const deliver = (ev) => listeners.forEach((l) => l(ev));
+
+  deliver({ type: 'sessionFocused', id: 's1' });
+  deliver({ type: 'historyLoaded', sessionId: 's1', history: { sessionId: 's1', messages: [], busy: false, pending: null, todos: [], approval: 'strict' } });
+  assert.deepEqual(applied, ['strict'], '装载历史时按该会话后端里的真实档位对齐显示');
+
+  deliver({ type: 'sessionFocused', id: 's2' });
+  deliver({ type: 'historyLoaded', sessionId: 's1', history: { sessionId: 's1', messages: [], busy: false, pending: null, todos: [], approval: 'auto' } });
+  assert.deepEqual(applied, ['strict'], '别的会话的历史不落本端显示（档位不串台）');
+
+  deliver({ type: 'historyLoaded', sessionId: 's2', history: { sessionId: 's2', messages: [], busy: false, pending: null, todos: [] } });
+  assert.deepEqual(applied, ['strict'], '快照没带 approval（老后端/演示源）时不猜');
+
+  deliver({ type: 'historyLoaded', sessionId: 'child-9', history: { sessionId: 'child-9', messages: [], busy: false, pending: null, todos: [], approval: 'auto' } });
+  assert.deepEqual(applied, ['strict'], '子会话的历史装载不改主会话的档位显示');
 });
 
 // ---------- 演示实现（能力接口三个实现都要有） ----------

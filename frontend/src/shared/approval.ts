@@ -25,11 +25,20 @@ export function approvalSyncTarget(ev: AgentEvent, currentSessionId: string): Ap
 
 /** 订阅后端广播的权限档变更并落到设置（返回退订——SettingsProvider 的 effect
  *  直接返回它）。当前会话从事件流里跟：sessionFocused 是「当前会话」的唯一事实
- *  源，另立一份状态迟早与它漂移。 */
+ *  源，另立一份状态迟早与它漂移。
+ *
+ *  **主会话之间隔离**（2026-10-07 用户要求）：档位是会话级状态，但本地设置只有
+ *  一份——切到别的会话时显示端会沿用上一会话的本地值（串台）。chat.history 现在
+ *  回带该会话此刻的档位，装载历史时按它对齐显示：每个主会话显示的都是它自己
+ *  后端里的真实档位。快照没带 approval（老后端/演示源）时不写——不猜。 */
 export function subscribeApprovalSync(source: AgentSource, apply: (mode: ApprovalMode) => void): () => void {
   let current = "";
   return source.subscribe((ev) => {
     if (ev.type === "sessionFocused") { current = ev.id; return; }
+    if (ev.type === "historyLoaded") {
+      if (ev.sessionId === current && ev.history.approval !== undefined) apply(ev.history.approval);
+      return;
+    }
     const mode = approvalSyncTarget(ev, current);
     if (mode) apply(mode);
   });

@@ -355,6 +355,10 @@ type ChatHistoryResult struct {
 	// 与 Messages[].model 的区别：那是**每轮**实际用的（历史事实），这是**此刻**
 	// 解析出来的（会话还没跑过任何一轮时也有值）。
 	Model string `json:"model,omitempty"`
+	// Approval 是该会话**此刻**的权限档（LiveApproval：子会话 = 取严(父实时, 自身默认)）。
+	// 前端据此做「主会话之间隔离」的档位显示——每个会话显示它自己后端里的真实档位，
+	// 而不是上一会话残留的本地值。空 = 后端没报（老后端），前端回落 confirm。
+	Approval string `json:"approval,omitempty"`
 }
 
 // ContextUsage 是上下文占用的 wire 形态（agent.ContextUsage 的映射——内核类型

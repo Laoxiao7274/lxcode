@@ -61,19 +61,25 @@ confirmRequest 挂待裁决、compacted 插压缩标记）。
 - **待裁决确认卡仍渲染在卡里**：它**不是**过程展示，是必须点得到的操作入口——去掉会让没开子会话
   标签的用户无从批准（会话卡在忙态）。
 
-### 2.4 子会话页头有它**自己的**两条读数（2026-09-30 用户报「上下文 会话信息这些展示没有」）
+### 2.4 子会话页 = 主会话同款完整版式，只锁输入（2026-10-07 用户要求）
 
-子会话是独立会话（AGENTS.md §2.3），所以它有自己的窗口占用与自己的累计消耗——页头必须显示**它
-自己那份**，不是主会话那份：
+用户原话：「输入框什么都应该全部保留，样式完全一致，只是不允许输入而已，不然你得重新做一个页面的样式非常麻烦」——
+所以子会话页不是"页头读数 + 时间线"的简化版，而是与主会话**同一套结构**：
 
-- **`StatsPills`（会话统计 = 整条子会话花了多少）** 与 **`ContextIndicator`（会话用量 = 此刻它自己的
-  窗口里有多少）**，数据都取 `sessionStates[childId]` 的 `stats` / `context`；
-- **数据来源两条腿**：打开标签页时 `source.childHistory` 的 `historyLoaded` 带回子会话的
-  `context`/`stats`；之后的实时 `chat.done` 由 store 双投路由进子会话 state。**后端必须给**：
-  `emit.go` 原先只在 `e.DispatchID == ""` 时挂 `Stats`，子会话的 `chat.done` 因此没有统计（页头永远
-  空着）——现在一律按 `sessionStatsOf(sessionID)` 折叠，子会话按**它自己的 session_id** 取数；
-- **缺席就不渲染**：一步都没有 → 统计胶囊整行不出、上下文未知 → 中性态「—」（AGENTS.md §2.4 的老纪律，
-  这里不破例）。
+- **同一个 `Composer`**（`readOnly`）：输入框（禁用 + 只读占位「只读视图——回到主会话才能发消息」）、
+  三个选择器（Agent/权限/模型，包在 `.pi-controls.pi-locked` 里整组锁定——它们作用的是**主会话**
+  的上下文，在子会话页可交互就是改错会话）、上下文环、统计胶囊，全保留、版式逐字节一致；
+  **上下文环/统计胶囊是读数，保持可点开**，数据就是这个子会话自己的 `stats`/`context`；
+- **页头只剩身份信息**（子会话/模型徽标/只读说明/返回）——读数从页头移进输入条后，
+  「同一块信息两个位置」的分叉就不存在了（§2.5 的 `placement="down"` 因此退役，组件的 prop
+  保留给别的调用方）；
+- **布局机制与主会话同一条**：`.composer-zone` 是 absolute 浮层、`.child-session-body` 按
+  `--composer-h` 预留底部空间、「回到底部」浮标让位输入区——全部照抄 `.thread-scroll` 的规则。
+  `--composer-h` 由 Composer 发布到**最近的工作区面板**（不是 `.main`）：工作区面板保活
+  （隐藏不卸载），聊天页与子会话页的 Composer 可能同时挂载，发布到 `.main` 会互踩；
+- **只读语义的例外不变**：待裁决的确认卡在这一页能批（§2.2）。
+
+（2026-09-30 的旧形态——页头两条读数——被本节取代；数据来源两条腿的纪律照旧生效。）
 
 ### 2.5 弹层方向由调用方显式指定（`placement`）
 
@@ -98,9 +104,11 @@ confirmRequest 挂待裁决、compacted 插压缩标记）。
 
 ## 4. 验收
 
-- 单测：`frontend/tests/store.test.mjs`（双投、两处定格、子会话历史重建不动主时间线）、
+- 单测：`frontend/tests/store.test.mjs`（双投、两处定格、**切完全访问一次性定格** `allowAllPendingConfirms`、
+  子会话历史重建不动主时间线）、
   `frontend/tests/dispatch-card-click.test.mjs`（`open`/`none` 与提示语同源）、
-  `frontend/tests/child-history.test.mjs`（`childHistory` 按子会话 id 寻址且发 `historyLoaded`）。
+  `frontend/tests/child-history.test.mjs`（`childHistory` 按子会话 id 寻址且发 `historyLoaded`）、
+  `frontend/tests/approval.test.mjs`（**档位显示按会话隔离**：`chat.history` 的 approval 对齐显示）。
 - 真布局：`node shell/node_modules/electron/cli.js scripts/check-preview-layout.cjs --no-sandbox --disable-gpu`
   的 dispatch 段——结论常显、无 chevron / 无卡内子时间线、点卡头进子会话标签页且看得到子 Agent 的
   工具行；**子会话页头两条读数**（`child-head-readouts`：统计胶囊有非空标签、上下文 chip 不是「—」）与

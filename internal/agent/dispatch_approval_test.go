@@ -165,6 +165,44 @@ func TestDispatchChildApprovalTakesStricter(t *testing.T) {
 	}
 }
 
+// TestDispatchChildPendingReleasedByParentAuto：子会话的确认门代理给父会话
+// （SetConfirmProxy → 父的确认通道），所以父切 auto 放行的**不只是父自己的挂起
+// 确认，还有子会话正等待的那张**——用户报的「切换完全访问之后当前的都自动确认掉」
+// 在子会话标签页上同样要成立：后端放行（工具真的跑起来）与前端卡片定格必须来自
+// 同一条通道，不能只做 UI 上的假放行。
+func TestDispatchChildPendingReleasedByParentAuto(t *testing.T) {
+	s, cap := newApprovalDispatchSession(t, "")
+	if err := s.Send("派活", WithApproval("confirm")); err != nil {
+		t.Fatal(err)
+	}
+	// 子 Agent 的 bash 挂在确认门上（父 confirm + 子未声明默认 = 继承 confirm）
+	waitFor(t, func() bool {
+		cap.mu.Lock()
+		defer cap.mu.Unlock()
+		return len(cap.pending) > 0
+	})
+	// 父切 auto：走既有确认通道放行子会话的挂起确认（不是旁路）
+	if got := s.SetApproval("auto"); got != "auto" {
+		t.Fatalf("SetApproval 应返回规范化后的档位: %q", got)
+	}
+	waitFor(t, func() bool { return !s.Busy() })
+
+	cap.mu.Lock()
+	defer cap.mu.Unlock()
+	var ran bool
+	for _, r := range cap.results {
+		if strings.Contains(r.Content, "用户拒绝") {
+			t.Fatalf("挂起的子会话确认应被放行，而不是当拒绝处理: %+v", r)
+		}
+		if strings.Contains(r.Content, "approval-marker") {
+			ran = true
+		}
+	}
+	if !ran {
+		t.Fatalf("父切 auto 后子会话的命令应执行: %+v", cap.results)
+	}
+}
+
 // TestDispatchChildWithoutApprovalInheritsRequest：子 Agent 未声明权限默认时按
 // 继承请求方处理——父轮 auto 下不产生多余确认（取严不等于一律收紧）。
 func TestDispatchChildWithoutApprovalInheritsRequest(t *testing.T) {

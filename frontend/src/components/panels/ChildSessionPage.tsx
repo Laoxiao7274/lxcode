@@ -10,16 +10,16 @@
 // 「我点开之后他里面就没有接着思考」。历史由 store 装载（source.childHistory 发
 // historyLoaded，sessionId 是子会话自己的），这一页只负责画。
 //
-// 只读：这是子 Agent 自己的对话，用户没有要求改它。撤回/编辑**不是**"传 undefined 让它
-// 静默失效"，而是整条动作条不渲染（Block 的 readOnly），只读语义在页头说明一次。
-// 例外是**确认门**：子 Agent 的确认由父会话代理（AGENTS.md §2.3），用户在这一页看到
-// 待裁决的确认卡时必须能批（点了没反应比没有按钮更糟）。
+// 只读，但**版式与主会话完全一致**（2026-10-07 用户要求）：时间线 + 同一个
+// Composer（输入框/选择器/读数全保留），只是输入被锁——不再维护第二套页面样式。
+// 页头只留身份信息（子会话/模型/返回），读数（上下文环/统计）在输入条里，
+// 与主会话同一位置。例外是**确认门**：子 Agent 的确认由父会话代理（AGENTS.md
+// §2.3），用户在这一页看到待裁决的确认卡时必须能批（点了没反应比没有按钮更糟）。
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AgentSource } from "../../shared/types";
 import type { UIState } from "../../shared/store";
-import { ContextIndicator } from "../context-indicator/ContextIndicator";
-import { StatsPills } from "../stats-pills/StatsPills";
 import { Button } from "../form";
+import { Composer } from "../composer";
 import { Block } from "../thread/blocks/Block";
 import { ScrollToBottom } from "../thread/ScrollToBottom";
 
@@ -89,14 +89,6 @@ export function ChildSessionPage({
         {/* 只读语义说明一次（页头）——而不是在每条消息上重复禁用原因：
          *  禁用按钮的 title 提示在多数浏览器里不弹（禁用元素不派发鼠标事件）。 */}
         <span className="child-session-readonly">只读 · 这是子 Agent 自己的会话，不提供撤回/编辑（待裁决的确认可以在这里批）</span>
-        {/* 子会话**自己的**两条读数（2026-09-30 用户报「上下文 会话信息这些展示没有」）：
-         *  ① 会话统计 = 整条子会话一共花了多少（时间胶囊，与主会话同一个组件）；
-         *  ② 上下文用量 = 此刻它自己的窗口里有多少（它有自己的窗口，不是主会话那份）。
-         *  两个弹层都**向下开**（placement="down"）：页头在页面顶部，向上开会跑出视口被裁掉
-         *  （用户原话「上下文展示的下拉框跑上面去被遮住了」）。
-         *  数据缺席时组件自己收手：统计一步都没有整行不渲染、上下文未知显示中性态「—」。 */}
-        <StatsPills stats={stats} placement="down" />
-        <ContextIndicator usage={context} stats={stats} placement="down" />
         <Button className="child-session-back" onClick={onBack}>返回主会话</Button>
       </div>
       <div className="child-session-body">
@@ -126,6 +118,19 @@ export function ChildSessionPage({
           </>
         )}
       </div>
+      {/* 与主会话**同一个 Composer**（2026-10-07 用户要求版式完全一致）：输入框、
+       *  三个选择器、上下文环、统计胶囊全保留，readOnly 只锁交互——三个选择器
+       *  整组不可点（它们作用的是主会话的上下文，在子会话页操作会改错会话），
+       *  上下文环/统计胶囊是读数保持可点开，数据就是这个子会话自己的那份。
+       *  onSend/onCancel 传 no-op：输入已锁，canSend 恒 false，到不了这两个回调。 */}
+      <Composer
+        readOnly
+        busy={Boolean(state?.busy)}
+        context={context}
+        stats={stats}
+        onSend={() => {}}
+        onCancel={() => {}}
+      />
     </div>
   );
 }

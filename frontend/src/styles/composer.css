@@ -297,8 +297,22 @@
 /* 这一行的**控件**一律不收缩、不折行：它们窄下去就是文字折成两行（工具名/模型名/
   权限名都带 chevron，折行还会把图标甩到第二行）。 */
 .piBar > .pop-wrap,
+.pi-controls > .pop-wrap,
 .piBar > .send-btn {
   flex: none;
+}
+/* 三个选择器（Agent/权限/模型）的共用容器：与 piBar 直排子元素保持同一套
+   间距与不收缩纪律。子会话页只读时整组锁定（pi-locked）：样式不变、只是
+   不可交互（半透明 + 不响应指针——可交互的假象比禁用更误导）。 */
+.pi-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+.pi-controls.pi-locked {
+  pointer-events: none;
+  opacity: 0.5;
 }
 /* 权限选择器（Codex：橙色主题——当前模式高亮，圆圈感叹号 + 下拉箭头） */
 .perm-chip {
@@ -355,6 +369,18 @@
 }
 .perm-item.on {
   font-weight: 500;
+}
+/* 完全访问的两步确认态（ PermPicker）：首次点击后项变危险色、文案换成
+   「再次点击确认」——第二次点击才真的改档。 */
+.perm-item.confirming {
+  background: rgba(220, 38, 38, 0.08);
+}
+.perm-item.confirming svg:first-child {
+  color: var(--danger);
+}
+.perm-item.confirming .perm-label {
+  color: var(--danger);
+  font-weight: 600;
 }
 .perm-item svg:first-child {
   color: var(--fg-faint);

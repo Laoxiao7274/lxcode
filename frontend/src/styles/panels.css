@@ -530,17 +530,19 @@
   color: var(--fg);
 }
 /* 内容区自己滚（整页不许把工作区撑高）。左右内边距留给 .thread 自带的 0 24px——
- * 时间线本体复用主时间线的容器类，横向排版与聊天列一致。 */
+ * 时间线本体复用主时间线的容器类，横向排版与聊天列一致。底部预留 = 输入区真实
+ * 高度（Composer 发布 --composer-h 到所在工作区面板）——与主会话的 .thread-scroll
+ * 同一条规则：输入区是 absolute 浮层，滚动区按它留白。 */
 .child-session-body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 14px 0 24px;
+  padding: 14px 0 calc(var(--composer-h, 170px) + 14px);
 }
-/* 子会话页没有输入区，所以「回到底部」浮标贴内容区底部——
- * --composer-h 是聊天列发布的（Composer 仍挂载着），在这里不适用，会让浮标凭空抬高。 */
+/* 「回到底部」浮标让位输入区的真实高度（与主会话同一套机制）——
+ * 输入区在页面底部浮多高，浮标就让多少。 */
 .child-session-page .scroll-to-bottom {
-  bottom: 18px;
+  bottom: calc(var(--composer-h, 170px) + 14px);
 }
 /* 三态提示（加载中 / 读失败 / 空历史）：一行轻量说明。
  * 与 .dispatch-child-note 同款形态——同一件事（读子会话历史）在两处不该有两套长相。

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { reduce, reduceSessionStates, resolveConfirmEverywhere, checkpointBody } from '../src/shared/store.ts';
+import { reduce, reduceSessionStates, pendingConfirmIds, allowAllPendingConfirms, resolveConfirmEverywhere, checkpointBody } from '../src/shared/store.ts';
 const state = { blocks: [{ kind: 'assistant', uid: 1, content: 'partial', reasoning: '', streaming: true }], busy: true, pending: { id: 'c' }, todos: [{ content: 'work', status: 'active' }], currentId: 's1', operationError: null, context: null };
 test('会话列表变化不改变任何 Session 的运行态', () => {
   for (const reason of ['renamed', 'archived', 'started']) {
@@ -275,5 +275,36 @@ test('子会话的 historyLoaded 重建它自己、不动主时间线（按 sess
   assert.strictEqual(all.parent.blocks, before, '子会话的历史重建不许碰父会话的块');
   assert.equal(all['child-1'].blocks.length, 2);
   assert.equal(all['child-1'].model, 'deepseek-chat', '子会话页头要显示**它自己的**模型');
+});
+
+test('pendingConfirmIds 收集挂起与两级确认卡（pending + 时间线 + dispatch 卡内，去重）', () => {
+  let all = withChild();
+  all = reduceSessionStates(all, { type: 'confirmRequest', sessionId: 'parent', request: { id: 'cf-own', name: 'bash', arguments: '{}', prompt: '主会话自己的' } });
+  all = reduceSessionStates(all, { type: 'confirmRequest', sessionId: 'parent', request: { id: 'confirm-9', name: 'bash', arguments: '{}', prompt: '跑测试', dispatch_id: 'd1' } });
+  const ids = pendingConfirmIds(all.parent);
+  assert.deepEqual([...ids].sort(), ['cf-own', 'confirm-9'], '挂起 + 卡内两级都收集');
+  assert.deepEqual(pendingConfirmIds({ blocks: [], pending: null }), [], '没有确认就是空清单');
+});
+
+test('切完全访问：本会话所有未裁决确认定格为已允许（含子会话双投的那份），别会话不动', () => {
+  let all = withChild();
+  all = reduceSessionStates(all, { type: 'confirmRequest', sessionId: 'parent', request: { id: 'cf-own', name: 'bash', arguments: '{}', prompt: '主会话自己的' } });
+  all = reduceSessionStates(all, { type: 'confirmRequest', sessionId: 'parent', request: { id: 'confirm-9', name: 'bash', arguments: '{}', prompt: '跑测试', dispatch_id: 'd1' } });
+  all = reduceSessionStates(all, {
+    type: 'confirmRequest', sessionId: 'other', request: { id: 'cf-other', name: 'bash', arguments: '{}', prompt: '别的会话的' },
+  });
+
+  const next = allowAllPendingConfirms(all, 'parent');
+  // 主会话：pending 清、卡转工具行
+  assert.equal(next.parent.pending, null);
+  assert.equal(next.parent.blocks.some((b) => b.kind === 'tool' && b.id === 'cf-own'), true, '主会话自己的确认卡就地转工具行');
+  const cardTool = next.parent.blocks.find((b) => b.kind === 'dispatch').subBlocks.find((s) => s.id === 'confirm-9');
+  assert.equal(cardTool.kind, 'tool', 'dispatch 卡内的子确认也定格');
+  // 子会话双投的那份一起定格（不等 toolResult）
+  assert.equal(next['child-1'].blocks.some((b) => b.kind === 'tool' && b.id === 'confirm-9'), true);
+  // 别的会话不串
+  assert.equal(next.other.pending.id, 'cf-other', '别的会话的挂起确认是别人的');
+  // 没有这个会话的 state = 无事发生
+  assert.equal(allowAllPendingConfirms(all, 'nope'), all);
 });
 

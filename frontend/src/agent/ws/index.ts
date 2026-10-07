@@ -14,6 +14,7 @@ import type {
   SearchTestResult, SendOptions, SessionMeta, SessionStats, TodoItem,
 } from "../../shared/types";
 import { rewindParams } from "../../shared/blocks";
+import { normalizeApproval } from "../../shared/approval";
 import { jobFromWire, sortJobs, upsertJob } from "../../shared/jobs";
 import { mapEvent } from "./events";
 
@@ -546,6 +547,8 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
       checkpoints?: number[];
       /** 该会话实际用的模型 id（子会话就是它自己 Agent 的模型）。 */
       model?: string;
+      /** 该会话此刻的权限档（老后端没有 → 缺席，显示端不猜）。 */
+      approval?: string;
     };
     return {
       sessionId: h.session_id ?? "",
@@ -557,6 +560,7 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
       stats: h.stats,
       checkpoints: h.checkpoints ?? [],
       model: h.model,
+      approval: h.approval === undefined ? undefined : normalizeApproval(h.approval),
     };
   }
 

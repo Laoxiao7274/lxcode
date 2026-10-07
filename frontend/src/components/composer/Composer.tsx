@@ -27,6 +27,7 @@ export interface ComposerDraft {
 export function Composer({
   busy,
   disabled,
+  readOnly = false,
   todos = [],
   context = null,
   stats = null,
@@ -40,6 +41,10 @@ export function Composer({
 }: {
   busy: boolean;
   disabled?: boolean;
+  /** 只读视图（子会话页）：版式与可交互模式**逐字节一致**，只是输入被锁——
+   *  输入框禁用、发送不可用、三个选择器整组锁定（半透明 + 不响应指针）。
+   *  上下文环与统计胶囊是读数（本就只读），保持可点开弹层。 */
+  readOnly?: boolean;
   /** 任务清单（空数组不渲染卡片）。 */
   todos?: TodoItem[];
   /** 上下文占用（后端测量；null = 未知——指示器显示中性态）。 */
@@ -66,10 +71,11 @@ export function Composer({
   const draftIdRef = useRef(0);
   // 「生成中」状态行挂载即上浮淡入（busy 翻转时才挂载/卸载）
   const busyRowRef = useEnterRef<HTMLDivElement>({ opacity: 0, y: 6 }, { opacity: 1, y: 0, duration: 0.26, ease: "power2.out", clearProps: "transform,opacity" });
-  const canSend = value.trim().length > 0 && !busy && !disabled && !value.startsWith("/");
+  const locked = Boolean(readOnly) || Boolean(disabled);
+  const canSend = value.trim().length > 0 && !busy && !locked && !value.startsWith("/");
 
   // 斜杠面板：输入以 / 开头（单行——/ 出现在行中不算命令）时开
-  const slashOpen = !disabled && value.startsWith("/") && !value.includes("\n");
+  const slashOpen = !locked && value.startsWith("/") && !value.includes("\n");
   const slashQuery = slashOpen ? value.replace(/^\/+/, "") : "";
 
   const submit = () => {
@@ -108,19 +114,22 @@ export function Composer({
     });
   }, [draft]);
 
-  // 输入区（含清单卡）的真实高度发布给 .main——线程区按它预留底部空间，
+  // 输入区（含清单卡）的真实高度发布给所在工作区面板——线程区按它预留底部空间，
   // 清单展开多高就留多少：浮层永远不遮挡对话内容（把清单当输入区的一部分）。
+  // 发布目标是**最近的工作区面板**而不是 .main：工作区面板是保活的（隐藏但不卸载，
+  // App.WorkspaceViewPanels），聊天页与子会话页的 Composer 可能同时挂载——都发布
+  // 到 .main 会互踩（子会话页的高度盖掉聊天页的，聊天底部留白错位）。
   useEffect(() => {
     const el = zoneRef.current;
-    const main = el?.closest(".main") as HTMLElement | null;
-    if (!el || !main) return;
-    const publish = () => main.style.setProperty("--composer-h", el.offsetHeight + "px");
+    const panel = (el?.closest(".workspace-view-panel") ?? el?.closest(".main")) as HTMLElement | null;
+    if (!el || !panel) return;
+    const publish = () => panel.style.setProperty("--composer-h", el.offsetHeight + "px");
     const ro = new ResizeObserver(publish);
     ro.observe(el);
     publish();
     return () => {
       ro.disconnect();
-      main.style.removeProperty("--composer-h");
+      panel.style.removeProperty("--composer-h");
     };
   }, []);
 
@@ -160,17 +169,21 @@ export function Composer({
           <textarea
             ref={taRef}
             className="piInput"
-            placeholder={busy ? "生成中… 可以先输入下一条（完成后发送）" : "让智能体构建、审查或解释点什么…"}
+            placeholder={locked ? "只读视图——回到主会话才能发消息" : busy ? "生成中… 可以先输入下一条（完成后发送）" : "让智能体构建、审查或解释点什么…"}
             rows={1}
             value={value}
-            disabled={disabled}
+            disabled={locked}
             onChange={(e) => setValue(e.target.value)}
             onKeyDown={onKey}
           />
           <div className="piBar">
-            <AgentPicker />
-            <PermPicker />
-            <ModelPicker />
+            {/* 三个选择器包一组：子会话页只读时整组锁定（样式不变，只是不可交互）。
+                ContextIndicator/StatsPills 是读数，留在组外保持可点开。 */}
+            <span className={"pi-controls" + (readOnly ? " pi-locked" : "")}>
+              <AgentPicker />
+              <PermPicker />
+              <ModelPicker />
+            </span>
             <ContextIndicator usage={context} stats={stats} onCompact={onCompact} busy={busy} />
             {/* 会话统计胶囊（时间）：紧挨上下文环（2026-09-30 用户拍板）。累计消耗那一半
                 并进了上下文环的「会话用量」弹层——输入条因此不再拥挤 */}

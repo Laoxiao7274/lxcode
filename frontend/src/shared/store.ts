@@ -9,11 +9,11 @@
 import { useCallback, useEffect, useState } from "react";
 import type { AgentSource, SendOptions } from "./types";
 import { type UIState, initial } from "./blocks";
-import { reduceSessionStates, resolveConfirm, resolveConfirmEverywhere } from "./reduce";
+import { reduceSessionStates, allowAllPendingConfirms, resolveConfirm, resolveConfirmEverywhere } from "./reduce";
 
 export type { AssistantBlock, ThreadBlock, UIState } from "./blocks";
 export { checkpointBody } from "./blocks";
-export { reduce, reduceSessionStates, resolveConfirm, resolveConfirmEverywhere } from "./reduce";
+export { reduce, reduceSessionStates, pendingConfirmIds, allowAllPendingConfirms, resolveConfirm, resolveConfirmEverywhere } from "./reduce";
 export function useAgent(source: AgentSource): {
   state: UIState;
   sessionStates: Record<string, UIState>;
@@ -43,6 +43,15 @@ export function useAgent(source: AgentSource): {
       }
       if (ev.type === "sessionsChanged" || ev.type === "projectsChanged" || ev.type === "sessionChanged" || ev.type === "ready") {
         setRevision((n) => n + 1);
+        return;
+      }
+      if (ev.type === "approvalChanged" && ev.approval === "auto") {
+        // 切「完全访问」：后端已沿确认通道放行本会话的挂起确认（含子会话的——
+        // 确认门代理走父通道，父切档子的一起松）。UI 的待裁决卡片同步定格为
+        // 「已允许」，不等 toolResult 回执——否则用户看着一张永远「待确认」的卡
+        // 而工具其实已经在跑（显示与事实脱节比慢半拍更糟）。只动这个会话的
+        // state：别的会话的挂起确认是别人的（主会话之间隔离）。
+        setSessionStates((all) => allowAllPendingConfirms(all, ev.sessionId));
         return;
       }
       if ("sessionId" in ev) setSessionStates((all) => reduceSessionStates(all, ev));

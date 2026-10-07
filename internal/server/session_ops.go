@@ -145,5 +145,8 @@ func (s *Server) history(sessionID string, sess *agent.Session) protocol.ChatHis
 		// 会话实际用的模型（子会话 = 它自己 Agent 的）：解析不出来时是空串 →
 		// wire 上整键缺席，前端显示中性态（不编一个模型名）。
 		Model: sess.ModelID(),
+		// 会话**此刻**的权限档（子会话 = 取严(父实时, 自身默认)）：切会话时前端
+		// 按它同步显示——档位显示必须跟随后端事实，而不是上一会话的本地残留。
+		Approval: sess.LiveApproval(),
 	}
 }

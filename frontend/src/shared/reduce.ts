@@ -473,6 +473,45 @@ function dispatchChildSession(states: Record<string, UIState>, dispatchId: strin
   return "";
 }
 
+/** 收集一个会话 state 里**所有未裁决**的确认请求 id：挂起中的（pending）+
+ *  时间线上的确认卡 + dispatch 卡内的确认卡。kind==="confirm" 的块只存在于
+ *  未裁决态（裁决后就地转工具行或定格 outcome），所以块类型本身就是裁决位。
+ *
+ *  用途：切「完全访问」时后端沿确认通道一次性放行挂起确认（含子会话的——
+ *  确认门代理走父通道），UI 的待裁决卡片要同步定格，不等 toolResult 回执。
+ *  导出供测试直接验证清单形状。 */
+export function pendingConfirmIds(st: UIState): string[] {
+  const ids: string[] = [];
+  if (st.pending) ids.push(st.pending.id);
+  for (const b of st.blocks) {
+    if (b.kind === "confirm") ids.push(b.request.id);
+    if (b.kind === "dispatch") {
+      for (const s of b.subBlocks) {
+        if (s.kind === "confirm") ids.push(s.request.id);
+      }
+    }
+  }
+  return [...new Set(ids)];
+}
+
+/** 切「完全访问」的一次性定格：把该会话 state 里**所有未裁决**的确认就地定格为
+ *  「已允许」。后端在 SetApproval(auto) 时已沿确认通道放行挂起确认（含子会话的
+ *  ——确认门代理走父通道），UI 在 approvalChanged(auto) 到达时调它同步定格，
+ *  不等 toolResult 回执。state 不存在 = 无事发生（原样返回）。子会话 state 里
+ *  那份双投的卡由 resolveConfirmEverywhere 一并定格。导出供测试直接验证。 */
+export function allowAllPendingConfirms(
+  states: Record<string, UIState>,
+  sessionId: string,
+): Record<string, UIState> {
+  const st = states[sessionId];
+  if (!st) return states;
+  let next = states;
+  for (const id of pendingConfirmIds(st)) {
+    next = resolveConfirmEverywhere(next, id, "allow");
+  }
+  return next;
+}
+
 /** 裁决要**两处同时定格**：确认在父会话的卡里与子会话自己的时间线里各有一份
  *  （双投的必然结果——只定格一边，另一边会永远挂着「待确认」）。
  *
