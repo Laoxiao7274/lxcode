@@ -26,6 +26,9 @@ protocol.registerSchemesAsPrivileged([
 // 远程内容渲染，必须重新评估此开关。
 app.commandLine.appendSwitch("no-sandbox");
 
+// 开发形态开 CDP 调试口（temp/cdp-*.mjs 验证脚本连它驱动真实窗口；打包形态不开）
+if (!app.isPackaged) app.commandLine.appendSwitch("remote-debugging-port", "9229");
+
 let win: BrowserWindow | null = null;
 
 // 单实例：第二个实例只聚焦已有窗口（也避免双壳竞态 spawn 后端）
@@ -71,6 +74,20 @@ if (!app.requestSingleInstanceLock()) {
       },
     });
     win.once("ready-to-show", () => win?.show());
+
+    // 鼠标侧键（Windows WM_APPCOMMAND）→ 页面浏览器历史。Electron 把侧键转成
+    // app-command 事件后**不做默认导航**；且它的 navigationHistory/goBack **不包含
+    // pushState 的同文档条目**（electron#24899：webContents 栈与页面栈是两套，
+    // 实测 canGoBack=false 而 CDP 的 Page.getNavigationHistory 满条目）——所以
+    // 直接在页面里调 history.back()/forward()：同文档遍历触发 popstate，App 把
+    // 工作区视图落回来（App.tsx 的 History API 接线）。页面里调用本身是安全的：
+    // 退到首条是 no-op，无需 canGo 判定。
+    win.on("app-command", (_e, cmd) => {
+      if (cmd !== "browser-backward" && cmd !== "browser-forward") return;
+      void win?.webContents
+        .executeJavaScript(`history.${cmd === "browser-backward" ? "back" : "forward"}()`)
+        .catch(() => { /* 页面正在跳转/销毁时注入失败无害 */ });
+    });
 
     // 窗口控制 IPC（preload 的 __LX__ 桥 → Topbar 按钮）
     ipcMain.on("win:minimize", () => win?.minimize());
