@@ -63,8 +63,8 @@ func (m ModelConfig) EffectiveFormat() string {
 }
 
 // validate 校验条目字段：id/model 非空、base_url 带合法 scheme、format 合法、
-// max_output_tokens 小于 context_window——云端版教训：输出上限逼近窗口会导致
-// 输入+输出超限报错（docs/01-model-management.md §4.2）。
+// max_output_tokens 小于 context_window——输出上限逼近窗口会导致输入+输出超限
+// 报错（判据就是本函数下一行那条检查，前端 validateProviderPatch 与之对齐）。
 func (m ModelConfig) validate() error {
 	if m.ID == "" {
 		return fmt.Errorf("id 不能为空")

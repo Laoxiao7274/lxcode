@@ -10,13 +10,15 @@ import { Chips, TextInput } from "../form";
 
 const TAG_CHOICES = ["推理", "工具", "视觉"];
 
-/** 宽松解析 k 记法（"128k" / "128000" → tokens）。 */
+/** 宽松解析 k 记法（"128k" / "128000" → tokens）。空串 = 0 = 未知。 */
 const parseK = (s: string): number | null => {
   const t = s.trim().toLowerCase();
+  // 空 = 未知（0）：窗口未知时压缩不触发，这是既有语义——编辑一个没配窗口的
+  // 模型（比如刚发现进来、目录里没数据的）不该被迫编一个数才能保存。
+  if (!t) return 0;
   const m = t.match(/^(\d+(?:\.\d+)?)\s*k?$/);
   if (!m) return null;
-  const n = Math.round(parseFloat(m[1]) * (t.endsWith("k") ? 1_000 : 1));
-  return n > 0 ? n : null;
+  return Math.round(parseFloat(m[1]) * (t.endsWith("k") ? 1_000 : 1));
 };
 
 export function ModelEditDialog({ provider, model, onClose }: { provider: ProviderMeta; model: ModelMeta; onClose: () => void }) {
@@ -25,8 +27,9 @@ export function ModelEditDialog({ provider, model, onClose }: { provider: Provid
     id: model.id,
     name: model.name,
     desc: model.desc,
-    contextWindow: kfmtTokens(model.contextWindow),
-    maxOutput: kfmtTokens(model.maxOutput),
+    // 未知（0）显示空串，不显示「0」——0 会被读成一个真实读数。
+    contextWindow: model.contextWindow > 0 ? kfmtTokens(model.contextWindow) : "",
+    maxOutput: model.maxOutput > 0 ? kfmtTokens(model.maxOutput) : "",
     tags: [...model.tags],
   });
   const [err, setErr] = useState<string | null>(null);
@@ -57,12 +60,12 @@ export function ModelEditDialog({ provider, model, onClose }: { provider: Provid
     }
     const ctx = parseK(draft.contextWindow);
     if (ctx === null) {
-      setErr("上下文窗口格式不对（如 128k）");
+      setErr("上下文窗口格式不对（如 128k，留空 = 未知）");
       return;
     }
     const out = parseK(draft.maxOutput);
     if (out === null) {
-      setErr("最大输出格式不对（如 8k）");
+      setErr("最大输出格式不对（如 8k，留空 = 未知）");
       return;
     }
     if (

@@ -118,6 +118,24 @@
   color: var(--danger);
   border-color: var(--danger);
 }
+/* 提供商连接配置（Base URL / API Key / 格式）：与模型行的铅笔按钮同规格 */
+.mset-provider-edit {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-faint);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  flex: none;
+}
+.mset-provider-edit:hover {
+  color: var(--fg);
+  background: var(--border-soft);
+}
 .mset-models {
   border-top: 1px solid var(--border-soft);
   padding: 2px 12px 8px 40px;
@@ -449,4 +467,107 @@
   font-size: 10.5px;
   color: var(--fg-faint);
   margin-top: 6px;
+}
+
+/* ---- 端点探测面板（「获取模型列表」→ 勾选候选 → 添加）----
+   候选行复用 .mset-model-row 的版式，这里只加面板自己的头与错误行。 */
+.mset-probe {
+  border-top: 1px solid var(--border-soft);
+  padding: 8px 0 2px;
+  margin-top: 2px;
+}
+.mset-probe-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 3px;
+}
+.mset-probe-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+}
+.mset-probe-text b {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+}
+.mset-probe-endpoint {
+  font-size: 10.5px;
+  color: var(--fg-faint);
+  font-family: var(--font-mono);
+  padding-bottom: 4px;
+  overflow-wrap: anywhere;
+}
+.mset-probe-all {
+  font-size: 11px;
+  color: var(--fg-muted);
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  padding: 2px 9px;
+  cursor: pointer;
+  font-family: var(--font-sans);
+  flex: none;
+}
+.mset-probe-all:hover {
+  color: var(--fg);
+  border-color: var(--fg);
+}
+.mset-probe-close {
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--fg-faint);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  flex: none;
+}
+.mset-probe-close:hover {
+  color: var(--fg);
+  background: var(--border-soft);
+}
+.mset-probe-err {
+  font-size: 11.5px;
+  color: var(--danger);
+  padding: 7px 0 5px;
+  overflow-wrap: anywhere;
+}
+/* 添加按钮禁用态（未勾选任何候选）：disabled 必须有可见反馈 */
+.mset-add-model-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.mset-fetch-btn:disabled,
+.mset-refresh-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* ---- 连接对话框里的候选清单（目录勾选 / 端点探测）----
+   候选可能上百条（OpenRouter 200+），必须能滚，否则「添加选中」按钮被顶到
+   对话框外面点不到。 */
+.mset-candidate-scroll {
+  max-height: 260px;
+  overflow-y: auto;
+  border-top: 1px solid var(--border-soft);
+  border-bottom: 1px solid var(--border-soft);
+  padding: 0 2px;
+}
+.mset-candidate-scroll .mset-model-row {
+  padding: 7px 0;
+}
+/* 表单说明里的端点地址：跟正文同流，不占整行 */
+.mset-probe-endpoint-inline {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-muted);
+  overflow-wrap: anywhere;
 }

@@ -4,17 +4,26 @@ import { gsap } from "gsap";
 import { useSettings, type ProviderMeta } from "../../shared/settings";
 import { motionAllowed, staggerIn, enterEase } from "../../shared/motion";
 import { collapseAway, playEnter } from "../../shared/anim";
-import { kfmtTokens } from "../../shared/format";
+import { kfmtLimit } from "../../shared/format";
+import type { DiscoveredModel } from "../../shared/types";
 import { TextInput, Toggle } from "../form";
 import { IconChevronRight, IconPencil, IconTrash } from "../icons";
+import { ProviderEditDialog } from "./ProviderEditDialog";
 
 function ProviderBlock({ provider, onEditModel }: { provider: ProviderMeta; onEditModel: (modelId: string) => void }) {
-  const { settings, set, setProviderEnabled, setModelVisible, fetchModels, addModel, removeModel, disconnectProvider } = useSettings();
+  const { settings, set, setProviderEnabled, setModelVisible, fetchModels, addDiscovered, addModel, removeModel, disconnectProvider } = useSettings();
   const [expanded, setExpanded] = useState(true);
+  // 连接配置弹窗（Base URL / API Key / 格式，一次写全组）
+  const [editingConn, setEditingConn] = useState(false);
   // 添加模型：内联输入行（空 = 未在添加）
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState("");
   const [draftErr, setDraftErr] = useState<string | null>(null);
+  // 端点探测（获取模型列表）：候选清单 + 勾选态（null = 面板没开）
+  const [probe, setProbe] = useState<{ endpoint: string; total: number; candidates: DiscoveredModel[] } | null>(null);
+  const [probePicked, setProbePicked] = useState<Set<string>>(new Set());
+  const [probing, setProbing] = useState(false);
+  const [probeErr, setProbeErr] = useState<string | null>(null);
 
   const cardRef = useRef<HTMLDivElement>(null);
   const modelsRef = useRef<HTMLDivElement>(null);
@@ -91,6 +100,48 @@ function ProviderBlock({ provider, onEditModel }: { provider: ProviderMeta; onEd
     collapseAway(cardRef.current, () => disconnectProvider(provider.id), { marginBottom: 0, duration: 0.28 });
   };
 
+  // 获取模型列表 = 探测端点**实际**提供什么，再让用户勾选要加哪些。
+  // 不自动全部添加：端点可能报 200 个模型（OpenRouter），自动写入会把选择器淹掉；
+  // 默认也不预勾选（可预期胜过聪明——预勾选在 3 个模型时方便，在 200 个时是灾难）。
+  const runProbe = async () => {
+    setProbing(true);
+    setProbeErr(null);
+    try {
+      const res = await fetchModels(provider.id);
+      const known = new Set(provider.models.map((m) => m.id));
+      const candidates = res.models.filter((m) => !known.has(m.id));
+      setProbe({ endpoint: res.endpoint, total: res.models.length, candidates });
+      setProbePicked(new Set());
+    } catch (e) {
+      setProbe(null);
+      setProbeErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setProbing(false);
+    }
+  };
+
+  const togglePick = (id: string) => {
+    setProbePicked((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleAllPicked = () => {
+    if (!probe) return;
+    setProbePicked((prev) => (prev.size === probe.candidates.length ? new Set() : new Set(probe.candidates.map((c) => c.id))));
+  };
+
+  const commitProbe = async () => {
+    if (!probe) return;
+    const picked = probe.candidates.filter((c) => probePicked.has(c.id));
+    if (!(await addDiscovered(provider.id, picked))) return;
+    setProbe(null);
+    setProbePicked(new Set());
+  };
+
   return (
     <div className="mset-provider" ref={cardRef}>
       <div className="mset-provider-head">
@@ -126,12 +177,16 @@ function ProviderBlock({ provider, onEditModel }: { provider: ProviderMeta; onEd
             >
               <span className="toggle-knob" />
             </span>
+            <button type="button" className="mset-provider-edit" title="改连接配置（Base URL / API Key / 格式）" aria-label={`配置 ${provider.name} 的连接`} onClick={() => setEditingConn(true)}>
+              <IconPencil strokeWidth={2} />
+            </button>
             <button type="button" className="mset-provider-remove" title="断开并移除凭据" onClick={handleRemove}>
               移除
             </button>
           </>
         )}
       </div>
+      {editingConn && <ProviderEditDialog provider={provider} onClose={() => setEditingConn(false)} />}
       {expanded && provider.connected && (
         <div className="mset-models" ref={modelsRef}>
           {provider.fetching && (
@@ -142,10 +197,55 @@ function ProviderBlock({ provider, onEditModel }: { provider: ProviderMeta; onEd
           )}
           {!provider.fetching && provider.models.length === 0 && (
             <div className="mset-empty">
-              <span className="mset-empty-text">尚未获取模型列表</span>
-              <button type="button" className="mset-fetch-btn" onClick={() => fetchModels(provider.id)}>
-                获取模型
+              <span className="mset-empty-text">{probeErr ? "获取失败" : "尚未获取模型列表"}</span>
+              <button type="button" className="mset-fetch-btn" onClick={runProbe} disabled={probing}>
+                {probing ? "获取中…" : "获取模型列表"}
               </button>
+            </div>
+          )}
+          {probeErr && <div className="mset-probe-err" role="alert">{probeErr}</div>}
+          {probe && (
+            <div className="mset-probe">
+              <div className="mset-probe-head">
+                <span className="mset-probe-text">
+                  端点报告 <b>{probe.total}</b> 个模型
+                  {probe.candidates.length === 0
+                    ? "，全部已在注册表中"
+                    : `，其中 ${probe.candidates.length} 个未添加`}
+                </span>
+                {probe.candidates.length > 0 && (
+                  <button type="button" className="mset-probe-all" onClick={toggleAllPicked}>
+                    {probePicked.size === probe.candidates.length ? "全不选" : "全选"}
+                  </button>
+                )}
+                <button type="button" className="mset-probe-close" aria-label="关闭候选面板" onClick={() => setProbe(null)}>
+                  ×
+                </button>
+              </div>
+              <div className="mset-probe-endpoint" title="实际请求的地址">{probe.endpoint}</div>
+              {probe.candidates.map((c) => (
+                <div key={c.id} className="mset-model-row">
+                  <span className="mset-model-text">
+                    <span className="mset-model-name">{c.name || c.id}</span>
+                    <span className="mset-model-meta">
+                      <span className="mset-model-id">{c.id}</span>
+                      <span className="mset-model-tag">新发现</span>
+                    </span>
+                  </span>
+                  <Toggle
+                    on={probePicked.has(c.id)}
+                    onChange={() => togglePick(c.id)}
+                    ariaLabel={`选择 ${c.id}`}
+                  />
+                </div>
+              ))}
+              {probe.candidates.length > 0 && (
+                <div className="mset-models-foot">
+                  <button type="button" className="mset-add-model-btn" disabled={probePicked.size === 0} onClick={commitProbe}>
+                    添加选中（{probePicked.size}）
+                  </button>
+                </div>
+              )}
             </div>
           )}
           {provider.models.map((m) => (
@@ -154,7 +254,7 @@ function ProviderBlock({ provider, onEditModel }: { provider: ProviderMeta; onEd
                 <span className="mset-model-name">{m.name}</span>
                 <span className="mset-model-meta">
                   <span className="mset-model-id">{m.id}</span>
-                  <span className="mset-model-ctx">上下文 {kfmtTokens(m.contextWindow)} · 输出 {kfmtTokens(m.maxOutput)}</span>
+                  <span className="mset-model-ctx">上下文 {kfmtLimit(m.contextWindow)} · 输出 {kfmtLimit(m.maxOutput)}</span>
                   {m.tags.map((t) => (
                     <span key={t} className="mset-model-tag">{t}</span>
                   ))}
@@ -203,7 +303,9 @@ function ProviderBlock({ provider, onEditModel }: { provider: ProviderMeta; onEd
             ) : (
               <div className="mset-models-foot">
                 <button type="button" className="mset-add-model-btn" onClick={() => setAdding(true)}>+ 添加模型</button>
-                <button type="button" className="mset-refresh-btn" onClick={() => fetchModels(provider.id)} title="从提供商重新获取模型列表">刷新列表</button>
+                <button type="button" className="mset-refresh-btn" onClick={runProbe} disabled={probing} title="获取该端点提供的模型清单，勾选想添加的">
+                  {probing ? "获取中…" : "获取模型列表"}
+                </button>
               </div>
             )
           )}

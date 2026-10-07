@@ -7,7 +7,8 @@
 // 不动 blocks/pending。
 import type {
   AgentAdminEntry, AgentAdminMcServer, AgentAdminModule, AgentAdminSource, AgentAdminTool,
-  AgentEvent, AgentSource, ApprovalMode, CompactOutcome, ConfirmRequest, ContextUsage, HistorySnapshot, JobAdminSource, JobInfo,
+  AgentEvent, AgentSource, ApprovalMode, CatalogModelList, CatalogProviderList, CompactOutcome,
+  ConfirmRequest, ContextUsage, DiscoverResult, HistorySnapshot, JobAdminSource, JobInfo,
   JobLogResult, ModelAdminSource, ModelEntry,
   ProjectInstructions, ProjectMeta, RewindOutcome, SearchAdminSource, SearchChannel, SearchChannelsSnapshot,
   SearchTestResult, SendOptions, SessionMeta, SessionStats, TodoItem,
@@ -618,6 +619,26 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
 
   setRole(role: string, modelId: string): Promise<void> {
     return this.call("role.set", { role, model_id: modelId }).then(() => undefined);
+  }
+
+  /** 模型目录的厂商清单（免 key；后端按 TTL 缓存，refresh 强制重拉）。 */
+  catalogProviders(refresh = false): Promise<CatalogProviderList> {
+    return this.call("model.catalog.list", { refresh }) as Promise<CatalogProviderList>;
+  }
+
+  /** 某厂商的模型明细（目录按需拉——厂商清单里不带模型明细）。 */
+  catalogModels(provider: string, refresh = false): Promise<CatalogModelList> {
+    return this.call("model.catalog.models", { provider, refresh }) as Promise<CatalogModelList>;
+  }
+
+  /** 探测端点的模型清单。key 只在后端用：给了 id 就不必再送 key。 */
+  discoverModels(input: { id?: string; baseUrl?: string; apiKey?: string; format?: string }): Promise<DiscoverResult> {
+    return this.call("model.discover", {
+      id: input.id,
+      base_url: input.baseUrl,
+      api_key: input.apiKey,
+      format: input.format,
+    }) as Promise<DiscoverResult>;
   }
 
   /** model.list 结果 → 缓存 + 通知（model.changed 事件也走这里）。 */
