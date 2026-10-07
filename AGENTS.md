@@ -25,7 +25,7 @@
 | LLM | 双 wire 格式：OpenAI chat completions + Anthropic Messages（`internal/llm`，从 local-myt-agent 整包继承——含 ChatAuto 分流策略：anthropic 恒流式，openai 带工具走非流式回放，依据是真机端点实测 openai 流式丢 tool_calls） |
 | 工具 | `internal/tools` 注册表 + 风险分级：低危自动执行，高危确认门 |
 | 会话 | **SQLite**（modernc.org/sqlite 纯 Go，WAL；2026-12 用户拍板，替换初版 JSONL——为 compaction/语义记忆/多会话并发铺路），重启恢复最近会话，`/new` `/resume` 切换；项目会话由 `sessions.workspace` 解析项目根，并在首次发送时绑定独立 Git worktree（见 §2.1）；工具相对路径、bash 默认目录、系统提示词经会话级 workDir 与 `tools.WithWorkDir` 对齐 |
-| 配置 | `internal/config` 模型注册表（models.json，原子写；default/vision 角色绑定；**30s 热加载** + model.changed 广播）；`internal/websearch` 网页搜索渠道（search.json，同目录，同一套 30s 热加载 + search.changed 广播，见 §3.2） |
+| 配置 | `internal/config` 模型注册表（models.json，原子写；default/vision 角色绑定；**30s 热加载** + model.changed 广播；**「提供商」不是磁盘实体**——前端按 base_url 分组投影，连接配置 base_url/api_key/format **逐模型**存，故「改提供商的 key」= 写全组条目）；`internal/websearch` 网页搜索渠道（search.json，同目录，同一套 30s 热加载 + search.changed 广播，见 §3.2）；`internal/modelcatalog` 模型目录 + 端点探测（**只读查询、不写注册表**，见 `docs/model-catalog.md`） |
 | 服务化 | **Windows SCM 服务**（`scripts/service/{install,update,uninstall}.ps1`；开机自启 + 崩溃自动重启；`--probe` 验收；布局 `%ProgramData%\lxcode\{bin,config,sessions,logs}`）；服务形态日志落文件（16MB 轮转 ×3） |
 | 桌面壳 | **Electron + Go sidecar（2026-09-16 用户拍板，推翻 09-10 的 Tauri 2 初选，决策记录见 §2.1；打包定案仅 Windows，2026-12）**；后端可先于壳长期独立运行，壳是薄客户端（窗口/托盘/渲染层直连 7789） |
 | Go 直接依赖 | gorilla/websocket（WS）、golang.org/x/sys（平台接口）、modernc.org/sqlite（纯 Go 存储）；传递依赖以 go.mod 为准 |
@@ -73,7 +73,7 @@
 - **压缩后必须更新占用测量**（锚定算术：新占用 = 旧真实占用 − 被压段估算 + 检查点估算）——不更新的话指示器停在压缩前的数字（真链路实测抓到过）；
 - wire：`chat.compact`（方法，参数 `agent` 可选）+ `chat.compacted` 事件（before/after/shadowed/summary/manual）+ `ChatHistoryResult.Checkpoints`（检查点下标，前端渲染「已压缩历史」块而不是用户气泡）；前端入口 = 输入区指示器里的「立即压缩」+ `/compact` 斜杠命令。
 
-**剩余（未做）**：① P3 的确定性裁剪（工具结果写入时已截到 8KB，将来加裁剪接在选区间之前，顺序对齐 DSH）。参考实现 = DSH 的 `dsh-compaction`（引擎接缝 + 配对不变量 + 检查点溯源）/`dsh-compaction-basic`（阈值与选区间策略）/`dsh-compaction-tool-result-pruner`（无模型裁剪）/`dsh-token-meter`（计账），路径 `C:\Users\xzy\AppData\Local\Programs\lx-dsh\resources\dsh\node_modules\@deepseek-ai\`（打包形态；`dsh-compaction` 带 TS 源码 `src/`）。
+**剩余（未做）**：① P3 的确定性裁剪（工具结果写入时已截到 8KB，将来加裁剪接在选区间之前，顺序对齐 DSH）。参考实现 = DSH 的 `dsh-compaction`（引擎接缝 + 配对不变量 + 检查点溯源）/`dsh-compaction-basic`（阈值与选区间策略）/`dsh-compaction-tool-result-pruner`（无模型裁剪）/`dsh-token-meter`（计账），路径 `C:\Users\xiaoziyi\AppData\Local\Programs\lx-dsh\resources\dsh\node_modules\@deepseek-ai\`（打包形态；`dsh-compaction` 带 TS 源码 `src/`）。
 
 ### 2.3 子会话：子 Agent = 独立会话（2026-09-22 用户拍板）
 
@@ -160,20 +160,7 @@
 协议：`search.channels.list` / `search.channel.save` / `search.channel.remove` / `search.primary.set` / `search.test` + `search.changed` 事件；前端走 `SearchAdminSource` 能力接口（UI 不知道数据来自 WS 还是 Demo）。
 ### 3.3 MCP 执行面（`internal/mcp` + `tools/mcp.go`，2026-09-27）
 
-**只依赖标准库**的 MCP 客户端：服务器注册后暴露的能力以工具形式进目录（`source=mcp` + `server` 指回），与 `source=binary` 同一段动态注册（`SetDynamic` 整体替换）。
-
-- **两种传输**：`stdio`（起子进程 + **换行分隔** JSON-RPC，故编码必须紧凑——带缩进的 JSON 破坏分帧）与 `sse`（= **Streamable HTTP**：单端点 POST、`Accept: application/json, text/event-stream`、响应可能是 JSON 或 SSE 的 `data:` 行、回带 `Mcp-Session-Id`/`MCP-Protocol-Version`）。磁盘 `transport` 取值 `stdio|sse` 受 SQLite CHECK 约束，**把 sse 实现成 Streamable HTTP 正好让老配置直接可用，不必改表**。
-- **握手顺序固定**：`initialize` → `notifications/initialized` → `tools/list` → `tools/call`。`initialize` 结果形状是 `{protocolVersion, capabilities, serverInfo:{name,version}}`——`name`/`version` **嵌套**，按扁平结构解析会静默拿到空名字（单测抓到过）。
-- **同连接串行**（`Client.mu` 覆盖整个往返）：MCP 允许并发（靠 id 配对），但使用面是「启动列举一次 + 调用」，串行换来实现简单且不会两处同读 stdout。
-- **stdout 噪音跳过而不是判死**：规范要求 stdout 只写协议、日志走 stderr，但现实有服务器混写。`decodeResponse` 对非 JSON 行/无 id 通知/别人的响应一律返回「不是我的」让调用方继续读，**不报错**。
-- **对账而非增量**（`Manager.Sync` 唯一入口，幂等）：传「当前应该连哪些」整份清单，自己算要连/要断/要保持。三条硬纪律：① 配置没变**保持原连接**（重连打断在途调用）；② 配置变了必须重连（沿用旧连接 = 配置没生效）；③ **上次没连上的必须重试**——`connect` 失败时 `client` 为 nil，按「指纹相同就保持」处理会让启动时连不上的服务器**永远**不再尝试（用户修好命令也没用），最难排查的一类问题。清理一律走 nil-safe 的 `entry.close()`。
-- **工具名净化必须做**（`ExposedName` = `<server>_<tool>`，非 `[A-Za-z0-9_-]` 换 `_`，截到 64）：MCP 允许点号（`web.search`），网关约束 `^[a-zA-Z0-9_-]{1,64}$`——不净化会被 400 拒收**整轮**（§5 坑 13 的事故）。净化后撞名**报错**而非悄悄加后缀（名字必须稳定，否则模型上轮学到的名字下轮就不存在）。
-- **风险一律高危 + `Mutates=true`，不采信服务器自报注解**（`readOnlyHint` 等）：MCP 规范明说「clients MUST consider tool annotations to be untrusted unless they come from trusted servers」——服务器可自称只读换自动执行。放宽只能靠用户显式选 `auto` 档；`Annotations` 只作展示，**不参与定级**。
-- **三处状态缺一处就是半截功能**：① 连接（`mcp.Manager`）② 目录（`tools` 表里 `source=mcp` 的条目 = 服务器的事实投影，`materializeMCPTools` 整份重建：删多的、补缺的、更描述变了的）③ 注册表（`syncDynamicTools` 的动态段）。`mcpDefs()` 的数据源是 **manager 而不是目录**（从目录反推 MCP 原名是绕远路——目录里只有净化后的名字）。
-- **停用 = 能力挂起**：断开 + 撤下目录条目。**MCP 物化条目是 `custom=0` 但可删**（`RemoveTool` 只读守卫的判据是 `source` 而不只是 `custom`：只看 `custom` 会让 MCP 工具永远删不掉，能力挂起变成假的——真链路探针抓到的真 bug）。
-- **运行期状态与磁盘形状分开**：`McServerEntry` 的 `status`/`tool_count`/`last_error`/`stderr` 由 `mcpServerViews` 应答时合成（不往 `McServerSpec` 塞运行期字段）。前端 **`enabled ≠ 已连接`**：`enabled` 是用户意图，连不上时仍为 true——拿它显示「已连接」等于骗用户（`mcp-status.ts` 的 `mcpStatusPill` 纯函数 + 测试钉住，缺状态字段时回落按 `enabled` 显示）；失败原因必须显示出来。
-- **`tools` 包不 import `mcp`**（用扁平 `MCPToolSpec` 构造，依赖方向保持「装配在 server」——映射在 `server/mcp.go`）（MCP 工具 id 同受这条约束）。
-- **验收**：`internal/mcp` 用「测试二进制自我 re-exec」当假 stdio 服务器（`TestMain` 看 `MCP_FAKE_SERVER`，不引外部依赖），HTTP 用 `httptest`；`internal/server/mcp_test.go` 走完整装配链（加服务器 → 物化 → 注册 → 执行 → 状态 → 停用 → 删除）；**真链路**探针 `node temp/ws-mcp-live.mjs` 打真实 Exa MCP 端点。
+**只依赖标准库**的 MCP 客户端：服务器注册后暴露的能力以工具形式进目录（`source=mcp` + `server` 指回），与 `source=binary` 同一段动态注册（`SetDynamic` 整体替换）。四条最易踩的：**stdio 编码必须紧凑**（缩进破坏换行分帧）、**`initialize` 结果里 `serverInfo` 是嵌套的**（按扁平解析静默拿到空名字）、**`Manager.Sync` 对账且「上次没连上的必须重试」**、**风险一律高危 + `Mutates`、不采信服务器自报注解**。**完整契约（每条纪律与理由）见 `docs/mcp.md`**。
 
 ## 4. 开发约定
 
@@ -214,6 +201,7 @@
 15. **文件编辑工具的原子写会炸运行中的 vite**（2026-09-27 实测两次）：写入器在目标目录建瞬时目录 `.name.<pid>.<uuid>.tmpdir/`，写完即删；vite 的 chokidar 恰好在这个窗口里对它建 watch → `EBUSY: resource busy or locked` → **vite 抛未捕获的 FSWatcher error，整个 dev 栈死掉**（前端热更失效、窗口白屏，而报错里只有一串临时目录路径，极易误判成源码问题）。**修法**：`frontend/vite.config.ts` 的 `server.watch.ignored` 必须含 `**/.*.tmpdir/**` 与 `**/*.tmp`。同类坑：vite watcher 也必须排除 `src-tauri/**` 这类被构建进程锁住的目录。
 16. **vite 会静默供应「陈旧转换结果」——症状是「方法在磁盘上存在、运行时却是 is not a function」**（2026-09-29 实测，排查代价极大）：原子写（临时目录 + rename）让 chokidar 漏掉某次变更后，vite 的**转换缓存**不失效，于是它继续把**旧版本**发给浏览器——磁盘文件是对的、`tsc` 与单测全绿，只有运行时炸（`source.childHistory is not a function`）。**刷新页面没用**（重新请求到的还是那份陈旧结果）。**判据**：`curl http://127.0.0.1:5190/src/<模块路径>` 看 vite 实际供应的 JS 里有没有那个新符号（比读磁盘可靠——它测的是真正跑到浏览器里的东西）。**处置**：碰一下 mtime（`(Get-Item <文件>).LastWriteTime = Get-Date`）逼它重新转换，或重启 dev 栈。**教训**：新符号"运行时不存在"时先怀疑转换缓存，别先怀疑代码——`tsc` 与单测都测不到这一层。
 17. **含密钥的配置文件必须进 .gitignore**（2026-09-27）：`config/search.json` 存各渠道 apikey，与 `config/local.json` 同性质——新增任何「会落盘凭据」的配置文件时，同步加 .gitignore，否则一次测试写入就变成待提交文件。
+18. **CSP 没放行 blob worker 会让 dev 页面「断了就再也回不来」**（2026-10-06 用户报错实测）：vite 的 dev client（`/@vite/client` 的 `waitForSuccessfulPing`）在 **HMR WebSocket 断开**后用 blob 造一个 `SharedWorker` 去轮询服务端，成功后 `location.reload()`；而 `frontend/index.html` 的 CSP 里 `script-src 'self' 'unsafe-inline'` 没有 `blob:`（`worker-src` 回退到 `script-src`）→ `new SharedWorker` 抛异常且**未被 catch** → reload 永不执行，页面停在死状态只能手动刷新（机器休眠导致 socket 断开时必现）。**修法**：CSP 加 `worker-src 'self' blob:`（**别**放宽 `script-src`——blob 仍不能当脚本执行）。**排查提示**：这类「vite 相关的控制台报错」先去 `curl http://127.0.0.1:5190/@vite/client` 看真实行号，别猜。
 
 ## 6. Windows 服务运维（对齐参考项目的部署形态）
 
@@ -256,8 +244,8 @@ Harness 的目标形态：**主 Agent 只做决策与分派，子 Agent 是用�
 
 **已定项不在本节重复**（本节只留「还没定/还没做」的事实）：桌面壳框架与打包更新机制见 §2.1；上下文管理 P1~P5 的落地范围与「未做」见 §2.2/§2.3；后端化路线的逐步验收标准见 `docs/backend-roadmap.md`。
 
-- **后端化路线**：已定（2026-09-18），**M1~M4 已落地**（M4 = 自定义工具 spawn / MCP / 网页搜索），M5（远程访问 + 客户端更新器）待做；子 Agent 再委派与供应商预算/公平调度器**明确出界**（见 roadmap「明确不做」）。
-- **自更新**：产物侧已实现，**客户端更新器未实现**（机制与产物契约见 §2.1）；服务形态走 `scripts\service\update.ps1`。
+- **后端化路线**：已定（2026-09-18），**M1~M4 已落地**（M4 = 自定义工具 spawn / MCP / 网页搜索），M5 只剩**远程访问**待做（客户端更新器已实现：设置面板检查-下载-安装流，走 §2.1 的 zip 产物契约）；子 Agent 再委派与供应商预算/公平调度器**明确出界**（见 roadmap「明确不做」）。
+- **自更新**：已实现（壳内检查 manifest → 下载 zip 校验 → 后端热替换/asar 冷替换，机制与产物契约见 §2.1）；服务形态走 `scripts\service\update.ps1`。
 - **语义记忆**：未做（会话搜索先行）；**存储底座已定**——会话已切 SQLite（modernc 纯 Go），语义记忆/向量检索（FTS5/sqlite-vec）将在同库扩展，不再单独立项选型。
 - **项目正式名**：工作名 lxcode，用户保留命名权。
 - **未分组会话无文件系统隔离**：顶层多活跃会话与项目 worktree 已落地（§2.1），未分组会话仍共用后端默认工作目录。
