@@ -13,8 +13,10 @@ import {
   isWorkspacePage,
   type WorkspacePage,
   type WorkspaceTab,
+  type WorkspaceTabsState,
   type WorkspaceView,
 } from "./shared/workspace-tabs";
+import { initialViewHistory, pushView, stepView } from "./shared/view-history";
 import { getAgentSource } from "./agent";
 import { useAgent, type ThreadBlock } from "./shared/store";
 import { beginEdit, canRewind, planRewind, type EditDraft } from "./shared/blocks";
@@ -79,28 +81,40 @@ function AppBody({ source }: { source: AgentSource }) {
   const sessionStatesRef = useRef(sessionStates);
   sessionStatesRef.current = sessionStates;
   const view = workspaceState.active;
+  // 浏览器式导航历史（鼠标侧键后退/前进，shared/view-history）：所有工作区导航
+  // 都从下面的 pushWorkspace 走，条目才不会漏记。ref 供窗口级监听器读（监听器
+  // 只挂一次，不能把 history 放进它的依赖）。
+  const [viewHistory, setViewHistory] = useState(initialViewHistory());
+  const viewHistoryRef = useRef(viewHistory);
+  viewHistoryRef.current = viewHistory;
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const settingsOpenRef = useRef(settingsOpen);
+  settingsOpenRef.current = settingsOpen;
   /** 对话范围（项目 id / ""=未分组）——App 持有：侧栏过滤、「新对话」归属、
    *  空态项目标签三处共用。用户拍板：**恒有范围**（启动即「未分组」，点项目行
    *  切换且不可取消——没有「全部」视图）。 */
   const [filter, setFilter] = useState<string>(LOOSE);
   const [gitProjectId, setGitProjectId] = useState("");
-  const [settingsOpen, setSettingsOpen] = useState(false);
   /** 右侧「已发送消息」大纲的开合：**纯 UI 状态**（不进会话历史、不落库、切会话不
    *  清——它只是当前窗口的查看方式）。 */
   const [outlineOpen, setOutlineOpen] = useState(true);
 
-  const openWorkspace = useCallback((page: WorkspacePage) => {
-    const next = focusWorkspacePage(workspaceStateRef.current, page);
+  /** 工作区导航的唯一收口：换状态 + 把落点压进浏览历史（连续同页去重在 pushView 里）。 */
+  const pushWorkspace = useCallback((next: WorkspaceTabsState) => {
     workspaceStateRef.current = next;
     setWorkspaceState(next);
+    setViewHistory((h) => pushView(h, next.active));
   }, []);
+
+  const openWorkspace = useCallback((page: WorkspacePage) => {
+    pushWorkspace(focusWorkspacePage(workspaceStateRef.current, page));
+  }, [pushWorkspace]);
   // 关闭的工作区标签：固定页签（agents/catalog/git）与子会话标签（child:<id>）同一套语义
   const closeWorkspace = useCallback((tab: WorkspaceTab): WorkspaceView => {
     const next = closeWorkspacePage(workspaceStateRef.current, tab);
-    workspaceStateRef.current = next;
-    setWorkspaceState(next);
+    pushWorkspace(next);
     return next.active;
-  }, []);
+  }, [pushWorkspace]);
   /** 标签栏点击一个工作区标签：固定页签走既有打开逻辑，子会话标签只是**聚焦**
    *  （它的内容已经挂载并保活——见 WorkspaceViewPanels，重开不重新读历史）。 */
   const openWorkspaceTab = useCallback((tab: WorkspaceTab) => {
@@ -108,17 +122,13 @@ function AppBody({ source }: { source: AgentSource }) {
       openWorkspace(tab);
       return;
     }
-    const next = focusWorkspaceTab(workspaceStateRef.current, tab);
-    workspaceStateRef.current = next;
-    setWorkspaceState(next);
-  }, [openWorkspace]);
+    pushWorkspace(focusWorkspaceTab(workspaceStateRef.current, tab));
+  }, [openWorkspace, pushWorkspace]);
   /** 卡上的「打开子会话」→ 把子会话作为**独立工作区标签**打开（focusChildTab 去重：
    *  重复打开同一个子会话回到同一个标签，不会并排长出两个）。 */
   const openChildTab = useCallback((sessionId: string) => {
-    const next = focusChildTab(workspaceStateRef.current, sessionId);
-    workspaceStateRef.current = next;
-    setWorkspaceState(next);
-  }, []);
+    pushWorkspace(focusChildTab(workspaceStateRef.current, sessionId));
+  }, [pushWorkspace]);
   const openAgents = useCallback(() => openWorkspace("agents"), [openWorkspace]);
   const openCatalog = useCallback(() => openWorkspace("catalog"), [openWorkspace]);
   const openGit = useCallback(() => {
@@ -127,15 +137,59 @@ function AppBody({ source }: { source: AgentSource }) {
     openWorkspace("git");
   }, [filter, openWorkspace, source]);
   const backToChat = useCallback(() => {
-    const next = focusChatTab(workspaceStateRef.current);
-    workspaceStateRef.current = next;
-    setWorkspaceState(next);
-  }, []);
+    pushWorkspace(focusChatTab(workspaceStateRef.current));
+  }, [pushWorkspace]);
   const focusSession = (id: string) => {
     setFilter(source.sessions().find((session) => session.id === id)?.workspace ?? LOOSE);
     void source.resumeSession(id);
     backToChat();
   };
+
+  // ---- 鼠标侧键 = 网页式后退/前进（button 3 = 后退，4 = 前进；2026-10-07 用户要求）----
+  // 监听挂在 capture 层：侧键不该触发页面上的任何交互（误按在消息上不该开始选择文本）。
+  // Chromium 在 Windows 上把侧键作为 button 3/4 的 mousedown/mouseup/auxclick 序列派发，
+  // 三处都 preventDefault——Electron 的 webContents 自带导航历史，不能让默认行为吞掉。
+  const jumpHistory = useCallback((dir: "back" | "forward") => {
+    const cur = workspaceStateRef.current;
+    // 可达性：chat 恒在、固定页签随时可重开；**子会话标签必须还在打开列表里**——
+    // 关掉的不悄悄复活（stepView 会跳过并丢弃死条目）。
+    const alive = (v: WorkspaceView) => v === "chat" || isWorkspacePage(v) || cur.tabs.includes(v);
+    const step = stepView(viewHistoryRef.current, dir, alive);
+    if (!step) return;
+    viewHistoryRef.current = step.history;
+    setViewHistory(step.history);
+    const target = step.view;
+    const next = target === "chat"
+      ? focusChatTab(cur)
+      : isWorkspacePage(target)
+        ? focusWorkspacePage(cur, target)
+        : focusWorkspaceTab(cur, target);
+    workspaceStateRef.current = next;
+    setWorkspaceState(next);
+  }, []);
+  useEffect(() => {
+    // 导航只在 **mousedown** 做：Chromium 把一次侧键按成 mousedown+mouseup(+auxclick)
+    // 三个事件，全程导航 = 一次按键跳两步（实测踩过）。
+    const onSide = (e: MouseEvent) => {
+      if (e.button !== 3 && e.button !== 4) return;
+      e.preventDefault();
+      // 设置是模态覆盖层，不进页历史——开着设置时侧键不动页面（关掉再退才是清晰语义）
+      if (settingsOpenRef.current) return;
+      jumpHistory(e.button === 3 ? "back" : "forward");
+    };
+    // mouseup/auxclick 只压默认行为（Electron 的 webContents 导航），不重复导航
+    const suppress = (e: MouseEvent) => {
+      if (e.button === 3 || e.button === 4) e.preventDefault();
+    };
+    window.addEventListener("mousedown", onSide, true);
+    window.addEventListener("mouseup", suppress, true);
+    window.addEventListener("auxclick", suppress, true);
+    return () => {
+      window.removeEventListener("mousedown", onSide, true);
+      window.removeEventListener("mouseup", suppress, true);
+      window.removeEventListener("auxclick", suppress, true);
+    };
+  }, [jumpHistory]);
 
   // live 写失败桥（AgentsProvider 的乐观更新 WS 调用失败 → 一次性提示）
   useEffect(() => {
