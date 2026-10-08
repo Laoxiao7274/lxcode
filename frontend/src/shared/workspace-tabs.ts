@@ -9,7 +9,7 @@
 // 的范围；字符串键是天然的判等凭据。
 import type { ThreadBlock } from "./blocks";
 
-export type WorkspacePage = "agents" | "catalog" | "git";
+export type WorkspacePage = "agents" | "catalog" | "git" | "remote";
 /** 子会话标签键（模板字面量类型：手写拼接的键在编译期就能被发现）。 */
 export type ChildTabKey = `child:${string}`;
 /** 可关闭的工作区标签：固定页签 + 子会话标签。 */
@@ -46,7 +46,7 @@ export function childTabSession(key: string): string | null {
 
 /** 是不是固定页签（App 按它分流：固定页签走既有打开逻辑，其余按子会话标签处理）。 */
 export function isWorkspacePage(tab: WorkspaceTab): tab is WorkspacePage {
-  return tab === "agents" || tab === "catalog" || tab === "git";
+  return tab === "agents" || tab === "catalog" || tab === "git" || tab === "remote";
 }
 
 /** 打开/聚焦一个工作区标签（固定页签与子会话标签共用这一条路径）。

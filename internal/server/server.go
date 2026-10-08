@@ -75,6 +75,11 @@ type Server struct {
 
 	mu      sync.Mutex
 	clients map[*wsClient]struct{}
+
+	// 远程访问（internal/server/remote.go）：remote.json 路径 + 管理互斥。
+	// 未装配（路径空）= 门不存在，行为与旧版一致。
+	remoteMu   sync.Mutex
+	remotePath string
 }
 
 func (s *Server) Ctx() context.Context {
@@ -204,6 +209,12 @@ func (s *Server) newRuntime(id string) (*agent.Session, error) {
 
 func (s *Server) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 远程访问的门：Enabled 时所有升级必须携带匹配 token（含回环——
+		// 公网隧道从本机回环进来）。失败直接 401，不进入 ws 升级。
+		if err := s.checkRemoteToken(r); err != nil {
+			http.Error(w, err.Error(), http.StatusUnauthorized)
+			return
+		}
 		conn, err := s.upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			log.Printf("ws 升级失败: %v", err)
@@ -278,6 +289,8 @@ func (s *Server) Run(ctx context.Context, addr string) error {
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("ok"))
 	})
+	// 远程访问管理端点（loopback-only，见 remote.go）
+	mux.HandleFunc("/remote-access", s.handleRemoteAccess)
 	srv := &http.Server{Addr: addr, Handler: mux}
 	go func() {
 		<-ctx.Done()

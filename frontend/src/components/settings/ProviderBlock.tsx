@@ -2,17 +2,16 @@
 import { useEffect, useRef, useState, type MouseEvent } from "react";
 import { gsap } from "gsap";
 import { useSettings, type ProviderMeta } from "../../shared/settings";
-import { catalogTags } from "../../shared/settings-models";
 import { motionAllowed, staggerIn, enterEase } from "../../shared/motion";
 import { collapseAway, playEnter } from "../../shared/anim";
 import { kfmtLimit } from "../../shared/format";
-import type { DiscoveredModel } from "../../shared/types";
 import { TextInput, Toggle } from "../form";
 import { IconChevronRight, IconPencil, IconTrash } from "../icons";
 import { ProviderEditDialog } from "./ProviderEditDialog";
+import { ProbeResultDialog, type ProbeModel } from "./ProbeResultDialog";
 
 function ProviderBlock({ provider, onEditModel }: { provider: ProviderMeta; onEditModel: (modelId: string) => void }) {
-  const { settings, set, setProviderEnabled, setModelVisible, fetchModels, addDiscovered, addModel, removeModel, disconnectProvider } = useSettings();
+  const { settings, set, setProviderEnabled, setModelVisible, fetchModels, addModel, removeModel, disconnectProvider } = useSettings();
   const [expanded, setExpanded] = useState(true);
   // 连接配置弹窗（Base URL / API Key / 格式，一次写全组）
   const [editingConn, setEditingConn] = useState(false);
@@ -20,9 +19,10 @@ function ProviderBlock({ provider, onEditModel }: { provider: ProviderMeta; onEd
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState("");
   const [draftErr, setDraftErr] = useState<string | null>(null);
-  // 端点探测（获取模型列表）：候选清单 + 勾选态（null = 面板没开）
-  const [probe, setProbe] = useState<{ endpoint: string; total: number; candidates: DiscoveredModel[] } | null>(null);
-  const [probePicked, setProbePicked] = useState<Set<string>>(new Set());
+  // 端点探测（获取模型列表）：完整结果交给 ProbeResultDialog 弹窗呈现（null = 没开）。
+  // 已在本提供商注册表里的模型打 added 标（弹窗里置灰禁选），不做过滤——
+  // 藏掉会让用户以为端点没报它。勾选态归弹窗自己管。
+  const [probe, setProbe] = useState<{ endpoint: string; models: ProbeModel[] } | null>(null);
   const [probing, setProbing] = useState(false);
   const [probeErr, setProbeErr] = useState<string | null>(null);
 
@@ -101,7 +101,7 @@ function ProviderBlock({ provider, onEditModel }: { provider: ProviderMeta; onEd
     collapseAway(cardRef.current, () => disconnectProvider(provider.id), { marginBottom: 0, duration: 0.28 });
   };
 
-  // 获取模型列表 = 探测端点**实际**提供什么，再让用户勾选要加哪些。
+  // 获取模型列表 = 探测端点**实际**提供什么，结果弹窗让用户勾选要加哪些。
   // 不自动全部添加：端点可能报 200 个模型（OpenRouter），自动写入会把选择器淹掉；
   // 默认也不预勾选（可预期胜过聪明——预勾选在 3 个模型时方便，在 200 个时是灾难）。
   const runProbe = async () => {
@@ -109,38 +109,17 @@ function ProviderBlock({ provider, onEditModel }: { provider: ProviderMeta; onEd
     setProbeErr(null);
     try {
       const res = await fetchModels(provider.id);
-      const known = new Set(provider.models.map((m) => m.id));
-      const candidates = res.models.filter((m) => !known.has(m.id));
-      setProbe({ endpoint: res.endpoint, total: res.models.length, candidates });
-      setProbePicked(new Set());
+      // 大小写不敏感比对：端点常把 id 的大小写报得跟注册表不一致（实测 myt ↔ MYT），
+      // 精确比对会让已添加的模型混进候选、重复注册一条仅大小写不同的条目。
+      const known = new Set(provider.models.map((m) => m.id.toLowerCase()));
+      const models = res.models.map((m) => ({ ...m, added: known.has(m.id.toLowerCase()) }));
+      setProbe({ endpoint: res.endpoint, models });
     } catch (e) {
       setProbe(null);
       setProbeErr(e instanceof Error ? e.message : String(e));
     } finally {
       setProbing(false);
     }
-  };
-
-  const togglePick = (id: string) => {
-    setProbePicked((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
-
-  const toggleAllPicked = () => {
-    if (!probe) return;
-    setProbePicked((prev) => (prev.size === probe.candidates.length ? new Set() : new Set(probe.candidates.map((c) => c.id))));
-  };
-
-  const commitProbe = async () => {
-    if (!probe) return;
-    const picked = probe.candidates.filter((c) => probePicked.has(c.id));
-    if (!(await addDiscovered(provider.id, picked))) return;
-    setProbe(null);
-    setProbePicked(new Set());
   };
 
   return (
@@ -206,54 +185,12 @@ function ProviderBlock({ provider, onEditModel }: { provider: ProviderMeta; onEd
           )}
           {probeErr && <div className="mset-probe-err" role="alert">{probeErr}</div>}
           {probe && (
-            <div className="mset-probe">
-              <div className="mset-probe-head">
-                <span className="mset-probe-text">
-                  端点报告 <b>{probe.total}</b> 个模型
-                  {probe.candidates.length === 0
-                    ? "，全部已在注册表中"
-                    : `，其中 ${probe.candidates.length} 个未添加`}
-                </span>
-                {probe.candidates.length > 0 && (
-                  <button type="button" className="mset-probe-all" onClick={toggleAllPicked}>
-                    {probePicked.size === probe.candidates.length ? "全不选" : "全选"}
-                  </button>
-                )}
-                <button type="button" className="mset-probe-close" aria-label="关闭候选面板" onClick={() => setProbe(null)}>
-                  ×
-                </button>
-              </div>
-              <div className="mset-probe-endpoint" title="实际请求的地址">{probe.endpoint}</div>
-              {probe.candidates.map((c) => (
-                <div key={c.id} className="mset-model-row">
-                  <span className="mset-model-text">
-                    <span className="mset-model-name">{c.name || c.id}</span>
-                    <span className="mset-model-meta">
-                      <span className="mset-model-id">{c.id}</span>
-                      {((c.context_window ?? 0) > 0 || (c.max_output_tokens ?? 0) > 0) && (
-                        <span className="mset-model-ctx">上下文 {kfmtLimit(c.context_window ?? 0)} · 输出 {kfmtLimit(c.max_output_tokens ?? 0)}</span>
-                      )}
-                      {catalogTags(c).map((t) => (
-                        <span key={t} className="mset-model-tag">{t}</span>
-                      ))}
-                      <span className="mset-model-tag">新发现</span>
-                    </span>
-                  </span>
-                  <Toggle
-                    on={probePicked.has(c.id)}
-                    onChange={() => togglePick(c.id)}
-                    ariaLabel={`选择 ${c.id}`}
-                  />
-                </div>
-              ))}
-              {probe.candidates.length > 0 && (
-                <div className="mset-models-foot">
-                  <button type="button" className="mset-add-model-btn" disabled={probePicked.size === 0} onClick={commitProbe}>
-                    添加选中（{probePicked.size}）
-                  </button>
-                </div>
-              )}
-            </div>
+            <ProbeResultDialog
+              provider={provider}
+              endpoint={probe.endpoint}
+              models={probe.models}
+              onClose={() => setProbe(null)}
+            />
           )}
           {provider.models.map((m) => (
             <div key={m.id} className="mset-model-row">

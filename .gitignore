@@ -6,6 +6,8 @@ bin/
 config/local.json
 # 网页搜索渠道配置（同样含各渠道 apikey）
 config/search.json
+# 远程访问开关与访问令牌（token 是后端门凭证，同性质）
+config/remote.json
 # 模型目录缓存（models.dev 快照，生成物；删了会自动重拉）
 config/model-catalog.json
 

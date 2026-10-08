@@ -235,6 +235,11 @@
 .toggle.on .toggle-knob {
   transform: translateX(14px);
 }
+/* 禁用态（探测结果弹窗里「已添加」的模型行）：可见但不可翻 */
+.toggle.disabled {
+  opacity: 0.45;
+  cursor: default;
+}
 .seg-btn {
   flex: 1;
   min-width: 56px;

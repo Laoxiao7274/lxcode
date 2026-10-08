@@ -188,20 +188,22 @@ function ConnectGroup({ title, items, onSelect }: { title: string; items: { id: 
   );
 }
 
-/** 候选模型勾选行（目录与探测两处共用——同一份版式与标签措辞）。 */
-function CandidateRows({
+/** 候选模型勾选行（目录与探测两处共用——同一份版式与标签措辞）。
+ *  导出给 ProbeResultDialog（探测结果弹窗）复用，保证两处勾选行逐字同款。
+ *  disabled = 已在注册表（探测结果弹窗专用）：整行置灰、开关不可翻。 */
+export function CandidateRows({
   items,
   picked,
   onToggle,
 }: {
-  items: { id: string; name?: string; note?: string; tags?: string[] }[];
+  items: { id: string; name?: string; note?: string; tags?: string[]; disabled?: boolean }[];
   picked: Set<string>;
   onToggle: (id: string) => void;
 }) {
   return (
     <>
-      {items.map((m) => (
-        <div key={m.id} className="mset-model-row">
+      {items.map((m, i) => (
+        <div key={`${m.id}-${i}`} className={"mset-model-row" + (m.disabled ? " added" : "")}>
           <span className="mset-model-text">
             <span className="mset-model-name">{m.name || m.id}</span>
             <span className="mset-model-meta">
@@ -212,7 +214,7 @@ function CandidateRows({
               ))}
             </span>
           </span>
-          <Toggle on={picked.has(m.id)} onChange={() => onToggle(m.id)} ariaLabel={`选择 ${m.id}`} />
+          <Toggle on={picked.has(m.id)} onChange={() => onToggle(m.id)} disabled={m.disabled} ariaLabel={`选择 ${m.id}`} />
         </div>
       ))}
     </>

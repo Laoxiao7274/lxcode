@@ -24,6 +24,7 @@ import { AgentsProvider, useAgents } from "./shared/agents";
 import { AgentsPage } from "./components/agents/AgentsPage";
 import { CatalogPage } from "./components/catalog/CatalogPage";
 import { GitWorkbenchPage } from "./components/git/GitWorkbenchPage";
+import { RemoteAccessPage } from "./components/remote/RemoteAccessPage";
 import { Topbar } from "./components/topbar";
 import { Sidebar, LOOSE } from "./components/sidebar";
 import { Thread } from "./components/thread";
@@ -42,20 +43,27 @@ import { ConnectionsProvider } from "./shared/connections";
 import { UpdateProvider } from "./shared/update";
 import { SearchAdminProvider } from "./shared/search-admin";
 import { JobsProvider } from "./shared/jobs-admin";
+import { getSakuraBridge } from "./agent/sakura";
+import { getTailscaleBridge } from "./agent/tailscale";
+import { getRemoteControlBridge } from "./agent/host";
 import { UpdateToast } from "./components/update/UpdateToast";
 import type { AgentSource, SendOptions, SessionMeta } from "./shared/types";
 
 export default function App() {
   const source = useMemo(() => getAgentSource(), []);
+  // 远程访问的桥（壳主进程领域）：浏览器模式 null → 各模式块演示/提示回落
+  const sakuraBridge = useMemo(() => getSakuraBridge(), []);
+  const tailscaleBridge = useMemo(() => getTailscaleBridge(), []);
+  const remoteControlBridge = useMemo(() => getRemoteControlBridge(), []);
   return (
     <SettingsProvider source={source}>
       <AgentsProvider source={source}>
-        <ConnectionsProvider>
+        <ConnectionsProvider source={source} sakuraBridge={sakuraBridge} remoteControlBridge={remoteControlBridge}>
           <UpdateProvider>
             <SearchAdminProvider source={source}>
               {/* 后台任务域：时间线卡片与顶栏面板共用同一份任务清单 */}
               <JobsProvider source={source}>
-                <AppBody source={source} />
+                <AppBody source={source} sakuraBridge={sakuraBridge} tailscaleBridge={tailscaleBridge} remoteControlBridge={remoteControlBridge} />
                 <UpdateToast />
               </JobsProvider>
             </SearchAdminProvider>
@@ -66,7 +74,12 @@ export default function App() {
   );
 }
 
-function AppBody({ source }: { source: AgentSource }) {
+function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }: {
+  source: AgentSource;
+  sakuraBridge: ReturnType<typeof getSakuraBridge>;
+  tailscaleBridge: ReturnType<typeof getTailscaleBridge>;
+  remoteControlBridge: ReturnType<typeof getRemoteControlBridge>;
+}) {
   const { state, sessionStates, send, resolve, clearError, reportError } = useAgent(source);
   const { settings, providers } = useSettings();
   // agents：子会话标签的标题要按 agentId 回落显示名（回放块的 agentName 是空串）
@@ -170,6 +183,7 @@ function AppBody({ source }: { source: AgentSource }) {
     setGitProjectId((current) => current || (filter && projects.some((project) => project.id === filter) ? filter : projects[0]?.id ?? ""));
     openWorkspace("git");
   }, [filter, openWorkspace, source]);
+  const openRemote = useCallback(() => openWorkspace("remote"), [openWorkspace]);
   const backToChat = useCallback(() => {
     pushWorkspace(focusChatTab(workspaceStateRef.current));
   }, [pushWorkspace]);
@@ -379,7 +393,7 @@ function AppBody({ source }: { source: AgentSource }) {
   // 这里只是显示层加前缀——两处不会给出**不同的标题**，只会一个带前缀一个带图标。
   const viewTitle = activeChildId !== null
     ? `子会话 · ${childTabTitleOf(activeChildId)}`
-    : view === "agents" ? "Agent 名单" : view === "catalog" ? "拓展" : view === "git" ? "Git 管理" : currentTitle;
+    : view === "agents" ? "Agent 名单" : view === "catalog" ? "拓展" : view === "git" ? "Git 管理" : view === "remote" ? "远程访问" : currentTitle;
 
   // 壳环境（Electron）= 真实窗口；浏览器 = 保留模拟壳（窗口模拟一层的差异，
   // 内部布局完全一致——同组件，不再两份 JSX）
@@ -473,6 +487,9 @@ function AppBody({ source }: { source: AgentSource }) {
     }
     if (activeView === "agents") return <AgentsPage />;
     if (activeView === "catalog") return <CatalogPage />;
+    if (activeView === "remote") {
+      return <RemoteAccessPage sakuraBridge={sakuraBridge} tailscaleBridge={tailscaleBridge} remoteControlBridge={remoteControlBridge} />;
+    }
     if (activeView === "git") {
       return (
         <GitWorkbenchPage
@@ -538,6 +555,8 @@ function AppBody({ source }: { source: AgentSource }) {
         onOpenCatalog={openCatalog}
         gitActive={view === "git"}
         onOpenGit={openGit}
+        remoteActive={view === "remote"}
+        onOpenRemote={openRemote}
       />
       <WorkspaceViewPanels
         activeView={view}
@@ -612,22 +631,40 @@ function WorkspaceViewPanels({
   if (displayedView !== "chat" && !renderedPages.includes(displayedView)) renderedPages.push(displayedView);
   const renderedViews: WorkspaceView[] = ["chat", ...renderedPages];
 
+  // 冻结渲染：隐藏面板复用**上一次渲染的同一元素对象**——React 对引用相同的
+  // 元素直接跳过整棵子树的协调。没有这层，每个聊天流式 delta 都会把所有
+  // 已打开页面（Agents/拓展/Git/远程访问/子会话）重渲染一遍——「标签页多了
+  // 切换就卡」的主因。重新激活时照常渲染新内容（组件状态不丢：同类型同
+  // key，只是重渲染）。
+  const frozen = useRef(new Map<WorkspaceView, ReactNode>());
+
   return (
     <main className="main">
-      {renderedViews.map((view) => (
-        <div
-          key={view}
-          ref={(element) => {
-            if (element) panels.current.set(view, element);
-            else panels.current.delete(view);
-          }}
-          className={"workspace-view-panel" + (view === "chat" ? " workspace-chat-panel" : "")}
-          data-workspace-view={view}
-          hidden={displayedView !== view}
-        >
-          {renderView(view)}
-        </div>
-      ))}
+      {renderedViews.map((view) => {
+        const isActive = displayedView === view;
+        // 活动页每次渲染新内容；从未渲染过的页（标签刚开还没轮到显示）也要
+        // 先渲染一次，否则挂着空壳。
+        if (isActive || !frozen.current.has(view)) {
+          frozen.current.set(view, renderView(view));
+        }
+        return (
+          <div
+            key={view}
+            ref={(element) => {
+              if (element) panels.current.set(view, element);
+              else {
+                panels.current.delete(view);
+                frozen.current.delete(view); // 页面关闭：连缓存一起清
+              }
+            }}
+            className={"workspace-view-panel" + (view === "chat" ? " workspace-chat-panel" : "")}
+            data-workspace-view={view}
+            hidden={displayedView !== view}
+          >
+            {frozen.current.get(view) ?? null}
+          </div>
+        );
+      })}
     </main>
   );
 }

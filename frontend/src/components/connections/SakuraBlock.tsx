@@ -11,13 +11,14 @@ import { Button, TextInput } from "../form";
 import { CopyBtn } from "./CopyBtn";
 
 /** 隧道删除钮（两步确认——useConfirmClick 统一行为）。 */
-function TunnelDelBtn({ onConfirm }: { onConfirm: () => void }) {
+function TunnelDelBtn({ onConfirm, disabled }: { onConfirm: () => void; disabled?: boolean }) {
   const del = useConfirmClick(onConfirm);
   return (
     <button
       type="button"
       className={"conn-copy danger" + (del.confirming ? " confirm" : "")}
       data-conn="tunnel-del"
+      disabled={disabled}
       onClick={del.onClick}
       onBlur={del.onBlur}
     >
@@ -27,11 +28,12 @@ function TunnelDelBtn({ onConfirm }: { onConfirm: () => void }) {
 }
 
 export function SakuraBlock() {
-  const { sakura, loginSakura, logoutSakura, tunnels, createTunnel, toggleTunnel, removeTunnel } = useConnections();
+  const { sakura, sakuraBusy, sakuraError, loginSakura, logoutSakura, refreshSakura, tunnels, createTunnel, toggleTunnel, removeTunnel } = useConnections();
   const [key, setKey] = useState("");
   const panelEnter = useEnterRef<HTMLDivElement>();
+  const busy = sakuraBusy !== null;
 
-  // 未登录：密钥输入（用户中心获取访问密钥）
+  // 未登录：密钥输入（用户中心获取访问密钥）；登录失败/账户冻结就地报错
   if (!sakura) {
     return (
       <div className="conn-sakura">
@@ -49,10 +51,11 @@ export function SakuraBlock() {
             placeholder="访问密钥（在 natfrp.com 用户中心生成）"
             aria-label="樱花frp 访问密钥"
           />
-          <Button variant="primary" data-conn="sakura-login" disabled={key.trim() === ""} onClick={() => loginSakura(key)}>
-            登录
+          <Button variant="primary" data-conn="sakura-login" disabled={key.trim() === "" || busy} onClick={() => loginSakura(key)}>
+            {busy ? "登录中…" : "登录"}
           </Button>
         </div>
+        {sakuraError && <div className="conn-sakura-err" role="alert">{sakuraError}</div>}
       </div>
     );
   }
@@ -70,10 +73,21 @@ export function SakuraBlock() {
             今日 {humanBytes(today)} · 剩余 <span className="conn-traffic-left">{humanBytes(remaining)}</span>（隧道流量双向计费）
           </div>
         </div>
-        <button type="button" className="conn-copy" data-conn="sakura-logout" onClick={logoutSakura} title="退出登录（清除本机密钥）">
-          退出
-        </button>
+        <div className="conn-sakura-actions">
+          <button type="button" className="conn-copy" data-conn="sakura-refresh" disabled={busy} onClick={refreshSakura} title="刷新账户流量与隧道列表（面板上新建的隧道也会出现）">
+            刷新
+          </button>
+          <button type="button" className="conn-copy" data-conn="sakura-logout" disabled={busy} onClick={logoutSakura} title="退出登录（清除本机密钥）">
+            退出
+          </button>
+        </div>
       </div>
+      {busy && (
+        <div className="conn-sakura-busy" role="status">
+          <span className="conn-busy-spinner" aria-hidden="true" />
+          {sakuraBusy}…
+        </div>
+      )}
       <div className="conn-ra-panel" ref={panelEnter}>
         {tunnels.length === 0 ? (
           <div className="conn-sakura-empty">
@@ -97,17 +111,18 @@ export function SakuraBlock() {
               </div>
               <div className="conn-cred">
                 <span className="conn-cred-label">用量</span>
-                <span className="conn-cred-value">{humanBytes(t.used)}</span>
-                <Button variant="ghost" className="conn-tunnel-btn" data-conn="tunnel-toggle" onClick={() => toggleTunnel(t.id)}>
+                <span className="conn-cred-value">{t.used === null ? "—" : humanBytes(t.used)}</span>
+                <Button variant="ghost" className="conn-tunnel-btn" data-conn="tunnel-toggle" disabled={busy} onClick={() => toggleTunnel(t.id)}>
                   {t.online ? "断开" : "启动"}
                 </Button>
-                <TunnelDelBtn onConfirm={() => removeTunnel(t.id)} />
+                <TunnelDelBtn onConfirm={() => removeTunnel(t.id)} disabled={busy} />
               </div>
             </div>
           ))
         )}
-        <button type="button" className="conn-add" data-conn="tunnel-new" onClick={createTunnel}>
-          + 创建公网隧道
+        {sakuraError && <div className="conn-sakura-err" role="alert">{sakuraError}</div>}
+        <button type="button" className="conn-add" data-conn="tunnel-new" disabled={busy} onClick={createTunnel}>
+          {busy ? (sakuraBusy ?? "处理中…") : "+ 创建公网隧道"}
         </button>
         <div className="conn-ra-hint">创建 = 自动选节点（负载最低）并分配端口，本地指向 127.0.0.1:7789；删除不连带本机地址。</div>
       </div>

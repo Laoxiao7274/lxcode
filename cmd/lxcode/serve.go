@@ -102,6 +102,15 @@ func runServe(ctx context.Context, path, addr, sessionsDir string) error {
 	catalogSvc := modelcatalog.LoadService(resolveCatalogPath(path))
 	srv.AttachModelCatalog(catalogSvc)
 	log.Printf("模型目录: %s（源 %s）", resolveCatalogPath(path), modelcatalog.SourceURL)
+
+	// 远程访问门（config/remote.json，与 models.json 同目录）：Enabled 时所有
+	// WS 升级必须携带 token（含回环——公网隧道从回环进来）。管理端点
+	// /remote-access 仅限本机，壳经它读取/轮换 token 与开关。
+	remotePath := resolveRemotePath(path)
+	srv.AttachRemoteAccess(remotePath)
+	if ra := config.LoadRemoteAccess(remotePath); ra.Enabled {
+		log.Printf("远程访问: 已启用（token 已配置，所有 /rpc 连接需凭证）")
+	}
 	// 后台预热：首次拉取要几秒（实测 5 MB / ~5s），预热过设置面板一开就是热的。
 	// 失败只记日志——真正的错误会在用户打开设置时如实回报。
 	go func() {
@@ -132,6 +141,13 @@ func resolveSearchPath(modelsPath string) string {
 		return env
 	}
 	return filepath.Join(filepath.Dir(modelsPath), "search.json")
+}
+
+// resolveRemotePath 决定远程访问配置路径：与 models.json 同目录（同一份
+// 部署配置的一部分——安装形态在 %ProgramData%\lxcode\config\，开发形态在
+// --config 指定目录）。
+func resolveRemotePath(modelsPath string) string {
+	return filepath.Join(filepath.Dir(modelsPath), "remote.json")
 }
 
 // reloadLoop 周期热加载注册表与搜索渠道配置：手改 models.json /

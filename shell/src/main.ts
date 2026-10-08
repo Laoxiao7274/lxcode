@@ -5,6 +5,9 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { app, BrowserWindow, dialog, ipcMain, net, protocol } from "electron";
 import { ensureBackend, shutdownBackend } from "./sidecar";
+import { initSakura, sakuraHandlers, shutdownSakura } from "./sakura";
+import { initTailscale, tailscaleHandlers } from "./tailscale";
+import { cachedState, cachedToken, disable as remoteDisable, enable as remoteEnable, initBackendRemote, refresh as remoteRefresh, rotate as remoteRotate } from "./backend-remote";
 
 // userData 目录名与应用身份（单实例锁、任务栏、通知都吃这个）
 app.setName("lxcode");
@@ -26,8 +29,12 @@ protocol.registerSchemesAsPrivileged([
 // 远程内容渲染，必须重新评估此开关。
 app.commandLine.appendSwitch("no-sandbox");
 
-// 开发形态开 CDP 调试口（temp/cdp-*.mjs 验证脚本连它驱动真实窗口；打包形态不开）
-if (!app.isPackaged) app.commandLine.appendSwitch("remote-debugging-port", "9229");
+// 开发形态开 CDP 调试口（temp/cdp-*.mjs 验证脚本连它驱动真实窗口；打包形态不开）。
+// 端口可经 LXCODE_CDP_PORT 覆盖——多实例并存时（如 e2e 用临时 userData 再拉一个壳）
+// 避免与常驻 dev 壳的 9229 撞端口。
+if (!app.isPackaged) {
+  app.commandLine.appendSwitch("remote-debugging-port", process.env.LXCODE_CDP_PORT ?? "9229");
+}
 
 let win: BrowserWindow | null = null;
 
@@ -49,6 +56,9 @@ if (!app.requestSingleInstanceLock()) {
 
     // 后端先行（探测→直连或拉起），窗口加载时渲染层 WSAgent 即可连上
     await ensureBackend();
+    // 远程访问状态（token 等）在窗口加载前取好——渲染层创建 WSAgent 时要
+    // 同步取 token 拼 WS URL（sendSync 只读缓存，不阻塞在网络上）
+    await initBackendRemote();
 
     win = new BrowserWindow({
       width: 1440,
@@ -105,6 +115,29 @@ if (!app.requestSingleInstanceLock()) {
       return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0];
     });
 
+    // 樱花frp 公网穿透（docs/sakurafrp-integration.md）：API/fpc 全在主进程，
+    // 渲染层经 invoke 发意图、经 sakura:state 推送收状态。handler 表逐个注册
+    //（invoke 的 channel 须在主进程显式声明，批量展开会扩大攻击面）。
+    for (const [channel, handler] of Object.entries(sakuraHandlers)) {
+      ipcMain.handle(channel, handler as (e: Electron.IpcMainInvokeEvent, ...args: unknown[]) => unknown);
+    }
+    initSakura((s) => win?.webContents.send("sakura:state", s));
+
+    // Tailscale 模式（远程访问的第二实现——与樱花frp 同构：主进程持状态，
+    // 渲染层发意图收推送）
+    for (const [channel, handler] of Object.entries(tailscaleHandlers)) {
+      ipcMain.handle(channel, handler as (e: Electron.IpcMainInvokeEvent, ...args: unknown[]) => unknown);
+    }
+    initTailscale((s) => win?.webContents.send("tailscale:state", s));
+
+    // 后端远程访问管理（token 同步取给渲染层拼 WS URL；开关/轮换走 invoke）
+    ipcMain.on("backendRemote:tokenSync", (e) => { e.returnValue = cachedToken(); });
+    ipcMain.handle("backendRemote:get", () => cachedState() ?? { enabled: false, token: "", lanAddr: "" });
+    ipcMain.handle("backendRemote:enable", () => remoteEnable());
+    ipcMain.handle("backendRemote:disable", () => remoteDisable());
+    ipcMain.handle("backendRemote:rotate", () => remoteRotate());
+    ipcMain.handle("backendRemote:refresh", () => remoteRefresh());
+
     // 产线诊断通道：渲染层控制台与加载失败转发到主进程 stdout
     // （打包后无 DevTools 场景排查渲染层问题全靠它）
     win.webContents.on("console-message", (_e, _lvl, msg) => console.log(`[renderer] ${msg}`));
@@ -123,5 +156,8 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.on("window-all-closed", () => app.quit()); // Windows 惯例：关窗即退出
-  app.on("will-quit", () => shutdownBackend());
+  app.on("will-quit", () => {
+    shutdownBackend();
+    shutdownSakura(); // frpc 与后端同一条退出路径：壳走，隧道进程跟着收
+  });
 }

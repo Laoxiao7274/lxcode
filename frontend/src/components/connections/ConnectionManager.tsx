@@ -1,18 +1,14 @@
-// 连接管理弹窗（从原 15.8KB 拆薄——只剩编排与远程访问块）：
-// 后端列表（本机回落默认 + 远程后端 + 添加/编辑表单）+ 远程访问分区
-// （局域网凭证 + 公网穿透）。壳的身份 = 连的谁。
-// CopyBtn 在 ./CopyBtn，樱花frp 块在 ./SakuraBlock，表单在 ./RemoteForm。
-import { useRef, useState } from "react";
+// 连接管理弹窗（连谁）：后端列表——本机回落默认 + 远程后端 + 添加/编辑表单。
+// 「被连」的远程访问配置（局域网凭证 + 公网穿透模式）在侧栏「远程访问」页
+// （components/remote/RemoteAccessPage）——两个入口各管一头。
+// CopyBtn 在 ./CopyBtn，表单在 ./RemoteForm。
+import { useState } from "react";
 import { maskToken, useConnections, type RemoteConn } from "../../shared/connections";
 import { useEscape } from "../../shared/popover";
-import { staggerIn } from "../../shared/motion";
-import { useEnterRef } from "../../shared/anim";
 import { useConfirmClick } from "../../shared/confirm-click";
-import { Button, Toggle } from "../form";
+import { Button } from "../form";
 import { IconPencil, IconTrash } from "../icons";
-import { CopyBtn } from "./CopyBtn";
 import { RemoteForm } from "./RemoteForm";
-import { SakuraBlock } from "./SakuraBlock";
 
 const LOCAL_ADDR = "127.0.0.1:7789";
 
@@ -29,56 +25,6 @@ function RemoteDelBtn({ onConfirm }: { onConfirm: () => void }) {
     >
       <IconTrash /> {del.confirming ? "确认" : "删除"}
     </button>
-  );
-}
-
-/** 远程访问（被连）设置块：开关 + 地址/token 展示——面板展开有
- *  gsap 入场（上浮淡入 + 凭证行交错）+ 公网穿透（樱花frp）。 */
-function RemoteAccessBlock() {
-  const { remoteAccess, setRemoteAccess, remoteAddr, remoteToken, regenerateRemoteToken } = useConnections();
-  const [reveal, setReveal] = useState(false);
-  const panelRef = useRef<HTMLDivElement>(null);
-  const panelEnter = useEnterRef<HTMLDivElement>();
-  return (
-    <div className="conn-ra">
-      <div className="conn-ra-row">
-        <div className="conn-ra-text">
-          <div className="conn-name">远程访问</div>
-          <div className="conn-sub">允许其它设备连这台机器的后端（局域网/公网）</div>
-        </div>
-        <Toggle on={remoteAccess} onChange={setRemoteAccess} ariaLabel="远程访问" />
-      </div>
-      {remoteAccess && (
-        <div
-          className="conn-ra-panel"
-          ref={(el) => {
-            panelRef.current = el;
-            panelEnter(el);
-            // 凭证行交错浮现（地址/Token/hint）
-            if (el) staggerIn(el.querySelectorAll(".conn-cred, .conn-ra-hint"), { each: 0.05 });
-          }}
-        >
-          <div className="conn-cred">
-            <span className="conn-cred-label">地址</span>
-            <span className="conn-cred-value mono">{remoteAddr}</span>
-            <CopyBtn value={remoteAddr} label="地址" />
-          </div>
-          <div className="conn-cred">
-            <span className="conn-cred-label">Token</span>
-            <span className="conn-cred-value mono">{reveal ? remoteToken : maskToken(remoteToken)}</span>
-            <button type="button" className="conn-copy" onClick={() => setReveal((v) => !v)} title={reveal ? "隐藏" : "显示明文"}>
-              {reveal ? "隐藏" : "显示"}
-            </button>
-            <CopyBtn value={remoteToken} label="Token" />
-            <button type="button" className="conn-copy" onClick={regenerateRemoteToken} title="重新生成（旧 Token 立即失效）">
-              重置
-            </button>
-          </div>
-          <div className="conn-ra-hint">把地址和 Token 给要连你的设备；重置后旧 Token 立即失效。</div>
-          <SakuraBlock />
-        </div>
-      )}
-    </div>
   );
 }
 
@@ -165,12 +111,8 @@ export function ConnectionManager({ onClose }: { onClose: () => void }) {
                 + 添加远程后端
               </button>
 
-              {/* 远程访问（被连）：局域网凭证 + 公网穿透——独立分区，
-               *  与「连谁」的后端列表分开 */}
-              <div className="conn-sec-title">远程访问<span className="conn-sec-sub">被连——把这台机器的后端暴露给其它设备</span></div>
-              <div className="conn-item conn-ra-item">
-                <RemoteAccessBlock />
-              </div>
+              {/* 「被连」的远程访问配置在侧栏「远程访问」页——这里只管「连谁」 */}
+              <div className="conn-ra-hint">要把这台机器的后端暴露给其它设备？去侧栏「远程访问」页配置（局域网 / 樱花frp / Tailscale）。</div>
             </>
           )}
         </div>

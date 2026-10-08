@@ -55,7 +55,7 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
   readonly agentAdmin: AgentAdminSource = this;
   readonly searchAdmin: SearchAdminSource = this;
   readonly jobAdmin: JobAdminSource = this;
-  private readonly addr: string;
+  private addr: string;
   private ws: WebSocket | null = null;
   private listeners = new Set<Listener>();
   private nextId = 1;
@@ -84,9 +84,39 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
   /** 首次连接是否已为本连接建立焦点 Session；重连恢复原焦点，不清空运行态。 */
   private booted = false;
   private currentSessionId = "";
+  /** 后端远程访问凭证提供者：**每次连接现取**（token 可能在两次连接之间被
+   *  开启/轮换——构造时取死值会让重连 401 循环）。 */
+  private tokenFn: (() => string | null) | null = null;
+  /** 显式凭证覆盖（连接管理「连谁」切到远程后端时设置——该连接自己的 token，
+   *  优先于 tokenFn）。null = 回落到 tokenFn（本机 = 宿主 token）。 */
+  private tokenOverride: string | null = null;
 
-  constructor(addr = "127.0.0.1:7789") {
+  constructor(addr = "127.0.0.1:7789", token?: string | (() => string | null)) {
     this.addr = addr;
+    this.tokenFn = typeof token === "function" ? token : token ? () => token : null;
+  }
+
+  /** 切换后端（连接管理「连谁」）：换地址/凭证并立即断开重连。
+   *  会话/模型/Agent 状态由新后端在握手后的初始化链里重放（connect 已有）。
+   *  注意不 disposeSocket——那是卸载语义（started=false），切换后仍要保持
+   *  订阅与自动重连。 */
+  setBackend(addr: string, token?: string | null): void {
+    const changed = this.addr !== addr || (this.tokenOverride ?? null) !== (token ?? null);
+    this.addr = addr;
+    this.tokenOverride = token ?? null;
+    if (changed && this.started) {
+      if (this.reconnectTimer) {
+        clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+      }
+      if (this.ws) {
+        this.ws.onclose = null;
+        this.rejectAllPending("切换后端连接");
+        this.ws.close();
+        this.ws = null;
+      }
+      this.connect();
+    }
   }
 
   subscribe(listener: Listener): () => void {
@@ -105,7 +135,9 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
   /** 连接 WS（自动重连）。 */
   private connect() {
     if (this.ws && (this.ws.readyState === WS_READY_STATE_OPEN || this.ws.readyState === 0)) return;
-    const url = `ws://${this.addr}/rpc`;
+    const token = this.tokenOverride ?? this.tokenFn?.() ?? null;
+    const url = `ws://${this.addr}/rpc${token ? `?token=${encodeURIComponent(token)}` : ""}`;
+    console.log("[ws] connect", url); // 连接轨迹（排查切换/重连问题的第一现场）
     const ws = new WebSocket(url);
     this.ws = ws;
 

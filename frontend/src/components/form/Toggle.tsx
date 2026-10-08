@@ -5,25 +5,30 @@ export function Toggle({
   on,
   onChange,
   ariaLabel,
+  disabled,
 }: {
   on: boolean;
   onChange?: (on: boolean) => void;
   ariaLabel?: string;
+  disabled?: boolean;
 }) {
   return (
     <span
-      className={"toggle" + (on ? " on" : "")}
+      className={"toggle" + (on ? " on" : "") + (disabled ? " disabled" : "")}
       role="switch"
-      tabIndex={0}
+      tabIndex={disabled ? undefined : 0}
       aria-label={ariaLabel}
       aria-checked={on}
+      aria-disabled={disabled || undefined}
       onClick={(e) => {
         e.stopPropagation();
+        if (disabled) return;
         onChange?.(!on);
       }}
       onKeyDown={(e) => {
         if (e.key === "Enter") {
           e.stopPropagation();
+          if (disabled) return;
           onChange?.(!on);
         }
       }}

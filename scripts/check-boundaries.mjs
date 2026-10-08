@@ -8,7 +8,16 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const require = createRequire(new URL('../frontend/package.json', import.meta.url));
 const ts = require('typescript');
 const sourceRoot = resolve(root, 'frontend/src');
-const hostConsumers = new Set(['components/topbar/Topbar.tsx', 'components/sidebar/AddProjectDialog.tsx']);
+const hostConsumers = new Set([
+  'components/topbar/Topbar.tsx',
+  'components/sidebar/AddProjectDialog.tsx',
+  // 樱花frp 渲染层桥（发意图/收状态推送——能力在壳主进程，渲染层无 Node 面）
+  'agent/sakura.ts',
+  // Tailscale 渲染层桥（同构第二模式）
+  'agent/tailscale.ts',
+  // 后端远程访问（token/开关/局域网地址）
+  'agent/host.ts',
+]);
 
 export function checkFrontendSource(name, source) {
   const errors = [];

@@ -30,6 +30,8 @@ export function Sidebar({
   onOpenCatalog,
   gitActive,
   onOpenGit,
+  remoteActive,
+  onOpenRemote,
 }: {
   source: AgentSource;
   currentId: string;
@@ -51,6 +53,9 @@ export function Sidebar({
   /** Git 项目工作台当前激活。 */
   gitActive: boolean;
   onOpenGit: () => void;
+  /** 远程访问页当前激活（局域网/樱花frp/Tailscale 模式配置）。 */
+  remoteActive: boolean;
+  onOpenRemote: () => void;
 }) {
   const [query, setQuery] = useState("");
   const [menuFor, setMenuFor] = useState<string | null>(null);
@@ -168,6 +173,14 @@ export function Sidebar({
             <path d="M6 8v8M18 8a6 6 0 0 1-6 6H8" />
           </svg>
           Git 管理
+        </button>
+        <button type="button" className="nav-item" data-nav="remote" onClick={onOpenRemote} title="把后端暴露给其它设备（局域网/樱花frp/Tailscale）" aria-current={remoteActive ? "page" : undefined}>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M12 3v6M8.5 5.5 12 3l3.5 2.5" />
+            <rect x="4" y="9" width="16" height="11" rx="2" />
+            <path d="M8 14h.01M12 14h.01M16 14h.01M7 17.5h10" />
+          </svg>
+          远程访问
         </button>
         <button type="button" className="nav-item">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

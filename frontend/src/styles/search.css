@@ -363,8 +363,13 @@
   font-family: var(--font-sans);
   flex: none;
 }
-.mset-add-confirm:hover {
+.mset-add-confirm:not(:disabled):hover {
   opacity: 0.85;
+}
+/* 禁用态必须有可见反馈：0 勾选时黑色主按钮全饱和看着像能点（探测结果弹窗实测） */
+.mset-add-confirm:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 .mset-add-cancel {
   font-size: 11.5px;

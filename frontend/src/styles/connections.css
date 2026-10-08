@@ -23,6 +23,12 @@
   overflow: hidden;
   animation: settings-in 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
+/* 探测结果弹窗（ProbeResultDialog）专用加宽：候选行带 id + 上下文/输出 +
+   能力标签一整行元数据，460px 的连接表单骨架装不下（挤到换行/溢出）。 */
+.mset-connect.wide {
+  width: min(640px, calc(100% - 48px));
+  max-height: min(600px, calc(100% - 64px));
+}
 .mset-connect-head {
   display: flex;
   align-items: center;

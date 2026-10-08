@@ -6,12 +6,14 @@
     <!-- CSP：本地应用，零远程内容。script 的 'unsafe-inline' 供 dev 模式
          @vitejs/plugin-react 的 RefreshRuntime inline preamble；style 的
          'unsafe-inline' 是 React inline style + gsap 直接改元素样式所必需。
-         connect 的 ws://127.0.0.1:7789 是渲染层连后端的唯一外联。
-         worker-src 的 blob: 只给 dev 模式用：vite 的 dev client 在 HMR socket
-         断开后会用 blob 造一个 SharedWorker 去轮询服务端（/@vite/client 的
-         waitForSuccessfulPing），挡掉它页面就再也不会自动 reload，只能手动刷新。
-         单独写在 worker-src 而不是放宽 script-src——blob 仍然不能当脚本执行。 -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' ws://127.0.0.1:7789" />
+         connect 的 ws:/wss: 允许任意主机——连接远程后端（局域网/公网隧道）
+         是核心功能，地址由用户在连接管理里配置；data 面只有 token 参数，
+         无静态远程资源。worker-src 的 blob: 只给 dev 模式用：vite 的 dev
+         client 在 HMR socket 断开后会用 blob 造一个 SharedWorker 去轮询
+         服务端（/@vite/client 的 waitForSuccessfulPing），挡掉它页面就再也
+         不会自动 reload，只能手动刷新。单独写在 worker-src 而不是放宽
+         script-src——blob 仍然不能当脚本执行。 -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' ws: wss:" />
     <title>lxcode · 智能体工作台</title>
   </head>
   <body>

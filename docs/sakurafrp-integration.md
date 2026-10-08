@@ -52,7 +52,7 @@ interface SakuraTunnel {
 | 节点选择 | `GET /nodes` + `GET /node/stats` | 过滤：flag bit2（允许创建）置位、bit9（离线）清零；按 load 升序取首个 |
 | 隧道列表 | `GET /tunnels` | 找 lxcode 建的（命名约定 `lxcode-backend`） |
 | 创建隧道 | `POST /tunnels` | `name=lxcode-backend, type=tcp, node=<id>, local_ip=127.0.0.1, local_port=7789`；remote 留空=自动分配端口 |
-| frpc 配置 | `POST /tunnel/config` | `query=<id>, frpc=<版本>` → ini/toml；壳写盘后 spawn |
+| frpc 启动 | 环境变量 `NATFRP_TOKEN` + `NATFRP_TARGET`，args `-n` | **官方姿势**（[frpc 用户手册](https://doc.natfrp.com/frpc/manual)）：frpc 自己拉配置，无需 /tunnel/config；密钥走环境变量不进进程列表。日志落 `userData/frpc/frpc-<id>.log` |
 | 停/启 | frpc 进程生命周期 | 关闭=kill frpc（隧道登记保留）；节点端踢下线由服务端处理 |
 | 删除隧道 | `POST /tunnel/delete` | `ids=<id>`（用户显式操作，不在关闭时自动删） |
 | 账户流量 | `GET /user/info` | `[本日消耗, 总剩余]` |

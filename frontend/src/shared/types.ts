@@ -351,6 +351,11 @@ export interface AgentSource {
   saveInstructions(projectId: string, content: string): Promise<void>;
   /** 显示名（顶栏徽标）。 */
   label: string;
+  /** 切换后端地址（连接管理「连谁」——真连接切换，不是 UI 状态）。
+   *  仅 WSAgent 实现：addr 换成远程后端，token 为该连接的凭证（null = 本机
+   *  回落，走宿主 token）。切换即断开重连；会话状态由后端各自持久化。
+   *  缺省（DemoAgent）= 无切换。 */
+  setBackend?(addr: string, token?: string | null): void;
   /** 模型注册表管理；缺省时设置面板使用独立的本地演示目录。 */
   modelAdmin?: ModelAdminSource;
   /** Agent 名单与拓展目录管理（M1）；缺省时前端用内存种子自管（demo）。 */
