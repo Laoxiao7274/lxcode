@@ -272,7 +272,10 @@
   outline: none;
   resize: none;
   min-height: 44px;
+  /* 高度由 Composer 的自增高效果按内容写 inline style（到 200px 封顶）；
+     封顶前 overflow hidden（不出内部滚动条），封顶后 JS 切 auto。 */
   max-height: 200px;
+  overflow-y: hidden;
   line-height: 1.5;
   display: block;
 }

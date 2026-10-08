@@ -9,11 +9,11 @@ import { useAgents } from "../../shared/agents";
 import { effectiveDelegates } from "../../shared/agent-delegation";
 import { ThinkingState } from "../../aicss/ThinkingState";
 import { staggerIn, motionAllowed } from "../../shared/motion";
-import { isNearBottom } from "../../shared/scroll-metrics";
 import { gsap } from "gsap";
 import { Block } from "./blocks";
 import { EmptyState } from "./EmptyState";
 import { ScrollToBottom } from "./ScrollToBottom";
+import { useStickyFollow } from "./useStickyFollow";
 
 export function Thread({
   state,
@@ -48,8 +48,18 @@ export function Thread({
    *  目标，等它真的挂上 DOM 再滚动 + 高亮。 */
   revealUid?: number | null;
 }) {
-  const endRef = useRef<HTMLDivElement>(null);
-  const emptyRef = useRef<HTMLDivElement>(null);
+  // 跟随状态机：共用实现（useStickyFollow——子会话页同款）。用户贴底 →
+  // sticky 跟随；上翻 → 解除；滚回底部 → 恢复。内容增高走 RO 每帧置底。
+  const empty = state.blocks.length === 0;
+  // 发送缓动滚底：窗口内 RO 不瞬跳，由 tween 自己推进
+  const smoothUntilRef = useRef(-1e9);
+  const scrollTweenRef = useRef<gsap.core.Tween | null>(null);
+  const { endRef, stickyRef, scrollRef, progRef } = useStickyFollow({
+    empty,
+    composerScope: ".main",
+    holdScroll: () => performance.now() < smoothUntilRef.current,
+    onDetach: () => scrollTweenRef.current?.kill(),
+  });
   // 换会话（含冷启动 "" → id）= 整块历史回放，不是「刚发出」：这一帧挂载的块
   // 不播发送动效（气泡回弹 + 缓动滚底）。不区分的话，点开一条项目会话会白跑一次
   // 0.4s 的滚底动画——CDP 采样实测它就是这次点击里最大的一块主线程开销
@@ -60,25 +70,11 @@ export function Thread({
   useEffect(() => {
     prevSessionRef.current = state.currentId;
   });
-  // 跟随状态机：用户贴底 → sticky 跟随；上翻 → 解除；滚回底部 → 恢复。
-  // 用户意图 = wheel/touch/keydown（程序置底绝不触发）+ scroll 兜底
-  // （覆盖滚动条拖动；prog 时间窗跳过程序置底自身的事件，防自激）。
-  // 内容增高（流式增量、工具/确认卡挂载、gsap 展开逐帧撑高）全走
-  // ResizeObserver → 每帧置底——只要 sticky 还在。
-  // 依赖 [empty]：空态↔会话切换会替换 endRef 所在子树与滚动容器首个子
-  // 节点，effect 必须随边界重装——[] 会在空态挂载时因 endRef 为空
-  // 而永不安装跟随（页面加载即失效的根因）。
-  const stickyRef = useRef(true);
-  const scrollRef = useRef<HTMLElement | null>(null);
-  // prog：程序置底时间窗（scroll 兜底判定跳过用）；两个 effect 共享
-  const progRef = useRef(-1e9);
-  // 发送缓动滚底：窗口内 RO 不瞬跳，由 tween 自己推进
-  const smoothUntilRef = useRef(-1e9);
-  const scrollTweenRef = useRef<gsap.core.Tween | null>(null);
-  const empty = state.blocks.length === 0;
-  // 渲染窗口：底部 windowSize 块（会话切换重置回初始窗口）
+  const emptyRef = useRef<HTMLDivElement>(null);
+  // 渲染窗口：底部 windowSize 块（会话切换重置回初始窗口——上翻扩过的窗口
+  // 不重置的话，切进另一条长会话要一次性挂载一大片块，切换就是「卡一下」）
   const [windowSize, setWindowSize] = useState<number>(WINDOW_INITIAL);
-  useEffect(() => { setWindowSize(WINDOW_INITIAL); }, [empty]);
+  useEffect(() => { setWindowSize(WINDOW_INITIAL); }, [empty, state.currentId]);
   const hidden = Math.max(0, state.blocks.length - windowSize);
   const visible = hidden > 0 ? state.blocks.slice(hidden) : state.blocks;
   // 大纲跳转：目标可能在窗口外（没挂 DOM）——先把窗口撑到包含它，下一帧再滚。
@@ -106,61 +102,6 @@ export function Thread({
   const { agents, activeAgentId, sessionDelegates } = useAgents();
   const activeAgent = agents.find((a) => a.id === activeAgentId) ?? agents.find((a) => a.isMain);
   const delegateCount = activeAgent?.isMain ? effectiveDelegates(agents, sessionDelegates).length : 0;
-  useEffect(() => {
-    const el = endRef.current?.parentElement?.parentElement ?? null;
-    scrollRef.current = el;
-    if (!el) return;
-    // sticky 解除只认用户的主动滚动——程序置底也触发 scroll，但那不是
-    // 用户意图（prog 时间窗内的 scroll 一律跳过；wheel/touch/keydown 不会
-    // 被程序滚动触发，双保险）。
-    const toBottom = () => {
-      progRef.current = performance.now();
-      el.scrollTop = el.scrollHeight;
-    };
-    const userIntent = () => {
-      // 贴底判定与「回到底部」按钮（ScrollToBottom）**同源**：同一个常量、同一个函数
-      // （shared/scroll-metrics）。在这里再写一个 200 就是分叉的开始——按钮会在
-      // "其实已经在底部"时还亮着。
-      stickyRef.current = isNearBottom(el);
-    };
-    const onWheel = () => userIntent();
-    const onTouch = () => userIntent();
-    const onKey = (e: KeyboardEvent) => {
-      if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"].includes(e.key)) {
-        requestAnimationFrame(userIntent);
-      }
-    };
-    const onScroll = () => {
-      if (performance.now() - progRef.current < 120) return;
-      userIntent();
-    };
-    el.addEventListener("wheel", onWheel, { passive: true });
-    el.addEventListener("touchmove", onTouch, { passive: true });
-    el.addEventListener("keydown", onKey);
-    el.addEventListener("scroll", onScroll, { passive: true });
-    const ro = new ResizeObserver(() => {
-      // 发送缓动窗口内让位给 tween，避免瞬跳打断滚底动画
-      if (performance.now() < smoothUntilRef.current) return;
-      if (stickyRef.current) toBottom();
-    });
-    ro.observe(el.firstElementChild ?? el);
-    // 输入区（含任务清单卡）高度变化也要跟随：它只改线程区的
-    // padding-bottom（不留心观察不到——内容尺寸没变），贴底时若不让位，
-    // 清单展开就会压住对话内容（对话该整体上移，收缩时下移回来）。
-    const composerZone = el.closest(".main")?.querySelector<HTMLElement>(".composer-zone");
-    if (composerZone) ro.observe(composerZone);
-    // 装上先贴一次底：首条消息挂载早于任何 RO 回调，先对齐
-    toBottom();
-    return () => {
-      el.removeEventListener("wheel", onWheel);
-      el.removeEventListener("touchmove", onTouch);
-      el.removeEventListener("keydown", onKey);
-      el.removeEventListener("scroll", onScroll);
-      ro.disconnect();
-      // 容器即将换代：杀掉进行中的发送缓动，别让 onUpdate 写游离节点
-      scrollTweenRef.current?.kill();
-    };
-  }, [empty]);
 
   // 用户消息挂载 → 缓动滚底（发出「已发送」的手感；贴底跟随由 RO 接管）
   const prevBlocksRef = useRef(state.blocks);
@@ -240,13 +181,14 @@ export function Thread({
   );
 }
 
-/** 首屏窗口与每批前插的块数（视口内块数远小于此——含工具行展开态）。 */
-const WINDOW_INITIAL = 40;
-const WINDOW_BATCH = 40;
+/** 首屏窗口与每批前插的块数（视口内块数远小于此——含工具行展开态）。
+ *  导出给子会话页：同一份窗口化参数（两处不一致就是两套手感）。 */
+export const WINDOW_INITIAL = 40;
+export const WINDOW_BATCH = 40;
 
 /** 顶部哨兵：进入视口即请求扩大窗口（IntersectionObserver——比滚动
- *  位置判断便宜且不与跟随状态机打架）。 */
-function WindowSentinel({ onExpand, label }: { onExpand: () => void; label: string }) {
+ *  位置判断便宜且不与跟随状态机打架）。子会话页共用。 */
+export function WindowSentinel({ onExpand, label }: { onExpand: () => void; label: string }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const el = ref.current;

@@ -114,6 +114,18 @@ export function Composer({
     });
   }, [draft]);
 
+  // 自增高（DSH 形态）：随内容长高到上限（CSS max-height 200px），之内
+  // **不出内部滚动条**——多行输入在 44px 固定高度里滚是 ugliness 本身。
+  // 到上限后才允许内部滚动。发送清空 / 注入草稿都走 value 变化 → 自动复位。
+  useEffect(() => {
+    const ta = taRef.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    const max = 200;
+    ta.style.height = Math.min(ta.scrollHeight, max) + "px";
+    ta.style.overflowY = ta.scrollHeight > max ? "auto" : "hidden";
+  }, [value]);
+
   // 输入区（含清单卡）的真实高度发布给所在工作区面板——线程区按它预留底部空间，
   // 清单展开多高就留多少：浮层永远不遮挡对话内容（把清单当输入区的一部分）。
   // 发布目标是**最近的工作区面板**而不是 .main：工作区面板是保活的（隐藏但不卸载，

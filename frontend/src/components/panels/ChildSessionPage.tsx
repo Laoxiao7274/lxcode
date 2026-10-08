@@ -22,6 +22,8 @@ import { Button } from "../form";
 import { Composer } from "../composer";
 import { Block } from "../thread/blocks/Block";
 import { ScrollToBottom } from "../thread/ScrollToBottom";
+import { WINDOW_INITIAL, WINDOW_BATCH, WindowSentinel } from "../thread/Thread";
+import { useStickyFollow } from "../thread/useStickyFollow";
 
 export function ChildSessionPage({
   sessionId,
@@ -79,6 +81,18 @@ export function ChildSessionPage({
   const stats = state?.stats ?? null;
   const model = state?.model ?? "";
 
+  // 滚动跟随：与主时间线**同一份状态机**（useStickyFollow）——之前这页没装，
+  // 子 Agent 流式跑工具/输出时页面纹丝不动（用户报「子会话尤其明显」的根因）。
+  // empty 传「当前有没有内容」：加载态→内容就绪会替换 endRef 所在子树，
+  // 状态机必须随这个边界重装（否则装在空态上永不生效）。
+  const { endRef } = useStickyFollow({ empty: blocks.length === 0, composerScope: ".child-session-page" });
+  // 窗口化渲染：与主时间线同一份参数（之前全量挂载——长子会话切标签页必卡）。
+  const [windowSize, setWindowSize] = useState<number>(WINDOW_INITIAL);
+  const hidden = Math.max(0, blocks.length - windowSize);
+  const visible = hidden > 0 ? blocks.slice(hidden) : blocks;
+  // 换子会话（标签切走再切回同一组件实例）重置窗口
+  useEffect(() => { setWindowSize(WINDOW_INITIAL); }, [sessionId]);
+
   return (
     <div className="child-session-page">
       <div className="child-session-head">
@@ -107,10 +121,13 @@ export function ChildSessionPage({
             {/* 复用 .thread（主时间线的容器类：块间距、720px 居中、左右 24px 内边距）——
              *  同一个视觉语言，不是第二套排版 */}
             <div className="thread">
-              {blocks.map((block) => (
+              {hidden > 0 && <WindowSentinel onExpand={() => setWindowSize((n) => n + WINDOW_BATCH)} label={`前面还有 ${hidden} 条…`} />}
+              {visible.map((block) => (
                 // readOnly：不渲染用户气泡的动作条（撤回/编辑在这里没有意义，见 Block 的说明）
                 <Block key={block.uid} block={block} onConfirm={handleConfirm} readOnly />
               ))}
+              {/* 跟随锚点：useStickyFollow 靠它定位滚动容器（.thread → .child-session-body） */}
+              <div ref={endRef} />
             </div>
             {/* 回到底部：与主时间线**共用同一份组件**（自己找滚动祖先 = 这里的
              *  .child-session-body）。各写一份的下场是修了一处漏一处。 */}
