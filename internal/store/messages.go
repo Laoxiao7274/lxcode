@@ -50,17 +50,27 @@ func (s *Store) AppendMsg(id string, m llm.Message) (int64, error) {
 	// 每轮生成的簿记（计时/用量/模型）随消息一起落库：刷新后 chat.history 回放的
 	// 必须是同一份数字（只放内存的话用户一刷新就没了，而 live 与 replay 分叉正是
 	// 本仓库反复踩过的坑）。
+	// images 是图片**文件引用**的 JSON（视觉请求）：恒存引用不存 base64（分层纪律
+	// 见 llm/images.go）。空串 = 无图（绝大多数消息）。
+	images := ""
+	if len(m.Images) > 0 {
+		b, err := json.Marshal(m.Images)
+		if err != nil {
+			return 0, fmt.Errorf("序列化图片引用失败: %w", err)
+		}
+		images = string(b)
+	}
 	// usage_split 一律写 1：写这一行的是**认识拆分口径**的二进制（usage_tokens 真的是
 	// 输出、输入侧三桶另记）。旧二进制写的行走列默认值 0 = 老口径（那时 usage_tokens
 	// 是 provider 的 total_tokens）——折叠统计按这一位把两种口径分开（见 store.go 的
 	// ALTER 注释与 stats.go 的 legacyUsageRow）。
 	if _, err := tx.Exec(
 		`INSERT INTO messages (session_id, seq, role, content, reasoning, reasoning_sig, tool_calls, tool_call_id,
-		                       first_token_ms, duration_ms, model, usage_tokens,
+		                       first_token_ms, duration_ms, model, usage_tokens, images,
 		                       input_tokens, cache_read_tokens, cache_write_tokens, notice, usage_split)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
 		id, seq, m.Role, m.Content, m.ReasoningContent, m.ReasoningSignature, string(toolCalls), m.ToolCallID,
-		m.FirstTokenMs, m.DurationMs, m.Model, m.UsageTokens,
+		m.FirstTokenMs, m.DurationMs, m.Model, m.UsageTokens, images,
 		m.InputTokens, m.CacheReadTokens, m.CacheWriteTokens, boolInt(m.Notice),
 	); err != nil {
 		return 0, fmt.Errorf("写消息失败: %w", err)
@@ -122,7 +132,7 @@ type rowData struct {
 func (s *Store) readRows(id string) ([]rowData, error) {
 	rows, err := s.db.Query(
 		`SELECT seq, role, content, reasoning, reasoning_sig, tool_calls, tool_call_id,
-		        checkpoint, shadowed_seqs, first_token_ms, duration_ms, model, usage_tokens,
+		        checkpoint, shadowed_seqs, first_token_ms, duration_ms, model, usage_tokens, images,
 		        input_tokens, cache_read_tokens, cache_write_tokens, notice, usage_split
 		 FROM messages WHERE session_id = ? ORDER BY seq`, id)
 	if err != nil {
@@ -132,11 +142,11 @@ func (s *Store) readRows(id string) ([]rowData, error) {
 	var out []rowData
 	for rows.Next() {
 		var r rowData
-		var toolCalls, shadowedSeqs string
+		var toolCalls, shadowedSeqs, images string
 		var cp, notice, usageSplit int
 		if err := rows.Scan(&r.seq, &r.msg.Role, &r.msg.Content, &r.msg.ReasoningContent,
 			&r.msg.ReasoningSignature, &toolCalls, &r.msg.ToolCallID, &cp, &shadowedSeqs,
-			&r.msg.FirstTokenMs, &r.msg.DurationMs, &r.msg.Model, &r.msg.UsageTokens,
+			&r.msg.FirstTokenMs, &r.msg.DurationMs, &r.msg.Model, &r.msg.UsageTokens, &images,
 			&r.msg.InputTokens, &r.msg.CacheReadTokens, &r.msg.CacheWriteTokens, &notice,
 			&usageSplit); err != nil {
 			return nil, fmt.Errorf("读消息行失败: %w", err)
@@ -147,6 +157,12 @@ func (s *Store) readRows(id string) ([]rowData, error) {
 		if toolCalls != "" && toolCalls != "[]" {
 			if err := json.Unmarshal([]byte(toolCalls), &r.msg.ToolCalls); err != nil {
 				return nil, fmt.Errorf("解析工具调用失败: %w", err)
+			}
+		}
+		// 图片引用读回（'' = 无图——老行/纯文本消息，零影响）
+		if images != "" && images != "[]" {
+			if err := json.Unmarshal([]byte(images), &r.msg.Images); err != nil {
+				return nil, fmt.Errorf("解析图片引用失败: %w", err)
 			}
 		}
 		r.checkpoint = cp == 1

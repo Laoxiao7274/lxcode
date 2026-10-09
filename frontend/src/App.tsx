@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { gsap } from "gsap";
 import { motionAllowed } from "./shared/motion";
 import {
+  childTabHint,
   childTabSession,
   childTabTitle,
   closeWorkspacePage,
@@ -19,6 +20,8 @@ import {
 } from "./shared/workspace-tabs";
 import { getAgentSource } from "./agent";
 import { useAgent, type ThreadBlock } from "./shared/store";
+import { queueSendAction } from "./shared/send-queue";
+import { visionBlockNotice } from "./shared/attachments";
 import { beginEdit, canRewind, planRewind, type EditDraft } from "./shared/blocks";
 import { AgentsProvider, useAgents } from "./shared/agents";
 import { AgentsPage } from "./components/agents/AgentsPage";
@@ -27,6 +30,7 @@ import { GitWorkbenchPage } from "./components/git/GitWorkbenchPage";
 import { RemoteAccessPage } from "./components/remote/RemoteAccessPage";
 import { Topbar } from "./components/topbar";
 import { Sidebar, LOOSE } from "./components/sidebar";
+import type { MergeEntry } from "./components/jobs";
 import { Thread } from "./components/thread";
 import { Composer, type ComposerDraft } from "./components/composer";
 import type { SlashCommand } from "./components/composer/SlashPalette";
@@ -47,7 +51,8 @@ import { getSakuraBridge } from "./agent/sakura";
 import { getTailscaleBridge } from "./agent/tailscale";
 import { getRemoteControlBridge } from "./agent/host";
 import { UpdateToast } from "./components/update/UpdateToast";
-import type { AgentSource, SendOptions, SessionMeta } from "./shared/types";
+import type { AgentSource, SendAttachments, SendOptions, SessionMeta } from "./shared/types";
+import type { ComposerAttsDraft } from "./components/composer";
 
 export default function App() {
   const source = useMemo(() => getAgentSource(), []);
@@ -80,7 +85,19 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
   tailscaleBridge: ReturnType<typeof getTailscaleBridge>;
   remoteControlBridge: ReturnType<typeof getRemoteControlBridge>;
 }) {
-  const { state, sessionStates, send, resolve, clearError, reportError } = useAgent(source);
+  // 自动发送的桥：useAgent 在组件顶部调用，而真正会发送的 sendWithOptions 要等
+  // 设置/providers 就绪后才定义——经 ref 反转依赖（store 只喊「该发了」，App 决定
+  // 怎么发：请求级参数 effort/approval/agent 都在 sendWithOptions 里补齐）。
+  // atts = 队首条目携带的附件（图片批次 B——按引用透传）。
+  const autoSendBridgeRef = useRef<(sessionId: string, text: string, atts?: SendAttachments) => void>(() => {});
+  /** 发送失败的附件回滚（store 钩子 → Composer 的 attsDraft）：文本丢了附件不能丢。 */
+  const [attsDraft, setAttsDraft] = useState<ComposerAttsDraft | null>(null);
+  const attsDraftIdRef = useRef(0);
+  const onSendFailedBridgeRef = useRef<(sessionId: string, atts: SendAttachments) => void>(() => {});
+  const { state, sessionStates, childParents, sendQueues, send, resolve, clearError, reportError, enqueueSend, removeQueuedSend, moveQueuedToFront } = useAgent(source, {
+    onAutoSend: (sessionId, text, atts) => autoSendBridgeRef.current(sessionId, text, atts),
+    onSendFailed: (sessionId, atts) => onSendFailedBridgeRef.current(sessionId, atts),
+  });
   const { settings, providers } = useSettings();
   // agents：子会话标签的标题要按 agentId 回落显示名（回放块的 agentName 是空串）
   const { agents, activeAgentId } = useAgents();
@@ -205,6 +222,26 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
     () => Object.fromEntries(Object.entries(sessionStates).map(([id, session]) => [id, session.busy])),
     [sessionStates],
   );
+
+  // 子会话标签按需显示（体验修复批次 5）：活跃主会话 = chat 视图时的 currentId；
+  // 正在看某个子会话标签时 = 那个子会话的父（映射缺失时回落 currentId——子标签
+  // 活跃的导航路径里 currentId 本来就是父会话：focusChildTab 不改 currentId）。
+  const activeChildId = childTabSession(view);
+  const activeParent = activeChildId !== null ? childParents[activeChildId] ?? currentId : currentId;
+
+  // 「合并请求」入口（后台任务面板）：只对项目会话可用——workspace 取当前会话
+  // 的归属（列表还没刷新到新会话时回落对话范围 filter：刚建的会话本来就没有
+  // 可合并的分支，落 "" 与落项目 id 的差别只是入口能不能点，后端还有同一道校验）。
+  const currentWorkspace =
+    source.sessions().find((s) => s.id === currentId)?.workspace ?? (filter === LOOSE ? "" : filter);
+  const handleMergeStart = useCallback(async (sessionId: string, targetBranch: string) => {
+    await source.mergeRequest(sessionId, targetBranch);
+  }, [source]);
+  const mergeEntry = useMemo<MergeEntry | undefined>(() => {
+    if (!currentId) return undefined;
+    return { sessionId: currentId, workspace: currentWorkspace, onStart: handleMergeStart };
+  }, [currentId, currentWorkspace, handleMergeStart]);
+
   const projects = source.projects();
   useEffect(() => {
     if (view === "git" && !gitProjectId && projects.length > 0) setGitProjectId(projects[0].id);
@@ -217,17 +254,37 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
   // 发送时携带请求级参数：effort 只在当前模型声明推理能力时上帧（后端
   // 能力门控会丢弃不匹配档位，不带上帧更诚实）；approval 恒带当前设置；
   // agent = 当前选用的 Agent（主 Agent 也显式携带——后端按名单语境跑）。
-  const sendWithOptions = useCallback((text: string) => {
+  // atts = 随消息的附件（图片/文件，图片批次 B）：按引用进 opts，不复制 base64。
+  // sendToSession：目标会话显式传入——缓冲区的自动发送可能由「当前会话」的
+  // busy 翻转触发，但触发瞬间 currentId 与目标一致，显式传参不依赖这个巧合。
+  const sendToSession = useCallback((sessionId: string, text: string, atts?: SendAttachments) => {
     const current = providers.flatMap((p) => p.models).find((m) => m.id === settings.model);
     const opts: SendOptions = { approval: settings.approval, agent: activeAgentId };
     if (current && current.efforts.length > 0) opts.effort = settings.effort;
-    if (currentId) send(currentId, text, opts);
-  }, [providers, settings.model, settings.effort, settings.approval, send, activeAgentId, currentId]);
+    if (atts?.images.length) opts.images = atts.images;
+    if (atts?.files.length) opts.files = atts.files;
+    if (sessionId) send(sessionId, text, opts);
+  }, [providers, settings.model, settings.effort, settings.approval, send, activeAgentId]);
+  const sendWithOptions = useCallback((text: string, atts?: SendAttachments) => sendToSession(currentId, text, atts), [sendToSession, currentId]);
+  // 桥接（渲染期同步赋值——store 的订阅闭包经 ref 读到最新身份）
+  autoSendBridgeRef.current = sendToSession;
+  onSendFailedBridgeRef.current = useCallback((_sessionId: string, atts: SendAttachments) => {
+    attsDraftIdRef.current += 1;
+    setAttsDraft({ id: attsDraftIdRef.current, atts });
+  }, []);
 
   // 稳定身份：Thread 的 Block 用 memo，onConfirm 每次新建会击穿它
   const handleConfirm = useCallback((id: string, allow: boolean) => {
     void source.confirm(currentId, id, allow)
       .then(() => resolve(currentId, id, allow ? "allow" : "deny"))
+      .catch((e) => reportError(e instanceof Error ? e.message : String(e)));
+  }, [source, resolve, reportError, currentId]);
+
+  /** 主会话时间线上 ask_user 提问的回答：文本答案发给当前会话（与 confirm 同一条
+   *  tool.confirm 通道——answer 非空时后端走 Answer 路径）。 */
+  const handleAnswer = useCallback((id: string, text: string) => {
+    void source.answer(currentId, id, text)
+      .then(() => resolve(currentId, id, "allow", text))
       .catch((e) => reportError(e instanceof Error ? e.message : String(e)));
   }, [source, resolve, reportError, currentId]);
 
@@ -252,6 +309,20 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
       .catch((e) => reportError(e instanceof Error ? e.message : String(e)));
   }, [source, resolve, reportError]);
 
+  /** 子会话标签页里 ask_user 提问的回答：与 handleChildConfirm 同一条 owner 反查
+   *  规则（提问由父会话代理挂起，答案必须发给持有它的会话）——只换成 answer 方法
+   *  与「已回答」定格。 */
+  const handleChildAnswer = useCallback((sessionId: string, id: string, text: string) => {
+    const did = sessionStatesRef.current[sessionId]?.pending?.dispatch_id ?? "";
+    const owner = did
+      ? Object.entries(sessionStatesRef.current).find(([, st]) =>
+          st.blocks.some((b) => b.kind === "dispatch" && b.id === did))?.[0]
+      : undefined;
+    void source.answer(owner ?? sessionId, id, text)
+      .then(() => resolve(sessionId, id, "allow", text))
+      .catch((e) => reportError(e instanceof Error ? e.message : String(e)));
+  }, [source, resolve, reportError]);
+
   // 手动压缩：请求类失败进一次性提示（不动 blocks）；没有可压收益时给一句人话
   // 原因（不是错误——历史还太短是正常态）。压缩成功由 chat.compacted 事件渲染标记块。
   const handleCompact = useCallback(async () => {
@@ -265,13 +336,14 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
 
   // ---- 用户气泡的三个动作（复制在 Block 内自足；这里管编辑与撤回）----
 
-  /** 输入框草稿注入（撤回/编辑把原文放回输入框）。id 单调递增——同一条消息连续
-   *  注入两次也要重新写入（按文本比较的话第二次是 no-op，用户看到"点了没反应"）。 */
+  /** 输入框草稿注入（撤回/编辑把原文放回输入框；atts = 附件一并装回附件区——
+   *  队列条目「编辑」的装回路径）。id 单调递增——同一条消息连续注入两次也要
+   *  重新写入（按文本比较的话第二次是 no-op，用户看到"点了没反应"）。 */
   const [draft, setDraft] = useState<ComposerDraft | null>(null);
   const draftIdRef = useRef(0);
-  const injectDraft = useCallback((text: string) => {
+  const injectDraft = useCallback((text: string, atts?: SendAttachments) => {
     draftIdRef.current += 1;
-    setDraft({ id: draftIdRef.current, text });
+    setDraft({ id: draftIdRef.current, text, ...(atts ? { atts } : {}) });
   }, []);
   /** 编辑态：只记锚点，**历史一个字都不动**——真正的撤回推迟到下次发送前。 */
   const [editDraft, setEditDraft] = useState<EditDraft | null>(null);
@@ -326,21 +398,77 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
 
   // 发送：编辑态下**先撤回再发**（这是"编辑"真正生效的时刻）。撤回失败就不发——
   // 历史没清干净就发，新消息会接在被编辑那条的后面，等于改了个寂寞；文本还给
-  // 用户重试（Composer 的 submit 已经先清了输入框）。
-  const handleSend = useCallback((text: string) => {
+  // 用户重试（Composer 的 submit 已经先清了输入框）。atts 随消息携带（图片批次 B），
+  // 撤回失败同样把附件装回输入框。
+  const handleSend = useCallback((text: string, atts?: SendAttachments) => {
     const editing = editDraft;
     setEditDraft(null);
     if (!editing) {
-      sendWithOptions(text);
+      sendWithOptions(text, atts);
       return;
     }
     void source.rewind(currentId, editing.seq)
-      .then(() => sendWithOptions(text))
+      .then(() => sendWithOptions(text, atts))
       .catch((e) => {
         reportError(`撤回失败，未发送: ${e instanceof Error ? e.message : String(e)}`);
-        injectDraft(text);
+        injectDraft(text, atts);
       });
   }, [editDraft, source, currentId, sendWithOptions, reportError, injectDraft]);
+
+  // ---- 发送缓冲区（体验修复批次 5）：busy 时提交的消息在这里排队 ----
+  // submit 入队走 Composer 的 onQueue（→ enqueueSend）；队列条目的三个动作：
+  // 编辑 = 取出回填输入框（改完再发，或再入队）；删除 = 移除；直接发送 =
+  // 空闲立即按正常路径发（乐观气泡照常），忙时把该条置顶等本轮结束。
+  const [queueNotice, setQueueNotice] = useState("");
+  const queueNoticeTimerRef = useRef<number | null>(null);
+  const flashQueueNotice = useCallback((text: string) => {
+    setQueueNotice(text);
+    if (queueNoticeTimerRef.current !== null) window.clearTimeout(queueNoticeTimerRef.current);
+    queueNoticeTimerRef.current = window.setTimeout(() => setQueueNotice(""), 4000);
+  }, []);
+  const handleQueueEdit = useCallback((id: string) => {
+    const item = sendQueues[currentId]?.find((entry) => entry.id === id);
+    if (!item) return;
+    removeQueuedSend(currentId, id);
+    // 附件随文本一并装回输入框（图片批次 B：编辑 = 文本 + 附件都回 Composer）
+    const atts: SendAttachments | undefined =
+      item.images?.length || item.files?.length
+        ? { images: item.images ?? [], files: item.files ?? [] }
+        : undefined;
+    injectDraft(item.text, atts);
+  }, [sendQueues, currentId, removeQueuedSend, injectDraft]);
+  const handleQueueDelete = useCallback((id: string) => {
+    removeQueuedSend(currentId, id);
+  }, [currentId, removeQueuedSend]);
+  const handleQueueSend = useCallback((id: string) => {
+    const item = sendQueues[currentId]?.find((entry) => entry.id === id);
+    if (!item) return;
+    // 附件按引用透传（队列条目与发送参数共享同一数组——不复制 base64）
+    const atts: SendAttachments | undefined =
+      item.images?.length || item.files?.length
+        ? { images: item.images ?? [], files: item.files ?? [] }
+        : undefined;
+    // 去向判定在 send-queue.ts 的 queueSendAction（纯函数，测试直测同一份）：
+    // 空闲 → 立即按正常路径发（乐观气泡照常）；忙/发送中 → 置顶（自动发送在
+    // busy true→false 时先发它）+ 一次性提示。
+    if (queueSendAction({ busy: state.busy, sending: state.sending }) === "send-now") {
+      removeQueuedSend(currentId, id);
+      sendWithOptions(item.text, atts);
+      return;
+    }
+    moveQueuedToFront(currentId, id);
+    flashQueueNotice("当前会话正在生成，已置顶，本轮结束后立即发送");
+  }, [sendQueues, currentId, state.busy, state.sending, removeQueuedSend, sendWithOptions, moveQueuedToFront, flashQueueNotice]);
+  const currentQueue = sendQueues[currentId] ?? [];
+
+  // ---- vision 可用性感知（图片批次 B，尽力而为）----
+  // 判定链见 shared/attachments.ts 的 visionBlockNotice（纯函数，测试直测同一份）：
+  // 当前会话**实际**模型（state.model——chat.history 的 Model 字段，与后端
+  // sendImages 的 ModelFor 同一条解析路径的产物）优先，拿不到回落全局设置的模型。
+  const visionBlocked = useMemo(
+    () => visionBlockNotice(state.model || settings.model, providers.flatMap((p) => p.models)),
+    [state.model, settings.model, providers],
+  );
 
   // ---- 右侧「轮次」面板 ----
   // 分组来自纯函数：一条 user 块开一轮，其后的派发都归入该轮（判定与摘要都在
@@ -377,16 +505,35 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
 
   /** 子会话标签标题：Agent 名 + 任务摘要（如 `researcher · 通读 internal/agent`）。
    *
-   *  数据来自**主时间线里那张 dispatch 块**（childTabTitle 纯函数按 sessionId 命中）；
+   *  数据来自**父会话主时间线里那张 dispatch 块**（childTabTitle 纯函数按 sessionId
+   *  命中）。父 = 子→父映射查到的（dispatchStart 的 owner_session_id / 历史回放
+   *  各记了一份）；映射缺失时回落 currentId——标签刚打开、父历史还没回放的窗口期。
+   *  反查必须用父的 blocks：传当前活跃会话的 blocks 的话，切到别的会话后反查失败，
+   *  子会话标签标题会回落成「子会话 <id 前 8 位>」（本批修掉的既有缺陷）。
    *  回放块的 agentName 是空串（展示名是 Agent 注册表的知识），所以按 agentId 回落——
    *  与 DispatchCard / TurnPanel 同款。找不到块时 childTabTitle 自己兜底
    *  「子会话 <id 前 8 位>」，**不许空白**。 */
   const childTabTitleOf = useCallback((sessionId: string) => {
-    return childTabTitle(state.blocks, sessionId, (agentId) => agents.find((a) => a.id === agentId)?.name ?? "");
-  }, [state.blocks, agents]);
+    const parent = childParents[sessionId] ?? currentId;
+    const blocks = sessionStates[parent]?.blocks ?? state.blocks;
+    return childTabTitle(blocks, sessionId, (agentId) => agents.find((a) => a.id === agentId)?.name ?? "");
+  }, [childParents, currentId, sessionStates, state.blocks, agents]);
+  /** 子会话标签的 hover 提示：`<项目名> · 主会话「<主会话标题>」 · <子会话标签名>`。
+   *
+   *  主会话 = 该子会话的**父**（映射查父，与 childTabTitleOf 同一条链路——dispatch
+   *  块就在父的主时间线里）；项目名按父会话的 workspace（项目 id）查 projects，
+   *  未分组会话没有项目名，childTabHint 自动少一节。 */
+  const childTabHintOf = useCallback((sessionId: string) => {
+    const parent = childParents[sessionId] ?? currentId;
+    const main = source.sessions().find((s) => s.id === parent);
+    const projectName = main?.workspace
+      ? source.projects().find((p) => p.id === main.workspace)?.name
+      : undefined;
+    return childTabHint(projectName, main?.title ?? "", childTabTitleOf(sessionId));
+  }, [source, childParents, currentId, childTabTitleOf]);
   // 顶栏标题与标签栏标题走**同一个**函数：各算一次早晚分叉（标签栏写着 researcher · …，
   // 顶栏却写着另一个名字）
-  const activeChildId = childTabSession(view);
+  // activeChildId/activeParent 已在 busyBySession 旁算出（TabBar 过滤与标题反查共用）
   // 子会话标题加「子会话 · 」前缀（用户报「子会话和主会话表明的不明显」）：标签栏那边靠
   // ↳ + 「子会话」胶囊 + 淡成功色底三个通道区分，而**顶栏只有一行文字**，没有那些通道，
   // 所以在这里补一个文字前缀。标题正文仍来自同一个 childTabTitleOf（不各算一次），
@@ -436,10 +583,11 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
           <div className="chat-main">
             {errorNotice}
             <div className="thread-scroll">
-              <Thread state={state} onConfirm={handleConfirm} onSuggestion={handleSend} projectName={filterProjectName} onEdit={handleEdit} onRewind={handleRewind} onOpenChild={openChildTab} revealUid={jumpedUid} />
+              <Thread state={state} onConfirm={handleConfirm} onAnswer={handleAnswer} onSuggestion={handleSend} projectName={filterProjectName} onEdit={handleEdit} onRewind={handleRewind} onOpenChild={openChildTab} revealUid={jumpedUid} />
             </div>
             <Composer
               busy={state.busy}
+              sending={state.sending}
               todos={state.todos}
               context={state.context}
               stats={state.stats}
@@ -450,6 +598,14 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
               draft={draft}
               editing={editDraft !== null}
               onCancelEdit={handleCancelEdit}
+              queue={currentQueue}
+              queueNotice={queueNotice}
+              onQueue={(text, atts) => enqueueSend(currentId, text, atts)}
+              onQueueEdit={handleQueueEdit}
+              onQueueDelete={handleQueueDelete}
+              onQueueSend={handleQueueSend}
+              attsDraft={attsDraft}
+              visionBlocked={visionBlocked}
             />
           </div>
           <aside className="outline-aside" data-open={outlineOpen ? "true" : "false"}>
@@ -516,6 +672,7 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
         source={source}
         state={sessionStates[childId]}
         onConfirm={(id, allow) => handleChildConfirm(childId, id, allow)}
+        onAnswer={(id, text) => handleChildAnswer(childId, id, text)}
         onBack={backToChat}
       />
     );
@@ -527,6 +684,7 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
         taskTitle={viewTitle}
         source={source}
         connected={false}
+        merge={mergeEntry}
       />
       <TabBar
         source={source}
@@ -540,6 +698,9 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
         onFocusWorkspaceTab={openWorkspaceTab}
         onCloseWorkspaceTab={closeWorkspace}
         childTabTitle={childTabTitleOf}
+        childTabHint={childTabHintOf}
+        childParents={childParents}
+        activeParent={activeParent}
       />
       <Sidebar
         source={source}

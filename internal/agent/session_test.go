@@ -46,16 +46,18 @@ func bindDefault(t *testing.T, reg *config.Registry) {
 
 // fakeStream 是可编排的假 LLM：按脚本顺序回放事件序列。
 type fakeStream struct {
-	mu     sync.Mutex
-	script [][]llm.StreamEvent // 每次 Send 消耗一段
-	calls  int
+	mu       sync.Mutex
+	script   [][]llm.StreamEvent // 每次 Send 消耗一段
+	calls    int
+	lastMsgs []llm.Message // 最近一次调用收到的消息（图片链路测试断言用）
 }
 
 func (f *fakeStream) stream(ctx context.Context, m config.ModelConfig, msgs []llm.Message, opts []llm.Option) (<-chan llm.StreamEvent, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	i := f.calls
 	f.calls++
+	f.lastMsgs = append([]llm.Message(nil), msgs...)
+	f.mu.Unlock()
 	if i >= len(f.script) {
 		return nil, errors.New("脚本耗尽（未预期的多轮调用）")
 	}
@@ -840,23 +842,25 @@ func TestTurnToolsRunInWorkDir(t *testing.T) {
 
 func TestSystemPromptListsAllTools(t *testing.T) {
 	s, _ := newTestSession(t)
-	prompt := BuildSystemPrompt(s.tools, "", ProjectDocs{})
+	prompt := BuildSystemPrompt(s.tools, "", WorktreeInfo{}, false, ProjectDocs{})
 	for _, name := range s.tools.Order() {
 		// 清单行形如 "- read_file：…"（中文冒号分隔）
 		if !strings.Contains(prompt, name+"：") {
 			t.Fatalf("提示词应列出工具 %s（清单与注册表不漂移）", name)
 		}
 	}
-	// 十四个工具的清单行数（read_skill + web_search + web_fetch + agent_dispatch
-	// + job_output/job_list/job_kill——渐进披露、联网检索与抓正文、调度、后台任务）
-	if got := strings.Count(prompt, "\n- "); got != 14 {
-		t.Fatalf("工具清单应 14 行, got %d", got)
+	// 十九个工具的清单行数（read_skill + web_search + web_fetch + agent_dispatch
+	// + merge_request + ask_user + job_output/job_list/job_kill + 工作区三件套——
+	// 渐进披露、联网检索与抓正文、调度、合并进程入口、提问通道、后台任务、
+	// 工作区查询/同步/回滚）
+	if got := strings.Count(prompt, "\n- "); got != 19 {
+		t.Fatalf("工具清单应 19 行, got %d", got)
 	}
 }
 
 func TestSystemPromptDeterministic(t *testing.T) {
 	s, _ := newTestSession(t)
-	a, b := BuildSystemPrompt(s.tools, "", ProjectDocs{}), BuildSystemPrompt(s.tools, "", ProjectDocs{})
+	a, b := BuildSystemPrompt(s.tools, "", WorktreeInfo{}, false, ProjectDocs{}), BuildSystemPrompt(s.tools, "", WorktreeInfo{}, false, ProjectDocs{})
 	if a != b {
 		t.Fatal("提示词应确定性生成")
 	}
@@ -866,13 +870,13 @@ func TestSystemPromptDeterministic(t *testing.T) {
 // 按它解析相对路径、决定在哪跑命令）。
 func TestSystemPromptWorkDir(t *testing.T) {
 	s, _ := newTestSession(t)
-	prompt := BuildSystemPrompt(s.tools, `C:\proj\demo`, ProjectDocs{})
+	prompt := BuildSystemPrompt(s.tools, `C:\proj\demo`, WorktreeInfo{}, false, ProjectDocs{})
 	for _, want := range []string{`C:\proj\demo`, "项目根目录即工作目录", "相对路径"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("项目会话提示词应含 %q", want)
 		}
 	}
-	if strings.Contains(BuildSystemPrompt(s.tools, "", ProjectDocs{}), "项目根") {
+	if strings.Contains(BuildSystemPrompt(s.tools, "", WorktreeInfo{}, false, ProjectDocs{}), "项目根") {
 		t.Fatal("未分组会话不应有项目根话术")
 	}
 }

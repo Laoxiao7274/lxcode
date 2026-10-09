@@ -44,6 +44,12 @@ func (s *Server) emitEvent(sessionID string, ev agent.Event) {
 		// 主会话的时间线不会被它碰到：前端按 session_id 路由（子事件另带 dispatch_id，
 		// 进的是卡与子会话自己的 state）。
 		params.Stats = s.sessionStatsOf(sessionID)
+		// 最终答复（没有待执行的工具调用）= 这一轮结束：项目会话异步提交一个检查点提交。
+		// 只起 goroutine（见 autocommit.go），不阻塞事件路径。中间轮（带工具调用）不提交
+		// ——它们还没给出最终答复。
+		if len(e.Message.ToolCalls) == 0 {
+			s.maybeAutoCommit(sessionID)
+		}
 		s.broadcast(protocol.EventDone, params)
 	case agent.TurnErrorEvent:
 		s.broadcast(protocol.EventError, protocol.ErrorParams{
@@ -138,6 +144,8 @@ func toProtocolConfirm(sessionID string, r *agent.ConfirmRequest) *protocol.Conf
 	return &protocol.ConfirmRequest{
 		SessionID: sessionID, ID: r.ID, Name: r.Name, Arguments: r.Arguments, Prompt: r.Prompt,
 		DispatchID: r.DispatchID,
+		// ask 提问的形态与预设选项透传（空值零序列化——确认语义的 wire 不变）
+		Kind: r.Kind, Options: r.Options,
 	}
 }
 

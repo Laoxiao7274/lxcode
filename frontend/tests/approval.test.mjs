@@ -32,21 +32,24 @@ function setup(t) {
 }
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
-/** 逐条应答初始化链（hello → 各 list → session.new → chat.history）——
- *  与 ws.test.mjs 同款：setApproval 要的是**当前会话 id**，只有走完 boot 才有。 */
+/** 应答初始化链（hello → 并行清单组 → session.new → chat.history）——
+ *  与 ws.test.mjs 同款：setApproval 要的是**当前会话 id**，只有走完 boot 才有。
+ *  清单刷新已并行化（allSettled）：每轮把**所有未应答**的请求都应答掉。 */
 async function driveInit(socket) {
   const seen = new Set();
   const methods = [];
   for (let i = 0; i < 40; i++) {
     await flush();
-    const last = socket.sent.at(-1);
-    if (!last || seen.has(last.id)) break;
-    seen.add(last.id);
-    methods.push(last.method);
-    if (last.method === 'connection.hello') socket.reply({ version: '2' });
-    else if (last.method === 'session.new') socket.reply({ session_id: 'boot-session' });
-    else if (last.method === 'session.resume') socket.reply({ session_id: 'boot-session' });
-    else socket.reply({});
+    const fresh = socket.sent.filter((r) => !seen.has(r.id));
+    if (fresh.length === 0) break; // 没有新请求 → 链已跑完或卡住
+    for (const req of fresh) {
+      seen.add(req.id);
+      methods.push(req.method);
+      if (req.method === 'connection.hello') socket.receive({ id: req.id, result: { version: '2' } });
+      else if (req.method === 'session.new') socket.receive({ id: req.id, result: { session_id: 'boot-session' } });
+      else if (req.method === 'session.resume') socket.receive({ id: req.id, result: { session_id: 'boot-session' } });
+      else socket.receive({ id: req.id, result: {} });
+    }
   }
   return methods;
 }

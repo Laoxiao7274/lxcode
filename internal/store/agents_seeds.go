@@ -91,6 +91,16 @@ var seedTools = []sessiondata.ToolSpec{
 		Doc:    "多步任务的过程对齐——每完成一步更新状态，清单是唯一事实源；active 项唯一。",
 	},
 	{
+		// 确认门的「提问」形态：与 todo 同理必须在目录里（编辑器渲染 chip 只读
+		// 目录，目录里没有 = 用户在界面上勾不到它）。
+		ID: "ask_user", Desc: "向用户提问并等待回答（冲突抉择时用）", Risk: "low", Source: "builtin", Custom: false,
+		Params: []sessiondata.ToolParam{
+			{Name: "question", Type: "string", Required: true, Desc: "要问用户的问题（说清背景、取舍与你的建议）"},
+			{Name: "options", Type: "array", Desc: "预设答案（最多 6 个，用户可直接点选）"},
+		},
+		Doc: "向用户提问并**挂起等待回答**，回答文本作为工具结果回填。\n\n- 问题要自包含：说清背景与两边的意图，给出你的建议与理由\n- 用户可能跳过（「用户没有回答」）——那时自行决策或换做法，别反复重问\n- 纯机械的取舍（不同文件、不同区域）自己解决，不要每处都问",
+	},
+	{
 		ID: "session_search", Desc: "搜历史会话内容（带标题、时间与上下文）", Risk: "low", Source: "builtin", Custom: false,
 		Params: []sessiondata.ToolParam{
 			{Name: "pattern", Type: "regex", Required: true},
@@ -119,6 +129,41 @@ var seedTools = []sessiondata.ToolSpec{
 			{Name: "session", Type: "string", Desc: "可选：续跑既有子会话的 id"},
 		},
 		Doc: "主 Agent 只做决策与分派，不直接执行任务。\n\n- 任务描述必须**自包含**——子 Agent 看不到当前对话历史\n- **并行**：一条消息里发多个 dispatch 调用，它们**真的并行跑**（子会话各自独立）；有前后依赖的才分多轮串行\n- 子 Agent 在独立会话里执行（有自己的历史与压缩），返回值带子会话 id\n- 要接着上次进度继续：把子会话 id 填进 session\n- 两类制：子 Agent 的白名单不含它（委派深度恒 1）",
+	},
+	{
+		// 合并进程（第二个 producer）的入口工具。与 agent_dispatch 同理必须在目录里：
+		// 编辑器渲染 chip 只读目录，目录里没有 = 用户在界面上勾不到它。
+		ID: "merge_request", Desc: "起一个合并进程（把本会话改动交给合并 Agent 汇总）", Risk: "low", Source: "builtin", Custom: false,
+		Params: []sessiondata.ToolParam{
+			{Name: "target_branch", Type: "string", Desc: "目标分支（可选；默认 lxcode/integration）"},
+		},
+		Doc: "起一个**后台合并进程**：任务体是内置的合并 Agent，在集成分支的专用工作树里把本会话分支的改动汇总进去（处理冲突、跑构建测试）。\n\n- 立刻返回任务 id；合并结束后经唤醒投递自动通告你（用 job_output 读输出）\n- 未分组会话没有可合并的分支（先归入项目）\n- 同一会话同时只允许一个在跑的合并进程",
+	},
+	{
+		// 工作区三件套之一（查询面，低危只读）。必须在目录里：编辑器渲染 chip
+		// 只读目录，目录里没有 = 用户在界面上勾不到它（web_search 栽过的那一跤）。
+		ID: "workspace_status", Desc: "查询项目工作区状态（主检出改动、各会话分支、集成分支）", Risk: "low", Source: "builtin", Custom: false,
+		Params: []sessiondata.ToolParam{
+			{Name: "project_id", Type: "string", Desc: "项目 id（可选；默认当前会话归属的项目）"},
+		},
+		Doc: "只读汇总：主检出的未提交/未跟踪文件、各会话分支领先多少（有没有工作树、是否已并入主检出）、集成分支的领先/落后。\n\n- 用户问「本地改了哪些东西」用它\n- 全部只读，绝不动工作区\n- 未分组会话报「没有归属项目」",
+	},
+	{
+		// 工作区三件套之二（提交推送链路，中危走确认门）。
+		ID: "workspace_sync", Desc: "提交本会话改动并起合并进程（可选拼推送）", Risk: "high", Source: "builtin", Custom: false,
+		Params: []sessiondata.ToolParam{
+			{Name: "message", Type: "string", Desc: "提交信息（可选；默认取最近一条用户消息首行）"},
+			{Name: "push", Type: "bool", Desc: "合并成功后是否推送到远程 origin（默认 false）"},
+		},
+		Doc: "「帮我提交/推送」的执行链路：提交 → 起合并进程 →（push=true 时）合并成功后推到 origin。\n\n- 工作区干净则跳过提交（不报错）\n- 合并是后台任务，立刻返回任务 id，结束后自动通知\n- 推送失败不影响已完成的合并（任务 detail 会写清）\n- 未分组会话报错；同一会话只允许一个在跑的合并进程",
+	},
+	{
+		// 工作区三件套之三（回滚，中危走确认门）。
+		ID: "workspace_rollback", Desc: "回滚本会话分支（上一轮/会话起点/指定提交）", Risk: "high", Source: "builtin", Custom: false,
+		Params: []sessiondata.ToolParam{
+			{Name: "target", Type: "enum", Desc: "last-turn（默认）/ session-start / 原始 commit hash"},
+		},
+		Doc: "「回滚到上一次提交」的执行者：把本会话分支 reset --hard 到目标提交。\n\n- 工作区有未提交改动时拒绝（绝不静默丢弃手工改动）\n- 目标提交已合并进集成分支时警告：那部分要在集成分支上 revert 才能撤销\n- 绝不 push、绝不动集成分支与主检出\n- 执行前走确认门（文案列明丢弃哪些提交与文件）",
 	},
 	{
 		// 外部 Rust 二进制的接入样板（AGENTS.md §2.1「Go 主刀、Rust 武器库」）：
@@ -179,13 +224,22 @@ var seedModules = []sessiondata.ModuleSpec{
 		Desc: "组件库工程与注册表",
 		Body: "# shadcn/ui\n\n组件库工程与注册表。\n\n- 组件按 registry 分发，不整包引入\n- 主题走 CSS 变量，不 fork 组件改样式\n- 升级以 diff 合并，不锁定版本",
 	},
+	{
+		// 合并进程的内置流程（merger 的 Workflow）：合并纪律是硬约束，不是可选项
+		//（不用 --force/-X 掩盖冲突、失败不谎报成功）。
+		ID: "merge-verify", Kind: "process", Custom: false,
+		Desc: "合并 → 验证：先看两边改动再合并，冲突逐个解决，合并后跑构建测试",
+		Body: "# 合并 → 验证\n\n在集成分支的工作树里把源分支的改动汇总进来。\n\n## 先看再合\n- 合并前先看两边改了什么（git log / git diff 源分支与目标分支）\n- 明白两边的意图再动手，不盲目 merge\n\n## 解冲突\n- 冲突逐个解决并说明取舍：为什么保留这一边，另一边的意图如何被满足\n- **绝不用 --force、-X theirs / -X ours 掩盖冲突**——那是把别人的改动悄悄丢掉\n\n## 验证\n- 合并后跑构建与测试，按仓库的验收标准验证\n- 失败就把集成分支恢复原状并**如实报告**，绝不谎报成功\n- 不 push、不动主检出、不丢弃任何人的改动",
+	},
 }
 
 var seedAgents = []sessiondata.AgentDef{
 	{
 		ID: "main", Name: "主 Agent", IsMain: true, Enabled: true, Color: "#0d0d0d", Model: "",
-		Desc:     "决策与分派中枢：理解意图、拆解任务、调用名单中的 Agent 并验收汇总。不直接执行任务。",
-		Tools:    []string{"agent_dispatch"},
+		Desc: "决策与分派中枢：理解意图、拆解任务、调用名单中的 Agent 并验收汇总。不直接执行任务。",
+		// 工作区三件套是主 Agent 的「用户无感」入口：查询 / 提交推送 / 回滚——
+		// 用户视角始终在操作一个项目，分支概念由这三个工具兜住。
+		Tools:    []string{"agent_dispatch", "merge_request", "workspace_status", "workspace_sync", "workspace_rollback"},
 		Prompt:   "",
 		Workflow: "plan-execute-verify", Skills: []string{},
 		Delegates: []string{"coder", "researcher", "tester"}, Approval: "confirm",
@@ -223,5 +277,19 @@ var seedAgents = []sessiondata.AgentDef{
 		Tools:    []string{"read_file", "search", "edit", "write_file", "bash", "todo"},
 		Workflow: "plan-execute-verify", Skills: []string{},
 		Delegates: []string{}, Approval: "confirm",
+	},
+	{
+		// 合并进程（第二个 producer）拉起的**内置 Agent**——**不是**主 Agent 的委派对象：
+		// 它不在主 Agent 的 Delegates 里（见 seedNonDelegatable），也不是被派活的，
+		// 是在集成分支的专用工作树里干活的独立子会话。
+		//
+		// 白名单含变更类工具（冲突要解、要跑构建测试）；approval=auto（后台进程
+		// 没人看着确认门，与 bash 后台任务的语义一致）。
+		ID: "merger", Name: "合并 Agent", Enabled: true, Color: "#db2777", Model: "",
+		Desc:     "把会话分支的改动汇总到集成分支：处理冲突（冲突抉择可向用户提问）、跑构建测试，如实报告结果。",
+		Prompt:   "你是合并 Agent。在集成分支的专用工作树里工作，把源会话分支的改动合并到目标分支。合并纪律：先看两边改了什么（git log / git diff）再合并；冲突必须逐个解决并说明取舍（为什么保留这一边，另一边的意图如何被满足）；绝不用 --force、-X theirs / -X ours 掩盖冲突；合并后跑构建与测试；失败就把集成分支恢复原状并如实报告，绝不谎报成功；不 push、不动主检出、不丢弃任何人的改动。遇到冲突抉择（两边都改了同一处、语义取舍说不清）时，调用 `ask_user` 向用户提问：说明冲突文件、两边的改动意图，给出你的建议与理由；用户回答后按回答执行。纯机械的冲突（不同文件、不同区域）自行解决，不要每处都问。",
+		Tools:    []string{"read_file", "search", "edit", "write_file", "bash", "ask_user"},
+		Workflow: "merge-verify", Skills: []string{},
+		Delegates: []string{}, Approval: "auto",
 	},
 }

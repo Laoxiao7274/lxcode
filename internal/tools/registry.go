@@ -76,6 +76,15 @@ type Registry struct {
 	jobsMu     sync.Mutex
 	jobsMgr    *jobs.Manager
 	jobCursors map[string]int64
+
+	// mergeStart 是注入的「起一个合并进程」实现（server 装配时接线；nil = 未装配）。
+	// 与 sessionSearch / webSearch 共用 searchMu：三者都是「装配期写一次、运行期只读」
+	// 的注入点，各配一把锁只是多一处可能忘记加锁的地方。
+	mergeStart MergeStartFn
+	// workspace 是注入的工作区三工具（status/sync/rollback）的 server 侧实现
+	//（server 装配时接线；零值 = 未装配，工具回「未装配」自解释错误）。
+	// 与 mergeStart 共用 searchMu（同一批装配期注入点）。
+	workspace WorkspaceOps
 }
 
 // SessionSearchFn 是会话搜索的实现约定：在全部会话（含当前）的消息内容里
@@ -121,7 +130,18 @@ func New() *Registry {
 	r.register(writeFileDef())
 	r.register(bashDef(r))
 	r.register(todoDef(r))
+	// ask_user（确认门的「提问」形态）：模型向用户提问、等用户回答——冲突
+	// 抉择、需要用户决策时用。与 todo 同为会话级交互工具，排在变更类之后。
+	r.register(askUserDef())
 	r.register(dispatchDef(r))
+	// 合并进程入口（第二个 producer）：起一个后台合并任务，任务体是内置合并 Agent
+	// 的独立子会话。与 agent_dispatch 同为调度类，排在最后。
+	r.register(mergeRequestDef(r))
+	// 工作区三件套（用户无感链路的收尾）：status 查询（低危只读）、sync 提交推送
+	// 与 rollback 回滚（中危走确认门）。排在 merge_request 之后——同一族能力。
+	r.register(workspaceStatusDef(r))
+	r.register(workspaceSyncDef(r))
+	r.register(workspaceRollbackDef(r))
 	return r
 }
 

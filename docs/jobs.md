@@ -252,3 +252,51 @@ settle 后投递给**时间线归属**（`Spec.OwnerSessionID`，见 §2 的 `Ow
 另有一条**正对照**（不杀则 marker 必须写得出来），否则「marker 不存在」可能只是因为命令
 压根没跑起来，断言就变成了空断言。
 
+
+## 9. merge producer（第二个 producer，Kind="merge"，2026-10）
+
+合并进程是 jobs 的**第二个 producer**（`internal/server/mergejob.go`）：把本会话分支
+的改动交给内置「合并 Agent」（merger，独立子会话）在集成分支的专用工作树里汇总。
+任务体**不是**子进程，而是一个真 `agent.Session`——所以压缩/溢出兜底/确认门/工具循环
+全部免费继承，job 日志只是它的事件出口之一。
+
+**Kind 与启动路径（两条，同一后端函数 `startMergeJob`）**：
+
+| 发起方 | 路径 |
+|---|---|
+| 模型 | `merge_request` 工具（低危，`internal/tools/merge.go`——经 `Registry.SetMergeStarter` 注入） |
+| 用户 | 后台任务面板的「合并请求」入口 → `chat.mergeRequest{session_id?, target_branch?}` → 返回 `{job_id}`（`internal/server/dispatch_chat.go`） |
+
+前置校验都在 `startMergeJob`（返回前做完，错误文案照搬给前端）：会话是项目会话
+（有 workspace）、已有可合并的分支（worktree 元数据 Path/Branch 非空）、同一会话
+同时只允许一个在跑的合并进程。`target_branch` 空 = 默认 `lxcode/integration`。
+
+**任务体**：`EnsureIntegrationWorktree` 准备集成分支工作树（`<sessions>/worktrees/<project-id>/integration`）
+→ `Session.RunAgentTask` 跑 merger 子会话（`Store.CreateChild` 建的**真子会话**，
+parent_id 指向主会话——不进侧栏、父归档级联归档）。子会话在集成工作树里工作
+（workDir 覆盖），任务说明书（`mergeTaskText`）自带合并纪律：先看两边改了什么、
+冲突逐个解决并说明取舍、绝不用 `--force`/`-X theirs` 掩盖冲突、合并后跑构建测试、
+失败恢复原状并如实报告。
+
+**事件与标签页（2026-10 用户拍板「合并进程要像子 Agent 一样有标签页」）**：
+`RunAgentTask` 把子会话事件走**双路**——一份进 job 日志（`job_output` 读），一份经
+`childEmitter` 带 `dispatch_id` 上抛父会话：起手 `chat.dispatchStart`（owner=父会话、
+session_id=子会话、**dispatch_id=子会话 id**——与确认/提问代理同一个归属键，前端
+「按 dispatch_id 反查卡」的既有链路零改动）、结束 `chat.dispatchEnd`（结论/错误/取消
+定格）。前端照子 Agent 的同一套归约：主时间线一张摘要卡、点开进子会话标签页（实时流
+双投）、`ask_user` 的提问卡落进标签页内（用户在标签页里回答，答案经父通道转回）。
+
+**结束与唤醒投递**：`EndedBy=EndedSelf`（与 bash 的 `settleBackground` 同口径）——
+按 §5 的表投递（`agent`/`backend` 不投，其余投给父会话），合并结束的通告自动回到
+父会话，这里不写任何通知逻辑。**取消语义**：用户/agent 停任务 → `CancelRegistrar`
+取消 ctx → 子会话经 `SendWait` 的 ctx 传播中断并**等它真正收尾**（§8 的纪律对子会话
+同样成立——不留半个合并）。
+
+**失败判定**（绝不谎报成功）：merger 结论之后还查一遍 `project.MergeConflicts`——
+冲突文件清单非空或仍有未收尾的合并（MERGE_HEAD 存在）→ `StatusFailed`，detail 写清
+冲突文件清单（截到 600 字符）；其余按 `Settle(Failed, detail)` 如实报错。空仓库等
+无改动场景合并成功 = `StatusCompleted`。
+
+**验收用例**：`internal/server/mergejob_test.go`（起任务/未分组报错/同会话互斥/
+通告投递/merger 定义/dispatch 事件广播）与 `internal/agent/ask_user_test.go`
+（merger 子会话的提问经确认代理上抛父会话）。

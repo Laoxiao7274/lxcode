@@ -115,6 +115,11 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig, ac *sessiondata.A
 		s.mu.Unlock()
 		s.emit(TodoUpdatedEvent{Items: items})
 	})
+	// 本轮的提问通道（ask_user 工具的等待端）：向用户提问 = 一张 ask 形态的
+	// 确认卡，走 awaitConfirm 的既有挂起槽位。经 ctx 注入（与 todo sink /
+	// 技能目录同一条理由）：「能不能问、答案给谁」是会话级状态，注册表是
+	// 进程级单例——父子会话各有各的提问归属。
+	ctx = tools.WithAsker(ctx, s.askUser)
 
 	var fileChanges []FileChange
 	defer func() {
@@ -265,11 +270,12 @@ func (s *Session) streamRound(ctx context.Context, workDir, effort string, ac *s
 	// 组合（nil = 全局默认）；工具 wire 声明按白名单过滤。
 	allow := agentToolsOf(ac)
 	docs := s.projectDocsFor(workDir)
+	wt, isChild := s.worktreeInfo()
 	var prompt string
 	if ac != nil {
-		prompt = ComposeSystemPrompt(s.tools, workDir, ac, allow, docs)
+		prompt = ComposeSystemPrompt(s.tools, workDir, ac, allow, wt, isChild, docs)
 	} else {
-		prompt = BuildSystemPrompt(s.tools, workDir, docs)
+		prompt = BuildSystemPrompt(s.tools, workDir, wt, isChild, docs)
 	}
 	msgs := append([]llm.Message{{Role: "system", Content: prompt}}, history...)
 

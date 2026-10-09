@@ -32,6 +32,9 @@
 @media (prefers-reduced-motion: reduce) {
   .pulse-dot,
   .job-dot,
+  .s-dot.live,
+  .session-spinner,
+  .proj-run-spinner,
   .msg,
   .job-card,
   .job-pop {

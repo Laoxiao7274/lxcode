@@ -21,7 +21,11 @@ const Path = "/rpc"
 
 // 方法名（客户端 → 服务端）。
 const (
-	MethodHello       = "connection.hello"
+	MethodHello = "connection.hello"
+	// MethodPing 心跳探测：参数可空，纯内存应答 {pong:true}（~0ms）。客户端
+	// 靠它主动判定连接活性——断线只靠被动 onclose 发现时，Chromium 的后台
+	// 节流会把重连推迟到窗口恢复那一刻（最小化期间断的线，回来才重连）。
+	MethodPing        = "connection.ping"
 	MethodModelList   = "model.list"
 	MethodModelAdd    = "model.add"
 	MethodModelUpdate = "model.update"
@@ -56,6 +60,11 @@ const (
 	// 空闲才允许——正在跑的一轮手里握着历史快照，抽掉它等于让模型按一份
 	// 已经不存在的上下文继续（与 chat.compact 同款纪律，服务端回 ErrBusy）。
 	MethodChatRewind = "chat.rewind"
+	// MethodChatMergeRequest 从客户端（后台任务面板的「合并请求」入口）直接起一个
+	// 后台合并进程——与 merge_request 工具同一条后端路径（startMergeJob），只是
+	// 发起方从模型换成用户。参数 target_branch 为空 = 默认 lxcode/integration；
+	// 返回 job id（任务出现在后台任务面板，结束经唤醒投递通告回会话）。
+	MethodChatMergeRequest = "chat.mergeRequest"
 
 	// 会话管理（持久化 + 切换）
 	MethodSessionList            = "session.list"
@@ -289,12 +298,36 @@ const (
 	ApprovalStrict  = "strict"
 )
 
+// ChatSendImage 是 chat.send 携带的一张图片：Data 为 base64（**不带** data: 前缀）。
+// 服务端校验（mime 白名单 / ≤5MB / ≤4 张）后落盘到附件目录，历史里只存文件引用
+// ——base64 绝不入库（2026-10 用户拍板）。
+type ChatSendImage struct {
+	Mime string `json:"mime"`
+	Data string `json:"data"`
+}
+
+// ChatSendFile 是 chat.send 携带的一个文件附件：Name 为客户端提供的原名
+//（服务端净化后只用于消息文本与扩展名），Data 为 base64（**不带** data: 前缀）。
+// 服务端校验（≤20MB / ≤4 个 / 名字净化）后落盘到同一附件目录，历史里只体现为
+// 消息文本的「[附件] 名字 → attachments/...」行（无新列、无视觉通道）——Agent
+// 用 read_file 自己读（2026-10 图片批次 B）。
+type ChatSendFile struct {
+	Name string `json:"name"`
+	Data string `json:"data"`
+}
+
 type ChatSendParams struct {
 	SessionID string `json:"session_id"`
 	Text      string `json:"text"`
 	Effort    string `json:"effort,omitempty"`   // 推理强度（可选；模型须声明 reasoning 能力才生效）
 	Approval  string `json:"approval,omitempty"` // 权限模式（可选；空 = Agent 默认/confirm）
 	Agent     string `json:"agent,omitempty"`    // 执行 Agent 的名单 id（可选；空 = 主 Agent/旧语境）
+	// Images 是可选的图片附件（视觉请求）：空 = 无图（omitempty——老客户端零影响，
+	// 协议 Version 不变）。校验失败的语义见 server 侧（CodeInvalidParams + 人话文案）。
+	Images []ChatSendImage `json:"images,omitempty"`
+	// Files 是可选的文件附件（给 Agent 读的，不进视觉通道）：空 = 无文件。
+	// 落盘后以「[附件] ...」行追加进消息文本，历史无新列（协议 Version 不变）。
+	Files []ChatSendFile `json:"files,omitempty"`
 }
 
 type ChatSessionParams struct {
@@ -327,6 +360,9 @@ type ToolConfirmParams struct {
 	SessionID string `json:"session_id"`
 	ID        string `json:"id"`
 	Allow     bool   `json:"allow"`
+	// Answer 非空 = 对 ask_user 提问的文本回答（走会话的 Answer 路径，
+	// 而不是二元确认）；空 = 二元批准/拒绝（现状语义，向后兼容）。
+	Answer string `json:"answer,omitempty"`
 }
 
 // ChatHistoryParams 指定要读取的会话；客户端焦点不属于服务端全局状态。
@@ -336,6 +372,9 @@ type ChatHistoryParams struct {
 
 // ChatHistoryResult 是指定会话的同步载荷。
 type ChatHistoryResult struct {
+	// Messages 是回放的历史：带图 user 消息的 Images 是**文件引用**
+	//（llm.ImageRef——相对附件根的路径 + mime），不含 base64；前端经
+	// GET /attachments/<sessionID>/<file> 取缩略图（图片批次 B 接 UI）。
 	Messages  []llm.Message    `json:"messages"`
 	Busy      bool             `json:"busy"`
 	Pending   *ConfirmRequest  `json:"pending,omitempty"`
@@ -443,7 +482,9 @@ type ToolResultParams struct {
 	DispatchID string `json:"dispatch_id,omitempty"`
 }
 
-// ConfirmRequest 是需要人工确认的工具调用（确认门）；客户端须回 tool.confirm。
+// ConfirmRequest 是需要人工介入的挂起请求（确认门）；客户端须回 tool.confirm。
+// Kind 为空 = 高危工具确认（批准/拒绝）；Kind == "ask" = ask_user 的提问——
+// 用户以文本回答（tool.confirm 带 answer）或跳过（allow=false）。
 type ConfirmRequest struct {
 	SessionID  string `json:"session_id"`
 	ID         string `json:"id"`
@@ -451,6 +492,11 @@ type ConfirmRequest struct {
 	Arguments  string `json:"arguments"`
 	Prompt     string `json:"prompt"`
 	DispatchID string `json:"dispatch_id,omitempty"` // 非空 = 子 Agent 的确认（归属 dispatch 卡）
+	// Kind 标记形态：空 = 工具确认（现状语义）；"ask" = 提问（用户打字回答）。
+	// 可选字段（向后兼容——老客户端忽略未知键，Version 不变）。
+	Kind string `json:"kind,omitempty"`
+	// Options 是提问的预设答案（可空）——前端渲染成可直接点选的选项按钮。
+	Options []string `json:"options,omitempty"`
 }
 
 type DoneParams struct {
@@ -532,6 +578,20 @@ type ChatRewindResult struct {
 	Removed int `json:"removed"`
 }
 
+// ChatMergeRequestParams 是 chat.mergeRequest 的参数：从后台任务面板直接起一个
+// 合并进程（与 merge_request 工具同一条后端路径）。SessionID 空 = 客户端当前会话；
+// TargetBranch 空 = 默认 lxcode/integration。
+type ChatMergeRequestParams struct {
+	SessionID    string `json:"session_id,omitempty"`
+	TargetBranch string `json:"target_branch,omitempty"`
+}
+
+// MergeRequestResult 是 chat.mergeRequest 的结果：JobID 是新起的后台任务 id
+// （job.list / job.log 按 它寻址；任务结束经唤醒投递自动通告回会话）。
+type MergeRequestResult struct {
+	JobID string `json:"job_id"`
+}
+
 // ChatRewoundParams 是 chat.rewound 事件的载荷：宿主据此**截断时间线**
 // （seq 之前的保留、seq 及其之后的丢弃）并刷新上下文指示器。
 //
@@ -601,9 +661,24 @@ type SessionRenameParams struct {
 }
 
 // SessionArchiveParams 是 session.archive 的参数。
+// ReleaseWorktree 为真时，在归档成功后顺带释放该会话（及其子会话）的工作区目录：
+// 只移除干净的检出目录，保留 Git 分支与会话记录（脏/未跟踪改动会让释放失败，
+// 但**不影响归档本身**）。可选参数，缺省 = 不释放（与旧客户端行为一致）。
 type SessionArchiveParams struct {
-	ID       string `json:"id"`
-	Archived bool   `json:"archived"`
+	ID              string `json:"id"`
+	Archived        bool   `json:"archived"`
+	ReleaseWorktree bool   `json:"release_worktree,omitempty"`
+}
+
+// SessionArchiveResult 是 session.archive 的结果。归档是主操作——它失败时以
+// JSON-RPC 错误返回，不走这里。
+// ReleasedWorktree 表明是否至少成功释放了一个工作区目录且没有失败（只在请求释放时
+// 可能为真）；ReleaseError 是释放失败的原因（「；」拼接，可能含 busy / 脏改动等
+// 原始文本）——归档已经成功，前端据此提示「已归档，但工作区未能释放」。
+type SessionArchiveResult struct {
+	Archived         bool   `json:"archived"`
+	ReleasedWorktree bool   `json:"released_worktree"`
+	ReleaseError     string `json:"release_error,omitempty"`
 }
 
 // SessionWorktreeReleaseParams 是 session.worktree.release 的参数。

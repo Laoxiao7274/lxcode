@@ -313,7 +313,9 @@ func TestSeedAgentsSelfConsistent(t *testing.T) {
 		}
 	}
 	for _, a := range seedAgents {
-		if a.IsMain {
+		if a.IsMain || seedNonDelegatable[a.ID] {
+			// 合并 Agent 这类由其他 producer 拉起的子 Agent 不进委派名单
+			//（它不是被派活的，见 seedNonDelegatable）
 			continue
 		}
 		if !slices.Contains(main.Delegates, a.ID) {
@@ -556,14 +558,23 @@ func TestTopUpSeedAgentsLeavesEditedDescAlone(t *testing.T) {
 	}
 }
 
-// TestTopUpSeedAgentsSkipsMainAgent：主 Agent 的工具是结构性的，不参与补种。
+// TestTopUpSeedAgentsSkipsMainAgent：主 Agent 的工具是结构性的（调度通道 +
+// 合并进程入口 + 工作区三件套），不参与补种。
 func TestTopUpSeedAgentsSkipsMainAgent(t *testing.T) {
 	s := openTestStore(t)
 	if err := s.syncCatalogSeeds("2026-09-28T00:00:00Z"); err != nil {
 		t.Fatal(err)
 	}
-	if got := agentToolsOf(t, s, "main"); strings.Join(got, ",") != "agent_dispatch" {
-		t.Fatalf("主 Agent 的工具应恒为 agent_dispatch（唯一调度通道）: %v", got)
+	got := agentToolsOf(t, s, "main")
+	// 主 Agent 恒为「调度 + 合并进程入口 + 工作区三件套」（结构成员，不由补种改写）
+	for _, want := range []string{"agent_dispatch", "merge_request",
+		"workspace_status", "workspace_sync", "workspace_rollback"} {
+		if !slices.Contains(got, want) {
+			t.Fatalf("主 Agent 的工具应含 %s（结构性）: %v", want, got)
+		}
+	}
+	if len(got) != 5 {
+		t.Fatalf("主 Agent 的工具应恒为 agent_dispatch + merge_request + 工作区三件套: %v", got)
 	}
 }
 

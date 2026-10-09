@@ -270,3 +270,62 @@
   line-height: 1.6;
   color: #d9a441;
 }
+/* ---- ask 变体（ask_user 提问）：提问正文 + 预设选项 + 自由文本回答 ---- */
+.askTool {
+  font-size: 11px;
+  color: #8e8e96;
+  line-height: 1.4;
+}
+.askText {
+  margin: 0;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.65;
+  color: #e8e8e8;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.askBody {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.askOptions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.askInputRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.askInput {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: 6px 12px;
+  border: 1px solid #e0e0e0;
+  border-radius: 999px;
+  background: transparent;
+  font: inherit;
+  font-size: 12.5px;
+  color: inherit;
+  outline: none;
+}
+.askInput:focus {
+  border-color: #3b82f6;
+}
+.askInput::placeholder { color: #a0a0a0; }
+:global([data-theme="dark"]) .askText,
+:global(.dark) .askText { color: #f0f0f0; }
+:global([data-theme="dark"]) .askInput,
+:global(.dark) .askInput { border-color: #333; }
+:global([data-theme="dark"]) .askInput::placeholder,
+:global(.dark) .askInput::placeholder { color: #6b6b6b; }
+@media (prefers-color-scheme: dark) {
+  .askText { color: #f0f0f0; }
+  .askInput { border-color: #333; }
+  .askInput::placeholder { color: #6b6b6b; }
+}

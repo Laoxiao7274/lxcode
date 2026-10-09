@@ -8,6 +8,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  dispatchErrorTitle,
   dispatchPrimaryAction,
   dispatchPrimaryTitle,
 } from '../src/components/thread/blocks/dispatch-primary.ts';
@@ -71,4 +72,40 @@ test('⑤ 提示语与判定同源：可打开说"打开子会话 <id 前 8 位>
     assert.ok(!t.includes('展开') && !t.includes('收起'),
       '不可打开时提示语不许提展开/收起（卡里没有折叠区了）：' + t);
   }
+});
+
+// ---------- 2026-10-09：失败卡展示错误原因 ----------
+
+// 失败卡原先只写「✗ 失败」，错误文本躺在 block.result 里从不展示（用户原话：
+// 「失败的子代理，鼠标移入要能展示错误原因或者点击打开」）。DispatchCard 的 hover
+// title / aria-label 由 dispatchErrorTitle 给出——这里钉住它的内容与截断。
+test('⑥ 失败卡 title 含错误原因全文（block.result 原文进提示）', () => {
+  const reason = '端点 400：assistant 的 tool_calls 缺少配对的 tool 消息';
+  assert.equal(dispatchErrorTitle(reason), reason, '不超长时全文透传，不许加工');
+  // 空白/缺席 → null：调用方回落默认提示，不许渲染成「失败：」后面空空如也
+  assert.equal(dispatchErrorTitle(undefined), null);
+  assert.equal(dispatchErrorTitle(null), null);
+  assert.equal(dispatchErrorTitle('   \n  '), null);
+});
+
+test('⑦ 超长错误按码点截到 800 并注明完整原因在子会话里', () => {
+  const long = '错'.repeat(801);
+  const title = dispatchErrorTitle(long);
+  assert.ok(title.startsWith('错'.repeat(800)), '截断到 800 码点');
+  assert.match(title, /…（完整原因在子会话里）$/);
+  // 码点截断：代理对不许从中间切开（每个 emoji 是 1 个码点 / 2 个码元，900 个超限）
+  const emoji = '🚀'.repeat(900);
+  const clipped = dispatchErrorTitle(emoji);
+  assert.ok(clipped.startsWith('🚀'.repeat(400)));
+  assert.equal([...clipped.replace('…（完整原因在子会话里）', '')].length, 800);
+});
+
+test('⑧ 失败卡组装出的 head title / aria 含「失败」与原因（DispatchCard 接线口径）', () => {
+  const reason = dispatchErrorTitle('子会话端点连不上');
+  assert.ok(reason, '有错误文本时必须给得出原因');
+  const headTitle = `失败：${reason}`;
+  const headAria = `子代理失败：${reason}`;
+  assert.match(headTitle, /^失败：/);
+  assert.match(headAria, /失败/);
+  assert.match(headAria, /子会话端点连不上/, 'aria 里要带原因摘要（读屏用户听得到失败原因）');
 });

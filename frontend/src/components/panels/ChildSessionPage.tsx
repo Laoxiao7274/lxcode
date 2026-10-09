@@ -30,6 +30,7 @@ export function ChildSessionPage({
   source,
   state,
   onConfirm,
+  onAnswer,
   onBack,
 }: {
   /** 子会话 id（标签键 child:<sessionId> 解析出来的那个）。 */
@@ -41,6 +42,8 @@ export function ChildSessionPage({
   state?: UIState;
   /** 裁决这个子会话里挂起的确认（父会话代理确认门，AGENTS.md §2.3）。 */
   onConfirm: (id: string, allow: boolean) => void;
+  /** 回答这个子会话里的 ask_user 提问（确认门代理同一条路由——答案发给父会话）。 */
+  onAnswer?: (id: string, text: string) => void;
   /** 返回主会话（标签栏的「聊天」标签）。 */
   onBack: () => void;
 }) {
@@ -75,6 +78,10 @@ export function ChildSessionPage({
   const handleConfirm = useCallback((id: string, allow: boolean) => {
     onConfirm(id, allow);
   }, [onConfirm]);
+
+  const handleAnswer = useCallback((id: string, text: string) => {
+    onAnswer?.(id, text);
+  }, [onAnswer]);
 
   const blocks = state?.blocks ?? [];
   const context = state?.context ?? null;
@@ -124,7 +131,7 @@ export function ChildSessionPage({
               {hidden > 0 && <WindowSentinel onExpand={() => setWindowSize((n) => n + WINDOW_BATCH)} label={`前面还有 ${hidden} 条…`} />}
               {visible.map((block) => (
                 // readOnly：不渲染用户气泡的动作条（撤回/编辑在这里没有意义，见 Block 的说明）
-                <Block key={block.uid} block={block} onConfirm={handleConfirm} readOnly />
+                <Block key={block.uid} block={block} onConfirm={handleConfirm} onAnswer={handleAnswer} readOnly />
               ))}
               {/* 跟随锚点：useStickyFollow 靠它定位滚动容器（.thread → .child-session-body） */}
               <div ref={endRef} />

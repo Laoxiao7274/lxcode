@@ -2,11 +2,13 @@ package project
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // Worktree 是一个顶层会话独占的 Git 工作树。BaseCommit 固定记录创建时 HEAD；
@@ -21,7 +23,16 @@ var safeWorktreeID = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,128}$`)
 
 // CreateWorktree 从项目当前 HEAD 建新分支与独立工作目录。
 // 未提交改动不会复制：用户已选择 HEAD 作为隔离基线，不能暗中把主工作树改动带入。
-func CreateWorktree(repoPath, worktreeRoot, projectID, sessionID string) (Worktree, error) {
+//
+// 耗时测量：这条链串行 2-3 个 git 子进程，是首条消息卡顿的主体（冷态秒级）。
+// 超过 200ms 才记一行（含会话 id），阈值之下保持安静。
+func CreateWorktree(repoPath, worktreeRoot, projectID, sessionID string) (wt Worktree, err error) {
+	start := time.Now()
+	defer func() {
+		if ms := time.Since(start).Milliseconds(); ms >= 200 {
+			log.Printf("worktree 创建耗时 %dms（session=%s, project=%s）", ms, sessionID, projectID)
+		}
+	}()
 	repo, err := ValidateDirectory(repoPath)
 	if err != nil {
 		return Worktree{}, err

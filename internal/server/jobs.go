@@ -38,6 +38,9 @@ func (s *Server) AttachJobs(mgr *jobs.Manager) {
 	s.jobsMu.Unlock()
 	if s.treg != nil {
 		s.treg.SetJobs(mgr)
+		// 合并进程的入口工具（merge_request）：注册表只持一个回调，不 import server
+		//（与 SetJobs 同款模式）。
+		s.treg.SetMergeStarter(s.startMergeJob)
 	}
 	// 订阅在装配期挂上、进程生命周期内不摘：任务结束事件必须有人接，
 	// 不接 = 唤醒投递静默失效（用户看到任务结束了，agent 却永远不知道）

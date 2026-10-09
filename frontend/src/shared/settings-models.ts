@@ -6,6 +6,9 @@ export const EFFORT_IDS: EffortId[] = ["minimal", "low", "medium", "high"];
 export interface ModelMeta {
   id: string; name: string; desc: string; tags: string[]; efforts: EffortId[];
   contextWindow: number; maxOutput: number; visible: boolean; manual?: boolean;
+  /** 视觉能力声明（注册表 capabilities.vision 的直通；undefined = 未声明——
+   *  前端不得据此禁用图片入口，发送时靠后端 vision 校验兜底）。 */
+  vision?: boolean;
 }
 export interface ProviderMeta {
   id: string; name: string; tagline: string; connected: boolean; enabled: boolean;
@@ -48,6 +51,9 @@ export function mapModels(models: ModelEntry[]): ProviderMeta[] {
       // 档位派生自能力声明：未声明 reasoning 的模型整个强度入口隐藏——
       // 对非推理端点传 effort 参数会 400，选择器只在真实生效处出现。
       efforts: m.capabilities?.reasoning ? [...EFFORT_IDS] : [],
+      // vision 直通（图片批次 B）：Composer 的图片入口按它禁用——只有注册表
+      // 明确声明 false 才算「不支持」，undefined = 未知不禁用（后端兜底）。
+      vision: m.capabilities?.vision,
       // 未配 = 0 = 未知（**不编一个 128k**）：显示层用 kfmtLimit 说「未知」，
       // 而窗口未知时压缩不触发——编一个数会让用户以为压缩在保护他。
       contextWindow: m.context_window ?? 0,

@@ -121,6 +121,47 @@
   color: var(--fg-faint);
   flex: none;
 }
+/* ===== 会话行运行中加强态（busy）：蓝点加大 + 标题旁 spinner + 标题加重 =====
+ * 视觉全部沿用既有件：s-dot.live 的运行蓝与 pulse 节奏、mset-spinner
+ *（tab-spinner 同款 9px 小尺寸）——不发明新视觉。busy 结束即恢复普通态。 */
+.session-item.busy {
+  color: var(--fg);
+}
+.session-item.busy .title {
+  font-weight: 550;
+}
+.session-item.busy .s-dot {
+  width: 7px;
+  height: 7px;
+  opacity: 1;
+}
+.session-spinner {
+  width: 9px;
+  height: 9px;
+  border-width: 1.2px;
+  flex: none;
+}
+/* ===== 项目行「运行中」角标：spinner +（>1 时）×N =====
+ * 口径见 shared/busy-summary.ts：该项目下 busy 的顶层会话数（子会话 busy
+ * 不上 wire，无法可靠归属——不硬编）。 */
+.proj-run {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #3b82f6;
+}
+.proj-run-spinner {
+  width: 9px;
+  height: 9px;
+  border-width: 1.2px;
+  border-top-color: #3b82f6;
+}
+.proj-run-count {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  line-height: 1;
+}
 /* ===== 会话行结构：行内容 + 当前会话的分支展开条 ===== */
 .session-line {
   display: flex;

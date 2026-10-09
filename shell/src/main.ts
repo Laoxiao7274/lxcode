@@ -8,6 +8,8 @@ import { ensureBackend, shutdownBackend } from "./sidecar";
 import { initSakura, sakuraHandlers, shutdownSakura } from "./sakura";
 import { initTailscale, tailscaleHandlers } from "./tailscale";
 import { cachedState, cachedToken, disable as remoteDisable, enable as remoteEnable, initBackendRemote, refresh as remoteRefresh, rotate as remoteRotate } from "./backend-remote";
+import { updateHandlers } from "./updater";
+import { createTray } from "./tray";
 
 // userData 目录名与应用身份（单实例锁、任务栏、通知都吃这个）
 app.setName("lxcode");
@@ -138,6 +140,12 @@ if (!app.requestSingleInstanceLock()) {
     ipcMain.handle("backendRemote:rotate", () => remoteRotate());
     ipcMain.handle("backendRemote:refresh", () => remoteRefresh());
 
+    // 自更新（manifest → 下载校验 → 后端热替换 → asar 退出冷替换，见 updater.ts）
+    updateHandlers();
+
+    // 系统托盘（关闭 = 隐藏到托盘，后端/隧道保持运行；托盘菜单退出才真退）
+    createTray(() => win);
+
     // 产线诊断通道：渲染层控制台与加载失败转发到主进程 stdout
     // （打包后无 DevTools 场景排查渲染层问题全靠它）
     win.webContents.on("console-message", (_e, _lvl, msg) => console.log(`[renderer] ${msg}`));
@@ -155,7 +163,9 @@ if (!app.requestSingleInstanceLock()) {
     console.log("[shell] 窗口已加载");
   });
 
-  app.on("window-all-closed", () => app.quit()); // Windows 惯例：关窗即退出
+  // 托盘常驻：关窗（隐藏到托盘）不退出——真退出走托盘菜单/更新重启
+  // （app.quit() 触发 will-quit 的统一收尾）。应用要常驻的后端/隧道因此保持。
+  app.on("window-all-closed", () => { /* 不退出：托盘在 */ });
   app.on("will-quit", () => {
     shutdownBackend();
     shutdownSakura(); // frpc 与后端同一条退出路径：壳走，隧道进程跟着收

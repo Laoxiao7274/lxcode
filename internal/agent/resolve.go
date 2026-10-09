@@ -40,10 +40,11 @@ func llmToolsFiltered(toolReg *tools.Registry, allow []string) []llm.Tool {
 type SendOpt func(*sendConfig)
 
 type sendConfig struct {
-	effort   string // 推理强度（空 = 模型默认）
-	approval string // 权限模式（空 = confirm）
-	agentID  string // Agent 名单 id（空 = 主语境——无 resolver 时旧语义）
-	notice   bool   // 这条 user 消息是**注入的提示条**（不是用户说的话——会话统计的轮数按它排除）
+	effort   string         // 推理强度（空 = 模型默认）
+	approval string         // 权限模式（空 = confirm）
+	agentID  string         // Agent 名单 id（空 = 主语境——无 resolver 时旧语义）
+	notice   bool           // 这条 user 消息是**注入的提示条**（不是用户说的话——会话统计的轮数按它排除）
+	images   []llm.ImageRef // 这条 user 消息附带的图片引用（视觉请求；恒为文件引用）
 }
 
 // WithEffort 指定本轮推理强度（模型须声明 reasoning 能力才真正生效）。
@@ -60,6 +61,24 @@ func WithNotice() SendOpt { return func(c *sendConfig) { c.notice = true } }
 // WithAgent 指定本轮的执行 Agent（名单 id；空 = 旧语境——全局默认
 // 提示词与 default 角色模型，兼容不接名单的调用方/单测）。
 func WithAgent(id string) SendOpt { return func(c *sendConfig) { c.agentID = id } }
+
+// WithImages 给这条 user 消息附带图片引用（视觉请求）：refs 恒为文件引用
+// （llm.ImageRef），base64 绝不经过这里。Send 时校验张数上限（≤4），超限
+// 报错——校验放内核是最后一道闸（server 已在入口校验过一次，双保险）。
+func WithImages(refs []llm.ImageRef) SendOpt { return func(c *sendConfig) { c.images = refs } }
+
+// ModelFor 解析指定 Agent 语境下的当前模型（Agent 绑定优先，回落 default 角色）。
+// 导出给 server 做**请求前的能力校验**（vision）：chat.send 带图而模型没声明
+// vision 时要在入历史前拒绝——不能静默把图发给不识图的模型。
+// agentID 语义与 WithAgent 一致（空 = 主 Agent/旧语境），与 Send 的解析同一条
+// 路径，保证「校验的模型」与「这轮实际用的模型」是同一个。
+func (s *Session) ModelFor(agentID string) (config.ModelConfig, error) {
+	ac, err := s.resolveAgent(agentID)
+	if err != nil {
+		return config.ModelConfig{}, err
+	}
+	return s.modelFor(ac)
+}
 
 // resolveAgent 解析本轮 Agent 载荷。agentID 空 + 无 resolver = nil
 // （旧语境）；agentID 空 + 有 resolver = 主 Agent（调度中枢——M3 后

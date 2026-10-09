@@ -1,7 +1,7 @@
 // 演示数据源（M3 叙事）：主 Agent 只调度——思考选人 → agent_dispatch →
 // dispatch 卡（子 Agent 全套执行：思考/读码/改码/确认门/跑测试）→ 验收
 // 汇总。覆盖 UI 全部状态。事件形状与后端协议 1:1——接线换 WSAgent 即可。
-import type { AgentEvent, AgentSource, ApprovalMode, CompactOutcome, ConfirmRequest, ContextUsage, HistoryMessage, HistorySnapshot, JobAdminSource, JobInfo, JobLogResult, ProjectInstructions, ProjectMeta, RewindOutcome, SendOptions, SessionMeta, SessionStats, TodoItem } from "../../shared/types";
+import type { AgentEvent, AgentSource, ApprovalMode, ArchiveOutcome, CompactOutcome, ConfirmRequest, ContextUsage, HistoryMessage, HistorySnapshot, JobAdminSource, JobInfo, JobLogResult, ProjectInstructions, ProjectMeta, RewindOutcome, SendOptions, SessionMeta, SessionStats, TodoItem } from "../../shared/types";
 import { JOB_NOTICE_PREFIX, sortJobs, upsertJob } from "../../shared/jobs";
 import { normalizeApproval } from "../../shared/approval";
 import { MAIN_REASONING, SUB_REASONING, SUB_RESULT, MAIN_ANSWER, TODO_INITIAL, TODO_LATER, FILES_CHANGED, SESSIONS } from "./data";
@@ -114,19 +114,31 @@ export class DemoAgent implements AgentSource, JobAdminSource {
     return () => this.listeners.delete(listener);
   }
 
-  send(sessionId: string, text: string, _opts?: SendOptions): void {
-    if (!sessionId || !text.trim() || this.busySessions.has(sessionId)) return;
+  send(sessionId: string, text: string, opts?: SendOptions): void {
+    // 附件（图片批次 B）：演示模式没有后端可落盘——附件不进演示流水线，
+    // 只在乐观呈现层折算成一行摘要文本（「[图片]×N [文件]×M」），保证
+    // 附件选择/预览全链路可玩、发送不炸。
+    const hasAtts = Boolean(opts?.images?.length || opts?.files?.length);
+    const attsText = !hasAtts ? "" : [
+      opts?.images?.length ? `[图片]×${opts.images.length}` : "",
+      opts?.files?.length ? `[文件]×${opts.files.length}` : "",
+    ].filter(Boolean).join(" ");
+    const display = text.trim() || attsText;
+    if (!sessionId || !display || this.busySessions.has(sessionId)) return;
+    // 演示模式**不需要**乐观用户气泡：下面的 userMessage 是同步 emit 的——
+    // 没有可感知的空窗，先插 pending 块反而要靠 FIFO 去重兜一层（真后端的
+    // 乐观气泡在 ws/index.ts 的 send 里发）。
     this.busySessions.add(sessionId);
     if (this.pendingNew.has(sessionId)) {
       const ws = this.pendingNew.get(sessionId) ?? "";
       this.pendingNew.delete(sessionId);
       this.sessions_ = [
-        { id: sessionId, title: text.length > 24 ? text.slice(0, 24) + "…" : text, updatedAt: "刚刚", messages: 1, workspace: ws },
+        { id: sessionId, title: display.length > 24 ? display.slice(0, 24) + "…" : display, updatedAt: "刚刚", messages: 1, workspace: ws },
         ...this.sessions_,
       ];
       this.emit({ type: "sessionsChanged" });
     }
-    this.emit({ type: "userMessage", sessionId, text, seq: this.nextSeq(sessionId) });
+    this.emit({ type: "userMessage", sessionId, text: display, seq: this.nextSeq(sessionId) });
     this.emit({ type: "busy", sessionId, busy: true });
     this.runTurn(sessionId);
   }
@@ -156,6 +168,17 @@ export class DemoAgent implements AgentSource, JobAdminSource {
     this.pendingConfirms.delete(sessionId);
     this.confirmCallbacks.delete(sessionId);
     cb?.(allow);
+  }
+
+  /** 回答 ask_user 的提问（演示模式）：演示脚本不产生 ask_user 调用，这里
+   *  按「已回答」放行挂起请求——接口形状与真后端一致（Backend 同构），行为
+   *  简化（没有文本可回传，演示流水线也消费不到它）。 */
+  async answer(sessionId: string, id: string, _text: string): Promise<void> {
+    if (this.pendingConfirms.get(sessionId)?.id !== id) throw new Error("提问请求已失效");
+    const cb = this.confirmCallbacks.get(sessionId);
+    this.pendingConfirms.delete(sessionId);
+    this.confirmCallbacks.delete(sessionId);
+    cb?.(true);
   }
 
   cancel(sessionId: string): void {
@@ -204,6 +227,12 @@ export class DemoAgent implements AgentSource, JobAdminSource {
     // 演示源没有真实文件系统；只提供与 live 模式一致的能力接口。
   }
 
+  /** 起合并进程（演示）：没有后端可发起——回一个演示任务 id，UI 链路照常可走
+   *  （入口可用、按钮有反馈），但不假造任何后端事件。 */
+  async mergeRequest(_sessionId: string, _targetBranch?: string): Promise<string> {
+    return "demo-merge";
+  }
+
   async resumeSession(id: string): Promise<void> {
     this.currentSession = id;
     this.emit({ type: "sessionFocused", id });
@@ -216,10 +245,12 @@ export class DemoAgent implements AgentSource, JobAdminSource {
     this.emit({ type: "sessionsChanged" });
   }
 
-  archiveSession(id: string): void {
+  archiveSession(id: string, _releaseWorktree = false): Promise<ArchiveOutcome> {
     this.sessions_ = this.sessions_.map((s) => (s.id === id ? { ...s, archived: true } : s));
     if (this.currentSession === id) this.newSession();
     this.emit({ type: "sessionsChanged" });
+    // 演示源没有真实文件系统：只回答能力接口（归档成功、没有可释放的工作区）。
+    return Promise.resolve({ archived: true, releasedWorktree: false, releaseError: "" });
   }
 
   unarchiveSession(id: string): void {

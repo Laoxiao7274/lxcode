@@ -52,7 +52,7 @@ type anthropicMessage struct {
 	Content []anthropicContentBlock `json:"content"`
 }
 
-// anthropicContentBlock 是 content 数组里的块（text/thinking/tool_use/tool_result）。
+// anthropicContentBlock 是 content 数组里的块（text/thinking/tool_use/tool_result/image）。
 // 不同块的专用字段靠 omitempty 共存。
 type anthropicContentBlock struct {
 	Type string `json:"type"`
@@ -67,6 +67,16 @@ type anthropicContentBlock struct {
 	// tool_result 块
 	ToolUseID string `json:"tool_use_id,omitempty"`
 	Content   string `json:"content,omitempty"`
+	// image 块（视觉请求）：source 用 base64 形态——媒体字节只在请求构造
+	// 瞬间由 loader 读出并编码（见 images.go 的分层纪律）。
+	Source *anthropicImageSource `json:"source,omitempty"`
+}
+
+// anthropicImageSource 是 image 块的 base64 源（media_type 限白名单内 mime）。
+type anthropicImageSource struct {
+	Type      string `json:"type"` // 恒 "base64"
+	MediaType string `json:"media_type"`
+	Data      string `json:"data"`
 }
 
 type anthropicToolDef struct {
@@ -163,6 +173,23 @@ func convertToAnthropic(model string, msgs []Message, o requestOpts, stream bool
 			system = append(system, m.Content)
 			lastToolResults = -1
 		case "user":
+			// 带图 user 消息：text 块 + image 块（base64 请求构造瞬间编码）。
+			// 读取失败 fail-open：跳过该图，text 尾部追加提示，不中断请求。
+			if len(m.Images) > 0 {
+				text := m.Content
+				imgs, note := loadImages(m.Images)
+				if note != "" {
+					text += note
+				}
+				blocks := []anthropicContentBlock{{Type: "text", Text: text}}
+				for _, im := range imgs {
+					blocks = append(blocks, anthropicContentBlock{Type: "image",
+						Source: &anthropicImageSource{Type: "base64", MediaType: im.mime, Data: im.b64}})
+				}
+				req.Messages = append(req.Messages, anthropicMessage{Role: "user", Content: blocks})
+				lastToolResults = -1
+				break
+			}
 			req.Messages = append(req.Messages, anthropicMessage{Role: "user",
 				Content: []anthropicContentBlock{{Type: "text", Text: m.Content}}})
 			lastToolResults = -1

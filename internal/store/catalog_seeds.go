@@ -87,6 +87,11 @@ func (s *Store) syncCatalogSeeds(now string) error {
 
 var seedDelegatesBaseline = []string{"coder"}
 
+// seedNonDelegatable 是**不被主 Agent 委派**的种子子 Agent：它们由其他 producer
+// 拉起（合并进程拉起 merger），不进主 Agent 的委派名单——列进去会让主 Agent 以为
+// 自己能派活给一个后台进程（选人信号里凭空多出一个不可用的目标）。
+var seedNonDelegatable = map[string]bool{"merger": true}
+
 func ensureSeedAgents(exec execer, now string) error {
 	for _, a := range seedAgents {
 		var n int
@@ -118,7 +123,7 @@ func topUpMainDelegates(exec execer, now string) error {
 	}
 	added := false
 	for _, a := range seedAgents {
-		if a.IsMain || slices.Contains(current, a.ID) {
+		if a.IsMain || seedNonDelegatable[a.ID] || slices.Contains(current, a.ID) {
 			continue
 		}
 		current = append(current, a.ID)
@@ -156,6 +161,13 @@ var seedAgentBaselines = map[string]seedAgentBaseline{
 	"researcher": {
 		Tools: []string{"read_file", "search", "session_search", "ripgrep", "web_search"},
 		Desc:  "代码库与资料勘察：全文检索、历史会话、联网搜索与跨文件脉络梳理，只给结论与出处。",
+	},
+	// 本版给合并 Agent 补了 ask_user（确认门的「提问」形态：冲突抉择向用户提问），
+	// 职责描述里同步点明「冲突抉择可向用户提问」。基线是上一版的白名单与描述——
+	// 老库里没动过这两处的 merger 由此吃到新工具与新描述；动过的行照旧不碰。
+	"merger": {
+		Tools: []string{"read_file", "search", "edit", "write_file", "bash"},
+		Desc:  "把会话分支的改动汇总到集成分支：处理冲突、跑构建测试，如实报告结果。",
 	},
 }
 

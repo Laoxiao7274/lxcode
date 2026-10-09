@@ -15,6 +15,7 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/moyunteng/lxcode/internal/agent"
 	"github.com/moyunteng/lxcode/internal/config"
@@ -71,6 +72,15 @@ type Server struct {
 	// 每次都走 prepareWorktree——不记就每次读历史都重付一遍（见 prepareWorktreeLocked）。
 	worktreeReady map[string]bool
 
+	// commitMu/commitLocks 是每会话的自动提交锁（轮结束的检查点提交）：同一会话的
+	// 提交必须串行，避免并发轮次互相打断 git index。与 worktreeLocks 分开——提交
+	// 在事件路径的 goroutine 上跑，而 worktreeLocks 在 prepare/release 里被持有且
+	// 可能跑较久的 git 校验，共用会互相阻塞（见 autocommit.go）。
+	commitMu    sync.Mutex
+	commitLocks map[string]*sync.Mutex
+	// commitWG 追踪在途的自动提交（测试等它们结束用；生产路径不读它）。
+	commitWG sync.WaitGroup
+
 	upgrader websocket.Upgrader
 
 	mu      sync.Mutex
@@ -103,10 +113,25 @@ type wsClient struct {
 	sessionID string // 连接本地焦点，仅兼容没有显式 session_id 的客户端
 }
 
+// broadcastWriteTimeout 是单次广播写的上限：超过即视为该客户端消费不动，
+// 关闭连接（客户端会自动重连）。写超时错误的清理走 broadcast/serve 既有路径。
+const broadcastWriteTimeout = 5 * time.Second
+
 func (c *wsClient) send(v any) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.conn.WriteJSON(v)
+	// 写超时防护：慢客户端（TCP 窗口满、页面被挂起不读）不能拖住广播循环把
+	// 其他客户端的事件路径也卡住（head-of-line blocking）。deadline 到了
+	// WriteJSON 返回错误，调用方关闭这条连接（客户端会自动重连）。
+	// 注意 gorilla 的 WriteJSON 超时后连接内部状态可能已脏（一帧只写了一半），
+	// 唯一正确的处理就是 Close，绝不能复用这条连接继续写。
+	_ = c.conn.SetWriteDeadline(time.Now().Add(broadcastWriteTimeout))
+	err := c.conn.WriteJSON(v)
+	if err != nil {
+		return err
+	}
+	_ = c.conn.SetWriteDeadline(time.Time{}) // 写成功清掉 deadline，不影响后续写
+	return nil
 }
 
 func NewServer(reg *config.Registry) *Server {
@@ -117,6 +142,7 @@ func NewServer(reg *config.Registry) *Server {
 		sessions:      map[string]*agent.Session{},
 		worktreeLocks: map[string]*sync.Mutex{},
 		worktreeReady: map[string]bool{},
+		commitLocks:   map[string]*sync.Mutex{},
 		upgrader: websocket.Upgrader{
 			// 仅本机/局域网使用，不做 Origin 校验（单用户）
 			CheckOrigin: func(*http.Request) bool { return true },
@@ -155,12 +181,25 @@ func (s *Server) AttachSessionStore(st *store.Store) error {
 		return errors.New("会话存储为空")
 	}
 	s.st = st
+	// 图片附件：注入 llm 层的图片读取函数（请求构造瞬间按引用读文件 → base64，
+	// 分层纪律见 internal/llm/images.go）。
+	s.bindAttachmentLoader(st)
 	s.treg.SetSessionSearch(func(_ context.Context, q sessiondata.SearchQuery) (string, error) {
 		hits, total, err := st.Search(q)
 		if err != nil {
 			return "", err
 		}
 		return sessiondata.FormatSearchHits(hits, total), nil
+	})
+	// 工作区三件套（workspace_status / workspace_sync / workspace_rollback）的
+	// server 侧实现：与 SetSessionSearch 同款注入模式（tools 是叶子包不 import
+	// server，回调在装配期写一次）。
+	s.treg.SetWorkspaceOps(tools.WorkspaceOps{
+		Status:          s.workspaceStatus,
+		Sync:            s.workspaceSync,
+		SyncConfirm:     s.syncConfirmText,
+		Rollback:        s.workspaceRollback,
+		RollbackConfirm: s.rollbackConfirmText,
 	})
 	// M4：工具目录里的自定义工具（binary）注册进工具注册表——启动时就位，
 	// 之后的目录变更由 catalog.tools.* 分支触发同步。
@@ -282,16 +321,25 @@ func (s *Server) broadcast(method string, params any) {
 	}
 }
 
-func (s *Server) Run(ctx context.Context, addr string) error {
-	s.setBaseCtx(ctx)
+// routes 装配 HTTP 路由（WS 端点 + /health + 附件只读端点 + 远程访问管理）。
+// 抽出来是为了测试能对**同一份路由表**起 httptest 服务（Run 与测试零漂移）。
+func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle(protocol.Path, s.Handler())
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("ok"))
 	})
+	// 图片附件只读端点（GET /attachments/<sessionID>/<file>）：前端显示缩略图用。
+	// 与 /health 同一个 mux、同一个端口（7789，只绑 127.0.0.1）。
+	mux.HandleFunc("/attachments/", s.handleAttachments)
 	// 远程访问管理端点（loopback-only，见 remote.go）
 	mux.HandleFunc("/remote-access", s.handleRemoteAccess)
-	srv := &http.Server{Addr: addr, Handler: mux}
+	return mux
+}
+
+func (s *Server) Run(ctx context.Context, addr string) error {
+	s.setBaseCtx(ctx)
+	srv := &http.Server{Addr: addr, Handler: s.routes()}
 	go func() {
 		<-ctx.Done()
 		s.closeAllClients()

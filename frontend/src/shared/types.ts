@@ -81,6 +81,19 @@ export interface RewindOutcome {
   removed: number;
 }
 
+/** 归档的结果（session.archive 的应答）。
+ *
+ *  归档是主操作——失败会以请求错误抛出，不走这里。这里只回答「顺带释放工作区
+ *  的结果」：归档已经成功，释放失败（脏改动 / 忙）只把原因带回，绝不回滚归档。 */
+export interface ArchiveOutcome {
+  /** 是否已归档（恒为 true——请求成功即已归档）。 */
+  archived: boolean;
+  /** 是否至少成功释放了一个工作区目录且没有失败。 */
+  releasedWorktree: boolean;
+  /** 释放失败的原因（「；」拼接，空串 = 无失败）。 */
+  releaseError: string;
+}
+
 /** 后台任务的运行状态（对齐 protocol/jobs.Status）。 */
 export type JobStatus = "running" | "stopping" | "completed" | "killed" | "failed";
 
@@ -151,6 +164,11 @@ export interface ConfirmRequest {
   prompt: string;
   /** 非空 = 子 Agent 的确认（归属 dispatch 卡内）。 */
   dispatch_id?: string;
+  /** 请求形态：空 = 高危工具确认（批准/拒绝）；"ask" = ask_user 的提问
+   *  （用户以文本回答或跳过）。老后端不带这个键 → 按确认语义处理。 */
+  kind?: string;
+  /** 提问的预设答案（可空）——渲染成可直接点选的选项按钮。 */
+  options?: string[];
 }
 
 /** AgentSource 推给 UI 的事件流（对齐服务端广播事件）。 */
@@ -160,6 +178,14 @@ export type AgentEvent =
   /** seq = 撤回锚点（ChatMessage 上的字段；历史回放与实时事件是**同一个类型**，
    *  所以两条路径都读 message.seq）。老后端没有它 → 块不可撤回，但绝不炸。 */
   | { type: "userMessage"; sessionId: string; text: string; seq?: number }
+  /** 乐观用户气泡（**本地事件，不经后端**——体验修复批次 2）：send 发起后立即在
+   *  当前会话插一个 pending 用户块，真后端的 userMessage 回执（排在 worktree 准备
+   *  等工作之后）到达时按 FIFO 去重。failed = 发送失败（ws 的 catch）：移除最旧的
+   *  pending 块。demo 模式不发自它——它的 userMessage 是同步 emit 的，没有空窗。 */
+  | { type: "optimisticUser"; sessionId: string; text: string; failed?: boolean;
+      /** 随消息携带的附件（带图/带文件时失败要装回输入框附件区——文本丢了
+       *  附件不能丢，见 store 的 onSendFailed 钩子）。 */
+      atts?: SendAttachments }
   | { type: "delta"; sessionId: string; kind: "text" | "reasoning"; text: string; dispatchId?: string }
   | { type: "toolCall"; sessionId: string; id: string; name: string; arguments: string; dispatchId?: string }
   | { type: "toolResult"; sessionId: string; id: string; name: string; content: string; isError: boolean; dispatchId?: string }
@@ -285,6 +311,27 @@ export interface ProjectMeta {
 /** 权限模式三档（协议值域：chat.send 与 chat.approval 的 approval 参数）。 */
 export type ApprovalMode = "auto" | "confirm" | "strict";
 
+/** chat.send 携带的一张图片附件：data 为纯 base64（不带 data: 前缀）。
+ *  与后端 protocol.ChatSendImage 同形（2026-10 图片批次 B）。 */
+export interface ChatSendImage {
+  mime: string;
+  data: string;
+}
+
+/** chat.send 携带的一个文件附件：name 为原名（后端净化），data 为纯 base64。
+ *  与后端 protocol.ChatSendFile 同形。 */
+export interface ChatSendFile {
+  name: string;
+  data: string;
+}
+
+/** 一条消息的附件集合（Composer 暂存 / 队列条目 / SendOptions 共用同一形状——
+ *  队列里引用同一数组，不再复制）。 */
+export interface SendAttachments {
+  images: ChatSendImage[];
+  files: ChatSendFile[];
+}
+
 /** 发送选项：随消息携带的请求级参数（不传 = 后端默认）。 */
 export interface SendOptions {
   /** 推理强度（仅对声明 reasoning 能力的模型生效）。 */
@@ -294,6 +341,10 @@ export interface SendOptions {
   /** 执行 Agent 的名单 id（空 = 主 Agent——后端按 Agent 四层组合提示词、
    *  模型绑定与工具白名单跑这一轮）。 */
   agent?: string;
+  /** 图片附件（视觉请求；空 = 无图）。 */
+  images?: ChatSendImage[];
+  /** 文件附件（后端落盘 + 消息文本追加附件行；空 = 无文件）。 */
+  files?: ChatSendFile[];
 }
 
 /**
@@ -310,6 +361,9 @@ export interface AgentSource {
   setApproval(mode: ApprovalMode): Promise<void>;
   /** 裁决确认门（目标会话显式传入，避免切换焦点后误投）。 */
   confirm(sessionId: string, id: string, allow: boolean): Promise<void>;
+  /** 回答 ask_user 的提问（确认门的「提问」形态）：文本答案发给持有挂起
+   *  请求的会话（子会话的提问由父会话代理——与 confirm 同一条路由规则）。 */
+  answer(sessionId: string, id: string, text: string): Promise<void>;
   /** 取消指定会话的生成。 */
   cancel(sessionId: string): void;
   /** 手动压缩指定会话的历史。 */
@@ -323,12 +377,19 @@ export interface AgentSource {
   newSession(workspace?: string): Promise<string>;
   /** 释放干净项目会话的 worktree 目录，保留分支与会话数据。 */
   releaseWorktree(id: string): Promise<void>;
+  /** 起一个后台合并进程（后台任务面板「合并请求」入口——与 merge_request 工具
+   *  同一条后端路径 chat.mergeRequest）。返回任务 id；targetBranch 空 = 默认
+   *  lxcode/integration。失败抛错（未分组会话 / 已有在跑的合并进程等，文案照后端）。 */
+  mergeRequest(sessionId: string, targetBranch?: string): Promise<string>;
   /** 恢复会话。 */
   resumeSession(id: string): Promise<void>;
   /** 重命名会话。 */
   renameSession(id: string, title: string): void;
-  /** 归档会话（当前会话被归档时自动切到新会话）。 */
-  archiveSession(id: string): void;
+  /** 归档会话（当前会话被归档时自动切到新会话）。
+   *  releaseWorktree 为真时，归档成功后顺带释放该会话（及其子会话）的工作区目录：
+   *  只移除干净的检出目录，保留会话记录与 Git 分支——释放失败不影响归档，
+   *  原因由应答的 releaseError 带回（见 ArchiveOutcome）。 */
+  archiveSession(id: string, releaseWorktree?: boolean): Promise<ArchiveOutcome>;
   /** 从归档恢复。 */
   unarchiveSession(id: string): void;
   /** 读**子会话**的历史（子 Agent = 独立会话，AGENTS.md §2.3：它自己的 messages

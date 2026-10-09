@@ -180,6 +180,11 @@ func Open(dir string) (*Store, error) {
 		// 不报 prompt_tokens"时会把新行误判成老行（少显示）。ALTER 的 DEFAULT 0 正好把
 		// 所有**已存在的行**标成老口径（它们确实是旧二进制写的），新写入一律置 1。
 		`ALTER TABLE messages ADD COLUMN usage_split INTEGER NOT NULL DEFAULT 0`,
+		// images（图片批次 A）：这条消息携带的图片**文件引用**（JSON 数组
+		// [{"path":"<相对路径>","mime":"image/png"}]）。恒存引用不存 base64——
+		// base64 入库会撑爆 SQLite 行、每次全量历史重复传输、上下文估算失真
+		//（2026-10 用户拍板）。老行默认 '' = 无图（零影响）。
+		`ALTER TABLE messages ADD COLUMN images TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := db.Exec(col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			db.Close()

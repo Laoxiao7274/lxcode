@@ -51,13 +51,19 @@ type ConfirmRequestEvent struct {
 	Request *ConfirmRequest
 }
 
-// ConfirmRequest 是挂起等待裁决的工具调用。
+// ConfirmRequest 是挂起等待裁决的请求。两种形态：
+//   - Kind == ""（默认）：高危工具确认——用户批准/拒绝；
+//   - Kind == "ask"：ask_user 的提问——用户以文本回答（Answer），或跳过。
 type ConfirmRequest struct {
 	ID         string
 	Name       string
 	Arguments  string
 	Prompt     string
 	DispatchID string // 非空 = 子 Agent 执行的确认（归属 dispatch 卡）
+	// Kind 标记形态：空 = 高危工具确认（现状语义）；"ask" = ask_user 的提问。
+	Kind string
+	// Options 是 ask 提问的预设答案（可空）——前端渲染成可直接点选的选项按钮。
+	Options []string
 }
 
 // BusyEvent：忙闲翻转（一轮开始/结束）。
