@@ -26,3 +26,6 @@ frontend/tsconfig.tsbuildinfo
 
 # Agent 私有会话状态（lxcode 自身的工作记忆）
 .lxcode/
+
+# 站点设计预览的浏览器审计转储（444MB 缓存/模型文件，误入库曾顶爆 GitHub 100MB 限制）
+site/.design-preview/
