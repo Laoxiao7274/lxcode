@@ -124,6 +124,9 @@ fun ConnectionsScreen(state: MockAppState) {
                 onClick = { state.route = Route.Pairing },
             )
 
+            // 真实后端（调试区第三个开关）：开 = WS 连真实 lxcode 后端（协议见 PROTOCOL-NOTES.md）
+            RealBackendSection(state)
+
             state.conns.forEachIndexed { i, conn ->
                 ConnCard(
                     modifier = Modifier.lxStaggerEnter(count = state.conns.size + 1, index = i),
@@ -192,7 +195,7 @@ fun ConnectionsScreen(state: MockAppState) {
 
 /** 「后端不可达」错误条（--danger 文案 + 重试按钮）。 */
 @Composable
-private fun UnreachableBar(onRetry: () -> Unit) {
+private fun UnreachableBar(onRetry: () -> Unit, message: String? = null) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -206,7 +209,7 @@ private fun UnreachableBar(onRetry: () -> Unit) {
     ) {
         SmallIcon(Icons.Filled.ErrorOutline, Lx.colors.Danger)
         Text(
-            text = "后端不可达：无法连接 ws://127.0.0.1:7789/rpc",
+            text = message ?: "后端不可达：无法连接 ws://127.0.0.1:7789/rpc",
             style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size12),
             color = Lx.colors.Danger,
             modifier = Modifier.weight(1f),
@@ -220,6 +223,98 @@ private fun UnreachableBar(onRetry: () -> Unit) {
                 SmallIcon(Icons.Filled.Refresh, Lx.colors.FgMuted, size = 12)
             },
         )
+    }
+}
+
+/**
+ * 「真实后端」调试区：开关 + 地址输入 + 实时连接状态 + 失败重试条。
+ *
+ * 开：连 `addr`（默认 127.0.0.1:7789）→ hello 握手 → 会话列表换真实数据；
+ * 关：断开并完全回到 mock 路径（mock 数据零改动）。断线复用 [UnreachableBar]，
+ * 重试按钮真实重连（重发握手）。
+ */
+@Composable
+private fun RealBackendSection(state: MockAppState) {
+    val real = state.real
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(Lx.radius.FieldShape)
+            .background(LxColors.Surface)
+            .border(1.dp, Lx.colors.BorderSoft, Lx.radius.FieldShape)
+            .padding(horizontal = Lx.space.s12, vertical = Lx.space.s10),
+        verticalArrangement = Arrangement.spacedBy(Lx.space.s8),
+    ) {
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Lx.space.s8),
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(text = "真实后端", style = Lx.type.ListTitle, color = Lx.colors.Fg)
+                Text(
+                    text = "开 = 连真实 lxcode 后端（WS JSON-RPC）；关 = 回到演示数据",
+                    style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size10_5),
+                    color = Lx.colors.FgFaint,
+                )
+            }
+            MockSwitch(
+                label = "",
+                checked = state.realOn,
+                onCheckedChange = { on ->
+                    state.realOn = on
+                    if (on) real.connect(state.realAddr) else real.disconnect()
+                },
+            )
+        }
+
+        // 状态行：阶段点 + 文案（连接中/已连接/失败原因）
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Lx.space.s6),
+        ) {
+            Box(
+                Modifier
+                    .size(7.dp)
+                    .background(
+                        when (real.phase) {
+                            com.moyunteng.lxcode.remote.net.RealPhase.Connected -> Lx.colors.Success
+                            com.moyunteng.lxcode.remote.net.RealPhase.Connecting -> LxColors.Amber
+                            com.moyunteng.lxcode.remote.net.RealPhase.Failed -> Lx.colors.Danger
+                            com.moyunteng.lxcode.remote.net.RealPhase.Offline -> Lx.colors.BorderStrong
+                        },
+                        CircleShape,
+                    ),
+            )
+            Text(
+                text = when (real.phase) {
+                    com.moyunteng.lxcode.remote.net.RealPhase.Connected ->
+                        "已连接 ${real.addr}（协议 v2）"
+                    com.moyunteng.lxcode.remote.net.RealPhase.Connecting -> "连接中 ${real.addr}…"
+                    com.moyunteng.lxcode.remote.net.RealPhase.Failed ->
+                        "连接失败：${real.phaseMessage ?: "未知原因"}"
+                    com.moyunteng.lxcode.remote.net.RealPhase.Offline -> "未连接（地址如下，开关打开即连）"
+                },
+                style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size11_5),
+                color = Lx.colors.FgFaint,
+            )
+        }
+
+        if (state.realOn) {
+            LxTextField(
+                value = state.realAddr,
+                onValueChange = { state.realAddr = it },
+                placeholder = "127.0.0.1:7789",
+            )
+        }
+
+        // 断线错误条（真实模式专用；mock 断线错误条在页首，两者互斥不并存）
+        if (state.realOn && real.phase == com.moyunteng.lxcode.remote.net.RealPhase.Failed) {
+            UnreachableBar(
+                onRetry = { real.retry() },
+                message = real.phaseMessage ?: "后端不可达：无法连接 ws://${state.realAddr}/rpc",
+            )
+        }
     }
 }
 

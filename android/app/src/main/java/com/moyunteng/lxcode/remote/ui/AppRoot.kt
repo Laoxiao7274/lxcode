@@ -139,6 +139,24 @@ class MockAppState {
      */
     var motionOn by mutableStateOf(true)
 
+    /**
+     * 「真实后端」开关（本批新增）：开 = 各页面从 [real] 取真实数据
+     * （WS JSON-RPC 连 7789）；关 = 完全回到 mock 路径（一行不改 mock 行为）。
+     */
+    var realOn by mutableStateOf(false)
+
+    /** 真实后端地址（连接页可改；默认本机 7789，测试时经 adb reverse 映射）。 */
+    var realAddr by mutableStateOf("127.0.0.1:7789")
+
+    /** 真实后端状态机（net/ 包；开关打开时驱动连接与事件归约）。 */
+    val real = com.moyunteng.lxcode.remote.net.RealBackend()
+
+    /** 顶栏连接药丸的在线位：真实模式跟 WS 实际连接态，mock 模式跟断线开关。 */
+    fun pillOnline(): Boolean = if (realOn) real.connected else online
+
+    /** 顶栏连接药丸的显示名：真实模式标「真实后端」，mock 模式沿用连接名。 */
+    fun pillName(): String = if (realOn) "真实后端" else activeName
+
     val activeConn: BackendConn
         get() = conns.firstOrNull { it.id == activeConnId } ?: conns.first()
 
@@ -164,6 +182,18 @@ class MockAppState {
         return if (scope.isEmpty()) all.filter { it.workspace.isEmpty() }
         else all.filter { it.workspace == scope }
     }
+
+    // ===== 真实模式的数据投影（realOn=true 时会话列表页读这里）=====
+
+    /** 真实会话列表按范围过滤（workspace 与 mock 同语义：""=未分组）。 */
+    fun realSessionsInScope(): List<com.moyunteng.lxcode.remote.mock.SessionMeta> =
+        real.sessions.filter { it.workspace == scope }
+
+    fun realProjectSessionCount(projectId: String): Int =
+        real.sessions.count { it.workspace == projectId }
+
+    fun realLooseSessionCount(): Int =
+        real.sessions.count { it.workspace.isEmpty() }
 
     fun projectSessionCount(projectId: String): Int =
         MockData.sessions.count { it.workspace == projectId }

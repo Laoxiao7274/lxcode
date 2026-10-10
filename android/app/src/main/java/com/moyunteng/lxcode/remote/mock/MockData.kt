@@ -97,9 +97,16 @@ sealed interface ThreadBlock {
         val reasoning: String?,
         val reasoningMs: Long,
         val model: String,
+        // ===== 真实后端追加的实测值（mock 数据不填 → 恒 null，展示行走旧硬编码）=====
+        // 首字延迟（chat.done 的 first_token_ms；null = 未知）
+        val firstTokenMs: Long? = null,
+        // 生成速度 tok/s（usage_tokens / duration_ms；null = 未知）
+        val tokPerSec: Double? = null,
     ) : ThreadBlock
 
     data class Tool(
+        // 调用 id（chat.toolCall/toolResult 与 llm.ToolCall.id 配对用；mock 数据为空串）
+        val id: String = "",
         val name: String,
         val title: String,
         val argsSummary: String,

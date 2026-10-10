@@ -76,11 +76,17 @@ import kotlin.math.roundToInt
 /** 输入卡片 Shape —— composer.css `.pi { border-radius: 14px }`。 */
 private val ComposerCardShape = RoundedCornerShape(14.dp)
 
-/** 输入区。 */
+/** 输入区。
+ *
+ * @param real 非空 = 真实后端模式：busy 跟 chat.busy、发送走 chat.send、
+ *   停止走 chat.cancel、上下文环/统计胶囊用实测值；null = mock 模式（一切照旧）。
+ */
 @Composable
-fun Composer(state: MockAppState) {
+fun Composer(state: MockAppState, real: com.moyunteng.lxcode.remote.net.RealBackend? = null) {
     var text by remember { mutableStateOf("") }
-    var busy by remember { mutableStateOf(false) }
+    var mockBusy by remember { mutableStateOf(false) }
+    // 真实模式忙闲由后端事件驱动；mock 模式沿用调试开关
+    val busy = real?.busy ?: mockBusy
 
     // ===== 模型 / 审批档选择状态（本次补真下拉菜单）=====
     var modelId by remember { mutableStateOf(MockData.DEFAULT_MODEL_ID) }
@@ -117,12 +123,15 @@ fun Composer(state: MockAppState) {
             .padding(bottom = 14.dp),
     ) {
         // mock 开关：切「运行中」（发送 ↔ 停止）。原型专用，挂白卡外，不进卡片视觉。
-        MockSwitch(
-            label = "运行中",
-            checked = busy,
-            onCheckedChange = { busy = it },
-            modifier = Modifier.align(Alignment.End),
-        )
+        // 真实模式没有这个开关（忙闲是后端事实，不是调试位）。
+        if (real == null) {
+            MockSwitch(
+                label = "运行中",
+                checked = mockBusy,
+                onCheckedChange = { mockBusy = it },
+                modifier = Modifier.align(Alignment.End),
+            )
+        }
 
         // ===== 白卡 =====
         val input = remember { MutableInteractionSource() }
@@ -251,15 +260,27 @@ fun Composer(state: MockAppState) {
                         }
                     }
                     // 上下文环 + 百分比（.ctx-chip / .ctx-pct）
-                    ContextRing(MockData.contextUsage)
+                    // 真实模式用实测值（context 键缺席 = null → 环显示「—」）
+                    ContextRing(if (real != null) real.contextUsage else MockData.contextUsage)
                     // 会话统计胶囊（.stats-pill：步数 0 整个胶囊不渲染）
-                    StatsCapsule()
+                    StatsCapsule(if (real != null) real.sessionStats else MockData.sessionStats)
                 }
                 Spacer(Modifier.width(4.dp))
                 SendButton(
                     busy = busy,
                     enabled = text.trim().isNotEmpty() && !text.startsWith("/"),
-                    onClick = { if (busy) busy = false else text = "" },
+                    onClick = {
+                        if (busy) {
+                            if (real != null) real.cancel() else mockBusy = false
+                        } else {
+                            if (real != null) {
+                                real.send(text)
+                                text = ""
+                            } else {
+                                text = ""
+                            }
+                        }
+                    },
                 )
             }
         }
@@ -327,9 +348,9 @@ private fun ComposerTextField(
  * 窗口未知显示「—」。
  */
 @Composable
-private fun ContextRing(usage: com.moyunteng.lxcode.remote.mock.ContextUsage) {
-    val known = usage.window > 0
-    val target = if (!known) 0f else (usage.used.toFloat() / usage.window).coerceIn(0f, 1f)
+private fun ContextRing(usage: com.moyunteng.lxcode.remote.mock.ContextUsage?) {
+    val known = (usage?.window ?: 0) > 0
+    val target = if (!known) 0f else (usage!!.used.toFloat() / usage.window).coerceIn(0f, 1f)
     // 环读数变化 220ms 动画过渡（桌面端 ContextIndicator 的环不瞬跳）
     val pct by lxAnimateFloat(target = target)
     val track = Lx.colors.BorderStrong // #e5e5e5
@@ -371,9 +392,8 @@ private fun ContextRing(usage: com.moyunteng.lxcode.remote.mock.ContextUsage) {
 
 /** 会话统计胶囊 —— ghost 药丸（.stats-pill：11sp、#8e8ea0、tabular-nums；步数 0 整个胶囊不渲染）。 */
 @Composable
-private fun StatsCapsule() {
-    val stats = MockData.sessionStats
-    if (stats.steps <= 0) return
+private fun StatsCapsule(stats: com.moyunteng.lxcode.remote.mock.SessionStats?) {
+    if (stats == null || stats.steps <= 0) return
     Text(
         text = stats.timePillLabel(), // 「N 轮 · M 步 · X.X tok/s」，缺哪段省哪段
         style = TextStyle(

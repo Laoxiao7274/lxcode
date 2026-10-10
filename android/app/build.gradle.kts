@@ -61,6 +61,11 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
 
+    // WebSocket JSON-RPC（真实后端模式，net/ 包）：OkHttp 4.12.0 —— WS 支持成熟、
+    // 传递面小（仅 okio + kotlin-stdlib），两者本机 gradle 缓存/m2 均有（离线可构建）。
+    // 不引 kotlinx-serialization：帧结构浅（两层），org.json（平台自带）足够。
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
     // 二维码解码（扫码配对）：手机是扫描方——扫桌面端「远程访问」页的二维码。
     // zxing-android-embedded 提供相机取景 + 连续解码（DecoratedBarcodeView），
     // 传递依赖 zxing:core 3.4.1；两者在本机 gradle 缓存中都有（离线也可构建）。

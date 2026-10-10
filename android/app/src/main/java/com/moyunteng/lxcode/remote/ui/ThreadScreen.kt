@@ -36,6 +36,7 @@ import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -74,11 +75,24 @@ import com.moyunteng.lxcode.remote.mock.formatMs
 /** 对话线程页。 */
 @Composable
 fun ThreadScreen(state: MockAppState, sessionId: String) {
+    // 真实模式：标题/块/忙闲/确认全部来自 RealBackend（WS 事件归约）；
+    // mock 模式：一切照旧（MockData 静态数据，行为零变化）。
+    val real = if (state.realOn) state.real else null
     val session = MockData.sessions.firstOrNull { it.id == sessionId }
-    val title = session?.title ?: "子会话 · frontend-dev"
+    val title = real?.sessionTitle ?: (session?.title ?: "子会话 · frontend-dev")
     var confirmOpen by remember { mutableStateOf(false) }
-    // 「运行中」的判定：线程里还有跑着的工具行（思考微光与扫光都挂在它上面）
-    val running = MockData.thread.any { it is ThreadBlock.Tool && it.running }
+    // 「运行中」的判定：真实模式 = 会话忙闲（chat.busy）；mock = 线程里还有跑着的工具行
+    val running = real?.busy ?: MockData.thread.any { it is ThreadBlock.Tool && it.running }
+    // 真实模式的挂起确认（chat.confirmRequest）→ 复用 LxConfirmDialog
+    val pendingConfirm = real?.confirm
+
+    // 真实模式：从会话列表点进来时拉取历史（session.resume → chat.history；
+    // 新建的会话已在 newSession 里切入，currentSessionId 相同则不重复拉）。
+    if (real != null) {
+        LaunchedEffect(sessionId) {
+            if (sessionId != real.currentSessionId) real.openSession(sessionId)
+        }
+    }
 
     Column(
         Modifier
@@ -103,8 +117,8 @@ fun ThreadScreen(state: MockAppState, sessionId: String) {
                 )
             }
             ConnPill(
-                online = state.online,
-                name = state.activeName,
+                online = state.pillOnline(),
+                name = state.pillName(),
                 onClick = { state.route = Route.Connections },
             )
             Text(
@@ -142,12 +156,15 @@ fun ThreadScreen(state: MockAppState, sessionId: String) {
             ) {
                 // 消息块逐个入场：`block-in`（opacity 0→1 + translateY(4px)→0，320ms 标准曲线），
                 // 延迟按 `staggerIn`（min(40ms, 360ms/条目数)）逐项错开。
-                itemsIndexed(MockData.thread) { i, block ->
+                // 真实模式 key 用下标：流式 delta 会整块替换（data class copy），
+                // 用块实例当 key 会让入场动画/打字机每个 delta 重播——下标才是稳定身份。
+                val blocks: List<ThreadBlock> = real?.blocks ?: MockData.thread
+                itemsIndexed(blocks) { i, block ->
                     Box(
                         Modifier.lxEnter(
                             spec = LxEnterSpec.BlockIn,
-                            delayMillis = LxStagger.delayMillis(MockData.thread.size, i),
-                            key = block,
+                            delayMillis = LxStagger.delayMillis(blocks.size, i),
+                            key = if (real != null) i else block,
                         ),
                     ) {
                         ThreadBlockView(block, busy = running)
@@ -178,7 +195,7 @@ fun ThreadScreen(state: MockAppState, sessionId: String) {
                         .padding(horizontal = Lx.space.s12)
                         .onSizeChanged { composerHeightDp = with(density) { it.height.toDp() } },
                 ) {
-                    Composer(state)
+                    Composer(state, real = real)
                 }
             }
         }
@@ -195,6 +212,26 @@ fun ThreadScreen(state: MockAppState, sessionId: String) {
                 TerminalBlock(
                     command = "rm -rf build && ./gradlew clean assembleDebug",
                     cwd = "C:\\Users\\xzy\\Desktop\\my\\lxcode\\android",
+                )
+            },
+        )
+    }
+
+    // 确认门（真实模式）：内容来自后端 chat.confirmRequest（标题 = prompt，
+    // 命令块 = arguments 里的 command/cwd）；批准/拒绝 → tool.confirm 裁决。
+    if (pendingConfirm != null) {
+        val c = pendingConfirm
+        LxConfirmDialog(
+            title = "执行此命令？",
+            text = c.prompt.ifBlank { "${c.name} 工具申请执行，请确认。" },
+            onApprove = { state.real.resolveConfirm(allow = true) },
+            onDeny = { state.real.resolveConfirm(allow = false) },
+            body = {
+                TerminalBlock(
+                    command = com.moyunteng.lxcode.remote.net.RealBackend.argsCommand(c.arguments)
+                        .ifBlank { c.arguments },
+                    cwd = com.moyunteng.lxcode.remote.net.RealBackend.argsCwd(c.arguments)
+                        .ifBlank { null },
                 )
             },
         )
@@ -276,8 +313,19 @@ private fun AssistantBlock(block: ThreadBlock.Assistant, busy: Boolean) {
             }
         }
         if (!block.content.isNullOrBlank()) {
+            // 署名行：真实模式用实测值（first_token_ms / usage_tokens÷duration_ms），
+            // 未知段省略；mock 数据没填这两个字段 → 走旧硬编码（回归保障）。
+            val footer = if (block.firstTokenMs != null || block.tokPerSec != null) {
+                listOfNotNull(
+                    block.model.takeIf { it.isNotBlank() },
+                    block.firstTokenMs?.let { "首字 ${formatMs(it)}" },
+                    block.tokPerSec?.let { String.format("%.1f tok/s", it) },
+                ).joinToString(" · ")
+            } else {
+                "${block.model} · 首字 812ms · 13.7 tok/s"
+            }
             Text(
-                text = "${block.model} · 首字 812ms · 13.7 tok/s",
+                text = footer,
                 style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size10_5),
                 color = Lx.colors.FgFaint,
             )

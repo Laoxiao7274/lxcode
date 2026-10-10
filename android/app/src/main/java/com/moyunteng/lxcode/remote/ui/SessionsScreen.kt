@@ -99,8 +99,8 @@ fun SessionsScreen(state: MockAppState) {
                     .background(Lx.colors.Border),
             )
             ConnPill(
-                online = state.online,
-                name = state.activeName,
+                online = state.pillOnline(),
+                name = state.pillName(),
                 onClick = { state.route = Route.Connections },
             )
         }
@@ -115,7 +115,12 @@ fun SessionsScreen(state: MockAppState) {
             // Agents/拓展/Git 管理/远程访问/自动化 是桌面端管理本机的面板，不进手机。
             val navItems = listOf(
                 NavEntry("新对话", Icons.Filled.ChatBubbleOutline) {
-                    state.route = Route.Thread(MockData.currentSessionId)
+                    if (state.realOn) {
+                        // 真实模式：session.new 拿到真会话 id 再进线程页
+                        state.real.newSession { id -> state.route = Route.Thread(id) }
+                    } else {
+                        state.route = Route.Thread(MockData.currentSessionId)
+                    }
                 },
             )
             itemsIndexed(navItems) { i, entry ->
@@ -167,33 +172,46 @@ fun SessionsScreen(state: MockAppState) {
             item { LxSectionHeader("项目") }
 
             // ④ 项目行 + 未分组
-            itemsIndexed(MockData.projects) { i, project ->
-                ProjectRow(
-                    modifier = Modifier.lxStaggerEnter(count = MockData.projects.size + 1, index = i),
-                    name = project.name,
-                    count = state.projectSessionCount(project.id),
-                    active = state.scope == project.id,
-                    onClick = { state.scope = project.id },
-                )
-            }
-            item {
-                ProjectRow(
-                    modifier = Modifier.lxEnter(
-                        spec = LxEnterSpec.StaggerItem,
-                        delayMillis = LxStagger.delayMillis(MockData.projects.size + 1, MockData.projects.size),
-                    ),
-                    name = "未分组",
-                    count = state.looseSessionCount(),
-                    active = state.scope.isEmpty(),
-                    onClick = { state.scope = "" },
-                )
+            // 真实模式：本批未接 project.list，项目分组整段隐藏（如实说明，不显示假数据）
+            if (state.realOn) {
+                item {
+                    ProjectRow(
+                        name = "未分组",
+                        count = state.realLooseSessionCount(),
+                        active = state.scope.isEmpty(),
+                        onClick = { state.scope = "" },
+                    )
+                }
+            } else {
+                itemsIndexed(MockData.projects) { i, project ->
+                    ProjectRow(
+                        modifier = Modifier.lxStaggerEnter(count = MockData.projects.size + 1, index = i),
+                        name = project.name,
+                        count = state.projectSessionCount(project.id),
+                        active = state.scope == project.id,
+                        onClick = { state.scope = project.id },
+                    )
+                }
+                item {
+                    ProjectRow(
+                        modifier = Modifier.lxEnter(
+                            spec = LxEnterSpec.StaggerItem,
+                            delayMillis = LxStagger.delayMillis(MockData.projects.size + 1, MockData.projects.size),
+                        ),
+                        name = "未分组",
+                        count = state.looseSessionCount(),
+                        active = state.scope.isEmpty(),
+                        onClick = { state.scope = "" },
+                    )
+                }
             }
 
             // ⑤ 「对话」分组标题
             item { LxSectionHeader("对话", topPadding = Lx.space.s12) }
 
             // ⑥ 会话行（搜索过滤）
-            val sessions = state.sessionsInScope().filter {
+            // 真实模式：列表来自 session.list（真数据）；mock 模式照旧
+            val sessions = (if (state.realOn) state.realSessionsInScope() else state.sessionsInScope()).filter {
                 state.query.trim().isEmpty() ||
                     it.title.contains(state.query.trim(), ignoreCase = true)
             }
