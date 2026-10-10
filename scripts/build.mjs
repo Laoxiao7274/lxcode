@@ -109,7 +109,13 @@ for (const f of UPDATE_FILES) {
   copyFileSync(src, join(staging, f));
 }
 // 用系统自带 bsdtar 造 zip（-a 按扩展名自动选 zip 格式，保留相对路径，零新增依赖）
-run(`更新包 ${zipName}`, "tar", ["-a", "-c", "-f", zipName, "-C", ".update-staging", "resources"], { cwd: releaseDir });
+// 必须显式指定 C:/Windows/System32/tar.exe（bsdtar）：Git Bash 的 PATH 会把
+// tar 解析到 GNU tar，它不认 `-a` 的 zip 语义，造出来的是 tar 包改了扩展名的
+// 假 zip（0.1.3 发版实测踩过，更新器解包失败）。System32 不存在时（非 Windows）
+// 回退 PATH 里的 tar。
+const bsdtar = "C:/Windows/System32/tar.exe";
+const tarBin = existsSync(bsdtar) ? bsdtar : "tar";
+run(`更新包 ${zipName}`, tarBin, ["-a", "-c", "-f", zipName, "-C", ".update-staging", "resources"], { cwd: releaseDir });
 rmSync(staging, { recursive: true, force: true });
 
 const manifest = {
