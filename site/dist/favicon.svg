@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="lxcode">
+  <!-- 站点标识：圆角方 + 等宽小写 lx（与产品 token 同形：近黑底、白字、12px 圆角语言） -->
+  <rect width="64" height="64" rx="14" fill="#0d0d0d" />
+  <path
+    d="M20 15v27h11"
+    fill="none"
+    stroke="#ffffff"
+    stroke-width="5"
+    stroke-linecap="square"
+  />
+  <path
+    d="M45 25 34 41M34 25l11 16"
+    fill="none"
+    stroke="#10a37f"
+    stroke-width="5"
+    stroke-linecap="square"
+  />
+</svg>

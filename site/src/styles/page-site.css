@@ -1,0 +1,421 @@
+/* ============================================================
+ * 前台页面（首页 / 下载 / 更新日志）的布局编排。
+ *
+ * base.css 的约定：页面 CSS 只做布局，**不发明按钮、标签、药丸**——
+ * 视觉原子一律复用 base.css；这里只有版式。
+ * 重做要点：hero 加张力（大字对比 + 点阵底 + 版本徽章 + mono 装饰行），
+ * 卡片加悬停层次，时间线加节点密度，下载块加分隔与对齐。
+ * ============================================================ */
+
+/* ===== 首页 hero：非对称（左宽右窄），点阵底向右下淡出 ===== */
+.hero {
+  position: relative;
+  padding: clamp(72px, 9vw, 128px) 0 var(--section-y);
+  border-bottom: var(--hair);
+  overflow: hidden;
+}
+/* 点阵底：克制的焦点，只铺上部并淡出（不用渐变堆砌、不用辉光） */
+.hero::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 440px;
+  background-image: radial-gradient(var(--dot) 1px, transparent 1px);
+  background-size: 22px 22px;
+  -webkit-mask-image: linear-gradient(180deg, #000 0%, transparent 90%);
+  mask-image: linear-gradient(180deg, #000 0%, transparent 90%);
+  pointer-events: none;
+}
+.hero-grid {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1.08fr) minmax(0, 0.92fr);
+  gap: clamp(32px, 5vw, 72px);
+  align-items: center;
+}
+.hero h1 {
+  font-size: var(--fs-display);
+  margin: var(--s-4) 0 var(--s-5);
+  max-width: 20ch;
+}
+.hero-lede {
+  max-width: 46ch;
+  font-size: var(--fs-lead);
+  line-height: 1.55;
+  color: var(--fg-muted);
+}
+.hero-cta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-3);
+  margin-top: var(--s-6);
+}
+/* 版本徽章行：mono 版本胶囊 + 日期，一行放得下 */
+.hero-badges {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  margin-top: var(--s-5);
+}
+/* mono 装饰行：栈信息一行（产品本身就是控制台，这一行是这个品牌最诚实的表达） */
+.hero-mono {
+  margin-top: var(--s-5);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  letter-spacing: var(--tr-mono);
+  color: var(--fg-faint);
+}
+/* 数字条：三个数字给 hero 一个落点（发丝线分隔，不是卡片） */
+.hero-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-4) var(--s-6);
+  margin-top: var(--s-6);
+  padding-top: var(--s-5);
+  border-top: var(--hair);
+}
+.hero-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.hero-stat-v {
+  font-family: var(--font-mono);
+  font-size: 1.25rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+@media (max-width: 900px) {
+  .hero-grid {
+    grid-template-columns: 1fr;
+    gap: var(--s-7);
+  }
+  .hero h1 {
+    max-width: none;
+  }
+}
+
+/* hero 右侧：终端窗口预览（真实的浮起窗口才用阴影，见 tokens 的 --shadow-window） */
+.term {
+  border: 1px solid #2a2a2a;
+  border-radius: var(--r-panel);
+  background: var(--term-bg);
+  color: var(--term-fg);
+  box-shadow: var(--shadow-window);
+  overflow: hidden;
+}
+.term-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  padding: 10px var(--s-3);
+  border-bottom: 1px solid #2a2a2a;
+  background: #212121;
+}
+.term-dots {
+  display: flex;
+  gap: 6px;
+  flex: none;
+}
+.term-dots i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #3d3d3d;
+}
+.term-body {
+  padding: var(--s-4) var(--s-4) var(--s-5);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  line-height: 1.9;
+  white-space: pre-wrap;
+}
+.term-dim {
+  color: var(--term-dim);
+}
+
+/* ===== 卡片网格：分节靠发丝线，卡片只用 .panel（可交互的加 .panel-lift）===== */
+.grid-3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--s-5);
+}
+.grid-2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--s-5);
+}
+@media (max-width: 1020px) {
+  .grid-3 {
+    grid-template-columns: 1fr;
+  }
+  .grid-2 {
+    grid-template-columns: 1fr;
+  }
+}
+.card-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+/* 卡片序号：mono 两位数，给一排卡片一个阅读顺序（纯排版，不是图标） */
+.card-idx {
+  font-family: var(--font-mono);
+  font-size: var(--fs-eyebrow);
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  color: var(--fg-faint);
+}
+.card-body h3 {
+  font-size: var(--fs-h3);
+  letter-spacing: -0.018em;
+}
+.card-body p {
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+  line-height: 1.62;
+}
+
+/* ===== 最新版本条（首页与下载页共用）===== */
+.rel-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-5);
+  flex-wrap: wrap;
+}
+.rel-main {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+}
+.rel-ver {
+  font-family: var(--font-mono);
+  font-size: 1.5rem;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+}
+
+/* ===== 下载页：三块产物 ===== */
+.dl-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  height: 100%;
+}
+.dl-file {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+  padding-bottom: var(--s-3);
+  border-bottom: var(--hair);
+}
+.dl-name {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  letter-spacing: var(--tr-mono);
+  word-break: break-all;
+}
+.dl-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+  /* 三块并排时按钮对齐到卡片底部 */
+  margin-top: auto;
+}
+.dl-hist {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+}
+
+/* ===== 更新日志：每版本一张卡（v2 重写，替掉「一根竖线串到底」的时间线）===== */
+.log-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-5);
+  margin-top: var(--s-6);
+}
+/* 卡片本体复用 .panel（发丝边框 + 12px 圆角 + 极轻阴影），这里只做内部编排 */
+.log-card {
+  overflow: hidden;
+}
+.log-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3) var(--s-4);
+  flex-wrap: wrap;
+  padding: var(--s-4) var(--s-5);
+  border-bottom: var(--hair);
+}
+.log-card-id {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+}
+/* 版本号：卡片里最大的一档字（每张卡第一眼要看到「哪个版本」） */
+.log-ver {
+  font-family: var(--font-mono);
+  font-size: 1.75rem;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+}
+.log-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-5);
+  padding: var(--s-5);
+}
+.log-group-k {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-2);
+  margin-bottom: var(--s-2);
+}
+.log-items {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+/* 条目：行首一条短横线（排版符号，不是新视觉原子） */
+.log-item {
+  position: relative;
+  padding-left: var(--s-4);
+  font-size: var(--fs-sm);
+  line-height: 1.62;
+}
+.log-item::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 9px;
+  width: 6px;
+  height: 1px;
+  background: var(--border-strong);
+}
+/* breaking 条目：左侧 2px 色条（用 danger 语义，不是装饰色） */
+.log-item-hot {
+  border-left: 2px solid var(--danger);
+  padding-left: var(--s-3);
+}
+.log-item-hot::before {
+  display: none;
+}
+/* 卡脚：下载动作行 + sha256 折叠（浅底与卡身分开，动作一眼看得见） */
+/* 卡脚：固定两行（下载动作 + 常驻哈希行）→ 高度不随交互变 */
+.log-card-foot {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--s-3);
+  padding: var(--s-4) var(--s-5);
+  border-top: var(--hair);
+  background: var(--bg-soft);
+}
+.log-hashes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+}
+.log-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+}
+/* 已撤回：按钮位换成一条禁用态说明（不留悬空链接） */
+.log-revoked {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+}
+.log-empty {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+/* 渠道过滤：药丸当按钮用（选中态走 aria-pressed，与 .nav-link.on 同一套「选中」口径） */
+.log-filter {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+  margin-bottom: var(--s-5);
+}
+button.pill {
+  cursor: pointer;
+  transition: border-color var(--t-fast) var(--ease-out), background var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+button.pill:hover {
+  border-color: var(--border-hover);
+  color: var(--fg);
+}
+button.pill[aria-pressed="true"] {
+  border-color: var(--fg);
+  background: var(--fg);
+  color: #fff;
+}
+/* ===== sha256 常驻行（替掉折叠块：没有展开态 → 高度恒定）===== */
+.hash-line {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+  min-height: 26px;
+}
+.hash-k {
+  flex: none;
+}
+.hash-v {
+  font-size: var(--fs-meta);
+}
+/* 文案在「复制 / 已复制 ✓ / 复制失败」之间切换：给最小宽度，行内不抖 */
+.hash-copy {
+  min-width: 78px;
+  justify-content: center;
+}
+/* 卡脚第二行：多个产物的哈希行竖排 */
+.hash-lines {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+}
+
+/* ===== 表单栅格（后台表单：两列，窄屏一列）===== */
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 var(--s-5);
+}
+.form-span {
+  grid-column: 1 / -1;
+}
+@media (max-width: 760px) {
+  .form-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.row-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+}
+.inline-note {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+}

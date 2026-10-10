@@ -6,7 +6,7 @@ import { humanBytes } from "../../shared/connections";
 import { useUpdate } from "../../shared/update";
 
 export function UpdateBlock() {
-  const { current, phase, manifest, progress, check, download, restart } = useUpdate();
+  const { current, phase, manifest, progress, error, check, download, restart } = useUpdate();
 
   return (
     <div className="set-update" data-phase={phase}>
@@ -16,6 +16,9 @@ export function UpdateBlock() {
           <span className="set-update-ver mono">lxcode {current}</span>
         </div>
 
+        {error && (
+          <div className="set-update-status" role="alert">✗ {error}</div>
+        )}
         {phase === "idle" && (
           <div className="set-update-actions">
             <Button variant="ghost" data-su="check" onClick={check}>检查更新</Button>

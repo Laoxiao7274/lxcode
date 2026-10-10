@@ -1,0 +1,194 @@
+/* ============================================================
+ * 站点外壳：顶部导航与页脚。
+ * 两处都是发丝线分隔，不用阴影、不用浮起卡片；层次靠留白与字号。
+ * 重做要点：导航 64px 锁高 + 半透明模糊 + 活动项给浅底（不再只有颜色差）；
+ * 页脚从「一行说明」补成「品牌 + 三组链接 + 版权行」的完整页脚。
+ * ============================================================ */
+
+/* ===== 顶部导航（桌面恒一行，高度锁 64px）===== */
+.nav {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  height: var(--nav-h);
+  border-bottom: var(--hair);
+  /* 半透明 + 模糊：滚动时内容从下方穿过仍可读；不支持 backdrop-filter 的浏览器
+     回落为纯白（见下方 @supports） */
+  background: rgba(255, 255, 255, 0.82);
+  backdrop-filter: saturate(180%) blur(14px);
+}
+@supports not (backdrop-filter: blur(12px)) {
+  .nav {
+    background: var(--bg);
+  }
+}
+.nav-in {
+  display: flex;
+  align-items: center;
+  gap: var(--s-6);
+  height: 100%;
+}
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex: none;
+}
+.brand-mark {
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  background: var(--fg);
+  color: #fff;
+  display: grid;
+  place-items: center;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.brand-name {
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.brand-ver {
+  padding-left: var(--s-2);
+  border-left: var(--hair);
+  font-family: var(--font-mono);
+  font-size: var(--fs-eyebrow);
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
+}
+.nav-links {
+  display: flex;
+  align-items: center;
+  gap: var(--s-1);
+  margin-left: auto;
+}
+.nav-link {
+  padding: 7px 11px;
+  border-radius: var(--r-ctl);
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  transition: color var(--t-fast) var(--ease-out), background var(--t-fast) var(--ease-out);
+}
+.nav-link:hover {
+  color: var(--fg);
+  background: var(--bg-hover);
+}
+/* 活动项：浅底 + 深字（只靠颜色差在小字上不够清楚，加一层底更稳） */
+.nav-link.on {
+  color: var(--fg);
+  background: var(--border-soft);
+  font-weight: 600;
+}
+.nav-cta {
+  margin-left: var(--s-3);
+}
+/* 窄屏：链接收进抽屉，导航保持一行 */
+.nav-burger {
+  display: none;
+  margin-left: auto;
+  width: 36px;
+  height: 36px;
+  align-items: center;
+  justify-content: center;
+  border: var(--hair-strong);
+  border-radius: var(--r-ctl);
+  background: var(--surface);
+  cursor: pointer;
+}
+.nav-drawer {
+  display: none;
+}
+
+@media (max-width: 860px) {
+  .nav-links,
+  .nav-cta {
+    display: none;
+  }
+  .nav-burger {
+    display: inline-flex;
+  }
+  .nav-drawer.open {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: var(--s-3) var(--shell-pad) var(--s-4);
+    border-bottom: var(--hair);
+    background: var(--bg);
+  }
+  .nav-drawer .nav-link {
+    padding: 11px 10px;
+    font-size: var(--fs-body);
+  }
+}
+
+/* ===== 页脚：品牌 + 三组链接 + 版权行 ===== */
+.foot {
+  border-top: var(--hair);
+  background: var(--bg-soft);
+  padding: var(--s-8) 0 var(--s-6);
+}
+.foot-grid {
+  display: grid;
+  grid-template-columns: 1.6fr repeat(2, minmax(0, 1fr));
+  gap: var(--s-6) var(--s-5);
+}
+.foot-brand {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  max-width: 34ch;
+}
+.foot-brand .brand {
+  gap: var(--s-2);
+}
+.foot-brand p {
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+  line-height: 1.6;
+}
+.foot-col h3 {
+  margin-bottom: var(--s-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-eyebrow);
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+.foot-col ul {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+.foot-col a {
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+  transition: color var(--t-fast) var(--ease-out);
+}
+.foot-col a:hover {
+  color: var(--fg);
+}
+.foot-note {
+  margin-top: var(--s-7);
+  padding-top: var(--s-4);
+  border-top: var(--hair);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2) var(--s-5);
+  align-items: baseline;
+  justify-content: space-between;
+  font-size: var(--fs-meta);
+  color: var(--fg-muted);
+}
+@media (max-width: 860px) {
+  .foot-grid {
+    grid-template-columns: 1fr 1fr;
+    gap: var(--s-6) var(--s-5);
+  }
+}

@@ -50,4 +50,18 @@ contextBridge.exposeInMainWorld("__LX__", {
     rotate: (): Promise<unknown> => ipcRenderer.invoke("backendRemote:rotate"),
     refresh: (): Promise<unknown> => ipcRenderer.invoke("backendRemote:refresh"),
   },
+  // 自更新：check/download(含校验+暂存)/apply(热替换+排程冷替换)/restart；
+  // 下载进度经 update:progress 事件推送
+  update: {
+    version: (): Promise<string> => ipcRenderer.invoke("update:version"),
+    check: (): Promise<unknown> => ipcRenderer.invoke("update:check"),
+    download: (): Promise<unknown> => ipcRenderer.invoke("update:download"),
+    apply: (): Promise<unknown> => ipcRenderer.invoke("update:apply"),
+    restart: (): void => { void ipcRenderer.invoke("update:restart"); },
+    onProgress: (cb: (p: unknown) => void): (() => void) => {
+      const listener = (_e: unknown, p: unknown): void => cb(p);
+      ipcRenderer.on("update:progress", listener as never);
+      return () => ipcRenderer.removeListener("update:progress", listener as never);
+    },
+  },
 });

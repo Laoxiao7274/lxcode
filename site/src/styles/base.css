@@ -1,0 +1,628 @@
+/* ============================================================
+ * 基础层：重置、排版基线、全站共用原语
+ *
+ * 原语只有这几个：.wrap（版心）· .btn（按钮）· .pill（状态药丸）· .tag（分类标签）
+ * · .panel（面板）· .spec（等宽键值行）· .tbl（数据表）· .field（表单）
+ * · .code / .hash（等宽代码与哈希）
+ * 页面 CSS 只做布局编排，**不再各自发明按钮和标签**——这是站点视觉一致性的唯一保障。
+ *
+ * 质感纪律（2026-10 视觉重做）：层次靠「发丝线 + 极轻阴影 + 悬停微抬 + 留白」，
+ * 不靠重阴影、不靠第二强调色；所有过渡都走 --t-* 与 --ease-out，reduced-motion 下归零。
+ * ============================================================ */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html {
+  /* 站内锚点跳转平滑滚动；reduced-motion 下由下方媒体查询关掉 */
+  scroll-behavior: smooth;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+  font-feature-settings: "cv05" 1, "ss01" 1; /* Inter 的小写 l 带尾、单层 a：等宽元数据旁更清楚 */
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  font-weight: 600;
+  line-height: var(--lh-tight);
+  /* 中文标题需要比西文更松的行高，1.22 下汉字不出墨迹问题，西文也不散 */
+  letter-spacing: var(--tr-title);
+  text-wrap: balance;
+}
+
+/* 展示级标题：字号越大字距越紧，否则大字看起来是散的 */
+h1 {
+  letter-spacing: var(--tr-display);
+  line-height: var(--lh-display);
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+img,
+svg {
+  display: block;
+  max-width: 100%;
+}
+
+::selection {
+  background: rgba(16, 163, 127, 0.22);
+}
+
+/* 焦点环全站统一：键盘可见、鼠标点击不出环（:focus-visible） */
+:focus-visible {
+  outline: 2px solid var(--fg);
+  outline-offset: 2px;
+  border-radius: var(--r-chip);
+}
+
+/* ---- 动效减免：全站过渡/动画一律归零（含 JS 侧门控的 .reveal）---- */
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+  .panel-lift:hover,
+  .btn:active {
+    transform: none !important;
+  }
+}
+
+/* ===== 排版工具 ===== */
+.wrap {
+  width: 100%;
+  max-width: var(--shell-max);
+  margin: 0 auto;
+  padding: 0 var(--shell-pad);
+}
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--tr-mono);
+}
+.muted {
+  color: var(--fg-muted);
+}
+.small {
+  font-size: var(--fs-sm);
+}
+/* 导语：比正文大一档、比标题小一档，度量收窄到 46ch——一行读得完一句 */
+.lead {
+  font-size: var(--fs-lead);
+  line-height: 1.5;
+  color: var(--fg-muted);
+  max-width: var(--measure-narrow);
+}
+/* 等宽元数据：版本号/哈希/体积/路径一律走它——这是本站的身份 register，
+   不是装饰（产品本身就是个控制台，元数据用等宽是这个品牌最诚实的表达） */
+.meta {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+  letter-spacing: var(--tr-mono);
+}
+/* 数字列：表格里的计数一律右对齐 + 等宽（左对齐的数字列读起来要来回找位） */
+.num {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+.skip-link {
+  position: absolute;
+  top: -100px;
+  left: 12px;
+  z-index: 100;
+  padding: 10px 14px;
+  border-radius: var(--r-ctl);
+  background: var(--fg);
+  color: #fff;
+  font-size: var(--fs-sm);
+}
+.skip-link:focus {
+  top: 12px;
+}
+
+/* ===== 小标签（eyebrow）：全站节制使用，只作分节分类，不作装饰 ===== */
+.eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-eyebrow);
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+/* eyebrow 前的短横线：给分节一个视觉起点（纯装饰，用伪元素而不是新元素） */
+.eyebrow::before {
+  content: "";
+  width: 18px;
+  height: 1px;
+  background: var(--border-strong);
+}
+.eyebrow-plain::before {
+  display: none;
+}
+
+/* ===== 分节 ===== */
+.sec {
+  padding: var(--section-y) 0;
+  border-top: var(--hair);
+}
+.sec-soft {
+  background: var(--bg-soft);
+}
+.sec-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  max-width: 54rem;
+  margin-bottom: var(--s-7);
+}
+.sec-head h1,
+.sec-head h2 {
+  letter-spacing: var(--tr-display);
+}
+.sec-head h2 {
+  font-size: var(--fs-h2);
+}
+.sec-lede {
+  font-size: var(--fs-lead);
+  line-height: 1.5;
+  color: var(--fg-muted);
+  max-width: var(--measure-narrow);
+}
+
+/* ===== 按钮：主操作恒为黑底白字（与产品一致），次操作描边，幽灵无框 ===== */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-2);
+  height: 40px;
+  padding: 0 18px;
+  border: var(--hair-strong);
+  border-radius: var(--r-ctl);
+  background: var(--surface);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: var(--fs-sm);
+  font-weight: 550;
+  letter-spacing: -0.005em;
+  white-space: nowrap; /* CTA 文案不许折行（桌面端折行即视为坏样式） */
+  cursor: pointer;
+  box-shadow: var(--shadow-btn);
+  transition: background var(--t-fast) var(--ease-out), border-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out), box-shadow var(--t-base) var(--ease-out),
+    transform var(--t-fast) var(--ease-out);
+}
+.btn:hover {
+  background: var(--bg-soft);
+  border-color: var(--border-hover);
+}
+.btn:active {
+  transform: translateY(1px);
+  box-shadow: none;
+}
+.btn-p {
+  border-color: var(--fg);
+  background: var(--fg);
+  color: #fff;
+  box-shadow: 0 1px 2px rgba(13, 13, 13, 0.16);
+}
+.btn-p:hover {
+  background: #262626;
+  border-color: #262626;
+}
+.btn-sm {
+  height: 32px;
+  padding: 0 12px;
+  font-size: var(--fs-meta);
+}
+.btn-lg {
+  height: 46px;
+  padding: 0 24px;
+  font-size: var(--fs-body);
+}
+/* 幽灵按钮：无边框无底，只在 hover 时给一层浅底 */
+.btn-quiet {
+  height: 32px;
+  padding: 0 10px;
+  border-color: transparent;
+  background: none;
+  color: var(--fg-muted);
+  box-shadow: none;
+}
+.btn-quiet:hover {
+  background: var(--bg-hover);
+  border-color: transparent;
+  color: var(--fg);
+}
+.btn-danger {
+  color: var(--danger);
+  border-color: var(--border-strong);
+}
+.btn-danger:hover {
+  background: #fdf1f0;
+  border-color: #f0c6c5;
+}
+.btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+.btn-block {
+  width: 100%;
+}
+
+/* ===== 状态药丸：站点唯一的语义色用法 ===== */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-pill);
+  background: var(--surface);
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-eyebrow);
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+.pill-ok {
+  border-color: #c4e6da;
+  background: var(--ok-bg);
+  color: #0b6b52;
+}
+.pill-warn {
+  border-color: var(--warn-border);
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+.pill-danger {
+  border-color: #f3c9c8;
+  background: #fdf1f0;
+  color: #a81f1c;
+}
+.pill-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+
+/* ===== 分类标签（更新日志用）：等宽短词 + 极浅底，不用彩色底块 ===== */
+.tag {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: var(--r-chip);
+  background: var(--border-soft);
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-eyebrow);
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.tag-feat {
+  background: var(--ok-bg);
+  color: #0b6b52;
+}
+.tag-fix {
+  background: #eef2fd;
+  color: #2f4d8f;
+}
+.tag-breaking {
+  background: #fdf1f0;
+  color: #a81f1c;
+}
+.tag-docs {
+  background: var(--border-soft);
+  color: var(--fg-muted);
+}
+
+/* ===== 面板：需要层级才用（分节一律用发丝线，不用卡片阴影）===== */
+.panel {
+  border: var(--hair);
+  border-radius: var(--r-panel);
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
+}
+/* 可交互卡片：hover 微抬 + 边框加深（表单面板不许用，免得填字时整块在动） */
+.panel-lift {
+  transition: box-shadow var(--t-base) var(--ease-out), border-color var(--t-base) var(--ease-out),
+    transform var(--t-base) var(--ease-out);
+}
+.panel-lift:hover {
+  border-color: var(--border-hover);
+  box-shadow: var(--shadow-card-hover);
+  transform: translateY(-2px);
+}
+.panel-pad {
+  padding: var(--s-5) var(--s-5);
+}
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3);
+  padding: var(--s-4) var(--s-5);
+  border-bottom: var(--hair);
+  background: linear-gradient(180deg, #ffffff, #fdfdfd);
+}
+.panel-title {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+/* ===== 等宽键值行：站点的「规格表」原语（架构、系统要求、manifest 预览共用）===== */
+.spec {
+  border-top: var(--hair);
+}
+.spec-row {
+  display: grid;
+  grid-template-columns: minmax(130px, 200px) 1fr;
+  gap: var(--s-4);
+  padding: var(--s-3) 0;
+  border-bottom: var(--hair);
+  align-items: baseline;
+}
+.spec-k {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  letter-spacing: var(--tr-mono);
+  color: var(--fg-muted);
+}
+.spec-v {
+  font-size: var(--fs-sm);
+}
+.spec-v .mono {
+  font-size: var(--fs-meta);
+}
+
+/* ===== 数据表：后台与历史版本共用 ===== */
+.tbl-wrap {
+  border: var(--hair);
+  border-radius: var(--r-panel);
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
+  overflow-x: auto;
+}
+.tbl {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-sm);
+}
+.tbl th {
+  padding: var(--s-3) var(--s-4);
+  border-bottom: var(--hair-strong);
+  background: var(--bg-soft);
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-eyebrow);
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-align: left;
+  white-space: nowrap;
+}
+.tbl td {
+  padding: var(--s-3) var(--s-4);
+  border-bottom: var(--hair);
+  vertical-align: middle;
+}
+/* 斑马纹：相邻行靠极浅底区分，读数时不串行 */
+.tbl tbody tr:nth-child(even) {
+  background: #fcfcfd;
+}
+.tbl tbody tr:hover {
+  background: var(--bg-hover);
+}
+.tbl tbody tr:last-child td {
+  border-bottom: none;
+}
+.tbl .num,
+.tbl .meta {
+  font-variant-numeric: tabular-nums;
+}
+/* 表内链接：hover 只改下划线颜色（改成左侧色条会让表格行跳动），所以用下划线 */
+.tbl a {
+  text-decoration: underline;
+  text-decoration-color: var(--border-strong);
+  text-underline-offset: 3px;
+  transition: text-decoration-color var(--t-fast) var(--ease-out);
+}
+.tbl a:hover {
+  text-decoration-color: var(--fg);
+}
+
+/* ===== 表单原语（后台管理用；标签恒在输入框上方，不用 placeholder 当标签）===== */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  margin-bottom: var(--s-4);
+}
+.lbl {
+  font-size: var(--fs-sm);
+  font-weight: 550;
+  letter-spacing: -0.005em;
+}
+.lbl .req {
+  color: var(--danger);
+  margin-left: 3px;
+}
+.inp,
+.sel,
+.txt {
+  width: 100%;
+  padding: 10px 12px;
+  border: var(--hair-strong);
+  border-radius: var(--r-ctl);
+  background: var(--surface);
+  font-family: var(--font-sans);
+  font-size: var(--fs-sm);
+  box-shadow: inset 0 1px 1px rgba(13, 13, 13, 0.02);
+  transition: border-color var(--t-fast) var(--ease-out), box-shadow var(--t-fast) var(--ease-out);
+}
+.inp::placeholder,
+.txt::placeholder {
+  color: var(--fg-faint);
+}
+.inp:hover,
+.sel:hover,
+.txt:hover {
+  border-color: var(--border-hover);
+}
+.inp:focus,
+.sel:focus,
+.txt:focus {
+  outline: none;
+  border-color: var(--fg);
+  box-shadow: var(--ring);
+}
+.sel {
+  appearance: none;
+  cursor: pointer;
+  /* 自绘箭头：原生 select 箭头在 Windows/Chromium 下与设计语言不符 */
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 5l3 3 3-3' fill='none' stroke='%236e6e80' stroke-width='1.4'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  padding-right: 32px;
+}
+.txt {
+  min-height: 92px;
+  resize: vertical;
+  line-height: 1.6;
+}
+.hint {
+  color: var(--fg-muted);
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+}
+.err {
+  color: var(--danger);
+  font-size: var(--fs-meta);
+}
+
+/* ===== 等宽代码 / 哈希 ===== */
+.code {
+  padding: var(--s-4);
+  border-radius: var(--r-chip);
+  background: var(--term-bg);
+  color: var(--term-fg);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  line-height: 1.75;
+  overflow-x: auto;
+  white-space: pre;
+}
+.hash {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+  letter-spacing: var(--tr-mono);
+  word-break: break-all;
+}
+
+/* ===== 入场动效：只在 JS 侧 motionAllowed() 通过时加 .in ===== */
+.reveal {
+  opacity: 0;
+  transform: translateY(10px);
+}
+.reveal.in {
+  opacity: 1;
+  transform: none;
+  transition: opacity 420ms var(--ease-out), transform 420ms var(--ease-out);
+}
+@media (prefers-reduced-motion: reduce) {
+  .reveal {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ===== 原型提示条（两个站点共用：官网与独立管理站都会用它）===== */
+.notice-bar {
+  position: fixed;
+  left: 50%;
+  bottom: var(--s-5);
+  z-index: 60;
+  transform: translate(-50%, 12px);
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  max-width: min(680px, calc(100vw - var(--s-8)));
+  padding: var(--s-3) var(--s-4);
+  border: var(--hair-strong);
+  border-radius: var(--r-ctl);
+  background: var(--surface);
+  box-shadow: var(--shadow-pop);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity var(--t-base) var(--ease-out), transform var(--t-base) var(--ease-out),
+    visibility var(--t-base) var(--ease-out);
+}
+.notice-bar.on {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(-50%, 0);
+}
+.notice-text {
+  min-width: 0;
+}
+
