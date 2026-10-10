@@ -138,10 +138,12 @@ func New() *Registry {
 	// 的独立子会话。与 agent_dispatch 同为调度类，排在最后。
 	r.register(mergeRequestDef(r))
 	// 工作区三件套（用户无感链路的收尾）：status 查询（低危只读）、sync 提交推送
-	// 与 rollback 回滚（中危走确认门）。排在 merge_request 之后——同一族能力。
+	// 与 rollback 回滚（中危走确认门）、publish 产物发布（走确认门）。
+	// 排在 merge_request 之后——同一族能力。
 	r.register(workspaceStatusDef(r))
 	r.register(workspaceSyncDef(r))
 	r.register(workspaceRollbackDef(r))
+	r.register(workspacePublishDef(r))
 	return r
 }
 

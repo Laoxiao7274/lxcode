@@ -566,15 +566,15 @@ func TestTopUpSeedAgentsSkipsMainAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := agentToolsOf(t, s, "main")
-	// 主 Agent 恒为「调度 + 合并进程入口 + 工作区三件套」（结构成员，不由补种改写）
+	// 主 Agent 恒为「调度 + 合并进程入口 + 工作区四件套」（结构成员，不由补种改写）
 	for _, want := range []string{"agent_dispatch", "merge_request",
-		"workspace_status", "workspace_sync", "workspace_rollback"} {
+		"workspace_status", "workspace_sync", "workspace_rollback", "workspace_publish"} {
 		if !slices.Contains(got, want) {
 			t.Fatalf("主 Agent 的工具应含 %s（结构性）: %v", want, got)
 		}
 	}
-	if len(got) != 5 {
-		t.Fatalf("主 Agent 的工具应恒为 agent_dispatch + merge_request + 工作区三件套: %v", got)
+	if len(got) != 6 {
+		t.Fatalf("主 Agent 的工具应恒为 agent_dispatch + merge_request + 工作区四件套: %v", got)
 	}
 }
 

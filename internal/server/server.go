@@ -209,6 +209,8 @@ func (s *Server) AttachSessionStore(st *store.Store) error {
 		SyncConfirm:     s.syncConfirmText,
 		Rollback:        s.workspaceRollback,
 		RollbackConfirm: s.rollbackConfirmText,
+		Publish:         s.workspacePublish,
+		PublishConfirm:  s.publishConfirmText,
 	})
 	// M4：工具目录里的自定义工具（binary）注册进工具注册表——启动时就位，
 	// 之后的目录变更由 catalog.tools.* 分支触发同步。

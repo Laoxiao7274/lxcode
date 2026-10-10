@@ -26,8 +26,8 @@ var toolNameOK = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 func TestLLMToolsShape(t *testing.T) {
 	r := New()
 	toolsWire := r.LLMTools()
-	if len(toolsWire) != 19 {
-		t.Fatalf("应有 19 个工具（read_file / search / web_search / web_fetch / job_output / job_list / job_kill / session_search / read_skill / edit / write_file / bash / todo / ask_user / agent_dispatch / merge_request / workspace_status / workspace_sync / workspace_rollback）, got %d", len(toolsWire))
+	if len(toolsWire) != 20 {
+		t.Fatalf("应有 20 个工具（read_file / search / web_search / web_fetch / job_output / job_list / job_kill / session_search / read_skill / edit / write_file / bash / todo / ask_user / agent_dispatch / merge_request / workspace_status / workspace_sync / workspace_rollback / workspace_publish）, got %d", len(toolsWire))
 	}
 	for _, tw := range toolsWire {
 		if tw.Name == "" || tw.Description == "" || !json.Valid(tw.Parameters) {

@@ -166,6 +166,18 @@ var seedTools = []sessiondata.ToolSpec{
 		Doc: "「回滚到上一次提交」的执行者：把本会话分支 reset --hard 到目标提交。\n\n- 工作区有未提交改动时拒绝（绝不静默丢弃手工改动）\n- 目标提交已合并进集成分支时警告：那部分要在集成分支上 revert 才能撤销\n- 绝不 push、绝不动集成分支与主检出\n- 执行前走确认门（文案列明丢弃哪些提交与文件）",
 	},
 	{
+		// 产物发布（中危走确认门）：会话 worktree 里的构建产物在 gitignore 里、
+		// 不随合并走——用户的项目文件夹里看不到它们；这个工具把产物显式送到
+		// 主检出对应位置。必须在目录里：编辑器渲染 chip 只读目录。
+		ID: "workspace_publish", Desc: "把会话工作树里的产物复制到项目主检出", Risk: "high", Source: "builtin", Custom: false,
+		Params: []sessiondata.ToolParam{
+			{Name: "source", Type: "string", Required: true, Desc: "会话工作树内的相对路径（文件或目录；绝对路径拒绝）"},
+			{Name: "target", Type: "string", Desc: "主检出内的相对路径（默认与 source 相同）"},
+			{Name: "exclude", Type: "array", Desc: "目录同步时排除的目录名（.git 始终自动排除）"},
+		},
+		Doc: "把会话工作树里的产物（构建产物、生成的文件或目录）复制到项目主检出对应位置，让产物出现在用户的项目文件夹里。\n\n- source/target 都必须是相对路径（绝对路径与 `..` 拒绝）\n- 目录递归复制、保留相对结构；目标父目录不存在会自动创建\n- 覆盖主检出已有文件前走确认门（确认文案列出会覆盖的文件）\n- 单次上限 2000 个文件 / 1GB，超出报「产物过大，请分批」",
+	},
+	{
 		// 外部 Rust 二进制的接入样板（AGENTS.md §2.1「Go 主刀、Rust 武器库」）：
 		// command 必须是**可运行**的模板——空 command 的工具进不了注册表，
 		// 模型会如实回答「注册表没有」（用户报告过的原始现象）。
@@ -237,9 +249,9 @@ var seedAgents = []sessiondata.AgentDef{
 	{
 		ID: "main", Name: "主 Agent", IsMain: true, Enabled: true, Color: "#0d0d0d", Model: "",
 		Desc: "决策与分派中枢：理解意图、拆解任务、调用名单中的 Agent 并验收汇总。不直接执行任务。",
-		// 工作区三件套是主 Agent 的「用户无感」入口：查询 / 提交推送 / 回滚——
-		// 用户视角始终在操作一个项目，分支概念由这三个工具兜住。
-		Tools:    []string{"agent_dispatch", "merge_request", "workspace_status", "workspace_sync", "workspace_rollback"},
+		// 工作区四件套是主 Agent 的「用户无感」入口：查询 / 提交推送 / 回滚 /
+		// 产物发布——用户视角始终在操作一个项目，分支概念由这些工具兜住。
+		Tools:    []string{"agent_dispatch", "merge_request", "workspace_status", "workspace_sync", "workspace_rollback", "workspace_publish"},
 		Prompt:   "",
 		Workflow: "plan-execute-verify", Skills: []string{},
 		Delegates: []string{"coder", "researcher", "tester"}, Approval: "confirm",

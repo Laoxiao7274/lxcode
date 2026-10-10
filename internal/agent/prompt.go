@@ -57,6 +57,8 @@ func worktreeLine(wt WorktreeInfo, isChild bool) string {
 		"用户问「改了哪些东西」用 `workspace_status`，按项目口径汇报，不向用户解释分支概念（除非他问）；"+
 		"用户说「提交/推送」用 `workspace_sync`；"+
 		"用户要「回滚/撤销」用 `workspace_rollback`（默认回滚到上一轮结束的状态）；"+
+		"用户需要产物出现在项目根（如打包产物、构建输出、生成的文件）时，在会话工作树里完成构建，"+
+		"然后用 `workspace_publish` 把产物同步到项目根对应位置；"+
 		"已合并进集成分支的内容要在集成分支上 revert，不要 reset 会话分支来期望它消失。\n", wt.Branch)
 }
 
@@ -97,6 +99,7 @@ var systemPromptTools = map[string]string{
 	tools.WorkspaceStatusToolName:   "workspace_status：查询项目工作区状态（主检出改动、各会话分支、集成分支），低危自动执行",
 	tools.WorkspaceSyncToolName:     "workspace_sync：提交本会话改动并起合并进程（可选拼推送），中危——执行前用户会收到确认提示",
 	tools.WorkspaceRollbackToolName: "workspace_rollback：回滚本会话分支到上一轮/会话起点/指定提交，中危——执行前用户会收到确认提示",
+	tools.WorkspacePublishToolName:  "workspace_publish：把会话工作树里的产物复制到项目主检出对应位置，中危——覆盖主检出文件前用户会收到确认提示",
 }
 
 // ProjectDocs 是注入提示词的项目守则（项目根的 AGENTS.md）。

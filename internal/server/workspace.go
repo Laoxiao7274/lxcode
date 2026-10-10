@@ -14,6 +14,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/moyunteng/lxcode/internal/project"
@@ -448,4 +449,117 @@ func short7(hash string) string {
 		return hash[:7]
 	}
 	return hash
+}
+
+// ---------- workspace_publish：产物发布到主检出 ----------
+
+// publishSourceLimit 等文本清单的展示上限（发布覆盖清单与确认文案同款截断）。
+const publishFileLimit = 40
+
+// preparePublish 是 publish 确认与执行共用的前置校验（只读）：
+// 解析会话归属项目（主检出 = meta.Path）与本会话工作树，净化 source/target
+// 相对路径，校验源在工作树内真实存在。返回净化后的相对路径与两端根目录。
+func (s *Server) preparePublish(sessionID, source, target string) (srcRoot, dstRoot, srcRel, dstRel string, err error) {
+	st, err := s.workspaceStore()
+	if err != nil {
+		return "", "", "", "", err
+	}
+	ws, err := st.WorkspaceOf(sessionID)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	if ws == "" {
+		return "", "", "", "", fmt.Errorf("当前会话没有归属项目，无处可发布（先把会话归入一个项目）")
+	}
+	meta, found, err := st.ProjectByID(ws)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	if !found {
+		return "", "", "", "", fmt.Errorf("项目 %s 不存在", ws)
+	}
+	wt, err := st.WorktreeOf(sessionID)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	if wt.Path == "" {
+		return "", "", "", "", fmt.Errorf("本会话还没有工作树（先发一条消息建立），没有可发布的产物")
+	}
+	if _, err := os.Stat(wt.Path); err != nil {
+		return "", "", "", "", fmt.Errorf("本会话工作树目录不存在（可能已被释放），无法发布")
+	}
+	srcRel, err = project.CleanPublishRel(source)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	// target 缺省 = 与 source 相同；同样必须是项目根内的相对路径（防穿越）。
+	if strings.TrimSpace(target) == "" {
+		dstRel = srcRel
+	} else if dstRel, err = project.CleanPublishRel(target); err != nil {
+		return "", "", "", "", fmt.Errorf("target 无效: %w", err)
+	}
+	// 源必须在工作树内真实存在（确认门之前就拒绝，不让用户确认一个落空的计划）。
+	if _, err := os.Stat(filepath.Join(wt.Path, srcRel)); err != nil {
+		return "", "", "", "", fmt.Errorf("会话工作树里不存在 %s（检查路径，或先在工作树里完成构建）", srcRel)
+	}
+	return wt.Path, meta.Path, srcRel, dstRel, nil
+}
+
+// publishConfirmText 组 publish 的确认门文案：发布到哪、多少文件、
+// **会不会覆盖主检出已有的文件**（会覆盖时列出文件清单——用户必须知道
+// 自己确认的是什么）。计划生成失败时回一条通用文案，确认门照常生效，
+// 具体错误在执行时报给模型。
+func (s *Server) publishConfirmText(sessionID, source, target string, exclude []string) string {
+	srcRoot, dstRoot, srcRel, dstRel, err := s.preparePublish(sessionID, source, target)
+	if err != nil {
+		return fmt.Sprintf("将把会话工作树的 %s 复制到项目主检出对应位置（同名文件将覆盖）。确认执行？",
+			strings.TrimSpace(source))
+	}
+	plan, err := project.PlanPublish(s.Ctx(), srcRoot, dstRoot, srcRel, dstRel, exclude)
+	if err != nil {
+		return fmt.Sprintf("将把会话工作树的 %s 复制到主检出 %s（同名文件将覆盖）。确认执行？", srcRel, dstRel)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "将把会话工作树的 %s 发布到主检出 %s（共 %d 个文件，约 %s）。",
+		srcRel, dstRel, len(plan.Files), humanBytes(plan.TotalBytes))
+	if len(plan.Overwrites) > 0 {
+		fmt.Fprintf(&b, "\n将覆盖主检出已有的 %s 下 %d 个文件：\n%s", dstRel, len(plan.Overwrites),
+			clipLines(plan.Overwrites, publishFileLimit))
+	} else {
+		b.WriteString("\n不覆盖主检出已有文件（目标位置无同名文件）。")
+	}
+	b.WriteString("\n确认执行？")
+	return b.String()
+}
+
+// workspacePublish 执行发布：源已在确认门前校验过存在，这里照计划复制。
+func (s *Server) workspacePublish(sessionID, source, target string, exclude []string) (string, error) {
+	srcRoot, dstRoot, srcRel, dstRel, err := s.preparePublish(sessionID, source, target)
+	if err != nil {
+		return "", err
+	}
+	published, skipped, err := project.PublishPathsTo(s.Ctx(), srcRoot, dstRoot, srcRel, dstRel, exclude)
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "已发布 %d 个文件到主检出 %s。", published, dstRel)
+	if skipped > 0 {
+		fmt.Fprintf(&b, "（跳过 %d 个排除项）", skipped)
+	}
+	return b.String(), nil
+}
+
+// humanBytes 把字节数组成人话（确认文案用；不需要精确到字节）。
+func humanBytes(n int64) string {
+	switch {
+	case n >= 1<<30:
+		return fmt.Sprintf("%.1f GB", float64(n)/(1<<30))
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.1f KB", float64(n)/(1<<10))
+	default:
+		return fmt.Sprintf("%d B", n)
+	}
 }

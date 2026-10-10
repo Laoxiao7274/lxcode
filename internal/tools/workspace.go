@@ -19,6 +19,7 @@ const (
 	WorkspaceStatusToolName   = "workspace_status"
 	WorkspaceSyncToolName     = "workspace_sync"
 	WorkspaceRollbackToolName = "workspace_rollback"
+	WorkspacePublishToolName  = "workspace_publish"
 )
 
 // WorkspaceOps 是三个工具的 server 侧实现（装配期注入一次，运行期只读）。
@@ -34,6 +35,12 @@ type WorkspaceOps struct {
 	Rollback func(sessionID, target string) (string, error)
 	// RollbackConfirm 组 rollback 的确认门文案（丢弃哪些提交、涉及哪些文件）。
 	RollbackConfirm func(sessionID, target string) string
+	// Publish 把会话工作树内的 source（相对路径，文件或目录）复制到主检出
+	// 的 target（相对路径；空串 = 与 source 相同）；exclude 是目录同步的
+	// 排除目录名。返回人话摘要（发布了多少文件、到了哪里）。
+	Publish func(sessionID, source, target string, exclude []string) (string, error)
+	// PublishConfirm 组 publish 的确认门文案（说清将覆盖主检出哪些文件）。
+	PublishConfirm func(sessionID, source, target string, exclude []string) string
 }
 
 // SetWorkspaceOps 注入三个工具的 server 侧实现（server 装配时调用；
@@ -173,6 +180,62 @@ func workspaceRollbackDef(r *Registry) *Def {
 				return "", fmt.Errorf("工作区回滚未装配（后端未初始化会话存储）")
 			}
 			return ops.Rollback(SessionID(ctx), a.Target)
+		},
+	}
+}
+
+// workspacePublishDef：把会话工作树里的产物复制到项目主检出（走确认门——
+// 会话 worktree 里的构建产物在 gitignore 里、不随合并走，用户的项目文件夹
+// 里看不到它们；这个工具把产物显式送到主检出对应位置）。
+func workspacePublishDef(r *Registry) *Def {
+	schema := json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"source": {"type": "string", "description": "会话工作树内的相对路径（文件或目录；绝对路径拒绝）"},
+			"target": {"type": "string", "description": "主检出内的相对路径（可选；默认与 source 相同）"},
+			"exclude": {"type": "array", "items": {"type": "string"}, "description": "目录同步时排除的目录名（如 [\"node_modules\"]；.git 始终自动排除）"}
+		},
+		"required": ["source"]
+	}`)
+	return &Def{
+		Name: WorkspacePublishToolName,
+		Description: "把本会话工作树里的产物（构建产物、生成的文件或目录）复制到项目主检出对应位置，" +
+			"让产物出现在你的项目文件夹里。中危——覆盖主检出文件前会请求确认。" +
+			"source 必须是工作树内的相对路径（绝对路径拒绝）；target 缺省与 source 相同；" +
+			"目录递归复制、保留相对结构，目标父目录不存在会自动创建，同名文件覆盖。",
+		Parameters: schema,
+		Risk:       RiskHigh,
+		Mutates:    true,
+		Confirm: func(ctx context.Context, args json.RawMessage) string {
+			var a struct {
+				Source  string   `json:"source"`
+				Target  string   `json:"target"`
+				Exclude []string `json:"exclude"`
+			}
+			_ = json.Unmarshal(args, &a)
+			if ops := r.getWorkspaceOps(); ops.PublishConfirm != nil {
+				if txt := ops.PublishConfirm(SessionID(ctx), a.Source, a.Target, a.Exclude); strings.TrimSpace(txt) != "" {
+					return txt
+				}
+			}
+			// 未装配/未给出文案时的兜底：确认门照常生效，动作说清楚。
+			return fmt.Sprintf("将把会话工作树的 %s 复制到项目主检出的对应位置（同名文件将覆盖）。确认执行？",
+				strings.TrimSpace(a.Source))
+		},
+		Exec: func(ctx context.Context, args json.RawMessage) (string, error) {
+			var a struct {
+				Source  string   `json:"source"`
+				Target  string   `json:"target"`
+				Exclude []string `json:"exclude"`
+			}
+			if err := json.Unmarshal(args, &a); err != nil {
+				return "", fmt.Errorf("参数解析失败: %w", err)
+			}
+			ops := r.getWorkspaceOps()
+			if ops.Publish == nil {
+				return "", fmt.Errorf("产物发布未装配（后端未初始化会话存储）")
+			}
+			return ops.Publish(SessionID(ctx), a.Source, a.Target, a.Exclude)
 		},
 	}
 }
