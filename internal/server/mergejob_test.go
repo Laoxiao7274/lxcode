@@ -6,6 +6,8 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -39,7 +41,7 @@ func mergeBlockStream(release <-chan struct{}) testStream {
 				text = m.Content
 			}
 		}
-		if strings.Contains(text, "把源会话分支") {
+		if strings.Contains(text, "源会话分支") {
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
@@ -51,6 +53,9 @@ func mergeBlockStream(release <-chan struct{}) testStream {
 }
 
 // sendTurn 发一条消息并等这一轮结束（建立 worktree、写标题）。
+// 之后还要等在途的自动提交收尾：合并发起时的扫描按「分支领先/工作树脏」判定
+// 有无改动，检查点提交没落库会被判成无改动（生产路径当前轮改动以未提交形态
+// 被 dirty 计入，不受影响）。
 func sendTurn(t *testing.T, srv *Server, client *wsTestClient, id, text string) {
 	t.Helper()
 	resp := client.call(protocol.MethodChatSend, protocol.ChatSendParams{SessionID: id, Text: text})
@@ -58,6 +63,7 @@ func sendTurn(t *testing.T, srv *Server, client *wsTestClient, id, text string) 
 		t.Fatalf("chat.send(%q) 失败: %+v", text, resp)
 	}
 	waitSessionIdle(t, srv, id)
+	srv.waitAutoCommits()
 }
 
 // waitSessionIdle 轮询会话忙闲直到空闲。
@@ -116,6 +122,22 @@ func waitRecorderNotice(t *testing.T, rec *serverRecorder, want string) {
 	t.Fatalf("父会话未收到含 %q 的通告", want)
 }
 
+// commitChange 在会话工作树里落一个文件改动并提交（模拟「这轮真的改了东西」）：
+// 合并发起时的扫描按「分支领先/工作树脏」判定有无改动，纯空转的「你好」轮
+// 没有检查点提交也没有未提交改动，会被如实判成无改动（新语义）。
+func commitChange(t *testing.T, srv *Server, id, name string) {
+	t.Helper()
+	wt, err := srv.st.WorktreeOf(id)
+	if err != nil || wt.Path == "" {
+		t.Fatalf("worktree not ready: %+v err=%v", wt, err)
+	}
+	if err := os.WriteFile(filepath.Join(wt.Path, name), []byte(name+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitServerTest(t, wt.Path, "add", "-A")
+	gitServerTest(t, wt.Path, "commit", "-m", "test change "+name)
+}
+
 // TestMergeRequestStartsJob：用例 1 —— 项目会话起合并任务，立刻返回 job id，
 // List 里出现一条 Kind=="merge" 的任务，标签含会话标题。
 func TestMergeRequestStartsJob(t *testing.T) {
@@ -124,6 +146,7 @@ func TestMergeRequestStartsJob(t *testing.T) {
 	meta := addAutoCommitProject(t, client, repo)
 	id := createTestSession(t, client, meta.ID)
 	sendTurn(t, srv, client, id, "你好") // 建立 worktree 并写标题
+	commitChange(t, srv, id, "a.txt")   // 留一个可合并的检查点提交
 
 	out := callMergeRequest(srv, id, "")
 	if !strings.Contains(out, "合并进程已启动") {
@@ -161,7 +184,7 @@ func TestMergeRequestRejectsUngroupedSession(t *testing.T) {
 	}
 }
 
-// TestMergeRequestRejectsConcurrent：用例 3 —— 同一会话同时只允许一个在跑的合并进程。
+// TestMergeRequestRejectsConcurrent：用例 3 —— 同一项目同时只允许一个在跑的合并进程。
 func TestMergeRequestRejectsConcurrent(t *testing.T) {
 	repo := initGitProject(t)
 	release := make(chan struct{}, 4)
@@ -169,6 +192,7 @@ func TestMergeRequestRejectsConcurrent(t *testing.T) {
 	meta := addAutoCommitProject(t, client, repo)
 	id := createTestSession(t, client, meta.ID)
 	sendTurn(t, srv, client, id, "你好") // 建立 worktree
+	commitChange(t, srv, id, "a.txt")   // 留一个可合并的检查点提交
 
 	if out := callMergeRequest(srv, id, ""); strings.Contains(out, "错误:") {
 		t.Fatalf("第一次 merge_request 应成功: %q", out)
@@ -204,6 +228,7 @@ func TestMergeJobSettleNotifiesParent(t *testing.T) {
 	meta := addAutoCommitProject(t, client, repo)
 	id := createTestSession(t, client, meta.ID)
 	sendTurn(t, srv, client, id, "你好")
+	commitChange(t, srv, id, "a.txt") // 留一个可合并的检查点提交（空转轮无改动会被拒绝）
 
 	out := callMergeRequest(srv, id, "")
 	jobID := ""
@@ -277,6 +302,7 @@ func TestMergeJobBroadcastsDispatchEvents(t *testing.T) {
 	meta := addAutoCommitProject(t, client, repo)
 	id := createTestSession(t, client, meta.ID)
 	sendTurn(t, srv, client, id, "你好")
+	commitChange(t, srv, id, "a.txt") // 留一个可合并的检查点提交
 
 	// 用户从后台任务面板发起（chat.mergeRequest——与 merge_request 工具同一条路径）
 	resp := client.call(protocol.MethodChatMergeRequest, protocol.ChatMergeRequestParams{SessionID: id})

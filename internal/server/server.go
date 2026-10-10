@@ -44,6 +44,11 @@ type Server struct {
 	// 进程级单例——工具面与协议面共用同一个实例。
 	jobsMu sync.Mutex
 	jobs   *jobs.Manager
+	// mergeJobProject 记录在跑合并任务归属的项目 id（任务 id → projectID）：
+	// jobs.Spec 没有项目字段，合并进程的「按项目互斥」靠它（startMergeJob 在
+	// mergeMu 内检查+登记，runMergeJob 收尾注销）。mergeMu 保护两个字段。
+	mergeMu         sync.Mutex
+	mergeJobProject map[string]string
 	// wakes 是连续唤醒预算表（契约 §5）：settle 投递在任务 goroutine 上，
 	// 用户消息与 job.kill 在 WS 读循环上——两处并发读写同一张表。
 	wakeMu sync.Mutex

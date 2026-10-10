@@ -229,7 +229,8 @@ func (s *Server) workspaceSync(sessionID, message string, push bool) (string, er
 	if err != nil {
 		return "", fmt.Errorf("提交失败: %w", err)
 	}
-	// 第二步：起合并进程（同一条路径与前置校验——含「同一会话只允许一个」）。
+	// 第二步：起合并进程（同一条路径与前置校验——含「同一项目只允许一个」，
+	// 并自动获得多分支行为：本项目其他有改动的会话分支一并纳入）。
 	jobID, err := s.startMergeJob(sessionID, "", push)
 	if err != nil {
 		if committed {
