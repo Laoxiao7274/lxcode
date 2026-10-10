@@ -18,3 +18,6 @@ local.properties
 /dump-*.xml
 /pairing-dump.xml
 /ui*.xml
+
+# 第二批临时测试实例（假后端脚本 / 临时 config+sessions / dump / 签名产物）
+/.tmp-batch2/

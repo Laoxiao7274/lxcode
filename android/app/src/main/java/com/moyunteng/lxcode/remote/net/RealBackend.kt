@@ -124,6 +124,10 @@ class RealBackend {
         if (connected) {
             phase = RealPhase.Connected
             phaseMessage = null
+            // 重连后忙闲以服务端事实为准（切入既有会话时 chat.history 会带回真实
+            // busy 键重设）：留着断线前的 busy=true 会让「发送」一直当「停止」用，
+            // 而停止的收敛依赖后端事件——假后端/断线场景会卡死在生成中。
+            busy = false
             refreshSessions()
         } else if (phase != RealPhase.Offline) {
             // 用户主动 disconnect 后的迟到回调不再标失败
