@@ -9,7 +9,8 @@
 //   chat.toolCall/toolResult → Tool 块（按调用 id 配对）；chat.done → 对齐最终正文 +
 //   更新 context/stats；chat.confirmRequest → 挂起确认（UI 弹 LxConfirmDialog → tool.confirm）；
 //   chat.error → Error 块；todo.updated → Todo 块；dispatch/compacted → 对应卡。
-//   dispatch_id 非空的事件属于子会话，本批忽略（只消费主会话时间线）。
+//   dispatch_id 非空的事件属于子会话：confirmRequest 必带 dispatch_id（协议契约），先于
+//   过滤器处理并弹确认门；toolCall 计入派发卡的子工具计数；其余丢弃（不进主时间线）。
 package com.moyunteng.lxcode.remote.net
 
 import android.util.Log
@@ -112,10 +113,10 @@ class RealBackend {
         phaseMessage = null
     }
 
-    /** 重试（断线 UI 的按钮；等价 connect）。 */
-    fun retry() {
+    /** 重试（断线 UI 的按钮；addr 传当前输入框地址——改了地址点重试应连新地址）。 */
+    fun retry(addr: String = this.addr) {
         Log.i(TAG, "手动重试连接 $addr")
-        connect()
+        connect(addr)
     }
 
     private fun onState(connected: Boolean, message: String?) {
@@ -222,9 +223,69 @@ class RealBackend {
     private var streamingIdx = -1
 
     private fun onEvent(method: String, p: JSONObject) {
-        // 子会话事件（dispatch_id 非空）不进主时间线
         val dispatchId = p.optString("dispatch_id", "")
-        if (dispatchId.isNotEmpty()) return
+        // 确认门先行：子 Agent 的确认请求**必带 dispatch_id**（协议契约 protocol.ConfirmRequest、
+        // dispatch_ws_test.go 钉住），不能进下面的子会话丢弃分支——否则真实模式（主 Agent 唯一
+        // 工具是 agent_dispatch，高危确认全来自子派发）确认弹窗永不出现、会话挂死。
+        // 归属照桌面端契约（AGENTS.md §2.3）：子确认按 request.dispatch_id 归到本会话的派发卡，
+        // 主会话自己的确认（dispatch_id 空）仍按 session_id 归属；裁决经 resolveConfirm 原样回
+        // tool.confirm（session_id 取载荷里的子会话 id）。
+        if (method == "chat.confirmRequest") {
+            if (dispatchId.isNotEmpty()) {
+                if (dispatchCardIdx(dispatchId) < 0) {
+                    Log.w(TAG, "confirmRequest 无归属派发卡（非当前会话的子派发？）dispatch=$dispatchId")
+                    return
+                }
+            } else if (p.optString("session_id", "") != currentSessionId) {
+                return
+            }
+            confirm = PendingConfirm(
+                sessionId = p.optString("session_id", ""),
+                id = p.optString("id"),
+                name = p.optString("name"),
+                arguments = p.optString("arguments"),
+                prompt = p.optString("prompt"),
+            )
+            return
+        }
+        // 派发卡事件（dispatchStart/End）自身也带 dispatch_id，但归属键是 owner_session_id——
+        // 必须先于下面的子会话过滤器处理，否则派发卡建不出来、后续子事件全部无归属。
+        if (method == "chat.dispatchStart" || method == "chat.dispatchEnd") {
+            if (p.optString("owner_session_id") != currentSessionId) return
+            if (method == "chat.dispatchStart") {
+                blocks.add(
+                    ThreadBlock.Dispatch(
+                        agentName = p.optString("agent_name"),
+                        task = p.optString("task"),
+                        conclusion = "",
+                        sessionId = p.optString("session_id", ""),
+                        done = false,
+                        isError = false,
+                        dispatchId = p.optString("dispatch_id", ""),
+                    ),
+                )
+            } else {
+                val i = blocks.indexOfLast { it is ThreadBlock.Dispatch && it.done.not() }
+                // dispatchEnd 用 owner+dispatch 对齐卡；原型期取最后一张未完结卡
+                if (i >= 0) {
+                    val d = blocks[i] as ThreadBlock.Dispatch
+                    blocks[i] = d.copy(
+                        conclusion = p.optString("result"),
+                        done = true,
+                        isError = p.optBoolean("is_error"),
+                    )
+                } else {
+                    Log.w(TAG, "dispatchEnd 无配对卡 dispatch=$dispatchId")
+                }
+            }
+            return
+        }
+        // 子会话事件（dispatch_id 非空）不进主时间线；工具调用归并进派发卡的子工具计数
+        //（安卓无子会话标签页，最小合理行为：卡上一行「子会话执行中 · N 个工具调用」，不无声丢弃）
+        if (dispatchId.isNotEmpty()) {
+            if (method == "chat.toolCall") bumpDispatchChildTools(dispatchId)
+            return
+        }
         val sid = p.optString("session_id", "")
         when (method) {
             "chat.userMessage" -> {
@@ -382,37 +443,6 @@ class RealBackend {
                         manual = p.optBoolean("manual"),
                     ),
                 )
-            }
-
-            "chat.dispatchStart" -> {
-                if (p.optString("owner_session_id") != currentSessionId) return
-                blocks.add(
-                    ThreadBlock.Dispatch(
-                        agentName = p.optString("agent_name"),
-                        task = p.optString("task"),
-                        conclusion = "",
-                        sessionId = p.optString("session_id", ""),
-                        done = false,
-                        isError = false,
-                    ),
-                )
-            }
-
-            "chat.dispatchEnd" -> {
-                if (p.optString("owner_session_id") != currentSessionId) return
-                val dispatchId = p.optString("dispatch_id")
-                val i = blocks.indexOfLast { it is ThreadBlock.Dispatch && it.done.not() }
-                // dispatchEnd 用 owner+dispatch 对齐卡；原型期取最后一张未完结卡
-                if (i >= 0) {
-                    val d = blocks[i] as ThreadBlock.Dispatch
-                    blocks[i] = d.copy(
-                        conclusion = p.optString("result"),
-                        done = true,
-                        isError = p.optBoolean("is_error"),
-                    )
-                } else {
-                    Log.w(TAG, "dispatchEnd 无配对卡 dispatch=$dispatchId")
-                }
             }
 
             else -> Log.d(TAG, "忽略事件 $method")
@@ -596,6 +626,21 @@ class RealBackend {
 
     private fun lastAssistantIndex(): Int =
         blocks.indexOfLast { it is ThreadBlock.Assistant }
+
+    /** 当前会话时间线里 dispatch_id 对应的派发卡下标（-1 = 无）。 */
+    private fun dispatchCardIdx(dispatchId: String): Int =
+        blocks.indexOfFirst { it is ThreadBlock.Dispatch && it.dispatchId == dispatchId }
+
+    /** 子会话工具调用计数 +1（归属派发卡；卡已完结/不存在则只记日志不动块）。 */
+    private fun bumpDispatchChildTools(dispatchId: String) {
+        val i = dispatchCardIdx(dispatchId)
+        if (i < 0) {
+            Log.w(TAG, "子会话工具事件无归属派发卡 dispatch=$dispatchId")
+            return
+        }
+        val d = blocks[i] as ThreadBlock.Dispatch
+        blocks[i] = d.copy(childTools = d.childTools + 1)
+    }
 
     private fun parseContext(o: JSONObject): ContextUsage = ContextUsage(
         used = o.optInt("used"),

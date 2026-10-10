@@ -125,6 +125,10 @@ sealed interface ThreadBlock {
         val sessionId: String,
         val done: Boolean,
         val isError: Boolean,
+        // 真实模式附加（mock 恒默认值）：dispatch_id = 事件归属键（子确认/子工具归并进卡）；
+        // childTools = 子会话至今的工具调用数（卡内一行「子会话执行中 · N 个工具调用」）
+        val dispatchId: String = "",
+        val childTools: Int = 0,
     ) : ThreadBlock
 
     data class Compaction(

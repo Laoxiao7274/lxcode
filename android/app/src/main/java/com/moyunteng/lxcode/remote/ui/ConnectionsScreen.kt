@@ -311,7 +311,7 @@ private fun RealBackendSection(state: MockAppState) {
         // 断线错误条（真实模式专用；mock 断线错误条在页首，两者互斥不并存）
         if (state.realOn && real.phase == com.moyunteng.lxcode.remote.net.RealPhase.Failed) {
             UnreachableBar(
-                onRetry = { real.retry() },
+                onRetry = { real.retry(state.realAddr) },
                 message = real.phaseMessage ?: "后端不可达：无法连接 ws://${state.realAddr}/rpc",
             )
         }

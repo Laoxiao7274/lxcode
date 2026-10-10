@@ -513,7 +513,12 @@ private fun DispatchCard(block: ThreadBlock.Dispatch) {
             color = Lx.colors.Fg,
         )
         Text(
-            text = block.conclusion,
+            text = if (!block.done && block.childTools > 0) {
+                // 子会话实时态：工具调用计数（chat.toolCall 带 dispatch_id 归并进卡）
+                "子会话执行中 · ${block.childTools} 个工具调用"
+            } else {
+                block.conclusion
+            },
             style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size11_5),
             color = Lx.colors.FgFaint,
             maxLines = 1,
