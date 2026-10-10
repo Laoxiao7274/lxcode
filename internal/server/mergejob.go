@@ -97,6 +97,13 @@ func (s *Server) startMergeJob(sessionID, targetBranch string, pushAfter bool) (
 	if meta.Path == "" || meta.Branch == "" {
 		return "", fmt.Errorf("本会话还没有可合并的分支（先发一条消息建立工作树）")
 	}
+	// 前置提交（见 autocommit.go 的 commitBeforeMerge）：merge_request 是模型轮内
+	// 调用的工具，本轮改动还没被 TurnDone 的自动提交落盘——不先提交的话，下面的
+	// 扫描把它们算成 dirty，而 merger 只合提交，本轮改动要等下次合并。工作树干净
+	// 则直接继续（无空提交）；git 出错则不起任务（fail-closed）。
+	if err := s.commitBeforeMerge(sessionID, meta.Path); err != nil {
+		return "", err
+	}
 	projectMeta, found, err := s.st.ProjectByID(workspace)
 	if err != nil {
 		return "", err

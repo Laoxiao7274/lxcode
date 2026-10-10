@@ -65,18 +65,65 @@ func (s *Server) autoCommit(sessionID string) {
 		return
 	}
 	message := commitMessage(turn, lastUser)
-	lock := s.autoCommitLock(sessionID)
-	lock.Lock()
-	defer lock.Unlock()
-	committed, err := project.CommitAll(s.Ctx(), meta.Path, message)
+	err = s.withCommitLock(sessionID, func() error {
+		committed, cerr := project.CommitAll(s.Ctx(), meta.Path, message)
+		if cerr != nil {
+			return cerr
+		}
+		if committed {
+			log.Printf("自动提交：会话 %s 第 %d 轮已提交到 %s", sessionID, turn, meta.Branch)
+		}
+		return nil
+	})
 	if err != nil {
 		// fail-open：提交失败绝不影响对话，只记日志
 		log.Printf("自动提交：会话 %s 第 %d 轮提交失败（不影响对话）: %v", sessionID, turn, err)
-		return
 	}
-	if committed {
-		log.Printf("自动提交：会话 %s 第 %d 轮已提交到 %s", sessionID, turn, meta.Branch)
+}
+
+// withCommitLock 持会话的提交锁执行 fn。轮结束的自动提交（autoCommit，异步
+// goroutine）与 merge_request 的前置提交（commitBeforeMerge，请求 goroutine）都会对
+// 同一会话做 CommitAll——不串行化会在 git index 上互相踩（两把 add -A / commit
+// 并发跑可能报 index.lock 竞争或产生错乱提交）。锁按会话分（autoCommitLock），
+// 不同会话互不阻塞。
+func (s *Server) withCommitLock(sessionID string, fn func() error) error {
+	lock := s.autoCommitLock(sessionID)
+	lock.Lock()
+	defer lock.Unlock()
+	return fn()
+}
+
+// commitBeforeMerge 在起合并进程前对发起会话做一次检查点提交（mergejob.go 的
+// startMergeJob 调用），消除时序缺口：merge_request 是模型**轮内**调用的工具，
+// 此时本轮改动还没被 TurnDone 的自动提交落盘——不先提交的话，扫描会把它们算成
+// dirty，而 merger 只合提交，本轮改动要等下一次合并才能进集成分支。
+//
+// 三条语义：
+//  1. 提交信息与自动提交同一口径（LastUserTurn 的轮次 + 用户消息摘要）——同一轮
+//     的改动无论由谁落盘，提交信息都长一个样；读不到轮次时退回中性信息（不挡合并）；
+//  2. 工作树干净 = 直接继续（CommitAll 无改动返回 false，不产生空提交）——
+//     workspace_sync 已经先提交过一遍时，这里自然跳过（幂等，无害）；
+//  3. git 出错 = 人话错误返回，合并任务不起（fail-closed：带着没提交的改动起
+//     合并，merger 合不到它们，等于静默丢改动）。
+//
+// 与自动提交共用 withCommitLock：轮内先提交，随后 TurnDone 的自动提交发现工作树
+// 干净 → 跳过（无空提交），时序收敛。
+func (s *Server) commitBeforeMerge(sessionID, worktreePath string) error {
+	turn, lastUser, err := s.st.LastUserTurn(sessionID)
+	message := "合并前检查点提交"
+	if err == nil {
+		message = commitMessage(turn, lastUser)
 	}
+	return s.withCommitLock(sessionID, func() error {
+		committed, err := project.CommitAll(s.Ctx(), worktreePath, message)
+		if err != nil {
+			return fmt.Errorf("提交本次改动失败：%v，合并未发起", err)
+		}
+		if committed {
+			log.Printf("合并前提交：会话 %s 第 %d 轮改动已提交（merge_request 前置）", sessionID, turn)
+		}
+		return nil
+	})
 }
 
 // waitAutoCommits 等所有在途的自动提交结束（测试同步用；生产路径不调用）。
