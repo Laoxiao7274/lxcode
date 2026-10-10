@@ -51,14 +51,14 @@ func DefaultProtocol(isMain bool) string {
 // + 流程模块（单选注入）+ 技能索引（名称 + 一句话——渐进披露，模型
 // 需要时经 read_skill 取全文，没注入的它当没有）+ 自定义段 + 动态注入
 // （主 Agent 的有效委派名单）+ 项目约定（项目根 AGENTS.md）+ 工作目录说明
-// + 工具清单（按白名单过滤）+ 工作守则。ac 为 nil = 无 Agent 语境（兼容旧路径：
-// 全局默认提示词）。
+// + Git 工作树说明（wt/isChild）+ 工具清单（按白名单过滤）+ 工作守则。ac 为 nil =
+// 无 Agent 语境（兼容旧路径：全局默认提示词）。
 //
 // 项目约定的位置即优先级（2026-09-21 用户拍板「项目约定比 Agent 自己的低」）：
 // 排在 Agent 四层组合之后、环境与工具清单之前，并在段内显式声明。
-func ComposeSystemPrompt(toolReg *tools.Registry, workDir string, ac *sessiondata.AgentContext, allowTools []string, docs ProjectDocs) string {
+func ComposeSystemPrompt(toolReg *tools.Registry, workDir string, ac *sessiondata.AgentContext, allowTools []string, wt WorktreeInfo, isChild bool, docs ProjectDocs) string {
 	if ac == nil {
-		return BuildSystemPrompt(toolReg, workDir, docs)
+		return BuildSystemPrompt(toolReg, workDir, wt, isChild, docs)
 	}
 	var b strings.Builder
 
@@ -106,8 +106,9 @@ func ComposeSystemPrompt(toolReg *tools.Registry, workDir string, ac *sessiondat
 	// ⑤ 项目约定（项目根 AGENTS.md）——低于上面四层，高于环境与工具清单
 	b.WriteString(projectDocsSection(docs))
 
-	// 环境说明 + 工具清单（白名单过滤）+ 守则
+	// 环境说明（工作目录 + Git 工作树）+ 工具清单（白名单过滤）+ 守则
 	b.WriteString("\n" + workdirLine(workDir))
+	b.WriteString(worktreeLine(wt, isChild))
 	b.WriteString("\n可用工具：\n")
 	allowed := toolSet(allowTools)
 	for _, name := range toolReg.Order() {

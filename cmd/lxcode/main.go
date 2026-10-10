@@ -6,6 +6,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
@@ -26,6 +27,7 @@ func main() {
 	addr := flag.String("addr", "127.0.0.1:7789", "后端监听地址（--serve/--probe）/ 连接地址（客户端，或 --backend）")
 	backendAddr := flag.String("backend", "", "客户端连接的后端地址（默认取 --addr）")
 	sessionsDir := flag.String("sessions", "", "会话存储目录（默认 <config 上级>/sessions，或环境变量 LXCODE_SESSIONS）")
+	stdinWatch := flag.Bool("stdin-watch", false, "监视 stdin：EOF 即优雅退出（桌面壳拉起子进程时用——壳被强杀时管道断开，后端不留孤儿；服务形态忽略此标志）")
 	showVersion := flag.Bool("version", false, "打印版本号并退出（构建时烙入，dev 构建显示 dev）")
 	flag.Parse()
 
@@ -60,6 +62,18 @@ func main() {
 		// 控制台形态：Ctrl+C → ctx 取消 → 优雅退出
 		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 		defer stop()
+		if *stdinWatch {
+			// 宿主退出监视：stdin 管道 EOF（壳被强杀时 OS 关闭句柄）→ 派生 ctx
+			// 取消 → 优雅退出。等价于 Job Object KILL_ON_JOB_CLOSE 的孤儿兜底，
+			// 但零原生模块（Electron 主进程没有 Win32 API 面）。
+			ctx, stop = context.WithCancel(ctx)
+			defer stop()
+			go func() {
+				_, _ = io.Copy(io.Discard, os.Stdin)
+				fmt.Fprintln(os.Stderr, "stdin 已关闭（宿主退出）——优雅收尾")
+				stop()
+			}()
+		}
 		if err := runServe(ctx, path, *addr, sdir); err != nil {
 			fmt.Fprintf(os.Stderr, "后端退出: %v\n", err)
 			os.Exit(1)

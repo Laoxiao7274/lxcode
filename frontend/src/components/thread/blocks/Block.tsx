@@ -26,9 +26,12 @@ import { NoticeBar } from "./NoticeBar";
 const NO_SEQ_HINT = "这条消息来自旧版后端（没有 seq），无法定位要撤回的位置";
 
 export const Block = memo(
-  function Block({ block, onConfirm, replayed, onEdit, onRewind, onOpenChild, readOnly, "data-uid": dataUid }: {
+  function Block({ block, onConfirm, onAnswer, replayed, onEdit, onRewind, onOpenChild, readOnly, "data-uid": dataUid }: {
     block: ThreadBlock;
     onConfirm: (id: string, allow: boolean) => void;
+    /** ask_user 提问的回答（ask 变体的确认卡用）：文本答案 + 请求 id。
+     *  二元确认走 onConfirm；缺省（只读视图没接）时提问卡收不起回答。 */
+    onAnswer?: (id: string, text: string) => void;
     replayed?: boolean;
     /** 块锚点（右侧大纲按 data-uid 精确寻址——不许按文本找元素）。Thread 对每个块
      *  都传，这里落到各渲染器的根元素上：子组件不一定会透传未知 props，所以逐层
@@ -86,11 +89,27 @@ export const Block = memo(
       // 动作条与气泡**并列**（不进流）：.msg.user 是 flex 容器且右对齐，动作条
       // 绝对定位在气泡**上方**（right:0 与气泡右缘对齐）——进流会给每条用户消息
       // 永久多留一行高度，hover 显隐还会顶动下方内容（长会话里整屏位移）。
+      // pending（乐观气泡，后端还没回执）：整体调淡 + 尾随「发送中…」指示，
+      // 动作条不渲染——消息还没被后端确认，复制/编辑/撤回都无从谈起。
       return (
         <div className="msg user" data-uid={dataUid}>
-          <div className="bubble" ref={bubbleRef}>{block.text}</div>
-          {/* 只读视图（子会话标签页）不画动作条：见 readOnly 的说明 */}
-          {!readOnly && <MessageActions block={block} onEdit={onEdit} onRewind={onRewind} />}
+          <div className={"bubble" + (block.pending ? " bubble-pending" : "")} ref={bubbleRef}>
+            {block.atts && (block.atts.images > 0 || block.atts.files > 0) && (
+              <span className="bubble-atts">
+                {block.atts.images > 0 && <span>[图片]×{block.atts.images}</span>}
+                {block.atts.files > 0 && <span>[文件]×{block.atts.files}</span>}
+              </span>
+            )}
+            {block.text}
+            {block.pending && (
+              <span className="pending-hint">
+                <span className="mset-spinner" aria-hidden />
+                发送中…
+              </span>
+            )}
+          </div>
+          {/* 只读视图（子会话标签页）与 pending 气泡都不画动作条：见各自说明 */}
+          {!readOnly && !block.pending && <MessageActions block={block} onEdit={onEdit} onRewind={onRewind} />}
         </div>
       );
 
@@ -123,7 +142,7 @@ export const Block = memo(
       return <FilesCard files={block.files} data-uid={dataUid} />;
 
     case "dispatch":
-      return <DispatchCard block={block} onConfirm={onConfirm} onOpenChild={onOpenChild} data-uid={dataUid} />;
+      return <DispatchCard block={block} onConfirm={onConfirm} onAnswer={onAnswer} onOpenChild={onOpenChild} data-uid={dataUid} />;
 
     case "compacted":
       return <CompactionCard block={block} data-uid={dataUid} />;
@@ -137,11 +156,15 @@ export const Block = memo(
     case "confirm":
       return (
         <ApprovalCard
-          command={prettyCommand(block.request)}
-          cwd={prettyCwd(block.request)}
+          // ask 变体：正文就是提问文本（不带 $ 提示符与 cwd——那不是命令）
+          command={block.request.kind === "ask" ? block.request.prompt : prettyCommand(block.request)}
+          cwd={block.request.kind === "ask" ? undefined : prettyCwd(block.request)}
+          request={block.request}
           resolved={block.resolved ?? null}
+          resolvedAnswer={block.resolvedAnswer}
           autoFocus={!block.resolved}
           onDecide={(allow) => onConfirm(block.request.id, allow)}
+          onAnswer={(text) => onAnswer?.(block.request.id, text)}
           data-uid={dataUid}
         />
       );
@@ -160,6 +183,7 @@ export const Block = memo(
   (prev, next) =>
     prev.block === next.block &&
     prev.onConfirm === next.onConfirm &&
+    prev.onAnswer === next.onAnswer &&
     prev.onEdit === next.onEdit &&
     prev.onRewind === next.onRewind &&
     // onOpenChild 也必须比：App 用 useCallback 固定它的身份，漏比的话一次身份变化

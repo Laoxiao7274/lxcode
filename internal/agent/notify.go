@@ -69,6 +69,25 @@ func (s *Session) QueueNotice(text string) error {
 	return nil
 }
 
+// QueueNoticePassive 把通告放进**被动队列**：只入队、且**永不自动开轮**——
+// 它只会在下一轮真的开始时（用户说话 / 下一次派发）由轮边界的 injectNotices
+// 并入历史。
+//
+// 与 QueueNotice 的分工：后台任务通告（notices）的语义是「尽快唤醒 agent」，
+// runTurn 收尾的 flushNotices 会把它开成一轮；而「生成被用户中断」这类注记
+// 走这条路会把中断变成模型的自言自语（用户刚点停止，又冒一段回复）——被动
+// 队列保证注记只在有真实下一轮时才被模型看见。
+func (s *Session) QueueNoticePassive(text string) error {
+	msg, err := noticeMessage(text)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.passiveNotices = append(s.passiveNotices, msg)
+	s.mu.Unlock()
+	return nil
+}
+
 // SetWakeGate 注入「能不能开新一轮」的判定（server 侧的连续唤醒预算）。
 // nil = 不限制（单测与未装配预算的调用方）。
 //
@@ -97,14 +116,21 @@ func noticeMessage(text string) (llm.Message, error) {
 // 严格端点 400 拒收整轮，而且压缩的平衡切点会永久卡在缺配对处之前。
 func (s *Session) injectNotices() {
 	s.mu.Lock()
-	if len(s.notices) == 0 {
+	if len(s.notices) == 0 && len(s.passiveNotices) == 0 {
 		s.mu.Unlock()
 		return
 	}
 	msgs := s.notices
 	s.notices = nil
+	passive := s.passiveNotices
+	s.passiveNotices = nil
 	s.mu.Unlock()
+	// 先投后台通告（它们等得最久），再投被动注记（用户中断这类——离当下最近）
 	for _, m := range msgs {
+		s.append(m)
+		s.emit(UserMsgEvent{Message: m})
+	}
+	for _, m := range passive {
 		s.append(m)
 		s.emit(UserMsgEvent{Message: m})
 	}

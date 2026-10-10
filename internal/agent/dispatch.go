@@ -16,6 +16,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 
@@ -23,6 +24,167 @@ import (
 	"github.com/moyunteng/lxcode/internal/sessiondata"
 	"github.com/moyunteng/lxcode/internal/tools"
 )
+
+// taskLogArgMax 是任务日志里单条工具参数/结果的字符上限（后台任务的日志是给人看的，
+// 一条 edit 的完整正文没必要全进 job 日志——超长会淹没真正的进展）。
+const taskLogArgMax = 400
+
+// RunAgentTask 在一个**独立子会话**里跑一个内置 Agent 的任务，把子会话的实时输出写进
+// out（后台任务句柄），返回它的最终结论。
+//
+// 与 runDispatch 的分工：那条路是**主 Agent 的委派**（受委派名单校验、事件带 dispatch_id
+// 归属进卡、结论回填主上下文）；这条路是**宿主拉起的后台进程**（如合并进程拉起 merger）
+// ——agentID 不经过委派名单校验（merger 不在主 Agent 的 Delegates 里），不回填主上下文。
+// 事件走**双路**（2026-10 用户拍板「合并进程要像子 Agent 一样有标签页」）：一份进 job
+// 日志（job_output 读），一份带 dispatch_id 归属上抛父会话（chat.dispatchStart/End 挂卡
+// + 实时流）——前端照子 Agent 的同一套归约建卡、开子会话标签页、双投实时事件。
+// 两者共用 openChildSession + SendWait（不复制一套子会话逻辑）：子会话
+// 是一个真 *Session，压缩/溢出兜底/工具循环全部免费继承。
+//
+// workDir 非空 = 子会话在**另一个工作树**里工作（合并进程的集成分支工作树）：此时清掉
+// 从父会话继承来的工作树提示词（那条说「改动与父会话共享」，对集成分支是错的），分支与
+// 路径由任务说明书说清。权限档取该 Agent 自己的默认（后台进程没人看着确认门）。
+func (s *Session) RunAgentTask(ctx context.Context, agentID, task, workDir string, out io.Writer) (string, error) {
+	ac, err := s.resolveAgent(agentID)
+	if err != nil {
+		return "", err
+	}
+	child, childID, err := s.openChildSession(tools.DispatchCall{Agent: agentID, Task: task}, ac)
+	if err != nil {
+		return "", err
+	}
+	if workDir != "" {
+		child.SetWorktreeInfo("", "")
+		if err := child.SetWorkDir(workDir); err != nil {
+			return "", err
+		}
+	}
+	// 确认门/提问同样代理给父会话（与 runDispatch 同一条通道）：合并进程的子会话
+	// 遇到冲突抉择时经 ask_user 向用户提问——请求带子会话 id 作 dispatch_id 上抛
+	//（父会话 emit chat.confirmRequest，前端把提问卡呈现出来），用户回答经
+	// tool.confirm{answer} 打到父会话、再由父通道转回子会话的等待处。merger 的
+	// 权限默认是 auto（高危不弹确认），但 ask 提问**不受档位豁免**——提问必须等用户。
+	// 纯内存子会话（无存储）没有会话 id：退一个随机 id 保住「非空 dispatch_id」
+	// 这条前端归属的前提（生产永远有存储，走的都是上面的会话 id）。
+	//
+	// dispatch_id 取子会话 id（不是另造一个）：确认/提问代理上抛的请求带的也是
+	// 它——卡、提问、双投三处共用同一个归属键，前端「按 dispatch_id 反查卡 →
+	// 卡上有子会话 id」的既有链路不用改。
+	askDispatchID := childID
+	if askDispatchID == "" {
+		askDispatchID = newConfirmID()
+	}
+	// 子会话运行时登记进父会话（与 runDispatch 同款）：合并子会话同样可以被
+	// 用户从标签页停止（chat.cancel 带子会话 id → CancelChild）。defer 注销
+	// 覆盖 SendWait 的全部收尾路径。
+	s.registerChild(askDispatchID, child)
+	defer s.unregisterChild(askDispatchID)
+	child.SetConfirmProxy(func(cctx context.Context, req *ConfirmRequest) (ConfirmOutcome, bool) {
+		stamped := *req
+		stamped.DispatchID = askDispatchID
+		return s.awaitConfirm(cctx, &stamped)
+	})
+	// 子会话事件双路（见函数注释）：job 日志照旧写，同时经 childEmitter 带
+	// dispatch_id 上抛父会话——父时间线挂出这张合并卡，前端据此建子会话标签页、
+	// 双投实时流（提问卡也落进标签页内，用户在标签页里回答）。 TurnErrorEvent
+	// 两路都收（job 日志要写、tap.err 要记），重复赋同一份值无害。
+	tap := &childEvents{}
+	jobLog := taskEmitter(out, tap)
+	forward := childEmitter(s.emit, askDispatchID, tap)
+	child.SetEmitter(func(ev Event) {
+		jobLog(ev)
+		forward(ev)
+	})
+	// 挂卡：合并任务在父时间线上是一张 dispatch 卡（一行摘要，点开进子会话标签页）
+	// ——与 agent_dispatch 的卡同一份前端归约，不新写页面。
+	s.emit(DispatchStartEvent{
+		DispatchID: askDispatchID, SessionID: childID,
+		AgentID: ac.Def.ID, AgentName: ac.Def.Name, AgentColor: ac.Def.Color,
+		Task: task,
+	})
+	err = child.SendWait(ctx, task, WithAgent(agentID), WithApproval(ac.Def.Approval))
+	// 收卡：结论 / 错误 / 取消都以 DispatchEnd 定格（错误口径与 runDispatch 一致——
+	// SendWait 在 done 关闭时恒返回 nil，真错误看 tap.err）。
+	endNote := ""
+	endIsErr := false
+	if err != nil {
+		if ctx.Err() != nil {
+			endNote = "已取消（合并进程中断）"
+			// 与 runDispatch 同款：子轮若没走 aborted 收尾（确认门等待期间被断），
+			// 这里补「用户中断」通告——模型下一轮才知道这轮为什么没有结论。
+			if tap.err == nil || !tap.err.Aborted {
+				_ = child.QueueNoticePassive(userAbortedNotice)
+			}
+		} else {
+			endNote = err.Error()
+		}
+		endIsErr = true
+	} else if tap.err != nil {
+		if ctx.Err() != nil {
+			endNote = "已取消（合并进程中断）"
+			if tap.err == nil || !tap.err.Aborted {
+				_ = child.QueueNoticePassive(userAbortedNotice)
+			}
+		} else {
+			endNote = tap.err.Message
+		}
+		endIsErr = true
+	} else {
+		endNote = lastAssistantText(child.History().Messages)
+		if endNote == "" {
+			endNote = "（没有产出结论）"
+		}
+	}
+	s.emit(DispatchEndEvent{
+		DispatchID: askDispatchID, SessionID: childID, Result: endNote, IsError: endIsErr,
+	})
+	if endIsErr {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		return "", fmt.Errorf("%s", endNote)
+	}
+	return endNote, nil
+}
+
+// taskEmitter 把子会话的输出转成后台任务日志（**不往主会话时间线上抛任何事件**）。
+//
+// 与 childEmitter（dispatch 卡）的区别：那条路把子会话事件带 dispatch_id 归属进卡、让父
+// 会话时间线实时可见；这条路是**后台进程**——输出进 job 日志（job_output 读），主会话
+// 时间线只看到一条 job 卡与结束通告，看不到子会话的实时流。busy/todo/会话切换/压缩/产物
+// 都不属于主时间线，一律拦下。
+func taskEmitter(out io.Writer, tap *childEvents) Emitter {
+	return func(ev Event) {
+		switch e := ev.(type) {
+		case DeltaEvent:
+			if e.Kind == "text" && e.Text != "" {
+				_, _ = io.WriteString(out, e.Text)
+			}
+		case ToolCallEvent:
+			fmt.Fprintf(out, "\n[tool] %s %s\n", e.Name, clipForTaskLog(e.Arguments))
+		case ToolResultEvent:
+			fmt.Fprintf(out, "[result] %s\n", clipForTaskLog(e.Content))
+		case TurnErrorEvent:
+			fmt.Fprintf(out, "\n[错误] %s\n", e.Message)
+			tap.mu.Lock()
+			errCopy := e
+			tap.err = &errCopy
+			tap.mu.Unlock()
+		case TurnDoneEvent, BusyEvent, TodoUpdatedEvent, SessionStartedEvent,
+			DispatchStartEvent, DispatchEndEvent, ConfirmRequestEvent, CompactedEvent, FilesChangedEvent:
+			// 不上抛：后台任务不进主会话时间线（子会话的忙闲/清单/切换/压缩/产物都不属于它）
+		}
+	}
+}
+
+// clipForTaskLog 截断后台任务日志里的单条内容（工具参数/结果可能很长）。
+func clipForTaskLog(s string) string {
+	r := []rune(s)
+	if len(r) <= taskLogArgMax {
+		return s
+	}
+	return string(r[:taskLogArgMax]) + "…"
+}
 
 // runDispatch 执行一次调度：解析目标 → 校验有效委派名单 → 开/接子会话 →
 // 等它跑完 → 把结论回填成工具结果。
@@ -62,12 +224,25 @@ func (s *Session) runDispatch(ctx context.Context, call tools.DispatchCall) tool
 	if err != nil {
 		return tools.DispatchResult{Output: fmt.Sprintf("错误: %v", err), IsError: true}
 	}
+	// 子会话运行时登记进父会话（CancelChild 的寻址依据）：服务端 chat.cancel
+	// 对子会话 id 取不到 server.sessions（子会话运行时不注册在那里——生命周期
+	// 跟着这次派发走），先查父会话的登记才能停掉真正在跑的子轮。SendWait 的
+	// 三条收尾路径（正常 / 取消 / panic）都经下面的 defer 注销。
+	// 纯内存子会话没有会话 id，用 dispatch id 当键（确认代理同款键）——
+	// 外部虽然多半寻址不到它，但注销路径的对称性不破。
+	childKey := childID
+	if childKey == "" {
+		childKey = call.DispatchID
+	}
+	s.registerChild(childKey, child)
+	defer s.unregisterChild(childKey)
 	// 子会话的事件按 dispatch_id 归属进卡；busy/todo/会话切换不上抛（见 childEmitter）
 	tap := &childEvents{}
 	child.SetEmitter(childEmitter(s.emit, call.DispatchID, tap))
 	// 确认门代理给父会话：全应用只有"同时一个挂起确认"，子会话自己持 pending
-	// 的话服务端的 tool.confirm 找不到它（会话会卡在 busy）。
-	child.SetConfirmProxy(func(cctx context.Context, req *ConfirmRequest) (bool, bool) {
+	// 的话服务端的 tool.confirm 找不到它（会话会卡在 busy）。ask 提问走同一条
+	// 代理（子会话的 ask_user 请求带 dispatch_id 上抛父会话，答案经父通道转回）。
+	child.SetConfirmProxy(func(cctx context.Context, req *ConfirmRequest) (ConfirmOutcome, bool) {
 		stamped := *req
 		stamped.DispatchID = call.DispatchID
 		return s.awaitConfirm(cctx, &stamped)
@@ -105,6 +280,14 @@ func (s *Session) runDispatch(ctx context.Context, call tools.DispatchCall) tool
 		}
 		if ctx.Err() != nil {
 			note = "已取消（子会话中断）"
+			// 用户停掉父轮 → 子轮连带被取消。子轮若走了 aborted 收尾（流式阶段
+			// 被断），它自己的 runTurn 已经入队「用户中断」通告（见 turn.go）；
+			// 走不到那条路的取消（如确认门等待期间被断，runTools 静默返回 false）
+			// 在这里补——通告留在子会话自己的队列里，下一轮边界注入，模型才知道
+			// 这一轮为什么没有结论。不重复入队：同一轮取消只说一遍。
+			if tap.err == nil || !tap.err.Aborted {
+				_ = child.QueueNoticePassive(userAbortedNotice)
+			}
 		} else if tap.err != nil {
 			note = tap.err.Message
 			if tap.err.Aborted {
@@ -134,8 +317,12 @@ func (s *Session) runDispatch(ctx context.Context, call tools.DispatchCall) tool
 func (s *Session) openChildSession(call tools.DispatchCall, ac *sessiondata.AgentContext) (*Session, string, error) {
 	s.mu.Lock()
 	st, parentID, stream, workDir := s.st, s.id, s.stream, s.workDir
+	branch, base := s.worktreeBranch, s.worktreeBase
 	s.mu.Unlock()
 	child := New(s.reg, s.tools, s.emit)
+	// 子会话在父会话的工作树里工作（SetWorkDir 继承同一个目录），提示词要如实说
+	// 「改动与父会话共享」而不是「你有独立分支」——分支信息同样从父会话继承。
+	child.SetWorktreeInfo(branch, base)
 	// 子会话压缩时保护历史第 0 条 = 派发的那条任务说明书（见 Session.protectHead）：
 	// 这是子 Agent 唯一的任务依据，被压进摘要后长任务就会跑偏。
 	// 在 st == nil 的提前返回之前置位——内存子会话同样有这条头部。
@@ -230,12 +417,17 @@ type childEvents struct {
 // 同时拦掉不该上抛的几类。
 //
 // 为什么要拦：
-//   - BusyEvent：子会话的忙闲不是主会话的忙闲，上抛会把主界面的"生成中"翻掉；
 //   - SessionStartedEvent：子会话行懒建不该让侧栏切过去（子会话不进侧栏列表）；
 //   - TodoUpdatedEvent：清单是会话级状态，子会话的清单属于它自己（主会话的
 //     计划条只显示主会话的清单）；
 //   - TurnErrorEvent：子会话的错误由 runDispatch 收成 DispatchEndEvent（保持
 //     卡内呈现语义，不让它跑到主时间线上当一条独立错误）。
+//
+// BusyEvent **上抛但带归属**（2026-10-10 用户要「子 Agent 里也要正在生成中的
+// 样式」）：带 dispatch_id 的 busy 在前端被两条守卫拦在主时间线之外（reduce 的
+// busy 分支与 store 的自动发送边界都跳过带归属的事件），同时经双投进子会话
+// 自己的 state——子会话标签页的「生成中」行与停止钮由此出现。主会话自己的
+// busy（无归属）语义逐字节不变。
 func childEmitter(parent Emitter, dispatchID string, tap *childEvents) Emitter {
 	return func(ev Event) {
 		switch e := ev.(type) {
@@ -254,6 +446,9 @@ func childEmitter(parent Emitter, dispatchID string, tap *childEvents) Emitter {
 		case CompactedEvent:
 			e.DispatchID = dispatchID
 			parent(e)
+		case BusyEvent:
+			e.DispatchID = dispatchID
+			parent(e)
 		case FilesChangedEvent:
 			parent(e)
 		case TurnErrorEvent:
@@ -261,8 +456,9 @@ func childEmitter(parent Emitter, dispatchID string, tap *childEvents) Emitter {
 			errCopy := e
 			tap.err = &errCopy
 			tap.mu.Unlock()
-		case BusyEvent, TodoUpdatedEvent, SessionStartedEvent, DispatchStartEvent, DispatchEndEvent, ConfirmRequestEvent:
-			// 不上抛：busy 会翻掉主会话、清单属于子会话自己、确认由父会话代理时发
+		case TodoUpdatedEvent, SessionStartedEvent, DispatchStartEvent, DispatchEndEvent, ConfirmRequestEvent:
+			// 不上抛：清单属于子会话自己、确认由父会话代理时发、
+			// start/end 由派发方自己发
 		}
 	}
 }

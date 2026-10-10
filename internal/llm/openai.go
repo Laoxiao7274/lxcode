@@ -8,12 +8,15 @@ import (
 
 // openaiRequest / openaiResponse：OpenAI chat completions wire 格式。
 // 只声明用到的字段，端点私有扩展字段靠 json 忽略（宽容解析）。
-// Message 本身就是 OpenAI 形态（统一模型的规范格式），直接序列化。
+// Message 本身就是 OpenAI 形态（统一模型的规范格式），经 sanitizeMessagesForWire
+// 清簿记后转成 openaiWireMessage 序列化——中间多一层是因为带图 user 消息的
+// content 要从 string 变数组（string/数组两种形态共用 any），而无图消息必须
+// 逐字节保持旧形态（openaiWireMessage 的字段顺序与 json tag 与 Message 严格一致）。
 type openaiRequest struct {
-	Model         string          `json:"model"`
-	Messages      []Message       `json:"messages"`
-	Tools         []openaiToolDef `json:"tools,omitempty"`
-	Stream        bool            `json:"stream,omitempty"`
+	Model         string              `json:"model"`
+	Messages      []openaiWireMessage `json:"messages"`
+	Tools         []openaiToolDef     `json:"tools,omitempty"`
+	Stream        bool                `json:"stream,omitempty"`
 	StreamOptions *struct {
 		IncludeUsage bool `json:"include_usage"`
 	} `json:"stream_options,omitempty"`
@@ -23,6 +26,29 @@ type openaiRequest struct {
 	ChatTemplateKwargs *struct {
 		EnableThinking bool `json:"enable_thinking"`
 	} `json:"chat_template_kwargs,omitempty"` // vLLM Qwen3 thinking 开关
+}
+
+// openaiWireMessage 是发给 OpenAI 端点的单条消息。Content 用 any：
+// 无图消息持有 string（与旧形态逐字节一致），带图消息持有 content 分片数组
+// （{"type":"text"} + {"type":"image_url"}——OpenAI 视觉请求的标准形态）。
+// 字段顺序即序列化顺序，必须与 llm.Message 一致（无图消息逐字节不变的保证）。
+type openaiWireMessage struct {
+	Role             string     `json:"role"`
+	Content          any        `json:"content"`
+	ReasoningContent string     `json:"reasoning_content,omitempty"`
+	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID       string     `json:"tool_call_id,omitempty"`
+}
+
+// openaiContentPart 是带图消息 content 数组里的分片（text / image_url 二选一）。
+type openaiContentPart struct {
+	Type     string          `json:"type"`
+	Text     string          `json:"text,omitempty"`
+	ImageURL *openaiImageURL `json:"image_url,omitempty"`
+}
+
+type openaiImageURL struct {
+	URL string `json:"url"`
 }
 
 type openaiToolDef struct {
@@ -69,12 +95,12 @@ func (c *Client) openaiChat(ctx context.Context, msgs []Message, o requestOpts) 
 	if c.cfg.APIKey != "" {
 		headers["Authorization"] = "Bearer " + c.cfg.APIKey
 	}
-	status, raw, err := c.post(ctx, payload, headers)
+	status, raw, hdr, err := c.post(ctx, payload, headers)
 	if err != nil {
 		return nil, err
 	}
 	if status < 200 || status >= 300 {
-		return nil, &APIError{StatusCode: status, Body: truncateStr(string(raw), 512)}
+		return nil, newAPIError(status, string(raw), hdr)
 	}
 	var or openaiResponse
 	if err := json.Unmarshal(raw, &or); err != nil {
@@ -89,7 +115,7 @@ func (c *Client) openaiChat(ctx context.Context, msgs []Message, o requestOpts) 
 // buildOpenAIRequest 组装请求体。
 func buildOpenAIRequest(model string, msgs []Message, o requestOpts, stream bool) openaiRequest {
 	// 消息里的工具调用参数过一遍读侧兜底（历史里的坏参数曾让端点 400 拒收整轮）
-	req := openaiRequest{Model: model, Messages: sanitizeMessagesForWire(msgs), Stream: stream}
+	req := openaiRequest{Model: model, Messages: openaiWireMessages(sanitizeMessagesForWire(msgs)), Stream: stream}
 	if stream {
 		// 让 vLLM 等在最后一个 chunk 带回 usage
 		req.StreamOptions = &struct {
@@ -153,4 +179,42 @@ func openAIStreamResult(content, reasoning string, toolCalls []ToolCall, finish 
 	res := &ChatResult{Message: msg, FinishReason: finish}
 	u.applyTo(res)
 	return res
+}
+
+// openaiWireMessages 把清过簿记的消息转成 wire 形态：无图消息原样搬运
+// （Content 保持 string，序列化逐字节与旧形态一致）；带图 user 消息的 Content
+// 变成 text + image_url 分片数组——base64 在这里（请求构造瞬间）由 loader
+// 读文件产出，绝不写回调用方的消息（内存历史恒存引用）。
+// 图片读取失败 fail-open：跳过该图，文本尾部追加提示（见 images.go loadImages）。
+func openaiWireMessages(msgs []Message) []openaiWireMessage {
+	out := make([]openaiWireMessage, len(msgs))
+	for i, m := range msgs {
+		wm := openaiWireMessage{
+			Role:             m.Role,
+			Content:          m.Content,
+			ReasoningContent: m.ReasoningContent,
+			ToolCalls:        m.ToolCalls,
+			ToolCallID:       m.ToolCallID,
+		}
+		// 只有 user 消息带图（assistant/tool 的 Images 恒空——写边界保证，
+		// 这里防御性不展开：万一带了也按无图发，不给端点编畸形结构）。
+		if m.Role == "user" && len(m.Images) > 0 {
+			text := m.Content
+			imgs, note := loadImages(m.Images)
+			if note != "" {
+				text += note
+			}
+			parts := make([]openaiContentPart, 0, len(imgs)+1)
+			parts = append(parts, openaiContentPart{Type: "text", Text: text})
+			for _, im := range imgs {
+				parts = append(parts, openaiContentPart{
+					Type:     "image_url",
+					ImageURL: &openaiImageURL{URL: "data:" + im.mime + ";base64," + im.b64},
+				})
+			}
+			wm.Content = parts
+		}
+		out[i] = wm
+	}
+	return out
 }

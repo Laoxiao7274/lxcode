@@ -111,7 +111,9 @@ export function mapEvent(method: string, params: unknown): AgentEvent | null {
     case "chat.error":
       return { type: "error", sessionId, message: String(p.message ?? ""), aborted: Boolean(p.aborted) };
     case "chat.busy":
-      return { type: "busy", sessionId, busy: Boolean(p.busy) };
+      // dispatchId 非空 = 子会话的忙闲（带归属）：归约侧与发送缓冲区边界都按它
+      // 过滤（主会话的忙闲不被子会话翻动），双投路径把它送进子会话自己的 state。
+      return { type: "busy", sessionId, busy: Boolean(p.busy), dispatchId };
     case "chat.approvalChanged":
       // 某会话的权限档被改了（多客户端同步）。落到设置的反向同步在设置层
       //（shared/approval.ts 的 subscribeApprovalSync）——这里只管形状。

@@ -4,10 +4,12 @@
 import { useEffect, useRef, useState, type ReactElement } from "react";
 import { gsap } from "gsap";
 import { useSettings, EFFORTS, APPROVALS } from "../../shared/settings";
+import { approvalPick } from "../../shared/approval";
 import { Button, Segmented } from "../form";
 import type { AgentSource, SessionMeta } from "../../shared/types";
 import { motionAllowed, staggerIn, enterEase } from "../../shared/motion";
 import { useEscape } from "../../shared/popover";
+import { ApprovalConfirmDialog } from "../perm-picker/ApprovalConfirmDialog";
 import { ConnectProviderDialog } from "./ConnectProviderDialog";
 import { ModelEditDialog } from "./ModelEditDialog";
 import { ProviderBlock } from "./ProviderBlock";
@@ -35,13 +37,13 @@ export function SettingsPanel({ open, onClose, source }: { open: boolean; onClos
   const [section, setSection] = useState<SectionId>("general");
   const [connectOpen, setConnectOpen] = useState(false);
   const [modelEdit, setModelEdit] = useState<{ providerId: string; modelId: string } | null>(null);
-  // 「高危操作」切完全访问的两步确认（与输入区 PermPicker 同一条规则、同一个
-  // 状态机——两个入口任何一个都不能一下就把高危确认门关掉）
-  const [confirmAuto, setConfirmAuto] = useState(false);
+  // 「高危操作」切完全访问的确认弹窗（与输入区 PermPicker 同一条规则、同一个
+  // 弹窗组件——两个入口任何一个都不能一下就把高危确认门关掉）
+  const [confirmAutoOpen, setConfirmAutoOpen] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
 
   // 二级弹窗在场时 Escape 归弹窗自己处理
-  useEscape(open && !connectOpen && !modelEdit, onClose);
+  useEscape(open && !connectOpen && !modelEdit && !confirmAutoOpen, onClose);
 
   // 分区切换：内容上浮淡入；模型/搜索/归档分区的行列表交错浮现
   useEffect(() => {
@@ -122,25 +124,14 @@ export function SettingsPanel({ open, onClose, source }: { open: boolean; onClos
                 })()}
                 <SegRow label="高危操作">
                   {/* 与输入区的权限选择器同一个入口语义：改档立刻发给后端（运行中的一轮即刻生效），不是只存本地等下一次发送。
-                      切「完全访问」两步确认：第一次点击只挂起，确认条出现后才真的改档（收权方向不拦）。 */}
+                      切「完全访问」先弹确认弹窗（approvalPick 分流，收权方向不拦），确认才真的改档。 */}
                   <Segmented
                     options={APPROVALS.map((a) => ({ value: a.id, label: a.label, hint: a.hint }))}
                     value={settings.approval}
-                    onChange={(mode) => {
-                      if (mode === "auto" && settings.approval !== "auto") { setConfirmAuto(true); return; }
-                      setConfirmAuto(false);
-                      applyApproval(mode);
-                    }}
+                    onChange={(mode) => approvalPick(settings.approval, mode, applyApproval, () => setConfirmAutoOpen(true))}
                     ariaLabel="高危操作"
                   />
                 </SegRow>
-                {confirmAuto && (
-                  <div className="settings-confirm-auto" role="alert">
-                    <span className="settings-confirm-auto-text">完全访问会自动执行高危操作（含 bash、写文件），不再逐条请求确认。</span>
-                    <Button className="settings-confirm-auto-btn" onClick={() => { setConfirmAuto(false); applyApproval("auto"); }}>确认开启</Button>
-                    <Button className="settings-confirm-auto-cancel" onClick={() => setConfirmAuto(false)}>取消</Button>
-                  </div>
-                )}
                 <ToggleRow
                   label="命令输出完整展示"
                   hint="关闭时工具结果默认折叠为摘要行"
@@ -245,6 +236,12 @@ export function SettingsPanel({ open, onClose, source }: { open: boolean; onClos
         </div>
       </div>
       {connectOpen && <ConnectProviderDialog onClose={() => setConnectOpen(false)} />}
+      {confirmAutoOpen && (
+        <ApprovalConfirmDialog
+          onConfirm={() => { setConfirmAutoOpen(false); applyApproval("auto"); }}
+          onCancel={() => setConfirmAutoOpen(false)}
+        />
+      )}
       {modelEdit &&
         (() => {
           const p = providers.find((x) => x.id === modelEdit.providerId);

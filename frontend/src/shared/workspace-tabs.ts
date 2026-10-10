@@ -63,6 +63,41 @@ export function focusWorkspacePage(state: WorkspaceTabsState, page: WorkspacePag
   return focusWorkspaceTab(state, page);
 }
 
+/** 标签条分流：固定页签留在工作区标签条，子会话标签归**会话标签条**。
+ *
+ *  2026-10-09 用户拍板：子会话标签原先混在左 strip（聊天 + Agent/拓展/Git）里，用户原话
+ *  「标签页左侧的聊天很突兀，应该同时只能选中一个」——子会话是**会话**不是工作区页面，
+ *  把它挪到右侧会话标签条（主会话标签之后）后，左 strip 恢复为纯页面页签，选中互斥在
+ *  视觉上也成立了（子会话标签 .on 时主会话标签不再高亮）。两个桶都保持原 tabs 的相对
+ *  顺序（focusWorkspaceTab 只追加不重排，这里也不许重排）。 */
+export function splitWorkspaceTabs(tabs: WorkspaceTab[]): { pages: WorkspacePage[]; children: ChildTabKey[] } {
+  const pages: WorkspacePage[] = [];
+  const children: ChildTabKey[] = [];
+  for (const tab of tabs) {
+    if (isWorkspacePage(tab)) pages.push(tab);
+    else children.push(tab);
+  }
+  return { pages, children };
+}
+
+/** 子会话标签的 hover 提示：`<项目名> · 主会话「<主会话标题>」 · <子会话标签名>`。
+ *
+ *  与 childTabTitle 的分工：那个是**标签上的短标题**（Agent 名 + 任务摘要），这个是
+ *  hover 里的**完整定位**（哪个项目、哪个主会话的孩子）。项目名缺席（未分组会话）就
+ *  少一节——不许写「未分组 · …」把没有归属的会话伪装成有归属；主会话标题/子标签缺席
+ *  时给明确的占位（空节在提示里就是一处看不懂的「· ·」）。 */
+export function childTabHint(
+  projectName: string | undefined,
+  mainSessionTitle: string,
+  childLabel: string,
+): string {
+  const parts: string[] = [];
+  if (projectName) parts.push(projectName);
+  parts.push(`主会话「${mainSessionTitle || "未命名"}」`);
+  parts.push(childLabel || "子会话");
+  return parts.join(" · ");
+}
+
 /** 打开/聚焦子会话标签（DispatchCard 的「打开子会话」→ 独立工作区标签）。 */
 export function focusChildTab(state: WorkspaceTabsState, sessionId: string): WorkspaceTabsState {
   // 空 id 不是合法子会话：开一个空键标签只会得到一个标题回落到「子会话 未知」的空白标签，
@@ -91,6 +126,88 @@ export function closeWorkspacePage(state: WorkspaceTabsState, tab: WorkspaceTab)
     active,
     history: history.filter((item) => item !== active),
   };
+}
+
+// ---- 子→父会话映射（子会话标签按需显示，2026-10-09 体验修复批次 5）----
+
+/** 子会话 id → 父会话 id 的持久映射。
+ *
+ *  为什么独立于 UIState：归约流是**逐事件**的，而映射是**跨会话**的索引——
+ *  塞进 UIState 要么挂在子会话 state 上（子会话 state 可能根本不存在，双投
+ *  「不建」规则）、要么每次事件全量扫（正是被消掉的那个 O(所有会话×所有块)）。
+ *  独立一份键值表，App 级持久（切会话不丢），只增不删（子会话 id 不复用）。 */
+export type ChildParents = Record<string, string>;
+
+/** 同一批 dispatch 事实产出的**两张**映射（键不同，不能混用）：
+ *  - childParents：子会话 id → 父会话 id（标签过滤、标题反查）；
+ *  - dispatchChild：dispatch id → 子会话 id（子事件双投的归属路由——子事件
+ *    带的是 dispatch_id，路由前要先把 dispatch_id 换成子会话 id）。 */
+export interface ChildLinks {
+  childParents: ChildParents;
+  dispatchChild: Record<string, string>;
+}
+
+export function emptyChildLinks(): ChildLinks {
+  return { childParents: {}, dispatchChild: {} };
+}
+
+/** 记一条 dispatch 事实（dispatchStart 或回放块）：两张映射一起更新。
+ *  幂等：同样的内容重复记录返回同一对象（不触发无谓的重渲染）。 */
+export function recordChildLink(
+  links: ChildLinks,
+  fact: { childId: string; parentId: string; dispatchId?: string },
+): ChildLinks {
+  if (!fact.childId || !fact.parentId) return links;
+  const childParents = recordChildParent(links.childParents, fact.childId, fact.parentId);
+  const dispatchId = fact.dispatchId ?? "";
+  const dispatchChild = !dispatchId || links.dispatchChild[dispatchId] === fact.childId
+    ? links.dispatchChild
+    : { ...links.dispatchChild, [dispatchId]: fact.childId };
+  if (childParents === links.childParents && dispatchChild === links.dispatchChild) return links;
+  return { childParents, dispatchChild };
+}
+
+/** 记一条子→父映射（幂等：同一条重复记录返回同一内容）。 */
+export function recordChildParent(parents: ChildParents, childId: string, parentId: string): ChildParents {
+  if (!childId || !parentId) return parents;
+  if (parents[childId] === parentId) return parents;
+  return { ...parents, [childId]: parentId };
+}
+
+/** 从一个会话的 blocks 里扫出它派发的子会话（历史回放路径的映射重建）。
+ *
+ *  dispatch 块同时带两把键：`id`（工具调用 id = dispatch id）与 `sessionId`
+ *  （子会话 id——实时路径来自 dispatchStart 的 childSessionId，回放路径来自
+ *  工具结果提示行，两处都已核实），持有这批 blocks 的会话就是父。
+ *  **只在 historyLoaded 时跑一次**，不是逐事件扫描。 */
+export function childLinksFromBlocks(parentId: string, blocks: ThreadBlock[]): ChildLinks {
+  let links: ChildLinks | null = null;
+  for (const block of blocks) {
+    if (block.kind !== "dispatch" || !block.sessionId) continue;
+    links = recordChildLink(links ?? emptyChildLinks(), {
+      childId: block.sessionId, parentId, dispatchId: block.id,
+    });
+  }
+  return links ?? emptyChildLinks();
+}
+
+/** 子会话标签的**按需可见性**：只显示「父会话是当前活跃主会话」的那些。
+ *
+ *  规则：`parent(t) === activeParent || t === active`——active 的子标签本身
+ *  恒可见（popstate/关闭回退把焦点导航到一个会被过滤掉的标签时，active
+ *  悬空比多显示一个标签更糟）。映射缺失（应用刚起、父历史还没回放）的
+ *  子标签不可见——猜一个父等于在错误的会话下面挂标签。 */
+export function visibleChildTabs(
+  tabs: ChildTabKey[],
+  active: WorkspaceView,
+  parents: ChildParents,
+  activeParent: string,
+): ChildTabKey[] {
+  return tabs.filter((tab) => {
+    if (tab === active) return true;
+    const childId = childTabSession(tab);
+    return childId !== null && parents[childId] === activeParent;
+  });
 }
 
 /** 子会话标签的标题：Agent 名 + 任务摘要（如 `researcher · 通读 internal/agent`）。

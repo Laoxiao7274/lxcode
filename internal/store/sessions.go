@@ -213,6 +213,22 @@ func (s *Store) Latest() (string, []llm.Message, error) {
 	return id, msgs, nil
 }
 
+// TitleOf 返回会话标题（侧栏显示的那一条）。会话不存在时报错。
+//
+// 为什么需要它：合并进程的任务标签要写「合并 <会话标题>」——标题是人与模型认得的
+// 定位信息，只有 id 的话任务列表里看不出这是哪个会话的合并。
+func (s *Store) TitleOf(id string) (string, error) {
+	var title string
+	err := s.db.QueryRow(`SELECT title FROM sessions WHERE id = ?`, id).Scan(&title)
+	if err == sql.ErrNoRows {
+		return "", fmt.Errorf("会话 %s 不存在", id)
+	}
+	if err != nil {
+		return "", fmt.Errorf("查询会话标题失败: %w", err)
+	}
+	return title, nil
+}
+
 // Rename 重命名会话（侧栏管理功能）。
 func (s *Store) Rename(id, title string) error {
 	title = strings.TrimSpace(title)

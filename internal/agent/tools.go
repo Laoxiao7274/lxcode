@@ -82,13 +82,13 @@ func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChange
 				ID: tc.ID, Name: tc.Function.Name, Arguments: tc.Function.Arguments, Prompt: prompt,
 				DispatchID: dispatchID, // 子 Agent 的确认归属（前端挂 dispatch 卡内）
 			}
-			allow, ok := s.awaitConfirm(ctx, req)
+			out, ok := s.awaitConfirm(ctx, req)
 			if !ok {
 				// 等待确认期间被取消：本调用与它后面的都没执行
 				s.sinkSkippedToolResults(sink, pendingCalls(calls, finished), dispatchID, skippedCancelNote)
 				return false // 取消
 			}
-			if !allow {
+			if !out.Allow {
 				s.finishToolCall(tc,
 					"用户拒绝了这次工具调用（未执行）。请改用其他方式完成任务，或向用户说明需要该操作的原因。",
 					"用户拒绝执行", true, 0, fileChanges, dispatchID, sink)

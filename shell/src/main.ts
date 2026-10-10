@@ -3,11 +3,13 @@
 // React 应用，经 WS 直连 127.0.0.1:7789，与浏览器/CLI 客户端同权。
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { app, BrowserWindow, dialog, ipcMain, net, protocol } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, nativeTheme, net, protocol } from "electron";
 import { ensureBackend, shutdownBackend } from "./sidecar";
 import { initSakura, sakuraHandlers, shutdownSakura } from "./sakura";
 import { initTailscale, tailscaleHandlers } from "./tailscale";
 import { cachedState, cachedToken, disable as remoteDisable, enable as remoteEnable, initBackendRemote, refresh as remoteRefresh, rotate as remoteRotate } from "./backend-remote";
+import { updateHandlers } from "./updater";
+import { createTray } from "./tray";
 
 // userData 目录名与应用身份（单实例锁、任务栏、通知都吃这个）
 app.setName("lxcode");
@@ -67,7 +69,9 @@ if (!app.requestSingleInstanceLock()) {
       minHeight: 700,
       autoHideMenuBar: true,
       title: "Lxcode",
-      backgroundColor: "#101014", // 对齐前端暗色主题，避免白闪
+      // 启动瞬间的窗口底色（页面加载前）：按当前系统亮暗取对应 token 基色，
+      // 避免与首帧主题相反的闪块（页面自身的防闪由 index.html 内联脚本负责）。
+      backgroundColor: nativeTheme.shouldUseDarkColors ? "#18181c" : "#ffffff",
       show: false, // 先就绪再显示，避免白窗
       frame: false, // 无系统标题栏——顶部栏由渲染层 Topbar 自绘（拖拽区 + 窗口控制按钮，经 preload 桥 __LX__）
       roundedCorners: true, // Win11 圆角（默认即 true，显式记录）
@@ -107,6 +111,13 @@ if (!app.requestSingleInstanceLock()) {
     });
     ipcMain.on("win:close", () => win?.close());
 
+    // 主题偏好（渲染层设置面板 → shared/theme.ts → 此处）：同步
+    // nativeTheme.themeSource，壳侧原生控件/对话框跟随渲染层主题。
+    // auto → "system"（Electron 的说法）；未知值回落 system 不抛错。
+    ipcMain.on("theme:prefer", (_e, pref: unknown) => {
+      nativeTheme.themeSource = pref === "dark" ? "dark" : pref === "light" ? "light" : "system";
+    });
+
     // 目录选择器（添加项目用）：只开系统选择框，返回路径字符串——
     // 渲染层拿不到任何 fs 能力，只是「让用户自己选」的 UI 通道
     ipcMain.handle("dialog:selectDirectory", async () => {
@@ -138,6 +149,12 @@ if (!app.requestSingleInstanceLock()) {
     ipcMain.handle("backendRemote:rotate", () => remoteRotate());
     ipcMain.handle("backendRemote:refresh", () => remoteRefresh());
 
+    // 自更新（manifest → 下载校验 → 后端热替换 → asar 退出冷替换，见 updater.ts）
+    updateHandlers();
+
+    // 系统托盘（关闭 = 隐藏到托盘，后端/隧道保持运行；托盘菜单退出才真退）
+    createTray(() => win);
+
     // 产线诊断通道：渲染层控制台与加载失败转发到主进程 stdout
     // （打包后无 DevTools 场景排查渲染层问题全靠它）
     win.webContents.on("console-message", (_e, _lvl, msg) => console.log(`[renderer] ${msg}`));
@@ -155,7 +172,9 @@ if (!app.requestSingleInstanceLock()) {
     console.log("[shell] 窗口已加载");
   });
 
-  app.on("window-all-closed", () => app.quit()); // Windows 惯例：关窗即退出
+  // 托盘常驻：关窗（隐藏到托盘）不退出——真退出走托盘菜单/更新重启
+  // （app.quit() 触发 will-quit 的统一收尾）。应用要常驻的后端/隧道因此保持。
+  app.on("window-all-closed", () => { /* 不退出：托盘在 */ });
   app.on("will-quit", () => {
     shutdownBackend();
     shutdownSakura(); // frpc 与后端同一条退出路径：壳走，隧道进程跟着收

@@ -25,6 +25,7 @@
   --todo-shine: linear-gradient(90deg, #f5f5f5 0%, #f5f5f5 30%, rgba(245, 245, 245, 0.45) 45%, rgba(245, 245, 245, 0.45) 55%, #f5f5f5 70%, #f5f5f5 100%);
 }
 @media (prefers-color-scheme: dark) {
+  :global([data-theme="auto"]),
   :global(:root:not([data-theme])) {
     --todo-fg: #f5f5f5;
     --todo-bg: #1a1a1a;

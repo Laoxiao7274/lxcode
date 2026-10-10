@@ -18,6 +18,7 @@ import { useStickyFollow } from "./useStickyFollow";
 export function Thread({
   state,
   onConfirm,
+  onAnswer,
   onSuggestion,
   projectName,
   onEdit,
@@ -27,6 +28,8 @@ export function Thread({
 }: {
   state: UIState;
   onConfirm: (id: string, allow: boolean) => void;
+  /** ask_user 提问的回答（ask 变体确认卡）——透传给 Block（判定与副作用在 App）。 */
+  onAnswer?: (id: string, text: string) => void;
   onSuggestion?: (text: string) => void;
   /** 新对话空态的归属项目名（选中项目时显示——新会话将建在该项目下）。 */
   projectName?: string;
@@ -165,7 +168,7 @@ export function Thread({
        *  「很多会话×长会话」的前提——见 docs/frontend-review.md §四-①。 */}
       {hidden > 0 && <WindowSentinel onExpand={() => setWindowSize((n) => n + WINDOW_BATCH)} label={`前面还有 ${hidden} 条…`} />}
       {visible.map((block) => (
-        <Block key={block.uid} block={block} onConfirm={onConfirm} replayed={replayed} onEdit={onEdit} onRewind={onRewind} onOpenChild={onOpenChild} data-uid={block.uid} />
+        <Block key={block.uid} block={block} onConfirm={onConfirm} onAnswer={onAnswer} replayed={replayed} onEdit={onEdit} onRewind={onRewind} onOpenChild={onOpenChild} data-uid={block.uid} />
       ))}
       {/* 进行中且还没有任何输出时显示思考 shimmer（无角色标签——DSH 形态） */}
       {state.busy && !lastIsStreamingAssistant(state.blocks) && (

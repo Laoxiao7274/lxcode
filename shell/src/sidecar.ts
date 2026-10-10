@@ -1,7 +1,9 @@
 // sidecar.ts —— Go 后端生命周期（壳主进程唯一"业务"）：
 // 探测 7789 → 已在线则直连（SCM 服务/旧实例，绝不重复 spawn）→
 // 离线才拉起捆绑的后端 exe。优雅退出由 main 的 will-quit 触发；
-// 壳被强杀的兜底是 Windows Job Object（KILL_ON_JOB_CLOSE 连带杀子进程）。
+// 壳被强杀的兜底是 --stdin-watch：后端监视 stdin，壳死亡即管道 EOF →
+// 后端优雅退出（零原生模块的 Job Object 等价物——Electron 主进程没有
+// Win32 API 面，见 cmd/lxcode/main.go）。
 //
 // 纪律（AGENTS.md §2.1）：必须显式传 --config/--sessions 指向 userData——
 // 否则后端配置解析顺序会落到 %ProgramData% 安装形态配置，两形态数据串台。
@@ -44,17 +46,8 @@ export function shutdownBackend(): void {
   }
 }
 
-// ---- 内部实现 ----
-
-/** 探测 /health（单次）。 */
-function probeHealth(): Promise<boolean> {
-  return fetch(HEALTH_URL, { signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS) })
-    .then((r) => r.ok)
-    .catch(() => false);
-}
-
-/** 后端 exe 路径：dev 由 dev.mjs 注入环境变量；产线取 extraResources。 */
-function backendExePath(): string | null {
+/** 后端 exe 路径（供更新器热替换用）：dev 由 dev.mjs 注入；产线取 extraResources。 */
+export function backendExePath(): string | null {
   const dev = process.env.LXCODE_BACKEND_EXE;
   if (dev && existsSync(dev)) return dev;
   if (app.isPackaged) {
@@ -75,16 +68,48 @@ async function spawnBackend(exe: string): Promise<void> {
   const logFd = app.isPackaged
     ? openSync(join(userData, "backend.log"), "a")
     : null;
-  child = spawn(exe, ["--serve", "--addr", ADDR, "--config", configPath, "--sessions", sessionsDir], {
-    stdio: logFd !== null ? ["ignore", logFd, logFd] : "inherit",
+  // stdin 必须是 pipe：--stdin-watch 靠它的 EOF 兜底（壳强杀 → OS 关句柄 →
+  // 后端 EOF 退出）；stdout/stderr 产线落日志文件，dev 泵到壳控制台。
+  child = spawn(exe, ["--serve", "--addr", ADDR, "--config", configPath, "--sessions", sessionsDir, "--stdin-watch"], {
+    stdio: ["pipe", logFd ?? "pipe", logFd ?? "pipe"],
     windowsHide: true, // 不弹后端控制台窗口
-    // 不 detached：默认留在壳的 Job Object 里——壳被强杀时系统连带收走后端
   });
+  if (logFd === null) {
+    child.stdout?.on("data", (d: Buffer) => process.stdout.write(d));
+    child.stderr?.on("data", (d: Buffer) => process.stderr.write(d));
+  }
   managed = true;
   child.on("exit", (code) => {
     // 端口被占（双壳竞态）等早退场景：health 可能由赢的那个实例提供，不在这里下结论
     console.log(`[shell] 后端进程退出码 ${code}`);
   });
+}
+
+/** 重启后端（更新器热替换后用）：停旧的 → **等它真的退出** → 拉起新的 → 等健康。
+ *  不能用 child.killed 判断——kill() 一调用它就为 true，而旧进程还在优雅收尾
+ *  （closeAllClients + SQLite 落盘），探活探到的会是它 → 新后端永远拉不起来。 */
+export async function restartBackend(): Promise<boolean> {
+  const old = child;
+  if (managed && old) {
+    shutdownBackend();
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, 5_000);
+      old.once("exit", () => { clearTimeout(timer); resolve(); });
+    });
+  }
+  const exe = backendExePath();
+  if (!exe) return false;
+  await spawnBackend(exe);
+  return waitBackendUp();
+}
+
+// ---- 内部实现 ----
+
+/** 探测 /health（单次）。 */
+function probeHealth(): Promise<boolean> {
+  return fetch(HEALTH_URL, { signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS) })
+    .then((r) => r.ok)
+    .catch(() => false);
 }
 
 /** 等后端就绪：轮询 /health。进程早退不立即失败——可能另一个实例赢了端口。 */

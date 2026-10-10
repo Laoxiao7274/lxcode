@@ -5,7 +5,7 @@
 // 本身没有任何组件读取，丢了就死锁）。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { reduce, resolveConfirm } from '../src/shared/store.ts';
+import { reduce, resolveConfirm, resolveConfirmEverywhere, pendingConfirmIds } from '../src/shared/store.ts';
 
 const base = { blocks: [], busy: true, pending: null, todos: [], currentId: '', operationError: null, context: null };
 
@@ -164,4 +164,53 @@ test('已裁决为拒绝的卡不被后到的结果覆盖（保持「已跳过�
   assert.equal(s.blocks.length, 1);
   assert.equal(s.blocks[0].kind, 'confirm');
   assert.equal(s.blocks[0].resolved, 'deny');
+});
+
+// ---- ask 变体（ask_user 提问）：确认门的「提问」形态 ----
+// 提问没有工具执行可看：回答后卡片保留原位定格「已回答（答案摘要）」，
+// 跳过定格「已跳过」；auto 切档**不得**替用户回答（后端对 ask 保持挂起，
+// UI 的 allowAllPendingConfirms 也必须跳过它——否则后端还挂着、UI 假定格）。
+
+const ASK = { id: 'c-ask-1', name: 'ask_user', arguments: '{}', prompt: '保留哪一边?', kind: 'ask', options: ['选 A', '选 B'] };
+
+test('ask 提问：回答后卡片保留原位定格已回答（不转工具行）', () => {
+  let s = reduce(base, { type: 'confirmRequest', request: ASK });
+  assert.equal(s.blocks[0].kind, 'confirm', '提问先挂一张确认卡');
+  s = resolveConfirm(s, 'c-ask-1', 'allow', '选 A');
+  assert.equal(s.blocks.length, 1, '提问卡不转工具行（原位定格）');
+  assert.equal(s.blocks[0].kind, 'confirm');
+  assert.equal(s.blocks[0].resolved, 'allow');
+  assert.equal(s.blocks[0].resolvedAnswer, '选 A', '答案摘要落块上');
+  assert.equal(s.pending, null, '回答后不再挂起');
+  // 后端随后的 toolResult（「用户回答：…」）找不到未裁决位 → 自然丢弃，不产生僵尸行
+  s = reduce(s, { type: 'toolResult', id: 'c-ask-1', name: 'ask_user', content: '用户回答：选 A', isError: false });
+  assert.deepEqual(zombies(s), []);
+  assert.equal(s.blocks.length, 1);
+});
+
+test('ask 提问：跳过定格「已跳过」，无答案摘要', () => {
+  let s = reduce(base, { type: 'confirmRequest', request: ASK });
+  s = resolveConfirm(s, 'c-ask-1', 'deny');
+  assert.equal(s.blocks[0].kind, 'confirm');
+  assert.equal(s.blocks[0].resolved, 'deny');
+  assert.equal(s.blocks[0].resolvedAnswer, undefined);
+});
+
+test('ask 提问不在 allowAllPendingConfirms 的放行清单里（auto 不替用户回答）', () => {
+  let s = reduce(base, { type: 'confirmRequest', request: ASK });
+  s = reduce(s, { type: 'confirmRequest', request: { id: 'c-bash-9', name: 'bash', arguments: '{}', prompt: 'p' } });
+  const ids = pendingConfirmIds(s);
+  assert.ok(ids.includes('c-bash-9'), '二元确认应在放行清单');
+  assert.ok(!ids.includes('c-ask-1'), 'ask 提问必须保持挂起（不能被 auto 定格）');
+});
+
+test('ask 提问的回答经 resolveConfirmEverywhere 双投定格（卡内 + 子会话标签页）', () => {
+  let parent = reduce(base, { type: 'dispatchStart', dispatchId: 'd-ask', childSessionId: 'child-1', agentId: 'coder', agentName: '代码', agentColor: '#3b82f6', task: 't' });
+  parent = reduce(parent, { type: 'confirmRequest', request: { ...ASK, dispatch_id: 'd-ask' } });
+  const child = reduce(base, { type: 'confirmRequest', request: ASK });
+  const states = { 'parent-s': parent, 'child-1': child };
+  const next = resolveConfirmEverywhere(states, 'c-ask-1', 'allow', '采用我的方案');
+  const pCard = next['parent-s'].blocks.find((b) => b.kind === 'dispatch').subBlocks[0];
+  assert.equal(pCard.resolvedAnswer, '采用我的方案', '父会话卡内的提问定格答案');
+  assert.equal(next['child-1'].blocks[0].resolvedAnswer, '采用我的方案', '子会话标签页同步定格');
 });

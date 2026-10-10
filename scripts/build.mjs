@@ -11,10 +11,21 @@
 // 原生读它出安装包名），本脚本把它烙进 Go 二进制（--version 可查）并写进
 // manifest——三方（安装包/二进制/更新清单）永远同源。
 //
-// 更新包约定（客户端更新器未实现，先定产物契约）：
+// 更新包约定（客户端更新器已实现——shell/src/updater.ts）：
 //   zip 内路径 = 安装目录相对路径（resources/app.asar、resources/bin/lxcode.exe）
 //   manifest   = {version, url, sha256(zip), size, files{逐文件 sha256}}
 //   Electron/Chromium 升级不走 zip（发全量安装包）。
+//
+// 发版清单（打包前逐条过）：
+//   1. bump shell/package.json 的 version——三方同源（安装包名/二进制 --version/
+//      manifest）全靠它，忘了 bump = 更新器判不出新版本
+//   2. 产物上传：manifest.json + update-<version>.zip 放更新源目录
+//      （壳默认拉仓库 raw 的 release/manifest.json，可用 LXCODE_UPDATE_URL 覆盖）；
+//      安装包全量分发
+//   3. 签名证书：signtoolOptions 按 CN=lxcode-selfsign 找用户证书存储——
+//      换构建机要先导入这张自签证书，否则 electron-builder 签名步骤失败
+//   4. 卸载保留用户数据（deleteAppDataOnUninstall: false，已显式声明）——
+//      Roaming\lxcode 下的 models.json/会话/frpc/token 不随卸载删除
 import { spawnSync } from "node:child_process";
 import { cpSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync, copyFileSync, statSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
@@ -98,7 +109,13 @@ for (const f of UPDATE_FILES) {
   copyFileSync(src, join(staging, f));
 }
 // 用系统自带 bsdtar 造 zip（-a 按扩展名自动选 zip 格式，保留相对路径，零新增依赖）
-run(`更新包 ${zipName}`, "tar", ["-a", "-c", "-f", zipName, "-C", ".update-staging", "resources"], { cwd: releaseDir });
+// 必须显式指定 C:/Windows/System32/tar.exe（bsdtar）：Git Bash 的 PATH 会把
+// tar 解析到 GNU tar，它不认 `-a` 的 zip 语义，造出来的是 tar 包改了扩展名的
+// 假 zip（0.1.3 发版实测踩过，更新器解包失败）。System32 不存在时（非 Windows）
+// 回退 PATH 里的 tar。
+const bsdtar = "C:/Windows/System32/tar.exe";
+const tarBin = existsSync(bsdtar) ? bsdtar : "tar";
+run(`更新包 ${zipName}`, tarBin, ["-a", "-c", "-f", zipName, "-C", ".update-staging", "resources"], { cwd: releaseDir });
 rmSync(staging, { recursive: true, force: true });
 
 const manifest = {

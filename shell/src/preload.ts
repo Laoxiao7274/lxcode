@@ -9,6 +9,9 @@ contextBridge.exposeInMainWorld("__LX__", {
   minimize: () => ipcRenderer.send("win:minimize"),
   toggleMaximize: () => ipcRenderer.send("win:toggleMaximize"),
   close: () => ipcRenderer.send("win:close"),
+  // 主题偏好（跟随系统/深色/浅色）→ 主进程 nativeTheme.themeSource：
+  // 壳侧原生控件（滚动条、对话框、titlebar 区域）跟随渲染层主题。fire-and-forget。
+  setThemePreference: (pref: string) => ipcRenderer.send("theme:prefer", pref),
   // 打开系统目录选择器，返回选中路径（取消返回 null）。async 形式
   // 经 invoke（请求-应答语义，不是事件广播）。
   selectDirectory: (): Promise<string | null> => ipcRenderer.invoke("dialog:selectDirectory"),
@@ -49,5 +52,19 @@ contextBridge.exposeInMainWorld("__LX__", {
     disable: (): Promise<unknown> => ipcRenderer.invoke("backendRemote:disable"),
     rotate: (): Promise<unknown> => ipcRenderer.invoke("backendRemote:rotate"),
     refresh: (): Promise<unknown> => ipcRenderer.invoke("backendRemote:refresh"),
+  },
+  // 自更新：check/download(含校验+暂存)/apply(热替换+排程冷替换)/restart；
+  // 下载进度经 update:progress 事件推送
+  update: {
+    version: (): Promise<string> => ipcRenderer.invoke("update:version"),
+    check: (): Promise<unknown> => ipcRenderer.invoke("update:check"),
+    download: (): Promise<unknown> => ipcRenderer.invoke("update:download"),
+    apply: (): Promise<unknown> => ipcRenderer.invoke("update:apply"),
+    restart: (): void => { void ipcRenderer.invoke("update:restart"); },
+    onProgress: (cb: (p: unknown) => void): (() => void) => {
+      const listener = (_e: unknown, p: unknown): void => cb(p);
+      ipcRenderer.on("update:progress", listener as never);
+      return () => ipcRenderer.removeListener("update:progress", listener as never);
+    },
   },
 });

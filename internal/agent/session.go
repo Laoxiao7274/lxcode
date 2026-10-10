@@ -14,6 +14,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 
 	"github.com/moyunteng/lxcode/internal/config"
@@ -76,7 +77,11 @@ type Session struct {
 	busy    bool
 	cancel  context.CancelFunc
 	pending *ConfirmRequest
-	confirm chan bool
+	// confirm 是确认门的裁决通道。ack 是「裁决结果」而不再是裸 bool：二元确认
+	// 只填 Allow；ask_user 提问由 Answer 投入文本答案（见 confirm.go 的
+	// ConfirmOutcome）。ask 与确认共用同一个槽位与同一条通道——全应用只有
+	// 「同时一个挂起确认」这条不变式不因新形态而多出出口。
+	confirm chan ConfirmOutcome
 	todos   []tools.TodoItem
 	// approval 是本会话**当前**的权限档（会话级实时状态，不是一轮的快照）：
 	// 用户中途改档要立刻作用于正在跑的那一轮（runTools 每个工具调用现读
@@ -94,6 +99,12 @@ type Session struct {
 	// runTurn 在**轮边界**并入历史（见 notify.go）。与 history 同一把锁——
 	// 否则 injectNotices 与 append 会交错。
 	notices []llm.Message
+	// passiveNotices 是**被动通告**队列（永不自动开轮）：与 notices 的差别在
+	// flushNotices——后台任务通告要尽快唤醒 agent（空闲就开一轮），而「用户中断」
+	// 这类注记只该在**下一轮真的开始时**（用户说话/下一次派发）由轮边界
+	// injectNotices 并入历史。进 notices 的话，runTurn 收尾的 flushNotices 会把
+	// 它自动开成一轮——用户刚点了停止，模型又自顾自回复一段，正好违背中断语义。
+	passiveNotices []llm.Message
 	// wakeGate 是「能不能开新一轮」的判定（server 侧的连续唤醒预算；
 	// nil = 不限制）。只约束空闲开新轮，不管轮边界注入。
 	wakeGate func() bool
@@ -110,6 +121,12 @@ type Session struct {
 	// 目录）。工具的相对路径、bash 默认目录与系统提示词的工作目录说明
 	// 都以它为准——每轮开始时快照进 ctx（tools.WithWorkDir）。
 	workDir string
+	// worktreeBranch/worktreeBase 是本会话 Git 工作树的分支与基线提交
+	// （server 在 prepareWorktree 成功后设置；子会话从父会话继承）。空 =
+	// 未分组会话/没有 worktree——提示词对 Git 工作树零注入。与 workDir
+	// 的分工：workDir 是「工具在哪跑」，这两个是「模型该怎么看待提交」。
+	worktreeBranch string
+	worktreeBase   string
 	// dispatchRoot 是本轮主 Agent 载荷（dispatch 委派名单校验的依据——
 	// runDispatch 在工具执行位读它；busy 期间与 ac 同生命周期）。
 	dispatchRoot *sessiondata.AgentContext
@@ -129,7 +146,7 @@ type Session struct {
 	// confirmProxy 非空时本会话的确认请求交给它裁决（子会话把确认门代理给
 	// 父会话）：全应用只有"同时一个挂起确认"这条不变式，子会话自己持
 	// pending 的话服务端的 tool.confirm 找不到它。
-	confirmProxy func(ctx context.Context, req *ConfirmRequest) (allow bool, ok bool)
+	confirmProxy func(ctx context.Context, req *ConfirmRequest) (ConfirmOutcome, bool)
 	// confirmMu 串行化确认门本身：上面那条不变式（同时只有一个挂起确认）原先靠
 	// "工具循环是串行的"顺带成立；并行 dispatch（runTools 阶段二）之后多个子会话
 	// 会同时来要确认，不串行化的话后到的会顶掉 s.pending/s.confirm，先到的那次
@@ -154,6 +171,12 @@ type Session struct {
 	// 模型显示错。来源有三处：Send 时解析出的 ac、dispatch 开子会话时显式置位、
 	// 服务端按会话 id 从库里读回（刷新后重新附着同一会话）。
 	agentID string
+	// children 是本会话**正在跑的子会话**登记（子会话 id → 运行时）。子会话的
+	// 运行时不进 server.sessions（生命周期跟着 runDispatch 走，跑完即注销），
+	// 不登记的话服务端对子会话 id 调 chat.cancel 会 newRuntime 建一个空对象
+	//（Cancel 空操作）——停不掉真正在跑的子轮。并行 dispatch 下同一父可有多个
+	// 活子会话，按 id 一对一。
+	children map[string]*Session
 }
 
 // New 创建会话；emit 为 nil 时事件被丢弃（单测可只调方法）。
@@ -274,6 +297,11 @@ func (s *Session) LiveApproval() string {
 // 「说了没用」——那正是这次要修的东西。裁决走**既有的确认通道**（往 s.confirm
 // 投递，与 Confirm 完全同一条路径）：在锁里直接写 channel 会死锁，而绕开通道
 // 另造一条放行路径会让「同时一个挂起确认」这条不变式多出一个出口。
+//
+// **ask 提问不放行**：auto 豁免的是「高危工具的确认打扰」，而 ask_user 是模型
+// 主动向用户要决策——自动替用户编一个回答等于冒充用户表态（合并进程里可能就是
+// 「冲突保哪边」这种不可撤回的取舍）。所以 auto 只放行 Kind=="" 的确认，
+// ask 保持挂起等用户回来。
 func (s *Session) SetApproval(mode string) string {
 	norm := mode
 	if norm == "" {
@@ -281,16 +309,16 @@ func (s *Session) SetApproval(mode string) string {
 	}
 	s.mu.Lock()
 	s.approval = norm
-	// 只在切到 auto 且确实有挂起确认时取通道；非阻塞投递（缓冲已满 =
-	// 这次挂起已被裁决过，重复投递没有意义）。
-	var ch chan bool
-	if norm == string(tools.ApprovalAuto) && s.pending != nil {
+	// 只在切到 auto 且确实有挂起**确认**（非 ask 提问）时取通道；非阻塞投递
+	//（缓冲已满 = 这次挂起已被裁决过，重复投递没有意义）。
+	var ch chan ConfirmOutcome
+	if norm == string(tools.ApprovalAuto) && s.pending != nil && s.pending.Kind == "" {
 		ch = s.confirm
 	}
 	s.mu.Unlock()
 	if ch != nil {
 		select {
-		case ch <- true:
+		case ch <- ConfirmOutcome{Allow: true}:
 		default:
 		}
 	}
@@ -315,6 +343,11 @@ func (s *Session) Send(text string, opts ...SendOpt) error {
 		return err // 快速失败（模型缺失在入历史前拒绝——不留半截轮次）
 	}
 
+	// 图片张数上限在入历史前校验（快失败——不留半截轮次）。
+	if len(cfg.images) > llm.MaxImagesPerMessage {
+		return fmt.Errorf("一条消息最多带 %d 张图片（收到 %d 张）", llm.MaxImagesPerMessage, len(cfg.images))
+	}
+
 	s.mu.Lock()
 	if s.busy {
 		s.mu.Unlock()
@@ -326,7 +359,8 @@ func (s *Session) Send(text string, opts ...SendOpt) error {
 	// 前端手里没有锚点。
 	// Notice 是**注入的提示条**标记（后台任务通告走 flushNotices → Send）：
 	// 它随消息落库，会话统计的轮数按它把注入消息排除在外（见 store.foldSessionStats）。
-	userMsg := llm.Message{Role: "user", Content: text, Notice: cfg.notice}
+	// Images 是图片**文件引用**（视觉请求）：随消息落库与回放，base64 绝不经此路径。
+	userMsg := llm.Message{Role: "user", Content: text, Notice: cfg.notice, Images: cfg.images}
 	userMsg.Seq = s.persistLocked(userMsg)
 	s.history = append(s.history, userMsg)
 	// 记下本轮归属的 Agent（会话页显示的模型按它解析）：主会话空 id 解析出的是
@@ -364,6 +398,53 @@ func (s *Session) Cancel() {
 	if cancel != nil {
 		cancel()
 	}
+}
+
+// CancelChild 取消一个**正在跑的**子会话：命中（该 id 是本会话登记中的活子会话）
+// 则取消它并返回 true；未命中返回 false（调用方走原路径——普通会话取消 /
+// 子会话已结束后的兜底）。
+//
+// 为什么挂在父会话上：子会话运行时的生命周期跟着 runDispatch 走（跑完即注销），
+// 不在 server.sessions 里——服务端对子会话 id 直接 s.session(id) 会 newRuntime
+// 建一个空对象，Cancel 是空操作。登记/注销的路径覆盖见 dispatch.go（runDispatch
+// 与 RunAgentTask 都在 openChildSession 成功后登记、defer 注销）。
+func (s *Session) CancelChild(childID string) bool {
+	if childID == "" {
+		return false
+	}
+	s.mu.Lock()
+	child := s.children[childID]
+	s.mu.Unlock()
+	if child == nil {
+		return false
+	}
+	child.Cancel()
+	return true
+}
+
+// registerChild 登记（openChildSession 成功后调用）；key 为空不登记（纯内存
+// 子会话没有 id，外部本来就寻址不到它）。
+func (s *Session) registerChild(key string, child *Session) {
+	if key == "" {
+		return
+	}
+	s.mu.Lock()
+	if s.children == nil {
+		s.children = make(map[string]*Session)
+	}
+	s.children[key] = child
+	s.mu.Unlock()
+}
+
+// unregisterChild 注销（SendWait 收尾后调用——正常结束 / 取消 / panic 三条
+// 路径都经 defer 走到这里）。
+func (s *Session) unregisterChild(key string) {
+	if key == "" {
+		return
+	}
+	s.mu.Lock()
+	delete(s.children, key)
+	s.mu.Unlock()
 }
 
 // SendWait 跑一轮并**等它结束**（派发给子会话时用：主 Agent 要拿子会话的结论）。
@@ -501,6 +582,23 @@ func (s *Session) SetWorkDir(dir string) error {
 	}
 	s.workDir = dir
 	return nil
+}
+
+// SetWorktreeInfo 记录本会话 Git 工作树的分支与基线提交（server 在 prepareWorktree
+// 成功后调用；子会话从父会话继承）。空 = 未分组会话/没有 worktree。
+func (s *Session) SetWorktreeInfo(branch, base string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.worktreeBranch = branch
+	s.worktreeBase = base
+}
+
+// worktreeInfo 返回本会话的 Git 工作树信息与「是否子会话」标志。子会话由
+// approvalSource 非 nil 判定（与权限来源同一判据，不另造一个开关）。
+func (s *Session) worktreeInfo() (WorktreeInfo, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return WorktreeInfo{Branch: s.worktreeBranch, Base: s.worktreeBase}, s.approvalSource != nil
 }
 
 // SessionID 返回当前会话 id（无存储模式为空串）。

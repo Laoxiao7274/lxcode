@@ -24,10 +24,10 @@
   text-align: left;
 }
 .fd-trigger:hover {
-  border-color: #c2c2c8;
+  border-color: var(--border-active);
 }
 .fd-trigger.open {
-  border-color: #a8a8b0;
+  border-color: var(--border-active-strong);
 }
 .fd-trigger:disabled {
   opacity: 0.6;
@@ -149,7 +149,7 @@
   transition: border-color 120ms, box-shadow 120ms;
 }
 .cg-card:hover {
-  border-color: #d4d4d8;
+  border-color: var(--border-hi);
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.03);
 }.cg-card-top {
   display: flex;

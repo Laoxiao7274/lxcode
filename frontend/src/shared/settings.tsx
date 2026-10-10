@@ -3,6 +3,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState, t
 import type { AgentSource, ApprovalMode, CatalogModel, CatalogModelList, CatalogProvider, CatalogProviderList, DiscoveredModel, DiscoverResult, ModelEntry } from "./types";
 import { subscribeApprovalSync } from "./approval";
 import { applyModelPatch, applyProviderPatch, catalogMetadata, mapModels, modelForProvider, providerKey, validateProviderPatch, type ModelPatch, type ProviderMeta, type ProviderPatch, type EffortId } from "./settings-models";
+import { initTheme, setTheme } from "./theme";
 import { demoCatalogModelList, demoCatalogProviderList, demoModel, demoProviders, CONNECTABLE_PROVIDERS } from "./settings-catalog";
 export type { ModelMeta, ModelPatch, ProviderMeta, ProviderPatch, EffortId } from "./settings-models";
 export { CONNECTABLE_PROVIDERS } from "./settings-catalog";
@@ -18,7 +19,7 @@ export interface Settings {
 }
 const DEFAULTS: Settings = { model: "MYT", effort: "medium", approval: "confirm", showThinking: true,
   showFullOutput: true, keepAwake: false, enterToSend: true, personality: "pragmatic",
-  theme: "light", gitBranch: "main" };
+  theme: "system", gitBranch: "main" };
 // 档位目录（后端协议值域——chat.send 的 effort 参数；仅对声明 reasoning
 // 能力的模型生效，选择器在 ModelPicker 里按模型能力显隐）
 export const EFFORTS: { id: EffortId; label: string; hint: string }[] = [
@@ -87,11 +88,16 @@ export function SettingsProvider({ source, children }: { source: AgentSource; ch
   }, []);
   const set = useCallback((patch: Partial<Settings>) => {
     // 全部设置本地生效（keepAwake/theme/personality 前端态；模型在
-    // live 模式走后端角色绑定——后端是事实源）
+    // live 模式走后端角色绑定——后端是事实源）。theme 额外即时落到
+    // DOM + localStorage + Electron 壳（setTheme：改完立刻生效，不重渲染等）
     const { model, ...supported } = patch;
+    if (supported.theme) setTheme(supported.theme);
     setLocal((s) => ({ ...s, ...supported, ...(!admin && model ? { model } : {}) }));
     if (admin && model) void run(() => admin.setRole("default", model));
   }, [admin, run]);
+  // 主题：挂载时从 localStorage 恢复（index.html 内联脚本已先行应用，
+  // 这里对齐 React 侧状态并接管系统亮暗变化监听）
+  useEffect(() => initTheme(), []);
   // 反向同步：后端广播的权限档变更落到本地设置（多客户端/壳+浏览器同时开着时
   // 两边一致）。当前会话从事件流里跟——sessionFocused 是它的唯一事实源。
   useEffect(() => subscribeApprovalSync(source, (mode) => {

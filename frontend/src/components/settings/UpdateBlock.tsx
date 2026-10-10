@@ -6,7 +6,7 @@ import { humanBytes } from "../../shared/connections";
 import { useUpdate } from "../../shared/update";
 
 export function UpdateBlock() {
-  const { current, phase, manifest, progress, check, download, restart } = useUpdate();
+  const { current, phase, manifest, progress, error, check, download, restart } = useUpdate();
 
   return (
     <div className="set-update" data-phase={phase}>
@@ -16,6 +16,9 @@ export function UpdateBlock() {
           <span className="set-update-ver mono">lxcode {current}</span>
         </div>
 
+        {error && (
+          <div className="set-update-status" role="alert">✗ {error}</div>
+        )}
         {phase === "idle" && (
           <div className="set-update-actions">
             <Button variant="ghost" data-su="check" onClick={check}>检查更新</Button>
@@ -39,9 +42,11 @@ export function UpdateBlock() {
                   新版本 <span className="mono">{manifest.version}</span>
                   <span className="set-update-size">{humanBytes(manifest.size)}</span>
                 </div>
-                <ul className="set-update-notes">
-                  {manifest.notes.map((n) => <li key={n}>{n}</li>)}
-                </ul>
+                {manifest.notes.length > 0 && (
+                  <ul className="set-update-notes">
+                    {manifest.notes.map((n) => <li key={n}>{n}</li>)}
+                  </ul>
+                )}
                 <div className="set-update-actions">
                   <Button variant="primary" data-su="download" onClick={download}>
                     下载并安装（{humanBytes(manifest.size)}）

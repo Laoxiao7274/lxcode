@@ -72,7 +72,13 @@ func (s *Server) dispatchSessions(c *wsClient, req *protocol.Request, params jso
 			return protocol.NewError(req.ID, protocol.CodeInvalidParams, err.Error())
 		}
 		s.broadcast(protocol.EventSessionChanged, protocol.SessionChangedParams{ID: p.ID, Reason: "archived"})
-		return protocol.NewResult(req.ID, map[string]any{})
+		result := protocol.SessionArchiveResult{Archived: p.Archived}
+		// 释放只在归档时尝试（取消归档不碰工作区）。归档已经提交并广播——释放是
+		// 尽力而为的附加动作：失败只把原因带回，绝不回滚归档。
+		if p.Archived && p.ReleaseWorktree {
+			result.ReleasedWorktree, result.ReleaseError = s.releaseArchivedWorktrees(p.ID)
+		}
+		return protocol.NewResult(req.ID, result)
 
 	case protocol.MethodSessionWorktreeRelease:
 		var p protocol.SessionWorktreeReleaseParams

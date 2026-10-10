@@ -259,7 +259,7 @@
 }
 .mset-model-del:hover {
   color: var(--danger);
-  background: #fdeeee;
+  background: var(--danger-wash);
 }
 .mset-model-edit {
   width: 22px;
@@ -329,7 +329,7 @@
 }
 .mset-del-danger:hover {
   border-color: var(--danger);
-  background: #fdeeee;
+  background: var(--danger-wash);
 }
 .mset-medit-badge {
   font-size: 10px;
@@ -603,4 +603,10 @@
   font-size: 11px;
   color: var(--fg-muted);
   overflow-wrap: anywhere;
+}
+
+/* ===== 暗色覆盖：manual 标签的紫色系（浅紫底在暗色下不可读） ===== */
+html[data-theme="dark"] .mset-model-tag.manual { color: #b9a3e8; border-color: #4a415f; background: #2c2740; }
+@media (prefers-color-scheme: dark) {
+  html[data-theme="auto"] .mset-model-tag.manual { color: #b9a3e8; border-color: #4a415f; background: #2c2740; }
 }

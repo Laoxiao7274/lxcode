@@ -107,10 +107,11 @@ func selectCompactRange(history []llm.Message, retainTokens int, protectHead boo
 func (s *Session) compactionSystemPrompt(ac *sessiondata.AgentContext, workDir string) string {
 	allow := agentToolsOf(ac)
 	docs := s.projectDocsFor(workDir)
+	wt, isChild := s.worktreeInfo()
 	if ac != nil {
-		return ComposeSystemPrompt(s.tools, workDir, ac, allow, docs)
+		return ComposeSystemPrompt(s.tools, workDir, ac, allow, wt, isChild, docs)
 	}
-	return BuildSystemPrompt(s.tools, workDir, docs)
+	return BuildSystemPrompt(s.tools, workDir, wt, isChild, docs)
 }
 
 // summarizeRange 让模型把一段历史压成检查点正文（不经过 streamRound：这次

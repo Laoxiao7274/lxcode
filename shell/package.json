@@ -1,7 +1,7 @@
 {
   "name": "lxcode-shell",
   "productName": "Lxcode",
-  "version": "0.1.0",
+  "version": "0.1.5",
   "description": "lxcode 桌面壳（Electron 薄壳，业务在 Go 后端）",
   "main": "dist/main.js",
   "author": "moyunteng",
@@ -27,7 +27,8 @@
     },
     "files": [
       "dist/**",
-      "renderer/**"
+      "renderer/**",
+      "build/icon.png"
     ],
     "extraResources": [
       {
@@ -50,10 +51,12 @@
       ]
     },
     "nsis": {
-      "oneClick": true,
+      "oneClick": false,
       "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
       "runAfterFinish": true,
-      "differentialPackage": false
+      "differentialPackage": false,
+      "deleteAppDataOnUninstall": false
     }
   }
 }
