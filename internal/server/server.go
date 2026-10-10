@@ -85,6 +85,10 @@ type Server struct {
 	commitLocks map[string]*sync.Mutex
 	// commitWG 追踪在途的自动提交（测试等它们结束用；生产路径不读它）。
 	commitWG sync.WaitGroup
+	// mergeHookWG 追踪在途的轮末自动合并钩子（maybeAutoMerge，测试等它们完成
+	// **发起尝试**用；生产路径不读它）——钩子完成只代表 startMergeJobOpts 已返回
+	//（任务已起或已被拒），不代表合并任务本身收尾。
+	mergeHookWG sync.WaitGroup
 
 	upgrader websocket.Upgrader
 

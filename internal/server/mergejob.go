@@ -64,6 +64,17 @@ type mergeSourceBranch struct {
 // pushAfter：合并成功后是否顺带把目标分支推到远程 origin（workspace_sync 的
 // 「提交 → 合并 → push」链路；push 是**异步**做的——合并任务收尾前执行，失败
 // 只把任务置为失败并写清「合并已完成，仅推送失败」，绝不误导为合并失败）。
+func (s *Server) startMergeJob(sessionID, targetBranch string, pushAfter bool) (string, error) {
+	return s.startMergeJobOpts(sessionID, targetBranch, pushAfter, false)
+}
+
+// startMergeJobOpts 是 startMergeJob 的本体，autoHook 区分两条调用路径：
+//
+//   - autoHook=false（工具路径，merge_request / workspace_sync）：扫描失败也要起
+//     一条任务并让它以失败收尾——模型能经 job_output 读到失败原因（原有语义）；
+//   - autoHook=true（轮末自动合并钩子，autocommit.go 的 maybeAutoMerge）：扫描发现
+//     「全项目没有待合并的改动」时直接把原因交回钩子静默记日志，**不创建任务**
+//     ——钩子不缺这份反馈（它只记日志），给用户 job 面板留一条失败任务纯是噪声。
 //
 // 前置校验（都在返回前做完，失败直接回给模型）：
 //   - 会话存在且是项目会话（有 workspace）；
@@ -71,7 +82,7 @@ type mergeSourceBranch struct {
 //   - 同一**项目**没有在跑的合并任务（2026-10 升级：从「按会话」扩为「按项目」
 //     ——同一项目多个会话各起合并进程会往同一集成分支互相踩）；
 //   - 扫描出本项目至少一个有改动的会话分支（含发起会话自身）。
-func (s *Server) startMergeJob(sessionID, targetBranch string, pushAfter bool) (string, error) {
+func (s *Server) startMergeJobOpts(sessionID, targetBranch string, pushAfter, autoHook bool) (string, error) {
 	if s.st == nil {
 		return "", fmt.Errorf("会话存储未启用，无法起合并进程")
 	}
@@ -120,6 +131,19 @@ func (s *Server) startMergeJob(sessionID, targetBranch string, pushAfter bool) (
 	if strings.TrimSpace(title) == "" {
 		label = "合并会话"
 	}
+	// 扫描本项目有改动的会话分支（含归档；含发起会话自身——扫描无偏心，
+	// 它的分支按同一套标准判定，无改动则跳过并在说明书注明）。
+	// 扫描挪到任务创建之前（2026-10，随自动合并钩子而来）：钩子路径遇到
+	// 「全项目没有待合并的改动」不该给用户留一条失败任务——把原因交回钩子
+	// 静默记日志即可；工具路径保持原语义（起一条任务、失败收尾，模型经
+	// job_output 读得到原因）。
+	sources, initiatorNote, err := s.scanProjectBranches(s.Ctx(), projectMeta.Path, workspace, targetBranch, sessionID)
+	if err != nil {
+		if autoHook && strings.Contains(err.Error(), "没有待合并的改动") {
+			return "", err
+		}
+		return s.startFailedMergeJob(sessionID, label, workspace, err)
+	}
 	// 按项目互斥：扫描全部在跑任务（List("") 列全部），同项目已有未收尾的合并
 	// 进程就拒绝。job 归属的项目记在 s.mergeJobProject（jobs.Spec 没有项目字段，
 	// 这是改动最小的跟随方式）。检查与登记都持 mergeMu——否则两个并发发起会
@@ -149,14 +173,6 @@ func (s *Server) startMergeJob(sessionID, targetBranch string, pushAfter bool) (
 	}
 	s.mergeJobProject[j.ID()] = workspace
 	s.mergeMu.Unlock()
-	// 扫描本项目有改动的会话分支（含归档；含发起会话自身——扫描无偏心，
-	// 它的分支按同一套标准判定，无改动则跳过并在说明书注明）。
-	sources, initiatorNote, err := s.scanProjectBranches(s.Ctx(), projectMeta.Path, workspace, targetBranch, sessionID)
-	if err != nil {
-		s.forgetMergeProject(j.ID())
-		j.Settle(jobs.StatusFailed, jobs.EndedSelf, mergeClip(err.Error()))
-		return j.ID(), nil
-	}
 	// 拉子会话的父会话：用**请求方会话自己**（继承它的 store/stream/名单解析器），
 	// 但子会话在集成分支的工作树里工作（RunAgentTask 的 workDir 覆盖）。
 	sess, err := s.session(sessionID)
@@ -166,6 +182,41 @@ func (s *Server) startMergeJob(sessionID, targetBranch string, pushAfter bool) (
 		return j.ID(), nil
 	}
 	go s.runMergeJob(j, sess, projectMeta.Path, workspace, targetBranch, pushAfter, sources, initiatorNote)
+	return j.ID(), nil
+}
+
+// startFailedMergeJob 起一条**立刻失败收尾**的合并任务（工具路径的扫描失败语义，
+// 2026-10 起从 startMergeJobOpts 拆出——扫描挪到了任务创建之前）：模型拿到任务 id
+// 后可经 job_output 读到失败原因，而不是收到一条裸错误字符串。按项目互斥照做
+//（同项目已有在跑的合并进程就拒绝，与正常路径同一道闸）；任务转瞬即终态，
+// 互斥登记随做随注销，不留项目占用。
+func (s *Server) startFailedMergeJob(sessionID, label, workspace string, cause error) (string, error) {
+	mgr := s.jobsManager()
+	s.mergeMu.Lock()
+	if s.mergeJobProject == nil {
+		s.mergeJobProject = map[string]string{}
+	}
+	for _, snap := range mgr.List("") {
+		if snap.Kind != mergeJobKind || snap.Status.Terminal() {
+			continue
+		}
+		if s.mergeJobProject[snap.ID] == workspace {
+			s.mergeMu.Unlock()
+			return "", fmt.Errorf("该项目已有合并进程在跑（任务 %s）", snap.ID)
+		}
+	}
+	j, err := mgr.Start(jobs.Spec{
+		Kind: mergeJobKind, Label: label,
+		SessionID: sessionID, OwnerSessionID: sessionID,
+	})
+	if err != nil {
+		s.mergeMu.Unlock()
+		return "", fmt.Errorf("启动合并进程失败: %w", err)
+	}
+	s.mergeJobProject[j.ID()] = workspace
+	s.mergeMu.Unlock()
+	s.forgetMergeProject(j.ID())
+	j.Settle(jobs.StatusFailed, jobs.EndedSelf, mergeClip(cause.Error()))
 	return j.ID(), nil
 }
 

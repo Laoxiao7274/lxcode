@@ -5,10 +5,12 @@
 package store
 
 import (
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/moyunteng/lxcode/internal/sessiondata"
 )
@@ -16,6 +18,18 @@ import (
 func (s *Store) initAgents() error {
 	if _, err := s.db.Exec(agentSchema); err != nil {
 		return fmt.Errorf("初始化目录表失败: %w", err)
+	}
+	// 列级迁移（旧库升级，幂等，照 store.go 既有写法）：内置 Agent 定义的 hash
+	// 热更新（2026-10）需要两列——seed_hash 记「这行内容对应哪个版本的种子」，
+	// user_modified 记「用户在界面上改过没有」（置 1 后热更新永远跳过这行）。
+	// 新库 CREATE 后紧接着 ALTER 补上，老库靠 ALTER 升级——两列对两个路径都就位。
+	for _, col := range []string{
+		`ALTER TABLE agents ADD COLUMN seed_hash TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE agents ADD COLUMN user_modified INTEGER NOT NULL DEFAULT 0`,
+	} {
+		if _, err := s.db.Exec(col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			return fmt.Errorf("迁移 agents 表失败: %w", err)
+		}
 	}
 	var n int
 	if err := s.db.QueryRow(`SELECT COUNT(*) FROM agents`).Scan(&n); err != nil {
@@ -51,6 +65,11 @@ func (s *Store) initAgents() error {
 		if err := insertAgent(tx, a, now); err != nil {
 			return err
 		}
+		// 新库种子行直接带上当前种子的 hash：下次 Open 的热更新拿它当「已是最新」的
+		// 快路径（内容对比都不用做）。
+		if err := setSeedHash(tx, a.ID, seedHashOf(a)); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }
@@ -72,6 +91,14 @@ func (s *Store) syncCatalogSeeds(now string) error {
 		}
 	}
 	if err := ensureSeedAgents(tx, now); err != nil {
+		return err
+	}
+	// 内置 Agent 定义的 hash 热更新（2026-10）：改了 seed（提示词/工具/职责描述等）
+	// 之后，老库里 user_modified=0 的行整条跟上——这正是「0.1.3 缺更新器」那一类坑
+	// 的补法。放在 top-up 之前：热更新后 user_modified=0 的行与种子逐字段一致，
+	// 下面的 top-up 对它们自然成为空转；top-up 继续负责 user_modified=1 行的
+	// 白名单/描述按基线补齐（用户改过提示词但没动过白名单，新工具照样到货）。
+	if err := syncSeedAgentDefs(tx, now); err != nil {
 		return err
 	}
 	if err := topUpMainDelegates(tx, now); err != nil {
@@ -99,9 +126,13 @@ func ensureSeedAgents(exec execer, now string) error {
 			return fmt.Errorf("查种子 Agent %s 失败: %w", a.ID, err)
 		}
 		if n > 0 {
-			continue // 已有行：用户可能改过（名字/工具/提示词/权限），一律不碰
+			continue // 已有行：交给 syncSeedAgentDefs 按 hash 决定要不要更新
 		}
 		if err := insertAgent(exec, a, now); err != nil {
+			return err
+		}
+		// 新补的种子行带上当前种子的 hash（与首建库同口径）。
+		if err := setSeedHash(exec, a.ID, seedHashOf(a)); err != nil {
 			return err
 		}
 	}
@@ -227,6 +258,140 @@ func topUpSeedAgents(exec execer, now string) error {
 				return fmt.Errorf("补 Agent %s 职责描述失败: %w", id, err)
 			}
 		}
+	}
+	return nil
+}
+
+// agentSeedFingerprint 是内置 Agent 定义里**全部可编辑字段**的稳定指纹载体
+//（Name/Desc/Prompt/Tools/Workflow/Skills/Delegates/Approval/Color/Model）。
+// 用 struct 而不是 map 做 JSON 序列化：encoding/json 对 struct 按字段声明顺序
+// 输出（固定），map 的遍历顺序虽经按键排序也稳定，但 struct 在编译期就锁死了
+// 字段集合——新增参与对比的字段必须显式改这里，不会静默漏掉。含切片不可用
+// == 直接比较，判等走「序列化 → hash」这条管道（seedHashOf）。
+type agentSeedFingerprint struct {
+	Name      string   `json:"name"`
+	Desc      string   `json:"desc"`
+	Prompt    string   `json:"prompt"`
+	Tools     []string `json:"tools"`
+	Workflow  string   `json:"workflow"`
+	Skills    []string `json:"skills"`
+	Delegates []string `json:"delegates"`
+	Approval  string   `json:"approval"`
+	Color     string   `json:"color"`
+	Model     string   `json:"model"`
+}
+
+// seedFingerprintOf 抽取一条 Agent 定义的指纹字段。
+func seedFingerprintOf(a sessiondata.AgentDef) agentSeedFingerprint {
+	return agentSeedFingerprint{
+		Name: a.Name, Desc: a.Desc, Prompt: a.Prompt,
+		Tools: a.Tools, Workflow: a.Workflow, Skills: a.Skills, Delegates: a.Delegates,
+		Approval: a.Approval, Color: a.Color, Model: a.Model,
+	}
+}
+
+// seedHashOf 对种子定义计算稳定 hash（sha256，前缀标明算法便于将来更换）。
+// 稳定性保证：fingerprint 是纯 struct，encoding/json 按字段声明顺序序列化——
+// 同一内容必得同一 hash，不依赖任何运行期遍历顺序。
+func seedHashOf(a sessiondata.AgentDef) string {
+	b, err := json.Marshal(seedFingerprintOf(a))
+	if err != nil {
+		return "" // 不可达：字段全是 string/[]string，序列化不会失败
+	}
+	return fmt.Sprintf("sha256:%x", sha256.Sum256(b))
+}
+
+// syncSeedAgentDefs 内置 Agent 定义的 hash 热更新（2026-10，用户拍板）：升级改了
+// seedAgents（比如 merger 的提示词、给某个子 Agent 加了工具）之后，老库里没被
+// 用户改过的行自动跟上——每次 Open 的种子同步里对比当前定义是否最新，不是最新
+// 就更新，老库因此不再停留在旧版提示词上（「0.1.3 缺更新器」那一类坑的补法）。
+//
+// 逐行判定：
+//   - user_modified=1 → 跳过（尊重用户自定义，一个字段都不碰）；
+//   - seed_hash == 当前种子 hash → 已是最新：不动库（连 updated_at 都不碰）；
+//   - 其余（seed_hash 为空的老行第一次遇到 / hash 落后）→ 内容指纹对比裁决：
+//       内容已一致 → 只补 hash（不值得为它伪造一次「更新」）；
+//       内容有差 → **整条更新**（含 Prompt）+ 写新 hash。
+//
+// 为什么内容对比是最终裁决而不是只比 hash：seed_hash 为空的老行，内容可能本来
+// 就与当前种子一致——只比 hash 会把这些行误判成需要更新，平白制造一次写库。
+// hash 是快路径与版本记录，指纹对比才是正确性裁决。
+// enabled/is_main/custom 不参与：用户禁用过的 Agent 不会被热更新重新启用，
+// 结构标记不归种子管。
+func syncSeedAgentDefs(exec execer, now string) error {
+	for _, seed := range seedAgents {
+		var hash string
+		var userModified int
+		err := exec.QueryRow(`SELECT seed_hash, user_modified FROM agents WHERE id = ?`, seed.ID).Scan(&hash, &userModified)
+		if err == sql.ErrNoRows {
+			continue // 行还没插进来：ensureSeedAgents 刚补过（带 hash），到不了这里
+		}
+		if err != nil {
+			return fmt.Errorf("查种子 Agent %s 失败: %w", seed.ID, err)
+		}
+		if userModified == 1 {
+			continue // 用户改过：热更新永远跳过（user_modified 存在的全部意义）
+		}
+		want := seedHashOf(seed)
+		if hash == want {
+			continue // 已是最新：不动库
+		}
+		row, err := queryAgentRow(exec, seed.ID)
+		if err != nil {
+			return fmt.Errorf("读种子 Agent %s 失败: %w", seed.ID, err)
+		}
+		if seedHashOf(row) == want {
+			// 内容已是最新（老行第一次遇到 hash 列）：只补 hash。用 hash 判内容
+			// 一致——指纹经固定字段顺序的 JSON 序列化后再 sha256，hash 相等 ⇔
+			// 序列化结果相等（[]string 不可用 == 直接比较，走同一条序列化管道）。
+			if err := setSeedHash(exec, seed.ID, want); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := updateSeedAgentDef(exec, seed, want, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// queryAgentRow 读一条 Agent 行的可编辑字段（指纹对比用）。
+func queryAgentRow(exec execer, id string) (sessiondata.AgentDef, error) {
+	var a sessiondata.AgentDef
+	var tools, skills, delegates string
+	err := exec.QueryRow(`SELECT name, desc, color, model, tools, workflow, skills, delegates, approval, prompt, protocol FROM agents WHERE id = ?`, id).
+		Scan(&a.Name, &a.Desc, &a.Color, &a.Model, &tools, &a.Workflow, &skills, &delegates, &a.Approval, &a.Prompt, &a.Protocol)
+	if err != nil {
+		return sessiondata.AgentDef{}, err
+	}
+	a.Tools = decodeStrList(tools)
+	a.Skills = decodeStrList(skills)
+	a.Delegates = decodeStrList(delegates)
+	return a, nil
+}
+
+// setSeedHash 写一行种子 hash（只动 seed_hash——补 hash 不是内容变更，不碰 updated_at）。
+func setSeedHash(exec execer, id, hash string) error {
+	if _, err := exec.Exec(`UPDATE agents SET seed_hash = ? WHERE id = ?`, hash, id); err != nil {
+		return fmt.Errorf("写 Agent %s 种子 hash 失败: %w", id, err)
+	}
+	return nil
+}
+
+// updateSeedAgentDef 把一行种子 Agent **整条**更新为当前 seed 定义（含 Prompt），
+// 同时写上新 hash。只覆盖可编辑字段；enabled/is_main/custom/created_at 不动。
+func updateSeedAgentDef(exec execer, seed sessiondata.AgentDef, hash, now string) error {
+	tools, _ := json.Marshal(seed.Tools)
+	skills, _ := json.Marshal(seed.Skills)
+	delegates, _ := json.Marshal(seed.Delegates)
+	res, err := exec.Exec(`UPDATE agents SET name=?, desc=?, color=?, model=?, tools=?, workflow=?, skills=?, delegates=?, approval=?, prompt=?, protocol=?, seed_hash=?, updated_at=? WHERE id=?`,
+		seed.Name, seed.Desc, seed.Color, seed.Model, string(tools), seed.Workflow, string(skills), string(delegates), seed.Approval, seed.Prompt, seed.Protocol, hash, now, seed.ID)
+	if err != nil {
+		return fmt.Errorf("热更新 Agent %s 失败: %w", seed.ID, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("热更新 Agent %s 失败: 行不存在", seed.ID)
 	}
 	return nil
 }

@@ -158,7 +158,11 @@ func (s *Store) UpdateAgent(a sessiondata.AgentDef) error {
 	if a.Enabled {
 		enabled = 1
 	}
-	res, err := s.db.Exec(`UPDATE agents SET name=?, desc=?, color=?, model=?, tools=?, workflow=?, skills=?, delegates=?, approval=?, enabled=?, prompt=?, protocol=?, updated_at=? WHERE id=?`,
+	// user_modified 置 1（2026-10）：这是**用户侧**的 Agent 编辑写路径（协议
+	// agent.update ← 前端 AgentEditor/设置面板保存），置位后内置 Agent 定义的
+	// hash 热更新永远跳过这行——用户的自定义不被种子升级覆盖。系统侧的种子化
+	// 与 top-up 走 catalog_seeds.go 里的裸 SQL，不经过这里，不会误置位。
+	res, err := s.db.Exec(`UPDATE agents SET name=?, desc=?, color=?, model=?, tools=?, workflow=?, skills=?, delegates=?, approval=?, enabled=?, prompt=?, protocol=?, user_modified=1, updated_at=? WHERE id=?`,
 		a.Name, a.Desc, a.Color, a.Model, string(tools), a.Workflow, string(skills), string(delegates), a.Approval, enabled, a.Prompt, a.Protocol, nowNano(), a.ID)
 	if err != nil {
 		return fmt.Errorf("更新 Agent 失败: %w", err)

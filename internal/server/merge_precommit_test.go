@@ -202,8 +202,15 @@ func TestMergeRequestPrecommitConcurrentWithAutoCommit(t *testing.T) {
 	}()
 	go func() {
 		defer wg.Done()
-		if out := callMergeRequest(srv, id, ""); strings.Contains(out, "错误:") {
-			t.Errorf("merge_request 不应报错: %q", out)
+		out := callMergeRequest(srv, id, "")
+		if !strings.Contains(out, "错误:") {
+			return // merge_request 抢到互斥：正常路径
+		}
+		// 2026-10 起自动提交产生了新提交会触发自动合并钩子（maybeAutoMerge）——
+		// 并发下它可能先占到项目互斥，此时 merge_request 拿到的必须是
+		// 「已有合并进程在跑」而不是别的错误，且合并任务确实存在。
+		if !strings.Contains(out, "已有合并进程在跑") {
+			t.Errorf("merge_request 并发失败只应是互斥拒绝: %q", out)
 		}
 	}()
 	wg.Wait()

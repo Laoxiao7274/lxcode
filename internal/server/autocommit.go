@@ -72,12 +72,54 @@ func (s *Server) autoCommit(sessionID string) {
 		}
 		if committed {
 			log.Printf("自动提交：会话 %s 第 %d 轮已提交到 %s", sessionID, turn, meta.Branch)
+			// 轮末自动合并（2026-10 硬钩子，用户拍板）：本轮产生了新提交 → 异步起
+			// 一个合并进程。提交与触发必须在同一条成功路径上——不依赖模型记得调
+			// merge_request（提示词纪律保留，但它是软触发，这里是硬兜底）。另起
+			// goroutine 而不是在本 goroutine 里跑：钩子不该拖住提交路径的收尾
+			//（waitAutoCommits 等的是提交，不是合并的发起）。
+			s.mergeHookWG.Add(1)
+			go func() {
+				defer s.mergeHookWG.Done()
+				s.maybeAutoMerge(sessionID)
+			}()
 		}
 		return nil
 	})
 	if err != nil {
 		// fail-open：提交失败绝不影响对话，只记日志
 		log.Printf("自动提交：会话 %s 第 %d 轮提交失败（不影响对话）: %v", sessionID, turn, err)
+	}
+}
+
+// maybeAutoMerge 是轮末自动合并钩子：自动提交产生了新提交后，异步起一个合并进程
+//（startMergeJobOpts 的 autoHook 形态：目标分支默认、不推送）。用户拍板的行为原话
+// 「我不管在哪个会话做完事情，该轮对话结束，agent 自动提交当前修改，然后触发合并」
+// ——提交与触发必须在同一条成功路径上，不能指望模型每轮都记得调 merge_request。
+//
+// 与模型 merge_request 的共存：按项目互斥（mergejob.go 的 mergeMu/mergeJobProject）
+// 兜住两边同时发起——谁先占到谁跑，后来者拿「已有合并进程在跑」。
+//
+// 全静默 fail-open（与自动提交同款纪律）：合并本来就是异步后台任务，钩子绝不向
+// 用户报错、绝不打扰对话——所有失败只按原因分档记日志：
+//   - 「该项目已有合并进程在跑」：模型纪律先触发了 merge_request / workspace_sync，
+//     正常竞争，静默跳过；
+//   - 「本项目没有待合并的改动」：防御性（刚有新提交不该扫空——除非改动已被并进
+//     集成分支），静默跳过，且不留失败任务（见 startMergeJobOpts 的 autoHook 分支）；
+//   - 其他错误：只记日志，不影响会话。
+func (s *Server) maybeAutoMerge(sessionID string) {
+	jobID, err := s.startMergeJobOpts(sessionID, "", false, true)
+	if err == nil {
+		log.Printf("自动合并：会话 %s 已触发合并进程（任务 %s）", sessionID, jobID)
+		return
+	}
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "已有合并进程在跑"):
+		log.Printf("自动合并：会话 %s 跳过——该项目已有合并进程在跑（模型已先发起）", sessionID)
+	case strings.Contains(msg, "没有待合并的改动"):
+		log.Printf("自动合并：会话 %s 跳过——%s（防御性：刚产生新提交，通常是改动已被并进集成分支）", sessionID, msg)
+	default:
+		log.Printf("自动合并：会话 %s 起合并进程失败（不影响对话）: %v", sessionID, err)
 	}
 }
 
@@ -128,6 +170,11 @@ func (s *Server) commitBeforeMerge(sessionID, worktreePath string) error {
 
 // waitAutoCommits 等所有在途的自动提交结束（测试同步用；生产路径不调用）。
 func (s *Server) waitAutoCommits() { s.commitWG.Wait() }
+
+// waitAutoMergeHooks 等所有在途的自动合并钩子完成发起尝试（测试同步用；生产路径
+// 不调用）。钩子完成 = startMergeJobOpts 已返回（任务已起或已被静默拒），合并任务
+// 本身的收尾由 jobs.Manager 的状态机表达。
+func (s *Server) waitAutoMergeHooks() { s.mergeHookWG.Wait() }
 
 // commitMessage 组装检查点提交信息：「第 N 轮：<本轮用户请求摘要>」。
 func commitMessage(turn int, lastUser string) string {
