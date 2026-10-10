@@ -10,7 +10,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { REPEAT_NOTICE_PREFIX } from '../src/shared/jobs.ts';
-import { NOTICE_KINDS, noticeBody, noticeLabel } from '../src/shared/notices.ts';
+import { NOTICE_KINDS, SYSTEM_NOTICE_PREFIX, isHiddenNotice, noticeBody, noticeLabel } from '../src/shared/notices.ts';
 import { reduce } from '../src/shared/store.ts';
 
 const base = { blocks: [], busy: false, pending: null, todos: [], currentId: '', operationError: null, context: null, historyReady: false };
@@ -64,13 +64,17 @@ test('前缀表顺序敏感：取数组里第一个命中的前缀', () => {
 });
 
 test('标签取自 NOTICE_KINDS：后台任务通告那条的标签仍是「后台任务通告」（旧行为不许变）', () => {
-  assert.equal(NOTICE_KINDS.length, 2);
+  assert.equal(NOTICE_KINDS.length, 3, '后台任务通告 + 重复调用提醒 + 系统通告（hidden）');
   const job = NOTICE_KINDS.find((k) => k.label === '后台任务通告');
   assert.ok(job, '后台任务通告必须在表里');
   assert.equal(job.prefix, '[后台任务通告] ');
   const repeat = NOTICE_KINDS.find((k) => k.label === '重复调用提醒');
   assert.ok(repeat, '重复调用提醒必须在表里');
   assert.equal(repeat.prefix, REPEAT_NOTICE_PREFIX);
+  const sys = NOTICE_KINDS.find((k) => k.label === '系统通告');
+  assert.ok(sys, '系统通告必须在表里');
+  assert.equal(sys.prefix, SYSTEM_NOTICE_PREFIX);
+  assert.equal(sys.hidden, true, '系统通告是对用户隐藏的（写给模型的注记）');
 });
 
 // ---------- 回归钉子：两条路径都不能变成用户气泡 ----------
@@ -108,4 +112,66 @@ test('重复调用提醒在历史回放里同样是提示条（两条路径必�
   assert.equal(last.kind, 'notice', '刷新后同一句话不能换张脸');
   assert.equal(last.label, '重复调用提醒');
   assert.equal(last.text, '你在重复完全相同的工具调用，参数一个字都没变。先仔细看上一次的结果再决定下一步。');
+});
+
+// ---------- 系统通告（hidden，2026-10-10）：对用户隐藏，模型照常可见 ----------
+
+// 刻意写字面量（照抄 Go 的 agent.SystemNoticePrefix + userAbortedNotice）而不是拼
+// 常量：前端常量漂移时用常量拼的样本会跟着漂、断言照样绿——那是假绿。
+const SYSTEM_TEXT = '[系统通告] 用户中断了这次生成（刚才算到一半的回答没有完成）。不要自行续写或重试刚才的任务；等用户的下一条指示，按新指示行动。';
+
+test('SYSTEM_NOTICE_PREFIX 与后端 agent.SystemNoticePrefix 逐字一致（含尾空格）', () => {
+  assert.equal(SYSTEM_NOTICE_PREFIX, '[系统通告] ');
+  assert.equal(SYSTEM_NOTICE_PREFIX.endsWith(' '), true, '尾空格必须保留');
+});
+
+test('isHiddenNotice：系统通告命中 hidden，其他种类与普通文本不命中', () => {
+  assert.equal(isHiddenNotice(SYSTEM_TEXT), true);
+  assert.equal(isHiddenNotice('看这条 [系统通告] 没在开头'), false, '只有开头才算');
+  assert.equal(isHiddenNotice('[后台任务通告] go test 结束。'), false, '非 hidden 照常显示');
+  assert.equal(isHiddenNotice('用户自己打的一句话'), false);
+  assert.equal(isHiddenNotice(''), false);
+});
+
+test('hidden 的系统注记在实时路径上不产生任何块（不渲染气泡也不渲染提示条）', () => {
+  const s = reduce(base, { type: 'userMessage', sessionId: 's1', text: SYSTEM_TEXT });
+  assert.equal(s.blocks.length, 0, '写给模型的注记，界面上当它不存在');
+  // 前后的普通消息不受影响
+  let s2 = reduce(base, { type: 'userMessage', sessionId: 's1', text: '帮我跑下测试' });
+  s2 = reduce(s2, { type: 'userMessage', sessionId: 's1', text: SYSTEM_TEXT });
+  s2 = reduce(s2, { type: 'userMessage', sessionId: 's1', text: '好了继续' });
+  assert.deepEqual(s2.blocks.map((b) => b.text), ['帮我跑下测试', '好了继续']);
+});
+
+test('hidden 的系统注记在历史回放里同样不产生任何块（两条路径一致）', () => {
+  const s = reduce(base, {
+    type: 'historyLoaded', sessionId: 's1',
+    history: {
+      sessionId: 's1', busy: false, pending: null, todos: [],
+      messages: [
+        { role: 'user', content: '帮我看下构建' },
+        { role: 'assistant', content: '好' },
+        { role: 'user', content: SYSTEM_TEXT },
+        { role: 'user', content: '换个方向' },
+      ],
+    },
+  });
+  assert.deepEqual(
+    s.blocks.filter((b) => b.kind === 'user' || b.kind === 'notice').map((b) => b.text ?? b.content),
+    ['帮我看下构建', '换个方向'],
+    '刷新后系统注记同样不可见（不换张脸）',
+  );
+});
+
+test('非 hidden 的通告（后台任务）在两条路径上照常渲染提示条——hidden 只影响自己那一行', () => {
+  const job = '[后台任务通告] 后台任务 go test 结束（退出码 0）。';
+  const live = reduce(base, { type: 'userMessage', sessionId: 's1', text: job });
+  assert.equal(live.blocks.length, 1);
+  assert.equal(live.blocks[0].kind, 'notice');
+  assert.equal(live.blocks[0].label, '后台任务通告');
+  const replay = reduce(base, {
+    type: 'historyLoaded', sessionId: 's1',
+    history: { sessionId: 's1', busy: false, pending: null, todos: [], messages: [{ role: 'user', content: job }] },
+  });
+  assert.equal(replay.blocks[0].kind, 'notice');
 });

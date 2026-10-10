@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { staggerIn } from "../../shared/motion";
 import { playEnter } from "../../shared/anim";
 import { useDismissal } from "../../shared/popover";
 import { useUpdate } from "../../shared/update";
-import type { AgentSource, ProjectMeta } from "../../shared/types";
+import { busyCountsByWorkspace } from "../../shared/busy-summary";
+import type { AgentSource, ProjectMeta, SessionMeta } from "../../shared/types";
 import { AddProjectDialog } from "./AddProjectDialog";
 import { ProjectInstructionsDialog } from "./ProjectInstructionsDialog";
 import { SessionRow } from "./SessionRow";
@@ -11,6 +12,18 @@ import { SessionRow } from "./SessionRow";
 /** 「未分组」过滤目标（无归属会话的家——不依赖真实项目 id）。
  *  导出给 App 用：启动时的默认范围可能落在「未分组」（App 的自动选中）。 */
 export const LOOSE = "";
+
+/** 项目行的「运行中」角标：spinner +（多于一个时）×N。count<=0 不渲染。
+ *  视觉沿用既有件（mset-spinner + 侧栏运行蓝 #3b82f6），不发明新视觉。 */
+export function ProjectRunBadge({ count }: { count: number }) {
+  if (count <= 0) return null;
+  return (
+    <span className="proj-run" title={`${count} 个会话正在运行`} aria-label={`${count} 个会话正在运行`}>
+      <span className="mset-spinner proj-run-spinner" aria-hidden />
+      {count > 1 && <span className="proj-run-count">×{count}</span>}
+    </span>
+  );
+}
 
 /** 侧栏（Codex 2026-05 版形态）：
  *  导航项（新对话/搜索/插件/自动化）→「项目」分组（上）→「对话」分组（下）。
@@ -78,7 +91,9 @@ export function Sidebar({
   void projectsTick;
   const projects = source.projects();
 
-  const all = source.sessions().filter((s) => !s.archived);
+  const allSessions = source.sessions();
+  // 列表引用稳定（source 内部缓存），过滤结果按它记忆化——busy 汇总随之不重算。
+  const all = useMemo(() => allSessions.filter((s) => !s.archived), [allSessions]);
   const loose = all.filter((s) => !s.workspace);
   // 过滤语义：项目 id → 该项目会话；LOOSE（默认）→ 未绑定会话
   const projectFiltered = filter === LOOSE ? loose : all.filter((s) => s.workspace === filter);
@@ -87,8 +102,23 @@ export function Sidebar({
     : projectFiltered;
   // 项目 id → 元数据（会话 workspace 指向项目 id，显示时取名）
   const projectById = new Map(projects.map((p) => [p.id, p]));
+  // busy 汇总（项目行「运行中」角标）：输入 =（未归档会话列表 + per-session busy，
+  // 即 App 从 sessionStates 派生的同一份 busyBySession——与 TabBar 小点同源）。
+  // 口径见 shared/busy-summary.ts：只算顶层会话（子会话 busy 不上 wire，无法可靠归属）。
+  const busyCountByWorkspace = useMemo(
+    () => busyCountsByWorkspace(all, busyBySession),
+    [all, busyBySession],
+  );
+  /** 未分组行的运行计数（workspace 空串 = 未分组，同一份结果里的 "" 键）。 */
+  const looseRun = busyCountByWorkspace[LOOSE] ?? 0;
   /** 当前范围的显示名（新对话归属提示用）。 */
   const filterName = filter === LOOSE ? "未分组" : projectById.get(filter)?.name ?? "项目";
+  /** 会话行的 hover 提示：`<项目名> · <会话标题>`（未分组/项目缺席 → undefined，
+   *  SessionRow 回落标题本身——不许把没有归属的会话伪装成有归属）。 */
+  const sessionHint = (s: SessionMeta): string | undefined => {
+    const name = s.workspace ? projectById.get(s.workspace)?.name : undefined;
+    return name ? `${name} · ${s.title}` : undefined;
+  };
 
   // 后出现的会话行（首轮消息建会话、归档区恢复）单独入场；
   // 首屏整列由 staggerIn 接管，boot 窗口内跳过避免双份动画打架。
@@ -235,14 +265,16 @@ export function Sidebar({
       {projects.map((p) => {
         const count = all.filter((s) => s.workspace === p.id).length;
         const active = filter === p.id;
+        const runCount = busyCountByWorkspace[p.id] ?? 0;
         return (
           <div
             key={p.id}
             className={"proj-row" + (active ? " active" : "")}
-            title={p.path}
+            title={runCount > 0 ? `${p.path}（${runCount} 个会话正在运行）` : p.path}
             role="button"
             tabIndex={0}
             aria-pressed={active}
+            aria-label={runCount > 0 ? `${p.name}，${runCount} 个会话正在运行` : undefined}
             onClick={() => { if (!active) setFilter(p.id); onOpenChat(); }}
             onKeyDown={(e) => { if (e.key === "Enter") { if (!active) setFilter(p.id); onOpenChat(); } }}
           >
@@ -250,6 +282,8 @@ export function Sidebar({
               <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
             </svg>
             <span className="proj-name">{p.name}</span>
+            {/* 该项目下有会话在跑（顶层口径，见 busyCountsByWorkspace） */}
+            <ProjectRunBadge count={runCount} />
             {/* 项目守则入口（hover 出现）：项目级「自定义指令」= 项目根 AGENTS.md */}
             <button
               type="button"
@@ -269,10 +303,11 @@ export function Sidebar({
           范围恒有选中，没有「全部」可退；会话为 0 时它仍代表当前范围）。 */}
       <div
         className={"proj-row loose" + (filter === LOOSE ? " active" : "")}
-        title="未归属项目的对话"
+        title={looseRun > 0 ? `未归属项目的对话（${looseRun} 个会话正在运行）` : "未归属项目的对话"}
         role="button"
         tabIndex={0}
         aria-pressed={filter === LOOSE}
+        aria-label={looseRun > 0 ? `未分组，${looseRun} 个会话正在运行` : undefined}
         onClick={() => { if (filter !== LOOSE) setFilter(LOOSE); onOpenChat(); }}
         onKeyDown={(e) => { if (e.key === "Enter") { if (filter !== LOOSE) setFilter(LOOSE); onOpenChat(); } }}
       >
@@ -281,6 +316,7 @@ export function Sidebar({
           <path d="M9 13.5h6" strokeDasharray="1.5 2.2" />
         </svg>
         <span className="proj-name">未分组</span>
+        <ProjectRunBadge count={looseRun} />
         <span className="proj-count">{loose.length}</span>
       </div>
       {projects.length === 0 && loose.length === 0 && (
@@ -318,11 +354,12 @@ export function Sidebar({
           busy={Boolean(busyBySession[s.id])}
           renaming={renaming === s.id}
           menuOpen={menuFor === s.id}
+          hint={sessionHint(s)}
           onOpenMenu={setMenuFor}
           onCloseMenu={() => setMenuFor(null)}
           onStartRename={setRenaming}
           onRename={commitRename}
-          onArchive={(id) => source.archiveSession(id)}
+          onArchive={(id, release) => source.archiveSession(id, release)}
           onReleaseWorktree={(id) => source.releaseWorktree(id)}
           onResume={(id) => {
             setFilter(source.sessions().find((session) => session.id === id)?.workspace ?? LOOSE);

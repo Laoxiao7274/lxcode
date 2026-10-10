@@ -22,11 +22,11 @@
   letter-spacing: 0.01em;
 }
 .stat-add {
-  color: #059669;
+  color: var(--ok-text);
   background: color-mix(in srgb, #10a37f 10%, transparent);
 }
 .stat-del {
-  color: #b91c1c;
+  color: var(--err-text);
   background: color-mix(in srgb, #ef4444 9%, transparent);
 }
 /* ===== diff 卡（DSH DiffBlock 对齐：四列网格 + 复制 + footer 统计） ===== */
@@ -35,7 +35,7 @@
   margin: 5px 0 0;
   border-radius: 12px;
   border: 0.5px solid var(--border);
-  background: var(--code-bg, #f4f5f7);
+  background: var(--code-bg);
   overflow: hidden;
 }
 /* 复制按钮：右上角浮动（DSH copyButton） */
@@ -375,7 +375,7 @@
 }
 .scroll-to-bottom-btn.fd-btn-g:hover {
   color: var(--fg);
-  border-color: #c9c9cf;
+  border-color: var(--border-hover);
 }
 .scroll-to-bottom-btn.fd-btn-g:focus-visible {
   outline: 2px solid var(--fg-muted);
@@ -413,11 +413,42 @@
 }
 .msg.user .bubble {
   max-width: 70%;
-  background: #f1f1f3;
+  background: var(--bg-inset);
   border-radius: 22px;
   padding: 10px 16px;
   font-size: 14px;
   white-space: pre-wrap;
+}
+/* 乐观用户气泡（pending——后端还没回执，体验修复批次 2）：整体调淡 + 尾随
+ * 「发送中…」轻量指示。回执（chat.userMessage）一到，归约器按 FIFO 换成本体
+ * 气泡（pending 块移除、真块带上 seq）——这里不需要任何过渡动画，换块即换脸。 */
+.msg.user .bubble.bubble-pending {
+  opacity: 0.55;
+}
+.bubble-pending .pending-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 10px;
+  font-size: 12px;
+  opacity: 0.8;
+  white-space: nowrap;
+}
+.bubble-pending .pending-hint .mset-spinner {
+  width: 10px;
+  height: 10px;
+  border-width: 1px;
+}
+/* 乐观气泡的附件标记（图片批次 B）：「[图片]×N [文件]×M」小 chip 行——
+ * pending 阶段图还发不到历史渲染层，但"这条带着附件"必须当场看得见。 */
+.bubble-atts {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 8px;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  white-space: nowrap;
 }
 /* 用户气泡**下方**的图标动作条（复制 / 编辑 / 撤回）。
  *
@@ -588,6 +619,24 @@
   font-size: 10px;
   color: var(--fg-faint);
 }
+/* 失败卡的「错误」小标识（2026-10-09）：错误原因全文在卡头 hover title 里，这里给一个
+ *  看得见的入口——点它也打开子会话（错误的完整上下文在子会话里），与整行点击同一个动作。
+ *  形态对齐 .tab-child-kind 的小胶囊语言，走危险色系（与 data-error 的描边同源）。
+ *  DOM 上是 span + role="button"（卡头是 <button>，HTML 不允许按钮嵌按钮）。 */
+.dispatch-error-chip {
+  flex: none;
+  font-size: 9.5px;
+  line-height: 15px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: rgba(224, 46, 42, 0.12);
+  color: var(--danger);
+  cursor: pointer;
+  user-select: none;
+}
+.dispatch-error-chip:hover {
+  background: rgba(224, 46, 42, 0.2);
+}
 /* 子会话 id 徽标（基础样式在 catalog.css：等宽 + 低对比度）——可打开时的"点得进去"
  * 视觉：成功色 + 描边 + 一个**向外的箭头**（↗）+ 主区 hover 时加下划线。
  * 只在真能打开时出现（.openable 由 DispatchCard 按 dispatchPrimaryAction 的同一份
@@ -631,7 +680,7 @@
   cursor: pointer;
 }
 .trow-row[role="button"]:hover {
-  background: rgba(0, 0, 0, 0.03);
+  background: var(--hover-veil);
   border-radius: 6px;
 }
 /* 运行中：光带扫过（DSH sweep——bg-base 60% 混色的横带） */
@@ -745,7 +794,7 @@
   background: currentColor;
 }
 .sdot.run {
-  color: #3b82f6;
+  color: var(--info-text);
   animation: sdot-pulse 1.6s ease-in-out infinite;
 }
 .sdot.err {
@@ -766,7 +815,7 @@
   position: relative;
   margin: 4px 0 4px 4px;
   padding-left: 30px; /* 左 gutter：状态点的一列之地（DSH --dsl-terminal-gutter） */
-  background: var(--code-bg, #f4f5f7);
+  background: var(--code-bg);
   border: 0.5px solid var(--border);
   border-radius: 12px;
   overflow: hidden;
@@ -842,7 +891,7 @@
   flex: none;
   position: sticky;
   top: 0;
-  background: var(--code-bg, #f4f5f7);
+  background: var(--code-bg);
   border: none;
   padding: 0;
   margin: 0;
@@ -909,7 +958,7 @@
   width: 8px;
 }
 .tool-result::-webkit-scrollbar-thumb {
-  background: #3a3a3a;
+  background: var(--scrollbar-thumb);
   border-radius: 4px;
 }
 /* ===== edit 工具的 diff 卡（沿用） ===== */
@@ -1136,7 +1185,7 @@
   border-radius: 6px;
 }
 .md-a {
-  color: #3b82f6;
+  color: var(--info-text);
   text-decoration: underline;
   text-underline-offset: 3px;
 }

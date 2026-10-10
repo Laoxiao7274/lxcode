@@ -101,7 +101,9 @@ func TestChatOperationsCarryFocusedSession(t *testing.T) {
 	if err := r.syncHistory(); err != nil {
 		t.Fatal(err)
 	}
-	if got := be.calls[0].params; got != (protocol.ChatSendParams{SessionID: "s1", Text: "hello"}) {
+	if got := be.calls[0].params; got.(protocol.ChatSendParams).Text != "hello" ||
+		got.(protocol.ChatSendParams).SessionID != "s1" ||
+		len(got.(protocol.ChatSendParams).Images) != 0 {
 		t.Fatalf("send params = %#v", got)
 	}
 	if got := be.calls[1].params; got != (protocol.ToolConfirmParams{SessionID: "s1", ID: "confirm-1", Allow: true}) {

@@ -5,14 +5,16 @@
 // 改档走 applyApproval：本地持久化 + **立刻发给后端**（chat.approval）。两者缺一
 // 不可——只改本地设置的话，正在跑的那一轮还在按开轮时的档位弹确认（用户实测）。
 //
-// **切「完全访问」要两步确认**（2026-10-07 用户要求）：auto = 高危工具不再问人，
-// 误触一下就把执行面全放开。复用全仓统一的两步确认状态机（nextConfirmState）：
-// 首次点击项变成「再次点击确认」，再点才真的改档；菜单收起即复位。
+// **切「完全访问」要弹窗确认**（2026-10-09 用户拍板，取代 10-07 的「再次点击」
+// 两步确认）：auto = 高危工具不再问人，误触一下就把执行面全放开——先弹
+// ApprovalConfirmDialog 说清后果，确认才真的改档；降险方向直接切。
+// 分流规则在 shared/approval.ts（approvalPick），与设置面板共用一份。
 import { useEffect, useState } from "react";
 import { useSettings, APPROVALS } from "../../shared/settings";
-import { nextConfirmState } from "../../shared/confirm-click";
+import { approvalPick } from "../../shared/approval";
 import { usePopover } from "../../shared/popover";
 import { IconCheck, IconChevronDown } from "../icons";
+import { ApprovalConfirmDialog } from "./ApprovalConfirmDialog";
 import type { ApprovalMode } from "../../shared/types";
 
 const ICONS: Record<string, string> = {
@@ -24,23 +26,21 @@ const ICONS: Record<string, string> = {
 export function PermPicker() {
   const { settings, applyApproval } = useSettings();
   const { open, toggle, requestClose, rootRef } = usePopover();
-  // 完全访问的两步确认态（只在菜单开着时有意义；菜单收起即复位——下次打开
-  // 必须从头走两步，不能带着上次的半确认态）
-  const [confirming, setConfirming] = useState(false);
+  // 「完全访问」确认弹窗（只在菜单开着时有意义；菜单收起即复位——下次打开
+  // 必须重新确认，不能带着上次的半确认态）
+  const [confirmOpen, setConfirmOpen] = useState(false);
   useEffect(() => {
-    if (!open) setConfirming(false);
+    if (!open) setConfirmOpen(false);
   }, [open]);
 
   const current = APPROVALS.find((p) => p.id === settings.approval) ?? APPROVALS[0];
 
-  const pick = (id: ApprovalMode) => {
-    if (id === "auto" && settings.approval !== "auto") {
-      // 危险方向才拦：从完全访问切回安全档不需要确认（收权总是安全的）
-      const next = nextConfirmState(confirming, "click");
-      setConfirming(next.confirming);
-      if (!next.fire) return;
-    }
-    applyApproval(id);
+  // 升险到 auto 先弹窗（askConfirm），其余直接改——分流规则与设置面板共用一份
+  const pick = (id: ApprovalMode) => approvalPick(settings.approval, id, applyApproval, () => setConfirmOpen(true));
+
+  const confirmAuto = () => {
+    setConfirmOpen(false);
+    applyApproval("auto");
     requestClose();
   };
 
@@ -58,30 +58,34 @@ export function PermPicker() {
         </button>
       </span>
       {open && (
-        <div className="perm-menu" role="menu" data-pop>
-          {APPROVALS.map((p) => {
-            const armed = p.id === "auto" && confirming && settings.approval !== "auto";
-            return (
-              <button
-                key={p.id}
-                type="button"
-                className={"perm-item" + (settings.approval === p.id ? " on" : "") + (armed ? " confirming" : "")}
-                role="menuitem"
-                title={p.hint}
-                onClick={() => pick(p.id)}
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <path d={ICONS[p.id]} />
-                </svg>
-                <span className="perm-text">
-                  <span className="perm-label">{armed ? "再次点击确认开启完全访问" : p.label}</span>
-                  <span className="perm-desc">{armed ? "高危工具将不再请求确认" : p.hint}</span>
-                </span>
-                {settings.approval === p.id && <IconCheck />}
-              </button>
-            );
-          })}
-        </div>
+        <>
+          <div className="perm-menu" role="menu" data-pop>
+            {APPROVALS.map((p) => {
+              return (
+                <button
+                  key={p.id}
+                  type="button"
+                  className={"perm-item" + (settings.approval === p.id ? " on" : "")}
+                  role="menuitem"
+                  title={p.hint}
+                  onClick={() => pick(p.id)}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d={ICONS[p.id]} />
+                  </svg>
+                  <span className="perm-text">
+                    <span className="perm-label">{p.label}</span>
+                    <span className="perm-desc">{p.hint}</span>
+                  </span>
+                  {settings.approval === p.id && <IconCheck />}
+                </button>
+              );
+            })}
+          </div>
+          {confirmOpen && (
+            <ApprovalConfirmDialog onConfirm={confirmAuto} onCancel={() => setConfirmOpen(false)} />
+          )}
+        </>
       )}
     </div>
   );

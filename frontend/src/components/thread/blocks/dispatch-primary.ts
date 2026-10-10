@@ -55,3 +55,24 @@ export function dispatchPrimaryTitle(
   }
   return "这次派发没有记下子会话 id（老数据/演示态）——进不去子会话";
 }
+
+/** 失败卡 hover / aria 里的错误原因截断上限（码点数）。
+ *  错误正文可能是整段堆栈——title 属性塞几万字符浏览器自己也会截断，还拖 hover
+ *  渲染；800 字符足够看清「为什么失败」，全文在子会话里。 */
+export const DISPATCH_ERROR_TITLE_LIMIT = 800;
+
+/**
+ * 失败卡的错误原因提示（2026-10-09：失败卡原先只写「✗ 失败」，错误文本躺在
+ * block.result 里从不展示——用户原话「失败的子代理，鼠标移入要能展示错误原因」）。
+ *
+ * 全文按**码点**截断（代理对从中间切开就是半个字符），超限注明完整原因的位置。
+ * 没有错误文本（老数据 result 缺席 / 空白）返回 null——调用方回落到默认 title，
+ * 不许渲染成「失败：」后面空空如也。
+ */
+export function dispatchErrorTitle(result: string | undefined | null): string | null {
+  const text = (result ?? "").trim();
+  if (text === "") return null;
+  const chars = [...text];
+  if (chars.length <= DISPATCH_ERROR_TITLE_LIMIT) return text;
+  return chars.slice(0, DISPATCH_ERROR_TITLE_LIMIT).join("") + "…（完整原因在子会话里）";
+}

@@ -16,6 +16,25 @@ import (
 	"github.com/moyunteng/lxcode/internal/tools"
 )
 
+// SystemNoticePrefix 标注「这条消息是系统对模型的注记，不是用户说的，也不要给用户
+// 看」——前端按它识别后**不渲染任何块**（用户气泡与提示条都不出），模型侧照常入
+// 历史/注入/落库（与 protocol.JobNoticePrefix、agent.RepeatNoticePrefix 同一套
+// 文本前缀机制，见 notify.go）。常量放在 agent 而不是 protocol：分层守卫禁止
+// agent import protocol（AGENTS.md §4），与 RepeatNoticePrefix 同一条理由；前端的
+// 同名常量由 frontend/tests 的对照测试钉住逐字一致。
+const SystemNoticePrefix = "[系统通告] "
+
+// userAbortedNotice 是「用户主动停止」时入队的通告（turn.go 的 aborted 分支 /
+// dispatch.go 的取消分支）：模型必须知道这轮是被用户停的——半截回答不是完整
+// 结论，不要自行续写，等用户的下一条指示。文案用中性的「生成被用户中断」，
+// 不区分「用户停的是本会话」与「用户停了父轮导致本子会话连带被停」：
+// 对模型来说两者的行动指令一致（停下、别续写、听下一条指示），强分没有收益。
+//
+// 带 SystemNoticePrefix：对用户隐藏（不渲染成用户气泡/提示条），模型照常可见——
+// 三处入队写点（runTurn 的 aborted 分支 + dispatch.go 的三个取消分支）都用本
+// 常量，前缀在这里拼一次即全覆盖。
+const userAbortedNotice = SystemNoticePrefix + "用户中断了这次生成（刚才算到一半的回答没有完成）。不要自行续写或重试刚才的任务；等用户的下一条指示，按新指示行动。"
+
 // streamWithLLM 默认 LLM 调用：按 default 角色配置建客户端，经 ChatAuto
 // （anthropic 永远流式；openai 带工具走非流式回放，见 llm.ChatAuto 注释——
 // 该策略来自真机端点实测：部分 openai 兼容端点的流式会丢 tool_calls）。
@@ -115,6 +134,11 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig, ac *sessiondata.A
 		s.mu.Unlock()
 		s.emit(TodoUpdatedEvent{Items: items})
 	})
+	// 本轮的提问通道（ask_user 工具的等待端）：向用户提问 = 一张 ask 形态的
+	// 确认卡，走 awaitConfirm 的既有挂起槽位。经 ctx 注入（与 todo sink /
+	// 技能目录同一条理由）：「能不能问、答案给谁」是会话级状态，注册表是
+	// 进程级单例——父子会话各有各的提问归属。
+	ctx = tools.WithAsker(ctx, s.askUser)
 
 	var fileChanges []FileChange
 	defer func() {
@@ -213,6 +237,16 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig, ac *sessiondata.A
 				partial = &m
 			}
 			s.emit(TurnErrorEvent{Message: note, Aborted: aborted, Partial: partial})
+			// 让模型知道是**用户**停的（而不是端点故障）：被动通告入队，下一轮
+			// 真的开始时（用户说话 / 下一次派发）由轮边界注入——runTurn 收尾的
+			// flushNotices 不会把它开成新一轮（那是主动通告的语义；中断注记
+			// 自动开轮 = 用户刚点停止模型又自言自语一段）。主会话与子会话走
+			// 同一条 runTurn 路径，一处覆盖两类；子会话经父取消（ctx 传播）也
+			// 走到这里——runDispatch 只对「没走 aborted 收尾」的取消（确认门
+			// 等待期被断）补队，不会重复。
+			if aborted {
+				_ = s.QueueNoticePassive(userAbortedNotice)
+			}
 			return
 		}
 		// 调用参数可能是半截 JSON（输出被 max_tokens 截断）：先修好再入历史，
@@ -265,11 +299,12 @@ func (s *Session) streamRound(ctx context.Context, workDir, effort string, ac *s
 	// 组合（nil = 全局默认）；工具 wire 声明按白名单过滤。
 	allow := agentToolsOf(ac)
 	docs := s.projectDocsFor(workDir)
+	wt, isChild := s.worktreeInfo()
 	var prompt string
 	if ac != nil {
-		prompt = ComposeSystemPrompt(s.tools, workDir, ac, allow, docs)
+		prompt = ComposeSystemPrompt(s.tools, workDir, ac, allow, wt, isChild, docs)
 	} else {
-		prompt = BuildSystemPrompt(s.tools, workDir, docs)
+		prompt = BuildSystemPrompt(s.tools, workDir, wt, isChild, docs)
 	}
 	msgs := append([]llm.Message{{Role: "system", Content: prompt}}, history...)
 

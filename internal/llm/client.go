@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -128,7 +129,8 @@ func applyOpts(opts []Option) requestOpts {
 	return o
 }
 
-// Chat 非流式对话：网络错误/5xx 指数退避重试（1s、2s，共 3 次），4xx 短路。
+// Chat 非流式对话：网络错误/5xx/429 指数退避重试（默认 1s、2s，共 3 次；
+// 429 的 Retry-After 可解析时用它，钳到 10s），其余 4xx 短路。
 func (c *Client) Chat(ctx context.Context, msgs []Message, opts ...Option) (*ChatResult, error) {
 	var lastErr error
 	for attempt := 0; attempt <= len(retryBackoff); attempt++ {
@@ -144,19 +146,40 @@ func (c *Client) Chat(ctx context.Context, msgs []Message, opts ...Option) (*Cha
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
-			case <-time.After(retryBackoff[attempt]):
+			case <-time.After(retryDelay(err, attempt)):
 			}
 		}
 	}
 	return nil, lastErr
 }
 
-// retryable：5xx/网络错误重试；4xx（鉴权/参数）与 ctx 取消不重试。
+// retryable：5xx/网络错误/429 重试；其余 4xx（鉴权/参数）与 ctx 取消不重试。
+// 429 单列：它是限流不是参数错，等一等就能过——等待时长按 Retry-After（见 retryDelay）。
 func retryable(err error) bool {
 	if apiErr, ok := err.(*APIError); ok {
+		if apiErr.StatusCode == http.StatusTooManyRequests {
+			return true
+		}
 		return apiErr.StatusCode >= 500
 	}
 	return true
+}
+
+// retryDelay 计算一次重试前的等待：端点给了可解析的 Retry-After 就用它
+//（钳到 maxRetryAfter——限流窗口可能长达几十分钟，照等会把用户挂在界面上），
+// 否则按固定退避表。Chat 与 ChatStream 共用一份，两条路径的节奏必须一致。
+func retryDelay(err error, attempt int) time.Duration {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.RetryAfter > 0 {
+		if apiErr.RetryAfter > maxRetryAfter {
+			return maxRetryAfter
+		}
+		return apiErr.RetryAfter
+	}
+	if attempt < len(retryBackoff) {
+		return retryBackoff[attempt]
+	}
+	return retryBackoff[len(retryBackoff)-1]
 }
 
 func (c *Client) chatOnce(ctx context.Context, msgs []Message, o requestOpts) (*ChatResult, error) {
@@ -167,14 +190,15 @@ func (c *Client) chatOnce(ctx context.Context, msgs []Message, o requestOpts) (*
 }
 
 // post 发 JSON 请求并读回（状态码由调用方判断）。鉴权头按格式由适配器设置。
-func (c *Client) post(ctx context.Context, payload any, headers map[string]string) (int, []byte, error) {
+// 第三返回值是响应头（Retry-After 的取数源——429 限流重试要用）。
+func (c *Client) post(ctx context.Context, payload any, headers map[string]string) (int, []byte, http.Header, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return 0, nil, fmt.Errorf("序列化请求: %w", err)
+		return 0, nil, nil, fmt.Errorf("序列化请求: %w", err)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(body))
 	if err != nil {
-		return 0, nil, fmt.Errorf("构造请求: %w", err)
+		return 0, nil, nil, fmt.Errorf("构造请求: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	for k, v := range headers {
@@ -183,16 +207,16 @@ func (c *Client) post(ctx context.Context, payload any, headers map[string]strin
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
-			return 0, nil, fmt.Errorf("请求已取消: %w", ctx.Err())
+			return 0, nil, nil, fmt.Errorf("请求已取消: %w", ctx.Err())
 		}
-		return 0, nil, fmt.Errorf("请求失败（端点未启动?）: %w", err)
+		return 0, nil, nil, fmt.Errorf("请求失败（端点未启动?）: %w", err)
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20)) // 8MB 上限防御
 	if err != nil {
-		return resp.StatusCode, nil, fmt.Errorf("读取响应: %w", err)
+		return resp.StatusCode, nil, resp.Header, fmt.Errorf("读取响应: %w", err)
 	}
-	return resp.StatusCode, raw, nil
+	return resp.StatusCode, raw, resp.Header, nil
 }
 
 // postStream 发起流式 POST，成功（2xx）返回响应体供 SSE 解析。
@@ -220,20 +244,114 @@ func (c *Client) postStream(ctx context.Context, payload any, headers map[string
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		resp.Body.Close()
-		return nil, &APIError{StatusCode: resp.StatusCode, Body: truncateStr(string(raw), 512)}
+		// Retry-After 一并解析（429 限流的等待依据，Chat/ChatStream 共用）
+		return nil, newAPIError(resp.StatusCode, string(raw), resp.Header)
 	}
 	return resp.Body, nil
 }
 
 // ChatStream 流式对话。连接与状态码错误同步返回；解析在后台 goroutine，
 // 事件经通道投递，通道关闭即流结束。中断（断流/取消）以 error 事件收尾，
-// Result 携带已生成的部分内容——不整体丢弃。流式不重试（云端版同款）。
+// Result 携带已生成的部分内容——不整体丢弃。
+//
+// 流式**受限重试**（2026-10-10：网关超时/5xx 不再一碰就断）：与 Chat 同一套
+// 节奏（1s/2s，共 3 次尝试），安全边界只有一条——**已向调用方交付过任何事件
+// （delta/tool_call）就不能重试**，否则同一段输出会被重复交给用户。所以：
+//   - 连接期失败（非 2xx / 网络错误）：一个事件都没交付过，同步退避后重试；
+//   - 首个事件就是 error 且此前零交付（首事件前断流）：pumpStream 丢弃它退避重试；
+//   - 已交付过事件后的失败：原样转发错误（partial 语义不变，调用方按现状处理）。
+//
+// ctx 取消与 4xx（含 IsContextOverflow）不重试。重试对上层透明：交付 0 事件
+// 意味着 turn 层还没 emit 过任何东西，重试不产生重复输出。
 func (c *Client) ChatStream(ctx context.Context, msgs []Message, opts ...Option) (<-chan StreamEvent, error) {
 	o := applyOpts(opts)
+	var lastErr error
+	for attempt := 0; attempt <= len(retryBackoff); attempt++ {
+		if attempt > 0 {
+			// 退避（Retry-After 优先）；ctx 取消就放弃
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(retryDelay(lastErr, attempt-1)):
+			}
+		}
+		ch, err := c.chatStreamOnce(ctx, msgs, o)
+		if err == nil {
+			// 连上了：剩余的重试预算交给搬运 goroutine（首事件前断流用它重试）
+			return c.pumpStream(ctx, ch, msgs, o, len(retryBackoff)-attempt), nil
+		}
+		lastErr = err
+		if ctx.Err() != nil || !retryable(err) {
+			return nil, err
+		}
+	}
+	return nil, lastErr
+}
+
+// chatStreamOnce 发起一次流式调用（不做重试——重试逻辑在 ChatStream/pumpStream）。
+func (c *Client) chatStreamOnce(ctx context.Context, msgs []Message, o requestOpts) (<-chan StreamEvent, error) {
 	if c.cfg.Format == FormatAnthropic {
 		return c.anthropicStream(ctx, msgs, o)
 	}
 	return c.openaiStream(ctx, msgs, o)
+}
+
+// pumpStream 把底层流事件搬运给调用方，并对「一个事件都没交付就失败」的流
+// 做受限重试（剩余预算 retriesLeft 由 ChatStream 按已消耗的尝试数递减）。
+//
+// 为什么在搬运层做：mid-stream 的失败以 EventError 事件到达，只有搬运方能
+// 在把它交给调用方之前判断「之前交付过几个事件」。已交付 >0 时错误原样冒泡
+//（partial 语义不变）；零交付时可安全重试——丢弃这次流，退避后重新发起。
+func (c *Client) pumpStream(ctx context.Context, ch <-chan StreamEvent, msgs []Message, o requestOpts, retriesLeft int) <-chan StreamEvent {
+	out := make(chan StreamEvent)
+	go func() {
+		defer close(out)
+		delivered := 0 // 已向调用方交付的事件数（重试安全边界的唯一判据）
+		var pendingErr error
+		pumpAttempt := 0 // 泵内的重试序号（默认退避表的游标）
+		for {
+			// 退避后重新发起（pendingErr 非空 = 上一次流在零交付处失败）
+			if pendingErr != nil {
+				select {
+				case <-ctx.Done():
+					// 取消不重试：错误原样交给调用方（partial 语义由它处理）
+					out <- StreamEvent{Type: EventError, Err: pendingErr}
+					return
+				case <-time.After(retryDelay(pendingErr, pumpAttempt-1)):
+				}
+				next, err := c.chatStreamOnce(ctx, msgs, o)
+				if err != nil {
+					if ctx.Err() != nil || !retryable(err) || retriesLeft <= 0 {
+						out <- StreamEvent{Type: EventError, Err: err}
+						return
+					}
+					retriesLeft--
+					pumpAttempt++
+					pendingErr = err
+					continue
+				}
+				ch = next
+				pendingErr = nil
+			}
+			retry := false
+			for ev := range ch {
+				if ev.Type == EventError && delivered == 0 && retriesLeft > 0 && ctx.Err() == nil && retryable(ev.Err) {
+					// 首个事件就是错误且零交付：丢弃，退避重试
+					pendingErr = ev.Err
+					retriesLeft--
+					pumpAttempt++
+					retry = true
+					break
+				}
+				delivered++
+				out <- ev
+			}
+			if !retry {
+				return // 正常结束（done/error 均已交付）
+			}
+		}
+	}()
+	return out
 }
 
 // ChatAuto 是"可靠优先"的统一对话入口：按格式分流——

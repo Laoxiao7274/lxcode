@@ -25,7 +25,7 @@
   height: 20px;
   border-radius: 6px;
   background: var(--fg);
-  color: #fff;
+  color: var(--on-accent);
   font-family: var(--font-mono);
   font-size: 11px;
   font-weight: 700;
@@ -83,7 +83,7 @@
 }
 .win-close:hover {
   background: #e02e2a;
-  color: #fff;
+  color: var(--on-accent);
 }
 .win-close:active {
   background: #c62622;
@@ -485,6 +485,12 @@
 }
 .conn-copy.danger.confirm {
   background: var(--danger);
-  color: #fff;
+  color: var(--on-accent);
   border-color: var(--danger);
+}
+
+/* ===== 暗色覆盖（零散硬编码：亮色值保留在原规则里不动） ===== */
+html[data-theme="dark"] .win-btn:active { background: var(--border-hover); }
+@media (prefers-color-scheme: dark) {
+  html[data-theme="auto"] .win-btn:active { background: var(--border-hover); }
 }

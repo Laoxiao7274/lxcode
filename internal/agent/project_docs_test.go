@@ -20,7 +20,7 @@ func TestProjectDocsInjectedAfterAgentLayers(t *testing.T) {
 		Protocol: "定制协议：只写 Go。", Prompt: "自定义段：先读再改。",
 	}}
 	docs := ProjectDocs{Path: `C:\proj\demo\AGENTS.md`, Content: docsMarker}
-	prompt := ComposeSystemPrompt(s.tools, `C:\proj\demo`, ac, ac.Def.Tools, docs)
+	prompt := ComposeSystemPrompt(s.tools, `C:\proj\demo`, ac, ac.Def.Tools, WorktreeInfo{}, false, docs)
 
 	idx := func(sub string) int {
 		i := strings.Index(prompt, sub)
@@ -58,16 +58,16 @@ func TestProjectDocsAbsentNoNoise(t *testing.T) {
 	s := newAgentSession(t)
 	ac := &sessiondata.AgentContext{Def: sessiondata.AgentDef{ID: "coder", Name: "代码 Agent", Tools: []string{"read_file"}}}
 
-	base := ComposeSystemPrompt(s.tools, "/proj/demo", ac, ac.Def.Tools, ProjectDocs{})
+	base := ComposeSystemPrompt(s.tools, "/proj/demo", ac, ac.Def.Tools, WorktreeInfo{}, false, ProjectDocs{})
 	if strings.Contains(base, "项目约定") {
 		t.Fatal("没有守则时不该出现「项目约定」段")
 	}
-	empty := ComposeSystemPrompt(s.tools, "/proj/demo", ac, ac.Def.Tools, ProjectDocs{Path: "/proj/demo/AGENTS.md", Content: "   \n\n"})
+	empty := ComposeSystemPrompt(s.tools, "/proj/demo", ac, ac.Def.Tools, WorktreeInfo{}, false, ProjectDocs{Path: "/proj/demo/AGENTS.md", Content: "   \n\n"})
 	if empty != base {
 		t.Fatal("守则内容为空白时，提示词应与无守则时逐字节一致")
 	}
 	// 旧语境（无 Agent）同样适用
-	if p := BuildSystemPrompt(s.tools, "/proj/demo", ProjectDocs{}); strings.Contains(p, "项目约定") {
+	if p := BuildSystemPrompt(s.tools, "/proj/demo", WorktreeInfo{}, false, ProjectDocs{}); strings.Contains(p, "项目约定") {
 		t.Fatal("无 Agent 语境下没有守则时不该出现「项目约定」段")
 	}
 }
@@ -76,7 +76,7 @@ func TestProjectDocsAbsentNoNoise(t *testing.T) {
 // 用户明明写了守则却没生效，得让模型和用户都看得见原因。
 func TestProjectDocsNoteSurfaced(t *testing.T) {
 	s := newAgentSession(t)
-	prompt := BuildSystemPrompt(s.tools, "/proj/demo", ProjectDocs{
+	prompt := BuildSystemPrompt(s.tools, "/proj/demo", WorktreeInfo{}, false, ProjectDocs{
 		Path: "/proj/demo/AGENTS.md", Note: "文件 2097152 字节，超过 1048576 字节上限，已跳过",
 	})
 	if !strings.Contains(prompt, "项目约定") || !strings.Contains(prompt, "已跳过") {
@@ -88,7 +88,7 @@ func TestProjectDocsNoteSurfaced(t *testing.T) {
 func TestProjectDocsTruncated(t *testing.T) {
 	s := newAgentSession(t)
 	long := strings.Repeat("规则。", projectDocsCap) // 远超上限
-	prompt := BuildSystemPrompt(s.tools, "/proj/demo", ProjectDocs{Path: "/proj/demo/AGENTS.md", Content: long})
+	prompt := BuildSystemPrompt(s.tools, "/proj/demo", WorktreeInfo{}, false, ProjectDocs{Path: "/proj/demo/AGENTS.md", Content: long})
 	if !strings.Contains(prompt, "已截断") {
 		t.Fatal("超长守则应截断并注明")
 	}

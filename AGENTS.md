@@ -133,6 +133,12 @@
 | `bash` | 高危 | 超时 60s/上限 300s、输出 32KB、stdin ≤64KB；**`run_in_background=true` 起后台任务**（见 docs/jobs.md）；**Windows shell 选择见 §5 坑** |
 | `todo` | 低危 | 任务清单全量写入（active 唯一性硬校验）；会话持有状态 + TodoUpdated 事件 |
 | `agent_dispatch` | 低危 | 主 Agent 唯一工具：把任务派给名单里的子 Agent（**子 Agent = 独立会话**，见 §2.3；深度恒 1） |
+| `merge_request` | 低危 | 起一个后台合并进程（第二个 producer）：把本会话分支的改动交给内置合并 Agent 汇总到集成分支（处理冲突、跑构建测试）；同一会话同时只允许一个；**合并子会话与子 Agent 同款标签页**（dispatchStart/End 挂卡 + 实时流 + 提问卡在标签页内回答，见 docs/jobs.md §9），前端入口 = 后台任务面板的「合并请求」（`chat.mergeRequest`） |
+| `ask_user` | 低危 | 向用户提问并等待回答（确认门的「提问」形态，`Kind="ask"`）：回答文本作为工具结果回填；用户跳过 = 「用户没有回答，自行决策」；**auto 审批档不豁免提问**；与高危确认共用同一个挂起槽位 |
+| `workspace_status` | 低危 | 查询项目工作区状态（**只读**）：主检出的未提交/未跟踪文件、各会话分支 ahead/工作树/是否已并入主检出、集成分支的领先/落后；未分组会话报「没有归属项目」 |
+| `workspace_sync` | 中危 | 「帮我提交/推送」的链路：提交本会话 worktree（干净则跳过）→ 起合并进程（`startMergeJob` 加 `pushAfter` 参数，合并成功后推 `origin`，push 失败 detail 写清「合并已完成，仅推送失败」）；执行前走确认门 |
+| `workspace_rollback` | 中危 | 回滚**本会话分支**到 `last-turn`（默认）/`session-start`/指定 commit hash：脏工作区拒绝（绝不静默丢弃手工改动）；目标已并入集成分支时警告「要在集成分支上 revert」；绝不 push、绝不动集成分支与主检出；执行前走确认门 |
+| `workspace_publish` | 中危 | 把会话 worktree 里的产物（构建产物/生成的文件/目录）复制到项目主检出对应相对路径（worktree 里的产物在 gitignore 里、不随合并走）：source/target 都必须是相对路径（绝对路径与 `..` 拒绝）；目录递归复制、exclude 按路径段排除、`.git` 恒排除；单次上限 2000 文件 / 1GB；**覆盖主检出已有文件前走确认门**（文案列出会覆盖的文件）；主检出的写入只经确认门、只落 target 相对路径内 |
 
 后台任务的完整契约（内核 API / 工具 schema / 协议方法事件 / 唤醒投递语义 / 边界 / **实测坑**）见 **docs/jobs.md**——细节留在那里，本文件只留指针。**动进程启停代码前必读 §8**（取消必须杀整棵进程树）。
 

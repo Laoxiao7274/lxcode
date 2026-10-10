@@ -25,6 +25,17 @@ func (s *Server) dispatchChat(c *wsClient, req *protocol.Request, params json.Ra
 			return protocol.NewError(req.ID, protocol.CodeInvalidParams,
 				"approval 必须是 auto/confirm/strict 之一（空 = confirm）")
 		}
+		// 图片先纯校验（mime 白名单 / 张数 / 大小）再谈会话——参数不合法时
+		// 连会话行都不该建（入历史前拒绝，不留半截状态）。文件附件同批：
+		// 个数 / 大小 / 名字净化同一道闸。
+		decodedImgs, err := validateChatImages(p.Images)
+		if err != nil {
+			return protocol.NewError(req.ID, protocol.CodeInvalidParams, err.Error())
+		}
+		decodedFiles, fileNames, err := validateChatFiles(p.Files)
+		if err != nil {
+			return protocol.NewError(req.ID, protocol.CodeInvalidParams, err.Error())
+		}
 		id := p.SessionID
 		if id == "" {
 			id = c.sessionID
@@ -37,7 +48,7 @@ func (s *Server) dispatchChat(c *wsClient, req *protocol.Request, params json.Ra
 				return protocol.NewError(req.ID, protocol.CodeInvalidParams, err.Error())
 			}
 			c.sessionID = id
-			if err := s.sendSession(id, sess, p.Text, chatSendOptions(p)...); err != nil {
+			if err := s.sendAttachments(id, sess, p, decodedImgs, decodedFiles, fileNames); err != nil {
 				return protocol.NewError(req.ID, errorCode(err), err.Error())
 			}
 			// 用户消息重置连续唤醒预算（契约 §5：用户交互本身就是交互，
@@ -49,7 +60,7 @@ func (s *Server) dispatchChat(c *wsClient, req *protocol.Request, params json.Ra
 		if err != nil {
 			return protocol.NewError(req.ID, protocol.CodeInvalidParams, err.Error())
 		}
-		if err := s.sendSession(id, sess, p.Text, chatSendOptions(p)...); err != nil {
+		if err := s.sendAttachments(id, sess, p, decodedImgs, decodedFiles, fileNames); err != nil {
 			return protocol.NewError(req.ID, errorCode(err), err.Error())
 		}
 		// 用户消息重置连续唤醒预算（契约 §5）
@@ -64,6 +75,14 @@ func (s *Server) dispatchChat(c *wsClient, req *protocol.Request, params json.Ra
 		id := p.SessionID
 		if id == "" {
 			id = c.sessionID
+		}
+		// 先在活跃会话的子会话登记里找：id 是某个**正在跑的**子会话时，它的
+		// 运行时不在 s.sessions（生命周期跟着派发走）——直接 s.session(id) 会
+		// newRuntime 建一个空对象，Cancel 是空操作、停不掉真正在跑的子轮。
+		// 命中即真停；未命中（普通会话 / 子会话已结束 / 重启恢复场景）走下面
+		// 的原路径，行为与原先一致。
+		if s.cancelChildAnywhere(id) {
+			return protocol.NewResult(req.ID, map[string]any{})
 		}
 		sess, err := s.session(id)
 		if err != nil {
@@ -174,6 +193,26 @@ func (s *Server) dispatchChat(c *wsClient, req *protocol.Request, params json.Ra
 		})
 		return protocol.NewResult(req.ID, protocol.ChatApprovalResult{Approval: approval})
 
+	case protocol.MethodChatMergeRequest:
+		var p protocol.ChatMergeRequestParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return protocol.NewError(req.ID, protocol.CodeInvalidParams, "参数解析失败: "+err.Error())
+		}
+		id := p.SessionID
+		if id == "" {
+			id = c.sessionID
+		}
+		if id == "" {
+			return protocol.NewError(req.ID, protocol.CodeInvalidParams, "缺少 session_id（没有当前会话）")
+		}
+		// 与 merge_request 工具同一条路径（startMergeJob）：前置校验（项目会话 /
+		// 已有分支 / 同一会话不重复起）与错误文案都在那里，这里只透传。
+		jobID, err := s.startMergeJob(id, p.TargetBranch, false)
+		if err != nil {
+			return protocol.NewError(req.ID, protocol.CodeInvalidParams, err.Error())
+		}
+		return protocol.NewResult(req.ID, protocol.MergeRequestResult{JobID: jobID})
+
 	case protocol.MethodToolConfirm:
 		var p protocol.ToolConfirmParams
 		if err := json.Unmarshal(params, &p); err != nil {
@@ -186,6 +225,15 @@ func (s *Server) dispatchChat(c *wsClient, req *protocol.Request, params json.Ra
 		sess, err := s.session(id)
 		if err != nil {
 			return protocol.NewError(req.ID, protocol.CodeInvalidParams, err.Error())
+		}
+		// ask 提问（tool.confirm 带 answer）走 Answer 路径：文本答案投进与二元
+		// 确认同一个等待通道（Session.Answer 校验挂起请求存在、id 匹配且是
+		// ask 形态）；answer 为空 = 现状语义（二元批准/拒绝）。
+		if p.Answer != "" {
+			if err := sess.Answer(p.ID, p.Answer); err != nil {
+				return protocol.NewError(req.ID, errorCode(err), err.Error())
+			}
+			return protocol.NewResult(req.ID, map[string]any{})
 		}
 		if err := sess.Confirm(p.ID, p.Allow); err != nil {
 			return protocol.NewError(req.ID, errorCode(err), err.Error())

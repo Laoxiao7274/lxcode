@@ -100,22 +100,22 @@ func TestAwaitConfirmSerializesConcurrentRequests(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	type answer struct {
-		id    string
-		allow bool
-		ok    bool
+		id  string
+		out ConfirmOutcome
+		ok  bool
 	}
 	results := make(chan answer, 2)
 	for _, id := range []string{"c1", "c2"} {
 		go func(id string) {
-			allow, ok := s.awaitConfirm(ctx, &ConfirmRequest{ID: id, Name: "bash", Prompt: "跑命令"})
-			results <- answer{id, allow, ok}
+			out, ok := s.awaitConfirm(ctx, &ConfirmRequest{ID: id, Name: "bash", Prompt: "跑命令"})
+			results <- answer{id, out, ok}
 		}(id)
 	}
 	for i := 0; i < 2; i++ {
 		select {
 		case r := <-results:
-			if !r.ok || !r.allow {
-				t.Fatalf("并发确认 %s 没拿到裁决（被后到的顶掉了）: ok=%v allow=%v", r.id, r.ok, r.allow)
+			if !r.ok || !r.out.Allow {
+				t.Fatalf("并发确认 %s 没拿到裁决（被后到的顶掉了）: ok=%v allow=%v", r.id, r.ok, r.out.Allow)
 			}
 		case <-time.After(2 * time.Second):
 			t.Fatal("并发确认超时——确认槽被顶掉，先到的那次永远等不到裁决")

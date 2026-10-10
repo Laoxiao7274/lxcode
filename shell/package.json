@@ -1,7 +1,7 @@
 {
   "name": "lxcode-shell",
   "productName": "Lxcode",
-  "version": "0.1.2",
+  "version": "0.1.5",
   "description": "lxcode 桌面壳（Electron 薄壳，业务在 Go 后端）",
   "main": "dist/main.js",
   "author": "moyunteng",

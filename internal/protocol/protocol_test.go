@@ -1172,3 +1172,21 @@ func TestModelCatalogWireShapes(t *testing.T) {
 		}
 	})
 }
+
+// chat.busy 的 dispatch_id（2026-10-10：子会话忙闲上抛）：带归属的 busy 载荷含
+// dispatch_id（前端投进子会话自己的 state），主会话的 busy 不带该键（omitempty，
+// wire 向后兼容——老客户端照常解析）。
+func TestBusyParamsDispatchID(t *testing.T) {
+	b := mustMarshal(t, BusyParams{SessionID: "s1", Busy: true, DispatchID: "d1"})
+	var m map[string]any
+	mustUnmarshal(t, b, &m)
+	if m["dispatch_id"] != "d1" {
+		t.Fatalf("子会话 busy 载荷应含 dispatch_id: %s", b)
+	}
+	b = mustMarshal(t, BusyParams{SessionID: "s1", Busy: true})
+	m = map[string]any{}
+	mustUnmarshal(t, b, &m)
+	if _, ok := m["dispatch_id"]; ok {
+		t.Fatalf("主会话 busy 不该带 dispatch_id（omitempty）: %s", b)
+	}
+}

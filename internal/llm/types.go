@@ -100,6 +100,13 @@ type Message struct {
 	CacheReadTokens  int `json:"-"`
 	CacheWriteTokens int `json:"-"`
 
+	// Images 是这条 user 消息携带的图片**引用**（视觉请求）：恒为文件引用，
+	// base64 只在构造 LLM 请求的瞬间存在（见 images.go 的分层纪律）——
+	// 不发库里的 base64、不进长期内存、不进日志。历史回放（chat.history /
+	// chat.userMessage）给前端的是同一份引用（前端经 HTTP 附件端点取缩略图）。
+	// 空 = 无图（omitempty：老消息 wire 上整键缺席，零影响）。
+	Images []ImageRef `json:"images,omitempty"`
+
 	// Notice 为真 = 这条 user 消息是**注入的提示条**（重复调用提醒 / 后台任务通告），
 	// 不是用户说的话。前端按文本前缀渲染成提示条（见 agent.RepeatNoticePrefix），
 	// 后端这个位是给**会话统计**用的：轮数只数真实用户消息。

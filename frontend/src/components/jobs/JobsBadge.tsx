@@ -8,9 +8,10 @@
 // 同一套；面板挂 data-pop 是 usePopover 的约定。
 import { useJobs } from "../../shared/jobs-admin";
 import { usePopover } from "../../shared/popover";
+import type { MergeEntry } from "./JobsPanel";
 import { JobsPanel } from "./JobsPanel";
 
-export function JobsBadge() {
+export function JobsBadge({ merge }: { merge?: MergeEntry }) {
   const { jobs, active } = useJobs();
   const { open, toggle, rootRef } = usePopover();
   const count = active > 0 ? active : jobs.length;
@@ -36,7 +37,7 @@ export function JobsBadge() {
       </button>
       {open && (
         <div className="job-pop" role="dialog" aria-label="后台任务" data-pop>
-          <JobsPanel />
+          <JobsPanel merge={merge} />
         </div>
       )}
     </div>

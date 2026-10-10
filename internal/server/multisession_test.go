@@ -122,6 +122,7 @@ func TestProjectSessionsGetIsolatedWorktreesFromHEAD(t *testing.T) {
 		}
 		waitSessionEvent(t, client, protocol.EventDone, id)
 	}
+	srv.waitAutoCommits() // 轮结束的检查点提交是异步的：等它结束再碰工作树
 	first, err := srv.st.WorktreeOf(firstID)
 	if err != nil {
 		t.Fatal(err)
@@ -254,6 +255,7 @@ func TestBusyProjectSessionCannotReleaseWorktree(t *testing.T) {
 
 	close(finish)
 	waitSessionEvent(t, client, protocol.EventDone, sessionID)
+	srv.waitAutoCommits() // 轮结束的检查点提交是异步的：等它结束再释放工作树
 	released := client.call(protocol.MethodSessionWorktreeRelease, protocol.SessionWorktreeReleaseParams{ID: sessionID})
 	if released == nil || released.Error != nil {
 		t.Fatalf("idle clean worktree release failed: %+v", released)
@@ -298,6 +300,7 @@ func TestWorktreeCacheStillRecoversDeletedDirectory(t *testing.T) {
 		t.Fatalf("chat.send failed: %+v", resp)
 	}
 	waitSessionEvent(t, client, protocol.EventDone, id)
+	srv.waitAutoCommits() // 轮结束的检查点提交是异步的：等它结束再删工作树目录
 	meta, err := srv.st.WorktreeOf(id)
 	if err != nil || meta.Path == "" {
 		t.Fatalf("worktree not created: %+v err=%v", meta, err)

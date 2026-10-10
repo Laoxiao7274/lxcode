@@ -3,7 +3,7 @@
 import type { AgentEvent, ConfirmRequest, JobInfo } from "./types";
 import { type AssistantBlock, type ThreadBlock, type UIState, DISPATCH_TOOL_NAME, initial, nextUid, withBlock, placeConfirm, planRewind } from "./blocks";
 import { reduceHistory } from "./history";
-import { noticeBody, noticeLabel } from "./notices";
+import { isHiddenNotice, noticeBody, noticeLabel } from "./notices";
 
 /** 单个事件类型的窄化类型（reduce 的每个分支提取成函数后，参数类型要收窄到那一个变体）。 */
 type Ev<T extends AgentEvent["type"]> = Extract<AgentEvent, { type: T }>;
@@ -12,6 +12,8 @@ export function reduce(state: UIState, ev: AgentEvent): UIState {
   switch (ev.type) {
     case "userMessage":
       return reduceUserMessage(state, ev);
+    case "optimisticUser":
+      return reduceOptimisticUser(state, ev);
     case "delta":
       return reduceDelta(state, ev);
     case "toolCall":
@@ -33,7 +35,14 @@ export function reduce(state: UIState, ev: AgentEvent): UIState {
     case "dispatchEnd":
       return reduceDispatchEnd(state, ev);
     case "busy":
-      return { ...state, busy: ev.busy, pending: ev.busy ? state.pending : null };
+      // 带归属的 busy = **子会话**的忙闲翻转：不碰主会话的 busy/sending
+      //（子会话在跑不代表主会话在生成），也不该清主会话的 pending。
+      // 子会话自己的 state 由双投路径（reduceSessionStates 的 withoutDispatch
+      // 副本）正常走这条归约——那边没有归属键，语义与主会话一致。
+      if (ev.dispatchId) return state;
+      // busy=true = 生成已经开始：发送中态交接给生成态；busy=false 一并收尾
+      //（防sending 卡死：done/error 之外的任何忙闲变化都意味着发送阶段已结束）。
+      return { ...state, busy: ev.busy, sending: false, pending: ev.busy ? state.pending : null };
     case "sessionsChanged":
       // 列表变化不改 UI 状态本身——新对象触发重渲染（侧栏重读 sessions()）
       return { ...state };
@@ -63,9 +72,19 @@ export function reduce(state: UIState, ev: AgentEvent): UIState {
  * 系统提示条（后台任务通告 / 重复调用提醒）在**历史里与实时流里都是真实 user 角色
  * 消息**（模型必须把它当用户回合才能回应），但它不是用户说的话——按**文本前缀**识别
  *（不能按角色，种类表见 shared/notices.ts），渲染成提示条而不是用户气泡，否则用户
- * 会以为是自己发的。 */
+ * 会以为是自己发的。
+ *
+ * **hidden 的系统注记（如「用户中断了这次生成」）不产生任何块**：它是写给模型的
+ * 注记，用户界面上当它不存在——原样返回 state（连乐观 pending 的去重也不做，
+ * 它本来就不是任何发送的回执）。与回放路径 history.ts 的同款判定共用一份前缀表。 */
 function reduceUserMessage(state: UIState, ev: Ev<"userMessage">): UIState {
+  if (isHiddenNotice(ev.text)) return state;
   const label = noticeLabel(ev.text);
+  // 乐观 pending 块的去重（FIFO 移除最旧的——连续发多条按发送顺序与回执一一对应）。
+  // 只对**真正的用户消息**做：提示条（notice）虽然也是 userMessage 事件，但它不是
+  // 本次发送的回执，动了会把还没确认的 pending 块错删掉。没有 pending 时照常渲染
+  //（不重复——removeOldestPending 找不到就原样返回）。
+  const base = label ? state : removeOldestPending(state);
   // seq 只在真的给了时才写进块：`seq: undefined` 会让既有断言多出一个键，
   // 而 canRewind 判的是 typeof === "number"，两种写法行为完全一致。
   const block: ThreadBlock = label
@@ -73,7 +92,42 @@ function reduceUserMessage(state: UIState, ev: Ev<"userMessage">): UIState {
     : typeof ev.seq === "number"
       ? { kind: "user", uid: nextUid(), text: ev.text, seq: ev.seq }
       : { kind: "user", uid: nextUid(), text: ev.text };
-  return { ...state, blocks: [...state.blocks, block] };
+  return { ...base, blocks: [...base.blocks, block] };
+}
+
+/** 乐观用户气泡（本地事件，不经后端——send 发起后立即给视觉反馈）。
+ *
+ *  真正的用户气泡要等后端 chat.userMessage 回执，而回执排在 worktree 准备等
+ *  工作之后（首条消息会空白等待数百毫秒）——pending 块先把「发出去了」这件事画出来。
+ *
+ *  pending 块挂在**当前会话**的 blocks 上（与会话 state 同生命周期）：切走再切回，
+ *  没等到回执的 pending 块还留在那个会话里——不全局悬浮、不串会话。
+ *  failed = 发送失败（ws 的 catch 发出的失败变体）：移除最旧的 pending 块（与成功
+ *  路径同一个 FIFO 口径）并结束发送中态，错误提示走既有 operationError 通道。 */
+function reduceOptimisticUser(state: UIState, ev: Ev<"optimisticUser">): UIState {
+  if (ev.failed) {
+    return { ...removeOldestPending(state), sending: false };
+  }
+  // 附件只留计数（base64 已随请求交出去，块里不需要也不该留一份拷贝）。
+  // 条件展开：无附件的块不出现 atts 键（与 seq 同款纪律——多余键会进测试断言）。
+  const hasAtts = Boolean(ev.atts && (ev.atts.images.length > 0 || ev.atts.files.length > 0));
+  return {
+    ...state,
+    sending: true,
+    blocks: [...state.blocks, {
+      kind: "user", uid: nextUid(), text: ev.text, pending: true,
+      ...(hasAtts ? { atts: { images: ev.atts!.images.length, files: ev.atts!.files.length } } : {}),
+    }],
+  };
+}
+
+/** 移除最旧的 pending 用户块（FIFO）；没有 pending 块时原样返回（对象都不换）。 */
+function removeOldestPending(state: UIState): UIState {
+  const idx = state.blocks.findIndex((b) => b.kind === "user" && b.pending);
+  if (idx < 0) return state;
+  const blocks = state.blocks.slice();
+  blocks.splice(idx, 1);
+  return { ...state, blocks };
 }
 
 /** 会话回退（chat.rewound）：时间线截断到锚点之前（锚点自己也消失）。
@@ -230,11 +284,11 @@ for (let i = withStats.blocks.length - 1; i >= 0; i--) {
   const b = withStats.blocks[i];
   if (b.kind === "assistant") { lastA = b; break; }
 }
-if (!lastA) return withStats;
-return withBlock(withStats, lastA.uid, (b) => {
+if (!lastA) return { ...withStats, sending: false };
+return { ...withBlock(withStats, lastA.uid, (b) => {
   const a = b as AssistantBlock;
   return { ...a, streaming: false, usageTokens: ev.usageTokens, firstTokenMs: ev.firstTokenMs, durationMs: ev.durationMs, model: ev.model };
-});
+}), sending: false };
 }
 
 /** error 事件的处理（从 reduce 的 switch 里提出来——原来 213 行的 switch
@@ -248,6 +302,7 @@ for (let i = 0; i < blocks.length; i++) {
 }
 return {
   ...state,
+  sending: false, // 轮已出错收尾：发送中态一并结束（错误条随后渲染）
   blocks: [...blocks, { kind: "error", uid: nextUid(), message: ev.message, aborted: ev.aborted }],
 };
 }
@@ -328,6 +383,9 @@ const rebuilt = reduceHistory(state, ev.history);
 return {
   ...rebuilt,
   busy: ev.history.busy,
+  // 历史全量重建：pending 乐观块一起被重建抹掉——回放的历史里要么已有这条消息
+  //（真块回来了），要么发送还没落库（留着会变僵尸 pending）。发送中态一并结束。
+  sending: false,
   blocks: jobs.length ? [...rebuilt.blocks, ...jobs] : rebuilt.blocks,
 };
 }
@@ -419,14 +477,23 @@ function reduceSub(blocks: ThreadBlock[], ev: AgentEvent): ThreadBlock[] | null 
  *
  *  子会话自己的 state 还不存在（标签从没打开过）时不建：没有历史基线的话，
  *  光靠实时增量拼出来的时间线是半截的；打开标签时用历史重建（见 ChildSessionPage
- *  装载 + source.childHistory 发的 historyLoaded）。 */
-export function reduceSessionStates(states: Record<string, UIState>, ev: AgentEvent): Record<string, UIState> {
+ *  装载 + source.childHistory 发的 historyLoaded）。
+ *
+ *  dispatchChild（可选）：store 维护的 dispatch id → 子会话 id 映射（与标签过滤用的
+ *  子→父映射同源，见 workspace-tabs.ts 的 ChildLinks）。双投归属先查表（O(1)），
+ *  查不到再回落 dispatchChildSession 的全量反查——直接调用本函数的测试没传表时
+ *  语义不变（保守处理：全量反查仍是兜底，只是不再是热路径）。 */
+export function reduceSessionStates(
+  states: Record<string, UIState>,
+  ev: AgentEvent,
+  dispatchChild?: Record<string, string>,
+): Record<string, UIState> {
   if (!("sessionId" in ev) || !ev.sessionId) return states;
   const id = ev.sessionId;
   const previous = states[id] ?? { ...initial, currentId: id };
   const next = { ...states, [id]: { ...reduce(previous, ev), currentId: id } };
   const did = eventDispatchId(ev);
-  const childId = did ? dispatchChildSession(states, did) : "";
+  const childId = did ? (dispatchChild?.[did] ?? dispatchChildSession(states, did)) : "";
   if (did && childId && childId !== id && states[childId]) {
     const child = states[childId];
     next[childId] = { ...reduce(child, withoutDispatch(ev)), currentId: childId };
@@ -458,12 +525,15 @@ function withoutDispatch(ev: AgentEvent): AgentEvent {
   return plain as unknown as AgentEvent;
 }
 
-/** dispatchId → 子会话 id（子事件双投用的归属键）。
+/** dispatchId → 子会话 id（子事件双投用的归属键；**兜底路径**）。
  *
- *  子会话 id 记在**卡上**（实时 dispatchStart 的 childSessionId，或历史回放的
- *  工具结果里那行 `[子会话 id: …]`——见 history.ts），两处都会把它写进
- *  `block.sessionId`。所以这里扫所有会话的卡：命中就返回那个子会话 id，
- *  没见过这张卡（应用刚起、dispatchStart 早于连接）时返回空串（不猜）。 */
+ *  热路径已改为 store 维护的 dispatch→子会话映射查表（O(1)，见 reduceSessionStates
+ *  的 dispatchChild 参数）——这里只剩两处用：映射还没记上时（理论上不该发生：
+ *  dispatchStart 先于一切子事件到达并记映射）、以及没传表的直接调用方（测试）。
+ *  反查逻辑保留原样：子会话 id 记在**卡上**（实时 dispatchStart 的 childSessionId，
+ *  或历史回放的工具结果里那行 `[子会话 id: …]`——见 history.ts），两处都会把它写进
+ *  `block.sessionId`。没见过这张卡（应用刚起、dispatchStart 早于连接）时返回空串
+ *  （不猜）。 */
 function dispatchChildSession(states: Record<string, UIState>, dispatchId: string): string {
   for (const st of Object.values(states)) {
     for (const b of st.blocks) {
@@ -477,17 +547,21 @@ function dispatchChildSession(states: Record<string, UIState>, dispatchId: strin
  *  时间线上的确认卡 + dispatch 卡内的确认卡。kind==="confirm" 的块只存在于
  *  未裁决态（裁决后就地转工具行或定格 outcome），所以块类型本身就是裁决位。
  *
+ *  **ask 提问不在清单里**：切「完全访问」（auto）放行的是高危确认打扰，
+ *  提问是模型向用户要决策——auto 不能替用户回答，UI 也不能替它定格
+ *  （后端对 ask 保持挂起，见 Session.SetApproval 的同一条判定）。
+ *
  *  用途：切「完全访问」时后端沿确认通道一次性放行挂起确认（含子会话的——
  *  确认门代理走父通道），UI 的待裁决卡片要同步定格，不等 toolResult 回执。
  *  导出供测试直接验证清单形状。 */
 export function pendingConfirmIds(st: UIState): string[] {
   const ids: string[] = [];
-  if (st.pending) ids.push(st.pending.id);
+  if (st.pending && st.pending.kind !== "ask") ids.push(st.pending.id);
   for (const b of st.blocks) {
-    if (b.kind === "confirm") ids.push(b.request.id);
+    if (b.kind === "confirm" && b.request.kind !== "ask") ids.push(b.request.id);
     if (b.kind === "dispatch") {
       for (const s of b.subBlocks) {
-        if (s.kind === "confirm") ids.push(s.request.id);
+        if (s.kind === "confirm" && s.request.kind !== "ask") ids.push(s.request.id);
       }
     }
   }
@@ -516,11 +590,13 @@ export function allowAllPendingConfirms(
  *  （双投的必然结果——只定格一边，另一边会永远挂着「待确认」）。
  *
  *  只对**真的有这个确认**的会话动手：没有它的会话原样返回（对象都不换），
- *  否则每次裁决都会把所有会话的 pending 清掉（那是别人的挂起确认）。 */
+ *  否则每次裁决都会把所有会话的 pending 清掉（那是别人的挂起确认）。
+ *  answer 只在 ask 提问的回答时有值（显示在已决卡上）；二元裁决忽略它。 */
 export function resolveConfirmEverywhere(
   states: Record<string, UIState>,
   id: string,
   outcome: "allow" | "deny",
+  answer?: string,
 ): Record<string, UIState> {
   const holds = (st: UIState): boolean =>
     st.pending?.id === id ||
@@ -530,7 +606,7 @@ export function resolveConfirmEverywhere(
   for (const [sid, st] of Object.entries(states)) {
     if (!holds(st)) continue;
     next = next ?? { ...states };
-    next[sid] = resolveConfirm(st, id, outcome);
+    next[sid] = resolveConfirm(st, id, outcome, answer);
   }
   return next ?? states;
 }
@@ -539,14 +615,24 @@ export function resolveConfirmEverywhere(
  *  与 DSH 同款：授权后看的是工具执行，不是审批表单）；拒绝 → 卡片
  *  定格为「已跳过」（没有工具执行可展示）。主时间线与 dispatch 卡内
  *  的确认都走这里（按 request.id 定位）。
- *  导出供测试直接驱动真实现——测试若复刻一份逻辑，断言的是副本，
- *  真实现漂移时不会红（假绿）。 */
-export function resolveConfirm(state: UIState, id: string, outcome: "allow" | "deny"): UIState {
+ *
+ *  **ask 提问是例外**：它没有工具执行可看——回答后卡片保留原位定格
+ *  「已回答」（resolvedAnswer = 用户答案摘要）；跳过定格「已跳过」。
+ *  后端随后的 toolResult（「用户回答：…」）在卡上找不到未裁决位就自然丢弃
+ *  （答案已经在卡上了，不必重复呈现）。
+ * 导出供测试直接驱动真实现——测试若复刻一份逻辑，断言的是副本，
+ * 真实现漂移时不会红（假绿）。 */
+export function resolveConfirm(state: UIState, id: string, outcome: "allow" | "deny", answer?: string): UIState {
   const convert = (blocks: ThreadBlock[]): ThreadBlock[] | null => {
     const idx = blocks.findIndex((b) => b.kind === "confirm" && b.request.id === id);
     if (idx < 0) return null;
     const next = blocks.slice();
     const b = next[idx] as Extract<ThreadBlock, { kind: "confirm" }>;
+    if (b.request.kind === "ask") {
+      // 提问卡不转工具行：保留原位显示「已回答（答案摘要）/已跳过」
+      next[idx] = { ...b, resolved: outcome, resolvedAnswer: outcome === "allow" ? answer : undefined };
+      return next;
+    }
     if (outcome === "allow") {
       // 就地转成工具行：uid 不变（React key 稳定——卡片不重挂），
       // id = 工具调用 id（toolResult 按它回填结果）

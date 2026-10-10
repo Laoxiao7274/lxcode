@@ -24,6 +24,14 @@ func (s *Server) dispatch(c *wsClient, req *protocol.Request) *protocol.Response
 	if req.Method == protocol.MethodHello {
 		return s.handleHello(req, params, isNotification)
 	}
+	// connection.ping 心跳：同 hello 一样「通知形态合法地返回 nil」（无 id 不回
+	// 应答），所以也内联在域处理器链之前。纯内存应答，供客户端判定连接活性。
+	if req.Method == protocol.MethodPing {
+		if isNotification {
+			return nil
+		}
+		return protocol.NewResult(req.ID, map[string]any{"pong": true})
+	}
 	if resp := s.dispatchModels(req, params); resp != nil {
 		return resp
 	}
@@ -34,6 +42,11 @@ func (s *Server) dispatch(c *wsClient, req *protocol.Request) *protocol.Response
 		return resp
 	}
 	if resp := s.dispatchProjects(req, params); resp != nil {
+		return resp
+	}
+
+	// git.overview / git.diff（Git 管理页只读查询——独立分发函数，未命中回落 unknown）
+	if resp := s.dispatchGit(c, req, params); resp != nil {
 		return resp
 	}
 

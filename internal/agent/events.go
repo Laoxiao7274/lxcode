@@ -51,18 +51,30 @@ type ConfirmRequestEvent struct {
 	Request *ConfirmRequest
 }
 
-// ConfirmRequest 是挂起等待裁决的工具调用。
+// ConfirmRequest 是挂起等待裁决的请求。两种形态：
+//   - Kind == ""（默认）：高危工具确认——用户批准/拒绝；
+//   - Kind == "ask"：ask_user 的提问——用户以文本回答（Answer），或跳过。
 type ConfirmRequest struct {
 	ID         string
 	Name       string
 	Arguments  string
 	Prompt     string
 	DispatchID string // 非空 = 子 Agent 执行的确认（归属 dispatch 卡）
+	// Kind 标记形态：空 = 高危工具确认（现状语义）；"ask" = ask_user 的提问。
+	Kind string
+	// Options 是 ask 提问的预设答案（可空）——前端渲染成可直接点选的选项按钮。
+	Options []string
 }
 
 // BusyEvent：忙闲翻转（一轮开始/结束）。
+// DispatchID 非空 = 子会话的忙闲（2026-10-10 起上抛：前端按归属投进子会话
+// 自己的 state——子会话页的「生成中」行与停止钮靠它出现；主时间线侧按
+// dispatchId 过滤，主会话的忙闲不被子会话翻动）。
 type BusyEvent struct {
 	Busy bool
+	// DispatchID 非空 = 这是子会话的忙闲翻转（归属键 = dispatch 卡 id，
+	// 与 DeltaEvent/ToolCallEvent 同一套）。
+	DispatchID string
 }
 
 // TurnDoneEvent：一轮生成的最终消息（含 usage/finish）。

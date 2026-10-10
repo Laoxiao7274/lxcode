@@ -132,6 +132,7 @@
   --tre-hover: #a3a3a3;
 }
 @media (prefers-color-scheme: dark) {
+  :global([data-theme="auto"]),
   :global(:root:not([data-theme])) {
     --tre-icon: #737373;
     --tre-verb: #a3a3a3;

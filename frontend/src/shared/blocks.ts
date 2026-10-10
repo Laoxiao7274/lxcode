@@ -20,11 +20,20 @@ export interface AssistantBlock {
 export type ThreadBlock =
   /** 用户气泡。seq = 撤回锚点（后端 ChatMessage 上的序号，历史回放与实时事件
    *  同一个类型）——**没有它就不能撤回/编辑**：老后端与更早落库的历史都不带
-   *  seq，锚不住就不能动历史（AGENTS.md §5 坑 11：老后端 + 新前端不许炸）。 */
-  | { kind: "user"; uid: number; text: string; seq?: number }
+   *  seq，锚不住就不能动历史（AGENTS.md §5 坑 11：老后端 + 新前端不许炸）。
+   *  pending = 乐观气泡（本地先画、后端还没回执）——视觉稍淡 + 发送中指示，
+   *  回执到达即按 FIFO 移除（见 reduce.ts）；pending 块没有 seq，天然不可撤回。 */
+  | { kind: "user"; uid: number; text: string; seq?: number; pending?: boolean;
+      /** 乐观气泡的附件标记（图片批次 B）：images/files 是随消息带的张数/个数
+       *  （pending 阶段 base64 已交出去，块里只留计数）；真块不带它——后端回执
+       *  的正文里文件附件有自己的「[附件]」行，图片引用的历史渲染另有批次接。 */
+      atts?: { images: number; files: number } }
   | AssistantBlock
   | { kind: "tool"; uid: number; id: string; name: string; arguments: string; result?: string; isError?: boolean }
-  | { kind: "confirm"; uid: number; request: ConfirmRequest; resolved?: "allow" | "deny" }
+  | { kind: "confirm"; uid: number; request: ConfirmRequest; resolved?: "allow" | "deny";
+      /** ask 提问被回答时的用户答案摘要（resolved="allow" 时显示在已决卡上；
+       *  二元确认永远没有它）。 */
+      resolvedAnswer?: string }
   | { kind: "files"; uid: number; files: FileChange[] }
   | { kind: "error"; uid: number; message: string; aborted: boolean }
   | {
@@ -114,13 +123,17 @@ export interface UIState {
   stats: SessionStats | null;
   /** 该会话至少完成过一次 history 回放，后续忙碌快照才可保留本地实时块。 */
   historyReady: boolean;
+  /** 发送中态（乐观气泡已插、后端 busy 还没到）：submit 后立刻置 true，busy
+   *  （生成交接）/ done / error / 发送失败 / 历史重建时收 false。它与 busy 的
+   *  分工：sending = 「消息已交出去、还没确认开始生成」，busy = 「生成中」。 */
+  sending: boolean;
   /** 该会话实际用的模型（回放快照里带；缺席 = 未知）。
    *  子会话页头显示的是**它自己的**模型——子 Agent 可以用与主会话不同的模型
    *  （AGENTS.md §2.3：子会话是独立会话），拿主会话的模型冒充是假数据。 */
   model: string;
 }
 
-export const initial: UIState = { blocks: [], busy: false, pending: null, todos: [], currentId: "", operationError: null, context: null, stats: null, historyReady: false, model: "" };
+export const initial: UIState = { blocks: [], busy: false, pending: null, todos: [], currentId: "", operationError: null, context: null, stats: null, historyReady: false, model: "", sending: false };
 
 // 块的唯一序号——React 渲染的稳定 key（index 作 key 在插入新块时
 // 会错位复用组件实例，是重复渲染类怪象的根因）。
@@ -220,6 +233,31 @@ export function beginEdit(block: ThreadBlock): EditDraft | null {
  *  刻意不接收也不返回 blocks：这个函数**没有能改历史的手**，取消不可能误删。 */
 export function cancelEdit(): null {
   return null;
+}
+
+/** 撤回的回填时机（两步一致，2026-10-10）：**rewind 成功才把原文装回输入框**，
+ *  失败只报错——文本根本没进输入框。
+ *
+ *  为什么顺序不能反：后端可能拒绝这次撤回（配对校验——「撤回锚点不是配对平衡的
+ *  切点」，旧库畸形/异常中断的历史会命中）。先 injectDraft 再 rewind 的话，拒绝
+ *  时文本已在输入框、时间线又被 ws 客户端的重放历史复原（rewind 失败 →
+ *  chat.history 重放对齐，见 agent/ws）——「到了输入框但会话里还在」，两步不一致。
+ *  与 App 的 handleSend（编辑重发）同款：rewind 成功才走下一步，失败才回填。
+ *  时间线的乐观截断仍在请求发出前发生（视觉上「历史先清、文本后到」一个往返，
+ *  可接受）。抽成纯函数：App 组件依赖太重，node:test 钉不住——把「成败分流」
+ *  这个契约钉在这里。 */
+export function rewindThenRestore(opts: {
+  rewind: () => Promise<unknown>;
+  text: string;
+  inject: (text: string) => void;
+  report: (message: string) => void;
+}): void {
+  void opts.rewind().then(
+    () => opts.inject(opts.text),
+    (e: unknown) => {
+      opts.report(`撤回失败: ${e instanceof Error ? e.message : String(e)}`);
+    },
+  );
 }
 
 /**

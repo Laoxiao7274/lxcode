@@ -263,7 +263,8 @@ func TestChildSessionEventAttribution(t *testing.T) {
 	waitDispatchIdle(t, env.s)
 
 	var sawSubDelta, sawSubTodo bool
-	var busyTrue, busyFalse int
+	var busyTrue, busyFalse int          // 主会话自己的 busy（无归属）
+	var subBusyTrue, subBusyFalse int    // 子会话的 busy（带归属上抛）
 	for _, ev := range env.snapshot() {
 		switch e := ev.(type) {
 		case DeltaEvent:
@@ -275,10 +276,18 @@ func TestChildSessionEventAttribution(t *testing.T) {
 				sawSubTodo = true
 			}
 		case BusyEvent:
-			if e.Busy {
-				busyTrue++
+			if e.DispatchID == "" {
+				if e.Busy {
+					busyTrue++
+				} else {
+					busyFalse++
+				}
 			} else {
-				busyFalse++
+				if e.Busy {
+					subBusyTrue++
+				} else {
+					subBusyFalse++
+				}
 			}
 		}
 	}
@@ -288,8 +297,14 @@ func TestChildSessionEventAttribution(t *testing.T) {
 	if sawSubTodo {
 		t.Fatal("子会话的清单不该上抛（清单归子会话自己）")
 	}
+	// busy 语义（2026-10-10 起）：主轮的 busy 无归属且恰好一真一假；子会话的
+	// busy **带归属上抛**（前端投进子会话自己的 state——「生成中」行与停止钮
+	// 靠它出现），同样一真一假（子会话一轮的开始与收尾）。
 	if busyTrue != 1 || busyFalse != 1 {
-		t.Fatalf("busy 只应来自主轮（1 真 1 假），实际 true=%d false=%d", busyTrue, busyFalse)
+		t.Fatalf("主轮 busy 应恰好一真一假（无归属），实际 true=%d false=%d", busyTrue, busyFalse)
+	}
+	if subBusyTrue != 1 || subBusyFalse != 1 {
+		t.Fatalf("子会话 busy 应带 dispatch_id 上抛且一真一假，实际 true=%d false=%d", subBusyTrue, subBusyFalse)
 	}
 }
 

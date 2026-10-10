@@ -42,9 +42,11 @@ export function UpdateBlock() {
                   新版本 <span className="mono">{manifest.version}</span>
                   <span className="set-update-size">{humanBytes(manifest.size)}</span>
                 </div>
-                <ul className="set-update-notes">
-                  {manifest.notes.map((n) => <li key={n}>{n}</li>)}
-                </ul>
+                {manifest.notes.length > 0 && (
+                  <ul className="set-update-notes">
+                    {manifest.notes.map((n) => <li key={n}>{n}</li>)}
+                  </ul>
+                )}
                 <div className="set-update-actions">
                   <Button variant="primary" data-su="download" onClick={download}>
                     下载并安装（{humanBytes(manifest.size)}）

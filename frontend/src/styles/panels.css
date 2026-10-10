@@ -504,7 +504,7 @@
   padding: 1px 7px;
   border-radius: 999px;
   background: rgba(16, 163, 127, 0.1);
-  color: #0b7a5e;
+  color: var(--ok-strong);
   white-space: nowrap;
   max-width: 160px;
   overflow: hidden;
@@ -573,4 +573,10 @@
 }
 .child-session-retry.fd-btn-g:hover {
   color: var(--fg);
+}
+
+/* ===== 暗色覆盖：运行中琥珀提亮（--turn-run 只在本面板声明，见上） ===== */
+html[data-theme="dark"] .turn-panel { --turn-run: #fbbf24; }
+@media (prefers-color-scheme: dark) {
+  html[data-theme="auto"] .turn-panel { --turn-run: #fbbf24; }
 }
