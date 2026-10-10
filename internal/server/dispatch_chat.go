@@ -8,6 +8,7 @@ import (
 
 	"github.com/moyunteng/lxcode/internal/agent"
 	"github.com/moyunteng/lxcode/internal/protocol"
+	"github.com/moyunteng/lxcode/internal/tools"
 )
 
 func (s *Server) dispatchChat(c *wsClient, req *protocol.Request, params json.RawMessage) *protocol.Response {
@@ -105,7 +106,7 @@ func (s *Server) dispatchChat(c *wsClient, req *protocol.Request, params json.Ra
 			return protocol.NewError(req.ID, protocol.CodeInvalidParams, err.Error())
 		}
 		if len(sess.History().Messages) > 0 {
-			if err := s.prepareWorktree(id, sess); err != nil {
+			if err := s.prepareWorkspace(id, sess); err != nil {
 				return protocol.NewError(req.ID, protocol.CodeInvalidParams, err.Error())
 			}
 		}
@@ -205,13 +206,10 @@ func (s *Server) dispatchChat(c *wsClient, req *protocol.Request, params json.Ra
 		if id == "" {
 			return protocol.NewError(req.ID, protocol.CodeInvalidParams, "缺少 session_id（没有当前会话）")
 		}
-		// 与 merge_request 工具同一条路径（startMergeJob）：前置校验（项目会话 /
-		// 已有分支 / 同一会话不重复起）与错误文案都在那里，这里只透传。
-		jobID, err := s.startMergeJob(id, p.TargetBranch, false)
-		if err != nil {
-			return protocol.NewError(req.ID, protocol.CodeInvalidParams, err.Error())
-		}
-		return protocol.NewResult(req.ID, protocol.MergeRequestResult{JobID: jobID})
+		// 遗留：合并进程已退役（2026-10 架构修订——会话直连主检出，没有分支合并
+		// 流程）。与 merge_request 工具共用同一条答复口径，不启动任何任务；
+		// 以错误码回带说明（前端就地展示人话，而不是假装起了一条任务）。
+		return protocol.NewError(req.ID, protocol.CodeInvalidParams, tools.MergeRequestLegacyMessage())
 
 	case protocol.MethodToolConfirm:
 		var p protocol.ToolConfirmParams

@@ -86,7 +86,10 @@ func TestConcurrentSessionsHaveIndependentRuntimeAndHistory(t *testing.T) {
 	}
 }
 
-func TestProjectSessionsGetIsolatedWorktreesFromHEAD(t *testing.T) {
+// TestProjectSessionsShareMainCheckout（2026-10 直连架构）：同一项目的多个会话
+// **共享主检出**——workDir 都是项目根，元数据 path/branch 为空（无独立 worktree）、
+// base 都记当时的 HEAD；不再有任何隔离目录或会话分支。
+func TestProjectSessionsShareMainCheckout(t *testing.T) {
 	repo := filepath.Join(t.TempDir(), "project")
 	if err := os.MkdirAll(repo, 0o755); err != nil {
 		t.Fatal(err)
@@ -107,7 +110,7 @@ func TestProjectSessionsGetIsolatedWorktreesFromHEAD(t *testing.T) {
 		close(ch)
 		return ch, nil
 	})
-	projectResp := client.call(protocol.MethodProjectAdd, protocol.ProjectAddParams{Name: "worktree-test", Path: repo})
+	projectResp := client.call(protocol.MethodProjectAdd, protocol.ProjectAddParams{Name: "workspace-test", Path: repo})
 	if projectResp == nil || projectResp.Error != nil {
 		t.Fatalf("project.add failed: %+v", projectResp)
 	}
@@ -131,11 +134,11 @@ func TestProjectSessionsGetIsolatedWorktreesFromHEAD(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Path == "" || second.Path == "" || first.Path == second.Path {
-		t.Fatalf("sessions did not receive independent worktree paths: first=%+v second=%+v", first, second)
+	if first.Path != "" || second.Path != "" || first.Branch != "" || second.Branch != "" {
+		t.Fatalf("直连模式不该有 worktree 元数据: first=%+v second=%+v", first, second)
 	}
 	if first.BaseCommit != head || second.BaseCommit != head {
-		t.Fatalf("worktrees did not start at initial HEAD %s: first=%+v second=%+v", head, first, second)
+		t.Fatalf("会话基线应记当时的 HEAD %s: first=%+v second=%+v", head, first, second)
 	}
 	firstRuntime, err := srv.session(firstID)
 	if err != nil {
@@ -145,47 +148,13 @@ func TestProjectSessionsGetIsolatedWorktreesFromHEAD(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if firstRuntime.WorkDir() != first.Path || secondRuntime.WorkDir() != second.Path {
-		t.Fatalf("runtime work dirs do not match their worktrees: %q %q", firstRuntime.WorkDir(), secondRuntime.WorkDir())
+	if firstRuntime.WorkDir() != repo || secondRuntime.WorkDir() != repo {
+		t.Fatalf("会话应共享主检出: %q %q, want %q", firstRuntime.WorkDir(), secondRuntime.WorkDir(), repo)
 	}
-	if err := os.WriteFile(filepath.Join(first.Path, "first-only.txt"), []byte("isolated"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	for _, path := range []string{filepath.Join(second.Path, "first-only.txt"), filepath.Join(repo, "first-only.txt")} {
-		if _, err := os.Stat(path); !os.IsNotExist(err) {
-			t.Fatalf("write leaked outside first session worktree at %s: %v", path, err)
-		}
-	}
-
-	rejected := client.call(protocol.MethodSessionWorktreeRelease, protocol.SessionWorktreeReleaseParams{ID: firstID})
-	if rejected == nil || rejected.Error == nil || !strings.Contains(rejected.Error.Message, "未提交或未跟踪") {
-		t.Fatalf("release must reject the untracked file: %+v", rejected)
-	}
-	if _, err := os.Stat(filepath.Join(first.Path, "first-only.txt")); err != nil {
-		t.Fatalf("rejected release damaged untracked file: %v", err)
-	}
-	if err := os.Remove(filepath.Join(first.Path, "first-only.txt")); err != nil {
-		t.Fatal(err)
-	}
-	released := client.call(protocol.MethodSessionWorktreeRelease, protocol.SessionWorktreeReleaseParams{ID: firstID})
-	if released == nil || released.Error != nil {
-		t.Fatalf("release clean worktree failed: %+v", released)
-	}
-	if _, err := os.Stat(first.Path); !os.IsNotExist(err) {
-		t.Fatalf("released worktree path still exists: %v", err)
-	}
-	if got := strings.TrimSpace(gitServerTest(t, repo, "rev-parse", first.Branch)); got == "" {
-		t.Fatal("release deleted the session branch")
-	}
-	resume := client.call(protocol.MethodSessionResume, protocol.SessionResumeParams{ID: firstID})
-	if resume == nil || resume.Error != nil {
-		t.Fatalf("resume should restore released worktree: %+v", resume)
-	}
-	if got := strings.TrimSpace(gitServerTest(t, first.Path, "branch", "--show-current")); got != first.Branch {
-		t.Fatalf("restored worktree branch = %q, want %q", got, first.Branch)
-	}
-	if _, err := os.Stat(filepath.Join(first.Path, "base.txt")); err != nil {
-		t.Fatalf("worktree was not restored from its recorded branch: %v", err)
+	// 仓库里不该出现任何 lxcode/session-* 分支。
+	out := gitServerTest(t, repo, "branch", "--list", "lxcode/session-*")
+	if strings.TrimSpace(out) != "" {
+		t.Fatalf("直连模式不该创建会话分支:\n%s", out)
 	}
 }
 
@@ -241,85 +210,25 @@ func TestBusyProjectSessionCannotReleaseWorktree(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("model stream did not start")
 	}
-	meta, err := srv.st.WorktreeOf(sessionID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	// 忙碌判定在前：忙碌会话的释放请求返回 CodeBusy（不变量保持）。
 	rejected := client.call(protocol.MethodSessionWorktreeRelease, protocol.SessionWorktreeReleaseParams{ID: sessionID})
 	if rejected == nil || rejected.Error == nil || rejected.Error.Code != protocol.CodeBusy {
 		t.Fatalf("busy worktree release should return CodeBusy: %+v", rejected)
 	}
-	if _, err := os.Stat(meta.Path); err != nil {
-		t.Fatalf("busy release removed the worktree: %v", err)
-	}
 
 	close(finish)
 	waitSessionEvent(t, client, protocol.EventDone, sessionID)
-	srv.waitAutoCommits() // 轮结束的检查点提交是异步的：等它结束再释放工作树
+	srv.waitAutoCommits()
+	// 直连模式（2026-10 架构修订）：会话没有独立 worktree，释放入口如实说明。
 	released := client.call(protocol.MethodSessionWorktreeRelease, protocol.SessionWorktreeReleaseParams{ID: sessionID})
-	if released == nil || released.Error != nil {
-		t.Fatalf("idle clean worktree release failed: %+v", released)
-	}
-	if _, err := os.Stat(meta.Path); !os.IsNotExist(err) {
-		t.Fatalf("idle release did not remove worktree: %v", err)
+	if released == nil || released.Error == nil || !strings.Contains(released.Error.Message, "没有独立 worktree") {
+		t.Fatalf("直连会话的释放应如实说明: %+v", released)
 	}
 }
 
-// 工作树校验在进程内缓存（prepareWorktreeLocked 的快路径：校验过一次之后只做一次
-// os.Stat）——这条测试钉住快路径**没有**把「目录被删掉」也当成「已校验」：
-// 外部删掉工作树目录后，下一次读历史必须把它按记录的分支重建回来。
-// 少了 os.Stat 守卫，快路径会一直放行，会话就永久停在一个不存在的 workDir 上。
-func TestWorktreeCacheStillRecoversDeletedDirectory(t *testing.T) {
-	repo := filepath.Join(t.TempDir(), "project")
-	if err := os.MkdirAll(repo, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	gitServerTest(t, repo, "init")
-	gitServerTest(t, repo, "config", "user.name", "Test")
-	gitServerTest(t, repo, "config", "user.email", "test@example.invalid")
-	if err := os.WriteFile(filepath.Join(repo, "base.txt"), []byte("committed\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	gitServerTest(t, repo, "add", "base.txt")
-	gitServerTest(t, repo, "commit", "-m", "base")
-
-	srv, client, _ := newTestServer(t, func(_ context.Context, _ config.ModelConfig, _ []llm.Message, _ []llm.Option) (<-chan llm.StreamEvent, error) {
-		ch := make(chan llm.StreamEvent, 1)
-		ch <- llm.StreamEvent{Type: llm.EventDone, Result: &llm.ChatResult{Message: llm.Message{Role: "assistant", Content: "ok"}}}
-		close(ch)
-		return ch, nil
-	})
-	projectResp := client.call(protocol.MethodProjectAdd, protocol.ProjectAddParams{Name: "cache-test", Path: repo})
-	if projectResp == nil || projectResp.Error != nil {
-		t.Fatalf("project.add failed: %+v", projectResp)
-	}
-	var projectMeta protocol.ProjectMeta
-	decodeServerResult(t, projectResp.Result, &projectMeta)
-	id := createTestSession(t, client, projectMeta.ID)
-	if resp := client.call(protocol.MethodChatSend, protocol.ChatSendParams{SessionID: id, Text: "work"}); resp == nil || resp.Error != nil {
-		t.Fatalf("chat.send failed: %+v", resp)
-	}
-	waitSessionEvent(t, client, protocol.EventDone, id)
-	srv.waitAutoCommits() // 轮结束的检查点提交是异步的：等它结束再删工作树目录
-	meta, err := srv.st.WorktreeOf(id)
-	if err != nil || meta.Path == "" {
-		t.Fatalf("worktree not created: %+v err=%v", meta, err)
-	}
-	// 再读一次历史：这次走快路径（已校验过、目录还在），不该重建。
-	readTestHistory(t, client, id)
-	// 外部删掉整个工作树目录（模拟用户手工清理 / 盘符变化）。
-	if err := os.RemoveAll(meta.Path); err != nil {
-		t.Fatal(err)
-	}
-	// 再读历史：必须把工作树按记录的分支重建回来，而不是拿缓存当「已校验」。
-	readTestHistory(t, client, id)
-	if _, err := os.Stat(filepath.Join(meta.Path, "base.txt")); err != nil {
-		t.Fatalf("worktree was not rebuilt after external deletion: %v", err)
-	}
-	if got := strings.TrimSpace(gitServerTest(t, repo, "rev-parse", meta.Branch)); got == "" {
-		t.Fatal("session branch went missing")
-	}
-}
+// TestWorktreeCacheStillRecoversDeletedDirectory 已随 per-session worktree 退役
+// 删除（2026-10 架构修订）：直连模式下没有可重建的工作树目录，worktree 目录丢失
+// 恢复逻辑（project.RestoreWorktree）由 internal/project 的既有用例覆盖。
 
 func createTestSession(t *testing.T, client *wsTestClient, workspace string) string {
 	t.Helper()

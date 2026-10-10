@@ -26,40 +26,37 @@ func workdirLine(workDir string) string {
 		"相对路径一律按此目录解析，bash 未指定 cwd 时也在此目录执行；项目外的文件用绝对路径访问。\n", workDir)
 }
 
-// WorktreeInfo 是本会话 Git 工作树的分支与基线提交。零值 = 未分组会话
-// （没有独立 worktree）——那时提示词零注入。
+// WorktreeInfo 是本会话的工作区信息：分支名与基线提交。零值 = 未分组会话
+// ——那时提示词零注入。
 type WorktreeInfo struct {
-	Branch string // lxcode/session-<id>
-	Base   string // 创建时的基线提交
+	Branch string // 主检出当前分支名（2026-10 直连架构：不再是 lxcode/session-<id>）
+	Base   string // 会话基线 HEAD（首次准备时记录；rollback 的 session-start 锚点）
 }
 
-// worktreeLine 渲染 Git 工作树说明段（零值零注入：逐字节等于未分组会话的提示词）。
+// worktreeLine 渲染工作区说明段（零值零注入：逐字节等于未分组会话的提示词）。
 //
-// 为什么必须告诉模型：每轮对话结束时系统会**自动**把改动提交为一个检查点提交，
-// 所以模型不要自己反复提交、也不要改动已提交的历史；而用户说「回滚到上一次提交」
-// 指的是上一轮结束时的状态。
+// 为什么必须告诉模型：会话**直接工作在用户的主检出目录**（改动实时可见），每轮
+// 对话结束时系统会**自动**把改动提交为一个检查点提交（方便回滚），所以模型不要
+// 自己反复提交、也不要改动已提交的历史；而用户说「回滚到上一次提交」指的是上一
+// 轮结束时的状态。
 //
-// 子会话在父会话的工作树里工作、改动与父会话共享——措辞必须区分，不能对它说
-// 「你有独立分支」（它没有；那是父会话的分支）。
+// 子会话在同一份主检出里工作、改动与父会话共享——措辞必须区分，不能对它说
+// 「你的会话目录」（它没有单独的；大家都在同一个项目目录里）。
 func worktreeLine(wt WorktreeInfo, isChild bool) string {
 	if wt.Branch == "" {
 		return ""
 	}
 	if isChild {
-		return fmt.Sprintf("你在父会话的 Git 工作树里工作（分支 %s），你的改动与父会话共享；"+
+		return fmt.Sprintf("你在父会话的项目目录里工作（Git 分支 %s），你的改动与父会话实时共享；"+
 			"每轮对话结束时系统会自动把改动提交为一个检查点提交——不要自己反复提交，也不要改动已提交的历史。\n", wt.Branch)
 	}
-	return fmt.Sprintf("本会话在独立 Git 工作树上工作（分支 %s）；"+
-		"每轮对话结束时系统会自动把改动提交为一个检查点提交，并自动发起合并进程（合并本项目全部有改动的会话分支）"+
-		"——所以不要自己反复提交，也不要改动已提交的历史，也无需手动调用 `merge_request`；"+
-		"只有用户明确要求立即合并、或需要指定目标分支时才调用 `merge_request`（重复发起会被按项目互斥拒绝，属正常竞争）；"+
-		"用户说「回滚到上一次提交」指的是上一轮结束时的状态；"+
-		"用户问「改了哪些东西」用 `workspace_status`，按项目口径汇报，不向用户解释分支概念（除非他问）；"+
-		"用户说「提交/推送」用 `workspace_sync`；"+
-		"用户要「回滚/撤销」用 `workspace_rollback`（默认回滚到上一轮结束的状态）；"+
-		"用户需要产物出现在项目根（如打包产物、构建输出、生成的文件）时，在会话工作树里完成构建，"+
-		"然后用 `workspace_publish` 把产物同步到项目根对应位置；"+
-		"已合并进集成分支的内容要在集成分支上 revert，不要 reset 会话分支来期望它消失。\n", wt.Branch)
+	return fmt.Sprintf("当前会话直接在用户的项目目录里工作（Git 分支 %s），你在项目里做的修改对用户实时可见。"+
+		"每轮对话结束时系统会自动提交一个检查点提交（git add -A，方便回滚）——"+
+		"不要自己反复提交，也不要改动已提交的历史。"+
+		"用户问「改了哪些东西」用 `workspace_status`（主检出状态口径，不向用户解释分支概念除非他问）；"+
+		"用户说「提交/推送」用 `workspace_sync`（提交到当前分支，可选拼直接推送）；"+
+		"用户要「回滚/撤销」用 `workspace_rollback`（默认退到上一轮检查点；"+
+		"用户说「回滚到上一次提交」指的是上一轮结束时的状态）。\n", wt.Branch)
 }
 
 const systemPromptFooter = `
@@ -95,11 +92,11 @@ var systemPromptTools = map[string]string{
 	"job_list":                      "job_list：列后台任务（新的在前，可按会话过滤），低危自动执行",
 	"job_kill":                      "job_kill：停止一个后台任务（归属记为 agent），低危自动执行",
 	tools.DispatchToolName:          tools.DispatchToolName + "：把任务派给名单中的子 Agent（任务的完整执行在子上下文里，结果回传验收），低危自动执行",
-	tools.MergeRequestToolName:      "merge_request：起一个合并进程，把本会话的改动交给合并 Agent 汇总到集成分支，低危自动执行",
-	tools.WorkspaceStatusToolName:   "workspace_status：查询项目工作区状态（主检出改动、各会话分支、集成分支），低危自动执行",
-	tools.WorkspaceSyncToolName:     "workspace_sync：提交本会话改动并起合并进程（可选拼推送），中危——执行前用户会收到确认提示",
-	tools.WorkspaceRollbackToolName: "workspace_rollback：回滚本会话分支到上一轮/会话起点/指定提交，中危——执行前用户会收到确认提示",
-	tools.WorkspacePublishToolName:  "workspace_publish：把会话工作树里的产物复制到项目主检出对应位置，中危——覆盖主检出文件前用户会收到确认提示",
+	tools.MergeRequestToolName:      "merge_request：（遗留）合并流程已退役，调用只会得到说明——提交/推送用 workspace_sync，回滚用 workspace_rollback",
+	tools.WorkspaceStatusToolName:   "workspace_status：查询项目工作区状态（主检出的未提交改动、遗留会话分支），低危自动执行",
+	tools.WorkspaceSyncToolName:     "workspace_sync：提交主检出的改动到当前分支，可选拼直接推送远程，中危——执行前用户会收到确认提示",
+	tools.WorkspaceRollbackToolName: "workspace_rollback：回滚主检出当前分支到上一轮检查点/会话基线/指定提交，中危——执行前用户会收到确认提示",
+	tools.WorkspacePublishToolName:  "workspace_publish：（遗留）旧工作树架构的产物发布，直连模式下无需发布，中危——覆盖文件前用户会收到确认提示",
 }
 
 // ProjectDocs 是注入提示词的项目守则（项目根的 AGENTS.md）。

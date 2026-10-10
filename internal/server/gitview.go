@@ -84,8 +84,8 @@ func (s *Server) gitOverview(sessionID, projectID string) (protocol.GitOverviewR
 	}
 	result.Branches = append(result.Branches, current)
 
-	// 会话分支：该项目下全部**顶层**会话（含归档——归档的分支同样是备份，标注），
-	// 分支存在才列（还没发过消息的会话没有分支，不编一条出来）。
+	// 遗留会话分支：该项目下全部**顶层**会话（含归档）里仍存在的 lxcode/session-*
+	// 分支（2026-10 直连架构不再新建会话分支；存量分支是真实的改动备份，照常展示）。
 	st, err := s.workspaceStore()
 	if err != nil {
 		return protocol.GitOverviewResult{}, err

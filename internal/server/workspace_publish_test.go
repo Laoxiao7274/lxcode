@@ -30,11 +30,9 @@ func callPublishConfirm(srv *Server, sessionID, rawArgs string) string {
 func TestWorkspacePublishCopiesToMainCheckout(t *testing.T) {
 	repo := initGitProject(t)
 	srv, client, _ := newJobTestServer(t, immediateStream)
+	meta := addAutoCommitProject(t, client, repo)
 	id := newProjectSessionWithCommits(t, srv, client, repo, 0)
-	wt, err := srv.st.WorktreeOf(id)
-	if err != nil {
-		t.Fatal(err)
-	}
+	wt := legacyWorktree(t, srv, meta.ID, id) // 遗留工具：用存量 worktree 形态驱动
 	if err := os.MkdirAll(filepath.Join(wt.Path, "dist"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -88,11 +86,9 @@ func TestWorkspacePublishCopiesToMainCheckout(t *testing.T) {
 func TestWorkspacePublishDirWithExclude(t *testing.T) {
 	repo := initGitProject(t)
 	srv, client, _ := newJobTestServer(t, immediateStream)
+	meta := addAutoCommitProject(t, client, repo)
 	id := newProjectSessionWithCommits(t, srv, client, repo, 0)
-	wt, err := srv.st.WorktreeOf(id)
-	if err != nil {
-		t.Fatal(err)
-	}
+	wt := legacyWorktree(t, srv, meta.ID, id) // 遗留工具：用存量 worktree 形态驱动
 	for _, f := range []struct{ rel, content string }{
 		{"release/index.html", "<html></html>"},
 		{"release/assets/a.js", "console.log(1)"},
@@ -133,7 +129,9 @@ func TestWorkspacePublishDirWithExclude(t *testing.T) {
 func TestWorkspacePublishValidation(t *testing.T) {
 	repo := initGitProject(t)
 	srv, client, _ := newJobTestServer(t, immediateStream)
+	meta := addAutoCommitProject(t, client, repo)
 	id := newProjectSessionWithCommits(t, srv, client, repo, 0)
+	legacyWorktree(t, srv, meta.ID, id) // 遗留工具：用存量 worktree 形态驱动
 
 	for _, tc := range []struct {
 		name string
@@ -161,7 +159,9 @@ func TestWorkspacePublishValidation(t *testing.T) {
 func TestWorkspacePublishMissingSource(t *testing.T) {
 	repo := initGitProject(t)
 	srv, client, _ := newJobTestServer(t, immediateStream)
+	meta := addAutoCommitProject(t, client, repo)
 	id := newProjectSessionWithCommits(t, srv, client, repo, 0)
+	legacyWorktree(t, srv, meta.ID, id) // 遗留工具：用存量 worktree 形态驱动
 
 	out := callWorkspaceTool(srv, id, tools.WorkspacePublishToolName,
 		map[string]any{"source": "dist/app.exe"})
@@ -176,12 +176,27 @@ func TestWorkspacePublishMissingSource(t *testing.T) {
 	}
 }
 
+// TestWorkspacePublishRejectsDirectMode（直连架构）：直连会话没有工作树 →
+// publish 如实说明（产物已经在主检出里，无需发布）。
+func TestWorkspacePublishRejectsDirectMode(t *testing.T) {
+	repo := initGitProject(t)
+	srv, client, _ := newJobTestServer(t, immediateStream)
+	id := newProjectSessionWithCommits(t, srv, client, repo, 0)
+	out := callWorkspaceTool(srv, id, tools.WorkspacePublishToolName,
+		map[string]any{"source": "dist/app.exe"})
+	if !strings.Contains(out, "错误:") || !strings.Contains(out, "无需发布") {
+		t.Fatalf("直连会话的 publish 应如实说明: %q", out)
+	}
+}
+
 // TestWorkspacePublishConfirmFallback：plan 失败（源不存在）时确认门仍生效
 // （回兜底文案，不让确认环节吞掉错误）。
 func TestWorkspacePublishConfirmFallback(t *testing.T) {
 	repo := initGitProject(t)
 	srv, client, _ := newJobTestServer(t, immediateStream)
+	meta := addAutoCommitProject(t, client, repo)
 	id := newProjectSessionWithCommits(t, srv, client, repo, 0)
+	legacyWorktree(t, srv, meta.ID, id) // 遗留工具：用存量 worktree 形态驱动
 
 	confirm := callPublishConfirm(srv, id, `{"source":"nope.txt"}`)
 	if confirm == "" || !strings.Contains(confirm, "确认执行？") {

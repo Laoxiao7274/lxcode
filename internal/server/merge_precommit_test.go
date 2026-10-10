@@ -1,4 +1,5 @@
-// merge_request 前置提交（startMergeJob 内部 commitBeforeMerge）的验收用例：
+// merge_request 前置提交（startMergeJob 内部 commitBeforeMerge）的验收用例
+// （遗留链路：合并进程退役后代码保留，测试用存量 worktree 数据形态驱动）：
 //   - 用例 1：轮内有未提交改动（自动提交尚未跑）→ 先提交、工作树变干净、
 //     提交进分支（ahead），扫描清单含发起会话分支（merger 必然合到本轮改动）；
 //   - 用例 2：工作树干净 → 不产生空提交、正常起任务；
@@ -21,7 +22,7 @@ import (
 	"github.com/moyunteng/lxcode/internal/project"
 )
 
-// writeMidTurnChange 往会话工作树写一个未提交文件（模拟「模型在轮内改了东西，
+// writeMidTurnChange 往存量 worktree 写一个未提交文件（模拟「模型在轮内改了东西，
 // TurnDone 的自动提交还没跑」——merge_request 正是在这个时点被调用的）。
 func writeMidTurnChange(t *testing.T, srv *Server, id, name string) {
 	t.Helper()
@@ -34,7 +35,7 @@ func writeMidTurnChange(t *testing.T, srv *Server, id, name string) {
 	}
 }
 
-// assertWorktreeClean 断言工作树没有未提交改动（提交前置的「消除时序缺口」落点）。
+// assertWorktreeClean 断言存量 worktree 没有未提交改动（提交前置的「消除时序缺口」落点）。
 func assertWorktreeClean(t *testing.T, srv *Server, id string) {
 	t.Helper()
 	wt, err := srv.st.WorktreeOf(id)
@@ -70,14 +71,15 @@ func finishMergeTest(t *testing.T, srv *Server, mgr *jobs.Manager, id, jobID str
 	srv.waitAutoCommits()
 }
 
-// TestMergeRequestPrecommitsMidTurnChanges：用例 1 —— 轮内有未提交改动时调
-// merge_request：先提交（工作树变干净、分支 ahead+1、提交信息与自动提交同口径），
-// 扫描清单含发起会话分支且按提交判定（ahead≥1、dirty=0）——本轮改动必然被 merger 合并。
-func TestMergeRequestPrecommitsMidTurnChanges(t *testing.T) {
+// TestStartMergeJobPrecommitsMidTurnChanges：用例 1 —— 轮内有未提交改动时起合并
+// 任务：先提交（工作树变干净、分支 ahead+1、提交信息与自动提交同口径），扫描清单
+// 含发起会话分支且按提交判定（ahead≥1、dirty=0）——本轮改动必然被 merger 合并。
+func TestStartMergeJobPrecommitsMidTurnChanges(t *testing.T) {
 	repo := initGitProject(t)
 	srv, client, mgr := newJobTestServer(t, immediateStream)
 	meta := addAutoCommitProject(t, client, repo)
 	id := createTestSession(t, client, meta.ID)
+	legacyWorktree(t, srv, meta.ID, id)
 	sendTurn(t, srv, client, id, "实现合并前置提交") // 第 1 轮，无改动、无提交
 	wt, err := srv.st.WorktreeOf(id)
 	if err != nil || wt.Path == "" {
@@ -88,9 +90,9 @@ func TestMergeRequestPrecommitsMidTurnChanges(t *testing.T) {
 	// 模拟轮内改动：文件已写、还没被 TurnDone 的自动提交落盘
 	writeMidTurnChange(t, srv, id, "midturn.txt")
 
-	out := callMergeRequest(srv, id, "")
-	if strings.Contains(out, "错误:") {
-		t.Fatalf("merge_request 应成功（前置提交兜住轮内改动）: %q", out)
+	jobID, err := startMergeDirect(srv, id)
+	if err != nil {
+		t.Fatalf("startMergeJob 应成功（前置提交兜住轮内改动）: %v", err)
 	}
 	// 工作树变干净：改动已提交
 	assertWorktreeClean(t, srv, id)
@@ -118,16 +120,17 @@ func TestMergeRequestPrecommitsMidTurnChanges(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	finishMergeTest(t, srv, mgr, id, mergeJobOf(mgr, id).ID)
+	finishMergeTest(t, srv, mgr, id, jobID)
 }
 
-// TestMergeRequestPrecommitSkipsCleanWorktree：用例 2 —— 工作树干净时调
-// merge_request：不产生空提交（提交数不变），任务正常起。
-func TestMergeRequestPrecommitSkipsCleanWorktree(t *testing.T) {
+// TestStartMergeJobPrecommitSkipsCleanWorktree：用例 2 —— 工作树干净时起合并任务：
+// 不产生空提交（提交数不变），任务正常起。
+func TestStartMergeJobPrecommitSkipsCleanWorktree(t *testing.T) {
 	repo := initGitProject(t)
 	srv, client, mgr := newJobTestServer(t, immediateStream)
 	meta := addAutoCommitProject(t, client, repo)
 	id := createTestSession(t, client, meta.ID)
+	legacyWorktree(t, srv, meta.ID, id)
 	sendTurn(t, srv, client, id, "你好")
 	commitChange(t, srv, id, "a.txt") // 已提交的改动，工作树干净
 	wt, err := srv.st.WorktreeOf(id)
@@ -136,27 +139,24 @@ func TestMergeRequestPrecommitSkipsCleanWorktree(t *testing.T) {
 	}
 	base := commitCount(t, wt.Path)
 
-	out := callMergeRequest(srv, id, "")
-	if strings.Contains(out, "错误:") {
-		t.Fatalf("干净工作树应正常起任务: %q", out)
+	jobID, err := startMergeDirect(srv, id)
+	if err != nil {
+		t.Fatalf("干净工作树应正常起任务: %v", err)
 	}
 	if got := commitCount(t, wt.Path); got != base {
 		t.Fatalf("不应产生空提交（base %d → %d）", base, got)
 	}
-	job := mergeJobOf(mgr, id)
-	if job.ID == "" {
-		t.Fatal("合并任务未启动")
-	}
-	finishMergeTest(t, srv, mgr, id, job.ID)
+	finishMergeTest(t, srv, mgr, id, jobID)
 }
 
-// TestMergeRequestPrecommitFailsClosed：用例 3 —— 前置提交失败（git 出错）→
+// TestStartMergeJobPrecommitFailsClosed：用例 3 —— 前置提交失败（git 出错）→
 // 返回人话错误、合并任务不起。
-func TestMergeRequestPrecommitFailsClosed(t *testing.T) {
+func TestStartMergeJobPrecommitFailsClosed(t *testing.T) {
 	repo := initGitProject(t)
 	srv, client, mgr := newJobTestServer(t, immediateStream)
 	meta := addAutoCommitProject(t, client, repo)
 	id := createTestSession(t, client, meta.ID)
+	legacyWorktree(t, srv, meta.ID, id)
 	sendTurn(t, srv, client, id, "你好")
 	wt, err := srv.st.WorktreeOf(id)
 	if err != nil || wt.Path == "" {
@@ -169,31 +169,36 @@ func TestMergeRequestPrecommitFailsClosed(t *testing.T) {
 	}
 	writeMidTurnChange(t, srv, id, "will-not-merge.txt")
 
-	out := callMergeRequest(srv, id, "")
-	if !strings.Contains(out, "提交本次改动失败") || !strings.Contains(out, "合并未发起") {
-		t.Fatalf("应报人话错误且说明合并未发起: %q", out)
+	if _, err := startMergeDirect(srv, id); err == nil || !strings.Contains(err.Error(), "提交本次改动失败") || !strings.Contains(err.Error(), "合并未发起") {
+		t.Fatalf("应报人话错误且说明合并未发起: %v", err)
 	}
 	if job := mergeJobOf(mgr, id); job.ID != "" {
 		t.Fatalf("提交失败时不应起合并任务: %s", job.ID)
 	}
 }
 
-// TestMergeRequestPrecommitConcurrentWithAutoCommit：用例 4 —— merge_request 的
-// 前置提交（请求 goroutine）与轮结束的自动提交（异步 goroutine）并发：共用按会话
-// 提交锁串行化，无 index 竞争错误，且恰好产生一个提交（后到的发现干净即跳过）。
-func TestMergeRequestPrecommitConcurrentWithAutoCommit(t *testing.T) {
+// TestPrecommitConcurrentWithAutoCommit：用例 4 —— 前置提交（请求 goroutine）与
+// 轮结束的自动提交（异步 goroutine）并发：共用按会话提交锁串行化，无 index 竞争
+// 错误，且恰好产生一个提交（后到的发现干净即跳过）。直连架构下两条路径提交的是
+// 同一个目录（主检出）——正是锁要兜住的真实并发形态。
+func TestPrecommitConcurrentWithAutoCommit(t *testing.T) {
 	repo := initGitProject(t)
 	srv, client, mgr := newJobTestServer(t, immediateStream)
 	meta := addAutoCommitProject(t, client, repo)
 	id := createTestSession(t, client, meta.ID)
 	sendTurn(t, srv, client, id, "并发用例")
-	wt, err := srv.st.WorktreeOf(id)
-	if err != nil || wt.Path == "" {
-		t.Fatalf("worktree not ready: %+v err=%v", wt, err)
+	sess, err := srv.session(id)
+	if err != nil {
+		t.Fatal(err)
 	}
-	base := commitCount(t, wt.Path)
+	if sess.WorkDir() != repo {
+		t.Fatalf("直连模式 workDir 应为主检出: %q", sess.WorkDir())
+	}
+	base := commitCount(t, repo)
 
-	writeMidTurnChange(t, srv, id, "race.txt")
+	if err := os.WriteFile(filepath.Join(repo, "race.txt"), []byte("race\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
@@ -202,26 +207,23 @@ func TestMergeRequestPrecommitConcurrentWithAutoCommit(t *testing.T) {
 	}()
 	go func() {
 		defer wg.Done()
-		out := callMergeRequest(srv, id, "")
-		if !strings.Contains(out, "错误:") {
-			return // merge_request 抢到互斥：正常路径
-		}
-		// 2026-10 起自动提交产生了新提交会触发自动合并钩子（maybeAutoMerge）——
-		// 并发下它可能先占到项目互斥，此时 merge_request 拿到的必须是
-		// 「已有合并进程在跑」而不是别的错误，且合并任务确实存在。
-		if !strings.Contains(out, "已有合并进程在跑") {
-			t.Errorf("merge_request 并发失败只应是互斥拒绝: %q", out)
+		if err := srv.commitBeforeMerge(id, repo); err != nil {
+			t.Errorf("前置提交不该失败: %v", err)
 		}
 	}()
 	wg.Wait()
 	srv.waitAutoCommits()
 
-	assertWorktreeClean(t, srv, id)
-	if got := commitCount(t, wt.Path); got != base+1 {
+	if lines, err := project.StatusLines(context.Background(), repo); err != nil || len(lines) != 0 {
+		t.Fatalf("主检出应已干净: lines=%v err=%v", lines, err)
+	}
+	if got := commitCount(t, repo); got != base+1 {
 		t.Fatalf("并发下应恰好产生 1 个提交（base %d → %d，无空提交/无重复）", base, got)
 	}
-	if msg := strings.TrimSpace(gitServerTest(t, wt.Path, "log", "-1", "--pretty=%s")); msg != "第 1 轮：并发用例" {
+	if msg := strings.TrimSpace(gitServerTest(t, repo, "log", "-1", "--pretty=%s")); msg != "第 1 轮：并发用例" {
 		t.Fatalf("提交信息应与自动提交同口径: %q", msg)
 	}
-	finishMergeTest(t, srv, mgr, id, mergeJobOf(mgr, id).ID)
+	waitSessionIdle(t, srv, id)
+	srv.waitAutoCommits()
+	_ = mgr
 }

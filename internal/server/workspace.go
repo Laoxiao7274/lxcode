@@ -1,13 +1,15 @@
 // workspace_status / workspace_sync / workspace_rollback 三个 Agent 工具的
-// server 侧实现：「用户无感」链路的最后一块——用户视角始终是「在操作一个项目」，
-// 内部是「主检出 + 每会话一个分支/备份 + 集成分支」。
+// server 侧实现：「用户无感」链路的最后一块。2026-10 架构修订：会话**直接工作在
+// 主检出与用户当前分支**——sync 就是「提交主检出 +（可选）直接 push 当前分支」，
+// rollback 作用于主检出当前分支；合并进程退役为遗留，本文件不再有合并语义。
 //
-// 三条纪律（对齐既有 mergejob / autocommit 的口径）：
+// 三条纪律（对齐既有口径）：
 //  1. status **只读**——全部走 project 包带 ctx+超时的只读封装，绝不动工作区；
-//  2. sync 的 push 是**合并任务的收尾步骤**（runMergeJob 里做），本文件只负责
-//     把 pushAfter 传进去——push 失败不影响已完成的合并；
-//  3. rollback **只作用于本会话分支**，绝不 push、绝不动集成分支与主检出；
-//     脏工作区一律拒绝（绝不静默丢弃用户手工改动）。
+//  2. sync 的 push 是显式的单一动作（RemoteExists 检查 + PushBranch），失败人话
+//     报错，已完成的提交不受影响；
+//  3. rollback **只作用于主检出当前分支**，绝不 push、绝不动远程；脏工作区一律
+//     拒绝（绝不静默丢弃用户手工改动）；reset 目标已在远程历史中时一律拒绝
+//     （只能 revert 不能 reset）。
 package server
 
 import (
@@ -77,7 +79,9 @@ func clipLines(lines []string, limit int) string {
 	return strings.Join(shown, "\n") + note
 }
 
-// workspaceStatus 汇报项目工作区状态：主检出 + 各会话分支 + 集成分支（全只读）。
+// workspaceStatus 汇报项目工作区状态：主检出（主体）+ 遗留会话分支 + 集成分支
+// （全只读）。会话分支段枚举保留：存量 lxcode/session-* 分支仍是真实的改动备份，
+// 新会话（直连模式）如实标注。
 func (s *Server) workspaceStatus(sessionID, projectID string) (string, error) {
 	meta, err := s.resolveProject(sessionID, projectID)
 	if err != nil {
@@ -96,7 +100,8 @@ func (s *Server) workspaceStatus(sessionID, projectID string) (string, error) {
 		fmt.Fprintf(&b, "- 未提交/未跟踪（%d 条）：\n%s\n", len(main.Files), clipLines(main.Files, statusFileLimit))
 	}
 
-	// 各会话分支：按项目过滤（含归档——归档的分支同样是备份，如实标注）。
+	// 遗留会话分支：按项目过滤（含归档——归档的分支同样是备份，如实标注）。
+	// 新架构下不再创建会话分支，这一段只会列出存量分支（用户可手工处理）。
 	st, err := s.workspaceStore()
 	if err != nil {
 		return "", err
@@ -105,18 +110,24 @@ func (s *Server) workspaceStatus(sessionID, projectID string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("列出会话失败: %w", err)
 	}
-	b.WriteString("\n【会话分支】\n")
+	b.WriteString("\n【遗留会话分支】\n")
 	listed := false
 	for _, sess := range sessions {
 		if sess.Workspace != meta.ID {
 			continue
 		}
-		listed = true
 		wt, err := st.WorktreeOf(sess.ID)
 		if err != nil {
 			fmt.Fprintf(&b, "- %s（%s）：读取 worktree 元数据失败: %v\n", sess.Title, sess.ID, err)
 			continue
 		}
+		if wt.Path == "" && wt.Branch == "" {
+			// 直连模式的新会话：没有独立分支，如实标注、不计入清单主体。
+			fmt.Fprintf(&b, "- %s（%s）：直连主检出模式（无独立分支）%s\n", sess.Title, sess.ID, archivedNote(sess.Archived))
+			listed = true
+			continue
+		}
+		listed = true
 		if wt.Branch == "" {
 			fmt.Fprintf(&b, "- %s（%s）：还没有会话分支（未发过消息）%s\n", sess.Title, sess.ID, archivedNote(sess.Archived))
 			continue
@@ -160,18 +171,19 @@ func (s *Server) workspaceStatus(sessionID, projectID string) (string, error) {
 		b.WriteString(line + "\n")
 	}
 	if !listed {
-		b.WriteString("- （该项目下还没有会话分支）\n")
+		b.WriteString("- （该项目下没有会话分支）\n")
 	}
 
-	// 集成分支（若存在）：ahead/behind 相对主检出当前分支。
+	// 集成分支（遗留，若存在）：ahead/behind 相对主检出当前分支。新架构不再
+	// 合并到集成分支，存量分支如实展示供用户手工处理。
 	const integration = "lxcode/integration"
 	exists, err := project.BranchExists(ctx, meta.Path, integration)
 	if err != nil {
 		return "", fmt.Errorf("查询集成分支失败: %w", err)
 	}
-	b.WriteString("\n【集成分支】\n")
+	b.WriteString("\n【集成分支（遗留）】\n")
 	if !exists {
-		b.WriteString("- lxcode/integration 尚未创建（还没有合并过）\n")
+		b.WriteString("- lxcode/integration 不存在（合并流程已退役）\n")
 	} else {
 		ahead, err := project.CommitCountBetween(ctx, meta.Path, main.Branch, integration)
 		if err != nil {
@@ -194,26 +206,23 @@ func archivedNote(archived bool) string {
 	return ""
 }
 
-// workspaceSync 执行「提交 → 起合并进程（→ 合并成功后 push）」链路：
-// 前两步同步做，push 异步在合并任务收尾时做（见 mergejob.go 的 pushAfter）。
+// workspaceSync 执行「提交主检出 →（可选）直接 push 当前分支」：
+// 2026-10 架构修订——合并进程退役，push 不再是合并任务的收尾步骤，而是 sync 的
+// 显式第二步（当前分支直接推 origin）。
 func (s *Server) workspaceSync(sessionID, message string, push bool) (string, error) {
 	st, err := s.workspaceStore()
 	if err != nil {
 		return "", err
 	}
-	ws, err := st.WorkspaceOf(sessionID)
+	meta, err := s.resolveProject(sessionID, "")
 	if err != nil {
 		return "", err
 	}
-	if ws == "" {
-		return "", fmt.Errorf("当前会话没有归属项目，无法提交推送（先把会话归入一个项目）")
-	}
-	wt, err := st.WorktreeOf(sessionID)
+	dir := meta.Path // 主检出：提交与推送都发生在这里
+	ctx := s.Ctx()
+	branch, err := project.CurrentBranch(ctx, dir)
 	if err != nil {
-		return "", err
-	}
-	if wt.Path == "" || wt.Branch == "" {
-		return "", fmt.Errorf("本会话还没有工作树（先发一条消息建立），没有可提交的内容")
+		return "", fmt.Errorf("读取主检出当前分支失败: %w", err)
 	}
 	msg := strings.TrimSpace(message)
 	if msg == "" {
@@ -225,152 +234,166 @@ func (s *Server) workspaceSync(sessionID, message string, push bool) (string, er
 			msg = "工作区同步"
 		}
 	}
-	// 第一步：提交本会话 worktree（干净则跳过，不报错）。
-	committed, err := project.CommitAll(s.Ctx(), wt.Path, msg)
+	// 第一步：提交主检出（干净则跳过，不报错）。
+	committed, err := project.CommitAll(ctx, dir, msg)
 	if err != nil {
 		return "", fmt.Errorf("提交失败: %w", err)
 	}
-	// 第二步：起合并进程（同一条路径与前置校验——含「同一项目只允许一个」，
-	// 并自动获得多分支行为：本项目其他有改动的会话分支一并纳入）。
-	jobID, err := s.startMergeJob(sessionID, "", push)
-	if err != nil {
-		if committed {
-			return "", fmt.Errorf("已提交检查点（%s），但起合并进程失败: %w", msg, err)
-		}
-		return "", err
-	}
 	var b strings.Builder
 	if committed {
-		// 检查点序号 = 相对基线的提交数（每次提交恰好 +1）。
+		// 检查点序号 = 相对会话基线的提交数（每次提交恰好 +1；基线未知时退
+		// HEAD^ 只数最近一个）。
+		wt, werr := st.WorktreeOf(sessionID)
 		n := 0
-		base := wt.BaseCommit
+		base := ""
+		if werr == nil {
+			base = wt.BaseCommit
+		}
 		if base == "" {
 			base = "HEAD^"
 		}
-		if cnt, cerr := project.CommitCountBetween(s.Ctx(), wt.Path, base, "HEAD"); cerr == nil {
+		if cnt, cerr := project.CommitCountBetween(ctx, dir, base, "HEAD"); cerr == nil {
 			n = cnt
 		}
-		fmt.Fprintf(&b, "已提交第 %d 个检查点（%s）。", n, msg)
+		fmt.Fprintf(&b, "已提交第 %d 个检查点（%s）到分支 %s。", n, msg, branch)
 	} else {
 		b.WriteString("工作区没有未提交改动，跳过提交。")
 	}
-	fmt.Fprintf(&b, "合并进程已启动（任务 %s），结束后会自动通知你。", jobID)
-	if push {
-		b.WriteString("推送将在合并成功后执行（推到远程 origin）。")
-	} else {
+	if !push {
 		b.WriteString("本次不推送。")
+		return b.String(), nil
 	}
+	// 第二步：直接推送当前分支到 origin（合并流程已退役）。
+	if ok, rerr := project.RemoteExists(ctx, dir, "origin"); rerr != nil {
+		return "", fmt.Errorf("检查远程 origin 失败: %w", rerr)
+	} else if !ok {
+		return "", fmt.Errorf("已提交到分支 %s，但该项目没有配置远程 origin，无法推送（先 git remote add origin <地址>）", branch)
+	}
+	if err := project.PushBranch(ctx, dir, branch); err != nil {
+		return "", fmt.Errorf("已提交到分支 %s，但推送失败: %w", branch, err)
+	}
+	fmt.Fprintf(&b, "已把分支 %s 推送到远程 origin。", branch)
 	return b.String(), nil
 }
 
 // rollbackPlan 是回滚的执行计划（确认门在计划上做，执行只照计划做）。
 type rollbackPlan struct {
-	worktree string   // 本会话工作树路径
+	repoDir  string   // 主检出路径（回滚作用在主检出当前分支上）
+	branch   string   // 主检出当前分支（确认文案展示用）
 	oldHead  string   // 回滚前的 HEAD
 	newHead  string   // 回滚到的提交
 	files    []string // 将被丢弃的文件清单（git diff --name-status 新..旧）
-	warns    []string // 警告（如「该提交已合并进集成分支」）
+	warns    []string // 警告（如「该提交已并进集成分支」）
 	drops    int      // 将丢弃的检查点提交数
 }
 
 // planRollback 生成回滚计划并做全部前置校验（只读，不动工作区）：
 //   - 脏工作区拒绝（绝不静默丢弃用户手工改动）；
-//   - target 是 hash 时校验它在本会话分支上；
-//   - 目标提交已并入集成分支时生成警告（回滚不撤销集成分支上的内容）。
+//   - target 是 hash 时校验它在当前分支历史上（是 HEAD 的祖先）；
+//   - **reset 目标已在远程历史中时拒绝**（硬纪律：已推送的提交只能 revert 不能
+//     reset——本地 reset 会与远程历史分叉）。
 func (s *Server) planRollback(sessionID, target string) (*rollbackPlan, error) {
 	st, err := s.workspaceStore()
 	if err != nil {
 		return nil, err
 	}
-	ws, err := st.WorkspaceOf(sessionID)
+	meta, err := s.resolveProject(sessionID, "")
 	if err != nil {
 		return nil, err
 	}
-	if ws == "" {
-		return nil, fmt.Errorf("当前会话没有归属项目，没有可回滚的会话分支")
+	dir := meta.Path // 主检出
+	if _, err := os.Stat(dir); err != nil {
+		return nil, fmt.Errorf("项目主检出目录不存在（%s），无法回滚", dir)
 	}
+	ctx := s.Ctx()
+	branch, err := project.CurrentBranch(ctx, dir)
+	if err != nil {
+		return nil, err
+	}
+	// 会话基线：worktree_base 列的新语义 = 会话开始时的 HEAD（首次准备时记录）。
+	// 老会话该列存的是旧 worktree 基线——语义同样是「这条会话开始时的 HEAD」，直接沿用。
 	wt, err := st.WorktreeOf(sessionID)
 	if err != nil {
 		return nil, err
 	}
-	if wt.Path == "" || wt.Branch == "" {
-		return nil, fmt.Errorf("本会话还没有工作树（先发一条消息建立），没有可回滚的分支")
-	}
-	if _, err := os.Stat(wt.Path); err != nil {
-		return nil, fmt.Errorf("本会话工作树目录不存在（可能已被释放），无法回滚")
-	}
-	ctx := s.Ctx()
-	oldHead, err := project.ResolveCommit(ctx, wt.Path, "HEAD")
+	base := wt.BaseCommit
+	oldHead, err := project.ResolveCommit(ctx, dir, "HEAD")
 	if err != nil {
 		return nil, err
 	}
 	switch strings.TrimSpace(target) {
 	case "", "last-turn":
 		// HEAD 就是基线 = 还没有任何轮次提交。
-		if wt.BaseCommit != "" && oldHead == wt.BaseCommit {
-			return nil, fmt.Errorf("本会话还没有可回滚的提交（当前就在会话基线上）")
+		if base != "" && oldHead == base {
+			return nil, fmt.Errorf("还没有可回滚的提交（当前就在会话基线上）")
 		}
-		head, err := project.ResolveCommit(ctx, wt.Path, "HEAD~1")
+		head, err := project.ResolveCommit(ctx, dir, "HEAD~1")
 		if err != nil {
-			return nil, fmt.Errorf("本会话还没有可回滚的提交: %w", err)
+			return nil, fmt.Errorf("还没有可回滚的提交: %w", err)
 		}
-		return s.finishRollbackPlan(ctx, wt, oldHead, head)
+		return s.finishRollbackPlan(ctx, dir, branch, oldHead, head)
 	case "session-start":
-		base := wt.BaseCommit
 		if base == "" {
 			// 基线元数据缺失：退回根提交（仓库最早的提交即会话可回的起点）。
-			roots, err := project.RootCommits(ctx, wt.Path)
+			roots, err := project.RootCommits(ctx, dir)
 			if err != nil || len(roots) == 0 {
 				return nil, fmt.Errorf("会话基线未知且找不到根提交，无法回滚到会话起点")
 			}
 			base = roots[len(roots)-1]
 		}
-		return s.finishRollbackPlan(ctx, wt, oldHead, base)
+		return s.finishRollbackPlan(ctx, dir, branch, oldHead, base)
 	default:
-		// 原始 commit hash：必须在本会话分支上（是 HEAD 的祖先）才允许。
-		head, err := project.ResolveCommit(ctx, wt.Path, strings.TrimSpace(target))
+		// 原始 commit hash：必须在当前分支历史上（是 HEAD 的祖先）才允许。
+		head, err := project.ResolveCommit(ctx, dir, strings.TrimSpace(target))
 		if err != nil {
 			return nil, err
 		}
-		ok, err := project.IsAncestor(ctx, wt.Path, head, oldHead)
+		ok, err := project.IsAncestor(ctx, dir, head, oldHead)
 		if err != nil {
 			return nil, err
 		}
 		if !ok {
-			return nil, fmt.Errorf("提交 %s 不在本会话分支上，拒绝回滚（只允许回滚本会话分支自己的历史）", head)
+			return nil, fmt.Errorf("提交 %s 不在当前分支历史上，拒绝回滚（只允许回滚当前分支自己的历史）", head)
 		}
-		return s.finishRollbackPlan(ctx, wt, oldHead, head)
+		return s.finishRollbackPlan(ctx, dir, branch, oldHead, head)
 	}
 }
 
 // finishRollbackPlan 在目标提交定下来之后补齐计划的公共部分：
-// 脏工作区拒绝、丢弃文件清单、丢弃提交数、集成分支警告。
-func (s *Server) finishRollbackPlan(ctx context.Context, wt store.WorktreeMeta, oldHead, newHead string) (*rollbackPlan, error) {
-	// 硬纪律：reset 前工作区必须干净——用户手工改动绝不被静默丢弃。
-	dirty, err := project.StatusLines(ctx, wt.Path)
+// 脏工作区拒绝、已推送拒绝、丢弃文件清单、丢弃提交数、集成分支警告。
+func (s *Server) finishRollbackPlan(ctx context.Context, dir, branch, oldHead, newHead string) (*rollbackPlan, error) {
+	// 硬纪律一：reset 前工作区必须干净——用户手工改动绝不被静默丢弃。
+	dirty, err := project.StatusLines(ctx, dir)
 	if err != nil {
 		return nil, fmt.Errorf("检查工作区状态失败: %w", err)
 	}
 	if len(dirty) > 0 {
 		return nil, fmt.Errorf("工作区有未提交改动，先提交或说明如何处理：\n%s", clipLines(dirty, 10))
 	}
-	plan := &rollbackPlan{worktree: wt.Path, oldHead: oldHead, newHead: newHead}
+	// 硬纪律二：reset 目标已在远程历史中 → 拒绝。已推送的提交只能 revert 不能
+	// reset——本地 reset 会与远程历史分叉（远端一拉就回来，或得 force 推）。
+	if onRemote, err := project.CommitOnRemote(ctx, dir, newHead); err != nil {
+		return nil, err
+	} else if onRemote {
+		return nil, fmt.Errorf("提交 %s 已推送到远程，只能 revert 不能 reset（回滚被拒绝）", short7(newHead))
+	}
+	plan := &rollbackPlan{repoDir: dir, branch: branch, oldHead: oldHead, newHead: newHead}
 	// 丢弃的文件清单：方向是 新..旧——状态字母表示「回滚会丢掉什么」（A=将删除）。
-	files, err := project.DiffNameStatus(ctx, wt.Path, newHead, oldHead)
+	files, err := project.DiffNameStatus(ctx, dir, newHead, oldHead)
 	if err != nil {
 		return nil, fmt.Errorf("统计将被丢弃的文件失败: %w", err)
 	}
 	plan.files = files
-	if drops, err := project.CommitCountBetween(ctx, wt.Path, newHead, oldHead); err == nil {
+	if drops, err := project.CommitCountBetween(ctx, dir, newHead, oldHead); err == nil {
 		plan.drops = drops
 	}
-	// 集成分支警告：目标提交已经并进集成分支的话，本会话分支的回滚不会撤销
+	// 集成分支警告（遗留）：目标提交已经并进集成分支的话，主检出的回滚不会撤销
 	// 集成分支上的内容——必须如实警告，不能让用户以为撤销生效了。
 	const integration = "lxcode/integration"
-	if exists, err := project.BranchExists(ctx, wt.Path, integration); err == nil && exists {
-		if merged, err := project.IsAncestor(ctx, wt.Path, newHead, integration); err == nil && merged {
+	if exists, err := project.BranchExists(ctx, dir, integration); err == nil && exists {
+		if merged, err := project.IsAncestor(ctx, dir, newHead, integration); err == nil && merged {
 			plan.warns = append(plan.warns,
-				"该提交已合并进集成分支，本会话分支的回滚不会撤销集成分支上的内容；如需撤销请让我在集成分支上 revert。")
+				"该提交已合并进集成分支（遗留），主检出的回滚不会撤销集成分支上的内容；如需撤销请 revert。")
 		}
 	}
 	return plan, nil
@@ -385,11 +408,11 @@ func (s *Server) rollbackConfirmText(sessionID, target string) string {
 	}
 	plan, err := s.planRollback(sessionID, target)
 	if err != nil {
-		return fmt.Sprintf("将把本会话分支回滚（目标：%s），丢弃其后的检查点提交。该操作不可逆，确认执行？", label)
+		return fmt.Sprintf("将把主检出当前分支回滚（目标：%s），丢弃其后的检查点提交。该操作不可逆，确认执行？", label)
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "将把本会话分支从 %s 回滚到 %s，丢弃其后的 %d 个检查点提交（该操作不可逆）。",
-		short7(plan.oldHead), short7(plan.newHead), plan.drops)
+	fmt.Fprintf(&b, "将把主检出分支 %s 从 %s 回滚到 %s，丢弃其后的 %d 个检查点提交（该操作不可逆）。",
+		plan.branch, short7(plan.oldHead), short7(plan.newHead), plan.drops)
 	if len(plan.files) > 0 {
 		fmt.Fprintf(&b, "\n涉及的文件：\n%s", clipLines(plan.files, syncFileLimit))
 	} else {
@@ -401,21 +424,23 @@ func (s *Server) rollbackConfirmText(sessionID, target string) string {
 	return b.String()
 }
 
-// syncConfirmText 组 sync 的确认门文案（说清将执行「提交 + 合并 +（可选）推送」
+// syncConfirmText 组 sync 的确认门文案（说清将执行「提交 +（可选）直接推送」
 // 哪些动作——用户必须知道自己确认的是什么）。
 func (s *Server) syncConfirmText(sessionID string, push bool) string {
 	var b strings.Builder
-	b.WriteString("将执行：\n1. 提交本会话工作区的全部改动（git add -A + commit）")
-	if _, err := s.workspaceStore(); err == nil {
+	b.WriteString("将执行：\n1. 提交主检出的全部改动（git add -A + commit，提交到当前分支）")
+	if meta, err := s.resolveProject(sessionID, ""); err == nil {
+		if branch, berr := project.CurrentBranch(s.Ctx(), meta.Path); berr == nil {
+			fmt.Fprintf(&b, "（分支 %s）", branch)
+		}
 		if _, lastUser, uerr := s.st.LastUserTurn(sessionID); uerr == nil {
 			if msg := commitSummary(lastUser); msg != "" {
 				fmt.Fprintf(&b, "，提交信息：%s", msg)
 			}
 		}
 	}
-	b.WriteString("\n2. 起合并进程，把改动合并到集成分支（后台任务，结束后自动通知）")
 	if push {
-		b.WriteString("\n3. 合并成功后推送到远程 origin")
+		b.WriteString("\n2. 把当前分支直接推送到远程 origin")
 	}
 	b.WriteString("\n确认执行？")
 	return b.String()
@@ -427,11 +452,12 @@ func (s *Server) workspaceRollback(sessionID, target string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := project.ResetHard(s.Ctx(), plan.worktree, plan.newHead); err != nil {
+	if err := project.ResetHard(s.Ctx(), plan.repoDir, plan.newHead); err != nil {
 		return "", fmt.Errorf("回滚失败: %w", err)
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "已回滚到提交 %s（丢弃了其后的 %d 个检查点提交）。", short7(plan.newHead), plan.drops)
+	fmt.Fprintf(&b, "已把分支 %s 回滚到提交 %s（丢弃了其后的 %d 个检查点提交）。",
+		plan.branch, short7(plan.newHead), plan.drops)
 	if len(plan.files) == 0 {
 		b.WriteString("\n丢弃的文件：无（只移动了分支指针）。")
 	} else {
@@ -483,7 +509,9 @@ func (s *Server) preparePublish(sessionID, source, target string) (srcRoot, dstR
 		return "", "", "", "", err
 	}
 	if wt.Path == "" {
-		return "", "", "", "", fmt.Errorf("本会话还没有工作树（先发一条消息建立），没有可发布的产物")
+		// 直连模式（2026-10 架构修订）：会话直接工作在主检出——产物本来就在
+		// 项目里，发布没有意义。
+		return "", "", "", "", fmt.Errorf("本会话直接工作在项目主检出，产物已经在项目里，无需发布（workspace_publish 是旧工作树架构的遗留工具）")
 	}
 	if _, err := os.Stat(wt.Path); err != nil {
 		return "", "", "", "", fmt.Errorf("本会话工作树目录不存在（可能已被释放），无法发布")

@@ -88,8 +88,9 @@ func commitCount(t *testing.T, dir string) int {
 }
 
 // sendProjectTurn 跑一轮：等流进入（趁机会写 change），放行收尾，等 chat.done 与
-// 在途自动提交都结束 Frobenius。change 为 nil = 这一轮不改动任何文件。
-func sendProjectTurn(t *testing.T, srv *Server, client *wsTestClient, id, text string, started chan string, release chan struct{}, change func(worktreePath string)) {
+// 在途自动提交都结束。change 为 nil = 这一轮不改动任何文件。直连模式下改动落在
+// 主检出（项目根）。
+func sendProjectTurn(t *testing.T, srv *Server, client *wsTestClient, id, text string, started chan string, release chan struct{}, change func(projectPath string)) {
 	t.Helper()
 	resp := client.call(protocol.MethodChatSend, protocol.ChatSendParams{SessionID: id, Text: text})
 	if resp == nil || resp.Error != nil {
@@ -101,9 +102,13 @@ func sendProjectTurn(t *testing.T, srv *Server, client *wsTestClient, id, text s
 		t.Fatalf("stream never started for %q", text)
 	}
 	if change != nil {
-		meta, err := srv.st.WorktreeOf(id)
-		if err != nil || meta.Path == "" {
-			t.Fatalf("worktree not ready: %+v err=%v", meta, err)
+		ws, err := srv.st.WorkspaceOf(id)
+		if err != nil || ws == "" {
+			t.Fatalf("workspace not ready: %q err=%v", ws, err)
+		}
+		meta, found, err := srv.st.ProjectByID(ws)
+		if err != nil || !found {
+			t.Fatalf("project not found: %q found=%v err=%v", ws, found, err)
 		}
 		change(meta.Path)
 	}
@@ -113,7 +118,7 @@ func sendProjectTurn(t *testing.T, srv *Server, client *wsTestClient, id, text s
 }
 
 // TestAutoCommitCommitsEachTurn 覆盖用例 1~3：每轮有改动就一个提交、信息含轮次与摘要、
-// 无改动不提交。
+// 无改动不提交。直连架构：提交落在主检出当前分支（git log 可见）。
 func TestAutoCommitCommitsEachTurn(t *testing.T) {
 	repo := initGitProject(t)
 	started := make(chan string, 8)
@@ -122,24 +127,28 @@ func TestAutoCommitCommitsEachTurn(t *testing.T) {
 	meta := addAutoCommitProject(t, client, repo)
 	id := createTestSession(t, client, meta.ID)
 
-	// 用例 1：第一轮有文件改动 → worktree 里出现一个新提交，信息含轮次与摘要。
+	// 用例 1：第一轮有文件改动 → 主检出出现一个新提交，信息含轮次与摘要。
 	sendProjectTurn(t, srv, client, id, "第一轮请求：新建文件", started, release, func(path string) {
 		if err := os.WriteFile(filepath.Join(path, "a.txt"), []byte("a\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	})
+	// 直连模式：元数据 path/branch 为空（表示无独立 worktree），base = 当时 HEAD。
 	wt, err := srv.st.WorktreeOf(id)
-	if err != nil || wt.Path == "" {
-		t.Fatalf("worktree not created: %+v err=%v", wt, err)
+	if err != nil {
+		t.Fatal(err)
 	}
-	logOut := gitServerTest(t, wt.Path, "log", "--oneline")
+	if wt.Path != "" || wt.Branch != "" || wt.BaseCommit == "" {
+		t.Fatalf("直连模式的元数据应为 path/branch 空、base 非空: %+v", wt)
+	}
+	logOut := gitServerTest(t, repo, "log", "--oneline")
 	if !strings.Contains(logOut, "第 1 轮") {
 		t.Fatalf("git log 缺少第 1 轮提交:\n%s", logOut)
 	}
-	if got := strings.TrimSpace(gitServerTest(t, wt.Path, "log", "-1", "--pretty=%s")); got != "第 1 轮：第一轮请求：新建文件" {
+	if got := strings.TrimSpace(gitServerTest(t, repo, "log", "-1", "--pretty=%s")); got != "第 1 轮：第一轮请求：新建文件" {
 		t.Fatalf("提交信息 = %q", got)
 	}
-	if count := commitCount(t, wt.Path); count != 2 {
+	if count := commitCount(t, repo); count != 2 {
 		t.Fatalf("第 1 轮后提交数 = %d, want 2（base + 第 1 轮）", count)
 	}
 
@@ -149,34 +158,34 @@ func TestAutoCommitCommitsEachTurn(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	if got := strings.TrimSpace(gitServerTest(t, wt.Path, "log", "-1", "--pretty=%s")); got != "第 2 轮：第二轮请求：再改一处" {
+	if got := strings.TrimSpace(gitServerTest(t, repo, "log", "-1", "--pretty=%s")); got != "第 2 轮：第二轮请求：再改一处" {
 		t.Fatalf("第 2 轮提交信息 = %q", got)
 	}
-	if count := commitCount(t, wt.Path); count != 3 {
+	if count := commitCount(t, repo); count != 3 {
 		t.Fatalf("第 2 轮后提交数 = %d, want 3（base + 两轮）", count)
 	}
 
 	// 用例 3：一轮没有任何文件改动 → 不产生提交（提交数不变，且不报错）。
-	before := commitCount(t, wt.Path)
+	before := commitCount(t, repo)
 	sendProjectTurn(t, srv, client, id, "第三轮请求：不改动", started, release, nil)
-	if after := commitCount(t, wt.Path); after != before {
+	if after := commitCount(t, repo); after != before {
 		t.Fatalf("无改动的一轮不该产生提交: before=%d after=%d", before, after)
 	}
 }
 
-// TestAutoCommitSkipsUngroupedSession 覆盖用例 4：未分组会话（无 worktree）跑一轮 →
+// TestAutoCommitSkipsUngroupedSession 覆盖用例 4：未分组会话（无归属项目）跑一轮 →
 // 不尝试提交、不报错。
 func TestAutoCommitSkipsUngroupedSession(t *testing.T) {
 	started := make(chan string, 8)
 	release := make(chan struct{}, 8)
 	srv, client, _ := newTestServer(t, autoCommitStream(started, release))
-	id := createTestSession(t, client, "") // 未分组会话：没有 worktree
+	id := createTestSession(t, client, "") // 未分组会话：没有归属项目
 	sendProjectTurn(t, srv, client, id, "未分组会话的一轮", started, release, nil)
 	meta, err := srv.st.WorktreeOf(id)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if meta.Path != "" || meta.Branch != "" {
-		t.Fatalf("未分组会话不该有 worktree: %+v", meta)
+	if meta.Path != "" || meta.Branch != "" || meta.BaseCommit != "" {
+		t.Fatalf("未分组会话不该有工作区元数据: %+v", meta)
 	}
 }

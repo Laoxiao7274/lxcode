@@ -200,6 +200,21 @@ func RemoteExists(ctx context.Context, repoDir, name string) (bool, error) {
 	return false, nil
 }
 
+// CommitOnRemote 报告提交 commit 是否已在任何远程分支的历史里（`git branch -r
+// --contains` 输出非空 = 已推送）。回滚的硬纪律用：reset 目标已在远程历史中时，
+// 本地 reset 会与远程历史分叉（远端一拉就回来或要 force）——必须拒绝，让用户走
+// revert。没有任何远程时恒为 false（没有推送目标，本地历史随便整）。
+func CommitOnRemote(ctx context.Context, repoDir, commit string) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, statusTimeout)
+	defer cancel()
+	out, err := gitOutputCtx(ctx, repoDir, "branch", "-r", "--contains", commit)
+	if err != nil {
+		// 提交不存在等错误如实上报；「不在任何远程分支」以空输出收场，不算错误。
+		return false, fmt.Errorf("git branch -r --contains %s: %w", commit, err)
+	}
+	return strings.TrimSpace(out) != "", nil
+}
+
 // PushBranch 把本地分支 branch 推到远程 origin（git push origin <branch>）。
 // remote 名固定 origin（本工具面的约定）；推送是显式的单一动作，不做 force。
 // GIT_TERMINAL_PROMPT=0：凭据缺失时立刻失败而不是挂起等终端输入。

@@ -134,7 +134,7 @@ func validateExistingWorktree(repo, path, branch string) error {
 	// （--show-toplevel / --git-common-dir / --abbrev-ref HEAD）。
 	// Windows 上每个 git 子进程实测约 35ms（进程创建占大头）：分开问三次是
 	// 158ms，合成一次是 33ms。这段校验在每次读历史、恢复会话时都会跑
-	// （见 server.prepareWorktreeLocked），所以这个差值每次切会话都要付一遍。
+	// （见 server.prepareWorkspaceLocked），所以这个差值每次切会话都要付一遍。
 	out, err := gitOutput(path, "rev-parse", "--show-toplevel", "--git-common-dir", "--abbrev-ref", "HEAD")
 	if err != nil {
 		return fmt.Errorf("worktree 路径存在但不是有效 Git 工作树: %w", err)

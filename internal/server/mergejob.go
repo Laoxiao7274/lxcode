@@ -68,13 +68,14 @@ func (s *Server) startMergeJob(sessionID, targetBranch string, pushAfter bool) (
 	return s.startMergeJobOpts(sessionID, targetBranch, pushAfter, false)
 }
 
-// startMergeJobOpts 是 startMergeJob 的本体，autoHook 区分两条调用路径：
+// startMergeJobOpts 是 startMergeJob 的本体，autoHook 区分两条调用路径
+//（**遗留**：主链路的两个入口——merge_request 工具与轮末自动合并钩子——均已退役，
+// 当前版本只有测试直接调用 startMergeJob；代码保留以便将来恢复隔离模式）：
 //
-//   - autoHook=false（工具路径，merge_request / workspace_sync）：扫描失败也要起
+//   - autoHook=false（原工具路径）：扫描失败也要起
 //     一条任务并让它以失败收尾——模型能经 job_output 读到失败原因（原有语义）；
-//   - autoHook=true（轮末自动合并钩子，autocommit.go 的 maybeAutoMerge）：扫描发现
-//     「全项目没有待合并的改动」时直接把原因交回钩子静默记日志，**不创建任务**
-//     ——钩子不缺这份反馈（它只记日志），给用户 job 面板留一条失败任务纯是噪声。
+//   - autoHook=true（原轮末自动合并钩子，autocommit.go 的 maybeAutoMerge，已删除）：
+//     扫描发现「全项目没有待合并的改动」时直接把原因交回钩子静默记日志，**不创建任务**。
 //
 // 前置校验（都在返回前做完，失败直接回给模型）：
 //   - 会话存在且是项目会话（有 workspace）；

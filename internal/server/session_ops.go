@@ -113,14 +113,8 @@ func (s *Server) createSession(workspace string) (string, *agent.Session, error)
 	s.sessionsMu.Lock()
 	s.sessions[id], s.lastSessionID = sess, id
 	s.sessionsMu.Unlock()
-	// 项目会话异步预热 worktree：把「串行 3 个 git 子进程建工作树」（首条消息
-	// ~200ms 起、冷态秒级）挪出用户等待路径——session.new 到首条发送之间有几秒
-	// 间隙，正好用它把工作树建好，首条 chat.send 命中快路径 ~0ms。
-	// 预热纯异步：session.new 的响应不等它；失败只记日志（fail-open），send 时
-	// 会按既有行为再试。
-	if workspace != "" {
-		s.preheatWorktree(id, sess)
-	}
+	// 直连模式（2026-10 架构修订）：主检出路径恒定、准备只剩 os.Stat 与一次性的
+	// 基线记录——旧的 worktree 异步预热没有意义，已随 per-session worktree 一起退役。
 	return id, sess, nil
 }
 
@@ -128,7 +122,7 @@ func (s *Server) sendSession(sessionID string, sess *agent.Session, text string,
 	lock := s.sessionWorktreeLock(sessionID)
 	lock.Lock()
 	defer lock.Unlock()
-	if err := s.prepareWorktreeLocked(sessionID, sess); err != nil {
+	if err := s.prepareWorkspaceLocked(sessionID, sess); err != nil {
 		return err
 	}
 	return sess.Send(text, opts...)

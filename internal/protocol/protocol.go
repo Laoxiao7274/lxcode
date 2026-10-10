@@ -60,10 +60,9 @@ const (
 	// 空闲才允许——正在跑的一轮手里握着历史快照，抽掉它等于让模型按一份
 	// 已经不存在的上下文继续（与 chat.compact 同款纪律，服务端回 ErrBusy）。
 	MethodChatRewind = "chat.rewind"
-	// MethodChatMergeRequest 从客户端（后台任务面板的「合并请求」入口）直接起一个
-	// 后台合并进程——与 merge_request 工具同一条后端路径（startMergeJob），只是
-	// 发起方从模型换成用户。参数 target_branch 为空 = 默认 lxcode/integration；
-	// 返回 job id（任务出现在后台任务面板，结束经唤醒投递通告回会话）。
+	// MethodChatMergeRequest 是后台任务面板「合并请求」入口的协议方法（**遗留**：
+	// 2026-10 架构修订——合并进程退役，会话直连主检出，没有分支合并流程）。
+	// 保留方法名以免协议漂移；被调用时以错误码回带退役说明，不启动任何任务。
 	MethodChatMergeRequest = "chat.mergeRequest"
 
 	// 会话管理（持久化 + 切换）

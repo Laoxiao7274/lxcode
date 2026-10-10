@@ -649,8 +649,8 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
     return String(result?.diff ?? "");
   }
 
-  /** 起一个后台合并进程（chat.mergeRequest）：与 merge_request 工具同一条后端
-   *  路径（startMergeJob），只是发起方从模型换成用户。返回任务 id。 */
+  /** 起一个后台合并进程（chat.mergeRequest）：**遗留**——合并流程已退役，后端
+   *  如实回说明并以错误码拒绝。保留方法签名便于将来恢复隔离模式。 */
   async mergeRequest(sessionId: string, targetBranch?: string): Promise<string> {
     const params: Record<string, string> = { session_id: sessionId };
     if (targetBranch && targetBranch.trim()) params.target_branch = targetBranch.trim();

@@ -121,10 +121,10 @@ type Session struct {
 	// 目录）。工具的相对路径、bash 默认目录与系统提示词的工作目录说明
 	// 都以它为准——每轮开始时快照进 ctx（tools.WithWorkDir）。
 	workDir string
-	// worktreeBranch/worktreeBase 是本会话 Git 工作树的分支与基线提交
-	// （server 在 prepareWorktree 成功后设置；子会话从父会话继承）。空 =
-	// 未分组会话/没有 worktree——提示词对 Git 工作树零注入。与 workDir
-	// 的分工：workDir 是「工具在哪跑」，这两个是「模型该怎么看待提交」。
+	// worktreeBranch/worktreeBase 是本会话的工作区信息：主检出当前分支名与会话
+	// 基线 HEAD（server 在 prepareWorkspace 成功后设置；子会话从父会话继承）。
+	// 空 = 未分组会话——提示词对工作区零注入。与 workDir 的分工：workDir 是
+	// 「工具在哪跑」（直连模式 = 主检出），这两个是「模型该怎么看待提交」。
 	worktreeBranch string
 	worktreeBase   string
 	// dispatchRoot 是本轮主 Agent 载荷（dispatch 委派名单校验的依据——
@@ -584,8 +584,9 @@ func (s *Session) SetWorkDir(dir string) error {
 	return nil
 }
 
-// SetWorktreeInfo 记录本会话 Git 工作树的分支与基线提交（server 在 prepareWorktree
-// 成功后调用；子会话从父会话继承）。空 = 未分组会话/没有 worktree。
+// SetWorktreeInfo 记录本会话的工作区信息：主检出当前分支名与会话基线 HEAD
+// （server 在 prepareWorkspace 成功后调用；子会话从父会话继承）。
+// 空 = 未分组会话（零注入）。
 func (s *Session) SetWorktreeInfo(branch, base string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
