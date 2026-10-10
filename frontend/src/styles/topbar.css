@@ -259,6 +259,39 @@
   margin-top: 8px;
   line-height: 1.5;
 }
+/* 配对二维码（局域网直连开启态——手机端扫码自动填入连接信息） */
+.conn-qr {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  background: var(--bg-side);
+}
+.conn-qr-img {
+  width: 160px;
+  height: 160px;
+  flex: none;
+  padding: 8px;
+  border-radius: 4px;
+  /* 白底保证暗色主题下也可扫（quiet zone 已含在码内，这里兜底衬底） */
+  background: #fff;
+}
+.conn-qr-desc {
+  flex: 1;
+  min-width: 0;
+  font-size: 10.5px;
+  color: var(--fg-faint);
+  line-height: 1.5;
+}
+.conn-qr-title {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--fg);
+  margin-bottom: 2px;
+}
 .conn-add {
   width: 100%;
   font-size: 12px;
