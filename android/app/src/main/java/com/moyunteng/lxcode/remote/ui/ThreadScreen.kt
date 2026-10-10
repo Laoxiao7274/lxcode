@@ -45,8 +45,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -481,10 +483,16 @@ private fun ToolCard(block: ThreadBlock.Tool) {
     }
 }
 
-/** 子 Agent 派发卡（一行摘要：状态点 + 已派发 → 名字 + 结论摘要 + 子会话 id，整行可点）。 */
+/**
+ * 子 Agent 派发卡：一行摘要（状态点 + 已派发 → 名字 + 结论摘要 + 子会话 id），
+ * 点按展开**子工具实时流**——子会话的 chat.toolCall/toolResult（带 dispatch_id）
+ * 归并进卡，实时看到子工具名/状态/耗时（桌面端「子会话标签页实时流」的安卓单页等价物）。
+ */
 @Composable
 private fun DispatchCard(block: ThreadBlock.Dispatch) {
-    Row(
+    // 展开态按 dispatchId 记忆：同一张卡流式更新（copy 重建）不重置展开
+    var open by remember(block.dispatchId) { mutableStateOf(false) }
+    Column(
         Modifier
             .fillMaxWidth()
             .clip(Lx.radius.CardShape)
@@ -498,42 +506,109 @@ private fun DispatchCard(block: ThreadBlock.Dispatch) {
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
-            ) { /* 进子会话：原型里子会话内容与主会话一致，不另开页 */ }
+            ) { open = !open }
             .padding(horizontal = Lx.space.s12, vertical = Lx.space.s10),
+        verticalArrangement = Arrangement.spacedBy(Lx.space.s8),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Lx.space.s8),
+        ) {
+            LxStatusDot(
+                status = if (block.isError) LxStatus.Danger else if (block.done) LxStatus.Success else LxStatus.Run,
+                size = 8.dp,
+            )
+            Text(
+                text = "已派发 → ${block.agentName}",
+                style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size12_5, fontWeight = FontWeight.SemiBold),
+                color = Lx.colors.Fg,
+            )
+            Text(
+                text = if (!block.done && block.childRuns.isNotEmpty()) {
+                    // 子会话实时态：运行中的子工具数（实时流行的计数）
+                    "子会话执行中 · ${block.childRuns.count { it.running }} 个工具运行中"
+                } else if (!block.done && block.childTools > 0) {
+                    "子会话执行中 · ${block.childTools} 个工具调用"
+                } else {
+                    block.conclusion
+                },
+                style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size11_5),
+                color = Lx.colors.FgFaint,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                text = block.sessionId,
+                style = Lx.type.Mono12.copy(fontSize = Lx.type.Size10, color = LxColors.SuccessInk),
+            )
+            Icon(
+                imageVector = Icons.Filled.KeyboardArrowDown,
+                contentDescription = if (open) "收起子工具" else "展开子工具",
+                tint = LxColors.SuccessInk,
+                modifier = Modifier
+                    .size(14.dp)
+                    .graphicsLayer {
+                        rotationZ = if (open) 180f else 0f
+                    },
+            )
+        }
+        if (open) {
+            if (block.childRuns.isEmpty()) {
+                Text(
+                    text = "子会话还没有工具调用",
+                    style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size11),
+                    color = Lx.colors.FgFaint,
+                )
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(Lx.space.s4)) {
+                    block.childRuns.forEach { run -> ChildToolRow(run) }
+                }
+            }
+        }
+    }
+}
+
+/** 派发卡内的一行子工具实时态（状态点 + 工具名 + 参数摘要 + 耗时/运行中）。 */
+@Composable
+private fun ChildToolRow(run: com.moyunteng.lxcode.remote.mock.ChildTool) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(Lx.radius.r6))
+            .background(Lx.colors.BorderSoft)
+            .padding(horizontal = Lx.space.s8, vertical = Lx.space.s4),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(Lx.space.s8),
+        horizontalArrangement = Arrangement.spacedBy(Lx.space.s6),
     ) {
         LxStatusDot(
-            status = if (block.isError) LxStatus.Danger else if (block.done) LxStatus.Success else LxStatus.Run,
-            size = 8.dp,
+            status = when {
+                run.running -> LxStatus.Run
+                run.isError -> LxStatus.Danger
+                else -> LxStatus.Success
+            },
+            size = 6.dp,
         )
         Text(
-            text = "已派发 → ${block.agentName}",
-            style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size12_5, fontWeight = FontWeight.SemiBold),
+            text = run.title,
+            style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size11, fontWeight = FontWeight.Medium),
             color = Lx.colors.Fg,
         )
         Text(
-            text = if (!block.done && block.childTools > 0) {
-                // 子会话实时态：工具调用计数（chat.toolCall 带 dispatch_id 归并进卡）
-                "子会话执行中 · ${block.childTools} 个工具调用"
-            } else {
-                block.conclusion
-            },
-            style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size11_5),
+            text = run.argsSummary,
+            style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size10_5),
             color = Lx.colors.FgFaint,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
         )
         Text(
-            text = block.sessionId,
-            style = Lx.type.Mono12.copy(fontSize = Lx.type.Size10, color = LxColors.SuccessInk),
-        )
-        Icon(
-            imageVector = Icons.Filled.KeyboardArrowRight,
-            contentDescription = "打开子会话",
-            tint = LxColors.SuccessInk,
-            modifier = Modifier.size(14.dp),
+            text = when {
+                run.running -> "运行中"
+                run.durationMs > 0 -> formatMs(run.durationMs)
+                else -> ""
+            },
+            style = TextStyle(fontFamily = Lx.type.Mono, fontSize = 10.sp, color = Lx.colors.FgFaint),
         )
     }
 }

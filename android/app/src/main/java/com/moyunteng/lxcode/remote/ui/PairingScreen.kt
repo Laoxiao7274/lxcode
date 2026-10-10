@@ -62,6 +62,7 @@ import com.moyunteng.lxcode.design.component.LxButtonSize
 import com.moyunteng.lxcode.design.component.LxButtonVariant
 import com.moyunteng.lxcode.design.token.Lx
 import com.moyunteng.lxcode.design.token.LxColors
+import com.moyunteng.lxcode.remote.BuildConfig
 import com.moyunteng.lxcode.remote.mock.MockData
 import com.moyunteng.lxcode.remote.mock.addrValid
 
@@ -148,8 +149,11 @@ fun PairingScreen(state: MockAppState) {
             // ③ 错误提示（非法载荷 / 未授权相机）
             state.scanError?.let { ScanErrorBanner(it) }
 
-            // ④ 调试区（云机无摄像头；真机联调同款入口）
-            ScanDebugArea(state)
+            // ④ 调试区（云机无摄像头；真机联调同款入口）——BuildConfig.DEBUG 门控：
+            // 「模拟扫到一张码」「模拟非法载荷」是 mock 调试控件，release 构建不出现
+            if (BuildConfig.DEBUG) {
+                ScanDebugArea(state)
+            }
         }
     }
 }

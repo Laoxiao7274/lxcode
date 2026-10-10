@@ -62,7 +62,12 @@
 | `session.new` | `{"workspace":"<项目id>"}`（可选，空 = 未分组） | `{"session_id":"…"}` |
 | `session.resume` | `{"id":"…"}` | `{}` |
 | `session.rename` | `{"id":"…","title":"…"}` | `{}` |
-| `session.archive` | `{"id":"…","archived":true}` | `{}` |
+| `session.archive` | `{"id":"…","archived":true}` | `{}`（`SessionArchiveResult`：`archived` / `released_worktree` / `release_error?`） |
+
+**会话操作缺口（2026-10-09 第二批核对，安卓端不造）**：
+- **删除会话**：协议**没有** `session.delete`（只有 archive；归档即从侧栏消失）——安卓「删除」入口缺位；
+- **置顶会话**：协议**没有**置顶/pin 方法（`SessionMeta` 也无 pinned 字段）——缺位；
+- `session.worktree.release` 存在（`{"id"}` → `{released}`），属项目工作区管理，本批不接。
 
 `SessionMeta`（`session.list` 条目）：
 
@@ -216,3 +221,19 @@ chat.userMessage → (chat.delta{kind:"reasoning"})* → (chat.delta{kind:"text"
   2. `session.list` 条目没有 `running` 字段（busy 是事件态 `chat.busy` 广播，不进列表）——
      安卓侧运行中状态点只能在连接期间用事件维护，重启后未知。
   3. hello 成功应答的 `busy` 恒为 false（服务端未填真实值），客户端不应依赖它。
+
+### 8.1 第二批（斜杠面板 / 会话操作 / 返回栈 / 派发卡实时流）补记（2026-10-09）
+
+- **斜杠命令面板**：命令集照抄桌面端 `App.tsx` slashCommands（new/compact/agents/catalog/
+  settings，名称与描述逐字一致）。`/new` → `session.new`、`/compact` → `chat.compact`
+  （参数 `{"session_id"}` → `CompactResult{compacted,reason?}`，都是协议内方法）；
+  **agents/catalog/settings 是桌面端页面导航命令**——不是协议缺口，是安卓原型没有
+  对应页面，选中时如实提示「安卓原型未提供该页」，不假装执行。
+- **派发卡实时流**：子会话 `chat.toolCall/toolResult`（带 dispatch_id）归并进派发卡的
+  `childRuns` 实时行（工具名/状态/耗时）。**耗时是本地计时**：协议 `toolResult` 事件
+  不带 `duration_ms`（只在历史 tool 消息上有），实时流在调用到达时记
+  `SystemClock.elapsedRealtime()`、结果到达时作差——与历史回放的口径（消息里的
+  duration_ms）来源不同，如实标注。
+- **会话操作**：`session.rename` / `session.archive` 已接（见 §3 的缺口清单——删除/
+  置顶协议没有，记缺口跳过）。mock 模式下这些操作如实提示「需连接真实后端」，
+  不对静态演示数据假装生效。

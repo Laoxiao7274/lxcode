@@ -1,0 +1,138 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "id": "myt",
+      "display_name": "MYT",
+      "base_url": "https://mytai.opencecs.com/v1",
+      "api_key": "sk-AGSHm-6UP87nfKMM8vEi5g",
+      "format": "anthropic",
+      "model": "MYT",
+      "context_window": 1000000,
+      "max_output_tokens": 32000,
+      "capabilities": {
+        "tools": true,
+        "vision": true,
+        "json_output": true,
+        "reasoning": true
+      },
+      "enabled": true,
+      "updated_at": "2026-09-17T03:12:20.8479132Z"
+    },
+    {
+      "id": "GLM-5.3-Flash",
+      "base_url": "https://mytai.opencecs.com/v1",
+      "api_key": "sk-AGSHm-6UP87nfKMM8vEi5g",
+      "format": "anthropic",
+      "model": "GLM-5.3-Flash",
+      "context_window": 1000000,
+      "max_output_tokens": 131072,
+      "capabilities": {
+        "tools": true,
+        "vision": true,
+        "json_output": true,
+        "reasoning": true
+      },
+      "enabled": true,
+      "updated_at": "2026-10-08T02:00:04.4716024Z"
+    },
+    {
+      "id": "MYT-Flash",
+      "base_url": "https://mytai.opencecs.com/v1",
+      "api_key": "sk-AGSHm-6UP87nfKMM8vEi5g",
+      "format": "anthropic",
+      "model": "MYT-Flash",
+      "capabilities": {
+        "tools": false,
+        "vision": false,
+        "json_output": false,
+        "reasoning": false
+      },
+      "enabled": true,
+      "updated_at": "2026-10-08T02:00:04.5078769Z"
+    },
+    {
+      "id": "glm-5-1-fp8",
+      "base_url": "https://mytai.opencecs.com/v1",
+      "api_key": "sk-AGSHm-6UP87nfKMM8vEi5g",
+      "format": "anthropic",
+      "model": "glm-5-1-fp8",
+      "capabilities": {
+        "tools": false,
+        "vision": false,
+        "json_output": false,
+        "reasoning": false
+      },
+      "enabled": true,
+      "updated_at": "2026-10-08T02:00:04.575101Z"
+    },
+    {
+      "id": "glm-5.1-fp8",
+      "base_url": "https://mytai.opencecs.com/v1",
+      "api_key": "sk-AGSHm-6UP87nfKMM8vEi5g",
+      "format": "anthropic",
+      "model": "glm-5.1-fp8",
+      "capabilities": {
+        "tools": false,
+        "vision": false,
+        "json_output": false,
+        "reasoning": false
+      },
+      "enabled": true,
+      "updated_at": "2026-10-08T02:00:04.6242158Z"
+    },
+    {
+      "id": "glm-5.3-flash",
+      "base_url": "https://mytai.opencecs.com/v1",
+      "api_key": "sk-AGSHm-6UP87nfKMM8vEi5g",
+      "format": "anthropic",
+      "model": "glm-5.3-flash",
+      "context_window": 1000000,
+      "max_output_tokens": 131072,
+      "capabilities": {
+        "tools": true,
+        "vision": true,
+        "json_output": true,
+        "reasoning": true
+      },
+      "enabled": true,
+      "updated_at": "2026-10-08T02:00:04.6893345Z"
+    },
+    {
+      "id": "qwen",
+      "base_url": "https://mytai.opencecs.com/v1",
+      "api_key": "sk-AGSHm-6UP87nfKMM8vEi5g",
+      "format": "anthropic",
+      "model": "qwen",
+      "capabilities": {
+        "tools": false,
+        "vision": false,
+        "json_output": false,
+        "reasoning": false
+      },
+      "enabled": true,
+      "updated_at": "2026-10-08T02:00:04.7492751Z"
+    },
+    {
+      "id": "qwen3.6-35b-a3b",
+      "base_url": "https://mytai.opencecs.com/v1",
+      "api_key": "sk-AGSHm-6UP87nfKMM8vEi5g",
+      "format": "anthropic",
+      "model": "qwen3.6-35b-a3b",
+      "context_window": 262144,
+      "max_output_tokens": 65536,
+      "capabilities": {
+        "tools": true,
+        "vision": true,
+        "json_output": true,
+        "reasoning": true
+      },
+      "enabled": true,
+      "updated_at": "2026-10-08T02:00:04.8192078Z"
+    }
+  ],
+  "roles": {
+    "default": "GLM-5.3-Flash",
+    "vision": ""
+  }
+}

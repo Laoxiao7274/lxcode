@@ -3,6 +3,7 @@
 // 纯远控壳：底部导航只有 会话/连接；配对与组件展示从连接页进入。
 package com.moyunteng.lxcode.remote.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -154,6 +155,13 @@ class MockAppState {
     /** 顶栏连接药丸的在线位：真实模式跟 WS 实际连接态，mock 模式跟断线开关。 */
     fun pillOnline(): Boolean = if (realOn) real.connected else online
 
+    /**
+     * 返回键拦截器（BackHandler 链的第一层）：弹层/菜单开着时由各页面注册——
+     * 返回键先关弹层（返回 true 消费），不导航；返回 null = 本页无弹层，交给路由回退。
+     * 逐层纪律见 AppRoot 的 BackHandler：弹层 → 页面路由 → 首页交给系统（退出）。
+     */
+    var backInterceptor by mutableStateOf<(() -> Boolean)?>(null)
+
     /** 顶栏连接药丸的显示名：真实模式标「真实后端」，mock 模式沿用连接名。 */
     fun pillName(): String = if (realOn) "真实后端" else activeName
 
@@ -222,6 +230,23 @@ private val NAV_ITEMS = listOf(
 @Composable
 fun AppRoot(pairUri: String? = null, onPairUriConsumed: () -> Unit = {}) {
     val state = remember { MockAppState() }
+
+    // 返回键路由栈（BackHandler 链）：① 弹层/菜单开着 → 先关弹层（各页面注册的
+    // [MockAppState.backInterceptor]）；② 详情页回上级（线程→会话列表、表单/扫码/展示→连接）；
+    // ③ 连接 tab → 会话 tab；④ 首页（会话列表）不拦截 → 交给系统（退出）。
+    // 真实模式连接中返回只是退页面：不断开 WS（连接生命周期归「真实后端」开关管）。
+    val backEnabled = state.route !is Route.Sessions || state.backInterceptor != null
+    BackHandler(enabled = backEnabled) {
+        if (state.backInterceptor?.invoke() == true) return@BackHandler
+        when (val r = state.route) {
+            is Route.Thread -> state.route = Route.Sessions
+            is Route.ConnForm -> state.route = Route.Connections
+            Route.Pairing -> state.route = Route.Connections
+            Route.Showcase -> state.route = Route.Connections
+            Route.Connections -> state.route = Route.Sessions
+            Route.Sessions -> Unit // 首页语义：交给系统（activity 退出）
+        }
+    }
 
     // deep-link：`lxcode://pair?...`（系统相机扫码 / adb VIEW intent 唤起）
     // → 解析 → 预填连接表单；非法载荷 → 扫码页展示错误提示。

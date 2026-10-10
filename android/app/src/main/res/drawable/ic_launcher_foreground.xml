@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 前景：近黑「L」字标（#0D0D0D，即设计 token 的前景色）。adaptive icon 画布 108dp，安全区居中
+     66dp，字形占 32x48dp（x38-70 / y30-78），四周留足安全边距。
+     字形 = 竖笔（宽 10）+ 底横笔（高 10），几何无衬线，对齐桌面端 brandMark「L」。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#0D0D0D"
+        android:pathData="M38,30 L48,30 L48,68 L70,68 L70,78 L38,78 Z" />
+</vector>

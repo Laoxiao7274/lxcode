@@ -12,6 +12,7 @@
 // 每个色值/字号/圆角/内距都标注对应的桌面端 CSS 选择器，不自创值。
 package com.moyunteng.lxcode.remote.ui
 
+import android.widget.Toast
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -28,6 +29,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -61,8 +63,10 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.platform.LocalContext
 import com.moyunteng.lxcode.design.motion.LxEnterSpec
 import com.moyunteng.lxcode.design.motion.lxAnimateColor
 import com.moyunteng.lxcode.design.motion.lxAnimateFloat
@@ -88,6 +92,32 @@ fun Composer(state: MockAppState, real: com.moyunteng.lxcode.remote.net.RealBack
     // 真实模式忙闲由后端事件驱动；mock 模式沿用调试开关
     val busy = real?.busy ?: mockBusy
 
+    // ===== 斜杠命令面板（桌面端 SlashPalette.tsx：输入以 / 开头弹出）=====
+    // slashClosed = 用户按返回键关掉面板（关面板不清输入，再输入 / 会重新弹出）
+    var slashClosed by remember { mutableStateOf(false) }
+    val slashOpen = text.startsWith("/") && !text.contains("\n") && !slashClosed
+    // 面板过滤：/ 后的前缀词（对齐桌面端 slashQuery = value.replace(/^\/+/, "")）
+    val slashQuery = if (slashOpen) text.dropWhile { it == '/' } else ""
+    val context = LocalContext.current
+    fun toast(msg: String) = Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+    // /new 走协议 session.new，/compact 走协议 chat.compact；agents/catalog/settings 是
+    // 桌面端页面导航命令——安卓原型没有对应页，如实提示不假装执行。
+    // 不用 remember 缓存：闭包要捕获当前 real（mock↔真实切换后动作必须跟着切）。
+    val slashCommands = listOf(
+            SlashCmd("new", "开始新对话") {
+                if (real != null) {
+                    real.newSession { id -> state.route = Route.Thread(id) }
+                } else {
+                    state.route = Route.Thread(MockData.currentSessionId)
+                }
+            },
+            SlashCmd("compact", "压缩早期历史（腾出上下文）") {
+                if (real != null) real.compact() else toast("演示模式：压缩需连接真实后端")
+            },
+            SlashCmd("agents", "打开 Agent 名单与组装") { toast("桌面端页面导航命令：安卓原型未提供该页") },
+            SlashCmd("catalog", "打开拓展（工具/技能/模板/MCP）") { toast("桌面端页面导航命令：安卓原型未提供该页") },
+            SlashCmd("settings", "打开设置") { toast("桌面端页面导航命令：安卓原型未提供该页") },
+    )
     // ===== 模型 / 审批档选择状态（本次补真下拉菜单）=====
     var modelId by remember { mutableStateOf(MockData.DEFAULT_MODEL_ID) }
     var effort by remember { mutableStateOf(MockData.DEFAULT_EFFORT) }
@@ -99,6 +129,22 @@ fun Composer(state: MockAppState, real: com.moyunteng.lxcode.remote.net.RealBack
     var permConfirming by remember { mutableStateOf(false) }
     LaunchedEffect(permMenuOpen) {
         if (!permMenuOpen) permConfirming = false
+    }
+
+    // 返回键第一层：输入区的弹层（模型/权限菜单、斜杠面板）开着 → 返回先关弹层
+    LaunchedEffect(modelMenuOpen, effortPanelOpen, permMenuOpen, slashOpen) {
+        state.backInterceptor =
+            if (modelMenuOpen || effortPanelOpen || permMenuOpen || slashOpen) {
+                {
+                    modelMenuOpen = false
+                    effortPanelOpen = false
+                    permMenuOpen = false
+                    slashClosed = true
+                    true
+                }
+            } else {
+                null
+            }
     }
 
     // 当前模型元数据与 effort 投影（对齐 ModelPicker.tsx）：
@@ -130,6 +176,19 @@ fun Composer(state: MockAppState, real: com.moyunteng.lxcode.remote.net.RealBack
                 checked = mockBusy,
                 onCheckedChange = { mockBusy = it },
                 modifier = Modifier.align(Alignment.End),
+            )
+        }
+
+        // 斜杠命令面板（输入 / 弹出，位于输入卡上方；照桌面端 composer.css .slash-palette：
+        // 白卡 / 1px --border-strong / 圆角 12 / padding 5 / 条目名+描述 / pop-in 160ms）
+        if (slashOpen) {
+            SlashPalette(
+                query = slashQuery,
+                commands = slashCommands,
+                onPick = { cmd ->
+                    text = "" // 选中清输入（对齐桌面端 Composer.pick）
+                    cmd.action()
+                },
             )
         }
 
@@ -465,6 +524,94 @@ private fun SendButton(busy: Boolean, enabled: Boolean, onClick: () -> Unit) {
                 drawLine(LxColors.Bg, Offset(12 * s, 19 * s), Offset(12 * s, 5 * s), strokeWidth = stroke, cap = StrokeCap.Round)
                 drawLine(LxColors.Bg, Offset(5 * s, 12 * s), Offset(12 * s, 5 * s), strokeWidth = stroke, cap = StrokeCap.Round)
                 drawLine(LxColors.Bg, Offset(19 * s, 12 * s), Offset(12 * s, 5 * s), strokeWidth = stroke, cap = StrokeCap.Round)
+            }
+        }
+    }
+}
+
+// ===== 斜杠命令面板（桌面端 SlashPalette.tsx / composer.css .slash-palette）=====
+
+/** 斜杠命令（桌面端 SlashCommand：name 不含 /；desc 一句话描述）。 */
+private data class SlashCmd(val name: String, val desc: String, val action: () -> Unit)
+
+/** 面板 Shape —— composer.css `.slash-palette { border-radius: 12px }`。 */
+private val SlashPaletteShape = RoundedCornerShape(12.dp)
+
+/**
+ * 斜杠命令面板 —— composer.css `.slash-palette`：白卡、1px --border-strong、圆角 12、
+ * 菜单级阴影；条目 `.cmd-item`（padding 8/10、圆角 8、命令名 12sp/600 mono + 描述
+ * 11.5sp 灰）；`.cmd-list` padding 5、max-height 264。入场 pop-in 160ms。
+ * 输入 / 前缀弹出，前缀过滤（name 或 desc 包含关键字，对齐桌面端 matches）；
+ * 触摸设备没有键盘导航：点按条目执行（桌面端的 ↑↓/Enter/Esc 提示行不照抄）。
+ */
+@Composable
+private fun SlashPalette(
+    query: String,
+    commands: List<SlashCmd>,
+    onPick: (SlashCmd) -> Unit,
+) {
+    val matches = remember(query, commands) {
+        val q = query.trim().lowercase()
+        if (q.isEmpty()) commands
+        else commands.filter { it.name.contains(q) || it.desc.lowercase().contains(q) }
+    }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            // bottom: calc(100% + 8px) 的近邻档（面板贴输入卡上方留 8dp）
+            .padding(bottom = 8.dp)
+            .shadow(
+                elevation = 12.dp,
+                shape = SlashPaletteShape,
+                clip = false,
+                ambientColor = Color(0x24000000),
+                spotColor = Color(0x14000000),
+            )
+            .clip(SlashPaletteShape)
+            .background(Lx.colors.Surface)
+            .border(1.dp, Lx.colors.BorderStrong, SlashPaletteShape)
+            .padding(5.dp)
+            .lxEnter(spec = LxEnterSpec.PopIn),
+        verticalArrangement = Arrangement.spacedBy(1.dp),
+    ) {
+        if (matches.isEmpty()) {
+            // `.cmd-empty`：padding 14/12、12sp、#8e8ea0
+            Text(
+                text = "没有匹配「${query.trim()}」的命令",
+                style = TextStyle(fontFamily = Lx.type.Sans, fontSize = 12.sp),
+                color = Lx.colors.FgFaint,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 14.dp),
+            )
+        } else {
+            matches.forEach { cmd ->
+                val interaction = remember { MutableInteractionSource() }
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable(interactionSource = interaction, indication = null) { onPick(cmd) }
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Text(
+                        text = "/${cmd.name}",
+                        style = TextStyle(
+                            fontFamily = Lx.type.Mono,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                        ),
+                        color = Lx.colors.Fg,
+                        modifier = Modifier.defaultMinSize(minWidth = 88.dp),
+                    )
+                    Text(
+                        text = cmd.desc,
+                        style = TextStyle(fontFamily = Lx.type.Sans, fontSize = 11.5.sp),
+                        color = Lx.colors.FgFaint,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
         }
     }

@@ -59,6 +59,7 @@ import com.moyunteng.lxcode.design.motion.lxPressScale
 import com.moyunteng.lxcode.design.motion.lxStaggerEnter
 import com.moyunteng.lxcode.design.token.Lx
 import com.moyunteng.lxcode.design.token.LxColors
+import com.moyunteng.lxcode.remote.BuildConfig
 import com.moyunteng.lxcode.remote.mock.BackendConn
 import com.moyunteng.lxcode.remote.mock.MockData
 import com.moyunteng.lxcode.remote.mock.addrValid
@@ -82,22 +83,27 @@ fun ConnectionsScreen(state: MockAppState) {
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(Lx.space.s4),
                 ) {
-                    MockSwitch("模拟在线", state.online, onCheckedChange = { state.online = it })
-                    // 动效调试开关（原型用）：关掉 = 模拟系统「减少动态效果」（静态到终态）
-                    MockSwitch("动效", state.motionOn, onCheckedChange = { state.motionOn = it })
-                    // 调试入口：组件库展示页（开发期用；纯远控壳不进底部导航，从这里进）
-                    Text(
-                        text = "组件展示",
-                        style = Lx.type.ListSubtitle.copy(fontSize = Lx.type.Size11_5),
-                        color = Lx.colors.FgMuted,
-                        modifier = Modifier
-                            .clip(Lx.radius.RowShape)
-                            .clickable(
-                                interactionSource = remember { MutableInteractionSource() },
-                                indication = null,
-                            ) { state.route = Route.Showcase }
-                            .padding(horizontal = Lx.space.s8, vertical = Lx.space.s6),
-                    )
+                    // ===== mock 调试控件（BuildConfig.DEBUG 门控：release 构建不出现）=====
+                    // 「模拟在线」「动效」都是原型调试位；「组件展示」是组件库调试入口。
+                    // 真实后端开关不在这里——它是功能（见下方 RealBackendSection），保留。
+                    if (BuildConfig.DEBUG) {
+                        MockSwitch("模拟在线", state.online, onCheckedChange = { state.online = it })
+                        // 动效调试开关（原型用）：关掉 = 模拟系统「减少动态效果」（静态到终态）
+                        MockSwitch("动效", state.motionOn, onCheckedChange = { state.motionOn = it })
+                        // 调试入口：组件库展示页（开发期用；纯远控壳不进底部导航，从这里进）
+                        Text(
+                            text = "组件展示",
+                            style = Lx.type.ListSubtitle.copy(fontSize = Lx.type.Size11_5),
+                            color = Lx.colors.FgMuted,
+                            modifier = Modifier
+                                .clip(Lx.radius.RowShape)
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null,
+                                ) { state.route = Route.Showcase }
+                                .padding(horizontal = Lx.space.s8, vertical = Lx.space.s6),
+                        )
+                    }
                 }
             },
         )

@@ -73,6 +73,21 @@ data class ProjectMeta(val id: String, val name: String, val path: String)
 /** todo 条目（对齐 `tools.TodoItem`：`content` / `status`）。 */
 data class TodoItem(val content: String, val status: String) // pending | active | done
 
+/**
+ * 派发卡内的一行子工具实时态（chat.toolCall / chat.toolResult 带 dispatch_id 的事件归并）。
+ * [running] = 已调用未回结果；[durationMs] 在结果到达时按本地计时补齐（协议 toolResult
+ * 不带耗时，tool 消息的 duration_ms 只在历史里有——实时流用本地计时，可回放历史对齐）。
+ */
+data class ChildTool(
+    val id: String,
+    val name: String,
+    val title: String,
+    val argsSummary: String,
+    val running: Boolean,
+    val isError: Boolean,
+    val durationMs: Long,
+)
+
 /** 工具调用（对齐 `llm.ToolCall`：`id` / `type` / `function{name,arguments}`）。 */
 data class ToolCall(val id: String, val name: String, val arguments: String)
 
@@ -126,9 +141,12 @@ sealed interface ThreadBlock {
         val done: Boolean,
         val isError: Boolean,
         // 真实模式附加（mock 恒默认值）：dispatch_id = 事件归属键（子确认/子工具归并进卡）；
-        // childTools = 子会话至今的工具调用数（卡内一行「子会话执行中 · N 个工具调用」）
+        // childTools = 子会话至今的工具调用数（卡内一行「子会话执行中 · N 个工具调用」）；
+        // childRuns = 子会话实时工具流（chat.toolCall/toolResult 带 dispatch_id 归并进卡，
+        // 卡内可展开看到子工具名/状态/耗时——桌面端「子会话标签页实时流」的安卓单页等价物）
         val dispatchId: String = "",
         val childTools: Int = 0,
+        val childRuns: List<ChildTool> = emptyList(),
     ) : ThreadBlock
 
     data class Compaction(

@@ -18,6 +18,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import com.moyunteng.lxcode.remote.mock.ChildTool
 import com.moyunteng.lxcode.remote.mock.ContextUsage
 import com.moyunteng.lxcode.remote.mock.SessionMeta
 import com.moyunteng.lxcode.remote.mock.SessionStats
@@ -217,6 +218,59 @@ class RealBackend {
         client.call("chat.cancel", JSONObject().put("session_id", currentSessionId)) { _, _ -> }
     }
 
+    /**
+     * 手动压缩当前会话（chat.compact）。结果经 [onDone] 回调（compacted=false 时
+     * reason 说明为什么没压——不是错误码）；压缩成功本身由 chat.compacted 事件
+     * 插「已压缩历史」块，这里只在失败/无收益时补一条说明。
+     */
+    fun compact(onDone: ((compacted: Boolean, reason: String) -> Unit)? = null) {
+        if (currentSessionId.isEmpty()) return
+        Log.i(TAG, "chat.compact session=$currentSessionId")
+        client.call("chat.compact", JSONObject().put("session_id", currentSessionId)) { err, result ->
+            if (err != null) {
+                val msg = err.optString("message")
+                Log.w(TAG, "chat.compact 失败: $msg")
+                blocks.add(ThreadBlock.Error("压缩失败: $msg"))
+                onDone?.invoke(false, msg)
+                return@call
+            }
+            val o = result as? JSONObject
+            val compacted = o?.optBoolean("compacted") ?: false
+            val reason = o?.optString("reason").orEmpty()
+            Log.i(TAG, "chat.compact → compacted=$compacted reason=$reason")
+            if (!compacted && reason.isNotEmpty()) {
+                blocks.add(ThreadBlock.Error("压缩未执行：$reason"))
+            }
+            onDone?.invoke(compacted, reason)
+        }
+    }
+
+    /** 重命名会话（session.rename；成功后刷新列表——session.changed 广播也会触发刷新）。 */
+    fun renameSession(id: String, title: String) {
+        Log.i(TAG, "session.rename id=$id title=$title")
+        client.call(
+            "session.rename",
+            JSONObject().put("id", id).put("title", title),
+        ) { err, _ ->
+            if (err != null) Log.w(TAG, "session.rename 失败: ${err.optString("message")}")
+            refreshSessions()
+        }
+    }
+
+    /** 归档会话（session.archive，archived=true；归档后列表刷新即消失——侧栏只显示未归档）。 */
+    fun archiveSession(id: String) {
+        Log.i(TAG, "session.archive id=$id")
+        client.call(
+            "session.archive",
+            JSONObject().put("id", id).put("archived", true),
+        ) { err, _ ->
+            if (err != null) {
+                Log.w(TAG, "session.archive 失败: ${err.optString("message")}")
+            }
+            refreshSessions()
+        }
+    }
+
     // ===== 事件归约 =====
 
     /** 当前流式 assistant 块的下标（-1 = 无；toolCall/done 后归 -1，下一步开新块）。 */
@@ -280,10 +334,22 @@ class RealBackend {
             }
             return
         }
-        // 子会话事件（dispatch_id 非空）不进主时间线；工具调用归并进派发卡的子工具计数
-        //（安卓无子会话标签页，最小合理行为：卡上一行「子会话执行中 · N 个工具调用」，不无声丢弃）
+        // 子会话事件（dispatch_id 非空）不进主时间线；toolCall/toolResult 归并进派发卡的
+        // 子工具实时流（卡内展开可见子工具名/状态/耗时——桌面端「子会话标签页实时流」的
+        // 安卓单页等价物），不再无声丢弃
         if (dispatchId.isNotEmpty()) {
-            if (method == "chat.toolCall") bumpDispatchChildTools(dispatchId)
+            when (method) {
+                "chat.toolCall" -> upsertChildTool(
+                    dispatchId,
+                    id = p.optString("id"),
+                    name = p.optString("name"),
+                    argsSummary = argsSummary(p.optString("arguments")),
+                    running = true,
+                    isError = false,
+                    durationMs = 0,
+                )
+                "chat.toolResult" -> finishChildTool(dispatchId, p.optString("id"), p.optBoolean("is_error"))
+            }
             return
         }
         val sid = p.optString("session_id", "")
@@ -631,15 +697,64 @@ class RealBackend {
     private fun dispatchCardIdx(dispatchId: String): Int =
         blocks.indexOfFirst { it is ThreadBlock.Dispatch && it.dispatchId == dispatchId }
 
-    /** 子会话工具调用计数 +1（归属派发卡；卡已完结/不存在则只记日志不动块）。 */
-    private fun bumpDispatchChildTools(dispatchId: String) {
+    /** 子会话工具实时流：调用到达即插行/标记运行中（归属派发卡；卡不存在只记日志）。 */
+    private fun upsertChildTool(
+        dispatchId: String,
+        id: String,
+        name: String,
+        argsSummary: String,
+        running: Boolean,
+        isError: Boolean,
+        durationMs: Long,
+    ) {
         val i = dispatchCardIdx(dispatchId)
         if (i < 0) {
             Log.w(TAG, "子会话工具事件无归属派发卡 dispatch=$dispatchId")
             return
         }
         val d = blocks[i] as ThreadBlock.Dispatch
-        blocks[i] = d.copy(childTools = d.childTools + 1)
+        if (running) childStarts[id] = android.os.SystemClock.elapsedRealtime()
+        val existing = d.childRuns.indexOfFirst { it.id == id }
+        val entry = ChildTool(
+            id = id,
+            name = name,
+            title = toolTitle(name),
+            argsSummary = argsSummary,
+            running = running,
+            isError = isError,
+            durationMs = durationMs,
+        )
+        val runs = if (existing >= 0) {
+            d.childRuns.toMutableList().also { it[existing] = entry }
+        } else {
+            d.childRuns + entry
+        }
+        blocks[i] = d.copy(childRuns = runs, childTools = runs.size)
+    }
+
+    /**
+     * 子会话工具结果到达：标记完成/出错，耗时按本地计时补齐（协议 toolResult 不带
+     * duration_ms；[childStarts] 记录调用到达时刻，回放历史时才用消息里的耗时）。
+     */
+    private val childStarts = mutableMapOf<String, Long>()
+
+    private fun finishChildTool(dispatchId: String, id: String, isError: Boolean) {
+        val i = dispatchCardIdx(dispatchId)
+        if (i < 0) {
+            Log.w(TAG, "子会话工具结果无归属派发卡 dispatch=$dispatchId")
+            return
+        }
+        val d = blocks[i] as ThreadBlock.Dispatch
+        val idx = d.childRuns.indexOfFirst { it.id == id }
+        if (idx < 0) {
+            Log.w(TAG, "子会话工具结果无配对调用行 id=$id dispatch=$dispatchId")
+            return
+        }
+        val start = childStarts.remove(id) ?: 0L
+        val dur = if (start > 0) android.os.SystemClock.elapsedRealtime() - start else 0L
+        val runs = d.childRuns.toMutableList()
+        runs[idx] = runs[idx].copy(running = false, isError = isError, durationMs = dur)
+        blocks[i] = d.copy(childRuns = runs, childTools = runs.size)
     }
 
     private fun parseContext(o: JSONObject): ContextUsage = ContextUsage(

@@ -22,18 +22,23 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.ChatBubbleOutline
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -41,9 +46,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import android.widget.Toast
+import com.moyunteng.lxcode.design.component.LxButton
+import com.moyunteng.lxcode.design.component.LxButtonSize
+import com.moyunteng.lxcode.design.component.LxButtonVariant
 import com.moyunteng.lxcode.design.component.LxListItem
 import com.moyunteng.lxcode.design.motion.LxEnterSpec
 import com.moyunteng.lxcode.design.motion.LxStagger
@@ -61,6 +73,25 @@ import com.moyunteng.lxcode.remote.mock.SessionMeta
 /** 会话列表页（首页）。 */
 @Composable
 fun SessionsScreen(state: MockAppState) {
+    val context = LocalContext.current
+    fun toast(msg: String) = Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+    // 会话行操作（本批新增）：行尾 ⋯ 菜单 → 重命名 / 归档（协议有 session.rename /
+    // session.archive，见 PROTOCOL-NOTES.md §3）；删除 / 置顶协议没有——记缺口不造。
+    var menuFor by remember { mutableStateOf<SessionMeta?>(null) }
+    var renaming by remember { mutableStateOf<SessionMeta?>(null) }
+    // 返回键第一层：行菜单 / 重命名弹窗开着 → 返回先关弹层（AppRoot 的 BackHandler 链）
+    LaunchedEffect(menuFor, renaming) {
+        state.backInterceptor =
+            if (menuFor != null || renaming != null) {
+                {
+                    menuFor = null
+                    renaming = null
+                    true
+                }
+            } else {
+                null
+            }
+    }
     Column(
         Modifier
             .fillMaxSize()
@@ -219,8 +250,30 @@ fun SessionsScreen(state: MockAppState) {
                 item { SmallEmpty("没有匹配「${state.query.trim()}」的对话") }
             } else {
                 itemsIndexed(sessions) { i, s ->
-                    SessionRowItem(s, Modifier.lxStaggerEnter(count = sessions.size, index = i)) {
-                        state.route = Route.Thread(s.id)
+                    Box {
+                        SessionRowItem(
+                            s,
+                            Modifier.lxStaggerEnter(count = sessions.size, index = i),
+                            onClick = { state.route = Route.Thread(s.id) },
+                            onMenu = { menuFor = s },
+                        )
+                        // 行尾 ⋯ 菜单（对齐桌面端 SessionRow.tsx 的 hover 菜单；触摸端改为点按弹出）
+                        AnchorMenu(expanded = menuFor?.id == s.id, onDismiss = { menuFor = null }) {
+                            SessionOpsMenu(
+                                onRename = {
+                                    menuFor = null
+                                    renaming = s
+                                },
+                                onArchive = {
+                                    menuFor = null
+                                    if (state.realOn) {
+                                        state.real.archiveSession(s.id)
+                                    } else {
+                                        toast("演示模式：会话操作需连接真实后端")
+                                    }
+                                },
+                            )
+                        }
                     }
                 }
             }
@@ -248,6 +301,52 @@ fun SessionsScreen(state: MockAppState) {
                 }
             }
         }
+    }
+
+    // 重命名弹窗（session.rename；真实模式生效并刷新列表，mock 模式如实提示）
+    renaming?.let { target ->
+        var draft by remember(target.id) { mutableStateOf(target.title) }
+        AlertDialog(
+            onDismissRequest = { renaming = null },
+            containerColor = LxColors.Surface,
+            title = {
+                Text(
+                    text = "重命名会话",
+                    style = Lx.type.ListTitle.copy(fontWeight = FontWeight.SemiBold),
+                    color = Lx.colors.Fg,
+                )
+            },
+            text = {
+                LxTextField(
+                    value = draft,
+                    onValueChange = { draft = it },
+                    placeholder = "会话标题",
+                )
+            },
+            confirmButton = {
+                LxButton(
+                    text = "保存",
+                    onClick = {
+                        val title = draft.trim()
+                        if (title.isNotEmpty()) {
+                            if (state.realOn) state.real.renameSession(target.id, title)
+                            else toast("演示模式：会话操作需连接真实后端")
+                        }
+                        renaming = null
+                    },
+                    variant = LxButtonVariant.Primary,
+                    size = LxButtonSize.Medium,
+                )
+            },
+            dismissButton = {
+                LxButton(
+                    text = "取消",
+                    onClick = { renaming = null },
+                    variant = LxButtonVariant.Secondary,
+                    size = LxButtonSize.Medium,
+                )
+            },
+        )
     }
 }
 
@@ -307,7 +406,12 @@ private fun ProjectRow(
 
 /** 会话行（状态点 + 标题 + 时间 + ⋯；对齐 .session-item）。 */
 @Composable
-private fun SessionRowItem(session: SessionMeta, modifier: Modifier = Modifier, onClick: () -> Unit) {
+private fun SessionRowItem(
+    session: SessionMeta,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+    onMenu: () -> Unit,
+) {
     LxListItem(
         title = session.title,
         modifier = modifier,
@@ -327,9 +431,73 @@ private fun SessionRowItem(session: SessionMeta, modifier: Modifier = Modifier, 
                     style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size10_5),
                     color = Lx.colors.FgFaint,
                 )
-                SmallIcon(Icons.Filled.MoreVert, Lx.colors.FgFaint, size = 12)
+                // 行尾操作入口（桌面端 SessionRow 的 hover 菜单 → 触摸端点按弹出）
+                Box(
+                    Modifier
+                        .clip(RoundedCornerShape(Lx.radius.r6))
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            onClick = onMenu,
+                        )
+                        .padding(2.dp),
+                ) {
+                    SmallIcon(Icons.Filled.MoreVert, Lx.colors.FgFaint, size = 12)
+                }
             }
         },
         onClick = onClick,
     )
+}
+
+/** 行操作菜单 Shape —— 对齐 PickerMenus 的 .mp-panel（圆角 12、1px 边、菜单级阴影）。 */
+private val SessionOpsShape = RoundedCornerShape(12.dp)
+
+/** 会话行操作菜单（重命名 / 归档；删除与置顶协议没有——缺口记 PROTOCOL-NOTES.md，不造）。 */
+@Composable
+private fun SessionOpsMenu(onRename: () -> Unit, onArchive: () -> Unit) {
+    Column(
+        Modifier
+            .width(150.dp)
+            .shadow(
+                elevation = 8.dp,
+                shape = SessionOpsShape,
+                clip = false,
+                ambientColor = Color(0x14000000),
+                spotColor = Color(0x1F000000),
+            )
+            .clip(SessionOpsShape)
+            .background(LxColors.Surface)
+            .border(1.dp, Lx.colors.BorderStrong, SessionOpsShape)
+            .padding(5.dp),
+        verticalArrangement = Arrangement.spacedBy(1.dp),
+    ) {
+        SessionOpsRow("重命名", Icons.Filled.Edit, onRename)
+        SessionOpsRow("归档", Icons.Filled.Archive, onArchive)
+    }
+}
+
+/** 菜单条目（图标 + 文字；对齐 .mp-item：padding 8/10、圆角 8、12sp）。 */
+@Composable
+private fun SessionOpsRow(label: String, icon: ImageVector, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onClick,
+            )
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Lx.space.s8),
+    ) {
+        SmallIcon(icon, Lx.colors.FgMuted, size = 13)
+        Text(
+            text = label,
+            style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size12_5),
+            color = Lx.colors.Fg,
+        )
+    }
 }

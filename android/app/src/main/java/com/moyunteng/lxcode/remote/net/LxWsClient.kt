@@ -92,7 +92,16 @@ class LxWsClient(
             if (token.isNotBlank()) append("?token=").append(java.net.URLEncoder.encode(token, "UTF-8"))
         }
         Log.i(TAG, "connect $url")
-        val req = Request.Builder().url(url).build()
+        // 非法地址（用户输入错乱 / 缺 host）不能 FATAL：OkHttp 的 url() 会抛
+        // IllegalArgumentException，这里转成失败态走断线 UI（实测路径：输入框残留
+        // "1270..01.7:790" 时点重试曾直接崩进程）。
+        val req = try {
+            Request.Builder().url(url).build()
+        } catch (e: IllegalArgumentException) {
+            Log.w(TAG, "非法地址 $url: ${e.message}")
+            main.post { stateListener.onState(false, "地址不合法: ${e.message}") }
+            return
+        }
         val ws = client.newWebSocket(req, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 Log.i(TAG, "ws onOpen (http ${response.code})，发送 hello")

@@ -28,6 +28,8 @@ android {
 
     buildFeatures {
         compose = true
+        // BuildConfig.DEBUG：连接页/扫码页的 mock 调试控件用它门控（release 不出现）
+        buildConfig = true
     }
 
     compileOptions {
