@@ -1,0 +1,20 @@
+# 构建产物（根锚定，避免误伤 res 资源）
+/build/
+/app/build/
+/design/build/
+/.gradle/
+/.kotlin/
+local.properties
+*.iml
+.idea/
+
+# 验收产物：截图 / 录屏 / uiautomator dump / 日志（仅根目录，不影响 app/src/main/res）
+/shots/
+/frames-*/
+/tools/__pycache__/
+/*.log
+/*.png
+/*.mp4
+/dump-*.xml
+/pairing-dump.xml
+/ui*.xml
