@@ -91,6 +91,23 @@ func BranchExists(ctx context.Context, repoDir, branch string) (bool, error) {
 	return true, nil
 }
 
+// RefExists 报告仓库 repoDir 里任意引用 ref 是否存在（只读；ref 形如
+// refs/heads/main 或 refs/remotes/origin/main）。找不到时以退出码 1 收场
+//（正常结论，不是错误）。与 BranchExists 的差别：BranchExists 只认本地分支，
+// 这里给上游引用（origin/<branch>）等场景复用同一套判定。
+func RefExists(ctx context.Context, repoDir, ref string) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, statusTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "-C", repoDir, "show-ref", "--verify", "--quiet", ref)
+	if err := cmd.Run(); err != nil {
+		if isExitCode(err, 1) {
+			return false, nil
+		}
+		return false, fmt.Errorf("git show-ref --verify %s: %w", ref, err)
+	}
+	return true, nil
+}
+
 // CommitCountBetween 返回 from..to 区间内的提交数（to 有而 from 没有的提交；
 // 只读）。ahead = CommitCountBetween(ctx, repo, base, branch)。
 func CommitCountBetween(ctx context.Context, repoDir, from, to string) (int, error) {

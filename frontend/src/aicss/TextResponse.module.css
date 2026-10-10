@@ -11,6 +11,7 @@
   --tr-code-bg: #242424;
 }
 @media (prefers-color-scheme: dark) {
+  :global([data-theme="auto"]),
   :global(:root:not([data-theme])) {
     --tr-fg: #f5f5f5;
     --tr-code-bg: #242424;

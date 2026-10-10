@@ -16,6 +16,13 @@ import (
 	"github.com/moyunteng/lxcode/internal/tools"
 )
 
+// userAbortedNotice 是「用户主动停止」时入队的通告（turn.go 的 aborted 分支 /
+// dispatch.go 的取消分支）：模型必须知道这轮是被用户停的——半截回答不是完整
+// 结论，不要自行续写，等用户的下一条指示。文案用中性的「生成被用户中断」，
+// 不区分「用户停的是本会话」与「用户停了父轮导致本子会话连带被停」：
+// 对模型来说两者的行动指令一致（停下、别续写、听下一条指示），强分没有收益。
+const userAbortedNotice = "用户中断了这次生成（刚才算到一半的回答没有完成）。不要自行续写或重试刚才的任务；等用户的下一条指示，按新指示行动。"
+
 // streamWithLLM 默认 LLM 调用：按 default 角色配置建客户端，经 ChatAuto
 // （anthropic 永远流式；openai 带工具走非流式回放，见 llm.ChatAuto 注释——
 // 该策略来自真机端点实测：部分 openai 兼容端点的流式会丢 tool_calls）。
@@ -218,6 +225,16 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig, ac *sessiondata.A
 				partial = &m
 			}
 			s.emit(TurnErrorEvent{Message: note, Aborted: aborted, Partial: partial})
+			// 让模型知道是**用户**停的（而不是端点故障）：被动通告入队，下一轮
+			// 真的开始时（用户说话 / 下一次派发）由轮边界注入——runTurn 收尾的
+			// flushNotices 不会把它开成新一轮（那是主动通告的语义；中断注记
+			// 自动开轮 = 用户刚点停止模型又自言自语一段）。主会话与子会话走
+			// 同一条 runTurn 路径，一处覆盖两类；子会话经父取消（ctx 传播）也
+			// 走到这里——runDispatch 只对「没走 aborted 收尾」的取消（确认门
+			// 等待期被断）补队，不会重复。
+			if aborted {
+				_ = s.QueueNoticePassive(userAbortedNotice)
+			}
 			return
 		}
 		// 调用参数可能是半截 JSON（输出被 max_tokens 截断）：先修好再入历史，

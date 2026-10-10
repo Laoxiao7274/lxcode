@@ -209,7 +209,7 @@
 :global([data-theme="dark"]) .btnPrimary:hover:not(:disabled)::before,
 :global(.dark) .btnPrimary:hover:not(:disabled)::before { background: #ffffff; }
 @media (prefers-color-scheme: dark) {
-.card {
+:global(html:not([data-theme="light"])) .card {
     background: #1a1a1a;
     box-shadow:
       0 0 0 0.5px rgba(255, 255, 255, 0.12),
@@ -217,32 +217,32 @@
       0 2px 4px rgba(0, 0, 0, 0.3);
     color: #f5f5f5;
   }
-.icon { background: #101010; color: #f5f5f5; }
-.icon[data-variant="questions"] {
+:global(html:not([data-theme="light"])) .icon { background: #101010; color: #f5f5f5; }
+:global(html:not([data-theme="light"])) .icon[data-variant="questions"] {
     background: color-mix(in srgb, #3b82f6 18%, #1a1a1a);
     color: #60a5fa;
   }
-.icon[data-variant="command"] {
+:global(html:not([data-theme="light"])) .icon[data-variant="command"] {
     background: color-mix(in srgb, #f5b14c 14%, #1a1a1a);
     color: #f5b14c;
   }
-.icon[data-variant="plan"] {
+:global(html:not([data-theme="light"])) .icon[data-variant="plan"] {
     background: color-mix(in srgb, #34d399 12%, #1a1a1a);
     color: #34d399;
   }
-.cmdBlock { background: #101010; }
-.cwd { color: #737373; }
-.cmd { color: #f5f5f5; }
-.btnGhost { color: #f5f5f5; }
-.btnGhost::before {
+:global(html:not([data-theme="light"])) .cmdBlock { background: #101010; }
+:global(html:not([data-theme="light"])) .cwd { color: #737373; }
+:global(html:not([data-theme="light"])) .cmd { color: #f5f5f5; }
+:global(html:not([data-theme="light"])) .btnGhost { color: #f5f5f5; }
+:global(html:not([data-theme="light"])) .btnGhost::before {
     background: color-mix(in srgb, #f5f5f5 6%, transparent);
   }
-.btnGhost:hover::before {
+:global(html:not([data-theme="light"])) .btnGhost:hover::before {
     background: color-mix(in srgb, #f5f5f5 10%, transparent);
   }
-.btnPrimary { color: #0a0a0a; }
-.btnPrimary::before { background: #f5f5f5; }
-.btnPrimary:hover:not(:disabled)::before { background: #ffffff; }}
+:global(html:not([data-theme="light"])) .btnPrimary { color: #0a0a0a; }
+:global(html:not([data-theme="light"])) .btnPrimary::before { background: #f5f5f5; }
+:global(html:not([data-theme="light"])) .btnPrimary:hover:not(:disabled)::before { background: #ffffff; }}
 /* ---- vendor 扩展：resolved 态徽标与补充说明（lxcode 确认门） ---- */
 .resolvedBadge {
   margin-left: auto;
@@ -318,6 +318,10 @@
   border-color: #3b82f6;
 }
 .askInput::placeholder { color: #a0a0a0; }
+:global([data-theme="dark"]) .resolvedBadge[data-outcome="allow"],
+:global(.dark) .resolvedBadge[data-outcome="allow"] { color: #34d399; }
+:global([data-theme="dark"]) .resolvedBadge[data-outcome="deny"],
+:global(.dark) .resolvedBadge[data-outcome="deny"] { color: #f87171; }
 :global([data-theme="dark"]) .askText,
 :global(.dark) .askText { color: #f0f0f0; }
 :global([data-theme="dark"]) .askInput,
@@ -325,7 +329,9 @@
 :global([data-theme="dark"]) .askInput::placeholder,
 :global(.dark) .askInput::placeholder { color: #6b6b6b; }
 @media (prefers-color-scheme: dark) {
-  .askText { color: #f0f0f0; }
-  .askInput { border-color: #333; }
-  .askInput::placeholder { color: #6b6b6b; }
+  :global(html:not([data-theme="light"])) .resolvedBadge[data-outcome="allow"] { color: #34d399; }
+  :global(html:not([data-theme="light"])) .resolvedBadge[data-outcome="deny"] { color: #f87171; }
+  :global(html:not([data-theme="light"])) .askText { color: #f0f0f0; }
+  :global(html:not([data-theme="light"])) .askInput { border-color: #333; }
+  :global(html:not([data-theme="light"])) .askInput::placeholder { color: #6b6b6b; }
 }

@@ -138,13 +138,19 @@ export function handleAgentEvent(ev: AgentEvent, c: AgentEventController): void 
   }
   // ---- 发送缓冲区的自动发送（busy true→false 的轮次边界）----
   if (ev.type === "busy") {
-    const prev = c.getPrevBusy()[ev.sessionId];
-    c.setPrevBusy({ ...c.getPrevBusy(), [ev.sessionId]: ev.busy });
-    // done/error 与 busy=false 可能同 tick——这里只消费 busy 事件，且只有
-    // true→false 的翻转才算边界（false→false 是重播/重复事件）；队首发出
-    // 即移除，重复触发空队列无副作用（幂等）。
-    const head = autoSendPick(prev, ev.busy, ev.sessionId, c.getCurrentId(), c.getSendQueues()[ev.sessionId]);
-    if (head) drainQueueHead(c, ev.sessionId);
+    // 带归属的 busy = 子会话的忙闲：**不记 prevBusy、不触发自动发送**——
+    // 子会话跑完不代表主会话空闲（主会话此刻多半还在等 dispatch 结论），
+    // 误触发会把队首那条在主会话忙时发出去、被后端以 busy 拒收。子会话自己的
+    // 归约照走（双投，下面那行）——只是边界检测这一份跳过。
+    if (!ev.dispatchId) {
+      const prev = c.getPrevBusy()[ev.sessionId];
+      c.setPrevBusy({ ...c.getPrevBusy(), [ev.sessionId]: ev.busy });
+      // done/error 与 busy=false 可能同 tick——这里只消费 busy 事件，且只有
+      // true→false 的翻转才算边界（false→false 是重播/重复事件）；队首发出
+      // 即移除，重复触发空队列无副作用（幂等）。
+      const head = autoSendPick(prev, ev.busy, ev.sessionId, c.getCurrentId(), c.getSendQueues()[ev.sessionId]);
+      if (head) drainQueueHead(c, ev.sessionId);
+    }
     c.setSessionStates(reduceSessionStates(c.getSessionStates(), ev, c.getChildLinks().dispatchChild));
     return;
   }

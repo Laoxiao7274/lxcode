@@ -76,6 +76,14 @@ func (s *Server) dispatchChat(c *wsClient, req *protocol.Request, params json.Ra
 		if id == "" {
 			id = c.sessionID
 		}
+		// 先在活跃会话的子会话登记里找：id 是某个**正在跑的**子会话时，它的
+		// 运行时不在 s.sessions（生命周期跟着派发走）——直接 s.session(id) 会
+		// newRuntime 建一个空对象，Cancel 是空操作、停不掉真正在跑的子轮。
+		// 命中即真停；未命中（普通会话 / 子会话已结束 / 重启恢复场景）走下面
+		// 的原路径，行为与原先一致。
+		if s.cancelChildAnywhere(id) {
+			return protocol.NewResult(req.ID, map[string]any{})
+		}
 		sess, err := s.session(id)
 		if err != nil {
 			return protocol.NewError(req.ID, protocol.CodeInvalidParams, err.Error())

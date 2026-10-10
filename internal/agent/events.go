@@ -67,8 +67,14 @@ type ConfirmRequest struct {
 }
 
 // BusyEvent：忙闲翻转（一轮开始/结束）。
+// DispatchID 非空 = 子会话的忙闲（2026-10-10 起上抛：前端按归属投进子会话
+// 自己的 state——子会话页的「生成中」行与停止钮靠它出现；主时间线侧按
+// dispatchId 过滤，主会话的忙闲不被子会话翻动）。
 type BusyEvent struct {
 	Busy bool
+	// DispatchID 非空 = 这是子会话的忙闲翻转（归属键 = dispatch 卡 id，
+	// 与 DeltaEvent/ToolCallEvent 同一套）。
+	DispatchID string
 }
 
 // TurnDoneEvent：一轮生成的最终消息（含 usage/finish）。

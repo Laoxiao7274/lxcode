@@ -3,7 +3,7 @@
 // React 应用，经 WS 直连 127.0.0.1:7789，与浏览器/CLI 客户端同权。
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { app, BrowserWindow, dialog, ipcMain, net, protocol } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, nativeTheme, net, protocol } from "electron";
 import { ensureBackend, shutdownBackend } from "./sidecar";
 import { initSakura, sakuraHandlers, shutdownSakura } from "./sakura";
 import { initTailscale, tailscaleHandlers } from "./tailscale";
@@ -69,7 +69,9 @@ if (!app.requestSingleInstanceLock()) {
       minHeight: 700,
       autoHideMenuBar: true,
       title: "Lxcode",
-      backgroundColor: "#101014", // 对齐前端暗色主题，避免白闪
+      // 启动瞬间的窗口底色（页面加载前）：按当前系统亮暗取对应 token 基色，
+      // 避免与首帧主题相反的闪块（页面自身的防闪由 index.html 内联脚本负责）。
+      backgroundColor: nativeTheme.shouldUseDarkColors ? "#18181c" : "#ffffff",
       show: false, // 先就绪再显示，避免白窗
       frame: false, // 无系统标题栏——顶部栏由渲染层 Topbar 自绘（拖拽区 + 窗口控制按钮，经 preload 桥 __LX__）
       roundedCorners: true, // Win11 圆角（默认即 true，显式记录）
@@ -108,6 +110,13 @@ if (!app.requestSingleInstanceLock()) {
       win.isMaximized() ? win.unmaximize() : win.maximize();
     });
     ipcMain.on("win:close", () => win?.close());
+
+    // 主题偏好（渲染层设置面板 → shared/theme.ts → 此处）：同步
+    // nativeTheme.themeSource，壳侧原生控件/对话框跟随渲染层主题。
+    // auto → "system"（Electron 的说法）；未知值回落 system 不抛错。
+    ipcMain.on("theme:prefer", (_e, pref: unknown) => {
+      nativeTheme.themeSource = pref === "dark" ? "dark" : pref === "light" ? "light" : "system";
+    });
 
     // 目录选择器（添加项目用）：只开系统选择框，返回路径字符串——
     // 渲染层拿不到任何 fs 能力，只是「让用户自己选」的 UI 通道

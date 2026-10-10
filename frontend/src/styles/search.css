@@ -276,7 +276,7 @@
 .mset-fetch-btn {
   font-size: 12px;
   font-weight: 500;
-  color: #fff;
+  color: var(--on-accent);
   background: var(--fg);
   border: none;
   border-radius: 999px;
@@ -354,7 +354,7 @@
 .mset-add-confirm {
   font-size: 11.5px;
   font-weight: 500;
-  color: #fff;
+  color: var(--on-accent);
   background: var(--fg);
   border: none;
   border-radius: 999px;

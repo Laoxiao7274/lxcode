@@ -15,6 +15,24 @@
          script-src——blob 仍然不能当脚本执行。 -->
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: http://127.0.0.1:7789 http://localhost:7789; font-src 'self' data:; connect-src 'self' ws: wss:" />
     <title>lxcode · 智能体工作台</title>
+    <!-- 主题防闪（必须内联在首帧前）：读持久化偏好（shared/theme.ts 的
+         THEME_KEY，两边必须一致）落 html data-theme 与背景兜底色。
+         auto=跟随系统（dark 判定走 matchMedia）；style.background 是
+         CSS 加载前的兜底——亮色系统下不再白闪、暗色系统下不再闪白。
+         异常（隐私模式禁 localStorage 等）静默回落：亮色 token + auto。 -->
+    <script>
+      (function () {
+        var pref = "system";
+        try {
+          var v = localStorage.getItem("lxcode.theme");
+          if (v === "dark" || v === "light" || v === "system") pref = v;
+        } catch (e) { /* 无 localStorage——保持跟随系统 */ }
+        var dark = pref === "dark" || (pref === "system" &&
+          window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+        document.documentElement.setAttribute("data-theme", pref === "system" ? "auto" : pref);
+        document.documentElement.style.background = dark ? "#18181c" : "#ffffff";
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

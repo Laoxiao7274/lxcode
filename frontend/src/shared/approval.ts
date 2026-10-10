@@ -13,6 +13,26 @@ export function normalizeApproval(value: unknown): ApprovalMode {
   return value === "auto" || value === "strict" ? value : "confirm";
 }
 
+/** 选「完全访问」是否需要弹窗确认：只有**升险**到 auto 拦（2026-10-09 用户拍板：
+ *  二次点击改成弹窗确认）。降险方向（auto→confirm/strict、confirm↔strict）总是
+ *  安全的，直接切——收权不需要向用户要许可。 */
+export function needsApprovalConfirm(from: ApprovalMode, to: ApprovalMode): boolean {
+  return to === "auto" && from !== "auto";
+}
+
+/** 选档入口的统一分流（PermPicker 与设置面板共用一份规则）：升险到 auto 先开
+ *  确认弹窗（askConfirm），其余档位直接改（apply）。两个入口都走这里，规则才
+ *  不会漂移成「一处弹窗、一处二次点击」。 */
+export function approvalPick(
+  from: ApprovalMode,
+  to: ApprovalMode,
+  apply: (mode: ApprovalMode) => void,
+  askConfirm: () => void,
+): void {
+  if (needsApprovalConfirm(from, to)) askConfirm();
+  else apply(to);
+}
+
 /** 后端广播的权限档变更 → 本端设置应同步到的档位；null = 与本端无关。
  *
  *  只认**当前会话**：多客户端同时开着时，别的会话的档位变更不能改写本端正在

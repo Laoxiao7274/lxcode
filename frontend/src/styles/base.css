@@ -4,6 +4,7 @@
    安静的中性风：白底近黑字、发丝边框、黑主按钮；绿色只作成功语义。
    页面以「桌面应用窗口」呈现：1440×900 自适应居中，外层暗底。 */
 :root {
+  color-scheme: light;
   --bg: #ffffff;
   --bg-side: #f9f9f9;
   --surface: #ffffff;
@@ -20,6 +21,120 @@
   --term-dim: #8e8e96;
   --font-sans: "Inter Variable", -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
   --font-mono: "JetBrains Mono Variable", ui-monospace, "Cascadia Code", monospace;
+  /* 派生 token（亮色值 = 原先散落各文件的硬编码值，归并时逐值等值搬运——
+   * 亮色渲染逐像素不变；暗色值在下面 html[data-theme="dark"] 覆盖块里成套给出）。
+   * --hover-veil 三档：中性悬停底（黑 veil → 暗色下翻成白 veil）。 */
+  --hover-veil: rgba(0, 0, 0, 0.04);
+  --hover-veil-mid: rgba(0, 0, 0, 0.06);
+  --hover-veil-strong: rgba(0, 0, 0, 0.08);
+  /* 边框加深档（hover/按压态的灰阶渐进，等值搬运自各文件） */
+  --border-hi: #d4d4d8;
+  --border-hi-strong: #cfcfd4;
+  --border-hover: #c9c9cf;
+  --border-active: #c2c2c8;
+  --border-active-strong: #a8a8b0;
+  --window-outer: #e8e8ea;   /* 浏览器模拟态的外层底 */
+  --window-border: #d8d8db;  /* 应用窗口描边 */
+  --bg-raised: #fafafa;      /* 比 surface 更浅一档的面板底 */
+  --bg-inset: #f1f1f3;       /* 内嵌浅灰底（代码块/嵌入区） */
+  --code-bg: #f4f5f7;        /* 行内/块级代码底 */
+  --scrollbar-thumb: #3a3a3a; /* 内容区滚动条拇指 */
+  --bg-soft: #f7f7f8;         /* 浅灰面板底（比 raised 再深半档） */
+  --danger-wash: #fdeeee;     /* 危险悬停浅红底 */
+  --on-accent: #ffffff;      /* var(--fg) 等深色实底上的文字（暗色下随底色翻深） */
+  --ok-text: #059669;        /* 语义状态字色（亮色档，暗色下给亮一档） */
+  --ok-strong: #0b7a5e;
+  --err-text: #b91c1c;
+  --info-text: #3b82f6;
+  --warn-text: #9a6400;
+  --warm-text: #c2410c;
+}
+/* ===== 主题：暗色 token 双套 =====
+ * 机制（shared/theme.ts）：html data-theme ∈ "auto" | "dark" | "light"。
+ * - :root 保持上面的亮色值不动（默认/亮色系统的渲染与历史版本逐像素一致）；
+ * - 深色：html[data-theme="dark"] 直接覆盖；
+ * - 跟随系统：html[data-theme="auto"] + @media (prefers-color-scheme: dark)
+ *   时应用同一套暗色值（亮色系统下 auto 不命中任何覆盖 = 亮色）。
+ * aicss 的 AI 内容卡模块各自维护双套局部 token，选择器与这里同构。 */
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #18181c;
+  --bg-side: #1e1e23;
+  --surface: #232329;
+  --fg: #ececf1;
+  --fg-muted: #a0a0b0;
+  --fg-faint: #7c7c8c;
+  --border: #2e2e35;
+  --border-strong: #3a3a42;
+  --border-soft: #26262c;
+  --success: #2fbf8f;
+  --danger: #f0564f;
+  --term-bg: #101014;
+  --term-fg: #d4d4d4;
+  --term-dim: #8e8e96;
+  --hover-veil: rgba(255, 255, 255, 0.06);
+  --hover-veil-mid: rgba(255, 255, 255, 0.08);
+  --hover-veil-strong: rgba(255, 255, 255, 0.12);
+  --border-hi: #3e3e47;
+  --border-hi-strong: #474751;
+  --border-hover: #4a4a54;
+  --border-active: #54545e;
+  --border-active-strong: #6a6a76;
+  --window-outer: #0c0c0e;
+  --window-border: #08080a;
+  --bg-raised: #202026;
+  --bg-inset: #1c1c21;
+  --code-bg: #26262c;
+  --scrollbar-thumb: #4a4a54;
+  --on-accent: #101014;
+  --ok-text: #34d399;
+  --ok-strong: #3ddba4;
+  --err-text: #f87171;
+  --info-text: #60a5fa;
+  --warn-text: #fbbf24;
+  --warm-text: #fb923c;
+}
+@media (prefers-color-scheme: dark) {
+  html[data-theme="auto"] {
+    color-scheme: dark;
+    --bg: #18181c;
+    --bg-side: #1e1e23;
+    --surface: #232329;
+    --fg: #ececf1;
+    --fg-muted: #a0a0b0;
+    --fg-faint: #7c7c8c;
+    --border: #2e2e35;
+    --border-strong: #3a3a42;
+    --border-soft: #26262c;
+    --success: #2fbf8f;
+    --danger: #f0564f;
+    --term-bg: #101014;
+    --term-fg: #d4d4d4;
+    --term-dim: #8e8e96;
+    --hover-veil: rgba(255, 255, 255, 0.06);
+    --hover-veil-mid: rgba(255, 255, 255, 0.08);
+    --hover-veil-strong: rgba(255, 255, 255, 0.12);
+    --border-hi: #3e3e47;
+    --border-hi-strong: #474751;
+    --border-hover: #4a4a54;
+    --border-active: #54545e;
+    --border-active-strong: #6a6a76;
+    --window-outer: #0c0c0e;
+    --window-border: #08080a;
+    --bg-raised: #202026;
+    --bg-inset: #1c1c21;
+    --code-bg: #26262c;
+    --scrollbar-thumb: #4a4a54;
+    --bg-soft: #24242a;
+    --danger-wash: rgba(240, 86, 79, 0.16);
+    --on-accent: #101014;
+    --ok-text: #34d399;
+    --ok-strong: #3ddba4;
+    --err-text: #f87171;
+    --info-text: #60a5fa;
+    --warn-text: #fbbf24;
+    --warm-text: #fb923c;
+  }
 }
 * {
   margin: 0;
@@ -41,7 +156,7 @@ body {
 }
 /* 浏览器模拟态的外层暗底（Tauri 模式不生效——.app 直接铺满） */
 body:has(.window-stage) {
-  background: #e8e8ea;
+  background: var(--window-outer);
 }
 /* ===== 应用窗口（桌面应用尺寸：1440×900，小屏自适应缩小） ===== */
 .window-stage {
@@ -56,7 +171,7 @@ body:has(.window-stage) {
   height: min(900px, 100%);
   background: var(--bg);
   border-radius: 12px;
-  border: 1px solid #d8d8db;
+  border: 1px solid var(--window-border);
   box-shadow:
     0 0 0 0.5px rgba(0, 0, 0, 0.04),
     0 24px 70px rgba(0, 0, 0, 0.16),
@@ -171,7 +286,7 @@ body:has(.window-stage) {
   transition: background 120ms, border-color 120ms;
 }
 .tab:hover {
-  background: rgba(0, 0, 0, 0.04);
+  background: var(--hover-veil);
 }
 .tab.on {
   background: var(--surface);
@@ -229,7 +344,7 @@ body:has(.window-stage) {
 .tab.on .tab-close,
 .tab:focus-within .tab-close { opacity: 1; }
 .tab-close:hover {
-  background: rgba(0, 0, 0, 0.08);
+  background: var(--hover-veil-strong);
   color: var(--fg);
 }
 
@@ -266,7 +381,7 @@ body:has(.window-stage) {
   padding: 0 5px;
   border-radius: 999px;
   background: rgba(16, 163, 127, 0.12);
-  color: #0b7a5e;
+  color: var(--ok-strong);
   white-space: nowrap;
 }
 .workspace-tab-main:focus-visible,
@@ -289,6 +404,6 @@ body:has(.window-stage) {
   transition: background 120ms, color 120ms;
 }
 .tab-new:hover {
-  background: rgba(0, 0, 0, 0.06);
+  background: var(--hover-veil-mid);
   color: var(--fg);
 }

@@ -650,9 +650,9 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
       return (
         <GitWorkbenchPage
           key={gitProjectId}
+          source={source}
           projects={projects}
           projectId={gitProjectId}
-          sessions={source.sessions()}
           onProjectChange={setGitProjectId}
           onOpenSession={focusSession}
         />

@@ -74,6 +74,11 @@ func (s *Session) RunAgentTask(ctx context.Context, agentID, task, workDir strin
 	if askDispatchID == "" {
 		askDispatchID = newConfirmID()
 	}
+	// 子会话运行时登记进父会话（与 runDispatch 同款）：合并子会话同样可以被
+	// 用户从标签页停止（chat.cancel 带子会话 id → CancelChild）。defer 注销
+	// 覆盖 SendWait 的全部收尾路径。
+	s.registerChild(askDispatchID, child)
+	defer s.unregisterChild(askDispatchID)
 	child.SetConfirmProxy(func(cctx context.Context, req *ConfirmRequest) (ConfirmOutcome, bool) {
 		stamped := *req
 		stamped.DispatchID = askDispatchID
@@ -105,6 +110,11 @@ func (s *Session) RunAgentTask(ctx context.Context, agentID, task, workDir strin
 	if err != nil {
 		if ctx.Err() != nil {
 			endNote = "已取消（合并进程中断）"
+			// 与 runDispatch 同款：子轮若没走 aborted 收尾（确认门等待期间被断），
+			// 这里补「用户中断」通告——模型下一轮才知道这轮为什么没有结论。
+			if tap.err == nil || !tap.err.Aborted {
+				_ = child.QueueNoticePassive(userAbortedNotice)
+			}
 		} else {
 			endNote = err.Error()
 		}
@@ -112,6 +122,9 @@ func (s *Session) RunAgentTask(ctx context.Context, agentID, task, workDir strin
 	} else if tap.err != nil {
 		if ctx.Err() != nil {
 			endNote = "已取消（合并进程中断）"
+			if tap.err == nil || !tap.err.Aborted {
+				_ = child.QueueNoticePassive(userAbortedNotice)
+			}
 		} else {
 			endNote = tap.err.Message
 		}
@@ -211,6 +224,18 @@ func (s *Session) runDispatch(ctx context.Context, call tools.DispatchCall) tool
 	if err != nil {
 		return tools.DispatchResult{Output: fmt.Sprintf("错误: %v", err), IsError: true}
 	}
+	// 子会话运行时登记进父会话（CancelChild 的寻址依据）：服务端 chat.cancel
+	// 对子会话 id 取不到 server.sessions（子会话运行时不注册在那里——生命周期
+	// 跟着这次派发走），先查父会话的登记才能停掉真正在跑的子轮。SendWait 的
+	// 三条收尾路径（正常 / 取消 / panic）都经下面的 defer 注销。
+	// 纯内存子会话没有会话 id，用 dispatch id 当键（确认代理同款键）——
+	// 外部虽然多半寻址不到它，但注销路径的对称性不破。
+	childKey := childID
+	if childKey == "" {
+		childKey = call.DispatchID
+	}
+	s.registerChild(childKey, child)
+	defer s.unregisterChild(childKey)
 	// 子会话的事件按 dispatch_id 归属进卡；busy/todo/会话切换不上抛（见 childEmitter）
 	tap := &childEvents{}
 	child.SetEmitter(childEmitter(s.emit, call.DispatchID, tap))
@@ -255,6 +280,14 @@ func (s *Session) runDispatch(ctx context.Context, call tools.DispatchCall) tool
 		}
 		if ctx.Err() != nil {
 			note = "已取消（子会话中断）"
+			// 用户停掉父轮 → 子轮连带被取消。子轮若走了 aborted 收尾（流式阶段
+			// 被断），它自己的 runTurn 已经入队「用户中断」通告（见 turn.go）；
+			// 走不到那条路的取消（如确认门等待期间被断，runTools 静默返回 false）
+			// 在这里补——通告留在子会话自己的队列里，下一轮边界注入，模型才知道
+			// 这一轮为什么没有结论。不重复入队：同一轮取消只说一遍。
+			if tap.err == nil || !tap.err.Aborted {
+				_ = child.QueueNoticePassive(userAbortedNotice)
+			}
 		} else if tap.err != nil {
 			note = tap.err.Message
 			if tap.err.Aborted {
@@ -384,12 +417,17 @@ type childEvents struct {
 // 同时拦掉不该上抛的几类。
 //
 // 为什么要拦：
-//   - BusyEvent：子会话的忙闲不是主会话的忙闲，上抛会把主界面的"生成中"翻掉；
 //   - SessionStartedEvent：子会话行懒建不该让侧栏切过去（子会话不进侧栏列表）；
 //   - TodoUpdatedEvent：清单是会话级状态，子会话的清单属于它自己（主会话的
 //     计划条只显示主会话的清单）；
 //   - TurnErrorEvent：子会话的错误由 runDispatch 收成 DispatchEndEvent（保持
 //     卡内呈现语义，不让它跑到主时间线上当一条独立错误）。
+//
+// BusyEvent **上抛但带归属**（2026-10-10 用户要「子 Agent 里也要正在生成中的
+// 样式」）：带 dispatch_id 的 busy 在前端被两条守卫拦在主时间线之外（reduce 的
+// busy 分支与 store 的自动发送边界都跳过带归属的事件），同时经双投进子会话
+// 自己的 state——子会话标签页的「生成中」行与停止钮由此出现。主会话自己的
+// busy（无归属）语义逐字节不变。
 func childEmitter(parent Emitter, dispatchID string, tap *childEvents) Emitter {
 	return func(ev Event) {
 		switch e := ev.(type) {
@@ -408,6 +446,9 @@ func childEmitter(parent Emitter, dispatchID string, tap *childEvents) Emitter {
 		case CompactedEvent:
 			e.DispatchID = dispatchID
 			parent(e)
+		case BusyEvent:
+			e.DispatchID = dispatchID
+			parent(e)
 		case FilesChangedEvent:
 			parent(e)
 		case TurnErrorEvent:
@@ -415,8 +456,9 @@ func childEmitter(parent Emitter, dispatchID string, tap *childEvents) Emitter {
 			errCopy := e
 			tap.err = &errCopy
 			tap.mu.Unlock()
-		case BusyEvent, TodoUpdatedEvent, SessionStartedEvent, DispatchStartEvent, DispatchEndEvent, ConfirmRequestEvent:
-			// 不上抛：busy 会翻掉主会话、清单属于子会话自己、确认由父会话代理时发
+		case TodoUpdatedEvent, SessionStartedEvent, DispatchStartEvent, DispatchEndEvent, ConfirmRequestEvent:
+			// 不上抛：清单属于子会话自己、确认由父会话代理时发、
+			// start/end 由派发方自己发
 		}
 	}
 }

@@ -205,7 +205,10 @@ export type AgentEvent =
   | { type: "dispatchEnd"; sessionId: string; dispatchId: string; childSessionId?: string; result: string; isError: boolean; usageTokens?: number }
   /** 请求失败不代表生成失败：不得清空会话、定格正文或解除确认卡。 */
   | { type: "operationError"; message: string }
-  | { type: "busy"; sessionId: string; busy: boolean }
+  /** busy 事件。dispatchId 非空 = 子会话的忙闲翻转（带归属）：主会话侧过滤
+   *  （不翻主会话的「生成中」/不触发发送缓冲区边界），双投进子会话自己的
+   *  state——子会话页的「生成中」行与停止钮靠它出现。 */
+  | { type: "busy"; sessionId: string; busy: boolean; dispatchId?: string }
   /** 某会话的权限档被改了（后端广播 chat.approvalChanged——多客户端/壳+浏览器
    *  同时开着时靠它保持一致；载荷是规范化后的档位，空 = confirm）。 */
   | { type: "approvalChanged"; sessionId: string; approval: ApprovalMode }
@@ -306,6 +309,47 @@ export interface ProjectMeta {
   id: string;
   name: string;
   path: string;
+}
+
+// ---- Git 管理页（git.overview / git.diff 的 wire 形态；全部只读查询）----
+
+/** 主检出的一条未提交/未跟踪变更。kind: modified | added | deleted | untracked。 */
+export interface GitChange {
+  path: string;
+  kind: string;
+}
+
+/** 一条分支：主检出当前分支（current=true）或某会话分支（带会话元数据）。 */
+export interface GitBranchInfo {
+  name: string;
+  current: boolean;
+  ahead: number;
+  behind: number;
+  /** 会话分支才有（主检出分支整键缺席）。 */
+  session_id?: string;
+  session_title?: string;
+  archived?: boolean;
+  has_worktree?: boolean;
+  worktree_path?: string;
+  dirty_count?: number;
+  merged?: boolean;
+}
+
+/** 一条提交（git log 条目；when 为 ISO，相对时间由前端折算）。 */
+export interface GitCommitInfo {
+  hash: string;
+  message: string;
+  author: string;
+  when: string;
+}
+
+/** git.overview 结果：项目主检出的只读快照。 */
+export interface GitOverview {
+  path: string;
+  branch: string;
+  dirty: GitChange[];
+  branches: GitBranchInfo[];
+  commits: GitCommitInfo[];
 }
 
 /** 权限模式三档（协议值域：chat.send 与 chat.approval 的 approval 参数）。 */
@@ -410,6 +454,12 @@ export interface AgentSource {
   readInstructions(projectId: string): Promise<ProjectInstructions>;
   /** 写项目守则（项目根 AGENTS.md，原子写）。 */
   saveInstructions(projectId: string, content: string): Promise<void>;
+  /** Git 管理页：项目主检出的只读快照（状态 / 分支 / 最近提交）。
+   *  projectId 空 = 当前会话归属的项目（未分组会话报错）。失败向上抛。 */
+  gitOverview(projectId?: string): Promise<GitOverview>;
+  /** Git 管理页：主检出工作区里单个文件的未提交差异（懒加载——点开文件才拉）。
+   *  失败向上抛（文件不可读 / 路径越界等，文案照后端）。 */
+  gitDiff(projectId: string, path: string): Promise<string>;
   /** 显示名（顶栏徽标）。 */
   label: string;
   /** 切换后端地址（连接管理「连谁」——真连接切换，不是 UI 状态）。

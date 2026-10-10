@@ -27,7 +27,9 @@ func (s *Server) emitEvent(sessionID string, ev agent.Event) {
 	case agent.ConfirmRequestEvent:
 		s.broadcast(protocol.EventConfirm, toProtocolConfirm(sessionID, e.Request))
 	case agent.BusyEvent:
-		s.broadcast(protocol.EventBusy, protocol.BusyParams{SessionID: sessionID, Busy: e.Busy})
+		// DispatchID 非空 = 子会话的忙闲（带归属上抛——前端投进子会话自己的
+		// state，主时间线侧过滤）。主会话的 busy 载荷与原先逐字节一致。
+		s.broadcast(protocol.EventBusy, protocol.BusyParams{SessionID: sessionID, Busy: e.Busy, DispatchID: e.DispatchID})
 	case agent.TurnDoneEvent:
 		params := protocol.DoneParams{
 			SessionID: sessionID, Message: e.Message, UsageTokens: e.UsageTokens, FinishReason: e.FinishReason,

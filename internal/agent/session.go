@@ -99,6 +99,12 @@ type Session struct {
 	// runTurn 在**轮边界**并入历史（见 notify.go）。与 history 同一把锁——
 	// 否则 injectNotices 与 append 会交错。
 	notices []llm.Message
+	// passiveNotices 是**被动通告**队列（永不自动开轮）：与 notices 的差别在
+	// flushNotices——后台任务通告要尽快唤醒 agent（空闲就开一轮），而「用户中断」
+	// 这类注记只该在**下一轮真的开始时**（用户说话/下一次派发）由轮边界
+	// injectNotices 并入历史。进 notices 的话，runTurn 收尾的 flushNotices 会把
+	// 它自动开成一轮——用户刚点了停止，模型又自顾自回复一段，正好违背中断语义。
+	passiveNotices []llm.Message
 	// wakeGate 是「能不能开新一轮」的判定（server 侧的连续唤醒预算；
 	// nil = 不限制）。只约束空闲开新轮，不管轮边界注入。
 	wakeGate func() bool
@@ -165,6 +171,12 @@ type Session struct {
 	// 模型显示错。来源有三处：Send 时解析出的 ac、dispatch 开子会话时显式置位、
 	// 服务端按会话 id 从库里读回（刷新后重新附着同一会话）。
 	agentID string
+	// children 是本会话**正在跑的子会话**登记（子会话 id → 运行时）。子会话的
+	// 运行时不进 server.sessions（生命周期跟着 runDispatch 走，跑完即注销），
+	// 不登记的话服务端对子会话 id 调 chat.cancel 会 newRuntime 建一个空对象
+	//（Cancel 空操作）——停不掉真正在跑的子轮。并行 dispatch 下同一父可有多个
+	// 活子会话，按 id 一对一。
+	children map[string]*Session
 }
 
 // New 创建会话；emit 为 nil 时事件被丢弃（单测可只调方法）。
@@ -386,6 +398,53 @@ func (s *Session) Cancel() {
 	if cancel != nil {
 		cancel()
 	}
+}
+
+// CancelChild 取消一个**正在跑的**子会话：命中（该 id 是本会话登记中的活子会话）
+// 则取消它并返回 true；未命中返回 false（调用方走原路径——普通会话取消 /
+// 子会话已结束后的兜底）。
+//
+// 为什么挂在父会话上：子会话运行时的生命周期跟着 runDispatch 走（跑完即注销），
+// 不在 server.sessions 里——服务端对子会话 id 直接 s.session(id) 会 newRuntime
+// 建一个空对象，Cancel 是空操作。登记/注销的路径覆盖见 dispatch.go（runDispatch
+// 与 RunAgentTask 都在 openChildSession 成功后登记、defer 注销）。
+func (s *Session) CancelChild(childID string) bool {
+	if childID == "" {
+		return false
+	}
+	s.mu.Lock()
+	child := s.children[childID]
+	s.mu.Unlock()
+	if child == nil {
+		return false
+	}
+	child.Cancel()
+	return true
+}
+
+// registerChild 登记（openChildSession 成功后调用）；key 为空不登记（纯内存
+// 子会话没有 id，外部本来就寻址不到它）。
+func (s *Session) registerChild(key string, child *Session) {
+	if key == "" {
+		return
+	}
+	s.mu.Lock()
+	if s.children == nil {
+		s.children = make(map[string]*Session)
+	}
+	s.children[key] = child
+	s.mu.Unlock()
+}
+
+// unregisterChild 注销（SendWait 收尾后调用——正常结束 / 取消 / panic 三条
+// 路径都经 defer 走到这里）。
+func (s *Session) unregisterChild(key string) {
+	if key == "" {
+		return
+	}
+	s.mu.Lock()
+	delete(s.children, key)
+	s.mu.Unlock()
 }
 
 // SendWait 跑一轮并**等它结束**（派发给子会话时用：主 Agent 要拿子会话的结论）。

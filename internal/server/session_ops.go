@@ -49,6 +49,27 @@ func (s *Server) peekSession(id string) *agent.Session {
 	return s.sessions[id]
 }
 
+// cancelChildAnywhere 在当前活跃的会话运行时里找一个「正在跑的子会话」并取消它，
+// 返回是否命中。子会话运行时不注册进 s.sessions（生命周期跟着派发走，跑完即注销
+// ——agent.Session.registerChild/unregisterChild），对子会话 id 直接 s.session(id)
+// 会 newRuntime 建一个空对象、Cancel 是空操作——停不掉真正在跑的子轮。所以
+// chat.cancel 先在这里找：命中即真停；未命中（普通会话 / 子会话已结束 / 重启恢复）
+// 由调用方走原路径，行为与现在一致。
+func (s *Server) cancelChildAnywhere(childID string) bool {
+	s.sessionsMu.RLock()
+	sessions := make([]*agent.Session, 0, len(s.sessions))
+	for _, sess := range s.sessions {
+		sessions = append(sessions, sess)
+	}
+	s.sessionsMu.RUnlock()
+	for _, sess := range sessions {
+		if sess.CancelChild(childID) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Server) createSession(workspace string) (string, *agent.Session, error) {
 	if s.st == nil {
 		if workspace != "" {

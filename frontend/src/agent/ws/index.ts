@@ -8,7 +8,7 @@
 import type {
   AgentAdminEntry, AgentAdminMcServer, AgentAdminModule, AgentAdminSource, AgentAdminTool,
   AgentEvent, AgentSource, ApprovalMode, ArchiveOutcome, CatalogModelList, CatalogProviderList, CompactOutcome,
-  ConfirmRequest, ContextUsage, DiscoverResult, HistorySnapshot, JobAdminSource, JobInfo,
+  ConfirmRequest, ContextUsage, DiscoverResult, GitOverview, HistorySnapshot, JobAdminSource, JobInfo,
   JobLogResult, ModelAdminSource, ModelEntry,
   ProjectInstructions, ProjectMeta, RewindOutcome, SearchAdminSource, SearchChannel, SearchChannelsSnapshot,
   SearchTestResult, SendAttachments, SendOptions, SessionMeta, SessionStats, TodoItem,
@@ -635,6 +635,18 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
 
   async releaseWorktree(id: string): Promise<void> {
     await this.call("session.worktree.release", { id });
+  }
+
+  /** git.overview：项目主检出的只读快照（Git 管理页数据源）。 */
+  async gitOverview(projectId?: string): Promise<GitOverview> {
+    const result = await this.call("git.overview", projectId ? { project_id: projectId } : undefined);
+    return result as GitOverview;
+  }
+
+  /** git.diff：主检出工作区里单个文件的未提交差异（懒加载）。 */
+  async gitDiff(projectId: string, path: string): Promise<string> {
+    const result = await this.call("git.diff", { project_id: projectId, path }) as { diff?: string } | null;
+    return String(result?.diff ?? "");
   }
 
   /** 起一个后台合并进程（chat.mergeRequest）：与 merge_request 工具同一条后端

@@ -45,6 +45,11 @@ func (s *Server) dispatch(c *wsClient, req *protocol.Request) *protocol.Response
 		return resp
 	}
 
+	// git.overview / git.diff（Git 管理页只读查询——独立分发函数，未命中回落 unknown）
+	if resp := s.dispatchGit(c, req, params); resp != nil {
+		return resp
+	}
+
 	// agent.*/catalog.*（M1——独立分发函数，未命中回落 unknown）
 	if resp := s.dispatchAgentCatalog(req.ID, req.Method, params); resp != nil {
 		return resp

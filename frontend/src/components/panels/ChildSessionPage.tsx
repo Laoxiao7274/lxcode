@@ -146,14 +146,17 @@ export function ChildSessionPage({
        *  三个选择器、上下文环、统计胶囊全保留，readOnly 只锁交互——三个选择器
        *  整组不可点（它们作用的是主会话的上下文，在子会话页操作会改错会话），
        *  上下文环/统计胶囊是读数保持可点开，数据就是这个子会话自己的那份。
-       *  onSend/onCancel 传 no-op：输入已锁，canSend 恒 false，到不了这两个回调。 */}
+       *  onSend 传 no-op：输入已锁，canSend 恒 false，到不了这个回调。
+       *  onCancel 接通（2026-10-10：子会话 busy 事件上抛后，「生成中」行与停止钮
+       *  会随 busy 出现）——停止 = chat.cancel 带子会话 id，服务端经父会话的
+       *  CancelChild 停掉真正在跑的子轮（子会话运行时不在 server.sessions 里）。 */}
       <Composer
         readOnly
         busy={Boolean(state?.busy)}
         context={context}
         stats={stats}
         onSend={() => {}}
-        onCancel={() => {}}
+        onCancel={() => source.cancel(sessionId)}
       />
     </div>
   );

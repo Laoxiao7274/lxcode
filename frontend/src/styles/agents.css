@@ -50,7 +50,7 @@
   font-size: 12.5px;
   font-weight: 500;
   font-family: var(--font-sans);
-  color: #fff;
+  color: var(--on-accent);
   background: var(--fg);
   border: none;
   border-radius: 9px;
@@ -79,7 +79,7 @@
 }
 .fd-btn-g:hover {
   color: var(--fg);
-  border-color: #c9c9cf;
+  border-color: var(--border-hover);
 }
 /* 名单卡 */
 .ag-card {
@@ -94,12 +94,12 @@
   transition: border-color 120ms, box-shadow 120ms;
 }
 .ag-card:hover {
-  border-color: #d4d4d8;
+  border-color: var(--border-hi);
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.03);
 }
 .ag-card.main {
-  border-color: #d4d4d8;
-  background: #fafafa;
+  border-color: var(--border-hi);
+  background: var(--bg-raised);
   box-shadow: 0 0 0 4px var(--border-soft);
 }
 .ag-card.off {
@@ -135,7 +135,7 @@
   font-size: 9.5px;
   font-weight: 700;
   line-height: 1;
-  color: #fff;
+  color: var(--on-accent);
   background: var(--fg);
   border-radius: 4px;
   padding: 2.5px 5px;
@@ -197,7 +197,7 @@
   color: var(--danger);
 }
 .ag-mini-btn.danger.confirm {
-  color: #fff;
+  color: var(--on-accent);
   background: var(--danger);
 }
 /* 编辑器 */
@@ -282,7 +282,7 @@
 }
 .fd-input:focus,
 .fd-textarea:focus {
-  border-color: #a8a8b0;
+  border-color: var(--border-active-strong);
 }
 .fd-textarea {
   font-family: var(--font-mono);
@@ -334,10 +334,10 @@
 }
 .fd-chip:hover {
   color: var(--fg);
-  border-color: #c2c2c8;
+  border-color: var(--border-active);
 }
 .fd-chip.on {
-  color: #fff;
+  color: var(--on-accent);
   background: var(--fg);
   border-color: var(--fg);
 }
@@ -408,7 +408,7 @@
   transition: border-color 120ms;
 }
 .ag-detail:hover {
-  border-color: #c9c9cf;
+  border-color: var(--border-hover);
 }
 .ag-detail.empty {
   border-style: dashed;
@@ -553,7 +553,7 @@
   height: 30px;
   border-radius: 8px;
   background: var(--fg);
-  color: #fff;
+  color: var(--on-accent);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -578,7 +578,7 @@
   border-color: var(--border-strong);
 }
 .ag-doc-reader .ag-param:nth-child(even) {
-  background: #fafafa;
+  background: var(--bg-raised);
 }
 /* 模块尾注：纸面页脚（虚线分隔） */
 .ag-doc-reader .ag-detail-note {
@@ -636,7 +636,7 @@
   font-family: var(--font-sans);
 }
 .ag-pill.risk-low {
-  color: #0f7a5c;
+  color: var(--ok-strong);
   background: rgba(16, 163, 127, 0.1);
 }
 .ag-pill.risk-high {
@@ -649,7 +649,7 @@
 }
 /* 「未配置」警示（外部二进制缺 command——不会进注册表，模型看不到它） */
 .ag-pill.warn {
-  color: #9a6400;
+  color: var(--warn-text);
   background: rgba(230, 162, 60, 0.14);
 }
 .ag-detail-desc {
@@ -714,7 +714,7 @@
   color: var(--fg-faint);
 }
 .ag-param-req {
-  color: #c2410c;
+  color: var(--warm-text);
   background: rgba(194, 65, 12, 0.08);
   border-radius: 5px;
   padding: 1.5px 6px;
@@ -907,4 +907,10 @@
   .ag-preview {
     display: none;
   }
+}
+
+/* ===== 暗色覆盖：fd-chip 风险点的浅红底（亮色 #ff8f8c 在暗黑底上仍可读，仅微调） ===== */
+html[data-theme="dark"] .fd-chip.on .fd-chip-risk { background: #e05550; }
+@media (prefers-color-scheme: dark) {
+  html[data-theme="auto"] .fd-chip.on .fd-chip-risk { background: #e05550; }
 }

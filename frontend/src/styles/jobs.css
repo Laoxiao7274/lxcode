@@ -36,7 +36,7 @@
 }
 /* 运行中时图标本身染色——不看数字也能一眼看出「有东西在跑」 */
 .jobs-badge[data-active="true"] {
-  color: #3b82f6;
+  color: var(--info-text);
 }
 .jobs-count {
   min-width: 14px;
@@ -182,7 +182,7 @@
   color: var(--fg-muted);
 }
 .job-row[data-state="run"] .job-row-state {
-  color: #3b82f6;
+  color: var(--info-text);
 }
 .job-row[data-state="ok"] .job-row-state {
   color: var(--success);
@@ -318,7 +318,7 @@
   color: var(--fg-muted);
 }
 .job-card[data-state="run"] .job-state {
-  color: #3b82f6;
+  color: var(--info-text);
 }
 .job-card[data-state="ok"] .job-state {
   color: var(--success);

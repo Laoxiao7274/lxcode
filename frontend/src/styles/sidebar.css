@@ -105,7 +105,7 @@
   color: var(--fg);
 }
 .session-item.active {
-  background: #ececec;
+  background: var(--border);
   color: var(--fg);
   font-weight: 500;
 }
@@ -149,13 +149,13 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  color: #3b82f6;
+  color: var(--info-text);
 }
 .proj-run-spinner {
   width: 9px;
   height: 9px;
   border-width: 1.2px;
-  border-top-color: #3b82f6;
+  border-top-color: var(--info-text);
 }
 .proj-run-count {
   font-family: var(--font-mono);

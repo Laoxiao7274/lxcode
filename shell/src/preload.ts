@@ -9,6 +9,9 @@ contextBridge.exposeInMainWorld("__LX__", {
   minimize: () => ipcRenderer.send("win:minimize"),
   toggleMaximize: () => ipcRenderer.send("win:toggleMaximize"),
   close: () => ipcRenderer.send("win:close"),
+  // 主题偏好（跟随系统/深色/浅色）→ 主进程 nativeTheme.themeSource：
+  // 壳侧原生控件（滚动条、对话框、titlebar 区域）跟随渲染层主题。fire-and-forget。
+  setThemePreference: (pref: string) => ipcRenderer.send("theme:prefer", pref),
   // 打开系统目录选择器，返回选中路径（取消返回 null）。async 形式
   // 经 invoke（请求-应答语义，不是事件广播）。
   selectDirectory: (): Promise<string | null> => ipcRenderer.invoke("dialog:selectDirectory"),

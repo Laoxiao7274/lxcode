@@ -35,6 +35,11 @@ export function reduce(state: UIState, ev: AgentEvent): UIState {
     case "dispatchEnd":
       return reduceDispatchEnd(state, ev);
     case "busy":
+      // 带归属的 busy = **子会话**的忙闲翻转：不碰主会话的 busy/sending
+      //（子会话在跑不代表主会话在生成），也不该清主会话的 pending。
+      // 子会话自己的 state 由双投路径（reduceSessionStates 的 withoutDispatch
+      // 副本）正常走这条归约——那边没有归属键，语义与主会话一致。
+      if (ev.dispatchId) return state;
       // busy=true = 生成已经开始：发送中态交接给生成态；busy=false 一并收尾
       //（防sending 卡死：done/error 之外的任何忙闲变化都意味着发送阶段已结束）。
       return { ...state, busy: ev.busy, sending: false, pending: ev.busy ? state.pending : null };

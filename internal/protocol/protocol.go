@@ -119,6 +119,15 @@ const (
 	// 降级会把「这个渠道坏了」测成「搜索正常」。
 	MethodSearchTest = "search.test"
 
+	// ---- Git 管理页（前端 Git 工作台的只读查询）----
+	//
+	// 两个方法全部只读：读主检出的状态 / 分支 / 最近提交与单文件 diff。
+	// Git 页面**不提供任何写主检出的操作**（提交由会话内检查点与
+	// workspace_sync 负责）；唯一的写入口是既有 session.worktree.release
+	// （释放会话工作树目录——弹窗确认、脏目录拒绝）。
+	MethodGitOverview = "git.overview"
+	MethodGitDiff     = "git.diff"
+
 	// ---- 后台任务（jobs——docs/jobs.md §4）----
 	//
 	// 三个方法 + 两个事件。job.kill 就是**用户点「结束」**：后端走
@@ -530,6 +539,11 @@ type ErrorParams struct {
 type BusyParams struct {
 	SessionID string `json:"session_id"`
 	Busy      bool   `json:"busy"`
+	// DispatchID 非空 = 子会话的忙闲翻转（2026-10-10 起：子会话页的「生成中」
+	// 行与停止钮靠它出现）。前端主时间线侧按它过滤（主会话忙闲不被子会话翻动），
+	// 双投路径把它归约进子会话自己的 state。omitempty：主会话的 busy 不带此键，
+	// wire 向后兼容。
+	DispatchID string `json:"dispatch_id,omitempty"`
 }
 
 // CompactParams 是 chat.compact 的参数（与 chat.send 同语义：agent 空 = 主 Agent）。
@@ -719,6 +733,69 @@ type ProjectInstructionsResult struct {
 	Content string `json:"content"`
 	Exists  bool   `json:"exists"`
 	Note    string `json:"note,omitempty"`
+}
+
+// ---- Git 管理页（git.overview / git.diff）----
+
+// GitOverviewParams 是 git.overview 的参数。ProjectID 空 = 当前会话归属的项目
+// （未分组会话报「当前会话没有归属项目」）。
+type GitOverviewParams struct {
+	ProjectID string `json:"project_id,omitempty"`
+}
+
+// GitChange 是主检出的一条未提交/未跟踪变更。
+type GitChange struct {
+	Path string `json:"path"`
+	// Kind 是变更类别：modified | added | deleted | untracked。
+	Kind string `json:"kind"`
+}
+
+// GitBranchInfo 是一条分支：主检出当前分支（Current=true）或某会话分支。
+// 会话分支带会话标题 / 工作树状态；Ahead/Behind 相对主检出当前分支
+// （当前分支自身相对其上游 origin/<branch>，无上游时两者为 0）。
+type GitBranchInfo struct {
+	Name    string `json:"name"`
+	Current bool   `json:"current"`
+	Ahead   int    `json:"ahead"`
+	Behind  int    `json:"behind"`
+	// 会话分支才有下面这些字段（主检出分支整键缺席）。
+	SessionID    string `json:"session_id,omitempty"`
+	SessionTitle string `json:"session_title,omitempty"`
+	Archived     bool   `json:"archived,omitempty"` // 归档会话的分支同样列出，如实标注
+	HasWorktree  bool   `json:"has_worktree,omitempty"`
+	WorktreePath string `json:"worktree_path,omitempty"`
+	DirtyCount   int    `json:"dirty_count,omitempty"`
+	Merged       bool   `json:"merged,omitempty"` // 分支已并入主检出当前分支
+}
+
+// GitCommitInfo 是主检出的一条提交（git log 条目）。
+type GitCommitInfo struct {
+	Hash    string `json:"hash"`
+	Message string `json:"message"` // 标题行（首行）
+	Author  string `json:"author"`
+	When    string `json:"when"` // ISO 8601（RFC3339）；相对时间由前端折算
+}
+
+// GitOverviewResult 是 git.overview 的结果：项目主检出的只读快照。
+type GitOverviewResult struct {
+	Path     string          `json:"path"` // 主检出路径
+	Branch   string          `json:"branch"`
+	Dirty    []GitChange     `json:"dirty"`
+	Branches []GitBranchInfo `json:"branches"`
+	Commits  []GitCommitInfo `json:"commits"` // 最近 20 条
+}
+
+// GitDiffParams 是 git.diff 的参数：主检出工作区里单个文件的差异。
+// Path 必须是仓库内的相对路径（由 git.overview 的 dirty 清单给出，客户端不得
+// 自行拼路径——含路径分隔符跳转（..）的输入直接拒绝）。
+type GitDiffParams struct {
+	ProjectID string `json:"project_id,omitempty"`
+	Path      string `json:"path"`
+}
+
+// GitDiffResult 是 git.diff 的结果。Diff 为空串 = 文件没有未提交差异。
+type GitDiffResult struct {
+	Diff string `json:"diff"`
 }
 
 // SessionMeta 是 session.list 的条目（resume 选择器的数据源）。

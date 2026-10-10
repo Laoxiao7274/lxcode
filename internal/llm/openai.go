@@ -95,12 +95,12 @@ func (c *Client) openaiChat(ctx context.Context, msgs []Message, o requestOpts) 
 	if c.cfg.APIKey != "" {
 		headers["Authorization"] = "Bearer " + c.cfg.APIKey
 	}
-	status, raw, err := c.post(ctx, payload, headers)
+	status, raw, hdr, err := c.post(ctx, payload, headers)
 	if err != nil {
 		return nil, err
 	}
 	if status < 200 || status >= 300 {
-		return nil, &APIError{StatusCode: status, Body: truncateStr(string(raw), 512)}
+		return nil, newAPIError(status, string(raw), hdr)
 	}
 	var or openaiResponse
 	if err := json.Unmarshal(raw, &or); err != nil {
