@@ -22,7 +22,7 @@ await build({
   platform: "node",
   format: "cjs",
   target: "node22",
-  external: ["electron"], // 主进程 API 由运行时注入，不能打进包
+  external: ["electron", "original-fs"], // electron 运行时注入；original-fs = Electron 内置的未打补丁 fs（updater 绕开 asar 补丁用）
   outfile: "dist/main.js",
   sourcemap: true,
   logLevel: "info",

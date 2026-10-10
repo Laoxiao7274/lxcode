@@ -8,7 +8,8 @@
 //     等壳退出 → 换 asar → 重新拉起（运行中 asar 被 Chromium 映射，换不了）
 // 解压用系统自带 bsdtar（与 scripts/build.mjs 造 zip 同一套零依赖纪律）。
 import { spawn, spawnSync } from "node:child_process";
-import { appendFileSync, copyFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, createWriteStream, existsSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { pipeline } from "node:stream/promises";
@@ -42,12 +43,29 @@ export function compareVersions(a: string, b: string): number {
   return 0;
 }
 
-const sha256 = (p: string): string => createHash("sha256").update(readFileSync(p)).digest("hex");
+const sha256 = (p: string): string => createHash("sha256").update(loadOriginalFs().readFileSync(p)).digest("hex");
 
 // ---- 日志与错误包装 ----
 // 2026-10-09 EPERM 事故：Node 的 rmSync 在 Windows 上删被占用的目录时，报错只有
 // 裸 `EPERM ... \\?\C:\...\update-staging`——路径指向顶层目录而不是被锁的具体文件，
 // 用户既看不出卡在哪一步也读不懂原因。两条对策：每一步落日志 + 所有 fs 错误包人话。
+//
+// 2026-10-10 根因定位（0.2.0 升级再次 EPERM）：占用者是**应用自身进程**——Electron
+// 给 fs 打了 asar 补丁，`readFileSync/copyFileSync/existsSync` 碰到 `*.asar` 路径会把
+// 整个路径当「归档+内部路径」解析：readFileSync 直接抛 `ENOENT: not found in <asar>`
+// （内部路径为空，实测），打包态还会把打开的归档句柄缓存在 ArchiveCache 里常驻到
+// 进程退出——于是逐文件校验必挂，且之后同一会话里任何对 update-staging 的删除都
+// EPERM，重试多久都没用。对策：所有可能触碰 *.asar 的 fs 调用一律走 originalFs
+// （Electron 注入的未打补丁 Node fs，读的是原始字节）；staging 同时改为唯一子目录
+// 兜底（见 downloadAndStage）。
+
+/** 未打补丁的 Node fs：优先 electron.originalFs，回落 Electron 内置模块 original-fs
+ *  （构建时 external，见 build.mjs；运行时由 Electron 注入）。 */
+function loadOriginalFs(): typeof import("node:fs") {
+  const ef = require("electron") as { originalFs?: typeof import("node:fs") };
+  if (ef.originalFs) return ef.originalFs;
+  return require("original-fs");
+}
 
 /** 更新器日志：主进程 console + userData/update.log（产线主进程 console 不可见，落文件才能事后对账）。 */
 function ulog(step: string, detail = ""): void {
@@ -65,18 +83,25 @@ function humanFsError(e: unknown, what: string): Error {
   const code = (e as NodeJS.ErrnoException | null)?.code ?? "";
   const raw = e instanceof Error ? e.message : String(e);
   if (code === "EPERM" || code === "EACCES") {
-    return new Error(`${what}：文件被占用或权限不足。常见原因是杀毒软件正在扫描刚下载/解压的文件——请等十几秒重试；` +
-      `若反复失败，退出 Lxcode 后手动删除更新缓存目录（Roaming\\lxcode 下的 update-staging / update-pending）再重试。`);
+    return new Error(`${what}：文件被占用或权限不足（常见是杀毒软件正在扫描刚下载/解压的文件）。` +
+      `本次下载已改用独立的暂存子目录，直接重试通常可以成功；若反复失败，退出 Lxcode（注意托盘也要退出）等十几秒再打开重试，` +
+      `仍不行则手动删除 Roaming\\lxcode 下的 update-staging / update-pending 目录后再试（删除它们不影响现有安装与数据）。`);
   }
   if (code === "EBUSY") return new Error(`${what}：文件正被其他程序使用，请稍后重试。`);
   if (code === "ENOSPC") return new Error(`${what}：磁盘空间不足，请清理后重试。`);
   return new Error(`${what}失败：${raw}`);
 }
 
-/** rmSync 带自实现退避重试。Node 自带的 maxRetries 在 Windows 上对目录树 EPERM
- *  不生效（实测 v24 1ms 内直接抛，一次都不重试），而杀软占用通常几百 ms~几秒——
- *  自己退避（8 次 × 250ms ≈ 2s 窗口）才真有用。非占用类错误立即包装上抛。 */
-async function rmWithRetry(path: string, what: string, recursive: boolean): Promise<void> {
+/** rmSync 带自实现指数退避（总窗 ~10s）。Node 自带的 maxRetries 在 Windows 上对目录树
+ *  EPERM 不生效（实测 v24 1ms 内直接抛，一次都不重试）。0.1.4 的 8×250ms≈2s 实测不够：
+ *  0.2.0 升级时占用持续超过 2s（杀软扫描 19MB exe / asar 归档句柄常驻）。指数退避
+ *  500ms→8s，总窗 10s 封顶；bestEffort=true 时超窗不抛错只记日志（清理类调用：删不掉
+ *  就留着，下次下载/再清），非占用类错误立即包装上抛。 */
+const RM_RETRY_DELAYS_MS = [500, 1000, 2000, 4000, 8000];
+const RM_RETRY_WINDOW_MS = 10_000;
+
+async function rmWithRetry(path: string, what: string, recursive: boolean, bestEffort = false): Promise<void> {
+  const t0 = Date.now();
   for (let i = 0; ; i++) {
     try {
       rmSync(path, { recursive, force: true });
@@ -84,16 +109,25 @@ async function rmWithRetry(path: string, what: string, recursive: boolean): Prom
     } catch (e) {
       const code = (e as NodeJS.ErrnoException)?.code ?? "";
       const transient = code === "EPERM" || code === "EBUSY" || code === "ENOTEMPTY";
-      if (!transient || i >= 7) throw humanFsError(e, what);
-      ulog("删除被占用，退避重试", `${what}（第 ${i + 1} 次，code=${code}）`);
-      await new Promise((r) => setTimeout(r, 250));
+      const waited = Date.now() - t0;
+      if (!transient || waited >= RM_RETRY_WINDOW_MS) {
+        if (bestEffort) {
+          ulog(`${what}——跳过（不影响本次更新，之后重清）`, `code=${code || "unknown"}，已退避 ${(waited / 1000).toFixed(1)}s`);
+          return;
+        }
+        throw humanFsError(e, what);
+      }
+      const delay = Math.min(RM_RETRY_DELAYS_MS[Math.min(i, RM_RETRY_DELAYS_MS.length - 1)], RM_RETRY_WINDOW_MS - waited);
+      ulog("删除被占用，退避重试", `${what}（第 ${i + 1} 次，code=${code}，已等 ${(waited / 1000).toFixed(1)}s）`);
+      await new Promise((r) => setTimeout(r, delay));
     }
   }
 }
 
 // 状态：检查到的可用更新（download 消费）+ 下载完成并校验通过的暂存目录（apply 消费）
 let lastManifest: UpdateManifest | null = null;
-let stagedDir: string | null = null;
+let stagedDir: string | null = null; // dl-<ts>/payload——apply 取 exe/asar 的地方
+let stagedRoot: string | null = null; // dl-<ts>——apply 完成后整体清理的单位
 let downloading = false; // 并发防护：下载中再点下载，第二次的 rmSync 会撞上第一次打开中的 zip 句柄 → EPERM
 
 /** 装配 IPC 面（main.ts 启动时调一次）。manifest 由主进程持有——渲染层不传
@@ -123,6 +157,31 @@ async function checkUpdate(): Promise<{ available: boolean; manifest: UpdateMani
   return { available, manifest: lastManifest };
 }
 
+/** 陈旧暂存清理（best-effort，单次尝试不重试）：0.2.1 起 staging 用唯一子目录
+ *  dl-<ts>，旧目录被锁不再阻断新下载，但目录会堆积——下载开始时顺带清一遍：
+ *  非 dl-* 的旧布局残留（0.2.0 及更早的平铺 update.zip/payload）直接清；dl-* 只清
+ *  超过 24h 的。锁住就跳过（下次下载再清），绝不抛错、不阻塞下载。 */
+async function cleanupStaleStaging(staging: string): Promise<void> {
+  let names: string[] = [];
+  try {
+    names = readdirSync(staging);
+  } catch {
+    return; // 目录不存在 = 没有残留
+  }
+  for (const name of names) {
+    const p = join(staging, name);
+    try {
+      const stale = !name.startsWith("dl-") || Date.now() - statSync(p).mtimeMs > 24 * 3600_000;
+      if (!stale) continue;
+      rmSync(p, { recursive: true, force: true });
+      ulog("陈旧暂存已清理", name);
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException)?.code ?? "";
+      ulog("陈旧暂存清理跳过（仍被占用，下次再清）", `${name}（code=${code}）`);
+    }
+  }
+}
+
 /** 下载 + 整包 sha256 校验 + 解压 + 逐文件校验 → 暂存目录就绪。 */
 async function downloadAndStage(): Promise<{ ok: boolean }> {
   if (!lastManifest) throw new Error("没有待下载的更新（先 check）");
@@ -131,13 +190,15 @@ async function downloadAndStage(): Promise<{ ok: boolean }> {
   const manifest = lastManifest;
   try {
     ulog("开始下载", `目标版本 ${manifest.version}`);
-    const base = join(app.getPath("userData"), "update-staging");
-    // 每次进入都清空暂存目录：上一次失败/中断的残留（半截 zip、解压一半的 payload）
-    // 不能留着——否则本次校验对象可能混入旧文件。被占用时重试后退避，仍失败报人话。
-    await rmWithRetry(base, "清理更新暂存目录（update-staging）", true);
-    ulog("暂存目录已清理", base);
-    mkdirSync(base, { recursive: true });
-    const zipPath = join(base, "update.zip");
+    const staging = join(app.getPath("userData"), "update-staging");
+    // 0.2.1 起 staging 改为唯一子目录：每次下载在 dl-<ts>/ 里解压、校验——旧子目录
+    // 被占用（杀软扫描、历史泄漏的句柄）完全不影响新下载；旧目录降级为 best-effort
+    // 清理（见 cleanupStaleStaging），不再「必须清空才能下载」。
+    await cleanupStaleStaging(staging);
+    const stageRoot = join(staging, `dl-${Date.now()}`);
+    mkdirSync(stageRoot, { recursive: true });
+    stagedRoot = stageRoot;
+    const zipPath = join(stageRoot, "update.zip");
 
     // 流式下载（进度经 webContents 广播；节流 100ms——渲染层刷条不要每块都画）。
     // url 允许是**相对文件名**（lxcode-site 的 manifest 契约：url = update-<v>.zip），
@@ -171,7 +232,7 @@ async function downloadAndStage(): Promise<{ ok: boolean }> {
     }
     ulog("整包校验通过");
     // 解压 + 逐文件校验（zip 内路径 = 安装目录相对路径）
-    const extractDir = join(base, "payload");
+    const extractDir = join(stageRoot, "payload");
     mkdirSync(extractDir, { recursive: true });
     const r = spawnSync("tar", ["-xf", zipPath, "-C", extractDir], { shell: false });
     if (r.status !== 0) {
@@ -183,19 +244,21 @@ async function downloadAndStage(): Promise<{ ok: boolean }> {
     if (manifest.files) {
       for (const [rel, expect] of Object.entries(manifest.files)) {
         const f = join(extractDir, rel);
-        if (!existsSync(f)) throw new Error(`更新包缺文件: ${rel}`);
-        if (sha256(f) !== expect) throw new Error(`文件校验失败: ${rel}`);
+        if (!loadOriginalFs().existsSync(f)) {
+          ulog("逐文件校验失败", `更新包缺文件: ${rel}`);
+          throw new Error(`更新包缺文件: ${rel}`);
+        }
+        if (sha256(f) !== expect) {
+          ulog("逐文件校验失败", `${rel}（sha256 不匹配）`);
+          throw new Error(`文件校验失败: ${rel}`);
+        }
       }
     }
     ulog("逐文件校验通过", `${Object.keys(manifest.files ?? {}).length} 个文件`);
     stagedDir = extractDir;
-    // zip 只服务于解压，删不删都不影响本次更新（下次下载会整体清空）——被占用
-    // （杀软正在扫它）时不应让整个下载报错，降级为日志。
-    try {
-      await rmWithRetry(zipPath, "清理暂存 zip", false);
-    } catch (e) {
-      ulog("暂存 zip 清理失败（不影响本次更新）", e instanceof Error ? e.message : String(e));
-    }
+    // zip 只服务于解压，删不删都不影响本次更新（它在本次的 dl-<ts> 子目录里，不会
+    // 混入下次校验）——被占用（杀软正在扫它）时不应让整个下载报错，降级为日志。
+    await rmWithRetry(zipPath, "清理暂存 zip", false, true);
     ulog("暂存就绪，等待应用");
     return { ok: true };
   } finally {
@@ -224,7 +287,7 @@ async function applyUpdate(): Promise<{ ok: boolean; needsRestart: boolean }> {
       throw humanFsError(e, "后端替换失败：无法改名旧后端 lxcode.exe（文件被占用）");
     }
     try {
-      copyFileSync(newExe, currentExe);
+      loadOriginalFs().copyFileSync(newExe, currentExe);
     } catch (e) {
       renameSync(oldPath, currentExe); // 回滚
       ulog("新后端落位失败，已回滚", e instanceof Error ? e.message : String(e));
@@ -236,13 +299,15 @@ async function applyUpdate(): Promise<{ ok: boolean; needsRestart: boolean }> {
   }
 
   // 2) asar 冷替换排程（仅产线）：暂存 + 脱离进程的替换脚本（等壳退出 → 换 → 重启壳）
+  //    注意 newAsar 的判定与拷贝必须走 originalFs：Electron 补丁版 fs 对 *.asar 路径
+  //    会当归档解析（existsSync 语义漂移、copyFileSync 直接 ENOENT）。
   const newAsar = join(stagedDir, "resources", "app.asar");
-  if (existsSync(newAsar) && app.isPackaged) {
+  if (loadOriginalFs().existsSync(newAsar) && app.isPackaged) {
     const pending = join(app.getPath("userData"), "update-pending");
     try {
       await rmWithRetry(pending, "清理冷替换暂存目录（update-pending）", true);
       mkdirSync(pending, { recursive: true });
-      copyFileSync(newAsar, join(pending, "app.asar"));
+      loadOriginalFs().copyFileSync(newAsar, join(pending, "app.asar"));
     } catch (e) {
       throw humanFsError(e, "asar 冷替换暂存失败");
     }
@@ -267,14 +332,11 @@ async function applyUpdate(): Promise<{ ok: boolean; needsRestart: boolean }> {
     ulog("asar 冷替换已排程", "壳退出后由 apply-update.cmd 完成");
   }
 
-  // 清理暂存（exe 已落位、asar 已暂存到 pending）。更新本身已完成，清理失败
-  // （杀软占用暂存里的 exe）只记日志——下次 download 进入时会再整体清空。
-  try {
-    await rmWithRetry(stagedDir, "清理更新暂存目录（update-staging）", true);
-  } catch (e) {
-    ulog("暂存清理失败（不影响本次更新，下次下载时重清）", e instanceof Error ? e.message : String(e));
-  }
+  // 清理本次的暂存子目录（exe 已落位、asar 已暂存到 pending）。更新本身已完成，
+  // 清理失败（占用残留）只记日志——之后由 cleanupStaleStaging 兜底重清。
+  await rmWithRetry(stagedRoot ?? stagedDir, "清理更新暂存子目录", true, true);
   stagedDir = null;
+  stagedRoot = null;
   ulog("更新应用完成", "needsRestart=true");
   return { ok: true, needsRestart: true };
 }
