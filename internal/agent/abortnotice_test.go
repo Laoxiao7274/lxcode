@@ -42,6 +42,19 @@ func abortStream(t *testing.T, laterText string) StreamFn {
 	}
 }
 
+// 通告必须带「系统通告」前缀（2026-10-10）：前端按它对用户隐藏这条注记（模型
+// 照常可见）——前缀丢了它会以普通用户气泡渲染（用户看到一句自己没说过的话）。
+// 前缀字面量与前端 SYSTEM_NOTICE_PREFIX 逐字一致（frontend/tests/notices.test.mjs
+// 那边也钉了一份，两边各自钉死防漂移）。
+func TestAbortedNoticeHasSystemPrefix(t *testing.T) {
+	if SystemNoticePrefix != "[系统通告] " {
+		t.Fatalf("SystemNoticePrefix 与前端对照字面量不一致: %q", SystemNoticePrefix)
+	}
+	if !strings.HasPrefix(userAbortedNotice, SystemNoticePrefix) {
+		t.Fatalf("userAbortedNotice 必须带 SystemNoticePrefix 前缀: %q", userAbortedNotice)
+	}
+}
+
 // aborted 后被动通告入队；下一次真实发送的轮边界把它注入历史（Notice=true），
 // 模型由此知道上一轮是用户停的。通告**不会**自动开轮（flushNotices 不碰被动
 // 队列）——取消后 busy 保持 false。

@@ -3,7 +3,7 @@
 import type { AgentEvent, ConfirmRequest, JobInfo } from "./types";
 import { type AssistantBlock, type ThreadBlock, type UIState, DISPATCH_TOOL_NAME, initial, nextUid, withBlock, placeConfirm, planRewind } from "./blocks";
 import { reduceHistory } from "./history";
-import { noticeBody, noticeLabel } from "./notices";
+import { isHiddenNotice, noticeBody, noticeLabel } from "./notices";
 
 /** 单个事件类型的窄化类型（reduce 的每个分支提取成函数后，参数类型要收窄到那一个变体）。 */
 type Ev<T extends AgentEvent["type"]> = Extract<AgentEvent, { type: T }>;
@@ -72,8 +72,13 @@ export function reduce(state: UIState, ev: AgentEvent): UIState {
  * 系统提示条（后台任务通告 / 重复调用提醒）在**历史里与实时流里都是真实 user 角色
  * 消息**（模型必须把它当用户回合才能回应），但它不是用户说的话——按**文本前缀**识别
  *（不能按角色，种类表见 shared/notices.ts），渲染成提示条而不是用户气泡，否则用户
- * 会以为是自己发的。 */
+ * 会以为是自己发的。
+ *
+ * **hidden 的系统注记（如「用户中断了这次生成」）不产生任何块**：它是写给模型的
+ * 注记，用户界面上当它不存在——原样返回 state（连乐观 pending 的去重也不做，
+ * 它本来就不是任何发送的回执）。与回放路径 history.ts 的同款判定共用一份前缀表。 */
 function reduceUserMessage(state: UIState, ev: Ev<"userMessage">): UIState {
+  if (isHiddenNotice(ev.text)) return state;
   const label = noticeLabel(ev.text);
   // 乐观 pending 块的去重（FIFO 移除最旧的——连续发多条按发送顺序与回执一一对应）。
   // 只对**真正的用户消息**做：提示条（notice）虽然也是 userMessage 事件，但它不是

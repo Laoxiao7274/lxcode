@@ -235,6 +235,31 @@ export function cancelEdit(): null {
   return null;
 }
 
+/** 撤回的回填时机（两步一致，2026-10-10）：**rewind 成功才把原文装回输入框**，
+ *  失败只报错——文本根本没进输入框。
+ *
+ *  为什么顺序不能反：后端可能拒绝这次撤回（配对校验——「撤回锚点不是配对平衡的
+ *  切点」，旧库畸形/异常中断的历史会命中）。先 injectDraft 再 rewind 的话，拒绝
+ *  时文本已在输入框、时间线又被 ws 客户端的重放历史复原（rewind 失败 →
+ *  chat.history 重放对齐，见 agent/ws）——「到了输入框但会话里还在」，两步不一致。
+ *  与 App 的 handleSend（编辑重发）同款：rewind 成功才走下一步，失败才回填。
+ *  时间线的乐观截断仍在请求发出前发生（视觉上「历史先清、文本后到」一个往返，
+ *  可接受）。抽成纯函数：App 组件依赖太重，node:test 钉不住——把「成败分流」
+ *  这个契约钉在这里。 */
+export function rewindThenRestore(opts: {
+  rewind: () => Promise<unknown>;
+  text: string;
+  inject: (text: string) => void;
+  report: (message: string) => void;
+}): void {
+  void opts.rewind().then(
+    () => opts.inject(opts.text),
+    (e: unknown) => {
+      opts.report(`撤回失败: ${e instanceof Error ? e.message : String(e)}`);
+    },
+  );
+}
+
 /**
  * 从检查点消息内容里剥出摘要正文：后端把摘要包成「前言 + 定界标记 + 正文」，
  * 前端只该展示正文（前言是给模型看的，不该出现在界面上）。

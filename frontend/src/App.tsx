@@ -21,8 +21,9 @@ import {
 import { getAgentSource } from "./agent";
 import { useAgent, type ThreadBlock } from "./shared/store";
 import { queueSendAction } from "./shared/send-queue";
+import { draftOf, writeDraft, writeDraftAtts, writeDraftText, type SessionDraft, type SessionDrafts } from "./shared/session-drafts";
 import { visionBlockNotice } from "./shared/attachments";
-import { beginEdit, canRewind, planRewind, type EditDraft } from "./shared/blocks";
+import { beginEdit, canRewind, planRewind, rewindThenRestore, type EditDraft } from "./shared/blocks";
 import { AgentsProvider, useAgents } from "./shared/agents";
 import { AgentsPage } from "./components/agents/AgentsPage";
 import { CatalogPage } from "./components/catalog/CatalogPage";
@@ -90,9 +91,14 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
   // 怎么发：请求级参数 effort/approval/agent 都在 sendWithOptions 里补齐）。
   // atts = 队首条目携带的附件（图片批次 B——按引用透传）。
   const autoSendBridgeRef = useRef<(sessionId: string, text: string, atts?: SendAttachments) => void>(() => {});
-  /** 发送失败的附件回滚（store 钩子 → Composer 的 attsDraft）：文本丢了附件不能丢。 */
+  /** 发送失败的附件回滚（store 钩子 → Composer 的 attsDraft）：文本丢了附件不能丢。
+   *  per-session 记账（drafts）之下它只服务「正看着的那个会话」——失败发生在别的
+   *  会话时只落记账键（切回去由初始草稿还原），不装给挂载中的 Composer。 */
   const [attsDraft, setAttsDraft] = useState<ComposerAttsDraft | null>(null);
   const attsDraftIdRef = useRef(0);
+  /** 当前会话 id 的 ref：草稿记账的写入点要落在**正确的会话**上——失败回填可能
+   *  在用户已切到别的会话之后到达（ws 异步），按 currentId 闭包写会串会话。 */
+  const currentIdRef = useRef("");
   const onSendFailedBridgeRef = useRef<(sessionId: string, atts: SendAttachments) => void>(() => {});
   const { state, sessionStates, childParents, sendQueues, send, resolve, clearError, reportError, enqueueSend, removeQueuedSend, moveQueuedToFront } = useAgent(source, {
     onAutoSend: (sessionId, text, atts) => autoSendBridgeRef.current(sessionId, text, atts),
@@ -218,6 +224,7 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
   }, [reportError]);
 
   const currentId = state.currentId;
+  currentIdRef.current = currentId;
   const busyBySession = useMemo(
     () => Object.fromEntries(Object.entries(sessionStates).map(([id, session]) => [id, session.busy])),
     [sessionStates],
@@ -268,9 +275,16 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
   const sendWithOptions = useCallback((text: string, atts?: SendAttachments) => sendToSession(currentId, text, atts), [sendToSession, currentId]);
   // 桥接（渲染期同步赋值——store 的订阅闭包经 ref 读到最新身份）
   autoSendBridgeRef.current = sendToSession;
-  onSendFailedBridgeRef.current = useCallback((_sessionId: string, atts: SendAttachments) => {
-    attsDraftIdRef.current += 1;
-    setAttsDraft({ id: attsDraftIdRef.current, atts });
+  onSendFailedBridgeRef.current = useCallback((sessionId: string, atts: SendAttachments) => {
+    // 失败回填落在**原会话**的记账键（shared/session-drafts.ts）：不管用户此刻
+    // 看的是哪个会话，切回去文本不丢、附件也在。
+    setDrafts((cur) => writeDraftAtts(cur, sessionId, atts));
+    // 正看着这个会话才经 attsDraft 把附件装回**挂载中**的 Composer——装给别的
+    // 会话的 Composer 就是串会话（这正是本次要修的 bug）。
+    if (sessionId === currentIdRef.current) {
+      attsDraftIdRef.current += 1;
+      setAttsDraft({ id: attsDraftIdRef.current, atts });
+    }
   }, []);
 
   // 稳定身份：Thread 的 Block 用 memo，onConfirm 每次新建会击穿它
@@ -338,12 +352,28 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
 
   /** 输入框草稿注入（撤回/编辑把原文放回输入框；atts = 附件一并装回附件区——
    *  队列条目「编辑」的装回路径）。id 单调递增——同一条消息连续注入两次也要
-   *  重新写入（按文本比较的话第二次是 no-op，用户看到"点了没反应"）。 */
+   *  重新写入（按文本比较的话第二次是 no-op，用户看到"点了没反应"）。
+   *
+   *  注入同时落**当前会话**的草稿记账键（drafts，shared/session-drafts.ts）：
+   *  Composer 挂载中的那份由 draft prop 即时生效，记账键服务「切走再切回」的
+   *  还原——两处写的是同一份语义。 */
   const [draft, setDraft] = useState<ComposerDraft | null>(null);
   const draftIdRef = useRef(0);
+  /** per-session 草稿记账（照 sendQueues 的模式，独立于 reduce 流——纯 UI 状态）：
+   *  键 = session id，值 = 文本 + 暂存附件。切走保留、切回还原、发送清空、失败
+   *  回填落原会话键。 */
+  const [drafts, setDrafts] = useState<SessionDrafts>({});
   const injectDraft = useCallback((text: string, atts?: SendAttachments) => {
     draftIdRef.current += 1;
     setDraft({ id: draftIdRef.current, text, ...(atts ? { atts } : {}) });
+    const sid = currentIdRef.current;
+    setDrafts((cur) => writeDraftAtts(writeDraftText(cur, sid, text), sid, atts));
+  }, []);
+  /** Composer 的草稿实时回写 → 当前会话的记账键（采集端见 Composer.onDraftChange：
+   *  打字/注入/清空/回填全汇聚到那一个 effect）。身份恒定——写哪个会话由
+   *  currentIdRef 在调用瞬间决定，不进依赖。 */
+  const handleDraftChange = useCallback((d: SessionDraft) => {
+    setDrafts((cur) => writeDraft(cur, currentIdRef.current, d));
   }, []);
   /** 编辑态：只记锚点，**历史一个字都不动**——真正的撤回推迟到下次发送前。 */
   const [editDraft, setEditDraft] = useState<EditDraft | null>(null);
@@ -354,8 +384,10 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
   blocksRef.current = state.blocks;
 
   // 撤回：历史立刻清空（由 source 的乐观 rewound 事件驱动归约器截断——两个实现
-  // 走同一条路径），原文回到输入框。**失败时 source 已经用后端真相对齐**（重放
-  // 历史把被乐观删掉的块拿回来），这里只负责把失败说给用户听。
+  // 走同一条路径）。**原文回到输入框的时机 = rewind 成功之后**（rewindThenRestore，
+  // 与 handleSend 的编辑重发同款两步一致）：后端拒绝（配对校验）时文本根本不进
+  // 输入框，时间线由 source 已用后端真相对齐（重放历史把被乐观删掉的块拿回来），
+  // 这里只负责把失败说给用户听。
   const handleRewind = useCallback((block: ThreadBlock) => {
     if (!canRewind(block)) {
       reportError("这条消息来自旧版后端（没有 seq），无法撤回");
@@ -367,10 +399,12 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
       reportError("这条消息已经不在当前对话里了（可能已被撤回）");
       return;
     }
-    injectDraft(plan.text);
     setEditDraft(null); // 撤回之后没有"编辑中"这回事：历史已经清了，没什么可取消
-    void source.rewind(currentId, block.seq).catch((e) => {
-      reportError(`撤回失败: ${e instanceof Error ? e.message : String(e)}`);
+    rewindThenRestore({
+      rewind: () => source.rewind(currentId, block.seq),
+      text: plan.text,
+      inject: injectDraft,
+      report: reportError,
     });
   }, [source, currentId, injectDraft, reportError]);
 
@@ -392,8 +426,13 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
 
   // 切会话必须退出编辑态：编辑锚点（seq）只在它所属的那个会话里有意义，带着它
   // 切走再发送会去撤回**另一个会话**的那条消息（静默删错历史——比不生效坏得多）。
+  // 注入态（draft / attsDraft）同理一并清：它们是「当前会话」的一次性动作，注入
+  // 的内容已实时同步进那个会话的草稿记账键，切回来由初始草稿还原；不清的话重挂
+  // 载的新 Composer 会把上一个会话的注入草稿再吃一遍（串会话）。
   useEffect(() => {
     setEditDraft(null);
+    setDraft(null);
+    setAttsDraft(null);
   }, [currentId]);
 
   // 发送：编辑态下**先撤回再发**（这是"编辑"真正生效的时刻）。撤回失败就不发——
@@ -585,7 +624,11 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
             <div className="thread-scroll">
               <Thread state={state} onConfirm={handleConfirm} onAnswer={handleAnswer} onSuggestion={handleSend} projectName={filterProjectName} onEdit={handleEdit} onRewind={handleRewind} onOpenChild={openChildTab} revealUid={jumpedUid} />
             </div>
+            {/* key=sessionId：切会话重挂载——输入框/附件区从该会话的草稿记账还原
+                （initialDraft），B 的输入框是 B 自己的（没有就是空）。不重挂的话
+                Composer 内部 state 跨会话存活，草稿隔离无从谈起。 */}
             <Composer
+              key={currentId}
               busy={state.busy}
               sending={state.sending}
               todos={state.todos}
@@ -605,6 +648,8 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
               onQueueDelete={handleQueueDelete}
               onQueueSend={handleQueueSend}
               attsDraft={attsDraft}
+              initialDraft={draftOf(drafts, currentId)}
+              onDraftChange={handleDraftChange}
               visionBlocked={visionBlocked}
             />
           </div>

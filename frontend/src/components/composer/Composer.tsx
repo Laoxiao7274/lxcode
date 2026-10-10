@@ -23,6 +23,7 @@ import {
   type PendingImage,
 } from "../../shared/attachments";
 import { routeSubmit, type SendQueueItem } from "../../shared/send-queue";
+import type { SessionDraft } from "../../shared/session-drafts";
 import type { SendAttachments, ContextUsage, SessionStats, TodoItem } from "../../shared/types";
 
 /** 输入区（Codex 式）：busy 时输入框保留（可预输入），发送钮变停止。
@@ -74,6 +75,8 @@ export function Composer({
   onQueueDelete,
   onQueueSend,
   attsDraft = null,
+  initialDraft = null,
+  onDraftChange,
   visionBlocked = null,
 }: {
   busy: boolean;
@@ -120,14 +123,23 @@ export function Composer({
   onQueueSend?: (id: string) => void;
   /** 外部注入的附件（发送失败装回；null = 无）。 */
   attsDraft?: ComposerAttsDraft | null;
+  /** 挂载时的初始草稿（per-session 记账的还原值，见 shared/session-drafts.ts）：
+   *  只在**挂载那一刻**生效（useState 初始化器）——App 以 key=sessionId 挂载
+   *  Composer，切走再切回就是一次重挂载，草稿从记账里还原；运行中的变化由
+   *  onDraftChange 实时回写记账，这里不追（追的话与内部 state 双源打架）。 */
+  initialDraft?: SessionDraft | null;
+  /** 草稿实时回写（文本/附件任一变化就上报一次）：App 据此按会话记账——切走
+   *  时半截输入已经落在那个会话的键上，切回来原样还原。传了就必须稳定身份
+   *  （App 用 useCallback——进 effect 依赖）。 */
+  onDraftChange?: (draft: SessionDraft) => void;
   /** 非空 = 当前模型未声明 vision 能力（值为人话原因）：「图片」入口禁用；
    *  null/undefined = 能力未知（老后端/模型没配）→ 不禁用，发送时依赖后端
    *  的 vision 校验人话错误兜底。文件入口不受影响。 */
   visionBlocked?: string | null;
 }) {
-  const [value, setValue] = useState("");
-  const [images, setImages] = useState<PendingImage[]>([]);
-  const [files, setFiles] = useState<PendingFile[]>([]);
+  const [value, setValue] = useState(initialDraft?.text ?? "");
+  const [images, setImages] = useState<PendingImage[]>(initialDraft?.images ?? []);
+  const [files, setFiles] = useState<PendingFile[]>(initialDraft?.files ?? []);
   const [notice, setNotice] = useState("");
   const taRef = useRef<HTMLTextAreaElement>(null);
   const zoneRef = useRef<HTMLDivElement>(null);
@@ -303,6 +315,17 @@ export function Composer({
     setImages(attsDraft.atts.images.map((im, i) => ({ id: `img-restore-${attsDraft.id}-${i}`, mime: im.mime, name: "", data: im.data })));
     setFiles(attsDraft.atts.files.map((f, i) => ({ id: `file-restore-${attsDraft.id}-${i}`, name: f.name, size: 0, data: f.data })));
   }, [attsDraft]);
+
+  // 草稿实时回写（per-session 记账的采集端）：文本/附件任一变化就上报一次——
+  // 打字、注入草稿、发送清空、失败回填全部汇聚到这一处，App 据此写当前会话的
+  // 草稿键。回调经 ref 读（身份必须稳定，不能进依赖——否则 App 每次渲染都重跑
+  // 本 effect，上报又触发渲染，成环）；挂载时也上报一次（重挂载还原的初值写回
+  // 记账，幂等）。
+  const onDraftChangeRef = useRef(onDraftChange);
+  onDraftChangeRef.current = onDraftChange;
+  useEffect(() => {
+    onDraftChangeRef.current?.({ text: value, images, files });
+  }, [value, images, files]);
 
   // 自增高（DSH 形态）：随内容长高到上限（CSS max-height 200px），之内
   // **不出内部滚动条**——多行输入在 44px 固定高度里滚是 ugliness 本身。
