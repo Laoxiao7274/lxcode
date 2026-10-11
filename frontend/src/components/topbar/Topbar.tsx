@@ -69,7 +69,7 @@ export function Topbar({
           </svg>
         </button>
       </div>
-      {mgrOpen && <ConnectionManager onClose={() => setMgrOpen(false)} />}
+      {mgrOpen && <ConnectionManager onClose={() => setMgrOpen(false)} connected={connected} />}
     </header>
   );
 }

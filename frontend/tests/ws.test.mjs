@@ -521,3 +521,65 @@ test('init refreshes run in parallel and one failure does not break the rest', a
     '其余并行刷新不受单个失败影响，照常落地',
   );
 });
+
+// ws/wss 自适应（远程访问场景）：地址形态决定 WS scheme——https 反代必须走
+// wss（明文 ws 升级会被 TLS 端点拒）、裸 host:port 维持 ws（局域网直连现状）、
+// 显式 ws/wss 原样；路径统一 /rpc，token 挂查询串（与后端 checkRemoteToken 同位）。
+test('wsURL adapts scheme by address form and appends /rpc + token', async () => {
+  const { wsURL } = await import('../src/agent/ws/index.ts');
+  assert.equal(wsURL('10.0.0.8:7789', null), 'ws://10.0.0.8:7789/rpc');
+  assert.equal(wsURL('127.0.0.1:7789', 'tok'), 'ws://127.0.0.1:7789/rpc?token=tok');
+  assert.equal(wsURL('https://lx.example.com', 'tok'), 'wss://lx.example.com/rpc?token=tok');
+  assert.equal(wsURL('http://lx.example.com:7789', null), 'ws://lx.example.com:7789/rpc');
+  assert.equal(wsURL('wss://lx.example.com', null), 'wss://lx.example.com/rpc');
+  assert.equal(wsURL('wss://lx.example.com/rpc', null), 'wss://lx.example.com/rpc');
+});
+
+// 连接态诚实化（三件套）：①connectionChanged 随真实 WS 的 open/close 翻转；
+// ②setBackend 换后端后，**握手成功**那一刻才清旧后端的会话缓存与焦点（握手失败
+// 保留旧缓存如实报错）；③新后端重新走 session.new 建焦点（旧会话 id 不打到新后端）。
+test('connectionChanged mirrors transport; setBackend clears caches only after hello', async (t) => {
+  const { agent, ws, events } = setup(t);
+  // 初始化链驱动（同 driveInit 的纪律：并行组一次性上车，全部未应答的都应答）；
+  // session.list 回一条旧后端会话、session.new 建焦点。
+  const seen = new Set();
+  const drive = async (socket, listResult) => {
+    for (let i = 0; i < 40; i++) {
+      await flush();
+      const fresh = socket.sent.filter((r) => !seen.has(r.id));
+      if (!fresh.length) break;
+      for (const req of fresh) {
+        seen.add(req.id);
+        if (req.method === 'connection.hello') socket.receive({ id: req.id, result: { version: '2' } });
+        else if (req.method === 'session.list') socket.receive({ id: req.id, result: listResult });
+        else if (req.method === 'session.new') socket.receive({ id: req.id, result: { session_id: 's-old' } });
+        else socket.receive({ id: req.id, result: {} });
+      }
+    }
+  };
+  ws.onopen();
+  await drive(ws, [{ id: 's-old', title: '旧后端会话', updated_at: 'now', messages: 1, archived: false }]);
+  assert.ok(events.some((e) => e.type === 'connectionChanged' && e.connected === true), 'onopen 应上报已连接');
+  assert.equal(agent.sessions()[0]?.id, 's-old');
+
+  // 切后端：旧 ws 被替换（onclose 已摘除 → 不发断连事件），新连接先发 hello
+  agent.setBackend('10.0.0.8:7789', 'tok');
+  const ws2 = FakeSocket.latest;
+  assert.notEqual(ws2, ws);
+  assert.equal(ws2.url, 'ws://10.0.0.8:7789/rpc?token=tok');
+  // 握手前：旧缓存仍在（失败保留旧缓存如实报错）
+  assert.equal(agent.sessions()[0]?.id, 's-old');
+  ws2.onopen();
+  const hello = ws2.sent.find((r) => r.method === 'connection.hello');
+  seen.add(hello.id);
+  ws2.receive({ id: hello.id, result: { version: '2' } });
+  await flush(); await flush();
+  // 握手成功那一刻清账：旧后端的会话列表消失（resetOnHello）
+  assert.deepEqual(agent.sessions(), []);
+  // 新后端重新走 session.new 建焦点（不拿旧 id 去 resume）
+  await drive(ws2, []);
+  assert.ok(ws2.sent.some((r) => r.method === 'session.new'), '新后端应重新 session.new');
+  // 断开 → connected=false（脉冲点灰）
+  ws2.onclose?.();
+  assert.ok(events.some((e) => e.type === 'connectionChanged' && e.connected === false));
+});

@@ -46,6 +46,28 @@ interface PendingCall {
 const WS_READY_STATE_OPEN = 1;
 const PROTOCOL_VERSION = "2";
 
+/** 由地址形态构造 WS URL（自适应）：
+ *  - `https://` → `wss://`（远端 HTTPS 反代——WS 必须同协议升级，明文 ws 会被拒）
+ *  - `http://`  → `ws://`
+ *  - `wss://` / `ws://` 原样
+ *  - 裸 `host:port` → `ws://`（局域网/本机直连，现状）
+ *  路径统一 /rpc（地址自带路径则追加），token 挂查询串（与后端 checkRemoteToken
+ *  的读取位置一致）。导出是为了测试钉住每条形态。 */
+export function wsURL(addr: string, token: string | null): string {
+  const trimmed = addr.trim();
+  let base: string;
+  if (/^wss:\/\//i.test(trimmed)) base = trimmed;
+  else if (/^https:\/\//i.test(trimmed)) base = `wss://${trimmed.slice(8)}`;
+  else if (/^http:\/\//i.test(trimmed)) base = `ws://${trimmed.slice(7)}`;
+  else if (/^ws:\/\//i.test(trimmed)) base = trimmed;
+  else base = `ws://${trimmed}`;
+  const url = new URL(base);
+  // 地址已带 /rpc（比如直接粘了完整升级路径）不重复追加
+  url.pathname = `${url.pathname.replace(/\/rpc\/?$/i, "").replace(/\/+$/, "")}/rpc`;
+  if (token) url.searchParams.set("token", token);
+  return url.toString();
+}
+
 const RECONNECT_MS = 5000;
 const REQUEST_TIMEOUT_MS = 10_000;
 
@@ -115,6 +137,10 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
   /** 显式凭证覆盖（连接管理「连谁」切到远程后端时设置——该连接自己的 token，
    *  优先于 tokenFn）。null = 回落到 tokenFn（本机 = 宿主 token）。 */
   private tokenOverride: string | null = null;
+  /** 后端切换待清账标志：setBackend 换地址/凭证后置位，**握手成功**那一刻清缓存
+   *  与会话焦点（旧后端的会话 id 不能打到新后端上——session.resume/loadHistory
+   *  会在新后端报「会话不存在」）。握手失败保留旧缓存并如实报错（opError）。 */
+  private resetOnHello = false;
 
   constructor(addr = "127.0.0.1:7789", token?: string | (() => string | null)) {
     this.addr = addr;
@@ -129,6 +155,7 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
     const changed = this.addr !== addr || (this.tokenOverride ?? null) !== (token ?? null);
     this.addr = addr;
     this.tokenOverride = token ?? null;
+    if (changed) this.resetOnHello = true;
     if (changed && this.started) {
       if (this.reconnectTimer) {
         clearTimeout(this.reconnectTimer);
@@ -162,13 +189,15 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
   private connect() {
     if (this.ws && (this.ws.readyState === WS_READY_STATE_OPEN || this.ws.readyState === 0)) return;
     const token = this.tokenOverride ?? this.tokenFn?.() ?? null;
-    const url = `ws://${this.addr}/rpc${token ? `?token=${encodeURIComponent(token)}` : ""}`;
+    const url = wsURL(this.addr, token);
     console.log("[ws] connect", url); // 连接轨迹（排查切换/重连问题的第一现场）
     const ws = new WebSocket(url);
     this.ws = ws;
 
     ws.onopen = () => {
-      // 连接活了：心跳失败计数清零并起跳（页面隐藏时 startHeartbeat 会按住不发）
+      // 连接活了：连接态诚实上报（顶栏脉冲点/连接管理的数据源），心跳失败
+      // 计数清零并起跳（页面隐藏时 startHeartbeat 会按住不发）
+      this.emit({ type: "connectionChanged", connected: true });
       this.heartbeatFailures = 0;
       this.startHeartbeat();
       // 握手失败则不继续调用；旧连接的初始化链不得串入重连后的连接。
@@ -177,6 +206,15 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
           const serverVersion = (result as { version?: string } | null)?.version;
           if (serverVersion !== PROTOCOL_VERSION) {
             throw new Error(`协议版本不兼容（客户端 ${PROTOCOL_VERSION}，服务端 ${serverVersion ?? "未知"}）`);
+          }
+          // 握手成功才算「真的连上了新后端」：清旧后端的缓存与焦点（resetOnHello
+          // 由 setBackend 置位）。握手失败走 catch——旧缓存保留、报错如实。
+          if (this.resetOnHello && this.ws === ws) {
+            this.resetOnHello = false;
+            this.sessionsCache = [];
+            this.projectsCache = [];
+            this.booted = false;
+            this.currentSessionId = "";
           }
           const refresh = async (method: string, apply: (r: unknown) => void, params?: unknown) => {
             if (this.ws !== ws) return;
@@ -243,7 +281,8 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
 
     ws.onclose = () => {
       this.ws = null;
-      // 连接没了：心跳立即停（下次 onopen 重新起跳），失败计数清零
+      // 连接没了：连接态诚实上报、心跳立即停（下次 onopen 重新起跳），失败计数清零
+      this.emit({ type: "connectionChanged", connected: false });
       this.stopHeartbeatTimer();
       this.heartbeatFailures = 0;
       // 断连：所有挂起请求立刻失败（不等 10s 超时——后端已死，等是骗人）

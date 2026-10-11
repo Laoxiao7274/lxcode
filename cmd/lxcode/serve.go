@@ -109,7 +109,10 @@ func runServe(ctx context.Context, path, addr, sessionsDir string) error {
 	remotePath := resolveRemotePath(path)
 	srv.AttachRemoteAccess(remotePath)
 	if ra := config.LoadRemoteAccess(remotePath); ra.Enabled {
-		log.Printf("远程访问: 已启用（token 已配置，所有 /rpc 连接需凭证）")
+		// 监听地址按开关热切换（internal/server/listener.go）：Enabled = 绑
+		// 0.0.0.0:<port>，关闭 = 回 --addr（默认回环）。翻转由后端巡检自动做，
+		// 不需要重启。
+		log.Printf("远程访问: 已启用（所有 /rpc 与 /attachments 连接需凭证；后端监听 0.0.0.0，关闭后回到 %s）", addr)
 	}
 	// 后台预热：首次拉取要几秒（实测 5 MB / ~5s），预热过设置面板一开就是热的。
 	// 失败只记日志——真正的错误会在用户打开设置时如实回报。

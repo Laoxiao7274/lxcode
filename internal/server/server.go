@@ -341,30 +341,16 @@ func (s *Server) routes() http.Handler {
 		_, _ = w.Write([]byte("ok"))
 	})
 	// 图片附件只读端点（GET /attachments/<sessionID>/<file>）：前端显示缩略图用。
-	// 与 /health 同一个 mux、同一个端口（7789，只绑 127.0.0.1）。
-	mux.HandleFunc("/attachments/", s.handleAttachments)
+	// 与 /health 同一个 mux、同一个端口。**套远程访问的 token 门**（与 /rpc 同一份
+	// checkRemoteToken）：监听切到 0.0.0.0 后这条 URL 无凭证也 reachable——不套门
+	// 等于远程开着时会话附件对外裸奔（remote_test.go 有「无 token 拒绝」的钉子）。
+	mux.Handle("/attachments/", s.attachmentsGate(s.handleAttachments))
 	// 远程访问管理端点（loopback-only，见 remote.go）
 	mux.HandleFunc("/remote-access", s.handleRemoteAccess)
 	return mux
 }
 
-func (s *Server) Run(ctx context.Context, addr string) error {
-	s.setBaseCtx(ctx)
-	srv := &http.Server{Addr: addr, Handler: s.routes()}
-	go func() {
-		<-ctx.Done()
-		s.closeAllClients()
-		// MCP stdio 服务器是**子进程**：不显式关就会留下孤儿进程
-		//（进程退出不会自动带走它们——Windows 上尤其如此）。
-		s.CloseMCP()
-		_ = srv.Shutdown(context.Background())
-	}()
-	log.Printf("后端 WS 服务监听 %s%s", addr, protocol.Path)
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		return err
-	}
-	return nil
-}
+// Run 在 listener.go（监听生命周期 + remote.json 开关热切换）。
 
 func (s *Server) closeAllClients() {
 	s.mu.Lock()

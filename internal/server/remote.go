@@ -9,6 +9,7 @@ package server
 
 import (
 	"encoding/json"
+	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -28,13 +29,7 @@ func (s *Server) AttachRemoteAccess(path string) {
 // remote.json 每次升级现读（连接不频繁，文件很小）——开关与轮换即时生效，
 // 不需要热加载机制。
 func (s *Server) checkRemoteToken(r *http.Request) error {
-	s.remoteMu.Lock()
-	path := s.remotePath
-	s.remoteMu.Unlock()
-	if path == "" {
-		return nil // 未装配 = 旧版行为
-	}
-	ra := config.LoadRemoteAccess(path)
+	ra := s.remoteConfig()
 	if !ra.Enabled {
 		return nil
 	}
@@ -82,6 +77,39 @@ func isLoopback(r *http.Request) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// isLoopbackAddr 是 isLoopback 的 net.Addr 版本（closeRemoteClients 用）。
+func isLoopbackAddr(a net.Addr) bool {
+	if a == nil {
+		return false
+	}
+	host, _, err := net.SplitHostPort(a.String())
+	if err != nil {
+		host = a.String()
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// closeRemoteClients 断开所有非回环客户端：关闭远程访问时调用——远端已建立的
+// 连接若不处理，「关远程」在传输层就是假的（token 门只在升级时查一次，老连接
+// 可以一直用下去）。本机（回环）连接不受影响。
+func (s *Server) closeRemoteClients() {
+	s.mu.Lock()
+	targets := make([]*wsClient, 0, len(s.clients))
+	for c := range s.clients {
+		if !isLoopbackAddr(c.conn.RemoteAddr()) {
+			targets = append(targets, c)
+		}
+	}
+	s.mu.Unlock()
+	for _, c := range targets {
+		_ = c.conn.Close()
+	}
+	if len(targets) > 0 {
+		log.Printf("远程访问已关闭: 断开 %d 个非本机连接", len(targets))
+	}
 }
 
 // handleRemoteAccess 是壳的本地管理端点（loopback-only）：

@@ -149,6 +149,10 @@ class MockAppState {
     /** 真实后端地址（连接页可改；默认本机 7789，测试时经 adb reverse 映射）。 */
     var realAddr by mutableStateOf("127.0.0.1:7789")
 
+    /** 真实后端访问令牌（后端 remote.json Enabled 时所有 /rpc 连接必须携带——
+     *  与地址同源的一对凭证；空 = 后端未开远程访问）。 */
+    var realToken by mutableStateOf("")
+
     /** 真实后端状态机（net/ 包；开关打开时驱动连接与事件归约）。 */
     val real = com.moyunteng.lxcode.remote.net.RealBackend()
 

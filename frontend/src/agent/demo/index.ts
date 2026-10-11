@@ -110,6 +110,7 @@ export class DemoAgent implements AgentSource, JobAdminSource {
   subscribe(listener: Listener): () => void {
     this.listeners.add(listener);
     this.emit({ type: "ready", server: "lxcode", version: "2", busy: this.busySessions.has(this.currentSession) });
+    this.emit({ type: "connectionChanged", connected: true }); // 本地模拟：恒已连接
     this.emit({ type: "sessionFocused", id: this.currentSession });
     return () => this.listeners.delete(listener);
   }

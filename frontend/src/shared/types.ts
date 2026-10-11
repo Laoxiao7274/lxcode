@@ -205,6 +205,9 @@ export type AgentEvent =
   | { type: "dispatchEnd"; sessionId: string; dispatchId: string; childSessionId?: string; result: string; isError: boolean; usageTokens?: number }
   /** 请求失败不代表生成失败：不得清空会话、定格正文或解除确认卡。 */
   | { type: "operationError"; message: string }
+  /** 传输层连接态翻转（WSAgent 真实 WS 的 open/close——顶栏脉冲点与连接管理
+   *  的「已连接」指示的数据源）。DemoAgent 是本地模拟，恒已连接，订阅即发 true。 */
+  | { type: "connectionChanged"; connected: boolean }
   /** busy 事件。dispatchId 非空 = 子会话的忙闲翻转（带归属）：主会话侧过滤
    *  （不翻主会话的「生成中」/不触发发送缓冲区边界），双投进子会话自己的
    *  state——子会话页的「生成中」行与停止钮靠它出现。 */

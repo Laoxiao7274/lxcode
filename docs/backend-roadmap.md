@@ -171,7 +171,8 @@ catalog.changed {kind}
 
 ## M5 — 远程访问与更新
 
-- **远程访问**：`--remote` 或配置开关 → 监听 0.0.0.0 + hello 携带 token 校验（Authorization: Bearer）；token 生成/重置接口（重置 = 旧失效）；与前端连接管理的远程访问面板对接（地址上报经 hello）
+- **远程访问**（已实现，2026-10-11）：config/remote.json `enabled` → 后端监听 **0.0.0.0:\<port\>**（关闭回 127.0.0.1，**热切换**——internal/server/listener.go 巡检 remote.json，翻转先关旧 listener 再重绑，既有连接不断；关远程额外断开非回环客户端）+ 所有 /rpc 与 /attachments 升级/请求必须携带 token（query token 或 Authorization: Bearer，含回环）；token 生成/轮换接口（loopback-only 的 /remote-access，轮换 = 旧失效）；与前端连接管理的远程访问面板对接（地址上报经壳桥）；前端 ws/wss 按地址形态自适应（agent/ws/index.ts wsURL）
+  - 遗留：hello 不携带 token 升级后的会话级续期（连接生命周期内 token 轮换不断既有连接——与「关远程即断远端」是两个语义，后者已实现）
 - **更新器客户端**（壳侧）：manifest 检查（版本对比）→ 下载 update-\<version\>.zip → sha256 校验 → 两级替换（后端热替换：新 exe 就位+优雅重启；asar 冷替换：退出时换）→ 重启
 - 验收：壳从公网地址连后端（token 对）；更新全流程（检查→下载→校验→替换→重启）真机通过
 

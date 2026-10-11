@@ -97,14 +97,20 @@ class RealBackend {
 
     val connected: Boolean get() = phase == RealPhase.Connected
 
+    /** 当前连接凭证（remote.json Enabled 的后端要求 query token；空 = 未开远程）。 */
+    var token by mutableStateOf("")
+        private set
+
     // ===== 连接生命周期 =====
 
-    /** 连接（真实开关打开 / 重试按钮）。 */
-    fun connect(addr: String = this.addr) {
+    /** 连接（真实开关打开 / 重试按钮）。token 与 addr 同源传入——后端
+     *  remote.json Enabled 时缺它直接 401。 */
+    fun connect(addr: String = this.addr, token: String = this.token) {
         this.addr = addr
+        this.token = token
         phase = RealPhase.Connecting
         phaseMessage = null
-        client.connect(addr, token = "")
+        client.connect(addr, token = token)
     }
 
     /** 断开（真实开关关闭）。 */
@@ -115,9 +121,9 @@ class RealBackend {
     }
 
     /** 重试（断线 UI 的按钮；addr 传当前输入框地址——改了地址点重试应连新地址）。 */
-    fun retry(addr: String = this.addr) {
+    fun retry(addr: String = this.addr, token: String = this.token) {
         Log.i(TAG, "手动重试连接 $addr")
-        connect(addr)
+        connect(addr, token)
     }
 
     private fun onState(connected: Boolean, message: String?) {

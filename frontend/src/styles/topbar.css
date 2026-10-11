@@ -189,6 +189,13 @@
   border-radius: 4px;
   padding: 1px 5px;
 }
+/* 「未连接」标记：当前活动但传输层没连上（远程不可达/后端死了）——
+   诚实显示 active 意图与真实连接态的差异。 */
+.conn-tag.off {
+  color: var(--fg-faint);
+  background: transparent;
+  border: 1px solid var(--border-strong);
+}
 .conn-actions {
   display: flex;
   align-items: center;

@@ -143,6 +143,20 @@ var extMime = func() map[string]string {
 	return m
 }()
 
+// attachmentsGate 给附件端点套远程访问的 token 门（与 /rpc 同一份
+// checkRemoteToken——query token 或 Authorization: Bearer，同源逻辑）。
+// 监听按 remote.json 切到 0.0.0.0 后（listener.go），附件 URL 与 /rpc 一样
+// 是局域网可达面：门必须同宽，否则开了远程附件对外裸奔。
+func (s *Server) attachmentsGate(next http.HandlerFunc) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := s.checkRemoteToken(r); err != nil {
+			http.Error(w, err.Error(), http.StatusUnauthorized)
+			return
+		}
+		next(w, r)
+	})
+}
+
 // handleAttachments 是 GET /attachments/<sessionID>/<file>：只读地回一张附件
 // 原始字节（前端显示缩略图用，图片批次 B 接 UI；本批先实现并测试）。
 //

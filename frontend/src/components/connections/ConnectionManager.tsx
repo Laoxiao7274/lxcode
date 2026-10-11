@@ -28,11 +28,15 @@ function RemoteDelBtn({ onConfirm }: { onConfirm: () => void }) {
   );
 }
 
-export function ConnectionManager({ onClose }: { onClose: () => void }) {
+export function ConnectionManager({ onClose, connected }: { onClose: () => void; connected?: boolean }) {
   useEscape(true, onClose);
   const { remotes, addRemote, updateRemote, removeRemote, active, setActive } = useConnections();
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<RemoteConn | null>(null);
+  // 圆点语义 = 「这条连接是当前活动**且传输层真的连着」：connected 是 WSAgent 的
+  // 真实 WS 连接态（connectionChanged 事件），不是「active 记了谁」——active 是
+  // 持久化意图，可能还没连上/已断线，两者分得开才是诚实显示。
+  const dot = (id: string) => `conn-dot${active === id && connected ? " on" : ""}`;
 
   return (
     <div
@@ -71,7 +75,8 @@ export function ConnectionManager({ onClose }: { onClose: () => void }) {
                 <div className="conn-ra-row">
                   <div className="conn-ra-text">
                     <div className="conn-name">
-                      <span className="conn-dot on" />本机{active === "local" && <span className="conn-tag">当前</span>}
+                      <span className={dot("local")} />本机{active === "local" && <span className="conn-tag">当前</span>}
+                      {active === "local" && !connected && <span className="conn-tag off">未连接</span>}
                     </div>
                     <div className="conn-sub mono">{LOCAL_ADDR}</div>
                   </div>
@@ -86,9 +91,10 @@ export function ConnectionManager({ onClose }: { onClose: () => void }) {
                   <div className="conn-ra-row">
                     <div className="conn-ra-text">
                       <div className="conn-name">
-                        <span className={"conn-dot" + (active === c.id ? " on" : "")} />
+                        <span className={dot(c.id)} />
                         {c.name}
                         {active === c.id && <span className="conn-tag">当前</span>}
+                        {active === c.id && !connected && <span className="conn-tag off">未连接</span>}
                       </div>
                       <div className="conn-sub mono">{c.addr} · {maskToken(c.token)}</div>
                     </div>

@@ -189,6 +189,18 @@ export function ConnectionsProvider({ children, sakuraBridge, remoteControlBridg
     } catch { /* 存储满/禁用：仅丢持久化，不影响会话 */ }
   }, [remotes, active]);
 
+  // 启动回连：重启后按持久化的 active **真的把传输层切过去**——否则 UI 显示远程
+  // 「当前」，传输层却还在连 127.0.0.1（连接状态骗人的另一半根源）。挂载后跑一次
+  //（bootRef 防重；之后的切换走 setActive）。source 缺 setBackend（演示）= 无操作。
+  const bootConnectRef = useRef(false);
+  useEffect(() => {
+    if (bootConnectRef.current) return;
+    bootConnectRef.current = true;
+    if (active === "local") return;
+    const conn = remotes.find((r) => r.id === active);
+    if (conn) sourceRef.current?.setBackend?.(conn.addr, conn.token || null);
+  }, [active, remotes]);
+
   /** 切换连接 = UI 状态 + **真传输层切换**（WSAgent.setBackend 断开重连）。
    *  本机回落走宿主 token；远程连接用该连接自己的 token（后端校验）。 */
   const setActive = useCallback((id: ActiveConn) => {

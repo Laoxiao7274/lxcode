@@ -269,7 +269,7 @@ private fun RealBackendSection(state: MockAppState) {
                 checked = state.realOn,
                 onCheckedChange = { on ->
                     state.realOn = on
-                    if (on) real.connect(state.realAddr) else real.disconnect()
+                    if (on) real.connect(state.realAddr, state.realToken) else real.disconnect()
                 },
             )
         }
@@ -312,12 +312,19 @@ private fun RealBackendSection(state: MockAppState) {
                 onValueChange = { state.realAddr = it },
                 placeholder = "127.0.0.1:7789",
             )
+            // 访问令牌：后端 remote.json Enabled 时所有 /rpc 连接必须携带（query
+            // token）——与地址同源的一对凭证；留空 = 连未开远程的后端。
+            LxTextField(
+                value = state.realToken,
+                onValueChange = { state.realToken = it },
+                placeholder = "访问令牌（后端未开远程访问时留空）",
+            )
         }
 
         // 断线错误条（真实模式专用；mock 断线错误条在页首，两者互斥不并存）
         if (state.realOn && real.phase == com.moyunteng.lxcode.remote.net.RealPhase.Failed) {
             UnreachableBar(
-                onRetry = { real.retry(state.realAddr) },
+                onRetry = { real.retry(state.realAddr, state.realToken) },
                 message = real.phaseMessage ?: "后端不可达：无法连接 ws://${state.realAddr}/rpc",
             )
         }

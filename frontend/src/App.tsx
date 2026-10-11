@@ -104,6 +104,12 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
     onAutoSend: (sessionId, text, atts) => autoSendBridgeRef.current(sessionId, text, atts),
     onSendFailed: (sessionId, atts) => onSendFailedBridgeRef.current(sessionId, atts),
   });
+  // 传输层连接态（WSAgent 的 connectionChanged 事件）：顶栏脉冲点的真实数据源。
+  // 旁路订阅（useAgent 的主订阅不归约它——那是会话域状态，这是连接域状态）。
+  const [wsConnected, setWsConnected] = useState(false);
+  useEffect(() => source.subscribe((ev) => {
+    if (ev.type === "connectionChanged") setWsConnected(ev.connected);
+  }), [source]);
   const { settings, providers } = useSettings();
   // agents：子会话标签的标题要按 agentId 回落显示名（回放块的 agentName 是空串）
   const { agents, activeAgentId } = useAgents();
@@ -728,7 +734,7 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
       <Topbar
         taskTitle={viewTitle}
         source={source}
-        connected={false}
+        connected={wsConnected}
         merge={mergeEntry}
       />
       <TabBar
