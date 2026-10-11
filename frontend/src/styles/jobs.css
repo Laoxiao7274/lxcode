@@ -273,11 +273,40 @@
 .job-card[data-state="err"] {
   border-color: rgba(224, 46, 42, 0.32);
 }
+/* 卡头可点：展开/收起输出（时间线形态默认收起——一行摘要） */
 .job-head {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 9px 13px;
+  cursor: pointer;
+  user-select: none;
+}
+.job-head:focus-visible {
+  outline: 1px solid var(--border-strong, var(--border));
+  outline-offset: -1px;
+}
+.job-caret {
+  flex: none;
+  font-size: 9px;
+  color: var(--fg-faint);
+  line-height: 1;
+}
+.job-head-kill {
+  display: inline-flex;
+  flex: none;
+}
+/* 收起态的一行实时 tail（运行中才有）：单行截断，不撑高卡片 */
+.job-tail {
+  border-top: 1px solid var(--border-soft);
+  background: var(--bg-side);
+  padding: 6px 13px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 /* 状态点：运行中呼吸（reduced-motion 下由 responsive.css 关掉） */
 .job-dot {

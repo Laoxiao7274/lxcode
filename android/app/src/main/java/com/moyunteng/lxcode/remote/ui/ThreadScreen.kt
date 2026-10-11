@@ -28,6 +28,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.KeyboardArrowRight
@@ -248,9 +249,44 @@ private fun ThreadBlockView(block: ThreadBlock, busy: Boolean) {
         is ThreadBlock.Assistant -> AssistantBlock(block, busy)
         is ThreadBlock.Tool -> ToolCard(block)
         is ThreadBlock.Dispatch -> DispatchCard(block)
+        is ThreadBlock.Notice -> NoticeBar(block)
         is ThreadBlock.Compaction -> CompactionCard(block)
         is ThreadBlock.Todo -> TodoCard(block.items)
         is ThreadBlock.Error -> ErrorBlock(block.message)
+    }
+}
+
+/**
+ * 系统提示条（后台任务通告 / 重复调用提醒）：一行浅底提示，不是用户气泡。
+ *
+ * 对齐桌面端 NoticeBar.tsx（.job-notice：图标 + 标签 + 正文）——通告是 user 角色
+ * 消息但不是用户说的话，按前缀识别后在这里以提示条形态出现。
+ */
+@Composable
+private fun NoticeBar(block: ThreadBlock.Notice) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(Lx.radius.RowShape)
+            .background(Lx.colors.BorderSoft)
+            .padding(horizontal = Lx.space.s10, vertical = Lx.space.s8),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Lx.space.s8),
+    ) {
+        SmallIcon(Icons.Filled.Info, Lx.colors.FgMuted, size = 14)
+        Text(
+            text = block.label,
+            style = Lx.type.Pill.copy(fontSize = Lx.type.Size10_5, fontWeight = FontWeight.SemiBold),
+            color = Lx.colors.FgMuted,
+        )
+        Text(
+            text = block.text,
+            style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size11_5),
+            color = Lx.colors.FgMuted,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
     }
 }
 
@@ -463,7 +499,29 @@ private fun ToolCard(block: ThreadBlock.Tool) {
 
         val output = block.output
         when {
-            output != null && block.isError -> Box(
+            output != null && block.isError -> FoldableOutput(output, danger = true)
+            output != null -> FoldableOutput(output, danger = false)
+            else -> SmallEmpty("等待工具输出…")
+        }
+    }
+}
+
+/**
+ * 工具输出折叠兜底：超过 8 行或 600 字符默认只显首 2 行 + 「展开」开关。
+ *
+ * 4_000 字符的截断上限（RealBackend.toolResult.take）意味着最坏情形仍是一大段
+ * 等宽文本铺满屏幕——折叠是读侧兜底，写侧截断照旧。错误输出同样适用（首 2 行
+ * 已足够判断「失败了」，全文点开看）。
+ */
+@Composable
+private fun FoldableOutput(text: String, danger: Boolean) {
+    val lines = text.split("\n")
+    val foldable = lines.size > 8 || text.length > 600
+    var open by remember(text) { mutableStateOf(false) }
+    Column(verticalArrangement = Arrangement.spacedBy(Lx.space.s4)) {
+        val shown = if (foldable && !open) lines.take(2).joinToString("\n") + "\n…" else text
+        if (danger) {
+            Box(
                 Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(Lx.radius.r8))
@@ -471,14 +529,24 @@ private fun ToolCard(block: ThreadBlock.Tool) {
                     .padding(Lx.space.s8),
             ) {
                 Text(
-                    text = output,
+                    text = shown,
                     style = Lx.type.Mono12.copy(fontSize = Lx.type.Size11),
                     color = Lx.colors.Danger,
                 )
             }
-
-            output != null -> CodeBlock(output)
-            else -> SmallEmpty("等待工具输出…")
+        } else {
+            CodeBlock(shown)
+        }
+        if (foldable) {
+            Text(
+                text = if (open) "收起" else "展开",
+                style = Lx.type.Pill.copy(fontSize = Lx.type.Size10_5, fontWeight = FontWeight.SemiBold),
+                color = Lx.colors.FgMuted,
+                modifier = Modifier.clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                ) { open = !open },
+            )
         }
     }
 }

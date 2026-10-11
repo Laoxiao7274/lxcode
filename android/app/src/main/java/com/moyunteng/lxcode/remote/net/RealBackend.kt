@@ -368,6 +368,16 @@ class RealBackend {
                 if (sid != currentSessionId) return
                 val msg = p.optJSONObject("message") ?: return
                 val text = msg.optString("content")
+                // 通告前缀识别（对齐桌面端 shared/notices.ts 的前缀表）：user 角色 ≠
+                // 用户说的话——后台任务完成通告渲染成提示条，不进用户气泡。
+                // hidden 前缀（[系统通告] ）是写给模型的注记：不产生任何块。
+                if (text.startsWith(HIDDEN_NOTICE_PREFIX)) return
+                val notice = noticeKind(text)
+                if (notice != null) {
+                    blocks.add(ThreadBlock.Notice(label = notice.second, text = text.removePrefix(notice.first).trim()))
+                    streamingIdx = -1
+                    return
+                }
                 val last = blocks.lastOrNull()
                 if (last !is ThreadBlock.User || last.text != text) {
                     blocks.add(ThreadBlock.User(text))
@@ -392,8 +402,12 @@ class RealBackend {
             "chat.toolCall" -> {
                 if (sid != currentSessionId) return
                 streamingIdx = -1 // 工具轮开始：下一步 delta 开新 assistant 块
-                val id = p.optString("id")
                 val name = p.optString("name")
+                // 调度工具不建工具行（对齐桌面端 reduce.ts）：它的渲染形态就是派发卡
+                //（dispatchStart 已建卡）——两处都建 = 同一个调度渲染两遍，且
+                // toolResult 会把子会话结论全文塞进 output（4000 字符）。
+                if (name == "agent_dispatch") return
+                val id = p.optString("id")
                 val args = p.optString("arguments")
                 blocks.add(
                     ThreadBlock.Tool(
@@ -413,6 +427,9 @@ class RealBackend {
 
             "chat.toolResult" -> {
                 if (sid != currentSessionId) return
+                // 调度结果不进主时间线（对齐桌面端）：全文是子会话结论，由
+                // dispatchEnd 回填派发卡的 conclusion 行（卡上截一行显示）。
+                if (p.optString("name") == "agent_dispatch") return
                 val id = p.optString("id")
                 val i = blocks.indexOfFirst { it is ThreadBlock.Tool && it.id == id }
                 if (i >= 0) {
@@ -560,6 +577,7 @@ class RealBackend {
             ?.toSet() ?: emptySet()
         // tool 消息先到调用块后到结果的配对表（历史里调用在前、结果紧随）
         val toolCallIdx = mutableMapOf<String, Int>()
+        val dispatchCallIdx = mutableMapOf<String, Int>()
         val newBlocks = mutableListOf<ThreadBlock>()
         for (i in 0 until msgs.length()) {
             val m = msgs.getJSONObject(i)
@@ -577,7 +595,18 @@ class RealBackend {
                 continue
             }
             when (role) {
-                "user" -> newBlocks.add(ThreadBlock.User(m.optString("content")))
+                "user" -> {
+                    // 通告前缀识别（对齐桌面端 history.ts 的 notices 分支）：
+                    // hidden 注记不产生任何块；通告渲染成提示条，其余才是用户气泡。
+                    val content = m.optString("content")
+                    if (content.startsWith(HIDDEN_NOTICE_PREFIX)) continue
+                    val notice = noticeKind(content)
+                    if (notice != null) {
+                        newBlocks.add(ThreadBlock.Notice(label = notice.second, text = content.removePrefix(notice.first).trim()))
+                    } else {
+                        newBlocks.add(ThreadBlock.User(content))
+                    }
+                }
                 "assistant" -> {
                     val ftms = m.optLong("first_token_ms", 0L)
                     val dur = m.optLong("duration_ms", 0L)
@@ -602,6 +631,32 @@ class RealBackend {
                             val callId = c.optString("id")
                             val name = fn.optString("name")
                             val args = fn.optString("arguments")
+                            // 调度调用重建的是**派发卡**，不是工具行（对齐桌面端 history.ts
+                            // 的 DISPATCH_TOOL_NAME 分支）——回放建工具行的后果：每次刷新
+                            // 派发都退化成一张 4000 字 output 的全文工具卡，卡、Agent 名、
+                            // 子会话 id 全没了。先按"中断"定格，配对结果到了再回填。
+                            if (name == "agent_dispatch") {
+                                val parsed = try {
+                                    JSONObject(args)
+                                } catch (_: Exception) {
+                                    null
+                                }
+                                dispatchCallIdx[callId] = newBlocks.size
+                                newBlocks.add(
+                                    ThreadBlock.Dispatch(
+                                        agentName = parsed?.optString("agent").orEmpty().ifBlank { "子 Agent" },
+                                        task = parsed?.optString("task").orEmpty(),
+                                        // 先按"中断"定格：历史里没有配对结果 = 那次派发在
+                                        // 结束前就断了，不是"正在跑"（不许假装 running）。
+                                        // 结果到了（tool 分支）再回填成 done + 正文。
+                                        conclusion = "这次派发在结束前中断了——历史里没有结果记录（重启前它没跑完）。",
+                                        sessionId = parsed?.optString("session").orEmpty(),
+                                        done = true,
+                                        isError = true,
+                                    ),
+                                )
+                                continue
+                            }
                             toolCallIdx[callId] = newBlocks.size
                             newBlocks.add(
                                 ThreadBlock.Tool(
@@ -623,14 +678,29 @@ class RealBackend {
 
                 "tool" -> {
                     val callId = m.optString("tool_call_id")
-                    val idx = toolCallIdx[callId]
-                    if (idx != null && idx < newBlocks.size) {
-                        val t = newBlocks[idx] as ThreadBlock.Tool
-                        newBlocks[idx] = t.copy(
-                            output = m.optString("content").take(4_000),
+                    // ① 调度卡回填：结果正文剥掉「[子会话 id: …]」提示行（给模型看的
+                    //    续跑线索），子会话 id 从提示行取（权威值）；正文空 = 没有文本结论。
+                    val dIdx = dispatchCallIdx[callId]
+                    if (dIdx != null && dIdx < newBlocks.size) {
+                        val d = newBlocks[dIdx] as ThreadBlock.Dispatch
+                        val (body, childSid) = splitDispatchResult(m.optString("content"))
+                        newBlocks[dIdx] = d.copy(
+                            conclusion = body.ifBlank { "（子 Agent 没有产出文本结论）" },
+                            sessionId = childSid.ifBlank { d.sessionId },
+                            done = true,
                             isError = false,
-                            durationMs = m.optLong("duration_ms", t.durationMs),
                         )
+                    } else {
+                        // ② 普通工具行：调用在前、结果紧随，按 id 配对回填
+                        val idx = toolCallIdx[callId]
+                        if (idx != null && idx < newBlocks.size) {
+                            val t = newBlocks[idx] as ThreadBlock.Tool
+                            newBlocks[idx] = t.copy(
+                                output = m.optString("content").take(4_000),
+                                isError = false,
+                                durationMs = m.optLong("duration_ms", t.durationMs),
+                            )
+                        }
                     }
                 }
             }
@@ -796,6 +866,37 @@ class RealBackend {
 
     companion object {
         private const val TAG = "LxReal"
+
+        /**
+         * 通告前缀表（对齐桌面端 shared/notices.ts 的 NOTICE_KINDS，逐字含尾空格）。
+         *
+         * 这类消息是**真实 user 角色消息**（模型必须当用户回合回应），但不是用户说的
+         * 话——按文本前缀识别，渲染成提示条。命中取第一个前缀（顺序敏感：更长的排前）。
+         */
+        private val NOTICE_KINDS = listOf(
+            "[后台任务通告] " to "后台任务通告",
+            "[重复调用提醒] " to "重复调用提醒",
+        )
+
+        /** hidden 注记前缀（写给模型的系统注记，界面上不产生任何块）。 */
+        private const val HIDDEN_NOTICE_PREFIX = "[系统通告] "
+
+        /** 命中的通告种类（label, 剩余正文）；没命中 = null（普通用户消息）。 */
+        private fun noticeKind(text: String): Pair<String, String>? =
+            NOTICE_KINDS.firstOrNull { text.startsWith(it.first) }
+
+        /** 子会话 id 提示行（后端 internal/agent/tools.go 在 dispatch 结果末尾追加）：
+         *  `\n\n[子会话 id: <id> —— 只在这次没做完时填进 session 参数续跑]`。
+         *  给模型看的续跑线索，回放时剥掉；id 从这里取是**权威**值（续跑时
+         *  arguments.session 可能为空）。对齐桌面端 history.ts 的 SUB_SESSION_HINT。 */
+        private val SUB_SESSION_HINT = Regex("\\[子会话 id:\\s*([^\\]\\s]+)[^\\]]*\\]")
+
+        /** 拆分 dispatch 结果：结论正文 + 子会话 id（没有提示行时 id 为空串）。 */
+        fun splitDispatchResult(raw: String): Pair<String, String> {
+            val m = SUB_SESSION_HINT.find(raw) ?: return raw.trimEnd() to ""
+            val body = (raw.substring(0, m.range.first) + raw.substring(m.range.last + 1)).trimEnd()
+            return body to m.groupValues[1]
+        }
 
         /** 工具显示名（对齐桌面端工具卡标题；未知工具原样显示 id）。 */
         private val TOOL_TITLES = mapOf(

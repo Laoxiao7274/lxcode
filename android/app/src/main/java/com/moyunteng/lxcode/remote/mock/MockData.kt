@@ -159,6 +159,15 @@ sealed interface ThreadBlock {
 
     data class Todo(val items: List<TodoItem>) : ThreadBlock
 
+    /**
+     * 系统提示条（后台任务通告 / 重复调用提醒）。
+     *
+     * 这类消息在历史与实时流里都是**真实 user 角色消息**（模型必须把它当用户回合
+     * 才会回应——后端硬约束），但它不是用户说的话：按**文本前缀**识别（前缀表在
+     * RealBackend，对齐桌面端 shared/notices.ts），渲染成一行提示条而不是用户气泡。
+     */
+    data class Notice(val label: String, val text: String) : ThreadBlock
+
     data class Error(val message: String) : ThreadBlock
 }
 
