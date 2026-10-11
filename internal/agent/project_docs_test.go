@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/moyunteng/lxcode/internal/config"
 	"github.com/moyunteng/lxcode/internal/sessiondata"
 )
 
@@ -93,7 +94,7 @@ func TestProjectDocsTruncated(t *testing.T) {
 		t.Fatal("超长守则应截断并注明")
 	}
 	// 注入正文不得超过上限（留出注明行的余量）
-	if got := len(prompt); got > len(systemPromptHeader)+len(systemPromptFooter)+projectDocsCap+4096 {
+	if got := len(prompt); got > len(systemPromptHeader)+len(systemPromptFooter(config.TodoPromptStrict))+projectDocsCap+4096 {
 		t.Fatalf("截断后提示词仍过大: %d 字节", got)
 	}
 }

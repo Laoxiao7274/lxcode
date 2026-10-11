@@ -6,7 +6,7 @@ import { gsap } from "gsap";
 import { useSettings, EFFORTS, APPROVALS } from "../../shared/settings";
 import { approvalPick } from "../../shared/approval";
 import { Button, Segmented } from "../form";
-import type { AgentSource, SessionMeta } from "../../shared/types";
+import type { AgentSource, SessionMeta, TodoPromptMode } from "../../shared/types";
 import { motionAllowed, staggerIn, enterEase } from "../../shared/motion";
 import { useEscape } from "../../shared/popover";
 import { ApprovalConfirmDialog } from "../perm-picker/ApprovalConfirmDialog";
@@ -32,11 +32,32 @@ const SECTIONS: { id: SectionId; label: string; icon: ReactElement }[] = [
   { id: "archived", label: "归档任务", icon: <BoxIcon /> },
 ];
 
+/** 任务清单模板三档（后端 behavior.json 的 todoPrompt——内置模板，不靠模型
+ *  自觉判断任务简不简单）。hint 是各档的一句话含义（选中后显示在分段下方）。 */
+const TODO_PROMPT_MODES: { value: TodoPromptMode; label: string; hint: string }[] = [
+  { value: "strict", label: "严格", hint: "需要工具的任务必须先建 3~7 条清单，两三步也要建，边做边更新" },
+  { value: "normal", label: "常规", hint: "按任务复杂度建清单，一两步的小任务直接做完汇报" },
+  { value: "off", label: "关闭", hint: "不注入清单指令，模型自行决定是否使用 todo" },
+];
+
 export function SettingsPanel({ open, onClose, source }: { open: boolean; onClose: () => void; source: AgentSource }) {
   const { settings, set, applyApproval, providers, error } = useSettings();
   const [section, setSection] = useState<SectionId>("general");
   const [connectOpen, setConnectOpen] = useState(false);
   const [modelEdit, setModelEdit] = useState<{ providerId: string; modelId: string } | null>(null);
+  // 任务清单模板（todo-first 档位）：live 模式后端是唯一事实源（get/changed
+  // 驱动 + set 写回）；demo（source 没给 todoPromptAdmin）用本地状态自管。
+  const todoAdmin = source.todoPromptAdmin;
+  const [todoMode, setTodoMode] = useState<TodoPromptMode>(() => todoAdmin?.mode() ?? "strict");
+  useEffect(() => {
+    if (!todoAdmin) return;
+    setTodoMode(todoAdmin.mode());
+    return todoAdmin.onChange(() => setTodoMode(todoAdmin.mode()));
+  }, [todoAdmin]);
+  const setTodoPrompt = (mode: TodoPromptMode) => {
+    if (todoAdmin) void todoAdmin.set(mode);
+    else setTodoMode(mode);
+  };
   // 「高危操作」切完全访问的确认弹窗（与输入区 PermPicker 同一条规则、同一个
   // 弹窗组件——两个入口任何一个都不能一下就把高危确认门关掉）
   const [confirmAutoOpen, setConfirmAutoOpen] = useState(false);
@@ -131,6 +152,17 @@ export function SettingsPanel({ open, onClose, source }: { open: boolean; onClos
                     onChange={(mode) => approvalPick(settings.approval, mode, applyApproval, () => setConfirmAutoOpen(true))}
                     ariaLabel="高危操作"
                   />
+                </SegRow>
+                <SegRow label="任务清单">
+                  {/* 动手前建清单的内置模板（后端级行为开关，主/子 Agent 同源）：
+                      改档即写盘并广播，**下一轮**对话生效（提示词每轮现组装）。 */}
+                  <Segmented
+                    options={TODO_PROMPT_MODES.map((m) => ({ value: m.value, label: m.label, hint: m.hint }))}
+                    value={todoMode}
+                    onChange={setTodoPrompt}
+                    ariaLabel="任务清单"
+                  />
+                  <div className="set-row-hint">{TODO_PROMPT_MODES.find((m) => m.value === todoMode)?.hint}</div>
                 </SegRow>
                 <ToggleRow
                   label="命令输出完整展示"

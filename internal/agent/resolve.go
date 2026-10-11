@@ -40,11 +40,13 @@ func llmToolsFiltered(toolReg *tools.Registry, allow []string) []llm.Tool {
 type SendOpt func(*sendConfig)
 
 type sendConfig struct {
-	effort   string         // 推理强度（空 = 模型默认）
-	approval string         // 权限模式（空 = confirm）
-	agentID  string         // Agent 名单 id（空 = 主语境——无 resolver 时旧语义）
-	notice   bool           // 这条 user 消息是**注入的提示条**（不是用户说的话——会话统计的轮数按它排除）
-	images   []llm.ImageRef // 这条 user 消息附带的图片引用（视觉请求；恒为文件引用）
+	effort   string // 推理强度（空 = 模型默认）
+	approval string // 权限模式（空 = confirm）
+	agentID  string // Agent 名单 id（空 = 主语境——无 resolver 时旧语义）
+	// todoPrompt 是 todo-first 提示词档位（空 = 不覆盖会话现值）。
+	todoPrompt string
+	notice     bool           // 这条 user 消息是**注入的提示条**（不是用户说的话——会话统计的轮数按它排除）
+	images     []llm.ImageRef // 这条 user 消息附带的图片引用（视觉请求；恒为文件引用）
 }
 
 // WithEffort 指定本轮推理强度（模型须声明 reasoning 能力才真正生效）。
@@ -61,6 +63,10 @@ func WithNotice() SendOpt { return func(c *sendConfig) { c.notice = true } }
 // WithAgent 指定本轮的执行 Agent（名单 id；空 = 旧语境——全局默认
 // 提示词与 default 角色模型，兼容不接名单的调用方/单测）。
 func WithAgent(id string) SendOpt { return func(c *sendConfig) { c.agentID = id } }
+
+// WithTodoPrompt 指定本会话的 todo-first 提示词档位（config.TodoPrompt*；
+// 空 = 不覆盖）。会话级：Send 时存进会话，本轮与后续轮的提示词组装都用它。
+func WithTodoPrompt(mode string) SendOpt { return func(c *sendConfig) { c.todoPrompt = mode } }
 
 // WithImages 给这条 user 消息附带图片引用（视觉请求）：refs 恒为文件引用
 // （llm.ImageRef），base64 绝不经过这里。Send 时校验张数上限（≤4），超限

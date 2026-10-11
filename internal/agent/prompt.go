@@ -2,8 +2,10 @@ package agent
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
+	"github.com/moyunteng/lxcode/internal/config"
 	"github.com/moyunteng/lxcode/internal/tools"
 )
 
@@ -62,19 +64,63 @@ func worktreeLine(wt WorktreeInfo, isChild bool) string {
 		"已合并进集成分支的内容要在集成分支上 revert，不要 reset 会话分支来期望它消失。\n", wt.Branch)
 }
 
-const systemPromptFooter = `
-工作守则：
-1. 需要文件内容、代码结构或命令输出时，主动调用工具获取，不要凭记忆猜测或编造。
-2. 说了就做：每个回复要么包含推进任务的工具调用，要么给出最终结果——只描述"接下来打算做什么"而不动手，是不可接受的。
-3. 把活干完：交付物是真实工具输出支撑的结果，不是计划书。工具失败时如实报告并换方法，绝不编造看起来合理的结果（假数据、假文件内容、假命令输出）。
-4. 相互独立的读取/搜索调用，在同一个回复里一起发出（不要一次只调一个）。
-5. 动手前先建清单：凡是需要调用工具（写文件、改代码、跑命令）才能完成的任务，开始前先用 todo 工具列出步骤清单（3~7 条、动词开头、每条可独立验收）——只有两三步也要先建；纯对话回复（打招呼、答疑、闲聊）可豁免。执行中每完成一步立即更新状态（当前项 done、下一项 active，一次只标一个 active），任务有变化时同步修订清单。
-6. 修改代码：先 read_file 看到真实内容，再用 edit 精确替换（old_string 必须逐字符一致且唯一）；新建文件才用 write_file 全量写入。改完能验证就验证（跑测试/编译）。
-7. bash 的输出与退出码会回传给你：非零退出码不是系统故障，读输出判断原因再决定重试还是换方法；不要盲目重试同一命令。
-8. 工具结果被拒绝（用户拒绝）时，不要原样重试同一操作——换一种方法，或向用户说明为什么需要这个操作。
-9. 工具结果过长会被截断——如需完整内容，把输出写到文件再用 read_file 分段读。
-10. 用户提到"之前/上次/我们讨论过"时，先用 session_search 找回上下文，不要让用户复述。
-11. 回答用中文，简洁直接；完成操作后向用户报告结果。`
+// todoPromptRule 按档位返回守则第 5 条（todo-first 指令——用户在设置里选的
+// 内置模板，不靠模型自觉判断任务简不简单）。档位常量在 internal/config。
+//
+//   - strict（默认，现有文案原样）：需要工具的任务必须先建清单，两三步也要建；
+//   - normal：按复杂度用清单——判断标准写死在提示词里（多步工具调用才建），
+//     不让模型发挥；
+//   - off：返回空串——整条不出现（编号顺延，不是留一个空号），todo 工具本身
+//     仍可用，模型自然使用。
+func todoPromptRule(mode string) string {
+	switch mode {
+	case config.TodoPromptNormal:
+		return "按任务复杂度用清单：需要多步工具调用才能完成的任务（改多处代码、跑构建与测试、跨环节排查），开始前先用 todo 工具列出步骤清单（3~7 条、动词开头、每条可独立验收）；一两步就能完成的小任务直接做完汇报，不建清单。清单条数与任务复杂度相称，不为凑数拆分，也不为简单任务引入它不需要的工具、文件或流程。建了清单就边做边更新状态（当前项 done、下一项 active，一次只标一个 active），任务有变化时同步修订清单。"
+	case config.TodoPromptOff:
+		return ""
+	default: // strict（含空串——缺省档）
+		return "动手前先建清单：凡是需要调用工具（写文件、改代码、跑命令）才能完成的任务，开始前先用 todo 工具列出步骤清单（3~7 条、动词开头、每条可独立验收）——只有两三步也要先建；纯对话回复（打招呼、答疑、闲聊）可豁免。清单的条目数与任务复杂度相称，不为凑数拆分；一两步就能完成的小任务直接做完汇报即可，不建清单、不搞仪式化步骤，也不要为简单任务引入它不需要的工具、文件或流程。执行中每完成一步立即更新状态（当前项 done、下一项 active，一次只标一个 active），任务有变化时同步修订清单。"
+	}
+}
+
+// systemPromptRules 是守则的固定条目（不含第 5 条 todo 档位条目——它按模式
+// 插在原位，off 时整体缺席、后续条目顺延编号）。
+var systemPromptRules = []string{
+	"需要文件内容、代码结构或命令输出时，主动调用工具获取，不要凭记忆猜测或编造。",
+	"说了就做：每个回复要么包含推进任务的工具调用，要么给出最终结果——只描述\"接下来打算做什么\"而不动手，是不可接受的。",
+	"把活干完：交付物是真实工具输出支撑的结果，不是计划书。工具失败时如实报告并换方法，绝不编造看起来合理的结果（假数据、假文件内容、假命令输出）。",
+	"相互独立的读取/搜索调用，在同一个回复里一起发出（不要一次只调一个）。",
+	"", // 第 5 条占位：todoPromptRule(mode) 填入
+	"修改代码：先 read_file 看到真实内容，再用 edit 精确替换（old_string 必须逐字符一致且唯一）；新建文件才用 write_file 全量写入。改完能验证就验证（跑测试/编译）。",
+	"bash 的输出与退出码会回传给你：非零退出码不是系统故障，读输出判断原因再决定重试还是换方法；不要盲目重试同一命令。",
+	"工具结果被拒绝（用户拒绝）时，不要原样重试同一操作——换一种方法，或向用户说明为什么需要这个操作。",
+	"工具结果过长会被截断——如需完整内容，把输出写到文件再用 read_file 分段读。",
+	"用户提到\"之前/上次/我们讨论过\"时，先用 session_search 找回上下文，不要让用户复述。",
+	"回答用中文，简洁直接；完成操作后向用户报告结果。",
+}
+
+// systemPromptFooter 组装守则尾段：固定条目 + 按档位注入的 todo-first 条目，
+// 统一编号。strict 档与拆分前的 const 逐字节一致（todo_prompt_test 钉住）。
+func systemPromptFooter(todoMode string) string {
+	rules := append([]string(nil), systemPromptRules...)
+	rules[4] = todoPromptRule(todoMode)
+	var b strings.Builder
+	b.WriteString("\n工作守则：\n")
+	n := 0
+	for _, r := range rules {
+		if r == "" {
+			continue // off 档：整条缺席，编号顺延
+		}
+		n++
+		b.WriteString(strconv.Itoa(n))
+		b.WriteString(". ")
+		b.WriteString(r)
+		b.WriteString("\n")
+	}
+	// 末条不带换行（与拆分前的 const 尾部一致）
+	s := b.String()
+	return strings.TrimSuffix(s, "\n")
+}
 
 // systemPromptTools 是工具的一句话摘要（BuildSystemPrompt 按注册表过滤）。
 // 写在这里而不是工具的 Description——Description 面向"怎么用"（给模型的
@@ -180,7 +226,9 @@ func firstLine(s string) string {
 // 与「是否子会话」（零值零注入——未分组会话的提示词逐字节不变）。工具清单从
 // 注册表生成——加新工具时不需要改这里（忘了改清单 = 模型不知道工具存在）。
 // docs 是项目守则（空 = 未分组会话或项目没写守则——不加噪声）。
-func BuildSystemPrompt(toolReg *tools.Registry, workDir string, wt WorktreeInfo, isChild bool, docs ProjectDocs) string {
+// todoMode 是 todo-first 提示词档位（config.TodoPrompt*；可变参数取第一个
+// 非空值，缺省 = strict——旧调用方/单测不传时行为不变）。
+func BuildSystemPrompt(toolReg *tools.Registry, workDir string, wt WorktreeInfo, isChild bool, docs ProjectDocs, todoMode ...string) string {
 	var b strings.Builder
 	b.WriteString(systemPromptHeader)
 	b.WriteString(projectDocsSection(docs))
@@ -192,6 +240,16 @@ func BuildSystemPrompt(toolReg *tools.Registry, workDir string, wt WorktreeInfo,
 			b.WriteString(toolLine(d))
 		}
 	}
-	b.WriteString(systemPromptFooter)
+	b.WriteString(systemPromptFooter(firstTodoMode(todoMode)))
 	return b.String()
+}
+
+// firstTodoMode 取可变参数里的第一个非空档位（缺省 = strict）。
+func firstTodoMode(modes []string) string {
+	for _, m := range modes {
+		if m != "" {
+			return m
+		}
+	}
+	return config.TodoPromptStrict
 }

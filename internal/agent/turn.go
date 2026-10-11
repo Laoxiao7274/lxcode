@@ -302,9 +302,9 @@ func (s *Session) streamRound(ctx context.Context, workDir, effort string, ac *s
 	wt, isChild := s.worktreeInfo()
 	var prompt string
 	if ac != nil {
-		prompt = ComposeSystemPrompt(s.tools, workDir, ac, allow, wt, isChild, docs)
+		prompt = ComposeSystemPrompt(s.tools, workDir, ac, allow, wt, isChild, docs, s.TodoPromptMode())
 	} else {
-		prompt = BuildSystemPrompt(s.tools, workDir, wt, isChild, docs)
+		prompt = BuildSystemPrompt(s.tools, workDir, wt, isChild, docs, s.TodoPromptMode())
 	}
 	msgs := append([]llm.Message{{Role: "system", Content: prompt}}, history...)
 

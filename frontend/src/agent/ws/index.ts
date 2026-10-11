@@ -12,6 +12,7 @@ import type {
   JobLogResult, ModelAdminSource, ModelEntry,
   ProjectInstructions, ProjectMeta, RewindOutcome, SearchAdminSource, SearchChannel, SearchChannelsSnapshot,
   SearchTestResult, SendAttachments, SendOptions, SessionMeta, SessionStats, TodoItem,
+  TodoPromptMode, TodoPromptSource,
 } from "../../shared/types";
 import { rewindParams } from "../../shared/blocks";
 import { normalizeApproval } from "../../shared/approval";
@@ -79,12 +80,13 @@ const HEARTBEAT_INTERVAL_MS = 15_000;
 const HEARTBEAT_TIMEOUT_MS = 3_000;
 const HEARTBEAT_MAX_FAILURES = 2;
 
-export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource, SearchAdminSource, JobAdminSource {
+export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource, SearchAdminSource, JobAdminSource, TodoPromptSource {
   label = "真实后端";
   readonly modelAdmin: ModelAdminSource = this;
   readonly agentAdmin: AgentAdminSource = this;
   readonly searchAdmin: SearchAdminSource = this;
   readonly jobAdmin: JobAdminSource = this;
+  readonly todoPromptAdmin: TodoPromptSource = this;
   private addr: string;
   private ws: WebSocket | null = null;
   private listeners = new Set<Listener>();
@@ -105,6 +107,9 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
   /** 搜索渠道快照（search.changed 驱动刷新；设置面板网页搜索区的数据源）。 */
   private searchCache: SearchChannelsSnapshot = { channels: [], ready: false };
   private searchListeners = new Set<() => void>();
+  /** todo-first 档位快照（settings.todoPrompt.changed 驱动刷新；设置面板数据源）。 */
+  private todoPromptCache: TodoPromptMode = "strict";
+  private todoPromptListeners = new Set<() => void>();
   /** 后台任务快照（job.list 结果 + job.started/settled 增量；顶栏面板的数据源）。 */
   private jobsCache: JobInfo[] = [];
   private jobListeners = new Set<() => void>();
@@ -234,6 +239,7 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
             refresh("catalog.tools.list", (r) => this.applyAgentTools(r)),
             refresh("catalog.mcp.list", (r) => this.applyAgentMcp(r)),
             refresh("search.channels.list", (r) => this.applySearchChannels(r)),
+            refresh("settings.todoPrompt.get", (r) => this.applyTodoPrompt(r)),
             // 后台任务：重连/刷新后事件不会重放，必须主动拉一次清单
             // （在跑的任务在面板里不能因为重连而消失）
             refresh("job.list", (r) => this.applyJobList(r)),
@@ -526,6 +532,10 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
         // 搜索渠道配置变更——载荷就是快照，直接采用（不必再往返一次
         // search.channels.list：后端广播时已经把它算好了）。
         this.applySearchChannels(p);
+        break;
+      case "settings.todoPrompt.changed":
+        // todo-first 档位变更（多端同步）——载荷就是 {todoPrompt}，直接采用。
+        this.applyTodoPrompt(p);
         break;
     }
   }
@@ -1096,6 +1106,30 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
       ready: r.ready === true,
     };
     this.searchListeners.forEach((l) => l());
+  }
+
+  // ---- TodoPromptSource（todo-first 档位——行为开关） ----
+
+  mode(): TodoPromptMode {
+    return this.todoPromptCache;
+  }
+
+  onChange(listener: () => void): () => void {
+    this.todoPromptListeners.add(listener);
+    return () => this.todoPromptListeners.delete(listener);
+  }
+
+  set(mode: TodoPromptMode): Promise<void> {
+    return this.call("settings.todoPrompt.set", { todoPrompt: mode }).then(() => undefined);
+  }
+
+  /** settings.todoPrompt.get 结果 / settings.todoPrompt.changed 载荷 → 缓存 + 通知。 */
+  private applyTodoPrompt(result: unknown) {
+    const r = result as { todoPrompt?: string } | null;
+    if (!r || typeof r.todoPrompt !== "string") return;
+    if (r.todoPrompt !== "strict" && r.todoPrompt !== "normal" && r.todoPrompt !== "off") return;
+    this.todoPromptCache = r.todoPrompt;
+    this.todoPromptListeners.forEach((l) => l());
   }
 
   // ---- JobAdminSource（后台任务——job.*） ----

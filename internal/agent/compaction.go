@@ -109,9 +109,9 @@ func (s *Session) compactionSystemPrompt(ac *sessiondata.AgentContext, workDir s
 	docs := s.projectDocsFor(workDir)
 	wt, isChild := s.worktreeInfo()
 	if ac != nil {
-		return ComposeSystemPrompt(s.tools, workDir, ac, allow, wt, isChild, docs)
+		return ComposeSystemPrompt(s.tools, workDir, ac, allow, wt, isChild, docs, s.TodoPromptMode())
 	}
-	return BuildSystemPrompt(s.tools, workDir, wt, isChild, docs)
+	return BuildSystemPrompt(s.tools, workDir, wt, isChild, docs, s.TodoPromptMode())
 }
 
 // summarizeRange 让模型把一段历史压成检查点正文（不经过 streamRound：这次

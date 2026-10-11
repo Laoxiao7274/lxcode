@@ -87,6 +87,11 @@ type Session struct {
 	// 用户中途改档要立刻作用于正在跑的那一轮（runTools 每个工具调用现读
 	// LiveApproval）。空 = confirm（与 tools.ApprovalFrom 的缺省语义一致）。
 	approval string
+	// todoPrompt 是本会话的 todo-first 提示词档位（config.TodoPrompt*——
+	// 用户在设置里选的内置模板）。chat.send 时由服务端按 behavior.json 现读
+	// 传入（会话级，子会话派发时从父会话继承）；空 = strict。与 approval 的
+	// 区别：它不需要「运行中即时生效」——下一轮读新值即可（提示词每轮现组装）。
+	todoPrompt string
 	// approvalSource 非 nil = 本会话是子会话：档位不自己说了算，而是
 	// 「父会话**此刻**的档位」与 approvalDefault 取严（子执行面不大于请求方）。
 	// 为什么是回调而不是派发那一刻算好的死值：父会话中途改档必须传得到
@@ -325,6 +330,17 @@ func (s *Session) SetApproval(mode string) string {
 	return norm
 }
 
+// TodoPromptMode 返回本会话的 todo-first 提示词档位（config.TodoPrompt*；
+// 空 = strict）。提示词组装（turn/compaction）与子会话派发继承都读它。
+func (s *Session) TodoPromptMode() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.todoPrompt == "" {
+		return config.TodoPromptStrict
+	}
+	return s.todoPrompt
+}
+
 // Send 发起一轮对话（异步）：校验模型 → 入历史 → 后台跑工具循环。
 // 忙时返回 ErrBusy；模型未绑定/停用返回对应哨兵（服务端按类别映射错误码）。
 func (s *Session) Send(text string, opts ...SendOpt) error {
@@ -376,6 +392,12 @@ func (s *Session) Send(text string, opts ...SendOpt) error {
 		s.approval = effectiveApproval(cfg.approval, agentDefaultOf(ac))
 	} else if s.approval == "" {
 		s.approval = effectiveApproval("", agentDefaultOf(ac))
+	}
+	// todo-first 档位同 approval 的存法：显式给了就覆盖会话现值（服务端每次
+	// chat.send 按 behavior.json 现读传入——热加载对下一轮自动生效），没给
+	// 则保留现值（CLI 路径/内部通告开轮不该重置用户的档位）。
+	if cfg.todoPrompt != "" {
+		s.todoPrompt = cfg.todoPrompt
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s.cancel = cancel

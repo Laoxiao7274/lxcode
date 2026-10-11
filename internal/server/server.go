@@ -99,6 +99,12 @@ type Server struct {
 	// 未装配（路径空）= 门不存在，行为与旧版一致。
 	remoteMu   sync.Mutex
 	remotePath string
+
+	// 行为开关（internal/server/behavior.go）：behavior.json 路径 + 互斥 +
+	// 热加载比对基线。未装配（路径空）= 恒默认档。
+	behaviorMu   sync.Mutex
+	behaviorPath string
+	behaviorLast config.Behavior
 }
 
 func (s *Server) Ctx() context.Context {

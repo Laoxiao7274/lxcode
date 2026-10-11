@@ -102,7 +102,7 @@ func (s *Session) RunAgentTask(ctx context.Context, agentID, task, workDir strin
 		AgentID: ac.Def.ID, AgentName: ac.Def.Name, AgentColor: ac.Def.Color,
 		Task: task,
 	})
-	err = child.SendWait(ctx, task, WithAgent(agentID), WithApproval(ac.Def.Approval))
+	err = child.SendWait(ctx, task, WithAgent(agentID), WithApproval(ac.Def.Approval), WithTodoPrompt(s.TodoPromptMode()))
 	// 收卡：结论 / 错误 / 取消都以 DispatchEnd 定格（错误口径与 runDispatch 一致——
 	// SendWait 在 done 关闭时恒返回 nil，真错误看 tap.err）。
 	endNote := ""
@@ -264,7 +264,8 @@ func (s *Session) runDispatch(ctx context.Context, call tools.DispatchCall) tool
 	// 模型/提示词/工具白名单仍由子会话按自己的 Agent 载荷组装。
 	child.SetApprovalSource(func() string { return s.LiveApproval() })
 	child.SetApprovalDefault(ac.Def.Approval)
-	err = child.SendWait(ctx, composeTaskMessage(call), WithAgent(ac.Def.ID))
+	// todo-first 档位从父会话继承（配置是后端级的，父子必须同一档）。
+	err = child.SendWait(ctx, composeTaskMessage(call), WithAgent(ac.Def.ID), WithTodoPrompt(s.TodoPromptMode()))
 	// 子会话这一轮的错误**不能只看 SendWait 的返回值**：SendWait 在 done 关闭时恒
 	// 返回 nil（即使这一轮以错误收尾——比如工具循环达上限），真正的错误记在 tap.err 里。
 	//

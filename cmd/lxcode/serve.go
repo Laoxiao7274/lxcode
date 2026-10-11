@@ -114,6 +114,12 @@ func runServe(ctx context.Context, path, addr, sessionsDir string) error {
 		// 不需要重启。
 		log.Printf("远程访问: 已启用（所有 /rpc 与 /attachments 连接需凭证；后端监听 0.0.0.0，关闭后回到 %s）", addr)
 	}
+	// 行为开关（config/behavior.json，与 models.json 同目录）：todo-first
+	// 提示词档位。chat.send 现读（下一轮生效），reloadLoop 只负责手改后的变更广播。
+	behaviorPath := resolveBehaviorPath(path)
+	srv.AttachBehavior(behaviorPath)
+	log.Printf("行为配置: %s（todoPrompt=%s）", behaviorPath, srv.BehaviorTodoPrompt())
+
 	// 后台预热：首次拉取要几秒（实测 5 MB / ~5s），预热过设置面板一开就是热的。
 	// 失败只记日志——真正的错误会在用户打开设置时如实回报。
 	go func() {
@@ -153,6 +159,12 @@ func resolveRemotePath(modelsPath string) string {
 	return filepath.Join(filepath.Dir(modelsPath), "remote.json")
 }
 
+// resolveBehaviorPath 决定行为开关配置路径：与 models.json 同目录（同
+// resolveRemotePath 的理由——同一份部署配置的一部分，不另开 flag）。
+func resolveBehaviorPath(modelsPath string) string {
+	return filepath.Join(filepath.Dir(modelsPath), "behavior.json")
+}
+
 // reloadLoop 周期热加载注册表与搜索渠道配置：手改 models.json /
 // search.json 后无需重启服务。变更才广播；失败保留旧状态（降级可用）。
 func reloadLoop(ctx context.Context, reg *config.Registry, searchSvc *websearch.Service, srv *server.Server) {
@@ -178,6 +190,10 @@ func reloadLoop(ctx context.Context, reg *config.Registry, searchSvc *websearch.
 					log.Printf("搜索渠道配置热加载失败（保留旧状态）: %v", err)
 				}
 			}
+			// 行为开关（behavior.json）：读侧（chat.send）每次现读，这里只负责
+			// 「手改后给其它客户端广播一次变更」——set 路径自己已广播并同步基线，
+			// 不会在这里重复。
+			srv.CheckBehaviorChanged()
 		}
 	}
 }

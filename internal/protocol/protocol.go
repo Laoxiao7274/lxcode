@@ -119,6 +119,13 @@ const (
 	// 降级会把「这个渠道坏了」测成「搜索正常」。
 	MethodSearchTest = "search.test"
 
+	// ---- 行为开关（用户在设置里选的内置模板——后端级配置，存 config/behavior.json）----
+	//
+	// get 返回当前档位；set 校验并原子写回 + 广播 settings.todoPrompt.changed。
+	// 提示词注入在下一轮生效（服务端每次 chat.send 现读——不需要重启或重开会话）。
+	MethodTodoPromptGet = "settings.todoPrompt.get"
+	MethodTodoPromptSet = "settings.todoPrompt.set"
+
 	// ---- Git 管理页（前端 Git 工作台的只读查询）----
 	//
 	// 两个方法全部只读：读主检出的状态 / 分支 / 最近提交与单文件 diff。
@@ -166,6 +173,9 @@ const (
 	EventCompacted      = "chat.compacted"     // 历史被压缩（前缀替换成摘要检查点）——客户端插标记块
 	EventRewound        = "chat.rewound"       // 会话被撤回（seq 及其之后的历史已删除）——客户端截断时间线
 	EventSearchChanged  = "search.changed"     // 搜索渠道配置变更——客户端重拉 search.channels.list
+	// EventTodoPromptChanged 行为开关（todo-first 档位）变更——多客户端同步：
+	// 壳与浏览器同时开着时两边的设置显示必须一致（与 search.changed 同款语义）。
+	EventTodoPromptChanged = "settings.todoPrompt.changed"
 	// EventJobStarted / EventJobSettled 是后台任务的状态广播（载荷 = JobInfo）：
 	// settled 带 EndedBy，前端据此显示「你停的 / 它挂了 / 超时 / 后端重启中断」。
 	EventJobStarted = "job.started"
@@ -316,7 +326,7 @@ type ChatSendImage struct {
 }
 
 // ChatSendFile 是 chat.send 携带的一个文件附件：Name 为客户端提供的原名
-//（服务端净化后只用于消息文本与扩展名），Data 为 base64（**不带** data: 前缀）。
+// （服务端净化后只用于消息文本与扩展名），Data 为 base64（**不带** data: 前缀）。
 // 服务端校验（≤20MB / ≤4 个 / 名字净化）后落盘到同一附件目录，历史里只体现为
 // 消息文本的「[附件] 名字 → attachments/...」行（无新列、无视觉通道）——Agent
 // 用 read_file 自己读（2026-10 图片批次 B）。
@@ -1041,6 +1051,18 @@ type SearchTestResult struct {
 	Results  []websearch.Result `json:"results"`
 	// ElapsedMS 是耗时（用户判断渠道快慢的依据）。
 	ElapsedMS int `json:"elapsed_ms"`
+}
+
+// TodoPromptResult 是 settings.todoPrompt.get 的结果，也是
+// settings.todoPrompt.changed 事件的载荷（一份形状——与 search.changed 同款）。
+type TodoPromptResult struct {
+	// TodoPrompt 是当前档位（strict/normal/off；读侧已归一，恒非空）。
+	TodoPrompt string `json:"todoPrompt"`
+}
+
+// TodoPromptSetParams 是 settings.todoPrompt.set 的参数。
+type TodoPromptSetParams struct {
+	TodoPrompt string `json:"todoPrompt"`
 }
 
 // ---- 后台任务（jobs——docs/jobs.md §4）----

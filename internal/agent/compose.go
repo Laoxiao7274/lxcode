@@ -56,9 +56,9 @@ func DefaultProtocol(isMain bool) string {
 //
 // 项目约定的位置即优先级（2026-09-21 用户拍板「项目约定比 Agent 自己的低」）：
 // 排在 Agent 四层组合之后、环境与工具清单之前，并在段内显式声明。
-func ComposeSystemPrompt(toolReg *tools.Registry, workDir string, ac *sessiondata.AgentContext, allowTools []string, wt WorktreeInfo, isChild bool, docs ProjectDocs) string {
+func ComposeSystemPrompt(toolReg *tools.Registry, workDir string, ac *sessiondata.AgentContext, allowTools []string, wt WorktreeInfo, isChild bool, docs ProjectDocs, todoMode ...string) string {
 	if ac == nil {
-		return BuildSystemPrompt(toolReg, workDir, wt, isChild, docs)
+		return BuildSystemPrompt(toolReg, workDir, wt, isChild, docs, todoMode...)
 	}
 	var b strings.Builder
 
@@ -125,7 +125,7 @@ func ComposeSystemPrompt(toolReg *tools.Registry, workDir string, ac *sessiondat
 		b.WriteString("注意：白名单里的 " + strings.Join(missing, "、") +
 			" 当前不可用（自定义工具需先配置 command，MCP 工具需先启用服务器）——不要调用它们。\n")
 	}
-	b.WriteString(systemPromptFooter)
+	b.WriteString(systemPromptFooter(firstTodoMode(todoMode)))
 	return b.String()
 }
 

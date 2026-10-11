@@ -9,11 +9,17 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/moyunteng/lxcode/internal/config"
+	"github.com/moyunteng/lxcode/internal/llm"
 	"github.com/moyunteng/lxcode/internal/sessiondata"
 )
 
 // todoFirstKey 是提示词层的行为指令关键句（改措辞时这里同步改）。
 const todoFirstKey = "动手前先建清单：凡是需要调用工具（写文件、改代码、跑命令）才能完成的任务，开始前先用 todo 工具列出步骤清单"
+
+// simpleTaskKey 是「简单任务常规化」分级语义的关键句：防止简单任务被
+// 仪式化的清单步骤复杂化，主/子会话提示词都必须包含。
+const simpleTaskKey = "一两步就能完成的小任务直接做完汇报即可，不建清单、不搞仪式化步骤"
 
 func TestTodoFirstInMainPrompt(t *testing.T) {
 	s := newAgentSession(t)
@@ -52,5 +58,110 @@ func TestTodoToolDescriptionSaysBuildFirst(t *testing.T) {
 	}
 	if !strings.Contains(d.Description, "再执行") {
 		t.Fatalf("todo 工具 description 缺少「先列清单再执行」语义：%s", d.Description)
+	}
+}
+
+// ---- 三档模板（用户可选——config.TodoPrompt*）----
+
+func TestTodoPromptModesInMainPrompt(t *testing.T) {
+	s := newAgentSession(t)
+	// strict（默认档，缺省参数 = strict）：现有关键句在场
+	p := BuildSystemPrompt(s.tools, "", WorktreeInfo{}, false, ProjectDocs{})
+	if !strings.Contains(p, todoFirstKey) {
+		t.Fatal("strict 主会话提示词缺少 todo-first 关键句")
+	}
+	// normal：常规版关键句在场；strict 硬约束与 strict 专属措辞缺席
+	p = BuildSystemPrompt(s.tools, "", WorktreeInfo{}, false, ProjectDocs{}, config.TodoPromptNormal)
+	if !strings.Contains(p, "按任务复杂度用清单：需要多步工具调用才能完成的任务") {
+		t.Fatal("normal 主会话提示词缺少常规版关键句")
+	}
+	if strings.Contains(p, todoFirstKey) || strings.Contains(p, "只有两三步也要先建") {
+		t.Fatal("normal 档不应包含 strict 的硬约束措辞")
+	}
+	if !strings.Contains(p, "不为凑数拆分") {
+		t.Fatal("normal 档缺少「条数与复杂度相称」语义")
+	}
+	// off：两档文案都不出现，编号顺延（守则不应留空号）
+	p = BuildSystemPrompt(s.tools, "", WorktreeInfo{}, false, ProjectDocs{}, config.TodoPromptOff)
+	if strings.Contains(p, todoFirstKey) || strings.Contains(p, "按任务复杂度用清单") {
+		t.Fatal("off 档不应包含任何 todo-first 指令")
+	}
+	if strings.Contains(p, "6. 修改代码") || strings.Contains(p, "5. 按任务复杂度") {
+		t.Fatal("off 档守则编号应顺延（修改代码是第 5 条）")
+	}
+	if !strings.Contains(p, "5. 修改代码") {
+		t.Fatal("off 档「修改代码」应为第 5 条")
+	}
+}
+
+func TestTodoPromptModesInChildPrompt(t *testing.T) {
+	s := newAgentSession(t)
+	// 子会话同源：两条组装路径 × 三档各断言一次
+	ac := &sessiondata.AgentContext{Def: sessiondata.AgentDef{ID: "coder", Name: "代码 Agent", IsMain: false, Tools: []string{"read_file"}}}
+	cases := []struct {
+		mode    string
+		wantKey string
+		banKey  string
+	}{
+		{config.TodoPromptStrict, todoFirstKey, "按任务复杂度用清单"},
+		{config.TodoPromptNormal, "按任务复杂度用清单：需要多步工具调用才能完成的任务", todoFirstKey},
+		{config.TodoPromptOff, "", todoFirstKey},
+	}
+	for _, c := range cases {
+		for _, path := range []struct {
+			name   string
+			prompt string
+		}{
+			{"BuildSystemPrompt(isChild)", BuildSystemPrompt(s.tools, "", WorktreeInfo{}, true, ProjectDocs{}, c.mode)},
+			{"ComposeSystemPrompt(isChild)", ComposeSystemPrompt(s.tools, "", ac, ac.Def.Tools, WorktreeInfo{}, true, ProjectDocs{}, c.mode)},
+		} {
+			if c.wantKey != "" && !strings.Contains(path.prompt, c.wantKey) {
+				t.Fatalf("%s 档子会话（%s）缺少关键句 %q", c.mode, path.name, c.wantKey)
+			}
+			if strings.Contains(path.prompt, c.banKey) {
+				t.Fatalf("%s 档子会话（%s）不应包含 %q", c.mode, path.name, c.banKey)
+			}
+		}
+	}
+}
+
+// off 档是「整条不出现」而不是「留一个空号」：strict 与 off 的守则条数差 1。
+func TestTodoPromptOffDropsExactlyOneRule(t *testing.T) {
+	s := newAgentSession(t)
+	strict := BuildSystemPrompt(s.tools, "", WorktreeInfo{}, false, ProjectDocs{}, config.TodoPromptStrict)
+	off := BuildSystemPrompt(s.tools, "", WorktreeInfo{}, false, ProjectDocs{}, config.TodoPromptOff)
+	if strings.Count(strict, "\n")-strings.Count(off, "\n") != 1 {
+		t.Fatalf("off 档应恰好少一条守则：strict %d 行 / off %d 行",
+			strings.Count(strict, "\n"), strings.Count(off, "\n"))
+	}
+}
+
+// 会话档位：Send 经 WithTodoPrompt 存进会话（空 = 不覆盖），TodoPromptMode
+// 归一缺省。子会话派发继承（dispatch.go 两处 SendWait 都带 WithTodoPrompt）。
+func TestSessionTodoPromptMode(t *testing.T) {
+	s, reg := newTestSession(t)
+	bindDefault(t, reg)
+	fake := &fakeStream{script: [][]llm.StreamEvent{
+		textResult("第一轮"),
+		textResult("第二轮"),
+	}}
+	s.stream = fake.stream
+	if got := s.TodoPromptMode(); got != config.TodoPromptStrict {
+		t.Fatalf("缺省档位应为 strict，got %q", got)
+	}
+	if err := s.Send("你好", WithTodoPrompt(config.TodoPromptOff)); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	waitFor(t, func() bool { return !s.Busy() })
+	if got := s.TodoPromptMode(); got != config.TodoPromptOff {
+		t.Fatalf("WithTodoPrompt 应覆盖会话档位，got %q", got)
+	}
+	// 不带参数的内部开轮（通告 flushNotices 等）不重置用户档位
+	if err := s.Send("再来一句"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	waitFor(t, func() bool { return !s.Busy() })
+	if got := s.TodoPromptMode(); got != config.TodoPromptOff {
+		t.Fatalf("不带参数的 Send 不应重置档位，got %q", got)
 	}
 }

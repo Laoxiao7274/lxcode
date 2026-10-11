@@ -60,6 +60,11 @@ func (s *Server) dispatch(c *wsClient, req *protocol.Request) *protocol.Response
 		return resp
 	}
 
+	// settings.todoPrompt.*（行为开关——todo-first 提示词档位）
+	if resp := s.handleBehavior(req, params); resp != nil {
+		return resp
+	}
+
 	// job.*（后台任务——独立分发函数，未命中回落 unknown）
 	if resp := s.dispatchJobs(req, params); resp != nil {
 		return resp

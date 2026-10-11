@@ -476,6 +476,8 @@ export interface AgentSource {
   agentAdmin?: AgentAdminSource;
   /** 网页搜索渠道管理（M4）；缺省时前端用内存演示渠道自管。 */
   searchAdmin?: SearchAdminSource;
+  /** todo-first 提示词档位（行为开关）；缺省时设置面板用本地状态（demo）。 */
+  todoPromptAdmin?: TodoPromptSource;
   /** 后台任务（jobs）；两个实现都提供——顶栏面板与时间线卡片共用它。 */
   jobAdmin?: JobAdminSource;
 }
@@ -590,6 +592,23 @@ export interface SearchAdminSource {
   setPrimary(id: string): Promise<void>;
   /** 测试单个渠道（不降级）。 */
   testChannel(id: string, query?: string): Promise<SearchTestResult>;
+}
+
+/** todo-first 提示词档位（后端 config/behavior.json 的 todoPrompt 字段——
+ *  内置模板三选一，不靠模型自觉判断任务简不简单）。 */
+export type TodoPromptMode = "strict" | "normal" | "off";
+
+/** TodoPromptSource：todo-first 档位的查看与设置（后端 settings.todoPrompt.* 直通）。
+ *
+ * 与 SearchAdminSource 同模式：live 模式后端是唯一事实源（get/set + changed
+ * 广播）；缺省（demo）时设置面板用本地状态自管。 */
+export interface TodoPromptSource {
+  /** 当前档位（缓存——连接建立与 changed 事件驱动刷新）。 */
+  mode(): TodoPromptMode;
+  /** 订阅档位变化（返回退订）。 */
+  onChange(listener: () => void): () => void;
+  /** 设置档位（后端原子写 + 广播；提示词下一轮生效）。 */
+  set(mode: TodoPromptMode): Promise<void>;
 }
 
 /** 项目守则（项目根 AGENTS.md）的读取结果——项目级「自定义指令」。 */

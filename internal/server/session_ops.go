@@ -198,6 +198,9 @@ func (s *Server) sendAttachments(sessionID string, sess *agent.Session, p protoc
 		}
 	}
 	opts := chatSendOptions(p)
+	// todo-first 档位每次现读 behavior.json（文件只有几十字节）：设置里切换或
+	// 手改后**下一轮**立即生效——不需要等热加载巡检，也不需要重开会话。
+	opts = append(opts, agent.WithTodoPrompt(s.behaviorConfig().TodoPrompt))
 	if len(refs) > 0 {
 		opts = append(opts, agent.WithImages(refs))
 	}
