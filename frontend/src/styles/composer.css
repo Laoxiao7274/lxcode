@@ -508,6 +508,23 @@
 .pi:focus-within {
   box-shadow: 0 0 0 1.5px var(--fg), 0 1px 3px rgba(0, 0, 0, 0.04);
 }
+/* ===== 任务清单区（融合进白卡：2026-12 用户拍板「让他和输入框融为一体」） =====
+ * 结构：.pi（一张白卡）> .pi-plan（清单）+ 发丝分隔线 + 输入区。取缔了旧
+ * .composer-plan 悬浮卡（与 .pi 之间隔 8px、两套圆角两套 ring 的脱节形态）。
+ * 圆角分工：.pi 的 ring 本来就按 14px 画整卡轮廓，.pi-plan 背景透明、没有
+ * 任何需要裁剪的色块——不设自己的 border-radius、.pi 也保持无 overflow:hidden
+ * （斜杠面板锚点纪律）。TodoList 去 card 化用 `> div`（子选择器直取其根）：
+ * CSS module 类名被哈希（_todo_xxx），`.pi-plan .todo` 类选择器不匹配——
+ * 特异性提到两级压过 module 单类，保证覆盖生效。 */
+.pi-plan {
+  border-bottom: 1px solid var(--border-soft); /* 发丝分隔线（plan 不渲染即无） */
+}
+.pi .pi-plan > div {
+  box-shadow: none;
+  border-radius: 0;
+  background: transparent; /* 暗色下 --todo-bg(#1a1a1a) 与 --surface(#232329) 不同，透明才不断层 */
+  padding: 10px 16px 10px; /* 与 composer 内距节奏一致（原 6px 12px 12px） */
+}
 .pi textarea.piInput {
   width: 100%;
   padding: 14px 16px 6px;

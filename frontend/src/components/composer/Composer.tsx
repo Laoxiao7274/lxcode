@@ -29,8 +29,8 @@ import type { SendAttachments, ContextUsage, SessionStats, TodoItem } from "../.
 /** 输入区（Codex 式）：busy 时输入框保留（可预输入），发送钮变停止。
  *  斜杠命令：输入以 / 开头时上方弹命令面板（关键字过滤 + 键盘导航 +
  *  Enter/Tab 补全——面板开着时 Enter 不发送）。
- *  任务清单卡浮在输入框正上方（与 busy 行同层——都在 composer 浮层内，
- *  不会被绝对定位的输入区遮挡；清单不进对话流）。
+ *  任务清单**融合进输入白卡**（.pi 内部顶部的 .pi-plan 区块：清单 + 发丝分隔线
+ *  + 输入区 = 一张卡的视觉；todos 为空时该区块不渲染，.pi 形态与无清单时一致）。
  *  附件（图片批次 B）：piBar 左侧「+」按钮弹出菜单（图片/文件，本地选择），
  *  输入区监听 paste（剪贴板图片走附件流程，文本粘贴照常）；暂存附件在输入框
  *  上方预览（缩略图/文件卡，点击 × 移除），随发送组装进 chat.send 的
@@ -361,12 +361,6 @@ export function Composer({
   return (
     <div className="composer-zone" ref={zoneRef}>
       <div className="composer-inner">
-        {/* 任务清单卡：输入框正上方（与 busy 行同层——浮层内不被遮挡） */}
-        {todos.length > 0 && (
-          <div className="composer-plan">
-            <TodoList items={todos} />
-          </div>
-        )}
         {/* 发送缓冲区：busy 期间提交的消息排队在这里（等空闲自动发出）。
             每条一行：序号 + 单行摘要 + 附件标记 + 直接发送/编辑/删除三个动作。 */}
         {queue && queue.length > 0 && (
@@ -458,6 +452,13 @@ export function Composer({
           </div>
         )}
         <div className="pi">
+          {/* 任务清单区：白卡顶部区块（清单 + 发丝分隔线 + 输入区 = 一张卡）。
+              在 .pi 的 relative 内——斜杠面板锚点不受影响；todos 为空不渲染。 */}
+          {todos.length > 0 && (
+            <div className="pi-plan">
+              <TodoList items={todos} />
+            </div>
+          )}
           {slashOpen && (
             <SlashPalette
               query={slashQuery}

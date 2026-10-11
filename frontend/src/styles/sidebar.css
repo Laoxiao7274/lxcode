@@ -170,13 +170,3 @@
   min-height: 26px;
 }
 /* 行级轻量状态：无（列表保持干净——完整状态在主区视图） */
-/* ===== 输入区上方的任务清单卡（aicss TodoList——卡片形态） =====
- * 位置：composer 浮层内、输入框正上方（与 busy 行同层——之前放在线程
- * 流内被绝对定位的输入区遮挡；也不进对话流）。 */
-.composer-plan {
-  padding: 0 4px 8px;
-}
-.composer-plan .todo,
-.composer-plan > div {
-  box-shadow: 0 0 0 1px var(--border-soft), 0 2px 8px rgba(0, 0, 0, 0.04);
-}
