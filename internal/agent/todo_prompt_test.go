@@ -13,7 +13,7 @@ import (
 )
 
 // todoFirstKey 是提示词层的行为指令关键句（改措辞时这里同步改）。
-const todoFirstKey = "动手前先建清单：凡是需要调用工具（写文件、改代码、跑命令）的任务，开始前先用 todo 工具列出步骤清单"
+const todoFirstKey = "动手前先建清单：凡是需要调用工具（写文件、改代码、跑命令）才能完成的任务，开始前先用 todo 工具列出步骤清单"
 
 func TestTodoFirstInMainPrompt(t *testing.T) {
 	s := newAgentSession(t)

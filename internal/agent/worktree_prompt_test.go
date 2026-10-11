@@ -27,9 +27,11 @@ func TestWorktreePromptProjectSession(t *testing.T) {
 		t.Fatalf("项目会话（非子会话）不该说「共享」:\n%s", prompt)
 	}
 
-	// 未分组会话（零值）：工作树说明零注入。
+	// 未分组会话（零值）：工作树说明零注入。（判据用 worktreeLine 特有的
+	// 措辞与分支名，不能用裸「工作树」——workspace_publish 的工具摘要里
+	// 合法地出现「会话工作树」，那是工具清单不是工作树说明注入。）
 	plain := BuildSystemPrompt(s.tools, "/proj/demo", WorktreeInfo{}, false, ProjectDocs{})
-	if strings.Contains(plain, "工作树") || strings.Contains(plain, testWorktreeBranch) {
+	if strings.Contains(plain, "独立 Git 工作树") || strings.Contains(plain, testWorktreeBranch) {
 		t.Fatalf("未分组会话不该注入工作树说明:\n%s", plain)
 	}
 
