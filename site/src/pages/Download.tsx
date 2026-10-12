@@ -20,7 +20,24 @@ import { useStore } from "../shared/useStore";
 import { DataStatus } from "../components/DataStatus";
 import { ArtifactLink } from "../components/ArtifactLink";
 import { HashLine } from "../components/HashLine";
+import { SITE_BASE } from "../shared/base";
 import "../styles/page-site.css";
+
+/**
+ * Android APK（原型）：不进发布模型。
+ *
+ * 后端产物模型只有 installer/portable/update 三类（`domain.ArtifactKind`），APK 塞进去
+ * 会污染桌面更新链（manifest / 校验 / 历史表都按桌面语义建的）。所以走静态文件方案：
+ * APK 放站点 dist/downloads/ 下，由后端 --static 兜底直接发。
+ * 这里的常量是发布时手工对齐的——换包必须同步改（versionName 与桌面版本对齐）。
+ */
+const ANDROID_APK = {
+  version: "0.2.2",
+  name: "lxcode-0.2.2-android.apk",
+  size: 11608987,
+  sha256: "e64d3cfeaa819db93d566f1c52cfd9b84e1e9e767a365cdadce5e914c0f78fd9",
+  url: "downloads/lxcode-0.2.2-android.apk",
+};
 
 const KINDS: Array<{
   kind: Artifact["kind"];
@@ -196,6 +213,39 @@ export default function Download() {
             {KINDS.map((kind) => (
               <ArtifactBlock key={kind.kind} release={latest} kind={kind.kind} />
             ))}
+          </div>
+        </div>
+      </section>
+
+      {/* Android APK（原型）：静态托管的直链入口，数据来自上面的 ANDROID_APK 常量。 */}
+      <section className="sec">
+        <div className="wrap">
+          <div className="sec-head">
+            <h2>Android APK（原型）</h2>
+            <p className="sec-lede">
+              安卓远端客户端原型，版本与桌面 stable 对齐（0.2.2）；连接自己机器上的 lxcode 后端跑会话，不走应用商店。
+            </p>
+          </div>
+          <div className="panel panel-lift">
+            <div className="panel-pad dl-block">
+              <div className="dl-file">
+                <span className="dl-name">{ANDROID_APK.name}</span>
+                <span className="meta">{formatBytes(ANDROID_APK.size)}</span>
+              </div>
+              <HashLine label="APK" hash={ANDROID_APK.sha256} />
+              <div className="dl-actions">
+                <a
+                  className="btn btn-p"
+                  href={SITE_BASE + ANDROID_APK.url}
+                  download={ANDROID_APK.name}
+                >
+                  下载 APK
+                </a>
+                <span className="meta">
+                  versionName {ANDROID_APK.version} · versionCode 2 · Android 8.0+
+                </span>
+              </div>
+            </div>
           </div>
         </div>
       </section>
