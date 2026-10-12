@@ -1,9 +1,17 @@
-// 下载页：三类产物 + 更新语义 + 历史版本（含已撤回版本的如实标注）。
+// 下载页：按平台分区（Windows / Android）+ 更新语义 + 历史版本（含已撤回版本的如实标注）。
 //
-// 三块不是三种格式，而是三条更新路径（见 release.ts 的 ArtifactKind 注释）：
+// 两个平台的版本号**来源分开、互不引用**：
+//   Windows — /api/releases 里最新已发布的 stable（latestPublished），读不到回落到
+//             WINDOWS_FALLBACK_VERSION 常量（只展示版本号，产物列表仍以接口为准）；
+//   Android — ANDROID_APK 常量（安卓独立版本源，不进发布模型）。
+// 桌面与安卓发版节奏不同（桌面 0.2.3、安卓 0.2.2），共用一个版本号会让用户把
+// 两个平台的版本混为一谈，所以页面头部不再报「最新 stable：x.y.z」，改由各平台
+// 区块各自标注自己的版本。
+//
+// 桌面三块不是三种格式，而是三条更新路径（见 release.ts 的 ArtifactKind 注释）：
 // 安装包 = 唯一能带 Electron 升级的全量包；免安装 = 绿色分发；更新包 = 两级替换的增量包。
-// 数据全部来自后端；撤回版本保留在列表里但**不提供下载链接**（如实标注，不假装它不存在）。
-// 产物链接走 ArtifactLink：原型阶段 /releases/<文件名> 没有真实文件，点击不导航、只出提示条（页面级单条 fixed）。
+// 撤回版本保留在历史列表里但**不提供下载链接**（如实标注，不假装它不存在）。
+// 产物链接走 ArtifactLink：/releases/<文件名> 是真下载（后端静态服务直发）。
 // sha256 常驻哈希行（HashLine）：不折叠 → 三块卡等高、高度恒定。
 
 import {
@@ -24,12 +32,23 @@ import { SITE_BASE } from "../shared/base";
 import "../styles/page-site.css";
 
 /**
- * Android APK（原型）：不进发布模型。
+ * Windows 桌面版版本号回落值。
+ *
+ * 正常路径：版本号取 /api/releases 里最新已发布的 stable（latestPublished，与
+ * 管理后台 / manifest 同源）。接口读不到、或还没有已发布版本时，回落到这个常量
+ * ——只用于展示「桌面版当前是什么版本」，产物列表仍以接口为准（读不到就不列，
+ * 不编造下载链接）。发版后手工同步这里。
+ */
+const WINDOWS_FALLBACK_VERSION = "0.2.3";
+
+/**
+ * Android APK（原型）：不进发布模型，版本号**独立于桌面版**演进。
  *
  * 后端产物模型只有 installer/portable/update 三类（`domain.ArtifactKind`），APK 塞进去
  * 会污染桌面更新链（manifest / 校验 / 历史表都按桌面语义建的）。所以走静态文件方案：
  * APK 放站点 dist/downloads/ 下，由后端 --static 兜底直接发。
- * 这里的常量是发布时手工对齐的——换包必须同步改（versionName 与桌面版本对齐）。
+ * 这里的常量是安卓自己的版本源（与 WINDOWS_FALLBACK_VERSION 分开，互不引用）——
+ * 桌面与安卓发版节奏不同，versionName 不再与桌面版本对齐，换包必须同步改。
  */
 const ANDROID_APK = {
   version: "0.2.2",
@@ -170,6 +189,8 @@ function HistoryTable({ releases }: { releases: Release[] }) {
 export default function Download() {
   const state = useStore();
   const latest = latestPublished(state.releases, "stable");
+  // 桌面版版本号：接口优先，回落常量兜底（安卓版本只读 ANDROID_APK 常量，不经过这里）。
+  const winVersion = latest?.version ?? WINDOWS_FALLBACK_VERSION;
   // 公开下载页只列已发布过的版本（草稿还没发布，撤回版保留但只做如实标注）
   const history = sortByVersionDesc(state.releases).filter(
     (r) => r.version !== latest?.version && r.status !== "draft",
@@ -185,45 +206,69 @@ export default function Download() {
     );
   }
 
-  if (!latest) {
-    return (
-      <section className="sec">
-        <div className="wrap">
-          <p className="muted">还没有已发布的 stable 版本，暂无可下载的产物。</p>
-        </div>
-      </section>
-    );
-  }
-
   return (
     <>
       <section className="sec">
         <div className="wrap">
           <div className="sec-head">
             <p className="eyebrow">下载</p>
-            <h1 style={{ fontSize: "var(--fs-h1)" }}>
-              最新 stable：{latest.version}
-            </h1>
+            <h1 style={{ fontSize: "var(--fs-h1)" }}>下载 lxcode</h1>
             <p className="sec-lede">
-              {dateOf(latest.publishedAt)} 发布 · 平台 Windows x64 ·
-              Electron {latest.electronVersion}
+              各平台独立发版：Windows 桌面版与 Android 客户端的版本号各自演进、互不共用，
+              每个平台区块标注自己的当前版本。
             </p>
-          </div>
-          <div className="grid-3">
-            {KINDS.map((kind) => (
-              <ArtifactBlock key={kind.kind} release={latest} kind={kind.kind} />
-            ))}
           </div>
         </div>
       </section>
 
-      {/* Android APK（原型）：静态托管的直链入口，数据来自上面的 ANDROID_APK 常量。 */}
+      {/* Windows：版本号与产物全部来自 releases 接口（读不到时版本号回落、产物不列）。 */}
+      <section className="sec sec-soft">
+        <div className="wrap">
+          <div className="sec-head">
+            <h2>
+              Windows 桌面版{" "}
+              <span className="pill pill-ok">
+                <span className="pill-dot" aria-hidden="true" />
+                v{winVersion}
+              </span>
+            </h2>
+            <p className="sec-lede">
+              {latest
+                ? `${dateOf(latest.publishedAt)} 发布 · Electron ${latest.electronVersion} · 系统要求：Windows 10 / 11（x64）`
+                : "发布数据暂时不可读，版本号显示为回落值，产物列表以接口恢复后为准。系统要求：Windows 10 / 11（x64）。"}
+            </p>
+          </div>
+          {latest ? (
+            <div className="grid-3">
+              {KINDS.map((kind) => (
+                <ArtifactBlock key={kind.kind} release={latest} kind={kind.kind} />
+              ))}
+            </div>
+          ) : (
+            <div className="panel panel-pad log-empty">
+              <p className="small">没有读到已发布的 stable 版本，暂不列出产物链接。</p>
+              <p className="meta">
+                接口恢复后这里会列出安装包与更新包；上方版本号是回落值，不代表存在可下载产物。
+              </p>
+            </div>
+          )}
+        </div>
+      </section>
+
+      {/* Android：版本号只来自 ANDROID_APK 常量（安卓独立版本源，与桌面 releases 接口无关）。 */}
       <section className="sec">
         <div className="wrap">
           <div className="sec-head">
-            <h2>Android APK（原型）</h2>
+            <h2>
+              Android 客户端（原型）{" "}
+              <span className="pill pill-ok">
+                <span className="pill-dot" aria-hidden="true" />
+                v{ANDROID_APK.version}
+              </span>
+            </h2>
             <p className="sec-lede">
-              安卓远端客户端原型，版本与桌面 stable 对齐（0.2.2）；连接自己机器上的 lxcode 后端跑会话，不走应用商店。
+              当前版本 v{ANDROID_APK.version}（独立于桌面版）· 远端客户端原型：连接自己机器上的
+              lxcode 后端跑会话，不走应用商店。
             </p>
           </div>
           <div className="panel panel-lift">
@@ -241,9 +286,7 @@ export default function Download() {
                 >
                   下载 APK
                 </a>
-                <span className="meta">
-                  versionName {ANDROID_APK.version} · versionCode 2 · Android 8.0+
-                </span>
+                <span className="meta">versionCode 2 · Android 8.0+</span>
               </div>
             </div>
           </div>
@@ -253,16 +296,16 @@ export default function Download() {
       <section className="sec sec-soft">
         <div className="wrap">
           <div className="sec-head">
-            <h2>更新语义</h2>
+            <h2>Windows 更新语义</h2>
             <p className="sec-lede">
-              这几项决定客户端拿到新版本之后怎么升级，字段与更新清单一一对应。
+              桌面客户端拿到新版本之后怎么升级，字段与更新清单一一对应（安卓 APK 不进这套更新模型）。
             </p>
           </div>
           <div className="spec">
             <div className="spec-row">
               <span className="spec-k">更新包命名</span>
               <span className="spec-v">
-                <span className="mono">{latest.manifest.url}</span>
+                <span className="mono">{latest?.manifest.url ?? "—"}</span>
               </span>
             </div>
             <div className="spec-row">
@@ -274,23 +317,31 @@ export default function Download() {
             <div className="spec-row">
               <span className="spec-k">最低可更新版本</span>
               <span className="spec-v">
-                低于 <span className="mono">{latest.minVersion}</span> 必须走安装包（旧布局的替换路径不覆盖）
+                {latest ? (
+                  <>
+                    低于 <span className="mono">{latest.minVersion}</span> 必须走安装包（旧布局的替换路径不覆盖）
+                  </>
+                ) : (
+                  "以接口数据为准"
+                )}
               </span>
             </div>
             <div className="spec-row">
               <span className="spec-k">强制更新</span>
-              <span className="spec-v">{latest.required ? "是，客户端不允许跳过" : "否，客户端可以跳过"}</span>
+              <span className="spec-v">
+                {latest ? (latest.required ? "是，客户端不允许跳过" : "否，客户端可以跳过") : "—"}
+              </span>
             </div>
             <div className="spec-row">
               <span className="spec-k">Electron 版本</span>
               <span className="spec-v">
-                <span className="mono">{latest.electronVersion}</span>
+                <span className="mono">{latest?.electronVersion ?? "—"}</span>
                 <span className="muted">（与上一版不同时只能发安装包）</span>
               </span>
             </div>
             <div className="spec-row">
               <span className="spec-k">更新包哈希</span>
-              <span className="spec-v hash">{latest.manifest.sha256}</span>
+              <span className="spec-v hash">{latest?.manifest.sha256 ?? "—"}</span>
             </div>
           </div>
         </div>
@@ -299,7 +350,7 @@ export default function Download() {
       <section className="sec">
         <div className="wrap">
           <div className="sec-head">
-            <h2>历史版本</h2>
+            <h2>Windows 历史版本</h2>
             <p className="sec-lede">
               草稿没发布过，不列在这里；已撤回的版本保留在列表里但不提供下载：
               它已从更新链摘掉，不再分发给客户端。
