@@ -74,7 +74,7 @@ type Server struct {
 	worktreeLocks map[string]*sync.Mutex
 	// worktreeReady 记录「本进程内已校验过工作树」的会话（release 时删除）。
 	// 校验要跑 4 个 git 子进程，实测 ~130ms，而 chat.history / session.resume
-	// 每次都走 prepareWorktree——不记就每次读历史都重付一遍（见 prepareWorktreeLocked）。
+	// 每次都走 prepareWorkspace——不记就每次读历史都重付一遍（见 prepareWorkspaceLocked）。
 	worktreeReady map[string]bool
 
 	// commitMu/commitLocks 是每会话的自动提交锁（轮结束的检查点提交）：同一会话的
@@ -85,10 +85,8 @@ type Server struct {
 	commitLocks map[string]*sync.Mutex
 	// commitWG 追踪在途的自动提交（测试等它们结束用；生产路径不读它）。
 	commitWG sync.WaitGroup
-	// mergeHookWG 追踪在途的轮末自动合并钩子（maybeAutoMerge，测试等它们完成
-	// **发起尝试**用；生产路径不读它）——钩子完成只代表 startMergeJobOpts 已返回
-	//（任务已起或已被拒），不代表合并任务本身收尾。
-	mergeHookWG sync.WaitGroup
+	// mergeHookWG 已随轮末自动合并钩子（maybeAutoMerge）退役——2026-10 架构修订：
+	// 会话直连主检出、没有分支要合并。自动提交只提交，不再触发任何后续流程。
 
 	upgrader websocket.Upgrader
 

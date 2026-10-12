@@ -133,7 +133,7 @@
 | `bash` | 高危 | 超时 60s/上限 300s、输出 32KB、stdin ≤64KB；**`run_in_background=true` 起后台任务**（见 docs/jobs.md）；**Windows shell 选择见 §5 坑** |
 | `todo` | 低危 | 任务清单全量写入（active 唯一性硬校验）；会话持有状态 + TodoUpdated 事件 |
 | `agent_dispatch` | 低危 | 主 Agent 唯一工具：把任务派给名单里的子 Agent（**子 Agent = 独立会话**，见 §2.3；深度恒 1） |
-| `merge_request` | 低危 | 起一个后台合并进程（第二个 producer）：把本会话分支的改动交给内置合并 Agent 汇总到集成分支（处理冲突、跑构建测试）；同一会话同时只允许一个；**合并子会话与子 Agent 同款标签页**（dispatchStart/End 挂卡 + 实时流 + 提问卡在标签页内回答，见 docs/jobs.md §9），前端入口 = 后台任务面板的「合并请求」（`chat.mergeRequest`） |
+| `merge_request` | 低危 | **遗留**（2026-10 架构修订：合并进程退役，会话直连主检出与用户当前分支，不再有分支合并流程）——被调用时如实返回说明、不启动任何任务；合并实现（mergejob.go / merger Agent）保留在库中以便将来恢复隔离模式。提交/推送用 `workspace_sync`（直接 push 当前分支），回滚用 `workspace_rollback` |
 | `ask_user` | 低危 | 向用户提问并等待回答（确认门的「提问」形态，`Kind="ask"`）：回答文本作为工具结果回填；用户跳过 = 「用户没有回答，自行决策」；**auto 审批档不豁免提问**；与高危确认共用同一个挂起槽位 |
 | `workspace_status` | 低危 | 查询项目工作区状态（**只读**）：主检出的未提交/未跟踪文件、各会话分支 ahead/工作树/是否已并入主检出、集成分支的领先/落后；未分组会话报「没有归属项目」 |
 | `workspace_sync` | 中危 | 「帮我提交/推送」的链路：提交本会话 worktree（干净则跳过）→ 起合并进程（`startMergeJob` 加 `pushAfter` 参数，合并成功后推 `origin`，push 失败 detail 写清「合并已完成，仅推送失败」）；执行前走确认门 |

@@ -21,7 +21,6 @@ import (
 	"github.com/moyunteng/lxcode/internal/jobs"
 	"github.com/moyunteng/lxcode/internal/llm"
 	"github.com/moyunteng/lxcode/internal/project"
-	"github.com/moyunteng/lxcode/internal/tools"
 )
 
 // mergeSourcesOf 把扫描结果整理成分支名集合（断言用）。
@@ -44,15 +43,18 @@ func TestMergeScanSelectsChangedBranches(t *testing.T) {
 
 	// A1：发起会话，领先 1 个提交
 	a1 := createTestSession(t, client, metaA.ID)
+	legacyWorktree(t, srv, metaA.ID, a1)
 	sendTurn(t, srv, client, a1, "A1")
 	commitChange(t, srv, a1, "a1.txt")
 	// A2：领先 1 个提交
 	a2 := createTestSession(t, client, metaA.ID)
+	legacyWorktree(t, srv, metaA.ID, a2)
 	sendTurn(t, srv, client, a2, "A2")
 	commitChange(t, srv, a2, "a2.txt")
 	// A3：提交后把集成分支指到它的头（已并入），再放一个未跟踪文件（工作树脏）
 	//→ ahead 0、dirty 1，仍然入选
 	a3 := createTestSession(t, client, metaA.ID)
+	legacyWorktree(t, srv, metaA.ID, a3)
 	sendTurn(t, srv, client, a3, "A3")
 	commitChange(t, srv, a3, "a3.txt")
 	wt3, err := srv.st.WorktreeOf(a3)
@@ -65,11 +67,13 @@ func TestMergeScanSelectsChangedBranches(t *testing.T) {
 	}
 	// A4：发过一轮但没有任何改动 → 分支存在但无提交且干净 → 跳过
 	a4 := createTestSession(t, client, metaA.ID)
+	legacyWorktree(t, srv, metaA.ID, a4)
 	sendTurn(t, srv, client, a4, "A4")
 	// A5：从未发过消息 → 无 worktree 元数据 → 跳过
 	_ = createTestSession(t, client, metaA.ID)
 	// B1：其他项目的会话，有自己的提交 → 不属于本项目 → 跳过
 	b1 := createTestSession(t, client, metaB.ID)
+	legacyWorktree(t, srv, metaB.ID, b1)
 	sendTurn(t, srv, client, b1, "B1")
 	commitChange(t, srv, b1, "b1.txt")
 
@@ -114,6 +118,7 @@ func TestMergeScanEdgeCases(t *testing.T) {
 		repo := initGitProject(t)
 		meta := addAutoCommitProject(t, client, repo)
 		id := createTestSession(t, client, meta.ID)
+		legacyWorktree(t, srv, meta.ID, id)
 		sendTurn(t, srv, client, id, "已并入")
 		commitChange(t, srv, id, "m.txt")
 		wt, _ := srv.st.WorktreeOf(id)
@@ -130,6 +135,7 @@ func TestMergeScanEdgeCases(t *testing.T) {
 		repo := initGitProject(t)
 		meta := addAutoCommitProject(t, client, repo)
 		id := createTestSession(t, client, meta.ID)
+		legacyWorktree(t, srv, meta.ID, id)
 		sendTurn(t, srv, client, id, "脏工作树")
 		commitChange(t, srv, id, "m2.txt")
 		wt, _ := srv.st.WorktreeOf(id)
@@ -149,9 +155,11 @@ func TestMergeScanEdgeCases(t *testing.T) {
 		repo := initGitProject(t)
 		meta := addAutoCommitProject(t, client, repo)
 		other := createTestSession(t, client, meta.ID)
+		legacyWorktree(t, srv, meta.ID, other)
 		sendTurn(t, srv, client, other, "别的会话")
 		commitChange(t, srv, other, "o.txt")
 		id := createTestSession(t, client, meta.ID)
+		legacyWorktree(t, srv, meta.ID, id)
 		sendTurn(t, srv, client, id, "我这边没改") // 分支无提交且干净
 		sources, note, err := srv.scanProjectBranches(context.Background(), repo, meta.ID, "lxcode/integration", id)
 		if err != nil {
@@ -291,18 +299,13 @@ func TestMergeJobRollsBackStrayCommit(t *testing.T) {
 	srv, client, mgr := newJobTestServer(t, stream)
 	meta := addAutoCommitProject(t, client, repo)
 	id := createTestSession(t, client, meta.ID)
+	legacyWorktree(t, srv, meta.ID, id)
 	sendTurn(t, srv, client, id, "你好")
 	commitChange(t, srv, id, "a.txt")
 
-	out := callMergeRequest(srv, id, "")
-	jobID := ""
-	for _, snap := range mgr.List(id) {
-		if snap.Kind == "merge" {
-			jobID = snap.ID
-		}
-	}
-	if jobID == "" || !strings.Contains(out, jobID) {
-		t.Fatalf("应起一条合并任务: out=%q", out)
+	jobID, err := startMergeDirect(srv, id)
+	if err != nil {
+		t.Fatalf("startMergeJob 应成功: %v", err)
 	}
 	snap := waitMergeJob(t, mgr, id, jobID)
 	if snap.Status != jobs.StatusFailed {
@@ -335,26 +338,29 @@ func TestMergePerProjectMutex(t *testing.T) {
 	metaA := addAutoCommitProject(t, client, repoA)
 	metaB := addAutoCommitProject(t, client, repoB)
 	a1 := createTestSession(t, client, metaA.ID)
+	legacyWorktree(t, srv, metaA.ID, a1)
 	sendTurn(t, srv, client, a1, "A1")
 	commitChange(t, srv, a1, "a1.txt")
 	a2 := createTestSession(t, client, metaA.ID)
+	legacyWorktree(t, srv, metaA.ID, a2)
 	sendTurn(t, srv, client, a2, "A2")
 	commitChange(t, srv, a2, "a2.txt")
 	b1 := createTestSession(t, client, metaB.ID)
+	legacyWorktree(t, srv, metaB.ID, b1)
 	sendTurn(t, srv, client, b1, "B1")
 	commitChange(t, srv, b1, "b1.txt")
 
 	// A1 发起（阻塞在合并子会话上，保持 running）
-	if out := callMergeRequest(srv, a1, ""); strings.Contains(out, "错误:") {
-		t.Fatalf("A1 发起应成功: %q", out)
+	if _, err := startMergeDirect(srv, a1); err != nil {
+		t.Fatalf("A1 发起应成功: %v", err)
 	}
 	// 同项目 A2 发起 → 拒绝（按项目互斥，即使不是同一会话）
-	if out := callMergeRequest(srv, a2, ""); !strings.Contains(out, "该项目已有合并进程在跑") {
-		t.Fatalf("同项目第二个会话发起应被拒: %q", out)
+	if _, err := startMergeDirect(srv, a2); err == nil || !strings.Contains(err.Error(), "该项目已有合并进程在跑") {
+		t.Fatalf("同项目第二个会话发起应被拒: %v", err)
 	}
 	// 不同项目 B1 发起 → 放行
-	if out := callMergeRequest(srv, b1, ""); strings.Contains(out, "错误:") {
-		t.Fatalf("不同项目发起应放行: %q", out)
+	if _, err := startMergeDirect(srv, b1); err != nil {
+		t.Fatalf("不同项目发起应放行: %v", err)
 	}
 	// 放行两个合并子会话，等任务收尾
 	release <- struct{}{}
@@ -377,9 +383,9 @@ func TestMergePerProjectMutex(t *testing.T) {
 	srv.waitAutoCommits()
 }
 
-// TestMergeSyncGetsMultiBranch：workspace_sync 走同一条 startMergeJob——
-// 自动获得多分支行为（本项目另一个会话的分支被一并写进任务说明书）。
-func TestMergeSyncGetsMultiBranch(t *testing.T) {
+// TestStartMergeJobGetsMultiBranch：startMergeJob 的多分支行为（本项目另一个
+// 会话的分支被一并写进任务说明书）。遗留链路：用存量 worktree 数据形态驱动。
+func TestStartMergeJobGetsMultiBranch(t *testing.T) {
 	repo := initGitProject(t)
 	var mu sync.Mutex
 	var taskText string
@@ -400,26 +406,18 @@ func TestMergeSyncGetsMultiBranch(t *testing.T) {
 	srv, client, mgr := newJobTestServer(t, stream)
 	meta := addAutoCommitProject(t, client, repo)
 	a1 := createTestSession(t, client, meta.ID)
+	legacyWorktree(t, srv, meta.ID, a1)
 	sendTurn(t, srv, client, a1, "A1")
 	commitChange(t, srv, a1, "a1.txt")
 	a2 := createTestSession(t, client, meta.ID)
+	legacyWorktree(t, srv, meta.ID, a2)
 	sendTurn(t, srv, client, a2, "A2")
 	commitChange(t, srv, a2, "a2.txt")
 
-	// A1 走 workspace_sync（「帮我提交」链路）发起合并
-	out := callWorkspaceTool(srv, a1, tools.WorkspaceSyncToolName, map[string]any{"message": "同步提交"})
-	if strings.Contains(out, "错误:") {
-		t.Fatalf("workspace_sync 不该报错: %q", out)
-	}
-	deadline := time.Now().Add(5 * time.Second)
-	var jobID string
-	for time.Now().Before(deadline) && jobID == "" {
-		for _, snap := range mgr.List(a1) {
-			if snap.Kind == "merge" {
-				jobID = snap.ID
-			}
-		}
-		time.Sleep(10 * time.Millisecond)
+	// A1 直接起合并任务
+	jobID, err := startMergeDirect(srv, a1)
+	if err != nil {
+		t.Fatalf("startMergeJob 应成功: %v", err)
 	}
 	waitMergeJob(t, mgr, a1, jobID)
 	mu.Lock()

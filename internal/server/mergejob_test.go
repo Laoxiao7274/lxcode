@@ -15,8 +15,10 @@ import (
 	"github.com/moyunteng/lxcode/internal/config"
 	"github.com/moyunteng/lxcode/internal/jobs"
 	"github.com/moyunteng/lxcode/internal/llm"
+	"github.com/moyunteng/lxcode/internal/project"
 	"github.com/moyunteng/lxcode/internal/protocol"
 	"github.com/moyunteng/lxcode/internal/sessiondata"
+	"github.com/moyunteng/lxcode/internal/store"
 	"github.com/moyunteng/lxcode/internal/tools"
 )
 
@@ -52,7 +54,31 @@ func mergeBlockStream(release <-chan struct{}) testStream {
 	}
 }
 
-// sendTurn 发一条消息并等这一轮结束（建立 worktree、写标题）。
+// legacyWorktree 给会话伪造存量 worktree 状态（2026-10 直连架构不再自动建 worktree；
+// 合并链路已退役为遗留——这些测试用老库的数据形态驱动保留在库里的合并代码）。
+func legacyWorktree(t *testing.T, srv *Server, projectID, sessionID string) project.Worktree {
+	t.Helper()
+	meta, found, err := srv.st.ProjectByID(projectID)
+	if err != nil || !found {
+		t.Fatalf("project %s not found: found=%v err=%v", projectID, found, err)
+	}
+	wt, err := project.CreateWorktree(meta.Path, srv.st.WorktreeRoot(), projectID, sessionID)
+	if err != nil {
+		t.Fatalf("构造老 worktree 失败: %v", err)
+	}
+	if err := srv.st.SetWorktree(sessionID, store.WorktreeMeta{Path: wt.Path, Branch: wt.Branch, BaseCommit: wt.BaseCommit}); err != nil {
+		t.Fatal(err)
+	}
+	return wt
+}
+
+// startMergeDirect 直接经 startMergeJob 起合并任务（遗留链路的测试入口：
+// merge_request 工具已退役为只回说明、不再起任务，见 tools/merge.go）。
+func startMergeDirect(srv *Server, sessionID string) (string, error) {
+	return srv.startMergeJob(sessionID, "", false)
+}
+
+// sendTurn 发一条消息并等这一轮结束（对准主检出并写标题）。
 // 之后还要等在途的自动提交收尾：合并发起时的扫描按「分支领先/工作树脏」判定
 // 有无改动，检查点提交没落库会被判成无改动（生产路径当前轮改动以未提交形态
 // 被 dirty 计入，不受影响）。
@@ -138,67 +164,82 @@ func commitChange(t *testing.T, srv *Server, id, name string) {
 	gitServerTest(t, wt.Path, "commit", "-m", "test change "+name)
 }
 
-// TestMergeRequestStartsJob：用例 1 —— 项目会话起合并任务，立刻返回 job id，
-// List 里出现一条 Kind=="merge" 的任务，标签含会话标题。
-func TestMergeRequestStartsJob(t *testing.T) {
+// TestStartMergeJobStartsJob：用例 1 —— 项目会话（存量 worktree 形态）直接起合并
+// 任务，立刻返回 job id，List 里出现一条 Kind=="merge" 的任务，标签含会话标题。
+// （merge_request 工具已退役为只回说明，任务入口改为直接调 startMergeJob。）
+func TestStartMergeJobStartsJob(t *testing.T) {
 	repo := initGitProject(t)
 	srv, client, mgr := newJobTestServer(t, immediateStream)
 	meta := addAutoCommitProject(t, client, repo)
 	id := createTestSession(t, client, meta.ID)
-	sendTurn(t, srv, client, id, "你好") // 建立 worktree 并写标题
+	legacyWorktree(t, srv, meta.ID, id)
+	sendTurn(t, srv, client, id, "你好") // 对准主检出并写标题
 	commitChange(t, srv, id, "a.txt")   // 留一个可合并的检查点提交
 
-	out := callMergeRequest(srv, id, "")
-	if !strings.Contains(out, "合并进程已启动") {
-		t.Fatalf("merge_request 应回提示语: %q", out)
+	jobID, err := startMergeDirect(srv, id)
+	if err != nil {
+		t.Fatalf("startMergeJob 应成功: %v", err)
 	}
 	// 任务出现在列表里，Kind 与标签符合
 	var found jobs.Snapshot
 	for _, snap := range mgr.List(id) {
-		if snap.Kind == "merge" {
+		if snap.ID == jobID {
 			found = snap
 			break
 		}
 	}
-	if found.ID == "" {
-		t.Fatal("jobs.List 里没有 Kind==merge 的任务")
+	if found.ID == "" || found.Kind != "merge" {
+		t.Fatalf("jobs.List 里没有刚起的合并任务: %+v", found)
 	}
 	if !strings.Contains(found.Label, "你好") {
 		t.Fatalf("合并任务标签应含会话标题: %q", found.Label)
-	}
-	if !strings.Contains(out, found.ID) {
-		t.Fatalf("提示语应含任务 id %s: %q", found.ID, out)
 	}
 	waitMergeJob(t, mgr, id, found.ID)
 	waitSessionIdle(t, srv, id) // 等唤醒开的这一轮与在途自动提交收尾
 	srv.waitAutoCommits()
 }
 
-// TestMergeRequestRejectsUngroupedSession：用例 2 —— 未分组会话没有可合并的分支。
-func TestMergeRequestRejectsUngroupedSession(t *testing.T) {
-	srv, client, _ := newJobTestServer(t, immediateStream)
-	id := createTestSession(t, client, "") // 未分组会话
+// TestMergeRequestToolReturnsLegacyNotice：merge_request 工具（已退役）被调用 →
+// 如实回说明、不启动任何任务。
+func TestMergeRequestToolReturnsLegacyNotice(t *testing.T) {
+	srv, client, mgr := newJobTestServer(t, immediateStream)
+	id := createTestSession(t, client, "") // 未分组会话也一样：工具不再区分场景
 	out := callMergeRequest(srv, id, "")
-	if !strings.Contains(out, "没有可合并的分支") {
-		t.Fatalf("未分组会话应明确报错: %q", out)
+	if !strings.Contains(out, "合并流程已退役") || !strings.Contains(out, "workspace_sync") {
+		t.Fatalf("merge_request 应回退役说明: %q", out)
+	}
+	for _, snap := range mgr.List(id) {
+		if snap.Kind == "merge" {
+			t.Fatalf("merge_request 不该再启动合并任务: %+v", snap)
+		}
 	}
 }
 
-// TestMergeRequestRejectsConcurrent：用例 3 —— 同一项目同时只允许一个在跑的合并进程。
-func TestMergeRequestRejectsConcurrent(t *testing.T) {
+// TestStartMergeJobRejectsUngroupedSession：用例 2 —— 未分组会话没有可合并的分支。
+func TestStartMergeJobRejectsUngroupedSession(t *testing.T) {
+	srv, client, _ := newJobTestServer(t, immediateStream)
+	id := createTestSession(t, client, "") // 未分组会话
+	if _, err := startMergeDirect(srv, id); err == nil || !strings.Contains(err.Error(), "没有可合并的分支") {
+		t.Fatalf("未分组会话应明确报错: %v", err)
+	}
+}
+
+// TestStartMergeJobRejectsConcurrent：用例 3 —— 同一项目同时只允许一个在跑的合并进程。
+func TestStartMergeJobRejectsConcurrent(t *testing.T) {
 	repo := initGitProject(t)
 	release := make(chan struct{}, 4)
 	srv, client, mgr := newJobTestServer(t, mergeBlockStream(release))
 	meta := addAutoCommitProject(t, client, repo)
 	id := createTestSession(t, client, meta.ID)
-	sendTurn(t, srv, client, id, "你好") // 建立 worktree
+	legacyWorktree(t, srv, meta.ID, id)
+	sendTurn(t, srv, client, id, "你好") // 对准主检出
 	commitChange(t, srv, id, "a.txt")   // 留一个可合并的检查点提交
 
-	if out := callMergeRequest(srv, id, ""); strings.Contains(out, "错误:") {
-		t.Fatalf("第一次 merge_request 应成功: %q", out)
+	if _, err := startMergeDirect(srv, id); err != nil {
+		t.Fatalf("第一次发起应成功: %v", err)
 	}
-	if out := callMergeRequest(srv, id, ""); !strings.Contains(out, "已有合并进程在跑") {
-		t.Fatalf("第二次 merge_request 应报已有在跑: %q", out)
+	if _, err := startMergeDirect(srv, id); err == nil || !strings.Contains(err.Error(), "已有合并进程在跑") {
+		t.Fatalf("第二次发起应报已有在跑: %v", err)
 	}
 	// 放行合并子会话，等它收尾（避免测试结束时 goroutine 还在写库）
 	release <- struct{}{}
@@ -227,18 +268,13 @@ func TestMergeJobSettleNotifiesParent(t *testing.T) {
 	srv, client, mgr := newJobTestServer(t, rec.stream)
 	meta := addAutoCommitProject(t, client, repo)
 	id := createTestSession(t, client, meta.ID)
+	legacyWorktree(t, srv, meta.ID, id)
 	sendTurn(t, srv, client, id, "你好")
 	commitChange(t, srv, id, "a.txt") // 留一个可合并的检查点提交（空转轮无改动会被拒绝）
 
-	out := callMergeRequest(srv, id, "")
-	jobID := ""
-	for _, snap := range mgr.List(id) {
-		if snap.Kind == "merge" {
-			jobID = snap.ID
-		}
-	}
-	if jobID == "" || !strings.Contains(out, jobID) {
-		t.Fatalf("应起一条合并任务: out=%q", out)
+	jobID, err := startMergeDirect(srv, id)
+	if err != nil {
+		t.Fatalf("startMergeJob 应成功: %v", err)
 	}
 	snap := waitMergeJob(t, mgr, id, jobID)
 	if snap.Status != jobs.StatusCompleted {
@@ -301,17 +337,14 @@ func TestMergeJobBroadcastsDispatchEvents(t *testing.T) {
 	srv, client, mgr := newJobTestServer(t, immediateStream)
 	meta := addAutoCommitProject(t, client, repo)
 	id := createTestSession(t, client, meta.ID)
+	legacyWorktree(t, srv, meta.ID, id)
 	sendTurn(t, srv, client, id, "你好")
 	commitChange(t, srv, id, "a.txt") // 留一个可合并的检查点提交
 
-	// 用户从后台任务面板发起（chat.mergeRequest——与 merge_request 工具同一条路径）
-	resp := client.call(protocol.MethodChatMergeRequest, protocol.ChatMergeRequestParams{SessionID: id})
-	if resp == nil || resp.Error != nil {
-		t.Fatalf("chat.mergeRequest 失败: %+v", resp)
-	}
-	var mr protocol.MergeRequestResult
-	if b, err := json.Marshal(resp.Result); err != nil || json.Unmarshal(b, &mr) != nil || mr.JobID == "" {
-		t.Fatalf("chat.mergeRequest 未回 job_id: %s", string(b))
+	// 直接起任务（chat.mergeRequest 协议方法已退役为回说明，不起任务）
+	jobID, err := startMergeDirect(srv, id)
+	if err != nil {
+		t.Fatalf("startMergeJob 应成功: %v", err)
 	}
 
 	// dispatchStart：归属父会话，带子会话 id 作 dispatch_id 与 session_id
@@ -349,7 +382,7 @@ func TestMergeJobBroadcastsDispatchEvents(t *testing.T) {
 		t.Fatalf("dispatchEnd 应带子会话结论: %+v", ep)
 	}
 	// 任务本身照常收尾，且结束后父会话收到唤醒通告（既有链路不受影响）
-	snap := waitMergeJob(t, mgr, id, mr.JobID)
+	snap := waitMergeJob(t, mgr, id, jobID)
 	if snap.Status != jobs.StatusCompleted {
 		t.Fatalf("合并任务应收尾为完成: %+v", snap)
 	}

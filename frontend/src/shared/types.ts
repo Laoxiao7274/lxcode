@@ -440,9 +440,8 @@ export interface AgentSource {
   newSession(workspace?: string): Promise<string>;
   /** 释放干净项目会话的 worktree 目录，保留分支与会话数据。 */
   releaseWorktree(id: string): Promise<void>;
-  /** 起一个后台合并进程（后台任务面板「合并请求」入口——与 merge_request 工具
-   *  同一条后端路径 chat.mergeRequest）。返回任务 id；targetBranch 空 = 默认
-   *  lxcode/integration。失败抛错（未分组会话 / 已有在跑的合并进程等，文案照后端）。 */
+  /** 起一个后台合并进程（**遗留**：合并流程已退役——后端如实回说明并拒绝）。
+   *  保留签名便于将来恢复隔离模式。 */
   mergeRequest(sessionId: string, targetBranch?: string): Promise<string>;
   /** 恢复会话。 */
   resumeSession(id: string): Promise<void>;

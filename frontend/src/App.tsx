@@ -1,5 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { gsap } from "gsap";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";import { gsap } from "gsap";
 import { motionAllowed } from "./shared/motion";
 import {
   childTabHint,
@@ -31,7 +30,6 @@ import { GitWorkbenchPage } from "./components/git/GitWorkbenchPage";
 import { RemoteAccessPage } from "./components/remote/RemoteAccessPage";
 import { Topbar } from "./components/topbar";
 import { Sidebar, LOOSE } from "./components/sidebar";
-import type { MergeEntry } from "./components/jobs";
 import { Thread } from "./components/thread";
 import { Composer, type ComposerDraft } from "./components/composer";
 import type { SlashCommand } from "./components/composer/SlashPalette";
@@ -243,19 +241,9 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
   const activeChildId = childTabSession(view);
   const activeParent = activeChildId !== null ? childParents[activeChildId] ?? currentId : currentId;
 
-  // 「合并请求」入口（后台任务面板）：只对项目会话可用——workspace 取当前会话
-  // 的归属（列表还没刷新到新会话时回落对话范围 filter：刚建的会话本来就没有
-  // 可合并的分支，落 "" 与落项目 id 的差别只是入口能不能点，后端还有同一道校验）。
-  const currentWorkspace =
-    source.sessions().find((s) => s.id === currentId)?.workspace ?? (filter === LOOSE ? "" : filter);
-  const handleMergeStart = useCallback(async (sessionId: string, targetBranch: string) => {
-    await source.mergeRequest(sessionId, targetBranch);
-  }, [source]);
-  const mergeEntry = useMemo<MergeEntry | undefined>(() => {
-    if (!currentId) return undefined;
-    return { sessionId: currentId, workspace: currentWorkspace, onStart: handleMergeStart };
-  }, [currentId, currentWorkspace, handleMergeStart]);
-
+  // 「合并请求」入口已随合并进程退役摘除（2026-10 架构修订：会话直连主检出，
+  // 没有分支合并流程）。mergeRequest 的 source 方法与 JobsPanel 的 MergeRow 组件
+  // 保留（协议方法在，后端如实回说明），但面板不再渲染这个入口。
   const projects = source.projects();
   useEffect(() => {
     if (view === "git" && !gitProjectId && projects.length > 0) setGitProjectId(projects[0].id);
@@ -738,7 +726,6 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
         taskTitle={viewTitle}
         source={source}
         connected={wsConnected}
-        merge={mergeEntry}
       />
       <TabBar
         source={source}
