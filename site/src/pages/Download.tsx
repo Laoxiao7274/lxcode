@@ -4,7 +4,8 @@
 //   Windows — /api/releases 里最新已发布的 stable（latestPublished），读不到回落到
 //             WINDOWS_FALLBACK_VERSION 常量（只展示版本号，产物列表仍以接口为准）；
 //   Android — ANDROID_APK 常量（安卓独立版本源，不进发布模型）。
-// 桌面与安卓发版节奏不同（桌面 0.2.3、安卓 0.2.2），共用一个版本号会让用户把
+// 桌面与安卓发版节奏不同（桌面 0.2.3、安卓 0.2.3——本次安卓重发包修复安装器
+// 「packageinfo is null」问题，改 v1+v2 双签名），共用一个版本号会让用户把
 // 两个平台的版本混为一谈，所以页面头部不再报「最新 stable：x.y.z」，改由各平台
 // 区块各自标注自己的版本。
 //
@@ -51,11 +52,11 @@ const WINDOWS_FALLBACK_VERSION = "0.2.3";
  * 桌面与安卓发版节奏不同，versionName 不再与桌面版本对齐，换包必须同步改。
  */
 const ANDROID_APK = {
-  version: "0.2.2",
-  name: "lxcode-0.2.2-android.apk",
-  size: 11608987,
-  sha256: "e64d3cfeaa819db93d566f1c52cfd9b84e1e9e767a365cdadce5e914c0f78fd9",
-  url: "downloads/lxcode-0.2.2-android.apk",
+  version: "0.2.3",
+  name: "lxcode-0.2.3-android.apk",
+  size: 11622193,
+  sha256: "b92b9899c802c951a64046badd726d807de407d4edcc45a60ada5d711c1d91a8",
+  url: "downloads/lxcode-0.2.3-android.apk",
 };
 
 const KINDS: Array<{
