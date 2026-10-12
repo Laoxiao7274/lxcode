@@ -9,7 +9,11 @@ export type { ModelMeta, ModelPatch, ProviderMeta, ProviderPatch, EffortId } fro
 export { CONNECTABLE_PROVIDERS } from "./settings-catalog";
 
 export interface Settings {
-  model: string; effort: EffortId; approval: ApprovalMode;
+  model: string; effort: EffortId;
+  /** 当前会话权限档的**显示镜像**——真实值在后端（会话级状态，落库持久化）。
+   *  由 shared/approval.ts 的反向同步维护（approvalChanged 广播 / chat.history
+   *  的 approval 对齐），不是本地偏好：改档走 applyApproval（chat.approval）。 */
+  approval: ApprovalMode;
   showThinking: boolean; showFullOutput: boolean; keepAwake: boolean;
   enterToSend: boolean; personality: "friendly" | "pragmatic" | "none";
   /** 主题（浅色/深色/跟随系统——前端态，后端化时落配置）。 */
@@ -20,6 +24,8 @@ export interface Settings {
 const DEFAULTS: Settings = { model: "MYT", effort: "medium", approval: "confirm", showThinking: true,
   showFullOutput: true, keepAwake: false, enterToSend: true, personality: "pragmatic",
   theme: "system", gitBranch: "main" };
+// DEFAULTS.approval = 镜像的初始值（confirm 是协议缺省档）——真实档位以
+// chat.history 回带的 approval 为准（反向同步覆盖它），这里只是首屏占位。
 // 档位目录（后端协议值域——chat.send 的 effort 参数；仅对声明 reasoning
 // 能力的模型生效，选择器在 ModelPicker 里按模型能力显隐）
 export const EFFORTS: { id: EffortId; label: string; hint: string }[] = [
@@ -36,9 +42,9 @@ export const APPROVALS = [
 ] as const;
 interface ContextValue {
   settings: Settings; set(patch: Partial<Settings>): void;
-  /** 改权限档：本地持久化 + **立刻发给后端**（运行中的一轮即刻生效）。
-   *  与 set({approval}) 的区别就是后半句——只改本地设置要等下一次 chat.send
-   *  才到后端，那时运行中的那一轮早按旧档位跑完了。 */
+  /** 改**当前会话**的权限档：更新镜像 + 立刻发给后端（chat.approval——后端
+   *  落库并广播，运行中的一轮即刻生效）。镜像只管显示即时反馈；真实值以
+   *  后端回执（approvalChanged 广播）为准。 */
   applyApproval(mode: ApprovalMode): void;
   providers: ProviderMeta[];
   live: boolean; error: string | null;
@@ -104,8 +110,9 @@ export function SettingsProvider({ source, children }: { source: AgentSource; ch
     setLocal((s) => (s.approval === mode ? s : { ...s, approval: mode }));
   }), [source]);
   const applyApproval = useCallback((mode: ApprovalMode) => {
+    // 镜像先动（选择器立刻反馈）；后端落库 + 广播后反向同步会对齐到规范化档位
+    //（与本地写入值一致，二次 setLocal 是幂等 no-op）。
     setLocal((s) => (s.approval === mode ? s : { ...s, approval: mode }));
-    // 两件事都要做：本地持久化管下次开应用，这次调用管**当前**这一轮。
     void run(() => source.setApproval(mode));
   }, [source, run]);
   const setModelVisible = (pid: string, id: string, on: boolean) => {

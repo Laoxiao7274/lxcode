@@ -121,7 +121,11 @@ fun Composer(state: MockAppState, real: com.moyunteng.lxcode.remote.net.RealBack
     // ===== 模型 / 审批档选择状态（本次补真下拉菜单）=====
     var modelId by remember { mutableStateOf(MockData.DEFAULT_MODEL_ID) }
     var effort by remember { mutableStateOf(MockData.DEFAULT_EFFORT) }
-    var approval by remember { mutableStateOf("confirm") }
+    // 审批档是**会话级状态**（后端落库）：真实模式读 RealBackend（chat.history
+    // 回读 + approvalChanged 广播维护，切会话即随会话走）；mock 模式本地自管。
+    // null = 后端没报（老后端/刚切会话还没装载历史）→ 回落「默认」，不猜。
+    var mockApproval by remember { mutableStateOf("confirm") }
+    val approval = real?.approval ?: mockApproval
     var modelMenuOpen by remember { mutableStateOf(false) }
     var effortPanelOpen by remember { mutableStateOf(false) } // 模型菜单里的二级推理强度面板
     var permMenuOpen by remember { mutableStateOf(false) }
@@ -312,7 +316,9 @@ fun Composer(state: MockAppState, real: com.moyunteng.lxcode.remote.net.RealBack
                                         }
                                     }
                                     permConfirming = false
-                                    approval = id
+                                    // 真实模式走协议（chat.approval：后端落库 + 广播，
+                                    // approvalChanged 回来对齐药丸）；mock 模式本地记
+                                    if (real != null) real.changeApproval(id) else mockApproval = id
                                     permMenuOpen = false
                                 },
                             )

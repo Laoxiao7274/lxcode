@@ -1,7 +1,7 @@
 // 块与 UI 状态的定义 + 纯工具函数（不含事件归约——那是 reduce.ts）。
 // 单独一个文件：组件只依赖类型与这几个 helper，不必把整个 reducer 拖进依赖图。
 
-import type { ConfirmRequest, ContextUsage, FileChange, JobInfo, SessionStats, TodoItem } from "./types";
+import type { ApprovalMode, ConfirmRequest, ContextUsage, FileChange, JobInfo, SessionStats, TodoItem } from "./types";
 
 export interface AssistantBlock {
   kind: "assistant";
@@ -131,9 +131,14 @@ export interface UIState {
    *  子会话页头显示的是**它自己的**模型——子 Agent 可以用与主会话不同的模型
    *  （AGENTS.md §2.3：子会话是独立会话），拿主会话的模型冒充是假数据。 */
   model: string;
+  /** 该会话**此刻**的权限档（会话级状态——后端落库的那份）。null = 未知
+   *  （老后端/演示源没报）：显示端不猜，回落 confirm。数据来自两条路：
+   *  chat.history 的 approval 键（回放对齐）与 chat.approvalChanged 事件
+   *  （实时改档）——reduceSessionStates 按 sessionId 路由，天然按会话隔离。 */
+  approval: ApprovalMode | null;
 }
 
-export const initial: UIState = { blocks: [], busy: false, pending: null, todos: [], currentId: "", operationError: null, context: null, stats: null, historyReady: false, model: "", sending: false };
+export const initial: UIState = { blocks: [], busy: false, pending: null, todos: [], currentId: "", operationError: null, context: null, stats: null, historyReady: false, model: "", sending: false, approval: null };
 
 // 块的唯一序号——React 渲染的稳定 key（index 作 key 在插入新块时
 // 会错位复用组件实例，是重复渲染类怪象的根因）。

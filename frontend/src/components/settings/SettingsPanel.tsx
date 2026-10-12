@@ -6,7 +6,7 @@ import { gsap } from "gsap";
 import { useSettings, EFFORTS, APPROVALS } from "../../shared/settings";
 import { approvalPick } from "../../shared/approval";
 import { Button, Segmented } from "../form";
-import type { AgentSource, SessionMeta, TodoPromptMode } from "../../shared/types";
+import type { AgentSource, ApprovalMode, SessionMeta, TodoPromptMode } from "../../shared/types";
 import { motionAllowed, staggerIn, enterEase } from "../../shared/motion";
 import { useEscape } from "../../shared/popover";
 import { ApprovalConfirmDialog } from "../perm-picker/ApprovalConfirmDialog";
@@ -41,7 +41,7 @@ const TODO_PROMPT_MODES: { value: TodoPromptMode; label: string; hint: string }[
 ];
 
 export function SettingsPanel({ open, onClose, source }: { open: boolean; onClose: () => void; source: AgentSource }) {
-  const { settings, set, applyApproval, providers, error } = useSettings();
+  const { settings, set, providers, error } = useSettings();
   const [section, setSection] = useState<SectionId>("general");
   const [connectOpen, setConnectOpen] = useState(false);
   const [modelEdit, setModelEdit] = useState<{ providerId: string; modelId: string } | null>(null);
@@ -58,8 +58,23 @@ export function SettingsPanel({ open, onClose, source }: { open: boolean; onClos
     if (todoAdmin) void todoAdmin.set(mode);
     else setTodoMode(mode);
   };
-  // 「高危操作」切完全访问的确认弹窗（与输入区 PermPicker 同一条规则、同一个
-  // 弹窗组件——两个入口任何一个都不能一下就把高危确认门关掉）
+  // 新会话默认审批档（behavior.json 的 approval——后端级行为开关）：live 模式
+  // 后端是唯一事实源（get 初始化 + settings.defaultApproval.changed 广播对齐 +
+  // set 写回落盘）；demo 源同名方法本地自管，形状一致（无后端也能验 UI）。
+  const [defApproval, setDefApproval] = useState<ApprovalMode>("confirm");
+  useEffect(() => {
+    let alive = true;
+    source.defaultApproval().then((m) => { if (alive) setDefApproval(m); }).catch(() => { /* 读不到保持缺省 */ });
+    const off = source.subscribe((ev) => {
+      if (ev.type === "defaultApprovalChanged") setDefApproval(ev.approval);
+    });
+    return () => { alive = false; off(); };
+  }, [source]);
+  const setDefaultApproval = (mode: ApprovalMode) => {
+    void source.setDefaultApproval(mode).catch(() => { /* 失败静默：下一次 get 会对齐 */ });
+  };
+  // 默认档切「完全访问」的确认弹窗（与输入区 PermPicker 同一条规则、同一个
+  // 弹窗组件——默认档放开的是**以后所有新会话**的执行面，更不能一下就关掉）
   const [confirmAutoOpen, setConfirmAutoOpen] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
 
@@ -117,7 +132,7 @@ export function SettingsPanel({ open, onClose, source }: { open: boolean; onClos
         <div className="settings-content">
           <div className="settings-content-inner" ref={contentRef}>
             {section === "general" && (
-              <Section title="通用" desc="模型、推理强度与权限模式随消息发送；输出展示与输入行为即时生效。">
+              <Section title="通用" desc="模型与推理强度随消息发送；权限档是会话级状态（当前会话在输入区权限选择器里改，这里只管新会话的默认档）。">
                 <SelectRow
                   label="模型"
                   value={settings.model}
@@ -143,15 +158,18 @@ export function SettingsPanel({ open, onClose, source }: { open: boolean; onClos
                     </SegRow>
                   );
                 })()}
-                <SegRow label="高危操作">
-                  {/* 与输入区的权限选择器同一个入口语义：改档立刻发给后端（运行中的一轮即刻生效），不是只存本地等下一次发送。
-                      切「完全访问」先弹确认弹窗（approvalPick 分流，收权方向不拦），确认才真的改档。 */}
+                <SegRow label="新会话默认审批档">
+                  {/* 改的是**新会话**的初始档（后端 behavior.json，set 写盘并广播，
+                      立即生效于下一次建会话）——不是当前会话的档位；已有会话各自
+                      持有落库的档，在输入区权限选择器里改。切「完全访问」先弹确认
+                      弹窗（approvalPick 分流，收权方向不拦）。 */}
                   <Segmented
                     options={APPROVALS.map((a) => ({ value: a.id, label: a.label, hint: a.hint }))}
-                    value={settings.approval}
-                    onChange={(mode) => approvalPick(settings.approval, mode, applyApproval, () => setConfirmAutoOpen(true))}
-                    ariaLabel="高危操作"
+                    value={defApproval}
+                    onChange={(mode) => approvalPick(defApproval, mode, setDefaultApproval, () => setConfirmAutoOpen(true))}
+                    ariaLabel="新会话默认审批档"
                   />
+                  <div className="set-row-hint">只影响新建的会话；已有会话保持自己的档位（当前会话在输入区权限选择器里改）。</div>
                 </SegRow>
                 <SegRow label="任务清单">
                   {/* 动手前建清单的内置模板（后端级行为开关，主/子 Agent 同源）：
@@ -270,7 +288,7 @@ export function SettingsPanel({ open, onClose, source }: { open: boolean; onClos
       {connectOpen && <ConnectProviderDialog onClose={() => setConnectOpen(false)} />}
       {confirmAutoOpen && (
         <ApprovalConfirmDialog
-          onConfirm={() => { setConfirmAutoOpen(false); applyApproval("auto"); }}
+          onConfirm={() => { setConfirmAutoOpen(false); setDefaultApproval("auto"); }}
           onCancel={() => setConfirmAutoOpen(false)}
         />
       )}

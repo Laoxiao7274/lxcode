@@ -74,18 +74,19 @@ test('改档发给后端：chat.approval 带当前会话与档位（契约 B1 �
   }
 });
 
-test('改档不依赖下一次 chat.send：send 的请求级 approval 与它各自独立', async (t) => {
+test('send 不再带请求级 approval（会话级状态——恒带会静默覆盖会话档且不广播）', async (t) => {
   const { agent, ws } = setup(t);
   ws.onopen();
   await driveInit(ws);
   const changing = agent.setApproval('auto');
   ws.reply({ approval: 'auto' });
   await changing;
-  // chat.send 仍带请求级 approval（契约 E：chat.send 的参数语义不变）
+  // 即便调用方传了（老调用方残留），ws 层也把它丢掉——approval 由 chat.approval
+  // / 会话档管，不随 send 上车（持久化/隔离修复的根因之一就是这条上车路径）
   agent.send('boot-session', 'hi', { approval: 'strict' });
   const last = ws.sent.at(-1);
   assert.equal(last.method, 'chat.send');
-  assert.equal(last.params.approval, 'strict');
+  assert.equal(last.params.approval, undefined, '请求级 approval 不允许再上车');
 });
 
 // ---------- ② 收到广播反向同步设置 ----------
@@ -178,4 +179,81 @@ test('演示模式：改档 → 广播 → 设置同步（真实实现走完整�
   await agent.setApproval('nonsense');
   assert.equal(events.at(-1).approval, 'confirm');
   assert.deepEqual(applied, ['strict', 'confirm']);
+});
+
+// ---------- 会话状态归约（UIState.approval——按会话隔离） ----------
+
+test('归约：approvalChanged 落进 UIState.approval，reduceSessionStates 按会话路由', async (t) => {
+  const { reduce, reduceSessionStates } = await import('../src/shared/reduce.ts');
+  const { initial } = await import('../src/shared/blocks.ts');
+
+  // 单会话归约：事件档位直接落 state
+  const st = reduce({ ...initial }, { type: 'approvalChanged', sessionId: 's1', approval: 'strict' });
+  assert.equal(st.approval, 'strict');
+
+  // 路由：每个会话只收自己的档位变更（主会话之间不串台）
+  let states = { s1: { ...initial, currentId: 's1' }, s2: { ...initial, currentId: 's2' } };
+  states = reduceSessionStates(states, { type: 'approvalChanged', sessionId: 's1', approval: 'strict' });
+  states = reduceSessionStates(states, { type: 'approvalChanged', sessionId: 's2', approval: 'auto' });
+  assert.equal(states.s1.approval, 'strict');
+  assert.equal(states.s2.approval, 'auto');
+});
+
+test('归约：chat.history 的 approval 对齐 UIState（快照缺席不猜）', async (t) => {
+  const { reduce } = await import('../src/shared/reduce.ts');
+  const { initial } = await import('../src/shared/blocks.ts');
+
+  const rebuilt = reduce({ ...initial }, {
+    type: 'historyLoaded', sessionId: 's1',
+    history: { sessionId: 's1', messages: [], busy: false, pending: null, todos: [], approval: 'strict' },
+  });
+  assert.equal(rebuilt.approval, 'strict', '全量重建按快照对齐');
+
+  const stale = reduce({ ...initial, approval: 'strict' }, {
+    type: 'historyLoaded', sessionId: 's1',
+    history: { sessionId: 's1', messages: [], busy: false, pending: null, todos: [] },
+  });
+  assert.equal(stale.approval, 'strict', '快照没带 approval（老后端/演示源）保持原值不猜');
+});
+
+// ---------- 新会话默认审批档（settings.defaultApproval.*） ----------
+
+test('演示源：defaultApproval/setDefaultApproval 往返 + changed 广播', async (t) => {
+  const agent = new DemoAgent();
+  const events = [];
+  agent.subscribe((e) => events.push(e));
+
+  assert.equal(await agent.defaultApproval(), 'confirm', '缺省默认档 = confirm');
+  await agent.setDefaultApproval('strict');
+  assert.equal(await agent.defaultApproval(), 'strict');
+  const ev = events.at(-1);
+  assert.equal(ev.type, 'defaultApprovalChanged', 'set 后广播（真后端同形状）');
+  assert.equal(ev.approval, 'strict');
+  // 归一：未知档位不进状态
+  await agent.setDefaultApproval('nonsense');
+  assert.equal(await agent.defaultApproval(), 'confirm');
+});
+
+test('历史先到、焦点后切：historyLoaded 先于 sessionFocused 也对齐（resumeSession 帧序）', (t) => {
+  const listeners = new Set();
+  const fakeSource = { subscribe(l) { listeners.add(l); return () => listeners.delete(l); } };
+  const applied = [];
+  const off = subscribeApprovalSync(fakeSource, (mode) => applied.push(mode));
+  t.after(off);
+  const deliver = (ev) => listeners.forEach((l) => l(ev));
+
+  // 当前在看 s1（strict）
+  deliver({ type: 'sessionFocused', id: 's1' });
+  deliver({ type: 'historyLoaded', sessionId: 's1', history: { sessionId: 's1', messages: [], busy: false, pending: null, todos: [], approval: 'strict' } });
+  assert.deepEqual(applied, ['strict']);
+
+  // 点另一个会话：历史先到（此时焦点还没切）→ 焦点后切。对齐必须发生在焦点切换时
+  deliver({ type: 'historyLoaded', sessionId: 's2', history: { sessionId: 's2', messages: [], busy: false, pending: null, todos: [], approval: 'auto' } });
+  assert.deepEqual(applied, ['strict'], '历史先到时焦点还在 s1，不应用 s2 的档位');
+  deliver({ type: 'sessionFocused', id: 's2' });
+  assert.deepEqual(applied, ['strict', 'auto'], '焦点切到 s2 时按已装载的历史对齐');
+
+  // 切回 s1：不重新拉历史也有档位可对齐（known 表）
+  deliver({ type: 'sessionFocused', id: 's1' });
+  assert.deepEqual(applied, ['strict', 'auto', 'strict'], '切回已知会话按记忆的档位对齐');
 });

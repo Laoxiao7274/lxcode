@@ -82,7 +82,7 @@ test('PermPicker 静态渲染（收起态）：弹窗不渲染、二次点击形
   assert.ok(!html.includes('perm-item confirming'), '二次点击确认态样式必须消失: ' + html);
 });
 
-test('SettingsPanel 静态渲染：高危操作分段在、旧内联确认条消失', () => {
+test('SettingsPanel 静态渲染：新会话默认审批档分段在、旧内联确认条消失', () => {
   const html = renderToStaticMarkup(createElement(
     SettingsProvider,
     { source: fakeSource() },
@@ -90,7 +90,10 @@ test('SettingsPanel 静态渲染：高危操作分段在、旧内联确认条消
       createElement(SettingsPanel, { open: true, onClose: () => {}, source: fakeSource() }),
     ),
   ));
-  assert.ok(html.includes('高危操作'), html);
+  assert.ok(html.includes('新会话默认审批档'), html);
+  // 「高危操作」这个旧标签的语义是当前会话档——设置面板里只该剩默认档语义
+  assert.ok(!html.includes('>高危操作<'), '旧「高危操作」当前会话档语义必须消失: ' + html);
+  assert.ok(html.includes('只影响新建的会话'), '默认档语义说明（只影响新会话）必须在场: ' + html);
   assert.ok(!html.includes('settings-confirm-auto'), '旧内联确认条必须消失（换弹窗）: ' + html);
   assert.ok(!html.includes('再次点击'), '两步确认文案不得残留: ' + html);
 });

@@ -88,7 +88,8 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
 }) {
   // 自动发送的桥：useAgent 在组件顶部调用，而真正会发送的 sendWithOptions 要等
   // 设置/providers 就绪后才定义——经 ref 反转依赖（store 只喊「该发了」，App 决定
-  // 怎么发：请求级参数 effort/approval/agent 都在 sendWithOptions 里补齐）。
+  // 怎么发：请求级参数 effort/agent 都在 sendWithOptions 里补齐——approval
+  // 不上车（会话级状态，见 sendToSession 的注释）。
   // atts = 队首条目携带的附件（图片批次 B——按引用透传）。
   const autoSendBridgeRef = useRef<(sessionId: string, text: string, atts?: SendAttachments) => void>(() => {});
   /** 发送失败的附件回滚（store 钩子 → Composer 的 attsDraft）：文本丢了附件不能丢。
@@ -265,19 +266,21 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
     filter === LOOSE ? undefined : projects.find((p) => p.id === filter)?.name;
 
   // 发送时携带请求级参数：effort 只在当前模型声明推理能力时上帧（后端
-  // 能力门控会丢弃不匹配档位，不带上帧更诚实）；approval 恒带当前设置；
-  // agent = 当前选用的 Agent（主 Agent 也显式携带——后端按名单语境跑）。
+  // 能力门控会丢弃不匹配档位，不带上帧更诚实）；agent = 当前选用的 Agent
+  //（主 Agent 也显式携带——后端按名单语境跑）。**approval 不上车**：它是
+  // 后端持久化的会话级状态（chat.approval 改 / 新会话按 behavior 默认档
+  // 初始化），请求级恒带会静默覆盖会话档且不广播。
   // atts = 随消息的附件（图片/文件，图片批次 B）：按引用进 opts，不复制 base64。
   // sendToSession：目标会话显式传入——缓冲区的自动发送可能由「当前会话」的
   // busy 翻转触发，但触发瞬间 currentId 与目标一致，显式传参不依赖这个巧合。
   const sendToSession = useCallback((sessionId: string, text: string, atts?: SendAttachments) => {
     const current = providers.flatMap((p) => p.models).find((m) => m.id === settings.model);
-    const opts: SendOptions = { approval: settings.approval, agent: activeAgentId };
+    const opts: SendOptions = { agent: activeAgentId };
     if (current && current.efforts.length > 0) opts.effort = settings.effort;
     if (atts?.images.length) opts.images = atts.images;
     if (atts?.files.length) opts.files = atts.files;
     if (sessionId) send(sessionId, text, opts);
-  }, [providers, settings.model, settings.effort, settings.approval, send, activeAgentId]);
+  }, [providers, settings.model, settings.effort, send, activeAgentId]);
   const sendWithOptions = useCallback((text: string, atts?: SendAttachments) => sendToSession(currentId, text, atts), [sendToSession, currentId]);
   // 桥接（渲染期同步赋值——store 的订阅闭包经 ref 读到最新身份）
   autoSendBridgeRef.current = sendToSession;

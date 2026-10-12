@@ -50,16 +50,33 @@ export function approvalSyncTarget(ev: AgentEvent, currentSessionId: string): Ap
  *  **主会话之间隔离**（2026-10-07 用户要求）：档位是会话级状态，但本地设置只有
  *  一份——切到别的会话时显示端会沿用上一会话的本地值（串台）。chat.history 现在
  *  回带该会话此刻的档位，装载历史时按它对齐显示：每个主会话显示的都是它自己
- *  后端里的真实档位。快照没带 approval（老后端/演示源）时不写——不猜。 */
+ *  后端里的真实档位。快照没带 approval（老后端/演示源）时不写——不猜。
+ *
+ *  **历史先到、焦点后切**（resumeSession 的帧序纪律，ws/index.ts）：historyLoaded
+ *  到达时 sessionFocused 还没发，按「只认当前会话」会把这次对齐整个跳过——所以
+ *  每个会话的档位按 id 记进 known 表，sessionFocused 切到谁就对齐谁的（事件序
+ *  无关；approvalChanged 实时改档同样记表，切回时不丢）。 */
 export function subscribeApprovalSync(source: AgentSource, apply: (mode: ApprovalMode) => void): () => void {
   let current = "";
+  const known = new Map<string, ApprovalMode>();
   return source.subscribe((ev) => {
-    if (ev.type === "sessionFocused") { current = ev.id; return; }
+    if (ev.type === "sessionFocused") {
+      current = ev.id;
+      const knownMode = known.get(ev.id);
+      if (knownMode !== undefined) apply(knownMode);
+      return;
+    }
     if (ev.type === "historyLoaded") {
-      if (ev.sessionId === current && ev.history.approval !== undefined) apply(ev.history.approval);
+      if (ev.history.approval !== undefined) {
+        known.set(ev.sessionId, ev.history.approval);
+        if (ev.sessionId === current) apply(ev.history.approval);
+      }
       return;
     }
     const mode = approvalSyncTarget(ev, current);
-    if (mode) apply(mode);
+    if (mode) {
+      known.set(current, mode);
+      apply(mode);
+    }
   });
 }

@@ -688,6 +688,14 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
       const result = await this.call("session.new", workspace ? { workspace } : undefined) as { session_id?: string };
       const id = String(result?.session_id ?? "");
       if (!id) throw new Error("服务端未返回 session_id");
+      // 空会话也拉一次历史（**历史先到、焦点后切**，与 resumeSession 同一条帧序
+      // 纪律）：chat.history 回带该会话的初始审批档（behavior 默认档）——不拉的
+      // 话显示端沿用上一会话的档位镜像（串台），用户在新会话里看到的权限档是假的。
+      try {
+        await this.loadHistory(id);
+      } catch {
+        // 空会话读历史失败不挡建会话：显示层回落缺省档，下次装载历史会对齐
+      }
       this.focusSession(id);
       return id;
     } catch (e) {

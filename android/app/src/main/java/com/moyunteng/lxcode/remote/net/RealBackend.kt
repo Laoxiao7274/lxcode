@@ -9,6 +9,7 @@
 //   chat.toolCall/toolResult → Tool 块（按调用 id 配对）；chat.done → 对齐最终正文 +
 //   更新 context/stats；chat.confirmRequest → 挂起确认（UI 弹 LxConfirmDialog → tool.confirm）；
 //   chat.error → Error 块；todo.updated → Todo 块；dispatch/compacted → 对应卡。
+//   chat.approvalChanged → 会话权限档（药丸；chat.history 的 approval 键回读同源）。
 //   dispatch_id 非空的事件属于子会话：confirmRequest 必带 dispatch_id（协议契约），先于
 //   过滤器处理并弹确认门；toolCall 计入派发卡的子工具计数；其余丢弃（不进主时间线）。
 package com.moyunteng.lxcode.remote.net
@@ -81,6 +82,12 @@ class RealBackend {
 
     /** 会话此刻的模型（chat.history.model / chat.done.model）。 */
     var sessionModel by mutableStateOf("")
+        private set
+
+    /** 当前会话**此刻**的权限档（chat.history 的 approval 回读 / chat.approvalChanged
+     *  广播；null = 后端没报——UI 回落「默认」，不猜）。会话级状态：switchTo 切会话
+     *  即复位，切回时由历史快照重新对齐——两会话各持各的档，不串台。 */
+    var approval by mutableStateOf<String?>(null)
         private set
 
     /** 会话忙闲（chat.busy / done/error 收敛）。 */
@@ -202,6 +209,23 @@ class RealBackend {
             } else {
                 Log.i(TAG, "chat.send accepted=${(result as? JSONObject)?.optBoolean("accepted")}")
             }
+        }
+    }
+
+    /** 中途改当前会话的权限档（chat.approval：后端落库 + 广播，立刻生效于
+     *  运行中的一轮）。本地先乐观置位（药丸即时反馈），chat.approvalChanged
+     *  广播回来再对齐一次（幂等）；失败仅记日志——真实档位以广播为准。
+     *  名字不带 set 前缀：`var approval` 的合成 setter 会占掉 setApproval 签名。 */
+    fun changeApproval(mode: String) {
+        val sid = currentSessionId
+        if (sid.isEmpty()) return
+        approval = mode
+        Log.i(TAG, "chat.approval session=$sid approval=$mode")
+        client.call(
+            "chat.approval",
+            JSONObject().put("session_id", sid).put("approval", mode),
+        ) { err, _ ->
+            if (err != null) Log.w(TAG, "chat.approval 失败: ${err.optString("message")}")
         }
     }
 
@@ -514,6 +538,13 @@ class RealBackend {
                 syncRunningDots()
             }
 
+            "chat.approvalChanged" -> {
+                // 权限档变更广播（多端同步——本端改档后的回执也走这条）：按会话
+                // 归属，别的会话的变更不改本会话药丸
+                if (sid != currentSessionId) return
+                p.optString("approval", "").takeIf { it.isNotEmpty() }?.let { approval = it }
+            }
+
             "todo.updated" -> {
                 if (sid != currentSessionId) return
                 val items = p.optJSONArray("items") ?: return
@@ -546,13 +577,19 @@ class RealBackend {
 
     /** chat.history → 块（含 checkpoints → 压缩块、pending → 挂起确认）。 */
     private fun loadHistory(id: String) {
+        // 先切再拉：currentSessionId 必须在**发起请求前**就指向目标会话——否则
+        // 回调里的过期响应守卫（id != currentSessionId）会把这次响应整个丢掉，
+        // 从 A 切 B 永远切不动（A 开着时点 B，resume 成功但 history 被丢弃，
+        // 界面停在 A——本批 e2e 实测抓到）。
+        if (id != currentSessionId) switchTo(id)
         client.call("chat.history", JSONObject().put("session_id", id)) { err, result ->
             if (err != null) {
                 Log.w(TAG, "chat.history($id) 失败: ${err.optString("message")}")
                 return@call
             }
-            if (id != currentSessionId && currentSessionId.isNotEmpty()) return@call
-            switchTo(id)
+            // 请求在途时用户又点了别的会话：currentSessionId 已指向新目标，
+            // 这份旧响应作废（守卫语义保留，判定对象不变）
+            if (id != currentSessionId) return@call
             applyHistory(result as? JSONObject)
         }
     }
@@ -567,6 +604,9 @@ class RealBackend {
         contextUsage = null
         sessionStats = null
         sessionModel = ""
+        // 权限档是会话级状态：切会话即清（切回时由 chat.history 的 approval 重新
+        // 对齐）——沿用上一会话的档位显示是串台
+        approval = null
     }
 
     private fun applyHistory(r: JSONObject?) {
@@ -712,6 +752,9 @@ class RealBackend {
         r.optJSONObject("stats")?.let { sessionStats = parseStats(it) }
         sessionModel = r.optString("model", "")
         busy = r.optBoolean("busy")
+        // 该会话此刻的权限档（后端 LiveApproval——会话级状态持久化的显示依据）；
+        // 空串 = 老后端没报，保持 null（UI 回落「默认」，不猜）
+        r.optString("approval", "").takeIf { it.isNotEmpty() }?.let { approval = it }
         r.optJSONObject("pending")?.let { pend ->
             confirm = PendingConfirm(
                 sessionId = pend.optString("session_id", currentSessionId),

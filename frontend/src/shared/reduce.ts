@@ -62,6 +62,11 @@ export function reduce(state: UIState, ev: AgentEvent): UIState {
       return reduceRewound(state, ev);
     case "historyLoaded":
       return reduceHistoryLoaded(state, ev);
+    case "approvalChanged":
+      // 权限档是**会话级状态**（后端落库，AGENTS.md §2 协议表）：事件带 sessionId，
+      // reduceSessionStates 按 id 路由——每个会话的 state 只收自己的档位变更，
+      // 主会话之间不串台。载荷档位已由 ws 层 normalizeApproval 归一。
+      return { ...state, approval: ev.approval };
     default:
       return state;
   }
@@ -371,6 +376,9 @@ if (ev.history.busy && state.busy && state.historyReady) {
     // 统计同样保持旧值：忙碌中的快照不带 stats 时（后端读不到库）不该把
     // 已经显示的数字擦掉——读不到 ≠ 没有
     stats: ev.history.stats ?? state.stats,
+    // 权限档同款：快照没带 approval（老后端/演示源）不写——不猜（不把已显示
+    // 的档位抹成 null）
+    approval: ev.history.approval ?? state.approval,
   };
 }
 // 冷恢复/空闲会话：messages → blocks（工具调用与结果配对）。
@@ -387,6 +395,9 @@ return {
   //（真块回来了），要么发送还没落库（留着会变僵尸 pending）。发送中态一并结束。
   sending: false,
   blocks: jobs.length ? [...rebuilt.blocks, ...jobs] : rebuilt.blocks,
+  // 权限档按快照对齐（后端 LiveApproval——会话级状态持久化的显示依据）；
+  // 快照没带（老后端/演示源）保持原值不猜。
+  approval: ev.history.approval ?? state.approval,
 };
 }
 

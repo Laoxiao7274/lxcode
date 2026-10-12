@@ -84,6 +84,8 @@ export class DemoAgent implements AgentSource, JobAdminSource {
   private pendingNew = new Map<string, string>();
   /** 演示态每会话的权限档（真后端持在会话上；这里只记「用户改过什么」）。 */
   private approvals_ = new Map<string, ApprovalMode>();
+  /** 演示态的新会话默认审批档（真后端持在 behavior.json；本地自管同形状）。 */
+  private defaultApproval_: ApprovalMode = "confirm";
   private emittingSession = "";
   /** 子会话的消息（演示态的「子会话历史」，见 childEmit / childHistory）。 */
   private childMsgs_: HistoryMessage[] = [];
@@ -161,6 +163,19 @@ export class DemoAgent implements AgentSource, JobAdminSource {
     const approval = normalizeApproval(mode);
     this.approvals_.set(sessionId, approval);
     this.emit({ type: "approvalChanged", sessionId, approval });
+  }
+
+  /** 读「新会话默认审批档」（演示态：本地自管——真后端读 behavior.json）。 */
+  async defaultApproval(): Promise<ApprovalMode> {
+    return this.defaultApproval_;
+  }
+
+  /** 写「新会话默认审批档」（演示态）：本地记下 + 广播同形状的事件——
+   *  真后端 set 会广播 settings.defaultApproval.changed，演示里照做，
+   *  设置面板的「订阅 changed 对齐显示」路径在演示模式里也走得到。 */
+  async setDefaultApproval(mode: ApprovalMode): Promise<void> {
+    this.defaultApproval_ = normalizeApproval(mode);
+    this.emit({ type: "defaultApprovalChanged", approval: this.defaultApproval_ });
   }
 
   async confirm(sessionId: string, id: string, allow: boolean): Promise<void> {

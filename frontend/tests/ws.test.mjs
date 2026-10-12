@@ -20,14 +20,16 @@ function setup(t) {
   return { agent, events, ws: FakeSocket.latest, off };
 }
 const flush = () => new Promise((resolve) => setImmediate(resolve));
-test('send carries effort and approval only when provided (omitempty wire shape)', async (t) => {
+test('send carries effort only when provided (omitempty wire shape; approval 不上车)', async (t) => {
   const { agent, ws } = setup(t);
   agent.send('s1', 'hi');
   assert.deepEqual(ws.sent.at(-1).params, { session_id: 's1', text: 'hi' });
   agent.send('s1', 'hi', { effort: 'high', approval: 'strict' });
-  assert.deepEqual(ws.sent.at(-1).params, { session_id: 's1', text: 'hi', effort: 'high', approval: 'strict' });
+  // approval 是会话级状态（chat.approval 改 / 新会话按 behavior 默认档初始化），
+  // 请求级恒带会静默覆盖会话档且不广播——即便调用方传了也不上车
+  assert.deepEqual(ws.sent.at(-1).params, { session_id: 's1', text: 'hi', effort: 'high' });
   agent.send('s2', 'hi', { approval: 'auto' });
-  assert.deepEqual(ws.sent.at(-1).params, { session_id: 's2', text: 'hi', approval: 'auto' });
+  assert.deepEqual(ws.sent.at(-1).params, { session_id: 's2', text: 'hi' });
 });
 
 // 图片批次 B：附件随 chat.send 上车（images 纯 base64 不带前缀；files name/data），
