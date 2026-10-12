@@ -260,14 +260,14 @@ export default function Download() {
         <div className="wrap">
           <div className="sec-head">
             <h2>
-              Android 客户端（原型）{" "}
+              Android 远端客户端{" "}
               <span className="pill pill-ok">
                 <span className="pill-dot" aria-hidden="true" />
                 v{ANDROID_APK.version}
               </span>
             </h2>
             <p className="sec-lede">
-              当前版本 v{ANDROID_APK.version}（独立于桌面版）· 远端客户端原型：连接自己机器上的
+              当前版本 v{ANDROID_APK.version}（独立于桌面版）· 远端客户端（早期版）：连接自己机器上的
               lxcode 后端跑会话，不走应用商店。
             </p>
           </div>

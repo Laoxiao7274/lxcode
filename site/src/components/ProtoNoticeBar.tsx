@@ -9,7 +9,7 @@ export function ProtoNoticeBar() {
   const notice = useProtoNotice();
   return (
     <div className={notice ? "notice-bar on" : "notice-bar"} role="status" aria-live="polite">
-      <span className="pill pill-warn">原型</span>
+      <span className="pill pill-warn">提示</span>
       <span className="meta notice-text">{notice?.text ?? ""}</span>
     </div>
   );
