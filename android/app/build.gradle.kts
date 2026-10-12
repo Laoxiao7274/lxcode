@@ -18,8 +18,8 @@ android {
         applicationId = "com.moyunteng.lxcode.remote"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.2.2"
+        versionCode = 3
+        versionName = "0.2.3"
     }
 
     // 签名（release）：凭据从 android/keystore.properties 读（gitignore，不入库）。
@@ -41,6 +41,12 @@ android {
                 storePassword = keystoreProps.getProperty("storePassword")
                 keyAlias = keystoreProps.getProperty("keyAlias")
                 keyPassword = keystoreProps.getProperty("keyPassword")
+                // v1 + v2 双签名：AGP 对 minSdk>=24 默认只打 v2，但部分国产 ROM 的
+                // 安装器/文件管理器拿到 v2-only 包时解析 PackageInfo 失败，安装时
+                // 报「packageinfo is null」（0.2.2 线上包实测只有 v2 签名）。补上
+                // v1 (JAR) 签名兜住这类安装器；v2 保持开启（Android 7+ 标准路径）。
+                enableV1Signing = true
+                enableV2Signing = true
             }
         }
     }
