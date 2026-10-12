@@ -11,7 +11,9 @@ import (
 
 	"github.com/moyunteng/lxcode/internal/config"
 	"github.com/moyunteng/lxcode/internal/llm"
+	"github.com/moyunteng/lxcode/internal/project"
 	"github.com/moyunteng/lxcode/internal/protocol"
+	"github.com/moyunteng/lxcode/internal/store"
 )
 
 // archiveTestServer 起一个服务端并注册一个 git 项目仓库，返回项目元数据与仓库路径。
@@ -45,20 +47,29 @@ func archiveTestServer(t *testing.T, name string) (*Server, *wsTestClient, proto
 	return srv, client, projectMeta, repo
 }
 
-// newProjectSessionWithWorktree 建一个项目会话并跑一轮，让它绑定出独立 worktree。
+// newProjectSessionWithWorktree 建一个项目会话并**伪造存量 worktree 状态**（直连
+// 架构下不再自动建 worktree；本组用例测的是遗留释放链路——session.archive 的
+// release_worktree 参数对存量 worktree 会话的行为，数据形态与老库一致）。
 func newProjectSessionWithWorktree(t *testing.T, srv *Server, client *wsTestClient, projectID string) (string, string) {
 	t.Helper()
+	repoMeta, found, err := srv.st.ProjectByID(projectID)
+	if err != nil || !found {
+		t.Fatalf("project %s not found: found=%v err=%v", projectID, found, err)
+	}
 	id := createTestSession(t, client, projectID)
 	if resp := client.call(protocol.MethodChatSend, protocol.ChatSendParams{SessionID: id, Text: "work"}); resp == nil || resp.Error != nil {
 		t.Fatalf("chat.send failed: %+v", resp)
 	}
 	waitSessionEvent(t, client, protocol.EventDone, id)
 	srv.waitAutoCommits() // 轮结束的检查点提交是异步的：等它结束再做工作树操作
-	meta, err := srv.st.WorktreeOf(id)
-	if err != nil || meta.Path == "" {
-		t.Fatalf("worktree not created: %+v err=%v", meta, err)
+	wt, err := project.CreateWorktree(repoMeta.Path, srv.st.WorktreeRoot(), projectID, id)
+	if err != nil {
+		t.Fatalf("构造老 worktree 失败: %v", err)
 	}
-	return id, meta.Path
+	if err := srv.st.SetWorktree(id, store.WorktreeMeta{Path: wt.Path, Branch: wt.Branch, BaseCommit: wt.BaseCommit}); err != nil {
+		t.Fatal(err)
+	}
+	return id, wt.Path
 }
 
 // sessionArchived 读库判断会话是否已归档。

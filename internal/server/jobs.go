@@ -39,7 +39,8 @@ func (s *Server) AttachJobs(mgr *jobs.Manager) {
 	if s.treg != nil {
 		s.treg.SetJobs(mgr)
 		// 合并进程的入口工具（merge_request）：注册表只持一个回调，不 import server
-		//（与 SetJobs 同款模式）。
+		//（与 SetJobs 同款模式）。**遗留**：合并流程已退役（2026-10 架构修订），
+		// 工具不再调用这个回调——装配保留，将来恢复隔离模式时接回即可。
 		s.treg.SetMergeStarter(s.startMergeJob)
 	}
 	// 订阅在装配期挂上、进程生命周期内不摘：任务结束事件必须有人接，

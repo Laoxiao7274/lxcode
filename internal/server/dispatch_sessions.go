@@ -44,7 +44,7 @@ func (s *Server) dispatchSessions(c *wsClient, req *protocol.Request, params jso
 			return protocol.NewError(req.ID, protocol.CodeInvalidParams, err.Error())
 		}
 		if len(sess.History().Messages) > 0 {
-			if err := s.prepareWorktree(p.ID, sess); err != nil {
+			if err := s.prepareWorkspace(p.ID, sess); err != nil {
 				return protocol.NewError(req.ID, protocol.CodeInvalidParams, err.Error())
 			}
 		}

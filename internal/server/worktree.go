@@ -1,14 +1,18 @@
-// 项目会话的 git 工作树：首次发送时从当时 HEAD 建独立分支与工作树，
-// 重启/目录丢失时恢复同一分支，用户可显式释放空闲且干净的。
+// 项目会话的工作区准备：会话**直接工作在用户的主检出目录与主检出当前分支**
+// （2026-10 架构修订拍板：废除 per-session worktree 与 lxcode/session-* 分支——
+// 「不用做隔离，就跟正常一样，也不用创分支」）。每轮结束的检查点提交直接落在
+// 主检出当前分支上，方便回滚；真正要推送时由 workspace_sync 直接 push。
+//
+// 兼容纪律（用户数据零丢失）：存量会话的 worktree 元数据、磁盘 worktree 目录与
+// lxcode/session-* 分支**一律保留不删**——resume 时切到直连模式，旧目录与分支
+// 原样留给用户手工处理。
 package server
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/moyunteng/lxcode/internal/agent"
 	"github.com/moyunteng/lxcode/internal/project"
@@ -26,22 +30,26 @@ func (s *Server) sessionWorktreeLock(sessionID string) *sync.Mutex {
 	return lock
 }
 
-func (s *Server) prepareWorktree(sessionID string, sess *agent.Session) error {
+func (s *Server) prepareWorkspace(sessionID string, sess *agent.Session) error {
 	lock := s.sessionWorktreeLock(sessionID)
 	lock.Lock()
 	defer lock.Unlock()
-	return s.prepareWorktreeLocked(sessionID, sess)
+	return s.prepareWorkspaceLocked(sessionID, sess)
 }
 
-func (s *Server) prepareWorktreeLocked(sessionID string, sess *agent.Session) error {
-	// 耗时测量：整条 git 链（快路径只付 os.Stat，慢路径串行 3+ 个 git 子进程）。
-	// 超过 200ms 才记一行——预热路径与 send 路径都会走这里，阈值之下保持安静。
-	start := time.Now()
-	defer func() {
-		if ms := time.Since(start).Milliseconds(); ms >= 200 {
-			log.Printf("worktree 准备耗时 %dms（session=%s）", ms, sessionID)
-		}
-	}()
+// prepareWorkspaceLocked 把项目会话对准主检出：workDir = 项目根目录，worktree
+// 信息 = 主检出当前分支 + 会话基线 HEAD。**不创建任何分支、任何 worktree、不做
+// status 脏检查**——主检出路径恒定，准备只剩 os.Stat + 一次性的基线记录。
+//
+// WorktreeOf 三列的新语义（wire 与列名不变，消费方按此适配）：
+//   - worktree_path / worktree_branch 对新会话**写空串** = 直连模式（无独立 worktree）；
+//   - worktree_base = 会话基线 HEAD（首次准备时记录，workspace_rollback 的
+//     session-start 锚点）；老会话该列存的是旧 worktree 基线，语义同样成立
+//     （它就是「这条会话开始时的 HEAD」）。
+//
+// 老会话（元数据里有 worktree 路径/分支）：切到直连模式，但**不动存储元数据**——
+// SetWorktree 的防改绑守卫会拒绝覆盖，而且旧目录与分支必须原样保留。
+func (s *Server) prepareWorkspaceLocked(sessionID string, sess *agent.Session) error {
 	if s.st == nil {
 		return nil
 	}
@@ -59,90 +67,56 @@ func (s *Server) prepareWorktreeLocked(sessionID string, sess *agent.Session) er
 	if !found {
 		return fmt.Errorf("项目 %s 不存在", workspace)
 	}
+	// 快路径：主检出路径恒定——本进程已准备过（workDir 已指向主检出）且目录还在
+	// → 直接收工。判据是「本进程校验过 + workDir 仍指向主检出 + 目录存在」：
+	// os.Stat 是必须的（用户手工删掉/移动项目目录后要落回完整流程）。
+	// 失效点只有一处：releaseSessionWorktree 会清掉标记（仅老会话有 worktree 时）。
+	if s.worktreeReadyNow(sessionID) && sess.WorkDir() == projectMeta.Path {
+		if _, statErr := os.Stat(projectMeta.Path); statErr == nil {
+			return nil
+		}
+	}
+	if _, err := project.ValidateDirectory(projectMeta.Path); err != nil {
+		return err
+	}
 	meta, err := s.st.WorktreeOf(sessionID)
 	if err != nil {
 		return err
 	}
-	// 快路径：本进程内已校验过这条会话的工作树，且目录还在 → 直接收工。
-	//
-	// 校验（project.RestoreWorktree）要跑 4 个 git 子进程，实测 ~130ms；而
-	// chat.history / session.resume 每次都会走到 prepareWorktree——一条项目会话
-	// 点开一次就是两次校验，切会话于是成了肉眼可见的「卡一下」（帧级实测：
-	// 项目会话点击 → 内容切换 ~480ms，其中服务端两次校验占 ~260ms；未分组
-	// 会话同一动作 0-12ms，因为它不走这条路）。
-	//
-	// 判据是「本进程校验过 + 会话的 workDir 仍指向它 + 目录还在」：workDir 只在
-	// prepare 成功后写入（见下），所以三者同时成立就等价于「刚校验过且没动过」。
-	// os.Stat 是必须的——用户手工删掉目录后要能落回下面的完整恢复流程。
-	// 失效点只有一处：releaseSessionWorktree 会清掉标记。
-	if meta.Path != "" && sess.WorkDir() == meta.Path && s.worktreeReadyNow(sessionID) {
-		if _, statErr := os.Stat(meta.Path); statErr == nil {
-			return nil
+	base := meta.BaseCommit
+	if meta.Path == "" {
+		// 直连模式：基线 HEAD 记录一次（幂等——SetWorktree 允许写回完全相同的
+		// 元数据；重复准备时 base 已非空，不再跑 rev-parse）。
+		if base == "" {
+			head, err := project.ResolveCommit(s.Ctx(), projectMeta.Path, "HEAD")
+			if err != nil {
+				// 零提交仓库没有 HEAD：不编基线（回滚的 session-start 会如实报
+				// 「基线未知」），不阻塞会话——直连模式不依赖 HEAD 也能工作。
+				base = ""
+			} else {
+				if err := s.st.SetWorktree(sessionID, store.WorktreeMeta{BaseCommit: head}); err != nil {
+					return err
+				}
+				base = head
+			}
 		}
 	}
-	if meta.Path == "" {
-		if meta.Branch != "" || meta.BaseCommit != "" {
-			return fmt.Errorf("会话 %s 的 worktree 元数据不完整", sessionID)
-		}
-		wt, err := project.CreateWorktree(projectMeta.Path, s.st.WorktreeRoot(), workspace, sessionID)
-		if err != nil {
-			return err
-		}
-		meta = store.WorktreeMeta{Path: wt.Path, Branch: wt.Branch, BaseCommit: wt.BaseCommit}
-		if err := s.st.SetWorktree(sessionID, meta); err != nil {
-			if rollbackErr := project.RemoveWorktree(projectMeta.Path, wt); rollbackErr != nil {
-				return fmt.Errorf("保存 worktree 元数据失败: %v；回滚也失败: %w", err, rollbackErr)
-			}
-			return err
-		}
-	} else if err := project.RestoreWorktree(projectMeta.Path, meta.Path, meta.Branch); err != nil {
+	// 分支名 = 主检出当前分支（只读展示给模型用——用户切了分支，下次准备时跟着变）。
+	branch, err := project.CurrentBranch(s.Ctx(), projectMeta.Path)
+	if err != nil {
 		return err
 	}
-	if sess.WorkDir() != meta.Path {
-		if err := sess.SetWorkDir(meta.Path); err != nil {
+	if sess.WorkDir() != projectMeta.Path {
+		if err := sess.SetWorkDir(projectMeta.Path); err != nil {
 			return err
 		}
 	}
-	// 工作树信息随 workDir 一起挂到会话上：提示词要告诉模型分支名与「每轮自动提交」
-	// 的语义（未分组会话没有这段，零注入）。无条件写（幂等）——快路径早退时它已经
-	// 设过，这里重复设置不会出错。
-	sess.SetWorktreeInfo(meta.Branch, meta.BaseCommit)
+	// 工作区信息随 workDir 一起挂到会话上：提示词要告诉模型「直接在用户的项目目录
+	// 工作」与「每轮自动提交」的语义（未分组会话没有这段，零注入）。无条件写（幂等）
+	// ——快路径早退时它已经设过，这里重复设置不会出错。
+	sess.SetWorktreeInfo(branch, base)
 	s.markWorktreeReady(sessionID)
 	return nil
-}
-
-// preheatWorktree 在 session.new 之后**异步**预热项目会话的 git 工作树：把建工作树
-// 的 git 链（show-ref + rev-parse + worktree add 完整检出，~200ms 起、冷态秒级）
-// 挪出首条 chat.send 的等待路径。
-//
-// 防重入用 per-session 互斥锁的 TryLock（实现选它而非另设 preheating map：锁本身
-// 就是「同一会话串行」的事实源——sendSession 持同一把锁，TryLock 抢不到说明
-// send/另一个预热正在跑，直接放弃即可，prepareWorktreeLocked 幂等， send 路径
-// 自会把工作树建出来；一张额外的 map 只会引入第二个需要保持一致的状态）。
-//
-// fail-open：预热失败（项目目录不可用、仓库没有 HEAD 等）只记一行日志，绝不广播
-// 错误、绝不影响 send——sendSession 会按既有行为再试并把这个错误带给前端。
-// 只对「workspace 非空且尚未建过工作树」的会话做：已建过的走快路径（~0ms），
-// 预热纯属浪费；未分组会话没有独立工作树，不预热。
-func (s *Server) preheatWorktree(sessionID string, sess *agent.Session) {
-	if s.st == nil {
-		return
-	}
-	go func() {
-		meta, err := s.st.WorktreeOf(sessionID)
-		if err != nil || meta.Path != "" {
-			// 读不到元数据 / 已建过：都不需要预热（后者本就走快路径）。
-			return
-		}
-		lock := s.sessionWorktreeLock(sessionID)
-		if !lock.TryLock() {
-			return // 已有预热或 sendSession 在跑：放弃，send 会再试
-		}
-		defer lock.Unlock()
-		if err := s.prepareWorktreeLocked(sessionID, sess); err != nil {
-			log.Printf("worktree 预热失败（不影响发送，首条消息时会重试）: session=%s: %v", sessionID, err)
-		}
-	}()
 }
 
 func (s *Server) worktreeReadyNow(sessionID string) bool {
@@ -166,6 +140,9 @@ func (s *Server) clearWorktreeReady(sessionID string) {
 	delete(s.worktreeReady, sessionID)
 }
 
+// releaseSessionWorktree 是**遗留**入口（session.worktree.release）：只对存量
+// worktree 会话有意义——移除干净的检出目录、保留分支。直连模式的新会话没有
+// worktree，到这里只会得到一句解释。代码保留：老会话的目录清理仍走它。
 func (s *Server) releaseSessionWorktree(sessionID string) error {
 	if s.st == nil {
 		return fmt.Errorf("会话存储未启用，无法释放工作区")
@@ -197,7 +174,7 @@ func (s *Server) releaseSessionWorktree(sessionID string) error {
 		return err
 	}
 	if meta.Path == "" || meta.Branch == "" {
-		return fmt.Errorf("会话尚未创建完整的 worktree")
+		return fmt.Errorf("本会话直接工作在项目主检出（直连模式），没有独立 worktree 可释放")
 	}
 	if err := project.ReleaseWorktree(projectMeta.Path, project.Worktree{
 		Path: meta.Path, Branch: meta.Branch, BaseCommit: meta.BaseCommit,
@@ -209,9 +186,9 @@ func (s *Server) releaseSessionWorktree(sessionID string) error {
 	return nil
 }
 
-// releaseArchivedWorktrees 释放某会话及其子会话的工作区目录（归档时的可选附加动作）。
-// 子会话可能已有自己的独立 worktree（标签页被打开过）——dispatch 深度恒 1，只遍历
-// 一层；没有 worktree 的目标（子会话没打开过标签页）按 Path 跳过、不报错。
+// releaseArchivedWorktrees 释放某会话及其子会话的工作区目录（归档时的可选附加动作，
+// **遗留**：只对存量 worktree 会话生效）。子会话可能有自己的旧 worktree（标签页被
+// 打开过）——dispatch 深度恒 1，只遍历一层；直连模式的目标（Path 为空）跳过、不报错。
 //
 // 归档是主操作，这里只做尽力而为：**绝不向上返回错误**，只把每个目标的失败原因
 // 收集起来（「；」拼接）交给前端提示。
@@ -233,7 +210,7 @@ func (s *Server) releaseArchivedWorktrees(sessionID string) (bool, string) {
 			continue
 		}
 		if meta.Path == "" {
-			continue // 没有 worktree（子会话没打开过标签页）——跳过不报错
+			continue // 直连模式（或没建过 worktree）——没有目录可释放，跳过不报错
 		}
 		if err := s.releaseSessionWorktree(id); err != nil {
 			failures = append(failures, fmt.Sprintf("%s：%v", id, err))

@@ -232,7 +232,7 @@ export function GitWorkbenchPage({
                 <div className="git-commit-box">
                   <div className="git-commit-hint">
                     这里不做暂存与提交：主检出由会话负责——每轮对话结束会自动提交检查点，
-                    也可以在会话里说「帮我提交」走合并流程。
+                    也可以在会话里说「帮我提交」用 workspace_sync（提交到当前分支，可推送）。
                   </div>
                 </div>
               </section>
