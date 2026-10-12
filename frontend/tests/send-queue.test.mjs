@@ -3,7 +3,8 @@
 // 被钉住的行为（全部驱动真实现——纯函数与 handleAgentEvent，不复刻副本）：
 // ① submit 门（routeSubmit）：空闲直接发送、busy/sending 入队、锁定与斜杠命令不发；
 // ② 自动发送（handleAgentEvent 的 busy 分支 + autoSendPick）：只在 busy true→false
-//    的轮次边界触发、只发当前活跃会话的队首、逐条（发出即移除，下一条等下一个边界）；
+//    的轮次边界触发、与会话可见性无关（后台会话的轮一结束也发）、逐条
+//    （发出即移除，下一条等下一个边界）；
 // ③ 「直接发送」按钮（queueSendAction）：空闲立即发、忙时置顶；
 // ④ 队列操作：编辑取出 / 删除 / 置顶；
 // ⑤ 切会话队列隔离 + 切回空闲会话接着发（sessionFocused 分支）；
@@ -133,22 +134,39 @@ test('② 幂等：done/error 与 busy=false 同 tick 的重复边界、false→
   handleAgentEvent(busyEv('s1', false), c2);
   assert.deepEqual(c2.sent, [], '没有 true→false 翻转就不发');
   // autoSendPick 自身的判定面（store 分支的同一份判定）
-  assert.equal(autoSendPick(undefined, false, 's1', 's1', [item('a', 'x')]), null);
-  assert.equal(autoSendPick(false, false, 's1', 's1', [item('a', 'x')]), null);
-  assert.equal(autoSendPick(true, true, 's1', 's1', [item('a', 'x')]), null);
-  assert.equal(autoSendPick(true, false, 's1', 's2', [item('a', 'x')]), null, '非当前会话不触发');
-  assert.equal(autoSendPick(true, false, 's1', 's1', []), null, '空队列不触发');
-  assert.deepEqual(autoSendPick(true, false, 's1', 's1', [item('a', 'x')]), item('a', 'x'));
+  assert.equal(autoSendPick(undefined, false, [item('a', 'x')]), null);
+  assert.equal(autoSendPick(false, false, [item('a', 'x')]), null);
+  assert.equal(autoSendPick(true, true, [item('a', 'x')]), null);
+  assert.equal(autoSendPick(true, false, []), null, '空队列不触发');
+  assert.deepEqual(autoSendPick(true, false, [item('a', 'x')]), item('a', 'x'));
 });
 
-test('② 非活跃会话的队列不抢发；切回（sessionFocused）且空闲才接着发', () => {
+test('② 钉子：非激活会话的排队消息在轮结束后自动发出（与用户在看哪个会话无关）', () => {
+  // 用户停在 s2 上看，s1 在后台跑、已有排队消息
+  const c = makeController();
+  c.currentId = 's2';
+  c.sendQueues = { s1: [item('a', 's1 第一条'), item('b', 's1 第二条')] };
+  handleAgentEvent(busyEv('s1', true), c);
+  assert.deepEqual(c.sent, [], '生成中不发');
+  // s1 的轮结束（用户仍停在 s2）：队首立即发出，不等用户切回去
+  handleAgentEvent(busyEv('s1', false), c);
+  assert.deepEqual(c.sent, [{ sessionId: 's1', text: 's1 第一条' }], '后台会话的轮次边界同样触发');
+  assert.deepEqual(c.sendQueues.s1, [item('b', 's1 第二条')], '发出即移除，剩余保留');
+  // 逐条：下一条等 s1 自己的下一个 true→false 边界（不并发）
+  handleAgentEvent(busyEv('s1', true), c);
+  handleAgentEvent(busyEv('s1', false), c);
+  assert.deepEqual(c.sent, [
+    { sessionId: 's1', text: 's1 第一条' },
+    { sessionId: 's1', text: 's1 第二条' },
+  ]);
+  assert.deepEqual(c.sendQueues.s1, []);
+});
+
+test('② 切回（sessionFocused）且明确空闲才接着发：忙闲未知时保守挂起', () => {
+  // 兜底路径：边界早于订阅/刷新丢失等场景下，切回空闲会话补发一次
   const c = makeController();
   c.currentId = 's2';
   c.sendQueues = { s1: [item('a', 's1 的排队消息')] };
-  handleAgentEvent(busyEv('s1', true), c);
-  handleAgentEvent(busyEv('s1', false), c);
-  assert.deepEqual(c.sent, [], 's1 不是当前活跃会话：边界到了也不发（口径：挂起等选中）');
-  assert.deepEqual(c.sendQueues.s1, [item('a', 's1 的排队消息')], '队列原样保留');
   // 切到 s1：state 不存在（忙闲未知）→ 保守挂起
   c.sessionStates = {};
   handleAgentEvent({ type: 'sessionFocused', id: 's1' }, c);
@@ -157,7 +175,7 @@ test('② 非活跃会话的队列不抢发；切回（sessionFocused）且空�
   c.sessionStates = { s1: { ...initial, currentId: 's1', busy: false, sending: false } };
   handleAgentEvent({ type: 'sessionFocused', id: 's1' }, c);
   assert.deepEqual(c.sent, [{ sessionId: 's1', text: 's1 的排队消息' }]);
-  // state 报忙碌（切走时它还在跑）→ 不发，等 busy false 边界（那时 currentId 已是它）
+  // 用户切到还在跑的 s1 → 不发，等 busy false 边界
   const c3 = makeController();
   c3.currentId = 's1';
   c3.sendQueues = { s1: [item('a', 'busy 会话的排队消息')] };

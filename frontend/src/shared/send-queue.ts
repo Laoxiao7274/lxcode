@@ -97,20 +97,20 @@ export function queueSendAction(opts: { busy: boolean; sending: boolean }): "sen
  *  - 这是一条 busy 事件（busy 翻转是「可以发下一条」的权威信号——done/error
  *    与 busy=false 可能同 tick，但只有 busy=false 事件被这里消费，天然幂等）；
  *  - 该会话 busy 由 true → false（false → false 是重播/重复事件，不是轮次边界）；
- *  - 事件归属的会话就是当前活跃会话（非活跃会话的队列保持挂起，等它被
- *    选中且空闲时再发——见 store 的 sessionFocused 分支）；
  *  - 队列非空。
+ *
+ *  **不看当前活跃会话**（2026-12 修复）：store 的订阅收到的是全部会话的事件
+ *  （reduceSessionStates 对所有会话归约），轮次边界对后台会话同样权威——
+ *  排队消息的发出必须与「用户正在看哪个会话」解耦（后台会话的轮一结束，
+ *  队首立即发出，不等用户切回去）。
  *
  *  返回该发出的队首条目（调用方负责发出并把它从队列移除——发出即移除，
  *  重复触发时空队列无副作用）；返回 null = 不触发。 */
 export function autoSendPick(
   prevBusy: boolean | undefined,
   busy: boolean,
-  sessionId: string,
-  currentId: string,
   queue: SendQueueItem[] | undefined,
 ): SendQueueItem | null {
   if (prevBusy !== true || busy !== false) return null;
-  if (sessionId !== currentId) return null;
   return queuedHead(queue);
 }

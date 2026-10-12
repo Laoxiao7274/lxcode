@@ -148,7 +148,7 @@ export function handleAgentEvent(ev: AgentEvent, c: AgentEventController): void 
       // done/error 与 busy=false 可能同 tick——这里只消费 busy 事件，且只有
       // true→false 的翻转才算边界（false→false 是重播/重复事件）；队首发出
       // 即移除，重复触发空队列无副作用（幂等）。
-      const head = autoSendPick(prev, ev.busy, ev.sessionId, c.getCurrentId(), c.getSendQueues()[ev.sessionId]);
+      const head = autoSendPick(prev, ev.busy, c.getSendQueues()[ev.sessionId]);
       if (head) drainQueueHead(c, ev.sessionId);
     }
     c.setSessionStates(reduceSessionStates(c.getSessionStates(), ev, c.getChildLinks().dispatchChild));
