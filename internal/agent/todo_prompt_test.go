@@ -17,10 +17,6 @@ import (
 // todoFirstKey 是提示词层的行为指令关键句（改措辞时这里同步改）。
 const todoFirstKey = "动手前先建清单：凡是需要调用工具（写文件、改代码、跑命令）才能完成的任务，开始前先用 todo 工具列出步骤清单"
 
-// simpleTaskKey 是「简单任务常规化」分级语义的关键句：防止简单任务被
-// 仪式化的清单步骤复杂化，主/子会话提示词都必须包含。
-const simpleTaskKey = "一两步就能完成的小任务直接做完汇报即可，不建清单、不搞仪式化步骤"
-
 func TestTodoFirstInMainPrompt(t *testing.T) {
 	s := newAgentSession(t)
 	// 主会话：全局默认路径（无 Agent 语境）
