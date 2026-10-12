@@ -89,7 +89,21 @@ func RestoreWorktree(repoPath, path, branch string) error {
 		return fmt.Errorf("worktree 元数据不完整")
 	}
 	if _, err := os.Stat(path); err == nil {
-		return validateExistingWorktree(repo, path, branch)
+		if verr := validateExistingWorktree(repo, path, branch); verr != nil {
+			// 校验失败先试指针修复（sessions 根迁移会 prune 掉管理目录或留过期
+			// 回指针）；修复动作本身不等于修复成功，重新校验确认。全部失败则
+			// 保留原报错（fail-closed：绝不以 HEAD 重建覆盖用户进度）。
+			if rerr := repairBrokenWorktree(repo, path, branch); rerr != nil {
+				log.Printf("worktree 自动修复未成功（branch=%s, path=%s）: %v", branch, path, rerr)
+				return fmt.Errorf("%w（自动修复未成功: %v）", verr, rerr)
+			}
+			if rerr := validateExistingWorktree(repo, path, branch); rerr != nil {
+				log.Printf("worktree 自动修复后校验仍失败（branch=%s, path=%s）: %v", branch, path, rerr)
+				return fmt.Errorf("%w（自动修复后仍未通过校验: %v）", verr, rerr)
+			}
+			log.Printf("worktree 指针断裂已自动修复（branch=%s, path=%s）", branch, path)
+		}
+		return nil
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("检查 worktree 路径失败: %w", err)
 	}
