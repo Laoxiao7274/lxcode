@@ -21,6 +21,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.moyunteng.lxcode.remote.mock.ChildTool
 import com.moyunteng.lxcode.remote.mock.ContextUsage
+import com.moyunteng.lxcode.remote.mock.ProjectMeta
 import com.moyunteng.lxcode.remote.mock.SessionMeta
 import com.moyunteng.lxcode.remote.mock.SessionStats
 import com.moyunteng.lxcode.remote.mock.ThreadBlock
@@ -64,6 +65,12 @@ class RealBackend {
 
     /** 会话列表（session.list；对齐 protocol.SessionMeta）。 */
     val sessions = mutableStateListOf<SessionMeta>()
+
+    /** 项目列表（project.list；对齐 protocol.ProjectMeta：id/name/path）。
+     *  会话的 workspace 字段存的是**项目 id**（空 = 未分组），显示时按 id 取名——
+     *  语义对照桌面端 Sidebar.tsx（projectById.get(s.workspace)?.name）与
+     *  internal/store/sessions.go 的 ListProjects/WorkspaceOf。 */
+    val projects = mutableStateListOf<ProjectMeta>()
 
     /** 当前会话（session.new / session.resume / 点会话行）。 */
     var currentSessionId by mutableStateOf("")
@@ -142,6 +149,7 @@ class RealBackend {
             // 而停止的收敛依赖后端事件——假后端/断线场景会卡死在生成中。
             busy = false
             refreshSessions()
+            refreshProjects()
         } else if (phase != RealPhase.Offline) {
             // 用户主动 disconnect 后的迟到回调不再标失败
             phase = RealPhase.Failed
@@ -159,6 +167,18 @@ class RealBackend {
                 return@call
             }
             applySessionList(result)
+        }
+    }
+
+    /** 刷新项目列表（project.list；hello 成功后与 session.list 同批拉取，
+     *  project.changed 广播时重拉——对齐桌面端 Sidebar 的 projectsTick 机制）。 */
+    fun refreshProjects() {
+        client.call("project.list", null) { err, result ->
+            if (err != null) {
+                Log.w(TAG, "project.list 失败: ${err.optString("message")}")
+                return@call
+            }
+            applyProjectList(result)
         }
     }
 
@@ -508,6 +528,11 @@ class RealBackend {
                 Log.i(TAG, "done: ctx=$contextUsage stats=$sessionStats")
                 msg?.optString("model", "")?.takeIf { it.isNotEmpty() }?.let { sessionModel = it }
                 busy = false
+                // 主轮结束重拉会话列表（对齐桌面端 ws/index.ts 的 chat.done →
+                // refreshSessionList）：新对话的首条消息落库后侧栏才出得来
+                //（后端语义：未发过消息的空会话不进 session.list；而 session.new
+                // 建的会话首条消息不发 SessionStarted 事件——唯一刷新信号就是 done）
+                refreshSessions()
                 streamingIdx = -1
             }
 
@@ -555,6 +580,8 @@ class RealBackend {
             }
 
             "session.changed" -> refreshSessions()
+
+            "project.changed" -> refreshProjects()
 
             "chat.compacted" -> {
                 if (sid != currentSessionId) return
@@ -791,6 +818,25 @@ class RealBackend {
         sessions.clear()
         sessions.addAll(list)
         Log.i(TAG, "session.list → ${list.size} 条")
+    }
+
+    private fun applyProjectList(r: Any?) {
+        // project.list 的 result 是**裸数组**（dispatchProjects 直接回 []ProjectMeta：
+        // {id,name,path}；workspace 字段是项目 id 而不是路径——见 SessionMeta.workspace）
+        val arr: org.json.JSONArray? = when (r) {
+            is org.json.JSONArray -> r
+            is JSONObject -> r.optJSONArray("projects")
+            else -> null
+        } ?: return
+        val list = (0 until arr!!.length()).mapNotNull { idx ->
+            val o = arr.getJSONObject(idx)
+            val id = o.optString("id")
+            if (id.isEmpty()) return@mapNotNull null
+            ProjectMeta(id = id, name = o.optString("name"), path = o.optString("path"))
+        }
+        projects.clear()
+        projects.addAll(list)
+        Log.i(TAG, "project.list → ${list.size} 个: ${list.joinToString { it.name }}")
     }
 
     /** 会话列表的运行中状态点随 busy 事件刷新（SessionMeta 是不可变值，重建条目）。 */

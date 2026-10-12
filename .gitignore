@@ -29,3 +29,8 @@ frontend/tsconfig.tsbuildinfo
 
 # 站点设计预览的浏览器审计转储（444MB 缓存/模型文件，误入库曾顶爆 GitHub 100MB 限制）
 site/.design-preview/
+
+# 安卓签名：keystore 与密码文件只在本地（丢了无法同签名更新，务必自行备份）
+android/keystore.properties
+android/*.keystore
+android/*.jks

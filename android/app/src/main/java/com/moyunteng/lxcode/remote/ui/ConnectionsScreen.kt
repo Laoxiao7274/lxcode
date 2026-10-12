@@ -36,6 +36,7 @@ import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Text
+import android.widget.Toast
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -44,6 +45,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.moyunteng.lxcode.design.component.LxButton
@@ -130,16 +132,24 @@ fun ConnectionsScreen(state: MockAppState) {
                 onClick = { state.route = Route.Pairing },
             )
 
-            // 真实后端（调试区第三个开关）：开 = WS 连真实 lxcode 后端（协议见 PROTOCOL-NOTES.md）
+            // 真实后端（调试区快捷开关）：开 = WS 连真实 lxcode 后端（协议见 PROTOCOL-NOTES.md）。
+            // 主入口已收口到连接列表条目的「连接」按钮（connectTo）；这里保留作快捷开关
+            // （手填地址/Token 直连，不属于任何条目 → 清掉「当前」标记）
             RealBackendSection(state)
 
             state.conns.forEachIndexed { i, conn ->
                 ConnCard(
                     modifier = Modifier.lxStaggerEnter(count = state.conns.size + 1, index = i),
                     conn = conn,
-                    active = conn.id == state.activeConnId,
-                    onConnect = { state.activeConnId = conn.id },
-                    onDisconnect = { state.activeConnId = "local" },
+                    // 「当前」标签：正在连接的条目，或最后选中（重启后未连也标记，作为
+                    // 重连目标）；「连接/断开」按钮看 connected——见 ConnCard 的 KDoc
+                    active = (state.realOn && state.isCurrentConn(conn.id)) ||
+                        (!state.realOn && conn.id == state.activeConnId),
+                    connected = state.realOn && state.isCurrentConn(conn.id),
+                    // 「连接」动作 = 真实连接：把条目的 addr/token 设为真实模式凭证并连
+                    // （等价于调试区开关 + 手填地址，入口从调试区收口到连接列表）
+                    onConnect = { state.connectTo(conn) },
+                    onDisconnect = { state.disconnectReal() },
                     onEdit = {
                         state.editing = ConnDraft(conn.id, conn.addr, conn.name, conn.token, isNew = false)
                         state.route = Route.ConnForm(fromScan = false)
@@ -269,7 +279,13 @@ private fun RealBackendSection(state: MockAppState) {
                 checked = state.realOn,
                 onCheckedChange = { on ->
                     state.realOn = on
-                    if (on) real.connect(state.realAddr, state.realToken) else real.disconnect()
+                    if (on) {
+                        // 手填地址/Token 直连：不属于任何连接条目，清掉「当前」标记
+                        state.setActiveConn("")
+                        real.connect(state.realAddr, state.realToken)
+                    } else {
+                        state.disconnectReal()
+                    }
                 },
             )
         }
@@ -331,11 +347,15 @@ private fun RealBackendSection(state: MockAppState) {
     }
 }
 
-/** 一条连接卡（本机与远程共用；本机不显示编辑/删除）。 */
+/** 一条连接卡（本机与远程共用；本机不显示编辑/删除）。
+ *  [active] = 「当前」标签（最后选中/正在连接的条目）；[connected] = 真实连接
+ *  正跑在这条上（决定「断开」/「连接」按钮——重启后 realOn=false，当前条目
+ *  也应显示「连接」按钮可一键重连，而不是卡在没有意义的「断开」上）。 */
 @Composable
 private fun ConnCard(
     conn: BackendConn,
     active: Boolean,
+    connected: Boolean,
     modifier: Modifier = Modifier,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
@@ -394,7 +414,7 @@ private fun ConnCard(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(Lx.space.s6, Alignment.End),
         ) {
-            if (active) {
+            if (connected) {
                 if (!conn.local) {
                     LxButton("断开", onDisconnect, variant = LxButtonVariant.Ghost, size = LxButtonSize.Small)
                 }
@@ -465,6 +485,7 @@ private fun DeleteBtn(onConfirm: () -> Unit) {
 /** 连接表单页：地址 + 名称 + Token 三字段 + 校验 + 取消/保存（不可保存时禁用）。 */
 @Composable
 fun ConnectionFormScreen(state: MockAppState, fromScan: Boolean) {
+    val context = LocalContext.current
     val draft = state.editing
     if (draft == null) {
         // 没有草稿（理论上进不来）：回连接页，不留空白屏
@@ -495,6 +516,10 @@ fun ConnectionFormScreen(state: MockAppState, fromScan: Boolean) {
         if (draft.isNew) state.addConn(saved) else state.updateConn(saved)
         state.editing = null
         state.route = Route.Connections
+        // 扫码收口最后一环：载荷已保存为连接条目，提示回连接页点「连接」一键接入
+        if (fromScan) {
+            Toast.makeText(context, "已保存「${saved.name}」，点「连接」接入真实后端", Toast.LENGTH_LONG).show()
+        }
     }
 
     Column(

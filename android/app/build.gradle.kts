@@ -1,6 +1,8 @@
 // :app —— lxcode 安卓远端客户端。
 // 依赖保持最小：Compose + Material3 + 图标，无 DI 框架、无导航库
 //（原型期导航是显式的少量屏幕状态，引入 navigation-compose 只会多一层间接）。
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -20,9 +22,37 @@ android {
         versionName = "0.1.0-prototype"
     }
 
+    // 签名（release）：凭据从 android/keystore.properties 读（gitignore，不入库）。
+    // 文件缺失时 release 退回 debug 签名并打 warning——本地构建不断，出包前必须补上
+    //（重新生成 keystore 的步骤见 android/RELEASE.md）。
+    val keystoreProps = Properties().apply {
+        val f = rootProject.file("keystore.properties")
+        if (f.exists()) f.inputStream().use { load(it) }
+    }
+    val hasReleaseKeystore = keystoreProps.getProperty("storeFile") != null
+    if (!hasReleaseKeystore) {
+        logger.warn("android/keystore.properties 缺失：release 将退回 debug 签名（仅限本地构建，不得分发）")
+    }
+
+    signingConfigs {
+        if (hasReleaseKeystore) {
+            create("release") {
+                storeFile = rootProject.file(keystoreProps.getProperty("storeFile"))
+                storePassword = keystoreProps.getProperty("storePassword")
+                keyAlias = keystoreProps.getProperty("keyAlias")
+                keyPassword = keystoreProps.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            if (hasReleaseKeystore) {
+                signingConfig = signingConfigs.getByName("release")
+            } else {
+                signingConfig = signingConfigs.getByName("debug")
+            }
         }
     }
 

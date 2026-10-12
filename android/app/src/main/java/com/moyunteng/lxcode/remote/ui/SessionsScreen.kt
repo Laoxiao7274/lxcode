@@ -203,10 +203,25 @@ fun SessionsScreen(state: MockAppState) {
             item { LxSectionHeader("项目") }
 
             // ④ 项目行 + 未分组
-            // 真实模式：本批未接 project.list，项目分组整段隐藏（如实说明，不显示假数据）
+            // 真实模式：项目来自 project.list（真数据）；会话按 workspace（= 项目 id）归组，
+            // 各组计数 = 该项目 id 下的会话数（对齐桌面端 Sidebar 的 count 口径）；
+            // 无归属（workspace 空）进「未分组」。
             if (state.realOn) {
+                itemsIndexed(state.real.projects) { i, project ->
+                    ProjectRow(
+                        modifier = Modifier.lxStaggerEnter(count = state.real.projects.size + 1, index = i),
+                        name = project.name,
+                        count = state.realProjectSessionCount(project.id),
+                        active = state.scope == project.id,
+                        onClick = { state.scope = project.id },
+                    )
+                }
                 item {
                     ProjectRow(
+                        modifier = Modifier.lxEnter(
+                            spec = LxEnterSpec.StaggerItem,
+                            delayMillis = LxStagger.delayMillis(state.real.projects.size + 1, state.real.projects.size),
+                        ),
                         name = "未分组",
                         count = state.realLooseSessionCount(),
                         active = state.scope.isEmpty(),

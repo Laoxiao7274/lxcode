@@ -3,6 +3,7 @@
 // 纯远控壳：底部导航只有 会话/连接；配对与组件展示从连接页进入。
 package com.moyunteng.lxcode.remote.ui
 
+import android.util.Log
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -34,7 +35,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.moyunteng.lxcode.remote.BuildConfig
+import com.moyunteng.lxcode.remote.ConnStore
 import com.moyunteng.lxcode.design.motion.LxEnterSpec
 import com.moyunteng.lxcode.design.motion.LxMotionGate
 import com.moyunteng.lxcode.design.motion.lxAnimateColor
@@ -71,18 +75,31 @@ data class ConnDraft(
 )
 
 /**
- * 全应用 mock 状态 —— 页面共享的可变状态（连接列表、当前连接、断线开关、筛选）。
+ * 全应用状态 —— 页面共享的可变状态（连接列表、当前连接、断线开关、筛选）。
  *
- * 全部内存态、无网络：原型只为「把页面画出来」服务。
+ * 连接列表经 [ConnStore] 持久化（SharedPreferences JSON 数组；addr/token/name 逐条落盘，
+ * App 重启保留）：保存/编辑/删除/选当前即写回；没有任何存档时按构建类型播种——
+ * DEBUG 播 mock 列表（原型数据迁移，调试区控件同源），release 只播本机条目。
+ * mock 页面行为不变（DEBUG 下播种的就是原 mock 数据）。
  */
-class MockAppState {
+class MockAppState(private val store: ConnStore? = null) {
     var route by mutableStateOf<Route>(Route.Sessions)
 
-    /** 连接列表（含本机；可增删改）。 */
-    val conns = mutableStateListOf<BackendConn>().apply { addAll(MockData.connections) }
+    /** 连接列表（含本机；可增删改；每次变更落盘）。 */
+    val conns = mutableStateListOf<BackendConn>().apply {
+        addAll(store?.loadConns() ?: seedConns())
+    }
 
-    /** 当前连接 id。 */
-    var activeConnId by mutableStateOf(MockData.activeConnId)
+    /** 当前连接 id（真实模式「连接」到哪条；落盘，重启保留）。 */
+    var activeConnId by mutableStateOf(store?.loadActiveId() ?: MockData.activeConnId)
+
+    /** 首次启动（无存档）的播种列表：DEBUG = mock 列表（迁移原型数据）；release = 本机。 */
+    private fun seedConns(): List<BackendConn> =
+        if (BuildConfig.DEBUG) {
+            MockData.connections
+        } else {
+            listOf(BackendConn("local", "本机", MockData.LOCAL_ADDR, "", local = true))
+        }
 
     /** mock 断线开关：true = 在线（顶栏绿点），false = 离线（灰点 + 连接页错误条）。 */
     var online by mutableStateOf(true)
@@ -177,17 +194,52 @@ class MockAppState {
 
     fun addConn(draft: ConnDraft) {
         conns.add(BackendConn(draft.id, draft.name, draft.addr, draft.token))
+        store?.saveConns(conns.toList())
     }
 
     fun updateConn(draft: ConnDraft) {
         val i = conns.indexOfFirst { it.id == draft.id }
         if (i >= 0) conns[i] = BackendConn(draft.id, draft.name, draft.addr, draft.token)
+        store?.saveConns(conns.toList())
     }
 
     fun removeConn(id: String) {
         conns.removeAll { it.id == id }
-        if (activeConnId == id) activeConnId = "local"
+        if (activeConnId == id) setActiveConn("local")
+        store?.saveConns(conns.toList())
     }
+
+    /** 设置当前连接 id（落盘，重启后连接列表与「当前」态原样恢复）。 */
+    fun setActiveConn(id: String) {
+        activeConnId = id
+        store?.saveActiveId(id)
+    }
+
+    // ===== 连接条目 → 真实连接（连接管理 = 真实连接的收口）=====
+
+    /**
+     * 「连接」一条条目：把它的 addr/token 设为真实模式凭证并立即连接
+     * （等价于调试区「真实后端」开关 + 手填地址，但入口在连接列表）。
+     * 断线重连沿用现有 retry 机制——它读 realAddr/realToken，即本条目的凭证。
+     */
+    fun connectTo(conn: BackendConn) {
+        setActiveConn(conn.id)
+        realAddr = if (conn.local) MockData.LOCAL_ADDR else conn.addr
+        realToken = conn.token
+        realOn = true
+        Log.i(TAG, "连接条目 ${conn.name} → $realAddr")
+        real.connect(realAddr, realToken)
+    }
+
+    /** 断开真实连接（条目「断开」按钮 / 调试开关关闭共用）：断 WS 并退出真实模式。 */
+    fun disconnectReal() {
+        real.disconnect()
+        realOn = false
+    }
+
+    /** 这条条目是不是「当前」连接：真实模式 targeting 它才算（调试开关手填地址
+     *  不属于任何条目 → setActiveConn("") 清掉标记，避免错标）。 */
+    fun isCurrentConn(id: String): Boolean = realOn && activeConnId == id
 
     fun sessionsInScope(): List<com.moyunteng.lxcode.remote.mock.SessionMeta> {
         val all = MockData.sessions.filter { !it.archived }
@@ -217,6 +269,8 @@ class MockAppState {
 /** 底部导航项。 */
 private data class NavItem(val route: Route, val label: String, val icon: ImageVector)
 
+private const val TAG = "MockAppState"
+
 // 纯远控壳：底部导航只留 会话 + 连接 两个 tab；「配对」改为连接页入口，
 // 「展示」（组件库调试页）改为连接页调试区入口（Route 保留，导航不再直达）。
 private val NAV_ITEMS = listOf(
@@ -233,7 +287,8 @@ private val NAV_ITEMS = listOf(
  */
 @Composable
 fun AppRoot(pairUri: String? = null, onPairUriConsumed: () -> Unit = {}) {
-    val state = remember { MockAppState() }
+    val context = LocalContext.current
+    val state = remember { MockAppState(ConnStore(context.applicationContext)) }
 
     // 返回键路由栈（BackHandler 链）：① 弹层/菜单开着 → 先关弹层（各页面注册的
     // [MockAppState.backInterceptor]）；② 详情页回上级（线程→会话列表、表单/扫码/展示→连接）；
