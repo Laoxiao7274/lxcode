@@ -1,0 +1,31 @@
+{
+  "generated_at": "2026-10-12",
+  "census_root": "C:/Users/xzy/AppData/Roaming/lxcode/sessions/worktrees",
+  "summary": { "total": 38, "ok": 37, "broken": 3, "unrepairable": 0 },
+  "broken_worktrees": [
+    {
+      "worktree": "C:/Users/xzy/AppData/Roaming/lxcode/sessions/worktrees/20260916-170347-72e2/20260917-092341-e24d",
+      "session_id": "20260917-092341-e24d",
+      "branch": "lxcode/session-20260917-092341-e24d",
+      "main_repo": "C:/Users/xzy/Desktop/gs/myt-sdk-go",
+      "gitfile_original": "gitdir: C:/Users/xzy/Desktop/gs/myt-sdk-go/.git/worktrees/20260917-092341-e24d",
+      "diagnosis": "admin dir pruned (gitdir target missing); main repo present; branch exists at 479950268964613160cf3fd8937a9598ea210804"
+    },
+    {
+      "worktree": "C:/Users/xzy/AppData/Roaming/lxcode/sessions/worktrees/20260916-170347-72e2/20260917-105323-9388",
+      "session_id": "20260917-105323-9388",
+      "branch": "lxcode/session-20260917-105323-9388",
+      "main_repo": "C:/Users/xzy/Desktop/gs/myt-sdk-go",
+      "gitfile_original": "gitdir: C:/Users/xzy/Desktop/gs/myt-sdk-go/.git/worktrees/20260917-105323-9388",
+      "diagnosis": "admin dir pruned (gitdir target missing); main repo present; branch exists at 479950268964613160cf3fd8937a9598ea210804"
+    },
+    {
+      "worktree": "C:/Users/xzy/AppData/Roaming/lxcode/sessions/worktrees/20260916-170347-72e2/20260917-133722-33ab",
+      "session_id": "20260917-133722-33ab",
+      "branch": "lxcode/session-20260917-133722-33ab",
+      "main_repo": "C:/Users/xzy/Desktop/gs/myt-sdk-go",
+      "gitfile_original": "gitdir: C:/Users/xzy/Desktop/gs/myt-sdk-go/.git/worktrees/20260917-133722-33ab",
+      "diagnosis": "admin dir pruned (gitdir target missing); main repo present; branch exists at 479950268964613160cf3fd8937a9598ea210804"
+    }
+  ]
+}
