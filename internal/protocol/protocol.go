@@ -483,6 +483,9 @@ type SessionStats struct {
 type UserMessageParams struct {
 	SessionID string      `json:"session_id"`
 	Message   llm.Message `json:"message"`
+	// DispatchID 非空 = 子会话的消息（派发方注入的任务说明书）：前端投进子会话
+	// 自己的 state，主时间线不画（dispatch 卡 = 一行摘要）。
+	DispatchID string `json:"dispatch_id,omitempty"`
 }
 
 type DeltaParams struct {

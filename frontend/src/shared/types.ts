@@ -177,7 +177,11 @@ export type AgentEvent =
   | { type: "sessionFocused"; id: string }
   /** seq = 撤回锚点（ChatMessage 上的字段；历史回放与实时事件是**同一个类型**，
    *  所以两条路径都读 message.seq）。老后端没有它 → 块不可撤回，但绝不炸。 */
-  | { type: "userMessage"; sessionId: string; text: string; seq?: number }
+  | { type: "userMessage"; sessionId: string; text: string; seq?: number;
+      /** dispatchId 非空 = 子会话的消息（派发方注入的任务说明书，后端 childEmitter
+       *  带归属上抛）：主时间线不画（dispatch 卡 = 一行摘要），双投进子会话自己的
+       *  state——子会话标签页里「新一轮的任务」靠它出现。 */
+      dispatchId?: string }
   /** 乐观用户气泡（**本地事件，不经后端**——体验修复批次 2）：send 发起后立即在
    *  当前会话插一个 pending 用户块，真后端的 userMessage 回执（排在 worktree 准备
    *  等工作之后）到达时按 FIFO 去重。failed = 发送失败（ws 的 catch）：移除最旧的

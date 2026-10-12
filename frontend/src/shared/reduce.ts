@@ -83,6 +83,10 @@ export function reduce(state: UIState, ev: AgentEvent): UIState {
  * 注记，用户界面上当它不存在——原样返回 state（连乐观 pending 的去重也不做，
  * 它本来就不是任何发送的回执）。与回放路径 history.ts 的同款判定共用一份前缀表。 */
 function reduceUserMessage(state: UIState, ev: Ev<"userMessage">): UIState {
+  // 子会话的消息（派发方注入的任务说明书，带 dispatch_id）：**主时间线不画**——
+  // dispatch 卡 = 一行摘要（docs/child-session-ui.md §2.3），任务全文属于子会话
+  // 自己的时间线（双投路径已把 dispatchId 剥掉后送到那里）。
+  if (ev.dispatchId) return state;
   if (isHiddenNotice(ev.text)) return state;
   const label = noticeLabel(ev.text);
   // 乐观 pending 块的去重（FIFO 移除最旧的——连续发多条按发送顺序与回执一一对应）。
@@ -505,11 +509,35 @@ export function reduceSessionStates(
   const next = { ...states, [id]: { ...reduce(previous, ev), currentId: id } };
   const did = eventDispatchId(ev);
   const childId = did ? (dispatchChild?.[did] ?? dispatchChildSession(states, did)) : "";
-  if (did && childId && childId !== id && states[childId]) {
+  if (did && childId && childId !== id && states[childId] && !isCardLifecycle(ev)) {
     const child = states[childId];
-    next[childId] = { ...reduce(child, withoutDispatch(ev)), currentId: childId };
+    let childNext = { ...reduce(child, withoutDispatch(ev)), currentId: childId };
+    // 生成中指示的兜底（2026-12 用户报「子会话标签页缺少生成中样式」）：busy=true
+    // 只在轮开始那一刻发**一次**（session.go 的 Send），而子会话 state 是双投的
+    // 「不建」规则——标签页打开之前那条 busy=true 无人接收；打开标签页时
+    // chat.history 的快照又来自按 id 现建的运行时，busy 恒 false。结果整轮都
+    // 没有生成中指示。子会话侧的活动事件（delta/toolCall/toolResult/任务消息/
+    // 待裁决确认）本身就证明子会话正在跑——见到就把 busy 置真；翻回 false 仍由
+    // 轮末那条 busy=false 事件负责（它无条件发，不会漏）。主会话的归约不受影响
+    //（忙闲仍由它自己的 busy 事件驱动）。
+    if (CHILD_BUSY_HINTS.has(ev.type)) childNext = { ...childNext, busy: true };
+    next[childId] = childNext;
   }
   return next;
+}
+
+/** 这些事件只可能发生在会话正在跑的时候——双投进子会话 state 时顺带把 busy 置真
+ *  （子会话「生成中」指示的兜底，见 reduceSessionStates 里的注释）。 */
+const CHILD_BUSY_HINTS = new Set<AgentEvent["type"]>([
+  "delta", "toolCall", "toolResult", "userMessage", "confirmRequest",
+]);
+
+/** dispatch 卡的生命周期事件（卡的开/关）：它们是**父会话时间线**上的呈现——
+ *  双投时绝不送进子会话自己的 state，否则 reduceDispatchStart 会在子会话时间线里
+ *  再画一张「调用子 Agent」卡（2026-12 用户报：子 Agent 深度恒 1，不可能再派发，
+ *  那张卡纯属归属错误）。子会话标签页里它的过程由 delta/toolCall 等事件本身呈现。 */
+function isCardLifecycle(ev: AgentEvent): boolean {
+  return ev.type === "dispatchStart" || ev.type === "dispatchEnd";
 }
 
 /** 事件归属的那个 dispatch id（子事件双投用的键）。

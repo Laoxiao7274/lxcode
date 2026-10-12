@@ -13,7 +13,7 @@ import (
 func (s *Server) emitEvent(sessionID string, ev agent.Event) {
 	switch e := ev.(type) {
 	case agent.UserMsgEvent:
-		s.broadcast(protocol.EventUserMsg, protocol.UserMessageParams{SessionID: sessionID, Message: e.Message})
+		s.broadcast(protocol.EventUserMsg, protocol.UserMessageParams{SessionID: sessionID, Message: e.Message, DispatchID: e.DispatchID})
 	case agent.DeltaEvent:
 		s.broadcast(protocol.EventDelta, protocol.DeltaParams{SessionID: sessionID, Kind: e.Kind, Text: e.Text, DispatchID: e.DispatchID})
 	case agent.ToolCallEvent:

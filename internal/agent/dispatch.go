@@ -450,6 +450,13 @@ func childEmitter(parent Emitter, dispatchID string, tap *childEvents) Emitter {
 		case BusyEvent:
 			e.DispatchID = dispatchID
 			parent(e)
+		case UserMsgEvent:
+			// 子会话的任务说明书（SendWait 发进去的 user 消息）与注入通告：带归属
+			// 上抛。前端把它画进子会话标签页的实时流——续跑的第二轮没有这条的话，
+			// 用户在子会话页里看不出「新一轮开始了」（2026-12 用户报）。
+			// 主时间线不画它（dispatch 卡 = 一行摘要，前端按 dispatch_id 过滤）。
+			e.DispatchID = dispatchID
+			parent(e)
 		case FilesChangedEvent:
 			parent(e)
 		case TurnErrorEvent:

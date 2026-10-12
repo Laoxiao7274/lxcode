@@ -308,6 +308,42 @@ func TestChildSessionEventAttribution(t *testing.T) {
 	}
 }
 
+// 子会话的任务说明书（SendWait 发进去的 user 消息）要带归属上抛：它是子会话历史里
+// 真实的 user 消息（chat.history 回放可见），实时流必须同样可见——否则续跑的第二轮
+// 在子会话标签页里看不出「新一轮开始了」（2026-12 用户报）。主时间线不画它
+//（前端按 dispatch_id 过滤，dispatch 卡 = 一行摘要）。
+func TestChildTaskUserMessageAttributed(t *testing.T) {
+	env, _ := newChildSessionEnv(t)
+	env.s.SetStream(dispatchStream(t, `{"agent":"coder","task":"跑一遍测试"}`, "子结论"))
+	if err := env.s.Send("把测试跑了"); err != nil {
+		t.Fatal(err)
+	}
+	waitDispatchIdle(t, env.s)
+
+	var sawTaskMsg bool
+	for _, ev := range env.snapshot() {
+		if e, ok := ev.(UserMsgEvent); ok && e.DispatchID != "" {
+			sawTaskMsg = true
+			if !strings.Contains(e.Message.Content, "跑一遍测试") {
+				t.Fatalf("子会话任务消息正文不对: %q", e.Message.Content)
+			}
+		}
+	}
+	if !sawTaskMsg {
+		t.Fatal("子会话的任务消息应带 dispatch_id 上抛（前端投进子会话自己的 state）")
+	}
+	// 主会话自己的用户消息回执不带归属（形状不变——多客户端回显按它去重）
+	for _, ev := range env.snapshot() {
+		if e, ok := ev.(UserMsgEvent); ok && e.DispatchID == "" {
+			if !strings.Contains(e.Message.Content, "把测试跑了") {
+				t.Fatalf("主会话的用户消息回执不该被改写: %q", e.Message.Content)
+			}
+			return
+		}
+	}
+	t.Fatal("主会话的用户消息回执丢失")
+}
+
 // 子会话压缩保护任务说明书：openChildSession 是开子会话的唯一入口（新建与续跑同一条
 // 路），它置位 protectHead——压缩后历史第 0 条仍是派发的那条任务原文，摘要落在它之后；
 // 库里回放同一顺序（检查点按影子锚点插回被替换段的位置，不是一律排最前）。

@@ -253,6 +253,46 @@ test('子会话的确认卡双投，裁决时两处一起定格（不留永远�
   assert.equal(all['child-1'].pending, null);
 });
 
+test('dispatch 卡的生命周期事件不双投进子会话时间线（子会话页不出现「调用子 Agent」卡）', () => {
+  // 2026-12 用户报：子会话标签页里出现 dispatch 卡。子 Agent 深度恒 1，不可能再
+  // 派发——那张卡是 dispatchStart/End 被双投进子会话 state 后 reduceDispatchStart
+  // 画出来的归属错误。卡的生命周期是**父会话时间线**上的呈现；子会话页的过程由
+  // delta/toolCall 等事件本身呈现（docs/child-session-ui.md §2.1 的双投清单里
+  // 本来就没有这两个变体）。
+  let all = withChild();
+  // 第二轮续跑：新 dispatch_id、同一个子会话（映射按 d2 记，归属键是 dispatch_id）
+  all = reduceSessionStates(all, {
+    type: 'dispatchStart', sessionId: 'parent', dispatchId: 'd2', childSessionId: 'child-1',
+    agentId: 'coder', agentName: '代码 Agent', agentColor: '#000', task: '接着做',
+  });
+  all = reduceSessionStates(all, { type: 'delta', sessionId: 'parent', kind: 'text', text: '第二轮的回复', dispatchId: 'd2' });
+  all = reduceSessionStates(all, { type: 'dispatchEnd', sessionId: 'parent', dispatchId: 'd2', childSessionId: 'child-1', result: '完成', isError: false });
+  assert.equal(all['child-1'].blocks.some((b) => b.kind === 'dispatch'), false,
+    '子会话时间线里不该出现任何 dispatch 卡');
+  // 父会话的卡照常（第二轮有自己的卡）；第二轮的流照常进子会话时间线
+  assert.ok(all.parent.blocks.some((b) => b.kind === 'dispatch' && b.id === 'd2'));
+  assert.ok(all['child-1'].blocks.some((b) => b.kind === 'assistant' && b.content === '第二轮的回复'),
+    '续跑第二轮的事件要接着追加进既有的子会话标签页');
+});
+
+test('子会话的任务消息（带 dispatch_id 的 userMessage）进子会话时间线，不进主时间线', () => {
+  // 续跑第二轮的任务说明书是子会话历史里真实的 user 消息（chat.history 回放可见），
+  // 实时流必须同样可见——否则标签页里看不出「新一轮开始了」（2026-12 用户报）。
+  // 主时间线不画它：dispatch 卡 = 一行摘要（docs/child-session-ui.md §2.3）。
+  let all = withChild();
+  // 续跑第二轮：先有派发（新 dispatch_id、同一子会话），随后 SendWait 把任务
+  // 说明书作为 user 消息发进子会话——后端 childEmitter 带归属上抛。
+  all = reduceSessionStates(all, {
+    type: 'dispatchStart', sessionId: 'parent', dispatchId: 'd2', childSessionId: 'child-1',
+    agentId: 'coder', agentName: '代码 Agent', agentColor: '#000', task: '接着做',
+  });
+  const before = all.parent.blocks.length;
+  all = reduceSessionStates(all, { type: 'userMessage', sessionId: 'parent', text: '第二轮任务\n\n背景：接着上次', dispatchId: 'd2' });
+  assert.equal(all.parent.blocks.length, before, '主时间线不画子会话的任务消息');
+  const task = all['child-1'].blocks.find((b) => b.kind === 'user' && b.text.startsWith('第二轮任务'));
+  assert.ok(task, '子会话时间线要出现新一轮的任务消息（user 块）');
+});
+
 test('裁决只碰真的有这个确认的会话（不许清别人的挂起确认）', () => {
   let all = withChild();
   all = reduceSessionStates(all, {

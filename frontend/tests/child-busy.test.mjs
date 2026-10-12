@@ -92,3 +92,31 @@ test('⑤ wire 映射：chat.busy 带/不带 dispatch_id', () => {
   const plain = mapEvent('chat.busy', { session_id: 's1', busy: true });
   assert.equal(plain.dispatchId, undefined, '主会话 busy 无归属键');
 });
+
+test('⑥ 生成中指示的兜底：错过轮开始的 busy=true，活动事件把子会话 busy 置真', () => {
+  // 真实时序（2026-12 用户报「子会话标签页缺少生成中样式」）：busy=true 只在轮开始
+  // 那刻发一次，而子会话 state 按「不建」规则要等标签页打开才存在——那条 busy=true
+  // 无人接收；打开标签页时 chat.history 的快照 busy 恒 false（按 id 现建的运行时）。
+  // 子会话侧的活动事件证明它正在跑，见到就把 busy 置真；翻回 false 仍由轮末那条
+  // busy=false 负责（它无条件发，不会漏）。
+  let all = { s1: { ...base }, 'child-1': { ...base, currentId: 'child-1' } };
+  const dispatchChild = { d1: 'child-1' };
+  // 标签页打开后快照说闲着（错过 busy=true）
+  all = reduceSessionStates(all, { type: 'busy', sessionId: 's1', busy: false, dispatchId: 'd1' }, dispatchChild);
+  assert.equal(all['child-1'].busy, false);
+  // 第一个活动事件到达 → 生成中亮起
+  all = reduceSessionStates(all, { type: 'delta', sessionId: 's1', kind: 'text', text: '开始干了', dispatchId: 'd1' }, dispatchChild);
+  assert.equal(all['child-1'].busy, true, '子会话的活动事件应把 busy 置真（输入框上方「生成中」靠它）');
+  // 主会话不被子会话的活动事件翻动
+  assert.equal(all.s1.busy, false);
+  assert.equal(all.s1.sending, false);
+  // 轮末 busy=false 照常翻回
+  all = reduceSessionStates(all, { type: 'busy', sessionId: 's1', busy: false, dispatchId: 'd1' }, dispatchChild);
+  assert.equal(all['child-1'].busy, false);
+  // 待裁决确认同样算「正在跑」（子会话卡在确认门时指示不能灭）
+  all = reduceSessionStates(all, {
+    type: 'confirmRequest', sessionId: 's1',
+    request: { id: 'cf1', name: 'bash', arguments: '{}', prompt: '跑？', dispatch_id: 'd1' },
+  }, dispatchChild);
+  assert.equal(all['child-1'].busy, true);
+});

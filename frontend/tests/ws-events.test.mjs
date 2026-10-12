@@ -68,6 +68,14 @@ test("files.changed 没有 files 数组时不产出事件", () => {
 test("userMessage 兼容 message 对象与早期扁平形状", () => {
   assert.equal(mapEvent("chat.userMessage", { session_id: "s", message: { content: "hi" } }).text, "hi");
   assert.equal(mapEvent("chat.userMessage", { session_id: "s", text: "hi" }).text, "hi");
+  // dispatch_id 非空 = 子会话的消息（派发方注入的任务说明书）：带归属透传——
+  // 双投路由靠它把这条 user 消息送进子会话自己的 state（续跑第二轮在子会话
+  // 标签页里要能看到「新一轮的任务」）。不归属时键缺席（形状与老后端一致）。
+  const child = mapEvent("chat.userMessage", { session_id: "s", message: { content: "任务", seq: 7 }, dispatch_id: "d2" });
+  assert.equal(child.dispatchId, "d2");
+  assert.equal(child.seq, 7);
+  const plain = mapEvent("chat.userMessage", { session_id: "s", message: { content: "hi" } });
+  assert.equal("dispatchId" in plain, false, "无归属时不带 dispatchId 键");
 });
 
 test("只重拉事实源的事件不产出前端事件（由 reactTo 负责）", () => {

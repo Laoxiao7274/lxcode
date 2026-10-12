@@ -24,9 +24,12 @@ export function mapEvent(method: string, params: unknown): AgentEvent | null {
       // 都读 message.seq，不另立字段名）。老后端没有它 → 键**缺席**（不是
       // undefined 值的键）：块不可撤回，但绝不炸（AGENTS.md §5 坑 11）。
       const seq = message.seq;
-      return typeof seq === "number"
+      // dispatchId 非空 = 子会话的消息（任务说明书）：同样**键缺席**而非 undefined
+      // 值——不归属的事件形状与老后端逐字节一致（测试按形状断言）。
+      const ev: AgentEvent = typeof seq === "number"
         ? { type: "userMessage", sessionId, text, seq }
         : { type: "userMessage", sessionId, text };
+      return dispatchId ? { ...ev, dispatchId } : ev;
     }
     case "chat.delta":
       return { type: "delta", sessionId, kind: String(p.kind) as "text" | "reasoning", text: String(p.text ?? ""), dispatchId };

@@ -14,8 +14,12 @@ import (
 type Event interface{ isEvent() }
 
 // UserMsgEvent：用户消息入会话（宿主渲染自己的消息，回显确认）。
+// DispatchID 非空 = 子会话的消息（派发方注入的任务说明书等）——经 childEmitter
+// 带归属上抛，前端投进子会话自己的 state（子会话标签页的实时流要能看到
+// 「新一轮的任务」，与 chat.history 回放出来的 user 消息保持一致）。
 type UserMsgEvent struct {
-	Message llm.Message
+	Message    llm.Message
+	DispatchID string
 }
 
 // DeltaEvent：流式增量。Kind = "text"（正文）| "reasoning"（思考链）。
