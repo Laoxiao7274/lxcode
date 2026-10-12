@@ -38,6 +38,13 @@ type Persistence interface {
 	//（老会话/从没跑过主轮）——调用方据此**回落估算**，而不是把它当成 0（当成 0
 	// 就是"编一个数"：空历史显示 0% 比显示中性态更坏）。
 	ContextUsageOf(sessionID string) (sessiondata.ContextUsage, bool, error)
+	// SaveApproval 落库会话当前的审批档（chat.approval 改档 / 新会话按 behavior
+	// 默认档初始化时写）。失败不该打断改档本身（内存才是运行真源，最坏情况是
+	// 重启后回落默认档）：调用方只记日志。
+	SaveApproval(sessionID, approval string) error
+	// ApprovalOf 读回会话落库的审批档。空串 = 没落过（老会话/从没改过档）——
+	// 调用方据此回落 behavior 默认档，而不是当成 confirm 写死。
+	ApprovalOf(sessionID string) (string, error)
 	Load(string) ([]llm.Message, error)
 	Latest() (string, []llm.Message, error)
 	List() ([]sessiondata.SessionMeta, error)

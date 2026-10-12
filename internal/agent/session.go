@@ -320,6 +320,7 @@ func (s *Session) SetApproval(mode string) string {
 	if norm == string(tools.ApprovalAuto) && s.pending != nil && s.pending.Kind == "" {
 		ch = s.confirm
 	}
+	st, id := s.st, s.id
 	s.mu.Unlock()
 	if ch != nil {
 		select {
@@ -327,6 +328,11 @@ func (s *Session) SetApproval(mode string) string {
 		default:
 		}
 	}
+	// 落库（不持锁——写盘不该占着会话锁）：审批档是会话的状态，重启后打开这条
+	// 会话还得是改后的档。失败只记日志：内存才是运行真源，落库失败不该让改档
+	// 本身失败（最坏情况是重启后回落默认档）。st 为 nil（纯内存模式）或 id 为空
+	//（会话还没建行）时是 no-op——与 persistContextUsage 同一条接缝模式。
+	persistApproval(st, id, norm)
 	return norm
 }
 

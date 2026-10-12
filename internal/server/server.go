@@ -259,6 +259,17 @@ func (s *Server) newRuntime(id string) (*agent.Session, error) {
 		if err := sess.AttachTo(s.st, id); err != nil {
 			return nil, err
 		}
+		// 审批档恢复（会话级状态持久化）：AttachTo 已把**落库值**恢复进内存；
+		// 空列（老会话/从没改过档）→ 回落 behavior 默认档——只有默认档不是
+		// confirm 时才需要显式置位（confirm 是缺省语义），置位同时会把列补上，
+		// 之后的恢复就不再走回落。
+		if stored, err := s.st.ApprovalOf(id); err != nil {
+			log.Printf("读会话审批档失败（回落默认档）: %v", err)
+		} else if stored == "" {
+			if def := s.behaviorConfig().Approval; def != "" && def != config.ApprovalConfirm {
+				sess.SetApproval(def)
+			}
+		}
 	}
 	return sess, nil
 }

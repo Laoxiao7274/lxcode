@@ -34,30 +34,58 @@ func ValidTodoPromptMode(m string) bool {
 	return false
 }
 
+// 审批档位（工具执行三档策略——与 tools.Approval* / 协议值域同一份口径）。
+const (
+	// ApprovalConfirm 默认（behavior.json 的缺省）：低危自动执行，高危需确认。
+	ApprovalConfirm = "confirm"
+	// ApprovalAuto 完全访问：全部自动执行。
+	ApprovalAuto = "auto"
+	// ApprovalStrict 只读：变更类工具直接拒绝。
+	ApprovalStrict = "strict"
+)
+
+// ValidApprovalMode 判断审批档位值合法（空串不算——空 = 缺省，由读侧补默认）。
+func ValidApprovalMode(m string) bool {
+	switch m {
+	case ApprovalConfirm, ApprovalAuto, ApprovalStrict:
+		return true
+	}
+	return false
+}
+
 // Behavior 是 behavior.json 的载荷。
 type Behavior struct {
 	// TodoPrompt 是 todo-first 提示词的注入档位；空 = strict（读侧补默认）。
 	TodoPrompt string `json:"todoPrompt"`
+	// Approval 是**新会话**的默认审批档（会话创建时用它初始化并落库；既有会话
+	// 的档位是它自己的落库值，改这里不影响它们）；空 = confirm（读侧补默认）。
+	Approval string `json:"approval"`
 }
 
-// Normalized 返回补齐缺省后的配置（空/非法值 = strict——非法值回落默认而不是
-// 报错，与 LoadBehavior 的容错语义一致：行为开关宁可回默认也不让会话发不出）。
+// Normalized 返回补齐缺省后的配置（空/非法值回落默认而不是报错，与 LoadBehavior
+// 的容错语义一致：行为开关宁可回默认也不让会话发不出）。两个字段**各自独立**
+// 归一——只校验出一个非法值就把另一个合法值一起丢掉是错的（set 只改一个字段
+// 时另一个必须原样保留）。
 func (b Behavior) Normalized() Behavior {
-	if !ValidTodoPromptMode(b.TodoPrompt) {
-		return Behavior{TodoPrompt: TodoPromptStrict}
+	n := b
+	if !ValidTodoPromptMode(n.TodoPrompt) {
+		n.TodoPrompt = TodoPromptStrict
 	}
-	return b
+	if !ValidApprovalMode(n.Approval) {
+		n.Approval = ApprovalConfirm
+	}
+	return n
 }
 
-// LoadBehavior 读行为配置。文件缺失/损坏/字段非法 = 默认（strict）。
+// LoadBehavior 读行为配置。文件缺失/损坏/字段非法 = 各字段默认（strict / confirm）。
 func LoadBehavior(path string) Behavior {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return Behavior{TodoPrompt: TodoPromptStrict}
+		return Behavior{TodoPrompt: TodoPromptStrict, Approval: ApprovalConfirm}
 	}
 	var b Behavior
 	if err := json.Unmarshal(data, &b); err != nil {
-		return Behavior{TodoPrompt: TodoPromptStrict}
+		return Behavior{TodoPrompt: TodoPromptStrict, Approval: ApprovalConfirm}
 	}
 	return b.Normalized()
 }

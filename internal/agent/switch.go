@@ -68,6 +68,7 @@ func (s *Session) SwitchTo(id string) error {
 	// 这条会话自己的事实——不填的话用户 resume 一条长会话会看到空的指示器（用户实测
 	// 报的就是这个现象）。
 	usage := s.restoredUsage(st, id, "", msgs)
+	approval := restoredApproval(st, id)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -78,6 +79,9 @@ func (s *Session) SwitchTo(id string) error {
 	s.id, s.history, s.workDir = id, msgs, dir
 	s.todos, s.pendingWorkspace = nil, ""
 	s.context = usage
+	// 审批档同理是**这条会话自己的**落库值（空列 = 空——回落默认档是读侧语义，
+	// 不能沿用上一条会话的档位，那是串台）。
+	s.approval = approval
 	// 归属 Agent 同理清零：agent 层读不到库里的 sessions.agent_id（Persistence 是
 	// 最小契约），换过来的会话归哪个 Agent 由调用方置位（服务端 newRuntime 会读库）。
 	// 留旧值等于把上一个会话的模型报给这个会话。

@@ -213,8 +213,14 @@ export type AgentEvent =
    *  state——子会话页的「生成中」行与停止钮靠它出现。 */
   | { type: "busy"; sessionId: string; busy: boolean; dispatchId?: string }
   /** 某会话的权限档被改了（后端广播 chat.approvalChanged——多客户端/壳+浏览器
-   *  同时开着时靠它保持一致；载荷是规范化后的档位，空 = confirm）。 */
+   *  同时开着时靠它保持一致；载荷是规范化后的档位，空 = confirm）。
+   *  消费方是**会话状态归约**（shared/reduce.ts 按会话落 UIState.approval），
+   *  不再有全局设置可同步。 */
   | { type: "approvalChanged"; sessionId: string; approval: ApprovalMode }
+  /** 新会话默认审批档被改了（settings.defaultApproval.changed——后端 behavior.json
+   *  的行为开关，多客户端同步）。只影响**之后新建**的会话；既有会话的档位是
+   *  它们自己的落库值，不受影响。 */
+  | { type: "defaultApprovalChanged"; approval: ApprovalMode }
   | { type: "sessionChanged"; id: string; reason: string }
   /** 会话列表本身变了（重命名/归档/恢复）——UI 重读 sessions()。 */
   | { type: "sessionsChanged" }
@@ -379,12 +385,15 @@ export interface SendAttachments {
   files: ChatSendFile[];
 }
 
-/** 发送选项：随消息携带的请求级参数（不传 = 后端默认）。 */
+/** 发送选项：随消息携带的请求级参数（不传 = 后端默认）。
+ *
+ *  审批档**不在其中**（2026-12 拍板）：approval 是后端持久化的会话级状态
+ *  （chat.approval 改 → 落库 → approvalChanged 广播），会话创建时用 behavior
+ *  默认档初始化——chat.send 再带 approval 会静默覆盖会话档且不广播，正是
+ *  「不持久化/不隔离」的根因之一。协议侧参数仍保留解析（老客户端兼容）。 */
 export interface SendOptions {
   /** 推理强度（仅对声明 reasoning 能力的模型生效）。 */
   effort?: string;
-  /** 权限模式：auto 高危自动 / confirm 高危确认（默认）/ strict 只读。 */
-  approval?: ApprovalMode;
   /** 执行 Agent 的名单 id（空 = 主 Agent——后端按 Agent 四层组合提示词、
    *  模型绑定与工具白名单跑这一轮）。 */
   agent?: string;
@@ -401,11 +410,18 @@ export interface SendOptions {
 export interface AgentSource {
   /** 订阅事件流（返回退订函数）。 */
   subscribe(listener: (ev: AgentEvent) => void): () => void;
-  /** 发送消息（一轮开始；opts 携带 effort/approval，缺省 = 后端默认）。 */
+  /** 发送消息（一轮开始；opts 携带 effort 等请求级参数，缺省 = 后端默认）。
+   *  审批档不在 opts 里——它是后端持久化的会话级状态（见 SendOptions）。 */
   send(sessionId: string, text: string, opts?: SendOptions): void;
-  /** 中途改权限档（**立刻生效于运行中的一轮**——不是等下一次 chat.send）。
-   *  持久化由设置层负责（settings 管下次开应用，这个方法管当前这一轮）。 */
+  /** 中途改**当前会话**的权限档（chat.approval：后端落库 + 广播，立刻生效于
+   *  运行中的一轮）。会话档经 approvalChanged 广播 / chat.history 的 approval
+   *  回读——归约层按会话落状态。 */
   setApproval(mode: ApprovalMode): Promise<void>;
+  /** 读「新会话默认审批档」（后端 behavior.json 的行为开关）。 */
+  defaultApproval(): Promise<ApprovalMode>;
+  /** 写「新会话默认审批档」（settings.defaultApproval.set：落盘 + 广播）。
+   *  只影响之后新建的会话，不改既有会话的档位。 */
+  setDefaultApproval(mode: ApprovalMode): Promise<void>;
   /** 裁决确认门（目标会话显式传入，避免切换焦点后误投）。 */
   confirm(sessionId: string, id: string, allow: boolean): Promise<void>;
   /** 回答 ask_user 的提问（确认门的「提问」形态）：文本答案发给持有挂起

@@ -593,7 +593,9 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
     // 每个请求都标明目标 Session；连接焦点只是旧客户端兼容回退。
     const params: Record<string, unknown> = { session_id: sessionId, text };
     if (opts?.effort) params.effort = opts.effort;
-    if (opts?.approval) params.approval = opts.approval;
+    // 审批档不再随 send 上车：它是后端持久化的会话级状态（chat.approval 改、
+    // 新会话按 behavior 默认档初始化）——恒带请求级 approval 会静默覆盖会话档
+    // 且不广播（持久化/隔离问题的根因之一）。协议侧参数仍保留（老客户端兼容）。
     if (opts?.agent) params.agent = opts.agent;
     // 附件（图片批次 B）：images = {mime, data}（纯 base64 不带前缀，后端协议
     // 同形）；files = {name, data}。base64 只在这一瞬间经 wire 存在——落盘后
@@ -623,6 +625,18 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
    *  会话 id 取连接焦点（UI 的操作永远发生在某个已聚焦的会话上）。 */
   setApproval(mode: ApprovalMode): Promise<void> {
     return this.call("chat.approval", { session_id: this.currentSessionId, approval: mode }).then(() => undefined);
+  }
+
+  /** 读「新会话默认审批档」（settings.defaultApproval.get——后端 behavior.json）。 */
+  defaultApproval(): Promise<ApprovalMode> {
+    return this.call("settings.defaultApproval.get", {}).then((r) =>
+      normalizeApproval((r as { approval?: string } | null)?.approval));
+  }
+
+  /** 写「新会话默认审批档」（settings.defaultApproval.set：落盘 + 广播）。
+   *  只影响之后新建的会话；既有会话的档位是它们自己的落库值。 */
+  setDefaultApproval(mode: ApprovalMode): Promise<void> {
+    return this.call("settings.defaultApproval.set", { approval: mode }).then(() => undefined);
   }
 
   /** 裁决确认门。resolve = 后端确认成功（结果随后以 toolResult 到达）；

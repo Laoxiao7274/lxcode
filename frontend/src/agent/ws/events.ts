@@ -115,9 +115,12 @@ export function mapEvent(method: string, params: unknown): AgentEvent | null {
       // 过滤（主会话的忙闲不被子会话翻动），双投路径把它送进子会话自己的 state。
       return { type: "busy", sessionId, busy: Boolean(p.busy), dispatchId };
     case "chat.approvalChanged":
-      // 某会话的权限档被改了（多客户端同步）。落到设置的反向同步在设置层
-      //（shared/approval.ts 的 subscribeApprovalSync）——这里只管形状。
+      // 某会话的权限档被改了（多客户端同步）。消费方是会话状态归约
+      //（shared/reduce.ts 按 sessionId 落 UIState.approval）——本层只管形状。
       return { type: "approvalChanged", sessionId, approval: normalizeApproval(p.approval) };
+    case "settings.defaultApproval.changed":
+      // 新会话默认审批档变了（后端 behavior.json 的行为开关，多客户端同步）。
+      return { type: "defaultApprovalChanged", approval: normalizeApproval(p.approval) };
     case "session.changed":
       return { type: "sessionChanged", id: String(p.id ?? ""), reason: String(p.reason ?? "") };
     case "files.changed": {

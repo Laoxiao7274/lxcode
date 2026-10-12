@@ -372,6 +372,38 @@ func (s *Store) ContextUsageOf(id string) (sessiondata.ContextUsage, bool, error
 	return u, true, nil
 }
 
+// SaveApproval 落库会话当前的权限档（chat.approval 改档 / 新会话按 behavior 默认
+// 档初始化时写）。为什么落库：审批档是**会话的状态**——用户把某条会话切成 strict
+// 后重启，打开这条会话还得是 strict（原先只在内存里，重启必回 confirm，用户实测）。
+//
+// **刻意不动 updated_at**：那是侧栏排序与「重启恢复最近会话」的依据，改档是会话的
+// 附属状态变化、不是"用户刚用过这个会话"——写它把会话顶到列表最前面是错的。
+func (s *Store) SaveApproval(id, approval string) error {
+	res, err := s.db.Exec(`UPDATE sessions SET approval = ? WHERE id = ?`, approval, id)
+	if err != nil {
+		return fmt.Errorf("写会话审批档失败: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("会话 %s 不存在", id)
+	}
+	return nil
+}
+
+// ApprovalOf 读回会话落库的审批档。空串 = 没落过（老会话/从没改过档）——调用方
+// 据此回落 behavior 默认档，而不是当成 confirm 写死。会话不存在时报错
+//（与 Load/WorkspaceOf 的语义一致）。
+func (s *Store) ApprovalOf(id string) (string, error) {
+	var approval string
+	err := s.db.QueryRow(`SELECT approval FROM sessions WHERE id = ?`, id).Scan(&approval)
+	if err == sql.ErrNoRows {
+		return "", fmt.Errorf("会话 %s 不存在", id)
+	}
+	if err != nil {
+		return "", fmt.Errorf("查询会话审批档失败: %w", err)
+	}
+	return approval, nil
+}
+
 // SessionWorkspace 设置会话归属的项目（空串 = 未分组）。
 func (s *Store) SessionWorkspace(id, workspace string) error {
 	res, err := s.db.Exec(`UPDATE sessions SET workspace = ? WHERE id = ?`, workspace, id)

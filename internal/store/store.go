@@ -131,6 +131,10 @@ func Open(dir string) (*Store, error) {
 		// 旧会话仍能显示占用——原先只在内存里，重启后旧会话的指示器就是空的（用户实测）。
 		// 空串 = 从没跑过主轮（老会话）→ 调用方按已加载的历史回落估算，而不是当成 0。
 		`ALTER TABLE sessions ADD COLUMN context_usage TEXT NOT NULL DEFAULT ''`,
+		// 会话级审批档（2026-12）：权限档是**会话的状态**不是请求的参数——用户中途
+		// 改档（chat.approval）后重启，打开同一条会话还得是改后的档。空串 = 没落过
+		// （老会话/默认档）→ 恢复时回落 behavior 默认档。
+		`ALTER TABLE sessions ADD COLUMN approval TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := db.Exec(col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			db.Close()

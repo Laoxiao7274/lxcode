@@ -126,6 +126,12 @@ const (
 	MethodTodoPromptGet = "settings.todoPrompt.get"
 	MethodTodoPromptSet = "settings.todoPrompt.set"
 
+	// 新会话默认审批档（与 todoPrompt 同一条模式：存 config/behavior.json）。
+	// 语义是「新会话的初始档」——改它不影响既有会话（那些是各自的落库值）；
+	// 会话内的实时改档走 chat.approval（会话级状态，不是这里的设置）。
+	MethodDefaultApprovalGet = "settings.defaultApproval.get"
+	MethodDefaultApprovalSet = "settings.defaultApproval.set"
+
 	// ---- Git 管理页（前端 Git 工作台的只读查询）----
 	//
 	// 两个方法全部只读：读主检出的状态 / 分支 / 最近提交与单文件 diff。
@@ -176,6 +182,9 @@ const (
 	// EventTodoPromptChanged 行为开关（todo-first 档位）变更——多客户端同步：
 	// 壳与浏览器同时开着时两边的设置显示必须一致（与 search.changed 同款语义）。
 	EventTodoPromptChanged = "settings.todoPrompt.changed"
+	// EventDefaultApprovalChanged 新会话默认审批档变更——多客户端同步（与
+	// settings.todoPrompt.changed 同款语义）。
+	EventDefaultApprovalChanged = "settings.defaultApproval.changed"
 	// EventJobStarted / EventJobSettled 是后台任务的状态广播（载荷 = JobInfo）：
 	// settled 带 EndedBy，前端据此显示「你停的 / 它挂了 / 超时 / 后端重启中断」。
 	EventJobStarted = "job.started"
@@ -1063,6 +1072,18 @@ type TodoPromptResult struct {
 // TodoPromptSetParams 是 settings.todoPrompt.set 的参数。
 type TodoPromptSetParams struct {
 	TodoPrompt string `json:"todoPrompt"`
+}
+
+// DefaultApprovalResult 是 settings.defaultApproval.get 的结果，也是
+// settings.defaultApproval.changed 事件的载荷（一份形状——与 todoPrompt 同款）。
+type DefaultApprovalResult struct {
+	// Approval 是当前默认档（auto/confirm/strict；读侧已归一，恒非空）。
+	Approval string `json:"approval"`
+}
+
+// DefaultApprovalSetParams 是 settings.defaultApproval.set 的参数。
+type DefaultApprovalSetParams struct {
+	Approval string `json:"approval"`
 }
 
 // ---- 后台任务（jobs——docs/jobs.md §4）----

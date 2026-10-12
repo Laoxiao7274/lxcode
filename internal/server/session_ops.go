@@ -110,6 +110,10 @@ func (s *Server) createSession(workspace string) (string, *agent.Session, error)
 	if err != nil {
 		return "", nil, err
 	}
+	// 新会话的初始审批档 = behavior 默认档（不是写死 confirm）：设置面板的
+	// 「新会话默认审批档」改的是这个值。SetApproval 会把它落库——重启后恢复
+	// 同一条会话读的就是这个列，不依赖「创建时的默认档」还成立。
+	sess.SetApproval(s.behaviorConfig().Approval)
 	s.sessionsMu.Lock()
 	s.sessions[id], s.lastSessionID = sess, id
 	s.sessionsMu.Unlock()

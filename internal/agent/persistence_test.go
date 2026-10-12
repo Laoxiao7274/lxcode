@@ -33,6 +33,8 @@ func (p *persistenceStub) ContextUsageOf(string) (sessiondata.ContextUsage, bool
 	return sessiondata.ContextUsage{}, false, nil
 }
 func (p *persistenceStub) SaveContextUsage(string, sessiondata.ContextUsage) error { return nil }
+func (p *persistenceStub) ApprovalOf(string) (string, error)       { return "", nil }
+func (p *persistenceStub) SaveApproval(string, string) error       { return nil }
 func (p *persistenceStub) ProjectByID(string) (sessiondata.ProjectMeta, bool, error) {
 	return sessiondata.ProjectMeta{ID: "project", Path: p.dir}, true, p.projectErr
 }

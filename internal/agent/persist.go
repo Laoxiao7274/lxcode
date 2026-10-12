@@ -94,6 +94,18 @@ func resolveWorkspaceDir(st Persistence, id string) (string, error) {
 	return project.ValidateDirectory(meta.Path)
 }
 
+// persistApproval 把审批档落库（调用方**不持锁**）。与 persistContextUsage 同一条
+// 模式：Persistence 是最小契约（agent 不见 SQL），失败只记日志——内存才是运行
+// 真源，落库失败不该让改档本身失败（最坏情况是重启后回落默认档）。
+func persistApproval(st Persistence, id, approval string) {
+	if st == nil || id == "" {
+		return
+	}
+	if err := st.SaveApproval(id, approval); err != nil {
+		log.Printf("审批档落库失败（继续运行）: %v", err)
+	}
+}
+
 // EnablePersistence 挂载磁盘存储并恢复最近会话（启动时调用）。
 // 库里没有任何会话时保持空历史（全新开始）。幂等：重复调用是 no-op。
 //
@@ -132,6 +144,7 @@ func (s *Session) EnablePersistence(st Persistence) error {
 		}
 	}
 	usage := s.restoredUsage(st, id, agentID, msgs)
+	approval := restoredApproval(st, id)
 
 	// 全部读取和校验成功后才提交，失败可修复存储后重试。
 	s.mu.Lock()
@@ -142,6 +155,7 @@ func (s *Session) EnablePersistence(st Persistence) error {
 	s.st, s.id, s.history, s.workDir = st, id, msgs, dir
 	s.todos, s.pendingWorkspace = nil, ""
 	s.context = usage
+	s.approval = approval
 	return nil
 }
 
@@ -172,6 +186,7 @@ func (s *Session) AttachTo(st Persistence, id string) error {
 	agentID := s.agentID // 窗口按归属 Agent 的模型解析（子会话可以绑自己的模型）
 	s.mu.Unlock()
 	usage := s.restoredUsage(st, id, agentID, msgs)
+	approval := restoredApproval(st, id)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -181,7 +196,24 @@ func (s *Session) AttachTo(st Persistence, id string) error {
 	s.st, s.id, s.history, s.workDir = st, id, msgs, dir
 	s.todos, s.pendingWorkspace = nil, ""
 	s.context = usage
+	s.approval = approval
 	return nil
+}
+
+// restoredApproval 读回会话落库的审批档（**调用方不持锁**——读库不该占会话锁）。
+// 空列 = 没落过（老会话/从没改过档）→ 返回空串，读侧回落 behavior 默认档；
+// 读失败也返回空串（fail-open：审批档是会话偏好，不是业务不变量，读不到不能让
+// 附着失败）。
+func restoredApproval(st Persistence, id string) string {
+	if st == nil || id == "" {
+		return ""
+	}
+	mode, err := st.ApprovalOf(id)
+	if err != nil {
+		log.Printf("读审批档失败（回落默认档）: %v", err)
+		return ""
+	}
+	return mode
 }
 
 // restoredUsage 决定附着一条会话之后内存里的占用测量（**调用方不持锁**——它要读库、
