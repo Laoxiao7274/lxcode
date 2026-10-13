@@ -188,10 +188,15 @@ func goldenSamples() map[string]goldenSample {
 			Skills: []string{"code-review"}, Delegates: []string{}, Approval: ApprovalConfirm,
 			Enabled: true, IsMain: true, Prompt: "你是评审 Agent……", Protocol: "主 Agent 协议", Custom: false,
 		}},
+		// 两个条目覆盖 stdio/sse 两种 transport 与 connected/error 两种运行态。
 		"mcServerEntry": {"AgentAdminMcServer", McServerEntry{
 			ID: "fs", Desc: "文件系统", Transport: "stdio", Command: "npx", Args: []string{"-y", "@mcp/fs"},
 			Env: map[string]string{"FS_ROOT": "/tmp"}, URL: "", Enabled: true, Custom: true,
-			Status: "connected", ToolCount: 11, LastError: "", Stderr: "",
+			Status: "connected", ToolCount: 11, LastError: "", Stderr: "[warn] experimental",
+		}},
+		"mcServerEntrySse": {"AgentAdminMcServer", McServerEntry{
+			ID: "remote", Desc: "远程 MCP", Transport: "sse", URL: "https://mcp.example.com/sse",
+			Enabled: true, Custom: false, Status: "error", LastError: "initialize 失败: context deadline exceeded",
 		}},
 		// 形状样本：一个条目覆盖全部 wire 键（risk/source/command 的取值组合在
 		// 真实数据里按 source 互斥，这里不为语义自洽服务）。
@@ -222,7 +227,7 @@ func goldenSamples() map[string]goldenSample {
 			Branches: []GitBranchInfo{
 				{Name: "master", Current: true, Ahead: 2, Behind: 0},
 				{Name: "lxcode/session-s1", Current: false, Ahead: 1, Behind: 3,
-					SessionID: "s1", SessionTitle: "修登录 bug", Archived: false,
+					SessionID: "s1", SessionTitle: "已归档会话", Archived: true,
 					HasWorktree: true, WorktreePath: `C:\Sessions\worktrees\p1\s1`, DirtyCount: 2, Merged: true},
 			},
 			Commits: []GitCommitInfo{{Hash: "abc1234", Message: "重构 protocol 包", Author: "xzy", When: "2026-10-13T10:00:00+08:00"}},
