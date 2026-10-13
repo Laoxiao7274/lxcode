@@ -44,7 +44,12 @@ export function ThinkingReasoning({ sentences, phase, elapsedMs = 0 }: ThinkingR
     if (!el) return;
     const ro = new ResizeObserver(() => setContentH(el.offsetHeight));
     ro.observe(el);
-    setContentH(el.offsetHeight);
+    // 页面隐藏时跳过手动测量：offsetHeight 是强制布局（整文档 layout），
+    // hidden 期间每行 reasoning 来一次是纯浪费（rAF/RO 都不派发，量了也没人看）；
+    // 恢复可见时 RO 会补派发一次尺寸回调，contentH 自然追上。
+    if (typeof document === "undefined" || document.visibilityState !== "hidden") {
+      setContentH(el.offsetHeight);
+    }
     return () => ro.disconnect();
   }, [sentences.length]);
 
