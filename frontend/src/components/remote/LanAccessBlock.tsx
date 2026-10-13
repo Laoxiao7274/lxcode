@@ -1,10 +1,10 @@
 // 局域网直连模式（被连的默认形态）：开关 + 地址/Token 展示与复制。
 // 从 ConnectionManager 迁入远程访问页——与樱花frp/Tailscale 并列为模式卡片。
 // 开启态附带配对二维码（lxcode://pair?addr=…&token=…）——手机端扫码自动填入。
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import QRCode from "qrcode";
 import { maskToken, useConnections } from "../../shared/connections";
-import { useEnterRef } from "../../shared/anim";
+import { playEnter } from "../../shared/anim";
 import { staggerIn } from "../../shared/motion";
 import { nameFromAddr } from "../connections/RemoteForm";
 import { CopyBtn } from "../connections/CopyBtn";
@@ -24,7 +24,21 @@ function pairPayload(addr: string, token: string): string {
 export function LanAccessBlock() {
   const { remoteAccess, remoteBusy, setRemoteAccess, remoteAddr, remoteToken, regenerateRemoteToken } = useConnections();
   const [reveal, setReveal] = useState(false);
-  const panelEnter = useEnterRef<HTMLDivElement>();
+  // 面板 ref：恒定回调（useCallback + playEnter 模块函数）——内联 ref 每次渲染
+  // 都会被 React 重调（旧 ref 传 null、新 ref 传 el），里面若触发动画就会随
+  // 父级每次重渲染重播，卡片反复淡入即「远程访问页一直闪」。
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const setPanelRef = useCallback((el: HTMLDivElement | null) => {
+    panelRef.current = el;
+    playEnter(el);
+  }, []);
+  // 面板入场交错：由 effect 驱动、只在面板挂载（remoteAccess 开启）时播一次；
+  // 门控仍走 staggerIn 内部的 motionAllowed（reduced-motion/测试开关）。
+  useEffect(() => {
+    if (!remoteAccess) return;
+    const el = panelRef.current;
+    if (el) staggerIn(el.querySelectorAll(".conn-cred, .conn-qr, .conn-ra-hint"), { each: 0.05 });
+  }, [remoteAccess]);
   // 配对二维码：仅在开启且地址/Token 都可得时生成（缺一就不渲染，不放占位假码）
   const payload = useMemo(
     () => (remoteAccess && remoteAddr && remoteToken ? pairPayload(remoteAddr, remoteToken) : ""),
@@ -58,13 +72,7 @@ export function LanAccessBlock() {
         <Toggle on={remoteAccess} onChange={setRemoteAccess} disabled={remoteBusy} ariaLabel="局域网远程访问" />
       </div>
       {remoteAccess && (
-        <div
-          className="conn-ra-panel"
-          ref={(el) => {
-            panelEnter(el);
-            if (el) staggerIn(el.querySelectorAll(".conn-cred, .conn-qr, .conn-ra-hint"), { each: 0.05 });
-          }}
-        >
+        <div className="conn-ra-panel" ref={setPanelRef}>
           <div className="conn-cred">
             <span className="conn-cred-label">地址</span>
             <span className="conn-cred-value mono">{remoteAddr}</span>
