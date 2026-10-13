@@ -105,6 +105,12 @@ type Server struct {
 	behaviorLast config.Behavior
 }
 
+// runtimeBuildSpan 仅供测试观测「运行时构建」的真实并发度（性能审计钉子：
+// TestConcurrentResumeOfBigSessionsDoesNotSerialize——恢复路径若再被全局串行点
+// 排队，构建并发度会恒为 1）。进入 newRuntime 时调用并 defer 其返回的收尾函数；
+// 生产恒 nil。
+var runtimeBuildSpan func() func()
+
 func (s *Server) Ctx() context.Context {
 	s.ctxMu.RLock()
 	defer s.ctxMu.RUnlock()
@@ -124,6 +130,20 @@ type wsClient struct {
 	conn      *websocket.Conn
 	mu        sync.Mutex
 	sessionID string // 连接本地焦点，仅兼容没有显式 session_id 的客户端
+}
+
+// 连接焦点（sessionID）的受锁访问器：请求并发化后（serve 每请求一个 goroutine），
+// 多个请求可能同时读写焦点——mu 同时保护写帧与焦点。
+func (c *wsClient) focus() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.sessionID
+}
+
+func (c *wsClient) setFocus(id string) {
+	c.mu.Lock()
+	c.sessionID = id
+	c.mu.Unlock()
 }
 
 // broadcastWriteTimeout 是单次广播写的上限：超过即视为该客户端消费不动，
@@ -233,6 +253,11 @@ func (s *Server) CloseMCP() {
 }
 
 func (s *Server) newRuntime(id string) (*agent.Session, error) {
+	// 测试观测点（性能审计钉子 TestConcurrentResumeOfBigSessionsDoesNotSerialize）：
+	// 记录运行时构建的真实并发度——生产为 nil，一次 nil 比较的开销可忽略。
+	if runtimeBuildSpan != nil {
+		defer runtimeBuildSpan()()
+	}
 	sess := agent.New(s.reg, s.treg, func(ev agent.Event) { s.emitEvent(id, ev) })
 	sess.SetProjectDocs(projectDocsReader)
 	if s.st != nil {
@@ -309,12 +334,21 @@ func (s *Server) serve(c *wsClient) {
 		if err := c.conn.ReadJSON(&req); err != nil {
 			return // 连接关闭
 		}
-		resp := s.dispatch(c, &req)
-		if resp != nil {
-			if err := c.send(resp); err != nil {
-				return
+		// **每请求一个 goroutine**（2026-12 性能审计钉子
+		// TestSlowRequestDoesNotHeadOfLineBlockPing）：原来 dispatch 在读循环里
+		// 同步执行，一个慢请求（大会话历史加载 / 压缩摘要调用）把同一连接上的
+		// 后续请求全部队头阻塞——心跳 connection.ping（客户端 3s 超时、连续 2 次
+		// 失败即误判断连）跟着遭殃，是「恢复会话失败: 请求超时」的放大器。
+		// 应答按 id 配对，乱序到达是 JSON-RPC 语义允许的（前端按 id 路由）；
+		// 事件走独立广播路径（broadcast），按 session 的保序不变。
+		go func(req protocol.Request) {
+			resp := s.dispatch(c, &req)
+			if resp != nil {
+				if err := c.send(resp); err != nil {
+					_ = c.conn.Close()
+				}
 			}
-		}
+		}(req)
 	}
 }
 

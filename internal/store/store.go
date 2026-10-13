@@ -99,9 +99,13 @@ func Open(dir string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("打开会话库失败: %w", err)
 	}
-	// 连接池上限：SQLite 单写者——过多连接只会增加 BUSY 概率；
-	// 4 足够（读并发 + 一个写）。
-	db.SetMaxOpenConns(4)
+	// 连接池上限：SQLite 单写者，但 WAL 下**读不阻塞写、读与读天然并行**——
+	// 多会话并发恢复（每条恢复要跑 SessionParentID/Load/WorkspaceOf/占用/审批档
+	// 等多次顺序查询）时，过小的池会把读排队成串行（2026-12 性能审计钉子
+	// TestConcurrentResumeOfBigSessionsDoesNotSerialize：池=4 时 6 路并发恢复
+	// 明显慢于单条的数倍）。写路径有 _txlock=immediate + busy_timeout(5000) 兜住
+	// BUSY，读连接放宽到 16 不增加写冲突面。
+	db.SetMaxOpenConns(16)
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("初始化会话表失败: %w", err)

@@ -38,17 +38,30 @@ func (s *Server) session(id string) (*agent.Session, error) {
 		}
 	}
 	s.sessionsMu.Lock()
-	defer s.sessionsMu.Unlock()
 	if sess = s.sessions[id]; sess != nil {
 		return sess, nil
 	}
 	if s.st == nil {
+		s.sessionsMu.Unlock()
 		return nil, errors.New("会话存储未启用")
 	}
-	var err error
-	sess, err = s.newRuntime(id)
+	// **慢操作必须移出全局锁**（2026-12 性能审计钉子
+	// TestConcurrentResumeOfBigSessionsDoesNotSerialize）：newRuntime 含全量历史
+	// 加载（AttachTo → Load）+ 工作区解析 + 占用/审批档回读，大会话是几十毫秒到
+	// 秒级——原来在 sessionsMu 写锁内执行，一个会话的慢加载把所有其他会话的
+	// resume/send/history 串成一列，前端 10s 超时（「恢复会话失败: 请求超时」）。
+	// 构建放在锁外：并发对手同 id 同建时，后注册者发现已有即弃置自己那份
+	//（弃置的运行时从未 Send，无落库、无事件，纯垃圾可回收）。
+	s.sessionsMu.Unlock()
+	sess, err := s.newRuntime(id)
 	if err != nil {
 		return nil, err
+	}
+	s.sessionsMu.Lock()
+	defer s.sessionsMu.Unlock()
+	// 并发对手可能已先注册（同一 id 双建）：用它的，弃置自己这份。
+	if existing := s.sessions[id]; existing != nil {
+		return existing, nil
 	}
 	s.sessions[id] = sess
 	s.lastSessionID = id

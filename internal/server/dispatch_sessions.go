@@ -30,7 +30,7 @@ func (s *Server) dispatchSessions(c *wsClient, req *protocol.Request, params jso
 		if err != nil {
 			return protocol.NewError(req.ID, protocol.CodeInvalidParams, err.Error())
 		}
-		c.sessionID = id
+		c.setFocus(id)
 		s.broadcastSessionChanged(id, "created")
 		return protocol.NewResult(req.ID, protocol.SessionResult{SessionID: id})
 
@@ -48,7 +48,7 @@ func (s *Server) dispatchSessions(c *wsClient, req *protocol.Request, params jso
 				return protocol.NewError(req.ID, protocol.CodeInvalidParams, err.Error())
 			}
 		}
-		c.sessionID = p.ID
+		c.setFocus(p.ID)
 		return protocol.NewResult(req.ID, protocol.SessionResult{SessionID: p.ID})
 
 	case protocol.MethodSessionRename:

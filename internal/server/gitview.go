@@ -28,7 +28,7 @@ func (s *Server) dispatchGit(c *wsClient, req *protocol.Request, params json.Raw
 		if err := json.Unmarshal(params, &p); err != nil {
 			return protocol.NewError(req.ID, protocol.CodeInvalidParams, "参数解析失败: "+err.Error())
 		}
-		result, err := s.gitOverview(c.sessionID, p.ProjectID)
+		result, err := s.gitOverview(c.focus(), p.ProjectID)
 		if err != nil {
 			return protocol.NewError(req.ID, errorCode(err), err.Error())
 		}
@@ -39,7 +39,7 @@ func (s *Server) dispatchGit(c *wsClient, req *protocol.Request, params json.Raw
 		if err := json.Unmarshal(params, &p); err != nil || strings.TrimSpace(p.Path) == "" {
 			return protocol.NewError(req.ID, protocol.CodeInvalidParams, "参数解析失败: 需要 path")
 		}
-		meta, err := s.resolveGitProject(c.sessionID, p.ProjectID)
+		meta, err := s.resolveGitProject(c.focus(), p.ProjectID)
 		if err != nil {
 			return protocol.NewError(req.ID, errorCode(err), err.Error())
 		}

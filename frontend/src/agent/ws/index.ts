@@ -83,6 +83,18 @@ export function wsURL(addr: string, token: string | null): string {
 
 const RECONNECT_MS = 5000;
 const REQUEST_TIMEOUT_MS = 10_000;
+// 重方法的宽容阈值（2026-12 性能审计）：session.resume / chat.history 要全量加载
+// 大会话历史（磁盘 IO + JSON 反序列化 + 统计折叠），chat.compact 要同步等一次
+// 摘要调用，session.list 要扫全库算各会话条数——大会话/慢盘上 10s 会偶发命中
+//（用户报的「恢复会话失败: 请求超时」）。放宽到 30s；其余请求保持 10s 快判。
+const HEAVY_REQUEST_TIMEOUT_MS = 30_000;
+const HEAVY_METHODS = new Set([
+  "session.resume",
+  "chat.history",
+  "chat.compact",
+  "chat.rewind",
+  "session.list",
+]);
 
 // 心跳参数：连接存活期内每 15s 发一次 connection.ping，单次 3s 超时（独立于
 // REQUEST_TIMEOUT_MS——心跳要快判，不能陪普通请求等 10s）；连续 2 次失败判定
@@ -574,7 +586,7 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
       const timeout = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error("请求超时"));
-      }, REQUEST_TIMEOUT_MS);
+      }, HEAVY_METHODS.has(method) ? HEAVY_REQUEST_TIMEOUT_MS : REQUEST_TIMEOUT_MS);
       this.pending.set(id, { resolve, reject, timeout });
       const req: WsRequest = { jsonrpc: "2.0", id, method };
       if (params !== undefined) req.params = params;

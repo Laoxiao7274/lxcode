@@ -39,7 +39,7 @@ func (s *Server) dispatchChat(c *wsClient, req *protocol.Request, params json.Ra
 		}
 		id := p.SessionID
 		if id == "" {
-			id = c.sessionID
+			id = c.focus()
 		}
 		if id == "" {
 			var sess *agent.Session
@@ -48,7 +48,7 @@ func (s *Server) dispatchChat(c *wsClient, req *protocol.Request, params json.Ra
 			if err != nil {
 				return protocol.NewError(req.ID, protocol.CodeInvalidParams, err.Error())
 			}
-			c.sessionID = id
+			c.setFocus(id)
 			if err := s.sendAttachments(id, sess, p, decodedImgs, decodedFiles, fileNames); err != nil {
 				return protocol.NewError(req.ID, errorCode(err), err.Error())
 			}
@@ -75,7 +75,7 @@ func (s *Server) dispatchChat(c *wsClient, req *protocol.Request, params json.Ra
 		}
 		id := p.SessionID
 		if id == "" {
-			id = c.sessionID
+			id = c.focus()
 		}
 		// 先在活跃会话的子会话登记里找：id 是某个**正在跑的**子会话时，它的
 		// 运行时不在 s.sessions（生命周期跟着派发走）——直接 s.session(id) 会
@@ -99,7 +99,7 @@ func (s *Server) dispatchChat(c *wsClient, req *protocol.Request, params json.Ra
 		}
 		id := p.SessionID
 		if id == "" {
-			id = c.sessionID
+			id = c.focus()
 		}
 		sess, err := s.session(id)
 		if err != nil {
@@ -119,7 +119,7 @@ func (s *Server) dispatchChat(c *wsClient, req *protocol.Request, params json.Ra
 		}
 		id := p.SessionID
 		if id == "" {
-			id = c.sessionID
+			id = c.focus()
 		}
 		sess, err := s.session(id)
 		if err != nil {
@@ -147,7 +147,7 @@ func (s *Server) dispatchChat(c *wsClient, req *protocol.Request, params json.Ra
 		}
 		id := p.SessionID
 		if id == "" {
-			id = c.sessionID
+			id = c.focus()
 		}
 		sess, err := s.session(id)
 		if err != nil {
@@ -178,7 +178,7 @@ func (s *Server) dispatchChat(c *wsClient, req *protocol.Request, params json.Ra
 		}
 		id := p.SessionID
 		if id == "" {
-			id = c.sessionID
+			id = c.focus()
 		}
 		sess, err := s.session(id)
 		if err != nil {
@@ -201,7 +201,7 @@ func (s *Server) dispatchChat(c *wsClient, req *protocol.Request, params json.Ra
 		}
 		id := p.SessionID
 		if id == "" {
-			id = c.sessionID
+			id = c.focus()
 		}
 		if id == "" {
 			return protocol.NewError(req.ID, protocol.CodeInvalidParams, "缺少 session_id（没有当前会话）")
@@ -218,7 +218,7 @@ func (s *Server) dispatchChat(c *wsClient, req *protocol.Request, params json.Ra
 		}
 		id := p.SessionID
 		if id == "" {
-			id = c.sessionID
+			id = c.focus()
 		}
 		sess, err := s.session(id)
 		if err != nil {
