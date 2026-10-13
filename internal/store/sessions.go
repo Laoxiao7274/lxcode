@@ -322,6 +322,23 @@ func (s *Store) SessionAgentID(id string) (string, error) {
 	return agentID, nil
 }
 
+// SessionParentID 返回会话的派发方 id（'' = 顶层会话）。会话不存在时报错。
+//
+// 服务端用它判定「按 id 现建运行时」的那条会话是不是子会话：子会话运行时不能
+// 进服务端的运行时缓存（缓存里的那份是 AttachTo 时刻的静态快照——收不到事件、
+// 不再追加，之后按 id 读历史会一直命中陈旧数据），必须现建现用。
+func (s *Store) SessionParentID(id string) (string, error) {
+	var parent string
+	err := s.db.QueryRow(`SELECT parent_id FROM sessions WHERE id = ?`, id).Scan(&parent)
+	if err == sql.ErrNoRows {
+		return "", fmt.Errorf("会话 %s 不存在", id)
+	}
+	if err != nil {
+		return "", fmt.Errorf("查询会话派发方失败: %w", err)
+	}
+	return parent, nil
+}
+
 // SaveContextUsage 落库一次上下文占用测量（只有**主轮**写它——子上下文有自己的窗口）。
 //
 // 为什么要落库：占用原先只在内存里，后端一重启，重启前跑过的会话打开时指示器就是空的

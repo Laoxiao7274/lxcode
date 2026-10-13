@@ -24,6 +24,19 @@ func (s *Server) session(id string) (*agent.Session, error) {
 	if sess != nil {
 		return sess, nil
 	}
+	// 子会话（parent_id 非空）**现建现用、不进运行时缓存**（2026-12 用户报：关闭
+	// 子会话视图再重开，历史丢了）：子会话运行时的生命周期跟着派发走——
+	// openChildSession 每次 New + AttachTo，从不查 s.sessions；这里为 chat.history
+	// 现建的那份一旦缓存，就成了 AttachTo 时刻的**静态快照**（收不到事件、不再
+	// 追加），之后每次按 id 读历史都命中陈旧缓存——重开视图看到的是第一次打开
+	// 那一刻的历史，之后的轮次全部「丢」。所以子会话每次重新 AttachTo（读库即
+	// 最新状态），不注册。会话不在库里（内存会话 id / 坏 id）时按原路径走——
+	// newRuntime 的 AttachTo 会报出准确的错误。
+	if s.st != nil {
+		if parent, err := s.st.SessionParentID(id); err == nil && parent != "" {
+			return s.newRuntime(id)
+		}
+	}
 	s.sessionsMu.Lock()
 	defer s.sessionsMu.Unlock()
 	if sess = s.sessions[id]; sess != nil {

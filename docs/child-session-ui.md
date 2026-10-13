@@ -20,6 +20,17 @@
 - **数据不丢**：子会话自身的 state 归约（§2.1 双投）、实时流缓存、子→父映射照旧保留
   （导航层不碰 store）；关闭/返回后重新打开由 `ChildSessionPage` 重新装载历史
   （`source.childHistory`），实时事件从双投续上；
+- **重开必是完整历史（2026-12 修复）**：`ChildSessionPage` 每次挂载都重新
+  `source.childHistory`，store 对 `historyLoaded` 一律**全量重建** blocks（替换不是
+  追加）——state 已存在、`historyReady=true` 也不跳过，没有「只拉一次」守卫。关闭
+  期间双投积累的实时块被重放的历史快照整体替换：不丢（历史 ⊇ 已见事件落库后的
+  内容）、不重复。这条的服务端半边同样要成立：**子会话运行时不进 `s.sessions`
+  运行时缓存**（`internal/server/session_ops.go`）——缓存里那份是 AttachTo 时刻的
+  静态快照（收不到事件、不再追加），一旦缓存，重开视图的 `chat.history` 会一直
+  命中第一次打开那一刻的快照（用户报的「历史丢了」根因）。钉子：
+  `internal/server/child_history_fresh_test.go`（子会话在跑时拉一次历史、跑完再拉
+  一次必须读到结论）+ `frontend/tests/child-reopen.test.mjs`（关闭 → 实时双投 →
+  重开全量重建不丢不重复）；
 - **浏览器历史**：打开/返回仍各 pushState 一个条目，侧键/浏览器后退可回到子会话视图
   （`focusHistoryView` → `focusChildView`，不要求该键在 `tabs` 里）。
 
