@@ -139,7 +139,7 @@ func goldenSamples() map[string]goldenSample {
 						Function: struct {
 							Name      string `json:"name"`
 							Arguments string `json:"arguments"`
-						}{Name: "read_file", Arguments: `{"path":"main.go"}`}}},
+						}{Name: "read_file", Arguments: `{"path":"main.go"}`}}}},
 				{Role: "tool", Content: "…文件内容…", Seq: 3, ToolCallID: "call_1", DurationMs: 120},
 				{Role: "assistant", Content: "改好了。", Seq: 4, FirstTokenMs: 420, DurationMs: 5230, Model: "deepseek-v3", UsageTokens: 512},
 			},
@@ -172,7 +172,7 @@ func goldenSamples() map[string]goldenSample {
 
 		// ---- chat 域：压缩 / 撤回 ----
 
-		"compactResult":    {"CompactOutcome", CompactResult{Compacted: false, Reason: "历史太短，摘要没有收益", Before: 9100, After: 9100, Shadowed: 0}},
+		"compactResult":    {"CompactOutcome", CompactResult{Compacted: false, Reason: "历史太短，摘要没有收益", Before: 9100, After: 9100, Shadowed: 3}},
 		"chatRewindResult": {"RewindOutcome", ChatRewindResult{Removed: 0}}, // 幂等空操作：显式 0，不是缺席
 
 		// ---- 会话管理域 ----
@@ -193,10 +193,13 @@ func goldenSamples() map[string]goldenSample {
 			Env: map[string]string{"FS_ROOT": "/tmp"}, URL: "", Enabled: true, Custom: true,
 			Status: "connected", ToolCount: 11, LastError: "", Stderr: "",
 		}},
+		// 形状样本：一个条目覆盖全部 wire 键（risk/source/command 的取值组合在
+		// 真实数据里按 source 互斥，这里不为语义自洽服务）。
 		"toolEntry": {"AgentAdminTool", ToolEntry{
-			ID: "read_file", Desc: "读文件", Risk: "low", Source: "builtin",
+			ID: "read_file", Desc: "读文件", Risk: "low", Source: "binary",
 			Params: []ToolParamEntry{{Name: "path", Type: "string", Required: true, Desc: "文件路径"}},
-			Doc:    "按行读取", Server: "", Command: "", Example: `{"path":"main.go"}`, PackageFile: "", Custom: false,
+			Doc:    "按行读取", Server: "smoke-mcp", Command: "rg {pattern} {path}",
+			Example: `{"path":"main.go"}`, PackageFile: "pack.yaml", Custom: false,
 		}},
 		// 模型注册表快照（ModelEntry = config.ModelConfig 的 wire 形态，含嵌套
 		// capabilities 与 updated_at；_type 留空——顶层是注册表不是单条目）。
