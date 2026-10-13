@@ -65,7 +65,7 @@ func validateChatImages(imgs []protocol.ChatSendImage) ([][]byte, error) {
 			// 推导结果**写回元素**——落盘（saveChatImages → SaveAttachment 的 mime
 			// 白名单）与展示元数据（session_ops 的 AttachmentRef.Mime）读同一份。
 			if mime == "" {
-				mime = extMime[strings.ToLower(filepathExt(im.Path))]
+				mime = extMime(strings.ToLower(filepathExt(im.Path)))
 				imgs[i].Mime = mime
 			}
 		}
@@ -191,17 +191,10 @@ func (s *Server) bindAttachmentLoader(st *store.Store) {
 	})
 }
 
-// extMime 是扩展名 → Content-Type 的反向映射（与 store.mimeExt 同一份白名单，
-// 派生自它，保证「存的时候推扩展名」与「读的时候回 mime」不漂移）。
-var extMime = func() map[string]string {
-	m := map[string]string{}
-	for mime, ext := range map[string]string{
-		"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif",
-	} {
-		m[ext] = mime
-	}
-	return m
-}()
+// extMime 是扩展名 → mime 的反向映射：直接用 store.ExtForMime（与写入口径
+// store.mimeExt 同一份白名单，不再各派生一份）。白名单行为一致：四种图片 mime
+// 推导出的扩展名（.png/.jpg/.webp/.gif）相同，未知扩展名两边都返回空串。
+func extMime(ext string) string { return store.ExtForMime(ext) }
 
 // attachmentsGate 给附件端点套远程访问的 token 门（与 /rpc 同一份
 // checkRemoteToken——query token 或 Authorization: Bearer，同源逻辑）。
@@ -272,7 +265,7 @@ func (s *Server) handleAttachments(w http.ResponseWriter, r *http.Request) {
 	}
 	// 内容不可变（文件名含随机 id）：缓存头让前端缩略图零重复传输
 	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
-	if mime, known := extMime[ext]; known {
+	if mime := extMime(ext); mime != "" {
 		w.Header().Set("Content-Type", mime)
 	} else {
 		w.Header().Set("Content-Type", "application/octet-stream")

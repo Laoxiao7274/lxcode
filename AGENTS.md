@@ -134,7 +134,7 @@
 | `bash` | 高危 | 超时 60s/上限 300s、输出 32KB、stdin ≤64KB；**`run_in_background=true` 起后台任务**（见 docs/jobs.md）；**Windows shell 选择见 §5 坑** |
 | `todo` | 低危 | 任务清单全量写入（active 唯一性硬校验）；会话持有状态 + TodoUpdated 事件 |
 | `agent_dispatch` | 低危 | 主 Agent 唯一工具：把任务派给名单里的子 Agent（**子 Agent = 独立会话**，见 §2.3；深度恒 1） |
-| `merge_request` | 低危 | **遗留**（2026-10 架构修订：合并进程退役，会话直连主检出与用户当前分支，不再有分支合并流程）——被调用时如实返回说明、不启动任何任务；合并实现（mergejob.go / merger Agent）保留在库中以便将来恢复隔离模式。提交/推送用 `workspace_sync`（直接 push 当前分支），回滚用 `workspace_rollback` |
+| `merge_request` | 低危 | **遗留**（2026-10 架构修订：合并进程退役，会话直连主检出与用户当前分支，不再有分支合并流程）——被调用时如实返回说明、不启动任何任务；合并实现（mergejob.go / merger Agent）**带 `lxmerge` 构建标签隔离**（默认构建不含；恢复方式 `go build -tags lxmerge`，见 docs/jobs.md）。提交/推送用 `workspace_sync`（直接 push 当前分支），回滚用 `workspace_rollback` |
 | `ask_user` | 低危 | 向用户提问并等待回答（确认门的「提问」形态，`Kind="ask"`）：回答文本作为工具结果回填；用户跳过 = 「用户没有回答，自行决策」；**auto 审批档不豁免提问**；与高危确认共用同一个挂起槽位 |
 | `agent_read` | 低危 | 查看 Agent 注册表：不带 id 列出全部（id/名称/职责/白名单/技能），带 id 读单个完整定义（含提示词模板全文）——`agent_write` 前先摸现状；结构与读写链路见 `docs/agents.md` |
 | `agent_write` | 高危 | 按 id 字段级修改 Agent 配置（职责描述/提示词模板/工具白名单/技能绑定；未提供字段不动，id 不可改）：**落库即生效**（该 Agent 下次被派发用新配置）+ 落库后广播 `agent.changed`；硬校验（主 Agent 拒改/白名单不能清空且工具名真实存在/模板非空/技能 id 存在）在共享层 `sessiondata.ValidateAgentFieldUpdate`，store 与工具两条写路径共用；确认门文案列明改动字段与后果；详见 `docs/agents.md` |

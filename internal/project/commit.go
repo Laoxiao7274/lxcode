@@ -3,7 +3,6 @@ package project
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"strings"
 	"time"
 )
@@ -43,14 +42,5 @@ func CommitAll(ctx context.Context, dir, message string) (committed bool, err er
 	return true, nil
 }
 
-// gitOutputCtx 是既有 gitOutput 的带 ctx/超时版本（既有私有 runGit/gitOutput 与其
-// 调用点保持不变）。自动提交走异步路径，必须能被取消/超时，不能像既有调用点那样无限等。
-func gitOutputCtx(ctx context.Context, dir string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = dir
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("git %s: %s", strings.Join(args, " "), truncate(string(out), 200))
-	}
-	return string(out), nil
-}
+// gitOutputCtx 已收敛到 git.go 的 runGitCtx（唯一 exec 原语）——commit.go 不再
+// 自带执行实现。

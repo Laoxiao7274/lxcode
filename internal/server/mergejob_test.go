@@ -1,3 +1,5 @@
+//go:build lxmerge
+
 // 合并进程（第二个 producer，Kind="merge"）的验收用例 1~5：项目会话起合并任务、
 // 未分组会话报错、同一会话只允许一个、Settle 后父会话收到通告、merger Agent 定义。
 // 全程不 spawn 真进程、不打网络（假 stream）。
@@ -22,19 +24,10 @@ import (
 	"github.com/moyunteng/lxcode/internal/tools"
 )
 
-// immediateStream 是立刻返回一句最终答复的假流（父轮与合并子会话共用）。
-func immediateStream(_ context.Context, _ config.ModelConfig, _ []llm.Message, _ []llm.Option) (<-chan llm.StreamEvent, error) {
-	ch := make(chan llm.StreamEvent, 2)
-	ch <- llm.StreamEvent{Type: llm.EventText, TextDelta: "ok"}
-	ch <- llm.StreamEvent{Type: llm.EventDone, Result: &llm.ChatResult{
-		Message: llm.Message{Role: "assistant", Content: "ok"}, FinishReason: llm.FinishStop,
-	}}
-	close(ch)
-	return ch, nil
-}
-
 // mergeBlockStream 只把**合并任务**那一轮阻塞住（父轮的普通消息立刻返回）：
 // 用来让合并任务停在 running，验证「同一会话只允许一个在跑的合并进程」。
+// （immediateStream / legacyWorktree / sendTurn / waitSessionIdle 在
+// test_helpers_test.go——无标签，workspace 等测试也要用。）
 func mergeBlockStream(release <-chan struct{}) testStream {
 	return func(ctx context.Context, _ config.ModelConfig, msgs []llm.Message, _ []llm.Option) (<-chan llm.StreamEvent, error) {
 		text := ""
@@ -54,58 +47,10 @@ func mergeBlockStream(release <-chan struct{}) testStream {
 	}
 }
 
-// legacyWorktree 给会话伪造存量 worktree 状态（2026-10 直连架构不再自动建 worktree；
-// 合并链路已退役为遗留——这些测试用老库的数据形态驱动保留在库里的合并代码）。
-func legacyWorktree(t *testing.T, srv *Server, projectID, sessionID string) project.Worktree {
-	t.Helper()
-	meta, found, err := srv.st.ProjectByID(projectID)
-	if err != nil || !found {
-		t.Fatalf("project %s not found: found=%v err=%v", projectID, found, err)
-	}
-	wt, err := project.CreateWorktree(meta.Path, srv.st.WorktreeRoot(), projectID, sessionID)
-	if err != nil {
-		t.Fatalf("构造老 worktree 失败: %v", err)
-	}
-	if err := srv.st.SetWorktree(sessionID, store.WorktreeMeta{Path: wt.Path, Branch: wt.Branch, BaseCommit: wt.BaseCommit}); err != nil {
-		t.Fatal(err)
-	}
-	return wt
-}
-
 // startMergeDirect 直接经 startMergeJob 起合并任务（遗留链路的测试入口：
 // merge_request 工具已退役为只回说明、不再起任务，见 tools/merge.go）。
 func startMergeDirect(srv *Server, sessionID string) (string, error) {
 	return srv.startMergeJob(sessionID, "", false)
-}
-
-// sendTurn 发一条消息并等这一轮结束（对准主检出并写标题）。
-// 之后还要等在途的自动提交收尾：合并发起时的扫描按「分支领先/工作树脏」判定
-// 有无改动，检查点提交没落库会被判成无改动（生产路径当前轮改动以未提交形态
-// 被 dirty 计入，不受影响）。
-func sendTurn(t *testing.T, srv *Server, client *wsTestClient, id, text string) {
-	t.Helper()
-	resp := client.call(protocol.MethodChatSend, protocol.ChatSendParams{SessionID: id, Text: text})
-	if resp == nil || resp.Error != nil {
-		t.Fatalf("chat.send(%q) 失败: %+v", text, resp)
-	}
-	waitSessionIdle(t, srv, id)
-	srv.waitAutoCommits()
-}
-
-// waitSessionIdle 轮询会话忙闲直到空闲。
-func waitSessionIdle(t *testing.T, srv *Server, id string) {
-	t.Helper()
-	sess, err := srv.session(id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) && sess.Busy() {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if sess.Busy() {
-		t.Fatalf("会话 %s 一直忙", id)
-	}
 }
 
 // callMergeRequest 直接经工具注册表调用 merge_request（与模型走的同一条路径）。

@@ -1,10 +1,10 @@
 package project
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -342,10 +342,10 @@ func gitOutput(dir string, args ...string) (string, error) {
 	return string(out), nil
 }
 
+// runGit 是无 ctx 调用点的兼容入口：落点仍是 runGitCtx（由它套默认 30s 超时
+// ——原先这里无限等，超时语义随 L2 收敛统一）。
 func runGit(dir string, args ...string) ([]byte, error) {
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	return cmd.CombinedOutput()
+	return runGitCtx(context.Background(), dir, args...)
 }
 
 func samePath(a, b string) bool {

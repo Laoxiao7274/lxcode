@@ -16,15 +16,13 @@ const fixedPNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYP
 // 单例——串行测试共享，各自保存/恢复避免互相污染）。
 func bindTestLoader(t *testing.T) {
 	t.Helper()
-	old := imageLoader
-	raw, err := base64.StdEncoding.DecodeString(fixedPNG)
-	if err != nil {
-		t.Fatalf("固定 PNG 样本解码失败（样本写坏了）: %v", err)
-	}
-	imageLoader = func(ImageRef) (string, []byte, error) {
+	withTestImageLoader(t, func(ImageRef) (string, []byte, error) {
+		raw, err := base64.StdEncoding.DecodeString(fixedPNG)
+		if err != nil {
+			t.Fatalf("固定 PNG 样本解码失败（样本写坏了）: %v", err)
+		}
 		return "image/png", raw, nil
-	}
-	t.Cleanup(func() { imageLoader = old })
+	})
 }
 
 // TestOpenAIImageMessageContentArray：带图 user 消息的 content 变数组，
@@ -126,11 +124,9 @@ func TestAnthropicImageBlocks(t *testing.T) {
 // TestImageLoadFailureFailOpen：读取失败不中断请求——跳过该图，text 尾部
 // 追加人话提示（openai 与 anthropic 两条路径同行为）。
 func TestImageLoadFailureFailOpen(t *testing.T) {
-	old := imageLoader
-	imageLoader = func(ref ImageRef) (string, []byte, error) {
+	withTestImageLoader(t, func(ref ImageRef) (string, []byte, error) {
 		return "", nil, errTestLoad
-	}
-	t.Cleanup(func() { imageLoader = old })
+	})
 
 	msgs := []Message{{Role: "user", Content: "看这张图",
 		Images: []ImageRef{{Path: "s1/gone.png", Mime: "image/png"}}}}
@@ -166,9 +162,7 @@ func TestImageLoadFailureFailOpen(t *testing.T) {
 // 零改动（回归钉子：无图路径不许碰 loader）。
 func TestNoImageMessagesUntouchedByLoader(t *testing.T) {
 	called := false
-	old := imageLoader
-	imageLoader = func(ImageRef) (string, []byte, error) { called = true; return "", nil, nil }
-	t.Cleanup(func() { imageLoader = old })
+	withTestImageLoader(t, func(ImageRef) (string, []byte, error) { called = true; return "", nil, nil })
 
 	msgs := []Message{{Role: "user", Content: "纯文本"}}
 	req := buildOpenAIRequest("m", msgs, requestOpts{}, false)

@@ -253,12 +253,24 @@ settle 后投递给**时间线归属**（`Spec.OwnerSessionID`，见 §2 的 `Ow
 压根没跑起来，断言就变成了空断言。
 
 
-## 9. merge producer（第二个 producer，Kind="merge"，2026-10）
+## 9. merge producer（第二个 producer，Kind="merge"，2026-10；**已退役，lxmerge 标签隔离**）
 
 合并进程是 jobs 的**第二个 producer**（`internal/server/mergejob.go`）：把本会话分支
 的改动交给内置「合并 Agent」（merger，独立子会话）在集成分支的专用工作树里汇总。
 任务体**不是**子进程，而是一个真 `agent.Session`——所以压缩/溢出兜底/确认门/工具循环
 全部免费继承，job 日志只是它的事件出口之一。
+
+**隔离与恢复方式（2026-10 架构修订）**：合并进程已退役（会话直连主检出，没有分支
+合并流程），`mergejob.go` 与其验收用例（`mergejob_test.go` / `mergejob_scan_test.go` /
+`merge_precommit_test.go`，以及共用的通用 helper 里 merge 专属部分）整体带
+`//go:build lxmerge` 构建标签——**默认构建不含**。恢复隔离模式：
+
+    go build -tags lxmerge ./...
+    go test -tags lxmerge ./internal/server/
+
+并把 `s.treg.SetMergeStarter(s.startMergeJob)` 接回 `AttachJobs`（server/jobs.go 里
+留有注释锚点）。merge_request 工具的遗留应答（tools/merge.go）不受标签影响，
+默认构建照常编译、被调用仍如实返回退役说明。
 
 **Kind 与启动路径（两条，同一后端函数 `startMergeJob`）**：
 

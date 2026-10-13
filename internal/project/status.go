@@ -11,7 +11,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -96,8 +95,7 @@ func currentBranchLenient(ctx context.Context, dir string) (string, error) {
 func BranchExists(ctx context.Context, repoDir, branch string) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, statusTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "-C", repoDir, "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
-	if err := cmd.Run(); err != nil {
+	if _, err := runGitCtx(ctx, repoDir, "show-ref", "--verify", "--quiet", "refs/heads/"+branch); err != nil {
 		if isExitCode(err, 1) {
 			return false, nil
 		}
@@ -113,8 +111,7 @@ func BranchExists(ctx context.Context, repoDir, branch string) (bool, error) {
 func RefExists(ctx context.Context, repoDir, ref string) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, statusTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "-C", repoDir, "show-ref", "--verify", "--quiet", ref)
-	if err := cmd.Run(); err != nil {
+	if _, err := runGitCtx(ctx, repoDir, "show-ref", "--verify", "--quiet", ref); err != nil {
 		if isExitCode(err, 1) {
 			return false, nil
 		}
@@ -144,8 +141,7 @@ func CommitCountBetween(ctx context.Context, repoDir, from, to string) (int, err
 func IsAncestor(ctx context.Context, repoDir, a, b string) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, statusTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "-C", repoDir, "merge-base", "--is-ancestor", a, b)
-	if err := cmd.Run(); err != nil {
+	if _, err := runGitCtx(ctx, repoDir, "merge-base", "--is-ancestor", a, b); err != nil {
 		if isExitCode(err, 1) {
 			return false, nil
 		}
@@ -232,17 +228,12 @@ func CommitOnRemote(ctx context.Context, repoDir, commit string) (bool, error) {
 
 // PushBranch 把本地分支 branch 推到远程 origin（git push origin <branch>）。
 // remote 名固定 origin（本工具面的约定）；推送是显式的单一动作，不做 force。
-// GIT_TERMINAL_PROMPT=0：凭据缺失时立刻失败而不是挂起等终端输入。
+// GIT_TERMINAL_PROMPT=0 由 runGitCtx 统一注入（凭据缺失时立刻失败）。
 func PushBranch(ctx context.Context, repoDir, branch string) error {
 	ctx, cancel := context.WithTimeout(ctx, pushTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "-C", repoDir, "push", "origin", branch)
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("git push origin %s: %s", branch, truncate(string(out), 300))
-	}
-	return nil
+	_, err := runGitCtx(ctx, repoDir, "push", "origin", branch)
+	return err
 }
 
 // splitLines 把命令输出按行切干净（去掉空行与 \r）。

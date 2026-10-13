@@ -1,3 +1,5 @@
+//go:build lxmerge
+
 // 合并进程：后台任务（jobs）的**第二个 producer**（Kind="merge"）。
 //
 // 用户拍板的设计链：每轮对话结束一个检查点提交（上一批已完成），接着起合并进程
@@ -18,6 +20,12 @@
 // 唤醒投递按 EndedBy 决定投不投（jobNoticeText）——EndedAgent 是「agent 调 job_kill」
 // 的语义，投递会**被拦下**（同一轮内已知，投递只是噪声），那样父会话永远收不到合并
 // 结束通告（验收用例 4 要的就是这条通告）。
+//
+// **隔离（2026-10 架构修订）**：合并进程已退役（会话直连主检出，没有分支合并
+// 流程），整个文件带 `lxmerge` 构建标签——默认构建不含它。恢复方式：
+// `go build -tags lxmerge ./...`（测试 `go test -tags lxmerge ./internal/server/`）；
+// 标签下的验收用例在 mergejob_test.go / mergejob_scan_test.go / merge_precommit_test.go
+//（同标签）。merge_request 工具的遗留应答（tools/merge.go）不受标签影响，照常编译。
 package server
 
 import (

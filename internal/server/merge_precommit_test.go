@@ -1,3 +1,5 @@
+//go:build lxmerge
+
 // merge_request 前置提交（startMergeJob 内部 commitBeforeMerge）的验收用例
 // （遗留链路：合并进程退役后代码保留，测试用存量 worktree 数据形态驱动）：
 //   - 用例 1：轮内有未提交改动（自动提交尚未跑）→ 先提交、工作树变干净、
