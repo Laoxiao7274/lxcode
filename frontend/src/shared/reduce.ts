@@ -86,22 +86,28 @@ export function reduce(state: UIState, ev: AgentEvent): UIState {
 function reduceUserMessage(state: UIState, ev: Ev<"userMessage">): UIState {
   // 子会话的消息（派发方注入的任务说明书，带 dispatch_id）：**主时间线不画**——
   // dispatch 卡 = 一行摘要（docs/child-session-ui.md §2.3），任务全文属于子会话
-  // 自己的时间线（双投路径已把 dispatchId 剥掉后送到那里）。
+  // 自己的时间线（双投路径已把 dispatchId 剥掉、打上 task 标记后送到那里）。
   if (ev.dispatchId) return state;
   if (isHiddenNotice(ev.text)) return state;
   const label = noticeLabel(ev.text);
   // 乐观 pending 块的去重（FIFO 移除最旧的——连续发多条按发送顺序与回执一一对应）。
   // 只对**真正的用户消息**做：提示条（notice）虽然也是 userMessage 事件，但它不是
-  // 本次发送的回执，动了会把还没确认的 pending 块错删掉。没有 pending 时照常渲染
+  // 本次发送的回执，动了会把还没确认的 pending 块错删掉。任务消息（task）同样不是
+  // 发送回执（它是主 Agent 派发进子会话的）——也不动。没有 pending 时照常渲染
   //（不重复——removeOldestPending 找不到就原样返回）。
-  const base = label ? state : removeOldestPending(state);
+  const base = (label || ev.task) ? state : removeOldestPending(state);
   // seq 只在真的给了时才写进块：`seq: undefined` 会让既有断言多出一个键，
   // 而 canRewind 判的是 typeof === "number"，两种写法行为完全一致。
   const block: ThreadBlock = label
     ? { kind: "notice", uid: nextUid(), label, text: noticeBody(ev.text) }
-    : typeof ev.seq === "number"
-      ? { kind: "user", uid: nextUid(), text: ev.text, seq: ev.seq }
-      : { kind: "user", uid: nextUid(), text: ev.text };
+    : ev.task
+      ? // 任务说明书（子会话时间线）：渲染成「任务」块——用户气泡的样式会让用户
+        // 以为是自己发的（用户实测报的问题 1 的实时路径）。回放路径（history.ts
+        // 的 child 快照）给出同一个块种类，两条路径不许分叉。
+        { kind: "task", uid: nextUid(), text: ev.text }
+      : typeof ev.seq === "number"
+        ? { kind: "user", uid: nextUid(), text: ev.text, seq: ev.seq }
+        : { kind: "user", uid: nextUid(), text: ev.text };
   return { ...base, blocks: [...base.blocks, block] };
 }
 
@@ -512,7 +518,18 @@ export function reduceSessionStates(
   const childId = did ? (dispatchChild?.[did] ?? dispatchChildSession(states, did)) : "";
   if (did && childId && childId !== id && states[childId] && !isCardLifecycle(ev)) {
     const child = states[childId];
-    let childNext = { ...reduce(child, withoutDispatch(ev)), currentId: childId };
+    // 任务消息的标记（实时路径的问题 1 修复）：带 dispatch_id 的 userMessage 是
+    // 主 Agent 派发的任务说明书。dispatchId 必须剥掉（带着它，子会话里的归约会
+    // 去找一张不存在的 dispatch 卡——delta 等事件就是这么被静默丢弃的），但「这是
+    // 任务消息」的信息不能跟着丢：剥掉之后子会话无法把它与真实用户消息区分开。
+    // task 标记就是干这个的——reduceUserMessage 据此渲染「任务」块而不是用户气泡。
+    // 注入通告（中断注记 / 重复调用提醒）同样带 dispatch_id 上抛，它们不是任务——
+    // reduceUserMessage 的前缀表判定优先于 task 标记，照旧走 notice / hidden。
+    let childEv = withoutDispatch(ev);
+    if (ev.type === "userMessage" && did !== "") {
+      childEv = { ...childEv, task: true } as AgentEvent;
+    }
+    let childNext = { ...reduce(child, childEv), currentId: childId };
     // 生成中指示的兜底（2026-12 用户报「子会话标签页缺少生成中样式」）：busy=true
     // 只在轮开始那一刻发**一次**（session.go 的 Send），而子会话 state 是双投的
     // 「不建」规则——标签页打开之前那条 busy=true 无人接收；打开标签页时

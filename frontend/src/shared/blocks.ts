@@ -51,6 +51,17 @@ export type ThreadBlock =
       manual: boolean;
     }
   | {
+      /** 子会话时间线的「任务」块：主 Agent 派发的任务说明书（user 角色消息，
+       *  但它不是用户说的话——用户没法在子会话页发言，这条的唯一来源是
+       *  agent_dispatch 的派发）。渲染成独立的任务卡而不是用户气泡：否则用户
+       *  分不清这是 AI 传进去的任务还是自己发的（用户实测报的就是这个）。
+       *  实时路径由双投打 task 标记（reduce.ts），回放路径由快照的 child 键分流
+       *  （history.ts）——两条路径必须给出同一个块种类。 */
+      kind: "task";
+      uid: number;
+      text: string;
+    }
+  | {
       /** 系统提示条（重复调用提醒——种类表见 shared/notices.ts；hidden 种类
        *  （后台任务通告 / 系统通告）不产生任何块，到不了这里）。
        *  **在历史里是真实 user 角色消息**——模型要把它当用户回合才能回应；但它不是

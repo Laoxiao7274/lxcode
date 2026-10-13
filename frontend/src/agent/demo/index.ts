@@ -338,6 +338,9 @@ export class DemoAgent implements AgentSource, JobAdminSource {
         context: demoContext(9_800),
         stats: this.stats_.get(sessionId) ?? demoStats(undefined, 730, 2_400, 1_100, 380),
       };
+    // child 标记（与 WSAgent.childHistory 同一份契约）：子会话历史里非通告的 user
+    // 消息 = 主 Agent 派发的任务说明书，historyBlocks 据此渲染「任务」块而不是用户气泡。
+    snapshot.child = true;
     // 与 WSAgent.childHistory **同一份契约**：发 historyLoaded（sessionId 是子会话自己的），
     // 让 store 把子会话自己的 state 建起来——子会话标签页要看到实时流，就得先有它自己的
     // state（历史是基线、随后的事件是增量）。漏了这一条的后果在真链路上就是用户报的

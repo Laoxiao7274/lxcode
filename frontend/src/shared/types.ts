@@ -181,7 +181,12 @@ export type AgentEvent =
       /** dispatchId 非空 = 子会话的消息（派发方注入的任务说明书，后端 childEmitter
        *  带归属上抛）：主时间线不画（dispatch 卡 = 一行摘要），双投进子会话自己的
        *  state——子会话标签页里「新一轮的任务」靠它出现。 */
-      dispatchId?: string }
+      dispatchId?: string;
+      /** task = 双投进子会话 state 时打的标记（reduceSessionStates：原本带
+       *  dispatch_id 的 userMessage 就是任务说明书）。子会话时间线据此渲染成
+       *  「任务」块而不是用户气泡——用户没法在子会话页发言，带这个标记的消息
+       *  唯一来源是 agent_dispatch 的派发。 */
+      task?: boolean }
   /** 乐观用户气泡（**本地事件，不经后端**——体验修复批次 2）：send 发起后立即在
    *  当前会话插一个 pending 用户块，真后端的 userMessage 回执（排在 worktree 准备
    *  等工作之后）到达时按 FIFO 去重。failed = 发送失败（ws 的 catch）：移除最旧的
@@ -283,6 +288,11 @@ export interface HistorySnapshot {
   /** 该会话**此刻**的权限档（后端 LiveApproval）。缺省 = 后端没报（老后端/演示源）
    *  ——显示端不猜，保持本地设置不动。主会话之间隔离的显示依据。 */
   approval?: ApprovalMode;
+  /** child = 这是**子会话**的历史（childHistory 装载的快照）。子会话时间线里
+   *  非通告的 user 消息只有一种来源——主 Agent 派发的任务说明书（子会话页只读，
+   *  用户无法在子会话里发言），渲染成「任务」块而不是用户气泡；主会话快照不带
+   *  这个键，user 消息照旧是用户气泡（两条路径共用 historyBlocks，靠它分流）。 */
+  child?: boolean;
 }
 
 /** 历史消息（llm.Message 的 wire 形态）。 */

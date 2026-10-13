@@ -289,8 +289,10 @@ test('子会话的任务消息（带 dispatch_id 的 userMessage）进子会话�
   const before = all.parent.blocks.length;
   all = reduceSessionStates(all, { type: 'userMessage', sessionId: 'parent', text: '第二轮任务\n\n背景：接着上次', dispatchId: 'd2' });
   assert.equal(all.parent.blocks.length, before, '主时间线不画子会话的任务消息');
-  const task = all['child-1'].blocks.find((b) => b.kind === 'user' && b.text.startsWith('第二轮任务'));
-  assert.ok(task, '子会话时间线要出现新一轮的任务消息（user 块）');
+  // 2026-10-13 用户报：任务消息渲染成用户气泡会让用户以为是自己发的——改成
+  // 独立的「任务」块（实时与回放两条路径同一种类，见 child-task-block.test.mjs）。
+  const task = all['child-1'].blocks.find((b) => b.kind === 'task' && b.text.startsWith('第二轮任务'));
+  assert.ok(task, '子会话时间线要出现新一轮的任务消息（任务块，不是用户气泡）');
 });
 
 test('裁决只碰真的有这个确认的会话（不许清别人的挂起确认）', () => {

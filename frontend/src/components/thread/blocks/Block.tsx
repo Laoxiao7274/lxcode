@@ -20,6 +20,7 @@ import { DispatchCard } from "./DispatchCard";
 import { CompactionCard } from "./CompactionCard";
 import { JobCard } from "./JobCard";
 import { NoticeBar } from "./NoticeBar";
+import { TaskBlock } from "./TaskBlock";
 
 /** 没有 seq 的块（老后端 / 更早落库的历史）不能撤回/编辑时的说明——禁用按钮上
  *  的 title。写清楚原因而不是默默点不动：用户至少知道为什么。 */
@@ -137,6 +138,10 @@ export const Block = memo(
 
     case "tool":
       return <ToolBlock block={block} data-uid={dataUid} />;
+
+    case "task":
+      // 子会话时间线的任务块（主 Agent 派发的任务说明书——不是用户气泡）
+      return <TaskBlock block={block} data-uid={dataUid} />;
 
     case "files":
       return <FilesCard files={block.files} data-uid={dataUid} />;

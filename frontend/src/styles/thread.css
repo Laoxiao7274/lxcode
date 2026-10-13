@@ -518,6 +518,46 @@
 .thread > .dispatch-card {
   margin: 8px 0;
 }
+/* ===== 子会话时间线的「任务」块（主 Agent 派发的任务说明书） =====
+ *  为什么不是用户气泡：气泡的语义是「我说的」——任务说明书画进气泡里，用户分不清
+ *  这是 AI 传进去的任务还是自己发的（用户实测报的问题 1）。形态对齐 dispatch 卡
+ *  （同一类"系统注入"的呈现：surface 底 + 边框 + 标签行，左对齐铺满），与用户气泡
+ *  （右对齐、inset 底、22px 圆角、无标签行）明确区分。实时与回放两条路径渲染同一种
+ *  块（blocks.ts 的 kind:"task"），样式只有这一份。 */
+.thread > .task-block {
+  margin: 8px 0;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  background: var(--surface);
+  overflow: hidden;
+  animation: block-in 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.task-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px 0;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+.task-icon {
+  display: inline-flex;
+  color: var(--fg-faint);
+}
+.task-tag {
+  font-weight: 600;
+  color: var(--fg);
+  letter-spacing: 0.02em;
+}
+.task-note {
+  color: var(--fg-faint);
+}
+.task-body {
+  padding: 4px 12px 10px;
+  font-size: 14px;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
 /* ===== 工具行（lx-dsh ui-tool 逐项对齐：ToolRow/DisclosureRow/StateDot/TerminalBlock） ===== */
 /* 根：纵向 flex（行 + 展开体） */
 .trow {

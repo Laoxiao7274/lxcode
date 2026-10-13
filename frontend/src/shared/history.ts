@@ -113,6 +113,15 @@ export function historyBlocks(h: HistorySnapshot): ThreadBlock[] {
         const label = noticeLabel(m.content);
         if (label) {
           blocks.push({ kind: "notice", uid: nextUid(), label, text: noticeBody(m.content) });
+        } else if (h.child) {
+          // 子会话历史里的非通告 user 消息 = 主 Agent 派发的任务说明书：渲染成
+          // 「任务」块而不是用户气泡（用户报的问题 1 的回放路径）。判据是**快照
+          // 的 child 键**（childHistory 装载的快照才带）——子会话页只读，用户无法
+          // 在子会话里发言，所以「非通告的 user 消息」只有派发这一个来源；主会话
+          // 快照不带这个键，user 消息照旧是用户气泡。与实时路径（reduce.ts 的
+          // task 标记）必须给出同一个块种类——两条路径分叉的代价是刷新之后同一条
+          // 任务说明书换了张脸。
+          blocks.push({ kind: "task", uid: nextUid(), text: m.content });
         } else {
           // seq = 撤回锚点（后端 ChatMessage 上的字段）。**回放路径与实时路径
           // 都读它**——少一条的话刷新之后同一条消息就再也撤不回（而界面上看起来

@@ -915,6 +915,10 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
   async childHistory(sessionId: string): Promise<HistorySnapshot> {
     const r = await this.call("chat.history", { session_id: sessionId });
     const snapshot = this.snapshotFromWire(r);
+    // child 标记（问题 1 的回放路径）：子会话历史里非通告的 user 消息 = 主 Agent
+    // 派发的任务说明书，historyBlocks 据此渲染「任务」块而不是用户气泡。主会话的
+    // loadHistory 不打这个标记——同一个映射靠它分流两条路径。
+    snapshot.child = true;
     // 用快照自己的 session_id（后端回带；缺席时回落请求参数——两者不一致时以后端为准）
     const id = snapshot.sessionId || sessionId;
     this.emit({ type: "historyLoaded", sessionId: id, history: snapshot });
