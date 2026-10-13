@@ -4,9 +4,9 @@
 package project
 
 import (
+	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 
 	"github.com/moyunteng/lxcode/internal/sessiondata"
@@ -60,10 +60,8 @@ func EnsureRepo(path string) error {
 	if _, err := os.Stat(filepath.Join(abs, ".git")); err == nil {
 		return nil // 已是仓库，不用管
 	}
-	cmd := exec.Command("git", "init")
-	cmd.Dir = abs
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git init 失败（git 未安装?）: %v: %s", err, truncate(string(out), 200))
+	if _, err := runGitCtx(context.Background(), abs, "init"); err != nil {
+		return fmt.Errorf("git init 失败（git 未安装?）: %w", err)
 	}
 	return nil
 }

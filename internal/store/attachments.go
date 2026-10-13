@@ -33,6 +33,20 @@ var mimeExt = map[string]string{
 // 反向使用：按扩展名回 Content-Type。
 func ExtForMime(m string) string { return mimeExt[m] }
 
+// MimeForExt 返回扩展名对应的 mime（未知扩展名返回空串）。ExtForMime 的反向
+// ——同一份 mimeExt 白名单派生，「存的时候按 mime 推扩展名」与「读的时候按
+// 扩展名回 mime」永不漂移。ext 带不带点都接受（调用方两种形态都有：path.Ext
+// 带点、ClassifyAttachment 的名字后缀不带点）。
+func MimeForExt(ext string) string {
+	if ext == "" {
+		return ""
+	}
+	if m, ok := extToMime[ext]; ok {
+		return m
+	}
+	return extToMime[strings.TrimPrefix(ext, ".")]
+}
+
 // ClassifyAttachment 按文件名的扩展名给附件分类（share_file 共享的文件用）：
 // 扩展名命中图片白名单 → kind=image + mime（前端渲染内联缩略图）；否则
 // kind=file + 空 mime（文件卡 + 下载）。共享通道不做内容嗅探——扩展名是

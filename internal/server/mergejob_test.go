@@ -17,10 +17,8 @@ import (
 	"github.com/moyunteng/lxcode/internal/config"
 	"github.com/moyunteng/lxcode/internal/jobs"
 	"github.com/moyunteng/lxcode/internal/llm"
-	"github.com/moyunteng/lxcode/internal/project"
 	"github.com/moyunteng/lxcode/internal/protocol"
 	"github.com/moyunteng/lxcode/internal/sessiondata"
-	"github.com/moyunteng/lxcode/internal/store"
 	"github.com/moyunteng/lxcode/internal/tools"
 )
 

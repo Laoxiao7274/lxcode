@@ -191,10 +191,10 @@ func (s *Server) bindAttachmentLoader(st *store.Store) {
 	})
 }
 
-// extMime 是扩展名 → mime 的反向映射：直接用 store.ExtForMime（与写入口径
+// extMime 是扩展名 → mime 的反向映射：直接用 store.MimeForExt（与写入口径
 // store.mimeExt 同一份白名单，不再各派生一份）。白名单行为一致：四种图片 mime
 // 推导出的扩展名（.png/.jpg/.webp/.gif）相同，未知扩展名两边都返回空串。
-func extMime(ext string) string { return store.ExtForMime(ext) }
+func extMime(ext string) string { return store.MimeForExt(ext) }
 
 // attachmentsGate 给附件端点套远程访问的 token 门（与 /rpc 同一份
 // checkRemoteToken——query token 或 Authorization: Bearer，同源逻辑）。
