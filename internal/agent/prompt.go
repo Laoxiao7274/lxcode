@@ -33,6 +33,7 @@ func workdirLine(workDir string) string {
 type WorktreeInfo struct {
 	Branch string // 主检出当前分支名（2026-10 直连架构：不再是 lxcode/session-<id>）
 	Base   string // 会话基线 HEAD（首次准备时记录；rollback 的 session-start 锚点）
+	NoGit  bool   // 项目目录不是 git 仓库（Branch 为空）：无检查点，提示词如实告知
 }
 
 // worktreeLine 渲染工作区说明段（零值零注入：逐字节等于未分组会话的提示词）。
@@ -46,6 +47,14 @@ type WorktreeInfo struct {
 // 「你的会话目录」（它没有单独的；大家都在同一个项目目录里）。
 func worktreeLine(wt WorktreeInfo, isChild bool) string {
 	if wt.Branch == "" {
+		if wt.NoGit {
+			// 非 git 项目目录的降级态：如实告知「没有检查点」，并且不让模型
+			// 自作主张去 git init / 提交（那是用户的决定）。
+			if isChild {
+				return "你在父会话的项目目录里工作，该目录不是 Git 仓库：没有自动检查点提交，也不要执行 git 提交/分支类操作；用户问起版本管理时如实说明。\n"
+			}
+			return "当前会话直接在用户的项目目录里工作，但该目录不是 Git 仓库：没有每轮的自动检查点提交，也不要主动执行 git 提交/分支类操作（是否 git init 由用户决定，需要时如实说明现状）。\n"
+		}
 		return ""
 	}
 	if isChild {

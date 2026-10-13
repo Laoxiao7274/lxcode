@@ -54,7 +54,7 @@ func (s *Session) RunAgentTask(ctx context.Context, agentID, task, workDir strin
 		return "", err
 	}
 	if workDir != "" {
-		child.SetWorktreeInfo("", "")
+		child.SetWorktreeInfo("", "", false)
 		if err := child.SetWorkDir(workDir); err != nil {
 			return "", err
 		}
@@ -318,12 +318,13 @@ func (s *Session) runDispatch(ctx context.Context, call tools.DispatchCall) tool
 func (s *Session) openChildSession(call tools.DispatchCall, ac *sessiondata.AgentContext) (*Session, string, error) {
 	s.mu.Lock()
 	st, parentID, stream, workDir := s.st, s.id, s.stream, s.workDir
-	branch, base := s.worktreeBranch, s.worktreeBase
+	branch, base, noGit := s.worktreeBranch, s.worktreeBase, s.worktreeNoGit
 	s.mu.Unlock()
 	child := New(s.reg, s.tools, s.emit)
 	// 子会话在父会话的工作树里工作（SetWorkDir 继承同一个目录），提示词要如实说
-	// 「改动与父会话共享」而不是「你有独立分支」——分支信息同样从父会话继承。
-	child.SetWorktreeInfo(branch, base)
+	// 「改动与父会话共享」而不是「你有独立分支」——分支信息同样从父会话继承
+	//（非 git 降级标志一并继承：子会话同样没有检查点）。
+	child.SetWorktreeInfo(branch, base, noGit)
 	// 子会话压缩时保护历史第 0 条 = 派发的那条任务说明书（见 Session.protectHead）：
 	// 这是子 Agent 唯一的任务依据，被压进摘要后长任务就会跑偏。
 	// 在 st == nil 的提前返回之前置位——内存子会话同样有这条头部。

@@ -135,6 +135,82 @@ func TestWorkspacePrepareIsIdempotent(t *testing.T) {
 	assertNoWorktreeArtifacts(t, srv, repo, sessionID)
 }
 
+// 用例 5：零提交仓库（git init 后没有任何提交，HEAD 指向未出生分支）建会话发
+// 消息——分支解析回退 symbolic-ref 不再炸出「ambiguous argument 'HEAD'」（用户
+// 实测的原始 bug）；第一轮结束的检查点提交成为仓库的**初始提交**；不编基线。
+func TestFirstSendWorksInUnbornRepo(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "project")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitServerTest(t, repo, "init")
+	gitServerTest(t, repo, "config", "user.name", "Test")
+	gitServerTest(t, repo, "config", "user.email", "test@example.invalid")
+	// 预放一个未跟踪文件：让第一轮的自动提交有东西可提交（零提交仓库上的第一次
+	// checkpoint commit 就是根提交——CommitAll 只做 status/add/commit，不碰 HEAD
+	// 基础的 diff/stash，unborn HEAD 也能走通）。
+	if err := os.WriteFile(filepath.Join(repo, "draft.txt"), []byte("draft\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	srv, client, _ := newTestServer(t, okStream())
+	sessionID := createTestSession(t, client, registerProject(t, client, repo))
+	resp := client.call(protocol.MethodChatSend, protocol.ChatSendParams{SessionID: sessionID, Text: "首条"})
+	if resp == nil || resp.Error != nil {
+		t.Fatalf("零提交仓库的首条 chat.send 失败: %+v", resp)
+	}
+	waitSessionEvent(t, client, protocol.EventDone, sessionID)
+	srv.waitAutoCommits()
+
+	if n := commitCount(t, repo); n != 1 {
+		t.Fatalf("第一轮的检查点提交应成为初始提交: commit count = %d", n)
+	}
+	branch := strings.TrimSpace(gitServerTest(t, repo, "rev-parse", "--abbrev-ref", "HEAD"))
+	if branch == "" || branch == "HEAD" {
+		t.Fatalf("初始提交后分支名异常: %q", branch)
+	}
+	meta := assertNoWorktreeArtifacts(t, srv, repo, sessionID)
+	if meta.BaseCommit != "" {
+		t.Fatalf("零提交仓库不该编基线（unborn HEAD 没有可记的 HEAD）: %+v", meta)
+	}
+	sess, err := srv.session(sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess.WorkDir() != repo {
+		t.Fatalf("运行时 workDir = %q, want 主检出 %q", sess.WorkDir(), repo)
+	}
+}
+
+// 用例 6：非 git 目录降级运行——注册时 EnsureRepo 会 git init，删掉 .git 模拟
+//「不是 git 仓库」的存量项目（.git 被删 / git init 从未成功）。会话照常创建、
+// 发送成功，且不偷偷替用户 git init、不产生任何检查点提交。
+func TestFirstSendWorksInNonGitDir(t *testing.T) {
+	dir := t.TempDir()
+	srv, client, _ := newTestServer(t, okStream())
+	sessionID := createTestSession(t, client, registerProject(t, client, dir))
+	if err := os.RemoveAll(filepath.Join(dir, ".git")); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := client.call(protocol.MethodChatSend, protocol.ChatSendParams{SessionID: sessionID, Text: "首条"})
+	if resp == nil || resp.Error != nil {
+		t.Fatalf("非 git 目录的首条 chat.send 失败（应降级而非报错）: %+v", resp)
+	}
+	waitSessionEvent(t, client, protocol.EventDone, sessionID)
+
+	if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+		t.Fatal("非 git 降级不该偷偷 git init")
+	}
+	sess, err := srv.session(sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess.WorkDir() != dir {
+		t.Fatalf("运行时 workDir = %q, want 项目目录 %q", sess.WorkDir(), dir)
+	}
+}
+
 // 用例 3：老元数据会话（有 worktree 元数据 + 磁盘目录 + lxcode/session-* 分支）
 // resume → 切到直连模式（workDir=主检出），**旧目录与分支原样保留不删**，旧基线
 // 沿用为会话基线。

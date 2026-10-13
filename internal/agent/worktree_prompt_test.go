@@ -85,3 +85,26 @@ func TestWorktreePromptChildSession(t *testing.T) {
 		t.Fatalf("子会话提示词缺少分支名:\n%s", prompt)
 	}
 }
+
+// TestWorktreePromptNoGit：项目目录不是 git 仓库的降级态——如实告知「没有自动
+// 检查点、不要执行 git 操作」，且不能沿用「每轮自动提交」的表述（那是假的）。
+func TestWorktreePromptNoGit(t *testing.T) {
+	s := newAgentSession(t)
+	wt := WorktreeInfo{NoGit: true}
+	prompt := BuildSystemPrompt(s.tools, "/proj/demo", wt, false, ProjectDocs{})
+	if !strings.Contains(prompt, "不是 Git 仓库") {
+		t.Fatalf("非 git 项目会话提示词应如实告知:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "系统会自动提交") {
+		t.Fatalf("非 git 项目会话不该声称自动提交:\n%s", prompt)
+	}
+	// 工作区说明层不该出现「Git 分支 <名>」的表述（没有分支可说）。
+	if strings.Contains(prompt, "（Git 分支 ") {
+		t.Fatalf("非 git 项目会话不该声称工作在某分支:\n%s", prompt)
+	}
+	// 子会话同样告知（非 git 标志随父会话继承）。
+	child := BuildSystemPrompt(s.tools, "/proj/demo", wt, true, ProjectDocs{})
+	if !strings.Contains(child, "不是 Git 仓库") {
+		t.Fatalf("非 git 子会话提示词应如实告知:\n%s", child)
+	}
+}

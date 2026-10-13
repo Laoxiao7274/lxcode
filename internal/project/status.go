@@ -36,7 +36,7 @@ type StatusInfo struct {
 func ProjectStatus(ctx context.Context, dir string) (StatusInfo, error) {
 	ctx, cancel := context.WithTimeout(ctx, statusTimeout)
 	defer cancel()
-	branch, err := gitOutputCtx(ctx, dir, "rev-parse", "--abbrev-ref", "HEAD")
+	branch, err := currentBranchLenient(ctx, dir)
 	if err != nil {
 		return StatusInfo{}, err
 	}
@@ -65,14 +65,29 @@ func gitPorcelain(ctx context.Context, dir string) ([]string, error) {
 }
 
 // CurrentBranch 返回工作树 dir 当前检出的分支名（只读）。
+//
+// 零提交仓库（刚 git init、HEAD 指向未出生分支）也能拿到分支名：rev-parse
+// --abbrev-ref HEAD 在 unborn HEAD 上必然报「ambiguous argument 'HEAD'」，
+// 此时回退 symbolic-ref --short HEAD（未出生分支同样有名字）。目录不是 git
+// 仓库或 git 不可用时如实返回错误，降级与否由调用方决定。
 func CurrentBranch(ctx context.Context, dir string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, statusTimeout)
 	defer cancel()
+	return currentBranchLenient(ctx, dir)
+}
+
+// currentBranchLenient 是 CurrentBranch / ProjectStatus 共用的分支解析：
+// rev-parse 成功直接用；失败时试 symbolic-ref（只对 unborn HEAD 有救——非 git
+// 目录上它同样失败），仍失败则返回**原始** rev-parse 错误（更贴近根因）。
+func currentBranchLenient(ctx context.Context, dir string) (string, error) {
 	out, err := gitOutputCtx(ctx, dir, "rev-parse", "--abbrev-ref", "HEAD")
-	if err != nil {
-		return "", err
+	if err == nil {
+		return strings.TrimSpace(out), nil
 	}
-	return strings.TrimSpace(out), nil
+	if alt, serr := gitOutputCtx(ctx, dir, "symbolic-ref", "--short", "HEAD"); serr == nil {
+		return strings.TrimSpace(alt), nil
+	}
+	return "", err
 }
 
 // BranchExists 报告仓库 repoDir 里本地分支 branch 是否存在（只读）。
