@@ -35,12 +35,14 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.Text
 import android.widget.Toast
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -51,7 +53,9 @@ import androidx.compose.ui.unit.dp
 import com.moyunteng.lxcode.design.component.LxButton
 import com.moyunteng.lxcode.design.component.LxButtonSize
 import com.moyunteng.lxcode.design.component.LxButtonVariant
+import com.moyunteng.lxcode.design.component.LxConfirmDialog
 import com.moyunteng.lxcode.design.component.LxListItem
+import com.moyunteng.lxcode.design.component.LxSpinner
 import com.moyunteng.lxcode.design.component.LxTextField
 import com.moyunteng.lxcode.design.motion.LxCollapseAway
 import com.moyunteng.lxcode.design.motion.LxEnterSpec
@@ -67,6 +71,7 @@ import com.moyunteng.lxcode.remote.mock.MockData
 import com.moyunteng.lxcode.remote.mock.addrValid
 import com.moyunteng.lxcode.remote.mock.maskToken
 import com.moyunteng.lxcode.remote.mock.nameFromAddr
+import kotlinx.coroutines.launch
 import java.util.UUID
 
 /** 连接页：本机 + 远程列表 + 添加 + （离线时）后端不可达错误条。 */
@@ -131,6 +136,10 @@ fun ConnectionsScreen(state: MockAppState) {
                 leading = { SmallIcon(Icons.Filled.QrCode2, Lx.colors.FgMuted, size = 15) },
                 onClick = { state.route = Route.Pairing },
             )
+
+            // 检查更新（手动入口）：启动时也会自动检查（失败/已最新都静默）；
+            // 这里三态齐全——有新版弹层给详情 + 下载按钮，已最新/失败给 toast。
+            UpdateCheckItem(state)
 
             // 真实后端（调试区快捷开关）：开 = WS 连真实 lxcode 后端（协议见 PROTOCOL-NOTES.md）。
             // 主入口已收口到连接列表条目的「连接」按钮（connectTo）；这里保留作快捷开关
@@ -635,5 +644,69 @@ private fun FormField(
                 color = Lx.colors.FgFaint,
             )
         }
+    }
+}
+
+/**
+ * 「检查更新」行：手动检查的三态 —— 有新版弹层（详情 + 去下载）/ 已最新 toast /
+ * 失败 toast（人话原因）。启动时的自动检查在 AppRoot（只有「有新版」出横幅）。
+ */
+@Composable
+private fun UpdateCheckItem(state: MockAppState) {
+    val context = LocalContext.current
+    fun toast(msg: String) = Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+    val scope = rememberCoroutineScope()
+    var checking by remember { mutableStateOf(false) }
+    var found by remember { mutableStateOf<com.moyunteng.lxcode.remote.update.ApkRelease?>(null) }
+
+    LxListItem(
+        title = "检查更新",
+        subtitle = "当前 v${BuildConfig.VERSION_NAME}",
+        leading = { SmallIcon(Icons.Filled.SystemUpdate, Lx.colors.FgMuted, size = 15) },
+        trailing = { if (checking) LxSpinner() },
+        onClick = {
+            if (checking) return@LxListItem
+            checking = true
+            scope.launch {
+                val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    com.moyunteng.lxcode.remote.update.UpdateChecker.check(
+                        BuildConfig.VERSION_CODE.toLong(),
+                    )
+                }
+                checking = false
+                when (result) {
+                    is com.moyunteng.lxcode.remote.update.UpdateCheckResult.Available ->
+                        found = result.release
+                    com.moyunteng.lxcode.remote.update.UpdateCheckResult.UpToDate ->
+                        toast("已是最新版本（v${BuildConfig.VERSION_NAME}）")
+                    is com.moyunteng.lxcode.remote.update.UpdateCheckResult.Failed ->
+                        toast("检查更新失败：${result.message}")
+                }
+            }
+        },
+    )
+
+    found?.let { release ->
+        LxConfirmDialog(
+            title = "发现新版本 v${release.version}",
+            text = buildString {
+                append("当前 v${BuildConfig.VERSION_NAME} · ")
+                append(com.moyunteng.lxcode.remote.update.formatBytes(release.size))
+                if (release.notes.isNotEmpty()) {
+                    append("\n")
+                    append(release.notes.joinToString("\n"))
+                }
+            },
+            approveText = "去下载",
+            denyText = "以后再说",
+            onApprove = {
+                found = null
+                if (!com.moyunteng.lxcode.remote.update.openApkDownload(context, release)) {
+                    toast("没有可打开链接的应用")
+                }
+            },
+            onDeny = { found = null },
+            onDismissRequest = { found = null },
+        )
     }
 }

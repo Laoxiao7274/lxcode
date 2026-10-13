@@ -173,6 +173,13 @@ class MockAppState(private val store: ConnStore? = null) {
     /** 真实后端状态机（net/ 包；开关打开时驱动连接与事件归约）。 */
     val real = com.moyunteng.lxcode.remote.net.RealBackend()
 
+    /**
+     * 启动自动检查发现的新版本（null = 无新版 / 还没查到 / 查询失败）。
+     * 自动检查三态里只有「有新版」有 UI（会话页横幅，非阻断）；
+     * 已最新与失败都静默——不弹 toast 打扰，手动检查入口在连接页。
+     */
+    var updateAvailable by mutableStateOf<com.moyunteng.lxcode.remote.update.ApkRelease?>(null)
+
     /** 顶栏连接药丸的在线位：真实模式跟 WS 实际连接态，mock 模式跟断线开关。 */
     fun pillOnline(): Boolean = if (realOn) real.connected else online
 
@@ -313,6 +320,19 @@ fun AppRoot(pairUri: String? = null, onPairUriConsumed: () -> Unit = {}) {
         if (pairUri != null) {
             state.applyPairPayload(pairUri)
             onPairUriConsumed()
+        }
+    }
+
+    // 启动自动检查更新：查询失败静默、已是最新静默、有新版 → 会话页横幅（非阻断，
+    // 用户可关）。查询是阻塞 IO（UpdateChecker），放 Default 派发，不卡首帧。
+    LaunchedEffect(Unit) {
+        val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            com.moyunteng.lxcode.remote.update.UpdateChecker.check(
+                BuildConfig.VERSION_CODE.toLong(),
+            )
+        }
+        if (result is com.moyunteng.lxcode.remote.update.UpdateCheckResult.Available) {
+            state.updateAvailable = result.release
         }
     }
 

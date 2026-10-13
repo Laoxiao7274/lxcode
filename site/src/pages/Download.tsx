@@ -3,7 +3,7 @@
 // 两个平台的版本号**来源分开、互不引用**：
 //   Windows — /api/releases 里最新已发布的 stable（latestPublished），读不到回落到
 //             WINDOWS_FALLBACK_VERSION 常量（只展示版本号，产物列表仍以接口为准）；
-//   Android — ANDROID_APK 常量（安卓独立版本源，不进发布模型）。
+//   Android — android-release.json（单一版本源，public/downloads/ 下，见下方 KDoc）。
 // 桌面与安卓发版节奏不同（桌面 0.2.3、安卓 0.2.3——本次安卓重发包修复安装器
 // 「packageinfo is null」问题，改 v1+v2 双签名），共用一个版本号会让用户把
 // 两个平台的版本混为一谈，所以页面头部不再报「最新 stable：x.y.z」，改由各平台
@@ -30,6 +30,9 @@ import { DataStatus } from "../components/DataStatus";
 import { ArtifactLink } from "../components/ArtifactLink";
 import { HashLine } from "../components/HashLine";
 import { SITE_BASE } from "../shared/base";
+// Android APK 发布元数据（单一版本源，见下方 KDoc）：随站点构建静态托管，
+// 安卓客户端的应用内更新检查也读部署后的这份 JSON。
+import androidRelease from "../../public/downloads/android-release.json";
 import "../styles/page-site.css";
 
 /**
@@ -43,21 +46,15 @@ import "../styles/page-site.css";
 const WINDOWS_FALLBACK_VERSION = "0.2.3";
 
 /**
- * Android APK（原型）：不进发布模型，版本号**独立于桌面版**演进。
+ * Android APK 发布元数据 —— **单一版本源**是仓库里的
+ * `site/public/downloads/android-release.json`（随站点构建进 dist/downloads/，
+ * 由站点后端静态托管）。安卓客户端的应用内更新检查拉的就是部署后的这份 JSON，
+ * 下载页 import 同一份文件——两处显示与判定永远同源，换包只改 JSON + 传新 APK。
  *
- * 后端产物模型只有 installer/portable/update 三类（`domain.ArtifactKind`），APK 塞进去
- * 会污染桌面更新链（manifest / 校验 / 历史表都按桌面语义建的）。所以走静态文件方案：
- * APK 放站点 dist/downloads/ 下，由后端 --static 兜底直接发。
- * 这里的常量是安卓自己的版本源（与 WINDOWS_FALLBACK_VERSION 分开，互不引用）——
- * 桌面与安卓发版节奏不同，versionName 不再与桌面版本对齐，换包必须同步改。
+ * 为什么 APK 不进桌面发布模型：后端产物模型只有 installer/portable/update 三类
+ * （`domain.ArtifactKind`），APK 塞进去会污染桌面更新链（manifest / 校验 / 历史表
+ * 都按桌面语义建的）。安卓走「静态文件 + 元数据 JSON」的最小方案，见 android/RELEASE.md。
  */
-const ANDROID_APK = {
-  version: "0.2.3",
-  name: "lxcode-0.2.3-android.apk",
-  size: 11622193,
-  sha256: "b92b9899c802c951a64046badd726d807de407d4edcc45a60ada5d711c1d91a8",
-  url: "downloads/lxcode-0.2.3-android.apk",
-};
 
 const KINDS: Array<{
   kind: Artifact["kind"];
@@ -256,7 +253,7 @@ export default function Download() {
         </div>
       </section>
 
-      {/* Android：版本号只来自 ANDROID_APK 常量（安卓独立版本源，与桌面 releases 接口无关）。 */}
+      {/* Android：版本号与产物来自 android-release.json（安卓独立版本源，与桌面 releases 接口无关）。 */}
       <section className="sec">
         <div className="wrap">
           <div className="sec-head">
@@ -264,30 +261,30 @@ export default function Download() {
               Android 远端客户端{" "}
               <span className="pill pill-ok">
                 <span className="pill-dot" aria-hidden="true" />
-                v{ANDROID_APK.version}
+                v{androidRelease.version}
               </span>
             </h2>
             <p className="sec-lede">
-              当前版本 v{ANDROID_APK.version}（独立于桌面版）· 远端客户端（早期版）：连接自己机器上的
+              当前版本 v{androidRelease.version}（独立于桌面版）· 远端客户端（早期版）：连接自己机器上的
               lxcode 后端跑会话，不走应用商店。
             </p>
           </div>
           <div className="panel panel-lift">
             <div className="panel-pad dl-block">
               <div className="dl-file">
-                <span className="dl-name">{ANDROID_APK.name}</span>
-                <span className="meta">{formatBytes(ANDROID_APK.size)}</span>
+                <span className="dl-name">{androidRelease.name}</span>
+                <span className="meta">{formatBytes(androidRelease.size)}</span>
               </div>
-              <HashLine label="APK" hash={ANDROID_APK.sha256} />
+              <HashLine label="APK" hash={androidRelease.sha256} />
               <div className="dl-actions">
                 <a
                   className="btn btn-p"
-                  href={SITE_BASE + ANDROID_APK.url}
-                  download={ANDROID_APK.name}
+                  href={SITE_BASE + androidRelease.url}
+                  download={androidRelease.name}
                 >
                   下载 APK
                 </a>
-                <span className="meta">versionCode 2 · Android 8.0+</span>
+                <span className="meta">versionCode {androidRelease.versionCode} · Android 8.0+</span>
               </div>
             </div>
           </div>

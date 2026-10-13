@@ -29,6 +29,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.ChatBubbleOutline
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
@@ -51,6 +52,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import android.widget.Toast
 import com.moyunteng.lxcode.design.component.LxButton
@@ -141,6 +143,18 @@ fun SessionsScreen(state: MockAppState) {
                 .fillMaxSize()
                 .padding(horizontal = Lx.space.s8),
         ) {
+            // ⓪ 更新横幅（启动自动检查发现新版本时出现；非阻断，可关）：
+            // 新版本号 + 大小 + 「去下载」（系统浏览器拿 APK）/「×」忽略。
+            state.updateAvailable?.let { release ->
+                item(key = "update-banner") {
+                    UpdateBanner(
+                        release = release,
+                        onDismiss = { state.updateAvailable = null },
+                        modifier = Modifier.padding(horizontal = Lx.space.s4, vertical = Lx.space.s6),
+                    )
+                }
+            }
+
             // ① 导航项
             // 纯远控壳：侧栏导航项只留「新对话」（对远程后端开新会话）；
             // Agents/拓展/Git 管理/远程访问/自动化 是桌面端管理本机的面板，不进手机。
@@ -514,5 +528,69 @@ private fun SessionOpsRow(label: String, icon: ImageVector, onClick: () -> Unit)
             style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size12_5),
             color = Lx.colors.Fg,
         )
+    }
+}
+
+/** 更新横幅（对齐 UnreachableBar 的卡片视觉）：发现新版本时的非阻断提示。 */
+@Composable
+private fun UpdateBanner(
+    release: com.moyunteng.lxcode.remote.update.ApkRelease,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val context = LocalContext.current
+    Row(
+        modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(11.dp))
+            .background(LxColors.Surface)
+            .border(1.dp, Lx.colors.Border, RoundedCornerShape(11.dp))
+            .padding(horizontal = Lx.space.s10, vertical = Lx.space.s8),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Lx.space.s8),
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = "发现新版本 v${release.version}",
+                style = Lx.type.ListTitle,
+                color = Lx.colors.Fg,
+            )
+            val sizeText = com.moyunteng.lxcode.remote.update.formatBytes(release.size)
+            Text(
+                text = "$sizeText · ${release.notes.firstOrNull() ?: "新的 APK 已发布"}",
+                style = Lx.type.ListSubtitle,
+                color = Lx.colors.FgFaint,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Text(
+            text = "去下载",
+            style = Lx.type.ListTitle.copy(fontSize = Lx.type.Size12_5),
+            color = Lx.colors.Fg,
+            modifier = Modifier
+                .clip(Lx.radius.RowShape)
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                ) {
+                    if (!com.moyunteng.lxcode.remote.update.openApkDownload(context, release)) {
+                        Toast.makeText(context, "没有可打开链接的应用", Toast.LENGTH_SHORT).show()
+                    }
+                }
+                .padding(horizontal = Lx.space.s8, vertical = Lx.space.s6),
+        )
+        Box(
+            Modifier
+                .clip(Lx.radius.RowShape)
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = onDismiss,
+                )
+                .padding(Lx.space.s4),
+        ) {
+            SmallIcon(Icons.Filled.Close, Lx.colors.FgFaint, size = 14)
+        }
     }
 }
