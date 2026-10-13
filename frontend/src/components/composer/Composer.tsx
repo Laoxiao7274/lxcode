@@ -23,6 +23,7 @@ import {
   type PendingImage,
 } from "../../shared/attachments";
 import { routeSubmit, type SendQueueItem } from "../../shared/send-queue";
+import { readFileAsBase64 } from "../../shared/attachment-read";
 import type { SessionDraft } from "../../shared/session-drafts";
 import type { SendAttachments, ContextUsage, SessionStats, TodoItem } from "../../shared/types";
 
@@ -211,18 +212,11 @@ export function Composer({
 
   // ---- 附件：本地选择 + 粘贴（共用一条异步读入路径） ----
 
-  /** File → {base64, size}（异步——大图读入不卡 UI）。 */
-  const readAsBase64 = (file: File) =>
-    new Promise<string>((resolve, reject) => {
-      const r = new FileReader();
-      r.onload = () => {
-        const result = String(r.result ?? "");
-        const idx = result.indexOf(",");
-        resolve(idx >= 0 ? result.slice(idx + 1) : result);
-      };
-      r.onerror = () => reject(r.error ?? new Error("读取文件失败"));
-      r.readAsDataURL(file);
-    });
+  /** File → {base64, size}（异步——大图读入不卡 UI）。
+   *  读入通道在 shared/attachment-read.ts：blob 快照失效（拖拽虚拟文件等，
+   *  FileReader 报 NotFoundError）时回落 Electron 真实路径重读；浏览器模式
+   *  无回退，错误带文件名与人话指引。 */
+  const readAsBase64 = (file: File) => readFileAsBase64(file);
 
   const ingest = async (list: File[]) => {
     if (list.length === 0) return;

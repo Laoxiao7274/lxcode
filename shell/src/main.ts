@@ -1,6 +1,7 @@
 // main.ts —— Electron 壳主进程：只做窗口/单实例/sidecar 生命周期，不放业务
 // （AGENTS.md §2.1 Electron 侧工程纪律）。渲染层复用 frontend/ 同一套
 // React 应用，经 WS 直连 127.0.0.1:7789，与浏览器/CLI 客户端同权。
+import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, net, protocol } from "electron";
@@ -124,6 +125,27 @@ if (!app.requestSingleInstanceLock()) {
       if (!win) return null;
       const r = await dialog.showOpenDialog(win, { properties: ["openDirectory"] });
       return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0];
+    });
+
+    // 附件读入的磁盘回退通道（preload 的 __LX__.readFileBase64）：渲染层 blob
+    // 快照失效时按 webUtils 解析出的真实路径重读。只读单个文件、限 20MB
+    // （与前端 MAX_FILE_BYTES 同一套）；失败给带路径的人话错误（渲染层把它
+    // 拼进附件提示，便于以后排查）。渲染层不因此获得任何通用 fs 能力。
+    ipcMain.handle("file:readBase64", async (_e, p: unknown) => {
+      if (typeof p !== "string" || p.trim() === "") {
+        throw new Error("来源文件没有真实磁盘路径（虚拟文件），无法按路径重读");
+      }
+      let size = 0;
+      try {
+        size = (await stat(p)).size;
+      } catch (err) {
+        throw new Error(`无法读取 ${p}：文件不存在或无权访问（${err instanceof Error ? err.message : String(err)}）`);
+      }
+      if (size > 20 << 20) {
+        throw new Error(`无法读取 ${p}：超过 20MB 上限（当前 ${size} 字节）`);
+      }
+      const buf = await readFile(p);
+      return buf.toString("base64");
     });
 
     // 樱花frp 公网穿透（docs/sakurafrp-integration.md）：API/fpc 全在主进程，

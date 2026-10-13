@@ -3,7 +3,7 @@
 // 项目添加需要系统目录选择器（selectDirectory）；樱花frp 经 sakurafrp 命名
 // 空间发意图/收状态（API 与 frpc 进程全在主进程，密钥不过渲染层）。
 // 刻意保持最小面：不给渲染层任何 Node/文件/进程能力（AGENTS.md Electron 纪律）。
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 
 contextBridge.exposeInMainWorld("__LX__", {
   minimize: () => ipcRenderer.send("win:minimize"),
@@ -15,6 +15,12 @@ contextBridge.exposeInMainWorld("__LX__", {
   // 打开系统目录选择器，返回选中路径（取消返回 null）。async 形式
   // 经 invoke（请求-应答语义，不是事件广播）。
   selectDirectory: (): Promise<string | null> => ipcRenderer.invoke("dialog:selectDirectory"),
+  // 附件读入的磁盘回退通道：渲染层 blob 快照失效（拖拽虚拟文件/原文件被移动
+  // ——FileReader 报 NotFoundError）时按真实路径重读。webUtils.getPathForFile
+  // 必须在 preload 侧调（File 可过 contextBridge，Electron 官方用法）；主进程
+  // 只读单个文件、限 20MB——不给渲染层任何通用 fs 能力（保持最小 IPC 面）。
+  readFileBase64: (file: File): Promise<string> =>
+    ipcRenderer.invoke("file:readBase64", webUtils.getPathForFile(file)),
   // 樱花frp：invoke 发意图（返回最新状态快照；失败 reject 人话错误消息），
   // onState 订阅主进程推送（登录恢复/轮询刷新/frpc 退出都走它）。
   sakurafrp: {
