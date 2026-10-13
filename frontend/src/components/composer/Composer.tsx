@@ -17,13 +17,16 @@ import {
   hasPendingAtts,
   isImageMime,
   MAX_FILE_BYTES,
+  MAX_FILE_COUNT,
   MAX_IMAGE_BYTES,
+  MAX_IMAGE_COUNT,
   removePending,
   type PendingFile,
   type PendingImage,
 } from "../../shared/attachments";
 import { routeSubmit, type SendQueueItem } from "../../shared/send-queue";
 import { readFileAsBase64 } from "../../shared/attachment-read";
+import { collectFolderEntries, defaultFolderDeps, type EntryLike } from "../../shared/folder-drop";
 import type { SessionDraft } from "../../shared/session-drafts";
 import type { SendAttachments, ContextUsage, SessionStats, TodoItem } from "../../shared/types";
 
@@ -280,9 +283,9 @@ export function Composer({
     void ingest(imgs);
   };
 
-  // 拖拽（与本地选择/粘贴共用 ingest 一条读入路径）：文件拖到输入区直接进
-  // 附件区。dragover 必须 preventDefault——否则浏览器用默认行为（打开文件）
-  // 顶掉 drop。locked（只读/禁用）时整个流程不接。
+  // 拖拽（单文件与本地选择/粘贴共用 ingest 一条读入路径；文件夹走展开收集）：
+  // 文件拖到输入区直接进附件区。dragover 必须 preventDefault——否则浏览器用
+  // 默认行为（打开文件）顶掉 drop。locked（只读/禁用）时整个流程不接。
   const [dragOver, setDragOver] = useState(false);
   const onDragOver = (e: React.DragEvent<HTMLDivElement>) => {
     if (locked) return;
@@ -293,13 +296,87 @@ export function Composer({
   const onDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
     if (e.currentTarget === e.target) setDragOver(false);
   };
+
+  /** 文件夹拖入：展开收集 → 逐个读入（个别失败跳过并说明）→ 进附件区。
+   *  收集口径（folder-drop.ts 的纯函数，测试直测）：≤16 个 / 总量 ≤20MB、
+   *  跳过隐藏项与超单文件上限者、截断与跳过都给人话提示、空文件夹有提示。 */
+  const ingestFolders = async (dirs: EntryLike[], plain: File[]) => {
+    if (plain.length > 0) await ingest(plain); // 文件夹混着散文件：散文件照旧路径
+    const notices: string[] = [];
+    const collected: File[] = [];
+    for (const dir of dirs) {
+      const r = await collectFolderEntries(dir, defaultFolderDeps);
+      collected.push(...r.files);
+      if (r.notice) notices.push(r.notice);
+    }
+    if (collected.length === 0) {
+      if (notices.length > 0) flashNotice(notices.join("；"));
+      return;
+    }
+    // 逐个读入：个别失败（快照与真实路径都读不到）跳过并在提示里说明，
+    // 不整批失败——文件夹里一个坏文件不该吞掉其余的。
+    const read: { file: File; data: string }[] = [];
+    let readFailed = 0;
+    for (const f of collected) {
+      try {
+        read.push({ file: f, data: await readAsBase64(f) });
+      } catch {
+        readFailed++;
+      }
+    }
+    if (readFailed > 0) notices.push(`${readFailed} 个文件读取失败已跳过`);
+    const imgs = read.filter((r) => isImageMime(r.file.type) && r.file.size <= MAX_IMAGE_BYTES);
+    const oversizeImgs = read.filter((r) => isImageMime(r.file.type) && r.file.size > MAX_IMAGE_BYTES).length;
+    if (oversizeImgs > 0) notices.push(`${oversizeImgs} 张图片超过 5MB 上限已跳过`);
+    const others = read.filter((r) => !isImageMime(r.file.type));
+    // 一条消息的图片/文件个数上限仍然生效：装得下的进，装不下的说明
+    const roomImgs = Math.max(0, MAX_IMAGE_COUNT - imagesRef.current.length);
+    const roomFiles = Math.max(0, MAX_FILE_COUNT - filesRef.current.length);
+    if (imgs.length > roomImgs) notices.push(`一条消息最多 ${MAX_IMAGE_COUNT} 张图片：已添加前 ${roomImgs} 张，其余未加入`);
+    if (others.length > roomFiles) notices.push(`一条消息最多 ${MAX_FILE_COUNT} 个文件：已添加前 ${roomFiles} 个，其余未加入`);
+    if (imgs.length > 0 && roomImgs > 0) {
+      const res = addPendingImages(
+        imagesRef.current,
+        imgs.slice(0, roomImgs).map((r) => ({ mime: r.file.type, name: r.file.name, data: r.data })),
+      );
+      setImages(res.images);
+      if (res.notice) flashNotice(res.notice);
+    }
+    if (others.length > 0 && roomFiles > 0) {
+      const res = addPendingFiles(
+        filesRef.current,
+        others.slice(0, roomFiles).map((r) => ({ name: r.file.name, size: r.file.size, data: r.data })),
+      );
+      setFiles(res.files);
+      if (res.notice) flashNotice(res.notice);
+    }
+    if (notices.length > 0) flashNotice(notices.join("；"));
+  };
+
   const onDrop = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     setDragOver(false);
     if (locked) return;
-    const files = Array.from(e.dataTransfer?.files ?? []);
-    if (files.length === 0) return;
-    void ingest(files);
+    const dt = e.dataTransfer;
+    if (!dt) return;
+    // webkitGetAsEntry 必须在 drop 事件的同步栈里调用——异步再取会被
+    // Chromium 置空（该 API 的经典坑），文件夹就识别不出来了。
+    const dirs: EntryLike[] = [];
+    const plain: File[] = [];
+    for (const item of Array.from(dt.items ?? [])) {
+      if (item.kind !== "file") continue;
+      const entry = (item.webkitGetAsEntry?.() ?? null) as unknown as EntryLike | null;
+      if (entry?.isDirectory) {
+        dirs.push(entry);
+        continue;
+      }
+      const f = item.getAsFile();
+      if (f) plain.push(f);
+    }
+    // 拿不到 entry 的来源（虚拟文件/旧引擎）回落 dt.files——单文件行为与原先一致
+    const files = dirs.length === 0 && plain.length === 0 ? Array.from(dt.files ?? []) : plain;
+    if (dirs.length > 0) void ingestFolders(dirs, files);
+    else if (files.length > 0) void ingest(files);
   };
 
   const removeImage = (id: string) => setImages((cur) => removePending(cur, id));
