@@ -1,7 +1,7 @@
 // Go/TS 协议一致性黄金测试（Go 侧）。
 //
 // golden.json 是协议 wire 形状的**快照事实源**，前端测试
-//（frontend/tests/protocol-golden.test.mjs）读同一份文件做 TS 侧校验。
+// （frontend/tests/protocol-golden.test.mjs）读同一份文件做 TS 侧校验。
 // 两层防护：
 //
 //  1. TestGoldenRoundTrip：样本序列化结果与 testdata/golden.json 逐字节一致
@@ -44,7 +44,7 @@ import (
 var updateGolden = flag.Bool("update", false, "重写 internal/protocol/testdata/golden.json")
 
 // goldenSample 是 golden.json 里的一个条目：Type 是对应的 types.ts 接口名
-//（空 = 无 1:1 接口，前端测试只做往返与抽检），Value 是 wire 形状样本。
+// （空 = 无 1:1 接口，前端测试只做往返与抽检），Value 是 wire 形状样本。
 type goldenSample struct {
 	Type  string `json:"_type"`
 	Value any    `json:"value"`
@@ -172,13 +172,23 @@ func goldenSamples() map[string]goldenSample {
 
 		// ---- chat 域：压缩 / 撤回 ----
 
+		// 整段会话统计的独立样本（wire 键全集；legacy_tokens 是早期口径，单独给出）。
+		"sessionStatsFull": {"SessionStats", SessionStats{
+			Turns: 12, Steps: 34, LLMMs: 58200, ToolMs: 21400,
+			TTFTMs: 380, TTFTSteps: 34, DecodeMs: 41200, DecodeTokens: 18200,
+			InputTokens: 486000, CacheReadTokens: 402000, CacheWriteTokens: 18000,
+			OutputTokens: 26400, LegacyTokens: 3200,
+		}},
 		"compactResult":    {"CompactOutcome", CompactResult{Compacted: false, Reason: "历史太短，摘要没有收益", Before: 9100, After: 9100, Shadowed: 3}},
 		"chatRewindResult": {"RewindOutcome", ChatRewindResult{Removed: 0}}, // 幂等空操作：显式 0，不是缺席
 
 		// ---- 会话管理域 ----
 
-		"sessionMeta":         {"", SessionMeta{ID: "s1", Title: "修登录 bug", UpdatedAt: "2026-10-13T10:30:00+08:00", Messages: 24, Archived: true, Workspace: "lxcode"}},
+		"sessionMeta":          {"", SessionMeta{ID: "s1", Title: "修登录 bug", UpdatedAt: "2026-10-13T10:30:00+08:00", Messages: 24, Archived: true, Workspace: "lxcode"}},
 		"sessionArchiveResult": {"", SessionArchiveResult{Archived: true, ReleasedWorktree: false, ReleaseError: "工作区有未提交改动，未释放"}},
+		"projectInstructionsResult": {"ProjectInstructions", ProjectInstructionsResult{
+			Path: `C:\Projects\lxcode\AGENTS.md`, Content: "# 项目守则……", Exists: true, Note: "（示例）上次读取时文件过大被截断",
+		}},
 
 		// ---- 目录域 ----
 
@@ -222,7 +232,7 @@ func goldenSamples() map[string]goldenSample {
 		// ---- git 域 ----
 
 		"gitOverviewResult": {"GitOverview", GitOverviewResult{
-			Path:   `C:\Users\xzy\Desktop\my\lxcode`, Branch: "master",
+			Path: `C:\Users\xzy\Desktop\my\lxcode`, Branch: "master",
 			Dirty: []GitChange{{Path: "internal/protocol/protocol.go", Kind: "modified"}},
 			Branches: []GitBranchInfo{
 				{Name: "master", Current: true, Ahead: 2, Behind: 0},
@@ -242,9 +252,13 @@ func goldenSamples() map[string]goldenSample {
 				{ID: "tavily", Label: "Tavily", Desc: "聚合搜索", DocURL: "https://tavily.com", EnvVar: "TAVILY_API_KEY",
 					NeedsKey: true, NeedsURL: false, AcceptsKey: true, OptIn: false, DefaultReady: false,
 					Category: "general", CategoryLabel: "通用",
-					OptionSpecs: []websearch.OptionSpec{{Key: "search_depth", Label: "搜索深度", Placeholder: "basic", Hint: "basic|advanced", EnvVar: "TAVILY_DEPTH", Required: false, Default: "basic", Choices: []string{"basic", "advanced"}}},
+					APIKey: "tvly-***", BaseURL: "https://api.tavily.com",
+					OptionSpecs: []websearch.OptionSpec{{Key: "search_depth", Label: "搜索深度", Placeholder: "basic", Hint: "basic|advanced", EnvVar: "TAVILY_DEPTH", Required: true, Default: "basic", Choices: []string{"basic", "advanced"}}},
 					Options:     map[string]string{"search_depth": "basic"},
 					Stored:      true, Enabled: true, Primary: true, Configured: true},
+				{ID: "exa-free", Label: "Exa 免配置通道", Desc: "零配置直连", NeedsKey: false, NeedsURL: false,
+					AcceptsKey: false, DefaultReady: true, Category: "free", CategoryLabel: "免费",
+					Stored: false, Enabled: true, Primary: false, Configured: true},
 				{ID: "ddg", Label: "DuckDuckGo", Desc: "零配置抓取", NeedsKey: false, NeedsURL: false,
 					AcceptsKey: false, OptIn: true, Category: "free", CategoryLabel: "免费",
 					Stored: false, Enabled: false, Primary: false, Configured: false},
@@ -307,16 +321,26 @@ func TestGoldenRoundTrip(t *testing.T) {
 			got, want)
 	}
 
-	// 往返稳定性：反序列化再序列化必须逐字节一致（golden 是确定性快照的前提）。
-	var round map[string]goldenSample
+	// 往返稳定性：golden 反序列化再序列化必须与自身规范化结果一致
+	//（golden 是确定性快照的前提；注意 struct 声明序与 map 键序不同，
+	// 两侧都规范化到 map 序再比）。
+	var round any
 	if err := json.Unmarshal(got, &round); err != nil {
 		t.Fatalf("golden.json 反序列化: %v", err)
 	}
-	again, err := json.MarshalIndent(round, "", "  ")
+	canonical, err := json.Marshal(round)
+	if err != nil {
+		t.Fatalf("规范化序列化: %v", err)
+	}
+	var round2 any
+	if err := json.Unmarshal(canonical, &round2); err != nil {
+		t.Fatalf("规范化结果反序列化: %v", err)
+	}
+	again, err := json.Marshal(round2)
 	if err != nil {
 		t.Fatalf("再序列化: %v", err)
 	}
-	if !bytes.Equal(append(again, '\n'), got) {
+	if !bytes.Equal(again, canonical) {
 		t.Fatalf("golden.json 往返不稳定（序列化→反序列化→序列化结果不同）")
 	}
 }
@@ -404,7 +428,7 @@ func collectKeys(v reflect.Value, cov *coverage, depth int) {
 
 // TestGoldenCoversAllWireFields：样本里出现过的每个结构体类型，其全部 wire
 // 字段必须被某个样本覆盖（正向），且样本里出现的键必须都是声明的 wire 字段
-//（反向，tag 拼错早爆）。给 wire 类型加字段而不更新 golden，这里失败。
+// （反向，tag 拼错早爆）。给 wire 类型加字段而不更新 golden，这里失败。
 func TestGoldenCoversAllWireFields(t *testing.T) {
 	cov := &coverage{keys: map[string]map[string]bool{}, types: map[string]reflect.Type{}}
 	for _, s := range goldenSamples() {
