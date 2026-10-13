@@ -314,6 +314,53 @@ withPreview(async (preview) => {
     reasoning: document.querySelectorAll(".msg").length,
   }))()`);
   log("dispatch-send-state", JSON.stringify(sentState));
+  assert.ok(sentState.userMsg, "chat: 发送后应出现用户气泡");
+  // 用户气泡溢出守卫：向真实气泡注入一段无空格超长串（模拟长 URL / 长路径 /
+  // 无空格长串），断言气泡不被横向撑破（overflow-wrap:anywhere 生效 →
+  // scrollWidth 不超 clientWidth），且气泡宽度仍在 70% 线宽约束内。
+  // 注入节点量完即移除，不影响后续场景。
+  const bubbleFit = await win.webContents.executeJavaScript(`(() => {
+    const bubble = document.querySelector(".msg.user .bubble");
+    if (!bubble) return null;
+    const probe = document.createElement("span");
+    probe.textContent = "a".repeat(5000) + "://very.long.example.com/path/" + "b".repeat(5000);
+    bubble.appendChild(probe);
+    const out = {
+      overflowWrap: getComputedStyle(bubble).overflowWrap,
+      scrollW: bubble.scrollWidth,
+      clientW: bubble.clientWidth,
+      bubbleW: Math.round(bubble.getBoundingClientRect().width),
+      threadW: Math.round(bubble.closest(".thread").getBoundingClientRect().width),
+    };
+    probe.remove();
+    return out;
+  })()`);
+  log("bubble-fit", JSON.stringify(bubbleFit));
+  assert.ok(bubbleFit, "chat: 用户气泡应可测量");
+  assert.equal(bubbleFit.overflowWrap, "anywhere", "chat: 用户气泡应声明 overflow-wrap:anywhere");
+  assert.ok(bubbleFit.scrollW <= bubbleFit.clientW + 1, "chat: 超长无空格串不得横向溢出气泡");
+  assert.ok(bubbleFit.bubbleW <= bubbleFit.threadW * 0.7 + 1, "chat: 气泡宽度不得超出 70% 线宽约束");
+  // 同类守卫（assistant 侧）：工具结果 / 代码围栏块（.tool-result）同样不许被
+  // 长行撑破——demo 时间轴此刻可能还没有该元素，缺席时跳过（不假绿也不误报）。
+  const toolFit = await win.webContents.executeJavaScript(`(() => {
+    const el = document.querySelector(".tool-result");
+    if (!el) return null;
+    const probe = document.createElement("span");
+    probe.textContent = "x".repeat(3000);
+    el.appendChild(probe);
+    const out = {
+      overflowWrap: getComputedStyle(el).overflowWrap,
+      scrollW: el.scrollWidth,
+      clientW: el.clientWidth,
+    };
+    probe.remove();
+    return out;
+  })()`);
+  log("tool-result-fit", JSON.stringify(toolFit));
+  if (toolFit) {
+    assert.equal(toolFit.overflowWrap, "anywhere", "chat: tool-result 应声明 overflow-wrap:anywhere");
+    assert.ok(toolFit.scrollW <= toolFit.clientW + 1, "chat: tool-result 超长行不得横向溢出");
+  }
   // 等确认卡（demo ~12.2s 到 bash 确认门）→ 点允许（CSS module 类名
   // 是哈希——定位用 data-variant 语义锚点；按钮组内第二个 = 允许）。
   // 断言「卡在 dispatch 卡内」是本段的核心回归守卫：子 Agent 的确认若落到

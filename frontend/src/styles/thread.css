@@ -418,6 +418,22 @@
   padding: 10px 16px;
   font-size: 14px;
   white-space: pre-wrap;
+  /* 溢出修复：pre-wrap 只保留换行符，不给「长 URL / 长路径 / 无空格长串」断行
+   * 机会——内容宽超过 max-width:70% 时会横向顶出气泡外。anywhere 允许在任意
+   * 字符处断行（比 break-word 更激进，且影响 min-content 尺寸计算）；min-width:0
+   * 是 flex 子元素（.msg.user 是 column flex）正常收缩的前提。 */
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  min-width: 0;
+}
+/* 气泡内的附件卡：固定上限之外再加 100% 约束——窄窗口下气泡宽可能小于
+ * 附件卡的固定 max-width，没有这条附件会把气泡撑破。 */
+.msg.user .att-cards {
+  max-width: 100%;
+}
+.msg.user .att-image,
+.msg.user .att-file {
+  max-width: 100%;
 }
 /* 乐观用户气泡（pending——后端还没回执，体验修复批次 2）：整体调淡 + 尾随
  * 「发送中…」轻量指示。回执（chat.userMessage）一到，归约器按 FIFO 换成本体
@@ -989,6 +1005,10 @@
   padding: 10px 14px;
   margin-top: 2px;
   white-space: pre-wrap;
+  /* 长代码行 / 长路径：pre-wrap 不给无空格串断行机会，会横向顶破卡——
+   * 允许任意字符处断行（代码块保持换行而非横向滚动，与 pre-wrap 语义一致）。 */
+  overflow-wrap: anywhere;
+  min-width: 0;
   max-height: 240px;
   overflow-y: auto;
   transition: border-color 140ms;
@@ -1024,6 +1044,7 @@
   border-top: 1px solid var(--border);
   color: var(--danger);
   font-size: 13px;
+  overflow-wrap: anywhere;
 }
 .error-block[data-aborted="true"] {
   color: var(--fg-muted);
@@ -1078,6 +1099,9 @@
   font-size: 14px;
   line-height: 1.71;
   margin-bottom: 0;
+  /* 与 .prose（TextResponse）同款断行约束——md-text 也出现在 .prose 之外的
+   * 容器（agents 详情等），那里没有 anywhere 继承源，长串同样会顶破列宽。 */
+  overflow-wrap: anywhere;
 }
 /* 连续段落后出现的段落（视觉段距 ≈ DSH 的 16px 段 margin） */
 .md-para {
@@ -1137,6 +1161,7 @@
 .md-quote-line {
   font-size: 14px;
   line-height: 1.71;
+  overflow-wrap: anywhere;
 }
 .md-list {
   margin: 12px 0;
@@ -1165,6 +1190,7 @@
 }
 .md-li-text {
   min-width: 0;
+  overflow-wrap: anywhere;
 }
 /* 表格（DSH 语言）：无线框——只有行底 hairline；表头 500 字重无底色；
  * 首列去左内距（对齐正文左缘）；单元格 max-width 防溢出。 */
