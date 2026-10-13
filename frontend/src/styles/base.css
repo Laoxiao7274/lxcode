@@ -293,6 +293,37 @@ body:has(.window-stage) {
   border-color: var(--border-soft);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
 }
+/* ===== 子会话临时视图叠加态（.viewing） =====
+ * 视图打开期间父会话标签不进普通激活态（高亮互斥），改走**视图态**：
+ * surface 实底 + info 色描边 + ↳ 角标——一眼看出「正在看这个会话的子会话」，
+ * 且与 .on（普通激活）在视觉上可区分（描边带色 vs 发丝灰边）。
+ * 生成中（busy）与视图态叠加不冲突：spinner 在标题前、角标在标题后，各占各的位。 */
+.tab.viewing {
+  background: var(--surface);
+  border-color: color-mix(in srgb, var(--info-text) 45%, var(--border-active));
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  /* 视图态带 ↳ + 子标题，比单标题宽一档——仍封顶，超宽截断省略 */
+  max-width: 220px;
+}
+.tab.viewing .tab-main { padding-right: 11px; }
+/* 两个文本段都要能收窄：min-width:auto 会顶住不缩，标签条就被撑破 */
+.tab.viewing .tab-title { min-width: 0; flex: 0 1 auto; }
+.tab-child-crumb {
+  flex: none;
+  font-size: 11.5px;
+  line-height: 16px; /* 与 .tab-title 同高：行盒容不下中文字形墨迹会裁掉上半截 */
+  color: var(--info-text);
+}
+.tab-child-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 11.5px;
+  line-height: 16px;
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .tab-main {
   display: inline-flex;
   align-items: center;

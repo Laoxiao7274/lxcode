@@ -2,7 +2,8 @@
 // （主会话标签 + 新建按钮）。
 // **子会话不在标签栏**（2026-12 用户拍板）：点主时间线的派发卡打开的是**临时视图**
 // （focusChildView 只切 active、不进 tabs），页头有「返回主会话」按钮；返回后视图消失，
-// 标签栏长度始终不变。临时视图活跃时主会话标签退为普通态（同屏只高亮一处）。
+// 标签栏长度始终不变。临时视图活跃时主会话标签进**视图态**（.viewing：↳ 子会话标题 +
+// 描边角标，区别于普通激活态；点击 = 返回主会话），同屏仍只有一个高亮语义。
 // 会话标签顺序语义对齐浏览器：**打开顺序固定**——点标签只切焦点，绝不重排；
 // 新会话/从侧栏点进来的会话追加到右侧，容量满丢最老的。
 // 每个会话标签是独立并发 Session；切焦点不取消后台轮次。关闭会话标签只隐藏标签，
@@ -24,6 +25,8 @@ import type { AgentSource } from "../../shared/types";
 import {
   childTabSession,
   isWorkspacePage,
+  sessionTabAction,
+  type ParentTabChildView,
   type WorkspacePage,
   type WorkspaceTab,
   type WorkspaceView,
@@ -105,6 +108,7 @@ export function TabBar({
   onFocusSession,
   workspaceTabs,
   activeWorkspaceView,
+  childView,
   onFocusChat,
   onFocusWorkspaceTab,
   onCloseWorkspaceTab,
@@ -117,6 +121,9 @@ export function TabBar({
   /** 可关闭的工作区标签：固定页签（子会话临时视图不进这里——见 focusChildView）。 */
   workspaceTabs: WorkspaceTab[];
   activeWorkspaceView: WorkspaceView;
+  /** 临时视图叠加中父会话标签的呈现信息（不活跃 = null，主标签保持普通态）。
+   *  App 用 parentTabChildView + childTabTitleOf 算（与视图页头同一份标题）。 */
+  childView: ParentTabChildView | null;
   onFocusChat: () => void;
   onFocusWorkspaceTab: (tab: WorkspaceTab) => void;
   onCloseWorkspaceTab: (tab: WorkspaceTab) => WorkspaceView;
@@ -182,8 +189,9 @@ export function TabBar({
   // isWorkspacePage 过滤是防御：坏键不渲染成空白页签。
   const pages = workspaceTabs.filter(isWorkspacePage);
   // 高亮：目的地优先——关标签后立刻指出"接下来是哪个"，不必等历史读回来。
-  // 子会话**临时视图**活跃时主会话标签**退为普通态**：同屏两个高亮 = 用户报的
-  // 「应该同时只能选中一个」。点主会话标签走 focusSession → backToChat()，链路不变。
+  // 子会话**临时视图**活跃时主会话标签不进普通激活态（高亮互斥），而是进**视图态**
+  // （.viewing：↳ 子标题 + info 描边角标，见下方渲染）——用户一眼看出「正在看这个
+  // 会话的子会话」，点击它 = 返回主会话。点主会话标签走 sessionTabAction → onFocusChat。
   const childActive = childTabSession(activeWorkspaceView) !== null;
   const activeId = childActive
     ? ""
@@ -245,31 +253,44 @@ export function TabBar({
           const on = id === activeId;
           const busy = Boolean(busyBySession[id]);
           const title = meta?.title || "新对话";
+          // 临时视图叠加态：只落在**父会话**（currentId）的标签上——视图打开期间
+          // currentId 恒为父（focusChildView 不改 currentId），别的会话标签不受影响。
+          const viewing = childView !== null && id === currentId;
+          const action = sessionTabAction(viewing, on);
           // hover 提示带项目名（workspace 存项目 id）：`<项目名> · <会话标题>`；
           // 未分组会话没有项目名，就只有标题（不许伪装成有归属）。
           const projectName = projectNameOf(meta?.workspace);
           const hint = projectName ? `${projectName} · ${title}` : title;
+          const viewHint = viewing ? `${hint} ↳ 正在查看子会话：${childView.title}` : hint;
           return (
             <div
               key={id}
-              className={"tab" + (on ? " on" : "")}
+              className={"tab" + (on ? " on" : "") + (viewing ? " viewing" : "")}
               data-cg="tab"
               data-busy={busy ? "true" : undefined}
-              title={hint}
+              data-child-view={viewing ? "true" : undefined}
+              title={viewHint}
             >
               <button
                 type="button"
                 className="tab-main"
                 aria-current={on ? "page" : undefined}
-                aria-label={`${hint}${busy ? "（生成中）" : ""}`}
+                aria-label={`${viewHint}${busy ? "（生成中）" : ""}`}
                 onClick={() => {
-                  if (!on) {
-                    onFocusSession(id);
-                  }
+                  if (action === "back") onFocusChat(); // 返回主会话 = 关闭临时视图
+                  else if (action === "focus") onFocusSession(id);
                 }}
               >
                 {busy && <span className="mset-spinner tab-spinner" aria-hidden />}
                 <span className="tab-title">{title}</span>
+                {/* 视图态角标：↳ + 子会话标题（Agent 名 · 任务摘要，App 与视图页头同一份）。
+                    过长由 CSS 截断省略——标签有 max-width，不许撑破标签条。 */}
+                {viewing && (
+                  <>
+                    <span className="tab-child-crumb" aria-hidden>↳</span>
+                    <span className="tab-child-title">{childView.title}</span>
+                  </>
+                )}
               </button>
               {/* 最后一个标签不显示关闭按钮：关掉它没有可回退的标签，而这个应用
                   的对话区恒需要一条当前会话（不能靠新建来"补位"——那正是原来的缺陷）。

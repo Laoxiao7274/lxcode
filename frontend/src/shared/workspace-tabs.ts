@@ -221,3 +221,48 @@ export function focusHistoryView(state: WorkspaceTabsState, target: WorkspaceVie
   if (isWorkspacePage(target)) return focusWorkspacePage(state, target);
   return focusChildView(state, childTabSession(target) ?? "");
 }
+
+// ---- 临时视图叠加中：父会话标签的「视图态」（TabBar 渲染与测试共用一份规则）----
+
+/** 临时视图活跃时，父会话标签上要显示的子会话信息。
+ *
+ *  TabBar 拿到它就给主会话标签（currentId 那个）加视图态：标题旁追加
+ *  「↳ <子标题>」、加 .viewing 类（描边/角标，区别于普通激活态），
+ *  点击 = 返回主会话（sessionTabAction）。 */
+export interface ParentTabChildView {
+  /** 正在查看的子会话 id（视图键 child:<id> 的 id 部分）。 */
+  sessionId: string;
+  /** 标签上显示的子会话标题（App 用 childTabTitleOf 算，与视图页头同一份）。 */
+  title: string;
+}
+
+/** 临时视图活跃时父会话标签的呈现信息（不活跃 = null，标签保持普通态）。
+ *
+ *  currentId 在视图打开期间恒为父会话（focusChildView 不改 currentId；focusSession
+ *  会先经 backToChat 关掉视图），所以「主会话标签」就是 currentId 那个。parentIdOf
+ *  是防御：映射已建立且指向别的会话时不显示（正常链路走不到，但浏览器 popstate
+ *  恢复条目只切 active——多一层校验不许标签说别人家孩子）；映射缺失（视图刚打开、
+ *  父历史还没回放的窗口期）时放行，回落信任 currentId。 */
+export function parentTabChildView(
+  activeView: WorkspaceView,
+  currentId: string,
+  parentIdOf: (childId: string) => string | undefined,
+  childTitleOf: (sessionId: string) => string,
+): ParentTabChildView | null {
+  const childId = childTabSession(activeView);
+  if (childId === null || currentId === "") return null;
+  const parent = parentIdOf(childId);
+  if (parent !== undefined && parent !== currentId) return null;
+  return { sessionId: childId, title: childTitleOf(childId) };
+}
+
+/** 会话标签点击语义（viewing = 该标签处于临时视图叠加态）。
+ *
+ *  与 dispatch-primary 的 open/none 同一条纪律：判定只此一份，提示（aria-label）、
+ *  行为与测试同源。viewing = 返回主会话（关闭临时视图，走 onFocusChat——不去
+ *  focusSession 重跑一遍 resumeSession 往返）；已激活 = no-op；其余 = 聚焦该会话。 */
+export function sessionTabAction(viewing: boolean, active: boolean): "back" | "none" | "focus" {
+  if (viewing) return "back";
+  if (active) return "none";
+  return "focus";
+}

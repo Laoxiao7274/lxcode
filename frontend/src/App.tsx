@@ -11,6 +11,7 @@ import {
   focusWorkspacePage,
   focusWorkspaceTab,
   isWorkspacePage,
+  parentTabChildView,
   type WorkspacePage,
   type WorkspaceTab,
   type WorkspaceTabsState,
@@ -236,7 +237,7 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
   );
 
   // 子会话**临时视图**活跃时（childTabSession(view) 非 null）：TabBar 侧主会话标签
-  // 退为普通态（高亮互斥），顶栏标题按这个子会话算（viewTitle）。
+  // 进**视图态**（↳ 子标题 + 描边角标，childView），顶栏标题按这个子会话算（viewTitle）。
   // 正在看子会话临时视图时 currentId 仍是父会话（focusChildView 不改 currentId）。
   const activeChildId = childTabSession(view);
 
@@ -561,6 +562,15 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
     ? `子会话 · ${childTabTitleOf(activeChildId)}`
     : view === "agents" ? "Agent 名单" : view === "catalog" ? "拓展" : view === "git" ? "Git 管理" : view === "remote" ? "远程访问" : currentTitle;
 
+  // TabBar 侧主会话标签的「视图态」信息：临时视图活跃时给父会话标签追加
+  // 「↳ 子标题」与描边角标（sessionTabAction 让点击 = 返回主会话）。标题与
+  // viewTitle 同源（childTabTitleOf），映射缺失时 parentTabChildView 回落信任
+  // currentId（视图刚打开、父历史还没回放的窗口期，见 workspace-tabs.ts）。
+  const childView = useMemo(
+    () => parentTabChildView(view, currentId, (id) => childParents[id], childTabTitleOf),
+    [view, currentId, childParents, childTabTitleOf],
+  );
+
   // 壳环境（Electron）= 真实窗口；浏览器 = 保留模拟壳（窗口模拟一层的差异，
   // 内部布局完全一致——同组件，不再两份 JSX）
   const isShell = typeof navigator !== "undefined" && navigator.userAgent.includes("Electron");
@@ -720,6 +730,7 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
         onFocusSession={focusSession}
         workspaceTabs={workspaceState.tabs}
         activeWorkspaceView={view}
+        childView={childView}
         onFocusChat={backToChat}
         onFocusWorkspaceTab={openWorkspaceTab}
         onCloseWorkspaceTab={closeWorkspace}

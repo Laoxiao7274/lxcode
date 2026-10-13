@@ -13,6 +13,18 @@
   **只切 `active`，不进 `tabs`**，所以标签栏长度不变、永不出现子会话标签；
 - **呈现**：`ChildSessionPage` 覆盖当前会话区（与原标签页同一套完整版式，§2.4），
   页头带明显的「返回主会话」按钮；
+- **标签页呈现（2026-12：视图打开期间主标签进「视图态」）**：临时视图只切 active、
+  不进 tabs，但主会话标签不能毫无表示——视图打开期间，**父会话**（currentId）的标签
+  显示 `主标题 ↳ 子会话标题`（子标题与视图页头同一份 `childTabTitle`：Agent 名 +
+  任务摘要，过长截断省略）+ `.viewing` 视图态样式（surface 实底 + info 色描边 +
+  ↳ 角标，区别于普通激活态的灰发丝边），`data-child-view` 供样式/测试定位；
+  **点击这个标签 = 返回主会话**（`sessionTabAction` 判 back → `onFocusChat` 关临时
+  视图，不走 focusSession 的 resumeSession 往返）。规则抽在 `workspace-tabs.ts` 的
+  `parentTabChildView` / `sessionTabAction`（与 dispatch-primary 的 open/none 同一条
+  单一判定纪律），TabBar 只管渲染；切换子会话时标签内容跟随，busy（生成中）与视图态
+  叠加不冲突（spinner 在标题前、角标在标题后）。钉子：
+  `frontend/tests/child-tab-view.test.mjs`（打开给出子标题/关闭恢复普通态、切换跟随、
+  映射缺失回落与跨父防御、点击语义、TabBar/App/base.css 接线）；
 - **返回**：页头按钮 / 点标签栏「聊天」→ `focusChatTab`，临时视图随之卸载
   （它不在 `tabs` 里，`WorkspaceViewPanels` 只保活 `tabs` 中的页面）；
 - **不残留、不重复**：重复点同一张卡回到同一个视图键（active 已是该键 = 焦点保持），
