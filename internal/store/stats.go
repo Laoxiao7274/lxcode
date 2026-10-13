@@ -19,16 +19,45 @@ import (
 
 // SessionStatsOf 折叠一条会话的整段日志统计。会话不存在时报错（与其他按 id 读的方法
 // 同语义——调用方据此区分「空会话」与「打错了 id」）。
+//
+// 统计走**专用聚合查询**（性能审查 P2-1，2026-10）：只 SELECT 折叠需要的列
+// （role / 计时 / 用量四桶 / 三个判定位），**不取 content/reasoning/tool_calls 等
+// 正文列**——原来走 readRows 把大会话的全部正文拉出来反序列化，实测 6MB 会话
+// 24ms/轮、50MB ≈ 200ms，而这段代码在 TurnDone 的事件路径上每轮收尾都要跑一遍。
+// 折叠本体仍是 foldSessionStats（与旧路径同一个纯函数），两条路径的口径由
+// TestSessionStatsAggregationMatchesFullFold 钉住相等。
 func (s *Store) SessionStatsOf(id string) (sessiondata.SessionStats, error) {
 	var exists int
 	if err := s.db.QueryRow(`SELECT 1 FROM sessions WHERE id = ?`, id).Scan(&exists); err != nil {
 		return sessiondata.SessionStats{}, fmt.Errorf("会话 %s 不存在", id)
 	}
-	rows, err := s.readRows(id)
+	rows, err := s.db.Query(
+		`SELECT role, checkpoint, notice, usage_split,
+		        first_token_ms, duration_ms, usage_tokens,
+		        input_tokens, cache_read_tokens, cache_write_tokens
+		 FROM messages WHERE session_id = ? ORDER BY seq`, id)
 	if err != nil {
+		return sessiondata.SessionStats{}, fmt.Errorf("查询会话 %s 统计失败: %w", id, err)
+	}
+	defer rows.Close()
+	var out []rowData
+	for rows.Next() {
+		var r rowData
+		var cp, notice, usageSplit int
+		if err := rows.Scan(&r.msg.Role, &cp, &notice, &usageSplit,
+			&r.msg.FirstTokenMs, &r.msg.DurationMs, &r.msg.UsageTokens,
+			&r.msg.InputTokens, &r.msg.CacheReadTokens, &r.msg.CacheWriteTokens); err != nil {
+			return sessiondata.SessionStats{}, fmt.Errorf("读会话统计失败: %w", err)
+		}
+		r.checkpoint = cp == 1
+		r.notice = notice == 1
+		r.usageSplit = usageSplit == 1
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
 		return sessiondata.SessionStats{}, err
 	}
-	return foldSessionStats(rows), nil
+	return foldSessionStats(out), nil
 }
 
 // foldSessionStats 是折叠本体（纯函数，单测直接喂行）。

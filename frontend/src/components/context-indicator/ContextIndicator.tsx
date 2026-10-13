@@ -17,6 +17,9 @@
 //（对中文还是低估）。区别的出口是**悬停说明 + 无障碍标签**（title / aria-label），
 // 可见记号只有 `~`——2026-09-30 用户拍板去掉百分比后面的「估」字，与 DSH 的
 // ContextMeter 一致（DSH 也只在读数上带 ~）。判定在 shared/context-usage.ts（纯函数，有测试钉住）。
+// memo（2026-12 渲染性能 Top1）：usage/stats 是后端测量对象（done/历史才换新）、
+// onCompact 由 App 用 useCallback 固定身份——Composer 每帧重渲染时这里跳过。
+import { memo } from "react";
 import { usePopover } from "../../shared/popover";
 import { Button } from "../form";
 import { kfmtTokens } from "../../shared/format";
@@ -24,7 +27,7 @@ import { contextUsageDisplay, contextFiguresText, contextSegments } from "../../
 import { usageDialogRows, usageTotalLabel } from "../../shared/session-stats";
 import type { ContextUsage, SessionStats } from "../../shared/types";
 
-export function ContextIndicator({ usage, stats, onCompact, busy = false, placement = "up" }: {
+export const ContextIndicator = memo(function ContextIndicator({ usage, stats, onCompact, busy = false, placement = "up" }: {
   usage: ContextUsage | null;
   /** 会话统计（累计消耗）——缺席或没有 token 时这一节整个不渲染（不显示一排 0）。 */
   stats?: SessionStats | null;
@@ -156,7 +159,7 @@ export function ContextIndicator({ usage, stats, onCompact, busy = false, placem
       )}
     </div>
   );
-}
+});
 
 /** 「会话用量」弹层里的**会话消耗**一节（累计四桶 + 缓存命中率）。
  *

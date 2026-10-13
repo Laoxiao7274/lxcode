@@ -192,13 +192,15 @@ function renderInline(text: string): ReactNode {
 
 // ---------- 渲染层（块组件 memo 在序列化 src 上——字符串 primitive） ----------
 
-/** 正文入口：``` 围栏先切（围栏内不解析任何语法），其余走块级解析。 */
-export function Markdown({ text }: { text: string }): ReactNode {
+/** 正文入口：``` 围栏先切（围栏内不解析任何语法），其余走块级解析。
+ *  keyPrefix：同一段正文切成两段渲染（AnswerBody 的已定稿前缀 + 尾段）时，
+ *  两段的段序号会撞 key——前缀用 "c"、尾段用 "t" 区分（单段调用不传，行为不变）。 */
+export function Markdown({ text, keyPrefix = "" }: { text: string; keyPrefix?: string }): ReactNode {
   const parts = text.split("```");
   return (
     <>
       {parts.map((part, i) =>
-        i % 2 === 1 ? <CodeSeg key={i} text={part} /> : <TextBlocks key={i} text={part} />,
+        i % 2 === 1 ? <CodeSeg key={keyPrefix + i} text={part} /> : <TextBlocks key={keyPrefix + i} text={part} />,
       )}
     </>
   );

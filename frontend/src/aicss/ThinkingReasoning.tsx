@@ -2,7 +2,7 @@
 // 视觉（CSS module）与折叠/滚动渐隐机制原样保留；数据面改为 props：
 // sentences 由调用方（事件流）驱动，phase 由调用方翻转。
 import styles from "./ThinkingReasoning.module.css";
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 
 export interface ThinkingReasoningProps {
   /** 思考句列表。流式期间调用方逐步 append，done 后全量展示。 */
@@ -28,7 +28,10 @@ const ThinkIcon = () => (
   </svg>
 );
 
-export function ThinkingReasoning({ sentences, phase, elapsedMs = 0 }: ThinkingReasoningProps) {
+// memo（2026-12 渲染性能 Top3）：sentences 由 Block 按 reasoning 字符串 useMemo
+// （内容不变 → 数组身份不变）、phase/elapsedMs 低频——正文打字机流式期间该块
+// 每帧重渲染，思考行内容没变就该整棵跳过（此前每条 delta 都重渲染一遍句子列表）。
+export const ThinkingReasoning = memo(function ThinkingReasoning({ sentences, phase, elapsedMs = 0 }: ThinkingReasoningProps) {
   const done = phase === "done";
   const [open, setOpen] = useState(false);
   const [fade, setFade] = useState({ top: false, bottom: true });
@@ -126,4 +129,4 @@ export function ThinkingReasoning({ sentences, phase, elapsedMs = 0 }: ThinkingR
       </div>
     </div>
   );
-}
+});

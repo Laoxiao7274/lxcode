@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -301,14 +303,35 @@ func startBackground(r *Registry, parent context.Context, shellName, shellFlag, 
 		return "", fmt.Errorf("后台任务启动失败: %w", err)
 	}
 	go func() {
-		werr := cmd.Wait()
-		// 先取 ctx.Err 再 cancel：cancel 之后它恒为 Canceled，
-		// 「超时」与「被 kill」就分不出来了
-		ctxErr := cctx.Err()
-		cancel()
-		settleBackground(j, ctxErr, normalizeWaitErr(cmd, werr))
+		// panic 防护（健壮性加固，2026-10）：这是后台任务的执行 goroutine，
+		// 里面的 panic 原样会打死整个进程（任务没等到 Settle，永远停在 running）。
+		// defer settleOnPanic 把 panic 转成任务失败收尾（Settle 幂等），stack
+		// 完整落日志；钉子见 TestJobPanicSettlesFailed。
+		defer settleOnPanic(j, cancel)
+		waitAndSettle(j, cmd, cctx, cancel)
 	}()
 	return backgroundStartedText(j.ID(), command), nil
+}
+
+// waitAndSettle 等子进程收尾并给任务定稿（后台任务执行 goroutine 的函数体）。
+func waitAndSettle(j jobs.Job, cmd *exec.Cmd, cctx context.Context, cancel func()) {
+	werr := cmd.Wait()
+	// 先取 ctx.Err 再 cancel：cancel 之后它恒为 Canceled，
+	// 「超时」与「被 kill」就分不出来了
+	ctxErr := cctx.Err()
+	cancel()
+	settleBackground(j, ctxErr, normalizeWaitErr(cmd, werr))
+}
+
+// settleOnPanic 是任务执行 goroutine 的 panic 防护（defer 注册）：转成任务失败
+// 收尾（Settle 幂等，与正常路径的 Settle 不冲突）；stack 完整落日志，不吞信息。
+func settleOnPanic(j jobs.Job, cancel func()) {
+	if r := recover(); r != nil {
+		log.Printf("后台任务 %s 执行 goroutine panic（任务按失败收尾，进程继续运行）: %v\n%s",
+			j.ID(), r, debug.Stack())
+		cancel()
+		j.Settle(jobs.StatusFailed, jobs.EndedSelf, fmt.Sprintf("任务执行发生内部错误: %v", r))
+	}
 }
 
 // settleBackground 给后台任务定稿（producer 是唯一知道退出码的人）。

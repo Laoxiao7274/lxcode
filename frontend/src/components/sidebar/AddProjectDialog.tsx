@@ -7,10 +7,11 @@ import { motionAllowed } from "../../shared/motion";
 import { useEscape } from "../../shared/popover";
 import { TextInput } from "../form";
 
-/** 壳桥（preload 注入；浏览器模式无）。 */
-const shell = (window as unknown as {
+/** 壳桥（preload 注入；浏览器模式无）。node 测试/无 DOM 环境不炸——
+ *  memo 结构断言（tests/memo-structure）要 import 本模块的宿主 Sidebar。 */
+const shell = (typeof window !== "undefined" ? (window as unknown as {
   __LX__?: { selectDirectory: () => Promise<string | null> };
-}).__LX__;
+}).__LX__ : undefined);
 
 /** 路径末段作默认项目名（C:\x\my\lxcode → lxcode）。 */
 const basename = (p: string) => {

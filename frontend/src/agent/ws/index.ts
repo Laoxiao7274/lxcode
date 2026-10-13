@@ -19,6 +19,7 @@ import { normalizeApproval } from "../../shared/approval";
 import { setAttachmentOrigin } from "../../shared/attachments";
 import { hasPathAtts, isPathReadError, readAttsAsBase64, wireFile, wireImage } from "../../shared/attachment-send";
 import { jobFromWire, sortJobs, upsertJob } from "../../shared/jobs";
+import { documentHidden } from "../../shared/stream-reveal";
 import { mapEvent } from "./events";
 
 /** WS JSON-RPC 帧结构（与 Go internal/protocol 对齐）。 */
@@ -105,6 +106,10 @@ const HEARTBEAT_INTERVAL_MS = 15_000;
 const HEARTBEAT_TIMEOUT_MS = 3_000;
 const HEARTBEAT_MAX_FAILURES = 2;
 
+// delta 合帧的兜底间隔（2026-12 渲染性能 Top1）：浏览器可见时优先 rAF（与绘制
+// 对齐，见 scheduleFlush）；无 DOM（node 测试）/页面隐藏时走这个 setTimeout。
+const DELTA_COALESCE_MS = 16;
+
 export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource, SearchAdminSource, JobAdminSource, TodoPromptSource {
   label = "真实后端";
   readonly modelAdmin: ModelAdminSource = this;
@@ -171,6 +176,16 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
    *  与会话焦点（旧后端的会话 id 不能打到新后端上——session.resume/loadHistory
    *  会在新后端报「会话不存在」）。握手失败保留旧缓存并如实报错（opError）。 */
   private resetOnHello = false;
+  /** delta 合帧队列（2026-12 渲染性能 Top1）：key = `session\0kind\0dispatch`，
+   *  值 = 合并中的 delta 事件（同键文本拼接）。帧末一次 emit——归约结果与逐条
+   *  应用完全一致（reduceDelta 对同键 delta 就是文本拼接），但 store 的 setState
+   *  与全量归约从「每条 delta 一次」降到「每帧每键一次」。 */
+  private deltaQueue = new Map<string, Extract<AgentEvent, { type: "delta" }>>();
+  /** 合帧冲刷已排程标志 + 取消钩子（rAF/setTimeout 二选一，见 scheduleFlush）。 */
+  private flushScheduled = false;
+  private cancelFlush: (() => void) | null = null;
+  /** 冲刷进行中标志（防重入：冲刷期间监听器再触发的 emit 不再嵌套冲刷）。 */
+  private flushing = false;
 
   constructor(addr = "127.0.0.1:7789", token?: string | (() => string | null)) {
     this.addr = addr;
@@ -344,6 +359,14 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
     this.rejectAllPending("后端连接已断开");
     this.ws?.close();
     this.ws = null;
+    // 合帧队列一并清账：dispose = 卸载语义（监听器已空/即将断开），挂起的
+    // delta 没有投递对象了，留着只会在之后的一帧对空集 emit。
+    if (this.cancelFlush) {
+      this.cancelFlush();
+      this.cancelFlush = null;
+    }
+    this.flushScheduled = false;
+    this.deltaQueue.clear();
   }
 
   // ---- 心跳与窗口恢复钩子（体验修复批次 3：消除「最小化一段时间后界面卡死」）----
@@ -602,7 +625,68 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
   }
 
   private emit(ev: AgentEvent) {
+    // delta 走合帧队列（同帧内多条合并成一次 emit）——见 coalesceDelta。
+    if (ev.type === "delta") {
+      this.coalesceDelta(ev);
+      return;
+    }
+    // 非 delta 事件先冲刷挂起的 delta 再发（保序纪律：先到先发，delta 合并
+    // 不打乱它与其他事件的相对顺序——比如 done 前积压的文本必须先归约，
+    // 否则 done 会把还在流式中的块定格成缺文）。
+    this.flushDeltas();
     this.listeners.forEach((l) => l(ev));
+  }
+
+  /** 流式 delta 合帧入队（同键拼接，异键各占一位——不同会话/不同 kind/主子会话
+   *  的 delta 互不合并）。 */
+  private coalesceDelta(ev: Extract<AgentEvent, { type: "delta" }>) {
+    const key = `${ev.sessionId}\u0000${ev.kind}\u0000${ev.dispatchId ?? ""}`;
+    const queued = this.deltaQueue.get(key);
+    this.deltaQueue.set(key, queued ? { ...queued, text: queued.text + ev.text } : ev);
+    this.scheduleFlush();
+  }
+
+  /** 排程帧末冲刷：浏览器可见时用 rAF（与绘制对齐，一帧最多一次 emit）；
+   *  页面隐藏 rAF 停转、无 DOM（node 测试）没有 rAF——都走 setTimeout 兜底
+   *  （事件不能因为页面隐藏就不到达，只是降频；reveal 层自己会 hold 渲染）。 */
+  private scheduleFlush() {
+    if (this.flushScheduled) return;
+    this.flushScheduled = true;
+    const w = globalThis as { requestAnimationFrame?: (cb: () => void) => number; cancelAnimationFrame?: (h: number) => void };
+    if (typeof w.requestAnimationFrame === "function" && !documentHidden()) {
+      const handle = w.requestAnimationFrame(() => {
+        this.flushScheduled = false;
+        this.cancelFlush = null;
+        this.flushDeltas();
+      });
+      this.cancelFlush = () => w.cancelAnimationFrame?.(handle);
+    } else {
+      const handle = setTimeout(() => {
+        this.flushScheduled = false;
+        this.cancelFlush = null;
+        this.flushDeltas();
+      }, DELTA_COALESCE_MS);
+      this.cancelFlush = () => clearTimeout(handle);
+    }
+  }
+
+  /** 冲刷合帧队列：按到达序逐条 emit（队列插入序 = 各键首条 delta 的到达序）。
+   *  冲刷后队列清空；flushing 防重入（冲刷期间新 delta 只入队等下一帧）。 */
+  private flushDeltas() {
+    if (this.cancelFlush) {
+      this.cancelFlush();
+      this.cancelFlush = null;
+    }
+    this.flushScheduled = false;
+    if (this.flushing || this.deltaQueue.size === 0) return;
+    this.flushing = true;
+    const queued = [...this.deltaQueue.values()];
+    this.deltaQueue.clear();
+    try {
+      for (const ev of queued) this.listeners.forEach((l) => l(ev));
+    } finally {
+      this.flushing = false;
+    }
   }
 
   /** 请求级失败（不影响生成状态）→ operationError 事件。 */

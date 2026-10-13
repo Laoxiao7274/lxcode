@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { staggerIn } from "../../shared/motion";
 import { playEnter } from "../../shared/anim";
 import { useDismissal } from "../../shared/popover";
@@ -28,8 +28,11 @@ export function ProjectRunBadge({ count }: { count: number }) {
 /** 侧栏（Codex 2026-05 版形态）：
  *  导航项（新对话/搜索/插件/自动化）→「项目」分组（上）→「对话」分组（下）。
  *  项目区：+ 号添加；点项目行过滤对话（再点取消）；未绑定项目的会话
- *  归入「未分组」行。选中项目后「新对话」按钮带归属提示。 */
-export function Sidebar({
+ *  归入「未分组」行。选中项目后「新对话」按钮带归属提示。
+ *  memo（2026-12 渲染性能 Top1）：流式 delta 每帧重渲染 AppBody，侧栏的
+ *  props（source/currentId/busyBySession/各回调）全部稳定身份（App 侧
+ *  useCallback + busy 汇总签名 memo），没动的帧整棵子树跳过协调。 */
+export const Sidebar = memo(function Sidebar({
   source,
   currentId,
   busyBySession,
@@ -394,4 +397,4 @@ export function Sidebar({
       </div>
     </aside>
   );
-}
+});

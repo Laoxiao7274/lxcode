@@ -231,9 +231,17 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
 
   const currentId = state.currentId;
   currentIdRef.current = currentId;
+  // busy 汇总的稳定性（2026-12 渲染性能 Top1）：sessionStates 每条 delta 都换新
+  // 对象，直接以它为依赖会每帧产出新 busyBySession → 击穿 Sidebar/TabBar 的 memo。
+  // 这里以「每会话 busy 位的签名」为依赖：busy 位没变的帧返回同一份对象。
+  const busySignature = useMemo(
+    () => Object.entries(sessionStates).map(([id, s]) => `${id}:${s.busy ? 1 : 0}`).join("|"),
+    [sessionStates],
+  );
   const busyBySession = useMemo(
     () => Object.fromEntries(Object.entries(sessionStates).map(([id, session]) => [id, session.busy])),
-    [sessionStates],
+    // 依赖是 busy 签名（上一行）：签名不变就不重建（签名本身已含全部 busy 位）
+    [busySignature], // eslint-disable-line react-hooks/exhaustive-deps
   );
 
   // 子会话**临时视图**活跃时（childTabSession(view) 非 null）：TabBar 侧主会话标签
@@ -344,6 +352,11 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
       reportError(`压缩失败: ${e instanceof Error ? e.message : String(e)}`);
     }
   }, [source, reportError, currentId]);
+  // Composer → ContextIndicator 的压缩入口（2026-12 渲染性能 Top1）：内联箭头
+  // 每帧换身份会击穿 ContextIndicator 的 memo，用 useCallback 固定。
+  const handleCompactClick = useCallback(() => { void handleCompact(); }, [handleCompact]);
+  // 侧栏「设置」入口（同上：内联箭头击穿 Sidebar memo）。
+  const openSettings = useCallback(() => setSettingsOpen(true), []);
 
   // ---- 用户气泡的三个动作（复制在 Block 内自足；这里管编辑与撤回）----
 
@@ -626,7 +639,7 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
               stats={state.stats}
               onSend={handleSend}
               onCancel={() => source.cancel(currentId)}
-              onCompact={() => { void handleCompact(); }}
+              onCompact={handleCompactClick}
               commands={slashCommands}
               draft={draft}
               editing={editDraft !== null}
@@ -741,7 +754,7 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
         busyBySession={busyBySession}
         filter={filter}
         setFilter={setFilter}
-        onOpenSettings={() => setSettingsOpen(true)}
+        onOpenSettings={openSettings}
         agentsActive={view === "agents"}
         onOpenAgents={openAgents}
         onOpenChat={backToChat}

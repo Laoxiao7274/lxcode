@@ -321,3 +321,61 @@ func TestSessionStatsShapeMatchesWire(t *testing.T) {
 		t.Fatal("有值之后不该判空")
 	}
 }
+
+// TestSessionStatsAggregationMatchesFullFold：专用聚合查询（SessionStatsOf 实际走的
+// 路径，只 SELECT 统计列、不取正文）与全量 readRows 折叠（含 content 反序列化的旧路径）
+// 的结果必须**严格相等**——口径单处（同一个 foldSessionStats），两条 SQL 各写一遍是
+// 本仓库的老坑（写进去的与读出来的对不上）。覆盖全部行型：新旧用量口径、通知行、
+// 检查点、工具行、无首字步。
+func TestSessionStatsAggregationMatchesFullFold(t *testing.T) {
+	s := openTestStore(t)
+	id, err := s.Create()
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendMsg := func(m llm.Message) {
+		t.Helper()
+		if _, err := s.AppendMsg(id, m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appendMsg(llm.Message{Role: "user", Content: "跑一下"})
+	appendMsg(llm.Message{Role: "assistant", Content: "调工具", DurationMs: 1000, UsageTokens: 20, InputTokens: 50})
+	appendMsg(llm.Message{Role: "tool", ToolCallID: "t1", Content: "ok", DurationMs: 700})
+	appendMsg(llm.Message{Role: "user", Content: "[系统通告] 后台任务结束", Notice: true})
+	appendMsg(llm.Message{
+		Role: "assistant", Content: "好了", DurationMs: 3000, FirstTokenMs: 500, UsageTokens: 200,
+		InputTokens: 100, CacheReadTokens: 5000, CacheWriteTokens: 80,
+	})
+	// 老口径行（usage_split=0，见 TestSessionStatsLegacyUsage 的造法）
+	if _, err := s.db.Exec(
+		`INSERT INTO messages (session_id, seq, role, content, reasoning, reasoning_sig, tool_calls,
+		                       tool_call_id, first_token_ms, duration_ms, model, usage_tokens)
+		 SELECT ?, COALESCE(MAX(seq), 0) + 1, 'assistant', 'legacy', '', '', '[]', '', 276, 2454, '', 1498
+		 FROM messages WHERE session_id = ?`, id, id); err != nil {
+		t.Fatal(err)
+	}
+	// 压缩检查点（影子掉前 3 条——折叠仍要算它们）
+	if _, err := s.AppendCheckpoint(id, llm.Message{Role: "user", Content: "<compacted-summary>摘要</compacted-summary>"}, 0, 3); err != nil {
+		t.Fatal(err)
+	}
+	appendMsg(llm.Message{Role: "user", Content: "再来"})
+
+	want, err := s.SessionStatsOf(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.readRows(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := foldSessionStats(rows)
+	if got != want {
+		t.Fatalf("两条路径的统计不一致:\n  聚合查询 %+v\n  全量折叠 %+v", want, got)
+	}
+	// 顺带钉住 LegacyTokens 在聚合路径上也被正确识别（对照的灵敏度——全 0 的对照
+	// 发现不了口径丢失）
+	if want.LegacyTokens != 1498 {
+		t.Fatalf("老口径行应单独记账: %+v", want)
+	}
+}

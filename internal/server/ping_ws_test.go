@@ -56,14 +56,13 @@ func TestSendErrorClosesClient(t *testing.T) {
 		t.Fatal("客户端未注册进服务端")
 	}
 
-	// 服务端侧关闭底层连接：下一次 send 必然报错（写失败路径的最小等价物）
+	// 服务端侧关闭底层连接：writer 的下一次写必然报错 → 走关闭路径
+	//（写失败路径的最小等价物；单帧写超时与它同一条路径——SetWriteDeadline
+	// 到期后 WriteMessage 返回错误，writeLoop 同样 Close）
 	_ = wc.conn.Close()
-	if err := wc.send(protocol.NewEvent(protocol.EventModels, protocol.ModelListResult{})); err == nil {
-		t.Fatal("已关闭的连接 send 应报错")
-	}
 
-	// 广播遇到写失败不应 panic；该客户端最终被清理出注册表（清理由读循环
-	// 的 defer 完成——连接已死，读循环随即退出）
+	// 广播遇到死连接不应 panic（入队成功、writer 写失败自行收尾）；该客户端
+	// 最终被清理出注册表（清理由读循环的 defer 完成——连接已死，读循环随即退出）
 	srv.broadcast(protocol.EventModels, protocol.ModelListResult{})
 
 	deadline := time.Now().Add(2 * time.Second)

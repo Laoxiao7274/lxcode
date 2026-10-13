@@ -11,7 +11,15 @@ import (
 	"github.com/moyunteng/lxcode/internal/protocol"
 )
 
+// dispatchPanicHook 仅供测试注入（panic 防护钉子，2026-10）：非 nil 时 dispatch
+// 前调用。生产恒 nil（与 runtimeBuildSpan 同一套测试缝纪律）。
+var dispatchPanicHook func()
+
 func (s *Server) dispatch(c *wsClient, req *protocol.Request) *protocol.Response {
+	// 测试钩子（panic 防护钉子用，生产恒 nil）：在分派前注入 panic。
+	if dispatchPanicHook != nil {
+		dispatchPanicHook()
+	}
 	params := req.Params
 	if len(params) == 0 {
 		params = json.RawMessage("{}")

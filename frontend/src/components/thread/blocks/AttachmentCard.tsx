@@ -87,14 +87,14 @@ function ImageCard({ att, url }: { att: AttachmentMeta; url: string | null }) {
         onClick={() => setZoom(true)}
         title={att.caption || `${att.name}（点击放大）`}
       >
-        <img src={url} alt={att.name || "图片附件"} loading="lazy" onError={() => setBroken(true)} />
+        <img src={url} alt={att.name || "图片附件"} loading="lazy" decoding="async" onError={() => setBroken(true)} />
         {(att.caption || att.name) && (
           <span className="att-image-cap">{att.caption || att.name}</span>
         )}
       </button>
       {zoom && (
         <div className="att-lightbox" role="dialog" aria-label="图片预览" onClick={() => setZoom(false)}>
-          <img src={url} alt={att.name || "图片附件"} />
+          <img src={url} alt={att.name || "图片附件"} decoding="async" />
           {(att.caption || att.name) && <span className="att-lightbox-cap">{att.caption || att.name}</span>}
         </div>
       )}

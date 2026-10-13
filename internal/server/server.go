@@ -10,11 +10,13 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/gorilla/websocket"
 	"log"
 	"net/http"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -131,6 +133,75 @@ type wsClient struct {
 	conn      *websocket.Conn
 	mu        sync.Mutex
 	sessionID string // 连接本地焦点，仅兼容没有显式 session_id 的客户端
+
+	// 每客户端**有界发送队列 + 独立 writer goroutine**（性能审查 P1-2，2026-10）：
+	// 原先 broadcast 在流式转发 goroutine 里同步逐客户端 WriteJSON，慢客户端
+	//（页面挂起不读、TCP 窗口满）一次写满缓冲就要等满 5s deadline 才报错——
+	// 这一个事件让生成流整整停 5s，两个慢客户端串行即 10s。现在广播只做入队
+	//（O(1)），每客户端单 writer 按序写（事件保序不变）；队列满 = 该客户端
+	// 跟不上 → 关闭这条连接交给重连（fast-fail，与 wsclient 的「缓冲满丢最旧/
+	// 断连」同一哲学），绝不让慢客户端阻塞生成流与其他客户端。
+	out       chan []byte
+	done      chan struct{}
+	closeOnce sync.Once
+}
+
+// clientQueueSize 是每客户端发送队列的容量（条数）。256 条 delta 级事件足够吸收
+// 正常抖动；真满了说明客户端已经掉队（不是抖动），留着也只是白占内存。
+const clientQueueSize = 256
+
+// close 关闭连接并通知 writer goroutine 收尾（幂等——多处失败路径都会调它）。
+func (c *wsClient) close() {
+	c.closeOnce.Do(func() {
+		close(c.done)
+		_ = c.conn.Close()
+	})
+}
+
+// writeLoop 是该客户端唯一的写者：按序把队列里的帧写到连接上（保序不变）。
+// 写失败（含 5s deadline 到了——超时后 gorilla 连接内部状态可能已脏，一帧只写了
+// 一半，唯一正确的处理就是 Close，绝不能复用这条连接继续写）→ 关闭并退出。
+func (c *wsClient) writeLoop() {
+	for {
+		select {
+		case b := <-c.out:
+			_ = c.conn.SetWriteDeadline(time.Now().Add(broadcastWriteTimeout))
+			if err := c.conn.WriteMessage(websocket.TextMessage, b); err != nil {
+				c.close()
+				return
+			}
+		case <-c.done:
+			return
+		}
+	}
+}
+
+// enqueue 把一条消息排进该客户端的发送队列（非阻塞）。返回 false = 该客户端已被
+// 放弃（队列满被 fast-fail，或连接已关）——调用方无需再对它做什么，读循环的
+// defer 会把它清理出注册表。
+func (c *wsClient) enqueue(v any) bool {
+	b, err := json.Marshal(v)
+	if err != nil {
+		// 序列化失败是服务端 bug（协议载荷必须可序列化）：丢这条消息并记日志，
+		// 不关连接——断连解决不了序列化问题。
+		log.Printf("消息序列化失败（丢弃）: %v", err)
+		return true
+	}
+	return c.enqueueBytes(b)
+}
+
+func (c *wsClient) enqueueBytes(b []byte) bool {
+	select {
+	case c.out <- b:
+		return true
+	case <-c.done:
+		return false
+	default:
+		// 队列满 = 该客户端跟不上：fast-fail 关闭（客户端会自动重连）。
+		log.Printf("客户端发送队列已满（%d 条），关闭慢客户端", clientQueueSize)
+		c.close()
+		return false
+	}
 }
 
 // 连接焦点（sessionID）的受锁访问器：请求并发化后（serve 每请求一个 goroutine），
@@ -147,26 +218,9 @@ func (c *wsClient) setFocus(id string) {
 	c.mu.Unlock()
 }
 
-// broadcastWriteTimeout 是单次广播写的上限：超过即视为该客户端消费不动，
-// 关闭连接（客户端会自动重连）。写超时错误的清理走 broadcast/serve 既有路径。
+// broadcastWriteTimeout 是单帧写的上限：超过即视为该客户端消费不动，
+// 关闭连接（客户端会自动重连）。超时错误的清理走 writeLoop 的关闭路径。
 const broadcastWriteTimeout = 5 * time.Second
-
-func (c *wsClient) send(v any) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	// 写超时防护：慢客户端（TCP 窗口满、页面被挂起不读）不能拖住广播循环把
-	// 其他客户端的事件路径也卡住（head-of-line blocking）。deadline 到了
-	// WriteJSON 返回错误，调用方关闭这条连接（客户端会自动重连）。
-	// 注意 gorilla 的 WriteJSON 超时后连接内部状态可能已脏（一帧只写了一半），
-	// 唯一正确的处理就是 Close，绝不能复用这条连接继续写。
-	_ = c.conn.SetWriteDeadline(time.Now().Add(broadcastWriteTimeout))
-	err := c.conn.WriteJSON(v)
-	if err != nil {
-		return err
-	}
-	_ = c.conn.SetWriteDeadline(time.Time{}) // 写成功清掉 deadline，不影响后续写
-	return nil
-}
 
 func NewServer(reg *config.Registry) *Server {
 	return &Server{
@@ -327,7 +381,7 @@ func (s *Server) Handler() http.Handler {
 			log.Printf("ws 升级失败: %v", err)
 			return
 		}
-		c := &wsClient{conn: conn}
+		c := &wsClient{conn: conn, out: make(chan []byte, clientQueueSize), done: make(chan struct{})}
 		s.mu.Lock()
 		s.clients[c] = struct{}{}
 		s.mu.Unlock()
@@ -335,10 +389,14 @@ func (s *Server) Handler() http.Handler {
 			s.mu.Lock()
 			delete(s.clients, c)
 			s.mu.Unlock()
-			conn.Close()
+			// close（不只是 conn.Close）：writer goroutine 可能正空闲等队列，
+			// 只关连接不关 done 会让它永远等下去（goroutine 泄漏）。
+			c.close()
 		}()
+		// 单 writer goroutine：本连接上所有帧（事件 + 应答）都经它的队列按序写。
+		go c.writeLoop()
 		// 连接建立即告知服务端身份与忙闲（客户端据此决定初始状态）
-		_ = c.send(protocol.NewEvent(protocol.EventReady, protocol.HelloResult{
+		_ = c.enqueue(protocol.NewEvent(protocol.EventReady, protocol.HelloResult{
 			Server: "lxcode", Version: protocol.Version, Busy: false,
 		}))
 		s.serve(c)
@@ -359,11 +417,24 @@ func (s *Server) serve(c *wsClient) {
 		// 应答按 id 配对，乱序到达是 JSON-RPC 语义允许的（前端按 id 路由）；
 		// 事件走独立广播路径（broadcast），按 session 的保序不变。
 		go func(req protocol.Request) {
+			// panic 防护（健壮性加固，2026-10）：每个请求一个 goroutine，任何
+			// panic 按 Go 语义打死整个进程。这里 recover → 记日志（stack 完整
+			// 落盘）+ 回 JSON-RPC internal error 应答——该请求失败，进程与其他
+			// 请求照常运行。
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("请求 %s 处理 panic（进程继续运行）: %v\n%s", req.Method, r, debug.Stack())
+					if len(req.ID) != 0 && string(req.ID) != "null" {
+						c.enqueue(protocol.NewError(req.ID, protocol.CodeInternal,
+							"internal error: 请求处理发生内部错误（已记录日志）"))
+					}
+				}
+			}()
 			resp := s.dispatch(c, &req)
 			if resp != nil {
-				if err := c.send(resp); err != nil {
-					_ = c.conn.Close()
-				}
+				// 应答同样走队列（单写者纪律——gorilla 连接不允许两个并发写者）：
+				// 队列满被 fast-fail 时连接已由 enqueue 关闭，读循环随即收尾。
+				c.enqueue(resp)
 			}
 		}(req)
 	}
@@ -385,6 +456,13 @@ func (s *Server) broadcastSessionChanged(id, reason string) {
 
 func (s *Server) broadcast(method string, params any) {
 	ev := protocol.NewEvent(method, params)
+	// 序列化**一次**、每客户端只做入队（O(1)）：原先在这里同步逐客户端
+	// WriteJSON，慢客户端会把生成流卡满 5s deadline（见 wsClient.out 的注释）。
+	b, err := json.Marshal(ev)
+	if err != nil {
+		log.Printf("广播事件序列化失败（丢弃）: %v", err)
+		return
+	}
 	s.mu.Lock()
 	clients := make([]*wsClient, 0, len(s.clients))
 	for c := range s.clients {
@@ -392,9 +470,7 @@ func (s *Server) broadcast(method string, params any) {
 	}
 	s.mu.Unlock()
 	for _, c := range clients {
-		if err := c.send(ev); err != nil {
-			_ = c.conn.Close()
-		}
+		c.enqueueBytes(b)
 	}
 }
 
@@ -426,6 +502,6 @@ func (s *Server) closeAllClients() {
 	}
 	s.mu.Unlock()
 	for _, c := range clients {
-		_ = c.conn.Close()
+		c.close()
 	}
 }

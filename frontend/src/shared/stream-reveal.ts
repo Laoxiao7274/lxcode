@@ -71,6 +71,79 @@ export function pourStep(shown: string, text: string, elapsedMs: number): string
   return text.slice(0, Math.min(text.length, shown.length + step));
 }
 
+// ---------- 已定稿前缀（两段渲染，2026-12 渲染性能 Top2）----------
+//
+// 打字机浇注期间 shown 每帧推进，若整段 shown 都走 Markdown 解析，每帧的成本
+// 是 O(全文)。两段渲染把 shown 切成「已定稿前缀 committed + 尾段 tail」：
+// committed 只在整行完成时才前进（前进频率 = 行完成频率，远低于帧率），它的
+// TextBlocks memo 按字符串比较恒命中（零解析零协调）；每帧真正重解析的只有
+// tail（≤2 行）。切点必须落在**块边界**上——切在 quote/list/table/代码围栏
+// 中间会把一个块渲染成两个（与整段解析的 DOM 形态分叉），所以候选切点要
+// 回退到更早的安全行（splitCommitted 纯函数，测试覆盖各未闭合形态）。
+
+const RE_QUOTE_LINE = /^>\s?/;
+const RE_UL_LINE = /^(\s*)[-*+]\s+/;
+const RE_OL_LINE = /^(\s*)(\d+)[.)]\s+/;
+const isTableRowLine = (l: string): boolean => l.trimStart().startsWith("|");
+
+/** shown 的已定稿前缀切分（纯函数，可单测）：
+ *  - 候选切点从「最后一行之前」起逐行回退（增长中的末行恒在 tail；比「倒数第
+ *    2 行之前」多保一行已定稿——尾段更小，每帧重解析更便宜）；
+ *  - 候选切点不安全（见 safeCutAt）就逐行回退，退到头则 committed 为空、
+ *    tail 承接全文——退回空段总是安全的（单段渲染 = 原行为）；
+ *  - committed + "\n" + tail 恒等于原文（只切行，不丢字符；committed 为空时
+ *    tail === 原文）。
+ *  性能纪律：本函数在**每个浇注帧**被调用（AnswerBody），不许对全文做
+ *  split("\n")/join——那与 parseBlocks 同量级，两段渲染的收益会被它吃光。
+ *  实现：行边界用 lastIndexOf 定位、围栏奇偶用「全文计数 ⊕ tail 计数」，
+ *  全文只做一次 C 速扫描（countFences），其余操作都只在末尾几行上。 */
+export function splitCommitted(text: string): { committed: string; tail: string } {
+  let cut = text.lastIndexOf("\n"); // committed = text.slice(0, cut)，tail = cut+1 起
+  if (cut <= 0) return { committed: "", tail: text };
+  const totalFences = countFences(text);
+  while (cut > 0) {
+    const tail = text.slice(cut + 1);
+    if (safeCutAt(text, cut, tail, totalFences)) {
+      return { committed: text.slice(0, cut), tail };
+    }
+    cut = text.lastIndexOf("\n", cut - 1);
+  }
+  return { committed: "", tail: text };
+}
+
+/** ``` 出现次数（与 Markdown 入口的 text.split("```") 同语义——行内出现也计入）。 */
+function countFences(s: string): number {
+  let n = 0, i = s.indexOf("```");
+  while (i >= 0) {
+    n++;
+    i = s.indexOf("```", i + 3);
+  }
+  return n;
+}
+
+/** 切点 cut（text[cut] 是 "\n"，tail = cut+1 起）是否安全：committed 与 tail
+ *  各自解析出的块序列拼接后与整段解析逐块一致。四条判定：
+ *  ① committed 内 ``` 计数为偶数（切点不在围栏内——围栏内任何切分都会把一段
+ *     代码渲染成两段 <pre>）；
+ *  ② committed 不以空行收尾（否则 tail 首块会丢段距 gap 标记——与整段解析
+ *     不一致；回退到更早的非空行）；
+ *  ③ tail 首行不得延续 committed 末行的多行块（quote/list/table——这些块是
+ *     「连续同类行聚块」，切在中间 = 一个块渲染成两个）。 */
+function safeCutAt(text: string, cut: number, tail: string, totalFences: number): boolean {
+  const committedFences = totalFences - countFences(tail);
+  if (committedFences % 2 !== 0) return false;
+  const prevStart = text.lastIndexOf("\n", cut - 1) + 1;
+  const prev = text.slice(prevStart, cut);
+  if (prev.trim() === "") return false;
+  const next = tail.split("\n", 1)[0] ?? "";
+  const prevList = RE_UL_LINE.test(prev) || RE_OL_LINE.test(prev);
+  const nextList = RE_UL_LINE.test(next) || RE_OL_LINE.test(next);
+  if (prevList && nextList) return false;
+  if (RE_QUOTE_LINE.test(prev) && RE_QUOTE_LINE.test(next)) return false;
+  if (isTableRowLine(prev) && isTableRowLine(next)) return false;
+  return true;
+}
+
 /**
  * 按节奏揭示持续增长的流式文本。
  * @param text - 已累计的全部流式文本。

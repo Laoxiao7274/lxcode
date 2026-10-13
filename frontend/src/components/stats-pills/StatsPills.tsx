@@ -15,12 +15,15 @@
 //   - 一步都没有（steps=0）→ **整行不渲染**，不显示一排 0；
 //   - 每一项缺席就**不显示那一项**（工具时间 0 与"没有工具时间"必须分得开）；
 //   - 数字格式只有一份实现（shared/session-stats.ts 的纯函数，组件与测试共用）。
+import { memo } from "react";
 import { usePopover } from "../../shared/popover";
 import { IconGauge } from "../icons";
 import { timeDialogRows, timePillLabel } from "../../shared/session-stats";
 import type { SessionStats } from "../../shared/types";
 
-export function StatsPills({ stats, placement = "up" }: { stats: SessionStats | null; placement?: "up" | "down" }) {
+// memo（2026-12 渲染性能 Top1）：stats 是后端折叠统计对象（done/历史才换新）——
+// Composer 每帧重渲染时这里跳过。
+export const StatsPills = memo(function StatsPills({ stats, placement = "up" }: { stats: SessionStats | null; placement?: "up" | "down" }) {
   // 一步都没有：整行不渲染（新会话/纯内存模式）——显示"0 轮 0 步"是个假事实。
   // 用量那一半已经并进上下文环的弹层，所以这里只认步数（只有 token 没有步数时不该留一个空胶囊）。
   if (!stats || stats.steps <= 0) return null;
@@ -29,7 +32,7 @@ export function StatsPills({ stats, placement = "up" }: { stats: SessionStats | 
       <TimePill stats={stats} placement={placement} />
     </div>
   );
-}
+});
 
 /** 时间胶囊：轮/步/速度 + 弹层明细。 */
 function TimePill({ stats, placement }: { stats: SessionStats; placement: "up" | "down" }) {

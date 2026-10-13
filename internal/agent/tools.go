@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -147,10 +148,24 @@ func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChange
 		for _, j := range dispatches {
 			wg.Add(1)
 			go func(j dispatchJob) {
+				started := time.Now()
 				defer wg.Done()
+				// panic 防护（健壮性加固，2026-10）：这里是一个**独立 goroutine**，
+				// 不在 runTurn 的 recover 覆盖范围内——子会话派发链路里的 panic
+				// 原样会打死整个进程。转成该下标的失败工具结果（isError），历史
+				// 配对不受影响（阶段三照常回填），stack 完整落日志。
+				defer func() {
+					if r := recover(); r != nil {
+						log.Printf("派发子会话 panic（已转为失败工具结果，进程继续运行）: %v\n%s",
+							r, debug.Stack())
+						dispatched[j.idx] = toolOutcome{
+							result:  fmt.Sprintf("错误: 派发的子任务因内部错误中断（%v）", r),
+							isError: true, executed: true, durationMs: msSince(started),
+						}
+					}
+				}()
 				// 子 Agent 的墙钟也算进「工具时间」：派发在模型眼里就是一次工具调用，
 				// 它的耗时属于工具侧而不是模型侧（llmMs 只算请求模型的那段）。
-				started := time.Now()
 				res := s.runDispatch(ctx, j.call)
 				elapsed := msSince(started)
 				out := res.Output

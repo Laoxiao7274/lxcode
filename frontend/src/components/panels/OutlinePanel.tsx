@@ -3,10 +3,13 @@
 // 这一层只做展示：条目判定与截断全在 ./outline（纯函数，有测试钉住），跳转的
 // 副作用（querySelector + scrollIntoView + 高亮）由 App 传进来——组件不碰 DOM、
 // 不碰历史（与 Thread 只做透传的分工一致）。
+import { memo } from "react";
 import { Button } from "../form";
 import { outlineLabel, type OutlineItem } from "./outline";
 
-export function OutlinePanel({
+// memo（2026-12 渲染性能 Top1）：items/activeUid/onJump 都由调用方稳定身份
+//（App 的 useMemo/useCallback）——流式 delta 每帧重渲染时面板整棵跳过。
+export const OutlinePanel = memo(function OutlinePanel({
   items,
   activeUid,
   onJump,
@@ -39,4 +42,4 @@ export function OutlinePanel({
       )}
     </div>
   );
-}
+});

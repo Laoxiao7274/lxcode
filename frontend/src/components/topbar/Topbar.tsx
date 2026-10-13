@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useState } from "react";
 import type { AgentSource } from "../../shared/types";
 import { useConnections } from "../../shared/connections";
 import { ConnectionManager } from "../connections/ConnectionManager";
@@ -7,8 +7,10 @@ import { JobsBadge, type MergeEntry } from "../jobs";
 /** 窗口标题栏：左 = 图标 + LxCode + 连接指示器（点击管理连接）；
  *  右 = 窗口控制（最小化/最大化/关闭）。
  *  拖拽区 = CSS -webkit-app-region: drag（global.css 的 .topbar/.win-btn）；
- *  窗口控制经 Electron preload 桥 __LX__（浏览器模式无桥，按钮无害空操作）。 */
-export function Topbar({
+ *  窗口控制经 Electron preload 桥 __LX__（浏览器模式无桥，按钮无害空操作）。
+ *  memo（2026-12 渲染性能 Top1）：props（taskTitle 字符串/source/connected 布尔）
+ *  在流式 delta 期间全部不变——AppBody 每帧重渲染时顶栏整棵子树跳过。 */
+export const Topbar = memo(function Topbar({
   taskTitle,
   source,
   connected,
@@ -72,4 +74,4 @@ export function Topbar({
       {mgrOpen && <ConnectionManager onClose={() => setMgrOpen(false)} connected={connected} />}
     </header>
   );
-}
+});

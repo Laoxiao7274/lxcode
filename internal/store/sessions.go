@@ -160,35 +160,83 @@ func (s *Store) List() ([]SessionMeta, error) {
 	return visible, nil
 }
 
-// surfaceCounts 统计每个会话当前历史的条数（跳过被影子掉的行）。
+// surfaceCounts 统计每个会话当前历史的条数（跳过被影子掉的行）——口径与
+// surfaceRows（回放的存活判定）严格一致。
+//
+// 计数下推 SQLite（性能审查 P1-1，2026-10）：原实现把**全库**消息行逐行拉进 Go、
+// 逐检查点解 shadowed_seqs JSON，只为数条数——53k 行实测 195ms 且随库线性涨，
+// 而调用面是侧栏每次刷新。现在分两步：
+//  1. 基础数 `GROUP BY session_id` 在 SQLite C 层聚合，Go 侧每会话只收一行；
+//  2. 影子扣减只对**检查点行**做（量级 = 压缩次数，极少数）：读它们的
+//     shadowed_seqs，把集合大小从基础数里减掉。
+//
+// 为什么「减 Σ len(影子集合)」与旧实现（数不在影子并集里的行）严格一致——
+// 三条不变量（均由写入路径保证，surfaceCountsTest.go 的对照测试钉住）：
+//   - AppendCheckpoint 的影子集合取自**当时的存活行**，每条 seq 都真实存在；
+//   - 同一会话各检查点的影子集合**两两不相交**（后一份摘要影子的是 surface 行，
+//     已被影子过的行不再参与计数——TestCheckpointShadowSkipsAlreadyShadowed）；
+//   - Rewind 把引用已删行的项从存活检查点的集合里滤掉、影子全空的检查点整条删掉，
+//     所以存活的检查点只引用还存在的行（撤回行不计 = GROUP BY 里根本没有它）。
+//
+// 防御性处理（只对库外改写出来的畸形数据生效，正常路径永不触发）：同会话内
+// 跨检查点的重复 seq 按集合去重（旧实现对重复 seq 也只数一次）；扣减后钳到 0
+// （旧实现的存活计数不可能为负）。
 func (s *Store) surfaceCounts() (map[string]int, error) {
-	rows, err := s.db.Query(`SELECT session_id, seq, checkpoint, shadowed_seqs FROM messages ORDER BY session_id, seq`)
+	rows, err := s.db.Query(`SELECT session_id, COUNT(*) FROM messages GROUP BY session_id`)
 	if err != nil {
 		return nil, fmt.Errorf("统计消息数失败: %w", err)
 	}
 	defer rows.Close()
-	bySession := make(map[string][]rowData)
+	counts := make(map[string]int)
 	for rows.Next() {
-		var r rowData
-		var id, shadowedSeqs string
-		var cp int
-		if err := rows.Scan(&id, &r.seq, &cp, &shadowedSeqs); err != nil {
+		var id string
+		var n int
+		if err := rows.Scan(&id, &n); err != nil {
 			return nil, fmt.Errorf("统计消息数失败: %w", err)
 		}
-		r.checkpoint = cp == 1
-		if r.checkpoint && shadowedSeqs != "" && shadowedSeqs != "[]" {
-			if err := json.Unmarshal([]byte(shadowedSeqs), &r.shadowed); err != nil {
-				return nil, fmt.Errorf("解析影子区间失败: %w", err)
-			}
-		}
-		bySession[id] = append(bySession[id], r)
+		counts[id] = n
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	counts := make(map[string]int, len(bySession))
-	for id, rs := range bySession {
-		counts[id] = len(surfaceRows(rs))
+	// 影子扣减：只扫检查点行（没压缩过的会话在这步零开销）。
+	crows, err := s.db.Query(
+		`SELECT session_id, shadowed_seqs FROM messages
+		 WHERE checkpoint = 1 AND shadowed_seqs IS NOT NULL AND shadowed_seqs <> '' AND shadowed_seqs <> '[]'`)
+	if err != nil {
+		return nil, fmt.Errorf("统计消息数失败: %w", err)
+	}
+	defer crows.Close()
+	shadowed := make(map[string]map[int]struct{}) // 会话 → 影子 seq 并集（去重）
+	for crows.Next() {
+		var id, shadowedSeqs string
+		if err := crows.Scan(&id, &shadowedSeqs); err != nil {
+			return nil, fmt.Errorf("统计消息数失败: %w", err)
+		}
+		var seqs []int
+		if err := json.Unmarshal([]byte(shadowedSeqs), &seqs); err != nil {
+			return nil, fmt.Errorf("解析影子区间失败: %w", err)
+		}
+		set := shadowed[id]
+		if set == nil {
+			set = make(map[int]struct{})
+			shadowed[id] = set
+		}
+		for _, seq := range seqs {
+			set[seq] = struct{}{}
+		}
+	}
+	if err := crows.Err(); err != nil {
+		return nil, err
+	}
+	for id, set := range shadowed {
+		if n, ok := counts[id]; ok {
+			if d := n - len(set); d > 0 {
+				counts[id] = d
+			} else {
+				counts[id] = 0 // 畸形数据兜底：存活计数不为负（见函数注释）
+			}
+		}
 	}
 	return counts, nil
 }
@@ -322,7 +370,7 @@ func (s *Store) SessionAgentID(id string) (string, error) {
 	return agentID, nil
 }
 
-// SessionParentID 返回会话的派发方 id（'' = 顶层会话）。会话不存在时报错。
+// SessionParentID 返回会话的派发方 id（” = 顶层会话）。会话不存在时报错。
 //
 // 服务端用它判定「按 id 现建运行时」的那条会话是不是子会话：子会话运行时不能
 // 进服务端的运行时缓存（缓存里的那份是 AttachTo 时刻的静态快照——收不到事件、
@@ -408,7 +456,7 @@ func (s *Store) SaveApproval(id, approval string) error {
 
 // ApprovalOf 读回会话落库的审批档。空串 = 没落过（老会话/从没改过档）——调用方
 // 据此回落 behavior 默认档，而不是当成 confirm 写死。会话不存在时报错
-//（与 Load/WorkspaceOf 的语义一致）。
+// （与 Load/WorkspaceOf 的语义一致）。
 func (s *Store) ApprovalOf(id string) (string, error) {
 	var approval string
 	err := s.db.QueryRow(`SELECT approval FROM sessions WHERE id = ?`, id).Scan(&approval)

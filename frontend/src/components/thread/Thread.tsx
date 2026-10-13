@@ -83,6 +83,9 @@ export function Thread({
   // 大纲跳转：目标可能在窗口外（没挂 DOM）——先把窗口撑到包含它，下一帧再滚。
   // handledRef 防重入：扩窗会改 windowSize → 本 effect 重跑，不记「这一跳已处理」就会
   // 每次都重新滚一遍（用户手动滚动会被立刻拽回去）。
+  // 软上限（2026-12 渲染性能 Top4）：一次提交最多多挂 WINDOW_SOFT_CAP 块——
+  // 目标比这更远时分批推进（本 effect 随 windowSize 重跑续扩），跳转目标
+  // 最终仍要到达；一次性挂 990 块的「跳一下卡一秒」就是这么来的。
   const handledJumpRef = useRef<number | null>(null);
   useEffect(() => {
     if (revealUid === null || revealUid === undefined) { handledJumpRef.current = null; return; }
@@ -90,8 +93,7 @@ export function Thread({
     const idx = state.blocks.findIndex((b) => b.uid === revealUid);
     if (idx < 0) return;
     if (idx < hidden) {
-      // 一次撑够（含一批余量）：逐批 40 个会让长会话连点多次才到位
-      setWindowSize(state.blocks.length - idx + WINDOW_BATCH);
+      setWindowSize((prev) => expandWindowForJump(prev, idx, state.blocks.length));
       return; // 元素这一帧还不在 DOM 里，扩窗后本 effect 会再跑一次
     }
     const el = document.querySelector<HTMLElement>(`[data-uid="${revealUid}"]`);
@@ -185,9 +187,24 @@ export function Thread({
 }
 
 /** 首屏窗口与每批前插的块数（视口内块数远小于此——含工具行展开态）。
- *  导出给子会话页：同一份窗口化参数（两处不一致就是两套手感）。 */
+ *  导出给子会话页：同一份窗口化参数（两处不一致就是两套手感）。
+ *  WINDOW_SOFT_CAP：跳转扩窗的**单次提交**上限（2026-12 渲染性能 Top4）——
+ *  目标更远时分批推进（expandWindowForJump 纯函数，测试钉住收敛与上限）。
+ *  子会话页没有跳转路径：它的哨兵扩窗本就是每批 WINDOW_BATCH 块，远小于上限。 */
 export const WINDOW_INITIAL = 40;
 export const WINDOW_BATCH = 40;
+export const WINDOW_SOFT_CAP = 400;
+
+/** 跳转扩窗一步（纯函数，单测钉住）：返回新的 windowSize。
+ *  - 目标已在窗口内 → 原样返回（调用方 effect 里据此继续滚/高亮）；
+ *  - 每步增长 ≤ WINDOW_SOFT_CAP（一次提交的挂载量有界，帧间可画）；
+ *  - 不超过「到达目标所需 + 一批余量」（不过冲：目标已够就不多挂）。
+ *  收敛性：反复应用必然在 ⌈需要量/上限⌉ 步内让目标进入窗口。 */
+export function expandWindowForJump(prev: number, targetIndex: number, blockCount: number): number {
+  if (blockCount - targetIndex <= prev) return prev;
+  const needed = blockCount - targetIndex + WINDOW_BATCH;
+  return Math.min(needed, prev + WINDOW_SOFT_CAP);
+}
 
 /** 顶部哨兵：进入视口即请求扩大窗口（IntersectionObserver——比滚动
  *  位置判断便宜且不与跟随状态机打架）。子会话页共用。 */

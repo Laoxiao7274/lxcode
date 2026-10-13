@@ -15,6 +15,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
+	"runtime/debug"
 	"sync"
 
 	"github.com/moyunteng/lxcode/internal/config"
@@ -417,7 +419,21 @@ func (s *Session) Send(text string, opts ...SendOpt) error {
 
 	s.emit(UserMsgEvent{Message: userMsg})
 	s.emit(BusyEvent{Busy: true})
-	go s.runTurn(ctx, cfg, ac)
+	go func() {
+		// panic 防护（健壮性加固，2026-10）：生成 goroutine 里的任何 panic
+		//（工具实现、llm 适配、本包逻辑的 bug）按 Go 语义会打死整个进程——
+		// 所有会话全部陪葬。这里转成 TurnError 事件（用户看到「本轮生成失败」
+		// 的人话），资源收尾仍走 runTurn 自己的 defer（busy 复位 / done 关闭 /
+		// 通告冲刷在 panic 传播路径上照常执行）；stack 完整落日志，不吞信息。
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("会话 %s 本轮生成 panic（已转为本轮错误，进程继续运行）: %v\n%s",
+					s.id, r, debug.Stack())
+				s.emit(TurnErrorEvent{Message: "本轮生成失败（内部错误），请重试；若反复出现请查看后端日志。"})
+			}
+		}()
+		s.runTurn(ctx, cfg, ac)
+	}()
 	return nil
 }
 
