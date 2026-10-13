@@ -185,6 +185,28 @@ export const BUILTIN_TOOLS: ToolSpec[] = [
     params: [{ name: "items", type: "array", required: true, desc: "全量替换，active 唯一" }],
     doc: "任务清单全量写入；active 项唯一（硬校验）。\n\n多步任务的过程对齐——每完成一步更新状态，清单是唯一事实源。",
   },
+  {
+    id: "agent_read",
+    desc: "查看 Agent 注册表（列表或单个完整定义，含提示词模板）",
+    risk: "low",
+    source: "builtin",
+    params: [{ name: "id", type: "string", desc: "要读的 Agent id（可选；缺省 = 列出全部）" }],
+    doc: "读 Agent 配置：不带 id 列出全部（id/名称/职责/白名单/技能），带 id 读单个完整定义（含模板全文）。\n\n- 修改 Agent 配置前先读现状——改之前知道它现在长什么样\n- 列表视图不含提示词全文（上下文考虑），要看全文带 id 单读",
+  },
+  {
+    id: "agent_write",
+    desc: "按 id 修改 Agent 配置（描述/模板/白名单/技能绑定，高危确认门）",
+    risk: "high",
+    source: "builtin",
+    params: [
+      { name: "id", type: "string", required: true, desc: "目标 Agent 的 id（不可改）" },
+      { name: "desc", type: "string", desc: "新的职责描述（可选）" },
+      { name: "prompt", type: "string", desc: "新的系统提示词模板全文（可选；不能为空）" },
+      { name: "tools", type: "array", desc: "新的工具白名单（可选；全量替换，不能清空，名字必须真实存在）" },
+      { name: "skills", type: "array", desc: "新的技能绑定（可选；全量替换，可为空）" },
+    ],
+    doc: "字段级更新：只写提供的字段，其余不动；id 不可改。\n\n- **高危**：改动落库即生效——该 Agent 下次被派发就按新配置运行\n- 工具白名单增删直接改变目标 Agent 能做什么（加写工具 = 它将能改动文件）\n- 硬校验：白名单不能清空、工具名必须真实存在、模板不能为空、主 Agent 不可改\n- 改之前先 agent_read 摸现状，向用户确认意图",
+  },
 ];
 
 /** 第三方工具目录——可插拔契约的演示：经进程边界接入，权限由 Harness 掌握。 */
@@ -492,7 +514,7 @@ export function seedAgents(): AgentDef[] {
       tools: [MAIN_TOOL.id, "merge_request", "workspace_status", "workspace_sync", "workspace_rollback"],
       workflow: "plan-execute-verify",
       skills: [],
-      delegates: ["coder", "researcher", "tester", "reviewer", "ops"],
+      delegates: ["coder", "researcher", "tester", "reviewer", "ops", "lxagent"],
       approval: "confirm",
       enabled: true,
     },
@@ -552,6 +574,22 @@ export function seedAgents(): AgentDef[] {
       skills: [],
       delegates: [],
       approval: "strict",
+      enabled: true,
+    },
+    {
+      // lxagent：专门维护其他 Agent 配置的内置 Agent（与后端种子对齐）——
+      // 改提示词模板/工具白名单/技能绑定，改动过确认门、落库即生效。
+      id: "lxagent",
+      name: "lxagent",
+      color: "#7c3aed",
+      model: "MYT-Deep",
+      desc: "维护其他 Agent 的配置：查看与修改系统提示词模板、工具白名单与技能绑定，改动经确认门落库，对后续派发生效。",
+      prompt: "你是 lxagent，专门维护其他 Agent 的配置：修改系统提示词模板、工具白名单与技能绑定。\n\n职责边界：\n- 只改 Agent 配置，不替用户做业务决策，也不亲自执行目标 Agent 的业务任务。\n- 动手前先 agent_read 摸清现状，向用户确认意图（改哪个 Agent、改成什么、为什么）再调用 agent_write。\n- agent_write 是高危操作（影响之后所有派发）：白名单加写工具会让目标 Agent 获得改动文件的能力，撤技能绑定会改变它的方法论——把后果说清让用户知情。\n- 每次改动后用 agent_read 复读确认落库结果，向用户回报改了什么。\n\n硬约束（工具层强制，勿试图绕过）：id 不可改、白名单不能清空、模板不能为空、工具名必须是工具目录里真实存在的、主 Agent 的配置不可经此修改。",
+      tools: ["agent_read", "agent_write", "read_file", "search", "session_search", "ask_user", "todo"],
+      workflow: "minimal-change",
+      skills: [],
+      delegates: [],
+      approval: "confirm",
       enabled: true,
     },
     {

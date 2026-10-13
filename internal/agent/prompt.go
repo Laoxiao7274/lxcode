@@ -145,6 +145,8 @@ var systemPromptTools = map[string]string{
 	"bash":                          "bash：执行 shell 命令，每次执行前用户会收到确认提示",
 	"todo":                          "todo：维护任务清单（全量写入），低危自动执行",
 	"ask_user":                      "ask_user：向用户提问并等待回答（冲突抉择、需要用户决策时用），低危自动执行",
+	"agent_read":                    "agent_read：查看 Agent 注册表（列表或单个完整定义，含提示词模板），低危自动执行",
+	"agent_write":                   "agent_write：按 id 修改 Agent 配置（描述/模板/白名单/技能绑定，落库即生效），高危——执行前用户会收到确认提示",
 	"job_output":                    "job_output：读后台任务的增量输出（可 wait 等它结束），低危自动执行",
 	"job_list":                      "job_list：列后台任务（新的在前，可按会话过滤），低危自动执行",
 	"job_kill":                      "job_kill：停止一个后台任务（归属记为 agent），低危自动执行",

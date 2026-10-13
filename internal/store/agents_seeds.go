@@ -1,7 +1,8 @@
 // 种子数据（首次建库注入；内容与前端 agent-seeds.ts 的目录部分对齐——
-// 演示 Agent 名单后端给主 + 代码 + 调研 + 测试四个（覆盖「实现 / 勘察 / 验证」
-// 三种执行面），其余（审查、运维）是前端演示专属，真实后端不替用户预置）。
-// 新增种子 Agent 的落地纪律见 agents.go 的 syncCatalogSeeds：缺失才插入，
+// 演示 Agent 名单后端给主 + 代码 + 调研 + 测试 + lxagent（配置维护）五个
+// 可委派项，外加合并进程拉起的 merger（不进委派名单）；其余（审查、运维）
+// 是前端演示专属，真实后端不替用户预置）。
+// 新增种子 Agent 的落地纪律见 catalog_seeds.go 的 syncCatalogSeeds：缺失才插入，
 // 已有行一律不碰——老库因此也能吃到，而用户的编辑不会被覆盖。
 package store
 
@@ -135,6 +136,27 @@ var seedTools = []sessiondata.ToolSpec{
 		ID: "read_image", Desc: "读取图片内容给视觉模型看（须声明「视觉」能力）", Risk: "low", Source: "builtin", Custom: false,
 		Params: []sessiondata.ToolParam{{Name: "path", Type: "string", Required: true, Desc: "图片路径（相对会话工作目录；必须在工作目录之内）"}},
 		Doc:    "只读语义：读工作目录里的图片（png/jpeg/webp/gif），作为视觉输入注入下一轮请求——模型直接描述与分析图里的内容。\n\n- 当前模型必须声明「视觉」能力，否则报人话错误\n- 给用户看图用 share_file（本工具只喂模型，不渲染给用户）\n- 单图 ≤5MB；路径越出工作目录会被拒绝",
+	},
+	{
+		// agent_read / agent_write（Agent 配置读写，lxagent 的手脚）。与
+		// agent_dispatch 同理必须在目录里：lxagent 的种子白名单直接写着它们，
+		// 且编辑器渲染 chip 也只读目录——目录里没有 = 用户勾不上、界面上看不到。
+		ID: "agent_read", Desc: "查看 Agent 注册表（列表或单个完整定义，含提示词模板）", Risk: "low", Source: "builtin", Custom: false,
+		Params: []sessiondata.ToolParam{
+			{Name: "id", Type: "string", Desc: "要读的 Agent id（可选；缺省 = 列出全部）"},
+		},
+		Doc: "读 Agent 配置：不带 id 列出全部（id/名称/职责/白名单/技能），带 id 读单个完整定义（含模板全文）。\n\n- 修改 Agent 配置前先读现状——改之前知道它现在长什么样\n- 列表视图不含提示词全文（上下文考虑），要看全文带 id 单读",
+	},
+	{
+		ID: "agent_write", Desc: "按 id 修改 Agent 配置（描述/模板/白名单/技能绑定，高危确认门）", Risk: "high", Source: "builtin", Custom: false,
+		Params: []sessiondata.ToolParam{
+			{Name: "id", Type: "string", Required: true, Desc: "目标 Agent 的 id（不可改）"},
+			{Name: "desc", Type: "string", Desc: "新的职责描述（可选）"},
+			{Name: "prompt", Type: "string", Desc: "新的系统提示词模板全文（可选；不能为空）"},
+			{Name: "tools", Type: "array", Desc: "新的工具白名单（可选；全量替换，不能清空，名字必须真实存在）"},
+			{Name: "skills", Type: "array", Desc: "新的技能绑定（可选；全量替换，可为空）"},
+		},
+		Doc: "字段级更新：只写提供的字段，其余不动；id 不可改。\n\n- **高危**：改动落库即生效——该 Agent 下次被派发就按新配置运行\n- 工具白名单增删直接改变目标 Agent 能做什么（加写工具 = 它将能改动文件）\n- 硬校验：白名单不能清空、工具名必须真实存在、模板不能为空、主 Agent 不可改\n- 改之前先 agent_read 摸现状，向用户确认意图",
 	},
 	{
 		// 调度通道（主 Agent 的唯一工具）。与 web_search 同理必须在目录里：
@@ -273,7 +295,7 @@ var seedAgents = []sessiondata.AgentDef{
 		Tools:    []string{"agent_dispatch", "merge_request", "workspace_status", "workspace_sync", "workspace_rollback", "workspace_publish"},
 		Prompt:   "",
 		Workflow: "plan-execute-verify", Skills: []string{},
-		Delegates: []string{"coder", "researcher", "tester"}, Approval: "confirm",
+		Delegates: []string{"coder", "researcher", "tester", "lxagent"}, Approval: "confirm",
 	},
 	{
 		ID: "coder", Name: "代码 Agent", Enabled: true, Color: "#3b82f6", Model: "",
@@ -322,5 +344,19 @@ var seedAgents = []sessiondata.AgentDef{
 		Tools:    []string{"read_file", "search", "edit", "write_file", "bash", "ask_user"},
 		Workflow: "merge-verify", Skills: []string{},
 		Delegates: []string{}, Approval: "auto",
+	},
+	{
+		// lxagent：**专门维护其他 Agent 配置**的内置 Agent——改系统提示词模板、
+		// 工具白名单与技能绑定。它的读写口就是 agent_read / agent_write 两个
+		// 工具（store 直改，与前端编辑器同一套校验）；改动过确认门、落库即生效。
+		// 审批档 confirm：agent_write 是高危工具，确认门在 confirm 档下生效——
+		// 配置变更必须用户点头。
+		ID: "lxagent", Name: "lxagent", Enabled: true, Color: "#7c3aed", Model: "",
+		// Desc 是**主 Agent 的选人信号**：要说清「改 Agent 配置」该派给谁。
+		Desc: "维护其他 Agent 的配置：查看与修改系统提示词模板、工具白名单与技能绑定，改动经确认门落库，对后续派发生效。",
+		Prompt: "你是 lxagent，专门维护其他 Agent 的配置：修改系统提示词模板、工具白名单与技能绑定。\n\n职责边界：\n- 只改 Agent 配置，不替用户做业务决策，也不亲自执行目标 Agent 的业务任务。\n- 动手前先 agent_read 摸清现状，向用户确认意图（改哪个 Agent、改成什么、为什么）再调用 agent_write。\n- agent_write 是高危操作（影响之后所有派发）：白名单加写工具会让目标 Agent 获得改动文件的能力，撤技能绑定会改变它的方法论——把后果说清让用户知情。\n- 每次改动后用 agent_read 复读确认落库结果，向用户回报改了什么。\n\n硬约束（工具层强制，勿试图绕过）：id 不可改、白名单不能清空、模板不能为空、工具名必须是工具目录里真实存在的、主 Agent 的配置不可经此修改。",
+		Tools:    []string{"agent_read", "agent_write", "read_file", "search", "session_search", "ask_user", "todo"},
+		Workflow: "minimal-change", Skills: []string{},
+		Delegates: []string{}, Approval: "confirm",
 	},
 }

@@ -158,15 +158,15 @@ func TestSyncSeedAgentsBackfillsOldDB(t *testing.T) {
 	if got := byID["coder"].Tools; slices.Contains(got, "todo") || slices.Contains(got, "share_file") || len(got) != 5 {
 		t.Fatalf("用户改过的 coder 行被同步动了: %v", got)
 	}
-	// 主 Agent 的委派名单（老库仍是上一版种子的值）补上新增的两个
+	// 主 Agent 的委派名单（老库仍是上一版种子的值）补上新增的
 	main := byID["main"]
-	for _, want := range []string{"coder", "researcher", "tester"} {
+	for _, want := range []string{"coder", "researcher", "tester", "lxagent"} {
 		if !slices.Contains(main.Delegates, want) {
 			t.Fatalf("主 Agent 的委派名单未补上 %s: %v", want, main.Delegates)
 		}
 	}
-	if len(main.Delegates) != 3 {
-		t.Fatalf("主 Agent 的委派名单应恰为三个（不重复追加）: %v", main.Delegates)
+	if len(main.Delegates) != 4 {
+		t.Fatalf("主 Agent 的委派名单应恰为四个（不重复追加）: %v", main.Delegates)
 	}
 
 	// 幂等：再开一次，名单与行数都不变
@@ -183,7 +183,7 @@ func TestSyncSeedAgentsBackfillsOldDB(t *testing.T) {
 		t.Fatalf("种子同步应幂等（数量稳定）: %d vs %d", len(list2), len(list))
 	}
 	for _, a := range list2 {
-		if a.ID == "main" && len(a.Delegates) != 3 {
+		if a.ID == "main" && len(a.Delegates) != 4 {
 			t.Fatalf("主 Agent 委派名单被重复追加: %v", a.Delegates)
 		}
 	}

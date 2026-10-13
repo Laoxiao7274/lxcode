@@ -115,7 +115,7 @@
 - **落库**：`messages` 加 `input_tokens`/`cache_read_tokens`/`cache_write_tokens`/`notice`/`usage_split` 五列（幂等 ALTER；老行恒 0 = 未知）；**`notice` 与 `usage_split` 都是写边界的一位标记**（两个前缀常量分别在 agent 与 protocol 包里，而折叠统计的 store 谁都不能 import）——`usage_split` 区分「本功能上线前的行」（那时 `usage_tokens` 装的是 provider 的 `total_tokens`，混算会把速度报得离谱）：那些行单独记 `LegacyTokens`，不进四桶、不进速度，只在明细里如实说明；tool 消息的 `duration_ms` 是工具耗时（`runTools` 计时，没执行的调用不写它）。**细节（含 `LegacyTokens` 的由来与判定）见 `docs/session-stats.md`**；
 - **wire**：`chat.done`（主轮与子轮各带**自己那份**——子会话的统计按它自己的 session_id 折叠）+ `ChatHistoryResult.stats` + `chat.rewound.stats`（重算后）；**零值 = 还没有任何一步 → 整键缺席**（前端不渲染统计胶囊，**不显示一排 0**）；前端三个名字必须分得开：「会话统计」= 时间胶囊（输入框那一行、紧挨上下文环）、「会话消耗」= 上下文环「会话用量」弹层里的那一节（总量 + 四桶 + 缓存命中，没有 token 时整节不渲染）、「会话用量」= 那个弹层（"此刻窗口里有多少" / "整条会话累计花了多少"）；**输入条永不折行**（控件 `flex:none`+`nowrap`，统计胶囊是唯一让位项）。
 
-## 3. 工具面（内置 14 个 + 目录动态注入）
+## 3. 工具面（内置 24 个 + 目录动态注入）
 
 | 工具 | 风险 | 说明 |
 |---|---|---|
@@ -136,6 +136,8 @@
 | `agent_dispatch` | 低危 | 主 Agent 唯一工具：把任务派给名单里的子 Agent（**子 Agent = 独立会话**，见 §2.3；深度恒 1） |
 | `merge_request` | 低危 | **遗留**（2026-10 架构修订：合并进程退役，会话直连主检出与用户当前分支，不再有分支合并流程）——被调用时如实返回说明、不启动任何任务；合并实现（mergejob.go / merger Agent）保留在库中以便将来恢复隔离模式。提交/推送用 `workspace_sync`（直接 push 当前分支），回滚用 `workspace_rollback` |
 | `ask_user` | 低危 | 向用户提问并等待回答（确认门的「提问」形态，`Kind="ask"`）：回答文本作为工具结果回填；用户跳过 = 「用户没有回答，自行决策」；**auto 审批档不豁免提问**；与高危确认共用同一个挂起槽位 |
+| `agent_read` | 低危 | 查看 Agent 注册表：不带 id 列出全部（id/名称/职责/白名单/技能），带 id 读单个完整定义（含提示词模板全文）——`agent_write` 前先摸现状；结构与读写链路见 `docs/agents.md` |
+| `agent_write` | 高危 | 按 id 字段级修改 Agent 配置（职责描述/提示词模板/工具白名单/技能绑定；未提供字段不动，id 不可改）：**落库即生效**（该 Agent 下次被派发用新配置）+ 落库后广播 `agent.changed`；硬校验（主 Agent 拒改/白名单不能清空且工具名真实存在/模板非空/技能 id 存在）在共享层 `sessiondata.ValidateAgentFieldUpdate`，store 与工具两条写路径共用；确认门文案列明改动字段与后果；详见 `docs/agents.md` |
 | `workspace_status` | 低危 | 查询项目工作区状态（**只读**）：主检出的未提交/未跟踪文件、各会话分支 ahead/工作树/是否已并入主检出、集成分支的领先/落后；未分组会话报「没有归属项目」 |
 | `workspace_sync` | 中危 | 「帮我提交/推送」的链路：提交本会话 worktree（干净则跳过）→ 起合并进程（`startMergeJob` 加 `pushAfter` 参数，合并成功后推 `origin`，push 失败 detail 写清「合并已完成，仅推送失败」）；执行前走确认门 |
 | `workspace_rollback` | 中危 | 回滚**本会话分支**到 `last-turn`（默认）/`session-start`/指定 commit hash：脏工作区拒绝（绝不静默丢弃手工改动）；目标已并入集成分支时警告「要在集成分支上 revert」；绝不 push、绝不动集成分支与主检出；执行前走确认门 |

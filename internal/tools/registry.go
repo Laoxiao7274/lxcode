@@ -85,6 +85,10 @@ type Registry struct {
 	//（server 装配时接线；零值 = 未装配，工具回「未装配」自解释错误）。
 	// 与 mergeStart 共用 searchMu（同一批装配期注入点）。
 	workspace WorkspaceOps
+	// agentCatalog 是注入的 Agent 配置读写实现（agent_read / agent_write 的
+	// store 侧实现——server 装配时接线；零值 = 未装配）。与 workspace 同一批
+	// 装配期注入点。
+	agentCatalog AgentCatalogOps
 }
 
 // SessionSearchFn 是会话搜索的实现约定：在全部会话（含当前）的消息内容里
@@ -139,6 +143,11 @@ func New() *Registry {
 	// ask_user（确认门的「提问」形态）：模型向用户提问、等用户回答——冲突
 	// 抉择、需要用户决策时用。与 todo 同为会话级交互工具，排在变更类之后。
 	r.register(askUserDef())
+	// agent_read / agent_write：Agent 配置的读与字段级写（lxagent 的手脚）。
+	// 读取类在前、变更类在后，插在 ask_user 之后、dispatch 之前——它们是
+	// 「管理面」工具（管的是 Agent 注册表本身，不是工作区）。
+	r.register(agentReadDef(r))
+	r.register(agentWriteDef(r))
 	r.register(dispatchDef(r))
 	// 合并进程入口（第二个 producer）：起一个后台合并任务，任务体是内置合并 Agent
 	// 的独立子会话。与 agent_dispatch 同为调度类，排在最后。

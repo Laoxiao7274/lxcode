@@ -221,6 +221,66 @@ func (s *Store) RemoveAgent(id string) error {
 	return nil
 }
 
+// UpdateAgentFields 对一条 Agent 定义做**字段级**更新（agent_write 工具的
+// 落库路径）：只动 u 里提供的字段，其余原样保留（含 enabled/is_main/custom）。
+//
+// 与前端编辑器（agent.update → UpdateAgent 全量写）共用同一套底层：校验走
+// sessiondata.ValidateAgentFieldUpdate（硬校验：主 Agent 拒改、模板非空、
+// 白名单不清空且名字真实存在、技能绑定存在）+ UpdateAgent 里的 validateAgent
+// 基础校验，落库走同一条 UPDATE（user_modified=1——agent 代用户改的配置同样
+// 受「种子热更新不覆盖用户改动」保护）。
+//
+// 「存在」的判定基准是**目录表**（tools / modules）而不是运行期注册表：
+// 目录是编辑器 chip 与白名单的事实源，注册表里没有的条目（未配置 command 的
+// binary 工具、未连接的 MCP 服务）在目录里合法存在——拿注册表当裁判会把
+// 现存合法白名单判死。
+func (s *Store) UpdateAgentFields(id string, u sessiondata.AgentFieldUpdate) error {
+	defs, err := s.ListAgents()
+	if err != nil {
+		return err
+	}
+	var def *sessiondata.AgentDef
+	for i := range defs {
+		if defs[i].ID == id {
+			def = &defs[i]
+			break
+		}
+	}
+	if def == nil {
+		return fmt.Errorf("Agent %s 不存在", id)
+	}
+	toolExists := func(name string) bool {
+		var n int
+		if err := s.db.QueryRow(`SELECT COUNT(*) FROM tools WHERE id = ?`, name).Scan(&n); err != nil || n == 0 {
+			return false
+		}
+		return true
+	}
+	skillExists := func(mid string) bool {
+		var n int
+		if err := s.db.QueryRow(`SELECT COUNT(*) FROM modules WHERE id = ?`, mid).Scan(&n); err != nil || n == 0 {
+			return false
+		}
+		return true
+	}
+	if err := sessiondata.ValidateAgentFieldUpdate(*def, u, toolExists, skillExists); err != nil {
+		return err
+	}
+	if u.Desc != nil {
+		def.Desc = *u.Desc
+	}
+	if u.Prompt != nil {
+		def.Prompt = *u.Prompt
+	}
+	if u.Tools != nil {
+		def.Tools = u.Tools
+	}
+	if u.Skills != nil {
+		def.Skills = u.Skills
+	}
+	return s.UpdateAgent(*def)
+}
+
 func validateAgent(a sessiondata.AgentDef) error {
 	if strings.TrimSpace(a.ID) == "" {
 		return fmt.Errorf("Agent id 不能为空")

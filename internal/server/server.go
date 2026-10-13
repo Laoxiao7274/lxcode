@@ -11,6 +11,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"github.com/gorilla/websocket"
 	"log"
 	"net/http"
@@ -235,6 +236,22 @@ func (s *Server) AttachSessionStore(st *store.Store) error {
 		RollbackConfirm: s.rollbackConfirmText,
 		Publish:         s.workspacePublish,
 		PublishConfirm:  s.publishConfirmText,
+	})
+	// agent_read / agent_write（Agent 配置读写，lxagent 的手脚）的 server 侧
+	// 实现：与 SetWorkspaceOps 同款注入模式。Update 走 store.UpdateAgentFields
+	// ——与前端编辑器共用一套校验与落库（user_modified=1，种子热更新不覆盖）；
+	// 成功后广播 agent.changed，让在线的编辑器界面立即反映新配置。
+	s.treg.SetAgentCatalogOps(tools.AgentCatalogOps{
+		List: func() ([]sessiondata.AgentDef, error) {
+			return st.ListAgents()
+		},
+		Update: func(id string, u sessiondata.AgentFieldUpdate) (string, error) {
+			if err := st.UpdateAgentFields(id, u); err != nil {
+				return "", err
+			}
+			s.broadcast(protocol.EventAgentChanged, protocol.AgentChangedParams{Reason: "update"})
+			return fmt.Sprintf("已更新 Agent「%s」的配置并落库——该 Agent 下次被派发就按新配置运行（编辑器界面已同步刷新）。", id), nil
+		},
 	})
 	// M4：工具目录里的自定义工具（binary）注册进工具注册表——启动时就位，
 	// 之后的目录变更由 catalog.tools.* 分支触发同步。
