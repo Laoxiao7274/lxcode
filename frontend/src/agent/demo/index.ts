@@ -704,7 +704,8 @@ export class DemoAgent implements AgentSource, JobAdminSource {
       if (jobId) {
         const settled = this.settleDemoJob(jobId, "completed", "self", "退出码 0");
         // 唤醒通告：后端在 settle 后把通告作为**真实 user 角色消息**投进归属会话
-        //（模型要当作用户回合才能回应），前端按文本前缀渲染成通告条——不是气泡。
+        //（模型要当作用户回合才能回应），前端按文本前缀识别、对用户隐藏（hidden：
+        // 不上对话时间线——任务状态在任务卡与 Jobs 面板）。
         // 措辞对齐契约 §5：EndedBy=self → 结束通告；EndedBy=user → 「不要重启」。
         this.emit({
           type: "userMessage",

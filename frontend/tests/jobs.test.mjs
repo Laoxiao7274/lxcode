@@ -142,17 +142,16 @@ test('通告识别只看文本前缀，不看角色', () => {
   assert.equal(jobNoticeBody('普通消息'), '普通消息');
 });
 
-test('通告渲染成通告条而不是用户气泡（实时路径）', () => {
+test('通告在实时路径上不产生任何块（hidden：不上对话时间线，也不能变用户气泡）', () => {
   const s = reduce(base, { type: 'userMessage', sessionId: 's1', text: '[后台任务通告] 用户主动结束了后台任务 X。不要重启它。' });
-  assert.equal(s.blocks.length, 1);
-  assert.equal(s.blocks[0].kind, 'notice', 'user 角色的通告不能变成用户气泡');
-  assert.equal(s.blocks[0].text, '用户主动结束了后台任务 X。不要重启它。', '前缀由标签承担，正文不带前缀');
+  assert.equal(s.blocks.length, 0, '写给模型的唤醒注记，界面上当它不存在（任务状态在任务卡与 Jobs 面板）');
   // 普通用户消息照旧是气泡
   const s2 = reduce(s, { type: 'userMessage', sessionId: 's1', text: '帮我看下构建' });
-  assert.equal(s2.blocks.at(-1).kind, 'user');
+  assert.equal(s2.blocks.length, 1);
+  assert.equal(s2.blocks[0].kind, 'user');
 });
 
-test('通告在历史回放里同样是通告条（两条路径必须一致）', () => {
+test('通告在历史回放里同样不产生任何块（两条路径必须一致）', () => {
   let s = reduce(base, {
     type: 'historyLoaded', sessionId: 's1',
     history: {
@@ -164,9 +163,7 @@ test('通告在历史回放里同样是通告条（两条路径必须一致）',
       ],
     },
   });
-  assert.equal(s.blocks[0].kind, 'user');
-  assert.equal(s.blocks.at(-1).kind, 'notice', '刷新后同一句话不能换张脸');
-  assert.equal(s.blocks.at(-1).text, '后台任务 go test 结束（退出码 0）。');
+  assert.deepEqual(s.blocks.map((b) => b.text ?? b.content), ['帮我看下构建', '好'], '刷新后通告同样不可见（不换张脸）');
 });
 
 // ---------- 纯映射（events.ts） ----------
@@ -378,10 +375,9 @@ test('演示模式：任务 settle 后投一条带前缀的 user 角色通告（
   assert.ok(notice, '任务 settle 后应投一条通告（模型要当作用户回合才能回应）');
   assert.equal(notice.sessionId, session, '通告投进归属会话');
   assert.equal(jobOutcomeText(agent.jobs()[0]), '正常结束');
-  // 通告走 reduce 之后是通告条，不是用户气泡
+  // 通告走 reduce 之后不产生任何块（hidden：不上对话时间线，更不是用户气泡）
   const s = reduce(base, notice);
-  assert.equal(s.blocks.at(-1).kind, 'notice');
-  assert.equal(s.blocks.at(-1).text, '后台任务 go test ./... -count=1 结束（退出码 0）。用 job_output 读输出。');
+  assert.equal(s.blocks.length, 0);
 });
 
 test('演示模式：未知任务 id 不静默成功（抛错给 UI 提示）', async () => {

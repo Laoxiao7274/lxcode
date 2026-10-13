@@ -25,9 +25,15 @@ export const SYSTEM_NOTICE_PREFIX = "[系统通告] ";
  *  **hidden = 对用户隐藏**（2026-10-10）：这条通告是写给**模型**的注记（如「用户
  *  中断了这次生成」——模型必须知道上一轮为什么半途而废），不是给用户看的界面
  *  元素——渲染层对它**不产生任何块**（实时 reduce 与回放 history 两处一致）。
- *  不带 hidden 的种类照旧渲染成提示条。 */
+ *  不带 hidden 的种类照旧渲染成提示条。
+ *
+ *  2026-12 用户拍板：后台任务通告也归入 hidden。用户原话「后台任务怎么还会展示到
+ *  对话界面」——它是写给模型的唤醒注记（模型必须知道任务结束了、去读输出），不是
+ *  对话内容；任务状态本来就有自己的界面（时间线上的任务卡 + Jobs 面板，来自
+ *  job.started/settled 事件），通告条在对话时间线里是重复呈现。模型侧语义不动：
+ *  它照常作为 user 角色消息入历史与上下文。 */
 export const NOTICE_KINDS: Array<{ prefix: string; label: string; hidden?: boolean }> = [
-  { prefix: JOB_NOTICE_PREFIX, label: "后台任务通告" },
+  { prefix: JOB_NOTICE_PREFIX, label: "后台任务通告", hidden: true },
   { prefix: REPEAT_NOTICE_PREFIX, label: "重复调用提醒" },
   { prefix: SYSTEM_NOTICE_PREFIX, label: "系统通告", hidden: true },
 ];

@@ -97,8 +97,9 @@ test('pending 块挂在会话自己的 state 上：切会话不串线、回来�
 test('提示条（notice）回执不动 pending 块：它不是本次发送的确认', () => {
   let s = blank();
   s = reduce(s, { type: 'optimisticUser', sessionId: 's1', text: '问题' });
-  // 后台任务通告在历史里也是 user 角色消息（notices.ts 前缀表识别）
+  // 后台任务通告在历史里也是 user 角色消息（notices.ts 前缀表识别）——
+  // 2026-12 起 hidden：不产生任何块，更不会动本次发送的 pending 块
   s = reduce(s, { type: 'userMessage', sessionId: 's1', text: '[后台任务通告] job-1 已结束' });
   assert.equal(s.blocks.filter((b) => b.kind === 'user' && b.pending).length, 1, 'pending 不被通告吃掉');
-  assert.equal(s.blocks.some((b) => b.kind === 'notice'), true, '通告照常渲染成提示条');
+  assert.equal(s.blocks.some((b) => b.kind === 'notice'), false, '通告对用户隐藏（不上对话时间线）');
 });

@@ -100,9 +100,10 @@ export function historyBlocks(h: HistorySnapshot): ThreadBlock[] {
       if (checkpoints.has(i)) {
         blocks.push({ kind: "compacted", uid: nextUid(), before: 0, after: 0, shadowed: 0, summary: checkpointBody(m.content), manual: false });
       } else {
-        // 提示条（后台任务通告 / 重复调用提醒）是 **user 角色**消息（模型要当作用户
-        // 回合才能回应），但它不是用户说的话——按**前缀表**识别并渲染成提示条
-        //（回放路径与实时路径必须一致，否则刷新之后同一句话换了张脸）。
+        // 提示条（重复调用提醒）是 **user 角色**消息（模型要当作用户回合才能回应），
+        // 但它不是用户说的话——按**前缀表**识别并渲染成提示条（回放路径与实时路径
+        // 必须一致，否则刷新之后同一句话换了张脸）。后台任务通告是 hidden 种类：
+        // 走上面的 isHiddenNotice 分支，不产生任何块（任务状态在任务卡与 Jobs 面板）。
         // **hidden 的系统注记不产生任何块**（写给模型的，界面上当它不存在——
         // 与实时路径 reduce.ts 共用同一份判定，两处一致性是本注释的既有纪律）。
         if (isHiddenNotice(m.content)) {

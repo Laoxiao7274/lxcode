@@ -63,14 +63,16 @@ test('前缀表顺序敏感：取数组里第一个命中的前缀', () => {
   assert.equal(noticeLabel('[后台任务通告] 后台任务 go test 结束'), '后台任务通告', '临时插入必须还原');
 });
 
-test('标签取自 NOTICE_KINDS：后台任务通告那条的标签仍是「后台任务通告」（旧行为不许变）', () => {
+test('标签取自 NOTICE_KINDS：后台任务通告（hidden，2026-12 用户拍板：不上对话时间线）', () => {
   assert.equal(NOTICE_KINDS.length, 3, '后台任务通告 + 重复调用提醒 + 系统通告（hidden）');
   const job = NOTICE_KINDS.find((k) => k.label === '后台任务通告');
   assert.ok(job, '后台任务通告必须在表里');
   assert.equal(job.prefix, '[后台任务通告] ');
+  assert.equal(job.hidden, true, '后台任务通告对用户隐藏（写给模型的唤醒注记，任务状态在任务卡与 Jobs 面板）');
   const repeat = NOTICE_KINDS.find((k) => k.label === '重复调用提醒');
   assert.ok(repeat, '重复调用提醒必须在表里');
   assert.equal(repeat.prefix, REPEAT_NOTICE_PREFIX);
+  assert.equal(repeat.hidden, undefined, '重复调用提醒照旧渲染提示条');
   const sys = NOTICE_KINDS.find((k) => k.label === '系统通告');
   assert.ok(sys, '系统通告必须在表里');
   assert.equal(sys.prefix, SYSTEM_NOTICE_PREFIX);
@@ -125,10 +127,10 @@ test('SYSTEM_NOTICE_PREFIX 与后端 agent.SystemNoticePrefix 逐字一致（含
   assert.equal(SYSTEM_NOTICE_PREFIX.endsWith(' '), true, '尾空格必须保留');
 });
 
-test('isHiddenNotice：系统通告命中 hidden，其他种类与普通文本不命中', () => {
+test('isHiddenNotice：系统通告与后台任务通告命中 hidden，其他种类与普通文本不命中', () => {
   assert.equal(isHiddenNotice(SYSTEM_TEXT), true);
   assert.equal(isHiddenNotice('看这条 [系统通告] 没在开头'), false, '只有开头才算');
-  assert.equal(isHiddenNotice('[后台任务通告] go test 结束。'), false, '非 hidden 照常显示');
+  assert.equal(isHiddenNotice('[后台任务通告] go test 结束。'), true, '后台任务通告对用户隐藏（2026-12）');
   assert.equal(isHiddenNotice('用户自己打的一句话'), false);
   assert.equal(isHiddenNotice(''), false);
 });
@@ -163,15 +165,21 @@ test('hidden 的系统注记在历史回放里同样不产生任何块（两条�
   );
 });
 
-test('非 hidden 的通告（后台任务）在两条路径上照常渲染提示条——hidden 只影响自己那一行', () => {
+test('后台任务通告（hidden）在两条路径上都不产生任何块——模型可见、界面不渲染', () => {
+  // 2026-12 用户拍板：后台任务通告不上对话时间线（任务状态在任务卡与 Jobs 面板）。
+  // 两条路径（实时 userMessage / 回放 historyLoaded）共用 isHiddenNotice 判定。
   const job = '[后台任务通告] 后台任务 go test 结束（退出码 0）。';
   const live = reduce(base, { type: 'userMessage', sessionId: 's1', text: job });
-  assert.equal(live.blocks.length, 1);
-  assert.equal(live.blocks[0].kind, 'notice');
-  assert.equal(live.blocks[0].label, '后台任务通告');
+  assert.equal(live.blocks.length, 0, '实时路径：通告不产生任何块');
   const replay = reduce(base, {
     type: 'historyLoaded', sessionId: 's1',
     history: { sessionId: 's1', busy: false, pending: null, todos: [], messages: [{ role: 'user', content: job }] },
   });
-  assert.equal(replay.blocks[0].kind, 'notice');
+  assert.equal(replay.blocks.length, 0, '历史回放：刷新后同样不可见');
+  // 前后的普通消息不受影响，重复调用提醒照旧渲染提示条
+  let s = reduce(base, { type: 'userMessage', sessionId: 's1', text: '帮我跑下测试' });
+  s = reduce(s, { type: 'userMessage', sessionId: 's1', text: job });
+  s = reduce(s, { type: 'userMessage', sessionId: 's1', text: REPEAT_TEXT });
+  s = reduce(s, { type: 'userMessage', sessionId: 's1', text: '好了继续' });
+  assert.deepEqual(s.blocks.map((b) => b.text), ['帮我跑下测试', '你在重复完全相同的工具调用，参数一个字都没变。先仔细看上一次的结果再决定下一步。', '好了继续']);
 });
