@@ -406,17 +406,34 @@ export interface GitOverview {
 export type ApprovalMode = "auto" | "confirm" | "strict";
 
 /** chat.send 携带的一张图片附件：data 为纯 base64（不带 data: 前缀）。
- *  与后端 protocol.ChatSendImage 同形（2026-10 图片批次 B）。 */
+ *  与后端 protocol.ChatSendImage 同形（2026-10 图片批次 B）。
+ *
+ *  **传输形态（2026-12 用户拍板：本地路径优先，base64 兜底）**：Electron 壳里
+ *  有真实磁盘路径的文件走 path 形态（path 非空、data 为空——后端按路径读盘，
+ *  WS 帧里没有文件内容）；粘贴截图、虚拟文件（无路径）与浏览器模式仍走 base64。
+ *  file 是**仅内存**的降级凭据：后端读不到 path（文件在 staging 后被移动/删除）
+ *  时，用它把同一个文件读成 base64 重发一次——绝不序列化（File 过 wire/草稿
+ *  持久化都会退化成 {}，两处注释都钉了这条）。 */
 export interface ChatSendImage {
   mime: string;
   data: string;
+  /** 展示名（可选；后端 path 形态没带时回落路径 basename，base64 形态回落「图片」）。 */
+  name?: string;
+  /** 本地真实路径（webUtils.getPathForFile 解析）；非空 = path 形态。 */
+  path?: string;
+  /** File 对象（仅内存，不进 wire）；path 形态发送失败时降级 base64 重发用。 */
+  file?: File;
 }
 
 /** chat.send 携带的一个文件附件：name 为原名（后端净化），data 为纯 base64。
- *  与后端 protocol.ChatSendFile 同形。 */
+ *  与后端 protocol.ChatSendFile 同形。path/file 的语义与 ChatSendImage 同款。 */
 export interface ChatSendFile {
   name: string;
   data: string;
+  /** 本地真实路径；非空 = path 形态（后端按路径读盘，data 为空）。 */
+  path?: string;
+  /** File 对象（仅内存，不进 wire）——降级 base64 重发用。 */
+  file?: File;
 }
 
 /** 一条消息的附件集合（Composer 暂存 / 队列条目 / SendOptions 共用同一形状——

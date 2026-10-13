@@ -14,16 +14,47 @@
 
 - 位置：`<sessions>/attachments/<session-id>/<随机id>.<ext>`（与 worktree 同层的
   `attachments/` 根；磁盘名恒为 16 字节随机 hex + 扩展名，**原名永不成为路径成分**）。
-- 消息恒存**相对 attachments 根的引用**（`<session-id>/<文件名>`）；base64 只活在
-  两个瞬间（chat.send 参数里 → 落盘即弃；LLM 请求构造瞬间），绝不进历史/事件/日志。
+- 消息恒存**相对 attachments 根的引用**（`<session-id>/<文件名>`）；文件内容只活在
+  几个瞬间（chat.send 参数里的 base64 → 落盘即弃；path 形态的磁盘读取 → 落盘即弃；
+  LLM 请求构造瞬间）——内容绝不进历史/事件/日志，path（客户端本机路径）也只活在
+  chat.send 参数里。
 - 大小上限：图片 5MB（Anthropic base64 源图上限，vision 通道）、文件 20MB
-  （`llm.MaxFileAttachmentBytes`，tools/store/server 三层共用一份常量）。
+  （`llm.MaxFileAttachmentBytes`，tools/store/server 三层共用一份常量）。path 形态
+  同一套上限（读盘后判定，见上面「传输形态」）。
 
 ## wire 形状（全部向后兼容：可选字段 + 新工具声明，协议 Version 不变）
 
 - `chat.send` 的 `images`/`files` 参数（base64）**就是上传通道**——第一版没有独立的
   `chat.attach` 方法：现状里协议已有这两个字段（2026-10 图片批次 B 铺好），上传与
   发送一步完成；`ChatSendImage` 新增可选 `name`（展示名，老客户端不带 → 回落「图片」）。
+- **传输形态（2026-12 用户拍板：本地路径优先，base64 兜底）**——`images`/`files`
+  的元素支持**双形态**（可选 `path` 键，向后兼容，协议 Version 不变）：
+  - **path 形态**（`path` 非空，`data` 必须为空，两者同带报参数错误）：前后端同机
+    （Electron 壳），WS 帧里**只有路径没有文件内容**——后端 `readLocalAttachment`
+    直接按路径读盘（`os.Stat` 存在性校验 + 同 base64 形态的大小上限：图片 5MB /
+    文件 20MB），错误一律带路径且带特征串「本地文件读取失败」。图片的 `mime` 可省
+    （服务端按扩展名推导，与附件端点 extMime 同一份映射；推导不出报参数错误）；
+    展示名可省（回落路径 basename，净化规则同 base64 形态）。
+  - **base64 形态**（`path` 缺省）：与 2026-10 版逐字节相同——老客户端/老后端互
+    操作不受影响。
+- **信任边界（path 形态）**：本机单用户模型——后端与客户端同机同用户，客户端本就
+  能经 share_file/read_file 工具读同一台机器的文件，故 path 形态**不做目录白名单**，
+  信任级别与那两个工具一致。但大小上限与存在性校验照做（与 base64 同一套常量），
+  错误带路径。**远程访问形态（listener 切 0.0.0.0）下这条边界不变**：path 由客户端
+  声明、按服务端本地盘解读——远程客户端不该发 path 形态（发的是它自己机器上不
+  存在的路径，会被存在性校验拒绝；不发白名单是因为「白名单」在这里防不住任何
+  有意义的攻击，只会制造两套口径）。
+- **前端降级链路**：文件在 staging 之后被移动/删除是真实场景——后端读不到 path
+  时报「本地文件读取失败」（带路径），前端只对这一特征串降级：用 staging 时留在
+  手上的 File 对象把**整批** path 条目读成 base64 **重发一次**（部分降级会让同一
+  文件发两遍或漏发，宁缺毋滥）；File 快照也失效才报带文件名的人话错误。降级逻辑
+  在 WSAgent.send 的 catch 里（`shared/attachment-send.ts` 的纯函数 + node:test 钉子）。
+- **暂存策略（前端）**：`stageFile`（shared/attachment-read.ts）——Electron 桥
+  （preload 新增 `__LX__.getPathForFile`，`webUtils.getPathForFile` 只解析不读内容）
+  解析出真实路径 → 暂存记 `{path, file, size}`，**不读内容、不占内存**；无路径
+  （粘贴截图 / 压缩包虚拟文件 / 浏览器模式）→ 维持 base64 读入（blob 优先、
+  shell 路径重读兜底，行为与 2026-12 之前一致）。File 对象仅存内存，随暂存条目、
+  队列条目与草稿记账走，**绝不序列化**（File 过 wire/持久化会退化成 `{}`）。
 - **`llm.Message.Attachments []AttachmentRef`**（json `attachments,omitempty`）是展示
   元数据的唯一载体：`{path, name, size, mime?, kind: image|file, caption?}`。
   - user 消息：用户发的图/文件（与 `Images` 并存——Images 服务视觉请求，
@@ -38,6 +69,8 @@
   图片扩展名回 `image/*` inline；其余回 `octet-stream` + `attachment` 处置（下载）。
   路径形态校验（sessionID 白名单 + 文件名 hex + 扩展名白名单 + 根内前缀双保险），
   穿越一律 404。
+- **模型侧不变**：path 形态落盘后的元数据、`ImageRef` 视觉通道、渲染、回放与
+  base64 形态**完全同构**——这次只改「传输形态」，不改「落盘之后的一切」。
 
 ## share_file 工具（Agent → 用户）
 
@@ -111,6 +144,10 @@
   `internal/agent/read_image_test.go`（视觉模型续轮请求带图引用 / 非视觉人话错误）、
   `internal/agent/dispatch_attachments_test.go`（子会话附件回传主会话三路径）、
   `internal/llm/tool_image_test.go`（tool 消息带图的双 wire 编码 + 无图逐字节不变）、
-  `internal/server/attachments_test.go` + `files_test.go`（端点文件卡、发送元数据落库）。
+  `internal/server/attachments_test.go` + `files_test.go`（端点文件卡、发送元数据落库）、
+  `internal/server/attachment_path_test.go`（path 形态：落盘/mime 推导/超限/不存在
+  带路径错误/path+data 互斥/path 与 base64 混发；wire 兼容由既有纯 base64 用例钉住）。
 - 前端：`tests/attachment-display.test.mjs`（URL 构造/行解析/归一化/实时与回放同形状/
-  渲染），`tests/attachments.test.mjs` 是发送侧（composer/队列/回滚）的既有钉子。
+  渲染），`tests/attachments.test.mjs` 是发送侧（composer/队列/回滚）的既有钉子，
+  `tests/attachment-path.test.mjs` 是 path 形态的发送侧钉子（staging 双轨不读内容/
+  wire 只带路径且 file 不上车/降级重发与凭据丢失的人话错误/失败回填保留 path+file）。

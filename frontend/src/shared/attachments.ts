@@ -21,20 +21,36 @@ export const MAX_FILE_BYTES = 20 << 20;
 /** 一条消息最多几个文件。 */
 export const MAX_FILE_COUNT = 4;
 
-/** Composer 暂存的一张图片：data 为纯 base64（不带 data: 前缀——发送直接用）。 */
+/** Composer 暂存的一张图片：data 为纯 base64（不带 data: 前缀——发送直接用）。
+ *
+ *  **双形态（2026-12 用户拍板：本地路径优先，base64 兜底）**：Electron 壳里
+ *  有真实路径的文件记 path（**data 为空串**——内容不进内存，发送只传路径）；
+ *  粘贴截图/虚拟文件/浏览器模式记 data（path 为空）。file 是仅内存的降级凭据
+ *  （path 发送失败时用它读 base64 重发），size 两种形态都有（File.size）。 */
 export interface PendingImage {
   id: string;
   mime: string;
   name: string;
   data: string;
+  /** 非空 = 路径形态（data 恒为空串）。 */
+  path?: string;
+  /** File 对象（仅内存，不进 wire/持久化——序列化会退化成 {}）。 */
+  file?: File;
+  /** 字节数（路径形态没有 data 可算，用 File.size；base64 形态可省略——由
+   *  data 长度推算）。 */
+  size?: number;
 }
 
-/** Composer 暂存的一个文件。 */
+/** Composer 暂存的一个文件（双形态语义与 PendingImage 同款）。 */
 export interface PendingFile {
   id: string;
   name: string;
   size: number;
   data: string;
+  /** 非空 = 路径形态（data 恒为空串）。 */
+  path?: string;
+  /** File 对象（仅内存，不进 wire/持久化）。 */
+  file?: File;
 }
 
 export function isImageMime(mime: string): boolean {
@@ -51,18 +67,20 @@ export function formatBytes(n: number): string {
 /** 追加图片（选择/粘贴共用一条路径）：逐张校验 mime 白名单、单张大小、总数。
  *  全部合法才收（一次选择里挑出非法的会拒掉整批并说明原因——半收半拒会让
  *  「刚才选中的哪几张进了」变成猜谜）。返回新数组（不原地改——React state）。
- *  notice 非空 = 有拒绝原因，调用方显示为一次性提示。 */
+ *  notice 非空 = 有拒绝原因，调用方显示为一次性提示。
+ *  双形态：path 非空 = 路径形态（大小用 size 字段），否则按 base64 算字节。 */
 export function addPendingImages(
   existing: PendingImage[],
-  incoming: { mime: string; name: string; data: string }[],
+  incoming: { mime: string; name: string; data?: string; path?: string; file?: File; size?: number }[],
 ): { images: PendingImage[]; notice: string } {
   if (incoming.length === 0) return { images: existing, notice: "" };
   for (const im of incoming) {
     if (!isImageMime(im.mime)) {
       return { images: existing, notice: `不支持的图片类型：${im.name || im.mime}（支持 png/jpeg/webp/gif）` };
     }
-    // base64 解码后的字节数 ≈ data 长度 × 3/4——判定用真字节（与后端口径一致）
-    if (base64Bytes(im.data) > MAX_IMAGE_BYTES) {
+    // 路径形态按 File.size 判定；base64 形态解码后字节数 ≈ data 长度 × 3/4
+    //（判定用真字节，与后端口径一致）
+    if ((im.path ? im.size ?? 0 : base64Bytes(im.data ?? "")) > MAX_IMAGE_BYTES) {
       return { images: existing, notice: `图片 ${im.name || ""} 超过 5MB 上限` };
     }
   }
@@ -71,15 +89,22 @@ export function addPendingImages(
   }
   const base = existing.length;
   return {
-    images: [...existing, ...incoming.map((im, i) => ({ id: `img-${Date.now().toString(36)}-${base + i}-${im.name}`, mime: im.mime, name: im.name, data: im.data }))],
+    images: [...existing, ...incoming.map((im, i) => ({
+      id: `img-${Date.now().toString(36)}-${base + i}-${im.name}`,
+      mime: im.mime,
+      name: im.name,
+      data: im.data ?? "",
+      ...(im.path ? { path: im.path, file: im.file, size: im.size } : {}),
+    }))],
     notice: "",
   };
 }
 
-/** 追加文件：逐个校验大小与总数（文件不做类型白名单——Agent 什么都要能收）。 */
+/** 追加文件：逐个校验大小与总数（文件不做类型白名单——Agent 什么都要能收）。
+ *  双形态：path 非空 = 路径形态（size 必带，data 为空串）。 */
 export function addPendingFiles(
   existing: PendingFile[],
-  incoming: { name: string; size: number; data: string }[],
+  incoming: { name: string; size: number; data?: string; path?: string; file?: File }[],
 ): { files: PendingFile[]; notice: string } {
   if (incoming.length === 0) return { files: existing, notice: "" };
   for (const f of incoming) {
@@ -92,7 +117,13 @@ export function addPendingFiles(
   }
   const base = existing.length;
   return {
-    files: [...existing, ...incoming.map((f, i) => ({ id: `file-${Date.now().toString(36)}-${base + i}-${f.name}`, name: f.name, size: f.size, data: f.data }))],
+    files: [...existing, ...incoming.map((f, i) => ({
+      id: `file-${Date.now().toString(36)}-${base + i}-${f.name}`,
+      name: f.name,
+      size: f.size,
+      data: f.data ?? "",
+      ...(f.path ? { path: f.path, file: f.file } : {}),
+    }))],
     notice: "",
   };
 }
@@ -108,11 +139,21 @@ export function hasPendingAtts(images: PendingImage[], files: PendingFile[]): bo
   return images.length > 0 || files.length > 0;
 }
 
-/** 暂存 → wire 形状（SendOptions.images/files / 队列条目共用——images/files
- *  数组按引用给出，调用方不再复制 base64）。 */
+/** 暂存 → wire 形状（SendOptions.images/files / 队列条目共用——数组按引用给出，
+ *  不复制内容）。双形态直通：路径形态带 path（data 为空串，wire 层由
+ *  attachment-send.wireImage/wireFile 只发其一）、base64 形态带 data；file 对象
+ *  随行（仅内存——WSAgent 组 wire 参数时剥掉）。 */
 export function attsFromPending(images: PendingImage[], files: PendingFile[]): SendAttachments {
-  const wireImages: ChatSendImage[] = images.map((im) => ({ mime: im.mime, data: im.data }));
-  const wireFiles: ChatSendFile[] = files.map((f) => ({ name: f.name, data: f.data }));
+  const wireImages: ChatSendImage[] = images.map((im) => ({
+    mime: im.mime,
+    data: im.data,
+    ...(im.path ? { path: im.path, file: im.file, name: im.name } : {}),
+  }));
+  const wireFiles: ChatSendFile[] = files.map((f) => ({
+    name: f.name,
+    data: f.data,
+    ...(f.path ? { path: f.path, file: f.file } : {}),
+  }));
   return { images: wireImages, files: wireFiles };
 }
 

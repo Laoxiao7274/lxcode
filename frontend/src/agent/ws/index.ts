@@ -17,6 +17,7 @@ import type {
 import { rewindParams } from "../../shared/blocks";
 import { normalizeApproval } from "../../shared/approval";
 import { setAttachmentOrigin } from "../../shared/attachments";
+import { hasPathAtts, isPathReadError, readAttsAsBase64, wireFile, wireImage } from "../../shared/attachment-send";
 import { jobFromWire, sortJobs, upsertJob } from "../../shared/jobs";
 import { mapEvent } from "./events";
 
@@ -623,11 +624,11 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
     // 新会话按 behavior 默认档初始化）——恒带请求级 approval 会静默覆盖会话档
     // 且不广播（持久化/隔离问题的根因之一）。协议侧参数仍保留（老客户端兼容）。
     if (opts?.agent) params.agent = opts.agent;
-    // 附件（图片批次 B）：images = {mime, data}（纯 base64 不带前缀，后端协议
-    // 同形）；files = {name, data}。base64 只在这一瞬间经 wire 存在——落盘后
-    // 历史里只有引用。
-    if (opts?.images?.length) params.images = opts.images.map((im) => ({ mime: im.mime, data: im.data }));
-    if (opts?.files?.length) params.files = opts.files.map((f) => ({ name: f.name, data: f.data }));
+    // 附件（图片批次 B + 2026-12 路径优先）：双形态——path 非空 = 本地路径形态
+    //（wire 上只有路径，后端按路径读盘；file 对象在 wireImage/wireFile 里剥掉，
+    // 绝不上 wire）；path 为空 = base64 形态（粘贴截图/虚拟文件/浏览器模式）。
+    if (opts?.images?.length) params.images = opts.images.map(wireImage);
+    if (opts?.files?.length) params.files = opts.files.map(wireFile);
     const atts: SendAttachments | undefined = hasAtts
       ? { images: opts?.images ?? [], files: opts?.files ?? [] }
       : undefined;
@@ -638,10 +639,42 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
     // 错误文案走既有 operationError 通道。failed 变体带回原附件——store 的
     // onSendFailed 钩子把它装回输入框附件区（文本丢了附件不能丢）。
     this.emit({ type: "optimisticUser", sessionId, text, ...(atts ? { atts } : {}) });
+    const degrade = hasPathAtts(opts?.images, opts?.files);
     this.call("chat.send", params).catch((e) => {
+      // 降级链路（path 失败 → base64 重发一次）：后端读不到 path（文件在暂存
+      // 之后被移动/删除）报「本地文件读取失败」类错误——用暂存时留在手上的
+      // File 对象把同一批文件读成 base64 重发一次。降级成功 = 乐观气泡照常
+      // 等回执；降级也失败（File 快照也没了/重发仍被拒）才走失败路径。
+      if (degrade && isPathReadError(e?.message)) {
+        void this.degradeResend(sessionId, text, opts, atts);
+        return;
+      }
       this.emit({ type: "optimisticUser", sessionId, text, failed: true, ...(atts ? { atts } : {}) });
       this.opError(`发送失败: ${e.message}`);
     });
+  }
+
+  /** path 形态发送失败的降级重发：全部 path 条目按 File 读成 base64，重发一次。
+   *  成功 → 什么都不做（乐观气泡继续等后端回执）；失败 → 原样走失败路径
+   * （failed 乐观气泡装回附件区 + operationError 人话文案）。 */
+  private async degradeResend(
+    sessionId: string,
+    text: string,
+    opts: SendOptions | undefined,
+    atts: SendAttachments | undefined,
+  ): Promise<void> {
+    try {
+      const b64 = await readAttsAsBase64(opts?.images, opts?.files);
+      const params: Record<string, unknown> = { session_id: sessionId, text };
+      if (opts?.effort) params.effort = opts.effort;
+      if (opts?.agent) params.agent = opts.agent;
+      if (b64.images.length) params.images = b64.images.map(wireImage);
+      if (b64.files.length) params.files = b64.files.map(wireFile);
+      await this.call("chat.send", params);
+    } catch (e) {
+      this.emit({ type: "optimisticUser", sessionId, text, failed: true, ...(atts ? { atts } : {}) });
+      this.opError(`发送失败: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   /** 中途改权限档（chat.approval）：**立刻生效于运行中的那一轮**。

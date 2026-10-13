@@ -66,12 +66,26 @@ export function clearDraft(drafts: SessionDrafts, sessionId: string): SessionDra
 let restoreSeq = 0;
 
 /** 发送形状的附件（SendAttachments）→ Composer 暂存形状（Pending*）：发送失败
- *  回填与注入草稿带附件时都要做这次换形。 */
+ *  回填与注入草稿带附件时都要做这次换形。双形态直通：path 形态保留 path 与
+ *  file（file 是仅内存对象——草稿记账不序列化，刷新即失，可接受：重发路径
+ *  失败时降级会得到「文件对象已不可用」的人话错误）。 */
 export function pendingFromAtts(atts: SendAttachments): { images: PendingImage[]; files: PendingFile[] } {
   restoreSeq += 1;
   const seq = restoreSeq;
   return {
-    images: atts.images.map((im, i) => ({ id: `restore-${seq}-${i}`, mime: im.mime, name: "", data: im.data })),
-    files: atts.files.map((f, i) => ({ id: `file-restore-${seq}-${i}`, name: f.name, size: 0, data: f.data })),
+    images: atts.images.map((im, i) => ({
+      id: `restore-${seq}-${i}`,
+      mime: im.mime,
+      name: im.name ?? "",
+      data: im.data,
+      ...(im.path ? { path: im.path, file: im.file } : {}),
+    })),
+    files: atts.files.map((f, i) => ({
+      id: `file-restore-${seq}-${i}`,
+      name: f.name,
+      size: 0,
+      data: f.data,
+      ...(f.path ? { path: f.path, file: f.file } : {}),
+    })),
   };
 }

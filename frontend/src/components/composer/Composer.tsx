@@ -25,7 +25,7 @@ import {
   type PendingImage,
 } from "../../shared/attachments";
 import { routeSubmit, type SendQueueItem } from "../../shared/send-queue";
-import { readFileAsBase64 } from "../../shared/attachment-read";
+import { stageFile } from "../../shared/attachment-read";
 import { collectFolderEntries, defaultFolderDeps, type EntryLike } from "../../shared/folder-drop";
 import type { SessionDraft } from "../../shared/session-drafts";
 import type { SendAttachments, ContextUsage, SessionStats, TodoItem } from "../../shared/types";
@@ -213,17 +213,16 @@ export function Composer({
     }
   };
 
-  // ---- 附件：本地选择 + 粘贴（共用一条异步读入路径） ----
+  // ---- 附件：本地选择 + 粘贴（共用一条暂存路径） ----
 
-  /** File → {base64, size}（异步——大图读入不卡 UI）。
-   *  读入通道在 shared/attachment-read.ts：blob 快照失效（拖拽虚拟文件等，
-   *  FileReader 报 NotFoundError）时回落 Electron 真实路径重读；浏览器模式
-   *  无回退，错误带文件名与人话指引。 */
-  const readAsBase64 = (file: File) => readFileAsBase64(file);
+  // 暂存通道在 shared/attachment-read.ts 的 stageFile：**路径优先**（Electron
+  // 壳里 webUtils 解析出真实磁盘路径的文件不读内容——发送只传路径，WS 帧里
+  // 没有文件内容也不占内存）；没有路径的（粘贴截图/压缩包虚拟文件/浏览器模式）
+  // 维持 base64 读入（blob 快照失效时回落真实路径重读）。
 
   const ingest = async (list: File[]) => {
     if (list.length === 0) return;
-    // 尺寸先于读取拦截：超大文件不读进内存（读 100MB 只为报错是浪费）
+    // 尺寸先于暂存拦截：超大文件不碰内容（读 100MB 只为报错是浪费）
     const oversizeImg = list.find((f) => isImageMime(f.type) && f.size > MAX_IMAGE_BYTES);
     if (oversizeImg) {
       flashNotice(`图片 ${oversizeImg.name} 超过 5MB 上限（当前 ${formatBytes(oversizeImg.size)}）`);
@@ -238,20 +237,24 @@ export function Composer({
       const imgs = list.filter((f) => isImageMime(f.type));
       const others = list.filter((f) => !isImageMime(f.type));
       if (imgs.length > 0) {
-        const datas = await Promise.all(imgs.map(readAsBase64));
+        const staged = await Promise.all(imgs.map((f) => stageFile(f)));
         // 追加基于 ref 镜像（await 期间用户可能又加了/删了附件）
         const res = addPendingImages(
           imagesRef.current,
-          datas.map((data, i) => ({ mime: imgs[i].type, name: imgs[i].name, data })),
+          staged.map((s, i) => s.path
+            ? { mime: imgs[i].type, name: imgs[i].name, path: s.path, file: s.file, size: s.file.size }
+            : { mime: imgs[i].type, name: imgs[i].name, data: s.data ?? "" }),
         );
         setImages(res.images);
         if (res.notice) flashNotice(res.notice);
       }
       if (others.length > 0) {
-        const datas = await Promise.all(others.map(readAsBase64));
+        const staged = await Promise.all(others.map((f) => stageFile(f)));
         const res = addPendingFiles(
           filesRef.current,
-          datas.map((data, i) => ({ name: others[i].name, size: others[i].size, data })),
+          staged.map((s, i) => s.path
+            ? { name: others[i].name, size: others[i].size, path: s.path, file: s.file }
+            : { name: others[i].name, size: others[i].size, data: s.data ?? "" }),
         );
         setFiles(res.files);
         if (res.notice) flashNotice(res.notice);
@@ -313,13 +316,14 @@ export function Composer({
       if (notices.length > 0) flashNotice(notices.join("；"));
       return;
     }
-    // 逐个读入：个别失败（快照与真实路径都读不到）跳过并在提示里说明，
-    // 不整批失败——文件夹里一个坏文件不该吞掉其余的。
-    const read: { file: File; data: string }[] = [];
+    // 逐个暂存：路径优先（不读内容），无路径的才读 base64——个别失败（快照与
+    // 真实路径都读不到）跳过并在提示里说明，不整批失败——文件夹里一个坏文件
+    // 不该吞掉其余的。
+    const read: { file: File; path: string | null; data: string | null }[] = [];
     let readFailed = 0;
     for (const f of collected) {
       try {
-        read.push({ file: f, data: await readAsBase64(f) });
+        read.push(await stageFile(f));
       } catch {
         readFailed++;
       }
@@ -337,7 +341,9 @@ export function Composer({
     if (imgs.length > 0 && roomImgs > 0) {
       const res = addPendingImages(
         imagesRef.current,
-        imgs.slice(0, roomImgs).map((r) => ({ mime: r.file.type, name: r.file.name, data: r.data })),
+        imgs.slice(0, roomImgs).map((r) => r.path
+          ? { mime: r.file.type, name: r.file.name, path: r.path, file: r.file, size: r.file.size }
+          : { mime: r.file.type, name: r.file.name, data: r.data ?? "" }),
       );
       setImages(res.images);
       if (res.notice) flashNotice(res.notice);
@@ -345,7 +351,9 @@ export function Composer({
     if (others.length > 0 && roomFiles > 0) {
       const res = addPendingFiles(
         filesRef.current,
-        others.slice(0, roomFiles).map((r) => ({ name: r.file.name, size: r.file.size, data: r.data })),
+        others.slice(0, roomFiles).map((r) => r.path
+          ? { name: r.file.name, size: r.file.size, path: r.path, file: r.file }
+          : { name: r.file.name, size: r.file.size, data: r.data ?? "" }),
       );
       setFiles(res.files);
       if (res.notice) flashNotice(res.notice);
@@ -390,8 +398,9 @@ export function Composer({
     draftIdRef.current = draft.id;
     setValue(draft.text);
     if (draft.atts) {
-      setImages(draft.atts.images.map((im, i) => ({ id: `img-restore-${draft.id}-${i}`, mime: im.mime, name: "", data: im.data })));
-      setFiles(draft.atts.files.map((f, i) => ({ id: `file-restore-${draft.id}-${i}`, name: f.name, size: 0, data: f.data })));
+      // 双形态直通：path 形态保留路径与 File 对象（file 仅内存——重发时降级用）
+      setImages(draft.atts.images.map((im, i) => ({ id: `img-restore-${draft.id}-${i}`, mime: im.mime, name: im.name ?? "", data: im.data, ...(im.path ? { path: im.path, file: im.file } : {}) })));
+      setFiles(draft.atts.files.map((f, i) => ({ id: `file-restore-${draft.id}-${i}`, name: f.name, size: 0, data: f.data, ...(f.path ? { path: f.path, file: f.file } : {}) })));
     }
     requestAnimationFrame(() => {
       const ta = taRef.current;
@@ -405,8 +414,9 @@ export function Composer({
   useEffect(() => {
     if (!attsDraft || attsDraft.id === attsDraftIdRef.current) return;
     attsDraftIdRef.current = attsDraft.id;
-    setImages(attsDraft.atts.images.map((im, i) => ({ id: `img-restore-${attsDraft.id}-${i}`, mime: im.mime, name: "", data: im.data })));
-    setFiles(attsDraft.atts.files.map((f, i) => ({ id: `file-restore-${attsDraft.id}-${i}`, name: f.name, size: 0, data: f.data })));
+    // 双形态直通（与 draft.atts 的恢复同款）：path 形态保留路径与 File 对象
+    setImages(attsDraft.atts.images.map((im, i) => ({ id: `img-restore-${attsDraft.id}-${i}`, mime: im.mime, name: im.name ?? "", data: im.data, ...(im.path ? { path: im.path, file: im.file } : {}) })));
+    setFiles(attsDraft.atts.files.map((f, i) => ({ id: `file-restore-${attsDraft.id}-${i}`, name: f.name, size: 0, data: f.data, ...(f.path ? { path: f.path, file: f.file } : {}) })));
   }, [attsDraft]);
 
   // 草稿实时回写（per-session 记账的采集端）：文本/附件任一变化就上报一次——
@@ -474,7 +484,7 @@ export function Composer({
                 {(item.images?.length || item.files?.length) ? (
                   <span className="send-queue-atts" aria-label={`附件：图片 ${item.images?.length ?? 0} 张，文件 ${item.files?.length ?? 0} 个`}>
                     {item.images?.map((im, i) => (
-                      <AttachmentThumb key={i} mime={im.mime} data={im.data} alt="排队消息的图片附件" small />
+                      <AttachmentThumb key={i} mime={im.mime} data={im.data} file={im.file} alt="排队消息的图片附件" small />
                     ))}
                     {item.files?.map((f, i) => (
                       <span key={i} className="send-queue-file" title={f.name}>{clipOneLine(f.name, 18)}</span>
@@ -525,7 +535,7 @@ export function Composer({
             {images.length > 0 && (
               <div className="att-thumbs">
                 {images.map((im) => (
-                  <AttachmentThumb key={im.id} mime={im.mime} data={im.data} alt={`图片附件 ${im.name || ""}`} title={im.name || undefined} onRemove={() => removeImage(im.id)} />
+                  <AttachmentThumb key={im.id} mime={im.mime} data={im.data} file={im.file} alt={`图片附件 ${im.name || ""}`} title={im.name || undefined} onRemove={() => removeImage(im.id)} />
                 ))}
               </div>
             )}
@@ -689,10 +699,14 @@ export function Composer({
 }
 
 /** 附件缩略图（预览区与队列条目共用）：base64 → Blob → objectURL，挂载时创建、
- *  卸载/数据变化时 revoke（不泄漏）。小尺寸（small）用于队列行。 */
-export function AttachmentThumb({ mime, data, alt, title, onRemove, small = false }: {
+ *  卸载/数据变化时 revoke（不泄漏）。小尺寸（small）用于队列行。
+ *  双形态：file 非空 = 路径形态的暂存条目（data 为空串）——直接对 File 建
+ *  objectURL 预览（不读内容，与「路径优先不占内存」同一口径）。 */
+export function AttachmentThumb({ mime, data, file, alt, title, onRemove, small = false }: {
   mime: string;
   data: string;
+  /** 路径形态的 File 对象（预览源）；base64 形态不传。 */
+  file?: File;
   alt: string;
   title?: string;
   onRemove?: () => void;
@@ -700,6 +714,12 @@ export function AttachmentThumb({ mime, data, alt, title, onRemove, small = fals
 }) {
   const [url, setUrl] = useState("");
   useEffect(() => {
+    if (file) {
+      const objectUrl = URL.createObjectURL(file);
+      setUrl(objectUrl);
+      return () => URL.revokeObjectURL(objectUrl);
+    }
+    if (!data) return;
     // base64 → 二进制 → Blob（mime 随图）；objectURL 只在这里活，卸载即 revoke
     const bin = atob(data);
     const bytes = new Uint8Array(bin.length);
@@ -707,7 +727,7 @@ export function AttachmentThumb({ mime, data, alt, title, onRemove, small = fals
     const objectUrl = URL.createObjectURL(new Blob([bytes], { type: mime }));
     setUrl(objectUrl);
     return () => URL.revokeObjectURL(objectUrl);
-  }, [mime, data]);
+  }, [mime, data, file]);
   return (
     <span className={"att-thumb" + (small ? " att-thumb-small" : "")}>
       {url && <img src={url} alt={alt} title={title} />}

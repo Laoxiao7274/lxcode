@@ -21,6 +21,17 @@ contextBridge.exposeInMainWorld("__LX__", {
   // 只读单个文件、限 20MB——不给渲染层任何通用 fs 能力（保持最小 IPC 面）。
   readFileBase64: (file: File): Promise<string> =>
     ipcRenderer.invoke("file:readBase64", webUtils.getPathForFile(file)),
+  // 附件的路径解析通道（2026-12 路径优先）：staging 阶段解析 File 的真实磁盘
+  // 路径——解析得出就直接把路径交给后端读盘（WS 帧里没有文件内容），解析不出
+  // （虚拟文件/无壳）回落 base64。只读元数据不读内容；失败返回 null（调用方
+  // 走 base64 通道），不给渲染层任何通用 fs 能力。
+  getPathForFile: (file: File): string | null => {
+    try {
+      return webUtils.getPathForFile(file) || null;
+    } catch {
+      return null;
+    }
+  },
   // 樱花frp：invoke 发意图（返回最新状态快照；失败 reject 人话错误消息），
   // onState 订阅主进程推送（登录恢复/轮询刷新/frpc 退出都走它）。
   sakurafrp: {

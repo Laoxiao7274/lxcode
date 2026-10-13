@@ -4,6 +4,7 @@ package server
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 
@@ -204,9 +205,15 @@ func (s *Server) sendAttachments(sessionID string, sess *agent.Session, p protoc
 			return err
 		}
 		for i, im := range p.Images {
+			// path 形态没带展示名 → 回落路径 basename（与 base64 形态的「图片」
+			// 兜底同一层净化，名字只做展示，永不成为磁盘文件名）。
+			name := im.Name
+			if name == "" && im.Path != "" {
+				name = filepath.Base(im.Path)
+			}
 			atts = append(atts, llm.AttachmentRef{
 				Path: refs[i].Path,
-				Name: attachmentDisplayName(im.Name, "图片"),
+				Name: attachmentDisplayName(name, "图片"),
 				Size: int64(len(decodedImgs[i])),
 				Mime: im.Mime,
 				Kind: llm.AttachmentKindImage,

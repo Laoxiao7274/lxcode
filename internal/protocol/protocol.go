@@ -328,13 +328,22 @@ const (
 // ChatSendImage 是 chat.send 携带的一张图片：Data 为 base64（**不带** data: 前缀）。
 // 服务端校验（mime 白名单 / ≤5MB / ≤4 张）后落盘到附件目录，历史里只存文件引用
 // ——base64 绝不入库（2026-10 用户拍板）。
+//
+// **传输形态（2026-12 用户拍板：本地路径优先，base64 兜底）**：前后端同机时，
+// 客户端可携带 Path（本地真实路径）代替 Data——服务端直接按路径读盘，WS 帧里
+// 没有文件内容。两形态互斥（同时携带报参数错误）；Path 形态的信任边界与读取
+// 限制见 docs/attachments.md 与 server 侧 readLocalAttachment。
 type ChatSendImage struct {
 	Mime string `json:"mime"`
 	Data string `json:"data"`
 	// Name 是客户端提供的展示名（可选，向后兼容：老客户端不带 → 服务端回落
-	// "图片"）。它只出现在附件卡的展示元数据里（llm.AttachmentRef.Name），
-	// 永不成为磁盘文件名（磁盘名恒为随机 hex）。
+	// "图片"；Path 形态没带 → 回落路径 basename）。它只出现在附件卡的展示
+	// 元数据里（llm.AttachmentRef.Name），永不成为磁盘文件名（磁盘名恒为随机 hex）。
 	Name string `json:"name,omitempty"`
+	// Path 非空 = 本地路径形态：服务端按此路径读盘（大小上限 / 存在性校验同
+	// base64 形态），Data 必须为空。Mime 可空 → 服务端按扩展名推导（推导不出
+	// 报参数错误）。仅本机单用户场景（Electron 壳）使用；浏览器模式恒 base64。
+	Path string `json:"path,omitempty"`
 }
 
 // ChatSendFile 是 chat.send 携带的一个文件附件：Name 为客户端提供的原名
@@ -342,9 +351,14 @@ type ChatSendImage struct {
 // 服务端校验（≤20MB / ≤4 个 / 名字净化）后落盘到同一附件目录，历史里只体现为
 // 消息文本的「[附件] 名字 → attachments/...」行（无新列、无视觉通道）——Agent
 // 用 read_file 自己读（2026-10 图片批次 B）。
+//
+// **传输形态**与 ChatSendImage 同款：Path 非空 = 服务端按路径读盘，Data 必须为空
+// （Name 也可省 → 回落路径 basename）。
 type ChatSendFile struct {
 	Name string `json:"name"`
 	Data string `json:"data"`
+	// Path 非空 = 本地路径形态（同 ChatSendImage.Path 的语义与限制）。
+	Path string `json:"path,omitempty"`
 }
 
 type ChatSendParams struct {

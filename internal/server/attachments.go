@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/moyunteng/lxcode/internal/llm"
@@ -19,10 +20,33 @@ import (
 	"github.com/moyunteng/lxcode/internal/store"
 )
 
+// readLocalAttachment 读一个客户端声明的本地路径（chat.send 的 path 形态——
+// 前后端同机的 Electron 客户端，2026-12 用户拍板：路径优先、base64 兜底）。
+//
+// **信任边界**：本机单用户模型——后端与客户端同机同用户，path 形态与
+// share_file/read_file 工具的信任级别一致（客户端本就能经工具读同机的文件），
+// 因此**不做目录白名单**；但大小上限与存在性校验照做（与 base64 形态同一套
+// 上限），且错误一律带路径——前端以「本地文件读取失败」这个特征串识别
+// 「后端读不到 path」，自动降级为 base64 重发一次。
+func readLocalAttachment(path string, max int64) ([]byte, error) {
+	st, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("本地文件读取失败：%s（文件不存在或无法访问）", path)
+	}
+	if st.Size() > max {
+		return nil, fmt.Errorf("本地文件 %s 超过大小上限（%d MB，当前 %d MB）", path, max/(1<<20), st.Size()/(1<<20))
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("本地文件读取失败：%s（%v）", path, err)
+	}
+	return data, nil
+}
+
 // validateChatImages 校验 chat.send 携带的图片（**纯校验，不落盘**）：
-// 一条消息 ≤4 张、mime 白名单、base64 解码后单张 ≤5MB。
-// 返回解码后的字节（调用方紧接着落盘）——避免二次解码。
-// 任何不合法都返回人话错误（JSON-RPC CodeInvalidParams 的文案）。
+// 一条消息 ≤4 张、mime 白名单、base64 解码后（或 path 形态读盘后）单张 ≤5MB。
+// 返回字节（调用方紧接着落盘）——base64 形态避免二次解码，path 形态复用读出的
+// 字节。任何不合法都返回人话错误（JSON-RPC CodeInvalidParams 的文案）。
 func validateChatImages(imgs []protocol.ChatSendImage) ([][]byte, error) {
 	if len(imgs) == 0 {
 		return nil, nil
@@ -32,15 +56,36 @@ func validateChatImages(imgs []protocol.ChatSendImage) ([][]byte, error) {
 	}
 	out := make([][]byte, 0, len(imgs))
 	for i, im := range imgs {
-		if !llm.ValidImageMime(im.Mime) {
+		mime := im.Mime
+		if im.Path != "" {
+			if im.Data != "" {
+				return nil, fmt.Errorf("第 %d 张图片不能同时携带 path 与 data（path 形态由服务端按路径读盘）", i+1)
+			}
+			// path 形态的 mime 可空：按扩展名推导（与附件端点 extMime 同一份映射）。
+			// 推导结果**写回元素**——落盘（saveChatImages → SaveAttachment 的 mime
+			// 白名单）与展示元数据（session_ops 的 AttachmentRef.Mime）读同一份。
+			if mime == "" {
+				mime = extMime[strings.ToLower(filepathExt(im.Path))]
+				imgs[i].Mime = mime
+			}
+		}
+		if !llm.ValidImageMime(mime) {
 			return nil, fmt.Errorf("第 %d 张图片类型不支持: %q（支持 png/jpeg/webp/gif）", i+1, im.Mime)
 		}
-		data, err := base64.StdEncoding.DecodeString(im.Data)
-		if err != nil {
-			return nil, fmt.Errorf("第 %d 张图片的 base64 解码失败（Data 不带 data: 前缀）: %v", i+1, err)
-		}
-		if len(data) > llm.MaxImageBytes {
-			return nil, fmt.Errorf("第 %d 张图片超过大小上限（%d MB，base64 解码后）", i+1, llm.MaxImageBytes/(1<<20))
+		var data []byte
+		var err error
+		if im.Path != "" {
+			if data, err = readLocalAttachment(im.Path, llm.MaxImageBytes); err != nil {
+				return nil, fmt.Errorf("第 %d 张图片: %w", i+1, err)
+			}
+		} else {
+			data, err = base64.StdEncoding.DecodeString(im.Data)
+			if err != nil {
+				return nil, fmt.Errorf("第 %d 张图片的 base64 解码失败（Data 不带 data: 前缀）: %v", i+1, err)
+			}
+			if len(data) > llm.MaxImageBytes {
+				return nil, fmt.Errorf("第 %d 张图片超过大小上限（%d MB，base64 解码后）", i+1, llm.MaxImageBytes/(1<<20))
+			}
 		}
 		out = append(out, data)
 	}
@@ -67,9 +112,9 @@ func (s *Server) saveChatImages(sessionID string, imgs []protocol.ChatSendImage,
 const MaxFilesPerMessage = 4
 
 // validateChatFiles 校验 chat.send 携带的文件附件（**纯校验，不落盘**）：
-// ≤4 个、base64 可解码、单个 ≤20MB（store.MaxFileAttachmentBytes）、
-// 名字净化后非空。返回解码后的字节与净化后的名字（调用方紧接着落盘）。
-// 任何不合法都返回人话错误（JSON-RPC CodeInvalidParams 的文案）。
+// ≤4 个、base64 可解码或 path 形态可读盘、单个 ≤20MB（store.MaxFileAttachmentBytes）、
+// 名字净化后非空（path 形态没带名字 → 回落路径 basename）。返回字节与净化后的
+// 名字（调用方紧接着落盘）。任何不合法都返回人话错误（JSON-RPC CodeInvalidParams 的文案）。
 func validateChatFiles(files []protocol.ChatSendFile) ([][]byte, []string, error) {
 	if len(files) == 0 {
 		return nil, nil, nil
@@ -80,14 +125,29 @@ func validateChatFiles(files []protocol.ChatSendFile) ([][]byte, []string, error
 	out := make([][]byte, 0, len(files))
 	names := make([]string, 0, len(files))
 	for i, f := range files {
-		data, err := base64.StdEncoding.DecodeString(f.Data)
-		if err != nil {
-			return nil, nil, fmt.Errorf("第 %d 个文件的 base64 解码失败（Data 不带 data: 前缀）: %v", i+1, err)
+		var data []byte
+		var err error
+		if f.Path != "" {
+			if f.Data != "" {
+				return nil, nil, fmt.Errorf("第 %d 个文件不能同时携带 path 与 data（path 形态由服务端按路径读盘）", i+1)
+			}
+			if data, err = readLocalAttachment(f.Path, store.MaxFileAttachmentBytes); err != nil {
+				return nil, nil, fmt.Errorf("第 %d 个文件: %w", i+1, err)
+			}
+		} else {
+			data, err = base64.StdEncoding.DecodeString(f.Data)
+			if err != nil {
+				return nil, nil, fmt.Errorf("第 %d 个文件的 base64 解码失败（Data 不带 data: 前缀）: %v", i+1, err)
+			}
+			if len(data) > store.MaxFileAttachmentBytes {
+				return nil, nil, fmt.Errorf("第 %d 个文件超过大小上限（%d MB，base64 解码后）", i+1, store.MaxFileAttachmentBytes/(1<<20))
+			}
 		}
-		if len(data) > store.MaxFileAttachmentBytes {
-			return nil, nil, fmt.Errorf("第 %d 个文件超过大小上限（%d MB，base64 解码后）", i+1, store.MaxFileAttachmentBytes/(1<<20))
+		name := f.Name
+		if name == "" && f.Path != "" {
+			name = filepath.Base(f.Path)
 		}
-		name := store.SanitizeFileName(f.Name)
+		name = store.SanitizeFileName(name)
 		if name == "" {
 			return nil, nil, fmt.Errorf("第 %d 个文件缺少文件名", i+1)
 		}

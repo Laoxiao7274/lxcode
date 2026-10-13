@@ -99,3 +99,49 @@ export async function readBase64With(file: File, deps: ReadDeps): Promise<string
 export function readFileAsBase64(file: File): Promise<string> {
   return readBase64With(file, defaultReadDeps);
 }
+
+// ---- path 优先的暂存判定（2026-12 用户拍板：本地路径优先，base64 兜底）----
+//
+// Electron 壳里有真实磁盘路径的文件**不再读内容**：staging 只记录路径 + File
+// 对象（发送时把路径交给后端读盘——WS 帧里没有文件内容，也不占内存）。没有
+// 路径的（粘贴截图 / 压缩包虚拟文件 / 浏览器模式）维持原样：blob 通道读入，
+// 失败回落 shell 真实路径重读。
+
+/** Electron 壳桥的路径解析切片（preload 的 __LX__.getPathForFile；浏览器模式
+ *  无桥 = null → 一律走 base64）。 */
+type ShellPath = (file: File) => string | null;
+
+/** 暂存依赖（测试注入 fake；defaultStageDeps 为真实实现）。 */
+export interface StageDeps {
+  /** File → 本地真实路径（无壳 / 解析不出 / 虚拟文件 = null）。 */
+  getPath: ShellPath;
+  /** base64 读入通道（readBase64With——blob 优先、shell 路径重读兜底）。 */
+  read: (file: File) => Promise<string>;
+}
+
+export const defaultStageDeps: StageDeps = {
+  // 壳桥在模块加载时解析一次（与 defaultReadDeps.shell 同一条理由）；无桥时
+  // 恒返回 null（每个文件都走 base64 通道）。
+  getPath: (file) => {
+    if (typeof window === "undefined") return null;
+    const get = (window as unknown as { __LX__?: { getPathForFile?: ShellPath } }).__LX__?.getPathForFile;
+    return get ? get(file) : null;
+  },
+  read: readFileAsBase64,
+};
+
+/** 一个文件的暂存结果：path 非空 = 路径形态（**没读过内容**，data 为 null——
+ *  发送只传路径）；path 为空 = base64 形态（data 已读好，与原先语义一致）。 */
+export interface StagedFile {
+  file: File;
+  path: string | null;
+  data: string | null;
+}
+
+/** 暂存一个文件：路径优先（Electron 桥解析出真实路径就不读内容），无路径
+ *  才读 base64。size 一律取 File.size（两种形态都有，预览与上限校验共用）。 */
+export async function stageFile(file: File, deps: StageDeps = defaultStageDeps): Promise<StagedFile> {
+  const path = deps.getPath(file);
+  if (path) return { file, path, data: null };
+  return { file, path: null, data: await deps.read(file) };
+}
