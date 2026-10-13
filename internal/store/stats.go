@@ -20,44 +20,52 @@ import (
 // SessionStatsOf 折叠一条会话的整段日志统计。会话不存在时报错（与其他按 id 读的方法
 // 同语义——调用方据此区分「空会话」与「打错了 id」）。
 //
-// 统计走**专用聚合查询**（性能审查 P2-1，2026-10）：只 SELECT 折叠需要的列
-// （role / 计时 / 用量四桶 / 三个判定位），**不取 content/reasoning/tool_calls 等
-// 正文列**——原来走 readRows 把大会话的全部正文拉出来反序列化，实测 6MB 会话
-// 24ms/轮、50MB ≈ 200ms，而这段代码在 TurnDone 的事件路径上每轮收尾都要跑一遍。
-// 折叠本体仍是 foldSessionStats（与旧路径同一个纯函数），两条路径的口径由
-// TestSessionStatsAggregationMatchesFullFold 钉住相等。
+// 统计走**专用聚合查询**（性能审查 P2-1，2026-10）：口径在 SQL 里按 role 分桶
+// 一次算完（单行结果），**不取 content/reasoning/tool_calls 等正文列**，也不把
+// 每行拉进 Go 逐行 Scan——原来走 readRows（全列 + JSON 反序列化），实测 6MB 大
+// 会话 24ms/轮、50MB ≈ 200ms，而这段代码在 TurnDone 的事件路径上每轮收尾都要
+// 跑一遍；逐行 Scan 的固定开销（modernc 纯 Go 驱动 ~4.7µs/行）也一并省掉。
+//
+// **口径的参照物是 foldSessionStats**（本文件下方）：下面每个 CASE 的条件与它
+// 逐条对应（含 legacyUsageRow 的老口径判定），两条路径的一致性由
+// TestSessionStatsAggregationMatchesFullFold 钉住——改任何一边先跑那个测试。
+// 折叠输入是**整段日志**（含被压缩影子掉的行）：WHERE 只按 session_id 过滤，
+// 不做任何影子/存活过滤，与 foldSessionStats 喂 readRows 全量行同口径。
 func (s *Store) SessionStatsOf(id string) (sessiondata.SessionStats, error) {
 	var exists int
 	if err := s.db.QueryRow(`SELECT 1 FROM sessions WHERE id = ?`, id).Scan(&exists); err != nil {
 		return sessiondata.SessionStats{}, fmt.Errorf("会话 %s 不存在", id)
 	}
-	rows, err := s.db.Query(
-		`SELECT role, checkpoint, notice, usage_split,
-		        first_token_ms, duration_ms, usage_tokens,
-		        input_tokens, cache_read_tokens, cache_write_tokens
-		 FROM messages WHERE session_id = ? ORDER BY seq`, id)
-	if err != nil {
-		return sessiondata.SessionStats{}, fmt.Errorf("查询会话 %s 统计失败: %w", id, err)
+	// legacy 行 = usage_split=0 AND usage_tokens>0（老二进制把 total_tokens 写进
+	// usage_tokens）：单独记 LegacyTokens，不进四桶、不进 decode（fold 的 continue）。
+	// decode 的条件（有首字 + 有输出 + 非 legacy）与 fold 的同一批步——分子分母同源。
+	const agg = `
+		SELECT
+		  COALESCE(SUM(CASE WHEN role='user' AND checkpoint=0 AND notice=0 THEN 1 ELSE 0 END), 0),
+		  COALESCE(SUM(CASE WHEN role='assistant' THEN 1 ELSE 0 END), 0),
+		  COALESCE(SUM(CASE WHEN role='assistant' THEN MAX(duration_ms, 0) ELSE 0 END), 0),
+		  COALESCE(SUM(CASE WHEN role='tool' THEN MAX(duration_ms, 0) ELSE 0 END), 0),
+		  COALESCE(SUM(CASE WHEN role='assistant' AND first_token_ms > 0 THEN first_token_ms ELSE 0 END), 0),
+		  COALESCE(SUM(CASE WHEN role='assistant' AND first_token_ms > 0 THEN 1 ELSE 0 END), 0),
+		  COALESCE(SUM(CASE WHEN role='assistant' AND usage_split = 0 AND usage_tokens > 0 THEN usage_tokens ELSE 0 END), 0),
+		  COALESCE(SUM(CASE WHEN role='assistant' AND NOT (usage_split = 0 AND usage_tokens > 0) THEN input_tokens ELSE 0 END), 0),
+		  COALESCE(SUM(CASE WHEN role='assistant' AND NOT (usage_split = 0 AND usage_tokens > 0) THEN cache_read_tokens ELSE 0 END), 0),
+		  COALESCE(SUM(CASE WHEN role='assistant' AND NOT (usage_split = 0 AND usage_tokens > 0) THEN cache_write_tokens ELSE 0 END), 0),
+		  COALESCE(SUM(CASE WHEN role='assistant' AND NOT (usage_split = 0 AND usage_tokens > 0) THEN usage_tokens ELSE 0 END), 0),
+		  COALESCE(SUM(CASE WHEN role='assistant' AND usage_split = 1 AND first_token_ms > 0 AND usage_tokens > 0
+		                    THEN MAX(duration_ms - first_token_ms, 0) ELSE 0 END), 0),
+		  COALESCE(SUM(CASE WHEN role='assistant' AND usage_split = 1 AND first_token_ms > 0 AND usage_tokens > 0
+		                    THEN usage_tokens ELSE 0 END), 0)
+		FROM messages WHERE session_id = ?`
+	var st sessiondata.SessionStats
+	if err := s.db.QueryRow(agg, id).Scan(
+		&st.Turns, &st.Steps, &st.LLMMs, &st.ToolMs, &st.TTFTMs, &st.TTFTSteps,
+		&st.LegacyTokens, &st.InputTokens, &st.CacheReadTokens, &st.CacheWriteTokens,
+		&st.OutputTokens, &st.DecodeMs, &st.DecodeTokens,
+	); err != nil {
+		return sessiondata.SessionStats{}, fmt.Errorf("折叠会话 %s 统计失败: %w", id, err)
 	}
-	defer rows.Close()
-	var out []rowData
-	for rows.Next() {
-		var r rowData
-		var cp, notice, usageSplit int
-		if err := rows.Scan(&r.msg.Role, &cp, &notice, &usageSplit,
-			&r.msg.FirstTokenMs, &r.msg.DurationMs, &r.msg.UsageTokens,
-			&r.msg.InputTokens, &r.msg.CacheReadTokens, &r.msg.CacheWriteTokens); err != nil {
-			return sessiondata.SessionStats{}, fmt.Errorf("读会话统计失败: %w", err)
-		}
-		r.checkpoint = cp == 1
-		r.notice = notice == 1
-		r.usageSplit = usageSplit == 1
-		out = append(out, r)
-	}
-	if err := rows.Err(); err != nil {
-		return sessiondata.SessionStats{}, err
-	}
-	return foldSessionStats(out), nil
+	return st, nil
 }
 
 // foldSessionStats 是折叠本体（纯函数，单测直接喂行）。

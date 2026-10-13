@@ -206,6 +206,24 @@ func Open(dir string) (*Store, error) {
 			return nil, fmt.Errorf("迁移消息表失败: %w", err)
 		}
 	}
+	// 压缩检查点部分索引（2026-10，性能审查 P1-1 的配套）：surfaceCounts 的影子
+	// 扣减只扫检查点行，部分索引让它免于全表扫——53k 行的库上无索引时这条查询
+	// 实测 ~67ms（modernc 是纯 Go 驱动，逐行扫的代价比 C SQLite 高一个量级），
+	// 建索引后 ~0.1ms。老库打开时一次性建（一次全表扫，之后增量为零成本）。
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_checkpoint ON messages(session_id) WHERE checkpoint = 1`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("建检查点索引失败: %w", err)
+	}
+	// 会话统计覆盖索引（2026-10，性能审查 P2-1 的配套）：SessionStatsOf 的聚合
+	// 只用这几个小列，但 SQLite 行式存储下**任何**触表查询都要把整行（含 KB 级
+	// 正文）从页里读出来——6MB 大会话实测仅"读页"就 ~20ms，正文越大越贵，而这
+	// 在 TurnDone 事件路径上每轮收尾都付一遍。把统计列全部放进索引后查询走
+	// COVERING INDEX 扫（只读 ~60B/行的索引项，不触正文页），与正文体积解耦。
+	// 列表与 stats.go 的聚合 SELECT 严格对应——改聚合先改这里（或反过来）。
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_stats ON messages(session_id, role, checkpoint, notice, usage_split, first_token_ms, duration_ms, usage_tokens, input_tokens, cache_read_tokens, cache_write_tokens)`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("建统计覆盖索引失败: %w", err)
+	}
 	st := &Store{db: db, dir: absDir}
 	// Agent 注册表与拓展目录（M1——四张表 + 首次种子，幂等）
 	if err := st.initAgents(); err != nil {

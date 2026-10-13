@@ -55,7 +55,7 @@ func TestRunTurnPanicBecomesTurnError(t *testing.T) {
 }
 
 // SendWait 路径同样要能收尾：panic 转成 TurnError 后 done 关闭，宿主不悬挂
-//（dispatch 等它）。错误经由返回值/事件二选一可见——这里钉「不悬挂 + 会话复活」。
+// （dispatch 等它）。错误经由返回值/事件二选一可见——这里钉「不悬挂 + 会话复活」。
 func TestSendWaitPanicDoesNotHang(t *testing.T) {
 	s, reg := newTestSession(t)
 	bindDefault(t, reg)
