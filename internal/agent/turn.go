@@ -140,6 +140,17 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig, ac *sessiondata.A
 	// 进程级单例——父子会话各有各的提问归属。
 	ctx = tools.WithAsker(ctx, s.askUser)
 
+	// 本轮附件共享的落盘口（share_file 工具的登记端）：经 ctx 注入（与上面
+	// 同一条理由）——「文件落进哪个会话的附件目录」是会话级状态，注册表是
+	// 进程级单例，父子会话各有各的目录。归属会话 id 取**本会话**的（子会话
+	// 共享的文件落进子会话自己的目录——与子会话的历史/占用同一条归属纪律）。
+	if s.st != nil {
+		st, sid := s.st, s.SessionID()
+		ctx = tools.WithAttachmentSave(ctx, func(name string, data []byte) (llm.AttachmentRef, error) {
+			return st.SaveSharedAttachment(sid, name, data)
+		})
+	}
+
 	var fileChanges []FileChange
 	defer func() {
 		s.mu.Lock()

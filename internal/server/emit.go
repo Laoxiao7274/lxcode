@@ -23,6 +23,9 @@ func (s *Server) emitEvent(sessionID string, ev agent.Event) {
 	case agent.ToolResultEvent:
 		s.broadcast(protocol.EventToolRslt, protocol.ToolResultParams{
 			SessionID: sessionID, ID: e.ID, Name: e.Name, Content: e.Content, IsError: e.IsError, DispatchID: e.DispatchID,
+			// share_file 共享的附件元数据（share_file 的结果消息上同一份）：
+			// 前端实时路径据此渲染附件卡，与 chat.history 回放同一形状。
+			Attachments: e.Attachments,
 		})
 	case agent.ConfirmRequestEvent:
 		s.broadcast(protocol.EventConfirm, toProtocolConfirm(sessionID, e.Request))

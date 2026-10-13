@@ -157,12 +157,18 @@ func (s *Server) attachmentsGate(next http.HandlerFunc) http.Handler {
 	})
 }
 
-// handleAttachments 是 GET /attachments/<sessionID>/<file>：只读地回一张附件
-// 原始字节（前端显示缩略图用，图片批次 B 接 UI；本批先实现并测试）。
+// handleAttachments 是 GET /attachments/<sessionID>/<file>：只读地回一个附件
+// 的原始字节（前端渲染附件卡用：图片内联缩略图，其余文件走下载）。
 //
-// 安全：sessionID 白名单、文件名白名单（十六进制 + 已知扩展名）、解析后路径
-// 必须仍在附件根内（store.ResolveAttachmentPath 双保险）——穿越一律 404，
+// 安全：sessionID 白名单、文件名白名单（十六进制 + 扩展名形态校验）、解析后
+// 路径必须仍在附件根内（store.ResolveAttachmentPath 双保险）——穿越一律 404，
 // 不泄露"存在但越权"与"不存在"的区别（都是 404）。
+//
+// Content-Type 分流（与附件卡两种形态一致）：
+//   - 图片扩展名（store 的白名单）→ 对应 image/* mime，inline（浏览器直接显示）；
+//   - 其余白名单内扩展名（saveFileAttachment 通道：字母/数字 ≤16 字符）→
+//     application/octet-stream + Content-Disposition: attachment（点击即下载）。
+//     不做内容嗅探：磁盘名是我们生成的随机 hex，扩展名就是写入时的分类。
 func (s *Server) handleAttachments(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "只支持 GET", http.StatusMethodNotAllowed)
@@ -182,11 +188,15 @@ func (s *Server) handleAttachments(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "会话 id 不合法", http.StatusNotFound)
 		return
 	}
-	// 文件名白名单：<16 字节 hex>.<白名单扩展名>——含 / \ .. 空白等一切杂质的
-	// 名字直接 404（我们生成的名字恒满足，满足不了就不是我们写的）。
+	// 文件名白名单：<16 字节 hex>.<扩展名>——含 / \ .. 空白等一切杂质的名字
+	// 直接 404（我们生成的名字恒满足，满足不了就不是我们写的）。扩展名上限
+	// 16 字符字母/数字（store.attachmentExt 的写入口径），超了/带杂质就 404。
 	ext := strings.ToLower(filepathExt(file))
-	mime, known := extMime[ext]
-	if !known || len(file) != 32+len(ext) || !isHex(file[:32]) {
+	if ext == "" || len(ext) > 17 || !isAlnum(ext[1:]) {
+		http.Error(w, "附件不存在", http.StatusNotFound)
+		return
+	}
+	if len(file) != 32+len(ext) || !isHex(file[:32]) {
 		http.Error(w, "附件不存在", http.StatusNotFound)
 		return
 	}
@@ -201,9 +211,29 @@ func (s *Server) handleAttachments(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// 内容不可变（文件名含随机 id）：缓存头让前端缩略图零重复传输
-	w.Header().Set("Content-Type", mime)
 	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+	if mime, known := extMime[ext]; known {
+		w.Header().Set("Content-Type", mime)
+	} else {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Disposition", "attachment")
+	}
 	_, _ = w.Write(data)
+}
+
+// isAlnum 报告 s 是否只含 ASCII 字母/数字（扩展名白名单）。
+func isAlnum(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= '0' && r <= '9', r >= 'a' && r <= 'z':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // filepathExt 是 path.Ext 的本地小包装（避免仅为一个函数 import path）。

@@ -16,6 +16,7 @@ import type {
 } from "../../shared/types";
 import { rewindParams } from "../../shared/blocks";
 import { normalizeApproval } from "../../shared/approval";
+import { setAttachmentOrigin } from "../../shared/attachments";
 import { jobFromWire, sortJobs, upsertJob } from "../../shared/jobs";
 import { mapEvent } from "./events";
 
@@ -42,6 +43,17 @@ interface PendingCall {
   resolve: (v: unknown) => void;
   reject: (e: Error) => void;
   timeout: ReturnType<typeof setTimeout>;
+}
+
+/** 由地址形态构造附件端点的 HTTP 源（与 wsURL 同一套形态自适应）：
+ *  http(s):// 原样；ws(s):// 换 http(s)；裸 host:port → http://。 */
+function httpOrigin(addr: string): string {
+  const trimmed = addr.trim();
+  if (/^https:\/\//i.test(trimmed)) return trimmed.replace(/\/+$/, "");
+  if (/^http:\/\//i.test(trimmed)) return trimmed.replace(/\/+$/, "");
+  if (/^wss:\/\//i.test(trimmed)) return `https://${trimmed.slice(6)}`.replace(/\/+$/, "");
+  if (/^ws:\/\//i.test(trimmed)) return `http://${trimmed.slice(5)}`.replace(/\/+$/, "");
+  return `http://${trimmed}`;
 }
 
 const WS_READY_STATE_OPEN = 1;
@@ -149,6 +161,7 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
 
   constructor(addr = "127.0.0.1:7789", token?: string | (() => string | null)) {
     this.addr = addr;
+    setAttachmentOrigin(httpOrigin(addr));
     this.tokenFn = typeof token === "function" ? token : token ? () => token : null;
   }
 
@@ -159,6 +172,7 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
   setBackend(addr: string, token?: string | null): void {
     const changed = this.addr !== addr || (this.tokenOverride ?? null) !== (token ?? null);
     this.addr = addr;
+    setAttachmentOrigin(httpOrigin(addr));
     this.tokenOverride = token ?? null;
     if (changed) this.resetOnHello = true;
     if (changed && this.started) {
@@ -863,6 +877,8 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
         reasoning_content?: string;
         tool_calls?: Array<{ id?: string; function?: { name: string; arguments?: string } }>;
         tool_call_id?: string;
+        attachments?: import("../../shared/types").AttachmentRef[];
+        images?: Array<{ path: string; mime: string }>;
       }>;
       busy?: boolean;
       pending?: ConfirmRequest | null;

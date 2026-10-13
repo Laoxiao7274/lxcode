@@ -1560,3 +1560,10 @@
 .ws-more:hover {
   color: var(--fg-muted);
 }
+
+/* 拖拽悬停态（文件拖到输入区）：整卡描边提示「松手即加入附件区」。 */
+.composer-zone.composer-dragover .composer-inner {
+  outline: 1.5px dashed var(--fg-muted);
+  outline-offset: 4px;
+  border-radius: 12px;
+}

@@ -189,6 +189,13 @@ func Open(dir string) (*Store, error) {
 		// base64 入库会撑爆 SQLite 行、每次全量历史重复传输、上下文估算失真
 		//（2026-10 用户拍板）。老行默认 '' = 无图（零影响）。
 		`ALTER TABLE messages ADD COLUMN images TEXT NOT NULL DEFAULT ''`,
+		// attachments（附件展示通道，2026-12）：这条消息携带的附件**引用 + 展示
+		// 元数据**（JSON 数组 [{"path","name","size","mime","kind","caption"}]）。
+		// 与 images 的分工：images 服务视觉请求（模型要看到图），attachments 服务
+		// **前端渲染**（缩略图卡/文件卡，实时与回放同一份）。user 消息（用户发的
+		// 图/文件）与 tool 消息（share_file 共享的文件）都写。老行默认 '' = 无附件
+		//（老历史的附件卡由前端从消息文本的「[附件]」行与 images 引用回落解析）。
+		`ALTER TABLE messages ADD COLUMN attachments TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := db.Exec(col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			db.Close()

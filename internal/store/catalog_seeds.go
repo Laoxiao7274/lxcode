@@ -200,6 +200,20 @@ var seedAgentBaselines = map[string]seedAgentBaseline{
 		Tools: []string{"read_file", "search", "edit", "write_file", "bash"},
 		Desc:  "把会话分支的改动汇总到集成分支：处理冲突、跑构建测试，如实报告结果。",
 	},
+	// 本版给代码/测试 Agent 补了 share_file（附件展示通道：把工作目录里的产物
+	// 共享到对话，前端渲染缩略图/文件卡），职责描述里同步点明「能把产物文件
+	// 共享到对话」——主 Agent 的选人信号按描述逐字生成，漏了它就不知道
+	// 「给用户看个文件」该派给谁（web_search 栽过的那一跤）。基线是上一版的
+	// 白名单与描述——老库里没动过这两处的 coder/tester 由此吃到新工具与新描述；
+	// 动过的行照旧不碰（用户在编辑器里自己勾）。
+	"coder": {
+		Tools: []string{"read_file", "search", "edit", "write_file", "bash", "todo"},
+		Desc:  "编码实现与重构：读写代码、跑构建测试，产出可验证的改动。",
+	},
+	"tester": {
+		Tools: []string{"read_file", "search", "edit", "write_file", "bash", "todo"},
+		Desc:  "验证与测试：跑构建与测试、按验收标准补用例，如实回传失败与复现命令。",
+	},
 }
 
 // topUpSeedAgents 给种子子 Agent 补上本版**新增**的东西：工具白名单里缺的

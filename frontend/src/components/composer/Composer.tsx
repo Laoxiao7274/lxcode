@@ -286,6 +286,28 @@ export function Composer({
     void ingest(imgs);
   };
 
+  // 拖拽（与本地选择/粘贴共用 ingest 一条读入路径）：文件拖到输入区直接进
+  // 附件区。dragover 必须 preventDefault——否则浏览器用默认行为（打开文件）
+  // 顶掉 drop。locked（只读/禁用）时整个流程不接。
+  const [dragOver, setDragOver] = useState(false);
+  const onDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    if (locked) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+    setDragOver(true);
+  };
+  const onDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    if (e.currentTarget === e.target) setDragOver(false);
+  };
+  const onDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setDragOver(false);
+    if (locked) return;
+    const files = Array.from(e.dataTransfer?.files ?? []);
+    if (files.length === 0) return;
+    void ingest(files);
+  };
+
   const removeImage = (id: string) => setImages((cur) => removePending(cur, id));
   const removeFile = (id: string) => setFiles((cur) => removePending(cur, id));
 
@@ -359,7 +381,13 @@ export function Composer({
   }, []);
 
   return (
-    <div className="composer-zone" ref={zoneRef}>
+    <div
+      className={"composer-zone" + (dragOver ? " composer-dragover" : "")}
+      ref={zoneRef}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
       <div className="composer-inner">
         {/* 发送缓冲区：busy 期间提交的消息排队在这里（等空闲自动发出）。
             每条一行：序号 + 单行摘要 + 附件标记 + 直接发送/编辑/删除三个动作。 */}

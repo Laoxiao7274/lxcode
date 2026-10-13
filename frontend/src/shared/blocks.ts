@@ -2,6 +2,7 @@
 // 单独一个文件：组件只依赖类型与这几个 helper，不必把整个 reducer 拖进依赖图。
 
 import type { ApprovalMode, ConfirmRequest, ContextUsage, FileChange, JobInfo, SessionStats, TodoItem } from "./types";
+import type { AttachmentMeta } from "./attachments";
 
 export interface AssistantBlock {
   kind: "assistant";
@@ -25,11 +26,17 @@ export type ThreadBlock =
    *  回执到达即按 FIFO 移除（见 reduce.ts）；pending 块没有 seq，天然不可撤回。 */
   | { kind: "user"; uid: number; text: string; seq?: number; pending?: boolean;
       /** 乐观气泡的附件标记（图片批次 B）：images/files 是随消息带的张数/个数
-       *  （pending 阶段 base64 已交出去，块里只留计数）；真块不带它——后端回执
-       *  的正文里文件附件有自己的「[附件]」行，图片引用的历史渲染另有批次接。 */
-      atts?: { images: number; files: number } }
+       *  （pending 阶段 base64 已交出去，块里只留计数）；真块不带它——真块的
+       *  附件卡来自后端回执的 attachments 引用（下面这个键）。 */
+      atts?: { images: number; files: number };
+      /** 附件引用（后端回执/历史回放带的展示元数据——渲染缩略图卡/文件卡）。
+       *  pending 乐观块没有它；老历史由 attachments.ts 的归一化回落给出。 */
+      attachments?: AttachmentMeta[] }
   | AssistantBlock
-  | { kind: "tool"; uid: number; id: string; name: string; arguments: string; result?: string; isError?: boolean }
+  | { kind: "tool"; uid: number; id: string; name: string; arguments: string; result?: string; isError?: boolean;
+      /** 这次执行共享的附件（share_file——实时 toolResult 与回放同一份）。
+       *  缺省 = 无（绝大多数工具调用）。 */
+      attachments?: AttachmentMeta[] }
   | { kind: "confirm"; uid: number; request: ConfirmRequest; resolved?: "allow" | "deny";
       /** ask 提问被回答时的用户答案摘要（resolved="allow" 时显示在已决卡上；
        *  二元确认永远没有它）。 */

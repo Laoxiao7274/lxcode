@@ -10,6 +10,7 @@ import { motionAllowed } from "../../../shared/motion";
 import { clip, shortArgs } from "../helpers";
 import { DiffBody } from "./DiffBody";
 import { TerminalCard } from "./TerminalCard";
+import { AttachmentCards } from "./AttachmentCard";
 
 const TOOL_TITLES: Record<string, string> = {
   read_file: "读文件",
@@ -80,6 +81,26 @@ export function ToolBlock({ block, "data-uid": dataUid }: { block: Extract<Threa
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [block.arguments]);
+
+  // share_file：附件卡是**主体**（共享给用户看的东西），工具行收成一行头 +
+  // 卡片——用户不用展开就能看到文件/图片（实时 toolResult 与历史回放同一份元数据）。
+  if (block.name === "share_file" && block.attachments?.length) {
+    return (
+      <div className={"tool-block share-block" + (running ? " trow-running" : "") + (block.isError ? " trow-error" : "")} data-uid={dataUid} ref={rootRef}>
+        <div className="diff-file-head">
+          <span className="ticon" aria-hidden>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z" />
+              <path d="M13 2v7h7" />
+            </svg>
+          </span>
+          <span className="tname">共享文件</span>
+          {running && <span className="tool-open-hint">执行中…</span>}
+        </div>
+        <AttachmentCards atts={block.attachments} />
+      </div>
+    );
+  }
 
   if (editDiff && block.name === "edit") {
     return (

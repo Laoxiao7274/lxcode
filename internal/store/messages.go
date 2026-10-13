@@ -60,17 +60,28 @@ func (s *Store) AppendMsg(id string, m llm.Message) (int64, error) {
 		}
 		images = string(b)
 	}
+	// attachments 是附件**引用 + 展示元数据**的 JSON（前端渲染附件卡——实时与
+	// 回放同一份）。恒存引用不存 base64（与 images 同一条分层纪律）。
+	// 空串 = 无附件（绝大多数消息）。
+	attachments := ""
+	if len(m.Attachments) > 0 {
+		b, err := json.Marshal(m.Attachments)
+		if err != nil {
+			return 0, fmt.Errorf("序列化附件引用失败: %w", err)
+		}
+		attachments = string(b)
+	}
 	// usage_split 一律写 1：写这一行的是**认识拆分口径**的二进制（usage_tokens 真的是
 	// 输出、输入侧三桶另记）。旧二进制写的行走列默认值 0 = 老口径（那时 usage_tokens
 	// 是 provider 的 total_tokens）——折叠统计按这一位把两种口径分开（见 store.go 的
 	// ALTER 注释与 stats.go 的 legacyUsageRow）。
 	if _, err := tx.Exec(
 		`INSERT INTO messages (session_id, seq, role, content, reasoning, reasoning_sig, tool_calls, tool_call_id,
-		                       first_token_ms, duration_ms, model, usage_tokens, images,
+		                       first_token_ms, duration_ms, model, usage_tokens, images, attachments,
 		                       input_tokens, cache_read_tokens, cache_write_tokens, notice, usage_split)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
 		id, seq, m.Role, m.Content, m.ReasoningContent, m.ReasoningSignature, string(toolCalls), m.ToolCallID,
-		m.FirstTokenMs, m.DurationMs, m.Model, m.UsageTokens, images,
+		m.FirstTokenMs, m.DurationMs, m.Model, m.UsageTokens, images, attachments,
 		m.InputTokens, m.CacheReadTokens, m.CacheWriteTokens, boolInt(m.Notice),
 	); err != nil {
 		return 0, fmt.Errorf("写消息失败: %w", err)
@@ -132,7 +143,7 @@ type rowData struct {
 func (s *Store) readRows(id string) ([]rowData, error) {
 	rows, err := s.db.Query(
 		`SELECT seq, role, content, reasoning, reasoning_sig, tool_calls, tool_call_id,
-		        checkpoint, shadowed_seqs, first_token_ms, duration_ms, model, usage_tokens, images,
+		        checkpoint, shadowed_seqs, first_token_ms, duration_ms, model, usage_tokens, images, attachments,
 		        input_tokens, cache_read_tokens, cache_write_tokens, notice, usage_split
 		 FROM messages WHERE session_id = ? ORDER BY seq`, id)
 	if err != nil {
@@ -142,11 +153,11 @@ func (s *Store) readRows(id string) ([]rowData, error) {
 	var out []rowData
 	for rows.Next() {
 		var r rowData
-		var toolCalls, shadowedSeqs, images string
+		var toolCalls, shadowedSeqs, images, attachments string
 		var cp, notice, usageSplit int
 		if err := rows.Scan(&r.seq, &r.msg.Role, &r.msg.Content, &r.msg.ReasoningContent,
 			&r.msg.ReasoningSignature, &toolCalls, &r.msg.ToolCallID, &cp, &shadowedSeqs,
-			&r.msg.FirstTokenMs, &r.msg.DurationMs, &r.msg.Model, &r.msg.UsageTokens, &images,
+			&r.msg.FirstTokenMs, &r.msg.DurationMs, &r.msg.Model, &r.msg.UsageTokens, &images, &attachments,
 			&r.msg.InputTokens, &r.msg.CacheReadTokens, &r.msg.CacheWriteTokens, &notice,
 			&usageSplit); err != nil {
 			return nil, fmt.Errorf("读消息行失败: %w", err)
@@ -163,6 +174,12 @@ func (s *Store) readRows(id string) ([]rowData, error) {
 		if images != "" && images != "[]" {
 			if err := json.Unmarshal([]byte(images), &r.msg.Images); err != nil {
 				return nil, fmt.Errorf("解析图片引用失败: %w", err)
+			}
+		}
+		// 附件引用读回（'' = 无附件——老行/纯文本消息，零影响）
+		if attachments != "" && attachments != "[]" {
+			if err := json.Unmarshal([]byte(attachments), &r.msg.Attachments); err != nil {
+				return nil, fmt.Errorf("解析附件引用失败: %w", err)
 			}
 		}
 		r.checkpoint = cp == 1

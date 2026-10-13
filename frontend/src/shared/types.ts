@@ -156,6 +156,21 @@ export interface JobAdminSource {
   readJobLog(id: string): Promise<JobLogResult>;
 }
 
+/** 附件引用（对齐 llm.AttachmentRef）：附件卡的展示元数据（实时事件与历史
+ *  回放同一份）。path 是相对后端 attachments 根的路径，前端经
+ *  /attachments/<path> 取内容（shared/attachments.ts 的 attachmentURL）。
+ *  kind 分流渲染：image = 内联缩略图（点击放大），file = 文件卡（点击下载）。 */
+export interface AttachmentRef {
+  path: string;
+  name: string;
+  /** 字节数（0/缺省 = 未知——文件卡不显示大小，不显示 0 B 假数据）。 */
+  size?: number;
+  mime?: string;
+  kind: "image" | "file";
+  /** 共享者附的一句话说明（share_file 的可选文案）。 */
+  caption?: string;
+}
+
 /** 确认请求（对齐 protocol.ConfirmRequest）。 */
 export interface ConfirmRequest {
   id: string;
@@ -178,6 +193,9 @@ export type AgentEvent =
   /** seq = 撤回锚点（ChatMessage 上的字段；历史回放与实时事件是**同一个类型**，
    *  所以两条路径都读 message.seq）。老后端没有它 → 块不可撤回，但绝不炸。 */
   | { type: "userMessage"; sessionId: string; text: string; seq?: number;
+      /** 随消息的附件引用（对齐 llm.Message.Attachments——后端落盘后的元数据）。
+       *  缺省 = 无附件（老后端/纯文本消息）。渲染附件卡的数据源。 */
+      attachments?: AttachmentRef[];
       /** dispatchId 非空 = 子会话的消息（派发方注入的任务说明书，后端 childEmitter
        *  带归属上抛）：主时间线不画（dispatch 卡 = 一行摘要），双投进子会话自己的
        *  state——子会话视图里「新一轮的任务」靠它出现。 */
@@ -197,7 +215,10 @@ export type AgentEvent =
       atts?: SendAttachments }
   | { type: "delta"; sessionId: string; kind: "text" | "reasoning"; text: string; dispatchId?: string }
   | { type: "toolCall"; sessionId: string; id: string; name: string; arguments: string; dispatchId?: string }
-  | { type: "toolResult"; sessionId: string; id: string; name: string; content: string; isError: boolean; dispatchId?: string }
+  | { type: "toolResult"; sessionId: string; id: string; name: string; content: string; isError: boolean; dispatchId?: string;
+      /** 这次执行共享的附件（share_file）——与结果消息 llm.Message.Attachments
+       *  同一份元数据。缺省 = 无。 */
+      attachments?: AttachmentRef[] }
   | { type: "confirmRequest"; sessionId: string; request: ConfirmRequest }
   | { type: "todoUpdated"; sessionId: string; items: TodoItem[] }
   | { type: "done"; sessionId: string; usageTokens: number; finishReason: string; dispatchId?: string; context?: ContextUsage;
@@ -315,6 +336,12 @@ export interface HistoryMessage {
     function?: { name: string; arguments?: string };
   }>;
   tool_call_id?: string;
+  /** 附件引用（user 消息 = 用户发的图/文件；tool 消息 = share_file 共享的）。
+   *  缺省 = 无附件（老行/纯文本消息）。 */
+  attachments?: AttachmentRef[];
+  /** 图片引用（对齐 llm.ImageRef——视觉请求通道的老字段）：老后端没有
+   *  attachments 列时的**回落**渲染源（图片缩略图卡）。 */
+  images?: Array<{ path: string; mime: string }>;
 }
 
 /** 改动文件条目（一轮任务结束时的产物汇总——Codex 的 diff 中心形态）。 */

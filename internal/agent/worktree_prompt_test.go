@@ -42,8 +42,11 @@ func TestWorktreePromptProjectSession(t *testing.T) {
 			t.Fatalf("merge_request 只能以遗留口径出现:\n%s", prompt)
 		}
 	}
-	if strings.Contains(prompt, "共享") {
-		t.Fatalf("项目会话（非子会话）不该说「共享」:\n%s", prompt)
+	// 「共享」曾是旧工作树架构的措辞（"在共享的检出里工作"）——直连后项目会话
+	// 提示词不该再出现**工作区说明层**的「共享」。share_file 的工具摘要合法地
+	// 含「共享到对话」（那是工具清单不是工作区说明），所以钉的是旧句式。
+	if strings.Contains(prompt, "在共享的检出") || strings.Contains(prompt, "共享的检出") {
+		t.Fatalf("项目会话（非子会话）不该说「共享的检出」:\n%s", prompt)
 	}
 
 	// 未分组会话（零值）：工作区说明零注入。（判据用 worktreeLine 特有的

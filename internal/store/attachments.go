@@ -33,6 +33,31 @@ var mimeExt = map[string]string{
 // 反向使用：按扩展名回 Content-Type。
 func ExtForMime(m string) string { return mimeExt[m] }
 
+// ClassifyAttachment 按文件名的扩展名给附件分类（share_file 共享的文件用）：
+// 扩展名命中图片白名单 → kind=image + mime（前端渲染内联缩略图）；否则
+// kind=file + 空 mime（文件卡 + 下载）。共享通道不做内容嗅探——扩展名是
+// 共享者（agent）对它刚生成的文件最可靠的判断，嗅探出错反而把 png 当成
+// 下载卡。没有扩展名也是 file。
+func ClassifyAttachment(name string) (kind, mime string) {
+	dot := strings.LastIndex(name, ".")
+	if dot < 0 {
+		return llm.AttachmentKindFile, ""
+	}
+	if m, ok := extToMime[strings.ToLower(name[dot+1:])]; ok {
+		return llm.AttachmentKindImage, m
+	}
+	return llm.AttachmentKindFile, ""
+}
+
+// extToMime 是 mimeExt 的反向映射（扩展名 → mime），包级初始化一次。
+var extToMime = func() map[string]string {
+	m := make(map[string]string, len(mimeExt))
+	for mime, ext := range mimeExt {
+		m[strings.TrimPrefix(ext, ".")] = mime
+	}
+	return m
+}()
+
 // validSessionID 报告 id 是否只含白名单字符（小写字母/数字/连字符）。
 // session id 是服务端生成的（时间戳 + 随机 hex），但它是**外部输入**能到达的
 // 路径成分（chat.send 参数 / HTTP URL），白名单校验是路径穿越的第一道闸。
@@ -121,6 +146,26 @@ func (s *Store) SaveAttachment(sessionID, mime string, data []byte) (string, err
 	return filepath.ToSlash(filepath.Join(sessionID, name)), nil
 }
 
+// SaveSharedAttachment 实现 agent.Persistence 的共享通道（share_file）：把
+// agent 工作目录里的一个文件复制登记进会话附件目录，返回展示元数据。
+//
+// 与 SaveFileAttachment（用户上传通道）的分工：那条通道的名字来自客户端
+//（不可信，只用于展示与扩展名推导）；这条通道的名字来自 agent 读到的磁盘
+// base 名（同样净化后只做展示与扩展名——磁盘名恒为随机 hex，两条通道一致）。
+// 分类按扩展名（ClassifyAttachment）：图片渲染缩略图卡，其余渲染文件卡。
+func (s *Store) SaveSharedAttachment(sessionID, name string, data []byte) (llm.AttachmentRef, error) {
+	clean := SanitizeFileName(name)
+	rel, err := s.SaveFileAttachment(sessionID, clean, data)
+	if err != nil {
+		return llm.AttachmentRef{}, err
+	}
+	kind, mime := ClassifyAttachment(clean)
+	return llm.AttachmentRef{
+		Path: rel, Name: clean, Size: int64(len(data)),
+		Mime: mime, Kind: kind,
+	}, nil
+}
+
 // randomAttachmentName 生成随机文件名（16 字节 hex + 扩展名）：内容不可预测、
 // 无碰撞窗口；不使用原文件名（用户上传的文件名不可信，不做路径成分）。
 func randomAttachmentName(ext string) (string, error) {
@@ -134,7 +179,8 @@ func randomAttachmentName(ext string) (string, error) {
 // MaxFileAttachmentBytes 单个文件附件的大小上限（base64 解码后）：20MB。
 // 与图片的 5MB（Anthropic 对 base64 源图的上限）分开——文件只落盘给
 // read_file 读，不受端点限制，给到「日常文档」够用的量级。
-const MaxFileAttachmentBytes = 20 << 20
+// 实值归 llm 层（tools/server/store 三层共用的同一份常量，见 llm 的注释）。
+const MaxFileAttachmentBytes = llm.MaxFileAttachmentBytes
 
 // SanitizeFileName 净化客户端提供的文件名（文件附件通道，图片批次 B）：
 //   - 只取 base 名（按 / 与 \ 切——两种分隔符都挡，Windows 客户端传全路径也不漏）；

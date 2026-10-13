@@ -47,6 +47,9 @@ type sendConfig struct {
 	todoPrompt string
 	notice     bool           // 这条 user 消息是**注入的提示条**（不是用户说的话——会话统计的轮数按它排除）
 	images     []llm.ImageRef // 这条 user 消息附带的图片引用（视觉请求；恒为文件引用）
+	// attachments 是这条 user 消息附带的附件**展示元数据**（前端渲染附件卡——
+	// 与 images 的分工见 llm.AttachmentRef 的注释；恒为引用，base64 绝不经此路径）。
+	attachments []llm.AttachmentRef
 }
 
 // WithEffort 指定本轮推理强度（模型须声明 reasoning 能力才真正生效）。
@@ -72,6 +75,12 @@ func WithTodoPrompt(mode string) SendOpt { return func(c *sendConfig) { c.todoPr
 // （llm.ImageRef），base64 绝不经过这里。Send 时校验张数上限（≤4），超限
 // 报错——校验放内核是最后一道闸（server 已在入口校验过一次，双保险）。
 func WithImages(refs []llm.ImageRef) SendOpt { return func(c *sendConfig) { c.images = refs } }
+
+// WithAttachments 给这条 user 消息附带附件展示元数据（llm.AttachmentRef——
+// 前端渲染附件卡的数据源，实时事件与历史回放同一份）。恒为引用 + 元数据，
+// base64 绝不经过这里。与 WithImages 并存：用户发的图既进视觉通道（Images）
+// 也渲染附件卡（Attachments）。
+func WithAttachments(refs []llm.AttachmentRef) SendOpt { return func(c *sendConfig) { c.attachments = refs } }
 
 // ModelFor 解析指定 Agent 语境下的当前模型（Agent 绑定优先，回落 default 角色）。
 // 导出给 server 做**请求前的能力校验**（vision）：chat.send 带图而模型没声明

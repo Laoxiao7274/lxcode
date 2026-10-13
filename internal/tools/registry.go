@@ -126,6 +126,9 @@ func New() *Registry {
 	r.register(jobKillDef(r))
 	r.register(sessionSearchDef(r))
 	r.register(readSkillDef(r))
+	// share_file（低危只读）：把工作目录里的产物文件共享到对话（前端附件卡）。
+	// 与读取类同族——它不改任何工作区文件，只是复制登记 + 展示。
+	r.register(shareFileDef())
 	r.register(editDef())
 	r.register(writeFileDef())
 	r.register(bashDef(r))

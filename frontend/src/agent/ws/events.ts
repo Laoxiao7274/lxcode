@@ -3,7 +3,7 @@
 // 与 index.ts 的 reactTo 分工：这里只回答「这个事件在前端长什么样」，
 // 「要不要重拉后端事实源」留在 reactTo。混在一起就没法单独测映射——
 // 而映射恰恰是最容易写错、也最值得钉住的一层（字段名、默认值、归属）。
-import type { AgentEvent, ConfirmRequest, ContextUsage, SessionStats, TodoItem } from "../../shared/types";
+import type { AgentEvent, AttachmentRef, ConfirmRequest, ContextUsage, SessionStats, TodoItem } from "../../shared/types";
 import { jobFromWire } from "../../shared/jobs";
 import { normalizeApproval } from "../../shared/approval";
 
@@ -24,19 +24,31 @@ export function mapEvent(method: string, params: unknown): AgentEvent | null {
       // 都读 message.seq，不另立字段名）。老后端没有它 → 键**缺席**（不是
       // undefined 值的键）：块不可撤回，但绝不炸（AGENTS.md §5 坑 11）。
       const seq = message.seq;
-      // dispatchId 非空 = 子会话的消息（任务说明书）：同样**键缺席**而非 undefined
-      // 值——不归属的事件形状与老后端逐字节一致（测试按形状断言）。
+      // 附件引用（llm.Message.Attachments——后端落盘后的展示元数据）：
+      // 数组空/缺失 → 键缺席（无附件块不带这个键）。
+      const atts = Array.isArray(message.attachments) && message.attachments.length
+        ? (message.attachments as AttachmentRef[])
+        : undefined;
       const ev: AgentEvent = typeof seq === "number"
-        ? { type: "userMessage", sessionId, text, seq }
-        : { type: "userMessage", sessionId, text };
+        ? { type: "userMessage", sessionId, text, seq, ...(atts ? { attachments: atts } : {}) }
+        : { type: "userMessage", sessionId, text, ...(atts ? { attachments: atts } : {}) };
       return dispatchId ? { ...ev, dispatchId } : ev;
     }
     case "chat.delta":
       return { type: "delta", sessionId, kind: String(p.kind) as "text" | "reasoning", text: String(p.text ?? ""), dispatchId };
     case "chat.toolCall":
       return { type: "toolCall", sessionId, id: String(p.id), name: String(p.name), arguments: String(p.arguments ?? ""), dispatchId };
-    case "chat.toolResult":
-      return { type: "toolResult", sessionId, id: String(p.id), name: String(p.name), content: String(p.content ?? ""), isError: Boolean(p.is_error), dispatchId };
+    case "chat.toolResult": {
+      // 附件（share_file 共享）：数组空/缺失 → 键缺席。
+      const rAtts = Array.isArray(p.attachments) && (p.attachments as unknown[]).length
+        ? (p.attachments as AttachmentRef[])
+        : undefined;
+      return {
+        type: "toolResult", sessionId, id: String(p.id), name: String(p.name),
+        content: String(p.content ?? ""), isError: Boolean(p.is_error), dispatchId,
+        ...(rAtts ? { attachments: rAtts } : {}),
+      };
+    }
     case "chat.dispatchStart":
       return {
         type: "dispatchStart",

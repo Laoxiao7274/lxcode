@@ -3,6 +3,7 @@
 import type { HistorySnapshot } from "./types";
 import { type AssistantBlock, type ThreadBlock, type UIState, DISPATCH_TOOL_NAME, nextUid, checkpointBody, placeConfirm } from "./blocks";
 import { isHiddenNotice, noticeBody, noticeLabel } from "./notices";
+import { attachmentsFromMessage, parseAttachmentLines } from "./attachments";
 
 /** dispatch 调用的参数（后端 internal/tools/dispatch.go 的 JSON 形状：
  *  `{agent, task, context?, session?}`）。 */
@@ -123,14 +124,18 @@ export function historyBlocks(h: HistorySnapshot): ThreadBlock[] {
           // 任务说明书换了张脸。
           blocks.push({ kind: "task", uid: nextUid(), text: m.content });
         } else {
+          // 附件归一化（与实时路径 reduce.ts 共用同一份纯函数）：结构化引用优先，
+          // 老历史回落 images 引用 + 文本「[附件]」行；正文剥掉附件行（卡区渲染）。
+          const atts = attachmentsFromMessage({ attachments: m.attachments, images: m.images, content: m.content });
+          const displayText = atts ? parseAttachmentLines(m.content).text : m.content;
           // seq = 撤回锚点（后端 ChatMessage 上的字段）。**回放路径与实时路径
           // 都读它**——少一条的话刷新之后同一条消息就再也撤不回（而界面上看起来
           // 一切正常）。只在真的给了时才写这个键：`seq: undefined` 会让既有断言
           // 多出一个键，而 canRewind 判的是 typeof === "number"，行为完全一致。
           blocks.push(
             typeof m.seq === "number"
-              ? { kind: "user", uid: nextUid(), text: m.content, seq: m.seq }
-              : { kind: "user", uid: nextUid(), text: m.content },
+              ? { kind: "user", uid: nextUid(), text: displayText, seq: m.seq, ...(atts ? { attachments: atts } : {}) }
+              : { kind: "user", uid: nextUid(), text: displayText, ...(atts ? { attachments: atts } : {}) },
           );
         }
       }
@@ -197,6 +202,8 @@ export function historyBlocks(h: HistorySnapshot): ThreadBlock[] {
       if (target && target.result === undefined) {
         target.result = m.content;
         target.isError = false;
+        // share_file 共享的附件（结果消息上的元数据——与实时 toolResult 同一份形状）
+        if (m.attachments?.length) target.attachments = m.attachments;
       }
       // ② 调度卡：同一个调用 id 的 dispatch 块。**这一条不能少**——回放重建的
       //    卡建出来就是"中断"态，结果到了必须能回填；只找 kind === "tool"

@@ -107,6 +107,16 @@ type Message struct {
 	// 空 = 无图（omitempty：老消息 wire 上整键缺席，零影响）。
 	Images []ImageRef `json:"images,omitempty"`
 
+	// Attachments 是这条消息携带的附件**引用**（展示通道，第一版不进模型上下文）：
+	// 用户发的图/文件（chat.send 落盘后的元数据）与 share_file 工具共享的文件。
+	// 与 Images 的分工：Images 服务视觉请求（模型要看到图），Attachments 服务
+	// **前端渲染**（缩略图卡 / 文件卡）——同一条消息可以两者都有（用户发的图既进
+	// 视觉通道也渲染附件卡）。恒为引用 + 元数据（名字/大小），绝不带 base64；
+	// 随消息落库与回放（chat.history / chat.userMessage / chat.toolResult 三条
+	// wire 同一份形状），前端经 HTTP 附件端点取内容。
+	// 空 = 无附件（omitempty：老消息 wire 上整键缺席，零影响）。
+	Attachments []AttachmentRef `json:"attachments,omitempty"`
+
 	// Notice 为真 = 这条 user 消息是**注入的提示条**（重复调用提醒 / 后台任务通告），
 	// 不是用户说的话。前端按文本前缀渲染成提示条（见 agent.RepeatNoticePrefix），
 	// 后端这个位是给**会话统计**用的：轮数只数真实用户消息。

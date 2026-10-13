@@ -331,6 +331,10 @@ const (
 type ChatSendImage struct {
 	Mime string `json:"mime"`
 	Data string `json:"data"`
+	// Name 是客户端提供的展示名（可选，向后兼容：老客户端不带 → 服务端回落
+	// "图片"）。它只出现在附件卡的展示元数据里（llm.AttachmentRef.Name），
+	// 永不成为磁盘文件名（磁盘名恒为随机 hex）。
+	Name string `json:"name,omitempty"`
 }
 
 // ChatSendFile 是 chat.send 携带的一个文件附件：Name 为客户端提供的原名
@@ -510,6 +514,10 @@ type ToolResultParams struct {
 	Content    string `json:"content"`
 	IsError    bool   `json:"is_error"`
 	DispatchID string `json:"dispatch_id,omitempty"`
+	// Attachments 非空 = 这次工具执行共享了附件（share_file）：与结果消息
+	// llm.Message.Attachments 同一份元数据（前端渲染附件卡——实时事件与
+	// chat.history 回放同一形状）。空 = 无（omitempty：老事件零影响）。
+	Attachments []llm.AttachmentRef `json:"attachments,omitempty"`
 }
 
 // ConfirmRequest 是需要人工介入的挂起请求（确认门）；客户端须回 tool.confirm。

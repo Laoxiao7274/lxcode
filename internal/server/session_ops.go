@@ -11,6 +11,7 @@ import (
 	"github.com/moyunteng/lxcode/internal/llm"
 	"github.com/moyunteng/lxcode/internal/project"
 	"github.com/moyunteng/lxcode/internal/protocol"
+	"github.com/moyunteng/lxcode/internal/store"
 )
 
 func (s *Server) session(id string) (*agent.Session, error) {
@@ -151,8 +152,13 @@ func chatSendOptions(p protocol.ChatSendParams) []agent.SendOpt {
 // 传给内核；带文件时走 SaveFileAttachment 落盘（无 mime 白名单），并把
 // 「[附件] 名字 → attachments/...」行追加进消息文本——Agent 用 read_file 读。
 // base64 在这里读完参数即弃（落盘的是原始字节），不进历史、不进事件。
+//
+// 落盘的每一份都同时生成**展示元数据**（llm.AttachmentRef——前端渲染附件卡），
+// 经 WithAttachments 随 user 消息落库与广播：实时事件与 chat.history 回放
+// 是同一份，两条路径渲染同一张卡。
 func (s *Server) sendAttachments(sessionID string, sess *agent.Session, p protocol.ChatSendParams, decodedImgs, decodedFiles [][]byte, fileNames []string) error {
 	var refs []llm.ImageRef
+	var atts []llm.AttachmentRef
 	if len(p.Images) > 0 {
 		// vision 能力校验：解析「这轮实际会用的模型」——与 Send 同一条解析路径
 		//（Agent 绑定优先，回落 default 角色，agentID 语义一致），保证校验的
@@ -171,6 +177,15 @@ func (s *Server) sendAttachments(sessionID string, sess *agent.Session, p protoc
 		if refs, err = s.saveChatImages(sessionID, p.Images, decodedImgs); err != nil {
 			return err
 		}
+		for i, im := range p.Images {
+			atts = append(atts, llm.AttachmentRef{
+				Path: refs[i].Path,
+				Name: attachmentDisplayName(im.Name, "图片"),
+				Size: int64(len(decodedImgs[i])),
+				Mime: im.Mime,
+				Kind: llm.AttachmentKindImage,
+			})
+		}
 	}
 	// 文件附件：不进视觉通道（vision 校验只看图片），纯落盘 + 文本行。
 	var fileLines []string
@@ -185,6 +200,12 @@ func (s *Server) sendAttachments(sessionID string, sess *agent.Session, p protoc
 		for i, rel := range rels {
 			// rel = <sessionID>/<落盘文件名>（SaveFileAttachment 的返回口径）
 			fileLines = append(fileLines, fmt.Sprintf("[附件] %s → attachments/%s", fileNames[i], rel))
+			atts = append(atts, llm.AttachmentRef{
+				Path: rel,
+				Name: fileNames[i],
+				Size: int64(len(decodedFiles[i])),
+				Kind: llm.AttachmentKindFile,
+			})
 		}
 	}
 	text := p.Text
@@ -202,7 +223,20 @@ func (s *Server) sendAttachments(sessionID string, sess *agent.Session, p protoc
 	if len(refs) > 0 {
 		opts = append(opts, agent.WithImages(refs))
 	}
+	if len(atts) > 0 {
+		opts = append(opts, agent.WithAttachments(atts))
+	}
 	return s.sendSession(sessionID, sess, text, opts...)
+}
+
+// attachmentDisplayName 是图片附件的展示名兜底：客户端给了就用（净化——名字
+// 只做展示，永不成为磁盘文件名），没给（老客户端）回落一个中性名——附件卡
+// 不显示"（空）"这种假缺陷。
+func attachmentDisplayName(name, fallback string) string {
+	if n := store.SanitizeFileName(name); n != "" && n != "file" {
+		return n
+	}
+	return fallback
 }
 
 func errorCode(err error) int {

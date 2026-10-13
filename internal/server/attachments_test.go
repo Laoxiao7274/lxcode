@@ -285,3 +285,52 @@ func TestAttachmentsHTTP(t *testing.T) {
 		t.Fatalf("POST 应 405: %d", r.StatusCode)
 	}
 }
+
+// TestAttachmentsHTTPFileCard：文件附件（非图片扩展名）也能经端点取回——
+// Content-Type 回 octet-stream + Content-Disposition: attachment（文件卡的
+// 下载语义）；图片扩展名照旧 inline。
+func TestAttachmentsHTTPFileCard(t *testing.T) {
+	srv, _, _ := newTestServer(t, textStream())
+	rel, err := srv.st.SaveFileAttachment("sess-b", "报告.txt", []byte("file-bytes"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	imgRel, err := srv.st.SaveFileAttachment("sess-b", "shot.png", []byte("png-bytes"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(srv.routes())
+	t.Cleanup(ts.Close)
+
+	resp, err := http.Get(ts.URL + "/attachments/" + rel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("文件附件应 200: %d", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/octet-stream" {
+		t.Fatalf("非图片应回 octet-stream: %q", ct)
+	}
+	if cd := resp.Header.Get("Content-Disposition"); cd != "attachment" {
+		t.Fatalf("非图片应带 attachment 处置: %q", cd)
+	}
+	got, _ := io.ReadAll(resp.Body)
+	if string(got) != "file-bytes" {
+		t.Fatalf("字节不一致: %q", got)
+	}
+
+	// 图片扩展名（经文件通道落盘）照旧 inline + image mime
+	resp2, err := http.Get(ts.URL + "/attachments/" + imgRel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	if ct := resp2.Header.Get("Content-Type"); ct != "image/png" {
+		t.Fatalf("png 应回 image/png: %q", ct)
+	}
+	if cd := resp2.Header.Get("Content-Disposition"); cd != "" {
+		t.Fatalf("图片不应带下载处置: %q", cd)
+	}
+}

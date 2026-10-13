@@ -129,6 +129,7 @@ var systemPromptTools = map[string]string{
 	"web_fetch":                     "web_fetch：抓取网页正文（HTML 转文本），低危自动执行",
 	"session_search":                "session_search：搜索历史会话内容（含当前会话），低危自动执行",
 	"read_skill":                    "read_skill：读取技能的完整内容（提示词里只有索引），低危自动执行",
+	"share_file":                    "share_file：把工作目录里的文件共享到对话（图片缩略图/文件卡），低危自动执行、不修改任何文件",
 	"edit":                          "edit：精确修改文件片段（唯一匹配替换），低危自动执行",
 	"write_file":                    "write_file：全量写入文件，覆盖已有文件时用户会收到确认提示",
 	"bash":                          "bash：执行 shell 命令，每次执行前用户会收到确认提示",

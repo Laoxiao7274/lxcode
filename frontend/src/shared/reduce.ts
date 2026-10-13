@@ -4,6 +4,7 @@ import type { AgentEvent, ConfirmRequest, JobInfo } from "./types";
 import { type AssistantBlock, type ThreadBlock, type UIState, DISPATCH_TOOL_NAME, initial, nextUid, withBlock, placeConfirm, planRewind } from "./blocks";
 import { reduceHistory } from "./history";
 import { isHiddenNotice, noticeBody, noticeLabel } from "./notices";
+import { attachmentsFromMessage, parseAttachmentLines } from "./attachments";
 
 /** 单个事件类型的窄化类型（reduce 的每个分支提取成函数后，参数类型要收窄到那一个变体）。 */
 type Ev<T extends AgentEvent["type"]> = Extract<AgentEvent, { type: T }>;
@@ -98,6 +99,12 @@ function reduceUserMessage(state: UIState, ev: Ev<"userMessage">): UIState {
   const base = (label || ev.task) ? state : removeOldestPending(state);
   // seq 只在真的给了时才写进块：`seq: undefined` 会让既有断言多出一个键，
   // 而 canRewind 判的是 typeof === "number"，两种写法行为完全一致。
+  // 附件归一化（结构化引用优先；「[附件]」行解析成卡并从正文剥离——正文与
+  // 卡区各渲染一份，正文里再留一行「[附件] … → attachments/…」是噪音）。
+  // 与回放路径 history.ts 共用同一份纯函数（attachmentsFromMessage），两条
+  // 路径不许分叉。
+  const atts = attachmentsFromMessage({ attachments: ev.attachments, content: ev.text });
+  const displayText = atts ? parseAttachmentLines(ev.text).text : ev.text;
   const block: ThreadBlock = label
     ? { kind: "notice", uid: nextUid(), label, text: noticeBody(ev.text) }
     : ev.task
@@ -106,8 +113,8 @@ function reduceUserMessage(state: UIState, ev: Ev<"userMessage">): UIState {
         // 的 child 快照）给出同一个块种类，两条路径不许分叉。
         { kind: "task", uid: nextUid(), text: ev.text }
       : typeof ev.seq === "number"
-        ? { kind: "user", uid: nextUid(), text: ev.text, seq: ev.seq }
-        : { kind: "user", uid: nextUid(), text: ev.text };
+        ? { kind: "user", uid: nextUid(), text: displayText, seq: ev.seq, ...(atts ? { attachments: atts } : {}) }
+        : { kind: "user", uid: nextUid(), text: displayText, ...(atts ? { attachments: atts } : {}) };
   return { ...base, blocks: [...base.blocks, block] };
 }
 
@@ -237,12 +244,14 @@ const route = (blocks: ThreadBlock[]) => {
   const next = blocks.slice();
   const b = next[idx];
   if (b.kind === "tool") {
-    next[idx] = { ...b, result: ev.content, isError: ev.isError };
+    next[idx] = { ...b, result: ev.content, isError: ev.isError,
+      ...(ev.attachments?.length ? { attachments: ev.attachments } : {}) };
   } else if (b.kind === "confirm") {
     next[idx] = {
       kind: "tool", uid: b.uid, id: b.request.id,
       name: b.request.name, arguments: b.request.arguments,
       result: ev.content, isError: ev.isError,
+      ...(ev.attachments?.length ? { attachments: ev.attachments } : {}),
     };
   } else {
     return null; // 两级查找只认这两种，其余不可达

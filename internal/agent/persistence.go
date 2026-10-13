@@ -50,7 +50,14 @@ type Persistence interface {
 	List() ([]sessiondata.SessionMeta, error)
 	SessionWorkspace(string, string) error
 	WorkspaceOf(string) (string, error)
+	// ProjectByID 读项目元数据。
 	ProjectByID(string) (sessiondata.ProjectMeta, bool, error)
+	// SaveSharedAttachment 把一个文件登记进会话附件目录（share_file 共享通道）：
+	// 落盘到 `<attachments>/<session-id>/<随机id>.<ext>` 并返回**展示元数据**
+	//（相对 attachments 根的路径 + 净化后的名字 + 大小 + 分类）。agent 层不见
+	// 磁盘布局——路径形态、随机文件名、大小上限都归实现所有（与 AppendMsg 的
+	// "seq 归实现所有"同一条接缝纪律）。
+	SaveSharedAttachment(sessionID, name string, data []byte) (llm.AttachmentRef, error)
 	// Search 按查询参数检索历史消息，返回 (命中, 总命中数, 错误)。
 	Search(sessiondata.SearchQuery) ([]sessiondata.SearchHit, int, error)
 }

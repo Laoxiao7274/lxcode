@@ -1229,3 +1229,119 @@
   text-decoration: underline;
   text-underline-offset: 3px;
 }
+
+/* ===== 附件卡（图片批次 B 的展示通道）=====
+ *  图片 = 内联缩略图（点击放大）；文件 = 图标 + 名字 + 大小（点击下载）。
+ *  用户气泡与 share_file 工具行共用一套（实时与回放同一份元数据）。 */
+.att-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.msg.user .att-cards {
+  justify-content: flex-end;
+}
+.att-image {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  max-width: 220px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--bg-inset);
+  cursor: zoom-in;
+}
+.att-image img {
+  display: block;
+  max-width: 220px;
+  max-height: 180px;
+  object-fit: cover;
+}
+.att-image .att-image-cap {
+  padding: 4px 8px;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 220px;
+}
+.att-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 260px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-inset);
+  color: var(--fg);
+  text-decoration: none;
+}
+.att-file:hover {
+  border-color: var(--fg-muted);
+}
+.att-file.att-dead {
+  opacity: 0.6;
+  cursor: default;
+}
+.att-file-icon {
+  display: inline-flex;
+  color: var(--fg-muted);
+  flex: none;
+}
+.att-file-body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.att-name {
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.att-sub {
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 放大预览：全屏遮罩 + 居中大图，点任意处/Esc 关闭。 */
+.att-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: rgba(0, 0, 0, 0.72);
+  cursor: zoom-out;
+}
+.att-lightbox img {
+  max-width: 88vw;
+  max-height: 82vh;
+  border-radius: 8px;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.5);
+}
+.att-lightbox-cap {
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 13px;
+}
+/* share_file 的工具行形态：头行 + 附件卡为主体（不用展开就能看到）。 */
+.share-block {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+}
+.share-block .att-cards {
+  margin-bottom: 0;
+  margin-top: 6px;
+}

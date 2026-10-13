@@ -7,7 +7,7 @@
 // 上限与后端 server 侧校验同一套（单图 ≤5MB 解码后 / ≤4 张；单文件 ≤20MB /
 // ≤4 个）——前端先拦是体验（选完立刻知道），后端再拦是权威（wire 可被绕过）。
 
-import type { ChatSendFile, ChatSendImage, SendAttachments } from "./types";
+import type { AttachmentRef, ChatSendFile, ChatSendImage, SendAttachments } from "./types";
 
 /** 图片 mime 白名单（与后端 llm.ValidImageMime 同一份清单）。 */
 export const IMAGE_MIMES = ["image/png", "image/jpeg", "image/webp", "image/gif"] as const;
@@ -139,4 +139,91 @@ export function visionBlockNotice(
   const entry = models.find((m) => m.id === modelId);
   if (!entry || entry.vision !== false) return null;
   return `当前模型不支持视觉：${modelId}——文件不受影响；要发图请先到 设置 → 模型 勾选「视觉」能力`;
+}
+
+// ===== 附件展示通道（2026-12 第一版）=====
+//
+// 后端把附件落盘到 <sessions>/attachments/<session-id>/，消息上带**引用 +
+// 展示元数据**（llm.AttachmentRef）。这里负责三件事：
+// ① 由引用构造 HTTP 取件 URL（后端 7789 的 /attachments 只读端点）；
+// ② 老历史的回落解析：attachments 列上线前的 user 消息只有文本里的
+//    「[附件] 名字 → attachments/...」行与 images 图片引用——归一化成同一份
+//    AttachmentMeta，两条路径（实时/回放）渲染同一张卡；
+// ③ 大小人话化（formatBytes 已在上面）。
+
+/** 附件卡的展示条目（归一化产物——AttachmentRef 或老历史回落的合成值）。 */
+export interface AttachmentMeta {
+  path: string;
+  name: string;
+  size?: number;
+  mime?: string;
+  kind: "image" | "file";
+  caption?: string;
+}
+
+/** 附件静态端点的 HTTP 源（wsagent 连接时注入——同一台后端主机）。
+ *  空串 = 同源（相对路径 /attachments/...，浏览器模式下页面本身就由后端服务）。 */
+let attachmentOrigin = "";
+
+/** 注入附件端点的 HTTP 源（WSAgent 建立/重连时调用；demo 源不调 = 同源回落）。 */
+export function setAttachmentOrigin(origin: string): void {
+  attachmentOrigin = (origin || "").replace(/\/+$/, "");
+}
+
+/** 由相对引用构造取件 URL：`<origin>/attachments/<path>`。
+ *  path 只接受 "<session-id>/<file>" 形态（服务端生成），任何带 .. 的输入
+ *  原样拒绝（返回 null——卡显示为不可点，不做穿越尝试）。 */
+export function attachmentURL(path: string): string | null {
+  if (!path || path.includes("..") || path.startsWith("/") || path.includes("\\")) return null;
+  const segs = path.split("/").filter(Boolean);
+  if (segs.length !== 2) return null;
+  return `${attachmentOrigin}/attachments/${segs[0]}/${encodeURIComponent(segs[1])}`;
+}
+
+/** 「[附件] 名字 → attachments/<sid>/<file>」行的定界（与后端 server 侧
+ *  sendAttachments 的写入格式逐字一致——写错了解析不出，卡片就消失）。 */
+const ATTACHMENT_LINE = /^\[附件\] (.+?) → attachments\/(.+)$/;
+
+/** 从消息文本解析出「[附件]」行并从正文剥离：老历史（attachments 列上线前）
+ *  的文件附件只有这一种载体。返回解析出的条目与剥离后的正文。
+ *  解析不出的行原样保留在正文里（宁可多一行字，不静默吞内容）。 */
+export function parseAttachmentLines(text: string): { atts: AttachmentMeta[]; text: string } {
+  const atts: AttachmentMeta[] = [];
+  const kept: string[] = [];
+  for (const line of text.split("\n")) {
+    const m = ATTACHMENT_LINE.exec(line.trim());
+    if (m && attachmentURL(m[2])) {
+      atts.push({ path: m[2], name: m[1], kind: "file" });
+    } else {
+      kept.push(line);
+    }
+  }
+  return { atts, text: kept.join("\n").replace(/\n{3,}/g, "\n\n").trim() };
+}
+
+/** 消息 → 附件卡条目（唯一归一化入口）：结构化 attachments 优先；老历史回落
+ *  images 引用（→ 图片卡）+ 文本「[附件]」行（→ 文件卡）。
+ *  返回 undefined = 无附件（不渲染卡区，与后端 omitempty 同语义）。 */
+export function attachmentsFromMessage(m: {
+  attachments?: AttachmentRef[];
+  images?: Array<{ path: string; mime: string }>;
+  content: string;
+}): AttachmentMeta[] | undefined {
+  if (m.attachments?.length) {
+    // 键缺席纪律：undefined 的可选键不写进条目（size/mime/caption 缺席就是缺席
+    // ——不是 undefined 值的键；测试按形状断言，渲染层也不得以 undefined 显示）。
+    return m.attachments.map((a) => {
+      const out: AttachmentMeta = { path: a.path, name: a.name, kind: a.kind === "image" ? "image" : "file" };
+      if (a.size) out.size = a.size;
+      if (a.mime) out.mime = a.mime;
+      if (a.caption) out.caption = a.caption;
+      return out;
+    });
+  }
+  const fromLines = parseAttachmentLines(m.content ?? "");
+  const imgs: AttachmentMeta[] = (m.images ?? []).map((im) => ({
+    path: im.path, name: "", mime: im.mime, kind: "image",
+  }));
+  const all = [...imgs, ...fromLines.atts];
+  return all.length ? all : undefined;
 }

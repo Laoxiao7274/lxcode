@@ -41,12 +41,15 @@ type ToolCallEvent struct {
 
 // ToolResultEvent：工具执行完成（IsError = 拒绝/失败）。
 // DispatchID 非空 = 子 Agent 的结果。
+// Attachments 非空 = 这次执行共享了附件（share_file——元数据随结果流动，
+// 前端渲染附件卡；与结果消息 llm.Message.Attachments 同一份）。
 type ToolResultEvent struct {
 	ID         string
 	Name       string
 	Content    string
 	IsError    bool
 	DispatchID string
+	Attachments []llm.AttachmentRef
 }
 
 // ConfirmRequestEvent：高危工具等待人工裁决（宿主弹确认卡并回 Confirm）。

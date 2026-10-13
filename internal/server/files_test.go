@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/moyunteng/lxcode/internal/llm"
 	"github.com/moyunteng/lxcode/internal/protocol"
 	"github.com/moyunteng/lxcode/internal/store"
 )
@@ -296,4 +297,45 @@ func TestChatSendFilesOnlyNoVision(t *testing.T) {
 		t.Fatalf("纯文件不应触发 vision 门: %+v", resp)
 	}
 	waitDone(t, client, sid)
+}
+
+// TestChatSendFilesPersistsAttachmentMeta：文件/图片附件的**展示元数据**
+//（llm.AttachmentRef）随 user 消息落库——chat.history 回放出的 user 消息带
+// attachments（前端渲染附件卡的数据源，实时 chat.userMessage 同一份形状）。
+func TestChatSendFilesPersistsAttachmentMeta(t *testing.T) {
+	srv, client, _ := newTestServer(t, textStream())
+	sid := newSessionForTest(t, client)
+
+	resp := client.call(protocol.MethodChatSend, protocol.ChatSendParams{
+		SessionID: sid,
+		Text:      "看文件和图",
+		Files: []protocol.ChatSendFile{
+			{Name: "数据.csv", Data: base64.StdEncoding.EncodeToString([]byte("a,b"))},
+		},
+	})
+	if resp == nil || resp.Error != nil {
+		t.Fatalf("文件发送应成功: %+v", resp)
+	}
+	waitDone(t, client, sid)
+
+	hist := client.call(protocol.MethodChatHistory, protocol.ChatHistoryParams{SessionID: sid})
+	var h protocol.ChatHistoryResult
+	decodeServerResult(t, hist.Result, &h)
+	var found *llm.Message
+	for i := range h.Messages {
+		if h.Messages[i].Role == "user" {
+			found = &h.Messages[i]
+		}
+	}
+	if found == nil || len(found.Attachments) != 1 {
+		t.Fatalf("user 消息应带附件元数据: %+v", found)
+	}
+	att := found.Attachments[0]
+	if att.Name != "数据.csv" || att.Kind != llm.AttachmentKindFile || att.Size != 3 {
+		t.Fatalf("附件元数据不符: %+v", att)
+	}
+	// 路径指向落盘文件（相对附件根）
+	if _, err := os.Stat(filepath.Join(srv.st.AttachmentsRoot(), filepath.FromSlash(att.Path))); err != nil {
+		t.Fatalf("附件路径指向的文件不存在: %s err=%v", att.Path, err)
+	}
 }

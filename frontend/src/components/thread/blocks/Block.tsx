@@ -21,6 +21,7 @@ import { CompactionCard } from "./CompactionCard";
 import { JobCard } from "./JobCard";
 import { NoticeBar } from "./NoticeBar";
 import { TaskBlock } from "./TaskBlock";
+import { AttachmentCards } from "./AttachmentCard";
 
 /** 没有 seq 的块（老后端 / 更早落库的历史）不能撤回/编辑时的说明——禁用按钮上
  *  的 title。写清楚原因而不是默默点不动：用户至少知道为什么。 */
@@ -101,6 +102,9 @@ export const Block = memo(
                 {block.atts.files > 0 && <span>[文件]×{block.atts.files}</span>}
               </span>
             )}
+            {/* 附件卡（后端回执/历史带的引用元数据）：气泡上方内联渲染——
+                图片缩略图 + 文件卡，与 share_file 工具行同一套组件。 */}
+            {!block.pending && <AttachmentCards atts={block.attachments} />}
             {block.text}
             {block.pending && (
               <span className="pending-hint">

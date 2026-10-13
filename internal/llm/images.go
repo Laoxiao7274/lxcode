@@ -19,6 +19,13 @@ const (
 	MaxImagesPerMessage = 4
 )
 
+// MaxFileAttachmentBytes 单个**文件**附件的大小上限（落盘字节）：20MB。
+// 与图片的 5MB（Anthropic 对 base64 源图的上限）分开——文件只落盘（给
+// read_file 读 / share_file 共享），不受端点限制，给到「日常文档」够用的量级。
+// 放 llm 层与 MaxImageBytes 同一份常量池：tools（share_file 的前置检查）、
+// store（写入边界）、server（上传校验）三层共用，各写一遍必然漂移。
+const MaxFileAttachmentBytes = 20 << 20
+
 // imageMIMEs 是 mime 白名单（png/jpeg/webp/gif——两家端点都支持的视觉格式）。
 var imageMIMEs = map[string]bool{
 	"image/png":  true,
@@ -36,6 +43,31 @@ func ValidImageMime(m string) bool { return imageMIMEs[m] }
 type ImageRef struct {
 	Path string `json:"path"`
 	Mime string `json:"mime"`
+}
+
+// 附件引用的两种展示形态：图片渲染内联缩略图（点击放大），其余渲染文件卡
+// （图标 + 名字 + 大小，点击下载）。前端按它分流，后端按它决定落盘通道。
+const (
+	AttachmentKindImage = "image"
+	AttachmentKindFile  = "file"
+)
+
+// AttachmentRef 是消息携带的一个附件的**引用 + 展示元数据**（不进模型上下文）：
+//   - Path：相对 attachments 根的路径（"<session-id>/<随机id>.<ext>"——磁盘名
+//     恒为随机 hex，不使用原名）；
+//   - Name：展示名（净化后的原名；客户端没给时服务端回落"图片"/"file"）；
+//   - Size：字节数（前端文件卡显示人话大小；未知 = 0，卡片不显示大小）；
+//   - Mime：图片类型（kind=image 时恒有；文件为空——文件不做 mime 白名单）；
+//   - Caption：共享者附的一句话说明（share_file 的可选文案；用户消息恒空）。
+//
+// 恒为引用：base64 绝不进这个结构（与 ImageRef 同一条分层纪律）。
+type AttachmentRef struct {
+	Path    string `json:"path"`
+	Name    string `json:"name"`
+	Size    int64  `json:"size"`
+	Mime    string `json:"mime,omitempty"`
+	Kind    string `json:"kind"`
+	Caption string `json:"caption,omitempty"`
 }
 
 // imageLoader 由宿主注入的图片读取函数：给一个引用，返回 (mime, 原始字节, 错误)。

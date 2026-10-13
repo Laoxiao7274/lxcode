@@ -53,6 +53,9 @@ func sanitizeMessagesForWire(msgs []Message) []Message {
 		out[i].DurationMs = 0
 		out[i].Model = ""
 		out[i].UsageTokens = 0
+		// Attachments 与 Seq 同类：展示元数据（前端渲染附件卡用），模型看不见
+		// 也不需要——发出去只会给严格网关多一个未知字段（同一坑）。
+		out[i].Attachments = nil
 		if len(out[i].ToolCalls) == 0 {
 			continue
 		}

@@ -382,7 +382,8 @@ func (s *Session) Send(text string, opts ...SendOpt) error {
 	// Notice 是**注入的提示条**标记（后台任务通告走 flushNotices → Send）：
 	// 它随消息落库，会话统计的轮数按它把注入消息排除在外（见 store.foldSessionStats）。
 	// Images 是图片**文件引用**（视觉请求）：随消息落库与回放，base64 绝不经此路径。
-	userMsg := llm.Message{Role: "user", Content: text, Notice: cfg.notice, Images: cfg.images}
+	// Attachments 是附件**展示元数据**（前端渲染附件卡——实时事件与历史回放同一份）。
+	userMsg := llm.Message{Role: "user", Content: text, Notice: cfg.notice, Images: cfg.images, Attachments: cfg.attachments}
 	userMsg.Seq = s.persistLocked(userMsg)
 	s.history = append(s.history, userMsg)
 	// 记下本轮归属的 Agent（会话页显示的模型按它解析）：主会话空 id 解析出的是

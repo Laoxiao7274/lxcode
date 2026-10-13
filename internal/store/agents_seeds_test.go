@@ -120,12 +120,13 @@ func TestSyncSeedAgentsBackfillsOldDB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	// 模拟老库：两个新种子 Agent 缺失、coder 被用户改过（加了 ripgrep）、
+	// 模拟老库：两个新种子 Agent 缺失、coder 被用户改过（删掉了 todo——补种
+	// 只在白名单仍含**全部基线工具**时才触发，删过工具的行是用户的编辑，不碰）、
 	// 主 Agent 的委派名单还是上一版种子的值
 	if _, err := st.db.Exec(`DELETE FROM agents WHERE id IN ('researcher','tester')`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.db.Exec(`UPDATE agents SET tools='["read_file","search","edit","write_file","bash","todo","ripgrep"]' WHERE id='coder'`); err != nil {
+	if _, err := st.db.Exec(`UPDATE agents SET tools='["read_file","search","edit","write_file","bash"]' WHERE id='coder'`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.db.Exec(`UPDATE agents SET delegates='["coder"]' WHERE is_main=1`); err != nil {
@@ -153,8 +154,8 @@ func TestSyncSeedAgentsBackfillsOldDB(t *testing.T) {
 			t.Fatalf("新增的种子 Agent 未补进老库: %s（名单 %v）", id, list)
 		}
 	}
-	// 用户改过的行不碰：coder 的 ripgrep 还在，且没有被重复追加
-	if got := byID["coder"].Tools; !slices.Contains(got, "ripgrep") || len(got) != 7 {
+	// 用户改过的行不碰：coder 删掉的 todo 不复活，share_file 也不被追加
+	if got := byID["coder"].Tools; slices.Contains(got, "todo") || slices.Contains(got, "share_file") || len(got) != 5 {
 		t.Fatalf("用户改过的 coder 行被同步动了: %v", got)
 	}
 	// 主 Agent 的委派名单（老库仍是上一版种子的值）补上新增的两个
