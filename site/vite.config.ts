@@ -6,7 +6,9 @@ import react from "@vitejs/plugin-react";
 //   index.html → 公开官网（src/main.tsx）
 //   admin.html → **独立的管理站**（src/admin.tsx）：自己的登录页与管理台外壳
 // 产物路径：dist/index.html 与 dist/admin.html；`/admin/` 由后端 staticFiles 映射到 admin.html。
-// 子路径部署（网关 /site/ 前缀）由部署侧 `vite build --base=/site/` 覆盖，两个入口共用同一 base。
+// 子路径部署（网关 /site/ 前缀）：base 固化在 package.json 的 build 脚本里
+// （`vite build --base=/site/`，两个入口共用同一 base）——2026-12 靠部署侧手加
+// 覆盖出过事故（忘了加 → 产物 /assets/* 在 /site/ 下全 404），不再依赖人工记忆。
 // 端口 5200：与产品 dev server（5190）错开，两者可同时开着对照设计。
 /**
  * dev 下把 /admin 与 /admin/<任意> 重写到 /admin.html。
@@ -53,7 +55,7 @@ export default defineConfig({
   build: {
     target: "chrome110",
     outDir: "dist",
-    // 站点以 http(s) 托管（静态目录），不用相对路径——子路径部署由部署侧 base 覆盖。
+    // 站点以 http(s) 托管（静态目录），不用相对路径——/site/ 前缀由 build 脚本的 --base=/site/ 提供（见文件头注释），dev 时仍是 /。
     base: "/",
     rollupOptions: {
       input: {
