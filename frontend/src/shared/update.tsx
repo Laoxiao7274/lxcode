@@ -121,6 +121,19 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
     return () => clearTimeout(t);
   }, [bridge, check]);
 
+  // 运行期周期检查（主进程每 6h+抖动拉 manifest）发现新版本 → 主进程推送
+  // update:available（shell updater.ts 的 startUpdatePolling）。非侵入：只在
+  // 空闲态（idle/latest）抬到 available——用户正在下载/已就绪时不打断；失败
+  // 静默是主进程侧的纪律，这里收到的推送必是「发现新版本」。
+  useEffect(() => {
+    if (!bridge?.onAvailable) return;
+    return bridge.onAvailable((m) => {
+      setError(null);
+      setManifest(m);
+      setPhase((p) => (p === "idle" || p === "latest" ? "available" : p));
+    });
+  }, [bridge]);
+
   const value = useMemo(
     () => ({
       current, phase, manifest, progress, error,

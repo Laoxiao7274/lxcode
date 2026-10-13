@@ -71,7 +71,8 @@ contextBridge.exposeInMainWorld("__LX__", {
     refresh: (): Promise<unknown> => ipcRenderer.invoke("backendRemote:refresh"),
   },
   // 自更新：check/download(含校验+暂存)/apply(热替换+排程冷替换)/restart；
-  // 下载进度经 update:progress 事件推送
+  // 下载进度经 update:progress 事件推送；运行期周期检查发现新版本经
+  // update:available 推送（主进程编排，见 updater.ts 的 startUpdatePolling）
   update: {
     version: (): Promise<string> => ipcRenderer.invoke("update:version"),
     check: (): Promise<unknown> => ipcRenderer.invoke("update:check"),
@@ -82,6 +83,11 @@ contextBridge.exposeInMainWorld("__LX__", {
       const listener = (_e: unknown, p: unknown): void => cb(p);
       ipcRenderer.on("update:progress", listener as never);
       return () => ipcRenderer.removeListener("update:progress", listener as never);
+    },
+    onAvailable: (cb: (m: unknown) => void): (() => void) => {
+      const listener = (_e: unknown, m: unknown): void => cb(m);
+      ipcRenderer.on("update:available", listener as never);
+      return () => ipcRenderer.removeListener("update:available", listener as never);
     },
   },
 });

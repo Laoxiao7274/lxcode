@@ -8,9 +8,31 @@
   grid-column: 1;
   border-right: 1px solid var(--border);
   background: var(--bg-side);
-  overflow-y: auto;
+  /* 整列不再滚动（旧布局 overflow-y:auto 会把底部设置入口挤出视口）：
+   * 侧栏是「固定区 + 滚动区」的纵向 flex——导航/搜索/分组标题/设置入口
+   * flex:none 恒可见，项目区与会话区各自滚动（见 .proj-scroll/.sess-scroll）。 */
+  overflow: hidden;
   display: flex;
   flex-direction: column;
+}
+/* 固定区（不进滚动容器）：主导航、搜索框、底部设置入口 */
+.nav-list,
+.sidebar-pad,
+.sidebar-footer {
+  flex: none;
+}
+/* 项目区滚动：空间充裕时按内容自然高（flex:none），项目多时封顶让位会话区 */
+.proj-scroll {
+  flex: none;
+  min-height: 0;
+  max-height: 42%;
+  overflow-y: auto;
+}
+/* 会话区滚动：吃掉剩余全部空间（列表长时在这里滚，设置入口永远钉在底部） */
+.sess-scroll {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
 }
 .sidebar-pad {
   padding: 12px 12px 10px;

@@ -253,7 +253,8 @@ export function Sidebar({
         </div>
       </div>
 
-      {/* 项目分组（上）——注册项目列表 + 添加按钮；点行过滤对话 */}
+      {/* 项目区（上分组）：标题行常驻，行列表独立滚动（proj-scroll）——
+          项目再多也不把下方的会话区/设置入口挤出视口 */}
       <div className="sidebar-label project-head">
         项目
         <button type="button" className="proj-add-btn" aria-label="添加项目" title="添加项目" onClick={() => setAddOpen(true)}>
@@ -262,6 +263,7 @@ export function Sidebar({
           </svg>
         </button>
       </div>
+      <div className="proj-scroll">
       {projects.map((p) => {
         const count = all.filter((s) => s.workspace === p.id).length;
         const active = filter === p.id;
@@ -322,6 +324,7 @@ export function Sidebar({
       {projects.length === 0 && loose.length === 0 && (
         <div className="proj-empty">还没有项目——点右上 + 添加</div>
       )}
+      </div>
       {addOpen && (
         <AddProjectDialog
           onAdd={(name, path) => source.addProject(name, path)}
@@ -337,7 +340,8 @@ export function Sidebar({
       )}
 
       {/* 对话分组（下）——列表恒属于当前范围（项目 / 未分组）；范围在项目区
-          用选中态表达，这里不再放可清除的 chip（没有「全部」可退） */}
+          用选中态表达，这里不再放可清除的 chip（没有「全部」可退）。
+          会话列表独立滚动（sess-scroll）：全部会话都可滚到，不再截断前 8 条。 */}
       <div className="sidebar-label group-head">
         对话
         <span className="group-actions" aria-hidden>
@@ -346,7 +350,8 @@ export function Sidebar({
           </svg>
         </span>
       </div>
-      {list.slice(0, 8).map((s) => (
+      <div className="sess-scroll">
+      {list.map((s) => (
         <SessionRow
           key={s.id}
           session={s}
@@ -369,10 +374,10 @@ export function Sidebar({
           enterRow={enterRow}
         />
       ))}
-      {list.length > 8 && <div className="ws-more">Show more（{list.length - 8}）</div>}
       {list.length === 0 && query.trim() && (
         <div className="sidebar-empty">没有匹配「{query.trim()}」的对话</div>
       )}
+      </div>
 
       <div className="sidebar-footer">
         <div className="settings-row" role="button" tabIndex={0} onClick={onOpenSettings}>

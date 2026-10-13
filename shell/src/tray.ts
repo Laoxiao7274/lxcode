@@ -53,3 +53,18 @@ export function createTray(getWin: () => BrowserWindow | null): void {
 export function isQuitting(): boolean {
   return quitting;
 }
+
+/** 托盘气泡（Windows）：运行期周期检查发现新版本时的非侵入提醒——不弹模态、
+ *  不抢焦点，用户开着别的窗口也能看见。托盘未装配或非 Windows 平台静默跳过；
+ *  气泡失败（个别系统裁剪了通知）只记日志语义上不影响更新流程。 */
+export function notifyTrayUpdate(version: string): void {
+  if (process.platform !== "win32" || !tray) return;
+  try {
+    tray.displayBalloon({
+      title: "Lxcode 有新版本",
+      content: `新版本 ${version} 已发布——打开 Lxcode，在设置里即可更新。`,
+    });
+  } catch {
+    // 气泡弹不出来不影响发现与更新本身（渲染层 Toast / 设置角标兜底）
+  }
+}

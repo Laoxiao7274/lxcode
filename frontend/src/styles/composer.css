@@ -1551,16 +1551,6 @@
   opacity: 1;
   animation: pulse 2.4s ease-in-out infinite;
 }
-.ws-more {
-  padding: 4px 14px 4px 32px;
-  font-size: 11px;
-  color: var(--fg-faint);
-  cursor: pointer;
-}
-.ws-more:hover {
-  color: var(--fg-muted);
-}
-
 /* 拖拽悬停态（文件拖到输入区）：整卡描边提示「松手即加入附件区」。 */
 .composer-zone.composer-dragover .composer-inner {
   outline: 1.5px dashed var(--fg-muted);

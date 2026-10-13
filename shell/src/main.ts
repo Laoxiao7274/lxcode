@@ -9,7 +9,7 @@ import { ensureBackend, shutdownBackend } from "./sidecar";
 import { initSakura, sakuraHandlers, shutdownSakura } from "./sakura";
 import { initTailscale, tailscaleHandlers } from "./tailscale";
 import { cachedState, cachedToken, disable as remoteDisable, enable as remoteEnable, initBackendRemote, refresh as remoteRefresh, rotate as remoteRotate } from "./backend-remote";
-import { updateHandlers } from "./updater";
+import { startUpdatePolling, stopUpdatePolling, updateHandlers } from "./updater";
 import { createTray } from "./tray";
 
 // userData 目录名与应用身份（单实例锁、任务栏、通知都吃这个）
@@ -173,6 +173,9 @@ if (!app.requestSingleInstanceLock()) {
 
     // 自更新（manifest → 下载校验 → 后端热替换 → asar 退出冷替换，见 updater.ts）
     updateHandlers();
+    // 运行期周期检查（每 6h+抖动；发现新版本 → 渲染层 Toast/设置角标 + 托盘气泡，
+    // 非侵入不打断——启动时的检查由渲染层负责，见 update-poll.ts 头注）
+    startUpdatePolling();
 
     // 系统托盘（关闭 = 隐藏到托盘，后端/隧道保持运行；托盘菜单退出才真退）
     createTray(() => win);
@@ -198,6 +201,7 @@ if (!app.requestSingleInstanceLock()) {
   // （app.quit() 触发 will-quit 的统一收尾）。应用要常驻的后端/隧道因此保持。
   app.on("window-all-closed", () => { /* 不退出：托盘在 */ });
   app.on("will-quit", () => {
+    stopUpdatePolling();
     shutdownBackend();
     shutdownSakura(); // frpc 与后端同一条退出路径：壳走，隧道进程跟着收
   });

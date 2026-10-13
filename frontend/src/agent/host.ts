@@ -63,6 +63,9 @@ export interface UpdateBridge {
   /** 退出壳（冷替换脚本等壳退出后换 asar 并重新拉起）。 */
   restart(): void;
   onProgress(cb: (p: { percent: number; downloaded: number; total: number }) => void): () => void;
+  /** 运行期周期检查发现新版本（主进程推送，见 shell updater.ts 的
+   *  startUpdatePolling）。可选：浏览器演示模式无此通道。 */
+  onAvailable?(cb: (m: UpdateManifestView) => void): () => void;
 }
 
 interface RawUpdateBridge {
@@ -72,6 +75,7 @@ interface RawUpdateBridge {
   apply(): Promise<unknown>;
   restart(): void;
   onProgress(cb: (p: unknown) => void): () => void;
+  onAvailable?(cb: (m: unknown) => void): () => void;
 }
 
 /** 自更新桥；null = 浏览器模式（演示回落）。 */
@@ -92,9 +96,18 @@ export function getUpdateBridge(): UpdateBridge | null {
   return {
     version: () => cast<string>(s.version()),
     check: async () => {
-      const r = await cast<{ available?: unknown; manifest?: unknown }>(s.check());
-      const manifest = normalize(r.manifest);
-      return { available: r.available === true && manifest !== null, manifest };
+      // IPC 契约 = shell manualCheckOutcome 三态（latest/available/error）：
+      // error 抛出（渲染层走 fail 路径显示原因——手动检查不许静默）；
+      // available 还原旧形状 {available, manifest}（UpdateProvider 状态机不变）。
+      const r = await cast<{ kind?: unknown; version?: unknown; manifest?: unknown; message?: unknown }>(s.check());
+      if (r.kind === "error") {
+        throw new Error(typeof r.message === "string" ? r.message : "检查更新失败");
+      }
+      if (r.kind === "available") {
+        const manifest = normalize(r.manifest);
+        if (manifest) return { available: true, manifest };
+      }
+      return { available: false, manifest: null };
     },
     download: () => cast<{ ok?: unknown }>(s.download()).then((r) => ({ ok: r.ok === true })),
     apply: () => cast<{ ok?: unknown }>(s.apply()).then((r) => ({ ok: r.ok === true, needsRestart: true })),
@@ -104,5 +117,11 @@ export function getUpdateBridge(): UpdateBridge | null {
         cb(p as { percent: number; downloaded: number; total: number });
       }
     }),
+    onAvailable: s.onAvailable
+      ? (cb) => s.onAvailable!((m) => {
+          const normalized = normalize(m);
+          if (normalized) cb(normalized);
+        })
+      : undefined,
   };
 }

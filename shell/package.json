@@ -9,6 +9,7 @@
   "scripts": {
     "build": "node build.mjs",
     "typecheck": "tsc --noEmit",
+    "test": "node --import ./tests/register.mjs --test tests/*.test.mjs",
     "dist": "electron-builder --win --x64"
   },
   "devDependencies": {

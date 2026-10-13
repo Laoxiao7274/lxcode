@@ -16,6 +16,8 @@ import { pipeline } from "node:stream/promises";
 import { Readable, Transform } from "node:stream";
 import { app, BrowserWindow, ipcMain } from "electron";
 import { backendExePath, restartBackend } from "./sidecar";
+import { createUpdatePoller, manualCheckOutcome, nextCheckDelayMs, type UpdatePoller } from "./update-poll";
+import { notifyTrayUpdate } from "./tray";
 
 /** 更新源（env 覆盖；默认 = 官网更新服务器的 manifest——site-backend 按契约生成，
  *  url 为相对文件名，按 manifest 所在目录解析）。 */
@@ -134,7 +136,9 @@ let downloading = false; // 并发防护：下载中再点下载，第二次的 
  *  更新元数据（防伪造：url/哈希只来自主进程拉取的 manifest）。 */
 export function updateHandlers(): void {
   ipcMain.handle("update:version", () => app.getVersion());
-  ipcMain.handle("update:check", () => checkUpdate());
+  // 手动检查走三态结局（latest/available/error）——error 带人话原因（网络差、
+  // manifest 格式坏），渲染层直接展示，不静默（manualCheck 的容错语义与自动检查不同）。
+  ipcMain.handle("update:check", () => manualCheckOutcome(checkUpdate));
   ipcMain.handle("update:download", () => downloadAndStage());
   ipcMain.handle("update:apply", () => applyUpdate());
   ipcMain.handle("update:restart", () => {
@@ -345,4 +349,43 @@ function broadcast(progress: { percent: number; downloaded: number; total: numbe
   for (const win of BrowserWindow.getAllWindows()) {
     win.webContents.send("update:progress", progress);
   }
+}
+
+// ---- 运行期周期检查（update-poll.ts 的装配；纯逻辑在 update-poll.ts 单测） ----
+
+let poller: UpdatePoller | null = null;
+
+/** 启动运行期周期检查（main.ts 装配时调一次）：
+ *  - 首次检查延迟一个完整周期（6h+抖动）——启动时的检查由渲染层负责，不重复；
+ *  - 发现新版本：update:available 推给渲染层（Toast/设置角标消费）+ 托盘气泡，
+ *    都是非侵入提示，不打断（不弹模态）；manifest 已留在 lastManifest，渲染层
+ *    走既有 download/apply 管线，语义不变；
+ *  - 检查失败静默（网络差不能烦人；checkUpdate 已落 update.log 有迹可查）。
+ *  与「更新必须重启才生效」的既有语义协调：提示文案由渲染层/托盘给出
+ *  （「重启后生效」），这里只负责发现与通知。 */
+export function startUpdatePolling(): void {
+  if (poller) return;
+  poller = createUpdatePoller({
+    check: () => checkUpdate(),
+    nextDelay: () => nextCheckDelayMs(),
+    onAvailable: () => {
+      const m = lastManifest;
+      if (!m) return;
+      const view = { version: m.version, size: m.size, notes: m.notes ?? [] };
+      for (const win of BrowserWindow.getAllWindows()) {
+        win.webContents.send("update:available", view);
+      }
+      notifyTrayUpdate(m.version);
+      ulog("周期检查发现新版本", `${m.version}（已通知渲染层与托盘）`);
+    },
+    setTimer: (fn, ms) => setTimeout(fn, ms),
+    clearTimer: (h) => clearTimeout(h as NodeJS.Timeout),
+  });
+  poller.start();
+}
+
+/** 停止周期检查（will-quit 收尾——不留悬挂定时器）。 */
+export function stopUpdatePolling(): void {
+  poller?.stop();
+  poller = null;
 }
