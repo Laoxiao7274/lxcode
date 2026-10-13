@@ -117,6 +117,40 @@ confirmRequest 挂待裁决、compacted 插压缩标记）。
 - 定位锚是 `.ctx-wrap` / `.stats-anchor`（都是 `position: relative`）：漏了它，`position: absolute` 的弹层
   会去认 `.child-session-page` 这个更外层的定位祖先，"向下开"就变成"开到整页底下"。
 
+## 2.6 派发卡下的附件条（2026-12：子会话成果回传主会话）
+
+用户需求：子 Agent 跑完把图/文件 share_file 共享后，**主会话里看不到**——附件按
+`dispatch_id` 归属只进子会话时间线，主时间线只有一行摘要卡。
+
+**方案选型（拍板记录）**：候选有两条——
+a) `chat.dispatchEnd` 带附件清单（卡的可展开附件区）；
+b) 附件随**调度结果消息**回流（结构化元数据挂到主会话那条 `role=tool` 消息上 +
+   实时 `toolResult` 事件同一份）。
+选 **b**，理由：
+
+- **零新 wire 形态**：附件回流走的全是既有通道（tool 消息的 `attachments` 列随消息
+  落库回放；`ToolResultEvent.attachments` 与 share_file 同一份形状）——`chat.dispatchEnd`
+  不加字段，协议 Version 不动；
+- **归属正确**：附件的磁盘位置与归属会话不变（仍在**子会话**的附件目录
+  `attachments/<子会话id>/<文件>`），引用自解释（路径首段就是子会话 id），前端
+  `attachmentURL` 直接可用；回放路径天然一致（历史里那条工具消息带着元数据）；
+- **主 Agent 拿得到路径**：调度结果文本追加「[附件] 名字 → attachments/<路径>」行
+  （与用户文件附件的写入格式逐字一致，不发明第二套）——主 Agent 下一轮可转述或
+  再次 share_file。
+
+**渲染：卡 = 一行摘要的例外，但不是推翻**。§2.3 说卡里没有子过程、没有结论正文——
+附件**不是过程也不是结论，是成果**（用户派活的交付物）。所以附件条渲染在卡**下方**
+（`DispatchCard` 尾部，`AttachmentCards` 复用 share_file 工具行同一组件），不进卡头、
+不做展开区、不复制子会话时间线——卡头那一行的形态逐字节不变，整行可点进子会话的
+入口也不变。
+
+- **实时路径**：`agent_dispatch` 的 `toolResult` 事件带 `attachments` →
+  `reduceToolResult` 按 id 找 dispatch 块挂上（没带附件的调度结果照旧 no-op）；
+- **回放路径**：调度结果消息的 `m.attachments` → `historyBlocks` 的 dispatch 卡分支
+  挂上——两条路径同一份元数据、同一个组件（分叉纪律与 §2.1 同源）；
+- 子会话视图里自己的 share_file 工具行照旧渲染（双投路径不动）——主时间线的附件条
+  是**回流副本**，不是子时间线的搬运。
+
 ## 3. 演示态（DemoAgent）也要给一个真子会话
 
 演示数据源不落库，所以派发过程**一边发事件一边录制**子会话的消息（`childEmit` → `childMsgs_`），
@@ -135,7 +169,9 @@ confirmRequest 挂待裁决、compacted 插压缩标记）。
   去重、返回回到原会话、再点同一张卡视图还在——§0 的钉子）、
   `frontend/tests/child-links.test.mjs`（子→父映射两数据源 + 双投路由 + 标题反查）、
   `frontend/tests/child-history.test.mjs`（`childHistory` 按子会话 id 寻址且发 `historyLoaded`）、
-  `frontend/tests/approval.test.mjs`（**档位显示按会话隔离**：`chat.history` 的 approval 对齐显示）。
+  `frontend/tests/approval.test.mjs`（**档位显示按会话隔离**：`chat.history` 的 approval 对齐显示）、
+  `frontend/tests/dispatch-attachments.test.mjs`（**附件回流**：实时 toolResult 挂卡、
+  回放从调度结果消息同一份形状——§2.6 的钉子）。
 - 真布局：`node shell/node_modules/electron/cli.js scripts/check-preview-layout.cjs --no-sandbox --disable-gpu`
   的 dispatch 段——结论常显、无 chevron / 无卡内子时间线、点卡头打开子会话临时视图且看得到子 Agent 的
   工具行；**子会话页头两条读数**（`child-head-readouts`：统计胶囊有非空标签、上下文 chip 不是「—」）与

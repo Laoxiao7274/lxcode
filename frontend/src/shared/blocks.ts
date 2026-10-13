@@ -107,6 +107,11 @@ export type ThreadBlock =
       /** 子 Agent 用量（轮末）。 */
       usageTokens?: number;
       isError?: boolean;
+      /** 这次派发期间子会话共享到对话的附件（share_file 等的产物——随调度
+       *  结果回流主会话）：主时间线渲染附件条（卡 = 一行摘要的例外：附件不是
+       *  子过程，是**成果**）。实时路径来自 dispatch 的 toolResult 事件、回放
+       *  路径来自调度结果消息上的同一份元数据——两条路径同一份形状。 */
+      attachments?: AttachmentMeta[];
     };
 
 /** 调度工具的 id（后端 tools.DispatchToolName 的前端对应物）——**唯一字面量**。

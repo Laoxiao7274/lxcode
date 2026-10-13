@@ -225,6 +225,9 @@ export function historyBlocks(h: HistorySnapshot): ThreadBlock[] {
         // 子会话 id 优先取结果里的（权威值：续跑时 arguments.session 可能为空，
         // 而这一行永远是本次真正用的那个子会话）
         if (sessionId) card.sessionId = sessionId;
+        // 子会话共享到对话的附件（调度结果消息上的元数据——与实时 toolResult
+        // 同一份形状）：主时间线渲染附件条（卡 = 一行摘要的例外：附件是成果）。
+        if (m.attachments?.length) card.attachments = m.attachments;
       }
       // 工具结果后正文续写：新开 assistant 块（下一条 assistant 自然处理）
       lastAssistant = null;

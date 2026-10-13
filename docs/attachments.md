@@ -5,8 +5,9 @@
 
 ## 范围边界（第一版明确不做）
 
-- **多模态输入（vision）**：用户图片喂给模型走的是既有 vision 通道（`llm.ImageRef`，
-  图片批次 A/B 的产物），不在本批改动内；本批只是给它**补上了展示层**。
+- ~~多模态输入（vision）~~：用户图片喂给模型走既有 vision 通道（`llm.ImageRef`）。
+  **2026-12 补全**：Agent 侧的视觉读图见下文「read_image 工具」——它把工作目录里的
+  图片也接进了同一条通道。
 - 附件的删除/过期清理：目录随会话归档，不单独清理。
 
 ## 存储布局
@@ -50,6 +51,35 @@
   结果消息与 `ToolResultEvent` 上。
 - 归属：子会话共享的文件落进**子会话自己**的附件目录（save 口按本会话 id 解析），
   事件按 `dispatch_id` 归属进子会话时间线。
+- **子会话附件回传主会话（2026-12 补全）**：派发收尾时把本次派发登记到的附件随
+  `DispatchResult.Attachments` 回流主会话——内核把它们挂到**主会话的调度结果消息**
+  上（结构化元数据，回放路径）并随 `agent_dispatch` 的 `ToolResultEvent` 发出（实时
+  路径），同时结果文本带「[附件] 名字 → attachments/<子会话id>/<文件>」行（格式与
+  用户文件附件的写入格式逐字一致）——主 Agent 下一轮拿得到路径，可转述或再次
+  share_file。前端渲染见 `docs/child-session-ui.md` §2.6。
+
+## read_image 工具（Agent → 模型，2026-12 补全）
+
+- 参数：`path`（相对会话工作目录解析，穿越拒绝与 share_file 同一套判定）。
+- 语义只读（`Mutates=false`）：读工作目录里的图片（png/jpg/jpeg/webp/gif，内容
+  嗅探核对扩展名），复制进会话附件目录（复用 `AttachmentSave` 落盘口），引用挂到
+  那条 tool 结果消息的 `llm.Message.Images` 上——**下一轮请求构造时 llm 层按引用
+  编码成视觉输入**（base64 只活在请求构造瞬间，与用户图片同一条分层纪律）。两种
+  wire 形态：OpenAI = tool 消息 content 分片数组（text + image_url data URI）；
+  Anthropic = tool_result 的 content 块数组（text + image base64 源，官方支持的
+  形态）。
+- **能力门控（fail-closed）**：会话开轮时按本轮实际会用的模型（modelFor 同一条
+  解析路径）把 `Capabilities.Vision` 经 `tools.WithVisionCapable` 注入；未声明视觉
+  的模型调用 read_image 得人话错误（提示 share_file 给用户看 / 勾选视觉能力），
+  不假装读图。未注入 = 不支持。
+- 大小上限：单图 ≤5MB（`llm.MaxImageBytes`，Anthropic 对 base64 源图的上限）。
+- 给模型的结果文本带图片基本信息（路径/格式/尺寸/大小）与「给用户看用 share_file」
+  的提示；给用户的展示：普通工具调用卡（模型已看图，用户要看图走 share_file——
+  不额外渲染）。
+- 目录与种子：工具目录新增 `read_image` 条目（store/agents_seeds.go + 前端
+  agent-seeds.ts，两份对齐）；coder/tester 种子白名单加 `read_image`，职责描述
+  点明「能读图片内容（视觉）」，`seedAgentBaselines` 记录上一版白名单与描述
+  （老库未动过的行自动补上，动过的不碰）。
 
 ## 渲染形态（前端）
 
@@ -75,8 +105,12 @@
 ## 测试组织
 
 - Go：`internal/tools/share_file_test.go`（参数/穿越/登记）、
+  `internal/tools/read_image_test.go`（门控/穿越/格式/嗅探/成功路径）、
   `internal/store/attachments_persist_test.go`（列往返 + SaveSharedAttachment）、
   `internal/agent/share_file_test.go`（内核全链路：工具结果与事件带元数据、文件落盘）、
+  `internal/agent/read_image_test.go`（视觉模型续轮请求带图引用 / 非视觉人话错误）、
+  `internal/agent/dispatch_attachments_test.go`（子会话附件回传主会话三路径）、
+  `internal/llm/tool_image_test.go`（tool 消息带图的双 wire 编码 + 无图逐字节不变）、
   `internal/server/attachments_test.go` + `files_test.go`（端点文件卡、发送元数据落库）。
 - 前端：`tests/attachment-display.test.mjs`（URL 构造/行解析/归一化/实时与回放同形状/
   渲染），`tests/attachments.test.mjs` 是发送侧（composer/队列/回滚）的既有钉子。

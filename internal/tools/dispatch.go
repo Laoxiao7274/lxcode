@@ -8,6 +8,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+
+	"github.com/moyunteng/lxcode/internal/llm"
 )
 
 // DispatchCall 是一次调度的参数（agent 内核在 runTools 调用位发起）。
@@ -28,6 +30,12 @@ type DispatchResult struct {
 	// SessionID 是这次调度用的子会话 id（回填给主 Agent——它下一轮可以显式
 	// 传 session 参数续跑；也是"子过程可回放/可对账"的钥匙）。
 	SessionID string
+	// Attachments 是这次派发期间子会话共享到对话的附件（share_file 等的产物）：
+	// 引用 + 展示元数据随调度结果回流主会话——主时间线渲染附件卡（卡 = 一行
+	// 摘要的例外：附件不是子过程，是**成果**），主 Agent 的上下文里也拿得到
+	// 路径（Output 文本带 [附件] 行，可转述或再次 share_file）。
+	// 恒为引用（相对子会话附件根的路径），base64 绝不经此。
+	Attachments []llm.AttachmentRef
 }
 
 // DispatchToolName 是调度工具的 id。

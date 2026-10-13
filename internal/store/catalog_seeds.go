@@ -206,13 +206,18 @@ var seedAgentBaselines = map[string]seedAgentBaseline{
 	// 「给用户看个文件」该派给谁（web_search 栽过的那一跤）。基线是上一版的
 	// 白名单与描述——老库里没动过这两处的 coder/tester 由此吃到新工具与新描述；
 	// 动过的行照旧不碰（用户在编辑器里自己勾）。
+	// 本版给代码/测试 Agent 补了 read_image（视觉读图通道：读工作目录里的图片
+	// 给视觉模型看，llm.ImageRef 通道），职责描述里同步点明「能读图片内容（视觉）」
+	// ——主 Agent 的选人信号按描述逐字生成。基线上移到上一版（含 share_file、
+	// 不含 read_image）：老库里没动过这两处的 coder/tester 由此吃到新工具与新描述；
+	// 动过的行照旧不碰（用户在编辑器里自己勾）。
 	"coder": {
-		Tools: []string{"read_file", "search", "edit", "write_file", "bash", "todo"},
-		Desc:  "编码实现与重构：读写代码、跑构建测试，产出可验证的改动。",
+		Tools: []string{"read_file", "search", "edit", "write_file", "bash", "todo", "share_file"},
+		Desc:  "编码实现与重构：读写代码、跑构建测试，产出可验证的改动，能把产物文件共享到对话。",
 	},
 	"tester": {
-		Tools: []string{"read_file", "search", "edit", "write_file", "bash", "todo"},
-		Desc:  "验证与测试：跑构建与测试、按验收标准补用例，如实回传失败与复现命令。",
+		Tools: []string{"read_file", "search", "edit", "write_file", "bash", "todo", "share_file"},
+		Desc:  "验证与测试：跑构建与测试、按验收标准补用例，如实回传失败与复现命令，能把产物文件共享到对话。",
 	},
 }
 

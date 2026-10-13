@@ -129,6 +129,9 @@ func New() *Registry {
 	// share_file（低危只读）：把工作目录里的产物文件共享到对话（前端附件卡）。
 	// 与读取类同族——它不改任何工作区文件，只是复制登记 + 展示。
 	r.register(shareFileDef())
+	// read_image（低危只读）：读一张图给视觉模型看（llm.ImageRef 视觉通道）。
+	// 紧挨 share_file——同族的「图片进出」两个口（进模型 vs 给用户）。
+	r.register(readImageDef())
 	r.register(editDef())
 	r.register(writeFileDef())
 	r.register(bashDef(r))

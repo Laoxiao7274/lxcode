@@ -21,6 +21,7 @@ import type { ThreadBlock } from "../../../shared/store";
 import { AGENT_COLORS, useAgents } from "../../../shared/agents";
 import { useEnterRef } from "../../../shared/anim";
 import { Block } from "./Block";
+import { AttachmentCards } from "./AttachmentCard";
 import { dispatchErrorTitle, dispatchPrimaryAction, dispatchPrimaryTitle } from "./dispatch-primary";
 
 /** agentId 也查不到时的名字（历史里参数坏了——比如 arguments 是截断的 JSON）。
@@ -169,6 +170,12 @@ export function DispatchCard({ block, onConfirm, onAnswer, onOpenChild, "data-ui
       {confirms.map((c) => (
         <Block key={c.uid} block={c} onConfirm={onConfirm} onAnswer={onAnswer} />
       ))}
+
+      {/* 这次派发共享到对话的附件（子会话 share_file 等的产物，随调度结果回流）：
+       *  卡 = 一行摘要的**例外**——附件不是子过程，是成果（用户点开卡就能拿到
+       *  文件，不必进子会话视图再翻）。实时（toolResult 回流）与回放（调度结果
+       *  消息上的同一份元数据）两条路径共用 AttachmentCards。 */}
+      <AttachmentCards atts={block.attachments} />
     </div>
   );
 }

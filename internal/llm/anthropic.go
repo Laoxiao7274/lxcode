@@ -64,9 +64,11 @@ type anthropicContentBlock struct {
 	ID    string          `json:"id,omitempty"`
 	Name  string          `json:"name,omitempty"`
 	Input json.RawMessage `json:"input,omitempty"`
-	// tool_result 块
+	// tool_result 块。Content 用 any：普通结果持有 string（与旧形态逐字节一致），
+	// 带图结果（read_image 的视觉注入）持有块数组（text + image——Anthropic
+	// 官方形态：tool_result 的 content 可为字符串或块数组）。
 	ToolUseID string `json:"tool_use_id,omitempty"`
-	Content   string `json:"content,omitempty"`
+	Content   any    `json:"content,omitempty"`
 	// image 块（视觉请求）：source 用 base64 形态——媒体字节只在请求构造
 	// 瞬间由 loader 读出并编码（见 images.go 的分层纪律）。
 	Source *anthropicImageSource `json:"source,omitempty"`
@@ -197,7 +199,26 @@ func convertToAnthropic(model string, msgs []Message, o requestOpts, stream bool
 			req.Messages = append(req.Messages, anthropicMessage{Role: "assistant", Content: assistantToBlocks(m)})
 			lastToolResults = -1
 		case "tool":
-			block := anthropicContentBlock{Type: "tool_result", ToolUseID: m.ToolCallID, Content: m.Content}
+			block := anthropicContentBlock{Type: "tool_result", ToolUseID: m.ToolCallID}
+			if len(m.Images) > 0 {
+				// 带图工具结果（read_image 的视觉注入）：content 变块数组
+				//（text + image——Anthropic 官方支持的 tool_result 形态）。
+				// base64 请求构造瞬间编码；读取失败 fail-open（文本尾部追加提示）。
+				text := m.Content
+				imgs, note := loadImages(m.Images)
+				if note != "" {
+					text += note
+				}
+				parts := []anthropicContentBlock{{Type: "text", Text: text}}
+				for _, im := range imgs {
+					parts = append(parts, anthropicContentBlock{Type: "image",
+						Source: &anthropicImageSource{Type: "base64", MediaType: im.mime, Data: im.b64}})
+				}
+				block.Content = parts
+			} else if m.Content != "" {
+				// 普通结果保持 string（空结果不写 content——与旧形态逐字节一致）。
+				block.Content = m.Content
+			}
 			if lastToolResults >= 0 {
 				req.Messages[lastToolResults].Content = append(req.Messages[lastToolResults].Content, block)
 			} else {

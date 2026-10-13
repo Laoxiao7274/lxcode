@@ -87,7 +87,7 @@ func TestAnthropicBackfillsMissingToolResult(t *testing.T) {
 	if results[0].ToolUseID != "call-a" || results[0].Content != "报告 A" {
 		t.Fatalf("原有结果被改动了: %+v", results[0])
 	}
-	if results[1].ToolUseID != "call-b" || !strings.Contains(results[1].Content, "残缺") {
+	if results[1].ToolUseID != "call-b" || !strings.Contains(results[1].Content.(string), "残缺") {
 		t.Fatalf("补的合成结果应指向缺失的调用并自解释: %+v", results[1])
 	}
 }

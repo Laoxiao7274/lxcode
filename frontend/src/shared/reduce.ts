@@ -227,6 +227,21 @@ return {
 /** toolResult 事件的处理（从 reduce 的 switch 里提出来——原来 213 行的 switch
  *  每个分支都是一段独立逻辑，混在一起只能整体读）。 */
 function reduceToolResult(state: UIState, ev: Ev<"toolResult">): UIState {
+// 调度结果（agent_dispatch）不建工具行（它的形态是 dispatch 卡）——但子会话
+// 共享到对话的附件随这条结果回流（后端 DispatchResult.Attachments → 工具结果
+// 事件同一份元数据）：挂到卡上，主时间线渲染附件条。卡 = 一行摘要的例外：
+// 附件不是子过程，是**成果**（docs/child-session-ui.md §2.6）。没带附件的调度
+// 结果照旧是 no-op（与旧行为逐字节一致）。
+if (ev.name === DISPATCH_TOOL_NAME) {
+  if (!ev.attachments?.length) return state;
+  const didx = state.blocks.findIndex((b) => b.kind === "dispatch" && b.id === ev.id);
+  if (didx < 0) return state;
+  const d = state.blocks[didx];
+  if (d.kind !== "dispatch") return state; // 不可达（findIndex 已按 kind 过滤）——收窄用
+  const dblocks = state.blocks.slice();
+  dblocks[didx] = { ...d, attachments: ev.attachments };
+  return { ...state, blocks: dblocks };
+}
 // 结果按 id 回填。两级查找：工具行 → **未裁决的确认卡**。
 // 后者不能少：App.tsx 是「confirm 成功后」才把卡定格成工具行（避免确认失败
 // 却已定格），而后端的 ack 响应与工具执行是并发的——工具跑得快时结果先到，

@@ -151,6 +151,15 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig, ac *sessiondata.A
 		})
 	}
 
+	// 本轮的视觉能力门控（read_image 的读图前提）：按本轮实际会用的模型判定
+	//（与 modelFor 同一条解析路径——Agent 绑定优先，回落 default 角色）。
+	// 解析失败（没绑模型等）按不支持处理：那一轮本来就发不出请求，门控 fail-closed
+	// 让 read_image 给出人话错误而不是把图塞给发不出去的端点。开轮时快照一次
+	//（轮中不重算——模型热切换本来就到下一轮才生效）。
+	if m, err := s.modelFor(ac); err == nil {
+		ctx = tools.WithVisionCapable(ctx, m.Capabilities.Vision)
+	}
+
 	var fileChanges []FileChange
 	defer func() {
 		s.mu.Lock()

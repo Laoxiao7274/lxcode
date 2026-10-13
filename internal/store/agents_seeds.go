@@ -129,6 +129,14 @@ var seedTools = []sessiondata.ToolSpec{
 		Doc: "只读语义：读源文件、复制进会话附件目录、渲染成附件卡——不修改任何文件。\n\n- 适合展示你刚生成的产物（图表、报告、导出数据、截图）\n- 图片（png/jpeg/webp/gif）渲染为可点击放大的缩略图，其余是可下载的文件卡\n- 单文件 ≤20MB；路径越出工作目录会被拒绝",
 	},
 	{
+		// read_image（视觉读图通道）：读一张图给视觉模型看。同样必须在目录里：
+		// Agent 编辑器渲染 chip 只读目录，目录里没有 = 用户勾不上它（web_search
+		// 栽过的那一跤）。
+		ID: "read_image", Desc: "读取图片内容给视觉模型看（须声明「视觉」能力）", Risk: "low", Source: "builtin", Custom: false,
+		Params: []sessiondata.ToolParam{{Name: "path", Type: "string", Required: true, Desc: "图片路径（相对会话工作目录；必须在工作目录之内）"}},
+		Doc:    "只读语义：读工作目录里的图片（png/jpeg/webp/gif），作为视觉输入注入下一轮请求——模型直接描述与分析图里的内容。\n\n- 当前模型必须声明「视觉」能力，否则报人话错误\n- 给用户看图用 share_file（本工具只喂模型，不渲染给用户）\n- 单图 ≤5MB；路径越出工作目录会被拒绝",
+	},
+	{
 		// 调度通道（主 Agent 的唯一工具）。与 web_search 同理必须在目录里：
 		// 主 Agent 的种子白名单直接写着它，但编辑器渲染 chip 也要靠目录
 		//（否则界面上看不到自己有哪些工具）。
@@ -269,9 +277,9 @@ var seedAgents = []sessiondata.AgentDef{
 	},
 	{
 		ID: "coder", Name: "代码 Agent", Enabled: true, Color: "#3b82f6", Model: "",
-		Desc:     "编码实现与重构：读写代码、跑构建测试，产出可验证的改动，能把产物文件共享到对话。",
+		Desc:     "编码实现与重构：读写代码、跑构建测试，产出可验证的改动，能把产物文件共享到对话、能读图片内容（视觉）。",
 		Prompt:   "你是代码 Agent。改动前先读相关代码，遵守仓库规范；每步改动可解释、可回退，构建测试通过才算完成。",
-		Tools:    []string{"read_file", "search", "edit", "write_file", "bash", "todo", "share_file"},
+		Tools:    []string{"read_file", "search", "read_image", "edit", "write_file", "bash", "todo", "share_file"},
 		Workflow: "minimal-change", Skills: []string{"frontend-design", "gsap"},
 		Delegates: []string{}, Approval: "confirm",
 	},
@@ -295,9 +303,9 @@ var seedAgents = []sessiondata.AgentDef{
 		// 验证面：bash 是它的核心能力（不跑就无从验证），edit/write_file 留给
 		// 「按验收标准补用例」；提示词把项目的测试纪律写进职责（不许为绿灯弱化断言）。
 		ID: "tester", Name: "测试 Agent", Enabled: true, Color: "#0ea5e9", Model: "",
-		Desc:     "验证与测试：跑构建与测试、按验收标准补用例，如实回传失败与复现命令，能把产物文件共享到对话。",
+		Desc:     "验证与测试：跑构建与测试、按验收标准补用例，如实回传失败与复现命令，能把产物文件共享到对话、能读图片内容（视觉）。",
 		Prompt:   "你是测试 Agent。跑构建与测试，断言行为与契约而不是实现细节；失败如实回传（关键输出 + 复现命令）。绝不为了让测试变绿而删除、跳过或弱化断言——测试与实现冲突时先判断谁对：实现错了改实现，需求变了先改方案。",
-		Tools:    []string{"read_file", "search", "edit", "write_file", "bash", "todo", "share_file"},
+		Tools:    []string{"read_file", "search", "read_image", "edit", "write_file", "bash", "todo", "share_file"},
 		Workflow: "plan-execute-verify", Skills: []string{},
 		Delegates: []string{}, Approval: "confirm",
 	},

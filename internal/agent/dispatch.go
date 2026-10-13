@@ -307,10 +307,23 @@ func (s *Session) runDispatch(ctx context.Context, call tools.DispatchCall) tool
 	if result == "" {
 		result = "（子 Agent 没有产出文本结论）"
 	}
+	// 附件回流：这次派发期间子会话共享到对话的文件（share_file 等）——
+	// ① 结果文本带 [附件] 行（主 Agent 下一轮就知道路径：可转述、可再次 share_file）；
+	// ② 引用随 DispatchResult.Attachments 回流（内核挂到主会话的调度结果消息上
+	//    ——主时间线渲染附件卡，实时 toolResult 与历史回放同一份）。
+	// 行格式与 server 侧用户文件附件的写入格式逐字一致（前端 shared/attachments.ts
+	// 的解析约定），不发明第二套。
+	childAtts := tap.attachments()
+	if len(childAtts) > 0 {
+		result += "\n\n本次派发共享到对话的附件（主时间线已渲染附件卡）："
+		for _, a := range childAtts {
+			result += fmt.Sprintf("\n[附件] %s → attachments/%s", a.Name, a.Path)
+		}
+	}
 	s.emit(DispatchEndEvent{
 		DispatchID: call.DispatchID, Result: result, SessionID: childID,
 	})
-	return tools.DispatchResult{Output: result, SessionID: childID}
+	return tools.DispatchResult{Output: result, SessionID: childID, Attachments: childAtts}
 }
 
 // openChildSession 开/接子会话并挂好存储：call.Session 非空 = 续跑既有子会话
@@ -411,8 +424,33 @@ func delegateNames(root *sessiondata.AgentContext) string {
 // childEvents 是子会话事件的可观测面：捕获子会话的收尾错误（给 dispatch 结果用），
 // 同时把不该上抛的事件拦下来。
 type childEvents struct {
-	mu  sync.Mutex
-	err *TurnErrorEvent
+	mu   sync.Mutex
+	err  *TurnErrorEvent
+	atts []llm.AttachmentRef
+}
+
+// addAttachments 登记一次派发期间子会话共享的附件（childEmitter 的
+// ToolResultEvent 分支调用；nil 安全——tap 只在捕获错误的场景外也可能为空）。
+func (t *childEvents) addAttachments(refs []llm.AttachmentRef) {
+	if t == nil || len(refs) == 0 {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.atts = append(t.atts, refs...)
+}
+
+// attachments 取走本次派发登记的全部附件（派发收尾时调用——那时子轮已结束，
+// 不会再有事件到达）。
+func (t *childEvents) attachments() []llm.AttachmentRef {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	refs := t.atts
+	t.atts = nil
+	return refs
 }
 
 // childEmitter 包装父会话的事件出口：子会话的事件带上 dispatch_id 归属进卡，
@@ -441,6 +479,10 @@ func childEmitter(parent Emitter, dispatchID string, tap *childEvents) Emitter {
 			parent(e)
 		case ToolResultEvent:
 			e.DispatchID = dispatchID
+			// 附件回流（子会话 share_file 等的产物）：登记进 tap——派发收尾时
+			// 作为 DispatchResult.Attachments 回传主会话（主时间线渲染附件卡 +
+			// 主 Agent 上下文拿到路径）。tap.mu 保护：事件从子会话 goroutine 到达。
+			tap.addAttachments(e.Attachments)
 			parent(e)
 		case TurnDoneEvent:
 			e.DispatchID = dispatchID

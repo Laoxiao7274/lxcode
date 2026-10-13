@@ -182,9 +182,9 @@ func openAIStreamResult(content, reasoning string, toolCalls []ToolCall, finish 
 }
 
 // openaiWireMessages 把清过簿记的消息转成 wire 形态：无图消息原样搬运
-// （Content 保持 string，序列化逐字节与旧形态一致）；带图 user 消息的 Content
-// 变成 text + image_url 分片数组——base64 在这里（请求构造瞬间）由 loader
-// 读文件产出，绝不写回调用方的消息（内存历史恒存引用）。
+// （Content 保持 string，序列化逐字节与旧形态一致）；带图 user/tool 消息的
+// Content 变成 text + image_url 分片数组——base64 在这里（请求构造瞬间）由
+// loader 读文件产出，绝不写回调用方的消息（内存历史恒存引用）。
 // 图片读取失败 fail-open：跳过该图，文本尾部追加提示（见 images.go loadImages）。
 func openaiWireMessages(msgs []Message) []openaiWireMessage {
 	out := make([]openaiWireMessage, len(msgs))
@@ -196,9 +196,11 @@ func openaiWireMessages(msgs []Message) []openaiWireMessage {
 			ToolCalls:        m.ToolCalls,
 			ToolCallID:       m.ToolCallID,
 		}
-		// 只有 user 消息带图（assistant/tool 的 Images 恒空——写边界保证，
-		// 这里防御性不展开：万一带了也按无图发，不给端点编畸形结构）。
-		if m.Role == "user" && len(m.Images) > 0 {
+		// user 消息带图（用户上传）与 tool 消息带图（read_image 的视觉注入）
+		// 都在这里展开：content 变 text + image_url 分片数组。assistant 的
+		// Images 恒空（写边界保证，这里防御性不展开：万一带了也按无图发，
+		// 不给端点编畸形结构）。
+		if (m.Role == "user" || m.Role == "tool") && len(m.Images) > 0 {
 			text := m.Content
 			imgs, note := loadImages(m.Images)
 			if note != "" {
