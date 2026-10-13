@@ -1,18 +1,19 @@
-// 工作区标签状态模型：固定页签（Agent/拓展/Git）+ 可关闭的**子会话标签**。
+// 工作区标签状态模型：固定页签（Agent/拓展/Git）+ **子会话临时视图**。
 //
-// 子会话标签（子 Agent = 独立会话，AGENTS.md §2.3）与固定页签共用同一套「打开顺序 /
-// 焦点 / 关闭回退」语义，所以不另起一个状态机——只把标签键从 WorkspacePage 泛化成
-// **字符串键** `child:<sessionId>`。
+// 子会话（子 Agent = 独立会话，AGENTS.md §2.3）**不再是标签页**（2026-12 用户拍板）：
+// 点主时间线的派发卡打开的是**临时视图**——只切 active、**不进 tabs**，标签栏因此永远
+// 不出现子会话；返回（focusChatTab / popstate）后视图消失，重新点同一张卡回到同一个
+// 视图键（child:<sessionId>），子会话在 store 里的 state 与实时流缓存不受影响。
 //
-// 为什么坚持字符串键而不是对象：本文件与调用方（App / TabBar）大量按值比较
-// （includes / filter / ===），换成对象会让每一处比较都退化成按引用比，波及面远超这一步
-// 的范围；字符串键是天然的判等凭据。
+// 视图键仍是**字符串键** `child:<sessionId>`：本文件与调用方（App / TabBar）大量按值
+// 比较（includes / filter / ===），换成对象会让每一处比较都退化成按引用比，波及面远超
+// 这一步的范围；字符串键是天然的判等凭据。
 import type { ThreadBlock } from "./blocks";
 
 export type WorkspacePage = "agents" | "catalog" | "git" | "remote";
-/** 子会话标签键（模板字面量类型：手写拼接的键在编译期就能被发现）。 */
+/** 子会话视图键（模板字面量类型：手写拼接的键在编译期就能被发现）。 */
 export type ChildTabKey = `child:${string}`;
-/** 可关闭的工作区标签：固定页签 + 子会话标签。 */
+/** 可关闭的工作区标签：固定页签（子会话临时视图不进 tabs，见 focusChildView）。 */
 export type WorkspaceTab = WorkspacePage | ChildTabKey;
 /** 工作区视图：聊天（恒在）+ 可关闭标签。 */
 export type WorkspaceView = "chat" | WorkspaceTab;
@@ -29,7 +30,7 @@ export function createWorkspaceTabs(): WorkspaceTabsState {
   return { tabs: [], active: "chat", history: [] };
 }
 
-/** 子会话标签的键。**唯一**的拼键处——调用方手写 `"child:" + id` 早晚会拼错。 */
+/** 子会话视图的键。**唯一**的拼键处——调用方手写 `"child:" + id` 早晚会拼错。 */
 export function childTabKey(sessionId: string): ChildTabKey {
   return `child:${sessionId}`;
 }
@@ -37,23 +38,23 @@ export function childTabKey(sessionId: string): ChildTabKey {
 /** 键 → 子会话 id（非子会话键返回 null）。
  *
  *  固定页签（agents/catalog/git）与 chat 都不带这个前缀，天然不会被误认成子会话键。
- *  `child:` 后面为空 = 坏键（会渲染成一个没有信息的空标签），返回 null 而不是空串。 */
+ *  `child:` 后面为空 = 坏键（会渲染成一个没有信息的空视图），返回 null 而不是空串。 */
 export function childTabSession(key: string): string | null {
   if (!key.startsWith("child:")) return null;
   const sessionId = key.slice("child:".length);
   return sessionId === "" ? null : sessionId;
 }
 
-/** 是不是固定页签（App 按它分流：固定页签走既有打开逻辑，其余按子会话标签处理）。 */
+/** 是不是固定页签（App 按它分流：固定页签走工作区标签逻辑，子会话走 focusChildView）。 */
 export function isWorkspacePage(tab: WorkspaceTab): tab is WorkspacePage {
   return tab === "agents" || tab === "catalog" || tab === "git" || tab === "remote";
 }
 
-/** 打开/聚焦一个工作区标签（固定页签与子会话标签共用这一条路径）。
+/** 打开/聚焦一个工作区标签（固定页签走这一条路径）。
  *
- *  **去重就在这里**：已在 tabs 里的键不重复 push——重复打开同一个子会话必须回到同一个
+ *  **去重就在这里**：已在 tabs 里的键不重复 push——重复打开同一个页面必须回到同一个
  *  标签，而不是并排长出两个一模一样的标签（关掉一个还剩一个，用户会以为关不掉）。
- *  tests/child-tab.test.mjs ② 钉住这条：把这里的 includes 判定去掉，那条测试立刻变红。 */
+ *  tests/workspace-tabs.test.mjs 钉住这条：把这里的 includes 判定去掉，那条测试立刻变红。 */
 export function focusWorkspaceTab(state: WorkspaceTabsState, tab: WorkspaceTab): WorkspaceTabsState {
   const tabs = state.tabs.includes(tab) ? state.tabs : [...state.tabs, tab];
   return focusView(state, tab, tabs);
@@ -63,56 +64,27 @@ export function focusWorkspacePage(state: WorkspaceTabsState, page: WorkspacePag
   return focusWorkspaceTab(state, page);
 }
 
-/** 标签条分流：固定页签留在工作区标签条，子会话标签归**会话标签条**。
+/** 打开/聚焦子会话**临时视图**（DispatchCard 整行点击的唯一入口）。
  *
- *  2026-10-09 用户拍板：子会话标签原先混在左 strip（聊天 + Agent/拓展/Git）里，用户原话
- *  「标签页左侧的聊天很突兀，应该同时只能选中一个」——子会话是**会话**不是工作区页面，
- *  把它挪到右侧会话标签条（主会话标签之后）后，左 strip 恢复为纯页面页签，选中互斥在
- *  视觉上也成立了（子会话标签 .on 时主会话标签不再高亮）。两个桶都保持原 tabs 的相对
- *  顺序（focusWorkspaceTab 只追加不重排，这里也不许重排）。 */
-export function splitWorkspaceTabs(tabs: WorkspaceTab[]): { pages: WorkspacePage[]; children: ChildTabKey[] } {
-  const pages: WorkspacePage[] = [];
-  const children: ChildTabKey[] = [];
-  for (const tab of tabs) {
-    if (isWorkspacePage(tab)) pages.push(tab);
-    else children.push(tab);
-  }
-  return { pages, children };
-}
-
-/** 子会话标签的 hover 提示：`<项目名> · 主会话「<主会话标题>」 · <子会话标签名>`。
+ *  临时视图语义（2026-12 用户拍板：标签栏不再出现子会话）：**只切 active，不进
+ *  tabs**——标签栏长度不变；返回（focusChatTab / popstate）后视图消失。重复打开
+ *  同一个子会话回到同一个视图（active 已是该键 = 焦点保持），连点/多张卡来回点都
+ *  不会长出重复视图。子会话在 store 里的 state 与实时流缓存不受影响（重新打开时
+ *  ChildSessionPage 重新装载历史，store 双投归约照旧续上）。
  *
- *  与 childTabTitle 的分工：那个是**标签上的短标题**（Agent 名 + 任务摘要），这个是
- *  hover 里的**完整定位**（哪个项目、哪个主会话的孩子）。项目名缺席（未分组会话）就
- *  少一节——不许写「未分组 · …」把没有归属的会话伪装成有归属；主会话标题/子标签缺席
- *  时给明确的占位（空节在提示里就是一处看不懂的「· ·」）。 */
-export function childTabHint(
-  projectName: string | undefined,
-  mainSessionTitle: string,
-  childLabel: string,
-): string {
-  const parts: string[] = [];
-  if (projectName) parts.push(projectName);
-  parts.push(`主会话「${mainSessionTitle || "未命名"}」`);
-  parts.push(childLabel || "子会话");
-  return parts.join(" · ");
-}
-
-/** 打开/聚焦子会话标签（DispatchCard 的「打开子会话」→ 独立工作区标签）。 */
-export function focusChildTab(state: WorkspaceTabsState, sessionId: string): WorkspaceTabsState {
-  // 空 id 不是合法子会话：开一个空键标签只会得到一个标题回落到「子会话 未知」的空白标签，
-  // 不如不开（no-op）
+ *  空 id 不是合法子会话：no-op（开一个空键视图只会得到「子会话 未知」的空页）。 */
+export function focusChildView(state: WorkspaceTabsState, sessionId: string): WorkspaceTabsState {
   if (sessionId === "") return state;
-  return focusWorkspaceTab(state, childTabKey(sessionId));
+  return focusView(state, childTabKey(sessionId), state.tabs);
 }
 
 export function focusChatTab(state: WorkspaceTabsState): WorkspaceTabsState {
   return focusView(state, "chat", state.tabs);
 }
 
-/** 关闭一个工作区标签（固定页签与子会话标签同一套语义，**逐字段保持原行为**）：
+/** 关闭一个工作区标签（固定页签语义，**逐字段保持原行为**）：
  *  非当前标签 → 只从 tabs/history 摘掉；当前标签 → 回退到最近仍打开的标签（没有就回 chat）。
- *  未知键是 no-op（返回原对象）。 */
+ *  未知键是 no-op（返回原对象）。子会话临时视图不进 tabs，不经过这里（返回走 focusChatTab）。 */
 export function closeWorkspacePage(state: WorkspaceTabsState, tab: WorkspaceTab): WorkspaceTabsState {
   if (!state.tabs.includes(tab)) return state;
 
@@ -128,7 +100,7 @@ export function closeWorkspacePage(state: WorkspaceTabsState, tab: WorkspaceTab)
   };
 }
 
-// ---- 子→父会话映射（子会话标签按需显示，2026-10-09 体验修复批次 5）----
+// ---- 子→父会话映射（子会话视图的标题反查与双投路由，2026-10-09 体验修复批次 5）----
 
 /** 子会话 id → 父会话 id 的持久映射。
  *
@@ -191,34 +163,15 @@ export function childLinksFromBlocks(parentId: string, blocks: ThreadBlock[]): C
   return links ?? emptyChildLinks();
 }
 
-/** 子会话标签的**按需可见性**：只显示「父会话是当前活跃主会话」的那些。
- *
- *  规则：`parent(t) === activeParent || t === active`——active 的子标签本身
- *  恒可见（popstate/关闭回退把焦点导航到一个会被过滤掉的标签时，active
- *  悬空比多显示一个标签更糟）。映射缺失（应用刚起、父历史还没回放）的
- *  子标签不可见——猜一个父等于在错误的会话下面挂标签。 */
-export function visibleChildTabs(
-  tabs: ChildTabKey[],
-  active: WorkspaceView,
-  parents: ChildParents,
-  activeParent: string,
-): ChildTabKey[] {
-  return tabs.filter((tab) => {
-    if (tab === active) return true;
-    const childId = childTabSession(tab);
-    return childId !== null && parents[childId] === activeParent;
-  });
-}
-
-/** 子会话标签的标题：Agent 名 + 任务摘要（如 `researcher · 通读 internal/agent`）。
+/** 子会话视图的标题：Agent 名 + 任务摘要（如 `researcher · 通读 internal/agent`）。
  *
  *  数据取自**主时间线里那张 dispatch 块**（按 sessionId 命中 kind === "dispatch"）——
- *  卡上是什么身份，标签上就是什么身份，两处不会各说各话。回放路径的 agentName 是空串
- *  （父会话历史里只有 tool_call 的 arguments，展示名是 Agent 注册表的知识），所以留了
- *  nameOf 回落口：App 传注册表查名，与 DispatchCard 的回落同款。
+ *  卡上是什么身份，临时视图页头/顶栏就是什么身份，两处不会各说各话。回放路径的
+ *  agentName 是空串（父会话历史里只有 tool_call 的 arguments，展示名是 Agent 注册表的
+ *  知识），所以留了 nameOf 回落口：App 传注册表查名，与 DispatchCard 的回落同款。
  *
  *  **不许空白**：找不到对应 dispatch 块（会话被撤回、历史被压缩掉、坏数据）就回落成
- *  `子会话 <id 前 8 位>`——空白标签在标签栏上就是一个认不出的色块。 */
+ *  `子会话 <id 前 8 位>`——空标题的视图页头就是一个认不出的空位。 */
 export function childTabTitle(
   blocks: ThreadBlock[],
   sessionId: string,
@@ -260,10 +213,11 @@ function focusView(state: WorkspaceTabsState, active: WorkspaceView, tabs: Works
  *  与鼠标侧键监听的历史方案的区别（2026-10-07 二轮）：硬件侧键在 Chromium 里是
  *  **浏览器进程**处理的——不派发给页面，直接导航 WebContents 自己的历史栈。所以
  *  「跟网页一样」的唯一实现 = 每次切页 pushState、popstate 时用本函数把条目落回
- *  工作区。**已关闭的子会话标签在这里要重开**（浏览器后退到一页就是把它恢复出来，
- *  不是跳过——页面内容由 ChildSessionPage 重新装载）。 */
+ *  工作区。**后退到子会话视图条目就是把它重新打开**（浏览器后退到一页就是把它恢复
+ *  出来，不是跳过——临时视图不进 tabs 也照样能恢复，页面内容由 ChildSessionPage
+ *  重新装载）。 */
 export function focusHistoryView(state: WorkspaceTabsState, target: WorkspaceView): WorkspaceTabsState {
   if (target === "chat") return focusChatTab(state);
   if (isWorkspacePage(target)) return focusWorkspacePage(state, target);
-  return focusChildTab(state, childTabSession(target) ?? "");
+  return focusChildView(state, childTabSession(target) ?? "");
 }

@@ -46,7 +46,7 @@ export const Block = memo(
      *  子会话的**实时过程**在它自己的标签页里（store 把带 dispatch_id 的子事件同时
      *  归约进子会话自己的 state），卡里只留摘要 + 结论，不再有卡内子时间线。 */
     onOpenChild?: (sessionId: string) => void;
-    /** 只读视图（子会话标签页用）：**不渲染**用户气泡的动作条。
+    /** 只读视图（子会话视图用）：**不渲染**用户气泡的动作条。
      *
      *  为什么是"不渲染"而不是"传 undefined 的 onEdit/onRewind"：那会让三个图标照常画出来、
      *  点下去毫无反应（静默失效）——用户以为界面坏了。为什么不在这里禁用+说明：禁用按钮的
@@ -109,7 +109,7 @@ export const Block = memo(
               </span>
             )}
           </div>
-          {/* 只读视图（子会话标签页）与 pending 气泡都不画动作条：见各自说明 */}
+          {/* 只读视图（子会话视图）与 pending 气泡都不画动作条：见各自说明 */}
           {!readOnly && !block.pending && <MessageActions block={block} onEdit={onEdit} onRewind={onRewind} />}
         </div>
       );

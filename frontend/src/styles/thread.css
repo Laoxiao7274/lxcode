@@ -699,8 +699,8 @@
   flex: none;
 }
 /* 卡里渲染的**待裁决确认卡**（子 Agent 的确认由父会话代理，AGENTS.md §2.3）：
- *  双投之后卡里与子会话标签页里各有一份，这里留一点外边距把它与那一行分开——
- *  它是**操作入口**（用户没开子会话标签也必须能批），不是过程展示。
+ *  双投之后卡里与子会话视图里各有一份，这里留一点外边距把它与那一行分开——
+ *  它是**操作入口**（用户没打开子会话视图也必须能批），不是过程展示。
  *  钩子用 ApprovalCard 自己的 data-variant="command"（它的根类名是 CSS Module 哈希，
  *  样式表里选不中——属性是稳定契约，scripts/check-preview-layout.cjs 也按它定位）。 */
 .dispatch-card [data-variant="command"] {

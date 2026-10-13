@@ -381,7 +381,7 @@ withPreview(async (preview) => {
   // 主区必须是**真按钮**（能进子会话：有子会话 id + 接了 onOpenChild）
   assert.equal(done.headTag, "BUTTON", `chat: 有子会话 id 时整行应渲染成按钮（${JSON.stringify(done)}）`);
   assert.equal(done.headOpenable, "true", `chat: 整行应标成可打开（${JSON.stringify(done)}）`);
-  // 点这一行 → **打开子会话标签页**：子会话自己的时间线在这一页里，
+  // 点这一行 → **打开子会话临时视图**（2026-12：不再进标签栏）：子会话自己的时间线在这一页里，
   // 而且它是**实时**的（store 把带 dispatch_id 的子事件同时归约进子会话自己的 state）。
   const child = await win.webContents.executeJavaScript(`(() => {
     const head = document.querySelector('.dispatch-card[data-done="true"] .dispatch-head');
@@ -399,9 +399,9 @@ withPreview(async (preview) => {
       });
     }, 600)) })()`);
   log("dispatch-child-tab", JSON.stringify(child));
-  assert.ok(child && child.page, `chat: 点这一行应打开子会话标签页（${JSON.stringify(child)}）`);
+  assert.ok(child && child.page, `chat: 点这一行应打开子会话临时视图（${JSON.stringify(child)}）`);
   assert.ok(child.id && child.id.length > 0, `chat: 子会话页头应显示子会话 id（${JSON.stringify(child)}）`);
-  assert.ok(child.blocks >= 3, `chat: 子会话标签页应看到子 Agent 的过程（历史 + 实时同一条时间线）（${JSON.stringify(child)}）`);
+  assert.ok(child.blocks >= 3, `chat: 子会话临时视图应看到子 Agent 的过程（历史 + 实时同一条时间线）（${JSON.stringify(child)}）`);
   assert.ok(child.tools >= 2, `chat: 子会话里应看到子 Agent 的工具行（${JSON.stringify(child)}）`);
   assert.equal(child.running, 0, `chat: 子 Agent 跑完后不该有「执行中」僵尸行（${JSON.stringify(child)}）`);
   assert.ok(!child.bodyInMain, "chat: 卡内不许再画子时间线（折叠区已去掉）");
@@ -452,7 +452,7 @@ withPreview(async (preview) => {
   // 关掉弹层（点外），免得影响后面的断言
   await win.webContents.executeJavaScript(`document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))`);
   await new Promise((r) => setTimeout(r, 400));
-  // 返回主会话（标签栏的「聊天」标签），后面的断言仍在主时间线上做
+  // 返回主会话（页头「返回主会话」按钮 / 标签栏的「聊天」标签），后面的断言仍在主时间线上做
   await win.webContents.executeJavaScript(`(() => {
     const back = document.querySelector('.child-session-back');
     if (back) back.click();

@@ -1,13 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";import { gsap } from "gsap";
 import { motionAllowed } from "./shared/motion";
 import {
-  childTabHint,
   childTabSession,
   childTabTitle,
   closeWorkspacePage,
   createWorkspaceTabs,
   focusChatTab,
-  focusChildTab,
+  focusChildView,
   focusHistoryView,
   focusWorkspacePage,
   focusWorkspaceTab,
@@ -110,7 +109,7 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
     if (ev.type === "connectionChanged") setWsConnected(ev.connected);
   }), [source]);
   const { settings, providers } = useSettings();
-  // agents：子会话标签的标题要按 agentId 回落显示名（回放块的 agentName 是空串）
+  // agents：子会话临时视图的标题要按 agentId 回落显示名（回放块的 agentName 是空串）
   const { agents, activeAgentId } = useAgents();
   /** 工作区页签与会话标签分开；未关闭的工作区页面保持挂载以保留表单/视图状态。 */
   const [workspaceState, setWorkspaceState] = useState(createWorkspaceTabs);
@@ -162,8 +161,8 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
   }, []);
 
   // 初始条目打上标记；popstate = 用户按了侧键/Alt+方向/浏览器后退——把条目落回工作区
-  //（state 为 null = 退到了首条 → 回聊天）。重开已关的子会话标签是**有意**的：
-  // 浏览器后退到一页就是把它恢复出来（focusHistoryView）。
+  //（state 为 null = 退到了首条 → 回聊天）。后退到子会话临时视图的条目是**有意**的：
+  // 浏览器后退到一页就是把它恢复出来（focusHistoryView → focusChildView）。
   useEffect(() => {
     try {
       window.history.replaceState({ lxView: pushedViewRef.current }, "");
@@ -184,14 +183,15 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
   const openWorkspace = useCallback((page: WorkspacePage) => {
     pushWorkspace(focusWorkspacePage(workspaceStateRef.current, page));
   }, [pushWorkspace]);
-  // 关闭的工作区标签：固定页签（agents/catalog/git）与子会话标签（child:<id>）同一套语义
+  // 关闭的工作区标签：固定页签（agents/catalog/git）同一套语义（子会话临时视图不进
+  // 标签栏，不经过这里——返回走 backToChat）
   const closeWorkspace = useCallback((tab: WorkspaceTab): WorkspaceView => {
     const next = closeWorkspacePage(workspaceStateRef.current, tab);
     pushWorkspace(next);
     return next.active;
   }, [pushWorkspace]);
-  /** 标签栏点击一个工作区标签：固定页签走既有打开逻辑，子会话标签只是**聚焦**
-   *  （它的内容已经挂载并保活——见 WorkspaceViewPanels，重开不重新读历史）。 */
+  /** 标签栏点击一个工作区标签（固定页签；子会话不进标签栏——临时视图由
+   *  openChildView 打开，不经过这里）。 */
   const openWorkspaceTab = useCallback((tab: WorkspaceTab) => {
     if (isWorkspacePage(tab)) {
       openWorkspace(tab);
@@ -199,10 +199,10 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
     }
     pushWorkspace(focusWorkspaceTab(workspaceStateRef.current, tab));
   }, [openWorkspace, pushWorkspace]);
-  /** 卡上的「打开子会话」→ 把子会话作为**独立工作区标签**打开（focusChildTab 去重：
-   *  重复打开同一个子会话回到同一个标签，不会并排长出两个）。 */
-  const openChildTab = useCallback((sessionId: string) => {
-    pushWorkspace(focusChildTab(workspaceStateRef.current, sessionId));
+  /** 卡上的「打开子会话」→ 打开**临时视图**（focusChildView 只切 active、不进 tabs：
+   *  标签栏不再出现子会话，重复打开同一个子会话回到同一个视图）。 */
+  const openChildView = useCallback((sessionId: string) => {
+    pushWorkspace(focusChildView(workspaceStateRef.current, sessionId));
   }, [pushWorkspace]);
   const openAgents = useCallback(() => openWorkspace("agents"), [openWorkspace]);
   const openCatalog = useCallback(() => openWorkspace("catalog"), [openWorkspace]);
@@ -235,11 +235,10 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
     [sessionStates],
   );
 
-  // 子会话标签按需显示（体验修复批次 5）：活跃主会话 = chat 视图时的 currentId；
-  // 正在看某个子会话标签时 = 那个子会话的父（映射缺失时回落 currentId——子标签
-  // 活跃的导航路径里 currentId 本来就是父会话：focusChildTab 不改 currentId）。
+  // 子会话**临时视图**活跃时（childTabSession(view) 非 null）：TabBar 侧主会话标签
+  // 退为普通态（高亮互斥），顶栏标题按这个子会话算（viewTitle）。
+  // 正在看子会话临时视图时 currentId 仍是父会话（focusChildView 不改 currentId）。
   const activeChildId = childTabSession(view);
-  const activeParent = activeChildId !== null ? childParents[activeChildId] ?? currentId : currentId;
 
   // 「合并请求」入口已随合并进程退役摘除（2026-10 架构修订：会话直连主检出，
   // 没有分支合并流程）。mergeRequest 的 source 方法与 JobsPanel 的 MergeRow 组件
@@ -299,7 +298,7 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
       .catch((e) => reportError(e instanceof Error ? e.message : String(e)));
   }, [source, resolve, reportError, currentId]);
 
-  /** 子会话标签页里的裁决。
+  /** 子会话视图里的裁决。
    *
    *  **必须发到持有挂起确认的那个会话**：确认门由**父会话代理**（AGENTS.md §2.3——
    *  子会话自己持 pending 的话服务端的 tool.confirm 找不到它，会话会卡在 busy），
@@ -320,7 +319,7 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
       .catch((e) => reportError(e instanceof Error ? e.message : String(e)));
   }, [source, resolve, reportError]);
 
-  /** 子会话标签页里 ask_user 提问的回答：与 handleChildConfirm 同一条 owner 反查
+  /** 子会话视图里 ask_user 提问的回答：与 handleChildConfirm 同一条 owner 反查
    *  规则（提问由父会话代理挂起，答案必须发给持有它的会话）——只换成 answer 方法
    *  与「已回答」定格。 */
   const handleChildAnswer = useCallback((sessionId: string, id: string, text: string) => {
@@ -539,13 +538,13 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
 
   const currentTitle = state.blocks.length === 0 ? "" : source.sessions().find((s: SessionMeta) => s.id === currentId)?.title ?? "任务";
 
-  /** 子会话标签标题：Agent 名 + 任务摘要（如 `researcher · 通读 internal/agent`）。
+  /** 子会话临时视图的标题：Agent 名 + 任务摘要（如 `researcher · 通读 internal/agent`）。
    *
    *  数据来自**父会话主时间线里那张 dispatch 块**（childTabTitle 纯函数按 sessionId
    *  命中）。父 = 子→父映射查到的（dispatchStart 的 owner_session_id / 历史回放
-   *  各记了一份）；映射缺失时回落 currentId——标签刚打开、父历史还没回放的窗口期。
+   *  各记了一份）；映射缺失时回落 currentId——视图刚打开、父历史还没回放的窗口期。
    *  反查必须用父的 blocks：传当前活跃会话的 blocks 的话，切到别的会话后反查失败，
-   *  子会话标签标题会回落成「子会话 <id 前 8 位>」（本批修掉的既有缺陷）。
+   *  顶栏标题会回落成「子会话 <id 前 8 位>」（本批修掉的既有缺陷）。
    *  回放块的 agentName 是空串（展示名是 Agent 注册表的知识），所以按 agentId 回落——
    *  与 DispatchCard / TurnPanel 同款。找不到块时 childTabTitle 自己兜底
    *  「子会话 <id 前 8 位>」，**不许空白**。 */
@@ -554,26 +553,10 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
     const blocks = sessionStates[parent]?.blocks ?? state.blocks;
     return childTabTitle(blocks, sessionId, (agentId) => agents.find((a) => a.id === agentId)?.name ?? "");
   }, [childParents, currentId, sessionStates, state.blocks, agents]);
-  /** 子会话标签的 hover 提示：`<项目名> · 主会话「<主会话标题>」 · <子会话标签名>`。
-   *
-   *  主会话 = 该子会话的**父**（映射查父，与 childTabTitleOf 同一条链路——dispatch
-   *  块就在父的主时间线里）；项目名按父会话的 workspace（项目 id）查 projects，
-   *  未分组会话没有项目名，childTabHint 自动少一节。 */
-  const childTabHintOf = useCallback((sessionId: string) => {
-    const parent = childParents[sessionId] ?? currentId;
-    const main = source.sessions().find((s) => s.id === parent);
-    const projectName = main?.workspace
-      ? source.projects().find((p) => p.id === main.workspace)?.name
-      : undefined;
-    return childTabHint(projectName, main?.title ?? "", childTabTitleOf(sessionId));
-  }, [source, childParents, currentId, childTabTitleOf]);
-  // 顶栏标题与标签栏标题走**同一个**函数：各算一次早晚分叉（标签栏写着 researcher · …，
-  // 顶栏却写着另一个名字）
-  // activeChildId/activeParent 已在 busyBySession 旁算出（TabBar 过滤与标题反查共用）
-  // 子会话标题加「子会话 · 」前缀（用户报「子会话和主会话表明的不明显」）：标签栏那边靠
-  // ↳ + 「子会话」胶囊 + 淡成功色底三个通道区分，而**顶栏只有一行文字**，没有那些通道，
-  // 所以在这里补一个文字前缀。标题正文仍来自同一个 childTabTitleOf（不各算一次），
-  // 这里只是显示层加前缀——两处不会给出**不同的标题**，只会一个带前缀一个带图标。
+  // 顶栏标题与临时视图页头身份走**同一个**函数：各算一次早晚分叉。
+  // 子会话标题加「子会话 · 」前缀（用户报「子会话和主会话表明的不明显」）：临时视图
+  // 有自己的页头与「返回主会话」按钮，而**顶栏只有一行文字**，所以在这里补一个文字前缀。
+  // 标题正文仍来自同一个 childTabTitleOf（不各算一次）。
   const viewTitle = activeChildId !== null
     ? `子会话 · ${childTabTitleOf(activeChildId)}`
     : view === "agents" ? "Agent 名单" : view === "catalog" ? "拓展" : view === "git" ? "Git 管理" : view === "remote" ? "远程访问" : currentTitle;
@@ -619,7 +602,7 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
           <div className="chat-main">
             {errorNotice}
             <div className="thread-scroll">
-              <Thread state={state} onConfirm={handleConfirm} onAnswer={handleAnswer} onSuggestion={handleSend} projectName={filterProjectName} onEdit={handleEdit} onRewind={handleRewind} onOpenChild={openChildTab} revealUid={jumpedUid} />
+              <Thread state={state} onConfirm={handleConfirm} onAnswer={handleAnswer} onSuggestion={handleSend} projectName={filterProjectName} onEdit={handleEdit} onRewind={handleRewind} onOpenChild={openChildView} revealUid={jumpedUid} />
             </div>
             {/* key=sessionId：切会话重挂载——输入框/附件区从该会话的草稿记账还原
                 （initialDraft），B 的输入框是 B 自己的（没有就是空）。不重挂的话
@@ -700,8 +683,10 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
         />
       );
     }
-    // 剩下的只可能是子会话标签（键 child:<sessionId>）：渲染子会话自己的完整时间线。
-    // key=childId：不同子会话各自一份实例（切标签不串历史，保活由 WorkspaceViewPanels 管）。
+    // 剩下的只可能是子会话**临时视图**（键 child:<sessionId>，不进标签栏——
+    // focusChildView 只切 active）：渲染子会话自己的完整时间线。
+    // key=childId：不同子会话各自一份实例（切走再回来不串历史；返回后视图卸载，
+    // store 里的子会话 state 与实时流缓存不受影响，重新打开由 ChildSessionPage 重新装载）。
     const childId = childTabSession(activeView);
     if (childId === null) return null; // 坏键（不该出现）：不渲染，也不炸
     // state 来自 store 的 sessionStates[childId]——**实时**（store 把带 dispatch_id 的
@@ -738,10 +723,6 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
         onFocusChat={backToChat}
         onFocusWorkspaceTab={openWorkspaceTab}
         onCloseWorkspaceTab={closeWorkspace}
-        childTabTitle={childTabTitleOf}
-        childTabHint={childTabHintOf}
-        childParents={childParents}
-        activeParent={activeParent}
       />
       <Sidebar
         source={source}
@@ -835,7 +816,7 @@ function WorkspaceViewPanels({
 
   // 冻结渲染：隐藏面板复用**上一次渲染的同一元素对象**——React 对引用相同的
   // 元素直接跳过整棵子树的协调。没有这层，每个聊天流式 delta 都会把所有
-  // 已打开页面（Agents/拓展/Git/远程访问/子会话）重渲染一遍——「标签页多了
+  // 已打开页面（Agents/拓展/Git/远程访问/子会话临时视图）重渲染一遍——「标签页多了
   // 切换就卡」的主因。重新激活时照常渲染新内容（组件状态不丢：同类型同
   // key，只是重渲染）。
   const frozen = useRef(new Map<WorkspaceView, ReactNode>());

@@ -180,7 +180,7 @@ export type AgentEvent =
   | { type: "userMessage"; sessionId: string; text: string; seq?: number;
       /** dispatchId 非空 = 子会话的消息（派发方注入的任务说明书，后端 childEmitter
        *  带归属上抛）：主时间线不画（dispatch 卡 = 一行摘要），双投进子会话自己的
-       *  state——子会话标签页里「新一轮的任务」靠它出现。 */
+       *  state——子会话视图里「新一轮的任务」靠它出现。 */
       dispatchId?: string;
       /** task = 双投进子会话 state 时打的标记（reduceSessionStates：原本带
        *  dispatch_id 的 userMessage 就是任务说明书）。子会话时间线据此渲染成

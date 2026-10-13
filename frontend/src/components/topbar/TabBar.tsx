@@ -1,11 +1,8 @@
 // 顶部标签栏：左侧工作区标签（聊天固定 + Agent/拓展/Git 可关闭页签），右侧会话标签
-// （主会话标签 + **子会话标签** + 新建按钮）。
-// 子会话标签是**带参数的标签**：键形如 child:<sessionId>（见 shared/workspace-tabs.ts），
-// 与其他标签共用同一个渲染件、同一套「关掉当前页回退到最近打开的页」语义——只有标题来源
-// 不同（App 用纯函数 childTabTitle / childTabHint 从主时间线那张 dispatch 块算出来，
-// 找不到就回落）。它跟主会话标签同一条 strip（子会话是**会话**不是工作区页面，
-// 2026-10-09 用户拍板从左 strip 迁出）：子会话标签 active 时主会话标签退为普通态，
-// 点主会话标签走 focusSession → backToChat() 回到 chat 视图。
+// （主会话标签 + 新建按钮）。
+// **子会话不在标签栏**（2026-12 用户拍板）：点主时间线的派发卡打开的是**临时视图**
+// （focusChildView 只切 active、不进 tabs），页头有「返回主会话」按钮；返回后视图消失，
+// 标签栏长度始终不变。临时视图活跃时主会话标签退为普通态（同屏只高亮一处）。
 // 会话标签顺序语义对齐浏览器：**打开顺序固定**——点标签只切焦点，绝不重排；
 // 新会话/从侧栏点进来的会话追加到右侧，容量满丢最老的。
 // 每个会话标签是独立并发 Session；切焦点不取消后台轮次。关闭会话标签只隐藏标签，
@@ -26,8 +23,7 @@ import {
 import type { AgentSource } from "../../shared/types";
 import {
   childTabSession,
-  splitWorkspaceTabs,
-  visibleChildTabs,
+  isWorkspacePage,
   type WorkspacePage,
   type WorkspaceTab,
   type WorkspaceView,
@@ -42,8 +38,8 @@ const WORKSPACE_LABELS: Record<WorkspacePage, string> = {
 
 /** 活动标签滚进可视区（两条 strip 共用一份实现）。
  *
- *  这是用户报的「标签页超出窗口被遮住」的**主因**修复：新开的会话标签（尤其子会话标签，
- *  它追加在最右）落在可视区外，而滚动条是隐藏的，用户看到的就是"被遮住一部分"。
+ *  这是用户报的「标签页超出窗口被遮住」的**主因**修复：新开的会话标签
+ *  （追加在最右）落在可视区外，而滚动条是隐藏的，用户看到的就是"被遮住一部分"。
  *
  *  inline: "nearest"（不是 center）：用户只是切标签时，center 会把整条 strip 拽来拽去，
  *  连本来看得见的标签也跟着跑。block: "nearest"：标签纵向本来就完整可见，
@@ -112,37 +108,18 @@ export function TabBar({
   onFocusChat,
   onFocusWorkspaceTab,
   onCloseWorkspaceTab,
-  childTabTitle,
-  /** 子会话标签的 hover 提示（`<项目名> · 主会话「<主会话标题>」 · <子会话标签名>`）。
-   *  主会话与项目名只有 App 知道（dispatch 块在主时间线里、项目表在 source 里），
-   *  TabBar 不再自己反查一份——两处各查一份早晚分叉。 */
-  childTabHint,
-  childParents,
-  activeParent,
 }: {
   source: AgentSource;
   currentId: string;
   busyBySession: Record<string, boolean>;
   onNewChat: () => void;
   onFocusSession: (id: string) => void;
-  /** 可关闭的工作区标签：固定页签 + 子会话标签（键形如 child:<sessionId>）。 */
+  /** 可关闭的工作区标签：固定页签（子会话临时视图不进这里——见 focusChildView）。 */
   workspaceTabs: WorkspaceTab[];
   activeWorkspaceView: WorkspaceView;
   onFocusChat: () => void;
   onFocusWorkspaceTab: (tab: WorkspaceTab) => void;
   onCloseWorkspaceTab: (tab: WorkspaceTab) => WorkspaceView;
-  /** 子会话标签的标题（App 用纯函数 childTabTitle 算：Agent 名 + 任务摘要）。
-   *  **必填**——固定页签走下面的 WORKSPACE_LABELS，子会话标签不在这里再写一份回落，
-   *  两份回落早晚分叉（标签栏显示「子会话 x」而顶栏显示别的名字）。 */
-  childTabTitle: (sessionId: string) => string;
-  /** 子会话标签的 hover 提示（App 用纯函数 childTabHint 算，见上）。 */
-  childTabHint: (sessionId: string) => string;
-  /** 子会话 id → 父会话 id（store 维护的持久映射；数据源 = dispatchStart 的
-   *  owner_session_id + 历史回放扫描，见 workspace-tabs.ts）。 */
-  childParents: Record<string, string>;
-  /** 当前活跃的**主会话** id：chat 视图 = currentId；子会话标签活跃 = 那个子
-   *  会话的父（App 计算，见 App.tsx 的 activeParent）。 */
-  activeParent: string;
 }) {
   const sessions = source.sessions();
   // 项目表：主会话标签的 hover 提示要带项目名（workspace 存的是项目 id）。
@@ -201,16 +178,11 @@ export function TabBar({
   // 渲染集合：按打开顺序，剔除已归档/已关闭的（当前会话恒显示）
   const tabIds = visibleSessionTabs(order, sessions, closed, currentId);
   const tabs = tabIds.map((id) => ({ id, meta: sessions.find((s) => s.id === id) }));
-  // 标签条分流（2026-10-09 用户拍板）：固定页签留在左 strip，子会话标签挪到右边的
-  // 会话标签条（主会话标签之后）——子会话是**会话**不是工作区页面，混在「聊天」旁边
-  // 既突兀又让选中态看起来同时高亮两处。
-  const { pages, children: allChildTabs } = splitWorkspaceTabs(workspaceTabs);
-  // 子会话标签**按需显示**（体验修复批次 5）：只显示「父会话是当前活跃主会话」的
-  // 那些——父在跑/刚跑完的子会话才跟当前视图相关，别的会话的子标签混进来只会
-  // 把标签条淹掉。active 的子标签本身恒可见（历史导航到它时不能悬空）。
-  const childTabs = visibleChildTabs(allChildTabs, activeWorkspaceView, childParents, activeParent);
+  // 工作区标签只含固定页签（子会话临时视图不进 tabs——focusChildView 只切 active）。
+  // isWorkspacePage 过滤是防御：坏键不渲染成空白页签。
+  const pages = workspaceTabs.filter(isWorkspacePage);
   // 高亮：目的地优先——关标签后立刻指出"接下来是哪个"，不必等历史读回来。
-  // 子会话标签 active 时主会话标签**退为普通态**：同屏两个高亮 = 用户报的
+  // 子会话**临时视图**活跃时主会话标签**退为普通态**：同屏两个高亮 = 用户报的
   // 「应该同时只能选中一个」。点主会话标签走 focusSession → backToChat()，链路不变。
   const childActive = childTabSession(activeWorkspaceView) !== null;
   const activeId = childActive
@@ -223,10 +195,9 @@ export function TabBar({
   const [workspaceStripRef, workspaceOverflow] = useStripOverflow<HTMLElement>();
   const [sessionStripRef, sessionOverflow] = useStripOverflow<HTMLDivElement>();
   // 活动标签滚进可视区：焦点变化（工作区视图 / 会话）时各来一次。
-  // 工作区那条的计数含固定「聊天」页签（+1），否则首屏铺开时那次滚动会被跳过；
-  // 会话那条的计数**含子会话标签**（它们现在就在这条 strip 里）。
+  // 工作区那条的计数含固定「聊天」页签（+1），否则首屏铺开时那次滚动会被跳过。
   useActiveTabVisible(workspaceStripRef, activeWorkspaceView, pages.length + 1);
-  useActiveTabVisible(sessionStripRef, childActive ? activeWorkspaceView : activeId, tabIds.length + childTabs.length);
+  useActiveTabVisible(sessionStripRef, activeId, tabIds.length);
 
   // 关闭 = 从标签条隐藏（会话本体留在侧栏，刷新仍在）。
   // 关掉**当前**标签时把焦点让给最近打开的另一个标签——**绝不新建会话**：
@@ -319,24 +290,9 @@ export function TabBar({
             </div>
           );
         })}
-        {/* 子会话标签：跟主会话标签同一条 strip（它们本来就是会话）。渲染件仍是
-            WorkspaceTabView——↳ 前缀、「子会话」胶囊、关闭动画与「关掉后焦点去哪」
-            都只有一份实现；标题/hover 提示来源与 App 的一套纯函数（childTabTitle /
-            childTabHint），TabBar 不各算一份。 */}
-        {childTabs.map((tab) => {
-          const sessionId = childTabSession(tab) ?? "";
-          return (
-            <WorkspaceTabView
-              key={tab}
-              tab={tab}
-              title={childTabTitle(sessionId)}
-              hint={childTabHint(sessionId)}
-              active={activeWorkspaceView === tab}
-              onFocus={onFocusWorkspaceTab}
-              onClose={onCloseWorkspaceTab}
-            />
-          );
-        })}
+        {/* 子会话不进标签栏（2026-12 用户拍板）：点主时间线的派发卡打开的是
+            **临时视图**（focusChildView 只切 active、不进 tabs），页头带
+            「返回主会话」；返回后视图消失，这里永远不给子会话长标签。 */}
         <button type="button" className="tab-new" onClick={onNewChat} aria-label="新对话" title="新对话">
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true">
             <path d="M12 5v14M5 12h14" />
@@ -347,21 +303,17 @@ export function TabBar({
   );
 }
 
-/** 一个可关闭的工作区标签（固定页签与子会话标签共用——关闭动画、焦点回落只有一份）。 */
+/** 一个可关闭的工作区标签（固定页签：关闭动画、焦点回落只有一份）。 */
 function WorkspaceTabView({
   tab,
   title,
-  hint,
   active,
   onFocus,
   onClose,
 }: {
   tab: WorkspaceTab;
-  /** 显示标题（固定页签来自 WORKSPACE_LABELS，子会话标签来自 childTabTitle）。 */
+  /** 显示标题（固定页签来自 WORKSPACE_LABELS）。 */
   title: string;
-  /** hover 提示（原生 title）。固定页签不给（页签名即全部信息）；子会话标签来自
-   *  App 的 childTabHint（`<项目名> · 主会话「<主会话标题>」 · <子会话标签名>`）。 */
-  hint?: string;
   active: boolean;
   onFocus: (tab: WorkspaceTab) => void;
   onClose: (tab: WorkspaceTab) => WorkspaceView;
@@ -417,12 +369,8 @@ function WorkspaceTabView({
     });
   };
 
-  // 子会话标签要在视觉上与固定页签（Agent/拓展/Git）分开——用户报「子会话和主会话表明的
-  // 不明显」。三个通道一起用：① ↳ 前缀（形状，灰度/色盲下也分得开）② 左侧强调色条
-  // （颜色）③ data-child（样式挂点）。只靠颜色不够（UI/UX 规范：不能只用颜色传达信息）。
-  const childId = childTabSession(tab);
   return (
-    <div ref={tabRef} className={"tab workspace-tab" + (active ? " on" : "")} data-workspace-tab={tab} data-child={childId !== null ? "true" : undefined} title={hint}>
+    <div ref={tabRef} className={"tab workspace-tab" + (active ? " on" : "")} data-workspace-tab={tab}>
       <button
         type="button"
         className="tab-main workspace-tab-main"
@@ -430,13 +378,7 @@ function WorkspaceTabView({
         aria-current={active ? "page" : undefined}
         onClick={() => onFocus(tab)}
       >
-        {/* 子会话标记：↳（形状）+ 「子会话」（文字）+ data-child（颜色）三通道一起用。
-         *  只靠颜色不够——UI/UX 规范：不能只用颜色传达信息（灰度/色盲下要分得开）。
-         *  固定页签（Agent/拓展/Git）是**页面**，子会话标签是**会话**：这两类混在一条
-         *  strip 里长得一模一样，就是用户报的「表明的不明显」。 */}
-        {childId !== null && <span className="tab-child-mark" aria-hidden>↳</span>}
         <span className="tab-title">{title}</span>
-        {childId !== null && <span className="tab-child-kind">子会话</span>}
       </button>
       <button
         type="button"

@@ -902,7 +902,7 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
    *  压缩检查点在库里另存一份，父会话历史里没有这些明细）。
    *
    *  与 loadHistory 走同一条协议方法（chat.history 按 session_id 寻址），也**发
-   *  historyLoaded**（2026-09-30 用户拍板：子会话标签页要看到实时流，所以它得先有
+   *  historyLoaded**（2026-09-30 用户拍板：子会话视图要看到实时流，所以它得先有
    *  自己的 state —— 历史是基线、随后的事件是增量）。
    *
    *  与 loadHistory 的**关键差别是事件里的 sessionId 是子会话的那个**（快照的

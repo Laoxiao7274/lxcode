@@ -14,7 +14,7 @@
 //
 // 两份**独立于归约流**的会话级状态也挂在这里（都是键值表，事件只读不写、
 // 用户操作只写不读，互不干扰）：
-// - childParents：子→父会话映射（子会话标签按需显示 + 标题反查，见
+// - childParents：子→父会话映射（子会话视图的标题反查 + 双投路由，见
 //   workspace-tabs.ts）；数据源 = dispatchStart 事件自带的 owner_session_id，
 //   以及 historyLoaded 回放时对 blocks 的一次性扫描；
 // - sendQueues：发送缓冲区（busy 时 chat.send 被后端拒收，排队等空闲再发，
@@ -169,7 +169,7 @@ export interface AgentHooks {
 export function useAgent(source: AgentSource, hooks?: AgentHooks): {
   state: UIState;
   sessionStates: Record<string, UIState>;
-  /** 子会话 id → 父会话 id（子会话标签按需显示与标题反查的唯一事实源）。 */
+  /** 子会话 id → 父会话 id（子会话视图标题反查与双投路由的唯一事实源）。 */
   childParents: ChildParents;
   /** 发送缓冲区（按会话隔离；busy 期间提交的文本在这里排队）。 */
   sendQueues: Record<string, SendQueueItem[]>;

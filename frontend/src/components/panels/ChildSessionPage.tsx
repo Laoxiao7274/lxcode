@@ -1,4 +1,6 @@
-// 子会话标签页：把一张 dispatch 卡上的子会话作为**独立工作区标签**打开的完整视图。
+// 子会话临时视图：点主时间线 dispatch 卡打开的**临时视图**（2026-12 用户拍板：标签栏
+// 不再出现子会话——这个视图不进 tabs，页头「返回主会话」关闭它，返回后视图卸载，
+// store 里的子会话 state 与实时流缓存保留，重新打开由这里重新装载历史）。
 //
 // 子 Agent = 独立会话（AGENTS.md §2.3）：它有自己的 messages、自己的压缩检查点。
 // 这一页读的就是**这个子会话在 store 里的 state**（`sessionStates[childId]`）——
@@ -33,7 +35,7 @@ export function ChildSessionPage({
   onAnswer,
   onBack,
 }: {
-  /** 子会话 id（标签键 child:<sessionId> 解析出来的那个）。 */
+  /** 子会话 id（视图键 child:<sessionId> 解析出来的那个）。 */
   sessionId: string;
   /** 数据源：childHistory 按子会话 id 寻址（后端 chat.history 已支持）。 */
   source: AgentSource;
@@ -44,7 +46,7 @@ export function ChildSessionPage({
   onConfirm: (id: string, allow: boolean) => void;
   /** 回答这个子会话里的 ask_user 提问（确认门代理同一条路由——答案发给父会话）。 */
   onAnswer?: (id: string, text: string) => void;
-  /** 返回主会话（标签栏的「聊天」标签）。 */
+  /** 返回主会话（关闭临时视图：视图不进标签栏，「返回主会话」是显式的关闭/返回入口）。 */
   onBack: () => void;
 }) {
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
@@ -59,7 +61,7 @@ export function ChildSessionPage({
   //（WSAgent.childHistory 发 historyLoaded，sessionId 是子会话自己的），随后的事件
   // 由 store 的双投续上：所以这一页看到的是**实时流**，不是一张快照。
   useEffect(() => {
-    // alive：切标签/卸载后迟到的应答不许再写 state（会画到别的子会话页上）
+    // alive：切走/卸载后迟到的应答不许再写 state（会画到别的子会话视图上）
     let alive = true;
     setStatus("loading");
     setError("");
@@ -97,7 +99,7 @@ export function ChildSessionPage({
   const [windowSize, setWindowSize] = useState<number>(WINDOW_INITIAL);
   const hidden = Math.max(0, blocks.length - windowSize);
   const visible = hidden > 0 ? blocks.slice(hidden) : blocks;
-  // 换子会话（标签切走再切回同一组件实例）重置窗口
+  // 换子会话（视图切走再切回同一组件实例）重置窗口
   useEffect(() => { setWindowSize(WINDOW_INITIAL); }, [sessionId]);
 
   return (

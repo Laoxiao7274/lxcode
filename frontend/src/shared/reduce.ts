@@ -487,11 +487,11 @@ function reduceSub(blocks: ThreadBlock[], ev: AgentEvent): ThreadBlock[] | null 
 
 /** 将一条服务端事件只归约进它所属的 Session；导出供并发隔离测试直接验证。
  *
- *  **子事件要双投**（2026-09-30 用户拍板：子会话标签页也要看到实时流）：
+ *  **子事件要双投**（2026-09-30 用户拍板：子会话视图也要看到实时流）：
  *  子 Agent 的事件按**父会话 id** 广播（后端由父会话的 emitter 发出，带 dispatch_id
  *  归属进卡），所以上面那一份进的是父会话的 dispatch 卡（摘要 + 状态）；
- *  而子会话**自己**那个 id 的 state 也要拿到同一份（标签页里看到的就是它），
- *  否则标签页只有一次性的历史快照——「点开之后他里面就没有接着思考」。
+ *  而子会话**自己**那个 id 的 state 也要拿到同一份（子会话视图里看到的就是它），
+ *  否则视图只有一次性的历史快照——「点开之后他里面就没有接着思考」。
  *
  *  双投时把 dispatchId 清掉：对子会话自己的时间线来说，它就是一条普通事件
  *  （delta 续写 assistant、toolCall 建工具行、confirmRequest 挂待裁决、compacted
@@ -530,9 +530,9 @@ export function reduceSessionStates(
       childEv = { ...childEv, task: true } as AgentEvent;
     }
     let childNext = { ...reduce(child, childEv), currentId: childId };
-    // 生成中指示的兜底（2026-12 用户报「子会话标签页缺少生成中样式」）：busy=true
+    // 生成中指示的兜底（2026-12 用户报「子会话视图缺少生成中样式」）：busy=true
     // 只在轮开始那一刻发**一次**（session.go 的 Send），而子会话 state 是双投的
-    // 「不建」规则——标签页打开之前那条 busy=true 无人接收；打开标签页时
+    // 「不建」规则——视图打开之前那条 busy=true 无人接收；打开视图时
     // chat.history 的快照又来自按 id 现建的运行时，busy 恒 false。结果整轮都
     // 没有生成中指示。子会话侧的活动事件（delta/toolCall/toolResult/任务消息/
     // 待裁决确认）本身就证明子会话正在跑——见到就把 busy 置真；翻回 false 仍由
@@ -553,7 +553,7 @@ const CHILD_BUSY_HINTS = new Set<AgentEvent["type"]>([
 /** dispatch 卡的生命周期事件（卡的开/关）：它们是**父会话时间线**上的呈现——
  *  双投时绝不送进子会话自己的 state，否则 reduceDispatchStart 会在子会话时间线里
  *  再画一张「调用子 Agent」卡（2026-12 用户报：子 Agent 深度恒 1，不可能再派发，
- *  那张卡纯属归属错误）。子会话标签页里它的过程由 delta/toolCall 等事件本身呈现。 */
+ *  那张卡纯属归属错误）。子会话视图里它的过程由 delta/toolCall 等事件本身呈现。 */
 function isCardLifecycle(ev: AgentEvent): boolean {
   return ev.type === "dispatchStart" || ev.type === "dispatchEnd";
 }
@@ -563,7 +563,7 @@ function isCardLifecycle(ev: AgentEvent): boolean {
  *  多数带归属的事件在**顶层** `dispatchId`（events.ts 的映射），而**确认请求是个
  *  例外**：它的归属在 `request.dispatch_id` 里（协议 ConfirmRequest.dispatch_id，
  *  与 toProtocolConfirm 一致）。漏了这一条，子 Agent 的确认卡就只落在父会话的卡里——
- *  子会话标签页里看不到待裁决的确认（用户没开标签时反倒只能去主会话批）。 */
+ *  子会话视图里看不到待裁决的确认（用户没打开视图时反倒只能去主会话批）。 */
 function eventDispatchId(ev: AgentEvent): string {
   if ("dispatchId" in ev && ev.dispatchId) return ev.dispatchId;
   if (ev.type === "confirmRequest") return ev.request.dispatch_id ?? "";

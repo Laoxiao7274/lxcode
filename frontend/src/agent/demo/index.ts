@@ -7,7 +7,7 @@ import { normalizeApproval } from "../../shared/approval";
 import { MAIN_REASONING, SUB_REASONING, SUB_RESULT, MAIN_ANSWER, TODO_INITIAL, TODO_LATER, FILES_CHANGED, SESSIONS } from "./data";
 
 /** 演示的子会话 id 与它的模型（子 Agent = 独立会话，AGENTS.md §2.3）。
- *  卡上的子会话 id 徽标、子会话标签页、childHistory 三处共用这一个常量——
+ *  卡上的子会话 id 徽标、子会话视图、childHistory 三处共用这一个常量——
  *  各写一份字面量的代价是标签页打开的是另一个 id（读不到历史）。 */
 const DEMO_CHILD_SESSION = "demo-child-d1";
 const DEMO_CHILD_MODEL = "deepseek-chat";
@@ -266,7 +266,7 @@ export class DemoAgent implements AgentSource, JobAdminSource {
       ],
       commits: [
         { hash: "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c", message: "演示：接入 Git 管理页真实数据", author: "demo", when: new Date().toISOString() },
-        { hash: "1029384756afbccddeeff0011223344556677889", message: "演示：子会话标签页实时流", author: "demo", when: new Date(Date.now() - 86_400_000).toISOString() },
+        { hash: "1029384756afbccddeeff0011223344556677889", message: "演示：子会话视图实时流", author: "demo", when: new Date(Date.now() - 86_400_000).toISOString() },
       ],
     };
   }
@@ -327,7 +327,7 @@ export class DemoAgent implements AgentSource, JobAdminSource {
         messages: this.childMsgs_,
         busy: false,
         // 挂起确认挂在**父会话**（确认门代理，AGENTS.md §2.3）——子会话自己没有 pending，
-        // 所以这里如实报 null；子会话标签页里那张待裁决卡来自实时事件（store 的双投）。
+        // 所以这里如实报 null；子会话视图里那张待裁决卡来自实时事件（store 的双投）。
         pending: null,
         todos: [],
         model: DEMO_CHILD_MODEL,
@@ -342,7 +342,7 @@ export class DemoAgent implements AgentSource, JobAdminSource {
     // 消息 = 主 Agent 派发的任务说明书，historyBlocks 据此渲染「任务」块而不是用户气泡。
     snapshot.child = true;
     // 与 WSAgent.childHistory **同一份契约**：发 historyLoaded（sessionId 是子会话自己的），
-    // 让 store 把子会话自己的 state 建起来——子会话标签页要看到实时流，就得先有它自己的
+    // 让 store 把子会话自己的 state 建起来——子会话视图要看到实时流，就得先有它自己的
     // state（历史是基线、随后的事件是增量）。漏了这一条的后果在真链路上就是用户报的
     //「点开之后他里面就没有接着思考」；在演示态就是标签页永远显示"没有可显示的历史"。
     this.emit({ type: "historyLoaded", sessionId, history: snapshot });
@@ -663,7 +663,7 @@ export class DemoAgent implements AgentSource, JobAdminSource {
     this.at(sessionId, 1400, () => {
       // 子会话**自己的**统计 + 占用：真后端在子会话 done 时按它自己的 session_id 折叠
       // 它的日志、并把子会话自己的 context 挂上（emit.go / turn.go），演示按同一契约在
-      // 它自己的 id 上记一份——子会话标签页的「会话统计」与上下文环读的就是这一份。
+      // 它自己的 id 上记一份——子会话视图的「会话统计」与上下文环读的就是这一份。
       const childStats = demoStats(this.stats_.get(DEMO_CHILD_SESSION), 730, 2_400, 1_100, 380);
       this.stats_.set(DEMO_CHILD_SESSION, childStats);
       this.childEmit({

@@ -1,10 +1,10 @@
 // 主 Agent 调度子 Agent 的卡（agent_dispatch 的渲染形态）：**一行摘要**。
 //
 // 形态（2026-09-30 用户拍板，两轮收敛后的定案）：dot + Agent 名 + 任务摘要 + 状态 +
-// 用量 + 子会话 id（带 ↗）——**就这一行**。整行可点 = 进子会话（独立工作区标签）。
+// 用量 + 子会话 id（带 ↗）——**就这一行**。整行可点 = 进子会话（临时视图）。
 //
 // 为什么卡里不放子过程与结论：
-//   ① 子 Agent 是**独立会话**（AGENTS.md §2.3），它自己的过程在它自己的标签页里看，
+//   ① 子 Agent 是**独立会话**（AGENTS.md §2.3），它自己的过程在它自己的临时视图里看，
 //      而且是**实时的**（store 把带 dispatch_id 的子事件同时归约进子会话自己的 state）；
 //   ② 卡里再画一份只可能是**滞后的摘要**，用户还得先展开、再滚到底才看得见——用户原话
 //      「执行完了还是会展示整个子Agent会话展开」；
@@ -15,8 +15,8 @@
 // 唯一的入口是这一行本身（可打开时是真 <button>，进不去时是静态行，不留点了没反应的按钮）。
 //
 // 例外是**待裁决的确认卡**：子 Agent 的确认由父会话代理（AGENTS.md §2.3），双投之后卡里
-// 与子会话标签页里各有一份——它不是过程展示，是必须点得到的操作入口，去掉会让没开子会话
-// 标签的用户无从批准（会话卡在忙态）。
+// 与子会话视图里各有一份——它不是过程展示，是必须点得到的操作入口，去掉会让没开子会话
+// 视图的用户无从批准（会话卡在忙态）。
 import type { ThreadBlock } from "../../../shared/store";
 import { AGENT_COLORS, useAgents } from "../../../shared/agents";
 import { useEnterRef } from "../../../shared/anim";
@@ -32,9 +32,10 @@ export function DispatchCard({ block, onConfirm, onAnswer, onOpenChild, "data-ui
   onConfirm: (id: string, allow: boolean) => void;
   /** ask_user 提问的回答（卡内子时间线的 ask 确认卡）——透传给 Block。 */
   onAnswer?: (id: string, text: string) => void;
-  /** 进子会话——把这张卡的子会话作为**独立工作区标签**打开（App 接线到 focusChildTab）。
+  /** 进子会话——把这张卡的子会话作为**临时视图**打开（App 接线到 focusChildView；
+   *  2026-12 拍板：不进标签栏，页头「返回主会话」关闭视图）。
    *  子 Agent 是独立会话（AGENTS.md §2.3），它的实时过程与完整时间线（含它自己的压缩
-   *  检查点）都在它自己的标签页里。缺省（老调用方/测试）时整行渲染成静态行——不假装能打开。 */
+   *  检查点）都在它自己的视图里。缺省（老调用方/测试）时整行渲染成静态行——不假装能打开。 */
   onOpenChild?: (sessionId: string) => void;
   /** 块锚点（右侧大纲按 data-uid 精确寻址——不许按文本找元素）。 */
   "data-uid"?: number;
@@ -71,7 +72,7 @@ export function DispatchCard({ block, onConfirm, onAnswer, onOpenChild, "data-ui
   const headAria = errorReason ? `子代理失败：${errorReason}` : primaryTitle;
   // 待裁决的确认卡（子 Agent 的确认由父会话代理，AGENTS.md §2.3）：双投之后它同时
   // 落在卡里与子会话自己的时间线里（store 的两处同时定格），所以这里渲染的是
-  // **操作入口**而不是过程展示——用户没开子会话标签也必须能裁决，否则会话卡在忙态。
+  // **操作入口**而不是过程展示——用户没打开子会话视图也必须能裁决，否则会话卡在忙态。
   const confirms = block.subBlocks.filter((b) => b.kind === "confirm" && !b.resolved);
 
   // 整行内容（两种形态共用同一份）：能进子会话时它是 <button>，进不去时是静态行。
@@ -163,8 +164,8 @@ export function DispatchCard({ block, onConfirm, onAnswer, onOpenChild, "data-ui
       )}
 
       {/* 待裁决的确认：子 Agent 的确认由父会话代理（AGENTS.md §2.3），双投之后
-       *  卡里与子会话标签页里各有一份——这里渲染的是**操作入口**（不是过程展示），
-       *  去掉它会让没开子会话标签的用户无从批准（会话卡在忙态）。 */}
+       *  卡里与子会话视图里各有一份——这里渲染的是**操作入口**（不是过程展示），
+       *  去掉它会让没打开子会话视图的用户无从批准（会话卡在忙态）。 */}
       {confirms.map((c) => (
         <Block key={c.uid} block={c} onConfirm={onConfirm} onAnswer={onAnswer} />
       ))}

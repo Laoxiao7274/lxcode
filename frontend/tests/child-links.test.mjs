@@ -1,12 +1,13 @@
-// 子会话标签按需显示（体验修复批次 5）：持久子→父映射 + 标签过滤 + 标题反查。
+// 子会话的子→父映射 + 标题反查（2026-12 起子会话不再有标签页，映射服务于
+// **临时视图的标题反查**与**双投路由**）。
 //
 // 三条被钉住的行为：
-// ① 过滤规则——只显示「父会话是当前活跃主会话」的子会话标签；active 的子标签
-//    本身恒可见（历史导航到它时不能悬空）；映射缺失的不可见（猜父 = 挂错地方）。
-// ② 映射的两个数据源——dispatchStart 事件自带的 owner_session_id（实时）与
+// ① 映射的两个数据源——dispatchStart 事件自带的 owner_session_id（实时）与
 //    historyLoaded 回放时对 blocks 的一次性扫描（刷新/冷恢复），都驱动真实现
 //    （handleAgentEvent），不复刻副本。
-// ③ 标题反查——childTabTitle 必须喂**父会话**的 blocks（App 现在按映射取父）；
+// ② 双投路由——子事件按 dispatchChild 查表归约进子会话自己的 state（临时视图
+//    看到的实时流就靠它，与标签栏无关）。
+// ③ 标题反查——childTabTitle 必须喂**父会话**的 blocks（App 按映射取父）；
 //    喂当前活跃会话的 blocks 是被修掉的缺陷（切走后回落 id 前缀）。
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -15,7 +16,6 @@ import {
   childTabTitle,
   recordChildLink,
   recordChildParent,
-  visibleChildTabs,
 } from '../src/shared/workspace-tabs.ts';
 import { handleAgentEvent } from '../src/shared/store.ts';
 import { initial } from '../src/shared/blocks.ts';
@@ -35,7 +35,7 @@ test('recordChildParent：记录、幂等、空 id 忽略', () => {
 test('recordChildLink：一次 dispatch 事实同时更新两张映射（键不同：子会话 id / dispatch id）', () => {
   const empty = { childParents: {}, dispatchChild: {} };
   let links = recordChildLink(empty, { childId: 'c1', parentId: 'p1', dispatchId: 'd1' });
-  assert.deepEqual(links.childParents, { c1: 'p1' }, '标签过滤/标题反查用的子→父映射');
+  assert.deepEqual(links.childParents, { c1: 'p1' }, '标题反查用的子→父映射');
   assert.deepEqual(links.dispatchChild, { d1: 'c1' }, '子事件双投归属路由用的 dispatch→子会话映射');
   // 幂等
   assert.equal(recordChildLink(links, { childId: 'c1', parentId: 'p1', dispatchId: 'd1' }), links);
@@ -56,29 +56,6 @@ test('childLinksFromBlocks：从父会话 blocks 扫出它派发的子会话（�
   assert.deepEqual(links.childParents, { 'child-a': 'p1', 'child-b': 'p1' });
   assert.deepEqual(links.dispatchChild, { d1: 'child-a', d2: 'child-b' });
   assert.deepEqual(childLinksFromBlocks('p1', [{ kind: 'user', uid: 1, text: 'hi' }]), { childParents: {}, dispatchChild: {} });
-});
-
-// ---------- 过滤规则 ----------
-
-const PARENTS = { c1: 'p1', c2: 'p2' };
-const TABS = ['child:c1', 'child:c2'];
-
-test('① 父会话活跃时显示其子会话标签，切到别的会话后隐藏', () => {
-  // 在 p1 的 chat 视图：c1 可见，c2（别人的孩子）不可见
-  assert.deepEqual(visibleChildTabs(TABS, 'chat', PARENTS, 'p1'), ['child:c1']);
-  // 切到 p2 的会话：反转
-  assert.deepEqual(visibleChildTabs(TABS, 'chat', PARENTS, 'p2'), ['child:c2']);
-  // 看的是 p1 的子会话标签（c1 活跃）：活跃主会话 = c1 的父 p1 → c1 可见
-  assert.deepEqual(visibleChildTabs(TABS, 'child:c1', PARENTS, 'p1'), ['child:c1']);
-});
-
-test('① active 的子标签本身恒可见（父映射缺失也不悬空）', () => {
-  // c2 活跃但映射里它的父不是 activeParent（映射缺失时 App 回落 currentId 的窗口期）：
-  // active 标签不能被过滤掉——历史导航到它却看不见，比多显示一个标签更糟
-  assert.deepEqual(visibleChildTabs(TABS, 'child:c2', PARENTS, 'p1'), ['child:c1', 'child:c2']);
-  // 映射完全缺失（应用刚起）：非 active 的隐藏，active 的仍在
-  assert.deepEqual(visibleChildTabs(TABS, 'chat', {}, 'p1'), []);
-  assert.deepEqual(visibleChildTabs(TABS, 'child:c1', {}, 'p1'), ['child:c1']);
 });
 
 // ---------- 数据源（驱动真实现 handleAgentEvent） ----------
@@ -139,7 +116,7 @@ test('① 数据源 B：historyLoaded 回放从 blocks 一次性扫出映射（�
 
 test('① 映射建立后双投查表路由（不再依赖对 blocks 的全量反查）', () => {
   const c = makeController();
-  // 子会话 state 已存在（标签打开过、历史已装载），但 dispatch 卡不在任何
+  // 子会话 state 已存在（视图打开过、历史已装载），但 dispatch 卡不在任何
   // 会话的 blocks 里（父的历史还没回放）——只有查表能命中
   c.sessionStates = { 'child-a': { ...initial, currentId: 'child-a' } };
   c.childLinks = { childParents: { 'child-a': 'p1' }, dispatchChild: { d1: 'child-a' } };
@@ -168,7 +145,7 @@ test('① childTabTitle 用父 blocks 反查得到完整标题；喂错 blocks �
   // 正确喂法（App 现在的链路）：映射拿父 → 父会话的 blocks 里找卡
   assert.equal(childTabTitle([dispatchCard('child-a')], 'child-a'), 'researcher · 通读 internal/agent');
   // 喂错 blocks（如当前活跃会话的不是父）：回落「子会话 <id 前 8 位>」——
-  // 这就是切走会话后子标签标题退化成 id 前缀的旧缺陷形态，钉住以区分正确喂法
+  // 这就是切走会话后标题退化成 id 前缀的旧缺陷形态，钉住以区分正确喂法
   assert.equal(childTabTitle([], 'child-a'), '子会话 child-a');
   // 回放块 agentName 为空（展示名是注册表的知识）→ nameOf 回落口
   const replayCard = { ...dispatchCard('child-a'), agentName: '' };
