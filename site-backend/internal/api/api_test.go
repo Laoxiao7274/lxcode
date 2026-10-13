@@ -16,6 +16,8 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -580,4 +582,76 @@ func decode[T any](t *testing.T, body []byte) T {
 		t.Fatalf("响应不是合法 JSON: %v（%.200s）", err, string(body))
 	}
 	return out
+}
+
+// TestStaticFilesFallback 钉住静态托管的兜底策略：
+// 存在的文件 200 + 正确 MIME；带扩展名但不存在 → 404（不许把 index.html 冒充
+// 资源发出去——2026-10-12 事故：未上传的 APK 链接被下成 1KB 假文件，下载器显示 0MB）；
+// 无扩展名的 SPA 路由仍回落入口 HTML。
+func TestStaticFilesFallback(t *testing.T) {
+	// 最小 dist 夹具：两个入口 HTML + 真实静态文件（模拟 /downloads/ 与 /assets/）
+	dist := t.TempDir()
+	write := func(rel, body string) {
+		t.Helper()
+		p := filepath.Join(dist, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatalf("建目录失败 %s: %v", rel, err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatalf("写文件失败 %s: %v", rel, err)
+		}
+	}
+	write("index.html", "<html>site-entry</html>")
+	write("admin.html", "<html>admin-entry</html>")
+	write("downloads/ok.apk", "apk-bytes")
+	write("assets/app.js", "console.log(1)")
+
+	st := newStore(t)
+	if err := seed.Run(st, log.New(io.Discard, "", 0)); err != nil {
+		t.Fatalf("导入种子失败: %v", err)
+	}
+	srv := httptest.NewServer(New(st, Config{Token: testToken, StaticDir: dist}, log.New(io.Discard, "", 0)).Handler())
+	t.Cleanup(srv.Close)
+
+	cases := []struct {
+		name     string
+		path     string
+		wantCode int
+		wantBody string // 非空时断言响应体精确一致
+		wantType string // 非空时断言 Content-Type 前缀
+		anyType  bool   // true = Content-Type 非空即可（MIME 表随环境浮动，如 .apk）
+	}{
+		{"存在的 APK 仍 200", "/downloads/ok.apk", 200, "apk-bytes", "", true},
+		{"存在的 JS 仍 200 + JS MIME", "/assets/app.js", 200, "console.log(1)", "text/javascript", false},
+		{"不存在的 APK 404（不回落 index.html）", "/downloads/foo.apk", 404, "", "", false},
+		{"不存在的资源 404", "/assets/missing.js", 404, "", "", false},
+		{"带扩展名的失效管理台链接 404", "/admin/missing.js", 404, "", "", false},
+		{"无扩展名 SPA 路由回落站点入口", "/some/spa/route", 200, "<html>site-entry</html>", "text/html", false},
+		{"站点根回落入口", "/", 200, "<html>site-entry</html>", "text/html", false},
+		{"管理台无扩展名路由回落入口", "/admin/releases", 200, "<html>admin-entry</html>", "text/html", false},
+		{"管理台根回落入口", "/admin", 200, "<html>admin-entry</html>", "text/html", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res, body := get(t, srv, tc.path, "")
+			if res.StatusCode != tc.wantCode {
+				t.Fatalf("GET %s = %d，want %d（body: %.120s）", tc.path, res.StatusCode, tc.wantCode, string(body))
+			}
+			if tc.wantBody != "" && string(body) != tc.wantBody {
+				t.Errorf("GET %s body = %.80q，want %.80q", tc.path, string(body), tc.wantBody)
+			}
+			ct := res.Header.Get("Content-Type")
+			switch {
+			case tc.anyType:
+				if ct == "" {
+					t.Errorf("GET %s Content-Type 为空", tc.path)
+				}
+			case tc.wantType != "" && !strings.HasPrefix(ct, tc.wantType):
+				t.Errorf("GET %s Content-Type = %q，want 前缀 %q", tc.path, ct, tc.wantType)
+			}
+			if tc.wantCode == 404 && strings.Contains(string(body), "<html>") {
+				t.Errorf("GET %s 404 响应体不该是 HTML 入口页（会把假文件存下来）: %.80q", tc.path, string(body))
+			}
+		})
+	}
 }

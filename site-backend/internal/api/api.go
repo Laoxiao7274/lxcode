@@ -54,7 +54,8 @@ type Config struct {
 	// SessionTTL 会话有效期（0 用默认 24h）；LoginPerMinute 登录失败限流（0 用默认 10）。
 	SessionTTL      time.Duration
 	LoginPerMinute  int
-	// StaticDir 非空时托管前端构建产物（--static）：未匹配路径回落 index.html。
+	// StaticDir 非空时托管前端构建产物（--static）：无扩展名的 SPA 路由回落 index.html，
+	// 带扩展名但文件不存在的路径 404（见 staticFiles 注释）。
 	StaticDir    string
 	MaxUploadMiB int64
 }
@@ -425,8 +426,12 @@ func (s *Server) artifact(w http.ResponseWriter, r *http.Request) {
 
 // staticFiles 托管前端构建产物（--static 指向 dist 目录）。
 //
-// 语义：存在的静态文件按扩展名给 Content-Type 直接发；其余一律回落 index.html——
-// 站点用哈希路由（#/admin/releases），真文件其实只有 /，但回落对将来的 path 路由无害。
+// 语义：存在的静态文件按扩展名给 Content-Type 直接发；无扩展名的路径回落 index.html
+// （站点用哈希路由 #/admin/releases，回落只服务「像 SPA 路由」的路径）；
+// **带扩展名但文件不存在 → 404**——回落会把 1KB 的 HTML 以 200 发出去，浏览器
+// 存成 .apk/.exe 后下载器显示 0MB（2026-10-12 真实事故：未上传的 APK 链接被下成假文件）。
+// 扩展名判定用 path.Ext（name 已是 slash 形式，query string 不在 r.URL.Path 里，
+// 无需再剥）；对 Windows/Linux 一致，且只关心「有没有扩展名」，与大小写无关。
 // 路径先经 path.Clean 归一、再校验落在 dist 之内：`..` 逃逸与目录穿越都到不了磁盘。
 func (s *Server) staticFiles() http.Handler {
 	root := s.cfg.StaticDir
@@ -437,7 +442,12 @@ func (s *Server) staticFiles() http.Handler {
 		// 管理站是**独立入口**（admin.html）：/admin、/admin/ 与 /admin/<任意> 都发它。
 		// 管理站内部是 hash 路由（#/releases），所以服务端只要把入口 HTML 发出去即可；
 		// 静态资源仍走 /assets/*（同一份构建产物，两个入口共用）。
+		// 带扩展名的 /admin/xxx 同样按静态资源对待：文件不存在就 404，不回落入口页。
 		if name == "admin" || strings.HasPrefix(name, "admin/") {
+			if path.Ext(name) != "" {
+				writeError(w, http.StatusNotFound, "静态文件不存在："+name)
+				return
+			}
 			if _, err := os.Stat(adminIndex); err != nil {
 				writeError(w, http.StatusNotFound, "管理站入口文件不存在："+adminIndex)
 				return
@@ -452,6 +462,12 @@ func (s *Server) staticFiles() http.Handler {
 					s.serveStatic(w, r, target, name)
 					return
 				}
+			}
+			// 带扩展名 = 静态资源直链（/downloads/*.apk、/assets/*.js…）：
+			// 文件不存在必须 404，绝不能把 index.html 冒充资源发出去。
+			if path.Ext(name) != "" {
+				writeError(w, http.StatusNotFound, "静态文件不存在："+name)
+				return
 			}
 		}
 		if _, err := os.Stat(index); err != nil {
