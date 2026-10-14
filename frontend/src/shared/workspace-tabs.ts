@@ -1,4 +1,4 @@
-// 工作区标签状态模型：固定页签（Agent/拓展/Git）+ **子会话临时视图**。
+// 工作区标签状态模型：固定页签（Agent/拓展/远程访问）+ **子会话临时视图**。
 //
 // 子会话（子 Agent = 独立会话，AGENTS.md §2.3）**不再是标签页**（2026-12 用户拍板）：
 // 点主时间线的派发卡打开的是**临时视图**——只切 active、**不进 tabs**，标签栏因此永远
@@ -10,7 +10,7 @@
 // 这一步的范围；字符串键是天然的判等凭据。
 import type { ThreadBlock } from "./blocks";
 
-export type WorkspacePage = "agents" | "catalog" | "git" | "remote";
+export type WorkspacePage = "agents" | "catalog" | "remote";
 /** 子会话视图键（模板字面量类型：手写拼接的键在编译期就能被发现）。 */
 export type ChildTabKey = `child:${string}`;
 /** 可关闭的工作区标签：固定页签（子会话临时视图不进 tabs，见 focusChildView）。 */
@@ -37,7 +37,7 @@ export function childTabKey(sessionId: string): ChildTabKey {
 
 /** 键 → 子会话 id（非子会话键返回 null）。
  *
- *  固定页签（agents/catalog/git）与 chat 都不带这个前缀，天然不会被误认成子会话键。
+ *  固定页签（agents/catalog）与 chat 都不带这个前缀，天然不会被误认成子会话键。
  *  `child:` 后面为空 = 坏键（会渲染成一个没有信息的空视图），返回 null 而不是空串。 */
 export function childTabSession(key: string): string | null {
   if (!key.startsWith("child:")) return null;
@@ -47,7 +47,7 @@ export function childTabSession(key: string): string | null {
 
 /** 是不是固定页签（App 按它分流：固定页签走工作区标签逻辑，子会话走 focusChildView）。 */
 export function isWorkspacePage(tab: WorkspaceTab): tab is WorkspacePage {
-  return tab === "agents" || tab === "catalog" || tab === "git" || tab === "remote";
+  return tab === "agents" || tab === "catalog" || tab === "remote";
 }
 
 /** 打开/聚焦一个工作区标签（固定页签走这一条路径）。

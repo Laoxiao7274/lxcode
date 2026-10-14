@@ -10,19 +10,19 @@ import {
 test('opening a workspace page adds one tab and focusing it does not reorder tabs', () => {
   let state = createWorkspaceTabs();
   state = focusWorkspacePage(state, 'catalog');
-  state = focusWorkspacePage(state, 'git');
+  state = focusWorkspacePage(state, 'agents');
   state = focusWorkspacePage(state, 'catalog');
 
-  assert.deepEqual(state.tabs, ['catalog', 'git']);
+  assert.deepEqual(state.tabs, ['catalog', 'agents']);
   assert.equal(state.active, 'catalog');
-  assert.deepEqual(state.history, ['git', 'chat']);
+  assert.deepEqual(state.history, ['agents', 'chat']);
 });
 
 test('closing the active page returns to the most recently focused open page', () => {
   let state = createWorkspaceTabs();
   state = focusWorkspacePage(state, 'agents');
-  state = focusWorkspacePage(state, 'git');
-  state = closeWorkspacePage(state, 'git');
+  state = focusWorkspacePage(state, 'catalog');
+  state = closeWorkspacePage(state, 'catalog');
 
   assert.deepEqual(state.tabs, ['agents']);
   assert.equal(state.active, 'agents');
@@ -30,8 +30,8 @@ test('closing the active page returns to the most recently focused open page', (
 });
 
 test('closing the final workspace page returns to chat and retains no stale history', () => {
-  let state = focusWorkspacePage(createWorkspaceTabs(), 'git');
-  state = closeWorkspacePage(state, 'git');
+  let state = focusWorkspacePage(createWorkspaceTabs(), 'catalog');
+  state = closeWorkspacePage(state, 'catalog');
 
   assert.deepEqual(state, { tabs: [], active: 'chat', history: [] });
 });
@@ -48,12 +48,12 @@ test('closing an inactive page leaves focus unchanged and removes it from histor
 });
 
 test('focusing chat keeps workspace tabs open for later reuse', () => {
-  let state = focusWorkspacePage(createWorkspaceTabs(), 'git');
+  let state = focusWorkspacePage(createWorkspaceTabs(), 'catalog');
   state = focusChatTab(state);
 
-  assert.deepEqual(state.tabs, ['git']);
+  assert.deepEqual(state.tabs, ['catalog']);
   assert.equal(state.active, 'chat');
-  assert.deepEqual(state.history, ['git']);
+  assert.deepEqual(state.history, ['catalog']);
 });
 
 test('closing an unknown page is a no-op', () => {

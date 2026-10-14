@@ -1,4 +1,4 @@
-// 顶部标签栏：左侧工作区标签（聊天固定 + Agent/拓展/Git 可关闭页签），右侧会话标签
+// 顶部标签栏：左侧工作区标签（聊天固定 + Agent/拓展/远程访问 可关闭页签），右侧会话标签
 // （主会话标签 + 新建按钮）。
 // **子会话不在标签栏**（2026-12 用户拍板）：点主时间线的派发卡打开的是**临时视图**
 // （focusChildView 只切 active、不进 tabs），页头有「返回主会话」按钮；返回后视图消失，
@@ -35,7 +35,6 @@ import {
 const WORKSPACE_LABELS: Record<WorkspacePage, string> = {
   agents: "Agent",
   catalog: "拓展",
-  git: "Git",
   remote: "远程访问",
 };
 

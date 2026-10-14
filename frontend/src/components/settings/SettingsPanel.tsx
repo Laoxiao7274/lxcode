@@ -15,21 +15,16 @@ import { ModelEditDialog } from "./ModelEditDialog";
 import { ProviderBlock } from "./ProviderBlock";
 import { SearchSection } from "./SearchSection";
 import { UpdateBlock } from "./UpdateBlock";
-import { ArchivedRow, Section, SegRow, SelectRow, InputRow, ToggleRow, ValueRow } from "./rows";
-import { BoxIcon, ClockIcon, CubeIcon, GearIcon, GitIcon, SearchIcon, SunIcon } from "./icons";
+import { Section, SegRow, SelectRow, ToggleRow, ValueRow } from "./rows";
+import { CubeIcon, GearIcon, SearchIcon, SunIcon } from "./icons";
 
-type SectionId =
-  | "general" | "appearance" | "models" | "search" | "personalization"
-  | "git" | "archived";
+type SectionId = "general" | "appearance" | "models" | "search";
 
 const SECTIONS: { id: SectionId; label: string; icon: ReactElement }[] = [
   { id: "general", label: "通用", icon: <GearIcon /> },
   { id: "appearance", label: "外观", icon: <SunIcon /> },
   { id: "models", label: "模型", icon: <CubeIcon /> },
   { id: "search", label: "网页搜索", icon: <SearchIcon /> },
-  { id: "personalization", label: "个性化", icon: <ClockIcon /> },
-  { id: "git", label: "Git", icon: <GitIcon /> },
-  { id: "archived", label: "归档任务", icon: <BoxIcon /> },
 ];
 
 /** 任务清单模板三档（后端 behavior.json 的 todoPrompt——内置模板，不靠模型
@@ -81,7 +76,7 @@ export function SettingsPanel({ open, onClose, source }: { open: boolean; onClos
   // 二级弹窗在场时 Escape 归弹窗自己处理
   useEscape(open && !connectOpen && !modelEdit && !confirmAutoOpen, onClose);
 
-  // 分区切换：内容上浮淡入；模型/搜索/归档分区的行列表交错浮现
+  // 分区切换：内容上浮淡入；模型/搜索分区的行列表交错浮现
   useEffect(() => {
     if (!open || !contentRef.current) return;
     const el = contentRef.current;
@@ -93,13 +88,7 @@ export function SettingsPanel({ open, onClose, source }: { open: boolean; onClos
     if (section === "search") {
       staggerIn([...el.querySelectorAll(".sp-card")], { each: 0.05, delay: 0.06 });
     }
-    if (section === "archived") {
-      staggerIn([...el.querySelectorAll(".archived-row")], { each: 0.05, delay: 0.06 });
-    }
   }, [section, open]);
-
-  // 归档列表：sessions 是活数据，每次渲染现读（memo 会在 unarchive 后失真）
-  const archived = source.sessions().filter((s: SessionMeta) => s.archived);
 
   if (!open) return null;
   return (
@@ -240,48 +229,6 @@ export function SettingsPanel({ open, onClose, source }: { open: boolean; onClos
             )}
 
             {section === "search" && <SearchSection />}
-
-            {section === "personalization" && (
-              <Section title="个性化" desc="回答的默认语气。（项目级自定义指令在侧栏项目行的「守则」入口——写进项目根 AGENTS.md）">
-                <SegRow label="语气">
-                  <Segmented
-                    options={[
-                      { value: "friendly", label: "友好" },
-                      { value: "pragmatic", label: "务实" },
-                      { value: "none", label: "无" },
-                    ]}
-                    value={settings.personality}
-                    onChange={(v) => set({ personality: v })}
-                    ariaLabel="语气"
-                  />
-                </SegRow>
-              </Section>
-            )}
-
-            {section === "git" && (
-              <Section title="Git" desc="分支命名与提交信息生成方式。">
-                <InputRow
-                  label="默认分支"
-                  hint="新任务的初始分支"
-                  value={settings.gitBranch}
-                  onChange={(v) => set({ gitBranch: v })}
-                  placeholder="main"
-                  mono
-                />
-                <ValueRow label="提交信息提示词" value="默认" hint="生成 commit message 的指令" />
-              </Section>
-            )}
-
-            {section === "archived" && (
-              <Section title="归档任务" desc="归档的会话不进侧栏对话列表，可恢复继续。在侧栏会话行的 ⋯ 菜单里归档。">
-                {archived.length === 0 && (
-                  <div className="sidebar-empty" style={{ padding: "16px 0" }}>没有归档的会话</div>
-                )}
-                {archived.map((s) => (
-                  <ArchivedRow key={s.id} title={s.title} date={s.updatedAt} onRestore={() => source.unarchiveSession(s.id)} />
-                ))}
-              </Section>
-            )}
           </div>
         </div>
       </div>

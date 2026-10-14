@@ -44,8 +44,6 @@ export const Sidebar = memo(function Sidebar({
   onOpenChat,
   catalogActive,
   onOpenCatalog,
-  gitActive,
-  onOpenGit,
   remoteActive,
   onOpenRemote,
 }: {
@@ -66,9 +64,6 @@ export const Sidebar = memo(function Sidebar({
   /** 拓展工作区标签当前激活（工具/技能/模板/MCP 管理）。 */
   catalogActive: boolean;
   onOpenCatalog: () => void;
-  /** Git 项目工作台当前激活。 */
-  gitActive: boolean;
-  onOpenGit: () => void;
   /** 远程访问页当前激活（局域网/樱花frp/Tailscale 模式配置）。 */
   remoteActive: boolean;
   onOpenRemote: () => void;
@@ -190,22 +185,6 @@ export const Sidebar = memo(function Sidebar({
             <rect x="14" y="14" width="7" height="7" rx="1" />
           </svg>
           拓展
-        </button>
-        <button
-          type="button"
-          className={"nav-item" + (gitActive ? " on" : "")}
-          data-nav="git"
-          onClick={onOpenGit}
-          title="项目分支、变更与会话工作树"
-          aria-current={gitActive ? "page" : undefined}
-        >
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <circle cx="6" cy="6" r="2" />
-            <circle cx="18" cy="6" r="2" />
-            <circle cx="6" cy="18" r="2" />
-            <path d="M6 8v8M18 8a6 6 0 0 1-6 6H8" />
-          </svg>
-          Git 管理
         </button>
         <button type="button" className="nav-item" data-nav="remote" onClick={onOpenRemote} title="把后端暴露给其它设备（局域网/樱花frp/Tailscale）" aria-current={remoteActive ? "page" : undefined}>
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

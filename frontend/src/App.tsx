@@ -15,7 +15,6 @@ import { visionBlockNotice } from "./shared/attachments";
 import { AgentsProvider, useAgents } from "./shared/agents";
 import { AgentsPage } from "./components/agents/AgentsPage";
 import { CatalogPage } from "./components/catalog/CatalogPage";
-import { GitWorkbenchPage } from "./components/git/GitWorkbenchPage";
 import { RemoteAccessPage } from "./components/remote/RemoteAccessPage";
 import { Topbar } from "./components/topbar";
 import { Sidebar, LOOSE } from "./components/sidebar";
@@ -113,8 +112,8 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
   sessionStatesRef.current = sessionStates;
   // ---- 工作区导航（use-workspace-nav：页签状态 + 真实浏览器历史 + 页签/视图回调）----
   const {
-    view, workspaceState, settingsOpen, setSettingsOpen, filter, setFilter, gitProjectId, setGitProjectId,
-    closeWorkspace, openWorkspaceTab, openChildView, openAgents, openCatalog, openGit, openRemote, backToChat, focusSession, openSettings,
+    view, workspaceState, settingsOpen, setSettingsOpen, filter, setFilter,
+    closeWorkspace, openWorkspaceTab, openChildView, openAgents, openCatalog, openRemote, backToChat, focusSession, openSettings,
   } = useWorkspaceNav({ source });
 
   // live 写失败桥（AgentsProvider 的乐观更新 WS 调用失败 → 一次性提示）
@@ -148,9 +147,6 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
   // 没有分支合并流程）。mergeRequest 的 source 方法与 JobsPanel 的 MergeRow 组件
   // 保留（协议方法在，后端如实回说明），但面板不再渲染这个入口。
   const projects = source.projects();
-  useEffect(() => {
-    if (view === "git" && !gitProjectId && projects.length > 0) setGitProjectId(projects[0].id);
-  }, [view, gitProjectId, projects]);
 
   // 当前范围的项目名（「未分组」→ 空态不标——无归属不需要声明）
   const filterProjectName =
@@ -238,7 +234,7 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
   // 标题正文仍来自同一个 childTabTitleOf（不各算一次）。
   const viewTitle = activeChildId !== null
     ? `子会话 · ${childTabTitleOf(activeChildId)}`
-    : view === "agents" ? "Agent 名单" : view === "catalog" ? "拓展" : view === "git" ? "Git 管理" : view === "remote" ? "远程访问" : currentTitle;
+    : view === "agents" ? "Agent 名单" : view === "catalog" ? "拓展" : view === "remote" ? "远程访问" : currentTitle;
 
   // TabBar 侧主会话标签的「视图态」信息：临时视图活跃时给父会话标签追加
   // 「↳ 子标题」与描边角标（sessionTabAction 让点击 = 返回主会话）。标题与
@@ -359,18 +355,6 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
     if (activeView === "remote") {
       return <RemoteAccessPage sakuraBridge={sakuraBridge} tailscaleBridge={tailscaleBridge} remoteControlBridge={remoteControlBridge} />;
     }
-    if (activeView === "git") {
-      return (
-        <GitWorkbenchPage
-          key={gitProjectId}
-          source={source}
-          projects={projects}
-          projectId={gitProjectId}
-          onProjectChange={setGitProjectId}
-          onOpenSession={focusSession}
-        />
-      );
-    }
     // 剩下的只可能是子会话**临时视图**（键 child:<sessionId>，不进标签栏——
     // focusChildView 只切 active）：渲染子会话自己的完整时间线。
     // key=childId：不同子会话各自一份实例（切走再回来不串历史；返回后视图卸载，
@@ -425,8 +409,6 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
         onOpenChat={backToChat}
         catalogActive={view === "catalog"}
         onOpenCatalog={openCatalog}
-        gitActive={view === "git"}
-        onOpenGit={openGit}
         remoteActive={view === "remote"}
         onOpenRemote={openRemote}
       />
