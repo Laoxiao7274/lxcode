@@ -359,13 +359,18 @@ func (c *Client) pumpStream(ctx context.Context, ch <-chan StreamEvent, msgs []M
 //     （content_block_start type=tool_use + input_json_delta），实测
 //     mytai.opencecs.com 的 anthropic 侧完全规范（rawstream5），流式 +
 //     工具共存，思考链也可见；
-//   - openai 格式 + 声明了工具 → 非流式（结果转事件回放，形态与
-//     ChatStream 一致，消费方无感）：部分端点的 openai 流式会丢
-//     tool_calls（同端点实测：思考心跳后直接 [DONE]，工具调用被吞——
-//     模型说"我来帮您查看"然后没了），而非流式的 tool_calls 完整。
+//   - openai 格式 + 声明了工具 + cfg.StreamTools 未开启 → 非流式（结果转
+//     事件回放，形态与 ChatStream 一致，消费方无感）：部分端点的 openai
+//     流式会丢 tool_calls（同端点实测：思考心跳后直接 [DONE]，工具调用
+//     被吞——模型说"我来帮您查看"然后没了），而非流式的 tool_calls 完整；
+//   - openai 格式 + 声明了工具 + cfg.StreamTools 开启 → 流式直走
+//     ChatStream（2026-10-13 新增，per-model 能力位：GLM-5.3-Flash 实测
+//     流式 tool_calls 完整——index 聚合/finish_reason=tool_calls/usage
+//     全部规范，见 temp/stream-tools-probe 探测记录）。开关只对显式实测
+//     开启的模型生效，缺省关闭 = 旧行为，不留探测式自动降级。
 func (c *Client) ChatAuto(ctx context.Context, msgs []Message, opts ...Option) (<-chan StreamEvent, error) {
 	o := applyOpts(opts)
-	if c.cfg.Format == FormatAnthropic || len(o.tools) == 0 {
+	if c.cfg.Format == FormatAnthropic || len(o.tools) == 0 || c.cfg.StreamTools {
 		return c.ChatStream(ctx, msgs, opts...)
 	}
 	res, err := c.Chat(ctx, msgs, opts...)

@@ -439,7 +439,8 @@
             "tools": true,
             "vision": false,
             "json_output": true,
-            "reasoning": true
+            "reasoning": true,
+            "stream_tools": true
           },
           "enabled": true,
           "updated_at": "2026-10-13T10:00:00Z"

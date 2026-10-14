@@ -223,7 +223,7 @@ func goldenSamples() map[string]goldenSample {
 				ID: "deepseek-v3", DisplayName: "DeepSeek V3", BaseURL: "https://api.deepseek.com/v1",
 				APIKey: "sk-**", Format: "openai", Model: "deepseek-chat",
 				ContextWindow: 128000, MaxOutputTokens: 8192,
-				Capabilities: config.Capabilities{Tools: true, Vision: false, JSONOut: true, Reasoning: true},
+				Capabilities: config.Capabilities{Tools: true, Vision: false, JSONOut: true, Reasoning: true, StreamTools: true},
 				Enabled:      true, UpdatedAt: time.Date(2026, 10, 13, 10, 0, 0, 0, time.UTC),
 			}},
 			Roles: map[string]string{"default": "deepseek-v3"},

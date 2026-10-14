@@ -43,6 +43,11 @@ type Config struct {
 	Model   string        // API 请求的 model 字段
 	Format  string        // "openai"（默认）| "anthropic"
 	Timeout time.Duration // 单次请求超时；0 = 300s（本地慢推理，给足）
+	// StreamTools 显式开启「openai 格式流式带工具」（per-model 能力位，注册表
+	// models.json 的 capabilities.stream_tools 透传而来）。缺省 false = 维持
+	// 现状（openai 带工具走非流式回放）——只有实测确认端点流式 tool_calls
+	// 完整的模型才应置 true。
+	StreamTools bool
 }
 
 // Message 是统一消息模型（**类型别名 = chatmsg.Message**）：消息事实模型住在

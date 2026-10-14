@@ -32,11 +32,15 @@ var Roles = []string{RoleDefault, RoleVision}
 // Reasoning 声明支持推理强度档位（OpenAI reasoning_effort / Anthropic
 // thinking budget）——未声明时 chat.send 的 effort 参数对该模型不生效
 // （对不支持的端点传参会直接 400，能力门控是硬需求不是优化）。
+// StreamTools 声明该 openai 格式端点的**流式带工具**可用（流式 delta 里
+// tool_calls 完整下发）——只有逐端点实测确认过的模型才应置 true；缺省
+// false = 维持现状（openai 带工具走非流式回放），schema 向后兼容。
 type Capabilities struct {
-	Tools     bool `json:"tools"`
-	Vision    bool `json:"vision"`
-	JSONOut   bool `json:"json_output"`
-	Reasoning bool `json:"reasoning"`
+	Tools       bool `json:"tools"`
+	Vision      bool `json:"vision"`
+	JSONOut     bool `json:"json_output"`
+	Reasoning   bool `json:"reasoning"`
+	StreamTools bool `json:"stream_tools,omitempty"`
 }
 
 // ModelConfig 是注册表中一个模型条目的完整配置（models.json 单条）。

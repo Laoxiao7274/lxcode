@@ -36,14 +36,16 @@ const SystemNoticePrefix = "[系统通告] "
 const userAbortedNotice = SystemNoticePrefix + "用户中断了这次生成（刚才算到一半的回答没有完成）。不要自行续写或重试刚才的任务；等用户的下一条指示，按新指示行动。"
 
 // streamWithLLM 默认 LLM 调用：按 default 角色配置建客户端，经 ChatAuto
-// （anthropic 永远流式；openai 带工具走非流式回放，见 llm.ChatAuto 注释——
-// 该策略来自真机端点实测：部分 openai 兼容端点的流式会丢 tool_calls）。
+// （anthropic 永远流式；openai 带工具默认走非流式回放，见 llm.ChatAuto 注释——
+// 该策略来自真机端点实测：部分 openai 兼容端点的流式会丢 tool_calls；
+// capabilities.stream_tools 显式开启的模型走流式直通，GLM-5.3-Flash 实测可用）。
 func streamWithLLM(ctx context.Context, m config.ModelConfig, msgs []llm.Message, opts []llm.Option) (<-chan llm.StreamEvent, error) {
 	client, err := llm.New(llm.Config{
-		BaseURL: m.BaseURL,
-		APIKey:  m.APIKey,
-		Model:   m.Model,
-		Format:  m.EffectiveFormat(),
+		BaseURL:     m.BaseURL,
+		APIKey:      m.APIKey,
+		Model:       m.Model,
+		Format:      m.EffectiveFormat(),
+		StreamTools: m.Capabilities.StreamTools,
 	})
 	if err != nil {
 		return nil, err
