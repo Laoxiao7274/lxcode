@@ -481,7 +481,8 @@ withPreview(async (preview) => {
   assert.ok(childHead.statsLabel.length > 0, `chat: 统计胶囊应有读数（${JSON.stringify(childHead)}）`);
   assert.ok(childHead.ctxChip, `chat: 子会话页应有上下文环（${JSON.stringify(childHead)}）`);
   assert.ok(!childHead.ctxUnknown, `chat: 子会话的上下文应是它自己的真实占用，不是中性态「—」（${JSON.stringify(childHead)}）`);
-  // 点开上下文环：弹层必须向下开（顶边 ≥ 触发器底边）且完整落在视口内
+  // 点开上下文环：读数在输入条（页面**底部**，随 Composer 进来的），弹层必须
+  // **向上**开（顶边 ≤ 触发器顶边）且完整落在视口内——向下开会跑出视口被裁。
   const popGeom = await win.webContents.executeJavaScript(`(() => {
     const chip = document.querySelector('.child-session-page .ctx-chip');
     if (chip) chip.click();
@@ -491,7 +492,7 @@ withPreview(async (preview) => {
       const p = pop?.getBoundingClientRect();
       res(pop && c && p ? {
         open: true,
-        down: p.top >= c.bottom - 1,
+        up: p.bottom <= c.top + 1,
         topInView: p.top >= 0,
         bottomInView: p.bottom <= window.innerHeight,
         vh: window.innerHeight,
@@ -499,7 +500,7 @@ withPreview(async (preview) => {
     }, 400)) })()`);
   log("child-ctx-pop", JSON.stringify(popGeom));
   assert.ok(popGeom.open, `chat: 点上下文环应打开弹层（${JSON.stringify(popGeom)}）`);
-  assert.ok(popGeom.down, `chat: 子会话页的上下文弹层应**向下**开（页头在页面顶部，向上开会跑出视口）（${JSON.stringify(popGeom)}）`);
+  assert.ok(popGeom.up, `chat: 子会话页的上下文弹层应**向上**开（读数在输入条里，页面底部——向下开会跑出视口）（${JSON.stringify(popGeom)}）`);
   assert.ok(popGeom.topInView && popGeom.bottomInView, `chat: 弹层必须完整落在视口内（被裁掉就是用户报的「跑上面去被遮住」）（${JSON.stringify(popGeom)}）`);
   // 关掉弹层（点外），免得影响后面的断言
   await win.webContents.executeJavaScript(`document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))`);
@@ -679,196 +680,8 @@ withPreview(async (preview) => {
   assert.ok(tabSwitch.chat && !tabSwitch.agents, `agents: 点击会话标签应返回聊天视图（${JSON.stringify(tabSwitch)}）`);
   await win.webContents.executeJavaScript(`document.querySelector('[data-nav="agents"]').click()`);
 
-  // Git 工作台：入口 → 项目仓库 → 暂存/模拟提交 → 分支与工作树 → 移动布局
-  await win.webContents.executeJavaScript(`document.querySelector('[data-nav="git"]').click()`);
-  await new Promise((r) => setTimeout(r, 120));
-  const gitInitial = await win.webContents.executeJavaScript(`(() => ({
-    page: !!document.querySelector('[data-git-page]'),
-    navOn: !!document.querySelector('.nav-item.on[data-nav="git"]'),
-    demo: document.querySelector('.git-demo-banner')?.textContent.includes('不会执行 Git 命令'),
-    projectPicker: !!document.querySelector('.git-project-select .fd-trigger'),
-    files: document.querySelectorAll('.git-file-row').length,
-    diff: !!document.querySelector('.git-diff-content'),
-    workspaceLabels: [...document.querySelectorAll('.workspace-tab .tab-title')].map((title) => title.textContent.trim()),
-  }))()`);
-  log("git-workbench-initial", JSON.stringify(gitInitial));
-  assert.ok(gitInitial.page && gitInitial.navOn, "git: 导航应打开并高亮工作台");
-  assert.ok(gitInitial.workspaceLabels.includes("Git") && !gitInitial.workspaceLabels.some((label) => label.includes("新会话") || label.includes("新对话")), "git: 工作区标签应显示页面名，实际标签: " + JSON.stringify(gitInitial.workspaceLabels));
-  assert.ok(gitInitial.demo, "git: 页面应声明原型数据不会执行真实命令");
-  assert.ok(gitInitial.projectPicker && gitInitial.files >= 3 && gitInitial.diff, "git: 项目选择器、变更与 diff 应可见");
-
-  await win.webContents.executeJavaScript(`(() => {
-    const stage = document.querySelector('.git-stage-toggle[aria-label^="暂存"]');
-    if (!stage) throw new Error("未暂存文件的暂存按钮缺失");
-    stage.click();
-  })()`);
-  await new Promise((r) => setTimeout(r, 70));
-  await win.webContents.executeJavaScript(`(() => {
-    const input = document.querySelector('.git-commit-input');
-    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
-    setter.call(input, 'Prototype commit smoke');
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-  })()`);
-  await new Promise((r) => setTimeout(r, 70));
-  await win.webContents.executeJavaScript(`document.querySelector('.git-commit-button').click()`);
-  await new Promise((r) => setTimeout(r, 100));
-  const gitCommitted = await win.webContents.executeJavaScript(`(() => ({
-    remaining: document.querySelectorAll('.git-file-row').length,
-    commitEnabled: !document.querySelector('.git-commit-button')?.disabled,
-    messageCleared: document.querySelector('.git-commit-input')?.value === '',
-  }))()`);
-  log("git-workbench-commit", JSON.stringify(gitCommitted));
-  assert.strictEqual(gitCommitted.remaining, 1, "git: 模拟提交只应移除已暂存文件");
-  assert.ok(gitCommitted.messageCleared, "git: 成功模拟提交后应清空说明");
-  assert.ok(!gitCommitted.commitEnabled, "git: 没有已暂存文件时提交按钮应禁用");
-
-  await win.webContents.executeJavaScript(`document.querySelector('[data-git-tab="history"]').click()`);
-  await new Promise((r) => setTimeout(r, 70));
-  const gitHistory = await win.webContents.executeJavaScript(`(() => ({
-    count: document.querySelectorAll('.git-history-item').length,
-    first: document.querySelector('.git-history-item strong')?.textContent,
-  }))()`);
-  log("git-workbench-history", JSON.stringify(gitHistory));
-  assert.strictEqual(gitHistory.count, 4, "git: 模拟提交应增加一条历史记录");
-  assert.strictEqual(gitHistory.first, "Prototype commit smoke", "git: 新提交应置顶");
-
-  await win.webContents.executeJavaScript(`document.querySelector('[data-git-tab="branches"]').click()`);
-  await new Promise((r) => setTimeout(r, 50));
-  const gitSessionBranches = await win.webContents.executeJavaScript(`(() => {
-    const rows = [...document.querySelectorAll('.git-branch-session-row')];
-    const row = rows[0];
-    return {
-      count: rows.length,
-      id: row?.getAttribute('data-git-session-branch'),
-      name: row?.querySelector('.git-branch-name')?.textContent,
-      title: row?.querySelector('.git-branch-session-title')?.textContent,
-      openId: row?.querySelector('.git-branch-open')?.getAttribute('data-git-branch-session'),
-    };
-  })()`);
-  log("git-session-branch-map", JSON.stringify(gitSessionBranches));
-  assert.ok(
-    gitSessionBranches.count >= 1 &&
-    gitSessionBranches.name === `lxcode/session-${gitSessionBranches.id}` &&
-    gitSessionBranches.title?.includes("会话：") &&
-    gitSessionBranches.openId === gitSessionBranches.id,
-    "git: 会话分支应显示完整会话归属并复用同一 ID 跳转",
-  );
-  await win.webContents.executeJavaScript(`document.querySelector('.git-branch-open').click()`);
-  await new Promise((r) => setTimeout(r, 100));
-  const branchSessionOpened = await win.webContents.executeJavaScript(`!!document.querySelector('[data-workspace-view="chat"]:not([hidden]) .thread-scroll') && !document.querySelector('[data-workspace-view="git"]:not([hidden])')`);
-  assert.ok(branchSessionOpened, "git: 会话分支入口应打开对应聊天会话");
-  await win.webContents.executeJavaScript(`document.querySelector('[data-nav="git"]').click()`);
-  await new Promise((r) => setTimeout(r, 100));
-  await win.webContents.executeJavaScript(`document.querySelector('[data-git-tab="branches"]').click()`);
-  await new Promise((r) => setTimeout(r, 50));
-  await win.webContents.executeJavaScript(`(() => {
-    const branch = [...document.querySelectorAll('.git-branch-row')].find((row) => row.textContent.includes('feature/git-workbench'));
-    if (!branch) throw new Error("演示分支缺失");
-    branch.click();
-  })()`);
-  await new Promise((r) => setTimeout(r, 70));
-  const gitBranch = await win.webContents.executeJavaScript(`document.querySelector('.git-current-branch strong')?.textContent`);
-  assert.strictEqual(gitBranch, "feature/git-workbench", "git: 普通分支仍可更新原型当前分支");
-  win.setContentSize(600, 800);
-  await new Promise((r) => setTimeout(r, 80));
-  const gitBranchMobile = await win.webContents.executeJavaScript(`(() => ({
-    viewport: document.documentElement.clientWidth,
-    scrollWidth: document.documentElement.scrollWidth,
-    rows: [...document.querySelectorAll('.git-branch-session-row')].length,
-  }))()`);
-  log("git-branch-mobile", JSON.stringify(gitBranchMobile));
-  assert.ok(gitBranchMobile.rows > 0 && gitBranchMobile.scrollWidth <= gitBranchMobile.viewport + 1, "git: 窄屏分支映射不应横向溢出");
-  win.setContentSize(1440, 900);
-  await new Promise((r) => setTimeout(r, 80));
-
-  await win.webContents.executeJavaScript(`document.querySelector('[data-git-tab="worktrees"]').click()`);
-  await new Promise((r) => setTimeout(r, 70));
-  const gitWorktrees = await win.webContents.executeJavaScript(`!!document.querySelector('[data-git="worktrees"]')`);
-  assert.ok(gitWorktrees, "git: 应可打开会话工作树视图");
-  const worktreeLink = await win.webContents.executeJavaScript(`!!document.querySelector('.git-worktree-foot button')`);
-  assert.ok(worktreeLink, "git: 会话工作树应提供打开会话入口");
-  await win.webContents.executeJavaScript(`document.querySelector('.git-worktree-foot button').click()`);
-  await new Promise((r) => setTimeout(r, 100));
-  const sessionOpened = await win.webContents.executeJavaScript(`!!document.querySelector('[data-workspace-view="chat"]:not([hidden]) .thread-scroll') && !document.querySelector('[data-workspace-view="git"]:not([hidden])')`);
-  assert.ok(sessionOpened, "git: 打开工作树会话应返回聊天视图");
-  await win.webContents.executeJavaScript(`document.querySelector('[data-nav="git"]').click()`);
-  await new Promise((r) => setTimeout(r, 100));
-
-  await win.webContents.executeJavaScript(`document.querySelector('.git-project-select .fd-trigger').click()`);
-  await new Promise((r) => setTimeout(r, 70));
-  await win.webContents.executeJavaScript(`(() => {
-    const option = [...document.querySelectorAll('.git-project-select .fd-item')].find((item) => item.textContent.includes('local-myt-agent'));
-    if (!option) throw new Error("第二个 Git 项目选项缺失");
-    option.click();
-  })()`);
-  await new Promise((r) => setTimeout(r, 120));
-  const gitProjectChanged = await win.webContents.executeJavaScript(`(() => ({
-    label: document.querySelector('.git-project-select .fd-trigger')?.textContent.trim(),
-    reset: document.querySelector('[data-git-tab="changes"]')?.getAttribute('aria-pressed') === 'true',
-  }))()`);
-  assert.strictEqual(gitProjectChanged.label, "local-myt-agent", "git: 仓库选择应切到所选项目");
-  assert.ok(gitProjectChanged.reset, "git: 切换仓库应重置本地原型视图状态");
-
-  // 工作区页签保活：Git 内部视图与项目选择在切到聊天后仍应保留。
-  await win.webContents.executeJavaScript(`document.querySelector('[data-git-tab="branches"]').click()`);
-  await win.webContents.executeJavaScript(`document.querySelector('[data-workspace-tab="chat"] .workspace-tab-main').click()`);
-  await new Promise((r) => setTimeout(r, 60));
-  const chatWorkspaceVisible = await win.webContents.executeJavaScript(`!!document.querySelector('[data-workspace-view="chat"]:not([hidden]) .thread-scroll')`);
-  assert.ok(chatWorkspaceVisible, "workspace: 固定聊天标签应切回聊天面板");
-  await win.webContents.executeJavaScript(`document.querySelector('[data-workspace-tab="git"] .workspace-tab-main').click()`);
-  await new Promise((r) => setTimeout(r, 60));
-  const gitWorkspaceRetained = await win.webContents.executeJavaScript(`(() => ({
-    active: document.querySelector('[data-workspace-view]:not([hidden])')?.getAttribute('data-workspace-view'),
-    tabPanel: document.querySelector('[data-git-tab-panel]')?.getAttribute('data-git-tab-panel'),
-    project: document.querySelector('.git-project-select .fd-trigger')?.textContent.trim(),
-  }))()`);
-  assert.strictEqual(gitWorkspaceRetained.active, "git", "workspace: 点击 Git 工作区标签应恢复页面");
-  assert.strictEqual(gitWorkspaceRetained.tabPanel, "branches", "workspace: Git 内部页签切换状态应保留");
-  assert.strictEqual(gitWorkspaceRetained.project, "local-myt-agent", "workspace: 项目选择状态应保留");
-
-  // 关闭当前 Git 标签应回退到最近的工作区 Agent，而不是关闭会话。
-  await win.webContents.executeJavaScript(`document.querySelector('[data-workspace-tab="agents"] .workspace-tab-main').click()`);
-  await win.webContents.executeJavaScript(`document.querySelector('[data-workspace-tab="git"] .workspace-tab-main').click()`);
-  const beforeWorkspaceClose = await win.webContents.executeJavaScript(`(() => ({
-    sessions: document.querySelector('.tabbar')?.getAttribute('data-tabs'),
-    sessionTitle: document.querySelector('.tab[data-cg="tab"].on .tab-title')?.textContent,
-  }))()`);
-  await win.webContents.executeJavaScript(`document.querySelector('[data-workspace-tab="git"] .tab-close').click()`);
-  await new Promise((r) => setTimeout(r, 60));
-  const afterWorkspaceClose = await win.webContents.executeJavaScript(`(() => ({
-    activeTab: document.querySelector('.workspace-tab.on')?.getAttribute('data-workspace-tab'),
-    activeView: document.querySelector('[data-workspace-view]:not([hidden])')?.getAttribute('data-workspace-view'),
-    gitTab: !!document.querySelector('[data-workspace-tab="git"]'),
-    agentGrid: !!document.querySelector('[data-workspace-view="agents"]:not([hidden]) .ag-grid'),
-    sessions: document.querySelector('.tabbar')?.getAttribute('data-tabs'),
-    sessionTitle: document.querySelector('.tab[data-cg="tab"].on .tab-title')?.textContent,
-    focusTab: document.activeElement?.closest('[data-workspace-tab]')?.getAttribute('data-workspace-tab'),
-  }))()`);
-  assert.strictEqual(afterWorkspaceClose.activeTab, "agents", "workspace: 关闭当前页应回到最近的工作区标签");
-  assert.strictEqual(afterWorkspaceClose.activeView, "agents", "workspace: 回退页面应实际可见");
-  assert.strictEqual(afterWorkspaceClose.focusTab, "agents", "workspace: 关闭标签后键盘焦点应回到回退标签");
-  assert.ok(!afterWorkspaceClose.gitTab && afterWorkspaceClose.agentGrid, "workspace: Git 标签关闭、Agent 标签仍打开");
-  assert.strictEqual(afterWorkspaceClose.sessions, beforeWorkspaceClose.sessions, "workspace: 关闭工作区页不得关闭会话标签");
-  assert.strictEqual(afterWorkspaceClose.sessionTitle, beforeWorkspaceClose.sessionTitle, "workspace: 关闭工作区页不得切换当前会话");
-
-  await win.webContents.executeJavaScript(`document.querySelector('[data-nav="git"]').click()`);
-  await new Promise((r) => setTimeout(r, 60));
-  const gitReopened = await win.webContents.executeJavaScript(`({
-    page: !!document.querySelector('[data-workspace-view="git"]:not([hidden]) [data-git-page]'),
-    tabCount: document.querySelectorAll('[data-workspace-tab="git"]').length,
-  })`);
-  assert.ok(gitReopened.page && gitReopened.tabCount === 1, "workspace: 侧栏应能重新打开唯一 Git 标签");
-
-  win.setContentSize(600, 800);
-  await new Promise((r) => setTimeout(r, 80));
-  const gitMobile = await win.webContents.executeJavaScript(`(() => ({
-    viewport: document.documentElement.clientWidth,
-    page: document.querySelector('.git-page')?.getBoundingClientRect().width ?? 0,
-    scrollWidth: document.documentElement.scrollWidth,
-  }))()`);
-  log("git-workbench-mobile", JSON.stringify(gitMobile));
-  assert.ok(gitMobile.page > 0 && gitMobile.scrollWidth <= gitMobile.viewport + 1, "git: 600px 布局不应横向溢出");
-  win.setContentSize(1440, 900);
+  // （Git 工作台场景已移除：Git 页面在 3aa3bc5 整页删除——断言引用的
+  //  [data-nav=git] / .git-* DOM 已不存在，脚本会直接抛错。）
 
   // 目录管理页：导航进入 → 页签与条目卡 → 点卡片开文档弹窗 → 切页签
   await win.webContents.executeJavaScript(`document.querySelector('[data-nav="catalog"]').click()`);
@@ -959,7 +772,7 @@ withPreview(async (preview) => {
   })()`);
   const catTpl = await win.webContents.executeJavaScript(`document.querySelectorAll(".cg-card").length`);
   log("catalog-templates", catTpl);
-  assert.strictEqual(catTpl, 3, "catalog: 模板页签应有 3 个条目");
+  assert.strictEqual(catTpl, 4, "catalog: 模板页签应有 4 个条目（种子加了 merge-verify）");
   // 自建模板全链路：新建 → 编写器 → 填 id → 保存 → 列表出现 → 两步删除（插桩：错误带回）
   const newClick = await win.webContents.executeJavaScript(`(() => {
     try {
@@ -1003,7 +816,7 @@ withPreview(async (preview) => {
     };
   })()`);
   log("module-created", JSON.stringify(afterCreate));
-  assert.strictEqual(afterCreate.cards, 4, "catalog: 保存后模板应有 4 个条目");
+  assert.strictEqual(afterCreate.cards, 5, "catalog: 保存后模板应有 5 个条目（4 种子 + 1 自建）");
   assert.ok(afterCreate.hasCustom, "catalog: 自建条目应有删除入口");
   await win.webContents.executeJavaScript(`(() => {
     const del = document.querySelector('[data-cg="del"]');
@@ -1014,7 +827,7 @@ withPreview(async (preview) => {
   await win.webContents.executeJavaScript(`document.querySelector('[data-cg="del"]').click()`);
   const afterDelete = await win.webContents.executeJavaScript(`document.querySelectorAll(".cg-card").length`);
   log("module-deleted", afterDelete);
-  assert.strictEqual(afterDelete, 3, "catalog: 两步删除后应回到 3 个条目");
+  assert.strictEqual(afterDelete, 4, "catalog: 两步删除后应回到种子基线 4 个条目");
   // 模块导入：入口 → 弹窗 → 填 JSON → 导入 → 列表出现（3→4）→ 删除回 3
   await win.webContents.executeJavaScript(`document.querySelector('[data-cg="import-modules"]').click()`);
   const modImportDlg = await win.webContents.executeJavaScript(`(() => {
@@ -1037,13 +850,13 @@ withPreview(async (preview) => {
     };
   })()`);
   log("module-imported", JSON.stringify(afterModImport));
-  assert.strictEqual(afterModImport.cards, 4, "catalog: 模块导入后应有 4 个条目");
+  assert.strictEqual(afterModImport.cards, 5, "catalog: 模块导入后应有 5 个条目（4 种子 + 1 导入）");
   assert.ok(afterModImport.dlgClosed, "catalog: 导入后弹窗应收起");
   await win.webContents.executeJavaScript(`document.querySelector('[data-cg="del"]').click()`);
   await win.webContents.executeJavaScript(`document.querySelector('[data-cg="del"]').click()`);
   const afterModDel = await win.webContents.executeJavaScript(`document.querySelectorAll(".cg-card").length`);
   log("module-import-deleted", afterModDel);
-  assert.strictEqual(afterModDel, 3, "catalog: 删除导入模块后应回到 3 个条目");
+  assert.strictEqual(afterModDel, 4, "catalog: 删除导入模块后应回到种子基线 4 个条目");
 
   // 工具编写器（表单生成，不写 JSON）：切回工具页签 → 新建 → 表单 → 保存（10→11）→ 删除回 10
   await win.webContents.executeJavaScript(`(() => {
@@ -1193,21 +1006,19 @@ withPreview(async (preview) => {
   })()`);
   log("conn-dialog", JSON.stringify(connMgr));
   assert.ok(connMgr.title === "连接" && connMgr.local, "topbar: 连接弹窗应含本机 " + JSON.stringify(connMgr));
-  // 开启远程访问 → 地址与 token 展示（遮罩）
-  await win.webContents.executeJavaScript(`(() => {
-    const t = document.querySelector(".ag-doc .toggle");
-    if (t) t.click();
-  })()`);
+  // 远程访问配置已移到侧栏「远程访问」页（SakuraBlock/LanAccessBlock/TailscaleBlock），
+  // 连接弹窗只列后端与 token（遮罩）+ 指引入口——这里断言现契约：
+  // 弹窗里有遮罩 token（••••）与「远程访问」指引。
   const ra = await win.webContents.executeJavaScript(`(() => {
-    const panel = document.querySelector(".conn-ra-panel");
-    return panel ? {
-      addr: panel.textContent.includes("192.168.1.105:7789"),
-      tokenMasked: !!panel.textContent.match(/[0-9a-f]{4}••••[0-9a-f]{4}/),
-      copyBtns: panel.querySelectorAll(".conn-copy").length,
-    } : { err: "no-panel" };
+    const doc = document.querySelector(".ag-doc");
+    if (!doc) return { err: "no-dialog" };
+    return {
+      tokenMasked: !!doc.textContent.match(/[0-9a-f]{4}••••[0-9a-f]{4}/),
+      raHint: doc.textContent.includes("远程访问"),
+    };
   })()`);
   log("conn-remote-access", JSON.stringify(ra));
-  assert.ok(!ra.err && ra.addr && ra.tokenMasked && ra.copyBtns >= 2, "topbar: 远程访问应展示地址与遮罩 token " + JSON.stringify(ra));
+  assert.ok(!ra.err && ra.tokenMasked && ra.raHint, "topbar: 连接弹窗应展示遮罩 token 与远程访问指引 " + JSON.stringify(ra));
   // 切换到远程连接（演示种子「公司开发机」）→ 指示器名称跟随
   const connSwitch = await win.webContents.executeJavaScript(`(() => {
     const btn = document.querySelector('[data-conn="connect"]');
@@ -1239,27 +1050,28 @@ withPreview(async (preview) => {
   assert.ok(connForm.fields >= 3, "topbar: 添加连接表单应有名称/地址/token 字段");
   await win.webContents.executeJavaScript(`document.querySelector(".ag-doc-close").click()`);
 
-  // 樱花frp 公网穿透：登录（访问密钥）→ 账户流量展示 → 创建隧道 → 公网地址 → 断开 → 删除
-  // （重新打开连接弹窗——remoteAccess 是 Provider 状态，前一步已开启，面板常驻）
-  await win.webContents.executeJavaScript(`document.querySelector('[data-conn="pill"]').click()`);
+  // 樱花frp 公网穿透（2026-12 改版：块移到侧栏「远程访问」页的 RemoteAccessPage，
+  // 连接弹窗里不再内嵌）——这里断言页面里樱花frp 块存在与登录入口可达。
+  await win.webContents.executeJavaScript(`document.querySelector('[data-nav="remote"]').click()`);
   await new Promise((r) => setTimeout(r, 250));
-  const skBefore = await win.webContents.executeJavaScript(`(() => {
-    const doc = document.querySelector(".ag-doc");
-    return doc ? { has: !!doc.querySelector(".conn-sakura") } : { err: "no-dialog" };
-  })()`);
-  log("sakura-block", JSON.stringify(skBefore));
-  assert.ok(skBefore.has, "conn: 远程访问面板应含樱花frp 块");
+  const skPage = await win.webContents.executeJavaScript(`(() => ({
+    page: !!document.querySelector(".ra-page"),
+    sakura: !!document.querySelector(".ra-page .conn-sakura"),
+    keyInput: !!document.querySelector(".conn-key-input"),
+    loginBtn: !!document.querySelector('[data-conn="sakura-login"]'),
+  }))()`);
+  log("sakura-block", JSON.stringify(skPage));
+  assert.ok(skPage.page && skPage.sakura && skPage.keyInput && skPage.loginBtn, "conn: 远程访问页应含樱花frp 块与登录入口 " + JSON.stringify(skPage));
   await win.webContents.executeJavaScript(`(() => {
     const input = document.querySelector(".conn-key-input");
-    if (input) {
-      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
-      setter.call(input, "demo-access-key");
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-    }
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+    setter.call(input, "demo-access-key");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
   })()`);
   await win.webContents.executeJavaScript(`document.querySelector('[data-conn="sakura-login"]').click()`);
+  await new Promise((r) => setTimeout(r, 300));
   const skLogged = await win.webContents.executeJavaScript(`(() => {
-    const blk = document.querySelector(".conn-sakura");
+    const blk = document.querySelector(".ra-page .conn-sakura");
     return {
       loggedIn: blk?.getAttribute("data-on") === "true",
       traffic: !!blk?.textContent.match(/今日 .+ · 剩余 .+/),
@@ -1267,35 +1079,14 @@ withPreview(async (preview) => {
   })()`);
   log("sakura-logged", JSON.stringify(skLogged));
   assert.ok(skLogged.loggedIn && skLogged.traffic, "conn: 登录后应展示账户流量 " + JSON.stringify(skLogged));
-  await win.webContents.executeJavaScript(`document.querySelector('[data-conn="tunnel-new"]').click()`);
-  const skTunnel = await win.webContents.executeJavaScript(`(() => {
-    const t = document.querySelector(".conn-tunnel");
-    return t ? {
-      name: t.querySelector(".conn-tunnel-name")?.textContent,
-      addr: !!t.querySelector(".conn-cred-value.mono")?.textContent.match(/[a-z0-9.-]+[.]natfrp[.]io:\\d+/),
-      online: t.getAttribute("data-online") === "true",
-    } : { err: "no-tunnel" };
-  })()`);
-  log("sakura-tunnel", JSON.stringify(skTunnel));
-  assert.ok(!skTunnel.err && skTunnel.addr && skTunnel.online, "conn: 创建后应有公网地址与在线态 " + JSON.stringify(skTunnel));
-  await win.webContents.executeJavaScript(`document.querySelector('[data-conn="tunnel-toggle"]').click()`);
-  const skOff = await win.webContents.executeJavaScript(`(() => {
-    const t = document.querySelector(".conn-tunnel");
-    return { online: t.getAttribute("data-online") === "true", label: t.querySelector('[data-conn="tunnel-toggle"]')?.textContent.trim() };
-  })()`);
-  log("sakura-tunnel-off", JSON.stringify(skOff));
-  assert.ok(!skOff.online, "conn: 断开后隧道应离线");
-  await win.webContents.executeJavaScript(`document.querySelector('[data-conn="tunnel-del"]').click()`);
-  await win.webContents.executeJavaScript(`document.querySelector('[data-conn="tunnel-del"]').click()`);
-  const skDeleted = await win.webContents.executeJavaScript(`(() => {
-    return { empty: !!document.querySelector(".conn-sakura-empty") };
-  })()`);
-  log("sakura-tunnel-deleted", JSON.stringify(skDeleted));
-  assert.ok(skDeleted.empty, "conn: 删除后应回到空态");
 
-  // 更新提示（页面级 Toast + 侧栏角标 + 设置块）：自动检查发现新版本 →
-  // Toast 弹出 → 立即更新（进度）→ 就绪 → 立即重启 → 侧栏回落 + 设置显示已是最新
-  await new Promise((r) => setTimeout(r, 1800)); // 等 Provider 自动检查（1.2s 演示桩）
+  // 更新提示（页面级 Toast + 侧栏角标 + 设置块）：演示模式**没有**自动检查
+  // （update.tsx 的定时检查只在有壳桥时启动）——从设置里手动「检查更新」进入，
+  //  900ms 演示桩后 available：Toast 弹出 → 立即更新（进度）→ 就绪 → 立即重启。
+  await win.webContents.executeJavaScript(`document.querySelector(".settings-row").click()`);
+  await new Promise((r) => setTimeout(r, 400));
+  await win.webContents.executeJavaScript(`document.querySelector('[data-su="check"]').click()`);
+  await new Promise((r) => setTimeout(r, 1500));
   const utShown = await win.webContents.executeJavaScript(`(() => {
     const t = document.querySelector(".upd-toast");
     return t ? {
@@ -1306,7 +1097,7 @@ withPreview(async (preview) => {
     } : { err: "no-toast", phase: document.querySelector(".set-update")?.getAttribute("data-phase") };
   })()`);
   log("update-toast", JSON.stringify(utShown));
-  assert.ok(!utShown.err && utShown.newVer && utShown.dl, "toast: 自动检查后应弹更新提示 " + JSON.stringify(utShown));
+  assert.ok(!utShown.err && utShown.newVer && utShown.dl, "toast: 手动检查后应弹更新提示 " + JSON.stringify(utShown));
   assert.ok(utShown.badge && utShown.verLabel === "可更新", "sidebar: 有更新时设置行应有角标与「可更新」");
   // Toast 立即更新 → 内联进度 → 就绪
   await win.webContents.executeJavaScript(`document.querySelector('[data-ut="download"]').click()`);
