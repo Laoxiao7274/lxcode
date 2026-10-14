@@ -500,6 +500,11 @@ func (s *Server) serveStatic(w http.ResponseWriter, r *http.Request, file string
 		contentType = "application/octet-stream"
 	}
 	w.Header().Set("Content-Type", contentType)
+	// APK 一律按附件下发：手机浏览器对 application/vnd.android.package-archive
+	// 的内联处理不一（有的存成 0B/小文件），attachment 头强制走下载器并固定文件名。
+	if strings.EqualFold(filepath.Ext(name), ".apk") {
+		w.Header().Set("Content-Disposition", `attachment; filename="`+path.Base(name)+`"`)
+	}
 	if strings.EqualFold(path.Base(name), "index.html") {
 		// 入口 HTML 不缓存：发新版本后旧 HTML 会指向已删除的哈希资源
 		w.Header().Set("Cache-Control", "no-cache")
