@@ -19,13 +19,16 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import com.moyunteng.lxcode.remote.mock.ChildTool
-import com.moyunteng.lxcode.remote.mock.ContextUsage
-import com.moyunteng.lxcode.remote.mock.ProjectMeta
-import com.moyunteng.lxcode.remote.mock.SessionMeta
-import com.moyunteng.lxcode.remote.mock.SessionStats
-import com.moyunteng.lxcode.remote.mock.ThreadBlock
-import com.moyunteng.lxcode.remote.mock.TodoItem
+import com.moyunteng.lxcode.remote.model.ChildTool
+import com.moyunteng.lxcode.remote.model.ContextUsage
+import com.moyunteng.lxcode.remote.model.EFFORT_IDS
+import com.moyunteng.lxcode.remote.model.ModelGroup
+import com.moyunteng.lxcode.remote.model.ModelMeta
+import com.moyunteng.lxcode.remote.model.ProjectMeta
+import com.moyunteng.lxcode.remote.model.SessionMeta
+import com.moyunteng.lxcode.remote.model.SessionStats
+import com.moyunteng.lxcode.remote.model.ThreadBlock
+import com.moyunteng.lxcode.remote.model.TodoItem
 import org.json.JSONObject
 import java.time.Instant
 import java.time.temporal.ChronoUnit
@@ -101,6 +104,22 @@ class RealBackend {
     var busy by mutableStateOf(false)
         private set
 
+    /**
+     * 历史**装载版本号**（applyHistory 每次完成 +1）：ThreadScreen 据此在历史装载
+     * 完成的那一刻滚动到底部（「进会话停在最底」，对齐桌面端行为）。数量变化
+     * （blocks.size）不足以区分「装载完成」与「流式追加」——两者的滚动语义不同
+     *（装载后必滚，流式期间跟随），但首个装载事件里两者都会发生，这里只服务 ①。
+     */
+    var historyVersion by mutableStateOf(0)
+        private set
+
+    /**
+     * 各会话的实时忙闲（chat.busy 广播；多端共享进度的列表侧投影）：
+     * 任意客户端（手机/桌面）上某会话开始/结束生成，这里都收到同一份广播。
+     * 会话列表的「运行中」状态点读它——不只是当前打开的会话。
+     */
+    private val sessionBusy = mutableMapOf<String, Boolean>()
+
     /** 挂起的工具确认（chat.confirmRequest；null = 无）。 */
     var confirm by mutableStateOf<PendingConfirm?>(null)
         private set
@@ -114,6 +133,79 @@ class RealBackend {
     /** 当前连接凭证（remote.json Enabled 的后端要求 query token；空 = 未开远程）。 */
     var token by mutableStateOf("")
         private set
+
+    // ===== 模型注册表（model.list；composer 模型菜单数据源）=====
+    //
+    // 对齐桌面端 settings-models.ts 的 mapModels：按 base_url（完整端点）分组投影，
+    // efforts 派生自 capabilities.reasoning（未声明 reasoning 的模型整个强度入口隐藏
+    // ——对非推理端点传 effort 参数会 400）。模型是**角色绑定**不是客户端本地态：
+    // 选中态 = roles.default（role.set 改，model.changed 广播回来对齐）。
+
+    /** 注册表快照（enabled 条目按端点分组；model.changed 时重拉）。 */
+    var modelGroups by mutableStateOf<List<ModelGroup>>(emptyList())
+        private set
+
+    /** 当前 default 角色绑定的模型 id（后端是唯一事实源；空 = 未绑定）。 */
+    var defaultModelId by mutableStateOf("")
+        private set
+
+    /** 平铺的全部模型（按 id 查找用）。 */
+    val allModels: List<ModelMeta>
+        get() = modelGroups.flatMap { it.models }
+
+    /** 刷新模型注册表（model.list）。 */
+    fun refreshModels() {
+        client.call("model.list", null) { err, result ->
+            if (err != null) {
+                Log.w(TAG, "model.list 失败: ${err.optString("message")}")
+                return@call
+            }
+            applyModelList(result as? JSONObject)
+        }
+    }
+
+    /** 切换 default 角色绑定（role.set；model.changed 广播回来对齐）。 */
+    fun setDefaultModel(id: String) {
+        Log.i(TAG, "role.set default → $id")
+        client.call("role.set", JSONObject().put("role", "default").put("model_id", id)) { err, _ ->
+            if (err != null) Log.w(TAG, "role.set 失败: ${err.optString("message")}")
+        }
+    }
+
+    private fun applyModelList(r: JSONObject?) {
+        if (r == null) return
+        val models = r.optJSONArray("models")
+        val roles = r.optJSONObject("roles")
+        if (models == null) return
+        val groups = linkedMapOf<String, MutableList<ModelMeta>>()
+        for (i in 0 until models.length()) {
+            val m = models.getJSONObject(i)
+            if (!m.optBoolean("enabled")) continue
+            val id = m.optString("id")
+            if (id.isEmpty()) continue
+            val baseUrl = m.optString("base_url")
+            val meta = ModelMeta(
+                id = id,
+                name = m.optString("display_name").ifBlank { m.optString("model", id) },
+                desc = if (m.optString("format") == "anthropic") "Anthropic 格式" else "OpenAI 兼容",
+                // 档位派生自能力声明（对齐桌面端 settings-models.ts：未声明 reasoning
+                // 的模型整个强度入口隐藏）
+                efforts = if (m.optJSONObject("capabilities")?.optBoolean("reasoning") == true) EFFORT_IDS else emptyList(),
+            )
+            groups.getOrPut(baseUrl) { mutableListOf() }.add(meta)
+        }
+        modelGroups = groups.map { (url, ms) ->
+            val host = try {
+                java.net.URI("https://" + url.substringAfter("://")).host ?: url
+            } catch (_: Exception) {
+                url
+            }
+            ModelGroup(name = host, models = ms)
+        }
+        // default 角色绑定是唯一事实源（对齐桌面端 settings.tsx：派生选中态，不猜）
+        defaultModelId = roles?.optString("default").orEmpty()
+        Log.i(TAG, "model.list → ${allModels.size} 个模型 / ${modelGroups.size} 组 default=$defaultModelId")
+    }
 
     // ===== 连接生命周期 =====
 
@@ -148,8 +240,14 @@ class RealBackend {
             // busy 键重设）：留着断线前的 busy=true 会让「发送」一直当「停止」用，
             // 而停止的收敛依赖后端事件——假后端/断线场景会卡死在生成中。
             busy = false
+            // 会话级忙闲投影同样清账：断线期间的 busy 广播收不到，留下的旧值
+            // 会让列表的「运行中」状态点卡住（后端 hello 不带逐会话 busy——
+            // 未知就显示空闲，等下一个 busy 广播修正，不编状态）。
+            sessionBusy.clear()
             refreshSessions()
             refreshProjects()
+            // 模型注册表：composer 模型菜单的数据源（桌面端是握手并行组的一步）
+            refreshModels()
         } else if (phase != RealPhase.Offline) {
             // 用户主动 disconnect 后的迟到回调不再标失败
             phase = RealPhase.Failed
@@ -361,6 +459,14 @@ class RealBackend {
         if (method == "chat.dispatchStart" || method == "chat.dispatchEnd") {
             if (p.optString("owner_session_id") != currentSessionId) return
             if (method == "chat.dispatchStart") {
+                // todos 非空 = 主 Agent 预拆的清单初稿（todo 契约——卡上第一秒显示计划）
+                val todos = p.optJSONArray("todos")
+                val (tDone, tTotal) = if (todos != null) {
+                    val list = (0 until todos.length()).map { todos.getJSONObject(it) }
+                    list.count { it.optString("status") == "done" } to list.size
+                } else {
+                    -1 to 0
+                }
                 blocks.add(
                     ThreadBlock.Dispatch(
                         agentName = p.optString("agent_name"),
@@ -370,6 +476,8 @@ class RealBackend {
                         done = false,
                         isError = false,
                         dispatchId = p.optString("dispatch_id", ""),
+                        childTodosDone = tDone,
+                        childTodosTotal = tTotal,
                     ),
                 )
             } else {
@@ -390,7 +498,9 @@ class RealBackend {
         }
         // 子会话事件（dispatch_id 非空）不进主时间线；toolCall/toolResult 归并进派发卡的
         // 子工具实时流（卡内展开可见子工具名/状态/耗时——桌面端「子会话标签页实时流」的
-        // 安卓单页等价物），不再无声丢弃
+        // 安卓单页等价物）。todo.updated（带 dispatch_id = 子 Agent 的清单更新）：
+        // 归并进**归属派发卡**（轻量派发进度——手机上看子 Agent 跑到哪一步，
+        // 与桌面端 TodoUpdatedParams.DispatchID 的归属契约一致；卡不存在只记日志）。
         if (dispatchId.isNotEmpty()) {
             when (method) {
                 "chat.toolCall" -> upsertChildTool(
@@ -403,6 +513,7 @@ class RealBackend {
                     durationMs = 0,
                 )
                 "chat.toolResult" -> finishChildTool(dispatchId, p.optString("id"), p.optBoolean("is_error"))
+                "todo.updated" -> mergeChildTodos(dispatchId, p.optJSONArray("items"))
             }
             return
         }
@@ -437,9 +548,9 @@ class RealBackend {
                 val i = ensureStreamingBlock()
                 val cur = blocks[i] as ThreadBlock.Assistant
                 blocks[i] = if (kind == "reasoning") {
-                    cur.copy(reasoning = (cur.reasoning ?: "") + text)
+                    cur.copy(reasoning = (cur.reasoning ?: "") + text, streaming = true)
                 } else {
-                    cur.copy(content = cur.content + text)
+                    cur.copy(content = cur.content + text, streaming = true)
                 }
             }
 
@@ -520,6 +631,8 @@ class RealBackend {
                             model = model,
                             firstTokenMs = if (ftms > 0) ftms else null,
                             tokPerSec = if (utok > 0 && dur > 0) utok * 1000.0 / dur else null,
+                            // 轮结束 = 打字机收尾：整块呈现（streaming=false）
+                            streaming = false,
                         )
                     }
                 }
@@ -547,7 +660,7 @@ class RealBackend {
                         val i = lastAssistantIndex()
                         if (i >= 0) {
                             val cur = blocks[i] as ThreadBlock.Assistant
-                            blocks[i] = cur.copy(content = content)
+                            blocks[i] = cur.copy(content = content, streaming = false)
                         } else {
                             blocks.add(ThreadBlock.Assistant(content, null, 0, sessionModel))
                         }
@@ -558,9 +671,14 @@ class RealBackend {
             }
 
             "chat.busy" -> {
+                // 多端共享进度：忙闲广播**先记进会话级投影**（列表运行中状态点，
+                // 所有会话都记——不只是当前打开的），当前会话再同步本页的 busy。
+                if (sid.isNotEmpty()) {
+                    sessionBusy[sid] = p.optBoolean("busy")
+                    syncRunningDots()
+                }
                 if (sid != currentSessionId) return
                 busy = p.optBoolean("busy")
-                syncRunningDots()
             }
 
             "chat.approvalChanged" -> {
@@ -582,6 +700,9 @@ class RealBackend {
             "session.changed" -> refreshSessions()
 
             "project.changed" -> refreshProjects()
+
+            // 模型注册表变更（多端同步：桌面端加了模型/改了绑定，手机端重拉对齐）
+            "model.changed" -> refreshModels()
 
             "chat.compacted" -> {
                 if (sid != currentSessionId) return
@@ -634,6 +755,10 @@ class RealBackend {
         // 权限档是会话级状态：切会话即清（切回时由 chat.history 的 approval 重新
         // 对齐）——沿用上一会话的档位显示是串台
         approval = null
+        // 历史装载版本也清零：新会话的历史还没装载，滚动触发条件（historyVersion>0）
+        // 必须等下一次 applyHistory 才成立——沿用上一会话的版本号会让 ThreadScreen
+        // 在 blocks 还是空的时候去滚
+        historyVersion = 0
     }
 
     private fun applyHistory(r: JSONObject?) {
@@ -779,6 +904,11 @@ class RealBackend {
         r.optJSONObject("stats")?.let { sessionStats = parseStats(it) }
         sessionModel = r.optString("model", "")
         busy = r.optBoolean("busy")
+        // 历史的 busy 键是服务端事实：同步进会话级忙闲投影（列表状态点对齐）
+        if (currentSessionId.isNotEmpty()) {
+            sessionBusy[currentSessionId] = busy
+            syncRunningDots()
+        }
         // 该会话此刻的权限档（后端 LiveApproval——会话级状态持久化的显示依据）；
         // 空串 = 老后端没报，保持 null（UI 回落「默认」，不猜）
         r.optString("approval", "").takeIf { it.isNotEmpty() }?.let { approval = it }
@@ -792,6 +922,8 @@ class RealBackend {
             )
         }
         Log.i(TAG, "history($currentSessionId): ${msgs.length()} 条消息 → ${blocks.size} 块 busy=$busy")
+        // 历史装载完成：ThreadScreen 据此滚动到底（进会话停在最底，对齐桌面端）
+        historyVersion++
     }
 
     private fun applySessionList(r: Any?) {
@@ -812,7 +944,9 @@ class RealBackend {
                 messages = o.optInt("messages"),
                 archived = o.optBoolean("archived"),
                 workspace = o.optString("workspace", ""),
-                running = o.optString("id") == currentSessionId && busy,
+                // 运行中状态点 = chat.busy 广播的会话级投影（多端共享进度）：
+                // 任何客户端上该会话在生成，这里都亮着——不再只看当前打开的会话
+                running = sessionBusy[id] == true,
             )
         }.filter { !it.archived }
         sessions.clear()
@@ -843,7 +977,7 @@ class RealBackend {
     private fun syncRunningDots() {
         for (i in sessions.indices) {
             val s = sessions[i]
-            val running = s.id == currentSessionId && busy
+            val running = sessionBusy[s.id] == true
             if (s.running != running) sessions[i] = s.copy(running = running)
         }
     }
@@ -854,7 +988,8 @@ class RealBackend {
         if (streamingIdx >= 0 && streamingIdx < blocks.size && blocks[streamingIdx] is ThreadBlock.Assistant) {
             return streamingIdx
         }
-        blocks.add(ThreadBlock.Assistant(content = "", reasoning = null, reasoningMs = 0, model = sessionModel))
+        // 新流式块 streaming=true：打字机只对实时增量揭示（历史回放的块是 false）
+        blocks.add(ThreadBlock.Assistant(content = "", reasoning = null, reasoningMs = 0, model = sessionModel, streaming = true))
         streamingIdx = blocks.size - 1
         return streamingIdx
     }
@@ -924,6 +1059,27 @@ class RealBackend {
         val runs = d.childRuns.toMutableList()
         runs[idx] = runs[idx].copy(running = false, isError = isError, durationMs = dur)
         blocks[i] = d.copy(childRuns = runs, childTools = runs.size)
+    }
+
+    /**
+     * 子 Agent 的清单进度归并（todo.updated 带 dispatch_id 的广播，多端共享进度）：
+     * 完成数/总数归进归属派发卡（卡上「清单 2/4」一行的数据源）；卡不存在只记日志
+     * （跨会话的旧广播、历史里没有卡的派发——丢弃是正确行为，不建孤儿卡）。
+     */
+    private fun mergeChildTodos(dispatchId: String, items: org.json.JSONArray?) {
+        if (items == null) return
+        val i = dispatchCardIdx(dispatchId)
+        if (i < 0) {
+            Log.w(TAG, "子会话清单事件无归属派发卡 dispatch=$dispatchId")
+            return
+        }
+        val d = blocks[i] as ThreadBlock.Dispatch
+        val list = (0 until items.length()).map { items.getJSONObject(it) }
+            .map { TodoItem(it.optString("content"), it.optString("status")) }
+        blocks[i] = d.copy(
+            childTodosDone = list.count { it.status == "done" },
+            childTodosTotal = list.size,
+        )
     }
 
     private fun parseContext(o: JSONObject): ContextUsage = ContextUsage(

@@ -63,8 +63,8 @@ import com.moyunteng.lxcode.design.component.LxButtonVariant
 import com.moyunteng.lxcode.design.token.Lx
 import com.moyunteng.lxcode.design.token.LxColors
 import com.moyunteng.lxcode.remote.BuildConfig
-import com.moyunteng.lxcode.remote.mock.MockData
-import com.moyunteng.lxcode.remote.mock.addrValid
+
+import com.moyunteng.lxcode.remote.model.addrValid
 
 // ===== 配对载荷解析（真扫码 / mock / deep-link 三条入口共用）=====
 
@@ -320,7 +320,7 @@ private fun ScanDebugArea(state: MockAppState) {
             onClick = {
                 // 拼 `lxcode://pair?...` 载荷再走统一解析路径——与真扫码同一条代码路径
                 state.applyPairPayload(
-                    buildPairPayload(MockData.PAIRING_ADDR, MockData.PAIRING_TOKEN, "工作室主机"),
+                    buildPairPayload("10.0.0.8:7789", "a1b2c3d4-e5f6-7890-abcd-ef1234567890", "工作室主机"),
                 )
             },
             variant = LxButtonVariant.Primary,

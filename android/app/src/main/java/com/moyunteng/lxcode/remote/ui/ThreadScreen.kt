@@ -15,14 +15,17 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -70,30 +73,50 @@ import com.moyunteng.lxcode.design.motion.lxSweep
 import com.moyunteng.lxcode.design.motion.rememberStreamReveal
 import com.moyunteng.lxcode.design.token.Lx
 import com.moyunteng.lxcode.design.token.LxColors
-import com.moyunteng.lxcode.remote.mock.MockData
-import com.moyunteng.lxcode.remote.mock.SessionMeta
-import com.moyunteng.lxcode.remote.mock.ThreadBlock
-import com.moyunteng.lxcode.remote.mock.formatMs
+import com.moyunteng.lxcode.remote.model.ThreadBlock
+import com.moyunteng.lxcode.remote.model.formatMs
 
 /** 对话线程页。 */
 @Composable
 fun ThreadScreen(state: MockAppState, sessionId: String) {
-    // 真实模式：标题/块/忙闲/确认全部来自 RealBackend（WS 事件归约）；
-    // mock 模式：一切照旧（MockData 静态数据，行为零变化）。
-    val real = if (state.realOn) state.real else null
-    val session = MockData.sessions.firstOrNull { it.id == sessionId }
-    val title = real?.sessionTitle ?: (session?.title ?: "子会话 · frontend-dev")
-    var confirmOpen by remember { mutableStateOf(false) }
-    // 「运行中」的判定：真实模式 = 会话忙闲（chat.busy）；mock = 线程里还有跑着的工具行
-    val running = real?.busy ?: MockData.thread.any { it is ThreadBlock.Tool && it.running }
+    // 真实后端模式：标题/块/忙闲/确认全部来自 RealBackend（WS 事件归约）。
+    // （mock 数据已随 P0 原型退役：未连接时会话页是连接引导态，到不了线程页。）
+    val real = state.real
+    val title = real.sessionTitle
+    // 「运行中」的判定 = 会话忙闲（chat.busy 事件 / done-error 收敛）
+    val running = real.busy
     // 真实模式的挂起确认（chat.confirmRequest）→ 复用 LxConfirmDialog
-    val pendingConfirm = real?.confirm
+    val pendingConfirm = real.confirm
 
-    // 真实模式：从会话列表点进来时拉取历史（session.resume → chat.history；
+    // 从会话列表点进来时拉取历史（session.resume → chat.history；
     // 新建的会话已在 newSession 里切入，currentSessionId 相同则不重复拉）。
-    if (real != null) {
-        LaunchedEffect(sessionId) {
-            if (sessionId != real.currentSessionId) real.openSession(sessionId)
+    LaunchedEffect(sessionId) {
+        if (sessionId != real.currentSessionId) real.openSession(sessionId)
+    }
+
+    // ===== 滚到底 =====
+    // 三个时机都要滚：
+    //  ① 历史装载完成（openSession 异步回填 blocks 的那一刻）——对齐桌面端「进会话
+    //     停在最底」；用 historyVersion（RealBackend 在 applyHistory 末尾递增）触发。
+    //  ② 消息流增长（delta 追加 / 工具行插入 / 用户发送）——流式期间跟随到底部。
+    //  ③ 键盘弹出（IME 可见性翻转）：lazyListState 是同一实例、消息数量不变，
+    //     不监听它的话视口被压缩后最后一屏停在半截——imeTargetHeight 变化即再滚一次。
+    val listState = rememberLazyListState()
+    val historyVersion = real.historyVersion
+    val imeHeight = WindowInsets.ime.getBottom(LocalDensity.current)
+    LaunchedEffect(historyVersion) {
+        if (historyVersion > 0 && real.blocks.isNotEmpty()) {
+            listState.scrollToItem(real.blocks.size - 1)
+        }
+    }
+    LaunchedEffect(real.blocks.size) {
+        if (real.blocks.isNotEmpty()) {
+            listState.scrollToItem(real.blocks.size - 1)
+        }
+    }
+    LaunchedEffect(imeHeight) {
+        if (imeHeight > 0 && real.blocks.isNotEmpty()) {
+            listState.scrollToItem(real.blocks.size - 1)
         }
     }
 
@@ -132,15 +155,13 @@ fun ThreadScreen(state: MockAppState, sessionId: String) {
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
-            // 确认门触发入口（mock：点开「执行此命令？」弹层）
-            LxIconButton(onClick = { confirmOpen = true }) {
-                Icon(
-                    imageVector = Icons.Filled.WarningAmber,
-                    contentDescription = "确认门",
-                    tint = LxColors.Amber,
-                    modifier = Modifier.size(18.dp),
-                )
-            }
+            // 确认门指示灯（有挂起确认时常亮；裁决走下方的 LxConfirmDialog）
+            Icon(
+                imageVector = Icons.Filled.WarningAmber,
+                contentDescription = "确认门",
+                tint = if (pendingConfirm != null) LxColors.Amber else Lx.colors.BorderStrong,
+                modifier = Modifier.size(18.dp),
+            )
         }
 
         // 中部消息流 + 底部输入区（悬浮，对齐桌面端 composer-zone 机制）：
@@ -154,20 +175,21 @@ fun ThreadScreen(state: MockAppState, sessionId: String) {
                 Modifier
                     .fillMaxSize()
                     .padding(horizontal = Lx.space.s12),
+                state = listState,
                 contentPadding = PaddingValues(top = Lx.space.s8, bottom = composerHeightDp + 14.dp),
                 verticalArrangement = Arrangement.spacedBy(Lx.space.s10),
             ) {
                 // 消息块逐个入场：`block-in`（opacity 0→1 + translateY(4px)→0，320ms 标准曲线），
                 // 延迟按 `staggerIn`（min(40ms, 360ms/条目数)）逐项错开。
-                // 真实模式 key 用下标：流式 delta 会整块替换（data class copy），
+                // key 用下标：流式 delta 会整块替换（data class copy），
                 // 用块实例当 key 会让入场动画/打字机每个 delta 重播——下标才是稳定身份。
-                val blocks: List<ThreadBlock> = real?.blocks ?: MockData.thread
+                val blocks: List<ThreadBlock> = real.blocks
                 itemsIndexed(blocks) { i, block ->
                     Box(
                         Modifier.lxEnter(
                             spec = LxEnterSpec.BlockIn,
                             delayMillis = LxStagger.delayMillis(blocks.size, i),
-                            key = if (real != null) i else block,
+                            key = i,
                         ),
                     ) {
                         ThreadBlockView(block, busy = running)
@@ -202,22 +224,6 @@ fun ThreadScreen(state: MockAppState, sessionId: String) {
                 }
             }
         }
-    }
-
-    // 确认门（mock 的「执行此命令？」弹层）
-    if (confirmOpen) {
-        LxConfirmDialog(
-            title = "执行此命令？",
-            text = "bash 工具申请执行以下命令（高危：会改动工作区）。",
-            onApprove = { confirmOpen = false },
-            onDeny = { confirmOpen = false },
-            body = {
-                TerminalBlock(
-                    command = "rm -rf build && ./gradlew clean assembleDebug",
-                    cwd = "C:\\Users\\xzy\\Desktop\\my\\lxcode\\android",
-                )
-            },
-        )
     }
 
     // 确认门（真实模式）：内容来自后端 chat.confirmRequest（标题 = prompt，
@@ -321,8 +327,11 @@ private fun UserBubble(text: String) {
 /** 助手块（思考块 + 正文 + 轮末统计行）。 */
 @Composable
 private fun AssistantBlock(block: ThreadBlock.Assistant, busy: Boolean) {
-    // 助手正文逐字揭示：桌面端 stream-reveal（REVEAL_* 常量），**不受 reduced-motion 门控**
-    val reveal = rememberStreamReveal(block.content, key = block)
+    // 助手正文逐字揭示：桌面端 stream-reveal（REVEAL_* 常量），**不受 reduced-motion 门控**。
+    // 打字机只用于**实时流式增量**（block.streaming = true）：历史回放的 assistant 块
+    // 直接整块呈现全文（对齐桌面端 AnswerBody 的 committed/tail 语义——历史 = snap
+    // 全量落下，只有实时 delta 才 reveal），否则打开会话时所有旧消息重播一遍打字。
+    val reveal = rememberStreamReveal(block.content, enabled = block.streaming, key = block)
 
     Column(verticalArrangement = Arrangement.spacedBy(Lx.space.s6)) {
         if (!block.reasoning.isNullOrBlank()) {
@@ -606,6 +615,15 @@ private fun DispatchCard(block: ThreadBlock.Dispatch) {
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
+            // 子 Agent 清单进度（todo.updated 带 dispatch_id 的广播归并；-1 = 没有清单）：
+            // 手机上看派发进度的轻量形态——不必展开卡就知道子 Agent 跑到哪一步
+            if (block.childTodosDone >= 0 && block.childTodosTotal > 0) {
+                Text(
+                    text = "清单 ${block.childTodosDone}/${block.childTodosTotal}",
+                    style = Lx.type.Pill.copy(fontSize = Lx.type.Size10, fontWeight = FontWeight.SemiBold),
+                    color = if (block.childTodosDone == block.childTodosTotal) LxColors.SuccessInk else LxColors.Amber,
+                )
+            }
             Text(
                 text = block.sessionId,
                 style = Lx.type.Mono12.copy(fontSize = Lx.type.Size10, color = LxColors.SuccessInk),
@@ -639,7 +657,7 @@ private fun DispatchCard(block: ThreadBlock.Dispatch) {
 
 /** 派发卡内的一行子工具实时态（状态点 + 工具名 + 参数摘要 + 耗时/运行中）。 */
 @Composable
-private fun ChildToolRow(run: com.moyunteng.lxcode.remote.mock.ChildTool) {
+private fun ChildToolRow(run: com.moyunteng.lxcode.remote.model.ChildTool) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -719,7 +737,7 @@ private fun CompactionCard(block: ThreadBlock.Compaction) {
 
 /** todo 清单块（active / 完成 两态任务行）。 */
 @Composable
-private fun TodoCard(items: List<com.moyunteng.lxcode.remote.mock.TodoItem>) {
+private fun TodoCard(items: List<com.moyunteng.lxcode.remote.model.TodoItem>) {
     val done = items.count { it.status == "done" }
     Column(
         Modifier

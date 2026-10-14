@@ -49,10 +49,12 @@ fun interface StateListener {
 }
 
 /**
- * WS JSON-RPC 客户端：连接、hello 握手、call 配对、事件分发。
+ * WS JSON-RPC 客户端：连接、hello 握手、call 配对、事件分发、心跳与自动重连。
  *
  * 生命周期：[connect] → 握手成功后 [connected] 为 true 并回调 onState(true)；
- * 断开/失败回调 onState(false, 原因)。重连由调用方驱动（本批手动重试，见任务纪律）。
+ * 断开/失败回调 onState(false, 原因)。断线后自动重连（指数退避，封顶 30s，
+ * 调用方 disconnect() 显式断开则不重连）。多端共享进度依赖它：手机息屏/
+ * 切后台回来时连接可能已被断开——心跳主动发现断线、重连后事件流续上。
  */
 class LxWsClient(
     private val eventListener: EventListener,
@@ -77,6 +79,29 @@ class LxWsClient(
     @Volatile var helloResult: JSONObject? = null
         private set
 
+    // ===== 心跳与自动重连（对齐桌面端 connection.ts 的 HEARTBEAT_* 常量语义）=====
+
+    /** 心跳间隔（15s——OKHttp 协议层 ping 是 30s，应用层这条覆盖「连接假活」：*
+     *  TCP 没断但后端已不回帧的场景，协议层 ping 发现不了）。 */
+    private val heartbeatIntervalMs = 15_000L
+
+    /** 心跳超时（3s）与连续失败上限（2 次）——超限主动 close 触发重连。 */
+    private val heartbeatTimeoutMs = 3_000L
+    private val maxHeartbeatFailures = 2
+    private var heartbeatFailures = 0
+    private var heartbeatRunnable: Runnable? = null
+
+    /** 自动重连退避（指数：1s → 2s → 4s … 封顶 30s；成功握手后归 1）。 */
+    private var reconnectBackoffMs = 1_000L
+    private var reconnectRunnable: Runnable? = null
+
+    /** 用户显式断开（disconnect()）= 不自动重连；其余断线（网络抖动/后端重启）重连。 */
+    @Volatile private var userClosed = false
+
+    /** 最近一次连接的凭证（自动重连复用）。 */
+    private var currentAddr: String = ""
+    private var currentToken: String = ""
+
     private data class PendingCall(
         val id: Int,
         val method: String,
@@ -86,7 +111,18 @@ class LxWsClient(
 
     /** 连接后端（addr 形如 127.0.0.1:7789；token 可空 = 后端未开远程门）。 */
     fun connect(addr: String, token: String) {
-        close()
+        // 手动 connect = 重置退避与用户关闭标记（调用方明确要连）
+        userClosed = false
+        reconnectBackoffMs = 1_000L
+        stopHeartbeat()
+        stopReconnect()
+        connectOnce(addr, token)
+    }
+
+    private fun connectOnce(addr: String, token: String) {
+        currentAddr = addr
+        currentToken = token
+        closeQuietly()
         val url = buildString {
             append("ws://").append(addr.trim()).append(RPC_PATH)
             if (token.isNotBlank()) append("?token=").append(java.net.URLEncoder.encode(token, "UTF-8"))
@@ -116,6 +152,9 @@ class LxWsClient(
                     val hello = result as? JSONObject
                     helloResult = hello
                     connected = true
+                    heartbeatFailures = 0
+                    reconnectBackoffMs = 1_000L
+                    startHeartbeat()
                     Log.i(TAG, "hello 成功: server=${hello?.optString("server")} version=${hello?.optString("version")}")
                     main.post { stateListener.onState(true, null) }
                 }
@@ -130,21 +169,33 @@ class LxWsClient(
                 Log.w(TAG, msg)
                 failAllPending("后端连接已断开")
                 connected = false
+                stopHeartbeat()
                 main.post { stateListener.onState(false, msg) }
+                scheduleReconnect(addr, token)
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 Log.i(TAG, "ws closed code=$code reason=$reason")
                 failAllPending("后端连接已断开")
                 connected = false
+                stopHeartbeat()
                 main.post { stateListener.onState(false, null) }
+                scheduleReconnect(addr, token)
             }
         })
         wsRef.set(ws)
     }
 
-    /** 关闭连接（幂等）。 */
+    /** 关闭连接（幂等；用户显式断开 = 不自动重连）。 */
     fun close() {
+        userClosed = true
+        stopHeartbeat()
+        stopReconnect()
+        closeQuietly()
+    }
+
+    /** 只关连接不清重连标记（connectOnce 的开场清账用）。 */
+    private fun closeQuietly() {
         connected = false
         val ws = wsRef.getAndSet(null) ?: return
         try {
@@ -152,6 +203,106 @@ class LxWsClient(
         } catch (_: Exception) {
         }
         failAllPending("后端连接已断开")
+    }
+
+    // ===== 心跳（connection.ping：主动发现「TCP 没断但后端不回帧」的假活连接）=====
+
+    private fun startHeartbeat() {
+        stopHeartbeat()
+        val r = object : Runnable {
+            override fun run() {
+                if (!connected) return
+                pingOnce { ok ->
+                    if (ok) {
+                        heartbeatFailures = 0
+                    } else {
+                        heartbeatFailures++
+                        Log.w(TAG, "心跳失败 $heartbeatFailures/$maxHeartbeatFailures")
+                        if (heartbeatFailures >= maxHeartbeatFailures) {
+                            // 主动断开触发重连路径（onFailure/onClosed → scheduleReconnect）
+                            Log.w(TAG, "心跳连续失败，主动断开重连")
+                            closeQuietly()
+                            stopHeartbeat()
+                            main.post { stateListener.onState(false, "心跳超时，正在重连…") }
+                            scheduleReconnect(currentAddr, currentToken)
+                            return@pingOnce
+                        }
+                    }
+                    heartbeatRunnable = this
+                    main.postDelayed(this, heartbeatIntervalMs)
+                }
+            }
+        }
+        heartbeatRunnable = r
+        main.postDelayed(r, heartbeatIntervalMs)
+    }
+
+    private fun stopHeartbeat() {
+        heartbeatRunnable?.let { main.removeCallbacks(it) }
+        heartbeatRunnable = null
+    }
+
+    /** 发一次 connection.ping；ok = 超时前收到应答（3s，独立于普通请求的 10s）。
+     *  应答到达走 deliverPending（按 id 配对）→ 回调在 pending 表上核对。 */
+    private fun pingOnce(done: (Boolean) -> Unit) {
+        val ws = wsRef.get()
+        if (ws == null) {
+            done(false)
+            return
+        }
+        val id = nextId.incrementAndGet()
+        val frame = JSONObject()
+            .put("jsonrpc", "2.0")
+            .put("id", id)
+            .put("method", "connection.ping")
+        val sent = try {
+            ws.send(frame.toString())
+        } catch (_: Exception) {
+            false
+        }
+        if (!sent) {
+            done(false)
+            return
+        }
+        pending.add(
+            PendingCall(
+                id = id,
+                method = "connection.ping",
+                createdAt = System.currentTimeMillis(),
+                // 应答到达：心跳回调（deliverPending 在主线程执行本回调）
+                callback = { _, _ -> pingAnswered = true },
+            ),
+        )
+        pingAnswered = false
+        main.postDelayed({
+            // 超时判定：应答没到（pending 已被 deliverPending 消费也会把 answered
+            // 置真——普通 call 的 10s 看门狗不认识心跳请求，不会提前 fail 它）
+            done(pingAnswered)
+        }, heartbeatTimeoutMs)
+    }
+
+    /** 当前心跳请求是否已收到应答（pingOnce 的超时判定读它）。 */
+    @Volatile private var pingAnswered = false
+
+    // ===== 自动重连（指数退避；用户显式 close 不重连）=====
+
+    private fun scheduleReconnect(addr: String, token: String) {
+        if (userClosed) return
+        stopReconnect()
+        val delay = reconnectBackoffMs
+        reconnectBackoffMs = (reconnectBackoffMs * 2).coerceAtMost(30_000L)
+        Log.i(TAG, "将在 ${delay}ms 后重连 $addr")
+        val r = Runnable {
+            reconnectRunnable = null
+            if (!userClosed && !connected) connectOnce(addr, token)
+        }
+        reconnectRunnable = r
+        main.postDelayed(r, delay)
+    }
+
+    private fun stopReconnect() {
+        reconnectRunnable?.let { main.removeCallbacks(it) }
+        reconnectRunnable = null
     }
 
     /**

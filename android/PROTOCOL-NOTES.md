@@ -237,3 +237,38 @@ chat.userMessage → (chat.delta{kind:"reasoning"})* → (chat.delta{kind:"text"
 - **会话操作**：`session.rename` / `session.archive` 已接（见 §3 的缺口清单——删除/
   置顶协议没有，记缺口跳过）。mock 模式下这些操作如实提示「需连接真实后端」，
   不对静态演示数据假装生效。
+
+### 8.2 第三批（mock 退役 / 滚到底 / 历史整块呈现 / 多端共享进度）补记（2026-10-14）
+
+- **mock 退役**：`mock/MockData.kt` 删除（假数据本体），协议对齐的类型定义迁到
+  `model/Wire.kt`（BackendConn/SessionMeta/ThreadBlock/ContextUsage/SessionStats/
+  ModelMeta…）。未连接任何后端时会话页显示**连接引导态**（logo + 扫码/手动添加入口），
+  不再显示编造的会话列表。composer 的模型菜单改读 `model.list`（注册表投影：
+  按 base_url 分组、efforts 派生自 capabilities.reasoning），模型选择走 `role.set`
+  （default 角色绑定，多端同步）。
+- **ThreadScreen 滚到底**：三个触发时机——①历史装载完成（`RealBackend.historyVersion`
+  在 applyHistory 末尾递增，ThreadScreen 据此 scrollToItem(last)）；②消息流增长
+  （blocks.size 变化即滚）；③键盘弹出（WindowInsets.ime 高度变化再滚一次）。
+- **打字机只用于实时流**：`ThreadBlock.Assistant.streaming` 位——delta 建的流式块
+  为 true（rememberStreamReveal enabled=true），历史回放/`chat.done` 定格/`chat.error`
+  partial 均为 false（直接整块呈现全文）。对齐桌面端 AnswerBody 的 committed/tail
+  语义：历史 = snap 全量落下。
+- **多端共享进度**：后端 WS 是全量广播（多客户端各收一份），安卓侧此前只消费
+  `session_id == currentSessionId` 的事件。本批起：
+  - `chat.busy` 先记进**会话级忙闲投影** `sessionBusy`（所有会话都记），会话列表的
+    「运行中」状态点读它——桌面端在跑的会话，手机列表上同样亮着；重连时投影清账
+    （hello 不带逐会话 busy，未知显示空闲等广播修正，不编状态）。
+  - 当前打开的会话消费全部事件（delta/toolCall/toolResult/confirm/done/error/
+    todo/compacted），与桌面端 reduceSessionStates 的实时追加语义一致；其他会话
+    的这些事件仍丢弃（没有历史基线，拼出来的是半截时间线——对齐「子会话 state
+    不存在时不建」的桌面纪律）。
+  - `todo.updated` 带 `dispatch_id`（子 Agent 清单）归并进归属派发卡
+    （`childTodosDone/childTodosTotal`，卡上「清单 N/M」一行）——手机上看派发
+    进度的轻量形态，不必做完整子会话视图。`chat.dispatchStart` 的 `todos`
+    初稿（主 Agent 预拆）同样进卡。
+  - `model.changed` 广播 → 重拉 model.list（多端模型/绑定同步）。
+- **心跳与自动重连（LxWsClient）**：每 15s 发一次 `connection.ping`（3s 超时、
+  连续 2 次失败主动断开），断线后指数退避自动重连（1s→2s→4s…封顶 30s；用户显式
+  disconnect 不重连）。多端常驻的前提：手机息屏/切后台导致连接死掉时能自己恢复，
+  事件流随之续上。后端每请求一个 goroutine（TestSlowRequestDoesNotHeadOfLineBlockPing
+  钉住），心跳不会被慢请求队头阻塞。

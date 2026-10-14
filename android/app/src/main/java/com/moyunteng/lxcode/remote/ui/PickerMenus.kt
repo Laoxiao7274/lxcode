@@ -87,8 +87,9 @@ import com.moyunteng.lxcode.design.motion.lxAnimateColor
 import com.moyunteng.lxcode.design.token.Lx
 import com.moyunteng.lxcode.design.token.LxColors
 import com.moyunteng.lxcode.design.token.LxMotion
-import com.moyunteng.lxcode.remote.mock.MockData
-import com.moyunteng.lxcode.remote.mock.MockModelGroup
+
+import com.moyunteng.lxcode.remote.model.ModelGroup
+import com.moyunteng.lxcode.remote.model.effortLabel
 
 // ===== 形状 / 色值（桌面端散落字面量，app 内私有）=====
 
@@ -315,7 +316,7 @@ private fun StrokePathIcon(
  */
 @Composable
 internal fun ModelMenuContent(
-    groups: List<MockModelGroup>,
+    groups: List<ModelGroup>,
     currentModelId: String,
     effortDim: String?,
     effortPanelOpen: Boolean,
@@ -448,7 +449,7 @@ internal fun EffortMenuContent(
         MenuTitle("推理强度")
         effortIds.forEach { id ->
             MenuTextItem(
-                label = MockData.effortLabel(id),
+                label = effortLabel(id),
                 selected = id == currentEffort,
                 onClick = { onPick(id) },
             )

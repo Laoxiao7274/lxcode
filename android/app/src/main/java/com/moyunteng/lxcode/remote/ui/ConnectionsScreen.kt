@@ -66,11 +66,12 @@ import com.moyunteng.lxcode.design.motion.lxStaggerEnter
 import com.moyunteng.lxcode.design.token.Lx
 import com.moyunteng.lxcode.design.token.LxColors
 import com.moyunteng.lxcode.remote.BuildConfig
-import com.moyunteng.lxcode.remote.mock.BackendConn
-import com.moyunteng.lxcode.remote.mock.MockData
-import com.moyunteng.lxcode.remote.mock.addrValid
-import com.moyunteng.lxcode.remote.mock.maskToken
-import com.moyunteng.lxcode.remote.mock.nameFromAddr
+import com.moyunteng.lxcode.remote.model.BackendConn
+
+import com.moyunteng.lxcode.remote.model.LOCAL_ADDR
+import com.moyunteng.lxcode.remote.model.addrValid
+import com.moyunteng.lxcode.remote.model.maskToken
+import com.moyunteng.lxcode.remote.model.nameFromAddr
 import kotlinx.coroutines.launch
 import java.util.UUID
 
@@ -122,9 +123,10 @@ fun ConnectionsScreen(state: MockAppState) {
                 .padding(Lx.space.s12),
             verticalArrangement = Arrangement.spacedBy(Lx.space.s10),
         ) {
-            // 断线错误条：入场 y+8dp 滑入（错误条自带），退场 collapseAway 220ms 高度归零 + 淡出
+            // 断线错误条（DEBUG 的「模拟在线」开关才可能触发；正式包恒在线，
+            // 真实断线的错误条在 RealBackendSection 里）：
             LxCollapseAway(
-                visible = !state.online,
+                visible = BuildConfig.DEBUG && !state.online,
                 enter = androidx.compose.animation.EnterTransition.None,
             ) {
                 UnreachableBar(onRetry = { state.online = true })
@@ -408,7 +410,7 @@ private fun ConnCard(
                 }
                 Text(
                     text = if (conn.local) {
-                        MockData.LOCAL_ADDR
+                        LOCAL_ADDR
                     } else {
                         "${conn.addr} · ${maskToken(conn.token)}"
                     },

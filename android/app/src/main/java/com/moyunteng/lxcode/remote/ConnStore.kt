@@ -12,7 +12,7 @@ package com.moyunteng.lxcode.remote
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
-import com.moyunteng.lxcode.remote.mock.BackendConn
+import com.moyunteng.lxcode.remote.model.BackendConn
 import org.json.JSONArray
 import org.json.JSONObject
 

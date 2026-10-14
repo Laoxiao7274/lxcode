@@ -73,8 +73,10 @@ import com.moyunteng.lxcode.design.motion.lxAnimateFloat
 import com.moyunteng.lxcode.design.motion.lxEnter
 import com.moyunteng.lxcode.design.token.Lx
 import com.moyunteng.lxcode.design.token.LxColors
-import com.moyunteng.lxcode.remote.mock.MockData
-import com.moyunteng.lxcode.remote.mock.timePillLabel
+
+import com.moyunteng.lxcode.remote.model.EFFORT_IDS
+import com.moyunteng.lxcode.remote.model.effortLabel
+import com.moyunteng.lxcode.remote.model.timePillLabel
 import kotlin.math.roundToInt
 
 /** 输入卡片 Shape —— composer.css `.pi { border-radius: 14px }`。 */
@@ -82,15 +84,14 @@ private val ComposerCardShape = RoundedCornerShape(14.dp)
 
 /** 输入区。
  *
- * @param real 非空 = 真实后端模式：busy 跟 chat.busy、发送走 chat.send、
- *   停止走 chat.cancel、上下文环/统计胶囊用实测值；null = mock 模式（一切照旧）。
+ * @param real 真实后端模式：busy 跟 chat.busy、发送走 chat.send、
+ *   停止走 chat.cancel、上下文环/统计胶囊用实测值、模型菜单读 model.list 注册表。
  */
 @Composable
-fun Composer(state: MockAppState, real: com.moyunteng.lxcode.remote.net.RealBackend? = null) {
+fun Composer(state: MockAppState, real: com.moyunteng.lxcode.remote.net.RealBackend?) {
     var text by remember { mutableStateOf("") }
-    var mockBusy by remember { mutableStateOf(false) }
-    // 真实模式忙闲由后端事件驱动；mock 模式沿用调试开关
-    val busy = real?.busy ?: mockBusy
+    // 忙闲由后端事件驱动（chat.busy / done / error 收敛）
+    val busy = real?.busy ?: false
 
     // ===== 斜杠命令面板（桌面端 SlashPalette.tsx：输入以 / 开头弹出）=====
     // slashClosed = 用户按返回键关掉面板（关面板不清输入，再输入 / 会重新弹出）
@@ -105,27 +106,20 @@ fun Composer(state: MockAppState, real: com.moyunteng.lxcode.remote.net.RealBack
     // 不用 remember 缓存：闭包要捕获当前 real（mock↔真实切换后动作必须跟着切）。
     val slashCommands = listOf(
             SlashCmd("new", "开始新对话") {
-                if (real != null) {
-                    real.newSession { id -> state.route = Route.Thread(id) }
-                } else {
-                    state.route = Route.Thread(MockData.currentSessionId)
-                }
+                real?.newSession { id -> state.route = Route.Thread(id) }
             },
             SlashCmd("compact", "压缩早期历史（腾出上下文）") {
-                if (real != null) real.compact() else toast("演示模式：压缩需连接真实后端")
+                if (real != null) real.compact() else toast("需连接后端才能压缩")
             },
             SlashCmd("agents", "打开 Agent 名单与组装") { toast("桌面端页面导航命令：安卓原型未提供该页") },
             SlashCmd("catalog", "打开拓展（工具/技能/模板/MCP）") { toast("桌面端页面导航命令：安卓原型未提供该页") },
             SlashCmd("settings", "打开设置") { toast("桌面端页面导航命令：安卓原型未提供该页") },
     )
-    // ===== 模型 / 审批档选择状态（本次补真下拉菜单）=====
-    var modelId by remember { mutableStateOf(MockData.DEFAULT_MODEL_ID) }
-    var effort by remember { mutableStateOf(MockData.DEFAULT_EFFORT) }
+    // ===== 模型 / 审批档选择状态 =====
     // 审批档是**会话级状态**（后端落库）：真实模式读 RealBackend（chat.history
-    // 回读 + approvalChanged 广播维护，切会话即随会话走）；mock 模式本地自管。
+    // 回读 + approvalChanged 广播维护，切会话即随会话走）。
     // null = 后端没报（老后端/刚切会话还没装载历史）→ 回落「默认」，不猜。
-    var mockApproval by remember { mutableStateOf("confirm") }
-    val approval = real?.approval ?: mockApproval
+    val approval = real?.approval
     var modelMenuOpen by remember { mutableStateOf(false) }
     var effortPanelOpen by remember { mutableStateOf(false) } // 模型菜单里的二级推理强度面板
     var permMenuOpen by remember { mutableStateOf(false) }
@@ -152,12 +146,16 @@ fun Composer(state: MockAppState, real: com.moyunteng.lxcode.remote.net.RealBack
     }
 
     // 当前模型元数据与 effort 投影（对齐 ModelPicker.tsx）：
+    // 模型注册表来自后端 model.list（RealBackend.modelGroups；role.set 切换，
+    // model.changed 广播对齐——后端是唯一事实源，客户端不存本地选择）。
     // effortOptions = 当前模型支持的档位；当前档位不在其中时回落到最后一档
-    val currentModel = MockData.allModels.find { it.id == modelId }
-    val effortOptions = currentModel?.efforts?.filter { it in MockData.EFFORT_IDS } ?: emptyList()
+    val currentModel = real?.allModels?.find { it.id == real.defaultModelId }
+    val effortOptions = currentModel?.efforts?.filter { it in EFFORT_IDS } ?: emptyList()
+    // 会话本轮的 effort（local 态；真实模式跟「当前选中模型」走，切换在模型菜单）
+    var effort by remember { mutableStateOf("medium") }
     val effortId = if (effort in effortOptions) effort else effortOptions.lastOrNull() ?: ""
     // 药丸灰字「· 中」——模型不支持 effort 时整个不显示（chip-dim 同款隐藏）
-    val effortDim = if (effortOptions.isNotEmpty()) "· ${MockData.effortLabel(effortId)}" else null
+    val effortDim = if (effortOptions.isNotEmpty()) "· ${effortLabel(effortId)}" else null
     // 档位名对齐桌面端 APPROVALS（shared/settings.tsx）：默认 / 完全访问 / 只读
     val approvalLabel = when (approval) {
         "auto" -> "完全访问"
@@ -172,17 +170,6 @@ fun Composer(state: MockAppState, real: com.moyunteng.lxcode.remote.net.RealBack
             // scrim 渐变一并盖住这段
             .padding(bottom = 14.dp),
     ) {
-        // mock 开关：切「运行中」（发送 ↔ 停止）。原型专用，挂白卡外，不进卡片视觉。
-        // 真实模式没有这个开关（忙闲是后端事实，不是调试位）。
-        if (real == null) {
-            MockSwitch(
-                label = "运行中",
-                checked = mockBusy,
-                onCheckedChange = { mockBusy = it },
-                modifier = Modifier.align(Alignment.End),
-            )
-        }
-
         // 斜杠命令面板（输入 / 弹出，位于输入卡上方；照桌面端 composer.css .slash-palette：
         // 白卡 / 1px --border-strong / 圆角 12 / padding 5 / 条目名+描述 / pop-in 160ms）
         if (slashOpen) {
@@ -248,7 +235,7 @@ fun Composer(state: MockAppState, real: com.moyunteng.lxcode.remote.net.RealBack
                     // 模型药丸 + 模型菜单（左面板）+ 推理强度二级右面板 —— 见 PickerMenus.kt
                     Box {
                         ModelPill(
-                            label = currentModel?.name ?: modelId,
+                            label = currentModel?.name ?: (real?.defaultModelId?.ifBlank { null } ?: "模型"),
                             effortDim = effortDim,
                             expanded = modelMenuOpen,
                             onToggle = {
@@ -258,18 +245,20 @@ fun Composer(state: MockAppState, real: com.moyunteng.lxcode.remote.net.RealBack
                         )
                         AnchorMenu(expanded = modelMenuOpen, onDismiss = { modelMenuOpen = false }) {
                             ModelMenuContent(
-                                groups = MockData.modelGroups,
-                                currentModelId = modelId,
+                                groups = real?.modelGroups ?: emptyList(),
+                                currentModelId = real?.defaultModelId ?: "",
                                 effortDim = effortDim,
                                 effortPanelOpen = effortPanelOpen,
                                 onPickModel = { id ->
-                                    // 切模型：当前档位在新模型上不存在 → 回落（优先「中」，否则首档）
-                                    val m = MockData.allModels.find { it.id == id }
-                                    val supported = m?.efforts?.filter { it in MockData.EFFORT_IDS } ?: emptyList()
+                                    // 切模型：role.set（后端角色绑定，多端同步——
+                                    // model.changed 广播回来对齐）；当前档位在新模型上
+                                    // 不存在 → 本地回落（优先「中」，否则首档）
+                                    val m = real?.allModels?.find { it.id == id }
+                                    val supported = m?.efforts?.filter { it in EFFORT_IDS } ?: emptyList()
                                     if (supported.isNotEmpty() && effort !in supported) {
                                         effort = if ("medium" in supported) "medium" else supported.first()
                                     }
-                                    modelId = id
+                                    real?.setDefaultModel(id)
                                     modelMenuOpen = false // 选完带退场动画收起
                                 },
                                 onToggleEffortPanel = { effortPanelOpen = !effortPanelOpen },
@@ -304,7 +293,7 @@ fun Composer(state: MockAppState, real: com.moyunteng.lxcode.remote.net.RealBack
                         )
                         AnchorMenu(expanded = permMenuOpen, onDismiss = { permMenuOpen = false }) {
                             PermMenuContent(
-                                current = approval,
+                                current = approval ?: "confirm",
                                 confirming = permConfirming,
                                 onPick = { id ->
                                     if (id == "auto" && approval != "auto") {
@@ -316,19 +305,19 @@ fun Composer(state: MockAppState, real: com.moyunteng.lxcode.remote.net.RealBack
                                         }
                                     }
                                     permConfirming = false
-                                    // 真实模式走协议（chat.approval：后端落库 + 广播，
-                                    // approvalChanged 回来对齐药丸）；mock 模式本地记
-                                    if (real != null) real.changeApproval(id) else mockApproval = id
+                                    // 走协议（chat.approval：后端落库 + 广播，
+                                    // approvalChanged 回来对齐药丸）
+                                    real?.changeApproval(id)
                                     permMenuOpen = false
                                 },
                             )
                         }
                     }
                     // 上下文环 + 百分比（.ctx-chip / .ctx-pct）
-                    // 真实模式用实测值（context 键缺席 = null → 环显示「—」）
-                    ContextRing(if (real != null) real.contextUsage else MockData.contextUsage)
+                    // 实测值（context 键缺席 = null → 环显示「—」）
+                    ContextRing(real?.contextUsage)
                     // 会话统计胶囊（.stats-pill：步数 0 整个胶囊不渲染）
-                    StatsCapsule(if (real != null) real.sessionStats else MockData.sessionStats)
+                    StatsCapsule(real?.sessionStats)
                 }
                 Spacer(Modifier.width(4.dp))
                 SendButton(
@@ -336,14 +325,10 @@ fun Composer(state: MockAppState, real: com.moyunteng.lxcode.remote.net.RealBack
                     enabled = text.trim().isNotEmpty() && !text.startsWith("/"),
                     onClick = {
                         if (busy) {
-                            if (real != null) real.cancel() else mockBusy = false
+                            real?.cancel()
                         } else {
-                            if (real != null) {
-                                real.send(text)
-                                text = ""
-                            } else {
-                                text = ""
-                            }
+                            real?.send(text)
+                            text = ""
                         }
                     },
                 )
@@ -413,7 +398,7 @@ private fun ComposerTextField(
  * 窗口未知显示「—」。
  */
 @Composable
-private fun ContextRing(usage: com.moyunteng.lxcode.remote.mock.ContextUsage?) {
+private fun ContextRing(usage: com.moyunteng.lxcode.remote.model.ContextUsage?) {
     val known = (usage?.window ?: 0) > 0
     val target = if (!known) 0f else (usage!!.used.toFloat() / usage.window).coerceIn(0f, 1f)
     // 环读数变化 220ms 动画过渡（桌面端 ContextIndicator 的环不瞬跳）
@@ -457,7 +442,7 @@ private fun ContextRing(usage: com.moyunteng.lxcode.remote.mock.ContextUsage?) {
 
 /** 会话统计胶囊 —— ghost 药丸（.stats-pill：11sp、#8e8ea0、tabular-nums；步数 0 整个胶囊不渲染）。 */
 @Composable
-private fun StatsCapsule(stats: com.moyunteng.lxcode.remote.mock.SessionStats?) {
+private fun StatsCapsule(stats: com.moyunteng.lxcode.remote.model.SessionStats?) {
     if (stats == null || stats.steps <= 0) return
     Text(
         text = stats.timePillLabel(), // 「N 轮 · M 步 · X.X tok/s」，缺哪段省哪段

@@ -48,8 +48,9 @@ import com.moyunteng.lxcode.design.token.Lx
 import com.moyunteng.lxcode.design.token.LxColors
 import com.moyunteng.lxcode.design.token.LxTheme
 import com.moyunteng.lxcode.remote.ShowcaseScreen
-import com.moyunteng.lxcode.remote.mock.BackendConn
-import com.moyunteng.lxcode.remote.mock.MockData
+import com.moyunteng.lxcode.remote.model.BackendConn
+import com.moyunteng.lxcode.remote.model.LOCAL_ADDR
+import com.moyunteng.lxcode.remote.model.SessionMeta
 import java.util.UUID
 
 /** 屏幕（路由）。 */
@@ -91,15 +92,12 @@ class MockAppState(private val store: ConnStore? = null) {
     }
 
     /** 当前连接 id（真实模式「连接」到哪条；落盘，重启保留）。 */
-    var activeConnId by mutableStateOf(store?.loadActiveId() ?: MockData.activeConnId)
+    var activeConnId by mutableStateOf(store?.loadActiveId() ?: "local")
 
-    /** 首次启动（无存档）的播种列表：DEBUG = mock 列表（迁移原型数据）；release = 本机。 */
+    /** 首次启动（无存档）的播种列表：只有本机一条——mock 假连接已随原型退役，
+     *  连接列表是用户自己的存档（ConnStore 持久化），不播种编造的远程条目。 */
     private fun seedConns(): List<BackendConn> =
-        if (BuildConfig.DEBUG) {
-            MockData.connections
-        } else {
-            listOf(BackendConn("local", "本机", MockData.LOCAL_ADDR, "", local = true))
-        }
+        listOf(BackendConn("local", "本机", LOCAL_ADDR, "", local = true))
 
     /** mock 断线开关：true = 在线（顶栏绿点），false = 离线（灰点 + 连接页错误条）。 */
     var online by mutableStateOf(true)
@@ -158,8 +156,8 @@ class MockAppState(private val store: ConnStore? = null) {
     var motionOn by mutableStateOf(true)
 
     /**
-     * 「真实后端」开关（本批新增）：开 = 各页面从 [real] 取真实数据
-     * （WS JSON-RPC 连 7789）；关 = 完全回到 mock 路径（一行不改 mock 行为）。
+     * 「真实后端」开关：开 = 各页面从 [real] 取真实数据（WS JSON-RPC 连后端）；
+     * 关 = 会话页显示连接引导态（mock 假数据已随原型退役，无第三条路径）。
      */
     var realOn by mutableStateOf(false)
 
@@ -180,8 +178,9 @@ class MockAppState(private val store: ConnStore? = null) {
      */
     var updateAvailable by mutableStateOf<com.moyunteng.lxcode.remote.update.ApkRelease?>(null)
 
-    /** 顶栏连接药丸的在线位：真实模式跟 WS 实际连接态，mock 模式跟断线开关。 */
-    fun pillOnline(): Boolean = if (realOn) real.connected else online
+    /** 顶栏连接药丸的在线位：跟 WS 实际连接态（未连接 = 灰点——不再有 mock 的
+     *  「模拟在线」在线位）。 */
+    fun pillOnline(): Boolean = realOn && real.connected
 
     /**
      * 返回键拦截器（BackHandler 链的第一层）：弹层/菜单开着时由各页面注册——
@@ -190,7 +189,7 @@ class MockAppState(private val store: ConnStore? = null) {
      */
     var backInterceptor by mutableStateOf<(() -> Boolean)?>(null)
 
-    /** 顶栏连接药丸的显示名：真实模式标「真实后端」，mock 模式沿用连接名。 */
+    /** 顶栏连接药丸的显示名：已连接标「真实后端」，未连接标当前选中条目名。 */
     fun pillName(): String = if (realOn) "真实后端" else activeName
 
     val activeConn: BackendConn
@@ -231,7 +230,7 @@ class MockAppState(private val store: ConnStore? = null) {
      */
     fun connectTo(conn: BackendConn) {
         setActiveConn(conn.id)
-        realAddr = if (conn.local) MockData.LOCAL_ADDR else conn.addr
+        realAddr = if (conn.local) LOCAL_ADDR else conn.addr
         realToken = conn.token
         realOn = true
         Log.i(TAG, "连接条目 ${conn.name} → $realAddr")
@@ -248,16 +247,10 @@ class MockAppState(private val store: ConnStore? = null) {
      *  不属于任何条目 → setActiveConn("") 清掉标记，避免错标）。 */
     fun isCurrentConn(id: String): Boolean = realOn && activeConnId == id
 
-    fun sessionsInScope(): List<com.moyunteng.lxcode.remote.mock.SessionMeta> {
-        val all = MockData.sessions.filter { !it.archived }
-        return if (scope.isEmpty()) all.filter { it.workspace.isEmpty() }
-        else all.filter { it.workspace == scope }
-    }
+    // ===== 会话列表的真实投影（连接后才拉得到数据；未连接 = 引导态，不渲染假列表）=====
 
-    // ===== 真实模式的数据投影（realOn=true 时会话列表页读这里）=====
-
-    /** 真实会话列表按范围过滤（workspace 与 mock 同语义：""=未分组）。 */
-    fun realSessionsInScope(): List<com.moyunteng.lxcode.remote.mock.SessionMeta> =
+    /** 真实会话列表按范围过滤（workspace 与桌面端同语义：""=未分组）。 */
+    fun realSessionsInScope(): List<SessionMeta> =
         real.sessions.filter { it.workspace == scope }
 
     fun realProjectSessionCount(projectId: String): Int =
@@ -265,12 +258,6 @@ class MockAppState(private val store: ConnStore? = null) {
 
     fun realLooseSessionCount(): Int =
         real.sessions.count { it.workspace.isEmpty() }
-
-    fun projectSessionCount(projectId: String): Int =
-        MockData.sessions.count { it.workspace == projectId }
-
-    fun looseSessionCount(): Int =
-        MockData.sessions.count { it.workspace.isEmpty() }
 }
 
 /** 底部导航项。 */

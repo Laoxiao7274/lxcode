@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -34,6 +35,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
@@ -69,15 +71,13 @@ import com.moyunteng.lxcode.design.component.LxStatusDot
 import com.moyunteng.lxcode.design.component.LxTextField
 import com.moyunteng.lxcode.design.token.Lx
 import com.moyunteng.lxcode.design.token.LxColors
-import com.moyunteng.lxcode.remote.mock.MockData
-import com.moyunteng.lxcode.remote.mock.SessionMeta
+import com.moyunteng.lxcode.remote.model.SessionMeta
 
 /** 会话列表页（首页）。 */
 @Composable
 fun SessionsScreen(state: MockAppState) {
     val context = LocalContext.current
-    fun toast(msg: String) = Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
-    // 会话行操作（本批新增）：行尾 ⋯ 菜单 → 重命名 / 归档（协议有 session.rename /
+    // 会话行操作：行尾 ⋯ 菜单 → 重命名 / 归档（协议有 session.rename /
     // session.archive，见 PROTOCOL-NOTES.md §3）；删除 / 置顶协议没有——记缺口不造。
     var menuFor by remember { mutableStateOf<SessionMeta?>(null) }
     var renaming by remember { mutableStateOf<SessionMeta?>(null) }
@@ -138,6 +138,17 @@ fun SessionsScreen(state: MockAppState) {
             )
         }
 
+        // 未连接任何后端：连接引导态（不是 mock 数据）——居中引导（logo + 文案 +
+        // 扫码/手动添加入口 → 连接页）。连接成功（realOn=true）才渲染会话列表。
+        if (!state.realOn) {
+            ConnectGuide(
+                onScan = { state.route = Route.Pairing },
+                onManual = { state.route = Route.Connections },
+                modifier = Modifier.weight(1f),
+            )
+            return@Column
+        }
+
         LazyColumn(
             Modifier
                 .fillMaxSize()
@@ -158,14 +169,10 @@ fun SessionsScreen(state: MockAppState) {
             // ① 导航项
             // 纯远控壳：侧栏导航项只留「新对话」（对远程后端开新会话）；
             // Agents/拓展/Git 管理/远程访问/自动化 是桌面端管理本机的面板，不进手机。
+            // （未连接时整页已是引导态，到不了这里——新对话只在连接后可用。）
             val navItems = listOf(
                 NavEntry("新对话", Icons.Filled.ChatBubbleOutline) {
-                    if (state.realOn) {
-                        // 真实模式：session.new 拿到真会话 id 再进线程页
-                        state.real.newSession { id -> state.route = Route.Thread(id) }
-                    } else {
-                        state.route = Route.Thread(MockData.currentSessionId)
-                    }
+                    state.real.newSession { id -> state.route = Route.Thread(id) }
                 },
             )
             itemsIndexed(navItems) { i, entry ->
@@ -217,66 +224,41 @@ fun SessionsScreen(state: MockAppState) {
             item { LxSectionHeader("项目") }
 
             // ④ 项目行 + 未分组
-            // 真实模式：项目来自 project.list（真数据）；会话按 workspace（= 项目 id）归组，
+            // 项目来自 project.list（真数据）；会话按 workspace（= 项目 id）归组，
             // 各组计数 = 该项目 id 下的会话数（对齐桌面端 Sidebar 的 count 口径）；
             // 无归属（workspace 空）进「未分组」。
-            if (state.realOn) {
-                itemsIndexed(state.real.projects) { i, project ->
-                    ProjectRow(
-                        modifier = Modifier.lxStaggerEnter(count = state.real.projects.size + 1, index = i),
-                        name = project.name,
-                        count = state.realProjectSessionCount(project.id),
-                        active = state.scope == project.id,
-                        onClick = { state.scope = project.id },
-                    )
-                }
-                item {
-                    ProjectRow(
-                        modifier = Modifier.lxEnter(
-                            spec = LxEnterSpec.StaggerItem,
-                            delayMillis = LxStagger.delayMillis(state.real.projects.size + 1, state.real.projects.size),
-                        ),
-                        name = "未分组",
-                        count = state.realLooseSessionCount(),
-                        active = state.scope.isEmpty(),
-                        onClick = { state.scope = "" },
-                    )
-                }
-            } else {
-                itemsIndexed(MockData.projects) { i, project ->
-                    ProjectRow(
-                        modifier = Modifier.lxStaggerEnter(count = MockData.projects.size + 1, index = i),
-                        name = project.name,
-                        count = state.projectSessionCount(project.id),
-                        active = state.scope == project.id,
-                        onClick = { state.scope = project.id },
-                    )
-                }
-                item {
-                    ProjectRow(
-                        modifier = Modifier.lxEnter(
-                            spec = LxEnterSpec.StaggerItem,
-                            delayMillis = LxStagger.delayMillis(MockData.projects.size + 1, MockData.projects.size),
-                        ),
-                        name = "未分组",
-                        count = state.looseSessionCount(),
-                        active = state.scope.isEmpty(),
-                        onClick = { state.scope = "" },
-                    )
-                }
+            itemsIndexed(state.real.projects) { i, project ->
+                ProjectRow(
+                    modifier = Modifier.lxStaggerEnter(count = state.real.projects.size + 1, index = i),
+                    name = project.name,
+                    count = state.realProjectSessionCount(project.id),
+                    active = state.scope == project.id,
+                    onClick = { state.scope = project.id },
+                )
+            }
+            item {
+                ProjectRow(
+                    modifier = Modifier.lxEnter(
+                        spec = LxEnterSpec.StaggerItem,
+                        delayMillis = LxStagger.delayMillis(state.real.projects.size + 1, state.real.projects.size),
+                    ),
+                    name = "未分组",
+                    count = state.realLooseSessionCount(),
+                    active = state.scope.isEmpty(),
+                    onClick = { state.scope = "" },
+                )
             }
 
             // ⑤ 「对话」分组标题
             item { LxSectionHeader("对话", topPadding = Lx.space.s12) }
 
-            // ⑥ 会话行（搜索过滤）
-            // 真实模式：列表来自 session.list（真数据）；mock 模式照旧
-            val sessions = (if (state.realOn) state.realSessionsInScope() else state.sessionsInScope()).filter {
+            // ⑥ 会话行（搜索过滤）：列表来自 session.list（真数据）
+            val sessions = state.realSessionsInScope().filter {
                 state.query.trim().isEmpty() ||
                     it.title.contains(state.query.trim(), ignoreCase = true)
             }
             if (sessions.isEmpty()) {
-                item { SmallEmpty("没有匹配「${state.query.trim()}」的对话") }
+                item { SmallEmpty(if (state.query.trim().isEmpty()) "还没有对话——点上方「新对话」开始" else "没有匹配「${state.query.trim()}」的对话") }
             } else {
                 itemsIndexed(sessions) { i, s ->
                     Box {
@@ -295,11 +277,7 @@ fun SessionsScreen(state: MockAppState) {
                                 },
                                 onArchive = {
                                     menuFor = null
-                                    if (state.realOn) {
-                                        state.real.archiveSession(s.id)
-                                    } else {
-                                        toast("演示模式：会话操作需连接真实后端")
-                                    }
+                                    state.real.archiveSession(s.id)
                                 },
                             )
                         }
@@ -358,8 +336,7 @@ fun SessionsScreen(state: MockAppState) {
                     onClick = {
                         val title = draft.trim()
                         if (title.isNotEmpty()) {
-                            if (state.realOn) state.real.renameSession(target.id, title)
-                            else toast("演示模式：会话操作需连接真实后端")
+                            state.real.renameSession(target.id, title)
                         }
                         renaming = null
                     },
@@ -592,5 +569,67 @@ private fun UpdateBanner(
         ) {
             SmallIcon(Icons.Filled.Close, Lx.colors.FgFaint, size = 14)
         }
+    }
+}
+
+/**
+ * 连接引导态（未连接任何后端时替代会话列表）——居中：logo + 「连接到你的 lxcode 后端」
+ * + 说明行 + 「扫码配对」（主按钮）/「手动添加」（次按钮）。不渲染任何编造的会话数据。
+ */
+@Composable
+private fun ConnectGuide(
+    onScan: () -> Unit,
+    onManual: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier
+            .fillMaxWidth()
+            .padding(horizontal = Lx.space.s12),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Box(
+            Modifier
+                .size(56.dp)
+                .clip(RoundedCornerShape(Lx.radius.r10 + 2.dp))
+                .background(Lx.colors.Fg),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = "L",
+                style = Lx.type.ListTitle.copy(fontSize = Lx.type.Size14, fontWeight = FontWeight.Bold),
+                color = LxColors.Bg,
+            )
+        }
+        Box(Modifier.height(Lx.space.s10))
+        Text(
+            text = "连接到你的 lxcode 后端",
+            style = Lx.type.ListTitle.copy(fontWeight = FontWeight.SemiBold),
+            color = Lx.colors.Fg,
+        )
+        Box(Modifier.height(Lx.space.s4))
+        Text(
+            text = "会话与项目都在后端上。用手机扫码配对，或手动填写后端地址。",
+            style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size12),
+            color = Lx.colors.FgMuted,
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            modifier = Modifier.padding(horizontal = Lx.space.s8),
+        )
+        Box(Modifier.height(Lx.space.s12))
+        LxButton(
+            text = "扫码配对",
+            onClick = onScan,
+            variant = LxButtonVariant.Primary,
+            size = LxButtonSize.Large,
+            leadingIcon = { SmallIcon(Icons.Filled.QrCode2, LxColors.Bg, size = 16) },
+        )
+        Box(Modifier.height(Lx.space.s4))
+        LxButton(
+            text = "手动添加连接",
+            onClick = onManual,
+            variant = LxButtonVariant.Secondary,
+            size = LxButtonSize.Large,
+        )
     }
 }
