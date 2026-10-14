@@ -3,7 +3,8 @@
 // chat.toolResult 的 attachments）与回放（chat.history 的同一份元数据）两条
 // 路径共用这一个组件——两条路径各写一套渲染就必然分叉。
 import { memo, useEffect, useState } from "react";
-import { attachmentURL, formatBytes, type AttachmentMeta } from "../../../shared/attachments";
+import { attachmentURL, formatBytes, groupMetaFolders, type AttachmentMeta } from "../../../shared/attachments";
+import { FolderCard } from "./FolderCard";
 
 /** 一组附件卡（share_file 工具行 / dispatch 成果区共用）。atts 为空不渲染。 */
 export function AttachmentCards({ atts }: { atts?: AttachmentMeta[] }) {
@@ -39,13 +40,20 @@ export function UserAttachmentSection({ atts }: { atts?: AttachmentMeta[] }) {
   const gridImgs = images.filter((a) => attachmentURL(a.path));
   const badImgs = images.filter((a) => !attachmentURL(a.path));
   const fileRow = [...badImgs, ...files];
-  if (!gridImgs.length && !fileRow.length) return null;
+  // 文件夹分组（拖文件夹改造，2026-12）：带 relPath 的文件按顶层目录归组成
+  // 文件夹卡（与暂存区同构）；散文件维持平铺文件卡。归组判定的纯逻辑在
+  // shared/attachments.ts 的 groupMetaFolders。
+  const { groups, loose } = groupMetaFolders(fileRow);
+  if (!gridImgs.length && !groups.length && !loose.length) return null;
   return (
     <div className="user-atts">
       {gridImgs.length > 0 && <ImageGrid atts={gridImgs} />}
-      {fileRow.length > 0 && (
+      {(groups.length > 0 || loose.length > 0) && (
         <div className="user-att-files">
-          {fileRow.map((a, i) => (
+          {groups.map((g) => (
+            <FolderCard key={g.name} group={g} />
+          ))}
+          {loose.map((a, i) => (
             <AttachmentCard key={`${a.path}-${i}`} att={a} />
           ))}
         </div>

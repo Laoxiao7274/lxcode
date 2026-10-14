@@ -59,12 +59,12 @@ test('readEntries 分页：多批读全（Chromium 每批 ≤100 条的坑）', 
   assert.equal(r.notice, '');
 });
 
-test('超个数上限：截到 maxFiles，提示「已添加前 N 个」不静默', async () => {
+test('超个数上限：截到 maxFiles，提示「已收录前 N 个」不静默', async () => {
   const many = Array.from({ length: 5 }, (_, i) => fileEntry(`f${i}.txt`, 1));
   const r = await collectFolderEntries(dirEntry('d', many), deps({ maxFiles: 3 }));
   assert.equal(r.files.length, 3);
-  assert.ok(r.notice.includes('文件过多'), r.notice);
-  assert.ok(r.notice.includes('前 3 个'), r.notice);
+  assert.ok(r.notice.includes('已收录前 3 个'), r.notice);
+  assert.ok(r.notice.includes('其余未加入'), r.notice);
   assert.ok(r.notice.includes('分批发送'), r.notice);
 });
 
@@ -148,7 +148,7 @@ test('多个截断/跳过原因合并成一条提示', async () => {
   const root = dirEntry('d', [fileEntry('.x', 1), fileEntry('huge', 500), fileEntry('a', 10), fileEntry('b', 10)]);
   const r = await collectFolderEntries(root, deps({ maxFileBytes: 100, maxFiles: 1 }));
   assert.equal(r.files.length, 1);
-  assert.ok(r.notice.includes('文件过多'), r.notice);
+  assert.ok(r.notice.includes('已收录前 1 个'), r.notice);
   assert.ok(r.notice.includes('超过单文件'), r.notice);
   assert.ok(r.notice.includes('；'), `多原因应以「；」连接: ${r.notice}`);
 });
@@ -165,4 +165,35 @@ test('defaultFolderDeps.resolveFile：entry.file 成功回调 → File，失败�
   assert.equal(bad, null);
   const noApi = await defaultFolderDeps.resolveFile({ isFile: true, isDirectory: false, name: 'a.png' });
   assert.equal(noApi, null);
+});
+
+// ---- 相对路径（拖文件夹改造，2026-12）：内部文件按文件夹根的相对路径收集 ----
+
+test('相对路径：嵌套文件按「目录/文件名」收集，与 files 一一对应', async () => {
+  const root = dirEntry('项目', [
+    fileEntry('README.md', 10),
+    dirEntry('docs', [fileEntry('api.md', 10), dirEntry('api', [fileEntry('auth.md', 10)])]),
+    dirEntry('assets', [fileEntry('logo.png', 10)]),
+  ]);
+  const r = await collectFolderEntries(root, deps());
+  assert.equal(r.files.length, 4);
+  assert.deepEqual(r.relPaths, [
+    'README.md',
+    'docs/api.md',
+    'docs/api/auth.md',
+    'assets/logo.png',
+  ]);
+  assert.equal(r.notice, '');
+});
+
+test('相对路径：截断时 relPaths 与 files 长度一致（平行数组）', async () => {
+  const many = Array.from({ length: 5 }, (_, i) => fileEntry(`f${i}.txt`, 1));
+  const r = await collectFolderEntries(dirEntry('d', many), deps({ maxFiles: 3 }));
+  assert.equal(r.relPaths.length, 3);
+  assert.deepEqual(r.relPaths, ['f0.txt', 'f1.txt', 'f2.txt']);
+});
+
+test('相对路径：空文件夹 relPaths 为空', async () => {
+  const r = await collectFolderEntries(dirEntry('empty', []), deps());
+  assert.deepEqual(r.relPaths, []);
 });

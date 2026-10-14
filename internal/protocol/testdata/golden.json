@@ -217,6 +217,14 @@
       "path": "C:\\Users\\xzy\\Docs\\报告.pdf"
     }
   },
+  "chatSendFileRelPath": {
+    "_type": "ChatSendFile",
+    "value": {
+      "name": "auth.md",
+      "data": "IyBBUEk=",
+      "rel_path": "docs/api/auth.md"
+    }
+  },
   "chatSendImagePathForm": {
     "_type": "ChatSendImage",
     "value": {

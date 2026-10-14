@@ -198,3 +198,33 @@ test('⑤ pendingFromAtts：path/file 保留（装回附件区后重发仍走 pa
   assert.equal(b64.images[0].data, 'aGk=');
   assert.equal(b64.images[0].path, undefined);
 });
+
+// ---------- ⑥ 文件夹相对路径（拖文件夹改造，2026-12）----------
+
+test('⑥ wireFile：rel_path → wire 键 rel_path；无相对路径的条目不带该键', () => {
+  assert.deepEqual(
+    wireFile({ name: 'auth.md', data: 'aGk=', rel_path: 'docs/api/auth.md' }),
+    { name: 'auth.md', data: 'aGk=', rel_path: 'docs/api/auth.md' },
+  );
+  assert.deepEqual(wireFile({ name: 'loose.txt', data: 'aGk=' }), { name: 'loose.txt', data: 'aGk=' });
+});
+
+test('⑥ attsFromPending：文件夹条目的 relPath 进 wire（rel_path），file 不上 wire', () => {
+  const f = fileOf('auth.md', 'x');
+  const files = addPendingFiles([], [
+    { name: 'auth.md', size: 1, path: 'C:\proj\docs\api\auth.md', file: f, group: 'docs', relPath: 'docs/api/auth.md' },
+  ]).files;
+  const atts = attsFromPending([], files);
+  assert.equal(atts.files[0].rel_path, 'docs/api/auth.md');
+  const w = wireFile(atts.files[0]);
+  assert.deepEqual(w, { name: 'auth.md', path: 'C:\proj\docs\api\auth.md', rel_path: 'docs/api/auth.md' });
+});
+
+test('⑥ pendingFromAtts：带 rel_path 的回填重建文件夹分组（group = 顶层目录）', () => {
+  const pending = pendingFromAtts({
+    images: [],
+    files: [{ name: 'auth.md', data: 'aGk=', rel_path: 'docs/api/auth.md' }],
+  });
+  assert.equal(pending.files[0].group, 'docs');
+  assert.equal(pending.files[0].relPath, 'docs/api/auth.md');
+});

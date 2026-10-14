@@ -439,6 +439,10 @@ export interface ChatSendFile {
   data: string;
   /** 本地真实路径；非空 = path 形态（后端按路径读盘，data 为空）。 */
   path?: string;
+  /** 文件夹内相对路径（拖文件夹改造，2026-12，wire 键 rel_path）：展示用——
+   *  后端记进消息元数据与「[附件]」行，落盘名仍为随机 hex。空 = 散文件
+   *  （老客户端形态）。 */
+  rel_path?: string;
   /** File 对象（仅内存，不进 wire）——降级 base64 重发用。 */
   file?: File;
 }

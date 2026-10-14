@@ -113,34 +113,37 @@ const MaxFilesPerMessage = 4
 
 // validateChatFiles 校验 chat.send 携带的文件附件（**纯校验，不落盘**）：
 // ≤4 个、base64 可解码或 path 形态可读盘、单个 ≤20MB（store.MaxFileAttachmentBytes）、
-// 名字净化后非空（path 形态没带名字 → 回落路径 basename）。返回字节与净化后的
-// 名字（调用方紧接着落盘）。任何不合法都返回人话错误（JSON-RPC CodeInvalidParams 的文案）。
-func validateChatFiles(files []protocol.ChatSendFile) ([][]byte, []string, error) {
+// 名字净化后非空（path 形态没带名字 → 回落路径 basename）。返回字节、净化后的
+// 名字与展示相对路径（文件夹拖入的内部文件带 rel_path——只做展示，绝不参与
+// 落盘寻址；空串 = 散文件）。任何不合法都返回人话错误（JSON-RPC
+// CodeInvalidParams 的文案）。
+func validateChatFiles(files []protocol.ChatSendFile) ([][]byte, []string, []string, error) {
 	if len(files) == 0 {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	if len(files) > MaxFilesPerMessage {
-		return nil, nil, fmt.Errorf("一条消息最多带 %d 个文件（收到 %d 个）", MaxFilesPerMessage, len(files))
+		return nil, nil, nil, fmt.Errorf("一条消息最多带 %d 个文件（收到 %d 个）", MaxFilesPerMessage, len(files))
 	}
 	out := make([][]byte, 0, len(files))
 	names := make([]string, 0, len(files))
+	relPaths := make([]string, 0, len(files))
 	for i, f := range files {
 		var data []byte
 		var err error
 		if f.Path != "" {
 			if f.Data != "" {
-				return nil, nil, fmt.Errorf("第 %d 个文件不能同时携带 path 与 data（path 形态由服务端按路径读盘）", i+1)
+				return nil, nil, nil, fmt.Errorf("第 %d 个文件不能同时携带 path 与 data（path 形态由服务端按路径读盘）", i+1)
 			}
 			if data, err = readLocalAttachment(f.Path, store.MaxFileAttachmentBytes); err != nil {
-				return nil, nil, fmt.Errorf("第 %d 个文件: %w", i+1, err)
+				return nil, nil, nil, fmt.Errorf("第 %d 个文件: %w", i+1, err)
 			}
 		} else {
 			data, err = base64.StdEncoding.DecodeString(f.Data)
 			if err != nil {
-				return nil, nil, fmt.Errorf("第 %d 个文件的 base64 解码失败（Data 不带 data: 前缀）: %v", i+1, err)
+				return nil, nil, nil, fmt.Errorf("第 %d 个文件的 base64 解码失败（Data 不带 data: 前缀）: %v", i+1, err)
 			}
 			if len(data) > store.MaxFileAttachmentBytes {
-				return nil, nil, fmt.Errorf("第 %d 个文件超过大小上限（%d MB，base64 解码后）", i+1, store.MaxFileAttachmentBytes/(1<<20))
+				return nil, nil, nil, fmt.Errorf("第 %d 个文件超过大小上限（%d MB，base64 解码后）", i+1, store.MaxFileAttachmentBytes/(1<<20))
 			}
 		}
 		name := f.Name
@@ -149,12 +152,13 @@ func validateChatFiles(files []protocol.ChatSendFile) ([][]byte, []string, error
 		}
 		name = store.SanitizeFileName(name)
 		if name == "" {
-			return nil, nil, fmt.Errorf("第 %d 个文件缺少文件名", i+1)
+			return nil, nil, nil, fmt.Errorf("第 %d 个文件缺少文件名", i+1)
 		}
 		out = append(out, data)
 		names = append(names, name)
+		relPaths = append(relPaths, sanitizeRelPath(f.RelPath))
 	}
-	return out, names, nil
+	return out, names, relPaths, nil
 }
 
 // saveChatFiles 把校验过的文件逐个落盘（SaveFileAttachment——无 mime 白名单的
@@ -170,6 +174,28 @@ func (s *Server) saveChatFiles(sessionID string, decoded [][]byte, names []strin
 		rels = append(rels, rel)
 	}
 	return rels, nil
+}
+
+// sanitizeRelPath 净化一个展示用相对路径：统一到 / 分隔、剥掉穿越片段（../、
+// ./、绝对路径前导盘符/斜杠）与控制字符。返回空串 = 无有效路径（散文件）。
+// 只用于展示与「[附件]」行文本——落盘名恒为随机 hex，这里永远不参与寻址。
+func sanitizeRelPath(p string) string {
+	if p == "" {
+		return ""
+	}
+	p = filepath.ToSlash(strings.TrimSpace(p))
+	var b strings.Builder
+	for _, seg := range strings.Split(p, "/") {
+		seg = store.SanitizeFileName(seg)
+		if seg == "" || seg == "." || seg == ".." || seg == "file" {
+			continue // 空段/自引用/穿越片段丢弃；SanitizeFileName 兜底名同样丢弃
+		}
+		if b.Len() > 0 {
+			b.WriteByte('/')
+		}
+		b.WriteString(seg)
+	}
+	return b.String()
 }
 
 // bindAttachmentLoader 把图片读取函数注入 llm 层（进程级一次）：给一个文件

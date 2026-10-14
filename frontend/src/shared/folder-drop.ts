@@ -43,6 +43,10 @@ export interface FolderCollectDeps {
 
 export interface FolderCollectResult {
   files: File[];
+  /** 与 files 平行的**相对路径数组**（相对拖入的文件夹根，保留目录结构——
+   *  展示层「内部是地址」：`docs/api/auth.md`、`assets/logo.png`）。length
+   *  与 files 一致，下标一一对应。 */
+  relPaths: string[];
   /** 人话说明（空串 = 没有可说的）：空文件夹 / 截断 / 跳过原因。 */
   notice: string;
 }
@@ -101,19 +105,22 @@ export async function collectFolderEntries(root: EntryLike, deps: FolderCollectD
   const maxFile = deps.maxFileBytes ?? MAX_FILE_BYTES;
 
   const files: File[] = [];
+  /** 与 files 平行的相对路径（相对拖入文件夹根；walk 途中拼接）。 */
+  const relPaths: string[] = [];
   let total = 0;
   let truncatedCount = false;
   let truncatedTotal = false;
   let unreadable = 0;
   let oversize = 0;
 
-  // 返回 false = 已到上限，整体停止（不再往深处走）
-  const walk = async (dir: EntryLike): Promise<boolean> => {
+  // 返回 false = 已到上限，整体停止（不再往深处走）；rel 是当前目录相对根的
+  // 路径前缀（根为空串，子目录逐级 `docs/api`）。
+  const walk = async (dir: EntryLike, rel: string): Promise<boolean> => {
     const entries = await readAllEntries(dir);
     for (const e of entries) {
       if (e.name.startsWith(".")) continue; // 隐藏文件/目录
       if (e.isDirectory) {
-        if (!(await walk(e))) return false;
+        if (!(await walk(e, rel ? `${rel}/${e.name}` : e.name))) return false;
         continue;
       }
       if (!e.isFile) continue;
@@ -135,27 +142,28 @@ export async function collectFolderEntries(root: EntryLike, deps: FolderCollectD
         return false;
       }
       files.push(f);
+      relPaths.push(rel ? `${rel}/${e.name}` : e.name);
       total += f.size;
     }
     return true;
   };
-  await walk(root);
+  await walk(root, "");
 
   const notes: string[] = [];
   if (files.length === 0 && !truncatedCount && !truncatedTotal) {
-    if (oversize === 0 && unreadable === 0) return { files, notice: "文件夹是空的" };
+    if (oversize === 0 && unreadable === 0) return { files, relPaths, notice: "文件夹是空的" };
     // 没收到任何文件，但原因明确：如实说为什么
     if (oversize > 0) notes.push(`${oversize} 个文件超过单文件 20MB 上限已跳过`);
     if (unreadable > 0) notes.push(`${unreadable} 个文件读取失败已跳过`);
-    return { files, notice: `文件夹里没有可添加的文件：${notes.join("，")}` };
+    return { files, relPaths, notice: `文件夹里没有可添加的文件：${notes.join("，")}` };
   }
   if (truncatedCount) {
-    notes.push(`文件夹内文件过多：已添加前 ${files.length} 个，其余未加入（可压缩后分批发送）`);
+    notes.push(`已收录前 ${files.length} 个，其余未加入（可压缩后分批发送）`);
   }
   if (truncatedTotal) {
-    notes.push(`文件夹内容总量超过 ${formatBytes(maxTotal)}：已添加前 ${files.length} 个，其余未加入（可压缩后分批发送）`);
+    notes.push(`文件夹内容总量超过 ${formatBytes(maxTotal)}：已收录前 ${files.length} 个，其余未加入（可压缩后分批发送）`);
   }
   if (oversize > 0) notes.push(`${oversize} 个文件超过单文件 20MB 上限已跳过`);
   if (unreadable > 0) notes.push(`${unreadable} 个文件读取失败已跳过`);
-  return { files, notice: notes.join("；") };
+  return { files, relPaths, notice: notes.join("；") };
 }

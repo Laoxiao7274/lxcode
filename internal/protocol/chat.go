@@ -54,11 +54,19 @@ type ChatSendImage struct {
 //
 // **传输形态**与 ChatSendImage 同款：Path 非空 = 服务端按路径读盘，Data 必须为空
 // （Name 也可省 → 回落路径 basename）。
+//
+// **RelPath（文件夹相对路径，2026-12 拖文件夹改造）**：拖入文件夹时内部文件按
+// 文件夹根的相对路径发送（如 `docs/api/auth.md`），服务端把它记进消息元数据与
+// 「[附件]」行——落盘名仍是随机 hex，展示名/相对路径与磁盘名解耦。空 = 散文件
+// （现状形态，老客户端不带此键零影响）。不净化分隔符以外的部分——相对路径要
+// 原样呈现给用户；穿越片段（..）会随净化剥掉。
 type ChatSendFile struct {
 	Name string `json:"name"`
 	Data string `json:"data"`
 	// Path 非空 = 本地路径形态（同 ChatSendImage.Path 的语义与限制）。
 	Path string `json:"path,omitempty"`
+	// RelPath 非空 = 文件夹内相对路径（展示用；不参与落盘寻址）。
+	RelPath string `json:"rel_path,omitempty"`
 }
 
 type ChatSendParams struct {

@@ -29,6 +29,7 @@ export function wireFile(f: ChatSendFile): Record<string, unknown> {
   const out: Record<string, unknown> = f.path
     ? { name: f.name, path: f.path }
     : { name: f.name, data: f.data };
+  if (f.rel_path) out.rel_path = f.rel_path;
   return out;
 }
 

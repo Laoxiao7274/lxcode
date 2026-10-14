@@ -252,3 +252,32 @@ test('⑥ 附件引用带穿越形态时渲染死卡（不可点），名字照�
   assert.ok(html.includes('att-dead'));
   assert.ok(!html.includes('/attachments/'), '不产出可点的穿越 URL');
 });
+
+// ---------- ⑦ 文件夹分组卡（拖文件夹改造，2026-12）：消息侧与暂存区同构 ----------
+
+test('⑦ UserAttachmentSection：带相对路径的文件归组成文件夹卡（相对路径行 + 计数），散文件照旧', () => {
+  const atts = [
+    { path: 's/a.md', name: 'docs/api/auth.md', size: 30, kind: 'file', group: 'docs', relPath: 'docs/api/auth.md' },
+    { path: 's/b.txt', name: 'loose.txt', size: 5, kind: 'file' },
+  ];
+  const html = renderBlock(createElement(Block, {
+    block: { kind: 'user', uid: 1, text: '看文件夹', attachments: atts },
+    onConfirm: () => {}, onAnswer: () => {},
+  }));
+  assert.ok(html.includes('folder-card'), '应渲染文件夹卡');
+  assert.ok(html.includes('folder-card-name'), '文件夹卡有名字');
+  assert.ok(html.includes('docs'), '文件夹名');
+  assert.ok(html.includes('1 个文件'), '计数');
+  assert.ok(html.includes('docs/api/auth.md'), '内部以相对路径呈现');
+  assert.ok(html.includes('att-file'), '散文件维持普通文件卡');
+  assert.equal((html.match(/folder-card-name/g) || []).length, 1, '只有一张文件夹卡（不是顶层文件平铺）');
+});
+
+test('⑦ 老消息（Name 无「/」）不产生文件夹卡——兼容回落', () => {
+  const html = renderBlock(createElement(Block, {
+    block: { kind: 'user', uid: 2, text: '旧消息', attachments: [{ path: 's/x.txt', name: 'x.txt', size: 1, kind: 'file' }] },
+    onConfirm: () => {}, onAnswer: () => {},
+  }));
+  assert.ok(!html.includes('folder-card'), '无文件夹卡');
+  assert.ok(html.includes('att-file'), '普通文件卡照旧');
+});

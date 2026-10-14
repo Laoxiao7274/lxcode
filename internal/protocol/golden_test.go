@@ -75,6 +75,9 @@ func goldenSamples() map[string]goldenSample {
 		}},
 		"chatSendFileBase64":   {"ChatSendFile", ChatSendFile{Name: "报告.pdf", Data: "JVBERi0xLjQ="}},
 		"chatSendFilePathForm": {"ChatSendFile", ChatSendFile{Name: "报告.pdf", Data: "", Path: `C:\Users\xzy\Docs\报告.pdf`}},
+		// 文件夹相对路径形态（拖文件夹改造，2026-12）：rel_path 只做展示，
+		// 落盘名恒为随机 hex（展示名/相对路径与磁盘名解耦）。
+		"chatSendFileRelPath": {"ChatSendFile", ChatSendFile{Name: "auth.md", Data: "IyBBUEk=", RelPath: "docs/api/auth.md"}},
 
 		// chat.done 全量：context/stats/每轮计时/模型都在（带 _type: AgentEvent——
 		// done 成员的 wire 载荷）。

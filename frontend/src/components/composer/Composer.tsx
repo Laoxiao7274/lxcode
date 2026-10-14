@@ -27,6 +27,8 @@ import {
 import { routeSubmit, type SendQueueItem } from "../../shared/send-queue";
 import { stageFile } from "../../shared/attachment-read";
 import { collectFolderEntries, defaultFolderDeps, type EntryLike } from "../../shared/folder-drop";
+import { groupFolderFiles } from "../../shared/attachments";
+import { FolderCard } from "../thread/blocks/FolderCard";
 import type { SessionDraft } from "../../shared/session-drafts";
 import type { SendAttachments, ContextUsage, SessionStats, TodoItem } from "../../shared/types";
 
@@ -301,32 +303,42 @@ export function Composer({
     if (e.currentTarget === e.target) setDragOver(false);
   };
 
-  /** 文件夹拖入：展开收集 → 逐个读入（个别失败跳过并说明）→ 进附件区。
+  /** 文件夹拖入：展开收集（带文件夹内相对路径）→ 逐个读入（个别失败跳过并
+   *  说明）→ 进附件区。暂存条目带 group（文件夹名）+ relPath（相对路径）——
+   *  暂存区渲染成**文件夹卡**（不是顶层文件平铺）；发送时 relPath 进 wire 的
+   *  rel_path，后端记进消息元数据与「[附件]」行。
    *  收集口径（folder-drop.ts 的纯函数，测试直测）：≤16 个 / 总量 ≤20MB、
-   *  跳过隐藏项与超单文件上限者、截断与跳过都给人话提示、空文件夹有提示。 */
+   *  跳过隐藏项与超单文件上限者、截断与跳过都给人话提示（挂在文件夹卡上）、
+   *  空文件夹有提示。 */
   const ingestFolders = async (dirs: EntryLike[], plain: File[]) => {
     if (plain.length > 0) await ingest(plain); // 文件夹混着散文件：散文件照旧路径
     const notices: string[] = [];
-    const collected: File[] = [];
+    /** 逐文件夹收集结果：folder 名 + 内部文件（File + 相对路径）。 */
+    const folders: { name: string; items: { file: File; relPath: string }[] }[] = [];
     for (const dir of dirs) {
       const r = await collectFolderEntries(dir, defaultFolderDeps);
-      collected.push(...r.files);
-      if (r.notice) notices.push(r.notice);
+      if (r.files.length > 0) {
+        folders.push({ name: dir.name, items: r.files.map((file, i) => ({ file, relPath: r.relPaths[i] })) });
+      }
+      if (r.notice) notices.push(`「${dir.name}」${r.notice}`);
     }
-    if (collected.length === 0) {
+    if (folders.length === 0) {
       if (notices.length > 0) flashNotice(notices.join("；"));
       return;
     }
     // 逐个暂存：路径优先（不读内容），无路径的才读 base64——个别失败（快照与
     // 真实路径都读不到）跳过并在提示里说明，不整批失败——文件夹里一个坏文件
     // 不该吞掉其余的。
-    const read: { file: File; path: string | null; data: string | null }[] = [];
+    const read: { file: File; path: string | null; data: string | null; folder: string; relPath: string }[] = [];
     let readFailed = 0;
-    for (const f of collected) {
-      try {
-        read.push(await stageFile(f));
-      } catch {
-        readFailed++;
+    for (const folder of folders) {
+      for (const item of folder.items) {
+        try {
+          const staged = await stageFile(item.file);
+          read.push({ file: item.file, path: staged.path, data: staged.data, folder: folder.name, relPath: item.relPath });
+        } catch {
+          readFailed++;
+        }
       }
     }
     if (readFailed > 0) notices.push(`${readFailed} 个文件读取失败已跳过`);
@@ -352,9 +364,13 @@ export function Composer({
     if (others.length > 0 && roomFiles > 0) {
       const res = addPendingFiles(
         filesRef.current,
-        others.slice(0, roomFiles).map((r) => r.path
-          ? { name: r.file.name, size: r.file.size, path: r.path, file: r.file }
-          : { name: r.file.name, size: r.file.size, data: r.data ?? "" }),
+        others.slice(0, roomFiles).map((r) => ({
+          name: r.file.name,
+          size: r.file.size,
+          ...(r.path ? { path: r.path, file: r.file } : { data: r.data ?? "" }),
+          group: r.folder,
+          relPath: r.relPath,
+        })),
       );
       setFiles(res.files);
       if (res.notice) flashNotice(res.notice);
@@ -541,23 +557,11 @@ export function Composer({
               </div>
             )}
             {files.length > 0 && (
-              <div className="att-file-cards">
-                {files.map((f) => (
-                  <span key={f.id} className="att-file-card" title={f.name}>
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                      <path d="M14 2v6h6" />
-                    </svg>
-                    <span className="att-file-name">{clipOneLine(f.name, 24)}</span>
-                    {f.size > 0 && <span className="att-file-size">{formatBytes(f.size)}</span>}
-                    <button type="button" className="att-remove" title="移除该文件" aria-label={`移除文件 ${f.name}`} onClick={() => removeFile(f.id)}>
-                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true">
-                        <path d="M18 6 6 18M6 6l12 12" />
-                      </svg>
-                    </button>
-                  </span>
-                ))}
-              </div>
+              <FolderFileCards
+                files={files}
+                onRemoveFolder={(folder) => setFiles((cur) => cur.filter((f) => f.group !== folder))}
+                onRemoveFile={(id) => setFiles((cur) => removePending(cur, id))}
+              />
             )}
           </div>
         )}
@@ -699,6 +703,39 @@ export function Composer({
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+/** 暂存文件区（拖文件夹改造，2026-12）：按 group 分组——文件夹成员渲染成
+ *  **文件夹卡**（FolderCard，可折叠清单 + 截断说明），散文件（无 group）维持
+ *  原先的文件卡形态。文件夹卡的整卡移除 = 移除该文件夹全部内部文件。 */
+function FolderFileCards({ files, onRemoveFolder, onRemoveFile }: {
+  files: PendingFile[];
+  onRemoveFolder: (folder: string) => void;
+  onRemoveFile: (id: string) => void;
+}) {
+  const { groups, loose } = groupFolderFiles(files);
+  return (
+    <div className="att-file-cards">
+      {groups.map((g) => (
+        <FolderCard key={g.name} group={g} onRemove={() => onRemoveFolder(g.name)} />
+      ))}
+      {loose.map((f) => (
+        <span key={f.id} className="att-file-card" title={f.name}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+            <path d="M14 2v6h6" />
+          </svg>
+          <span className="att-file-name">{clipOneLine(f.name, 24)}</span>
+          {f.size > 0 && <span className="att-file-size">{formatBytes(f.size)}</span>}
+          <button type="button" className="att-remove" title="移除该文件" aria-label={`移除文件 ${f.name}`} onClick={() => onRemoveFile(f.id)}>
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true">
+              <path d="M18 6 6 18M6 6l12 12" />
+            </svg>
+          </button>
+        </span>
+      ))}
     </div>
   );
 }

@@ -33,7 +33,7 @@ func (s *Server) dispatchChat(c *wsClient, req *protocol.Request, params json.Ra
 		if err != nil {
 			return protocol.NewError(req.ID, protocol.CodeInvalidParams, err.Error())
 		}
-		decodedFiles, fileNames, err := validateChatFiles(p.Files)
+		decodedFiles, fileNames, fileRelPaths, err := validateChatFiles(p.Files)
 		if err != nil {
 			return protocol.NewError(req.ID, protocol.CodeInvalidParams, err.Error())
 		}
@@ -49,7 +49,7 @@ func (s *Server) dispatchChat(c *wsClient, req *protocol.Request, params json.Ra
 				return protocol.NewError(req.ID, protocol.CodeInvalidParams, err.Error())
 			}
 			c.setFocus(id)
-			if err := s.sendAttachments(id, sess, p, decodedImgs, decodedFiles, fileNames); err != nil {
+			if err := s.sendAttachments(id, sess, p, decodedImgs, decodedFiles, fileNames, fileRelPaths); err != nil {
 				return protocol.NewError(req.ID, errorCode(err), err.Error())
 			}
 			// 用户消息重置连续唤醒预算（契约 §5：用户交互本身就是交互，
@@ -61,7 +61,7 @@ func (s *Server) dispatchChat(c *wsClient, req *protocol.Request, params json.Ra
 		if err != nil {
 			return protocol.NewError(req.ID, protocol.CodeInvalidParams, err.Error())
 		}
-		if err := s.sendAttachments(id, sess, p, decodedImgs, decodedFiles, fileNames); err != nil {
+		if err := s.sendAttachments(id, sess, p, decodedImgs, decodedFiles, fileNames, fileRelPaths); err != nil {
 			return protocol.NewError(req.ID, errorCode(err), err.Error())
 		}
 		// 用户消息重置连续唤醒预算（契约 §5）

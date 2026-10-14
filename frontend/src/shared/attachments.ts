@@ -51,6 +51,11 @@ export interface PendingFile {
   path?: string;
   /** File 对象（仅内存，不进 wire/持久化）。 */
   file?: File;
+  /** 非空 = 文件夹相对路径（拖文件夹改造，2026-12）：该文件来自拖入的文件夹，
+   *  group 是文件夹名，relPath 是文件夹内相对路径（`docs/api/auth.md`）。
+   *  暂存区按 group 分组成文件夹卡；发送时 relPath 进 wire 的 rel_path。 */
+  group?: string;
+  relPath?: string;
 }
 
 export function isImageMime(mime: string): boolean {
@@ -101,10 +106,11 @@ export function addPendingImages(
 }
 
 /** 追加文件：逐个校验大小与总数（文件不做类型白名单——Agent 什么都要能收）。
- *  双形态：path 非空 = 路径形态（size 必带，data 为空串）。 */
+ *  双形态：path 非空 = 路径形态（size 必带，data 为空串）。group/relPath 是
+ *  文件夹拖入的归属（同一次拖入的内部文件共用 group）——直通不校验。 */
 export function addPendingFiles(
   existing: PendingFile[],
-  incoming: { name: string; size: number; data?: string; path?: string; file?: File }[],
+  incoming: { name: string; size: number; data?: string; path?: string; file?: File; group?: string; relPath?: string }[],
 ): { files: PendingFile[]; notice: string } {
   if (incoming.length === 0) return { files: existing, notice: "" };
   for (const f of incoming) {
@@ -123,6 +129,7 @@ export function addPendingFiles(
       size: f.size,
       data: f.data ?? "",
       ...(f.path ? { path: f.path, file: f.file } : {}),
+      ...(f.group ? { group: f.group, relPath: f.relPath } : {}),
     }))],
     notice: "",
   };
@@ -153,8 +160,78 @@ export function attsFromPending(images: PendingImage[], files: PendingFile[]): S
     name: f.name,
     data: f.data,
     ...(f.path ? { path: f.path, file: f.file } : {}),
+    ...(f.relPath ? { rel_path: f.relPath } : {}),
   }));
   return { images: wireImages, files: wireFiles };
+}
+
+// ===== 文件夹分组（拖文件夹改造，2026-12）=====
+
+/** 一个文件夹卡的展示条目：暂存与消息侧共用同一形状（渲染层同构复用）。 */
+export interface FolderGroup {
+  /** 文件夹名（拖入的顶层目录名；消息侧 = 附件的 group 元数据）。 */
+  name: string;
+  /** 内部文件（folder 内成员；每项带相对路径与大小）。 */
+  files: FolderGroupFile[];
+  /** 已收录的内部文件总字节（人话大小在渲染层算）。 */
+  totalBytes: number;
+  /** 非空 = 截断/跳过说明（挂在文件夹卡上，如「已收录前 N 个，其余未加入」）。 */
+  notice?: string;
+}
+
+/** 文件夹卡里的一行（相对路径 + 大小——「内部是地址」）。 */
+export interface FolderGroupFile {
+  /** 文件夹内相对路径（`docs/api/auth.md`——含文件名）。 */
+  relPath: string;
+  size?: number;
+}
+
+/** 把暂存文件列表按 group 分组：文件夹成员进各自的 FolderGroup（按首次出现
+ *  顺序），散文件（无 group）原样留在 files 里由调用方继续画普通文件卡。
+ *  纯函数——暂存区与消息侧共用同一份分组判定，渲染不许各写一套。 */
+export function groupFolderFiles(files: PendingFile[]): { groups: FolderGroup[]; loose: PendingFile[] } {
+  const groups: FolderGroup[] = [];
+  const byName = new Map<string, FolderGroup>();
+  const loose: PendingFile[] = [];
+  for (const f of files) {
+    if (!f.group) {
+      loose.push(f);
+      continue;
+    }
+    let g = byName.get(f.group);
+    if (!g) {
+      g = { name: f.group, files: [], totalBytes: 0 };
+      byName.set(f.group, g);
+      groups.push(g);
+    }
+    g.files.push({ relPath: f.relPath || f.name, size: f.size });
+    g.totalBytes += f.size || 0;
+  }
+  return { groups, loose };
+}
+
+/** 消息侧的文件夹归组（AttachmentMeta 版）：带 relPath 的条目按 group 归进
+ *  FolderGroup，其余（老消息/散文件）原样返回。与 groupFolderFiles 同一份
+ *  分组判定、两种输入形状——合并成一个泛型会引入双重映射，分开写更直白。 */
+export function groupMetaFolders(atts: AttachmentMeta[]): { groups: FolderGroup[]; loose: AttachmentMeta[] } {
+  const groups: FolderGroup[] = [];
+  const byName = new Map<string, FolderGroup>();
+  const loose: AttachmentMeta[] = [];
+  for (const a of atts) {
+    if (!a.relPath) {
+      loose.push(a);
+      continue;
+    }
+    let g = byName.get(a.group!);
+    if (!g) {
+      g = { name: a.group!, files: [], totalBytes: 0 };
+      byName.set(a.group!, g);
+      groups.push(g);
+    }
+    g.files.push({ relPath: a.relPath, size: a.size });
+    g.totalBytes += a.size || 0;
+  }
+  return { groups, loose };
 }
 
 /** base64 字符串对应的解码后字节数（不真的解码——只算大小）。 */
@@ -200,6 +277,11 @@ export interface AttachmentMeta {
   mime?: string;
   kind: "image" | "file";
   caption?: string;
+  /** 非空 = 文件夹相对路径（拖文件夹改造，2026-12）：后端把 rel_path 记进
+   *  AttachmentRef.Name（消息侧展示名 = 相对路径），这里由 name 含「/」推导
+   *  ——文件卡按顶层目录分组渲染成文件夹卡。 */
+  group?: string;
+  relPath?: string;
 }
 
 /** 附件静态端点的 HTTP 源（wsagent 连接时注入——同一台后端主机）。
@@ -237,6 +319,16 @@ export function attachmentURL(path: string): string | null {
  *  sendAttachments 的写入格式逐字一致——写错了解析不出，卡片就消失）。 */
 const ATTACHMENT_LINE = /^\[附件\] (.+?) → attachments\/(.+)$/;
 
+/** 由展示名推导文件夹分组（拖文件夹改造，2026-12）：Name 含「/」= 文件夹相对
+ *  路径（后端把 rel_path 记进展示名），取顶层目录作 group。原地写进条目。 */
+function applyRelGroup(out: AttachmentMeta): void {
+  if (out.kind !== "image" && out.name.includes("/")) {
+    const i = out.name.indexOf("/");
+    out.group = out.name.slice(0, i);
+    out.relPath = out.name;
+  }
+}
+
 /** 从消息文本解析出「[附件]」行并从正文剥离：老历史（attachments 列上线前）
  *  的文件附件只有这一种载体。返回解析出的条目与剥离后的正文。
  *  解析不出的行原样保留在正文里（宁可多一行字，不静默吞内容）。 */
@@ -246,7 +338,9 @@ export function parseAttachmentLines(text: string): { atts: AttachmentMeta[]; te
   for (const line of text.split("\n")) {
     const m = ATTACHMENT_LINE.exec(line.trim());
     if (m && attachmentURL(m[2])) {
-      atts.push({ path: m[2], name: m[1], kind: "file" });
+      const att: AttachmentMeta = { path: m[2], name: m[1], kind: "file" };
+      applyRelGroup(att);
+      atts.push(att);
     } else {
       kept.push(line);
     }
@@ -270,6 +364,9 @@ export function attachmentsFromMessage(m: {
       if (a.size) out.size = a.size;
       if (a.mime) out.mime = a.mime;
       if (a.caption) out.caption = a.caption;
+      // 文件夹相对路径（Name 含「/」= 来自拖入文件夹）：推导分组归属——消息侧
+      // 文件卡按它分组渲染成文件夹卡。老消息（无相对路径）不带这两个键。
+      applyRelGroup(out);
       return out;
     });
   }

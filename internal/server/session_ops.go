@@ -183,7 +183,7 @@ func chatSendOptions(p protocol.ChatSendParams) []agent.SendOpt {
 // 落盘的每一份都同时生成**展示元数据**（llm.AttachmentRef——前端渲染附件卡），
 // 经 WithAttachments 随 user 消息落库与广播：实时事件与 chat.history 回放
 // 是同一份，两条路径渲染同一张卡。
-func (s *Server) sendAttachments(sessionID string, sess *agent.Session, p protocol.ChatSendParams, decodedImgs, decodedFiles [][]byte, fileNames []string) error {
+func (s *Server) sendAttachments(sessionID string, sess *agent.Session, p protocol.ChatSendParams, decodedImgs, decodedFiles [][]byte, fileNames, fileRelPaths []string) error {
 	var refs []llm.ImageRef
 	var atts []llm.AttachmentRef
 	if len(p.Images) > 0 {
@@ -221,6 +221,9 @@ func (s *Server) sendAttachments(sessionID string, sess *agent.Session, p protoc
 		}
 	}
 	// 文件附件：不进视觉通道（vision 校验只看图片），纯落盘 + 文本行。
+	// 展示名 = 文件夹相对路径优先（拖文件夹的内部文件按 `docs/api/auth.md`
+	// 呈现——用户要的「内部应该是地址」），散文件回落净化后的原名。落盘名
+	// 恒为随机 hex，展示名/相对路径与磁盘名解耦。
 	var fileLines []string
 	if len(p.Files) > 0 {
 		if s.st == nil {
@@ -232,10 +235,14 @@ func (s *Server) sendAttachments(sessionID string, sess *agent.Session, p protoc
 		}
 		for i, rel := range rels {
 			// rel = <sessionID>/<落盘文件名>（SaveFileAttachment 的返回口径）
-			fileLines = append(fileLines, fmt.Sprintf("[附件] %s → attachments/%s", fileNames[i], rel))
+			display := fileNames[i]
+			if fileRelPaths[i] != "" {
+				display = fileRelPaths[i]
+			}
+			fileLines = append(fileLines, fmt.Sprintf("[附件] %s → attachments/%s", display, rel))
 			atts = append(atts, llm.AttachmentRef{
 				Path: rel,
-				Name: fileNames[i],
+				Name: display,
 				Size: int64(len(decodedFiles[i])),
 				Kind: llm.AttachmentKindFile,
 			})

@@ -86,6 +86,15 @@ export function pendingFromAtts(atts: SendAttachments): { images: PendingImage[]
       size: 0,
       data: f.data,
       ...(f.path ? { path: f.path, file: f.file } : {}),
+      ...(f.rel_path ? { group: folderNameOf(f.rel_path), relPath: f.rel_path } : {}),
     })),
   };
+}
+
+/** 从文件夹相对路径取顶层目录名（回填暂存区时重建文件夹分组归属）：
+ *  `docs/api/auth.md` → `docs`；无目录段（`auth.md`）返回空串（散文件，
+ *  条件展开会剥掉空串键——不产生无意义的 group）。 */
+function folderNameOf(relPath: string): string {
+  const i = relPath.indexOf("/");
+  return i > 0 ? relPath.slice(0, i) : "";
 }

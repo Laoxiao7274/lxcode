@@ -17,9 +17,12 @@ import {
   addPendingImages,
   attsFromPending,
   formatBytes,
+  groupFolderFiles,
+  groupMetaFolders,
   hasPendingAtts,
   removePending,
   visionBlockNotice,
+  attachmentsFromMessage,
 } from '../src/shared/attachments.ts';
 import { enqueueSend, routeSubmit } from '../src/shared/send-queue.ts';
 import { drainQueueHead, handleAgentEvent } from '../src/shared/store.ts';
@@ -294,3 +297,48 @@ function fakeSource() {
     label: 'demo',
   };
 }
+
+// ---------- 文件夹分组（拖文件夹改造，2026-12）----------
+
+test('④ groupFolderFiles：按 group 分组成文件夹卡，散文件留 loose', () => {
+  const files = addPendingFiles([], [
+    { name: 'auth.md', size: 30, group: 'docs', relPath: 'docs/api/auth.md' },
+    { name: 'api.md', size: 20, group: 'docs', relPath: 'docs/api.md' },
+    { name: 'loose.txt', size: 5 },
+    { name: 'logo.png', size: 10, group: 'assets', relPath: 'assets/logo.png' },
+  ]).files;
+  const { groups, loose } = groupFolderFiles(files);
+  assert.equal(groups.length, 2);
+  assert.equal(groups[0].name, 'docs');
+  assert.deepEqual(groups[0].files.map((f) => f.relPath), ['docs/api/auth.md', 'docs/api.md']);
+  assert.equal(groups[0].totalBytes, 50);
+  assert.equal(groups[1].name, 'assets');
+  assert.equal(loose.length, 1);
+  assert.equal(loose[0].name, 'loose.txt');
+});
+
+test('④ groupMetaFolders：消息侧 AttachmentMeta 按 relPath 归组；老消息条目留 loose', () => {
+  const { groups, loose } = groupMetaFolders([
+    { path: 's/1.md', name: 'docs/api/auth.md', kind: 'file', group: 'docs', relPath: 'docs/api/auth.md' },
+    { path: 's/2.txt', name: '旧文件.txt', kind: 'file' },
+    { path: 's/3.md', name: 'assets/logo.png', kind: 'file', group: 'assets', relPath: 'assets/logo.png' },
+  ]);
+  assert.equal(groups.length, 2);
+  assert.equal(groups[0].name, 'docs');
+  assert.equal(groups[0].files[0].relPath, 'docs/api/auth.md');
+  assert.equal(loose.length, 1, '老消息（无 relPath）不进文件夹卡');
+});
+
+test('⑤ attachmentsFromMessage：Name 含「/」推导 group/relPath；老消息不带这两个键', () => {
+  const meta = attachmentsFromMessage({
+    attachments: [
+      { path: 's/a.md', name: 'docs/api/auth.md', size: 3, kind: 'file' },
+      { path: 's/b.txt', name: '旧.txt', size: 1, kind: 'file' },
+    ],
+    content: '',
+  });
+  assert.equal(meta[0].group, 'docs');
+  assert.equal(meta[0].relPath, 'docs/api/auth.md');
+  assert.equal(meta[1].group, undefined);
+  assert.equal(meta[1].relPath, undefined);
+});

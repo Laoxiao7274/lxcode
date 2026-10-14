@@ -339,3 +339,69 @@ func TestChatSendFilesPersistsAttachmentMeta(t *testing.T) {
 		t.Fatalf("附件路径指向的文件不存在: %s err=%v", att.Path, err)
 	}
 }
+
+// TestChatSendFilesRelPath：拖文件夹改造（2026-12）的钉子——文件夹内部文件以
+// 相对路径（rel_path）发送时：
+//   - 消息文本的「[附件]」行与 AttachmentRef.Name 都用**相对路径**（展示层
+//     「内部是地址」），落盘名仍为随机 hex（展示名与磁盘名解耦）；
+//   - rel_path 的穿越片段（../）被剥掉（不会伪造路径成分）；
+//   - rel_path 缺省（散文件）行为与原先逐字节一致（向后兼容）。
+func TestChatSendFilesRelPath(t *testing.T) {
+	srv, client, _ := newTestServer(t, textStream())
+	sid := newSessionForTest(t, client)
+
+	resp := client.call(protocol.MethodChatSend, protocol.ChatSendParams{
+		SessionID: sid,
+		Text:      "看这个文件夹",
+		Files: []protocol.ChatSendFile{
+			{Name: "auth.md", Data: base64.StdEncoding.EncodeToString([]byte("# api")), RelPath: "docs/api/auth.md"},
+			{Name: "../escape.txt", Data: base64.StdEncoding.EncodeToString([]byte("x")), RelPath: "../../etc/passwd"},
+			{Name: "loose.txt", Data: base64.StdEncoding.EncodeToString([]byte("y"))},
+		},
+	})
+	if resp == nil || resp.Error != nil {
+		t.Fatalf("带 rel_path 的文件发送应成功: %+v", resp)
+	}
+	waitDone(t, client, sid)
+
+	hist := client.call(protocol.MethodChatHistory, protocol.ChatHistoryParams{SessionID: sid})
+	var h protocol.ChatHistoryResult
+	decodeServerResult(t, hist.Result, &h)
+	var user *llm.Message
+	for i := range h.Messages {
+		if h.Messages[i].Role == "user" {
+			user = &h.Messages[i]
+		}
+	}
+	if user == nil || len(user.Attachments) != 3 {
+		t.Fatalf("user 消息应带 3 条附件元数据: %+v", user)
+	}
+	// 逐条核对展示名：相对路径原样、穿越被剥、散文件保持原名
+	if user.Attachments[0].Name != "docs/api/auth.md" {
+		t.Fatalf("第 1 条展示名应为相对路径: %q", user.Attachments[0].Name)
+	}
+	if user.Attachments[1].Name != "etc/passwd" {
+		t.Fatalf("穿越片段应被剥掉: %q", user.Attachments[1].Name)
+	}
+	if user.Attachments[2].Name != "loose.txt" {
+		t.Fatalf("散文件展示名应保持原名: %q", user.Attachments[2].Name)
+	}
+	// 「[附件]」行同口径（相对路径进文本行——Agent 也按地址读到它）
+	lines := attachmentLines(user.Content)
+	if len(lines) != 3 {
+		t.Fatalf("应有 3 行附件说明: %q", user.Content)
+	}
+	if !strings.Contains(lines[0], "[附件] docs/api/auth.md → attachments/") {
+		t.Fatalf("附件行应用相对路径: %q", lines[0])
+	}
+	// 落盘名仍为随机 hex（不是相对路径，也没有目录层级）
+	entries, err := os.ReadDir(filepath.Join(srv.st.AttachmentsRoot(), sid))
+	if err != nil || len(entries) != 3 {
+		t.Fatalf("附件目录应平铺 3 个文件: %v err=%v", entries, err)
+	}
+	for _, e := range entries {
+		if strings.Contains(e.Name(), "/") || e.Name() == "docs" {
+			t.Fatalf("落盘名不应带目录层级: %s", e.Name())
+		}
+	}
+}
