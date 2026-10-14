@@ -257,7 +257,8 @@ private fun UnreachableBar(onRetry: () -> Unit, message: String? = null) {
  * 「真实后端」调试区：开关 + 地址输入 + 实时连接状态 + 失败重试条。
  *
  * 开：连 `addr`（默认 127.0.0.1:7789）→ hello 握手 → 会话列表换真实数据；
- * 关：断开并完全回到 mock 路径（mock 数据零改动）。断线复用 [UnreachableBar]，
+ * 关：断开并回到连接引导态（mock 假数据已随原型退役，无第三条路径）。
+ * 断线复用 [UnreachableBar]，
  * 重试按钮真实重连（重发握手）。
  */
 @Composable
@@ -280,7 +281,7 @@ private fun RealBackendSection(state: MockAppState) {
             Column(Modifier.weight(1f)) {
                 Text(text = "真实后端", style = Lx.type.ListTitle, color = Lx.colors.Fg)
                 Text(
-                    text = "开 = 连真实 lxcode 后端（WS JSON-RPC）；关 = 回到演示数据",
+                    text = "开 = 连真实 lxcode 后端（WS JSON-RPC）；关 = 显示连接引导",
                     style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size10_5),
                     color = Lx.colors.FgFaint,
                 )

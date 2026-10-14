@@ -172,7 +172,13 @@ fun SessionsScreen(state: MockAppState) {
             // （未连接时整页已是引导态，到不了这里——新对话只在连接后可用。）
             val navItems = listOf(
                 NavEntry("新对话", Icons.Filled.ChatBubbleOutline) {
-                    state.real.newSession { id -> state.route = Route.Thread(id) }
+                    // 项目组内新建：scope 是当前范围的项目 id（未分组 = ""）——
+                    // session.new 的 workspace 参数，会话归属该项目（对齐桌面端
+                    // Sidebar 的 filter 语义：在哪个范围里点的新对话就归哪个项目）
+                    state.real.newSession(
+                        workspace = state.scope,
+                        onReady = { id -> state.route = Route.Thread(id) },
+                    )
                 },
             )
             itemsIndexed(navItems) { i, entry ->

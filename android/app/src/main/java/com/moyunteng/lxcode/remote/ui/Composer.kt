@@ -106,7 +106,7 @@ fun Composer(state: MockAppState, real: com.moyunteng.lxcode.remote.net.RealBack
     // 不用 remember 缓存：闭包要捕获当前 real（mock↔真实切换后动作必须跟着切）。
     val slashCommands = listOf(
             SlashCmd("new", "开始新对话") {
-                real?.newSession { id -> state.route = Route.Thread(id) }
+                real?.newSession(onReady = { id -> state.route = Route.Thread(id) })
             },
             SlashCmd("compact", "压缩早期历史（腾出上下文）") {
                 if (real != null) real.compact() else toast("需连接后端才能压缩")
@@ -151,9 +151,15 @@ fun Composer(state: MockAppState, real: com.moyunteng.lxcode.remote.net.RealBack
     // effortOptions = 当前模型支持的档位；当前档位不在其中时回落到最后一档
     val currentModel = real?.allModels?.find { it.id == real.defaultModelId }
     val effortOptions = currentModel?.efforts?.filter { it in EFFORT_IDS } ?: emptyList()
-    // 会话本轮的 effort（local 态；真实模式跟「当前选中模型」走，切换在模型菜单）
+    // 会话本轮的 effort（内存视图，不落盘）：协议里 effort 只是 chat.send 的
+    // 请求级参数（后端没有会话级 effort 方法、chat.history 不回它——远端无
+    // 读写通道），所以本地只在**发送时**把当前视图带上，不发明持久化语义。
+    // remember 无存档：App 重启回落模型默认（与「远端化」原则一致——连接
+    // 信息之外不持久化业务状态）。
     var effort by remember { mutableStateOf("medium") }
     val effortId = if (effort in effortOptions) effort else effortOptions.lastOrNull() ?: ""
+    // 发送携带的档位：模型不支持 effort 时空串（不带键——对非推理端点传参会 400）
+    val sendEffort = if (effortOptions.isNotEmpty()) effortId else ""
     // 药丸灰字「· 中」——模型不支持 effort 时整个不显示（chip-dim 同款隐藏）
     val effortDim = if (effortOptions.isNotEmpty()) "· ${effortLabel(effortId)}" else null
     // 档位名对齐桌面端 APPROVALS（shared/settings.tsx）：默认 / 完全访问 / 只读
@@ -258,7 +264,12 @@ fun Composer(state: MockAppState, real: com.moyunteng.lxcode.remote.net.RealBack
                                     if (supported.isNotEmpty() && effort !in supported) {
                                         effort = if ("medium" in supported) "medium" else supported.first()
                                     }
-                                    real?.setDefaultModel(id)
+                                    real?.setDefaultModel(id) { ok, msg ->
+                                        // role.set 失败要给反馈：选择态由 model.changed
+                                        // 广播对齐（后端没改绑就不会广播），本地乐观选中
+                                        // 会永远停在旧模型上——toast 说明，不假装成功
+                                        if (!ok) toast("切换模型失败${if (msg.isNotBlank()) "：$msg" else ""}")
+                                    }
                                     modelMenuOpen = false // 选完带退场动画收起
                                 },
                                 onToggleEffortPanel = { effortPanelOpen = !effortPanelOpen },
@@ -327,7 +338,7 @@ fun Composer(state: MockAppState, real: com.moyunteng.lxcode.remote.net.RealBack
                         if (busy) {
                             real?.cancel()
                         } else {
-                            real?.send(text)
+                            real?.send(text, sendEffort)
                             text = ""
                         }
                     },

@@ -97,20 +97,31 @@ fun ThreadScreen(state: MockAppState, sessionId: String) {
     // ===== 滚到底 =====
     // 三个时机都要滚：
     //  ① 历史装载完成（openSession 异步回填 blocks 的那一刻）——对齐桌面端「进会话
-    //     停在最底」；用 historyVersion（RealBackend 在 applyHistory 末尾递增）触发。
-    //  ② 消息流增长（delta 追加 / 工具行插入 / 用户发送）——流式期间跟随到底部。
+    //     停在最底」；用 historyVersion（RealBackend 在 applyHistory 末尾递增）触发，
+    //     **无条件**滚（装载 = 进入这个会话，用户预期就是看最新）。
+    //  ② 消息流增长（delta 追加 / 工具行插入 / 用户发送）——只在「本来就在底部附近」
+    //     时跟随（sticky-follow）：用户往上翻历史时每条 delta 把他拽回底部，历史就没法看了。
     //  ③ 键盘弹出（IME 可见性翻转）：lazyListState 是同一实例、消息数量不变，
     //     不监听它的话视口被压缩后最后一屏停在半截——imeTargetHeight 变化即再滚一次。
     val listState = rememberLazyListState()
     val historyVersion = real.historyVersion
     val imeHeight = WindowInsets.ime.getBottom(LocalDensity.current)
+
+    /** 是否停在底部附近（sticky-follow 的判定）：最后一个条目可见即算——
+     *  允许键盘/输入区遮挡导致的轻微偏移，但翻上去看历史（最后条目出视口）不算。 */
+    fun nearBottom(): Boolean {
+        val info = listState.layoutInfo.visibleItemsInfo
+        if (info.isEmpty()) return true
+        return info.last().index >= real.blocks.size - 1
+    }
+
     LaunchedEffect(historyVersion) {
         if (historyVersion > 0 && real.blocks.isNotEmpty()) {
             listState.scrollToItem(real.blocks.size - 1)
         }
     }
     LaunchedEffect(real.blocks.size) {
-        if (real.blocks.isNotEmpty()) {
+        if (real.blocks.isNotEmpty() && nearBottom()) {
             listState.scrollToItem(real.blocks.size - 1)
         }
     }
@@ -184,7 +195,7 @@ fun ThreadScreen(state: MockAppState, sessionId: String) {
                 // key 用下标：流式 delta 会整块替换（data class copy），
                 // 用块实例当 key 会让入场动画/打字机每个 delta 重播——下标才是稳定身份。
                 val blocks: List<ThreadBlock> = real.blocks
-                itemsIndexed(blocks) { i, block ->
+                itemsIndexed(blocks, key = { i, _ -> "$sessionId:$i" }) { i, block ->
                     Box(
                         Modifier.lxEnter(
                             spec = LxEnterSpec.BlockIn,
@@ -192,7 +203,7 @@ fun ThreadScreen(state: MockAppState, sessionId: String) {
                             key = i,
                         ),
                     ) {
-                        ThreadBlockView(block, busy = running)
+                        ThreadBlockView(block, busy = running, stableKey = "$sessionId:$i")
                     }
                 }
             }
@@ -247,12 +258,14 @@ fun ThreadScreen(state: MockAppState, sessionId: String) {
     }
 }
 
-/** 单个块的分发（对齐 Block.tsx 的 switch (block.kind)）。 */
+/** 单个块的分发（对齐 Block.tsx 的 switch (block.kind)）。
+ *  [stableKey] 会话 id + 块下标：打字机的稳定身份——delta 整块替换（data class
+ *  copy）时 key 不变，reveal 状态保持继续浇而不是重播。 */
 @Composable
-private fun ThreadBlockView(block: ThreadBlock, busy: Boolean) {
+private fun ThreadBlockView(block: ThreadBlock, busy: Boolean, stableKey: String) {
     when (block) {
         is ThreadBlock.User -> UserBubble(block.text)
-        is ThreadBlock.Assistant -> AssistantBlock(block, busy)
+        is ThreadBlock.Assistant -> AssistantBlock(block, busy, stableKey)
         is ThreadBlock.Tool -> ToolCard(block)
         is ThreadBlock.Dispatch -> DispatchCard(block)
         is ThreadBlock.Notice -> NoticeBar(block)
@@ -326,12 +339,15 @@ private fun UserBubble(text: String) {
 
 /** 助手块（思考块 + 正文 + 轮末统计行）。 */
 @Composable
-private fun AssistantBlock(block: ThreadBlock.Assistant, busy: Boolean) {
+private fun AssistantBlock(block: ThreadBlock.Assistant, busy: Boolean, stableKey: String) {
     // 助手正文逐字揭示：桌面端 stream-reveal（REVEAL_* 常量），**不受 reduced-motion 门控**。
     // 打字机只用于**实时流式增量**（block.streaming = true）：历史回放的 assistant 块
     // 直接整块呈现全文（对齐桌面端 AnswerBody 的 committed/tail 语义——历史 = snap
     // 全量落下，只有实时 delta 才 reveal），否则打开会话时所有旧消息重播一遍打字。
-    val reveal = rememberStreamReveal(block.content, enabled = block.streaming, key = block)
+    // key 用**稳定身份**（会话 id + 块下标）：流式 delta 每次整块替换（data class copy），
+    // key 用块对象会让 remember(key) 每 delta 重置 revealed → 每条 delta 从头重播打字。
+    // key 稳定时 text 增长只推进循环（revealed 续浇），块定格（streaming=false）整块呈现。
+    val reveal = rememberStreamReveal(block.content, enabled = block.streaming, key = stableKey)
 
     Column(verticalArrangement = Arrangement.spacedBy(Lx.space.s6)) {
         if (!block.reasoning.isNullOrBlank()) {

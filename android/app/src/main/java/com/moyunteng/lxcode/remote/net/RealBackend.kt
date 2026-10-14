@@ -47,7 +47,8 @@ data class PendingConfirm(
 
 /**
  * 真实后端状态机。一个实例挂在 [com.moyunteng.lxcode.remote.ui.MockAppState] 上，
- * 「真实后端」开关打开时各页面从这里取数据；关闭时页面走原 mock 路径（零改动）。
+ * 「真实后端」开关打开时各页面从这里取数据；关闭时会话页是连接引导态（mock 假数据
+ * 已随原型退役）。
  */
 class RealBackend {
 
@@ -79,7 +80,7 @@ class RealBackend {
     var currentSessionId by mutableStateOf("")
         private set
 
-    /** 当前会话时间线（真实块；mock 模式不读它）。 */
+    /** 当前会话时间线（真实块）。 */
     val blocks = mutableStateListOf<ThreadBlock>()
 
     /** 上下文占用（chat.done / chat.history 的 context 键；null = 未知 → UI 显示「—」）。 */
@@ -164,11 +165,20 @@ class RealBackend {
         }
     }
 
-    /** 切换 default 角色绑定（role.set；model.changed 广播回来对齐）。 */
-    fun setDefaultModel(id: String) {
+    /** 切换 default 角色绑定（role.set；model.changed 广播回来对齐）。
+     *  [onDone] 回调结果（ok=false 时 msg 是错误信息——调用方给用户反馈；
+     *  选中态不本地回退：它从 model.list 的 roles.default 推导，后端没改绑
+     *  就不会广播，显示自动停在旧模型上）。 */
+    fun setDefaultModel(id: String, onDone: ((ok: Boolean, msg: String) -> Unit)? = null) {
         Log.i(TAG, "role.set default → $id")
         client.call("role.set", JSONObject().put("role", "default").put("model_id", id)) { err, _ ->
-            if (err != null) Log.w(TAG, "role.set 失败: ${err.optString("message")}")
+            if (err != null) {
+                val msg = err.optString("message")
+                Log.w(TAG, "role.set 失败: $msg")
+                onDone?.invoke(false, msg)
+            } else {
+                onDone?.invoke(true, "")
+            }
         }
     }
 
@@ -226,6 +236,13 @@ class RealBackend {
         phaseMessage = null
     }
 
+    /** 亮屏即时重连（MainActivity onStart/onResume 调）：掉线且非用户主动断开时
+     *  立即重连，不等自动重连的退避定时器。未进真实模式（从未连过）不动作。 */
+    fun reconnectIfDown() {
+        if (phase == RealPhase.Offline) return
+        client.reconnectIfDown()
+    }
+
     /** 重试（断线 UI 的按钮；addr 传当前输入框地址——改了地址点重试应连新地址）。 */
     fun retry(addr: String = this.addr, token: String = this.token) {
         Log.i(TAG, "手动重试连接 $addr")
@@ -280,16 +297,23 @@ class RealBackend {
         }
     }
 
-    /** 新建会话并切入（会话列表「新对话」；发送前无会话时也走这里）。 */
-    fun newSession(onReady: (String) -> Unit = {}) {
-        client.call("session.new", null) { err, result ->
+    /** 新建会话并切入（会话列表「新对话」；发送前无会话时也走这里）。
+     *  [workspace] 归属项目 id（session.new 的 SessionNewParams.Workspace——
+     *  项目组内新建时透传 scope；空 = 未分组）。 */
+    fun newSession(onReady: (String) -> Unit = {}, workspace: String = "") {
+        val params = if (workspace.isNotBlank()) {
+            JSONObject().put("workspace", workspace)
+        } else {
+            null
+        }
+        client.call("session.new", params) { err, result ->
             if (err != null) {
                 Log.w(TAG, "session.new 失败: ${err.optString("message")}")
                 blocks.add(ThreadBlock.Error("新建会话失败: ${err.optString("message")}"))
                 return@call
             }
             val id = (result as? JSONObject)?.optString("session_id").orEmpty()
-            Log.i(TAG, "session.new → $id")
+            Log.i(TAG, "session.new → $id workspace=$workspace")
             if (id.isNotEmpty()) {
                 switchTo(id)
                 onReady(id)
@@ -305,19 +329,26 @@ class RealBackend {
         }
     }
 
-    /** 发送一条消息（chat.send；内容经事件流到达）。 */
-    fun send(text: String) {
+    /** 发送一条消息（chat.send；内容经事件流到达）。
+     *  effort 是**请求级参数**（protocol.ChatSendParams.Effort——与桌面端同语义：
+    *   每条消息携带；后端没有会话级 effort 方法、chat.history 也不回它，故无
+    *   远端读写通道，本端不持久化选择——只是发送时带上当前内存视图的值）。
+     *  effort 为空 = 不带键（老后端/未选档优雅降级）。 */
+    fun send(text: String, effort: String = "") {
         val t = text.trim()
         if (t.isEmpty()) return
         if (currentSessionId.isEmpty()) {
-            newSession { send(t) }
+            newSession(onReady = { send(t, effort) })
             return
         }
         busy = true
-        Log.i(TAG, "chat.send session=$currentSessionId text=${t.take(80)}")
+        Log.i(TAG, "chat.send session=$currentSessionId text=${t.take(80)} effort=$effort")
+        val params = JSONObject().put("session_id", currentSessionId).put("text", t)
+        // 空串不带 effort 键（wire 纪律：值缺省整键缺席，不发明「空档位」语义）
+        if (effort.isNotBlank()) params.put("effort", effort)
         client.call(
             "chat.send",
-            JSONObject().put("session_id", currentSessionId).put("text", t),
+            params,
         ) { err, result ->
             if (err != null) {
                 busy = false
@@ -481,8 +512,16 @@ class RealBackend {
                     ),
                 )
             } else {
-                val i = blocks.indexOfLast { it is ThreadBlock.Dispatch && it.done.not() }
-                // dispatchEnd 用 owner+dispatch 对齐卡；原型期取最后一张未完结卡
+                // 先按 dispatch_id 精确配对（协议契约：dispatchStart/End 的
+                // dispatch_id 同源）；找不到（历史重建后的卡没有 dispatch_id、
+                // 或跨会话的旧广播）才回落「最后一张未完结卡」并记日志。
+                val exact = dispatchCardIdx(dispatchId)
+                val i = if (exact >= 0) {
+                    exact
+                } else {
+                    Log.w(TAG, "dispatchEnd 无 dispatch_id 配对卡，回落未完结卡 dispatch=$dispatchId")
+                    blocks.indexOfLast { it is ThreadBlock.Dispatch && it.done.not() }
+                }
                 if (i >= 0) {
                     val d = blocks[i] as ThreadBlock.Dispatch
                     blocks[i] = d.copy(
@@ -612,7 +651,10 @@ class RealBackend {
 
             "chat.done" -> {
                 if (sid != currentSessionId) return
-                // 用最终 message 对齐流式块（修 delta 丢字的尾差）
+                // 用最终 message 对齐流式块（修 delta 丢字的尾差）。
+                // 覆盖语义对齐桌面端 reduce.ts 的 reduceDone：**content 非空才覆盖**
+                //——中间步 done（带 tool_calls、content 空）不得把已流式的正文
+                // 清成空串；空 content 时只关 streaming + 填元数据。
                 val msg = p.optJSONObject("message")
                 if (msg != null) {
                     val i = lastAssistantIndex()
@@ -625,7 +667,7 @@ class RealBackend {
                         val dur = msg.optLong("duration_ms", 0L)
                         val utok = msg.optInt("usage_tokens", 0)
                         blocks[i] = cur.copy(
-                            content = content,
+                            content = content.ifBlank { cur.content },
                             reasoning = reasoning.ifBlank { cur.reasoning },
                             reasoningMs = ftms,
                             model = model,
@@ -900,6 +942,16 @@ class RealBackend {
         blocks.clear()
         blocks.addAll(newBlocks)
         streamingIdx = -1
+        // 历史快照的任务清单（ChatHistoryResult.todos——对齐桌面端 history-snapshot
+        // 的 todos 装载）：非空插一块 Todo（当前清单的定格视图，随后的 todo.updated
+        // 会找到并替换它）；缺席/空 = 不插（老后端或没建过清单——不编空块）。
+        r.optJSONArray("todos")?.let { arr ->
+            if (arr.length() > 0) {
+                val list = (0 until arr.length()).map { arr.getJSONObject(it) }
+                    .map { TodoItem(it.optString("content"), it.optString("status")) }
+                blocks.add(ThreadBlock.Todo(list))
+            }
+        }
         r.optJSONObject("context")?.let { contextUsage = parseContext(it) }
         r.optJSONObject("stats")?.let { sessionStats = parseStats(it) }
         sessionModel = r.optString("model", "")

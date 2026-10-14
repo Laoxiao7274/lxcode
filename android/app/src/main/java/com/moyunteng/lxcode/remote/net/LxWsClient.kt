@@ -270,19 +270,19 @@ class LxWsClient(
                 method = "connection.ping",
                 createdAt = System.currentTimeMillis(),
                 // 应答到达：心跳回调（deliverPending 在主线程执行本回调）
-                callback = { _, _ -> pingAnswered = true },
+                callback = { _, _ -> pingAnsweredId = id },
             ),
         )
-        pingAnswered = false
         main.postDelayed({
-            // 超时判定：应答没到（pending 已被 deliverPending 消费也会把 answered
-            // 置真——普通 call 的 10s 看门狗不认识心跳请求，不会提前 fail 它）
-            done(pingAnswered)
+            // 超时判定：**本次** ping 的应答没到（按请求 id 限定——共享布尔会被
+            // 上一次心跳的迟到应答置真，让本次超时误判为成功）
+            done(pingAnsweredId == id)
         }, heartbeatTimeoutMs)
     }
 
-    /** 当前心跳请求是否已收到应答（pingOnce 的超时判定读它）。 */
-    @Volatile private var pingAnswered = false
+    /** 最近一次收到应答的心跳请求 id（pingOnce 的超时判定读它；按 id 限定，
+     *  不会被上一轮心跳的迟到应答污染）。 */
+    @Volatile private var pingAnsweredId = 0
 
     // ===== 自动重连（指数退避；用户显式 close 不重连）=====
 
@@ -303,6 +303,18 @@ class LxWsClient(
     private fun stopReconnect() {
         reconnectRunnable?.let { main.removeCallbacks(it) }
         reconnectRunnable = null
+    }
+
+    /**
+     * 亮屏即时重连（MainActivity onStart/onResume 调）：掉线且用户没显式断开时
+     * 立即 connectOnce，不等退避定时器走完——退避最长 30s，回手机看一眼要等
+     * 半分钟才重连是不可接受的。已连接 / 用户主动断开（close）时不动作。
+     */
+    fun reconnectIfDown() {
+        if (userClosed || connected) return
+        Log.i(TAG, "亮屏重连：立即 connectOnce $currentAddr（不等退避）")
+        stopReconnect()
+        connectOnce(currentAddr, currentToken)
     }
 
     /**

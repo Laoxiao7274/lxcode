@@ -81,7 +81,8 @@ data class ConnDraft(
  * 连接列表经 [ConnStore] 持久化（SharedPreferences JSON 数组；addr/token/name 逐条落盘，
  * App 重启保留）：保存/编辑/删除/选当前即写回；没有任何存档时按构建类型播种——
  * DEBUG 播 mock 列表（原型数据迁移，调试区控件同源），release 只播本机条目。
- * mock 页面行为不变（DEBUG 下播种的就是原 mock 数据）。
+ * 连接信息是 app 唯一持久化的业务状态（用户拍板的远端化原则）；mock 数据已随
+ * 原型退役（DEBUG 下播种的就是原 mock 连接条目）。
  */
 class MockAppState(private val store: ConnStore? = null) {
     var route by mutableStateOf<Route>(Route.Sessions)
@@ -308,6 +309,20 @@ fun AppRoot(pairUri: String? = null, onPairUriConsumed: () -> Unit = {}) {
             state.applyPairPayload(pairUri)
             onPairUriConsumed()
         }
+    }
+
+    // 亮屏/回前台即时重连（3.4）：掉线且非用户主动断开时立即 connectOnce——
+    // 自动重连的指数退避最长 30s，不能让用户回手机看一眼等退避走完。
+    // ON_START 在 activity onStart 触发；phase==Offline（从未连过/用户断开）no-op。
+    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
+        val obs = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_START) {
+                state.real.reconnectIfDown()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(obs)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
     }
 
     // 启动自动检查更新：查询失败静默、已是最新静默、有新版 → 会话页横幅（非阻断，
