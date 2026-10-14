@@ -170,15 +170,24 @@ function fakeSource() {
 
 const renderBlock = (el) => renderToStaticMarkup(createElement(SettingsProvider, { source: fakeSource() }, el));
 
-test('⑥ 用户气泡渲染附件卡（图片缩略图 + 文件卡），无附件不渲染卡区', () => {
+test('⑥ 用户消息附件区与气泡分离（千问式独立区块）：气泡外 user-atts + 图片网格 + 文件卡行', () => {
   const atts = [imgAtt(), fileAtt()];
   const html = renderBlock(createElement(Block, {
     block: { kind: 'user', uid: 1, text: '看图', attachments: atts },
     onConfirm: () => {}, onAnswer: () => {},
   }));
-  assert.ok(html.includes('att-image'), '图片缩略图');
+  // DOM 结构钉子：附件区在气泡外（user-atts 容器与 bubble 是兄弟，附件区在前）
+  const attsIdx = html.indexOf('user-atts');
+  const bubbleIdx = html.indexOf('class="bubble"');
+  assert.ok(attsIdx >= 0 && bubbleIdx >= 0, '独立附件区与气泡都渲染');
+  assert.ok(attsIdx < bubbleIdx, '附件区在气泡上方');
+  assert.ok(!/class="bubble"[^]*att-cards/.test(html), '附件卡不再进气泡');
+  // 图片 = 缩略图网格（att-grid + 统一方格单元）
+  assert.ok(html.includes('att-grid-item'), '图片进统一方格网格');
   assert.ok(html.includes('/attachments/s-1/ab12.png'), '缩略图用端点 URL');
-  assert.ok(html.includes('att-file'), '文件卡');
+  // 文件 = 文件卡行（user-att-files + att-file）
+  assert.ok(html.includes('user-att-files'), '文件进独立卡行');
+  assert.ok(html.includes('att-file'), '文件卡形态');
   assert.ok(html.includes('数据.csv'));
   assert.ok(html.includes('4 B'), '大小人话化');
 
@@ -186,7 +195,38 @@ test('⑥ 用户气泡渲染附件卡（图片缩略图 + 文件卡），无附�
     block: { kind: 'user', uid: 2, text: '纯文本' },
     onConfirm: () => {}, onAnswer: () => {},
   }));
-  assert.ok(!plain.includes('att-cards'), '无附件不渲染卡区');
+  assert.ok(!plain.includes('user-atts'), '无附件不渲染附件区');
+});
+
+test('⑥ 图片网格 +N 溢出层：超过 4 张收末格计数，点开看全部', () => {
+  const many = Array.from({ length: 6 }, (_, i) => imgAtt({ path: `s-1/g${i}.png`, name: `g${i}.png` }));
+  const html = renderBlock(createElement(Block, {
+    block: { kind: 'user', uid: 6, text: '多图', attachments: many },
+    onConfirm: () => {}, onAnswer: () => {},
+  }));
+  assert.ok(html.includes('att-grid-more'), '溢出计数格');
+  assert.ok(html.includes('+2'), '显示 +N');
+  assert.ok((html.match(/att-grid-item/g) || []).length === 4, '只渲染前 4 格');
+  const few = renderBlock(createElement(Block, {
+    block: { kind: 'user', uid: 7, text: '两图', attachments: many.slice(0, 2) },
+    onConfirm: () => {}, onAnswer: () => {},
+  }));
+  assert.ok(!few.includes('att-grid-more'), '不超限不出溢出格');
+});
+
+test('⑥ 纯图片只出网格、纯文件只出卡行（不渲染空段）', () => {
+  const imgs = renderBlock(createElement(Block, {
+    block: { kind: 'user', uid: 8, text: '图', attachments: [imgAtt()] },
+    onConfirm: () => {}, onAnswer: () => {},
+  }));
+  assert.ok(imgs.includes('att-grid-item'));
+  assert.ok(!imgs.includes('user-att-files'), '无文件不渲染文件行');
+  const files = renderBlock(createElement(Block, {
+    block: { kind: 'user', uid: 9, text: '文件', attachments: [fileAtt()] },
+    onConfirm: () => {}, onAnswer: () => {},
+  }));
+  assert.ok(files.includes('user-att-files'));
+  assert.ok(!files.includes('att-grid-item'), '无图片不渲染网格');
 });
 
 test('⑥ share_file 工具行渲染附件卡为主体（含 caption）', () => {

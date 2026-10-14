@@ -21,7 +21,7 @@ import { CompactionCard } from "./CompactionCard";
 import { JobCard } from "./JobCard";
 import { NoticeBar } from "./NoticeBar";
 import { TaskBlock } from "./TaskBlock";
-import { AttachmentCards } from "./AttachmentCard";
+import { UserAttachmentSection } from "./AttachmentCard";
 
 /** 没有 seq 的块（老后端 / 更早落库的历史）不能撤回/编辑时的说明——禁用按钮上
  *  的 title。写清楚原因而不是默默点不动：用户至少知道为什么。 */
@@ -95,6 +95,11 @@ export const Block = memo(
       // 动作条不渲染——消息还没被后端确认，复制/编辑/撤回都无从谈起。
       return (
         <div className="msg user" data-uid={dataUid}>
+          {/* 附件区（千问式独立区块）：在气泡**上方、气泡外**——图片统一方格
+              网格 + 文件卡行，与下方文字气泡视觉分离（间距、无气泡底）。
+              pending（乐观气泡，后端还没回执）不渲染：附件元数据要等回执才到，
+              pending 阶段的「带着附件」由气泡内的 bubble-atts 计数 chip 交代。 */}
+          {!block.pending && <UserAttachmentSection atts={block.attachments} />}
           <div className={"bubble" + (block.pending ? " bubble-pending" : "")} ref={bubbleRef}>
             {block.atts && (block.atts.images > 0 || block.atts.files > 0) && (
               <span className="bubble-atts">
@@ -102,9 +107,6 @@ export const Block = memo(
                 {block.atts.files > 0 && <span>[文件]×{block.atts.files}</span>}
               </span>
             )}
-            {/* 附件卡（后端回执/历史带的引用元数据）：气泡上方内联渲染——
-                图片缩略图 + 文件卡，与 share_file 工具行同一套组件。 */}
-            {!block.pending && <AttachmentCards atts={block.attachments} />}
             {block.text}
             {block.pending && (
               <span className="pending-hint">

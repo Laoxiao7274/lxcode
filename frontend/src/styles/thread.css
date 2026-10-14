@@ -452,14 +452,105 @@
   word-break: break-word;
   min-width: 0;
 }
-/* 气泡内的附件卡：固定上限之外再加 100% 约束——窄窗口下气泡宽可能小于
- * 附件卡的固定 max-width，没有这条附件会把气泡撑破。 */
-.msg.user .att-cards {
-  max-width: 100%;
+/* 附件区（千问式独立区块）：在气泡上方、气泡**外**——独立无底容器，
+ *  图片统一方格网格 + 文件卡行。与气泡的间距 6px（千问附件区与气泡的关系：
+ *  附件在上、文字气泡在下，两者分属不同容器、有明确留白）。
+ *  max-width:70% 与气泡同宽约束：窄窗口下附件区不能比气泡宽太多顶出列宽
+ *  （溢出修复从气泡内搬到这里——附件已不在气泡内，约束跟着搬）。 */
+.msg.user .user-atts {
+  max-width: 70%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  margin-bottom: 6px;
 }
-.msg.user .att-image,
-.msg.user .att-file {
-  max-width: 100%;
+/* 图片网格（千问 common-image-grid 语义）：统一方格网格。 */
+.att-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.att-grid-item {
+  width: 96px;
+  height: 96px;
+  padding: 0;
+  border: none;
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--bg-inset);
+  cursor: zoom-in;
+  flex: none;
+}
+.att-grid-item img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 12px;
+}
+.att-grid-item:hover img {
+  filter: brightness(0.92);
+}
+/* 坏图占位格：URL 可构造但源文件已不在——图标占位，不可点开放大。 */
+.att-grid-broken {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-faint);
+  cursor: default;
+  border: 1px dashed var(--border);
+}
+/* +N 溢出层（千问 common-image-grid-overflow）：同尺寸方格 + 半透明遮罩 +
+ * 计数，点开看全部。 */
+.att-grid-more {
+  width: 96px;
+  height: 96px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 12px;
+  background: var(--bg-inset);
+  color: var(--fg-muted);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.att-grid-more:hover {
+  color: var(--fg);
+}
+/* 溢出层展开态：全屏遮罩内的全量网格（可滚动），点空白处关闭。 */
+.att-grid-full-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+  max-width: 80vw;
+  max-height: 82vh;
+  overflow-y: auto;
+  padding: 8px;
+}
+.att-grid-full-item {
+  position: relative;
+  display: inline-flex;
+}
+.att-grid-full-item .att-grid-item {
+  width: 120px;
+  height: 120px;
+}
+/* 文件卡行（千问 file-card-list 语义）：横排卡行，多文件 wrap。 */
+.user-att-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.user-att-files .att-file {
+  max-width: 280px;
 }
 /* 乐观用户气泡（pending——后端还没回执，体验修复批次 2）：整体调淡 + 尾随
  * 「发送中…」轻量指示。回执（chat.userMessage）一到，归约器按 FIFO 换成本体
@@ -1353,15 +1444,13 @@
 
 /* ===== 附件卡（图片批次 B 的展示通道）=====
  *  图片 = 内联缩略图（点击放大）；文件 = 图标 + 名字 + 大小（点击下载）。
- *  用户气泡与 share_file 工具行共用一套（实时与回放同一份元数据）。 */
+ *  share_file 工具行 / dispatch 成果区共用一套（实时与回放同一份元数据）。
+ *  用户消息侧已拆到 .user-atts 独立区块（见 .msg.user .user-atts）。 */
 .att-cards {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 8px;
-}
-.msg.user .att-cards {
-  justify-content: flex-end;
 }
 .att-image {
   position: relative;

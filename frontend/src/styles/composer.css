@@ -256,14 +256,14 @@
 .att-thumbs {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 8px;
 }
 .att-thumb {
   position: relative;
   display: inline-flex;
-  width: 56px;
-  height: 56px;
-  border-radius: 8px;
+  width: 72px;
+  height: 72px;
+  border-radius: 10px;
   overflow: hidden;
   border: 1px solid var(--border-soft);
   background: var(--bg-side);
@@ -302,7 +302,7 @@
 .att-file-cards {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 8px;
 }
 .att-file-card {
   display: inline-flex;
