@@ -20,6 +20,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/moyunteng/lxcode/internal/winutil"
 )
 
 // defaultGitTimeout 是 ctx 未带 deadline 时的默认硬超时。
@@ -36,6 +38,10 @@ func runGitCtx(ctx context.Context, dir string, args ...string) ([]byte, error) 
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	// 无窗口：git 是控制台程序，GUI/服务形态的后端下会往桌面弹黑窗
+	if attr := winutil.NoWindowAttr(); attr != nil {
+		cmd.SysProcAttr = attr
+	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return out, &gitError{args: strings.Join(args, " "), out: truncate(string(out), 200), err: err}

@@ -192,6 +192,12 @@ func bashDef(r *Registry) *Def {
 			cctx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
 			cmd := exec.CommandContext(cctx, shellName, shellFlag, a.Command)
+			// 无窗口：GUI 形态的后端（桌面壳 sidecar / SCM 服务）没有控制台，
+			// shell 的控制台子命令会新建可见控制台 → 用户桌面弹黑窗（CREATE_NO_WINDOW
+			// 让子树继承不可见控制台，见 noswindow_windows.go）
+			if attr := noWindowAttr(); attr != nil {
+				cmd.SysProcAttr = attr
+			}
 			// 取消 = 杀**整棵进程树**：默认的 Cancel 只 Process.Kill 直接子进程，
 			// 而 sh -c 拉起的孙进程会活下来（见 proctree_*.go 的实测记录）
 			configureProcTree(cmd)
@@ -281,6 +287,10 @@ func startBackground(r *Registry, parent context.Context, shellName, shellFlag, 
 			time.Duration(min(timeoutSec, int(bashMaxTimeout/time.Second)))*time.Second)
 	}
 	cmd := exec.CommandContext(cctx, shellName, shellFlag, command)
+	// 与前台同款：无窗口旗标（GUI 形态后端下控制台子命令不弹黑窗）
+	if attr := noWindowAttr(); attr != nil {
+		cmd.SysProcAttr = attr
+	}
 	// 与前台同款：取消要杀掉整棵树，且给 I/O 一个兜底期限
 	configureProcTree(cmd)
 	cmd.Cancel = func() error { return killProcessTree(cmd.Process) }

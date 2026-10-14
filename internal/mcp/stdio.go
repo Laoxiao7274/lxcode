@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/moyunteng/lxcode/internal/winutil"
 )
 
 // transport 是一条 MCP 连接的下半层：把一条请求帧送出去、把响应帧收回来。
@@ -57,6 +59,11 @@ func newStdioTransport(cfg ServerConfig) (*stdioTransport, error) {
 		return nil, newError(cfg.ID, "transport", "stdio 传输需要 command", nil)
 	}
 	cmd := exec.Command(cfg.Command, cfg.Args...)
+	// 无窗口：后端在 GUI/服务形态下没有控制台，stdio MCP 服务器若是控制台
+	// 程序会往用户桌面弹黑窗（CREATE_NO_WINDOW 让它拿不可见控制台）
+	if attr := winutil.NoWindowAttr(); attr != nil {
+		cmd.SysProcAttr = attr
+	}
 	// 环境：继承当前进程 + 服务器自己的配置（用户填的覆盖继承的——
 	// 与 mcpServers 事实标准同语义）。
 	env := os.Environ()

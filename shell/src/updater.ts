@@ -16,6 +16,7 @@ import { pipeline } from "node:stream/promises";
 import { Readable, Transform } from "node:stream";
 import { app, BrowserWindow, ipcMain } from "electron";
 import { backendExePath, restartBackend } from "./sidecar";
+import { buildApplyScript } from "./update-script";
 import { createUpdatePoller, manualCheckOutcome, nextCheckDelayMs, type UpdatePoller } from "./update-poll";
 import { notifyTrayUpdate } from "./tray";
 
@@ -238,7 +239,7 @@ async function downloadAndStage(): Promise<{ ok: boolean }> {
     // 解压 + 逐文件校验（zip 内路径 = 安装目录相对路径）
     const extractDir = join(stageRoot, "payload");
     mkdirSync(extractDir, { recursive: true });
-    const r = spawnSync("tar", ["-xf", zipPath, "-C", extractDir], { shell: false });
+    const r = spawnSync("tar", ["-xf", zipPath, "-C", extractDir], { shell: false, windowsHide: true });
     if (r.status !== 0) {
       const stderr = r.stderr?.toString().trim().slice(0, 300) ?? "";
       ulog("解压失败", `tar exit ${r.status} ${stderr}`);
@@ -305,6 +306,9 @@ async function applyUpdate(): Promise<{ ok: boolean; needsRestart: boolean }> {
   // 2) asar 冷替换排程（仅产线）：暂存 + 脱离进程的替换脚本（等壳退出 → 换 → 重启壳）
   //    注意 newAsar 的判定与拷贝必须走 originalFs：Electron 补丁版 fs 对 *.asar 路径
   //    会当归档解析（existsSync 语义漂移、copyFileSync 直接 ENOENT）。
+  //    脚本用 PowerShell 而不是 cmd（黑窗根因修复，详见 update-script.ts 头注）；
+  //    spawn 端 windowsHide + detached——PS 自身无控制台，cmdlet 又零子进程，
+  //    全链路无任何可见窗口。
   const newAsar = join(stagedDir, "resources", "app.asar");
   if (loadOriginalFs().existsSync(newAsar) && app.isPackaged) {
     const pending = join(app.getPath("userData"), "update-pending");
@@ -317,23 +321,28 @@ async function applyUpdate(): Promise<{ ok: boolean; needsRestart: boolean }> {
     }
     const asar = join(process.resourcesPath, "app.asar");
     const installDir = join(process.resourcesPath, "..");
-    const script = [
-      "@echo off",
-      ":wait",
-      `tasklist /FI "IMAGENAME eq ${app.getName()}.exe" | find /I "${app.getName()}.exe" >nul && (timeout /t 1 /nul >nul & goto wait)`,
-      `move /y "${asar}" "${asar}.old"`,
-      `copy /y "${join(pending, "app.asar")}" "${asar}"`,
-      `if exist "${asar}.old" del "${asar}.old"`,
-      `start "" "${join(installDir, `${app.getName()}.exe`)}"`,
-    ].join("\r\n");
-    const scriptPath = join(pending, "apply-update.cmd");
+    const shellExe = join(installDir, `${app.getName()}.exe`);
+    const scriptPath = join(pending, "apply-update.ps1");
     try {
-      writeFileSync(scriptPath, script, "utf8");
+      // 带 BOM 写入：Windows PowerShell 5.1 对无 BOM 文件按 ANSI 解码，路径含
+      // 非 ASCII（中文用户名）会乱码 → 替换错路径。BOM 是 PS5.1 的 UTF-8 信号。
+      writeFileSync(scriptPath, "\uFEFF" + buildApplyScript({
+        asar,
+        pendingAsar: join(pending, "app.asar"),
+        shellExe,
+        imageName: `${app.getName()}.exe`,
+      }), "utf8");
     } catch (e) {
       throw humanFsError(e, "冷替换脚本写入失败");
     }
-    spawn("cmd", ["/d", "/s", "/c", scriptPath], { detached: true, stdio: "ignore", windowsHide: true }).unref();
-    ulog("asar 冷替换已排程", "壳退出后由 apply-update.cmd 完成");
+    // -NonInteractive：脚本绝不等输入（卡住就超时退出，不给用户一个能敲 Ctrl+C
+    // 的交互控制台）；-ExecutionPolicy Bypass：单文件脚本不受系统策略拦。
+    spawn("powershell", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", scriptPath], {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true, // PS 自身的控制台不可见（子命令全是 cmdlet，无孙进程）
+    }).unref();
+    ulog("asar 冷替换已排程", "壳退出后由 apply-update.ps1 完成");
   }
 
   // 清理本次的暂存子目录（exe 已落位、asar 已暂存到 pending）。更新本身已完成，

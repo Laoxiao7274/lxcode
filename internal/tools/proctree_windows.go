@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
-	"syscall"
 )
 
 // configureProcTree 在 Windows 上无需额外设置：树杀靠 taskkill 按父子关系走。
@@ -27,7 +26,7 @@ func killProcessTree(p *os.Process) error {
 		return os.ErrProcessDone
 	}
 	kill := exec.Command("taskkill", "/T", "/F", "/PID", strconv.Itoa(p.Pid))
-	kill.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	kill.SysProcAttr = noWindowAttr()
 	if err := kill.Run(); err != nil {
 		return p.Kill()
 	}

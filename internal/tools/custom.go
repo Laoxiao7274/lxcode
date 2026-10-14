@@ -313,6 +313,10 @@ func runArgv(ctx context.Context, argv []string) (string, error) {
 	cctx, cancel := context.WithTimeout(ctx, customTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(cctx, argv[0], argv[1:]...)
+	// 无窗口旗标：同 bash（GUI 形态后端下，自定义工具的控制台可执行文件不弹黑窗）
+	if attr := noWindowAttr(); attr != nil {
+		cmd.SysProcAttr = attr
+	}
 	// 自定义工具虽不经过 shell，但它照样可能拉起子进程；取消时杀整棵树，
 	// 免得留下孤儿攥着输出管道把这次调用拖到超时之外（见 proctree_*.go）
 	configureProcTree(cmd)
