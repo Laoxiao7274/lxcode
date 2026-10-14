@@ -37,11 +37,12 @@ import type { SendAttachments, ContextUsage, SessionStats, TodoItem } from "../.
  *  Enter/Tab 补全——面板开着时 Enter 不发送）。
  *  任务清单**融合进输入白卡**（.pi 内部顶部的 .pi-plan 区块：清单 + 发丝分隔线
  *  + 输入区 = 一张卡的视觉；todos 为空时该区块不渲染，.pi 形态与无清单时一致）。
- *  附件（图片批次 B，2026-12 改版对齐 DSH composer 布局语义）：「+」按钮在
- *  **输入区左侧**（与 textarea 同行、贴底对齐——DSH 的左端图标组语义），弹出
- *  菜单（图片/文件，本地选择）；输入区监听 paste（剪贴板图片走附件流程，文本
- *  粘贴照常）；暂存附件在输入框上方预览（缩略图/文件卡，点击 × 移除），随发送
- *  组装进 chat.send 的 images/files 参数，busy 时入队**携带附件**。 */
+ *  附件（图片批次 B → 千问对齐 2026-12）：「+」按钮在**输入区左侧**（32px 正圆、
+ *  无边框、hover 浅灰底——千问 AddButton subtle 实测形态），弹出菜单（图片/文件，
+ *  本地选择）；输入区监听 paste（剪贴板图片走附件流程，文本粘贴照常）；暂存附件在
+ *  输入卡**内部**、文本行上方预览（96px 方格 + 文件卡行，与消息侧 UserAttachmentSection
+ *  同一套视觉语言，点击 × 移除），随发送组装进 chat.send 的 images/files 参数，
+ *  busy 时入队**携带附件**。 */
 /** 外部注入输入框的草稿（撤回/编辑把原文放回输入框）。
  *
  *  **用单调递增的 id 而不是按文本比较**：同一条消息连续撤回两次（或撤回后再编辑
@@ -544,33 +545,35 @@ export function Composer({
             <span className="busy-text">{busy ? "生成中" : "发送中…"}</span>
           </div>
         )}
-        {/* 附件预览区：贴输入框上方（队列区之下）。图片缩略图 + 文件卡，点 × 移除；
+        {/* 附件预览区：千问 topContent 槽位——在输入卡**内部**、文本行上方
+            （2026-12 千问对齐：附件区与输入同卡，不再浮在卡外）。图片 96px 方格
+            （与消息侧 UserAttachmentSection 同一套视觉语言）+ 文件卡行，点 × 移除；
             一次性提示（超限拒绝等）也显示在这里。 */}
-        {(images.length > 0 || files.length > 0 || notice) && (
-          <div className="att-preview" role="region" aria-label="附件预览">
-            {notice && <div className="att-notice" role="status">{notice}</div>}
-            {images.length > 0 && (
-              <div className="att-thumbs">
-                {images.map((im) => (
-                  <AttachmentThumb key={im.id} mime={im.mime} data={im.data} file={im.file} alt={`图片附件 ${im.name || ""}`} title={im.name || undefined} onRemove={() => removeImage(im.id)} />
-                ))}
-              </div>
-            )}
-            {files.length > 0 && (
-              <FolderFileCards
-                files={files}
-                onRemoveFolder={(folder) => setFiles((cur) => cur.filter((f) => f.group !== folder))}
-                onRemoveFile={(id) => setFiles((cur) => removePending(cur, id))}
-              />
-            )}
-          </div>
-        )}
         <div className="pi">
           {/* 任务清单区：白卡顶部区块（清单 + 发丝分隔线 + 输入区 = 一张卡）。
               在 .pi 的 relative 内——斜杠面板锚点不受影响；todos 为空不渲染。 */}
           {todos.length > 0 && (
             <div className="pi-plan">
               <TodoList items={todos} />
+            </div>
+          )}
+          {(images.length > 0 || files.length > 0 || notice) && (
+            <div className="att-preview" role="region" aria-label="附件预览">
+              {notice && <div className="att-notice" role="status">{notice}</div>}
+              {images.length > 0 && (
+                <div className="att-thumbs">
+                  {images.map((im) => (
+                    <AttachmentThumb key={im.id} mime={im.mime} data={im.data} file={im.file} alt={`图片附件 ${im.name || ""}`} title={im.name || undefined} onRemove={() => removeImage(im.id)} />
+                  ))}
+                </div>
+              )}
+              {files.length > 0 && (
+                <FolderFileCards
+                  files={files}
+                  onRemoveFolder={(folder) => setFiles((cur) => cur.filter((f) => f.group !== folder))}
+                  onRemoveFile={(id) => setFiles((cur) => removePending(cur, id))}
+                />
+              )}
             </div>
           )}
           {slashOpen && (
@@ -597,7 +600,7 @@ export function Composer({
                   aria-expanded={addMenu.open}
                   onClick={addMenu.toggle}
                 >
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
                     <path d="M12 5v14M5 12h14" />
                   </svg>
                 </button>

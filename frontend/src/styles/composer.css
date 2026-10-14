@@ -241,12 +241,17 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* ===== 附件（图片批次 B）：预览区 + 「+」菜单 ===== */
+/* ===== 附件（图片批次 B → 千问对齐 2026-12）：预览区 + 「+」菜单 =====
+ * 千问实测（web-app-runtime.css / async chunk，2026-12 抓取）：附件区在输入卡
+ * **内部**、文本行上方（topContent 槽位）；图片 120px 高方格、radius 8-12px、
+ * gap 8px；文件卡 fileBox 212×52px、radius 12、icon 28px、title 12px/500、
+ * status 10px；移除钮 20px 圆、白底、绝对定位卡外右上角 -6px。
+ * 我们与消息侧 UserAttachmentSection 同一套视觉语言：96px 方格 + radius 12。 */
 .att-preview {
-  padding: 0 4px 8px;
+  padding: 12px 16px 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 .att-notice {
   font-size: 11.5px;
@@ -261,43 +266,48 @@
 .att-thumb {
   position: relative;
   display: inline-flex;
-  width: 72px;
-  height: 72px;
-  border-radius: 10px;
-  overflow: hidden;
-  border: 1px solid var(--border-soft);
-  background: var(--bg-side);
+  width: 96px;
+  height: 96px;
+  border-radius: 12px;
+  overflow: visible;
+  border: none;
+  background: transparent;
 }
 .att-thumb img {
   width: 100%;
   height: 100%;
   object-fit: cover;
   display: block;
+  border-radius: 12px;
+  background: var(--bg-inset);
 }
 .att-thumb-small {
   width: 22px;
   height: 22px;
   border-radius: 5px;
+  overflow: hidden;
   flex: none;
 }
 .att-remove {
   position: absolute;
-  top: 1px;
-  right: 1px;
+  top: -6px;
+  right: -6px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 15px;
-  height: 15px;
-  border: none;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--border);
   border-radius: 50%;
-  background: rgba(0, 0, 0, 0.55);
-  color: #fff;
+  background: var(--surface);
+  color: var(--fg-muted);
   cursor: pointer;
   padding: 0;
+  z-index: 2;
 }
 .att-remove:hover {
-  background: rgba(0, 0, 0, 0.75);
+  background: var(--hover-veil-mid);
+  color: var(--fg);
 }
 .att-file-cards {
   display: flex;
@@ -307,14 +317,17 @@
 .att-file-card {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 3px 8px;
-  border: 1px solid var(--border-soft);
-  border-radius: 8px;
-  background: var(--bg-side);
-  font-size: 11.5px;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  font-size: 12px;
+  font-weight: 500;
   color: var(--fg);
   max-width: 260px;
+  min-height: 40px;
+  box-sizing: border-box;
 }
 .att-file-card svg {
   flex: none;
@@ -324,30 +337,35 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  line-height: 20px;
 }
 .att-file-size {
   flex: none;
-  color: var(--fg-muted);
+  color: var(--fg-faint);
   font-size: 10.5px;
+  font-weight: 400;
 }
 .att-file-card .att-remove,
-.att-thumb .att-remove {
+.att-thumb .att-remove,
+.folder-card .att-remove {
   position: static;
   flex: none;
   width: 14px;
   height: 14px;
+  border: none;
   background: transparent;
   color: var(--fg-muted);
 }
 .att-file-card .att-remove:hover,
-.att-thumb .att-remove:hover {
+.att-thumb .att-remove:hover,
+.folder-card .att-remove:hover {
   background: var(--border-soft);
   color: var(--fg);
 }
-/* 「+」按钮（DSH 的 .add 语义）：输入区左侧的圆形图标钮——28px 正圆 + subtle
- *  填充（DSH --dsw-specific-selector 一档，这里用 token 近似）、14px 图标、
- *  flex:none。贴底对齐（.pi-row 的 align-items:flex-end）+ 微调，与 textarea
- *  首行文字齐平。弹出菜单向上（输入框下方没有空间）。 */
+/* 「+」按钮（千问 AddButton subtle 对齐 2026-12）：输入区左侧的正圆图标钮——
+ * 千问实测 `size-8 rounded-full border-0 text-primary hover:bg-option`：
+ * 32px 正圆、无边框、透明底、fg 色图标（16px）、hover 浅灰底（--hover-veil）。
+ * flex:none。贴底对齐（.pi-row 的 align-items:flex-end）+ 微调。菜单向上。 */
 .att-add-wrap {
   position: relative;
 }
@@ -356,19 +374,19 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
-  margin: 0 2px 7px 10px;
+  width: 32px;
+  height: 32px;
+  margin: 0 2px 8px 8px;
   border: none;
   border-radius: 999px;
-  background: var(--border-soft);
-  color: var(--fg-muted);
+  background: transparent;
+  color: var(--fg);
   cursor: pointer;
   padding: 0;
+  transition: background-color 120ms;
 }
 .att-add:hover {
-  color: var(--fg);
-  background: var(--border);
+  background: var(--hover-veil);
 }
 .att-menu {
   position: absolute;
@@ -410,6 +428,9 @@
   flex: none;
   color: var(--fg-muted);
 }
+.att-add svg {
+  flex: none;
+}
 /* 隐藏的文件选择入口（「+」菜单项触发；display:none 也行——用类名便于测试定位） */
 .att-input {
   display: none;
@@ -450,10 +471,15 @@
   flex: none;
 }
 /* 输入框（不加 overflow:hidden——piBar 里的弹层菜单要向上弹出，
-   圆角裁剪交给内部元素：textarea 上圆角 + piBar 下圆角） */
+   圆角裁剪交给内部元素：textarea 上圆角 + piBar 下圆角）。
+   千问实测（async chunk 2865，2026-12）：`rounded-[28px] border border-line-heavier
+   bg-capsule px-[12px] pb-[12px] pt-[16px]` + hover/focus-within 只是同一枚
+   shadow（0 8px 16px -4px rgba(0,0,0,.05)）——没有焦点描边变色。这里 radius 取
+   20px（720px 卡宽对 28px 圆角的等比映射），卡级 padding 由 textarea/piBar 的
+   内距实现（下面各自的 padding 值按 16/12/12 节奏分摊）。 */
 .pi {
   position: relative; /* 斜杠命令面板的定位锚 */
-  border-radius: 14px;
+  border-radius: 20px;
   background: var(--surface);
   box-shadow: 0 0 0 1px var(--border-strong), 0 1px 3px rgba(0, 0, 0, 0.04);
   border: none;
@@ -521,7 +547,7 @@
   color: var(--fg-faint);
 }
 .pi:focus-within {
-  box-shadow: 0 0 0 1.5px var(--fg), 0 1px 3px rgba(0, 0, 0, 0.04);
+  box-shadow: 0 0 0 1px var(--fg-faint), 0 8px 16px -4px rgba(0, 0, 0, 0.05);
 }
 /* ===== 任务清单区（融合进白卡：2026-12 用户拍板「让他和输入框融为一体」） =====
  * 结构：.pi（一张白卡）> .pi-plan（清单）+ 发丝分隔线 + 输入区。取缔了旧
@@ -547,7 +573,7 @@
   padding: 14px 16px 6px 0;
   font-family: var(--font-sans);
   font-size: 14px;
-  border-radius: 14px 14px 0 0;
+  border-radius: 20px 20px 0 0;
   color: var(--fg);
   background: transparent;
   border: none;
@@ -575,8 +601,8 @@
      可收缩的控件文字折成了两行）。真正让位的是统计胶囊（下面 .stats-pills 允许收缩，
      标签带 ellipsis 兜底）。 */
   flex-wrap: nowrap;
-  padding: 8px 12px 10px;
-  border-radius: 0 0 14px 14px;
+  padding: 6px 12px 10px;
+  border-radius: 0 0 20px 20px;
   background: var(--surface);
 }
 /* 这一行的**控件**一律不收缩、不折行：它们窄下去就是文字折成两行（工具名/模型名/
@@ -1031,9 +1057,14 @@
   margin: 0 1px;
   background: var(--surface);
 }
+/* 发送钮（千问 SendButton 对齐 2026-12）：32px 正圆无边框。千问实测
+ * 发送态 `bg-black-button`（#0d0d0d）+ 白图标 → 我们用 --fg 底 + --on-accent；
+ * 禁用态 `bg-[--ty-text-disabled]`（#ccc）→ 我们用 --border-strong 底（实色，
+ * 不再靠 opacity 假灰）；停止态千问浅灰底白图标 → 我们保持 --fg 底（对比更
+ * 清晰，语义同构）。 */
 .send-btn {
-  width: 30px;
-  height: 30px;
+  width: 32px;
+  height: 32px;
   border-radius: 50%;
   display: inline-flex;
   align-items: center;
@@ -1052,7 +1083,9 @@
   transform: scale(0.95);
 }
 .send-btn:disabled {
-  opacity: 0.25;
+  background: var(--border-strong);
+  color: var(--on-accent);
+  opacity: 1;
   cursor: default;
 }
 .send-btn.stop {
@@ -1584,9 +1617,9 @@
   gap: 6px;
 }
 .folder-card {
-  border: 1px solid var(--border-soft);
-  border-radius: 8px;
-  background: var(--bg-side);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
   max-width: 340px;
 }
 .folder-card-head {

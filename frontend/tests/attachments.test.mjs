@@ -9,6 +9,7 @@
 // ⑦ Composer 静态渲染：队列条目附件标记可见、「+」入口随 readOnly 消失。
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 
@@ -236,6 +237,65 @@ test('⑦ Composer：只读视图（子会话页）不渲染「+」入口', () =
     ),
   ));
   assert.ok(!html.includes('att-add'), '只读视图不该有「+」入口: ' + html);
+});
+
+test('⑦b Composer：暂存附件区在输入卡内部（千问 topContent 槽位）——96px 方格 + 文件卡行 + 移除钮', () => {
+  // initialDraft 装两张图 + 一个散文件：暂存区渲染进 .pi 卡内、pi-row 之前；
+  // 类名钉住新形态（att-thumbs/att-thumb/att-file-card/att-remove），不留旧 72px。
+  const html = renderToStaticMarkup(createElement(
+    SettingsProvider,
+    { source: fakeSource() },
+    createElement(AgentsProvider, { source: fakeSource() },
+      createElement(Composer, {
+        busy: false,
+        onSend: () => {},
+        onCancel: () => {},
+        initialDraft: {
+          text: '',
+          images: [
+            { id: 'im1', mime: 'image/png', name: 'shot1.png', data: 'aGVsbG8=' },
+            { id: 'im2', mime: 'image/png', name: 'shot2.png', data: 'aGVsbG8=' },
+          ],
+          files: [{ id: 'f1', mime: '', name: '季度报告.pdf', size: 2048, file: undefined }],
+        },
+      }),
+    ),
+  ));
+  const piAt = html.indexOf('class="pi"');
+  const previewAt = html.indexOf('att-preview');
+  const rowAt = html.indexOf('class="pi-row"');
+  assert.ok(piAt >= 0 && rowAt >= 0, '输入卡与输入行应存在');
+  assert.ok(previewAt > piAt && previewAt < rowAt, '附件预览区应在 .pi 卡内、pi-row 之前');
+  assert.ok(html.includes('att-thumbs'), '图片网格容器应存在');
+  assert.equal((html.match(/class="att-thumb"/g) || []).length, 2, '两张图各一格（96px 方格形态）');
+  assert.ok(html.includes('att-file-card'), '散文件应是文件卡行');
+  assert.ok(html.includes('季度报告.pdf'), '文件名应可见');
+  assert.ok(html.includes('att-remove'), '移除钮应存在');
+});
+
+test('⑦c CSS：暂存区千问形态的源码钉子——96px 方格 radius12、+钮 32px 正圆无边框、发送钮 32px 灰底禁用', () => {
+  const css = readFileSync('src/styles/composer.css', 'utf8');
+  const rule = (selector) => {
+    const at = css.indexOf(selector);
+    if (at < 0) return null;
+    const start = css.indexOf('{', at);
+    return css.slice(start + 1, css.indexOf('}', start));
+  };
+  const thumb = rule('.att-thumb {');
+  assert.ok(thumb?.includes('width: 96px') && thumb.includes('height: 96px'), '缩略图 96px 方格: ' + (thumb ?? ''));
+  assert.ok(thumb?.includes('border-radius: 12px'), '方格 radius 12（与消息侧同款）: ' + (thumb ?? ''));
+  const add = rule('.att-add {');
+  assert.ok(add?.includes('width: 32px') && add.includes('height: 32px'), '+按钮 32px 正圆（千问 size-8）: ' + (add ?? ''));
+  assert.ok(add?.includes('background: transparent') && !add.includes('border: 1px'), '+按钮无边框透明底: ' + (add ?? ''));
+  assert.ok(add?.includes('border-radius: 999px'), '+按钮正圆: ' + (add ?? ''));
+  const send = rule('\n.send-btn {');
+  assert.ok(send?.includes('width: 32px') && send.includes('height: 32px'), '发送钮 32px: ' + (send ?? ''));
+  const sendDisabled = rule('.send-btn:disabled {');
+  assert.ok(sendDisabled?.includes('background: var(--border-strong)'), '禁用态实色灰底（千问 text-disabled 映射）: ' + (sendDisabled ?? ''));
+  const pi = rule('.pi {');
+  assert.ok(pi?.includes('border-radius: 20px'), '输入卡大圆角（千问 28px 的等比映射）: ' + (pi ?? ''));
+  const preview = rule('.att-preview {');
+  assert.ok(preview?.includes('padding: 12px 16px 0'), '附件区卡内内距（与 textarea 左右对齐）: ' + (preview ?? ''));
 });
 
 // ---------- 测试脚手架 ----------
