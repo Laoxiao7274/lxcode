@@ -115,6 +115,14 @@ class RealBackend {
         private set
 
     /**
+     * 流式**内容版本号**（当前会话的流式块每次被 delta 改写 +1）：ThreadScreen 据此在
+     * sticky-follow 时跟随内容增长——最后一块超过一屏时，delta 只让它变高、块数不变
+     * （blocks.size 不触发），不监听它的话视口会停在该块开头、最新内容在屏外。
+     */
+    var streamVersion by mutableStateOf(0)
+        private set
+
+    /**
      * 各会话的实时忙闲（chat.busy 广播；多端共享进度的列表侧投影）：
      * 任意客户端（手机/桌面）上某会话开始/结束生成，这里都收到同一份广播。
      * 会话列表的「运行中」状态点读它——不只是当前打开的会话。
@@ -591,6 +599,7 @@ class RealBackend {
                 } else {
                     cur.copy(content = cur.content + text, streaming = true)
                 }
+                streamVersion++
             }
 
             "chat.toolCall" -> {

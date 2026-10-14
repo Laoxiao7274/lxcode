@@ -8,6 +8,8 @@ package com.moyunteng.lxcode.remote.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -45,6 +47,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -57,6 +60,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.delay
 import com.moyunteng.lxcode.design.component.LxConfirmDialog
 import com.moyunteng.lxcode.design.component.LxIconButton
 import com.moyunteng.lxcode.design.component.LxStatus
@@ -107,27 +111,105 @@ fun ThreadScreen(state: MockAppState, sessionId: String) {
     val historyVersion = real.historyVersion
     val imeHeight = WindowInsets.ime.getBottom(LocalDensity.current)
 
-    /** 是否停在底部附近（sticky-follow 的判定）：最后一个条目可见即算——
-     *  允许键盘/输入区遮挡导致的轻微偏移，但翻上去看历史（最后条目出视口）不算。 */
-    fun nearBottom(): Boolean {
-        val info = listState.layoutInfo.visibleItemsInfo
-        if (info.isEmpty()) return true
-        return info.last().index >= real.blocks.size - 1
+    // sticky-follow 的「跟随」状态：进入会话/拉底之后为 true，用户翻离底部后为 false。
+    // 判定**只看用户拖拽**（interactionSource 的 DragInteraction）——程序化滚动
+    // （snapToBottom / 跟随补滚）不产生拖拽事件，不会误伤；isScrollInProgress
+    // 无法区分两者（程序滚也会置它，真机复测抓到过：补滚被当成翻历史、跟随被解除）。
+    var sticky by remember { mutableStateOf(true) }
+
+    /** 是否已在列表**真正的底部**：最后一块的**底边**进入视口可视区。
+     *  不能用「最后一个条目可见」判定——最后一块超过一屏时它永远可见，
+     *  用户看它的开头也会被判成在底部（流式新块一到就把人拽走）；
+     *  补滚到真底部后该判定同样成立，两处语义统一。
+     *  注意 viewportEndOffset **含**底部 contentPadding（输入区高度），
+     *  真底 = viewportEndOffset - afterContentPadding，不减会把「还没到底」
+     *  判成「已在底」（真机复测抓到过：流式跟随因此在块开头卡住）。 */
+    fun bottomAligned(): Boolean {
+        val info = listState.layoutInfo
+        if (info.visibleItemsInfo.isEmpty()) return true
+        val last = info.visibleItemsInfo.lastOrNull { it.index == real.blocks.size - 1 }
+            ?: return false
+        return last.offset + last.size <= info.viewportEndOffset - info.afterContentPadding
+    }
+
+    // 用户拖拽流：开始拖拽时若不在底部 = 在翻历史，解除跟随；拖拽结束停在底部则恢复。
+    LaunchedEffect(listState) {
+        listState.interactionSource.interactions.collect { interaction ->
+            when (interaction) {
+                is DragInteraction.Start -> if (!bottomAligned()) sticky = false
+                is DragInteraction.Stop, is DragInteraction.Cancel -> sticky = bottomAligned()
+            }
+        }
+    }
+
+    /** 滚到列表**真正的底部**。
+     *  scrollToItem(index) 只把该条目的顶部对齐视口顶（LazyColumn 对超高条目就是
+     *  这个行为）——最后一块超过一屏时，用户看到的是块的开头、最新内容在屏外。
+     *  所以跳到最后一项之后，再按「条目底边 − 视口底」的实测差值补滚：
+     *  逐帧收敛（最多 6 帧，防抖、不无限循环），期间图片/代码块异步量高导致的
+     *  高度变化也会被后续帧补上；scrollBy 在可滚动范围尽头自动钳住，不会滚过头。
+     *  [recheckDelayMs] > 0 时延迟后再收敛一次（异步内容在收敛帧之后才量完的兜底）。 */
+    suspend fun snapToBottom(recheckDelayMs: Long = 0) {
+        val count = real.blocks.size
+        if (count <= 0) return
+        listState.scrollToItem(count - 1)
+        suspend fun converge() {
+            repeat(6) {
+                withFrameNanos { }
+                if (!listState.canScrollForward) return
+                val info = listState.layoutInfo
+                val last = info.visibleItemsInfo.lastOrNull { it.index == count - 1 }
+                // 真底 = viewportEndOffset - afterContentPadding（含底部输入区 padding，见 bottomAligned）
+                val delta = last?.let {
+                    it.offset + it.size - (info.viewportEndOffset - info.afterContentPadding)
+                } ?: 0
+                if (delta > 0) listState.scrollBy(delta.toFloat())
+                else listState.scrollBy(1_000_000f) // 差值口径不符时兜底：直接滚到范围尽头
+            }
+        }
+        converge()
+        if (recheckDelayMs > 0) {
+            delay(recheckDelayMs)
+            if (sticky) converge()
+        }
     }
 
     LaunchedEffect(historyVersion) {
         if (historyVersion > 0 && real.blocks.isNotEmpty()) {
-            listState.scrollToItem(real.blocks.size - 1)
+            snapToBottom(recheckDelayMs = 400)
+            sticky = true
         }
     }
     LaunchedEffect(real.blocks.size) {
-        if (real.blocks.isNotEmpty() && nearBottom()) {
-            listState.scrollToItem(real.blocks.size - 1)
+        if (real.blocks.isNotEmpty() && sticky) {
+            snapToBottom()
+            sticky = true
+        }
+    }
+    // 流式期间内容增长（delta 追加让最后一块变高、块数不变）：sticky 时跟随。
+    // 用收敛式补滚（scrollBy 差值）而不是 scrollToItem——避免每条 delta 都把视口
+    // 猛跳一次，也天然兼容超高块（scrollToItem 对它只做顶对齐）。
+    // 先等一帧再量：effect 触发时新文本往往还没量高（layoutInfo 是旧的），
+    // 直接量会得到 delta≈0 而漏滚（真机复测抓到过：流式停在新块开头）。
+    LaunchedEffect(real.streamVersion) {
+        if (real.streamVersion > 0 && sticky) {
+            repeat(3) {
+                withFrameNanos { }
+                if (!listState.canScrollForward) return@LaunchedEffect
+                val info = listState.layoutInfo
+                val last = info.visibleItemsInfo.lastOrNull { it.index == real.blocks.size - 1 }
+                // 真底 = viewportEndOffset - afterContentPadding（含底部输入区 padding，见 bottomAligned）
+                val delta = last?.let {
+                    it.offset + it.size - (info.viewportEndOffset - info.afterContentPadding)
+                } ?: 0
+                if (delta > 0) listState.scrollBy(delta.toFloat())
+            }
         }
     }
     LaunchedEffect(imeHeight) {
-        if (imeHeight > 0 && real.blocks.isNotEmpty()) {
-            listState.scrollToItem(real.blocks.size - 1)
+        if (imeHeight > 0 && real.blocks.isNotEmpty() && sticky) {
+            snapToBottom()
+            sticky = true
         }
     }
 
