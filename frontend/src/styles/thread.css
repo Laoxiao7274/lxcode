@@ -177,6 +177,32 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* 折叠卡（改动文件 > FILES_COLLAPSE_THRESHOLD）：列表收起时高度归零，
+ * 展开按钮参考 ToolBlock 摘要行的紧凑做法（细字、弱色、hover 提亮）。 */
+.files-list { overflow: hidden; }
+.files-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  border-top: 1px solid var(--border-soft);
+  padding: 5px 13px;
+  font-size: 11px;
+  color: var(--fg-faint);
+  cursor: pointer;
+  text-align: left;
+  transition: background 100ms, color 100ms;
+}
+.files-toggle:hover { background: var(--border-soft); color: var(--fg-muted); }
+.files-summary {
+  font-family: var(--font-mono);
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 /* 会话行 hover ⋯ 与操作菜单 */
 .session-more {
   width: 18px;
