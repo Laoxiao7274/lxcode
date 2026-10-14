@@ -7,7 +7,7 @@
 // 请求类失败（拒绝/断连/超时）走 operationError 事件——UI 只提示，不动
 // blocks/pending。
 import type { AgentEvent, HistorySnapshot } from "../../shared/types";
-import { setAttachmentOrigin } from "../../shared/attachments";
+import { setAttachmentOrigin, setAttachmentToken } from "../../shared/attachments";
 import { normalizeApproval } from "../../shared/approval";
 import { DeltaCoalescer } from "./coalesce";
 import { mapEvent } from "./events";
@@ -214,6 +214,9 @@ export class WsConnection {
     if (this.ws && (this.ws.readyState === WS_READY_STATE_OPEN || this.ws.readyState === 0)) return;
     const token = this.tokenOverride ?? this.tokenFn?.() ?? null;
     const url = wsURL(this.addr, token);
+    // 附件端点与升级门同宽（remote.json enabled 时无 token 一律 401）：每次连接
+    // 现取的同一份 token 同步注入 URL 构造器（token 轮换随重连自动刷新）。
+    setAttachmentToken(token ?? "");
     console.log("[ws] connect", url); // 连接轨迹（排查切换/重连问题的第一现场）
     const ws = new WebSocket(url);
     this.ws = ws;

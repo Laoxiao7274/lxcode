@@ -16,6 +16,7 @@ import {
   attachmentsFromMessage,
   parseAttachmentLines,
   setAttachmentOrigin,
+  setAttachmentToken,
 } from '../src/shared/attachments.ts';
 import { reduce } from '../src/shared/store.ts';
 import { historyBlocks } from '../src/shared/history.ts';
@@ -34,6 +35,8 @@ setAttachmentOrigin('http://127.0.0.1:7789');
 // ---------- ① attachmentURL ----------
 
 test('① attachmentURL：origin + 编码；穿越/非两段形态一律 null（不做穿越尝试）', () => {
+  // 凭证清空 = 无 token 形态（后端远程访问未开启时的正确形状）
+  setAttachmentToken('');
   assert.equal(attachmentURL('s-1/ab12.png'), 'http://127.0.0.1:7789/attachments/s-1/ab12.png');
   assert.equal(attachmentURL('s-1/数 据.csv'), 'http://127.0.0.1:7789/attachments/s-1/%E6%95%B0%20%E6%8D%AE.csv');
   assert.equal(attachmentURL('../secret.png'), null, '.. 直接拒');
@@ -42,6 +45,23 @@ test('① attachmentURL：origin + 编码；穿越/非两段形态一律 null（
   assert.equal(attachmentURL('a\\b.png'), null, '反斜杠拒');
   assert.equal(attachmentURL('only-one-seg'), null);
   assert.equal(attachmentURL(''), null);
+});
+
+test('①b attachmentURL：凭证注入后 URL 带 token 查询串（远程门开启时附件端点同宽，缺它 401 =「文件不存在」）', () => {
+  setAttachmentToken('tk-abc');
+  assert.equal(
+    attachmentURL('s-1/ab12.png'),
+    'http://127.0.0.1:7789/attachments/s-1/ab12.png?token=tk-abc',
+  );
+  // token 里的保留字符编码（凭证是 hex，编码是防御性的——别让 & ? 破坏查询串）
+  setAttachmentToken('a&b=c?d');
+  assert.equal(
+    attachmentURL('s-1/ab12.png'),
+    'http://127.0.0.1:7789/attachments/s-1/ab12.png?token=a%26b%3Dc%3Fd',
+  );
+  // 空串回落无 token 形态（不产生 "?token=" 空尾巴）
+  setAttachmentToken('');
+  assert.equal(attachmentURL('s-1/ab12.png'), 'http://127.0.0.1:7789/attachments/s-1/ab12.png');
 });
 
 // ---------- ② parseAttachmentLines ----------

@@ -211,6 +211,17 @@ export function setAttachmentOrigin(origin: string): void {
   attachmentOrigin = (origin || "").replace(/\/+$/, "");
 }
 
+/** 附件端点的远程访问凭证（与 /rpc 同一份 token——后端 remote.json enabled 时
+ *  附件端点的 token 门与升级门同宽，缺它所有附件请求 401 =「文件不存在」）。
+ *  空串/未注入 = 后端远程访问未开启，URL 不带 token（带凭证的 URL 挂查询串
+ *  只进浏览器缓存与历史，能免则免）。 */
+let attachmentToken = "";
+
+/** 注入附件端点凭证（WSAgent 每次连接现取 token 后调用——token 可轮换，随连接刷新）。 */
+export function setAttachmentToken(token: string): void {
+  attachmentToken = token || "";
+}
+
 /** 由相对引用构造取件 URL：`<origin>/attachments/<path>`。
  *  path 只接受 "<session-id>/<file>" 形态（服务端生成），任何带 .. 的输入
  *  原样拒绝（返回 null——卡显示为不可点，不做穿越尝试）。 */
@@ -218,7 +229,8 @@ export function attachmentURL(path: string): string | null {
   if (!path || path.includes("..") || path.startsWith("/") || path.includes("\\")) return null;
   const segs = path.split("/").filter(Boolean);
   if (segs.length !== 2) return null;
-  return `${attachmentOrigin}/attachments/${segs[0]}/${encodeURIComponent(segs[1])}`;
+  const q = attachmentToken ? `?token=${encodeURIComponent(attachmentToken)}` : "";
+  return `${attachmentOrigin}/attachments/${segs[0]}/${encodeURIComponent(segs[1])}${q}`;
 }
 
 /** 「[附件] 名字 → attachments/<sid>/<file>」行的定界（与后端 server 侧
