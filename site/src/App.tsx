@@ -14,7 +14,7 @@ import Download from "./pages/Download";
 import ChangelogPage from "./pages/Changelog";
 import NotFound from "./pages/NotFound";
 import { ProtoNoticeBar } from "./components/ProtoNoticeBar";
-import { SITE_BASE } from "./shared/base";
+import { siteUrl } from "./shared/base";
 import { useHashPath } from "./shared/hash";
 import { latestPublished } from "./shared/release";
 import { useStore } from "./shared/useStore";
@@ -147,7 +147,7 @@ export default function App() {
               <ul>
                 <li>
                   {/* 管理台是独立站点（admin.html）：官网只在页脚留一个低调入口 */}
-                  <a href={`${SITE_BASE}/admin/`}>管理</a>
+                  <a href={siteUrl("admin/")}>管理</a>
                 </li>
                 <li>
                   <a href="#/download">系统要求</a>

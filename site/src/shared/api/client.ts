@@ -7,7 +7,7 @@
 // 为什么不再有 localStorage token：上轮让人手贴长期 token 存 localStorage，
 // 既能被 XSS 读走、又不会过期；会话 cookie 是同一件事的安全做法。
 
-import { SITE_BASE } from "../base";
+import { siteUrl } from "../base";
 import type { PublishCheck } from "../release";
 
 /** 接口错误：status 给页面判断（401 = 未登录/密码错；429 = 限流；400 = 校验阻断项）。 */
@@ -30,7 +30,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 async function request<T>(path: string, init: RequestInit): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(SITE_BASE + path, {
+    response = await fetch(siteUrl(path), {
       ...init,
       // 会话 cookie 必须显式带上：跨站/子路径部署时默认值不一定够
       credentials: "same-origin",

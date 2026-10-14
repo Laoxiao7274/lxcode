@@ -29,7 +29,7 @@ import { useStore } from "../shared/useStore";
 import { DataStatus } from "../components/DataStatus";
 import { ArtifactLink } from "../components/ArtifactLink";
 import { HashLine } from "../components/HashLine";
-import { SITE_BASE } from "../shared/base";
+import { siteUrl } from "../shared/base";
 // Android APK 发布元数据（单一版本源，见下方 KDoc）：随站点构建静态托管，
 // 安卓客户端的应用内更新检查也读部署后的这份 JSON。
 import androidRelease from "../../public/downloads/android-release.json";
@@ -279,7 +279,7 @@ export default function Download() {
               <div className="dl-actions">
                 <a
                   className="btn btn-p"
-                  href={SITE_BASE + androidRelease.url}
+                  href={siteUrl(androidRelease.url)}
                   download={androidRelease.name}
                 >
                   下载 APK

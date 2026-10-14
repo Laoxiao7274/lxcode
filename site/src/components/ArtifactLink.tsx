@@ -7,7 +7,7 @@
 import type { ReactNode } from "react";
 
 import type { Artifact } from "../shared/release";
-import { SITE_BASE } from "../shared/base";
+import { siteUrl } from "../shared/base";
 import { artifactUrl } from "../shared/release";
 
 export function ArtifactLink({
@@ -22,7 +22,7 @@ export function ArtifactLink({
   return (
     <a
       className={className}
-      href={SITE_BASE + artifactUrl(artifact.name)}
+      href={siteUrl(artifactUrl(artifact.name))}
       title={`${artifact.name}（${artifact.sha256.slice(0, 12)}…）`}
       download={artifact.name}
     >
