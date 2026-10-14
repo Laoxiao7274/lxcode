@@ -115,7 +115,11 @@ func (c *Client) openaiChat(ctx context.Context, msgs []Message, o requestOpts) 
 // buildOpenAIRequest 组装请求体。
 func buildOpenAIRequest(model string, msgs []Message, o requestOpts, stream bool) openaiRequest {
 	// 消息里的工具调用参数过一遍读侧兜底（历史里的坏参数曾让端点 400 拒收整轮）
-	req := openaiRequest{Model: model, Messages: openaiWireMessages(sanitizeMessagesForWire(msgs)), Stream: stream}
+	// 之后做空消息清洗，再过配对兜底（清洗跳过消息不影响配对：被跳过的只有
+	// 纯空 assistant，它没有 tool_calls，不参与配对）。
+	req := openaiRequest{Model: model,
+		Messages: backfillOpenAIToolResults(openaiWireMessages(sanitizeMessagesForWire(msgs))),
+		Stream:   stream}
 	if stream {
 		// 让 vLLM 等在最后一个 chunk 带回 usage
 		req.StreamOptions = &struct {
@@ -186,15 +190,42 @@ func openAIStreamResult(content, reasoning string, toolCalls []ToolCall, finish 
 // Content 变成 text + image_url 分片数组——base64 在这里（请求构造瞬间）由
 // loader 读文件产出，绝不写回调用方的消息（内存历史恒存引用）。
 // 图片读取失败 fail-open：跳过该图，文本尾部追加提示（见 images.go loadImages）。
+//
+// 空消息清洗（emptywire.go 里有完整根因）：不让任何空 content 以可被 LiteLLM
+// 清洗的形态上 wire——
+//   - assistant 带 tool_calls 且 content 为空 → content: null（OpenAI 规范语义：
+//     官方 schema 的 content 是 Union[str, parts, None]，带 tool_calls 时非必填；
+//     选 null 而不是省略键：openaiWireMessage.Content 无 omitempty（string 形态
+//     恒须出现），加 omitempty 会让正常空串消息丢键——而逐字节不变测试钉死了
+//     旧形态，null 是不动结构的最小改动）；
+//   - 纯空 assistant（无 content 无 tool_calls 无图）→ 整条跳过（空消息无信息量，
+//     发出去只会触发清洗）；
+//   - tool 结果空 content → wireEmptyToolResult 单空格哨兵（见 emptywire.go 的
+//     类型合法性论证）。
 func openaiWireMessages(msgs []Message) []openaiWireMessage {
-	out := make([]openaiWireMessage, len(msgs))
-	for i, m := range msgs {
+	out := make([]openaiWireMessage, 0, len(msgs))
+	for _, m := range msgs {
+		// 纯空 assistant 先行跳过（带图判定在后面，这里 len(Images)==0 已含在内；
+		// ReasoningContent 非空 = 只有思考链的消息，那不是空消息，不跳）。
+		if m.Role == "assistant" && m.Content == "" && m.ReasoningContent == "" &&
+			len(m.ToolCalls) == 0 && len(m.Images) == 0 {
+			continue
+		}
 		wm := openaiWireMessage{
 			Role:             m.Role,
 			Content:          m.Content,
 			ReasoningContent: m.ReasoningContent,
 			ToolCalls:        m.ToolCalls,
 			ToolCallID:       m.ToolCallID,
+		}
+		if m.Role == "assistant" && m.Content == "" {
+			// content: null（见上，OpenAI 规范允许）。纯空 assistant 已在上面
+			// 跳过，走到这里的空正文消息要么带 tool_calls、要么带思考链——
+			// 两者都会触发清洗，null 化一视同仁。
+			wm.Content = nil
+		}
+		if m.Role == "tool" && m.Content == "" && len(m.Images) == 0 {
+			wm.Content = wireEmptyToolResult // 单空格哨兵，避开代理清洗
 		}
 		// user 消息带图（用户上传）与 tool 消息带图（read_image 的视觉注入）
 		// 都在这里展开：content 变 text + image_url 分片数组。assistant 的
@@ -206,6 +237,8 @@ func openaiWireMessages(msgs []Message) []openaiWireMessage {
 			if note != "" {
 				text += note
 			}
+			// 带图消息的 text 分片可为空串吗？tool 哨兵在此不适用（content 是
+			// 数组形态），空 text 分片保留旧形态（历史形态如此，端点接受）。
 			parts := make([]openaiContentPart, 0, len(imgs)+1)
 			parts = append(parts, openaiContentPart{Type: "text", Text: text})
 			for _, im := range imgs {
@@ -216,7 +249,7 @@ func openaiWireMessages(msgs []Message) []openaiWireMessage {
 			}
 			wm.Content = parts
 		}
-		out[i] = wm
+		out = append(out, wm)
 	}
 	return out
 }

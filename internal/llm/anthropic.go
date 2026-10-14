@@ -177,13 +177,20 @@ func convertToAnthropic(model string, msgs []Message, o requestOpts, stream bool
 		case "user":
 			// 带图 user 消息：text 块 + image 块（base64 请求构造瞬间编码）。
 			// 读取失败 fail-open：跳过该图，text 尾部追加提示，不中断请求。
+			// 空 user 正文（无图）：不发空 text 块——真 Anthropic 对
+			// "text content blocks must contain non-whitespace text" 400 拒收，
+			// 空消息（history 里确实存在：撤销/占位路径的产物）按 openai 路径
+			// 同款策略整条跳过（emptywire.go 的清洗纪律，两路径对称）。
 			if len(m.Images) > 0 {
 				text := m.Content
 				imgs, note := loadImages(m.Images)
 				if note != "" {
 					text += note
 				}
-				blocks := []anthropicContentBlock{{Type: "text", Text: text}}
+				blocks := []anthropicContentBlock{}
+				if text != "" {
+					blocks = append(blocks, anthropicContentBlock{Type: "text", Text: text})
+				}
 				for _, im := range imgs {
 					blocks = append(blocks, anthropicContentBlock{Type: "image",
 						Source: &anthropicImageSource{Type: "base64", MediaType: im.mime, Data: im.b64}})
@@ -192,10 +199,22 @@ func convertToAnthropic(model string, msgs []Message, o requestOpts, stream bool
 				lastToolResults = -1
 				break
 			}
+			if m.Content == "" {
+				// 空正文（且无图）：不发空 text 块，整条跳过（同 openai 路径）。
+				lastToolResults = -1
+				continue
+			}
 			req.Messages = append(req.Messages, anthropicMessage{Role: "user",
 				Content: []anthropicContentBlock{{Type: "text", Text: m.Content}}})
 			lastToolResults = -1
 		case "assistant":
+			// 纯空 assistant（无正文无思考无调用）：整条跳过——anthropicToBlocks
+			// 的兜底会给它发空 text 块，真 Anthropic 对空 text 块 400 拒收；
+			// 与 openai 路径同款清洗（emptywire.go 的纪律，两路径对称）。
+			if m.Content == "" && m.ReasoningContent == "" && len(m.ToolCalls) == 0 {
+				lastToolResults = -1
+				continue
+			}
 			req.Messages = append(req.Messages, anthropicMessage{Role: "assistant", Content: assistantToBlocks(m)})
 			lastToolResults = -1
 		case "tool":
@@ -277,7 +296,7 @@ func backfillToolResults(msgs []anthropicMessage) []anthropicMessage {
 			}
 			log.Printf("历史里工具调用 %s 没有结果记录，已补合成结果后发送（历史残缺；见 AGENTS.md §5 坑 12）", id)
 			next.Content = append(next.Content, anthropicContentBlock{
-				Type: "tool_result", ToolUseID: id, Content: "（该调用的结果未记录：历史残缺）",
+				Type: "tool_result", ToolUseID: id, Content: backfillPlaceholder,
 			})
 		}
 	}

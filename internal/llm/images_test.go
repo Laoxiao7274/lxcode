@@ -71,8 +71,10 @@ func TestOpenAIImageMessageContentArray(t *testing.T) {
 	}
 }
 
-// TestOpenAIPlainMessagesByteIdentical：无图消息的 wire 形态必须与旧实现
+// TestOpenAIPlainMessagesByteIdentical：非空无图消息的 wire 形态必须与旧实现
 // （Message 直接序列化）逐字节一致——换 wire 类型不允许动存量请求体。
+// （空 content 的形态是 2026-12 空消息清洗有意变更的，不在此钉——见
+// emptywire_test.go 的 TestOpenAIAssistantToolCallsEmptyContentIsNull。）
 func TestOpenAIPlainMessagesByteIdentical(t *testing.T) {
 	tc := ToolCall{ID: "c1", Type: "function"}
 	tc.Function.Name = "bash"
@@ -81,7 +83,7 @@ func TestOpenAIPlainMessagesByteIdentical(t *testing.T) {
 		{Role: "user", Content: "你好"},
 		{Role: "assistant", Content: "在", ReasoningContent: "想了一下"},
 		{Role: "tool", Content: "结果", ToolCallID: "t1"},
-		{Role: "assistant", Content: "", ToolCalls: []ToolCall{tc}},
+		{Role: "assistant", Content: "跑完了", ToolCalls: []ToolCall{tc}},
 	}
 	got, err := json.Marshal(buildOpenAIRequest("m", msgs, requestOpts{}, false).Messages)
 	if err != nil {
