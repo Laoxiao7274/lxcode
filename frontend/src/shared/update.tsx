@@ -9,12 +9,27 @@ import { getUpdateBridge, type UpdateBridge, type UpdateManifestView } from "../
 
 export type UpdatePhase = "idle" | "checking" | "latest" | "available" | "downloading" | "ready";
 
+/** 相对时间（「10 分钟前检查」）：设置页更新块的时间戳展示。
+ *  纯函数（测试直接钉）；秒级以下不展示（刚检查完就显示「刚刚」）。 */
+export function relTime(ts: number, now: number): string {
+  const s = Math.max(0, Math.floor((now - ts) / 1000));
+  if (s < 60) return "刚刚";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m} 分钟前`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h} 小时前`;
+  return `${Math.floor(h / 24)} 天前`;
+}
+
 interface UpdateValue {
   current: string;
   phase: UpdatePhase;
   manifest: UpdateManifestView | null;
   /** 下载进度（0-100）。 */
   progress: number;
+  /** 最近一次检查完成的时刻（epoch ms；null = 从未检查过）。纯展示态——
+   *  设置页用它显示「N 分钟前检查」，不影响状态机与管线。 */
+  checkedAt: number | null;
   /** 最近一次操作的失败原因（检查失败/下载校验失败——UI 显示，不静默）。 */
   error: string | null;
   /** 用户已关闭提示（Toast 不再弹；设置里仍可继续）。 */
@@ -45,6 +60,7 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   const [phase, setPhase] = useState<UpdatePhase>("idle");
   const [manifest, setManifest] = useState<UpdateManifestView | null>(null);
   const [progress, setProgress] = useState(0);
+  const [checkedAt, setCheckedAt] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [toastDismissed, setToastDismissed] = useState(false);
   // 桥钉在挂载时的那一个；null = 浏览器演示模式
@@ -67,12 +83,12 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
     if (!b) {
       // 演示：1s 后发现有新版本
       setPhase("checking");
-      setTimeout(() => { setManifest(DEMO_MANIFEST); setPhase("available"); }, 900);
+      setTimeout(() => { setManifest(DEMO_MANIFEST); setCheckedAt(Date.now()); setPhase("available"); }, 900);
       return;
     }
     setPhase("checking");
     b.check()
-      .then((r) => { setManifest(r.manifest); setPhase(r.available ? "available" : "latest"); })
+      .then((r) => { setManifest(r.manifest); setCheckedAt(Date.now()); setPhase(r.available ? "available" : "latest"); })
       .catch(fail);
   }, [fail]);
 
@@ -136,10 +152,10 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo(
     () => ({
-      current, phase, manifest, progress, error,
+      current, phase, manifest, progress, checkedAt, error,
       toastDismissed, dismissToast: () => setToastDismissed(true), check, download, restart,
     }),
-    [current, phase, manifest, progress, error, toastDismissed, check, download, restart],
+    [current, phase, manifest, progress, checkedAt, error, toastDismissed, check, download, restart],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
