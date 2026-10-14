@@ -59,6 +59,10 @@ export function mapEvent(method: string, params: unknown): AgentEvent | null {
         agentName: String(p.agent_name ?? ""),
         agentColor: String(p.agent_color ?? "#3b82f6"),
         task: String(p.task ?? ""),
+        // todo 契约批③：主 Agent 预拆的清单初稿（可选键，缺席 = 子自拆）。
+        // 缺席时**不写这个键**（不是写 undefined——deepStrictEqual 按键比对，
+        // 且「键缺席 = 未知」是本仓库 wire 的统一约定）。
+        ...(Array.isArray(p.todos) ? { todos: p.todos as TodoItem[] } : {}),
       };
     case "chat.dispatchEnd":
       return {
@@ -69,6 +73,9 @@ export function mapEvent(method: string, params: unknown): AgentEvent | null {
         result: String(p.result ?? ""),
         isError: Boolean(p.is_error),
         usageTokens: Number(p.usage_tokens ?? 0),
+        // 派发结束时子会话清单的定格值（可选键，缺席 = 没建过清单）。
+        // 缺席时不写这个键（与 todos 同一条约定）。
+        ...(Array.isArray(p.final_todos) ? { finalTodos: p.final_todos as TodoItem[] } : {}),
       };
     case "chat.compacted":
       // 历史被压缩（可能是别的客户端触发的——广播给所有端）。
@@ -106,7 +113,9 @@ export function mapEvent(method: string, params: unknown): AgentEvent | null {
     case "chat.confirmRequest":
       return { type: "confirmRequest", sessionId, request: p as unknown as ConfirmRequest };
     case "todo.updated":
-      return { type: "todoUpdated", sessionId, items: (p.items as TodoItem[]) ?? [] };
+      // dispatchId 非空 = 子会话的清单更新（带归属）：主时间线更新派发卡徽标，
+      // 子会话页由双投吃到。空 = 主会话自己的计划条。
+      return { type: "todoUpdated", sessionId, items: (p.items as TodoItem[]) ?? [], dispatchId };
     case "chat.done":
       return {
         type: "done",

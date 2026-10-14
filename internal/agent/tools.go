@@ -102,10 +102,11 @@ func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChange
 		//（json.RawMessage）给不了——在调用位展开。这里只解析参数，执行留到阶段二。
 		if tc.Function.Name == tools.DispatchToolName {
 			var p struct {
-				Agent   string `json:"agent"`
-				Task    string `json:"task"`
-				Context string `json:"context"`
-				Session string `json:"session"`
+				Agent   string                 `json:"agent"`
+				Task    string                 `json:"task"`
+				Context string                 `json:"context"`
+				Session string                 `json:"session"`
+				Todos   []sessiondata.TodoItem `json:"todos"`
 			}
 			if err := json.Unmarshal([]byte(tc.Function.Arguments), &p); err != nil {
 				s.finishToolCall(tc,
@@ -116,7 +117,7 @@ func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChange
 			}
 			dispatches = append(dispatches, dispatchJob{idx: i, call: tools.DispatchCall{
 				DispatchID: tc.ID, Agent: p.Agent, Task: p.Task, Context: p.Context,
-				Session: p.Session,
+				Session: p.Session, Todos: p.Todos,
 			}})
 			continue
 		}

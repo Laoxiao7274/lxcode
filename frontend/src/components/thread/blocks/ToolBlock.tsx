@@ -11,6 +11,7 @@ import { clip, shortArgs } from "../helpers";
 import { DiffBody } from "./DiffBody";
 import { TerminalCard } from "./TerminalCard";
 import { AttachmentCards } from "./AttachmentCard";
+import type { TodoItem } from "../../../shared/types";
 
 const TOOL_TITLES: Record<string, string> = {
   read_file: "读文件",
@@ -130,6 +131,55 @@ export function ToolBlock({ block, "data-uid": dataUid }: { block: Extract<Threa
   // 出错：错误输出的首行（DSH 的 errorSummary = firstLine(output)）
   const errorSummary = !running && block.isError ? (block.result ?? "").split("\n")[0] : null;
   const summary = errorSummary ?? (running ? "执行中…" : argsSummary);
+
+  // todo 契约批②：todo 调用渲染成**纯摘要行**（拍板⑥——不展开参数）：三态计数
+  // + 当前进行项。清单的完整呈现面是计划条（Composer/子会话页），时间线上留一行
+  // 状态跳变即可——每次 todo 调用 = 一次进度更新，视觉上「清单出来之后有痕迹」。
+  // items 解析放在所有早 return 之前（hooks 规则）。
+  const todoItems = useMemo((): TodoItem[] => {
+    if (block.name !== "todo" || !block.arguments) return [];
+    try {
+      const a = JSON.parse(block.arguments) as { items?: TodoItem[] };
+      return Array.isArray(a.items) ? a.items : [];
+    } catch {
+      return [];
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [block.name, block.arguments]);
+  const todoDone = todoItems.filter((it) => it.status === "done").length;
+  const todoActive = todoItems.filter((it) => it.status === "active").length;
+  const todoPending = todoItems.filter((it) => it.status === "pending").length;
+  const todoFocus = todoItems.find((it) => it.status === "active")?.content;
+
+  if (block.name === "todo") {
+    return (
+      <div className={"tool-block todo-row" + (running ? " trow-running" : "") + (block.isError ? " trow-error" : "")} data-uid={dataUid} ref={rootRef}>
+        <div className="trow-row" role={expandable ? "button" : undefined} tabIndex={expandable ? 0 : undefined}>
+          <span className="trow-leading" aria-hidden>
+            {running || block.isError ? (
+              <span className={"sdot" + (running ? " run" : " err")} />
+            ) : (
+              <svg className="trow-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M13 5h8" /><path d="M13 12h8" /><path d="M13 19h8" />
+                <path d="m3 17 2 2 4-4" /><path d="m3 7 2 2 4-4" />
+              </svg>
+            )}
+          </span>
+          <span className="trow-title">任务清单</span>
+          <span className="trow-sep" aria-hidden />
+          {block.isError ? (
+            <span className="trow-summary err">{errorSummary}</span>
+          ) : (
+            <span className="trow-summary">
+              {todoItems.length === 0
+                ? "清单已清空"
+                : `✓ ${todoDone} · ▶ ${todoActive} · ○ ${todoPending}${todoFocus ? ` → ${todoFocus}` : ""}`}
+            </span>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div

@@ -54,7 +54,7 @@ func newChildSessionEnv(t *testing.T) (*dispatchEnv, *store.Store) {
 		},
 		"coder": {
 			Def: sessiondata.AgentDef{ID: "coder", Name: "代码 Agent", Enabled: true, Color: "#3b82f6",
-				Tools: []string{"read_file", "edit"}, Approval: "confirm"},
+				Tools: []string{"read_file", "edit", "todo"}, Approval: "confirm"},
 		},
 	}})
 	if err := s.EnablePersistence(st); err != nil {

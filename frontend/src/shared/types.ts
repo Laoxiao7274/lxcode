@@ -220,7 +220,10 @@ export type AgentEvent =
        *  同一份元数据。缺省 = 无。 */
       attachments?: AttachmentRef[] }
   | { type: "confirmRequest"; sessionId: string; request: ConfirmRequest }
-  | { type: "todoUpdated"; sessionId: string; items: TodoItem[] }
+  | { type: "todoUpdated"; sessionId: string; items: TodoItem[];
+      /** dispatchId 非空 = 子会话的清单更新（带归属）：主时间线更新派发卡徽标，
+       *  子会话页由双投吃到。空 = 主会话自己的计划条。 */
+      dispatchId?: string }
   | { type: "done"; sessionId: string; usageTokens: number; finishReason: string; dispatchId?: string; context?: ContextUsage;
       /** 整段会话统计（缺省 = 还没有任何一步 / 纯内存模式）。一轮里的每个 done 都带
        *  一份最新的，取最后收到的那份即可（与 DSH 的投影随事件推进同语义）。 */
@@ -231,8 +234,12 @@ export type AgentEvent =
       /** 本轮实际使用的模型 id（Agent 绑定优先、否则 default 角色）。 */
       model?: string }
   | { type: "error"; sessionId: string; message: string; aborted: boolean }
-  | { type: "dispatchStart"; sessionId: string; dispatchId: string; childSessionId?: string; agentId: string; agentName: string; agentColor: string; task: string }
-  | { type: "dispatchEnd"; sessionId: string; dispatchId: string; childSessionId?: string; result: string; isError: boolean; usageTokens?: number }
+  | { type: "dispatchStart"; sessionId: string; dispatchId: string; childSessionId?: string; agentId: string; agentName: string; agentColor: string; task: string;
+      /** 主 Agent 预拆的清单初稿（todo 契约批③；缺席 = 子自拆）。 */
+      todos?: TodoItem[] }
+  | { type: "dispatchEnd"; sessionId: string; dispatchId: string; childSessionId?: string; result: string; isError: boolean; usageTokens?: number;
+      /** 派发结束时子会话清单的定格值（缺席 = 没建过清单）。 */
+      finalTodos?: TodoItem[] }
   /** 请求失败不代表生成失败：不得清空会话、定格正文或解除确认卡。 */
   | { type: "operationError"; message: string }
   /** 传输层连接态翻转（WSAgent 真实 WS 的 open/close——顶栏脉冲点与连接管理

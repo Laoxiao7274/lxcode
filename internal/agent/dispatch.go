@@ -17,6 +17,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"strings"
 	"sync"
 
@@ -170,9 +171,10 @@ func taskEmitter(out io.Writer, tap *childEvents) Emitter {
 			errCopy := e
 			tap.err = &errCopy
 			tap.mu.Unlock()
-		case TurnDoneEvent, BusyEvent, TodoUpdatedEvent, SessionStartedEvent,
+		case TurnDoneEvent, BusyEvent, SessionStartedEvent,
 			DispatchStartEvent, DispatchEndEvent, ConfirmRequestEvent, CompactedEvent, FilesChangedEvent:
-			// 不上抛：后台任务不进主会话时间线（子会话的忙闲/清单/切换/压缩/产物都不属于它）
+			// 不上抛：后台任务不进主会话时间线（子会话的忙闲/切换/压缩/产物都不属于它）。
+			// TodoUpdatedEvent 已从这里移出：todo 契约改为带归属上抛（childEmitter）。
 		}
 	}
 }
@@ -252,7 +254,26 @@ func (s *Session) runDispatch(ctx context.Context, call tools.DispatchCall) tool
 		DispatchID: call.DispatchID, SessionID: childID,
 		AgentID: ac.Def.ID, AgentName: ac.Def.Name, AgentColor: ac.Def.Color,
 		Task: call.Task,
+		Todos: append([]tools.TodoItem(nil), call.Todos...),
 	})
+
+	// 清单初稿装载（todo 契约批③）：主 Agent 预拆的清单作为子会话清单的初始
+	// 快照——用户在派发卡上第一秒就看到进度基线，子 Agent 上下文里也有（任务
+	// 消息末尾附清单文本，见 composeTaskMessage）。装载后广播一次（带归属——
+	// 卡上的徽标从初稿开始走）。子会话执行中仍可全量替换修订（主拆初稿 +
+	// 子可修订）。同时落库：子会话行有自己的 todos 列。
+	if len(call.Todos) > 0 {
+		child.mu.Lock()
+		child.todos = append([]tools.TodoItem(nil), call.Todos...)
+		childSt, childIDForTodos := child.st, child.id
+		child.mu.Unlock()
+		if childSt != nil && childIDForTodos != "" {
+			if err := childSt.SaveTodos(childIDForTodos, call.Todos); err != nil {
+				log.Printf("子会话清单初稿落库失败（继续运行）: %v", err)
+			}
+		}
+		s.emit(TodoUpdatedEvent{Items: append([]tools.TodoItem(nil), call.Todos...), DispatchID: call.DispatchID})
+	}
 
 	// 子会话的权限档**不在派发这一刻算死值**：把父会话的实时档位以回调形式交给
 	// 子会话，子会话每次工具调用现算 stricterApproval(父此刻, 子 Agent 默认)。
@@ -297,6 +318,7 @@ func (s *Session) runDispatch(ctx context.Context, call tools.DispatchCall) tool
 		}
 		s.emit(DispatchEndEvent{
 			DispatchID: call.DispatchID, Result: note, IsError: true, SessionID: childID,
+			FinalTodos: child.Todos(),
 		})
 		return tools.DispatchResult{Output: note, IsError: true, SessionID: childID}
 	}
@@ -306,6 +328,20 @@ func (s *Session) runDispatch(ctx context.Context, call tools.DispatchCall) tool
 	result := lastAssistantText(child.History().Messages)
 	if result == "" {
 		result = "（子 Agent 没有产出文本结论）"
+	}
+	// todo 契约批③：清单**定格归档**——派发结束即终态（子会话不再有「清单漂在
+	// 内存里谁也不管」的状态）。三件事：① 子会话行的 todos 落库定格值（重启后
+	// 打开子会话还能看到终态清单）；② DispatchEnd 带 finalTodos（卡上徽标定格）；
+	// ③ 结果文本追加最终清单状态（主 Agent 下一轮上下文里能看到 N/M 与残留项——
+	// 只在结束时一次性回传，轮中不塞避免打断）。
+	finalTodos := child.Todos()
+	if len(finalTodos) > 0 {
+		if child.st != nil && child.id != "" {
+			if err := child.st.SaveTodos(child.id, finalTodos); err != nil {
+				log.Printf("子会话清单定格落库失败（继续运行）: %v", err)
+			}
+		}
+		result += "\n\n" + dispatchTodoSummary(finalTodos)
 	}
 	// 附件回流：这次派发期间子会话共享到对话的文件（share_file 等）——
 	// ① 结果文本带 [附件] 行（主 Agent 下一轮就知道路径：可转述、可再次 share_file）；
@@ -322,6 +358,7 @@ func (s *Session) runDispatch(ctx context.Context, call tools.DispatchCall) tool
 	}
 	s.emit(DispatchEndEvent{
 		DispatchID: call.DispatchID, Result: result, SessionID: childID,
+		FinalTodos: finalTodos,
 	})
 	return tools.DispatchResult{Output: result, SessionID: childID, Attachments: childAtts}
 }
@@ -397,8 +434,10 @@ func lastAssistantText(msgs []llm.Message) string {
 	return ""
 }
 
-// composeTaskMessage 组任务消息（task + 可选背景）。子会话的第一条 user 消息
-// 就是它——子 Agent 的全部依据（它看不到主对话历史）。
+// composeTaskMessage 组任务消息（task + 可选背景 + 可选清单初稿）。子会话的第一条
+// user 消息就是它——子 Agent 的全部依据（它看不到主对话历史）。
+// todos 非空时末尾附清单文本：子 Agent 第一眼依据里就有它（清单初稿在卡上可见，
+// 在任务说明书里可执行——两个通道同一份内容）。
 func composeTaskMessage(call tools.DispatchCall) string {
 	var b strings.Builder
 	b.WriteString(call.Task)
@@ -406,7 +445,31 @@ func composeTaskMessage(call tools.DispatchCall) string {
 		b.WriteString("\n\n背景：\n")
 		b.WriteString(ctx)
 	}
+	if len(call.Todos) > 0 {
+		b.WriteString("\n\n任务清单（清单初稿——执行中可按实际进展用 todo 工具修订，每完成一步更新状态）：\n")
+		for _, it := range call.Todos {
+			b.WriteString("- " + it.Content + "\n")
+		}
+	}
 	return b.String()
+}
+
+// dispatchTodoSummary 生成派发结果文本里的清单终态行（主 Agent 验收输入）：
+// 全部完成 = 一行 N/M；有残留 = 点名未完成项（让主 Agent 知道子 Agent 没做完什么，
+// 而不是只看到一句没兑现的结论——2026-09-29 实测「把开场白当结论」的补强）。
+func dispatchTodoSummary(items []tools.TodoItem) string {
+	done, act, pend := sessiondata.CountTodoStatus(items)
+	head := fmt.Sprintf("子会话清单最终状态：%d/%d 完成", done, len(items))
+	if act == 0 && pend == 0 {
+		return head + "。"
+	}
+	var unfinished []string
+	for _, it := range items {
+		if it.Status != "done" {
+			unfinished = append(unfinished, it.Content+"（"+map[string]string{"active": "进行中", "pending": "待办"}[it.Status]+"）")
+		}
+	}
+	return head + "，未完成：" + strings.Join(unfinished, "、")
 }
 
 // delegateNames 列出有效委派名单的 id（错误信息用）。
@@ -507,9 +570,16 @@ func childEmitter(parent Emitter, dispatchID string, tap *childEvents) Emitter {
 			errCopy := e
 			tap.err = &errCopy
 			tap.mu.Unlock()
-		case TodoUpdatedEvent, SessionStartedEvent, DispatchStartEvent, DispatchEndEvent, ConfirmRequestEvent:
-			// 不上抛：清单属于子会话自己、确认由父会话代理时发、
-			// start/end 由派发方自己发
+		case TodoUpdatedEvent:
+			// todo 契约（批②）：子会话的清单更新**带归属上抛**——主时间线据此
+			// 实时更新派发卡上的进度徽标（N done · M 进行）；子会话页由既有双投
+			// 吃到（reduceSessionStates 按 dispatch_id 双写，前端零新机制）。
+			// 清单本身仍归子会话自己（主会话的计划条不显示子会话的清单——
+			// 那是它的会话级状态），上抛的只是「这个派发的进度」。
+			e.DispatchID = dispatchID
+			parent(e)
+		case SessionStartedEvent, DispatchStartEvent, DispatchEndEvent, ConfirmRequestEvent:
+			// 不上抛：确认由父会话代理时发、start/end 由派发方自己发
 		}
 	}
 }

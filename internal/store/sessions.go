@@ -437,6 +437,47 @@ func (s *Store) ContextUsageOf(id string) (sessiondata.ContextUsage, bool, error
 	return u, true, nil
 }
 
+// SaveTodos 落库会话当前的任务清单快照（JSON 全量替换）。清单是**会话的状态**：
+// 落库后重启恢复，计划条还在、下一轮的快照注入还有事实可注入。
+//
+// **刻意不动 updated_at**：那是侧栏排序与「重启恢复最近会话」的依据，清单更新是
+// 会话的附属状态变化、不是"用户刚用过这个会话"——写它把会话顶到列表最前面是错的。
+func (s *Store) SaveTodos(id string, items []sessiondata.TodoItem) error {
+	b, err := json.Marshal(items)
+	if err != nil {
+		return fmt.Errorf("序列化任务清单失败: %w", err)
+	}
+	res, err := s.db.Exec(`UPDATE sessions SET todos = ? WHERE id = ?`, string(b), id)
+	if err != nil {
+		return fmt.Errorf("写任务清单失败: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("会话 %s 不存在", id)
+	}
+	return nil
+}
+
+// TodosOf 读回会话的任务清单快照。ok=false = 库里没有（老会话/从没建过清单）——
+// 调用方按"无清单"处理。会话不存在时报错（与 Load/WorkspaceOf 的语义一致）。
+func (s *Store) TodosOf(id string) ([]sessiondata.TodoItem, bool, error) {
+	var raw string
+	err := s.db.QueryRow(`SELECT todos FROM sessions WHERE id = ?`, id).Scan(&raw)
+	if err == sql.ErrNoRows {
+		return nil, false, fmt.Errorf("会话 %s 不存在", id)
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("查询任务清单失败: %w", err)
+	}
+	if strings.TrimSpace(raw) == "" {
+		return nil, false, nil
+	}
+	var items []sessiondata.TodoItem
+	if err := json.Unmarshal([]byte(raw), &items); err != nil {
+		return nil, false, fmt.Errorf("解析任务清单失败: %w", err)
+	}
+	return items, true, nil
+}
+
 // SaveApproval 落库会话当前的权限档（chat.approval 改档 / 新会话按 behavior 默认
 // 档初始化时写）。为什么落库：审批档是**会话的状态**——用户把某条会话切成 strict
 // 后重启，打开这条会话还得是 strict（原先只在内存里，重启必回 confirm，用户实测）。

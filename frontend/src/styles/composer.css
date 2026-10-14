@@ -344,7 +344,10 @@
   background: var(--border-soft);
   color: var(--fg);
 }
-/* 「+」按钮与弹出菜单：piBar 左端，风格对齐 send-btn（subdued 一档） */
+/* 「+」按钮（DSH 的 .add 语义）：输入区左侧的圆形图标钮——28px 正圆 + subtle
+ *  填充（DSH --dsw-specific-selector 一档，这里用 token 近似）、14px 图标、
+ *  flex:none。贴底对齐（.pi-row 的 align-items:flex-end）+ 微调，与 textarea
+ *  首行文字齐平。弹出菜单向上（输入框下方没有空间）。 */
 .att-add-wrap {
   position: relative;
 }
@@ -353,22 +356,23 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
+  margin: 0 2px 7px 10px;
   border: none;
-  border-radius: 7px;
-  background: transparent;
+  border-radius: 999px;
+  background: var(--border-soft);
   color: var(--fg-muted);
   cursor: pointer;
   padding: 0;
 }
 .att-add:hover {
   color: var(--fg);
-  background: var(--border-soft);
+  background: var(--border);
 }
 .att-menu {
   position: absolute;
-  bottom: calc(100% + 6px);
+  bottom: calc(100% + 8px);
   left: 0;
   min-width: 210px;
   padding: 4px;
@@ -432,6 +436,17 @@
   font-size: 11px;
   border-radius: 7px;
   margin-left: auto;
+  flex: none;
+}
+/* ===== 输入行（.pi-row）：DSH composer 的布局语义——左侧图标列（附件「+」）
+ *  + 右侧大块文本输入区。只包「+」与 textarea 一层；选择器/读数/发送仍在下方
+ *  piBar（DSH 的底部工具行）。不折行：控件 flex:none。 */
+.pi-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+}
+.pi-row > .pop-wrap {
   flex: none;
 }
 /* 输入框（不加 overflow:hidden——piBar 里的弹层菜单要向上弹出，
@@ -526,8 +541,10 @@
   padding: 10px 16px 10px; /* 与 composer 内距节奏一致（原 6px 12px 12px） */
 }
 .pi textarea.piInput {
-  width: 100%;
-  padding: 14px 16px 6px;
+  flex: 1;
+  min-width: 0;
+  width: auto;
+  padding: 14px 16px 6px 0;
   font-family: var(--font-sans);
   font-size: 14px;
   border-radius: 14px 14px 0 0;

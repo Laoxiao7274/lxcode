@@ -62,6 +62,15 @@
 .rollInner span { height: 1em; line-height: 1em; }
 .rollInner.on { transform: translateY(-1em); }
 .rollStatic { display: inline-block; height: 1em; line-height: 1em; }
+/* DSH TodoDock 三段计数：每段 = 状态图标 + 滚动数字；active 段用强调色 */
+.todoSeg { display: inline-flex; align-items: center; gap: 3px; }
+.todoSeg .todoIcon { position: static; inset: auto; width: 12px; height: 12px; opacity: 1; }
+.todoSegDot { color: var(--todo-muted, #a1a1a1); margin: 0 2px; }
+.segDone { color: var(--todo-check, #15a06a); }
+.segDone .todoIcon { color: var(--todo-check, #15a06a); }
+.segActive .todoIcon { color: var(--todo-strong, #1a1a1a); }
+.segPending { color: var(--todo-muted, #a1a1a1); }
+.todoCountDone { color: var(--todo-check, #15a06a); font-weight: 500; }
 .todoCollapsible {
   display: grid; grid-template-rows: 1fr; opacity: 1;
   transition: grid-template-rows 280ms ease, opacity 200ms ease;

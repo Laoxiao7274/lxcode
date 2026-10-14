@@ -10,6 +10,7 @@ import (
 
 	"github.com/moyunteng/lxcode/internal/llm"
 	"github.com/moyunteng/lxcode/internal/project"
+	"github.com/moyunteng/lxcode/internal/sessiondata"
 )
 
 // checkpointIndexes 标出历史里的压缩检查点下标（前端渲染成「已压缩历史」块）。
@@ -153,7 +154,7 @@ func (s *Session) EnablePersistence(st Persistence) error {
 		return nil // 期间已被挂载（并发调用）：幂等
 	}
 	s.st, s.id, s.history, s.workDir = st, id, msgs, dir
-	s.todos, s.pendingWorkspace = nil, ""
+	s.todos, s.pendingWorkspace = restoredTodos(st, id), ""
 	s.context = usage
 	s.approval = approval
 	return nil
@@ -194,7 +195,7 @@ func (s *Session) AttachTo(st Persistence, id string) error {
 		return fmt.Errorf("%w（不能附着到别的会话）", ErrBusy)
 	}
 	s.st, s.id, s.history, s.workDir = st, id, msgs, dir
-	s.todos, s.pendingWorkspace = nil, ""
+	s.todos, s.pendingWorkspace = restoredTodos(st, id), ""
 	s.context = usage
 	s.approval = approval
 	return nil
@@ -214,6 +215,21 @@ func restoredApproval(st Persistence, id string) string {
 		return ""
 	}
 	return mode
+}
+
+// restoredTodos 读回会话落库的任务清单快照（**调用方不持锁**）。ok=false（老会话/
+// 从没建过清单）与读失败都返回 nil（fail-open：清单是会话状态，读不到不能让附着
+// 失败——最坏情况是这一轮的快照注入没有事实可注入）。
+func restoredTodos(st Persistence, id string) []sessiondata.TodoItem {
+	if st == nil || id == "" {
+		return nil
+	}
+	items, _, err := st.TodosOf(id)
+	if err != nil {
+		log.Printf("读任务清单失败（按无清单处理）: %v", err)
+		return nil
+	}
+	return items
 }
 
 // restoredUsage 决定附着一条会话之后内存里的占用测量（**调用方不持锁**——它要读库、

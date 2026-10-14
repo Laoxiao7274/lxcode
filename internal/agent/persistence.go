@@ -45,6 +45,12 @@ type Persistence interface {
 	// ApprovalOf 读回会话落库的审批档。空串 = 没落过（老会话/从没改过档）——
 	// 调用方据此回落 behavior 默认档，而不是当成 confirm 写死。
 	ApprovalOf(sessionID string) (string, error)
+	// SaveTodos 落库会话当前的任务清单快照（todo 契约）。失败不该打断清单更新
+	//（内存才是运行真源，最坏情况是重启后清单丢失）：调用方只记日志。
+	SaveTodos(sessionID string, items []sessiondata.TodoItem) error
+	// TodosOf 读回会话落库的任务清单快照。ok=false = 库里没有（老会话/从没建过）——
+	// 调用方按"无清单"处理，不编一个空清单。
+	TodosOf(sessionID string) ([]sessiondata.TodoItem, bool, error)
 	Load(string) ([]llm.Message, error)
 	Latest() (string, []llm.Message, error)
 	List() ([]sessiondata.SessionMeta, error)

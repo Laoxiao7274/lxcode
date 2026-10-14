@@ -103,8 +103,11 @@ type TurnErrorEvent struct {
 }
 
 // TodoUpdatedEvent：任务清单更新（宿主渲染 TodoList 卡片）。
+// DispatchID 非空 = 子会话的清单更新（盖了 dispatch_id 归属上抛——主时间线
+// 据此更新派发卡徽标，子会话页由既有双投吃到）。空 = 主会话自己的清单。
 type TodoUpdatedEvent struct {
-	Items []tools.TodoItem
+	Items      []tools.TodoItem
+	DispatchID string `json:",omitempty"`
 }
 
 // SessionStartedEvent：会话行懒建完成（首条消息落库时）——宿主据此刷新
@@ -137,6 +140,8 @@ type DispatchStartEvent struct {
 	AgentName  string
 	AgentColor string
 	Task       string
+	// Todos 非空 = 主 Agent 预拆的清单初稿（卡上第一秒就显示「这次派发要做什么」）。
+	Todos []tools.TodoItem
 }
 
 // DispatchEndEvent：子 Agent 执行收尾（Result = 最终回复——主 Agent 的
@@ -147,6 +152,9 @@ type DispatchEndEvent struct {
 	Result      string
 	IsError     bool
 	UsageTokens int
+	// FinalTodos 是派发结束时子会话清单的**定格值**（todo 契约批③）：卡上
+	// 徽标定格为它——派发结束即归档，未完成项如实显示。nil = 子会话没建过清单。
+	FinalTodos []tools.TodoItem
 }
 
 // CompactedEvent：一次压缩事务收尾（历史的前缀已被摘要检查点替换）。

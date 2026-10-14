@@ -39,6 +39,8 @@ func (p *approvalStub) SaveApproval(id, approval string) error {
 	p.saved[id] = approval
 	return nil
 }
+func (p *approvalStub) TodosOf(string) ([]sessiondata.TodoItem, bool, error) { return nil, false, nil }
+func (p *approvalStub) SaveTodos(string, []sessiondata.TodoItem) error       { return nil }
 
 func TestSetApprovalPersistsViaSeam(t *testing.T) {
 	p := &approvalStub{}

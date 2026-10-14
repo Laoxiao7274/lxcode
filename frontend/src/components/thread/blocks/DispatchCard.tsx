@@ -20,6 +20,7 @@
 import type { ThreadBlock } from "../../../shared/store";
 import { AGENT_COLORS, useAgents } from "../../../shared/agents";
 import { useEnterRef } from "../../../shared/anim";
+import type { AttachmentMeta } from "../../../shared/attachments";
 import { Block } from "./Block";
 import { AttachmentCards } from "./AttachmentCard";
 import { dispatchErrorTitle, dispatchPrimaryAction, dispatchPrimaryTitle } from "./dispatch-primary";
@@ -59,6 +60,15 @@ export function DispatchCard({ block, onConfirm, onAnswer, onOpenChild, "data-ui
   const cardRef = useEnterRef<HTMLDivElement>();
   const sessionId = block.sessionId ?? "";
 
+  // todo 契约批②：派发卡上的进度徽标（不破「卡 = 一行摘要」契约——徽标是计数，
+  // 不是内容，不展开卡内子时间线）。running 时随带 dispatch_id 的 todo.updated
+  // 实时更新；done 时定格为 FinalTodos（派发结束即归档）。
+  const todos = block.todos ?? [];
+  const todoDone = todos.filter((it) => it.status === "done").length;
+  const todoTotal = todos.length;
+  const todoFocus = todos.find((it) => it.status === "active")?.content;
+  const showTodoBadge = todoTotal > 0;
+
   // ---- 整行点下去该干什么（纯判定在 dispatch-primary.ts，有单测钉住）----
   // canOpenChild / primaryTitle 与 primaryAction 共用同一份判定——两处各判一遍的后果是
   // "提示说能进、点下去什么都没发生"。
@@ -84,6 +94,15 @@ export function DispatchCard({ block, onConfirm, onAnswer, onOpenChild, "data-ui
       <span className="dispatch-dot" style={{ background: agentColor }} aria-hidden />
       <span className="dispatch-agent">{agentName}</span>
       <span className="dispatch-task" title={block.task}>{clipTask(block.task)}</span>
+      {showTodoBadge && (
+        <span
+          className="dispatch-todos mono"
+          title={`子会话任务清单：完成 ${todoDone}/${todoTotal}${todoFocus ? `，进行中：${todoFocus}` : ""}`}
+        >
+          ✓ {todoDone}/{todoTotal}
+          {todoFocus && <span className="dispatch-todos-focus">· {clipTask(todoFocus)}</span>}
+        </span>
+      )}
       <span className="dispatch-state">
         {done ? (
           <>
@@ -172,10 +191,23 @@ export function DispatchCard({ block, onConfirm, onAnswer, onOpenChild, "data-ui
       ))}
 
       {/* 这次派发共享到对话的附件（子会话 share_file 等的产物，随调度结果回流）：
-       *  卡 = 一行摘要的**例外**——附件不是子过程，是成果（用户点开卡就能拿到
-       *  文件，不必进子会话视图再翻）。实时（toolResult 回流）与回放（调度结果
-       *  消息上的同一份元数据）两条路径共用 AttachmentCards。 */}
-      <AttachmentCards atts={block.attachments} />
+       *  卡 = 一行摘要的**例外**——附件不是子过程，是成果。渲染成**独立的成果区**
+       *  （发丝分隔线 + 「成果文件」小标题 + 附件卡网格），不与卡头拼在一坨；
+       *  用户点开卡就能拿到文件，不必进子会话视图再翻。实时（toolResult 回流）
+       *  与回放（调度结果消息上的同一份元数据）两条路径共用 AttachmentCards。 */}
+      <DispatchDeliverables atts={block.attachments} />
+    </div>
+  );
+}
+
+/** 派发卡的成果区：附件非空才渲染。发丝线与卡头分开 + 小标题（agent-console-v3
+ *  的区块标签语言：小号、faint、字距微开）+ 附件卡网格。 */
+function DispatchDeliverables({ atts }: { atts?: AttachmentMeta[] }) {
+  if (!atts?.length) return null;
+  return (
+    <div className="dispatch-deliverables" role="region" aria-label="成果文件">
+      <span className="dispatch-deliverables-label">成果文件</span>
+      <AttachmentCards atts={atts} />
     </div>
   );
 }

@@ -375,9 +375,12 @@ type ChatRewoundParams struct {
 }
 
 // TodoUpdatedParams 是 todo.updated 事件的载荷：完整清单（全量替换语义）。
+// DispatchID 非空 = 子会话的清单更新（带归属——前端据此更新主时间线派发卡上的
+// 进度徽标；子会话页由既有双投吃到）。空 = 主会话自己的清单（按 session_id 路由）。
 type TodoUpdatedParams struct {
-	SessionID string           `json:"session_id"`
-	Items     []tools.TodoItem `json:"items"`
+	SessionID  string           `json:"session_id"`
+	Items      []tools.TodoItem `json:"items"`
+	DispatchID string           `json:"dispatch_id,omitempty"`
 }
 
 // ChatApprovalParams 是 chat.approval 的参数（中途改权限档）。
@@ -409,6 +412,8 @@ type DispatchStartParams struct {
 	AgentName      string `json:"agent_name"`
 	AgentColor     string `json:"agent_color"`
 	Task           string `json:"task"`
+	// Todos 非空 = 主 Agent 预拆的清单初稿（todo 契约——卡上第一秒显示计划）。
+	Todos []tools.TodoItem `json:"todos,omitempty"`
 }
 
 // DispatchEndParams 是 chat.dispatchEnd 的载荷。OwnerSessionID 标明结果归属
@@ -420,4 +425,6 @@ type DispatchEndParams struct {
 	Result         string `json:"result"`
 	IsError        bool   `json:"is_error"`
 	UsageTokens    int    `json:"usage_tokens,omitempty"`
+	// FinalTodos 是派发结束时子会话清单的定格值（nil = 没建过清单）。
+	FinalTodos []tools.TodoItem `json:"final_todos,omitempty"`
 }

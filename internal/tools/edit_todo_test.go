@@ -154,6 +154,36 @@ func TestTodoEmptyList(t *testing.T) {
 	}
 }
 
+// content 唯一性（todo 契约，对齐 DSH）：重复项报错、sink 不被触达。
+func TestTodoRejectsDuplicateContent(t *testing.T) {
+	r := New()
+	var sinkCalled bool
+	ctx := WithTodoSink(context.Background(), func(items []TodoItem) { sinkCalled = true })
+	got := r.Execute(ctx, call("todo",
+		`{"items":[{"content":"写测试","status":"done"},{"content":"写测试","status":"active"}]}`))
+	if !strings.Contains(got, "重复") || !strings.Contains(got, "唯一") {
+		t.Fatalf("重复 content 应报错: %q", got)
+	}
+	if sinkCalled {
+		t.Fatalf("校验失败时不应触达 sink")
+	}
+}
+
+// 回显强化（todo 契约）：三态结构化计数 + 全 done 收敛行。
+func TestTodoResultStructuredCounts(t *testing.T) {
+	r := New()
+	got := r.Execute(context.Background(), call("todo",
+		`{"items":[{"content":"a","status":"done"},{"content":"b","status":"done"},{"content":"c","status":"active"},{"content":"d","status":"pending"}]}`))
+	if !strings.Contains(got, "done 2 · 进行 1 · 待办 1") {
+		t.Fatalf("回显应带三态计数: %q", got)
+	}
+	allDone := r.Execute(context.Background(), call("todo",
+		`{"items":[{"content":"a","status":"done"},{"content":"b","status":"done"}]}`))
+	if !strings.Contains(allDone, "清单已全部完成") {
+		t.Fatalf("全 done 回显应带收敛行: %q", allDone)
+	}
+}
+
 // 清单写回口是每会话状态：两个 ctx 各自的清单互不影响（父/子会话不串）。
 func TestTodoSinkIsPerContext(t *testing.T) {
 	r := New()

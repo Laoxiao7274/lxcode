@@ -64,11 +64,13 @@ func (s *Server) emitEvent(sessionID string, ev agent.Event) {
 		s.broadcast(protocol.EventDispatchStart, protocol.DispatchStartParams{
 			OwnerSessionID: sessionID, DispatchID: e.DispatchID, SessionID: e.SessionID,
 			AgentID: e.AgentID, AgentName: e.AgentName, AgentColor: e.AgentColor, Task: e.Task,
+			Todos: e.Todos,
 		})
 	case agent.DispatchEndEvent:
 		s.broadcast(protocol.EventDispatchEnd, protocol.DispatchEndParams{
 			OwnerSessionID: sessionID, DispatchID: e.DispatchID, SessionID: e.SessionID,
 			Result: e.Result, IsError: e.IsError, UsageTokens: e.UsageTokens,
+			FinalTodos: e.FinalTodos,
 		})
 	case agent.CompactedEvent:
 		s.broadcast(protocol.EventCompacted, protocol.CompactedParams{
@@ -86,7 +88,7 @@ func (s *Server) emitEvent(sessionID string, ev agent.Event) {
 			Stats: s.sessionStatsOf(sessionID),
 		})
 	case agent.TodoUpdatedEvent:
-		s.broadcast(protocol.EventTodo, protocol.TodoUpdatedParams{SessionID: sessionID, Items: e.Items})
+		s.broadcast(protocol.EventTodo, protocol.TodoUpdatedParams{SessionID: sessionID, Items: e.Items, DispatchID: e.DispatchID})
 	case agent.FilesChangedEvent:
 		params := protocol.FilesChangedParams{SessionID: sessionID, Files: make([]protocol.FileChangeParams, len(e.Files))}
 		for i, f := range e.Files {

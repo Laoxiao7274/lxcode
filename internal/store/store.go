@@ -139,6 +139,12 @@ func Open(dir string) (*Store, error) {
 		// 改档（chat.approval）后重启，打开同一条会话还得是改后的档。空串 = 没落过
 		// （老会话/默认档）→ 恢复时回落 behavior 默认档。
 		`ALTER TABLE sessions ADD COLUMN approval TEXT NOT NULL DEFAULT ''`,
+		// 任务清单快照（todo 契约，2026-12）：清单是**会话的状态**不是事件流——
+		// 每次 todo 调用全量替换后落一份 JSON 快照，重启恢复读回（计划条还在、
+		// 模型下一轮还能感知残留）。事件级溯源不需要：todo 的每次调用本来就在
+		// messages 历史里（session_search 可搜），再记一份是纯冗余。
+		// 空串 = 无清单（老会话/从没建过）。
+		`ALTER TABLE sessions ADD COLUMN todos TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := db.Exec(col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			db.Close()

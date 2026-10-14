@@ -10,6 +10,7 @@ import (
 	"fmt"
 
 	"github.com/moyunteng/lxcode/internal/llm"
+	"github.com/moyunteng/lxcode/internal/sessiondata"
 )
 
 // DispatchCall 是一次调度的参数（agent 内核在 runTools 调用位发起）。
@@ -21,6 +22,10 @@ type DispatchCall struct {
 	// Session 非空 = **续跑既有子会话**（2026-09-22）：子 Agent 的进度在库里，
 	// 附着同一个 id 接着跑；空 = 新开一个子会话。
 	Session string
+	// Todos 非空 = 主 Agent 拆好的**初始清单**（todo 契约批③——主拆初稿 +
+	// 子可修订）：作为子会话的清单初稿装载（子会话执行中可全量替换修订）。
+	// 空 = 子 Agent 按 strict 档自拆（与改造前一致）。
+	Todos []sessiondata.TodoItem
 }
 
 // DispatchResult 是调度执行的结果（回填主会话的工具结果）。
@@ -63,17 +68,30 @@ func dispatchDef(r *Registry) *Def {
 				"agent": { "type": "string", "description": "目标 Agent 的名单 id（提示词「可委派名单」里列出的）" },
 				"task": { "type": "string", "description": "任务描述——目标 + 约束 + 验收标准（子 Agent 据此独立完成并回传结果）" },
 				"context": { "type": "string", "description": "可选背景：当前对话的关键约束/已尝试的路径（不是完整历史）" },
-				"session": { "type": "string", "description": "可选：续跑既有子会话的 id（上一次 dispatch 结果里带的子会话 id）。填了就接着那个子会话的进度继续，不填则新开一个" }
+				"session": { "type": "string", "description": "可选：续跑既有子会话的 id（上一次 dispatch 结果里带的子会话 id）。填了就接着那个子会话的进度继续，不填则新开一个" },
+				"todos": {
+					"type": "array",
+					"description": "可选：为这次派发预拆的任务清单（3~7 条、动词开头、每条可独立验收）。作为子 Agent 的清单初稿——它执行中可以修订。给了它，用户在派发当下就能看到这次派发要做什么。",
+					"items": {
+						"type": "object",
+						"properties": {
+							"content": {"type": "string", "description": "任务描述（一句话，动词开头）"},
+							"status": {"type": "string", "enum": ["pending", "active", "done"], "description": "初始状态，通常全部 pending"}
+						},
+						"required": ["content", "status"]
+					}
+				}
 			},
 			"required": ["agent", "task"]
 		}`),
 		Risk: RiskLow,
 		Exec: func(ctx context.Context, args json.RawMessage) (string, error) {
 			var p struct {
-				Agent   string `json:"agent"`
-				Task    string `json:"task"`
-				Context string `json:"context"`
-				Session string `json:"session"`
+				Agent   string                   `json:"agent"`
+				Task    string                   `json:"task"`
+				Context string                   `json:"context"`
+				Session string                   `json:"session"`
+				Todos   []sessiondata.TodoItem   `json:"todos"`
 			}
 			if err := json.Unmarshal(args, &p); err != nil {
 				return "", fmt.Errorf("参数解析失败: %w", err)

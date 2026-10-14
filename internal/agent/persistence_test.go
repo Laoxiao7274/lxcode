@@ -38,6 +38,8 @@ func (p *persistenceStub) SaveApproval(string, string) error       { return nil 
 func (p *persistenceStub) ProjectByID(string) (sessiondata.ProjectMeta, bool, error) {
 	return sessiondata.ProjectMeta{ID: "project", Path: p.dir}, true, p.projectErr
 }
+func (p *persistenceStub) TodosOf(string) ([]sessiondata.TodoItem, bool, error) { return nil, false, nil }
+func (p *persistenceStub) SaveTodos(string, []sessiondata.TodoItem) error       { return nil }
 
 func TestSwitchFailuresPreserveWholeSession(t *testing.T) {
 	for _, kind := range []string{"lookup", "workspace", "missingDirectory"} {

@@ -46,6 +46,29 @@ export const TODO_LATER: TodoItem[] = [
   { content: "验收子结果并汇总", status: "active" },
 ];
 
+/** todo 契约（demo 同步）：主 Agent 预拆的派发清单初稿（dispatchStart.todos——
+ *  卡上第一秒显示这次派发要做什么）。 */
+export const DISPATCH_TODOS: TodoItem[] = [
+  { content: "定位工具循环的卡死路径", status: "pending" },
+  { content: "给 runTools 包 per-tool 120s 超时", status: "pending" },
+  { content: "补超时回填的测试", status: "pending" },
+];
+
+/** 子会话执行中修订后的清单（带 dispatch_id 的 todoUpdated——双投：子会话页
+ *  计划条实时走 + 主时间线卡徽标实时走）。 */
+export const DISPATCH_TODOS_RUNNING: TodoItem[] = [
+  { content: "定位工具循环的卡死路径", status: "done" },
+  { content: "给 runTools 包 per-tool 120s 超时", status: "active" },
+  { content: "补超时回填的测试", status: "pending" },
+];
+
+/** 派发结束的定格清单（dispatchEnd.finalTodos——卡上徽标定格为终态）。 */
+export const DISPATCH_TODOS_FINAL: TodoItem[] = [
+  { content: "定位工具循环的卡死路径", status: "done" },
+  { content: "给 runTools 包 per-tool 120s 超时", status: "done" },
+  { content: "补超时回填的测试", status: "done" },
+];
+
 /** 一轮任务的产物（filesChanged 事件数据——Codex 的验收视图；子 Agent 的改动并入）。 */
 export const FILES_CHANGED: FileChange[] = [
   {

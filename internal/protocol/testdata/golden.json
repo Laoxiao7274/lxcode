@@ -310,7 +310,17 @@
       "agent_id": "reviewer",
       "agent_name": "评审员",
       "agent_color": "#3b82f6",
-      "task": "评审这次的改动"
+      "task": "评审这次的改动",
+      "todos": [
+        {
+          "content": "读改动",
+          "status": "done"
+        },
+        {
+          "content": "写意见",
+          "status": "active"
+        }
+      ]
     }
   },
   "gitBranchInfoMain": {
@@ -614,6 +624,19 @@
           "status": "active"
         }
       ]
+    }
+  },
+  "todoUpdatedParamsDispatched": {
+    "_type": "",
+    "value": {
+      "session_id": "s1",
+      "items": [
+        {
+          "content": "定位泄漏点",
+          "status": "active"
+        }
+      ],
+      "dispatch_id": "d1"
     }
   },
   "toolEntry": {

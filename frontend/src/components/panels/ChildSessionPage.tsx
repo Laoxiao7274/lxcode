@@ -26,6 +26,7 @@ import { Block } from "../thread/blocks/Block";
 import { ScrollToBottom } from "../thread/ScrollToBottom";
 import { WINDOW_INITIAL, WINDOW_BATCH, WindowSentinel } from "../thread/Thread";
 import { useStickyFollow } from "../thread/useStickyFollow";
+import { TodoList } from "../../aicss/TodoList";
 
 export function ChildSessionPage({
   sessionId,
@@ -89,6 +90,10 @@ export function ChildSessionPage({
   const context = state?.context ?? null;
   const stats = state?.stats ?? null;
   const model = state?.model ?? "";
+  // todo 契约批②：子会话自己的计划条（页头下）——数据 = 该子会话 state 的 todos
+  //（双投已把带 dispatch_id 的 todo.updated 归约进子会话 state，零新机制）。
+  // 派发结束定格后显示定格值。
+  const todos = state?.todos ?? [];
 
   // 滚动跟随：与主时间线**同一份状态机**（useStickyFollow）——之前这页没装，
   // 子 Agent 流式跑工具/输出时页面纹丝不动（用户报「子会话尤其明显」的根因）。
@@ -114,6 +119,13 @@ export function ChildSessionPage({
         <span className="child-session-readonly">只读 · 这是子 Agent 自己的会话，不提供撤回/编辑（待裁决的确认可以在这里批）</span>
         <Button className="child-session-back" onClick={onBack}>返回主会话</Button>
       </div>
+      {/* 子会话自己的计划条（todo 契约批②）：子 Agent 建过清单才渲染——它的
+       *  实时进度在这里看（与主时间线派发卡上的徽标是同一份数据的两个呈现面）。 */}
+      {todos.length > 0 && (
+        <div className="child-session-todos">
+          <TodoList items={todos} />
+        </div>
+      )}
       <div className="child-session-body">
         {status === "loading" && blocks.length === 0 && <div className="child-session-note">正在读取子会话历史…</div>}
         {status === "error" && (

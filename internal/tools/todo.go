@@ -6,17 +6,16 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/moyunteng/lxcode/internal/sessiondata"
 )
 
-// TodoItem 是任务清单的一项。Status 三态对齐主流 coding agent 的习惯：
-// pending（未开始）/ active（进行中，同一时刻应只有一项）/ done（完成）。
-type TodoItem struct {
-	Content string `json:"content"`
-	Status  string `json:"status"` // pending | active | done
-}
+// TodoItem 是任务清单的一项（共享形状定义在 sessiondata——落库需要，分层规则
+// 禁止 store import tools；这里保持别名，既有调用面零改动）。
+type TodoItem = sessiondata.TodoItem
 
-// validTodoStatus 是合法状态集合。
-var validTodoStatus = map[string]bool{"pending": true, "active": true, "done": true}
+// validTodoStatus 引用共享的合法状态集合（sessiondata.TodoItemStates）。
+var validTodoStatus = sessiondata.TodoItemStates
 
 // TodoWriteFn 是 todo 状态写入的注入接缝（agent.Session 接线）：
 // 会话持有清单状态才能在 UI 上渲染（桌面壳的 TodoList 卡片），
@@ -57,10 +56,9 @@ func todoDef(r *Registry) *Def {
 	}`)
 	return &Def{
 		Name: "todo",
-		Description: "维护当前任务清单（全量替换式写入）。动手前先建清单：凡是需要调用工具" +
-			"（写文件、改代码、跑命令）的任务，先用本工具列出步骤清单（3~7 条、动词开头、可独立验收）" +
-			"再执行——只有两三步也要先建；纯对话回复可豁免。" +
-"简单任务不必建清单，直接做完汇报即可。" +
+		Description: "维护当前任务清单（全量替换式写入）。每轮开始先审视清单：新任务先用本工具出" +
+			"步骤清单（3~7 条、动词开头、可独立验收）再执行——只有两三步也要先建；已有清单先" +
+"对照现状更新，不要另起炉灶。" +
 			"每完成一步立即更新状态：把当前项标 done、下一项标 active。清单帮你自己不漏步骤，" +
 			"也让用户看到进度。同一时刻最多一项 active。",
 		Parameters: schema,
@@ -73,6 +71,7 @@ func todoDef(r *Registry) *Def {
 				return "", fmt.Errorf("参数解析失败: %w", err)
 			}
 			active := 0
+			seen := map[string]bool{}
 			for i, it := range a.Items {
 				if it.Content == "" {
 					return "", fmt.Errorf("第 %d 项的 content 不能为空", i+1)
@@ -83,6 +82,12 @@ func todoDef(r *Registry) *Def {
 				if it.Status == "active" {
 					active++
 				}
+				// content 唯一性（对齐 DSH）：全量替换语义下重复项没有任何合法用途，
+				// 纯噪声——重复会让「按 content 对照清单」的注入/摘要自相矛盾。
+				if seen[it.Content] {
+					return "", fmt.Errorf("第 %d 项与前面的项内容重复（%q）——清单项必须唯一，请合并或改写", i+1, it.Content)
+				}
+				seen[it.Content] = true
 			}
 			if active > 1 {
 				return "", fmt.Errorf("active 状态有 %d 项——同一时刻只能有一项进行中，请先完成或改回 pending", active)
@@ -97,10 +102,16 @@ func todoDef(r *Registry) *Def {
 }
 
 // formatTodoResult 把清单渲染成模型可读的确认文本。
+//
+// 回显强化（todo 契约）：模型每次写清单看到的反馈带**结构化三态计数**与当前焦点，
+// 全 done 时追加收敛行——「清单已全部完成」是模型侧唯一的收敛信号（没有它，模型
+// 会在任务完成后反复改写清单）。计数与 UI 徽标共用 sessiondata.CountTodoStatus 的
+// 口径（一份事实源，模型看到的数字与用户看到的一致）。
 func formatTodoResult(items []TodoItem) string {
 	if len(items) == 0 {
 		return "清单已清空。"
 	}
+	done, act, pend := sessiondata.CountTodoStatus(items)
 	// 展示顺序：active 最前（当前焦点），pending 次之，done 最后——
 	// 与人读清单的注意力顺序一致，而不是模型写入的随机顺序。
 	order := map[string]int{"active": 0, "pending": 1, "done": 2}
@@ -111,16 +122,11 @@ func formatTodoResult(items []TodoItem) string {
 		mark := map[string]string{"done": "✓", "active": "▶", "pending": "·"}[it.Status]
 		fmt.Fprintf(&b, "%s %s\n", mark, it.Content)
 	}
-	return fmt.Sprintf("清单已更新（%d 项，done %d）:\n%s",
-		len(items), countDone(items), b.String())
+	out := fmt.Sprintf("清单已更新（%d 项：done %d · 进行 %d · 待办 %d）:\n%s",
+		len(items), done, act, pend, b.String())
+	if act == 0 && pend == 0 {
+		out += "\n清单已全部完成。"
+	}
+	return out
 }
 
-func countDone(items []TodoItem) int {
-	n := 0
-	for _, it := range items {
-		if it.Status == "done" {
-			n++
-		}
-	}
-	return n
-}

@@ -297,6 +297,10 @@ withPreview(async (preview) => {
 
   // 主 Agent 调度子 Agent（dispatch 卡——M3 形态）：发消息 → 确认门放行
   // → dispatchStart → 子执行挂卡内 → dispatchEnd 定格（demo 时间轴全程 ~22s）
+  // 隐藏窗口里 gsap ticker（rAF）冻结：点卡头进子会话视图的退场补间永不完成
+  //（displayedView 卡在 chat，子会话面板不渲染）。与下面 Agents 段同款处理：
+  // 关掉动效门控，视图切换走同步分支，断言可测。
+  await win.webContents.executeJavaScript("window.__LX_TEST_MOTION_OFF__ = true");
   await win.webContents.executeJavaScript(`(() => {
     const ta = document.querySelector(".piInput");
     if (!ta) throw new Error("输入框缺失");
@@ -455,13 +459,14 @@ withPreview(async (preview) => {
   // 子会话页头的两条读数（2026-09-30 用户报「上下文 会话信息这些展示没有」）：
   //   ① 会话统计胶囊（整条子会话花了多少）——它自己的数字，不是主会话那份；
   //   ② 上下文环（此刻它自己的窗口里有多少）。
-  // 两个弹层都必须**向下开且在视口内**：页头在页面顶部，向上开会跑出视口被裁掉
-  //（用户原话「上下文展示的下拉框跑上面去被遮住了」）——所以这里量真实几何：
-  // 弹层顶边必须在触发器底边之下，且底边在视口内（被裁就是 bottom > 视口高）。
+  // 两个弹层都必须**向下开且在视口内**：读数在输入条里（2026-10-07 起子会话页挂
+  // 与主会话同一个 Composer，读数随它进了输入条——页头只留身份信息），输入条在
+  // 页面底部，向上开会跑出视口被裁掉（用户原话「上下文展示的下拉框跑上面去被遮
+  // 住了」）——所以这里量真实几何：弹层顶边必须在触发器底边之下，且底边在视口内。
   const childHead = await win.webContents.executeJavaScript(`(() => {
-    const head = document.querySelector('.child-session-head');
-    const pill = head && head.querySelector('.stats-pill');
-    const chip = head && head.querySelector('.ctx-chip');
+    const page = document.querySelector('.child-session-page');
+    const pill = page && page.querySelector('.stats-pill');
+    const chip = page && page.querySelector('.ctx-chip');
     return {
       statsPill: !!pill,
       statsLabel: (pill?.querySelector('.stats-label')?.textContent ?? '').trim(),
@@ -472,16 +477,16 @@ withPreview(async (preview) => {
     };
   })()`);
   log("child-head-readouts", JSON.stringify(childHead));
-  assert.ok(childHead.statsPill, `chat: 子会话页头应有「会话统计」胶囊（${JSON.stringify(childHead)}）`);
+  assert.ok(childHead.statsPill, `chat: 子会话页应有「会话统计」胶囊（输入条里，与主会话同一份 Composer）（${JSON.stringify(childHead)}）`);
   assert.ok(childHead.statsLabel.length > 0, `chat: 统计胶囊应有读数（${JSON.stringify(childHead)}）`);
-  assert.ok(childHead.ctxChip, `chat: 子会话页头应有上下文环（${JSON.stringify(childHead)}）`);
+  assert.ok(childHead.ctxChip, `chat: 子会话页应有上下文环（${JSON.stringify(childHead)}）`);
   assert.ok(!childHead.ctxUnknown, `chat: 子会话的上下文应是它自己的真实占用，不是中性态「—」（${JSON.stringify(childHead)}）`);
   // 点开上下文环：弹层必须向下开（顶边 ≥ 触发器底边）且完整落在视口内
   const popGeom = await win.webContents.executeJavaScript(`(() => {
-    const chip = document.querySelector('.child-session-head .ctx-chip');
+    const chip = document.querySelector('.child-session-page .ctx-chip');
     if (chip) chip.click();
     return new Promise((res) => setTimeout(() => {
-      const pop = document.querySelector('.child-session-head .ctx-pop');
+      const pop = document.querySelector('.child-session-page .ctx-pop');
       const c = chip?.getBoundingClientRect();
       const p = pop?.getBoundingClientRect();
       res(pop && c && p ? {

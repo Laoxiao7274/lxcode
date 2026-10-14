@@ -122,6 +122,8 @@ func goldenSamples() map[string]goldenSample {
 
 		"todoItem":          {"TodoItem", tools.TodoItem{Content: "拆分 protocol.go", Status: "done"}},
 		"todoUpdatedParams": {"", TodoUpdatedParams{SessionID: "s1", Items: []tools.TodoItem{{Content: "拆分 protocol.go", Status: "done"}, {Content: "golden 往返测试", Status: "active"}}}},
+		// 带归属（子会话上抛）：dispatch_id 是可选键——缺席 = 主会话自己的清单
+		"todoUpdatedParamsDispatched": {"", TodoUpdatedParams{SessionID: "s1", DispatchID: "d1", Items: []tools.TodoItem{{Content: "定位泄漏点", Status: "active"}}}},
 
 		// ---- chat 域：历史回放 ----
 
@@ -287,6 +289,7 @@ func goldenSamples() map[string]goldenSample {
 		"dispatchStartParams": {"", DispatchStartParams{
 			OwnerSessionID: "s1", DispatchID: "d1", SessionID: "child-1",
 			AgentID: "reviewer", AgentName: "评审员", AgentColor: "#3b82f6", Task: "评审这次的改动",
+			Todos: []tools.TodoItem{{Content: "读改动", Status: "done"}, {Content: "写意见", Status: "active"}},
 		}},
 	}
 }

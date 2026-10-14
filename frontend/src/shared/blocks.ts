@@ -107,6 +107,10 @@ export type ThreadBlock =
       /** 子 Agent 用量（轮末）。 */
       usageTokens?: number;
       isError?: boolean;
+      /** 子会话的任务清单（todo 契约批②/③）：实时路径由带 dispatch_id 的
+       *  todo.updated 驱动（running 时实时更新）；派发结束时定格为 finalTodos
+       *  （dispatchEnd 回填）。徽标 = 三态计数，不展开卡内子时间线。 */
+      todos?: TodoItem[];
       /** 这次派发期间子会话共享到对话的附件（share_file 等的产物——随调度
        *  结果回流主会话）：主时间线渲染附件条（卡 = 一行摘要的例外：附件不是
        *  子过程，是**成果**）。实时路径来自 dispatch 的 toolResult 事件、回放

@@ -652,6 +652,25 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* todo 契约批②：派发卡上的清单进度徽标（✓ N/M · 进行项）。计数不抢任务摘要
+ *  的戏——faint 色 + tabular-nums；进行项截断省略。 */
+.dispatch-todos {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  font-size: 10.5px;
+  color: var(--success);
+  font-variant-numeric: tabular-nums;
+  max-width: 40%;
+  overflow: hidden;
+}
+.dispatch-todos-focus {
+  color: var(--fg-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .dispatch-state {
   display: inline-flex;
   align-items: center;
@@ -721,6 +740,56 @@
  *  样式表里选不中——属性是稳定契约，scripts/check-preview-layout.cjs 也按它定位）。 */
 .dispatch-card [data-variant="command"] {
   margin: 0 12px 10px;
+}
+/* ===== 派发卡的**成果区**（子会话附件回流，2026-12 用户拍板重做）=====
+ *  附件不是子过程，是成果——但也不能与卡头一行拼在一坨。独立区块：
+ *  发丝分隔线与卡头分开 + 「成果文件」小标题（v3 区块标签语言：小号、faint、
+ *  字距微开）+ 附件卡网格。卡 = 一行摘要的契约不破：这里只有成果，没有子过程。 */
+.dispatch-deliverables {
+  border-top: 1px solid var(--border-soft);
+  padding: 9px 12px 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.dispatch-deliverables-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--fg-faint);
+  user-select: none;
+}
+/* 附件网格：横向流式排布（图片缩略统一尺寸、文件卡等高对齐）——不挤成一坨 */
+.dispatch-deliverables .att-cards {
+  margin-bottom: 0;
+}
+/* 成果区的图片缩略图：统一 72×72 圆角方图（与主时间线的 max-width 自由形态
+ *  区分——成果区是网格语义，尺寸必须一致才齐）。标题藏进 hover title（与
+ *  主时间线同款 title），卡内不留文字行。 */
+.dispatch-deliverables .att-image {
+  width: 72px;
+  max-width: 72px;
+  border-radius: 10px;
+}
+.dispatch-deliverables .att-image img {
+  width: 72px;
+  height: 72px;
+  max-width: none;
+  object-fit: cover;
+}
+.dispatch-deliverables .att-image .att-image-cap {
+  display: none;
+}
+/* 成果区的文件卡：紧凑行（图标 + 名字两行对齐，悬停反馈沿用主时间线的
+ *  描边变亮），尺寸对齐图片缩略的高度节奏。 */
+.dispatch-deliverables .att-file {
+  height: 44px;
+  padding: 0 12px;
+  border-radius: 10px;
+  align-items: center;
+}
+.dispatch-deliverables .att-file .att-name {
+  font-size: 12px;
 }
 /* 行：24px 高（DSH DisclosureRow 的行高）；运行中扫光在 ::after */
 .trow-row {

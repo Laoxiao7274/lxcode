@@ -35,10 +35,11 @@ import type { SendAttachments, ContextUsage, SessionStats, TodoItem } from "../.
  *  Enter/Tab 补全——面板开着时 Enter 不发送）。
  *  任务清单**融合进输入白卡**（.pi 内部顶部的 .pi-plan 区块：清单 + 发丝分隔线
  *  + 输入区 = 一张卡的视觉；todos 为空时该区块不渲染，.pi 形态与无清单时一致）。
- *  附件（图片批次 B）：piBar 左侧「+」按钮弹出菜单（图片/文件，本地选择），
- *  输入区监听 paste（剪贴板图片走附件流程，文本粘贴照常）；暂存附件在输入框
- *  上方预览（缩略图/文件卡，点击 × 移除），随发送组装进 chat.send 的
- *  images/files 参数，busy 时入队**携带附件**。 */
+ *  附件（图片批次 B，2026-12 改版对齐 DSH composer 布局语义）：「+」按钮在
+ *  **输入区左侧**（与 textarea 同行、贴底对齐——DSH 的左端图标组语义），弹出
+ *  菜单（图片/文件，本地选择）；输入区监听 paste（剪贴板图片走附件流程，文本
+ *  粘贴照常）；暂存附件在输入框上方预览（缩略图/文件卡，点击 × 移除），随发送
+ *  组装进 chat.send 的 images/files 参数，busy 时入队**携带附件**。 */
 /** 外部注入输入框的草稿（撤回/编辑把原文放回输入框）。
  *
  *  **用单调递增的 id 而不是按文本比较**：同一条消息连续撤回两次（或撤回后再编辑
@@ -576,20 +577,11 @@ export function Composer({
               onClose={() => setValue("")}
             />
           )}
-          <textarea
-            ref={taRef}
-            className="piInput"
-            placeholder={locked ? "只读视图——回到主会话才能发消息" : busy ? "生成中… 可先输入，Enter 排队发送" : "让智能体构建、审查或解释点什么…"}
-            rows={1}
-            value={value}
-            disabled={locked}
-            onChange={(e) => setValue(e.target.value)}
-            onKeyDown={onKey}
-            onPaste={onPaste}
-          />
-          <div className="piBar">
+          <div className="pi-row">
             {/* 「+」添加附件：图片（受 vision 能力门控）/文件。子会话只读时不渲染
-                （locked 与选择器同款语义——只读视图不该出现添加入口）。 */}
+                （locked 与选择器同款语义——只读视图不该出现添加入口）。
+                位置：输入区**左侧**（DSH composer 的左端图标组语义——与 textarea
+                同行、贴底对齐），菜单向上弹出。 */}
             {!locked && (
               <span className="pop-wrap att-add-wrap" ref={addMenu.rootRef}>
                 <button
@@ -601,7 +593,7 @@ export function Composer({
                   aria-expanded={addMenu.open}
                   onClick={addMenu.toggle}
                 >
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true">
                     <path d="M12 5v14M5 12h14" />
                   </svg>
                 </button>
@@ -659,6 +651,19 @@ export function Composer({
                 />
               </span>
             )}
+            <textarea
+              ref={taRef}
+              className="piInput"
+              placeholder={locked ? "只读视图——回到主会话才能发消息" : busy ? "生成中… 可先输入，Enter 排队发送" : "让智能体构建、审查或解释点什么…"}
+              rows={1}
+              value={value}
+              disabled={locked}
+              onChange={(e) => setValue(e.target.value)}
+              onKeyDown={onKey}
+              onPaste={onPaste}
+            />
+          </div>
+          <div className="piBar">
             {/* 三个选择器包一组：子会话页只读时整组锁定（样式不变，只是不可交互）。
                 ContextIndicator/StatsPills 是读数，留在组外保持可点开。 */}
             <span className={"pi-controls" + (readOnly ? " pi-locked" : "")}>

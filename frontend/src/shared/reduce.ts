@@ -25,7 +25,11 @@ export function reduce(state: UIState, ev: AgentEvent): UIState {
       return reduceConfirmRequest(state, ev);
     case "todoUpdated":
       // 任务清单不进对话流（用户拍板：只做输入框上方的计划条——
-      // 消息流里再插一份是重复呈现；历史回放同样不重建清单卡）
+      // 消息流里再插一份是重复呈现；历史回放同样不重建清单卡）。
+      // todo 契约批②：带 dispatch_id 的是子会话的清单更新——归约进主时间线
+      // 派发卡的 todos 徽标（不碰本会话的计划条；清单归子会话自己）；子会话
+      // 自己的 state 由双投路径吃到（withoutDispatch 后走本分支）。
+      if (eventDispatchId(ev)) return applyDispatchTodos(state, ev);
       return { ...state, todos: ev.items };
     case "done":
       return reduceDone(state, ev);
@@ -363,14 +367,29 @@ return {
     kind: "dispatch", uid: nextUid(), id: ev.dispatchId, sessionId: ev.childSessionId,
     agentId: ev.agentId, agentName: ev.agentName, agentColor: ev.agentColor,
     task: ev.task, status: "running", subBlocks: [],
+    // todo 契约批③：主 Agent 预拆的清单初稿（卡上第一秒显示计划；子会话修订后
+    // 由带 dispatch_id 的 todo.updated 实时覆盖）。
+    todos: ev.todos,
   }],
 };
 }
 
+/** 带归属的 todo.updated → 更新主时间线派发卡上的清单徽标（实时进度）。
+ *  卡不存在（历史回放外的边缘时序）就忽略——徽标是附属于卡的呈现，不是独立状态。 */
+function applyDispatchTodos(state: UIState, ev: Ev<"todoUpdated">): UIState {
+  const did = ev.dispatchId;
+  if (!did) return state;
+  const idx = state.blocks.findIndex((b) => b.kind === "dispatch" && b.id === did);
+  if (idx < 0) return state;
+  const blocks = state.blocks.slice();
+  const b = blocks[idx] as Extract<ThreadBlock, { kind: "dispatch" }>;
+  blocks[idx] = { ...b, todos: ev.items };
+  return { ...state, blocks };
+}
+
 /** dispatchEnd 事件的处理（从 reduce 的 switch 里提出来——原来 213 行的 switch
  *  每个分支都是一段独立逻辑，混在一起只能整体读）。 */
-function reduceDispatchEnd(state: UIState, ev: Ev<"dispatchEnd">): UIState {
-// 子 Agent 最终回复作为结果回填（卡定格——结果在卡内展示，
+function reduceDispatchEnd(state: UIState, ev: Ev<"dispatchEnd">): UIState {// 子 Agent 最终回复作为结果回填（卡定格——结果在卡内展示，
 // 主会话后续由主 Agent 继续汇总会话）
 const idx = state.blocks.findIndex((b) => b.kind === "dispatch" && b.id === ev.dispatchId);
 if (idx < 0) return state;
@@ -379,6 +398,9 @@ const b = blocks[idx] as Extract<ThreadBlock, { kind: "dispatch" }>;
 blocks[idx] = {
   ...b, status: "done", result: ev.result, isError: ev.isError,
   usageTokens: ev.usageTokens, sessionId: ev.childSessionId ?? b.sessionId,
+  // todo 契约批③：派发结束定格终态清单（FinalTodos 非空才覆盖——运行中徽标
+  // 由带 dispatch_id 的 todo.updated 实时喂；nil = 子会话没建过清单，不动）。
+  todos: ev.finalTodos ?? b.todos,
 };
 return { ...state, blocks };
 }

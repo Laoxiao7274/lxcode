@@ -15,7 +15,8 @@ import (
 )
 
 // todoFirstKey 是提示词层的行为指令关键句（改措辞时这里同步改）。
-const todoFirstKey = "动手前先建清单：凡是需要调用工具（写文件、改代码、跑命令）才能完成的任务，开始前先用 todo 工具列出步骤清单"
+// strict 档 2026-12 改写为 todo 契约的轮次纪律（每轮审视 / 不攒批 / 收尾一致）。
+const todoFirstKey = "每轮开始先审视任务清单：本轮是新任务就用 todo 工具先出清单"
 
 func TestTodoFirstInMainPrompt(t *testing.T) {
 	s := newAgentSession(t)
@@ -49,10 +50,10 @@ func TestTodoToolDescriptionSaysBuildFirst(t *testing.T) {
 	if !ok {
 		t.Fatal("todo 工具未注册")
 	}
-	if !strings.Contains(d.Description, "动手前先建清单") {
-		t.Fatalf("todo 工具 description 缺少「动手前先建清单」：%s", d.Description)
+	if !strings.Contains(d.Description, "维护当前任务清单") {
+		t.Fatalf("todo 工具 description 缺少「维护当前任务清单」：%s", d.Description)
 	}
-	if !strings.Contains(d.Description, "再执行") {
+	if !strings.Contains(d.Description, "每完成一步立即更新状态") {
 		t.Fatalf("todo 工具 description 缺少「先列清单再执行」语义：%s", d.Description)
 	}
 }
@@ -71,7 +72,7 @@ func TestTodoPromptModesInMainPrompt(t *testing.T) {
 	if !strings.Contains(p, "按任务复杂度用清单：需要多步工具调用才能完成的任务") {
 		t.Fatal("normal 主会话提示词缺少常规版关键句")
 	}
-	if strings.Contains(p, todoFirstKey) || strings.Contains(p, "只有两三步也要先建") {
+	if strings.Contains(p, todoFirstKey) || strings.Contains(p, "只有两三步也要先建") || strings.Contains(p, "每轮开始先审视任务清单") {
 		t.Fatal("normal 档不应包含 strict 的硬约束措辞")
 	}
 	if !strings.Contains(p, "不为凑数拆分") {

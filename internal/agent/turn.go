@@ -6,6 +6,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -129,11 +130,19 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig, ac *sessiondata.A
 		}
 		ctx = tools.WithSkillSource(ctx, func(context.Context) []tools.SkillEntry { return entries })
 	}
-	// 本轮 todo 清单的写回口（清单状态归会话，UI 的 TodoList 数据源）
+	// 本轮 todo 清单的写回口（清单状态归会话，UI 的 TodoList 数据源）。
+	// todo 契约：清单同时落库（重启恢复读回，计划条还在）——失败只记日志，
+	// 内存才是运行真源（与占用/审批档落库同一条纪律）。
 	ctx = tools.WithTodoSink(ctx, func(items []tools.TodoItem) {
 		s.mu.Lock()
 		s.todos = items
+		st, id := s.st, s.id
 		s.mu.Unlock()
+		if st != nil && id != "" {
+			if err := st.SaveTodos(id, items); err != nil {
+				log.Printf("任务清单落库失败（继续运行）: %v", err)
+			}
+		}
 		s.emit(TodoUpdatedEvent{Items: items})
 	})
 	// 本轮的提问通道（ask_user 工具的等待端）：向用户提问 = 一张 ask 形态的
@@ -198,6 +207,13 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig, ac *sessiondata.A
 		// 落进历史，插一条 user 消息不会把 assistant 的 tool_calls 与它的
 		// 结果拆开（配对不变量——拆开会 400，还会让压缩切点永久卡死）。
 		s.injectNotices()
+		// todo 契约（轮首清单快照注入，只在第一轮）：模型对「清单不更新」的唯一
+		// 可感知闭环——有清单就把现状当面摆出来（提示词是期望，注入是事实）。
+		// 只注入一次（round == 0）：续轮的清单变化模型自己在工具回显里看得到，
+		// 每轮都注入会把同一份清单反复塞进上下文。
+		if round == 0 {
+			s.injectTodoSnapshot()
+		}
 		// 重复调用提醒也在**轮边界**注入——与 injectNotices 同一个理由（唯一安全的
 		// 历史插入点：上一轮工具结果已全部落进历史，见 notify.go 与 toolpair.go）。
 		if repeatHint != "" {
@@ -280,6 +296,11 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig, ac *sessiondata.A
 			Context: s.ProjectedContextUsage(),
 		})
 		if len(res.Message.ToolCalls) == 0 {
+			// 轮自然收尾（没有工具调用 = 模型交了最终答复）：todo 契约的收尾校验——
+			// 清单仍有 active/pending 项 → 被动通告入队，下一轮真的开始时模型必然
+			// 看到（不硬阻塞：跨轮长任务轮轮收尾都欠着清单是常态）。busy/错误收尾
+			// 不校验（那轮本来就没走完，校验只会产生噪声）。
+			s.auditTodosAtRoundEnd()
 			return
 		}
 		if !s.runTools(ctx, res.Message.ToolCalls, &fileChanges, ac, "", s.append) {
@@ -421,4 +442,84 @@ func (s *Session) streamRound(ctx context.Context, workDir, effort string, ac *s
 		return nil, lastErr
 	}
 	return nil, errors.New("流意外结束（无 done 事件）")
+}
+
+// todoSnapshotNotice / todoConvergedNotice / todoAuditNotice 是 todo 契约的注入
+// 通告文案。带 SystemNoticePrefix：对用户隐藏（不渲染成用户气泡/提示条——清单状态
+// 用户在计划条上看），模型照常可见。SystemNoticePrefix 的机制见 turn.go 顶部。
+const (
+	todoSnapshotNotice = SystemNoticePrefix + "[当前任务清单] %s先对照此清单行动：" +
+		"完成即更新（当前项 done、下一项 active），状态如实，不要无视它另起炉灶。"
+	todoConvergedNotice = SystemNoticePrefix + "[任务清单已完成] 上一轮的清单已全部完成。若本轮是新任务，" +
+		"请先用 todo 工具重建清单再动手；纯对话可直接回复。"
+	todoAuditNotice = SystemNoticePrefix + "[清单收尾提示] 上一轮结束时清单仍有未完成项：%s。" +
+		"若任务实际已完成，请更新清单（全量替换）；若未完成，本轮继续推进。"
+)
+
+// todoSummary 生成「N 项：done X · 进行 Y · 待办 Z。进行中：…」的摘要（轮首注入
+// 与派发结果回传共用一份口径）。
+func todoSummary(items []tools.TodoItem) string {
+	done, act, pend := sessiondata.CountTodoStatus(items)
+	s := fmt.Sprintf("%d 项：done %d · 进行 %d · 待办 %d", len(items), done, act, pend)
+	var focus []string
+	for _, it := range items {
+		if it.Status == "active" {
+			focus = append(focus, it.Content)
+		}
+	}
+	if len(focus) > 0 {
+		s += "。进行中：" + strings.Join(focus, "、")
+	}
+	return s
+}
+
+// injectTodoSnapshot 轮首把当前清单快照注入上下文（**Notice=true 的 user 消息**，
+// 不落用户时间线）。三分支：
+//   - 无清单：不注入（strict 档提示词负责「必出」，注入空气是噪声）；
+//   - 全 done（收敛态）：提示重建——防上一单的旧清单挂着误导本轮；
+//   - 未完成：注入现状——「不更新」从模型不知道变成每轮被当面提醒。
+func (s *Session) injectTodoSnapshot() {
+	s.mu.Lock()
+	items := append([]tools.TodoItem(nil), s.todos...)
+	s.mu.Unlock()
+	if len(items) == 0 {
+		return
+	}
+	_, act, pend := sessiondata.CountTodoStatus(items)
+	var text string
+	if act == 0 && pend == 0 {
+		text = todoConvergedNotice
+	} else {
+		text = fmt.Sprintf(todoSnapshotNotice, todoSummary(items))
+	}
+	m := llm.Message{Role: "user", Content: text, Notice: true}
+	s.append(m)
+	s.emit(UserMsgEvent{Message: m})
+}
+
+// auditTodosAtRoundEnd 轮自然收尾时的清单校验：仍有 active/pending 项 → 被动通告
+// 入队（QueueNoticePassive——只在下一轮真的开始时注入，绝不自动开轮）。全 done 或
+// 无清单是干净的收尾态，什么都不做。
+//
+// 为什么不硬阻塞：跨轮长任务轮轮收尾都欠着清单是常态，阻塞会把正常节奏卡死；
+// 被动通告 = 下一轮模型必然看到 + 用户在通告条上也看得到（清单本身在计划条上实时可见）。
+func (s *Session) auditTodosAtRoundEnd() {
+	s.mu.Lock()
+	items := append([]tools.TodoItem(nil), s.todos...)
+	s.mu.Unlock()
+	if len(items) == 0 {
+		return
+	}
+	_, act, pend := sessiondata.CountTodoStatus(items)
+	if act == 0 && pend == 0 {
+		return // 全 done：干净收尾
+	}
+	// 列出未完成项（active 优先——那正是「漂着」最扎眼的）
+	var unfinished []string
+	for _, it := range items {
+		if it.Status != "done" {
+			unfinished = append(unfinished, it.Content+"（"+map[string]string{"active": "进行中", "pending": "待办"}[it.Status]+"）")
+		}
+	}
+	_ = s.QueueNoticePassive(fmt.Sprintf(todoAuditNotice, strings.Join(unfinished, "、")))
 }

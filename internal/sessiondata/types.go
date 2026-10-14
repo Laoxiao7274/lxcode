@@ -15,6 +15,36 @@ type SessionMeta struct {
 	AgentID   string // 该会话运行的 Agent（子会话续跑时按同一套四层组合组装）
 }
 
+// TodoItem 是任务清单的一项（todo 契约的共享形状）：agent 持有内存态、tools 做
+// 校验、store 落库、protocol 转 wire——四处用同一份定义。
+//
+// 为什么定义在 sessiondata 而不是 tools：清单要**落库**（重启后打开会话，计划条还在，
+// 模型在下一轮还能感知残留），分层规则禁止 store import tools（AGENTS.md §4）——
+// sessiondata 正是"两侧共享的业务数据"的归处（ContextUsage 同一条理由）。
+// tools 侧保持同名类型别名，既有调用面零改动。
+type TodoItem struct {
+	Content string `json:"content"`
+	Status  string `json:"status"` // pending | active | done
+}
+
+// TodoItemState 的合法值集合（与 tools/todo.go 的校验共用同一份事实源）。
+var TodoItemStates = map[string]bool{"pending": true, "active": true, "done": true}
+
+// CountTodoStatus 统计三态计数（回显/徽标/TodoDock 共用的口径）。
+func CountTodoStatus(items []TodoItem) (done, active, pending int) {
+	for _, it := range items {
+		switch it.Status {
+		case "done":
+			done++
+		case "active":
+			active++
+		default:
+			pending++
+		}
+	}
+	return done, active, pending
+}
+
 // ContextUsage 是一次上下文测量的**共享形状**：agent 测量、store 落库、server 转 wire
 // 三处用同一份定义（agent 侧是类型别名，见 internal/agent/context_usage.go）。
 //

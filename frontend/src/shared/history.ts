@@ -1,12 +1,12 @@
 // 历史快照 → UI 状态：消息序列重建 blocks（回放路径与实时路径必须一致）。
 
-import type { HistorySnapshot } from "./types";
+import type { HistorySnapshot, TodoItem } from "./types";
 import { type AssistantBlock, type ThreadBlock, type UIState, DISPATCH_TOOL_NAME, nextUid, checkpointBody, placeConfirm } from "./blocks";
 import { isHiddenNotice, noticeBody, noticeLabel } from "./notices";
 import { attachmentsFromMessage, parseAttachmentLines } from "./attachments";
 
 /** dispatch 调用的参数（后端 internal/tools/dispatch.go 的 JSON 形状：
- *  `{agent, task, context?, session?}`）。 */
+ *  `{agent, task, context?, session?, todos?}`）。 */
 export interface DispatchArgs {
   /** 目标 Agent 的名单 id（空 = 历史里没有 / 参数坏了）。 */
   agent: string;
@@ -15,6 +15,8 @@ export interface DispatchArgs {
   /** 续跑的子会话 id（可选）。**不是权威值**——续跑时它可能为空，
    *  真正用的那个 id 在结果的提示行里（见 splitDispatchResult）。 */
   session: string;
+  /** 主 Agent 预拆的清单初稿（todo 契约批③；可选）。 */
+  todos?: TodoItem[];
 }
 
 /** 解析 agent_dispatch 的 arguments（纯函数，不 import React——可直接单测）。
@@ -38,7 +40,23 @@ export function parseDispatchArgs(raw: string | undefined | null): DispatchArgs 
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return none;
   const o = parsed as Record<string, unknown>;
   const str = (k: string) => (typeof o[k] === "string" ? (o[k] as string) : "");
-  return { agent: str("agent"), task: str("task"), session: str("session") };
+  // todos 的判定刻意宽松：形状不对（不是数组/条目缺 content）就整个丢弃——
+  // 徽标是展示信息，坏参数不渲染比渲染成垃圾好；不抛错（与 agent/task/session
+  // 的容错同一条纪律）。
+  let todos: TodoItem[] | undefined;
+  if (Array.isArray(o.todos)) {
+    const items = (o.todos as unknown[]).filter(
+      (it): it is TodoItem =>
+        typeof it === "object" && it !== null &&
+        typeof (it as { content?: unknown }).content === "string" &&
+        typeof (it as { status?: unknown }).status === "string",
+    );
+    if (items.length > 0) todos = items;
+  }
+  // todos 缺席时**不写这个键**（键缺席 = 未知——本仓库 wire 的统一约定）。
+  const out: DispatchArgs = { agent: str("agent"), task: str("task"), session: str("session") };
+  if (todos) out.todos = todos;
+  return out;
 }
 
 /** 子会话 id 提示行（后端 internal/agent/tools.go 在 dispatch 结果末尾追加）：
@@ -174,6 +192,11 @@ export function historyBlocks(h: HistorySnapshot): ThreadBlock[] {
             // 按 agentId 从 useAgents() 回落（渲染层才有注册表）
             agentName: "", agentColor: "",
             task: args.task,
+            // todo 契约批③：主 Agent 预拆的清单初稿（arguments.todos）——回放时
+            // 卡上仍能看到当时的计划。子会话执行中的修订不在父会话历史里（它落
+            // 在子会话自己的消息流），回放定格为初稿是**诚实的降级**（与 subBlocks
+            // 同一条理由）。
+            todos: Array.isArray(args.todos) ? (args.todos as TodoItem[]) : undefined,
             // 先按"中断"定格：历史里**没有**配对结果 = 那次派发在结束前就断了，
             // 不是"正在跑"。结果到了（role=tool 分支）再回填成 done + 正文。
             status: "done", isError: true, result: DISPATCH_INTERRUPTED,

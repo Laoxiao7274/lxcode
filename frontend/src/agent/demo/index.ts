@@ -4,7 +4,7 @@
 import type { AgentEvent, AgentSource, ApprovalMode, ArchiveOutcome, CompactOutcome, ConfirmRequest, ContextUsage, GitOverview, HistoryMessage, HistorySnapshot, JobAdminSource, JobInfo, JobLogResult, ProjectInstructions, ProjectMeta, RewindOutcome, SendOptions, SessionMeta, SessionStats, TodoItem } from "../../shared/types";
 import { JOB_NOTICE_PREFIX, sortJobs, upsertJob } from "../../shared/jobs";
 import { normalizeApproval } from "../../shared/approval";
-import { MAIN_REASONING, SUB_REASONING, SUB_RESULT, MAIN_ANSWER, TODO_INITIAL, TODO_LATER, FILES_CHANGED, SESSIONS } from "./data";
+import { MAIN_REASONING, SUB_REASONING, SUB_RESULT, MAIN_ANSWER, TODO_INITIAL, TODO_LATER, DISPATCH_TODOS, DISPATCH_TODOS_RUNNING, DISPATCH_TODOS_FINAL, FILES_CHANGED, SESSIONS } from "./data";
 
 /** 演示的子会话 id 与它的模型（子 Agent = 独立会话，AGENTS.md §2.3）。
  *  卡上的子会话 id 徽标、子会话视图、childHistory 三处共用这一个常量——
@@ -567,6 +567,8 @@ export class DemoAgent implements AgentSource, JobAdminSource {
         agentId: "coder", agentName: "代码 Agent",
         agentColor: "#3b82f6",
         task: SUB_TASK,
+        // todo 契约：主 Agent 预拆的清单初稿（卡上第一秒显示计划）
+        todos: DISPATCH_TODOS,
       });
     });
 
@@ -600,6 +602,10 @@ export class DemoAgent implements AgentSource, JobAdminSource {
         type: "toolResult", dispatchId: "d1", id: "d-c1", name: "read_file", isError: false,
         content: "296→// runTools 执行本轮工具调用（高危先确认）；返回 false 表示被取消。\n297→func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall) bool {\n…（共 548 行，已显示 296-335 行）",
       });
+      // todo 契约：子会话执行中更新清单（带 dispatch_id 上抛——双投：子会话页
+      // 计划条 + 主时间线卡徽标同步走）。与真实链路一致：todo.updated 是子会话
+      // 的工具调用触发的。
+      this.childEmit({ type: "todoUpdated", dispatchId: "d1", items: DISPATCH_TODOS_RUNNING });
     });
 
     // ---- 子 Agent：改代码（edit，低危自动——diff 呈现）----
@@ -677,6 +683,8 @@ export class DemoAgent implements AgentSource, JobAdminSource {
       this.emit({
         type: "dispatchEnd", dispatchId: "d1", isError: false, usageTokens: 730,
         result: allow ? SUB_RESULT : "已完成（源码核对版）：改动与回归用例如上；测试未执行——用户拒绝了 bash，需要时可以说一声我再跑。",
+        // todo 契约：派发结束清单定格（卡上徽标定格为终态）
+        finalTodos: DISPATCH_TODOS_FINAL,
       });
       // 真实后端在子上下文收尾后还会回填一条工具结果（id = 主轮的
       // agent_dispatch 调用 id）。store 对 agent_dispatch 不建工具行，

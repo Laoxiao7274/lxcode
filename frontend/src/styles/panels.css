@@ -484,6 +484,15 @@
   font-weight: 600;
   color: var(--fg);
 }
+/* todo 契约批②：子会话自己的计划条容器（页头下）——宽度对齐时间线内容区，
+ *  窄屏可折叠；TodoList 组件自带样式（aicss token），这里只管位置。 */
+.child-session-todos {
+  flex: none;
+  padding: 10px 24px 0;
+  max-width: 768px;
+  margin: 0 auto;
+  width: 100%;
+}
 /* 子会话 id：等宽 + 低对比度——它是标识符，不是内容（与卡头的 .dispatch-session 同款） */
 .child-session-id {
   flex: none;
