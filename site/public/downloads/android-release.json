@@ -1,17 +1,16 @@
 {
-  "version": "0.2.6",
-  "versionCode": 6,
-  "name": "lxcode-0.2.6-android.apk",
-  "size": 11672049,
-  "sha256": "ab8b8a0d7cfa2056ae51ade8005df8b3753ae0448188f4675a7381efca4affbb",
-  "url": "downloads/lxcode-0.2.6-android.apk",
+  "version": "0.2.7",
+  "versionCode": 7,
+  "name": "lxcode-0.2.7-android.apk",
+  "size": 11704808,
+  "sha256": "8abbef5d0f4bf6353c3ffa56fd5645fd31793d14187e92ae127e2d9db5d24e42",
+  "url": "downloads/lxcode-0.2.7-android.apk",
   "notes": [
-    "连接草稿持久化：未保存的地址/Token 重启不再丢失",
-    "应用内更新下载替换（不再跳浏览器）",
-    "会话消息 Markdown 渲染",
-    "生成中/处理中样式优化",
-    "子会话查看",
-    "会话自动贴底修复",
-    "安全加固"
+    "输入框不再遮挡消息",
+    "项目运行中指示",
+    "Markdown 渲染对齐桌面端（删除线/有序列表/嵌套列表/分割线）",
+    "图片与文件上传发送",
+    "全屏灯箱查看图片",
+    "任务清单三段计数 + 进度环"
   ]
 }
