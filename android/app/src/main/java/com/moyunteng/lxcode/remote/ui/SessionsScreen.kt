@@ -62,6 +62,7 @@ import com.moyunteng.lxcode.design.component.LxButton
 import com.moyunteng.lxcode.design.component.LxButtonSize
 import com.moyunteng.lxcode.design.component.LxButtonVariant
 import com.moyunteng.lxcode.design.component.LxListItem
+import com.moyunteng.lxcode.design.component.LxSpinner
 import com.moyunteng.lxcode.design.motion.LxEnterSpec
 import com.moyunteng.lxcode.design.motion.LxStagger
 import com.moyunteng.lxcode.design.motion.lxEnter
@@ -260,6 +261,7 @@ fun SessionsScreen(state: MockAppState) {
                     modifier = Modifier.lxStaggerEnter(count = state.real.projects.size + 1, index = i),
                     name = project.name,
                     count = state.realProjectSessionCount(project.id),
+                    runningCount = state.realProjectRunningCount(project.id),
                     active = state.scope == project.id,
                     onClick = { state.scope = project.id },
                 )
@@ -272,6 +274,7 @@ fun SessionsScreen(state: MockAppState) {
                     ),
                     name = "未分组",
                     count = state.realLooseSessionCount(),
+                    runningCount = state.realLooseRunningCount(),
                     active = state.scope.isEmpty(),
                     onClick = { state.scope = "" },
                 )
@@ -397,11 +400,14 @@ private fun NavRow(entry: NavEntry, modifier: Modifier = Modifier) {
     )
 }
 
-/** 项目行（文件夹图标 + 名字 + 守则 + 会话数；对齐 .proj-row）。 */
+/** 项目行（文件夹图标 + 名字 + 守则 + 会话数；对齐 .proj-row）。
+ *  [runningCount] > 0 时标题旁亮运行中 spinner + 计数（对齐桌面端侧栏项目行的
+ *  spinner——项目内任一会话在生成就亮，多端共享进度）。 */
 @Composable
 private fun ProjectRow(
     name: String,
     count: Int,
+    runningCount: Int,
     active: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
@@ -411,11 +417,19 @@ private fun ProjectRow(
         modifier = modifier,
         selected = active,
         leading = {
-            SmallIcon(
-                if (active) Icons.Filled.FolderOpen else Icons.Filled.Folder,
-                Lx.colors.FgMuted,
-                size = 14,
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Lx.space.s6),
+            ) {
+                SmallIcon(
+                    if (active) Icons.Filled.FolderOpen else Icons.Filled.Folder,
+                    Lx.colors.FgMuted,
+                    size = 14,
+                )
+                if (runningCount > 0) {
+                    LxSpinner(size = 10.dp)
+                }
+            }
         },
         trailing = {
             Row(
@@ -427,6 +441,13 @@ private fun ProjectRow(
                     style = Lx.type.Button.copy(fontSize = Lx.type.Size10_5),
                     color = Lx.colors.FgFaint,
                 )
+                if (runningCount > 0) {
+                    Text(
+                        text = "$runningCount 运行中",
+                        style = Lx.type.Badge.copy(fontSize = Lx.type.Size10_5),
+                        color = LxColors.Amber,
+                    )
+                }
                 Text(
                     text = "$count",
                     style = Lx.type.Badge,

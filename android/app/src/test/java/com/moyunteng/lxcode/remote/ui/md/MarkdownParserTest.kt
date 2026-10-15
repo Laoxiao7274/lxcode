@@ -109,16 +109,144 @@ class MarkdownParserTest {
     fun bulletListGroupsConsecutiveLines() {
         val blocks = parseMarkdown("- 第一项\n- 第二项\n\n普通段落")
         assertEquals(2, blocks.size)
-        val list = blocks[0] as MdBlock.BulletList
-        assertEquals(listOf("第一项", "第二项"), list.items.map { it.single().text })
+        val list = blocks[0] as MdBlock.Listing
+        assertFalse(list.ordered)
+        assertEquals(listOf("第一项", "第二项"), list.items.map { it.spans.single().text })
+        assertEquals(listOf(0, 0), list.items.map { it.level })
         assertTrue(blocks[1] is MdBlock.Paragraph)
     }
 
     @Test
     fun asteriskBulletWorks() {
         val blocks = parseMarkdown("* 项")
-        val list = blocks[0] as MdBlock.BulletList
-        assertEquals("项", list.items.single().single().text)
+        val list = blocks[0] as MdBlock.Listing
+        assertEquals("项", list.items.single().spans.single().text)
+    }
+
+    @Test
+    fun plusBulletWorks() {
+        // 桌面端 RE_UL 认 `+ `（[-*+]）——对齐
+        val blocks = parseMarkdown("+ 项")
+        val list = blocks[0] as MdBlock.Listing
+        assertEquals("项", list.items.single().spans.single().text)
+    }
+
+    // ===== 有序列表（桌面端 RE_OL 有——补齐）=====
+
+    @Test
+    fun orderedListWithDotMarker() {
+        val blocks = parseMarkdown("1. 第一\n2. 第二")
+        assertEquals(1, blocks.size)
+        val list = blocks[0] as MdBlock.Listing
+        assertTrue(list.ordered)
+        assertEquals(listOf("第一", "第二"), list.items.map { it.spans.single().text })
+    }
+
+    @Test
+    fun orderedListWithParenMarker() {
+        // 桌面端 RE_OL 认 `1)`——对齐
+        val blocks = parseMarkdown("1) 甲\n2) 乙")
+        val list = blocks[0] as MdBlock.Listing
+        assertTrue(list.ordered)
+        assertEquals(listOf("甲", "乙"), list.items.map { it.spans.single().text })
+    }
+
+    @Test
+    fun plainNumberDotIsNotAList() {
+        // 「3.14 是圆周率」不是列表：数字后必须跟 . + 空格
+        val blocks = parseMarkdown("3.14 是圆周率")
+        assertTrue(blocks[0] is MdBlock.Paragraph)
+    }
+
+    // ===== 嵌套列表（缩进 2 空格一级——桌面端 MdListItem.level 同口径）=====
+
+    @Test
+    fun nestedBulletListIndentLevels() {
+        val blocks = parseMarkdown("- 外层\n  - 内层\n    - 更深")
+        assertEquals(1, blocks.size)
+        val list = blocks[0] as MdBlock.Listing
+        assertEquals(listOf(0, 1, 2), list.items.map { it.level })
+        assertEquals("外层", list.items[0].spans.single().text)
+        assertEquals("内层", list.items[1].spans.single().text)
+        assertEquals("更深", list.items[2].spans.single().text)
+    }
+
+    @Test
+    fun mixedListTypesSplitIntoBlocks() {
+        // 异类列表行开新块（对齐桌面端：if (!m) break）
+        val blocks = parseMarkdown("- 无序\n1. 有序")
+        assertEquals(2, blocks.size)
+        assertFalse((blocks[0] as MdBlock.Listing).ordered)
+        assertTrue((blocks[1] as MdBlock.Listing).ordered)
+    }
+
+    // ===== 分割线（桌面端 RE_HR 有——补齐）=====
+
+    @Test
+    fun horizontalRules() {
+        for (src in listOf("---", "***", "___", "-----")) {
+            val blocks = parseMarkdown("上\n$src\n下")
+            assertEquals(3, blocks.size)
+            assertTrue("src=$src", blocks[1] is MdBlock.Hr)
+        }
+    }
+
+    @Test
+    fun shortOrMixedDashesAreNotHr() {
+        // 不足 3 个 / 混合符号：不是分割线（对齐桌面端 RE_HR）
+        assertTrue(parseMarkdown("--\n")[0] is MdBlock.Paragraph)
+        assertTrue(parseMarkdown("-*-\n")[0] is MdBlock.Paragraph)
+    }
+
+    // ===== 删除线（桌面端 md-del 有——补齐）=====
+
+    @Test
+    fun strikethroughRendersAsStrikeSpan() {
+        val spans = parseInline("~~不要了~~")
+        assertEquals(1, spans.size)
+        assertTrue(spans[0].strike)
+        assertEquals("不要了", spans[0].text)
+    }
+
+    @Test
+    fun singleTildeIsLiteral() {
+        // 单个 ~ 不是删除线标记（桌面端 RE 要求双 ~）
+        val spans = parseInline("近似 ~5kg")
+        assertEquals(1, spans.size)
+        assertFalse(spans[0].strike)
+        assertEquals("近似 ~5kg", spans[0].text)
+    }
+
+    @Test
+    fun unclosedStrikethroughIsLiteral() {
+        // 流式容错：未闭合的 ~~ 按字面
+        val spans = parseInline("正在 ~~删除")
+        assertEquals(1, spans.size)
+        assertFalse(spans[0].strike)
+    }
+
+    // ===== 段落段距（gap——桌面端 .md-para 语义）=====
+
+    @Test
+    fun paragraphAfterBlankLineCarriesGap() {
+        val blocks = parseMarkdown("第一段\n\n第二段")
+        assertEquals(2, blocks.size)
+        assertFalse((blocks[0] as MdBlock.Paragraph).gap)
+        assertTrue((blocks[1] as MdBlock.Paragraph).gap)
+    }
+
+    @Test
+    fun firstParagraphHasNoGap() {
+        val blocks = parseMarkdown("开头段")
+        assertFalse((blocks[0] as MdBlock.Paragraph).gap)
+    }
+
+    @Test
+    fun paragraphAfterHrCarriesGap() {
+        // 分割线是块级边界——后续段落带段距（桌面端 parseBlocks 同语义）
+        val blocks = parseMarkdown("---\n段")
+        assertTrue(blocks[0] is MdBlock.Hr)
+        assertTrue((blocks[1] as MdBlock.Paragraph).gap)
     }
 
     @Test
@@ -128,6 +256,32 @@ class MarkdownParserTest {
         val q = blocks[0] as MdBlock.Quote
         assertEquals(2, q.paragraphs.size)
         assertEquals("引用一", q.paragraphs[0].single().text)
+    }
+
+    // ===== 代码块内换行保留 =====
+
+    @Test
+    fun codeBlockPreservesBlankLines() {
+        val blocks = parseMarkdown("```\nline1\n\nline3\n```")
+        assertEquals("line1\n\nline3", (blocks[0] as MdBlock.CodeBlock).code)
+    }
+
+    // ===== 桌面端没有的语法：不做的口径钉住 =====
+
+    @Test
+    fun taskListSyntaxIsPlainListItem() {
+        // 桌面端 RE_UL 不认 `- [ ]`——按普通列表项渲染，不发明任务列表
+        val blocks = parseMarkdown("- [ ] 待办")
+        val list = blocks[0] as MdBlock.Listing
+        assertEquals("[ ] 待办", list.items.single().spans.single().text)
+    }
+
+    @Test
+    fun tableRowIsPlainParagraph() {
+        // 表格第一版不补（手机窄屏横向滚动体验差，差异已记录）——管道行按普通段落
+        val blocks = parseMarkdown("| a | b |\n|---|---|\n| 1 | 2 |")
+        assertEquals(1, blocks.size)
+        assertTrue(blocks[0] is MdBlock.Paragraph)
     }
 
     // ===== 链接 =====

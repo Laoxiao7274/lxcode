@@ -13,6 +13,8 @@
 package com.moyunteng.lxcode.remote.ui
 
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -40,6 +42,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -67,6 +71,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalContext
+import com.moyunteng.lxcode.design.component.LxIconButton
 import com.moyunteng.lxcode.design.motion.LxEnterSpec
 import com.moyunteng.lxcode.design.motion.lxAnimateColor
 import com.moyunteng.lxcode.design.motion.lxAnimateFloat
@@ -169,6 +174,24 @@ fun Composer(state: MockAppState, real: com.moyunteng.lxcode.remote.net.RealBack
         else -> "默认"
     }
 
+    // ===== 附件（图片/文件上传；对齐桌面端 Composer 的 att-preview 区）=====
+    // 图片走 PickVisualMedia（Photo Picker，免存储权限）、文件走 OpenDocument
+    //（SAF，免权限）；mime 由系统解析。base64 读入暂存（手机与后端不同机，
+    // path 形态不适用），随下一条消息发送。
+    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(maxItems = 4)) { uris ->
+        if (uris.isNotEmpty()) {
+            real?.addPendingImages(
+                uris.map { uri ->
+                    val mime = context.contentResolver.getType(uri) ?: "image/jpeg"
+                    uri to mime
+                },
+            )
+        }
+    }
+    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isNotEmpty()) real?.addPendingFiles(uris)
+    }
+
     Column(
         Modifier
             .fillMaxWidth()
@@ -187,6 +210,47 @@ fun Composer(state: MockAppState, real: com.moyunteng.lxcode.remote.net.RealBack
                     cmd.action()
                 },
             )
+        }
+
+        // ===== 附件预览区（.att-preview：卡内、文本行上方；有暂存或有提示才渲染）=====
+        // 图片 = 64dp 方缩略图（radius 16）+ 右上 18dp 移除钮；文件 = 240×64 卡。
+        if (real != null && (real.pendingImages.isNotEmpty() || real.pendingFiles.isNotEmpty() || real.attachNotice != null)) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(start = 16.dp, end = 16.dp, top = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                real.attachNotice?.let { notice ->
+                    Text(
+                        text = notice,
+                        style = TextStyle(fontFamily = Lx.type.Sans, fontSize = 11.5.sp),
+                        color = Lx.colors.FgMuted,
+                    )
+                }
+                if (real.pendingImages.isNotEmpty()) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        real.pendingImages.forEach { im ->
+                            PendingImageThumb(
+                                image = im,
+                                urlOf = { real.attachmentURL(it) },
+                                onRemove = { real.removePendingImage(im.id) },
+                            )
+                        }
+                    }
+                }
+                if (real.pendingFiles.isNotEmpty()) {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        real.pendingFiles.forEach { f ->
+                            PendingFileCard(
+                                name = f.name,
+                                sub = fileSub(f.size, f.mime),
+                                onRemove = { real.removePendingFile(f.id) },
+                            )
+                        }
+                    }
+                }
+            }
         }
 
         // ===== 白卡 =====
@@ -228,6 +292,30 @@ fun Composer(state: MockAppState, real: com.moyunteng.lxcode.remote.net.RealBack
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                // 「＋」添加附件（对齐桌面端 att-add：输入区左端图标、贴底对齐）——
+                // 点图片（Photo Picker）/文件（SAF）两个入口
+                LxIconButton(onClick = {
+                    imagePicker.launch(
+                        androidx.activity.result.PickVisualMediaRequest(
+                            ActivityResultContracts.PickVisualMedia.ImageOnly,
+                        ),
+                    )
+                }) {
+                    Icon(
+                        imageVector = Icons.Filled.Add,
+                        contentDescription = "添加图片或文件",
+                        tint = Lx.colors.FgMuted,
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
+                LxIconButton(onClick = { filePicker.launch(arrayOf("*/*")) }) {
+                    Icon(
+                        imageVector = Icons.Filled.Description,
+                        contentDescription = "添加文件",
+                        tint = Lx.colors.FgMuted,
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
                 // 药丸组：360dp 放不下就横滚（控件各自 flex:none，视觉不缩水）
                 Row(
                     Modifier
@@ -333,7 +421,9 @@ fun Composer(state: MockAppState, real: com.moyunteng.lxcode.remote.net.RealBack
                 Spacer(Modifier.width(4.dp))
                 SendButton(
                     busy = busy,
-                    enabled = text.trim().isNotEmpty() && !text.startsWith("/"),
+                    enabled = (text.trim().isNotEmpty() && !text.startsWith("/")) ||
+                        real?.pendingImages?.isNotEmpty() == true ||
+                        real?.pendingFiles?.isNotEmpty() == true,
                     onClick = {
                         if (busy) {
                             real?.cancel()

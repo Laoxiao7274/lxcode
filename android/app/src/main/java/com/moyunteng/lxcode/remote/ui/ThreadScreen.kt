@@ -12,6 +12,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -42,6 +43,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -62,13 +64,19 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
@@ -81,6 +89,7 @@ import com.moyunteng.lxcode.design.motion.LocalLxMotionEnabled
 import com.moyunteng.lxcode.design.motion.LxExpandable
 import com.moyunteng.lxcode.design.motion.LxShimmerText
 import com.moyunteng.lxcode.design.motion.LxStagger
+import com.moyunteng.lxcode.design.motion.lxAnimateFloat
 import com.moyunteng.lxcode.design.motion.lxCaret
 import com.moyunteng.lxcode.design.motion.lxEnter
 import com.moyunteng.lxcode.design.motion.lxPressScale
@@ -280,18 +289,26 @@ fun ThreadScreen(state: MockAppState, sessionId: String) {
         }
 
         // 中部消息流 + 底部输入区（悬浮，对齐桌面端 composer-zone 机制）：
-        // 消息列表铺满，底部 contentPadding = 输入区实际高度 + 14dp（onSizeChanged 实测，
-        // 等价桌面端 --composer-h）——输入区多高都不会压住最后一条消息；
+        // 消息列表铺满，底部 contentPadding = 输入区**整个叠层**的实测高度（onSizeChanged
+        // 量 scrim Column，等价桌面端 --composer-h）——输入区多高都不会压住最后一条消息。
+        // 注意量测对象必须是整个 scrim Column（40dp 渐隐带 + busy 指示条 + Composer 卡），
+        // 不能只量 Composer 卡：渐隐带从 24% 起就是不透明底色，只量卡会让消息底部
+        // 一行被它盖掉一半（真机反馈「输入框遮住消息一半」的根因）。
         // 输入卡片上方一层白色渐隐 scrim（linear-gradient to top, white 76% → transparent）。
         var composerHeightDp by remember { mutableStateOf(0.dp) }
         val density = LocalDensity.current
+        // 输入区高度变化（busy 条出现/消失、斜杠面板弹出、附件预览增减）时，
+        // sticky 跟随态下补滚一次——否则 padding 变了列表停在旧「真底」，最后一条被盖。
+        LaunchedEffect(composerHeightDp) {
+            if (composerHeightDp > 0.dp && real.blocks.isNotEmpty() && sticky) snapToBottom()
+        }
         Box(Modifier.weight(1f).fillMaxWidth()) {
             LazyColumn(
                 Modifier
                     .fillMaxSize()
                     .padding(horizontal = Lx.space.s12),
                 state = listState,
-                contentPadding = PaddingValues(top = Lx.space.s8, bottom = composerHeightDp + 14.dp),
+                contentPadding = PaddingValues(top = Lx.space.s8, bottom = composerHeightDp),
                 verticalArrangement = Arrangement.spacedBy(Lx.space.s10),
             ) {
                 // 消息块逐个入场：`block-in`（opacity 0→1 + translateY(4px)→0，320ms 标准曲线），
@@ -308,6 +325,7 @@ fun ThreadScreen(state: MockAppState, sessionId: String) {
                         ),
                     ) {
                         ThreadBlockView(
+                            state,
                             block,
                             busy = running,
                             stableKey = "$sessionId:$i",
@@ -337,11 +355,15 @@ fun ThreadScreen(state: MockAppState, sessionId: String) {
                 }
             }
 
-            // 底部输入区：白色渐隐 scrim + 白卡（scrim 渐变盖住整个输入区高度，含卡片下缘空隙）
+            // 底部输入区：白色渐隐 scrim + 白卡（scrim 渐变盖住整个输入区高度，含卡片下缘空隙）。
+            // onSizeChanged 量在**整个 scrim Column** 上（含 40dp 渐隐带 + busy 指示条 +
+            // Composer 卡 + 卡下 14dp 空隙）——contentPadding 与 snapToBottom 的「真底」
+            // 判定共用这一个数，输入区多高消息都不会被盖。
             Column(
                 Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
+                    .onSizeChanged { composerHeightDp = with(density) { it.height.toDp() } }
                     .background(
                         Brush.verticalGradient(
                             colorStops = arrayOf(
@@ -381,8 +403,7 @@ fun ThreadScreen(state: MockAppState, sessionId: String) {
                 Box(
                     Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = Lx.space.s12)
-                        .onSizeChanged { composerHeightDp = with(density) { it.height.toDp() } },
+                        .padding(horizontal = Lx.space.s12),
                 ) {
                     Composer(state, real = real)
                 }
@@ -416,13 +437,14 @@ fun ThreadScreen(state: MockAppState, sessionId: String) {
  *  copy）时 key 不变，reveal 状态保持继续浇而不是重播。 */
 @Composable
 private fun ThreadBlockView(
+    state: MockAppState,
     block: ThreadBlock,
     busy: Boolean,
     stableKey: String,
     onOpenChild: (String, String, String) -> Unit = { _, _, _ -> },
 ) {
     when (block) {
-        is ThreadBlock.User -> UserBubble(block.text)
+        is ThreadBlock.User -> UserBubble(state, block.text, block.attachments)
         is ThreadBlock.Assistant -> AssistantBlock(block, busy, stableKey)
         is ThreadBlock.Tool -> ToolCard(block)
         is ThreadBlock.Dispatch -> DispatchCard(block, onOpenChild)
@@ -473,25 +495,51 @@ private fun NoticeBar(block: ThreadBlock.Notice) {
  * 动效：回弹入场 —— 桌面端 `back.out(1.8)`（低阻尼 spring，等价 [LxEnterSpec.BubbleIn]）。
  */
 @Composable
-private fun UserBubble(text: String) {
-    Row(
+private fun UserBubble(
+    state: MockAppState,
+    text: String,
+    attachments: List<com.moyunteng.lxcode.remote.model.AttachmentMeta> = emptyList(),
+) {
+    // 灯箱（全屏图片查看）状态：集合 = 本条消息的全部图片、下标按点击处对齐
+    var lightbox by remember { mutableStateOf<Pair<List<String>, Int>?>(null) }
+    val real = state.real
+    Column(
         Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.End,
+        horizontalAlignment = Alignment.End,
     ) {
-        Box(
-            Modifier
-                .lxEnter(spec = LxEnterSpec.BubbleIn, key = text)
-                .fillMaxWidth(0.78f)
-                .clip(RoundedCornerShape(22.dp))
-                .background(LxColors.BubbleUser)
-                .padding(horizontal = Lx.space.s16, vertical = Lx.space.s10),
-        ) {
-            Text(
-                text = text,
-                style = Lx.type.Body.copy(lineHeight = (Lx.type.Size14.value * 1.6f).sp),
-                color = Lx.colors.Fg,
+        // 附件区在气泡上方、气泡外（对齐桌面端 .user-atts 语义：图片 gallery +
+        // 文件卡与文字气泡视觉分离）；文本非空才画气泡（纯图片消息不画空泡）
+        if (attachments.isNotEmpty()) {
+            UserAttachmentSection(
+                atts = attachments,
+                urlOf = { real.attachmentURL(it) },
+                onOpenImage = { urls, i -> lightbox = urls to i },
             )
         }
+        if (text.isNotEmpty()) {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+            ) {
+                Box(
+                    Modifier
+                        .lxEnter(spec = LxEnterSpec.BubbleIn, key = text)
+                        .fillMaxWidth(0.78f)
+                        .clip(RoundedCornerShape(22.dp))
+                        .background(LxColors.BubbleUser)
+                        .padding(horizontal = Lx.space.s16, vertical = Lx.space.s10),
+                ) {
+                    Text(
+                        text = text,
+                        style = Lx.type.Body.copy(lineHeight = (Lx.type.Size14.value * 1.6f).sp),
+                        color = Lx.colors.Fg,
+                    )
+                }
+            }
+        }
+    }
+    lightbox?.let { (urls, i) ->
+        ImageLightbox(urls = urls, initialIndex = i, onDismiss = { lightbox = null })
     }
 }
 
@@ -941,63 +989,201 @@ private fun CompactionCard(block: ThreadBlock.Compaction) {
     }
 }
 
-/** todo 清单块（active / 完成 两态任务行）。 */
+/**
+ * todo 清单块（对齐桌面端 aicss/TodoList.tsx + TodoList.module.css）：
+ *
+ *  - 头部一行可点（折叠/展开）：状态图标（全 done = 实心绿勾 / 有 active = 进度环
+ *    （conic 进度扇 + 虚线外环，determinate = done/total）/ 其余 = 清单图标）+
+ *    「任务清单」标题 + 右侧三段计数「✓N · ▶M · ○K」（done 段绿、active 段强调、
+ *    pending 段 muted；三段恒在——为 0 的段也显示，一眼看到「还有什么没做」）；
+ *    全 done 时整头显示「完成 N 项」（绿）。
+ *  - 自动展开/收起（todo 契约批②）：有 active 项自动展开一次；全 done 自动收起；
+ *    折叠态用户可随时手动覆盖。
+ *  - 条目行：状态图标（done 绿勾 / active 箭头 / pending 虚线圆）+ 内容文字
+ *    （done = muted + 删除线）。
+ */
 @Composable
 private fun TodoCard(items: List<com.moyunteng.lxcode.remote.model.TodoItem>) {
     val done = items.count { it.status == "done" }
+    val active = items.count { it.status == "active" }
+    val pending = items.size - done - active
+    val running = active > 0
+    val allDone = items.isNotEmpty() && done == items.size
+    val pct = if (items.isEmpty()) 0f else done.toFloat() / items.size
+    // 自动展开/收起（对齐桌面端 useEffect([running, allDone])）
+    var collapsed by remember { mutableStateOf(allDone) }
+    LaunchedEffect(running, allDone) {
+        if (running) collapsed = false
+        else if (allDone) collapsed = true
+    }
+
     Column(
         Modifier
             .fillMaxWidth()
             .clip(Lx.radius.CardShape)
             .background(LxColors.Surface)
             .border(1.dp, Lx.colors.Border, Lx.radius.CardShape)
-            .padding(Lx.space.s10),
-        verticalArrangement = Arrangement.spacedBy(Lx.space.s6),
+            .padding(horizontal = Lx.space.s12, vertical = Lx.space.s6),
     ) {
-        Text(
-            text = "任务清单 $done/${items.size}",
-            style = Lx.type.Pill.copy(fontSize = Lx.type.Size11, fontWeight = FontWeight.SemiBold),
-            color = Lx.colors.FgMuted,
-        )
-        items.forEachIndexed { i, item ->
-            val isDone = item.status == "done"
-            val isActive = item.status == "active"
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    // todo 条目入场：translateY(-7dp) + 淡入，360ms 标准曲线，每项延迟 i*50ms
-                    .lxEnter(spec = LxEnterSpec.TodoItemIn, delayMillis = i * 50),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(Lx.space.s8),
-            ) {
-                LxStatusDot(
-                    status = when {
-                        isDone -> LxStatus.Success
-                        isActive -> LxStatus.Run
-                        else -> LxStatus.Idle
-                    },
-                    size = 7.dp,
-                )
-                Text(
-                    text = item.content,
-                    style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size12_5),
-                    color = if (isDone) Lx.colors.FgFaint else Lx.colors.Fg,
-                    modifier = Modifier.weight(1f),
-                )
-                if (isActive) {
-                    Text(
-                        text = "进行中",
-                        style = Lx.type.Pill.copy(fontSize = Lx.type.Size10, fontWeight = FontWeight.SemiBold),
-                        color = LxColors.Amber,
+        // 头部（可点折叠）
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                ) { collapsed = !collapsed }
+                .padding(vertical = Lx.space.s6),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Lx.space.s8),
+        ) {
+            // 状态图标位：16dp 槽位里三态切换
+            Box(Modifier.size(16.dp), contentAlignment = Alignment.Center) {
+                when {
+                    allDone -> Icon(
+                        imageVector = Icons.Filled.CheckCircle,
+                        contentDescription = null,
+                        tint = LxColors.SuccessInk,
+                        modifier = Modifier.size(15.dp),
                     )
-                } else if (isDone) {
-                    Text(
-                        text = "完成",
-                        style = Lx.type.Pill.copy(fontSize = Lx.type.Size10, fontWeight = FontWeight.SemiBold),
-                        color = LxColors.SuccessInk,
-                    )
+                    running -> TodoProgressRing(progress = pct, size = 13.dp)
+                    else -> SmallIcon(Icons.Filled.Checklist, Lx.colors.FgFaint, size = 13)
                 }
             }
+            Text(
+                text = "任务清单",
+                style = Lx.type.BodySmall.copy(
+                    fontSize = Lx.type.Size13,
+                    fontWeight = FontWeight.Medium,
+                ),
+                color = Lx.colors.Fg,
+            )
+            Spacer(Modifier.weight(1f))
+            if (allDone) {
+                Text(
+                    text = "完成 ${items.size} 项",
+                    style = Lx.type.BodySmall.copy(
+                        fontSize = Lx.type.Size12,
+                        fontWeight = FontWeight.Medium,
+                    ),
+                    color = LxColors.SuccessInk,
+                )
+            } else {
+                // 三段计数：✓ N · ▶ M · ○ K（段间点分隔；为 0 的段仍显示）
+                TodoCountSegment("✓", done.toString(), LxColors.SuccessInk)
+                Text(text = "·", style = Lx.type.BodySmall, color = Lx.colors.FgFaint)
+                TodoCountSegment("▶", active.toString(), Lx.colors.Fg)
+                Text(text = "·", style = Lx.type.BodySmall, color = Lx.colors.FgFaint)
+                TodoCountSegment("○", pending.toString(), Lx.colors.FgFaint)
+            }
+            Icon(
+                imageVector = if (collapsed) Icons.Filled.KeyboardArrowDown else Icons.Filled.KeyboardArrowUp,
+                contentDescription = if (collapsed) "展开任务清单" else "折叠任务清单",
+                tint = Lx.colors.FgFaint,
+                modifier = Modifier.size(12.dp),
+            )
+        }
+        // 条目列表（折叠：高度 + 淡入淡出）
+        LxExpandable(visible = !collapsed) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = Lx.space.s4, bottom = Lx.space.s6),
+                verticalArrangement = Arrangement.spacedBy(Lx.space.s8),
+            ) {
+                items.forEachIndexed { i, item ->
+                    val isDone = item.status == "done"
+                    val isActive = item.status == "active"
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            // todo 条目入场：translateY(-7dp) + 淡入，360ms 标准曲线，每项延迟 i*50ms
+                            .lxEnter(spec = LxEnterSpec.TodoItemIn, delayMillis = i * 50),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(9.dp),
+                    ) {
+                        // 状态图标：done 绿勾 / active 箭头（强调）/ pending 虚线圆
+                        when {
+                            isDone -> Icon(
+                                imageVector = Icons.Filled.CheckCircle,
+                                contentDescription = null,
+                                tint = LxColors.SuccessInk,
+                                modifier = Modifier.size(15.dp),
+                            )
+                            isActive -> SmallIcon(Icons.Filled.KeyboardArrowRight, Lx.colors.Fg, size = 15)
+                            else -> Box(
+                                Modifier
+                                    .size(13.dp)
+                                    .border(1.2.dp, Lx.colors.FgFaint, CircleShape),
+                            )
+                        }
+                        Text(
+                            text = item.content,
+                            style = Lx.type.BodySmall.copy(
+                                fontSize = Lx.type.Size12_5,
+                                textDecoration = if (isDone) TextDecoration.LineThrough else null,
+                            ),
+                            color = when {
+                                isDone -> Lx.colors.FgFaint
+                                isActive -> Lx.colors.Fg
+                                else -> Lx.colors.FgMuted
+                            },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** 三段计数的一段（图形字符 + 数字；对齐桌面端 CountSegment 的着色语义）。 */
+@Composable
+private fun TodoCountSegment(glyph: String, value: String, color: androidx.compose.ui.graphics.Color) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(
+            text = glyph,
+            style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size11_5, fontWeight = FontWeight.SemiBold),
+            color = color,
+        )
+        Text(
+            text = value,
+            style = Lx.type.Badge.copy(fontSize = Lx.type.Size11_5),
+            color = color,
+        )
+    }
+}
+
+/**
+ * 头部进度环（桌面端 .todoHeadPie：conic 进度扇 + 虚线外环，13dp）。
+ * 进度 = done/total（determinate fill）；进度弧走 400ms 过渡（--todo-pie transition）。
+ */
+@Composable
+private fun TodoProgressRing(progress: Float, size: androidx.compose.ui.unit.Dp) {
+    val animated by lxAnimateFloat(target = progress)
+    // token 读取在 composable 上下文（draw lambda 里读不了 CompositionLocal）
+    val track = Lx.colors.FgFaint
+    val pie = Lx.colors.Fg
+    Canvas(Modifier.size(size)) {
+        val ringPx = 1.6.dp.toPx()
+        val r = this.size.minDimension / 2 - ringPx / 2
+        // 虚线外环（对齐 pending 条目的虚线圆语义——.todoHeadPieRing）
+        drawCircle(
+            color = track,
+            radius = r,
+            style = Stroke(width = ringPx, pathEffect = PathEffect.dashPathEffect(floatArrayOf(3f, 4f))),
+        )
+        // 进度扇：从 12 点方向顺时针（conic-gradient 同语义），扇心留虚线环可见的空腔
+        val pieR = r - ringPx
+        if (pieR > 0) {
+            drawArc(
+                color = pie,
+                startAngle = -90f,
+                sweepAngle = 360f * animated,
+                useCenter = true,
+                topLeft = Offset(this.size.width / 2 - pieR, this.size.height / 2 - pieR),
+                size = Size(pieR * 2, pieR * 2),
+            )
         }
     }
 }
@@ -1051,7 +1237,14 @@ private fun MarkdownBody(text: String, modifier: Modifier = Modifier) {
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(Lx.space.s6)) {
         blocks.forEach { block ->
             when (block) {
-                is MdBlock.Paragraph -> MdText(block.spans, style = body, color = Lx.colors.Fg)
+                is MdBlock.Paragraph -> MdText(
+                    block.spans,
+                    style = body,
+                    color = Lx.colors.Fg,
+                    // 空行后的段落给段距（桌面端 .md-para { margin-top: 1em }——
+                    // 块间呼吸感是 DSH markdown 规范「好看」的核心）
+                    modifier = if (block.gap) Modifier.padding(top = Lx.space.s10) else Modifier,
+                )
                 is MdBlock.Heading -> MdText(
                     spans = block.spans,
                     style = body.copy(
@@ -1079,31 +1272,62 @@ private fun MarkdownBody(text: String, modifier: Modifier = Modifier) {
                         modifier = Modifier.horizontalScroll(rememberScrollState()),
                     )
                 }
-                is MdBlock.BulletList -> Column(verticalArrangement = Arrangement.spacedBy(Lx.space.s2)) {
-                    block.items.forEach { item ->
-                        Row(horizontalArrangement = Arrangement.spacedBy(Lx.space.s6)) {
-                            Text(text = "•", style = body, color = Lx.colors.FgMuted)
-                            MdText(item, style = body, color = Lx.colors.Fg, modifier = Modifier.weight(1f))
+                is MdBlock.Hr -> Box(
+                    // .md-hr：0.5px hairline、--border-strong、上下 24px margin
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = Lx.space.s10)
+                        .height(0.5.dp)
+                        .background(Lx.colors.BorderStrong),
+                )
+                is MdBlock.Listing -> Column(verticalArrangement = Arrangement.spacedBy(Lx.space.s2)) {
+                    block.items.forEachIndexed { idx, item ->
+                        Row(
+                            // 嵌套缩进：每级 14dp（桌面端 .md-li { padding-left: level*14 }）
+                            modifier = Modifier.padding(start = (item.level * 14).dp),
+                            horizontalArrangement = Arrangement.spacedBy(Lx.space.s6),
+                        ) {
+                            Text(
+                                // 真实 marker：有序 = 「N.」（块内递增），无序 = 「·」
+                                text = if (block.ordered) "${idx + 1}." else "·",
+                                style = Lx.type.Mono12.copy(
+                                    fontSize = Lx.type.Size12_5,
+                                    lineHeight = (Lx.type.Size12_5.value * 1.71f).sp,
+                                ),
+                                color = Lx.colors.FgMuted,
+                            )
+                            MdText(item.spans, style = body, color = Lx.colors.Fg, modifier = Modifier.weight(1f))
                         }
                     }
                 }
-                is MdBlock.Quote -> Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(Lx.radius.r6))
-                        .background(Lx.colors.BorderSoft)
-                        .padding(horizontal = Lx.space.s8, vertical = Lx.space.s6),
-                    verticalArrangement = Arrangement.spacedBy(Lx.space.s2),
-                ) {
-                    block.paragraphs.forEach { p ->
-                        MdText(
-                            p,
-                            style = Lx.type.Body.copy(
-                                fontSize = Lx.type.Size13,
-                                lineHeight = (Lx.type.Size13.value * 1.6f).sp,
-                            ),
-                            color = Lx.colors.FgMuted,
-                        )
+                is MdBlock.Quote -> {
+                    // token 读取必须在 composable 上下文（drawBehind lambda 里读不了）
+                    val quoteBar = Lx.colors.FgFaint
+                    Column(
+                        // .md-quote：左侧 2px 边条（--fg-faint）+ 左 14px 内距 + muted 文字
+                        //——不用整块底色（桌面端引用语言是边条不是色块）
+                        Modifier
+                            .fillMaxWidth()
+                            .drawBehind {
+                                drawRect(
+                                    color = quoteBar,
+                                    topLeft = Offset.Zero,
+                                    size = Size(2.dp.toPx(), size.height),
+                                )
+                            }
+                            .padding(start = Lx.space.s10),
+                        verticalArrangement = Arrangement.spacedBy(Lx.space.s2),
+                    ) {
+                        block.paragraphs.forEach { p ->
+                            MdText(
+                                p,
+                                style = Lx.type.Body.copy(
+                                    fontSize = Lx.type.Size14,
+                                    lineHeight = (Lx.type.Size14.value * 1.71f).sp,
+                                ),
+                                color = Lx.colors.FgMuted,
+                            )
+                        }
                     }
                 }
             }
@@ -1159,13 +1383,14 @@ private fun spansToAnnotatedString(
             )
             continue
         }
-        if (!s.bold && !s.italic && !s.code) continue
+        if (!s.bold && !s.italic && !s.code && !s.strike) continue
         builder.addStyle(
             androidx.compose.ui.text.SpanStyle(
                 fontWeight = if (s.bold) FontWeight.Bold else null,
                 fontStyle = if (s.italic) androidx.compose.ui.text.font.FontStyle.Italic else null,
                 background = if (s.code) codeBg else androidx.compose.ui.graphics.Color.Unspecified,
                 fontFamily = if (s.code) mono else null,
+                textDecoration = if (s.strike) androidx.compose.ui.text.style.TextDecoration.LineThrough else null,
             ),
             start,
             end,
@@ -1315,7 +1540,7 @@ private fun ChildThreadView(state: MockAppState) {
             val blocks: List<ThreadBlock> = real.childBlocks
             itemsIndexed(blocks, key = { i, _ -> "$childId:$i" }) { i, block ->
                 Box(Modifier.lxEnter(spec = LxEnterSpec.BlockIn, delayMillis = 0, key = i)) {
-                    ThreadBlockView(block, busy = real.childBusy, stableKey = "$childId:$i")
+                    ThreadBlockView(state, block, busy = real.childBusy, stableKey = "$childId:$i")
                 }
             }
             // 生成中打字点（子会话流式期间）

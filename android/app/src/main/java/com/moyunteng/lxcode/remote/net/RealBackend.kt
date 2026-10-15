@@ -20,6 +20,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.moyunteng.lxcode.remote.model.ChildTool
+import com.moyunteng.lxcode.remote.model.AttachmentMeta
 import com.moyunteng.lxcode.remote.model.ContextUsage
 import com.moyunteng.lxcode.remote.model.EFFORT_IDS
 import com.moyunteng.lxcode.remote.model.ModelGroup
@@ -177,6 +178,174 @@ class RealBackend {
     /** 当前连接凭证（remote.json Enabled 的后端要求 query token；空 = 未开远程）。 */
     var token by mutableStateOf("")
         private set
+
+    // ===== 附件（图片/文件上传 + 渲染元数据；对齐 docs/attachments.md）=====
+
+    /** Composer 暂存的一张图片：data 为纯 base64（不带 data: 前缀——发送直接用）。
+     *  [uri] 是内容选择器给的 content:// Uri（预览渲染 + 降级重读用），不进 wire。 */
+    data class PendingImage(
+        val id: String,
+        val name: String,
+        val mime: String,
+        val data: String,
+        val size: Long,
+        val uri: android.net.Uri,
+    )
+
+    /** Composer 暂存的一个文件附件（base64 形态——手机与后端不同机，path 形态不适用）。 */
+    data class PendingFile(
+        val id: String,
+        val name: String,
+        val size: Long,
+        val mime: String,
+        val data: String,
+        val uri: android.net.Uri,
+    )
+
+    /** 单图上限 5MB / 单文件 20MB / 各最多 4 个（与后端 server 校验同一套常量，
+     *  常量本体在文件尾的 companion object 里）。 */
+
+    /** 图片暂存（Composer 预览与发送的数据源）。 */
+    val pendingImages = mutableStateListOf<PendingImage>()
+
+    /** 文件暂存（同上）。 */
+    val pendingFiles = mutableStateListOf<PendingFile>()
+
+    /** 一次性提示（超限拒绝等）——Composer 预览区显示，随下一条消息清掉。 */
+    var attachNotice by mutableStateOf<String?>(null)
+
+    /** 暂存图片（base64 读盘 + 上限校验；任何一项非法拒整批并给原因——
+     *  半收半拒会让「哪几张进了」变成猜谜，对齐桌面端 addPendingImages）。
+     *  [items] = (content Uri, mime) 对（mime 由系统选择器解析）。 */
+    fun addPendingImages(items: List<Pair<android.net.Uri, String>>) {
+        if (items.isEmpty()) return
+        val context = com.moyunteng.lxcode.remote.update.AppContextHolder.context
+        val decoded = mutableListOf<PendingImage>()
+        for ((uri, mime) in items) {
+            val name = queryDisplayName(context, uri) ?: "图片"
+            val bytes = try {
+                context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+            } catch (_: Exception) {
+                null
+            }
+            if (bytes == null) {
+                attachNotice = "图片 $name 读取失败"
+                return
+            }
+            if (mime !in IMAGE_MIMES) {
+                attachNotice = "不支持的图片类型：$name（支持 png/jpeg/webp/gif）"
+                return
+            }
+            if (bytes.size > MAX_IMAGE_BYTES) {
+                attachNotice = "图片 $name 超过 5MB 上限"
+                return
+            }
+            decoded.add(
+                PendingImage(
+                    id = "img-${System.nanoTime()}-$name",
+                    name = name,
+                    mime = mime,
+                    data = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP),
+                    size = bytes.size.toLong(),
+                    uri = uri,
+                ),
+            )
+        }
+        if (pendingImages.size + decoded.size > MAX_IMAGE_COUNT) {
+            attachNotice = "一条消息最多 $MAX_IMAGE_COUNT 张图片"
+            return
+        }
+        pendingImages.addAll(decoded)
+        attachNotice = null
+    }
+
+    /** 暂存一个文件（文件不做类型白名单——Agent 什么都要能收）。 */
+    fun addPendingFiles(items: List<android.net.Uri>) {
+        if (items.isEmpty()) return
+        val context = com.moyunteng.lxcode.remote.update.AppContextHolder.context
+        val decoded = mutableListOf<PendingFile>()
+        for (uri in items) {
+            val name = queryDisplayName(context, uri) ?: "文件"
+            val mime = context.contentResolver.getType(uri) ?: "application/octet-stream"
+            val bytes = try {
+                context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+            } catch (_: Exception) {
+                null
+            }
+            if (bytes == null) {
+                attachNotice = "文件 $name 读取失败"
+                return
+            }
+            if (bytes.size > MAX_FILE_BYTES) {
+                attachNotice = "文件 $name 超过 20MB 上限（当前 ${formatBytes(bytes.size.toLong())}）"
+                return
+            }
+            decoded.add(
+                PendingFile(
+                    id = "file-${System.nanoTime()}-$name",
+                    name = name,
+                    size = bytes.size.toLong(),
+                    mime = mime,
+                    data = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP),
+                    uri = uri,
+                ),
+            )
+        }
+        if (pendingFiles.size + decoded.size > MAX_FILE_COUNT) {
+            attachNotice = "一条消息最多 $MAX_FILE_COUNT 个文件"
+            return
+        }
+        pendingFiles.addAll(decoded)
+        attachNotice = null
+    }
+
+    fun removePendingImage(id: String) {
+        pendingImages.removeAll { it.id == id }
+    }
+
+    fun removePendingFile(id: String) {
+        pendingFiles.removeAll { it.id == id }
+    }
+
+    /** content:// Uri 的显示名（OpenableColumns.DISPLAY_NAME；取不到回落 null）。 */
+    private fun queryDisplayName(context: android.content.Context, uri: android.net.Uri): String? {
+        try {
+            context.contentResolver.query(uri, null, null, null, null)?.use { c ->
+                val idx = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                if (idx >= 0 && c.moveToFirst()) return c.getString(idx)
+            }
+        } catch (_: Exception) {
+        }
+        return null
+    }
+
+    /** 附件取件 URL（渲染缩略图/下载用）：`http://<addr>/attachments/<path>?token=...`。
+     *  引用形态校验与桌面端 attachmentURL 同一份：只认两段、拒绝穿越。 */
+    fun attachmentURL(path: String): String? {
+        if (path.isEmpty() || path.contains("..") || path.startsWith("/") || path.contains("\\")) return null
+        val segs = path.split("/").filter { it.isNotEmpty() }
+        if (segs.size != 2) return null
+        val q = if (token.isNotBlank()) "?token=${java.net.URLEncoder.encode(token, "UTF-8")}" else ""
+        return "http://$addr/attachments/${segs[0]}/${java.net.URLEncoder.encode(segs[1], "UTF-8")}$q"
+    }
+
+    /** llm.Message 的 attachments JSON → AttachmentMeta 列表（缺键 = 空表）。 */
+    private fun parseAttachments(arr: org.json.JSONArray?): List<AttachmentMeta> {
+        if (arr == null) return emptyList()
+        return (0 until arr.length()).mapNotNull { i ->
+            val a = arr.optJSONObject(i) ?: return@mapNotNull null
+            val p = a.optString("path")
+            if (p.isEmpty()) return@mapNotNull null
+            AttachmentMeta(
+                path = p,
+                name = a.optString("name"),
+                size = a.optLong("size", 0),
+                mime = a.optString("mime", ""),
+                kind = if (a.optString("kind") == "image") "image" else "file",
+                caption = a.optString("caption", ""),
+            )
+        }
+    }
 
     // ===== 模型注册表（model.list；composer 模型菜单数据源）=====
     //
@@ -434,19 +603,53 @@ class RealBackend {
      *  effort 是**请求级参数**（protocol.ChatSendParams.Effort——与桌面端同语义：
     *   每条消息携带；后端没有会话级 effort 方法、chat.history 也不回它，故无
     *   远端读写通道，本端不持久化选择——只是发送时带上当前内存视图的值）。
-     *  effort 为空 = 不带键（老后端/未选档优雅降级）。 */
+     *  effort 为空 = 不带键（老后端/未选档优雅降级）。
+     *  暂存附件非空时随消息带上（images/files base64 形态——手机与后端不同机，
+     *  path 形态不适用），发送成功即清暂存。 */
     fun send(text: String, effort: String = "") {
         val t = text.trim()
-        if (t.isEmpty()) return
+        if (t.isEmpty() && pendingImages.isEmpty() && pendingFiles.isEmpty()) return
         if (currentSessionId.isEmpty()) {
             newSession(onReady = { send(t, effort) })
             return
         }
         busy = true
-        Log.i(TAG, "chat.send session=$currentSessionId text=${t.take(80)} effort=$effort")
+        attachNotice = null
+        val images = pendingImages.toList()
+        val files = pendingFiles.toList()
+        Log.i(TAG, "chat.send session=$currentSessionId text=${t.take(80)} effort=$effort img=${images.size} file=${files.size}")
         val params = JSONObject().put("session_id", currentSessionId).put("text", t)
         // 空串不带 effort 键（wire 纪律：值缺省整键缺席，不发明「空档位」语义）
         if (effort.isNotBlank()) params.put("effort", effort)
+        if (images.isNotEmpty()) {
+            params.put(
+                "images",
+                org.json.JSONArray().apply {
+                    images.forEach {
+                        put(
+                            JSONObject()
+                                .put("mime", it.mime)
+                                .put("data", it.data)
+                                .put("name", it.name),
+                        )
+                    }
+                },
+            )
+        }
+        if (files.isNotEmpty()) {
+            params.put(
+                "files",
+                org.json.JSONArray().apply {
+                    files.forEach {
+                        put(
+                            JSONObject()
+                                .put("name", it.name)
+                                .put("data", it.data),
+                        )
+                    }
+                },
+            )
+        }
         client.call(
             "chat.send",
             params,
@@ -457,6 +660,9 @@ class RealBackend {
                 Log.w(TAG, "chat.send 被拒: code=${err.optInt("code")} $msg")
                 blocks.add(ThreadBlock.Error("发送失败: $msg"))
             } else {
+                // 发送受理才清暂存（被拒时保留——用户可改完重发，不丢已选附件）
+                pendingImages.clear()
+                pendingFiles.clear()
                 Log.i(TAG, "chat.send accepted=${(result as? JSONObject)?.optBoolean("accepted")}")
             }
         }
@@ -701,9 +907,10 @@ class RealBackend {
                     streamingIdx = -1
                     return
                 }
+                val atts = parseAttachments(msg.optJSONArray("attachments"))
                 val last = blocks.lastOrNull()
-                if (last !is ThreadBlock.User || last.text != text) {
-                    blocks.add(ThreadBlock.User(text))
+                if (last !is ThreadBlock.User || last.text != text || last.attachments != atts) {
+                    blocks.add(ThreadBlock.User(text, atts))
                     streamingIdx = -1
                 }
             }
@@ -969,7 +1176,7 @@ class RealBackend {
                     if (notice != null) {
                         newBlocks.add(ThreadBlock.Notice(label = notice.second, text = content.removePrefix(notice.first).trim()))
                     } else {
-                        newBlocks.add(ThreadBlock.User(content))
+                        newBlocks.add(ThreadBlock.User(content, parseAttachments(m.optJSONArray("attachments"))))
                     }
                 }
                 "assistant" -> {
@@ -1318,9 +1525,10 @@ class RealBackend {
                     childStreamingIdx = -1
                     return
                 }
+                val atts = parseAttachments(msg.optJSONArray("attachments"))
                 val last = childBlocks.lastOrNull()
                 if (last !is ThreadBlock.User || last.text != text) {
-                    childBlocks.add(ThreadBlock.User(text))
+                    childBlocks.add(ThreadBlock.User(text, atts))
                     childStreamingIdx = -1
                 }
             }
@@ -1515,6 +1723,21 @@ class RealBackend {
 
     companion object {
         private const val TAG = "LxReal"
+
+        // ===== 附件上限（与后端 server 侧校验同一套常量，见 docs/attachments.md）=====
+
+        const val MAX_IMAGE_BYTES = 5L * 1024 * 1024
+        const val MAX_FILE_BYTES = 20L * 1024 * 1024
+        const val MAX_IMAGE_COUNT = 4
+        const val MAX_FILE_COUNT = 4
+        val IMAGE_MIMES = setOf("image/png", "image/jpeg", "image/webp", "image/gif")
+
+        /** 字节数 → 人话大小（附件卡 meta 行；与桌面端 formatBytes 同口径）。 */
+        fun formatBytes(n: Long): String = when {
+            n < 1024 -> "$n B"
+            n < 1024 * 1024 -> "${n / 1024} KB"
+            else -> String.format(java.util.Locale.ROOT, "%.1f MB", n / (1024.0 * 1024.0))
+        }
 
         /**
          * 通告前缀表（对齐桌面端 shared/notices.ts 的 NOTICE_KINDS，逐字含尾空格）。

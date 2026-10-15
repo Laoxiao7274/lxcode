@@ -1,16 +1,22 @@
 // 轻量 Markdown 解析器 —— 安卓端自写子集（零新增依赖，与桌面端 markdown.tsx
 // 的自写子集语义对齐）。
 //
-// 支持的子集（用户拍板清单）：
+// 支持的子集（**以桌面端 markdown.tsx 为口径对齐**）：
 //   * 标题    `# ` ~ `###### `（行级，ATX）
 //   * 粗体    `**text**` / `__text__`
 //   * 斜体    `*text*` / `_text_`（不与粗体歧义：先匹配粗体）
+//   * 删除线  `~~text~~`（桌面端 md-del 有——补齐）
 //   * 行内码  `` `code` ``（内部不再解析其它标记）
 //   * 代码块  ``` 围栏（行级；语言标记只丢弃，不做高亮）
-//   * 无序列表 `- item` / `* item`（行级，缩进不做嵌套——子集）
+//   * 分割线  `---` / `***` / `___`（桌面端 md-hr 有——补齐）
+//   * 无序列表 `- item` / `* item` / `+ item`（缩进 2 空格一级 = 嵌套，桌面端同口径）
+//   * 有序列表 `1. item` / `1) item`（桌面端 ordered list 有——补齐）
 //   * 引用    `> text`（行级；连续引用行合并为一段）
 //   * 链接    URL 自动识别（http/https，可点击）+ `[text](url)` 形式
-//   * 表格不做（拍板：可暂不做）
+//   * 表格    桌面端有（md-table）但渲染依赖 HTML table 语义，手机窄屏上
+//             横向滚动体验差——第一版不补（差异已记录，见任务报告）。
+//   * 任务列表 `- [ ]`：桌面端没有（RE_UL 不认）——不做，`- [ ]` 按普通列表项渲染。
+//   * 转义    桌面端没有——不做。
 //
 // 解析输出是**块列表**（MdBlock），每块携带 AnnotatedString 的数据形态
 // （Spans：文本 + 样式标记 + 链接）。渲染层（ThreadScreen.MdText）把块映射成
@@ -25,8 +31,9 @@ package com.moyunteng.lxcode.remote.ui.md
  * 一个 Markdown 块（渲染单元）。
  */
 sealed interface MdBlock {
-    /** 普通段落（含行内样式与链接）。 */
-    data class Paragraph(val spans: List<MdSpan>) : MdBlock
+    /** 普通段落（含行内样式与链接）。[gap] = 前面有空行——渲染层给段距
+     *  （对齐桌面端 md-para：连续段落间的 16px 呼吸感）。 */
+    data class Paragraph(val spans: List<MdSpan>, val gap: Boolean = false) : MdBlock
 
     /** 标题（level 1~6）。 */
     data class Heading(val level: Int, val spans: List<MdSpan>) : MdBlock
@@ -34,12 +41,22 @@ sealed interface MdBlock {
     /** 围栏代码块（语言标记已丢弃；内容原样）。 */
     data class CodeBlock(val code: String) : MdBlock
 
-    /** 无序列表（多行合并为一块；每项独立解析行内样式）。 */
-    data class BulletList(val items: List<List<MdSpan>>) : MdBlock
+    /** 分割线（`---` / `***` / `___`，对齐桌面端 md-hr）。 */
+    data object Hr : MdBlock
+
+    /** 列表（多行合并为一块；每项独立解析行内样式）。
+     *  [ordered] = 有序（`1. `）；[items] 携带缩进级别（2 空格一级，
+     *  对齐桌面端 MdListItem.level——嵌套列表渲染层按级缩进）。
+     *  名字用 Listing：List 与 kotlin.List 撞名（data class List 声明会
+     *  遮蔽标准库泛型 List，同文件的 List<MdSpan> 全部编译失败）。 */
+    data class Listing(val ordered: Boolean, val items: List<MdListItem>) : MdBlock
 
     /** 引用（连续行合并；每段解析行内样式）。 */
     data class Quote(val paragraphs: List<List<MdSpan>>) : MdBlock
 }
+
+/** 列表项：[level] = 缩进级数（2 空格一级，tab 记 2——桌面端同口径）。 */
+data class MdListItem(val level: Int, val spans: List<MdSpan>)
 
 /**
  * 行内 span。
@@ -53,6 +70,8 @@ data class MdSpan(
     val bold: Boolean = false,
     val italic: Boolean = false,
     val code: Boolean = false,
+    /** 删除线（`~~x~~`，对齐桌面端 md-del：opacity 0.55 的删除线）。 */
+    val strike: Boolean = false,
     val link: String? = null,
 )
 
@@ -66,6 +85,7 @@ fun parseMarkdown(src: String): List<MdBlock> {
     val blocks = mutableListOf<MdBlock>()
     val lines = src.split('\n')
     var i = 0
+    var gap = false // 空行标记：下一个段落块带段距（对齐桌面端 parseBlocks 的 gap）
     while (i < lines.size) {
         val line = lines[i]
         when {
@@ -79,21 +99,43 @@ fun parseMarkdown(src: String): List<MdBlock> {
                 }
                 if (i < lines.size) i++ // 吃掉闭合围栏
                 blocks.add(MdBlock.CodeBlock(body.toString().trimEnd('\n')))
+                gap = false
             }
             // 标题：1~6 个 # + 空格
             headingLevel(line) > 0 -> {
                 val level = headingLevel(line)
                 blocks.add(MdBlock.Heading(level, parseInline(line.trimStart().dropWhile { it == '#' }.trim())))
                 i++
+                gap = false
             }
-            // 无序列表：- 或 * + 空格（连续行聚成一块）
-            isBullet(line) -> {
-                val items = mutableListOf<List<MdSpan>>()
-                while (i < lines.size && isBullet(lines[i])) {
-                    items.add(parseInline(lines[i].trimStart().drop(1).trim()))
+            // 分割线：--- / *** / ___（整行只有 3+ 个同一符号；对齐桌面端 RE_HR）
+            isHr(line) -> {
+                blocks.add(MdBlock.Hr)
+                i++
+                gap = true // 分割线是块级边界——后续段落带段距（桌面端同语义）
+            }
+            // 列表：无序（- / *）或有序（1. / 1)）；连续同类行聚成一块，
+            // 缩进按 2 空格一级记进 item.level（嵌套列表渲染层缩进——桌面端同口径）
+            isBullet(line) || isOrderedItem(line) -> {
+                val ordered = !isBullet(line)
+                val items = mutableListOf<MdListItem>()
+                while (i < lines.size) {
+                    val l = lines[i]
+                    val lvl = if (ordered) orderedIndentLevel(l) else bulletIndentLevel(l)
+                    // 异类列表行 / 非列表行 → 开新块（对齐桌面端：if (!m) break）
+                    if (lvl < 0) break
+                    items.add(
+                        MdListItem(
+                            level = lvl,
+                            spans = parseInline(
+                                if (ordered) orderedItemText(l) else l.trimStart().drop(1).trim(),
+                            ),
+                        ),
+                    )
                     i++
                 }
-                blocks.add(MdBlock.BulletList(items))
+                blocks.add(MdBlock.Listing(ordered, items))
+                gap = false
             }
             // 引用：> + 可选空格（连续行聚成一块）
             line.trimStart().startsWith(">") -> {
@@ -103,29 +145,65 @@ fun parseMarkdown(src: String): List<MdBlock> {
                     i++
                 }
                 blocks.add(MdBlock.Quote(paras))
+                gap = false
             }
-            // 空行：段落分隔（跳过）
-            line.isBlank() -> i++
-            // 普通段落：连续非空非特殊行聚成一段（中间的换行合成空格——软换行）
+            // 空行：段落分隔（记 gap，跳过）
+            line.isBlank() -> {
+                gap = true
+                i++
+            }
+            // 普通段落：连续非空非特殊行聚成一段（中间的换行保留——软换行）
             else -> {
                 val parts = mutableListOf<String>()
                 while (i < lines.size && !isBlockBoundary(lines[i])) {
                     parts.add(lines[i].trim())
                     i++
                 }
-                blocks.add(MdBlock.Paragraph(parseInline(parts.joinToString("\n"))))
+                blocks.add(MdBlock.Paragraph(parseInline(parts.joinToString("\n")), gap))
+                gap = false
             }
         }
     }
     return blocks
 }
 
-/** 是不是块边界（用于段落聚合）：空行 / 围栏 / 标题 / 列表 / 引用开头。 */
+/** 分割线行：整行（去空白）只有 3+ 个 - / * / _（对齐桌面端 RE_HR）。 */
+private fun isHr(line: String): Boolean {
+    val t = line.trim()
+    if (t.length < 3) return false
+    val c = t[0]
+    if (c != '-' && c != '*' && c != '_') return false
+    return t.all { it == c }
+}
+
+/** 有序列表行（`1. ` / `1)`；对齐桌面端 RE_OL）。 */
+private fun isOrderedItem(line: String): Boolean = ORDERED_RE.containsMatchIn(line.trimStart())
+
+private val ORDERED_RE = Regex("""^(\s*)(\d+)[.)]\s+(.*)$""")
+private val UL_RE = Regex("""^(\s*)[-*+]\s+(.*)$""")
+
+/** 有序项缩进级数（前导空白 2 格一级，tab 记 2）；-1 = 不是有序项。 */
+private fun orderedIndentLevel(line: String): Int =
+    ORDERED_RE.find(line)?.let { indentLevel(it.groupValues[1]) } ?: -1
+
+/** 无序项缩进级数；-1 = 不是无序项。 */
+private fun bulletIndentLevel(line: String): Int =
+    UL_RE.find(line)?.let { indentLevel(it.groupValues[1]) } ?: -1
+
+private fun indentLevel(ws: String): Int = ws.replace("\t", "  ").length / 2
+
+/** 有序项的文本部分（剥掉 `1. ` 前缀）。 */
+private fun orderedItemText(line: String): String =
+    ORDERED_RE.find(line)!!.groupValues[3]
+
+/** 是不是块边界（用于段落聚合）：空行 / 围栏 / 标题 / 列表 / 引用 / 分割线开头。 */
 private fun isBlockBoundary(line: String): Boolean =
     line.isBlank() ||
         line.trimStart().startsWith("```") ||
         headingLevel(line) > 0 ||
+        isHr(line) ||
         isBullet(line) ||
+        isOrderedItem(line) ||
         line.trimStart().startsWith(">")
 
 /** ATX 标题级别（0 = 不是标题；# 后必须有空格或行尾）。 */
@@ -139,10 +217,12 @@ private fun headingLevel(line: String): Int {
     return if (t[n] == ' ' || t[n] == '\t') n else 0
 }
 
-/** 无序列表行（`- `/`* ` + 空格；`*` 后必须有空格避免与斜体歧义）。 */
+/** 无序列表行（`- `/`* `/`+ ` + 空格；`*` 后必须有空格避免与斜体歧义）。
+ *  `+` 是桌面端 RE_UL 认的第三个 marker（[-*+]）——对齐。 */
 private fun isBullet(line: String): Boolean {
     val t = line.trimStart()
-    return (t.startsWith("- ") || t.startsWith("* ") || t.startsWith("-\t") || t.startsWith("*\t")) &&
+    return (t.startsWith("- ") || t.startsWith("* ") || t.startsWith("+ ") ||
+        t.startsWith("-\t") || t.startsWith("*\t") || t.startsWith("+\t")) &&
         t.length > 2
 }
 
@@ -197,6 +277,17 @@ fun parseInline(src: String): List<MdSpan> {
                         spans.add(s.copy(bold = true))
                     }
                     i = end + endMarker.length
+                } else {
+                    plain.append(c); i++
+                }
+            }
+            // 删除线 `~~text~~`（先于斜体判；对齐桌面端 md-del）
+            c == '~' && src.startsWith("~~", i) -> {
+                val end = src.indexOf("~~", i + 2)
+                if (end > i + 2) {
+                    flushPlain()
+                    spans.add(MdSpan(text = src.substring(i + 2, end), strike = true))
+                    i = end + 2
                 } else {
                     plain.append(c); i++
                 }

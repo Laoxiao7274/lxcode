@@ -290,6 +290,16 @@ class MockAppState(private val store: ConnStore? = null) {
 
     fun realLooseSessionCount(): Int =
         real.sessions.count { it.workspace.isEmpty() }
+
+    /** 项目/未分组下运行中的会话数（sessionBusy 投影聚合）：侧栏项目行的运行指示
+     *  数据源——对齐桌面端 Sidebar 项目行的 spinner（项目内任一会话忙就亮）。
+     *  计数复用 SessionMeta.running（RealBackend 已把 chat.busy 广播投影进去），
+     *  不再单独开一份口径。 */
+    fun realProjectRunningCount(projectId: String): Int =
+        real.sessions.count { it.workspace == projectId && it.running }
+
+    fun realLooseRunningCount(): Int =
+        real.sessions.count { it.workspace.isEmpty() && it.running }
 }
 
 /** 底部导航项。 */

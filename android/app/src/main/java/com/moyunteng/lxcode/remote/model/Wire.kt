@@ -72,6 +72,19 @@ data class ProjectMeta(val id: String, val name: String, val path: String)
 data class TodoItem(val content: String, val status: String) // pending | active | done
 
 /**
+ * 附件元数据（对齐 `llm.AttachmentRef` / 桌面端 AttachmentMeta）。
+ * [path] = 相对附件根的引用（`<session-id>/<文件名>`）；[kind] = image | file。
+ */
+data class AttachmentMeta(
+    val path: String,
+    val name: String,
+    val size: Long = 0,
+    val mime: String = "",
+    val kind: String, // image | file
+    val caption: String = "",
+)
+
+/**
  * 派发卡内的一行子工具实时态（chat.toolCall / chat.toolResult 带 dispatch_id 的事件归并）。
  * [running] = 已调用未回结果；[durationMs] 在结果到达时按本地计时补齐（协议 toolResult
  * 不带耗时，tool 消息的 duration_ms 只在历史里有——实时流用本地计时，可回放历史对齐）。
@@ -101,7 +114,14 @@ data class ChildTool(
  *  * [Error] → `chat.error`（或连接层错误）。
  */
 sealed interface ThreadBlock {
-    data class User(val text: String) : ThreadBlock
+    /**
+     * 用户消息的附件（图片/文件卡）。
+     *
+     * 对齐桌面端 `llm.Message.Attachments`（AttachmentRef）：`path` 是相对附件根的
+     * 引用（`<session-id>/<文件名>`），取件走 `GET /attachments/<path>?token=...`。
+     * 实时（chat.userMessage）与回放（chat.history）两条路径共用这一个块字段。
+     */
+    data class User(val text: String, val attachments: List<AttachmentMeta> = emptyList()) : ThreadBlock
 
     data class Assistant(
         val content: String,
