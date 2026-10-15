@@ -111,5 +111,10 @@ dependencies {
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
     implementation("com.google.zxing:core:3.4.1")
 
+    // 单元测试（纯 JVM）：markdown 解析器、sha256 校验等无 Android 依赖的核心逻辑。
+    // 不配 robolectric——工程既有约定是「构建即验证」，这里只补最小 JUnit4
+    // （本机 gradle 缓存/m2 均有）。
+    testImplementation("junit:junit:4.13.2")
+
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

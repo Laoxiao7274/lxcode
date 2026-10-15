@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FileProvider 路径白名单：只暴露公开下载目录的 lxcode/ 子目录
+     （ApkDownloader 的 APK 落点 /sdcard/Download/lxcode/）。 -->
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <external-path
+        name="downloads"
+        path="Download/lxcode/" />
+</paths>

@@ -700,13 +700,13 @@ private fun UpdateCheckItem(state: MockAppState) {
                     append(release.notes.joinToString("\n"))
                 }
             },
-            approveText = "去下载",
+            approveText = "下载并安装",
             denyText = "以后再说",
             onApprove = {
                 found = null
-                if (!com.moyunteng.lxcode.remote.update.openApkDownload(context, release)) {
-                    toast("没有可打开链接的应用")
-                }
+                // 应用内下载替换：入队 DownloadManager → 横幅接管进度/校验/安装
+                // （流程收口在会话页横幅 + AppRoot 的 verify/install 编排）
+                state.updateAvailable = release
             },
             onDeny = { found = null },
             onDismissRequest = { found = null },

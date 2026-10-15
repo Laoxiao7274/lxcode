@@ -5,17 +5,15 @@
 //   随站点构建进 dist/downloads/）→ 站点后端静态托管 → 本类 GET 它。
 //   下载页（site/src/pages/Download.tsx）import 同一份 JSON，两处显示永远同源。
 //
-// 刻意不做的两件事：
-//   * 应用内静默安装：需要 REQUEST_INSTALL_PACKAGES + 引导用户开「未知来源」，
-//     且远控壳没有应用商店分发渠道，静默装包对用户是不可预期行为——明确不做，
-//     下载动作交给系统浏览器（浏览器自带下载完成后的安装提示）。
-//   * sha256 本地校验：我们不在应用内下载 APK（浏览器下载），哈希只展示在下载页，
-//     供人工核对——链路信任点在 HTTPS + 站点后端。
+// 2026-12 用户拍板：下载动作从「跳系统浏览器」改为**应用内下载替换**——
+// DownloadManager 下载 → sha256 校验 → 拉起系统安装器（见 ApkDownloader.kt）。
+// 刻意不做的仍然只有一件：
+//   * 应用内**静默**安装：需要 REQUEST_INSTALL_PACKAGES + 引导用户开「未知来源」，
+//     且远控壳没有应用商店分发渠道，静默装包对用户是不可预期行为——明确不做。
+//     应用内下载后拉起**系统安装器**（用户确认安装）不是静默安装，是标准做法。
 package com.moyunteng.lxcode.remote.update
 
 import android.content.Context
-import android.content.Intent
-import android.net.Uri
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import java.util.concurrent.TimeUnit
@@ -106,17 +104,6 @@ object UpdateChecker {
     /** 元数据里的 url 是站点根相对路径（"downloads/…"），解析成绝对地址。 */
     private fun absoluteUrl(url: String): String =
         if (url.startsWith("http")) url else SITE_BASE + url.removePrefix("/")
-}
-
-/** 用系统浏览器打开 APK 下载地址（下载与安装提示都由浏览器/系统接管，见文件头注释）。 */
-fun openApkDownload(context: Context, release: ApkRelease): Boolean {
-    return try {
-        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(release.url)))
-        true
-    } catch (e: Exception) {
-        // 没有可处理 https 的应用（极少数裁剪系统）：不崩溃，调用方给提示
-        false
-    }
 }
 
 /** 字节数人性化（对齐下载页 formatBytes：1024 进制、四档单位）。 */

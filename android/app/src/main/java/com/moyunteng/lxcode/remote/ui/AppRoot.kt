@@ -179,6 +179,17 @@ class MockAppState(private val store: ConnStore? = null) {
      */
     var updateAvailable by mutableStateOf<com.moyunteng.lxcode.remote.update.ApkRelease?>(null)
 
+    /**
+     * 应用内更新下载器（DownloadManager + sha256 校验 + 拉起系统安装器）。
+     * downloadState 是横幅的渲染源（Running=进度 / Ready=可安装 / Failed=提示重试）。
+     * [AppContextHolder] 由 AppRoot 在构造本状态前 init（上下文时序见 AppRoot）。
+     */
+    val updater = com.moyunteng.lxcode.remote.update.ApkDownloader(
+        com.moyunteng.lxcode.remote.update.AppContextHolder.context,
+    )
+
+    /** 下载器状态投影（ApkDownloader.onState 回调 → Compose 可观察）。 */
+    var downloadState by mutableStateOf<com.moyunteng.lxcode.remote.update.DownloadState?>(null)
     /** 顶栏连接药丸的在线位：跟 WS 实际连接态（未连接 = 灰点——不再有 mock 的
      *  「模拟在线」在线位）。 */
     fun pillOnline(): Boolean = realOn && real.connected
@@ -283,7 +294,30 @@ private val NAV_ITEMS = listOf(
 @Composable
 fun AppRoot(pairUri: String? = null, onPairUriConsumed: () -> Unit = {}) {
     val context = LocalContext.current
+    // 应用 Context 先注入更新器（MockAppState 构造时要建 ApkDownloader——
+    // FileProvider URI 生成依赖它，见 ApkDownloader.AppContextHolder）
+    com.moyunteng.lxcode.remote.update.AppContextHolder.init(context.applicationContext)
     val state = remember { MockAppState(ConnStore(context.applicationContext)) }
+
+    // 下载器状态 → Compose 可观察（横幅进度/就绪/失败三态渲染）
+    LaunchedEffect(state.updater) {
+        state.updater.onState = { s -> state.downloadState = s }
+    }
+
+    // 应用内下载流程：Ready（下载完成）→ IO 线程 sha256 校验 → 通过自动拉起安装器
+    LaunchedEffect(state.downloadState) {
+        val ds = state.downloadState ?: return@LaunchedEffect
+        val release = state.updateAvailable ?: return@LaunchedEffect
+        if (ds is com.moyunteng.lxcode.remote.update.DownloadState.Ready) {
+            val verified = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                state.updater.verify(ds, release)
+            }
+            state.downloadState = verified
+            if (verified is com.moyunteng.lxcode.remote.update.DownloadState.Ready) {
+                state.updater.install(verified)
+            }
+        }
+    }
 
     // 返回键路由栈（BackHandler 链）：① 弹层/菜单开着 → 先关弹层（各页面注册的
     // [MockAppState.backInterceptor]）；② 详情页回上级（线程→会话列表、表单/扫码/展示→连接）；

@@ -5,10 +5,19 @@
 // 压缩检查点 / todo 清单 / 错误块。
 package com.moyunteng.lxcode.remote.ui
 
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.StartOffset
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -25,6 +34,7 @@ import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -51,6 +61,7 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onSizeChanged
@@ -66,6 +77,7 @@ import com.moyunteng.lxcode.design.component.LxIconButton
 import com.moyunteng.lxcode.design.component.LxStatus
 import com.moyunteng.lxcode.design.component.LxStatusDot
 import com.moyunteng.lxcode.design.motion.LxEnterSpec
+import com.moyunteng.lxcode.design.motion.LocalLxMotionEnabled
 import com.moyunteng.lxcode.design.motion.LxExpandable
 import com.moyunteng.lxcode.design.motion.LxShimmerText
 import com.moyunteng.lxcode.design.motion.LxStagger
@@ -79,10 +91,20 @@ import com.moyunteng.lxcode.design.token.Lx
 import com.moyunteng.lxcode.design.token.LxColors
 import com.moyunteng.lxcode.remote.model.ThreadBlock
 import com.moyunteng.lxcode.remote.model.formatMs
+import com.moyunteng.lxcode.remote.ui.md.MdBlock
+import com.moyunteng.lxcode.remote.ui.md.MdSpan
+import com.moyunteng.lxcode.remote.ui.md.parseMarkdown
 
 /** 对话线程页。 */
 @Composable
 fun ThreadScreen(state: MockAppState, sessionId: String) {
+    // 子会话临时视图（点派发卡进入）：数据源切 child* 状态，返回回主会话——
+    // 与桌面端「临时视图」同语义。整页替换渲染，主会话的滚动/输入态不共享。
+    if (state.real.viewChildSessionId != null) {
+        ChildThreadView(state)
+        return
+    }
+
     // 真实后端模式：标题/块/忙闲/确认全部来自 RealBackend（WS 事件归约）。
     // （mock 数据已随 P0 原型退役：未连接时会话页是连接引导态，到不了线程页。）
     val real = state.real
@@ -285,7 +307,32 @@ fun ThreadScreen(state: MockAppState, sessionId: String) {
                             key = i,
                         ),
                     ) {
-                        ThreadBlockView(block, busy = running, stableKey = "$sessionId:$i")
+                        ThreadBlockView(
+                            block,
+                            busy = running,
+                            stableKey = "$sessionId:$i",
+                            // 进入子会话临时视图：标题 = Agent 名 + 任务摘要（卡内已知，
+                            // DispatchCard 传原始值，这里拼标题）
+                            onOpenChild = { childId, agentName, task ->
+                                real.openChildSession(
+                                    childId,
+                                    title = "$agentName · ${task.take(24)}",
+                                )
+                            },
+                        )
+                    }
+                }
+                // 「生成中」打字指示（三点跳动）：流式期间（busy 且最后一块正在流式追加）
+                // 显示在最后一个块下方——真机验证时确认「流式有内容追加但没有生成中标识」，
+                // 这里补上与桌面端一致的 typing 点。历史回放/空闲不显示。
+                if (running && real.streamVersion > 0) {
+                    item(key = "$sessionId:typing") {
+                        TypingIndicator(
+                            modifier = Modifier.padding(
+                                start = Lx.space.s4,
+                                top = Lx.space.s2,
+                            ),
+                        )
                     }
                 }
             }
@@ -307,6 +354,30 @@ fun ThreadScreen(state: MockAppState, sessionId: String) {
             ) {
                 // scrim 上方先垫 40dp 渐隐带（盖住滚上来的消息）
                 Spacer(Modifier.height(40.dp))
+                // 「正在处理…」指示条：会话忙但无流式文本（工具执行中/等待模型首字）
+                // 时显示在输入区上方——对齐桌面端 busy 指示（生成中时刻总有一个可见的
+                // 「在干活」信号；流式文本自身的光标/打字点覆盖另一段）。
+                if (running && real.streamVersion == 0) {
+                    Row(
+                        Modifier
+                            .padding(horizontal = Lx.space.s12, vertical = Lx.space.s4)
+                            .clip(Lx.radius.PillShape)
+                            .background(Lx.colors.BorderSoft)
+                            .padding(horizontal = Lx.space.s8, vertical = Lx.space.s4),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(Lx.space.s6),
+                    ) {
+                        TypingDots(dotSize = 5.dp, gap = 3.dp)
+                        Text(
+                            text = "正在处理…",
+                            style = Lx.type.BodySmall.copy(
+                                fontSize = Lx.type.Size11_5,
+                                fontWeight = FontWeight.Medium,
+                            ),
+                            color = Lx.colors.FgMuted,
+                        )
+                    }
+                }
                 Box(
                     Modifier
                         .fillMaxWidth()
@@ -344,12 +415,17 @@ fun ThreadScreen(state: MockAppState, sessionId: String) {
  *  [stableKey] 会话 id + 块下标：打字机的稳定身份——delta 整块替换（data class
  *  copy）时 key 不变，reveal 状态保持继续浇而不是重播。 */
 @Composable
-private fun ThreadBlockView(block: ThreadBlock, busy: Boolean, stableKey: String) {
+private fun ThreadBlockView(
+    block: ThreadBlock,
+    busy: Boolean,
+    stableKey: String,
+    onOpenChild: (String, String, String) -> Unit = { _, _, _ -> },
+) {
     when (block) {
         is ThreadBlock.User -> UserBubble(block.text)
         is ThreadBlock.Assistant -> AssistantBlock(block, busy, stableKey)
         is ThreadBlock.Tool -> ToolCard(block)
-        is ThreadBlock.Dispatch -> DispatchCard(block)
+        is ThreadBlock.Dispatch -> DispatchCard(block, onOpenChild)
         is ThreadBlock.Notice -> NoticeBar(block)
         is ThreadBlock.Compaction -> CompactionCard(block)
         is ThreadBlock.Todo -> TodoCard(block.items)
@@ -437,13 +513,14 @@ private fun AssistantBlock(block: ThreadBlock.Assistant, busy: Boolean, stableKe
         }
         if (block.content.isNotEmpty()) {
             Row(verticalAlignment = Alignment.Bottom) {
-                Text(
+                // Markdown 渲染（自写子集，见 md/MarkdownParser.kt）：解析在**已显示
+                // 文本**（reveal.text）上进行——打字机揭示到哪，markdown 就渲染到哪，
+                // 两者天然对齐；流式期间每帧重解析整块的已显示前缀（纯字符串扫描，
+                // 微秒级，实测瓶颈在 layout 不在解析）。历史块（streaming=false）
+                // reveal.text = 全文，同样路径一次渲染。
+                MarkdownBody(
                     text = reveal.text,
-                    style = Lx.type.Body.copy(
-                        fontSize = Lx.type.Size14,
-                        lineHeight = (Lx.type.Size14.value * 1.71f).sp, // 行高 1.71 那档
-                    ),
-                    color = Lx.colors.Fg,
+                    modifier = Modifier.weight(1f),
                 )
                 if (reveal.revealing) {
                     // 光标：caret-blink 1s steps(1)（硬切）
@@ -664,7 +741,10 @@ private fun FoldableOutput(text: String, danger: Boolean) {
  * 归并进卡，实时看到子工具名/状态/耗时（桌面端「子会话标签页实时流」的安卓单页等价物）。
  */
 @Composable
-private fun DispatchCard(block: ThreadBlock.Dispatch) {
+private fun DispatchCard(
+    block: ThreadBlock.Dispatch,
+    onOpenChild: (String, String, String) -> Unit,
+) {
     // 展开态按 dispatchId 记忆：同一张卡流式更新（copy 重建）不重置展开
     var open by remember(block.dispatchId) { mutableStateOf(false) }
     Column(
@@ -748,6 +828,34 @@ private fun DispatchCard(block: ThreadBlock.Dispatch) {
                 Column(verticalArrangement = Arrangement.spacedBy(Lx.space.s4)) {
                     block.childRuns.forEach { run -> ChildToolRow(run) }
                 }
+            }
+        }
+        // 「查看 ›」进入子会话（临时视图；sessionId 空 = 历史重建没拿到子会话 id，
+        // 不显示入口——不给一个点了必失败的按钮）
+        if (block.sessionId.isNotEmpty()) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(Lx.radius.r6))
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                    ) { onOpenChild(block.sessionId, block.agentName, block.task) }
+                    .padding(horizontal = Lx.space.s4, vertical = Lx.space.s4),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Lx.space.s4),
+            ) {
+                Text(
+                    text = "查看子会话",
+                    style = Lx.type.Pill.copy(fontSize = Lx.type.Size11, fontWeight = FontWeight.SemiBold),
+                    color = LxColors.SuccessInk,
+                )
+                Icon(
+                    imageVector = Icons.Filled.KeyboardArrowRight,
+                    contentDescription = "进入子会话",
+                    tint = LxColors.SuccessInk,
+                    modifier = Modifier.size(12.dp),
+                )
             }
         }
     }
@@ -912,6 +1020,338 @@ private fun ErrorBlock(message: String) {
             style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size12),
             color = Lx.colors.Danger,
             modifier = Modifier.weight(1f),
+        )
+    }
+}
+
+// ===== Markdown 渲染（自写子集 → Compose，见 md/MarkdownParser.kt）=====
+
+/** Markdown 正文样式（行高 1.71 那档，原 AssistantBlock 正文的基线）。 */
+@Composable
+private fun mdBodyStyle(): TextStyle = Lx.type.Body.copy(
+    fontSize = Lx.type.Size14,
+    lineHeight = (Lx.type.Size14.value * 1.71f).sp,
+)
+
+/**
+ * Markdown 块渲染：把 [parseMarkdown] 的块列表映射成 Compose 组件。
+ *
+ * 视觉对齐 design token：代码块底 = --code-bg（LxColors.CodeBg，Common.CodeBlock 同源）、
+ * 行内 code 底 = --border-soft 派生、引用 = --border-soft 底、标题按级别加粗缩放。
+ * 链接（行内 [text](url) 与裸 URL）走 LinkAnnotation.Url——点击 ACTION_VIEW，
+ * 无浏览器时系统弹「没有应用」（与桌面端容错一致，不额外拦截）。
+ *
+ * 与打字机协同：[text] 是**已显示文本**（reveal.text），流式期间每帧重解析
+ * （remember(text)——文本没变不重算；delta 驱动的帧率下是纯字符串扫描，开销微秒级）。
+ */
+@Composable
+private fun MarkdownBody(text: String, modifier: Modifier = Modifier) {
+    val blocks = remember(text) { parseMarkdown(text) }
+    val body = mdBodyStyle()
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(Lx.space.s6)) {
+        blocks.forEach { block ->
+            when (block) {
+                is MdBlock.Paragraph -> MdText(block.spans, style = body, color = Lx.colors.Fg)
+                is MdBlock.Heading -> MdText(
+                    spans = block.spans,
+                    style = body.copy(
+                        fontWeight = FontWeight.Bold,
+                        // 标题缩放：token 只有 9.5~14 一档（桌面端 h1/h2 同样 14~16 区间），
+                        // 安卓取 14sp 加粗为最大、13sp 次级——不发明新 token
+                        fontSize = if (block.level <= 2) Lx.type.Size14 else Lx.type.Size13,
+                    ),
+                    color = Lx.colors.Fg,
+                )
+                is MdBlock.CodeBlock -> Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(Lx.radius.r8))
+                        .background(LxColors.CodeBg)
+                        .padding(Lx.space.s8),
+                ) {
+                    Text(
+                        text = block.code,
+                        style = Lx.type.Mono12.copy(
+                            fontSize = Lx.type.Size11,
+                            lineHeight = (Lx.type.Size11.value * 1.5f).sp,
+                        ),
+                        color = Lx.colors.FgMuted,
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    )
+                }
+                is MdBlock.BulletList -> Column(verticalArrangement = Arrangement.spacedBy(Lx.space.s2)) {
+                    block.items.forEach { item ->
+                        Row(horizontalArrangement = Arrangement.spacedBy(Lx.space.s6)) {
+                            Text(text = "•", style = body, color = Lx.colors.FgMuted)
+                            MdText(item, style = body, color = Lx.colors.Fg, modifier = Modifier.weight(1f))
+                        }
+                    }
+                }
+                is MdBlock.Quote -> Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(Lx.radius.r6))
+                        .background(Lx.colors.BorderSoft)
+                        .padding(horizontal = Lx.space.s8, vertical = Lx.space.s6),
+                    verticalArrangement = Arrangement.spacedBy(Lx.space.s2),
+                ) {
+                    block.paragraphs.forEach { p ->
+                        MdText(
+                            p,
+                            style = Lx.type.Body.copy(
+                                fontSize = Lx.type.Size13,
+                                lineHeight = (Lx.type.Size13.value * 1.6f).sp,
+                            ),
+                            color = Lx.colors.FgMuted,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** 一个块的 AnnotatedString 渲染（粗/斜/code 样式 + 链接点击）。 */
+@Composable
+private fun MdText(
+    spans: List<MdSpan>,
+    style: TextStyle,
+    modifier: Modifier = Modifier,
+    color: androidx.compose.ui.graphics.Color,
+) {
+    // token 读取在 composable 上下文，字符串组装是纯函数（remember 记住成品）
+    val mono = Lx.type.Mono
+    val codeBg = Lx.colors.BorderSoft
+    val annotated = remember(spans, mono, codeBg) { spansToAnnotatedString(spans, mono, codeBg) }
+    Text(text = annotated, style = style, color = color, modifier = modifier)
+}
+
+/**
+ * span 列表 → AnnotatedString（纯函数；token 由调用方传入）。
+ * 链接用 LinkAnnotation.Url（compose 1.7 Text 原生处理点击 + 无障碍语义）；
+ * 行内 code 底色用 --border-soft（token 低饱和填充）。
+ */
+private fun spansToAnnotatedString(
+    spans: List<MdSpan>,
+    mono: androidx.compose.ui.text.font.FontFamily,
+    codeBg: androidx.compose.ui.graphics.Color,
+): androidx.compose.ui.text.AnnotatedString {
+    val linkInk = LxColors.SuccessInk
+    val builder = androidx.compose.ui.text.AnnotatedString.Builder()
+    for (s in spans) {
+        val start = builder.length
+        builder.append(s.text)
+        val end = builder.length
+        if (s.link != null) {
+            // LinkAnnotation.Url：Text 自动处理点按（ACTION_VIEW 由系统解析）
+            builder.addLink(
+                androidx.compose.ui.text.LinkAnnotation.Url(
+                    s.link,
+                    androidx.compose.ui.text.TextLinkStyles(
+                        style = androidx.compose.ui.text.SpanStyle(
+                            color = linkInk,
+                            textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline,
+                        ),
+                    ),
+                ),
+                start,
+                end,
+            )
+            continue
+        }
+        if (!s.bold && !s.italic && !s.code) continue
+        builder.addStyle(
+            androidx.compose.ui.text.SpanStyle(
+                fontWeight = if (s.bold) FontWeight.Bold else null,
+                fontStyle = if (s.italic) androidx.compose.ui.text.font.FontStyle.Italic else null,
+                background = if (s.code) codeBg else androidx.compose.ui.graphics.Color.Unspecified,
+                fontFamily = if (s.code) mono else null,
+            ),
+            start,
+            end,
+        )
+    }
+    return builder.toAnnotatedString()
+}
+
+// ===== 生成中指示（三点跳动；design 动效门控复用）=====
+
+/** 「生成中」打字指示：三个 6dp 圆点波动（跳字机节奏），motionAllowed 门控。 */
+@Composable
+private fun TypingIndicator(modifier: Modifier = Modifier) {
+    Row(modifier = modifier, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        TypingDots(dotSize = 6.dp, gap = 4.dp)
+    }
+}
+
+/**
+ * 三点跳动圆点（typing dots）：每点按 150ms 相位差做透明度 + 位移波动。
+ * 门控关闭（reduced-motion / 调试开关）时三点恒亮静态——不消失（空闲≠在动，
+ * 但「动效关了指示也该看得见」与 lxCaret 的 reduced-motion 纪律同源）。
+ */
+@Composable
+private fun TypingDots(dotSize: androidx.compose.ui.unit.Dp, gap: androidx.compose.ui.unit.Dp) {
+    val motion = LocalLxMotionEnabled.current
+    Row(horizontalArrangement = Arrangement.spacedBy(gap)) {
+        repeat(3) { i ->
+            val alpha: Float
+            val dy: Float
+            if (motion) {
+                val transition = rememberInfiniteTransition(label = "lx-typing-$i")
+                val a by transition.animateFloat(
+                    initialValue = 0.3f,
+                    targetValue = 1f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(durationMillis = 450, easing = Lx.motion.Easing),
+                        repeatMode = RepeatMode.Reverse,
+                        // 相位差：起始延迟按 i 递增（Compose 的 infiniteRepeatable 无
+                        // startDelay，用 keyframes 偏移实现——每点前 150ms 静止）
+                        initialStartOffset = androidx.compose.animation.core.StartOffset(i * 150),
+                    ),
+                    label = "lx-typing-alpha-$i",
+                )
+                alpha = a
+                dy = (1f - a) * 2f // 亮 = 上浮 2dp，暗 = 落回
+            } else {
+                alpha = 0.6f
+                dy = 0f
+            }
+            Box(
+                Modifier
+                    .offset(y = dy.dp)
+                    .size(dotSize)
+                    .alpha(alpha)
+                    .background(Lx.colors.FgMuted, CircleShape),
+            )
+        }
+    }
+}
+
+// ===== 子会话临时视图（点派发卡进入；桌面端「临时视图」的安卓等价物）=====
+
+/**
+ * 子会话视图页：标题 = Agent 名 + 任务摘要，块流 = childBlocks（实时双投），
+ * 返回回主会话（主会话状态全程未动，重开数据不丢）。
+ *
+ * 结构是 ThreadScreen 的精简投影：无输入区（子会话由主 Agent 驱动，用户不直接
+ * 发言——对齐桌面端临时视图只读）、无统计胶囊/上下文环；确认门用同一只
+ * LxConfirmDialog（confirm 带 dispatch_id 的子确认正常弹，裁决走 resolveChildConfirm）。
+ */
+@Composable
+private fun ChildThreadView(state: MockAppState) {
+    val real = state.real
+    val childId = real.viewChildSessionId ?: return
+
+    // 返回键：先回主会话（消费），不退会话页
+    BackHandler { real.closeChildSession() }
+
+    // 历史装载完成滚到底
+    val listState = rememberLazyListState()
+    LaunchedEffect(real.childHistoryVersion) {
+        if (real.childHistoryVersion > 0 && real.childBlocks.isNotEmpty()) {
+            listState.scrollToItem(real.childBlocks.size - 1)
+        }
+    }
+    // 流式跟随（同主会话的收敛式补滚，简化版）
+    LaunchedEffect(real.childStreamVersion) {
+        if (real.childStreamVersion > 0 && real.childBlocks.isNotEmpty()) {
+            withFrameNanos { }
+            if (listState.canScrollForward) listState.scrollBy(1_000_000f)
+        }
+    }
+
+    Column(
+        Modifier
+            .fillMaxSize()
+            .background(LxColors.Bg),
+    ) {
+        // 顶栏：返回主会话 + 「子会话」标签 + Agent 名/任务摘要
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .background(LxColors.Surface)
+                .padding(horizontal = Lx.space.s6, vertical = Lx.space.s6),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Lx.space.s6),
+        ) {
+            LxIconButton(onClick = { real.closeChildSession() }) {
+                Icon(
+                    imageVector = Icons.Filled.KeyboardArrowLeft,
+                    contentDescription = "返回主会话",
+                    tint = Lx.colors.FgMuted,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = real.childViewTitle.ifBlank { "子会话" },
+                    style = Lx.type.ListTitle,
+                    color = Lx.colors.Fg,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = "子会话 · " + childId.take(8),
+                    style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size10_5),
+                    color = Lx.colors.FgFaint,
+                )
+            }
+            // 忙闲点（子会话自己的）
+            LxStatusDot(
+                status = if (real.childBusy) LxStatus.Run else LxStatus.Idle,
+                size = 8.dp,
+            )
+        }
+
+        // 块流（只读；无输入区）
+        LazyColumn(
+            Modifier
+                .fillMaxSize()
+                .padding(horizontal = Lx.space.s12),
+            state = listState,
+            contentPadding = PaddingValues(top = Lx.space.s8, bottom = Lx.space.s16),
+            verticalArrangement = Arrangement.spacedBy(Lx.space.s10),
+        ) {
+            val blocks: List<ThreadBlock> = real.childBlocks
+            itemsIndexed(blocks, key = { i, _ -> "$childId:$i" }) { i, block ->
+                Box(Modifier.lxEnter(spec = LxEnterSpec.BlockIn, delayMillis = 0, key = i)) {
+                    ThreadBlockView(block, busy = real.childBusy, stableKey = "$childId:$i")
+                }
+            }
+            // 生成中打字点（子会话流式期间）
+            if (real.childBusy && real.childStreamVersion > 0) {
+                item(key = "$childId:typing") {
+                    TypingIndicator(modifier = Modifier.padding(start = Lx.space.s4, top = Lx.space.s2))
+                }
+            }
+            if (real.childBusy && real.childStreamVersion == 0) {
+                item(key = "$childId:processing") {
+                    Text(
+                        text = "正在处理…",
+                        style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size11_5),
+                        color = Lx.colors.FgFaint,
+                        modifier = Modifier.padding(start = Lx.space.s4),
+                    )
+                }
+            }
+        }
+    }
+
+    // 子会话的确认请求（confirm 带 dispatch_id）正常弹
+    real.childConfirm?.let { c ->
+        LxConfirmDialog(
+            title = "执行此命令？",
+            text = c.prompt.ifBlank { "${c.name} 工具申请执行，请确认。" },
+            onApprove = { real.resolveChildConfirm(allow = true) },
+            onDeny = { real.resolveChildConfirm(allow = false) },
+            body = {
+                TerminalBlock(
+                    command = com.moyunteng.lxcode.remote.net.RealBackend.argsCommand(c.arguments)
+                        .ifBlank { c.arguments },
+                    cwd = com.moyunteng.lxcode.remote.net.RealBackend.argsCwd(c.arguments)
+                        .ifBlank { null },
+                )
+            },
         )
     }
 }

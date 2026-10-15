@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -155,12 +156,33 @@ fun SessionsScreen(state: MockAppState) {
                 .padding(horizontal = Lx.space.s8),
         ) {
             // ⓪ 更新横幅（启动自动检查发现新版本时出现；非阻断，可关）：
-            // 新版本号 + 大小 + 「去下载」（系统浏览器拿 APK）/「×」忽略。
+            // 新版本号 + 大小 + 「下载并安装」（应用内 DownloadManager → sha256 校验 →
+            // 系统安装器）/「×」忽略；下载中显示进度，失败显示人话原因 + 重试。
             state.updateAvailable?.let { release ->
                 item(key = "update-banner") {
                     UpdateBanner(
                         release = release,
-                        onDismiss = { state.updateAvailable = null },
+                        download = state.downloadState,
+                        onDismiss = {
+                            state.updateAvailable = null
+                            state.downloadState = null
+                            state.updater.cancel()
+                        },
+                        onDownload = {
+                            state.updater.enqueue(release)
+                        },
+                        onRetry = {
+                            state.downloadState = null
+                            state.updater.enqueue(release)
+                        },
+                        onInstall = {
+                            (state.downloadState as? com.moyunteng.lxcode.remote.update.DownloadState.Ready)
+                                ?.let { state.updater.install(it) }
+                        },
+                        onCancel = {
+                            state.downloadState = null
+                            state.updater.cancel()
+                        },
                         modifier = Modifier.padding(horizontal = Lx.space.s4, vertical = Lx.space.s6),
                     )
                 }
@@ -514,14 +536,23 @@ private fun SessionOpsRow(label: String, icon: ImageVector, onClick: () -> Unit)
     }
 }
 
-/** 更新横幅（对齐 UnreachableBar 的卡片视觉）：发现新版本时的非阻断提示。 */
+/**
+ * 更新横幅 —— 应用内下载替换（2026-12 用户拍板，替代旧的「去下载」跳浏览器）。
+ *
+ * 四态：空闲（「下载并安装」）/ Running（进度条 + 已下载/总量）/ Ready（「安装」，
+ * sha256 校验通过后由 AppRoot 自动拉起安装器——这行是手动兜底）/ Failed（人话原因 + 重试）。
+ */
 @Composable
 private fun UpdateBanner(
     release: com.moyunteng.lxcode.remote.update.ApkRelease,
+    download: com.moyunteng.lxcode.remote.update.DownloadState?,
     onDismiss: () -> Unit,
+    onDownload: () -> Unit,
+    onRetry: () -> Unit,
+    onInstall: () -> Unit,
+    onCancel: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val context = LocalContext.current
     Row(
         modifier
             .fillMaxWidth()
@@ -539,30 +570,74 @@ private fun UpdateBanner(
                 color = Lx.colors.Fg,
             )
             val sizeText = com.moyunteng.lxcode.remote.update.formatBytes(release.size)
+            val sub = when (val d = download) {
+                is com.moyunteng.lxcode.remote.update.DownloadState.Running -> {
+                    val pct = if (d.total > 0) " · ${(d.downloaded * 100 / d.total)}%" else ""
+                    "$sizeText · 下载中 $pct"
+                }
+                is com.moyunteng.lxcode.remote.update.DownloadState.Ready -> "$sizeText · 校验通过，可以安装"
+                is com.moyunteng.lxcode.remote.update.DownloadState.Failed -> d.message
+                null -> "$sizeText · ${release.notes.firstOrNull() ?: "新的 APK 已发布"}"
+            }
             Text(
-                text = "$sizeText · ${release.notes.firstOrNull() ?: "新的 APK 已发布"}",
+                text = sub,
                 style = Lx.type.ListSubtitle,
-                color = Lx.colors.FgFaint,
+                color = if (download is com.moyunteng.lxcode.remote.update.DownloadState.Failed) {
+                    Lx.colors.Danger
+                } else {
+                    Lx.colors.FgFaint
+                },
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
-        }
-        Text(
-            text = "去下载",
-            style = Lx.type.ListTitle.copy(fontSize = Lx.type.Size12_5),
-            color = Lx.colors.Fg,
-            modifier = Modifier
-                .clip(Lx.radius.RowShape)
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
+            // 进度条（Running 态；total 未知时不画——不编进度）
+            if (download is com.moyunteng.lxcode.remote.update.DownloadState.Running && download.total > 0) {
+                Box(
+                    Modifier
+                        .padding(top = Lx.space.s6)
+                        .fillMaxWidth()
+                        .height(3.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(Lx.colors.BorderSoft),
                 ) {
-                    if (!com.moyunteng.lxcode.remote.update.openApkDownload(context, release)) {
-                        Toast.makeText(context, "没有可打开链接的应用", Toast.LENGTH_SHORT).show()
-                    }
+                    Box(
+                        Modifier
+                            .fillMaxWidth(download.downloaded.toFloat() / download.total)
+                            .fillMaxHeight()
+                            .background(Lx.colors.Success),
+                    )
                 }
-                .padding(horizontal = Lx.space.s8, vertical = Lx.space.s6),
-        )
+            }
+        }
+        // 动作位：空闲=下载并安装 / Running=取消 / Ready=安装 / Failed(可重试)=重试
+        val actionText = when (download) {
+            is com.moyunteng.lxcode.remote.update.DownloadState.Running -> "取消"
+            is com.moyunteng.lxcode.remote.update.DownloadState.Ready -> "安装"
+            is com.moyunteng.lxcode.remote.update.DownloadState.Failed -> if (download.retryable) "重试" else ""
+            null -> "下载并安装"
+        }
+        if (actionText.isNotEmpty()) {
+            Text(
+                text = actionText,
+                style = Lx.type.ListTitle.copy(fontSize = Lx.type.Size12_5),
+                color = Lx.colors.Fg,
+                modifier = Modifier
+                    .clip(Lx.radius.RowShape)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                    ) {
+                        when (download) {
+                            is com.moyunteng.lxcode.remote.update.DownloadState.Running -> onCancel()
+                            is com.moyunteng.lxcode.remote.update.DownloadState.Ready -> onInstall()
+                            null -> onDownload()
+                            is com.moyunteng.lxcode.remote.update.DownloadState.Failed ->
+                                if (download.retryable) onRetry()
+                        }
+                    }
+                    .padding(horizontal = Lx.space.s8, vertical = Lx.space.s6),
+            )
+        }
         Box(
             Modifier
                 .clip(Lx.radius.RowShape)
@@ -577,6 +652,8 @@ private fun UpdateBanner(
         }
     }
 }
+
+/** 横幅「取消」：调 AppRoot 传入的取消路径（经 onDismiss 携带 cancel；这里只停下载）。 */
 
 /**
  * 连接引导态（未连接任何后端时替代会话列表）——居中：logo + 「连接到你的 lxcode 后端」

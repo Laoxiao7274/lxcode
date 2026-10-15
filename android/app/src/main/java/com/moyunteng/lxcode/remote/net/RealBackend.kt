@@ -122,6 +122,41 @@ class RealBackend {
     var streamVersion by mutableStateOf(0)
         private set
 
+    // ===== 子会话临时视图（对齐桌面端「临时视图」语义）=====
+    //
+    // 点派发卡进入子会话：数据源切到 child* 状态，主会话 blocks/busy/confirm
+    // **原封不动**——返回即恢复，重开数据不丢。live 事件双投：子会话的事件
+    // （session_id == viewChildSessionId，或 dispatch_id 归属该子会话）在归并进
+    // 主时间线派发卡的同时投进 child 状态（对齐桌面端 reduceSessionStates 双投）。
+
+    /** 正在查看的子会话 id（null = 不在子会话视图；返回主会话时置空）。 */
+    var viewChildSessionId by mutableStateOf<String?>(null)
+
+    /** 子会话视图的时间线。 */
+    val childBlocks = mutableStateListOf<ThreadBlock>()
+
+    /** 子会话视图的忙闲（chat.busy / done/error 收敛——该子会话自己的）。 */
+    var childBusy by mutableStateOf(false)
+        private set
+
+    /** 子会话视图的挂起确认（confirm 带 dispatch_id 的子确认，正常弹）。 */
+    var childConfirm by mutableStateOf<PendingConfirm?>(null)
+        private set
+
+    /** 子会话视图的历史装载版本（ThreadScreen 据此滚到底）。 */
+    var childHistoryVersion by mutableStateOf(0)
+        private set
+
+    /** 子会话视图的流式内容版本（同 streamVersion 的语义，child 块追加时 +1）。 */
+    var childStreamVersion by mutableStateOf(0)
+        private set
+
+    /** 子会话视图自己的流式块下标（-1 = 无）。 */
+    private var childStreamingIdx = -1
+
+    /** 子会话视图的标题（Agent 名 + 任务摘要，由派发卡带入）。 */
+    var childViewTitle by mutableStateOf("")
+
     /**
      * 各会话的实时忙闲（chat.busy 广播；多端共享进度的列表侧投影）：
      * 任意客户端（手机/桌面）上某会话开始/结束生成，这里都收到同一份广播。
@@ -337,6 +372,64 @@ class RealBackend {
         }
     }
 
+    /**
+     * 打开子会话临时视图（点派发卡；对齐桌面端「临时视图」语义）。
+     *
+     * 只拉子会话历史进 child* 状态，**不动** currentSessionId / blocks / busy /
+     * confirm——主会话状态原封保留，返回即恢复，重开数据不丢。
+     * `chat.history` 支持按子会话 id 寻址（桌面端临时视图同款通道），
+     * 不发 session.resume（子会话不是「当前会话」，切焦点是另一回事）。
+     */
+    fun openChildSession(childId: String, title: String) {
+        if (viewChildSessionId == childId) return
+        viewChildSessionId = childId
+        childViewTitle = title
+        childBlocks.clear()
+        childStreamingIdx = -1
+        childConfirm = null
+        childBusy = false
+        childHistoryVersion = 0
+        childStreamVersion = 0
+        client.call("chat.history", JSONObject().put("session_id", childId)) { err, result ->
+            if (err != null) {
+                Log.w(TAG, "chat.history(child $childId) 失败: ${err.optString("message")}")
+                childBlocks.add(ThreadBlock.Error("子会话历史加载失败: ${err.optString("message")}"))
+                return@call
+            }
+            // 请求在途时已切走/关闭视图：过期响应作废
+            if (viewChildSessionId != childId) return@call
+            applyChildHistory(result as? JSONObject)
+        }
+    }
+
+    /** 关闭子会话视图（返回主会话）：清 child 状态，主会话状态从未动过。 */
+    fun closeChildSession() {
+        viewChildSessionId = null
+        childBlocks.clear()
+        childStreamingIdx = -1
+        childConfirm = null
+        childBusy = false
+        childHistoryVersion = 0
+        childStreamVersion = 0
+        childViewTitle = ""
+    }
+
+    /** 裁决子会话视图里挂起的确认（与主会话 resolveConfirm 同款，session_id 取载荷）。 */
+    fun resolveChildConfirm(allow: Boolean) {
+        val c = childConfirm ?: return
+        Log.i(TAG, "tool.confirm(child) id=${c.id} allow=$allow")
+        client.call(
+            "tool.confirm",
+            JSONObject().put("session_id", c.sessionId).put("id", c.id).put("allow", allow),
+        ) { err, _ ->
+            if (err != null) {
+                Log.w(TAG, "tool.confirm(child) 失败: ${err.optString("message")}")
+                childBlocks.add(ThreadBlock.Error("确认裁决失败: ${err.optString("message")}"))
+            }
+            childConfirm = null
+        }
+    }
+
     /** 发送一条消息（chat.send；内容经事件流到达）。
      *  effort 是**请求级参数**（protocol.ChatSendParams.Effort——与桌面端同语义：
     *   每条消息携带；后端没有会话级 effort 方法、chat.history 也不回它，故无
@@ -491,6 +584,10 @@ class RealBackend {
                 arguments = p.optString("arguments"),
                 prompt = p.optString("prompt"),
             )
+            // 子会话视图打开时双投确认（子会话页内的确认请求正常弹——契约要求）
+            if (dispatchId == viewChildSessionId) {
+                childConfirm = confirm
+            }
             return
         }
         // 派发卡事件（dispatchStart/End）自身也带 dispatch_id，但归属键是 owner_session_id——
@@ -550,21 +647,45 @@ class RealBackend {
         // 与桌面端 TodoUpdatedParams.DispatchID 的归属契约一致；卡不存在只记日志）。
         if (dispatchId.isNotEmpty()) {
             when (method) {
-                "chat.toolCall" -> upsertChildTool(
-                    dispatchId,
-                    id = p.optString("id"),
-                    name = p.optString("name"),
-                    argsSummary = argsSummary(p.optString("arguments")),
-                    running = true,
-                    isError = false,
-                    durationMs = 0,
-                )
-                "chat.toolResult" -> finishChildTool(dispatchId, p.optString("id"), p.optBoolean("is_error"))
-                "todo.updated" -> mergeChildTodos(dispatchId, p.optJSONArray("items"))
+                "chat.toolCall" -> {
+                    upsertChildTool(
+                        dispatchId,
+                        id = p.optString("id"),
+                        name = p.optString("name"),
+                        argsSummary = argsSummary(p.optString("arguments")),
+                        running = true,
+                        isError = false,
+                        durationMs = 0,
+                    )
+                    // 子会话视图双投（对齐桌面端 reduceSessionStates）：子会话标签页
+                    // 看实时流，主时间线卡同时保持摘要行
+                    if (dispatchId == viewChildSessionId) childUpsertTool(
+                        id = p.optString("id"),
+                        name = p.optString("name"),
+                        argsSummary = argsSummary(p.optString("arguments")),
+                        running = true,
+                        isError = false,
+                        durationMs = 0,
+                    )
+                }
+                "chat.toolResult" -> {
+                    finishChildTool(dispatchId, p.optString("id"), p.optBoolean("is_error"))
+                    if (dispatchId == viewChildSessionId) childFinishTool(p.optString("id"), p.optBoolean("is_error"))
+                }
+                "todo.updated" -> {
+                    mergeChildTodos(dispatchId, p.optJSONArray("items"))
+                    if (dispatchId == viewChildSessionId) childMergeTodos(p.optJSONArray("items"))
+                }
             }
             return
         }
         val sid = p.optString("session_id", "")
+        // 子会话视图双投：子会话自己的事件（无 dispatch_id、session_id == 子会话 id）
+        // 在**不进主时间线**的前提下投进 child 状态——子会话标签页看实时流。
+        if (viewChildSessionId != null && sid == viewChildSessionId) {
+            childRouteEvent(method, p)
+            return
+        }
         when (method) {
             "chat.userMessage" -> {
                 if (sid != currentSessionId) return
@@ -812,9 +933,10 @@ class RealBackend {
         historyVersion = 0
     }
 
-    private fun applyHistory(r: JSONObject?) {
-        if (r == null) return
-        val msgs = r.optJSONArray("messages") ?: return
+    /** 解析 chat.history 的 messages → 块列表 + todos JSON（主会话与子会话视图共用）。 */
+    private fun parseHistoryBlocks(r: JSONObject?): Pair<List<ThreadBlock>, org.json.JSONArray?> {
+        if (r == null) return emptyList<ThreadBlock>() to null
+        val msgs = r.optJSONArray("messages") ?: return emptyList<ThreadBlock>() to null
         val checkpoints = r.optJSONArray("checkpoints")
             ?.let { cp -> (0 until cp.length()).map { cp.optInt(it) } }
             ?.toSet() ?: emptySet()
@@ -948,18 +1070,24 @@ class RealBackend {
                 }
             }
         }
+        // 历史快照的任务清单（todos 原样返回，调用方决定插不插 Todo 块）
+        val todosArr = r.optJSONArray("todos")?.takeIf { it.length() > 0 }
+        return newBlocks.toList() to todosArr
+    }
+
+    private fun applyHistory(r: JSONObject?) {
+        if (r == null) return
+        val (parsed, todosArr) = parseHistoryBlocks(r)
         blocks.clear()
-        blocks.addAll(newBlocks)
+        blocks.addAll(parsed)
         streamingIdx = -1
         // 历史快照的任务清单（ChatHistoryResult.todos——对齐桌面端 history-snapshot
         // 的 todos 装载）：非空插一块 Todo（当前清单的定格视图，随后的 todo.updated
         // 会找到并替换它）；缺席/空 = 不插（老后端或没建过清单——不编空块）。
-        r.optJSONArray("todos")?.let { arr ->
-            if (arr.length() > 0) {
-                val list = (0 until arr.length()).map { arr.getJSONObject(it) }
-                    .map { TodoItem(it.optString("content"), it.optString("status")) }
-                blocks.add(ThreadBlock.Todo(list))
-            }
+        todosArr?.let { arr ->
+            val list = (0 until arr.length()).map { arr.getJSONObject(it) }
+                .map { TodoItem(it.optString("content"), it.optString("status")) }
+            blocks.add(ThreadBlock.Todo(list))
         }
         r.optJSONObject("context")?.let { contextUsage = parseContext(it) }
         r.optJSONObject("stats")?.let { sessionStats = parseStats(it) }
@@ -982,10 +1110,37 @@ class RealBackend {
                 prompt = pend.optString("prompt"),
             )
         }
-        Log.i(TAG, "history($currentSessionId): ${msgs.length()} 条消息 → ${blocks.size} 块 busy=$busy")
+        Log.i(TAG, "history($currentSessionId): ${parsed.size} 条消息 → ${blocks.size} 块 busy=$busy")
         // 历史装载完成：ThreadScreen 据此滚动到底（进会话停在最底，对齐桌面端）
         historyVersion++
     }
+
+    /** 子会话视图的历史装载（与主会话同一解析器；副作用落在 child* 状态上）。 */
+    private fun applyChildHistory(r: JSONObject?) {
+        val (parsed, todosArr) = parseHistoryBlocks(r)
+        childBlocks.clear()
+        childBlocks.addAll(parsed)
+        childStreamingIdx = -1
+        todosArr?.let { arr ->
+            val list = (0 until arr.length()).map { arr.getJSONObject(it) }
+                .map { TodoItem(it.optString("content"), it.optString("status")) }
+            childBlocks.add(ThreadBlock.Todo(list))
+        }
+        childBusy = r?.optBoolean("busy") ?: false
+        r?.optJSONObject("pending")?.let { pend ->
+            childConfirm = PendingConfirm(
+                sessionId = pend.optString("session_id", viewChildSessionId ?: ""),
+                id = pend.optString("id"),
+                name = pend.optString("name"),
+                arguments = pend.optString("arguments"),
+                prompt = pend.optString("prompt"),
+            )
+        }
+        Log.i(TAG, "child history($viewChildSessionId): ${parsed.size} 条消息 → ${childBlocks.size} 块 busy=$childBusy")
+        // 装载完成：ThreadScreen 据此把子会话视图滚到底
+        childHistoryVersion++
+    }
+
 
     private fun applySessionList(r: Any?) {
         // session.list 的 result 是**裸数组**（toProtocolSessionList 直接回 []SessionMeta）
@@ -1141,6 +1296,194 @@ class RealBackend {
             childTodosDone = list.count { it.status == "done" },
             childTodosTotal = list.size,
         )
+    }
+
+    // ===== 子会话视图的事件归约（主会话 reducer 的 child 影子；块语义同款）=====
+
+    /**
+     * 子会话自己的事件（session_id == viewChildSessionId、无 dispatch_id）归约进
+     * child 状态。类型集 = 子会话会产生的全部事件（delta/toolCall/toolResult/
+     * done/error/busy/todo.updated/compacted）；块构建逻辑与主会话 reducer 逐条
+     * 同源——子会话是真 Session，协议上与主会话发同一套事件。
+     */
+    private fun childRouteEvent(method: String, p: JSONObject) {
+        when (method) {
+            "chat.userMessage" -> {
+                val msg = p.optJSONObject("message") ?: return
+                val text = msg.optString("content")
+                if (text.startsWith(HIDDEN_NOTICE_PREFIX)) return
+                val notice = noticeKind(text)
+                if (notice != null) {
+                    childBlocks.add(ThreadBlock.Notice(label = notice.second, text = text.removePrefix(notice.first).trim()))
+                    childStreamingIdx = -1
+                    return
+                }
+                val last = childBlocks.lastOrNull()
+                if (last !is ThreadBlock.User || last.text != text) {
+                    childBlocks.add(ThreadBlock.User(text))
+                    childStreamingIdx = -1
+                }
+            }
+
+            "chat.delta" -> {
+                val kind = p.optString("kind", "text")
+                val text = p.optString("text")
+                if (text.isEmpty()) return
+                val i = childEnsureStreamingBlock()
+                val cur = childBlocks[i] as ThreadBlock.Assistant
+                childBlocks[i] = if (kind == "reasoning") {
+                    cur.copy(reasoning = (cur.reasoning ?: "") + text, streaming = true)
+                } else {
+                    cur.copy(content = cur.content + text, streaming = true)
+                }
+                childStreamVersion++
+            }
+
+            "chat.toolCall" -> {
+                childStreamingIdx = -1
+                val name = p.optString("name")
+                if (name == "agent_dispatch") return // 子会话再派发不会发生（深度恒 1），防御性丢弃
+                childBlocks.add(
+                    ThreadBlock.Tool(
+                        id = p.optString("id"),
+                        name = name,
+                        title = toolTitle(name),
+                        argsSummary = argsSummary(p.optString("arguments")),
+                        command = argsCommand(p.optString("arguments")),
+                        cwd = argsCwd(p.optString("arguments")),
+                        output = null,
+                        running = true,
+                        isError = false,
+                        durationMs = 0,
+                    ),
+                )
+            }
+
+            "chat.toolResult" -> {
+                if (p.optString("name") == "agent_dispatch") return
+                val id = p.optString("id")
+                val i = childBlocks.indexOfFirst { it is ThreadBlock.Tool && it.id == id }
+                if (i >= 0) {
+                    val t = childBlocks[i] as ThreadBlock.Tool
+                    childBlocks[i] = t.copy(
+                        output = p.optString("content").take(4_000),
+                        running = false,
+                        isError = p.optBoolean("is_error"),
+                    )
+                }
+            }
+
+            "chat.done" -> {
+                val msg = p.optJSONObject("message")
+                if (msg != null) {
+                    val i = childBlocks.indexOfLast { it is ThreadBlock.Assistant }
+                    if (i >= 0) {
+                        val cur = childBlocks[i] as ThreadBlock.Assistant
+                        val content = msg.optString("content")
+                        val reasoning = msg.optString("reasoning_content", "")
+                        val model = msg.optString("model", cur.model)
+                        val ftms = msg.optLong("first_token_ms", 0L)
+                        val dur = msg.optLong("duration_ms", 0L)
+                        val utok = msg.optInt("usage_tokens", 0)
+                        childBlocks[i] = cur.copy(
+                            content = content.ifBlank { cur.content },
+                            reasoning = reasoning.ifBlank { cur.reasoning },
+                            reasoningMs = ftms,
+                            model = model,
+                            firstTokenMs = if (ftms > 0) ftms else null,
+                            tokPerSec = if (utok > 0 && dur > 0) utok * 1000.0 / dur else null,
+                            streaming = false,
+                        )
+                    }
+                }
+                childBusy = false
+                childStreamingIdx = -1
+            }
+
+            "chat.error" -> {
+                childStreamingIdx = -1
+                val aborted = p.optBoolean("aborted")
+                val message = p.optString("message")
+                p.optJSONObject("partial")?.let { partial ->
+                    val content = partial.optString("content")
+                    if (content.isNotEmpty()) {
+                        val i = childBlocks.indexOfLast { it is ThreadBlock.Assistant }
+                        if (i >= 0) {
+                            val cur = childBlocks[i] as ThreadBlock.Assistant
+                            childBlocks[i] = cur.copy(content = content, streaming = false)
+                        }
+                    }
+                }
+                childBlocks.add(ThreadBlock.Error(if (aborted) "已中断" else message))
+                childBusy = false
+            }
+
+            "chat.busy" -> childBusy = p.optBoolean("busy")
+
+            "todo.updated" -> childMergeTodos(p.optJSONArray("items"))
+
+            "chat.compacted" -> childBlocks.add(
+                ThreadBlock.Compaction(
+                    summary = p.optString("summary"),
+                    shadowed = p.optInt("shadowed"),
+                    before = p.optInt("before"),
+                    after = p.optInt("after"),
+                    manual = p.optBoolean("manual"),
+                ),
+            )
+        }
+    }
+
+    private fun childEnsureStreamingBlock(): Int {
+        if (childStreamingIdx >= 0 && childStreamingIdx < childBlocks.size && childBlocks[childStreamingIdx] is ThreadBlock.Assistant) {
+            return childStreamingIdx
+        }
+        childBlocks.add(ThreadBlock.Assistant(content = "", reasoning = null, reasoningMs = 0, model = "", streaming = true))
+        childStreamingIdx = childBlocks.size - 1
+        return childStreamingIdx
+    }
+
+    /** 子会话视图的实时工具行（派发卡 childRuns 的同源投影，进子会话时间线）。 */
+    private fun childUpsertTool(
+        id: String,
+        name: String,
+        argsSummary: String,
+        running: Boolean,
+        isError: Boolean,
+        durationMs: Long,
+    ) {
+        val i = childBlocks.indexOfFirst { it is ThreadBlock.Tool && it.id == id }
+        val entry = ThreadBlock.Tool(
+            id = id,
+            name = name,
+            title = toolTitle(name),
+            argsSummary = argsSummary,
+            command = "",
+            cwd = "",
+            output = null,
+            running = running,
+            isError = isError,
+            durationMs = durationMs,
+        )
+        if (i >= 0) childBlocks[i] = entry else childBlocks.add(entry)
+        childStarts[id] = android.os.SystemClock.elapsedRealtime()
+    }
+
+    private fun childFinishTool(id: String, isError: Boolean) {
+        val i = childBlocks.indexOfFirst { it is ThreadBlock.Tool && it.id == id }
+        if (i < 0) return
+        val t = childBlocks[i] as ThreadBlock.Tool
+        val start = childStarts.remove(id) ?: 0L
+        val dur = if (start > 0) android.os.SystemClock.elapsedRealtime() - start else 0L
+        childBlocks[i] = t.copy(running = false, isError = isError, durationMs = dur)
+    }
+
+    private fun childMergeTodos(items: org.json.JSONArray?) {
+        if (items == null) return
+        val list = (0 until items.length()).map { items.getJSONObject(it) }
+            .map { TodoItem(it.optString("content"), it.optString("status")) }
+        val i = childBlocks.indexOfFirst { it is ThreadBlock.Todo }
+        if (i >= 0) childBlocks[i] = ThreadBlock.Todo(list) else childBlocks.add(ThreadBlock.Todo(list))
     }
 
     private fun parseContext(o: JSONObject): ContextUsage = ContextUsage(
