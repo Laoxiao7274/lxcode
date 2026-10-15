@@ -2,8 +2,18 @@
 // 其他文件 → 文件卡（图标 + 名字 + 大小，点击下载）。实时（chat.userMessage /
 // chat.toolResult 的 attachments）与回放（chat.history 的同一份元数据）两条
 // 路径共用这一个组件——两条路径各写一套渲染就必然分叉。
-import { memo, useEffect, useState } from "react";
+//
+// 灯箱（2026-12 重做）：三处内联灯箱实现收口到一个全局 ImageLightbox
+// （shared/lightbox.tsx，portal + 缩放/平移/多图切换/工具条）。缩略图只负责
+// openImageLightbox(images, index)——「放大看」的状态不再散在每张卡里：
+//  - ImageCard / GridImage（卡内自足形态）不带 onClick 时打开以自身为
+//    单元素集合的灯箱（与旧行为等价）；
+//  - ImageGrid 带整区集合（含未展示的 +N）与起始下标——灯箱内左右切换
+//    覆盖该附件区的全部图片；
+//  - 溢出层（+N 展开态）点单张同样进灯箱（集合 = 全区图片）。
+import { memo, useState } from "react";
 import { attachmentURL, formatBytes, groupMetaFolders, type AttachmentMeta } from "../../../shared/attachments";
+import { lightboxImages, openImageLightbox } from "../../../shared/lightbox";
 import { FolderCard } from "./FolderCard";
 
 /** 一组附件卡（share_file 工具行 / dispatch 成果区共用）。atts 为空不渲染。 */
@@ -70,10 +80,12 @@ function ImageGrid({ atts }: { atts: AttachmentMeta[] }) {
   const [overflowOpen, setOverflowOpen] = useState(false);
   const shown = atts.slice(0, USER_IMAGE_GRID_MAX);
   const hidden = atts.length - shown.length;
+  // 灯箱集合 = 本附件区全部可放大图片（含未展示的 +N）；下标按 atts 对齐。
+  const openAt = (i: number) => openImageLightbox(lightboxImages(atts), i);
   return (
     <div className="att-grid" role="list" aria-label={`图片附件 ${atts.length} 张`}>
       {shown.map((a, i) => (
-        <GridImage key={`${a.path}-${i}`} att={a} />
+        <GridImage key={`${a.path}-${i}`} att={a} onClick={() => openAt(i)} />
       ))}
       {hidden > 0 && (
         <button
@@ -86,18 +98,18 @@ function ImageGrid({ atts }: { atts: AttachmentMeta[] }) {
         </button>
       )}
       {/* 溢出层（千问 common-image-grid-overflow 的「查看全部」）：全屏遮罩 +
-          全量网格。点遮罩空白处关闭；单张仍可点开放大灯箱（stopPropagation
-          隔离两层的点击关闭语义——外层关全部，内层关单张）。 */}
+          全量网格。点遮罩空白处关闭；单张仍点开放大灯箱（stopPropagation
+          隔离两层的点击关闭语义——外层关全部，内层进灯箱）。 */}
       {overflowOpen && (
         <div
-          className="att-lightbox att-grid-full"
+          className="att-grid-full"
           role="dialog"
           aria-label="全部图片"
           onClick={() => setOverflowOpen(false)}
         >
           <div className="att-grid-full-grid">
             {atts.map((a, i) => (
-              <FullGridImage key={`${a.path}-${i}`} att={a} />
+              <FullGridImage key={`${a.path}-${i}`} att={a} onOpen={() => openAt(i)} />
             ))}
           </div>
         </div>
@@ -107,25 +119,10 @@ function ImageGrid({ atts }: { atts: AttachmentMeta[] }) {
 }
 
 /** 溢出层里的可放大图。 */
-function FullGridImage({ att }: { att: AttachmentMeta }) {
-  const [zoom, setZoom] = useState(false);
-  const url = attachmentURL(att.path);
+function FullGridImage({ att, onOpen }: { att: AttachmentMeta; onOpen: () => void }) {
   return (
     <span className="att-grid-full-item">
-      <GridImage att={att} onClick={() => setZoom(true)} />
-      {zoom && url && (
-        <div
-          className="att-lightbox"
-          role="dialog"
-          aria-label={att.name || "图片预览"}
-          onClick={(e) => {
-            e.stopPropagation();
-            setZoom(false);
-          }}
-        >
-          <img src={url} alt={att.name || "图片附件"} decoding="async" />
-        </div>
-      )}
+      <GridImage att={att} onClick={onOpen} />
     </span>
   );
 }
@@ -165,16 +162,6 @@ const AttachmentCard = memo(function AttachmentCard({ att }: { att: AttachmentMe
  *  已清理的文件时——附件不随会话删除，但历史可能比磁盘活得久），不渲染破图。 */
 function ImageCard({ att, url }: { att: AttachmentMeta; url: string | null }) {
   const [broken, setBroken] = useState(false);
-  const [zoom, setZoom] = useState(false);
-  useEffect(() => {
-    if (!zoom) return;
-    const close = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setZoom(false);
-    };
-    window.addEventListener("keydown", close);
-    return () => window.removeEventListener("keydown", close);
-  }, [zoom]);
-
   if (!url || broken) {
     return (
       <span className="att-file att-dead" title={att.name}>
@@ -193,77 +180,53 @@ function ImageCard({ att, url }: { att: AttachmentMeta; url: string | null }) {
     );
   }
   return (
-    <>
-      <button
-        type="button"
-        className="att-image"
-        onClick={() => setZoom(true)}
-        title={att.caption || `${att.name}（点击放大）`}
-      >
-        <img src={url} alt={att.name || "图片附件"} loading="lazy" decoding="async" onError={() => setBroken(true)} />
-        {(att.caption || att.name) && (
-          <span className="att-image-cap">{att.caption || att.name}</span>
-        )}
-      </button>
-      {zoom && (
-        <div className="att-lightbox" role="dialog" aria-label="图片预览" onClick={() => setZoom(false)}>
-          <img src={url} alt={att.name || "图片附件"} decoding="async" />
-          {(att.caption || att.name) && <span className="att-lightbox-cap">{att.caption || att.name}</span>}
-        </div>
+    <button
+      type="button"
+      className="att-image"
+      onClick={() => openImageLightbox(lightboxImages([att]), 0)}
+      title={att.caption || `${att.name}（点击放大）`}
+    >
+      <img src={url} alt={att.name || "图片附件"} loading="lazy" decoding="async" onError={() => setBroken(true)} />
+      {(att.caption || att.name) && (
+        <span className="att-image-cap">{att.caption || att.name}</span>
       )}
-    </>
+    </button>
   );
 }
 
 /** 网格单元里的图（千问 common-image-grid-image 语义）：纯方格 cover，
- *  不带 caption 行——caption 进 title，点击进灯箱（自足：own broken/zoom 态）。
+ *  不带 caption 行——caption 进 title，点击进灯箱（onClick 由上层给——
+ *  上层知道整区集合，灯箱才能左右切换；不带 onClick 时自足开单图灯箱）。
  *  加载失败不渲染破图，但**留占位格**（坏图格可辨——静默消失会让网格悄悄
  *  缩水，用户不知道少了一张）。 */
 function GridImage({ att, onClick }: { att: AttachmentMeta; onClick?: () => void }) {
   const [broken, setBroken] = useState(false);
-  const [zoom, setZoom] = useState(false);
   const url = attachmentURL(att.path);
-  useEffect(() => {
-    if (!zoom) return;
-    const close = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setZoom(false);
-    };
-    window.addEventListener("keydown", close);
-    return () => window.removeEventListener("keydown", close);
-  }, [zoom]);
   if (!url) return null;
   return (
-    <>
-      <button
-        type="button"
-        className={"att-grid-item" + (broken ? " att-grid-broken" : "")}
-        role="listitem"
-        onClick={() => {
-          if (broken) return;
-          if (onClick) onClick();
-          else setZoom(true);
-        }}
-        title={att.caption || `${att.name}（点击放大）`}
-      >
-        {broken ? (
-          <span className="att-grid-broken-label" title="图片不可用（源文件已不在）">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-              <rect x="3" y="3" width="18" height="18" rx="2" />
-              <circle cx="9" cy="9" r="2" />
-              <path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21" />
-            </svg>
-          </span>
-        ) : (
-          <img src={url} alt={att.name || "图片附件"} loading="lazy" decoding="async" onError={() => setBroken(true)} />
-        )}
-      </button>
-      {zoom && !broken && (
-        <div className="att-lightbox" role="dialog" aria-label={att.name || "图片预览"} onClick={() => setZoom(false)}>
-          <img src={url} alt={att.name || "图片附件"} decoding="async" />
-          {(att.caption || att.name) && <span className="att-lightbox-cap">{att.caption || att.name}</span>}
-        </div>
+    <button
+      type="button"
+      className={"att-grid-item" + (broken ? " att-grid-broken" : "")}
+      role="listitem"
+      onClick={() => {
+        if (broken) return;
+        if (onClick) onClick();
+        else openImageLightbox(lightboxImages([att]), 0);
+      }}
+      title={att.caption || `${att.name}（点击放大）`}
+    >
+      {broken ? (
+        <span className="att-grid-broken-label" title="图片不可用（源文件已不在）">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <rect x="3" y="3" width="18" height="18" rx="2" />
+            <circle cx="9" cy="9" r="2" />
+            <path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21" />
+          </svg>
+        </span>
+      ) : (
+        <img src={url} alt={att.name || "图片附件"} loading="lazy" decoding="async" onError={() => setBroken(true)} />
       )}
-    </>
+    </button>
   );
 }
 

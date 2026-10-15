@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";import { gsap } from "gsap";
 import { motionAllowed } from "./shared/motion";
+import { LightboxHost } from "./shared/lightbox";
 import {
   childTabSession,
   childTabTitle,
@@ -61,6 +62,8 @@ export default function App() {
               <JobsProvider source={source}>
                 <AppBody source={source} sakuraBridge={sakuraBridge} tailscaleBridge={tailscaleBridge} remoteControlBridge={remoteControlBridge} />
                 <UpdateToast />
+                {/* 全局灯箱宿主：单实例（openRef 收口），附件缩略图统一入口 */}
+                <LightboxHost />
               </JobsProvider>
             </SearchAdminProvider>
           </UpdateProvider>

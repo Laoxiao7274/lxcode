@@ -523,25 +523,7 @@
 .att-grid-more:hover {
   color: var(--fg);
 }
-/* 溢出层展开态：全屏遮罩内的全量网格（可滚动），点空白处关闭。 */
-.att-grid-full-grid {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  justify-content: center;
-  max-width: 80vw;
-  max-height: 82vh;
-  overflow-y: auto;
-  padding: 8px;
-}
-.att-grid-full-item {
-  position: relative;
-  display: inline-flex;
-}
-.att-grid-full-item .att-grid-item {
-  width: 120px;
-  height: 120px;
-}
+/* 溢出层展开态的全量网格样式在文件末尾「灯箱」一节（.att-grid-full*）。 */
 /* 文件卡行（千问 file-card-list 语义）：横排卡行，多文件 wrap。 */
 .user-att-files {
   display: flex;
@@ -1521,28 +1503,221 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* 放大预览：全屏遮罩 + 居中大图，点任意处/Esc 关闭。 */
-.att-lightbox {
+/* ===== 灯箱（2026-12 重做，shared/lightbox.tsx）：portal 挂 body，全屏
+ * 深色遮罩 + 轻度 backdrop blur；图 = 原图（natural 尺寸 × transform 缩放），
+ * 适配态 scale=1 由 JS fitSize 保证不超视口。z-index 1000：高于所有既有
+ * 浮层（对话框 200、搜索 90、agents 80）——灯箱是模态终点，不该被盖。 */
+.lightbox {
   position: fixed;
   inset: 0;
-  z-index: 200;
+  z-index: 1000;
+  background: rgba(8, 9, 12, 0.82);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 10px;
-  background: rgba(0, 0, 0, 0.72);
+  animation: lightbox-in 0.18s ease-out;
   cursor: zoom-out;
+  user-select: none;
 }
-.att-lightbox img {
-  max-width: 88vw;
-  max-height: 82vh;
+.lightbox.lightbox-closing {
+  animation: lightbox-out 0.14s ease-in forwards;
+}
+@keyframes lightbox-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes lightbox-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+/* 舞台：图片层（双击缩放/按住拖动在这里）；点图片不冒泡成关闭。 */
+.lightbox-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  max-width: 92vw;
+  max-height: 92vh;
+  cursor: default;
+  touch-action: none;
+}
+.lightbox-dragging .lightbox-stage {
+  cursor: grabbing;
+}
+.lightbox-stage img,
+.lightbox-img {
+  max-width: none;
   border-radius: 8px;
-  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 16px 64px rgba(0, 0, 0, 0.55);
+  animation: lightbox-img-in 0.18s ease-out;
+  will-change: transform;
 }
-.att-lightbox-cap {
+@keyframes lightbox-img-in {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+/* 加载中 / 失败态：不白屏。 */
+.lightbox-loading {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.lightbox-spinner {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2.5px solid rgba(255, 255, 255, 0.25);
+  border-top-color: rgba(255, 255, 255, 0.85);
+  animation: lightbox-spin 0.8s linear infinite;
+}
+@keyframes lightbox-spin {
+  to { transform: rotate(360deg); }
+}
+.lightbox-failed {
+  position: absolute;
+  padding: 8px 14px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.6);
   color: rgba(255, 255, 255, 0.85);
-  font-size: 13px;
+  font-size: 12.5px;
+}
+/* 顶栏：名字 + 计数 + 关闭（左上/右上贴边，半透明底）。 */
+.lightbox-topbar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: linear-gradient(rgba(8, 9, 12, 0.55), rgba(8, 9, 12, 0));
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 12.5px;
+  pointer-events: none;
+}
+.lightbox-name {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lightbox-count {
+  flex: none;
+  color: rgba(255, 255, 255, 0.6);
+  font-variant-numeric: tabular-nums;
+}
+.lightbox-topbar .lightbox-close {
+  margin-left: auto;
+  pointer-events: auto;
+}
+/* 左右切换箭头（贴边竖排居中，多图才渲染）。 */
+.lightbox-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+}
+.lightbox-prev { left: 12px; }
+.lightbox-next { right: 12px; }
+.lightbox-nav:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+/* 底部工具条：缩放比例 / ± / 提示 / 下载——贴底细条不挡图。 */
+.lightbox-toolbar {
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px;
+  margin-bottom: 12px;
+  border-radius: 12px;
+  background: rgba(20, 22, 27, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 12px;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+.lightbox-scale {
+  min-width: 44px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.75);
+}
+.lightbox-sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 4px;
+  background: rgba(255, 255, 255, 0.14);
+}
+.lightbox-hint {
+  color: rgba(255, 255, 255, 0.45);
+  font-size: 11px;
+}
+/* 通用小按钮（关闭/箭头/缩放/下载）：透明底、悬停微亮。 */
+.lightbox-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.85);
+  cursor: pointer;
+  flex: none;
+}
+.lightbox-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+.lightbox-close {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+}
+/* ===== 溢出层（+N 展开态）：全屏遮罩内的全量网格，点空白处关闭。
+ * 与灯箱分离（这是网格选择器不是查看器）：z-index 300、无 blur。 */
+.att-grid-full {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(8, 9, 12, 0.82);
+  cursor: zoom-out;
+  animation: lightbox-in 0.18s ease-out;
+}
+.att-grid-full-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+  max-width: 80vw;
+  max-height: 82vh;
+  overflow-y: auto;
+  padding: 8px;
+  cursor: default;
+}
+.att-grid-full-item {
+  position: relative;
+  display: inline-flex;
+}
+.att-grid-full-item .att-grid-item {
+  width: 120px;
+  height: 120px;
 }
 /* share_file 的工具行形态：头行 + 附件卡为主体（不用展开就能看到）。 */
 .share-block {
