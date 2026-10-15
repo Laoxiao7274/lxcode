@@ -68,6 +68,13 @@ export function DispatchCard({ block, onConfirm, onAnswer, onOpenChild, "data-ui
   const todoTotal = todos.length;
   const todoFocus = todos.find((it) => it.status === "active")?.content;
   const showTodoBadge = todoTotal > 0;
+  // 未收敛（done 卡上仍有 active/pending 项）：如实呈现，不假装完成——hover
+  // 点名残留项（用户能感知「清单没收敛」而不是以为界面没刷新）。清单是否收敛
+  // 归子会话如实报告，卡片只放大这个事实，绝不代它把最后一项标成完成。
+  const todoUnfinished = todos.filter((it) => it.status !== "done");
+  const todoBadgeTitle = todoUnfinished.length > 0
+    ? `子会话任务清单：完成 ${todoDone}/${todoTotal}${todoFocus ? `，进行中：${todoFocus}` : ""}——清单未收敛：${todoUnfinished.map((it) => it.content).join("、")}`
+    : `子会话任务清单：完成 ${todoDone}/${todoTotal}${todoFocus ? `，进行中：${todoFocus}` : ""}`;
 
   // ---- 整行点下去该干什么（纯判定在 dispatch-primary.ts，有单测钉住）----
   // canOpenChild / primaryTitle 与 primaryAction 共用同一份判定——两处各判一遍的后果是
@@ -97,7 +104,7 @@ export function DispatchCard({ block, onConfirm, onAnswer, onOpenChild, "data-ui
       {showTodoBadge && (
         <span
           className="dispatch-todos mono"
-          title={`子会话任务清单：完成 ${todoDone}/${todoTotal}${todoFocus ? `，进行中：${todoFocus}` : ""}`}
+          title={todoBadgeTitle}
         >
           ✓ {todoDone}/{todoTotal}
           {todoFocus && <span className="dispatch-todos-focus">· {clipTask(todoFocus)}</span>}

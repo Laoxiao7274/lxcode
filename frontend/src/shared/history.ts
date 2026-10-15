@@ -89,6 +89,55 @@ export const DISPATCH_INTERRUPTED = "这次派发在结束前中断了——历�
  *  与后端"（子 Agent 没有产出文本结论）"同款口径——是事实陈述，不是编的结论。 */
 export const DISPATCH_NO_TEXT = "（子 Agent 没有产出文本结论）";
 
+/** 派发结果文本里的清单终态行（后端 internal/agent/dispatch.go 的
+ *  dispatchTodoSummary——派发收尾追加在结论之后）：
+ *    `子会话清单最终状态：N/M 完成。`（全部完成）
+ *    `子会话清单最终状态：N/M 完成，未完成：X（进行中）、Y（待办）`（有残留）
+ *  历史回放没有 dispatchEnd 事件可吃 finalTodos，卡上的清单徽标只能从这条文本
+ *  恢复终态——格式与后端钉在同一份实现上（dispatch_todos_test 钉住文案），
+ *  解析不出（老历史/格式漂移）返回 undefined，卡维持初稿展示（诚实的降级）。 */
+export const DISPATCH_TODO_SUMMARY = /子会话清单最终状态：(\d+)\/(\d+) 完成/;
+
+/** 从清单终态行 + 清单初稿恢复回放用的终态清单。
+ *
+ *  三分支：① 解析不到终态行 → undefined（回放保持初稿，不猜）；
+ *  ② 初稿缺位或条数对不上（子会话执行中重写过清单）→ 只能恢复计数能恢复的部分：
+ *     全部完成时返回 undefined 不动初稿（内容无从知晓，编条目是撒谎），
+ *     有残留时同样 undefined（同一条理由）——徽标退回初稿展示；
+ *  ③ 条数对得上 → 以初稿内容为底：点名未完成的项按括号注记改状态
+ *    （进行中→active、待办→pending），其余全部 done。
+ *  条数对得上时这份恢复是**如实**的：终态行是后端按定格清单现算的，未完成项
+ *  点名带状态；对不上的分支宁可不恢复也不编。 */
+export function replayDispatchTodos(
+  raw: string,
+  draft: TodoItem[] | undefined,
+): TodoItem[] | undefined {
+  if (!draft || draft.length === 0) return undefined;
+  const m = DISPATCH_TODO_SUMMARY.exec(raw ?? "");
+  if (!m) return undefined;
+  const done = Number(m[1]);
+  const total = Number(m[2]);
+  if (total !== draft.length) return undefined;
+  // 未完成点名段（可缺席 = 全部完成）
+  const tail = (raw ?? "").slice(m.index + m[0].length);
+  const unfinished = new Map<string, TodoItem["status"]>();
+  const list = /未完成：(.+)$/.exec(tail.split("\n")[0] ?? "");
+  if (list) {
+    for (const part of list[1].split("、")) {
+      const pm = /^(.*)（(进行中|待办)）$/.exec(part.trim());
+      if (pm && pm[1]) unfinished.set(pm[1], pm[2] === "进行中" ? "active" : "pending");
+    }
+  }
+  // 一致性守卫：解析出的未完成数 + done 必须等于总数，对不上说明点名段被截断
+  // 或格式漂移——整体放弃恢复（宁缺毋滥，不许半真半假的清单上卡）。
+  const remaining = total - done;
+  if (unfinished.size !== remaining) return undefined;
+  return draft.map((it) => {
+    const st = unfinished.get(it.content);
+    return st ? { ...it, status: st } : { ...it, status: "done" as const };
+  });
+}
+
 /** 消息序列 → blocks（**唯一一份映射**）。
  *
  *  两条路径共用它：① 回放路径 reduceHistory（刷新/切会话重建主时间线）；
@@ -248,6 +297,12 @@ export function historyBlocks(h: HistorySnapshot): ThreadBlock[] {
         // 子会话 id 优先取结果里的（权威值：续跑时 arguments.session 可能为空，
         // 而这一行永远是本次真正用的那个子会话）
         if (sessionId) card.sessionId = sessionId;
+        // todo 契约批③（回放侧）：从结果文本里的清单终态行恢复定格清单——
+        // 实时路径吃 dispatchEnd.finalTodos，回放没有那个事件，只能从后端写进
+        // 结果的「子会话清单最终状态：N/M 完成」恢复。恢复不了（没建过清单 /
+        // 初稿条数对不上 / 文本被截断）保持初稿不动——不编。
+        const todos = replayDispatchTodos(m.content, card.todos);
+        if (todos) card.todos = todos;
         // 子会话共享到对话的附件（调度结果消息上的元数据——与实时 toolResult
         // 同一份形状）：主时间线渲染附件条（卡 = 一行摘要的例外：附件是成果）。
         if (m.attachments?.length) card.attachments = m.attachments;

@@ -383,6 +383,10 @@ function applyDispatchTodos(state: UIState, ev: Ev<"todoUpdated">): UIState {
   if (idx < 0) return state;
   const blocks = state.blocks.slice();
   const b = blocks[idx] as Extract<ThreadBlock, { kind: "dispatch" }>;
+  // 迟到守卫：卡已定格（done）就不再回写——终态以 dispatchEnd 的 finalTodos 为准，
+  // 迟到的旧快照（网络重排 / 历史回放外的边缘时序）不许把定格的终态覆盖回去。
+  // 续跑（新一轮派发）会先到 dispatchStart 重开卡，那之后的更新照常生效。
+  if (b.status === "done") return state;
   blocks[idx] = { ...b, todos: ev.items };
   return { ...state, blocks };
 }
@@ -562,30 +566,46 @@ export function reduceSessionStates(
   const next = { ...states, [id]: { ...reduce(previous, ev), currentId: id } };
   const did = eventDispatchId(ev);
   const childId = did ? (dispatchChild?.[did] ?? dispatchChildSession(states, did)) : "";
-  if (did && childId && childId !== id && states[childId] && !isCardLifecycle(ev)) {
-    const child = states[childId];
-    // 任务消息的标记（实时路径的问题 1 修复）：带 dispatch_id 的 userMessage 是
-    // 主 Agent 派发的任务说明书。dispatchId 必须剥掉（带着它，子会话里的归约会
-    // 去找一张不存在的 dispatch 卡——delta 等事件就是这么被静默丢弃的），但「这是
-    // 任务消息」的信息不能跟着丢：剥掉之后子会话无法把它与真实用户消息区分开。
-    // task 标记就是干这个的——reduceUserMessage 据此渲染「任务」块而不是用户气泡。
-    // 注入通告（中断注记 / 重复调用提醒）同样带 dispatch_id 上抛，它们不是任务——
-    // reduceUserMessage 的前缀表判定优先于 task 标记，照旧走 notice / hidden。
-    let childEv = withoutDispatch(ev);
-    if (ev.type === "userMessage" && did !== "") {
-      childEv = { ...childEv, task: true } as AgentEvent;
+  if (did && childId && childId !== id && states[childId]) {
+    if (ev.type === "dispatchEnd") {
+      // dispatchEnd 是卡生命周期事件（不整投进子会话 state），但它的 `finalTodos`
+      // 是**子会话清单的终态**（todo 契约批③），不是卡呈现——按 todoUpdated 的
+      // 归约路径写进子会话自己的 state：子会话视图的计划条据此从「最后一次
+      // todo.updated」定格到终态。不这样做的话，模型做完最后一步工作直接给结论
+      //（没再调 todo 把它标 done）时，计划条上那一项永远挂着 active——这正是
+      // 「子会话结束后清单最后一项没显示完成」的根因。清单为空（没建过清单）
+      // 不写（wire 约定：键缺席 = 未知，不猜）。
+      if (ev.finalTodos && ev.finalTodos.length > 0) {
+        next[childId] = {
+          ...reduce(states[childId], { type: "todoUpdated", sessionId: childId, items: ev.finalTodos }),
+          currentId: childId,
+        };
+      }
+    } else if (!isCardLifecycle(ev)) {
+      const child = states[childId];
+      // 任务消息的标记（实时路径的问题 1 修复）：带 dispatch_id 的 userMessage 是
+      // 主 Agent 派发的任务说明书。dispatchId 必须剥掉（带着它，子会话里的归约会
+      // 去找一张不存在的 dispatch 卡——delta 等事件就是这么被静默丢弃的），但「这是
+      // 任务消息」的信息不能跟着丢：剥掉之后子会话无法把它与真实用户消息区分开。
+      // task 标记就是干这个的——reduceUserMessage 据此渲染「任务」块而不是用户气泡。
+      // 注入通告（中断注记 / 重复调用提醒）同样带 dispatch_id 上抛，它们不是任务——
+      // reduceUserMessage 的前缀表判定优先于 task 标记，照旧走 notice / hidden。
+      let childEv = withoutDispatch(ev);
+      if (ev.type === "userMessage" && did !== "") {
+        childEv = { ...childEv, task: true } as AgentEvent;
+      }
+      let childNext = { ...reduce(child, childEv), currentId: childId };
+      // 生成中指示的兜底（2026-12 用户报「子会话视图缺少生成中样式」）：busy=true
+      // 只在轮开始那一刻发**一次**（session.go 的 Send），而子会话 state 是双投的
+      // 「不建」规则——视图打开之前那条 busy=true 无人接收；打开视图时
+      // chat.history 的快照又来自按 id 现建的运行时，busy 恒 false。结果整轮都
+      // 没有生成中指示。子会话侧的活动事件（delta/toolCall/toolResult/任务消息/
+      // 待裁决确认）本身就证明子会话正在跑——见到就把 busy 置真；翻回 false 仍由
+      // 轮末那条 busy=false 事件负责（它无条件发，不会漏）。主会话的归约不受影响
+      //（忙闲仍由它自己的 busy 事件驱动）。
+      if (CHILD_BUSY_HINTS.has(ev.type)) childNext = { ...childNext, busy: true };
+      next[childId] = childNext;
     }
-    let childNext = { ...reduce(child, childEv), currentId: childId };
-    // 生成中指示的兜底（2026-12 用户报「子会话视图缺少生成中样式」）：busy=true
-    // 只在轮开始那一刻发**一次**（session.go 的 Send），而子会话 state 是双投的
-    // 「不建」规则——视图打开之前那条 busy=true 无人接收；打开视图时
-    // chat.history 的快照又来自按 id 现建的运行时，busy 恒 false。结果整轮都
-    // 没有生成中指示。子会话侧的活动事件（delta/toolCall/toolResult/任务消息/
-    // 待裁决确认）本身就证明子会话正在跑——见到就把 busy 置真；翻回 false 仍由
-    // 轮末那条 busy=false 事件负责（它无条件发，不会漏）。主会话的归约不受影响
-    //（忙闲仍由它自己的 busy 事件驱动）。
-    if (CHILD_BUSY_HINTS.has(ev.type)) childNext = { ...childNext, busy: true };
-    next[childId] = childNext;
   }
   return next;
 }

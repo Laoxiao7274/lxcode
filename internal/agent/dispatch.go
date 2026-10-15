@@ -138,6 +138,10 @@ func (s *Session) RunAgentTask(ctx context.Context, agentID, task, workDir strin
 	}
 	s.emit(DispatchEndEvent{
 		DispatchID: askDispatchID, SessionID: childID, Result: endNote, IsError: endIsErr,
+		// 清单终态（todo 契约批③，与 runDispatch 同一条纪律）：合并进程的子会话
+		// 同样可能用清单——收尾定格，前端卡徽标据此定格（漏了它就是「子会话结束
+		// 后最后一项没显示完成」的合并进程版）。
+		FinalTodos: child.Todos(),
 	})
 	if endIsErr {
 		if ctx.Err() != nil {
