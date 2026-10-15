@@ -239,9 +239,9 @@ test('⑦ Composer：只读视图（子会话页）不渲染「+」入口', () =
   assert.ok(!html.includes('att-add'), '只读视图不该有「+」入口: ' + html);
 });
 
-test('⑦b Composer：暂存附件区在输入卡内部（千问 topContent 槽位）——96px 方格 + 文件卡行 + 移除钮', () => {
+test('⑦b Composer：暂存附件区在输入卡内部（topContent 槽位）——64px 方格 + 文件卡行 + 移除钮', () => {
   // initialDraft 装两张图 + 一个散文件：暂存区渲染进 .pi 卡内、pi-row 之前；
-  // 类名钉住新形态（att-thumbs/att-thumb/att-file-card/att-remove），不留旧 72px。
+  // 类名钉住新形态（att-thumbs/att-thumb/att-file-card/att-remove），DSH 对齐。
   const html = renderToStaticMarkup(createElement(
     SettingsProvider,
     { source: fakeSource() },
@@ -267,13 +267,13 @@ test('⑦b Composer：暂存附件区在输入卡内部（千问 topContent 槽�
   assert.ok(piAt >= 0 && rowAt >= 0, '输入卡与输入行应存在');
   assert.ok(previewAt > piAt && previewAt < rowAt, '附件预览区应在 .pi 卡内、pi-row 之前');
   assert.ok(html.includes('att-thumbs'), '图片网格容器应存在');
-  assert.equal((html.match(/class="att-thumb"/g) || []).length, 2, '两张图各一格（96px 方格形态）');
+  assert.equal((html.match(/class="att-thumb"/g) || []).length, 2, '两张图各一格（64px 方格形态）');
   assert.ok(html.includes('att-file-card'), '散文件应是文件卡行');
   assert.ok(html.includes('季度报告.pdf'), '文件名应可见');
   assert.ok(html.includes('att-remove'), '移除钮应存在');
 });
 
-test('⑦c CSS：暂存区千问形态的源码钉子——96px 方格 radius12、+钮 32px 正圆无边框、发送钮 32px 灰底禁用', () => {
+test('⑦c CSS：暂存区 DSH 形态的源码钉子——64px 方格 radius16 细边框、文件卡 240×64、+钮 32px 正圆无边框、移除钮悬停显、发送钮 32px 灰底禁用', () => {
   const css = readFileSync('src/styles/composer.css', 'utf8');
   const rule = (selector) => {
     const at = css.indexOf(selector);
@@ -282,18 +282,31 @@ test('⑦c CSS：暂存区千问形态的源码钉子——96px 方格 radius12�
     return css.slice(start + 1, css.indexOf('}', start));
   };
   const thumb = rule('.att-thumb {');
-  assert.ok(thumb?.includes('width: 96px') && thumb.includes('height: 96px'), '缩略图 96px 方格: ' + (thumb ?? ''));
-  assert.ok(thumb?.includes('border-radius: 12px'), '方格 radius 12（与消息侧同款）: ' + (thumb ?? ''));
+  assert.ok(thumb?.includes('width: 64px') && thumb.includes('height: 64px'), '缩略图 64px 方格（DSH thumbnail）: ' + (thumb ?? ''));
+  assert.ok(thumb?.includes('border-radius: 16px'), '方格 radius 16（DSH 语义）: ' + (thumb ?? ''));
+  const thumbImg = rule('.att-thumb img {');
+  assert.ok(thumbImg?.includes('border: 1px solid'), '缩略图细边框（DSH .5px 的 1px 映射）: ' + (thumbImg ?? ''));
+  assert.ok(thumbImg?.includes('cursor: zoom-in'), '缩略图 zoom-in 光标: ' + (thumbImg ?? ''));
+  const fileCard = rule('.att-file-card {');
+  assert.ok(fileCard?.includes('width: 240px') && fileCard.includes('height: 64px'), '文件卡 240×64（DSH FileCard）: ' + (fileCard ?? ''));
+  assert.ok(fileCard?.includes('border-radius: 16px'), '文件卡 radius 16: ' + (fileCard ?? ''));
+  const remove = rule('.att-remove {');
+  assert.ok(remove?.includes('opacity: 0'), '移除钮默认隐藏（DSH 悬停显）: ' + (remove ?? ''));
+  assert.ok(remove?.includes('top: 4px') && remove.includes('right: 4px'), '移除钮卡内 4px（DSH 位置）: ' + (remove ?? ''));
+  const hover = rule('.att-thumb:hover .att-remove,\n.att-file-card:hover .att-remove,\n.att-remove:focus-visible {');
+  assert.ok(hover?.includes('opacity: 1'), 'hover/焦点显移除钮: ' + (hover ?? ''));
+  const coarse = css.includes('@media (pointer: coarse) {\n  .att-remove {\n    opacity: 1;\n  }\n}');
+  assert.ok(coarse, '触屏恒显移除钮（DSH pointer:coarse 规则）');
   const add = rule('.att-add {');
-  assert.ok(add?.includes('width: 32px') && add.includes('height: 32px'), '+按钮 32px 正圆（千问 size-8）: ' + (add ?? ''));
+  assert.ok(add?.includes('width: 32px') && add.includes('height: 32px'), '+按钮 32px 正圆: ' + (add ?? ''));
   assert.ok(add?.includes('background: transparent') && !add.includes('border: 1px'), '+按钮无边框透明底: ' + (add ?? ''));
   assert.ok(add?.includes('border-radius: 999px'), '+按钮正圆: ' + (add ?? ''));
   const send = rule('\n.send-btn {');
   assert.ok(send?.includes('width: 32px') && send.includes('height: 32px'), '发送钮 32px: ' + (send ?? ''));
   const sendDisabled = rule('.send-btn:disabled {');
-  assert.ok(sendDisabled?.includes('background: var(--border-strong)'), '禁用态实色灰底（千问 text-disabled 映射）: ' + (sendDisabled ?? ''));
+  assert.ok(sendDisabled?.includes('background: var(--border-strong)'), '禁用态实色灰底: ' + (sendDisabled ?? ''));
   const pi = rule('.pi {');
-  assert.ok(pi?.includes('border-radius: 20px'), '输入卡大圆角（千问 28px 的等比映射）: ' + (pi ?? ''));
+  assert.ok(pi?.includes('border-radius: 20px'), '输入卡大圆角: ' + (pi ?? ''));
   const preview = rule('.att-preview {');
   assert.ok(preview?.includes('padding: 12px 16px 0'), '附件区卡内内距（与 textarea 左右对齐）: ' + (preview ?? ''));
 });

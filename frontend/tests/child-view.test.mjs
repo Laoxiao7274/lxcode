@@ -37,7 +37,7 @@ test('① childTabKey/childTabSession 往返一致，固定页签键不被误认
   // id 里带冒号也照样往返（id 是后端给的，别假设它的字符集）
   assert.equal(childTabSession(childTabKey('a:b:c')), 'a:b:c');
   // 固定页签与 chat 都不是子会话键——否则标签栏会把「Agent」页签当成子会话去读历史
-  for (const fixed of ['agents', 'catalog', 'catalog', 'chat']) {
+  for (const fixed of ['agents', 'catalog', 'git', 'chat']) {
     assert.equal(childTabSession(fixed), null, fixed + ' 不该被当成子会话键');
   }
   // 前缀必须整段匹配：childish: 不是 child:
@@ -74,7 +74,7 @@ test('② focusChildView 打开并聚焦临时视图；重复打开回到同一�
 
 test('③ 点派发卡：视图打开、标签栏长度不变；返回后回到原会话；再点同一张卡视图还在', () => {
   // 有一个工作区标签 + 聊天视图的初始态（标签栏非空才量得出「长度不变」）
-  let state = focusWorkspacePage(createWorkspaceTabs(), 'catalog');
+  let state = focusWorkspacePage(createWorkspaceTabs(), 'git');
   state = focusChatTab(state);
   const tabsBefore = state.tabs.length;
   assert.ok(tabsBefore > 0);
@@ -114,9 +114,9 @@ test('④ 两个不同子会话来回点：各自聚焦互不干扰，也不长�
   assert.notEqual(childTabKey('sess-aaaaaaaa'), childTabKey('sess-bbbbbbbb'));
 
   // 临时视图与固定页签互不干扰：固定页签照常进 tabs
-  let mixed = focusWorkspacePage(createWorkspaceTabs(), 'catalog');
+  let mixed = focusWorkspacePage(createWorkspaceTabs(), 'git');
   mixed = focusChildView(mixed, 'sess-aaaaaaaa');
-  assert.deepEqual(mixed.tabs, ['catalog'], '打开子会话视图不动既有工作区标签');
+  assert.deepEqual(mixed.tabs, ['git'], '打开子会话视图不动既有工作区标签');
   assert.equal(mixed.active, childTabKey('sess-aaaaaaaa'));
 });
 

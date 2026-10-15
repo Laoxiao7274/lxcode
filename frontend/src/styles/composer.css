@@ -241,12 +241,16 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* ===== 附件（图片批次 B → 千问对齐 2026-12）：预览区 + 「+」菜单 =====
- * 千问实测（web-app-runtime.css / async chunk，2026-12 抓取）：附件区在输入卡
- * **内部**、文本行上方（topContent 槽位）；图片 120px 高方格、radius 8-12px、
- * gap 8px；文件卡 fileBox 212×52px、radius 12、icon 28px、title 12px/500、
- * status 10px；移除钮 20px 圆、白底、绝对定位卡外右上角 -6px。
- * 我们与消息侧 UserAttachmentSection 同一套视觉语言：96px 方格 + radius 12。 */
+/* ===== 附件（DSH ComposerAttachments 对齐 2026-12）：预览区 + 「+」菜单 =====
+ *  DSH 实测（dsh-client-ui-attachment 打包 CSS，2026-12 提取）：
+ *  - 图片缩略图 64×64、radius 16、border .5px、interactive-bg-hover 底、
+ *    object-fit cover、cursor zoom-in；
+ *  - 移除钮 18px 正圆、深底白叉（button-contrast-fill），绝对定位卡内 4px，
+ *    默认 opacity:0、hover/焦点显（.2s ease-in-out；pointer:coarse 恒显）；
+ *  - 文件卡 FileCard 240×64、radius 16、border .5px、icon 28px、名称
+ *    14px/500/lh22、meta 12px/lh15（扩展名 + 大小）、hover 名称留 18px 右距。
+ *  交互语义对齐：轨道 gap 10px；上传中/失败态见 att-thumb-loading / att-file-card
+ *  的失败变体。灯箱语义（点缩略图放大）由我们的全局 Lightbox 承担。 */
 .att-preview {
   padding: 12px 16px 0;
   display: flex;
@@ -261,14 +265,14 @@
 .att-thumbs {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 10px;
 }
 .att-thumb {
   position: relative;
   display: inline-flex;
-  width: 96px;
-  height: 96px;
-  border-radius: 12px;
+  width: 64px;
+  height: 64px;
+  border-radius: 16px;
   overflow: visible;
   border: none;
   background: transparent;
@@ -278,8 +282,39 @@
   height: 100%;
   object-fit: cover;
   display: block;
-  border-radius: 12px;
+  border-radius: 16px;
   background: var(--bg-inset);
+  border: 1px solid var(--border);
+  cursor: zoom-in;
+  box-sizing: border-box;
+}
+/* DSH 上传中态（FileCard spinner 语义）：objectURL 未就绪时显示旋转占位——
+ * 20px、2px 边框旋转（我们的读取是瞬时的，大图解码时能看见一瞬）。 */
+.att-thumb-loading {
+  width: 100%;
+  height: 100%;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background: var(--bg-inset);
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+}
+.att-thumb-spinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--border-strong);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: att-spin 0.8s linear infinite;
+}
+@keyframes att-spin {
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .att-thumb-spinner {
+    animation: none;
+  }
 }
 .att-thumb-small {
   width: 22px;
@@ -288,79 +323,115 @@
   overflow: hidden;
   flex: none;
 }
+.att-thumb-small img {
+  border: none;
+  cursor: default;
+}
+.att-thumb-small .att-thumb-loading {
+  display: none;
+}
+/* 移除钮（DSH remove 语义）：18px 正圆深底白叉，卡内 4px，**悬停/焦点显**
+ * （pointer:coarse 恒显；reduced-motion 关过渡）。 */
 .att-remove {
   position: absolute;
-  top: -6px;
-  right: -6px;
+  top: 4px;
+  right: 4px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 18px;
   height: 18px;
-  border: 1px solid var(--border);
+  border: none;
   border-radius: 50%;
-  background: var(--surface);
-  color: var(--fg-muted);
+  background: rgba(0, 0, 0, 0.72);
+  color: #fff;
   cursor: pointer;
   padding: 0;
   z-index: 2;
+  opacity: 0;
+  transition: opacity 0.2s ease-in-out;
+}
+.att-thumb:hover .att-remove,
+.att-file-card:hover .att-remove,
+.att-remove:focus-visible {
+  opacity: 1;
+}
+@media (pointer: coarse) {
+  .att-remove {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .att-remove {
+    transition: none;
+  }
 }
 .att-remove:hover {
-  background: var(--hover-veil-mid);
-  color: var(--fg);
+  background: rgba(0, 0, 0, 0.88);
+  color: #fff;
 }
+html[data-theme="dark"] .att-remove {
+  background: rgba(255, 255, 255, 0.28);
+}
+html[data-theme="dark"] .att-remove:hover {
+  background: rgba(255, 255, 255, 0.42);
+}
+/* 散文件卡（DSH FileCard 语义）：240×64 定宽高、radius 16 细边框、28px 图标框
+ *  + 名称 14px/500 + meta 行 12px（扩展名·大小）；hover 提亮。 */
 .att-file-cards {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 10px;
 }
 .att-file-card {
+  position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 7px 10px;
+  gap: 10px;
+  width: 240px;
+  height: 64px;
+  padding: 0 12px;
   border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--surface);
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--fg);
-  max-width: 260px;
-  min-height: 40px;
+  border-radius: 16px;
+  background: var(--bg-inset);
   box-sizing: border-box;
+  overflow: hidden;
 }
-.att-file-card svg {
+.att-file-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex: none;
+  width: 28px;
+  height: 28px;
   color: var(--fg-muted);
+}
+.att-file-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  padding: 8px 0;
 }
 .att-file-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  line-height: 20px;
-}
-.att-file-size {
-  flex: none;
-  color: var(--fg-faint);
-  font-size: 10.5px;
-  font-weight: 400;
-}
-.att-file-card .att-remove,
-.att-thumb .att-remove,
-.folder-card .att-remove {
-  position: static;
-  flex: none;
-  width: 14px;
-  height: 14px;
-  border: none;
-  background: transparent;
-  color: var(--fg-muted);
-}
-.att-file-card .att-remove:hover,
-.att-thumb .att-remove:hover,
-.folder-card .att-remove:hover {
-  background: var(--border-soft);
   color: var(--fg);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 22px;
+}
+.att-file-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-faint);
+  font-size: 12px;
+  line-height: 15px;
+}
+.att-file-card:hover .att-file-name {
+  padding-right: 18px;
 }
 /* 「+」按钮（千问 AddButton subtle 对齐 2026-12）：输入区左侧的正圆图标钮——
  * 千问实测 `size-8 rounded-full border-0 text-primary hover:bg-option`：
@@ -1669,6 +1740,22 @@
   padding: 0;
 }
 .folder-card-toggle:hover {
+  background: var(--border-soft);
+  color: var(--fg);
+}
+/* 文件夹卡头行的移除钮：覆盖 .att-remove 的绝对定位/悬停显（DSH 语义只适用
+ *  图片缩略图与文件卡的浮动钮——文件夹卡是行内控件，常显小叉不遮挡头部）。 */
+.folder-card .att-remove {
+  position: static;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg-muted);
+  opacity: 1;
+}
+.folder-card .att-remove:hover {
   background: var(--border-soft);
   color: var(--fg);
 }

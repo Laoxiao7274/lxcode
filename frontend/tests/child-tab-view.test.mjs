@@ -47,7 +47,7 @@ test('① 视图打开：parentTabChildView 给出子会话 id 与标题；返�
   ws = focusChatTab(ws);
   assert.equal(parentTabChildView(ws.active, 'sess-1234567890', () => 'sess-1234567890', childTitleOf), null);
   // 非子会话视图（固定页签/聊天）也恒为 null
-  const page = focusWorkspacePage(createWorkspaceTabs(), 'catalog');
+  const page = focusWorkspacePage(createWorkspaceTabs(), 'git');
   assert.equal(parentTabChildView(page.active, 'x', () => 'x', childTitleOf), null);
   assert.equal(parentTabChildView('chat', 'x', () => 'x', childTitleOf), null);
 });

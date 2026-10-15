@@ -35,6 +35,7 @@ import {
 const WORKSPACE_LABELS: Record<WorkspacePage, string> = {
   agents: "Agent",
   catalog: "拓展",
+  git: "Git",
   remote: "远程访问",
 };
 

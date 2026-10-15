@@ -712,7 +712,10 @@ export function Composer({
 
 /** 暂存文件区（拖文件夹改造，2026-12）：按 group 分组——文件夹成员渲染成
  *  **文件夹卡**（FolderCard，可折叠清单 + 截断说明），散文件（无 group）维持
- *  原先的文件卡形态。文件夹卡的整卡移除 = 移除该文件夹全部内部文件。 */
+ *  原先的文件卡形态。文件夹卡的整卡移除 = 移除该文件夹全部内部文件。
+ *  散文件卡对齐 DSH FileCard（2026-12）：240×64 定宽高、radius 16 细边框、
+ *  28px 图标框 + 名称 14px/500 + 扩展名·大小 meta 行；移除钮 = 卡内右上角
+ *  18px 深底圆钮、悬停显（与图片缩略图同款交互）。 */
 function FolderFileCards({ files, onRemoveFolder, onRemoveFile }: {
   files: PendingFile[];
   onRemoveFolder: (folder: string) => void;
@@ -726,12 +729,18 @@ function FolderFileCards({ files, onRemoveFolder, onRemoveFile }: {
       ))}
       {loose.map((f) => (
         <span key={f.id} className="att-file-card" title={f.name}>
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-            <path d="M14 2v6h6" />
-          </svg>
-          <span className="att-file-name">{clipOneLine(f.name, 24)}</span>
-          {f.size > 0 && <span className="att-file-size">{formatBytes(f.size)}</span>}
+          <span className="att-file-icon" aria-hidden>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+              <path d="M14 2v6h6" />
+            </svg>
+          </span>
+          <span className="att-file-body">
+            <span className="att-file-name">{clipOneLine(f.name, 24)}</span>
+            <span className="att-file-meta">
+              {f.size > 0 ? formatBytes(f.size) : "文件"}
+            </span>
+          </span>
           <button type="button" className="att-remove" title="移除该文件" aria-label={`移除文件 ${f.name}`} onClick={() => onRemoveFile(f.id)}>
             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true">
               <path d="M18 6 6 18M6 6l12 12" />
@@ -746,7 +755,11 @@ function FolderFileCards({ files, onRemoveFolder, onRemoveFile }: {
 /** 附件缩略图（预览区与队列条目共用）：base64 → Blob → objectURL，挂载时创建、
  *  卸载/数据变化时 revoke（不泄漏）。小尺寸（small）用于队列行。
  *  双形态：file 非空 = 路径形态的暂存条目（data 为空串）——直接对 File 建
- *  objectURL 预览（不读内容，与「路径优先不占内存」同一口径）。 */
+ *  objectURL 预览（不读内容，与「路径优先不占内存」同一口径）。
+ *  样式对齐 DSH ComposerAttachments（2026-12）：64px 方格 radius16 细边框 +
+ *  **悬停显**的深底白叉移除钮（卡内 4px；触屏/键盘焦点恒显）。
+ *  加载中（url 未就绪）显示 spinner 占位——对齐 DSH FileCard 的上传中态语义
+ *  （我们暂存是同步读入，spinner 覆盖 objectURL 建立的一瞬与 base64 大图解码）。 */
 export function AttachmentThumb({ mime, data, file, alt, title, onRemove, small = false }: {
   mime: string;
   data: string;
@@ -775,7 +788,7 @@ export function AttachmentThumb({ mime, data, file, alt, title, onRemove, small 
   }, [mime, data, file]);
   return (
     <span className={"att-thumb" + (small ? " att-thumb-small" : "")}>
-      {url && <img src={url} alt={alt} title={title} />}
+      {url ? <img src={url} alt={alt} title={title} /> : <span className="att-thumb-loading" aria-hidden><span className="att-thumb-spinner" /></span>}
       {onRemove && (
         <button type="button" className="att-remove" title="移除该图片" aria-label={alt ? `移除 ${alt}` : "移除该图片"} onClick={onRemove}>
           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true">

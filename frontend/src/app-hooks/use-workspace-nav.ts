@@ -1,7 +1,7 @@
 // 工作区导航域（审查 M5 前端重构：从 App.tsx 纯移动，语义零改动）。
 //
 // 页签状态 + **真实浏览器历史**（History API；2026-10-07 二轮重写）+ 页签/视图
-// 回调 + 两块伴随的 UI 态（settingsOpen / filter）。
+// 回调 + 三块伴随的 UI 态（settingsOpen / filter / gitProjectId）。
 //
 // 一轮的教训：硬件侧键（和 Alt+←/→）在 Chromium 里由**浏览器进程**处理——不派发
 // 给页面（页面收不到 button 3/4 的 mousedown），直接导航 WebContents 自己的历史栈
@@ -42,6 +42,8 @@ export function useWorkspaceNav({ source }: { source: AgentSource }) {
    *  空态项目标签三处共用。用户拍板：**恒有范围**（启动即「未分组」，点项目行
    *  切换且不可取消——没有「全部」视图）。 */
   const [filter, setFilter] = useState<string>(LOOSE);
+  /** Git 工作台当前聚焦的项目 id（侧栏「Git 管理」打开时选中）。 */
+  const [gitProjectId, setGitProjectId] = useState("");
 
   /** 最后写进浏览器历史的那个视图：popstate 是异步事实，用它区分「UI 导航要 push」
    *  与「历史条目已是它」（同页重复聚焦不该堆出重复条目）。 */
@@ -108,6 +110,11 @@ export function useWorkspaceNav({ source }: { source: AgentSource }) {
   }, [pushWorkspace]);
   const openAgents = useCallback(() => openWorkspace("agents"), [openWorkspace]);
   const openCatalog = useCallback(() => openWorkspace("catalog"), [openWorkspace]);
+  const openGit = useCallback(() => {
+    const projects = source.projects();
+    setGitProjectId((current) => current || (filter && projects.some((project) => project.id === filter) ? filter : projects[0]?.id ?? ""));
+    openWorkspace("git");
+  }, [filter, openWorkspace, source]);
   const openRemote = useCallback(() => openWorkspace("remote"), [openWorkspace]);
   const backToChat = useCallback(() => {
     pushWorkspace(focusChatTab(workspaceStateRef.current));
@@ -121,9 +128,9 @@ export function useWorkspaceNav({ source }: { source: AgentSource }) {
   const openSettings = useCallback(() => setSettingsOpen(true), []);
 
   return {
-    view, workspaceState, settingsOpen, setSettingsOpen, filter, setFilter,
+    view, workspaceState, settingsOpen, setSettingsOpen, filter, setFilter, gitProjectId, setGitProjectId,
     openWorkspace, closeWorkspace, openWorkspaceTab, openChildView,
-    openAgents, openCatalog, openRemote, backToChat, focusSession, openSettings,
+    openAgents, openCatalog, openGit, openRemote, backToChat, focusSession, openSettings,
   };
 }
 

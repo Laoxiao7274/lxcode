@@ -11,7 +11,7 @@
 //  - ImageGrid 带整区集合（含未展示的 +N）与起始下标——灯箱内左右切换
 //    覆盖该附件区的全部图片；
 //  - 溢出层（+N 展开态）点单张同样进灯箱（集合 = 全区图片）。
-import { memo, useState } from "react";
+import { memo, useState, type CSSProperties } from "react";
 import { attachmentURL, formatBytes, groupMetaFolders, type AttachmentMeta } from "../../../shared/attachments";
 import { lightboxImages, openImageLightbox } from "../../../shared/lightbox";
 import { FolderCard } from "./FolderCard";
@@ -28,16 +28,18 @@ export function AttachmentCards({ atts }: { atts?: AttachmentMeta[] }) {
   );
 }
 
-/** 用户消息的附件区（千问式独立区块，2026-12 重做）：**在气泡上方、气泡外**
- *  独立排布，与文字气泡视觉分离——不再是气泡内挤在文字前面的一段内容。
+/** 用户消息的附件区（DSH MessageImages 语义，2026-12 重做）：**在气泡上方、
+ *  气泡外**独立排布，与文字气泡视觉分离。
  *
- *  布局语义对齐千问网页版（从其打包 CSS/JS 读到的实际几何）：
- *  - 图片：`common-image-grid`——统一方格网格（repeat(auto-fill,固定边长)、
- *    gap 8px、12px 圆角、object-fit:cover），超出显示上限时末格盖 +N 溢出层
- *    （common-image-grid-overflow：半透明遮罩 + 计数，点开看全部）；
- *  - 文件：`file-card-list`——横排卡行（flex wrap、gap 8px），卡 = 图标 +
- *    文件名 + 大小（attachment-card 的 info/title/size 三段式）；
- *  - 附件区与正文分属两个容器（千问把附件渲染在气泡外、文字在气泡内）。
+ *  布局语义对齐 DSH（dsh-client-ui-attachment 的 MessageImage.module.css 实测）：
+ *  - 图片：`ImageGallery`——flex wrap、gap 10px；**多图 = 64px 方 tile**
+ *    （radius 16、细边框、object-fit:cover、cursor:zoom-in），**单图 = 长边
+ *    240px** 的自适应形态（宽高比钳 [0.25,4]，cover 裁切，不放大超原图）；
+ *    加载失败 = 可辨的占位块（DSH 的可点重试错误块语义——源文件已不在时
+ *    我们没有可重试的端点，保留「看得见的坏消息」占位）；
+ *  - 文件：横排卡行（flex wrap、gap 10px），卡对齐 DSH FileCard 的几何
+ *    （72px 高、radius 16、细边框、图标框 + 名称 + 大小 meta）；
+ *  - 附件区与正文分属两个容器（DSH 把图片渲染在消息气泡外的独立 gallery）。
  *
  *  功能与旧形态一致：点击灯箱/下载、加载失败降级、token URL 机制不动。
  *  atts 为空不渲染。 */
@@ -72,8 +74,9 @@ export function UserAttachmentSection({ atts }: { atts?: AttachmentMeta[] }) {
   );
 }
 
-/** 千问式图片网格：统一 96px 方格（千问 120px，在气泡流里偏大，96 保留同一
- *  几何：方格 + cover + 12px 圆角 + gap 8px），超过 4 张收进末格的 +N 溢出层。 */
+/** DSH ImageGallery 语义的图片区：单张 = 240px 自适应单图（长边 240、比例钳
+ *  [0.25,4]），多张 = 64px 方 tile 网格。超过 4 张收进末格的 +N 溢出层
+ *  （溢出层保留千问的「查看全部」交互——DSH 无此形态，是超出 DSH 的既有功能）。 */
 const USER_IMAGE_GRID_MAX = 4;
 
 function ImageGrid({ atts }: { atts: AttachmentMeta[] }) {
@@ -82,8 +85,15 @@ function ImageGrid({ atts }: { atts: AttachmentMeta[] }) {
   const hidden = atts.length - shown.length;
   // 灯箱集合 = 本附件区全部可放大图片（含未展示的 +N）；下标按 atts 对齐。
   const openAt = (i: number) => openImageLightbox(lightboxImages(atts), i);
+  if (atts.length === 1) {
+    return (
+      <div className="att-gallery" role="list" aria-label="图片附件 1 张">
+        <SingleImage att={atts[0]} onClick={() => openAt(0)} />
+      </div>
+    );
+  }
   return (
-    <div className="att-grid" role="list" aria-label={`图片附件 ${atts.length} 张`}>
+    <div className="att-gallery" role="list" aria-label={`图片附件 ${atts.length} 张`}>
       {shown.map((a, i) => (
         <GridImage key={`${a.path}-${i}`} att={a} onClick={() => openAt(i)} />
       ))}
@@ -97,9 +107,9 @@ function ImageGrid({ atts }: { atts: AttachmentMeta[] }) {
           +{hidden}
         </button>
       )}
-      {/* 溢出层（千问 common-image-grid-overflow 的「查看全部」）：全屏遮罩 +
-          全量网格。点遮罩空白处关闭；单张仍点开放大灯箱（stopPropagation
-          隔离两层的点击关闭语义——外层关全部，内层进灯箱）。 */}
+      {/* 溢出层（「查看全部」）：全屏遮罩 + 全量网格。点遮罩空白处关闭；单张仍
+          点开放大灯箱（stopPropagation 隔离两层的点击关闭语义——外层关全部，
+          内层进灯箱）。 */}
       {overflowOpen && (
         <div
           className="att-grid-full"
@@ -127,8 +137,11 @@ function FullGridImage({ att, onOpen }: { att: AttachmentMeta; onOpen: () => voi
   );
 }
 
-/** 单张附件卡。取件 URL 构造失败（引用形态不对/已带穿越）→ 不可点的死卡
- *  + 名字照显：宁可难看，不静默丢内容。 */
+/** 消息侧文件卡（share_file 工具行 / dispatch 成果区 / 用户消息文件行共用）：
+ *  形态对齐 DSH（FileCard 几何 + DeliveredFile 语义）——72px 高、radius 16、
+ *  细边框、图标框 + 名称 14px/500 + 大小说明 meta 行（12px tertiary）。
+ *  取件 URL 构造失败（引用形态不对/已带穿越）→ 不可点的死卡 + 名字照显：
+ *  宁可难看，不静默丢内容。 */
 const AttachmentCard = memo(function AttachmentCard({ att }: { att: AttachmentMeta }) {
   const url = attachmentURL(att.path);
   if (att.kind === "image") {
@@ -145,7 +158,7 @@ const AttachmentCard = memo(function AttachmentCard({ att }: { att: AttachmentMe
       title={att.caption || `${att.name}（点击下载）`}
     >
       <span className="att-file-icon" aria-hidden>
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
           <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z" />
           <path d="M13 2v7h7" />
         </svg>
@@ -158,26 +171,40 @@ const AttachmentCard = memo(function AttachmentCard({ att }: { att: AttachmentMe
   );
 });
 
+/** 坏图/坏引用占位（DSH error 块语义：看得见的坏消息，不静默消失）：图片 URL
+ *  不可用（源文件已不在——附件不随会话删除，但历史可能比磁盘活得久）时的
+ *  文件卡形态回落。 */
+function BrokenFileCard({ att, kind }: { att: AttachmentMeta; kind: "image" | "file" }) {
+  return (
+    <span className="att-file att-dead" title={att.name}>
+      <span className="att-file-icon" aria-hidden>
+        {kind === "image" ? (
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="3" y="3" width="18" height="18" rx="2" />
+            <circle cx="9" cy="9" r="2" />
+            <path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21" />
+          </svg>
+        ) : (
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z" />
+            <path d="M13 2v7h7" />
+          </svg>
+        )}
+      </span>
+      <span className="att-file-body">
+        <span className="att-name">{att.name || (kind === "image" ? "图片" : "文件")}</span>
+        <span className="att-sub">{kind === "image" ? "图片不可用（源文件已不在）" : "文件不可用（源文件已不在）"}</span>
+      </span>
+    </span>
+  );
+}
+
 /** 图片缩略图卡（气泡流 / 卡内形态）：加载失败降级成文件卡形态（引用指向
  *  已清理的文件时——附件不随会话删除，但历史可能比磁盘活得久），不渲染破图。 */
 function ImageCard({ att, url }: { att: AttachmentMeta; url: string | null }) {
   const [broken, setBroken] = useState(false);
   if (!url || broken) {
-    return (
-      <span className="att-file att-dead" title={att.name}>
-        <span className="att-file-icon" aria-hidden>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
-            <rect x="3" y="3" width="18" height="18" rx="2" />
-            <circle cx="9" cy="9" r="2" />
-            <path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21" />
-          </svg>
-        </span>
-        <span className="att-file-body">
-          <span className="att-name">{att.name || "图片"}</span>
-          <span className="att-sub">图片不可用（源文件已不在）</span>
-        </span>
-      </span>
-    );
+    return <BrokenFileCard att={att} kind="image" />;
   }
   return (
     <button
@@ -194,9 +221,55 @@ function ImageCard({ att, url }: { att: AttachmentMeta; url: string | null }) {
   );
 }
 
-/** 网格单元里的图（千问 common-image-grid-image 语义）：纯方格 cover，
- *  不带 caption 行——caption 进 title，点击进灯箱（onClick 由上层给——
- *  上层知道整区集合，灯箱才能左右切换；不带 onClick 时自足开单图灯箱）。
+/** 单图形态（DSH singleFit 语义）：长边 240px、宽高比钳 [0.25, 4]，cover 裁切
+ *  超出部分（裁切锚点对齐 DSH：极扁图留顶部、极窄图留左侧），不放大超原图。
+ *  天然尺寸未知（img 加载前）先按 240 方块占位，onLoad 后按 natural 修正。
+ *  加载失败降级成文件卡形态（引用指向已清理的文件时），不渲染破图。 */
+function SingleImage({ att, onClick }: { att: AttachmentMeta; onClick: () => void }) {
+  const [broken, setBroken] = useState(false);
+  const [natural, setNatural] = useState<{ w: number; h: number } | null>(null);
+  const url = attachmentURL(att.path);
+  if (!url || broken) {
+    return <BrokenFileCard att={att} kind="image" />;
+  }
+  // singleFit：比例钳 [0.25,4] → 长边 240 → 不超 natural（scale ≤ 1）
+  let style: CSSProperties | undefined;
+  if (natural) {
+    const ratio = Math.min(4, Math.max(0.25, natural.w / natural.h));
+    const box = ratio >= 1 ? { width: 240, height: 240 / ratio } : { width: 240 * ratio, height: 240 };
+    const scale = Math.min(1, natural.w / box.width, natural.h / box.height);
+    style = {
+      width: Math.max(1, Math.round(box.width * scale)),
+      height: Math.max(1, Math.round(box.height * scale)),
+      objectPosition: natural.w / natural.h < 0.25 ? "center top" : natural.w / natural.h > 4 ? "left center" : "center",
+    };
+  }
+  return (
+    <button
+      type="button"
+      className="att-single"
+      style={style}
+      onClick={onClick}
+      title={att.caption || `${att.name}（点击放大）`}
+    >
+      <img
+        src={url}
+        alt={att.name || "图片附件"}
+        loading="lazy"
+        decoding="async"
+        onError={() => setBroken(true)}
+        onLoad={(e) => {
+          const img = e.currentTarget;
+          if (img.naturalWidth > 0 && img.naturalHeight > 0) setNatural({ w: img.naturalWidth, h: img.naturalHeight });
+        }}
+      />
+    </button>
+  );
+}
+
+/** 网格单元里的图（DSH MessageImage tile 语义）：纯方格 cover，不带 caption
+ *  行——caption 进 title，点击进灯箱（onClick 由上层给——上层知道整区集合，
+ *  灯箱才能左右切换；不带 onClick 时自足开单图灯箱）。
  *  加载失败不渲染破图，但**留占位格**（坏图格可辨——静默消失会让网格悄悄
  *  缩水，用户不知道少了一张）。 */
 function GridImage({ att, onClick }: { att: AttachmentMeta; onClick?: () => void }) {

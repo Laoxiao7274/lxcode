@@ -182,8 +182,8 @@ test('⑥ 用户消息附件区与气泡分离（千问式独立区块）：气�
   assert.ok(attsIdx >= 0 && bubbleIdx >= 0, '独立附件区与气泡都渲染');
   assert.ok(attsIdx < bubbleIdx, '附件区在气泡上方');
   assert.ok(!/class="bubble"[^]*att-cards/.test(html), '附件卡不再进气泡');
-  // 图片 = 缩略图网格（att-grid + 统一方格单元）
-  assert.ok(html.includes('att-grid-item'), '图片进统一方格网格');
+  // 图片 = 单图形态（1 张 → DSH singleFit 240px 自适应，att-single）
+  assert.ok(html.includes('att-single'), '单图走 240px 自适应形态');
   assert.ok(html.includes('/attachments/s-1/ab12.png'), '缩略图用端点 URL');
   // 文件 = 文件卡行（user-att-files + att-file）
   assert.ok(html.includes('user-att-files'), '文件进独立卡行');
@@ -214,12 +214,14 @@ test('⑥ 图片网格 +N 溢出层：超过 4 张收末格计数，点开看全
   assert.ok(!few.includes('att-grid-more'), '不超限不出溢出格');
 });
 
-test('⑥ 纯图片只出网格、纯文件只出卡行（不渲染空段）', () => {
+test('⑥ 纯图片只出网格、纯文件只出卡行（不渲染空段）；单图走 240px 自适应形态', () => {
   const imgs = renderBlock(createElement(Block, {
     block: { kind: 'user', uid: 8, text: '图', attachments: [imgAtt()] },
     onConfirm: () => {}, onAnswer: () => {},
   }));
-  assert.ok(imgs.includes('att-grid-item'));
+  // 单张图 = DSH singleFit 形态（att-single），不出 64px tile
+  assert.ok(imgs.includes('att-single'), '单图走 240px 自适应形态');
+  assert.ok(!imgs.includes('att-grid-item'), '单图不出 tile');
   assert.ok(!imgs.includes('user-att-files'), '无文件不渲染文件行');
   const files = renderBlock(createElement(Block, {
     block: { kind: 'user', uid: 9, text: '文件', attachments: [fileAtt()] },
