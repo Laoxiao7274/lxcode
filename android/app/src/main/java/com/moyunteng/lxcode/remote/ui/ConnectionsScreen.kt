@@ -337,14 +337,20 @@ private fun RealBackendSection(state: MockAppState) {
         if (state.realOn) {
             LxTextField(
                 value = state.realAddr,
-                onValueChange = { state.realAddr = it },
+                onValueChange = {
+                    state.realAddr = it
+                    state.saveRealDraft()
+                },
                 placeholder = "127.0.0.1:7789",
             )
             // 访问令牌：后端 remote.json Enabled 时所有 /rpc 连接必须携带（query
             // token）——与地址同源的一对凭证；留空 = 连未开远程的后端。
             LxTextField(
                 value = state.realToken,
-                onValueChange = { state.realToken = it },
+                onValueChange = {
+                    state.realToken = it
+                    state.saveRealDraft()
+                },
                 placeholder = "访问令牌（后端未开远程访问时留空）",
             )
         }
@@ -504,9 +510,20 @@ fun ConnectionFormScreen(state: MockAppState, fromScan: Boolean) {
         state.route = Route.Connections
         return
     }
-    var addr by remember(draft) { mutableStateOf(draft.addr) }
-    var name by remember(draft) { mutableStateOf(draft.name) }
-    var token by remember(draft) { mutableStateOf(draft.token) }
+    var addr by remember(draft) {
+        // 新建表单预填上次输入（连接草稿持久化：没保存就重启也不丢——0.2.6 修复）；
+        // 编辑既有条目仍从条目本身开始，不掺草稿。
+        val d = if (draft.isNew) state.loadFormDraft() else null
+        mutableStateOf(draft.addr.ifEmpty { d?.addr ?: "" })
+    }
+    var name by remember(draft) {
+        val d = if (draft.isNew) state.loadFormDraft() else null
+        mutableStateOf(draft.name.ifEmpty { d?.name ?: "" })
+    }
+    var token by remember(draft) {
+        val d = if (draft.isNew) state.loadFormDraft() else null
+        mutableStateOf(draft.token.ifEmpty { d?.token ?: "" })
+    }
 
     val addrTrim = addr.trim()
     val addrOk = addrValid(addrTrim)
@@ -571,7 +588,10 @@ fun ConnectionFormScreen(state: MockAppState, fromScan: Boolean) {
             FormField(
                 label = "地址",
                 value = addr,
-                onValueChange = { addr = it },
+                onValueChange = {
+                    addr = it
+                    state.saveFormDraft(addr, token, name)
+                },
                 placeholder = "host:port（如 10.0.0.8:7789）或 https://api.example.com",
                 mono = true,
                 error = if (!addrOk) "地址格式应为 host:port（如 10.0.0.8:7789）或 https://host。" else null,
@@ -579,7 +599,10 @@ fun ConnectionFormScreen(state: MockAppState, fromScan: Boolean) {
             FormField(
                 label = "名称",
                 value = name,
-                onValueChange = { name = it },
+                onValueChange = {
+                    name = it
+                    state.saveFormDraft(addr, token, name)
+                },
                 placeholder = "显示名（留空自动取 ${if (addrTrim.isEmpty()) "地址主机名" else nameFromAddr(addrTrim)}）",
                 mono = false,
                 error = null,
@@ -587,7 +610,10 @@ fun ConnectionFormScreen(state: MockAppState, fromScan: Boolean) {
             FormField(
                 label = "Token",
                 value = token,
-                onValueChange = { token = it },
+                onValueChange = {
+                    token = it
+                    state.saveFormDraft(addr, token, name)
+                },
                 placeholder = "连接凭证（服务端生成）",
                 mono = true,
                 error = null,

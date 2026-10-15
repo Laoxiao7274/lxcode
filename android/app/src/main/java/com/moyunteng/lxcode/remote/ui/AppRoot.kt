@@ -162,12 +162,30 @@ class MockAppState(private val store: ConnStore? = null) {
      */
     var realOn by mutableStateOf(false)
 
-    /** 真实后端地址（连接页可改；默认本机 7789，测试时经 adb reverse 映射）。 */
-    var realAddr by mutableStateOf("127.0.0.1:7789")
+    /**
+     * 真实后端地址/Token：预填上次输入（ConnStore 草稿），没有草稿回本机默认。
+     * 「真实后端」开关的手填地址是引导态的输入口——不持久化的话每次杀进程
+     * 重启都回 127.0.0.1:7789，用户每次重填（0.2.6 修复的 bug）。
+     */
+    var realAddr by mutableStateOf(store?.loadDraft()?.addr?.takeIf { it.isNotEmpty() } ?: "127.0.0.1:7789")
 
     /** 真实后端访问令牌（后端 remote.json Enabled 时所有 /rpc 连接必须携带——
-     *  与地址同源的一对凭证；空 = 后端未开远程访问）。 */
-    var realToken by mutableStateOf("")
+     *  与地址同源的一对凭证；空 = 后端未开远程访问）。同样预填上次输入。 */
+    var realToken by mutableStateOf(store?.loadDraft()?.token ?: "")
+
+    /** 输入变化即落草稿（SharedPreferences.apply 异步；引导态没保存就重启也不丢输入）。
+     *  name 字段归手动添加表单用，这里原样保留。 */
+    fun saveRealDraft() {
+        store?.saveDraft(realAddr, realToken, store?.loadDraft()?.name ?: "")
+    }
+
+    /** 手动添加表单：预填上次输入（没有草稿返回 null → 各字段回空/默认）。 */
+    fun loadFormDraft(): ConnStore.Draft? = store?.loadDraft()
+
+    /** 手动添加表单：输入变化即落草稿（与「真实后端」开关共用一份地址/Token）。 */
+    fun saveFormDraft(addr: String, token: String, name: String) {
+        store?.saveDraft(addr, token, name)
+    }
 
     /** 真实后端状态机（net/ 包；开关打开时驱动连接与事件归约）。 */
     val real = com.moyunteng.lxcode.remote.net.RealBackend()
@@ -245,6 +263,8 @@ class MockAppState(private val store: ConnStore? = null) {
         realAddr = if (conn.local) LOCAL_ADDR else conn.addr
         realToken = conn.token
         realOn = true
+        // 上次连接的凭证也记进草稿：下次引导态/开关预填的就是这套地址
+        saveRealDraft()
         Log.i(TAG, "连接条目 ${conn.name} → $realAddr")
         real.connect(realAddr, realToken)
     }

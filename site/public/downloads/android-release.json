@@ -1,11 +1,17 @@
 {
-  "version": "0.2.6-test",
+  "version": "0.2.6",
   "versionCode": 6,
-  "name": "lxcode-0.2.5-android.apk",
-  "size": 11638571,
-  "sha256": "bebf581b5de4ca84a4f66573237357678085d4ddf19f729f1a6071183fcc6b7d",
-  "url": "downloads/lxcode-0.2.5-android.apk",
+  "name": "lxcode-0.2.6-android.apk",
+  "size": 11672049,
+  "sha256": "ab8b8a0d7cfa2056ae51ade8005df8b3753ae0448188f4675a7381efca4affbb",
+  "url": "downloads/lxcode-0.2.6-android.apk",
   "notes": [
-    "验证构建：应用内更新闭环测试"
+    "连接草稿持久化：未保存的地址/Token 重启不再丢失",
+    "应用内更新下载替换（不再跳浏览器）",
+    "会话消息 Markdown 渲染",
+    "生成中/处理中样式优化",
+    "子会话查看",
+    "会话自动贴底修复",
+    "安全加固"
   ]
 }

@@ -58,6 +58,32 @@ class ConnStore(context: Context) {
         prefs.edit().putString(KEY_CONNS, arr.toString()).apply()
     }
 
+    /**
+     * 连接草稿（引导态/表单里**尚未保存为连接条目**的输入：地址/Token/名称）。
+     *
+     * 与 [loadConns] 的已保存列表刻意分开：用户没点「保存」前重启不该丢输入——
+     * 「真实后端」开关的手填地址与手动添加表单都从这里预填上次输入。
+     * 仍属「连接设备信息」范畴（addr/token/name），同一个 prefs 文件，不落明文日志。
+     */
+    data class Draft(val addr: String, val token: String, val name: String)
+
+    /** 读连接草稿；没有存档返回 null（调用方回各自默认值）。 */
+    fun loadDraft(): Draft? {
+        val raw = prefs.getString(KEY_DRAFT, null) ?: return null
+        return try {
+            val o = JSONObject(raw)
+            Draft(o.optString("addr"), o.optString("token"), o.optString("name"))
+        } catch (e: Exception) {
+            Log.w(TAG, "连接草稿解析失败，当作没有草稿: $e")
+            null
+        }
+    }
+
+    fun saveDraft(addr: String, token: String, name: String) {
+        val o = JSONObject().put("addr", addr).put("token", token).put("name", name)
+        prefs.edit().putString(KEY_DRAFT, o.toString()).apply()
+    }
+
     /** 读当前连接 id；没有存档返回 null。 */
     fun loadActiveId(): String? = prefs.getString(KEY_ACTIVE, null)
 
@@ -69,5 +95,6 @@ class ConnStore(context: Context) {
         private const val TAG = "ConnStore"
         private const val KEY_CONNS = "conns"
         private const val KEY_ACTIVE = "activeConnId"
+        private const val KEY_DRAFT = "draft"
     }
 }
