@@ -593,6 +593,13 @@
 .pi textarea.piInput:disabled {
   opacity: 0.5;
 }
+/* 只读视图（子会话页）的输入框：锁定时不渲染左侧「+」按钮（Composer 的 !locked
+ *  分支），textarea 成为首元素——基态 padding-left:0 是给「+」让位的，锁住后
+ *  placeholder「只读视图——…」就贴死左缘、视觉上像被挤进 piBar 工具行
+ * （2026-12 用户截图报的问题）。补回与 piBar 一致的左内距，独立成行。 */
+.pi textarea.piInput:disabled {
+  padding-left: 16px;
+}
 .piBar {
   display: flex;
   align-items: center;
