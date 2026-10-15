@@ -4,14 +4,16 @@ import { playEnter } from "../../shared/anim";
 import { useDismissal } from "../../shared/popover";
 import { useUpdate } from "../../shared/update";
 import { busyCountsByWorkspace } from "../../shared/busy-summary";
+import { LOOSE } from "../../shared/project-entry";
 import type { AgentSource, ProjectMeta, SessionMeta } from "../../shared/types";
 import { AddProjectDialog } from "./AddProjectDialog";
 import { ProjectInstructionsDialog } from "./ProjectInstructionsDialog";
 import { SessionRow } from "./SessionRow";
 
 /** 「未分组」过滤目标（无归属会话的家——不依赖真实项目 id）。
- *  导出给 App 用：启动时的默认范围可能落在「未分组」（App 的自动选中）。 */
-export const LOOSE = "";
+ *  导出给 App 用：启动时的默认范围可能落在「未分组」（App 的自动选中）。
+ *  实体从 shared/project-entry.ts re-export（项目行交互语义的判定与常量同源）。 */
+export { LOOSE } from "../../shared/project-entry";
 
 /** 项目行的「运行中」角标：spinner +（多于一个时）×N。count<=0 不渲染。
  *  视觉沿用既有件（mset-spinner + 侧栏运行蓝 #3b82f6），不发明新视觉。 */
@@ -38,6 +40,7 @@ export const Sidebar = memo(function Sidebar({
   busyBySession,
   filter,
   setFilter,
+  onOpenProject,
   onOpenSettings,
   agentsActive,
   onOpenAgents,
@@ -57,12 +60,17 @@ export const Sidebar = memo(function Sidebar({
    *  没有「全部」视图，列表永远只属于一个具体范围）。 */
   filter: string;
   setFilter: (f: string) => void;
+  /** 新对话按钮用（归属当前范围）。 */
+  onOpenChat: () => void;
+  /** 点项目行/未分组行：过滤到该项目 + 切到该项目列表最上面的会话
+   *  （App 侧 openProject——判定与边界在 shared/project-entry.ts）。
+   *  list = 该项目（过滤后）的会话列表，顺序即侧栏展示顺序（顶=最新）。
+   *  稳定身份（App 侧 useCallback）：项目行击穿 Sidebar memo 的同款纪律。 */
+  onOpenProject: (workspace: string, list: readonly SessionMeta[]) => void;
   onOpenSettings: () => void;
   /** Agent 工作区标签当前激活（侧栏仅负责聚焦，不负责关闭标签）。 */
   agentsActive: boolean;
   onOpenAgents: () => void;
-  /** 新对话/恢复会话回到固定的「聊天」工作区标签。 */
-  onOpenChat: () => void;
   /** 拓展工作区标签当前激活（工具/技能/模板/MCP 管理）。 */
   catalogActive: boolean;
   onOpenCatalog: () => void;
@@ -271,6 +279,8 @@ export const Sidebar = memo(function Sidebar({
         const count = all.filter((s) => s.workspace === p.id).length;
         const active = filter === p.id;
         const runCount = busyCountByWorkspace[p.id] ?? 0;
+        // 该项目的会话列表（侧栏展示的那份——顶到底顺序即切换目标顺序）。
+        const projList = all.filter((s) => s.workspace === p.id);
         return (
           <div
             key={p.id}
@@ -280,8 +290,8 @@ export const Sidebar = memo(function Sidebar({
             tabIndex={0}
             aria-pressed={active}
             aria-label={runCount > 0 ? `${p.name}，${runCount} 个会话正在运行` : undefined}
-            onClick={() => { if (!active) setFilter(p.id); onOpenChat(); }}
-            onKeyDown={(e) => { if (e.key === "Enter") { if (!active) setFilter(p.id); onOpenChat(); } }}
+            onClick={() => { onOpenProject(p.id, projList); }}
+            onKeyDown={(e) => { if (e.key === "Enter") onOpenProject(p.id, projList); }}
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
@@ -313,8 +323,8 @@ export const Sidebar = memo(function Sidebar({
         tabIndex={0}
         aria-pressed={filter === LOOSE}
         aria-label={looseRun > 0 ? `未分组，${looseRun} 个会话正在运行` : undefined}
-        onClick={() => { if (filter !== LOOSE) setFilter(LOOSE); onOpenChat(); }}
-        onKeyDown={(e) => { if (e.key === "Enter") { if (filter !== LOOSE) setFilter(LOOSE); onOpenChat(); } }}
+        onClick={() => { onOpenProject(LOOSE, loose); }}
+        onKeyDown={(e) => { if (e.key === "Enter") onOpenProject(LOOSE, loose); }}
       >
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />

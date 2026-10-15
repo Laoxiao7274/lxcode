@@ -26,9 +26,10 @@ import {
   type WorkspaceView,
 } from "../shared/workspace-tabs";
 import { LOOSE } from "../components/sidebar";
-import type { AgentSource } from "../shared/types";
+import { openProject as openProjectEntry } from "../shared/project-entry";
+import type { AgentSource, SessionMeta } from "../shared/types";
 
-export function useWorkspaceNav({ source }: { source: AgentSource }) {
+export function useWorkspaceNav({ source, currentId }: { source: AgentSource; /** 当前会话 id（App 渲染值——openProject 的幂等判定用，App 侧保证传入的就是最新值）。 */ currentId: string }) {
   /** 工作区页签与会话标签分开；未关闭的工作区页面保持挂载以保留表单/视图状态。 */
   const [workspaceState, setWorkspaceState] = useState(createWorkspaceTabs);
   const workspaceStateRef = useRef(workspaceState);
@@ -124,13 +125,29 @@ export function useWorkspaceNav({ source }: { source: AgentSource }) {
     void source.resumeSession(id);
     backToChat();
   }, [source, backToChat]);
+  /** 点侧栏项目行/未分组行：过滤到该项目 + 当前标签页切到该项目最上面的会话。
+   *  判定与边界（无会话不切 / 已是第一条无操作 / 连点幂等）在 shared/project-entry.ts；
+   *  切换复用 focusSession 的既有链路（resumeSession + backToChat）——过滤已由
+   *  project-entry 的 openProject 完成，这里直接用 resume + backToChat 收口。
+   *  currentId 经参数进（App 侧每渲染喂最新值，本回调依赖它——身份随切会话变化
+   *  没关系：Sidebar 的 memo 击穿由 App 传入的 props 稳定性保证，见 App 注释）。 */
+  const openProject = useCallback((workspace: string, list: readonly SessionMeta[]) => {
+    openProjectEntry({
+      workspace,
+      list,
+      currentId,
+      setFilter,
+      resumeSession: (id) => { void source.resumeSession(id); },
+      onOpenChat: backToChat,
+    });
+  }, [source, currentId, setFilter, backToChat]);
   // 侧栏「设置」入口（内联箭头会击穿 Sidebar memo——useCallback 固定身份）。
   const openSettings = useCallback(() => setSettingsOpen(true), []);
 
   return {
     view, workspaceState, settingsOpen, setSettingsOpen, filter, setFilter, gitProjectId, setGitProjectId,
     openWorkspace, closeWorkspace, openWorkspaceTab, openChildView,
-    openAgents, openCatalog, openGit, openRemote, backToChat, focusSession, openSettings,
+    openAgents, openCatalog, openGit, openRemote, backToChat, focusSession, openProject, openSettings,
   };
 }
 

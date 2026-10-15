@@ -90,7 +90,9 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
    *  per-session 记账（drafts）之下它只服务「正看着的那个会话」——失败发生在别的
    *  会话时只落记账键（切回去由初始草稿还原），不装给挂载中的 Composer。 */
   /** 当前会话 id 的 ref：草稿记账的写入点要落在**正确的会话**上——失败回填可能
-   *  在用户已切到别的会话之后到达（ws 异步），按 currentId 闭包写会串会话。 */
+   *  在用户已切到别的会话之后到达（ws 异步），按 currentId 闭包写会串会话。
+   *  初值在下方 useAgent 之后同步（state.currentId）——openProject 的幂等判定
+   *  同样读这份 ref（见 currentIdRef 镜像注释）。 */
   const currentIdRef = useRef("");
   const onSendFailedBridgeRef = useRef<(sessionId: string, atts: SendAttachments) => void>(() => {});
   /** 右侧「已发送消息」大纲的开合：**纯 UI 状态**（不进会话历史、不落库、切会话不
@@ -114,11 +116,16 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
   // 而不是把 sessionStates 放进 useCallback 的依赖里。
   const sessionStatesRef = useRef(sessionStates);
   sessionStatesRef.current = sessionStates;
+  // currentId 的 ref 镜像（与上方草稿记账用的 currentIdRef 是同一个 ref）：
+  // openProject（点击项目切换会话）要读**最新**的当前会话——useCallback 依赖
+  // currentId 会把回调身份绑到每次切会话，击穿 Sidebar memo（同款问题）。
+  currentIdRef.current = state.currentId;
   // ---- 工作区导航（use-workspace-nav：页签状态 + 真实浏览器历史 + 页签/视图回调）----
+  const currentId = state.currentId;
   const {
     view, workspaceState, settingsOpen, setSettingsOpen, filter, setFilter, gitProjectId, setGitProjectId,
-    closeWorkspace, openWorkspaceTab, openChildView, openAgents, openCatalog, openGit, openRemote, backToChat, focusSession, openSettings,
-  } = useWorkspaceNav({ source });
+    closeWorkspace, openWorkspaceTab, openChildView, openAgents, openCatalog, openGit, openRemote, backToChat, focusSession, openProject, openSettings,
+  } = useWorkspaceNav({ source, currentId });
 
   // live 写失败桥（AgentsProvider 的乐观更新 WS 调用失败 → 一次性提示）
   useEffect(() => {
@@ -126,9 +133,6 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
     window.addEventListener("lx-operation-error", on);
     return () => window.removeEventListener("lx-operation-error", on);
   }, [reportError]);
-
-  const currentId = state.currentId;
-  currentIdRef.current = currentId;
   // busy 汇总的稳定性（2026-12 渲染性能 Top1）：sessionStates 每条 delta 都换新
   // 对象，直接以它为依赖会每帧产出新 busyBySession → 击穿 Sidebar/TabBar 的 memo。
   // 这里以「每会话 busy 位的签名」为依赖：busy 位没变的帧返回同一份对象。
@@ -422,6 +426,7 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
         busyBySession={busyBySession}
         filter={filter}
         setFilter={setFilter}
+        onOpenProject={openProject}
         onOpenSettings={openSettings}
         agentsActive={view === "agents"}
         onOpenAgents={openAgents}
