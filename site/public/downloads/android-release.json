@@ -1,11 +1,13 @@
 {
-  "version": "0.2.4",
-  "versionCode": 4,
-  "name": "lxcode-0.2.4-android.apk",
-  "size": 11638569,
-  "sha256": "0a8cdf22a723871d6b66a51b9dc3c9637fcdda6abb39f13fbf7ab59928cbddc8",
-  "url": "downloads/lxcode-0.2.4-android.apk",
+  "version": "0.2.5",
+  "versionCode": 5,
+  "name": "lxcode-0.2.5-android.apk",
+  "size": 11638571,
+  "sha256": "bebf581b5de4ca84a4f66573237357678085d4ddf19f729f1a6071183fcc6b7d",
+  "url": "downloads/lxcode-0.2.5-android.apk",
   "notes": [
-    "应用内更新检查：启动自动检查 + 连接页「检查更新」手动入口"
+    "连接引导态替代 mock 数据；会话打开自动贴底、历史整块呈现无打字机重播",
+    "多端实时同步 + 运行状态点；智能滚动跟随；息屏亮屏自动重连",
+    "effort 面板生效；安全加固"
   ]
 }
