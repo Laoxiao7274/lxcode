@@ -18,6 +18,19 @@
 //   2. `timeout /t 1 /nul`——/nul 不是 timeout 的合法参数，每轮报错且退化为
 //      忙循环。现在用 Start-Sleep -Milliseconds 500，且等待有上限（壳真退不
 //      出来就带着错误退出、放弃替换——宁可停在旧版也不能死等或删掉现役 asar）。
+//
+// 0.2.9→0.2.10 「立即重启没反应」事故（2026-10-15）：PS 版脚本的**首次真实
+// 运行**就失败——powershell.exe 静默空退、asar 没换、新壳没人拉起（壳退了、
+// 用户只能手动重开）。根因在 spawn 端（updater.ts）：Windows 上 detached:true
+// 映射 DETACHED_PROCESS，windowsHide:true 映射 CREATE_NO_WINDOW，二者是
+// MSDN 明文禁止同用的创建标志组合；cmd.exe 对此鲁棒（cmd 时代一直成功），
+// PowerShell 5.1 在该组合下立即退出且不执行 -File 脚本。修复后 spawn 保留
+// windowsHide、去掉 detached（非 detached 子进程在壳退出后照常存活——
+// sidecar 的 --stdin-watch 兜底正是依赖这一点）。脚本侧同步加三道防御：
+//   a. 每一步落 apply-update.log（与本脚本同目录）——失败可事后对账；
+//   b. 替换失败回滚：Move 成功而 Copy 失败时把 .old 移回原位再拉起旧壳；
+//   c. 兜底拉起：无论替换成败（超时 abort 除外——那时什么都没动），finally
+//      里 Start-Process 拉起壳。宁可旧版重启也不能让应用消失。
 
 /** 冷替换脚本的输入：全部绝对路径 + 壳镜像名（CIM Name 过滤的第一道筛）。 */
 export interface ApplyScriptInput {
@@ -43,7 +56,10 @@ export function psQuote(s: string): string {
   return `'${s.replace(/'/g, "''")}'`;
 }
 
-/** 生成冷替换 PowerShell 脚本文本。 */
+/** 生成冷替换 PowerShell 脚本文本。结构（0.2.10 修复后的三道防御，见文件头注）：
+ *  等壳退出（超时 abort，什么都不动）→ try { 改名旧 → 落新 → 删旧 } →
+ *  catch { 尽力回滚（.old 移回原位）→ throw } → finally { 拉起壳（除 abort 外必到）}。
+ *  每步写 apply-update.log（脚本同目录，update-pending 下）——失败可事后对账。 */
 export function buildApplyScript(input: ApplyScriptInput): string {
   const wait = Math.max(1, input.waitTimeoutSec ?? 90);
   const filter = `Name='${wqlQuote(input.imageName)}'`;
@@ -52,6 +68,10 @@ export function buildApplyScript(input: ApplyScriptInput): string {
     `$target = ${psQuote(input.asar)}`,
     `$pending = ${psQuote(input.pendingAsar)}`,
     `$exe = ${psQuote(input.shellExe)}`,
+    `$log = $PSScriptRoot + ${"'\\apply-update.log'"}`,
+    // 日志函数：Add-Content 失败不能反噬主流程（日志写不进去不影响替换）
+    `function Write-ULog([string]$msg) { try { Add-Content -LiteralPath $log -Value (('[' + (Get-Date -Format o) + '] ') + $msg) -ErrorAction SilentlyContinue } catch {} }`,
+    `Write-ULog 'apply-update.ps1 started'`,
     `$deadline = (Get-Date).AddSeconds(${wait})`,
     // 等壳退出：先按镜像名粗筛（WQL 服务端过滤，快），再按完整路径精确匹配——
     // Go 后端同名（lxcode.exe）但在 resources\bin 下，路径不同，不会被误等。
@@ -62,15 +82,31 @@ export function buildApplyScript(input: ApplyScriptInput): string {
     `  Start-Sleep -Milliseconds 500`,
     `}`,
     `if (Get-CimInstance Win32_Process -Filter "${filter}" | Where-Object { $_.ExecutablePath -and $_.ExecutablePath -ieq $exe }) {`,
+    `  Write-ULog 'WAIT-TIMEOUT: shell still running after deadline; update aborted, nothing touched'`,
     `  throw 'Lxcode shell did not exit in time; update aborted'`,
     `}`,
-    // 壳已退出：改名现役 → 落新 → 清旧 → 拉起新壳。任何一步失败都会因
-    // $ErrorActionPreference='Stop' 中止（旧 asar 已改名时新壳拉不起旧版——
-    // 所以 Move 放在等待确认之后，且 .old 保留到 Copy 成功才删）。
-    `Move-Item -Force -LiteralPath $target -Destination ($target + '.old')`,
-    `Copy-Item -Force -LiteralPath $pending -Destination $target`,
-    `Remove-Item -Force -LiteralPath ($target + '.old') -ErrorAction SilentlyContinue`,
-    `Start-Process -FilePath $exe`,
+    `Write-ULog 'shell exited, applying asar swap'`,
+    // 兜底拉起放 finally：替换成败都不让应用消失（abort 路径 throw 在 try 外，
+    // 不会进 finally，也无须拉起——壳还活着）。替换失败时先回滚再拉起旧版。
+    `try {`,
+    `  Move-Item -Force -LiteralPath $target -Destination ($target + '.old')`,
+    `  Write-ULog 'moved old asar to .old'`,
+    `  Copy-Item -Force -LiteralPath $pending -Destination $target`,
+    `  Write-ULog 'copied new asar into place'`,
+    `  Remove-Item -Force -LiteralPath ($target + '.old') -ErrorAction SilentlyContinue`,
+    `  Write-ULog 'cleanup done; relaunching shell'`,
+    `} catch {`,
+    `  Write-ULog ('SWAP FAILED: ' + $_.Exception.Message)`,
+    // Move 成功而 Copy 失败：把 .old 移回原位，保证拉起的是完整旧版
+    `  if ((Test-Path -LiteralPath ($target + '.old')) -and -not (Test-Path -LiteralPath $target)) {`,
+    `    Move-Item -Force -LiteralPath ($target + '.old') -Destination $target -ErrorAction SilentlyContinue`,
+    `    Write-ULog 'rolled back: old asar restored'`,
+    `  }`,
+    `  throw`,
+    `} finally {`,
+    `  if (Test-Path -LiteralPath $exe) { Start-Process -FilePath $exe; Write-ULog 'relaunch attempted' }`,
+    `  else { Write-ULog 'relaunch skipped: shell exe not found' }`,
+    `}`,
     ``,
   ].join("\r\n");
 }

@@ -143,7 +143,10 @@ export function updateHandlers(): void {
   ipcMain.handle("update:download", () => downloadAndStage());
   ipcMain.handle("update:apply", () => applyUpdate());
   ipcMain.handle("update:restart", () => {
-    // 冷替换脚本在壳退出后完成换 asar 并重新拉起
+    // 冷替换脚本在壳退出后完成换 asar 并重新拉起。落一条日志标记重启意图——
+    // 0.2.9→0.2.10 事故排查时靠「应用完成」到下一条日志之间的空白对账，这条
+    // 让下次一眼能看出 quit 是否发生、之后脚本是否接住了。
+    ulog("用户请求重启（冷替换脚本接管：等壳退出 → 换 asar → 拉起新壳）");
     app.quit();
   });
 }
@@ -307,8 +310,8 @@ async function applyUpdate(): Promise<{ ok: boolean; needsRestart: boolean }> {
   //    注意 newAsar 的判定与拷贝必须走 originalFs：Electron 补丁版 fs 对 *.asar 路径
   //    会当归档解析（existsSync 语义漂移、copyFileSync 直接 ENOENT）。
   //    脚本用 PowerShell 而不是 cmd（黑窗根因修复，详见 update-script.ts 头注）；
-  //    spawn 端 windowsHide + detached——PS 自身无控制台，cmdlet 又零子进程，
-  //    全链路无任何可见窗口。
+  //    spawn 端 windowsHide（无 detached——见下方 spawn 处的事故注释）——
+  //    PS 自身无控制台，cmdlet 又零子进程，全链路无任何可见窗口。
   const newAsar = join(stagedDir, "resources", "app.asar");
   if (loadOriginalFs().existsSync(newAsar) && app.isPackaged) {
     const pending = join(app.getPath("userData"), "update-pending");
@@ -336,12 +339,25 @@ async function applyUpdate(): Promise<{ ok: boolean; needsRestart: boolean }> {
       throw humanFsError(e, "冷替换脚本写入失败");
     }
     // -NonInteractive：脚本绝不等输入（卡住就超时退出，不给用户一个能敲 Ctrl+C
-    // 的交互控制台）；-ExecutionPolicy Bypass：单文件脚本不受系统策略拦。
-    spawn("powershell", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", scriptPath], {
-      detached: true,
+    //   的交互控制台）；-ExecutionPolicy Bypass：单文件脚本不受系统策略拦。
+    // 0.2.10 修复（detached 事故，详见 update-script.ts 头注）：Windows 上
+    // detached:true 与 windowsHide:true 同时给会映射出 MSDN 禁止同用的创建
+    // 标志（DETACHED_PROCESS + CREATE_NO_WINDOW）——cmd.exe 鲁棒，PowerShell
+    // 5.1 在此组合下立即静默退出且 -File 脚本零执行（0.2.9→0.2.10 重启失灵根因）。
+    // 去掉 detached：非 detached 子进程在壳退出后照常存活（sidecar 的
+    // --stdin-watch 兜底正是依赖这一点），windowsHide 独自负责不弹窗。
+    // error 监听必须有：spawn 失败（如 powershell 被裁剪/PATH 异常）是异步
+    // error 事件，无人监听会变成主进程 uncaughtException。
+    const child = spawn("powershell", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", scriptPath], {
       stdio: "ignore",
       windowsHide: true, // PS 自身的控制台不可见（子命令全是 cmdlet，无孙进程）
-    }).unref();
+    });
+    child.on("error", (e) => {
+      // 脚本没跑起来 = 无人换 asar 也无人拉起新壳——但壳还没退出（本 handler
+      // 在 app.quit() 之前执行），此时如实记日志即可，不阻断重启流程。
+      ulog("冷替换脚本启动失败（asar 将不会被替换，本次重启维持旧版）", `code=${(e as NodeJS.ErrnoException).code ?? ""} ${e.message}`);
+    });
+    child.unref();
     ulog("asar 冷替换已排程", "壳退出后由 apply-update.ps1 完成");
   }
 
