@@ -1,16 +1,15 @@
 {
-  "version": "0.2.7",
-  "versionCode": 7,
-  "name": "lxcode-0.2.7-android.apk",
-  "size": 11704808,
-  "sha256": "8abbef5d0f4bf6353c3ffa56fd5645fd31793d14187e92ae127e2d9db5d24e42",
-  "url": "downloads/lxcode-0.2.7-android.apk",
+  "version": "0.2.8",
+  "versionCode": 8,
+  "name": "lxcode-0.2.8-android.apk",
+  "size": 11721198,
+  "sha256": "03e02cbe8af4cdff11061de400847bbcd26c54cec1c5071fdd1823df8d9a9318",
+  "url": "downloads/lxcode-0.2.8-android.apk",
   "notes": [
-    "输入框不再遮挡消息",
-    "项目运行中指示",
-    "Markdown 渲染对齐桌面端（删除线/有序列表/嵌套列表/分割线）",
-    "图片与文件上传发送",
-    "全屏灯箱查看图片",
-    "任务清单三段计数 + 进度环"
+    "应用内更新可靠性加固：下载失败给出人话提示并支持重试",
+    "进程被杀后重新进入应用可找回下载状态继续安装",
+    "安装器拉起失败时提供手动安装指引",
+    "防止重复下载：同一版本已在下载中/已就绪时不重复发起",
+    "安装完成后自动清理旧版本安装包"
   ]
 }
