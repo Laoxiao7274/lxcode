@@ -208,6 +208,13 @@ class MockAppState(private val store: ConnStore? = null) {
 
     /** 下载器状态投影（ApkDownloader.onState 回调 → Compose 可观察）。 */
     var downloadState by mutableStateOf<com.moyunteng.lxcode.remote.update.DownloadState?>(null)
+
+    /**
+     * 拉起安装器失败的人话提示（install() 返回 false 时置上，横幅副行展示）。
+     * 国产 ROM（MIUI/ColorOS 等）无包安装器或「未知来源」被拦时 ActivityNotFoundException
+     * ——不展示就是「点了安装没反应」的静默失败（对齐桌面更新脚本教训）。
+     */
+    var installHint by mutableStateOf<String?>(null)
     /** 顶栏连接药丸的在线位：跟 WS 实际连接态（未连接 = 灰点——不再有 mock 的
      *  「模拟在线」在线位）。 */
     fun pillOnline(): Boolean = realOn && real.connected
@@ -334,6 +341,13 @@ fun AppRoot(pairUri: String? = null, onPairUriConsumed: () -> Unit = {}) {
         state.updater.onState = { s -> state.downloadState = s }
     }
 
+    // 冷启动找回：DownloadManager 的任务是系统级持久的——进程被杀/后台回收后
+    // 下载仍在跑。启动时按持久化的 download id 查回状态，横幅回到进度/就绪/失败，
+    // 而不是静默回「空闲」（对齐桌面「更新脚本静默失败无人拉起」的教训）。
+    LaunchedEffect(Unit) {
+        state.updater.resumePendingDownload()
+    }
+
     // 应用内下载流程：Ready（下载完成）→ IO 线程 sha256 校验 → 通过自动拉起安装器
     LaunchedEffect(state.downloadState) {
         val ds = state.downloadState ?: return@LaunchedEffect
@@ -344,7 +358,16 @@ fun AppRoot(pairUri: String? = null, onPairUriConsumed: () -> Unit = {}) {
             }
             state.downloadState = verified
             if (verified is com.moyunteng.lxcode.remote.update.DownloadState.Ready) {
-                state.updater.install(verified)
+                // 拉起失败（国产 ROM 无安装器/未知来源被拦）→ 人话提示走横幅，
+                // 不静默：install() 返回 false 就是失败，必须让用户看见。
+                if (!state.updater.install(verified)) {
+                    state.installHint =
+                        "无法自动打开系统安装器（可能被系统拦截）。" +
+                            "请到「文件管理 → Download/lxcode/」手动安装 " +
+                            "（文件：${verified.file.name}）"
+                } else {
+                    state.installHint = null
+                }
             }
         }
     }

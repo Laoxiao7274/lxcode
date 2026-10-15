@@ -164,24 +164,39 @@ fun SessionsScreen(state: MockAppState) {
                     UpdateBanner(
                         release = release,
                         download = state.downloadState,
+                        installHint = state.installHint,
                         onDismiss = {
                             state.updateAvailable = null
                             state.downloadState = null
+                            state.installHint = null
                             state.updater.cancel()
                         },
                         onDownload = {
+                            state.installHint = null
                             state.updater.enqueue(release)
                         },
                         onRetry = {
                             state.downloadState = null
+                            state.installHint = null
                             state.updater.enqueue(release)
                         },
                         onInstall = {
                             (state.downloadState as? com.moyunteng.lxcode.remote.update.DownloadState.Ready)
-                                ?.let { state.updater.install(it) }
+                                ?.let {
+                                    if (!state.updater.install(it)) {
+                                        // 手动兜底路径的同样失败也要可见（横幅提示路径 + 文件名）
+                                        state.installHint =
+                                            "无法自动打开系统安装器（可能被系统拦截）。" +
+                                                "请到「文件管理 → Download/lxcode/」手动安装 " +
+                                                "（文件：${it.file.name}）"
+                                    } else {
+                                        state.installHint = null
+                                    }
+                                }
                         },
                         onCancel = {
                             state.downloadState = null
+                            state.installHint = null
                             state.updater.cancel()
                         },
                         modifier = Modifier.padding(horizontal = Lx.space.s4, vertical = Lx.space.s6),
@@ -562,11 +577,13 @@ private fun SessionOpsRow(label: String, icon: ImageVector, onClick: () -> Unit)
  *
  * 四态：空闲（「下载并安装」）/ Running（进度条 + 已下载/总量）/ Ready（「安装」，
  * sha256 校验通过后由 AppRoot 自动拉起安装器——这行是手动兜底）/ Failed（人话原因 + 重试）。
+ * [installHint] 非空 = 自动/手动拉起安装器都失败了——展示手动安装指引（路径 + 文件名）。
  */
 @Composable
 private fun UpdateBanner(
     release: com.moyunteng.lxcode.remote.update.ApkRelease,
     download: com.moyunteng.lxcode.remote.update.DownloadState?,
+    installHint: String?,
     onDismiss: () -> Unit,
     onDownload: () -> Unit,
     onRetry: () -> Unit,
@@ -591,24 +608,28 @@ private fun UpdateBanner(
                 color = Lx.colors.Fg,
             )
             val sizeText = com.moyunteng.lxcode.remote.update.formatBytes(release.size)
-            val sub = when (val d = download) {
-                is com.moyunteng.lxcode.remote.update.DownloadState.Running -> {
-                    val pct = if (d.total > 0) " · ${(d.downloaded * 100 / d.total)}%" else ""
-                    "$sizeText · 下载中 $pct"
+            val sub = when {
+                // 安装器拉起失败的手动指引优先展示（Ready 态但自动打开被系统拦了）
+                installHint != null -> installHint
+                else -> when (val d = download) {
+                    is com.moyunteng.lxcode.remote.update.DownloadState.Running -> {
+                        val pct = if (d.total > 0) " · ${(d.downloaded * 100 / d.total)}%" else ""
+                        "$sizeText · 下载中 $pct"
+                    }
+                    is com.moyunteng.lxcode.remote.update.DownloadState.Ready -> "$sizeText · 校验通过，可以安装"
+                    is com.moyunteng.lxcode.remote.update.DownloadState.Failed -> d.message
+                    null -> "$sizeText · ${release.notes.firstOrNull() ?: "新的 APK 已发布"}"
                 }
-                is com.moyunteng.lxcode.remote.update.DownloadState.Ready -> "$sizeText · 校验通过，可以安装"
-                is com.moyunteng.lxcode.remote.update.DownloadState.Failed -> d.message
-                null -> "$sizeText · ${release.notes.firstOrNull() ?: "新的 APK 已发布"}"
             }
             Text(
                 text = sub,
                 style = Lx.type.ListSubtitle,
-                color = if (download is com.moyunteng.lxcode.remote.update.DownloadState.Failed) {
+                color = if (download is com.moyunteng.lxcode.remote.update.DownloadState.Failed || installHint != null) {
                     Lx.colors.Danger
                 } else {
                     Lx.colors.FgFaint
                 },
-                maxLines = 2,
+                maxLines = 3,
                 overflow = TextOverflow.Ellipsis,
             )
             // 进度条（Running 态；total 未知时不画——不编进度）
