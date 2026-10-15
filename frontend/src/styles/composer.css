@@ -436,7 +436,12 @@ html[data-theme="dark"] .att-remove:hover {
 /* 「+」按钮（千问 AddButton subtle 对齐 2026-12）：输入区左侧的正圆图标钮——
  * 千问实测 `size-8 rounded-full border-0 text-primary hover:bg-option`：
  * 32px 正圆、无边框、透明底、fg 色图标（16px）、hover 浅灰底（--hover-veil）。
- * flex:none。贴底对齐（.pi-row 的 align-items:flex-end）+ 微调。菜单向上。 */
+ * flex:none。贴底对齐（.pi-row 的 align-items:flex-end）。菜单向上。
+ * margin-bottom 是**首行对齐补偿**（2026-12 用户截图「+ 偏上」）：单行态
+ * textarea 被 min-height:44px 顶住（自增高算出的 scrollHeight≈41 < 44），
+ * 首行文字中心距盒顶 = padding-top 14 + 行高 21/2 = 24.5px；按钮中心要落在
+ * 同一点，则距盒底 = 44 − 24.5 − 32/2 = 3.5px。多行长高后按钮仍贴底跟随
+ * （距底 3.5px ≈ 最后一行中心 16.5px，视觉自然）。 */
 .att-add-wrap {
   position: relative;
 }
@@ -447,7 +452,7 @@ html[data-theme="dark"] .att-remove:hover {
   justify-content: center;
   width: 32px;
   height: 32px;
-  margin: 0 2px 8px 8px;
+  margin: 0 2px 3.5px 8px;
   border: none;
   border-radius: 999px;
   background: transparent;

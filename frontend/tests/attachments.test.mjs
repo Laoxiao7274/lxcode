@@ -311,6 +311,46 @@ test('⑦c CSS：暂存区 DSH 形态的源码钉子——64px 方格 radius16 �
   assert.ok(preview?.includes('padding: 12px 16px 0'), '附件区卡内内距（与 textarea 左右对齐）: ' + (preview ?? ''));
 });
 
+// ---------- ⑦d 「+」按钮与首行文字的对齐钉子（2026-12 用户截图「+ 偏上」） ----------
+// 偏移根因（盒模型，单行态）：.pi-row 是 flex-end（贴底对齐盒底，不是文字基线）；
+// textarea min-height:44px 顶住（自增高 scrollHeight≈41 < 44），首行文字中心
+// 距盒顶 = padding-top 14 + 21/2 = 24.5px（font 14 × line-height 1.5 = 21）；
+// 按钮中心距盒底 = margin-bottom + 32/2。对齐 ⇔ 44 − (mb + 16) = 24.5 ⇔ mb = 3.5。
+// 这里按同一算式从 CSS 里解析出各值做断言——将来改 padding/行高/按钮尺寸时，
+// 断言会用新值重算并把漏改的 margin-bottom 指出来。
+test('⑦d CSS：单行态「+」按钮中心与 textarea 首行文字中心重合（margin-bottom 补偿）', () => {
+  const css = readFileSync('src/styles/composer.css', 'utf8');
+  const rule = (selector) => {
+    const at = css.indexOf(selector);
+    if (at < 0) return null;
+    const start = css.indexOf('{', at);
+    return css.slice(start + 1, css.indexOf('}', start));
+  };
+  const num = (body, prop) => {
+    const m = body?.match(new RegExp(prop + ':\\s*([\\d.]+)px'));
+    return m ? parseFloat(m[1]) : null;
+  };
+  const ta = rule('.pi textarea.piInput {');
+  const add = rule('.att-add {');
+  assert.ok(ta && add, '两条规则都在 composer.css');
+  const pt = num(ta, 'padding-top') ?? num(ta, 'padding'); // padding 简写取第一个值（上）
+  const minH = num(ta, 'min-height');
+  const fs_ = num(ta, 'font-size');
+  const btn = num(add, 'height');
+  const mb = num(add, 'margin-bottom') ?? (() => { // margin 简写取第三个值（下；上值可能是无单位的 0）
+    const m = add?.match(/margin:\s*([\d.]+)(?:px)?\s+[\d.]+px\s+([\d.]+)px/);
+    return m ? parseFloat(m[2]) : null;
+  })();
+  assert.ok([pt, minH, fs_, btn, mb].every((v) => v !== null), `盒模型各值可解析: pt=${pt} minH=${minH} fs=${fs_} btn=${btn} mb=${mb}`);
+  const rowH = Math.max(minH, fs_ * 1.5 + pt); // 单行态：自增高 scrollHeight = 行高 + 上 padding（无下 padding 参与）
+  const lineCenter = pt + (fs_ * 1.5) / 2; // 首行文字中心距盒顶
+  const btnCenter = rowH - mb - btn / 2; // 贴底对齐下按钮中心距盒顶
+  assert.ok(
+    Math.abs(btnCenter - lineCenter) <= 0.5,
+    `单行态按钮中心(${btnCenter}px) 应≈首行文字中心(${lineCenter}px)——margin-bottom 需 = ${rowH - lineCenter - btn / 2}px`,
+  );
+});
+
 // ---------- 测试脚手架 ----------
 
 function makeController() {
