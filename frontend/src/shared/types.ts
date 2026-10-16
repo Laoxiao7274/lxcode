@@ -81,17 +81,10 @@ export interface RewindOutcome {
   removed: number;
 }
 
-/** 归档的结果（session.archive 的应答）。
- *
- *  归档是主操作——失败会以请求错误抛出，不走这里。这里只回答「顺带释放工作区
- *  的结果」：归档已经成功，释放失败（脏改动 / 忙）只把原因带回，绝不回滚归档。 */
+/** 归档的结果（session.archive 的应答）。 */
 export interface ArchiveOutcome {
   /** 是否已归档（恒为 true——请求成功即已归档）。 */
   archived: boolean;
-  /** 是否至少成功释放了一个工作区目录且没有失败。 */
-  releasedWorktree: boolean;
-  /** 释放失败的原因（「；」拼接，空串 = 无失败）。 */
-  releaseError: string;
 }
 
 /** 后台任务的运行状态（对齐 protocol/jobs.Status）。 */
@@ -507,8 +500,6 @@ export interface AgentSource {
   rewind(sessionId: string, seq: number): Promise<RewindOutcome>;
   /** 新会话（可选归属项目 id——会话挂在项目分组下）。 */
   newSession(workspace?: string): Promise<string>;
-  /** 释放干净项目会话的 worktree 目录，保留分支与会话数据。 */
-  releaseWorktree(id: string): Promise<void>;
   /** 起一个后台合并进程（**遗留**：合并流程已退役——后端如实回说明并拒绝）。
    *  保留签名便于将来恢复隔离模式。 */
   mergeRequest(sessionId: string, targetBranch?: string): Promise<string>;
@@ -516,11 +507,10 @@ export interface AgentSource {
   resumeSession(id: string): Promise<void>;
   /** 重命名会话。 */
   renameSession(id: string, title: string): void;
-  /** 归档会话（当前会话被归档时自动切到新会话）。
-   *  releaseWorktree 为真时，归档成功后顺带释放该会话（及其子会话）的工作区目录：
-   *  只移除干净的检出目录，保留会话记录与 Git 分支——释放失败不影响归档，
-   *  原因由应答的 releaseError 带回（见 ArchiveOutcome）。 */
-  archiveSession(id: string, releaseWorktree?: boolean): Promise<ArchiveOutcome>;
+  /** 归档会话（当前会话被归档时自动切到新会话）。原先的 releaseWorktree 参数与
+   *  ArchiveOutcome 的 releasedWorktree/releaseError 已随直连模式移除
+   *  （2026-12 用户拍板）：归档不再顺带释放 worktree 目录。 */
+  archiveSession(id: string): Promise<ArchiveOutcome>;
   /** 从归档恢复。 */
   unarchiveSession(id: string): void;
   /** 读**子会话**的历史（子 Agent = 独立会话，AGENTS.md §2.3：它自己的 messages

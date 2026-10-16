@@ -126,24 +126,8 @@ func TestGitOverviewDirtyAndSessionBranch(t *testing.T) {
 		t.Fatalf("最新提交应是直连会话的检查点: %+v", overview.Commits[0])
 	}
 
-	// 释放遗留工作区后：分支仍在、工作树消失。
-	resp := client.call(protocol.MethodSessionWorktreeRelease, protocol.SessionWorktreeReleaseParams{ID: legacyID})
-	if resp == nil || resp.Error != nil {
-		t.Fatalf("释放工作区失败: %+v", resp)
-	}
-	overview = callGitOverview(t, client, "")
-	sessionBranch = nil
-	for i := range overview.Branches {
-		if overview.Branches[i].SessionID == legacyID {
-			sessionBranch = &overview.Branches[i]
-		}
-	}
-	if sessionBranch == nil {
-		t.Fatal("释放后分支应仍然列出")
-	}
-	if sessionBranch.HasWorktree || sessionBranch.WorktreePath != "" {
-		t.Fatalf("释放后不应再有工作树: %+v", sessionBranch)
-	}
+	// 释放入口（session.worktree.release）已随直连模式移除（2026-12 用户拍板）：
+	// 遗留工作树目录与分支一律保留，git.overview 照常如实展示。
 	_ = mgr
 }
 

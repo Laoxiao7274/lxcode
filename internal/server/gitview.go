@@ -2,7 +2,8 @@
 //
 // 纪律（对齐 workspace.go 的三条）：**全部只读**——只走 project 包带 ctx+超时的
 // 只读封装，绝不 commit / checkout / reset 主检出；页面上的提交由会话内检查点与
-// workspace_sync 负责，唯一的写入口是既有 session.worktree.release。
+// workspace_sync 负责。原先唯一的写入口 session.worktree.release 已随直连模式
+// 移除（2026-12 用户拍板）——本页现在是纯只读。
 package server
 
 import (

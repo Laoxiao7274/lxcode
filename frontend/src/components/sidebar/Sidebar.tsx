@@ -377,8 +377,7 @@ export const Sidebar = memo(function Sidebar({
           onCloseMenu={() => setMenuFor(null)}
           onStartRename={setRenaming}
           onRename={commitRename}
-          onArchive={(id, release) => source.archiveSession(id, release)}
-          onReleaseWorktree={(id) => source.releaseWorktree(id)}
+          onArchive={(id) => source.archiveSession(id)}
           onResume={(id) => {
             setFilter(source.sessions().find((session) => session.id === id)?.workspace ?? LOOSE);
             void source.resumeSession(id);

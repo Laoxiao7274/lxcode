@@ -161,11 +161,7 @@ const FIELD_CHECKS = {
   chatRewindResult: [['removed', ['=', 0]]],
   // 会话管理。
   sessionMeta: [['updated_at', 'string'], ['workspace', 'string'], ['archived', ['=', true]]],
-  sessionArchiveResult: [
-    ['archived', ['=', true]],
-    ['released_worktree', ['=', false]],
-    ['release_error', 'string'],
-  ],
+  sessionArchiveResult: [['archived', ['=', true]]],
   // 目录域。
   agentEntry: [['tools', 'array'], ['is_main', ['=', true]], ['delegates', 'array']],
   mcServerEntry: [['status', ['=', 'connected']], ['tool_count', 'number'], ['stderr', 'string'], ['args', 'array']],

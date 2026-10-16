@@ -239,10 +239,6 @@ export class DemoAgent implements AgentSource, JobAdminSource {
     return id;
   }
 
-  async releaseWorktree(_id: string): Promise<void> {
-    // 演示源没有真实文件系统；只提供与 live 模式一致的能力接口。
-  }
-
   /** git.overview（演示）：简化假数据——保持 Git 管理页在无后端时全量可看，
    *  不假装是真实仓库状态（路径/分支名用演示项目的占位值）。 */
   async gitOverview(projectId?: string): Promise<GitOverview> {
@@ -294,12 +290,11 @@ export class DemoAgent implements AgentSource, JobAdminSource {
     this.emit({ type: "sessionsChanged" });
   }
 
-  archiveSession(id: string, _releaseWorktree = false): Promise<ArchiveOutcome> {
+  archiveSession(id: string): Promise<ArchiveOutcome> {
     this.sessions_ = this.sessions_.map((s) => (s.id === id ? { ...s, archived: true } : s));
     if (this.currentSession === id) this.newSession();
     this.emit({ type: "sessionsChanged" });
-    // 演示源没有真实文件系统：只回答能力接口（归档成功、没有可释放的工作区）。
-    return Promise.resolve({ archived: true, releasedWorktree: false, releaseError: "" });
+    return Promise.resolve({ archived: true });
   }
 
   unarchiveSession(id: string): void {

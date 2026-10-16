@@ -110,32 +110,19 @@ withPreview(async (preview) => {
   assert.equal(sidebarScoped.active, 1, "sidebar: 点项目行后应恰好一个范围选中");
   assert.ok(!sidebarScoped.looseActive, "sidebar: 选中项目后「未分组」不再选中");
 
-  const releaseMenu = await win.webContents.executeJavaScript(`(() => {
+  // 「释放工作区」菜单与确认弹窗已随直连模式移除（2026-12 用户拍板）——
+  // 会话菜单只剩重命名/归档（归档不再带释放复选框）。
+  const sessionMenu = await win.webContents.executeJavaScript(`(() => {
     document.querySelector(".session-item .session-more")?.click();
     return new Promise((resolve) => setTimeout(() => {
-      const menu = document.querySelector(".session-menu");
-      const action = [...(menu?.querySelectorAll('[role="menuitem"]') ?? [])].find((item) => item.textContent.includes("释放工作区"));
-      resolve({ menu: !!menu, action: !!action, label: action?.textContent.trim() ?? "" });
+      const items = [...document.querySelectorAll('.session-menu [role="menuitem"]')].map((item) => item.textContent.trim());
+      resolve(items);
     }, 100));
   })()`);
-  log("worktree-release-menu", JSON.stringify(releaseMenu));
-  assert.ok(releaseMenu.menu && releaseMenu.action, "sidebar: 项目会话菜单应提供释放工作区操作");
-  await win.webContents.executeJavaScript(`(() => {
-    [...document.querySelectorAll('.session-menu [role="menuitem"]')].find((item) => item.textContent.includes("释放工作区"))?.click();
-  })()`);
-  const releaseDialog = await win.webContents.executeJavaScript(`(() => new Promise((resolve) => setTimeout(() => {
-    const dialog = document.querySelector('[role="alertdialog"][aria-label="释放工作区"]');
-    resolve({
-      open: !!dialog,
-      title: dialog?.querySelector(".proj-add-title")?.textContent ?? "",
-      explainsBranch: dialog?.textContent.includes("Git 分支会保留") ?? false,
-      warnsIgnored: dialog?.textContent.includes("忽略文件") ?? false,
-    });
-  }, 100)))()`);
-  log("worktree-release-dialog", JSON.stringify(releaseDialog));
-  assert.ok(releaseDialog.open && releaseDialog.explainsBranch && releaseDialog.warnsIgnored, "sidebar: 释放确认应解释保留分支与目录删除范围");
-  await win.webContents.executeJavaScript(`document.querySelector(".session-release .proj-add-cancel")?.click()`);
-  assert.equal(await win.webContents.executeJavaScript(`!!document.querySelector('[role="alertdialog"][aria-label="释放工作区"]')`), false, "sidebar: 取消应关闭释放确认且不执行操作");
+  log("session-menu", JSON.stringify(sessionMenu));
+  assert.ok(sessionMenu.some((t) => t.includes("重命名")) && sessionMenu.some((t) => t.includes("归档")), "sidebar: 会话菜单应有重命名与归档");
+  assert.ok(!sessionMenu.some((t) => t.includes("释放工作区")), "sidebar: 释放工作区入口应已移除");
+  await win.webContents.executeJavaScript(`document.querySelector(".session-item .session-more")?.click()`);
 
   // 再点同一个项目行：不允许取消（仍是该项目选中）
   const sidebarAgain = await win.webContents.executeJavaScript(`(() => {

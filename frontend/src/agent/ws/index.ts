@@ -329,10 +329,6 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
     }
   }
 
-  async releaseWorktree(id: string): Promise<void> {
-    await this.call("session.worktree.release", { id });
-  }
-
   /** git.overview：项目主检出的只读快照（Git 管理页数据源）。 */
   async gitOverview(projectId?: string): Promise<GitOverview> {
     const result = await this.call("git.overview", projectId ? { project_id: projectId } : undefined);
@@ -387,17 +383,11 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
       .catch((e) => this.opError(`重命名失败: ${e.message}`));
   }
 
-  async archiveSession(id: string, releaseWorktree = false): Promise<ArchiveOutcome> {
-    const params: Record<string, unknown> = { id, archived: true };
-    if (releaseWorktree) params.release_worktree = true;
-    const result = await this.call("session.archive", params) as {
-      archived?: boolean; released_worktree?: boolean; release_error?: string;
+  async archiveSession(id: string): Promise<ArchiveOutcome> {
+    const result = await this.call("session.archive", { id, archived: true }) as {
+      archived?: boolean;
     } | null;
-    return {
-      archived: Boolean(result?.archived ?? true),
-      releasedWorktree: Boolean(result?.released_worktree),
-      releaseError: String(result?.release_error ?? ""),
-    };
+    return { archived: Boolean(result?.archived ?? true) };
   }
 
   unarchiveSession(id: string): void {

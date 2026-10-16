@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"strings"
 	"sync"
 
 	"github.com/moyunteng/lxcode/internal/agent"
@@ -71,7 +70,6 @@ func (s *Server) prepareWorkspaceLocked(sessionID string, sess *agent.Session) e
 	// 快路径：主检出路径恒定——本进程已准备过（workDir 已指向主检出）且目录还在
 	// → 直接收工。判据是「本进程校验过 + workDir 仍指向主检出 + 目录存在」：
 	// os.Stat 是必须的（用户手工删掉/移动项目目录后要落回完整流程）。
-	// 失效点只有一处：releaseSessionWorktree 会清掉标记（仅老会话有 worktree 时）。
 	if s.worktreeReadyNow(sessionID) && sess.WorkDir() == projectMeta.Path {
 		if _, statErr := os.Stat(projectMeta.Path); statErr == nil {
 			return nil
@@ -144,85 +142,4 @@ func (s *Server) clearWorktreeReady(sessionID string) {
 	s.worktreeMu.Lock()
 	defer s.worktreeMu.Unlock()
 	delete(s.worktreeReady, sessionID)
-}
-
-// releaseSessionWorktree 是**遗留**入口（session.worktree.release）：只对存量
-// worktree 会话有意义——移除干净的检出目录、保留分支。直连模式的新会话没有
-// worktree，到这里只会得到一句解释。代码保留：老会话的目录清理仍走它。
-func (s *Server) releaseSessionWorktree(sessionID string) error {
-	if s.st == nil {
-		return fmt.Errorf("会话存储未启用，无法释放工作区")
-	}
-	lock := s.sessionWorktreeLock(sessionID)
-	lock.Lock()
-	defer lock.Unlock()
-	// 不创建运行时：释放是纯磁盘操作，为一个没打开的会话拉起运行时（读历史、
-	// 附着存储）没有意义。不在内存里 = 没有正在跑的一轮 = 不忙。
-	if sess := s.peekSession(sessionID); sess != nil && sess.Busy() {
-		return agent.ErrBusy
-	}
-	workspace, err := s.st.WorkspaceOf(sessionID)
-	if err != nil {
-		return err
-	}
-	if workspace == "" {
-		return fmt.Errorf("未分组会话没有独立 worktree")
-	}
-	projectMeta, found, err := s.st.ProjectByID(workspace)
-	if err != nil {
-		return err
-	}
-	if !found {
-		return fmt.Errorf("项目 %s 不存在", workspace)
-	}
-	meta, err := s.st.WorktreeOf(sessionID)
-	if err != nil {
-		return err
-	}
-	if meta.Path == "" || meta.Branch == "" {
-		return fmt.Errorf("本会话直接工作在项目主检出（直连模式），没有独立 worktree 可释放")
-	}
-	if err := project.ReleaseWorktree(projectMeta.Path, project.Worktree{
-		Path: meta.Path, Branch: meta.Branch, BaseCommit: meta.BaseCommit,
-	}); err != nil {
-		return err
-	}
-	// 目录已经移除：清掉校验标记，否则下次恢复会话会走快路径、不再重建工作树。
-	s.clearWorktreeReady(sessionID)
-	return nil
-}
-
-// releaseArchivedWorktrees 释放某会话及其子会话的工作区目录（归档时的可选附加动作，
-// **遗留**：只对存量 worktree 会话生效）。子会话可能有自己的旧 worktree（标签页被
-// 打开过）——dispatch 深度恒 1，只遍历一层；直连模式的目标（Path 为空）跳过、不报错。
-//
-// 归档是主操作，这里只做尽力而为：**绝不向上返回错误**，只把每个目标的失败原因
-// 收集起来（「；」拼接）交给前端提示。
-//
-// 返回：是否至少成功释放了一个目标且没有失败；失败原因（空串 = 无失败）。
-func (s *Server) releaseArchivedWorktrees(sessionID string) (bool, string) {
-	targets := []string{sessionID}
-	if children, err := s.st.ChildrenOf(sessionID); err == nil {
-		for _, child := range children {
-			targets = append(targets, child.ID)
-		}
-	}
-	released := false
-	var failures []string
-	for _, id := range targets {
-		meta, err := s.st.WorktreeOf(id)
-		if err != nil {
-			failures = append(failures, fmt.Sprintf("%s：%v", id, err))
-			continue
-		}
-		if meta.Path == "" {
-			continue // 直连模式（或没建过 worktree）——没有目录可释放，跳过不报错
-		}
-		if err := s.releaseSessionWorktree(id); err != nil {
-			failures = append(failures, fmt.Sprintf("%s：%v", id, err))
-			continue
-		}
-		released = true
-	}
-	return released && len(failures) == 0, strings.Join(failures, "；")
 }

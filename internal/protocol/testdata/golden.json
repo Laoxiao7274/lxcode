@@ -571,9 +571,7 @@
   "sessionArchiveResult": {
     "_type": "",
     "value": {
-      "archived": true,
-      "released_worktree": false,
-      "release_error": "工作区有未提交改动，未释放"
+      "archived": true
     }
   },
   "sessionMeta": {

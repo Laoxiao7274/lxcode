@@ -67,7 +67,7 @@
 **会话操作缺口（2026-10-09 第二批核对，安卓端不造）**：
 - **删除会话**：协议**没有** `session.delete`（只有 archive；归档即从侧栏消失）——安卓「删除」入口缺位；
 - **置顶会话**：协议**没有**置顶/pin 方法（`SessionMeta` 也无 pinned 字段）——缺位；
-- `session.worktree.release` 存在（`{"id"}` → `{released}`），属项目工作区管理，本批不接。
+- ~~`session.worktree.release` 存在（`{"id"}` → `{released}`），属项目工作区管理，本批不接。~~（该方法已随直连模式移除——2026-12 用户拍板，调用会得到标准的未知方法错误。）
 
 `SessionMeta`（`session.list` 条目）：
 

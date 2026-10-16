@@ -563,23 +563,8 @@ color: var(--git-hunk-fg);
   color: var(--fg);
   border-color: var(--border-strong);
 }
-.git-worktree-release {
-  color: var(--git-warning);
-}
 .git-worktree-path-empty {
   font-style: italic;
-}
-.git-release-path {
-  display: block;
-  overflow: hidden;
-  margin-top: 2px;
-  padding: 5px 8px;
-  border: 1px solid var(--border-soft);
-  border-radius: 6px;
-  color: var(--fg-faint);
-  font: 10px var(--font-mono);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .git-history-list {
   margin: 0;

@@ -47,12 +47,15 @@ const (
 	MethodChatMergeRequest = "chat.mergeRequest"
 
 	// 会话管理（持久化 + 切换）
-	MethodSessionList            = "session.list"
-	MethodSessionNew             = "session.new"
-	MethodSessionResume          = "session.resume"
-	MethodSessionRename          = "session.rename"
-	MethodSessionArchive         = "session.archive"
-	MethodSessionWorktreeRelease = "session.worktree.release"
+	MethodSessionList    = "session.list"
+	MethodSessionNew     = "session.new"
+	MethodSessionResume  = "session.resume"
+	MethodSessionRename  = "session.rename"
+	MethodSessionArchive = "session.archive"
+	// MethodSessionWorktreeRelease 已随直连模式移除（2026-10 架构修订废除
+	// per-session worktree，「释放工作区」失去主场景——用户 2026-12 拍板移除）。
+	// 不保留方法名：老客户端调用会得到标准的「未知方法」错误（CodeInvalidRequest），
+	// 旧会话的 worktree 目录/分支由 temp/ 一次性清理脚本处理，不走协议。
 
 	// 项目管理（workspace 分组）
 	MethodProjectAdd  = "project.add"
@@ -116,8 +119,8 @@ const (
 	//
 	// 两个方法全部只读：读主检出的状态 / 分支 / 最近提交与单文件 diff。
 	// Git 页面**不提供任何写主检出的操作**（提交由会话内检查点与
-	// workspace_sync 负责）；唯一的写入口是既有 session.worktree.release
-	// （释放会话工作树目录——弹窗确认、脏目录拒绝）。
+	// workspace_sync 负责）。原先的写入口 session.worktree.release 已随直连
+	// 模式移除（2026-12 用户拍板）。
 	MethodGitOverview = "git.overview"
 	MethodGitDiff     = "git.diff"
 

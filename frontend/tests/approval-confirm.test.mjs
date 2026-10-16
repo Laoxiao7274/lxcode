@@ -111,7 +111,7 @@ function fakeSource() {
     compact: async () => ({ compacted: false }),
     rewind: async () => ({ removed: 0 }),
     newSession: async () => 's1',
-    releaseWorktree: async () => {},
+   
     mergeRequest: async () => 'j1',
     resumeSession: () => {},
     renameSession: () => {},

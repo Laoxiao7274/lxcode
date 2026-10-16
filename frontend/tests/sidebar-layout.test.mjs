@@ -33,7 +33,6 @@ function fakeSource(sessions, projects) {
     newSession: () => {},
     renameSession: () => {},
     archiveSession: () => {},
-    releaseWorktree: () => {},
     resumeSession: () => {},
   };
 }

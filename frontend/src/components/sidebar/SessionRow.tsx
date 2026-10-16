@@ -6,7 +6,7 @@ import { gsap } from "gsap";
 import type { ArchiveOutcome, SessionMeta } from "../../shared/types";
 import { motionAllowed } from "../../shared/motion";
 import { collapseAway } from "../../shared/anim";
-import { IconPencil, IconArchive, IconDownload } from "../icons";
+import { IconPencil, IconArchive } from "../icons";
 
 export interface SessionRowProps {
   session: SessionMeta;
@@ -21,10 +21,8 @@ export interface SessionRowProps {
   onStartRename: (id: string) => void;
   /** 提交重命名。 */
   onRename: (s: SessionMeta, title: string) => void;
-  /** 归档会话（releaseWorktree 为真时顺带释放工作区）。失败必须向上抛——
-   *  弹窗要显示原因且不关闭；成功时用返回的释放结果决定提示文案。 */
-  onArchive: (id: string, releaseWorktree: boolean) => Promise<ArchiveOutcome>;
-  onReleaseWorktree: (id: string) => Promise<void>;
+  /** 归档会话。失败必须向上抛——弹窗要显示原因且不关闭。 */
+  onArchive: (id: string) => Promise<ArchiveOutcome>;
   /** 行的 hover 提示（原生 title）。缺省回落会话标题本身；
    *  Sidebar 传「<项目名> · <会话标题>」（未分组会话不传，保持只有标题）。 */
   hint?: string;
@@ -33,11 +31,8 @@ export interface SessionRowProps {
   enterRow: RefCallback<HTMLDivElement>;
 }
 
-/** 归档结果的提示文案（弹窗 done 态显示）。归档已经成功——这里只说释放的结局：
- *  释放失败带回原因，成功则如实说明，没请求释放则是一句简短的归档成功提示。 */
-function archiveResultText(outcome: ArchiveOutcome): string {
-  if (outcome.releaseError) return `已归档。工作区未能释放：${outcome.releaseError}`;
-  if (outcome.releasedWorktree) return "已归档，工作区已释放。";
+/** 归档结果的提示文案（弹窗 done 态显示）。 */
+function archiveResultText(_outcome: ArchiveOutcome): string {
   return "已归档。";
 }
 
@@ -53,7 +48,6 @@ export const SessionRow = memo(function SessionRow({
   onStartRename,
   onRename,
   onArchive,
-  onReleaseWorktree,
   onResume,
   enterRow,
 }: SessionRowProps) {
@@ -65,44 +59,16 @@ export const SessionRow = memo(function SessionRow({
     rowRef.current = el;
     enterRow(el);
   }, [enterRow]);
-  const [releaseOpen, setReleaseOpen] = useState(false);
-  const [releaseBusy, setReleaseBusy] = useState(false);
-  const [releaseDone, setReleaseDone] = useState(false);
-  const [releaseError, setReleaseError] = useState("");
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [archiveBusy, setArchiveBusy] = useState(false);
   const [archiveDone, setArchiveDone] = useState(false);
   const [archiveError, setArchiveError] = useState("");
   const [archiveMessage, setArchiveMessage] = useState("");
-  /** 复选框「同时释放工作区」：只在项目会话且有消息时出现，默认勾选。 */
-  const [archiveRelease, setArchiveRelease] = useState(true);
-  const canRelease = Boolean(s.workspace && s.messages > 0);
-
-  const closeRelease = () => {
-    if (releaseBusy) return;
-    setReleaseOpen(false);
-    setReleaseDone(false);
-    setReleaseError("");
-  };
-
-  const confirmRelease = async () => {
-    setReleaseBusy(true);
-    setReleaseError("");
-    try {
-      await onReleaseWorktree(s.id);
-      setReleaseDone(true);
-    } catch (error) {
-      setReleaseError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setReleaseBusy(false);
-    }
-  };
 
   const openArchive = () => {
     setArchiveDone(false);
     setArchiveError("");
     setArchiveMessage("");
-    setArchiveRelease(canRelease);
     setArchiveOpen(true);
   };
 
@@ -122,7 +88,7 @@ export const SessionRow = memo(function SessionRow({
     setArchiveBusy(true);
     setArchiveError("");
     try {
-      const outcome = await onArchive(s.id, canRelease && archiveRelease);
+      const outcome = await onArchive(s.id);
       setArchiveDone(true);
       setArchiveMessage(archiveResultText(outcome));
     } catch (error) {
@@ -149,7 +115,7 @@ export const SessionRow = memo(function SessionRow({
     });
   }, [s.id, onCloseMenu]);
 
-  const dialogOpen = releaseOpen || archiveOpen;
+  const dialogOpen = archiveOpen;
 
   return (
     <div
@@ -224,74 +190,10 @@ export const SessionRow = memo(function SessionRow({
             <IconPencil />
             重命名
           </button>
-          {s.workspace && s.messages > 0 && (
-            <button type="button" role="menuitem" onClick={() => {
-              closeMenu();
-              setReleaseDone(false);
-              setReleaseError("");
-              setReleaseOpen(true);
-            }}>
-              <IconDownload />
-              释放工作区
-            </button>
-          )}
           <button type="button" role="menuitem" onClick={(e) => { e.stopPropagation(); closeMenu(); openArchive(); }}>
             <IconArchive />
             归档
           </button>
-        </div>
-      )}
-      {releaseOpen && (
-        <div
-          className="proj-add-mask"
-          role="alertdialog"
-          aria-modal="true"
-          aria-label="释放工作区"
-          onKeyDown={(e) => {
-            e.stopPropagation();
-            if (e.key === "Escape" && !releaseBusy) closeRelease();
-          }}
-          onPointerDown={(e) => {
-            e.stopPropagation();
-            if (e.target === e.currentTarget) closeRelease();
-          }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <div className="proj-add session-release">
-            <div className="proj-add-head">
-              <span className="proj-add-title">{releaseDone ? "工作区已释放" : "释放工作区？"}</span>
-              {!releaseBusy && (
-                <button type="button" className="proj-add-close" aria-label="关闭" onClick={closeRelease}>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-                    <path d="m18 6-12 12M6 6l12 12" />
-                  </svg>
-                </button>
-              )}
-            </div>
-            <div className="proj-add-body">
-              {releaseDone ? (
-                <p className="proj-field-hint">会话记录和分支已保留。下次恢复该会话时，会从原分支重建工作区。</p>
-              ) : (
-                <>
-                  <p className="proj-field-hint">只移除这份项目目录；会话记录和 Git 分支会保留，不会自动合并到主项目。</p>
-                  <p className="proj-field-hint">未提交或未跟踪的文件会阻止释放。忽略文件（例如依赖和构建缓存）会随工作区目录一起删除。</p>
-                  {releaseError && <div className="proj-add-error" role="alert">{releaseError}</div>}
-                </>
-              )}
-            </div>
-            <div className="proj-add-foot">
-              {releaseDone ? (
-                <button type="button" className="proj-add-ok" autoFocus onClick={closeRelease}>完成</button>
-              ) : (
-                <>
-                  <button type="button" className="proj-add-cancel" disabled={releaseBusy} autoFocus onClick={closeRelease}>取消</button>
-                  <button type="button" className="proj-add-ok" disabled={releaseBusy} aria-busy={releaseBusy} onClick={() => void confirmRelease()}>
-                    {releaseBusy ? "正在释放…" : "释放工作区"}
-                  </button>
-                </>
-              )}
-            </div>
-          </div>
         </div>
       )}
       {archiveOpen && (
@@ -327,21 +229,6 @@ export const SessionRow = memo(function SessionRow({
               ) : (
                 <>
                   <p className="proj-field-hint">归档后会话从侧栏收起，记录仍保留，可在设置里恢复。</p>
-                  {canRelease && (
-                    <>
-                      <label className="proj-check">
-                        <input
-                          type="checkbox"
-                          checked={archiveRelease}
-                          disabled={archiveBusy}
-                          onChange={(e) => setArchiveRelease(e.target.checked)}
-                        />
-                        同时释放工作区
-                      </label>
-                      <p className="proj-field-hint">只移除检出目录；会话记录和 Git 分支会保留，可再次恢复。</p>
-                      <p className="proj-field-hint">未提交或未跟踪的文件会阻止释放；忽略文件（例如依赖和构建缓存）会随目录一起删除。</p>
-                    </>
-                  )}
                   {archiveError && <div className="proj-add-error" role="alert">{archiveError}</div>}
                 </>
               )}
@@ -353,7 +240,7 @@ export const SessionRow = memo(function SessionRow({
                 <>
                   <button type="button" className="proj-add-cancel" disabled={archiveBusy} autoFocus onClick={closeArchive}>取消</button>
                   <button type="button" className="proj-add-ok" disabled={archiveBusy} aria-busy={archiveBusy} onClick={() => void confirmArchive()}>
-                    {archiveBusy ? "正在归档…" : canRelease && archiveRelease ? "归档并释放工作区" : "归档"}
+                    {archiveBusy ? "正在归档…" : "归档"}
                   </button>
                 </>
               )}

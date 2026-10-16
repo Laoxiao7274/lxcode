@@ -19,34 +19,17 @@ type SessionRenameParams struct {
 }
 
 // SessionArchiveParams 是 session.archive 的参数。
-// ReleaseWorktree 为真时，在归档成功后顺带释放该会话（及其子会话）的工作区目录：
-// 只移除干净的检出目录，保留 Git 分支与会话记录（脏/未跟踪改动会让释放失败，
-// 但**不影响归档本身**）。可选参数，缺省 = 不释放（与旧客户端行为一致）。
 type SessionArchiveParams struct {
-	ID              string `json:"id"`
-	Archived        bool   `json:"archived"`
-	ReleaseWorktree bool   `json:"release_worktree,omitempty"`
+	ID       string `json:"id"`
+	Archived bool   `json:"archived"`
 }
 
 // SessionArchiveResult 是 session.archive 的结果。归档是主操作——它失败时以
 // JSON-RPC 错误返回，不走这里。
-// ReleasedWorktree 表明是否至少成功释放了一个工作区目录且没有失败（只在请求释放时
-// 可能为真）；ReleaseError 是释放失败的原因（「；」拼接，可能含 busy / 脏改动等
-// 原始文本）——归档已经成功，前端据此提示「已归档，但工作区未能释放」。
+// （原 ReleasedWorktree/ReleaseError 两字段随直连模式移除：归档不再顺带释放
+// worktree 目录，2026-12 用户拍板。）
 type SessionArchiveResult struct {
-	Archived         bool   `json:"archived"`
-	ReleasedWorktree bool   `json:"released_worktree"`
-	ReleaseError     string `json:"release_error,omitempty"`
-}
-
-// SessionWorktreeReleaseParams 是 session.worktree.release 的参数。
-type SessionWorktreeReleaseParams struct {
-	ID string `json:"id"`
-}
-
-// SessionWorktreeReleaseResult 表明工作区目录是否已释放。
-type SessionWorktreeReleaseResult struct {
-	Released bool `json:"released"`
+	Archived bool `json:"archived"`
 }
 
 // ProjectAddParams 是 project.add 的参数（path 为本地目录绝对路径）。

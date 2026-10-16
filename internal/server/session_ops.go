@@ -70,7 +70,7 @@ func (s *Server) session(id string) (*agent.Session, error) {
 }
 
 // peekSession 只看内存里已存在的运行时，**不创建**（对比 session：后者会为未打开的
-// 会话建运行时）。用于纯读场景——如释放工作区时的忙闲判定，不该为此拉起一个运行时。
+// 会话建运行时）。用于纯读场景——不该为此拉起一个运行时。
 func (s *Server) peekSession(id string) *agent.Session {
 	s.sessionsMu.RLock()
 	defer s.sessionsMu.RUnlock()

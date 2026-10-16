@@ -190,7 +190,7 @@ func goldenSamples() map[string]goldenSample {
 		// ---- 会话管理域 ----
 
 		"sessionMeta":          {"", SessionMeta{ID: "s1", Title: "修登录 bug", UpdatedAt: "2026-10-13T10:30:00+08:00", Messages: 24, Archived: true, Workspace: "lxcode"}},
-		"sessionArchiveResult": {"", SessionArchiveResult{Archived: true, ReleasedWorktree: false, ReleaseError: "工作区有未提交改动，未释放"}},
+		"sessionArchiveResult": {"", SessionArchiveResult{Archived: true}},
 		"projectInstructionsResult": {"ProjectInstructions", ProjectInstructionsResult{
 			Path: `C:\Projects\lxcode\AGENTS.md`, Content: "# 项目守则……", Exists: true, Note: "（示例）上次读取时文件过大被截断",
 		}},

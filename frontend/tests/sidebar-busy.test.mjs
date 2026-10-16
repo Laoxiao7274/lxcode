@@ -64,8 +64,7 @@ const rowProps = (busy) => ({
   onCloseMenu: () => {},
   onStartRename: () => {},
   onRename: () => {},
-  onArchive: async () => ({}),
-  onReleaseWorktree: async () => {},
+  onArchive: async () => ({ archived: true }),
   onResume: () => {},
   enterRow: () => {},
 });
@@ -108,7 +107,6 @@ function fakeSource(sessions, projects) {
     newSession: () => {},
     renameSession: () => {},
     archiveSession: () => {},
-    releaseWorktree: () => {},
     resumeSession: () => {},
   };
 }

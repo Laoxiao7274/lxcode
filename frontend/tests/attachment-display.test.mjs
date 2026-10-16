@@ -163,7 +163,7 @@ function fakeSource() {
     subscribe: () => () => {},
     send: () => {}, setApproval: async () => {}, confirm: async () => {}, answer: async () => {},
     cancel: () => {}, compact: async () => ({ compacted: false }), rewind: async () => ({ removed: 0 }),
-    newSession: async () => 's1', releaseWorktree: async () => {}, mergeRequest: async () => 'j1',
+    newSession: async () => 's1', mergeRequest: async () => 'j1',
     resumeSession: () => {}, renameSession: () => {}, archiveSession: async () => ({ ok: true }),
   };
 }

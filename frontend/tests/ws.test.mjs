@@ -107,28 +107,15 @@ test('session failure emits operationError rather than terminating a chat', asyn
   await flush();
   assert.deepEqual(events, [{ type: 'operationError', message: '新建会话失败: busy' }]);
 });
-test('releasing a session worktree calls the scoped protocol method', async (t) => {
-  const { agent, ws } = setup(t);
-  const release = agent.releaseWorktree('s-worktree');
-  assert.equal(ws.sent.at(-1).method, 'session.worktree.release');
-  assert.deepEqual(ws.sent.at(-1).params, { id: 's-worktree' });
-  ws.reply({ released: true });
-  await release;
-});
-// 归档顺带释放工作区：release_worktree 只在请求时上车（omitempty 线形），
-// 应答的释放结果映射成 ArchiveOutcome（归档成功但释放失败必须如实带回原因）。
-test('archive carries release_worktree only when requested and maps the outcome', async (t) => {
+// session.worktree.release 已随直连模式移除（2026-12 用户拍板）：归档不再顺带
+// 释放工作区，session.archive 只带 id + archived。
+test('archive sends id + archived only', async (t) => {
   const { agent, ws } = setup(t);
   const plain = agent.archiveSession('s-archive');
   assert.equal(ws.sent.at(-1).method, 'session.archive');
   assert.deepEqual(ws.sent.at(-1).params, { id: 's-archive', archived: true });
-  ws.reply({ archived: true, released_worktree: false });
-  assert.deepEqual(await plain, { archived: true, releasedWorktree: false, releaseError: '' });
-
-  const releasing = agent.archiveSession('s-archive-2', true);
-  assert.deepEqual(ws.sent.at(-1).params, { id: 's-archive-2', archived: true, release_worktree: true });
-  ws.reply({ archived: true, released_worktree: false, release_error: '工作区有未提交或未跟踪改动' });
-  assert.deepEqual(await releasing, { archived: true, releasedWorktree: false, releaseError: '工作区有未提交或未跟踪改动' });
+  ws.reply({ archived: true });
+  assert.deepEqual(await plain, { archived: true });
 });
 
 test('disconnect immediately rejects pending and unsubscribe stops reconnection', async (t) => {

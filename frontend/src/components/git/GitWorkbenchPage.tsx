@@ -2,8 +2,8 @@
 //
 // 纪律：本页不提供任何写主检出的操作（不暂存 / 不提交 / 不切换分支——
 // 「一会话一分支」架构下分支切换语义不存在；提交由会话内的检查点提交与
-// workspace_sync 负责）。唯一的写操作 = 释放会话工作树（session.worktree.release，
-// 弹窗确认，脏目录会被后端拒绝）。
+// workspace_sync 负责）。原先唯一的写操作「释放会话工作树」已随直连模式
+// 移除（2026-12 用户拍板）——本页现在是纯只读。
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { gsap } from "gsap";
 import { motionAllowed } from "../../shared/motion";
@@ -257,9 +257,7 @@ export function GitWorkbenchPage({
           {displayedTab === "worktrees" && (
             <WorktreesPanel
               worktrees={worktrees}
-              source={source}
               onOpenSession={onOpenSession}
-              onReleased={() => setReloadTick((n) => n + 1)}
             />
           )}
 
@@ -445,16 +443,11 @@ function BranchRow({ branch, onOpenSession }: { branch: GitBranch; onOpenSession
 
 function WorktreesPanel({
   worktrees,
-  source,
   onOpenSession,
-  onReleased,
 }: {
   worktrees: GitWorktree[];
-  source: AgentSource;
   onOpenSession: (id: string) => void;
-  onReleased: () => void;
 }) {
-  const [releaseTarget, setReleaseTarget] = useState<GitWorktree | null>(null);
   return (
     <section className="git-panel git-list-panel" data-git="worktrees" aria-label="会话工作树">
       <div className="git-panel-head">
@@ -470,24 +463,15 @@ function WorktreesPanel({
               key={worktree.id}
               worktree={worktree}
               onOpen={() => onOpenSession(worktree.sessionId)}
-              onRelease={() => setReleaseTarget(worktree)}
             />
           ))}
         </div>
-      )}
-      {releaseTarget && (
-        <ReleaseDialog
-          worktree={releaseTarget}
-          source={source}
-          onClose={() => setReleaseTarget(null)}
-          onReleased={onReleased}
-        />
       )}
     </section>
   );
 }
 
-function WorktreeCard({ worktree, onOpen, onRelease }: { worktree: GitWorktree; onOpen: () => void; onRelease: () => void }) {
+function WorktreeCard({ worktree, onOpen }: { worktree: GitWorktree; onOpen: () => void }) {
   const status = worktree.state === "released"
     ? "已释放（分支保留）"
     : worktree.state === "changes"
@@ -506,93 +490,10 @@ function WorktreeCard({ worktree, onOpen, onRelease }: { worktree: GitWorktree; 
       <div className="git-worktree-foot">
         <span>会话 {worktree.sessionId.slice(-8)}</span>
         <div className="git-worktree-actions">
-          {worktree.state !== "released" && (
-            <button type="button" className="git-worktree-release" data-git-release={worktree.sessionId} onClick={onRelease}>
-              释放工作区
-            </button>
-          )}
           <button type="button" onClick={onOpen}>打开会话</button>
         </div>
       </div>
     </article>
-  );
-}
-
-/** ReleaseDialog 复用 session.worktree.release 与侧栏「释放工作区」弹层的确认
- *  模式与文案：只移除检出目录，会话记录和 Git 分支保留；脏目录会被后端拒绝。 */
-function ReleaseDialog({ worktree, source, onClose, onReleased }: {
-  worktree: GitWorktree;
-  source: AgentSource;
-  onClose: () => void;
-  onReleased: () => void;
-}) {
-  const [busy, setBusy] = useState(false);
-  const [done, setDone] = useState(false);
-  const [error, setError] = useState("");
-
-  const close = () => { if (!busy) onClose(); };
-
-  const confirm = async () => {
-    setBusy(true);
-    setError("");
-    try {
-      await source.releaseWorktree(worktree.sessionId);
-      setDone(true);
-      onReleased();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div
-      className="proj-add-mask"
-      role="alertdialog"
-      aria-modal="true"
-      aria-label="释放工作区"
-      onKeyDown={(e) => { e.stopPropagation(); if (e.key === "Escape" && !busy) close(); }}
-      onPointerDown={(e) => { e.stopPropagation(); if (e.target === e.currentTarget) close(); }}
-      onClick={(e) => e.stopPropagation()}
-    >
-      <div className="proj-add session-release">
-        <div className="proj-add-head">
-          <span className="proj-add-title">{done ? "工作区已释放" : "释放工作区？"}</span>
-          {!busy && (
-            <button type="button" className="proj-add-close" aria-label="关闭" onClick={close}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-                <path d="m18 6-12 12M6 6l12 12" />
-              </svg>
-            </button>
-          )}
-        </div>
-        <div className="proj-add-body">
-          {done ? (
-            <p className="proj-field-hint">会话记录和分支已保留。下次恢复该会话时，会从原分支重建工作区。</p>
-          ) : (
-            <>
-              <p className="proj-field-hint">只移除检出目录；会话记录和 Git 分支会保留，不会自动合并到主项目。</p>
-              <p className="proj-field-hint">未提交或未跟踪的文件会阻止释放。忽略文件（例如依赖和构建缓存）会随工作区目录一起删除。</p>
-              <code className="git-release-path">{worktree.path || worktree.branch}</code>
-              {error && <div className="proj-add-error git-error" role="alert">{error}</div>}
-            </>
-          )}
-        </div>
-        <div className="proj-add-foot">
-          {done ? (
-            <button type="button" className="proj-add-ok" autoFocus onClick={close}>完成</button>
-          ) : (
-            <>
-              <button type="button" className="proj-add-cancel" disabled={busy} autoFocus onClick={close}>取消</button>
-              <button type="button" className="proj-add-ok" disabled={busy} aria-busy={busy} data-git-release-confirm onClick={() => void confirm()}>
-                {busy ? "正在释放…" : "释放工作区"}
-              </button>
-            </>
-          )}
-        </div>
-      </div>
-    </div>
   );
 }
 

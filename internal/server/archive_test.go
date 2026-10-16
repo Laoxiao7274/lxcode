@@ -1,5 +1,6 @@
-// 归档 + 可选释放工作区（session.archive 的 release_worktree 参数）。
-// 核心不变量：**归档绝不因释放失败而回滚**——释放只把原因带回给前端提示。
+// 归档测试（session.archive）。原先的 release_worktree 参数组用例已随直连模式
+// 移除（2026-12 用户拍板：per-session worktree 废除，「释放工作区」失去主场景；
+// 归档不再顺带释放工作区目录）。
 package server
 
 import (
@@ -48,8 +49,7 @@ func archiveTestServer(t *testing.T, name string) (*Server, *wsTestClient, proto
 }
 
 // newProjectSessionWithWorktree 建一个项目会话并**伪造存量 worktree 状态**（直连
-// 架构下不再自动建 worktree；本组用例测的是遗留释放链路——session.archive 的
-// release_worktree 参数对存量 worktree 会话的行为，数据形态与老库一致）。
+// 架构下不再自动建 worktree；本组用例测的是老库数据形态下归档的兼容行为）。
 func newProjectSessionWithWorktree(t *testing.T, srv *Server, client *wsTestClient, projectID string) (string, string) {
 	t.Helper()
 	repoMeta, found, err := srv.st.ProjectByID(projectID)
@@ -88,75 +88,16 @@ func sessionArchived(t *testing.T, srv *Server, id string) bool {
 	return false
 }
 
-// 用例1：项目会话 + release_worktree=true → 归档成功、目录消失、分支与会话记录保留。
-func TestArchiveWithReleaseWorktreeRemovesCleanWorktree(t *testing.T) {
-	srv, client, projectMeta, repo := archiveTestServer(t, "archive-release-clean")
+// 用例1：项目会话（伪造存量 worktree 元数据）+ 普通归档 → 归档成功，目录与
+// 分支**一律保留**（兼容纪律：用户数据零丢失，归档不做清理——清理走 temp/
+// 一次性脚本）。
+func TestArchiveKeepsLegacyWorktree(t *testing.T) {
+	srv, client, projectMeta, repo := archiveTestServer(t, "archive-keep-worktree")
 	id, path := newProjectSessionWithWorktree(t, srv, client, projectMeta.ID)
 	meta, err := srv.st.WorktreeOf(id)
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	resp := client.call(protocol.MethodSessionArchive, protocol.SessionArchiveParams{ID: id, Archived: true, ReleaseWorktree: true})
-	if resp == nil || resp.Error != nil {
-		t.Fatalf("archive with release failed: %+v", resp)
-	}
-	var result protocol.SessionArchiveResult
-	decodeServerResult(t, resp.Result, &result)
-	if !result.Archived || !result.ReleasedWorktree || result.ReleaseError != "" {
-		t.Fatalf("archive result mismatch: %+v", result)
-	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("released worktree directory still exists: %v", err)
-	}
-	if got := strings.TrimSpace(gitServerTest(t, repo, "rev-parse", meta.Branch)); got == "" {
-		t.Fatal("release deleted the session branch")
-	}
-	if !sessionArchived(t, srv, id) {
-		t.Fatal("archived session record went missing")
-	}
-}
-
-// 用例2：worktree 里有未提交改动 + release_worktree=true → 归档仍成功，释放失败只回报原因。
-func TestArchiveWithReleaseWorktreeKeepsDirtyWorktree(t *testing.T) {
-	srv, client, projectMeta, _ := archiveTestServer(t, "archive-release-dirty")
-	id, path := newProjectSessionWithWorktree(t, srv, client, projectMeta.ID)
-	dirty := filepath.Join(path, "dirty.txt")
-	if err := os.WriteFile(dirty, []byte("uncommitted"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	resp := client.call(protocol.MethodSessionArchive, protocol.SessionArchiveParams{ID: id, Archived: true, ReleaseWorktree: true})
-	if resp == nil || resp.Error != nil {
-		t.Fatalf("archive must succeed even when release fails: %+v", resp)
-	}
-	var result protocol.SessionArchiveResult
-	decodeServerResult(t, resp.Result, &result)
-	if !result.Archived {
-		t.Fatalf("archive should have succeeded: %+v", result)
-	}
-	if result.ReleasedWorktree || result.ReleaseError == "" {
-		t.Fatalf("dirty release must report a failure: %+v", result)
-	}
-	if !strings.Contains(result.ReleaseError, "未提交或未跟踪") {
-		t.Fatalf("release error should carry the dirty reason: %q", result.ReleaseError)
-	}
-	if !sessionArchived(t, srv, id) {
-		t.Fatal("archive did not commit the DB row")
-	}
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("dirty release removed the worktree: %v", err)
-	}
-	got, err := os.ReadFile(dirty)
-	if err != nil || string(got) != "uncommitted" {
-		t.Fatalf("dirty file damaged by rejected release: %q err=%v", got, err)
-	}
-}
-
-// 用例3：release_worktree=false（或不传）→ 与现在完全一致，目录保留。
-func TestArchiveWithoutReleaseWorktreeKeepsWorktree(t *testing.T) {
-	srv, client, projectMeta, _ := archiveTestServer(t, "archive-keep-worktree")
-	id, path := newProjectSessionWithWorktree(t, srv, client, projectMeta.ID)
 
 	resp := client.call(protocol.MethodSessionArchive, protocol.SessionArchiveParams{ID: id, Archived: true})
 	if resp == nil || resp.Error != nil {
@@ -164,20 +105,24 @@ func TestArchiveWithoutReleaseWorktreeKeepsWorktree(t *testing.T) {
 	}
 	var result protocol.SessionArchiveResult
 	decodeServerResult(t, resp.Result, &result)
-	if result.ReleasedWorktree || result.ReleaseError != "" {
-		t.Fatalf("plain archive must not release anything: %+v", result)
-	}
-	if !sessionArchived(t, srv, id) {
-		t.Fatal("plain archive did not commit the DB row")
+	if !result.Archived {
+		t.Fatalf("archive result mismatch: %+v", result)
 	}
 	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("plain archive removed the worktree: %v", err)
+		t.Fatalf("archive must not remove the worktree directory: %v", err)
+	}
+	if got := strings.TrimSpace(gitServerTest(t, repo, "rev-parse", meta.Branch)); got == "" {
+		t.Fatal("archive deleted the session branch")
+	}
+	if !sessionArchived(t, srv, id) {
+		t.Fatal("archived session record went missing")
 	}
 }
 
-// 用例4：带子会话（父有 worktree 元数据、子为空）→ 只释放父，跳过子不报错。
-func TestArchiveWithReleaseSkipsChildWithoutWorktree(t *testing.T) {
-	srv, client, projectMeta, _ := archiveTestServer(t, "archive-release-child")
+// 用例2：带子会话（父有 worktree 元数据、子为空）→ 归档父会话，双方元数据与
+// 目录都不动。
+func TestArchiveWithChildKeepsWorktrees(t *testing.T) {
+	srv, client, projectMeta, _ := archiveTestServer(t, "archive-child-worktree")
 	parent, parentPath := newProjectSessionWithWorktree(t, srv, client, projectMeta.ID)
 	// 子会话只继承父的 workspace，worktree 三列为空（标签页没被打开过）。
 	child, err := srv.st.CreateChild(parent, "agent-x", "dispatch-x")
@@ -185,20 +130,17 @@ func TestArchiveWithReleaseSkipsChildWithoutWorktree(t *testing.T) {
 		t.Fatalf("CreateChild failed: %v", err)
 	}
 
-	resp := client.call(protocol.MethodSessionArchive, protocol.SessionArchiveParams{ID: parent, Archived: true, ReleaseWorktree: true})
+	resp := client.call(protocol.MethodSessionArchive, protocol.SessionArchiveParams{ID: parent, Archived: true})
 	if resp == nil || resp.Error != nil {
 		t.Fatalf("archive with child failed: %+v", resp)
 	}
 	var result protocol.SessionArchiveResult
 	decodeServerResult(t, resp.Result, &result)
-	if result.ReleaseError != "" {
-		t.Fatalf("child without worktree must be skipped silently: %q", result.ReleaseError)
+	if !result.Archived {
+		t.Fatalf("archive result mismatch: %+v", result)
 	}
-	if !result.ReleasedWorktree {
-		t.Fatalf("parent worktree should have been released: %+v", result)
-	}
-	if _, err := os.Stat(parentPath); !os.IsNotExist(err) {
-		t.Fatalf("parent worktree still exists: %v", err)
+	if _, err := os.Stat(parentPath); err != nil {
+		t.Fatalf("archive removed the parent worktree: %v", err)
 	}
 	childMeta, err := srv.st.WorktreeOf(child)
 	if err != nil || childMeta.Path != "" {

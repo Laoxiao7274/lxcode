@@ -138,7 +138,7 @@ test('gitDiff 走 git.diff 并回读 diff 文本', async (t) => {
 
 // ---------- DemoAgent：演示假数据（页面可演示，不假装真实） ----------
 
-test('演示模式：gitOverview 返回简化假数据、gitDiff 返回演示 diff、releaseWorktree 不炸', async () => {
+test('演示模式：gitOverview 返回简化假数据、gitDiff 返回演示 diff', async () => {
   const agent = new DemoAgent();
   const overview = await agent.gitOverview(agent.projects()[0].id);
   assert.equal(overview.branch, 'main');
@@ -148,7 +148,6 @@ test('演示模式：gitOverview 返回简化假数据、gitDiff 返回演示 di
   const diff = await agent.gitOverview('nope').then(() => '', () => 'fallback'); // 未知项目回落第一个演示项目
   assert.equal(diff, '');
   assert.ok((await agent.gitDiff('proj-demo-lxcode', 'x.go')).includes('演示'));
-  await agent.releaseWorktree('s1'); // 不抛即可
 });
 
 // ---------- 页面渲染冒烟（演示假数据源 + 真组件） ----------
@@ -158,7 +157,6 @@ function stubSource(overview) {
     subscribe: () => () => {},
     gitOverview: () => Promise.resolve(overview),
     gitDiff: () => Promise.resolve('+++ b/x\n+line\n'),
-    releaseWorktree: () => Promise.resolve(),
     label: 'stub',
   };
 }

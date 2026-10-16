@@ -193,57 +193,9 @@ func validateExistingWorktree(repo, path, branch string) error {
 	return nil
 }
 
-// ReleaseWorktree 只移除干净的检出目录，保留分支供后续恢复；不会强制丢弃改动。
-func ReleaseWorktree(repoPath string, wt Worktree) error {
-	repo, err := ValidateDirectory(repoPath)
-	if err != nil {
-		return err
-	}
-	if wt.Path == "" || wt.Branch == "" {
-		return fmt.Errorf("worktree 元数据不完整")
-	}
-	info, err := os.Stat(wt.Path)
-	if os.IsNotExist(err) {
-		if _, branchErr := gitOutput(repo, "show-ref", "--verify", "refs/heads/"+wt.Branch); branchErr != nil {
-			return fmt.Errorf("工作区目录已不存在，保留分支 %s 也无法找到，不能安全确认释放: %w", wt.Branch, branchErr)
-		}
-		registeredPath, registered, listErr := registeredBranchPath(repo, wt.Branch)
-		if listErr != nil {
-			return listErr
-		}
-		if registered {
-			wantPath, absErr := filepath.Abs(wt.Path)
-			if absErr != nil {
-				return fmt.Errorf("解析 worktree 路径失败: %w", absErr)
-			}
-			if !samePath(registeredPath, wantPath) {
-				return fmt.Errorf("分支 %s 已登记在另一工作树 %s", wt.Branch, registeredPath)
-			}
-		}
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("检查 worktree 路径失败: %w", err)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("worktree 路径不是目录: %s", wt.Path)
-	}
-	if err := validateExistingWorktree(repo, wt.Path, wt.Branch); err != nil {
-		return err
-	}
-	status, err := gitOutput(wt.Path, "status", "--porcelain", "--untracked-files=all")
-	if err != nil {
-		return fmt.Errorf("检查 worktree 改动失败: %w", err)
-	}
-	status = strings.TrimSpace(status)
-	if status != "" {
-		return fmt.Errorf("工作区有未提交或未跟踪改动，先提交后再释放:\n%s", truncate(status, 600))
-	}
-	if out, err := runGit(repo, "worktree", "remove", wt.Path); err != nil {
-		return fmt.Errorf("释放 worktree 失败: %v: %s", err, truncate(string(out), 300))
-	}
-	return nil
-}
+// ReleaseWorktree 已随直连模式移除（2026-12 用户拍板：per-session worktree
+// 废除，「释放工作区」失去主场景）。遗留 worktree 目录由 temp/ 一次性清理
+// 脚本对照 SQLite 元数据出报告后手工处理。
 
 func registeredBranchPath(repo, branch string) (string, bool, error) {
 	out, err := gitOutput(repo, "worktree", "list", "--porcelain")

@@ -317,7 +317,7 @@ func TestProtocolConstants(t *testing.T) {
 	methods := []string{MethodHello, MethodModelList, MethodModelAdd, MethodModelUpdate,
 		MethodModelRemove, MethodModelEnable, MethodRoleSet, MethodChatSend,
 		MethodChatCancel, MethodChatHistory, MethodToolConfirm, MethodChatApproval,
-		MethodSessionList, MethodSessionNew, MethodSessionResume, MethodSessionWorktreeRelease,
+		MethodSessionList, MethodSessionNew, MethodSessionResume,
 		MethodJobList, MethodJobKill, MethodJobLog}
 	events := []string{EventReady, EventUserMsg, EventDelta, EventToolCall, EventToolRslt,
 		EventConfirm, EventDone, EventError, EventBusy, EventApproval, EventModels, EventTodo, EventSessionChanged,
@@ -343,21 +343,8 @@ func TestProtocolConstants(t *testing.T) {
 	}
 }
 
-func TestSessionWorktreeReleaseProtocolShape(t *testing.T) {
-	params := mustMarshal(t, SessionWorktreeReleaseParams{ID: "session-1"})
-	if string(params) != `{"id":"session-1"}` {
-		t.Fatalf("release params JSON = %s", params)
-	}
-	var got SessionWorktreeReleaseParams
-	mustUnmarshal(t, params, &got)
-	if got.ID != "session-1" {
-		t.Fatalf("release params round-trip = %+v", got)
-	}
-	result := mustMarshal(t, SessionWorktreeReleaseResult{Released: true})
-	if string(result) != `{"released":true}` {
-		t.Fatalf("release result JSON = %s", result)
-	}
-}
+// TestSessionWorktreeReleaseProtocolShape 已随 session.worktree.release 方法移除
+// （2026-12 用户拍板：直连模式废除 per-session worktree，「释放工作区」失去主场景）。
 
 // TestChatSendParamsRoundTrip：session_id 显式路由；effort/approval 仍可省略，
 // 旧客户端缺 session_id 时由服务端连接焦点回退兼容。
