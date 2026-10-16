@@ -19,13 +19,21 @@
 // §2.3），用户在这一页看到待裁决的确认卡时必须能批（点了没反应比没有按钮更糟）。
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AgentSource } from "../../shared/types";
-import type { UIState } from "../../shared/store";
+import type { UIState, ThreadBlock } from "../../shared/store";
 import { Button } from "../form";
 import { Composer } from "../composer";
 import { Block } from "../thread/blocks/Block";
 import { ScrollToBottom } from "../thread/ScrollToBottom";
+import { ThinkingState } from "../../aicss/ThinkingState";
 import { WINDOW_INITIAL, WINDOW_BATCH, WindowSentinel } from "../thread/Thread";
 import { useStickyFollow } from "../thread/useStickyFollow";
+
+/** 尾块是流式中的 assistant：主时间线的判定（Thread.tsx）对子会话**同一份**——
+ *  delta 在流时就「有输出」，不该再叠一行「正在处理…」（两个进行中指示互相打架）。 */
+function lastIsStreamingAssistant(blocks: ThreadBlock[]): boolean {
+  const last = blocks[blocks.length - 1];
+  return last?.kind === "assistant" && last.streaming;
+}
 
 export function ChildSessionPage({
   sessionId,
@@ -89,6 +97,9 @@ export function ChildSessionPage({
   const context = state?.context ?? null;
   const stats = state?.stats ?? null;
   const model = state?.model ?? "";
+  // 子会话的忙闲（CHILD_BUSY_HINTS 兜底置真 / 轮末 busy=false 翻回）：
+  // 驱动页头忙点与时间线尾部的「正在处理…」指示。
+  const busy = Boolean(state?.busy);
   // todo 契约批②：子会话自己的计划条——数据 = 该子会话 state 的 todos
   //（双投已把带 dispatch_id 的 todo.updated 归约进子会话 state，零新机制）。
   // 派发结束定格后显示定格值。**挂载点 = Composer 的 todos prop**（2026-12 用户
@@ -115,6 +126,9 @@ export function ChildSessionPage({
     <div className="child-session-page">
       <div className="child-session-head">
         <span className="child-session-title">子会话</span>
+        {/* 忙闲点：与会话侧栏同一套件（.s-dot，busy 时加 .live 呼吸蓝点）——
+         *  子会话在跑时页头一眼可辨；轮末 busy=false 翻回，恢复普通灰点。 */}
+        <span className={"s-dot" + (busy ? " live" : "")} aria-hidden />
         <span className="child-session-id mono" title={sessionId}>{sessionId}</span>
         {/* 子会话自己的模型：缺席（老后端/未配置）就不渲染这一项，不显示假名字 */}
         {model !== "" && <span className="child-session-model mono" title={`子会话用的模型：${model}`}>{model}</span>}
@@ -147,6 +161,16 @@ export function ChildSessionPage({
                 // readOnly：不渲染用户气泡的动作条（撤回/编辑在这里没有意义，见 Block 的说明）
                 <Block key={block.uid} block={block} onConfirm={handleConfirm} onAnswer={handleAnswer} readOnly />
               ))}
+              {/* 生成中且还没有任何输出时显示思考 shimmer（与主时间线同一形态、同一文案：
+               *  Thread.tsx 对 state.busy && !lastIsStreamingAssistant 的呈现原样复刻——
+               *  busy 的信号来自子会话自己的 state（CHILD_BUSY_HINTS 兜底置真 + 轮末
+               *  busy=false 翻回），流式打字光标与思考块由共用的 Block/AnswerBody 自带，
+               *  这里补的是容器级指示：工具执行中 / 等首字时时间线尾部不空着。 */}
+              {busy && !lastIsStreamingAssistant(blocks) && (
+                <div className="msg">
+                  <ThinkingState text="正在处理…" />
+                </div>
+              )}
               {/* 跟随锚点：useStickyFollow 靠它定位滚动容器（.thread → .child-session-body） */}
               <div ref={endRef} />
             </div>
@@ -166,7 +190,7 @@ export function ChildSessionPage({
        *  CancelChild 停掉真正在跑的子轮（子会话运行时不在 server.sessions 里）。 */}
       <Composer
         readOnly
-        busy={Boolean(state?.busy)}
+        busy={busy}
         context={context}
         stats={stats}
         todos={todos}

@@ -484,6 +484,13 @@
   font-weight: 600;
   color: var(--fg);
 }
+/* 页头忙闲点：沿用会话侧栏的 .s-dot（composer.css）+ .live 呼吸蓝（topbar.css
+ * 的 @keyframes pulse，responsive.css 的 reduced-motion 关停同一条规则覆盖）。
+ * 侧栏点的尺寸是给 5px 行距设计的，页头行高更大——这里放大到 6px 让它不显小。 */
+.child-session-head .s-dot {
+  width: 6px;
+  height: 6px;
+}
 /* 子会话 id：等宽 + 低对比度——它是标识符，不是内容（与卡头的 .dispatch-session 同款） */
 .child-session-id {
   flex: none;
