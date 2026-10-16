@@ -26,7 +26,6 @@
 package main
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -112,8 +111,16 @@ func readPendingManifest(pendingDir string) (*UpdateManifestV1, error) {
 
 // runApplyUpdate 执行引导：换 asar → 拉壳 → 收尾。返回 error 时清单保留
 // （下次启动再试——中途失败的替换重跑是幂等的：rename 目标不存在就跳过）。
-func runApplyUpdate(pendingDir string, m *UpdateManifestV1) error {
+func runApplyUpdate(pendingDir string, m *UpdateManifestV1) (err error) {
 	aLog := newApplyLogger(pendingDir)
+	// 失败路径也要关日志句柄——Windows 上打开中的文件不可删，句柄不关
+	// pending 目录清不掉（连测试的 TempDir 清理都会被卡死）。
+	defer closeApplyLogger(pendingDir)
+	defer func() {
+		if err != nil {
+			aLog("引导替换失败: %v", err)
+		}
+	}()
 	aLog("引导替换开始: 目标=%s 新=%s 壳=%s 版本=%s", m.TargetAsar, m.NewAsar, m.ShellExe, m.ExpectedVersion)
 
 	// 壳 exe 必须在场（不然拉不起来——替换就别做了，省得白换）。
@@ -156,19 +163,21 @@ func runApplyUpdate(pendingDir string, m *UpdateManifestV1) error {
 
 	// 拉起新壳。无论成败都要收尾：拉不起来用户手动开（老 asar 已经换成新的
 	// 了——替换本身是成功的，别因为拉壳失败回滚掉它）。
-	if err := startShell(m, aLog); err != nil {
-		aLog("拉起新壳失败（用户需手动打开）: %v", err)
+	if serr := startShell(m, aLog); serr != nil {
+		aLog("拉起新壳失败（用户需手动打开）: %v", serr)
 	}
+	// 收尾前先关日志句柄——Windows 上打开中的文件不可删，日志句柄不关，
+	// pending 目录永远清不掉（首个真机试跑实测抓到）。
+	closeApplyLogger(pendingDir)
 	if err := os.RemoveAll(pendingDir); err != nil {
 		aLog("清理 pending 目录失败（留待下次清理）: %v", err)
 	} else {
-		aLog("引导完成，pending 目录已清理")
+		log.Printf("更新引导: pending 目录已清理")
 	}
 	log.Printf("更新引导: asar 替换完成（版本 %s）", m.ExpectedVersion)
 	return nil
 }
 
-// awaitTargetReleasable 等 asar 的句柄被释放：Windows 上对被映射的文件
 // rename 会失败（Access Denied），成功即已释放。重试到 60s。
 func awaitTargetReleasable(target string, aLog func(string, ...any)) error {
 	if _, err := os.Stat(target); err != nil {
@@ -248,6 +257,13 @@ func startShell(m *UpdateManifestV1, aLog func(string, ...any)) error {
 		dir = filepath.Dir(m.ShellExe)
 	}
 	args := m.ShellArgs
+	// Windows 的 os.StartProcess 把第一个参数同时当 argv[0]（程序名）与命令行
+	// 第一段——传参必须把 exe 路径放回 args[0]，否则 fakeshell 的 -selftest 会
+	// 被当成程序名（首个真机试跑实测抓到：StartProcess(exe, ["-selftest", …])
+	// 实际执行的是「-selftest 这个程序」）。
+	if len(args) == 0 || args[0] != m.ShellExe {
+		args = append([]string{m.ShellExe}, args...)
+	}
 	// os.StartProcess 不走 PATH 解析之外的 shell，参数按 argv 原样传——
 	// Windows 上 StartProcess 会把 args 拼进命令行（引号转义由 Go 处理）。
 	p, err := os.StartProcess(m.ShellExe, args, &os.ProcAttr{
@@ -263,27 +279,51 @@ func startShell(m *UpdateManifestV1, aLog func(string, ...any)) error {
 }
 
 // newApplyLogger 返回同时写 stderr（服务/控制台日志）与 update-pending 下
-// apply-update.log 的日志函数（写不进去不反噬主流程）。
+// apply-update.log 的日志函数（写不进去不反噬主流程）。日志句柄由本函数
+// 注册进 closeHook，pending 目录收尾前由 closeApplyLogger 释放——Windows
+// 上打开中的文件不可删，句柄不关 RemoveAll 永远清不掉目录。
 func newApplyLogger(pendingDir string) func(string, ...any) {
 	f, err := os.OpenFile(filepath.Join(pendingDir, applyUpdateLog), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	closed := false
+	prev := closeApplyLoggerHook
+	closeApplyLoggerHook = func(string) {
+		if err == nil && !closed {
+			_ = f.Close()
+			closed = true
+		}
+		closeApplyLoggerHook = prev // 恢复（多层嵌套场景防御，通常只有一层）
+	}
+	if err != nil {
+		return func(format string, args ...any) {
+			log.Printf("更新引导: "+format, args...)
+		}
+	}
 	return func(format string, args ...any) {
+		if closed {
+			log.Printf("更新引导: "+format, args...)
+			return
+		}
 		line := fmt.Sprintf("[%s] %s\n", time.Now().Format(time.RFC3339), fmt.Sprintf(format, args...))
 		log.Print("更新引导: " + fmt.Sprintf(format, args...))
-		if err == nil {
-			_, _ = f.WriteString(line)
+		if _, werr := f.WriteString(line); werr != nil {
+			// 写失败就退化为纯 stderr 日志，别让日志问题反噬主流程
+			closeApplyLogger(pendingDir)
 		}
 	}
 }
 
+// closeApplyLogger 在 pending 目录收尾前调用：释放日志句柄，RemoveAll 才
+// 能成功（Windows 上打开中的文件不可删——与 asar 同一条铁律）。真正的关闭
+// 逻辑在 newApplyLogger 闭包里持有句柄——用包级 hook 让单测能驱动，同时
+// 保持 runApplyUpdate 的签名干净。
+var closeApplyLoggerHook = func(pendingDir string) {}
+
+func closeApplyLogger(pendingDir string) { closeApplyLoggerHook(pendingDir) }
+
 // applyUpdateOnServeExit 是 --stdin-watch 退出路径的挂载：ctx 取消（EOF）后
-// 检查 pending。它**阻塞直到引导完成**——本进程已是「老壳拉起的老后端」，
-// stdin 已 EOF（壳在退出），本进程没有继续服务的意义；引导完成后进程退出，
-// 新壳拉起自己的新后端。
+// 在主 goroutine 调用（main.go 的 stdin-watch 分支——runServe 返回之后），
+// 阻塞直到引导完成。本进程已是「老壳拉起的老后端」，stdin 已 EOF（壳在
+// 退出），引导完成后进程退出，新壳拉起自己的新后端。
 func applyUpdateOnServeExit(pendingDir string) {
-	// 给壳一点时间把 will-quit 收尾做完（其实 EOF 到达时壳多半已死，但
-	// asar 释放的判定靠 rename 重试，这里不猜）。
-	ctx, cancel := context.WithTimeout(context.Background(), 70*time.Second)
-	defer cancel()
-	_ = ctx // awaitTargetReleasable 自带重试窗；保留 context 形状给将来扩展
 	applyUpdatePending(pendingDir)
 }

@@ -72,18 +72,31 @@ func main() {
 			// 取消 → 优雅退出。等价于 Job Object KILL_ON_JOB_CLOSE 的孤儿兜底，
 			// 但零原生模块（Electron 主进程没有 Win32 API 面）。
 			//
-			// EOF 后除了优雅收尾，还要接一次更新引导：应用内更新的 asar 冷
-			// 替换已由壳写进 update-pending 清单、托付给本进程——壳退出后的
-			// 换 asar + 拉新壳由引导完成（applyupdate.go）。引导**阻塞到完成**
-			// 才返回：本进程 stdin 已断，没有继续服务的意义。
+			// EOF 还兼着更新引导的触发：应用内更新的 asar 冷替换已由壳写进
+			// update-pending 清单、托付给本进程——壳退出后的换 asar + 拉新壳
+			// 由引导完成（applyupdate.go）。引导必须在 runServe **返回之后**
+			// 于主 goroutine 执行：goroutine 里做会被随后的进程退出杀掉
+			// （首个真机推演抓到）。
+			stdinEOF := make(chan struct{})
 			ctx, stop = context.WithCancel(ctx)
 			defer stop()
 			go func() {
 				_, _ = io.Copy(io.Discard, os.Stdin)
 				fmt.Fprintln(os.Stderr, "stdin 已关闭（宿主退出）——优雅收尾")
+				close(stdinEOF)
 				stop()
-				applyUpdateOnServeExit(updatePendingDir(path))
 			}()
+			if err := runServe(ctx, path, *addr, sdir); err != nil {
+				fmt.Fprintf(os.Stderr, "后端退出: %v\n", err)
+			}
+			// 服务已收尾。EOF = 壳在退出：执行更新引导（阻塞到完成，本进程
+			// stdin 已断，没有继续服务的意义）。没 EOF = 用户 Ctrl+C：原样退出。
+			select {
+			case <-stdinEOF:
+				applyUpdateOnServeExit(updatePendingDir(path))
+			default:
+			}
+			return
 		}
 		if err := runServe(ctx, path, *addr, sdir); err != nil {
 			fmt.Fprintf(os.Stderr, "后端退出: %v\n", err)

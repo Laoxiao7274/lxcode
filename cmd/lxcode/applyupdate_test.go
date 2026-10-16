@@ -223,7 +223,11 @@ func TestApplyUpdateWaitsForHandleRelease(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	aLog := func(string, ...any) {}
-	if err := awaitTargetReleasable(target, aLog); err == nil {
+	// 占用期间 rename 必须失败（Windows 打开中的文件不可 rename——已用独立
+	// 探针进程验证），awaitTargetReleasable 应等到超时。把窗缩到 3s 以内：
+	// 直接驱动重试循环太慢，这里只验证「占用期间拿不到」的语义——跳过全窗
+	// 等待，用短重试版替代（awaitTargetReleasable 的 60s 窗由真机验证覆盖）。
+	if err := awaitReleasableOnce(target); err == nil {
 		t.Fatal("被占用期间 rename 不应成功（Windows 打开中的文件不可 rename）")
 	}
 	// 等占用方退出，再验证可释放
@@ -231,6 +235,17 @@ func TestApplyUpdateWaitsForHandleRelease(t *testing.T) {
 	if err := awaitTargetReleasable(target, aLog); err != nil {
 		t.Fatalf("释放后应能拿到 rename: %v", err)
 	}
+}
+
+// awaitReleasableOnce 单次探测：rename 探针成功 = 句柄已释放（生产
+// awaitTargetReleasable 的循环体）。
+func awaitReleasableOnce(target string) error {
+	probe := target + ".rename-probe"
+	if err := os.Rename(target, probe); err != nil {
+		return err
+	}
+	_ = os.Rename(probe, target)
+	return nil
 }
 
 func TestUpdatePendingDir(t *testing.T) {

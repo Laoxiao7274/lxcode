@@ -4,10 +4,12 @@
 //   resources/bin/lxcode.exe）
 // 两级更新：
 //   后端热替换 = 停后端 → 旧 exe 改名 .old → 落新 exe → 重启后端（壳不退）
-//   asar 冷替换 = 暂存到 userData/update-pending + 脱离进程的替换脚本：
-//     等壳退出 → 换 asar → 重新拉起（运行中 asar 被 Chromium 映射，换不了）
+//   asar 冷替换 = 暂存到 userData/update-pending + 写引导清单（manifest.json）：
+//     壳退出（app.quit）→ 后端 --stdin-watch 收到 EOF → 后端引导替换
+//     （换 asar → 拉新壳，见 cmd/lxcode/applyupdate.go）。0.2.12 及更早走
+//     PowerShell 冷替换脚本，已退役（2026-12 用户拍板）。
 // 解压用系统自带 bsdtar（与 scripts/build.mjs 造 zip 同一套零依赖纪律）。
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { appendFileSync, createWriteStream, existsSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { readdirSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -16,7 +18,6 @@ import { pipeline } from "node:stream/promises";
 import { Readable, Transform } from "node:stream";
 import { app, BrowserWindow, ipcMain } from "electron";
 import { backendExePath, restartBackend } from "./sidecar";
-import { buildApplyScript } from "./update-script";
 import { createUpdatePoller, manualCheckOutcome, nextCheckDelayMs, type UpdatePoller } from "./update-poll";
 import { notifyTrayUpdate } from "./tray";
 
@@ -143,10 +144,10 @@ export function updateHandlers(): void {
   ipcMain.handle("update:download", () => downloadAndStage());
   ipcMain.handle("update:apply", () => applyUpdate());
   ipcMain.handle("update:restart", () => {
-    // 冷替换脚本在壳退出后完成换 asar 并重新拉起。落一条日志标记重启意图——
-    // 0.2.9→0.2.10 事故排查时靠「应用完成」到下一条日志之间的空白对账，这条
-    // 让下次一眼能看出 quit 是否发生、之后脚本是否接住了。
-    ulog("用户请求重启（冷替换脚本接管：等壳退出 → 换 asar → 拉起新壳）");
+    // 退出重启：asar 冷替换的排程（引导清单）在 applyUpdate 时已写好——壳
+    // 退出 → 后端 --stdin-watch 收到 EOF → 引导替换（换 asar → 拉新壳）。
+    // 无 pending 清单时这就是一次普通重启（现状语义）。
+    ulog("用户请求重启（壳退出后由后端引导替换 asar）");
     app.quit();
   });
 }
@@ -306,16 +307,19 @@ async function applyUpdate(): Promise<{ ok: boolean; needsRestart: boolean }> {
     ulog("后端热替换完成");
   }
 
-  // 2) asar 冷替换排程（仅产线）：暂存 + 脱离进程的替换脚本（等壳退出 → 换 → 重启壳）
-  //    注意 newAsar 的判定与拷贝必须走 originalFs：Electron 补丁版 fs 对 *.asar 路径
-  //    会当归档解析（existsSync 语义漂移、copyFileSync 直接 ENOENT）。
-  //    脚本用 PowerShell 而不是 cmd（黑窗根因修复，详见 update-script.ts 头注）；
-  //    spawn 端 windowsHide（无 detached——见下方 spawn 处的事故注释）——
-  //    PS 自身无控制台，cmdlet 又零子进程，全链路无任何可见窗口。
+  // 2) asar 冷替换排程（仅产线）：暂存 + 写引导清单，托付给**老后端进程**——
+  //    壳退出（app.quit）→ 后端 --stdin-watch 收到 EOF → 执行引导（换 asar →
+  //    拉新壳）。旧链路的 PowerShell 冷替换脚本已退役：PS 冷替换
+  //    是 0.2.9→0.2.10 事故的策源地，且多一个脱离进程的执行体就多一类「没人
+  //    接住」的失败模式——后端本来就在，stdin EOF 就是天然的「壳已退出」信号。
+  //    注意 newAsar 的判定与拷贝必须走 originalFs：Electron 补丁版 fs 对
+  //    *.asar 路径会当归档解析（existsSync 语义漂移、copyFileSync 直接 ENOENT）。
   const newAsar = join(stagedDir, "resources", "app.asar");
   if (loadOriginalFs().existsSync(newAsar) && app.isPackaged) {
     const pending = join(app.getPath("userData"), "update-pending");
     try {
+      // 幂等：旧清单（上次更新没跑完的）直接清掉再写新的——后端只认最新的。
+      // 0.2.12 及更早版本残留的是 apply-update.ps1（旧 PS 链路），一并清除。
       await rmWithRetry(pending, "清理冷替换暂存目录（update-pending）", true);
       mkdirSync(pending, { recursive: true });
       loadOriginalFs().copyFileSync(newAsar, join(pending, "app.asar"));
@@ -325,40 +329,26 @@ async function applyUpdate(): Promise<{ ok: boolean; needsRestart: boolean }> {
     const asar = join(process.resourcesPath, "app.asar");
     const installDir = join(process.resourcesPath, "..");
     const shellExe = join(installDir, `${app.getName()}.exe`);
-    const scriptPath = join(pending, "apply-update.ps1");
+    // 引导清单（v1，格式见 cmd/lxcode/applyupdate.go）：后端在 stdin EOF 与
+    // 启动时都会读它。writeFileSync+rename 的原子写防后端读到半份 JSON。
+    const manifest = {
+      version: 1,
+      new_asar: join(pending, "app.asar"),
+      target_asar: asar,
+      shell_exe: shellExe,
+      shell_args: [],
+      expected_version: lastManifest?.version ?? "",
+      created_at_unix: Math.floor(Date.now() / 1000),
+    };
+    const manifestPath = join(pending, "manifest.json");
+    const manifestTmp = join(pending, "manifest.json.tmp");
     try {
-      // 带 BOM 写入：Windows PowerShell 5.1 对无 BOM 文件按 ANSI 解码，路径含
-      // 非 ASCII（中文用户名）会乱码 → 替换错路径。BOM 是 PS5.1 的 UTF-8 信号。
-      writeFileSync(scriptPath, "\uFEFF" + buildApplyScript({
-        asar,
-        pendingAsar: join(pending, "app.asar"),
-        shellExe,
-        imageName: `${app.getName()}.exe`,
-      }), "utf8");
+      writeFileSync(manifestTmp, JSON.stringify(manifest, null, 2), "utf8");
+      renameSync(manifestTmp, manifestPath);
     } catch (e) {
-      throw humanFsError(e, "冷替换脚本写入失败");
+      throw humanFsError(e, "引导清单写入失败");
     }
-    // -NonInteractive：脚本绝不等输入（卡住就超时退出，不给用户一个能敲 Ctrl+C
-    //   的交互控制台）；-ExecutionPolicy Bypass：单文件脚本不受系统策略拦。
-    // 0.2.10 修复（detached 事故，详见 update-script.ts 头注）：Windows 上
-    // detached:true 与 windowsHide:true 同时给会映射出 MSDN 禁止同用的创建
-    // 标志（DETACHED_PROCESS + CREATE_NO_WINDOW）——cmd.exe 鲁棒，PowerShell
-    // 5.1 在此组合下立即静默退出且 -File 脚本零执行（0.2.9→0.2.10 重启失灵根因）。
-    // 去掉 detached：非 detached 子进程在壳退出后照常存活（sidecar 的
-    // --stdin-watch 兜底正是依赖这一点），windowsHide 独自负责不弹窗。
-    // error 监听必须有：spawn 失败（如 powershell 被裁剪/PATH 异常）是异步
-    // error 事件，无人监听会变成主进程 uncaughtException。
-    const child = spawn("powershell", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", scriptPath], {
-      stdio: "ignore",
-      windowsHide: true, // PS 自身的控制台不可见（子命令全是 cmdlet，无孙进程）
-    });
-    child.on("error", (e) => {
-      // 脚本没跑起来 = 无人换 asar 也无人拉起新壳——但壳还没退出（本 handler
-      // 在 app.quit() 之前执行），此时如实记日志即可，不阻断重启流程。
-      ulog("冷替换脚本启动失败（asar 将不会被替换，本次重启维持旧版）", `code=${(e as NodeJS.ErrnoException).code ?? ""} ${e.message}`);
-    });
-    child.unref();
-    ulog("asar 冷替换已排程", "壳退出后由 apply-update.ps1 完成");
+    ulog("asar 冷替换已排程", "清单已写，壳退出后由后端引导替换");
   }
 
   // 清理本次的暂存子目录（exe 已落位、asar 已暂存到 pending）。更新本身已完成，
