@@ -23,10 +23,32 @@
 //   * 下载 id 持久化进 prefs：DownloadManager 的任务是系统级持久的，app 进程
 //     被杀/后台回收后重启能按 id 找回进行中的下载（横幅不静默回「空闲」）；
 //   * 防重复入队：同 URL 已有进行中任务时复用，不重复 enqueue；
-//   * 旧 APK 清理：enqueue 前清掉 Download/lxcode/ 里的旧版本文件（保留当前
-//     任务的），防多版本 APK 堆积；
+//   * 旧 APK 清理：enqueue 前清掉私有目录里的旧版本文件（保留当前任务的），
+//     防多版本 APK 堆积；0.2.8 前落在公共 /sdcard/Download/lxcode/ 的旧文件
+//     在 enqueue 时一并清理（落点已迁移，公共目录不再留 lxcode 的文件）；
 //   * 拉起安装器失败（ActivityNotFoundException——国产 ROM 无安装器 / 未知来源
-//     未授权等）给用户人话提示 + 文件路径，可去系统下载目录手动装。
+//     未授权等）给用户人话提示——私有目录文件管理器看不到，「手动安装」路径不再
+//     可行，指引改为重新下载（installerLaunchHint）。
+//
+// 校验与安装合并（2026-12，F-Droid 审计纪律：**不可能绕过验证提交安装**）：
+//   * verify() 与 install() 原是两个公开方法、UI 层串联——状态机演化可能引入
+//     「跳过校验直接装」。现合并为 installVerified() 单一入口：内部先 sha256
+//     校验（sha256 缺席的老元数据跳过放行的语义保留），失败即短路不安装；
+//     verify/install 从公开面移除（verifyApkFile/launchInstaller 均 private 面）。
+//
+// 下载落点私有目录（2026-12）：
+//   * DownloadManager 的目标从公共 /sdcard/Download/lxcode/ 改为 app 私有外部
+//     files 目录（setDestinationInExternalFilesDir——DownloadManager 官方支持的
+//     app 外部 files 落点）：去掉外部存储状态依赖与多 app 竞争；
+//   * FileProvider 的 file_paths.xml 相应改 external-files-path；
+//   * 安装完成（ACTION_PACKAGE_REPLACED，system_server 发的系统广播，不受
+//     RECEIVER_NOT_EXPORTED 限制）清下载状态/横幅回空闲/删已装 APK 文件；
+//     防御式兜底：横幅状态由 update 元数据（versionCode 比对，isRemoteNewer）
+//     驱动而非只靠广播。
+//
+// 下载前空间预检（2026-12）：
+//   * enqueue 前 StatFs 检查可用空间 ≥ APK size × 1.2，不足直接人话失败
+//     （spaceShortfallMessage）——不浪费流量在中途 ERROR_INSUFFICIENT_SPACE 上。
 package com.moyunteng.lxcode.remote.update
 
 import android.app.DownloadManager
@@ -40,9 +62,11 @@ import android.os.Build
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
+import android.os.StatFs
 import android.util.Log
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileInputStream
@@ -54,16 +78,19 @@ sealed interface DownloadState {
     /** 排队/下载中（[total] ≤ 0 = 长度未知，进度条转圈）。 */
     data class Running(val downloaded: Long, val total: Long) : DownloadState
 
-    /** 下载完成（等待 sha256 校验/安装；校验由 [ApkDownloader.verify] 做）。 */
+    /** 下载完成（等待 sha256 校验/安装；校验由 [ApkDownloader.installVerified] 内部做）。 */
     data class Ready(val apkUri: Uri, val file: File) : DownloadState
 
     /** 失败（[retryable] = 可重试：网络/校验失败；false = 环境问题如无下载器）。 */
     data class Failed(val message: String, val retryable: Boolean) : DownloadState
+
+    /** 空闲（安装完成后由 [ApkDownloader.onInstalled] 置上；UI 收到即清横幅）。 */
+    data object Idle : DownloadState
 }
 
 /**
  * APK 下载器。一个实例挂在应用状态上（横幅跨重组保持进度），
- * 生命周期：[enqueue] → 轮询进度 → 完成广播 → Ready → [verify] → [install]。
+ * 生命周期：[enqueue] → 轮询进度 → 完成广播 → Ready → [installVerified]（校验+安装单入口）。
  */
 class ApkDownloader(private val context: Context) {
 
@@ -75,11 +102,29 @@ class ApkDownloader(private val context: Context) {
         private const val KEY_DOWNLOAD_ID = "download_id"
         private const val KEY_DOWNLOAD_URL = "download_url"
 
-        /** DownloadManager 落点目录（/sdcard/Download/lxcode/，与 file_paths.xml 一致）。 */
-        fun downloadsDir(): File = File(
-            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-            "lxcode",
-        )
+        /** 空间预检安全系数：可用空间须 ≥ APK size × 1.2（覆盖文件系统开销/解包临时占用）。 */
+        const val SPACE_HEADROOM_FACTOR = 1.2
+
+        /**
+         * 下载落点目录：app 私有外部 files 目录的 updates 子目录
+         * （getExternalFilesDir——DownloadManager 的 setDestinationInExternalFilesDir
+         * 官方支持的 app 落点；用户/其它 app 不可见，无外部存储状态依赖与竞争）。
+         */
+        fun downloadsDir(context: Context): File {
+            val base = context.getExternalFilesDir("updates")
+                ?: File(context.filesDir, "updates") // 外部存储不可用：退内部私有目录
+            return base
+        }
+
+        /** 空间预检的人话失败消息（纯函数，JVM 可测）。 */
+        fun spaceShortfallMessage(neededBytes: Long): String {
+            val mb = (neededBytes + 1024 * 1024 - 1) / (1024 * 1024)
+            return "存储空间不足，需要约 ${mb} MB 可用空间，请清理后重试"
+        }
+
+        /** 空间预检判定（纯函数，JVM 可测）：availableBytes ≥ size × 1.2 才放行。 */
+        fun hasEnoughSpace(availableBytes: Long, apkSize: Long): Boolean =
+            availableBytes >= (apkSize.toDouble() * SPACE_HEADROOM_FACTOR).toLong()
     }
 
     /** 当前下载任务（null = 空闲）。AtomicReference：完成广播在 binder 线程到达。 */
@@ -124,10 +169,63 @@ class ApkDownloader(private val context: Context) {
     }
 
     /**
-     * 入队下载。落点 = 公开下载目录的 lxcode 子目录（DownloadManager 目标须在公有目录；
-     * 子目录隔离，不污染用户下载列表根）。
-     * 同 URL 已有进行中任务 → 复用（防连点入队多个任务）；
-     * 同名旧文件先删（重试场景不覆盖）+ 目录里的其它旧 APK 顺带清理（多版本堆积）。
+     * 安装完成观察器：ACTION_PACKAGE_REPLACED（本包被覆盖安装）→ 清下载状态/
+     * 删已装 APK 文件/横幅回空闲。
+     *
+     * NOT_EXPORTED 可达性论证（上次教训：DownloadManager 完成广播由 media uid 发，
+     * 我们曾以为 NOT_EXPORTED 收不到系统侧广播——区别在于**发送方是谁**）：
+     * PACKAGE_REPLACED 由 **system_server（system uid）**发出，属于系统广播——
+     * RECEIVER_NOT_EXPORTED 只挡「其它 app」发的广播，系统（system/root/phone shell
+     * uid）发的广播不受此限制，NOT_EXPORTED 注册可达（Android 14 行为变更文档：
+     * 「system broadcasts sent by the system are still delivered」）。
+     * 防御式再包一层：横幅是否仍显示由 update 元数据的 versionCode 比对
+     * （[isRemoteNewer]，AppRoot 侧）驱动而非只靠这条广播——广播丢失时
+     * 已装新版后横幅也会自行消失。
+     */
+    private val installObserver = object : BroadcastReceiver() {
+        override fun onReceive(ctx: Context, intent: Intent) {
+            val data = intent.data ?: return
+            val pkg = data.schemeSpecificPart ?: return
+            if (pkg != context.packageName) return // 只认本包被替换
+            Log.i(TAG, "ACTION_PACKAGE_REPLACED：本包已更新，清理下载状态与已装 APK")
+            onInstalled()
+        }
+    }
+
+    private var installObserverRegistered = false
+
+    private fun registerInstallObserver() {
+        if (installObserverRegistered) return
+        installObserverRegistered = true
+        val filter = IntentFilter(Intent.ACTION_PACKAGE_REPLACED)
+        filter.addDataScheme("package")
+        if (Build.VERSION.SDK_INT >= 33) {
+            // RECEIVER_NOT_EXPORTED + data scheme=package + 包名过滤：收到面最小化
+            context.registerReceiver(installObserver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            context.registerReceiver(installObserver, filter)
+        }
+    }
+
+    /** 本包被覆盖安装完成（广播路径与防御式调用共用）：清任务状态、删已装 APK 文件。 */
+    fun onInstalled() {
+        handler.removeCallbacksAndMessages(null)
+        prefs.edit().remove(KEY_DOWNLOAD_ID).remove(KEY_DOWNLOAD_URL).apply()
+        val cur = active.get()
+        active.set(null)
+        cur?.let {
+            if (it.file.delete()) Log.i(TAG, "已删除已安装的 APK：${it.file.name}")
+            else Log.w(TAG, "已装 APK 删除失败（下次 enqueue 清理）：${it.file.name}")
+        }
+        onState?.invoke(DownloadState.Idle)
+    }
+
+    /**
+     * 入队下载。落点 = app 私有外部 files 目录 updates 子目录
+     * （setDestinationInExternalFilesDir——DownloadManager 官方支持的 app 落点；
+     * 通知栏可见性不变）。同 URL 已有进行中任务 → 复用（防连点入队多个任务）；
+     * 同名旧文件先删（重试场景不覆盖）+ 目录里的其它旧 APK 顺带清理（多版本堆积），
+     * 并清理 0.2.8 前落在公共 /sdcard/Download/lxcode/ 的遗留文件。
      */
     fun enqueue(release: ApkRelease) {
         val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as? DownloadManager
@@ -135,6 +233,24 @@ class ApkDownloader(private val context: Context) {
             Log.w(TAG, "DownloadManager 不可用（设备没有系统下载服务）")
             onState?.invoke(DownloadState.Failed("设备没有系统下载服务", retryable = false))
             return
+        }
+
+        // 空间预检（缺口3）：可用空间 ≥ APK size × 1.2 才入队——不足直接人话失败，
+        // 不浪费流量在中途 ERROR_INSUFFICIENT_SPACE 上。size 未知（≤0）跳过预检
+        // （元数据缺 size 不是拒绝下载的理由，DownloadManager 自身的空间检查兜底）。
+        if (release.size > 0) {
+            val available = try {
+                val dir = downloadsDir(context)
+                StatFs(dir.absolutePath).availableBytes
+            } catch (e: Exception) {
+                Log.w(TAG, "空间预检 StatFs 失败（放行，交给 DownloadManager 兜底）", e)
+                Long.MAX_VALUE
+            }
+            if (!hasEnoughSpace(available, release.size)) {
+                Log.w(TAG, "空间预检不足：可用=$available 需要≈${(release.size * SPACE_HEADROOM_FACTOR).toLong()}")
+                onState?.invoke(DownloadState.Failed(spaceShortfallMessage(release.size), retryable = true))
+                return
+            }
         }
 
         // 防重复：同 URL 的任务已在跑 → 直接复用当前状态（连点「下载并安装」不入队第二个）
@@ -150,19 +266,23 @@ class ApkDownloader(private val context: Context) {
         }
 
         registerReceiver()
+        registerInstallObserver()
 
-        val dir = downloadsDir()
+        val dir = downloadsDir(context)
+        dir.mkdirs()
         val file = File(dir, release.fileName())
         // 旧 APK 清理：删同名旧文件 + 目录里其它 .apk（保留下载中的当前目标，
-        // 但当前目标此刻也不该存在——重试前它必然已被删或校验失败删过）
+        // 但当前目标此刻也不该存在——重试前它必然已被删或校验失败删过）；
+        // 落点已迁私有目录，公共 /sdcard/Download/lxcode/ 的遗留文件一并清理。
         cleanupStaleApks(dir, keep = file)
+        cleanupLegacyPublicDir()
 
         val req = DownloadManager.Request(Uri.parse(release.url)).apply {
             setTitle("lxcode v${release.version}")
             setDescription("lxcode 应用更新包")
             setMimeType("application/vnd.android.package-archive")
             setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-            setDestinationUri(Uri.fromFile(file))
+            setDestinationInExternalFilesDir(context, "updates", file.name)
         }
         val id = try {
             dm.enqueue(req)
@@ -179,11 +299,20 @@ class ApkDownloader(private val context: Context) {
         startPolling(id)
     }
 
-    /** 旧 APK 清理：删目录里除 [keep] 外的所有 .apk（多版本堆积；不碰子目录/其它文件）。 */
-    private fun cleanupStaleApks(dir: File, keep: File) {
+    /** 0.2.8 前落在公共 /sdcard/Download/lxcode/ 的遗留 APK 清理（落点已迁移）。 */
+    private fun cleanupLegacyPublicDir() {
+        val legacy = File(
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+            "lxcode",
+        )
+        cleanupStaleApks(legacy, keep = null)
+    }
+
+    /** 旧 APK 清理：删目录里除 [keep]（null = 全删）外的所有 .apk（多版本堆积；不碰子目录/其它文件）。 */
+    private fun cleanupStaleApks(dir: File, keep: File?) {
         val list = dir.listFiles() ?: return
         for (f in list) {
-            if (f.isFile && f.name.endsWith(".apk") && f.absolutePath != keep.absolutePath) {
+            if (f.isFile && f.name.endsWith(".apk") && f.absolutePath != keep?.absolutePath) {
                 if (f.delete()) Log.i(TAG, "清理旧安装包：${f.name}")
                 else Log.w(TAG, "旧安装包删除失败（下次再试）：${f.name}")
             }
@@ -216,7 +345,7 @@ class ApkDownloader(private val context: Context) {
                 return
             }
             val status = c.getInt(c.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
-            val file = File(downloadsDir(), fileNameFromUrl(url))
+            val file = File(downloadsDir(context), fileNameFromUrl(url))
             val release = ApkRelease(
                 version = "", // 冷启动恢复只有 URL 可依赖；版本名不参与下载/校验/安装
                 versionCode = 0,
@@ -326,11 +455,38 @@ class ApkDownloader(private val context: Context) {
     }
 
     /**
-     * sha256 校验（调用方放 IO 线程）。读文件算哈希与 release.sha256 比对：
-     * 通过 → 原样返回 Ready；失败 → Failed(retryable=true) + 删坏文件（提示重试）。
-     * release.sha256 为空（元数据没带哈希）→ 跳过校验直接通过（不因元数据缺字段拒装）。
+     * **校验 + 安装单一入口**（F-Droid 审计纪律：不可能绕过验证提交安装）。
+     * 内部先 sha256 校验（与 release.sha256 比对；sha256 缺席的老元数据跳过放行——
+     * 不因元数据缺字段拒装），失败即短路返回 false **不安装**；
+     * 通过后拉起系统安装器（FileProvider URI + FLAG_GRANT_READ_URI_PERMISSION）。
+     *
+     * 返回 false = 校验失败（横幅已是 Failed 态）或启动失败（ActivityNotFoundException：
+     * 国产 ROM 装了「纯净模式」/ 无包安装器、未知来源未授权被拦）——调用方给用户
+     * 人话提示（[installerLaunchHint]），静默吞掉就是桌面端「更新脚本静默失败」的
+     * 安卓复刻。原 verify()/install() 公开方法已移除——状态机演化不再可能绕过校验。
      */
-    suspend fun verify(state: DownloadState.Ready, release: ApkRelease): DownloadState {
+    fun installVerified(state: DownloadState.Ready, release: ApkRelease): Boolean {
+        val verified = runBlocking { verifyApkFile(state, release) }
+        if (verified !is DownloadState.Ready) {
+            // 校验失败：横幅已经是 Failed 人话态（onState 已带出去），不安装
+            Log.w(TAG, "installVerified 短路：校验未通过，不安装 ${state.file.name}")
+            return false
+        }
+        return launchInstaller(verified)
+    }
+
+    /** 手动安装指引文案：私有目录文件管理器看不到——改为重新下载（不再指路）。 */
+    fun installerLaunchHint(fileName: String): String =
+        "无法自动打开系统安装器（可能被系统拦截）。请回到横幅点「重试」重新下载后安装" +
+            "（文件：$fileName）"
+
+    /**
+     * sha256 校验（[installVerified] 内部步骤，不在公开面）。读文件算哈希与
+     * release.sha256 比对：通过 → 原样返回 Ready；失败 → Failed(retryable=true) +
+     * 删坏文件（提示重试）。release.sha256 为空（元数据没带哈希）→ 跳过校验直接
+     * 通过（不因元数据缺字段拒装）。
+     */
+    private suspend fun verifyApkFile(state: DownloadState.Ready, release: ApkRelease): DownloadState {
         val expected = release.sha256.trim().lowercase()
         if (expected.isEmpty()) return state
         return withContext(Dispatchers.IO) {
@@ -353,12 +509,12 @@ class ApkDownloader(private val context: Context) {
     }
 
     /**
-     * 拉起系统安装器（Ready 之后）。FileProvider URI + FLAG_GRANT_READ_URI_PERMISSION。
+     * 拉起系统安装器（[installVerified] 内部步骤，不在公开面）。
+     * FileProvider URI + FLAG_GRANT_READ_URI_PERMISSION。
      * 返回 false = 启动失败（ActivityNotFoundException：国产 ROM 装了「纯净模式」/
-     * 无包安装器、未知来源未授权被拦）——调用方给用户人话提示（路径可手动装），
-     * 静默吞掉就是桌面端「更新脚本静默失败」的安卓复刻。
+     * 无包安装器、未知来源未授权被拦）。
      */
-    fun install(state: DownloadState.Ready): Boolean {
+    private fun launchInstaller(state: DownloadState.Ready): Boolean {
         return try {
             val i = Intent(Intent.ACTION_VIEW).apply {
                 setDataAndType(state.apkUri, "application/vnd.android.package-archive")
@@ -461,3 +617,7 @@ internal object AppContextHolder {
 internal fun initDownloaderContext(context: Context) {
     AppContextHolder.init(context)
 }
+
+/** 远端 versionCode 是否比本机新（防御式横幅判定的纯函数，JVM 可测）。 */
+internal fun isRemoteNewer(remoteVersionCode: Long, currentVersionCode: Long): Boolean =
+    remoteVersionCode > currentVersionCode

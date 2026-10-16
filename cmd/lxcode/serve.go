@@ -55,6 +55,19 @@ func programDataRoot() string {
 	return filepath.Join(root, "lxcode")
 }
 
+// updatePendingDir 决定更新引导清单目录：LXCODE_UPDATE_PENDING 环境变量 >
+// 配置文件所在目录下的 update-pending。壳侧 updater.ts 写清单时用的是
+// userData/update-pending，而壳 spawn 后端时传 --config 指向 userData/models
+// .json——所以「配置上级」与 userData 是同一目录，两方天然对上。SCM 服务
+// 形态的 config 在 %ProgramData%（没有壳写清单，此目录一般不存在 = 空转，
+// 检查本身无害）；若将来需要，用环境变量显式指路。
+func updatePendingDir(configPath string) string {
+	if env := os.Getenv("LXCODE_UPDATE_PENDING"); env != "" {
+		return env
+	}
+	return filepath.Join(filepath.Dir(configPath), "update-pending")
+}
+
 // runServe 运行后端：装配（config → store → server）+ 热加载 + 监听。
 // ctx 取消即优雅退出（控制台形态接 Ctrl+C，服务形态接 SCM Stop）。
 func runServe(ctx context.Context, path, addr, sessionsDir string) error {

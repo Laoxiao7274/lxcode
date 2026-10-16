@@ -50,6 +50,11 @@ func main() {
 		path := resolveConfigPath(*configPath)
 		sdir := resolveSessionsDir(*sessionsDir, path)
 
+		// 启动时检查更新引导清单（pendingDir 与控制台形态同源——见
+		// updatePendingDir）。上次替换没跑完（壳异常退出、EOF 没来；或 SCM
+		// 服务形态根本没有 stdin watch 路径）时在这里补完。
+		applyUpdatePending(updatePendingDir(path))
+
 		// 服务形态（SCM 启动）：Stop → ctx 取消 → 优雅退出
 		if isWindowsService() {
 			if err := runAsService(path, *addr, sdir); err != nil {
@@ -66,12 +71,18 @@ func main() {
 			// 宿主退出监视：stdin 管道 EOF（壳被强杀时 OS 关闭句柄）→ 派生 ctx
 			// 取消 → 优雅退出。等价于 Job Object KILL_ON_JOB_CLOSE 的孤儿兜底，
 			// 但零原生模块（Electron 主进程没有 Win32 API 面）。
+			//
+			// EOF 后除了优雅收尾，还要接一次更新引导：应用内更新的 asar 冷
+			// 替换已由壳写进 update-pending 清单、托付给本进程——壳退出后的
+			// 换 asar + 拉新壳由引导完成（applyupdate.go）。引导**阻塞到完成**
+			// 才返回：本进程 stdin 已断，没有继续服务的意义。
 			ctx, stop = context.WithCancel(ctx)
 			defer stop()
 			go func() {
 				_, _ = io.Copy(io.Discard, os.Stdin)
 				fmt.Fprintln(os.Stderr, "stdin 已关闭（宿主退出）——优雅收尾")
 				stop()
+				applyUpdateOnServeExit(updatePendingDir(path))
 			}()
 		}
 		if err := runServe(ctx, path, *addr, sdir); err != nil {

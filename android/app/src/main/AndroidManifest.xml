@@ -34,10 +34,11 @@
             </intent-filter>
         </activity>
 
-        <!-- 应用内更新：授权系统安装器读 DownloadManager 落到公开下载目录的 APK
-             （ACTION_VIEW + FLAG_GRANT_READ_URI_PERMISSION；authority 与
-             ApkDownloader.toApkUri 一致）。file_paths 只暴露 downloads-path 的
-             lxcode 子目录——权限最小化，不给全盘。 -->
+        <!-- 应用内更新：授权系统安装器读 DownloadManager 落到 app 私有外部 files
+             目录（getExternalFilesDir("updates")）的 APK（ACTION_VIEW +
+             FLAG_GRANT_READ_URI_PERMISSION；authority 与 ApkDownloader.toApkUri
+             一致）。file_paths 只暴露 external-files-path 的 updates 子目录——
+             权限最小化，不给全盘。 -->
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="com.moyunteng.lxcode.remote.fileprovider"

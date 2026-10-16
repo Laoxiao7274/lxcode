@@ -348,26 +348,48 @@ fun AppRoot(pairUri: String? = null, onPairUriConsumed: () -> Unit = {}) {
         state.updater.resumePendingDownload()
     }
 
-    // 应用内下载流程：Ready（下载完成）→ IO 线程 sha256 校验 → 通过自动拉起安装器
+    // 应用内下载流程：Ready（下载完成）→ installVerified（**校验+安装单入口**：
+    // sha256 失败即短路不安装，F-Droid 纪律「不可能绕过验证提交安装」）。
+    // 拉起安装器失败（国产 ROM 无安装器/未知来源被拦）→ 人话提示走横幅，不静默。
     LaunchedEffect(state.downloadState) {
         val ds = state.downloadState ?: return@LaunchedEffect
-        val release = state.updateAvailable ?: return@LaunchedEffect
+        if (ds is com.moyunteng.lxcode.remote.update.DownloadState.Idle) {
+            // 安装完成广播（PACKAGE_REPLACED）或防御式比对收尾：横幅回空闲
+            state.installHint = null
+            state.downloadState = null
+            state.updateAvailable = null
+            return@LaunchedEffect
+        }
         if (ds is com.moyunteng.lxcode.remote.update.DownloadState.Ready) {
-            val verified = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                state.updater.verify(ds, release)
-            }
-            state.downloadState = verified
-            if (verified is com.moyunteng.lxcode.remote.update.DownloadState.Ready) {
-                // 拉起失败（国产 ROM 无安装器/未知来源被拦）→ 人话提示走横幅，
-                // 不静默：install() 返回 false 就是失败，必须让用户看见。
-                if (!state.updater.install(verified)) {
-                    state.installHint =
-                        "无法自动打开系统安装器（可能被系统拦截）。" +
-                            "请到「文件管理 → Download/lxcode/」手动安装 " +
-                            "（文件：${verified.file.name}）"
-                } else {
+            val release = state.updateAvailable ?: return@LaunchedEffect
+            // installVerified 内部先校验后安装；失败短路（校验失败时 onState 已置 Failed 人话态）
+            if (!state.updater.installVerified(ds, release)) {
+                if (state.downloadState is com.moyunteng.lxcode.remote.update.DownloadState.Failed) {
+                    // 校验失败：横幅已是 Failed 态（带人话），不再叠安装器提示
                     state.installHint = null
+                } else {
+                    state.installHint = state.updater.installerLaunchHint(ds.file.name)
                 }
+            } else {
+                state.installHint = null
+            }
+        }
+    }
+
+    // 防御式横幅收尾（缺口4 兜底）：横幅是否显示由 update 元数据的 versionCode 比对
+    // 驱动而非只靠 PACKAGE_REPLACED 广播——广播丢失（进程被杀/注册时序）时，已装新版
+    // 的用户回到 app 也会因「远端不再比本机新」自动摘掉横幅。
+    LaunchedEffect(state.updateAvailable) {
+        val release = state.updateAvailable ?: return@LaunchedEffect
+        if (!com.moyunteng.lxcode.remote.update.isRemoteNewer(
+                release.versionCode,
+                BuildConfig.VERSION_CODE.toLong(),
+            )
+        ) {
+            state.updateAvailable = null
+            state.installHint = null
+            if (state.downloadState !is com.moyunteng.lxcode.remote.update.DownloadState.Running) {
+                state.downloadState = null
             }
         }
     }

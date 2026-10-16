@@ -183,12 +183,12 @@ fun SessionsScreen(state: MockAppState) {
                         onInstall = {
                             (state.downloadState as? com.moyunteng.lxcode.remote.update.DownloadState.Ready)
                                 ?.let {
-                                    if (!state.updater.install(it)) {
-                                        // 手动兜底路径的同样失败也要可见（横幅提示路径 + 文件名）
-                                        state.installHint =
-                                            "无法自动打开系统安装器（可能被系统拦截）。" +
-                                                "请到「文件管理 → Download/lxcode/」手动安装 " +
-                                                "（文件：${it.file.name}）"
+                                    // 手动兜底路径走同一个 installVerified 单入口
+                                    //（校验失败时 onState 已置 Failed 人话态；此处只补安装器拉起失败的提示）
+                                    if (!state.updater.installVerified(it, release)) {
+                                        if (state.downloadState !is com.moyunteng.lxcode.remote.update.DownloadState.Failed) {
+                                            state.installHint = state.updater.installerLaunchHint(it.file.name)
+                                        }
                                     } else {
                                         state.installHint = null
                                     }
@@ -576,8 +576,9 @@ private fun SessionOpsRow(label: String, icon: ImageVector, onClick: () -> Unit)
  * 更新横幅 —— 应用内下载替换（2026-12 用户拍板，替代旧的「去下载」跳浏览器）。
  *
  * 四态：空闲（「下载并安装」）/ Running（进度条 + 已下载/总量）/ Ready（「安装」，
- * sha256 校验通过后由 AppRoot 自动拉起安装器——这行是手动兜底）/ Failed（人话原因 + 重试）。
- * [installHint] 非空 = 自动/手动拉起安装器都失败了——展示手动安装指引（路径 + 文件名）。
+ * installVerified 单入口：sha256 校验通过后拉起安装器——这行是手动兜底）/
+ * Failed（人话原因 + 重试）。[installHint] 非空 = 拉起安装器失败——指引重新下载
+ * （APK 落 app 私有目录，文件管理器看不到，旧的「去目录手动装」不再可行）。
  */
 @Composable
 private fun UpdateBanner(
@@ -618,6 +619,8 @@ private fun UpdateBanner(
                     }
                     is com.moyunteng.lxcode.remote.update.DownloadState.Ready -> "$sizeText · 校验通过，可以安装"
                     is com.moyunteng.lxcode.remote.update.DownloadState.Failed -> d.message
+                    is com.moyunteng.lxcode.remote.update.DownloadState.Idle ->
+                        "$sizeText · ${release.notes.firstOrNull() ?: "新的 APK 已发布"}"
                     null -> "$sizeText · ${release.notes.firstOrNull() ?: "新的 APK 已发布"}"
                 }
             }
@@ -656,6 +659,7 @@ private fun UpdateBanner(
             is com.moyunteng.lxcode.remote.update.DownloadState.Running -> "取消"
             is com.moyunteng.lxcode.remote.update.DownloadState.Ready -> "安装"
             is com.moyunteng.lxcode.remote.update.DownloadState.Failed -> if (download.retryable) "重试" else ""
+            is com.moyunteng.lxcode.remote.update.DownloadState.Idle -> "下载并安装"
             null -> "下载并安装"
         }
         if (actionText.isNotEmpty()) {
@@ -673,6 +677,7 @@ private fun UpdateBanner(
                             is com.moyunteng.lxcode.remote.update.DownloadState.Running -> onCancel()
                             is com.moyunteng.lxcode.remote.update.DownloadState.Ready -> onInstall()
                             null -> onDownload()
+                            is com.moyunteng.lxcode.remote.update.DownloadState.Idle -> onDownload()
                             is com.moyunteng.lxcode.remote.update.DownloadState.Failed ->
                                 if (download.retryable) onRetry()
                         }

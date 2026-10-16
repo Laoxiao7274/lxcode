@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- FileProvider 路径白名单：只暴露公开下载目录的 lxcode/ 子目录
-     （ApkDownloader 的 APK 落点 /sdcard/Download/lxcode/）。 -->
+<!-- FileProvider 路径白名单：只暴露 app 私有外部 files 目录的 updates/ 子目录
+     （ApkDownloader 的 APK 落点 context.getExternalFilesDir("updates")，
+     2026-12 从公共 /sdcard/Download/lxcode/ 迁入——DownloadManager 走
+     setDestinationInExternalFilesDir，无外部存储状态依赖与多 app 竞争）。 -->
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
-    <external-path
-        name="downloads"
-        path="Download/lxcode/" />
+    <external-files-path
+        name="updates"
+        path="updates/" />
 </paths>
