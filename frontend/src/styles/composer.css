@@ -823,6 +823,8 @@ html[data-theme="dark"] .att-remove:hover {
   font-family: var(--font-mono);
   font-size: 10px;
   color: var(--fg-faint);
+  /* 切会话时数字位数变化不引起 chip 宽度跳动（等宽字体本身已稳，保险再钉一位） */
+  font-variant-numeric: tabular-nums;
 }
 .ctx-pop {
   position: absolute;

@@ -327,6 +327,93 @@ test('resume reads history before switching focus (no empty-state flash)', async
   );
 });
 
+// ---- 切回已装载会话的「秒回」（state 缓存）----
+//
+// 首次进入会话必须全量装载（session.resume + chat.history 两个往返 + 整列表重建
+// ——大会话上百毫秒）；**切走再切回**时这一切都白跑：state 已经在 store 里（按
+// sessionId 隔离），后续轮次的事件本来就会实时到达本连接。缓存命中 = 只发
+// sessionFocused，不发 session.resume / chat.history。
+test('resume of an already-loaded session skips session.resume + chat.history (秒回)', async (t) => {
+  const { agent, ws, events } = setup(t);
+  // 首次进入 s-target：全量装载（记住它）
+  const first = agent.resumeSession('s-target');
+  assert.equal(ws.sent.at(-1).method, 'session.resume');
+  ws.reply({ session_id: 's-target' });
+  await flush();
+  assert.equal(ws.sent.at(-1).method, 'chat.history');
+  ws.reply({ session_id: 's-target', messages: [{ role: 'user', content: 'hi' }], busy: false });
+  await first;
+  const afterFirst = ws.sent.filter((r) => r.method === 'chat.history').length;
+
+  // 切走（未装载过的会话：照常全量装载）
+  const second = agent.resumeSession('s-other');
+  assert.equal(ws.sent.at(-1).method, 'session.resume');
+  ws.reply({ session_id: 's-other' });
+  await flush();
+  assert.equal(ws.sent.at(-1).method, 'chat.history');
+  ws.reply({ session_id: 's-other', messages: [], busy: false });
+  await second;
+
+  // 切回 s-target：**不发** session.resume / chat.history，只发 sessionFocused
+  const sentBefore = ws.sent.length;
+  await agent.resumeSession('s-target');
+  const methods = ws.sent.slice(sentBefore).map((r) => r.method);
+  assert.deepEqual(methods, [], '切回已装载会话不应再发任何请求（state 缓存秒回）');
+  const focused = events.filter((e) => e.type === 'sessionFocused').at(-1);
+  assert.equal(focused.id, 's-target', '焦点事件必须发出（UI 渲染目标变了）');
+  assert.equal(ws.sent.filter((r) => r.method === 'chat.history').length, afterFirst + 1, 'chat.history 总数不变');
+});
+
+// 缓存的边界：**装载失败不记**（那次 resume 走了全量装载路径），重试时仍全量
+// ——失败的记忆会让会话永远空着，比慢一拍更糟。
+test('failed history load is not remembered; retry does full load', async (t) => {
+  const { agent, ws } = setup(t);
+  const first = agent.resumeSession('s-bad');
+  ws.reply({ session_id: 's-bad' });
+  await flush();
+  ws.reply(null, { code: -1, message: 'boom' }); // chat.history 失败
+  await flush();
+  await first;
+  const sentBefore = ws.sent.length;
+  const retry = agent.resumeSession('s-bad');
+  assert.equal(ws.sent.at(-1).method, 'session.resume', '装载失败过的会话重试必须全量装载');
+  ws.reply({ session_id: 's-bad' });
+  await flush();
+  assert.equal(ws.sent.at(-1).method, 'chat.history');
+  ws.reply({ session_id: 's-bad', messages: [], busy: false });
+  await retry;
+});
+
+// 换后端清缓存（resetOnHello）：旧后端的「已装载」记忆对新后端没有意义——
+// 旧会话 id 在新后端甚至不存在。
+test('backend switch clears the loaded-session cache (fresh full load)', async (t) => {
+  const { agent, ws } = setup(t);
+  const first = agent.resumeSession('s-old-backend');
+  ws.reply({ session_id: 's-old-backend' });
+  await flush();
+  ws.reply({ session_id: 's-old-backend', messages: [], busy: false });
+  await first;
+  // 切后端（握手成功即清账）
+  agent.setBackend('10.0.0.9:7789');
+  const ws2 = FakeSocket.latest;
+  ws2.onopen();
+  // 只应答 hello（并行组/建会话等后续请求与本题无关，让它们挂着——
+  // 不应答不会阻塞 resumeSession 的判定路径）
+  const hello = ws2.sent.find((r) => r.method === 'connection.hello');
+  ws2.receive({ id: hello.id, result: { version: '2' } });
+  await flush();
+  await flush();
+  const sentBefore = ws2.sent.length;
+  const resumed = agent.resumeSession('s-old-backend');
+  const methods = ws2.sent.slice(sentBefore).map((r) => r.method);
+  assert.ok(methods.includes('session.resume') || methods.includes('chat.history'),
+    '换后端后同一 id 必须重新全量装载（旧记忆清掉）');
+  ws2.reply({ session_id: 's-old-backend' });
+  await flush();
+  ws2.reply({ session_id: 's-old-backend', messages: [], busy: false });
+  await resumed;
+});
+
 test('answer 发送 tool.confirm 且带 answer 键（ask_user 提问的回答通道）', async (t) => {
   const { agent, ws } = setup(t);
   const answering = agent.answer('s1', 'ask-1', '选 A');

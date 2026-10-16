@@ -342,6 +342,33 @@
    * （把清单当输入区的一部分）。170px 是无 JS 时的兜底。 */
   padding: 20px 0 calc(var(--composer-h, 170px) + 14px);
 }
+/* 会话切换装载中（App 的 switching 态）：内容暂缺时给一个安静的加载指示。
+ * 不做内容透明度动画——透明度会让旧内容在替换帧之间透出背景（另一种闪烁）；
+ * 指示条自身的脉冲是极低强度的 opacity 动画（reduced-motion 时停掉）。 */
+.thread-scroll[data-switching="true"] {
+  position: relative;
+}
+.thread-scroll[data-switching="true"]::after {
+  content: "正在载入会话…";
+  position: absolute;
+  top: 40vh;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-size: 12px;
+  color: var(--fg-faint);
+  pointer-events: none;
+  animation: switch-pulse 1.2s ease-in-out infinite;
+}
+@keyframes switch-pulse {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .thread-scroll[data-switching="true"]::after {
+    animation: none;
+  }
+}
 .thread {
   max-width: 720px;
   margin: 0 auto;

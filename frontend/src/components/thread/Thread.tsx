@@ -63,6 +63,18 @@ export function Thread({
     holdScroll: () => performance.now() < smoothUntilRef.current,
     onDetach: () => scrollTweenRef.current?.kill(),
   });
+  // **换会话 = 程序置底而不是用户滚动**：useStickyFollow 的 scroll 兜底判定会在
+  // 置底后 120ms 内把任何 scroll 事件当成程序自己的（prog 时间窗），但窗口重置
+  // （windowSize 40）与全量重建让置底后的一帧里内容高度还会变——RO 在 sticky=true
+  // 时会继续每帧置底，此时若用户恰好开始滚动会被拽回（切换瞬间的「滚不动」感）。
+  // 换会话的那一帧显式把 sticky 置真（新会话应从底部看起），并把 prog 窗口拉长，
+  // 让重建期间的 scroll 噪声不污染用户意图判定。
+  const prevIdRef = useRef(state.currentId);
+  if (prevIdRef.current !== state.currentId) {
+    prevIdRef.current = state.currentId;
+    stickyRef.current = true;
+    progRef.current = performance.now();
+  }
   // 换会话（含冷启动 "" → id）= 整块历史回放，不是「刚发出」：这一帧挂载的块
   // 不播发送动效（气泡回弹 + 缓动滚底）。不区分的话，点开一条项目会话会白跑一次
   // 0.4s 的滚底动画——CDP 采样实测它就是这次点击里最大的一块主线程开销

@@ -122,6 +122,29 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
   currentIdRef.current = state.currentId;
   // ---- 工作区导航（use-workspace-nav：页签状态 + 真实浏览器历史 + 页签/视图回调）----
   const currentId = state.currentId;
+
+  // ---- 会话切换的「装载中」态（防闪烁）----
+  // 焦点已切到新会话（currentId 变了）但它的历史还没装载（historyReady=false，
+  // blocks 是空数组）：这一帧如果照常渲染，Thread 会画空态（EmptyState「我们做
+  // 点什么？」）——先看到旧内容瞬间消失、再看到空态、再被真历史顶掉，就是用户
+  // 报的「切换瞬间闪两下」（ws.test.mjs 的帧序注释实测过 +20ms 空态出现 +48ms
+  // 内容回来）。装载完成前保留旧内容 + loading 指示（CSS 淡化），装载后一次性
+  // 替换——Thread 拿到的还是 state（空 blocks），只是外层在装载期不做视觉替换。
+  // 快照未经装载（historyReady=false）时 blocks 恒为空，旧内容在那一帧其实已经
+  // 没了（state 已切到新会话）——所以这层保护真正兜的是「渲染什么」：空态换成
+  // 保留上次 DOM 的指示条。previousSessionRef 记录上一帧焦点；首轮渲染
+  //（previous=""）不算切换。 */
+  const [switching, setSwitching] = useState(false);
+  const prevFocusedRef = useRef(currentId);
+  useEffect(() => {
+    if (prevFocusedRef.current === currentId) return;
+    prevFocusedRef.current = currentId;
+    setSwitching(!state.historyReady && state.blocks.length === 0);
+  }); // 每次渲染检查（state 变化本身不进依赖——ref 已挡住重复处理）
+  useEffect(() => {
+    if (switching && state.historyReady) setSwitching(false);
+  }, [switching, state.historyReady]);
+
   const {
     view, workspaceState, settingsOpen, setSettingsOpen, filter, setFilter, gitProjectId, setGitProjectId,
     closeWorkspace, openWorkspaceTab, openChildView, openAgents, openCatalog, openGit, openRemote, backToChat, focusSession, openProject, openSettings,
@@ -296,7 +319,7 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
         <div className="chat-split">
           <div className="chat-main">
             {errorNotice}
-            <div className="thread-scroll">
+            <div className="thread-scroll" data-switching={switching ? "true" : undefined}>
               <Thread state={state} onConfirm={handleConfirm} onAnswer={handleAnswer} onSuggestion={handleSend} projectName={filterProjectName} onEdit={handleEdit} onRewind={handleRewind} onOpenChild={openChildView} revealUid={jumpedUid} />
             </div>
             {/* key=sessionId：切会话重挂载——输入框/附件区从该会话的草稿记账还原

@@ -86,6 +86,9 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
   /** 会话域缓存（sessions/projects——AgentSource 自身的数据源）。 */
   private sessionsCache: SessionMeta[] = [];
   private projectsCache: ProjectMeta[] = [];
+  /** 本连接内已成功装载过历史的会话 id（resumeSession 的「秒回」依据，见
+   *  resumeSession 注释）。握手成功清账（换后端 = 旧会话 id 全部作废）。 */
+  private loadedSessions = new Set<string>();
 
   constructor(addr = "127.0.0.1:7789", token?: string | (() => string | null)) {
     this.conn = new WsConnection(addr, token);
@@ -107,6 +110,7 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
     this.conn.onHelloReset(() => {
       this.sessionsCache = [];
       this.projectsCache = [];
+      this.loadedSessions.clear();
     });
     this.conn.onEventSideEffect((method, _params, ev) => {
       if (method === "chat.done") {
@@ -143,10 +147,13 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
   }
 
   /** 测试插桩口：按会话拉历史并重放（ws.test.mjs 直接调用私有形态）。
-   *  无参调用保持原 wire 形态（params 带 session_id: undefined → JSON 丢键）。 */
+   *  无参调用保持原 wire 形态（params 带 session_id: undefined → JSON 丢键）。
+   *  装载成功记入 loadedSessions（resumeSession 的秒回依据——失败不记，
+   *  空历史也是一次成功装载）。 */
   private loadHistory(sessionId?: string): Promise<void> {
     return this.call("chat.history", { session_id: sessionId })
       .then((r) => {
+        if (sessionId) this.loadedSessions.add(sessionId);
         this.emit({ type: "historyLoaded", sessionId: String(sessionId ?? ""), history: snapshotFromWire(r) });
       }) as Promise<void>;
   }
@@ -166,9 +173,10 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
     this.conn.opError(message);
   }
 
-  /** 连接层的历史重放（boot/resume 链内部用——不经测试插桩口）。 */
+  /** 连接层的历史重放（boot/resume 链内部用——不经测试插桩口）。
+   *  装载成功同样记入 loadedSessions（与插桩口同一份记忆——resume 链的秒回）。 */
   private loadHistoryConn(sessionId: string): Promise<void> {
-    return this.conn.loadHistory(sessionId);
+    return this.conn.loadHistory(sessionId).then(() => { this.loadedSessions.add(sessionId); });
   }
 
   /** 切换连接焦点会话（发 sessionFocused）。 */
@@ -353,6 +361,22 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
   }
 
   async resumeSession(id: string): Promise<void> {
+    // 切回已装载过的会话（本连接内 history 装载成功的记忆）：**本地秒回**——
+    // 发 sessionFocused，不发 session.resume / chat.history。所有后续操作都显式
+    // 带 session_id（见 send 注释），连接焦点只为兼容旧客户端与首屏 UI 服务，
+    // 所以省掉这两个往返是安全的。收益：
+    //  ① 大会话 chat.history 全量重载（磁盘 IO + JSON 反序列化 + 块重建）整段
+    //     跳过——往返本身可能上百毫秒（HEAVY_METHODS 为它放宽到 30s 就是佐证）；
+    //  ② 时间线整列表全量重建（reduceHistory 逐块新对象）连带 React 协调整屏，
+    //     「切回来滚一下」的常见操作直接归零。
+    // 快照照旧由后端/浏览器历史装载路径兜底：切走后回放出的增量（别的会话跑完
+    // 回写、重连重放）不追——后续轮次的 chat.done/事件本来就会实时到达本连接，
+    // 重连/换后端清缓存（onHelloReset）后一切照旧全量装载。演示源（DemoAgent）
+    // 不走这里（它没有 loadHistory 纪律），行为不变。
+    if (this.loadedSessions.has(id) && this.conn.sessionFocus !== id) {
+      this.focusSession(id);
+      return;
+    }
     try {
       await this.call("session.resume", { id });
     } catch (e) {
