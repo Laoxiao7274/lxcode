@@ -56,11 +56,11 @@ export interface UpdateBridge {
   version(): Promise<string>;
   /** 检查更新：available = manifest.version > 当前。 */
   check(): Promise<{ available: boolean; manifest: UpdateManifestView | null }>;
-  /** 下载 + 整包/逐文件校验 + 后端热替换 + asar 冷替换排程。进度走 onProgress。 */
+  /** 下载 + 整包/逐文件校验 + 暂存（不碰运行中的文件）。进度走 onProgress。 */
   download(): Promise<{ ok: boolean }>;
-  /** 应用已暂存的更新（后端热替换 + asar 排程）；download 之后调用。 */
+  /** 应用已暂存的更新（排程独立 bat：壳退出后完成全部替换与拉起）；download 之后调用。 */
   apply(): Promise<{ ok: boolean; needsRestart: boolean }>;
-  /** 退出壳（冷替换脚本等壳退出后换 asar 并重新拉起）。 */
+  /** 退出壳（apply-update.bat 等进程退出后完成全部替换并拉起新版）。 */
   restart(): void;
   onProgress(cb: (p: { percent: number; downloaded: number; total: number }) => void): () => void;
   /** 运行期周期检查发现新版本（主进程推送，见 shell updater.ts 的

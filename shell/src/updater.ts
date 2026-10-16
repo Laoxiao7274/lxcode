@@ -2,12 +2,18 @@
 //   manifest.json {version,url,sha256,size,files{逐文件 sha256}}
 //   update-<version>.zip 内路径 = 安装目录相对路径（resources/app.asar、
 //   resources/bin/lxcode.exe）
-// 两级更新：
-//   后端热替换 = 停后端 → 旧 exe 改名 .old → 落新 exe → 重启后端（壳不退）
-//   asar 冷替换 = 暂存到 userData/update-pending + 写引导清单（manifest.json）：
-//     壳退出（app.quit）→ 后端 --stdin-watch 收到 EOF → 后端引导替换
-//     （换 asar → 拉新壳，见 cmd/lxcode/applyupdate.go）。0.2.12 及更早走
-//     PowerShell 冷替换脚本，已退役（2026-12 用户拍板）。
+// 更新链路（2026-12 重构拍板：**独立 bat 完成全部替换与拉起**）：
+//   下载校验 → 全部待换文件暂存到 update-pending/staged（与安装目录同构）
+//   → 生成 apply-update.bat（幂等自包含：等 PID 退出 → 原件挪 .old → 落位 →
+//   certutil sha256 校验 → 失败整体回滚拉旧壳 / 成功清理拉新壳自删除）
+//   → wscript 隐藏启动（GUI 子系统进程零窗口，见 apply-update.ts 头注）
+//   → app.quit()（后端随 stdin EOF 自行退出，不参与更新）。
+// 旧链路（壳热替换 bin + 后端引导换 asar，cmd/lxcode/applyupdate.go）已退役：
+//   0.2.14 事故（bin 半写损坏 + asar 等待超时 + 两边状态不一致）的根因是两个
+//   进程各自做一半替换、状态无法对齐——新链路一个批处理进程完成全部替换，
+//   与被更新对象完全解耦（Chrome/Edge/Squirrel 的本质做法）。
+//   update-pending 下旧格式残留（manifest.json v1 / apply-update.ps1 /
+//   apply-update.log）在新链路排程时一并清除。
 // 解压用系统自带 bsdtar（与 scripts/build.mjs 造 zip 同一套零依赖纪律）。
 import { spawnSync } from "node:child_process";
 import { appendFileSync, createWriteStream, existsSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -17,7 +23,8 @@ import { join } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Readable, Transform } from "node:stream";
 import { app, BrowserWindow, ipcMain } from "electron";
-import { backendExePath, restartBackend } from "./sidecar";
+import { managedBackendPid } from "./sidecar";
+import { buildApplyBat, buildApplyManifest, buildApplyVbs, toCrlf, type ApplyFileEntry, type ApplyPlan } from "./apply-update";
 import { createUpdatePoller, manualCheckOutcome, nextCheckDelayMs, type UpdatePoller } from "./update-poll";
 import { notifyTrayUpdate } from "./tray";
 
@@ -130,7 +137,7 @@ async function rmWithRetry(path: string, what: string, recursive: boolean, bestE
 
 // 状态：检查到的可用更新（download 消费）+ 下载完成并校验通过的暂存目录（apply 消费）
 let lastManifest: UpdateManifest | null = null;
-let stagedDir: string | null = null; // dl-<ts>/payload——apply 取 exe/asar 的地方
+let stagedDir: string | null = null; // dl-<ts>/payload——apply 取文件的地方
 let stagedRoot: string | null = null; // dl-<ts>——apply 完成后整体清理的单位
 let stagedManifest: UpdateManifest | null = null; // 暂存对应的清单（apply 校验逐文件哈希用）
 let downloading = false; // 并发防护：下载中再点下载，第二次的 rmSync 会撞上第一次打开中的 zip 句柄 → EPERM
@@ -145,10 +152,9 @@ export function updateHandlers(): void {
   ipcMain.handle("update:download", () => downloadAndStage());
   ipcMain.handle("update:apply", () => applyUpdate());
   ipcMain.handle("update:restart", () => {
-    // 退出重启：asar 冷替换的排程（引导清单）在 applyUpdate 时已写好——壳
-    // 退出 → 后端 --stdin-watch 收到 EOF → 引导替换（换 asar → 拉新壳）。
-    // 无 pending 清单时这就是一次普通重启（现状语义）。
-    ulog("用户请求重启（壳退出后由后端引导替换 asar）");
+    // 退出重启：applyUpdate 已排程 apply-update.bat（独立 bat 进程完成全部替换
+    // 与拉起），壳退出即触发。无排程时这就是一次普通重启（现状语义）。
+    ulog("用户请求重启（壳退出后由 apply-update.bat 完成替换与拉起）");
     app.quit();
   });
 }
@@ -277,131 +283,119 @@ async function downloadAndStage(): Promise<{ ok: boolean }> {
   }
 }
 
-/** 应用更新：后端热替换（壳不退）+ asar 冷替换排程（退出时换）+ 提示重启。 */
+/** 应用更新（新链路，2026-12 拍板）：暂存全部待换文件到 update-pending/staged
+ *  （与安装目录同构）→ 生成 apply-update.bat + apply-update.vbs + 清单 →
+ *  wscript 隐藏启动 bat（detached：壳退出后 bat 独立存活）→ app.quit()。
+ *  bat 等 PID 退出后完成全部替换与拉起——壳与后端都不参与替换（0.2.14 事故
+ *  的双进程协作链路整体退役，见文件头注释）。 */
 async function applyUpdate(): Promise<{ ok: boolean; needsRestart: boolean }> {
   if (!stagedDir) throw new Error("更新尚未暂存（先下载校验）");
+  // 仅产线排程：dev 形态的 process.resourcesPath 指向 electron 发行包目录，
+  // 对它做替换毫无意义且会砸掉开发环境。
+  if (!app.isPackaged) throw new Error("开发形态不执行应用内更新（请手动拉取最新构建）");
 
-  // 1) 后端热替换：停 → 旧改名 .old → 落新 → 重启。失败要回滚（别把用户后端弄没了）。
-  //    bin 热替换失败 = 本轮更新**中止**（不再排程冷替换）：0.2.13→0.2.14 事故的
-  //    策源地。bin 没换上的话，即使 asar 引导替换成功，新壳也会因为找不到可用的
-  //    后端二进制而报「127.0.0.1:7789 不在线」——宁可不更新（旧版照常能用），
-  //    也不能把装出「新 asar + 无 bin」的残局留给用户。
-  const newExe = join(stagedDir, "resources", "bin", "lxcode.exe");
-  const currentExe = backendExePath();
-  if (existsSync(newExe) && currentExe && existsSync(currentExe)) {
-    // newExe 落位前先做完整性预检（copyFileSync 只做文件复制，不做校验——
-    // 0.2.13→0.2.14 现场抓到过落位了一个损坏的新 exe（332 字节）且流程继续走完。
-    // 这里在写目标前把新 exe 与暂存清单的哈希对一遍，不一致直接中止本轮更新）。
-    if (stagedManifest?.files?.["resources/bin/lxcode.exe"]) {
-      const want = stagedManifest.files["resources/bin/lxcode.exe"];
-      const got = sha256(newExe);
-      if (got !== want) {
-        ulog("新后端预检失败（中止更新）", `resources/bin/lxcode.exe sha256 期望 ${want} 实际 ${got}`);
-        throw new Error(`新后端校验失败（resources/bin/lxcode.exe sha256 不匹配）——更新已中止，现有安装未受影响`);
-      }
+  // 1) 组装替换计划。待换文件 = 暂存 payload 的全部文件（zip 内路径 = 安装目录
+  //    相对路径；通常为 resources/app.asar + resources/bin/lxcode.exe）。
+  //    逐文件哈希以暂存清单为准（下载时已按它校验过 payload——同一哈希在
+  //    bat 的 certutil 复核里再次把关，两级都过才收尾）。
+  const files: ApplyFileEntry[] = [];
+  const manifest = stagedManifest;
+  const payloadDir = stagedDir;
+  if (manifest?.files) {
+    for (const rel of Object.keys(manifest.files)) {
+      files.push({
+        staged: join(payloadDir, rel),
+        target: join(installDir(), rel),
+        sha256: manifest.files[rel],
+      });
     }
-    ulog("后端热替换开始", currentExe);
-    const oldPath = `${currentExe}.old`;
-    try {
-      await rmWithRetry(oldPath, "清理旧后端备份（lxcode.exe.old）", false);
-      // 运行中的 exe 不能覆盖，但能改名（Windows 允许 rename 正在执行的映像文件）
-      renameSync(currentExe, oldPath);
-    } catch (e) {
-      // 改名失败 = 旧后端文件被别的句柄锁住（不是自身进程——Windows 允许 rename
-      // 运行中的映像；常见是杀软/备份软件占用）。此时新旧都还在原位，直接报人话。
-      ulog("旧后端改名失败（中止更新，不再排程冷替换）", e instanceof Error ? e.message : String(e));
-      throw humanFsError(e, "后端替换失败：无法改名旧后端 lxcode.exe（文件被占用）——更新已中止，现有安装未受影响");
-    }
-    try {
-      loadOriginalFs().copyFileSync(newExe, currentExe);
-    } catch (e) {
-      renameSync(oldPath, currentExe); // 回滚
-      ulog("新后端落位失败，已回滚（中止更新，不再排程冷替换）", e instanceof Error ? e.message : String(e));
-      throw humanFsError(e, "后端替换失败（已回滚，旧后端原样保留）——更新已中止，现有安装未受影响");
-    }
-    // 落位后立即复核目标文件（copyFileSync 静默失败/短写的兜底——旧代码没有这道
-    // 校验，0.2.13→0.2.14 事故的现场就是目标位留下了一个损坏的 exe 而流程照走）。
-    if (stagedManifest?.files?.["resources/bin/lxcode.exe"]) {
-      const want = stagedManifest.files["resources/bin/lxcode.exe"];
-      const got = sha256(currentExe);
-      if (got !== want) {
-        renameSync(oldPath, currentExe); // 回滚旧后端
-        ulog("新后端落位复核失败，已回滚（中止更新）", `resources/bin/lxcode.exe sha256 期望 ${want} 实际 ${got}`);
-        throw new Error(`新后端落位后校验失败（resources/bin/lxcode.exe sha256 不匹配）——已回滚旧后端，更新中止`);
-      }
-    }
-    const ok = await restartBackend();
-    if (!ok) throw new Error("后端已替换但重启失败——更新已中止（asar 未排程冷替换），查看 userData/backend.log");
-    ulog("后端热替换完成");
   } else {
-    // 缺口加固（0.2.13→0.2.14 事故的防御面）：bin 不在场（壳的 backendExePath
-    // 解析不到、或更新包缺 resources/bin/lxcode.exe）= 换完 asar 新壳也起不来后端
-    // ——直接中止本轮更新，不排程冷替换。
-    if (!currentExe || !existsSync(currentExe)) {
-      ulog("现有后端不在场（中止更新，不排程冷替换）", currentExe ?? "backendExePath()=null");
-      throw new Error("现有后端二进制不在场，无法热替换——更新已中止，现有安装未受影响");
-    }
-    if (!existsSync(newExe)) {
-      ulog("更新包缺新后端（中止更新，不排程冷替换）", newExe);
-      throw new Error(`更新包缺 resources/bin/lxcode.exe——更新已中止，现有安装未受影响`);
-    }
+    throw new Error("更新包缺少逐文件哈希清单——无法安全替换，更新已中止（现有安装未受影响）");
+  }
+  // 壳 exe 本体不在更新包里（zip 只装 resources/**）——但 bat 成功/回滚都要
+  // 拉起壳，必须先确认它在场（拉不起来就是白换，宁可不更新）。
+  const shellExe = join(installDir(), `${app.getName()}.exe`);
+  if (!existsSync(shellExe)) {
+    throw new Error(`壳可执行文件不在场（${shellExe}）——无法安排替换后的拉起，更新已中止（现有安装未受影响）`);
   }
 
-  // 2) asar 冷替换排程（仅产线）：暂存 + 写引导清单，托付给**老后端进程**——
-  //    壳退出（app.quit）→ 后端 --stdin-watch 收到 EOF → 执行引导（换 asar →
-  //    拉新壳）。旧链路的 PowerShell 冷替换脚本已退役：PS 冷替换
-  //    是 0.2.9→0.2.10 事故的策源地，且多一个脱离进程的执行体就多一类「没人
-  //    接住」的失败模式——后端本来就在，stdin EOF 就是天然的「壳已退出」信号。
-  //    注意 newAsar 的判定与拷贝必须走 originalFs：Electron 补丁版 fs 对
-  //    *.asar 路径会当归档解析（existsSync 语义漂移、copyFileSync 直接 ENOENT）。
-  const newAsar = join(stagedDir, "resources", "app.asar");
-  if (loadOriginalFs().existsSync(newAsar) && app.isPackaged) {
-    const pending = join(app.getPath("userData"), "update-pending");
-    try {
-      // 幂等：旧清单（上次更新没跑完的）直接清掉再写新的——后端只认最新的。
-      // 0.2.12 及更早版本残留的是 apply-update.ps1（旧 PS 链路），一并清除。
-      await rmWithRetry(pending, "清理冷替换暂存目录（update-pending）", true);
-      mkdirSync(pending, { recursive: true });
-      loadOriginalFs().copyFileSync(newAsar, join(pending, "app.asar"));
-    } catch (e) {
-      throw humanFsError(e, "asar 冷替换暂存失败");
-    }
-    const asar = join(process.resourcesPath, "app.asar");
-    const installDir = join(process.resourcesPath, "..");
-    const shellExe = join(installDir, `${app.getName()}.exe`);
-    // 引导清单（v1，格式见 cmd/lxcode/applyupdate.go）：后端在 stdin EOF 与
-    // 启动时都会读它。writeFileSync+rename 的原子写防后端读到半份 JSON。
-    const manifest = {
-      version: 1,
-      new_asar: join(pending, "app.asar"),
-      target_asar: asar,
-      shell_exe: shellExe,
-      shell_args: [],
-      // bin_dir（可选，0.2.15 起带）：后端引导替换前检查 resources/bin/lxcode.exe
-      // 是否在场并落 apply-update.log——bin 状态从此在引导日志里可对账。
-      bin_dir: join(process.resourcesPath, "bin"),
-      expected_version: lastManifest?.version ?? "",
-      created_at_unix: Math.floor(Date.now() / 1000),
-    };
-    const manifestPath = join(pending, "manifest.json");
-    const manifestTmp = join(pending, "manifest.json.tmp");
-    try {
-      writeFileSync(manifestTmp, JSON.stringify(manifest, null, 2), "utf8");
-      renameSync(manifestTmp, manifestPath);
-    } catch (e) {
-      throw humanFsError(e, "引导清单写入失败");
-    }
-    ulog("asar 冷替换已排程", "清单已写，壳退出后由后端引导替换");
-  }
+  // 2) 暂存目录 + 清单 + bat + VBS，一次写齐（update-pending 全量重置：
+  //    旧链路残留的 manifest.json v1 / apply-update.ps1 / apply-update.log
+  //    / 旧 staged 一并清除——旧格式作废，别让旧残留下次又冒出来）。
+  const pending = join(app.getPath("userData"), "update-pending");
+  await rmWithRetry(pending, "清理 update-pending（含旧链路残留）", true);
+  mkdirSync(pending, { recursive: true });
 
-  // 清理本次的暂存子目录（exe 已落位、asar 已暂存到 pending）。更新本身已完成，
-  // 清理失败（占用残留）只记日志——之后由 cleanupStaleStaging 兜底重清。
-  await rmWithRetry(stagedRoot ?? stagedDir, "清理更新暂存子目录", true, true);
+  const plan: ApplyPlan = {
+    pendingDir: pending,
+    stagedDir: join(pending, "staged"),
+    shellExe,
+    shellArgs: [],
+    // 等待名单：壳自己 + 壳拉起的后端（直连的 SCM 服务不在列——它不占
+    // 安装目录里的文件）。bat 在壳退出后跑，壳 PID 等待是自洽的兜底。
+    pids: [process.pid, managedBackendPid()].filter((p): p is number => typeof p === "number"),
+    appVersion: lastManifest?.version ?? "",
+    files,
+  };
+  // 暂存 = payload 整体落到 pending/staged（copyTree，走 originalFs 避开
+  // asar 补丁——payload 里有 *.asar）。复制而非移动：dl-<ts> 整体保留，
+  // 排程失败时暂存原样在，重试 apply 即可。
+  const stagedTarget = join(pending, "staged");
+  copyTree(payloadDir, stagedTarget);
+  ulog("更新文件已暂存到 update-pending/staged", `${files.length} 个文件`);
+
+  const batPath = join(pending, "apply-update.bat");
+  const vbsPath = join(pending, "apply-update.vbs");
+  // bat 必须 CRLF + ASCII 可编码（依据见 buildApplyBat 的 docstring——e2e
+  // 实测 LF 与 UTF-8 中文都会让 cmd 解析出假命令）。这里系统代码页是 GBK：
+  // Buffer.from(utf8) 落盘即可，ASCII 子集下 GBK 与 UTF-8 字节相同。
+  writeFileSync(batPath, Buffer.from(toCrlf(buildApplyBat(plan)), "utf8"));
+  writeFileSync(vbsPath, buildApplyVbs(batPath), "utf8");
+  // 清单（v2）：bat 是可执行真相，这份 JSON 是对账/取证记录（映射、哈希、
+  // PID、版本）。原子写防半份 JSON。
+  const manifestTmp = join(pending, "update-manifest.json.tmp");
+  writeFileSync(manifestTmp, JSON.stringify(buildApplyManifest(plan, Math.floor(Date.now() / 1000)), null, 2), "utf8");
+  renameSync(manifestTmp, join(pending, "update-manifest.json"));
+
+  // 3) wscript 隐藏启动 bat（零窗口，依据见 apply-update.ts 头注）。
+  //    detached + stdio ignore：bat 生命周期与壳无关，壳退出不影响它。
+  const { spawn } = await import("node:child_process");
+  const vbsRunner = spawn("wscript.exe", [vbsPath], {
+    detached: true,
+    stdio: "ignore",
+    windowsHide: true,
+    windowsVerbatimArguments: false,
+  });
+  vbsRunner.unref();
+  ulog("apply-update.bat 已排程（wscript 隐藏启动）", `目标版本 ${plan.appVersion}，等待 PID ${plan.pids.join(",")}`);
+
+  // 4) 收尾：清理本次下载的 dl-<ts>（文件已复制进 pending/staged，这里是
+  //    best-effort 清理——占用残留由下次下载的 cleanupStaleStaging 兜底）。
+  await rmWithRetry(stagedRoot ?? payloadDir, "清理更新暂存子目录", true, true);
   stagedDir = null;
   stagedRoot = null;
   stagedManifest = null;
-  ulog("更新应用完成", "needsRestart=true");
+  ulog("更新应用完成（壳即将退出，bat 接管）", "needsRestart=true");
   return { ok: true, needsRestart: true };
+}
+
+/** 安装目录（resources 的上级）：产线 = <install>\resources；dev 形态不排程
+ *  （applyUpdate 仅在 app.isPackaged 时可达——见入口 guard）。 */
+function installDir(): string {
+  return join(process.resourcesPath, "..");
+}
+
+/** 递归复制目录（originalFs：payload 含 *.asar，Electron 补丁版 fs 会把
+ *  asar 路径当归档解析——见文件头 2026-10-10 事故注释）。 */
+function copyTree(src: string, dst: string): void {
+  const fs = loadOriginalFs();
+  fs.mkdirSync(dst, { recursive: true });
+  for (const name of readdirSync(src)) {
+    const s = join(src, name);
+    const d = join(dst, name);
+    if (statSync(s).isDirectory()) copyTree(s, d);
+    else fs.copyFileSync(s, d);
+  }
 }
 
 function broadcast(progress: { percent: number; downloaded: number; total: number }): void {

@@ -1,9 +1,9 @@
 // 更新域：版本检查/下载/安装的共享状态机——设置面板的 UpdateBlock
 // 与页面级 UpdateToast 共用（同一状态，两处展示）。
 // 契约对齐自建 zip 更新（AGENTS.md §2.1）：manifest.json + update-<version>.zip、
-// 两级更新（后端热替换 / asar 冷替换需重启）、哲学 = 定时检查 + 人工确认。
+// 更新（独立 bat 完成全部替换与拉起，见 shell/src/apply-update.ts）、哲学 = 定时检查 + 人工确认。
 // 真链路 = getUpdateBridge()（壳主进程编排：manifest 拉取、sha256 校验、
-// 后端热替换、asar 退出冷替换全不经过渲染层）；浏览器模式无桥 → 演示回落。
+// 更新（独立 bat 完成全部替换与拉起，见 shell/src/apply-update.ts）；浏览器模式无桥 → 演示回落。
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { getUpdateBridge, type UpdateBridge, type UpdateManifestView } from "../agent/host";
 
@@ -37,7 +37,7 @@ interface UpdateValue {
   dismissToast: () => void;
   check: () => void;
   download: () => void;
-  /** 立即重启（壳退出 → 冷替换脚本换 asar → 自动拉起）。 */
+  /** 立即重启（壳退出 → apply-update.bat 完成全部替换与拉起）。 */
   restart: () => void;
 }
 
@@ -111,8 +111,9 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
     setProgress(0);
     const un = b.onProgress((p) => setProgress(p.percent));
     try {
-      // download = 下载 + 整包/逐文件校验（暂存就绪）；apply = 后端热替换 +
-      // asar 冷替换排程（主进程编排，壳不退）。两步分开——校验失败绝不碰运行中的文件。
+      // download = 下载 + 整包/逐文件校验（暂存就绪）；apply = 暂存到
+      // update-pending/staged + 排程 apply-update.bat（主进程编排，壳不退）。
+      // 两步分开——校验失败绝不碰运行中的文件。
       const d = await b.download();
       if (!d.ok) throw new Error("下载/校验失败");
       await b.apply();
@@ -127,7 +128,7 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   const restart = useCallback(() => {
     const b = bridgeRef.current;
     if (!b) { setPhase("latest"); return; } // 演示
-    b.restart(); // 壳退出 → 冷替换脚本换 asar → 自动拉起
+    b.restart(); // 壳退出 → apply-update.bat 完成全部替换与拉起
   }, []);
 
   // 启动自动检查（定时检查的人工确认形态：发现新版本才弹提示，不打断）

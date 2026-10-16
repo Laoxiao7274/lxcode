@@ -50,11 +50,6 @@ func main() {
 		path := resolveConfigPath(*configPath)
 		sdir := resolveSessionsDir(*sessionsDir, path)
 
-		// 启动时检查更新引导清单（pendingDir 与控制台形态同源——见
-		// updatePendingDir）。上次替换没跑完（壳异常退出、EOF 没来；或 SCM
-		// 服务形态根本没有 stdin watch 路径）时在这里补完。
-		applyUpdatePending(updatePendingDir(path))
-
 		// 服务形态（SCM 启动）：Stop → ctx 取消 → 优雅退出
 		if isWindowsService() {
 			if err := runAsService(path, *addr, sdir); err != nil {
@@ -72,11 +67,9 @@ func main() {
 			// 取消 → 优雅退出。等价于 Job Object KILL_ON_JOB_CLOSE 的孤儿兜底，
 			// 但零原生模块（Electron 主进程没有 Win32 API 面）。
 			//
-			// EOF 还兼着更新引导的触发：应用内更新的 asar 冷替换已由壳写进
-			// update-pending 清单、托付给本进程——壳退出后的换 asar + 拉新壳
-			// 由引导完成（applyupdate.go）。引导必须在 runServe **返回之后**
-			// 于主 goroutine 执行：goroutine 里做会被随后的进程退出杀掉
-			// （首个真机推演抓到）。
+			// 注意：后端不参与应用内更新（2026-12 重构拍板）——更新替换由壳
+			// 排程的独立 bat 完成（shell/src/apply-update.ts），bat 按 PID 等
+			// 壳与后端退出后动手；本进程在 EOF 后只做优雅收尾，不做任何替换。
 			stdinEOF := make(chan struct{})
 			ctx, stop = context.WithCancel(ctx)
 			defer stop()
@@ -88,13 +81,6 @@ func main() {
 			}()
 			if err := runServe(ctx, path, *addr, sdir); err != nil {
 				fmt.Fprintf(os.Stderr, "后端退出: %v\n", err)
-			}
-			// 服务已收尾。EOF = 壳在退出：执行更新引导（阻塞到完成，本进程
-			// stdin 已断，没有继续服务的意义）。没 EOF = 用户 Ctrl+C：原样退出。
-			select {
-			case <-stdinEOF:
-				applyUpdateOnServeExit(updatePendingDir(path))
-			default:
 			}
 			return
 		}

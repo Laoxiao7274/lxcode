@@ -1,11 +1,13 @@
-// updater-spawn.test.mjs —— asar 冷替换链路的结构性钉子（node --test 直读
+// updater-spawn.test.mjs —— 更新链路的结构性钉子（node --test 直读
 // 源码文本，updater.ts 引 electron 不能整模块加载）。
 //
 // 历史：0.2.9→0.2.10 事故（PS 脚本 spawn 的 detached+windowsHide 组合导致
-// PowerShell 静默空退、asar 没换、新壳没人拉起）。2026-12 重构：PS 冷替换
-// 整体退役，改为「后端引导替换」——壳只写 update-pending 清单，壳退出后由
-// 老后端进程（--stdin-watch 的 EOF 路径）执行换 asar + 拉新壳。
-// 这组钉子保证：PS 链路不许复活、引导清单契约不许悄悄漂移。
+// PowerShell 静默空退、asar 没换、新壳没人拉起）→ PS 冷替换退役；改为后端
+// 引导替换后，0.2.13→0.2.14 又出事故（bin 半写损坏 + asar 等待超时 + 壳/
+// 后端两边状态不一致）。2026-12 用户拍板重构：**独立 bat 完成全部替换与
+// 拉起**（apply-update.ts 生成，wscript 隐藏启动）——壳只下载/暂存/排程，
+// 壳与后端都不参与替换。这组钉子保证：旧双进程链路不许复活、新 bat 契约
+// 不许悄悄漂移。
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -17,40 +19,50 @@ const src = readFileSync(
   "utf8",
 );
 
-test("PS 冷替换脚本已退役（不得再 spawn powershell，也不得再 import update-script）", () => {
-  assert.ok(!src.includes("update-script"), "updater.ts 不得再引用 update-script（PS 链路已退役）");
-  assert.ok(!src.includes('"powershell"'), "updater.ts 不得再 spawn powershell（冷替换改由后端引导）");
+test("旧双进程链路已退役（不得热替换后端、不得再引用后端引导清单 v1）", () => {
+  // 0.2.13→0.2.14 事故的策源地是壳侧热替换 bin（rename/copy 后端 exe）——
+  // 新链路里后端 exe 与 asar 一样交给 bat 统一替换，壳不得再碰它。
+  assert.ok(!src.includes("后端热替换"), "updater.ts 不得再有后端热替换段");
+  assert.ok(!src.includes("renameSync(currentExe"), "不得 rename 运行中的后端 exe");
+  assert.ok(!src.includes("restartBackend"), "壳不得再重启后端（后端随壳退出自行收场）");
+  assert.ok(!src.includes("new_asar") && !src.includes("target_asar"), "旧后端引导清单 v1 字段不得复活");
+  assert.ok(!src.includes('"powershell"'), "不得 spawn powershell（旧 PS 链路）");
 });
 
-test("applyUpdate 必须写引导清单（manifest.json，v1）", () => {
-  assert.ok(src.includes("manifest.json"), "applyUpdate 必须把引导清单写进 update-pending/manifest.json");
-  assert.ok(src.includes("version: 1"), "清单格式版本必须是 1（后端只认认识的版本）");
-  // 后端契约字段（cmd/lxcode/applyupdate.go UpdateManifestV1）——缺一个后端就拒绝执行
-  for (const field of ["new_asar", "target_asar", "shell_exe", "created_at_unix"]) {
-    assert.ok(src.includes(field), `清单缺少后端契约字段 ${field}`);
-  }
+test("applyUpdate 必须写 update-manifest.json（v2）且原子落盘", () => {
+  assert.ok(src.includes("update-manifest.json"), "必须写 update-manifest.json");
+  assert.ok(src.includes("buildApplyManifest"), "清单内容必须来自 apply-update.ts 的纯函数（与 bat 同源）");
+  assert.ok(src.includes("update-manifest.json.tmp"), "清单要先写 .tmp 再 rename，原子落盘");
 });
 
-test("清单写入必须原子（tmp + rename，防后端读到半份 JSON）", () => {
-  assert.ok(src.includes("manifest.json.tmp"), "清单要先写 .tmp 再 rename，原子落盘");
+test("applyUpdate 必须生成并隐藏启动 apply-update.bat（wscript + VBS 包装）", () => {
+  assert.ok(src.includes("buildApplyBat"), "bat 内容必须来自 apply-update.ts 的纯函数");
+  assert.ok(src.includes("buildApplyVbs"), "必须有 VBS 隐藏启动包装");
+  assert.ok(src.includes('"wscript.exe"'), "启动方式 = wscript（GUI 子系统进程，零窗口）");
+  assert.ok(src.includes("detached: true"), "bat 进程必须脱离壳（壳退出后 bat 独立存活）");
 });
 
-test("清单写完不 spawn 任何脱离进程（接手方是后端，不是壳再造一个执行体）", () => {
-  // downloadAndStage 里的 spawnSync("tar") 是解压，合法；除此之外不得有 spawn。
-  const spawnCalls = [...src.matchAll(/spawn(Sync)?\(/g)].length;
-  assert.equal(spawnCalls, 1, `updater.ts 只允许 tar 解压的 spawnSync（当前 ${spawnCalls} 处 spawn）`);
+test("壳退出由 update:restart IPC 承载（applyUpdate 只排程，退出动作在 IPC handler）", () => {
+  // applyUpdate 本身不调 app.quit——用户点「立即重启」（或渲染层 apply 成功
+  // 后提示重启）才触发 update:restart → app.quit()。这里钉住接线语义。
+  const restartIdx = src.indexOf("update:restart");
+  const quitIdx = src.indexOf("app.quit()", restartIdx);
+  assert.ok(restartIdx > 0 && quitIdx > restartIdx, "update:restart handler 内必须 app.quit()");
+  assert.ok(src.includes("update:apply"), "apply 通道存在（渲染层 apply 成功后引导用户重启）");
 });
 
-test("bin 热替换必须在 asar 冷替换排程之前，且失败即中止（0.2.13→0.2.14 事故钉子）", () => {
-  // 0.2.13→0.2.14 事故：bin 热替换留了个损坏的 exe、流程照走、冷替换照排程
-  // ——新壳起来报「127.0.0.1:7789 不在线，且壳内没有可用的后端二进制」。
-  // 结构钉子：applyUpdate 里「后端热替换开始」必须先于「asar 冷替换已排程」，
-  // 且热替换段必须有 sha256 预检（stagedManifest.files 逐文件哈希对 newExe）。
-  const start = src.indexOf("后端热替换开始");
-  const schedule = src.indexOf("asar 冷替换已排程");
-  assert.ok(start >= 0, "applyUpdate 必须有 bin 热替换段");
-  assert.ok(schedule >= 0, "applyUpdate 必须有 asar 冷替换排程段");
-  assert.ok(start < schedule, "bin 热替换必须发生在 asar 冷替换排程之前（bin 没换上就排冷替换 = 造出「新 asar + 无 bin」残局）");
-  assert.ok(src.includes('stagedManifest?.files?.["resources/bin/lxcode.exe"]'), "bin 落位前后必须按暂存清单逐文件哈希校验（copyFileSync 不校验内容）");
-  assert.ok(src.includes("bin_dir"), "引导清单必须带 bin_dir（后端引导日志要能回答 bin 在不在）");
+test("排程的等待名单按 PID（壳 + 壳拉起的后端），不含按名匹配", () => {
+  assert.ok(src.includes("managedBackendPid()"), "后端 PID 来自 sidecar 的 managedBackendPid");
+  assert.ok(src.includes("process.pid"), "壳自身 PID 在等待名单里");
+  assert.ok(!src.includes("taskkill /IM") && !src.includes("tasklist /FI \"IM eq\""), "不得按进程名匹配（按名会误杀同名进程）");
+});
+
+test("暂存必须与安装目录同构（update-pending/staged + copyTree 到 staged）", () => {
+  assert.ok(src.includes('join(pending, "staged")'), "暂存目录 = update-pending/staged");
+  assert.ok(src.includes("copyTree(payloadDir, stagedTarget)"), "payload 整体复制进 staged");
+  assert.ok(src.includes("originalFs"), "触碰 *.asar 的 fs 必须走 originalFs（Electron 补丁规避）");
+});
+
+test("旧格式残留清理：update-pending 全量重置（v1 清单 / apply-update.ps1 一并清）", () => {
+  assert.ok(src.includes('rmWithRetry(pending, "清理 update-pending（含旧链路残留）", true)'), "排程前必须全量清 update-pending");
 });

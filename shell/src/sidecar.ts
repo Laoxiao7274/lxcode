@@ -20,6 +20,12 @@ const START_TIMEOUT_MS = 20_000;
 let child: ChildProcess | null = null;
 let managed = false; // 是否由本壳拉起（退出时才杀；直连的服务/旧实例不动）
 
+/** 本壳拉起的后端 PID（更新器写 apply-update 清单用；未拉起 = null——
+ *  直连的 SCM 服务不在更新等待名单里，它的二进制不在安装目录）。 */
+export function managedBackendPid(): number | null {
+  return managed && child ? child.pid ?? null : null;
+}
+
 /** 探测 + 必要时拉起后端，返回是否可用。 */
 export async function ensureBackend(): Promise<boolean> {
   if (await probeHealth()) {
