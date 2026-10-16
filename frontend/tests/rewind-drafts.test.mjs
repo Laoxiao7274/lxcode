@@ -1,10 +1,10 @@
-// 撤回的回填时机（rewindThenRestore，2026-10-10）与草稿的按会话记账
+// 撤回的回填时机（rewindThenRestore，2026-12 乐观回填）与草稿的按会话记账
 // （shared/session-drafts.ts）的契约钉子。
 //
 // 为什么值得单独一个文件：
-// ① 撤回「先 rewind 成功才回填输入框」的顺序错了不会让任何东西编译失败——只会
-//    在后端拒绝（配对校验）时把原文留在输入框、时间线却复原成没撤过的样子
-//    （「到了输入框但会话里还在」，两步不一致）。App 组件依赖太重钉不住，
+// ① 撤回「点击即回填 + 失败回滚」的顺序/归属写错了不会让任何东西编译失败——只会
+//    在后端拒绝（配对校验）时把原文留在输入框（时间线却复原成没撤过的样子），
+//    或把 A 的撤回文本注进 B 的输入框（跨会话泄漏）。App 组件依赖太重钉不住，
 //    成败分流抽成纯函数在这里钉。
 // ② 草稿按会话隔离的时机契约（切走保留/切回还原/失败回填落原会话键）同理：
 //    写错一个键名就是 A 的半截输入串到 B，纯函数在这里钉住。
@@ -21,46 +21,82 @@ import {
   writeDraftText,
 } from '../src/shared/session-drafts.ts';
 
-// ---------- ① rewindThenRestore：成功才回填，失败只报错 ----------
+// ---------- ① rewindThenRestore：乐观回填，失败回滚 ----------
 
-test('rewind 成功 → 原文注入输入框（inject 恰好一次，文本是撤回计划给的）', async () => {
+test('撤回乐观回填：点击即注入（不等 rewind 应答），文本是撤回计划给的', async () => {
   const injected = [];
   const reported = [];
   let resolveRewind;
   const rewind = () => new Promise((res) => { resolveRewind = res; });
-  rewindThenRestore({ rewind, text: '被撤回的那条', inject: (t) => injected.push(t), report: (m) => reported.push(m) });
-  assert.deepEqual(injected, [], 'rewind 还没成功就不能回填（两步一致）');
+  rewindThenRestore({
+    rewind, text: '被撤回的那条', sid: 'A',
+    inject: (sid, t) => injected.push([sid, t]),
+    rollback: () => { throw new Error('不应回滚'); },
+    report: (m) => reported.push(m),
+  });
+  assert.deepEqual(injected, [['A', '被撤回的那条']], '点击那一帧输入框就要有内容（乐观）');
+  assert.deepEqual(reported, [], '成功不报错');
   resolveRewind({ removed: 3 });
   await new Promise((r) => setTimeout(r, 0));
-  assert.deepEqual(injected, ['被撤回的那条']);
-  assert.deepEqual(reported, [], '成功不报错');
+  assert.deepEqual(injected, [['A', '被撤回的那条']], '成功路径不重复注入');
 });
 
-test('rewind 被拒 → 不注入 draft、报错照旧（时间线由 ws 重放历史复原，这里不碰）', async () => {
+test('撤回被拒 → 回滚注入的草稿（清 sid 的注入）+ 报错（时间线由 ws 重放历史复原，这里不碰）', async () => {
   const injected = [];
+  const rolledBack = [];
   const reported = [];
   let rejectRewind;
   const rewind = () => new Promise((_, rej) => { rejectRewind = rej; });
-  rewindThenRestore({ rewind, text: '被撤回的那条', inject: (t) => injected.push(t), report: (m) => reported.push(m) });
+  rewindThenRestore({
+    rewind, text: '被撤回的那条', sid: 'A',
+    inject: (sid, t) => injected.push([sid, t]),
+    rollback: (sid) => rolledBack.push(sid),
+    report: (m) => reported.push(m),
+  });
+  assert.deepEqual(injected, [['A', '被撤回的那条']], '乐观注入先发生');
   rejectRewind(new Error('撤回锚点不是配对平衡的切点'));
   await new Promise((r) => setTimeout(r, 0));
-  assert.deepEqual(injected, [], '失败时文本根本没进输入框——不再误回填');
+  assert.deepEqual(rolledBack, ['A'], '回滚落在原会话（不是回调时刻的当前会话）');
   assert.equal(reported.length, 1);
   assert.match(reported[0], /^撤回失败: 撤回锚点不是配对平衡的切点$/);
 });
 
-test('rewind 被拒（非 Error 抛出）→ 报错不炸，文本照样不进输入框', async () => {
-  const injected = [];
+test('撤回被拒（非 Error 抛出）→ 回滚照走，报错不炸', async () => {
+  const rolledBack = [];
   const reported = [];
   rewindThenRestore({
     rewind: () => Promise.reject('字符串异常'),
-    text: 'x',
-    inject: (t) => injected.push(t),
+    text: 'x', sid: 'A',
+    inject: () => {},
+    rollback: (sid) => rolledBack.push(sid),
     report: (m) => reported.push(m),
   });
   await new Promise((r) => setTimeout(r, 0));
-  assert.deepEqual(injected, []);
+  assert.deepEqual(rolledBack, ['A']);
   assert.match(reported[0], /^撤回失败: 字符串异常$/);
+});
+
+// ---------- ①b 跨会话隔离（问题 1 的钉子）----------
+
+test('跨会话隔离：A 点撤回后切到 B，注入仍落 A（sid 在点击那一刻定死）', async () => {
+  // inject/rollback 按 sid 落——注入时「当前会话」是 B 也不能把 A 的文本写进 B。
+  const injected = [];
+  const rolledBack = [];
+  let resolveRewind;
+  const rewind = () => new Promise((res) => { resolveRewind = res; });
+  rewindThenRestore({
+    rewind, text: 'A 里的原文', sid: 'A',
+    inject: (sid, t) => injected.push([sid, t]),
+    rollback: (sid) => rolledBack.push(sid),
+    report: () => {},
+  });
+  // 模拟「后端慢、用户已切到 B」：注入/回滚回调在 currentId=B 的世界里执行——
+  // 纯函数本身收 sid，注入的是 A（真实现里 use-rewind 的 injectDraft 也按 sid
+  // 判定挂载 Composer 的归属，tests/app-hooks-rewind.test.mjs 钉住那条）。
+  resolveRewind({ removed: 1 });
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(injected, [['A', 'A 里的原文']]);
+  assert.deepEqual(rolledBack, [], '成功不回滚');
 });
 
 // ---------- ② session-drafts：per-session 记账的存取时机 ----------

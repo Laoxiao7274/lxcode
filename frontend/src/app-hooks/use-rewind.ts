@@ -2,8 +2,8 @@
 // 语义零改动）。
 //
 // 职责：草稿注入/记账（draft、drafts、attsDraft）、编辑态（editDraft）、
-// 撤回（先本地乐观截断，失败用后端真相对齐）、发送（编辑态下先撤回再发）、
-// 切会话清注入态、发送失败把附件装回输入框。
+// 撤回（先本地乐观截断 + 原文乐观回填，失败用后端真相对齐并回滚注入）、
+// 发送（编辑态下先撤回再发）、切会话清注入态、发送失败把附件装回输入框。
 import { useCallback, useEffect, useRef, useState } from "react";
 import { beginEdit, canRewind, planRewind, rewindThenRestore, type EditDraft } from "../shared/blocks";
 import { draftOf, writeDraft, writeDraftAtts, writeDraftText, type SessionDraft, type SessionDrafts } from "../shared/session-drafts";
@@ -32,20 +32,41 @@ export function useRewind({ source, currentId, currentIdRef, reportError, sendWi
    *  队列条目「编辑」的装回路径）。id 单调递增——同一条消息连续注入两次也要
    *  重新写入（按文本比较的话第二次是 no-op，用户看到"点了没反应"）。
    *
-   *  注入同时落**当前会话**的草稿记账键（drafts，shared/session-drafts.ts）：
-   *  Composer 挂载中的那份由 draft prop 即时生效，记账键服务「切走再切回」的
-   *  还原——两处写的是同一份语义。 */
+   *  **sid = 注入归属的会话**（调用方在动作发生那一刻捕获，不是回调时刻的
+   *  「当前会话」）：记账键恒落 sid；挂载中的 Composer 只在 sid 正是当前会话
+   *  时才接收注入——后端应答是异步的，用户可能已经切走，把 A 的撤回文本注进
+   *  B 的挂载 Composer（或 B 的记账键）就是跨会话泄漏（用户实测报的问题 1：
+   *  撤回 A 里的消息，文本出现在 B 的输入框/时间线里）。
+   *
+   *  注入同时落 sid 的草稿记账键（drafts，shared/session-drafts.ts）：挂载中
+   *  的那份由 draft prop 即时生效，记账键服务「切走再切回」的还原——两处写的
+   *  是同一份语义。 */
   const [draft, setDraft] = useState<ComposerDraft | null>(null);
   const draftIdRef = useRef(0);
   /** per-session 草稿记账（照 sendQueues 的模式，独立于 reduce 流——纯 UI 状态）：
    *  键 = session id，值 = 文本 + 暂存附件。切走保留、切回还原、发送清空、失败
    *  回填落原会话键。 */
   const [drafts, setDrafts] = useState<SessionDrafts>({});
-  const injectDraft = useCallback((text: string, atts?: SendAttachments) => {
-    draftIdRef.current += 1;
-    setDraft({ id: draftIdRef.current, text, ...(atts ? { atts } : {}) });
-    const sid = currentIdRef.current;
+  const injectDraft = useCallback((sid: string, text: string, atts?: SendAttachments) => {
     setDrafts((cur) => writeDraftAtts(writeDraftText(cur, sid, text), sid, atts));
+    if (sid === currentIdRef.current) {
+      draftIdRef.current += 1;
+      setDraft({ id: draftIdRef.current, text, ...(atts ? { atts } : {}) });
+    }
+  }, [currentIdRef]);
+  /** 注入草稿的失败回滚（撤回被后端拒绝时把注入的原文撤出输入框）：sid 的记账
+   *  键文本清零（附件暂存保留——注入本来就不该动它）；sid 正是当前会话时再清
+   *  挂载 Composer 的注入态（清零 = 一条新 id 的空文本注入——Composer 只在 id
+   *  变化时应用草稿，同 id no-op）；用户已切走时挂载 Composer 是别的会话的，
+   *  只清掉本 hook 持有的注入态，不碰那个会话。 */
+  const rollbackDraft = useCallback((sid: string) => {
+    setDrafts((cur) => writeDraftText(cur, sid, ""));
+    if (sid === currentIdRef.current) {
+      draftIdRef.current += 1;
+      setDraft({ id: draftIdRef.current, text: "" });
+    } else {
+      setDraft(null);
+    }
   }, [currentIdRef]);
   /** Composer 的草稿实时回写 → 当前会话的记账键（采集端见 Composer.onDraftChange：
    *  打字/注入/清空/回填全汇聚到那一个 effect）。身份恒定——写哪个会话由
@@ -79,10 +100,12 @@ export function useRewind({ source, currentId, currentIdRef, reportError, sendWi
   }, []);
 
   // 撤回：历史立刻清空（由 source 的乐观 rewound 事件驱动归约器截断——两个实现
-  // 走同一条路径）。**原文回到输入框的时机 = rewind 成功之后**（rewindThenRestore，
-  // 与 handleSend 的编辑重发同款两步一致）：后端拒绝（配对校验）时文本根本不进
-  // 输入框，时间线由 source 已用后端真相对齐（重放历史把被乐观删掉的块拿回来），
-  // 这里只负责把失败说给用户听。
+  // 走同一条路径），**原文乐观回填**（2026-12：点击即注入，不再等后端应答——
+  // 应答链上有整段日志折叠统计，大会话 1~2s，用户看到"时间线清了文本迟迟不来"）。
+  // 后端拒绝（配对校验）时 rollback 把注入的文本撤出输入框，时间线由 source
+  // 已用后端真相对齐（重放历史把被乐观删掉的块拿回来），失败原因说给用户听。
+  // 归属 sid 在点击那一刻捕获：应答是异步的，回调时「当前会话」可能已经是
+  // 别的会话——不捕获就会把 A 的撤回文本注进 B（跨会话泄漏，问题 1 的根因）。
   const handleRewind = useCallback((block: ThreadBlock) => {
     if (!canRewind(block)) {
       reportError("这条消息来自旧版后端（没有 seq），无法撤回");
@@ -94,14 +117,17 @@ export function useRewind({ source, currentId, currentIdRef, reportError, sendWi
       reportError("这条消息已经不在当前对话里了（可能已被撤回）");
       return;
     }
+    const sid = currentId;
     setEditDraft(null); // 撤回之后没有"编辑中"这回事：历史已经清了，没什么可取消
     rewindThenRestore({
-      rewind: () => source.rewind(currentId, block.seq),
+      rewind: () => source.rewind(sid, block.seq),
       text: plan.text,
+      sid,
       inject: injectDraft,
+      rollback: rollbackDraft,
       report: reportError,
     });
-  }, [source, currentId, injectDraft, reportError]);
+  }, [source, currentId, injectDraft, rollbackDraft, reportError]);
 
   // 编辑：只把原文放回输入框并进入编辑态——**不动历史**。编辑是"我可能改主意"，
   // 一点就把后面的对话毁掉是不可接受的；真正的撤回推迟到下次发送前。
@@ -112,8 +138,8 @@ export function useRewind({ source, currentId, currentIdRef, reportError, sendWi
       return;
     }
     setEditDraft(d);
-    injectDraft(d.text);
-  }, [injectDraft, reportError]);
+    injectDraft(currentId, d.text);
+  }, [currentId, injectDraft, reportError]);
 
   // 取消编辑：退出编辑态。输入框里的文本**留着**（用户可能还想发）——取消只是
   // 撤回"这条是编辑"的语义，下次发送就是一条普通的新消息。
@@ -133,19 +159,21 @@ export function useRewind({ source, currentId, currentIdRef, reportError, sendWi
   // 发送：编辑态下**先撤回再发**（这是"编辑"真正生效的时刻）。撤回失败就不发——
   // 历史没清干净就发，新消息会接在被编辑那条的后面，等于改了个寂寞；文本还给
   // 用户重试（Composer 的 submit 已经先清了输入框）。atts 随消息携带（图片批次 B），
-  // 撤回失败同样把附件装回输入框。
+  // 撤回失败同样把附件装回输入框。归属 sid 在点击那一刻捕获（撤回/回填都落原
+  // 会话——应答异步，「当前会话」在回调里不可信）。
   const handleSend = useCallback((text: string, atts?: SendAttachments) => {
     const editing = editDraft;
+    const sid = currentId;
     setEditDraft(null);
     if (!editing) {
       sendWithOptions(text, atts);
       return;
     }
-    void source.rewind(currentId, editing.seq)
+    void source.rewind(sid, editing.seq)
       .then(() => sendWithOptions(text, atts))
       .catch((e) => {
         reportError(`撤回失败，未发送: ${e instanceof Error ? e.message : String(e)}`);
-        injectDraft(text, atts);
+        injectDraft(sid, text, atts);
       });
   }, [editDraft, source, currentId, sendWithOptions, reportError, injectDraft]);
 
@@ -155,6 +183,7 @@ export function useRewind({ source, currentId, currentIdRef, reportError, sendWi
     drafts,
     editDraft,
     injectDraft,
+    rollbackDraft,
     handleDraftChange,
     onSendFailed,
     syncBlocks,

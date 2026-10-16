@@ -268,26 +268,42 @@ export function cancelEdit(): null {
   return null;
 }
 
-/** 撤回的回填时机（两步一致，2026-10-10）：**rewind 成功才把原文装回输入框**，
- *  失败只报错——文本根本没进输入框。
+/** 撤回的回填时机（乐观，2026-12）：**点击撤回那一刻就把原文装回输入框**——
+ *  后端确认只做校正，失败回滚（把注入的草稿清掉 + 报错）。
  *
- *  为什么顺序不能反：后端可能拒绝这次撤回（配对校验——「撤回锚点不是配对平衡的
- *  切点」，旧库畸形/异常中断的历史会命中）。先 injectDraft 再 rewind 的话，拒绝
- *  时文本已在输入框、时间线又被 ws 客户端的重放历史复原（rewind 失败 →
- *  chat.history 重放对齐，见 agent/ws）——「到了输入框但会话里还在」，两步不一致。
- *  与 App 的 handleSend（编辑重发）同款：rewind 成功才走下一步，失败才回填。
- *  时间线的乐观截断仍在请求发出前发生（视觉上「历史先清、文本后到」一个往返，
- *  可接受）。抽成纯函数：App 组件依赖太重，node:test 钉不住——把「成败分流」
- *  这个契约钉在这里。 */
+ *  为什么要改（原实现是「rewind 成功才回填」）：回填要等一个 WS 往返，而后端
+ *  rewind 的应答链上有删历史 + 占用重算 + **整段日志折叠统计**（emit.go 的
+ *  sessionStatsOf），大会话实测 1~2s——这期间输入框是空的，用户看到「时间线
+ *  已经清了、文本却迟迟不来」。时间线的乐观截断本来就发生在请求发出前，回填
+ *  却排在应答之后，两半不一致；把回填也提到请求之前，点击 → 下一帧输入框就有
+ *  内容，与「历史先清」对齐。
+ *
+ *  为什么现在敢乐观（当初 fail-closed 的理由是否还成立）：后端拒绝（配对校验）
+ *  时文本已进输入框——所以失败路径必须**回滚**：rollback 把注入的草稿清掉
+ *  （输入框恢复原样），时间线由 ws 的失败对齐路径复原（rewind 失败 →
+ *  chat.history 重放，见 agent/ws），两边一起回到撤回前。注入时**显式带上
+ *  会话 id**（sid——调用方在点击那一刻捕获的归属会话）：回填/回滚可能发生在
+ *  用户已切到别的会话之后（后端应答是异步的），「当前会话」在 promise 回调里
+ *  已经不可信——按 sid 落，才不会把 A 的撤回文本注进 B 的输入框（跨会话泄漏，
+ *  用户实测报的就是这个）。
+ *
+ *  抽成纯函数：App 组件依赖太重，node:test 钉不住——把「乐观回填 + 失败回滚
+ *  + 会话归属」这个契约钉在这里。 */
 export function rewindThenRestore(opts: {
   rewind: () => Promise<unknown>;
   text: string;
-  inject: (text: string) => void;
+  /** 撤回发生时会话 id（点击那一刻的归属——不是回调时刻的「当前会话」）。 */
+  sid: string;
+  inject: (sid: string, text: string) => void;
+  /** 失败回滚：清掉注入进该会话的草稿（时间线由 ws 的重放路径复原，这里不碰）。 */
+  rollback: (sid: string) => void;
   report: (message: string) => void;
 }): void {
+  opts.inject(opts.sid, opts.text);
   void opts.rewind().then(
-    () => opts.inject(opts.text),
+    () => undefined,
     (e: unknown) => {
+      opts.rollback(opts.sid);
       opts.report(`撤回失败: ${e instanceof Error ? e.message : String(e)}`);
     },
   );

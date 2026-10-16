@@ -24,7 +24,7 @@ export function useSendQueue({ sendQueues, currentId, removeQueuedSend, moveQueu
   moveQueuedToFront: (sessionId: string, id: string) => void;
   /** 队列「编辑」把文本/附件装回输入框：注入当前会话的草稿（文本 + 附件记账
    *  一并落——原实现就是 injectDraft 一处写两份语义）。 */
-  injectDraft: (text: string, atts?: SendAttachments) => void;
+  injectDraft: (sid: string, text: string, atts?: SendAttachments) => void;
   sendWithOptions: (text: string, atts?: SendAttachments) => void;
   busy: boolean;
   sending: boolean;
@@ -43,7 +43,7 @@ export function useSendQueue({ sendQueues, currentId, removeQueuedSend, moveQueu
     if (!item) return;
     removeQueuedSend(currentId, id);
     // 附件随文本一并装回输入框（图片批次 B：编辑 = 文本 + 附件都回 Composer）
-    injectDraft(item.text, attsOf(item));
+    injectDraft(currentId, item.text, attsOf(item));
   }, [sendQueues, currentId, removeQueuedSend, injectDraft]);
 
   const handleQueueDelete = useCallback((id: string) => {
