@@ -5,11 +5,13 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -257,4 +259,73 @@ func TestUpdatePendingDir(t *testing.T) {
 	if got := updatePendingDir(filepath.Join("u", "data", "models.json")); got != filepath.Join("u", "data", "update-pending") {
 		t.Fatalf("默认取配置上级: %s", got)
 	}
+}
+
+func TestApplyUpdateLogsBinDir(t *testing.T) {
+	// bin 状态诊断（0.2.13→0.2.14 事故的取证面）：bin_dir 在场时引导日志必须
+	// 记下 resources/bin/lxcode.exe 的状态——在场（含大小）或不在场（警告）。
+	// 当时 apply-update.log 对 bin 一字未提，新壳报「后端二进制不可用」时现场
+	// 只能靠猜；这条钉住「日志能回答 bin 在不在」。
+	// 成功路径会把 pending 目录（含日志）一并清掉（幂等收尾），所以两个用例
+	// 都用「壳 exe 不在场」的失败路径驱动——bin 诊断日志写在壳检查之前，日志
+	// 会随失败路径保留。
+	shellExe := buildFakeShell(t) // 假壳只用来保证 go build 环境就绪，下面用不存在的路径
+
+	// bin 不在场 → 警告日志
+	dir, _, _, _ := writePending(t, func(m *UpdateManifestV1) {
+		m.BinDir = filepath.Join(t.TempDir(), "bin") // 不存在的目录 → 不在场警告
+		m.ShellExe = filepath.Join(t.TempDir(), "missing-shell.exe")
+	})
+	mRaw, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m UpdateManifestV1
+	if err := json.Unmarshal(mRaw, &m); err != nil {
+		t.Fatal(err)
+	}
+	if err := runApplyUpdate(dir, &m); err == nil {
+		t.Fatal("壳 exe 不在场应报错")
+	}
+	logData, err := os.ReadFile(filepath.Join(dir, "apply-update.log"))
+	if err != nil {
+		t.Fatalf("apply-update.log 应存在: %v", err)
+	}
+	if !strings.Contains(string(logData), "后端二进制不在场") {
+		t.Fatalf("bin 不在场应落警告日志，实际:\n%s", logData)
+	}
+
+	// 在场路径：bin 目录里放一个占位 exe，日志应记录大小
+	dir2, _, _, _ := writePending(t, nil)
+	binDir := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "lxcode.exe"), bytes.Repeat([]byte("M"), 1234), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m2Raw, err := os.ReadFile(filepath.Join(dir2, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m2 UpdateManifestV1
+	if err := json.Unmarshal(m2Raw, &m2); err != nil {
+		t.Fatal(err)
+	}
+	m2.ShellExe = filepath.Join(t.TempDir(), "missing-shell.exe")
+	m2.BinDir = binDir
+	if err := writeManifest(dir2, &m2); err != nil {
+		t.Fatal(err)
+	}
+	if err := runApplyUpdate(dir2, &m2); err == nil {
+		t.Fatal("壳 exe 不在场应报错")
+	}
+	logData2, err := os.ReadFile(filepath.Join(dir2, "apply-update.log"))
+	if err != nil {
+		t.Fatalf("apply-update.log 应存在: %v", err)
+	}
+	if !strings.Contains(string(logData2), "后端二进制在场") || !strings.Contains(string(logData2), "1234") {
+		t.Fatalf("bin 在场应落大小日志，实际:\n%s", logData2)
+	}
+	_ = shellExe
 }

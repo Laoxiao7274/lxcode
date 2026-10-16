@@ -40,3 +40,17 @@ test("清单写完不 spawn 任何脱离进程（接手方是后端，不是壳�
   const spawnCalls = [...src.matchAll(/spawn(Sync)?\(/g)].length;
   assert.equal(spawnCalls, 1, `updater.ts 只允许 tar 解压的 spawnSync（当前 ${spawnCalls} 处 spawn）`);
 });
+
+test("bin 热替换必须在 asar 冷替换排程之前，且失败即中止（0.2.13→0.2.14 事故钉子）", () => {
+  // 0.2.13→0.2.14 事故：bin 热替换留了个损坏的 exe、流程照走、冷替换照排程
+  // ——新壳起来报「127.0.0.1:7789 不在线，且壳内没有可用的后端二进制」。
+  // 结构钉子：applyUpdate 里「后端热替换开始」必须先于「asar 冷替换已排程」，
+  // 且热替换段必须有 sha256 预检（stagedManifest.files 逐文件哈希对 newExe）。
+  const start = src.indexOf("后端热替换开始");
+  const schedule = src.indexOf("asar 冷替换已排程");
+  assert.ok(start >= 0, "applyUpdate 必须有 bin 热替换段");
+  assert.ok(schedule >= 0, "applyUpdate 必须有 asar 冷替换排程段");
+  assert.ok(start < schedule, "bin 热替换必须发生在 asar 冷替换排程之前（bin 没换上就排冷替换 = 造出「新 asar + 无 bin」残局）");
+  assert.ok(src.includes('stagedManifest?.files?.["resources/bin/lxcode.exe"]'), "bin 落位前后必须按暂存清单逐文件哈希校验（copyFileSync 不校验内容）");
+  assert.ok(src.includes("bin_dir"), "引导清单必须带 bin_dir（后端引导日志要能回答 bin 在不在）");
+});

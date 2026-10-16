@@ -132,6 +132,7 @@ async function rmWithRetry(path: string, what: string, recursive: boolean, bestE
 let lastManifest: UpdateManifest | null = null;
 let stagedDir: string | null = null; // dl-<ts>/payload——apply 取 exe/asar 的地方
 let stagedRoot: string | null = null; // dl-<ts>——apply 完成后整体清理的单位
+let stagedManifest: UpdateManifest | null = null; // 暂存对应的清单（apply 校验逐文件哈希用）
 let downloading = false; // 并发防护：下载中再点下载，第二次的 rmSync 会撞上第一次打开中的 zip 句柄 → EPERM
 
 /** 装配 IPC 面（main.ts 启动时调一次）。manifest 由主进程持有——渲染层不传
@@ -265,6 +266,7 @@ async function downloadAndStage(): Promise<{ ok: boolean }> {
     }
     ulog("逐文件校验通过", `${Object.keys(manifest.files ?? {}).length} 个文件`);
     stagedDir = extractDir;
+    stagedManifest = manifest;
     // zip 只服务于解压，删不删都不影响本次更新（它在本次的 dl-<ts> 子目录里，不会
     // 混入下次校验）——被占用（杀软正在扫它）时不应让整个下载报错，降级为日志。
     await rmWithRetry(zipPath, "清理暂存 zip", false, true);
@@ -279,10 +281,25 @@ async function downloadAndStage(): Promise<{ ok: boolean }> {
 async function applyUpdate(): Promise<{ ok: boolean; needsRestart: boolean }> {
   if (!stagedDir) throw new Error("更新尚未暂存（先下载校验）");
 
-  // 1) 后端热替换：停 → 旧改名 .old → 落新 → 重启。失败要回滚（别把用户后端弄没了）
+  // 1) 后端热替换：停 → 旧改名 .old → 落新 → 重启。失败要回滚（别把用户后端弄没了）。
+  //    bin 热替换失败 = 本轮更新**中止**（不再排程冷替换）：0.2.13→0.2.14 事故的
+  //    策源地。bin 没换上的话，即使 asar 引导替换成功，新壳也会因为找不到可用的
+  //    后端二进制而报「127.0.0.1:7789 不在线」——宁可不更新（旧版照常能用），
+  //    也不能把装出「新 asar + 无 bin」的残局留给用户。
   const newExe = join(stagedDir, "resources", "bin", "lxcode.exe");
   const currentExe = backendExePath();
   if (existsSync(newExe) && currentExe && existsSync(currentExe)) {
+    // newExe 落位前先做完整性预检（copyFileSync 只做文件复制，不做校验——
+    // 0.2.13→0.2.14 现场抓到过落位了一个损坏的新 exe（332 字节）且流程继续走完。
+    // 这里在写目标前把新 exe 与暂存清单的哈希对一遍，不一致直接中止本轮更新）。
+    if (stagedManifest?.files?.["resources/bin/lxcode.exe"]) {
+      const want = stagedManifest.files["resources/bin/lxcode.exe"];
+      const got = sha256(newExe);
+      if (got !== want) {
+        ulog("新后端预检失败（中止更新）", `resources/bin/lxcode.exe sha256 期望 ${want} 实际 ${got}`);
+        throw new Error(`新后端校验失败（resources/bin/lxcode.exe sha256 不匹配）——更新已中止，现有安装未受影响`);
+      }
+    }
     ulog("后端热替换开始", currentExe);
     const oldPath = `${currentExe}.old`;
     try {
@@ -292,19 +309,42 @@ async function applyUpdate(): Promise<{ ok: boolean; needsRestart: boolean }> {
     } catch (e) {
       // 改名失败 = 旧后端文件被别的句柄锁住（不是自身进程——Windows 允许 rename
       // 运行中的映像；常见是杀软/备份软件占用）。此时新旧都还在原位，直接报人话。
-      ulog("旧后端改名失败", e instanceof Error ? e.message : String(e));
-      throw humanFsError(e, "后端替换失败：无法改名旧后端 lxcode.exe（文件被占用）");
+      ulog("旧后端改名失败（中止更新，不再排程冷替换）", e instanceof Error ? e.message : String(e));
+      throw humanFsError(e, "后端替换失败：无法改名旧后端 lxcode.exe（文件被占用）——更新已中止，现有安装未受影响");
     }
     try {
       loadOriginalFs().copyFileSync(newExe, currentExe);
     } catch (e) {
       renameSync(oldPath, currentExe); // 回滚
-      ulog("新后端落位失败，已回滚", e instanceof Error ? e.message : String(e));
-      throw humanFsError(e, "后端替换失败（已回滚，旧后端原样保留）");
+      ulog("新后端落位失败，已回滚（中止更新，不再排程冷替换）", e instanceof Error ? e.message : String(e));
+      throw humanFsError(e, "后端替换失败（已回滚，旧后端原样保留）——更新已中止，现有安装未受影响");
+    }
+    // 落位后立即复核目标文件（copyFileSync 静默失败/短写的兜底——旧代码没有这道
+    // 校验，0.2.13→0.2.14 事故的现场就是目标位留下了一个损坏的 exe 而流程照走）。
+    if (stagedManifest?.files?.["resources/bin/lxcode.exe"]) {
+      const want = stagedManifest.files["resources/bin/lxcode.exe"];
+      const got = sha256(currentExe);
+      if (got !== want) {
+        renameSync(oldPath, currentExe); // 回滚旧后端
+        ulog("新后端落位复核失败，已回滚（中止更新）", `resources/bin/lxcode.exe sha256 期望 ${want} 实际 ${got}`);
+        throw new Error(`新后端落位后校验失败（resources/bin/lxcode.exe sha256 不匹配）——已回滚旧后端，更新中止`);
+      }
     }
     const ok = await restartBackend();
-    if (!ok) throw new Error("后端已替换但重启失败——查看 userData/backend.log");
+    if (!ok) throw new Error("后端已替换但重启失败——更新已中止（asar 未排程冷替换），查看 userData/backend.log");
     ulog("后端热替换完成");
+  } else {
+    // 缺口加固（0.2.13→0.2.14 事故的防御面）：bin 不在场（壳的 backendExePath
+    // 解析不到、或更新包缺 resources/bin/lxcode.exe）= 换完 asar 新壳也起不来后端
+    // ——直接中止本轮更新，不排程冷替换。
+    if (!currentExe || !existsSync(currentExe)) {
+      ulog("现有后端不在场（中止更新，不排程冷替换）", currentExe ?? "backendExePath()=null");
+      throw new Error("现有后端二进制不在场，无法热替换——更新已中止，现有安装未受影响");
+    }
+    if (!existsSync(newExe)) {
+      ulog("更新包缺新后端（中止更新，不排程冷替换）", newExe);
+      throw new Error(`更新包缺 resources/bin/lxcode.exe——更新已中止，现有安装未受影响`);
+    }
   }
 
   // 2) asar 冷替换排程（仅产线）：暂存 + 写引导清单，托付给**老后端进程**——
@@ -337,6 +377,9 @@ async function applyUpdate(): Promise<{ ok: boolean; needsRestart: boolean }> {
       target_asar: asar,
       shell_exe: shellExe,
       shell_args: [],
+      // bin_dir（可选，0.2.15 起带）：后端引导替换前检查 resources/bin/lxcode.exe
+      // 是否在场并落 apply-update.log——bin 状态从此在引导日志里可对账。
+      bin_dir: join(process.resourcesPath, "bin"),
       expected_version: lastManifest?.version ?? "",
       created_at_unix: Math.floor(Date.now() / 1000),
     };
@@ -356,6 +399,7 @@ async function applyUpdate(): Promise<{ ok: boolean; needsRestart: boolean }> {
   await rmWithRetry(stagedRoot ?? stagedDir, "清理更新暂存子目录", true, true);
   stagedDir = null;
   stagedRoot = null;
+  stagedManifest = null;
   ulog("更新应用完成", "needsRestart=true");
   return { ok: true, needsRestart: true };
 }

@@ -59,6 +59,12 @@ type UpdateManifestV1 struct {
 	ShellDir string `json:"shell_dir,omitempty"`
 	// ExpectedVersion 是新版本号（记日志用，不参与校验逻辑）。
 	ExpectedVersion string `json:"expected_version,omitempty"`
+	// BinDir 是安装目录下的 resources/bin（可选，0.2.15 起由壳写入）：
+	// 引导在动手前检查 bin/lxcode.exe 是否在场并落日志——bin 缺失/损坏时
+	// 引导本身不挡（设计上 bin 热替换归壳，见文件头），但要让日志能回答
+	// 「替换完成后 bin 在不在」——0.2.13→0.2.14 事故（新壳报后端二进制不可用）
+	// 当时 apply-update.log 对 bin 状态一字未提，现场只能靠猜。
+	BinDir string `json:"bin_dir,omitempty"`
 	// CreatedAtUnix 是清单写入完成时刻（秒）：过期判定用。
 	CreatedAtUnix int64 `json:"created_at_unix"`
 }
@@ -122,6 +128,19 @@ func runApplyUpdate(pendingDir string, m *UpdateManifestV1) (err error) {
 		}
 	}()
 	aLog("引导替换开始: 目标=%s 新=%s 壳=%s 版本=%s", m.TargetAsar, m.NewAsar, m.ShellExe, m.ExpectedVersion)
+
+	// bin 状态诊断（可选字段 bin_dir 在场时）：bin 热替换归壳侧 updater.ts
+	// 在壳退出**前**完成，引导不碰它——但替换完成后新壳要靠 resources/bin/
+	// lxcode.exe 起后端。这里不挡替换（挡了反而造出「asar 旧、bin 新」的
+	// 另一种错位），只把状态落进 apply-update.log：bin 缺失时现场一眼可见。
+	if m.BinDir != "" {
+		binExe := filepath.Join(m.BinDir, "lxcode.exe")
+		if st, err := os.Stat(binExe); err != nil {
+			aLog("警告: 后端二进制不在场（%s）——新壳将无法拉起后端: %v", binExe, err)
+		} else {
+			aLog("后端二进制在场: %s（%d 字节）", binExe, st.Size())
+		}
+	}
 
 	// 壳 exe 必须在场（不然拉不起来——替换就别做了，省得白换）。
 	if _, err := os.Stat(m.ShellExe); err != nil {
