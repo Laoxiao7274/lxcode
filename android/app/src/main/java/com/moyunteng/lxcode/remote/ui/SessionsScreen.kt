@@ -183,8 +183,10 @@ fun SessionsScreen(state: MockAppState) {
                         onInstall = {
                             (state.downloadState as? com.moyunteng.lxcode.remote.update.DownloadState.Ready)
                                 ?.let {
-                                    // 手动兜底路径走同一个 installVerified 单入口
-                                    //（校验失败时 onState 已置 Failed 人话态；此处只补安装器拉起失败的提示）
+                                    // 安装编排的唯一路径（AppRoot 不再自动 installVerified——
+                                    // 曾经两条路径都会拉安装器，重复弹且冷启动不打招呼）。
+                                    // installVerified 内部先校验后安装；校验失败时 onState
+                                    // 已置 Failed 人话态；拉起失败给安装器指引。
                                     if (!state.updater.installVerified(it, release)) {
                                         if (state.downloadState !is com.moyunteng.lxcode.remote.update.DownloadState.Failed) {
                                             state.installHint = state.updater.installerLaunchHint(it.file.name)

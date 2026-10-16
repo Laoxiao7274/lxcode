@@ -351,6 +351,10 @@ fun AppRoot(pairUri: String? = null, onPairUriConsumed: () -> Unit = {}) {
     // 应用内下载流程：Ready（下载完成）→ installVerified（**校验+安装单入口**：
     // sha256 失败即短路不安装，F-Droid 纪律「不可能绕过验证提交安装」）。
     // 拉起安装器失败（国产 ROM 无安装器/未知来源被拦）→ 人话提示走横幅，不静默。
+    // **自动流只做提示，不做安装编排**：拉安装器这个动作只归 SessionsScreen 横幅的
+    // 「安装」按钮（用户显式手势）——曾经这里也自动 installVerified，与手动按钮
+    // 是两条都会拉安装器的路径（冷启动找回的 Ready 还会不打招呼直接弹安装器，
+    // 用户视角「没点安装却弹了」）。Ready 到达时只把横幅置成「可以安装」等手势。
     LaunchedEffect(state.downloadState) {
         val ds = state.downloadState ?: return@LaunchedEffect
         if (ds is com.moyunteng.lxcode.remote.update.DownloadState.Idle) {
@@ -360,19 +364,13 @@ fun AppRoot(pairUri: String? = null, onPairUriConsumed: () -> Unit = {}) {
             state.updateAvailable = null
             return@LaunchedEffect
         }
-        if (ds is com.moyunteng.lxcode.remote.update.DownloadState.Ready) {
-            val release = state.updateAvailable ?: return@LaunchedEffect
-            // installVerified 内部先校验后安装；失败短路（校验失败时 onState 已置 Failed 人话态）
-            if (!state.updater.installVerified(ds, release)) {
-                if (state.downloadState is com.moyunteng.lxcode.remote.update.DownloadState.Failed) {
-                    // 校验失败：横幅已是 Failed 态（带人话），不再叠安装器提示
-                    state.installHint = null
-                } else {
-                    state.installHint = state.updater.installerLaunchHint(ds.file.name)
-                }
-            } else {
-                state.installHint = null
-            }
+        if (ds is com.moyunteng.lxcode.remote.update.DownloadState.Ready &&
+            state.installHint != null
+        ) {
+            // 上一次「安装」拉起失败留了指引；用户此刻环境已修好（比如刚开了
+            // 「未知来源」），横幅回到 Ready 的正常文案让「安装」按钮可再试
+            //（拉起失败不消耗单飞位，见 ApkDownloader.launchInstaller）。
+            state.installHint = null
         }
     }
 

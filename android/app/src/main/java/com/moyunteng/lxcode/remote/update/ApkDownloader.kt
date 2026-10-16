@@ -78,8 +78,26 @@ sealed interface DownloadState {
     /** 排队/下载中（[total] ≤ 0 = 长度未知，进度条转圈）。 */
     data class Running(val downloaded: Long, val total: Long) : DownloadState
 
-    /** 下载完成（等待 sha256 校验/安装；校验由 [ApkDownloader.installVerified] 内部做）。 */
-    data class Ready(val apkUri: Uri, val file: File) : DownloadState
+    /**
+     * 下载完成（sha256 校验在 [ApkDownloader.installVerified] 内部做，不在本态做）。
+     * [installed] 的 CAS 置位（[markInstalling]）把「这个 Ready 已经拉起过一次安装器」
+     * 钉在对象上：AppRoot 自动流与「安装」按钮手动兜底、Compose 重组重入同一个
+     * Ready，都靠它保证系统安装器只被拉起一次（防背靠背弹两次）。
+     */
+    data class Ready(
+        val apkUri: Uri?,
+        val file: File,
+        /** true = 已拉起过一次系统安装器（单飞置位；见 [markInstalling]）。 */
+        @get:JvmName("installed") val installed: Boolean = false,
+    ) : DownloadState {
+        /**
+         * 第一次调用置 true 并返回 true（本实例获得安装权），之后恒 false。
+         * CAS：广播与轮询的收尾可能在不同线程各调一次 installVerified。
+         */
+        fun markInstalling(): Boolean = installedAtomic.compareAndSet(false, true)
+
+        private val installedAtomic = java.util.concurrent.atomic.AtomicBoolean(installed)
+    }
 
     /** 失败（[retryable] = 可重试：网络/校验失败；false = 环境问题如无下载器）。 */
     data class Failed(val message: String, val retryable: Boolean) : DownloadState
@@ -217,6 +235,9 @@ class ApkDownloader(private val context: Context) {
             if (it.file.delete()) Log.i(TAG, "已删除已安装的 APK：${it.file.name}")
             else Log.w(TAG, "已装 APK 删除失败（下次 enqueue 清理）：${it.file.name}")
         }
+        // 广播只证明「本包被覆盖安装过」，不证明活着的这个 active 任务就是刚装的那份——
+        // 活跃任务若是另一个 URL（较旧/较新的另一个下载），文件还在用，不能顺手删。
+        cleanupStaleApks(downloadsDir(context), keep = cur?.file)
         onState?.invoke(DownloadState.Idle)
     }
 
@@ -451,7 +472,7 @@ class ApkDownloader(private val context: Context) {
     private fun finishSuccess(cur: ActiveDownload) {
         handler.removeCallbacksAndMessages(null)
         prefs.edit().remove(KEY_DOWNLOAD_ID).remove(KEY_DOWNLOAD_URL).apply()
-        onState?.invoke(DownloadState.Ready(cur.file.toApkUri(), cur.file))
+        onState?.invoke(DownloadState.Ready(cur.file.toApkUri(), cur.file, installed = false))
     }
 
     /**
@@ -460,12 +481,20 @@ class ApkDownloader(private val context: Context) {
      * 不因元数据缺字段拒装），失败即短路返回 false **不安装**；
      * 通过后拉起系统安装器（FileProvider URI + FLAG_GRANT_READ_URI_PERMISSION）。
      *
+     * **Ready 单飞**：一个 Ready 态只放行一次安装（[Ready.installed] CAS 置位）。
+     * UI 的两处入口（AppRoot 的 LaunchedEffect 自动流 + SessionsScreen 的「安装」
+     * 按钮手动兜底）与 Compose 重组（LaunchedEffect(downloadState) 对同一 Ready
+     * 重启）可能把**同一个** Ready 交给本方法多次——没有置位时每次都拉一次安装器，
+     * 用户在安装器按返回后背靠背弹第二次（桌面 0.2.14「两方都以为对方负责」的
+     * 缝隙在这里的形态）。同一 Ready 重入返回 true（已拉起过）且**不再拉起**。
+     *
      * 返回 false = 校验失败（横幅已是 Failed 态）或启动失败（ActivityNotFoundException：
      * 国产 ROM 装了「纯净模式」/ 无包安装器、未知来源未授权被拦）——调用方给用户
      * 人话提示（[installerLaunchHint]），静默吞掉就是桌面端「更新脚本静默失败」的
      * 安卓复刻。原 verify()/install() 公开方法已移除——状态机演化不再可能绕过校验。
      */
     fun installVerified(state: DownloadState.Ready, release: ApkRelease): Boolean {
+        if (!state.markInstalling()) return true // 已拉起过：重入不重复弹安装器
         val verified = runBlocking { verifyApkFile(state, release) }
         if (verified !is DownloadState.Ready) {
             // 校验失败：横幅已经是 Failed 人话态（onState 已带出去），不安装
@@ -486,7 +515,10 @@ class ApkDownloader(private val context: Context) {
      * 删坏文件（提示重试）。release.sha256 为空（元数据没带哈希）→ 跳过校验直接
      * 通过（不因元数据缺字段拒装）。
      */
-    private suspend fun verifyApkFile(state: DownloadState.Ready, release: ApkRelease): DownloadState {
+    private suspend fun verifyApkFile(
+        state: DownloadState.Ready,
+        release: ApkRelease,
+    ): DownloadState {
         val expected = release.sha256.trim().lowercase()
         if (expected.isEmpty()) return state
         return withContext(Dispatchers.IO) {
@@ -502,6 +534,16 @@ class ApkDownloader(private val context: Context) {
                     )
                 }
             } catch (e: Exception) {
+                // 文件读不了（被清理/存储不可用）与坏文件同性质：删掉残留，回可重试失败态。
+                // 之前只报 Failed 不删文件——横幅文案改「校验失败」但安装按钮已不可达，
+                // 「重试」入队时 cleanupStaleApks 才能清掉这个残骸，把链路重新收敛。
+                try {
+                    if (state.file.exists() && !state.file.delete()) {
+                        Log.w(TAG, "校验异常后的残留文件删除失败：${state.file.name}")
+                    }
+                } catch (de: Exception) {
+                    Log.w(TAG, "校验异常后的残留文件删除异常：${state.file.name}", de)
+                }
                 Log.w(TAG, "sha256 读取失败：${state.file.name}", e)
                 DownloadState.Failed("校验安装包失败：${e.message ?: "读取错误"}", retryable = true)
             }
@@ -525,6 +567,7 @@ class ApkDownloader(private val context: Context) {
             Log.i(TAG, "已拉起系统安装器：${state.file.name}")
             true
         } catch (e: Exception) {
+            // 拉起失败不消耗单飞位：用户修好环境（如开「未知来源」）后按「安装」还能再试
             Log.w(TAG, "拉起系统安装器失败", e)
             false
         }
