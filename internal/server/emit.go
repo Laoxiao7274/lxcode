@@ -166,3 +166,22 @@ func toProtocolSessionList(metas []store.SessionMeta) []protocol.SessionMeta {
 	}
 	return out
 }
+
+// busySessions 返回**此刻**在生成的顶层会话 id 快照（运行时缓存里 Busy()==true 的）。
+// 消费方：hello 快照（BusySessions）与 session.list 的 running 位——两者的语义
+// 必须同源（同一份判定），否则同一时刻两处报的运行状态会分叉。
+// 注意：只扫 s.sessions（活跃运行时缓存）。不活跃的会话必然不在生成（进程内
+// 只有缓存里的 Session 能跑轮次），不需要查库——库里的 busy 位没有事实源。
+// 子会话运行时不进缓存（生命周期跟派发走），不出现在快照里——它们的忙闲经
+// chat.busy（带 dispatch_id）广播，前端投进子会话自己的 state。
+func (s *Server) busySessions() []string {
+	s.sessionsMu.RLock()
+	defer s.sessionsMu.RUnlock()
+	var out []string
+	for id, sess := range s.sessions {
+		if sess.Busy() {
+			out = append(out, id)
+		}
+	}
+	return out
+}

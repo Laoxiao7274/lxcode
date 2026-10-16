@@ -253,7 +253,7 @@ export type AgentEvent =
   | { type: "defaultApprovalChanged"; approval: ApprovalMode }
   | { type: "sessionChanged"; id: string; reason: string }
   /** 会话列表本身变了（重命名/归档/恢复）——UI 重读 sessions()。 */
-  | { type: "sessionsChanged" }
+  | { type: "sessionsChanged"; running?: string[] }
   /** 项目列表变了（添加）——UI 重读 projects()。 */
   | { type: "projectsChanged" }
   /** 一轮任务的产物汇总（改动文件 + diff 统计——验收视图）。 */
@@ -288,6 +288,18 @@ export interface SessionMeta {
   workspace?: string;
   /** 归档态——侧栏不显示，设置「归档任务」里可恢复。 */
   archived?: boolean;
+  /** 此刻是否在生成（老后端缺席 = 空闲，不编状态）。新连上的客户端错过
+   *  busy=true 广播时，列表据此直接亮运行指示。 */
+  running?: boolean;
+}
+
+/** hello 应答（协议版本匹配 + 连接时刻的忙闲快照）。 */
+export interface HelloResult {
+  server: string;
+  version: string;
+  busy: boolean;
+  /** 握手时刻在生成的会话 id（缺省 = 无在跑，不编状态）。 */
+  busySessions?: string[];
 }
 
 /** 历史快照（chat.history 的载荷——重建视图用）。 */

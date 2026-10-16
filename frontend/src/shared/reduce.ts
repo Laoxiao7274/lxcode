@@ -442,6 +442,10 @@ if (ev.history.busy && state.busy && state.historyReady) {
     approval: ev.history.approval ?? state.approval,
   };
 }
+// 快照说会话在生成而本地不知道（新连上的客户端错过了那次 busy=true 广播）：
+// 以服务端事实为准置真。反向不写（busy=false 抹掉本地真值是既有行为——
+// rebuilt 展开已带 busy: ev.history.busy）。
+const busySnapshot = ev.history.busy;
 // 冷恢复/空闲会话：messages → blocks（工具调用与结果配对）。
 // **任务卡不在历史里**（契约只把后台任务定义成 job.started/settled 事件，
 // ChatHistoryResult 不带 jobs）——整块重建会把它们一起丢掉：切走再切回一个正在
@@ -451,7 +455,7 @@ const jobs = state.blocks.filter((b) => b.kind === "job");
 const rebuilt = reduceHistory(state, ev.history);
 return {
   ...rebuilt,
-  busy: ev.history.busy,
+  busy: busySnapshot || ev.history.busy,
   // 历史全量重建：pending 乐观块一起被重建抹掉——回放的历史里要么已有这条消息
   //（真块回来了），要么发送还没落库（留着会变僵尸 pending）。发送中态一并结束。
   sending: false,

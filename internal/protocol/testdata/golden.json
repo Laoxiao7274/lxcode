@@ -382,6 +382,18 @@
       ]
     }
   },
+  "helloResult": {
+    "_type": "HelloResult",
+    "value": {
+      "server": "lxcode",
+      "version": "2",
+      "busy": false,
+      "busy_sessions": [
+        "s1",
+        "s2"
+      ]
+    }
+  },
   "jobInfo": {
     "_type": "JobInfo",
     "value": {
@@ -582,7 +594,8 @@
       "updated_at": "2026-10-13T10:30:00+08:00",
       "messages": 24,
       "archived": true,
-      "workspace": "lxcode"
+      "workspace": "lxcode",
+      "running": true
     }
   },
   "sessionStatsFull": {

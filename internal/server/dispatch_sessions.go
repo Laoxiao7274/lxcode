@@ -19,7 +19,18 @@ func (s *Server) dispatchSessions(c *wsClient, req *protocol.Request, params jso
 		if err != nil {
 			return protocol.NewError(req.ID, protocol.CodeInternal, err.Error())
 		}
-		return protocol.NewResult(req.ID, toProtocolSessionList(metas))
+		// running 位：**此刻**在生成的会话（与 hello 的 busy_sessions 同一份判定
+		// ——busySessions()）。新连上的客户端错过 busy=true 广播时，列表据此直接
+		// 亮运行指示，不用先点进会话（chat.history 带 busy）才补上。
+		busy := map[string]bool{}
+		for _, id := range s.busySessions() {
+			busy[id] = true
+		}
+		list := toProtocolSessionList(metas)
+		for i := range list {
+			list[i].Running = busy[list[i].ID]
+		}
+		return protocol.NewResult(req.ID, list)
 
 	case protocol.MethodSessionNew:
 		var p protocol.SessionNewParams

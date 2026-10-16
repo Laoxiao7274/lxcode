@@ -63,4 +63,10 @@ type HelloResult struct {
 	Server  string `json:"server"`
 	Version string `json:"version"`
 	Busy    bool   `json:"busy"`
+	// BusySessions 是**此刻**在生成的会话 id 快照（连接建立时逐会话 busy 状态）。
+	// 背景：chat.busy 只在轮次边界各发一次——客户端连接建立时错过进行中轮次的那次
+	// busy=true 广播，就永远不知道那个会话在跑（手机列表的项目行运行指示要点进
+	// 会话触发 chat.history 才补上）。握手即给快照，客户端直接建忙闲投影；字段
+	// 可选（向后兼容：nil = 无会话在跑，不编状态）。
+	BusySessions []string `json:"busy_sessions,omitempty"`
 }

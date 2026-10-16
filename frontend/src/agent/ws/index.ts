@@ -462,8 +462,11 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
 
   /** 后端 session.list 结果 → 缓存（协议 snake_case → 前端 camelCase 映射）。 */
   private applySessionList(result: unknown) {
-    const list = result as Array<{ id: string; title: string; updated_at: string; messages: number; archived?: boolean; workspace?: string }>;
+    const list = result as Array<{ id: string; title: string; updated_at: string; messages: number; archived?: boolean; workspace?: string; running?: boolean }>;
     if (!Array.isArray(list)) return;
+    // 此刻在跑的会话 id（事件载荷——App 据此初始化 busyBySession 投影，冷启动
+    // /重连后项目行运行指示立即亮，不等点进会话的 chat.history）。
+    const running = list.filter((s) => s.running).map((s) => s.id);
     this.sessionsCache = list.map((s) => ({
       id: s.id,
       title: s.title,
@@ -471,8 +474,11 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
       messages: s.messages,
       archived: Boolean(s.archived),
       workspace: s.workspace ?? "",
+      // 此刻是否在生成（老后端缺席 = false/undefined，不编状态）：
+      // 新连上的客户端错过 busy=true 广播时，列表据此直接亮运行指示。
+      running: Boolean(s.running),
     }));
-    this.emit({ type: "sessionsChanged" });
+    this.emit({ type: "sessionsChanged", running });
   }
 
   /** 后端 project.list 结果 → 缓存。 */

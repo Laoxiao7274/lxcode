@@ -159,6 +159,16 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
   // busy 汇总的稳定性（2026-12 渲染性能 Top1）：sessionStates 每条 delta 都换新
   // 对象，直接以它为依赖会每帧产出新 busyBySession → 击穿 Sidebar/TabBar 的 memo。
   // 这里以「每会话 busy 位的签名」为依赖：busy 位没变的帧返回同一份对象。
+  // busyInit：会话列表携带的「此刻在跑」快照（session.list 的 running 位 →
+  // sessionsChanged.running）——sessionStates 只覆盖**打开过的**会话，冷启动时
+  // 正在生成的会话没 state，busy 位永远缺席，列表运行指示要点进会话才亮
+  //（安卓端同一问题的桌面版）。事件到达时记下这份初始投影。
+  const [busyInit, setBusyInit] = useState<Record<string, boolean>>({});
+  useEffect(() => source.subscribe((ev) => {
+    if (ev.type === "sessionsChanged" && ev.running) {
+      setBusyInit(Object.fromEntries(ev.running.map((id) => [id, true])));
+    }
+  }), [source]);
   const busySignature = useMemo(
     () => Object.entries(sessionStates).map(([id, s]) => `${id}:${s.busy ? 1 : 0}`).join("|"),
     [sessionStates],
@@ -167,6 +177,12 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
     () => Object.fromEntries(Object.entries(sessionStates).map(([id, session]) => [id, session.busy])),
     // 依赖是 busy 签名（上一行）：签名不变就不重建（签名本身已含全部 busy 位）
     [busySignature], // eslint-disable-line react-hooks/exhaustive-deps
+  );
+  // 合并 busyInit：state 里打开过的会话以实时 busy 位为准（busy=false 的 state
+  // 是后端 done/busy 事件收敛后的**事实**，快照是旧值），没 state 的回落快照。
+  const busyBySessionMerged = useMemo(
+    () => ({ ...busyInit, ...busyBySession }),
+    [busyInit, busyBySession],
   );
 
   // 子会话**临时视图**活跃时（childTabSession(view) 非 null）：TabBar 侧主会话标签
@@ -433,7 +449,7 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
       <TabBar
         source={source}
         currentId={currentId}
-        busyBySession={busyBySession}
+        busyBySession={busyBySessionMerged}
         onNewChat={() => { void source.newSession(filter); backToChat(); }}
         onFocusSession={focusSession}
         workspaceTabs={workspaceState.tabs}
@@ -446,7 +462,7 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
       <Sidebar
         source={source}
         currentId={currentId}
-        busyBySession={busyBySession}
+        busyBySession={busyBySessionMerged}
         filter={filter}
         setFilter={setFilter}
         onOpenProject={openProject}

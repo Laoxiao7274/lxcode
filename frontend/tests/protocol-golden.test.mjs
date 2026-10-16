@@ -61,6 +61,8 @@ const ADAPTER_ONLY = {
   SendOptions: ['session_id', 'text', 'approval'],
   // 前端 confirmRequest 事件外层带 sessionId，适配层把 session_id 从请求里剥离。
   ConfirmRequest: ['session_id'],
+  // busy_sessions 适配层转 camelCase busySessions（HelloResult.snapshot）。
+  HelloResult: ['busy_sessions'],
 };
 
 // ---- 字段抽检表：样本名 → [点分路径, 期望] ----

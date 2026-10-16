@@ -70,6 +70,13 @@ type SessionMeta struct {
 	Messages  int    `json:"messages"`
 	Archived  bool   `json:"archived"`            // 归档态——侧栏不显示，设置归档区可恢复
 	Workspace string `json:"workspace,omitempty"` // 归属项目 id（空 = 未分组）
+	// Running 是**此刻**是否在生成（server 运行时的事实，与 busy 广播同源）。
+	// 背景：chat.busy 只在轮次边界各发一次——新连上的客户端错过那次 busy=true，
+	// 列表的运行指示要点进会话（chat.history 带 busy）才补上。session.list 直接
+	// 带 running，客户端建投影不再依赖「恰好在线时收到广播」。老后端缺席 = 空闲
+	//（不编状态）；子会话不进 session.list（List 只认顶层），运行中的子会话经
+	// busy_sessions 快照与 chat.busy 广播投影。
+	Running bool `json:"running,omitempty"`
 }
 
 // SessionChangedParams 是会话元数据变化通知；它不代表客户端焦点变化，

@@ -189,7 +189,7 @@ func goldenSamples() map[string]goldenSample {
 
 		// ---- 会话管理域 ----
 
-		"sessionMeta":          {"", SessionMeta{ID: "s1", Title: "修登录 bug", UpdatedAt: "2026-10-13T10:30:00+08:00", Messages: 24, Archived: true, Workspace: "lxcode"}},
+		"sessionMeta":          {"", SessionMeta{ID: "s1", Title: "修登录 bug", UpdatedAt: "2026-10-13T10:30:00+08:00", Messages: 24, Archived: true, Workspace: "lxcode", Running: true}},
 		"sessionArchiveResult": {"", SessionArchiveResult{Archived: true}},
 		"projectInstructionsResult": {"ProjectInstructions", ProjectInstructionsResult{
 			Path: `C:\Projects\lxcode\AGENTS.md`, Content: "# 项目守则……", Exists: true, Note: "（示例）上次读取时文件过大被截断",
@@ -293,6 +293,16 @@ func goldenSamples() map[string]goldenSample {
 			OwnerSessionID: "s1", DispatchID: "d1", SessionID: "child-1",
 			AgentID: "reviewer", AgentName: "评审员", AgentColor: "#3b82f6", Task: "评审这次的改动",
 			Todos: []tools.TodoItem{{Content: "读改动", Status: "done"}, {Content: "写意见", Status: "active"}},
+		}},
+
+		// ---- 连接域：握手 ----
+
+		// hello 快照：busy_sessions = 握手时刻在生成的会话 id（连接建立时的逐会话
+		// 忙闲事实源——chat.busy 只在轮次边界发一次，新客户端错过就永远不知道在跑）。
+		// busy:false 是显式零值（无 omitempty，与既有 wire 一致）。
+		"helloResult": {"HelloResult", HelloResult{
+			Server: "lxcode", Version: Version, Busy: false,
+			BusySessions: []string{"s1", "s2"},
 		}},
 	}
 }

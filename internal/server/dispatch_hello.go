@@ -25,8 +25,12 @@ func (s *Server) handleHello(req *protocol.Request, params json.RawMessage, isNo
 			return protocol.NewError(req.ID, protocol.CodeVersionMismatch,
 				fmt.Sprintf("协议版本不兼容：客户端 %q，服务端 %q", p.Version, protocol.Version))
 		}
+		// busy_sessions：连接建立时的逐会话忙闲快照。chat.busy 只在轮次边界发——
+		// 客户端连上时错过了进行中轮次的那次广播，就永远不知道它在跑（手机列表
+		// 的运行指示要点进会话才补上）。握手即给事实，客户端直接建投影。
 		return protocol.NewResult(req.ID, protocol.HelloResult{
 			Server: "lxcode", Version: protocol.Version, Busy: false,
+			BusySessions: s.busySessions(),
 		})
 	}
 	return nil
