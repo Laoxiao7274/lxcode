@@ -4,22 +4,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import QRCode from "qrcode";
 import { maskToken, useConnections } from "../../shared/connections";
+import { pairPayload } from "../../shared/pairing";
 import { playEnter } from "../../shared/anim";
 import { staggerIn } from "../../shared/motion";
-import { nameFromAddr } from "../connections/RemoteForm";
 import { CopyBtn } from "../connections/CopyBtn";
 import { Toggle } from "../form";
-
-/** 配对载荷：lxcode://pair?addr=<host:port>&token=<token>&name=<hostname>。
- *  组件值 URL encode（URLSearchParams）；name 取地址主机名，取不到不带该参数。 */
-function pairPayload(addr: string, token: string): string {
-  const params = new URLSearchParams();
-  params.set("addr", addr);
-  params.set("token", token);
-  const name = nameFromAddr(addr);
-  if (name && name !== addr) params.set("name", name);
-  return `lxcode://pair?${params.toString()}`;
-}
 
 export function LanAccessBlock() {
   const { remoteAccess, remoteBusy, setRemoteAccess, remoteAddr, remoteToken, regenerateRemoteToken } = useConnections();

@@ -3,8 +3,10 @@
 // API 层后接 api.natfrp.com/v4。
 // 从 ConnectionManager 拆出（独立领域：有自己的状态、冒烟链路与
 // 实现文档；ConnectionManager 只在远程访问面板里挂它）。
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import QRCode from "qrcode";
 import { humanBytes, useConnections } from "../../shared/connections";
+import { pairPayload, tunnelPairEndpoints } from "../../shared/pairing";
 import { useEnterRef } from "../../shared/anim";
 import { useConfirmClick } from "../../shared/confirm-click";
 import { Button, TextInput } from "../form";
@@ -28,10 +30,33 @@ function TunnelDelBtn({ onConfirm, disabled }: { onConfirm: () => void; disabled
 }
 
 export function SakuraBlock() {
-  const { sakura, sakuraBusy, sakuraError, loginSakura, logoutSakura, refreshSakura, tunnels, createTunnel, toggleTunnel, removeTunnel } = useConnections();
+  const { sakura, sakuraBusy, sakuraError, loginSakura, logoutSakura, refreshSakura, tunnels, createTunnel, toggleTunnel, removeTunnel, remoteToken } = useConnections();
   const [key, setKey] = useState("");
   const panelEnter = useEnterRef<HTMLDivElement>();
   const busy = sakuraBusy !== null;
+
+  // 配对二维码：在线隧道的公网地址 + 后端同一把 token（frp 只是隧道，门是
+  // 同一把——internal/server/remote.go）。只展示在线隧道（离线地址扫了也连
+  // 不上）；token 拿不到（无桥/后端未就绪）就不渲染，不放占位假码。
+  const pairEndpoints = useMemo(
+    () => (remoteToken ? tunnelPairEndpoints(tunnels) : []),
+    [remoteToken, tunnels],
+  );
+  const [qr, setQr] = useState<{ url: string; label: string; desc: string } | null>(null);
+  useEffect(() => {
+    let alive = true;
+    setQr(null);
+    const ep = pairEndpoints[0];
+    if (!ep) return;
+    QRCode.toDataURL(pairPayload(ep.addr, remoteToken, ep.name), { margin: 2, width: 320, errorCorrectionLevel: "M" })
+      .then((url) => {
+        if (alive) setQr({ url, label: `${ep.label}（${ep.addr}）`, desc: "手机端「扫码配对」扫此码即可通过公网入口连接——地址与 Token 自动填入" });
+      })
+      .catch(() => {
+        if (alive) setQr(null);
+      });
+    return () => { alive = false; };
+  }, [pairEndpoints, remoteToken]);
 
   // 未登录：密钥输入（用户中心获取访问密钥）；登录失败/账户冻结就地报错
   if (!sakura) {
@@ -124,7 +149,16 @@ export function SakuraBlock() {
         <button type="button" className="conn-add" data-conn="tunnel-new" disabled={busy} onClick={createTunnel}>
           {busy ? (sakuraBusy ?? "处理中…") : "+ 创建公网隧道"}
         </button>
-        <div className="conn-ra-hint">创建 = 自动选节点（负载最低）并分配端口，本地指向 127.0.0.1:7789；删除不连带本机地址。</div>
+        {qr && (
+          <div className="conn-qr" role="img" aria-label={`配对二维码：公网入口 ${qr.label}`}>
+            <img className="conn-qr-img" src={qr.url} alt="" width={160} height={160} />
+            <div className="conn-qr-desc">
+              <div className="conn-qr-title">公网扫码配对 · {qr.label}</div>
+              <div>{qr.desc}</div>
+            </div>
+          </div>
+        )}
+        <div className="conn-ra-hint">创建 = 自动选节点（负载最低）并分配端口，本地指向 127.0.0.1:7789；删除不连带本机地址。隧道在线后可用上方二维码配对（公网入口 + 同一把 Token）。</div>
       </div>
     </div>
   );
