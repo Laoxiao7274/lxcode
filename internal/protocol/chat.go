@@ -121,6 +121,14 @@ type ToolConfirmParams struct {
 // ChatHistoryParams 指定要读取的会话；客户端焦点不属于服务端全局状态。
 type ChatHistoryParams struct {
 	SessionID string `json:"session_id"`
+	// Tail 可选：只返回**尾部** N 条（当前历史下标语义，非库 seq——配平逻辑
+	// 在 agent 层做，见 Session.TailHistory）。0/缺省 = 全量（老客户端不受
+	// 影响，wire 向后兼容）。
+	//
+	// 背景（2026-10 公网性能排查）：chat.history 是全量载荷，大会话 1.4~1.7MB
+	// 经 frp 公网隧道（限速 10 Mbit/s）要 1.2~4.8s，安卓端固定 10s 超时偶尔
+	// 直接失败。慢链路客户端先拉尾部、上滑再增量补头部（协议侧配合项）。
+	Tail int `json:"tail,omitempty"`
 }
 
 // ChatHistoryResult 是指定会话的同步载荷。

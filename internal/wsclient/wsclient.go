@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	neturl "net/url"
 	"sync"
 
 	"github.com/gorilla/websocket"
@@ -35,9 +36,13 @@ type wsClient struct {
 	once   sync.Once
 }
 
-// Dial 连接后端（addr 形如 127.0.0.1:7789）。
-func Dial(addr string) (Backend, error) {
+// DialWithToken 连接后端（addr 形如 127.0.0.1:7789；token 非空 = 远程访问凭证，
+// 走 query 参数——与 frontend buildWsUrl 同款）。
+func DialWithToken(addr, token string) (Backend, error) {
 	url := fmt.Sprintf("ws://%s%s", addr, protocol.Path)
+	if token != "" {
+		url += "?token=" + neturl.QueryEscape(token)
+	}
 	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("连接后端 %s 失败: %w", url, err)
@@ -45,11 +50,16 @@ func Dial(addr string) (Backend, error) {
 	c := &wsClient{
 		conn:    conn,
 		pending: map[int64]chan protocol.Response{},
-		events:  make(chan protocol.Response, 64), // 缓冲：渲染慢时不阻塞读循环
+		events:  make(chan protocol.Response, 64),
 		closed:  make(chan struct{}),
 	}
 	go c.readLoop()
 	return c, nil
+}
+
+// Dial 连接后端（addr 形如 127.0.0.1:7789）。
+func Dial(addr string) (Backend, error) {
+	return DialWithToken(addr, "")
 }
 
 // readLoop 把应答按 id 路由到等待者，把事件投递到 Events。

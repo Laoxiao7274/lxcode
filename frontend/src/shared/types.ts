@@ -477,6 +477,14 @@ export interface SendOptions {
   files?: ChatSendFile[];
 }
 
+/** chat.history 请求参数（wire `ChatHistoryParams`）。session_id 缺省 = 当前焦点会话。 */
+export interface ChatHistoryParams {
+  session_id?: string;
+  /** 尾部窗口：只拉当前历史的最后 N 条（0/缺省 = 全量——老客户端语义不变）。
+   *  慢链路（公网隧道）分页加载用：先拉尾部，上滑到顶再增量补头部。 */
+  tail?: number;
+}
+
 /**
  * AgentSource 是数据源抽象：demo（脚本编排）与 live（WS 连后端）实现
  * 同一接口。浏览器与 Electron 渲染层复用相同 JSON-RPC 适配器。

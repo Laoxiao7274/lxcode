@@ -38,6 +38,22 @@ const val RPC_PATH = "/rpc"
 /** 请求超时（对齐 frontend WSAgent 的 REQUEST_TIMEOUT_MS）。 */
 private const val REQUEST_TIMEOUT_MS = 10_000L
 
+/** 重方法超时（对齐 frontend connection.ts 的 HEAVY_REQUEST_TIMEOUT_MS）：
+ *  session.resume / chat.history 要全量加载大会话历史（后端磁盘 IO + JSON
+ *  反序列化 + 折叠统计），公网 frp 隧道限速 10 Mbit/s 下 1.4~1.7MB 载荷传输
+ *  本身就要秒级——10s 会偶发命中（用户报的「历史加载不出来」）。放宽到 30s，
+ *  其余请求保持 10s 快判。 */
+private const val HEAVY_REQUEST_TIMEOUT_MS = 30_000L
+
+/** 重方法名单（与 frontend HEAVY_METHODS 同一份语义）。 */
+private val HEAVY_METHODS = setOf(
+    "session.resume",
+    "chat.history",
+    "chat.compact",
+    "chat.rewind",
+    "session.list",
+)
+
 /** 事件监听：method = 事件名（如 "chat.delta"），params = 载荷。 */
 fun interface EventListener {
     fun onEvent(method: String, params: JSONObject)
@@ -342,13 +358,14 @@ class LxWsClient(
             pending.removeIf { it.id == id }
             main.post { callback(errorObj(-1, "发送请求失败（连接不可用）"), null) }
         }
-        // 超时看门狗（对齐 WSAgent 的 10s 请求超时）
+        // 超时看门狗（普通 10s；重方法 30s——对齐 frontend 的 HEAVY_METHODS）
+        val timeoutMs = if (method in HEAVY_METHODS) HEAVY_REQUEST_TIMEOUT_MS else REQUEST_TIMEOUT_MS
         main.postDelayed({
             if (pending.removeIf { it.id == id }) {
-                Log.w(TAG, "请求超时: $method")
+                Log.w(TAG, "请求超时(${timeoutMs / 1000}s): $method")
                 callback(errorObj(-1, "请求超时"), null)
             }
-        }, REQUEST_TIMEOUT_MS)
+        }, timeoutMs)
     }
 
     /** 处理一帧：有 id = 应答（按 id 配对）；无 id = 事件（分发 listener）。 */

@@ -298,8 +298,10 @@ func errorCode(err error) int {
 	}
 }
 
-func (s *Server) history(sessionID string, sess *agent.Session) protocol.ChatHistoryResult {
-	snap := sess.History()
+// history 组装 chat.history 应答。tail > 0 = 尾部窗口（慢链路分页：内核
+// TailHistory 负责配平与检查点平移；0 = 全量，老语义不变）。
+func (s *Server) history(sessionID string, sess *agent.Session, tail int) protocol.ChatHistoryResult {
+	snap := sess.TailHistory(tail)
 	var pending *protocol.ConfirmRequest
 	if snap.Pending != nil {
 		pending = toProtocolConfirm(sessionID, snap.Pending)

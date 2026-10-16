@@ -83,7 +83,12 @@
 
 ## 4. 历史（`chat.history`）
 
-参数：`{"session_id":"…"}`。
+参数：`{"session_id":"…","tail":50}`。`tail` 可选（2026-10 慢链路优化）：只拉
+当前历史尾部 N 条，0/缺省 = 全量（老客户端不受影响）。尾部起点强制回退到
+**工具配对平衡切点**（不会把 assistant 的 tool_calls 切在它的结果之前），
+检查点下标随窗口平移；busy/pending/todos/context/stats 与全量一致（context
+的投影基线按全量历史算——窗口只是传输裁剪，不改占用计账）。
+安卓端固定带 `tail:50`（TAIL_WINDOW，RealBackend）进会话先见最新。
 结果（`protocol.ChatHistoryResult`）：
 
 ```json

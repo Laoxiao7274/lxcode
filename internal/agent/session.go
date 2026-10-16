@@ -519,6 +519,12 @@ func (s *Session) SendWait(ctx context.Context, text string, opts ...SendOpt) er
 	}
 }
 
+// AppendForTest 把一条消息直接写进历史并落库（仅测试用：chat.history 的 tail
+// 行为要一段已落库的真实历史——生产路径只有 Send/notify 会写历史）。
+func (s *Session) AppendForTest(m llm.Message) {
+	s.append(m)
+}
+
 // Busy 返回当前忙闲状态。
 func (s *Session) Busy() bool {
 	s.mu.Lock()
@@ -541,6 +547,51 @@ func (s *Session) History() Snapshot {
 		SessionID: s.id, Todos: append([]tools.TodoItem(nil), s.todos...),
 		Context: projectedUsage(s.context, msgs), Checkpoints: checkpointIndexes(msgs),
 	}
+}
+
+// TailHistory 返回会话快照的**尾部窗口**（慢链路客户端分页加载的内核配合项）。
+//
+// n ≤ 0 或 n ≥ 历史长度时等价于 History()（全量）。n > 0 时只取尾部 n 条：
+// 起点强制回退到最近的**工具配对平衡切点**（AnalyzeToolPairing 的不变量——
+// 把 assistant 的 tool_calls 切在它的 tool 结果之前是畸形历史，严格端点 400
+// 拒收整轮）。起点落在配对平衡切点上时，前端拿这份窗口当独立历史渲染/配对
+// 都与全量逐字一致；Checkpoint 下标同步平移（窗口里第一个是检查点 → 下标 0）。
+//
+// pending/todo/busy/context 与全量完全一致（它们不是历史区间的函数）：
+// context 的投影基线按**全量历史**算——窗口只是传输裁剪，占用统计不能因为
+// 客户端只拉了尾巴就变小。
+func (s *Session) TailHistory(n int) Snapshot {
+	snap := s.History()
+	if n <= 0 || n >= len(snap.Messages) {
+		return snap
+	}
+	pairing := AnalyzeToolPairing(snap.Messages)
+	start := len(snap.Messages) - n
+	if balanced := pairing.NearestBalancedAtOrBefore(start); balanced >= 0 {
+		start = balanced
+	}
+	// NearestBalancedAtOrBefore 返回 -1 只在 Cuts 全假时（开头恒真，实际不可达）；
+	// 防御性回落全量，不猜。
+	if start < 0 {
+		return snap
+	}
+	tail := append([]llm.Message(nil), snap.Messages[start:]...)
+	snap.Messages = tail
+	snap.Checkpoints = shiftCheckpoints(snap.Checkpoints, start)
+	return snap
+}
+
+// shiftCheckpoints 把检查点下标按窗口起点平移：下标 ≥ start 的减 start，
+// 其余丢弃（检查点在窗口外 = 前端看不到那个「已压缩历史」块，正确——
+// 它属于没拉的那段头部）。下标本身有序，顺序保持。
+func shiftCheckpoints(cps []int, start int) []int {
+	var out []int
+	for _, i := range cps {
+		if i >= start {
+			out = append(out, i-start)
+		}
+	}
+	return out
 }
 
 // projectedContext 是**展示用**的占用：真实测量 + 测量之后历史的变化量

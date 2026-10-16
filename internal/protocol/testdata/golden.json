@@ -81,6 +81,19 @@
       "model": "deepseek-v3"
     }
   },
+  "chatHistoryParamsFull": {
+    "_type": "ChatHistoryParams",
+    "value": {
+      "session_id": "s1",
+      "tail": 50
+    }
+  },
+  "chatHistoryParamsMinimal": {
+    "_type": "ChatHistoryParams",
+    "value": {
+      "session_id": "s1"
+    }
+  },
   "chatHistoryResultFull": {
     "_type": "",
     "value": {

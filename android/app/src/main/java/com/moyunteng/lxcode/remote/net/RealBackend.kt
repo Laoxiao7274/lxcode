@@ -1109,9 +1109,19 @@ class RealBackend {
         // 从 A 切 B 永远切不动（A 开着时点 B，resume 成功但 history 被丢弃，
         // 界面停在 A——本批 e2e 实测抓到）。
         if (id != currentSessionId) switchTo(id)
-        client.call("chat.history", JSONObject().put("session_id", id)) { err, result ->
+        // 慢链路优化（2026-10 公网性能排查）：先拉尾部 TAIL_WINDOW 条（公网 frp
+        // 隧道限速 10 Mbit/s，大会话全量 1.4~1.7MB 要秒级传输），进会话即刻可见；
+        // tail 是可选参数、缺省全量（wire 向后兼容，老后端忽略未知键）。
+        client.call("chat.history", JSONObject().put("session_id", id).put("tail", TAIL_WINDOW)) { err, result ->
             if (err != null) {
                 Log.w(TAG, "chat.history($id) 失败: ${err.optString("message")}")
+                // 失败不能静默（原实现只 log——用户看到的就是白屏「加载不出来」）：
+                // 插一块 Error 给人话反馈；重试 = 返回后重新进入会话（openSession 重拉）。
+                if (id == currentSessionId) {
+                    blocks.clear()
+                    blocks.add(ThreadBlock.Error("历史加载失败: ${err.optString("message")}（返回后重新进入可重试）"))
+                    historyVersion++
+                }
                 return@call
             }
             // 请求在途时用户又点了别的会话：currentSessionId 已指向新目标，
@@ -1723,6 +1733,11 @@ class RealBackend {
 
     companion object {
         private const val TAG = "LxReal"
+
+        /** 历史尾部窗口（chat.history 的 tail 参数）：进会话只拉最近 N 条（慢链路
+         *  分页——公网隧道带宽有限，全量大会话历史秒级传输；桌面局域网无感）。
+         *  50 条 ≈ 一次长对话的工具往返量，覆盖「进会话看最新」的绝大多数场景。 */
+        private const val TAIL_WINDOW = 50
 
         // ===== 附件上限（与后端 server 侧校验同一套常量，见 docs/attachments.md）=====
 

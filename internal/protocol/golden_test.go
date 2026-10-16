@@ -130,6 +130,11 @@ func goldenSamples() map[string]goldenSample {
 
 		// ---- chat 域：历史回放 ----
 
+		// 请求参数：tail 是可选的尾部窗口（0 = 全量，老客户端语义；>0 = 只拉
+		// 尾部 N 条——慢链路分页，配平在内核 TailHistory）。
+		"chatHistoryParamsFull": {"ChatHistoryParams", ChatHistoryParams{SessionID: "s1", Tail: 50}},
+		"chatHistoryParamsMinimal": {"ChatHistoryParams", ChatHistoryParams{SessionID: "s1"}},
+
 		// 全量历史：检查点/统计/上下文/权限档/待确认全在。message 数组覆盖
 		// llm.Message 的全部 wire 字段（images/attachments/tool_calls/tool_call_id/
 		// reasoning_content/每轮簿记）。_type 留空：前端 HistorySnapshot 是

@@ -110,7 +110,7 @@ func (s *Server) dispatchChat(c *wsClient, req *protocol.Request, params json.Ra
 				return protocol.NewError(req.ID, protocol.CodeInvalidParams, err.Error())
 			}
 		}
-		return protocol.NewResult(req.ID, s.history(id, sess))
+		return protocol.NewResult(req.ID, s.history(id, sess, p.Tail))
 
 	case protocol.MethodChatCompact:
 		var p protocol.CompactParams
