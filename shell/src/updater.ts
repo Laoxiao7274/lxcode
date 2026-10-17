@@ -16,10 +16,9 @@
 //   apply-update.log）在新链路排程时一并清除。
 // 解压用系统自带 bsdtar（与 scripts/build.mjs 造 zip 同一套零依赖纪律）。
 import { spawnSync } from "node:child_process";
-import { appendFileSync, createWriteStream, existsSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { readdirSync } from "node:fs";
+import { appendFileSync, createWriteStream, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Readable, Transform } from "node:stream";
 import { app, BrowserWindow, ipcMain } from "electron";
@@ -112,10 +111,11 @@ const RM_RETRY_DELAYS_MS = [500, 1000, 2000, 4000, 8000];
 const RM_RETRY_WINDOW_MS = 10_000;
 
 async function rmWithRetry(path: string, what: string, recursive: boolean, bestEffort = false): Promise<void> {
+  const fs = loadOriginalFs(); // 补丁版 rmSync 对含 *.asar 段的路径有归档特判（update-pending/staged 里就是真实 app.asar）——与 copyTree 同一纪律，删除也走 originalFs
   const t0 = Date.now();
   for (let i = 0; ; i++) {
     try {
-      rmSync(path, { recursive, force: true });
+      fs.rmSync(path, { recursive, force: true });
       return;
     } catch (e) {
       const code = (e as NodeJS.ErrnoException)?.code ?? "";
@@ -178,18 +178,19 @@ async function checkUpdate(): Promise<{ available: boolean; manifest: UpdateMani
  *  非 dl-* 的旧布局残留（0.2.0 及更早的平铺 update.zip/payload）直接清；dl-* 只清
  *  超过 24h 的。锁住就跳过（下次下载再清），绝不抛错、不阻塞下载。 */
 async function cleanupStaleStaging(staging: string): Promise<void> {
+  const fs = loadOriginalFs(); // 暂存树遍历与 copyTree 同一纪律：不走补丁版 fs（dl-* 里就躺着 payload 的 app.asar）
   let names: string[] = [];
   try {
-    names = readdirSync(staging);
+    names = fs.readdirSync(staging);
   } catch {
     return; // 目录不存在 = 没有残留
   }
   for (const name of names) {
     const p = join(staging, name);
     try {
-      const stale = !name.startsWith("dl-") || Date.now() - statSync(p).mtimeMs > 24 * 3600_000;
+      const stale = !name.startsWith("dl-") || Date.now() - fs.statSync(p).mtimeMs > 24 * 3600_000;
       if (!stale) continue;
-      rmSync(p, { recursive: true, force: true });
+      fs.rmSync(p, { recursive: true, force: true });
       ulog("陈旧暂存已清理", name);
     } catch (e) {
       const code = (e as NodeJS.ErrnoException)?.code ?? "";
@@ -315,7 +316,7 @@ async function applyUpdate(): Promise<{ ok: boolean; needsRestart: boolean }> {
   // 壳 exe 本体不在更新包里（zip 只装 resources/**）——但 bat 成功/回滚都要
   // 拉起壳，必须先确认它在场（拉不起来就是白换，宁可不更新）。
   const shellExe = join(installDir(), `${app.getName()}.exe`);
-  if (!existsSync(shellExe)) {
+  if (!loadOriginalFs().existsSync(shellExe)) {
     throw new Error(`壳可执行文件不在场（${shellExe}）——无法安排替换后的拉起，更新已中止（现有安装未受影响）`);
   }
 
@@ -342,7 +343,8 @@ async function applyUpdate(): Promise<{ ok: boolean; needsRestart: boolean }> {
   // 排程失败时暂存原样在，重试 apply 即可。
   const stagedTarget = join(pending, "staged");
   copyTree(payloadDir, stagedTarget);
-  ulog("更新文件已暂存到 update-pending/staged", `${files.length} 个文件`);
+  verifyStagedFiles(files, payloadDir, stagedTarget);
+  ulog("更新文件已暂存到 update-pending/staged", `${files.length} 个文件（逐文件文件形态+大小复核通过）`);
 
   const batPath = join(pending, "apply-update.bat");
   const vbsPath = join(pending, "apply-update.vbs");
@@ -385,16 +387,46 @@ function installDir(): string {
   return join(process.resourcesPath, "..");
 }
 
-/** 递归复制目录（originalFs：payload 含 *.asar，Electron 补丁版 fs 会把
- *  asar 路径当归档解析——见文件头 2026-10-10 事故注释）。 */
+/** 递归复制目录（**全程 originalFs**——2026-12-0.2.17 事故：此函数曾只把
+ *  mkdirSync/copyFileSync 换成 originalFs，readdirSync/statSync 用的却是
+ *  顶部 import 的被 Electron 补丁版 fs。补丁版 statSync 把 `app.asar` 报成
+ *  **目录**、readdirSync 能列出 asar 虚拟内容（build/icon.png 等），于是递归
+ *  进了虚拟目录、originalFs copyFileSync 找不到真实文件报 ENOENT。教训：
+ *  复制含 *.asar 的目录树，**每一个** fs 调用都必须绕过 asar 补丁，混用即翻车）。 */
 function copyTree(src: string, dst: string): void {
   const fs = loadOriginalFs();
   fs.mkdirSync(dst, { recursive: true });
-  for (const name of readdirSync(src)) {
+  for (const name of fs.readdirSync(src)) {
     const s = join(src, name);
     const d = join(dst, name);
-    if (statSync(s).isDirectory()) copyTree(s, d);
+    if (fs.statSync(s).isDirectory()) copyTree(s, d);
     else fs.copyFileSync(s, d);
+  }
+}
+
+/** 暂存防御校验（copyTree 之后、排程之前）：清单里每个文件在 staged 必须以
+ *  **普通文件**形态落位且大小与 payload 一致——0.2.17 事故的副本防线：若将来
+ *  有人把复制路径换回被 asar 补丁的 fs（app.asar 会被误报成目录并递归出虚拟
+ *  内容），这里会以「不是文件 / 大小不符」拦下排程，bat 拿到的 staged 永远是
+ *  与安装目录同构的真实文件树。 */
+function verifyStagedFiles(files: ApplyFileEntry[], payloadDir: string, stagedRoot: string): void {
+  const fs = loadOriginalFs();
+  for (const f of files) {
+    const rel = relative(stagedRoot, f.staged);
+    if (!rel || rel.startsWith("..")) throw new Error(`暂存路径异常（不在 staged 下）: ${f.staged}`);
+    const payloadFile = join(payloadDir, rel);
+    const st = (() => {
+      try {
+        return fs.statSync(f.staged);
+      } catch (e) {
+        throw humanFsError(e, `暂存缺文件（复制不完整）: ${rel}，更新已中止（现有安装未受影响）`);
+      }
+    })(); // 不是文件（目录/缺失）直接抛
+    if (!st.isFile()) throw new Error(`暂存位不是普通文件: ${f.staged}——更新已中止（现有安装未受影响）`);
+    const stPayload = fs.statSync(payloadFile); // payload 侧同样必须真实存在
+    if (!stPayload.isFile() || stPayload.size !== st.size) {
+      throw new Error(`暂存文件大小不符（payload ${stPayload.isFile() ? stPayload.size : "缺失"} vs staged ${st.size}）: ${rel}——更新已中止（现有安装未受影响）`);
+    }
   }
 }
 

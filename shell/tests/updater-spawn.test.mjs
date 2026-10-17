@@ -66,3 +66,29 @@ test("暂存必须与安装目录同构（update-pending/staged + copyTree 到 s
 test("旧格式残留清理：update-pending 全量重置（v1 清单 / apply-update.ps1 一并清）", () => {
   assert.ok(src.includes('rmWithRetry(pending, "清理 update-pending（含旧链路残留）", true)'), "排程前必须全量清 update-pending");
 });
+
+test("暂存防御校验（verifyStagedFiles）：copyTree 后逐文件断言文件形态+大小一致（0.2.17 事故防线）", () => {
+  assert.ok(src.includes("verifyStagedFiles"), "必须有暂存防御校验函数");
+  const callIdx = src.indexOf("verifyStagedFiles(files");
+  const copyIdx = src.indexOf("copyTree(payloadDir, stagedTarget)");
+  assert.ok(callIdx > copyIdx, "校验必须插在 copyTree 之后、排程之前");
+  assert.ok(src.includes("isFile()"), "staged 里每个文件必须是普通文件形态（asar 被误报成目录时拦下）");
+  assert.ok(src.includes("size !== st.size") || /stPayload\.size !== st\.size/.test(src), "staged 大小必须与 payload 一致");
+});
+
+test("asar 防护统一：触碰暂存树/清理链路的 fs 全部走 originalFs，不得用顶部 import 的补丁版", () => {
+  // 0.2.17 事故根因是 copyTree 混用（readdir/stat 用补丁版）——整条更新链路
+  // （rmWithRetry / cleanupStaleStaging / copyTree / verifyStagedFiles）统一纪律
+  for (const fn of ["rmWithRetry", "cleanupStaleStaging", "copyTree", "verifyStagedFiles"]) {
+    const m = src.match(new RegExp(`function ${fn}\\([\\s\\S]*?\\n\\}`));
+    assert.ok(m, `能定位 ${fn}`);
+    const body = m[0];
+    assert.ok(body.includes("loadOriginalFs()"), `${fn} 必须取 originalFs`);
+    assert.ok(!/[^.\w](readdirSync|statSync|copyFileSync|rmSync|existsSync)\(/.test(body),
+      `${fn} 内不得裸调顶部 import 的补丁版 fs（必须 fs.xxx）`);
+  }
+  // 逐文件校验与 shellExe 探测也碰 payload/安装目录路径，必须走 originalFs
+  assert.ok(!src.includes("existsSync(f)") || src.includes("loadOriginalFs().existsSync(f)"), "payload 逐文件校验走 originalFs");
+  assert.ok(src.includes("loadOriginalFs().existsSync(shellExe)"), "shellExe 探测走 originalFs（安装目录树含 app.asar）");
+  assert.ok(src.includes('readFileSync(p)).digest("hex")') && src.match(/sha256 = \(p[^]*?loadOriginalFs\(\)\.readFileSync/), "哈希读取走 originalFs");
+});
