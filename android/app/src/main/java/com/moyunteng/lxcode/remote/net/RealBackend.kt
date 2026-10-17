@@ -30,6 +30,7 @@ import com.moyunteng.lxcode.remote.model.SessionMeta
 import com.moyunteng.lxcode.remote.model.SessionStats
 import com.moyunteng.lxcode.remote.model.ThreadBlock
 import com.moyunteng.lxcode.remote.model.TodoItem
+import org.json.JSONArray
 import org.json.JSONObject
 import java.time.Instant
 import java.time.temporal.ChronoUnit
@@ -113,6 +114,36 @@ class RealBackend {
      *（装载后必滚，流式期间跟随），但首个装载事件里两者都会发生，这里只服务 ①。
      */
     var historyVersion by mutableStateOf(0)
+        private set
+
+    // ===== 向上翻页（chat.history 的 before_seq 分页，2026-12）=====
+
+    /** 已加载窗口最旧一条消息的 seq（下一次 before_seq 的 anchor；0 = 还没装载过）。
+     *  取值来源：tail 装载 = tail 段首条消息的 seq；分页装载 = min(旧值, 新窗口首条)。 */
+    var oldestLoadedSeq by mutableStateOf(0L)
+        private set
+
+    /** anchor 之前还有没有更早的历史（远端 has_more；false = 列表头显示「已加载全部历史」）。 */
+    var hasMoreHistory by mutableStateOf(true)
+        private set
+
+    /** 分页装载中（LazyColumn 顶部 spinner）。 */
+    var loadingEarlier by mutableStateOf(false)
+        private set
+
+    /** 上一次分页装载失败的原因（非空 = 顶部显示重试；成功装载即清）。 */
+    var loadEarlierError by mutableStateOf<String?>(null)
+        private set
+
+    /** 分页装载版本号（更早的块插入头部时 +1；ThreadScreen 据此做不跳屏补偿）。 */
+    var earlierVersion by mutableStateOf(0)
+        private set
+
+    /** 会话本地缓存（视图加速；与 ConnStore 分开存储——cache/sessions/<会话 id>.json）。 */
+    private val sessionCache = SessionCache(com.moyunteng.lxcode.remote.update.AppContextHolder.context)
+
+    /** 当前会话是否在展示缓存（断网打开会话时置位；远端装载成功即清）。 */
+    var showingCached by mutableStateOf(false)
         private set
 
     /**
@@ -1018,6 +1049,11 @@ class RealBackend {
                 p.optJSONObject("context")?.let { contextUsage = parseContext(it) }
                 p.optJSONObject("stats")?.let { sessionStats = parseStats(it) }
                 Log.i(TAG, "done: ctx=$contextUsage stats=$sessionStats")
+                // 轮结束即刷新缓存快照（断网可看的最新性）：cache 落盘不在关键路径，
+                // 失败只影响下次打开的秒开质量，不影响正确性（远端是事实源）。
+                if (oldestLoadedSeq > 0) {
+                    saveHistoryCache(currentSessionId, currentTodosJson(), currentStatsJson())
+                }
                 msg?.optString("model", "")?.takeIf { it.isNotEmpty() }?.let { sessionModel = it }
                 busy = false
                 // 主轮结束重拉会话列表（对齐桌面端 ws/index.ts 的 chat.done →
@@ -1102,26 +1138,58 @@ class RealBackend {
 
     // ===== 历史装载 =====
 
-    /** chat.history → 块（含 checkpoints → 压缩块、pending → 挂起确认）。 */
+    /** chat.history → 块（含 checkpoints → 压缩块、pending → 挂起确认）。
+     *  打开流程（2026-12 缓存秒开）：先把缓存渲染出来（如果有），再拉远端 tail——
+     *  远端返回后 tail 窗口替换缓存尾部（分页加载的更早部分保留）。 */
     private fun loadHistory(id: String) {
         // 先切再拉：currentSessionId 必须在**发起请求前**就指向目标会话——否则
         // 回调里的过期响应守卫（id != currentSessionId）会把这次响应整个丢掉，
         // 从 A 切 B 永远切不动（A 开着时点 B，resume 成功但 history 被丢弃，
         // 界面停在 A——本批 e2e 实测抓到）。
         if (id != currentSessionId) switchTo(id)
+        // 缓存秒开：有缓存先渲染（快于任何网络往返）；远端回来后按 tailAnchorSeq
+        // 合并。缓存块与远端块的「分界」由 anchor 保证——anchor 之前的块是历史
+        // 分页段（信任缓存），之后整段以远端为准。
+        val cached = sessionCache.load(id)
+        cachedBlocks = emptyList()
+        cachedOldestSeq = null
+        if (cached != null && cached.blocks.isNotEmpty()) {
+            blocks.clear()
+            blocks.addAll(cached.blocks)
+            cached.statsJson?.let { sj ->
+                try {
+                    sessionStats = parseStats(JSONObject(sj))
+                } catch (_: Exception) {
+                }
+            }
+            oldestLoadedSeq = cached.oldestSeq
+            hasMoreHistory = cached.hasMore
+            // 记住缓存段：远端 tail 回来后 anchor 之前（= 分页段）要合并保留
+            cachedBlocks = cached.blocks
+            if (cached.oldestSeq < cached.tailAnchorSeq) cachedOldestSeq = cached.oldestSeq
+            showingCached = true
+            // 缓存装载也算一次「历史就绪」：ThreadScreen 滚到底（进会话停在最底）。
+            historyVersion++
+            Log.i(TAG, "cache($id): ${cached.blocks.size} 块 anchor=${cached.tailAnchorSeq}")
+        }
         // 慢链路优化（2026-10 公网性能排查）：先拉尾部 TAIL_WINDOW 条（公网 frp
         // 隧道限速 10 Mbit/s，大会话全量 1.4~1.7MB 要秒级传输），进会话即刻可见；
         // tail 是可选参数、缺省全量（wire 向后兼容，老后端忽略未知键）。
         client.call("chat.history", JSONObject().put("session_id", id).put("tail", TAIL_WINDOW)) { err, result ->
             if (err != null) {
                 Log.w(TAG, "chat.history($id) 失败: ${err.optString("message")}")
+                if (id != currentSessionId) return@call
+                if (showingCached) {
+                    // 缓存已在屏上：不插整屏 Error（那会把秒开的缓存盖掉）——
+                    // 只标记离线展示态，UI 顶部出「离线，显示缓存」提示条。
+                    showingCached = true
+                    return@call
+                }
                 // 失败不能静默（原实现只 log——用户看到的就是白屏「加载不出来」）：
                 // 插一块 Error 给人话反馈；重试 = 返回后重新进入会话（openSession 重拉）。
-                if (id == currentSessionId) {
-                    blocks.clear()
-                    blocks.add(ThreadBlock.Error("历史加载失败: ${err.optString("message")}（返回后重新进入可重试）"))
-                    historyVersion++
-                }
+                blocks.clear()
+                blocks.add(ThreadBlock.Error("历史加载失败: ${err.optString("message")}（返回后重新进入可重试）"))
+                historyVersion++
                 return@call
             }
             // 请求在途时用户又点了别的会话：currentSessionId 已指向新目标，
@@ -1131,8 +1199,90 @@ class RealBackend {
         }
     }
 
-    private fun switchTo(id: String) {
-        if (currentSessionId == id) return
+    /**
+     * 向上翻页：拉取已加载窗口（oldestLoadedSeq）之前更早 TAIL_WINDOW 条
+     * （chat.history 的 before_seq 分页——内核 HistoryBefore 负责配平与检查点平移）。
+     *
+     * 状态机：loadingEarlier 置位（UI spinner）→ 成功后新块**插入头部** +
+     * oldestLoadedSeq 推进 + earlierVersion++（ThreadScreen 做不跳屏补偿）；
+     * has_more=false → hasMoreHistory=false（「已加载全部历史」）；失败 →
+     * loadEarlierError 置位（UI 重试按钮），loadingEarlier 复位。
+     * 忙碌会话也可翻页（读路径不冲突）；重复触发被 loadingEarlier 闸住。
+     */
+    fun loadEarlier() {
+        if (loadingEarlier) return
+        val id = currentSessionId
+        val anchor = oldestLoadedSeq
+        if (id.isEmpty() || anchor <= 0 || !hasMoreHistory) return
+        loadingEarlier = true
+        loadEarlierError = null
+        client.call(
+            "chat.history",
+            JSONObject()
+                .put("session_id", id)
+                .put("tail", TAIL_WINDOW)
+                .put("before_seq", anchor),
+        ) { err, result ->
+            loadingEarlier = false
+            if (id != currentSessionId) return@call
+            if (err != null) {
+                Log.w(TAG, "chat.history(before_seq=$anchor) 失败: ${err.optString("message")}")
+                loadEarlierError = err.optString("message").ifBlank { "加载失败" }
+                return@call
+            }
+            val r = result as? JSONObject ?: return@call
+            val (parsed, _, _) = parseHistoryBlocks(r)
+            if (parsed.isEmpty()) {
+                // 空窗口 = 已到头（防御：后端 has_more 缺席的老版本）
+                hasMoreHistory = false
+                earlierVersion++
+                return@call
+            }
+            // 插入头部（LazyColumn 顶部）；seq 薄记推进到新窗口首条（分页应答的
+            // first_seq 是权威值——配平回退后窗口首条可能比 anchor-N 更旧）
+            blocks.addAll(0, parsed)
+            val newFirstSeq = r.optLong("first_seq", 0L)
+            if (newFirstSeq > 0) oldestLoadedSeq = newFirstSeq
+            hasMoreHistory = r.optBoolean("has_more", false)
+            loadEarlierError = null
+            earlierVersion++
+            Log.i(TAG, "loadEarlier($id): +${parsed.size} 块 has_more=$hasMoreHistory anchor=$oldestLoadedSeq")
+            saveHistoryCache(id, currentTodosJson(), currentStatsJson())
+        }
+    }
+
+    /** 当前 blocks 里的 Todo 块序列化（缓存落盘用；无 = null）。 */
+    private fun currentTodosJson(): String? {
+        val todo = blocks.firstOrNull { it is ThreadBlock.Todo } as? ThreadBlock.Todo ?: return null
+        val arr = JSONArray()
+        todo.items.forEach { arr.put(JSONObject().put("content", it.content).put("status", it.status)) }
+        return arr.toString()
+    }
+
+    /** 当前 stats 序列化（缓存落盘用；无 = null）。 */
+    private fun currentStatsJson(): String? = try {
+        sessionStats?.let { s ->
+            JSONObject()
+                .put("turns", s.turns)
+                .put("steps", s.steps)
+                .put("llm_ms", s.llmMs)
+                .put("tool_ms", s.toolMs)
+                .put("ttft_ms", s.ttftMs)
+                .put("ttft_steps", s.ttftSteps)
+                .put("decode_ms", s.decodeMs)
+                .put("decode_tokens", s.decodeTokens)
+                .put("input_tokens", s.inputTokens)
+                .put("cache_read_tokens", s.cacheReadTokens)
+                .put("cache_write_tokens", s.cacheWriteTokens)
+                .put("output_tokens", s.outputTokens)
+                .put("legacy_tokens", s.legacyTokens)
+                .toString()
+        }
+    } catch (_: Exception) {
+        null
+    }
+
+    private fun switchTo(id: String) {        if (currentSessionId == id) return
         currentSessionId = id
         blocks.clear()
         streamingIdx = -1
@@ -1148,12 +1298,20 @@ class RealBackend {
         // 必须等下一次 applyHistory 才成立——沿用上一会话的版本号会让 ThreadScreen
         // 在 blocks 还是空的时候去滚
         historyVersion = 0
+        // 分页薄记同会话复位（上一会话的 anchor/has_more/错误状态不能带过来）
+        oldestLoadedSeq = 0
+        hasMoreHistory = true
+        loadingEarlier = false
+        loadEarlierError = null
+        showingCached = false
     }
 
-    /** 解析 chat.history 的 messages → 块列表 + todos JSON（主会话与子会话视图共用）。 */
-    private fun parseHistoryBlocks(r: JSONObject?): Pair<List<ThreadBlock>, org.json.JSONArray?> {
-        if (r == null) return emptyList<ThreadBlock>() to null
-        val msgs = r.optJSONArray("messages") ?: return emptyList<ThreadBlock>() to null
+    /** 解析 chat.history 的 messages → 块列表 + todos JSON + 首条消息 seq（主会话与
+     *  子会话视图共用）。首条 seq 是分页薄记的 anchor（老后端缺 seq = 0）。 */
+    private fun parseHistoryBlocks(r: JSONObject?): Triple<List<ThreadBlock>, org.json.JSONArray?, Long> {
+        if (r == null) return Triple(emptyList<ThreadBlock>(), null, 0L)
+        val msgs = r.optJSONArray("messages") ?: return Triple(emptyList<ThreadBlock>(), null, 0L)
+        val firstSeq = msgs.optJSONObject(0)?.optLong("seq", 0L) ?: 0L
         val checkpoints = r.optJSONArray("checkpoints")
             ?.let { cp -> (0 until cp.length()).map { cp.optInt(it) } }
             ?.toSet() ?: emptySet()
@@ -1289,12 +1447,20 @@ class RealBackend {
         }
         // 历史快照的任务清单（todos 原样返回，调用方决定插不插 Todo 块）
         val todosArr = r.optJSONArray("todos")?.takeIf { it.length() > 0 }
-        return newBlocks.toList() to todosArr
+        return Triple(newBlocks.toList(), todosArr, firstSeq)
     }
 
     private fun applyHistory(r: JSONObject?) {
         if (r == null) return
-        val (parsed, todosArr) = parseHistoryBlocks(r)
+        val (parsed, todosArr, firstSeq) = parseHistoryBlocks(r)
+        // 分页薄记：tail 段首条消息的 seq 是「tail 窗口」的锚点——缓存合并时 anchor
+        // 之前的块（历史分页段）保留、之后整段以远端为准。缺 seq（老后端）= 记 0
+        //（缓存退化为整段替换——正确性不受影响，只是丢掉分页复用）。
+        val tailAnchor = firstSeq
+        val cacheTodos = todosArr?.toString()
+        val cacheStats = r.optJSONObject("stats")?.toString()
+        val hadEarlierBlocks = cachedOldestSeq != null && tailAnchor > 0 &&
+            (cachedOldestSeq ?: 0L) < tailAnchor
         blocks.clear()
         blocks.addAll(parsed)
         streamingIdx = -1
@@ -1328,13 +1494,67 @@ class RealBackend {
             )
         }
         Log.i(TAG, "history($currentSessionId): ${parsed.size} 条消息 → ${blocks.size} 块 busy=$busy")
+        // 分页薄记 + 缓存落盘（在 historyVersion++ 之前——UI 读到的状态要一次到位）：
+        // 远端 tail 窗口替换缓存尾部（tailAnchor 之后整段以远端为准），anchor 之前的
+        // 分页段（打开会话时缓存秒开的部分）保留——缓存与远端合并口径。
+        if (hadEarlierBlocks) {
+            val earlier = cachedBlocksBefore(tailAnchor)
+            if (earlier.isNotEmpty()) {
+                blocks.addAll(0, earlier)
+            }
+            oldestLoadedSeq = cachedOldestSeq ?: tailAnchor
+        } else {
+            oldestLoadedSeq = tailAnchor
+        }
+        hasMoreHistory = oldestLoadedSeq > 0 // tail 首条 > 0 即可能还有更早的（hasMore 由分页应答精化）
+        showingCached = false
+        saveHistoryCache(currentSessionId, cacheTodos, cacheStats)
         // 历史装载完成：ThreadScreen 据此滚动到底（进会话停在最底，对齐桌面端）
         historyVersion++
     }
 
+    /** 缓存合并薄记：loadHistory 渲染缓存时记住「分页段块列表」与「分页段最旧
+     *  seq」——远端 tail 回来后把分页段合并回头部（tail 段以远端为准）。 */
+    private var cachedBlocks: List<ThreadBlock> = emptyList()
+    private var cachedOldestSeq: Long? = null
+
+    private fun cachedBlocksBefore(anchor: Long): List<ThreadBlock> {
+        if (cachedBlocks.isEmpty() || anchor <= 0) return emptyList()
+        // 分页段 = 缓存里 anchor 之前的部分（缓存的 blocks 布局就是「分页段 + tail 段」，
+        // tail 段的长度 == 本次远端 tail 装载的块数——按位置从尾部对齐切除 tail 段）
+        val tailCount = blocks.size
+        return if (cachedBlocks.size > tailCount) {
+            cachedBlocks.subList(0, cachedBlocks.size - tailCount)
+        } else {
+            emptyList()
+        }
+    }
+
+    /** 当前 blocks 落缓存（会话 id + 分页薄记一起存）。Todo 块不缓存（todos 单独
+     *  存 JSON——它的更新走 todo.updated 事件，块列表快照里的 Todo 是定格视图）。 */
+    private fun saveHistoryCache(sessionId: String, todosJson: String?, statsJson: String?) {
+        if (sessionId.isEmpty()) return
+        val snapshot = blocks.toList().filterNot { it is ThreadBlock.Todo || it is ThreadBlock.Error }
+        // tailAnchor = 分页段与 tail 段的分界（最旧已加载 seq）：缓存合并按
+        // 「缓存块数 − 远端 tail 块数」的位置切分——anchor 语义等价记录
+        val anchor = oldestLoadedSeq
+        sessionCache.save(
+            SessionCacheEntry(
+                sessionId = sessionId,
+                blocks = snapshot.filterNot { it is ThreadBlock.Todo },
+                todosJson = todosJson,
+                statsJson = statsJson,
+                tailAnchorSeq = anchor,
+                oldestSeq = anchor,
+                hasMore = hasMoreHistory,
+                savedAt = System.currentTimeMillis(),
+            ),
+        )
+    }
+
     /** 子会话视图的历史装载（与主会话同一解析器；副作用落在 child* 状态上）。 */
     private fun applyChildHistory(r: JSONObject?) {
-        val (parsed, todosArr) = parseHistoryBlocks(r)
+        val (parsed, todosArr, _) = parseHistoryBlocks(r)
         childBlocks.clear()
         childBlocks.addAll(parsed)
         childStreamingIdx = -1

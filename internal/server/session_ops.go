@@ -298,15 +298,38 @@ func errorCode(err error) int {
 	}
 }
 
-// history 组装 chat.history 应答。tail > 0 = 尾部窗口（慢链路分页：内核
-// TailHistory 负责配平与检查点平移；0 = 全量，老语义不变）。
-func (s *Server) history(sessionID string, sess *agent.Session, tail int) protocol.ChatHistoryResult {
+// history 组装 chat.history 应答。两种窗口（互斥，before_seq > 0 时优先）：
+//   - before_seq > 0：前缀分页窗口——anchor（before_seq）之前最多 tail 条
+//     （内核 HistoryBefore 负责配平回退与检查点平移），应答带 has_more /
+//     first_seq 分页元数据；tail ≤ 0 报参数错误（分页必须有窗口大小）；
+//   - 否则 tail > 0 = 尾部窗口（慢链路分页：内核 TailHistory 负责配平与
+//     检查点平移）；0 = 全量，老语义不变。
+func (s *Server) history(sessionID string, sess *agent.Session, tail int, beforeSeq int64) (protocol.ChatHistoryResult, error) {
+	if beforeSeq > 0 {
+		snap, hasMore, firstSeq, err := sess.HistoryBefore(beforeSeq, tail)
+		if err != nil {
+			// 错误直接上抛（dispatch 层映射 CodeInvalidParams）：before_seq
+			// 是客户端记录的 seq，错误值会切出重复或空洞的窗口——静默回落
+			// 全量只会把错位藏起来（安卓端的「重试」依赖它收到这个错误）。
+			return protocol.ChatHistoryResult{}, err
+		}
+		return s.historyResult(sessionID, sess, snap, &hasMore, &firstSeq), nil
+	}
+	if tail <= 0 {
+		return s.historyResult(sessionID, sess, sess.History(), nil, nil), nil
+	}
 	snap := sess.TailHistory(tail)
+	return s.historyResult(sessionID, sess, snap, nil, nil), nil
+}
+
+// historyResult 把快照装成 wire 应答（三种窗口共用：尾部 / 前缀 / 全量）。
+// hasMore/firstSeq 非空 = 分页应答（wire 带这两个键）；nil = 非分页（缺席）。
+func (s *Server) historyResult(sessionID string, sess *agent.Session, snap agent.Snapshot, hasMore *bool, firstSeq *int64) protocol.ChatHistoryResult {
 	var pending *protocol.ConfirmRequest
 	if snap.Pending != nil {
 		pending = toProtocolConfirm(sessionID, snap.Pending)
 	}
-	return protocol.ChatHistoryResult{
+	res := protocol.ChatHistoryResult{
 		Messages: snap.Messages, Busy: snap.Busy, Pending: pending,
 		SessionID: sessionID, Todos: snap.Todos,
 		Context:     toProtocolContext(snap.Context),
@@ -321,4 +344,11 @@ func (s *Server) history(sessionID string, sess *agent.Session, tail int) protoc
 		// 按它同步显示——档位显示必须跟随后端事实，而不是上一会话的本地残留。
 		Approval: sess.LiveApproval(),
 	}
+	if hasMore != nil {
+		res.HasMore = *hasMore
+	}
+	if firstSeq != nil {
+		res.FirstSeq = *firstSeq
+	}
+	return res
 }

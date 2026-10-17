@@ -59,6 +59,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -80,6 +81,7 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
 import com.moyunteng.lxcode.design.component.LxConfirmDialog
 import com.moyunteng.lxcode.design.component.LxIconButton
 import com.moyunteng.lxcode.design.component.LxStatus
@@ -155,10 +157,18 @@ fun ThreadScreen(state: MockAppState, sessionId: String) {
      *  注意 viewportEndOffset **含**底部 contentPadding（输入区高度），
      *  真底 = viewportEndOffset - afterContentPadding，不减会把「还没到底」
      *  判成「已在底」（真机复测抓到过：流式跟随因此在块开头卡住）。 */
+    /** 最后一个消息块在 LazyColumn 里的条目下标：头部固定有「分页状态行」item
+     *  （恒在列表头；离线提示条打开时它占 index 0、header 退居 1）——消息块下标 =
+     *  头部条目数 + 块下标。「真底」判定与 snapToBottom 共用这一份口径。 */
+    fun lastBlockItemIndex(): Int {
+        val headerCount = if (real.showingCached) 2 else 1
+        return headerCount + real.blocks.size - 1
+    }
+
     fun bottomAligned(): Boolean {
         val info = listState.layoutInfo
         if (info.visibleItemsInfo.isEmpty()) return true
-        val last = info.visibleItemsInfo.lastOrNull { it.index == real.blocks.size - 1 }
+        val last = info.visibleItemsInfo.lastOrNull { it.index == lastBlockItemIndex() }
             ?: return false
         return last.offset + last.size <= info.viewportEndOffset - info.afterContentPadding
     }
@@ -183,13 +193,13 @@ fun ThreadScreen(state: MockAppState, sessionId: String) {
     suspend fun snapToBottom(recheckDelayMs: Long = 0) {
         val count = real.blocks.size
         if (count <= 0) return
-        listState.scrollToItem(count - 1)
+        listState.scrollToItem(lastBlockItemIndex())
         suspend fun converge() {
             repeat(6) {
                 withFrameNanos { }
                 if (!listState.canScrollForward) return
                 val info = listState.layoutInfo
-                val last = info.visibleItemsInfo.lastOrNull { it.index == count - 1 }
+                val last = info.visibleItemsInfo.lastOrNull { it.index == lastBlockItemIndex() }
                 // 真底 = viewportEndOffset - afterContentPadding（含底部输入区 padding，见 bottomAligned）
                 val delta = last?.let {
                     it.offset + it.size - (info.viewportEndOffset - info.afterContentPadding)
@@ -228,7 +238,7 @@ fun ThreadScreen(state: MockAppState, sessionId: String) {
                 withFrameNanos { }
                 if (!listState.canScrollForward) return@LaunchedEffect
                 val info = listState.layoutInfo
-                val last = info.visibleItemsInfo.lastOrNull { it.index == real.blocks.size - 1 }
+                val last = info.visibleItemsInfo.lastOrNull { it.index == lastBlockItemIndex() }
                 // 真底 = viewportEndOffset - afterContentPadding（含底部输入区 padding，见 bottomAligned）
                 val delta = last?.let {
                     it.offset + it.size - (info.viewportEndOffset - info.afterContentPadding)
@@ -241,6 +251,60 @@ fun ThreadScreen(state: MockAppState, sessionId: String) {
         if (imeHeight > 0 && real.blocks.isNotEmpty() && sticky) {
             snapToBottom()
             sticky = true
+        }
+    }
+
+    // ===== 向上翻页（before_seq 分页 + 不跳屏补偿，2026-12）=====
+    //
+    // 触发：第一个可见项接近列表头（index ≤ 1 且还没到头/没在装载）→ loadEarlier()。
+    // 不跳屏：更早的块**插入头部**后，原第一项的下标整体后移 N——装载回调
+    // （earlierVersion 变化）里按「插入前快照的第一可见项 (index, offset)」恢复视觉
+    // 位置：插入后旧内容的新下标 = 旧下标 + 插入块数，逐帧收敛补滚（插入后同帧
+    // layoutInfo 还是旧的，直接量会偏——复用 snapToBottom 的收敛纪律）。
+    val earlierVersion = real.earlierVersion
+    // 插入前快照：第一可见项的 (下标, 偏移) 与插入前的块数（插入数 = 前后差）
+    var prePagingFirstIndex by remember { mutableStateOf(0) }
+    var prePagingFirstOffset by remember { mutableStateOf(0) }
+    var prePagingBlockCount by remember { mutableStateOf(0) }
+    var pendingScrollCompensation by remember { mutableStateOf(false) }
+
+    // 触发装载：滚到头（index ≤ 1）且还有更早的历史 → 快照位置 → loadEarlier()
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
+            .distinctUntilChanged()
+            .collect { (index, offset) ->
+                if (index <= 1 && real.hasMoreHistory && !real.loadingEarlier &&
+                    real.oldestLoadedSeq > 0 && real.blocks.isNotEmpty()
+                ) {
+                    prePagingFirstIndex = index
+                    prePagingFirstOffset = offset
+                    prePagingBlockCount = real.blocks.size
+                    pendingScrollCompensation = true
+                    real.loadEarlier()
+                }
+            }
+    }
+
+    // 装载完成：头部插入了 N 块 → 把旧的第一可见项滚回原 offset（不跳屏）。
+    LaunchedEffect(earlierVersion) {
+        if (!pendingScrollCompensation) return@LaunchedEffect
+        pendingScrollCompensation = false
+        val inserted = real.blocks.size - prePagingBlockCount
+        if (inserted <= 0) return@LaunchedEffect
+        val targetIndex = prePagingFirstIndex + inserted
+        repeat(8) {
+            withFrameNanos { }
+            val info = listState.layoutInfo
+            if (info.visibleItemsInfo.isEmpty()) return@LaunchedEffect
+            val target = info.visibleItemsInfo.firstOrNull { it.index == targetIndex }
+            if (target != null) {
+                // 目标项（旧的第一可见内容）现在的实测顶部 − 快照 offset = 补滚量
+                val delta = target.offset - prePagingFirstOffset
+                if (delta != 0) listState.scrollBy(delta.toFloat())
+                return@LaunchedEffect
+            }
+            // 目标项被挤出可视区（新块很高）：按目标下标硬滚到快照 offset
+            listState.scrollToItem(targetIndex, prePagingFirstOffset)
         }
     }
 
@@ -311,6 +375,72 @@ fun ThreadScreen(state: MockAppState, sessionId: String) {
                 contentPadding = PaddingValues(top = Lx.space.s8, bottom = composerHeightDp),
                 verticalArrangement = Arrangement.spacedBy(Lx.space.s10),
             ) {
+                // 头部：离线提示（断网打开会话时显示缓存 + 提示条——缓存是视图加速，
+                // 远端才是事实源；重连后远端 tail 装载会覆盖缓存段）。
+                if (real.showingCached) {
+                    item(key = "$sessionId:offline") {
+                        Text(
+                            text = "离线，显示缓存内容",
+                            style = Lx.type.BodySmall.copy(
+                                fontSize = Lx.type.Size11_5,
+                                fontWeight = FontWeight.Medium,
+                            ),
+                            color = LxColors.Amber,
+                            modifier = Modifier.fillMaxWidth().padding(vertical = Lx.space.s2),
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        )
+                    }
+                }
+                // 头部：分页状态行（spinner / 「已加载全部历史」/ 重试按钮）。
+                // key 固定 "header"——插入更早块时它恒在 index 0，blocks 的 key 用
+                // 下标（"$sessionId:$i"）会随插入整体平移（LazyColumn 以 key 复用，
+                // 平移 = 所有块重组一次，但视觉位置由上面的补偿滚保持不变）。
+                item(key = "$sessionId:header") {
+                    when {
+                        real.loadingEarlier -> Row(
+                            Modifier.fillMaxWidth().padding(vertical = Lx.space.s4),
+                            horizontalArrangement = Arrangement.Center,
+                        ) {
+                            TypingDots(dotSize = 5.dp, gap = 3.dp)
+                            Text(
+                                text = "加载更早的历史…",
+                                style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size11_5),
+                                color = Lx.colors.FgMuted,
+                                modifier = Modifier.padding(start = Lx.space.s4),
+                            )
+                        }
+                        real.loadEarlierError != null -> Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = "更早的历史加载失败",
+                                style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size11_5),
+                                color = Lx.colors.FgMuted,
+                            )
+                            Text(
+                                text = "重试",
+                                style = Lx.type.BodySmall.copy(
+                                    fontSize = Lx.type.Size11_5,
+                                    fontWeight = FontWeight.Medium,
+                                    textDecoration = TextDecoration.Underline,
+                                ),
+                                color = Lx.colors.Fg,
+                                modifier = Modifier
+                                    .padding(start = Lx.space.s4)
+                                    .clickable { real.loadEarlier() },
+                            )
+                        }
+                        !real.hasMoreHistory && real.oldestLoadedSeq > 0 -> Text(
+                            text = "已加载全部历史",
+                            style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size11_5),
+                            color = Lx.colors.FgMuted,
+                            modifier = Modifier.fillMaxWidth().padding(vertical = Lx.space.s2),
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        )
+                    }
+                }
                 // 消息块逐个入场：`block-in`（opacity 0→1 + translateY(4px)→0，320ms 标准曲线），
                 // 延迟按 `staggerIn`（min(40ms, 360ms/条目数)）逐项错开。
                 // key 用下标：流式 delta 会整块替换（data class copy），

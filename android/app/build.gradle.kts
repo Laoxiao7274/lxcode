@@ -14,6 +14,10 @@ android {
     compileSdk = 35
     buildToolsVersion = "35.0.0"
 
+    // 单元测试用真实 org.json 实现（Android jar 里的 org.json 是 stub，方法一调就
+    // 抛 "not mocked"——SessionCacheCodec 的缓存编解码测试需要真的读写 JSON）。
+    // json 依赖只进 testImplementation（main 用平台自带的 org.json，见依赖纪律）。
+
     defaultConfig {
         applicationId = "com.moyunteng.lxcode.remote"
         minSdk = 26
@@ -115,6 +119,9 @@ dependencies {
     // 不配 robolectric——工程既有约定是「构建即验证」，这里只补最小 JUnit4
     // （本机 gradle 缓存/m2 均有）。
     testImplementation("junit:junit:4.13.2")
+    // 真实 org.json（Android jar 的 org.json 是 stub——SessionCacheCodec 的编解码
+    // 单测要真的读写 JSON；testImplementation 不进 APK，main 仍用平台自带实现）。
+    testImplementation("org.json:json:20240303")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

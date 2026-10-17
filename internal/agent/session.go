@@ -581,6 +581,72 @@ func (s *Session) TailHistory(n int) Snapshot {
 	return snap
 }
 
+// HistoryBefore 返回会话快照里「某条消息之前」的**前缀窗口**（慢链路客户端
+// 向上翻页的内核配合项，与 TailHistory 同一套纪律）。
+//
+// 参数：seq = 客户端已加载窗口最旧一条消息的**库序号**（llm.Message.Seq——
+// store 分配的 messages.seq，chat.history 的每条消息都带着，客户端原样记录）；
+// n = 最多返回多少条。返回 seq 之前（不含 seq）最多 n 条，加三个窗口元数据：
+//
+//   - start 回退到最近的**工具配对平衡切点**（AnalyzeToolPairing 的不变量——
+//     分页窗口同样不能把 assistant 的 tool_calls 切在它的 tool 结果之前，
+//     严格端点 400 拒收整轮）；
+//   - Checkpoints 下标同步平移：窗口里的「已压缩历史」块照常渲染（下标
+//     平移后与该窗口独立成史时的语义逐字一致——桌面端怎么做这里就怎么做），
+//     窗口外的检查点丢弃（它属于还没拉的那段更早历史）；
+//   - hasMore = 窗口起点 > 0（还有更早的没拉）；firstSeq = 窗口首条的 Seq
+//     （客户端下一次分页的 anchor；空窗口时 0）；
+//   - pending/todo/busy/context 与全量完全一致（它们不是历史区间的函数——
+//     窗口只是传输裁剪，TailHistory 的同一条注释在这里逐字成立）。
+//
+// seq 不在历史里（≤0 或查无此号）返回错误：客户端只信任自己记录的 seq，
+// 错误的 anchor 会切出重复或空洞的窗口——静默回落全量只会把错位藏起来。
+// 这是**协议错误**（server 侧映射 CodeInvalidParams），不是内部故障。
+func (s *Session) HistoryBefore(seq int64, n int) (snap Snapshot, hasMore bool, firstSeq int64, err error) {
+	snap = s.History()
+	if seq <= 0 {
+		return snap, false, 0, fmt.Errorf("before_seq 必须是消息序号（正整数），得到 %d", seq)
+	}
+	if n <= 0 {
+		return snap, false, 0, fmt.Errorf("分页条数 n 必须是正整数，得到 %d", n)
+	}
+	// anchor 的库内位置：按 Seq 线性找（Seq 在内存历史里单调不减——store 分配；
+	// 线性扫的代价可忽略：分页请求本来就是慢链路上的低频操作）。
+	anchor := -1
+	for i, m := range snap.Messages {
+		if m.Seq == seq {
+			anchor = i
+			break
+		}
+	}
+	if anchor < 0 {
+		return snap, false, 0, fmt.Errorf("before_seq %d 不在这条会话的历史里（会话可能已被撤回或压缩重建）", seq)
+	}
+	if anchor == 0 {
+		// anchor 就是历史第一条：之前没有内容了。返回空窗口 + has_more=false
+		//（不报错——客户端滚到头继续触发是正常路径，不是异常）。
+		return snap, false, 0, nil
+	}
+	start := anchor - n
+	if start < 0 {
+		start = 0
+	}
+	pairing := AnalyzeToolPairing(snap.Messages)
+	if balanced := pairing.NearestBalancedAtOrBefore(start); balanced >= 0 {
+		start = balanced
+	}
+	if start < 0 {
+		return snap, false, 0, nil // 防御性回落（与 TailHistory 同一条：Cuts 全假不可达）
+	}
+	window := append([]llm.Message(nil), snap.Messages[start:anchor]...)
+	snap.Messages = window
+	snap.Checkpoints = shiftCheckpoints(snap.Checkpoints, start)
+	if len(window) > 0 {
+		firstSeq = window[0].Seq
+	}
+	return snap, start > 0, firstSeq, nil
+}
+
 // shiftCheckpoints 把检查点下标按窗口起点平移：下标 ≥ start 的减 start，
 // 其余丢弃（检查点在窗口外 = 前端看不到那个「已压缩历史」块，正确——
 // 它属于没拉的那段头部）。下标本身有序，顺序保持。

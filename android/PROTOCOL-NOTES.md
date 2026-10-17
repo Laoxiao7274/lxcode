@@ -89,6 +89,21 @@
 检查点下标随窗口平移；busy/pending/todos/context/stats 与全量一致（context
 的投影基线按全量历史算——窗口只是传输裁剪，不改占用计账）。
 安卓端固定带 `tail:50`（TAIL_WINDOW，RealBackend）进会话先见最新。
+
+**分页（2026-12）**：`before_seq` 可选（>0 生效）= 返回该消息**之前**（不含它）
+最多 `tail` 条——向上翻页的 anchor 语义。`tail` 在此语境下是窗口大小；配平与
+检查点平移在内核 `Session.HistoryBefore`（与 TailHistory 同一套纪律）。请求：
+
+```json
+{"session_id":"…","tail":50,"before_seq":42}
+```
+
+- `before_seq` 不在历史里 / ≤0 / 缺 `tail` → `CodeInvalidParams`（错误的 anchor
+  会切出重复或空洞的窗口，不静默回落）；
+- 应答多两个**分页专属键**（非分页应答整键缺席）：`has_more`（anchor 之前还有
+  没有更早的）与 `first_seq`（本窗口首条消息的 seq——下一次请求的 anchor，
+  配平回退后它可能比 anchor−N 更旧，客户端以它为准推进薄记）。
+
 结果（`protocol.ChatHistoryResult`）：
 
 ```json

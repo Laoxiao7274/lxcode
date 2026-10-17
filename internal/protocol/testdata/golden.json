@@ -94,6 +94,14 @@
       "session_id": "s1"
     }
   },
+  "chatHistoryParamsPaging": {
+    "_type": "ChatHistoryParams",
+    "value": {
+      "session_id": "s1",
+      "tail": 50,
+      "before_seq": 3
+    }
+  },
   "chatHistoryResultFull": {
     "_type": "",
     "value": {
@@ -207,6 +215,26 @@
         }
       ],
       "busy": false
+    }
+  },
+  "chatHistoryResultPaging": {
+    "_type": "",
+    "value": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "更早的问题",
+          "seq": 1
+        },
+        {
+          "role": "assistant",
+          "content": "更早的回答",
+          "seq": 2
+        }
+      ],
+      "busy": false,
+      "has_more": true,
+      "first_seq": 1
     }
   },
   "chatRewindResult": {

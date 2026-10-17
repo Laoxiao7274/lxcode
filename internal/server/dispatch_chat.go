@@ -110,7 +110,19 @@ func (s *Server) dispatchChat(c *wsClient, req *protocol.Request, params json.Ra
 				return protocol.NewError(req.ID, protocol.CodeInvalidParams, err.Error())
 			}
 		}
-		return protocol.NewResult(req.ID, s.history(id, sess, p.Tail))
+		// before_seq 分页（2026-12 安卓向上翻页）：>0 = 按 anchor 取前缀窗口，
+		// tail 在这个语境里是「最多多少条」的窗口大小（与尾部窗口共用参数：
+		// 客户端同一份 TAIL_WINDOW 常量，语义 = 窗口大小）。0 = 老语义（tail
+		// 从尾部数 N 条）。
+		if p.BeforeSeq > 0 && p.Tail <= 0 {
+			return protocol.NewError(req.ID, protocol.CodeInvalidParams,
+				"before_seq 分页必须同时给 tail（窗口大小，正整数）")
+		}
+		res, err := s.history(id, sess, p.Tail, p.BeforeSeq)
+		if err != nil {
+			return protocol.NewError(req.ID, protocol.CodeInvalidParams, err.Error())
+		}
+		return protocol.NewResult(req.ID, res)
 
 	case protocol.MethodChatCompact:
 		var p protocol.CompactParams

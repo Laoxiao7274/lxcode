@@ -481,8 +481,13 @@ export interface SendOptions {
 export interface ChatHistoryParams {
   session_id?: string;
   /** 尾部窗口：只拉当前历史的最后 N 条（0/缺省 = 全量——老客户端语义不变）。
-   *  慢链路（公网隧道）分页加载用：先拉尾部，上滑到顶再增量补头部。 */
+   *  慢链路（公网隧道）分页加载用：先拉尾部，上滑到顶再增量补头部。
+   *  与 before_seq 组合时语义变为「anchor 之前最多 N 条」的窗口大小。 */
   tail?: number;
+  /** 前缀分页 anchor（2026-12 安卓向上翻页）：>0 = 返回这条消息**之前**（不含它）
+   *  最多 tail 条。seq 是 llm.Message.Seq（库序号，每条消息都带），客户端原样记录
+   *  再原样传回；不在历史里 / ≤0 → CodeInvalidParams。缺省 0 = 不分页。 */
+  before_seq?: number;
 }
 
 /**

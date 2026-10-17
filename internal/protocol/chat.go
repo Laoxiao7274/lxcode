@@ -129,6 +129,17 @@ type ChatHistoryParams struct {
 	// 经 frp 公网隧道（限速 10 Mbit/s）要 1.2~4.8s，安卓端固定 10s 超时偶尔
 	// 直接失败。慢链路客户端先拉尾部、上滑再增量补头部（协议侧配合项）。
 	Tail int `json:"tail,omitempty"`
+	// BeforeSeq 可选（2026-12 分页加载，安卓端）：返回**这条消息之前**（不含它）
+	// 最多 Tail 条——「向上翻页」的 anchor 语义。tail 是「从尾部数 N 条」，
+	// before_seq 是「从中间某处往前数 N 条」，两者互补：
+	//   - tail=50                    → 进会话的首次加载（最新 50 条）；
+	//   - before_seq=<最旧一条 seq>, tail=50 → 上滑到顶再补更早 50 条。
+	// seq 是 llm.Message.Seq（store 分配的库序号，chat.history 的每条消息都带），
+	// 客户端原样记录再原样传回。不在历史里 / ≤0 / n≤0 → CodeInvalidParams
+	//（错误的 anchor 会切出重复或空洞的窗口，静默回落只会把错位藏起来）。
+	// 与 Tail 一样配平与检查点平移在内核（Session.HistoryBefore）。缺省 0 =
+	// 不分页（tail 语义不变，老客户端零影响——协议 Version 不变）。
+	BeforeSeq int64 `json:"before_seq,omitempty"`
 }
 
 // ChatHistoryResult 是指定会话的同步载荷。
@@ -159,6 +170,14 @@ type ChatHistoryResult struct {
 	// 前端据此做「主会话之间隔离」的档位显示——每个会话显示它自己后端里的真实档位，
 	// 而不是上一会话残留的本地值。空 = 后端没报（老后端），前端回落 confirm。
 	Approval string `json:"approval,omitempty"`
+	// HasMore 仅分页应答（before_seq 请求）携带：true = anchor 之前还有更早的
+	// 历史（客户端继续上滑还能拉）；false = 已经到头（显示「已加载全部历史」）。
+	// 非分页应答整键缺席（omitempty——老客户端与桌面端零影响）。
+	HasMore bool `json:"has_more,omitempty"`
+	// FirstSeq 仅分页应答携带：本窗口**首条**消息的 Seq（下一次 before_seq 的
+	// anchor）。空窗口（anchor 已是历史第一条）为 0 且 has_more=false——客户端
+	// 不该拿 0 去发起下一次请求。与 has_more 同批（2026-12 安卓分页加载）。
+	FirstSeq int64 `json:"first_seq,omitempty"`
 }
 
 // ContextUsage 是上下文占用的 wire 形态（agent.ContextUsage 的映射——内核类型

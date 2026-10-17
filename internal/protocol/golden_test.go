@@ -131,9 +131,12 @@ func goldenSamples() map[string]goldenSample {
 		// ---- chat 域：历史回放 ----
 
 		// 请求参数：tail 是可选的尾部窗口（0 = 全量，老客户端语义；>0 = 只拉
-		// 尾部 N 条——慢链路分页，配平在内核 TailHistory）。
+		// 尾部 N 条——慢链路分页，配平在内核 TailHistory）。before_seq 是可选的
+		// 前缀分页 anchor（>0 = 取该消息**之前**最多 tail 条——安卓向上翻页；
+		// 两个样本分别演示 tail-only 与 before_seq 分页两种形态）。
 		"chatHistoryParamsFull": {"ChatHistoryParams", ChatHistoryParams{SessionID: "s1", Tail: 50}},
 		"chatHistoryParamsMinimal": {"ChatHistoryParams", ChatHistoryParams{SessionID: "s1"}},
+		"chatHistoryParamsPaging": {"ChatHistoryParams", ChatHistoryParams{SessionID: "s1", Tail: 50, BeforeSeq: 3}},
 
 		// 全量历史：检查点/统计/上下文/权限档/待确认全在。message 数组覆盖
 		// llm.Message 的全部 wire 字段（images/attachments/tool_calls/tool_call_id/
@@ -168,6 +171,18 @@ func goldenSamples() map[string]goldenSample {
 		"chatHistoryResultMinimal": {"", ChatHistoryResult{
 			Messages: []llm.Message{{Role: "user", Content: "在吗"}},
 			Busy:     false,
+		}},
+		// 分页应答：has_more/first_seq 只在 before_seq 请求的应答里出现
+		//（非分页应答整键缺席——上方 Minimal 样本钉住）。first_seq 是下一次
+		// 请求的 anchor（窗口首条的 seq）。
+		"chatHistoryResultPaging": {"", ChatHistoryResult{
+			Messages: []llm.Message{
+				{Role: "user", Content: "更早的问题", Seq: 1},
+				{Role: "assistant", Content: "更早的回答", Seq: 2},
+			},
+			Busy:     false,
+			HasMore:  true,
+			FirstSeq: 1,
 		}},
 
 		// ---- chat 域：上下文占用（缺席 vs 估算语义）----
