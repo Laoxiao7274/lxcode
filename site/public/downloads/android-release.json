@@ -1,14 +1,14 @@
 {
-  "version": "0.2.10",
-  "versionCode": 10,
-  "name": "lxcode-0.2.10-android.apk",
-  "size": 11721210,
-  "sha256": "48963a1041caf80d5f6d53f486ba50ee6dad388f3e315166883f75d74f6e226c",
-  "url": "downloads/lxcode-0.2.10-android.apk",
+  "version": "0.2.11",
+  "versionCode": 11,
+  "name": "lxcode-0.2.11-android.apk",
+  "size": 11737585,
+  "sha256": "21cc7aeeba265c424e2bffa2d1828fc8460ec7db4da84122488beaf8bb9131be",
+  "url": "downloads/lxcode-0.2.11-android.apk",
   "notes": [
-    "安装弹窗防重复（单飞位）：连续点更新不再弹出多个安装窗",
-    "校验异常自动清理：损坏的下载包自动删除重下",
-    "安装后清理防护：广播误删问题修复",
-    "更新链路稳定性修复（P1/P2/P3）"
+    "大会话秒开：先显示最近 50 条消息，不等全量历史",
+    "上滑加载更早历史：平滑接续、不跳屏",
+    "本地缓存：离线也能看历史会话",
+    "加载失败人话提示 + 一键重试"
   ]
 }
