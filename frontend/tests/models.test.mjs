@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mapModels, modelForProvider, applyModelPatch, applyProviderPatch, validateProviderPatch, catalogMetadata, catalogTags } from '../src/shared/settings-models.ts';
+import { mapModels, modelForProvider, applyModelPatch, applyProviderPatch, validateProviderPatch, catalogMetadata, catalogTags, modelKey, modelIdOfKey } from '../src/shared/settings-models.ts';
 import { kfmtLimit, kfmtTokens } from '../src/shared/format.ts';
 import { sourceMode } from '../src/agent/source-mode.ts';
 const entry = { id: 'one', model: 'model-one', base_url: 'https://gateway.test/a', api_key: 'secret', format: 'anthropic', enabled: true };
@@ -151,4 +151,59 @@ test('探测结果与目录模型同构：DiscoveredModel 直接复用 catalogMe
   assert.equal(bare.context_window, undefined);
   assert.equal(bare.max_output_tokens, undefined);
   assert.deepEqual(bare.capabilities, { tools: false, vision: false, json_output: false, reasoning: false });
+});
+
+// ---- 组合键（provider::id）：同名模型的并存与存量兼容 ----
+
+test('组合键：有 provider 时主键是 provider::id，无 provider 时是纯 id', () => {
+  // 与后端 config.ModelConfig.Key() 逐字一致——两边不一致就会出现「前端以为
+  // 同一条、后端当两条」这类极难查的分叉。
+  assert.equal(modelKey(undefined, 'gpt-4o'), 'gpt-4o');
+  assert.equal(modelKey('', 'gpt-4o'), 'gpt-4o');
+  assert.equal(modelKey('openrouter', 'gpt-4o'), 'openrouter::gpt-4o');
+  assert.equal(modelIdOfKey('openrouter::gpt-4o'), 'gpt-4o');
+  assert.equal(modelIdOfKey('gpt-4o'), 'gpt-4o');
+});
+
+test('同名模型在两个提供商下并存，mapModels 给出两个可区分的项', () => {
+  const groups = mapModels([
+    { ...entry, id: 'gpt-4o', provider: 'p1' },
+    { ...entry, id: 'gpt-4o', provider: 'p2', base_url: 'https://gateway.test/c' },
+  ]);
+  assert.equal(groups.length, 2);
+  const ids = groups.flatMap((g) => g.models.map((m) => m.id)).sort();
+  assert.deepEqual(ids, ['p1::gpt-4o', 'p2::gpt-4o']);
+  // 纯 id 与 provider 分离：展示用 modelId，选择/回传用主键
+  assert.deepEqual(groups[0].models.map((m) => m.modelId), ['gpt-4o']);
+  assert.equal(groups[0].models[0].provider, 'p1');
+  // 存量条目（无 provider）主键就是纯 id，行为与改动前逐字一致
+  const [legacy] = mapModels([entry]);
+  assert.equal(legacy.models[0].id, 'one');
+  assert.equal(legacy.models[0].provider, undefined);
+});
+
+test('添加模型：重复判定按组合键，标签可选', () => {
+  const models = [{ ...entry, provider: 'p1' }];
+  // 同一 provider 下同名 = 重复
+  assert.throws(() => modelForProvider(models, entry.base_url, 'one', 'p1'), /该提供商下已存在/);
+  // 换一家提供商 = 允许（这就是引入 provider 的目的）
+  const added = modelForProvider(models, entry.base_url, 'one', 'p2');
+  assert.equal(added.provider, 'p2');
+  assert.equal(added.id, 'one');
+  assert.equal(added.base_url, entry.base_url);
+  // 不给标签 = 存量路径：不写 provider 字段（JSON 里逐字不出现）
+  const plain = modelForProvider([entry], entry.base_url, 'two');
+  assert.equal(plain.provider, undefined);
+  assert.ok(!('provider' in plain));
+  // 存量重复判定仍按纯 id
+  assert.throws(() => modelForProvider([entry], entry.base_url, 'one'), /已存在/);
+  // id 里带分隔符 → 早拒（引用会歧义），与后端 validate 同款判据
+  assert.throws(() => modelForProvider([entry], entry.base_url, 'a::b'), /不能包含/);
+});
+
+test('编辑模型：provider 可改（= 换主键），清空回落存量纯 id', () => {
+  const patch = { id: 'one', name: 'N', desc: '', tags: [], contextWindow: 0, maxOutput: 0 };
+  assert.equal(applyModelPatch(entry, { ...patch, provider: ' p1 ' }).provider, 'p1');
+  assert.equal(applyModelPatch({ ...entry, provider: 'p1' }, patch).provider, undefined);
+  assert.throws(() => applyModelPatch(entry, { ...patch, provider: 'a::b' }), /不能包含/);
 });

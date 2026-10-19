@@ -1,9 +1,9 @@
 // Git 管理页：项目主检出的**只读**工作台（真实数据——git.overview / git.diff）。
 //
 // 纪律：本页不提供任何写主检出的操作（不暂存 / 不提交 / 不切换分支——
-// 「一会话一分支」架构下分支切换语义不存在；提交由会话内的检查点提交与
-// workspace_sync 负责）。原先唯一的写操作「释放会话工作树」已随直连模式
-// 移除（2026-12 用户拍板）——本页现在是纯只读。
+// 「一会话一分支」架构下分支切换语义不存在；提交由会话里的 workspace_sync 负责，
+// 轮末自动检查点提交已移除——2026-10 用户拍板）。原先唯一的写操作「释放会话工作树」
+// 已随直连模式移除（2026-12 用户拍板）——本页现在是纯只读。
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { gsap } from "gsap";
 import { motionAllowed } from "../../shared/motion";
@@ -156,7 +156,7 @@ export function GitWorkbenchPage({
       </header>
 
       <div className="git-readonly-note" role="note">
-        只读视图：这里展示项目仓库的真实状态；提交请在会话里进行（每轮自动检查点，或对会话说「帮我提交」）。
+        只读视图：这里展示项目仓库的真实状态；提交请在会话里进行（对会话说「帮我提交」，走 workspace_sync；轮末已不再自动提交）。
       </div>
 
       {!project ? (
@@ -231,8 +231,9 @@ export function GitWorkbenchPage({
                 )}
                 <div className="git-commit-box">
                   <div className="git-commit-hint">
-                    这里不做暂存与提交：主检出由会话负责——每轮对话结束会自动提交检查点，
-                    也可以在会话里说「帮我提交」用 workspace_sync（提交到当前分支，可推送）。
+                    这里不做暂存与提交：主检出由会话负责——在会话里说「帮我提交」用
+                    workspace_sync（提交到当前分支，可推送）。轮末不会自动提交，未提交的改动
+                    就留在工作区。
                   </div>
                 </div>
               </section>

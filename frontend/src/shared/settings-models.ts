@@ -4,7 +4,14 @@ export type EffortId = "minimal" | "low" | "medium" | "high";
 /** 全部推理档位（固定 4 档——后端协议值域：minimal/low/medium/high）。 */
 export const EFFORT_IDS: EffortId[] = ["minimal", "low", "medium", "high"];
 export interface ModelMeta {
-  id: string; name: string; desc: string; tags: string[]; efforts: EffortId[];
+  /** 注册表**主键**（`provider::id`；条目无 provider 时就是纯 id）——所有查找、
+   *  选中态、wire 回传都用它，对齐后端 config.ModelConfig.Key()。 */
+  id: string;
+  /** 条目自己的 model id（不含 provider 前缀）——纯展示用。 */
+  modelId: string;
+  /** provider 标签（可选）——同名模型的来源标注。 */
+  provider?: string;
+  name: string; desc: string; tags: string[]; efforts: EffortId[];
   contextWindow: number; maxOutput: number; visible: boolean; manual?: boolean;
   /** 视觉能力声明（注册表 capabilities.vision 的直通；undefined = 未声明——
    *  前端不得据此禁用图片入口，发送时靠后端 vision 校验兜底）。 */
@@ -20,10 +27,26 @@ export interface ProviderMeta {
 export interface ModelPatch {
   id: string; name: string; desc: string; tags: string[];
   contextWindow: number; maxOutput: number;
+  /** provider 标签（可改 = 换主键，后端按新键定位；空 = 清回存量纯 id 语义）。 */
+  provider?: string;
 }
 /** 提供商级连接配置（三个字段都是组内共享的，改一次写全组）。 */
 export interface ProviderPatch {
   baseUrl: string; apiKey: string; format: string;
+}
+
+/** 组合键：`provider::id`；无 provider（存量）= 纯 id。
+ *
+ *  与后端 `config.ModelConfig.Key()` 逐字一致——前端所有「同一个模型吗」的比较
+ *  都走它，否则两家提供商的同名模型会互相覆盖/重复注册。 */
+export function modelKey(provider: string | undefined, id: string): string {
+  return provider ? `${provider}::${id}` : id;
+}
+
+/** 从组合键里取纯 id（找不到分隔符就原样返回——存量键）。 */
+export function modelIdOfKey(key: string): string {
+  const i = key.indexOf("::");
+  return i > 0 ? key.slice(i + 2) : key;
 }
 
 // 按完整端点分组，而非 host：同 host 的不同代理路径不共享凭据或协议。
@@ -44,7 +67,8 @@ export function mapModels(models: ModelEntry[]): ProviderMeta[] {
         baseUrl: m.base_url, apiKey: m.api_key ?? "", format: m.format || "openai" };
       groups.set(id, p);
     }
-    p.models.push({ id: m.id, name: m.display_name || m.model || m.id,
+    p.models.push({ id: modelKey(m.provider, m.id), modelId: m.id, provider: m.provider,
+      name: m.display_name || m.model || m.id,
       desc: m.format === "anthropic" ? "Anthropic 格式" : "OpenAI 兼容",
       tags: [m.capabilities?.tools ? "工具" : "", m.capabilities?.vision ? "视觉" : "",
         m.capabilities?.reasoning ? "推理" : ""].filter(Boolean),
@@ -90,19 +114,30 @@ export function catalogTags(m: CatalogModel): string[] {
   return [m.tools ? "工具" : "", m.vision ? "视觉" : "", m.reasoning ? "推理" : ""].filter(Boolean);
 }
 
-export function modelForProvider(models: ModelEntry[], providerId: string, modelId: string): ModelEntry {  const id = modelId.trim();
+export function modelForProvider(models: ModelEntry[], providerId: string, modelId: string, label?: string): ModelEntry {
+  const id = modelId.trim();
   if (!id) throw new Error("模型 ID 不能为空");
-  if (models.some((m) => m.id === id)) throw new Error("模型 ID 已存在");
+  if (id.includes("::")) throw new Error("模型 ID 不能包含 ::（那是 provider 与 id 的分隔符）");
+  // 重复判定按**组合键**：不同提供商的同名模型允许并存（同 id 不同 base_url 是常态）。
+  const tag = label?.trim() ?? "";
+  const key = modelKey(tag, id);
+  if (models.some((m) => modelKey(m.provider, m.id) === key)) {
+    throw new Error(tag ? `该提供商下已存在模型 ${id}` : `模型 ${id} 已存在`);
+  }
   const template = models.find((m) => providerKey(m.base_url) === providerId);
   if (!template) throw new Error("提供商不存在，请刷新模型列表");
   // 仅继承连接配置；模型专属能力/上下文不得从不同模型猜测。
+  // label 空 = 不写 provider 字段（存量条目零改动的同一条路径）。
   return { id, model: id, base_url: template.base_url, api_key: template.api_key,
-    format: template.format, enabled: true };
+    format: template.format, enabled: true, ...(tag ? { provider: tag } : {}) };
 }
 
 export function applyModelPatch(entry: ModelEntry, patch: ModelPatch): ModelEntry {
   if (patch.id.trim() !== entry.id) throw new Error("后端不支持修改模型 ID，请新增模型");
-  return { ...entry, display_name: patch.name.trim(), context_window: patch.contextWindow,
+  const tag = patch.provider?.trim() ?? "";
+  if (tag.includes("::")) throw new Error("provider 不能包含 ::");
+  return { ...entry, ...(tag ? { provider: tag } : { provider: undefined }),
+    display_name: patch.name.trim(), context_window: patch.contextWindow,
     max_output_tokens: patch.maxOutput, capabilities: { ...entry.capabilities,
       tools: patch.tags.includes("工具"), vision: patch.tags.includes("视觉"),
       reasoning: patch.tags.includes("推理") } };

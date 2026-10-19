@@ -49,12 +49,8 @@ func (s *Server) emitEvent(sessionID string, ev agent.Event) {
 		// 主会话的时间线不会被它碰到：前端按 session_id 路由（子事件另带 dispatch_id，
 		// 进的是卡与子会话自己的 state）。
 		params.Stats = s.sessionStatsOf(sessionID)
-		// 最终答复（没有待执行的工具调用）= 这一轮结束：项目会话异步提交一个检查点提交。
-		// 只起 goroutine（见 autocommit.go），不阻塞事件路径。中间轮（带工具调用）不提交
-		// ——它们还没给出最终答复。
-		if len(e.Message.ToolCalls) == 0 {
-			s.maybeAutoCommit(sessionID)
-		}
+		// 轮结束**不再**自动提交检查点（2026-10 用户拍板移除，回滚方案后期
+		// 重新设计）：改动留在工作区，等用户显式要求时由 workspace_sync 提交。
 		s.broadcast(protocol.EventDone, params)
 	case agent.TurnErrorEvent:
 		s.broadcast(protocol.EventError, protocol.ErrorParams{

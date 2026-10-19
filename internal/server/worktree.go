@@ -1,7 +1,8 @@
 // 项目会话的工作区准备：会话**直接工作在用户的主检出目录与主检出当前分支**
 // （2026-10 架构修订拍板：废除 per-session worktree 与 lxcode/session-* 分支——
-// 「不用做隔离，就跟正常一样，也不用创分支」）。每轮结束的检查点提交直接落在
-// 主检出当前分支上，方便回滚；真正要推送时由 workspace_sync 直接 push。
+// 「不用做隔离，就跟正常一样，也不用创分支」）。轮末自动检查点提交已移除
+// （2026-10 用户拍板）：改动留在工作区，提交与推送都由用户显式要求的
+// workspace_sync 完成。
 //
 // 兼容纪律（用户数据零丢失）：存量会话的 worktree 元数据、磁盘 worktree 目录与
 // lxcode/session-* 分支**一律保留不删**——resume 时切到直连模式，旧目录与分支
@@ -103,10 +104,10 @@ func (s *Server) prepareWorkspaceLocked(sessionID string, sess *agent.Session) e
 	// 分支名 = 主检出当前分支（只读展示给模型用——用户切了分支，下次准备时跟着变）。
 	// 零提交仓库（unborn HEAD）由 project.CurrentBranch 内部回退 symbolic-ref 兜住；
 	// 走到这里的错误基本是「目录不是 git 仓库」（.git 被删 / git init 从未成功）：
-	// 降级运行而非失败——无检查点提交、提示词如实告知，会话照常创建与发送。
+	// 降级运行而非失败——提示词如实告知没有版本管理，会话照常创建与发送。
 	branch, err := project.CurrentBranch(s.Ctx(), projectMeta.Path)
 	if err != nil {
-		log.Printf("工作区准备：读取项目 %s 的 git 分支失败，会话按非 git 目录降级（无自动检查点）: %v", projectMeta.Path, err)
+		log.Printf("工作区准备：读取项目 %s 的 git 分支失败，会话按非 git 目录降级: %v", projectMeta.Path, err)
 		branch = ""
 	}
 	if sess.WorkDir() != projectMeta.Path {
@@ -115,7 +116,7 @@ func (s *Server) prepareWorkspaceLocked(sessionID string, sess *agent.Session) e
 		}
 	}
 	// 工作区信息随 workDir 一起挂到会话上：提示词要告诉模型「直接在用户的项目目录
-	// 工作」与「每轮自动提交」的语义（未分组会话没有这段，零注入；非 git 目录只
+	// 工作」与「不会自动提交」的语义（未分组会话没有这段，零注入；非 git 目录只
 	// 注入降级说明）。无条件写（幂等）——快路径早退时它已经设过，这里重复设置
 	// 不会出错。branch 为空 = 非 git 降级（CurrentBranch 成功时恒返回非空名字）。
 	sess.SetWorktreeInfo(branch, base, branch == "")

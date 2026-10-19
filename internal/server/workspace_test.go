@@ -30,19 +30,14 @@ func callWorkspaceTool(srv *Server, sessionID, name string, args map[string]any)
 	}{Name: name, Arguments: string(raw)}})
 }
 
-// newProjectSessionWithCommits 建一个项目会话并伪造 n 个检查点提交（直连模式：
-// 提交直接落在主检出当前分支，走与自动提交同一套 CommitAll——提交信息同款
+// newProjectSessionWithCommits 建一个项目会话并造 n 个提交（直连模式：提交直接
+// 落在主检出当前分支，走与 workspace_sync 同一套 CommitAll——提交信息同款
 // 「第 N 轮：…」）。返回会话 id。
 func newProjectSessionWithCommits(t *testing.T, srv *Server, client *wsTestClient, repo string, n int) string {
 	t.Helper()
-	meta := addAutoCommitProject(t, client, repo)
+	meta := addGitProject(t, client, repo)
 	id := createTestSession(t, client, meta.ID)
 	sendTurn(t, srv, client, id, "你好") // 对准主检出并写标题
-	srv.waitAutoCommits()               // 等在途自动提交结束（避免与伪造提交抢 git index）
-	// 与自动提交同一把会话锁：提交必须串行（autocommit.go 的纪律）。
-	lock := srv.autoCommitLock(id)
-	lock.Lock()
-	defer lock.Unlock()
 	for i := 1; i <= n; i++ {
 		if err := os.WriteFile(filepath.Join(repo, fmt.Sprintf("file%d.txt", i)),
 			[]byte(fmt.Sprintf("content %d\n", i)), 0o600); err != nil {
@@ -76,7 +71,6 @@ func TestWorkspaceStatusReportsProject(t *testing.T) {
 		t.Fatalf("状态应含集成分支（遗留）段: %q", out)
 	}
 	waitSessionIdle(t, srv, id)
-	srv.waitAutoCommits()
 }
 
 // TestWorkspaceSyncCommitsToCurrentBranch：workspace_sync{message:"测试提交"} →
@@ -108,7 +102,6 @@ func TestWorkspaceSyncCommitsToCurrentBranch(t *testing.T) {
 		t.Fatalf("当前分支顶部的提交信息 = %q", got)
 	}
 	waitSessionIdle(t, srv, id)
-	srv.waitAutoCommits()
 }
 
 // TestWorkspaceSyncPushesToBareOrigin：workspace_sync{push:true} 且项目配置本地
@@ -140,7 +133,6 @@ func TestWorkspaceSyncPushesToBareOrigin(t *testing.T) {
 		t.Fatalf("bare origin 应有当前分支 %s:\n%s", branch, branches)
 	}
 	waitSessionIdle(t, srv, id)
-	srv.waitAutoCommits()
 }
 
 // TestWorkspaceSyncPushWithoutOrigin：项目没有远程 origin → 明确报错且提交已完成。
@@ -161,7 +153,6 @@ func TestWorkspaceSyncPushWithoutOrigin(t *testing.T) {
 		t.Fatalf("推送失败但提交应已完成: lines=%v err=%v", lines, err)
 	}
 	waitSessionIdle(t, srv, id)
-	srv.waitAutoCommits()
 }
 
 // TestWorkspaceRollbackLastTurn：last-turn 回滚到上一轮、丢弃文件清单正确；
@@ -255,7 +246,6 @@ func TestWorkspaceRollbackRejectsPushedCommit(t *testing.T) {
 		t.Fatalf("拒绝后 HEAD 不该动: %q", got)
 	}
 	waitSessionIdle(t, srv, id)
-	srv.waitAutoCommits()
 }
 
 // TestWorkspaceToolsRejectUngroupedSession：未分组会话三个工具都明确报错。

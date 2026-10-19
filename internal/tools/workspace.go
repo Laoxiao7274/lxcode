@@ -27,7 +27,7 @@ const (
 type WorkspaceOps struct {
 	// Status 汇报项目工作区状态（只读）：主检出 + 各会话分支 + 集成分支。
 	Status func(sessionID, projectID string) (string, error)
-	// Sync 执行「提交 → 起合并进程（→ 合并成功后 push）」。
+	// Sync 执行「提交主检出当前分支 →（push 时）直接推送 origin」。
 	Sync func(sessionID, message string, push bool) (string, error)
 	// SyncConfirm 组 sync 的确认门文案（说清将执行哪些动作）。
 	SyncConfirm func(sessionID string, push bool) string
@@ -89,20 +89,20 @@ func workspaceStatusDef(r *Registry) *Def {
 	}
 }
 
-// workspaceSyncDef：提交 → 合并 →（可选）push（中危——每次执行前走确认门）。
+// workspaceSyncDef：提交当前分支 →（可选）直接推送 origin（中危——每次执行前走确认门）。
 func workspaceSyncDef(r *Registry) *Def {
 	schema := json.RawMessage(`{
 		"type": "object",
 		"properties": {
 			"message": {"type": "string", "description": "提交信息（可选；默认取最近一条用户消息的首行）"},
-			"push": {"type": "boolean", "description": "合并成功后是否推送到远程 origin（默认 false）"}
+			"push": {"type": "boolean", "description": "提交后是否把当前分支直接推送到远程 origin（默认 false）"}
 		}
 	}`)
 	return &Def{
 		Name: WorkspaceSyncToolName,
-		Description: "提交本会话工作区的改动并起合并进程（提交 → 合并到集成分支；push=true 时" +
-			"合并成功后推送到远程 origin）。用户说「提交」「推送」时用它。立刻返回——合并是" +
-			"后台任务，结束后会自动通知你。同一会话同时只允许一个在跑的合并进程。",
+		Description: "提交当前分支的改动并（push=true 时）直接推送到远程 origin（不 force）。用户说「提交」「推送」时用它。" +
+			"工作区干净则跳过提交、不报错；推送失败时提交已完成、如实报错。" +
+			"lxcode 本体仓库（仓库根有 scripts/push-release.mjs 与 docs/git-history.md）的推送会被拒绝并给出发版指引——那是闸门，不是故障。",
 		Parameters: schema,
 		Risk:       RiskHigh,
 		Mutates:    true,
@@ -118,9 +118,9 @@ func workspaceSyncDef(r *Registry) *Def {
 			}
 			// 未装配/未给出文案时的兜底：确认门照常生效，动作说清楚。
 			if a.Push {
-				return "将执行：提交本会话工作区的改动 → 起合并进程合并到集成分支 → 合并成功后推送到远程 origin。确认执行？"
+				return "将执行：提交主检出的全部改动到当前分支 → 把当前分支直接推送到远程 origin。确认执行？"
 			}
-			return "将执行：提交本会话工作区的改动 → 起合并进程合并到集成分支。确认执行？"
+			return "将执行：提交主检出的全部改动到当前分支（不推送）。确认执行？"
 		},
 		Exec: func(ctx context.Context, args json.RawMessage) (string, error) {
 			var a struct {
@@ -144,14 +144,15 @@ func workspaceRollbackDef(r *Registry) *Def {
 	schema := json.RawMessage(`{
 		"type": "object",
 		"properties": {
-			"target": {"type": "string", "description": "回滚目标：\"last-turn\"（默认，上一轮结束的状态）/ \"session-start\"（会话起点）/ 原始 commit hash（须在本会话分支上）"}
+			"target": {"type": "string", "description": "回滚目标：\"last-turn\"（默认，上一个提交——轮末自动检查点已移除，不是上一轮对话）/ \"session-start\"（会话起点）/ 原始 commit hash（须在当前分支历史上）"}
 		}
 	}`)
 	return &Def{
 		Name: WorkspaceRollbackToolName,
-		Description: "把本会话分支回滚到目标状态（默认上一轮结束时的状态）。工作区有未提交改动时" +
-			"会拒绝（绝不丢弃手工改动）；目标提交已合并进集成分支时会警告——那部分要在集成分支上" +
-			" revert 才能撤销。绝不 push、绝不动集成分支与主检出。",
+		Description: "把主检出当前分支回滚到目标提交（默认上一个提交）。轮末自动检查点已移除：" +
+			"只有经 workspace_sync 或用户手工提交落过的改动才有回滚锚点，未提交的改动不会被回滚。" +
+			"工作区有未提交改动时会拒绝（绝不丢弃手工改动）；目标提交已合并进集成分支时会警告——" +
+			"那部分要在集成分支上 revert 才能撤销。绝不 push、绝不动集成分支与主检出。",
 		Parameters: schema,
 		Risk:       RiskHigh,
 		Mutates:    true,
@@ -166,7 +167,8 @@ func workspaceRollbackDef(r *Registry) *Def {
 				}
 			}
 			// 兜底：确认门照常生效，具体丢弃内容在执行时报给模型。
-			return "将把本会话分支回滚到目标状态（丢弃其后的检查点提交，不可逆）。确认执行？"
+			return "将把主检出当前分支回滚到目标提交（丢弃其后的提交，不可逆；" +
+				"自动检查点已移除，只能回到提交过的位置）。确认执行？"
 		},
 		Exec: func(ctx context.Context, args json.RawMessage) (string, error) {
 			var a struct {

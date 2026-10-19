@@ -353,7 +353,12 @@ func (s *Session) SetApproval(mode string) string {
 // SetModel 设置本会话选中的模型（会话级状态：只改这一条会话，不动全局 default
 // 角色——模型选择的作用域就是会话）。
 //
-// 校验模型存在且启用：不存在的 id 报错（协议层映射成参数错误），**不静默回落**
+// 入参是**注册表引用**：组合键（`provider::id`）或纯 id 都接受（解析交给
+// config.Registry.Resolve）——存量 sessions.model 里存的是纯 id，照旧解析。
+// 落库与返回值都是**规范键**（config.ModelConfig.Key()），所以两个不同
+// 提供商的同名模型在会话级选择上互不冲突。
+//
+// 校验模型存在且启用：不存在的引用报错（协议层映射成参数错误），**不静默回落**
 // 到别的模型——那会让用户以为选中的那个在用。
 //
 // 与 SetApproval 同一条接缝模式：改内存 → 落库（不持锁，写盘不该占会话锁）→
@@ -361,27 +366,28 @@ func (s *Session) SetApproval(mode string) string {
 // st 为 nil / id 为空时是 no-op。运行中的一轮不受影响：模型在开轮时解析
 // （streamRound），下一轮才用新模型——与「热切换模型到下一轮生效」一致。
 //
-// 返回规范化后的模型 id（= 注册表 id），调用方据此广播。
+// 返回规范化后的模型引用（= 注册表主键），调用方据此广播。
 func (s *Session) SetModel(id string) (string, error) {
 	if id == "" {
-		return "", errors.New("model 不能为空（切回默认请传 default 角色的模型 id）")
+		return "", errors.New("model 不能为空（切回默认请传 default 角色的模型引用）")
 	}
-	m, ok := s.reg.Get(id)
+	m, ok := s.reg.Resolve(id)
 	if !ok {
 		return "", fmt.Errorf("模型不存在: %s", id)
 	}
 	if !m.Enabled {
-		return "", fmt.Errorf("%w: %s", ErrModelDisabled, m.ID)
+		return "", fmt.Errorf("%w: %s", ErrModelDisabled, m.Key())
 	}
+	key := m.Key()
 	s.mu.Lock()
-	s.model = m.ID
+	s.model = key
 	st, sid := s.st, s.id
 	s.mu.Unlock()
-	persistSessionModel(st, sid, m.ID)
-	return m.ID, nil
+	persistSessionModel(st, sid, key)
+	return key, nil
 }
 
-// SelectedModel 返回本会话**显式选中**的模型 id（空 = 没选过——回落 Agent 绑定 /
+// SelectedModel 返回本会话**显式选中**的模型引用（注册表主键；空 = 没选过——回落 Agent 绑定 /
 // default 角色）。与 ModelID 的分工：那个是「此刻实际用哪个」（解析后的结果），
 // 这个是「用户给这条会话选了什么」——前端选择器的选中态按它对齐。
 func (s *Session) SelectedModel() string {
@@ -756,7 +762,7 @@ func (s *Session) SetAgentID(id string) {
 	s.agentID = id
 }
 
-// ModelID 返回本会话**实际使用**的模型注册表 id（走 resolve.go 那一套：
+// ModelID 返回本会话**实际使用**的模型注册表主键（provider::id；走 resolve.go 那一套：
 // 会话级选择 s.model 优先，其次 Agent 绑定 AgentDef.Model，最后 default 角色）。
 //
 // 空串 = 未知（名单里没这个 Agent / 模型被删或被停用 / 没有 default 角色）——wire 上
@@ -776,7 +782,9 @@ func (s *Session) ModelID() string {
 	if err != nil {
 		return ""
 	}
-	return m.ID
+	// 返回**注册表主键**（provider::id；无 provider 时纯 id）——前端按它对齐
+	// 选择态，两家提供商的同名模型才不会互相高亮/覆盖。
+	return m.Key()
 }
 
 // WorkDir 返回当前会话的工作目录（空 = 后端进程目录）。

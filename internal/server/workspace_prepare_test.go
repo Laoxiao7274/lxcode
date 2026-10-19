@@ -7,6 +7,7 @@ package server
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -82,7 +83,6 @@ func TestFirstSendWorksInMainCheckout(t *testing.T) {
 		t.Fatalf("首条 chat.send 失败: %+v", resp)
 	}
 	waitSessionEvent(t, client, protocol.EventDone, sessionID)
-	srv.waitAutoCommits()
 
 	meta := assertNoWorktreeArtifacts(t, srv, repo, sessionID)
 	if meta.BaseCommit != head {
@@ -137,7 +137,7 @@ func TestWorkspacePrepareIsIdempotent(t *testing.T) {
 
 // 用例 5：零提交仓库（git init 后没有任何提交，HEAD 指向未出生分支）建会话发
 // 消息——分支解析回退 symbolic-ref 不再炸出「ambiguous argument 'HEAD'」（用户
-// 实测的原始 bug）；第一轮结束的检查点提交成为仓库的**初始提交**；不编基线。
+// 实测的原始 bug）；轮末不再自动提交（2026-10 移除），改动留在工作区；不编基线。
 func TestFirstSendWorksInUnbornRepo(t *testing.T) {
 	repo := filepath.Join(t.TempDir(), "project")
 	if err := os.MkdirAll(repo, 0o755); err != nil {
@@ -146,9 +146,9 @@ func TestFirstSendWorksInUnbornRepo(t *testing.T) {
 	gitServerTest(t, repo, "init")
 	gitServerTest(t, repo, "config", "user.name", "Test")
 	gitServerTest(t, repo, "config", "user.email", "test@example.invalid")
-	// 预放一个未跟踪文件：让第一轮的自动提交有东西可提交（零提交仓库上的第一次
-	// checkpoint commit 就是根提交——CommitAll 只做 status/add/commit，不碰 HEAD
-	// 基础的 diff/stash，unborn HEAD 也能走通）。
+	// 预放一个未跟踪文件：工作区有东西可提交（零提交仓库上第一次 CommitAll 就是
+	// 根提交——CommitAll 只做 status/add/commit，不碰 HEAD 基础的 diff/stash，
+	// unborn HEAD 也能走通）。
 	if err := os.WriteFile(filepath.Join(repo, "draft.txt"), []byte("draft\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -160,14 +160,10 @@ func TestFirstSendWorksInUnbornRepo(t *testing.T) {
 		t.Fatalf("零提交仓库的首条 chat.send 失败: %+v", resp)
 	}
 	waitSessionEvent(t, client, protocol.EventDone, sessionID)
-	srv.waitAutoCommits()
 
-	if n := commitCount(t, repo); n != 1 {
-		t.Fatalf("第一轮的检查点提交应成为初始提交: commit count = %d", n)
-	}
-	branch := strings.TrimSpace(gitServerTest(t, repo, "rev-parse", "--abbrev-ref", "HEAD"))
-	if branch == "" || branch == "HEAD" {
-		t.Fatalf("初始提交后分支名异常: %q", branch)
+	// 轮末自动提交已移除：这一轮不产生任何提交（unborn HEAD 仍是 unborn）。
+	if out, err := exec.Command("git", "-C", repo, "rev-parse", "--verify", "HEAD").CombinedOutput(); err == nil {
+		t.Fatalf("轮末不该再自动提交，但 HEAD 已存在: %s", out)
 	}
 	meta := assertNoWorktreeArtifacts(t, srv, repo, sessionID)
 	if meta.BaseCommit != "" {
@@ -217,7 +213,7 @@ func TestFirstSendWorksInNonGitDir(t *testing.T) {
 func TestLegacySessionResumeSwitchesToMainCheckout(t *testing.T) {
 	repo := initGitProject(t)
 	srv, client, _ := newTestServer(t, okStream())
-	meta := addAutoCommitProject(t, client, repo)
+	meta := addGitProject(t, client, repo)
 	sessionID := createTestSession(t, client, meta.ID)
 
 	// 伪造存量状态：按旧架构建 worktree + 分支 + 元数据（数据形态与老库一致）。
@@ -239,7 +235,6 @@ func TestLegacySessionResumeSwitchesToMainCheckout(t *testing.T) {
 		t.Fatalf("chat.send 失败: %+v", resp)
 	}
 	waitSessionEvent(t, client, protocol.EventDone, sessionID)
-	srv.waitAutoCommits()
 	sess, err := srv.session(sessionID)
 	if err != nil {
 		t.Fatal(err)
@@ -264,7 +259,7 @@ func TestLegacySessionResumeSwitchesToMainCheckout(t *testing.T) {
 func TestChildSessionPrepareUsesMainCheckout(t *testing.T) {
 	repo := initGitProject(t)
 	srv, client, _ := newTestServer(t, okStream())
-	meta := addAutoCommitProject(t, client, repo)
+	meta := addGitProject(t, client, repo)
 	parentID := createTestSession(t, client, meta.ID)
 	if _, err := srv.session(parentID); err != nil {
 		t.Fatal(err)

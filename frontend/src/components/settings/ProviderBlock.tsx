@@ -20,9 +20,11 @@ function ProviderBlock({ provider, onEditModel }: { provider: ProviderMeta; onEd
   const [expanded, setExpanded] = useState(() => isExpanded(provider.id));
   // 连接配置弹窗（Base URL / API Key / 格式，一次写全组）
   const [editingConn, setEditingConn] = useState(false);
-  // 添加模型：内联输入行（空 = 未在添加）
+  // 添加模型：内联输入行（空 = 未在添加）。draftTag = 可选 provider 标签：
+  // 同一个模型 id 在两家提供商下并存要靠它（主键 `provider::id`）。
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState("");
+  const [draftTag, setDraftTag] = useState("");
   const [draftErr, setDraftErr] = useState<string | null>(null);
   // 端点探测（获取模型列表）：完整结果交给 ProbeResultDialog 弹窗呈现（null = 没开）。
   // 已在本提供商注册表里的模型打 added 标（弹窗里置灰禁选），不做过滤——
@@ -95,11 +97,12 @@ function ProviderBlock({ provider, onEditModel }: { provider: ProviderMeta; onEd
       setDraftErr("模型 ID 不能为空");
       return;
     }
-    if (!(await addModel(provider.id, draft))) {
+    if (!(await addModel(provider.id, draft, draftTag))) {
       setDraftErr("添加失败，请检查模型 ID 或上方错误提示");
       return;
     }
     setDraft("");
+    setDraftTag("");
     setDraftErr(null);
     setAdding(false);
   };
@@ -211,6 +214,7 @@ function ProviderBlock({ provider, onEditModel }: { provider: ProviderMeta; onEd
                 <span className="mset-model-name">{m.name}</span>
                 <span className="mset-model-meta">
                   <span className="mset-model-id">{m.id}</span>
+                  {m.provider && <span className="mset-model-tag manual">{m.provider}</span>}
                   <span className="mset-model-ctx">上下文 {kfmtLimit(m.contextWindow)} · 输出 {kfmtLimit(m.maxOutput)}</span>
                   {m.tags.map((t) => (
                     <span key={t} className="mset-model-tag">{t}</span>
@@ -247,15 +251,27 @@ function ProviderBlock({ provider, onEditModel }: { provider: ProviderMeta; onEd
                   onChange={(v) => { setDraft(v); setDraftErr(null); }}
                   onKeyDown={(e) => {
                     if (e.key === "Enter") { e.preventDefault(); commitAdd(); }
-                    if (e.key === "Escape") { setAdding(false); setDraft(""); setDraftErr(null); }
+                    if (e.key === "Escape") { setAdding(false); setDraft(""); setDraftTag(""); setDraftErr(null); }
                   }}
                   placeholder="模型 ID，如 deepseek-v3.2"
                   spellCheck={false}
                   aria-label="新模型 ID"
                 />
+                <TextInput
+                  value={draftTag}
+                  onChange={(v) => { setDraftTag(v); setDraftErr(null); }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") { e.preventDefault(); commitAdd(); }
+                    if (e.key === "Escape") { setAdding(false); setDraft(""); setDraftTag(""); setDraftErr(null); }
+                  }}
+                  placeholder="提供商标签（选填）"
+                  title="同一模型 ID 在不同提供商下并存时用它区分；填了注册表键就是「标签::模型 ID」。留空 = 与原来一样按纯 ID 注册。"
+                  spellCheck={false}
+                  aria-label="提供商标签"
+                />
                 <span className={"mset-add-hint" + (draftErr ? " err" : "")}>{draftErr ?? "回车确认 · Esc 取消"}</span>
                 <button type="button" className="mset-add-confirm" onClick={commitAdd}>添加</button>
-                <button type="button" className="mset-add-cancel" onClick={() => { setAdding(false); setDraft(""); setDraftErr(null); }}>取消</button>
+                <button type="button" className="mset-add-cancel" onClick={() => { setAdding(false); setDraft(""); setDraftTag(""); setDraftErr(null); }}>取消</button>
               </div>
             ) : (
               <div className="mset-models-foot">

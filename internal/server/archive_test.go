@@ -61,7 +61,6 @@ func newProjectSessionWithWorktree(t *testing.T, srv *Server, client *wsTestClie
 		t.Fatalf("chat.send failed: %+v", resp)
 	}
 	waitSessionEvent(t, client, protocol.EventDone, id)
-	srv.waitAutoCommits() // 轮结束的检查点提交是异步的：等它结束再做工作树操作
 	wt, err := project.CreateWorktree(repoMeta.Path, srv.st.WorktreeRoot(), projectID, id)
 	if err != nil {
 		t.Fatalf("构造老 worktree 失败: %v", err)

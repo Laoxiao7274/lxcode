@@ -125,7 +125,6 @@ func TestProjectSessionsShareMainCheckout(t *testing.T) {
 		}
 		waitSessionEvent(t, client, protocol.EventDone, id)
 	}
-	srv.waitAutoCommits() // 轮结束的检查点提交是异步的：等它结束再碰工作树
 	first, err := srv.st.WorktreeOf(firstID)
 	if err != nil {
 		t.Fatal(err)

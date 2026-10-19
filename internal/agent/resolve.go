@@ -167,15 +167,17 @@ func (s *Session) modelForRequest(ac *sessiondata.AgentContext, requested string
 		return config.ModelConfig{}, fmt.Errorf("%w: %w", ErrNoDefaultModel, err)
 	}
 	if !m.Enabled {
-		return config.ModelConfig{}, fmt.Errorf("%w: %s", ErrModelDisabled, m.ID)
+		return config.ModelConfig{}, fmt.Errorf("%w: %s", ErrModelDisabled, m.Key())
 	}
 	return m, nil
 }
 
-// modelByID 按注册表 id 取一个可用模型（不存在/停用都报错，来源写进错误信息——
-// 用户要能分辨是"我选的模型没了"还是"Agent 绑的模型没了"）。
+// modelByID 按**注册表引用**取一个可用模型：组合键（`provider::id`）或纯 id
+// 都接受——存量 sessions.model / agents.model 存的是纯 id，这里照旧解析。
+// 不存在/停用都报错，来源写进错误信息——用户要能分辨是"我选的模型没了"还是
+// "Agent 绑的模型没了"。
 func (s *Session) modelByID(id, source string) (config.ModelConfig, error) {
-	m, ok := s.reg.Get(id)
+	m, ok := s.reg.Resolve(id)
 	if !ok {
 		return config.ModelConfig{}, fmt.Errorf("模型 %s 不存在（%s；到设置里重新选择）", id, source)
 	}

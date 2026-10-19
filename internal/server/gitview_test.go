@@ -30,12 +30,13 @@ func callGitOverview(t *testing.T, client *wsTestClient, projectID string) proto
 }
 
 // TestGitOverviewDirtyAndSessionBranch（干净/脏主检出 + 遗留会话分支 ahead/hasWorktree）。
-// 直连架构：会话的检查点提交直接落在主检出当前分支（历史随之增长）；会话分支段落
+// 直连架构：会话的提交直接落在主检出当前分支（历史随之增长；轮末自动提交已移除，
+// 这里的提交由测试自己造）；会话分支段落
 // 只列存量 lxcode/session-* 分支（用老数据形态伪造）。
 func TestGitOverviewDirtyAndSessionBranch(t *testing.T) {
 	repo := initGitProject(t)
 	srv, client, mgr := newJobTestServer(t, immediateStream)
-	meta := addAutoCommitProject(t, client, repo)
+	meta := addGitProject(t, client, repo)
 	id := newProjectSessionWithCommits(t, srv, client, repo, 2)
 
 	legacyID := createTestSession(t, client, meta.ID)
@@ -45,7 +46,6 @@ func TestGitOverviewDirtyAndSessionBranch(t *testing.T) {
 		t.Fatalf("legacy chat.send failed: %+v", resp)
 	}
 	waitSessionEvent(t, client, protocol.EventDone, legacyID)
-	srv.waitAutoCommits()
 	if err := os.WriteFile(filepath.Join(wt.Path, "legacy.txt"), []byte("legacy\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -118,12 +118,12 @@ func TestGitOverviewDirtyAndSessionBranch(t *testing.T) {
 		}
 	}
 
-	// 提交历史：主检出 = 基线 + 直连会话的 2 个检查点提交。
+	// 提交历史：主检出 = 基线 + 直连会话的 2 个提交。
 	if len(overview.Commits) != 3 {
 		t.Fatalf("主检出应有 3 条提交: %+v", overview.Commits)
 	}
 	if overview.Commits[0].Message != "第 2 轮：测试改动 2" || len(overview.Commits[0].Hash) != 40 {
-		t.Fatalf("最新提交应是直连会话的检查点: %+v", overview.Commits[0])
+		t.Fatalf("最新提交应是直连会话的提交: %+v", overview.Commits[0])
 	}
 
 	// 释放入口（session.worktree.release）已随直连模式移除（2026-12 用户拍板）：
@@ -135,14 +135,13 @@ func TestGitOverviewDirtyAndSessionBranch(t *testing.T) {
 func TestGitOverviewMergedBranch(t *testing.T) {
 	repo := initGitProject(t)
 	srv, client, _ := newJobTestServer(t, immediateStream)
-	meta := addAutoCommitProject(t, client, repo)
+	meta := addGitProject(t, client, repo)
 	id := createTestSession(t, client, meta.ID)
 	wt := legacyWorktree(t, srv, meta.ID, id)
 	if resp := client.call(protocol.MethodChatSend, protocol.ChatSendParams{SessionID: id, Text: "你好"}); resp == nil || resp.Error != nil {
 		t.Fatalf("chat.send failed: %+v", resp)
 	}
 	waitSessionEvent(t, client, protocol.EventDone, id)
-	srv.waitAutoCommits()
 	// 在遗留分支上提交一个改动（只新增文件，不碰主检出内容）。
 	if err := os.WriteFile(filepath.Join(wt.Path, "legacy.txt"), []byte("legacy\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -193,7 +192,7 @@ func TestGitOverviewNoProject(t *testing.T) {
 func TestGitDiffModifiedUntrackedAndTruncation(t *testing.T) {
 	repo := initGitProject(t)
 	_, client, _ := newJobTestServer(t, immediateStream)
-	meta := addAutoCommitProject(t, client, repo)
+	meta := addGitProject(t, client, repo)
 
 	// ① 已跟踪文件的修改 diff。
 	if err := os.WriteFile(filepath.Join(repo, "base.txt"), []byte("changed\n"), 0o600); err != nil {
@@ -247,7 +246,7 @@ func TestGitDiffModifiedUntrackedAndTruncation(t *testing.T) {
 func TestGitDiffParamsRequirePath(t *testing.T) {
 	repo := initGitProject(t)
 	_, client, _ := newJobTestServer(t, immediateStream)
-	meta := addAutoCommitProject(t, client, repo)
+	meta := addGitProject(t, client, repo)
 	resp := client.call(protocol.MethodGitDiff, protocol.GitDiffParams{ProjectID: meta.ID})
 	if resp == nil || resp.Error == nil || resp.Error.Code != protocol.CodeInvalidParams {
 		t.Fatalf("缺 path 应报参数错误: %+v", resp)

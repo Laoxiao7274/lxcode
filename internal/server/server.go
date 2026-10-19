@@ -80,16 +80,10 @@ type Server struct {
 	// 每次都走 prepareWorkspace——不记就每次读历史都重付一遍（见 prepareWorkspaceLocked）。
 	worktreeReady map[string]bool
 
-	// commitMu/commitLocks 是每会话的自动提交锁（轮结束的检查点提交）：同一会话的
-	// 提交必须串行，避免并发轮次互相打断 git index。与 worktreeLocks 分开——提交
-	// 在事件路径的 goroutine 上跑，而 worktreeLocks 在 prepare/release 里被持有且
-	// 可能跑较久的 git 校验，共用会互相阻塞（见 autocommit.go）。
-	commitMu    sync.Mutex
-	commitLocks map[string]*sync.Mutex
-	// commitWG 追踪在途的自动提交（测试等它们结束用；生产路径不读它）。
-	commitWG sync.WaitGroup
-	// mergeHookWG 已随轮末自动合并钩子（maybeAutoMerge）退役——2026-10 架构修订：
-	// 会话直连主检出、没有分支要合并。自动提交只提交，不再触发任何后续流程。
+	// 轮末自动检查点提交已移除（2026-10 用户拍板，回滚方案后期重新设计）：原先
+	// commitMu/commitLocks/commitWG 只为它服务，一并删除。提交现在只发生在用户
+	// 显式要求的 workspace_sync 里（请求 goroutine 内同步执行，无需额外锁）。
+	// mergeHookWG 已随轮末自动合并钩子（maybeAutoMerge）退役。
 
 	upgrader websocket.Upgrader
 
@@ -230,7 +224,6 @@ func NewServer(reg *config.Registry) *Server {
 		sessions:      map[string]*agent.Session{},
 		worktreeLocks: map[string]*sync.Mutex{},
 		worktreeReady: map[string]bool{},
-		commitLocks:   map[string]*sync.Mutex{},
 		upgrader: websocket.Upgrader{
 			// 仅本机/局域网使用，不做 Origin 校验（单用户）
 			CheckOrigin: func(*http.Request) bool { return true },

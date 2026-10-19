@@ -6,7 +6,7 @@
 //   - 收尾来源校验（可归因 → 通过；越界提交 → Failed + detail + 集成分支回滚）；
 //   - 按项目互斥（同项目第二个会话拒绝、不同项目放行）。
 //
-// 全程不 spawn 真进程、不打网络（假 stream）；git 操作走真仓库（与 autocommit 同款）。
+// 全程不 spawn 真进程、不打网络（假 stream）；git 操作走真仓库。
 package server
 
 import (
@@ -40,8 +40,8 @@ func TestMergeScanSelectsChangedBranches(t *testing.T) {
 	repoA := initGitProject(t)
 	repoB := initGitProject(t)
 	srv, client, _ := newJobTestServer(t, immediateStream)
-	metaA := addAutoCommitProject(t, client, repoA)
-	metaB := addAutoCommitProject(t, client, repoB)
+	metaA := addGitProject(t, client, repoA)
+	metaB := addGitProject(t, client, repoB)
 
 	// A1：发起会话，领先 1 个提交
 	a1 := createTestSession(t, client, metaA.ID)
@@ -118,7 +118,7 @@ func TestMergeScanEdgeCases(t *testing.T) {
 
 	t.Run("已并入且干净：报没有待合并的改动", func(t *testing.T) {
 		repo := initGitProject(t)
-		meta := addAutoCommitProject(t, client, repo)
+		meta := addGitProject(t, client, repo)
 		id := createTestSession(t, client, meta.ID)
 		legacyWorktree(t, srv, meta.ID, id)
 		sendTurn(t, srv, client, id, "已并入")
@@ -135,7 +135,7 @@ func TestMergeScanEdgeCases(t *testing.T) {
 	})
 	t.Run("已并入但工作树脏：入选", func(t *testing.T) {
 		repo := initGitProject(t)
-		meta := addAutoCommitProject(t, client, repo)
+		meta := addGitProject(t, client, repo)
 		id := createTestSession(t, client, meta.ID)
 		legacyWorktree(t, srv, meta.ID, id)
 		sendTurn(t, srv, client, id, "脏工作树")
@@ -155,7 +155,7 @@ func TestMergeScanEdgeCases(t *testing.T) {
 	})
 	t.Run("发起会话无改动但有其他分支：注明后合其他的", func(t *testing.T) {
 		repo := initGitProject(t)
-		meta := addAutoCommitProject(t, client, repo)
+		meta := addGitProject(t, client, repo)
 		other := createTestSession(t, client, meta.ID)
 		legacyWorktree(t, srv, meta.ID, other)
 		sendTurn(t, srv, client, other, "别的会话")
@@ -299,7 +299,7 @@ func TestMergeJobRollsBackStrayCommit(t *testing.T) {
 		return immediateStream(ctx, config.ModelConfig{}, nil, nil)
 	}
 	srv, client, mgr := newJobTestServer(t, stream)
-	meta := addAutoCommitProject(t, client, repo)
+	meta := addGitProject(t, client, repo)
 	id := createTestSession(t, client, meta.ID)
 	legacyWorktree(t, srv, meta.ID, id)
 	sendTurn(t, srv, client, id, "你好")
@@ -327,7 +327,6 @@ func TestMergeJobRollsBackStrayCommit(t *testing.T) {
 		t.Fatalf("回滚后集成分支头 = %s, want %s", head, baseHead)
 	}
 	waitSessionIdle(t, srv, id)
-	srv.waitAutoCommits()
 }
 
 // TestMergePerProjectMutex：按项目互斥——同项目第二个会话发起被拒，
@@ -337,8 +336,8 @@ func TestMergePerProjectMutex(t *testing.T) {
 	repoB := initGitProject(t)
 	release := make(chan struct{}, 8)
 	srv, client, mgr := newJobTestServer(t, mergeBlockStream(release))
-	metaA := addAutoCommitProject(t, client, repoA)
-	metaB := addAutoCommitProject(t, client, repoB)
+	metaA := addGitProject(t, client, repoA)
+	metaB := addGitProject(t, client, repoB)
 	a1 := createTestSession(t, client, metaA.ID)
 	legacyWorktree(t, srv, metaA.ID, a1)
 	sendTurn(t, srv, client, a1, "A1")
@@ -382,7 +381,6 @@ func TestMergePerProjectMutex(t *testing.T) {
 	}
 	waitSessionIdle(t, srv, a1)
 	waitSessionIdle(t, srv, b1)
-	srv.waitAutoCommits()
 }
 
 // TestStartMergeJobGetsMultiBranch：startMergeJob 的多分支行为（本项目另一个
@@ -406,7 +404,7 @@ func TestStartMergeJobGetsMultiBranch(t *testing.T) {
 		return immediateStream(ctx, config.ModelConfig{}, nil, nil)
 	}
 	srv, client, mgr := newJobTestServer(t, stream)
-	meta := addAutoCommitProject(t, client, repo)
+	meta := addGitProject(t, client, repo)
 	a1 := createTestSession(t, client, meta.ID)
 	legacyWorktree(t, srv, meta.ID, a1)
 	sendTurn(t, srv, client, a1, "A1")
@@ -432,5 +430,4 @@ func TestStartMergeJobGetsMultiBranch(t *testing.T) {
 		t.Fatalf("任务说明书应含范围硬限定段:\n%s", taskText)
 	}
 	waitSessionIdle(t, srv, a1)
-	srv.waitAutoCommits()
 }

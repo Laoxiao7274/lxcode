@@ -24,7 +24,8 @@ const parseK = (s: string): number | null => {
 export function ModelEditDialog({ provider, model, onClose }: { provider: ProviderMeta; model: ModelMeta; onClose: () => void }) {
   const { settings, set, updateModel, removeModel, live, error } = useSettings();
   const [draft, setDraft] = useState({
-    id: model.id,
+    id: model.modelId,
+    provider: model.provider ?? "",
     name: model.name,
     desc: model.desc,
     // 未知（0）显示空串，不显示「0」——0 会被读成一个真实读数。
@@ -71,6 +72,7 @@ export function ModelEditDialog({ provider, model, onClose }: { provider: Provid
     if (
       !await updateModel(provider.id, model.id, {
         id: draft.id,
+        provider: draft.provider,
         name: draft.name,
         desc: draft.desc.trim(),
         tags: draft.tags,
@@ -110,6 +112,17 @@ export function ModelEditDialog({ provider, model, onClose }: { provider: Provid
             <label className="mset-edit-field">
               <span>模型 ID</span>
               <TextInput className="mono" autoFocus disabled={live} title={live ? "后端不支持改 ID，请新增模型" : undefined} value={draft.id} onChange={(v) => patch({ id: v })} spellCheck={false} />
+            </label>
+            <label className="mset-edit-field">
+              <span>提供商标签（选填）</span>
+              <TextInput
+                className="mono"
+                value={draft.provider}
+                onChange={(v) => patch({ provider: v })}
+                placeholder="留空 = 按纯 ID 注册"
+                spellCheck={false}
+                aria-label="提供商标签"
+              />
             </label>
             <label className="mset-edit-field">
               <span>显示名称</span>

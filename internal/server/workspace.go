@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/moyunteng/lxcode/internal/project"
 	"github.com/moyunteng/lxcode/internal/store"
@@ -30,7 +31,32 @@ const statusFileLimit = 40
 // syncCheckpointLimit 等文本清单的通用截断（回滚丢弃文件清单同款）。
 const syncFileLimit = 40
 
-// workspaceStore 返回会话存储；未启用时报自解释错误。
+// selfRepoPushBlocked 是本仓库（lxcode 本体）直推被闸门拦下时的完整文案。
+// 三段必须都在：**为什么**被拦（本地 master 含逐轮检查点历史）、**没发生什么**
+//（提交已完成、远端未动）、**该走哪条路**（push-release.mjs）。模型读到的是
+// 工具结果，所以指引要能直接照抄执行。
+const selfRepoPushBlocked = "推送被拒绝：本仓库是 lxcode 本体——本地 master 含历史逐轮检查点提交，" +
+	"直接推送会把它们公开到远端。\n" +
+	"本地提交已完成、远端未动。发版请用 `" + project.SelfRepoReleaseCommand + "`" +
+	"（把上次发布以来的改动聚合成一条 `release: <version>` 提交推 origin/master）；" +
+	"如需推送用户自己的项目，请在那个项目的会话里用 workspace_sync。"
+
+// commitSummaryMax 是提交信息里摘要的字符上限（约 60 字符）。按 rune 计——
+// 中文一个汉字算一个字符，按字节截会把中文砍成乱码。
+const commitSummaryMax = 60
+
+// commitSummary 取本轮用户消息的首行并截断到约 60 字符（提交信息要一眼看出是哪一轮）。
+// 轮末自动检查点提交已移除后，它是 workspace_sync 默认提交信息的唯一来源。
+func commitSummary(text string) string {
+	if i := strings.IndexAny(text, "\r\n"); i >= 0 {
+		text = text[:i]
+	}
+	text = strings.TrimSpace(text)
+	if utf8.RuneCountInString(text) > commitSummaryMax {
+		text = strings.TrimSpace(string([]rune(text)[:commitSummaryMax])) + "…"
+	}
+	return text
+}
 func (s *Server) workspaceStore() (*store.Store, error) {
 	if s.st == nil {
 		return nil, fmt.Errorf("会话存储未启用，无法执行工作区操作")
@@ -209,6 +235,14 @@ func archivedNote(archived bool) string {
 // workspaceSync 执行「提交主检出 →（可选）直接 push 当前分支」：
 // 2026-10 架构修订——合并进程退役，push 不再是合并任务的收尾步骤，而是 sync 的
 // 显式第二步（当前分支直接推 origin）。
+//
+// 2026-10 用户拍板：轮末自动检查点提交已移除，这里是**唯一**的提交入口（用户或
+// 模型显式要求时才提交）。改动因此按「这一轮会话的改动」累计，提交信息的默认摘要
+// 仍取最近一条用户消息。
+//
+// 仓库级闸门：本仓库（lxcode 本体，判据见 project.IsSelfRepo）的 push=true 被拒绝
+// 并给出发版指引——本地 master 含历史逐轮检查点，直推即公开它们；push=false 的提交
+// 完全不受影响（普通提交是正常流程）。
 func (s *Server) workspaceSync(sessionID, message string, push bool) (string, error) {
 	st, err := s.workspaceStore()
 	if err != nil {
@@ -219,6 +253,11 @@ func (s *Server) workspaceSync(sessionID, message string, push bool) (string, er
 		return "", err
 	}
 	dir := meta.Path // 主检出：提交与推送都发生在这里
+	// 仓库级推送闸门（lxcode 本体）：本地 master 上全是历史逐轮检查点提交，直推会把
+	// 它们公开——发版只能走 scripts/push-release.mjs 的聚合发布线。**提交照常**，
+	// 只拦 push=true；普通项目（无指纹文件）不受影响。
+	// 前置到任何写动作之前：拒绝时工作区一个字节都不动。
+	selfRepo := push && project.IsSelfRepo(dir)
 	ctx := s.Ctx()
 	branch, err := project.CurrentBranch(ctx, dir)
 	if err != nil {
@@ -226,7 +265,7 @@ func (s *Server) workspaceSync(sessionID, message string, push bool) (string, er
 	}
 	msg := strings.TrimSpace(message)
 	if msg == "" {
-		// 默认取最近一条用户消息的首行（与自动提交的摘要同一套截断）。
+		// 默认取最近一条用户消息的首行（自动提交移除后，摘要规则只剩这一处用）。
 		if _, lastUser, err := st.LastUserTurn(sessionID); err == nil {
 			msg = commitSummary(lastUser)
 		}
@@ -241,8 +280,7 @@ func (s *Server) workspaceSync(sessionID, message string, push bool) (string, er
 	}
 	var b strings.Builder
 	if committed {
-		// 检查点序号 = 相对会话基线的提交数（每次提交恰好 +1；基线未知时退
-		// HEAD^ 只数最近一个）。
+		// 提交序号 = 相对会话基线的提交数（基线未知时退回 HEAD^ 只数最近一个）。
 		wt, werr := st.WorktreeOf(sessionID)
 		n := 0
 		base := ""
@@ -255,12 +293,17 @@ func (s *Server) workspaceSync(sessionID, message string, push bool) (string, er
 		if cnt, cerr := project.CommitCountBetween(ctx, dir, base, "HEAD"); cerr == nil {
 			n = cnt
 		}
-		fmt.Fprintf(&b, "已提交第 %d 个检查点（%s）到分支 %s。", n, msg, branch)
+		fmt.Fprintf(&b, "已提交（本会话第 %d 个提交，%s）到分支 %s。", n, msg, branch)
 	} else {
 		b.WriteString("工作区没有未提交改动，跳过提交。")
 	}
 	if !push {
 		b.WriteString("本次不推送。")
+		return b.String(), nil
+	}
+	if selfRepo {
+		// 闸门命中：提交已完成（上面那一步），推送被拒绝并给出唯一正确通道。
+		b.WriteString(selfRepoPushBlocked)
 		return b.String(), nil
 	}
 	// 第二步：直接推送当前分支到 origin（合并流程已退役）。
@@ -278,13 +321,13 @@ func (s *Server) workspaceSync(sessionID, message string, push bool) (string, er
 
 // rollbackPlan 是回滚的执行计划（确认门在计划上做，执行只照计划做）。
 type rollbackPlan struct {
-	repoDir  string   // 主检出路径（回滚作用在主检出当前分支上）
-	branch   string   // 主检出当前分支（确认文案展示用）
-	oldHead  string   // 回滚前的 HEAD
-	newHead  string   // 回滚到的提交
-	files    []string // 将被丢弃的文件清单（git diff --name-status 新..旧）
-	warns    []string // 警告（如「该提交已并进集成分支」）
-	drops    int      // 将丢弃的检查点提交数
+	repoDir string   // 主检出路径（回滚作用在主检出当前分支上）
+	branch  string   // 主检出当前分支（确认文案展示用）
+	oldHead string   // 回滚前的 HEAD
+	newHead string   // 回滚到的提交
+	files   []string // 将被丢弃的文件清单（git diff --name-status 新..旧）
+	warns   []string // 警告（如「该提交已并进集成分支」）
+	drops   int      // 将丢弃的提交数
 }
 
 // planRollback 生成回滚计划并做全部前置校验（只读，不动工作区）：
@@ -292,6 +335,11 @@ type rollbackPlan struct {
 //   - target 是 hash 时校验它在当前分支历史上（是 HEAD 的祖先）；
 //   - **reset 目标已在远程历史中时拒绝**（硬纪律：已推送的提交只能 revert 不能
 //     reset——本地 reset 会与远程历史分叉）。
+//
+// **2026-10 用户拍板移除轮末自动检查点提交之后**：工具保留，但 `last-turn` 的
+// 语义从「退到上一轮检查点」退化为「退到上一个提交」（HEAD~1）——中间没有自动
+// 提交的轮次不再有回滚锚点，回滚只能到手工/显式提交（workspace_sync）为止。
+// 这条退化在确认门文案与执行结果里如实告知（见 rollbackConfirmText / workspaceRollback）。
 func (s *Server) planRollback(sessionID, target string) (*rollbackPlan, error) {
 	st, err := s.workspaceStore()
 	if err != nil {
@@ -323,7 +371,7 @@ func (s *Server) planRollback(sessionID, target string) (*rollbackPlan, error) {
 	}
 	switch strings.TrimSpace(target) {
 	case "", "last-turn":
-		// HEAD 就是基线 = 还没有任何轮次提交。
+		// HEAD 就是基线 = 还没有任何提交。
 		if base != "" && oldHead == base {
 			return nil, fmt.Errorf("还没有可回滚的提交（当前就在会话基线上）")
 		}
@@ -399,7 +447,13 @@ func (s *Server) finishRollbackPlan(ctx context.Context, dir, branch, oldHead, n
 	return plan, nil
 }
 
-// rollbackConfirmText 组确认门文案（「将丢弃第 N 个检查点，涉及哪些文件」）。
+// rollbackNoCheckpointNote 是「自动检查点已移除」的如实说明：模型与用户都必须
+// 知道 last-turn 现在指的是「上一个提交」，而不是「上一轮对话」。
+const rollbackNoCheckpointNote = "注意：轮末自动检查点提交已移除（2026-10 用户拍板，回滚方案后期重新设计），" +
+	"last-turn 现在指「上一个提交」——只有经 workspace_sync（或用户手工提交）落过的改动才有回滚锚点，" +
+	"尚未提交的轮次改动不会被回滚。如需按轮回滚，请先让用户确认提交策略。"
+
+// rollbackConfirmText 组确认门文案（「将丢弃多少个提交，涉及哪些文件」）。
 // 计划生成失败时回一条通用文案——确认门照常生效，具体错误在执行时报给模型。
 func (s *Server) rollbackConfirmText(sessionID, target string) string {
 	label := strings.TrimSpace(target)
@@ -408,10 +462,10 @@ func (s *Server) rollbackConfirmText(sessionID, target string) string {
 	}
 	plan, err := s.planRollback(sessionID, target)
 	if err != nil {
-		return fmt.Sprintf("将把主检出当前分支回滚（目标：%s），丢弃其后的检查点提交。该操作不可逆，确认执行？", label)
+		return fmt.Sprintf("将把主检出当前分支回滚（目标：%s），丢弃其后的提交。该操作不可逆，确认执行？\n%s", label, rollbackNoCheckpointNote)
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "将把主检出分支 %s 从 %s 回滚到 %s，丢弃其后的 %d 个检查点提交（该操作不可逆）。",
+	fmt.Fprintf(&b, "将把主检出分支 %s 从 %s 回滚到 %s，丢弃其后的 %d 个提交（该操作不可逆）。",
 		plan.branch, short7(plan.oldHead), short7(plan.newHead), plan.drops)
 	if len(plan.files) > 0 {
 		fmt.Fprintf(&b, "\n涉及的文件：\n%s", clipLines(plan.files, syncFileLimit))
@@ -421,15 +475,21 @@ func (s *Server) rollbackConfirmText(sessionID, target string) string {
 	for _, w := range plan.warns {
 		b.WriteString("\n警告：" + w)
 	}
+	b.WriteString("\n" + rollbackNoCheckpointNote)
 	return b.String()
 }
 
 // syncConfirmText 组 sync 的确认门文案（说清将执行「提交 +（可选）直接推送」
 // 哪些动作——用户必须知道自己确认的是什么）。
+//
+// 本仓库（lxcode 本体）的 push 会被闸门拦下：确认文案必须在**确认之前**就说清
+// 「只提交、不推送」以及发版该走哪条路，不能让用户确认一个不会发生的推送。
 func (s *Server) syncConfirmText(sessionID string, push bool) string {
 	var b strings.Builder
 	b.WriteString("将执行：\n1. 提交主检出的全部改动（git add -A + commit，提交到当前分支）")
+	dir := ""
 	if meta, err := s.resolveProject(sessionID, ""); err == nil {
+		dir = meta.Path
 		if branch, berr := project.CurrentBranch(s.Ctx(), meta.Path); berr == nil {
 			fmt.Fprintf(&b, "（分支 %s）", branch)
 		}
@@ -440,7 +500,12 @@ func (s *Server) syncConfirmText(sessionID string, push bool) string {
 		}
 	}
 	if push {
-		b.WriteString("\n2. 把当前分支直接推送到远程 origin")
+		if dir != "" && project.IsSelfRepo(dir) {
+			fmt.Fprintf(&b, "\n2. 推送会被拒绝：本仓库是 lxcode 本体（本地 master 含历史逐轮检查点，"+
+				"直推会公开它们）——本次只提交，发版请用 `%s`。", project.SelfRepoReleaseCommand)
+		} else {
+			b.WriteString("\n2. 把当前分支直接推送到远程 origin")
+		}
 	}
 	b.WriteString("\n确认执行？")
 	return b.String()
@@ -456,7 +521,7 @@ func (s *Server) workspaceRollback(sessionID, target string) (string, error) {
 		return "", fmt.Errorf("回滚失败: %w", err)
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "已把分支 %s 回滚到提交 %s（丢弃了其后的 %d 个检查点提交）。",
+	fmt.Fprintf(&b, "已把分支 %s 回滚到提交 %s（丢弃了其后的 %d 个提交）。",
 		plan.branch, short7(plan.newHead), plan.drops)
 	if len(plan.files) == 0 {
 		b.WriteString("\n丢弃的文件：无（只移动了分支指针）。")
@@ -466,6 +531,7 @@ func (s *Server) workspaceRollback(sessionID, target string) (string, error) {
 	for _, w := range plan.warns {
 		b.WriteString("\n警告：" + w)
 	}
+	b.WriteString("\n" + rollbackNoCheckpointNote)
 	return b.String(), nil
 }
 

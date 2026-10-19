@@ -191,20 +191,22 @@ var seedTools = []sessiondata.ToolSpec{
 	},
 	{
 		// 工作区三件套之二（提交推送链路，中危走确认门）。
-		ID: "workspace_sync", Desc: "提交本会话改动并起合并进程（可选拼推送）", Risk: "high", Source: "builtin", Custom: false,
+		// Desc/Doc 必须说实际行为：2026-10 直连架构下就是「提交当前分支 + 直接推送」，
+		// 没有合并进程也没有集成分支（那套已退役）。
+		ID: "workspace_sync", Desc: "提交当前分支的改动并直接推送到 origin（可选）", Risk: "high", Source: "builtin", Custom: false,
 		Params: []sessiondata.ToolParam{
 			{Name: "message", Type: "string", Desc: "提交信息（可选；默认取最近一条用户消息首行）"},
-			{Name: "push", Type: "bool", Desc: "合并成功后是否推送到远程 origin（默认 false）"},
+			{Name: "push", Type: "bool", Desc: "提交后是否把当前分支直接推送到远程 origin（默认 false）"},
 		},
-		Doc: "「帮我提交/推送」的执行链路：提交 → 起合并进程 →（push=true 时）合并成功后推到 origin。\n\n- 工作区干净则跳过提交（不报错）\n- 合并是后台任务，立刻返回任务 id，结束后自动通知\n- 推送失败不影响已完成的合并（任务 detail 会写清）\n- 未分组会话报错；同一会话只允许一个在跑的合并进程",
+		Doc: "「帮我提交/推送」的执行链路：提交主检出当前分支 →（push=true 时）直接推送到 origin（不 force）。\n\n- 工作区干净则跳过提交（不报错）\n- 推送失败不影响已完成的提交（如实报错，提交不会回退）\n- **lxcode 本体仓库的推送被闸门拒绝**：本地 master 含历史逐轮检查点，发版走 `node scripts/push-release.mjs [version]`（提交照常）\n- 未分组会话报「没有归属项目」",
 	},
 	{
 		// 工作区三件套之三（回滚，中危走确认门）。
-		ID: "workspace_rollback", Desc: "回滚本会话分支（上一轮/会话起点/指定提交）", Risk: "high", Source: "builtin", Custom: false,
+		ID: "workspace_rollback", Desc: "回滚主检出当前分支（上一个提交/会话起点/指定提交）", Risk: "high", Source: "builtin", Custom: false,
 		Params: []sessiondata.ToolParam{
 			{Name: "target", Type: "enum", Desc: "last-turn（默认）/ session-start / 原始 commit hash"},
 		},
-		Doc: "「回滚到上一次提交」的执行者：把本会话分支 reset --hard 到目标提交。\n\n- 工作区有未提交改动时拒绝（绝不静默丢弃手工改动）\n- 目标提交已合并进集成分支时警告：那部分要在集成分支上 revert 才能撤销\n- 绝不 push、绝不动集成分支与主检出\n- 执行前走确认门（文案列明丢弃哪些提交与文件）",
+		Doc: "「回滚到上一次提交」的执行者：把主检出当前分支 reset --hard 到目标提交。\n\n- 轮末自动检查点已移除（2026-10 用户拍板）：只有经 workspace_sync 或手工提交过的位置可回滚，last-turn = 上一个提交（不是上一轮对话）\n- 工作区有未提交改动时拒绝（绝不静默丢弃手工改动）\n- 目标提交已合并进集成分支时警告：那部分要在集成分支上 revert 才能撤销\n- 绝不 push、绝不动集成分支与主检出\n- 执行前走确认门（文案列明丢弃哪些提交与文件）",
 	},
 	{
 		// 产物发布（中危走确认门）：会话 worktree 里的构建产物在 gitignore 里、
@@ -300,7 +302,7 @@ var seedAgents = []sessiondata.AgentDef{
 	{
 		ID: "coder", Name: "代码 Agent", Enabled: true, Color: "#3b82f6", Model: "",
 		Desc:     "编码实现与重构：读写代码、跑构建测试，产出可验证的改动，能把产物文件共享到对话、能读图片内容（视觉）。",
-		Prompt:   "你是代码 Agent。改动前先读相关代码，遵守仓库规范；每步改动可解释、可回退，构建测试通过才算完成。",
+		Prompt:   "你是代码 Agent。改动前先读相关代码，遵守仓库规范；每步改动可解释、可回退，构建测试通过才算完成。绝不执行 git push（含 --force）：推送只由用户经 workspace_sync 发起；lxcode 本体仓库的发版只走 scripts/push-release.mjs。",
 		Tools:    []string{"read_file", "search", "read_image", "edit", "write_file", "bash", "todo", "share_file"},
 		Workflow: "minimal-change", Skills: []string{"frontend-design", "gsap"},
 		Delegates: []string{}, Approval: "confirm",
@@ -326,7 +328,7 @@ var seedAgents = []sessiondata.AgentDef{
 		// 「按验收标准补用例」；提示词把项目的测试纪律写进职责（不许为绿灯弱化断言）。
 		ID: "tester", Name: "测试 Agent", Enabled: true, Color: "#0ea5e9", Model: "",
 		Desc:     "验证与测试：跑构建与测试、按验收标准补用例，如实回传失败与复现命令，能把产物文件共享到对话、能读图片内容（视觉）。",
-		Prompt:   "你是测试 Agent。跑构建与测试，断言行为与契约而不是实现细节；失败如实回传（关键输出 + 复现命令）。绝不为了让测试变绿而删除、跳过或弱化断言——测试与实现冲突时先判断谁对：实现错了改实现，需求变了先改方案。",
+		Prompt:   "你是测试 Agent。跑构建与测试，断言行为与契约而不是实现细节；失败如实回传（关键输出 + 复现命令）。绝不为了让测试变绿而删除、跳过或弱化断言——测试与实现冲突时先判断谁对：实现错了改实现，需求变了先改方案。绝不执行 git push（含 --force）：推送只由用户经 workspace_sync 发起。",
 		Tools:    []string{"read_file", "search", "read_image", "edit", "write_file", "bash", "todo", "share_file"},
 		Workflow: "plan-execute-verify", Skills: []string{},
 		Delegates: []string{}, Approval: "confirm",

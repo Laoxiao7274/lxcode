@@ -520,6 +520,7 @@
       "models": [
         {
           "id": "deepseek-v3",
+          "provider": "deepseek",
           "display_name": "DeepSeek V3",
           "base_url": "https://api.deepseek.com/v1",
           "api_key": "sk-**",
@@ -536,10 +537,24 @@
           },
           "enabled": true,
           "updated_at": "2026-10-13T10:00:00Z"
+        },
+        {
+          "id": "legacy-model",
+          "display_name": "Legacy",
+          "base_url": "http://127.0.0.1:8080/v1",
+          "model": "legacy",
+          "capabilities": {
+            "tools": false,
+            "vision": false,
+            "json_output": false,
+            "reasoning": false
+          },
+          "enabled": false,
+          "updated_at": "0001-01-01T00:00:00Z"
         }
       ],
       "roles": {
-        "default": "deepseek-v3"
+        "default": "deepseek::deepseek-v3"
       }
     }
   },

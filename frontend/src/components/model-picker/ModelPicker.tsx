@@ -60,8 +60,20 @@ export function ModelPicker({ model, onPickModel }: {
       .filter((g) => g.models.length > 0);
   }, [providers, query]);
 
-  // 扁平的可选序列（键盘导航与高亮用；分组只影响呈现）
+  // 扁平的可选序列（键盘导航与高亮用；分组只影响呈现）。
+  // id 是注册表**主键**（provider::id 或纯 id）——两家提供商的同名模型是两个不同项。
   const flat = useMemo(() => groups.flatMap((g) => g.models.map((m) => m.id)), [groups]);
+
+  // 有重名的模型才标注来源（提供商名）：组标题已经写着 host，再重复一遍纯噪音；
+  // 只有用户在多个组里看到同一个模型名时，来源才是必须说清的信息。
+  const dupNames = useMemo(() => {
+    const byId = new Map<string, string[]>();
+    for (const p of providers) {
+      if (!p.connected || !p.enabled) continue;
+      for (const m of p.models) byId.set(m.modelId, [...(byId.get(m.modelId) ?? []), p.name]);
+    }
+    return new Set([...byId].filter(([, names]) => names.length > 1).map(([id]) => id));
+  }, [providers]);
   const hasQuery = query.trim().length > 0;
 
   // 当前模型的档位元数据
@@ -69,8 +81,12 @@ export function ModelPicker({ model, onPickModel }: {
     () => providers.flatMap((p) => p.models).find((m) => m.id === selected),
     [providers, selected],
   );
+  // 芯片上的模型名也标来源：同名模型时只报名字的话用户分不清选了哪家
+  const currentDup = current ? dupNames.has(current.modelId) : false;
   const effortOptions = useMemo(() => EFFORTS.filter((e) => current?.efforts.includes(e.id)), [current]);
   const effortSupported = effortOptions.length > 0;
+  // 无 provider 标签时（存量条目）来源就退成分组 host
+  const providerNameOf = current ? (providers.find((p) => p.models.includes(current))?.name ?? "") : "";
   const effortLabel = effortSupported ? effortOptions.find((e) => e.id === settings.effort)?.label ?? effortOptions[effortOptions.length - 1].label : undefined;
 
   // 重新打开回到模型面板；清掉上一轮的搜索/高亮
@@ -139,6 +155,7 @@ export function ModelPicker({ model, onPickModel }: {
         <button type="button" className="model-chip" title="模型与推理强度">
           {/* 芯片显示模型名（display_name→model→id 回退链），不裸显注册 id */}
           {current?.name ?? (selected || "模型")}
+          {currentDup && current && <span className="chip-dim">· {current.provider || providerNameOf}</span>}
           {effortSupported && <span className="chip-dim">· {effortLabel}</span>}
           <IconChevronDown />
         </button>
@@ -180,6 +197,9 @@ export function ModelPicker({ model, onPickModel }: {
                       <span className="mp-label">
                         <span className="mp-model-name">{m.name}</span>
                         <span className="mp-model-desc">{m.desc}</span>
+                        {dupNames.has(m.modelId) && (
+                          <span className="mp-model-desc">来源 {m.provider || g.name}</span>
+                        )}
                       </span>
                       {selected === m.id && <span className="mp-check">{<IconCheck />}</span>}
                     </button>

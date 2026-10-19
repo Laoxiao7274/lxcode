@@ -7,6 +7,7 @@ package config
 import (
 	"fmt"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -43,9 +44,17 @@ type Capabilities struct {
 	StreamTools bool `json:"stream_tools,omitempty"`
 }
 
+// ProviderSep 是组合键分隔符。注册表主键从「纯 model id」扩展为
+// `provider::model`（KeySep），provider 本身是自由文本——不进主键。
+const ProviderSep = "::"
+
 // ModelConfig 是注册表中一个模型条目的完整配置（models.json 单条）。
 type ModelConfig struct {
-	ID              string       `json:"id"`
+	ID string `json:"id"`
+	// Provider 是可选的「提供商」标签：同一 id 在不同提供商（不同 base_url /
+	// 凭据 / 协议）下可以并存，磁盘主键 = provider::id（见 Key）。
+	// 空 = 存量数据（没有这个字段），主键就是纯 id——**存量零迁移**。
+	Provider        string       `json:"provider,omitempty"`
 	DisplayName     string       `json:"display_name,omitempty"`
 	BaseURL         string       `json:"base_url"`
 	APIKey          string       `json:"api_key,omitempty"`
@@ -66,12 +75,39 @@ func (m ModelConfig) EffectiveFormat() string {
 	return m.Format
 }
 
+// Key 是条目的**注册表主键**：有 provider 时 = `provider::id`，无 provider
+// （存量数据）时 = 纯 id。这条规则是全链路唯一的口径——内存 map 的键、
+// 落盘的 roles 取值、sessions.model / agents.model 的引用都是它。
+func (m ModelConfig) Key() string {
+	if m.Provider == "" {
+		return m.ID
+	}
+	return m.Provider + ProviderSep + m.ID
+}
+
+// SplitKey 把引用值拆成 (provider, id)：引用可以是组合键（`provider::id`），
+// 也可以是纯 id（存量引用 / 无 provider 条目）。解析不出 provider 时返回 ""。
+func SplitKey(ref string) (provider, id string) {
+	if i := strings.Index(ref, ProviderSep); i > 0 && i+len(ProviderSep) < len(ref) {
+		return ref[:i], ref[i+len(ProviderSep):]
+	}
+	return "", ref
+}
+
 // validate 校验条目字段：id/model 非空、base_url 带合法 scheme、format 合法、
 // max_output_tokens 小于 context_window——输出上限逼近窗口会导致输入+输出超限
 // 报错（判据就是本函数下一行那条检查，前端 validateProviderPatch 与之对齐）。
 func (m ModelConfig) validate() error {
 	if m.ID == "" {
 		return fmt.Errorf("id 不能为空")
+	}
+	// 主键是 provider::id，所以分隔符出现在任一段里都会让引用解析歧义——
+	// 早拒比事后猜用户想指哪个模型好。
+	if strings.Contains(m.ID, ProviderSep) {
+		return fmt.Errorf("id 不能包含 %q（那是 provider 与 id 的分隔符）", ProviderSep)
+	}
+	if strings.Contains(m.Provider, ProviderSep) {
+		return fmt.Errorf("provider 不能包含 %q", ProviderSep)
 	}
 	if m.Model == "" {
 		return fmt.Errorf("model 不能为空")

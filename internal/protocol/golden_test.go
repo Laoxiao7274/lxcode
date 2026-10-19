@@ -134,9 +134,9 @@ func goldenSamples() map[string]goldenSample {
 		// 尾部 N 条——慢链路分页，配平在内核 TailHistory）。before_seq 是可选的
 		// 前缀分页 anchor（>0 = 取该消息**之前**最多 tail 条——安卓向上翻页；
 		// 两个样本分别演示 tail-only 与 before_seq 分页两种形态）。
-		"chatHistoryParamsFull": {"ChatHistoryParams", ChatHistoryParams{SessionID: "s1", Tail: 50}},
+		"chatHistoryParamsFull":    {"ChatHistoryParams", ChatHistoryParams{SessionID: "s1", Tail: 50}},
 		"chatHistoryParamsMinimal": {"ChatHistoryParams", ChatHistoryParams{SessionID: "s1"}},
-		"chatHistoryParamsPaging": {"ChatHistoryParams", ChatHistoryParams{SessionID: "s1", Tail: 50, BeforeSeq: 3}},
+		"chatHistoryParamsPaging":  {"ChatHistoryParams", ChatHistoryParams{SessionID: "s1", Tail: 50, BeforeSeq: 3}},
 
 		// 全量历史：检查点/统计/上下文/权限档/待确认全在。message 数组覆盖
 		// llm.Message 的全部 wire 字段（images/attachments/tool_calls/tool_call_id/
@@ -204,16 +204,16 @@ func goldenSamples() map[string]goldenSample {
 			InputTokens: 486000, CacheReadTokens: 402000, CacheWriteTokens: 18000,
 			OutputTokens: 26400, LegacyTokens: 3200,
 		}},
-		"compactResult":    {"CompactOutcome", CompactResult{Compacted: false, Reason: "历史太短，摘要没有收益", Before: 9100, After: 9100, Shadowed: 3}},
+		"compactResult": {"CompactOutcome", CompactResult{Compacted: false, Reason: "历史太短，摘要没有收益", Before: 9100, After: 9100, Shadowed: 3}},
 
 		// ---- chat 域：会话级模型（chat.model / chat.modelChanged）----
 		//
 		// 模型选择是**会话级**状态（与 approval 同一层级）：参数/结果/事件三份形状
 		// 都由样本钉住——字段改名不编译报错、只静默丢字段。
-		"chatModelParams": {"", ChatModelParams{SessionID: "s1", ModelID: "deepseek-v3"}},
-		"chatModelResult": {"", ChatModelResult{SessionID: "s1", ModelID: "deepseek-v3"}},
+		"chatModelParams":    {"", ChatModelParams{SessionID: "s1", ModelID: "deepseek-v3"}},
+		"chatModelResult":    {"", ChatModelResult{SessionID: "s1", ModelID: "deepseek-v3"}},
 		"modelChangedParams": {"", ModelChangedParams{SessionID: "s1", ModelID: "deepseek-v3"}},
-		"chatRewindResult": {"RewindOutcome", ChatRewindResult{Removed: 0}}, // 幂等空操作：显式 0，不是缺席
+		"chatRewindResult":   {"RewindOutcome", ChatRewindResult{Removed: 0}}, // 幂等空操作：显式 0，不是缺席
 
 		// ---- 会话管理域 ----
 
@@ -253,13 +253,18 @@ func goldenSamples() map[string]goldenSample {
 		// capabilities 与 updated_at；_type 留空——顶层是注册表不是单条目）。
 		"modelListResult": {"", ModelListResult{
 			Models: []config.ModelConfig{{
-				ID: "deepseek-v3", DisplayName: "DeepSeek V3", BaseURL: "https://api.deepseek.com/v1",
+				// Provider 有值 = 组合键条目（主键 provider::id）；同组再放一条
+				// 无 provider 的存量条目，钉住「omitempty 字段缺席」也是合法 wire。
+				ID: "deepseek-v3", Provider: "deepseek", DisplayName: "DeepSeek V3", BaseURL: "https://api.deepseek.com/v1",
 				APIKey: "sk-**", Format: "openai", Model: "deepseek-chat",
 				ContextWindow: 128000, MaxOutputTokens: 8192,
 				Capabilities: config.Capabilities{Tools: true, Vision: false, JSONOut: true, Reasoning: true, StreamTools: true},
 				Enabled:      true, UpdatedAt: time.Date(2026, 10, 13, 10, 0, 0, 0, time.UTC),
+			}, {
+				ID: "legacy-model", DisplayName: "Legacy", BaseURL: "http://127.0.0.1:8080/v1",
+				Model: "legacy", Enabled: false,
 			}},
-			Roles: map[string]string{"default": "deepseek-v3"},
+			Roles: map[string]string{"default": "deepseek::deepseek-v3"},
 		}},
 
 		// ---- git 域 ----

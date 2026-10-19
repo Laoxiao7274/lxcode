@@ -1,9 +1,9 @@
 // push-release.mjs —— 发版聚合推送：把本地逐轮检查点历史压成发布线推出去。
 //
-// 为什么需要它：每轮对话结束会落一个检查点提交（git add -A，一轮一个），这是
-// **本地回滚粒度**；直接推 master 会让公开仓库历史被「第 N 轮：…」淹没。所以
-// 约定是：
-//   - 本地 master = 完整历史（检查点 + 手工提交），**永不推送**，逐轮回滚靠它；
+// 为什么需要它：本地 master 里带着大量历史逐轮检查点提交（2026-10 之前的每轮
+// 自动提交，`git add -A`，一轮一个）；直接推 master 会让公开仓库历史被「第 N 轮：…」
+// 淹没。**轮末自动提交已移除（2026-10 用户拍板）**，但存量历史与聚合机制不变：
+//   - 本地 master = 完整历史（存量检查点 + 手工/workspace_sync 提交），**永不推送**；
 //   - 发布线     = 每次发版一个快照提交（`release: <version>`），公开仓库只看到它。
 //
 // 关键设计：发布线是**独立的一条线**（每个提交的树 = 当时 master 的树，父提交 =
@@ -35,7 +35,7 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-/** 检查点提交正文的标记（与 internal/project/checkpoint.go 的 CheckpointMarker 同值）。 */
+/** 历史检查点提交正文的标记（原 internal/project/checkpoint.go 的 CheckpointMarker，已随自动提交移除）。 */
 export const CHECKPOINT_MARKER = "[checkpoint]";
 
 /** 发布提交的标题前缀：`release: <version>`。 */

@@ -33,41 +33,54 @@ func workdirLine(workDir string) string {
 type WorktreeInfo struct {
 	Branch string // 主检出当前分支名（2026-10 直连架构：不再是 lxcode/session-<id>）
 	Base   string // 会话基线 HEAD（首次准备时记录；rollback 的 session-start 锚点）
-	NoGit  bool   // 项目目录不是 git 仓库（Branch 为空）：无检查点，提示词如实告知
+	NoGit  bool   // 项目目录不是 git 仓库（Branch 为空）：无版本管理，提示词如实告知
 }
 
 // worktreeLine 渲染工作区说明段（零值零注入：逐字节等于未分组会话的提示词）。
 //
-// 为什么必须告诉模型：会话**直接工作在用户的主检出目录**（改动实时可见），每轮
-// 对话结束时系统会**自动**把改动提交为一个检查点提交（方便回滚），所以模型不要
-// 自己反复提交、也不要改动已提交的历史；而用户说「回滚到上一次提交」指的是上一
-// 轮结束时的状态。
+// 为什么必须告诉模型：会话**直接工作在用户的主检出目录**（改动实时可见），而
+// **轮末不会自动提交**（2026-10 用户拍板移除自动检查点，回滚方案后期重新设计）——
+// 改动留在工作区，直到用户或模型显式要求提交（`workspace_sync`）。所以模型不要
+// 自己反复提交、也不要改动已提交的历史；用户说「回滚」时只能回到手工/显式提交
+// 过的位置。
 //
 // 子会话在同一份主检出里工作、改动与父会话共享——措辞必须区分，不能对它说
 // 「你的会话目录」（它没有单独的；大家都在同一个项目目录里）。
 func worktreeLine(wt WorktreeInfo, isChild bool) string {
 	if wt.Branch == "" {
 		if wt.NoGit {
-			// 非 git 项目目录的降级态：如实告知「没有检查点」，并且不让模型
+			// 非 git 项目目录的降级态：如实告知「没有版本管理」，并且不让模型
 			// 自作主张去 git init / 提交（那是用户的决定）。
 			if isChild {
-				return "你在父会话的项目目录里工作，该目录不是 Git 仓库：没有自动检查点提交，也不要执行 git 提交/分支类操作；用户问起版本管理时如实说明。\n"
+				return "你在父会话的项目目录里工作，该目录不是 Git 仓库：改动不会被提交，也不要执行 git 提交/分支类操作；用户问起版本管理时如实说明。\n"
 			}
-			return "当前会话直接在用户的项目目录里工作，但该目录不是 Git 仓库：没有每轮的自动检查点提交，也不要主动执行 git 提交/分支类操作（是否 git init 由用户决定，需要时如实说明现状）。\n"
+			return "当前会话直接在用户的项目目录里工作，但该目录不是 Git 仓库：改动不会被提交，也不要主动执行 git 提交/分支类操作（是否 git init 由用户决定，需要时如实说明现状）。\n"
 		}
 		return ""
 	}
 	if isChild {
 		return fmt.Sprintf("你在父会话的项目目录里工作（Git 分支 %s），你的改动与父会话实时共享；"+
-			"每轮对话结束时系统会自动把改动提交为一个检查点提交——不要自己反复提交，也不要改动已提交的历史。\n", wt.Branch)
+			"系统不会自动提交——改动留在工作区，等用户显式要求时再提交，也不要改动已提交的历史。\n", wt.Branch)
 	}
 	return fmt.Sprintf("当前会话直接在用户的项目目录里工作（Git 分支 %s），你在项目里做的修改对用户实时可见。"+
-		"每轮对话结束时系统会自动提交一个检查点提交（git add -A，方便回滚）——"+
+		"系统**不会**自动提交（轮末没有检查点提交）——改动留在工作区，直到用户显式要求提交；"+
 		"不要自己反复提交，也不要改动已提交的历史。"+
 		"用户问「改了哪些东西」用 `workspace_status`（主检出状态口径，不向用户解释分支概念除非他问）；"+
 		"用户说「提交/推送」用 `workspace_sync`（提交到当前分支，可选拼直接推送）；"+
-		"用户要「回滚/撤销」用 `workspace_rollback`（默认退到上一轮检查点；"+
-		"用户说「回滚到上一次提交」指的是上一轮结束时的状态）。\n", wt.Branch)
+		"用户要「回滚/撤销」用 `workspace_rollback`（只能回到手工/显式提交过的位置——"+
+		"自动检查点已移除，last-turn 指上一个提交而不是上一轮对话）。\n"+pushDisciplineLine(), wt.Branch)
+}
+
+// pushDisciplineLine 是推送纪律（项目会话无条件注入）：工具层的闸门只保护「走
+// workspace_sync 的路径」，agent 直接跑 `git push` 仍能绕过它——所以提示词里必须
+// 有一条硬纪律把「推送只能走工具」说死。对本仓库（lxcode 本体）的直推禁令另在
+// workspace_sync 的闸门里强制执行（本地 master 含逐轮检查点，推出去即公开）。
+func pushDisciplineLine() string {
+	return "推送纪律：推送只能通过 `workspace_sync`（push=true）——**永远不要直接执行 `git push`**，" +
+		"也不要用 `git push --force` 绕过任何拒绝；工具拒绝推送时如实转达原因，不另找路子。" +
+		"lxcode 本体仓库（含 scripts/push-release.mjs）的推送被闸门拒绝是**预期行为**：" +
+		"本地 master 含逐轮检查点，发版只走 `node scripts/push-release.mjs [version]`，" +
+		"且发版是用户的显式动作——不要自行运行它。\n"
 }
 
 // todoPromptRule 按档位返回守则第 5 条（todo-first 指令——用户在设置里选的
@@ -155,7 +168,7 @@ var systemPromptTools = map[string]string{
 	tools.MergeRequestToolName:      "merge_request：（遗留）合并流程已退役，调用只会得到说明——提交/推送用 workspace_sync，回滚用 workspace_rollback",
 	tools.WorkspaceStatusToolName:   "workspace_status：查询项目工作区状态（主检出的未提交改动、遗留会话分支），低危自动执行",
 	tools.WorkspaceSyncToolName:     "workspace_sync：提交主检出的改动到当前分支，可选拼直接推送远程，中危——执行前用户会收到确认提示",
-	tools.WorkspaceRollbackToolName: "workspace_rollback：回滚主检出当前分支到上一轮检查点/会话基线/指定提交，中危——执行前用户会收到确认提示",
+	tools.WorkspaceRollbackToolName: "workspace_rollback：回滚主检出当前分支到上一个提交/会话基线/指定提交（自动检查点已移除，只有提交过的位置可回滚），中危——执行前用户会收到确认提示",
 	tools.WorkspacePublishToolName:  "workspace_publish：（遗留）旧工作树架构的产物发布，直连模式下无需发布，中危——覆盖文件前用户会收到确认提示",
 }
 

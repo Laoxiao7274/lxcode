@@ -93,7 +93,7 @@ func waitRecorderNotice(t *testing.T, rec *serverRecorder, want string) {
 
 // commitChange 在会话工作树里落一个文件改动并提交（模拟「这轮真的改了东西」）：
 // 合并发起时的扫描按「分支领先/工作树脏」判定有无改动，纯空转的「你好」轮
-// 没有检查点提交也没有未提交改动，会被如实判成无改动（新语义）。
+// 没有提交也没有未提交改动，会被如实判成无改动（新语义）。
 func commitChange(t *testing.T, srv *Server, id, name string) {
 	t.Helper()
 	wt, err := srv.st.WorktreeOf(id)
@@ -113,11 +113,11 @@ func commitChange(t *testing.T, srv *Server, id, name string) {
 func TestStartMergeJobStartsJob(t *testing.T) {
 	repo := initGitProject(t)
 	srv, client, mgr := newJobTestServer(t, immediateStream)
-	meta := addAutoCommitProject(t, client, repo)
+	meta := addGitProject(t, client, repo)
 	id := createTestSession(t, client, meta.ID)
 	legacyWorktree(t, srv, meta.ID, id)
 	sendTurn(t, srv, client, id, "你好") // 对准主检出并写标题
-	commitChange(t, srv, id, "a.txt")   // 留一个可合并的检查点提交
+	commitChange(t, srv, id, "a.txt")   // 留一个可合并的提交
 
 	jobID, err := startMergeDirect(srv, id)
 	if err != nil {
@@ -139,7 +139,6 @@ func TestStartMergeJobStartsJob(t *testing.T) {
 	}
 	waitMergeJob(t, mgr, id, found.ID)
 	waitSessionIdle(t, srv, id) // 等唤醒开的这一轮与在途自动提交收尾
-	srv.waitAutoCommits()
 }
 
 // TestMergeRequestToolReturnsLegacyNotice：merge_request 工具（已退役）被调用 →
@@ -172,11 +171,11 @@ func TestStartMergeJobRejectsConcurrent(t *testing.T) {
 	repo := initGitProject(t)
 	release := make(chan struct{}, 4)
 	srv, client, mgr := newJobTestServer(t, mergeBlockStream(release))
-	meta := addAutoCommitProject(t, client, repo)
+	meta := addGitProject(t, client, repo)
 	id := createTestSession(t, client, meta.ID)
 	legacyWorktree(t, srv, meta.ID, id)
 	sendTurn(t, srv, client, id, "你好") // 对准主检出
-	commitChange(t, srv, id, "a.txt")   // 留一个可合并的检查点提交
+	commitChange(t, srv, id, "a.txt")   // 留一个可合并的提交
 
 	if _, err := startMergeDirect(srv, id); err != nil {
 		t.Fatalf("第一次发起应成功: %v", err)
@@ -196,7 +195,6 @@ func TestStartMergeJobRejectsConcurrent(t *testing.T) {
 		}
 		if !running {
 			waitSessionIdle(t, srv, id)
-			srv.waitAutoCommits()
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -209,11 +207,11 @@ func TestMergeJobSettleNotifiesParent(t *testing.T) {
 	repo := initGitProject(t)
 	rec := &serverRecorder{}
 	srv, client, mgr := newJobTestServer(t, rec.stream)
-	meta := addAutoCommitProject(t, client, repo)
+	meta := addGitProject(t, client, repo)
 	id := createTestSession(t, client, meta.ID)
 	legacyWorktree(t, srv, meta.ID, id)
 	sendTurn(t, srv, client, id, "你好")
-	commitChange(t, srv, id, "a.txt") // 留一个可合并的检查点提交（空转轮无改动会被拒绝）
+	commitChange(t, srv, id, "a.txt") // 留一个可合并的提交（空转轮无改动会被拒绝）
 
 	jobID, err := startMergeDirect(srv, id)
 	if err != nil {
@@ -227,7 +225,6 @@ func TestMergeJobSettleNotifiesParent(t *testing.T) {
 	waitRecorderNotice(t, rec, "后台任务")
 	waitRecorderNotice(t, rec, "合并")
 	waitSessionIdle(t, srv, id) // 等唤醒开的这一轮收尾（避免测试结束时还在跑）
-	srv.waitAutoCommits()
 }
 
 // TestMergerAgentDefinition：用例 5 —— merger Agent 定义存在且字段符合，且不在 main 的委派名单里。
@@ -278,11 +275,11 @@ func TestMergerAgentDefinition(t *testing.T) {
 func TestMergeJobBroadcastsDispatchEvents(t *testing.T) {
 	repo := initGitProject(t)
 	srv, client, mgr := newJobTestServer(t, immediateStream)
-	meta := addAutoCommitProject(t, client, repo)
+	meta := addGitProject(t, client, repo)
 	id := createTestSession(t, client, meta.ID)
 	legacyWorktree(t, srv, meta.ID, id)
 	sendTurn(t, srv, client, id, "你好")
-	commitChange(t, srv, id, "a.txt") // 留一个可合并的检查点提交
+	commitChange(t, srv, id, "a.txt") // 留一个可合并的提交
 
 	// 直接起任务（chat.mergeRequest 协议方法已退役为回说明，不起任务）
 	jobID, err := startMergeDirect(srv, id)
@@ -330,7 +327,6 @@ func TestMergeJobBroadcastsDispatchEvents(t *testing.T) {
 		t.Fatalf("合并任务应收尾为完成: %+v", snap)
 	}
 	waitSessionIdle(t, srv, id)
-	srv.waitAutoCommits()
 }
 
 func containsStr(list []string, want string) bool {

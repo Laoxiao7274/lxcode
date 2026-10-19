@@ -738,6 +738,9 @@ export interface ProjectInstructions {
 /** 后端模型注册表（config.ModelConfig 的 wire 形态，snake_case）。 */
 export interface ModelEntry {
   id: string;
+  /** 提供商标签（可选）：磁盘主键 = `provider::id`，两家提供商的同名模型可并存。
+   *  省略 = 存量条目，主键就是纯 id。 */
+  provider?: string;
   display_name?: string;
   base_url: string;
   api_key?: string;

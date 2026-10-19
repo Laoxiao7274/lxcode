@@ -2,8 +2,9 @@
 
 // 合并进程：后台任务（jobs）的**第二个 producer**（Kind="merge"）。
 //
-// 用户拍板的设计链：每轮对话结束一个检查点提交（上一批已完成），接着起合并进程
+// 用户拍板的设计链（**已退役**）：原先每轮对话结束一个检查点提交、接着起合并进程
 // ——用户视角始终是「在操作一个项目」，内部是「主检出 + 每会话一个分支/备份」。
+// 2026-10 直连模式取代了这套流程；文件带 lxmerge 标签，默认构建不含。
 //
 // 任务体是**内置「合并 Agent」的独立子会话**（在集成分支的专用工作树里把**本项目
 // 全部有改动的会话分支**汇总进去）。四条纪律：
@@ -31,6 +32,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 
@@ -55,6 +57,34 @@ const (
 	// 分支太多既慢又会把任务说明书撑爆——超出直接拒绝，请分批合并。
 	mergeMaxScanBranches = 50
 )
+
+// commitBeforeMerge 在起合并进程前对发起会话做一次提交（遗留链路的唯一提交入口）：
+// 轮末自动检查点提交已移除（2026-10 用户拍板），本轮改动默认留在工作区——不先提交
+// 的话扫描把它们算成 dirty，而 merger 只合提交。
+//
+// 三条语义：
+//  1. 提交信息取最近一条用户消息的首行摘要（与 workspace_sync 的默认信息同一套
+//     截断）；读不到轮次时摘要为空，CommitAll 会退回调用方给的消息；
+//  2. 工作树干净 = 直接继续（CommitAll 无改动返回 false，不产生空提交）；
+//  3. git 出错 = 人话错误返回，合并任务不起（fail-closed）。
+func (s *Server) commitBeforeMerge(sessionID, worktreePath string) error {
+	_, lastUser, err := s.st.LastUserTurn(sessionID)
+	if err != nil {
+		lastUser = ""
+	}
+	msg := commitSummary(lastUser)
+	if msg == "" {
+		msg = "合并前提交本轮改动"
+	}
+	committed, err := project.CommitAll(s.Ctx(), worktreePath, msg)
+	if err != nil {
+		return fmt.Errorf("提交本次改动失败：%v，合并未发起", err)
+	}
+	if committed {
+		log.Printf("合并前提交：会话 %s 的改动已提交（merge_request 前置）", sessionID)
+	}
+	return nil
+}
 
 // mergeSourceBranch 是扫描出的一个待合并源分支（任务说明书与收尾来源校验共用）。
 type mergeSourceBranch struct {
@@ -82,7 +112,7 @@ func (s *Server) startMergeJob(sessionID, targetBranch string, pushAfter bool) (
 //
 //   - autoHook=false（原工具路径）：扫描失败也要起
 //     一条任务并让它以失败收尾——模型能经 job_output 读到失败原因（原有语义）；
-//   - autoHook=true（原轮末自动合并钩子，autocommit.go 的 maybeAutoMerge，已删除）：
+//   - autoHook=true（原轮末自动合并钩子 maybeAutoMerge，已删除）：
 //     扫描发现「全项目没有待合并的改动」时直接把原因交回钩子静默记日志，**不创建任务**。
 //
 // 前置校验（都在返回前做完，失败直接回给模型）：
@@ -117,10 +147,10 @@ func (s *Server) startMergeJobOpts(sessionID, targetBranch string, pushAfter, au
 	if meta.Path == "" || meta.Branch == "" {
 		return "", fmt.Errorf("本会话还没有可合并的分支（先发一条消息建立工作树）")
 	}
-	// 前置提交（见 autocommit.go 的 commitBeforeMerge）：merge_request 是模型轮内
-	// 调用的工具，本轮改动还没被 TurnDone 的自动提交落盘——不先提交的话，下面的
-	// 扫描把它们算成 dirty，而 merger 只合提交，本轮改动要等下次合并。工作树干净
-	// 则直接继续（无空提交）；git 出错则不起任务（fail-closed）。
+	// 前置提交（commitBeforeMerge）：轮末自动检查点提交已移除（2026-10 用户拍板），
+	// 本轮改动默认留在工作区——不先提交的话，下面的扫描把它们算成 dirty，而 merger
+	// 只合提交，本轮改动要等下次合并。工作树干净则直接继续（无空提交）；git 出错则
+	// 不起任务（fail-closed）。**注意**：遗留链路唯一的提交入口，默认构建不含本文件。
 	if err := s.commitBeforeMerge(sessionID, meta.Path); err != nil {
 		return "", err
 	}

@@ -6,6 +6,10 @@ package server
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -46,9 +50,8 @@ func legacyWorktree(t *testing.T, srv *Server, projectID, sessionID string) proj
 }
 
 // sendTurn 发一条消息并等这一轮结束（对准主检出并写标题）。
-// 之后还要等在途的自动提交收尾：合并发起时的扫描按「分支领先/工作树脏」判定
-// 有无改动，检查点提交没落库会被判成无改动（生产路径当前轮改动以未提交形态
-// 被 dirty 计入，不受影响）。
+// 轮末自动检查点提交已移除（2026-10 用户拍板）：这一轮结束后工作区仍保留未提交
+// 改动，需要提交的用例自己调 CommitAll / workspace_sync。
 func sendTurn(t *testing.T, srv *Server, client *wsTestClient, id, text string) {
 	t.Helper()
 	resp := client.call(protocol.MethodChatSend, protocol.ChatSendParams{SessionID: id, Text: text})
@@ -56,7 +59,47 @@ func sendTurn(t *testing.T, srv *Server, client *wsTestClient, id, text string) 
 		t.Fatalf("chat.send(%q) 失败: %+v", text, resp)
 	}
 	waitSessionIdle(t, srv, id)
-	srv.waitAutoCommits()
+}
+
+// initGitProject 建一个带基线提交的 Git 仓库（项目根）。
+func initGitProject(t *testing.T) string {
+	t.Helper()
+	repo := filepath.Join(t.TempDir(), "project")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitServerTest(t, repo, "init")
+	gitServerTest(t, repo, "config", "user.name", "Test")
+	gitServerTest(t, repo, "config", "user.email", "test@example.invalid")
+	if err := os.WriteFile(filepath.Join(repo, "base.txt"), []byte("base\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitServerTest(t, repo, "add", "base.txt")
+	gitServerTest(t, repo, "commit", "-m", "base")
+	return repo
+}
+
+// addGitProject 注册一个 git 项目并返回元数据。
+func addGitProject(t *testing.T, client *wsTestClient, path string) protocol.ProjectMeta {
+	t.Helper()
+	resp := client.call(protocol.MethodProjectAdd, protocol.ProjectAddParams{Name: "project", Path: path})
+	if resp == nil || resp.Error != nil {
+		t.Fatalf("project.add failed: %+v", resp)
+	}
+	var meta protocol.ProjectMeta
+	decodeServerResult(t, resp.Result, &meta)
+	return meta
+}
+
+// commitCount 数本工作树 HEAD 上的提交数。
+func commitCount(t *testing.T, dir string) int {
+	t.Helper()
+	out := strings.TrimSpace(gitServerTest(t, dir, "rev-list", "--count", "HEAD"))
+	n, err := strconv.Atoi(out)
+	if err != nil {
+		t.Fatalf("解析提交数失败: %q", out)
+	}
+	return n
 }
 
 // waitSessionIdle 轮询会话忙闲直到空闲。

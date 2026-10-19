@@ -1,7 +1,8 @@
 // 仅演示模式的目录；不代表远端实际模型或已验证的能力。
 import type { CatalogModel, CatalogModelList, CatalogProviderList } from "./types";
 import type { ProviderMeta, ModelMeta } from "./settings-models";
-export const demoModel = (id: string): ModelMeta => ({ id, name: id, desc: "演示模型",
+// 演示条目没有 provider 标签（主键 = 纯 id，与存量数据同一条路径）
+export const demoModel = (id: string): ModelMeta => ({ id, modelId: id, name: id, desc: "演示模型",
   tags: ["工具"], efforts: [], contextWindow: 128_000, maxOutput: 8_000, visible: true });
 export const CONNECTABLE_PROVIDERS = [
   { id: "openai", name: "OpenAI", tagline: "演示目录", color: "#0d0d0d" },

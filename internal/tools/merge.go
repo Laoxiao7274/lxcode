@@ -42,7 +42,7 @@ func (r *Registry) getMergeStarter() MergeStartFn {
 // mergeRequestLegacyMessage 是合并流程退役后的一致答复（工具与 chat.mergeRequest
 // 协议方法共用同一条口径——模型与用户看到的说法不能分叉）。
 const mergeRequestLegacyMessage = "合并流程已退役：当前版本会话直接工作在项目主检出与用户当前分支，" +
-	"没有「会话分支合并到集成分支」的流程可发起。每轮对话结束时系统会自动把改动提交为检查点提交；" +
+	"没有「会话分支合并到集成分支」的流程可发起。系统不会自动提交（轮末自动检查点已移除）；" +
 	"如需提交或推送，用 workspace_sync；如需回滚，用 workspace_rollback。"
 
 // mergeRequestDef：合并流程的遗留入口（低危——只回一条说明，不动任何状态）。

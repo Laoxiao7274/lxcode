@@ -1,6 +1,6 @@
-// 工作区说明注入的契约（2026-10 直连架构）：项目会话说「直接在用户的项目目录工作」
-// + 分支名 +「每轮自动提交」语义，**没有**「独立工作树/合并」的表述；未分组会话
-// 零注入；子会话说「共享」。
+// 工作区说明注入的契约（2026-10 直连架构 + 轮末自动提交已移除）：项目会话说
+// 「直接在用户的项目目录工作」+ 分支名 +「系统不会自动提交、显式要求才提交」的
+// 语义，**没有**「独立工作树/合并」的表述；未分组会话零注入；子会话说「共享」。
 package agent
 
 import (
@@ -13,7 +13,7 @@ import (
 const testWorktreeBranch = "main"
 
 // TestWorktreePromptProjectSession：项目会话（设了工作区信息）的提示词含「直接在
-// 用户的项目目录」、分支名与「自动提交」语义；不再有独立工作树/合并进程/merge_request
+// 用户的项目目录」、分支名与「不会自动提交」语义；不再有独立工作树/合并进程/merge_request
 // 的表述；未分组会话（零值）零注入。
 func TestWorktreePromptProjectSession(t *testing.T) {
 	s := newAgentSession(t)
@@ -60,13 +60,31 @@ func TestWorktreePromptProjectSession(t *testing.T) {
 	// 两条提示词路径必须都注入——漏一条会出现「同一会话不同提示词」。
 	ac := &sessiondata.AgentContext{Def: sessiondata.AgentDef{ID: "coder", Name: "代码 Agent", Tools: []string{"read_file"}}}
 	composed := ComposeSystemPrompt(s.tools, "/proj/demo", ac, ac.Def.Tools, wt, false, ProjectDocs{})
-	if !strings.Contains(composed, "直接在用户的项目目录") || !strings.Contains(composed, "自动") {
+	if !strings.Contains(composed, "直接在用户的项目目录") || !strings.Contains(composed, "不会**自动提交") {
 		t.Fatalf("ComposeSystemPrompt 未注入工作区说明:\n%s", composed)
 	}
 	// ComposeSystemPrompt 的旧语境回落（ac == nil）同样要注入。
 	fallback := ComposeSystemPrompt(s.tools, "/proj/demo", nil, nil, wt, false, ProjectDocs{})
 	if !strings.Contains(fallback, "直接在用户的项目目录") {
 		t.Fatalf("ComposeSystemPrompt(ac=nil) 未注入工作区说明:\n%s", fallback)
+	}
+}
+
+// TestWorktreePromptPushDiscipline：项目会话注入推送纪律（推送只能走 workspace_sync、
+// 永不直接 git push、本体仓库发版走 push-release.mjs）；未分组会话（零值）零注入。
+func TestWorktreePromptPushDiscipline(t *testing.T) {
+	s := newAgentSession(t)
+	wt := WorktreeInfo{Branch: testWorktreeBranch, Base: "0123456"}
+	prompt := BuildSystemPrompt(s.tools, "/proj/demo", wt, false, ProjectDocs{})
+	for _, want := range []string{"推送纪律", "永远不要直接执行 `git push`", "scripts/push-release.mjs"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("项目会话提示词缺少推送纪律 %q:\n%s", want, prompt)
+		}
+	}
+	// 未分组会话：没有工作区说明，也就没有推送纪律（零注入的既有契约）。
+	plain := BuildSystemPrompt(s.tools, "/proj/demo", WorktreeInfo{}, false, ProjectDocs{})
+	if strings.Contains(plain, "推送纪律") {
+		t.Fatalf("未分组会话不该注入推送纪律:\n%s", plain)
 	}
 }
 
@@ -86,8 +104,8 @@ func TestWorktreePromptChildSession(t *testing.T) {
 	}
 }
 
-// TestWorktreePromptNoGit：项目目录不是 git 仓库的降级态——如实告知「没有自动
-// 检查点、不要执行 git 操作」，且不能沿用「每轮自动提交」的表述（那是假的）。
+// TestWorktreePromptNoGit：项目目录不是 git 仓库的降级态——如实告知「改动不会被
+// 提交、不要执行 git 操作」，且不能声称自动提交（自动提交已移除，更不能假称存在）。
 func TestWorktreePromptNoGit(t *testing.T) {
 	s := newAgentSession(t)
 	wt := WorktreeInfo{NoGit: true}

@@ -2,7 +2,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { AgentSource, ApprovalMode, CatalogModel, CatalogModelList, CatalogProvider, CatalogProviderList, DiscoveredModel, DiscoverResult, ModelEntry } from "./types";
 import { subscribeApprovalSync } from "./approval";
-import { applyModelPatch, applyProviderPatch, catalogMetadata, mapModels, modelForProvider, providerKey, validateProviderPatch, type ModelPatch, type ProviderMeta, type ProviderPatch, type EffortId } from "./settings-models";
+import { applyModelPatch, applyProviderPatch, catalogMetadata, mapModels, modelForProvider, modelKey, providerKey, validateProviderPatch, type ModelPatch, type ProviderMeta, type ProviderPatch, type EffortId } from "./settings-models";
 import { initTheme, setTheme } from "./theme";
 import { demoCatalogModelList, demoCatalogProviderList, demoModel, demoProviders, CONNECTABLE_PROVIDERS } from "./settings-catalog";
 export type { ModelMeta, ModelPatch, ProviderMeta, ProviderPatch, EffortId } from "./settings-models";
@@ -60,7 +60,8 @@ interface ContextValue {
   addCatalogModels(provider: CatalogProvider, models: CatalogModel[], apiKey: string): Promise<boolean>;
   /** 把探测到的模型加进已有提供商分组（只继承连接配置，不猜元数据）。 */
   addDiscovered(providerId: string, models: DiscoveredModel[]): Promise<boolean>;
-  addModel(providerId: string, modelId: string): Promise<boolean>;
+  /** 往提供商加模型；`provider` = 可选标签（同 id 多提供商并存 = 主键 provider::id）。 */
+  addModel(providerId: string, modelId: string, provider?: string): Promise<boolean>;
   updateModel(providerId: string, oldId: string, patch: ModelPatch): Promise<boolean>;
   /** 改提供商的连接配置（Base URL / API Key / 格式），一次写到该组**所有**模型。
    *  磁盘上没有提供商实体（这三个字段逐模型存），所以「改提供商的 key」就是
@@ -112,6 +113,8 @@ export function SettingsProvider({ source, children }: { source: AgentSource; ch
     setLocal((s) => (s.approval === mode ? s : { ...s, approval: mode }));
     void run(() => source.setApproval(mode));
   }, [source, run]);
+  // 下面所有 id 参数都是**注册表主键**（provider::id 或纯 id）——mapModels 之后
+  // ModelMeta.id 已经是主键，整条链路（查找 / 启停 / 删除 / wire 回传）只认它。
   const setModelVisible = (pid: string, id: string, on: boolean) => {
     if (admin) { void run(() => admin.setModelEnabled(id, on)); return; }
     setDemo((ps) => ps.map((p) => p.id === pid ? { ...p, models: p.models.map((m) => m.id === id ? { ...m, visible: on } : m) } : p));
@@ -120,15 +123,17 @@ export function SettingsProvider({ source, children }: { source: AgentSource; ch
     if (admin) { void run(() => Promise.all(providers.find((p) => p.id === id)?.models.map((m) => admin.setModelEnabled(m.id, on)) ?? [])); return; }
     setDemo((ps) => ps.map((p) => p.id === id ? { ...p, enabled: on } : p));
   };
-  const addModel = async (pid: string, id: string) => {
-    if (admin) return run(() => admin.addModel(modelForProvider(admin.models().models, pid, id)));
+  /** 往某个提供商加模型。`label` = 可选的 provider 标签：同一个 id 在两家
+   *  提供商下可以并存（主键 `provider::id`）；省略则按存量纯 id 语义。 */
+  const addModel = async (pid: string, id: string, label?: string) => {
+    if (admin) return run(() => admin.addModel(modelForProvider(admin.models().models, pid, id, label)));
     if (!id.trim() || demo.some((p) => p.models.some((m) => m.id === id.trim()))) return false;
     setDemo((ps) => ps.map((p) => p.id === pid ? { ...p, models: [...p.models, demoModel(id.trim())] } : p));
     return true;
   };
   const updateModel = async (pid: string, oldId: string, patch: ModelPatch) => {
     if (admin) return run(async () => {
-      const entry = admin.models().models.find((m) => m.id === oldId);
+      const entry = admin.models().models.find((m) => modelKey(m.provider, m.id) === oldId);
       if (!entry) throw new Error("模型不存在");
       await admin.updateModel(applyModelPatch(entry, patch));
     });
@@ -154,7 +159,7 @@ export function SettingsProvider({ source, children }: { source: AgentSource; ch
         for (const id of ids) {
           // 每条都从**当前快照**重新取，不用循环外的快照：上一条写成功会让
           // 注册表变化，拿旧对象去覆盖会把并发改动抹掉。
-          const entry = admin.models().models.find((m) => m.id === id);
+          const entry = admin.models().models.find((m) => modelKey(m.provider, m.id) === id);
           if (!entry) { failed.push(`${id}（已不在注册表中）`); continue; }
           try { await admin.updateModel(applyProviderPatch(entry, patch)); }
           catch (e) { failed.push(`${id}（${e instanceof Error ? e.message : String(e)}）`); }
@@ -188,7 +193,7 @@ export function SettingsProvider({ source, children }: { source: AgentSource; ch
       // 用该分组里任一条目的连接配置探测：key 取自注册表，不必再过一遍 wire。
       const entry = admin.models().models.find((m) => providerKey(m.base_url) === id);
       if (!entry) throw new Error("该提供商没有已注册的模型，无法推断端点");
-      return admin.discoverModels({ id: entry.id });
+      return admin.discoverModels({ id: modelKey(entry.provider, entry.id) });
     }
     // 演示模式没有真端点：保持老的「填一个演示模型」行为，并回演示清单让面板可点。
     const name = CONNECTABLE_PROVIDERS.find((p) => p.id === id)?.name ?? id;
