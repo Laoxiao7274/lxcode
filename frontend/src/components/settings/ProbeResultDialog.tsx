@@ -6,8 +6,9 @@
 //  3. **已添加过的模型仍然显示**——整行置灰 + 开关禁用 + 「已添加」标签，可见、可核对、
 //     不可再勾（藏掉会让用户以为端点没报它）；全选/计数只作用于未添加的。
 //
-// 弹窗骨架与 ProviderEditDialog / ConnectProviderDialog 同款（mset-connect-mask），
-// 候选行复用 ConnectProviderDialog 的 CandidateRows——两处勾选行逐字同款。
+// 候选清单与新建自定义提供商**共用 CandidatePicker**（同一份搜索/全选/已添加禁用/
+// 计数实现）——两处不再各写一套，行为不会漂移。
+// 弹窗骨架与 ProviderEditDialog / ConnectProviderDialog 同款（mset-connect-mask）。
 import { useEffect, useRef, useState } from "react";
 import { gsap } from "gsap";
 import { useSettings, type ProviderMeta } from "../../shared/settings";
@@ -16,7 +17,7 @@ import { motionAllowed } from "../../shared/motion";
 import { useEscape } from "../../shared/popover";
 import { kfmtLimit } from "../../shared/format";
 import type { DiscoveredModel } from "../../shared/types";
-import { CandidateRows } from "./ConnectProviderDialog";
+import { CandidatePicker } from "./CandidatePicker";
 
 /** 探测结果条目：added = 该 id 已在本提供商的注册表里（ProviderBlock 打标）。 */
 export type ProbeModel = DiscoveredModel & { added?: boolean };
@@ -60,9 +61,6 @@ export function ProbeResultDialog({
       return next;
     });
 
-  const toggleAll = () =>
-    setPicked((prev) => (prev.size === selectable.length ? new Set() : new Set(selectable.map((c) => c.id))));
-
   const commit = async () => {
     const chosen = selectable.filter((c) => picked.has(c.id));
     if (chosen.length === 0) return;
@@ -89,8 +87,8 @@ export function ProbeResultDialog({
               : `，其中 ${selectable.length} 个未添加、${addedCount} 个已添加`}
           </p>
           <div className="mset-probe-endpoint" title="实际请求的地址">{endpoint}</div>
-          <div className="mset-connect-scroll mset-candidate-scroll" ref={listRef}>
-            <CandidateRows
+          <div ref={listRef} className="mset-probe-list">
+            <CandidatePicker
               items={models.map((c) => ({
                 id: c.id,
                 name: c.name,
@@ -102,32 +100,24 @@ export function ProbeResultDialog({
               }))}
               picked={picked}
               onToggle={toggle}
+              onPickAll={setPicked}
+              emptyText="端点没有报告任何模型"
             />
           </div>
-          {/* 底栏在 body 内侧（与内容同边距）：左侧已选计数 + 全选，右侧取消/添加。
-              计数与全选只针对未添加的；全部已添加时只留「关闭」。 */}
+          {/* 底栏在 body 内侧（与内容同边距）：计数/全选在上面的候选清单里
+              （CandidatePicker 统一给），这里只放动作按钮。全部已添加时只留「关闭」。 */}
           <div className="mset-medit-foot mset-probe-foot">
-            {selectable.length > 0 ? (
-              <>
-                <span className="mset-probe-text">已选 {picked.size} / {selectable.length}</span>
-                <span className="mset-medit-actions">
-                  <button type="button" className="mset-probe-all" onClick={toggleAll}>
-                    {picked.size === selectable.length ? "全不选" : "全选"}
-                  </button>
-                  <button type="button" className="mset-add-cancel" onClick={onClose}>取消</button>
-                  <button type="button" className="mset-add-confirm" disabled={busy || picked.size === 0} onClick={commit}>
-                    {busy ? "添加中…" : `添加选中（${picked.size}）`}
-                  </button>
-                </span>
-              </>
-            ) : (
-              <>
-                <span className="mset-probe-text">全部已添加</span>
-                <span className="mset-medit-actions">
-                  <button type="button" className="mset-add-cancel" onClick={onClose}>关闭</button>
-                </span>
-              </>
-            )}
+            <span className="mset-probe-text">{selectable.length === 0 ? "全部已添加" : ""}</span>
+            <span className="mset-medit-actions">
+              <button type="button" className="mset-add-cancel" onClick={onClose}>
+                {selectable.length > 0 ? "取消" : "关闭"}
+              </button>
+              {selectable.length > 0 && (
+                <button type="button" className="mset-add-confirm" disabled={busy || picked.size === 0} onClick={commit}>
+                  {busy ? "添加中…" : `添加选中（${picked.size}）`}
+                </button>
+              )}
+            </span>
           </div>
         </div>
       </div>

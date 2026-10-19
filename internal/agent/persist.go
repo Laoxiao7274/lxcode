@@ -107,6 +107,18 @@ func persistApproval(st Persistence, id, approval string) {
 	}
 }
 
+// persistSessionModel 把会话选中的模型落库（调用方**不持锁**）。与 persistApproval
+// 同一条模式：Persistence 是最小契约（agent 不见 SQL），失败只记日志——内存才是
+// 运行真源，最坏情况是重启后回落 Agent 绑定/default 角色。
+func persistSessionModel(st Persistence, id, model string) {
+	if st == nil || id == "" {
+		return
+	}
+	if err := st.SaveSessionModel(id, model); err != nil {
+		log.Printf("会话模型落库失败（继续运行）: %v", err)
+	}
+}
+
 // EnablePersistence 挂载磁盘存储并恢复最近会话（启动时调用）。
 // 库里没有任何会话时保持空历史（全新开始）。幂等：重复调用是 no-op。
 //
@@ -146,6 +158,7 @@ func (s *Session) EnablePersistence(st Persistence) error {
 	}
 	usage := s.restoredUsage(st, id, agentID, msgs)
 	approval := restoredApproval(st, id)
+	model := restoredSessionModel(st, id)
 
 	// 全部读取和校验成功后才提交，失败可修复存储后重试。
 	s.mu.Lock()
@@ -157,6 +170,7 @@ func (s *Session) EnablePersistence(st Persistence) error {
 	s.todos, s.pendingWorkspace = restoredTodos(st, id), ""
 	s.context = usage
 	s.approval = approval
+	s.model = model
 	return nil
 }
 
@@ -188,6 +202,7 @@ func (s *Session) AttachTo(st Persistence, id string) error {
 	s.mu.Unlock()
 	usage := s.restoredUsage(st, id, agentID, msgs)
 	approval := restoredApproval(st, id)
+	model := restoredSessionModel(st, id)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -198,6 +213,7 @@ func (s *Session) AttachTo(st Persistence, id string) error {
 	s.todos, s.pendingWorkspace = restoredTodos(st, id), ""
 	s.context = usage
 	s.approval = approval
+	s.model = model
 	return nil
 }
 
@@ -215,6 +231,21 @@ func restoredApproval(st Persistence, id string) string {
 		return ""
 	}
 	return mode
+}
+
+// restoredSessionModel 读回会话落库的模型选择（**调用方不持锁**——读库不该占会话锁）。
+// 空串 = 没选过（老会话/从没切过模型）→ 解析时回落 Agent 绑定与 default 角色；
+// 读失败也返回空串（fail-open：模型选择是会话偏好，读不到不能让附着失败）。
+func restoredSessionModel(st Persistence, id string) string {
+	if st == nil || id == "" {
+		return ""
+	}
+	m, err := st.SessionModelOf(id)
+	if err != nil {
+		log.Printf("读会话模型失败（回落默认）: %v", err)
+		return ""
+	}
+	return m
 }
 
 // restoredTodos 读回会话落库的任务清单快照（**调用方不持锁**）。ok=false（老会话/

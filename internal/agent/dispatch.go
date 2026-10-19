@@ -373,6 +373,9 @@ func (s *Session) openChildSession(call tools.DispatchCall, ac *sessiondata.Agen
 	s.mu.Lock()
 	st, parentID, stream, workDir := s.st, s.id, s.stream, s.workDir
 	branch, base, noGit := s.worktreeBranch, s.worktreeBase, s.worktreeNoGit
+	// 父会话**此刻**选中的模型（空 = 没选过）：子会话要继承它，否则默认角色在
+	// 派发之后被改时，子会话会悄悄换成另一个模型（默认漂移）。
+	parentModel := s.model
 	s.mu.Unlock()
 	child := New(s.reg, s.tools, s.emit)
 	// 子会话在父会话的工作树里工作（SetWorkDir 继承同一个目录），提示词要如实说
@@ -397,10 +400,21 @@ func (s *Session) openChildSession(call tools.DispatchCall, ac *sessiondata.Agen
 	child.SetAgentID(ac.Def.ID)
 	// 无存储（纯内存模式/未挂 store 的调用方）：退化成内存子会话——它仍是一个
 	// 独立会话（自己的历史、自己的压缩），只是不落库、不能续跑。生产永远有存储。
+	// 模型继承：子会话**自己的**选择优先（续跑时库里存着），没选过才继承父会话的
+	// 会话级选择（父也没选 = 空，子会话照旧走 Agent 绑定/default——与改动前一致）。
+	// 落库：续跑/回放时子会话页显示的模型是它真正用过的那个，不随父会话后来切模型漂移。
+	inheritModel := func() error {
+		if parentModel == "" || child.SelectedModel() != "" {
+			return nil
+		}
+		_, err := child.SetModel(parentModel)
+		return err
+	}
 	if st == nil {
 		if err := child.SetWorkDir(workDir); err != nil {
 			return nil, "", err
 		}
+		_ = inheritModel() // 纯内存子会话同样继承（无 id 时落库是 no-op）
 		return child, "", nil
 	}
 	childID := call.Session
@@ -416,6 +430,11 @@ func (s *Session) openChildSession(call tools.DispatchCall, ac *sessiondata.Agen
 	}
 	if err := child.SetWorkDir(workDir); err != nil {
 		return nil, "", err
+	}
+	if err := inheritModel(); err != nil {
+		// 继承失败不挡派发：子会话回落 Agent 绑定/default（那是改动前的行为），
+		// 比让整次派发失败好——但如实记日志。
+		log.Printf("子会话继承父会话模型失败（回落 Agent 绑定/default）: %v", err)
 	}
 	return child, childID, nil
 }

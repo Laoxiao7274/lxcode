@@ -86,9 +86,8 @@ func (s *Server) autoCommit(sessionID string) {
 		log.Printf("自动提交：读取会话 %s 的轮次与摘要失败: %v", sessionID, err)
 		return
 	}
-	message := commitMessage(turn, lastUser)
 	err = s.withCommitLock(sessionID, func() error {
-		committed, cerr := project.CommitAll(s.Ctx(), path, message)
+		committed, cerr := project.CommitCheckpoint(s.Ctx(), path, turn, lastUser)
 		if cerr != nil {
 			return cerr
 		}
@@ -120,21 +119,20 @@ func (s *Server) withCommitLock(sessionID string, fn func() error) error {
 // 代码与测试保留以便将来恢复隔离模式）。
 //
 // 三条语义：
-//  1. 提交信息与自动提交同一口径（LastUserTurn 的轮次 + 用户消息摘要）——同一轮
-//     的改动无论由谁落盘，提交信息都长一个样；读不到轮次时退回中性信息（不挡合并）；
-//  2. 工作树干净 = 直接继续（CommitAll 无改动返回 false，不产生空提交）；
+//  1. 提交信息与自动提交同一口径（project.CommitCheckpoint 的规则生成）——同一轮
+//     的改动无论由谁落盘，提交信息都长一个样；读不到轮次时轮次记 0（不挡合并）；
+//  2. 工作树干净 = 直接继续（CommitCheckpoint 无改动返回 false，不产生空提交）；
 //  3. git 出错 = 人话错误返回，合并任务不起（fail-closed）。
 //
 // 与自动提交共用 withCommitLock：轮内先提交，随后 TurnDone 的自动提交发现工作树
 // 干净 → 跳过（无空提交），时序收敛。
 func (s *Server) commitBeforeMerge(sessionID, worktreePath string) error {
 	turn, lastUser, err := s.st.LastUserTurn(sessionID)
-	message := "合并前检查点提交"
-	if err == nil {
-		message = commitMessage(turn, lastUser)
+	if err != nil {
+		turn, lastUser = 0, ""
 	}
 	return s.withCommitLock(sessionID, func() error {
-		committed, err := project.CommitAll(s.Ctx(), worktreePath, message)
+		committed, err := project.CommitCheckpoint(s.Ctx(), worktreePath, turn, lastUser)
 		if err != nil {
 			return fmt.Errorf("提交本次改动失败：%v，合并未发起", err)
 		}
@@ -148,12 +146,13 @@ func (s *Server) commitBeforeMerge(sessionID, worktreePath string) error {
 // waitAutoCommits 等所有在途的自动提交结束（测试同步用；生产路径不调用）。
 func (s *Server) waitAutoCommits() { s.commitWG.Wait() }
 
-// commitMessage 组装检查点提交信息：「第 N 轮：<本轮用户请求摘要>」。
+// commitMessage 组装检查点提交信息（`<type>(<scope>): <摘要>` + `[checkpoint]` 正文）。
+// 规则与判定全在 project.CheckpointMessage——自动提交、合并前置提交、workspace_sync
+// 默认信息共用同一份口径；这里只做「还不知道改了哪些文件」的预览形态（files 为空，
+// type/scope 由用户原话推断，scope 可能缺席）。
 func commitMessage(turn int, lastUser string) string {
-	if summary := commitSummary(lastUser); summary != "" {
-		return fmt.Sprintf("第 %d 轮：%s", turn, summary)
-	}
-	return fmt.Sprintf("第 %d 轮", turn)
+	subject, _ := project.CheckpointMessage(turn, lastUser, nil)
+	return subject
 }
 
 // commitSummary 取本轮用户消息的首行并截断到约 60 字符（提交信息要一眼看出是哪一轮）。

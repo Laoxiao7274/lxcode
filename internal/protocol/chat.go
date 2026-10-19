@@ -418,6 +418,31 @@ type TodoUpdatedParams struct {
 	DispatchID string           `json:"dispatch_id,omitempty"`
 }
 
+// ChatModelParams 是 chat.model 的参数（切换本会话选中的模型）。
+//
+// ModelID 是模型**注册表 id**（model.list 的 models[].id）；空 = 参数错误
+// （不提供"清空回默认"的隐式语义——那会让选择器传空串时静默回落到 default 角色，
+// 用户看到的是"选了但没生效"）。想回默认就显式传 default 角色的模型 id。
+type ChatModelParams struct {
+	SessionID string `json:"session_id"`
+	ModelID   string `json:"model_id"`
+}
+
+// ChatModelResult 是 chat.model 的结果：回**注册表里实际生效**的模型 id（服务端
+// 校验后的规范化值），客户端据此对齐本地选择态（不自己再猜一遍）。
+type ChatModelResult struct {
+	SessionID string `json:"session_id,omitempty"`
+	ModelID   string `json:"model_id"`
+}
+
+// ModelChangedParams 是 chat.modelChanged 事件的载荷（会话级模型变更，多客户端同步）。
+// 与 model.changed 的分工：那个是全局注册表/角色绑定变了（客户端重拉 model.list），
+// 这个是某条会话换了模型——客户端只更新那条会话的选择态，不动注册表缓存。
+type ModelChangedParams struct {
+	SessionID string `json:"session_id"`
+	ModelID   string `json:"model_id"`
+}
+
 // ChatApprovalParams 是 chat.approval 的参数（中途改权限档）。
 // Approval 空 = 未指定（服务端按 confirm 规范化后回填）。
 type ChatApprovalParams struct {

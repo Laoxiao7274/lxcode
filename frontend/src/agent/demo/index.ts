@@ -86,6 +86,9 @@ export class DemoAgent implements AgentSource, JobAdminSource {
   private approvals_ = new Map<string, ApprovalMode>();
   /** 演示态的新会话默认审批档（真后端持在 behavior.json；本地自管同形状）。 */
   private defaultApproval_: ApprovalMode = "confirm";
+  /** 演示态每会话**选中的模型**（真后端持在 sessions.model；演示不接注册表，
+   *  只记"用户给这条会话选了什么"——模型名直接用 id）。 */
+  private models_ = new Map<string, string>();
   private emittingSession = "";
   /** 子会话的消息（演示态的「子会话历史」，见 childEmit / childHistory）。 */
   private childMsgs_: HistoryMessage[] = [];
@@ -163,6 +166,18 @@ export class DemoAgent implements AgentSource, JobAdminSource {
     const approval = normalizeApproval(mode);
     this.approvals_.set(sessionId, approval);
     this.emit({ type: "approvalChanged", sessionId, approval });
+  }
+
+  /** 改**当前会话**选中的模型（演示态：本地记下 + 广播同形状的事件）。
+   *
+   *  广播这一步是刻意的——真后端 chat.model 会广播 chat.modelChanged 给所有端，
+   *  演示里照做，那条「广播 → 归约层按会话落 model」的路径才在演示模式里也走得到
+   *  （无后端也能验 UI）。只改这条会话：其他会话的 model 不受影响（作用域语义）。 */
+  async setSessionModel(modelId: string): Promise<void> {
+    if (!modelId) throw new Error("model 不能为空");
+    const sessionId = this.currentSession;
+    this.models_.set(sessionId, modelId);
+    this.emit({ type: "modelChanged", sessionId, model: modelId });
   }
 
   /** 读「新会话默认审批档」（演示态：本地自管——真后端读 behavior.json）。 */
@@ -280,6 +295,11 @@ export class DemoAgent implements AgentSource, JobAdminSource {
 
   async resumeSession(id: string): Promise<void> {
     this.currentSession = id;
+    // 会话级模型：演示态没有库，按记下的选择回带一次（与真链路 chat.history 的
+    // model 键同契约）。用 modelChanged 而不是 historyLoaded——后者会按 messages
+    // 重建时间线，空快照会把演示的对话流抹掉。
+    const picked = this.models_.get(id);
+    if (picked) this.emit({ type: "modelChanged", sessionId: id, model: picked });
     this.emit({ type: "sessionFocused", id });
   }
 

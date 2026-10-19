@@ -510,6 +510,38 @@ func (s *Store) ApprovalOf(id string) (string, error) {
 	return approval, nil
 }
 
+// SaveSessionModel 落库会话**选中的模型**（chat.model 切模型 / 子会话继承父会话）。
+// 为什么落库：模型选择是会话的状态——用户把某条会话切到模型 X 后重启，打开这条
+// 会话还得是 X（原先选择只能改全局 default 角色，一个会话切模型所有会话跟着变）。
+//
+// **刻意不动 updated_at**：与 SaveApproval 同一条理由——改模型是会话的附属状态
+// 变化，不是"用户刚用过这个会话"，写它会把会话顶到侧栏最前面。
+func (s *Store) SaveSessionModel(id, model string) error {
+	res, err := s.db.Exec(`UPDATE sessions SET model = ? WHERE id = ?`, model, id)
+	if err != nil {
+		return fmt.Errorf("写会话模型失败: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("会话 %s 不存在", id)
+	}
+	return nil
+}
+
+// SessionModelOf 读回会话落库的模型选择。空串 = 没选过（老会话/从没切过模型）——
+// 调用方据此回落 Agent 绑定与 default 角色，而不是把它当成"没模型可用"。
+// 会话不存在时报错（与 Load/WorkspaceOf 的语义一致）。
+func (s *Store) SessionModelOf(id string) (string, error) {
+	var model string
+	err := s.db.QueryRow(`SELECT model FROM sessions WHERE id = ?`, id).Scan(&model)
+	if err == sql.ErrNoRows {
+		return "", fmt.Errorf("会话 %s 不存在", id)
+	}
+	if err != nil {
+		return "", fmt.Errorf("查询会话模型失败: %w", err)
+	}
+	return model, nil
+}
+
 // SessionWorkspace 设置会话归属的项目（空串 = 未分组）。
 func (s *Store) SessionWorkspace(id, workspace string) error {
 	res, err := s.db.Exec(`UPDATE sessions SET workspace = ? WHERE id = ?`, workspace, id)

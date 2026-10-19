@@ -9,12 +9,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { gsap } from "gsap";
 import { useSettings } from "../../shared/settings";
-import { catalogTags } from "../../shared/settings-models";
+import { catalogTags, providerKey } from "../../shared/settings-models";
+import { rememberExpand } from "../../shared/provider-expanded";
 import { kfmtLimit } from "../../shared/format";
 import { motionAllowed } from "../../shared/motion";
 import { useEscape } from "../../shared/popover";
 import type { CatalogModel, CatalogProvider, DiscoveredModel } from "../../shared/types";
-import { TextInput, Toggle } from "../form";
+import { TextInput } from "../form";
+import { CandidatePicker } from "./CandidatePicker";
 
 const backArrow = (
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -163,7 +165,17 @@ export function ConnectProviderDialog({ onClose }: { onClose: () => void }) {
 
         {page.kind === "provider" && current && <ProviderForm provider={current} onClose={onClose} />}
 
-        {page.kind === "custom" && <CustomForm onSubmit={(input) => { addCustomProvider(input); onClose(); }} />}
+        {page.kind === "custom" && (
+          <CustomForm
+            onSubmit={(input) => {
+              // 新建后自动展开该卡：地址是分组的依据（providerKey = URL.href），
+              // 先记下 id 再提交——提交会触发注册表刷新，之后设置页据此展开。
+              rememberExpand(providerKey(input.baseUrl));
+              addCustomProvider(input);
+              onClose();
+            }}
+          />
+        )}
       </div>
     </div>
   );
@@ -185,39 +197,6 @@ function ConnectGroup({ title, items, onSelect }: { title: string; items: { id: 
         </button>
       ))}
     </section>
-  );
-}
-
-/** 候选模型勾选行（目录与探测两处共用——同一份版式与标签措辞）。
- *  导出给 ProbeResultDialog（探测结果弹窗）复用，保证两处勾选行逐字同款。
- *  disabled = 已在注册表（探测结果弹窗专用）：整行置灰、开关不可翻。 */
-export function CandidateRows({
-  items,
-  picked,
-  onToggle,
-}: {
-  items: { id: string; name?: string; note?: string; tags?: string[]; disabled?: boolean }[];
-  picked: Set<string>;
-  onToggle: (id: string) => void;
-}) {
-  return (
-    <>
-      {items.map((m, i) => (
-        <div key={`${m.id}-${i}`} className={"mset-model-row" + (m.disabled ? " added" : "")}>
-          <span className="mset-model-text">
-            <span className="mset-model-name">{m.name || m.id}</span>
-            <span className="mset-model-meta">
-              <span className="mset-model-id">{m.id}</span>
-              {m.note && <span className="mset-model-ctx">{m.note}</span>}
-              {(m.tags ?? []).map((t) => (
-                <span key={t} className="mset-model-tag">{t}</span>
-              ))}
-            </span>
-          </span>
-          <Toggle on={picked.has(m.id)} onChange={() => onToggle(m.id)} disabled={m.disabled} ariaLabel={`选择 ${m.id}`} />
-        </div>
-      ))}
-    </>
   );
 }
 
@@ -262,7 +241,11 @@ function ProviderForm({ provider, onClose }: { provider: CatalogProvider; onClos
     setBusy(true);
     const ok = await addCatalogModels(provider, chosen, key.trim());
     setBusy(false);
-    if (ok) onClose();
+    if (ok) {
+      // 新建成功的提供商回到设置页时自动展开（与自定义提供商同一条记忆）
+      if (provider.api) rememberExpand(providerKey(provider.api));
+      onClose();
+    }
     else setErr("添加失败，请查看设置面板顶部的错误提示");
   };
 
@@ -290,30 +273,18 @@ function ProviderForm({ provider, onClose }: { provider: CatalogProvider; onClos
         {!models && !err && <div className="mset-connect-empty">正在读取模型目录…</div>}
         {models && models.length === 0 && <div className="mset-connect-empty">目录里这个厂商没有可用模型</div>}
         {models && models.length > 0 && (
-          <div className="mset-connect-scroll mset-candidate-scroll">
-            <CandidateRows
-              items={models.map((m) => ({
-                id: m.id,
-                name: m.name,
-                note: `上下文 ${kfmtLimit(m.context_window ?? 0)} · 输出 ${kfmtLimit(m.max_output_tokens ?? 0)}`,
-                tags: catalogTags(m),
-              }))}
-              picked={picked}
-              onToggle={toggle}
-            />
-          </div>
-        )}
-        {models && models.length > 0 && (
-          <div className="mset-probe-head">
-            <span className="mset-probe-text">已选 {picked.size} / {models.length}</span>
-            <button
-              type="button"
-              className="mset-probe-all"
-              onClick={() => setPicked((prev) => (prev.size === models.length ? new Set() : new Set(models.map((m) => m.id))))}
-            >
-              {picked.size === models.length ? "全不选" : "全选"}
-            </button>
-          </div>
+          <CandidatePicker
+            items={models.map((m) => ({
+              id: m.id,
+              name: m.name,
+              note: `上下文 ${kfmtLimit(m.context_window ?? 0)} · 输出 ${kfmtLimit(m.max_output_tokens ?? 0)}`,
+              tags: catalogTags(m),
+            }))}
+            picked={picked}
+            onToggle={toggle}
+            onPickAll={setPicked}
+            emptyText="目录里这个厂商没有可用模型"
+          />
         )}
         {stale && <div className="mset-connect-empty">目录已过期（网络不可用），显示的是上次缓存。</div>}
       </div>
@@ -326,18 +297,44 @@ function ProviderForm({ provider, onClose }: { provider: CatalogProvider; onClos
 }
 
 function CustomForm({ onSubmit }: { onSubmit: (input: { name: string; baseUrl: string; models: string[]; apiKey?: string }) => void }) {
-  const { discover } = useSettings();
+  const { discover, providers } = useSettings();
   const [name, setName] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [key, setKey] = useState("");
   const [models, setModels] = useState<string[]>([""]);
   const [err, setErr] = useState<{ name?: string; baseUrl?: string }>({});
-  // 探测：把端点**实际**提供的模型列出来让用户勾（比手抄 ID 可靠）
+  // 探测：把端点**实际**提供的模型列出来让用户勾（比手抄 ID 可靠）。
+  // **默认全不选**——与「获取模型列表」同一条纪律：端点可能报 200 个模型，
+  // 自动写入会把模型选择器淹掉（此前这里 setPicked(全部) 正是问题 1 的根因）。
   const [found, setFound] = useState<DiscoveredModel[] | null>(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [probing, setProbing] = useState(false);
   const [probeErr, setProbeErr] = useState<string | null>(null);
   const [endpoint, setEndpoint] = useState<string | null>(null);
+
+  // 该端点若已注册过（同 base_url 分组），已有模型标「已添加」不可重复勾——
+  // 与 ProbeResultDialog 的 added 标同款口径（大小写不敏感，端点常把大小写报得
+  // 跟注册表不一致）。
+  const known = new Set(
+    (providers.find((p) => p.id === providerKey(baseUrl.trim()))?.models ?? []).map((m) => m.id.toLowerCase()),
+  );
+  const candidates = (found ?? []).map((m) => {
+    const added = known.has(m.id.toLowerCase());
+    return { id: m.id, name: m.name, tags: added ? ["已添加"] : undefined, disabled: added };
+  });
+  const selectableCount = candidates.filter((c) => !c.disabled).length;
+  // 候选清单在手时默认收起手工输入（避免两套入口打架）；端点一个模型都没报、
+  // 或报的全是「已添加」时自动展开，用户仍能补一个手工 ID。
+  const [manualOpen, setManualOpen] = useState(false);
+  const showManual = !found || found.length === 0 || selectableCount === 0 || manualOpen;
+
+  const toggle = (id: string) =>
+    setPicked((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
 
   const runProbe = async () => {
     if (!/^https?:\/\//.test(baseUrl.trim())) {
@@ -350,7 +347,8 @@ function CustomForm({ onSubmit }: { onSubmit: (input: { name: string; baseUrl: s
       const res = await discover({ baseUrl: baseUrl.trim(), apiKey: key, format: "openai" });
       setFound(res.models);
       setEndpoint(res.endpoint);
-      setPicked(new Set(res.models.map((m) => m.id)));
+      // 换端点/重探：旧勾选作废（否则会把上一个端点的 id 带进这次创建）
+      setPicked(new Set());
     } catch (e) {
       setFound(null);
       setProbeErr(errText(e));
@@ -363,8 +361,16 @@ function CustomForm({ onSubmit }: { onSubmit: (input: { name: string; baseUrl: s
     const next: { name?: string; baseUrl?: string } = {};
     if (!name.trim()) next.name = "名称不能为空";
     if (!/^https?:\/\//.test(baseUrl.trim())) next.baseUrl = "需以 http(s):// 开头";
-    const ids = found ? [...picked] : models.map((m) => m.trim()).filter(Boolean);
-    if (ids.length === 0) next.baseUrl = next.baseUrl ?? "至少填一个模型 ID（或用「探测模型」自动列出）";
+    const manual = models.map((m) => m.trim()).filter(Boolean);
+    // 候选清单在手时以勾选为准；端点没报模型 / 报的全是已添加时仍可手工补 ID。
+    const ids = found
+      ? [...new Set([...picked, ...(showManual ? manual : [])])]
+      : manual;
+    if (ids.length === 0) {
+      next.baseUrl = next.baseUrl ?? (found
+        ? "请至少勾选一个模型（候选清单里挑，或在下面手工填模型 ID）"
+        : "至少填一个模型 ID（或用「获取模型」自动列出）");
+    }
     setErr(next);
     if (next.name || next.baseUrl) return;
     onSubmit({ name: name.trim(), baseUrl: baseUrl.trim(), models: ids, apiKey: key });
@@ -390,30 +396,26 @@ function CustomForm({ onSubmit }: { onSubmit: (input: { name: string; baseUrl: s
         <span>模型</span>
         <div className="mset-probe-head">
           <span className="mset-probe-text">
-            {found ? `端点报告 ${found.length} 个模型` : "手工填 ID，或让端点自己报（推荐）"}
+            {found
+              ? `端点报告 ${found.length} 个模型，可添加 ${selectableCount} 个`
+              : "手工填 ID，或让端点自己报（推荐）"}
           </span>
           <button type="button" className="mset-probe-all" onClick={runProbe} disabled={probing}>
-            {probing ? "探测中…" : "探测模型"}
+            {probing ? "获取中…" : "获取模型"}
           </button>
         </div>
         {endpoint && <div className="mset-probe-endpoint">{endpoint}</div>}
         {probeErr && <div className="mset-field-err" role="alert">{probeErr}</div>}
-        {found && found.length > 0 && (
-          <div className="mset-connect-scroll mset-candidate-scroll">
-            <CandidateRows
-              items={found.map((m) => ({ id: m.id, name: m.name }))}
-              picked={picked}
-              onToggle={(id) => setPicked((prev) => {
-                const next = new Set(prev);
-                if (next.has(id)) next.delete(id);
-                else next.add(id);
-                return next;
-              })}
-            />
-          </div>
+        {found && (
+          <CandidatePicker
+            items={candidates}
+            picked={picked}
+            onToggle={toggle}
+            onPickAll={setPicked}
+            emptyText="端点没有报告任何模型——可直接在下面手工填模型 ID"
+          />
         )}
-        {found && found.length === 0 && <div className="mset-connect-empty">端点没有报告任何模型</div>}
-        {!found && models.map((m, i) => (
+        {showManual && models.map((m, i) => (
           <TextInput
             key={i}
             className="mset-model-input"
@@ -423,14 +425,22 @@ function CustomForm({ onSubmit }: { onSubmit: (input: { name: string; baseUrl: s
             spellCheck={false}
           />
         ))}
-        {!found && (
+        {showManual && (
           <button type="button" className="mset-add-model" onClick={() => setModels((ms) => [...ms, ""])}>
             + 添加模型
           </button>
         )}
+        {/* 候选在手但用户还想手工补一个：入口始终可见（否则「端点没报它」就无解） */}
+        {found && !manualOpen && selectableCount > 0 && (
+          <button type="button" className="mset-add-model" onClick={() => setManualOpen(true)}>
+            + 手工添加模型 ID
+          </button>
+        )}
       </div>
       {err.baseUrl && <div className="mset-field-err" role="alert">{err.baseUrl}</div>}
-      <button type="submit" className="mset-form-submit">连接</button>
+      <button type="submit" className="mset-form-submit" disabled={found ? picked.size === 0 : false}>
+        {found ? `连接（已选 ${picked.size}）` : "连接"}
+      </button>
     </form>
   );
 }

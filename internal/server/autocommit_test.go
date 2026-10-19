@@ -117,8 +117,9 @@ func sendProjectTurn(t *testing.T, srv *Server, client *wsTestClient, id, text s
 	srv.waitAutoCommits() // 提交是异步的：等它结束再断言
 }
 
-// TestAutoCommitCommitsEachTurn 覆盖用例 1~3：每轮有改动就一个提交、信息含轮次与摘要、
-// 无改动不提交。直连架构：提交落在主检出当前分支（git log 可见）。
+// TestAutoCommitCommitsEachTurn 覆盖用例 1~3：每轮有改动就一个提交、信息是
+// conventional commits 形态且带 [checkpoint] 正文标记、无改动不提交。直连架构：
+// 提交落在主检出当前分支（git log 可见）。
 func TestAutoCommitCommitsEachTurn(t *testing.T) {
 	repo := initGitProject(t)
 	started := make(chan string, 8)
@@ -127,7 +128,8 @@ func TestAutoCommitCommitsEachTurn(t *testing.T) {
 	meta := addAutoCommitProject(t, client, repo)
 	id := createTestSession(t, client, meta.ID)
 
-	// 用例 1：第一轮有文件改动 → 主检出出现一个新提交，信息含轮次与摘要。
+	// 用例 1：第一轮有文件改动 → 主检出出现一个新提交，信息是
+	// `feat(a): <用户首行>`，正文带 [checkpoint] 与改动清单。
 	sendProjectTurn(t, srv, client, id, "第一轮请求：新建文件", started, release, func(path string) {
 		if err := os.WriteFile(filepath.Join(path, "a.txt"), []byte("a\n"), 0o600); err != nil {
 			t.Fatal(err)
@@ -141,12 +143,15 @@ func TestAutoCommitCommitsEachTurn(t *testing.T) {
 	if wt.Path != "" || wt.Branch != "" || wt.BaseCommit == "" {
 		t.Fatalf("直连模式的元数据应为 path/branch 空、base 非空: %+v", wt)
 	}
-	logOut := gitServerTest(t, repo, "log", "--oneline")
-	if !strings.Contains(logOut, "第 1 轮") {
-		t.Fatalf("git log 缺少第 1 轮提交:\n%s", logOut)
-	}
-	if got := strings.TrimSpace(gitServerTest(t, repo, "log", "-1", "--pretty=%s")); got != "第 1 轮：第一轮请求：新建文件" {
+	if got := strings.TrimSpace(gitServerTest(t, repo, "log", "-1", "--pretty=%s")); got != "feat: 第一轮请求：新建文件" {
 		t.Fatalf("提交信息 = %q", got)
+	}
+	body := gitServerTest(t, repo, "log", "-1", "--pretty=%B")
+	if !strings.Contains(body, "[checkpoint] 第 1 轮") {
+		t.Fatalf("正文缺少 [checkpoint] 标记:\n%s", body)
+	}
+	if !strings.Contains(body, "用户原话：") || !strings.Contains(body, "a.txt") {
+		t.Fatalf("正文应含用户原话与改动文件:\n%s", body)
 	}
 	if count := commitCount(t, repo); count != 2 {
 		t.Fatalf("第 1 轮后提交数 = %d, want 2（base + 第 1 轮）", count)
@@ -158,7 +163,7 @@ func TestAutoCommitCommitsEachTurn(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	if got := strings.TrimSpace(gitServerTest(t, repo, "log", "-1", "--pretty=%s")); got != "第 2 轮：第二轮请求：再改一处" {
+	if got := strings.TrimSpace(gitServerTest(t, repo, "log", "-1", "--pretty=%s")); got != "feat: 第二轮请求：再改一处" {
 		t.Fatalf("第 2 轮提交信息 = %q", got)
 	}
 	if count := commitCount(t, repo); count != 3 {

@@ -247,6 +247,13 @@ export type AgentEvent =
    *  消费方是**会话状态归约**（shared/reduce.ts 按会话落 UIState.approval），
    *  不再有全局设置可同步。 */
   | { type: "approvalChanged"; sessionId: string; approval: ApprovalMode }
+  /** 某会话**选中的模型**被改了（后端广播 chat.modelChanged——多客户端/壳+浏览器
+   *  同时看着同一条会话时靠它保持一致）。
+   *
+   *  与 `model.changed` 的分工：那个是全局模型注册表变了（客户端重拉 model.list），
+   *  这个是**会话级**选择变了（只更新那条会话的选择态，不动注册表缓存）。消费方
+   *  是会话状态归约（shared/reduce.ts 按 sessionId 落 UIState.model）。 */
+  | { type: "modelChanged"; sessionId: string; model: string }
   /** 新会话默认审批档被改了（settings.defaultApproval.changed——后端 behavior.json
    *  的行为开关，多客户端同步）。只影响**之后新建**的会话；既有会话的档位是
    *  它们自己的落库值，不受影响。 */
@@ -504,6 +511,13 @@ export interface AgentSource {
    *  运行中的一轮）。会话档经 approvalChanged 广播 / chat.history 的 approval
    *  回读——归约层按会话落状态。 */
   setApproval(mode: ApprovalMode): Promise<void>;
+  /** 改**当前会话**选中的模型（chat.model：后端落库 + 广播，只改这一条会话）。
+   *
+   *  与 ModelAdminSource.setRole 的分工：那个改全局 default 角色（= 新会话的默认
+   *  模型，设置页用），这个改当前会话——原先模型选择只能走 role.set，于是一个会话
+   *  切模型所有会话（含之后新建的）全跟着变，正是"模型选择作用域"那个 bug。
+   *  会话 id 取连接焦点（UI 的操作永远发生在某个已聚焦的会话上）。 */
+  setSessionModel(modelId: string): Promise<void>;
   /** 读「新会话默认审批档」（后端 behavior.json 的行为开关）。 */
   defaultApproval(): Promise<ApprovalMode>;
   /** 写「新会话默认审批档」（settings.defaultApproval.set：落盘 + 广播）。

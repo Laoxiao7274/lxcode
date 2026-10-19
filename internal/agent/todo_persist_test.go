@@ -34,6 +34,8 @@ func (p *todoStub) ContextUsageOf(string) (sessiondata.ContextUsage, bool, error
 func (p *todoStub) SaveContextUsage(string, sessiondata.ContextUsage) error { return nil }
 func (p *todoStub) ApprovalOf(string) (string, error)                       { return "", nil }
 func (p *todoStub) SaveApproval(string, string) error                       { return nil }
+func (p *todoStub) SaveSessionModel(string, string) error                   { return nil }
+func (p *todoStub) SessionModelOf(string) (string, error)                   { return "", nil }
 func (p *todoStub) TodosOf(string) ([]sessiondata.TodoItem, bool, error) {
 	if p.loadMode == nil {
 		return nil, false, nil

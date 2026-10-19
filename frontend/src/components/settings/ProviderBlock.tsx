@@ -1,7 +1,11 @@
 // 模型分区：提供商卡（可收拢的模型列表 + 可见性开关 + 获取/添加/删除）。
+// 展开状态：**默认全部收缩**，用户点开才展开；状态记 localStorage
+// （shared/provider-expanded.ts）。新建/编辑后自动展开对应项也走同一份存储
+// （rememberExpand）——新建完回来，新卡就是开着的。
 import { useEffect, useRef, useState, type MouseEvent } from "react";
 import { gsap } from "gsap";
 import { useSettings, type ProviderMeta } from "../../shared/settings";
+import { isExpanded, writeExpanded } from "../../shared/provider-expanded";
 import { motionAllowed, staggerIn, enterEase } from "../../shared/motion";
 import { collapseAway, playEnter } from "../../shared/anim";
 import { kfmtLimit } from "../../shared/format";
@@ -12,7 +16,8 @@ import { ProbeResultDialog, type ProbeModel } from "./ProbeResultDialog";
 
 function ProviderBlock({ provider, onEditModel }: { provider: ProviderMeta; onEditModel: (modelId: string) => void }) {
   const { settings, set, setProviderEnabled, setModelVisible, fetchModels, addModel, removeModel, disconnectProvider } = useSettings();
-  const [expanded, setExpanded] = useState(true);
+  // 初始展开态读记忆；没有记忆 = 收缩（默认收起）
+  const [expanded, setExpanded] = useState(() => isExpanded(provider.id));
   // 连接配置弹窗（Base URL / API Key / 格式，一次写全组）
   const [editingConn, setEditingConn] = useState(false);
   // 添加模型：内联输入行（空 = 未在添加）
@@ -43,6 +48,14 @@ function ProviderBlock({ provider, onEditModel }: { provider: ProviderMeta; onEd
     if (!expanded || !modelsRef.current) return;
     staggerIn([...modelsRef.current.children], { each: 0.04 });
   }, [expanded]);
+
+  // 展开状态落 localStorage（用户点开/收起记下来，下次进设置页照旧）
+  useEffect(() => {
+    writeExpanded(provider.id, expanded);
+  }, [provider.id, expanded]);
+
+  // 新建后自动展开由挂载时读记忆完成（新提供商的卡是新组件，key = id）：
+  // 创建路径在打开前已 rememberExpand 该 id，挂载即展开。
 
   // 收起要有退场：先播高度收拢+淡出，动画结束再卸载（条件渲染直接卸载是瞬灭）
   const collapsingRef = useRef(false);
@@ -157,7 +170,7 @@ function ProviderBlock({ provider, onEditModel }: { provider: ProviderMeta; onEd
             >
               <span className="toggle-knob" />
             </span>
-            <button type="button" className="mset-provider-edit" title="改连接配置（Base URL / API Key / 格式）" aria-label={`配置 ${provider.name} 的连接`} onClick={() => setEditingConn(true)}>
+            <button type="button" className="mset-provider-edit" title="改连接配置（Base URL / API Key / 格式）" aria-label={`配置 ${provider.name} 的连接`} onClick={() => { setExpanded(true); setEditingConn(true); }}>
               <IconPencil strokeWidth={2} />
             </button>
             <button type="button" className="mset-provider-remove" title="断开并移除凭据" onClick={handleRemove}>

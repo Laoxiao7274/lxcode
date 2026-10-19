@@ -233,7 +233,7 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig, ac *sessiondata.A
 		s.mu.Lock()
 		histSnap := append([]llm.Message(nil), s.history...)
 		s.mu.Unlock()
-		res, err := s.streamRound(ctx, workDir, cfg.effort, ac, histSnap, "")
+		res, err := s.streamRound(ctx, workDir, cfg.effort, cfg.model, ac, histSnap, "")
 		if err != nil {
 			// 端点报超长：强制压一次（保留预算归零）再重试同一轮——这是
 			// 会话已经长到发不出去时的唯一出路。只重试一次（压不动就报错，
@@ -326,8 +326,8 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig, ac *sessiondata.A
 // history 是这轮的消息序列（主轮 = s.history 快照；子轮 = 子上下文的
 // 独立历史——隔离的核心）。dispatchID 非空 = 子 Agent 执行（事件带
 // 归属标记，前端挂 dispatch 卡）。
-func (s *Session) streamRound(ctx context.Context, workDir, effort string, ac *sessiondata.AgentContext, history []llm.Message, dispatchID string) (res *llm.ChatResult, err error) {
-	m, err := s.modelFor(ac)
+func (s *Session) streamRound(ctx context.Context, workDir, effort, requestedModel string, ac *sessiondata.AgentContext, history []llm.Message, dispatchID string) (res *llm.ChatResult, err error) {
+	m, err := s.modelForRequest(ac, requestedModel)
 	if err != nil {
 		return nil, err
 	}

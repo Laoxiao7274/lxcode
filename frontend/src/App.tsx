@@ -210,14 +210,27 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
   // atts = 随消息的附件（图片/文件，图片批次 B）：按引用进 opts，不复制 base64。
   // sendToSession：目标会话显式传入——缓冲区的自动发送可能由「当前会话」的
   // busy 翻转触发，但触发瞬间 currentId 与目标一致，显式传参不依赖这个巧合。
+  // ---- 会话级模型（模型选择器的作用域 = 当前会话）----
+  // 选中态取当前会话的 state.model（chat.history 的 model 键 / chat.modelChanged
+  // 广播），**不是**全局 default 角色——后者是「新会话的默认模型」（设置页管）。
+  // 没拿到（刚建会话/老后端）才回落全局设置里的值，与改动前的显示一致。
+  const sessionModel = state.model || settings.model;
+  const pickSessionModel = useCallback((id: string) => {
+    // 切模型走会话级方法（chat.model：落库 + 广播，只改这一条会话）。
+    // 选中态不在这里乐观改：后端成功才广播 chat.modelChanged，归约层按它对齐。
+    source.setSessionModel(id).catch((e) => reportError(`切换模型失败: ${e instanceof Error ? e.message : String(e)}`));
+  }, [source, reportError]);
+
   const sendToSession = useCallback((sessionId: string, text: string, atts?: SendAttachments) => {
-    const current = providers.flatMap((p) => p.models).find((m) => m.id === settings.model);
+    // 推理强度的能力门控按**这条会话的**模型判定（会话级选择优先，回落全局 default）：
+    // 拿全局模型判会把 effort 发给一个不支持它的端点（400），或反过来丢掉档位。
+    const current = providers.flatMap((p) => p.models).find((m) => m.id === sessionModel);
     const opts: SendOptions = { agent: activeAgentId };
     if (current && current.efforts.length > 0) opts.effort = settings.effort;
     if (atts?.images.length) opts.images = atts.images;
     if (atts?.files.length) opts.files = atts.files;
     if (sessionId) send(sessionId, text, opts);
-  }, [providers, settings.model, settings.effort, send, activeAgentId]);
+  }, [providers, sessionModel, settings.effort, send, activeAgentId]);
   const sendWithOptions = useCallback((text: string, atts?: SendAttachments) => sendToSession(currentId, text, atts), [sendToSession, currentId]);
   // 桥接（渲染期同步赋值——store 的订阅闭包经 ref 读到最新身份）
   autoSendBridgeRef.current = sendToSession;
@@ -365,6 +378,8 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
               initialDraft={draftOf(drafts, currentId)}
               onDraftChange={handleDraftChange}
               visionBlocked={visionBlocked}
+              model={sessionModel}
+              onPickModel={pickSessionModel}
             />
           </div>
           <aside className="outline-aside" data-open={outlineOpen ? "true" : "false"}>

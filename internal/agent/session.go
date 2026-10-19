@@ -89,6 +89,16 @@ type Session struct {
 	// 用户中途改档要立刻作用于正在跑的那一轮（runTools 每个工具调用现读
 	// LiveApproval）。空 = confirm（与 tools.ApprovalFrom 的缺省语义一致）。
 	approval string
+	// model 是本会话**选中**的模型注册表 id（会话级状态，不是全局 default 角色）：
+	// 用户在某条会话里切模型只改这条会话——原先模型选择走 role.set 改全局 default，
+	// 一个会话切模型所有会话（以及之后新建的会话）全跟着变，是「模型选择作用域」
+	// 那个 bug 的根因。
+	//
+	// 解析优先级见 modelFor：请求级（chat.send 的 model）> 本字段 > Agent 绑定
+	// （AgentDef.Model）> default 角色。空 = 没选过（老会话/新会话）→ 回落
+	// Agent 绑定与 default 角色，与改动前的行为逐字一致。
+	// 落库（sessions.model）——重启后打开同一条会话还得是用户选的模型。
+	model string
 	// todoPrompt 是本会话的 todo-first 提示词档位（config.TodoPrompt*——
 	// 用户在设置里选的内置模板）。chat.send 时由服务端按 behavior.json 现读
 	// 传入（会话级，子会话派发时从父会话继承）；空 = strict。与 approval 的
@@ -338,6 +348,46 @@ func (s *Session) SetApproval(mode string) string {
 	//（会话还没建行）时是 no-op——与 persistContextUsage 同一条接缝模式。
 	persistApproval(st, id, norm)
 	return norm
+}
+
+// SetModel 设置本会话选中的模型（会话级状态：只改这一条会话，不动全局 default
+// 角色——模型选择的作用域就是会话）。
+//
+// 校验模型存在且启用：不存在的 id 报错（协议层映射成参数错误），**不静默回落**
+// 到别的模型——那会让用户以为选中的那个在用。
+//
+// 与 SetApproval 同一条接缝模式：改内存 → 落库（不持锁，写盘不该占会话锁）→
+// 调用方广播。落库失败只记日志（内存才是运行真源，最坏情况是重启后回落默认），
+// st 为 nil / id 为空时是 no-op。运行中的一轮不受影响：模型在开轮时解析
+// （streamRound），下一轮才用新模型——与「热切换模型到下一轮生效」一致。
+//
+// 返回规范化后的模型 id（= 注册表 id），调用方据此广播。
+func (s *Session) SetModel(id string) (string, error) {
+	if id == "" {
+		return "", errors.New("model 不能为空（切回默认请传 default 角色的模型 id）")
+	}
+	m, ok := s.reg.Get(id)
+	if !ok {
+		return "", fmt.Errorf("模型不存在: %s", id)
+	}
+	if !m.Enabled {
+		return "", fmt.Errorf("%w: %s", ErrModelDisabled, m.ID)
+	}
+	s.mu.Lock()
+	s.model = m.ID
+	st, sid := s.st, s.id
+	s.mu.Unlock()
+	persistSessionModel(st, sid, m.ID)
+	return m.ID, nil
+}
+
+// SelectedModel 返回本会话**显式选中**的模型 id（空 = 没选过——回落 Agent 绑定 /
+// default 角色）。与 ModelID 的分工：那个是「此刻实际用哪个」（解析后的结果），
+// 这个是「用户给这条会话选了什么」——前端选择器的选中态按它对齐。
+func (s *Session) SelectedModel() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.model
 }
 
 // TodoPromptMode 返回本会话的 todo-first 提示词档位（config.TodoPrompt*；
@@ -706,8 +756,8 @@ func (s *Session) SetAgentID(id string) {
 	s.agentID = id
 }
 
-// ModelID 返回本会话**实际使用**的模型注册表 id（走 resolve.go 那一套：Agent 绑定
-// AgentDef.Model 优先，否则 default 角色）。
+// ModelID 返回本会话**实际使用**的模型注册表 id（走 resolve.go 那一套：
+// 会话级选择 s.model 优先，其次 Agent 绑定 AgentDef.Model，最后 default 角色）。
 //
 // 空串 = 未知（名单里没这个 Agent / 模型被删或被停用 / 没有 default 角色）——wire 上
 // 整键缺席，前端显示中性态。**绝不**回落成"编一个模型名"：那会让子会话页显示一个

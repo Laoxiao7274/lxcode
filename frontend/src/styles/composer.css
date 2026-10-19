@@ -1203,6 +1203,57 @@ html[data-theme="dark"] .att-remove:hover {
 .mp-left {
   bottom: calc(100% + 8px);
   left: 0;
+  /* 固定最大高度（模型多时不许撑满屏幕）+ 列表内部滚动。
+     面板本身是 flex 列：标题/搜索框/强度行钉住，只有 .mp-list 滚。 */
+  display: flex;
+  flex-direction: column;
+  max-height: min(420px, 60vh);
+}
+/* 列表滚动区：内部滚动 + 现有滚动条样式（--scrollbar-thumb） */
+.mp-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+.mp-list::-webkit-scrollbar {
+  width: 8px;
+}
+.mp-list::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 4px;
+}
+/* 搜索框（模型多时是唯一可用的入口）：与面板内边距对齐，紧凑一行 */
+.mp-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 5px 4px;
+  padding: 0 7px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  color: var(--fg-faint);
+  flex: none;
+}
+.mp-search:focus-within {
+  border-color: var(--fg);
+  color: var(--fg);
+}
+.mp-search input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  color: var(--fg);
+  padding: 5px 0;
+}
+.mp-search input::placeholder {
+  color: var(--fg-faint);
 }
 /* 右面板：顶边对齐左面板中部（强度行展开的位置），向右紧贴左面板；
    展开动画 = 从左侧滑入 + 淡入（transform-origin 左） */

@@ -45,6 +45,15 @@ type Persistence interface {
 	// ApprovalOf 读回会话落库的审批档。空串 = 没落过（老会话/从没改过档）——
 	// 调用方据此回落 behavior 默认档，而不是当成 confirm 写死。
 	ApprovalOf(sessionID string) (string, error)
+	// SaveSessionModel 落库会话**选中的模型**（chat.model 切模型 / 子会话继承父会话）。
+	// 为什么落库：模型选择是会话的状态——用户在会话 A 里切到模型 X 后重启，打开 A
+	// 还得是 X（原先选择只能改全局 default 角色，一个会话切模型所有会话跟着变）。
+	// 失败不该打断切模型本身（内存才是运行真源，最坏情况是重启后回落默认）：
+	// 调用方只记日志。
+	SaveSessionModel(sessionID, model string) error
+	// SessionModelOf 读回会话落库的模型选择。空串 = 没选过（老会话/从没切过）——
+	// 调用方据此回落 Agent 绑定与 default 角色，而不是把它当成"没模型可用"。
+	SessionModelOf(sessionID string) (string, error)
 	// SaveTodos 落库会话当前的任务清单快照（todo 契约）。失败不该打断清单更新
 	//（内存才是运行真源，最坏情况是重启后清单丢失）：调用方只记日志。
 	SaveTodos(sessionID string, items []sessiondata.TodoItem) error

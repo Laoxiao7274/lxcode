@@ -98,12 +98,15 @@ func TestStartMergeJobPrecommitsMidTurnChanges(t *testing.T) {
 	}
 	// 工作树变干净：改动已提交
 	assertWorktreeClean(t, srv, id)
-	// 恰好多一个提交，信息与自动提交同一口径（LastUserTurn 轮次 + 用户消息摘要）
+	// 恰好多一个提交，信息与自动提交同一口径（project.CommitCheckpoint 的规则生成）
 	if got := commitCount(t, wt.Path); got != base+1 {
 		t.Fatalf("应恰好新增 1 个提交（base %d → %d）", base, got)
 	}
-	if msg := strings.TrimSpace(gitServerTest(t, wt.Path, "log", "-1", "--pretty=%s")); msg != "第 1 轮：实现合并前置提交" {
+	if msg := strings.TrimSpace(gitServerTest(t, wt.Path, "log", "-1", "--pretty=%s")); msg != "feat: 实现合并前置提交" {
 		t.Fatalf("提交信息应与自动提交同口径: %q", msg)
+	}
+	if body := gitServerTest(t, wt.Path, "log", "-1", "--pretty=%B"); !strings.Contains(body, "[checkpoint] 第 1 轮") {
+		t.Fatalf("前置提交也应是检查点形态: %s", body)
 	}
 	// 扫描清单含发起会话分支，且本轮改动以提交形态入选（ahead≥1、dirty=0）
 	//——merger 只合提交，dirty 部分合不进，这是本修复要消除的缺口
@@ -222,7 +225,7 @@ func TestPrecommitConcurrentWithAutoCommit(t *testing.T) {
 	if got := commitCount(t, repo); got != base+1 {
 		t.Fatalf("并发下应恰好产生 1 个提交（base %d → %d，无空提交/无重复）", base, got)
 	}
-	if msg := strings.TrimSpace(gitServerTest(t, repo, "log", "-1", "--pretty=%s")); msg != "第 1 轮：并发用例" {
+	if msg := strings.TrimSpace(gitServerTest(t, repo, "log", "-1", "--pretty=%s")); msg != "feat: 并发用例" {
 		t.Fatalf("提交信息应与自动提交同口径: %q", msg)
 	}
 	waitSessionIdle(t, srv, id)

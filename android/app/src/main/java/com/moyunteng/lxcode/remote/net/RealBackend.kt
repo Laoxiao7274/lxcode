@@ -93,9 +93,16 @@ class RealBackend {
     var sessionStats by mutableStateOf<SessionStats?>(null)
         private set
 
-    /** 会话此刻的模型（chat.history.model / chat.done.model）。 */
+    /** 会话此刻**实际使用**的模型（chat.history.model / chat.done.model）——后端
+     *  解析后的结果（会话选择 > Agent 绑定 > default 角色）。消息气泡上的模型徽标
+     *  读它；模型菜单的选中态读 [pickedModelId]（用户给这条会话选了什么）。 */
     var sessionModel by mutableStateOf("")
         private set
+
+    /** 模型菜单的选中态：本会话选中的模型优先，没选过（老会话/新会话）才回落
+     *  全局 default 角色——与桌面端 ModelPicker 的 `model ?? settings.model` 同一条。 */
+    val activeModelId: String
+        get() = pickedModelId.ifEmpty { defaultModelId }
 
     /** 当前会话**此刻**的权限档（chat.history 的 approval 回读 / chat.approvalChanged
      *  广播；null = 后端没报——UI 回落「默认」，不猜）。会话级状态：switchTo 切会话
@@ -389,9 +396,17 @@ class RealBackend {
     var modelGroups by mutableStateOf<List<ModelGroup>>(emptyList())
         private set
 
-    /** 当前 default 角色绑定的模型 id（后端是唯一事实源；空 = 未绑定）。 */
+    /** 全局 default 角色绑定的模型 id（后端是唯一事实源；空 = 未绑定）。
+     *  语义 = **新会话的默认模型**（设置页管），不是当前会话的选中态——当前会话
+     *  看 [sessionModel]（chat.history.model / chat.modelChanged）。 */
     var defaultModelId by mutableStateOf("")
         private set
+
+    /** 当前会话**选中**的模型 id（会话级状态：chat.history 的 model 键回读 /
+     *  chat.modelChanged 广播）。空 = 未知（刚建会话/老后端）→ 显示回落
+     *  [defaultModelId]。与 defaultModelId 的分工见上——混用正是「一个会话切
+     *  模型所有会话跟着变」那个 bug。 */
+    private var pickedModelId by mutableStateOf("")
 
     /** 平铺的全部模型（按 id 查找用）。 */
     val allModels: List<ModelMeta>
@@ -408,16 +423,28 @@ class RealBackend {
         }
     }
 
-    /** 切换 default 角色绑定（role.set；model.changed 广播回来对齐）。
+    /** 切换**当前会话**的模型（chat.model：后端落库 + 广播，只改这一条会话）。
+     *
+     *  与 role.set 的分工：role.set 改的是全局 default 角色（= 新会话的默认模型，
+     *  设置页语义），拿它切模型会让所有会话跟着变——这正是用户报的那个 bug。
+     *
      *  [onDone] 回调结果（ok=false 时 msg 是错误信息——调用方给用户反馈；
-     *  选中态不本地回退：它从 model.list 的 roles.default 推导，后端没改绑
-     *  就不会广播，显示自动停在旧模型上）。 */
-    fun setDefaultModel(id: String, onDone: ((ok: Boolean, msg: String) -> Unit)? = null) {
-        Log.i(TAG, "role.set default → $id")
-        client.call("role.set", JSONObject().put("role", "default").put("model_id", id)) { err, _ ->
+     *  选中态不本地乐观改：后端成功才广播 chat.modelChanged，归约层按它对齐，
+     *  失败时显示自然停在旧模型上，不假装成功）。 */
+    fun changeSessionModel(id: String, onDone: ((ok: Boolean, msg: String) -> Unit)? = null) {
+        val sid = currentSessionId
+        if (sid.isEmpty()) {
+            onDone?.invoke(false, "还没有打开会话")
+            return
+        }
+        Log.i(TAG, "chat.model session=$sid → $id")
+        client.call(
+            "chat.model",
+            JSONObject().put("session_id", sid).put("model_id", id),
+        ) { err, _ ->
             if (err != null) {
                 val msg = err.optString("message")
-                Log.w(TAG, "role.set 失败: $msg")
+                Log.w(TAG, "chat.model 失败: $msg")
                 onDone?.invoke(false, msg)
             } else {
                 onDone?.invoke(true, "")
@@ -1096,6 +1123,13 @@ class RealBackend {
                 busy = p.optBoolean("busy")
             }
 
+            "chat.modelChanged" -> {
+                // 会话级模型变更广播（多端同步——本端切模型后的回执也走这条）：
+                // 按会话归属，别的会话的变更不改本会话的选中态（不串台）
+                if (sid != currentSessionId) return
+                p.optString("model_id", "").takeIf { it.isNotEmpty() }?.let { pickedModelId = it }
+            }
+
             "chat.approvalChanged" -> {
                 // 权限档变更广播（多端同步——本端改档后的回执也走这条）：按会话
                 // 归属，别的会话的变更不改本会话药丸
@@ -1291,6 +1325,9 @@ class RealBackend {
         contextUsage = null
         sessionStats = null
         sessionModel = ""
+        // 会话级模型同款：切会话即清（切回时由 chat.history 的 model 重新对齐）
+        // ——沿用上一会话的模型显示是串台
+        pickedModelId = ""
         // 权限档是会话级状态：切会话即清（切回时由 chat.history 的 approval 重新
         // 对齐）——沿用上一会话的档位显示是串台
         approval = null
@@ -1475,6 +1512,9 @@ class RealBackend {
         r.optJSONObject("context")?.let { contextUsage = parseContext(it) }
         r.optJSONObject("stats")?.let { sessionStats = parseStats(it) }
         sessionModel = r.optString("model", "")
+        // 模型菜单的选中态：快照里带的 model 是**后端解析后**的（会话选择 > Agent
+        // 绑定 > default 角色）。老后端不带键 = 未知，保持空（显示回落 default）。
+        pickedModelId = sessionModel
         busy = r.optBoolean("busy")
         // 历史的 busy 键是服务端事实：同步进会话级忙闲投影（列表状态点对齐）
         if (currentSessionId.isNotEmpty()) {

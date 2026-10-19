@@ -266,6 +266,13 @@ chat.userMessage → (chat.delta{kind:"reasoning"})* → (chat.delta{kind:"text"
   不再显示编造的会话列表。composer 的模型菜单改读 `model.list`（注册表投影：
   按 base_url 分组、efforts 派生自 capabilities.reasoning），模型选择走 `role.set`
   （default 角色绑定，多端同步）。
+
+  > **2026-12 修订（模型选择作用域）**：模型选择改走 **`chat.model`**（会话级：
+  > 后端落库 `sessions.model` + 广播 `chat.modelChanged`，只改这一条会话）。原先
+  > 走 `role.set` 改全局 default 角色——一个会话切模型所有会话跟着变。`role.set`
+  > 仍保留全局语义（= 新会话的默认模型，设置页用）。菜单选中态 = `chat.history`
+  > 的 `model` 键 / `chat.modelChanged`（`RealBackend.activeModelId`：会话选择 →
+  > 回落 default 角色）。
 - **ThreadScreen 滚到底**：三个触发时机——①历史装载完成（`RealBackend.historyVersion`
   在 applyHistory 末尾递增，ThreadScreen 据此 scrollToItem(last)）；②消息流增长
   （blocks.size 变化即滚）；③键盘弹出（WindowInsets.ime 高度变化再滚一次）。

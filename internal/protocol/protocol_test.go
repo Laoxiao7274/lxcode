@@ -316,11 +316,11 @@ func TestProtocolConstants(t *testing.T) {
 	// 方法名与事件名不得重名，否则 dispatch 与事件处理会撞车
 	methods := []string{MethodHello, MethodModelList, MethodModelAdd, MethodModelUpdate,
 		MethodModelRemove, MethodModelEnable, MethodRoleSet, MethodChatSend,
-		MethodChatCancel, MethodChatHistory, MethodToolConfirm, MethodChatApproval,
+		MethodChatCancel, MethodChatHistory, MethodToolConfirm, MethodChatApproval, MethodChatModel,
 		MethodSessionList, MethodSessionNew, MethodSessionResume,
 		MethodJobList, MethodJobKill, MethodJobLog}
 	events := []string{EventReady, EventUserMsg, EventDelta, EventToolCall, EventToolRslt,
-		EventConfirm, EventDone, EventError, EventBusy, EventApproval, EventModels, EventTodo, EventSessionChanged,
+		EventConfirm, EventDone, EventError, EventBusy, EventApproval, EventModelChanged, EventModels, EventTodo, EventSessionChanged,
 		EventJobStarted, EventJobSettled}
 	seen := map[string]bool{}
 	for _, m := range methods {
@@ -844,6 +844,36 @@ func TestChatApprovalPayloads(t *testing.T) {
 		}
 		if MethodChatApproval != "chat.approval" || EventApproval != "chat.approvalChanged" {
 			t.Fatalf("命名漂移: %s / %s", MethodChatApproval, EventApproval)
+		}
+	})
+
+	t.Run("chat.model 的 wire 形状（参数/结果/事件键名与往返）", func(t *testing.T) {
+		if MethodChatModel == EventModelChanged {
+			t.Fatal("方法名与事件名不得重名")
+		}
+		if MethodChatModel != "chat.model" || EventModelChanged != "chat.modelChanged" {
+			t.Fatalf("命名漂移: %s / %s", MethodChatModel, EventModelChanged)
+		}
+		// model_id 不是 omitempty：空串也要显式发出去（服务端据此报参数错误，
+		// 而不是把空值当成"回默认"静默处理）
+		b := mustMarshal(t, ChatModelParams{SessionID: "s1"})
+		if !strings.Contains(string(b), `"model_id"`) {
+			t.Fatalf("model_id 应恒发: %s", b)
+		}
+		var p ChatModelParams
+		mustUnmarshal(t, mustMarshal(t, ChatModelParams{SessionID: "s1", ModelID: "m2"}), &p)
+		if p.SessionID != "s1" || p.ModelID != "m2" {
+			t.Fatalf("参数往返丢字段: %+v", p)
+		}
+		var r ChatModelResult
+		mustUnmarshal(t, mustMarshal(t, ChatModelResult{SessionID: "s1", ModelID: "m2"}), &r)
+		if r.SessionID != "s1" || r.ModelID != "m2" {
+			t.Fatalf("结果往返丢字段: %+v", r)
+		}
+		var e ModelChangedParams
+		mustUnmarshal(t, mustMarshal(t, ModelChangedParams{SessionID: "s1", ModelID: "m2"}), &e)
+		if e.SessionID != "s1" || e.ModelID != "m2" {
+			t.Fatalf("事件往返丢字段: %+v", e)
 		}
 	})
 

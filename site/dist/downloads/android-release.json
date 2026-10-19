@@ -1,14 +1,13 @@
 {
-  "version": "0.2.11",
-  "versionCode": 11,
-  "name": "lxcode-0.2.11-android.apk",
-  "size": 11737585,
-  "sha256": "21cc7aeeba265c424e2bffa2d1828fc8460ec7db4da84122488beaf8bb9131be",
-  "url": "downloads/lxcode-0.2.11-android.apk",
+  "version": "0.2.12",
+  "versionCode": 12,
+  "name": "lxcode-0.2.12-android.apk",
+  "size": 11737584,
+  "sha256": "e24bb288898a64f948fc287ab870b941761ad2b50838241637781a597e968574",
+  "url": "downloads/lxcode-0.2.12-android.apk",
   "notes": [
-    "大会话秒开：先显示最近 50 条消息，不等全量历史",
-    "上滑加载更早历史：平滑接续、不跳屏",
-    "本地缓存：离线也能看历史会话",
-    "加载失败人话提示 + 一键重试"
+    "模型选择改为会话级：每个会话记住自己选的模型，切会话不再串台",
+    "多端同步：手机与桌面同时看同一会话，改模型即时同步",
+    "子会话继承父会话当前模型，派发后不再偷偷换模型"
   ]
 }

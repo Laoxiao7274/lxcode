@@ -142,6 +142,11 @@ export function mapEvent(method: string, params: unknown): AgentEvent | null {
       // 某会话的权限档被改了（多客户端同步）。消费方是会话状态归约
       //（shared/reduce.ts 按 sessionId 落 UIState.approval）——本层只管形状。
       return { type: "approvalChanged", sessionId, approval: normalizeApproval(p.approval) };
+    case "chat.modelChanged":
+      // 某会话**选中的模型**变了（多客户端同步，与 chat.approvalChanged 同款）。
+      // 与 model.changed 的分工：那个是全局注册表变了（重拉 model.list），这个是
+      // 会话级选择——消费方是会话状态归约（shared/reduce.ts 按 sessionId 落 model）。
+      return { type: "modelChanged", sessionId, model: String(p.model_id ?? "") };
     case "settings.defaultApproval.changed":
       // 新会话默认审批档变了（后端 behavior.json 的行为开关，多客户端同步）。
       return { type: "defaultApprovalChanged", approval: normalizeApproval(p.approval) };

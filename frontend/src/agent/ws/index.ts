@@ -260,6 +260,16 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
     return this.call("chat.approval", { session_id: this.conn.sessionFocus, approval: mode }).then(() => undefined);
   }
 
+  /** 改**当前会话**选中的模型（chat.model）：后端落库 + 广播 chat.modelChanged，
+   *  只改这一条会话（全局 default 角色不受影响——那是「新会话的默认模型」）。
+   *
+   *  会话 id 取连接焦点（与 setApproval 同一条约定）。选中态不在这里乐观改：
+   *  归约层按 modelChanged 广播/chat.history 的 model 对齐——后端没改成功就不会
+   *  广播，显示自然停在旧模型上（不假装成功）。 */
+  setSessionModel(modelId: string): Promise<void> {
+    return this.call("chat.model", { session_id: this.conn.sessionFocus, model_id: modelId }).then(() => undefined);
+  }
+
   /** 读「新会话默认审批档」（settings.defaultApproval.get——后端 behavior.json）。 */
   defaultApproval(): Promise<ApprovalMode> {
     return this.call("settings.defaultApproval.get", {}).then((r) =>

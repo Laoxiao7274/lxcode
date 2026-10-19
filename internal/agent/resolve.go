@@ -43,6 +43,10 @@ type sendConfig struct {
 	effort   string // 推理强度（空 = 模型默认）
 	approval string // 权限模式（空 = confirm）
 	agentID  string // Agent 名单 id（空 = 主语境——无 resolver 时旧语义）
+	// model 是本轮显式指定的模型 id（空 = 用会话级选择）。协议侧 chat.send 不带
+	// 这个参数（模型选择走 chat.model 的会话级状态）——保留它给内部调用方
+	// （派发时显式继承父会话的模型），优先级最高。
+	model string
 	// todoPrompt 是 todo-first 提示词档位（空 = 不覆盖会话现值）。
 	todoPrompt string
 	notice     bool           // 这条 user 消息是**注入的提示条**（不是用户说的话——会话统计的轮数按它排除）
@@ -66,6 +70,13 @@ func WithNotice() SendOpt { return func(c *sendConfig) { c.notice = true } }
 // WithAgent 指定本轮的执行 Agent（名单 id；空 = 旧语境——全局默认
 // 提示词与 default 角色模型，兼容不接名单的调用方/单测）。
 func WithAgent(id string) SendOpt { return func(c *sendConfig) { c.agentID = id } }
+
+// WithModel 指定本轮使用的模型注册表 id（空 = 用会话级选择/Agent 绑定/default）。
+//
+// 这是**请求级**的临时覆盖，不改会话状态——子会话派发时用它显式继承父会话的模型
+// （默认角色可能在派发之后被改，继承死值才不会漂移）。用户切模型走 chat.model
+// （Session.SetModel），那条路会落库 + 广播。
+func WithModel(id string) SendOpt { return func(c *sendConfig) { c.model = id } }
 
 // WithTodoPrompt 指定本会话的 todo-first 提示词档位（config.TodoPrompt*；
 // 空 = 不覆盖）。会话级：Send 时存进会话，本轮与后续轮的提示词组装都用它。
@@ -122,18 +133,34 @@ func (s *Session) resolveAgent(agentID string) (*sessiondata.AgentContext, error
 	return ac, nil
 }
 
-// modelFor 按 Agent 绑定取模型（绑定优先，回落 default 角色）；
-// 无 Agent 语境走 default 角色（旧语义）。
+// modelFor 解析这一轮实际用的模型，优先级：
+//
+//	请求级显式指定（cfg.model）> 会话级选择（s.model）> Agent 绑定（AgentDef.Model）
+//	> default 角色
+//
+// 「会话级选择」是 2026-12 修的模型作用域 bug 的落点：模型选择是**会话的状态**
+// （与 approval/effort 同一层级），原先只能改全局 default 角色，一个会话切模型
+// 所有会话跟着变。空 = 没选过 → 逐级回落，与改动前逐字一致（老会话零影响）。
+//
+// 解析失败（选中的模型被删/被停用）**不静默回落**：回落到别的模型会让用户以为
+// 自己选的那个在用。交给调用方报错（错误信息里点明是会话选择）。
 func (s *Session) modelFor(ac *sessiondata.AgentContext) (config.ModelConfig, error) {
+	return s.modelForRequest(ac, "")
+}
+
+// modelForRequest 是 modelFor 的带请求级覆盖版本（sendConfig.model）。
+func (s *Session) modelForRequest(ac *sessiondata.AgentContext, requested string) (config.ModelConfig, error) {
+	if requested != "" {
+		return s.modelByID(requested, "本轮指定")
+	}
+	s.mu.Lock()
+	picked := s.model
+	s.mu.Unlock()
+	if picked != "" {
+		return s.modelByID(picked, "会话选择")
+	}
 	if ac != nil && ac.Def.Model != "" {
-		m, ok := s.reg.Get(ac.Def.Model)
-		if !ok {
-			return config.ModelConfig{}, fmt.Errorf("Agent 绑定的模型 %s 不存在（编辑该 Agent 换绑或先在设置里添加模型）", ac.Def.Model)
-		}
-		if !m.Enabled {
-			return config.ModelConfig{}, fmt.Errorf("%w: %s（Agent 绑定）", ErrModelDisabled, m.ID)
-		}
-		return m, nil
+		return s.modelByID(ac.Def.Model, "Agent 绑定")
 	}
 	m, err := s.reg.ModelForRole(config.RoleDefault)
 	if err != nil {
@@ -141,6 +168,19 @@ func (s *Session) modelFor(ac *sessiondata.AgentContext) (config.ModelConfig, er
 	}
 	if !m.Enabled {
 		return config.ModelConfig{}, fmt.Errorf("%w: %s", ErrModelDisabled, m.ID)
+	}
+	return m, nil
+}
+
+// modelByID 按注册表 id 取一个可用模型（不存在/停用都报错，来源写进错误信息——
+// 用户要能分辨是"我选的模型没了"还是"Agent 绑的模型没了"）。
+func (s *Session) modelByID(id, source string) (config.ModelConfig, error) {
+	m, ok := s.reg.Get(id)
+	if !ok {
+		return config.ModelConfig{}, fmt.Errorf("模型 %s 不存在（%s；到设置里重新选择）", id, source)
+	}
+	if !m.Enabled {
+		return config.ModelConfig{}, fmt.Errorf("%w: %s（%s）", ErrModelDisabled, m.ID, source)
 	}
 	return m, nil
 }

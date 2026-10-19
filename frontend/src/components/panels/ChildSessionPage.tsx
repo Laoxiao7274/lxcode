@@ -194,6 +194,9 @@ export function ChildSessionPage({
         context={context}
         stats={stats}
         todos={todos}
+        // 子会话**自己的**模型（与页头那一项同一个值）：只读视图里选择器被锁，
+        // 但显示要如实——拿全局 default 角色冒充会让用户以为子会话用的是那个。
+        model={model}
         onSend={() => {}}
         onCancel={() => source.cancel(sessionId)}
       />

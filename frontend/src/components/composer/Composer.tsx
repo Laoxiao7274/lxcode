@@ -86,6 +86,8 @@ export function Composer({
   initialDraft = null,
   onDraftChange,
   visionBlocked = null,
+  model = "",
+  onPickModel,
 }: {
   busy: boolean;
   /** 发送中态（乐观气泡已插、后端 busy 还没到——新会话首条消息的 git 链窗口）：
@@ -144,6 +146,11 @@ export function Composer({
    *  null/undefined = 能力未知（老后端/模型没配）→ 不禁用，发送时依赖后端
    *  的 vision 校验人话错误兜底。文件入口不受影响。 */
   visionBlocked?: string | null;
+  /** 当前**会话**的模型 id（会话级状态，见 ModelPicker 的注释）：模型选择器的
+   *  选中态按它渲染。空 = 未知（刚建会话/老后端）→ 选择器回落全局 default 角色。 */
+  model?: string;
+  /** 切当前会话的模型（App → source.setSessionModel → chat.model 落库 + 广播）。 */
+  onPickModel?: (id: string) => void;
 }) {
   const [value, setValue] = useState(initialDraft?.text ?? "");
   const [images, setImages] = useState<PendingImage[]>(initialDraft?.images ?? []);
@@ -676,7 +683,7 @@ export function Composer({
             <span className={"pi-controls" + (readOnly ? " pi-locked" : "")}>
               <AgentPicker />
               <PermPicker />
-              <ModelPicker />
+              <ModelPicker model={model} onPickModel={onPickModel} />
             </span>
             <ContextIndicator usage={context} stats={stats} onCompact={onCompact} busy={busy} />
             {/* 会话统计胶囊（时间）：紧挨上下文环（2026-09-30 用户拍板）。累计消耗那一半

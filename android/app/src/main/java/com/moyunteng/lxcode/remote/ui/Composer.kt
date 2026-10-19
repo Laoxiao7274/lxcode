@@ -151,10 +151,11 @@ fun Composer(state: MockAppState, real: com.moyunteng.lxcode.remote.net.RealBack
     }
 
     // 当前模型元数据与 effort 投影（对齐 ModelPicker.tsx）：
-    // 模型注册表来自后端 model.list（RealBackend.modelGroups；role.set 切换，
-    // model.changed 广播对齐——后端是唯一事实源，客户端不存本地选择）。
+    // 模型注册表来自后端 model.list（RealBackend.modelGroups）。**选中态取当前会话
+    // 的模型**（activeModelId = 会话选择 → 回落全局 default 角色）——不是全局
+    // default 角色：拿它当选中态正是「一个会话切模型所有会话跟着变」那个 bug。
     // effortOptions = 当前模型支持的档位；当前档位不在其中时回落到最后一档
-    val currentModel = real?.allModels?.find { it.id == real.defaultModelId }
+    val currentModel = real?.allModels?.find { it.id == real.activeModelId }
     val effortOptions = currentModel?.efforts?.filter { it in EFFORT_IDS } ?: emptyList()
     // 会话本轮的 effort（内存视图，不落盘）：协议里 effort 只是 chat.send 的
     // 请求级参数（后端没有会话级 effort 方法、chat.history 不回它——远端无
@@ -329,7 +330,7 @@ fun Composer(state: MockAppState, real: com.moyunteng.lxcode.remote.net.RealBack
                     // 模型药丸 + 模型菜单（左面板）+ 推理强度二级右面板 —— 见 PickerMenus.kt
                     Box {
                         ModelPill(
-                            label = currentModel?.name ?: (real?.defaultModelId?.ifBlank { null } ?: "模型"),
+                            label = currentModel?.name ?: (real?.activeModelId?.ifBlank { null } ?: "模型"),
                             effortDim = effortDim,
                             expanded = modelMenuOpen,
                             onToggle = {
@@ -340,22 +341,23 @@ fun Composer(state: MockAppState, real: com.moyunteng.lxcode.remote.net.RealBack
                         AnchorMenu(expanded = modelMenuOpen, onDismiss = { modelMenuOpen = false }) {
                             ModelMenuContent(
                                 groups = real?.modelGroups ?: emptyList(),
-                                currentModelId = real?.defaultModelId ?: "",
+                                currentModelId = real?.activeModelId ?: "",
                                 effortDim = effortDim,
                                 effortPanelOpen = effortPanelOpen,
                                 onPickModel = { id ->
-                                    // 切模型：role.set（后端角色绑定，多端同步——
-                                    // model.changed 广播回来对齐）；当前档位在新模型上
-                                    // 不存在 → 本地回落（优先「中」，否则首档）
+                                    // 切模型：**会话级**（chat.model：后端落库 + 广播，
+                                    // 只改这一条会话——不是 role.set 的全局 default 角色，
+                                    // 那会让所有会话跟着变）；当前档位在新模型上不存在 →
+                                    // 本地回落（优先「中」，否则首档）
                                     val m = real?.allModels?.find { it.id == id }
                                     val supported = m?.efforts?.filter { it in EFFORT_IDS } ?: emptyList()
                                     if (supported.isNotEmpty() && effort !in supported) {
                                         effort = if ("medium" in supported) "medium" else supported.first()
                                     }
-                                    real?.setDefaultModel(id) { ok, msg ->
-                                        // role.set 失败要给反馈：选择态由 model.changed
-                                        // 广播对齐（后端没改绑就不会广播），本地乐观选中
-                                        // 会永远停在旧模型上——toast 说明，不假装成功
+                                    real?.changeSessionModel(id) { ok, msg ->
+                                        // 失败要给反馈：选中态由 chat.modelChanged 广播对齐
+                                        //（后端没改成功就不会广播），本地乐观选中会永远停在
+                                        // 旧模型上——toast 说明，不假装成功
                                         if (!ok) toast("切换模型失败${if (msg.isNotBlank()) "：$msg" else ""}")
                                     }
                                     modelMenuOpen = false // 选完带退场动画收起

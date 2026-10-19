@@ -145,6 +145,11 @@ func Open(dir string) (*Store, error) {
 		// messages 历史里（session_search 可搜），再记一份是纯冗余。
 		// 空串 = 无清单（老会话/从没建过）。
 		`ALTER TABLE sessions ADD COLUMN todos TEXT NOT NULL DEFAULT ''`,
+		// 会话选中的模型（2026-12 模型作用域修复）：模型选择是**会话的状态**——
+		// 用户在会话 A 里切到模型 X 后重启，打开 A 还得是 X。原先选择只能改全局
+		// default 角色（role.set），一个会话切模型所有会话跟着变。空串 = 没选过
+		//（老会话/新会话）→ 恢复时回落 Agent 绑定与 default 角色。
+		`ALTER TABLE sessions ADD COLUMN model TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := db.Exec(col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			db.Close()

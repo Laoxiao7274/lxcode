@@ -205,6 +205,14 @@ func goldenSamples() map[string]goldenSample {
 			OutputTokens: 26400, LegacyTokens: 3200,
 		}},
 		"compactResult":    {"CompactOutcome", CompactResult{Compacted: false, Reason: "历史太短，摘要没有收益", Before: 9100, After: 9100, Shadowed: 3}},
+
+		// ---- chat 域：会话级模型（chat.model / chat.modelChanged）----
+		//
+		// 模型选择是**会话级**状态（与 approval 同一层级）：参数/结果/事件三份形状
+		// 都由样本钉住——字段改名不编译报错、只静默丢字段。
+		"chatModelParams": {"", ChatModelParams{SessionID: "s1", ModelID: "deepseek-v3"}},
+		"chatModelResult": {"", ChatModelResult{SessionID: "s1", ModelID: "deepseek-v3"}},
+		"modelChangedParams": {"", ModelChangedParams{SessionID: "s1", ModelID: "deepseek-v3"}},
 		"chatRewindResult": {"RewindOutcome", ChatRewindResult{Removed: 0}}, // 幂等空操作：显式 0，不是缺席
 
 		// ---- 会话管理域 ----

@@ -312,7 +312,7 @@ func TestSubRoundDoesNotTouchMainContextUsage(t *testing.T) {
 	child := New(reg, tools.New(), nil)
 	t.Cleanup(child.Close)
 	child.stream = (&fakeStream{script: [][]llm.StreamEvent{textResultWithUsage("子", 5, 99999)}}).stream
-	if _, err := child.streamRound(context.Background(), "", "", nil, []llm.Message{{Role: "user", Content: "子任务"}}, "d1"); err != nil {
+	if _, err := child.streamRound(context.Background(), "", "", "", nil, []llm.Message{{Role: "user", Content: "子任务"}}, "d1"); err != nil {
 		t.Fatal(err)
 	}
 	// 子会话记下它自己的占用（子会话页要显示的就是这一份）

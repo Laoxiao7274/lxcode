@@ -17,7 +17,7 @@
 | 项 | 决策 |
 |---|---|
 | 形态 | **前后台分离**（2026-09-10 用户拍板，对齐 local-myt-agent）：后端 `lxcode --serve` 独立进程（WS JSON-RPC `127.0.0.1:7789/rpc` + 注册表 + 会话运行时 + 工具循环，`/health` 健康检查）；CLI / 桌面壳都是客户端 |
-| 协议 | `internal/protocol`：WS JSON-RPC 2.0（应用协议 Version=2；帧/方法/事件单处定义，客户端服务端共享，不兼容变更递增版本并拒绝握手不匹配的客户端）；扩展 `todo.updated` 事件与 `ChatHistoryResult.Todos`；`chat.send` 可选参数 `effort`（minimal/low/medium/high，仅声明 reasoning 能力的模型生效）与 `approval`（auto/confirm/strict 工具执行三档，空 = confirm；**会话级实时状态**——`chat.approval` 可中途改，跑着的一轮立刻生效）；`chat.done` 与 `ChatHistoryResult` 携带 `context`（上下文占用测量，见 §2.2；未知时整键缺席）；端口 7789（与 local-myt-agent 的 7788 错开） |
+| 协议 | `internal/protocol`：WS JSON-RPC 2.0（应用协议 Version=2；帧/方法/事件单处定义，客户端服务端共享，不兼容变更递增版本并拒绝握手不匹配的客户端）；扩展 `todo.updated` 事件与 `ChatHistoryResult.Todos`；`chat.send` 可选参数 `effort`（minimal/low/medium/high，仅声明 reasoning 能力的模型生效）与 `approval`（auto/confirm/strict 工具执行三档，空 = confirm；**会话级实时状态**——`chat.approval` 可中途改，跑着的一轮立刻生效）；**模型选择是会话级状态**（`chat.model` 切本会话模型 → 落库 `sessions.model` + 广播 `chat.modelChanged`；`role.set` 只保留全局语义 = 新会话的默认模型；解析优先级 = 会话选择 > Agent 绑定 > default 角色）；`chat.done` 与 `ChatHistoryResult` 携带 `context`（上下文占用测量，见 §2.2；未知时整键缺席）；端口 7789（与 local-myt-agent 的 7788 错开） |
 | 内核 | `internal/agent`：纯 Go 包（typed Event + Emitter + Confirm），由 server 包装广播；客户端不得绕过 JSON-RPC 直接调用内核 |
 | 客户端 | `internal/wsclient`：Backend 接口 + Dial（请求按 id 配对、事件 channel、断连 fast-fail、缓冲满丢最旧）；CLI 是第一个客户端，桌面壳复用同一协议 |
 | 前端 | **React 19 + TypeScript + Vite + gsap**，零 UI 库（手写 CSS 设计 token，设计语言 agent-console-v3）；`AgentSource` 双实现：WSAgent（连 7789 真实后端）/ DemoAgent（纯前端演示，无后端也能全量跑 UI）；渲染纪律：打字机行级 memo + memo(Block) 稳定回调 + motionAllowed 动效门控（reduced-motion/测试开关） |
@@ -176,6 +176,7 @@
 - **本文件自身有大小上限**：agent 加载本文件时有 **65536 字节**的指令预算（与技能目录等注入内容共享），**超了会被静默截断**——被截的尾部对读它的 agent 完全不存在，而磁盘上文件是好的，极易误判成「写进去了」。往本文件加大段内容后**必须确认加载时没有 truncate 告警**；接近上限时优先**删重复**（已定结论不重复、细节指向 `docs/`）而不是逐句改措辞，并留几百字节余量（实测卡在 65287 会被截，压到 64071 才稳）。量各节大小的脚本：`temp/agents-sections.mjs`。
 - Go，module `github.com/moyunteng/lxcode`；提交前 `go build ./...` + `go vet ./...` + `gofmt -l .`（输出为空）+ `go test ./...` 全绿；
 - 注释解释"为什么"，用中文；提交信息 conventional commits（`feat(工具): …`）；
+- **提交/推送规范（2026-10-19 定案）：本地检查点细粒度、公开历史按版本聚合**——每轮自动检查点提交格式 `<type>(<scope>): <摘要>` + 正文（`[checkpoint] 第 N 轮` + 用户原话 + 改动统计，规则推断、不调模型）；**本地 master 保留逐轮检查点且永不直接推送**，发版跑 `node scripts/push-release.mjs [version]` 把上次发布以来的改动聚合成一个 `release: <version>` 提交推 `origin/master`（快进；发布线是独立快照线，本地 master 不动）。**完整契约（格式规则/脚本语义/一次性清理 `--bootstrap` 与备份纪律）见 `docs/git-history.md`**；
 - 测试就近放包内（`_test.go` 与源码同目录——Go 项目按包放测试是正确布局）；
 - 后端：`lxcode --serve`（配置默认 `./config/models.json`，`--config` / `LXCODE_CONFIG` 覆盖；会话目录默认 `<config 上级>/sessions`；监听 `--addr`，默认 `127.0.0.1:7789`）；
 - CLI 客户端：`lxcode`（连 `--backend`，默认取 `--addr`；连接失败会给启动指引）；

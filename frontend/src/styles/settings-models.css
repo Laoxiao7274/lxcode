@@ -11,6 +11,16 @@
   text-transform: uppercase;
   letter-spacing: 0.07em;
   padding: 6px 10px 3px;
+  /* 分组标题吸顶：长列表滚动时仍能看出当前在哪家提供商下。
+     面板底是不透明的 --surface，否则吸顶标题会透出下方内容。 */
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface);
+}
+/* 键盘高亮（↑/↓ 移动的那一行）——与 :hover 同款底，但键盘操作时也要看得见 */
+.mp-item.kbd {
+  background: var(--border-soft);
 }
 .mp-group .mp-item {
   padding-left: 18px;
@@ -716,11 +726,29 @@
   min-height: 0;
   max-height: none;
 }
-/* 探测弹窗底栏：分隔线 + 与清单的呼吸间距（已选计数在左、按钮在右） */
+/* 探测弹窗底栏：分隔线 + 与清单的呼吸间距（按钮在右） */
 .mset-probe-foot {
   margin-top: 0;
   padding-top: 9px;
   border-top: 1px solid var(--border-soft);
+}
+/* 探测弹窗的候选区：CandidatePicker 自带「搜索 + 清单 + 计数/全选」三段，
+   外面这层只负责占满剩余高度（清单在内部滚）。 */
+.mset-probe-list {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+/* 候选选择器（CandidatePicker）的搜索框：与清单贴紧，不要 picker 页的 10px 下距 */
+.mset-candidate-search {
+  margin-bottom: 6px;
+  flex: none;
+}
+/* 表单里（非 wide 弹窗）的候选清单：固定上限 + 内部滚动。
+   wide 弹窗里由上面的 flex 规则接管（撑满 + 自身滚）。 */
+.mset-form .mset-candidate-scroll {
+  max-height: 260px;
 }
 /* 表单说明里的端点地址：跟正文同流，不占整行 */
 .mset-probe-endpoint-inline {

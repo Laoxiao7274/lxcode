@@ -67,6 +67,11 @@ export function reduce(state: UIState, ev: AgentEvent): UIState {
       return reduceRewound(state, ev);
     case "historyLoaded":
       return reduceHistoryLoaded(state, ev);
+    case "modelChanged":
+      // 会话**选中的模型**变了（chat.modelChanged / 演示态的本地广播）：与
+      // approvalChanged 同一条会话级路由——reduceSessionStates 按 sessionId 分发，
+      // 每个会话的 state 只收自己的模型变更（切会话时显示的是那条会话自己的模型）。
+      return { ...state, model: ev.model };
     case "approvalChanged":
       // 权限档是**会话级状态**（后端落库，AGENTS.md §2 协议表）：事件带 sessionId，
       // reduceSessionStates 按 id 路由——每个会话的 state 只收自己的档位变更，

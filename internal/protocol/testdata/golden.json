@@ -237,6 +237,20 @@
       "first_seq": 1
     }
   },
+  "chatModelParams": {
+    "_type": "",
+    "value": {
+      "session_id": "s1",
+      "model_id": "deepseek-v3"
+    }
+  },
+  "chatModelResult": {
+    "_type": "",
+    "value": {
+      "session_id": "s1",
+      "model_id": "deepseek-v3"
+    }
+  },
   "chatRewindResult": {
     "_type": "RewindOutcome",
     "value": {
@@ -491,6 +505,13 @@
       "custom": false,
       "status": "error",
       "last_error": "initialize 失败: context deadline exceeded"
+    }
+  },
+  "modelChangedParams": {
+    "_type": "",
+    "value": {
+      "session_id": "s1",
+      "model_id": "deepseek-v3"
     }
   },
   "modelListResult": {

@@ -179,6 +179,37 @@ func (s *Server) dispatchChat(c *wsClient, req *protocol.Request, params json.Ra
 		}
 		return protocol.NewResult(req.ID, protocol.ChatRewindResult{Removed: res.Removed})
 
+	case protocol.MethodChatModel:
+		var p protocol.ChatModelParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return protocol.NewError(req.ID, protocol.CodeInvalidParams, "参数解析失败: "+err.Error())
+		}
+		if p.ModelID == "" {
+			return protocol.NewError(req.ID, protocol.CodeInvalidParams,
+				"model_id 不能为空（要回默认就显式传 default 角色的模型 id）")
+		}
+		id := p.SessionID
+		if id == "" {
+			id = c.focus()
+		}
+		sess, err := s.session(id)
+		if err != nil {
+			return protocol.NewError(req.ID, protocol.CodeInvalidParams, err.Error())
+		}
+		// 会话级状态：只改这一条会话（校验模型存在且启用，不存在不静默回落）。
+		model, err := sess.SetModel(p.ModelID)
+		if err != nil {
+			return protocol.NewError(req.ID, errorCode(err), err.Error())
+		}
+		// 广播（含发请求的这个客户端）：多客户端同步——壳与浏览器/手机同时看着
+		// 同一条会话时两边的模型选择必须一致，否则用户在一侧改了、另一侧还显示旧模型。
+		// 用 chat.modelChanged 而不是 model.changed：后者会让客户端重拉整个注册表
+		// （全局语义），这里只是某条会话的选择变了。
+		s.broadcast(protocol.EventModelChanged, protocol.ModelChangedParams{
+			SessionID: id, ModelID: model,
+		})
+		return protocol.NewResult(req.ID, protocol.ChatModelResult{SessionID: id, ModelID: model})
+
 	case protocol.MethodChatApproval:
 		var p protocol.ChatApprovalParams
 		if err := json.Unmarshal(params, &p); err != nil {

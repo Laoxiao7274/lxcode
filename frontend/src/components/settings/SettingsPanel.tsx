@@ -135,7 +135,7 @@ export function SettingsPanel({ open, onClose, source }: { open: boolean; onClos
                     }
                     return opts;
                   })()}
-                  hint="默认模型（模型管理在「模型」分区）"
+                  hint="新会话的默认模型（当前会话的模型在输入区的模型选择器里改；模型管理在「模型」分区）"
                 />
                 {(() => {
                   const cur = providers.flatMap((p) => p.models).find((m) => m.id === settings.model);

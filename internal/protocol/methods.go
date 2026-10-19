@@ -32,6 +32,11 @@ const (
 	// MethodChatCompact 手动压缩历史（空闲才允许——服务端返回 ErrBusy 映射的
 	// 错误码）。参数可带 agent（与 chat.send 同语义：空 = 主 Agent）。
 	MethodChatCompact = "chat.compact"
+	// MethodChatModel 切换本会话**选中的模型**（会话级状态：落库 + 广播，只改
+	// 这一条会话）。与 role.set 的分工：那个改的是全局 default 角色（= 新会话的
+	// 默认模型，设置页用），这个改的是当前会话——原先模型选择只能走 role.set，
+	// 于是一个会话切模型所有会话（含之后新建的）全跟着变。
+	MethodChatModel = "chat.model"
 	// MethodChatApproval 中途改本会话的权限档（立刻生效于**运行中的**一轮）。
 	// 与 chat.send 的 approval 参数的区别：那个是「这一轮用哪一档」，这个是
 	// 「从现在起这个会话用哪一档」——用户的当前意图是会话级实时状态。
@@ -146,6 +151,10 @@ const (
 	EventDone     = "chat.done"  // 一轮 assistant 消息完成
 	EventError    = "chat.error" // 出错或中断（aborted=true 表示用户取消）
 	EventBusy     = "chat.busy"  // 忙闲状态变化（多客户端同步）
+	// EventModelChanged 会话**选中模型**变更（多客户端同步，与 chat.approvalChanged
+	// 同款）：壳与浏览器/手机同时看同一条会话时显示必须一致。与 model.changed 的
+	// 分工：那个是全局模型注册表变了（列表/角色绑定），这个是某会话换了模型。
+	EventModelChanged = "chat.modelChanged"
 	// EventApproval 权限档变化（多客户端同步，与 chat.busy 同款）：壳与浏览器
 	// 同时开着时两边的档位必须一致，否则用户在一侧改成 auto、另一侧还显示 confirm。
 	EventApproval = "chat.approvalChanged"
