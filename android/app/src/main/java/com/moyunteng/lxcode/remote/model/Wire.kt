@@ -51,7 +51,9 @@ fun addrValid(addr: String): Boolean = addr.isEmpty() || ADDR_RE.matches(addr)
  * 对齐 `protocol.SessionMeta`：`id` / `title` / `updated_at` / `messages` /
  * `archived` / `workspace`。额外两列是**客户端投影**：
  *  * [updatedAt] 在协议里是 ISO 时间戳，桌面端展示成「3 分钟前」——安卓侧转换后的展示串；
- *  * [running] 是 `chat.busy` 广播的投影（协议里它由 busy 事件维护，不是 SessionMeta 的字段）。
+ *  * [running] = 服务端 `session.list` 的 `running` 位 **或** `chat.busy` 广播的
+ *    会话级投影（两者取并集：快照覆盖「连上时那轮已经在跑」，广播覆盖「列表拉到
+ *    之后才开跑/跑完」——协议里 `SessionMeta.Running` 是服务端运行时的事实）。
  */
 data class SessionMeta(
     val id: String,
@@ -256,13 +258,39 @@ fun formatMs(ms: Long): String =
  * 一个模型条目（对齐 ModelConfig 的注册表投影：`id` / `display_name` / `format` /
  * `capabilities.reasoning`）。[efforts] 为空 = 该模型不支持推理强度（菜单里的
  * 跳转行整个隐藏）——派生自能力声明，对非推理端点传 effort 参数会 400。
+ *
+ * **[id] 是注册表主键（`provider::id`；无 provider 时就是纯 id）**——所有查找、
+ * 选中态比较、`chat.model` 的 `model_id` 都用它（与后端 `config.ModelConfig.Key()`
+ * 逐字一致，也与 `chat.history.model` / `chat.modelChanged.model_id` 一致）。
+ * [modelId] 是条目自己的 model id（不含 provider 前缀），**纯展示用**——
+ * 菜单与药丸显示它，绝不显示组合键（用户不该看到 `openai::gpt-4o` 这种串）。
  */
 data class ModelMeta(
     val id: String,
+    /** 条目自己的 model id（不含 provider 前缀）——对齐桌面端 `ModelMeta.modelId`。 */
+    val modelId: String,
+    /** provider 标签（可选；空 = 存量条目，主键就是纯 id）。 */
+    val provider: String = "",
     val name: String,
     val desc: String,
     val efforts: List<String>,
 )
+
+/**
+ * 组合键：`provider::id`；无 provider（存量）= 纯 id。
+ *
+ * 与后端 `config.ModelConfig.Key()`、桌面端 `shared/settings-models.ts` 的
+ * `modelKey` **逐字一致**——所有「是不是同一个模型」的比较都走它，否则两家
+ * 提供商的同名模型会互相覆盖/串台高亮。
+ */
+fun modelKey(provider: String?, id: String): String =
+    if (provider.isNullOrEmpty()) id else "$provider::$id"
+
+/** 从组合键里取纯 id（找不到分隔符就原样返回——存量键）。对齐 `modelIdOfKey`。 */
+fun modelIdOfKey(key: String): String {
+    val i = key.indexOf("::")
+    return if (i > 0) key.substring(i + 2) else key
+}
 
 /** 按端点（base_url host）分组的模型列表（桌面端 providers 里 connected+enabled 的投影）。 */
 data class ModelGroup(val name: String, val models: List<ModelMeta>)

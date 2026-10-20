@@ -45,6 +45,7 @@
         "role": "assistant",
         "content": "改好了，构建通过。",
         "seq": 7,
+        "parent_seq": 6,
         "first_token_ms": 420,
         "duration_ms": 5230,
         "model": "deepseek-v3",
@@ -202,7 +203,8 @@
         0
       ],
       "model": "deepseek-v3",
-      "approval": "confirm"
+      "approval": "confirm",
+      "leaf_seq": 4
     }
   },
   "chatHistoryResultMinimal": {
@@ -237,6 +239,24 @@
       "first_seq": 1
     }
   },
+  "chatLeafChanged": {
+    "_type": "",
+    "value": {
+      "session_id": "s1",
+      "leaf_seq": 12,
+      "prev_leaf_seq": 9,
+      "removed": 3,
+      "context": {
+        "used": 1024,
+        "window": 65536
+      },
+      "files": {
+        "child_sessions": [
+          "child-1"
+        ]
+      }
+    }
+  },
   "chatModelParams": {
     "_type": "",
     "value": {
@@ -252,6 +272,50 @@
     }
   },
   "chatRewindResult": {
+    "_type": "RewindOutcome",
+    "value": {
+      "removed": 3,
+      "leaf_seq": 12,
+      "branched": true,
+      "files": {
+        "restored": [
+          {
+            "path": "internal/store/tree.go",
+            "from_seq": 44,
+            "from_owner_seq": 42,
+            "session_id": "s1",
+            "bytes": 2048,
+            "recreated": true
+          }
+        ],
+        "deleted": [
+          {
+            "path": "temp/scratch.go",
+            "session_id": "child-1"
+          }
+        ],
+        "conflicts": [
+          {
+            "path": "docs/a.md",
+            "expected_hash": "aa",
+            "actual_hash": "bb",
+            "session_id": "child-1",
+            "reason": "磁盘内容与快照期望不符（可能被手动修改或 bash 改过）"
+          }
+        ],
+        "skipped": [
+          {
+            "path": "dist/app.exe",
+            "reason": "二进制文件未快照"
+          }
+        ],
+        "child_sessions": [
+          "child-1"
+        ]
+      }
+    }
+  },
+  "chatRewindResultIdempotent": {
     "_type": "RewindOutcome",
     "value": {
       "removed": 0
@@ -317,6 +381,79 @@
     "value": {
       "session_id": "s1",
       "text": "在吗"
+    }
+  },
+  "chatSetLeafParams": {
+    "_type": "",
+    "value": {
+      "session_id": "s1",
+      "seq": 12,
+      "files": true
+    }
+  },
+  "chatSetLeafResult": {
+    "_type": "",
+    "value": {
+      "session_id": "s1",
+      "leaf_seq": 12,
+      "removed": 2,
+      "files": {
+        "restored": [
+          {
+            "path": "a.go",
+            "from_seq": 13,
+            "bytes": 10
+          }
+        ]
+      }
+    }
+  },
+  "chatTreeParams": {
+    "_type": "",
+    "value": {
+      "session_id": "s1",
+      "include": "compact",
+      "max_nodes": 2000
+    }
+  },
+  "chatTreeResult": {
+    "_type": "",
+    "value": {
+      "leaf_seq": 12,
+      "nodes": [
+        {
+          "seq": 1,
+          "parent_seq": 0,
+          "kind": "user",
+          "turn": 1,
+          "summary": "帮我看看这个报错",
+          "children": 1,
+          "on_path": true
+        },
+        {
+          "seq": 2,
+          "parent_seq": 1,
+          "kind": "assistant",
+          "summary": "好的",
+          "children": 1,
+          "on_path": false,
+          "orphan": true,
+          "files": 2,
+          "child_files": 1,
+          "external": 1
+        },
+        {
+          "seq": 3,
+          "parent_seq": 2,
+          "kind": "checkpoint",
+          "summary": "已压缩",
+          "children": 0,
+          "on_path": true,
+          "shadowed": 4
+        }
+      ],
+      "total": 3,
+      "truncated": true
     }
   },
   "compactResult": {
@@ -565,6 +702,13 @@
       "content": "# 项目守则……",
       "exists": true,
       "note": "（示例）上次读取时文件过大被截断"
+    }
+  },
+  "projectRemoveResult": {
+    "_type": "ProjectRemoveResult",
+    "value": {
+      "removed": true,
+      "sessions": 3
     }
   },
   "searchChannelsResult": {

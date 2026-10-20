@@ -262,6 +262,9 @@ func (s *Server) AttachSessionStore(st *store.Store) error {
 		return errors.New("会话存储为空")
 	}
 	s.st = st
+	// 崩溃自愈（docs/session-tree.md §C.5）：上次「文件已还原但 leaf 未移」的
+	// 回滚在这里补做（只移指针，不碰文件）。失败只记日志——自愈是缓解，不是启动前提。
+	s.ResumePendingRestores()
 	// 图片附件：注入 llm 层的图片读取函数（请求构造瞬间按引用读文件 → base64，
 	// 分层纪律见 internal/llm/images.go）。
 	s.bindAttachmentLoader(st)

@@ -16,12 +16,34 @@
 //     WScript.Shell.Run(..., 0, False) 以隐藏样式启动目标、不等待——
 //     整条链路从头到尾没有任何可见窗口。
 
+import { join } from "node:path";
+
 /** 单个待替换文件：staged（暂存绝对路径）→ target（安装目录内绝对路径），
  *  sha256 为落位后目标文件应有的哈希（来自更新包逐文件清单，暂存时已校验过）。 */
 export interface ApplyFileEntry {
   staged: string;
   target: string;
   sha256: string;
+}
+
+/** 组装替换计划：staged 必须指向 **pending/staged 里的副本**（bat 从这里取文件），
+ *  target 是安装目录里的落位点。
+ *
+ *  2026-10-20 事故（「更新报错、暂存目录有文件但没排程」）的根因就在这一行：
+ *  早先 staged 取的是 `update-staging/dl-<ts>/payload/<rel>`（下载解压区），
+ *  而 copyTree 把副本落到了 `update-pending/staged/<rel>`——两者不在同一棵树，
+ *  verifyStagedFiles 算出的相对路径以 `..` 开头，于是排程前就抛「暂存路径异常」。
+ *  抽成纯函数是为了让这条映射有单测钉子（applyUpdate 本身依赖 electron 不可直测）。 */
+export function buildApplyFileEntries(
+  installRoot: string,
+  stagedRoot: string,
+  hashes: Record<string, string>,
+): ApplyFileEntry[] {
+  return Object.entries(hashes).map(([rel, sha256]) => ({
+    staged: join(stagedRoot, rel),
+    target: join(installRoot, rel),
+    sha256,
+  }));
 }
 
 /** bat/manifest 的生成输入。pids = 壳进程 PID + 壳自己拉起的后端 PID
@@ -64,7 +86,7 @@ function batLiteral(s: string): string {
  *  - 落位/校验阶段失败：DEPLOYED 已置位——所有目标「有 .old 移回原件，
  *    无 .old（更新新增的文件）则删除」，旧版壳原样恢复并被拉起。
  *
- *  Windows 批处理的两条硬约束（e2e 实测抓到，缺一不可）：
+ *  Windows 批处理的四条硬约束（e2e / 真机实测抓到，缺一不可）：
  *  - **行尾必须是 CRLF**：bat 以 LF 跑时 cmd 会把「注释行 + 下一行」拼成
  *    一行解析（rem 行吞掉下一行的换行），rem 里的中文被当命令执行——
  *    症状是「'xx' 不是内部或外部命令」。生成后写文件时统一 CRLF
@@ -73,7 +95,24 @@ function batLiteral(s: string): string {
  *    把 UTF-8 中文按 GBK 乱解，注释/日志里的多字节序列会切割出假命令、
  *    假路径（症状是「'xx' 不是内部或外部命令」「找不到路径」）。所以
  *    bat 里的 rem 与 echo 文本一律 ASCII——bat 落盘的 apply-update.log
- *    是英文，中文说明在壳侧 update.log（UTF-8）与这份注释里。 */
+ *    是英文，中文说明在壳侧 update.log（UTF-8）与这份注释里。
+ *  - **每个外部命令都写绝对路径（%SYSROOT% 下的完整路径）**：本 bat 由
+ *    wscript 以隐藏窗口启动，那个会话的 PATH 不保证与用户 shell 一致
+ *    （精简 PATH / 组策略 / 被劫持的环境变量都可能让 `taskkill`、`certutil`
+ *    变成「不是内部或外部命令」，cmd 直接报 9009 并把流程带进回滚）。
+ *    绝对路径是这条链路上唯一稳定的寻址方式——cmd 内建命令（echo / set /
+ *    if / for / call / goto / move / copy / del / mkdir / rmdir / start）
+ *    不走 PATH，保持裸写；
+ *  - **不依赖 `findstr` 做哈希比对**：certutil 的输出格式随系统语言变化
+ *    （中文系统是「SHA256 的 h.txt 哈希:」），而 `findstr` 本身也是外部
+ *    命令。改为「certutil 算出的哈希落临时文件 → 用 set /p 读回 → 纯
+ *    cmd 字符串比较」，既少一个外部依赖，也不受本地化文本影响。
+ *    临时文件落在 pending 目录（可写、随更新一起清理）。
+ *
+ *  `find` / `findstr` / `tasklist` / `powershell` 一律不许出现在本 bat 里：
+ *  前两个是 PATH 依赖 + 本地化敏感，后两个在无控制台的隐藏会话里对活进程
+ *  会随机挂死（用户现场症状：一个标题为「find lxcode.exe」的 cmd 窗口卡住，
+ *  Ctrl+C 打断后更新才继续——那就是老的探测式等待循环）。 */
 export function buildApplyBat(plan: ApplyPlan): string {
   const files = plan.files;
   const timeout = plan.pidTimeoutSec ?? 60;
@@ -109,9 +148,17 @@ rem Flow: grace window then force-kill stale pids -> stash originals
 rem   as .old -> deploy staged files -> certutil sha256 verify ->
 rem   success: delete .old, cleanup, start new shell, self-delete;
 rem   failure: rollback all, start old shell, keep log, exit.
+rem ALL external commands use absolute paths under %SYSROOT% (see buildApplyBat
+rem   docstring): a wscript-hidden session does not guarantee a usable PATH.
+set "SYSROOT=%SystemRoot%"
+if not exist "%SYSROOT%\\System32\\certutil.exe" set "SYSROOT=C:\\Windows"
+set "CERTUTIL=%SYSROOT%\\System32\\certutil.exe"
+set "TASKKILL=%SYSROOT%\\System32\\taskkill.exe"
+set "PING=%SYSROOT%\\System32\\ping.exe"
 set "PENDING=${L(plan.pendingDir)}"
 set "STAGED=%PENDING%\\staged"
 set "LOG=%PENDING%\\apply-update.log"
+set "HASHFILE=%PENDING%\\apply-update.sha256"
 set "SHELL=${L(plan.shellExe)}"
 set "SHELL_ARGS=${L(args)}"
 set "PIDS=${plan.pids.join(",")}"
@@ -129,16 +176,21 @@ if not exist "%SHELL%" (
   >>"%LOG%" echo [%date% %time%] shell exe missing ^(%SHELL%^) -- abort, keep current install
   exit /b 1
 )
+if not exist "%CERTUTIL%" (
+  >>"%LOG%" echo [%date% %time%] certutil missing ^(%CERTUTIL%^) -- abort, keep current install
+  exit /b 1
+)
 
 rem ---- phase 1: grace window then force-kill stale pids.
 rem      No polling: tasklist AND powershell both hang at random on a LIVE
 rem      pid in a windowless session (wscript hidden start; found by e2e,
-rem      reproduced many times). Fixed wait + unconditional taskkill is the
-rem      only stable shape -- taskkill on an exited pid is a harmless no-op.
-rem      Window = PID_TIMEOUT seconds (prod 60s: graceful shutdown + AV
-rem      scanning; shortened in e2e). ----
-if not "%PIDS%"=="" for %%P in (%PIDS%) do taskkill /F /PID %%P >nul 2>&1
-ping -n %WAIT_SEC% 127.0.0.1 >nul
+rem      reproduced many times -- user saw a stuck cmd window titled
+rem      "find lxcode.exe" and had to Ctrl+C it). Fixed wait + unconditional
+rem      taskkill is the only stable shape -- taskkill on an exited pid is a
+rem      harmless no-op. Window = PID_TIMEOUT seconds (prod 60s: graceful
+rem      shutdown + AV scanning; shortened in e2e). ----
+if not "%PIDS%"=="" for %%P in (%PIDS%) do "%TASKKILL%" /F /PID %%P >nul 2>&1
+"%PING%" -n %WAIT_SEC% 127.0.0.1 >nul
 
 rem ---- phase 2: stash ALL originals as .old first (no file content is
 rem      touched until every backup succeeded) ----
@@ -153,6 +205,7 @@ ${cleanOldLines.join("\n")}
 if exist "%STAGED%" rmdir /s /q "%STAGED%"
 if exist "%PENDING%\\update-manifest.json" del /f /q "%PENDING%\\update-manifest.json"
 if exist "%PENDING%\\apply-update.vbs" del /f /q "%PENDING%\\apply-update.vbs"
+if exist "%HASHFILE%" del /f /q "%HASHFILE%"
 start "" "%SHELL%" %SHELL_ARGS%
 >>"%LOG%" echo [%date% %time%] ========== apply-update DONE (success, new shell started) ==========
 (goto) 2>nul & del /f /q "%~f0"
@@ -161,6 +214,7 @@ exit /b 0
 :rollback
 >>"%LOG%" echo [%date% %time%] update FAILED -- rolling back to pre-update state
 ${rollbackLines.join("\n")}
+if exist "%HASHFILE%" del /f /q "%HASHFILE%"
 >>"%LOG%" echo [%date% %time%] rollback done -- starting old shell (still usable)
 start "" "%SHELL%" %SHELL_ARGS%
 >>"%LOG%" echo [%date% %time%] ========== apply-update END (failed, rolled back) ==========
@@ -180,6 +234,9 @@ exit /b 0
 rem Deploy: staged file must exist (missing = staging tampered, refuse to
 rem update) -> ensure target dir -> copy (target is a freshly freed slot)
 rem -> certutil sha256 verify (guards silent short writes / disk corruption).
+rem Hash check reads certutil's raw output from a file instead of piping into
+rem findstr: certutil's wording is localized and findstr itself is another
+rem PATH-dependent external command (see buildApplyBat docstring).
 if not exist "%~1" (
   >>"%LOG%" echo [%date% %time%] staged file missing: %~1
   exit /b 1
@@ -189,8 +246,15 @@ copy /y "%~1" "%~2" >nul 2>&1 || (
   >>"%LOG%" echo [%date% %time%] deploy failed: %~2
   exit /b 1
 )
-certutil -hashfile "%~2" SHA256 2>nul | findstr /i /c:"%~3" >nul || (
+"%CERTUTIL%" -hashfile "%~2" SHA256 >"%HASHFILE%" 2>nul
+rem tokens=1 strips leading whitespace and takes the first field of each line;
+rem only the bare hash line can equal the expected value (the header/footer
+rem lines are localized prose). No findstr, no PATH, no locale assumptions.
+set "MATCH="
+for /f "usebackq tokens=1" %%H in ("%HASHFILE%") do if /i "%%H"=="%~3" set "MATCH=1"
+if not defined MATCH (
   >>"%LOG%" echo [%date% %time%] sha256 mismatch: %~2 ^(expect %~3^)
+  type "%HASHFILE%" >>"%LOG%" 2>nul
   exit /b 1
 )
 exit /b 0

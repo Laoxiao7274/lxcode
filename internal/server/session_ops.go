@@ -343,6 +343,9 @@ func (s *Server) historyResult(sessionID string, sess *agent.Session, snap agent
 		// 会话**此刻**的权限档（子会话 = 取严(父实时, 自身默认)）：切会话时前端
 		// 按它同步显示——档位显示必须跟随后端事实，而不是上一会话的本地残留。
 		Approval: sess.LiveApproval(),
+		// 这次回放对应的叶（0 = 空路径）：新客户端拿它对齐树面板的高亮与
+		// 「回到最新」的落点。老客户端忽略（未知键）。
+		LeafSeq: s.leafOf(sessionID),
 	}
 	if hasMore != nil {
 		res.HasMore = *hasMore

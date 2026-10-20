@@ -84,10 +84,15 @@ func writeFileDef() *Def {
 					return "", fmt.Errorf("创建目录失败: %w", err)
 				}
 			}
+			// 文件快照（docs/session-tree.md §C.2）：**在写之前**抓 before
+			//（覆盖分支读旧内容，新文件 before_hash='' = 回滚时删掉它）。
+			snap := beginSnapshot(ctx, path)
 			if err := atomicfile.Write(path, []byte(a.Content)); err != nil {
+				snap.Abort()
 				return "", fmt.Errorf("写入 %s 失败: %w", a.Path, err)
 			}
-			return fmt.Sprintf("已写入 %s（%d 字节）", a.Path, len(a.Content)), nil
+			snap.Commit(HashBytes([]byte(a.Content)), int64(len(a.Content)))
+			return fmt.Sprintf("已写入 %s（%d 字节）%s", a.Path, len(a.Content), skipNote(snap)), nil
 		},
 	}
 }

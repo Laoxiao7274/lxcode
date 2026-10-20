@@ -540,7 +540,7 @@ export function Composer({
             用户会以为编辑只是改字，而历史会被清掉 */}
         {editing && (
           <div className="edit-row">
-            <span className="edit-text">正在编辑这条消息 · 发送时会先撤回它及其之后的对话</span>
+            <span className="edit-text">正在编辑这条消息 · 发送时会把这条之后的对话移出当前对话（不会删除，右侧会话树里能切回来）</span>
             <Button className="edit-cancel" onClick={onCancelEdit}>取消编辑</Button>
           </div>
         )}

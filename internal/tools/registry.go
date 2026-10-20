@@ -139,6 +139,7 @@ func New() *Registry {
 	r.register(editDef())
 	r.register(writeFileDef())
 	r.register(bashDef(r))
+	r.register(bashReadOnlyDef(r))
 	r.register(todoDef(r))
 	// ask_user（确认门的「提问」形态）：模型向用户提问、等用户回答——冲突
 	// 抉择、需要用户决策时用。与 todo 同为会话级交互工具，排在变更类之后。

@@ -182,7 +182,7 @@ func TestChildSessionContextOverWS(t *testing.T) {
 	}
 
 	// 子会话（派发开的独立会话：自己的行 + 自己的历史）
-	childID, err := srv.st.CreateChild(mainID, "coder", "d1")
+	childID, err := srv.st.CreateChild(mainID, "coder", "d1", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}

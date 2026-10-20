@@ -204,7 +204,7 @@ func TestChildSessionCompactionLandsOnChildRow(t *testing.T) {
 	if parentID == "" {
 		t.Fatal("前置条件：父会话应有行")
 	}
-	childID, err := st.CreateChild(parentID, "coder", "call-x")
+	childID, err := st.CreateChild(parentID, "coder", "call-x", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,8 +263,8 @@ func TestChildSessionEventAttribution(t *testing.T) {
 	waitDispatchIdle(t, env.s)
 
 	var sawSubDelta, sawSubTodo bool
-	var busyTrue, busyFalse int          // 主会话自己的 busy（无归属）
-	var subBusyTrue, subBusyFalse int    // 子会话的 busy（带归属上抛）
+	var busyTrue, busyFalse int       // 主会话自己的 busy（无归属）
+	var subBusyTrue, subBusyFalse int // 子会话的 busy（带归属上抛）
 	for _, ev := range env.snapshot() {
 		switch e := ev.(type) {
 		case DeltaEvent:
@@ -311,7 +311,7 @@ func TestChildSessionEventAttribution(t *testing.T) {
 // 子会话的任务说明书（SendWait 发进去的 user 消息）要带归属上抛：它是子会话历史里
 // 真实的 user 消息（chat.history 回放可见），实时流必须同样可见——否则续跑的第二轮
 // 在子会话标签页里看不出「新一轮开始了」（2026-12 用户报）。主时间线不画它
-//（前端按 dispatch_id 过滤，dispatch 卡 = 一行摘要）。
+// （前端按 dispatch_id 过滤，dispatch 卡 = 一行摘要）。
 func TestChildTaskUserMessageAttributed(t *testing.T) {
 	env, _ := newChildSessionEnv(t)
 	env.s.SetStream(dispatchStream(t, `{"agent":"coder","task":"跑一遍测试"}`, "子结论"))

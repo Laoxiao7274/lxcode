@@ -38,6 +38,21 @@ type ProjectAddParams struct {
 	Path string `json:"path"`
 }
 
+// ProjectRemoveParams 是 project.remove 的参数（只给项目 id）。
+type ProjectRemoveParams struct {
+	ProjectID string `json:"project_id"`
+}
+
+// ProjectRemoveResult 是 project.remove 的结果。
+//
+// 语义（用户拍板）：**只从 lxcode 的项目列表移除注册**——不删磁盘目录、不删
+// 会话。Sessions 是该项目下保留在库里的会话数（这些会话的归属被清空、归入
+// 「未分组」，历史一条不丢），调用方据此提示用户「N 条会话保留在库里」。
+type ProjectRemoveResult struct {
+	Removed  bool `json:"removed"`
+	Sessions int  `json:"sessions"`
+}
+
 // ProjectMeta 是 project.list 的条目。
 type ProjectMeta struct {
 	ID   string `json:"id"`

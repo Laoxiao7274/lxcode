@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"sync"
 )
 
 // 每会话注入态：todo 清单的写回口与技能目录**经 ctx 注入**，不再挂在注册表上。
@@ -100,4 +101,101 @@ func skillSourceFrom(ctx context.Context) SkillSourceFn {
 	}
 	fn, _ := ctx.Value(skillSourceKey{}).(SkillSourceFn)
 	return fn
+}
+
+// readStateKey 是「本会话读过哪些文件」的 ctx 键。
+type readStateKey struct{}
+
+// ReadState 记本会话的读取观测（read_file 的重复读去重与 edit 的
+// 「改前先读」提示共用同一份记录）。
+//
+// 为什么是会话级而不是进程级（与 todo sink / 技能目录同一条理由）：
+// 注册表是进程级单例，父子会话并存时「读到过没有」必须各算各的——
+// 父会话读过的文件不能替子会话满足前置条件，否则子 Agent 会凭父会话的
+// 观测去改一个它自己没看过的文件。
+//
+// 并发：同一会话内工具调用可能并行（一条 assistant 消息里的多个调用），
+// 所以自带互斥；跨会话天然隔离（各持一个实例）。
+type ReadState struct {
+	mu   sync.Mutex
+	step int
+	last map[string]ReadObservation // 键 = 绝对路径
+}
+
+// ReadObservation 是一次读取的观测快照：判「文件是否变过」用它，判
+// 「是不是同一区间」用 Offset/Limit。
+type ReadObservation struct {
+	// Size / ModUnixNano 是读取那一刻的 stat 结果（判「未被修改」的廉价判据：
+	// 同一会话内同一纳秒被改回原大小几乎不可能，而内容 hash 要多读一遍全文）。
+	Size        int64
+	ModUnixNano int64
+	// Offset / Limit 是这次读取用的分页参数（已归一：offset 从 1 起、
+	// limit 已按默认值/上限收敛）——只有完全相同才回摘要，不同区间照常返回全文。
+	Offset int
+	Limit  int
+	// Step 是第几次 read_file 调用（会话内自增，只用于回话里的「上次读取于第 N 步」）。
+	Step int
+	// TotalLines 是文件总行数（回摘要时告诉模型「共 M 行」，它才知道
+	// 要不要换个区间读别的部分）。
+	TotalLines int
+}
+
+// NewReadState 创建一个空会话读取记录（agent 每轮开始时注入 ctx）。
+func NewReadState() *ReadState {
+	return &ReadState{last: map[string]ReadObservation{}}
+}
+
+// WithReadState 把会话读取记录放进 ctx（nil = 不注入——纯内存模式/单测直调，
+// 那时不去重，行为与改动前逐字节一致）。
+func WithReadState(ctx context.Context, st *ReadState) context.Context {
+	if st == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, readStateKey{}, st)
+}
+
+// readStateFrom 取 ctx 里的会话读取记录（nil = 未注入）。
+func readStateFrom(ctx context.Context) *ReadState {
+	if ctx == nil {
+		return nil
+	}
+	st, _ := ctx.Value(readStateKey{}).(*ReadState)
+	return st
+}
+
+// NextStep 分配本会话的下一个读取步号（0 = 未注入，不记步）。
+func (s *ReadState) NextStep() int {
+	if s == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.step++
+	return s.step
+}
+
+// Peek 取某文件的最后一次**交付全文**的观测（edit 的前置提示与 read_file
+// 的重复读判定都读它）；ok=false = 本会话还没读过这个文件。
+func (s *ReadState) Peek(path string) (ReadObservation, bool) {
+	if s == nil {
+		return ReadObservation{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	obs, ok := s.last[path]
+	return obs, ok
+}
+
+// Record 记下这次**交付了全文**的读取（回摘要的那次不记——它没有交付内容，
+// 记了会把「上次读取于第 N 步」改成一个没给出任何内容的步号）。
+func (s *ReadState) Record(path string, obs ReadObservation) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.last == nil {
+		s.last = map[string]ReadObservation{}
+	}
+	s.last[path] = obs
 }

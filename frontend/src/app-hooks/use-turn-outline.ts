@@ -4,10 +4,17 @@
 // panels/turns.ts——提示条 notice 在历史里也是 user 角色消息，但它不开新轮）。
 import { useCallback, useMemo, useState } from "react";
 import { turnGroups } from "../components/panels/turns";
+import { userSeqUid } from "../components/panels/tree-model";
 import type { ThreadBlock } from "../shared/store";
 
 export function useTurnOutline({ blocks }: { blocks: ThreadBlock[] }) {
   const groups = useMemo(() => turnGroups(blocks), [blocks]);
+  /** seq → 块 uid 的映射（会话树面板的跳转要用）。
+   *
+   *  **只有 kind === "user" 的块带 seq**（dispatch / assistant / tool 块没有）——映射
+   *  表只收 user 块，非 user 节点单击时由 TreeRow.userSeq 回落到它的 user 祖先。
+   *  与 tree-model 的 userSeqUid 同一份实现（各写一份会让两处漂移）。 */
+  const seqToUid = useMemo(() => userSeqUid(blocks), [blocks]);
   /** 面板头的轮次数（如「共 7 轮 · 12 次派发」）。 */
   const dispatchCount = groups.reduce((n, group) => n + group.agents.length, 0);
   /** 最近跳转的那个块（高亮跟随点击）。它可能已经不在列表里（撤回/切会话），
@@ -34,5 +41,13 @@ export function useTurnOutline({ blocks }: { blocks: ThreadBlock[] }) {
     setJumpedUid(uid);
   }, []);
 
-  return { groups, dispatchCount, jumpedUid, activeUid, handleOutlineJump };
+  /** 当前高亮块对应的 seq（树面板按 seq 判高亮——块 uid 与 seq 是两个空间）。
+   *  取不到（高亮项不在时间线里）时返回 null。 */
+  const activeSeq = useMemo(() => {
+    if (activeUid === null) return null;
+    const hit = blocks.find((b) => b.uid === activeUid);
+    return hit && hit.kind === "user" && typeof hit.seq === "number" ? hit.seq : null;
+  }, [blocks, activeUid]);
+
+  return { groups, dispatchCount, jumpedUid, activeUid, activeSeq, seqToUid, handleOutlineJump };
 }

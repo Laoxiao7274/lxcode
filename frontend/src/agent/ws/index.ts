@@ -13,12 +13,13 @@
 // 不动 blocks/pending。
 import type {
   AgentAdminEntry, AgentAdminMcServer, AgentAdminModule, AgentAdminSource, AgentAdminTool, AgentEvent, AgentSource,
-  ApprovalMode, ArchiveOutcome, CatalogModelList, CatalogProviderList, CompactOutcome, DiscoverResult, GitOverview,
-  HistorySnapshot, JobAdminSource, JobInfo, JobLogResult, ModelAdminSource, ModelEntry, ProjectInstructions,
-  ProjectMeta, RewindOutcome, SearchAdminSource, SearchChannel, SearchChannelsSnapshot, SearchTestResult,
-  SendAttachments, SendOptions, SessionMeta, TodoItem, TodoPromptMode, TodoPromptSource,
+  ApprovalMode, ArchiveOutcome, CatalogModelList, CatalogProviderList, ChatTreeResult, CompactOutcome, DiscoverResult,
+  FileRestoreResult, GitOverview, HistorySnapshot, JobAdminSource, JobInfo, JobLogResult, ModelAdminSource, ModelEntry,
+  ProjectInstructions, ProjectMeta, RewindOutcome, SearchAdminSource, SearchChannel, SearchChannelsSnapshot,
+  SearchTestResult, SendAttachments, SendOptions, SessionMeta, SetLeafOutcome, TodoItem, TodoPromptMode,
+  TodoPromptSource,
 } from "../../shared/types";
-import { rewindParams } from "../../shared/blocks";
+import { rewindParams, setLeafParams } from "../../shared/blocks";
 import { normalizeApproval } from "../../shared/approval";
 import { hasPathAtts, isPathReadError, readAttsAsBase64, wireFile, wireImage } from "../../shared/attachment-send";
 import { WsConnection, type Listener } from "./connection";
@@ -28,6 +29,7 @@ import { AgentAdminDomain } from "./agent-admin";
 import { SearchAdmin } from "./search-admin";
 import { JobAdminDomain } from "./job-admin";
 import { TodoPrompt } from "./todo-prompt";
+import { treeFromWire } from "./tree";
 
 export { wsURL } from "./connection";
 
@@ -122,6 +124,26 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
       if (method === "session.changed") {
         // 元数据变化不切焦点或重载历史；列表缓存更新后通知 UI 重读
         this.refreshSessionList();
+      }
+      if (method === "project.changed") {
+        // 项目增删是**共享状态**（别的客户端加的，本端也要立刻看见）：后端是
+        // 事实源，本端只重拉 project.list（applyProjectList 落缓存并发
+        // projectsChanged，侧栏据此重读）。缺这一条时新增项目要重启才出现
+        // ——「新增项目要重启 lxcode 才显示」的根因。
+        this.refreshProjectList();
+        // 会话列表也要重拉：project.remove 会把该项目下会话的归属清空（落进
+        // 「未分组」），只刷项目列表的话这些会话在侧栏仍是「属于一个不存在的
+        // 项目」——分组消失、会话也跟着看不见。
+        this.refreshSessionList();
+      }
+      if (method === "chat.leafChanged") {
+        // 叶指针是**会话的共享状态**（可能是别的客户端动的）：本地没有"该怎么变"
+        // 的知识，唯一正确做法是重拉历史（对齐路径/统计/上下文/检查点下标）。
+        // 树由 UI 层的 use-session-tree 收到 leafChanged 事件后自行重拉——连接层
+        // 不替它缓存树（树是面板的视图数据，不进会话状态归约）。
+        if (ev?.type === "leafChanged" && ev.sessionId) {
+          void this.loadHistory(ev.sessionId).catch(() => undefined);
+        }
       }
     });
   }
@@ -305,25 +327,81 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
     return this.call("chat.compact", { session_id: sessionId }).then((r) => (r ?? { compacted: false }) as CompactOutcome);
   }
 
-  /** 会话回退（chat.rewind）：删掉 seq 这条用户消息及其之后的全部历史。
+  /** 会话回退（chat.rewind）：把 leaf 移到 seq 的父节点（**一条不删**，旧分支保留）。
    *
    *  **先本地乐观截断**：等 WS 往返再清，用户会看到一段"点了没反应"。本地发一条
    *  rewound 事件 → 归约器 planRewind 立刻截断；后端广播 chat.rewound 到达时锚点
    *  已不在，是幂等重放（no-op）。乐观回声不知道条数（removed=0）——归约器不拿
    *  它渲染，真值随后端广播到达。
    *
-   *  **失败必须用后端真相对齐**：本地已截断而后端没删 = 用户以为撤回了、下次刷新
-   *  又全回来（比"点了没反应"更坏，是"骗过一次刷新"）。重放历史是唯一的真相来源。
-   *  老后端没有 chat.rewind 方法时走的正是这条路径——报错 + 时间线复原。 */
-  async rewind(sessionId: string, seq: number): Promise<RewindOutcome> {
+   *  **必须用后端真相对齐的两种情形**（重放历史是唯一的真相来源）：
+   *  ① 请求失败——本地已截断而后端没动 = 用户以为回退了、下次刷新又全回来
+   *     （比"点了没反应"更坏，是"骗过一次刷新"）。老后端没有 chat.rewind 方法时
+   *     走的正是这条路径：报错 + 时间线复原；
+   *  ② `files:true` 的**冲突路径**——请求成功、但后端 fail-closed 什么都没改
+   *     （`removed=0` + `files.conflicts` 非空），于是**不会有** chat.rewound 事件
+   *     来纠正本地那次乐观截断（docs §B.3 的时序坑）。这里主动重拉一次。
+   *
+   *  树面板的 `chat.tree` 由 leafChanged 副作用统一重拉（见构造函数的事件副作用）。 */
+  async rewind(sessionId: string, seq: number, files?: boolean): Promise<RewindOutcome> {
     this.emit({ type: "rewound", sessionId, seq, removed: 0 });
+    let r: { removed?: number; leaf_seq?: number; branched?: boolean; files?: FileRestoreResult } | null;
     try {
-      const r = (await this.call("chat.rewind", rewindParams(sessionId, seq))) as { removed?: number } | null;
-      return { removed: Number(r?.removed ?? 0) };
+      r = (await this.call("chat.rewind", rewindParams(sessionId, seq, files))) as typeof r;
     } catch (e) {
       await this.loadHistory(sessionId).catch(() => undefined);
       throw e;
     }
+    const outcome: RewindOutcome = {
+      removed: Number(r?.removed ?? 0),
+      ...(typeof r?.leaf_seq === "number" ? { leaf_seq: r.leaf_seq } : {}),
+      ...(r?.branched ? { branched: true } : {}),
+      ...(r?.files ? { files: r.files } : {}),
+    };
+    // 冲突（或后端其实没动）：乐观截断必须回滚——重拉历史把被本地删掉的块拿回来。
+    // 判定用两个事实源（removed=0 **或** conflicts 非空）：后端冲突时恒返回 removed=0，
+    // 但两个都判一次不依赖"冲突一定伴随 removed=0"这条实现细节。
+    if (files && (outcome.removed === 0 || (outcome.files?.conflicts?.length ?? 0) > 0)) {
+      await this.loadHistory(sessionId).catch(() => undefined);
+    }
+    return outcome;
+  }
+
+  /** 切叶（chat.setLeaf）：leaf 直接指向 seq（该节点**留在路径上**）。
+   *
+   *  与 rewind 的关键差别：**不做乐观截断**——切叶的落点与本地时间线的关系不是
+   *  「砍掉一段」那么简单（可能切到另一条分支、可能回到被压缩影子的原文），本地
+   *  没有算这个的知识。等应答后重拉 chat.history 是唯一正确的一条路（后端刻意不
+   *  在应答里回 messages，就是为了不让客户端拼第二份历史）。
+   *
+   *  `files:true` 且冲突时后端返回 `removed=0` 且 leaf 未变——那时不需要回滚什么
+   *  （本来就没乐观改过），把 conflicts 交给调用方展示。 */
+  async setLeaf(sessionId: string, seq: number, files?: boolean): Promise<SetLeafOutcome> {
+    const r = (await this.call("chat.setLeaf", setLeafParams(sessionId, seq, files))) as {
+      leaf_seq?: number; removed?: number; files?: FileRestoreResult;
+    } | null;
+    const outcome: SetLeafOutcome = {
+      leafSeq: Number(r?.leaf_seq ?? seq),
+      removed: Number(r?.removed ?? 0),
+      ...(r?.files ? { files: r.files } : {}),
+    };
+    // 重拉历史（对齐路径/统计/上下文/检查点下标）+ 树（分支结构变了）。历史失败
+    // 必须抛：本地没改过任何东西，静默吞掉会让用户看到"切了但时间线没变"。
+    await this.loadHistory(sessionId);
+    return outcome;
+  }
+
+  /** 读会话树骨架（chat.tree）。`maxNodes=0` = 后端缺省（2000）——「加载全部」按钮
+   *  也走它（后端没有"无上限"这个选项，见 protocol.ChatTreeParams 的注释）。
+   *  老后端没有这个方法 → 抛错，调用方（树面板）据此回落到线性轮次视图。 */
+  async tree(sessionId: string, opts?: { maxNodes?: number; include?: "compact" | "full" }): Promise<ChatTreeResult> {
+    const params: Record<string, unknown> = { session_id: sessionId };
+    if (opts?.maxNodes && opts.maxNodes > 0) params.max_nodes = opts.maxNodes;
+    if (opts?.include) params.include = opts.include;
+    const r = (await this.call("chat.tree", params)) as {
+      leaf_seq?: number; nodes?: unknown[]; total?: number; truncated?: boolean;
+    } | null;
+    return treeFromWire(r);
   }
 
   async newSession(workspace?: string): Promise<string> {
@@ -439,10 +517,17 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
   }
 
   addProject(name: string, path: string): void {
-    // project.changed 广播回来时刷新列表（后端事实源）
+    // project.changed 广播回来时刷新列表（后端事实源，见 wireAgentSourceSideEffects）
     this.call("project.add", { name, path })
       .then(() => undefined)
       .catch((e) => this.opError(`添加项目失败: ${e.message}`));
+  }
+
+  /** 从项目列表移除注册（**只解绑，不删磁盘文件、不删会话**）。
+   *  该项目的会话留在库里（侧栏按 workspace 找不到项目时会话仍可经「未分组」
+   *  / 搜索找回），失败原样抛（活跃会话在跑 → 后端拒绝，调用方显示原因）。 */
+  removeProject(id: string): Promise<void> {
+    return this.call("project.remove", { project_id: id }).then(() => undefined);
   }
 
   /** 读项目守则（项目根 AGENTS.md——项目级「自定义指令」）。 */
@@ -461,6 +546,13 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
   /** 写项目守则（后端原子写；下一轮提示词就会读到新内容）。 */
   async saveInstructions(projectId: string, content: string): Promise<void> {
     await this.call("project.instructions.save", { project_id: projectId, content });
+  }
+
+  /** 重拉项目列表（project.changed 广播——后端是事实源）。 */
+  private refreshProjectList() {
+    this.call("project.list")
+      .then((r) => this.applyProjectList(r))
+      .catch((e) => this.opError(`刷新项目列表失败: ${e.message}`));
   }
 
   /** 重拉会话列表（chat.done 主轮 / session.changed 共用）。 */

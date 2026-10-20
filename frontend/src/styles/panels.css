@@ -587,3 +587,381 @@ html[data-theme="dark"] .turn-panel { --turn-run: #fbbf24; }
 @media (prefers-color-scheme: dark) {
   html[data-theme="auto"] .turn-panel { --turn-run: #fbbf24; }
 }
+
+/* ===== 会话树面板（.stree-*，docs/session-tree.md §D.4） =====
+ * 与轮次面板（.turn-*）并存：有 chat.tree 的后端用树、老后端回落轮次列表。视觉沿用
+ * 同一套皮（同字号、同导轨思路、同徽标尺寸），区别只有缩进 + 连接线 + 分支标记。
+ *
+ * 连接线怎么画：每行用 ::before 画**竖线**（按 depth 定位到父行的竖线位置），
+ * 用 ::after 画**横向短枝**；`data-last="true"` 的行把竖线截到行中点（└ 而不是 ├）。
+ * 缩进用 `--stree-depth` 变量（行内 style 给），不靠嵌套 DOM——嵌套会让「按 seq 平铺
+ * 的列表」变成递归组件，而行的可见性/折叠已经在纯函数层算完了。 */
+.stree-panel {
+  /* 与 .turn-panel 同一条局部变量理由：琥珀色没有 :root token（只属于本面板的运行态）。 */
+  --stree-run: #d97706;
+  --stree-indent: 13px;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 4px 6px 8px;
+}
+/* 树模式下右栏加宽（240px 装不下缩进后的行）：只在本面板出现时生效——
+ * 老后端的线性列表维持 240px（那一版不需要更宽）。 */
+.outline-aside[data-tree="true"] {
+  width: 288px;
+}
+.outline-aside[data-tree="true"][data-open="false"] {
+  width: 34px;
+}
+.stree-toolbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 2px 6px;
+  border-bottom: 1px solid var(--border-soft);
+  margin-bottom: 4px;
+}
+.stree-chips {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  gap: 3px;
+  flex-wrap: wrap;
+}
+/* 过滤 chip：小胶囊（比套件的 fd-chip 再紧一档——面板窄，三个 chip 要排得下） */
+.stree-chip {
+  flex: none;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg-faint);
+  font-size: 10.5px;
+  line-height: 16px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.stree-chip:hover {
+  color: var(--fg);
+  border-color: var(--border-hi);
+}
+.stree-chip.on {
+  background: var(--fg);
+  border-color: var(--fg);
+  color: var(--on-accent);
+}
+.stree-chip:focus-visible {
+  outline: 2px solid var(--fg-muted);
+  outline-offset: 1px;
+}
+/* 「回到最新」：常显的次要动作（用户从废弃分支回来只有这一个入口——藏起来就找不到了） */
+.stree-latest.fd-btn-g {
+  flex: none;
+  padding: 1px 7px;
+  font-size: 10.5px;
+  line-height: 16px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+}
+.stree-latest.fd-btn-g:hover:not(:disabled) {
+  border-color: var(--border-hi);
+  color: var(--fg);
+}
+.stree-latest.fd-btn-g:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.stree-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+/* 截断提示（「更早的 N 个节点未加载」+ 加载全部）：不静默截断——用户要知道上面还有 */
+.stree-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  font-size: 10.5px;
+  color: var(--fg-faint);
+  border-bottom: 1px dashed var(--border-soft);
+  margin-bottom: 2px;
+}
+.stree-note-warn {
+  color: var(--err-text);
+}
+.stree-loadall.fd-btn-g {
+  flex: none;
+  padding: 0 6px;
+  font-size: 10.5px;
+  line-height: 16px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+}
+/* 一行 = 定位壳（画连接线）+ 行体（可点）+ 行尾操作。 */
+.stree-row-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  /* 缩进：depth 0 时 6px（与 .turn-row 的内边距对齐），每深一级 +13px */
+  padding-left: calc(6px + var(--stree-depth, 0) * var(--stree-indent));
+}
+/* 竖连接线：落在父行的竖线位置（当前行缩进 - 半级）。depth 0 不画。 */
+.stree-row-wrap:not([data-depth="0"])::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(6px + (var(--stree-depth, 0) - 1) * var(--stree-indent) + 6px);
+  width: 1px;
+  background: var(--border);
+}
+/* 最后一个子行：竖线只画到行中点（└ 的形状），否则它像还有后继 */
+.stree-row-wrap[data-last="true"]::before {
+  bottom: 50%;
+}
+/* 横向短枝：从竖线连到行体 */
+.stree-row-wrap:not([data-depth="0"])::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: calc(6px + (var(--stree-depth, 0) - 1) * var(--stree-indent) + 6px);
+  width: calc(var(--stree-indent) - 6px);
+  height: 1px;
+  background: var(--border);
+}
+.stree-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: 1;
+  min-width: 0;
+  padding: 3px 5px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--fg-muted);
+  text-align: left;
+}
+.stree-row.fd-btn-g {
+  border: none;
+  background: transparent;
+}
+.stree-row.fd-btn-g:hover {
+  color: var(--fg);
+  background: var(--hover-veil);
+}
+.stree-row.fd-btn-g:focus-visible {
+  outline: 2px solid var(--fg-muted);
+  outline-offset: 1px;
+}
+/* 不可点的行（过滤骨架 / 没有 user 祖先）：不当按钮，也不给 hover 反馈 */
+.stree-row-static {
+  cursor: default;
+}
+/* 当前跳转高亮：与 .turn-row 同款——左侧一条高亮条压在连接线上 */
+.stree-row-wrap[data-active="true"] > .stree-row::before {
+  content: "";
+  position: absolute;
+  left: -3px;
+  top: 2px;
+  bottom: 2px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--success);
+}
+/* 当前 leaf（「你在这里」）：高亮条 + 小标，与「刚跳到的行」是两种状态 */
+.stree-row-wrap[data-leaf="true"] > .stree-row {
+  color: var(--fg);
+  font-weight: 500;
+}
+/* 废弃分支：灰化但**不隐藏**（用户明确要求：要能看出有别的分支，且能点过去） */
+.stree-row-wrap[data-off-path="true"] > .stree-row {
+  opacity: 0.55;
+}
+.stree-row-wrap[data-off-path="true"] > .stree-row .stree-label {
+  color: var(--fg-faint);
+  font-weight: 400;
+}
+.stree-row-wrap[data-off-path="true"] > .stree-row:hover {
+  opacity: 1;
+}
+/* 过滤骨架（只因后代命中被保留的祖先）：更低对比度、不可点 */
+.stree-row-wrap[data-skeleton="true"] > .stree-row {
+  opacity: 0.4;
+}
+.stree-caret {
+  flex: none;
+  width: 11px;
+  text-align: center;
+  font-size: 9px;
+  line-height: 1;
+  color: var(--fg-faint);
+  cursor: pointer;
+  border-radius: 3px;
+}
+.stree-caret:hover {
+  color: var(--fg);
+  background: var(--hover-veil-mid);
+}
+.stree-caret:focus-visible {
+  outline: 1px solid var(--fg-muted);
+}
+.stree-caret-empty {
+  cursor: default;
+}
+/* 轮次徽标（与 .turn-badge 同尺寸；检查点/提示条用 ▣ / · 占位，保持缩进对齐） */
+.stree-badge {
+  flex: none;
+  min-width: 16px;
+  padding: 0 3px;
+  border-radius: 4px;
+  background: var(--border-soft);
+  color: var(--fg-faint);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 15px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+.stree-badge-mark {
+  background: transparent;
+}
+.stree-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 徽标组：都是「有就显示、没有就不渲染」（0 不显示——零值 = 没有这个事实） */
+.stree-branch-badge,
+.stree-files,
+.stree-external,
+.stree-hidden,
+.stree-here,
+.stree-orphan {
+  flex: none;
+  padding: 0 4px;
+  border-radius: 4px;
+  font-size: 9.5px;
+  line-height: 14px;
+  white-space: nowrap;
+}
+.stree-branch-badge {
+  background: var(--border-soft);
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+.stree-files {
+  background: color-mix(in srgb, var(--success) 12%, transparent);
+  color: var(--ok-text);
+  font-variant-numeric: tabular-nums;
+}
+.stree-external {
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  color: var(--err-text);
+  font-variant-numeric: tabular-nums;
+}
+.stree-hidden {
+  color: var(--fg-faint);
+  font-variant-numeric: tabular-nums;
+}
+.stree-here {
+  background: color-mix(in srgb, var(--success) 14%, transparent);
+  color: var(--ok-text);
+}
+.stree-orphan {
+  color: var(--warn-text);
+}
+/* 行尾操作：hover / 聚焦时出现（触摸端常驻——见下一条 @media）。
+ * 为什么不是常显：每行两个按钮会把面板撑成按钮墙，而这是**低频**动作（切分支）；
+ * 但「只在 hover 出现」对键盘与触屏不可达，所以 :focus-within 也显示，且触屏常驻。 */
+.stree-actions {
+  flex: none;
+  display: none;
+  align-items: center;
+  gap: 2px;
+}
+.stree-row-wrap:hover > .stree-actions,
+.stree-row-wrap:focus-within > .stree-actions {
+  display: flex;
+}
+@media (hover: none) {
+  .stree-actions {
+    display: flex;
+  }
+}
+.stree-action.fd-btn-g {
+  flex: none;
+  padding: 0 5px;
+  font-size: 10px;
+  line-height: 16px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+.stree-action.fd-btn-g:hover:not(:disabled) {
+  border-color: var(--border-hi);
+  color: var(--fg);
+}
+.stree-action.fd-btn-g:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+/* 二次确认里的「无法还原」警告行（三段文案的第二段） */
+.stree-warn-line {
+  color: var(--err-text);
+}
+/* 冲突清单（fail-closed：整批未执行） */
+.stree-conflict-box .proj-add-body {
+  max-height: 46vh;
+  overflow-y: auto;
+}
+.stree-conflict-list {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.stree-conflict-item {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 5px 7px;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: var(--bg-soft);
+}
+.stree-conflict-path {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg);
+  word-break: break-all;
+}
+.stree-conflict-reason {
+  font-size: 10.5px;
+  color: var(--fg-faint);
+}
+/* 动效减免：树面板没有任何动画（折叠/展开是瞬时切换），这里只钉住"将来别加"。
+ * 与 .turn-pulse 的减免同一条理由：信息不靠动效承载。 */
+@media (prefers-reduced-motion: reduce) {
+  .stree-panel * {
+    transition: none;
+  }
+}
+/* 暗色：树面板的运行态色与轮次面板同档（本文件末尾的暗色覆盖段已按 .turn-panel 声明，
+ * 这里补 .stree-panel —— 两者共用同一套行皮，色值不该分叉）。 */
+html[data-theme="dark"] .stree-panel { --stree-run: #fbbf24; }
+@media (prefers-color-scheme: dark) {
+  html[data-theme="auto"] .stree-panel { --stree-run: #fbbf24; }
+}

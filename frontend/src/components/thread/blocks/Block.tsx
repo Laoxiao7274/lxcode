@@ -25,7 +25,7 @@ import { UserAttachmentSection } from "./AttachmentCard";
 
 /** 没有 seq 的块（老后端 / 更早落库的历史）不能撤回/编辑时的说明——禁用按钮上
  *  的 title。写清楚原因而不是默默点不动：用户至少知道为什么。 */
-const NO_SEQ_HINT = "这条消息来自旧版后端（没有 seq），无法定位要撤回的位置";
+const NO_SEQ_HINT = "这条消息来自旧版后端（没有 seq），无法定位要回到的位置";
 
 export const Block = memo(
   function Block({ block, onConfirm, onAnswer, replayed, onEdit, onRewind, onOpenChild, readOnly, "data-uid": dataUid }: {
@@ -248,16 +248,21 @@ function MessageActions({ block, onEdit, onRewind }: {
         className="msg-action"
         aria-label="编辑"
         disabled={!rewindable}
-        title={rewindable ? "编辑这条消息（发送时才会撤回它及其之后的对话）" : NO_SEQ_HINT}
+        title={rewindable ? "编辑这条消息（发送时才会把之后的内容移出当前对话——不会删除，右侧会话树里能切回来）" : NO_SEQ_HINT}
         onClick={() => onEdit?.(block)}
       >
         <IconEdit />
       </Button>
       <Button
         className="msg-action"
-        aria-label="撤回"
+        aria-label="回到这里"
         disabled={!rewindable}
-        title={rewindable ? "撤回这条及其之后的全部对话，原文回到输入框" : NO_SEQ_HINT}
+        title={rewindable
+          // 文案口径（docs/session-tree.md §D.8）：分支化之后「撤回」不再删除任何东西
+          // ——之后的消息只是离开当前对话，右侧树面板里随时能切回来。说「撤回」会让
+          // 用户以为数据没了（那是最不该被误解的一件事）。
+          ? "回到这里：这条及其之后会从当前对话里移开，但**不会删除**——可以在右侧会话树里再切回来；原文回到输入框"
+          : NO_SEQ_HINT}
         onClick={() => onRewind?.(block)}
       >
         <IconUndo />

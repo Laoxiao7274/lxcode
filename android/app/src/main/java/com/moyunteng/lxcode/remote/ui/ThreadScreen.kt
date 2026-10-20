@@ -101,7 +101,9 @@ import com.moyunteng.lxcode.design.motion.rememberStreamReveal
 import com.moyunteng.lxcode.design.token.Lx
 import com.moyunteng.lxcode.design.token.LxColors
 import com.moyunteng.lxcode.remote.model.ThreadBlock
+import com.moyunteng.lxcode.remote.model.canOpenChild
 import com.moyunteng.lxcode.remote.model.formatMs
+import com.moyunteng.lxcode.remote.model.modelIdOfKey
 import com.moyunteng.lxcode.remote.ui.md.MdBlock
 import com.moyunteng.lxcode.remote.ui.md.MdSpan
 import com.moyunteng.lxcode.remote.ui.md.parseMarkdown
@@ -717,12 +719,15 @@ private fun AssistantBlock(block: ThreadBlock.Assistant, busy: Boolean, stableKe
             // 未知段省略；mock 数据没填这两个字段 → 走旧硬编码（回归保障）。
             val footer = if (block.firstTokenMs != null || block.tokPerSec != null) {
                 listOfNotNull(
-                    block.model.takeIf { it.isNotBlank() },
+                    // 署名里的模型名：消息上的 model 是**注册表主键**（provider::id，
+                    // 对齐后端 ModelID()）——显示层剥成纯 id（modelIdOfKey），
+                    // 否则气泡署名会出现 `openai::gpt-4o` 这种串。
+                    block.model.takeIf { it.isNotBlank() }?.let { modelIdOfKey(it) },
                     block.firstTokenMs?.let { "首字 ${formatMs(it)}" },
                     block.tokPerSec?.let { String.format("%.1f tok/s", it) },
                 ).joinToString(" · ")
             } else {
-                "${block.model} · 首字 812ms · 13.7 tok/s"
+                "${modelIdOfKey(block.model)} · 首字 812ms · 13.7 tok/s"
             }
             Text(
                 text = footer,
@@ -914,9 +919,14 @@ private fun FoldableOutput(text: String, danger: Boolean) {
 }
 
 /**
- * 子 Agent 派发卡：一行摘要（状态点 + 已派发 → 名字 + 结论摘要 + 子会话 id），
- * 点按展开**子工具实时流**——子会话的 chat.toolCall/toolResult（带 dispatch_id）
- * 归并进卡，实时看到子工具名/状态/耗时（桌面端「子会话标签页实时流」的安卓单页等价物）。
+ * 子 Agent 派发卡：一行摘要（状态点 + 已派发 → 名字 + 任务/结论 + 状态词 + 子会话 id），
+ *
+ * 两个动作分得开（对齐桌面端 DispatchCard + docs/child-session-ui.md §2.3）：
+ *  * **整行点按 = 进入子会话**（实时过程与完整时间线都在它自己的视图里）——
+ *    这是唯一的主操作；入口**与有没有工具调用无关**（只输出文字的子 Agent 同样
+ *    点得进去，否则主时间线上就完全没有这个派发的入口）；
+ *  * 行尾 ⌄ = 展开卡内**子工具实时流**（chat.toolCall/toolResult 带 dispatch_id
+ *    归并进来的轻量投影——桌面端「子会话标签页实时流」的安卓单页等价物）。
  */
 @Composable
 private fun DispatchCard(
@@ -925,6 +935,34 @@ private fun DispatchCard(
 ) {
     // 展开态按 dispatchId 记忆：同一张卡流式更新（copy 重建）不重置展开
     var open by remember(block.dispatchId) { mutableStateOf(false) }
+    // 三态（对齐桌面端 DispatchCard 的 data-done/data-error）：
+    //   运行中 = 琥珀呼吸点（LxStatus.Run，与工具卡「执行中」同一档语义）
+    //   完成   = 成功绿
+    //   失败   = 危险红——**红色只给失败**（用户报的「子 Agent 运行时总是红色，
+    //            看起来像中断了」：运行中的卡绝不能落到 danger 色系）
+    // 卡片描边同理：运行中走发丝边框（中性），完成绿、失败红——运行中染绿会把
+    // 「还在跑」说成「已完成」，染红则说成「失败」。
+    val status = when {
+        block.isError -> LxStatus.Danger
+        block.done -> LxStatus.Success
+        else -> LxStatus.Run
+    }
+    val statusText = when {
+        block.isError -> "✗ 失败"
+        block.done -> "✓ 完成"
+        else -> "执行中"
+    }
+    val accent = when (status) {
+        LxStatus.Danger -> Lx.colors.Danger
+        LxStatus.Success -> Lx.colors.Success
+        // 运行中：中性描边（不冒充完成色），状态点自己用琥珀呼吸表达"在跑"
+        else -> Lx.colors.BorderSoft
+    }
+    // 能不能进子会话：有子会话 id 才行（老数据/纯内存子会话没有 id），
+    // **与有没有工具调用无关**（只输出文字的子 Agent 同样有入口）。
+    // 进不去就渲染成静态行——点了没反应的按钮比没有入口更糟（桌面端
+    // dispatch-primary.ts 的同一条判定，纯函数在 DispatchState.kt，单测钉住）。
+    val canOpen = canOpenChild(block.sessionId)
     Column(
         Modifier
             .fillMaxWidth()
@@ -932,44 +970,58 @@ private fun DispatchCard(
             .background(LxColors.Surface)
             .border(
                 width = 1.dp,
-                color = if (block.isError) Lx.colors.Danger.copy(alpha = 0.35f)
-                else Lx.colors.Success.copy(alpha = 0.3f),
+                color = if (status == LxStatus.Run) accent else accent.copy(alpha = 0.32f),
                 shape = Lx.radius.CardShape,
-            )
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-            ) { open = !open }
-            .padding(horizontal = Lx.space.s12, vertical = Lx.space.s10),
+            ),
         verticalArrangement = Arrangement.spacedBy(Lx.space.s8),
     ) {
         Row(
+            Modifier
+                .fillMaxWidth()
+                // 整行 = 主操作（进入子会话）：**与有没有工具调用无关**
+                .clickable(
+                    enabled = canOpen,
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                ) { onOpenChild(block.sessionId, block.agentName, block.task) }
+                .padding(start = Lx.space.s12, end = Lx.space.s6, top = Lx.space.s10, bottom = Lx.space.s10),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(Lx.space.s8),
         ) {
-            LxStatusDot(
-                status = if (block.isError) LxStatus.Danger else if (block.done) LxStatus.Success else LxStatus.Run,
-                size = 8.dp,
-            )
+            LxStatusDot(status = status, size = 8.dp)
             Text(
                 text = "已派发 → ${block.agentName}",
                 style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size12_5, fontWeight = FontWeight.SemiBold),
                 color = Lx.colors.Fg,
             )
             Text(
-                text = if (!block.done && block.childRuns.isNotEmpty()) {
-                    // 子会话实时态：运行中的子工具数（实时流行的计数）
-                    "子会话执行中 · ${block.childRuns.count { it.running }} 个工具运行中"
-                } else if (!block.done && block.childTools > 0) {
-                    "子会话执行中 · ${block.childTools} 个工具调用"
-                } else {
-                    block.conclusion
+                // 运行中显示**任务摘要**（一行），收尾后显示结论。
+                // 为什么不能只显示子工具计数：一个只输出文字、没调任何工具的子 Agent
+                // 在卡上会变成一片空白（用户报的「看不到入口」的一半原因）；任务摘要
+                // 是这张卡永远说得出来的东西。
+                text = when {
+                    !block.done && block.childRuns.isNotEmpty() ->
+                        // 子会话实时态：运行中的子工具数（实时流行的计数）
+                        "子会话执行中 · ${block.childRuns.count { it.running }} 个工具运行中"
+                    !block.done -> block.task.ifBlank { "子会话执行中…" }
+                    else -> block.conclusion
                 },
                 style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size11_5),
                 color = Lx.colors.FgFaint,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
+            )
+            // 状态词（对齐桌面端 .dispatch-state：运行中「执行中」/ ✓ 完成 / ✗ 失败）：
+            // 光靠一个点说"在跑"太隐晦，尤其失败卡上必须一眼看出是失败而不是运行中。
+            Text(
+                text = statusText,
+                style = Lx.type.Pill.copy(fontSize = Lx.type.Size10, fontWeight = FontWeight.SemiBold),
+                color = when (status) {
+                    LxStatus.Danger -> Lx.colors.Danger
+                    LxStatus.Success -> LxColors.SuccessInk
+                    else -> LxColors.AmberInk
+                },
             )
             // 子 Agent 清单进度（todo.updated 带 dispatch_id 的广播归并；-1 = 没有清单）：
             // 手机上看派发进度的轻量形态——不必展开卡就知道子 Agent 跑到哪一步
@@ -980,60 +1032,80 @@ private fun DispatchCard(
                     color = if (block.childTodosDone == block.childTodosTotal) LxColors.SuccessInk else LxColors.Amber,
                 )
             }
-            Text(
-                text = block.sessionId,
-                style = Lx.type.Mono12.copy(fontSize = Lx.type.Size10, color = LxColors.SuccessInk),
-            )
-            Icon(
-                imageVector = Icons.Filled.KeyboardArrowDown,
-                contentDescription = if (open) "收起子工具" else "展开子工具",
-                tint = LxColors.SuccessInk,
-                modifier = Modifier
-                    .size(14.dp)
-                    .graphicsLayer {
-                        rotationZ = if (open) 180f else 0f
-                    },
-            )
-        }
-        if (open) {
-            if (block.childRuns.isEmpty()) {
-                Text(
-                    text = "子会话还没有工具调用",
-                    style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size11),
-                    color = Lx.colors.FgFaint,
-                )
-            } else {
-                Column(verticalArrangement = Arrangement.spacedBy(Lx.space.s4)) {
-                    block.childRuns.forEach { run -> ChildToolRow(run) }
-                }
-            }
-        }
-        // 「查看 ›」进入子会话（临时视图；sessionId 空 = 历史重建没拿到子会话 id，
-        // 不显示入口——不给一个点了必失败的按钮）
-        if (block.sessionId.isNotEmpty()) {
-            Row(
+            // 展开箭头（次级操作：展开卡内子工具流）。它有自己的点击区，不抢
+            // 整行「进子会话」的主操作；颜色中性（不是成功语义——旧代码给它上
+            // 成功绿，运行中的卡上那一抹绿会被读成"已完成"）。
+            Box(
                 Modifier
-                    .fillMaxWidth()
                     .clip(RoundedCornerShape(Lx.radius.r6))
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
-                    ) { onOpenChild(block.sessionId, block.agentName, block.task) }
-                    .padding(horizontal = Lx.space.s4, vertical = Lx.space.s4),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(Lx.space.s4),
+                    ) { open = !open }
+                    .padding(Lx.space.s4),
             ) {
-                Text(
-                    text = "查看子会话",
-                    style = Lx.type.Pill.copy(fontSize = Lx.type.Size11, fontWeight = FontWeight.SemiBold),
-                    color = LxColors.SuccessInk,
-                )
                 Icon(
-                    imageVector = Icons.Filled.KeyboardArrowRight,
-                    contentDescription = "进入子会话",
-                    tint = LxColors.SuccessInk,
-                    modifier = Modifier.size(12.dp),
+                    imageVector = Icons.Filled.KeyboardArrowDown,
+                    contentDescription = if (open) "收起子工具" else "展开子工具",
+                    tint = Lx.colors.FgFaint,
+                    modifier = Modifier
+                        .size(14.dp)
+                        .graphicsLayer {
+                            rotationZ = if (open) 180f else 0f
+                        },
                 )
+            }
+        }
+        // 次级行：子会话实时工具流（折叠）+ 明确的「查看子会话 ›」入口。
+        // 入口文案是给"整行可点"这个隐藏交互的显式提示——手机上没有 hover，
+        // 光靠整行可点太隐晦（用户报的「没有打开入口」）。
+        Column(
+            Modifier.padding(start = Lx.space.s12, end = Lx.space.s12, bottom = Lx.space.s8),
+            verticalArrangement = Arrangement.spacedBy(Lx.space.s6),
+        ) {
+            if (open) {
+                if (block.childRuns.isEmpty()) {
+                    Text(
+                        text = "子会话还没有工具调用",
+                        style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size11),
+                        color = Lx.colors.FgFaint,
+                    )
+                } else {
+                    Column(verticalArrangement = Arrangement.spacedBy(Lx.space.s4)) {
+                        block.childRuns.forEach { run -> ChildToolRow(run) }
+                    }
+                }
+            }
+            if (canOpen) {
+                Row(
+                    Modifier
+                        .clip(RoundedCornerShape(Lx.radius.r6))
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                        ) { onOpenChild(block.sessionId, block.agentName, block.task) }
+                        .padding(vertical = Lx.space.s2),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(Lx.space.s4),
+                ) {
+                    Text(
+                        text = "查看子会话",
+                        style = Lx.type.Pill.copy(fontSize = Lx.type.Size11, fontWeight = FontWeight.SemiBold),
+                        color = Lx.colors.Fg,
+                    )
+                    Icon(
+                        imageVector = Icons.Filled.KeyboardArrowRight,
+                        contentDescription = "进入子会话",
+                        tint = Lx.colors.FgMuted,
+                        modifier = Modifier.size(12.dp),
+                    )
+                    // 子会话 id（短 8 位，完整 id 在子会话页头）：一屏多张卡时靠它区分
+                    // 是哪次派发（与桌面端 .dispatch-session 的同一用途）。
+                    Text(
+                        text = block.sessionId.take(8),
+                        style = Lx.type.Mono12.copy(fontSize = Lx.type.Size10, color = Lx.colors.FgFaint),
+                    )
+                }
             }
         }
     }
@@ -1651,11 +1723,20 @@ private fun ChildThreadView(state: MockAppState) {
                     color = Lx.colors.FgFaint,
                 )
             }
-            // 忙闲点（子会话自己的）
+            // 忙闲点（子会话自己的）：运行中 = 琥珀呼吸点，空闲 = 灰点。
+            // 红色**只给失败**（失败已经在子会话时间线里有一条 Error 块，页头不重复
+            // 着色）——旧实现把"在跑"画成红点，用户读成"中断了"（问题 4）。
             LxStatusDot(
                 status = if (real.childBusy) LxStatus.Run else LxStatus.Idle,
                 size = 8.dp,
             )
+            if (real.childBusy) {
+                Text(
+                    text = "执行中",
+                    style = Lx.type.Pill.copy(fontSize = Lx.type.Size10, fontWeight = FontWeight.SemiBold),
+                    color = LxColors.AmberInk,
+                )
+            }
         }
 
         // 块流（只读；无输入区）

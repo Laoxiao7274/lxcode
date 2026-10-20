@@ -85,7 +85,12 @@ const HEAVY_METHODS = new Set([
   "session.resume",
   "chat.history",
   "chat.compact",
+  // chat.rewind 的实现改成「移 leaf」之后负载只会更重（重载路径 + 占用重估 +
+  // 整段日志折叠统计），10s 快判会误伤；chat.setLeaf 同理（带 files:true 时是磁盘 IO）。
   "chat.rewind",
+  "chat.setLeaf",
+  // chat.tree：大会话要扫全表骨架（compact 投影 + 分支摘要），慢盘上 10s 会偶发命中。
+  "chat.tree",
   "session.list",
 ]);
 

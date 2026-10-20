@@ -2,7 +2,7 @@
 
 import type { AgentEvent, ConfirmRequest, JobInfo } from "./types";
 import { type AssistantBlock, type ThreadBlock, type UIState, DISPATCH_TOOL_NAME, initial, nextUid, withBlock, placeConfirm, planRewind } from "./blocks";
-import { reduceHistory } from "./history";
+import { DISPATCH_INTERRUPTED, reduceHistory } from "./history";
 import { isHiddenNotice, noticeBody, noticeLabel } from "./notices";
 import { attachmentsFromMessage, parseAttachmentLines } from "./attachments";
 
@@ -366,6 +366,34 @@ for (let i = 0; i < blocks.length; i++) {
   const b = blocks[i];
   if (b.kind === "assistant" && b.streaming) blocks[i] = { ...b, streaming: false };
 }
+// **复用已有卡**（2026-12 修复「子 Agent 清单不显示」的另一半）：历史回放
+// （history.ts）已经从 assistant 的 agent_dispatch 调用建过一张同 id 的派发卡
+// （先按「中断」占位定格）。刷新的时序是「先 historyLoaded 建占位卡 → 子 Agent
+// 继续跑 → dispatchStart 到」——无条件追加会**并排长两张同 id 的卡**：新的那张
+// 收 todo.updated，而用户点进去/看到的是历史那张（占位 done，被迟到守卫丢弃）；
+// 安卓端 parseHistoryBlocks + dispatchStart 的复用分支（RealBackend 的 idx >= 0）
+// 早就是这么做的，桌面端漏了。
+// 续跑（同一 dispatch_id 再派一次）也走这里：状态回到 running、旧结论清掉。
+const idx = blocks.findIndex((b) => b.kind === "dispatch" && b.id === ev.dispatchId);
+if (idx >= 0) {
+  const prev = blocks[idx] as Extract<ThreadBlock, { kind: "dispatch" }>;
+  blocks[idx] = {
+    ...prev,
+    sessionId: ev.childSessionId ?? prev.sessionId,
+    // 身份字段以实时载荷为准，空值回落旧值（回放路径的 agentName 恒空）
+    agentId: ev.agentId || prev.agentId,
+    agentName: ev.agentName || prev.agentName,
+    agentColor: ev.agentColor || prev.agentColor,
+    task: ev.task || prev.task,
+    status: "running",
+    isError: undefined,
+    result: undefined,
+    usageTokens: undefined,
+    // 清单：初稿非空才覆盖（nil = 没带初稿，别把回放/实时已有的清单抹掉）
+    ...(ev.todos && ev.todos.length > 0 ? { todos: ev.todos } : {}),
+  };
+  return { ...state, blocks };
+}
 return {
   ...state,
   blocks: [...blocks, {
@@ -388,10 +416,16 @@ function applyDispatchTodos(state: UIState, ev: Ev<"todoUpdated">): UIState {
   if (idx < 0) return state;
   const blocks = state.blocks.slice();
   const b = blocks[idx] as Extract<ThreadBlock, { kind: "dispatch" }>;
-  // 迟到守卫：卡已定格（done）就不再回写——终态以 dispatchEnd 的 finalTodos 为准，
+  // 迟到守卫：卡已**真定格**就不再回写——终态以 dispatchEnd 的 finalTodos 为准，
   // 迟到的旧快照（网络重排 / 历史回放外的边缘时序）不许把定格的终态覆盖回去。
   // 续跑（新一轮派发）会先到 dispatchStart 重开卡，那之后的更新照常生效。
-  if (b.status === "done") return state;
+  //
+  // **回放占位态不是终态**：历史里没有配对结果的调度先按「中断」定格
+  //（status=done + isError + DISPATCH_INTERRUPTED），那是没有证据时的诚实默认。
+  // 子会话仍在跑时，todo.updated 恰恰是「它还活着」的第一手证据——按 done 一律
+  // 丢弃会让清单进度永远停在初稿（用户报的「任务列表有时不显示」根因之一）。
+  // 真终态（成功 / 真失败）仍受守卫保护。
+  if (b.status === "done" && !(b.isError && b.result === DISPATCH_INTERRUPTED)) return state;
   blocks[idx] = { ...b, todos: ev.items };
   return { ...state, blocks };
 }
@@ -431,13 +465,27 @@ return { ...state, blocks: [...state.blocks, block] };
 /** historyLoaded 事件的处理（从 reduce 的 switch 里提出来——原来 213 行的 switch
  *  每个分支都是一段独立逻辑，混在一起只能整体读）。 */
 function reduceHistoryLoaded(state: UIState, ev: Ev<"historyLoaded">): UIState {
+// **流式尾巴不许被快照冲掉**（2026-12 用户报「子 Agent 正文输出后消失」的根因）：
+// assistant 消息由后端**整轮结束**才 append（turn.go 的 s.append 在 streamRound
+// 返回之后），正在流式的那段正文永远不在 chat.history 里；而子会话的快照是
+// 「现建运行时 + AttachTo」（server/session_ops.go 的 session()：子会话不进运行时
+// 缓存），AttachTo 出来的 Session busy 恒 false —— 快照的 busy 键对子会话不携带
+// 任何忙闲事实。旧守卫 `history.busy && state.busy && historyReady` 因此对子会话
+// 恒不成立，重开视图（ChildSessionPage 挂载即 childHistory，StrictMode 下两次）
+// 就把流式块整数组换掉。现在的口径：**重建照常做**（快照里可能有更多历史），但
+// 本地那份流式尾巴必须接回去（appendLiveTail 去重：已落库时不追加、只续写同一块）。
+const live = liveTail(state);
 // 当前会话仍在生成且此前已完成过历史回放时，后端快照只含已追加消息；
-// 全量重建会抹掉本地实时流。冷恢复/首次载入则必须重建确认卡等历史状态。
+// 本地还可能积累着**快照里没有的非流式实时块**（dispatch 卡、确认卡、任务卡）。
+// 冷恢复/首次载入则必须重建确认卡等历史状态——所以这里保留旧快照语义。
 if (ev.history.busy && state.busy && state.historyReady) {
   return {
     ...state,
     pending: ev.history.pending ?? state.pending,
-    todos: ev.history.todos ?? state.todos,
+    // 清单：**空快照不覆盖**（键缺席与空数组在 wire 上同形，HistoryResult.todos
+    // 是 omitempty）。否则「子 Agent 建了清单 → 重开视图 → 清单消失」——
+    // 用户报的「任务列表有时不显示」的另一半。
+    todos: ev.history.todos && ev.history.todos.length > 0 ? ev.history.todos : state.todos,
     context: ev.history.context ?? state.context,
     // 统计同样保持旧值：忙碌中的快照不带 stats 时（后端读不到库）不该把
     // 已经显示的数字擦掉——读不到 ≠ 没有
@@ -445,6 +493,7 @@ if (ev.history.busy && state.busy && state.historyReady) {
     // 权限档同款：快照没带 approval（老后端/演示源）不写——不猜（不把已显示
     // 的档位抹成 null）
     approval: ev.history.approval ?? state.approval,
+    historyReady: true,
   };
 }
 // 快照说会话在生成而本地不知道（新连上的客户端错过了那次 busy=true 广播）：
@@ -458,17 +507,133 @@ const busySnapshot = ev.history.busy;
 // 保留的是本会话状态里的卡（state 本就按会话隔离），位置接在重建后的历史之后。
 const jobs = state.blocks.filter((b) => b.kind === "job");
 const rebuilt = reduceHistory(state, ev.history);
+// 会话仍在跑：最后那张「中断」占位卡其实是执行中（见 reviveRunningDispatch）
+const revived = reviveRunningDispatch(rebuilt.blocks, state.blocks, busySnapshot || state.busy);
+// 流式尾巴接回（去重见 appendLiveTail）
+const withLive = appendLiveTail(revived, live, ev.history);
+const base = jobs.length ? [...withLive, ...jobs] : withLive;
 return {
   ...rebuilt,
-  busy: busySnapshot || ev.history.busy,
+  busy: busySnapshot || ev.history.busy || live.length > 0,
   // 历史全量重建：pending 乐观块一起被重建抹掉——回放的历史里要么已有这条消息
   //（真块回来了），要么发送还没落库（留着会变僵尸 pending）。发送中态一并结束。
   sending: false,
-  blocks: jobs.length ? [...rebuilt.blocks, ...jobs] : rebuilt.blocks,
+  blocks: base,
+  // 清单同上面那条守卫的理由：空快照不覆盖本地清单。
+  todos: ev.history.todos && ev.history.todos.length > 0 ? ev.history.todos : state.todos,
   // 权限档按快照对齐（后端 LiveApproval——会话级状态持久化的显示依据）；
   // 快照没带（老后端/演示源）保持原值不猜。
   approval: ev.history.approval ?? state.approval,
 };
+}
+
+/** 本地时间线里**还没落库的实时尾巴**（重建时接在快照之后，不许被抹掉）。
+ *
+ *  口径只有一条：尾块是流式中的 assistant。理由（2026-12 用户报「子 Agent 正文
+ *  输出后消失」的根因）：assistant 消息由后端**整轮结束**才 append（turn.go 的
+ *  s.append 在 streamRound 返回之后），所以正在流式的那段正文在 chat.history 里
+ *  根本不存在；子会话的 chat.history 又是「现建运行时 + AttachTo」（session_ops.go
+ *  的 session()），AttachTo 出来的 Session busy 恒 false —— 快照的 busy 键对子会话
+ *  不携带任何忙闲事实，于是旧守卫（`history.busy && state.busy`）恒不成立：重开
+ *  视图（ChildSessionPage 每次挂载都 childHistory，StrictMode 下还是两次）就把
+ *  流式块整数组换掉 → 用户看到文字凭空消失。
+ *
+ *  只取尾块而不是「所有 streaming 块」：reduceDelta 开新块时会把前一块定格
+ *  （streaming=false），所以流式块恒在末尾；多接就是重复。 */
+function liveTail(state: UIState): ThreadBlock[] {
+  const last = state.blocks[state.blocks.length - 1];
+  return last && last.kind === "assistant" && last.streaming ? [last] : [];
+}
+
+/** 把实时尾巴接回重建结果（**去重**：同一块可能已经落库并在快照里了）。
+ *
+ *  竞态窗口：后端 append 之后、chat.done 到达之前拉一次 chat.history——快照里
+ *  已经有这条 assistant，而本地那块还是 streaming。此时直接追加就是**同一条回复
+ *  出现两遍**。判定用快照最后一条消息：角色 assistant 且正文是实时块正文的前缀
+ *  （deltas 只追加不修改，所以「已落库的部分」一定是前缀）→ 判定为同一条，不追加；
+ *  并把重建出来的那块重新标成 streaming，让后续 delta 续写同一块（否则 reduceDelta
+ *  会在它后面另开一块，把一条回复劈成两半）。 */
+function appendLiveTail(blocks: ThreadBlock[], live: ThreadBlock[], history: Ev<"historyLoaded">["history"]): ThreadBlock[] {
+  if (live.length === 0) return blocks;
+  const tail = live[0] as AssistantBlock;
+  // 重建结果里的**最后一块 assistant**（同一条回复只可能落在它身上）
+  let idx = -1;
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    if (blocks[i].kind === "assistant") { idx = i; break; }
+  }
+  const last = idx >= 0 ? (blocks[idx] as AssistantBlock) : null;
+  // ① 它就是这条回复（相同 / 互为前缀）→ 合并，正文取较长的那份（本地领先 = 快照
+  //    落后几个 delta；快照领先 = 本地还差几条，别把已落库的文字吞回去），并标回
+  //    streaming 让后续 delta 续写同一块（否则 reduceDelta 会在后面另开一块，把一条
+  //    回复劈成两半）。收尾由 chat.done 负责。
+  if (last && sameReply(last.content, tail.content)) {
+    const content = tail.content.length >= last.content.length ? tail.content : last.content;
+    const reasoning = tail.reasoning.length >= last.reasoning.length ? tail.reasoning : last.reasoning;
+    const next = blocks.slice();
+    next[idx] = { ...last, streaming: true, content, reasoning };
+    return next;
+  }
+  // ② 快照里已有这条回复、但它后面还有更新的块 → 本地那份是**陈旧的实时尾巴**
+  //    （已落库并被后续轮次接上）：丢弃，不许追加（否则同一条回复出现两遍），也不许
+  //    覆盖最后一块（那会把新一轮的正文替换成上一轮的字）。
+  const persisted = (history.messages ?? []).some(
+    (m) => m.role === "assistant" && sameReply(m.content ?? "", tail.content),
+  );
+  if (persisted) return blocks;
+  // ③ 确实是快照之外的实时块（后端整轮结束才 append，正在写的新回复）→ 接在后面
+  return [...blocks, ...live];
+}
+
+/** 两条正文是不是**同一条回复**：完全相同，或一方是另一方的前缀（delta 只追加不修改）。
+ *  空串不参与前缀判定（空 assistant 块与任何正文都"前缀相容"，那会把不同回复并成一条）。 */
+function sameReply(a: string, b: string): boolean {
+  if (a === b) return true;
+  if (a.length === 0 || b.length === 0) return false;
+  return a.startsWith(b) || b.startsWith(a);
+}
+
+/** 回放占位卡在会话仍然忙碌时恢复成「执行中」（对齐安卓端 markDispatchRunning）。
+ *
+ *  历史里没有配对结果的调度会被 history.ts 先按「中断」定格（status done +
+ *  isError + DISPATCH_INTERRUPTED）——那是**没有证据时的诚实默认**。但如果这个
+ *  会话此刻仍在跑，最后那张占位卡其实正在执行：不回填的话（a）用户看到一张红着的
+ *  「✗ 失败」卡，子 Agent 明明还在干活（安卓端同一问题的修复见 DispatchState.kt）；
+ *  （b）`applyDispatchTodos` 的迟到守卫按 `status === "done"` 丢弃后续 todo.updated
+ *  ——卡上的清单进度永远不动，这正是「任务列表有时不显示」的另一半根因。
+ *
+ *  只复活**最后一张**占位卡：更早的占位卡是历史上真断掉的派发，本会话后来的忙碌
+ *  与它无关（把它们一起点亮 = 把中断说成在跑）。子块与清单从本地那份同 id 的卡
+ *  继承（重建出来的占位卡这两项恒空——回放无从得知）。 */
+function reviveRunningDispatch(rebuilt: ThreadBlock[], prevBlocks: ThreadBlock[], busy: boolean): ThreadBlock[] {
+  if (!busy) return rebuilt;
+  let idx = -1;
+  for (let i = rebuilt.length - 1; i >= 0; i--) {
+    if (rebuilt[i].kind === "dispatch") { idx = i; break; }
+  }
+  if (idx < 0) return rebuilt;
+  const card = rebuilt[idx];
+  if (card.kind !== "dispatch") return rebuilt;
+  if (card.status !== "done" || !card.isError || card.result !== DISPATCH_INTERRUPTED) return rebuilt;
+  // 本地同 id 的那份（可能带实时子块/清单）——只补空项，不覆盖重建出来的历史事实
+  const prev = prevBlocks.find((b) => b.kind === "dispatch" && b.id === card.id) as
+    | Extract<ThreadBlock, { kind: "dispatch" }>
+    | undefined;
+  const next = rebuilt.slice();
+  next[idx] = {
+    kind: "dispatch",
+    uid: card.uid,
+    id: card.id,
+    sessionId: card.sessionId ?? prev?.sessionId,
+    agentId: card.agentId,
+    agentName: card.agentName,
+    agentColor: card.agentColor,
+    task: card.task,
+    status: "running",
+    subBlocks: card.subBlocks.length > 0 ? card.subBlocks : (prev?.subBlocks ?? []),
+    ...(card.todos ?? prev?.todos ? { todos: card.todos ?? prev?.todos } : {}),
+    ...(card.attachments ? { attachments: card.attachments } : {}),
+  };
+  return next;
 }
 
 /** jobStarted / jobSettled 共用：同一个任务只留一张卡（就地更新快照）。

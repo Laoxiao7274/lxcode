@@ -165,19 +165,114 @@ func (s *Server) dispatchChat(c *wsClient, req *protocol.Request, params json.Ra
 		if err != nil {
 			return protocol.NewError(req.ID, protocol.CodeInvalidParams, err.Error())
 		}
+		// 文件还原在**切 leaf 之前**（fail-closed：有冲突就整批不执行、leaf 不动）。
+		// 切段口径 = rewindCut（owner_seq >= anchor，锚点自己也算「离开路径」）。
+		var files *protocol.FileRestoreResult
+		if p.Files {
+			res, conflicts, rerr := s.restoreFiles(id, p.Seq, rewindCut)
+			if rerr != nil {
+				return protocol.NewError(req.ID, errorCode(rerr), rerr.Error())
+			}
+			files = res
+			if conflicts > 0 {
+				// 冲突是**正常业务结果**（要带清单给用户看），不是错误码。
+				// leaf 不动、removed=0 —— 前端据此回滚它的乐观截断（§B.3 方案②）。
+				return protocol.NewResult(req.ID, protocol.ChatRewindResult{
+					Removed: 0, LeafSeq: s.leafOf(id), Branched: true, Files: files,
+				})
+			}
+		}
 		res, err := sess.Rewind(p.Seq)
 		if err != nil {
 			return protocol.NewError(req.ID, errorCode(err), err.Error())
 		}
-		// 事件由内核发（RewoundEvent → chat.rewound，见 emit.go）：撤回改变了
-		// 时间线，所有客户端都要在同一时刻收到同一份事实。这里只回答请求方。
+		if p.Files {
+			// 文件已经还原、leaf 也已移动 → 清意图日志（崩溃自愈的收尾）。
+			// 顺序：④ 文件 → ⑥ leaf → 清日志。中间崩溃时日志还在，启动补做。
+			if s.st != nil {
+				_ = s.st.ClearRestoreIntent(id)
+			}
+		}
+		// 事件由内核发（RewoundEvent → chat.rewound + chat.leafChanged，见 emit.go）：
+		// 叶移动改变了时间线，所有客户端都要在同一时刻收到同一份事实。这里只回答请求方。
 		//
-		// 另外广播一次会话元数据变化（与 chat.compact 同款）：撤回让消息数变小了，
-		// 侧栏的条数得跟着刷新——客户端收到 session.changed 一律重拉会话列表。
+		// 另外广播一次会话元数据变化（与 chat.compact 同款）：侧栏条数跟着路径变，
+		// 客户端收到 session.changed 一律重拉会话列表。
 		if res.Removed > 0 {
 			s.broadcastSessionChanged(id, "rewound")
 		}
-		return protocol.NewResult(req.ID, protocol.ChatRewindResult{Removed: res.Removed})
+		return protocol.NewResult(req.ID, protocol.ChatRewindResult{
+			Removed: res.Removed, LeafSeq: res.LeafSeq, Branched: true, Files: files,
+		})
+
+	case protocol.MethodChatSetLeaf:
+		var p protocol.ChatSetLeafParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return protocol.NewError(req.ID, protocol.CodeInvalidParams, "参数解析失败: "+err.Error())
+		}
+		if p.Seq < 0 {
+			return protocol.NewError(req.ID, protocol.CodeInvalidParams,
+				"seq 不能为负（0 = 空路径，回到第一条消息之前）")
+		}
+		id := p.SessionID
+		if id == "" {
+			id = c.focus()
+		}
+		sess, err := s.session(id)
+		if err != nil {
+			return protocol.NewError(req.ID, protocol.CodeInvalidParams, err.Error())
+		}
+		// 文件还原（fail-closed）：切段口径 = setLeafCut（owner_seq > seq，**严格大于**
+		// ——seq 这条消息自己的改动属于「目标状态」，不该被还原掉）。
+		var files *protocol.FileRestoreResult
+		if p.Files {
+			res, conflicts, rerr := s.restoreFiles(id, p.Seq, setLeafCut)
+			if rerr != nil {
+				return protocol.NewError(req.ID, errorCode(rerr), rerr.Error())
+			}
+			files = res
+			if conflicts > 0 {
+				return protocol.NewResult(req.ID, protocol.ChatSetLeafResult{
+					SessionID: id, LeafSeq: s.leafOf(id), Removed: 0, Files: files,
+				})
+			}
+		}
+		res, err := sess.SetLeaf(p.Seq)
+		if err != nil {
+			return protocol.NewError(req.ID, errorCode(err), err.Error())
+		}
+		if p.Files && s.st != nil {
+			_ = s.st.ClearRestoreIntent(id)
+		}
+		if res.Removed > 0 {
+			s.broadcastSessionChanged(id, "rewound")
+		}
+		return protocol.NewResult(req.ID, protocol.ChatSetLeafResult{
+			SessionID: id, LeafSeq: res.LeafSeq, Removed: res.Removed, Files: files,
+		})
+
+	case protocol.MethodChatTree:
+		var p protocol.ChatTreeParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return protocol.NewError(req.ID, protocol.CodeInvalidParams, "参数解析失败: "+err.Error())
+		}
+		id := p.SessionID
+		if id == "" {
+			id = c.focus()
+		}
+		sess, err := s.session(id)
+		if err != nil {
+			return protocol.NewError(req.ID, protocol.CodeInvalidParams, err.Error())
+		}
+		maxNodes := p.MaxNodes
+		if maxNodes <= 0 {
+			maxNodes = defaultTreeMaxNodes
+		}
+		tree, err := sess.Tree(maxNodes)
+		if err != nil {
+			return protocol.NewError(req.ID, errorCode(err), err.Error())
+		}
+		return protocol.NewResult(req.ID, toProtocolTree(tree))
 
 	case protocol.MethodChatModel:
 		var p protocol.ChatModelParams

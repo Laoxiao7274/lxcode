@@ -41,12 +41,16 @@ function waitMark(mark, timeoutMs = 20_000) {
   return false;
 }
 
-function runBat(pendingDir, batPath, timeoutMs = 90_000) {
+function runBat(pendingDir, batPath, timeoutMs = 90_000, env = undefined) {
   // 真实执行路径与生产一致：wscript 隐藏启动 VBS → VBS Run bat。
   // e2e 里用同步 spawn wscript 并等它返回（VBS 的 Run 是不等待的——bat 在
   // 独立 cmd 里跑，wscript 秒回；所以这里轮询产物状态而不是等 wscript）。
-  const r = spawnSync("wscript.exe", [join(pendingDir, "apply-update.vbs")], { timeout: 10_000 });
-  if (r.status !== 0) throw new Error(`wscript 启动失败: exit ${r.status} ${r.stderr}`);
+  // env 可注入精简 PATH（模拟 wscript 隐藏会话——2026-10-20 漏掉的那类环境）。
+  // wscript 用绝对路径启动：精简 PATH 场景下测试进程传下去的 PATH 是空的，
+  // 靠 PATH 找 wscript.exe 会 ENOENT（被测试的 bat 不受影响，它自己有绝对路径）。
+  const wscriptExe = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "wscript.exe");
+  const r = spawnSync(wscriptExe, [join(pendingDir, "apply-update.vbs")], { timeout: 10_000, env });
+  if (r.status !== 0) throw new Error(`wscript 启动失败: exit ${r.status} ${r.stderr ?? r.error}`);
   // 轮询终态：bat 自删除（成功）或日志出现结束标记（失败），超时抛出。
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -235,10 +239,72 @@ function e2eTimeoutKill() {
   if (stillAlive) spawnSync("taskkill", ["/F", "/PID", String(sleeper.pid)]);
 }
 
+// ---------- 路径 4：精简 PATH（wscript 隐藏会话的真实形态） ----------
+// 2026-10-20 事故的第二根因：bat 里的 taskkill / ping / certutil / findstr 全是
+// 裸命令名，靠 PATH 寻址。用户现场看到的「找不到」与「标题为 find lxcode.exe 的
+// cmd 窗口卡住」都出在这里。这条路径把 PATH 指向一个空目录（模拟 PATH 不可用），
+// 断言：替换照常完成、sha 校验照常生效、日志里没有任何 9009（命令找不到）。
+function e2eMinimalPath() {
+  const root = mkdtempSync(join(tmpdir(), "lxcode-e2e-minpath-"));
+  const install = join(root, "install");
+  const pending = join(root, "pending");
+  const staged = join(pending, "staged");
+  const emptyPath = join(root, "empty-path");
+  mkdirSync(join(install, "resources", "bin"), { recursive: true });
+  mkdirSync(join(staged, "resources", "bin"), { recursive: true });
+  mkdirSync(emptyPath, { recursive: true });
+
+  const targets = {
+    "resources\\app.asar": "OLD-ASAR-BYTES",
+    "resources\\bin\\lxcode.exe": "OLD-EXE-BYTES",
+  };
+  const news = {
+    "resources\\app.asar": "NEW-ASAR-BYTES-" + "x".repeat(1000),
+    "resources\\bin\\lxcode.exe": "NEW-EXE-BYTES-" + "y".repeat(2000),
+  };
+  for (const [rel, content] of Object.entries(targets)) writeFileSync(join(install, rel), content);
+  for (const [rel, content] of Object.entries(news)) writeFileSync(join(staged, rel), content);
+
+  const mark = join(root, "launched.mark");
+  const plan = {
+    pendingDir: pending,
+    stagedDir: staged,
+    shellExe: process.execPath,
+    shellArgs: [`"${fakeShellJs}"`, `"${mark}"`, "new-shell"],
+    pids: [999999],
+    appVersion: "0.3.0-e2e-minpath",
+    pidTimeoutSec: 2,
+    files: Object.keys(news).map((rel) => ({
+      staged: join(staged, rel),
+      target: join(install, rel),
+      sha256: sha256(join(staged, rel)),
+    })),
+  };
+  writeFileSync(join(pending, "apply-update.bat"), Buffer.from(toCrlf(buildApplyBat(plan)), "utf8"));
+  writeFileSync(join(pending, "apply-update.vbs"), buildApplyVbs(join(pending, "apply-update.bat")), "utf8");
+
+  // PATH 只剩一个空目录：任何裸命令名都会 9009。SystemRoot 保留（bat 用它
+  // 拼绝对路径，真实系统里恒有）。
+  const env = { ...process.env, PATH: emptyPath, Path: emptyPath };
+  const log = runBat(pending, join(pending, "apply-update.bat"), 90_000, env);
+
+  const okAsar = readFileSync(join(install, "resources\\app.asar"), "utf8") === news["resources\\app.asar"];
+  const okExe = readFileSync(join(install, "resources\\bin\\lxcode.exe"), "utf8") === news["resources\\bin\\lxcode.exe"];
+  const noOld = Object.keys(targets).every((rel) => !existsSync(join(install, rel) + ".old"));
+  const launched = waitMark(mark) && readFileSync(mark, "utf8") === "new-shell";
+  report("精简 PATH：替换落位（外部命令不依赖 PATH）", okAsar && okExe);
+  report("精简 PATH：.old 已清理（不是被回滚兜住）", noOld);
+  report("精简 PATH：新壳被拉起", launched);
+  report("精简 PATH：日志无 9009/命令找不到", !/9009|not recognized|not found/i.test(log));
+  report("精简 PATH：日志记录成功收尾", log.includes("apply-update DONE (success"));
+  rmSync(root, { recursive: true, force: true });
+}
+
 try {
   e2eSuccess();
   e2eRollback();
   e2eTimeoutKill();
+  e2eMinimalPath();
 } finally {
   rmSync(fakeShellJs, { force: true });
   rmSync(sleeperJs, { force: true });

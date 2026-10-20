@@ -8,7 +8,7 @@
 // 局域网远程访问的真数据（token/开关/局域网地址）经 remoteControlBridge。
 // 浏览器模式无桥 → 演示回落。实现文档 docs/sakurafrp-integration.md。
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import type { SakuraBridge, SakuraStateView } from "../agent/sakura";
+import type { SakuraBridge, SakuraLatencyEvent, SakuraNodeList, SakuraStateView } from "../agent/sakura";
 import type { RemoteControlBridge, RemoteControlState } from "../agent/host";
 
 /** 一条远程后端连接（地址 + token 凭证）。 */
@@ -46,10 +46,10 @@ export interface SakuraTunnel {
   addr: string;
   /** 在线（frpc 在跑且节点可达）。 */
   online: boolean;
-  /** 节点负载百分比（选节点时的参考）。 */
-  load: number;
-  /** 隧道累计用量（字节——双向计费）。 */
-  used: number;
+  /** 节点负载百分比（选节点时的参考；null = 负载表拉不到，UI 显示「—」）。 */
+  load: number | null;
+  /** 隧道累计用量（字节——双向计费；null = 还没取到）。 */
+  used: number | null;
 }
 
 /** 字节数人性化（流量展示）。 */
@@ -104,9 +104,14 @@ interface ConnectionsValue {
   refreshSakura: () => void;
   /** 公网隧道（登录后可建——lxcode-backend 命名约定）。 */
   tunnels: SakuraTunnel[];
-  createTunnel: () => void;
+  /** 创建隧道：nodeId 省略 = 自动选节点（负载最低）；传了就按该节点建。 */
+  createTunnel: (nodeId?: number | null) => void;
   toggleTunnel: (id: number) => void;
   removeTunnel: (id: number) => void;
+  /** 节点选择列表（含实测延迟；调用会触发主进程异步探测，结果经 onNodeLatency 补）。 */
+  listSakuraNodes: () => Promise<SakuraNodeList>;
+  /** 订阅延迟探测结果（列表先出、延迟逐个填）；无桥返回空订阅。 */
+  onSakuraNodeLatency: (cb: (e: SakuraLatencyEvent) => void) => () => void;
 }
 
 const Ctx = createContext<ConnectionsValue | null>(null);
@@ -330,7 +335,7 @@ export function ConnectionsProvider({ children, sakuraBridge, remoteControlBridg
     b.logout().then(applySakuraState).catch(sakuraFail);
   }, [applySakuraState, sakuraFail]);
 
-  const createTunnel = useCallback(() => {
+  const createTunnel = useCallback((nodeId?: number | null) => {
     const b = bridgeRef.current;
     if (!b) {
       // 演示：轮换演示节点 + 随机远程端口
@@ -350,8 +355,35 @@ export function ConnectionsProvider({ children, sakuraBridge, remoteControlBridg
       return;
     }
     setSakuraError(null);
-    b.createTunnel().then(applySakuraState).catch(sakuraFail);
+    b.createTunnel(nodeId).then(applySakuraState).catch(sakuraFail);
   }, [applySakuraState, sakuraFail]);
+
+  const listSakuraNodes = useCallback(() => {
+    const b = bridgeRef.current;
+    if (!b) {
+      // 演示：假节点池（延迟留 null——不编造"实测值"）
+      return Promise.resolve<SakuraNodeList>({
+        nodes: DEMO_NODES.map((n, i) => ({
+          id: 900 + i,
+          name: n.name,
+          host: n.host,
+          load: n.load,
+          usable: true,
+          reason: null,
+          latency: null,
+        })),
+        groupLevel: 0,
+        probing: false, // 演示模式没有探测：延迟位显示「—」，不装作在测
+      });
+    }
+    return b.listNodes();
+  }, []);
+
+  const onSakuraNodeLatency = useCallback((cb: (e: SakuraLatencyEvent) => void) => {
+    const b = bridgeRef.current;
+    if (!b) return () => { /* 演示模式没有探测 */ };
+    return b.onNodeLatency(cb);
+  }, []);
 
   const toggleTunnel = useCallback((id: number) => {
     const b = bridgeRef.current;
@@ -380,6 +412,7 @@ export function ConnectionsProvider({ children, sakuraBridge, remoteControlBridg
       remoteAccess, setRemoteAccess, remoteBusy, remoteAddr, remoteToken, regenerateRemoteToken,
       sakura, loginSakura, logoutSakura, sakuraBusy, sakuraError, refreshSakura,
       tunnels, createTunnel, toggleTunnel, removeTunnel,
+      listSakuraNodes, onSakuraNodeLatency,
     }),
     [
       remotes, addRemote, updateRemote, removeRemote,
@@ -387,6 +420,7 @@ export function ConnectionsProvider({ children, sakuraBridge, remoteControlBridg
       remoteAccess, setRemoteAccess, remoteBusy, remoteAddr, remoteToken, regenerateRemoteToken,
       sakura, loginSakura, logoutSakura, sakuraBusy, sakuraError, refreshSakura,
       tunnels, createTunnel, toggleTunnel, removeTunnel,
+      listSakuraNodes, onSakuraNodeLatency,
     ],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

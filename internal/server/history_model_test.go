@@ -52,7 +52,7 @@ func TestHistoryModelOverWS(t *testing.T) {
 	}
 
 	// 子会话：用它自己 Agent 绑定的模型（m2）——按 id 重建运行时也必须答对
-	childID, err := srv.st.CreateChild(mainID, "coder", "d1")
+	childID, err := srv.st.CreateChild(mainID, "coder", "d1", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestHistoryModelOverWS(t *testing.T) {
 	}
 
 	// 归属 Agent 已不在名单（被删了）→ 未知：整键缺席，**不**回落成主 Agent 的模型
-	ghostID, err := srv.st.CreateChild(mainID, "ghost", "d2")
+	ghostID, err := srv.st.CreateChild(mainID, "ghost", "d2", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}

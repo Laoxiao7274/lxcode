@@ -313,6 +313,10 @@ fun SessionsScreen(state: MockAppState) {
                         SessionRowItem(
                             s,
                             Modifier.lxStaggerEnter(count = sessions.size, index = i),
+                            // 状态点 = 快照位 **或** 实时 busy 投影（并集）：
+                            // 投影是 Compose 可观察的 state map，电脑端在这条会话里
+                            // 开跑时手机上立刻亮，不必点进去（chat.history）才补上。
+                            running = s.running || state.real.isSessionRunning(s.id),
                             onClick = { state.route = Route.Thread(s.id) },
                             onMenu = { menuFor = s },
                         )
@@ -481,6 +485,7 @@ private fun ProjectRow(
 private fun SessionRowItem(
     session: SessionMeta,
     modifier: Modifier = Modifier,
+    running: Boolean = session.running,
     onClick: () -> Unit,
     onMenu: () -> Unit,
 ) {
@@ -488,8 +493,10 @@ private fun SessionRowItem(
         title = session.title,
         modifier = modifier,
         leading = {
+            // 运行中 = 琥珀呼吸点（LxStatus.Run），空闲 = 灰点——红色只给失败态，
+            // 这里没有失败语义，永远不出现 Danger。
             LxStatusDot(
-                status = if (session.running) LxStatus.Run else LxStatus.Idle,
+                status = if (running) LxStatus.Run else LxStatus.Idle,
                 size = 7.dp,
             )
         },

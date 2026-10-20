@@ -72,13 +72,134 @@ export interface CompactOutcome {
   shadowed?: number;
 }
 
+/** 文件还原结果（对齐 protocol.FileRestoreResult，chat.rewind / chat.setLeaf 共用）。
+ *
+ *  覆盖范围含**子会话**的改动（2026-12 拍板：父会话回滚要把子 Agent 的改动一起
+ *  还原，子会话的对话历史不动）——每项带 session_id 标明是谁改的。
+ *
+ *  `conflicts` 非空 = **整批未执行**（fail-closed）：leaf 不动、文件不动，清单交给
+ *  用户看。它不是错误码——冲突是正常业务结果（用户手改过文件）。 */
+export interface FileRestoreResult {
+  /** 按快照写回的文件。 */
+  restored?: FileRestoreItem[];
+  /** 回滚到「当时还不存在」→ 删掉的文件（agent 新建的）。 */
+  deleted?: FileDeleteItem[];
+  /** 磁盘现状与快照期望不符（用户手改/bash 改过）：整批拒绝。 */
+  conflicts?: FileConflict[];
+  /** 大文件/二进制：当时没抓快照，如实报「回滚不到」。 */
+  skipped?: FileSkip[];
+  /** 本次回滚涉及的子会话 id（父会话自己不算）。 */
+  child_sessions?: string[];
+}
+
+/** 一项文件还原（写回快照内容）。 */
+export interface FileRestoreItem {
+  path: string;
+  /** 取的是哪个快照的 before（**写它的那个会话**的 seq）。 */
+  from_seq: number;
+  /** 那次写属于父会话的哪一轮之后（缺省 = 0/未知）。 */
+  from_owner_seq?: number;
+  /** 写这个文件的那个会话（父会话自己 = 顶层 id；否则是子会话 id）。 */
+  session_id?: string;
+  bytes: number;
+  /** 磁盘上本来没有，按快照写回。 */
+  recreated?: boolean;
+}
+
+/** 一项「回滚 = 删掉这个文件」。 */
+export interface FileDeleteItem {
+  path: string;
+  /** 谁新建的这个文件（多半是子会话）。 */
+  session_id?: string;
+}
+
+/** 一项冲突（磁盘现状与快照期望不符）。 */
+export interface FileConflict {
+  path: string;
+  expected_hash?: string;
+  actual_hash?: string;
+  /** 期望状态是**哪个会话**写的（冲突提示要说清「这是子 Agent 改的文件」）。 */
+  session_id?: string;
+  reason: string;
+}
+
+/** 一项「当时没抓快照，回滚不到」。 */
+export interface FileSkip {
+  path: string;
+  reason: string;
+}
+
 /** 会话回退的结果（chat.rewind 的应答）。
  *
  *  **不用于渲染**——时间线的截断由 rewound 事件驱动（本地乐观 + 后端广播走
- *  同一条归约路径）。它只回答「后端真删了几条」，供提示与诊断用。 */
+ *  同一条归约路径）。它只回答「后端真删了几条」，供提示与诊断用。
+ *
+ *  语义已随会话树改为「leaf 移到 parent(seq)」（一条不删、旧分支保留）：`removed`
+ *  仍是「离开当前路径的条数」，与旧口径逐例相同（老客户端零影响）。 */
 export interface RewindOutcome {
-  /** 被删除的消息条数（锚点那条 + 它之后的全部）。 */
+  /** 离开当前路径的消息条数（锚点那条 + 它之后的全部）。 */
   removed: number;
+  /** 移动后的叶（0 = 空路径）。缺省 = 老后端没回这个键。
+   *  **键名保持 wire 的 snake_case**：这个接口是 `chat.rewind` 应答的 wire 形态
+   *  （protocol-golden 的 `_type` 钉住它），与 ChatHistoryParams 同一类"协议形态"
+   *  类型；适配成 camelCase 会在两处各有一份、迟早漂移。 */
+  leaf_seq?: number;
+  /** true = 历史保留为分支（一条没删）——老客户端以为删了，其实还能在树里切回来。 */
+  branched?: boolean;
+  /** 本次带文件还原时的结果（含子会话）。缺省 = 没开 files。 */
+  files?: FileRestoreResult;
+}
+
+/** chat.setLeaf 的结果：**不回 messages**（客户端重拉 chat.history——切 leaf 之后
+ *  要重载的不止消息，还有树/统计/上下文/检查点下标，复制一份必然与 chat.history
+ *  分叉）。 */
+export interface SetLeafOutcome {
+  /** 移动后的叶（0 = 空路径）。 */
+  leafSeq: number;
+  /** 离开当前路径的条数（与 chat.rewind 的 removed 同口径）。 */
+  removed: number;
+  /** 本次带文件还原时的结果（冲突时 conflicts 非空且 leaf 未变）。 */
+  files?: FileRestoreResult;
+}
+
+/** 会话树里的一个节点（对齐 protocol.TreeNode）。`nodes` 按 seq 升序，前端自己按
+ *  parent_seq 建树。 */
+export interface TreeNode {
+  seq: number;
+  /** 0 = root。 */
+  parentSeq: number;
+  /** user | assistant | tool | checkpoint | notice */
+  kind: string;
+  /** 轮次序号（user/notice 才有；与 SessionStats.turns 同口径）。 */
+  turn?: number;
+  /** ≤120 字符的单行摘要（不含正文全文）。 */
+  summary?: string;
+  /** 直接子节点数（>1 = 分支点）。 */
+  children: number;
+  /** 是否在当前 leaf 路径上（false = 废弃分支）。 */
+  onPath: boolean;
+  /** 父节点缺失 / 成环（畸形数据兜底：不丢节点、不抛异常）。 */
+  orphan?: boolean;
+  /** 该轮可还原的文件改动数（含子会话）；0 时整键缺席。 */
+  files?: number;
+  /** 其中来自子会话的改动数（files 的子集）；0 时整键缺席。 */
+  childFiles?: number;
+  /** 该轮无法快照的写（bash/MCP/自定义工具，含子会话里的 bash）；0 时整键缺席。 */
+  external?: number;
+  /** checkpoint 的影子条数。 */
+  shadowed?: number;
+}
+
+/** 会话树骨架（chat.tree 的应答）。 */
+export interface ChatTreeResult {
+  /** 当前叶（0 = 空路径）。 */
+  leafSeq: number;
+  /** 按 seq 升序。 */
+  nodes: TreeNode[];
+  /** 全量节点数（截断时用于「还有 N 个」提示）。 */
+  total: number;
+  /** true = 只回了最近 max_nodes 个节点（**不静默截断**，面板要显示提示）。 */
+  truncated?: boolean;
 }
 
 /** 归档的结果（session.archive 的应答）。 */
@@ -268,14 +389,29 @@ export type AgentEvent =
   /** 历史被压缩（前缀替换成摘要检查点）——UI 插一条「已压缩历史」标记块。
    *  dispatchId 非空 = 子会话自己的压缩（归属进 dispatch 卡内，不进主时间线）。 */
   | { type: "compacted"; sessionId: string; before: number; after: number; shadowed: number; summary: string; manual?: boolean; dispatchId?: string }
-  /** 会话回退（chat.rewound）：seq 这条用户消息及其之后的全部历史已被删除。
+  /** 会话回退（chat.rewound）：seq 这条用户消息及其之后的全部历史已离开当前路径
+   *  （**一条没删**——旧分支保留在树里，随时能切回来）。
    *
    *  归约是**幂等**的：本地乐观截断（发起撤回时立刻清空时间线）已经把锚点删掉了，
    *  后端广播随后到达时找不到锚点就原样返回——不幂等的话重复到达会再切一刀，
    *  把更早的消息也一起删掉。 */
   | { type: "rewound"; sessionId: string; seq: number; removed: number; context?: ContextUsage;
-      /** 重算后的整段统计（撤回真删了行，步数/token 跟着变小）。 */
+      /** 重算后的整段统计（口径仍是折叠整段日志——切分支不改数字）。 */
       stats?: SessionStats }
+  /** 叶指针变更（chat.leafChanged，rewind 与 setLeaf 都发）。
+   *
+   *  **到达时必须重拉 history + tree**（在 ws 层做，不进归约器）：leaf 是**共享
+   *  状态**，可能是别的客户端动的——本地没有"该怎么变"的知识，后端才是事实源。
+   *  setLeaf 只发这个事件（不发 chat.rewound）：老客户端收到 rewound 会截断时间线，
+   *  而切到另一条分支时那个截断是错的。 */
+  | { type: "leafChanged"; sessionId: string; leafSeq: number;
+      /** 移动前的叶（客户端据此判断"是不是别人动的"）。 */
+      prevLeafSeq?: number;
+      removed: number;
+      /** 重算后的上下文占用（缺省 = 未知 → 指示器中性态）。 */
+      context?: ContextUsage;
+      /** 本次带文件还原时的结果（含子会话）。 */
+      files?: FileRestoreResult }
   /** 历史载入（连接/切会话后）——全量重建对话视图。 */
   | { type: "historyLoaded"; sessionId: string; history: HistorySnapshot }
   /** 后台任务起了（时间线插一张任务卡）。sessionId = 任务归属会话——
@@ -333,6 +469,9 @@ export interface HistorySnapshot {
    *  用户无法在子会话里发言），渲染成「任务」块而不是用户气泡；主会话快照不带
    *  这个键，user 消息照旧是用户气泡（两条路径共用 historyBlocks，靠它分流）。 */
   child?: boolean;
+  /** 这次回放对应的叶（0 = 空路径；缺省 = 老后端没回这个键）。
+   *  树面板拿它高亮「你在这里」，也拿它判断「回到最新」该往哪走。 */
+  leafSeq?: number;
 }
 
 /** 历史消息（llm.Message 的 wire 形态）。 */
@@ -342,6 +481,9 @@ export interface HistoryMessage {
   /** 撤回锚点（后端 ChatMessage 的字段，与实时 chat.userMessage 的载荷是同一个
    *  类型）。老后端没有它 → 块不可撤回（动作禁用），绝不炸（AGENTS.md §5 坑 11）。 */
   seq?: number;
+  /** 消息级父指针（会话树的边；0/缺省 = root）。与 `sessions.parent_id`（**会话级**
+   *  父子，子 Agent = 独立会话）是两个不同的东西，一眼分得开。老后端没有它。 */
+  parent_seq?: number;
   /** 每轮计时/用量/模型（后端 messages 表那四列）。**回放路径必须与实时路径给出同一组
    *  数字**——只填实时不填回放的话，用户刷新一次这些数字就全没了（本仓库吃过三次亏的
    *  那类 bug）。缺席的项不写这个键（不是 0——0 会被显示成「首字 0ms」的假数据）。 */
@@ -532,11 +674,30 @@ export interface AgentSource {
   cancel(sessionId: string): void;
   /** 手动压缩指定会话的历史。 */
   compact(sessionId: string): Promise<CompactOutcome>;
-  /** 会话回退：删掉 seq 这条用户消息及其之后的全部历史（内存 + 库）并重算上下文
-   *  占用。时间线截断由 rewound 事件驱动（本地乐观 + 后端广播同一条归约路径）；
-   *  实现负责在调用失败时用后端真相对齐（重放历史）——本地删了而后端没删，
-   *  用户会以为撤回了、刷新又全回来。 */
-  rewind(sessionId: string, seq: number): Promise<RewindOutcome>;
+  /** 会话回退（chat.rewind）：把 leaf 移到 seq 的父节点（**一条不删**——旧分支保留
+   *  在树里，随时能在右侧面板切回来）并重算上下文占用。时间线截断由 rewound 事件
+   *  驱动（本地乐观 + 后端广播同一条归约路径）；实现负责在调用失败、或带文件还原
+   *  发生冲突（应答 removed=0）时用后端真相对齐（重放历史）——本地删了而后端没删，
+   *  用户会以为回退了、刷新又全回来。
+   *
+   *  files = true 时同时还原文件（fail-closed：有冲突则整批不执行、leaf 不动）。 */
+  rewind(sessionId: string, seq: number, files?: boolean): Promise<RewindOutcome>;
+  /** 切叶（chat.setLeaf）：leaf 直接指向 seq（**该节点留在路径上**，继续对话即从它
+   *  长出新分支）。seq = 0 = 空路径（回到第一条消息之前）。
+   *
+   *  与 rewind 的差别只有落点差一格：rewind → parent(seq)（那条消息自己离开路径，
+   *  因为它要改写重发）；setLeaf → seq 本身（「从这里接着长」）。
+   *
+   *  **不返回 messages**（后端刻意不回）：切叶之后要重载的不止消息，还有树/统计/
+   *  上下文/检查点下标——实现必须在应答后自己重拉 chat.history。
+   *  老后端没有这个方法 → 实现应抛错（调用方据此禁用行尾按钮，不静默 no-op）。 */
+  setLeaf(sessionId: string, seq: number, files?: boolean): Promise<SetLeafOutcome>;
+  /** 读会话树骨架（chat.tree）：节点 + 父子关系 + 当前 leaf + 分支摘要。
+   *
+   *  `maxNodes` 缺省 2000（0 = 后端缺省；传 0 也用于「加载全部」——后端按 0 回落
+   *  缺省值，**不是**无上限，见 protocol.ChatTreeParams）。老后端没有这个方法 →
+   *  实现应抛错，面板据此回落到线性轮次视图（不报错、不空屏）。 */
+  tree(sessionId: string, opts?: { maxNodes?: number; include?: "compact" | "full" }): Promise<ChatTreeResult>;
   /** 新会话（可选归属项目 id——会话挂在项目分组下）。 */
   newSession(workspace?: string): Promise<string>;
   /** 起一个后台合并进程（**遗留**：合并流程已退役——后端如实回说明并拒绝）。
@@ -566,6 +727,9 @@ export interface AgentSource {
   projects(): ProjectMeta[];
   /** 添加项目（注册目录为 git 仓库——已有仓库不动，没有则 init）。 */
   addProject(name: string, path: string): void;
+  /** 从项目列表移除注册（**只解绑**：不删磁盘目录、不删会话——会话留在库里，
+   *  侧栏不再按项目分组）。失败向上抛（有会话在跑时后端拒绝，调用方显示原因）。 */
+  removeProject(id: string): Promise<void>;
   /** 读项目守则（项目根 AGENTS.md——项目级「自定义指令」，每轮现读进提示词）。 */
   readInstructions(projectId: string): Promise<ProjectInstructions>;
   /** 写项目守则（项目根 AGENTS.md，原子写）。 */
@@ -722,6 +886,13 @@ export interface TodoPromptSource {
   onChange(listener: () => void): () => void;
   /** 设置档位（后端原子写 + 广播；提示词下一轮生效）。 */
   set(mode: TodoPromptMode): Promise<void>;
+}
+
+/** project.remove 的结果（**只解绑**：不删磁盘目录、不删会话）。 */
+export interface ProjectRemoveResult {
+  removed: boolean;
+  /** 该项目下**保留在库里**的会话数（侧栏不再按项目分组，历史一条不丢）。 */
+  sessions: number;
 }
 
 /** 项目守则（项目根 AGENTS.md）的读取结果——项目级「自定义指令」。 */

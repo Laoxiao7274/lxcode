@@ -29,6 +29,10 @@ import { Button } from "./components/form";
 // 右栏面板：轮次树（TurnPanel）取代了原先并排的 OutlinePanel + SubAgentPanel——
 // 那两个组件与它们的测试仍在（回退用），只是不再挂载。
 import { TurnPanel } from "./components/panels/TurnPanel";
+import { SessionTreePanel } from "./components/panels/SessionTreePanel";
+import { RewindConfirmDialog, RewindConflictDialog } from "./components/panels/RewindDialogs";
+import { latestSeq, truncationNote, type TreeRow } from "./components/panels/tree-model";
+import type { RewindPlanFacts } from "./components/panels/rewind-confirm";
 import { ChildSessionPage } from "./components/panels/ChildSessionPage";
 import { SettingsProvider, useSettings } from "./shared/settings";
 import { ConnectionsProvider } from "./shared/connections";
@@ -38,6 +42,7 @@ import { JobsProvider } from "./shared/jobs-admin";
 import { useConfirmFlow } from "./app-hooks/use-confirm-flow";
 import { useWorkspaceNav } from "./app-hooks/use-workspace-nav";
 import { useTurnOutline } from "./app-hooks/use-turn-outline";
+import { useSessionTree } from "./app-hooks/use-session-tree";
 import { useSendQueue } from "./app-hooks/use-send-queue";
 import { useRewind } from "./app-hooks/use-rewind";
 import { useCompaction } from "./app-hooks/use-compaction";
@@ -272,7 +277,141 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
   );
 
   // ---- 右侧「轮次」大纲面板（use-turn-outline：分组 + 高亮 + 跳转目标）----
-  const { groups, dispatchCount, jumpedUid, activeUid, handleOutlineJump } = useTurnOutline({ blocks: state.blocks });
+  const { groups, dispatchCount, jumpedUid, activeUid, activeSeq, seqToUid, handleOutlineJump } = useTurnOutline({ blocks: state.blocks });
+
+  // ---- 右侧「会话树」面板（use-session-tree：chat.tree + 过滤/折叠 + 切叶）----
+  //
+  // 老后端没有 chat.tree → `tree === null` → 面板回落 TurnPanel（线性轮次视图，
+  // 不报错、不空屏：AGENTS.md §5 坑 11「老后端 + 新前端不许炸」）。
+  const sessionTree = useSessionTree({ source, sessionId: currentId });
+  const treeTruncation = useMemo(() => truncationNote(sessionTree.tree), [sessionTree.tree]);
+  /** 「回到最新」的落点 = 树里最大的 seq（**不是 0**——0 是空路径，会把用户送到第一条
+   *  消息之前）。已经在最新处时按钮禁用（点了没有变化，不做成点了没反应）。 */
+  const latestSeqInTree = useMemo(() => latestSeq(sessionTree.tree), [sessionTree.tree]);
+  const atLatest = sessionTree.tree !== null && sessionTree.tree.leafSeq >= latestSeqInTree;
+  /** 待确认的「回到这里 + 还原文件」（null = 没有待确认的动作）。
+   *  facts 在**点击那一刻**算好并定格：确认框里显示的数字必须与随后执行的那一次
+   *  请求一致（树可能在这期间被别的事件刷新——让弹窗跟着变会让用户看到"数字跳了"）。 */
+  const [rewindPlan, setRewindPlan] = useState<{ row: TreeRow; facts: RewindPlanFacts } | null>(null);
+  /** 冲突清单（fail-closed 的展示；null = 没有）。 */
+  const [rewindConflicts, setRewindConflicts] = useState<{ conflicts: import("./shared/types").FileConflict[]; row: TreeRow } | null>(null);
+
+  /** 树行的单击：**跳转**（在别的分支上则先切过去再跳——纯滚动跳转在别分支上是
+   *  静默 no-op，比报错更坏，见 docs §D.5）。
+   *
+   *  跳转锚点只能落在 user 块上（只有它带 seq 的块有 data-uid）：行的 userSeq 就是
+   *  它最近的 user 祖先。seqToUid 查不到 = 该块不在当前时间线里（在别的分支上）——
+   *  先 setLeaf 切过去，等历史重载后再跳（这里用轮询式的重试一次：历史重载是异步的）。 */
+  /** 切过去之后要跳的那条 seq（等历史重载、块真的挂上时间线再跳）。
+   *
+   *  为什么不用"等一会儿再查一次"：历史重载是异步的，超时长短都是猜的——猜短了跳不到
+   *  （用户点了一个废弃分支，切过去了却没跳，看起来像"只切了一半"），猜长了白等。
+   *  记下意图、由下面的 effect 在 seqToUid 真的出现时兑现，是唯一确定的做法。 */
+  const pendingJumpSeqRef = useRef<number | null>(null);
+  /** 最新一份 seqToUid：切分支是异步的，兑现跳转时必须读**重载之后**的映射
+   *  （闭包里那份是切换之前的——废弃分支的块在旧时间线里根本不存在）。 */
+  const seqToUidRef = useRef(seqToUid);
+  seqToUidRef.current = seqToUid;
+  const handleTreeJump = useCallback((row: TreeRow) => {
+    if (row.onPath) {
+      const uid = seqToUid.get(row.userSeq);
+      if (uid !== undefined) {
+        handleOutlineJump(uid);
+        return;
+      }
+      // 在路径上却没有对应的块：可能是被窗口化渲染挡在外面/历史还没重载——只切不跳
+      // 是静默 no-op，所以这里只报一句实话（不编一个"跳了"）。
+      reportError("这条消息还没加载到时间线里（可能正在切换会话）");
+      return;
+    }
+    // 废弃分支：**先切过去再跳**（纯滚动跳转在别分支上是静默 no-op——那个块在当前
+    // 时间线里根本不存在，比报错更坏）。判据用 onPath 而不是「uid 查不到」：废弃分支
+    // 上的行可能回落到一个**共享祖先**的 user 块（分支首节点是 notice 时），那时 uid
+    // 查得到但跳过去等于没切分支——用户点的是"去那条分支"，不是"去它的祖先"。
+    pendingJumpSeqRef.current = row.userSeq;
+    void sessionTree.setLeaf(row.seq).then(() => {
+      // 历史已重载：能立刻兑现就兑现（seqToUid 可能还没在 effect 里刷新）。
+      const uid = seqToUidRef.current.get(row.userSeq);
+      if (uid !== undefined) {
+        pendingJumpSeqRef.current = null;
+        handleOutlineJump(uid);
+      }
+    }).catch((e: unknown) => {
+      pendingJumpSeqRef.current = null;
+      reportError(`切到这条分支失败: ${e instanceof Error ? e.message : String(e)}`);
+    });
+  }, [seqToUid, handleOutlineJump, reportError, sessionTree]);
+
+  // 待兑现的跳转：切分支之后历史重载完，块的 uid 才出现在 seqToUid 里。
+  useEffect(() => {
+    const seq = pendingJumpSeqRef.current;
+    if (seq === null) return;
+    const uid = seqToUid.get(seq);
+    if (uid === undefined) return;
+    pendingJumpSeqRef.current = null;
+    handleOutlineJump(uid);
+  }, [seqToUid, handleOutlineJump]);
+
+  /** 「切到此」（不还原文件）：该节点留在路径上。 */
+  const handleTreeSetLeaf = useCallback((row: TreeRow, files: boolean) => {
+    if (files) {
+      // 带文件是**破坏性**动作（磁盘 IO + fail-closed 整批拒绝）→ 先二次确认。
+      // 数字来自 TreeRow.rollback*（**这一行之后**的改动量）：后端还原的是
+      // `owner_seq > seq` 那一段，目标行自己的改动属于「目标状态」，不该被还原
+      // （把本行徽标当成"将还原 X 个文件"会让确认框多出一轮）。
+      setRewindPlan({
+        row,
+        facts: {
+          ...(row.turn ? { turn: row.turn } : {}),
+          files: row.rollbackFiles,
+          ...(row.rollbackChildFiles ? { childFiles: row.rollbackChildFiles } : {}),
+          external: row.rollbackExternal,
+        },
+      });
+      return;
+    }
+    void sessionTree.setLeaf(row.seq).catch((e: unknown) => {
+      reportError(`切换分支失败: ${e instanceof Error ? e.message : String(e)}`);
+    });
+  }, [sessionTree, reportError]);
+
+  /** 二次确认之后的真正执行（切叶 + 还原文件）。冲突时弹清单、不静默覆盖。 */
+  const runTreeSetLeafWithFiles = useCallback((row: TreeRow) => {
+    setRewindPlan(null);
+    void sessionTree.setLeaf(row.seq, true).then((r) => {
+      const conflicts = r.files?.conflicts ?? [];
+      if (conflicts.length > 0) setRewindConflicts({ conflicts, row });
+    }).catch((e: unknown) => {
+      reportError(`还原文件失败: ${e instanceof Error ? e.message : String(e)}`);
+    });
+  }, [sessionTree, reportError]);
+
+  /** 「从此分支」：把该 user 节点自己移出路径 + 原文回填输入框（= 旧的「编辑后重发」）。
+   *
+   *  为什么走 rewind 而不是 setLeaf（docs §D.5，最容易做错的一处）：setLeaf(seq) 让
+   *  该节点**留在**路径上，用户随后重发就会出现两条一模一样的用户消息（一条旧的、
+   *  一条新的，同一个父亲）——那是明显的 bug。rewind(seq) 内部就是 setLeaf(parent(seq))，
+   *  正是「我要把这条改一下重发」。
+   *
+   *  复用 handleRewind：它已经负责乐观截断 + 原文乐观回填 + 失败回滚（同一份逻辑，
+   *  不另写一遍）。这里只需按 seq 找到对应的块。 */
+  const handleTreeBranchFrom = useCallback((row: TreeRow) => {
+    const uid = seqToUid.get(row.userSeq);
+    const block = uid === undefined ? undefined : state.blocks.find((b) => b.uid === uid);
+    if (!block) {
+      reportError("这条消息还没加载到时间线里（可能正在切换会话）");
+      return;
+    }
+    handleRewind(block);
+  }, [seqToUid, state.blocks, handleRewind, reportError]);
+
+  /** 「回到最新」：落点 = 树里最大的 seq（绝不传 0）。 */
+  const handleTreeLatest = useCallback(() => {
+    if (latestSeqInTree <= 0) return;
+    void sessionTree.setLeaf(latestSeqInTree).catch((e: unknown) => {
+      reportError(`回到最新失败: ${e instanceof Error ? e.message : String(e)}`);
+    });
+  }, [latestSeqInTree, sessionTree, reportError]);
 
   const currentTitle = state.blocks.length === 0 ? "" : source.sessions().find((s: SessionMeta) => s.id === currentId)?.title ?? "任务";
 
@@ -382,12 +521,12 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
               onPickModel={pickSessionModel}
             />
           </div>
-          <aside className="outline-aside" data-open={outlineOpen ? "true" : "false"}>
+          <aside className="outline-aside" data-open={outlineOpen ? "true" : "false"} data-tree={sessionTree.tree !== null ? "true" : "false"}>
             <div className="outline-head">
-              {/* 标题与轮次数竖排：240px 宽横排放不下「轮次」与「共 7 轮 · 12 次派发」两段字 */}
+              {/* 标题与轮次数竖排：窄栏横排放不下「会话树」与「共 7 轮 · 12 次派发」两段字 */}
               {outlineOpen && (
                 <div className="turn-head-text">
-                  <span className="outline-title">轮次</span>
+                  <span className="outline-title">{sessionTree.tree !== null ? "会话树" : "轮次"}</span>
                   {groups.length > 0 && (
                     <span className="turn-count">
                       共 {groups.length} 轮 · {dispatchCount} 次派发
@@ -408,9 +547,33 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
                 </svg>
               </Button>
             </div>
-            {/* 唯一的右栏面板：按轮次分组的树（一条用户消息一轮，其下的子 Agent 挂在组内）。
+            {/* 右栏面板，两条数据源：
+             *  ① 有 chat.tree（新后端）→ 会话树（分支结构 + 废弃分支灰化 + 切叶）；
+             *  ② 没有（老后端 / 纯内存）→ 回落 TurnPanel 的线性轮次视图（不报错、不空屏）。
              *  跳转复用同一个 handleOutlineJump（扩窗 + 滚 + 高亮都在 Thread 里，面板不碰 DOM）。 */}
-            {outlineOpen && <TurnPanel groups={groups} activeUid={activeUid} onJump={handleOutlineJump} />}
+            {outlineOpen && sessionTree.tree !== null && (
+              <SessionTreePanel
+                rows={sessionTree.rows}
+                filter={sessionTree.view.filter ?? "all"}
+                onFilter={sessionTree.setFilter}
+                activeSeq={activeSeq}
+                onJump={handleTreeJump}
+                onToggle={(row) => sessionTree.toggle(row.seq, row.onPath)}
+                onSetLeaf={handleTreeSetLeaf}
+                onBranchFrom={handleTreeBranchFrom}
+                onLoadAll={() => { void sessionTree.refresh({ loadAll: true }); }}
+                loadedAll={sessionTree.loadedAll}
+                onLatest={handleTreeLatest}
+                canLatest={!atLatest}
+                truncation={treeTruncation}
+                loading={sessionTree.loading}
+                error={sessionTree.error}
+                busy={state.busy}
+              />
+            )}
+            {outlineOpen && sessionTree.tree === null && (
+              <TurnPanel groups={groups} activeUid={activeUid} onJump={handleOutlineJump} />
+            )}
           </aside>
         </div>
       );
@@ -498,6 +661,32 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
         renderView={renderView}
       />
       <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} source={source} />
+      {/* 「回到这里 + 还原文件」的二次确认（破坏性动作：磁盘 IO + fail-closed 整批拒绝）。
+          数字来自树节点（这一轮的文件/外部操作计数）——文案由 panels/rewind-confirm 的
+          纯函数给出（三段骨架固定、只填数字），组件不自己拼。 */}
+      {rewindPlan && (
+        <RewindConfirmDialog
+          facts={rewindPlan.facts}
+          onConfirm={() => runTreeSetLeafWithFiles(rewindPlan.row)}
+          onCancel={() => setRewindPlan(null)}
+        />
+      )}
+      {/* 冲突清单（fail-closed：整批未执行，对话与文件都没动）——逐文件给路径与原因，
+          不静默覆盖用户的手改。 */}
+      {rewindConflicts && (
+        <RewindConflictDialog
+          conflicts={rewindConflicts.conflicts}
+          onClose={() => setRewindConflicts(null)}
+          onHistoryOnly={() => {
+            const row = rewindConflicts.row;
+            setRewindConflicts(null);
+            // 「只切历史，不动文件」= files:false 重试（失败时的退路，不是默认动作）
+            void sessionTree.setLeaf(row.seq).catch((e: unknown) => {
+              reportError(`切换分支失败: ${e instanceof Error ? e.message : String(e)}`);
+            });
+          }}
+        />
+      )}
     </div>
   );
 

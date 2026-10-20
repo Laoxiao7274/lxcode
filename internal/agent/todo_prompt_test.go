@@ -6,6 +6,7 @@
 package agent
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -83,11 +84,14 @@ func TestTodoPromptModesInMainPrompt(t *testing.T) {
 	if strings.Contains(p, todoFirstKey) || strings.Contains(p, "按任务复杂度用清单") {
 		t.Fatal("off 档不应包含任何 todo-first 指令")
 	}
-	if strings.Contains(p, "6. 修改代码") || strings.Contains(p, "5. 按任务复杂度") {
-		t.Fatal("off 档守则编号应顺延（修改代码是第 5 条）")
+	// 编号顺延 = 不留空号（off 档少一条，后面的条目整体前移）。
+	// 断言连续性而不是写死「第 N 条」：守则会继续增删，写死编号的测试会在
+	// 每次改守则时误报，而真正要钉的是「不出现 1,2,4,5 这种断号」。
+	if got := ruleNumbers(p); !consecutiveFromOne(got) {
+		t.Fatalf("off 档守则编号应顺延且不留空号，实际 %v", got)
 	}
-	if !strings.Contains(p, "5. 修改代码") {
-		t.Fatal("off 档「修改代码」应为第 5 条")
+	if !strings.Contains(p, ". 修改代码") {
+		t.Fatal("off 档「修改代码」条目应存在")
 	}
 }
 
@@ -161,4 +165,44 @@ func TestSessionTodoPromptMode(t *testing.T) {
 	if got := s.TodoPromptMode(); got != config.TodoPromptOff {
 		t.Fatalf("不带参数的 Send 不应重置档位，got %q", got)
 	}
+}
+
+// ruleNumbers 抽出提示词里「工作守则」段的条目编号（按出现顺序）。
+//
+// 只认行首 `数字. `：工具清单是 `- ` 开头，正文里的序号不会被误认。
+func ruleNumbers(prompt string) []int {
+	var nums []int
+	inRules := false
+	for _, line := range strings.Split(prompt, "\n") {
+		if line == "工作守则：" {
+			inRules = true
+			continue
+		}
+		if !inRules {
+			continue
+		}
+		dot := strings.Index(line, ". ")
+		if dot <= 0 {
+			continue
+		}
+		n, err := strconv.Atoi(line[:dot])
+		if err != nil {
+			continue
+		}
+		nums = append(nums, n)
+	}
+	return nums
+}
+
+// consecutiveFromOne 报告编号是否恰好是 1..N（无空号、无重复）。
+func consecutiveFromOne(nums []int) bool {
+	if len(nums) == 0 {
+		return false
+	}
+	for i, n := range nums {
+		if n != i+1 {
+			return false
+		}
+	}
+	return true
 }

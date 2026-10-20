@@ -496,6 +496,145 @@
   border-color: var(--danger);
 }
 
+/* ===== 节点选择面板（创建公网隧道前的一步——.conn-node-*） ===== */
+/* 面板本体与隧道卡同层：它是 conn-ra-panel 里的一个块，不再是"点一下就建" */
+.conn-node-picker {
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  padding: 10px 12px;
+  margin: 8px 0;
+  background: var(--surface);
+}
+.conn-node-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.conn-node-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.conn-node-sub {
+  font-size: 10.5px;
+  color: var(--fg-faint);
+}
+.conn-node-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  padding: 8px 2px;
+}
+.conn-node-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 260px;
+  overflow-y: auto;
+  margin: 0 -4px;
+  padding: 0 4px;
+}
+.conn-node-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 9px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  font-family: var(--font-sans);
+  text-align: left;
+  cursor: pointer;
+  transition: background 120ms, border-color 120ms;
+}
+.conn-node-item:hover:not(:disabled) {
+  background: var(--bg-side);
+}
+.conn-node-item.on {
+  background: var(--bg-side);
+  border-color: var(--border-active);
+}
+/* 不可用节点：置灰但仍可读（用户要看得见"为什么点不了"） */
+.conn-node-item.off {
+  opacity: 0.5;
+  cursor: default;
+}
+.conn-node-main {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.conn-node-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.conn-node-host {
+  font-size: 10px;
+  color: var(--fg-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.conn-node-metrics {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+  font-size: 10.5px;
+}
+.conn-node-latency {
+  font-family: var(--font-mono);
+  color: var(--fg-muted);
+  min-width: 52px;
+  text-align: right;
+}
+.conn-node-latency.tone-fast { color: var(--success); }
+.conn-node-latency.tone-slow { color: var(--fg-faint); }
+.conn-node-load {
+  color: var(--fg-faint);
+  min-width: 56px;
+  text-align: right;
+}
+.conn-node-reason {
+  font-size: 10px;
+  color: var(--fg-faint);
+  border: 1px solid var(--border-soft);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+.conn-node-tag {
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  padding: 0 4px;
+  flex: none;
+}
+.conn-node-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+.conn-node-create {
+  flex: 1;
+  margin-top: 0;
+  border-style: solid;
+}
+
 /* ===== 暗色覆盖（零散硬编码：亮色值保留在原规则里不动） ===== */
 html[data-theme="dark"] .win-btn:active { background: var(--border-hover); }
 @media (prefers-color-scheme: dark) {

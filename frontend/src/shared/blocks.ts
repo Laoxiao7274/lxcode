@@ -214,8 +214,18 @@ const CHECKPOINT_CLOSE = "</compacted-summary>";
  *  单独一个构造器而不是各处手写对象字面量：这个项目的协议坑是「字段名错一个
  *  不编译报错、只静默丢字段」——后端收到 `seq_no` 只会当作 seq 缺失，撤回
  *  "成功"返回 removed=0 而历史一条没删。参数只有这一处来源，测试钉住它。 */
-export function rewindParams(sessionId: string, seq: number): { session_id: string; seq: number } {
-  return { session_id: sessionId, seq };
+export function rewindParams(sessionId: string, seq: number, files?: boolean): { session_id: string; seq: number; files?: boolean } {
+  // files 只在 true 时写这个键（omitempty 语义：false 与缺席等价，少一个字节的
+  // 歧义——后端按 p.Files 判，缺省就是不动文件）
+  return files ? { session_id: sessionId, seq, files: true } : { session_id: sessionId, seq };
+}
+
+/** chat.setLeaf 的参数形状（与 Go internal/protocol 逐字一致）。
+ *
+ *  与 rewindParams 同一个理由单独成函数：wire 字段名错一个不会编译报错，只会
+ *  静默丢字段（后端当作 seq 缺失 → 把用户送到一个他没点的位置）。 */
+export function setLeafParams(sessionId: string, seq: number, files?: boolean): { session_id: string; seq: number; files?: boolean } {
+  return files ? { session_id: sessionId, seq, files: true } : { session_id: sessionId, seq };
 }
 
 /** 撤回锚点：seq 命中的那条 user 块下标（-1 = 时间线里没有它）。

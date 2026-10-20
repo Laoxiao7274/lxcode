@@ -44,11 +44,11 @@ type ToolCallEvent struct {
 // Attachments 非空 = 这次执行共享了附件（share_file——元数据随结果流动，
 // 前端渲染附件卡；与结果消息 llm.Message.Attachments 同一份）。
 type ToolResultEvent struct {
-	ID         string
-	Name       string
-	Content    string
-	IsError    bool
-	DispatchID string
+	ID          string
+	Name        string
+	Content     string
+	IsError     bool
+	DispatchID  string
 	Attachments []llm.AttachmentRef
 }
 
@@ -166,16 +166,35 @@ type CompactedEvent struct {
 	DispatchID string
 }
 
-// RewoundEvent：一次撤回收尾（历史里 seq 及其之后的消息已从内存与库中删除）。
+// RewoundEvent：一次撤回收尾（叶已移到 anchor 的父节点；**一行都没删**）。
 // 宿主广播给客户端（前端据此截断时间线、刷新上下文指示器）——与 CompactedEvent
-// 同款：这是一次**改变历史**的事务收尾，客户端必须收到通知而不是自己猜。
+// 同款：这是一次**改变历史形状**的事务收尾，客户端必须收到通知而不是自己猜。
+//
+// 兼容性：载荷形状与语义对老客户端完全不变（它按 planRewind 截断，得到的恰好
+// 是新路径）。新客户端另收 LeafChangedEvent（带新叶与 prev 叶）。
 type RewoundEvent struct {
 	Seq     int64
 	Removed int
-	// Context 是**重算后**的上下文占用：撤回删掉了一段历史，旧数字一定是错的，
-	// 客户端拿它直接刷新指示器而不必等下一轮。零值 = 未知（纯内存模式 / 本会话
-	// 还没跑过主轮），wire 上整键缺席——客户端显示中性态而不是编一个数
+	// LeafSeq 是移动后的叶（0 = 空路径）。
+	LeafSeq int64
+	// Context 是**重算后**的上下文占用：叶移动后旧数字一定是错的，客户端拿它
+	// 直接刷新指示器而不必等下一轮。零值 = 未知（纯内存模式 / 本会话还没跑过
+	// 主轮），wire 上整键缺席——客户端显示中性态而不是编一个数
 	//（与 chat.done / ChatHistoryResult 的 context 同一套语义）。
+	Context ContextUsage
+}
+
+// LeafChangedEvent：叶指针变了（rewind 与 setLeaf 都发）。
+//
+// 为什么单独一个事件（而不是只靠 chat.rewound）：setLeaf 是**无删除**的指针移动，
+// 老客户端收到 chat.rewound 会截断时间线——而切到另一条分支时那个截断是错的。
+// 所以 setLeaf 只发本事件（老客户端忽略未知事件，是既有行为）；rewind 两个都发
+// （chat.rewound 保住老客户端的截断路径）。
+type LeafChangedEvent struct {
+	LeafSeq     int64
+	PrevLeafSeq int64
+	Removed     int
+	// Context 同上：重算后的占用（零值 = 未知）。
 	Context ContextUsage
 }
 
@@ -194,6 +213,7 @@ func (DispatchStartEvent) isEvent()  {}
 func (DispatchEndEvent) isEvent()    {}
 func (CompactedEvent) isEvent()      {}
 func (RewoundEvent) isEvent()        {}
+func (LeafChangedEvent) isEvent()    {}
 
 // Snapshot 是宿主初始化/重连时的会话同步载荷（History 的返回值）。
 type Snapshot struct {

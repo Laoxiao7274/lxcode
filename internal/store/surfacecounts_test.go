@@ -98,15 +98,16 @@ func TestSurfaceCountsMatchesLegacyScan(t *testing.T) {
 		t.Fatal(err)
 	}
 	compareSurfaceCounts(t, s, "压缩后撤回前")
-	// 撤回检查点之后的一条消息（锚点在当前历史里）：后面的行被删、检查点影子收缩
+	// 回到检查点之后的一条消息之前（批次 2：只移 leaf，一行不删）。
+	// surfaceCounts 是**全表口径**，所以这里两个实现仍然必须一致（都数全表）。
 	surface, err := s.Load(c)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Rewind(c, surface[len(surface)-1].Seq); err != nil {
+	if _, _, err := s.RewindTo(c, surface[len(surface)-1].Seq); err != nil {
 		t.Fatal(err)
 	}
-	compareSurfaceCounts(t, s, "压缩后撤回")
+	compareSurfaceCounts(t, s, "压缩后回到更早的节点")
 
 	// 通知行（notice=1）与退化检查点（count=0，无影子集合）：都是普通行计数
 	d, _ := s.Create()
@@ -119,19 +120,31 @@ func TestSurfaceCountsMatchesLegacyScan(t *testing.T) {
 	appendN(t, s, d, 2)
 	compareSurfaceCounts(t, s, "通知行+退化检查点")
 
-	// 全量对照：List 的侧栏条数（对外契约）与新实现同源
+	// 全量对照（批次 2 更新）：List 的 Messages 现在读 **leaf_len**（当前路径长度），
+	// 不再走 surfaceCounts——两者只在**单链会话**（路径覆盖全表）上数值相同。
+	// 所以这里断言的是 List 与 leaf_len 同源（侧栏口径），surfaceCounts 的对照
+	// 由上面各阶段的 compareSurfaceCounts 承担（那是两个**实现**之间的一致性）。
 	list, err := s.List()
 	if err != nil {
 		t.Fatal(err)
 	}
+	for _, meta := range list {
+		_, n := leafAndLen(t, s, meta.ID)
+		if meta.Messages != n {
+			t.Fatalf("List 的 Messages 应与 leaf_len 同源: %s=%d vs %d",
+				meta.ID, meta.Messages, n)
+		}
+	}
+	// 单链会话（a/b/d 都没移过 leaf）上，leaf_len 与 surfaceCounts 必须相同——
+	// 这条是「批次 1 迁移后侧栏数值不变」的延续钉子。
 	counts, err := s.surfaceCounts()
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, meta := range list {
-		if meta.Messages != counts[meta.ID] {
-			t.Fatalf("List 的 Messages 与 surfaceCounts 不一致: %s=%d vs %d",
-				meta.ID, meta.Messages, counts[meta.ID])
+	for _, id := range []string{a, b, d} {
+		_, n := leafAndLen(t, s, id)
+		if n != counts[id] {
+			t.Fatalf("单链会话 %s 的 leaf_len=%d 与 surfaceCounts=%d 不一致", id, n, counts[id])
 		}
 	}
 }

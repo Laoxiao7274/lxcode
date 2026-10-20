@@ -179,7 +179,7 @@ func TestFirstSendWorksInUnbornRepo(t *testing.T) {
 }
 
 // 用例 6：非 git 目录降级运行——注册时 EnsureRepo 会 git init，删掉 .git 模拟
-//「不是 git 仓库」的存量项目（.git 被删 / git init 从未成功）。会话照常创建、
+// 「不是 git 仓库」的存量项目（.git 被删 / git init 从未成功）。会话照常创建、
 // 发送成功，且不偷偷替用户 git init、不产生任何检查点提交。
 func TestFirstSendWorksInNonGitDir(t *testing.T) {
 	dir := t.TempDir()
@@ -264,7 +264,7 @@ func TestChildSessionPrepareUsesMainCheckout(t *testing.T) {
 	if _, err := srv.session(parentID); err != nil {
 		t.Fatal(err)
 	}
-	childID, err := srv.st.CreateChild(parentID, "main", "disp-1")
+	childID, err := srv.st.CreateChild(parentID, "main", "disp-1", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}

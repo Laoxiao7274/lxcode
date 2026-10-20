@@ -112,6 +112,13 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig, ac *sessiondata.A
 	s.dispatchRoot = ac // 主 Agent 载荷（dispatch 的委派名校验读它）
 	s.mu.Unlock()
 	ctx = tools.WithWorkDir(ctx, workDir)
+	// 会话读取观测（read_file 的重复读去重 / edit 的「改前先读」提示）：
+	// 会话级状态，与 workdir / todo sink 同一条 ctx 注入理由。用会话自己那份
+	// （不是每轮新建）：上一轮读过的文件这一轮不必再灌一遍全文。
+	s.mu.Lock()
+	readState := s.readState
+	s.mu.Unlock()
+	ctx = tools.WithReadState(ctx, readState)
 	// 会话 id 也进 ctx：后台任务（bash 的 run_in_background）要记**归属会话**，
 	// 唤醒投递按它找回会话。注册表是进程级单例，多会话并发时不能把归属
 	// 挂在注册表上（与 workdir / todo sink 同一条理由）。
@@ -269,7 +276,7 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig, ac *sessiondata.A
 					if !aborted {
 						skipNote = skippedFailureNote
 					}
-					s.sinkSkippedToolResults(s.append, res.Message.ToolCalls, "", skipNote)
+					s.sinkSkippedToolResults(func(m llm.Message) { s.append(m) }, res.Message.ToolCalls, "", skipNote)
 				}
 				m := res.Message
 				partial = &m
@@ -290,7 +297,27 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig, ac *sessiondata.A
 		// 调用参数可能是半截 JSON（输出被 max_tokens 截断）：先修好再入历史，
 		// 落库的参数与随后执行用的参数保持一致（tools 执行前修的是同一份实现）
 		sanitizeToolCallArgs(res.Message.ToolCalls, "本轮工具调用")
-		s.append(res.Message)
+		// 落库并拿到本轮 assistant 消息的 seq：它既是历史里的序号，也是文件快照的
+		// 锚点（append 是值传递，不回传的话 res.Message.Seq 恒为 0 → 永远不抓快照）。
+		roundSeq := s.append(res.Message)
+
+		// 文件快照的接缝（docs/session-tree.md §C.2）：锚点 = 本轮 assistant 消息的
+		// seq（append 已把 store 分配的号写回消息对象），owner = 回滚归属。
+		// 两者在顶层会话里相等，在子会话里不同（owner 是**父会话**那条派发消息的
+		// seq）——这正是必须分成两个 ctx 值的原因。
+		//
+		// 拿不到锚点（纯内存模式 / 落盘失败 → Seq==0）或没存储 → **不抓快照**
+		// （诚实降级：这一轮的改动回滚不了，树面板标 ⚠️），绝不编一个假锚点。
+		if s.st != nil && roundSeq > 0 {
+			toolsCtx := tools.WithSnapshotAnchor(ctx, roundSeq)
+			if ownerID, ownerSeq, ok := s.snapshotOwnerFor(roundSeq); ok {
+				toolsCtx = tools.WithSnapshotOwner(toolsCtx, ownerID, ownerSeq)
+			}
+			if fn := s.snapshotter(toolsCtx); fn != nil {
+				toolsCtx = tools.WithFileSnapshotter(toolsCtx, fn)
+			}
+			ctx = toolsCtx
+		}
 		s.emit(TurnDoneEvent{
 			Message: res.Message, UsageTokens: res.UsageTokens, FinishReason: res.FinishReason,
 			Context: s.ProjectedContextUsage(),
@@ -303,7 +330,7 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig, ac *sessiondata.A
 			s.auditTodosAtRoundEnd()
 			return
 		}
-		if !s.runTools(ctx, res.Message.ToolCalls, &fileChanges, ac, "", s.append) {
+		if !s.runTools(ctx, res.Message.ToolCalls, &fileChanges, ac, "", roundSeq, func(m llm.Message) { s.append(m) }) {
 			return // 取消
 		}
 		// 这一轮的调用是不是在原地打转（同工具 + 同参数）？提醒留到**下一个轮边界**

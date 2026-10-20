@@ -124,7 +124,7 @@ func TestArchiveWithChildKeepsWorktrees(t *testing.T) {
 	srv, client, projectMeta, _ := archiveTestServer(t, "archive-child-worktree")
 	parent, parentPath := newProjectSessionWithWorktree(t, srv, client, projectMeta.ID)
 	// 子会话只继承父的 workspace，worktree 三列为空（标签页没被打开过）。
-	child, err := srv.st.CreateChild(parent, "agent-x", "dispatch-x")
+	child, err := srv.st.CreateChild(parent, "agent-x", "dispatch-x", "", 0)
 	if err != nil {
 		t.Fatalf("CreateChild failed: %v", err)
 	}

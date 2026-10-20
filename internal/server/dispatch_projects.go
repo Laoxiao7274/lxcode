@@ -1,9 +1,10 @@
-// 项目域：project.*（增列 / 项目守则读写——只按项目 id 寻址）。
+// 项目域：project.*（增列 / 移除注册 / 项目守则读写——只按项目 id 寻址）。
 
 package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/moyunteng/lxcode/internal/project"
@@ -26,6 +27,33 @@ func (s *Server) dispatchProjects(req *protocol.Request, params json.RawMessage)
 		return protocol.NewResult(req.ID, protocol.ProjectMeta{
 			ID: saved.ID, Name: saved.Name, Path: saved.Path,
 		})
+
+	case protocol.MethodProjectRemove:
+		var p protocol.ProjectRemoveParams
+		if err := json.Unmarshal(params, &p); err != nil || p.ProjectID == "" {
+			return protocol.NewError(req.ID, protocol.CodeInvalidParams, "参数解析失败: 需要 project_id")
+		}
+		if s.st == nil {
+			return protocol.NewError(req.ID, protocol.CodeInvalidParams, "会话存储未启用")
+		}
+		// 边界：项目下**有会话正在跑** → 拒绝（移除后侧栏没有入口停它们，
+		// 而项目根仍在被这些会话当作工作目录用——先停再删是唯一不会让人
+		// 困惑的顺序）。空闲会话不拦：它们留在库里，历史一条不丢。
+		if running := s.runningSessionsOfProject(p.ProjectID); running > 0 {
+			return protocol.NewError(req.ID, protocol.CodeInvalidParams,
+				fmt.Sprintf("该项目还有 %d 个会话正在运行——请先停止它们再移除项目", running))
+		}
+		// 会话条数在**移除之前**数（移除会把归属清空，之后数出来是 0）——
+		// 结果回给调用方做提示文案：「N 条会话保留在库里（落进未分组）」
+		n, err := s.st.ProjectSessionCount(p.ProjectID)
+		if err != nil {
+			return protocol.NewError(req.ID, protocol.CodeInternal, err.Error())
+		}
+		if err := s.st.RemoveProject(p.ProjectID); err != nil {
+			return protocol.NewError(req.ID, protocol.CodeInvalidParams, err.Error())
+		}
+		s.broadcast(protocol.EventProjectChanged, map[string]any{})
+		return protocol.NewResult(req.ID, protocol.ProjectRemoveResult{Removed: true, Sessions: n})
 
 	case protocol.MethodProjectList:
 		metas, err := s.st.ListProjects()

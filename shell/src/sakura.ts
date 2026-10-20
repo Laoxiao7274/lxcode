@@ -8,11 +8,22 @@
 // 状态机：主进程持有唯一真相（SakuraState），每次变更经回调推给渲染层；
 // 渲染层只发意图（login/create/start/...），不自己拼 API。
 // 测试注入口：LXCODE_SAKURA_API 覆盖 API 基址（e2e 指向本地 mock）。
+//
+// 节点选择（2026-12）：列表 + 实测延迟（TCP connect，见 sakura-nodes.ts 头注）
+// 经 sakura:listNodes 拉、延迟结果经 sakura:nodeLatency 异步推；创建隧道可带
+// 显式 nodeId（校验在候选列表里且可用），不传则沿用自动选（负载最低）。
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { app } from "electron";
+import {
+  candidateNodes,
+  createLatencyProber,
+  resolveNodeChoice,
+  type NodeCandidate,
+  type RawNode,
+} from "./sakura-nodes";
 
 const API_BASE = process.env.LXCODE_SAKURA_API ?? "https://api.natfrp.com/v4";
 /** 隧道命名约定：靠它识别「我们的」隧道，复用不重建（文档 §4.3）。 */
@@ -39,10 +50,39 @@ export interface SakuraTunnelView {
   /** 公网连接地址 host:port。 */
   addr: string;
   online: boolean;
-  /** 节点负载百分比。 */
+  /** 节点负载百分比（/node/stats 拉不到时为 null——UI 显示「—」，不是 0%）。 */
   load: number | null;
   /** 隧道累计用量（字节，双向计费）。 */
   used: number | null;
+}
+
+/** 节点选择列表项（渲染层投影：候选节点 + 已测出的延迟）。 */
+export interface SakuraNodeView {
+  id: number;
+  name: string;
+  host: string;
+  /** 负载百分比（null = 未知）。 */
+  load: number | null;
+  /** 能否用来创建隧道。 */
+  usable: boolean;
+  /** 不可用原因（可用时 null）：需更高等级 / 离线 / 不可创建隧道 / 节点地址缺失。 */
+  reason: string | null;
+  /** 已测延迟（ms；null = 还没测出/测不出）。 */
+  latency: number | null;
+}
+
+export interface SakuraNodeList {
+  nodes: SakuraNodeView[];
+  /** 当前用户组等级（UI 标注「需更高等级」的依据）。 */
+  groupLevel: number;
+  /** 延迟是否会在随后异步补（列表先出、延迟逐个推）。 */
+  probing: boolean;
+}
+
+/** 单节点延迟探测结果（IPC 推送：列表先出，延迟异步填）。 */
+export interface SakuraLatencyEvent {
+  host: string;
+  latency: number | null;
 }
 
 export interface SakuraState {
@@ -68,6 +108,9 @@ let groupLevel = 0; // 用户组等级（选节点过滤 VIP 专属用，不进�
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let frpc: ChildProcess | null = null;
 let notify: ((s: SakuraState) => void) | null = null;
+let notifyLatency: ((e: SakuraLatencyEvent) => void) | null = null;
+/** 延迟探测（TCP connect 到 frps 控制端口，结果 5 分钟缓存）。 */
+const prober = createLatencyProber();
 
 function emptyState(): SakuraState {
   return { loggedIn: false, account: null, ban: null, tunnels: [], runningId: null, frpcReady: false, frpcHint: null, busy: null, error: null };
@@ -135,13 +178,6 @@ interface RawUserInfo {
   traffic?: number[];
   group?: { name?: string; level?: number };
   ban?: { title?: string; reason?: string };
-}
-
-interface RawNode {
-  name?: string;
-  host?: string;
-  vip?: number;
-  flag?: number;
 }
 
 interface RawTunnel {
@@ -277,24 +313,58 @@ async function refresh(quiet: boolean): Promise<void> {
   }
 }
 
-// ---- 隧道操作 ----
+// ---- 节点列表与延迟探测 ----
 
-/** 自动选节点：可创建（flag bit2）+ 在线（bit9 清零）+ 非 VIP 专属，负载最低者优先。 */
-async function pickNode(t: string, groupLevel: number): Promise<{ id: number; name: string }> {
+/**
+ * 候选节点列表（含已测延迟，未知为 null）+ 当前用户组等级。
+ *
+ * 首屏只带**缓存里已知**的延迟（点开面板立即有数），随后按 hosts 异步探测并
+ * 逐个推 sakura:nodeLatency——列表不被探测阻塞（70 个节点全测完要十几秒）。
+ * 探测本身用 5 分钟缓存 + 并发 6，面板反复开关不会刷屏式 connect。
+ */
+async function listNodes(): Promise<SakuraNodeList> {
+  const t = requireToken();
   const { nodes } = await fetchNodes(t);
-  const candidates = [...nodes.entries()]
-    .filter(([, n]) => typeof n.flag === "number" && (n.flag & (1 << 2)) !== 0 && (n.flag & (1 << 9)) === 0)
-    .filter(([, n]) => (n.vip ?? 0) <= groupLevel)
-    .sort((a, b) => (a[1].load ?? 100) - (b[1].load ?? 100));
-  if (candidates.length === 0) throw new SakuraError("没有可用的节点（全部满载/离线或需要更高用户等级）");
-  return { id: candidates[0][0], name: candidates[0][1].name ?? String(candidates[0][0]) };
+  const cands = candidateNodes(nodes.entries(), groupLevel);
+  const views: SakuraNodeView[] = cands.map((c) => {
+    const cached = c.host ? prober.peek(c.host) : { known: false, ms: null };
+    return {
+      id: c.id,
+      name: c.name,
+      host: c.host,
+      load: c.load,
+      usable: c.usable,
+      reason: c.reason,
+      latency: cached.known ? cached.ms : null,
+    };
+  });
+  // 只探可用且未缓存的节点：不可用的选了也建不了，别浪费连接
+  const hosts = cands.filter((c) => c.usable).map((c) => c.host);
+  void prober
+    .probeAll(hosts, (host, ms) => notifyLatency?.({ host, latency: ms }))
+    .catch((e) => console.log(`[sakura] 延迟探测中断: ${errMsg(e)}`));
+  return { nodes: views, groupLevel, probing: true };
 }
 
-async function createTunnel(): Promise<void> {
+// ---- 隧道操作 ----
+
+/**
+ * 选节点：候选列表由 candidateNodes 给出（与 sakura:listNodes 同一份判定），
+ * nodeId 传了就校验它当前可用，不传就自动选（负载最低）。
+ */
+async function chooseNode(t: string, nodeId: number | null | undefined): Promise<NodeCandidate> {
+  const { nodes } = await fetchNodes(t);
+  const cands = candidateNodes(nodes.entries(), groupLevel);
+  const choice = resolveNodeChoice(cands, nodeId);
+  if (!choice.ok) throw new SakuraError(choice.error);
+  return choice.node;
+}
+
+async function createTunnel(nodeId?: number | null): Promise<void> {
   const t = requireToken();
   setState({ busy: "正在创建隧道" });
   try {
-    const node = await pickNode(t, groupLevel);
+    const node = await chooseNode(t, nodeId);
     const created = await api<{ id?: number; name?: string; remote?: string }>(`/tunnels`, {
       token: t,
       form: { name: TUNNEL_NAME, type: "tcp", node: String(node.id), local_ip: "127.0.0.1", local_port: String(localBackendPort()), remote: "" },
@@ -540,8 +610,9 @@ function errMsg(e: unknown): string {
 // ---- 装配 ----
 
 /** 初始化：读回密钥（有则自动恢复登录态）+ 注册状态推送。 */
-export function initSakura(onState: (s: SakuraState) => void): void {
+export function initSakura(onState: (s: SakuraState) => void, onLatency?: (e: SakuraLatencyEvent) => void): void {
   notify = onState;
+  notifyLatency = onLatency ?? null;
   const saved = loadToken();
   if (saved) {
     token = saved;
@@ -572,7 +643,10 @@ export const sakuraHandlers = {
   "sakura:login": (_e: unknown, key: string): Promise<SakuraState> => login(String(key ?? "")).then(snapshot),
   "sakura:logout": (): SakuraState => { logout(); return snapshot(); },
   "sakura:refresh": (): Promise<SakuraState> => refresh(false).then(snapshot),
-  "sakura:createTunnel": (): Promise<SakuraState> => createTunnel().then(snapshot),
+  "sakura:listNodes": (): Promise<SakuraNodeList> => listNodes(),
+  // nodeId 可选：不传（或非数字）= 自动选（负载最低），传了就校验候选与可用性
+  "sakura:createTunnel": (_e: unknown, nodeId?: number | null): Promise<SakuraState> =>
+    createTunnel(typeof nodeId === "number" && Number.isFinite(nodeId) ? nodeId : null).then(snapshot),
   "sakura:removeTunnel": (_e: unknown, id: number): Promise<SakuraState> => removeTunnel(Number(id)).then(snapshot),
   "sakura:startTunnel": (_e: unknown, id: number): Promise<SakuraState> => startTunnel(Number(id)).then(snapshot),
   "sakura:stopTunnel": (): Promise<SakuraState> => stopTunnel().then(snapshot),

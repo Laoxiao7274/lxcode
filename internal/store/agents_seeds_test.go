@@ -355,7 +355,9 @@ func TestBuiltinToolsPresentInCatalog(t *testing.T) {
 }
 
 // TestSeedAgentsCoverExecutionSurfaces：名单要覆盖三种执行面（实现 / 勘察 / 验证）
-// ——调研 Agent 只读（无变更类工具），测试 Agent 能跑命令（bash）。
+// ——调研 Agent 只读（无变更类工具，但必须有**只读执行面** bash_readonly：
+// 2026-12 用户反馈「调研 Agent 读不了本地文件」，查 SQLite/git log 只能答做不到），
+// 测试 Agent 能跑完整命令（bash）。
 func TestSeedAgentsCoverExecutionSurfaces(t *testing.T) {
 	byID := map[string]sessiondata.AgentDef{}
 	for _, a := range seedAgents {
@@ -369,6 +371,10 @@ func TestSeedAgentsCoverExecutionSurfaces(t *testing.T) {
 		if tl == "edit" || tl == "write_file" || tl == "bash" {
 			t.Fatalf("调研 Agent 是只读面，不该含变更类工具 %s: %v", tl, researcher.Tools)
 		}
+	}
+	// 只读执行面必须有（否则查库/看历史都做不到——用户实测反馈）
+	if !slices.Contains(researcher.Tools, "bash_readonly") {
+		t.Fatalf("调研 Agent 缺 bash_readonly——读不了本地数据（sqlite3/git log/wc 全跑不了）: %v", researcher.Tools)
 	}
 	if researcher.Approval != "strict" {
 		t.Fatalf("调研 Agent 的权限默认应为 strict（只读，纵深防御）: %q", researcher.Approval)
@@ -445,6 +451,42 @@ func TestSeedResearcherHasWebFetch(t *testing.T) {
 	got := agentToolsOf(t, s, "researcher")
 	if !slices.Contains(got, "web_fetch") {
 		t.Fatalf("调研 Agent 的白名单缺 web_fetch（搜索只给摘要，正文要靠它）: %v", got)
+	}
+}
+
+// TestSeedResearcherHasReadOnlyBash：调研 Agent 的白名单必须含 bash_readonly，
+// 且**不能**含完整 bash。
+//
+// 2026-12 用户反馈：调研 Agent 没有执行面，读不了本地数据（SQLite 聚合、git log、
+// 文件规模统计都只能答「做不到」）。补的是**只读执行面**——完整 bash 会把
+// rm -rf / git push 一起交出去（approval=strict 只能拦住「变更类工具」这个粒度，
+// 拦不住一条命令里的写操作），所以两个断言一起钉：有只读、无完整。
+func TestSeedResearcherHasReadOnlyBash(t *testing.T) {
+	s := openTestStore(t)
+	got := agentToolsOf(t, s, "researcher")
+	if !slices.Contains(got, "bash_readonly") {
+		t.Fatalf("调研 Agent 的白名单缺 bash_readonly（读不了本地数据）: %v", got)
+	}
+	if slices.Contains(got, "bash") {
+		t.Fatalf("调研 Agent 不该有完整 bash（写操作只能靠命令级判据拦，不是靠白名单）: %v", got)
+	}
+}
+
+// TestSeedResearcherDescMentionsReadOnlyBash：职责描述必须点明「查数据库/只读执行面」。
+//
+// 描述是主 Agent 的选人信号：漏了它，主 Agent 就不知道「查一下库里的统计」
+// 「看 git 历史」该派给谁——工具给了也白给（web_search 栽过的那一跤）。
+func TestSeedResearcherDescMentionsReadOnlyBash(t *testing.T) {
+	byID := map[string]sessiondata.AgentDef{}
+	for _, a := range seedAgents {
+		byID[a.ID] = a
+	}
+	got := byID["researcher"].Desc
+	if !strings.Contains(got, "查数据库") || !strings.Contains(got, "只读") {
+		t.Fatalf("调研 Agent 的职责描述应点明只读执行面能查数据库: %q", got)
+	}
+	if !strings.Contains(byID["researcher"].Prompt, "bash_readonly") {
+		t.Fatalf("调研 Agent 的提示词应写明只读执行面的边界: %q", byID["researcher"].Prompt)
 	}
 }
 

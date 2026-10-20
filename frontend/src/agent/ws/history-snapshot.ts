@@ -35,6 +35,8 @@ export function snapshotFromWire(r: unknown): HistorySnapshot {
     model?: string;
     /** 该会话此刻的权限档（老后端没有 → 缺席，显示端不猜）。 */
     approval?: string;
+    /** 这次回放对应的叶（0 = 空路径；老后端缺席）。 */
+    leaf_seq?: number;
   };
   return {
     sessionId: h.session_id ?? "",
@@ -47,5 +49,9 @@ export function snapshotFromWire(r: unknown): HistorySnapshot {
     checkpoints: h.checkpoints ?? [],
     model: h.model,
     approval: h.approval === undefined ? undefined : normalizeApproval(h.approval),
+    // 叶指针（0 = 空路径，是**合法状态**不是"未知"）：树面板拿它高亮「你在这里」，
+    // 也拿它决定「回到最新」的落点。老后端缺席时**不写这个键**——显示端据此
+    // 退回"不知道叶在哪"（树面板用 chat.tree 自己的 leaf_seq 兜底）。
+    ...(typeof h.leaf_seq === "number" ? { leafSeq: h.leaf_seq } : {}),
   };
 }

@@ -41,3 +41,39 @@ test('代码/测试 Agent 的种子提示词含推送纪律（不得直接 git p
     assert.match(a.prompt, /workspace_sync/, `${id} 的提示词应指明唯一推送通道`);
   }
 });
+
+// 职责分工（2026-12 用户拍板）：代码 Agent 只写代码、不跑测试；测试与验证归
+// 测试 Agent。前端种子是演示名单与 Agent 编辑器的默认值，与后端种子同款文案。
+test('代码 Agent 的种子文案不把测试写成自己的活（分工：测试归测试 Agent）', () => {
+  const agents = seedAgents();
+  const coder = agents.find((a) => a.id === 'coder');
+  assert.ok(coder);
+  for (const banned of ['跑构建测试', '构建测试通过才算完成']) {
+    assert.ok(!coder.desc.includes(banned), `coder.desc 不该含「${banned}」: ${coder.desc}`);
+    assert.ok(!coder.prompt.includes(banned), `coder.prompt 不该含「${banned}」`);
+  }
+  assert.match(coder.prompt, /不跑测试/, 'coder 的提示词要明说不跑测试');
+  assert.match(coder.prompt, /编译/, 'coder 保留编译自检底线');
+  assert.match(coder.desc, /测试交给测试 Agent/, 'desc 是主 Agent 的选人信号，要把测试指向测试 Agent');
+
+  const tester = agents.find((a) => a.id === 'tester');
+  assert.ok(tester);
+  assert.match(tester.desc, /验收/, 'tester 的 desc 应点明验收职责');
+  assert.match(tester.prompt, /代码 Agent/, 'tester 的提示词应写明接手 coder 交回的改动');
+});
+
+// 调研 Agent 的执行面（2026-12 用户反馈）：只读 bash 在目录里、在白名单里、
+// 描述里点明；完整 bash 不在白名单里（写操作只能靠命令级判据拦，不是白名单）。
+test('调研 Agent 有只读执行面，没有完整 bash', () => {
+  const tools = BUILTIN_TOOLS.map((t) => t.id);
+  assert.ok(tools.includes('bash_readonly'), '目录里必须有 bash_readonly（编辑器 chip 只读目录）');
+  const ro = toolOf('bash_readonly');
+  assert.equal(ro.risk, 'low', '只读执行面必须是低危（strict 档下可用）');
+  const researcher = seedAgents().find((a) => a.id === 'researcher');
+  assert.ok(researcher, '种子里必须有 researcher');
+  assert.ok(researcher.tools.includes('bash_readonly'), '调研 Agent 的白名单应含 bash_readonly');
+  assert.ok(!researcher.tools.includes('bash'), '调研 Agent 不该有完整 bash');
+  assert.match(researcher.desc, /只读/, '描述是主 Agent 的选人信号，要点明只读');
+  assert.match(researcher.desc, /查数据库/, '描述要点明能查数据库（sqlite3 等）');
+  assert.equal(researcher.approval, 'strict', '调研 Agent 的权限默认仍是 strict');
+});

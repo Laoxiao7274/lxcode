@@ -849,13 +849,14 @@ func TestSystemPromptListsAllTools(t *testing.T) {
 			t.Fatalf("提示词应列出工具 %s（清单与注册表不漂移）", name)
 		}
 	}
-	// 二十四个工具的清单行数（read_skill + web_search + web_fetch + agent_read
+	// 二十五个工具的清单行数（read_skill + web_search + web_fetch + agent_read
 	// + agent_write + agent_dispatch + merge_request + ask_user + job_output/
-	// job_list/job_kill + 工作区四件套 + share_file + read_image——渐进披露、
-	// 联网检索与抓正文、Agent 配置读写、调度、合并进程入口、提问通道、后台任务、
-	// 工作区查询/同步/回滚/产物发布、附件共享、视觉读图）
-	if got := strings.Count(prompt, "\n- "); got != 24 {
-		t.Fatalf("工具清单应 24 行, got %d", got)
+	// job_list/job_kill + 工作区四件套 + share_file + read_image + bash_readonly
+	// ——渐进披露、联网检索与抓正文、Agent 配置读写、调度、合并进程入口、提问
+	// 通道、后台任务、工作区查询/同步/回滚/产物发布、附件共享、视觉读图、
+	// 只读执行面）
+	if got := strings.Count(prompt, "\n- "); got != 25 {
+		t.Fatalf("工具清单应 25 行, got %d", got)
 	}
 }
 

@@ -27,8 +27,9 @@ export const BUILTIN_TOOLS: ToolSpec[] = [
       { name: "path", type: "string", required: true },
       { name: "offset", type: "int", desc: "起始行号" },
       { name: "limit", type: "int", desc: "行数（默认 2000）" },
+      { name: "force", type: "bool", desc: "确实要重读原文时置 true（跳过同区间去重）" },
     ],
-    doc: "按行输出，行号前缀（N→）。256KB 上限，二进制文件拒绝（魔数检测）。\n\nedit 前先 read 拿到精确的 old_string——这是精确替换工作流的第一步。",
+    doc: "按行输出，行号前缀（N→）。256KB 上限，二进制文件拒绝（魔数检测）。\n\nedit 前先 read 拿到精确的 old_string——这是精确替换工作流的第一步。\n\n**会话级去重**：同一会话里对同一文件用完全相同的 offset/limit 重读、且文件没被改过时只回一句摘要；确实要原文就加 force=true，或换区间读别的部分。",
   },
   {
     id: "search",
@@ -176,6 +177,19 @@ export const BUILTIN_TOOLS: ToolSpec[] = [
       { name: "stdin", type: "string", desc: "标准输入，≤64KB" },
     ],
     doc: "按 OS 选 shell（Windows 优先 Git Bash）。\n\n- 超时 60s（上限 300s）、输出 32KB 截断\n- 长命令建议先落盘成脚本再执行——可审查、可重放",
+  },
+  {
+    id: "bash_readonly",
+    desc: "执行只读 shell 命令（读数据：ls/grep/wc、git log、sqlite3 查询）",
+    risk: "low",
+    source: "builtin",
+    params: [
+      { name: "command", type: "string", required: true, desc: "只读命令（ls / cat / grep / find / wc / git log / sqlite3 的 SELECT 等）" },
+      { name: "cwd", type: "string", desc: "工作目录（绝对或相对会话工作目录，可选）" },
+      { name: "stdin", type: "string", desc: "标准输入，≤64KB" },
+      { name: "timeout_sec", type: "int", desc: "秒，上限 300" },
+    ],
+    doc: "只读执行面：命令级白名单校验，写操作（rm/mv/重定向/git commit/git push/包管理/解释器脚本）一律拒绝并说明原因；命令替换、解释器等无法静态判定的结构同样拒绝（只读命令之间的管道可以）。\n\n- 适合读数据：查 SQLite、看 git 历史、统计文件规模\n- 改文件请交给代码 Agent（bash / edit / write_file）",
   },
   {
     id: "todo",
@@ -523,8 +537,11 @@ export function seedAgents(): AgentDef[] {
       name: "代码 Agent",
       color: "#3b82f6",
       model: "MYT-Deep",
-      desc: "编码实现与重构：读写代码、跑构建测试，产出可验证的改动，能把产物文件共享到对话、能读图片内容（视觉）。",
-      prompt: "你是代码 Agent。改动前先读相关代码，遵守仓库规范；每步改动可解释、可回退，构建测试通过才算完成。绝不执行 git push（含 --force）：推送只由用户经 workspace_sync 发起；lxcode 本体仓库的发版只走 scripts/push-release.mjs。",
+      // 职责边界（2026-12 用户拍板，与后端种子 agents_seeds.go 同款）：**只写代码，
+      // 不跑测试**——测试与验证归测试 Agent。desc 是主 Agent 的选人信号，写着
+      // 「跑测试」会让它把验证任务也派给 coder；只保留「改完确认能编译」这条底线。
+      desc: "写代码：新增功能、修 bug、重构与改配置（只改文件：测试交给测试 Agent、查资料交给调研 Agent），能把产物文件共享到对话、能读图片内容（视觉）。",
+      prompt: "你是代码 Agent。改动前先读相关代码，遵守仓库规范；每步改动可解释、可回退。你只负责实现与重构，**不跑测试**——验证（跑构建与测试、补用例、验收）是测试 Agent 的职责，把改动与改动说明如实交回即可。唯一的自检底线：改完确认代码能编译、无明显语法错误（如 go build / tsc 级别的编译检查），不要让连编译都过不了的代码流到下游。绝不执行 git push（含 --force）：推送只由用户经 workspace_sync 发起；lxcode 本体仓库的发版只走 scripts/push-release.mjs。",
       tools: ["read_file", "search", "read_image", "edit", "write_file", "bash", "todo", "share_file"],
       workflow: "minimal-change",
       skills: ["frontend-design", "gsap"],
@@ -539,9 +556,11 @@ export function seedAgents(): AgentDef[] {
       model: "MYT",
       // desc 是**主 Agent 的选人信号**（可委派名单按它逐字生成）：漏写「联网搜索」，
       // 主 Agent 就不知道「查外部资料」该派给谁——工具与白名单都到位，能力照样等于不存在。
-      desc: "代码库与资料勘察：全文检索、历史会话、联网搜索与抓取网页正文、跨文件脉络梳理，只给结论与出处。",
-      prompt: "你是调研 Agent。只做检索与信息整理：结论必须带依据（文件路径 + 行号、命令输出或文档链接）；查不到就如实说「未找到」，不编造也不推测。不修改任何文件。",
-      tools: ["read_file", "search", "session_search", "web_search", "web_fetch", "ripgrep"],
+      // bash_readonly（2026-12 用户反馈）：调研要查本地数据（sqlite3 聚合、git log、
+      // wc 统计），没有执行面就只能答「做不到」；完整 bash 又太危险，所以给只读执行面。
+      desc: "只读调研：检索代码、读文件、查数据库（只读 bash_readonly：sqlite3 查询/git log/wc 等）、联网搜索与抓取网页正文、梳理跨文件脉络，只给结论与出处，不改任何文件。",
+      prompt: "你是调研 Agent。只做检索与信息整理，**不修改任何文件、不执行构建测试、不提交推送**。\n\n职责边界：\n- 结论必须带依据：文件路径 + 行号、命令输出或文档链接；查不到就如实说「未找到」，不编造也不推测。\n- bash_readonly 是只读执行面：可以跑读取类命令（ls/cat/grep/find/wc、git log/diff/status、sqlite3 的 SELECT 查询等），写操作（rm/mv/重定向/git commit/git push/包管理/解释器脚本）会被工具直接拒绝。\n- 被拒绝时不要绕过：把「需要什么改动」写进结论，交回主 Agent 派给代码 Agent（coder）或测试 Agent（tester）。",
+      tools: ["read_file", "search", "session_search", "web_search", "web_fetch", "ripgrep", "bash_readonly"],
       workflow: "research-first",
       skills: [],
       delegates: [],
@@ -553,8 +572,10 @@ export function seedAgents(): AgentDef[] {
       name: "测试 Agent",
       color: "#0ea5e9",
       model: "MYT-Deep",
-      desc: "验证与测试：跑构建与测试、按验收标准补用例，如实回传失败与复现命令，能把产物文件共享到对话、能读图片内容（视觉）。",
-      prompt: "你是测试 Agent。跑构建与测试，断言行为与契约而不是实现细节；失败如实回传（关键输出 + 复现命令）。绝不为了让测试变绿而删除、跳过或弱化断言——测试与实现冲突时先判断谁对：实现错了改实现，需求变了先改方案。绝不执行 git push（含 --force）：推送只由用户经 workspace_sync 发起。",
+      // 与代码 Agent 的分工（2026-12 用户拍板）：测试与验证归这里——coder 只写
+      // 代码不跑测试，所以描述里写明「代码 Agent 交回的改动由你验收」。
+      desc: "验证与测试：跑构建与测试（代码 Agent 交回的改动由你验收）、按验收标准补用例，如实回传失败与复现命令（不改实现；查资料交给调研 Agent），能把产物文件共享到对话、能读图片内容（视觉）。",
+      prompt: "你是测试 Agent，负责验证与测试（代码 Agent 只写代码、不跑测试，改动交回后由你跑构建与测试验收）。跑构建与测试，断言行为与契约而不是实现细节；失败如实回传（关键输出 + 复现命令）。绝不为了让测试变绿而删除、跳过或弱化断言——测试与实现冲突时先判断谁对：实现错了改实现，需求变了先改方案；改实现超出「补用例/修测试」的范围时，如实交回主 Agent 派给代码 Agent，不自己重写功能。只读调研（查资料、查历史、梳理跨文件脉络）也不是你的活，派给调研 Agent。绝不执行 git push（含 --force）：推送只由用户经 workspace_sync 发起。",
       tools: ["read_file", "search", "read_image", "edit", "write_file", "bash", "todo", "share_file"],
       workflow: "plan-execute-verify",
       skills: [],
@@ -583,8 +604,8 @@ export function seedAgents(): AgentDef[] {
       name: "lxagent",
       color: "#7c3aed",
       model: "MYT-Deep",
-      desc: "维护其他 Agent 的配置：查看与修改系统提示词模板、工具白名单与技能绑定，改动经确认门落库，对后续派发生效。",
-      prompt: "你是 lxagent，专门维护其他 Agent 的配置：修改系统提示词模板、工具白名单与技能绑定。\n\n职责边界：\n- 只改 Agent 配置，不替用户做业务决策，也不亲自执行目标 Agent 的业务任务。\n- 动手前先 agent_read 摸清现状，向用户确认意图（改哪个 Agent、改成什么、为什么）再调用 agent_write。\n- agent_write 是高危操作（影响之后所有派发）：白名单加写工具会让目标 Agent 获得改动文件的能力，撤技能绑定会改变它的方法论——把后果说清让用户知情。\n- 每次改动后用 agent_read 复读确认落库结果，向用户回报改了什么。\n\n硬约束（工具层强制，勿试图绕过）：id 不可改、白名单不能清空、模板不能为空、工具名必须是工具目录里真实存在的、主 Agent 的配置不可经此修改。",
+      desc: "改 Agent 配置：查看与修改系统提示词模板、工具白名单与技能绑定（只改配置，不写业务代码、不跑测试），改动经确认门落库，对后续派发生效。",
+      prompt: "你是 lxagent，专门维护其他 Agent 的配置：修改系统提示词模板、工具白名单与技能绑定。\n\n职责边界：\n- 只改 Agent 配置，不替用户做业务决策，也不亲自执行目标 Agent 的业务任务（不写业务代码、不跑测试、不做调研——那些派给 coder / tester / researcher）。\n- 动手前先 agent_read 摸清现状，向用户确认意图（改哪个 Agent、改成什么、为什么）再调用 agent_write。\n- agent_write 是高危操作（影响之后所有派发）：白名单加写工具会让目标 Agent 获得改动文件的能力，撤技能绑定会改变它的方法论——把后果说清让用户知情。\n- 每次改动后用 agent_read 复读确认落库结果，向用户回报改了什么。\n\n硬约束（工具层强制，勿试图绕过）：id 不可改、白名单不能清空、模板不能为空、工具名必须是工具目录里真实存在的、主 Agent 的配置不可经此修改。",
       tools: ["agent_read", "agent_write", "read_file", "search", "session_search", "ask_user", "todo"],
       workflow: "minimal-change",
       skills: [],

@@ -80,9 +80,12 @@ func TestSessionStatsAbsentForEmptySession(t *testing.T) {
 	}
 }
 
-// TestSessionStatsFollowsRewindOverWS：撤回真删了行 → chat.rewound 带**重算后**的统计
-// （步数跟着变小）；全撤光时统计回到零值 → 整键缺席（前端不渲染胶囊）。
-func TestSessionStatsFollowsRewindOverWS(t *testing.T) {
+// TestSessionStatsUnchangedByRewindOverWS：撤回（批次 2 起**只移 leaf、一行不删**）
+// **不改变整段统计**——这是拍板项 3（SessionStats 仍折叠整段日志）的钉子。
+//
+// 旧语义（真删行）下这里断言「步数变小」；分支化之后那条断言就是错的：
+// 数据还在库里，切分支不改数字（DSH 原话：paging and compaction cannot change）。
+func TestSessionStatsUnchangedByRewindOverWS(t *testing.T) {
 	_, client, _ := newTestServer(t, usageStream(1111, 1111))
 	id := createTestSession(t, client, "")
 
@@ -100,16 +103,22 @@ func TestSessionStatsFollowsRewindOverWS(t *testing.T) {
 	ev := waitSessionEvent(t, client, protocol.EventRewound, id)
 	var rp protocol.ChatRewoundParams
 	decodeServerResult(t, ev.Params, &rp)
-	// 全撤光之后统计是零值 → 整键缺席（前端不渲染胶囊，不显示一排 0）。
-	// 零值**不是**"已知的 0"：它与"还没有任何一步"在展示上是同一件事。
-	if rp.Stats != nil && *rp.Stats != (protocol.SessionStats{}) {
-		t.Fatalf("撤回全部历史后统计应回到零值或整键缺席: %+v", *rp.Stats)
+	// 撤回只移 leaf：整段日志仍在库里 → 统计**一点没变**（2 轮 2 步）。
+	if rp.Stats == nil {
+		t.Fatal("撤回后统计不该缺席（历史行还在库里）")
+	}
+	if rp.Stats.Turns != 2 || rp.Stats.Steps != 2 {
+		t.Fatalf("撤回（只移 leaf）不该改变整段统计: %+v", *rp.Stats)
+	}
+	// 回放路径同口径（两条路径必须给同一份数字）。
+	if got := readTestHistory(t, client, id).Stats; got == nil || got.Turns != 2 {
+		t.Fatalf("撤回后 chat.history 的统计该与事件一致: %+v", got)
 	}
 }
 
-// TestSessionStatsShrinksOnPartialRewind：撤回**一部分**时，重算后的统计必须真的变小
-// （这是"撤回会改统计"与"压缩不改统计"的分界——只有真删行才会变）。
-func TestSessionStatsShrinksOnPartialRewind(t *testing.T) {
+// TestSessionStatsUnchangedByPartialRewind：撤回**一部分**同样不改统计
+// （只移 leaf、一行不删——见上一个测试的说明）。
+func TestSessionStatsUnchangedByPartialRewind(t *testing.T) {
 	_, client, _ := newTestServer(t, usageStream(1111, 1111, 1111))
 	id := createTestSession(t, client, "")
 	sendAndWaitDoneStats(t, client, id, "第一轮")
@@ -118,7 +127,7 @@ func TestSessionStatsShrinksOnPartialRewind(t *testing.T) {
 	if third.Turns != 3 || third.Steps != 3 {
 		t.Fatalf("三轮之后应是 3 轮 3 步: %+v", third)
 	}
-	// 撤回第三轮那条用户消息（seq=5）：只删掉第三轮 → 统计回到 2 轮 2 步
+	// 回到第三轮之前（seq=5）：路径只剩前两轮，但库里的行一条没少
 	resp := client.call(protocol.MethodChatRewind, protocol.ChatRewindParams{SessionID: id, Seq: 5})
 	if resp == nil || resp.Error != nil {
 		t.Fatalf("chat.rewind 失败: %+v", resp)
@@ -127,14 +136,19 @@ func TestSessionStatsShrinksOnPartialRewind(t *testing.T) {
 	var rp protocol.ChatRewoundParams
 	decodeServerResult(t, ev.Params, &rp)
 	if rp.Stats == nil {
-		t.Fatal("部分撤回后统计不该缺席（还有两轮在）")
+		t.Fatal("撤回后统计不该缺席")
 	}
-	if rp.Stats.Turns != 2 || rp.Stats.Steps != 2 {
-		t.Fatalf("撤回一轮后统计应变成 2 轮 2 步: %+v", *rp.Stats)
+	if rp.Stats.Turns != 3 || rp.Stats.Steps != 3 {
+		t.Fatalf("撤回（只移 leaf）不该改变整段统计（仍是 3 轮 3 步）: %+v", *rp.Stats)
 	}
 	// 回放路径同口径
-	if got := readTestHistory(t, client, id).Stats; got == nil || got.Turns != 2 {
-		t.Fatalf("撤回后 chat.history 的统计该跟着变小: %+v", got)
+	if got := readTestHistory(t, client, id).Stats; got == nil || got.Turns != 3 {
+		t.Fatalf("撤回后 chat.history 的统计该与事件一致: %+v", got)
+	}
+	// 但**路径**确实变短了（这才是用户看到的东西）
+	hist := readTestHistory(t, client, id)
+	if len(hist.Messages) != 4 {
+		t.Fatalf("回到第三轮之前后，路径应只剩 4 条（两轮），实际 %d", len(hist.Messages))
 	}
 }
 
@@ -144,7 +158,7 @@ func TestChildSessionStatsOverWS(t *testing.T) {
 	mainID := createTestSession(t, client, "")
 	mainLive := sendAndWaitDoneStats(t, client, mainID, "主会话的一轮")
 
-	childID, err := srv.st.CreateChild(mainID, "coder", "d1")
+	childID, err := srv.st.CreateChild(mainID, "coder", "d1", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}

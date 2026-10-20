@@ -326,9 +326,10 @@ func runArgv(ctx context.Context, argv []string) (string, error) {
 		cmd.Dir = wd
 	}
 	out, err := cmd.CombinedOutput()
-	result := string(out)
+	// 与 bash 同一条编码归一（外部二进制的输出编码同样跟控制台代码页走）
+	result := normalizeConsoleOutput(out)
 	if len(result) > customMaxOutput {
-		result = result[:customMaxOutput] + "\n…（输出超 32KB 已截断）"
+		result = truncateUTF8(result, customMaxOutput) + "\n…（输出超 32KB 已截断）"
 	}
 	note := execNote(cctx, err, customTimeout)
 	if result == "" && note == "" {

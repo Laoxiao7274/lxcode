@@ -10,6 +10,7 @@ import (
 	"log"
 
 	"github.com/moyunteng/lxcode/internal/sessiondata"
+	"github.com/moyunteng/lxcode/internal/tools"
 )
 
 // SwitchNew 结束当前会话（记录保留，可后续 resume），从空历史开始。
@@ -31,6 +32,10 @@ func (s *Session) SwitchNew(workspace string) (string, error) {
 	// 归属 Agent 同理清零（下一轮 Send 时解析出来）：留着上一会话的会让
 	// ModelID() 报一个这个会话没用过的模型。
 	s.agentID = ""
+	// 读取观测清零：新会话没读过任何文件——留着上一条会话的观测会让 read_file
+	// 对着一个「模型这次根本没见过内容」的文件回「内容未变」摘要，那是**错误信息**
+	// （模型会以为自己已经看过，直接去 edit 一个没读过的文件）。
+	s.readState = tools.NewReadState()
 	return "", nil
 }
 
@@ -86,6 +91,9 @@ func (s *Session) SwitchTo(id string) error {
 	// 最小契约），换过来的会话归哪个 Agent 由调用方置位（服务端 newRuntime 会读库）。
 	// 留旧值等于把上一个会话的模型报给这个会话。
 	s.agentID = ""
+	// 读取观测同理：恢复的会话要重新读（去重的判据是「本会话读过」，
+	// 沿用上一条会话的观测会把没读过的文件报成「内容未变」）。
+	s.readState = tools.NewReadState()
 	return nil
 }
 

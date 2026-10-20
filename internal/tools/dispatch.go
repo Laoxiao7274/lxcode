@@ -26,6 +26,13 @@ type DispatchCall struct {
 	// 子可修订）：作为子会话的清单初稿装载（子会话执行中可全量替换修订）。
 	// 空 = 子 Agent 按 strict 档自拆（与改造前一致）。
 	Todos []sessiondata.TodoItem
+	// DispatchSeq 是**父会话**那条携带本次 dispatch 的 assistant 消息 seq。
+	// 子会话的文件快照按它归属到父会话的这一轮（docs/session-tree.md §C.2.1）：
+	// 回滚到这一轮之前时，子会话改的文件要一起还原。
+	//
+	// 为什么不回库反查 dispatch_id：那个 id 是 tool_call id，**续跑时不变**，
+	// 无法区分「第几次派发」——而归属必须按本次派发算（§C.5.1 边界①）。
+	DispatchSeq int64
 }
 
 // DispatchResult 是调度执行的结果（回填主会话的工具结果）。
@@ -41,6 +48,11 @@ type DispatchResult struct {
 	// 路径（Output 文本带 [附件] 行，可转述或再次 share_file）。
 	// 恒为引用（相对子会话附件根的路径），base64 绝不经此。
 	Attachments []llm.AttachmentRef
+	// ExternalCount 是子会话本轮**无法快照的写**（bash / MCP / 自定义工具，
+	// 以及被跳过的大文件/二进制）——加到父会话这一轮的 external 计数上。
+	// 不这么做的话树面板会显示「这一轮 0 处无法还原」，而子 Agent 用 bash 改了
+	// 一堆文件（docs §C.1：**这正是用户最会被骗的一处**）。
+	ExternalCount int
 }
 
 // DispatchToolName 是调度工具的 id。
@@ -87,11 +99,11 @@ func dispatchDef(r *Registry) *Def {
 		Risk: RiskLow,
 		Exec: func(ctx context.Context, args json.RawMessage) (string, error) {
 			var p struct {
-				Agent   string                   `json:"agent"`
-				Task    string                   `json:"task"`
-				Context string                   `json:"context"`
-				Session string                   `json:"session"`
-				Todos   []sessiondata.TodoItem   `json:"todos"`
+				Agent   string                 `json:"agent"`
+				Task    string                 `json:"task"`
+				Context string                 `json:"context"`
+				Session string                 `json:"session"`
+				Todos   []sessiondata.TodoItem `json:"todos"`
 			}
 			if err := json.Unmarshal(args, &p); err != nil {
 				return "", fmt.Errorf("参数解析失败: %w", err)

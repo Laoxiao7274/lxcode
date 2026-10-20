@@ -10,6 +10,33 @@ import (
 	"github.com/moyunteng/lxcode/internal/atomicfile"
 )
 
+// readObservationHint 是 edit 失败时附加的「你改之前读过这个文件吗」提示。
+//
+// 为什么只做提示、不硬拦（2026-12 用户拍板，保守取向）：DSH 的
+// fs-observation-policy 用 FS_NOT_OBSERVED 硬拒绝「没读过就 edit」，它防的是
+// 「凭记忆改 → 失败 → 去读 → 再改」那一串多余 step。但 lxcode 的 edit 本来
+// 就要求 old_string 逐字符唯一匹配——凭记忆写出来的 old_string 几乎必然不匹配，
+// 于是「先读再改」已经是工具语义自带的约束，硬拦只是把同一条约束提前一道，
+// 代价是打断合法流程：刚 write_file 写完的文件（内容就在上下文里，根本没读过）、
+// 以及本会话之前读过但进程重启过的会话。硬拦在那些场景里会逼模型做一次纯
+// 仪式性的 read_file。
+//
+// 所以这里做的是「在失败信息里补上关键事实」：本会话读到过没有、读的是不是
+// 同一版本、读到第几步。模型据此判断该去读，还是该换 old_string。
+func readObservationHint(ctx context.Context, path string, st os.FileInfo) string {
+	state := readStateFrom(ctx)
+	obs, seen := state.Peek(path)
+	if !seen {
+		return "；本会话还没有读过这个文件——先用 read_file 看一遍原文"
+	}
+	if st != nil && (obs.Size != st.Size() || obs.ModUnixNano != st.ModTime().UnixNano()) {
+		return fmt.Sprintf("；本会话在第 %d 步读过它，但文件此后被改过——重新 read_file 拿最新内容",
+			obs.Step)
+	}
+	return fmt.Sprintf("；本会话在第 %d 步读过它（offset=%d limit=%d），内容此后未变——"+
+		"old_string 请直接从那次 read_file 的输出里复制", obs.Step, obs.Offset, obs.Limit)
+}
+
 // editDef：edit，风险等级 低危——编程 agent 的主编辑通道，每次改动都是
 // 有界 diff（old_string 精确匹配），不像 write_file 是全量覆盖，破坏面天然
 // 受控；给 edit 挂确认门会让"改一处代码"都要按一次 y/n，agent 基本不可用
@@ -74,10 +101,10 @@ func editDef() *Def {
 			switch {
 			case n == 0:
 				return "", fmt.Errorf("old_string 在 %s 中没有匹配。请先 read_file 核对原文"+
-					"（注意缩进、空行、全半角必须逐字符一致）后再试", a.Path)
+					"（注意缩进、空行、全半角必须逐字符一致）后再试%s", a.Path, readObservationHint(ctx, path, st))
 			case n > 1 && !a.ReplaceAll:
 				return "", fmt.Errorf("old_string 在 %s 中匹配了 %d 处。要么扩大 old_string 的范围"+
-					"（带上前后行使其唯一），要么确认全部都要改并用 replace_all=true", a.Path, n)
+					"（带上前后行使其唯一），要么确认全部都要改并用 replace_all=true%s", a.Path, n, readObservationHint(ctx, path, st))
 			}
 
 			var out string
@@ -86,15 +113,27 @@ func editDef() *Def {
 			} else {
 				out = strings.Replace(string(data), a.OldString, a.NewString, 1)
 			}
+			// 文件快照（docs/session-tree.md §C.2）：**在 atomicfile.Write 之前**抓
+			// before（这里 data 已经是全文，抓取器自己再读一次也就 1MB 以内，可忽略）。
+			// 句柄窄到只有 Commit/Abort——工具层不知道快照落在哪张表、哪个目录。
+			// 未注入（纯内存模式/单测）= 不抓，静默降级（那一轮的改动回滚不了）。
+			snap := beginSnapshot(ctx, path)
 			if err := atomicfile.Write(path, []byte(out)); err != nil {
+				snap.Abort()
 				return "", fmt.Errorf("写入 %s 失败: %w", a.Path, err)
 			}
+			// Commit 失败**不让工具失败**：快照是旁路记录，写文件本身已经成功。
+			// 反过来（为了快照失败而回滚用户的写）是本末倒置。
+			snap.Commit(HashBytes([]byte(out)), int64(len(out)))
+			// 没抓到（大文件/二进制/落盘失败）时如实告知：这个改动回滚不到。
+			// 这句提示也是 agent 侧计 external 的识别依据（同一句常量）。
+			note := skipNote(snap)
 			if n > 1 && a.ReplaceAll {
-				return fmt.Sprintf("已修改 %s（%d 处替换，%d 字节 → %d 字节）",
-					a.Path, n, len(data), len(out)), nil
+				return fmt.Sprintf("已修改 %s（%d 处替换，%d 字节 → %d 字节）%s",
+					a.Path, n, len(data), len(out), note), nil
 			}
-			return fmt.Sprintf("已修改 %s（1 处替换，%d 字节 → %d 字节）",
-				a.Path, len(data), len(out)), nil
+			return fmt.Sprintf("已修改 %s（1 处替换，%d 字节 → %d 字节）%s",
+				a.Path, len(data), len(out), note), nil
 		},
 	}
 }

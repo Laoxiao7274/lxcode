@@ -257,7 +257,7 @@ func (s *Session) runDispatch(ctx context.Context, call tools.DispatchCall) tool
 	s.emit(DispatchStartEvent{
 		DispatchID: call.DispatchID, SessionID: childID,
 		AgentID: ac.Def.ID, AgentName: ac.Def.Name, AgentColor: ac.Def.Color,
-		Task: call.Task,
+		Task:  call.Task,
 		Todos: append([]tools.TodoItem(nil), call.Todos...),
 	})
 
@@ -364,7 +364,13 @@ func (s *Session) runDispatch(ctx context.Context, call tools.DispatchCall) tool
 		DispatchID: call.DispatchID, Result: result, SessionID: childID,
 		FinalTodos: finalTodos,
 	})
-	return tools.DispatchResult{Output: result, SessionID: childID, Attachments: childAtts}
+	// 子会话本轮「无法快照的写」（bash/MCP/自定义/被跳过的大文件）回带父会话，
+	// 由 runTools 阶段三累加到这一轮的 external（§C.1：不这么做树面板会显示
+	// 「这一轮 0 处无法还原」，而子 Agent 用 bash 改了一堆文件——用户最会被骗的地方）。
+	return tools.DispatchResult{
+		Output: result, SessionID: childID, Attachments: childAtts,
+		ExternalCount: child.ExternalCount(),
+	}
 }
 
 // openChildSession 开/接子会话并挂好存储：call.Session 非空 = 续跑既有子会话
@@ -417,13 +423,34 @@ func (s *Session) openChildSession(call tools.DispatchCall, ac *sessiondata.Agen
 		_ = inheritModel() // 纯内存子会话同样继承（无 id 时落库是 no-op）
 		return child, "", nil
 	}
+	// 快照归属（docs/session-tree.md §C.2.1）：回滚发起方 = 顶层会话 id，
+	// owner_seq = **父会话那条 dispatch 消息的 seq**。
+	//
+	// 嵌套时继承父会话的 owner（不取 parentID）：对**顶层**而言，这次派发仍发生在
+	// 「顶层第 42 轮之后」——记成子会话自己的 seq 则顶层回滚时不可比。
+	// 今天深度恒 1（子 Agent 白名单不含 agent_dispatch），按继承写是为了将来放开
+	// 深度时零改动。
+	ownerID := s.OwnerSessionID()
+	if ownerID == "" {
+		ownerID = parentID
+	}
 	childID := call.Session
 	if childID == "" {
-		id, err := st.CreateChild(parentID, ac.Def.ID, call.DispatchID)
+		id, err := st.CreateChild(parentID, ac.Def.ID, call.DispatchID, ownerID, call.DispatchSeq)
 		if err != nil {
 			return nil, "", err
 		}
 		childID = id
+	} else if call.DispatchSeq > 0 {
+		// **续跑按本次派发重写 owner_seq**（§C.5.1 边界①）：同一个子会话在第 45 轮
+		// 被续跑时改的文件必须归到 45 而不是 42——否则回滚到 43 轮时会被一起还原
+		//（多还原）。owner_id 不变（仍是顶层）。
+		//
+		// 失败只记日志：归属是回滚对账的元数据，不该让派发失败（回落上一次派发的
+		// owner_seq = 那一批改动归到更早的轮次，回滚会多还原——比派发失败轻）。
+		if err := st.SetSnapshotOwner(childID, ownerID, call.DispatchSeq); err != nil {
+			log.Printf("续跑重写快照归属失败（沿用上次派发的 owner_seq）: %v", err)
+		}
 	}
 	if err := child.AttachTo(st, childID); err != nil {
 		return nil, "", err

@@ -23,7 +23,7 @@ import { pipeline } from "node:stream/promises";
 import { Readable, Transform } from "node:stream";
 import { app, BrowserWindow, ipcMain } from "electron";
 import { managedBackendPid } from "./sidecar";
-import { buildApplyBat, buildApplyManifest, buildApplyVbs, toCrlf, type ApplyFileEntry, type ApplyPlan } from "./apply-update";
+import { buildApplyBat, buildApplyFileEntries, buildApplyManifest, buildApplyVbs, toCrlf, type ApplyFileEntry, type ApplyPlan } from "./apply-update";
 import { createUpdatePoller, manualCheckOutcome, nextCheckDelayMs, type UpdatePoller } from "./update-poll";
 import { notifyTrayUpdate } from "./tray";
 
@@ -150,7 +150,17 @@ export function updateHandlers(): void {
   // manifest 格式坏），渲染层直接展示，不静默（manualCheck 的容错语义与自动检查不同）。
   ipcMain.handle("update:check", () => manualCheckOutcome(checkUpdate));
   ipcMain.handle("update:download", () => downloadAndStage());
-  ipcMain.handle("update:apply", () => applyUpdate());
+  // apply 失败必须落日志：2026-10-20 排查时 update.log 停在「暂存就绪，等待应用」，
+  // 真正的失败原因（暂存路径异常）只在渲染层的错误提示里出现过一次——事后无迹可查，
+  // 只能靠 update-pending 的 mtime 反推。这里把失败原因也写进 update.log。
+  ipcMain.handle("update:apply", async () => {
+    try {
+      return await applyUpdate();
+    } catch (e) {
+      ulog("更新排程失败", e instanceof Error ? e.message : String(e));
+      throw e;
+    }
+  });
   ipcMain.handle("update:restart", () => {
     // 退出重启：applyUpdate 已排程 apply-update.bat（独立 bat 进程完成全部替换
     // 与拉起），壳退出即触发。无排程时这就是一次普通重启（现状语义）。
@@ -299,18 +309,9 @@ async function applyUpdate(): Promise<{ ok: boolean; needsRestart: boolean }> {
   //    相对路径；通常为 resources/app.asar + resources/bin/lxcode.exe）。
   //    逐文件哈希以暂存清单为准（下载时已按它校验过 payload——同一哈希在
   //    bat 的 certutil 复核里再次把关，两级都过才收尾）。
-  const files: ApplyFileEntry[] = [];
   const manifest = stagedManifest;
   const payloadDir = stagedDir;
-  if (manifest?.files) {
-    for (const rel of Object.keys(manifest.files)) {
-      files.push({
-        staged: join(payloadDir, rel),
-        target: join(installDir(), rel),
-        sha256: manifest.files[rel],
-      });
-    }
-  } else {
+  if (!manifest?.files) {
     throw new Error("更新包缺少逐文件哈希清单——无法安全替换，更新已中止（现有安装未受影响）");
   }
   // 壳 exe 本体不在更新包里（zip 只装 resources/**）——但 bat 成功/回滚都要
@@ -327,9 +328,24 @@ async function applyUpdate(): Promise<{ ok: boolean; needsRestart: boolean }> {
   await rmWithRetry(pending, "清理 update-pending（含旧链路残留）", true);
   mkdirSync(pending, { recursive: true });
 
+  // 暂存 = payload 整体落到 pending/staged（copyTree，走 originalFs 避开
+  // asar 补丁——payload 里有 *.asar）。复制而非移动：dl-<ts> 整体保留，
+  // 排程失败时暂存原样在，重试 apply 即可。
+  const stagedTarget = join(pending, "staged");
+  copyTree(payloadDir, stagedTarget);
+
+  // 计划的 staged 必须指向 **副本**（pending/staged），不是 payload：bat 在
+  // 壳退出后才跑，那时 payload（update-staging/dl-<ts>）已被本次收尾清掉。
+  // 2026-10-20 事故：这里曾取 payloadDir，导致 verifyStagedFiles 的相对路径
+  // 算出 `..\..\update-staging\...` 而抛「暂存路径异常」——更新在排程前就中止
+  // （用户看到「找不到」类报错，磁盘上 staged 却已齐全）。见 buildApplyFileEntries。
+  const files: ApplyFileEntry[] = buildApplyFileEntries(installDir(), stagedTarget, manifest.files);
+  verifyStagedFiles(files, payloadDir, stagedTarget);
+  ulog("更新文件已暂存到 update-pending/staged", `${files.length} 个文件（逐文件文件形态+大小复核通过）`);
+
   const plan: ApplyPlan = {
     pendingDir: pending,
-    stagedDir: join(pending, "staged"),
+    stagedDir: stagedTarget,
     shellExe,
     shellArgs: [],
     // 等待名单：壳自己 + 壳拉起的后端（直连的 SCM 服务不在列——它不占
@@ -338,13 +354,6 @@ async function applyUpdate(): Promise<{ ok: boolean; needsRestart: boolean }> {
     appVersion: lastManifest?.version ?? "",
     files,
   };
-  // 暂存 = payload 整体落到 pending/staged（copyTree，走 originalFs 避开
-  // asar 补丁——payload 里有 *.asar）。复制而非移动：dl-<ts> 整体保留，
-  // 排程失败时暂存原样在，重试 apply 即可。
-  const stagedTarget = join(pending, "staged");
-  copyTree(payloadDir, stagedTarget);
-  verifyStagedFiles(files, payloadDir, stagedTarget);
-  ulog("更新文件已暂存到 update-pending/staged", `${files.length} 个文件（逐文件文件形态+大小复核通过）`);
 
   const batPath = join(pending, "apply-update.bat");
   const vbsPath = join(pending, "apply-update.vbs");

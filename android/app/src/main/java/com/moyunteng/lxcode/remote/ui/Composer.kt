@@ -81,6 +81,7 @@ import com.moyunteng.lxcode.design.token.LxColors
 
 import com.moyunteng.lxcode.remote.model.EFFORT_IDS
 import com.moyunteng.lxcode.remote.model.effortLabel
+import com.moyunteng.lxcode.remote.model.modelDisplayLabel
 import com.moyunteng.lxcode.remote.model.timePillLabel
 import kotlin.math.roundToInt
 
@@ -330,7 +331,14 @@ fun Composer(state: MockAppState, real: com.moyunteng.lxcode.remote.net.RealBack
                     // 模型药丸 + 模型菜单（左面板）+ 推理强度二级右面板 —— 见 PickerMenus.kt
                     Box {
                         ModelPill(
-                            label = currentModel?.name ?: (real?.activeModelId?.ifBlank { null } ?: "模型"),
+                            // 药丸显示**显示名**，绝不显示注册表主键：查得到条目用它的
+                            // name（display_name/model/纯 id 的回落）；查不到（刚切会话、
+                            // 注册表还没拉到）时把组合键剥成纯 id（对齐桌面端
+                            // modelIdOfKey）——否则药丸上会出现 `openai::gpt-4o` 这种串。
+                            label = modelDisplayLabel(
+                                real?.allModels ?: emptyList(),
+                                real?.activeModelId ?: "",
+                            ),
                             effortDim = effortDim,
                             expanded = modelMenuOpen,
                             onToggle = {

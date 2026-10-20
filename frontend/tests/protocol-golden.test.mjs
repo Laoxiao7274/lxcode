@@ -160,7 +160,38 @@ const FIELD_CHECKS = {
   sessionStatsFull: [['legacy_tokens', 'number'], ['decode_tokens', 'number'], ['turns', 'number']],
   compactResult: [['compacted', ['=', false]], ['reason', 'string'], ['shadowed', 'number']],
   // 幂等空操作：removed 是**显式 0**（无 omitempty），不是缺席。
-  chatRewindResult: [['removed', ['=', 0]]],
+  // 带文件的那份（chatRewindResult）另见下方——它的 removed 是真实条数。
+  chatRewindResultIdempotent: [['removed', ['=', 0]], ['leaf_seq', 'absent']],
+  // 会话树（批次 2/3 的新契约）：节点字段的缺席语义 + 结果顶层键。
+  // rewind 的结果在分支化之后多了 leaf_seq/branched/files（removed 口径不变）。
+  chatRewindResult: [
+    ['removed', 'number'],
+    ['leaf_seq', 'number'],
+    ['branched', ['=', true]],
+    ['files.conflicts.0.reason', 'string'],
+    ['files.child_sessions', 'array'],
+  ],
+  chatSetLeafResult: [['leaf_seq', 'number'], ['removed', 'number'], ['files.restored.0.path', 'string']],
+  chatTreeResult: [
+    ['leaf_seq', 'number'],
+    ['total', 'number'],
+    ['truncated', ['=', true]],
+    ['nodes.0.parent_seq', ['=', 0]],
+    ['nodes.1.files', 'number'],
+    ['nodes.1.child_files', 'number'],
+    ['nodes.1.external', 'number'],
+    ['nodes.2.shadowed', 'number'],
+    // 缺席语义：没有文件改动的节点不带 files（0 不落成假事实）
+    ['nodes.0.files', 'absent'],
+    ['nodes.2.files', 'absent'],
+  ],
+  chatLeafChanged: [
+    ['leaf_seq', 'number'],
+    ['prev_leaf_seq', 'number'],
+    ['removed', 'number'],
+    ['context', 'object'],
+    ['files.child_sessions', 'array'],
+  ],
   // 会话管理。
   sessionMeta: [['updated_at', 'string'], ['workspace', 'string'], ['archived', ['=', true]]],
   sessionArchiveResult: [['archived', ['=', true]]],

@@ -50,15 +50,21 @@ func (s *Store) CreateWithID(id, title string) (string, error) {
 // 组装），dispatch_id 是哪次调度开的（对账用）；**workspace 直接继承父会话的行**
 // （子会话的工具相对路径与 bash 默认目录必须与父一致——在 SQL 里 SELECT 过来，
 // 免得 agent 层还要记住 workspace id）。
-func (s *Store) CreateChild(parentID, agentID, dispatchID string) (string, error) {
+//
+// ownerID/ownerSeq 是**快照归属**（docs/session-tree.md §C.2.1）：回滚发起方（顶层
+// 会话 id）与「这次派发属于父会话哪一轮」（父会话那条 dispatch 消息的 seq）。
+// 与子会话行**同一条 INSERT** 落库，避免「子会话建好了但归属没写上」的中间态。
+// 续跑时由 SetSnapshotOwner 按本次派发重写 owner_seq（边界①）。
+func (s *Store) CreateChild(parentID, agentID, dispatchID, ownerID string, ownerSeq int64) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	id := newSessionID()
 	now := nowNano()
 	res, err := s.db.Exec(
-		`INSERT INTO sessions (id, created_at, updated_at, title, archived, parent_id, agent_id, dispatch_id, workspace)
-		 SELECT ?, ?, ?, '', 0, id, ?, ?, workspace FROM sessions WHERE id = ?`,
-		id, now, now, agentID, dispatchID, parentID)
+		`INSERT INTO sessions (id, created_at, updated_at, title, archived, parent_id, agent_id, dispatch_id,
+		                       workspace, child_owner_id, child_owner_seq)
+		 SELECT ?, ?, ?, '', 0, id, ?, ?, workspace, ?, ? FROM sessions WHERE id = ?`,
+		id, now, now, agentID, dispatchID, ownerID, ownerSeq, parentID)
 	if err != nil {
 		return "", fmt.Errorf("创建子会话失败: %w", err)
 	}
@@ -72,7 +78,8 @@ func (s *Store) CreateChild(parentID, agentID, dispatchID string) (string, error
 // ChildrenOf 列出某会话的子会话（按创建序）——归档级联与将来的子会话视图用。
 func (s *Store) ChildrenOf(parentID string) ([]SessionMeta, error) {
 	rows, err := s.db.Query(
-		`SELECT id, title, updated_at, archived, workspace, parent_id, agent_id
+		`SELECT id, title, updated_at, archived, workspace, parent_id, agent_id, leaf_len,
+		        child_owner_id, child_owner_seq
 		 FROM sessions WHERE parent_id = ? ORDER BY created_at ASC, rowid ASC`, parentID)
 	if err != nil {
 		return nil, fmt.Errorf("列出子会话失败: %w", err)
@@ -81,9 +88,11 @@ func (s *Store) ChildrenOf(parentID string) ([]SessionMeta, error) {
 	var out []SessionMeta
 	for rows.Next() {
 		var meta SessionMeta
-		var archived int
+		var archived, leafLen int
+		var ownerID string
+		var ownerSeq int64
 		if err := rows.Scan(&meta.ID, &meta.Title, &meta.UpdatedAt, &archived, &meta.Workspace,
-			&meta.ParentID, &meta.AgentID); err != nil {
+			&meta.ParentID, &meta.AgentID, &leafLen, &ownerID, &ownerSeq); err != nil {
 			return nil, fmt.Errorf("读子会话行失败: %w", err)
 		}
 		meta.Archived = archived == 1
@@ -91,20 +100,11 @@ func (s *Store) ChildrenOf(parentID string) ([]SessionMeta, error) {
 			meta.Title = "（空子会话）"
 		}
 		meta.UpdatedAt = fmtTime(meta.UpdatedAt)
+		meta.Messages = leafLen // 与 List 同口径：当前 leaf 路径的节点数（读列，不再聚合）
+		meta.OwnerID, meta.OwnerSeq = ownerID, ownerSeq
 		out = append(out, meta)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	// 消息数与 List 同口径（按当前历史算——压缩后不能显示原始条数）
-	counts, err := s.surfaceCounts()
-	if err != nil {
-		return nil, err
-	}
-	for i := range out {
-		out[i].Messages = counts[out[i].ID]
-	}
-	return out, nil
+	return out, rows.Err()
 }
 
 // nowNano 是库内时间戳格式（纳秒精度 + 时区）——排序依据 updated_at，
@@ -114,11 +114,21 @@ func nowNano() string { return time.Now().Format(time.RFC3339Nano) }
 
 // List 列出全部**顶层**会话（按更新时间倒序，归档的沉底；rowid 兜底保证确定性顺序）。
 // 子会话（parent_id 非空）不进侧栏——它们是派发的产物，在 dispatch 卡里可见；
-// 列进来会把用户的会话列表淹掉。消息数按**当前历史**算（跳过被压缩检查点影子掉的
-// 行）——与 Load 同口径，否则压缩后侧栏条数与用户看到的历史对不上。
+// 列进来会把用户的会话列表淹掉。
+//
+// 消息数（docs/session-tree.md §E.5）：读 `sessions.leaf_len`（**当前 leaf 路径**的
+// 节点数）——分支之后「全表数 − 影子数」不再等于路径长度（废弃分支的行也在表里），
+// 而 `leaf_len` 由三处写入点维护（AppendMsg +1、AppendCheckpoint 按新路径重算、
+// SetLeaf/RewindTo 重算——后几处不能增量硬算，见各自函数注释）。副作用：侧栏
+// 不再需要跑一次全表聚合（比原来还快）。
+//
+// ⚠️ **可见性判据不能用 leaf_len**：撤回第一条消息后 leaf_len = 0（空路径是合法状态），
+// 而那条会话的废弃分支仍在库里——按 0 过滤会让它从侧栏消失（数据在、入口没了）。
+// 所以可见性用「表里有任意行」。
 func (s *Store) List() ([]SessionMeta, error) {
 	rows, err := s.db.Query(
-		`SELECT s.id, s.title, s.updated_at, s.archived, s.workspace, s.parent_id, s.agent_id
+		`SELECT s.id, s.title, s.updated_at, s.archived, s.workspace, s.parent_id, s.agent_id, s.leaf_len,
+		        EXISTS(SELECT 1 FROM messages m WHERE m.session_id = s.id) AS has_rows
 		 FROM sessions s
 		 WHERE s.parent_id = ''
 		 ORDER BY s.archived ASC, s.updated_at DESC, s.rowid DESC`)
@@ -127,11 +137,12 @@ func (s *Store) List() ([]SessionMeta, error) {
 	}
 	defer rows.Close()
 	var out []SessionMeta
+	hasRows := make(map[string]bool)
 	for rows.Next() {
 		var meta SessionMeta
-		var archived int
+		var archived, leafLen, has int
 		if err := rows.Scan(&meta.ID, &meta.Title, &meta.UpdatedAt, &archived, &meta.Workspace,
-			&meta.ParentID, &meta.AgentID); err != nil {
+			&meta.ParentID, &meta.AgentID, &leafLen, &has); err != nil {
 			return nil, fmt.Errorf("读会话行失败: %w", err)
 		}
 		meta.Archived = archived == 1 // 结构化归档态（不再是标题前缀 hack）
@@ -139,21 +150,19 @@ func (s *Store) List() ([]SessionMeta, error) {
 			meta.Title = "（空会话）"
 		}
 		meta.UpdatedAt = fmtTime(meta.UpdatedAt)
+		meta.Messages = leafLen
+		hasRows[meta.ID] = has == 1
 		out = append(out, meta)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	// 消息数：按当前历史算（复用回放的同一套存活判定）
-	counts, err := s.surfaceCounts()
-	if err != nil {
-		return nil, err
-	}
 	visible := out[:0]
 	for i := range out {
-		out[i].Messages = counts[out[i].ID]
 		// 空白草稿与旧版懒建语义一致：未发过消息的 Session 不进入历史列表。
-		if out[i].Messages > 0 {
+		// 判据是「表里有任意行」而不是 leaf_len > 0——空路径（leaf_len=0）但有
+		// 废弃分支的会话必须留在侧栏（见函数注释）。
+		if hasRows[out[i].ID] {
 			visible = append(visible, out[i])
 		}
 	}
@@ -162,6 +171,13 @@ func (s *Store) List() ([]SessionMeta, error) {
 
 // surfaceCounts 统计每个会话当前历史的条数（跳过被影子掉的行）——口径与
 // surfaceRows（回放的存活判定）严格一致。
+//
+// **2026-12 批次 2 起只服务测试**：生产调用点已全部改读 sessions.leaf_len（侧栏
+// 条数）与 readPathRows（路径回放）。保留它是因为它是 leaf_len 的**独立对照实现**
+// （surfacecounts_test.go 的逐会话比对 + tree_test.go 的随机序列不变量都靠它当
+// 基准）；删掉它等于把「三处 leaf_len 维护点没漂移」这条断言一起删掉。
+// 它数的是**全表口径**（全库行 − 影子），所以在有废弃分支的会话上与 leaf_len
+// 天然不同——对照测试只在单链会话上比。
 //
 // 计数下推 SQLite（性能审查 P1-1，2026-10）：原实现把**全库**消息行逐行拉进 Go、
 // 逐检查点解 shadowed_seqs JSON，只为数条数——53k 行实测 195ms 且随库线性涨，
@@ -175,8 +191,8 @@ func (s *Store) List() ([]SessionMeta, error) {
 //   - AppendCheckpoint 的影子集合取自**当时的存活行**，每条 seq 都真实存在；
 //   - 同一会话各检查点的影子集合**两两不相交**（后一份摘要影子的是 surface 行，
 //     已被影子过的行不再参与计数——TestCheckpointShadowSkipsAlreadyShadowed）；
-//   - Rewind 把引用已删行的项从存活检查点的集合里滤掉、影子全空的检查点整条删掉，
-//     所以存活的检查点只引用还存在的行（撤回行不计 = GROUP BY 里根本没有它）。
+//   - 撤回（批次 2 之前真删行；之后只移 leaf、一行不删）不会让检查点引用不存在的
+//     行：行永远在库里，GROUP BY 恒含它们——所以这条不变量在分支模型下更稳。
 //
 // 防御性处理（只对库外改写出来的畸形数据生效，正常路径永不触发）：同会话内
 // 跨检查点的重复 seq 按集合去重（旧实现对重复 seq 也只数一次）；扣减后钳到 0

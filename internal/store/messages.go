@@ -35,6 +35,15 @@ func (s *Store) AppendMsg(id string, m llm.Message) (int64, error) {
 	if err := tx.QueryRow(`SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE session_id = ?`, id).Scan(&seq); err != nil {
 		return 0, fmt.Errorf("取序号失败: %w", err)
 	}
+	// 会话树（docs/session-tree.md §A.4）：**追加 = 沿当前叶前进**。
+	//   parent = leaf_seq（0 = 新 root：用户在第一条消息之前「回到这里」再发消息，
+	//            就是开一条与旧历史并列的新根分支——旧历史仍在，切回去就回来）
+	//   然后 leaf_seq = 新 seq、leaf_len + 1（同一事务内）。
+	// 注意**不要**写成 COALESCE(leaf, MAX(seq))：那会把新消息接回旧链尾，等于撤回失效。
+	var leaf int
+	if err := tx.QueryRow(`SELECT leaf_seq FROM sessions WHERE id = ?`, id).Scan(&leaf); err != nil {
+		return 0, fmt.Errorf("读叶指针失败: %w", err)
+	}
 	// 标题懒维护：首条 user 消息截断（写入时算好，List 零计算）
 	if m.Role == "user" {
 		var title string
@@ -76,18 +85,20 @@ func (s *Store) AppendMsg(id string, m llm.Message) (int64, error) {
 	// 是 provider 的 total_tokens）——折叠统计按这一位把两种口径分开（见 store.go 的
 	// ALTER 注释与 stats.go 的 legacyUsageRow）。
 	if _, err := tx.Exec(
-		`INSERT INTO messages (session_id, seq, role, content, reasoning, reasoning_sig, tool_calls, tool_call_id,
+		`INSERT INTO messages (session_id, seq, parent_seq, role, content, reasoning, reasoning_sig, tool_calls, tool_call_id,
 		                       first_token_ms, duration_ms, model, usage_tokens, images, attachments,
 		                       input_tokens, cache_read_tokens, cache_write_tokens, notice, usage_split)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
-		id, seq, m.Role, m.Content, m.ReasoningContent, m.ReasoningSignature, string(toolCalls), m.ToolCallID,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+		id, seq, leaf, m.Role, m.Content, m.ReasoningContent, m.ReasoningSignature, string(toolCalls), m.ToolCallID,
 		m.FirstTokenMs, m.DurationMs, m.Model, m.UsageTokens, images, attachments,
 		m.InputTokens, m.CacheReadTokens, m.CacheWriteTokens, boolInt(m.Notice),
 	); err != nil {
 		return 0, fmt.Errorf("写消息失败: %w", err)
 	}
-	if _, err := tx.Exec(`UPDATE sessions SET updated_at = ? WHERE id = ?`, nowNano(), id); err != nil {
-		return 0, fmt.Errorf("更新会话时间失败: %w", err)
+	// 叶指针前进 + 路径长度 +1（与 INSERT 同一事务：不允许「消息进去了但叶没动」）。
+	if _, err := tx.Exec(`UPDATE sessions SET leaf_seq = ?, leaf_len = leaf_len + 1, updated_at = ? WHERE id = ?`,
+		seq, nowNano(), id); err != nil {
+		return 0, fmt.Errorf("更新叶指针失败: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, err
@@ -95,8 +106,16 @@ func (s *Store) AppendMsg(id string, m llm.Message) (int64, error) {
 	return int64(seq), nil
 }
 
-// Load 读出会话的全部消息（按 seq 升序）。会话不存在时报错
+// Load 读出会话的**当前历史**（leaf 路径，按 surface 顺序）。会话不存在时报错
 // （调用方 SwitchTo 依赖此语义区分「空会话」与「不存在」）。
+//
+// 会话树（docs/session-tree.md §A.3）：回放 = 「从 leaf 回溯到 root 的可达行」再套
+// 现有的 surfaceRows（影子集合跳过 + 检查点锚点插入，一字不改）。单链会话
+// （leaf = 最后一条）的结果与迁移前**逐字节一致**。
+//
+// 取数口用 readPathRows（SQL 递归回溯，只读路径上的行）而不是「全表 + Go 侧筛」：
+// 分支化之后路径长度与表行数会越差越多，而大会话的行正文是 KB 级的。判定仍然只有
+// surfaceRows 一份——SQL 只回答「哪些行可达」。
 func (s *Store) Load(id string) ([]llm.Message, error) {
 	var exists int
 	if err := s.db.QueryRow(`SELECT 1 FROM sessions WHERE id = ?`, id).Scan(&exists); err != nil {
@@ -105,30 +124,44 @@ func (s *Store) Load(id string) ([]llm.Message, error) {
 		}
 		return nil, fmt.Errorf("查询会话 %s 失败: %w", id, err)
 	}
-	return s.loadSurface(id)
-}
-
-// loadSurface 读会话的**当前历史**：跳过被压缩检查点影子覆盖的行，并把历史
-// 顺序还原成 surface 顺序（见 surfaceRows）。
-//
-// 与 surfaceRows 共用同一份实现：这两条路径（回放 / 落库时算存活集）必须
-// 逐字一致——判定漂移的代价是「写进去的影子区间与读出来的历史对不上」。
-func (s *Store) loadSurface(id string) ([]llm.Message, error) {
-	rows, err := s.readRows(id)
+	if !s.treeMigrated {
+		// 未迁移的库（只在 Open 失败前的一瞬间可能存在）：旧语义 = 全表 surface。
+		rows, err := s.readRows(id)
+		if err != nil {
+			return nil, err
+		}
+		return messagesOf(surfaceRows(rows)), nil
+	}
+	leaf, err := s.LeafSeq(id)
 	if err != nil {
 		return nil, err
 	}
-	surface := surfaceRows(rows)
-	msgs := make([]llm.Message, 0, len(surface))
-	for _, r := range surface {
-		msgs = append(msgs, r.msg)
+	if leaf <= 0 {
+		// 空路径（用户回到了第一条消息之前 / 新会话还没发消息）。
+		// **不是**「回落全表」——那样等于把刚离开路径的历史又装回来。
+		return []llm.Message{}, nil
 	}
-	return msgs, nil
+	rows, err := s.readPathRows(id, int(leaf))
+	if err != nil {
+		return nil, err
+	}
+	return messagesOf(surfaceRows(rows)), nil
 }
 
-// rowData 是一行消息（含压缩检查点的影子信息）。
+// messagesOf 把行集拷成消息切片（空行集也返回**非 nil** 的空切片：wire 上是 `[]`
+// 而不是 `null`，与改动前的载荷形状一致）。
+func messagesOf(rows []rowData) []llm.Message {
+	msgs := make([]llm.Message, 0, len(rows))
+	for _, r := range rows {
+		msgs = append(msgs, r.msg)
+	}
+	return msgs
+}
+
+// rowData 是一行消息（含压缩检查点的影子信息与会话树的父指针）。
 type rowData struct {
 	seq        int
+	parentSeq  int // 会话树：父消息的 seq（0 = root，见 tree.go）
 	msg        llm.Message
 	checkpoint bool
 	shadowed   []int // 检查点影子掉的 seq 集合（权威；空 = 不是检查点）
@@ -136,26 +169,31 @@ type rowData struct {
 	usageSplit bool  // 这行的用量是**拆分口径**（usage_tokens 是输出）——老行是 total_tokens
 }
 
-// readRows 读会话全部消息行（按 seq 升序）。
+// messageCols 是 messages 行读出的**唯一**列清单（按此顺序 Scan）。
 //
-// SELECT 列表与 readRowsTx 必须逐字一致：两条路径各写一遍是本仓库的老坑（写进去的
-// 与读出来的对不上），计时字段同样在这两条路径上——漏一条就是"刷新后数字消失"。
-func (s *Store) readRows(id string) ([]rowData, error) {
-	rows, err := s.db.Query(
-		`SELECT seq, role, content, reasoning, reasoning_sig, tool_calls, tool_call_id,
-		        checkpoint, shadowed_seqs, first_token_ms, duration_ms, model, usage_tokens, images, attachments,
-		        input_tokens, cache_read_tokens, cache_write_tokens, notice, usage_split
-		 FROM messages WHERE session_id = ? ORDER BY seq`, id)
-	if err != nil {
-		return nil, fmt.Errorf("查询会话 %s 失败: %w", id, err)
-	}
+// 为什么抽成常量（2026-12 批次 1）：readRows 与 readRowsTx 原先各写一遍 SELECT，
+// 而它们已经漂移过——readRowsTx 漏了 images / attachments 两列（注释却写着「必须
+// 逐字一致」），只因当时的调用方只读 seq/checkpoint/shadowed_seqs 才没暴露。
+// 一份清单 + 一个扫描函数，从结构上消灭这类漂移（「写进去的与读出来的对不上」
+// 是本仓库反复踩的坑）。
+const messageCols = `seq, parent_seq, role, content, reasoning, reasoning_sig, tool_calls, tool_call_id,
+	checkpoint, shadowed_seqs, first_token_ms, duration_ms, model, usage_tokens, images, attachments,
+	input_tokens, cache_read_tokens, cache_write_tokens, notice, usage_split`
+
+// querier 是 *sql.DB 与 *sql.Tx 的公共读接口（同一份查询在两条路径上跑）。
+type querier interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+}
+
+// scanRows 把消息行扫成 rowData（唯一一份扫描逻辑，与 messageCols 严格对应）。
+func scanRows(rows *sql.Rows) ([]rowData, error) {
 	defer rows.Close()
 	var out []rowData
 	for rows.Next() {
 		var r rowData
 		var toolCalls, shadowedSeqs, images, attachments string
 		var cp, notice, usageSplit int
-		if err := rows.Scan(&r.seq, &r.msg.Role, &r.msg.Content, &r.msg.ReasoningContent,
+		if err := rows.Scan(&r.seq, &r.parentSeq, &r.msg.Role, &r.msg.Content, &r.msg.ReasoningContent,
 			&r.msg.ReasoningSignature, &toolCalls, &r.msg.ToolCallID, &cp, &shadowedSeqs,
 			&r.msg.FirstTokenMs, &r.msg.DurationMs, &r.msg.Model, &r.msg.UsageTokens, &images, &attachments,
 			&r.msg.InputTokens, &r.msg.CacheReadTokens, &r.msg.CacheWriteTokens, &notice,
@@ -165,6 +203,9 @@ func (s *Store) readRows(id string) ([]rowData, error) {
 		// 序号随消息一起回给上层：前端拿它当撤回锚点（chat.rewind 的 seq），
 		// 而「刷新后的历史」与「内存里的历史」必须给出同一个号（否则撤回会打偏）
 		r.msg.Seq = int64(r.seq)
+		// 父指针同理（会话树的边）：chat.history 直接回放 llm.Message，
+		// 不回填的话前端拿不到父指针（批次 2 的 chat.tree 与分支视图要用）。
+		r.msg.ParentSeq = int64(r.parentSeq)
 		if toolCalls != "" && toolCalls != "[]" {
 			if err := json.Unmarshal([]byte(toolCalls), &r.msg.ToolCalls); err != nil {
 				return nil, fmt.Errorf("解析工具调用失败: %w", err)
@@ -197,6 +238,60 @@ func (s *Store) readRows(id string) ([]rowData, error) {
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// readRows 读会话**全部**消息行（按 seq 升序）——写路径（落库算存活集、撤回、
+// 迁移、统计）要全表；回放走 readPathRows（只取 leaf 可达的行）。
+func (s *Store) readRows(id string) ([]rowData, error) {
+	return queryRows(s.db, id)
+}
+
+// queryRows 是全表读的实现（readRows / readRowsTx 共用）。
+func queryRows(q querier, id string) ([]rowData, error) {
+	rows, err := q.Query(`SELECT `+messageCols+` FROM messages WHERE session_id = ? ORDER BY seq`, id)
+	if err != nil {
+		return nil, fmt.Errorf("查询会话 %s 失败: %w", id, err)
+	}
+	return scanRows(rows)
+}
+
+// readPathRows 只读**当前 leaf 路径上**的消息行（从 leaf 沿 parent_seq 回溯到 root
+// 的可达集合，按 seq 升序）——回放（Load/Latest）的取数口。
+//
+// 为什么在 SQL 里做回溯（而不是像 pathRows 那样把全表拉进 Go 再筛）：大会话
+// 53k 行时全表读要扫 KB 级正文（与 stats.go 记录的覆盖索引优化同一个理由），
+// 而分支化之后「路径长度」与「表行数」会越差越多。递归 CTE 只取路径上的行。
+//
+// 与 pathRows 的分工（**判定只有一份，别在这里加第二套**）：
+//   - 这里只回答「哪些行可达」（parent 链的传递闭包），**不判影子、不排检查点**；
+//   - 影子集合跳过与检查点锚点插入仍然只由 surfaceRows 做。
+//
+// 等价性由 TestSQLPathMatchesGoReach 钉住：对同一份库，
+// readPathRows(leaf) 必须与 pathRows 眼里的可达集逐 seq 相同（含检查点、含影子行）。
+//
+// 防御与 pathRows 同一条纪律：环用 UNION（去重）自然终止，断链（父指针指向不存在
+// 的行）就停在那里——畸形数据不炸加载路径。
+func (s *Store) readPathRows(id string, leaf int) ([]rowData, error) {
+	return queryPathRows(s.db, id, leaf)
+}
+
+func queryPathRows(q querier, id string, leaf int) ([]rowData, error) {
+	if leaf <= 0 {
+		return nil, nil // 空路径（见 leaf_seq 的注释：0 不是「未知」）
+	}
+	rows, err := q.Query(`WITH RECURSIVE reach(seq, parent_seq) AS (
+			SELECT seq, parent_seq FROM messages WHERE session_id = ? AND seq = ?
+			UNION
+			SELECT m.seq, m.parent_seq FROM messages m JOIN reach r ON m.seq = r.parent_seq
+			 WHERE m.session_id = ?
+		)
+		SELECT `+messageCols+` FROM messages
+		 WHERE session_id = ? AND seq IN (SELECT seq FROM reach)
+		 ORDER BY seq`, id, leaf, id, id)
+	if err != nil {
+		return nil, fmt.Errorf("查询会话 %s 的路径失败: %w", id, err)
+	}
+	return scanRows(rows)
 }
 
 // shadowSet 把所有检查点的影子区间取并集（权威判定：seq 在集合里 = 已被压缩掉）。
@@ -302,7 +397,14 @@ func (s *Store) AppendCheckpoint(id string, m llm.Message, skip, count int) (int
 	if err != nil {
 		return 0, err
 	}
-	surface := surfaceRows(rows)
+	// 会话树（docs/session-tree.md §A.3 的三件事）：区间必须解析到**当前 leaf 路径**
+	// 的 surface，而不是全表的 surface——否则「内存里的路径」与「库里 leaf 的路径」
+	// 不一致时，会写出一个跨分支的无效影子集。
+	leaf, err := leafOfTx(tx, id)
+	if err != nil {
+		return 0, err
+	}
+	surface := pathRows(rows, leaf, s.treeMigrated)
 	var shadowedSeqs []int
 	var shadStart, shadEnd int
 	if count > 0 {
@@ -322,21 +424,81 @@ func (s *Store) AppendCheckpoint(id string, m llm.Message, skip, count int) (int
 	if err := tx.QueryRow(`SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE session_id = ?`, id).Scan(&seq); err != nil {
 		return 0, fmt.Errorf("取序号失败: %w", err)
 	}
+	// 检查点的父指针 = 被影子段**之前**的最后一条存活行（没有则 0 = root）。
+	// 这一步让「检查点属于哪条分支」由 parent 链自己回答——pathRows 里因此**不需要**
+	// 第二套「影子集合包含关系」的分支判定（两套判定迟早分叉）。
+	//
+	// count == 0 的退化检查点单独一条规则：它**不替换任何行**，旧语义（surfaceRows 的
+	// 锚点回落自身 seq）把它排在历史**末尾**。树模型下对应「挂在当前叶之后、自己成为
+	// 新叶」——写成 cpParent = surface[skip-1]（并重接 surface[skip]）会把整条历史
+	// 挂到摘要底下，从 leaf 回溯出来的路径顺序就与旧回放不一致了。
+	cpParent := 0
+	switch {
+	case count == 0:
+		cpParent = leaf // 尾部追加：父 = 当前叶（leaf=0 时它就是新 root）
+	case skip > 0:
+		cpParent = surface[skip-1].seq
+	}
 	seqJSON, err := json.Marshal(shadowedSeqs)
 	if err != nil {
 		return 0, fmt.Errorf("序列化影子区间失败: %w", err)
 	}
 	if _, err := tx.Exec(
-		`INSERT INTO messages (session_id, seq, role, content, reasoning, reasoning_sig, tool_calls, tool_call_id,
+		`INSERT INTO messages (session_id, seq, parent_seq, role, content, reasoning, reasoning_sig, tool_calls, tool_call_id,
 		                       checkpoint, shadow_start_seq, shadow_end_seq, shadowed_seqs)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, '', 1, ?, ?, ?)`,
-		id, seq, m.Role, m.Content, m.ReasoningContent, m.ReasoningSignature, string(toolCalls),
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', 1, ?, ?, ?)`,
+		id, seq, cpParent, m.Role, m.Content, m.ReasoningContent, m.ReasoningSignature, string(toolCalls),
 		shadStart, shadEnd, string(seqJSON),
 	); err != nil {
 		return 0, fmt.Errorf("写检查点失败: %w", err)
 	}
-	if _, err := tx.Exec(`UPDATE sessions SET updated_at = ? WHERE id = ?`, nowNano(), id); err != nil {
-		return 0, fmt.Errorf("更新会话时间失败: %w", err)
+	// **重接父指针**：被影子段之后那条存活行（surface[skip+count]）改挂到检查点上。
+	// 没有后继行（压缩发生在历史末尾）时不用改——检查点自己就是新的路径末尾。
+	// count == 0 时**不重接**：退化检查点没有影子段，它只是尾部追加一行（见 cpParent
+	// 的注释），把 surface[skip] 挂过去会把整条历史塞到摘要底下。
+	if count > 0 && skip+count < len(surface) {
+		if _, err := tx.Exec(
+			`UPDATE messages SET parent_seq = ? WHERE session_id = ? AND seq = ?`,
+			seq, id, surface[skip+count].seq); err != nil {
+			return 0, fmt.Errorf("重接父指针失败: %w", err)
+		}
+	}
+	// 叶指针：**只在它原本落在被影子段里时才改到检查点**。压缩区间在尾部保留段之前，
+	// 所以 leaf 通常不受影响——无条件改成检查点会让模型看不到保留的尾部，而
+	// chat.compact 返回的 after 占用仍按完整路径算（两个数字互相矛盾）。
+	// count == 0（退化检查点）是唯一的例外：它追加在路径末尾、自己就是新叶（见上面
+	// cpParent 的注释；旧语义里它也排在历史最后一条）。
+	//
+	// leaf_len **不能**用 len(surface)−count+1 硬算：那假设 leaf 在路径尾部。用户把叶
+	// 切到中间节点后再压缩时，路径长度是「leaf 之前那段 + 检查点 + leaf 之后那段」，
+	// 与整条 surface 的长度无关。所以统一改成**重算**（pathRows 走一遍，O(n) 可忽略）
+	// ——三处维护点里只有这里是「形状变了且叶可能不在尾部」，硬算迟早漂移。
+	newLeaf := leaf
+	switch {
+	case count == 0:
+		newLeaf = seq // 退化检查点成为新叶（父 = 原 leaf）
+	case leafInShadowed(leaf, shadowedSeqs):
+		newLeaf = seq
+	}
+	// 重算 leaf_len 要用「压缩之后」的行集：把新检查点加进去，并且**同步父指针的
+	// 两处改动**（检查点挂 cpParent、后继行改挂检查点）——否则算出来的还是旧树。
+	afterRows := make([]rowData, 0, len(rows)+1)
+	for _, r := range rows {
+		if r.seq == seq {
+			continue // 新检查点还没进 rows（下面单独追加）
+		}
+		if count > 0 && skip+count < len(surface) && r.seq == surface[skip+count].seq {
+			r.parentSeq = seq // 后继行改挂检查点（与上面的 UPDATE 同步）
+		}
+		afterRows = append(afterRows, r)
+	}
+	afterRows = append(afterRows, rowData{
+		seq: seq, parentSeq: cpParent, checkpoint: true, shadowed: shadowedSeqs, msg: m,
+	})
+	newLen := len(pathRows(afterRows, newLeaf, s.treeMigrated))
+	if _, err := tx.Exec(`UPDATE sessions SET leaf_seq = ?, leaf_len = ?, updated_at = ? WHERE id = ?`,
+		newLeaf, newLen, nowNano(), id); err != nil {
+		return 0, fmt.Errorf("更新叶指针失败: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, err
@@ -345,148 +507,9 @@ func (s *Store) AppendCheckpoint(id string, m llm.Message, skip, count int) (int
 }
 
 // readRowsTx 是 readRows 的事务版（落库要在同一事务里读存活集）。
-// SELECT 列表与 readRows 逐字一致——两条路径各写一遍就会漂移（见 readRows 的注释）。
+// 与 readRows **共用 messageCols + scanRows**（2026-12 批次 1 收敛）：原先两处各写
+// 一遍 SELECT，而 readRowsTx 已经漏过 images / attachments 两列（注释却写着「必须
+// 逐字一致」）。一份清单 + 一个扫描函数，从结构上消灭这类漂移。
 func (s *Store) readRowsTx(tx *sql.Tx, id string) ([]rowData, error) {
-	rows, err := tx.Query(
-		`SELECT seq, role, content, reasoning, reasoning_sig, tool_calls, tool_call_id,
-		        checkpoint, shadowed_seqs, first_token_ms, duration_ms, model, usage_tokens,
-		        input_tokens, cache_read_tokens, cache_write_tokens, notice, usage_split
-		 FROM messages WHERE session_id = ? ORDER BY seq`, id)
-	if err != nil {
-		return nil, fmt.Errorf("查询会话 %s 失败: %w", id, err)
-	}
-	defer rows.Close()
-	var out []rowData
-	for rows.Next() {
-		var r rowData
-		var toolCalls, shadowedSeqs string
-		var cp, notice, usageSplit int
-		if err := rows.Scan(&r.seq, &r.msg.Role, &r.msg.Content, &r.msg.ReasoningContent,
-			&r.msg.ReasoningSignature, &toolCalls, &r.msg.ToolCallID, &cp, &shadowedSeqs,
-			&r.msg.FirstTokenMs, &r.msg.DurationMs, &r.msg.Model, &r.msg.UsageTokens,
-			&r.msg.InputTokens, &r.msg.CacheReadTokens, &r.msg.CacheWriteTokens, &notice,
-			&usageSplit); err != nil {
-			return nil, fmt.Errorf("读消息行失败: %w", err)
-		}
-		// 序号随消息一起回给上层：前端拿它当撤回锚点（chat.rewind 的 seq），
-		// 而「刷新后的历史」与「内存里的历史」必须给出同一个号（否则撤回会打偏）
-		r.msg.Seq = int64(r.seq)
-		if toolCalls != "" && toolCalls != "[]" {
-			if err := json.Unmarshal([]byte(toolCalls), &r.msg.ToolCalls); err != nil {
-				return nil, fmt.Errorf("解析工具调用失败: %w", err)
-			}
-		}
-		r.checkpoint = cp == 1
-		r.notice = notice == 1
-		r.usageSplit = usageSplit == 1
-		r.msg.Notice = r.notice // 与 readRows 逐字一致（写进去的与读出来的必须对得上）
-		if r.checkpoint && shadowedSeqs != "" && shadowedSeqs != "[]" {
-			if err := json.Unmarshal([]byte(shadowedSeqs), &r.shadowed); err != nil {
-				return nil, fmt.Errorf("解析影子区间失败: %w", err)
-			}
-		}
-		out = append(out, r)
-	}
-	return out, rows.Err()
-}
-
-// Rewind 撤回：把 seq 那条消息**及其之后的全部历史**从会话里删掉，返回从当前历史里
-// 移除的条数。幂等：锚点已经不在当前历史里（重复撤回、序号不存在）返回 0，不报错——
-// 重复撤回与两个客户端同时点撤回都是正常交互，不该变成错误码。
-//
-// 为什么「seq >= N」不能直接套在检查点上：压缩检查点行是**追加在末尾**的（它的 seq 比
-// 它顶替的那段历史里任何一行都大），但它顶替的是那段历史在**历史顺序**里的位置。按行号
-// 一刀切会把一个位置在锚点**之前**的摘要一起删掉，被它影子掉的原文随即「复活」——磁盘
-// 回放（Load）就与内存历史分叉了（内存只做截断，不会让旧原文回来）。
-//
-// 所以检查点按**影子集合**判死活：引用已删行的项滤掉；滤空了说明它影子掉的整段都在锚点
-// 之后（没有影子可替了），整条删掉。检查点只可能引用**比自己更早**的行（影子集合取自创建
-// 那一刻的存活行），所以按 seq 降序遍历 + 扫到不动点即可覆盖级联（引用被删检查点）。
-func (s *Store) Rewind(id string, seq int64) (int, error) {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return 0, fmt.Errorf("开事务失败: %w", err)
-	}
-	defer tx.Rollback() // 已提交时是 no-op
-
-	rows, err := s.readRowsTx(tx, id)
-	if err != nil {
-		return 0, err
-	}
-	// 锚点必须在**当前历史**里：被影子掉的原文不是历史（前端看不到它，也就无从撤回它）
-	surface := surfaceRows(rows)
-	idx := -1
-	for i, r := range surface {
-		if int64(r.seq) == seq {
-			idx = i
-			break
-		}
-	}
-	if idx < 0 {
-		return 0, nil
-	}
-	removed := len(surface) - idx
-
-	// 1) 锚点及其之后的**消息**行直接删（检查点不在此列——见上面的注释）
-	if _, err := tx.Exec(
-		`DELETE FROM messages WHERE session_id = ? AND seq >= ? AND checkpoint = 0`, id, seq); err != nil {
-		return 0, fmt.Errorf("撤回消息失败: %w", err)
-	}
-
-	// 2) 活下来的检查点收缩影子集合；影子全没了就整条删掉
-	deleted := make(map[int]struct{})
-	for _, r := range rows {
-		if !r.checkpoint && int64(r.seq) >= seq {
-			deleted[r.seq] = struct{}{}
-		}
-	}
-	// 反复扫到不动点：检查点 A 可能引用检查点 B，而 B 在这一趟里才被删掉（引用被删检查点
-	// 的项同样不许留）——一趟过后 A 的影子集合会变，所以必须扫到没有变化为止。
-	// 检查点数量极少（每次压缩一条），这个循环实际只跑一两趟。
-	for changed := true; changed; {
-		changed = false
-		for i := len(rows) - 1; i >= 0; i-- {
-			r := rows[i]
-			if !r.checkpoint || len(r.shadowed) == 0 {
-				continue // 非检查点行归上面那条 DELETE 管；无影子集合的退化检查点不受撤回影响
-			}
-			if _, gone := deleted[r.seq]; gone {
-				continue // 上一趟已经删掉了它（不跳过会永远"删"同一条，循环停不下来）
-			}
-			kept := make([]int, 0, len(r.shadowed))
-			for _, sh := range r.shadowed {
-				if _, gone := deleted[sh]; !gone {
-					kept = append(kept, sh)
-				}
-			}
-			if len(kept) == 0 {
-				if _, err := tx.Exec(`DELETE FROM messages WHERE session_id = ? AND seq = ?`, id, r.seq); err != nil {
-					return 0, fmt.Errorf("撤回检查点失败: %w", err)
-				}
-				deleted[r.seq] = struct{}{}
-				changed = true
-				continue
-			}
-			if len(kept) == len(r.shadowed) {
-				continue // 影子一个没少：不动它（省一次写，也免得把顺序写乱）
-			}
-			b, err := json.Marshal(kept)
-			if err != nil {
-				return 0, fmt.Errorf("序列化影子区间失败: %w", err)
-			}
-			if _, err := tx.Exec(`UPDATE messages SET shadowed_seqs = ? WHERE session_id = ? AND seq = ?`,
-				string(b), id, r.seq); err != nil {
-				return 0, fmt.Errorf("收缩影子区间失败: %w", err)
-			}
-			r.shadowed = kept
-			changed = true
-		}
-	}
-	if _, err := tx.Exec(`UPDATE sessions SET updated_at = ? WHERE id = ?`, nowNano(), id); err != nil {
-		return 0, fmt.Errorf("更新会话时间失败: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, err
-	}
-	return removed, nil
+	return queryRows(tx, id)
 }

@@ -211,16 +211,18 @@ func TestSessionStatsFollowsRewind(t *testing.T) {
 	if before.Turns != 2 || before.Steps != 2 {
 		t.Fatalf("撤回前统计不符: %+v", before)
 	}
-	// 撤回第一条用户消息：它及其之后的全部历史被真删掉
-	if _, err := s.Rewind(id, seq1); err != nil {
+	// 撤回第一条用户消息：叶移回空路径。
+	// 注：统计**仍折叠整段日志**（拍板项 3——切分支不改变数字），所以这条断言
+	// 在批次 2 之后是「统计不变」而不是「回到零值」。撤回不再删行，数字自然不变。
+	if _, _, err := s.RewindTo(id, seq1); err != nil {
 		t.Fatal(err)
 	}
 	after, err := s.SessionStatsOf(id)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !after.Empty() {
-		t.Fatalf("撤回全部历史后统计应回到零值: %+v", after)
+	if after != before {
+		t.Fatalf("撤回（只移 leaf）不该改变整段统计: before=%+v after=%+v", before, after)
 	}
 }
 

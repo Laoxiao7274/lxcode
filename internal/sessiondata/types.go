@@ -13,6 +13,10 @@ type SessionMeta struct {
 	Workspace string
 	ParentID  string // 父会话 id（空 = 顶层会话）
 	AgentID   string // 该会话运行的 Agent（子会话续跑时按同一套四层组合组装）
+	// OwnerID/OwnerSeq 是子会话的**快照归属**（回滚发起方 + 它上一次被派发时属于
+	// 父会话哪一轮）。顶层会话为空/0（它就是自己的 owner）。回滚对账要用。
+	OwnerID  string
+	OwnerSeq int64
 }
 
 // TodoItem 是任务清单的一项（todo 契约的共享形状）：agent 持有内存态、tools 做
@@ -131,6 +135,62 @@ type SessionStats struct {
 
 // Empty 判断统计是否还是零值（没有任何一步）——调用方据此决定 wire 上整键缺席。
 func (s SessionStats) Empty() bool { return s == SessionStats{} }
+
+// TreeRow 是会话树骨架的一行（轻量投影：不含正文全文，只取前 120 字符做摘要）。
+//
+// 为什么定义在 sessiondata：树骨架要**跨层**（store 读、agent 组装、server 转 wire），
+// 而分层规则禁止 agent import store（AGENTS.md §4）。sessiondata 是两侧共享业务数据
+// 的归处（SessionMeta / ContextUsage 同一条理由）。
+//
+// 设计约束（docs/session-tree.md §A.6）：树面板**不能**走 readRows——那是全列读
+// （含 KB 级正文），大会话 53k 行实测 ~195ms。骨架只取 seq/parent/role/标记 + 摘要前缀。
+type TreeRow struct {
+	Seq        int
+	ParentSeq  int
+	Role       string
+	Checkpoint bool
+	Notice     bool
+	// ContentLen 是正文的字符数（摘要为空时前端据此显示「(N 字)」）。
+	ContentLen int
+	// Summary 是正文前 120 个字符（单行化：换行折成空格，压掉多余空白）。
+	Summary string
+}
+
+// FileSnapshot 是一行文件快照元数据（回滚 plan 的输入）。
+//
+// 归属（docs/session-tree.md §C.2.1）：OwnerSessionID = 回滚发起方（顶层会话 id），
+// OwnerSeq = 父会话空间的 seq。子会话的写按它归属到父会话的某一轮——回滚只需
+// WHERE owner_session_id = ? AND owner_seq >= ? 一次索引查询。
+type FileSnapshot struct {
+	ID        int64
+	SessionID string // 真正执行这次写的会话（父会话自己，或某个子会话）
+	Seq       int64  // 锚点：携带 tool_call 的 assistant 行（**那个会话自己的** seq）
+	// OwnerSessionID / OwnerSeq 是回滚切段的唯一依据（父会话空间的 seq）。
+	OwnerSessionID string
+	OwnerSeq       int64
+	ToolCallID     string
+	Path           string // 工作区相对路径（'/' 分隔，根 = 会话 workDir）
+	BeforeHash     string // '' = 写之前文件不存在（新建）→ 回滚 = 删掉
+	AfterHash      string // '' = 写之后文件不存在（删除类写）
+	Size           int64
+	Skipped        bool
+	SkipReason     string
+	CreatedAt      string
+}
+
+// SnapshotIntent 是崩溃自愈的意图日志（§C.5）：文件还原完成但 leaf 还没移时
+// 进程被杀，下次启动据此补做（文件已经对了，只差移 leaf）。
+type SnapshotIntent struct {
+	SessionID string `json:"session_id"`
+	// CutSeq 是切段锚点（不是新叶）：自愈时按 CutKind 重算目标叶。
+	CutSeq int64 `json:"cut_seq"`
+	// CutKind = "rewind" | "setLeaf"——决定目标叶是 parent(anchor) 还是 anchor
+	// （两个入口的落点差一格，自愈必须用同一个口径重算）。
+	CutKind string `json:"cut_kind"`
+	// Written 是已写的文件（相对路径，诊断用）。
+	Written   []string `json:"written"`
+	CreatedAt string   `json:"created_at"`
+}
 
 // ProjectMeta 是注册项目的身份与根目录。
 type ProjectMeta struct {

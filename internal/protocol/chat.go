@@ -178,6 +178,9 @@ type ChatHistoryResult struct {
 	// anchor）。空窗口（anchor 已是历史第一条）为 0 且 has_more=false——客户端
 	// 不该拿 0 去发起下一次请求。与 has_more 同批（2026-12 安卓分页加载）。
 	FirstSeq int64 `json:"first_seq,omitempty"`
+	// LeafSeq 是这次回放对应的叶（0 = 空路径）。老客户端忽略（未知键）；
+	// 新客户端拿它对齐树面板的高亮与「回到最新」的落点。
+	LeafSeq int64 `json:"leaf_seq,omitempty"`
 }
 
 // ContextUsage 是上下文占用的 wire 形态（agent.ContextUsage 的映射——内核类型
@@ -361,6 +364,11 @@ type CompactedParams struct {
 type ChatRewindParams struct {
 	SessionID string `json:"session_id"`
 	Seq       int64  `json:"seq"`
+	// Files = true 时同时还原文件（fail-closed）。
+	// **作用域（2026-12 拍板）**：父会话 + 它派出的**全部子会话**在这一段里的文件改动
+	// 一起还原；子会话的**对话历史不动**。客户端不需要（也无法）按会话挑选——
+	// 「父会话回到这一轮之前」在文件系统上就是一次跨会话的整体回滚。
+	Files bool `json:"files,omitempty"`
 }
 
 // ChatRewindResult 是 chat.rewind 的结果：Removed = 从会话历史里删掉的条数
@@ -368,6 +376,13 @@ type ChatRewindParams struct {
 // 不是错误（客户端重试/两个客户端同时点撤回都不该报错）。
 type ChatRewindResult struct {
 	Removed int `json:"removed"`
+	// LeafSeq 是移动后的叶（0 = 空路径）。老客户端忽略（未知键）。
+	LeafSeq int64 `json:"leaf_seq,omitempty"`
+	// Branched = true 表示历史**保留为分支**（新语义的诚实告知：老客户端以为删了，
+	// 其实一条没删——它看不到找回入口，但数据还在）。
+	Branched bool `json:"branched,omitempty"`
+	// Files 非空 = 本次带了文件还原的结果（含子会话：每项带 session_id）。
+	Files *FileRestoreResult `json:"files,omitempty"`
 }
 
 // ChatMergeRequestParams 是 chat.mergeRequest 的参数：从后台任务面板直接起一个
@@ -384,6 +399,145 @@ type MergeRequestResult struct {
 	JobID string `json:"job_id"`
 }
 
+// ChatSetLeafParams 切到任意历史节点：**leaf 直接指向该节点**，继续对话即从它长出新分支。
+//
+// Seq == 0 = **空路径**（回到第一条消息之前）——这是 chat.rewind 撤回第一条消息时的
+// 落点，用户必须能到达；因此「回到最新」不是一个特殊值，而是客户端传树里的最大 seq
+// （chat.tree 的 nodes 末条）。**不给 0 兼两个语义**：那是本仓库反复吃亏的那类歧义。
+//
+// 与 chat.rewind 的分工：rewind 把 leaf 移到 parent(anchor)（锚点自己也离开路径，
+// 因为它是用户要改写的那条消息）；setLeaf 把 leaf 移到 seq 本身（「从这里接着长」）。
+// 文件切段也随之差一格：rewind 还原 owner_seq >= anchor，setLeaf 还原 owner_seq > seq
+// （**严格大于**——seq 这条消息自己的改动属于「目标状态」，不该被还原掉）。
+type ChatSetLeafParams struct {
+	SessionID string `json:"session_id"`
+	Seq       int64  `json:"seq"`
+	// Files = true 时先还原文件快照再切 leaf（fail-closed：还原失败/有冲突则不切）。
+	// 缺省 false（老客户端不传 → 纯历史指针移动，零文件副作用）。
+	// 作用域与 chat.rewind 的 files 完全一致：**父会话 + 全部子会话**在这一段里的
+	// 文件改动（按 owner_session_id/owner_seq 收集），子会话对话历史不动。
+	Files bool `json:"files,omitempty"`
+}
+
+// ChatSetLeafResult 是 chat.setLeaf 的结果。
+//
+// 刻意**不**回 messages：切 leaf 之后客户端要重载的东西不止消息（树、统计、上下文、
+// 检查点下标、分页游标），在 setLeaf 的应答里再复制一份必然与 chat.history 分叉
+// （本仓库的老坑）。客户端统一走一次 chat.history —— 多一个往返，少一类 bug。
+type ChatSetLeafResult struct {
+	SessionID string `json:"session_id,omitempty"`
+	LeafSeq   int64  `json:"leaf_seq"`
+	// Removed = 离开路径的条数（与 chat.rewind 的 removed 同口径、同数值）。
+	Removed int `json:"removed"`
+	// 文件还原结果（只在 files:true 时出现；冲突时 conflicts 非空且 leaf 未变）。
+	Files *FileRestoreResult `json:"files,omitempty"`
+}
+
+// ChatTreeParams 是 chat.tree 的参数。Include 缺省 "compact"。
+type ChatTreeParams struct {
+	SessionID string `json:"session_id"`
+	Include   string `json:"include,omitempty"`   // compact(默认) | full
+	MaxNodes  int    `json:"max_nodes,omitempty"` // 缺省 2000；超出只回最近 N 个并置 truncated
+}
+
+// ChatTreeResult 是会话树骨架（按 seq 升序；前端自己按 parent 建树）。
+type ChatTreeResult struct {
+	LeafSeq int64      `json:"leaf_seq"`
+	Nodes   []TreeNode `json:"nodes"`
+	// Total 是全量节点数（截断时用于「还有 N 个」提示）。
+	Total     int  `json:"total"`
+	Truncated bool `json:"truncated,omitempty"`
+}
+
+// TreeNode 是树里的一个节点。
+type TreeNode struct {
+	Seq       int64 `json:"seq"`
+	ParentSeq int64 `json:"parent_seq"` // 0 = root
+	// Kind = user | assistant | tool | checkpoint | notice
+	Kind string `json:"kind"`
+	// Turn 是轮次序号（user/notice 才有；与 SessionStats.turns 同口径）。
+	Turn int `json:"turn,omitempty"`
+	// Summary 是 ≤120 字符的单行摘要（不含正文全文）。
+	Summary string `json:"summary,omitempty"`
+	// Children 是直接子节点数（>1 = 分支点）。
+	Children int `json:"children"`
+	// OnPath = 是否在当前 leaf 路径上（废弃分支 = false）。
+	OnPath bool `json:"on_path"`
+	// Orphan = 父节点缺失 / 成环（畸形数据的兜底：不丢节点、不抛异常）。
+	Orphan bool `json:"orphan,omitempty"`
+	// Files = 该轮（owner_seq 落在这一轮的区间内）**可还原**的文件改动数，
+	// 含子会话的改动。批次 3 填充；为 0 时整键缺席（前端不渲染徽标，不显示 0）。
+	Files int `json:"files,omitempty"`
+	// ChildFiles = 其中来自子会话的改动数（Files 的子集）。
+	ChildFiles int `json:"child_files,omitempty"`
+	// External = 该轮无法快照的写（bash/MCP/自定义工具，含子会话里的 bash）。
+	External int `json:"external,omitempty"`
+	// Shadowed = checkpoint 的影子条数。
+	Shadowed int `json:"shadowed,omitempty"`
+}
+
+// ChatLeafChangedParams 是 chat.leafChanged 事件的载荷（rewind 与 setLeaf 都发）。
+type ChatLeafChangedParams struct {
+	SessionID string `json:"session_id"`
+	LeafSeq   int64  `json:"leaf_seq"`
+	// PrevLeafSeq 是移动前的叶（客户端据此判断"是不是别人动的"）。
+	PrevLeafSeq int64 `json:"prev_leaf_seq,omitempty"`
+	Removed     int   `json:"removed"`
+	// Context 是**重算后**的上下文占用（零值 = 未知 → 整键缺席）。
+	Context *ContextUsage `json:"context,omitempty"`
+	// Files 是本次带文件还原时的结果（含子会话）。
+	Files *FileRestoreResult `json:"files,omitempty"`
+}
+
+// FileRestoreResult 是文件还原结果（chat.setLeaf / chat.rewind 共用）。
+// 覆盖范围含**子会话**的改动（2026-12 用户拍板）：每项带 session_id 标明是谁改的。
+type FileRestoreResult struct {
+	Restored  []FileRestoreItem `json:"restored,omitempty"`
+	Deleted   []FileDeleteItem  `json:"deleted,omitempty"`   // 回滚到「当时还不存在」= 删掉
+	Conflicts []FileConflict    `json:"conflicts,omitempty"` // 非空 = 整批未执行（fail-closed）
+	Skipped   []FileSkip        `json:"skipped,omitempty"`   // 大文件/二进制：如实报「没抓」
+	// ChildSessions 是本次回滚涉及到的子会话（父会话自己不算）。
+	// 前端据此显示「本次还原涉及 N 个子 Agent 的改动，它们的对话未回滚」。
+	ChildSessions []string `json:"child_sessions,omitempty"`
+}
+
+// FileDeleteItem 是一项「回滚 = 删掉这个文件」（它在回滚段里是 agent 新建的）。
+type FileDeleteItem struct {
+	Path string `json:"path"`
+	// SessionID = 谁新建的这个文件（多半是子会话）。
+	SessionID string `json:"session_id,omitempty"`
+}
+
+// FileRestoreItem 是一项文件还原（写回快照内容）。
+type FileRestoreItem struct {
+	Path string `json:"path"`
+	// FromSeq 是取的是哪个快照的 before（**写它的那个会话**的 seq）。
+	FromSeq int64 `json:"from_seq"`
+	// FromOwnerSeq 是那次写属于父会话的哪一轮之后。
+	FromOwnerSeq int64 `json:"from_owner_seq,omitempty"`
+	// SessionID = 写这个文件的那个会话（父会话自己 = 顶层 id；否则是子会话 id）。
+	SessionID string `json:"session_id,omitempty"`
+	Bytes     int64  `json:"bytes"`
+	// Recreated = 磁盘上本来没有，按快照写回（见 §C.5）。
+	Recreated bool `json:"recreated,omitempty"`
+}
+
+// FileConflict 是一项冲突（磁盘现状与快照期望不符）。
+type FileConflict struct {
+	Path     string `json:"path"`
+	Expected string `json:"expected_hash"`
+	Actual   string `json:"actual_hash"`
+	// SessionID = 期望状态是**哪个会话**写的（冲突提示要说清「这是子 Agent 改的文件」）。
+	SessionID string `json:"session_id,omitempty"`
+	Reason    string `json:"reason"`
+}
+
+// FileSkip 是一项「当时没抓快照，回滚不到」。
+type FileSkip struct {
+	Path   string `json:"path"`
+	Reason string `json:"reason"`
+}
+
 // ChatRewoundParams 是 chat.rewound 事件的载荷：宿主据此**截断时间线**
 // （seq 之前的保留、seq 及其之后的丢弃）并刷新上下文指示器。
 //
@@ -397,15 +551,16 @@ type ChatRewoundParams struct {
 	SessionID string `json:"session_id"`
 	Seq       int64  `json:"seq"`
 	Removed   int    `json:"removed"`
+	// LeafSeq 是移动后的叶（0 = 空路径）。新客户端用它对齐；老客户端忽略。
+	LeafSeq int64 `json:"leaf_seq,omitempty"`
 	// Context 是**重算后**的上下文占用，与 chat.done / ChatHistoryResult.context
-	// 同一个结构与同一套语义（撤回删了一段历史，撤回前的数字一定是错的——
-	// 客户端拿它直接刷新指示器，不必等下一轮，也不必自己按 -removed 猜）。
+	// 同一个结构与同一套语义（叶移动后旧数字一定是错的——客户端拿它直接刷新
+	// 指示器，不必等下一轮，也不必自己按 -removed 猜）。
 	// 未知（纯内存模式 / 本会话还没跑过主轮）时整键缺席：发零值等于显示 0%，
 	// 那是编出来的假信息（本仓库既有纪律：未知就显示中性态）。
 	Context *ContextUsage `json:"context,omitempty"`
-	// Stats 是**重算后**的整段会话统计：撤回真删了行，步数/token 会跟着变小，
-	// 客户端拿它直接刷新统计胶囊（与 Context 同一条理由：这是一次改写历史的事务，
-	// 客户端必须被通知而不是自己猜）。
+	// Stats 是整段会话统计（口径**不变**：仍折叠整段日志——切分支不改数字，
+	// 见拍板项 3）。客户端拿它刷新统计胶囊，与 chat.done 同一份来源。
 	Stats *SessionStats `json:"stats,omitempty"`
 }
 

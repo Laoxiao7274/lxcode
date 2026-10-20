@@ -34,7 +34,7 @@ import (
 // dispatchID 非空 = 子 Agent 执行（事件带归属）；写目标经 sink 抽象
 // （主轮 = s.append 进会话历史并落库；子轮 = 写局部历史，隔离）。
 // 返回 false 表示被取消。fileChanges 收集文件改动供轮末产物汇总。
-func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChanges *[]FileChange, ac *sessiondata.AgentContext, dispatchID string, sink func(llm.Message)) bool {
+func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChanges *[]FileChange, ac *sessiondata.AgentContext, dispatchID string, anchor int64, sink func(llm.Message)) bool {
 	allowed := toolSet(agentToolsOf(ac))
 	// finished 标记哪些调用已经落了结果：取消时剩下的（含已登记但还没跑的 dispatch）
 	// 都要补合成结果，配对不变量不能破（见 sinkSkippedToolResults）。
@@ -118,6 +118,9 @@ func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChange
 			dispatches = append(dispatches, dispatchJob{idx: i, call: tools.DispatchCall{
 				DispatchID: tc.ID, Agent: p.Agent, Task: p.Task, Context: p.Context,
 				Session: p.Session, Todos: p.Todos,
+				// 父会话这条消息的 seq：子会话的文件快照按它归属到这一轮（§C.2.1）。
+				// 续跑时同样按**本次**派发算（§C.5.1 边界①）。
+				DispatchSeq: anchor,
 			}})
 			continue
 		}
@@ -132,6 +135,13 @@ func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChange
 		images := &tools.ImageCollector{}
 		execCtx := tools.WithImageCollector(tools.WithAttachmentCollector(ctx, collector), images)
 		out := s.tools.Execute(execCtx, tc)
+		// 外部操作计数（§C.1）：只有**成功执行**的变更类工具才计——拒绝/取消不计。
+		// Registry.Execute 用 "错误: " 前缀表示失败（工具契约的既有约定，与
+		// finishToolCall 的 isError 同一来源）；失败说明没改动任何东西。
+		// edit/write_file 的快照被跳过（大文件/二进制）同样算「回滚不到」。
+		if !strings.HasPrefix(out, "错误: ") {
+			s.turnCounters.add(anchor, countExternal(tc.Function.Name, s.tools.IsMutating(tc.Function.Name), out))
+		}
 		s.finishToolCall(tc, out, "", false, msSince(started), collector.Take(), images.Take(), fileChanges, dispatchID, sink)
 		finished[i] = true
 	}
@@ -177,6 +187,8 @@ func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChange
 					// 主 Agent 拿这个 id 把活重做了一遍）。
 					out += fmt.Sprintf("\n\n[子会话 id: %s —— 只在这次**没做完**时填进 session 参数续跑；已经给出结论就别再派]", res.SessionID)
 				}
+				// 子会话里的 bash/MCP 改动同样无法还原——加到父会话这一轮（§C.1）。
+				s.turnCounters.add(anchor, res.ExternalCount)
 				dispatched[j.idx] = toolOutcome{result: out, isError: res.IsError, executed: true, durationMs: elapsed, attachments: res.Attachments}
 			}(j)
 		}

@@ -25,13 +25,19 @@ func checkpointIndexes(msgs []llm.Message) []int {
 	return out
 }
 
-func (s *Session) append(m llm.Message) {
+// 返回 store 分配的序号（0 = 没落库：纯内存模式/落盘失败）。**必须回传**：
+// append 是值传递，调用方手里的 llm.Message 副本不会被写上 Seq——而文件快照的
+// 锚点（docs/session-tree.md §C.2）就是这条 assistant 消息的 seq，拿不到就不抓
+// （诚实降级：这一轮的改动回滚不了）。
+func (s *Session) append(m llm.Message) int64 {
 	s.mu.Lock()
 	// 序号归 store：先落盘拿到号再入内存历史，两边同号（前端按 seq 撤回时
 	// 内存与库必须指向同一条消息）
 	m.Seq = s.persistLocked(m)
 	s.history = append(s.history, m)
+	seq := m.Seq
 	s.mu.Unlock()
+	return seq
 }
 
 // persistLocked 落盘并返回 store 分配的序号（调用方持锁；store 挂了才做，

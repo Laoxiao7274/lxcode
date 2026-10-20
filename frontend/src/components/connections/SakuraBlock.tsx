@@ -11,6 +11,8 @@ import { useEnterRef } from "../../shared/anim";
 import { useConfirmClick } from "../../shared/confirm-click";
 import { Button, TextInput } from "../form";
 import { CopyBtn } from "./CopyBtn";
+import { SakuraNodePicker } from "./SakuraNodePicker";
+import { loadText } from "../../shared/sakura-nodes";
 
 /** 隧道删除钮（两步确认——useConfirmClick 统一行为）。 */
 function TunnelDelBtn({ onConfirm, disabled }: { onConfirm: () => void; disabled?: boolean }) {
@@ -30,8 +32,10 @@ function TunnelDelBtn({ onConfirm, disabled }: { onConfirm: () => void; disabled
 }
 
 export function SakuraBlock() {
-  const { sakura, sakuraBusy, sakuraError, loginSakura, logoutSakura, refreshSakura, tunnels, createTunnel, toggleTunnel, removeTunnel, remoteToken } = useConnections();
+  const { sakura, sakuraBusy, sakuraError, loginSakura, logoutSakura, refreshSakura, tunnels, createTunnel, toggleTunnel, removeTunnel, remoteToken, listSakuraNodes, onSakuraNodeLatency } = useConnections();
   const [key, setKey] = useState("");
+  // 创建流程：先开节点选择面板（节点是隧道级属性，建完改不了），确认后才创建
+  const [picking, setPicking] = useState(false);
   const panelEnter = useEnterRef<HTMLDivElement>();
   const busy = sakuraBusy !== null;
 
@@ -132,7 +136,7 @@ export function SakuraBlock() {
               </div>
               <div className="conn-cred">
                 <span className="conn-cred-label">节点</span>
-                <span className="conn-cred-value">{t.nodeName} · 负载 {t.load}%</span>
+                <span className="conn-cred-value">{t.nodeName} · 负载 {loadText(t.load)}</span>
               </div>
               <div className="conn-cred">
                 <span className="conn-cred-label">用量</span>
@@ -146,9 +150,22 @@ export function SakuraBlock() {
           ))
         )}
         {sakuraError && <div className="conn-sakura-err" role="alert">{sakuraError}</div>}
-        <button type="button" className="conn-add" data-conn="tunnel-new" disabled={busy} onClick={createTunnel}>
-          {busy ? (sakuraBusy ?? "处理中…") : "+ 创建公网隧道"}
-        </button>
+        {picking ? (
+          <SakuraNodePicker
+            busy={sakuraBusy}
+            onCancel={() => setPicking(false)}
+            onConfirm={(nodeId) => {
+              createTunnel(nodeId);
+              setPicking(false);
+            }}
+            listNodes={listSakuraNodes}
+            onLatency={onSakuraNodeLatency}
+          />
+        ) : (
+          <button type="button" className="conn-add" data-conn="tunnel-new" disabled={busy} onClick={() => setPicking(true)}>
+            {busy ? (sakuraBusy ?? "处理中…") : "+ 创建公网隧道"}
+          </button>
+        )}
         {qr && (
           <div className="conn-qr" role="img" aria-label={`配对二维码：公网入口 ${qr.label}`}>
             <img className="conn-qr-img" src={qr.url} alt="" width={160} height={160} />
@@ -158,7 +175,7 @@ export function SakuraBlock() {
             </div>
           </div>
         )}
-        <div className="conn-ra-hint">创建 = 自动选节点（负载最低）并分配端口，本地指向 127.0.0.1:7789；删除不连带本机地址。隧道在线后可用上方二维码配对（公网入口 + 同一把 Token）。</div>
+        <div className="conn-ra-hint">创建时可选节点（自动 = 按负载最低）并自动分配端口，本地指向 127.0.0.1:7789；删除不连带本机地址。隧道在线后可用上方二维码配对（公网入口 + 同一把 Token）。</div>
       </div>
     </div>
   );

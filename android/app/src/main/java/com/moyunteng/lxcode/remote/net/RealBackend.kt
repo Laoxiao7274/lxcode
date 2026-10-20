@@ -20,6 +20,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.moyunteng.lxcode.remote.model.ChildTool
+import com.moyunteng.lxcode.remote.model.DISPATCH_INTERRUPTED
 import com.moyunteng.lxcode.remote.model.AttachmentMeta
 import com.moyunteng.lxcode.remote.model.ContextUsage
 import com.moyunteng.lxcode.remote.model.EFFORT_IDS
@@ -30,6 +31,12 @@ import com.moyunteng.lxcode.remote.model.SessionMeta
 import com.moyunteng.lxcode.remote.model.SessionStats
 import com.moyunteng.lxcode.remote.model.ThreadBlock
 import com.moyunteng.lxcode.remote.model.TodoItem
+import com.moyunteng.lxcode.remote.model.isDispatchFinal
+import com.moyunteng.lxcode.remote.model.isDispatchPlaceholder
+import com.moyunteng.lxcode.remote.model.mergeChildLiveTail
+import com.moyunteng.lxcode.remote.model.mergeChildTodoList
+import com.moyunteng.lxcode.remote.model.mergeKnownChildIds
+import com.moyunteng.lxcode.remote.model.parseModelList
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.Instant
@@ -201,7 +208,20 @@ class RealBackend {
      * 任意客户端（手机/桌面）上某会话开始/结束生成，这里都收到同一份广播。
      * 会话列表的「运行中」状态点读它——不只是当前打开的会话。
      */
-    private val sessionBusy = mutableMapOf<String, Boolean>()
+    // Compose 可观察的 map（mutableStateMapOf）：投影本身就是 UI 状态的一部分，
+    // 任何在组合里读它的地方（列表状态点/项目行计数）都随 busy 事件自动重组——
+    // 用户报的「必须点进去再退出才亮」就是这条链断在"投影只是普通 map"上。
+    private val sessionBusy = androidx.compose.runtime.mutableStateMapOf<String, Boolean>()
+
+    /**
+     * 某会话此刻是否在生成（**投影口径**，与列表状态点同源）。
+     *
+     * UI 读它而不是只读 `SessionMeta.running`：`SessionMeta` 是不可变值，只有
+     * `syncRunningDots()` 重建条目时才变；投影是 Compose 可观察的 state map，
+     * 任何在组合里读它的地方都会随 busy 事件重组。两条都读（`session.running ||
+     * isSessionRunning(id)`）= 服务端快照与实时广播取并集，任一来源更新都能点亮。
+     */
+    fun isSessionRunning(id: String): Boolean = sessionBusy[id] == true
 
     /** 挂起的工具确认（chat.confirmRequest；null = 无）。 */
     var confirm by mutableStateOf<PendingConfirm?>(null)
@@ -454,36 +474,15 @@ class RealBackend {
 
     private fun applyModelList(r: JSONObject?) {
         if (r == null) return
-        val models = r.optJSONArray("models")
-        val roles = r.optJSONObject("roles")
-        if (models == null) return
-        val groups = linkedMapOf<String, MutableList<ModelMeta>>()
-        for (i in 0 until models.length()) {
-            val m = models.getJSONObject(i)
-            if (!m.optBoolean("enabled")) continue
-            val id = m.optString("id")
-            if (id.isEmpty()) continue
-            val baseUrl = m.optString("base_url")
-            val meta = ModelMeta(
-                id = id,
-                name = m.optString("display_name").ifBlank { m.optString("model", id) },
-                desc = if (m.optString("format") == "anthropic") "Anthropic 格式" else "OpenAI 兼容",
-                // 档位派生自能力声明（对齐桌面端 settings-models.ts：未声明 reasoning
-                // 的模型整个强度入口隐藏）
-                efforts = if (m.optJSONObject("capabilities")?.optBoolean("reasoning") == true) EFFORT_IDS else emptyList(),
-            )
-            groups.getOrPut(baseUrl) { mutableListOf() }.add(meta)
-        }
-        modelGroups = groups.map { (url, ms) ->
-            val host = try {
-                java.net.URI("https://" + url.substringAfter("://")).host ?: url
-            } catch (_: Exception) {
-                url
-            }
-            ModelGroup(name = host, models = ms)
-        }
+        // 投影口径（组合键主键 / 显示名 / 选中态比较）在纯函数里，JVM 单测钉住：
+        // model.list 的 `id` 是**条目自己的 model id**，注册表主键是
+        // `Key() = provider::id`（无 provider 时纯 id）——只读纯 id 的后果：填了
+        // provider 标签后选中态不高亮（后端回的 chat.history.model /
+        // chat.modelChanged.model_id 是组合键），药丸还会把组合键原样显示出来。
+        val snapshot = parseModelList(r)
+        modelGroups = snapshot.groups
         // default 角色绑定是唯一事实源（对齐桌面端 settings.tsx：派生选中态，不猜）
-        defaultModelId = roles?.optString("default").orEmpty()
+        defaultModelId = snapshot.defaultModelId
         Log.i(TAG, "model.list → ${allModels.size} 个模型 / ${modelGroups.size} 组 default=$defaultModelId")
     }
 
@@ -528,9 +527,20 @@ class RealBackend {
             // 而停止的收敛依赖后端事件——假后端/断线场景会卡死在生成中。
             busy = false
             // 会话级忙闲投影同样清账：断线期间的 busy 广播收不到，留下的旧值
-            // 会让列表的「运行中」状态点卡住（后端 hello 不带逐会话 busy——
-            // 未知就显示空闲，等下一个 busy 广播修正，不编状态）。
+            // 会让列表的「运行中」状态点卡住。
             sessionBusy.clear()
+            // 但清空不能留下「不知道」：hello 的 busy_sessions 就是**此刻在跑**
+            // 的会话 id 快照（protocol.HelloResult，与 session.list 的 running 位
+            // 同源，见 internal/server/emit.go 的 busySessions）——握手即建投影，
+            // 手机一连上就能看到电脑端正在跑的会话（否则要等下一次 busy 广播，
+            // 而 busy 只在轮次边界各发一次，错过了就永远不知道在跑）。
+            client.helloResult?.optJSONArray("busy_sessions")?.let { arr ->
+                for (i in 0 until arr.length()) {
+                    val id = arr.optString(i, "")
+                    if (id.isNotEmpty()) sessionBusy[id] = true
+                }
+            }
+            syncRunningDots()
             refreshSessions()
             refreshProjects()
             // 模型注册表：composer 模型菜单的数据源（桌面端是握手并行组的一步）
@@ -848,8 +858,11 @@ class RealBackend {
                 arguments = p.optString("arguments"),
                 prompt = p.optString("prompt"),
             )
-            // 子会话视图打开时双投确认（子会话页内的确认请求正常弹——契约要求）
-            if (dispatchId == viewChildSessionId) {
+            // 子会话视图打开时双投确认（子会话页内的确认请求正常弹——契约要求）。
+            // 归属判定同样要看**卡上的子会话 id**：dispatch_id 是工具调用 id，
+            // 与子会话 id 不相等（旧代码直接比两者，普通派发的子确认因此永远
+            // 弹不到子会话视图里）。
+            if (dispatchId.isNotEmpty() && dispatchChildSessionOf(dispatchId) == viewChildSessionId) {
                 childConfirm = confirm
             }
             return
@@ -867,19 +880,51 @@ class RealBackend {
                 } else {
                     -1 to 0
                 }
-                blocks.add(
-                    ThreadBlock.Dispatch(
-                        agentName = p.optString("agent_name"),
-                        task = p.optString("task"),
-                        conclusion = "",
-                        sessionId = p.optString("session_id", ""),
+                // **建卡与是否有工具调用无关**：dispatchStart 一到就挂卡（一行摘要 +
+                // 「查看子会话 ›」）。子 Agent 只输出文字、一个工具都没调的派发同样
+                // 需要一个进得去的入口——卡只在 toolCall 里建/显示的话，那种派发在
+                // 主时间线上完全不可见（用户报的现象）。
+                //
+                // 去重：历史回放（parseHistoryBlocks）已经从 assistant 的
+                // agent_dispatch 调用建过一张同 dispatch_id 的卡（实时与回放同一张脸）；
+                // 本轮实时事件又到一次 dispatchStart 时**复用**它（把"中断"占位改回
+                // 运行中 + 回填实时字段），绝不并排长两张卡。dispatch_id 为空的
+                // 老载荷没有归属键，只能按「最后一张未完结卡」兜底。
+                val cardId = p.optString("dispatch_id", "")
+                val idx = if (cardId.isNotEmpty()) {
+                    dispatchCardIdx(cardId)
+                } else {
+                    blocks.indexOfLast { it is ThreadBlock.Dispatch && it.done.not() }
+                }
+                val fresh = ThreadBlock.Dispatch(
+                    agentName = p.optString("agent_name"),
+                    task = p.optString("task"),
+                    conclusion = "",
+                    sessionId = p.optString("session_id", ""),
+                    done = false,
+                    isError = false,
+                    dispatchId = cardId,
+                    childTodosDone = tDone,
+                    childTodosTotal = tTotal,
+                )
+                if (idx >= 0) {
+                    val prev = blocks[idx] as ThreadBlock.Dispatch
+                    blocks[idx] = prev.copy(
+                        agentName = fresh.agentName.ifBlank { prev.agentName },
+                        task = fresh.task.ifBlank { prev.task },
+                        // 子会话 id：实时载荷是权威值（回放时可能只有 arguments.session）
+                        sessionId = fresh.sessionId.ifBlank { prev.sessionId },
+                        // 重新开跑（续跑同一 dispatch_id）：状态回到运行中，旧结论清掉
                         done = false,
                         isError = false,
-                        dispatchId = p.optString("dispatch_id", ""),
-                        childTodosDone = tDone,
-                        childTodosTotal = tTotal,
-                    ),
-                )
+                        conclusion = "",
+                        dispatchId = cardId.ifBlank { prev.dispatchId },
+                        childTodosDone = if (tDone >= 0) tDone else prev.childTodosDone,
+                        childTodosTotal = if (tTotal > 0) tTotal else prev.childTodosTotal,
+                    )
+                } else {
+                    blocks.add(fresh)
+                }
             } else {
                 // 先按 dispatch_id 精确配对（协议契约：dispatchStart/End 的
                 // dispatch_id 同源）；找不到（历史重建后的卡没有 dispatch_id、
@@ -893,10 +938,25 @@ class RealBackend {
                 }
                 if (i >= 0) {
                     val d = blocks[i] as ThreadBlock.Dispatch
+                    // 清单终态（DispatchEnd.FinalTodos）：定格卡上的「清单 N/M」。
+                    // 空 = 子会话没建过清单，保持实时进度不动（不把已有徽标擦成 0）。
+                    val finalTodos = p.optJSONArray("final_todos")
+                    val (fDone, fTotal) = if (finalTodos != null && finalTodos.length() > 0) {
+                        val list = (0 until finalTodos.length()).map { finalTodos.getJSONObject(it) }
+                        list.count { it.optString("status") == "done" } to list.size
+                    } else {
+                        d.childTodosDone to d.childTodosTotal
+                    }
+                    if (dispatchId.isNotEmpty()) endedDispatches.add(dispatchId)
                     blocks[i] = d.copy(
                         conclusion = p.optString("result"),
+                        // 子会话 id 以 dispatchEnd 的为准（续跑时 arguments.session 可能
+                        // 为空，而这里永远是本次真正用的那个）——缺了就保留卡上的。
+                        sessionId = p.optString("session_id", "").ifBlank { d.sessionId },
                         done = true,
                         isError = p.optBoolean("is_error"),
+                        childTodosDone = fDone,
+                        childTodosTotal = fTotal,
                     )
                 } else {
                     Log.w(TAG, "dispatchEnd 无配对卡 dispatch=$dispatchId")
@@ -910,6 +970,22 @@ class RealBackend {
         // 归并进**归属派发卡**（轻量派发进度——手机上看子 Agent 跑到哪一步，
         // 与桌面端 TodoUpdatedParams.DispatchID 的归属契约一致；卡不存在只记日志）。
         if (dispatchId.isNotEmpty()) {
+            // 「这个派发还在跑」的证据：任何带归属的子事件（delta/toolCall/toolResult/
+            // todo.updated/busy）都只可能来自**正在执行**的子会话。历史回放建的卡
+            // 先按"中断"定格（那时不知道它是死是活），一旦有子事件到达就说明它还活着
+            // ——把卡恢复成运行中（否则用户看到的是一张红着的"中断"卡，子 Agent 其实
+            // 正在干活；用户报的「子 Agent 在运行时总是红色」就是这条）。
+            markDispatchRunning(dispatchId)
+            // ===== 子会话视图双投（对齐桌面端 reduceSessionStates）=====
+            // 归属判定必须用**卡上的子会话 id**：dispatch_id 是**工具调用 id**
+            // （runDispatch 的 call.DispatchID = tc.ID），与子会话 id 是两回事——
+            // 旧代码拿 `dispatchId == viewChildSessionId` 比，普通派发永远不相等，
+            // 于是「进了子会话视图只有打开那一刻的历史快照、看不到实时流」（文字
+            // 流式、工具流全都停在原地）。桌面端同样是按卡反查子会话 id。
+            val ownerChild = dispatchChildSessionOf(dispatchId)
+            val routeToChild = viewChildSessionId != null &&
+                (ownerChild == viewChildSessionId || dispatchId == viewChildSessionId)
+            if (routeToChild) childRouteEvent(method, p)
             when (method) {
                 "chat.toolCall" -> {
                     upsertChildTool(
@@ -921,24 +997,12 @@ class RealBackend {
                         isError = false,
                         durationMs = 0,
                     )
-                    // 子会话视图双投（对齐桌面端 reduceSessionStates）：子会话标签页
-                    // 看实时流，主时间线卡同时保持摘要行
-                    if (dispatchId == viewChildSessionId) childUpsertTool(
-                        id = p.optString("id"),
-                        name = p.optString("name"),
-                        argsSummary = argsSummary(p.optString("arguments")),
-                        running = true,
-                        isError = false,
-                        durationMs = 0,
-                    )
                 }
                 "chat.toolResult" -> {
                     finishChildTool(dispatchId, p.optString("id"), p.optBoolean("is_error"))
-                    if (dispatchId == viewChildSessionId) childFinishTool(p.optString("id"), p.optBoolean("is_error"))
                 }
                 "todo.updated" -> {
                     mergeChildTodos(dispatchId, p.optJSONArray("items"))
-                    if (dispatchId == viewChildSessionId) childMergeTodos(p.optJSONArray("items"))
                 }
             }
             return
@@ -1018,7 +1082,30 @@ class RealBackend {
                 if (sid != currentSessionId) return
                 // 调度结果不进主时间线（对齐桌面端）：全文是子会话结论，由
                 // dispatchEnd 回填派发卡的 conclusion 行（卡上截一行显示）。
-                if (p.optString("name") == "agent_dispatch") return
+                //
+                // 但**子会话 id 的权威来源就是这条结果**（后端在 agent_dispatch 的
+                // 结果末尾追加 `[子会话 id: …]`，见 internal/agent/tools.go）：只靠
+                // dispatchStart/End 的 session_id 的话，续跑（arguments.session 为空）
+                // 与老载荷会让卡上 id 为空——那张卡就再也没有「查看子会话」入口了。
+                // 所以这里照样把正文剥出来回填卡（卡已定格也不改状态，只补 id/结论）。
+                if (p.optString("name") == "agent_dispatch") {
+                    val (body, childSid) = splitDispatchResult(p.optString("content"))
+                    // 归属键 = 这次调用的 id（后端 DispatchCall.DispatchID = tc.ID），
+                    // 与 dispatchStart/End 的 dispatch_id 同源。
+                    val i = dispatchCardIdx(p.optString("id"))
+                    if (i >= 0) {
+                        val d = blocks[i] as ThreadBlock.Dispatch
+                        blocks[i] = d.copy(
+                            // 结论以 dispatchEnd 为准（它有 is_error 语义）；这里只在
+                            // 卡还空着时补，避免把 dispatchEnd 写好的终态覆盖成半成品。
+                            conclusion = d.conclusion.ifBlank { body },
+                            sessionId = childSid.ifBlank { d.sessionId },
+                        )
+                    } else {
+                        Log.w(TAG, "调度结果无归属派发卡 id=${p.optString("id")}（卡还没建？）")
+                    }
+                    return
+                }
                 val id = p.optString("id")
                 val i = blocks.indexOfFirst { it is ThreadBlock.Tool && it.id == id }
                 if (i >= 0) {
@@ -1083,6 +1170,13 @@ class RealBackend {
                 }
                 msg?.optString("model", "")?.takeIf { it.isNotEmpty() }?.let { sessionModel = it }
                 busy = false
+                // 投影同款收敛：done 就是本会话这一轮的结束（chat.busy 广播可能晚到
+                // 或在断线窗口里丢掉）——列表状态点不该等它。chat.done **不带**
+                // dispatch_id（子轮有），所以这条只可能是主轮，归属 = sid。
+                if (sid.isNotEmpty()) {
+                    sessionBusy[sid] = false
+                    syncRunningDots()
+                }
                 // 主轮结束重拉会话列表（对齐桌面端 ws/index.ts 的 chat.done →
                 // refreshSessionList）：新对话的首条消息落库后侧栏才出得来
                 //（后端语义：未发过消息的空会话不进 session.list；而 session.new
@@ -1110,6 +1204,11 @@ class RealBackend {
                 }
                 blocks.add(ThreadBlock.Error(if (aborted) "已中断" else message))
                 busy = false
+                // 投影同款收敛（与 chat.done 同一条纪律：错误收尾也是这一轮结束）
+                if (sid.isNotEmpty()) {
+                    sessionBusy[sid] = false
+                    syncRunningDots()
+                }
             }
 
             "chat.busy" -> {
@@ -1320,6 +1419,9 @@ class RealBackend {
         currentSessionId = id
         blocks.clear()
         streamingIdx = -1
+        // 已收尾派发集合是"这份时间线"的簿记：切会话即清（否则上一条会话的
+        // dispatch_id 会在这里越积越多，且语义上属于另一份时间线）
+        endedDispatches.clear()
         confirm = null
         busy = false
         contextUsage = null
@@ -1426,10 +1528,17 @@ class RealBackend {
                                         // 先按"中断"定格：历史里没有配对结果 = 那次派发在
                                         // 结束前就断了，不是"正在跑"（不许假装 running）。
                                         // 结果到了（tool 分支）再回填成 done + 正文。
-                                        conclusion = "这次派发在结束前中断了——历史里没有结果记录（重启前它没跑完）。",
+                                        conclusion = DISPATCH_INTERRUPTED,
                                         sessionId = parsed?.optString("session").orEmpty(),
                                         done = true,
                                         isError = true,
+                                        // 归属键 = 这次工具调用的 id（后端 DispatchCall.DispatchID
+                                        // = tc.ID，与 dispatchStart/End 的 dispatch_id 同源）：
+                                        // 有了它，本轮稍后到达的实时 dispatchStart 才能按 id
+                                        // **复用**这张卡（而不是并排再长一张），tool 结果分支也
+                                        // 才能精确回填。老代码这里留空 = 每次刷新后卡与实时事件
+                                        // 断链。
+                                        dispatchId = callId,
                                     ),
                                 )
                                 continue
@@ -1498,8 +1607,16 @@ class RealBackend {
         val cacheStats = r.optJSONObject("stats")?.toString()
         val hadEarlierBlocks = cachedOldestSeq != null && tailAnchor > 0 &&
             (cachedOldestSeq ?: 0L) < tailAnchor
+        // 子会话 id 的跨重载记忆：历史里只有消息（没有 dispatchStart），正在跑
+        // 的派发在历史里既没有结果提示行、也没有子会话 id——直接整段替换的话，
+        // 用户打开这个会话就看不到任何能进子会话的入口（问题 2）。把上一份块里
+        // 同一 dispatch_id 已知的 id 合并回来（只补空值，不编造）。
+        val merged = mergeKnownChildIds(parsed, blocks.toList())
+        // 已收尾集合属于"当前这一份时间线"：重载之后旧记录无意义（且不清理会
+        // 随会话长度无限增长）
+        endedDispatches.clear()
         blocks.clear()
-        blocks.addAll(parsed)
+        blocks.addAll(merged)
         streamingIdx = -1
         // 历史快照的任务清单（ChatHistoryResult.todos——对齐桌面端 history-snapshot
         // 的 todos 装载）：非空插一块 Todo（当前清单的定格视图，随后的 todo.updated
@@ -1520,6 +1637,15 @@ class RealBackend {
         if (currentSessionId.isNotEmpty()) {
             sessionBusy[currentSessionId] = busy
             syncRunningDots()
+        }
+        // 卡里的占位态同样按快照修正：本会话在跑 + **最后一张**派发卡还是"中断"
+        // 占位 = 那次派发其实正在跑（子事件可能还没到，而 history 的 busy 已经是
+        // 服务端事实）。只认最后一张：更早的占位卡是历史上真断掉的派发，本会话
+        // 后来的忙碌与它无关——把它们一起点亮就是"把中断说成在跑"。
+        if (busy) {
+            blocks.indexOfLast { it is ThreadBlock.Dispatch && (it as ThreadBlock.Dispatch).done }
+                .takeIf { it >= 0 }
+                ?.let { markDispatchRunning((blocks[it] as ThreadBlock.Dispatch).dispatchId) }
         }
         // 该会话此刻的权限档（后端 LiveApproval——会话级状态持久化的显示依据）；
         // 空串 = 老后端没报，保持 null（UI 回落「默认」，不猜）
@@ -1595,15 +1721,32 @@ class RealBackend {
     /** 子会话视图的历史装载（与主会话同一解析器；副作用落在 child* 状态上）。 */
     private fun applyChildHistory(r: JSONObject?) {
         val (parsed, todosArr, _) = parseHistoryBlocks(r)
-        childBlocks.clear()
-        childBlocks.addAll(parsed)
-        childStreamingIdx = -1
-        todosArr?.let { arr ->
-            val list = (0 until arr.length()).map { arr.getJSONObject(it) }
+        // 重载**不许抹掉本地实时内容**（2026-12 用户报「子 Agent 正文输出后消失」）：
+        // assistant 是整轮结束才落库的，正在流式的那段永远不在 chat.history 里；
+        // 而子会话的 chat.history 走「现建运行时 + AttachTo」，busy 恒 false——
+        // 不能拿快照的 busy 判「本地有没有实时块」。判定与去重见 ChildHistoryMerge.kt。
+        val prevBlocks = childBlocks.toList()
+        val prevTodos = prevBlocks.filterIsInstance<ThreadBlock.Todo>().lastOrNull()?.items
+        val snapshotTodos = todosArr?.let { arr ->
+            (0 until arr.length()).map { arr.getJSONObject(it) }
                 .map { TodoItem(it.optString("content"), it.optString("status")) }
-            childBlocks.add(ThreadBlock.Todo(list))
         }
-        childBusy = r?.optBoolean("busy") ?: false
+        val merged = mergeChildLiveTail(parsed, prevBlocks)
+        childBlocks.clear()
+        childBlocks.addAll(merged)
+        // 流式块的续写下标：接回来的尾巴就是尾块（否则后续 delta 会另开一块）。
+        childStreamingIdx = if ((merged.lastOrNull() as? ThreadBlock.Assistant)?.streaming == true) {
+            merged.size - 1
+        } else {
+            -1
+        }
+        // 清单：空快照 = 未知（omitempty），沿用上一份——否则「重开视图清单消失」。
+        mergeChildTodoList(snapshotTodos, prevTodos)?.let { childBlocks.add(ThreadBlock.Todo(it)) }
+        // 忙闲：快照的 busy 键对子会话**不可信**（chat.history 是现建运行时 + AttachTo，
+        // busy 恒 false）。接回了流式尾部 = 它确实在跑——别把「生成中」指示抹掉。
+        // 翻回 false 仍由轮末那条 chat.busy=false 负责（它无条件发，不会漏）。
+        val liveTail = childStreamingIdx >= 0
+        childBusy = (r?.optBoolean("busy") ?: false) || liveTail
         r?.optJSONObject("pending")?.let { pend ->
             childConfirm = PendingConfirm(
                 sessionId = pend.optString("session_id", viewChildSessionId ?: ""),
@@ -1630,6 +1773,9 @@ class RealBackend {
             val o = arr.getJSONObject(idx)
             val id = o.optString("id")
             if (id.isEmpty()) return@mapNotNull null
+            // 快照说在跑 → 顺手把投影补成 true：否则下一次 syncRunningDots 会按
+            // 空投影把它抹掉（状态点闪一下就灭），也覆盖不到「连上时已经在跑」。
+            if (o.optBoolean("running")) sessionBusy[id] = true
             SessionMeta(
                 id = id,
                 title = o.optString("title").ifBlank { "新对话" },
@@ -1637,9 +1783,16 @@ class RealBackend {
                 messages = o.optInt("messages"),
                 archived = o.optBoolean("archived"),
                 workspace = o.optString("workspace", ""),
-                // 运行中状态点 = chat.busy 广播的会话级投影（多端共享进度）：
-                // 任何客户端上该会话在生成，这里都亮着——不再只看当前打开的会话
-                running = sessionBusy[id] == true,
+                // 运行中状态点 = **服务端事实**（session.list 的 running 位，
+                // 与 hello 的 busy_sessions 同源，见 internal/server/dispatch_sessions.go）
+                // **或** chat.busy 广播的会话级投影。
+                //
+                // 两个来源都要认：running 位覆盖「连上时那轮已经在跑」（客户端错过
+                // 了 busy=true 广播）；投影覆盖「列表拉到之后才开跑/跑完」（新广播
+                // 到，列表不必重拉）。只认投影 = 冷启动/重连后状态点不亮（用户报的
+                // 「必须点进去再退出才亮」的其中一条路径）；只认快照 = 广播到了
+                // 状态点不动。
+                running = o.optBoolean("running") || sessionBusy[id] == true,
             )
         }.filter { !it.archived }
         sessions.clear()
@@ -1666,7 +1819,13 @@ class RealBackend {
         Log.i(TAG, "project.list → ${list.size} 个: ${list.joinToString { it.name }}")
     }
 
-    /** 会话列表的运行中状态点随 busy 事件刷新（SessionMeta 是不可变值，重建条目）。 */
+    /** 会话列表的运行中状态点随 busy 事件刷新（SessionMeta 是不可变值，重建条目）。
+     *
+     *  两条路径都靠它：
+     *   ① `chat.busy`（任何会话，不只当前打开的）——投影变了就重算；
+     *   ② `session.list` 回来时（[applySessionList] 直接按投影填 running）。
+     *  投影本身是 Compose 可观察的（mutableStateMapOf），所以「列表还没拉到 / 该会话
+     *  还不在列表里」时投影变化照样能驱动读它的 UI（项目行计数等），不靠这里重建条目。 */
     private fun syncRunningDots() {
         for (i in sessions.indices) {
             val s = sessions[i]
@@ -1693,6 +1852,62 @@ class RealBackend {
     /** 当前会话时间线里 dispatch_id 对应的派发卡下标（-1 = 无）。 */
     private fun dispatchCardIdx(dispatchId: String): Int =
         blocks.indexOfFirst { it is ThreadBlock.Dispatch && it.dispatchId == dispatchId }
+
+    /**
+     * dispatch_id → 卡上的**子会话 id**（空 = 没有这张卡 / 卡上没有 id）。
+     *
+     * 两个 id 是**不同的东西**：dispatch_id = 这次工具调用的 id（后端
+     * `DispatchCall.DispatchID = tc.ID`），子会话 id = 独立会话行 id。凡是"这条
+     * 子事件属不属于当前打开的子会话视图"的判定都必须走这里（桌面端按卡反查，
+     * 见 shared/reduce.ts 的 dispatchChildSession）。
+     */
+    private fun dispatchChildSessionOf(dispatchId: String): String =
+        (blocks.firstOrNull { it is ThreadBlock.Dispatch && it.dispatchId == dispatchId }
+            as? ThreadBlock.Dispatch)?.sessionId.orEmpty()
+
+    /**
+     * 已经收尾（收到过 dispatchEnd）的 dispatch_id：迟到的子事件不许把卡翻回运行中。
+     *
+     * 生命周期 = 当前这一份时间线：历史重载（[applyHistory]）时清空——重载之后
+     * 的卡是新的，旧的"已收尾"记录没有意义（也顺手把内存账收掉）。
+     */
+    private val endedDispatches = mutableSetOf<String>()
+
+    /**
+     * 按**子会话 id** 找派发卡并恢复成运行中（`chat.busy` 无归属键的那条走这里：
+     * 普通派发的 dispatch_id 是工具调用 id，与子会话 id 不同，不能拿它当键）。
+     */
+    private fun markChildCardRunning(childSessionId: String) {
+        if (childSessionId.isEmpty()) return
+        val i = blocks.indexOfLast { it is ThreadBlock.Dispatch && it.sessionId == childSessionId }
+        if (i < 0) return
+        val d = blocks[i] as ThreadBlock.Dispatch
+        if (!isDispatchPlaceholder(d.done, d.isError, d.conclusion)) return
+        blocks[i] = d.copy(conclusion = "", done = false, isError = false)
+    }
+
+    /**
+     * 「这个派发还活着」的信号：带 dispatch_id 的子事件（delta/toolCall/toolResult/
+     * todo.updated）只可能来自**正在执行**的子会话。
+     *
+     * 为什么需要它：历史回放建的卡先按"中断"定格（`parseHistoryBlocks` 里那条
+     * 占位结论——那时不知道它是死是活），而**实时事件里并没有 dispatchStart 可吃**
+     * 的情形真实存在（回放刚建完卡、子事件紧接着到；或连接建立时那轮已经在跑）。
+     * 不翻回来的话，用户看到的是一张红色的"中断"卡，而子 Agent 明明正在干活
+     * （用户报的「子 Agent 在运行时总是红色，看起来像中断了」）。
+     *
+     * 判据刻意收窄：只翻**占位态**（done + isError + 结论就是那句占位文案）——
+     * 正常结束的卡（成功或真失败）绝不会被迟到事件改成运行中；收到过 dispatchEnd
+     * 的 id 直接跳过（`endedDispatches`）。
+     */
+    private fun markDispatchRunning(dispatchId: String) {
+        if (dispatchId.isEmpty() || dispatchId in endedDispatches) return
+        val i = dispatchCardIdx(dispatchId)
+        if (i < 0) return
+        val d = blocks[i] as ThreadBlock.Dispatch
+        if (!isDispatchPlaceholder(d.done, d.isError, d.conclusion)) return
+        blocks[i] = d.copy(conclusion = "", done = false, isError = false)
+    }
 
     /** 子会话工具实时流：调用到达即插行/标记运行中（归属派发卡；卡不存在只记日志）。 */
     private fun upsertChildTool(
@@ -1767,6 +1982,11 @@ class RealBackend {
             return
         }
         val d = blocks[i] as ThreadBlock.Dispatch
+        // 迟到守卫只挡**真终态**（成功 / 带真实错误正文的失败）：终态以 dispatchEnd
+        // 的 final_todos 为准。回放占位态（done + isError + 那句「中断」文案）不是
+        // 终态——会话仍在跑时它刚被 markDispatchRunning 翻回运行中，清单必须能写上去
+        //（用户报的「任务列表有时不显示」：刷新后清单永远停在初稿）。
+        if (isDispatchFinal(d.done, d.isError, d.conclusion)) return
         val list = (0 until items.length()).map { items.getJSONObject(it) }
             .map { TodoItem(it.optString("content"), it.optString("status")) }
         blocks[i] = d.copy(
@@ -1896,7 +2116,12 @@ class RealBackend {
                 childBusy = false
             }
 
-            "chat.busy" -> childBusy = p.optBoolean("busy")
+            // 子会话自己的忙闲（无归属键、session_id == 子会话 id 的那条）。
+            // 带 dispatch_id 的那条走主 reducer 的子会话分支（同样双投到 childBusy）。
+            "chat.busy" -> {
+                childBusy = p.optBoolean("busy")
+                if (childBusy) markChildCardRunning(viewChildSessionId ?: "")
+            }
 
             "todo.updated" -> childMergeTodos(p.optJSONArray("items"))
 

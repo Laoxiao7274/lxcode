@@ -43,12 +43,16 @@ func repairToolArgsForWire(args string) string {
 //
 // 四个计时/用量/模型字段（FirstTokenMs / DurationMs / Model / UsageTokens）与 Seq
 // 同类：都是**我们自己的簿记**，模型不需要、也不该看见。漏清一个的代价不是"多传了
-// 点数据"——严格网关会拒收整轮（同一个坑）。这五个字段一起在这里清，别只清一部分。
+// 点数据"——严格网关会拒收整轮（同一个坑）。这些字段一起在这里清，别只清一部分。
+// ParentSeq（会话树）2026-12 批次 1 加入同一批——它是新加的书签字段，漏清同样 400。
 func sanitizeMessagesForWire(msgs []Message) []Message {
 	out := make([]Message, len(msgs))
 	copy(out, msgs)
 	for i := range out {
 		out[i].Seq = 0
+		// ParentSeq（会话树的父指针）与 Seq 同一类簿记：前端用它画分支树，
+		// 模型不需要——多一个未知字段就会被严格网关 400 拒收整轮。
+		out[i].ParentSeq = 0
 		out[i].FirstTokenMs = 0
 		out[i].DurationMs = 0
 		out[i].Model = ""

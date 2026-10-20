@@ -21,6 +21,15 @@ type Message struct {
 	// 由 sanitizeMessagesForWire 清掉（见 llm/toolargs.go）。
 	Seq int64 `json:"seq,omitempty"`
 
+	// ParentSeq 是这条消息在**会话树**里的父节点（messages.parent_seq，0 = root）。
+	// 与 sessions.parent_id 的分工：那个是**会话级**父子（子 Agent = 独立会话），
+	// 这个是**消息级**父指针（会话树的一条边，见 docs/session-tree.md §E.1）。
+	//
+	// 批次 2 起**上 wire**（omitempty：root 的 0 整键缺席）：前端按它建树/画分支，
+	// 与 chat.tree 的 parent_seq 同一口径。它是**簿记字段**，模型不需要——组装
+	// provider 请求时由 sanitizeMessagesForWire 清掉（与 Seq 同一批）。
+	ParentSeq int64 `json:"parent_seq,omitempty"`
+
 	// 以下字段是**每轮生成的簿记**（计时 + 用量 + 模型），与 Seq 同一性质与
 	// 同一条纪律：随消息一起流动（chat.done 实时 / chat.history 回放 / 重启后
 	// Load 三条路径必须给出同一份数字——各算一遍必然漂移），并在

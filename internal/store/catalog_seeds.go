@@ -185,13 +185,14 @@ type seedAgentBaseline struct {
 }
 
 var seedAgentBaselines = map[string]seedAgentBaseline{
-	// 本版给调研 Agent 补了 web_fetch：白名单加一项，职责描述里点明「抓取网页正文」。
-	// 基线随之上移到上一版（含 web_search、不含 web_fetch）——基线的语义就是
-	// 「上一版长什么样」，留在更早的版本上会让「用户删掉 web_search」被误判成
-	// 「没动过」，每次 Open 都把它塞回去。
+	// 本版（2026-12 用户反馈「调研 Agent 读不了本地文件」）给调研 Agent 补了
+	// **bash_readonly**（只读执行面，见 tools/readonly.go），并把职责描述改写成
+	// 「一眼能区分」的版本（点明只读 bash 能查库/看历史、不改任何文件）。基线是
+	// 上一版的白名单与描述——老库里没动过这两处的 researcher 由此吃到新工具与
+	// 新描述；用户改过的一律不碰。
 	"researcher": {
-		Tools: []string{"read_file", "search", "session_search", "ripgrep", "web_search"},
-		Desc:  "代码库与资料勘察：全文检索、历史会话、联网搜索与跨文件脉络梳理，只给结论与出处。",
+		Tools: []string{"read_file", "search", "session_search", "ripgrep", "web_search", "web_fetch"},
+		Desc:  "代码库与资料勘察：全文检索、历史会话、联网搜索与抓取网页正文、跨文件脉络梳理，只给结论与出处。",
 	},
 	// 本版给合并 Agent 补了 ask_user（确认门的「提问」形态：冲突抉择向用户提问），
 	// 职责描述里同步点明「冲突抉择可向用户提问」。基线是上一版的白名单与描述——
@@ -211,13 +212,22 @@ var seedAgentBaselines = map[string]seedAgentBaseline{
 	// ——主 Agent 的选人信号按描述逐字生成。基线上移到上一版（含 share_file、
 	// 不含 read_image）：老库里没动过这两处的 coder/tester 由此吃到新工具与新描述；
 	// 动过的行照旧不碰（用户在编辑器里自己勾）。
+	// 本版（2026-12 用户拍板）改了代码 Agent 的职责边界：**只写代码，不跑测试**
+	// ——测试与验证归测试 Agent。基线是上一版的描述（含「跑构建测试」），所以
+	// 老库里没动过 desc 的 coder 会吃到新描述；用户自己改过的一律不碰。
+	// 本版（2026-12）把 coder/tester 的职责边界写得更硬：描述里点明「不跑测试」
+	// /「不做只读调研」/「不改实现」，主 Agent 按描述选人时不再把三类活混派。
+	// 基线是上一版的描述，老库里没动过 desc 的 coder/tester 由此吃到新描述；
+	// 用户自己改过的一律不碰。
 	"coder": {
 		Tools: []string{"read_file", "search", "edit", "write_file", "bash", "todo", "share_file"},
-		Desc:  "编码实现与重构：读写代码、跑构建测试，产出可验证的改动，能把产物文件共享到对话。",
+		Desc:  "编码实现与重构：读写代码、产出可验证的改动（改完只确认能编译/无语法错误，测试交给测试 Agent），能把产物文件共享到对话、能读图片内容（视觉）。",
 	},
+	// 测试 Agent 的描述同步改了（写明「代码 Agent 交回的改动由你验收」）：基线
+	// 保持上一版，老库里没动过 desc 的 tester 由此吃到新描述。
 	"tester": {
 		Tools: []string{"read_file", "search", "edit", "write_file", "bash", "todo", "share_file"},
-		Desc:  "验证与测试：跑构建与测试、按验收标准补用例，如实回传失败与复现命令，能把产物文件共享到对话。",
+		Desc:  "验证与测试：跑构建与测试（代码 Agent 交回的改动由你验收）、按验收标准补用例，如实回传失败与复现命令，能把产物文件共享到对话、能读图片内容（视觉）。",
 	},
 }
 

@@ -41,11 +41,22 @@ const (
 	// 与 chat.send 的 approval 参数的区别：那个是「这一轮用哪一档」，这个是
 	// 「从现在起这个会话用哪一档」——用户的当前意图是会话级实时状态。
 	MethodChatApproval = "chat.approval"
-	// MethodChatRewind 撤回（rewind）：把 seq 那条消息**及其之后的全部历史**
-	// 从会话里删掉（那条消息的正文由客户端自己留在输入框里，用户改完重发）。
+	// MethodChatRewind 撤回（rewind）：**保留方法名，语义改为「移 leaf」**——
+	// 把叶移到 seq 的父节点（那条消息自己也离开路径，因为它是用户要改写的那条）。
+	// **一条消息都不删**：旧分支完整保留在树里，切回去就回来。
+	// 对老客户端的可见行为逐条不变（它本地 planRewind 截断出来的前缀恰好就是
+	// 新路径，随后 chat.history 拿到的也是这条路径），见 docs/session-tree.md §B.1。
 	// 空闲才允许——正在跑的一轮手里握着历史快照，抽掉它等于让模型按一份
 	// 已经不存在的上下文继续（与 chat.compact 同款纪律，服务端回 ErrBusy）。
 	MethodChatRewind = "chat.rewind"
+	// MethodChatSetLeaf 切叶：把 leaf 直接指向 seq（「从这里接着长」），
+	// 与 rewind 的差别只有落点差一格（rewind → parent(seq)，setLeaf → seq）。
+	// Seq=0 = 空路径（回到第一条消息之前）；「回到最新」由客户端传树里最大的 seq
+	// ——**不给 0 兼两个语义**（那是本仓库反复吃亏的那类歧义）。
+	MethodChatSetLeaf = "chat.setLeaf"
+	// MethodChatTree 会话树骨架（节点 + 父子关系 + 当前 leaf + 分支摘要）。
+	// 默认 compact（折叠 assistant/tool 进轮节点）；max_nodes 缺省 2000。
+	MethodChatTree = "chat.tree"
 	// MethodChatMergeRequest 是后台任务面板「合并请求」入口的协议方法（**遗留**：
 	// 2026-10 架构修订——合并进程退役，会话直连主检出，没有分支合并流程）。
 	// 保留方法名以免协议漂移；被调用时以错误码回带退役说明，不启动任何任务。
@@ -65,6 +76,9 @@ const (
 	// 项目管理（workspace 分组）
 	MethodProjectAdd  = "project.add"
 	MethodProjectList = "project.list"
+	// MethodProjectRemove 从项目列表**移除注册**（只解绑：不删磁盘目录、不删
+	// 会话——会话留在库里，归属清空后归入「未分组」）。
+	MethodProjectRemove = "project.remove"
 	// 项目守则（项目根 AGENTS.md）读写：**只按项目 id 寻址**，客户端不传路径——
 	// 越权面在结构上为零（固定文件名 + 项目根由服务端解析）。
 	MethodProjectInstructionsGet  = "project.instructions.get"
@@ -169,8 +183,12 @@ const (
 	EventDispatchStart  = "chat.dispatchStart" // 主 Agent 派发子 Agent——客户端渲染 dispatch 卡
 	EventDispatchEnd    = "chat.dispatchEnd"   // 子 Agent 执行收尾——dispatch 卡定格带结果
 	EventCompacted      = "chat.compacted"     // 历史被压缩（前缀替换成摘要检查点）——客户端插标记块
-	EventRewound        = "chat.rewound"       // 会话被撤回（seq 及其之后的历史已删除）——客户端截断时间线
-	EventSearchChanged  = "search.changed"     // 搜索渠道配置变更——客户端重拉 search.channels.list
+	EventRewound        = "chat.rewound"       // 会话被撤回（叶已移到 anchor 之前；一行未删）——客户端截断时间线
+	// EventLeafChanged 叶指针变更（rewind 与 setLeaf 都发）。与 chat.rewound 的分工：
+	// setLeaf 是**无删除**的指针移动，老客户端收到 chat.rewound 会截断时间线——
+	// 切到另一条分支时那个截断是错的。所以 setLeaf 只发本事件（老客户端忽略未知事件）。
+	EventLeafChanged   = "chat.leafChanged"
+	EventSearchChanged = "search.changed" // 搜索渠道配置变更——客户端重拉 search.channels.list
 	// EventTodoPromptChanged 行为开关（todo-first 档位）变更——多客户端同步：
 	// 壳与浏览器同时开着时两边的设置显示必须一致（与 search.changed 同款语义）。
 	EventTodoPromptChanged = "settings.todoPrompt.changed"

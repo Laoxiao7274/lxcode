@@ -190,12 +190,21 @@ type Session struct {
 	// 模型显示错。来源有三处：Send 时解析出的 ac、dispatch 开子会话时显式置位、
 	// 服务端按会话 id 从库里读回（刷新后重新附着同一会话）。
 	agentID string
+	// turnCounters 是本会话按轮（锚点 seq）记的「无法快照的写」计数
+	// （docs/session-tree.md §C.1）。树面板的 ⚠️ 徽标与回滚确认文案都读它。
+	turnCounters *turnCounters
 	// children 是本会话**正在跑的子会话**登记（子会话 id → 运行时）。子会话的
 	// 运行时不进 server.sessions（生命周期跟着 runDispatch 走，跑完即注销），
 	// 不登记的话服务端对子会话 id 调 chat.cancel 会 newRuntime 建一个空对象
 	//（Cancel 空操作）——停不掉真正在跑的子轮。并行 dispatch 下同一父可有多个
 	// 活子会话，按 id 一对一。
 	children map[string]*Session
+	// readState 是本会话的读取观测（read_file 的重复读去重、edit 的「改前先读」
+	// 提示共用）。**会话级**状态：父子会话各持一份（注册表是进程级单例，
+	// 父会话读过的文件不能替子会话满足前置条件——与 todo sink 同一条理由）。
+	// 会话生命周期内常驻：跨轮次仍有效（上一轮读过的文件这一轮不必再灌一遍），
+	// 新建/切换会话时由 New / 附着路径换成新实例。
+	readState *tools.ReadState
 }
 
 // New 创建会话；emit 为 nil 时事件被丢弃（单测可只调方法）。
@@ -203,7 +212,8 @@ func New(reg *config.Registry, toolReg *tools.Registry, emit Emitter) *Session {
 	if emit == nil {
 		emit = func(Event) {}
 	}
-	s := &Session{reg: reg, tools: toolReg, stream: streamWithLLM, emit: emit}
+	s := &Session{reg: reg, tools: toolReg, stream: streamWithLLM, emit: emit,
+		turnCounters: newTurnCounters(), readState: tools.NewReadState()}
 	// 注意：todo 清单的写回口与技能目录都**不进注册表**（进程级单例），
 	// 而是每轮经 ctx 注入（runTurn 里 WithTodoSink / WithSkillSource）——
 	// 子 Agent 是独立会话后，注册表级全局态会让父子互相踩（见 tools/sessionstate.go）。
@@ -579,6 +589,27 @@ func (s *Session) SendWait(ctx context.Context, text string, opts ...SendOpt) er
 // 行为要一段已落库的真实历史——生产路径只有 Send/notify 会写历史）。
 func (s *Session) AppendForTest(m llm.Message) {
 	s.append(m)
+}
+
+// ExternalCount 返回本会话累计的「无法快照的写」数（dispatch 回带父会话用）。
+//
+// 口径见 external.go：只有**成功执行**的变更类工具才计；edit/write_file 的快照
+// 被跳过（大文件/二进制）同样算。子会话的这个数经 DispatchResult.ExternalCount
+// 加到父会话那一轮上——回滚时用户看到的「N 处无法还原」必须包含子 Agent 的 bash。
+func (s *Session) ExternalCount() int {
+	s.mu.Lock()
+	c := s.turnCounters
+	s.mu.Unlock()
+	if c == nil {
+		return 0
+	}
+	total := 0
+	c.mu.Lock()
+	for _, n := range c.bySeq {
+		total += n
+	}
+	c.mu.Unlock()
+	return total
 }
 
 // Busy 返回当前忙闲状态。

@@ -73,10 +73,20 @@ func (s *Server) emitEvent(sessionID string, ev agent.Event) {
 			SessionID: sessionID, Before: e.Result.Before, After: e.Result.After, Shadowed: e.Result.Shadowed,
 			Summary: e.Result.Summary, Manual: e.Manual, DispatchID: e.DispatchID,
 		})
+	case agent.LeafChangedEvent:
+		// 叶指针变更（rewind 与 setLeaf 都发）：所有客户端在同一时刻对齐。
+		// setLeaf **只**发这个事件（老客户端忽略未知事件）——因为它没有删除，
+		// 老客户端若按 chat.rewound 截断时间线，切到另一条分支时那个截断是错的。
+		s.broadcast(protocol.EventLeafChanged, protocol.ChatLeafChangedParams{
+			SessionID: sessionID, LeafSeq: e.LeafSeq, PrevLeafSeq: e.PrevLeafSeq,
+			Removed: e.Removed,
+			// toProtocolContext 在未知（Used <= 0）时返回 nil → 整键缺席
+			Context: toProtocolContext(e.Context),
+		})
 	case agent.RewoundEvent:
 		// 撤回后前端据此截断时间线（seq 之前的保留、之后的丢弃），不必重拉历史
 		s.broadcast(protocol.EventRewound, protocol.ChatRewoundParams{
-			SessionID: sessionID, Seq: e.Seq, Removed: e.Removed,
+			SessionID: sessionID, Seq: e.Seq, Removed: e.Removed, LeafSeq: e.LeafSeq,
 			// toProtocolContext 在未知（Used <= 0）时返回 nil → 整键缺席
 			Context: toProtocolContext(e.Context),
 			// 统计也重算：撤回真删了行，步数/token 跟着变小才对（压缩不删行，
@@ -180,4 +190,30 @@ func (s *Server) busySessions() []string {
 		}
 	}
 	return out
+}
+
+// runningSessionsOfProject 返回归属该项目的**此刻在生成**的顶层会话数。
+// project.remove 的边界判定用它（移除后侧栏没有入口停它们，而项目根仍在被
+// 这些会话当工作目录用——先停再删是唯一不让人困惑的顺序）。
+//
+// 与 busySessions 同一份判定（运行时缓存里 Busy()==true），项目归属从库里查
+// （session 内存态不记 workspace）。子会话不进缓存，也不单独拦：父会话在跑时
+// 它必然也在跑，父会话的 busy 已经把它覆盖。
+func (s *Server) runningSessionsOfProject(projectID string) int {
+	if s.st == nil || projectID == "" {
+		return 0
+	}
+	ids, err := s.st.SessionIDsOfProject(projectID)
+	if err != nil {
+		return 0 // 查不动时不拦（移除本身会报错）；宁可让用户看到真实错误
+	}
+	n := 0
+	s.sessionsMu.RLock()
+	defer s.sessionsMu.RUnlock()
+	for _, id := range ids {
+		if sess := s.sessions[id]; sess != nil && sess.Busy() {
+			n++
+		}
+	}
+	return n
 }

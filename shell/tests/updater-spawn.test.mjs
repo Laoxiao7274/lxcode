@@ -63,6 +63,20 @@ test("暂存必须与安装目录同构（update-pending/staged + copyTree 到 s
   assert.ok(src.includes("originalFs"), "触碰 *.asar 的 fs 必须走 originalFs（Electron 补丁规避）");
 });
 
+test("替换计划的 staged 取副本目录而非 payload（2026-10-20「更新失败、找不到」事故钉子）", () => {
+  // 事故：files[].staged 曾用 payloadDir（update-staging/dl-<ts>/payload）拼，
+  // 而副本在 update-pending/staged——verifyStagedFiles 的 relative() 以 ".."
+  // 开头 → 排程前抛「暂存路径异常」，用户只看到更新报错。
+  assert.ok(
+    src.includes("buildApplyFileEntries(installDir(), stagedTarget, manifest.files)"),
+    "staged 必须由 stagedTarget（副本根）拼出，且经纯函数（可单测）",
+  );
+  assert.ok(
+    !/staged:\s*join\(payloadDir/.test(src),
+    "不得再用 payloadDir 拼 staged（bat 在壳退出后才跑，payload 那时已被清掉）",
+  );
+});
+
 test("旧格式残留清理：update-pending 全量重置（v1 清单 / apply-update.ps1 一并清）", () => {
   assert.ok(src.includes('rmWithRetry(pending, "清理 update-pending（含旧链路残留）", true)'), "排程前必须全量清 update-pending");
 });

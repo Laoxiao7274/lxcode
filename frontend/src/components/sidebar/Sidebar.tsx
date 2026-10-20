@@ -8,6 +8,7 @@ import { LOOSE } from "../../shared/project-entry";
 import type { AgentSource, ProjectMeta, SessionMeta } from "../../shared/types";
 import { AddProjectDialog } from "./AddProjectDialog";
 import { ProjectInstructionsDialog } from "./ProjectInstructionsDialog";
+import { RemoveProjectDialog } from "./RemoveProjectDialog";
 import { SessionRow } from "./SessionRow";
 
 /** 「未分组」过滤目标（无归属会话的家——不依赖真实项目 id）。
@@ -87,6 +88,9 @@ export const Sidebar = memo(function Sidebar({
   const [addOpen, setAddOpen] = useState(false);
   /** 项目守则编辑器（项目行「守则」入口打开；null = 关闭）。 */
   const [insFor, setInsFor] = useState<ProjectMeta | null>(null);
+  /** 移除项目确认（项目行 hover 的「移除」入口；null = 关闭）。
+   *  语义 = 只解绑（不删磁盘文件、不删会话），文案见 RemoveProjectDialog。 */
+  const [removeFor, setRemoveFor] = useState<ProjectMeta | null>(null);
   const [projectsTick, setProjectsTick] = useState(0); // projectsChanged 事件驱动重读
   const searchRef = useRef<HTMLInputElement>(null);
   const { phase: updPhase } = useUpdate();
@@ -101,6 +105,16 @@ export const Sidebar = memo(function Sidebar({
   }, [source]);
   void projectsTick;
   const projects = source.projects();
+  // 当前范围的项目被移除（本端或别的客户端）→ 退回「未分组」：否则会话列表
+  // 停在一个已不存在的项目上，侧栏与空态都无从解释（多端同步的收口）。
+  // projects 为空时不判（握手前/换后端清缓存那一刻列表还没回来——那不是
+  // 「项目被删了」，此时重置会把用户的范围白白丢掉）。
+  useEffect(() => {
+    if (filter === LOOSE || filter === "") return;
+    if (projects.length === 0) return;
+    if (projects.some((p) => p.id === filter)) return;
+    setFilter(LOOSE);
+  }, [filter, projects, setFilter]);
 
   const allSessions = source.sessions();
   // 列表引用稳定（source 内部缓存），过滤结果按它记忆化——busy 汇总随之不重算。
@@ -310,6 +324,20 @@ export const Sidebar = memo(function Sidebar({
             >
               守则
             </button>
+            {/* 移除入口（hover 出现）：只从项目列表解绑，不删磁盘文件、不删会话 */}
+            <button
+              type="button"
+              className="proj-remove-btn"
+              data-remove={p.id}
+              title="移除项目（不会删除磁盘文件与已有会话）"
+              aria-label={`移除项目 ${p.name}`}
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => { e.stopPropagation(); setRemoveFor(p); }}
+            >
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+                <path d="M18 6 6 18M6 6l12 12" />
+              </svg>
+            </button>
             <span className="proj-count">{count}</span>
           </div>
         );
@@ -349,6 +377,19 @@ export const Sidebar = memo(function Sidebar({
           source={source}
           project={insFor}
           onClose={() => setInsFor(null)}
+        />
+      )}
+      {removeFor && (
+        <RemoveProjectDialog
+          project={removeFor}
+          sessionCount={allSessions.filter((s) => s.workspace === removeFor.id).length}
+          onRemove={async () => {
+            await source.removeProject(removeFor.id);
+            // 移除的正是当前筛选范围 → 退回「未分组」（否则列表停在一个
+            // 已不存在的项目上，侧栏与空态都无从解释）
+            if (filter === removeFor.id) setFilter(LOOSE);
+          }}
+          onClose={() => setRemoveFor(null)}
         />
       )}
 

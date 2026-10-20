@@ -115,11 +115,11 @@
 - **落库**：`messages` 加 `input_tokens`/`cache_read_tokens`/`cache_write_tokens`/`notice`/`usage_split` 五列（幂等 ALTER；老行恒 0 = 未知）；**`notice` 与 `usage_split` 都是写边界的一位标记**（两个前缀常量分别在 agent 与 protocol 包里，而折叠统计的 store 谁都不能 import）——`usage_split` 区分「本功能上线前的行」（那时 `usage_tokens` 装的是 provider 的 `total_tokens`，混算会把速度报得离谱）：那些行单独记 `LegacyTokens`，不进四桶、不进速度，只在明细里如实说明；tool 消息的 `duration_ms` 是工具耗时（`runTools` 计时，没执行的调用不写它）。**细节（含 `LegacyTokens` 的由来与判定）见 `docs/session-stats.md`**；
 - **wire**：`chat.done`（主轮与子轮各带**自己那份**——子会话的统计按它自己的 session_id 折叠）+ `ChatHistoryResult.stats` + `chat.rewound.stats`（重算后）；**零值 = 还没有任何一步 → 整键缺席**（前端不渲染统计胶囊，**不显示一排 0**）；前端三个名字必须分得开：「会话统计」= 时间胶囊（输入框那一行、紧挨上下文环）、「会话消耗」= 上下文环「会话用量」弹层里的那一节（总量 + 四桶 + 缓存命中，没有 token 时整节不渲染）、「会话用量」= 那个弹层（"此刻窗口里有多少" / "整条会话累计花了多少"）；**输入条永不折行**（控件 `flex:none`+`nowrap`，统计胶囊是唯一让位项）。
 
-## 3. 工具面（内置 24 个 + 目录动态注入）
+## 3. 工具面（内置 25 个 + 目录动态注入）
 
 | 工具 | 风险 | 说明 |
 |---|---|---|
-| `read_file` | 低危 | 按行输出（`行号→` 前缀），offset/limit 分页，256KB 上限，二进制拒绝 |
+| `read_file` | 低危 | 按行输出（`行号→` 前缀），offset/limit 分页，256KB 上限，二进制拒绝；**会话级重复读去重**：同文件+同 offset/limit+mtime/size 未变 → 只回摘要（`force=true` 或换区间可要原文，见 §3.1） |
 | `search` | 低危 | 纯 Go RE2 检索（files/content/count 三模式），不经过 shell |
 | `session_search` | 低危 | 搜历史会话（带标题/时间/上下文；格式归 store 包） |
 | `web_search` | 低危 | 联网搜索（多渠道降级；渠道与配置见 §3.2） |
@@ -131,7 +131,8 @@
 | `share_file` | 低危 | 把工作目录里的文件共享到对话（复制进会话附件目录 → 前端附件卡；图片缩略图/文件下载卡；**只读语义**不改任何文件；路径越出工作目录拒绝；单文件 ≤20MB）——落盘与元数据契约见 `docs/attachments.md` |
 | `edit` | 低危 | **精确替换**：old_string 唯一匹配硬校验（0/>1 报错自解释），原子写 |
 | `write_file` | 高危 | 全量覆盖：覆盖已有文件需确认 + 缩水守卫（<50% 告警） |
-| `bash` | 高危 | 超时 60s/上限 300s、输出 32KB、stdin ≤64KB；**`run_in_background=true` 起后台任务**（见 docs/jobs.md）；**Windows shell 选择见 §5 坑** |
+| `bash_readonly` | 低危 | **只读执行面**（调研 Agent 的手脚）：与 `bash` 共用执行核，但命令级**白名单**校验（`internal/tools/readonly.go`：只读命令 + git 只读子命令 + sqlite3 查询；重定向/命令替换/管道外的写入口/解释器/包管理一律拒绝并回填出路）；`Mutates=false` → strict 档下可用、不弹确认门 |
+| `bash` | 高危 | 超时 60s/上限 300s、输出 32KB、stdin ≤64KB；**`run_in_background=true` 起后台任务**（见 docs/jobs.md）；**Windows shell 选择 / MSYS 坑 / 编码见 §5 坑 19-20 与 `docs/windows-shell.md`** |
 | `todo` | 低危 | 任务清单全量写入（active 唯一性硬校验）；会话持有状态 + TodoUpdated 事件 |
 | `agent_dispatch` | 低危 | 主 Agent 唯一工具：把任务派给名单里的子 Agent（**子 Agent = 独立会话**，见 §2.3；深度恒 1） |
 | `merge_request` | 低危 | **遗留**（2026-10 架构修订：合并进程退役，会话直连主检出与用户当前分支，不再有分支合并流程）——被调用时如实返回说明、不启动任何任务；合并实现（mergejob.go / merger Agent）**带 `lxmerge` 构建标签隔离**（默认构建不含；恢复方式 `go build -tags lxmerge`，见 docs/jobs.md）。提交/推送用 `workspace_sync`（直接 push 当前分支），回滚用 `workspace_rollback` |
@@ -161,6 +162,19 @@
 - 参数坏 JSON 先走保守修复（`internal/jsonrepair`：裸换行/尾逗号/单引号/截断补括号），修复成功注明——弱模型坏参数是高频失败形态。
 - **工具调用参数必须在写边界就合法**（2026-09-23 线上事故，见 §5 坑 12）：三道防线——① `agent.sanitizeToolCallArgs` 在 `s.append` 前清洗（正常轮次与流失败保留 partial 两条路径都走）；② `llm.repairToolArgsForWire` 组装请求时兜底（保守修复，修不动发 `{}`，**绝不报错**）；③ `tools.Execute` 执行前再试一次。三者共用 `jsonrepair` 一份实现。
 - **工具 id 必须匹配 `^[a-zA-Z0-9_-]{1,64}$`**（OpenAI 与 Anthropic 的同一条约束）：违反它会被严格网关 400 拒收整轮——原名 `agent.dispatch` 的点号就栽在这上面（2026-09-23 改成 `agent_dispatch` 并配老库迁移，见 §5 坑 13）。`tools` 的 `TestLLMToolsShape` 已按这条字符集校验全部内置工具 id；新增内置工具或导入目录条目时不要用点号。
+
+### 3.1 重复读去重与「改前先读」（2026-12）
+
+**read_file 会话级去重**（`internal/tools/file_read.go` + `sessionstate.go` 的 `ReadState`）：同一会话内对**同一文件**用**完全相同的 offset/limit** 再读、且 `mtime + size` 未变 → 只回一句摘要（「内容未变（上次读取于第 N 步，共 M 行，区间 …）」），不再灌一遍全文。
+
+- **作用域是会话级**（ctx 注入 `tools.WithReadState`，与 `WithTodoSink` 同一套机制）：注册表是进程级单例，父会话读过的文件不能替子会话满足前置条件——`TestReadDedupDoesNotLeakToChildSession` 钉住这条；
+- **只对完全相同分页参数生效**：换 offset/limit 说明模型在读另一部分（可能在拼接长文件），必须照常返回全文；
+- **判据是 stat（mtime+size）不是内容 hash**：会话内同一纳秒被改回原大小几乎不可能，而 hash 要多读一遍全文（去重本身就是为了省 IO 与上下文）；
+- **模型有显式出口**：`force=true` 跳过判定（它确实要再确认一遍原文时用），摘要文案也提示「换 offset/limit 读其他区间」；
+- **未注入 state 时不去重**（纯内存模式 / 单测直调），行为与改动前逐字节一致；
+- 回摘要的那次**不推进**「上次读取于第 N 步」（它没交付内容，记它会让步号指向一次没给正文的读取）。
+
+**edit 的「改前先读」只做提示、不硬拦**（2026-12 用户拍板，保守取向）：DSH 的 `dsh-fs-observation-policy` 用 `FS_NOT_OBSERVED` 硬拒绝未读过的 edit。lxcode 不照抄——① edit 的 old_string 唯一匹配语义已经自带「必须先看到真实内容」的约束（凭记忆写的几乎必然不匹配）；② 硬拦会打断合法流程（刚 write_file 写完、内容就在上下文里的文件；重启前读过但内存里没有观测的会话）。所以只在 **edit 失败信息**里补关键事实（`readObservationHint`）：本会话还没读过 / 读过但文件此后被改过 / 读过且未变（附步号与区间）。`TestEditDoesNotRequirePriorRead` 是「不硬拦」的钉子。
 
 ### 3.2 网页搜索渠道（`internal/websearch`）
 
@@ -213,6 +227,9 @@
 17. **含密钥的配置文件必须进 .gitignore**（2026-09-27）：`config/search.json` 存各渠道 apikey，与 `config/local.json` 同性质——新增任何「会落盘凭据」的配置文件时，同步加 .gitignore，否则一次测试写入就变成待提交文件。
 18. **CSP 没放行 blob worker 会让 dev 页面「断了就再也回不来」**（2026-10-06 用户报错实测）：vite 的 dev client（`/@vite/client` 的 `waitForSuccessfulPing`）在 **HMR WebSocket 断开**后用 blob 造一个 `SharedWorker` 去轮询服务端，成功后 `location.reload()`；而 `frontend/index.html` 的 CSP 里 `script-src 'self' 'unsafe-inline'` 没有 `blob:`（`worker-src` 回退到 `script-src`）→ `new SharedWorker` 抛异常且**未被 catch** → reload 永不执行，页面停在死状态只能手动刷新（机器休眠导致 socket 断开时必现）。**修法**：CSP 加 `worker-src 'self' blob:`（**别**放宽 `script-src`——blob 仍不能当脚本执行）。**排查提示**：这类「vite 相关的控制台报错」先去 `curl http://127.0.0.1:5190/@vite/client` 看真实行号，别猜。
 
+19. **控制台子进程的输出编码跟代码页走——中文系统是 GBK，不是 UTF-8**（2026-12 真库取证）：后端是 GUI/服务形态，子进程拿到 CREATE_NO_WINDOW 建的隐藏控制台，代码页仍是 936；`ipconfig` / `tasklist` / `powershell -Command "..."` 的中文因此全是 GBK 字节。旧实现 `string(out)` 直接当 UTF-8 拼进工具结果，经 JSON 序列化变成一串 `����`（真库：66193 条工具结果里 431 条是非法 UTF-8，其中 354 条来自 bash、57 条含 U+FFFD 且 **56/57 条紧接着又发了一条 bash 调用**——模型看不懂输出只能盲目重试）。**修法**：`tools.normalizeConsoleOutput`（`internal/tools/encoding*.go`）——合法 UTF-8 原样返回（零回归面），非法段**按行**用 `MultiByteToWideChar(CP_ACP)` 解码，失败回落 U+FFFD。**刻意不做** `chcp 65001` 命令前缀：那会让确认卡展示的命令与实际执行的不一致，且对无视代码页直接写 GBK 的程序无效。
+20. **Windows 的 bash 不是 WSL，但也不是真 bash**（2026-12 取证）：`selectShell` 依次找 `sh.exe`（Git Bash）→ 非系统目录的 `bash.exe` → `C:\Program Files\Git\bin\bash.exe` → `cmd /c`，**从不选 WSL**；本机实测 `bash.exe` 落在 `C:\Program Files\Git\usr\bin\bash.exe`。两处真坑：① **MSYS 路径改写**——参数形如 `/FI`、`/PID`、`/c` 会被 Git Bash 改写成 `C:/Program Files/Git/FI`（真库 12 例 `ERROR: Invalid argument/option - 'C:/Program Files/Git/FI'`），命令里要用 `MSYS_NO_PATHCONV=1` 或 `//FI` 双斜杠；② **`$_` / `$( )` 被 bash 先展开**——`powershell -Command "... $_.Foo ..."` 里的 `$_` 被 sh 换成上一条命令的路径（真库 37 例 `/usr/bin/bash.ProcessName` 之类），必须用单引号包 PS 脚本或写成 `.ps1` 文件。**服务形态**（SCM，只有机器级 PATH）下 Git 不在 PATH 时 `selectShell` 会退到 `cmd /c`——那时模型写的 bash 语法全部失效，`shellSyntaxHint` 会把这件事写进工具描述。
+
 ## 6. Windows 服务运维（对齐参考项目的部署形态）
 
 - **布局**（安装形态固定根，= 参考项目的 `/mmc/myt-agent/`）：
@@ -243,7 +260,7 @@ Harness 的目标形态：**主 Agent 只做决策与分派，子 Agent 是用�
 - **表单组件套件**（`components/form/`，`.fd-` 命名空间）：Button/TextInput/Textarea/Select/Segmented/ColorPicker/Chips/Toggle——项目内表单一律用套件，不再裸写原生控件（chips 有 `exclusive` 单选模式承载流程原子语义）。
 - 字段命名注意：AgentDef 的流程模块字段叫 `workflow` 不叫 `process`——与 Node 全局 `process` 撞形会让边界守卫（scripts/check-boundaries.mjs）误报，属性读取与 `process.env` 结构上无法区分。
 - **种子名单（2026-09-23）**：后端种子 = 主 Agent + 三个执行面 Agent——`coder`（代码，实现）、`researcher`（调研，只读勘察）、`tester`（测试，验证与跑命令）；主 Agent 的 `delegates` = 这三个 id。前端 `agent-seeds.ts` 的演示名单（main/coder/researcher/reviewer/ops）是**演示专属**，live 模式下后端是事实源（`shared/agents.tsx`）。三条种子纪律：
-  - **执行面即白名单**：调研 Agent 的 `tools` 不含 edit/write_file/bash（"不改文件"是结构保证），`approval=strict` 是第二道保险；测试 Agent 必须含 `bash`（不跑就无从验证）；
+  - **执行面即白名单**：调研 Agent 的 `tools` 不含 edit/write_file/bash（"不改文件"是结构保证），`approval=strict` 是第二道保险；它读本地数据走 `bash_readonly`（只读执行面——查 SQLite/git log/wc 靠它，写操作由命令级判据拒绝）；测试 Agent 必须含 `bash`（不跑就无从验证）；
   - **子 Agent 种子不含 `agent_dispatch`**（两类制，深度恒 1）；白名单也不含"声明了没实现"的工具（如 `browser`——注册表里没有它，提示词会点名「当前不可用」）；
   - **种子必须自洽**：`workflow`/`skills`/`tools` 引用的 id 必须真实存在——server 按 id 解析时**缺失静默跳过**，打错就是一份空提示词且不报任何错（`TestSeedAgentsSelfConsistent` 钉住这条）。
 - **种子同步（Agent 侧，2026-09-23）**：工具/模块按 `custom` 全字段同步（见 §3），Agent 名单**更严**——`ensureSeedAgents` 只插缺失 id（已有行不 UPDATE、不 DELETE：子 Agent 插入即 `custom=1`＝用户所有）；补种只在字段仍等于上一版基线时才补：`topUpMainDelegates` 补主 Agent 委派名单（`seedDelegatesBaseline`），`topUpSeedAgents` 补子 Agent 白名单与职责描述（`seedAgentBaselines`——两者都要补：白名单漏了没人勾得上，描述漏了主 Agent 不知道派给谁，web_search 就栽过）。代价：删过的种子 Agent 下次 Open 会回来（不想要应停用而非删除）。

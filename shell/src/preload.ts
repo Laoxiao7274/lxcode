@@ -39,7 +39,11 @@ contextBridge.exposeInMainWorld("__LX__", {
     login: (key: string): Promise<unknown> => ipcRenderer.invoke("sakura:login", key),
     logout: (): Promise<unknown> => ipcRenderer.invoke("sakura:logout"),
     refresh: (): Promise<unknown> => ipcRenderer.invoke("sakura:refresh"),
-    createTunnel: (): Promise<unknown> => ipcRenderer.invoke("sakura:createTunnel"),
+    // 节点选择：列表（含已缓存的实测延迟）+ 当前用户组等级；延迟结果另经
+    // sakura:nodeLatency 逐个异步推（列表不被探测阻塞）。nodeId 可选：
+    // 不传 = 自动选（负载最低），传了主进程会校验它在候选列表里且可用。
+    listNodes: (): Promise<unknown> => ipcRenderer.invoke("sakura:listNodes"),
+    createTunnel: (nodeId?: number | null): Promise<unknown> => ipcRenderer.invoke("sakura:createTunnel", nodeId),
     startTunnel: (id: number): Promise<unknown> => ipcRenderer.invoke("sakura:startTunnel", id),
     stopTunnel: (): Promise<unknown> => ipcRenderer.invoke("sakura:stopTunnel"),
     removeTunnel: (id: number): Promise<unknown> => ipcRenderer.invoke("sakura:removeTunnel", id),
@@ -47,6 +51,11 @@ contextBridge.exposeInMainWorld("__LX__", {
       const listener = (_e: unknown, s: unknown): void => cb(s);
       ipcRenderer.on("sakura:state", listener as never);
       return () => ipcRenderer.removeListener("sakura:state", listener as never);
+    },
+    onNodeLatency: (cb: (e: unknown) => void): (() => void) => {
+      const listener = (_e: unknown, ev: unknown): void => cb(ev);
+      ipcRenderer.on("sakura:nodeLatency", listener as never);
+      return () => ipcRenderer.removeListener("sakura:nodeLatency", listener as never);
     },
   },
   // Tailscale 模式：status 检测 + serve 发布开关（与樱花frp 同构）

@@ -1513,6 +1513,30 @@ html[data-theme="dark"] .att-remove:hover {
   background: var(--border);
   color: var(--fg);
 }
+/* 项目行 hover 出现的「移除」入口（与守则同款的出现时机）。
+   语义是**只解绑**（不删磁盘文件、不删会话），所以视觉用中性灰而不是红——
+   红色会让人以为这一下会毁掉磁盘上的代码；确认对话框里再交代清楚。 */
+.proj-remove-btn {
+  flex: none;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--fg-faint);
+  padding: 2px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background 100ms, color 100ms;
+}
+.proj-row:hover .proj-remove-btn,
+.proj-remove-btn:focus-visible {
+  display: inline-flex;
+}
+.proj-remove-btn:hover {
+  background: var(--border);
+  color: var(--danger);
+}
 /* ===== 项目守则编辑器 ===== */
 .proj-ins {
   width: 560px;
@@ -1652,6 +1676,41 @@ html[data-theme="dark"] .att-remove:hover {
 .proj-add-error {
   font-size: 11.5px;
   color: var(--danger);
+}
+/* 移除项目对话框：路径 + 三条事实清单（会发生什么 / 不会发生什么） */
+.proj-remove-path {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  word-break: break-all;
+}
+.proj-remove-facts {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--fg-muted);
+}
+.proj-remove-facts b {
+  color: var(--fg);
+  font-weight: 600;
+}
+/* 移除按钮（危险动作用描边而不是实心黑——与主按钮区分，且不喧宾夺主） */
+.proj-add-ok.danger {
+  border-color: var(--danger);
+  background: var(--danger);
+  color: #fff;
+}
+.proj-add-ok.danger:hover {
+  opacity: 0.9;
+}
+.proj-add-ok:disabled,
+.proj-add-cancel:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 .proj-add-foot {
   display: flex;

@@ -154,7 +154,10 @@ if (!app.requestSingleInstanceLock()) {
     for (const [channel, handler] of Object.entries(sakuraHandlers)) {
       ipcMain.handle(channel, handler as (e: Electron.IpcMainInvokeEvent, ...args: unknown[]) => unknown);
     }
-    initSakura((s) => win?.webContents.send("sakura:state", s));
+    initSakura(
+      (s) => win?.webContents.send("sakura:state", s),
+      (e) => win?.webContents.send("sakura:nodeLatency", e),
+    );
 
     // Tailscale 模式（远程访问的第二实现——与樱花frp 同构：主进程持状态，
     // 渲染层发意图收推送）

@@ -66,12 +66,28 @@ func isUnderSystemDir(p string) bool {
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, "..")
 }
 
-// shellSyntaxHint 给描述补充所选 shell 的语法差异提示——只对 cmd.exe 需要：
-// 模型默认按 bash 写命令（$VAR、$( )、单引号分组），在 cmd 下会原样失败。
+// shellSyntaxHint 给描述补充所选 shell 的语法差异提示。
+//
+// 两种提示，都来自真库取证（2026-12）：
+//   - cmd.exe：模型默认按 bash 写命令（$VAR、$( )、单引号分组），在 cmd 下会原样失败；
+//   - Git Bash（Windows 上的 sh.exe/bash.exe 就是 MSYS）：两处高频踩坑——
+//     ① MSYS 把 `/FI`、`/PID`、`/c` 这类**斜杠开头的参数**改写成
+//     `C:/Program Files/Git/FI`（真库 12 例 `ERROR: Invalid argument/option`）；
+//     ② `$_`、`$( )` 会被 sh 先展开，`powershell -Command "... $_.Foo ..."`
+//     实际传给 PS 的是上一条命令的路径（真库 37 例 `/usr/bin/bash.ProcessName`）。
+//
+// 写在工具描述里而不是等模型试错：它每次请求都读得到，比一次失败后猜要便宜得多。
 func shellSyntaxHint(shellName string) string {
-	if strings.Contains(filepath.Base(strings.ToLower(shellName)), "cmd") {
+	base := filepath.Base(strings.ToLower(shellName))
+	if strings.Contains(base, "cmd") {
 		return "注意：本机 shell 是 cmd.exe——不要用 bash 专属语法（$VAR、$( )、反引号、单引号分组），" +
 			"环境变量写 %VAR%，字符串用双引号，&& 与 || 可用。"
+	}
+	if runtime.GOOS == "windows" && (base == "sh.exe" || base == "bash.exe") {
+		return "注意：本机是 Git Bash（MSYS），不是 WSL：① 斜杠开头的 Windows 参数会被改写路径" +
+			"（`tasklist /FI` 变成 `C:/Program Files/Git/FI`）——用 `//FI` 或前缀 `MSYS_NO_PATHCONV=1`；" +
+			"② `$_` 与 `$( )` 会先被 bash 展开，PowerShell 脚本请用单引号包住 `-Command '...'` " +
+			"或写成 .ps1 文件再执行；③ 系统命令（ipconfig 等）输出是 GBK，已自动转码。"
 	}
 	return ""
 }
@@ -94,8 +110,32 @@ func shellSyntaxHint(shellName string) string {
 // ——它由 agent 的权限门在 Exec 之前调用，批准了才走到这里；跑起来之后不再弹
 // 确认（后台任务没有"当前轮"可挂，这是 auto 档的语义边界）。
 func bashDef(r *Registry) *Def {
+	return newBashDef(r, false)
+}
+
+// bashReadOnlyName 是只读 bash 的注册名（调研 Agent 的执行面）。
+const bashReadOnlyName = "bash_readonly"
+
+// bashReadOnlyDef：只读 bash——与 bash 共用执行核，但**命令级白名单校验**
+// （readonly.go）+ 不支持后台任务 + Mutates=false（strict 只读档下可用）。
+//
+// 为什么是独立工具而不是给 bash 加参数：
+//   - 工具级的能力边界必须**对模型可见**：白名单里写着 bash_readonly，提示词
+//     的工具清单就写着「只读」，模型不会拿它去试写操作再被拒；
+//   - strict 档的语义保持原样（「变更类工具直接拒绝」）——只读 bash 不是
+//     strict 的例外，它本来就不是变更类工具；
+//   - 用户给别的 Agent 勾只读 bash 时，权限面是白纸黑字的一行白名单。
+func bashReadOnlyDef(r *Registry) *Def {
+	return newBashDef(r, true)
+}
+
+func newBashDef(r *Registry, readOnly bool) *Def {
 	shellName, shellFlag := selectShell()
 	shellDisp := filepath.Base(shellName)
+	name := "bash"
+	description := "在本机执行 shell 命令（" + shellDisp + "），返回合并的 stdout/stderr 与退出码。" +
+		"适合查看状态、文件操作、构建测试、系统管理。多行脚本请用 stdin 传（别在 command 里堆引号）。" +
+		shellSyntaxHint(shellDisp)
 	schema := json.RawMessage(`{
 		"type": "object",
 		"properties": {
@@ -107,15 +147,36 @@ func bashDef(r *Registry) *Def {
 		},
 		"required": ["command"]
 	}`)
+	if readOnly {
+		name = bashReadOnlyName
+		description = "在本机执行**只读** shell 命令（" + shellDisp + "），返回合并的 stdout/stderr 与退出码。" +
+			"用于读数据：ls/cat/grep/find/wc、git log/diff/status、sqlite3 的 SELECT 查询等。" +
+			"写操作（rm/mv/重定向/git commit/git push/包管理/解释器脚本）会被拒绝并说明原因；" +
+			"管道与命令替换等无法静态判定的结构同样拒绝。改文件请交给代码 Agent。" +
+			shellSyntaxHint(shellDisp)
+		schema = json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"command": {"type": "string", "description": "只读命令（如 ls -la / git log --oneline -5 / sqlite3 db.sqlite \"select count(*) from t\"）"},
+			"cwd": {"type": "string", "description": "工作目录（绝对或相对会话工作目录，可选）"},
+			"stdin": {"type": "string", "description": "喂给命令的标准输入（可选，上限 64KB）"},
+			"timeout_sec": {"type": "integer", "description": "超时秒数，默认 60，上限 300"}
+		},
+		"required": ["command"]
+	}`)
+	}
 	return &Def{
-		Name: "bash",
-		Description: "在本机执行 shell 命令（" + shellDisp + "），返回合并的 stdout/stderr 与退出码。" +
-			"适合查看状态、文件操作、构建测试、系统管理。多行脚本请用 stdin 传（别在 command 里堆引号）。" +
-			shellSyntaxHint(shellDisp),
-		Parameters: schema,
-		Risk:       RiskHigh,
-		Mutates:    true, // 执行命令即变更外部世界（strict 只读模式拒绝）
+		Name:        name,
+		Description: description,
+		Parameters:  schema,
+		// 只读面：低危（自动执行）+ 不变更外部世界——strict 档下照常可用，
+		// 命令级校验（readonly.go）是它唯一的安全边界，不靠确认门。
+		Risk:    riskOf(readOnly),
+		Mutates: !readOnly,
 		Confirm: func(ctx context.Context, args json.RawMessage) string {
+			if readOnly {
+				return "" // 只读命令无需人工确认（校验在 Exec 里做）
+			}
 			var a struct {
 				Command         string `json:"command"`
 				Cwd             string `json:"cwd"`
@@ -152,6 +213,22 @@ func bashDef(r *Registry) *Def {
 			if a.Command == "" {
 				return "", fmt.Errorf("command 不能为空")
 			}
+			// 只读面：命令级白名单校验（readonly.go），违规即拒绝并给出出路。
+			// 这是唯一的安全边界——只读工具没有确认门可依赖。
+			if readOnly {
+				if violation := readOnlyViolation(a.Command); violation != "" {
+					return "", fmt.Errorf("%s。%s", violation, readOnlyRejectHint)
+				}
+				// stdin 是「命令之外的第二条输入通道」：sqlite3 不带 SQL 参数时会从
+				// stdin 读语句，`sqlite3 db` + stdin 里的 `delete from t` 就绕过了参数
+				// 校验。只读面只接受**命令里写明的**查询——stdin 一律拒绝。
+				if a.Stdin != "" {
+					return "", fmt.Errorf("只读模式不接受 stdin（命令之外的第二条输入通道无法静态校验；SQL 请直接写在 command 参数里）。%s", readOnlyRejectHint)
+				}
+				if a.RunInBackground {
+					return "", fmt.Errorf("只读模式不支持后台任务（后台命令的生命周期与输出无法静态判定）。%s", readOnlyRejectHint)
+				}
+			}
 			// 系统层硬校验：cwd 必须解析为存在的目录（相对路径按会话工作
 			// 目录解析），别让模型靠 sh 报错猜
 			if a.Cwd != "" {
@@ -185,43 +262,61 @@ func bashDef(r *Registry) *Def {
 			if a.RunInBackground {
 				return startBackground(r, ctx, shellName, shellFlag, a.Command, a.Cwd, a.Stdin, a.TimeoutSec)
 			}
-			timeout := bashDefaultTimeout
-			if a.TimeoutSec > 0 {
-				timeout = time.Duration(min(a.TimeoutSec, int(bashMaxTimeout/time.Second))) * time.Second
-			}
-			cctx, cancel := context.WithTimeout(ctx, timeout)
-			defer cancel()
-			cmd := exec.CommandContext(cctx, shellName, shellFlag, a.Command)
-			// 无窗口：GUI 形态的后端（桌面壳 sidecar / SCM 服务）没有控制台，
-			// shell 的控制台子命令会新建可见控制台 → 用户桌面弹黑窗（CREATE_NO_WINDOW
-			// 让子树继承不可见控制台，见 noswindow_windows.go）
-			if attr := noWindowAttr(); attr != nil {
-				cmd.SysProcAttr = attr
-			}
-			// 取消 = 杀**整棵进程树**：默认的 Cancel 只 Process.Kill 直接子进程，
-			// 而 sh -c 拉起的孙进程会活下来（见 proctree_*.go 的实测记录）
-			configureProcTree(cmd)
-			cmd.Cancel = func() error { return killProcessTree(cmd.Process) }
-			cmd.WaitDelay = procKillGrace
-			if a.Cwd != "" {
-				cmd.Dir = a.Cwd
-			}
-			if a.Stdin != "" {
-				cmd.Stdin = strings.NewReader(a.Stdin)
-			}
-			out, err := cmd.CombinedOutput()
-			result := string(out)
-			if len(result) > bashMaxOutput {
-				result = result[:bashMaxOutput] + "\n…（输出超 32KB 已截断）"
-			}
-			// 非零退出码与超时是"结果"不是执行错误——回填文本让模型自行判断
-			note := execNote(cctx, err, timeout)
-			if result == "" && note == "" {
-				return "（无输出，退出码 0）", nil
-			}
-			return result + note, nil
+			return runForegroundBash(ctx, shellName, shellFlag, a.Command, a.Cwd, a.Stdin, a.TimeoutSec)
 		},
 	}
+}
+
+// riskOf 返回工具的风险等级（只读面低危、完整 bash 高危）。
+func riskOf(readOnly bool) RiskLevel {
+	if readOnly {
+		return RiskLow
+	}
+	return RiskHigh
+}
+
+// runForegroundBash 是前台执行的共用核（超时、进程树取消、编码归一、输出截断）。
+func runForegroundBash(ctx context.Context, shellName, shellFlag, command, cwd, stdin string, timeoutSec int) (string, error) {
+	timeout := bashDefaultTimeout
+	if timeoutSec > 0 {
+		timeout = time.Duration(min(timeoutSec, int(bashMaxTimeout/time.Second))) * time.Second
+	}
+	cctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	cmd := exec.CommandContext(cctx, shellName, shellFlag, command)
+	// 无窗口：GUI 形态的后端（桌面壳 sidecar / SCM 服务）没有控制台，
+	// shell 的控制台子命令会新建可见控制台 → 用户桌面弹黑窗（CREATE_NO_WINDOW
+	// 让子树继承不可见控制台，见 noswindow_windows.go）
+	if attr := noWindowAttr(); attr != nil {
+		cmd.SysProcAttr = attr
+	}
+	// 取消 = 杀**整棵进程树**：默认的 Cancel 只 Process.Kill 直接子进程，
+	// 而 sh -c 拉起的孙进程会活下来（见 proctree_*.go 的实测记录）
+	configureProcTree(cmd)
+	cmd.Cancel = func() error { return killProcessTree(cmd.Process) }
+	cmd.WaitDelay = procKillGrace
+	if cwd != "" {
+		cmd.Dir = cwd
+	}
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
+	}
+	out, err := cmd.CombinedOutput()
+	// 输出编码归一（见 encoding.go）：Windows 控制台程序按代码页输出
+	// （中文系统 GBK），直接 string() 会得到一串非法 UTF-8 → 模型读到
+	// 乱码只能盲目重试。合法 UTF-8 原样返回，零回归面。
+	result := normalizeConsoleOutput(out)
+	if len(result) > bashMaxOutput {
+		// 按 rune 边界截断：直接切字节会把多字节字符劈成两半，产出的
+		// 又是非法 UTF-8（与刚修好的编码问题同一后果）
+		result = truncateUTF8(result, bashMaxOutput) + "\n…（输出超 32KB 已截断）"
+	}
+	// 非零退出码与超时是"结果"不是执行错误——回填文本让模型自行判断
+	note := execNote(cctx, err, timeout)
+	if result == "" && note == "" {
+		return "（无输出，退出码 0）", nil
+	}
+	return result + note, nil
 }
 
 // execNote 把执行错误翻译成回填模型的说明文本（bash 与自定义工具共用，

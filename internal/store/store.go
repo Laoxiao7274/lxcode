@@ -70,6 +70,11 @@ type SessionMeta = sessiondata.SessionMeta
 type Store struct {
 	db  *sql.DB
 	dir string // 会话数据库所在目录；worktree 工作目录放在其独立子目录
+	// treeMigrated 报告本库是否已跑过会话树迁移（parent_seq 链式回填）。
+	// 读路径（pathRows）据它决定「按 leaf 回溯」还是「回落旧的整表 surface」——
+	// 未迁移的库必须与今天逐字节一致（老库打开不炸）。**不靠数据指纹猜**：
+	// 「所有 parent_seq 都是 0」既可能是没迁移，也可能是一条刚建的会话。
+	treeMigrated bool
 	// mu 只保护 Create 的 id 生成竞态；数据库自身并发由
 	// 连接池 + WAL + busy_timeout 保证。
 	mu sync.Mutex
@@ -150,6 +155,25 @@ func Open(dir string) (*Store, error) {
 		// default 角色（role.set），一个会话切模型所有会话跟着变。空串 = 没选过
 		//（老会话/新会话）→ 恢复时回落 Agent 绑定与 default 角色。
 		`ALTER TABLE sessions ADD COLUMN model TEXT NOT NULL DEFAULT ''`,
+		// 会话树（docs/session-tree.md §A.1，批次 1）：
+		//   leaf_seq = 当前叶指针。**0 = 合法状态「空路径」**（用户回到了第一条消息
+		//     之前 / 新会话还没发消息），**不是「未知」**——把两者混起来会让「撤回第一条
+		//     消息」在下次 Load 时整个失效（历史全回来）。未知态由 PRAGMA user_version
+		//     的迁移标记区分（见 store.Open 里的 treeSchemaVersion）。
+		//   leaf_len = 当前路径的节点数（侧栏「消息数」的新口径）。为什么落列：分支之后
+		//     「全表数 − 影子数」不再等于路径长度（废弃分支的行也在表里）。增量维护点
+		//     三处：AppendMsg +1、AppendCheckpoint 重算（形状变了且叶可能不在尾部，
+		//     增量硬算会漂移）、SetLeaf 重算。
+		`ALTER TABLE sessions ADD COLUMN leaf_seq INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE sessions ADD COLUMN leaf_len INTEGER NOT NULL DEFAULT 0`,
+		// 子会话的快照归属（docs/session-tree.md §C.2.1，批次 3）：
+		//   child_owner_id  = 回滚的发起方（沿 parent_id 上溯到顶的顶层会话 id）；
+		//   child_owner_seq = 上一次派发它时，**父会话那条 dispatch 消息的 seq**
+		//                     （每次派发重写——续跑按本次派发算，见 §C.5.1 边界①）。
+		// 空串 / 0 = 老会话或顶层会话（调用方回落「自己就是 owner」）。
+		// 注意这只是**默认值/兜底**：写入点的权威 owner 由 ctx 注入（§C.2.1）。
+		`ALTER TABLE sessions ADD COLUMN child_owner_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE sessions ADD COLUMN child_owner_seq INTEGER NOT NULL DEFAULT 0`,
 	} {
 		if _, err := db.Exec(col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			db.Close()
@@ -211,6 +235,12 @@ func Open(dir string) (*Store, error) {
 		// 图/文件）与 tool 消息（share_file 共享的文件）都写。老行默认 '' = 无附件
 		//（老历史的附件卡由前端从消息文本的「[附件]」行与 images 引用回落解析）。
 		`ALTER TABLE messages ADD COLUMN attachments TEXT NOT NULL DEFAULT ''`,
+		// 会话树（docs/session-tree.md §A.1①，批次 1）：消息级父指针。
+		// 命名为 parent_seq（不是 parent_id）：它与主键 (session_id, seq) 的 seq 同域，
+		// 而 sessions.parent_id 是**会话级**父子（子 Agent = 独立会话）——两个 parent
+		// 必须一眼分得开。0 = root（首条消息 / 被压缩到开头的检查点）。
+		// 存量回填按 surface 顺序（含检查点接入树），见 tree.go 的 migrateSessionTree。
+		`ALTER TABLE messages ADD COLUMN parent_seq INTEGER NOT NULL DEFAULT 0`,
 	} {
 		if _, err := db.Exec(col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			db.Close()
@@ -235,7 +265,56 @@ func Open(dir string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("建统计覆盖索引失败: %w", err)
 	}
+	// 会话树的父指针索引（docs/session-tree.md §A.1，批次 1）：chat.tree 按父查子、
+	// 以及将来「某节点有几个分支」都要它。老库打开时一次性建（一次全表扫）。
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_parent ON messages(session_id, parent_seq)`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("建父指针索引失败: %w", err)
+	}
+	// 文件快照（docs/session-tree.md §A.1④ + §C，批次 3）：一行 = 一次写操作**之前**的
+	// 文件状态（+ 之后的期望状态，冲突检测用）。blob 落磁盘（<sessions>/fileblobs/<sha256>，
+	// 与 attachments 同一先例），表里只存 hash 引用。
+	//
+	// 为什么 owner_* 两列而不是只有 session_id/seq（§C.2.1）：子会话的 seq 是它自己的
+	// 序号空间，与父会话不可比；回滚切段只能用**父会话的** seq。所以：
+	//   session_id/seq       = 谁写的、在它自己的哪条消息下（追溯/对账用）；
+	//   owner_session_id/seq = 这笔账记在谁的头上、哪一轮之后（**回滚切段用**）。
+	// 合并成一个字段的话，「子会话内部定位」与「父会话回滚定位」必有一个做不到。
+	//
+	// before_hash 为空 = 写之前文件不存在（新建）→ 回滚 = 删掉这个文件；
+	// after_hash  为空 = 写之后文件不存在（删除类写，当前工具没有，留给将来）。
+	// skipped=1 = 没抓内容（超大 / 二进制）：只记「这里发生过写」，回滚时如实报 skipped。
+	if _, err := db.Exec(`
+CREATE TABLE IF NOT EXISTS file_snapshots (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id       TEXT    NOT NULL,
+  seq              INTEGER NOT NULL,
+  owner_session_id TEXT    NOT NULL DEFAULT '',
+  owner_seq        INTEGER NOT NULL DEFAULT 0,
+  tool_call_id     TEXT    NOT NULL DEFAULT '',
+  path             TEXT    NOT NULL,
+  before_hash      TEXT    NOT NULL DEFAULT '',
+  after_hash       TEXT    NOT NULL DEFAULT '',
+  size             INTEGER NOT NULL DEFAULT 0,
+  skipped          INTEGER NOT NULL DEFAULT 0,
+  skip_reason      TEXT    NOT NULL DEFAULT '',
+  created_at       TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_snapshots_path ON file_snapshots(session_id, path, seq);
+CREATE INDEX IF NOT EXISTS idx_snapshots_blob ON file_snapshots(before_hash);
+CREATE INDEX IF NOT EXISTS idx_snapshots_owner ON file_snapshots(owner_session_id, owner_seq);
+CREATE INDEX IF NOT EXISTS idx_snapshots_owner_path ON file_snapshots(owner_session_id, path, owner_seq);
+`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("建文件快照表失败: %w", err)
+	}
 	st := &Store{db: db, dir: absDir}
+	// 会话树的存量迁移（parent_seq 链式回填 + leaf_seq/leaf_len 定值）。
+	// 幂等靠 PRAGMA user_version；**失败则整体回滚并让 Open 报错**（不留半迁移状态）。
+	if err := st.migrateSessionTree(); err != nil {
+		db.Close()
+		return nil, err
+	}
 	// Agent 注册表与拓展目录（M1——四张表 + 首次种子，幂等）
 	if err := st.initAgents(); err != nil {
 		db.Close()

@@ -84,7 +84,7 @@ func goldenSamples() map[string]goldenSample {
 		"chatDoneFull": {"AgentEvent", DoneParams{
 			SessionID: "s1",
 			Message: llm.Message{
-				Role: "assistant", Content: "改好了，构建通过。", Seq: 7,
+				Role: "assistant", Content: "改好了，构建通过。", Seq: 7, ParentSeq: 6,
 				FirstTokenMs: 420, DurationMs: 5230, Model: "deepseek-v3", UsageTokens: 512,
 			},
 			UsageTokens:  512,
@@ -165,6 +165,8 @@ func goldenSamples() map[string]goldenSample {
 			Checkpoints: []int{0},
 			Model:       "deepseek-v3",
 			Approval:    ApprovalConfirm,
+			// 批次 2：回放对应的叶（新客户端对齐树面板用）。
+			LeafSeq: 4,
 		}},
 		// 最小历史：context/stats/pending/todos/checkpoints/model/approval 全部
 		// **整键缺席**（未知 = 缺席，不编数）；busy 是显式 false（无 omitempty）。
@@ -213,12 +215,51 @@ func goldenSamples() map[string]goldenSample {
 		"chatModelParams":    {"", ChatModelParams{SessionID: "s1", ModelID: "deepseek-v3"}},
 		"chatModelResult":    {"", ChatModelResult{SessionID: "s1", ModelID: "deepseek-v3"}},
 		"modelChangedParams": {"", ModelChangedParams{SessionID: "s1", ModelID: "deepseek-v3"}},
-		"chatRewindResult":   {"RewindOutcome", ChatRewindResult{Removed: 0}}, // 幂等空操作：显式 0，不是缺席
+		// chat.rewind 的结果：removed 显式 0（幂等空操作）+ 批次 2 的三个新键
+		//（leaf_seq / branched / files）。files 的子结构在下面的样本里逐个覆盖。
+		"chatRewindResult": {"RewindOutcome", ChatRewindResult{
+			Removed: 3, LeafSeq: 12, Branched: true,
+			Files: &FileRestoreResult{
+				Restored: []FileRestoreItem{{Path: "internal/store/tree.go", FromSeq: 44, FromOwnerSeq: 42,
+					SessionID: "s1", Bytes: 2048, Recreated: true}},
+				Deleted:       []FileDeleteItem{{Path: "temp/scratch.go", SessionID: "child-1"}},
+				Conflicts:     []FileConflict{{Path: "docs/a.md", Expected: "aa", Actual: "bb", SessionID: "child-1", Reason: "磁盘内容与快照期望不符（可能被手动修改或 bash 改过）"}},
+				Skipped:       []FileSkip{{Path: "dist/app.exe", Reason: "二进制文件未快照"}},
+				ChildSessions: []string{"child-1"},
+			},
+		}},
+		// 幂等空操作：removed 显式 0（不是缺席）——老客户端的兼容钉子。
+		"chatRewindResultIdempotent": {"RewindOutcome", ChatRewindResult{Removed: 0}},
+
+		// ---- chat 域：切叶 / 树 / leafChanged（批次 2）----
+		//
+		// setLeaf 的落点与 rewind 差一格（seq 自己留在路径上），所以参数/结果/事件
+		// 三份形状都要有样本：字段改名不编译报错、只静默丢字段。
+		"chatSetLeafParams": {"", ChatSetLeafParams{SessionID: "s1", Seq: 12, Files: true}},
+		"chatSetLeafResult": {"", ChatSetLeafResult{SessionID: "s1", LeafSeq: 12, Removed: 2,
+			Files: &FileRestoreResult{Restored: []FileRestoreItem{{Path: "a.go", FromSeq: 13, Bytes: 10}}}}},
+		"chatTreeParams": {"", ChatTreeParams{SessionID: "s1", Include: "compact", MaxNodes: 2000}},
+		// 树结果：一个节点覆盖全部 wire 键（kind/turn/summary/children/on_path/orphan
+		// 与批次 3 的 files/child_files/external/shadowed）。
+		"chatTreeResult": {"", ChatTreeResult{
+			LeafSeq: 12, Total: 3, Truncated: true,
+			Nodes: []TreeNode{
+				{Seq: 1, ParentSeq: 0, Kind: "user", Turn: 1, Summary: "帮我看看这个报错", Children: 1, OnPath: true},
+				{Seq: 2, ParentSeq: 1, Kind: "assistant", Summary: "好的", Children: 1, OnPath: false, Orphan: true,
+					Files: 2, ChildFiles: 1, External: 1},
+				{Seq: 3, ParentSeq: 2, Kind: "checkpoint", Summary: "已压缩", Children: 0, OnPath: true, Shadowed: 4},
+			},
+		}},
+		"chatLeafChanged": {"", ChatLeafChangedParams{SessionID: "s1", LeafSeq: 12, PrevLeafSeq: 9, Removed: 3,
+			Context: &ContextUsage{Used: 1024, Window: 65536},
+			Files:   &FileRestoreResult{ChildSessions: []string{"child-1"}}}},
 
 		// ---- 会话管理域 ----
 
 		"sessionMeta":          {"", SessionMeta{ID: "s1", Title: "修登录 bug", UpdatedAt: "2026-10-13T10:30:00+08:00", Messages: 24, Archived: true, Workspace: "lxcode", Running: true}},
 		"sessionArchiveResult": {"", SessionArchiveResult{Archived: true}},
+		// project.remove 的结果：只解绑不删（sessions = 保留在库里的会话数）
+		"projectRemoveResult": {"ProjectRemoveResult", ProjectRemoveResult{Removed: true, Sessions: 3}},
 		"projectInstructionsResult": {"ProjectInstructions", ProjectInstructionsResult{
 			Path: `C:\Projects\lxcode\AGENTS.md`, Content: "# 项目守则……", Exists: true, Note: "（示例）上次读取时文件过大被截断",
 		}},

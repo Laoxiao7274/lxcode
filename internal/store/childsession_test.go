@@ -15,7 +15,7 @@ func TestCreateChildAndListFilters(t *testing.T) {
 	if _, err := s.AppendMsg(parent, llm.Message{Role: "user", Content: "父会话第一句"}); err != nil {
 		t.Fatal(err)
 	}
-	child, err := s.CreateChild(parent, "coder", "call-1")
+	child, err := s.CreateChild(parent, "coder", "call-1", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,8 +77,8 @@ func TestCreateChildAndListFilters(t *testing.T) {
 func TestArchiveCascadesToChildren(t *testing.T) {
 	s := openTestStore(t)
 	parent, _ := s.Create()
-	child1, _ := s.CreateChild(parent, "coder", "call-1")
-	child2, _ := s.CreateChild(parent, "scout", "call-2")
+	child1, _ := s.CreateChild(parent, "coder", "call-1", "", 0)
+	child2, _ := s.CreateChild(parent, "scout", "call-2", "", 0)
 	other, _ := s.Create()
 
 	if err := s.Archive(parent, true); err != nil {

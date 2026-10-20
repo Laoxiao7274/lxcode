@@ -3,7 +3,7 @@
 // 与 index.ts 的 reactTo 分工：这里只回答「这个事件在前端长什么样」，
 // 「要不要重拉后端事实源」留在 reactTo。混在一起就没法单独测映射——
 // 而映射恰恰是最容易写错、也最值得钉住的一层（字段名、默认值、归属）。
-import type { AgentEvent, AttachmentRef, ConfirmRequest, ContextUsage, SessionStats, TodoItem } from "../../shared/types";
+import type { AgentEvent, AttachmentRef, ConfirmRequest, ContextUsage, FileRestoreResult, SessionStats, TodoItem } from "../../shared/types";
 import { jobFromWire } from "../../shared/jobs";
 import { normalizeApproval } from "../../shared/approval";
 
@@ -102,14 +102,28 @@ export function mapEvent(method: string, params: unknown): AgentEvent | null {
       return { type: "jobSettled", sessionId: owner, job };
     }
     case "chat.rewound":
-      // 会话回退：seq 这条用户消息及其之后的全部历史被后端删掉了。这个事件既是
-      // 「别的客户端撤回了」的同步，也是本地乐观截断的权威确认——归约器按同一份
-      // 判定处理，重复到达是幂等 no-op（见 reduce.ts 的 reduceRewound）。
-      // context：后端重算后的占用（撤回删掉一截历史，旧数字一定是错的）。未知时
-      // 整键缺席——那时归约器回落中性态「—」，不编一个数。
+      // 会话回退：seq 这条用户消息及其之后的全部历史**离开当前路径**（一条没删——
+      // 旧分支保留在树里，随时能切回来）。这个事件既是「别的客户端回退了」的同步，
+      // 也是本地乐观截断的权威确认——归约器按同一份判定处理，重复到达是幂等 no-op
+      // （见 reduce.ts 的 reduceRewound）。
+      // context：后端重算后的占用（旧路径的测量一定是错的）。未知时整键缺席——
+      // 那时归约器回落中性态「—」，不编一个数。
       return { type: "rewound", sessionId, seq: Number(p.seq ?? 0), removed: Number(p.removed ?? 0), context: (p.context as ContextUsage | undefined) ?? undefined,
-        // 重算后的整段统计：撤回删了行，统计会变小——UI 拿它直接刷新统计胶囊
+        // 重算后的整段统计（口径是折叠整段日志，切分支不改数字——拍板项 3）
         stats: (p.stats as SessionStats | undefined) ?? undefined };
+    case "chat.leafChanged":
+      // 叶指针变更（rewind 与 setLeaf 都发）：leaf 是**会话的共享状态**，可能是别的
+      // 客户端动的。前端不在归约器里猜「该怎么变」——ws 层收到就重拉 history + tree
+      // （见 index.ts 的事件副作用），这里只把载荷映射出来供提示与诊断用。
+      return {
+        type: "leafChanged", sessionId,
+        leafSeq: Number(p.leaf_seq ?? 0),
+        // prev_leaf_seq 缺席（0）时不写这个键：0 是合法的「空路径」，编不出来源
+        ...(typeof p.prev_leaf_seq === "number" && p.prev_leaf_seq > 0 ? { prevLeafSeq: p.prev_leaf_seq } : {}),
+        removed: Number(p.removed ?? 0),
+        context: (p.context as ContextUsage | undefined) ?? undefined,
+        files: (p.files as FileRestoreResult | undefined) ?? undefined,
+      };
     case "chat.confirmRequest":
       return { type: "confirmRequest", sessionId, request: p as unknown as ConfirmRequest };
     case "todo.updated":

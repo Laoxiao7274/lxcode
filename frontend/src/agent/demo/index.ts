@@ -1,7 +1,7 @@
 // 演示数据源（M3 叙事）：主 Agent 只调度——思考选人 → agent_dispatch →
 // dispatch 卡（子 Agent 全套执行：思考/读码/改码/确认门/跑测试）→ 验收
 // 汇总。覆盖 UI 全部状态。事件形状与后端协议 1:1——接线换 WSAgent 即可。
-import type { AgentEvent, AgentSource, ApprovalMode, ArchiveOutcome, CompactOutcome, ConfirmRequest, ContextUsage, GitOverview, HistoryMessage, HistorySnapshot, JobAdminSource, JobInfo, JobLogResult, ProjectInstructions, ProjectMeta, RewindOutcome, SendOptions, SessionMeta, SessionStats, TodoItem } from "../../shared/types";
+import type { AgentEvent, AgentSource, ApprovalMode, ArchiveOutcome, ChatTreeResult, CompactOutcome, ConfirmRequest, ContextUsage, GitOverview, HistoryMessage, HistorySnapshot, JobAdminSource, JobInfo, JobLogResult, ProjectInstructions, ProjectMeta, RewindOutcome, SendOptions, SessionMeta, SessionStats, SetLeafOutcome, TodoItem, TreeNode } from "../../shared/types";
 import { JOB_NOTICE_PREFIX, sortJobs, upsertJob } from "../../shared/jobs";
 import { normalizeApproval } from "../../shared/approval";
 import { MAIN_REASONING, SUB_REASONING, SUB_RESULT, MAIN_ANSWER, TODO_INITIAL, TODO_LATER, DISPATCH_TODOS, DISPATCH_TODOS_RUNNING, DISPATCH_TODOS_FINAL, FILES_CHANGED, SESSIONS } from "./data";
@@ -99,6 +99,9 @@ export class DemoAgent implements AgentSource, JobAdminSource {
   /** 演示态的 seq 分配器（每会话独立自增）：撤回锚点必须由**产生消息的那一方**
    *  给号，前端不自己编号——真后端也一样（seq 是库里的序号，客户端编不出）。 */
   private seqBySession = new Map<string, number>();
+  /** 演示态每会话的叶指针（真后端 = sessions.leaf_seq；0 = 空路径）。
+   *  演示态没有分支存储，它只服务树面板的「你在这里」高亮与「回到最新」的落点。 */
+  private leaf_ = new Map<string, number>();
   /** 演示的后台任务（内存态：与真实后端同一形状的 JobInfo 快照）。 */
   private jobs_: JobInfo[] = [];
   /** 每会话当前的后台任务 id（runTurn 起、finishDispatch 收尾——中间隔着
@@ -154,6 +157,8 @@ export class DemoAgent implements AgentSource, JobAdminSource {
   private nextSeq(sessionId: string): number {
     const n = (this.seqBySession.get(sessionId) ?? 0) + 1;
     this.seqBySession.set(sessionId, n);
+    // 演示态的历史是一条直线：叶跟着最新的 seq 走（真后端由 store 维护 leaf_seq）。
+    this.leaf_.set(sessionId, n);
     return n;
   }
 
@@ -240,10 +245,98 @@ export class DemoAgent implements AgentSource, JobAdminSource {
    *  链路**完全同一条**归约路径（发 rewound → 归约器 planRewind 截断）。
    *
    *  演示不落库，所以「后端对齐」退化成"内存里本来就只有这一份时间线"，没有
-   *  失败路径可对齐（真后端那份对齐见 agent/ws/index.ts 的 rewind）。 */
-  async rewind(sessionId: string, seq: number): Promise<RewindOutcome> {
+   *  失败路径可对齐（真后端那份对齐见 agent/ws/index.ts 的 rewind）。
+   *  `files` 参数在演示态无副作用（没有磁盘可还原）——**如实回空结果**而不是
+   *  假装还原了几个文件。 */
+  async rewind(sessionId: string, seq: number, files?: boolean): Promise<RewindOutcome> {
     this.emit({ type: "rewound", sessionId, seq, removed: 0 });
-    return { removed: 0 };
+    this.leaf_.set(sessionId, Math.max(0, seq - 1));
+    this.emit({ type: "leafChanged", sessionId, leafSeq: this.leaf_.get(sessionId) ?? 0, removed: 0 });
+    return { removed: 0, leaf_seq: this.leaf_.get(sessionId) ?? 0, branched: true, ...(files ? { files: {} } : {}) };
+  }
+
+  /** 切叶（演示态）：移动 leaf 指针 + 广播同形状的 leafChanged。
+   *
+   *  演示态没有分支存储（seq 是每会话自增的单调计数器，历史只有一条线），所以
+   *  「切到某节点」退化成"把 leaf 指到那里"——树面板拿到的是一条直线（见 tree）。
+   *  这是**诚实的降级**：演示模式本来就演不出分支，而不是把按钮做成点了没反应。 */
+  async setLeaf(sessionId: string, seq: number, files?: boolean): Promise<SetLeafOutcome> {
+    const prev = this.leaf_.get(sessionId) ?? 0;
+    this.leaf_.set(sessionId, seq);
+    this.emit({
+      type: "leafChanged", sessionId, leafSeq: seq,
+      ...(prev > 0 ? { prevLeafSeq: prev } : {}),
+      removed: 0,
+      ...(files ? { files: {} } : {}),
+    });
+    return { leafSeq: seq, removed: 0, ...(files ? { files: {} } : {}) };
+  }
+
+  /** 读会话树（演示态）：**按演示事实造**——每轮一条 user 节点（seq = 轮次号，与
+   *  `chat.userMessage` 给的 seq 同一套编号），另加一条废弃分支（第 2 轮之后分叉）。
+   *
+   *  为什么按轮次号而不是另立一套 id：演示态的 seq 分配器每轮 +1（见 nextSeq），
+   *  所以「第 N 轮 = seq N」；树节点用同一套号，`setLeaf`/`rewind` 的 seq 才与树上的
+   *  节点对得上（两套号会让"点第 3 轮切过去"落到别的轮）。
+   *
+   *  为什么造一条废弃分支：分支/灰化/「你在这里」/「回到最新」是本面板的主要信息，
+   *  单链直线演示不出它们（AGENTS.md §2：演示要能全量跑 UI）。分支节点用
+   *  `turns + 1` 当 seq（在演示态里不与任何真实消息冲突——它只活在树里）。
+   *
+   *  文件/外部操作徽标也按演示事实给：第 3 轮「改了 2 个文件」、分支节点「1 处外部
+   *  操作」——徽标与过滤档在演示模式里才有内容可看。 */
+  async tree(sessionId: string, opts?: { maxNodes?: number; include?: "compact" | "full" }): Promise<ChatTreeResult> {
+    const turns = this.seqBySession.get(sessionId) ?? 0;
+    const leaf = this.leaf_.get(sessionId) ?? turns;
+    const branchSeq = turns + 1;
+    const raw: TreeNode[] = [];
+    for (let t = 1; t <= turns; t++) {
+      raw.push({
+        seq: t,
+        parentSeq: t - 1,
+        kind: "user",
+        turn: t,
+        summary: `演示消息 ${t}`,
+        children: 0, // 下面统一按 parent 计数
+        onPath: false, // 下面按 leaf 回溯统一算
+        // 第 3 轮演「改了 2 个文件（含 1 个子 Agent）」——徽标与「只看有改动」有内容
+        ...(t === 3 ? { files: 2, childFiles: 1 } : {}),
+        // 第 4 轮演「1 处无法还原的 bash 写」——⚠️ 徽标与确认文案的警告段有内容
+        ...(t === 4 ? { external: 1 } : {}),
+      });
+    }
+    // 废弃分支：从第 2 轮分叉（轮数够多时才造，否则一个分支点都没有意义）
+    if (turns >= 3) {
+      raw.push({
+        seq: branchSeq,
+        parentSeq: 2,
+        kind: "user",
+        turn: 3,
+        summary: "（废弃分支）换个方向试试",
+        children: 0,
+        onPath: false,
+        files: 1,
+      });
+    }
+    const bySeq = new Map(raw.map((n) => [n.seq, n]));
+    // children：直接子节点数（>1 = 分支点）
+    for (const n of raw) {
+      if (n.parentSeq > 0) {
+        const p = bySeq.get(n.parentSeq);
+        if (p) p.children += 1;
+      }
+    }
+    // on_path：沿 parent 链从 leaf 回溯（与真后端同一套判据）
+    for (let cur = leaf, guard = 0; cur > 0 && guard <= raw.length + 1; guard++) {
+      const n = bySeq.get(cur);
+      if (!n) break;
+      n.onPath = true;
+      cur = n.parentSeq;
+    }
+    const max = opts?.maxNodes && opts.maxNodes > 0 ? opts.maxNodes : 2000;
+    const total = raw.length;
+    const nodes = raw.length > max ? raw.slice(raw.length - max) : raw;
+    return { leafSeq: leaf, nodes, total, ...(nodes.length < total ? { truncated: true } : {}) };
   }
 
   async newSession(workspace?: string): Promise<string> {
@@ -408,6 +501,12 @@ export class DemoAgent implements AgentSource, JobAdminSource {
       { id: "proj-" + Math.random().toString(36).slice(2, 8), name, path },
       ...this.projects_,
     ];
+    this.emit({ type: "projectsChanged" });
+  }
+
+  /** 移除项目（演示模式：只从列表拿掉——不删会话、不碰磁盘，与真后端同语义）。 */
+  async removeProject(id: string): Promise<void> {
+    this.projects_ = this.projects_.filter((p) => p.id !== id);
     this.emit({ type: "projectsChanged" });
   }
 
