@@ -1,9 +1,12 @@
 // 派发卡跨「历史重载」保留子会话 id 的**纯函数**（不 import Compose / Android）。
 //
 // 为什么需要它：历史里只有消息（assistant 的 agent_dispatch 调用 + tool 结果），
-// **没有 dispatchStart 事件**。子会话 id 的两个来源：
+// **没有 dispatchStart 事件**。子会话 id 的来源：
 //   ① tool 结果末尾的 `[子会话 id: …]` 提示行——派发**结束后**才有；
-//   ② 实时 chat.dispatchStart 的 session_id——重开会话/重连时收不到。
+//   ② 实时 chat.dispatchStart 的 session_id——重开会话/重连时收不到；
+//   ③ 窗口外的派发结果正文剥出的 id（parseHistoryBlocks 的 orphanChildIds 喂给
+//      mergeKnownChildIds 的 previous）——派发卡被 tail 窗口截掉时，①的配对目标
+//      不在窗口里，这条是回放占位卡补 id 的最后一道兜底（不编造：提示行缺失不动）。
 // 于是"派发正在跑的时候打开这个会话"会出现一张既没有结果、也没有子会话 id 的卡：
 // 用户在主时间线上看不到任何能点进子会话的入口（问题 2 的另一半）。
 //
@@ -33,4 +36,14 @@ fun mergeKnownChildIds(
             b
         }
     }
+}
+
+/** 续跑提示行的解析（对齐桌面端 history.ts 的 SUB_SESSION_HINT）。 */
+private val SUB_SESSION_HINT = Regex("\\[子会话 id:\\s*([^\\]\\s]+)[^\\]]*\\]")
+
+/** 拆分 dispatch 结果：结论正文 + 子会话 id（没有提示行时 id 为空串）。 */
+fun splitDispatchResult(raw: String): Pair<String, String> {
+    val m = SUB_SESSION_HINT.find(raw) ?: return raw.trimEnd() to ""
+    val body = (raw.substring(0, m.range.first) + raw.substring(m.range.last + 1)).trimEnd()
+    return body to m.groupValues[1]
 }

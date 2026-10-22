@@ -107,4 +107,31 @@ class DispatchStateTest {
         // 改这句话会让回放卡与实时事件断链（占位态认不出来），单测在这里拦一下
         assertTrue(DISPATCH_INTERRUPTED.startsWith("这次派发在结束前中断了"))
     }
+
+    // ===== 窗口外派发结果剥出的子会话 id（第三来源——孤儿结果提示行）=====
+
+    @Test
+    fun splitDispatchResultExtractsChildSessionId() {
+        // 后端在 dispatch 结果末尾追加的续跑提示行（internal/agent/tools.go 的格式）
+        val (body, sid) = splitDispatchResult("结论正文\n\n[子会话 id: sess-abc123 —— 只在这次没做完时填进 session 参数续跑]")
+        assertEquals("结论正文", body)
+        assertEquals("sess-abc123", sid)
+    }
+
+    @Test
+    fun splitDispatchResultWithoutHintKeepsBody() {
+        val (body, sid) = splitDispatchResult("（子 Agent 没有产出文本结论）")
+        assertEquals("（子 Agent 没有产出文本结论）", body)
+        assertEquals("", sid)
+    }
+
+    @Test
+    fun orphanHintFillsPlaybackCardWithoutId() {
+        // 回放窗口截掉了 dispatch 调用、只留下结果——剥出的 id 喂给 mergeKnownChildIds
+        // 的 previous（RealBackend.applyHistory 的组装方式），占位卡据此补上 id
+        val orphan = dispatch("call_9", "sess-xyz", done = false)
+        val fresh = listOf(dispatch("call_9", ""))
+        val merged = mergeKnownChildIds(fresh, listOf(orphan))
+        assertEquals("sess-xyz", (merged.single() as ThreadBlock.Dispatch).sessionId)
+    }
 }

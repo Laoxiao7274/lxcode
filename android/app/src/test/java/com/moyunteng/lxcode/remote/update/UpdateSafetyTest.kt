@@ -84,4 +84,16 @@ class UpdateSafetyTest {
         assertTrue(isRemoteNewer(9_000_000_000L, 8_999_999_999L))
         assertFalse(isRemoteNewer(8_999_999_999L, 9_000_000_000L))
     }
+
+    // ===== 安装权限引导（2026-12）：预检文案纯函数 =====
+
+    @Test
+    fun installPermissionGuideMentionsUnknownSourcesAndPureMode() {
+        val msg = ApkDownloader.installPermissionGuideMessage()
+        // 关键词钉两条引导语义：权限名 + MIUI 纯净模式提示（该限制无法程序检测，
+        // 只能在文案里带一句）
+        assertTrue(msg.contains("安装未知应用"))
+        assertTrue(msg.contains("纯净模式"))
+        assertTrue("授权后重试的指引", msg.contains("再点一次"))
+    }
 }

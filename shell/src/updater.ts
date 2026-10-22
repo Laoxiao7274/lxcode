@@ -465,7 +465,29 @@ function broadcast(progress: UpdateProgress): void {
 
 /** 上次更新失败标记：apply-update.bat 失败/回滚时写入（ASCII 单行，见
  *  apply-update.ts）。壳启动时消费：24h 内有效 → 返回文本并删除（一次性，
- *  每个失败只打扰一次）；超 24h 或读失败 → 删除/忽略并返回 null（不抛）。 */
+ *  每个失败只打扰一次）；超 24h 或读失败 → 删除/忽略并返回 null（不抛）。
+ *
+ *  bat 只会写两条英文标记（2026-12 修复：原样透传给用户是英文硬伤）：
+ *  * 文件锁（stash 重试耗尽）→ 映射中文人话——最常见根因是应用刚被重新打开；
+ *  * 回滚（其它失败路径的兜底）→ 映射中文人话 + 指向 apply-update.log。
+ *  映射做在这里（主进程）而不是渲染层：标记的英文原文只存在于 bat 源，
+ *  消费口径单处收口，UpdateDialog 只展示 message 无需感知来源。 */
+const FAILURE_MARKERS = [
+  {
+    match: "install files are locked",
+    message: "安装文件被占用（应用可能被重新打开）；请关闭所有 Lxcode 窗口后重试",
+  },
+  {
+    match: "previous version was restored",
+    message: "替换未能完成，已恢复原版本；详情见 update-pending/apply-update.log",
+  },
+] as const;
+
+function mapUpdateFailureMessage(raw: string): string {
+  const marker = FAILURE_MARKERS.find((m) => raw.includes(m.match));
+  return marker ? marker.message : raw;
+}
+
 export function consumePendingUpdateFailure(): string | null {
   const FAILED_FILE = "apply-update.failed";
   const MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -477,7 +499,7 @@ export function consumePendingUpdateFailure(): string | null {
     let message: string | null = null;
     if (text) {
       const age = Date.now() - fs.statSync(path).mtimeMs;
-      if (age >= 0 && age < MAX_AGE_MS) message = text;
+      if (age >= 0 && age < MAX_AGE_MS) message = mapUpdateFailureMessage(text);
       else ulog("丢弃过期更新失败标记", `${Math.round(age / 3600_000)}h 前`);
     }
     fs.rmSync(path, { force: true }); // 一次性：读过就删，下次启动不再打扰

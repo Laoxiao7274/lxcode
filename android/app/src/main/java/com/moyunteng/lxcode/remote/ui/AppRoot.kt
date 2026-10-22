@@ -47,7 +47,6 @@ import com.moyunteng.lxcode.design.motion.lxPressScale
 import com.moyunteng.lxcode.design.token.Lx
 import com.moyunteng.lxcode.design.token.LxColors
 import com.moyunteng.lxcode.design.token.LxTheme
-import com.moyunteng.lxcode.remote.ShowcaseScreen
 import com.moyunteng.lxcode.remote.model.BackendConn
 import com.moyunteng.lxcode.remote.model.LOCAL_ADDR
 import com.moyunteng.lxcode.remote.model.SessionMeta
@@ -55,13 +54,12 @@ import java.util.UUID
 
 /** 屏幕（路由）。 */
 sealed interface Route {
-    /** 顶部 tab 页（会话/连接）与从连接页进入的配对/展示页显示底部导航栏；详情页（线程/表单）不显示。 */
+    /** 顶部 tab 页（会话/连接）与从连接页进入的配对页显示底部导航栏；详情页（线程/表单）不显示。 */
     val showBottomBar: Boolean get() = true
 
     data object Sessions : Route
     data object Connections : Route
     data object Pairing : Route
-    data object Showcase : Route
     data class Thread(val sessionId: String) : Route { override val showBottomBar get() = false }
     data class ConnForm(val fromScan: Boolean) : Route { override val showBottomBar get() = false }
 }
@@ -201,6 +199,21 @@ class AppState(private val store: ConnStore? = null) {
      * ——不展示就是「点了安装没反应」的静默失败（对齐桌面更新脚本教训）。
      */
     var installHint by mutableStateOf<String?>(null)
+
+    /**
+     * 「安装未知应用」权限引导对话框开关（Android 8+ 未授权时点「安装」置上）。
+     * 见 SessionsScreen.InstallPermissionGuideDialog——预检不发 ACTION_VIEW，
+     * 弹我们自己的对话框引导去系统设置授权页。
+     */
+    var showInstallPermissionGuide by mutableStateOf(false)
+
+    /**
+     * 启动自动检查发现新版本的确认弹窗（待展示的 release；null = 无待弹）。
+     * 弹窗批准才置 [updateAvailable] 出横幅（统一弹窗形态：与连接页「检查更新」
+     * 同款 LxConfirmDialog，横幅不再承担「发现新版」的第一呈现）。
+     * 冷启动找回的进行中下载（downloadState 非空）不弹——用户已表达过下载意图。
+     */
+    var pendingUpdatePrompt by mutableStateOf<com.moyunteng.lxcode.remote.update.ApkRelease?>(null)
     /** 顶栏连接药丸的在线位：跟 WS 实际连接态（未连接 = 灰点）。 */
     fun pillOnline(): Boolean = realOn && real.connected
 
@@ -403,6 +416,7 @@ fun AppRoot(pairUri: String? = null, onPairUriConsumed: () -> Unit = {}) {
         ) {
             state.updateAvailable = null
             state.installHint = null
+            state.pendingUpdatePrompt = null
             if (state.downloadState !is com.moyunteng.lxcode.remote.update.DownloadState.Running) {
                 state.downloadState = null
             }
@@ -410,7 +424,7 @@ fun AppRoot(pairUri: String? = null, onPairUriConsumed: () -> Unit = {}) {
     }
 
     // 返回键路由栈（BackHandler 链）：① 弹层/菜单开着 → 先关弹层（各页面注册的
-    // [AppState.backInterceptor]）；② 详情页回上级（线程→会话列表、表单/扫码/展示→连接）；
+    // [AppState.backInterceptor]）；② 详情页回上级（线程→会话列表、表单/扫码→连接）；
     // ③ 连接 tab → 会话 tab；④ 首页（会话列表）不拦截 → 交给系统（退出）。
     // 真实模式连接中返回只是退页面：不断开 WS（连接生命周期归「真实后端」开关管）。
     val backEnabled = state.route !is Route.Sessions || state.backInterceptor != null
@@ -420,7 +434,6 @@ fun AppRoot(pairUri: String? = null, onPairUriConsumed: () -> Unit = {}) {
             is Route.Thread -> state.route = Route.Sessions
             is Route.ConnForm -> state.route = Route.Connections
             Route.Pairing -> state.route = Route.Connections
-            Route.Showcase -> state.route = Route.Connections
             Route.Connections -> state.route = Route.Sessions
             Route.Sessions -> Unit // 首页语义：交给系统（activity 退出）
         }
@@ -449,8 +462,11 @@ fun AppRoot(pairUri: String? = null, onPairUriConsumed: () -> Unit = {}) {
         onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
     }
 
-    // 启动自动检查更新：查询失败静默、已是最新静默、有新版 → 会话页横幅（非阻断，
-    // 用户可关）。查询是阻塞 IO（UpdateChecker），放 Default 派发，不卡首帧。
+    // 启动自动检查更新：查询失败静默、已是最新静默、有新版 → 与连接页「检查更新」
+    // 同一个确认弹窗（2026-12 用户拍板统一形态，不再以横幅作「发现新版」的第一
+    // 呈现）。冷启动找回的进行中下载（resumePendingDownload 恢复了 downloadState）
+    // 不弹——用户此前已表达过下载意图，横幅接管即可。查询是阻塞 IO
+    // （UpdateChecker），放 Default 派发，不卡首帧。
     LaunchedEffect(Unit) {
         val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
             com.moyunteng.lxcode.remote.update.UpdateChecker.check(
@@ -458,7 +474,11 @@ fun AppRoot(pairUri: String? = null, onPairUriConsumed: () -> Unit = {}) {
             )
         }
         if (result is com.moyunteng.lxcode.remote.update.UpdateCheckResult.Available) {
-            state.updateAvailable = result.release
+            // 双重保险：downloadState 投影与下载器 active 位任一非空都视为
+            // 「冷启动找回在进行中/已完成任务」——不弹确认弹窗（用户已表达过下载意图）
+            if (state.downloadState == null && state.updater.idle()) {
+                state.pendingUpdatePrompt = result.release
+            }
         }
     }
 
@@ -484,7 +504,6 @@ fun AppRoot(pairUri: String? = null, onPairUriConsumed: () -> Unit = {}) {
                                 Route.Sessions -> SessionsScreen(state)
                                 Route.Connections -> ConnectionsScreen(state)
                                 Route.Pairing -> PairingScreen(state)
-                                Route.Showcase -> ShowcaseScreen(Modifier.fillMaxSize())
                                 is Route.Thread -> ThreadScreen(state, route.sessionId)
                                 is Route.ConnForm -> ConnectionFormScreen(state, route.fromScan)
                             }

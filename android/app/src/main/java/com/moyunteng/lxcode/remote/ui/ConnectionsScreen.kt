@@ -5,7 +5,7 @@
 //      非 active 时右侧「连接」按钮）
 //   ② 每条远程连接（点 + 名字 + mono「{地址} · {掩码Token}」+ active 时「当前」+
 //      「断开」/「连接」+「编辑」+ 删除（两步确认变「确认」））
-//   ③ 底部「+ 添加远程后端」
+//   ③ 底部「添加远程后端」
 //   ④ 提示行
 // 行视觉（对齐 .conn-item）：1px --border-soft 边、圆角 11、active 时边框 --fg-muted、
 // 点 7px（绿 = --success）。Token 掩码 = 保头尾各 4 位、中间 ••••。
@@ -57,7 +57,6 @@ import com.moyunteng.lxcode.design.component.LxConfirmDialog
 import com.moyunteng.lxcode.design.component.LxListItem
 import com.moyunteng.lxcode.design.component.LxSpinner
 import com.moyunteng.lxcode.design.component.LxTextField
-import com.moyunteng.lxcode.design.motion.LxCollapseAway
 import com.moyunteng.lxcode.design.motion.LxEnterSpec
 import com.moyunteng.lxcode.design.motion.LxStagger
 import com.moyunteng.lxcode.design.motion.lxEnter
@@ -75,7 +74,7 @@ import com.moyunteng.lxcode.remote.model.nameFromAddr
 import kotlinx.coroutines.launch
 import java.util.UUID
 
-/** 连接页：本机 + 远程列表 + 添加 + （离线时）后端不可达错误条。 */
+/** 连接页：头部 → 扫码配对 → 检查更新 → （失败错误条）→ 连接卡片列表 → 添加远程后端 → 提示行。 */
 @Composable
 fun ConnectionsScreen(state: AppState) {
     Column(
@@ -86,29 +85,6 @@ fun ConnectionsScreen(state: AppState) {
         ScreenHeader(
             title = "连接",
             onBack = { state.route = Route.Sessions },
-            trailing = {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(Lx.space.s4),
-                ) {
-                    // 「组件展示」是组件库调试入口（保留）。
-                    if (BuildConfig.DEBUG) {
-                        // 调试入口：组件库展示页（开发期用；纯远控壳不进底部导航，从这里进）
-                        Text(
-                            text = "组件展示",
-                            style = Lx.type.ListSubtitle.copy(fontSize = Lx.type.Size11_5),
-                            color = Lx.colors.FgMuted,
-                            modifier = Modifier
-                                .clip(Lx.radius.RowShape)
-                                .clickable(
-                                    interactionSource = remember { MutableInteractionSource() },
-                                    indication = null,
-                                ) { state.route = Route.Showcase }
-                                .padding(horizontal = Lx.space.s8, vertical = Lx.space.s6),
-                        )
-                    }
-                }
-            },
         )
 
         Column(
@@ -129,10 +105,14 @@ fun ConnectionsScreen(state: AppState) {
             // 这里三态齐全——有新版弹层给详情 + 下载按钮，已最新/失败给 toast。
             UpdateCheckItem(state)
 
-            // 真实后端（调试区快捷开关）：开 = WS 连真实 lxcode 后端（协议见 PROTOCOL-NOTES.md）。
-            // 主入口已收口到连接列表条目的「连接」按钮（connectTo）；这里保留作快捷开关
-            // （手填地址/Token 直连，不属于任何条目 → 清掉「当前」标记）
-            RealBackendSection(state)
+            // 后端不可达错误条（全局态：连接失败时浮在卡片列表上方；重试重连当前凭证）
+            val real = state.real
+            if (real.phase == com.moyunteng.lxcode.remote.net.RealPhase.Failed) {
+                UnreachableBar(
+                    onRetry = { real.retry(state.realAddr, state.realToken) },
+                    message = real.phaseMessage ?: "后端不可达：无法连接 ws://${state.realAddr}/rpc",
+                )
+            }
 
             state.conns.forEachIndexed { i, conn ->
                 ConnCard(
@@ -155,7 +135,6 @@ fun ConnectionsScreen(state: AppState) {
                 )
             }
 
-            // ③ 底部「+ 添加远程后端」（弹层入场 pop-in：translateY(-4dp) + scale .98，160ms）
             // ③ 底部「+ 添加远程后端」（弹层入场 pop-in：translateY(-4dp) + scale .98，160ms）
             val addInteraction = remember { MutableInteractionSource() }
             Row(
@@ -189,7 +168,7 @@ fun ConnectionsScreen(state: AppState) {
                 SmallIcon(Icons.Filled.Add, Lx.colors.FgMuted)
                 Box(Modifier.width(Lx.space.s6))
                 Text(
-                    text = "+ 添加远程后端",
+                    text = "添加远程后端",
                     style = Lx.type.Button,
                     color = Lx.colors.FgMuted,
                 )
@@ -212,7 +191,7 @@ private fun UnreachableBar(onRetry: () -> Unit, message: String? = null) {
     Row(
         Modifier
             .fillMaxWidth()
-            // 断线态滑入：y 8dp + 淡入，220ms 标准曲线（退场由 LxCollapseAway 承担）
+            // 断线态滑入：y 8dp + 淡入，220ms 标准曲线
             .lxEnter(spec = LxEnterSpec.ErrorBarIn)
             .clip(Lx.radius.FieldShape)
             .background(Lx.colors.DangerSoft)
@@ -236,118 +215,6 @@ private fun UnreachableBar(onRetry: () -> Unit, message: String? = null) {
                 SmallIcon(Icons.Filled.Refresh, Lx.colors.FgMuted, size = 12)
             },
         )
-    }
-}
-
-/**
- * 「真实后端」调试区：开关 + 地址输入 + 实时连接状态 + 失败重试条。
- *
- * 开：连 `addr`（默认 127.0.0.1:7789）→ hello 握手 → 会话列表换真实数据；
- * 关：断开并回到连接引导态。
- * 断线复用 [UnreachableBar]，
- * 重试按钮真实重连（重发握手）。
- */
-@Composable
-private fun RealBackendSection(state: AppState) {
-    val real = state.real
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .clip(Lx.radius.FieldShape)
-            .background(LxColors.Surface)
-            .border(1.dp, Lx.colors.BorderSoft, Lx.radius.FieldShape)
-            .padding(horizontal = Lx.space.s12, vertical = Lx.space.s10),
-        verticalArrangement = Arrangement.spacedBy(Lx.space.s8),
-    ) {
-        Row(
-            Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(Lx.space.s8),
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text(text = "真实后端", style = Lx.type.ListTitle, color = Lx.colors.Fg)
-                Text(
-                    text = "开 = 连真实 lxcode 后端（WS JSON-RPC）；关 = 显示连接引导",
-                    style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size10_5),
-                    color = Lx.colors.FgFaint,
-                )
-            }
-            LabelSwitch(
-                label = "",
-                checked = state.realOn,
-                onCheckedChange = { on ->
-                    state.writeRealOn(on)
-                    if (on) {
-                        // 手填地址/Token 直连：不属于任何连接条目，清掉「当前」标记
-                        state.setActiveConn("")
-                        real.connect(state.realAddr, state.realToken)
-                    } else {
-                        state.disconnectReal()
-                    }
-                },
-            )
-        }
-
-        // 状态行：阶段点 + 文案（连接中/已连接/失败原因）
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(Lx.space.s6),
-        ) {
-            Box(
-                Modifier
-                    .size(7.dp)
-                    .background(
-                        when (real.phase) {
-                            com.moyunteng.lxcode.remote.net.RealPhase.Connected -> Lx.colors.Success
-                            com.moyunteng.lxcode.remote.net.RealPhase.Connecting -> LxColors.Amber
-                            com.moyunteng.lxcode.remote.net.RealPhase.Failed -> Lx.colors.Danger
-                            com.moyunteng.lxcode.remote.net.RealPhase.Offline -> Lx.colors.BorderStrong
-                        },
-                        CircleShape,
-                    ),
-            )
-            Text(
-                text = when (real.phase) {
-                    com.moyunteng.lxcode.remote.net.RealPhase.Connected ->
-                        "已连接 ${real.addr}（协议 v2）"
-                    com.moyunteng.lxcode.remote.net.RealPhase.Connecting -> "连接中 ${real.addr}…"
-                    com.moyunteng.lxcode.remote.net.RealPhase.Failed ->
-                        "连接失败：${real.phaseMessage ?: "未知原因"}"
-                    com.moyunteng.lxcode.remote.net.RealPhase.Offline -> "未连接（地址如下，开关打开即连）"
-                },
-                style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size11_5),
-                color = Lx.colors.FgFaint,
-            )
-        }
-
-        if (state.realOn) {
-            LxTextField(
-                value = state.realAddr,
-                onValueChange = {
-                    state.realAddr = it
-                    state.saveRealDraft()
-                },
-                placeholder = "127.0.0.1:7789",
-            )
-            // 访问令牌：后端 remote.json Enabled 时所有 /rpc 连接必须携带（query
-            // token）——与地址同源的一对凭证；留空 = 连未开远程的后端。
-            LxTextField(
-                value = state.realToken,
-                onValueChange = {
-                    state.realToken = it
-                    state.saveRealDraft()
-                },
-                placeholder = "访问令牌（后端未开远程访问时留空）",
-            )
-        }
-
-        // 断线错误条（真实模式专用）
-        if (state.realOn && real.phase == com.moyunteng.lxcode.remote.net.RealPhase.Failed) {
-            UnreachableBar(
-                onRetry = { real.retry(state.realAddr, state.realToken) },
-                message = real.phaseMessage ?: "后端不可达：无法连接 ws://${state.realAddr}/rpc",
-            )
-        }
     }
 }
 

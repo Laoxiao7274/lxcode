@@ -548,6 +548,14 @@ class RealBackend {
             refreshProjects()
             // 模型注册表：composer 模型菜单的数据源（桌面端是握手并行组的一步）
             refreshModels()
+            // 断线期间错过的 chat.dispatchStart 不重放（事件一次性），而回放扫不出
+            // 正在跑的派发（结果提示行要派发结束才落库）——重连即重拉当前会话的
+            // chat.history，让 running_dispatches（新后端 0.3.6+）按此刻的运行中登记
+            // 把卡补上子会话 id；老后端无该键时回放占位卡维持原样（不编 id）。
+            if (currentSessionId.isNotEmpty()) {
+                Log.i(TAG, "重连后重拉当前会话历史: $currentSessionId")
+                loadHistory(currentSessionId)
+            }
         } else if (phase != RealPhase.Offline) {
             // 用户主动 disconnect 后的迟到回调不再标失败
             phase = RealPhase.Failed
@@ -1367,7 +1375,7 @@ class RealBackend {
                 return@call
             }
             val r = result as? JSONObject ?: return@call
-            val (parsed, _, _) = parseHistoryBlocks(r)
+            val (parsed, _, _, _) = parseHistoryBlocks(r)
             if (parsed.isEmpty()) {
                 // 空窗口 = 已到头（防御：后端 has_more 缺席的老版本）
                 hasMoreHistory = false
@@ -1449,10 +1457,13 @@ class RealBackend {
     }
 
     /** 解析 chat.history 的 messages → 块列表 + todos JSON + 首条消息 seq（主会话与
-     *  子会话视图共用）。首条 seq 是分页薄记的 anchor（老后端缺 seq = 0）。 */
-    private fun parseHistoryBlocks(r: JSONObject?): Triple<List<ThreadBlock>, org.json.JSONArray?, Long> {
-        if (r == null) return Triple(emptyList<ThreadBlock>(), null, 0L)
-        val msgs = r.optJSONArray("messages") ?: return Triple(emptyList<ThreadBlock>(), null, 0L)
+     *  子会话视图共用）。首条 seq 是分页薄记的 anchor（老后端缺 seq = 0）。
+     *  第四个返回值 = 「窗口外派发结果剥出的子会话 id」（callId → childSid）：
+     *  派发卡被 tail 窗口截掉时，结果正文里的「[子会话 id: …]」提示行是卡重建后
+     *  兜底补 id 的最后一道来源（applyHistory 里并进 mergeKnownChildIds 的口径）。 */
+    private fun parseHistoryBlocks(r: JSONObject?): Quad<List<ThreadBlock>, org.json.JSONArray?, Long, Map<String, String>> {
+        if (r == null) return Quad(emptyList(), null, 0L, emptyMap())
+        val msgs = r.optJSONArray("messages") ?: return Quad(emptyList(), null, 0L, emptyMap())
         val firstSeq = msgs.optJSONObject(0)?.optLong("seq", 0L) ?: 0L
         val checkpoints = r.optJSONArray("checkpoints")
             ?.let { cp -> (0 until cp.length()).map { cp.optInt(it) } }
@@ -1460,6 +1471,9 @@ class RealBackend {
         // tool 消息先到调用块后到结果的配对表（历史里调用在前、结果紧随）
         val toolCallIdx = mutableMapOf<String, Int>()
         val dispatchCallIdx = mutableMapOf<String, Int>()
+        // 窗口外的派发结果剥出的子会话 id（callId → childSid）：卡被 tail 截掉时
+        // dispatchCallIdx 里没有它的调用——applyRunningDispatches 的兜底第三来源。
+        val orphanChildIds = mutableMapOf<String, String>()
         val newBlocks = mutableListOf<ThreadBlock>()
         for (i in 0 until msgs.length()) {
             val m = msgs.getJSONObject(i)
@@ -1579,6 +1593,12 @@ class RealBackend {
                             done = true,
                             isError = false,
                         )
+                    } else if (dispatchCallIdx.containsKey(callId)) {
+                        // ①b 派发卡被 tail 窗口截掉、只剩这条结果：从正文剥出子会话 id
+                        //    兜底记进配对表——稍后 applyRunningDispatches 用它补回放卡
+                        //    （老后端快照键缺席时的最后一道兜底；不编造，提示行缺失不动）。
+                        val (_, childSid) = splitDispatchResult(m.optString("content"))
+                        if (childSid.isNotEmpty()) orphanChildIds[callId] = childSid
                     } else {
                         // ② 普通工具行：调用在前、结果紧随，按 id 配对回填
                         val idx = toolCallIdx[callId]
@@ -1596,12 +1616,15 @@ class RealBackend {
         }
         // 历史快照的任务清单（todos 原样返回，调用方决定插不插 Todo 块）
         val todosArr = r.optJSONArray("todos")?.takeIf { it.length() > 0 }
-        return Triple(newBlocks.toList(), todosArr, firstSeq)
+        return Quad(newBlocks.toList(), todosArr, firstSeq, orphanChildIds.toMap())
     }
+
+    /** 四元组（Triple 的扩展——parseHistoryBlocks 还要带「窗口外剥出的子会话 id」）。 */
+    private data class Quad<A, B, C, D>(val first: A, val second: B, val third: C, val fourth: D)
 
     private fun applyHistory(r: JSONObject?) {
         if (r == null) return
-        val (parsed, todosArr, firstSeq) = parseHistoryBlocks(r)
+        val (parsed, todosArr, firstSeq, orphanChildIds) = parseHistoryBlocks(r)
         // 分页薄记：tail 段首条消息的 seq 是「tail 窗口」的锚点——缓存合并时 anchor
         // 之前的块（历史分页段）保留、之后整段以远端为准。缺 seq（老后端）= 记 0
         //（缓存退化为整段替换——正确性不受影响，只是丢掉分页复用）。
@@ -1614,7 +1637,18 @@ class RealBackend {
         // 的派发在历史里既没有结果提示行、也没有子会话 id——直接整段替换的话，
         // 用户打开这个会话就看不到任何能进子会话的入口（问题 2）。把上一份块里
         // 同一 dispatch_id 已知的 id 合并回来（只补空值，不编造）。
-        val merged = mergeKnownChildIds(parsed, blocks.toList())
+        // 第三来源：窗口外的派发结果正文剥出的 id（parseHistoryBlocks 的
+        // orphanChildIds）——卡被 tail 截掉时它可能是唯一线索，同口径「只补空缺」。
+        val knownChildIds = blocks.toList()
+        val previousBlocks = if (orphanChildIds.isEmpty()) knownChildIds else {
+            knownChildIds + orphanChildIds.map { (callId, sid) ->
+                ThreadBlock.Dispatch(
+                    agentName = "", task = "", conclusion = "",
+                    sessionId = sid, done = true, isError = false, dispatchId = callId,
+                )
+            }
+        }
+        val merged = mergeKnownChildIds(parsed, previousBlocks)
         // 观察端回填（chat.history 的 running_dispatches，2026-12 用户报「安卓
         // 点不开电脑发起的子会话」的主修）：历史回放扫不出正在跑的派发（结果
         // 提示行要派发结束才落库、dispatchStart 是本机不在场时错过的事件）——
@@ -1622,7 +1656,7 @@ class RealBackend {
         // 回放占位卡被恢复成运行中（后端事实，比「只认最后一张」的 busy 启发式
         // 强——多派发并行时每张都能恢复）；已收尾的真终态卡绝不被翻回。
         val runningDispatches = parseRunningDispatches(r.optJSONArray("running_dispatches"))
-        val filled = applyRunningDispatches(merged, runningDispatches, blocks.toList())
+        val filled = applyRunningDispatches(merged, runningDispatches, previousBlocks)
         // 已收尾集合属于"当前这一份时间线"：重载之后旧记录无意义（且不清理会
         // 随会话长度无限增长）
         endedDispatches.clear()
@@ -1731,7 +1765,7 @@ class RealBackend {
 
     /** 子会话视图的历史装载（与主会话同一解析器；副作用落在 child* 状态上）。 */
     private fun applyChildHistory(r: JSONObject?) {
-        val (parsed, todosArr, _) = parseHistoryBlocks(r)
+        val (parsed, todosArr, _, _) = parseHistoryBlocks(r)
         // 重载**不许抹掉本地实时内容**（2026-12 用户报「子 Agent 正文输出后消失」）：
         // assistant 是整轮结束才落库的，正在流式的那段永远不在 chat.history 里；
         // 而子会话的 chat.history 走「现建运行时 + AttachTo」，busy 恒 false——
@@ -2292,15 +2326,12 @@ class RealBackend {
         /** 子会话 id 提示行（后端 internal/agent/tools.go 在 dispatch 结果末尾追加）：
          *  `\n\n[子会话 id: <id> —— 只在这次没做完时填进 session 参数续跑]`。
          *  给模型看的续跑线索，回放时剥掉；id 从这里取是**权威**值（续跑时
-         *  arguments.session 可能为空）。对齐桌面端 history.ts 的 SUB_SESSION_HINT。 */
-        private val SUB_SESSION_HINT = Regex("\\[子会话 id:\\s*([^\\]\\s]+)[^\\]]*\\]")
+         *  arguments.session 可能为空）。对齐桌面端 history.ts 的 SUB_SESSION_HINT。
+         *  解析已下沉到 model 层（DispatchMerge.kt——纯函数可单测），这里只委托。 */
 
         /** 拆分 dispatch 结果：结论正文 + 子会话 id（没有提示行时 id 为空串）。 */
-        fun splitDispatchResult(raw: String): Pair<String, String> {
-            val m = SUB_SESSION_HINT.find(raw) ?: return raw.trimEnd() to ""
-            val body = (raw.substring(0, m.range.first) + raw.substring(m.range.last + 1)).trimEnd()
-            return body to m.groupValues[1]
-        }
+        fun splitDispatchResult(raw: String): Pair<String, String> =
+            com.moyunteng.lxcode.remote.model.splitDispatchResult(raw)
 
         /** 工具显示名（对齐桌面端工具卡标题；未知工具原样显示 id）。 */
         private val TOOL_TITLES = mapOf(

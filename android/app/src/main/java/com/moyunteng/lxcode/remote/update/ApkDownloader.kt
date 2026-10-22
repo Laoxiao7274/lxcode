@@ -63,8 +63,10 @@ import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.os.StatFs
+import android.provider.Settings
 import android.util.Log
 import androidx.core.content.FileProvider
+import androidx.core.net.toUri
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
@@ -95,6 +97,14 @@ sealed interface DownloadState {
          * CAS：广播与轮询的收尾可能在不同线程各调一次 installVerified。
          */
         fun markInstalling(): Boolean = installedAtomic.compareAndSet(false, true)
+
+        /**
+         * 撤销单飞置位（权限预检不放行时回退——没有真正拉起安装器，
+         * 不能挡住授权后的重试；与 markInstalling 成对使用）。
+         */
+        fun revokeInstalling() {
+            installedAtomic.set(false)
+        }
 
         private val installedAtomic = java.util.concurrent.atomic.AtomicBoolean(installed)
     }
@@ -133,6 +143,12 @@ class ApkDownloader(private val context: Context) {
                 ?: File(context.filesDir, "updates") // 外部存储不可用：退内部私有目录
             return base
         }
+
+        /** 安装权限引导文案（纯函数，JVM 可测； companion 侧与 spaceShortfallMessage 同款纪律）。 */
+        fun installPermissionGuideMessage(): String =
+            "需要「安装未知应用」权限才能安装更新。请去系统设置开启 lxcode 的授权，" +
+                "返回后再点一次「安装」。部分小米/红米机型还需关闭「纯净模式」" +
+                "（此限制无法自动检测）。"
 
         /** 空间预检的人话失败消息（纯函数，JVM 可测）。 */
         fun spaceShortfallMessage(neededBytes: Long): String {
@@ -501,7 +517,46 @@ class ApkDownloader(private val context: Context) {
             Log.w(TAG, "installVerified 短路：校验未通过，不安装 ${state.file.name}")
             return false
         }
+        if (!canRequestInstall()) {
+            // 未知来源未授权（Android 8+）：不拉 ACTION_VIEW——系统安装器只会弹
+            // 晦涩的「lxcode 没有权限安装此应用」拦截框。不消耗单飞位（置回 false，
+            // 与 launchInstaller 失败路径同语义）：用户授权回来后再点「安装」能重试。
+            Log.i(TAG, "未授权「安装未知应用」，不拉起系统安装器")
+            state.revokeInstalling()
+            return false
+        }
         return launchInstaller(verified)
+    }
+
+    /**
+     * 「安装未知应用」权限预检。installVerified 内部步骤，同时也是公开查询面：
+     * UI 在安装被拒时用它区分「权限未授权」（弹引导对话框）与其它拉起失败
+     * （弹 installerLaunchHint 重新下载指引）。true = 已授权。
+     * API 26+ 才有这个权限模型：`canRequestPackageInstalls()`；低于 26（本项目
+     * minSdk=26，防御性兼容直接调用本方法的宿主）视为已授权直接放行。
+     */
+    fun canRequestInstall(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.O ||
+            context.packageManager.canRequestPackageInstalls()
+
+    /**
+     * 引导用户去系统设置开「安装未知应用」授权（[installPermissionGuideMessage]
+     * 的伴随入口）：`ACTION_MANAGE_UNKNOWN_APP_SOURCES` 带 `package:` URI 直达
+     * lxcode 自己的授权页。返回 false = 本机不支持该设置入口（用户改走通用
+     * 「安装未知应用」总开关），调用方退化为仅展示引导文案。
+     */
+    fun openInstallPermissionSettings(): Boolean {
+        return try {
+            val i = Intent(
+                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                "package:${context.packageName}".toUri(),
+            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(i)
+            true
+        } catch (e: Exception) {
+            Log.w(TAG, "打开「安装未知应用」设置页失败（机型不支持直达入口）", e)
+            false
+        }
     }
 
     /** 手动安装指引文案：私有目录文件管理器看不到——改为重新下载（不再指路）。 */

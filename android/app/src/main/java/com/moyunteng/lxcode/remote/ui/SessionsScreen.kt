@@ -58,6 +58,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import android.widget.Toast
+import androidx.core.net.toUri
 import com.moyunteng.lxcode.design.component.LxButton
 import com.moyunteng.lxcode.design.component.LxButtonSize
 import com.moyunteng.lxcode.design.component.LxButtonVariant
@@ -78,6 +79,11 @@ import com.moyunteng.lxcode.remote.model.SessionMeta
 /** 会话列表页（首页）。 */
 @Composable
 fun SessionsScreen(state: AppState) {
+    // 安装权限引导（Compose 弹窗模式对齐 LxConfirmDialog 用法）+ 启动更新确认弹窗。
+    // 两个弹窗挂在页面层而非 AppRoot：横幅与「安装」按钮也在这里，弹窗消费的状态
+    // （showInstallPermissionGuide / pendingUpdatePrompt）归本页编排。
+    InstallPermissionGuideDialog(state)
+    UpdateFoundDialog(state)
     val context = LocalContext.current
     // 会话行操作：行尾 ⋯ 菜单 → 重命名 / 归档（协议有 session.rename /
     // session.archive，见 PROTOCOL-NOTES.md §3）；删除 / 置顶协议没有——记缺口不造。
@@ -185,6 +191,13 @@ fun SessionsScreen(state: AppState) {
                                 ?.let {
                                     // 安装编排的唯一路径（AppRoot 不再自动 installVerified——
                                     // 曾经两条路径都会拉安装器，重复弹且冷启动不打招呼）。
+                                    // 权限预检先行：Android 8+ 未授权「安装未知应用」时
+                                    // 不发 ACTION_VIEW（系统安装器只会弹晦涩的拦截框），
+                                    // 改弹我们自己的引导对话框去系统设置授权页。
+                                    if (!state.updater.canRequestInstall()) {
+                                        state.showInstallPermissionGuide = true
+                                        return@let
+                                    }
                                     // installVerified 内部先校验后安装；校验失败时 onState
                                     // 已置 Failed 人话态；拉起失败给安装器指引。
                                     if (!state.updater.installVerified(it, release)) {
@@ -710,6 +723,74 @@ private fun UpdateBanner(
 }
 
 /** 横幅「取消」：调 AppRoot 传入的取消路径（经 onDismiss 携带 cancel；这里只停下载）。 */
+
+/**
+ * 「安装未知应用」权限引导对话框：Android 8+ 未授权时点「安装」弹出——
+ * 不让系统安装器弹晦涩的「lxcode 没有权限安装此应用」拦截框，改由我们给出
+ * 人话说明 + 直达系统设置里 lxcode 自己的授权页（ApkDownloader.openInstall
+ * PermissionSettings）。MIUI「纯净模式」无法程序检测，文案里带一句提示。
+ * 批准 = 跳设置页；拒绝/点遮罩 = 留在 Ready 态（授权回来再点一次「安装」）。
+ */
+@Composable
+private fun InstallPermissionGuideDialog(state: AppState) {
+    if (!state.showInstallPermissionGuide) return
+    val context = LocalContext.current
+    com.moyunteng.lxcode.design.component.LxConfirmDialog(
+        title = "需要「安装未知应用」权限",
+        text = com.moyunteng.lxcode.remote.update.ApkDownloader.installPermissionGuideMessage(),
+        approveText = "去设置开启",
+        denyText = "暂不",
+        onApprove = {
+            state.showInstallPermissionGuide = false
+            // 直达 lxcode 的授权页；机型不支持该入口时退化为打开应用详情设置
+            if (!state.updater.openInstallPermissionSettings()) {
+                try {
+                    context.startActivity(
+                        android.content.Intent(
+                            android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                            "package:${context.packageName}".toUri(),
+                        ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+                    )
+                } catch (e: Exception) {
+                    Toast.makeText(context, "无法打开系统设置，请手动前往", Toast.LENGTH_SHORT).show()
+                }
+            }
+        },
+        onDeny = { state.showInstallPermissionGuide = false },
+        onDismissRequest = { state.showInstallPermissionGuide = false },
+    )
+}
+
+/**
+ * 启动自动检查发现新版本的确认弹窗（与连接页「检查更新」同一个弹窗形态，
+ * 2026-12 用户拍板统一）：含版本/大小/notes，批准 = 应用内下载（走横幅态）。
+ * 可关闭——本次关闭后横幅仍在（会话页可手动下载）；下次启动若无更新不再弹。
+ * 横幅仍是下载进度/就绪/失败的态载体，只是不再承担「发现新版」的第一呈现。
+ */
+@Composable
+private fun UpdateFoundDialog(state: AppState) {
+    val release = state.pendingUpdatePrompt ?: return
+    com.moyunteng.lxcode.design.component.LxConfirmDialog(
+        title = "发现新版本 v${release.version}",
+        text = buildString {
+            append("当前 v${com.moyunteng.lxcode.remote.BuildConfig.VERSION_NAME} · ")
+            append(com.moyunteng.lxcode.remote.update.formatBytes(release.size))
+            if (release.notes.isNotEmpty()) {
+                append("\n")
+                append(release.notes.joinToString("\n"))
+            }
+        },
+        approveText = "下载并安装",
+        denyText = "以后再说",
+        onApprove = {
+            state.pendingUpdatePrompt = null
+            // 与连接页「下载并安装」同语义：横幅接管下载/校验/安装编排
+            state.updateAvailable = release
+        },
+        onDeny = { state.pendingUpdatePrompt = null },
+        onDismissRequest = { state.pendingUpdatePrompt = null },
+    )
+}
 
 /**
  * 连接引导态（未连接任何后端时替代会话列表）——居中：logo + 「连接到你的 lxcode 后端」

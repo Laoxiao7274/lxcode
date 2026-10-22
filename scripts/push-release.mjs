@@ -242,7 +242,12 @@ function main(argv) {
   if (current !== "master") fail(`当前分支是 ${current}，发布线只从 master 出（先切回 master）`);
 
   // 公开发布线的当前末端：远端 master（清理过历史后它就是发布线）。
-  gitOrNull(root, ["fetch", remote, "--prune", "--quiet"]);
+  // fetch / ls-remote 失败（网络抖动、凭据问题）都必须显式报错退出——静默吞掉的
+  // 后果是走「首次发布 / 聚合全部历史」分支，真推时造出无父提交（0.3.6 事故）。
+  // --bootstrap 不经过这段（bootstrapRemote 自带备份与 force push 语义），无需豁免。
+  if (gitOrNull(root, ["fetch", remote, "--prune", "--quiet"]) === null) {
+    fail(`无法 fetch ${remote}——网络恢复后重试，不做首次发布假设。`);
+  }
   const publicTip = remoteRef(root, remote, `refs/heads/${publicBranch}`);
 
   if (publicTip) {
@@ -288,6 +293,17 @@ function main(argv) {
     return;
   }
 
+  // 第二层防御：到这里 publicTip 为空只可能是远端确实没有发布线，而常规发版
+  // （非 bootstrap）必须建立在既有发布线之上——没有基线就提交 = 无父孤儿提交。
+  // bootstrap 走 bootstrapRemote（本 if 之前已 return），不受影响。
+  if (!publicTip) {
+    fail(
+      `远端 ${remote}/${publicBranch} 没有发布线末端（publicTip 为空）。\n` +
+        `常规发版必须快进在既有发布线之上；若远端确实是旧检查点历史，先跑 ` +
+        `node scripts/push-release.mjs --bootstrap 清理（会先备份）。`
+    );
+  }
+
   // 发布提交：树 = master 的树，父 = 上一个发布提交（快进推送）。
   const commitArgs = ["commit-tree", tree, "-m", message];
   if (publicTip) commitArgs.push("-p", publicTip);
@@ -331,10 +347,26 @@ function ensureClean(root) {
   if (dirty) fail(`工作区不干净，先提交或清理：\n${dirty}`);
 }
 
+/**
+ * 探测远端 ref 末端。**只把「ls-remote 成功但 ref 不存在」当 null**；
+ * 命令本身失败（网络抖动等）直接报错退出——0.3.6 事故根因就是这里失败时
+ * 静默返回 null，脚本误走「首次发布 / 聚合全部历史」分支造出无父提交。
+ * 仅常规发版路径调用（--bootstrap 不探测远端，天然豁免此守卫）。
+ */
 function remoteRef(root, remote, ref) {
-  const out = gitOrNull(root, ["ls-remote", remote, ref]);
-  if (!out) return null;
-  const line = out.trim().split("\n").find(Boolean);
+  const r = spawnSync("git", ["ls-remote", remote, ref], {
+    cwd: root,
+    encoding: "utf8",
+    env: GIT_ENV,
+    timeout: NET_TIMEOUT_MS,
+  });
+  if (r.error || r.status !== 0) {
+    fail(
+      `无法探测远端发布线（ls-remote ${remote} ${ref} 失败）——网络恢复后重试，不做首次发布假设。\n` +
+        `${(r.stderr || "") + (r.stdout || "")}`
+    );
+  }
+  const line = (r.stdout || "").trim().split("\n").find(Boolean);
   return line ? line.split("\t")[0] : null;
 }
 
