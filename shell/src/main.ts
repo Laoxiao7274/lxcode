@@ -41,6 +41,19 @@ if (!app.isPackaged) {
 
 let win: BrowserWindow | null = null;
 
+/** 主进程 → 渲染层的统一推送出口：窗口/webContents 已销毁时静默跳过。
+ *
+ *  为什么必须有：退出路径（will-quit）里 stopUpdatePolling/shutdownSakura/
+ *  shutdownBackend 都可能触发最后一次状态推送，而此时窗口已经销毁——直接
+ *  `win?.webContents.send` 只挡了 null 挡不住已销毁，send 会抛
+ *  「Object has been destroyed」变成未捕获异常弹窗（0.3.3 实测：退出时
+ *  stopFrpc → setState → notify → send 崩）。任何退出路径都从这里过。 */
+function pushToRenderer(channel: string, ...args: unknown[]): void {
+  const w = win;
+  if (!w || w.isDestroyed() || w.webContents.isDestroyed()) return;
+  w.webContents.send(channel, ...args);
+}
+
 // 单实例：第二个实例只聚焦已有窗口（也避免双壳竞态 spawn 后端）
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -155,8 +168,8 @@ if (!app.requestSingleInstanceLock()) {
       ipcMain.handle(channel, handler as (e: Electron.IpcMainInvokeEvent, ...args: unknown[]) => unknown);
     }
     initSakura(
-      (s) => win?.webContents.send("sakura:state", s),
-      (e) => win?.webContents.send("sakura:nodeLatency", e),
+      (s) => pushToRenderer("sakura:state", s),
+      (e) => pushToRenderer("sakura:nodeLatency", e),
     );
 
     // Tailscale 模式（远程访问的第二实现——与樱花frp 同构：主进程持状态，
@@ -164,7 +177,7 @@ if (!app.requestSingleInstanceLock()) {
     for (const [channel, handler] of Object.entries(tailscaleHandlers)) {
       ipcMain.handle(channel, handler as (e: Electron.IpcMainInvokeEvent, ...args: unknown[]) => unknown);
     }
-    initTailscale((s) => win?.webContents.send("tailscale:state", s));
+    initTailscale((s) => pushToRenderer("tailscale:state", s));
 
     // 后端远程访问管理（token 同步取给渲染层拼 WS URL；开关/轮换走 invoke）
     ipcMain.on("backendRemote:tokenSync", (e) => { e.returnValue = cachedToken(); });
@@ -196,7 +209,7 @@ if (!app.requestSingleInstanceLock()) {
       const failure = consumePendingUpdateFailure();
       if (failure) {
         console.log(`[shell] 上次更新失败：${failure}`);
-        win.webContents.send("update:failed", { message: failure });
+        pushToRenderer("update:failed", { message: failure });
       }
     } catch (e) {
       console.log(`[shell] 消费更新失败标记出错：${e instanceof Error ? e.message : String(e)}`);

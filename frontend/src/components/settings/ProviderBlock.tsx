@@ -13,6 +13,7 @@ import { TextInput, Toggle } from "../form";
 import { IconChevronRight, IconPencil, IconTrash } from "../icons";
 import { ProviderEditDialog } from "./ProviderEditDialog";
 import { ProbeResultDialog, type ProbeModel } from "./ProbeResultDialog";
+import { RemoveProviderDialog } from "./RemoveProviderDialog";
 
 function ProviderBlock({ provider, onEditModel }: { provider: ProviderMeta; onEditModel: (modelId: string) => void }) {
   const { settings, set, setProviderEnabled, setModelVisible, fetchModels, addModel, removeModel, disconnectProvider } = useSettings();
@@ -32,6 +33,9 @@ function ProviderBlock({ provider, onEditModel }: { provider: ProviderMeta; onEd
   const [probe, setProbe] = useState<{ endpoint: string; models: ProbeModel[] } | null>(null);
   const [probing, setProbing] = useState(false);
   const [probeErr, setProbeErr] = useState<string | null>(null);
+  // 移除提供商：二次确认弹窗（null = 没开）。确认后才断开——该组模型条目
+  // 含 API Key 且不可恢复，直接删是危险的。
+  const [removing, setRemoving] = useState(false);
 
   const cardRef = useRef<HTMLDivElement>(null);
   const modelsRef = useRef<HTMLDivElement>(null);
@@ -112,10 +116,9 @@ function ProviderBlock({ provider, onEditModel }: { provider: ProviderMeta; onEd
     collapseAway((e.currentTarget as HTMLElement).closest(".mset-model-row"), () => removeModel(provider.id, modelId), { borderBottomWidth: 0, duration: 0.24 });
   };
 
-  // 移除提供商：整卡收起后断开
-  const handleRemove = () => {
-    collapseAway(cardRef.current, () => disconnectProvider(provider.id), { marginBottom: 0, duration: 0.28 });
-  };
+  // 移除提供商：先弹确认（本组件管弹窗开关），确认回调成功才收整卡——
+  // 收起动画保持在「删除完成」之后，退场观感与原来一致；失败弹窗不关、点名回显。
+  const handleRemove = () => setRemoving(true);
 
   // 获取模型列表 = 探测端点**实际**提供什么，结果弹窗让用户勾选要加哪些。
   // 不自动全部添加：端点可能报 200 个模型（OpenRouter），自动写入会把选择器淹掉；
@@ -183,6 +186,18 @@ function ProviderBlock({ provider, onEditModel }: { provider: ProviderMeta; onEd
         )}
       </div>
       {editingConn && <ProviderEditDialog provider={provider} onClose={() => setEditingConn(false)} />}
+      {removing && (
+        <RemoveProviderDialog
+          providerName={provider.name}
+          modelCount={provider.models.length}
+          onRemove={async () => {
+            // 成功后才播退场：动画的 onDone 只负责状态清理，删除已先行完成
+            await disconnectProvider(provider.id);
+            collapseAway(cardRef.current, () => { /* 删除已完成，收起即可 */ }, { marginBottom: 0, duration: 0.28 });
+          }}
+          onClose={() => setRemoving(false)}
+        />
+      )}
       {expanded && provider.connected && (
         <div className="mset-models" ref={modelsRef}>
           {provider.fetching && (

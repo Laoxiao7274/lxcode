@@ -456,6 +456,9 @@ function verifyStagedFiles(files: ApplyFileEntry[], payloadDir: string, stagedRo
 
 function broadcast(progress: UpdateProgress): void {
   for (const win of BrowserWindow.getAllWindows()) {
+    // 退出路径也会广播最后一次进度：窗口已销毁时 send 会抛「Object has
+    // been destroyed」（与 main.ts pushToRenderer 同一条纪律），跳过即可。
+    if (win.isDestroyed() || win.webContents.isDestroyed()) continue;
     win.webContents.send("update:progress", progress);
   }
 }
@@ -508,6 +511,7 @@ export function startUpdatePolling(): void {
       if (!m) return;
       const view = { version: m.version, size: m.size, notes: m.notes ?? [] };
       for (const win of BrowserWindow.getAllWindows()) {
+        if (win.isDestroyed() || win.webContents.isDestroyed()) continue; // 同 broadcast：退出时窗口可能已销毁
         win.webContents.send("update:available", view);
       }
       notifyTrayUpdate(m.version);

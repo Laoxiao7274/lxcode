@@ -62,14 +62,14 @@ interface ContextValue {
   addDiscovered(providerId: string, models: DiscoveredModel[]): Promise<boolean>;
   /** 往提供商加模型；`provider` = 可选标签（同 id 多提供商并存 = 主键 provider::id）。 */
   addModel(providerId: string, modelId: string, provider?: string): Promise<boolean>;
-  updateModel(providerId: string, oldId: string, patch: ModelPatch): Promise<boolean>;
-  /** 改提供商的连接配置（Base URL / API Key / 格式），一次写到该组**所有**模型。
+  updateModel(providerId: string, oldId: string, patch: ModelPatch): Promise<boolean>;  /** 改提供商的连接配置（Base URL / API Key / 格式），一次写到该组**所有**模型。
    *  磁盘上没有提供商实体（这三个字段逐模型存），所以「改提供商的 key」就是
    *  「把这一组条目的连接配置一起改掉」——比「移除再重加」少丢一次模型配置。 */
   updateProvider(providerId: string, patch: ProviderPatch): Promise<boolean>;
   removeModel(providerId: string, modelId: string): void;
   addCustomProvider(input: { name: string; baseUrl: string; models: string[]; apiKey?: string }): void;
-  disconnectProvider(id: string): void;
+  /** 断开并移除提供商（删该组全部模型条目，不可恢复）——失败逐条点名 reject。 */
+  disconnectProvider(id: string): Promise<void>;
 }
 const Ctx = createContext<ContextValue | null>(null);
 export function SettingsProvider({ source, children }: { source: AgentSource; children: ReactNode }) {
@@ -291,8 +291,23 @@ export function SettingsProvider({ source, children }: { source: AgentSource; ch
       color: "#8e6fbe", fetching: false, custom: true, baseUrl, apiKey: apiKey ?? "", format: "openai",
       models: models.map(demoModel) }]);
   };
-  const disconnectProvider = (id: string) => {
-    if (admin) { void run(async () => { for (const m of providers.find((p) => p.id === id)?.models ?? []) await admin.removeModel(m.id); }); return; }
+  /** 断开并移除提供商：删该分组下全部模型条目（含 API Key，不可恢复）。
+   *  返回 Promise 供确认弹窗呈现 busy/error（此前是 fire-and-forget，失败只进
+   *  面板顶部 error 块，弹窗拿不到）。后端逐条 model.remove 不原子——单个失败
+   *  不中断整批（成功的留下），失败逐条点名回抛（对齐 updateProvider 文案）。 */
+  const disconnectProvider = async (id: string) => {
+    if (admin) {
+      await run(async () => {
+        const models = providers.find((p) => p.id === id)?.models ?? [];
+        const failed: string[] = [];
+        for (const m of models) {
+          try { await admin.removeModel(m.id); }
+          catch (e) { failed.push(`${m.id}（${e instanceof Error ? e.message : String(e)}）`); }
+        }
+        if (failed.length) throw new Error(`${failed.length}/${models.length} 个模型没删掉: ${failed.join("；")}`);
+      });
+      return;
+    }
     setDemo((ps) => ps.map((p) => p.id === id ? { ...p, connected: false, models: [] } : p));
   };
   return <Ctx.Provider value={{ settings, set, applyApproval, providers, live: Boolean(admin), error, setProviderEnabled,
