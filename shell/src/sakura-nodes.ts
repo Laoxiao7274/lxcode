@@ -100,6 +100,52 @@ export function candidateNodes(
   });
 }
 
+// ---- 隧道 extra（ini 风格键值串）—— auto_https 自愈 ----
+//
+// 背景（docs/sakurafrp-integration.md §3）：内地节点对 TCP 隧道上的 HTTP
+// （WS 升级）流量回 501（官方 FAQ 建站条件表：内地节点 + TCP + HTTP 流量
+// = 需配置自动 HTTPS）。extra 是 /tunnels 与 /tunnel/edit 都接受的 ini
+// 风格键值串（多行 `key = value`），官方示例即含 `auto_https = auto`。
+
+/** 我们的隧道统一带的 extra 值（创建时直接用；passthrough 模式待真机验证后再加）。 */
+export const AUTO_HTTPS_EXTRA = "auto_https = auto";
+
+/** 解析 extra 串为键值表：key 小写归一、值去空白；注释行（# ;）与空行忽略。 */
+export function parseExtra(extra: unknown): Map<string, string> {
+  const out = new Map<string, string>();
+  if (typeof extra !== "string") return out;
+  for (const line of extra.split(/\r?\n/)) {
+    const t = line.trim();
+    if (t === "" || t.startsWith("#") || t.startsWith(";")) continue;
+    const eq = t.indexOf("=");
+    if (eq <= 0) continue; // 没有键或键为空——畸形行丢弃，不抛（extra 是外部数据）
+    out.set(t.slice(0, eq).trim().toLowerCase(), t.slice(eq + 1).trim());
+  }
+  return out;
+}
+
+/** auto_https 是否已配置：值 auto 或非空（域名列表也算已配置）；缺失/空 = 未配置。 */
+export function autoHttpsConfigured(extra: unknown): boolean {
+  const v = parseExtra(extra).get(AUTO_HTTPS_KEY);
+  return typeof v === "string" && v !== "";
+}
+
+/**
+ * 写回 auto_https = auto，**保留其余键**（用户在面板配的其他项不能被这次
+ * 自愈抹掉）：已有 auto_https 一律替换成规范形态，其余键按原顺序原样保留。
+ */
+export function withAutoHttps(extra: unknown): string {
+  const pairs = parseExtra(extra);
+  pairs.delete(AUTO_HTTPS_KEY);
+  const lines = [...pairs.entries()].map(([k, v]) => `${k} = ${v}`);
+  lines.push(`${AUTO_HTTPS_KEY} = ${AUTO_HTTPS_VALUE}`);
+  return lines.join("\n");
+}
+
+/** auto_https 的目标值（auto = 节点按 SNI 自动申请证书并在节点侧终结 TLS）。 */
+const AUTO_HTTPS_KEY = "auto_https";
+const AUTO_HTTPS_VALUE = "auto";
+
 export type NodeChoice =
   | { ok: true; node: NodeCandidate }
   | { ok: false; error: string };

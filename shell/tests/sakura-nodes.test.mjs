@@ -9,15 +9,19 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  AUTO_HTTPS_EXTRA,
   PROBE_CACHE_TTL_MS,
   PROBE_CONCURRENCY,
   PROBE_TIMEOUT_MS,
+  autoHttpsConfigured,
   autoNodeChoice,
   candidateNodes,
   createLatencyProber,
   measureLatency,
   nodeUnusableReason,
+  parseExtra,
   resolveNodeChoice,
+  withAutoHttps,
 } from "../src/sakura-nodes.ts";
 
 const ALLOW = 1 << 2; // 允许创建
@@ -317,4 +321,66 @@ test("createLatencyProber：进行中的同一 host 复用同一个探测（面�
   const [a, b] = await Promise.all([prober.probe("same.com"), prober.probe("same.com")]);
   assert.equal(connects, 1, "两次并发 probe 只该开一个连接");
   assert.equal(a, b);
+});
+
+// ---- extra / auto_https（内地节点 501 修复）----
+
+test("parseExtra：ini 键值串解析（大小写归一、注释与畸形行丢弃）", () => {
+  const m = parseExtra("Auto_Https = auto\n# 注释\n; 也是注释\n\nbadline\n = nokey\nfoo = bar = baz");
+  assert.equal(m.get("auto_https"), "auto");
+  assert.equal(m.get("foo"), "bar = baz"); // 值里的 = 保留（只按第一个切）
+  assert.ok(!m.has("badline"));
+  assert.equal(parseExtra(null).size, 0);
+  assert.equal(parseExtra(undefined).size, 0);
+  assert.equal(parseExtra(42).size, 0);
+});
+
+test("autoHttpsConfigured：值非空 = 已配置（域名列表算），缺失/空 = 未配置", () => {
+  assert.ok(autoHttpsConfigured("auto_https = auto"));
+  assert.ok(autoHttpsConfigured("auto_https=example.com,foo.bar"));
+  assert.ok(!autoHttpsConfigured("auto_https = "));
+  assert.ok(!autoHttpsConfigured("other_key = x"));
+  assert.ok(!autoHttpsConfigured(""));
+  assert.ok(!autoHttpsConfigured(null));
+});
+
+test("withAutoHttps：补 auto_https 且保留其余键；已有则替换为规范形态（幂等）", () => {
+  assert.equal(withAutoHttps(""), AUTO_HTTPS_EXTRA);
+  assert.equal(withAutoHttps(null), AUTO_HTTPS_EXTRA);
+  assert.equal(withAutoHttps("foo = 1\nbar = 2"), "foo = 1\nbar = 2\n" + AUTO_HTTPS_EXTRA);
+  // 已有 auto_https（哪怕是别的值）→ 归一，其余键不丢
+  assert.equal(withAutoHttps("auto_https = something\nfoo = 1"), "foo = 1\n" + AUTO_HTTPS_EXTRA);
+  // 幂等：再跑一遍结果不变
+  const once = withAutoHttps("foo = 1");
+  assert.equal(withAutoHttps(once), once);
+});
+
+test("sakura.ts：创建带 extra、启动前自愈、repairTunnel handler 都在位", () => {
+  const src = readFileSync(new URL("../src/sakura.ts", import.meta.url), "utf8");
+  assert.ok(/extra: AUTO_HTTPS_EXTRA/.test(src), "createTunnel 的 form 必须带 extra");
+  assert.ok(/ensureAutoHttps\(t, id,/.test(src), "startTunnel spawn 前要走 ensureAutoHttps");
+  assert.ok(/"sakura:repairTunnel"/.test(src), "要有手动修复 IPC handler");
+  assert.ok(/autoHttps: autoHttpsConfigured\(x\.extra\)/.test(src), "隧道视图要带 autoHttps");
+});
+
+// ---- 三态拆分（online / running / starting）----
+//
+// online 只能来自服务端 x.online（节点端确认）；「本机 frpc 在跑」（runningId）
+// 不得合并进 online——否则「启动中」窗口里用户看到「在线」但实际还没连上节点。
+// starting = running && !online，QR 入口只认 online。
+
+test("sakura.ts：online 与 running 三态拆分（runningId 不再合并进 online）", () => {
+  assert.ok(/online: boolean;/m.test(sakuraSrc), "SakuraTunnelView.online = 节点端确认在线");
+  assert.ok(/running: boolean;/m.test(sakuraSrc), "SakuraTunnelView.running = 本机 frpc 在跑");
+  assert.ok(/starting\?: boolean;/m.test(sakuraSrc), "SakuraTunnelView.starting = 推导的启动中态");
+  assert.ok(
+    !/online: Boolean\(x\.online\) \|\| state\.runningId === x\.id/.test(sakuraSrc),
+    "旧合并（online = x.online || runningId===id）必须已删除——那是「在线」语义失真的来源",
+  );
+});
+
+test("sakura.ts：fetchTunnels 视图推导 online/running/starting（纯字段投影，不编造）", () => {
+  assert.ok(/const running = state\.runningId === x\.id;/.test(sakuraSrc), "running 直接取 runningId===id");
+  assert.ok(/const online = Boolean\(x\.online\);/.test(sakuraSrc), "online 只取服务端 x.online");
+  assert.ok(/starting: running && !online,/.test(sakuraSrc), "starting = running && !online（启动中窗口）");
 });

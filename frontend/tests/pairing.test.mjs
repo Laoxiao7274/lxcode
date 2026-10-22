@@ -57,3 +57,14 @@ test('frp 公网地址过安卓 addrValid 同款正则（host:port 形态可被�
   const [ep] = tunnelPairEndpoints([{ addr: 'idea-leaper-1.natfrp.io:20000', online: true }]);
   assert.ok(ADDR_RE.test(ep.addr), ep.addr);
 });
+
+// online 语义收紧（2026-12 三态拆分）：online = 节点端确认在线（服务端可达），
+// 不再包含「本机 frpc 在跑但节点未确认」（starting）——starting 隧道的公网地址
+// 扫了还连不上，不能进二维码。
+test('frp 入口：starting 隧道（running 未 online）不进二维码——online 必须是节点确认态', () => {
+  const eps = tunnelPairEndpoints([
+    { addr: 'idea-leaper-1.natfrp.io:20000', online: false, running: true, starting: true },
+    { addr: 'hk-1.natfrp.io:20001', online: true, running: true, starting: false },
+  ]);
+  assert.deepEqual(eps.map((e) => e.addr), ['hk-1.natfrp.io:20001']);
+});

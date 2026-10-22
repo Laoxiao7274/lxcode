@@ -46,10 +46,16 @@ export interface SakuraTunnel {
   addr: string;
   /** 在线（frpc 在跑且节点可达）。 */
   online: boolean;
+  /** 本机 frpc 正在服务这条隧道（runningId===id）。 */
+  running: boolean;
+  /** 本机 frpc 在跑但节点端还没确认在线（启动中——pill 三态的中间态）。 */
+  starting: boolean;
   /** 节点负载百分比（选节点时的参考；null = 负载表拉不到，UI 显示「—」）。 */
   load: number | null;
   /** 隧道累计用量（字节——双向计费；null = 还没取到）。 */
   used: number | null;
+  /** 自动 HTTPS 已配置（extra.auto_https 非空；未配置的隧道 WS 流量会被内地节点 501）。 */
+  autoHttps: boolean;
 }
 
 /** 字节数人性化（流量展示）。 */
@@ -348,8 +354,11 @@ export function ConnectionsProvider({ children, sakuraBridge, remoteControlBridg
           nodeName: node.name,
           addr: `${node.host}:${port}`,
           online: true,
+          running: true,
+          starting: false,
           load: node.load,
           used: 0,
+          autoHttps: true,
         }];
       });
       return;
@@ -388,14 +397,21 @@ export function ConnectionsProvider({ children, sakuraBridge, remoteControlBridg
   const toggleTunnel = useCallback((id: number) => {
     const b = bridgeRef.current;
     if (!b) {
-      setTunnels((list) => list.map((t) => (t.id === id ? { ...t, online: !t.online } : t)));
+      setTunnels((list) => list.map((t) => (t.id === id ? { ...t, online: !t.online, running: !t.online, starting: false } : t)));
       return;
     }
     setSakuraError(null);
-    // 在线 = frpc 在跑：停掉；离线：启动（换隧道由主进程先停旧的）
+    // 在线 = 节点端确认在线：停掉；否则启动（换隧道由主进程先停旧的）。
+    // 启动返回后仍无 online（frpc 拉配置+注册节点要几秒）→ 本地乐观置 starting
+    //（不动 online），等 refresh 的真实数据覆盖——填掉 4s 反馈死区。
     const running = tunnels.find((t) => t.id === id)?.online;
     const call = running ? b.stopTunnel() : b.startTunnel(id);
-    call.then(applySakuraState).catch(sakuraFail);
+    call
+      .then((s) => {
+        applySakuraState(s);
+        setTunnels((list) => list.map((t) => (t.id === id && !t.online ? { ...t, starting: true } : t)));
+      })
+      .catch(sakuraFail);
   }, [applySakuraState, sakuraFail, tunnels]);
 
   const removeTunnel = useCallback((id: number) => {

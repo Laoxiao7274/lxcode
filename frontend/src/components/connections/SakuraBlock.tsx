@@ -54,7 +54,7 @@ export function SakuraBlock() {
     if (!ep) return;
     QRCode.toDataURL(pairPayload(ep.addr, remoteToken, ep.name), { margin: 2, width: 320, errorCorrectionLevel: "M" })
       .then((url) => {
-        if (alive) setQr({ url, label: `${ep.label}（${ep.addr}）`, desc: "手机端「扫码配对」扫此码即可通过公网入口连接——地址与 Token 自动填入" });
+        if (alive) setQr({ url, label: `${ep.label}（${ep.addr}）`, desc: "手机端「扫码配对」扫此码即可通过公网入口连接——地址与 Token 自动填入。隧道已带自动 HTTPS（节点对外 TLS）：若手机端连不上，把入口地址改用 wss:// 再试（客户端连接协议待真机验证）。" });
       })
       .catch(() => {
         if (alive) setQr(null);
@@ -124,10 +124,23 @@ export function SakuraBlock() {
           </div>
         ) : (
           tunnels.map((t) => (
-            <div className="conn-tunnel" key={t.id} data-online={t.online ? "true" : undefined}>
+            <div className="conn-tunnel" key={t.id} data-online={t.online ? "true" : undefined} data-starting={t.starting && !t.online ? "true" : undefined}>
               <div className="conn-tunnel-head">
                 <span className="conn-tunnel-name mono">{t.name}</span>
-                <span className={"ag-pill " + (t.online ? "risk-low" : "src")}>{t.online ? "在线" : "已断开"}</span>
+                {/* 三态：online = 节点端确认在线；starting = 本机 frpc 在跑但节点未确认
+                    （地址扫了还连不上）；都不满足 = 已断开 */}
+                {t.online ? (
+                  <span className="ag-pill risk-low">在线</span>
+                ) : t.starting ? (
+                  <span className="ag-pill starting">启动中…</span>
+                ) : (
+                  <span className="ag-pill src">已断开</span>
+                )}
+                {t.autoHttps ? (
+                  <span className="ag-pill risk-low" title="已配置自动 HTTPS——内地节点对 TCP 隧道上的 WS 流量不再回 501">HTTPS 直通</span>
+                ) : (
+                  <span className="ag-pill warn" title="未配置自动 HTTPS——内地节点会把这条隧道上的 WS 流量回 501；启动隧道时会自动补上">需修复</span>
+                )}
               </div>
               <div className="conn-cred">
                 <span className="conn-cred-label">地址</span>
@@ -141,7 +154,7 @@ export function SakuraBlock() {
               <div className="conn-cred">
                 <span className="conn-cred-label">用量</span>
                 <span className="conn-cred-value">{t.used === null ? "—" : humanBytes(t.used)}</span>
-                <Button variant="ghost" className="conn-tunnel-btn" data-conn="tunnel-toggle" disabled={busy} onClick={() => toggleTunnel(t.id)}>
+                <Button variant="ghost" className="conn-tunnel-btn" data-conn="tunnel-toggle" disabled={busy || (!!t.starting && !t.online)} onClick={() => toggleTunnel(t.id)}>
                   {t.online ? "断开" : "启动"}
                 </Button>
                 <TunnelDelBtn onConfirm={() => removeTunnel(t.id)} disabled={busy} />

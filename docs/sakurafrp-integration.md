@@ -51,7 +51,8 @@ interface SakuraTunnel {
 | 登录校验 | `GET /user/info` | Bearer token；拿 name/traffic/speed |
 | 节点选择 | `GET /nodes` + `GET /node/stats` | 过滤：flag bit2（允许创建）置位、bit9（离线）清零；按 load 升序取首个 |
 | 隧道列表 | `GET /tunnels` | 找 lxcode 建的（命名约定 `lxcode-backend`） |
-| 创建隧道 | `POST /tunnels` | `name=lxcode-backend, type=tcp, node=<id>, local_ip=127.0.0.1, local_port=7789`；remote 留空=自动分配端口 |
+| 创建隧道 | `POST /tunnels` | `name=lxcode-backend, type=tcp, node=<id>, local_ip=127.0.0.1, local_port=7789`；remote 留空=自动分配端口；**`extra = "auto_https = auto"`（见下）** |
+| 存量隧道自愈 | `POST /tunnel/edit` | form `id` + `extra`（保留原有其他键、写回 `auto_https = auto`）。时机 = **启动隧道 spawn frpc 前**（frpc 每次启动从服务端拉配置，改完重启即生效）；已配置则跳过（幂等），edit 失败不阻断启动；另有 `sakura:repairTunnel` IPC 手动兜底口 |
 | frpc 启动 | 环境变量 `NATFRP_TOKEN` + `NATFRP_TARGET`，args `-n` | **官方姿势**（[frpc 用户手册](https://doc.natfrp.com/frpc/manual)）：frpc 自己拉配置，无需 /tunnel/config；密钥走环境变量不进进程列表。日志落 `userData/frpc/frpc-<id>.log` |
 | 停/启 | frpc 进程生命周期 | 关闭=kill frpc（隧道登记保留）；节点端踢下线由服务端处理 |
 | 删除隧道 | `POST /tunnel/delete` | `ids=<id>`（用户显式操作，不在关闭时自动删） |
@@ -61,6 +62,15 @@ interface SakuraTunnel {
 **认证**：`Authorization: Bearer <token>`（或 query `token=`——POST 表单兼容）。
 
 **错误**：统一 `{code, msg}`；429 限频注意重试退避。
+
+### 3.1 auto_https（隧道 extra）——为什么必须带
+
+`extra` 是隧道上的 ini 风格键值串（`POST /tunnels` / `POST /tunnel/edit` 都接受，`GET /tunnels` 回显）。我们统一写 `auto_https = auto`：
+
+- **根因**：extra 留空时，**内地节点对 TCP 隧道上的 HTTP（含 WS 升级）流量回 501**——官方 FAQ 建站条件表：内地节点 + TCP + HTTP 流量 = 需配置自动 HTTPS。lxcode 后端走 WS，正好命中。
+- **参数语义**：`auto_https = auto` = 节点按请求的 SNI 自动申请证书，并在**节点侧终结 TLS**；frpc 不解析、不修改流量。`auto_https_mode = passthrough`（frpc 侧终结，最接近纯 TCP）官方未承诺同样免除 501 判定——**待真机验证后再考虑**，当前只带 `auto_https = auto`。
+- **解析口径**（`shell/src/sakura-nodes.ts` `parseExtra` / `autoHttpsConfigured`）：`auto_https` 键存在且值非空（auto 或域名列表）视为已配置；缺失/空 = 未配置，需要自愈。
+- **⚠ 待真机验证**：auto 模式下节点对外是 TLS，手机端扫码配对后客户端连 `ws://` 明文入口可能被拒——**客户端可能必须改用 `wss://`**（连接二维码与 SakuraBlock 的说明里已标注此点）。配对二维码载荷本身未改。
 
 ## 4. 架构与安全决策
 

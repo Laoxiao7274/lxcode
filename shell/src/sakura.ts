@@ -18,9 +18,12 @@ import { existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSyn
 import { join } from "node:path";
 import { app } from "electron";
 import {
+  AUTO_HTTPS_EXTRA,
+  autoHttpsConfigured,
   candidateNodes,
   createLatencyProber,
   resolveNodeChoice,
+  withAutoHttps,
   type NodeCandidate,
   type RawNode,
 } from "./sakura-nodes";
@@ -49,11 +52,22 @@ export interface SakuraTunnelView {
   nodeName: string;
   /** 公网连接地址 host:port。 */
   addr: string;
+  /** 节点端确认在线（/tunnels 的 x.online——服务端真实在线态，不与 running 合并）。 */
   online: boolean;
+  /** 本机 frpc 正在服务这条隧道（runningId===id）。 */
+  running: boolean;
+  /**
+   * 本机 frpc 在跑但节点端还没确认在线（starting = running && !online，渲染层
+   * 可自行推导；壳里直接给出省得两端各推一遍）。此窗口内公网地址扫了连不上
+   * ——二维码入口只认 online。
+   */
+  starting?: boolean;
   /** 节点负载百分比（/node/stats 拉不到时为 null——UI 显示「—」，不是 0%）。 */
   load: number | null;
   /** 隧道累计用量（字节，双向计费）。 */
   used: number | null;
+  /** 自动 HTTPS 已配置（extra.auto_https 非空）——未配置的隧道 WS 流量会被内地节点 501。 */
+  autoHttps: boolean;
 }
 
 /** 节点选择列表项（渲染层投影：候选节点 + 已测出的延迟）。 */
@@ -186,6 +200,8 @@ interface RawTunnel {
   node?: number;
   online?: boolean;
   remote?: string;
+  /** ini 风格键值串（auto_https 等）；缺失 = 未配置任何扩展项。 */
+  extra?: string;
 }
 
 async function fetchAccount(t: string): Promise<{ account: SakuraAccountView | null; ban: SakuraState["ban"] }> {
@@ -271,16 +287,22 @@ async function fetchTunnels(t: string, nodes: Map<number, RawNode & { load: numb
   for (const x of ours) {
     const node = nodes.get(x.node ?? -1);
     const port = parseInt(x.remote ?? "", 10);
+    const running = state.runningId === x.id;
+    const online = Boolean(x.online);
     views.push({
       id: x.id as number,
       name: x.name ?? TUNNEL_NAME,
       nodeName: node?.name ?? `节点 ${x.node ?? "?"}`,
       addr: node?.host && Number.isFinite(port) ? `${node.host}:${port}` : (x.remote || "待分配"),
-      // 在线 = 节点端确认在线，或 frpc 正在跑（spawn 后节点端状态有延迟——
-      // 不合并的话行内毫无反馈，用户会连点启动）
-      online: Boolean(x.online) || state.runningId === x.id,
+      // 三态拆分（2026-12 用户拍板）：online = 节点端确认在线（服务端真实态），
+      // running = 本机 frpc 在跑。旧实现把 runningId===id 合并进 online，导致
+      // 「在线」失真（frpc 拉配置+注册节点要几秒，用户看到在线其实还没连上）。
+      online,
+      running,
+      starting: running && !online,
       load: node?.load ?? null,
       used: null,
+      autoHttps: autoHttpsConfigured(x.extra),
     });
   }
   // 隧道流量：每条一次请求，条数少时直取；失败不挡列表（used 留 null）
@@ -365,9 +387,18 @@ async function createTunnel(nodeId?: number | null): Promise<void> {
   setState({ busy: "正在创建隧道" });
   try {
     const node = await chooseNode(t, nodeId);
+    // extra 带 auto_https = auto（ini 键值串，官方示例同款）：内地节点对 TCP
+    // 隧道上的 HTTP（WS 升级）流量回 501（官方 FAQ 建站条件表：内地节点 +
+    // TCP + HTTP 流量 = 需配置自动 HTTPS）。auto 模式下 frpc 不碰流量、节点
+    // 按 SNI 自动签证书并在节点侧终结 TLS。passthrough 模式（更接近纯 TCP）
+    // 官方未承诺同样免除 501 判定——待真机验证后再考虑。
     const created = await api<{ id?: number; name?: string; remote?: string }>(`/tunnels`, {
       token: t,
-      form: { name: TUNNEL_NAME, type: "tcp", node: String(node.id), local_ip: "127.0.0.1", local_port: String(localBackendPort()), remote: "" },
+      form: {
+        name: TUNNEL_NAME, type: "tcp", node: String(node.id),
+        local_ip: "127.0.0.1", local_port: String(localBackendPort()), remote: "",
+        extra: AUTO_HTTPS_EXTRA,
+      },
     });
     // 回显 id 入缓存：这就是「这条是 lxcode 建的」的事实源（不依赖名字）
     if (typeof created?.id === "number") {
@@ -405,6 +436,49 @@ async function removeTunnel(id: number): Promise<void> {
   } finally {
     setState({ busy: null });
   }
+}
+
+// ---- auto_https 自愈 ----
+//
+// 存量隧道（extra 没带 auto_https）在启动前补一次 edit：缺失/不对 →
+// POST /tunnel/edit（保留原有其他键，写回 auto_https = auto）→ 已配置则
+// 跳过（幂等）。改完 extra 后 frpc 重启即生效——frpc 每次启动都从服务端拉
+// 配置，所以放在 spawn 之前检查即可，无需 /tunnel/config。
+
+/**
+ * 确保隧道的 auto_https 已配置；已配置（幂等）返回 false，做了 edit 返回 true。
+ * 失败**不阻断启动**（edit 挂了隧道照常能跑，只是内地节点可能 501）——错误
+ * 记日志并回 false，由调用方决定要不要提示。
+ */
+async function ensureAutoHttps(t: string, id: number, currentExtra: unknown): Promise<boolean> {
+  if (autoHttpsConfigured(currentExtra)) return false;
+  const extra = withAutoHttps(currentExtra);
+  await api(`/tunnel/edit`, { token: t, form: { id: String(id), extra } });
+  console.log(`[sakura] 隧道 ${id} 已补 auto_https = auto（/tunnel/edit）`);
+  return true;
+}
+
+/** 手动触发口（IPC sakura:repairTunnel）：按当前列表补一遍 auto_https。 */
+async function repairTunnels(): Promise<SakuraState> {
+  const t = requireToken();
+  let repaired = 0;
+  try {
+    const raw = await api<RawTunnel[]>("/tunnels", { token: t });
+    for (const x of raw) {
+      if (typeof x.id !== "number") continue;
+      try {
+        if (await ensureAutoHttps(t, x.id, x.extra)) repaired++;
+      } catch (e) {
+        console.log(`[sakura] 隧道 ${x.id} auto_https 修复失败: ${errMsg(e)}`);
+      }
+    }
+    await refresh(true);
+  } catch (e) {
+    setState({ error: errMsg(e) });
+    throw e;
+  }
+  console.log(`[sakura] auto_https 修复完成：${repaired} 条`);
+  return snapshot();
 }
 
 // ---- frpc 生命周期 ----
@@ -478,6 +552,14 @@ async function startTunnel(id: number): Promise<void> {
   }
   setState({ busy: "正在启动隧道" });
   try {
+    // 启动前自愈：存量隧道 extra 缺 auto_https → 先 /tunnel/edit 补上再 spawn
+    // （frpc 每次启动从服务端拉配置，改完重启即生效）。失败不阻断启动，
+    // 只记日志——内地节点 501 的修复尝试不该让隧道整个起不来。
+    const raw = await api<RawTunnel[]>("/tunnels", { token: t });
+    const current = raw.find((x) => x.id === id);
+    await ensureAutoHttps(t, id, current?.extra).catch((e) => {
+      console.log(`[sakura] 隧道 ${id} auto_https 修复失败（继续启动）: ${errMsg(e)}`);
+    });
     const exe = await ensureFrpc();
     if (state.runningId !== null && state.runningId !== id) stopFrpc();
     mkdirSync(frpcDir(), { recursive: true });
@@ -650,4 +732,6 @@ export const sakuraHandlers = {
   "sakura:removeTunnel": (_e: unknown, id: number): Promise<SakuraState> => removeTunnel(Number(id)).then(snapshot),
   "sakura:startTunnel": (_e: unknown, id: number): Promise<SakuraState> => startTunnel(Number(id)).then(snapshot),
   "sakura:stopTunnel": (): Promise<SakuraState> => stopTunnel().then(snapshot),
+  // 手动兜底口：对账户里 lxcode 管理的存量隧道补 auto_https（幂等；前端暂未接）。
+  "sakura:repairTunnel": (): Promise<SakuraState> => repairTunnels(),
 };

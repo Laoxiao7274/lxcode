@@ -47,6 +47,8 @@ contextBridge.exposeInMainWorld("__LX__", {
     startTunnel: (id: number): Promise<unknown> => ipcRenderer.invoke("sakura:startTunnel", id),
     stopTunnel: (): Promise<unknown> => ipcRenderer.invoke("sakura:stopTunnel"),
     removeTunnel: (id: number): Promise<unknown> => ipcRenderer.invoke("sakura:removeTunnel", id),
+    // 存量隧道 auto_https 手动修复口（幂等；前端暂未接，留作兜底）。
+    repairTunnels: (): Promise<unknown> => ipcRenderer.invoke("sakura:repairTunnel"),
     onState: (cb: (s: unknown) => void): (() => void) => {
       const listener = (_e: unknown, s: unknown): void => cb(s);
       ipcRenderer.on("sakura:state", listener as never);

@@ -467,6 +467,22 @@
 .conn-tunnel[data-online="true"] {
   border-color: rgba(16, 163, 127, 0.35);
 }
+/* 启动中 pill：frpc 在跑但节点未确认——中性色 + 呼吸（1.4s，reduced-motion 门控）。
+   无边框强调——在线绿框只留给确认在线的隧道。 */
+.conn-tunnel[data-starting="true"] .ag-pill.starting {
+  color: var(--fg-muted);
+  background: var(--border-soft);
+  animation: conn-pill-breathe 1.4s ease-in-out infinite;
+}
+@keyframes conn-pill-breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .conn-tunnel[data-starting="true"] .ag-pill.starting {
+    animation: none;
+  }
+}
 .conn-tunnel-head {
   display: flex;
   align-items: center;
