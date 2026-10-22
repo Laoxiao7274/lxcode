@@ -91,10 +91,23 @@ class ConnStore(context: Context) {
         prefs.edit().putString(KEY_ACTIVE, id).apply()
     }
 
+    /**
+     * 「真实后端」开关的持久化（true = 上次退出时处于真实模式）。
+     * 重启恢复的依据：true → 启动时按当前连接条目自动 [重连]（连接持久化的另一半
+     * ——凭证/列表/activeId 早已落盘，缺的就是这一个布尔）。
+     * 用户显式断开必须写 false，否则重启又自动连上，违背断开的预期。
+     */
+    fun loadRealOn(): Boolean = prefs.getBoolean(KEY_REAL_ON, false)
+
+    fun saveRealOn(on: Boolean) {
+        prefs.edit().putBoolean(KEY_REAL_ON, on).apply()
+    }
+
     companion object {
         private const val TAG = "ConnStore"
         private const val KEY_CONNS = "conns"
         private const val KEY_ACTIVE = "activeConnId"
         private const val KEY_DRAFT = "draft"
+        private const val KEY_REAL_ON = "realOn"
     }
 }

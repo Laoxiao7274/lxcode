@@ -290,7 +290,7 @@ private fun RealBackendSection(state: MockAppState) {
                 label = "",
                 checked = state.realOn,
                 onCheckedChange = { on ->
-                    state.realOn = on
+                    state.writeRealOn(on)
                     if (on) {
                         // 手填地址/Token 直连：不属于任何连接条目，清掉「当前」标记
                         state.setActiveConn("")
@@ -367,8 +367,9 @@ private fun RealBackendSection(state: MockAppState) {
 
 /** 一条连接卡（本机与远程共用；本机不显示编辑/删除）。
  *  [active] = 「当前」标签（最后选中/正在连接的条目）；[connected] = 真实连接
- *  正跑在这条上（决定「断开」/「连接」按钮——重启后 realOn=false，当前条目
- *  也应显示「连接」按钮可一键重连，而不是卡在没有意义的「断开」上）。 */
+ *  正跑在这条上（决定「断开」/「连接」按钮——重启后按 realOn 持久化自动恢复连接，
+ *  恢复失败/条目被删时当前条目仍显示「连接」按钮可一键重连，而不是卡在
+ *  没有意义的「断开」上）。 */
 @Composable
 private fun ConnCard(
     conn: BackendConn,

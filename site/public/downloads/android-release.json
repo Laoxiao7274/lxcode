@@ -1,13 +1,12 @@
 {
-  "version": "0.2.12",
-  "versionCode": 12,
-  "name": "lxcode-0.2.12-android.apk",
-  "size": 11737584,
-  "sha256": "e24bb288898a64f948fc287ab870b941761ad2b50838241637781a597e968574",
-  "url": "downloads/lxcode-0.2.12-android.apk",
+  "version": "0.3.5",
+  "versionCode": 13,
+  "name": "lxcode-0.3.5-android.apk",
+  "size": 11737583,
+  "sha256": "b5d730113c7568609e743df54b2b3eb50acc1da2bbfe3dcf7617d3f596d53b2f",
+  "url": "downloads/lxcode-0.3.5-android.apk",
   "notes": [
-    "模型选择改为会话级：每个会话记住自己选的模型，切会话不再串台",
-    "多端同步：手机与桌面同时看同一会话，改模型即时同步",
-    "子会话继承父会话当前模型，派发后不再偷偷换模型"
+    "安卓端连接协议自适应（wss/ws/裸地址），wss 专用自签证书放行",
+    "安卓连接状态持久化：重启自动恢复连接；显式断开不自动重连；失败保持待重连"
   ]
 }

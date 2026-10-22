@@ -19,6 +19,13 @@ test('载荷对特殊字符 URL encode（name 含空格/中文不破坏 URI）',
   );
 });
 
+test('载荷接受 wss:// 前缀地址（樱花隧道入口——hostFromAddr 对带 scheme 地址取对 host）', () => {
+  assert.equal(
+    pairPayload('wss://idea-leaper-1.natfrp.io:20000', 'tok'),
+    'lxcode://pair?addr=wss%3A%2F%2Fidea-leaper-1.natfrp.io%3A20000&token=tok&name=idea-leaper-1.natfrp.io',
+  );
+});
+
 test('hostFromAddr 回落原样时（name === addr）不带 name 参数（安卓会自动按地址带出）', () => {
   // 地址解析不出主机段时 hostFromAddr 原样返回 → name 与 addr 相同 → 省略
   const payload = pairPayload('weird-addr', 'tok');
@@ -32,8 +39,15 @@ test('frp 入口：只收在线隧道（离线地址扫了也连不上，不放�
     { addr: 'hk-1.natfrp.io:20001', online: false },
   ]);
   assert.equal(eps.length, 1);
-  assert.equal(eps[0].addr, 'idea-leaper-1.natfrp.io:20000');
+  assert.equal(eps[0].addr, 'wss://idea-leaper-1.natfrp.io:20000');
   assert.equal(eps[0].label, '樱花frp');
+});
+
+test('frp 入口：addr 带 wss:// 前缀（auto_https=auto 节点对外 TLS，明文 ws 被节点 501 拦）', () => {
+  const eps = tunnelPairEndpoints([{ addr: 'idea-leaper-1.natfrp.io:20000', online: true }]);
+  assert.ok(eps[0].addr.startsWith('wss://'), eps[0].addr);
+  // name 仍按主机名带出，不带 wss:// 前缀
+  assert.equal(eps[0].name, '樱花frp · idea-leaper-1.natfrp.io');
 });
 
 test('frp 入口：按 addr 去重、空地址剔除、顺序保持', () => {
@@ -43,7 +57,7 @@ test('frp 入口：按 addr 去重、空地址剔除、顺序保持', () => {
     { addr: '  ', online: true },
     { addr: '待分配', online: true },
   ]);
-  assert.deepEqual(eps.map((e) => e.addr), ['cn-sh-1.natfrp.io:20002']);
+  assert.deepEqual(eps.map((e) => e.addr), ['wss://cn-sh-1.natfrp.io:20002']);
 });
 
 test('frp 入口的预填连接名可区分来源（带「樱花frp」标签 + 节点主机名）', () => {
@@ -52,8 +66,8 @@ test('frp 入口的预填连接名可区分来源（带「樱花frp」标签 + �
   assert.ok(ep.name.includes('idea-leaper-1.natfrp.io'), ep.name);
 });
 
-test('frp 公网地址过安卓 addrValid 同款正则（host:port 形态可被对端消费）', () => {
-  const ADDR_RE = /^(https?:\/\/)?[a-zA-Z0-9.-]+(:\d{1,5})(\/.*)?$/;
+test('frp 公网地址过安卓 addrValid 同款正则（wss://host:port 形态可被对端消费）', () => {
+  const ADDR_RE = /^((https?|wss?):\/\/)?[a-zA-Z0-9.-]+(:\d{1,5})(\/.*)?$/;
   const [ep] = tunnelPairEndpoints([{ addr: 'idea-leaper-1.natfrp.io:20000', online: true }]);
   assert.ok(ADDR_RE.test(ep.addr), ep.addr);
 });
@@ -66,5 +80,5 @@ test('frp 入口：starting 隧道（running 未 online）不进二维码——o
     { addr: 'idea-leaper-1.natfrp.io:20000', online: false, running: true, starting: true },
     { addr: 'hk-1.natfrp.io:20001', online: true, running: true, starting: false },
   ]);
-  assert.deepEqual(eps.map((e) => e.addr), ['hk-1.natfrp.io:20001']);
+  assert.deepEqual(eps.map((e) => e.addr), ['wss://hk-1.natfrp.io:20001']);
 });

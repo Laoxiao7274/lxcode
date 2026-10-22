@@ -159,6 +159,7 @@ class MockAppState(private val store: ConnStore? = null) {
     /**
      * 「真实后端」开关：开 = 各页面从 [real] 取真实数据（WS JSON-RPC 连后端）；
      * 关 = 会话页显示连接引导态（mock 假数据已随原型退役，无第三条路径）。
+     * 写入一律走 [writeRealOn]（开关即落盘）；启动恢复见 [restoreRealConnection]。
      */
     var realOn by mutableStateOf(false)
 
@@ -269,7 +270,7 @@ class MockAppState(private val store: ConnStore? = null) {
         setActiveConn(conn.id)
         realAddr = if (conn.local) LOCAL_ADDR else conn.addr
         realToken = conn.token
-        realOn = true
+        writeRealOn(true)
         // 上次连接的凭证也记进草稿：下次引导态/开关预填的就是这套地址
         saveRealDraft()
         Log.i(TAG, "连接条目 ${conn.name} → $realAddr")
@@ -279,7 +280,31 @@ class MockAppState(private val store: ConnStore? = null) {
     /** 断开真实连接（条目「断开」按钮 / 调试开关关闭共用）：断 WS 并退出真实模式。 */
     fun disconnectReal() {
         real.disconnect()
-        realOn = false
+        writeRealOn(false)
+    }
+
+    /**
+     * 「真实后端」开关的内存态写入收口（连接页手动开关用）：开关即落盘。
+     * 命名避属性 setter：`setRealOn` 与 `var realOn` 的 JVM setter 签名撞车
+     * （Platform declaration clash），落盘收口叫 writeRealOn。
+     * store 是 private（持久化细节不出状态类），外部一律经此方法写 realOn——
+     * connectTo/disconnectReal 内部写内存态时也走这里，三处落盘同一份逻辑。
+     */
+    fun writeRealOn(on: Boolean) {
+        realOn = on
+        store?.saveRealOn(on)
+    }
+
+    /**
+     * 启动恢复连接（AppRoot 冷启动 LaunchedEffect 调一次）：上次退出处于真实模式
+     * （realOn 落盘 true）且当前连接 id 命中现存条目 → 直接 connectTo 恢复连接。
+     * 放这里而非构造函数：构造时发网络连接与 AppContextHolder.init 时序耦合（AppRoot）。
+     * 条目已被删 → 不动作，保持 Offline 引导态（不编造）；连接失败不回写
+     * realOn=false（Failed 态持续退避 + 亮屏即拉），只有用户显式断开才清。
+     */
+    fun restoreRealConnection() {
+        if (store?.loadRealOn() != true) return
+        conns.firstOrNull { it.id == activeConnId }?.let { connectTo(it) }
     }
 
     /** 这条条目是不是「当前」连接：真实模式 targeting 它才算（调试开关手填地址
@@ -346,6 +371,14 @@ fun AppRoot(pairUri: String? = null, onPairUriConsumed: () -> Unit = {}) {
     // 而不是静默回「空闲」（对齐桌面「更新脚本静默失败无人拉起」的教训）。
     LaunchedEffect(Unit) {
         state.updater.resumePendingDownload()
+    }
+
+    // 连接持久化（恢复）：realOn 落盘 + 凭证/列表/activeConnId 早已落盘，重启后
+    // 这里按存档自动恢复真实模式——重进 app 不用每次手动点连接。放 LaunchedEffect
+    // 而非 MockAppState 构造函数：构造时发网络连接与 AppContextHolder.init 时序耦合。
+    // 恢复条件与失败语义见 MockAppState.restoreRealConnection。
+    LaunchedEffect(Unit) {
+        state.restoreRealConnection()
     }
 
     // 应用内下载流程：Ready（下载完成）→ installVerified（**校验+安装单入口**：

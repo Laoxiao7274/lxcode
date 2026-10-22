@@ -37,8 +37,10 @@ fun nameFromAddr(addr: String): String {
     return noScheme.substringBefore("/").substringBefore(":")
 }
 
-/** 地址格式校验（对齐桌面端 RemoteForm 的正则）。 */
-private val ADDR_RE = Regex("""^(https?://)?[a-zA-Z0-9.-]+(:\d{1,5})(/.*)?$""")
+/** 地址格式校验（对齐桌面端 RemoteForm 的正则）。
+ *  前缀放宽到 ws(s)://：樱花frp 隧道入口 auto_https=auto 节点对外 TLS，二维码
+ *  载荷带 wss:// 前缀（shared/pairing.ts）；明文 ws 会被节点回 501。 */
+private val ADDR_RE = Regex("""^((https?|wss?)://)?[a-zA-Z0-9.-]+(:\d{1,5})(/.*)?$""")
 
 /** 地址合法（空串也算「还没填」，不报错）。 */
 fun addrValid(addr: String): Boolean = addr.isEmpty() || ADDR_RE.matches(addr)

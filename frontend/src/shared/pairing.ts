@@ -43,7 +43,10 @@ export function pairPayload(addr: string, token: string, name = ""): string {
 /** 从樱花frp 隧道挑出可扫码的公网入口：
  *  只收**在线**隧道（离线隧道的地址扫了也连不上，不放进去误导用户）；
  *  剔除占位地址（「待分配」——端口还没分配，扫了连不上）；
- *  按 addr 去重（同一节点同端口不会出现两条码）；顺序保持隧道列表顺序。 */
+ *  按 addr 去重（同一节点同端口不会出现两条码）；顺序保持隧道列表顺序。
+ *  addr 带 `wss://` 前缀：隧道 extra 是 auto_https=auto，节点对外 TLS 终结
+ *  （frpc 侧自签证书），明文 ws 升级会被节点回 501——扫码端必须走 wss。
+ *  局域网入口（LanAccessBlock）不受影响，保持裸地址（客户端拼 ws://）。 */
 export function tunnelPairEndpoints(tunnels: { addr: string; online: boolean }[]): PairEndpoint[] {
   const out: PairEndpoint[] = [];
   const seen = new Set<string>();
@@ -51,7 +54,7 @@ export function tunnelPairEndpoints(tunnels: { addr: string; online: boolean }[]
     const addr = t.addr.trim();
     if (!t.online || addr === "" || !/^[a-zA-Z0-9.-]+:\d{1,5}$/.test(addr) || seen.has(addr)) continue;
     seen.add(addr);
-    out.push({ addr, label: "樱花frp", name: `樱花frp · ${hostFromAddr(addr)}` });
+    out.push({ addr: `wss://${addr}`, label: "樱花frp", name: `樱花frp · ${hostFromAddr(addr)}` });
   }
   return out;
 }

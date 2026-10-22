@@ -378,13 +378,15 @@ class RealBackend {
     }
 
     /** 附件取件 URL（渲染缩略图/下载用）：`http://<addr>/attachments/<path>?token=...`。
-     *  引用形态校验与桌面端 attachmentURL 同一份：只认两段、拒绝穿越。 */
+     *  引用形态校验与桌面端 attachmentURL 同一份：只认两段、拒绝穿越。
+     *  addr 可能带 wss://（樱花隧道扫码配对）/ws:// 前缀——剥掉保持 http://<host:port>
+     *  原形态（配对前行为不变；经隧道的附件下载是明文 http 会被节点 501，属已知限制）。 */
     fun attachmentURL(path: String): String? {
         if (path.isEmpty() || path.contains("..") || path.startsWith("/") || path.contains("\\")) return null
         val segs = path.split("/").filter { it.isNotEmpty() }
         if (segs.size != 2) return null
         val q = if (token.isNotBlank()) "?token=${java.net.URLEncoder.encode(token, "UTF-8")}" else ""
-        return "http://$addr/attachments/${segs[0]}/${java.net.URLEncoder.encode(segs[1], "UTF-8")}$q"
+        return "http://${addr.trim().substringAfter("://", addr.trim()).trimEnd('/')}/attachments/${segs[0]}/${java.net.URLEncoder.encode(segs[1], "UTF-8")}$q"
     }
 
     /** llm.Message 的 attachments JSON → AttachmentMeta 列表（缺键 = 空表）。 */

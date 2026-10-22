@@ -39,6 +39,34 @@ if (!app.isPackaged) {
   app.commandLine.appendSwitch("remote-debugging-port", process.env.LXCODE_CDP_PORT ?? "9229");
 }
 
+// wss 配对连接的自签证书放行（樱花frp 隧道，定向）。
+// 背景：隧道 extra 是 auto_https=auto，节点对外 TLS 终结用 frpc **自签**证书；
+// 渲染层 WsConnection 的 WebSocket 走 Chromium 网络栈，自签证书默认直接拒绝
+// 且无任何可跳过的 UI——同一张配对二维码在桌面端扫（或手填 wss:// 地址）必然
+// 连接失败，故按事件定向放行而不是全局 ignore-certificate-errors。
+// 放行条件（三条取交集，尽量窄）：
+//  * URL 是 wss:// 或 https://（隧道入口的 WS / 附件 origin 两种形态——
+//    wsURL 会把 wss 地址用于 WS，httpOrigin 会把它换成 https 用于附件下载）；
+//  * host 非回环（回环 = 本机后端，永远是 ws:// 明文，不该走到这里）；
+//  * 错误属于自签特征（信任链无效 / 主机名不匹配——frpc 自签证书两者都会中）。
+// 其余证书错误（app:// 主帧、公网导航、过期证书等）照常拒绝，行为不变。
+const SELF_SIGNED_CERT_ERRORS = new Set(["ERR_CERT_AUTHORITY_INVALID", "ERR_CERT_COMMON_NAME_INVALID"]);
+app.on("certificate-error", (event, _webContents, url, error, _certificate, callback) => {
+  let allow = false;
+  try {
+    const u = new URL(url);
+    const loopback = u.hostname === "localhost" || u.hostname === "127.0.0.1" || u.hostname === "::1";
+    allow =
+      (u.protocol === "wss:" || u.protocol === "https:") &&
+      !loopback &&
+      SELF_SIGNED_CERT_ERRORS.has(error);
+  } catch {
+    // 非法 URL：不放行
+  }
+  if (allow) event.preventDefault();
+  callback(allow);
+});
+
 let win: BrowserWindow | null = null;
 
 /** 主进程 → 渲染层的统一推送出口：窗口/webContents 已销毁时静默跳过。

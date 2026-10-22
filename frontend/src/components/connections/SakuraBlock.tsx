@@ -54,7 +54,7 @@ export function SakuraBlock() {
     if (!ep) return;
     QRCode.toDataURL(pairPayload(ep.addr, remoteToken, ep.name), { margin: 2, width: 320, errorCorrectionLevel: "M" })
       .then((url) => {
-        if (alive) setQr({ url, label: `${ep.label}（${ep.addr}）`, desc: "手机端「扫码配对」扫此码即可通过公网入口连接——地址与 Token 自动填入。隧道已带自动 HTTPS（节点对外 TLS）：若手机端连不上，把入口地址改用 wss:// 再试（客户端连接协议待真机验证）。" });
+        if (alive) setQr({ url, label: `${ep.label}（${ep.addr}）`, desc: "手机端「扫码配对」扫此码即可通过公网入口连接——地址与 Token 自动填入。入口走加密连接（wss，节点 TLS 终结，自签证书已在客户端放行）：安卓端需更新到支持 wss 配对的新版本，旧版扫此码会连接失败。" });
       })
       .catch(() => {
         if (alive) setQr(null);

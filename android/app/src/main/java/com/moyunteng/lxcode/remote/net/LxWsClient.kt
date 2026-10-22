@@ -24,10 +24,15 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.json.JSONObject
+import java.net.URLEncoder
+import java.security.SecureRandom
+import java.security.cert.X509Certificate
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
+import javax.net.ssl.SSLContext
+import javax.net.ssl.X509TrustManager
 
 /** 协议版本（internal/protocol.Version = "2"；不匹配服务端回 1007）。 */
 const val PROTOCOL_VERSION = "2"
@@ -77,11 +82,45 @@ class LxWsClient(
     private val stateListener: StateListener,
 ) {
     private val main = Handler(Looper.getMainLooper())
+
+    /** 局域网/本机直连用：默认 OkHttp（系统信任链，行为不变）。 */
     private val client = OkHttpClient.Builder()
         .connectTimeout(5, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.MILLISECONDS) // WS 长连接：读不超时
         .pingInterval(30, TimeUnit.SECONDS)
         .build()
+
+    /**
+     * wss（樱花frp 隧道）专用 client：放行 frpc 节点的**自签**证书。
+     *
+     * 为什么放行：隧道 extra 是 auto_https=auto，节点对外 TLS 终结用 frpc 自签
+     * 证书（无 CA 签发、主机名也是节点域名而非证书 SAN），系统信任链必然拒绝；
+     * 明文 ws 又会被节点回 501——自签是这条入口唯一可用的 TLS 形态。
+     * 为什么可接受：这是**点对点的配对/隧道连接**，token 已是唯一凭据
+     * （internal/server/remote.go 对每次 /rpc 升级验 token），不依赖证书身份；
+     * 宽松信任只挂在本 client 实例上——UpdateChecker / Attachments 等其他
+     * HTTPS 调用走各自默认 client，不受影响。
+     */
+    private val clientTrustAll: OkHttpClient by lazy {
+        val tm = object : X509TrustManager {
+            override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String) {}
+            override fun checkServerTrusted(chain: Array<X509Certificate>, authType: String) {}
+            override fun getAcceptedIssuers(): Array<X509Certificate> = arrayOf()
+        }
+        val ssl = SSLContext.getInstance("TLS").apply { init(null, arrayOf(tm), SecureRandom()) }
+        OkHttpClient.Builder()
+            .connectTimeout(5, TimeUnit.SECONDS)
+            .readTimeout(0, TimeUnit.MILLISECONDS)
+            .pingInterval(30, TimeUnit.SECONDS)
+            .sslSocketFactory(ssl.socketFactory, tm)
+            // 自签证书的 SAN 不含节点域名（或干脆没有 SAN），hostname 校验必然失败
+            .hostnameVerifier { _, _ -> true }
+            .build()
+    }
+
+    /** 按 addr 形态选 client：wss = 隧道入口（自签放行），其余 = 默认信任链。 */
+    private fun clientFor(addr: String): OkHttpClient =
+        if (addr.trim().startsWith("wss://", ignoreCase = true)) clientTrustAll else client
 
     private val nextId = AtomicInteger(0)
     private val pending = ConcurrentLinkedQueue<PendingCall>()
@@ -135,26 +174,39 @@ class LxWsClient(
         connectOnce(addr, token)
     }
 
-    private fun connectOnce(addr: String, token: String) {
-        currentAddr = addr
-        currentToken = token
-        closeQuietly()
-        val url = buildString {
-            append("ws://").append(addr.trim()).append(RPC_PATH)
-            if (token.isNotBlank()) append("?token=").append(java.net.URLEncoder.encode(token, "UTF-8"))
+    /** 按 addr 形态构造升级请求（对齐桌面端 connection.ts 的 wsURL 自适应）：
+     *  `wss://` 前缀原样（樱花frp 隧道——节点对外 TLS，明文 ws 会被节点回 501）；
+     *  `ws://` / 裸 host:port → ws://（局域网/本机直连，行为不变）；
+     *  `https://` → wss://（远端 HTTPS 反代同款语义）。路径统一 /rpc，token 挂查询串。
+     *  地址只取 host:port（载荷地址不带路径；即便带了也收敛到 /rpc）。
+     *  非法地址（用户输入错乱 / 缺 host）不 FATAL：返回 null 走失败态 UI
+     * （实测路径：输入框残留 "1270..01.7:790" 时点重试曾直接崩进程）。 */
+    private fun request(addr: String, token: String): Request? {
+        val trimmed = addr.trim()
+        val base = when {
+            trimmed.startsWith("wss://", true) -> "wss://" + trimmed.substring(6)
+            trimmed.startsWith("ws://", true) -> "ws://" + trimmed.substring(5)
+            trimmed.startsWith("https://", true) -> "wss://" + trimmed.substring(8)
+            trimmed.startsWith("http://", true) -> "ws://" + trimmed.substring(7)
+            else -> "ws://" + trimmed
         }
+        // scheme://host:port 之后是路径/查询——全部剥掉，路径统一 /rpc
+        val authority = base.substringAfter("://").substringBefore('/').substringBefore('?')
+        val url = "${base.substringBefore("://")}://$authority$RPC_PATH" +
+            if (token.isNotBlank()) "?token=${URLEncoder.encode(token, "UTF-8")}" else ""
         Log.i(TAG, "connect $url")
-        // 非法地址（用户输入错乱 / 缺 host）不能 FATAL：OkHttp 的 url() 会抛
-        // IllegalArgumentException，这里转成失败态走断线 UI（实测路径：输入框残留
-        // "1270..01.7:790" 时点重试曾直接崩进程）。
-        val req = try {
+        return try {
             Request.Builder().url(url).build()
         } catch (e: IllegalArgumentException) {
             Log.w(TAG, "非法地址 $url: ${e.message}")
             main.post { stateListener.onState(false, "地址不合法: ${e.message}") }
-            return
+            null
         }
-        val ws = client.newWebSocket(req, object : WebSocketListener() {
+    }
+
+    /** WS 事件监听（连接/心跳/重连逻辑与 scheme 无关，抽出共用）。 */
+    private fun listener(addr: String, token: String): WebSocketListener =
+        object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 Log.i(TAG, "ws onOpen (http ${response.code})，发送 hello")
                 // 握手：connection.hello（版本不匹配服务端回 code 1007）
@@ -198,7 +250,15 @@ class LxWsClient(
                 main.post { stateListener.onState(false, null) }
                 scheduleReconnect(addr, token)
             }
-        })
+        }
+
+    /** 连接后端（addr 形如 127.0.0.1:7789 或 wss://公网入口；token 可空 = 后端未开远程门）。 */
+    private fun connectOnce(addr: String, token: String) {
+        currentAddr = addr
+        currentToken = token
+        closeQuietly()
+        val req = request(addr, token) ?: return // 非法地址：失败态已在 request 里上报
+        val ws = clientFor(addr).newWebSocket(req, listener(addr, token))
         wsRef.set(ws)
     }
 
