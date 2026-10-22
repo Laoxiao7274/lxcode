@@ -96,13 +96,17 @@ test('chat.rewound 归约：截断到锚点之前，且重复到达是幂等的'
   let s = { ...base, blocks: timeline(), context: { used: 999 }, stats: statsFixture() };
   s = reduce(s, { type: 'rewound', sessionId: 's1', seq: 20, removed: 3 });
   assert.deepEqual(uids(s.blocks), [1, 2, 3], '锚点(uid 4, seq 20)及其之后的 uid 5/6 都消失');
-  // 删掉历史后旧占用一定是错的（协议不带重算后的占用）——中性态而不是编一个数
-  assert.equal(s.context, null);
-  // 统计同理：撤回真删了行，旧数字一定是错的 → 清空（不显示统计胶囊），不编也不留
-  assert.equal(s.stats, null);
-  // 后端广播重复到达（本地乐观截断已经把锚点删了）：不能再往下切一刀
-  const again = reduce(s, { type: 'rewound', sessionId: 's1', seq: 20, removed: 3 });
-  assert.strictEqual(again, s, '找不到锚点必须原样返回（不换对象、不改内容）');
+  // 本地乐观回声不带 context/stats：沿用撤回前的旧值（略过期但不是未知——
+  // 「—」闪一下比过期数字更让人困惑），真事件带来重算值时再覆盖
+  assert.deepEqual(s.context, { used: 999 });
+  assert.deepEqual(s.stats, statsFixture());
+  // 后端广播重复到达（本地乐观截断已经把锚点删了）：不能再往下切一刀，
+  // **但重算值照常消费**（context/stats 按新路径校正）
+  const usage = { used: 1200, window: 32768 };
+  const again = reduce(s, { type: 'rewound', sessionId: 's1', seq: 20, removed: 3, context: usage });
+  assert.deepEqual(again.context, usage, '锚点不在时重算值仍要消费');
+  const onceMore = reduce(again, { type: 'rewound', sessionId: 's1', seq: 20, removed: 3 });
+  assert.strictEqual(onceMore, again, '锚点不在且事件不带重算值 = 原样返回（幂等）');
 });
 
 test('chat.done 带 stats 时更新统计；不带时保持旧值（读不到 ≠ 没有）', () => {

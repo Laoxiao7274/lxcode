@@ -2,6 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { reduce } from '../src/shared/store.ts';
+import { timelineOf } from '../src/shared/blocks.ts';
 const base = { blocks: [], busy: true, pending: null, todos: [], currentId: '', operationError: null, context: null };
 
 test('dispatchStart 开卡 → 子事件按 dispatchId 挂进 subBlocks', () => {
@@ -43,8 +44,9 @@ test('子事件不干扰主时间线的流式块（并行场景的归属正确�
   let s = reduce(base, { type: 'dispatchStart', dispatchId: 'd1', agentId: 'coder', agentName: 'c', agentColor: '#000', task: 't' });
   s = reduce(s, { type: 'delta', kind: 'text', text: '主时间线' });
   s = reduce(s, { type: 'delta', kind: 'text', text: '子时间线', dispatchId: 'd1' });
-  const main = s.blocks.find((b) => b.kind === 'assistant');
+  const main = timelineOf(s).find((b) => b.kind === 'assistant');
   const card = s.blocks.find((b) => b.kind === 'dispatch');
   assert.equal(main.content, '主时间线');
-  assert.equal(card.subBlocks[0].content, '子时间线');
+  // 子事件仍在流式（还没被 toolCall/done 定型）→ 在卡的 subStreaming 里
+  assert.equal(card.subStreaming.content, '子时间线');
 });

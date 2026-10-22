@@ -27,12 +27,14 @@ const searchIcon = (
   </svg>
 );
 
-export function ModelPicker({ model, onPickModel }: {
+export function ModelPicker({ model, onPickModel, chipTitle }: {
   /** 当前**会话**的模型 id（会话级状态；空/未传 = 回落全局 default 角色）。 */
   model?: string;
   /** 选模型：改当前会话（App → source.setSessionModel → chat.model）。未传 =
    *  退回设置页的全局语义（role.set，改「新会话的默认模型」）。 */
   onPickModel?: (id: string) => void;
+  /** 芯片 title 覆盖（子会话页 busy 态用：「正在运行，切换将在下一轮生效」）。 */
+  chipTitle?: string;
 } = {}) {
   const { settings, set, providers } = useSettings();
   const { open, toggle, requestClose, rootRef } = usePopover();
@@ -152,7 +154,7 @@ export function ModelPicker({ model, onPickModel }: {
   return (
     <div className="pop-wrap" ref={rootRef} onKeyDown={onKeyDown}>
       <span className="pop-trigger" onClick={onToggle}>
-        <button type="button" className="model-chip" title="模型与推理强度">
+        <button type="button" className="model-chip" title={chipTitle ?? "模型与推理强度"}>
           {/* 芯片显示模型名（display_name→model→id 回退链），不裸显注册 id */}
           {current?.name ?? (selected || "模型")}
           {currentDup && current && <span className="chip-dim">· {current.provider || providerNameOf}</span>}

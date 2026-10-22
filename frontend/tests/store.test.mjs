@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { reduce, reduceSessionStates, pendingConfirmIds, allowAllPendingConfirms, resolveConfirmEverywhere, checkpointBody } from '../src/shared/store.ts';
+import { timelineOf } from '../src/shared/blocks.ts';
 const state = { blocks: [{ kind: 'assistant', uid: 1, content: 'partial', reasoning: '', streaming: true }], busy: true, pending: { id: 'c' }, todos: [{ content: 'work', status: 'active' }], currentId: 's1', operationError: null, context: null };
 test('会话列表变化不改变任何 Session 的运行态', () => {
   for (const reason of ['renamed', 'archived', 'started']) {
@@ -194,15 +195,18 @@ test('子事件双投：父会话的卡与子会话自己的时间线各拿一�
   // 父会话：卡里拿到同一份（卡的状态/摘要来源），主时间线上**不**出现子 Agent 的正文
   const card = all.parent.blocks.find((b) => b.kind === 'dispatch' && b.id === 'd1');
   // 两条 delta 合成一个 assistant 块、toolCall 建工具行、toolResult 就地回填 → 卡里 2 个块
+  // （流式块在 subStreaming 里、定型后才并入 subBlocks——见 applyToDispatch）
   assert.equal(card.subBlocks.length, 2, '父会话的卡里应累积子事件（assistant + tool）');
   assert.equal(card.subBlocks.find((b) => b.kind === 'tool').result, '已替换', 'toolResult 要回填到卡里的工具行');
   assert.equal(all.parent.blocks.some((b) => b.kind === 'assistant' && b.content === '改完了'),
     false, '子 Agent 的正文不许进主时间线');
 
-  // 子会话：自己的时间线拿到**同一份**事件的普通形态（历史那条 user 消息 + 实时块）
-  const kinds = all['child-1'].blocks.map((b) => b.kind);
+  // 子会话：自己的时间线拿到**同一份**事件的普通形态（历史那条 user 消息 + 实时块）。
+  // 逻辑时间线 = blocks + streaming（正在流式的那一块单独存，见 timelineOf）。
+  const childTimeline = timelineOf(all['child-1']);
+  const kinds = childTimeline.map((b) => b.kind);
   assert.deepEqual(kinds, ['user', 'assistant', 'tool'], '子会话自己应拿到 user(历史) + assistant(实时) + tool(实时)');
-  const assistant = all['child-1'].blocks.find((b) => b.kind === 'assistant');
+  const assistant = childTimeline.find((b) => b.kind === 'assistant');
   assert.equal(assistant.content, '改完了');
   assert.equal(assistant.reasoning, '先看 runTools');
   const tool = all['child-1'].blocks.find((b) => b.kind === 'tool');
@@ -218,7 +222,9 @@ test('子会话自己的 state 还不存在时不凭空建（半截时间线）�
   });
   all = reduceSessionStates(all, { type: 'delta', sessionId: 'parent', kind: 'text', text: '边跑边说', dispatchId: 'd1' });
   assert.equal(all['child-1'], undefined, '子会话 state 没建起来之前不许凭空拼一份半截时间线');
-  assert.equal(all.parent.blocks.find((b) => b.kind === 'dispatch').subBlocks.length, 1, '父会话的卡照旧拿到子事件');
+  // 流式中的子块在卡的 subStreaming 里（与主时间线的 state.streaming 同一个不变量）
+  assert.equal(all.parent.blocks.find((b) => b.kind === 'dispatch').subStreaming.content, '边跑边说',
+    '父会话的卡照旧拿到子事件');
 });
 
 test('子会话自己的压缩标记落在它自己的时间线里（不是卡里）', () => {
@@ -271,7 +277,7 @@ test('dispatch 卡的生命周期事件不双投进子会话时间线（子会�
     '子会话时间线里不该出现任何 dispatch 卡');
   // 父会话的卡照常（第二轮有自己的卡）；第二轮的流照常进子会话时间线
   assert.ok(all.parent.blocks.some((b) => b.kind === 'dispatch' && b.id === 'd2'));
-  assert.ok(all['child-1'].blocks.some((b) => b.kind === 'assistant' && b.content === '第二轮的回复'),
+  assert.ok(timelineOf(all['child-1']).some((b) => b.kind === 'assistant' && b.content === '第二轮的回复'),
     '续跑第二轮的事件要接着追加进既有的子会话标签页');
 });
 

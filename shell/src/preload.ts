@@ -98,5 +98,12 @@ contextBridge.exposeInMainWorld("__LX__", {
       ipcRenderer.on("update:available", listener as never);
       return () => ipcRenderer.removeListener("update:available", listener as never);
     },
+    // 上次更新失败标记（主进程壳启动时消费 update-pending/apply-update.failed
+    // 后推一次，载荷 {message}；见 updater.ts consumePendingUpdateFailure）
+    onUpdateFailed: (cb: (e: unknown) => void): (() => void) => {
+      const listener = (_e: unknown, ev: unknown): void => cb(ev);
+      ipcRenderer.on("update:failed", listener as never);
+      return () => ipcRenderer.removeListener("update:failed", listener as never);
+    },
   },
 });

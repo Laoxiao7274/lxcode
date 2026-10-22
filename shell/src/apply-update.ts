@@ -58,6 +58,10 @@ export interface ApplyPlan {
   files: ApplyFileEntry[];
   /** 等待进程退出的超时秒数（超时 taskkill 强杀）。生产 60s；e2e 测试缩短。 */
   pidTimeoutSec?: number;
+  /** taskkill 前的宽限秒数（等壳自然退出）。默认 5。 */
+  graceSec?: number;
+  /** stash 重试之间的间隔秒数。默认 2。 */
+  retrySec?: number;
 }
 
 /** update-manifest.json（v2）：bat 是可执行真相，这份清单是人对账/取证的
@@ -116,13 +120,16 @@ function batLiteral(s: string): string {
 export function buildApplyBat(plan: ApplyPlan): string {
   const files = plan.files;
   const timeout = plan.pidTimeoutSec ?? 60;
+  const graceSec = plan.graceSec ?? 5;
+  const retrySec = plan.retrySec ?? 2;
+  const stashRetries = Math.max(1, Math.floor((timeout - graceSec) / retrySec));
   const L = (s: string) => batLiteral(s);
   const args = plan.shellArgs.join(" ");
 
   // staged/target 都写绝对路径（计划即真相，不依赖 %STAGED% 拼接——
   // 「%STAGED% + 绝对路径」会拼出 C:\p\stagedC:\abs 这类畸形串）。
-  const stashLines = files.map(
-    (f) => `call :stash "${L(f.staged)}" "${L(f.target)}" || goto :rollback`,
+  const stashAllLines = files.map(
+    (f) => `call :stash "${L(f.staged)}" "${L(f.target)}" || exit /b 1`,
   );
   const deployLines = files.map(
     (f) => `call :deploy "${L(f.staged)}" "${L(f.target)}" "${f.sha256}" || goto :rollback`,
@@ -163,9 +170,13 @@ set "SHELL=${L(plan.shellExe)}"
 set "SHELL_ARGS=${L(args)}"
 set "PIDS=${plan.pids.join(",")}"
 set "PID_TIMEOUT=${timeout}"
-set "WAIT_SEC=${timeout + 2}"
+set "GRACE_SEC=${graceSec}"
+set "RETRY_SEC=${retrySec}"
+set "STASH_RETRIES=${stashRetries}"
+set "FAILED=%PENDING%\\apply-update.failed"
 
 >>"%LOG%" echo [%date% %time%] ========== apply-update BEGIN (target ${L(plan.appVersion)}, ${files.length} files) ==========
+if exist "%FAILED%" del /f /q "%FAILED%"
 if not exist "%STAGED%" (
   rem bare parens in echo must be escaped inside an if (...) block
   rem (an unescaped close-paren terminates the block early; found by e2e)
@@ -181,20 +192,33 @@ if not exist "%CERTUTIL%" (
   exit /b 1
 )
 
-rem ---- phase 1: grace window then force-kill stale pids.
+rem ---- phase 1: grace window, force-kill stale pids, then RETRYING stash.
 rem      No polling: tasklist AND powershell both hang at random on a LIVE
 rem      pid in a windowless session (wscript hidden start; found by e2e,
 rem      reproduced many times -- user saw a stuck cmd window titled
-rem      "find lxcode.exe" and had to Ctrl+C it). Fixed wait + unconditional
-rem      taskkill is the only stable shape -- taskkill on an exited pid is a
-rem      harmless no-op. Window = PID_TIMEOUT seconds (prod 60s: graceful
-rem      shutdown + AV scanning; shortened in e2e). ----
+rem      "find lxcode.exe" and had to Ctrl+C it). Grace window then
+rem      unconditional taskkill is the only stable shape -- taskkill on an
+rem      exited pid is a harmless no-op. Stash retries with RETRY_SEC gaps:
+rem      a relaunch during the grace window locks app.asar; single-shot
+rem      stash used to roll back silently with no user-visible error. ----
+"%PING%" -n %GRACE_SEC% 127.0.0.1 >nul
 if not "%PIDS%"=="" for %%P in (%PIDS%) do "%TASKKILL%" /F /PID %%P >nul 2>&1
-"%PING%" -n %WAIT_SEC% 127.0.0.1 >nul
+set "STASH_TRY=0"
+:tryStash
+set /a STASH_TRY+=1
+call :stashAll
+if not errorlevel 1 goto :stashed
+if %STASH_TRY% GEQ %STASH_RETRIES% goto :stashGiveUp
+>>"%LOG%" echo [%date% %time%] stash attempt %STASH_TRY% of %STASH_RETRIES% failed -- retrying
+"%PING%" -n %RETRY_SEC% 127.0.0.1 >nul
+goto :tryStash
 
-rem ---- phase 2: stash ALL originals as .old first (no file content is
-rem      touched until every backup succeeded) ----
-${stashLines.join("\n")}
+:stashGiveUp
+>>"%LOG%" echo [%date% %time%] stash failed after %STASH_RETRIES% attempts -- another instance is holding the install files
+>>"%FAILED%" echo lxcode update failed: install files are locked by another running instance. Close all Lxcode windows and tray icons, wait a few seconds, then install again.
+goto :rollback
+
+:stashed
 
 rem ---- phase 3: deploy staged files (rollback may delete added files) ----
 set "DEPLOYED=1"
@@ -208,10 +232,12 @@ if exist "%PENDING%\\apply-update.vbs" del /f /q "%PENDING%\\apply-update.vbs"
 if exist "%HASHFILE%" del /f /q "%HASHFILE%"
 start "" "%SHELL%" %SHELL_ARGS%
 >>"%LOG%" echo [%date% %time%] ========== apply-update DONE (success, new shell started) ==========
+if exist "%FAILED%" del /f /q "%FAILED%"
 (goto) 2>nul & del /f /q "%~f0"
 exit /b 0
 
 :rollback
+if not exist "%FAILED%" >>"%FAILED%" echo lxcode update failed: replacement could not be completed and the previous version was restored. See apply-update.log in the update-pending folder.
 >>"%LOG%" echo [%date% %time%] update FAILED -- rolling back to pre-update state
 ${rollbackLines.join("\n")}
 if exist "%HASHFILE%" del /f /q "%HASHFILE%"
@@ -219,6 +245,10 @@ if exist "%HASHFILE%" del /f /q "%HASHFILE%"
 start "" "%SHELL%" %SHELL_ARGS%
 >>"%LOG%" echo [%date% %time%] ========== apply-update END (failed, rolled back) ==========
 exit /b 1
+
+:stashAll
+${stashAllLines.join("\n")}
+exit /b 0
 
 :stash
 rem Stash: move original to .old (move /y overwrites stale .old from a prior

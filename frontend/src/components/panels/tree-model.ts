@@ -20,6 +20,37 @@ import { outlineLabel } from "./outline";
 /** 过滤三档（用户要求）：全部 / 只看用户消息 / 只看有改动。 */
 export type TreeFilter = "all" | "user" | "changed";
 
+/** 视觉缩进最多钳到这一级（**只影响渲染，不改 `TreeRow.depth` 的语义**）。
+ *
+ *  为什么需要钳制：单链会话每轮再深一层（后端每条消息的 parent_seq = 当时的 leaf），
+ *  而缩进按 depth 线性乘算——一条 20 轮的会话就把标签挤到面板外（288px 面板、每级
+ *  13px，depth≈13 起内容实质消失，且 `.stree-list` 没有横向滚动可退）。
+ *
+ *  取值依据（288px 面板，逐层扣减）：
+ *    288 − 面板左右 padding 12 − 缩进基准 6 − 13·min(depth, 8) − 行体 padding 10
+ *        − caret 11 − 轮次徽标 16 − 2 个 gap 10
+ *    → depth 0 标签 ≈ 223px；钳制后最深层（任何 depth ≥ 8）标签 ≈ **119px**
+ *      （再加「2 分支」≈ 33 + 间距 5 → 81px；再加「你在这里」≈ 46 + 间距 5 → 30px，
+ *      极端徽标堆满时由 `.stree-list` 的横向滚动兜底）。
+ *  再抬 MAX 会把最坏情况压到 1~2 个字（MAX=10 时标签 ≈ 93px、全徽标为负），
+ *  再降则层级感不够，故取 8。 */
+export const STREE_MAX_VISUAL_DEPTH = 8;
+
+/** 视觉深度 = min(depth, STREE_MAX_VISUAL_DEPTH)。
+ *
+ *  **纯视觉量**：CSS 的 padding-left 与连接线（::before/::after）都只认它，于是所有
+ *  depth ≥ MAX 的行共用同一列缩进、连接线在钳制边界处仍然连贯（不会错位/断线）。
+ *  `depth` 本身照旧承载「成行祖先数」（分支/路径信息），不改。 */
+export function visualDepth(depth: number): number {
+  if (!Number.isFinite(depth) || depth <= 0) return 0;
+  return Math.min(Math.floor(depth), STREE_MAX_VISUAL_DEPTH);
+}
+
+/** 是否被钳制（depth > MAX → 渲染一个「还有更深层级」的轻量标记，不静默压平）。 */
+export function depthClamped(depth: number): boolean {
+  return Number.isFinite(depth) && depth > STREE_MAX_VISUAL_DEPTH;
+}
+
 /** 面板要画的一行（= 一个成行节点 + 折叠进来的统计）。 */
 export interface TreeRow {
   seq: number;

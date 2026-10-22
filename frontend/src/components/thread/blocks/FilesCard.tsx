@@ -25,7 +25,7 @@ export function filesDefaultExpanded(count: number): boolean {
   return count <= FILES_COLLAPSE_THRESHOLD;
 }
 
-export function FilesCard({ files, "data-uid": dataUid }: { files: FileChange[]; "data-uid"?: number }) {
+export function FilesCard({ files, replayed, "data-uid": dataUid }: { files: FileChange[]; /** 回放帧（换会话）：不播入场/行交错动效。 */ replayed?: boolean; "data-uid"?: number }) {
   const [open, setOpen] = useState<string | null>(null);
   // > 阈值默认收起（回放/重渲染回到同一默认态）；≤ 阈值无折叠概念，恒展开。
   const [expanded, setExpanded] = useState(() => filesDefaultExpanded(files.length));
@@ -62,6 +62,8 @@ export function FilesCard({ files, "data-uid": dataUid }: { files: FileChange[];
   }, [expanded, collapsible]);
 
   useEffect(() => {
+    // 回放帧不播（理由同 ToolBlock：切会话那一帧不该逐块读样式建补间）。
+    if (replayed) return;
     playEnter(rootRef.current, { y: 10, opacity: 0 }, { y: 0, opacity: 1, duration: 0.34, ease: "power2.out", clearProps: "transform,opacity" });
     // 行交错浮现只对当前可见的行（收起时列表不在 DOM 里，自然跳过）。
     const rows = rootRef.current?.querySelectorAll<HTMLElement>(".files-file");
@@ -69,6 +71,7 @@ export function FilesCard({ files, "data-uid": dataUid }: { files: FileChange[];
       gsap.fromTo(rows, { opacity: 0, y: 5 }, { opacity: 1, y: 0, duration: 0.24, ease: "power2.out", stagger: 0.05, delay: 0.08, clearProps: "transform,opacity" });
     }
     staggerIn(headRowRef.current ? [headRowRef.current] : [], {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const added = files.reduce((n, f) => n + f.added, 0);

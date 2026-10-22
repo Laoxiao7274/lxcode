@@ -708,6 +708,17 @@ html[data-theme="dark"] .att-remove:hover {
   pointer-events: none;
   opacity: 0.5;
 }
+/* 锁定组内放行的槽位（2026-12：子会话页可切模型）：恢复指针事件与不透明度。
+   父组的 pointer-events:none 不禁止子元素显式恢复（覆盖自身的 pointer-events
+   即可）；opacity 是合成属性、子元素没法"撤销"父组的 0.5，所以放行槽位把
+   组的不透明度直接顶回 1——视觉上 Agent/权限仍半透明、模型芯片恢复原样。 */
+.pi-controls.pi-locked .pi-model-slot.pi-unlocked {
+  pointer-events: auto;
+  opacity: 1;
+}
+.pi-controls.pi-locked .pi-model-slot.pi-unlocked .model-chip {
+  cursor: pointer;
+}
 /* 权限选择器（Codex：橙色主题——当前模式高亮，圆圈感叹号 + 下拉箭头） */
 .perm-chip {
   display: inline-flex;

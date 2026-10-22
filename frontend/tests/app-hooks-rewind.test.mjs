@@ -81,3 +81,23 @@ test('④ Composer 按 draft.id 判变化（同 id no-op、新 id 应用）—�
     'Composer 必须按 id 判注入变化，否则回滚注入的空文本会被文本比较吃掉',
   );
 });
+
+// ---------- ⑤ busy 不再拦截撤回/编辑（2026-12 拍板：撤回自动取消并等待收尾） ----------
+
+// 后端 Rewind 现在 busy 时先取消当前轮并等它收尾（agent.settleBusyForRewind），
+// 前端早拦反而把「一步完成停止+撤回」拆成两步。这里钉住：hook 里不再有 busy 早拦，
+// Block 的按钮 busy 时可用、title 换成「撤回并停止本轮」。
+const blockSrc = readFileSync(join(here, '../src/components/thread/blocks/Block.tsx'), 'utf8');
+
+test('⑤a handleRewind/handleEdit/handleSend 不再有 busy 早拦（后端自动取消并收尾）', () => {
+  assert.doesNotMatch(hookSrc, /生成中不可撤回/, 'busy 早拦文案必须移除（handleRewind）');
+  assert.doesNotMatch(hookSrc, /生成中不可编辑/, 'busy 早拦文案必须移除（handleEdit）');
+  assert.doesNotMatch(hookSrc, /if \(busy\) \{[\s\S]{0,200}reportError\("生成中/, 'busy 分支不得先于 rewind 发出');
+});
+
+test('⑤b Block 的撤回/编辑按钮 busy 时可用（title 提示「停止本轮」）', () => {
+  assert.match(blockSrc, /撤回并停止本轮/, 'busy 时撤回按钮的 title 应说明会停止本轮');
+  assert.match(blockSrc, /停止本轮并编辑/, 'busy 时编辑按钮的 title 应说明会停止本轮');
+  assert.doesNotMatch(blockSrc, /lockedByBusy/, 'busy 不再参与 disabled（变量也撤掉，避免留死代码）');
+  assert.doesNotMatch(blockSrc, /生成中不可撤回，请先停止当前生成/, '旧禁用文案必须移除');
+});

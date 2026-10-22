@@ -80,7 +80,9 @@ mkdirSync(join(SHELL, "renderer"), { recursive: true });
 cpSync(join(FRONTEND, "dist"), join(SHELL, "renderer"), { recursive: true });
 console.log("--- 渲染层 stage 完成（frontend/dist → shell/renderer）");
 
-// 4. 壳主进程
+// 4. 壳主进程（先重生托盘 ico：它由 build/icon.png 派生，源图换了必须同步，
+//    否则打包会带上旧图标——见 scripts/gen-tray-icon.cjs 头注）
+run("托盘图标生成", "node", [join(ROOT, "scripts", "gen-tray-icon.cjs")], { cwd: ROOT });
 run("壳主进程构建", "node", ["build.mjs"], { cwd: SHELL });
 
 // 5. electron-builder（NSIS + 签名）

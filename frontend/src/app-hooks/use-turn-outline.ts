@@ -8,6 +8,9 @@ import { userSeqUid } from "../components/panels/tree-model";
 import type { ThreadBlock } from "../shared/store";
 
 export function useTurnOutline({ blocks }: { blocks: ThreadBlock[] }) {
+  // 派生计算按**引用**记忆化：流式期间 blocks 引用不变（流式块单独放在
+  // state.streaming，见 shared/blocks.ts 的 timelineOf）——所以这里不会每帧
+  // 重跑 turnGroups/userSeqUid（原先 delta 每帧换数组，这两个 O(n) 也跟着每帧跑）。
   const groups = useMemo(() => turnGroups(blocks), [blocks]);
   /** seq → 块 uid 的映射（会话树面板的跳转要用）。
    *

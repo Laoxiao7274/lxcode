@@ -7,6 +7,9 @@
 //      含 error 在场）下可见可点；检查中禁用防连点，恢复后可点；
 //   2. 每种状态一个明确的视觉形态（data-phase + 状态行/错误行/面板 tone），
 //      不共用模糊样式。
+// 2026-12 统一更新弹窗：设置块不再内联下载/进度/安装面板——所有交互收敛到
+// UpdateDialog，块里只留「查看更新」入口（打开同一个弹窗，见
+// update-dialog.test.mjs）。这里相应钉住「不再有第二套交互按钮」。
 // UpdateBlockView 是纯展示组件（静态渲染即可测，无需 DOM/Provider）。
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -26,8 +29,7 @@ const render = (over = {}) => renderToStaticMarkup(createElement(UpdateBlockView
   error: null,
   now: NOW,
   onCheck: () => {},
-  onDownload: () => {},
-  onRestart: () => {},
+  onOpen: () => {},
   ...over,
 }));
 
@@ -64,8 +66,8 @@ test('状态形态：每态各一个 data-phase 与对应状态文案，不共�
     ['checking', '正在检查更新'],
     ['latest', '已是最新版本'],
     ['available', '新版本'],
-    ['downloading', '下载中'],
-    ['ready', '更新已就绪'],
+    ['downloading', '正在下载'],
+    ['ready', '下载完成'],
   ];
   for (const [phase, text] of cases) {
     const html = render({ phase, manifest: MANIFEST, progress: 40 });
@@ -74,26 +76,33 @@ test('状态形态：每态各一个 data-phase 与对应状态文案，不共�
   }
 });
 
-test('available：面板 info tone + 下载主按钮；ready：面板 ok tone + 重启主按钮', () => {
+test('available：面板 info tone；ready：面板 ok tone——都只有一个「查看更新」入口', () => {
   const avail = render({ phase: 'available', manifest: MANIFEST });
   assert.match(avail, /data-tone="info"/);
-  assert.ok(avail.includes('data-su="download"'));
+  assert.ok(avail.includes('data-su="open"'));
   const ready = render({ phase: 'ready', manifest: MANIFEST });
   assert.match(ready, /data-tone="ok"/);
-  assert.ok(ready.includes('data-su="restart"'));
+  assert.ok(ready.includes('data-su="open"'));
 });
 
-test('downloading：进度条与百分比渲染', () => {
+test('设置块不再内联第二套交互（下载/重启按钮已收进统一弹窗）', () => {
+  for (const phase of ['available', 'downloading', 'ready']) {
+    const html = render({ phase, manifest: MANIFEST, progress: 62 });
+    assert.ok(!html.includes('data-su="download"'), `${phase}: 下载按钮属于弹窗，不该出现在设置块`);
+    assert.ok(!html.includes('data-su="restart"'), `${phase}: 重启按钮属于弹窗，不该出现在设置块`);
+  }
+});
+
+test('downloading：块内只报进度摘要（进度条在弹窗里）', () => {
   const html = render({ phase: 'downloading', manifest: MANIFEST, progress: 62 });
-  assert.match(html, /width:62%/);
-  assert.ok(html.includes('62%'));
+  assert.ok(html.includes('62%'), '块内要给出下载百分比摘要');
+  assert.ok(!html.includes('set-update-progress-bar'), '进度条只在统一弹窗里渲染');
 });
 
-test('notes：默认只露前 3 条，其余折叠进展开入口', () => {
+test('notes：设置块不再重复展开更新说明（完整说明在弹窗）', () => {
   const html = render({ phase: 'available', manifest: MANIFEST });
-  assert.ok(html.includes('>a<') && html.includes('>b<') && html.includes('>c<'));
-  assert.ok(!html.includes('>d<'), '折叠的 notes 不该出现');
-  assert.ok(html.includes('展开其余 2 条'));
+  assert.ok(!html.includes('>a<'), '说明列表收进弹窗，块内不重复渲染');
+  assert.ok(!html.includes('展开其余'), '块内没有折叠展开入口了');
 });
 
 test('checkedAt：渲染相对时间「N 分钟前检查」；checking 中不显示', () => {

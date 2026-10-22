@@ -162,6 +162,12 @@ type Session struct {
 	// turnDone 是本轮的收尾信号（SendWait 用）：Send 时新建，runTurn 的
 	// defer 关闭。派发要等子会话给出结论——异步 Send 满足不了这个需求。
 	turnDone chan struct{}
+	// turnEnded 是本轮的收尾信号（**所有路径**用，普通用户轮也有）：Send 时
+	// 新建，runTurn 的 defer 关闭。与 turnDone 的分工：turnDone 只服务
+	// SendWait 的"等结论"，而撤回的"自动取消并等待收尾"需要在**普通用户轮**
+	// 上也能等到收尾——没有它，撤回只能拒掉 busy 会话（用户先点停止再点
+	// 撤回，两步变三步）。panic 也走 runTurn 的 defer，信号同样可靠。
+	turnEnded chan struct{}
 	// confirmProxy 非空时本会话的确认请求交给它裁决（子会话把确认门代理给
 	// 父会话）：全应用只有"同时一个挂起确认"这条不变式，子会话自己持
 	// pending 的话服务端的 tool.confirm 找不到它。
@@ -406,6 +412,21 @@ func (s *Session) SelectedModel() string {
 	return s.model
 }
 
+// setModelInMemory 只改内存里的会话级模型槽位，**不落库**——派发链给子会话继承
+// 父会话选择用的内部通道（dispatch.go 的 inheritModel）。
+//
+// 为什么不落库：继承的父模型不是子会话**自己的**选择，落库会让续跑/回放把它当成
+// 子会话显式选中的模型，此后「父会话清掉选择 / 子 Agent 改绑」都反映不到下一次
+// 派发（Agent 绑定永远被压死）。内存级则每轮派发重新按优先级解析。
+//
+// 入参信任调用方（dispatch.go 传的是父会话已解析过的注册表主键），不做注册表校验——
+// 校验失败也不能让派发失败，回落解析链即可。
+func (s *Session) setModelInMemory(id string) {
+	s.mu.Lock()
+	s.model = id
+	s.mu.Unlock()
+}
+
 // TodoPromptMode 返回本会话的 todo-first 提示词档位（config.TodoPrompt*；
 // 空 = strict）。提示词组装（turn/compaction）与子会话派发继承都读它。
 func (s *Session) TodoPromptMode() string {
@@ -446,6 +467,9 @@ func (s *Session) Send(text string, opts ...SendOpt) error {
 		return ErrBusy
 	}
 	s.busy = true
+	// 本轮收尾信号：撤回的「自动取消并等待收尾」在普通用户轮上也能等到
+	// runTurn 真正结束（runTurn 的 defer 负责关闭，panic 路径同样走到）。
+	s.turnEnded = make(chan struct{})
 	// 先落盘拿序号再入历史：chat.userMessage 实时事件要带 seq（前端拿它当撤回
 	// 锚点），只让"刷新后的历史"有序号等于这条消息当场就撤不了——用户点撤回时
 	// 前端手里没有锚点。
@@ -495,6 +519,11 @@ func (s *Session) Send(text string, opts ...SendOpt) error {
 			if r := recover(); r != nil {
 				log.Printf("会话 %s 本轮生成 panic（已转为本轮错误，进程继续运行）: %v\n%s",
 					s.id, r, debug.Stack())
+				// panic 补配对在前（2026-12 拍板）：runTurn 的 defer 已经把
+				// busy 复位，此时历史不再被本轮写入，补齐是安全的；先补再
+				// 发 TurnError，TurnError 到达前端时配对已闭合——用户立刻
+				// 点撤回也不会撞上「配对不平衡切点」的拒绝。
+				s.repairUnpairedAfterPanic()
 				s.emit(TurnErrorEvent{Message: "本轮生成失败（内部错误），请重试；若反复出现请查看后端日志。"})
 			}
 		}()

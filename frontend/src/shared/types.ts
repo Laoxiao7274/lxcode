@@ -412,8 +412,14 @@ export type AgentEvent =
       context?: ContextUsage;
       /** 本次带文件还原时的结果（含子会话）。 */
       files?: FileRestoreResult }
-  /** 历史载入（连接/切会话后）——全量重建对话视图。 */
-  | { type: "historyLoaded"; sessionId: string; history: HistorySnapshot }
+  /** 历史载入（连接/切会话后）——重建对话视图。
+   *
+   *  `paging: true` = 这是**上翻分页**的增量应答（chat.history 的 before_seq）：
+   *  归约器把这一页**前插**进现有时间线，而不是重建。区分必须靠这个显式标记，
+   *  不能按快照内容猜——`has_more` 在首屏 tail 应答上也会由前端推导出来
+   *  （deriveTailPaging），而重拉（rewind/setLeaf 副作用）必须**重建**（否则
+   *  回放出来的「中断占位卡」永远修不回来）。 */
+  | { type: "historyLoaded"; sessionId: string; history: HistorySnapshot; paging?: boolean }
   /** 后台任务起了（时间线插一张任务卡）。sessionId = 任务归属会话——
    *  无归属（空）的任务只进顶栏全局面板，不进任何会话时间线。 */
   | { type: "jobStarted"; sessionId: string; job: JobInfo }
@@ -472,6 +478,14 @@ export interface HistorySnapshot {
   /** 这次回放对应的叶（0 = 空路径；缺省 = 老后端没回这个键）。
    *  树面板拿它高亮「你在这里」，也拿它判断「回到最新」该往哪走。 */
   leafSeq?: number;
+  /** 分页装载（chat.history 的 tail/before_seq）的窗口元数据。
+   *
+   *  `hasMore` 只在 **before_seq 请求**的应答里出现（协议 HasMore 的 omitempty）：
+   *  缺省 = 这不是一次分页应答（老后端/首次 tail 拉取）——前端按「不再上翻」处理。
+   *  `firstSeq` = 本窗口首条消息的 seq（下一次 before_seq 的 anchor；空窗口 0）。
+   *  两个键都在时才能继续上翻：拿 0 去请求会被后端判 CodeInvalidParams。 */
+  hasMore?: boolean;
+  firstSeq?: number;
 }
 
 /** 历史消息（llm.Message 的 wire 形态）。 */
@@ -658,8 +672,10 @@ export interface AgentSource {
    *  与 ModelAdminSource.setRole 的分工：那个改全局 default 角色（= 新会话的默认
    *  模型，设置页用），这个改当前会话——原先模型选择只能走 role.set，于是一个会话
    *  切模型所有会话（含之后新建的）全跟着变，正是"模型选择作用域"那个 bug。
-   *  会话 id 取连接焦点（UI 的操作永远发生在某个已聚焦的会话上）。 */
-  setSessionModel(modelId: string): Promise<void>;
+   *  会话 id 取连接焦点（UI 的操作永远发生在某个已聚焦的会话上）；**显式传
+   *  sessionId 时按它寻址**——子会话页切模型带子会话 id（视图打开期间连接焦点
+   *  仍是父会话，不能落错会话）。 */
+  setSessionModel(modelId: string, sessionId?: string): Promise<void>;
   /** 读「新会话默认审批档」（后端 behavior.json 的行为开关）。 */
   defaultApproval(): Promise<ApprovalMode>;
   /** 写「新会话默认审批档」（settings.defaultApproval.set：落盘 + 广播）。
@@ -720,7 +736,11 @@ export interface AgentSource {
    *  的只读补充，不参与主时间线归约（实时子事件照旧走 dispatchId 归属）。
    *  失败必须向上抛（调用方显示明确原因，不许静默降级成"子会话本来就是空的"）：
    *  子会话不存在 / 老后端没有 chat.history 的这个用法 / 断连超时都要看得见。 */
-  childHistory(sessionId: string): Promise<HistorySnapshot>;
+  childHistory(sessionId: string, beforeSeq?: number): Promise<HistorySnapshot>;
+  /** 上翻分页：拉 beforeSeq 之前的一页历史（chat.history 的 before_seq + tail），
+   *  结果经 historyLoaded 增量装载（与首屏同一条归约路径）。主时间线与子会话页
+   *  共用；缺省实现（演示源）= 没有更早的历史。 */
+  historyBefore?(sessionId: string, beforeSeq: number): Promise<void>;
   /** 会话列表。 */
   sessions(): SessionMeta[];
   /** 项目列表。 */

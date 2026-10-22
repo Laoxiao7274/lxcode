@@ -19,20 +19,24 @@
 // §2.3），用户在这一页看到待裁决的确认卡时必须能批（点了没反应比没有按钮更糟）。
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AgentSource } from "../../shared/types";
-import type { UIState, ThreadBlock } from "../../shared/store";
+import type { UIState } from "../../shared/store";
 import { Button } from "../form";
 import { Composer } from "../composer";
 import { Block } from "../thread/blocks/Block";
 import { ScrollToBottom } from "../thread/ScrollToBottom";
 import { ThinkingState } from "../../aicss/ThinkingState";
-import { WINDOW_INITIAL, WINDOW_BATCH, WindowSentinel } from "../thread/Thread";
+import { WindowSentinel } from "../thread/Thread";
+import { useWindowedHistory } from "../thread/useWindowedHistory";
+import { useLoadOlderHistory, loadOlderLabel } from "../thread/useLoadOlderHistory";
 import { useStickyFollow } from "../thread/useStickyFollow";
 
 /** 尾块是流式中的 assistant：主时间线的判定（Thread.tsx）对子会话**同一份**——
- *  delta 在流时就「有输出」，不该再叠一行「正在处理…」（两个进行中指示互相打架）。 */
-function lastIsStreamingAssistant(blocks: ThreadBlock[]): boolean {
-  const last = blocks[blocks.length - 1];
-  return last?.kind === "assistant" && last.streaming;
+ *  delta 在流时就「有输出」，不该再叠一行「正在处理…」（两个进行中指示互相打架）。
+ *
+ *  2026-12 起流式块单独存在 state.streaming 里（见 shared/blocks.ts），所以判定
+ *  直接看它——逻辑时间线的尾块**就是**它（不变量：它恒为最后一块）。 */
+function lastIsStreamingAssistant(state?: UIState): boolean {
+  return Boolean(state?.streaming);
 }
 
 export function ChildSessionPage({
@@ -93,7 +97,12 @@ export function ChildSessionPage({
     onAnswer?.(id, text);
   }, [onAnswer]);
 
-  const blocks = state?.blocks ?? [];
+  // **渲染不拼数组**（与主时间线同一条纪律）：已定型块走窗口切片，正在流式的
+  // 那一块（state.streaming）单独挂——每帧拼一份逻辑时间线等于把 reduceDelta
+  // 省下来的 O(块数) 复制又还回去。
+  const sealed = state?.blocks ?? [];
+  const streaming = state?.streaming ?? null;
+  const total = sealed.length + (streaming ? 1 : 0);
   const context = state?.context ?? null;
   const stats = state?.stats ?? null;
   const model = state?.model ?? "";
@@ -114,13 +123,40 @@ export function ChildSessionPage({
   // 子 Agent 流式跑工具/输出时页面纹丝不动（用户报「子会话尤其明显」的根因）。
   // empty 传「当前有没有内容」：加载态→内容就绪会替换 endRef 所在子树，
   // 状态机必须随这个边界重装（否则装在空态上永不生效）。
-  const { endRef } = useStickyFollow({ empty: blocks.length === 0, composerScope: ".child-session-page" });
-  // 窗口化渲染：与主时间线同一份参数（之前全量挂载——长子会话切标签页必卡）。
-  const [windowSize, setWindowSize] = useState<number>(WINDOW_INITIAL);
-  const hidden = Math.max(0, blocks.length - windowSize);
-  const visible = hidden > 0 ? blocks.slice(hidden) : blocks;
-  // 换子会话（视图切走再切回同一组件实例）重置窗口
-  useEffect(() => { setWindowSize(WINDOW_INITIAL); }, [sessionId]);
+  const { endRef, stickyRef, scrollRef } = useStickyFollow({
+    empty: total === 0,
+    composerScope: ".child-session-page",
+    // 子会话标签页之间/从主会话切进来同样要重装状态机并贴底——否则视口停在
+    // 上一个会话的滚动位置（与主时间线同款 bug）。
+    sessionKey: sessionId,
+  });
+  // 窗口化渲染 + 上翻扩窗的滚动锚定：与主时间线**同一份实现**
+  // （useWindowedHistory——窗口按会话派生，前插后按高度差补偿 scrollTop）。
+  // 之前这页自己写一份 useState + useEffect 重置：既在切换首帧挂着上一份
+  // 窗口，又没有锚定——子会话上翻照样“跳顶”。
+  const { hidden, expandOlder, captureAnchor, clearAnchor } = useWindowedHistory({
+    sessionKey: sessionId,
+    total,
+    scrollRef,
+    isSticky: () => stickyRef.current,
+  });
+  // 窗口只切已定型块；流式块恒在末尾、永远落在窗口内（hidden 按逻辑时间线算，
+  // 已包含那一块——见 Thread.tsx 的同款说明）
+  const visible = hidden > 0 ? sealed.slice(hidden) : sealed;
+  // 上翻触顶：先补后端更早一页（子会话也是会话，chat.history 同一个方法），
+  // 补不到再扩本地窗口——与主时间线共用一份实现（useLoadOlderHistory）。
+  const loadOlder = useLoadOlderHistory({
+    sessionId,
+    source,
+    hasMore: Boolean(state?.historyMore),
+    firstSeq: state?.historyFirstSeq ?? 0,
+    expand: expandOlder,
+    captureAnchor,
+    clearAnchor,
+    // 子会话分页必须走 childHistory（带 child 标记——分页补进来的任务说明书
+    // 要渲染成「任务」块，不能变成用户气泡）
+    load: (beforeSeq: number) => source.childHistory(sessionId, beforeSeq).then(() => undefined),
+  });
 
   return (
     <div className="child-session-page">
@@ -133,40 +169,50 @@ export function ChildSessionPage({
         {/* 子会话自己的模型：缺席（老后端/未配置）就不渲染这一项，不显示假名字 */}
         {model !== "" && <span className="child-session-model mono" title={`子会话用的模型：${model}`}>{model}</span>}
         {/* 只读语义说明一次（页头）——而不是在每条消息上重复禁用原因：
-         *  禁用按钮的 title 提示在多数浏览器里不弹（禁用元素不派发鼠标事件）。 */}
-        <span className="child-session-readonly">只读 · 这是子 Agent 自己的会话，不提供撤回/编辑（待裁决的确认可以在这里批）</span>
+         *  禁用按钮的 title 提示在多数浏览器里不弹（禁用元素不派发鼠标事件）。
+         *  2026-12：模型选择器单独放行，说明随之补充去向——切了模型要回主会话
+         *  让主 Agent 续跑此子会话才见新模型（输入框仍锁，派发是主会话发起的）。 */}
+        <span className="child-session-readonly">只读 · 这是子 Agent 自己的会话，不提供撤回/编辑（待裁决的确认可以在这里批）；模型可切换——对下一次派发生效，回主会话让主 Agent 续跑此子会话</span>
         <Button className="child-session-back" onClick={onBack}>返回主会话</Button>
       </div>
       {/* 子会话自己的计划条不再在这里挂（2026-12 用户报「清单卡出现在时间线顶部」）：
        *  它随 todos prop 进 Composer 的白卡顶部区块（.pi-plan）——与主会话同一个
        *  挂载点、同一套视觉。归约层 todo.updated 不产生时间线块，清单不会在消息流里。 */}
       <div className="child-session-body">
-        {status === "loading" && blocks.length === 0 && <div className="child-session-note">正在读取子会话历史…</div>}
+        {status === "loading" && total === 0 && <div className="child-session-note">正在读取子会话历史…</div>}
         {status === "error" && (
           <div className="child-session-note error" role="alert">
             <span className="child-session-msg">读不到子会话历史：{error}</span>
             <Button className="child-session-retry" onClick={() => setNonce((n) => n + 1)}>重试</Button>
           </div>
         )}
-        {status === "ready" && blocks.length === 0 && (
+        {status === "ready" && total === 0 && (
           <div className="child-session-note">这个子会话没有可显示的历史（它可能还没开始执行，或历史已被清空）。</div>
         )}
-        {blocks.length > 0 && (
+        {total > 0 && (
           <>
             {/* 复用 .thread（主时间线的容器类：块间距、720px 居中、左右 24px 内边距）——
              *  同一个视觉语言，不是第二套排版 */}
             <div className="thread">
-              {hidden > 0 && <WindowSentinel onExpand={() => setWindowSize((n) => n + WINDOW_BATCH)} label={`前面还有 ${hidden} 条…`} />}
+              {/* 与主时间线同一条：本地窗口扩到 0 之后只要后端还有更早的历史，
+               *  哨兵就必须在（否则分页永远触发不了）。 */}
+              {(hidden > 0 || state?.historyMore) && (
+                <WindowSentinel onExpand={loadOlder} label={loadOlderLabel(Boolean(state?.historyMore), hidden)} />
+              )}
               {visible.map((block) => (
                 // readOnly：不渲染用户气泡的动作条（撤回/编辑在这里没有意义，见 Block 的说明）
                 <Block key={block.uid} block={block} onConfirm={handleConfirm} onAnswer={handleAnswer} readOnly />
               ))}
+              {/* 正在流式的那一块：单独挂（不拼数组——与主时间线同一条纪律） */}
+              {streaming && (
+                <Block key={streaming.uid} block={streaming} onConfirm={handleConfirm} onAnswer={handleAnswer} readOnly />
+              )}
               {/* 生成中且还没有任何输出时显示思考 shimmer（与主时间线同一形态、同一文案：
                *  Thread.tsx 对 state.busy && !lastIsStreamingAssistant 的呈现原样复刻——
                *  busy 的信号来自子会话自己的 state（CHILD_BUSY_HINTS 兜底置真 + 轮末
                *  busy=false 翻回），流式打字光标与思考块由共用的 Block/AnswerBody 自带，
                *  这里补的是容器级指示：工具执行中 / 等首字时时间线尾部不空着。 */}
-              {busy && !lastIsStreamingAssistant(blocks) && (
+              {busy && !streaming && (
                 <div className="msg">
                   <ThinkingState text="正在处理…" />
                 </div>
@@ -181,9 +227,12 @@ export function ChildSessionPage({
         )}
       </div>
       {/* 与主会话**同一个 Composer**（2026-10-07 用户要求版式完全一致）：输入框、
-       *  三个选择器、上下文环、统计胶囊全保留，readOnly 只锁交互——三个选择器
-       *  整组不可点（它们作用的是主会话的上下文，在子会话页操作会改错会话），
-       *  上下文环/统计胶囊是读数保持可点开，数据就是这个子会话自己的那份。
+       *  三个选择器、上下文环、统计胶囊全保留——输入框仍锁定（chat.send 对子会话
+       *  的拦截是刻意设计），但**模型选择器单独放行**（2026-12：子会话页切模型）：
+       *  模型是子会话自己的会话级状态，onPickModel 显式带子会话 id 寻址（视图打开
+       *  期间连接焦点仍是父会话，缺省寻址会落错会话）。Agent/权限选择器保持锁定
+       *  （它们作用的是父会话的上下文），上下文环/统计胶囊是读数保持可点开，
+       *  数据就是这个子会话自己的那份。
        *  onSend 传 no-op：输入已锁，canSend 恒 false，到不了这个回调。
        *  onCancel 接通（2026-10-10：子会话 busy 事件上抛后，「生成中」行与停止钮
        *  会随 busy 出现）——停止 = chat.cancel 带子会话 id，服务端经父会话的
@@ -194,9 +243,17 @@ export function ChildSessionPage({
         context={context}
         stats={stats}
         todos={todos}
-        // 子会话**自己的**模型（与页头那一项同一个值）：只读视图里选择器被锁，
-        // 但显示要如实——拿全局 default 角色冒充会让用户以为子会话用的是那个。
+        // 子会话**自己的**模型（与页头那一项同一个值）：没选过（state.model 为空串）
+        // 就原样传空串——ModelPicker 的回落链是 `model ?? settings.model`，`??` 对
+        // 空串不触发，芯片显示「模型」空态占位；传 undefined 反而会回落全局 default
+        // 角色冒充「子会话已选」（正是要避免的误导）。
         model={model}
+        modelInteractive
+        onPickModel={(id) =>
+          // 失败不弹全局报错条（子会话视图没有那条通道）也不假装成功：选中态
+          // 归根由 chat.modelChanged 广播对齐——后端没改成功就不会广播，芯片
+          // 停在旧模型上（与主会话 pickSessionModel 的「不乐观改」同一条纪律）。
+          source.setSessionModel(id, sessionId).catch(() => {})}
         onSend={() => {}}
         onCancel={() => source.cancel(sessionId)}
       />

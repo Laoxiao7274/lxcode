@@ -16,6 +16,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { historyBlocks, reduceHistory } from '../src/shared/history.ts';
 import { WSAgent } from '../src/agent/ws/index.ts';
+import { HISTORY_TAIL } from '../src/agent/ws/history-snapshot.ts';
 import { DemoAgent } from '../src/agent/demo/index.ts';
 
 /** 与 reduceHistory 入参同形状的初始 UIState（测试里手写，避免依赖 store 的初始值）。 */
@@ -193,8 +194,8 @@ test('⑥ WSAgent.childHistory：按 session_id 走 chat.history，返回快照�
 
   const p = agent.childHistory('s-child-1');
   assert.equal(FakeSocket.latest.sent.at(-1).method, 'chat.history');
-  assert.deepEqual(FakeSocket.latest.sent.at(-1).params, { session_id: 's-child-1' },
-    '子会话历史按子会话 id 寻址（父会话 id 会读到主时间线）');
+  assert.deepEqual(FakeSocket.latest.sent.at(-1).params, { session_id: 's-child-1', tail: HISTORY_TAIL },
+    '子会话历史按子会话 id 寻址（父会话 id 会读到主时间线），且只拉尾部窗口（分页装载）');
   FakeSocket.latest.reply({
     session_id: 's-child-1',
     messages: [{ role: 'assistant', content: '子会话的正文' }],

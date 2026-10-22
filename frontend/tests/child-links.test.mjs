@@ -18,7 +18,7 @@ import {
   recordChildParent,
 } from '../src/shared/workspace-tabs.ts';
 import { handleAgentEvent } from '../src/shared/store.ts';
-import { initial } from '../src/shared/blocks.ts';
+import { initial, timelineOf } from '../src/shared/blocks.ts';
 
 // ---------- 映射的记录 ----------
 
@@ -122,7 +122,7 @@ test('① 映射建立后双投查表路由（不再依赖对 blocks 的全量�
   c.childLinks = { childParents: { 'child-a': 'p1' }, dispatchChild: { d1: 'child-a' } };
   handleAgentEvent({ type: 'delta', sessionId: 'p1', kind: 'text', text: '子过程输出', dispatchId: 'd1' }, c);
   assert.equal(
-    c.sessionStates['child-a'].blocks.some((b) => b.kind === 'assistant' && b.content === '子过程输出'),
+    timelineOf(c.sessionStates['child-a']).some((b) => b.kind === 'assistant' && b.content === '子过程输出'),
     true,
     '带映射时子事件双投进子会话自己的时间线',
   );
@@ -130,7 +130,7 @@ test('① 映射建立后双投查表路由（不再依赖对 blocks 的全量�
   const c2 = makeController();
   c2.sessionStates = { 'child-a': { ...initial, currentId: 'child-a' } };
   handleAgentEvent({ type: 'delta', sessionId: 'p1', kind: 'text', text: '子过程输出', dispatchId: 'd1' }, c2);
-  assert.equal(c2.sessionStates['child-a'].blocks.length, 0, '无映射无卡时不双投');
+  assert.equal(timelineOf(c2.sessionStates['child-a']).length, 0, '无映射无卡时不双投');
 });
 
 // ---------- 标题反查（父 blocks） ----------

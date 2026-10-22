@@ -98,3 +98,49 @@ test('只读提示是 pi-row 里 textarea 的 placeholder，不在 piBar 工具�
   assert.ok(piRow > 0 && piRow < ta && ta < piBar,
     '只读提示应落在 .pi-row 的 textarea（placeholder）内——piBar 工具行在它之后');
 });
+
+// ---- 2026-12：子会话页切模型（锁两放一） ----
+// 整组锁（.pi-controls.pi-locked）拆开：Agent/权限恒锁（作用父会话的上下文），
+// 模型选择器由 modelInteractive 单独放行（作用子会话自己的会话级模型）。
+// 断言用 includes 而不是正则：接线是字面 JSX/类名，字面匹配即可——正则转义
+// 反而把可读性换成了脆性。
+
+test('Composer 锁定粒度：整组锁条件不变，放行槽位由 modelInteractive 控制', async () => {
+  const src = fs.readFileSync(new URL('../src/components/composer/Composer.tsx', import.meta.url), 'utf8');
+  // 整组锁仍在（readOnly 时对 Agent/Perm 生效）——不能被这次拆锁顺手去掉
+  assert.ok(src.includes('"pi-controls" + (readOnly ? " pi-locked" : "")'),
+    '只读视图的整组锁必须保留（Agent/权限仍锁）');
+  // 放行槽位：readOnly && modelInteractive 才加 .pi-unlocked（默认锁定，主会话不受影响）
+  assert.ok(src.includes('readOnly && modelInteractive ? " pi-unlocked" : ""'),
+    '模型选择器的放行必须由 modelInteractive 单独控制（readOnly 输入框仍锁不变）');
+  // 放行的只是 ModelPicker 槽位，ModelPicker 的接线保持 prop 直传
+  assert.ok(src.includes('<ModelPicker model={model} onPickModel={onPickModel} chipTitle='),
+    'ModelPicker 槽位接线保持 prop 直传（chipTitle 承载 busy 提示）');
+});
+
+test('CSS：放行槽位在锁定组内恢复指针事件与不透明度', () => {
+  const css = fs.readFileSync(new URL('../src/styles/composer.css', import.meta.url), 'utf8');
+  const block = css.slice(css.indexOf('.pi-controls.pi-locked .pi-model-slot.pi-unlocked'));
+  assert.ok(block.includes('pointer-events: auto'),
+    '放行槽位必须显式恢复 pointer-events:auto（父组的 none 不覆盖子元素的显式值）');
+  assert.ok(block.includes('opacity: 1'),
+    '放行槽位必须顶回 opacity:1（合成属性，子元素无法撤销父组的 0.5）');
+});
+
+test('ChildSessionPage：模型选择器放行 + onPickModel 显式带子会话 id 调 setSessionModel', async () => {
+  const src = fs.readFileSync(new URL('../src/components/panels/ChildSessionPage.tsx', import.meta.url), 'utf8');
+  assert.ok(src.includes('modelInteractive'),
+    '子会话页必须传 modelInteractive 放行模型选择器');
+  // mock source 层的接线断言：onPickModel → setSessionModel(id, sessionId)
+  assert.ok(src.includes('setSessionModel(id, sessionId)'),
+    '切模型必须显式带该子会话的 sessionId（视图打开期间连接焦点是父会话）');
+  // busy 提示：正在运行时切换语义 = 下一轮生效（chipTitle 经 Composer 传给 ModelPicker）
+  const composer = fs.readFileSync(new URL('../src/components/composer/Composer.tsx', import.meta.url), 'utf8');
+  assert.ok(composer.includes('正在运行，切换将在下一轮生效'),
+    'busy 态芯片应有「切换将在下一轮生效」的 title 提示');
+  // 没选过模型时不拿全局 default 冒充：空串转 undefined（ModelPicker 自己显示空态占位）
+  // ModelPicker 的回落链是 model ?? settings.model：空串不触发 ??（空态占位），
+  // undefined 才会回落全局 default——所以这里断言**原样传 state.model**。
+  assert.ok(src.includes('model={model}'),
+    '子会话 state.model 为空时不得显示全局 default 当作已选');
+});

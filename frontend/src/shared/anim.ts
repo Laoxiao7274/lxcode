@@ -17,13 +17,23 @@ export function playEnter(
 
 /** 回调 ref：元素挂载即 playEnter（条件渲染/列表新增行的入场）。
  *  from/to 取首次渲染的配置（静态配置用途）；ref identity 恒定，
- *  React 只在挂载/卸载时调用——动画不会因重渲染重播。 */
+ *  React 只在挂载/卸载时调用——动画不会因重渲染重播。
+ *
+ *  `skip`（回放帧）：换会话的那一帧挂载的历史块不播入场动效。那一帧
+ *  要尽快把内容画出来，而每个块的 fromTo 都要读一遍计算样式（强制布局）
+ *  并建一个补间；40 块叠起来就是切会话那一帧的长任务。 */
 export function useEnterRef<T extends HTMLElement>(
   from?: gsap.TweenVars,
   to?: gsap.TweenVars,
+  skip?: boolean,
 ): (el: T | null) => void {
   const optsRef = useRef({ from, to });
-  return useCallback((el: T | null) => playEnter(el, optsRef.current.from, optsRef.current.to), []);
+  const skipRef = useRef(skip);
+  skipRef.current = skip;
+  return useCallback((el: T | null) => {
+    if (skipRef.current) return;
+    playEnter(el, optsRef.current.from, optsRef.current.to);
+  }, []);
 }
 
 /** 收拢退场：高度/内边距/外边距归零 + 淡出，动画结束回调（条件渲染的

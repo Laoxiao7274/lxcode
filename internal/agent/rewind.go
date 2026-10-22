@@ -18,6 +18,7 @@ package agent
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/moyunteng/lxcode/internal/llm"
 )
@@ -37,26 +38,67 @@ type SetLeafResult struct {
 	Removed int
 }
 
+// rewindSettleTimeout 是撤回「自动取消并等待收尾」的上限：取消是异步的
+//（LLM 请求可能等在流式读上、工具子进程可能等退出），给一轮收尾留 10s；
+// 超时说明收尾本身卡住了（极少数：子进程不响应取消），如实报错让用户重试，
+// 不无限等——错误路径永远比挂死好。
+const rewindSettleTimeout = 10 * time.Second
+
+// settleBusyForRewind 让撤回可以「自动取消并等待收尾」：busy 时先发出取消
+//（幂等——与用户点停止同一份 cancel），再等本轮真正收尾。
+//
+// 锁纪律（死锁自查的关键）：**等待期间绝不持有 s.mu**——锁内只取 cancel 与
+// turnEnded 的引用；close 在 runTurn 的 defer 里做（那里同样先锁内取引用、
+// 锁外 close），等待方持锁等待会与 defer 抢锁直接死锁。
+//
+// turnEnded 为 nil（老轮次快照/理论上到不了）时退化成"取消已发出但等不到
+// 收尾"，如实报错——不假装成功。
+func (s *Session) settleBusyForRewind() error {
+	s.mu.Lock()
+	if !s.busy {
+		s.mu.Unlock()
+		return nil
+	}
+	cancel := s.cancel
+	ended := s.turnEnded
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel() // 幂等：与用户点停止同一条路径，重复调用无副作用
+	}
+	if ended == nil {
+		return fmt.Errorf("%w（正在收尾，请稍后重试）", ErrBusy)
+	}
+	select {
+	case <-ended:
+		return nil
+	case <-time.After(rewindSettleTimeout):
+		return fmt.Errorf("%w：本轮正在收尾（取消已发出），请稍后重试", ErrBusy)
+	}
+}
+
 // Rewind 回到 seq 那条消息**之前**（叶移到它的父节点）。
 //
-// 为什么必须空闲（busy → ErrBusy，与 Compact 同款）：正在跑的那一轮手里握着开轮那一刻的
-// 历史快照，抽掉它脚下的历史不会让那一轮停下来——它会按一份已经不存在的上下文继续生成，
-// 然后把 assistant/tool 消息追加到一段"穿越"了撤回点的历史上。
+// busy 不再是硬拒绝（2026-12 拍板）：先 settleBusyForRewind 自动取消当前轮
+// 并等它收尾，用户一步完成"停止 + 撤回"。
 //
-// 为什么锚点必须是配对平衡的切点：撤回锚点是 user 消息（轮边界），切点天然平衡；但库里
-// 真存在 P5 之前留下的畸形历史（取消时没补配对）。在那种历史上切一刀会留下孤儿 tool_call，
-// 严格端点直接 400 拒收整轮（toolpair.go 的不变量）。这里**守住**这条不变量，而不是指望
-// 调用方——拒绝撤回比产出一个发不出去的历史好。
+// **锁内原有的 busy 检查保留**：settle 返回后、拿锁前 flushNotices 可能已经
+// 开了新一轮（后台通告冲刷）——这时撤回还是会被拒，文案如实说"重新开始了
+// 新一轮"，用户再点一次即可。
 func (s *Session) Rewind(seq int64) (RewindResult, error) {
 	if seq <= 0 {
 		// 0 不是合法序号：没有落库的消息在内存里 Seq 也是 0，拿它当锚点会误伤
 		//（第一条没落库的消息之后的所有历史）。宁可报错也不猜。
 		return RewindResult{}, errors.New("撤回锚点必须是消息序号（正整数）")
 	}
+	if err := s.settleBusyForRewind(); err != nil {
+		return RewindResult{}, err
+	}
 	s.mu.Lock()
 	if s.busy {
+		// settle 成功返回后、拿锁前，flushNotices 可能已开新一轮：如实拒绝
+		//（不静默对新一轮历史动刀——用户看到的是"正在生成"，再点一次即可）。
 		s.mu.Unlock()
-		return RewindResult{}, fmt.Errorf("%w（先取消当前生成再撤回）", ErrBusy)
+		return RewindResult{}, fmt.Errorf("%w（刚开始了新一轮，请稍后再试）", ErrBusy)
 	}
 	idx := -1
 	for i, m := range s.history {

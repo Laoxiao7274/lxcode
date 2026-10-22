@@ -104,6 +104,11 @@ export type ThreadBlock =
       result?: string;
       /** 子执行过程的块（子上下文隔离——delta/工具行挂在这里，不进主时间线）。 */
       subBlocks: ThreadBlock[];
+      /** 子执行**正在流式**的那一块（与主时间线的 state.streaming 同一个不变量：
+       *  它恒为 subBlocks 逻辑上的最后一块，定型时并入）。分开存是为了让子事件的
+       *  delta 也不复制整个时间线（applyToDispatch 每帧只换这一个对象）。
+       *  卡本身不渲染子块（卡 = 一行摘要），这里只是归约语义与主时间线同构。 */
+      subStreaming?: AssistantBlock;
       /** 子 Agent 用量（轮末）。 */
       usageTokens?: number;
       isError?: boolean;
@@ -133,7 +138,30 @@ export type ThreadBlock =
 export const DISPATCH_TOOL_NAME = "agent_dispatch";
 
 export interface UIState {
+  /** **已定型**的块（不含正在流式生成的那一块——见下面的 streaming）。
+   *
+   *  为什么要分开（2026-12 渲染性能）：流式 delta 是 token 级的（一轮几百条），
+   *  原先每帧都 `blocks.slice()` 整数组复制再替换尾块——2000 块的会话在流式期间
+   *  每秒几十次全量复制（O(块数) × 帧率）。分开之后 delta 只换 streaming 这一个
+   *  对象引用（O(1)），定型（工具调用打断 / done / error / 重拉历史）时才做一次
+   *  数组合并。块对象本身仍然不可突变（memo(Block) 靠引用比较）。
+   *
+   *  渲染侧（Thread / ChildSessionPage）**分两段挂**（blocks 窗口 + streaming），
+   *  不拼数组——每帧拼一份逻辑时间线等于把这里省下的 O(块数) 复制又还回去。
+   *  需要全量序列的顺序敏感派生（大纲/轮次/标题反查/撤回原文）用 timelineOf()。
+   *  其它消费点（派发卡、确认门）只看 blocks——它们要的 user/dispatch/tool 块
+   *  全在这里，流式中的 assistant 块既没有 seq 也不参与这些判定。 */
   blocks: ThreadBlock[];
+  /** 正在流式生成的 assistant 块（**不在 blocks 里**；null = 当前没有在流式输出）。
+   *  由 reduceDelta 逐帧替换（只复制这一块），定型时由 finalizeStreaming 并入
+   *  blocks。恒为 blocks 逻辑上的最后一块。 */
+  streaming: AssistantBlock | null;
+  /** 更早的历史还没拉完（分页装载，chat.history 的 before_seq）：Thread /
+   *  子会话页据此在顶部继续显示「加载更早」的入口。false = 已到头，或后端
+   *  没报（老后端 → 不分页，行为与改造前一致）。 */
+  historyMore: boolean;
+  /** 已装载历史里最旧一条消息的 seq（下一次 before_seq 的 anchor；0 = 未知）。 */
+  historyFirstSeq: number;
   busy: boolean;
   pending: ConfirmRequest | null;
   todos: TodoItem[];
@@ -164,9 +192,33 @@ export interface UIState {
    *  chat.history 的 approval 键（回放对齐）与 chat.approvalChanged 事件
    *  （实时改档）——reduceSessionStates 按 sessionId 路由，天然按会话隔离。 */
   approval: ApprovalMode | null;
+  /** 时间线**重建代次号**（2026-12「撤回闪回来」的配套）：blocks 被全量重建
+   *  （historyLoaded 重建分支）时递增；增量路径（分页前插、实时追加）不动它。
+   *  Thread 据此区分「换会话的整块回放」（要播入场动画）与「同会话重拉的全量
+   *  重建」（不播——用户看着的时间线闪一遍弹跳动画只表达"界面抽风"）。 */
+  rebuiltGen: number;
 }
 
-export const initial: UIState = { blocks: [], busy: false, pending: null, todos: [], currentId: "", operationError: null, context: null, stats: null, historyReady: false, model: "", sending: false, approval: null };
+export const initial: UIState = { blocks: [], streaming: null, historyMore: false, historyFirstSeq: 0, busy: false, pending: null, todos: [], currentId: "", operationError: null, context: null, stats: null, historyReady: false, model: "", sending: false, approval: null, rebuiltGen: 0 };
+
+/** 逻辑时间线 = 已定型块 + 正在流式的那一块（拼在末尾）。
+ *
+ *  只在**渲染**与**顺序敏感的纯函数**（大纲/轮次/导出）里用；`state.blocks`
+ *  仍然是「已定型」的那一份（撤回、派发卡、确认门只认它）。返回新数组是必要的
+ *  ——组件要一个可 map 的序列；这一步的代价是 O(块数)，但它只发生在需要全量的
+ *  地方，不在流式热路径上。 */
+export function timelineOf(state: Pick<UIState, "blocks" | "streaming">): ThreadBlock[] {
+  return state.streaming ? [...state.blocks, state.streaming] : state.blocks;
+}
+
+/** 把正在流式的那一块**并入**已定型块（定型：工具调用打断 / 轮末 done /
+ *  出错 / 重拉历史）。没有流式块时原样返回（连对象都不换——避免无变化的重渲染）。 */
+export function finalizeStreaming(state: UIState, patch?: Partial<AssistantBlock>): UIState {
+  const cur = state.streaming;
+  if (!cur) return state;
+  const block: AssistantBlock = { ...cur, ...patch, streaming: false };
+  return { ...state, blocks: [...state.blocks, block], streaming: null };
+}
 
 // 块的唯一序号——React 渲染的稳定 key（index 作 key 在插入新块时
 // 会错位复用组件实例，是重复渲染类怪象的根因）。

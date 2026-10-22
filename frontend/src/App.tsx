@@ -11,6 +11,7 @@ import {
 } from "./shared/workspace-tabs";
 import { getAgentSource } from "./agent";
 import { useAgent, type ThreadBlock } from "./shared/store";
+import { timelineOf } from "./shared/blocks";
 import { draftOf } from "./shared/session-drafts";
 import { visionBlockNotice } from "./shared/attachments";
 import { AgentsProvider, useAgents } from "./shared/agents";
@@ -49,7 +50,7 @@ import { useCompaction } from "./app-hooks/use-compaction";
 import { getSakuraBridge } from "./agent/sakura";
 import { getTailscaleBridge } from "./agent/tailscale";
 import { getRemoteControlBridge } from "./agent/host";
-import { UpdateToast } from "./components/update/UpdateToast";
+import { UpdateDialog } from "./components/update/UpdateDialog";
 import type { AgentSource, SendAttachments, SendOptions, SessionMeta } from "./shared/types";
 
 export default function App() {
@@ -67,7 +68,7 @@ export default function App() {
               {/* 后台任务域：时间线卡片与顶栏面板共用同一份任务清单 */}
               <JobsProvider source={source}>
                 <AppBody source={source} sakuraBridge={sakuraBridge} tailscaleBridge={tailscaleBridge} remoteControlBridge={remoteControlBridge} />
-                <UpdateToast />
+                <UpdateDialog />
                 {/* 全局灯箱宿主：单实例（openRef 收口），附件缩略图统一入口 */}
                 <LightboxHost />
               </JobsProvider>
@@ -139,6 +140,13 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
   // 没了（state 已切到新会话）——所以这层保护真正兜的是「渲染什么」：空态换成
   // 保留上次 DOM 的指示条。previousSessionRef 记录上一帧焦点；首轮渲染
   //（previous=""）不算切换。 */
+  // 逻辑时间线（已定型块 + 正在流式的那一块）：**只给顺序敏感的派生计算**用
+  // （大纲/轮次/标题反查/撤回原文）。渲染路径不拼它——Thread / ChildSessionPage
+  // 分两段挂（已定型块 + 流式块），避免每帧 O(块数) 的数组复制。
+  // 记忆化：流式期间 state.blocks 引用不变，只有 state.streaming 换对象——拼一次
+  // 数组的代价因此按「流式块变化」而不是按帧计（每帧仍会新建一个短数组，
+  // 但不再影响渲染路径；见下面的 useMemo 依赖）。
+  const timeline = useMemo(() => timelineOf(state), [state.blocks, state.streaming]);
   const [switching, setSwitching] = useState(false);
   const prevFocusedRef = useRef(currentId);
   useEffect(() => {
@@ -257,8 +265,10 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
   // 发送失败的附件回滚（store 钩子 → 草稿域）：桥接（渲染期同步赋值——store 的
   // 订阅闭包经 ref 读到最新身份）
   onSendFailedBridgeRef.current = onSendFailed;
-  // 最新时间线的引用（撤回要按锚点取原文）——保持与原实现相同的渲染期同步时机
-  syncBlocks(state.blocks);
+  // 最新时间线的引用（撤回要按锚点取原文）——保持与原实现相同的渲染期同步时机。
+  // 用**逻辑时间线**（含正在流式的那一块）：撤回锚点恒是 user 块（在 blocks 里），
+  // 但「最新时间线」的语义应当与用户看到的一致（流式块也在屏幕上）。
+  syncBlocks(timeline);
 
   // ---- 发送缓冲区条目动作（use-send-queue）----
   const { queueNotice, handleQueueEdit, handleQueueDelete, handleQueueSend, currentQueue } = useSendQueue({
@@ -277,7 +287,7 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
   );
 
   // ---- 右侧「轮次」大纲面板（use-turn-outline：分组 + 高亮 + 跳转目标）----
-  const { groups, dispatchCount, jumpedUid, activeUid, activeSeq, seqToUid, handleOutlineJump } = useTurnOutline({ blocks: state.blocks });
+  const { groups, dispatchCount, jumpedUid, activeUid, activeSeq, seqToUid, handleOutlineJump } = useTurnOutline({ blocks: timeline });
 
   // ---- 右侧「会话树」面板（use-session-tree：chat.tree + 过滤/折叠 + 切叶）----
   //
@@ -397,13 +407,13 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
    *  不另写一遍）。这里只需按 seq 找到对应的块。 */
   const handleTreeBranchFrom = useCallback((row: TreeRow) => {
     const uid = seqToUid.get(row.userSeq);
-    const block = uid === undefined ? undefined : state.blocks.find((b) => b.uid === uid);
+    const block = uid === undefined ? undefined : timeline.find((b) => b.uid === uid);
     if (!block) {
       reportError("这条消息还没加载到时间线里（可能正在切换会话）");
       return;
     }
     handleRewind(block);
-  }, [seqToUid, state.blocks, handleRewind, reportError]);
+  }, [seqToUid, timeline, handleRewind, reportError]);
 
   /** 「回到最新」：落点 = 树里最大的 seq（绝不传 0）。 */
   const handleTreeLatest = useCallback(() => {
@@ -413,7 +423,7 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
     });
   }, [latestSeqInTree, sessionTree, reportError]);
 
-  const currentTitle = state.blocks.length === 0 ? "" : source.sessions().find((s: SessionMeta) => s.id === currentId)?.title ?? "任务";
+  const currentTitle = timeline.length === 0 ? "" : source.sessions().find((s: SessionMeta) => s.id === currentId)?.title ?? "任务";
 
   /** 子会话临时视图的标题：Agent 名 + 任务摘要（如 `researcher · 通读 internal/agent`）。
    *
@@ -427,9 +437,9 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
    *  「子会话 <id 前 8 位>」，**不许空白**。 */
   const childTabTitleOf = useCallback((sessionId: string) => {
     const parent = childParents[sessionId] ?? currentId;
-    const blocks = sessionStates[parent]?.blocks ?? state.blocks;
-    return childTabTitle(blocks, sessionId, (agentId) => agents.find((a) => a.id === agentId)?.name ?? "");
-  }, [childParents, currentId, sessionStates, state.blocks, agents]);
+    const parentState = sessionStates[parent] ?? state;
+    return childTabTitle(timelineOf(parentState), sessionId, (agentId) => agents.find((a) => a.id === agentId)?.name ?? "");
+  }, [childParents, currentId, sessionStates, state, agents]);
   // 顶栏标题与临时视图页头身份走**同一个**函数：各算一次早晚分叉。
   // 子会话标题加「子会话 · 」前缀（用户报「子会话和主会话表明的不明显」）：临时视图
   // 有自己的页头与「返回主会话」按钮，而**顶栏只有一行文字**，所以在这里补一个文字前缀。
@@ -488,7 +498,7 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
           <div className="chat-main">
             {errorNotice}
             <div className="thread-scroll" data-switching={switching ? "true" : undefined}>
-              <Thread state={state} onConfirm={handleConfirm} onAnswer={handleAnswer} onSuggestion={handleSend} projectName={filterProjectName} onEdit={handleEdit} onRewind={handleRewind} onOpenChild={openChildView} revealUid={jumpedUid} />
+              <Thread state={state} source={source} onConfirm={handleConfirm} onAnswer={handleAnswer} onSuggestion={handleSend} projectName={filterProjectName} onEdit={handleEdit} onRewind={handleRewind} onOpenChild={openChildView} revealUid={jumpedUid} />
             </div>
             {/* key=sessionId：切会话重挂载——输入框/附件区从该会话的草稿记账还原
                 （initialDraft），B 的输入框是 B 自己的（没有就是空）。不重挂的话

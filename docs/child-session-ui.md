@@ -114,10 +114,24 @@ confirmRequest 挂待裁决、compacted 插压缩标记）。
 所以子会话视图不是"页头读数 + 时间线"的简化版，而是与主会话**同一套结构**：
 
 - **同一个 `Composer`**（`readOnly`）：输入框（禁用 + 只读占位「只读视图——回到主会话才能发消息」）、
-  三个选择器（Agent/权限/模型，包在 `.pi-controls.pi-locked` 里整组锁定——它们作用的是**主会话**
-  的上下文，在子会话视图可交互就是改错会话）、上下文环、统计胶囊，全保留、版式逐字节一致；
+  三个选择器（Agent/权限/模型，包在 `.pi-controls.pi-locked` 里）、上下文环、统计胶囊，
+  全保留、版式逐字节一致；
   **上下文环/统计胶囊是读数，保持可点开**，数据就是这个子会话自己的 `stats`/`context`；
-- **页头只剩身份信息**（子会话/模型徽标/只读说明/返回）——读数从页头移进输入条后，
+- **选择器锁定粒度（2026-12 用户需求：子会话页切模型）**：整组锁拆开——**Agent/权限选择器仍锁定**
+  （它们作用的是**父会话**的上下文，在子会话视图可交互就是改错会话），**模型选择器单独放行**：
+  `Composer` 新 prop `modelInteractive`（默认 false，主会话不受影响；readOnly 输入框仍锁不变），
+  放行槽位（`.pi-model-slot.pi-unlocked`）在锁定组内恢复 `pointer-events:auto` 与不透明度 1
+  （`styles/composer.css`——opacity 是合成属性，子元素无法撤销父组的 0.5，故槽位直接顶回 1）。
+  `ChildSessionPage` 接 `onPickModel={(id) => source.setSessionModel(id, sessionId)}`——
+  **显式带子会话 id 寻址**（子会话视图打开期间连接焦点仍是父会话，`setSessionModel` 缺省按
+  焦点寻址会落错会话）；后端 `chat.model` 对子会话 id 天然可用（落库 `sessions.model` +
+  按 `session_id` 广播 `chat.modelChanged`，前端双投把它归约进子会话自己的 state，
+  页头徽标与选择器芯片随之更新——事件回流零新机制）。busy 时芯片 title
+  「正在运行，切换将在下一轮生效」；空闲语义 =「对下一次派发生效——回主会话让主 Agent 续跑
+  此子会话」（页头说明承载）。**子会话没选过模型时（`state.model` 为空）
+  选择器不显示全局 default 角色冒充已选——`state.model` 原样传给 Composer
+  （空串不触发 ModelPicker 回落链 `model ?? settings.model` 的 `??`，芯片显示「模型」
+  空态占位；传 `undefined` 反而会回落全局 default 冒充已选）。
   「同一块信息两个位置」的分叉就不存在了（§2.5 的 `placement="down"` 因此退役，组件的 prop
   保留给别的调用方）；
 - **布局机制与主会话同一条**：`.composer-zone` 是 absolute 浮层、`.child-session-body` 按

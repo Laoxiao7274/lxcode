@@ -406,15 +406,26 @@ func (s *Session) openChildSession(call tools.DispatchCall, ac *sessiondata.Agen
 	child.SetAgentID(ac.Def.ID)
 	// 无存储（纯内存模式/未挂 store 的调用方）：退化成内存子会话——它仍是一个
 	// 独立会话（自己的历史、自己的压缩），只是不落库、不能续跑。生产永远有存储。
-	// 模型继承：子会话**自己的**选择优先（续跑时库里存着），没选过才继承父会话的
-	// 会话级选择（父也没选 = 空，子会话照旧走 Agent 绑定/default——与改动前一致）。
-	// 落库：续跑/回放时子会话页显示的模型是它真正用过的那个，不随父会话后来切模型漂移。
+	// 模型继承：子会话**自己的**选择优先（续跑时库里存着 = 用户给子会话切过模型），
+	// 否则**子 Agent 的模型绑定**优先（ac.Def.Model——用户在 Agents 设置里给这个
+	// 子 Agent 绑的模型，不该被父会话的会话级选择压死：2026-12 用户实测，绑定模型
+	// 一直被主会话选择覆盖），父会话也没绑才继承父会话的会话级选择（父也没选 =
+	// 空，子会话照旧走 default——与改动前一致）。
+	// 继承值是**内存级**的（setModelInMemory，不落库）：父会话后来清掉选择或 Agent
+	// 改绑，下一次派发就能反映；落库的话续跑/回放会把它当成子会话自己的选择永久钉死。
+	// 落库的只有用户显式切给子会话的模型（SetModel 路径）。
 	inheritModel := func() error {
-		if parentModel == "" || child.SelectedModel() != "" {
+		if child.SelectedModel() != "" {
 			return nil
 		}
-		_, err := child.SetModel(parentModel)
-		return err
+		if ac.Def.Model != "" {
+			return nil // Agent 绑定优先于父继承：留给解析链按绑定解析
+		}
+		if parentModel == "" {
+			return nil
+		}
+		child.setModelInMemory(parentModel)
+		return nil
 	}
 	if st == nil {
 		if err := child.SetWorkDir(workDir); err != nil {

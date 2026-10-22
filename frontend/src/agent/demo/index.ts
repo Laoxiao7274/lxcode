@@ -177,12 +177,17 @@ export class DemoAgent implements AgentSource, JobAdminSource {
    *
    *  广播这一步是刻意的——真后端 chat.model 会广播 chat.modelChanged 给所有端，
    *  演示里照做，那条「广播 → 归约层按会话落 model」的路径才在演示模式里也走得到
-   *  （无后端也能验 UI）。只改这条会话：其他会话的 model 不受影响（作用域语义）。 */
-  async setSessionModel(modelId: string): Promise<void> {
+   *  （无后端也能验 UI）。只改这条会话：其他会话的 model 不受影响（作用域语义）。
+   *
+   *  **与真实现的差异**：demo 没有子会话运行时与双投，显式传 sessionId 时直接
+   *  按它记/广播（真实现是「缺省回落连接焦点」），归约层对收到的
+   *  modelChanged 一视同仁——所以「子会话页选模型 → 子会话 state 更新」这条
+   *  UI 链路在演示模式里同样走得到。 */
+  async setSessionModel(modelId: string, sessionId?: string): Promise<void> {
     if (!modelId) throw new Error("model 不能为空");
-    const sessionId = this.currentSession;
-    this.models_.set(sessionId, modelId);
-    this.emit({ type: "modelChanged", sessionId, model: modelId });
+    const target = sessionId && sessionId !== "" ? sessionId : this.currentSession;
+    this.models_.set(target, modelId);
+    this.emit({ type: "modelChanged", sessionId: target, model: modelId });
   }
 
   /** 读「新会话默认审批档」（演示态：本地自管——真后端读 behavior.json）。 */
@@ -427,7 +432,8 @@ export class DemoAgent implements AgentSource, JobAdminSource {
    *
    *  别的 id（不存在/老调用方）返回**空快照**，不编内容；也不抛错：演示模式里
    *  根本没有那个子会话，报错会把"演示没有后端"说成"读取失败"。 */
-  async childHistory(sessionId: string): Promise<HistorySnapshot> {
+  async childHistory(sessionId: string, beforeSeq?: number): Promise<HistorySnapshot> {
+    void beforeSeq; // 演示数据源没有更早的历史：ignored（不分页）
     const snapshot: HistorySnapshot = sessionId !== DEMO_CHILD_SESSION
       ? { sessionId, messages: [], busy: false, pending: null, todos: [] }
       : {

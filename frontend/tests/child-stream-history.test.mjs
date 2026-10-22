@@ -18,6 +18,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { handleAgentEvent, reduce } from '../src/shared/store.ts';
+import { timelineOf } from '../src/shared/blocks.ts';
 
 /** 与 child-reopen.test.mjs 同款的可变 controller。 */
 function makeController() {
@@ -59,22 +60,24 @@ function openChild(c, messages = [{ role: 'user', content: '任务说明书' }])
   handleAgentEvent({ type: 'historyLoaded', sessionId: 'child-1', history: snapshot('child-1', messages) }, c);
 }
 
-const texts = (blocks) => blocks.map((b) => b.content ?? b.text ?? '');
+/** 逻辑时间线（已定型块 + 正在流式的那一块）的正文——UIState 把流式块单独存
+ *  （见 shared/blocks.ts 的 timelineOf），断言要看用户看到的顺序就得用它。 */
+const texts = (state) => timelineOf(state).map((b) => b.content ?? b.text ?? '');
 
 test('① 流式 delta → 历史重拉（busy=false 快照）→ 已显示的文字不丢', () => {
   const c = makeController();
   openChild(c);
   handleAgentEvent({ type: 'delta', sessionId: 'parent-1', kind: 'text', text: '正在写', dispatchId: 'd1' }, c);
   handleAgentEvent({ type: 'delta', sessionId: 'parent-1', kind: 'text', text: '结论', dispatchId: 'd1' }, c);
-  assert.deepEqual(texts(c.sessionStates['child-1'].blocks), ['任务说明书', '正在写结论']);
+  assert.deepEqual(texts(c.sessionStates['child-1']), ['任务说明书', '正在写结论']);
 
   // 重开视图（ChildSessionPage 每次挂载都 childHistory；StrictMode 下还是两次）
   handleAgentEvent({ type: 'historyLoaded', sessionId: 'child-1', history: snapshot('child-1', [{ role: 'user', content: '任务说明书' }]) }, c);
-  assert.deepEqual(texts(c.sessionStates['child-1'].blocks), ['任务说明书', '正在写结论'],
+  assert.deepEqual(texts(c.sessionStates['child-1']), ['任务说明书', '正在写结论'],
     '快照里没有流式中的 assistant（后端整轮结束才落库）——重拉不许把它抹掉');
   // 再拉一次（StrictMode 双调用）同样不丢
   handleAgentEvent({ type: 'historyLoaded', sessionId: 'child-1', history: snapshot('child-1', [{ role: 'user', content: '任务说明书' }]) }, c);
-  assert.deepEqual(texts(c.sessionStates['child-1'].blocks), ['任务说明书', '正在写结论']);
+  assert.deepEqual(texts(c.sessionStates['child-1']), ['任务说明书', '正在写结论']);
   // busy 保真：流式块存在就是「在跑」的证据（子会话快照的 busy 恒 false，不可信）
   assert.equal(c.sessionStates['child-1'].busy, true, '有流式块 = 会话在跑');
 });
@@ -88,11 +91,11 @@ test('② 快照已含这条回复（append 后、done 前重拉）→ 不重复
     type: 'historyLoaded', sessionId: 'child-1',
     history: snapshot('child-1', [{ role: 'user', content: '任务说明书' }, { role: 'assistant', content: '第一段' }]),
   }, c);
-  assert.deepEqual(texts(c.sessionStates['child-1'].blocks), ['任务说明书', '第一段'],
+  assert.deepEqual(texts(c.sessionStates['child-1']), ['任务说明书', '第一段'],
     '同一条回复不许出现两遍（按正文去重）');
   // 后续 delta 续写同一块（不是另开一块把回复劈成两半）
   handleAgentEvent({ type: 'delta', sessionId: 'parent-1', kind: 'text', text: '第二段', dispatchId: 'd1' }, c);
-  assert.deepEqual(texts(c.sessionStates['child-1'].blocks), ['任务说明书', '第一段第二段']);
+  assert.deepEqual(texts(c.sessionStates['child-1']), ['任务说明书', '第一段第二段']);
 });
 
 test('②b 快照落后几个 delta（前缀）→ 取本地更长的那份，不重复', () => {
@@ -103,7 +106,7 @@ test('②b 快照落后几个 delta（前缀）→ 取本地更长的那份，�
     type: 'historyLoaded', sessionId: 'child-1',
     history: snapshot('child-1', [{ role: 'user', content: '任务说明书' }, { role: 'assistant', content: 'AB' }]),
   }, c);
-  assert.deepEqual(texts(c.sessionStates['child-1'].blocks), ['任务说明书', 'ABCD'],
+  assert.deepEqual(texts(c.sessionStates['child-1']), ['任务说明书', 'ABCD'],
     '快照是前缀 → 同一条回复，正文取本地那份（delta 只增不减）');
 });
 
@@ -121,7 +124,7 @@ test('③ 关闭期间实时流 → 重开重拉 → 不丢不重复（child-reo
       { role: 'assistant', content: '第二轮正在写结论' },
     ]),
   }, c);
-  const all = texts(c.sessionStates['child-1'].blocks);
+  const all = texts(c.sessionStates['child-1']);
   assert.deepEqual(all, ['任务说明书', '第一轮结论', '（续跑指令）', '第二轮正在写结论'],
     '历史完整重建，且流式尾巴按正文去重（不重复）');
 });
@@ -152,5 +155,5 @@ test('⑤ 主会话同样受保护：leafChanged 重拉不冲掉正在流的回�
     type: 'historyLoaded', sessionId: 's1',
     history: { sessionId: 's1', messages: [{ role: 'user', content: '问题' }], busy: false, pending: null, todos: [] },
   });
-  assert.deepEqual(texts(s.blocks), ['问题', '实时正文'], '切叶副作用重拉（快照 busy 可能是 false）不冲掉流式块');
+  assert.deepEqual(texts(s), ['问题', '实时正文'], '切叶副作用重拉（快照 busy 可能是 false）不冲掉流式块');
 });

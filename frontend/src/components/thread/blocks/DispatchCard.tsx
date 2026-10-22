@@ -29,8 +29,10 @@ import { dispatchErrorTitle, dispatchPrimaryAction, dispatchPrimaryTitle } from 
  *  **不许留空白**：空白的卡头让用户不知道是谁在干活，比一个明确的"未知"更糟。 */
 const UNKNOWN_AGENT = "未知 Agent";
 
-export function DispatchCard({ block, onConfirm, onAnswer, onOpenChild, "data-uid": dataUid }: {
+export function DispatchCard({ block, onConfirm, onAnswer, onOpenChild, replayed, "data-uid": dataUid }: {
   block: Extract<ThreadBlock, { kind: "dispatch" }>;
+  /** 回放帧（换会话）：不播入场动效（见 useEnterRef 的 skip）。 */
+  replayed?: boolean;
   onConfirm: (id: string, allow: boolean) => void;
   /** ask_user 提问的回答（卡内子时间线的 ask 确认卡）——透传给 Block。 */
   onAnswer?: (id: string, text: string) => void;
@@ -57,7 +59,7 @@ export function DispatchCard({ block, onConfirm, onAnswer, onOpenChild, "data-ui
   const agentName = block.agentName || known?.name || block.agentId || UNKNOWN_AGENT;
   const agentColor = block.agentColor || known?.color || AGENT_COLORS[0];
   const done = block.status === "done";
-  const cardRef = useEnterRef<HTMLDivElement>();
+  const cardRef = useEnterRef<HTMLDivElement>(undefined, undefined, replayed);
   const sessionId = block.sessionId ?? "";
 
   // todo 契约批②：派发卡上的进度徽标（不破「卡 = 一行摘要」契约——徽标是计数，

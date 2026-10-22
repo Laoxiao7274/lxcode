@@ -592,10 +592,15 @@ html[data-theme="dark"] .turn-panel { --turn-run: #fbbf24; }
  * 与轮次面板（.turn-*）并存：有 chat.tree 的后端用树、老后端回落轮次列表。视觉沿用
  * 同一套皮（同字号、同导轨思路、同徽标尺寸），区别只有缩进 + 连接线 + 分支标记。
  *
- * 连接线怎么画：每行用 ::before 画**竖线**（按 depth 定位到父行的竖线位置），
+ * 连接线怎么画：每行用 ::before 画**竖线**（按**视觉深度**定位到父行的竖线位置），
  * 用 ::after 画**横向短枝**；`data-last="true"` 的行把竖线截到行中点（└ 而不是 ├）。
- * 缩进用 `--stree-depth` 变量（行内 style 给），不靠嵌套 DOM——嵌套会让「按 seq 平铺
- * 的列表」变成递归组件，而行的可见性/折叠已经在纯函数层算完了。 */
+ * 缩进用 `--stree-depth` 变量（行内 style 给，值是**钳制后的视觉深度** `min(depth, 8)`，
+ * 见 tree-model.ts 的 STREE_MAX_VISUAL_DEPTH），不靠嵌套 DOM——嵌套会让「按 seq 平铺
+ * 的列表」变成递归组件，而行的可见性/折叠已经在纯函数层算完了。
+ *
+ * 为什么缩进与连接线必须用同一个值：竖线要落在**父行的竖线列**上（当前行缩进 - 半级）。
+ * 缩进钳制而连接线按原始 depth 乘算 → 深层行的竖线跑到标签右边去，线就断了。所以两边
+ * 都只读 `--stree-depth`（视觉深度）：depth=8 与 depth=9 相邻时共列，竖线连续贯通。 */
 .stree-panel {
   /* 与 .turn-panel 同一条局部变量理由：琥珀色没有 :root token（只属于本面板的运行态）。 */
   --stree-run: #d97706;
@@ -677,7 +682,9 @@ html[data-theme="dark"] .turn-panel { --turn-run: #fbbf24; }
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  overflow-x: hidden;
+  /* 兜底：钳制之后正常情况装得下（最深层标签仍有 ~118px），但徽标堆满时内容仍可能
+   * 超出面板宽——给一条横向滚动，而不是静默裁掉（`.stree-label` 的最小宽度见下）。 */
+  overflow-x: auto;
 }
 /* 截断提示（「更早的 N 个节点未加载」+ 加载全部）：不静默截断——用户要知道上面还有 */
 .stree-note {
@@ -707,10 +714,13 @@ html[data-theme="dark"] .turn-panel { --turn-run: #fbbf24; }
   display: flex;
   align-items: center;
   gap: 2px;
-  /* 缩进：depth 0 时 6px（与 .turn-row 的内边距对齐），每深一级 +13px */
+  /* 缩进：depth 0 时 6px（与 .turn-row 的内边距对齐），每深一级 +13px。
+   * --stree-depth 是**视觉深度**（min(depth, 8)，钳制在 tree-model.ts）：超过上限之后
+   * 不再线性外推，深层行共用同一列缩进 → 标签始终有可读宽度。 */
   padding-left: calc(6px + var(--stree-depth, 0) * var(--stree-indent));
 }
-/* 竖连接线：落在父行的竖线位置（当前行缩进 - 半级）。depth 0 不画。 */
+/* 竖连接线：落在父行的竖线位置（当前行缩进 - 半级）。depth 0 不画。
+ * 与缩进读同一个 --stree-depth（视觉深度）——否则钳制边界处会错位/断线。 */
 .stree-row-wrap:not([data-depth="0"])::before {
   content: "";
   position: absolute;
@@ -733,6 +743,17 @@ html[data-theme="dark"] .turn-panel { --turn-run: #fbbf24; }
   width: calc(var(--stree-indent) - 6px);
   height: 1px;
   background: var(--border);
+}
+/* 缩进已钳制（depth > 视觉上限）：横向短枝画成**虚线**，说明这条链还在往深处走
+ * （再配标签前的 ⋯ 记号，见 SessionTreePanel 的 .stree-deep）——于是「压平之后像
+ * 兄弟」不会发生：同一列里既有兄弟、也有更深的子孙，虚线短枝就是那条区分线。
+ * 刻意做得很轻，不喧宾夺主；宽度不变，保证竖线仍然接得上。 */
+.stree-row-wrap[data-clamped="true"]::after {
+  background: repeating-linear-gradient(
+    to right,
+    var(--border) 0 3px,
+    transparent 3px 6px
+  );
 }
 .stree-row {
   position: relative;
@@ -834,10 +855,20 @@ html[data-theme="dark"] .turn-panel { --turn-run: #fbbf24; }
 }
 .stree-label {
   flex: 1;
-  min-width: 0;
+  /* 兜底可读宽度：正常情况下钳制已保证 ≥ 60px；徽标堆满（分支 + 文件·子 Agent +
+   * 「你在这里」）时这一条不让标签被压没，多出来的部分由 `.stree-list` 的横向滚动兜住。 */
+  min-width: 64px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* 缩进已钳制的记号（depth > 视觉上限）：内联在标签开头，不占 flex 槽位、不挤压标签。
+ * 只说明「这条链还有更深的层级」，不是错误态——用最轻的对比度。 */
+.stree-deep {
+  color: var(--fg-faint);
+  opacity: 0.7;
+  margin-right: 3px;
+  letter-spacing: 0.5px;
 }
 /* 徽标组：都是「有就显示、没有就不渲染」（0 不显示——零值 = 没有这个事实） */
 .stree-branch-badge,
@@ -881,12 +912,21 @@ html[data-theme="dark"] .turn-panel { --turn-run: #fbbf24; }
 }
 /* 行尾操作：hover / 聚焦时出现（触摸端常驻——见下一条 @media）。
  * 为什么不是常显：每行两个按钮会把面板撑成按钮墙，而这是**低频**动作（切分支）；
- * 但「只在 hover 出现」对键盘与触屏不可达，所以 :focus-within 也显示，且触屏常驻。 */
+ * 但「只在 hover 出现」对键盘与触屏不可达，所以 :focus-within 也显示，且触屏常驻。
+ * 出现方式是**覆盖式**（absolute 贴行尾 + 底色），不占 flex 布局：否则 hover 时按钮
+ * 一插进来就把标签挤窄，长标签会在鼠标划过的瞬间被截掉一截（抖动 + 看不全）。 */
 .stree-actions {
-  flex: none;
+  position: absolute;
+  right: 2px;
+  top: 50%;
+  transform: translateY(-50%);
   display: none;
   align-items: center;
   gap: 2px;
+  padding: 1px 2px;
+  border-radius: 6px;
+  background: var(--bg-side);
+  box-shadow: 0 0 0 1px var(--border-soft);
 }
 .stree-row-wrap:hover > .stree-actions,
 .stree-row-wrap:focus-within > .stree-actions {

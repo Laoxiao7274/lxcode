@@ -1,86 +1,140 @@
 /* 页面级更新提示与网页搜索分区。 */
 
-/* ===== 页面级更新提示（右下角 Toast .upd-toast） ===== */
-.upd-toast {
-  position: fixed;
-  right: 20px;
-  bottom: 20px;
-  z-index: 90;
-  width: 300px;
-  background: var(--surface);
-  border: 1px solid var(--border-strong);
-  border-radius: 12px;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.16), 0 3px 10px rgba(0, 0, 0, 0.08);
-  padding: 13px 15px;
-  animation: settings-in 240ms cubic-bezier(0.22, 1, 0.36, 1) both;
+/* ===== 统一更新弹窗（.upd-dialog，组件 components/update/UpdateDialog.tsx） =====
+   骨架复用 .proj-add-mask / .proj-add（composer.css），这里只加更新自己的
+   版本表、说明列表、进度区与错误行；色全部走 token（亮/暗两套自动跟随）。 */
+.upd-dialog {
+  width: min(480px, calc(100vw - 48px));
 }
-.upd-toast-title {
+.upd-body {
+  gap: 10px;
+}
+/* 版本表：新版本 / 当前版本 两行，值用等宽 */
+.upd-vers {
   display: flex;
-  align-items: center;
-  gap: 7px;
+  flex-direction: column;
+  gap: 5px;
+  background: var(--bg-side);
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  padding: 9px 12px;
+}
+.upd-vers-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+}
+.upd-vers-label {
+  flex: none;
+  width: 56px;
+  color: var(--fg-faint);
+}
+.upd-vers-new {
   font-size: 13px;
   font-weight: 600;
   color: var(--fg);
 }
-.upd-toast-title.ok {
-  color: var(--success);
-}
-.upd-toast-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--success);
-  animation: pulse 2.4s ease-in-out infinite;
-}
-.upd-toast-notes {
+.upd-vers-size {
+  margin-left: auto;
   font-size: 11px;
   color: var(--fg-faint);
-  margin: 5px 0 0;
-  line-height: 1.5;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
 }
-.upd-toast-actions {
+.upd-vers-cur {
+  color: var(--fg-muted);
+}
+/* 更新说明：长列表在框内滚动（不把弹窗撑过一屏） */
+.upd-notes-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  letter-spacing: 0.02em;
+  margin-bottom: 4px;
+}
+.upd-notes {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 12px;
+  max-height: 168px;
+  overflow-y: auto;
   display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 10px;
+  flex-direction: column;
+  gap: 3px;
 }
-.upd-toast-later {
-  font-size: 11.5px;
-  color: var(--fg-faint);
-  background: none;
-  border: none;
-  padding: 4px 6px;
-  cursor: pointer;
-  font-family: var(--font-sans);
+.upd-notes li {
+  position: relative;
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--fg-muted);
 }
-.upd-toast-later:hover {
-  color: var(--fg);
-}
-.upd-toast-close {
+.upd-notes li::before {
+  content: "";
   position: absolute;
-  top: 9px;
-  right: 9px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  color: var(--fg-faint);
-  background: transparent;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
+  left: -11px;
+  top: 0.72em;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--border-strong);
 }
-.upd-toast-close:hover {
-  background: var(--border-soft);
+/* 进度区 */
+.upd-progress-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.upd-progress-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+.upd-progress-num {
+  flex: none;
+  font-size: 11.5px;
   color: var(--fg);
 }
-.upd-toast .set-update-progress {
-  margin-top: 10px;
+.upd-progress-bytes {
+  font-size: 10.5px;
+  color: var(--fg-faint);
+  min-height: 13px;
+}
+/* 就绪/安装：重启告知 */
+.upd-ready {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--fg-muted);
+  background: color-mix(in srgb, var(--ok-text) 6%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ok-text) 22%, var(--border-soft));
+  border-radius: 9px;
+  padding: 8px 11px;
+}
+.upd-error {
+  padding: 0;
+}
+.upd-hint {
+  font-size: 12px;
+  color: var(--fg-muted);
+  line-height: 1.6;
+}
+.upd-close-hint {
+  font-size: 10.5px;
+  color: var(--fg-faint);
+}
+.upd-btn-spin {
+  width: 11px;
+  height: 11px;
+  margin-right: 5px;
+}
+.proj-add-close:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.proj-add-close:disabled:hover {
+  background: transparent;
+  color: var(--fg-faint);
 }
 /* 侧栏设置行的更新角标 */
 .settings-upd-dot {

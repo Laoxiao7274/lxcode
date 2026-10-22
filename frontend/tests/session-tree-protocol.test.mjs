@@ -159,6 +159,47 @@ test('leafChanged 到达 → 重拉本会话历史（leaf 是共享状态，可�
   );
 });
 
+test('本端 rewind 成功 → 同会话 leafChanged 判重跳过重拉（乐观截断已是终态，不闪回）', async () => {
+  const { agent, calls } = stubAgent((method) => {
+    if (method === 'chat.rewind') return { removed: 3, leaf_seq: 6 };
+    return { session_id: 's1', messages: [], busy: false, todos: [] };
+  });
+  await agent.rewind('s1', 7);
+  calls.length = 0;
+  // rewind 成功后后端广播 chat.leafChanged——它只是本次操作的回声
+  agent['conn']['handleEvent']('chat.leafChanged', { session_id: 's1', leaf_seq: 6, removed: 3 });
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(calls, [], '回声不该触发全量重拉（时间线清空又闪回来的根因）');
+  // 消费一次之后，同会话**再来一条** leafChanged（别的来源动了叶）照常重拉
+  agent['conn']['handleEvent']('chat.leafChanged', { session_id: 's1', leaf_seq: 4, removed: 1 });
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(
+    calls.map((c) => [c.method, c.params?.session_id]),
+    [['chat.history', 's1']],
+    '判重只消费一次——别的来源的叶变更不能被误伤',
+  );
+  // 换会话的 leafChanged 从来不受判重影响
+  const { agent: a2, calls: c2 } = stubAgent();
+  await a2.rewind('s1', 7);
+  c2.length = 0;
+  a2['conn']['handleEvent']('chat.leafChanged', { session_id: 'other', leaf_seq: 4, removed: 1 });
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(c2.map((c) => c.params?.session_id), ['other'], '别的会话的 leafChanged 照常重拉');
+});
+
+test('rewind 失败 → 显式重拉不受判重影响（纠错不是回声）', async () => {
+  const { agent, calls } = stubAgent((method) => {
+    if (method === 'chat.rewind') throw new Error('拒绝');
+    return { session_id: 's1', messages: [], busy: false, todos: [] };
+  });
+  await assert.rejects(() => agent.rewind('s1', 7), /拒绝/);
+  assert.deepEqual(
+    calls.filter((c) => c.method === 'chat.history').map((c) => c.params?.session_id),
+    ['s1'],
+    '失败后必须重放历史对齐（本地截断是错的）',
+  );
+});
+
 // ---------- 4. files:true 冲突 → 乐观截断回滚 ----------
 
 test('rewind 带 files 冲突（removed=0）→ 重拉历史把乐观截断回滚', async () => {

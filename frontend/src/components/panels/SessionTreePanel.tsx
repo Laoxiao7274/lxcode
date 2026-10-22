@@ -17,9 +17,11 @@ import { useEffect, useRef, type CSSProperties } from "react";
 import { Button } from "../form";
 import {
   branchBadge,
+  depthClamped,
   externalBadge,
   filesBadge,
   truncationNote,
+  visualDepth,
   type TreeFilter,
   type TreeRow,
 } from "./tree-model";
@@ -190,7 +192,12 @@ function TreeNodeRow({ row, active, busy, onJump, onToggle, onSetLeaf, onBranchF
   const clickable = row.userSeq > 0 && !row.skeleton;
   // 已在路径上且就是当前叶 → 「切到此」无视觉变化，禁用并说明（不做成点了没反应）。
   const atLeaf = row.isLeaf;
-  const indent = { "--stree-depth": String(row.depth) } as CSSProperties;
+  // 缩进/连接线只认**视觉深度**（钳制后的值）：depth 照旧承载成行祖先数（数据语义），
+  // 但超过 STREE_MAX_VISUAL_DEPTH 之后不再线性外推——否则单链会话几十轮之后标签会被
+  // 挤出面板（详见 tree-model.ts 的 STREE_MAX_VISUAL_DEPTH）。
+  const vDepth = visualDepth(row.depth);
+  const clamped = depthClamped(row.depth);
+  const indent = { "--stree-depth": String(vDepth) } as CSSProperties;
 
   const body = (
     <>
@@ -227,7 +234,15 @@ function TreeNodeRow({ row, active, busy, onJump, onToggle, onSetLeaf, onBranchF
           {row.kind === "checkpoint" ? "▣" : "·"}
         </span>
       )}
-      <span className="stree-label" title={row.label}>{row.label || "（空消息）"}</span>
+      <span className="stree-label" title={row.label}>
+        {/* 缩进被钳制（depth > STREE_MAX_VISUAL_DEPTH）：给一个轻量记号，说明这条链
+            还在往深处走——**不静默压平**（压平之后深层行看起来像兄弟，看不出层级）。
+            记号放在标签内联开头：不占一个 flex 槽位，不额外挤压标签宽度。 */}
+        {clamped && (
+          <span className="stree-deep" title="缩进已到上限：这条链还有更深的层级">⋯</span>
+        )}
+        {row.label || "（空消息）"}
+      </span>
       {/* 徽标全部 omitempty 语义：0 不渲染（**不显示「0 文件」**）。 */}
       {branch && <span className="stree-branch-badge" title="这个节点有多个后继分支">{branch}</span>}
       {files && <span className="stree-files" title="这一轮可还原的文件改动（含子 Agent 的）">{files}</span>}
@@ -246,6 +261,8 @@ function TreeNodeRow({ row, active, busy, onJump, onToggle, onSetLeaf, onBranchF
     <div
       className="stree-row-wrap"
       data-depth={row.depth}
+      data-vdepth={vDepth}
+      data-clamped={clamped ? "true" : "false"}
       data-last={row.last ? "true" : "false"}
       data-off-path={row.onPath ? "false" : "true"}
       data-leaf={atLeaf ? "true" : "false"}

@@ -51,6 +51,15 @@ export interface UpdateManifestView {
   notes: string[];
 }
 
+/** 下载进度（update:progress 事件载荷；stage 区分下载与校验两个阶段）。
+ *  stage 可选：老壳只推 percent/downloaded/total，缺省按 downloading 处理。 */
+export interface UpdateProgressView {
+  percent: number;
+  downloaded: number;
+  total: number;
+  stage: "downloading" | "verifying";
+}
+
 export interface UpdateBridge {
   /** 当前壳版本（= shell/package.json，版本三方同源）。 */
   version(): Promise<string>;
@@ -62,10 +71,13 @@ export interface UpdateBridge {
   apply(): Promise<{ ok: boolean; needsRestart: boolean }>;
   /** 退出壳（apply-update.bat 等进程退出后完成全部替换并拉起新版）。 */
   restart(): void;
-  onProgress(cb: (p: { percent: number; downloaded: number; total: number }) => void): () => void;
+  onProgress(cb: (p: UpdateProgressView) => void): () => void;
   /** 运行期周期检查发现新版本（主进程推送，见 shell updater.ts 的
    *  startUpdatePolling）。可选：浏览器演示模式无此通道。 */
   onAvailable?(cb: (m: UpdateManifestView) => void): () => void;
+  /** 上次更新失败（apply-update.bat 失败标记，壳启动时消费一次）→ 可读原因。
+   *  可选：老壳/浏览器演示模式无此通道。 */
+  onUpdateFailed?(cb: (message: string) => void): () => void;
 }
 
 interface RawUpdateBridge {
@@ -76,6 +88,7 @@ interface RawUpdateBridge {
   restart(): void;
   onProgress(cb: (p: unknown) => void): () => void;
   onAvailable?(cb: (m: unknown) => void): () => void;
+  onUpdateFailed?(cb: (e: unknown) => void): () => void;
 }
 
 /** 自更新桥；null = 浏览器模式（演示回落）。 */
@@ -113,14 +126,27 @@ export function getUpdateBridge(): UpdateBridge | null {
     apply: () => cast<{ ok?: unknown }>(s.apply()).then((r) => ({ ok: r.ok === true, needsRestart: true })),
     restart: () => s.restart(),
     onProgress: (cb) => s.onProgress((p) => {
-      if (typeof p === "object" && p !== null && typeof (p as { percent?: unknown }).percent === "number") {
-        cb(p as { percent: number; downloaded: number; total: number });
-      }
+      if (typeof p !== "object" || p === null) return;
+      const r = p as { percent?: unknown; downloaded?: unknown; total?: unknown; stage?: unknown };
+      if (typeof r.percent !== "number") return;
+      cb({
+        percent: r.percent,
+        downloaded: typeof r.downloaded === "number" ? r.downloaded : 0,
+        total: typeof r.total === "number" ? r.total : 0,
+        // 老壳没有 stage 字段：一律按下载中（行为与升级前一致）
+        stage: r.stage === "verifying" ? "verifying" : "downloading",
+      });
     }),
     onAvailable: s.onAvailable
       ? (cb) => s.onAvailable!((m) => {
           const normalized = normalize(m);
           if (normalized) cb(normalized);
+        })
+      : undefined,
+    onUpdateFailed: s.onUpdateFailed
+      ? (cb) => s.onUpdateFailed!((e) => {
+          const r = (e ?? {}) as { message?: unknown };
+          if (typeof r.message === "string" && r.message) cb(r.message);
         })
       : undefined,
   };

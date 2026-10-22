@@ -38,11 +38,16 @@ test('等待逻辑：固定宽限窗后无条件强杀 PID（零探测——探�
   assert.ok(bat.includes('"%TASKKILL%" /F /PID %%P'), "宽限窗后无条件强杀名单内 PID（taskkill 绝对路径）");
   assert.ok(bat.includes("PIDS=4242,818"), "PID 列表来自计划（壳 + 后端）");
   assert.ok(bat.includes("PID_TIMEOUT=60"), "宽限窗默认 60s");
-  assert.ok(bat.includes('"%PING%" -n %WAIT_SEC% 127.0.0.1 >nul'), "用 ping 固定等待（零探测，绝对路径）");
-  assert.ok(bat.includes("WAIT_SEC=62"), "等待窗 = PID_TIMEOUT + 2s 缓冲");
+  assert.ok(bat.includes('"%PING%" -n %GRACE_SEC% 127.0.0.1 >nul'), "宽限窗用 ping 固定等待（零探测，绝对路径）");
+  assert.ok(bat.includes("GRACE_SEC=5"), "宽限窗默认 5s（taskkill 前等壳自然退出）");
+  assert.ok(bat.includes("RETRY_SEC=2") && bat.includes("STASH_RETRIES=27"), "stash 重试参数按 PID_TIMEOUT 推导（(60-5)/2=27）");
+  assert.ok(bat.includes(":tryStash") && bat.includes("if not errorlevel 1 goto :stashed"), "stash 带重试循环");
+  assert.ok(bat.includes("STASH_RETRIES% attempts -- another instance is holding the install files"), "重试耗尽要落日志");
+  assert.ok(bat.includes('>>"%FAILED%" echo lxcode update failed: install files are locked'), "重试耗尽要写用户可见失败标记");
+  assert.ok(bat.includes('set "FAILED=%PENDING%\\apply-update.failed"') && bat.includes('if exist "%FAILED%" del /f /q "%FAILED%"'), "失败标记文件每次 BEGIN 清空");
   // 强杀必须先于替换（行首标签定位子例程区）
   const killIdx = bat.indexOf('"%TASKKILL%" /F /PID %%P');
-  const stashLabel = bat.indexOf("\n:stash\n");
+  const stashLabel = bat.indexOf("\n:stashAll\n");
   assert.ok(killIdx >= 0 && killIdx < stashLabel, "强杀在替换之前");
   assert.ok(bat.includes("DEPLOYED=1"), "落位阶段要有 DEPLOYED 门（回滚时区分新增文件）");
 });
@@ -111,10 +116,12 @@ test("逐文件替换带 sha256 校验（certutil 绝对路径），且先备份
     // staged/target 都是绝对路径，不做 %STAGED% + 绝对路径的畸形拼接
     assert.ok(bat.includes(`call :stash "${f.staged}" "${f.target}"`), "stash 调用带绝对路径");
   }
-  // 阶段顺序：全部 stash 完才进入 deploy（备份先行——半备份半落位的中间态最危险）
-  const stashLast = bat.lastIndexOf("call :stash");
+  // 阶段顺序：全部 stash 完才进入 deploy（备份先行——半备份半落位的中间态最危险）。
+  // stash 现在由 :stashAll 子例程统一调用（主流程 call :stashAll 带重试），
+  // 顺序看主流程里的两次 call（子例程体统一在文件尾部的子例程区）。
+  const stashCall = bat.indexOf("call :stashAll");
   const deployFirst = bat.indexOf("call :deploy");
-  assert.ok(stashLast < deployFirst, "先全部备份再全部落位");
+  assert.ok(stashCall >= 0 && stashCall < deployFirst, "先全部备份再全部落位");
 });
 
 test("失败回滚：.old 移回、无 .old 的新增文件仅回滚期才删、拉起旧壳、留日志", () => {

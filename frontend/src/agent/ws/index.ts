@@ -23,7 +23,7 @@ import { rewindParams, setLeafParams } from "../../shared/blocks";
 import { normalizeApproval } from "../../shared/approval";
 import { hasPathAtts, isPathReadError, readAttsAsBase64, wireFile, wireImage } from "../../shared/attachment-send";
 import { WsConnection, type Listener } from "./connection";
-import { snapshotFromWire } from "./history-snapshot";
+import { deriveTailPaging, historyParams, HISTORY_TAIL, snapshotFromWire } from "./history-snapshot";
 import { ModelAdmin } from "./model-admin";
 import { AgentAdminDomain } from "./agent-admin";
 import { SearchAdmin } from "./search-admin";
@@ -32,6 +32,12 @@ import { TodoPrompt } from "./todo-prompt";
 import { treeFromWire } from "./tree";
 
 export { wsURL } from "./connection";
+
+/** 本端 rewind 的回声窗口（leafChanged 判重）：发起撤回之后这么长时间内到达的同
+ *  会话 leafChanged 视为本次 rewind 的回声，跳过全量重拉。给得比应答链路宽
+ *  （后端 rewind 应答含整段日志折叠统计，大会话 1~2s），又不至于把「撤回之后
+ *  马上有别的来源动叶」的正常重拉吞掉。 */
+const REWIND_ECHO_WINDOW_MS = 5000;
 
 export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource, SearchAdminSource, JobAdminSource, TodoPromptSource {
   label = "真实后端";
@@ -91,6 +97,13 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
   /** 本连接内已成功装载过历史的会话 id（resumeSession 的「秒回」依据，见
    *  resumeSession 注释）。握手成功清账（换后端 = 旧会话 id 全部作废）。 */
   private loadedSessions = new Set<string>();
+  /** 本端**刚发起的 rewind**（leafChanged 判重的依据——2026-12「时间线清空又闪回来」）：
+   *  键 = 会话 id，值 = 发起时刻 + 目标 seq。rewind 成功后后端会连发
+   *  chat.rewound + chat.leafChanged，leafChanged 的无脑重拉会把**已经正确的乐观
+   *  截断**全量重建一遍（1~2s 空窗 + 入场动画重播 = 用户看到的「闪回来」）。
+   *  发起时记录，leafChanged 到达时按「同会话 + 时间窗内」跳过；窗口过后自动失效
+   *  （别的客户端在同会话的后续改动照常重拉）。 */
+  private recentRewinds = new Map<string, { at: number; seq: number }>();
 
   constructor(addr = "127.0.0.1:7789", token?: string | (() => string | null)) {
     this.conn = new WsConnection(addr, token);
@@ -113,6 +126,8 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
       this.sessionsCache = [];
       this.projectsCache = [];
       this.loadedSessions.clear();
+      // 换后端 = 旧后端的 rewind 回声永远不会再到，记录清掉（防串账）
+      this.recentRewinds.clear();
     });
     this.conn.onEventSideEffect((method, _params, ev) => {
       if (method === "chat.done") {
@@ -141,11 +156,34 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
         // 的知识，唯一正确做法是重拉历史（对齐路径/统计/上下文/检查点下标）。
         // 树由 UI 层的 use-session-tree 收到 leafChanged 事件后自行重拉——连接层
         // 不替它缓存树（树是面板的视图数据，不进会话状态归约）。
-        if (ev?.type === "leafChanged" && ev.sessionId) {
+        //
+        // **判重（2026-12「时间线清空又闪回来」）**：本端刚发起过 rewind 时跳过
+        //  重拉——乐观截断已经是正确终态（rewind 成功 = 新路径恰好是本地截断出的
+        //  前缀），后端把同一件事广播回来（rewind 双事件）不该再触发一次 1~2s 的
+        //  全量重建。精确条件 = **同会话 + 时间窗内**（REWRITE_GRACE_MS）：别的
+        //  客户端对同一会话的后续改动、setLeaf、窗口过后的任何变化都照常重拉，
+        //  判重不会把它们误伤掉。rewind 失败/冲突路径**不走这条副作用**（它们在
+        //  rewind() 里显式重拉——那里是纠错，必须拉）。
+        if (ev?.type === "leafChanged" && ev.sessionId && !this.ownRewindEcho(ev.sessionId)) {
           void this.loadHistory(ev.sessionId).catch(() => undefined);
         }
       }
     });
+  }
+
+  /** leafChanged 是不是**本端刚发起的那次 rewind** 的回声（判重判定）。
+   *  条件：同会话在 REWRITE_GRACE_MS 内发起过 rewind——命中即跳过重拉并**消费掉**
+   *  记录（一次 rewind 只该跳过一次；窗口内再次到达的 leafChanged 说明还有别的
+   *  来源动了叶，照常重拉）。
+   *
+   *  为什么不按 seq 精确匹配 leafSeq：后端 Rewind 的 seq 是锚点、leafSeq 是它的
+   *  父节点（rewind.go），换算多一步容易漂移；「点击后极短窗口内的同会话叶变更」
+   *  就是本次 rewind，超出窗口或非本端发起的都放行。 */
+  private ownRewindEcho(sessionId: string): boolean {
+    const rec = this.recentRewinds.get(sessionId);
+    if (!rec) return false;
+    this.recentRewinds.delete(sessionId);
+    return performance.now() - rec.at < REWIND_ECHO_WINDOW_MS;
   }
 
   // ---- 连接层转发（连接管理 / 事件订阅） ----
@@ -173,10 +211,14 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
    *  装载成功记入 loadedSessions（resumeSession 的秒回依据——失败不记，
    *  空历史也是一次成功装载）。 */
   private loadHistory(sessionId?: string): Promise<void> {
-    return this.call("chat.history", { session_id: sessionId })
+    // 尾部窗口（见 connection.loadHistory）：无 sessionId 的调用保持原 wire 形态
+    //（params 带 session_id: undefined → JSON 丢键），不额外加 tail。
+    return this.call("chat.history", sessionId ? historyParams(sessionId) : { session_id: undefined })
       .then((r) => {
         if (sessionId) this.loadedSessions.add(sessionId);
-        this.emit({ type: "historyLoaded", sessionId: String(sessionId ?? ""), history: snapshotFromWire(r) });
+        // 尾部窗口的分页元数据推导（tail 应答不带 has_more/first_seq）
+        const history = sessionId ? deriveTailPaging(snapshotFromWire(r), HISTORY_TAIL) : snapshotFromWire(r);
+        this.emit({ type: "historyLoaded", sessionId: String(sessionId ?? ""), history });
       }) as Promise<void>;
   }
 
@@ -285,11 +327,15 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
   /** 改**当前会话**选中的模型（chat.model）：后端落库 + 广播 chat.modelChanged，
    *  只改这一条会话（全局 default 角色不受影响——那是「新会话的默认模型」）。
    *
-   *  会话 id 取连接焦点（与 setApproval 同一条约定）。选中态不在这里乐观改：
+   *  会话 id 取连接焦点（与 setApproval 同一条约定）；**显式传 sessionId 时按它
+   *  寻址**——子会话视图打开期间连接焦点仍是父会话，从子会话页切模型必须带上
+   *  子会话自己的 id（后端对不在运行的子会话现建临时运行时处理 chat.model，
+   *  落库 sessions.model 并按该 id 广播）。选中态不在这里乐观改：
    *  归约层按 modelChanged 广播/chat.history 的 model 对齐——后端没改成功就不会
    *  广播，显示自然停在旧模型上（不假装成功）。 */
-  setSessionModel(modelId: string): Promise<void> {
-    return this.call("chat.model", { session_id: this.conn.sessionFocus, model_id: modelId }).then(() => undefined);
+  setSessionModel(modelId: string, sessionId?: string): Promise<void> {
+    const target = sessionId && sessionId !== "" ? sessionId : this.conn.sessionFocus;
+    return this.call("chat.model", { session_id: target, model_id: modelId }).then(() => undefined);
   }
 
   /** 读「新会话默认审批档」（settings.defaultApproval.get——后端 behavior.json）。 */
@@ -345,10 +391,18 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
    *  树面板的 `chat.tree` 由 leafChanged 副作用统一重拉（见构造函数的事件副作用）。 */
   async rewind(sessionId: string, seq: number, files?: boolean): Promise<RewindOutcome> {
     this.emit({ type: "rewound", sessionId, seq, removed: 0 });
+    // 判重记账：本次 rewind 引起的 leafChanged（rewind 双事件）到达时跳过重拉——
+    // 乐观截断已是正确终态。成功路径靠这个跳过；失败/冲突路径在下面显式重拉纠错，
+    // 与它互不干扰（记录 5s 后自动失效，不发也不留账）。
+    this.recentRewinds.set(sessionId, { at: performance.now(), seq });
     let r: { removed?: number; leaf_seq?: number; branched?: boolean; files?: FileRestoreResult } | null;
     try {
       r = (await this.call("chat.rewind", rewindParams(sessionId, seq, files))) as typeof r;
     } catch (e) {
+      // 失败 = 本地截断是错的，必须重放历史对齐（重拉**显式**走，不受判重影响——
+      // 这不是回声，是纠错）。判重记录一并清掉：失败的 rewind 没有回声可跳，
+      // 留着它会误伤窗口内**别的来源**的同会话叶变更重拉。
+      this.recentRewinds.delete(sessionId);
       await this.loadHistory(sessionId).catch(() => undefined);
       throw e;
     }
@@ -361,7 +415,11 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
     // 冲突（或后端其实没动）：乐观截断必须回滚——重拉历史把被本地删掉的块拿回来。
     // 判定用两个事实源（removed=0 **或** conflicts 非空）：后端冲突时恒返回 removed=0，
     // 但两个都判一次不依赖"冲突一定伴随 removed=0"这条实现细节。
+    // 同上：这是纠错不是回声，显式重拉（且 leafChanged 副作用可能已被本次记录
+    // 跳过一次——冲突时后端**不发** rewound/leafChanged，记录会留到窗口结束，
+    // 无害：它只影响下一个 5s 内的同会话 leafChanged）。
     if (files && (outcome.removed === 0 || (outcome.files?.conflicts?.length ?? 0) > 0)) {
+      this.recentRewinds.delete(sessionId);
       await this.loadHistory(sessionId).catch(() => undefined);
     }
     return outcome;
@@ -607,7 +665,14 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
    *
    *  失败原样抛（断连/超时/子会话不存在）：调用方（App 打开标签、卡片的懒加载）
    *  必须把原因显示出来——静默吞掉会让用户以为"子会话本来就是空的"。 */
-  async childHistory(sessionId: string): Promise<HistorySnapshot> {
-    return this.conn.childHistory(sessionId);
+  async childHistory(sessionId: string, beforeSeq?: number): Promise<HistorySnapshot> {
+    return this.conn.childHistory(sessionId, beforeSeq);
+  }
+
+  /** 上翻分页（主时间线与子会话页共用）：拉 beforeSeq 之前的一页历史并归约。
+   *  失败向上抛——调用方（Thread / ChildSessionPage）据此显示「加载更早失败」
+   *  而不是把「没补上」说成「已经到头」。 */
+  async historyBefore(sessionId: string, beforeSeq: number): Promise<void> {
+    await this.conn.historyBefore(sessionId, beforeSeq);
   }
 }

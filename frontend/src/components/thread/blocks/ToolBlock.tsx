@@ -23,7 +23,7 @@ const TOOL_TITLES: Record<string, string> = {
   todo: "任务清单",
 };
 
-export function ToolBlock({ block, "data-uid": dataUid }: { block: Extract<ThreadBlock, { kind: "tool" }>; "data-uid"?: number }) {
+export function ToolBlock({ block, replayed, "data-uid": dataUid }: { block: Extract<ThreadBlock, { kind: "tool" }>; /** 回放帧（换会话）：不播入场动效（见 useEnterRef 的 skip）。 */ replayed?: boolean; "data-uid"?: number }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
   const [bodyMounted, setBodyMounted] = useState(false);
@@ -32,7 +32,11 @@ export function ToolBlock({ block, "data-uid": dataUid }: { block: Extract<Threa
   const expandable = !running;
 
   useEffect(() => {
+    // 回放帧不播：切会话的那一帧要尽快画出内容，而 playEnter 要读一遍计算样式
+    // （强制布局）并建一个补间——整屏工具行叠起来就是一次长任务。
+    if (replayed) return;
     playEnter(rootRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // 展开/收起（DSH DisclosureRow 同款节奏：开 0.22s power2.out 补高度，

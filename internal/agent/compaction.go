@@ -130,7 +130,7 @@ func (s *Session) summarizeRange(ctx context.Context, ac *sessiondata.AgentConte
 
 	// 工具声明照发（对齐 DSH）：这次调用的前缀与上次真实请求一致，
 	// provider 的 KV 缓存能复用——上下文越长这一步省得越多。
-	opts := []llm.Option{llm.WithTools(llmToolsFiltered(s.tools, allow))}
+	opts := []llm.Option{llm.WithTools(llmToolsFiltered(s.tools, allow, s.TodoPromptMode()))}
 	maxOut := compactionMaxTokens
 	if m.MaxOutputTokens > 0 && m.MaxOutputTokens < maxOut {
 		maxOut = m.MaxOutputTokens

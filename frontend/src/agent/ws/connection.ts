@@ -11,7 +11,7 @@ import { setAttachmentOrigin, setAttachmentToken } from "../../shared/attachment
 import { normalizeApproval } from "../../shared/approval";
 import { DeltaCoalescer } from "./coalesce";
 import { mapEvent } from "./events";
-import { snapshotFromWire } from "./history-snapshot";
+import { deriveTailPaging, historyParams, HISTORY_TAIL, snapshotFromWire } from "./history-snapshot";
 
 /** WS JSON-RPC 帧结构（与 Go internal/protocol 对齐）。 */
 interface WsRequest {
@@ -564,12 +564,32 @@ export class WsConnection {
     };
   }
 
-  /** 拉当前会话的历史并重放视图（连接建立/切换会话后调）。 */
+  /** 拉当前会话的历史并重放视图（连接建立/切换会话后调）。
+   *
+   *  **只拉尾部窗口**（tail=HISTORY_TAIL，协议 ChatHistoryParams.tail）：大会话
+   *  的全量载荷是 1.4~1.7MB / 上千条消息，而首屏只渲染末尾 40 块——多出来的是
+   *  纯传输 + 反序列化 + historyBlocks 重建的开销。更早的历史由 Thread 上翻时
+   *  按 before_seq 分页补（见 historyBefore）。 */
   loadHistory(sessionId: string): Promise<void> {
-    return this.call("chat.history", { session_id: sessionId })
+    return this.call("chat.history", historyParams(sessionId))
       .then((r) => {
-        this.emit({ type: "historyLoaded", sessionId, history: snapshotFromWire(r) });
+        // tail 应答不带 has_more/first_seq（协议只在 before_seq 应答里给）——
+        // 由真实返回条数与首条 seq 推导「还有更早的」，见 deriveTailPaging。
+        const history = deriveTailPaging(snapshotFromWire(r), HISTORY_TAIL);
+        this.emit({ type: "historyLoaded", sessionId, history });
       }) as Promise<void>;
+  }
+
+  /** 上翻分页：拉 beforeSeq **之前**的一页历史并发 historyLoaded（增量装载）。
+   *
+   *  协议：`before_seq` 必须配 `tail`（窗口大小），否则后端判 CodeInvalidParams；
+   *  应答带 has_more / first_seq（还有更早的没有、下一次的 anchor）。
+   *  **不抛**（调用方是滚动触发，失败只意味着"这一页没补上"）——但错误必须
+   *  上报：静默吞掉会让用户以为「已经到头了」。 */
+  async historyBefore(sessionId: string, beforeSeq: number): Promise<void> {
+    const r = await this.call("chat.history", historyParams(sessionId, beforeSeq));
+    // paging: true —— 归约器据此**前插**而不是重建（见 AgentEvent.historyLoaded）
+    this.emit({ type: "historyLoaded", sessionId, history: snapshotFromWire(r), paging: true });
   }
 
   /** 读子会话的历史并发 historyLoaded（带子会话自己的 id——store 按 sessionId
@@ -577,13 +597,14 @@ export class WsConnection {
    *  消息 = 主 Agent 派发的任务说明书，historyBlocks 据此渲染「任务」块而不是
    *  用户气泡（主会话的 loadHistory 不打这个标记）。失败原样抛——调用方必须把
    *  原因显示出来。 */
-  async childHistory(sessionId: string): Promise<HistorySnapshot> {
-    const r = await this.call("chat.history", { session_id: sessionId });
-    const snapshot = snapshotFromWire(r);
+  async childHistory(sessionId: string, beforeSeq?: number): Promise<HistorySnapshot> {
+    const r = await this.call("chat.history", historyParams(sessionId, beforeSeq));
+    const snapshot = deriveTailPaging(snapshotFromWire(r), HISTORY_TAIL);
     snapshot.child = true;
     // 用快照自己的 session_id（后端回带；缺席时回落请求参数——两者不一致时以后端为准）
     const id = snapshot.sessionId || sessionId;
-    this.emit({ type: "historyLoaded", sessionId: id, history: snapshot });
+    // beforeSeq 非空 = 上翻分页的增量应答（前插）；否则是首屏装载（重建）
+    this.emit({ type: "historyLoaded", sessionId: id, history: snapshot, ...(beforeSeq ? { paging: true } : {}) });
     return snapshot;
   }
 

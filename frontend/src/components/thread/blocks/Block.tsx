@@ -28,13 +28,14 @@ import { UserAttachmentSection } from "./AttachmentCard";
 const NO_SEQ_HINT = "这条消息来自旧版后端（没有 seq），无法定位要回到的位置";
 
 export const Block = memo(
-  function Block({ block, onConfirm, onAnswer, replayed, onEdit, onRewind, onOpenChild, readOnly, "data-uid": dataUid }: {
+  function Block({ block, onConfirm, onAnswer, replayed, onEdit, onRewind, onOpenChild, readOnly, busy, "data-uid": dataUid }: {
     block: ThreadBlock;
     onConfirm: (id: string, allow: boolean) => void;
     /** ask_user 提问的回答（ask 变体的确认卡用）：文本答案 + 请求 id。
      *  二元确认走 onConfirm；缺省（只读视图没接）时提问卡收不起回答。 */
     onAnswer?: (id: string, text: string) => void;
     replayed?: boolean;
+    busy?: boolean;
     /** 块锚点（右侧大纲按 data-uid 精确寻址——不许按文本找元素）。Thread 对每个块
      *  都传，这里落到各渲染器的根元素上：子组件不一定会透传未知 props，所以逐层
      *  显式带下去（宿主元素才会把它写成 DOM 属性）。 */
@@ -116,7 +117,7 @@ export const Block = memo(
             )}
           </div>
           {/* 只读视图（子会话视图）与 pending 气泡都不画动作条：见各自说明 */}
-          {!readOnly && !block.pending && <MessageActions block={block} onEdit={onEdit} onRewind={onRewind} />}
+          {!readOnly && !block.pending && <MessageActions block={block} onEdit={onEdit} onRewind={onRewind} busy={busy} />}
         </div>
       );
 
@@ -143,17 +144,17 @@ export const Block = memo(
       );
 
     case "tool":
-      return <ToolBlock block={block} data-uid={dataUid} />;
+      return <ToolBlock block={block} replayed={replayed} data-uid={dataUid} />;
 
     case "task":
       // 子会话时间线的任务块（主 Agent 派发的任务说明书——不是用户气泡）
       return <TaskBlock block={block} data-uid={dataUid} />;
 
     case "files":
-      return <FilesCard files={block.files} data-uid={dataUid} />;
+      return <FilesCard files={block.files} replayed={replayed} data-uid={dataUid} />;
 
     case "dispatch":
-      return <DispatchCard block={block} onConfirm={onConfirm} onAnswer={onAnswer} onOpenChild={onOpenChild} data-uid={dataUid} />;
+      return <DispatchCard block={block} onConfirm={onConfirm} onAnswer={onAnswer} onOpenChild={onOpenChild} replayed={replayed} data-uid={dataUid} />;
 
     case "compacted":
       return <CompactionCard block={block} data-uid={dataUid} />;
@@ -191,6 +192,8 @@ export const Block = memo(
   // 比较器**故意不看 replayed**：它只在挂载那一刻有意义（见上面的 layout effect），
   // 而进会话后它就从 true 翻成 false——默认的浅比较会让整屏几十个块为此重渲染一遍
   // （markdown 重解析 + 协调），而这次翻转不表达任何新内容。
+  // busy 必须比：它翻转时撤回/编辑按钮的 title 要更新（「撤回并停止本轮」）——
+  // 禁用态已不随 busy 变（2026-12 拍板后撤回 busy 时仍可用），但 title 分支要看它。
   (prev, next) =>
     prev.block === next.block &&
     prev.onConfirm === next.onConfirm &&
@@ -200,6 +203,7 @@ export const Block = memo(
     // onOpenChild 也必须比：App 用 useCallback 固定它的身份，漏比的话一次身份变化
     // （依赖数组变了）就会让整屏块全部重渲染一遍。
     prev.onOpenChild === next.onOpenChild &&
+    prev.busy === next.busy &&
     // readOnly 是布尔（只读视图恒定），漏比会让切换视图时留下上一种的渲染结果
     prev.readOnly === next.readOnly,
 );
@@ -220,13 +224,17 @@ export const Block = memo(
  *  复制走与 DiffBody / TerminalCard 同一套写法（navigator.clipboard 的可选链 + 1.2s 反馈，
  *  不弹 toast）。没有 seq 的块把撤回/编辑**禁用**并给出原因（title）：老后端 + 新前端不许炸
  *  （AGENTS.md §5 坑 11）——复制照常可用。 */
-function MessageActions({ block, onEdit, onRewind }: {
+function MessageActions({ block, onEdit, onRewind, busy }: {
   block: ThreadBlock;
   onEdit?: (block: ThreadBlock) => void;
   onRewind?: (block: ThreadBlock) => void;
+  /** 会话生成中：撤回/编辑**仍然可用**（后端 Rewind 现在会自动取消当前轮并等它
+   *  收尾，2026-12 拍板）——busy 只改 title 措辞，告知点击会发生「停止本轮」。 */
+  busy?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
   const rewindable = canRewind(block);
+  const busyNow = busy === true;
   const text = block.kind === "user" ? block.text : "";
   const copy = () => {
     if (copied) return;
@@ -248,7 +256,9 @@ function MessageActions({ block, onEdit, onRewind }: {
         className="msg-action"
         aria-label="编辑"
         disabled={!rewindable}
-        title={rewindable ? "编辑这条消息（发送时才会把之后的内容移出当前对话——不会删除，右侧会话树里能切回来）" : NO_SEQ_HINT}
+        title={busyNow
+          ? "停止本轮并编辑（当前生成会先被取消）"
+          : rewindable ? "编辑这条消息（发送时才会把之后的内容移出当前对话——不会删除，右侧会话树里能切回来）" : NO_SEQ_HINT}
         onClick={() => onEdit?.(block)}
       >
         <IconEdit />
@@ -257,7 +267,9 @@ function MessageActions({ block, onEdit, onRewind }: {
         className="msg-action"
         aria-label="回到这里"
         disabled={!rewindable}
-        title={rewindable
+        title={busyNow
+          ? "撤回并停止本轮（当前生成会先被取消）"
+          : rewindable
           // 文案口径（docs/session-tree.md §D.8）：分支化之后「撤回」不再删除任何东西
           // ——之后的消息只是离开当前对话，右侧树面板里随时能切回来。说「撤回」会让
           // 用户以为数据没了（那是最不该被误解的一件事）。

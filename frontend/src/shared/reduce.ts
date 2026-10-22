@@ -1,8 +1,8 @@
 // 事件流 → UI 状态的归约（纯函数，无 React——可直接单测）。
 
 import type { AgentEvent, ConfirmRequest, JobInfo } from "./types";
-import { type AssistantBlock, type ThreadBlock, type UIState, DISPATCH_TOOL_NAME, initial, nextUid, withBlock, placeConfirm, planRewind } from "./blocks";
-import { DISPATCH_INTERRUPTED, reduceHistory } from "./history";
+import { type AssistantBlock, type ThreadBlock, type UIState, DISPATCH_TOOL_NAME, initial, nextUid, withBlock, placeConfirm, planRewind, finalizeStreaming, timelineOf } from "./blocks";
+import { DISPATCH_INTERRUPTED, mergeOlderHistory, reduceHistory } from "./history";
 import { isHiddenNotice, noticeBody, noticeLabel } from "./notices";
 import { attachmentsFromMessage, parseAttachmentLines } from "./attachments";
 
@@ -55,9 +55,13 @@ export function reduce(state: UIState, ev: AgentEvent): UIState {
       return { ...state };
     case "operationError":
       return { ...state, operationError: ev.message };
-    case "filesChanged":
-      // 一轮任务的产物汇总（验收视图——Codex 的 diff 中心形态）
-      return { ...state, blocks: [...state.blocks, { kind: "files", uid: nextUid(), files: ev.files }] };
+    case "filesChanged": {
+      // 一轮任务的产物汇总（验收视图——Codex 的 diff 中心形态）。
+      // 追加前先定型流式块：不变量是「streaming 恒为逻辑上的最后一块」，
+      // 否则新块会插在正在输出的正文之前。
+      const sealed = finalizeStreaming(state);
+      return { ...sealed, blocks: [...sealed.blocks, { kind: "files", uid: nextUid(), files: ev.files }] };
+    }
     case "compacted":
       return reduceCompacted(state, ev);
     case "jobStarted":
@@ -124,7 +128,8 @@ function reduceUserMessage(state: UIState, ev: Ev<"userMessage">): UIState {
       : typeof ev.seq === "number"
         ? { kind: "user", uid: nextUid(), text: displayText, seq: ev.seq, ...(atts ? { attachments: atts } : {}) }
         : { kind: "user", uid: nextUid(), text: displayText, ...(atts ? { attachments: atts } : {}) };
-  return { ...base, blocks: [...base.blocks, block] };
+  const sealed = finalizeStreaming(base);
+  return { ...sealed, blocks: [...sealed.blocks, block] };
 }
 
 /** 乐观用户气泡（本地事件，不经后端——send 发起后立即给视觉反馈）。
@@ -143,10 +148,12 @@ function reduceOptimisticUser(state: UIState, ev: Ev<"optimisticUser">): UIState
   // 附件只留计数（base64 已随请求交出去，块里不需要也不该留一份拷贝）。
   // 条件展开：无附件的块不出现 atts 键（与 seq 同款纪律——多余键会进测试断言）。
   const hasAtts = Boolean(ev.atts && (ev.atts.images.length > 0 || ev.atts.files.length > 0));
+  // 追加前定型流式块（不变量：streaming 恒为逻辑上的最后一块）
+  const sealed = finalizeStreaming(state);
   return {
-    ...state,
+    ...sealed,
     sending: true,
-    blocks: [...state.blocks, {
+    blocks: [...sealed.blocks, {
       kind: "user", uid: nextUid(), text: ev.text, pending: true,
       ...(hasAtts ? { atts: { images: ev.atts!.images.length, files: ev.atts!.files.length } } : {}),
     }],
@@ -175,61 +182,86 @@ function removeOldestPending(state: UIState): UIState {
  *  下一轮 chat.done 会把真值带回来。 */
 function reduceRewound(state: UIState, ev: Ev<"rewound">): UIState {
   const plan = planRewind(state.blocks, ev.seq);
-  if (!plan) return state;
-  return { ...state, blocks: plan.blocks, context: ev.context ?? null, stats: ev.stats ?? null };
+  if (!plan) {
+    // 锚点不在（本地乐观截断已经把它删了 / 别的客户端早撤过）= 幂等 no-op，
+    // **但后端随真事件带来的重算值仍要消费**（2026-12）：chat.rewound 的
+    // context/stats 是按新路径重算的，丢了它们指示器就停在过期数字上。
+    // 只更新这两键（blocks 已是截断态，不能再切一刀）；事件不带（回声/老后端）
+    // 才原样返回——同键不换对象，重复到达依旧不触发重渲染。
+    if (ev.context === undefined && ev.stats === undefined) return state;
+    return { ...state, context: ev.context ?? state.context, stats: ev.stats ?? state.stats };
+  }
+  // 流式块逻辑上在末尾：撤回锚点之前的截断一定把它一起丢掉（否则它会接在被
+  // 截断的旧时间线后面继续流，用户看到「撤回之后还在写」）。
+  //
+  // **context/stats 保留旧值**（2026-12「撤回后指示器眨成 —」）：本地乐观回声
+  // 不带这两键（它发在请求之前，什么都不知道），真事件（后端带重算值）到达时
+  // 正常覆盖——中间隔的几百毫秒里沿用撤回前的数字，比闪一下「—」诚实（数字是
+  // 略过期的，不是未知的；下一轮 chat.done 或 rewound 广播会校正它）。
+  return {
+    ...state,
+    blocks: plan.blocks,
+    streaming: null,
+    context: ev.context ?? state.context,
+    stats: ev.stats ?? state.stats,
+  };
 }
 
 /** delta 事件的处理（从 reduce 的 switch 里提出来——原来 213 行的 switch
  *  每个分支都是一段独立逻辑，混在一起只能整体读）。 */
 function reduceDelta(state: UIState, ev: Ev<"delta">): UIState {
 // dispatch 归属：子执行的事件路由进 dispatch 块（子上下文隔离）
-if (ev.dispatchId) return applyToDispatch(state, ev.dispatchId, (sub) => reduceSub(sub, ev));
-// reasoning/text 增量写进最近的 assistant 块（没有则开一块）。
-// 不可突变旧块对象——每条 delta 都以新对象替换，保证引用变化。
+if (ev.dispatchId) return applyToDispatch(state, ev.dispatchId, (sub, subStream) => reduceSub(sub, subStream, ev));
+// reasoning/text 增量写进**正在流式的那一块**（state.streaming；没有则开一块）。
+//
+// **不许整数组复制**（2026-12 渲染性能）：delta 是 token 级的，原先每帧
+// `state.blocks.slice()` 把整条时间线复制一遍——2000 块的会话在流式期间每秒
+// 几十次 O(块数) 复制。现在流式块单独放在 state.streaming 里，每帧只换这一个
+// 对象（O(1)）；blocks 一个字节都不动，memo(Block) 的既有块引用因此完全稳定
+// （切会话/工具行重渲染的收益都在这里）。不可突变旧块对象——每条 delta 都以
+// 新对象替换，保证引用变化（AnswerBody 靠它重渲染）。
 // 开新块 = 前一块已定格：中间轮的 usage 一并清（tokens 只在整轮
 // 的最终 assistant 显示——工具行上方的「已完成 · N tokens」是
 // 错位的中间轮统计，DSH 的 stats 在轮末）。
-const blocks = state.blocks.slice();
-const last = blocks[blocks.length - 1];
-let target: AssistantBlock;
-if (last && last.kind === "assistant" && last.streaming) {
-  target = { ...last };
-  blocks[blocks.length - 1] = target;
-} else {
-  target = { kind: "assistant", uid: nextUid(), content: "", reasoning: "", streaming: true };
-  for (let i = 0; i < blocks.length; i++) {
-    const b = blocks[i];
-    if (b.kind === "assistant" && b.usageTokens !== undefined) {
-      blocks[i] = { ...b, usageTokens: undefined };
-    }
-  }
-  blocks.push(target);
+const cur = state.streaming;
+if (cur) {
+  const target: AssistantBlock = { ...cur };
+  if (ev.kind === "text") target.content += ev.text;
+  else target.reasoning += ev.text;
+  return { ...state, streaming: target };
 }
+const target: AssistantBlock = { kind: "assistant", uid: nextUid(), content: "", reasoning: "", streaming: true };
 if (ev.kind === "text") target.content += ev.text;
 else target.reasoning += ev.text;
-return { ...state, blocks };
+// 清中间轮 usage：只有真的存在这样的块才换数组（常见情形是空循环，零开销）
+let blocks = state.blocks;
+for (let i = 0; i < blocks.length; i++) {
+  const b = blocks[i];
+  if (b.kind === "assistant" && b.usageTokens !== undefined) {
+    if (blocks === state.blocks) blocks = state.blocks.slice();
+    blocks[i] = { ...b, usageTokens: undefined };
+  }
+}
+return { ...state, blocks, streaming: target };
 }
 
 /** toolCall 事件的处理（从 reduce 的 switch 里提出来——原来 213 行的 switch
  *  每个分支都是一段独立逻辑，混在一起只能整体读）。 */
 function reduceToolCall(state: UIState, ev: Ev<"toolCall">): UIState {
-if (ev.dispatchId) return applyToDispatch(state, ev.dispatchId, (sub) => reduceSub(sub, ev));
+if (ev.dispatchId) return applyToDispatch(state, ev.dispatchId, (sub, subStream) => reduceSub(sub, subStream, ev));
 // 工具调用打断流式中的 assistant 块——立刻定格（否则它永远挂着
-// "思考中" shimmer，成为僵尸块；中间插工具/清单后再开新块续写）
-const blocks = state.blocks.slice();
-for (let i = 0; i < blocks.length; i++) {
-  const b = blocks[i];
-  if (b.kind === "assistant" && b.streaming) blocks[i] = { ...b, streaming: false };
-}
+// "思考中" shimmer，成为僵尸块；中间插工具/清单后再开新块续写）。
+// 定型 = 把 state.streaming 并入 blocks（一次性 O(块数)，不是每帧）。
+const sealed = finalizeStreaming(state);
 // 调度工具不建工具行：它的渲染形态就是 dispatch 卡
 //（随后 dispatchStart 挂卡）。两处都建 = 同一个调度渲染两遍——
 // 外面一个工具行、卡里一份执行过程（用户报的「重复」）。
 // 判定用 blocks.ts 的**唯一字面量**：回放路径（history.ts）必须与这里一致，
 // 否则刷新之后同一张卡换一张脸（见 DISPATCH_TOOL_NAME 的注释）。
-if (ev.name === DISPATCH_TOOL_NAME) return { ...state, blocks };
+if (ev.name === DISPATCH_TOOL_NAME) return sealed;
 return {
-  ...state,
-  blocks: [...blocks, { kind: "tool", uid: nextUid(), id: ev.id, name: ev.name, arguments: ev.arguments }],
+  ...sealed,
+  blocks: [...sealed.blocks, { kind: "tool", uid: nextUid(), id: ev.id, name: ev.name, arguments: ev.arguments }],
 };
 }
 
@@ -299,7 +331,8 @@ if (did && hasDispatch(state, did)) {
   const next = applyToDispatch(state, did, (sub) => placeConfirm(sub, ev.request));
   return { ...next, pending: ev.request };
 }
-return { ...state, pending: ev.request, blocks: placeConfirm(state.blocks, ev.request) };
+const sealed = finalizeStreaming(state);
+return { ...sealed, pending: ev.request, blocks: placeConfirm(sealed.blocks, ev.request) };
 }
 
 /** done 事件的处理（从 reduce 的 switch 里提出来——原来 213 行的 switch
@@ -307,12 +340,15 @@ return { ...state, pending: ev.request, blocks: placeConfirm(state.blocks, ev.re
 function reduceDone(state: UIState, ev: Ev<"done">): UIState {
 // dispatch 归属：子轮的 done 定格子时间线里最后一个 assistant
 if (ev.dispatchId) {
-  return applyToDispatch(state, ev.dispatchId, (sub) => {
+  return applyToDispatch(state, ev.dispatchId, (sub, subStream) => {
+    const patch = { usageTokens: ev.usageTokens, firstTokenMs: ev.firstTokenMs, durationMs: ev.durationMs, model: ev.model };
+    // 正在流式的那一块就是本轮的最终 assistant：定型时带上用量/计时/模型
+    if (subStream) return { blocks: [...sub, { ...subStream, ...patch, streaming: false }], streaming: null };
     for (let i = sub.length - 1; i >= 0; i--) {
       const b = sub[i];
       if (b.kind === "assistant") {
         const next = sub.slice();
-        next[i] = { ...b, streaming: false, usageTokens: ev.usageTokens, firstTokenMs: ev.firstTokenMs, durationMs: ev.durationMs, model: ev.model };
+        next[i] = { ...b, streaming: false, ...patch };
         return next;
       }
     }
@@ -328,6 +364,16 @@ if (ev.dispatchId) {
 // 用户已经看到的数字擦掉（读不到 ≠ 没有）。
 const withCtx = ev.context ? { ...state, context: ev.context } : state;
 const withStats = ev.stats ? { ...withCtx, stats: ev.stats } : withCtx;
+// 正在流式的那一块就是本轮的最终 assistant：定型时一并带上用量/计时/模型
+// （O(1)——不用为了改它把整条时间线复制一遍）。
+if (withStats.streaming) {
+  return {
+    ...finalizeStreaming(withStats, {
+      usageTokens: ev.usageTokens, firstTokenMs: ev.firstTokenMs, durationMs: ev.durationMs, model: ev.model,
+    }),
+    sending: false,
+  };
+}
 let lastA: AssistantBlock | undefined;
 for (let i = withStats.blocks.length - 1; i >= 0; i--) {
   const b = withStats.blocks[i];
@@ -343,16 +389,12 @@ return { ...withBlock(withStats, lastA.uid, (b) => {
 /** error 事件的处理（从 reduce 的 switch 里提出来——原来 213 行的 switch
  *  每个分支都是一段独立逻辑，混在一起只能整体读）。 */
 function reduceError(state: UIState, ev: Ev<"error">): UIState {
-// 中断保留已生成部分：把进行中的 assistant 块定格
-const blocks = state.blocks.slice();
-for (let i = 0; i < blocks.length; i++) {
-  const b = blocks[i];
-  if (b.kind === "assistant" && b.streaming) blocks[i] = { ...b, streaming: false };
-}
+// 中断保留已生成部分：把进行中的 assistant 块定格（并入 blocks，一次 O(块数)）
+const sealed = finalizeStreaming(state);
 return {
-  ...state,
+  ...sealed,
   sending: false, // 轮已出错收尾：发送中态一并结束（错误条随后渲染）
-  blocks: [...blocks, { kind: "error", uid: nextUid(), message: ev.message, aborted: ev.aborted }],
+  blocks: [...sealed.blocks, { kind: "error", uid: nextUid(), message: ev.message, aborted: ev.aborted }],
 };
 }
 
@@ -360,12 +402,10 @@ return {
  *  每个分支都是一段独立逻辑，混在一起只能整体读）。 */
 function reduceDispatchStart(state: UIState, ev: Ev<"dispatchStart">): UIState {
 // 派发打断流式中的 assistant 块——立刻定格（否则主 Agent 那句
-// 「我派 X 去做」后面永远挂着闪烁光标，直到整轮结束）
-const blocks = state.blocks.slice();
-for (let i = 0; i < blocks.length; i++) {
-  const b = blocks[i];
-  if (b.kind === "assistant" && b.streaming) blocks[i] = { ...b, streaming: false };
-}
+// 「我派 X 去做」后面永远挂着闪烁光标，直到整轮结束）。定型是一次 O(块数)
+// 的数组合并（不在流式热路径上）。
+const sealed = finalizeStreaming(state);
+const blocks = sealed.blocks;
 // **复用已有卡**（2026-12 修复「子 Agent 清单不显示」的另一半）：历史回放
 // （history.ts）已经从 assistant 的 agent_dispatch 调用建过一张同 id 的派发卡
 // （先按「中断」占位定格）。刷新的时序是「先 historyLoaded 建占位卡 → 子 Agent
@@ -392,10 +432,10 @@ if (idx >= 0) {
     // 清单：初稿非空才覆盖（nil = 没带初稿，别把回放/实时已有的清单抹掉）
     ...(ev.todos && ev.todos.length > 0 ? { todos: ev.todos } : {}),
   };
-  return { ...state, blocks };
+  return { ...sealed, blocks };
 }
 return {
-  ...state,
+  ...sealed,
   blocks: [...blocks, {
     kind: "dispatch", uid: nextUid(), id: ev.dispatchId, sessionId: ev.childSessionId,
     agentId: ev.agentId, agentName: ev.agentName, agentColor: ev.agentColor,
@@ -459,13 +499,22 @@ const block = {
 if (ev.dispatchId) return applyToDispatch(state, ev.dispatchId, (sub) => [...sub, block]);
 // 历史被压缩：插一条标记块（摘要可展开查看）。压缩不改动已有块——
 // 被压缩的那些消息本来就不在 UI 里（它们是更早的轮次，早已滚出视图）
-return { ...state, blocks: [...state.blocks, block] };
+const sealed = finalizeStreaming(state);
+return { ...sealed, blocks: [...sealed.blocks, block] };
 }
 
 /** historyLoaded 事件的处理（从 reduce 的 switch 里提出来——原来 213 行的 switch
  *  每个分支都是一段独立逻辑，混在一起只能整体读）。 */
 function reduceHistoryLoaded(state: UIState, ev: Ev<"historyLoaded">): UIState {
-// **流式尾巴不许被快照冲掉**（2026-12 用户报「子 Agent 正文输出后消失」的根因）：
+// **上翻分页的增量装载**（before_seq 应答）：把更早的一页**前插**，不重建时间线。
+//
+// 判据是事件自带的 `paging` 标记（historyBefore 发的事件才置真），**不是**快照里的
+// has_more——首屏 tail 应答的 has_more 是前端推导的，重拉（rewind/setLeaf 副作用）
+// 走的也是 loadHistory；那些必须**重建**（否则回放出来的「中断占位卡」永远修不
+// 回来）。state 还没装载过（historyReady=false）时也走重建：没有基线可前插。
+if (ev.paging && state.historyReady) {
+  return mergeOlderHistory(state, ev.history);
+}// **流式尾巴不许被快照冲掉**（2026-12 用户报「子 Agent 正文输出后消失」的根因）：
 // assistant 消息由后端**整轮结束**才 append（turn.go 的 s.append 在 streamRound
 // 返回之后），正在流式的那段正文永远不在 chat.history 里；而子会话的快照是
 // 「现建运行时 + AttachTo」（server/session_ops.go 的 session()：子会话不进运行时
@@ -507,18 +556,28 @@ const busySnapshot = ev.history.busy;
 // 保留的是本会话状态里的卡（state 本就按会话隔离），位置接在重建后的历史之后。
 const jobs = state.blocks.filter((b) => b.kind === "job");
 const rebuilt = reduceHistory(state, ev.history);
+// **重建代次号**（Thread 判「同会话全量重建 → 不重播入场动画」的标记）：
+// blocks 被整体换掉（全新 uid）就算一次重建，从旧 state 递增。快照 busy 提前
+// 返回的那条分支不重建 blocks，不递增——它一个块都没换。
+const rebuiltGen = (state.rebuiltGen ?? 0) + 1;
 // 会话仍在跑：最后那张「中断」占位卡其实是执行中（见 reviveRunningDispatch）
 const revived = reviveRunningDispatch(rebuilt.blocks, state.blocks, busySnapshot || state.busy);
-// 流式尾巴接回（去重见 appendLiveTail）
-const withLive = appendLiveTail(revived, live, ev.history);
+// 流式尾巴接回（去重见 appendLiveTail）——它回到 state.streaming，不并入 blocks
+//（之后还有 delta 到达时要继续续写同一块，见 liveTail）。
+const { blocks: withLive, streaming: liveStream } = appendLiveTail(revived, live, ev.history);
 const base = jobs.length ? [...withLive, ...jobs] : withLive;
 return {
   ...rebuilt,
+  rebuiltGen,
   busy: busySnapshot || ev.history.busy || live.length > 0,
   // 历史全量重建：pending 乐观块一起被重建抹掉——回放的历史里要么已有这条消息
   //（真块回来了），要么发送还没落库（留着会变僵尸 pending）。发送中态一并结束。
   sending: false,
   blocks: base,
+  streaming: liveStream,
+  // 分页元数据随快照走（键缺席 = 老后端/非分页应答 → 不分页，行为不变）
+  historyMore: Boolean(ev.history.hasMore),
+  historyFirstSeq: ev.history.firstSeq ?? 0,
   // 清单同上面那条守卫的理由：空快照不覆盖本地清单。
   todos: ev.history.todos && ev.history.todos.length > 0 ? ev.history.todos : state.todos,
   // 权限档按快照对齐（后端 LiveApproval——会话级状态持久化的显示依据）；
@@ -541,8 +600,7 @@ return {
  *  只取尾块而不是「所有 streaming 块」：reduceDelta 开新块时会把前一块定格
  *  （streaming=false），所以流式块恒在末尾；多接就是重复。 */
 function liveTail(state: UIState): ThreadBlock[] {
-  const last = state.blocks[state.blocks.length - 1];
-  return last && last.kind === "assistant" && last.streaming ? [last] : [];
+  return state.streaming ? [state.streaming] : [];
 }
 
 /** 把实时尾巴接回重建结果（**去重**：同一块可能已经落库并在快照里了）。
@@ -553,8 +611,12 @@ function liveTail(state: UIState): ThreadBlock[] {
  *  （deltas 只追加不修改，所以「已落库的部分」一定是前缀）→ 判定为同一条，不追加；
  *  并把重建出来的那块重新标成 streaming，让后续 delta 续写同一块（否则 reduceDelta
  *  会在它后面另开一块，把一条回复劈成两半）。 */
-function appendLiveTail(blocks: ThreadBlock[], live: ThreadBlock[], history: Ev<"historyLoaded">["history"]): ThreadBlock[] {
-  if (live.length === 0) return blocks;
+function appendLiveTail(
+  blocks: ThreadBlock[],
+  live: ThreadBlock[],
+  history: Ev<"historyLoaded">["history"],
+): { blocks: ThreadBlock[]; streaming: AssistantBlock | null } {
+  if (live.length === 0) return { blocks, streaming: null };
   const tail = live[0] as AssistantBlock;
   // 重建结果里的**最后一块 assistant**（同一条回复只可能落在它身上）
   let idx = -1;
@@ -569,9 +631,19 @@ function appendLiveTail(blocks: ThreadBlock[], live: ThreadBlock[], history: Ev<
   if (last && sameReply(last.content, tail.content)) {
     const content = tail.content.length >= last.content.length ? tail.content : last.content;
     const reasoning = tail.reasoning.length >= last.reasoning.length ? tail.reasoning : last.reasoning;
-    const next = blocks.slice();
-    next[idx] = { ...last, streaming: true, content, reasoning };
-    return next;
+    // 合并结果回到 streaming（后续 delta 续写同一块；收尾由 chat.done 负责）。
+    // 用重建块的 uid：同一段回复的 React key 不因一次重拉而变（不重挂）。
+    // **必须从 blocks 里摘掉**，否则同一条回复会在时间线里出现两遍。
+    // 只在它是**尾块**时摘（正常情形：这条回复就是最后一条消息）；它后面还有块
+    // （工具行/后续轮次）说明这条回复早就写完了，本地那份是陈旧的实时尾巴——
+    // 丢弃即可，不动重建出来的历史（与情形 ② 同一条判定）。
+    if (idx === blocks.length - 1) {
+      return {
+        blocks: blocks.slice(0, idx),
+        streaming: { ...last, streaming: true, content, reasoning },
+      };
+    }
+    return { blocks, streaming: null };
   }
   // ② 快照里已有这条回复、但它后面还有更新的块 → 本地那份是**陈旧的实时尾巴**
   //    （已落库并被后续轮次接上）：丢弃，不许追加（否则同一条回复出现两遍），也不许
@@ -579,9 +651,10 @@ function appendLiveTail(blocks: ThreadBlock[], live: ThreadBlock[], history: Ev<
   const persisted = (history.messages ?? []).some(
     (m) => m.role === "assistant" && sameReply(m.content ?? "", tail.content),
   );
-  if (persisted) return blocks;
-  // ③ 确实是快照之外的实时块（后端整轮结束才 append，正在写的新回复）→ 接在后面
-  return [...blocks, ...live];
+  if (persisted) return { blocks, streaming: null };
+  // ③ 确实是快照之外的实时块（后端整轮结束才 append，正在写的新回复）→ 作为
+  //    流式块续上（它还没落库，仍在流；append 之后 delta 还要写它）
+  return { blocks, streaming: tail };
 }
 
 /** 两条正文是不是**同一条回复**：完全相同，或一方是另一方的前缀（delta 只追加不修改）。
@@ -630,6 +703,7 @@ function reviveRunningDispatch(rebuilt: ThreadBlock[], prevBlocks: ThreadBlock[]
     task: card.task,
     status: "running",
     subBlocks: card.subBlocks.length > 0 ? card.subBlocks : (prev?.subBlocks ?? []),
+    ...(card.subStreaming ?? prev?.subStreaming ? { subStreaming: card.subStreaming ?? prev?.subStreaming } : {}),
     ...(card.todos ?? prev?.todos ? { todos: card.todos ?? prev?.todos } : {}),
     ...(card.attachments ? { attachments: card.attachments } : {}),
   };
@@ -645,7 +719,9 @@ function reviveRunningDispatch(rebuilt: ThreadBlock[], prevBlocks: ThreadBlock[]
 function upsertJobBlock(state: UIState, job: JobInfo): UIState {
   const idx = state.blocks.findIndex((b) => b.kind === "job" && b.job.id === job.id);
   if (idx < 0) {
-    return { ...state, blocks: [...state.blocks, { kind: "job", uid: nextUid(), job }] };
+    // 追加前定型流式块（不变量：streaming 恒为逻辑上的最后一块）
+    const sealed = finalizeStreaming(state);
+    return { ...sealed, blocks: [...sealed.blocks, { kind: "job", uid: nextUid(), job }] };
   }
   const blocks = state.blocks.slice();
   const prev = blocks[idx] as Extract<ThreadBlock, { kind: "job" }>;
@@ -654,15 +730,34 @@ function upsertJobBlock(state: UIState, job: JobInfo): UIState {
 }
 
 /** 把子事件应用进 dispatch 块的 subBlocks（子上下文隔离的归属路由）。
- *  fn 拿到当前 subBlocks 返回新的；dispatch 块不存在时原样返回。 */
-function applyToDispatch(state: UIState, dispatchId: string, fn: (subBlocks: ThreadBlock[]) => ThreadBlock[] | null): UIState {
+ *  fn 拿到当前 subBlocks 返回新的；dispatch 块不存在时原样返回。
+ *
+ *  **流式增量走 subStreaming**（与主时间线的 state.streaming 同一个理由与不变量）：
+ *  fn 返回 {blocks, streaming} 时块照旧落 subBlocks，正在流式的那一块单独记在
+ *  卡的 subStreaming 里——每帧只换这一个对象，不复制整个时间线与整张卡。
+ *  注意子块不参与渲染（卡 = 一行摘要，见 docs/child-session-ui.md），这里分开
+ *  存是为了**归约语义与主时间线同构**（toolCall/done 定型时的行为逐条一致）。 */
+function applyToDispatch(
+  state: UIState,
+  dispatchId: string,
+  fn: (subBlocks: ThreadBlock[], subStreaming: AssistantBlock | null) => ThreadBlock[] | SubReduce | null,
+): UIState {
   const idx = state.blocks.findIndex((b) => b.kind === "dispatch" && b.id === dispatchId);
   if (idx < 0) return state;
   const blocks = state.blocks.slice();
   const b = blocks[idx] as Extract<ThreadBlock, { kind: "dispatch" }>;
-  const next = fn(b.subBlocks);
-  blocks[idx] = next ? { ...b, subBlocks: next } : b;
+  const next = fn(b.subBlocks, b.subStreaming ?? null);
+  if (!next) return state;
+  blocks[idx] = Array.isArray(next)
+    ? { ...b, subBlocks: next }
+    : { ...b, subBlocks: next.blocks, subStreaming: next.streaming ?? undefined };
   return { ...state, blocks };
+}
+
+/** 子时间线的归约产出：已定型块 + 正在流式的那一块（见 DispatchBlock.subStreaming）。 */
+interface SubReduce {
+  blocks: ThreadBlock[];
+  streaming: AssistantBlock | null;
 }
 
 /** dispatch 卡是否已在时间线里（确认卡归属的前置检查——卡不在就回落，
@@ -671,39 +766,36 @@ function hasDispatch(state: UIState, dispatchId: string): boolean {
   return state.blocks.some((b) => b.kind === "dispatch" && b.id === dispatchId);
 }
 
-/** 子事件在子时间线上的归约（与主时间线同款语义，作用域是 subBlocks）。 */
-function reduceSub(blocks: ThreadBlock[], ev: AgentEvent): ThreadBlock[] | null {
+/** 子事件在子时间线上的归约（与主时间线同款语义，作用域是 subBlocks +
+ *  subStreaming）。返回数组 = 只改已定型块；返回 SubReduce = 连流式块一起换。 */
+function reduceSub(blocks: ThreadBlock[], subStreaming: AssistantBlock | null, ev: AgentEvent): ThreadBlock[] | SubReduce | null {
   switch (ev.type) {
     case "delta": {
-      const next = blocks.slice();
-      const last = next[next.length - 1];
-      let target: AssistantBlock;
-      if (last && last.kind === "assistant" && last.streaming) {
-        target = { ...last };
-        next[next.length - 1] = target;
-      } else {
-        target = { kind: "assistant", uid: nextUid(), content: "", reasoning: "", streaming: true };
-        next.push(target);
-      }
+      // 流式增量：只换 streaming 这一个对象（不复制子时间线——与主时间线同一条纪律）
+      const target: AssistantBlock = { ...(subStreaming ?? { kind: "assistant", uid: nextUid(), content: "", reasoning: "", streaming: true }) };
       if (ev.kind === "text") target.content += ev.text;
       else target.reasoning += ev.text;
-      return next;
+      return { blocks, streaming: target };
     }
     case "toolCall": {
-      const next = blocks.slice();
-      for (let i = 0; i < next.length; i++) {
-        const b = next[i];
-        if (b.kind === "assistant" && b.streaming) next[i] = { ...b, streaming: false };
-      }
+      // 工具调用打断流式：先把流式块定型进 subBlocks（一次 O(块数)），再挂工具行
+      const next = subStreaming
+        ? [...blocks, { ...subStreaming, streaming: false }]
+        : blocks.slice();
       next.push({ kind: "tool", uid: nextUid(), id: ev.id, name: ev.name, arguments: ev.arguments });
-      return next;
+      return { blocks: next, streaming: null };
     }
-    case "compacted":
+    case "compacted": {
       // 子会话自己的压缩：卡内插一条标记块（与主时间线同一个组件）
-      return [...blocks, {
-        kind: "compacted" as const, uid: nextUid(), before: ev.before, after: ev.after,
-        shadowed: ev.shadowed, summary: ev.summary, manual: Boolean(ev.manual),
-      }];
+      const base = subStreaming ? [...blocks, { ...subStreaming, streaming: false }] : blocks;
+      return {
+        blocks: [...base, {
+          kind: "compacted" as const, uid: nextUid(), before: ev.before, after: ev.after,
+          shadowed: ev.shadowed, summary: ev.summary, manual: Boolean(ev.manual),
+        }],
+        streaming: null,
+      };
+    }
     default:
       return null;
   }

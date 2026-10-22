@@ -11,6 +11,10 @@ import { ProjectInstructionsDialog } from "./ProjectInstructionsDialog";
 import { RemoveProjectDialog } from "./RemoveProjectDialog";
 import { SessionRow } from "./SessionRow";
 
+/** 空列表常量：没有该分组的会话时返回同一个引用（不每次新建数组——
+ *  否则「项目列表里的空分组」每次渲染都换引用，下游 memo 全部失效）。 */
+const EMPTY_SESSIONS: SessionMeta[] = [];
+
 /** 「未分组」过滤目标（无归属会话的家——不依赖真实项目 id）。
  *  导出给 App 用：启动时的默认范围可能落在「未分组」（App 的自动选中）。
  *  实体从 shared/project-entry.ts re-export（项目行交互语义的判定与常量同源）。 */
@@ -117,16 +121,44 @@ export const Sidebar = memo(function Sidebar({
   }, [filter, projects, setFilter]);
 
   const allSessions = source.sessions();
-  // 列表引用稳定（source 内部缓存），过滤结果按它记忆化——busy 汇总随之不重算。
+  // **派生计算移出渲染体**（2026-12 渲染性能）：会话上千条时，原先渲染体里的
+  // `all.filter(...)` 是「O(会话数) × 项目数」——每个项目行再扫一遍全部会话。
+  // 现在按「会话列表引用」记忆化一次，按 workspace 分组预计算一次：
+  //   - source.sessions() 返回**内部缓存的同一个数组**（会话列表变化才换引用，
+  //     见 ws/index.ts 的 sessionsCache），所以列表变化时 useMemo 一定重算；
+  //   - busy 位（busyBySession）与分组无关，只影响 busy 汇总（已单独记忆化）；
+  //   - filter/query 变化只重算「当前范围」的那一小段，不再扫全部会话。
+  // 陈旧数据的边界：分组结果与 `all` 同源同引用，`all` 随 allSessions 失效——
+  // 新会话/归档/重命名都会换 sessionsCache 的引用（sessionsChanged 事件驱动
+  // source 重读），所以不会出现「侧栏停在旧列表」。
   const all = useMemo(() => allSessions.filter((s) => !s.archived), [allSessions]);
-  const loose = all.filter((s) => !s.workspace);
+  /** workspace → 会话（按列表原序；"" 键 = 未分组）。一次遍历。 */
+  const byWorkspace = useMemo(() => {
+    const map = new Map<string, SessionMeta[]>();
+    for (const s of all) {
+      const key = s.workspace ?? "";
+      const bucket = map.get(key);
+      if (bucket) bucket.push(s);
+      else map.set(key, [s]);
+    }
+    return map;
+  }, [all]);
+  const loose = byWorkspace.get("") ?? EMPTY_SESSIONS;
   // 过滤语义：项目 id → 该项目会话；LOOSE（默认）→ 未绑定会话
-  const projectFiltered = filter === LOOSE ? loose : all.filter((s) => s.workspace === filter);
-  const list = query.trim()
-    ? projectFiltered.filter((s) => s.title.toLowerCase().includes(query.trim().toLowerCase()))
-    : projectFiltered;
+  const projectFiltered = useMemo(
+    () => (filter === LOOSE ? loose : (byWorkspace.get(filter) ?? EMPTY_SESSIONS)),
+    [filter, loose, byWorkspace],
+  );
+  const trimmedQuery = query.trim().toLowerCase();
+  const list = useMemo(
+    () => (trimmedQuery ? projectFiltered.filter((s) => s.title.toLowerCase().includes(trimmedQuery)) : projectFiltered),
+    [projectFiltered, trimmedQuery],
+  );
   // 项目 id → 元数据（会话 workspace 指向项目 id，显示时取名）
-  const projectById = new Map(projects.map((p) => [p.id, p]));
+  const projectById = useMemo(() => new Map(projects.map((p) => [p.id, p])), [projects]);
+  /** 会话 id → 会话（归档区「恢复」要按 id 找它的归属范围——每次 O(n) 扫描
+   *  在会话上千条时是白白的全表扫）。 */
+  const sessionById = useMemo(() => new Map(all.map((s) => [s.id, s])), [all]);
   // busy 汇总（项目行「运行中」角标）：输入 =（未归档会话列表 + per-session busy，
   // 即 App 从 sessionStates 派生的同一份 busyBySession——与 TabBar 小点同源）。
   // 口径见 shared/busy-summary.ts：只算顶层会话（子会话 busy 不上 wire，无法可靠归属）。
@@ -140,10 +172,10 @@ export const Sidebar = memo(function Sidebar({
   const filterName = filter === LOOSE ? "未分组" : projectById.get(filter)?.name ?? "项目";
   /** 会话行的 hover 提示：`<项目名> · <会话标题>`（未分组/项目缺席 → undefined，
    *  SessionRow 回落标题本身——不许把没有归属的会话伪装成有归属）。 */
-  const sessionHint = (s: SessionMeta): string | undefined => {
+  const sessionHint = useCallback((s: SessionMeta): string | undefined => {
     const name = s.workspace ? projectById.get(s.workspace)?.name : undefined;
     return name ? `${name} · ${s.title}` : undefined;
-  };
+  }, [projectById]);
 
   // 后出现的会话行（首轮消息建会话、归档区恢复）单独入场；
   // 首屏整列由 staggerIn 接管，boot 窗口内跳过避免双份动画打架。
@@ -290,11 +322,12 @@ export const Sidebar = memo(function Sidebar({
       </div>
       <div className="proj-scroll">
       {projects.map((p) => {
-        const count = all.filter((s) => s.workspace === p.id).length;
+        // 该项目的会话列表（分组结果直接取——不再每个项目扫一遍全部会话；
+        // 顺序即列表原序 = 侧栏展示顺序 = 切换目标顺序）。
+        const projList = byWorkspace.get(p.id) ?? EMPTY_SESSIONS;
+        const count = projList.length;
         const active = filter === p.id;
         const runCount = busyCountByWorkspace[p.id] ?? 0;
-        // 该项目的会话列表（侧栏展示的那份——顶到底顺序即切换目标顺序）。
-        const projList = all.filter((s) => s.workspace === p.id);
         return (
           <div
             key={p.id}
@@ -382,7 +415,7 @@ export const Sidebar = memo(function Sidebar({
       {removeFor && (
         <RemoveProjectDialog
           project={removeFor}
-          sessionCount={allSessions.filter((s) => s.workspace === removeFor.id).length}
+          sessionCount={(byWorkspace.get(removeFor.id) ?? EMPTY_SESSIONS).length}
           onRemove={async () => {
             await source.removeProject(removeFor.id);
             // 移除的正是当前筛选范围 → 退回「未分组」（否则列表停在一个
@@ -420,7 +453,8 @@ export const Sidebar = memo(function Sidebar({
           onRename={commitRename}
           onArchive={(id) => source.archiveSession(id)}
           onResume={(id) => {
-            setFilter(source.sessions().find((session) => session.id === id)?.workspace ?? LOOSE);
+            // 归属范围从已建好的索引取（不再扫一遍会话列表）
+            setFilter(sessionById.get(id)?.workspace ?? LOOSE);
             void source.resumeSession(id);
             onOpenChat();
           }}

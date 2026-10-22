@@ -23,13 +23,18 @@ export function useStickyFollow(opts: {
   holdScroll?: () => boolean;
   /** 容器即将换代时的额外清理（杀进行中的 tween，别让 onUpdate 写游离节点）。 */
   onDetach?: () => void;
+  /** 会话键（currentId / 子会话 id）：**进 effect 依赖**。只传 empty/composerScope
+   *  的话，两个非空会话之间切换 effect 不重跑——只把 stickyRef 置真、指望
+   *  ResizeObserver 跟随，而新旧会话内容高度接近时 RO 不触发 → 视口留在上一个
+   *  会话的滚动位置（用户报「切换会话后滚动条不在最下面」的直接根因）。 */
+  sessionKey?: string;
 }) {
   const endRef = useRef<HTMLDivElement>(null);
   const stickyRef = useRef(true);
   const scrollRef = useRef<HTMLElement | null>(null);
   // prog：程序置底时间窗（scroll 兜底判定跳过用）
   const progRef = useRef(-1e9);
-  const { empty, composerScope } = opts;
+  const { empty, composerScope, sessionKey } = opts;
   // 回调走 ref：调用方常传内联箭头（身份每渲染都变）——进依赖数组会让跟随
   // 状态机每渲染重装一遍（监听器 churn + 每次都 toBottom）。
   const holdRef = useRef(opts.holdScroll);
@@ -72,9 +77,17 @@ export function useStickyFollow(opts: {
     ro.observe(el.querySelector<HTMLElement>(":scope > .thread") ?? el.firstElementChild ?? el);
     const composerZone = el.closest(composerScope)?.querySelector<HTMLElement>(".composer-zone");
     if (composerZone) ro.observe(composerZone);
-    // 装上先贴一次底：首条消息挂载早于任何 RO 回调，先对齐
+    // 装上先贴一次底：首条消息挂载早于任何 RO 回调，先对齐。
+    // 切会话（非首次安装）时此刻的回放块往往还没挂进 DOM（React 提交在本 effect
+    // 之后才绘制完整体内容），这一次置底只对齐了切换前的残骸——所以再排双 rAF
+    // 各贴一次：等回放块/字体布局稳定后仍落在底部。
     toBottom();
+    const raf = requestAnimationFrame(() => {
+      toBottom();
+      requestAnimationFrame(toBottom);
+    });
     return () => {
+      cancelAnimationFrame(raf);
       el.removeEventListener("wheel", onWheel);
       el.removeEventListener("touchmove", onTouch);
       el.removeEventListener("keydown", onKey);
@@ -82,6 +95,6 @@ export function useStickyFollow(opts: {
       ro.disconnect();
       detachRef.current?.();
     };
-  }, [empty, composerScope]);
+  }, [empty, composerScope, sessionKey]);
   return { endRef, stickyRef, scrollRef, progRef };
 }

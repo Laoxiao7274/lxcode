@@ -11,12 +11,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   branchBadge,
+  depthClamped,
   externalBadge,
   filesBadge,
   flattenTree,
   latestSeq,
+  STREE_MAX_VISUAL_DEPTH,
   truncationNote,
   userSeqUid,
+  visualDepth,
 } from '../src/components/panels/tree-model.ts';
 
 /** 造节点的小工具（只填判定用得到的字段）。 */
@@ -328,3 +331,50 @@ test('last 标记：同一父行下最后一行（CSS 据此画 └）', () => {
   // 根层只有一个（1）
   assert.equal(rows.find((r) => r.seq === 1).last, true);
 });
+
+// ---------- 10. 视觉深度钳制（缩进不线性外推，depth 语义不变） ----------
+
+test('visualDepth：depth 原值保留，视觉深度钳到 MAX（边界：0 / MAX / MAX+1 / 很深）', () => {
+  const MAX = STREE_MAX_VISUAL_DEPTH;
+  assert.equal(visualDepth(0), 0, '根行不缩进');
+  assert.equal(visualDepth(1), 1, '浅层原样');
+  assert.equal(visualDepth(MAX), MAX, '正好到上限');
+  assert.equal(visualDepth(MAX + 1), MAX, '越过一级即钳住');
+  assert.equal(visualDepth(20), MAX, '20 轮的单链会话也只缩到上限');
+  assert.equal(visualDepth(1000), MAX, '再深也一样（标签不会被挤出面板）');
+  // 畸形输入不炸（负数/NaN 按根处理）
+  assert.equal(visualDepth(-3), 0);
+  assert.equal(visualDepth(Number.NaN), 0);
+  assert.ok(MAX >= 6 && MAX <= 8, 'MAX 取 6~8（按 288px 面板实测）');
+});
+
+test('depthClamped：只有 depth > MAX 才标「还有更深层级」', () => {
+  const MAX = STREE_MAX_VISUAL_DEPTH;
+  assert.equal(depthClamped(0), false);
+  assert.equal(depthClamped(MAX), false, '到上限本身不算被钳制（它还看得见整级缩进）');
+  assert.equal(depthClamped(MAX + 1), true, '越界行要给记号，不静默压平');
+  assert.equal(depthClamped(50), true);
+});
+
+test('flattenTree 的 depth 语义不变：单链 20 轮每轮 +1（钳制只在视觉层）', () => {
+  // 单链会话：user → assistant → user → ...（后端每条消息的 parent = 当时的 leaf）
+  const nodes = [];
+  let seq = 1;
+  for (let turn = 1; turn <= 20; turn++) {
+    const userSeq = seq;
+    nodes.push(node(userSeq, userSeq - 1, 'user', { turn }));
+    nodes.push(node(userSeq + 1, userSeq, 'assistant'));
+    seq += 2;
+  }
+  const rows = flattenTree({ leafSeq: seq - 1, total: nodes.length, nodes });
+  assert.equal(rows.length, 20, '20 个 user 行');
+  assert.equal(rows[0].depth, 0);
+  assert.equal(rows[19].depth, 19, 'depth 照旧是成行祖先数（不因钳制而改）');
+  assert.equal(visualDepth(rows[19].depth), STREE_MAX_VISUAL_DEPTH, '视觉上停在 MAX 列');
+  // 最深层标签可用宽度（288px 面板的算式，与 tree-model.ts 的 MAX 注释同一口径）
+  const labelAtMax = 288 - 12 - 6 - 13 * STREE_MAX_VISUAL_DEPTH - 10 - 11 - 16 - 10;
+  assert.ok(labelAtMax >= 110, `最深层单行标签可用宽 ${labelAtMax}px ≥ 110px`);
+  // 徽标堆满（「2 分支」约 33 + 间距 5、「你在这里」约 46 + 间距 5）时仍为正数
+  assert.ok(labelAtMax - 38 - 51 >= 20, `全徽标仍剩 ${labelAtMax - 89}px（横向滚动兜底）`);
+});
+

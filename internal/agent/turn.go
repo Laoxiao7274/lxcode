@@ -188,6 +188,10 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig, ac *sessiondata.A
 		s.dispatchRoot = nil
 		done := s.turnDone
 		s.turnDone = nil
+		// 本轮收尾信号同 turnDone：锁内取出引用、锁外 close（等待方绝不
+		// 持锁等待——撤回的 settleBusyForRewind 依赖这条纪律）。
+		ended := s.turnEnded
+		s.turnEnded = nil
 		s.mu.Unlock()
 		s.emit(BusyEvent{Busy: false})
 		if len(fileChanges) > 0 {
@@ -197,6 +201,12 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig, ac *sessiondata.A
 		// 本轮（含事件广播）已经结束。
 		if done != nil {
 			close(done)
+		}
+		// 普通轮的收尾信号（撤回的等待端）：与 close(done) 同位——所有退出
+		// 路径（正常 / 取消 / 失败 / panic）都会走到这里，等待方拿到的是
+		// 「本轮已真正收尾」。
+		if ended != nil {
+			close(ended)
 		}
 		// 收尾后若还有排队的自动通告：开新一轮（空闲 → 开一轮）。
 		// 放在 close(done) **之后**：SendWait 等的是它那一轮，不该被新一轮拖住；
@@ -218,6 +228,8 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig, ac *sessiondata.A
 		// 可感知闭环——有清单就把现状当面摆出来（提示词是期望，注入是事实）。
 		// 只注入一次（round == 0）：续轮的清单变化模型自己在工具回显里看得到，
 		// 每轮都注入会把同一份清单反复塞进上下文。
+		// off 档不注入：快照正文本身带「先对照此清单行动」的指令性措辞，注入即违背
+		// 「off = 不注入任何清单指令」；工具仍可用（模型想用清单时描述里有中性说明）。
 		if round == 0 {
 			s.injectTodoSnapshot()
 		}
@@ -378,7 +390,7 @@ func (s *Session) streamRound(ctx context.Context, workDir, effort, requestedMod
 	}
 	msgs := append([]llm.Message{{Role: "system", Content: prompt}}, history...)
 
-	wireTools := llmToolsFiltered(s.tools, allow)
+	wireTools := llmToolsFiltered(s.tools, allow, s.TodoPromptMode())
 	// 本轮请求的上下文占用（估算）：provider 回报了真实用量就以它为准，
 	// 估算只用于分类拆分（anchoredTo 归一）与「端点不回报 usage」的回落。
 	est := estimateContextUsage(prompt, wireTools, history)
@@ -502,10 +514,15 @@ func todoSummary(items []tools.TodoItem) string {
 
 // injectTodoSnapshot 轮首把当前清单快照注入上下文（**Notice=true 的 user 消息**，
 // 不落用户时间线）。三分支：
+//   - off 档：不注入（快照正文是指令性措辞——「先对照此清单行动」，与 off 档
+//     「不注入任何清单指令」冲突；工具本身仍可用）；
 //   - 无清单：不注入（strict 档提示词负责「必出」，注入空气是噪声）；
 //   - 全 done（收敛态）：提示重建——防上一单的旧清单挂着误导本轮；
 //   - 未完成：注入现状——「不更新」从模型不知道变成每轮被当面提醒。
 func (s *Session) injectTodoSnapshot() {
+	if s.TodoPromptMode() == config.TodoPromptOff {
+		return
+	}
 	s.mu.Lock()
 	items := append([]tools.TodoItem(nil), s.todos...)
 	s.mu.Unlock()
@@ -526,11 +543,15 @@ func (s *Session) injectTodoSnapshot() {
 
 // auditTodosAtRoundEnd 轮自然收尾时的清单校验：仍有 active/pending 项 → 被动通告
 // 入队（QueueNoticePassive——只在下一轮真的开始时注入，绝不自动开轮）。全 done 或
-// 无清单是干净的收尾态，什么都不做。
+// 无清单是干净的收尾态，什么都不做。off 档整个跳过（「清单收尾提示」是催促性
+// 注入，与 off 档语义冲突）。
 //
 // 为什么不硬阻塞：跨轮长任务轮轮收尾都欠着清单是常态，阻塞会把正常节奏卡死；
 // 被动通告 = 下一轮模型必然看到 + 用户在通告条上也看得到（清单本身在计划条上实时可见）。
 func (s *Session) auditTodosAtRoundEnd() {
+	if s.TodoPromptMode() == config.TodoPromptOff {
+		return
+	}
 	s.mu.Lock()
 	items := append([]tools.TodoItem(nil), s.todos...)
 	s.mu.Unlock()

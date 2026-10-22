@@ -71,6 +71,36 @@ test('切模型发给后端：chat.model 带当前会话与模型 id（不是 ro
   assert.ok(!ws.sent.some((r) => r.method === 'role.set'), '切模型不该改全局 default 角色');
 });
 
+// ---------- ①b 显式会话寻址（子会话页切模型） ----------
+
+// 子会话视图打开期间连接焦点仍是父会话：从子会话页切模型必须显式带子会话 id，
+// 否则 chat.model 落到父会话上（改错会话）。缺省（不传第二参）维持焦点行为。
+test('切模型显式带子会话 id：chat.model 寻址该子会话（缺省仍按连接焦点）', async (t) => {
+  const { agent, ws } = setup(t);
+  ws.onopen();
+  await driveInit(ws);
+  ws.sent.length = 0;
+
+  const done = agent.setSessionModel('glm-4.6', 'child-7');
+  const req = ws.sent.at(-1);
+  assert.equal(req.method, 'chat.model');
+  assert.deepEqual(req.params, { session_id: 'child-7', model_id: 'glm-4.6' },
+    '显式 sessionId 非空时必须按它寻址，不能用连接焦点');
+  ws.reply({ session_id: 'child-7', model_id: 'glm-4.6' });
+  await done;
+});
+
+// 显式会话寻址：demo 同契约——带 sessionId 时按它记/广播（子会话页链路在演示模式走得到）
+test('演示数据源：切模型带子会话 id 时按该会话广播', async () => {
+  const demo = new DemoAgent();
+  const events = [];
+  const off = demo.subscribe((e) => events.push(e));
+  await demo.setSessionModel('glm-4.6', 'child-7');
+  const ev = events.filter((e) => e.type === 'modelChanged').at(-1);
+  assert.equal(ev.sessionId, 'child-7', '显式 sessionId 必须原样进广播（不落 currentSession）');
+  assert.equal(ev.model, 'glm-4.6');
+  off();
+});
 // ---------- ② 广播按会话归约 ----------
 
 test('chat.modelChanged 的 wire 形状（snake_case）与事件映射', () => {

@@ -21,8 +21,10 @@ func agentToolsOf(ac *sessiondata.AgentContext) []string {
 }
 
 // llmToolsFiltered 按白名单过滤 wire 声明（nil = 全量——旧语境）。
-func llmToolsFiltered(toolReg *tools.Registry, allow []string) []llm.Tool {
-	all := toolReg.LLMTools()
+// todoMode 是会话的 todo-first 档位（off 档下 todo 的工具描述去掉指令性措辞；
+// 空 = strict，与改动前逐字节一致）。
+func llmToolsFiltered(toolReg *tools.Registry, allow []string, todoMode string) []llm.Tool {
+	all := toolReg.LLMToolsForMode(todoMode)
 	if allow == nil {
 		return all
 	}

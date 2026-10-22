@@ -42,6 +42,17 @@ export interface UpdateManifest {
   files?: Record<string, string>;
 }
 
+/** 下载进度事件（update:progress）的载荷。stage 让渲染层区分「下载中」与
+ *  「校验中」——整包 sha256 + 解压 + 逐文件校验可能持续数秒，进度条停在 100%
+ *  却没有任何说明会被当成卡死。新增字段向后兼容：老渲染层只读
+ *  percent/downloaded/total。 */
+export interface UpdateProgress {
+  stage: "downloading" | "verifying";
+  percent: number;
+  downloaded: number;
+  total: number;
+}
+
 /** 语义化版本比较（负数 = a<b）。逐段数值比较，段数不齐补零（0.2 vs 0.2.1）。 */
 export function compareVersions(a: string, b: string): number {
   const pa = a.replace(/^v/i, "").split(/[.-]/).map((x) => parseInt(x, 10) || 0);
@@ -242,14 +253,18 @@ async function downloadAndStage(): Promise<{ ok: boolean }> {
         const now = Date.now();
         if (now - lastEmit > 100) {
           lastEmit = now;
-          broadcast({ percent: total > 0 ? Math.min(99, Math.round((done / total) * 100)) : 0, downloaded: done, total });
+          broadcast({ stage: "downloading", percent: total > 0 ? Math.min(99, Math.round((done / total) * 100)) : 0, downloaded: done, total });
         }
         cb(null, chunk);
       },
     });
     await pipeline(Readable.fromWeb(res.body as never), counter, createWriteStream(zipPath));
-    broadcast({ percent: 100, downloaded: done, total });
+    broadcast({ stage: "downloading", percent: 100, downloaded: done, total });
     ulog("下载完成", `${done} 字节`);
+
+    // 校验/解压/逐文件核对可能要好几秒——进度条已到 100%，必须换成
+    // 「正在校验」态，否则渲染层看起来像卡死（弹窗据此显示校验中文案）。
+    broadcast({ stage: "verifying", percent: 100, downloaded: done, total });
 
     // 整包校验
     const actual = sha256(zipPath);
@@ -439,9 +454,35 @@ function verifyStagedFiles(files: ApplyFileEntry[], payloadDir: string, stagedRo
   }
 }
 
-function broadcast(progress: { percent: number; downloaded: number; total: number }): void {
+function broadcast(progress: UpdateProgress): void {
   for (const win of BrowserWindow.getAllWindows()) {
     win.webContents.send("update:progress", progress);
+  }
+}
+
+/** 上次更新失败标记：apply-update.bat 失败/回滚时写入（ASCII 单行，见
+ *  apply-update.ts）。壳启动时消费：24h 内有效 → 返回文本并删除（一次性，
+ *  每个失败只打扰一次）；超 24h 或读失败 → 删除/忽略并返回 null（不抛）。 */
+export function consumePendingUpdateFailure(): string | null {
+  const FAILED_FILE = "apply-update.failed";
+  const MAX_AGE_MS = 24 * 60 * 60 * 1000;
+  try {
+    const fs = loadOriginalFs();
+    const path = join(app.getPath("userData"), "update-pending", FAILED_FILE);
+    if (!fs.existsSync(path)) return null;
+    const text = fs.readFileSync(path, "utf8").trim();
+    let message: string | null = null;
+    if (text) {
+      const age = Date.now() - fs.statSync(path).mtimeMs;
+      if (age >= 0 && age < MAX_AGE_MS) message = text;
+      else ulog("丢弃过期更新失败标记", `${Math.round(age / 3600_000)}h 前`);
+    }
+    fs.rmSync(path, { force: true }); // 一次性：读过就删，下次启动不再打扰
+    return message;
+  } catch (e) {
+    // 标记读不出来不该挡住启动——留日志即可（下次启动会再试删）
+    ulog("读取更新失败标记失败", e instanceof Error ? e.message : String(e));
+    return null;
   }
 }
 
@@ -451,12 +492,12 @@ let poller: UpdatePoller | null = null;
 
 /** 启动运行期周期检查（main.ts 装配时调一次）：
  *  - 首次检查延迟一个完整周期（6h+抖动）——启动时的检查由渲染层负责，不重复；
- *  - 发现新版本：update:available 推给渲染层（Toast/设置角标消费）+ 托盘气泡，
- *    都是非侵入提示，不打断（不弹模态）；manifest 已留在 lastManifest，渲染层
- *    走既有 download/apply 管线，语义不变；
+ *  - 发现新版本：update:available 推给渲染层（统一更新弹窗 UpdateDialog 消费，
+ *    与「启动/手动检查发现新版本」走同一个弹窗）+ 托盘气泡；manifest 已留在
+ *    lastManifest，渲染层走既有 download/apply 管线，语义不变；
  *  - 检查失败静默（网络差不能烦人；checkUpdate 已落 update.log 有迹可查）。
  *  与「更新必须重启才生效」的既有语义协调：提示文案由渲染层/托盘给出
- *  （「重启后生效」），这里只负责发现与通知。 */
+ *  （「安装会重启应用」），这里只负责发现与通知。 */
 export function startUpdatePolling(): void {
   if (poller) return;
   poller = createUpdatePoller({

@@ -88,6 +88,7 @@ export function Composer({
   visionBlocked = null,
   model = "",
   onPickModel,
+  modelInteractive = false,
 }: {
   busy: boolean;
   /** 发送中态（乐观气泡已插、后端 busy 还没到——新会话首条消息的 git 链窗口）：
@@ -151,6 +152,11 @@ export function Composer({
   model?: string;
   /** 切当前会话的模型（App → source.setSessionModel → chat.model 落库 + 广播）。 */
   onPickModel?: (id: string) => void;
+  /** **模型选择器是否可交互**（2026-12：子会话页切模型）。锁定态（readOnly）下
+   *  Agent/权限选择器仍整组锁定（它们作用主会话的上下文），模型选择器由这个
+   *  prop 单独放行——子会话页传 true + onPickModel（带子会话 id 寻址）。
+   *  未传 = 锁定（主会话不受影响：可交互模式下整组本来就没锁）。 */
+  modelInteractive?: boolean;
 }) {
   const [value, setValue] = useState(initialDraft?.text ?? "");
   const [images, setImages] = useState<PendingImage[]>(initialDraft?.images ?? []);
@@ -678,12 +684,18 @@ export function Composer({
             />
           </div>
           <div className="piBar">
-            {/* 三个选择器包一组：子会话页只读时整组锁定（样式不变，只是不可交互）。
-                ContextIndicator/StatsPills 是读数，留在组外保持可点开。 */}
+            {/* 三个选择器包一组：Agent/权限在只读视图整组锁定（它们作用主会话的
+                上下文，在子会话页可交互就是改错会话）；模型选择器由 modelInteractive
+                单独放行（2026-12：子会话页切模型——作用的是子会话自己的会话级模型，
+                寻址显式带子会话 id）。放行的槽位（.pi-unlocked）在锁定组内恢复
+                指针事件与不透明度——见 composer.css。ContextIndicator/StatsPills
+                是读数，留在组外保持可点开。 */}
             <span className={"pi-controls" + (readOnly ? " pi-locked" : "")}>
               <AgentPicker />
               <PermPicker />
-              <ModelPicker model={model} onPickModel={onPickModel} />
+              <span className={"pi-model-slot" + (readOnly && modelInteractive ? " pi-unlocked" : "")}>
+                <ModelPicker model={model} onPickModel={onPickModel} chipTitle={modelInteractive && busy ? "正在运行，切换将在下一轮生效" : undefined} />
+              </span>
             </span>
             <ContextIndicator usage={context} stats={stats} onCompact={onCompact} busy={busy} />
             {/* 会话统计胶囊（时间）：紧挨上下文环（2026-09-30 用户拍板）。累计消耗那一半

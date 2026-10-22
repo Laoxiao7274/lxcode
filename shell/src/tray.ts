@@ -10,11 +10,23 @@ import { join } from "node:path";
 let tray: Tray | null = null;
 let quitting = false;
 
-/** 托盘图标：dev 用 shell/build/icon.png；产线从 asar 里取（files 已含 build/icon.png）。 */
+/** 托盘图标：优先 build/tray.ico（多尺寸 16/20/24/32/40/48），退回 icon.png。
+ *
+ *  为什么必须用 .ico：Windows 上 Electron 的 Tray::SetImage 走
+ *  NativeImage::GetHICON(GetSystemMetrics(SM_CXSMICON))——对非 .ico 路径它把
+ *  **整张位图**做成 HICON 交给 Shell_NotifyIcon（尺寸参数被忽略），真正的
+ *  16/20/24px 缩放由任务栏用 GDI 完成；512px 源图里 2% 宽的笔画缩到 16px 后
+ *  不足 0.35px，会被打成散点（用户报的「撕裂/切碎」）。
+ *  .ico 路径走 ReadICOFromPath → LoadImage(IMAGE_ICON, size, size)，系统直接
+ *  挑最接近的尺寸条目、不缩放。生成脚本：scripts/gen-tray-icon.cjs。 */
 function trayIconPath(): string {
-  const packaged = join(app.getAppPath(), "build", "icon.png");
-  if (app.isPackaged && existsSync(packaged)) return packaged;
-  return join(__dirname, "..", "build", "icon.png");
+  const candidates = [
+    join(app.getAppPath(), "build", "tray.ico"),
+    join(__dirname, "..", "build", "tray.ico"),
+    join(app.getAppPath(), "build", "icon.png"),
+    join(__dirname, "..", "build", "icon.png"),
+  ];
+  return candidates.find((p) => existsSync(p)) ?? candidates[candidates.length - 1];
 }
 
 /** 装配托盘 + 关闭→隐藏语义。返回「是否真退出」的判定给 close 拦截用。 */

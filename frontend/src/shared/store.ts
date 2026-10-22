@@ -125,6 +125,12 @@ export function handleAgentEvent(ev: AgentEvent, c: AgentEventController): void 
     // 事件侧没有映射可记——从回放重建的 blocks 里一次性扫出该会话派发的
     // 子会话（dispatch 块的 sessionId 就是子会话 id）。只在回放时跑，
     // 不是逐事件扫描。
+    //
+    // 注意：这里会建一份块用于扫接链，紧接着的归约器还会再建一份
+    // （两次都是 O(n)；historyBlocks 内部的 tool/dispatch 查找已改成
+    // 建索引，不再是 O(n²)）。就地缓存会让两份 UIState 共享同一批
+    // 块对象（后续归约若原地修改就会互相影响）——不值得为一次
+    // O(n) 业务带来这个隐形共享。
     const rebuilt = reduceHistory({ ...initial, currentId: ev.sessionId }, ev.history);
     const scanned = childLinksFromBlocks(ev.sessionId, rebuilt.blocks);
     let next = c.getChildLinks();

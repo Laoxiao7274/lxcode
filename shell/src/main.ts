@@ -9,7 +9,7 @@ import { ensureBackend, shutdownBackend } from "./sidecar";
 import { initSakura, sakuraHandlers, shutdownSakura } from "./sakura";
 import { initTailscale, tailscaleHandlers } from "./tailscale";
 import { cachedState, cachedToken, disable as remoteDisable, enable as remoteEnable, initBackendRemote, refresh as remoteRefresh, rotate as remoteRotate } from "./backend-remote";
-import { startUpdatePolling, stopUpdatePolling, updateHandlers } from "./updater";
+import { startUpdatePolling, stopUpdatePolling, updateHandlers, consumePendingUpdateFailure } from "./updater";
 import { createTray } from "./tray";
 
 // userData 目录名与应用身份（单实例锁、任务栏、通知都吃这个）
@@ -188,6 +188,19 @@ if (!app.requestSingleInstanceLock()) {
     win.webContents.on("console-message", (_e, _lvl, msg) => console.log(`[renderer] ${msg}`));
     win.webContents.on("did-fail-load", (_e, code, desc, url) =>
       console.log(`[shell] 加载失败 ${url}: ${code} ${desc}`));
+
+    // 上次更新失败（apply-update.bat 留下的失败标记）→ 开屏推给渲染层，
+    // 统一更新弹窗展示可读原因 + 重试/手工安装指引。必须在窗口加载完之后发，
+    // 否则渲染层订阅还没建立收不到。
+    try {
+      const failure = consumePendingUpdateFailure();
+      if (failure) {
+        console.log(`[shell] 上次更新失败：${failure}`);
+        win.webContents.send("update:failed", { message: failure });
+      }
+    } catch (e) {
+      console.log(`[shell] 消费更新失败标记出错：${e instanceof Error ? e.message : String(e)}`);
+    }
 
     if (process.env.LXCODE_DEV_URL) {
       // 壳开发模式：加载 vite dev server（scripts/dev.mjs 注入）

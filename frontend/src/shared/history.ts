@@ -160,6 +160,13 @@ export function historyBlocks(h: HistorySnapshot): ThreadBlock[] {
   // 「畸形历史要么在写边界拦住、要么在读侧兜底」同一条纪律（AGENTS.md §5 坑 12）。
   const messages = h.messages ?? [];
   let lastAssistant: AssistantBlock | null = null;
+  // 工具调用 id → 块下标的索引（tool / dispatch 分开记）：回填结果时不再对
+  // 整个 blocks 做两次 find。旧写法是 O(消息数 × 块数)——一次 1000 条消息、
+  // 300 次工具调用的会话在装载时是几十万次比较，切会话的卡顿里它是实打实的一块
+  // （而且每次装载都要跑一遍）。索引只在本函数内建一次，语义与 find 完全相同
+  // （同一 id 只对应一条结果；先到的为准由 result === undefined 判定）。
+  const toolIdx = new Map<string, number>();
+  const dispatchIdx = new Map<string, number>();
   for (let i = 0; i < messages.length; i++) {
     const m = messages[i];
     if (m.role === "user") {
@@ -231,6 +238,7 @@ export function historyBlocks(h: HistorySnapshot): ThreadBlock[] {
           // 回放建工具行的后果就是用户报的那个：刷新之后卡片、Agent 名、任务、
           // 结论全没了，只剩一行 `agent_dispatch`。
           const args = parseDispatchArgs(tc.function?.arguments);
+          if (!dispatchIdx.has(id)) dispatchIdx.set(id, blocks.length);
           blocks.push({
             kind: "dispatch", uid: nextUid(), id,
             // 续跑时 arguments.session 就是那个子会话；结果里的提示行优先
@@ -258,6 +266,7 @@ export function historyBlocks(h: HistorySnapshot): ThreadBlock[] {
           });
           continue;
         }
+        if (!toolIdx.has(id)) toolIdx.set(id, blocks.length);
         blocks.push({
           kind: "tool", uid: nextUid(), id,
           name, arguments: tc.function?.arguments ?? "",
@@ -266,9 +275,13 @@ export function historyBlocks(h: HistorySnapshot): ThreadBlock[] {
     } else if (m.role === "tool") {
       // 工具结果回填（按 tool_call_id 找块；找不到则丢弃——防御坏数据）
       const id = m.tool_call_id ?? "";
+      // 索引与旧的 blocks.find 同义：命中**第一个**同 id 的块（建索引时
+      // 已按首次出现记录，重复 id 不覆盖）——重复工具调用 id 是坏数据，
+      // 但两条路径必须对同一个块回填（否则刷新前后长不一样）。
       // ① 普通工具行：原逻辑不动（**只在还没有结果时回填**——重复的结果不该
       //    覆盖先到的那条）
-      const target = blocks.find((b) => b.kind === "tool" && b.id === id) as
+      const toolAt = toolIdx.get(id);
+      const target = (toolAt === undefined ? undefined : blocks[toolAt]) as
         | Extract<ThreadBlock, { kind: "tool" }>
         | undefined;
       if (target && target.result === undefined) {
@@ -281,7 +294,8 @@ export function historyBlocks(h: HistorySnapshot): ThreadBlock[] {
       //    卡建出来就是"中断"态，结果到了必须能回填；只找 kind === "tool"
       //    的话每张卡都停在中断态（用户看到的还是"没有结论"）。
       //    历史里一个调用 id 只对应一条结果，所以这里直接覆盖，不必判空。
-      const card = blocks.find((b) => b.kind === "dispatch" && b.id === id) as
+      const cardAt = dispatchIdx.get(id);
+      const card = (cardAt === undefined ? undefined : blocks[cardAt]) as
         | Extract<ThreadBlock, { kind: "dispatch" }>
         | undefined;
       if (card) {
@@ -327,11 +341,49 @@ export function historyBlocks(h: HistorySnapshot): ThreadBlock[] {
  *  单独一层的理由：子会话历史只需要块（它不参与主时间线的归约——卡内的
  *  子时间线是**只读补充**），而主时间线需要 busy/pending/todos/context。
  *  两份产出共用同一个 historyBlocks，映射不可能分叉。 */
+/** 上翻分页：把**更早一页**的块前插到现有时间线（不重建、不动本地实时状态）。
+ *
+ *  与 reduceHistory 的分工：那个是「一份完整基线替换整条时间线」（首屏/重拉），
+ *  这个是「在已有的前面补一段」（before_seq 应答）。两条路径共用同一个
+ *  historyBlocks 映射（块形状不可能分叉）。
+ *
+ *  三条纪律：
+ *  ① **不动 state.streaming**——分页只补头部，正在流式的那一块在尾部，与它无关；
+ *  ② **不重复确认卡**：分页应答同样按 pending 追加确认卡（historyBlocks 末尾的
+ *     placeConfirm），而那张卡本地已经有了——按 request.id 去重，否则同一张待裁决
+ *     卡会在时间线里出现两遍；
+ *  ③ 分页元数据随应答更新（has_more / first_seq），下一次上翻才有 anchor。
+ *  区间不重叠由后端保证（before_seq 是**不含 anchor** 的前缀窗口）。 */
+export function mergeOlderHistory(state: UIState, h: HistorySnapshot): UIState {
+  const existing = new Set<string>();
+  for (const b of state.blocks) {
+    if (b.kind === "confirm") existing.add(b.request.id);
+  }
+  // 分页应答里的检查点下标**已经按窗口平移**（后端 shiftCheckpoints，见
+  // internal/agent/session.go 的 HistoryBefore）——historyBlocks 直接按窗口内下标
+  // 认，压缩历史块不会因分页错位。
+  const older = historyBlocks(h).filter((b) => !(b.kind === "confirm" && existing.has(b.request.id)));
+  return {
+    ...state,
+    blocks: [...older, ...state.blocks],
+    historyMore: Boolean(h.hasMore),
+    historyFirstSeq: h.firstSeq ?? 0,
+    historyReady: true,
+  };
+}
+
 export function reduceHistory(state: UIState, h: HistorySnapshot): UIState {
   const pending = h.pending ?? null;
   return {
     ...state,
     blocks: historyBlocks(h),
+    // 回放重建 = 一份完整的历史基线：本地那份流式块由 reduceHistoryLoaded 的
+    // appendLiveTail 决定接不接（接回时写回 streaming），这里先清空。
+    streaming: null,
+    // 分页元数据（before_seq 应答才带 has_more/first_seq）：键缺席 = 老后端/
+    // 非分页应答 → 不再上翻（与改造前的行为一致）。
+    historyMore: Boolean(h.hasMore),
+    historyFirstSeq: h.firstSeq ?? 0,
     busy: false,
     pending,
     todos: h.todos ?? [],

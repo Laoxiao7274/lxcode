@@ -17,6 +17,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { handleAgentEvent } from '../src/shared/store.ts';
+import { timelineOf } from '../src/shared/blocks.ts';
 
 /** 与 child-busy.test.mjs ③ 同款的可变 controller。 */
 function makeController() {
@@ -88,7 +89,7 @@ test('②③④ 关闭 → 实时双投继续 → 重开全量重建：不丢、
   handleAgentEvent({ type: 'delta', sessionId: 'parent-1', kind: 'text', text: '第二轮正在', dispatchId: 'd1' }, c);
   handleAgentEvent({ type: 'delta', sessionId: 'parent-1', kind: 'text', text: '写结论', dispatchId: 'd1' }, c);
   const whileClosed = c.sessionStates['child-1'];
-  assert.ok(whileClosed.blocks.length > 2, '关闭期间实时事件应继续双投（state 已存在）');
+  assert.ok(timelineOf(whileClosed).length > 2, '关闭期间实时事件应继续双投（state 已存在）');
   // ③ 重开视图：ChildSessionPage 重新拉历史 → 全量 historyLoaded（含关闭期间的轮次）
   handleAgentEvent({
     type: 'historyLoaded', sessionId: 'child-1',
@@ -100,7 +101,7 @@ test('②③④ 关闭 → 实时双投继续 → 重开全量重建：不丢、
     ]),
   }, c);
   const reopened = c.sessionStates['child-1'];
-  const texts = reopened.blocks.map((b) => b.content ?? b.text ?? '');
+  const texts = timelineOf(reopened).map((b) => b.content ?? b.text ?? '');
   assert.deepEqual(texts, ['任务说明书', '第一轮结论', '（续跑指令）', '第二轮正在写结论'],
     '重开后历史必须完整重建：任务 + 每轮结论都在，实时流被快照整体替换');
   // 不重复：第一轮结论只出现一次（重建是替换不是追加）
@@ -118,7 +119,7 @@ test('②③④ 关闭 → 实时双投继续 → 重开全量重建：不丢、
     ]),
   }, c);
   const again = c.sessionStates['child-1'];
-  assert.ok(again.blocks.some((b) => (b.content ?? '') === '第三轮补充'),
+  assert.ok(timelineOf(again).some((b) => (b.content ?? '') === '第三轮补充'),
     'state 已装载后再次 historyLoaded 仍必须全量重建（不许「只拉一次」）');
-  assert.equal(again.blocks.length, 5, '重建后块数与历史一致（无累积重复）');
+  assert.equal(timelineOf(again).length, 5, '重建后块数与历史一致（无累积重复）');
 });

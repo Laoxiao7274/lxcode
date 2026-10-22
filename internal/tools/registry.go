@@ -227,14 +227,28 @@ func (r *Registry) Get(name string) (*Def, bool) {
 
 // LLMTools 返回 wire 声明（给 llm.WithTools）。
 func (r *Registry) LLMTools() []llm.Tool {
+	return r.LLMToolsForMode("")
+}
+
+// LLMToolsForMode 返回按 todo-first 档位调整过的 wire 声明（空 = strict，与
+// LLMTools 逐字节一致——旧调用方零改动）。
+//
+// 只有 todo 的描述随档位变：off 档下不再有任何清单指令性/催促性措辞（工具仍注册、
+// 仍可调用，只是不再替模型决定「必须建清单」）。档位是**会话级**状态，所以按调用
+// 传入，不存注册表字段（注册表是进程级单例，父子会话会互相踩）。
+func (r *Registry) LLMToolsForMode(todoMode string) []llm.Tool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	names := r.namesLocked()
 	out := make([]llm.Tool, 0, len(names))
 	for _, name := range names {
 		d := r.defs[name]
+		desc := d.Description
+		if name == "todo" {
+			desc = todoDescriptionFor(todoMode)
+		}
 		out = append(out, llm.Tool{
-			Name: d.Name, Description: d.Description, Parameters: d.Parameters,
+			Name: d.Name, Description: desc, Parameters: d.Parameters,
 		})
 	}
 	return out

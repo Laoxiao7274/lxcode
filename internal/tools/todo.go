@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/moyunteng/lxcode/internal/config"
 	"github.com/moyunteng/lxcode/internal/sessiondata"
 )
 
@@ -23,6 +24,32 @@ var validTodoStatus = sessiondata.TodoItemStates
 // 经 ctx 注入（见 sessionstate.go）——父会话与子会话各有自己的清单，
 // 注册表级全局会让子 Agent 的清单覆盖主会话的。
 type TodoWriteFn func(items []TodoItem)
+
+// todoDescriptionStrict 是 strict 档的工具描述（默认；措辞逐字节保留——
+// todo_prompt_test 的 TestTodoDescriptionPinned 钉住）。
+const todoDescriptionStrict = "维护当前任务清单（全量替换式写入）。每轮开始先审视清单：新任务先用本工具出" +
+	"步骤清单（3~7 条、动词开头、可独立验收）再执行——只有两三步也要先建；已有清单先" +
+	"对照现状更新，不要另起炉灶。" +
+	"每完成一步立即更新状态：把当前项标 done、下一项标 active。清单帮你自己不漏步骤，" +
+	"也让用户看到进度。同一时刻最多一项 active。"
+
+// todoDescriptionOff 是 off 档的工具描述：只留中性能力说明与参数语义（全量替换、
+// 空数组 = 清空、status 三态、同时最多一项 active 是工具层硬校验）。
+//
+// 为什么描述也要跟档位走：工具描述同样是**发给模型的指令面**——用户在设置里选
+// 「关闭」后，若描述里还留着「每轮开始先审视清单」「只有两三步也要先建」，
+// off 档就名不副实。工具本身仍注册、仍可调用（模型自行决定要不要用清单）。
+const todoDescriptionOff = "维护当前任务清单（全量替换式写入）：把完整清单一次写入 items（全量替换，不是增量）；" +
+	"空数组 = 清空清单。status 只认 pending/active/done。清单项必须唯一。"
+
+// todoDescriptionFor 按 todo-first 档位取工具描述。档位常量在 internal/config
+// （tools 不 import agent——分层守卫；config 只依赖 atomicfile，不会成环）。
+func todoDescriptionFor(mode string) string {
+	if mode == config.TodoPromptOff {
+		return todoDescriptionOff
+	}
+	return todoDescriptionStrict
+}
 
 // todoDef：todo，风险等级 低危（只写会话内的规划状态，不碰文件系统）。
 //
@@ -55,14 +82,10 @@ func todoDef(r *Registry) *Def {
 		"required": ["items"]
 	}`)
 	return &Def{
-		Name: "todo",
-		Description: "维护当前任务清单（全量替换式写入）。每轮开始先审视清单：新任务先用本工具出" +
-			"步骤清单（3~7 条、动词开头、可独立验收）再执行——只有两三步也要先建；已有清单先" +
-"对照现状更新，不要另起炉灶。" +
-			"每完成一步立即更新状态：把当前项标 done、下一项标 active。清单帮你自己不漏步骤，" +
-			"也让用户看到进度。同一时刻最多一项 active。",
-		Parameters: schema,
-		Risk:       RiskLow,
+		Name:        "todo",
+		Description: todoDescriptionStrict,
+		Parameters:  schema,
+		Risk:        RiskLow,
 		Exec: func(ctx context.Context, args json.RawMessage) (string, error) {
 			var a struct {
 				Items []TodoItem `json:"items"`

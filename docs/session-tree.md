@@ -599,6 +599,15 @@ type ChatRewindResult struct {
 **推荐 ②**：它复用现成的「失败 → 重放历史对齐」机制，不需要给 `rewind` 加"别乐观"的分支
 （那条分支会让 `files:true` 与 `files:false` 的交互手感不同，用户会以为是卡了）。
 
+**前端回声判重（2026-12 补充，「撤回后时间线清空又闪回来」的修复）**：成功路径上
+`chat.leafChanged` 是本次 rewind 的**回声**（乐观截断已是正确终态），ws 层按
+「同会话 + 5s 窗口内刚发起过 rewind」跳过全量重拉——`agent/ws/index.ts` 的
+`recentRewinds` / `ownRewindEcho`。窗口过后的 leafChanged、setLeaf 的、别的客户端
+发起的同会话叶变更**照常重拉**（判重只消费一次记录）。失败/冲突路径显式重拉
+（纠错，不受判重影响）；同会话重拉若真的发生（如旧库残留），`rebuiltGen`
+（`shared/blocks.ts` 的 UIState）标记重建代次，Thread 不重播入场动画并按高度差
+补偿滚动位置——同会话重建不再表现为「时间线闪一遍」。
+
 `chat.rewound` 事件载荷**不改**（老客户端零影响）；新增 `chat.leafChanged`：
 
 ```go
@@ -1175,9 +1184,14 @@ export function flattenTree(
 .stree-panel                       // 容器（替代 .turn-panel 的位置，复用 .outline-aside 外框）
 .stree-toolbar                     // 过滤 chips + 「N 个分支」汇总
 .stree-list
-  .stree-row[data-depth="0..n"]    // 缩进用 --depth 变量：padding-left: calc(6px + var(--depth) * 14px)
-    ::before                       // 竖连接线（按 depth 定位到父节点的竖线位置）
-    ::after                        // 横向短枝（└/├）
+  .stree-row[data-depth="0..n"]    // 缩进用 --depth 变量：padding-left: calc(6px + var(--depth) * 13px)
+                                   // 这里的 depth 是**视觉深度** = min(成行祖先数, 8)
+                                   // （tree-model.ts 的 STREE_MAX_VISUAL_DEPTH）：单链会话每轮
+                                   // 再深一层，不钳制的话 20 轮就把标签挤出 288px 面板
+    ::before                       // 竖连接线（按同一个视觉深度定位到父节点的竖线位置，
+                                   // 钳制边界处共列、连贯）
+    ::after                        // 横向短枝（└/├）；被钳制的行短枝更紧凑 + 标签前「⋯」记号
+                                   // （data-clamped="true"）——不静默压平
     [data-last="true"]             // 最后一个子节点：竖线到这一行为止（└）
     [data-leaf="true"]             // 当前 leaf：左侧 2px 高亮条 + 「你在这里」小标
     [data-off-path="true"]         // 废弃分支：opacity .55 + 文字降级到 --fg-faint
@@ -1188,7 +1202,8 @@ export function flattenTree(
                                    // 「3 文件 · 1 子 Agent」（title 列出是哪个子会话改的）
   .stree-external                  // 「⚠ 2」外部操作（external > 0，title 说明不可回滚；
                                    // 含子 Agent 里跑的 bash —— 这一处最容易让人误以为回滚干净了）
-  .stree-actions                   // 行尾操作（hover / focus 时出现，触摸端常驻）
+  .stree-actions                   // 行尾操作（hover / focus 时**覆盖式**出现——absolute
+                                   // 定位不占 flex 槽位，否则一 hover 标签就被挤窄；触摸端常驻）
     button "⟲ 切到此"              // = setLeaf(seq)（该节点留在路径上）
     button "↳ 从此分支"            // = rewind(seq) + 回填输入框（user 节点才给，见 D.5）
 ```
@@ -1239,7 +1254,7 @@ export function flattenTree(
 
 | 情形 | 行为 |
 |---|---|
-| 后端有 `chat.tree`（新后端） | 渲染树；`tree.nodes` 里 `children<=1` 且全在路径上时，视觉与现在的线性轮次列表几乎一致（缩进恒 0） |
+| 后端有 `chat.tree`（新后端） | 渲染树；`tree.nodes` 里 `children<=1` 且全在路径上时，视觉与现在的线性轮次列表几乎一致——区别只在缩进：单链会话每轮深一层（depth 逐轮 +1），缩进**按视觉深度 `min(depth, 8)` 钳制**（tree-model.ts 的 `STREE_MAX_VISUAL_DEPTH`），所以 8 轮之后不再右移，最深层标签仍有约 119px 可读宽度（钳制行带「⋯」记号，不静默压平） |
 | 后端无 `chat.tree`（老后端 / `CodeInvalidRequest`） | **回落现有 `TurnPanel`**（`tree === null` 分支），不报错、不空屏——AGENTS.md §5 坑 11「老后端 + 新前端不许炸」 |
 | 纯内存模式（无持久化） | `chat.tree` 回空树 → 同上回落；`setLeaf` 报错，行尾按钮 disabled |
 | 树节点在别的分支上（当前时间线无对应块） | 单击 = 先 `setLeaf` 再跳（D.5）；`seqToUid` 里查不到就等 history 重载后重试一次，仍查不到则只切不跳（并 toast 说明） |
@@ -1613,7 +1628,8 @@ SetChildOwner(sessionID, ownerID string, ownerSeq int64) error
   │    ⑥ context 整份重估（Estimated=true，等下一轮真实 prompt_tokens 校正）
   ├─ 事件：chat.rewound（老客户端兼容）+ chat.leafChanged（新）+ session.changed("rewound")
   └─ 前端：树面板重拉 chat.tree（旧分支变灰、leaf 标记移到新位置）、
-           时间线重载为 leaf 路径、输入框回填被撤回的那条原文
+           时间线**不再重拉**（leafChanged 判重跳过——乐观截断已是终态，见 §B.3）、
+           输入框回填被撤回的那条原文；rewound 广播的 context/stats 按新路径校正指示器
 用户想回到旧分支：点树面板里灰掉的节点 → chat.setLeaf(旧 seq) → 时间线切回、文件不动
 ```
 

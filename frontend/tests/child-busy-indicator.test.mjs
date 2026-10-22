@@ -13,6 +13,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+const threadSrc = fs.readFileSync(new URL('../src/components/thread/Thread.tsx', import.meta.url), 'utf8');
 import { reduceSessionStates } from '../src/shared/reduce.ts';
 import { mapEvent } from '../src/agent/ws/events.ts';
 
@@ -55,9 +56,13 @@ test('wire 映射：chat.busy 带 dispatch_id（子会话忙闲的归属键要�
 
 test('ChildSessionPage：busy 且尾块非流式 assistant 时渲染「正在处理…」（主时间线同款形态）', async () => {
   const src = fs.readFileSync(new URL('../src/components/panels/ChildSessionPage.tsx', import.meta.url), 'utf8');
-  // 判定与 Thread.tsx 同源：busy && !lastIsStreamingAssistant——不另立一套条件
-  assert.ok(/busy && !lastIsStreamingAssistant\(blocks\)/.test(src),
-    '子会话的指示判定必须与主时间线一致（busy && !lastIsStreamingAssistant）');
+  // 判定与 Thread.tsx 同源：busy && 当前没有流式块——不另立一套条件。
+  // （2026-12：流式块单独存在 state.streaming 里，判定从「尾块是不是流式 assistant」
+  //  变成「有没有流式块」——不变量是它恒为逻辑时间线的最后一块，见 shared/blocks.ts。）
+  assert.ok(/busy && !streaming/.test(src),
+    '子会话的指示判定必须与主时间线一致（busy && 没有流式块）');
+  assert.ok(/busy && !streaming/.test(threadSrc),
+    '主时间线的同一判定（Thread.tsx）也必须保持这个形状');
   assert.ok(src.includes('import { ThinkingState }'), '复用 ThinkingState 组件（不造第二套 shimmer）');
   assert.ok(src.includes('<ThinkingState text="正在处理…" />'),
     '文案与主时间线同一句（Thread.tsx：正在处理…）');
@@ -70,10 +75,17 @@ test('ChildSessionPage：busy 且尾块非流式 assistant 时渲染「正在处
     '「正在处理…」应挂在 .thread 容器内、跟随锚点之前');
 });
 
-test('lastIsStreamingAssistant：只认尾块是流式中的 assistant（与非流式/工具块区分）', async () => {
+test('lastIsStreamingAssistant：只认正在流式的那一块（与已定型的 assistant/工具块区分）', async () => {
   const src = fs.readFileSync(new URL('../src/components/panels/ChildSessionPage.tsx', import.meta.url), 'utf8');
-  assert.ok(/kind === "assistant" && last\.streaming/.test(src),
-    '判定 = 尾块 kind=assistant 且 streaming（delta 流式期间不再叠「正在处理…」）');
+  assert.ok(/Boolean\(state\?\.streaming\)/.test(src),
+    '判定 = 当前有流式块（delta 流式期间不再叠「正在处理…」）');
+  // 语义钉子：已定型的 assistant 块（streaming=false、在 blocks 里）不算「在流式」
+  const { reduce } = await import('../src/shared/store.ts');
+  const { initial } = await import('../src/shared/blocks.ts');
+  let st = reduce(initial, { type: 'delta', kind: 'text', text: '写' });
+  assert.equal(Boolean(st.streaming), true, 'delta 期间有流式块');
+  st = reduce(st, { type: 'done', usageTokens: 1, finishReason: 'stop' });
+  assert.equal(Boolean(st.streaming), false, 'done 之后定型 → 不再算流式（要显示「正在处理…」）');
 });
 
 // ---- ③ 页头忙点：.s-dot + busy 时 .live（侧栏同一套件） ----

@@ -132,6 +132,8 @@ export function useRewind({ source, currentId, currentIdRef, reportError, sendWi
   // 编辑：只把原文放回输入框并进入编辑态——**不动历史**。编辑是"我可能改主意"，
   // 一点就把后面的对话毁掉是不可接受的；真正的撤回推迟到下次发送前。
   const handleEdit = useCallback((block: ThreadBlock) => {
+    // busy 不再拦截（2026-12 拍板）：后端 Rewind 现在会自动取消当前轮并等它收尾，
+    // 「停止本轮并编辑」是一步完成的合法操作（按钮 title 已说明）。
     const d = beginEdit(block);
     if (!d) {
       reportError("这条消息来自旧版后端（没有 seq），无法编辑");
@@ -169,6 +171,9 @@ export function useRewind({ source, currentId, currentIdRef, reportError, sendWi
       sendWithOptions(text, atts);
       return;
     }
+    // busy 兜底（2026-12 拍板后语义变化：后端会自动取消当前轮并收尾，撤回不再
+    // 必拒）——但**撤回 + 发送**合在一步时若后端返回 busy（例如取消后又有新一轮
+    // 抢先开了），仍如实报错并把文本装回输入框，不静默丢弃编辑。
     void source.rewind(sid, editing.seq)
       .then(() => sendWithOptions(text, atts))
       .catch((e) => {
