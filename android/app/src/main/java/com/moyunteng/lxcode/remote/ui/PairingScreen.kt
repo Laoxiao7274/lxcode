@@ -8,10 +8,8 @@
 //      ② 取景框（四角框线 + 内嵌 DecoratedBarcodeView 真相机连续解码；
 //         无相机硬件/未授权时显示占位提示）
 //      ③ 非法载荷错误提示条
-//      ④ 调试区（云机没有可用摄像头：模拟扫到一张码 / 模拟非法载荷；
-//         与连接页「组件展示」调试入口同一先例，真机联调也用它）
 //
-// 无论真假扫码，解析走同一条路径：字符串 → parsePairPayload → 预填表单（见 MockAppState.applyPairPayload）。
+// 无论真假扫码，解析走同一条路径：字符串 → parsePairPayload → 预填表单（见 AppState.applyPairPayload）。
 package com.moyunteng.lxcode.remote.ui
 
 import android.Manifest
@@ -66,7 +64,7 @@ import com.moyunteng.lxcode.remote.BuildConfig
 
 import com.moyunteng.lxcode.remote.model.addrValid
 
-// ===== 配对载荷解析（真扫码 / mock / deep-link 三条入口共用）=====
+// ===== 配对载荷解析（真扫码 / deep-link 两条入口共用）=====
 
 /** 一条解析成功的配对载荷（对应桌面端「远程访问」二维码的三个字段）。 */
 data class PairPayload(
@@ -97,13 +95,13 @@ fun parsePairPayload(raw: String): PairPayload? = runCatching {
     PairPayload(addr, token, name)
 }.getOrNull()
 
-/** 按两端约定格式拼一条载荷（mock 扫码用它走与真扫码完全相同的解析路径）。 */
+/** 按两端约定格式拼一条载荷（deep-link 生成端用它；解析走与真扫码相同的路径）。 */
 fun buildPairPayload(addr: String, token: String, name: String): String =
     "lxcode://pair?addr=${Uri.encode(addr)}&token=${Uri.encode(token)}&name=${Uri.encode(name)}"
 
-/** 扫码配对页：取景框 + 说明 + 错误提示 + 调试区。 */
+/** 扫码配对页：取景框 + 说明 + 错误提示。 */
 @Composable
-fun PairingScreen(state: MockAppState) {
+fun PairingScreen(state: AppState) {
     // 系统返回键同样回连接页（与顶栏返回箭头一致）
     BackHandler { state.route = Route.Connections }
 
@@ -149,11 +147,6 @@ fun PairingScreen(state: MockAppState) {
             // ③ 错误提示（非法载荷 / 未授权相机）
             state.scanError?.let { ScanErrorBanner(it) }
 
-            // ④ 调试区（云机无摄像头；真机联调同款入口）——BuildConfig.DEBUG 门控：
-            // 「模拟扫到一张码」「模拟非法载荷」是 mock 调试控件，release 构建不出现
-            if (BuildConfig.DEBUG) {
-                ScanDebugArea(state)
-            }
         }
     }
 }
@@ -294,46 +287,6 @@ private fun ScanErrorBanner(message: String) {
             style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size11_5),
             color = Lx.colors.Danger,
             modifier = Modifier.weight(1f),
-        )
-    }
-}
-
-/** 调试区：云机没有可用摄像头，验收/联调靠模拟入口（连接页调试区同一先例）。 */
-@Composable
-private fun ScanDebugArea(state: MockAppState) {
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .clip(Lx.radius.CardShape)
-            .background(LxColors.Surface)
-            .border(1.dp, Lx.colors.BorderSoft, Lx.radius.CardShape)
-            .padding(Lx.space.s12),
-        verticalArrangement = Arrangement.spacedBy(Lx.space.s10),
-    ) {
-        Text(
-            text = "调试（云机无摄像头 / 真机联调）",
-            style = Lx.type.Pill.copy(fontSize = Lx.type.Size11, fontWeight = FontWeight.SemiBold),
-            color = Lx.colors.FgFaint,
-        )
-        LxButton(
-            text = "模拟扫到一张码",
-            onClick = {
-                // 拼 `lxcode://pair?...` 载荷再走统一解析路径——与真扫码同一条代码路径
-                state.applyPairPayload(
-                    buildPairPayload("10.0.0.8:7789", "a1b2c3d4-e5f6-7890-abcd-ef1234567890", "工作室主机"),
-                )
-            },
-            variant = LxButtonVariant.Primary,
-            size = LxButtonSize.Large,
-            modifier = Modifier.fillMaxWidth(),
-            leadingIcon = { SmallIcon(Icons.Filled.QrCodeScanner, LxColors.Bg, size = 16) },
-        )
-        LxButton(
-            text = "模拟非法载荷",
-            onClick = { state.applyPairPayload("lxcode://pair?xxx") },
-            variant = LxButtonVariant.Secondary,
-            size = LxButtonSize.Medium,
-            modifier = Modifier.fillMaxWidth(),
         )
     }
 }

@@ -167,9 +167,15 @@ func goldenSamples() map[string]goldenSample {
 			Approval:    ApprovalConfirm,
 			// 批次 2：回放对应的叶（新客户端对齐树面板用）。
 			LeafSeq: 4,
+			// 观察端回填（安卓/新开窗口错过 dispatchStart 时重建卡用）：全量样本
+			// 必须覆盖，否则 TestGoldenCoversAllWireFields 会拦住 types.ts 漏字段。
+			RunningDispatches: []RunningDispatch{{
+				DispatchID: "call_9", ChildSessionID: "20261214-091200-ab12", AgentName: "代码 Agent", Task: "跑测试并修复",
+			}},
 		}},
 		// 最小历史：context/stats/pending/todos/checkpoints/model/approval 全部
 		// **整键缺席**（未知 = 缺席，不编数）；busy 是显式 false（无 omitempty）。
+		// running_dispatches 同款：空闲会话不导出（nil 切片不上 wire）。
 		"chatHistoryResultMinimal": {"", ChatHistoryResult{
 			Messages: []llm.Message{{Role: "user", Content: "在吗"}},
 			Busy:     false,

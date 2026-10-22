@@ -181,6 +181,25 @@ type ChatHistoryResult struct {
 	// LeafSeq 是这次回放对应的叶（0 = 空路径）。老客户端忽略（未知键）；
 	// 新客户端拿它对齐树面板的高亮与「回到最新」的落点。
 	LeafSeq int64 `json:"leaf_seq,omitempty"`
+	// RunningDispatches 是该会话**此刻正在跑的派发**（主会话寻址时导出自己
+	// 的登记；子会话寻址时导出它自己的——恒为空，整键缺席）。观察端（安卓 /
+	// 新开的桌面窗口）错过 dispatchStart 广播时靠它把回放重建的占位卡补上
+	// 子会话 id，子会话入口与卡内进度事件路由由此恢复。整键缺席 = 没有
+	//（omitempty，老客户端零影响，协议 Version 不递增）。
+	RunningDispatches []RunningDispatch `json:"running_dispatches,omitempty"`
+}
+
+// RunningDispatch 是一次进行中派发的观察快照（ChatHistoryResult.RunningDispatches
+// 的元素）。
+type RunningDispatch struct {
+	// DispatchID 是归属键（agent_dispatch 调用 id，与 dispatchStart/End 同源）。
+	DispatchID string `json:"dispatch_id"`
+	// ChildSessionID 是子会话 id（纯内存子会话为空——寻址不到它）。
+	ChildSessionID string `json:"child_session_id,omitempty"`
+	// AgentName 是子 Agent 的显示名（卡片头）。
+	AgentName string `json:"agent_name,omitempty"`
+	// Task 是下发的任务描述（占位卡正文）。
+	Task string `json:"task,omitempty"`
 }
 
 // ContextUsage 是上下文占用的 wire 形态（agent.ContextUsage 的映射——内核类型

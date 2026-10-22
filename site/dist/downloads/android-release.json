@@ -1,12 +1,14 @@
 {
-  "version": "0.3.5",
-  "versionCode": 13,
-  "name": "lxcode-0.3.5-android.apk",
-  "size": 11737583,
-  "sha256": "b5d730113c7568609e743df54b2b3eb50acc1da2bbfe3dcf7617d3f596d53b2f",
-  "url": "downloads/lxcode-0.3.5-android.apk",
+  "version": "0.3.6",
+  "versionCode": 14,
+  "name": "lxcode-0.3.6-android.apk",
+  "size": 11737572,
+  "sha256": "e6eeb278b1b8849eabe4a328131a359682e9a1599afa139301cf569711836c71",
+  "url": "downloads/lxcode-0.3.6-android.apk",
   "notes": [
-    "安卓端连接协议自适应（wss/ws/裸地址），wss 专用自签证书放行",
-    "安卓连接状态持久化：重启自动恢复连接；显式断开不自动重连；失败保持待重连"
+    "安卓子会话页滚动跟随（贴底自动滚、上翻不拽、回到底部按钮）",
+    "安卓 markdown 表格渲染（列对齐/表头/斑马线/横滚，对齐桌面语义）",
+    "运行中派发回填占位卡：中途打开也能点开电脑发起的子会话",
+    "删除 mock 双轨残留（模拟在线/动效/模拟扫码控件），只接真实数据"
   ]
 }

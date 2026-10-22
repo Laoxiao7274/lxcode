@@ -204,7 +204,15 @@
       ],
       "model": "deepseek-v3",
       "approval": "confirm",
-      "leaf_seq": 4
+      "leaf_seq": 4,
+      "running_dispatches": [
+        {
+          "dispatch_id": "call_9",
+          "child_session_id": "20261214-091200-ab12",
+          "agent_name": "代码 Agent",
+          "task": "跑测试并修复"
+        }
+      ]
     }
   },
   "chatHistoryResultMinimal": {

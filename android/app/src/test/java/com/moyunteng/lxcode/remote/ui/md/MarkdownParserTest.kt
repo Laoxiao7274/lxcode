@@ -276,11 +276,107 @@ class MarkdownParserTest {
         assertEquals("[ ] 待办", list.items.single().spans.single().text)
     }
 
+    // ===== 表格 =====
+
     @Test
-    fun tableRowIsPlainParagraph() {
-        // 表格第一版不补（手机窄屏横向滚动体验差，差异已记录）——管道行按普通段落
+    fun basicTableIsTableBlock() {
         val blocks = parseMarkdown("| a | b |\n|---|---|\n| 1 | 2 |")
         assertEquals(1, blocks.size)
+        val t = blocks[0] as MdBlock.Table
+        assertEquals(listOf("a", "b"), t.header.map { it.single().text })
+        assertEquals(1, t.rows.size)
+        assertEquals(listOf("1", "2"), t.rows[0].map { it.single().text })
+    }
+
+    @Test
+    fun tableWithoutOuterPipes() {
+        // GFM 容错：首尾管道可省
+        val t = parseMarkdown("a | b\n--- | ---\n1 | 2")[0] as MdBlock.Table
+        assertEquals(2, t.header.size)
+        assertEquals(1, t.rows.size)
+    }
+
+    @Test
+    fun tableDividerWithAlignmentColons() {
+        // 对齐冒号（:--- / :--: / ---:）照常识别为分隔行（对齐信息丢弃）
+        val t = parseMarkdown("| 左 | 中 | 右 |\n|:---|:---:|---:|\n| 1 | 2 | 3 |")[0] as MdBlock.Table
+        assertEquals(3, t.header.size)
+        assertEquals(1, t.rows.size)
+    }
+
+    @Test
+    fun tableCellInlineFormattingKept() {
+        val t = parseMarkdown("| 名 | 值 |\n|---|---|\n| **粗** | `code` |")[0] as MdBlock.Table
+        val row = t.rows[0]
+        assertTrue(row[0].single().bold)
+        assertTrue(row[1].single().code)
+        assertEquals("粗", row[0].single().text)
+        assertEquals("code", row[1].single().text)
+    }
+
+    @Test
+    fun tableEscapedPipeStaysInCell() {
+        // `\|` 是字面管道，不切列
+        val t = parseMarkdown("| a | b |\n|---|---|\n| x\\|y | 2 |")[0] as MdBlock.Table
+        assertEquals(2, t.rows[0].size)
+        assertEquals("x|y", t.rows[0][0].single().text)
+    }
+
+    @Test
+    fun tableEmptyCellsKept() {
+        val t = parseMarkdown("| a | b | c |\n|---|---|---|\n| 1 |  | 3 |")[0] as MdBlock.Table
+        assertEquals(3, t.rows[0].size)
+        assertTrue(t.rows[0][1].isEmpty())
+    }
+
+    @Test
+    fun tableIrregularColumnsPaddedToMax() {
+        // 少列补空、多列对齐到全局最大列数
+        val t = parseMarkdown("| a | b | c |\n|---|---|---|\n| 1 |\n| 1 | 2 | 3 | 4 |")[0] as MdBlock.Table
+        assertEquals(4, t.header.size) // 全局最大列数 = 数据行最宽的 4
+        assertEquals(4, t.rows[0].size)
+        assertTrue(t.rows[0][1].isEmpty()) // 补空
+        assertEquals("4", t.rows[1][3].single().text)
+    }
+
+    @Test
+    fun lonePipeRowStillParagraph() {
+        // 只有管道行、没有分隔行 → 不认表格（照常段落）
+        val blocks = parseMarkdown("| a | b |\n| c | d |")
+        assertEquals(1, blocks.size)
+        assertTrue(blocks[0] is MdBlock.Paragraph)
+    }
+
+    @Test
+    fun paragraphBeforeTableNotSwallowed() {
+        // 表格前的普通段落不并进表格
+        val blocks = parseMarkdown("说明如下\n| a | b |\n|---|---|\n| 1 | 2 |")
+        assertEquals(2, blocks.size)
+        assertTrue(blocks[0] is MdBlock.Paragraph)
+        assertTrue(blocks[1] is MdBlock.Table)
+    }
+
+    @Test
+    fun tableFollowedByParagraph() {
+        val blocks = parseMarkdown("| a | b |\n|---|---|\n| 1 | 2 |\n\n后文")
+        assertEquals(2, blocks.size)
+        assertTrue(blocks[0] is MdBlock.Table)
+        assertTrue(blocks[1] is MdBlock.Paragraph)
+    }
+
+    @Test
+    fun pipeInsideInlineCodeNotColumnSeparator() {
+        // 单元格内行内 code 里的管道不算列分隔
+        val t = parseMarkdown("| a | b |\n|---|---|\n| `x|y` | 2 |")[0] as MdBlock.Table
+        assertEquals(2, t.rows[0].size)
+        assertEquals("x|y", t.rows[0][0].single().text)
+        assertTrue(t.rows[0][0].single().code)
+    }
+
+    @Test
+    fun dividerRowNeedsDash() {
+        // `| a | b |` 连续两行只有表头没有分隔 → 不认表格
+        val blocks = parseMarkdown("| a | b |\n| x | y |")
         assertTrue(blocks[0] is MdBlock.Paragraph)
     }
 

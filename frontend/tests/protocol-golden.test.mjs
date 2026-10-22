@@ -132,6 +132,12 @@ const FIELD_CHECKS = {
     ['approval', ['=', 'confirm']],
     ['pending', 'object'],
     ['model', 'string'],
+    // 运行中派发快照（观察端回填卡的钥匙——dispatch_id + child_session_id）。
+    ['running_dispatches', 'array'],
+    ['running_dispatches.0.dispatch_id', 'string'],
+    ['running_dispatches.0.child_session_id', 'string'],
+    ['running_dispatches.0.agent_name', 'string'],
+    ['running_dispatches.0.task', 'string'],
   ],
   chatHistoryResultMinimal: [
     ['busy', ['=', false]],
@@ -143,6 +149,8 @@ const FIELD_CHECKS = {
     ['model', 'absent'],
     ['approval', 'absent'],
     ['session_id', 'absent'],
+    // 运行中派发快照：空闲会话不导出（omitempty——整键缺席，不是空数组）。
+    ['running_dispatches', 'absent'],
   ],
   // 上下文占用：估算位 vs 冷态（只有 used，其余整键缺席 = 中性态）。
   contextUsageEstimated: [

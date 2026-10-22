@@ -1,8 +1,8 @@
 // RealBackend —— 真实后端会话态（安卓端）。
 //
 // 职责：把 LxWsClient 的事件流归约成 UI 可观察状态（Compose mutableState），
-// 类型复用 mock 包里「逐字段对齐协议」的 SessionMeta / ThreadBlock / ContextUsage /
-// SessionStats（MockData.kt 开头的纪律：接真后端时这一层换成 WS 解析结果，页面不动）。
+// 类型复用 model 包里「逐字段对齐协议」的 SessionMeta / ThreadBlock / ContextUsage /
+// SessionStats（Wire.kt 开头的纪律：接真后端时这一层换成 WS 解析结果，页面不动）。
 //
 // 事件 → 块的映射（见 android/PROTOCOL-NOTES.md §5/§7）：
 //   chat.userMessage → User 块；chat.delta → Assistant 块流式增长（kind=reasoning 进思考链）；
@@ -27,10 +27,12 @@ import com.moyunteng.lxcode.remote.model.EFFORT_IDS
 import com.moyunteng.lxcode.remote.model.ModelGroup
 import com.moyunteng.lxcode.remote.model.ModelMeta
 import com.moyunteng.lxcode.remote.model.ProjectMeta
+import com.moyunteng.lxcode.remote.model.RunningDispatchInfo
 import com.moyunteng.lxcode.remote.model.SessionMeta
 import com.moyunteng.lxcode.remote.model.SessionStats
 import com.moyunteng.lxcode.remote.model.ThreadBlock
 import com.moyunteng.lxcode.remote.model.TodoItem
+import com.moyunteng.lxcode.remote.model.applyRunningDispatches
 import com.moyunteng.lxcode.remote.model.isDispatchFinal
 import com.moyunteng.lxcode.remote.model.isDispatchPlaceholder
 import com.moyunteng.lxcode.remote.model.mergeChildLiveTail
@@ -55,9 +57,8 @@ data class PendingConfirm(
 )
 
 /**
- * 真实后端状态机。一个实例挂在 [com.moyunteng.lxcode.remote.ui.MockAppState] 上，
- * 「真实后端」开关打开时各页面从这里取数据；关闭时会话页是连接引导态（mock 假数据
- * 已随原型退役）。
+ * 真实后端状态机。一个实例挂在 [com.moyunteng.lxcode.remote.ui.AppState] 上，
+ * 「真实后端」开关打开时各页面从这里取数据；关闭时会话页是连接引导态。
  */
 class RealBackend {
 
@@ -1614,11 +1615,19 @@ class RealBackend {
         // 用户打开这个会话就看不到任何能进子会话的入口（问题 2）。把上一份块里
         // 同一 dispatch_id 已知的 id 合并回来（只补空值，不编造）。
         val merged = mergeKnownChildIds(parsed, blocks.toList())
+        // 观察端回填（chat.history 的 running_dispatches，2026-12 用户报「安卓
+        // 点不开电脑发起的子会话」的主修）：历史回放扫不出正在跑的派发（结果
+        // 提示行要派发结束才落库、dispatchStart 是本机不在场时错过的事件）——
+        // 后端按**此刻的运行中登记**导出快照，按 dispatch_id 补卡/补 id。
+        // 回放占位卡被恢复成运行中（后端事实，比「只认最后一张」的 busy 启发式
+        // 强——多派发并行时每张都能恢复）；已收尾的真终态卡绝不被翻回。
+        val runningDispatches = parseRunningDispatches(r.optJSONArray("running_dispatches"))
+        val filled = applyRunningDispatches(merged, runningDispatches, blocks.toList())
         // 已收尾集合属于"当前这一份时间线"：重载之后旧记录无意义（且不清理会
         // 随会话长度无限增长）
         endedDispatches.clear()
         blocks.clear()
-        blocks.addAll(merged)
+        blocks.addAll(filled)
         streamingIdx = -1
         // 历史快照的任务清单（ChatHistoryResult.todos——对齐桌面端 history-snapshot
         // 的 todos 装载）：非空插一块 Todo（当前清单的定格视图，随后的 todo.updated
@@ -1909,6 +1918,27 @@ class RealBackend {
         val d = blocks[i] as ThreadBlock.Dispatch
         if (!isDispatchPlaceholder(d.done, d.isError, d.conclusion)) return
         blocks[i] = d.copy(conclusion = "", done = false, isError = false)
+    }
+
+    /** chat.history 的 running_dispatches → 观察快照列表（键缺席/空数组 = 没有 → null，
+     *  让 applyRunningDispatches 的「原样返回」路径生效）。残缺条目（无 dispatch_id）丢弃。 */
+    private fun parseRunningDispatches(arr: org.json.JSONArray?): List<com.moyunteng.lxcode.remote.model.RunningDispatchInfo>? {
+        if (arr == null || arr.length() == 0) return null
+        val out = mutableListOf<com.moyunteng.lxcode.remote.model.RunningDispatchInfo>()
+        for (k in 0 until arr.length()) {
+            val o = arr.optJSONObject(k) ?: continue
+            val id = o.optString("dispatch_id")
+            if (id.isEmpty()) continue
+            out.add(
+                com.moyunteng.lxcode.remote.model.RunningDispatchInfo(
+                    dispatchId = id,
+                    childSessionId = o.optString("child_session_id"),
+                    agentName = o.optString("agent_name"),
+                    task = o.optString("task"),
+                ),
+            )
+        }
+        return out.ifEmpty { null }
     }
 
     /** 子会话工具实时流：调用到达即插行/标记运行中（归属派发卡；卡不存在只记日志）。 */
@@ -2292,7 +2322,7 @@ class RealBackend {
 
         fun toolTitle(name: String): String = TOOL_TITLES[name] ?: name
 
-        /** 参数摘要：取第一个标量值截断（照 mock 的 argsSummary 风格）。 */
+        /** 参数摘要：取第一个标量值截断（对齐原型 argsSummary 的风格）。 */
         fun argsSummary(arguments: String): String = try {
             val o = JSONObject(arguments)
             val keys = o.keys()

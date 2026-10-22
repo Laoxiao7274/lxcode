@@ -346,6 +346,11 @@ func (s *Server) historyResult(sessionID string, sess *agent.Session, snap agent
 		// 这次回放对应的叶（0 = 空路径）：新客户端拿它对齐树面板的高亮与
 		// 「回到最新」的落点。老客户端忽略（未知键）。
 		LeafSeq: s.leafOf(sessionID),
+		// 运行中派发（观察快照，agent.Session.dispatches）：**只导出当前寻址
+		// 会话自己的登记**——主会话寻址时是它派出的活子会话；子会话寻址时它
+		// 自己没有登记（恒空、整键缺席）。观察端（安卓/新开窗口）拿它回填
+		// 回放占位卡的子会话 id（跑完即注销，不会把已结束的报成运行中）。
+		RunningDispatches: toProtocolRunningDispatches(sess.RunningDispatches()),
 	}
 	if hasMore != nil {
 		res.HasMore = *hasMore
@@ -354,4 +359,22 @@ func (s *Server) historyResult(sessionID string, sess *agent.Session, snap agent
 		res.FirstSeq = *firstSeq
 	}
 	return res
+}
+
+// toProtocolRunningDispatches 把内核的观察快照映射成 wire 形态（agent 类型不过
+// 协议边界——与 toProtocolContext 同一条纪律）。nil 切片保持 nil（omitempty）。
+func toProtocolRunningDispatches(in []agent.RunningDispatch) []protocol.RunningDispatch {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]protocol.RunningDispatch, 0, len(in))
+	for _, d := range in {
+		out = append(out, protocol.RunningDispatch{
+			DispatchID:     d.DispatchID,
+			ChildSessionID: d.ChildSessionID,
+			AgentName:      d.AgentName,
+			Task:           d.Task,
+		})
+	}
+	return out
 }

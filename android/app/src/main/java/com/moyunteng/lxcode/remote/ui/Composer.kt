@@ -94,10 +94,10 @@ private val ComposerCardShape = RoundedCornerShape(14.dp)
  *   停止走 chat.cancel、上下文环/统计胶囊用实测值、模型菜单读 model.list 注册表。
  */
 @Composable
-fun Composer(state: MockAppState, real: com.moyunteng.lxcode.remote.net.RealBackend?) {
+fun Composer(state: AppState, real: com.moyunteng.lxcode.remote.net.RealBackend) {
     var text by remember { mutableStateOf("") }
     // 忙闲由后端事件驱动（chat.busy / done / error 收敛）
-    val busy = real?.busy ?: false
+    val busy = real.busy
 
     // ===== 斜杠命令面板（桌面端 SlashPalette.tsx：输入以 / 开头弹出）=====
     // slashClosed = 用户按返回键关掉面板（关面板不清输入，再输入 / 会重新弹出）
@@ -109,13 +109,13 @@ fun Composer(state: MockAppState, real: com.moyunteng.lxcode.remote.net.RealBack
     fun toast(msg: String) = Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
     // /new 走协议 session.new，/compact 走协议 chat.compact；agents/catalog/settings 是
     // 桌面端页面导航命令——安卓原型没有对应页，如实提示不假装执行。
-    // 不用 remember 缓存：闭包要捕获当前 real（mock↔真实切换后动作必须跟着切）。
+    // 不用 remember 缓存：闭包要捕获当前 real（真实后端对象替换后动作必须跟着切）。
     val slashCommands = listOf(
             SlashCmd("new", "开始新对话") {
-                real?.newSession(onReady = { id -> state.route = Route.Thread(id) })
+                real.newSession(onReady = { id -> state.route = Route.Thread(id) })
             },
             SlashCmd("compact", "压缩早期历史（腾出上下文）") {
-                if (real != null) real.compact() else toast("需连接后端才能压缩")
+                real.compact()
             },
             SlashCmd("agents", "打开 Agent 名单与组装") { toast("桌面端页面导航命令：安卓原型未提供该页") },
             SlashCmd("catalog", "打开拓展（工具/技能/模板/MCP）") { toast("桌面端页面导航命令：安卓原型未提供该页") },
@@ -125,7 +125,7 @@ fun Composer(state: MockAppState, real: com.moyunteng.lxcode.remote.net.RealBack
     // 审批档是**会话级状态**（后端落库）：真实模式读 RealBackend（chat.history
     // 回读 + approvalChanged 广播维护，切会话即随会话走）。
     // null = 后端没报（老后端/刚切会话还没装载历史）→ 回落「默认」，不猜。
-    val approval = real?.approval
+    val approval = real.approval
     var modelMenuOpen by remember { mutableStateOf(false) }
     var effortPanelOpen by remember { mutableStateOf(false) } // 模型菜单里的二级推理强度面板
     var permMenuOpen by remember { mutableStateOf(false) }
@@ -156,7 +156,7 @@ fun Composer(state: MockAppState, real: com.moyunteng.lxcode.remote.net.RealBack
     // 的模型**（activeModelId = 会话选择 → 回落全局 default 角色）——不是全局
     // default 角色：拿它当选中态正是「一个会话切模型所有会话跟着变」那个 bug。
     // effortOptions = 当前模型支持的档位；当前档位不在其中时回落到最后一档
-    val currentModel = real?.allModels?.find { it.id == real.activeModelId }
+    val currentModel = real.allModels.find { it.id == real.activeModelId }
     val effortOptions = currentModel?.efforts?.filter { it in EFFORT_IDS } ?: emptyList()
     // 会话本轮的 effort（内存视图，不落盘）：协议里 effort 只是 chat.send 的
     // 请求级参数（后端没有会话级 effort 方法、chat.history 不回它——远端无
@@ -182,7 +182,7 @@ fun Composer(state: MockAppState, real: com.moyunteng.lxcode.remote.net.RealBack
     // path 形态不适用），随下一条消息发送。
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(maxItems = 4)) { uris ->
         if (uris.isNotEmpty()) {
-            real?.addPendingImages(
+            real.addPendingImages(
                 uris.map { uri ->
                     val mime = context.contentResolver.getType(uri) ?: "image/jpeg"
                     uri to mime
@@ -191,7 +191,7 @@ fun Composer(state: MockAppState, real: com.moyunteng.lxcode.remote.net.RealBack
         }
     }
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
-        if (uris.isNotEmpty()) real?.addPendingFiles(uris)
+        if (uris.isNotEmpty()) real.addPendingFiles(uris)
     }
 
     Column(
@@ -216,7 +216,7 @@ fun Composer(state: MockAppState, real: com.moyunteng.lxcode.remote.net.RealBack
 
         // ===== 附件预览区（.att-preview：卡内、文本行上方；有暂存或有提示才渲染）=====
         // 图片 = 64dp 方缩略图（radius 16）+ 右上 18dp 移除钮；文件 = 240×64 卡。
-        if (real != null && (real.pendingImages.isNotEmpty() || real.pendingFiles.isNotEmpty() || real.attachNotice != null)) {
+        if (real.pendingImages.isNotEmpty() || real.pendingFiles.isNotEmpty() || real.attachNotice != null) {
             Column(
                 Modifier
                     .fillMaxWidth()
@@ -336,8 +336,8 @@ fun Composer(state: MockAppState, real: com.moyunteng.lxcode.remote.net.RealBack
                             // 注册表还没拉到）时把组合键剥成纯 id（对齐桌面端
                             // modelIdOfKey）——否则药丸上会出现 `openai::gpt-4o` 这种串。
                             label = modelDisplayLabel(
-                                real?.allModels ?: emptyList(),
-                                real?.activeModelId ?: "",
+                                real.allModels,
+                                real.activeModelId,
                             ),
                             effortDim = effortDim,
                             expanded = modelMenuOpen,
@@ -348,8 +348,8 @@ fun Composer(state: MockAppState, real: com.moyunteng.lxcode.remote.net.RealBack
                         )
                         AnchorMenu(expanded = modelMenuOpen, onDismiss = { modelMenuOpen = false }) {
                             ModelMenuContent(
-                                groups = real?.modelGroups ?: emptyList(),
-                                currentModelId = real?.activeModelId ?: "",
+                                groups = real.modelGroups,
+                                currentModelId = real.activeModelId,
                                 effortDim = effortDim,
                                 effortPanelOpen = effortPanelOpen,
                                 onPickModel = { id ->
@@ -357,12 +357,12 @@ fun Composer(state: MockAppState, real: com.moyunteng.lxcode.remote.net.RealBack
                                     // 只改这一条会话——不是 role.set 的全局 default 角色，
                                     // 那会让所有会话跟着变）；当前档位在新模型上不存在 →
                                     // 本地回落（优先「中」，否则首档）
-                                    val m = real?.allModels?.find { it.id == id }
+                                    val m = real.allModels.find { it.id == id }
                                     val supported = m?.efforts?.filter { it in EFFORT_IDS } ?: emptyList()
                                     if (supported.isNotEmpty() && effort !in supported) {
                                         effort = if ("medium" in supported) "medium" else supported.first()
                                     }
-                                    real?.changeSessionModel(id) { ok, msg ->
+                                    real.changeSessionModel(id) { ok, msg ->
                                         // 失败要给反馈：选中态由 chat.modelChanged 广播对齐
                                         //（后端没改成功就不会广播），本地乐观选中会永远停在
                                         // 旧模型上——toast 说明，不假装成功
@@ -416,7 +416,7 @@ fun Composer(state: MockAppState, real: com.moyunteng.lxcode.remote.net.RealBack
                                     permConfirming = false
                                     // 走协议（chat.approval：后端落库 + 广播，
                                     // approvalChanged 回来对齐药丸）
-                                    real?.changeApproval(id)
+                                    real.changeApproval(id)
                                     permMenuOpen = false
                                 },
                             )
@@ -424,21 +424,21 @@ fun Composer(state: MockAppState, real: com.moyunteng.lxcode.remote.net.RealBack
                     }
                     // 上下文环 + 百分比（.ctx-chip / .ctx-pct）
                     // 实测值（context 键缺席 = null → 环显示「—」）
-                    ContextRing(real?.contextUsage)
+                    ContextRing(real.contextUsage)
                     // 会话统计胶囊（.stats-pill：步数 0 整个胶囊不渲染）
-                    StatsCapsule(real?.sessionStats)
+                    StatsCapsule(real.sessionStats)
                 }
                 Spacer(Modifier.width(4.dp))
                 SendButton(
                     busy = busy,
                     enabled = (text.trim().isNotEmpty() && !text.startsWith("/")) ||
-                        real?.pendingImages?.isNotEmpty() == true ||
-                        real?.pendingFiles?.isNotEmpty() == true,
+                        real.pendingImages.isNotEmpty() ||
+                        real.pendingFiles.isNotEmpty(),
                     onClick = {
                         if (busy) {
-                            real?.cancel()
+                            real.cancel()
                         } else {
-                            real?.send(text, sendEffort)
+                            real.send(text, sendEffort)
                             text = ""
                         }
                     },

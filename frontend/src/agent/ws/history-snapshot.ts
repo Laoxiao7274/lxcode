@@ -89,6 +89,13 @@ export function snapshotFromWire(r: unknown): HistorySnapshot {
     /** 分页窗口元数据（只在 before_seq 请求的应答里出现，见 HistorySnapshot.hasMore）。 */
     has_more?: boolean;
     first_seq?: number;
+    /** 该会话此刻正在跑的派发快照（观察端回填卡用；老后端/空闲缺席）。 */
+    running_dispatches?: Array<{
+      dispatch_id?: string;
+      child_session_id?: string;
+      agent_name?: string;
+      task?: string;
+    }>;
   };
   return {
     sessionId: h.session_id ?? "",
@@ -109,5 +116,19 @@ export function snapshotFromWire(r: unknown): HistorySnapshot {
     // （= 不是分页应答 → 不再上翻），与 has_more 的 omitempty 语义一致。
     ...(typeof h.has_more === "boolean" ? { hasMore: h.has_more } : {}),
     ...(typeof h.first_seq === "number" ? { firstSeq: h.first_seq } : {}),
+    // 运行中派发快照：缺省**不写键**（= 没有/老后端），与 omitempty 语义一致。
+    // 残缺项（dispatch_id 缺失）丢弃——没有归属键的条目没法回填任何卡。
+    ...(Array.isArray(h.running_dispatches) && h.running_dispatches.length
+      ? {
+          runningDispatches: h.running_dispatches
+            .filter((d) => typeof d.dispatch_id === "string" && d.dispatch_id !== "")
+            .map((d) => ({
+              dispatchId: d.dispatch_id ?? "",
+              childSessionId: d.child_session_id ?? "",
+              agentName: d.agent_name ?? "",
+              task: d.task ?? "",
+            })),
+        }
+      : {}),
   };
 }

@@ -77,7 +77,7 @@ import com.moyunteng.lxcode.remote.model.SessionMeta
 
 /** 会话列表页（首页）。 */
 @Composable
-fun SessionsScreen(state: MockAppState) {
+fun SessionsScreen(state: AppState) {
     val context = LocalContext.current
     // 会话行操作：行尾 ⋯ 菜单 → 重命名 / 归档（协议有 session.rename /
     // session.archive，见 PROTOCOL-NOTES.md §3）；删除 / 置顶协议没有——记缺口不造。
@@ -140,7 +140,7 @@ fun SessionsScreen(state: MockAppState) {
             )
         }
 
-        // 未连接任何后端：连接引导态（不是 mock 数据）——居中引导（logo + 文案 +
+        // 未连接任何后端：连接引导态——居中引导（logo + 文案 +
         // 扫码/手动添加入口 → 连接页）。连接成功（realOn=true）才渲染会话列表。
         if (!state.realOn) {
             ConnectGuide(
@@ -362,7 +362,7 @@ fun SessionsScreen(state: MockAppState) {
         }
     }
 
-    // 重命名弹窗（session.rename；真实模式生效并刷新列表，mock 模式如实提示）
+    // 重命名弹窗（session.rename；真实模式生效并刷新列表，未连接时如实提示）
     renaming?.let { target ->
         var draft by remember(target.id) { mutableStateOf(target.title) }
         AlertDialog(

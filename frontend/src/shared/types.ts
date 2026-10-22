@@ -486,6 +486,21 @@ export interface HistorySnapshot {
    *  两个键都在时才能继续上翻：拿 0 去请求会被后端判 CodeInvalidParams。 */
   hasMore?: boolean;
   firstSeq?: number;
+  /** 该会话**此刻正在跑**的派发快照（缺省 = 没有/老后端）。
+   *  观察端（安卓/新开窗口）错过 dispatchStart 广播时靠它把回放重建的
+   *  「中断」占位卡补上子会话 id——点开子会话与卡内进度事件路由由此恢复。
+   *  派发结束即从后端注销（不会把已收尾的报成运行中）。 */
+  runningDispatches?: RunningDispatchInfo[];
+}
+
+/** 一次进行中派发的观察快照（chat.history 的 running_dispatches 元素）。
+ *  与 dispatchStart 事件字段的对应：dispatchId ↔ dispatch_id、childSessionId ↔
+ *  session_id、agentName ↔ agent_name、task ↔ task。 */
+export interface RunningDispatchInfo {
+  dispatchId: string;
+  childSessionId: string;
+  agentName: string;
+  task: string;
 }
 
 /** 历史消息（llm.Message 的 wire 形态）。 */

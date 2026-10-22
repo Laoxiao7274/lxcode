@@ -73,6 +73,8 @@ import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -110,7 +112,7 @@ import com.moyunteng.lxcode.remote.ui.md.parseMarkdown
 
 /** 对话线程页。 */
 @Composable
-fun ThreadScreen(state: MockAppState, sessionId: String) {
+fun ThreadScreen(state: AppState, sessionId: String) {
     // 子会话临时视图（点派发卡进入）：数据源切 child* 状态，返回回主会话——
     // 与桌面端「临时视图」同语义。整页替换渲染，主会话的滚动/输入态不共享。
     if (state.real.viewChildSessionId != null) {
@@ -119,7 +121,7 @@ fun ThreadScreen(state: MockAppState, sessionId: String) {
     }
 
     // 真实后端模式：标题/块/忙闲/确认全部来自 RealBackend（WS 事件归约）。
-    // （mock 数据已随 P0 原型退役：未连接时会话页是连接引导态，到不了线程页。）
+    // 未连接时会话页是连接引导态，到不了线程页。
     val real = state.real
     val title = real.sessionTitle
     // 「运行中」的判定 = 会话忙闲（chat.busy 事件 / done-error 收敛）
@@ -569,7 +571,7 @@ fun ThreadScreen(state: MockAppState, sessionId: String) {
  *  copy）时 key 不变，reveal 状态保持继续浇而不是重播。 */
 @Composable
 private fun ThreadBlockView(
-    state: MockAppState,
+    state: AppState,
     block: ThreadBlock,
     busy: Boolean,
     stableKey: String,
@@ -628,7 +630,7 @@ private fun NoticeBar(block: ThreadBlock.Notice) {
  */
 @Composable
 private fun UserBubble(
-    state: MockAppState,
+    state: AppState,
     text: String,
     attachments: List<com.moyunteng.lxcode.remote.model.AttachmentMeta> = emptyList(),
 ) {
@@ -716,7 +718,7 @@ private fun AssistantBlock(block: ThreadBlock.Assistant, busy: Boolean, stableKe
         }
         if (!block.content.isNullOrBlank()) {
             // 署名行：真实模式用实测值（first_token_ms / usage_tokens÷duration_ms），
-            // 未知段省略；mock 数据没填这两个字段 → 走旧硬编码（回归保障）。
+            // 未知段省略（wire 类型该字段缺省 → 走旧硬编码，回归保障）。
             val footer = if (block.firstTokenMs != null || block.tokPerSec != null) {
                 listOfNotNull(
                     // 署名里的模型名：消息上的 model 是**注册表主键**（provider::id，
@@ -1532,10 +1534,125 @@ private fun MarkdownBody(text: String, modifier: Modifier = Modifier) {
                         }
                     }
                 }
+                is MdBlock.Table -> MdTable(block)
             }
         }
     }
 }
+
+/**
+ * 表格渲染：边框（--border-strong）+ 斑马线（--border-soft，隔行低饱和填充）+
+ * 表头加粗 + 整表 horizontalScroll（宽表格横滚，不挤压单元格）。
+ * 列宽 = 每列最宽单元格的单行宽度（maxIntrinsicWidth），整表等列对齐。
+ * 表头底色 / 斑马线 / 网格线统一画在外层 Box 的 drawBehind——几何在 measure
+ * 期算出写进 State、draw 期消费（cell 高度不满行高，背景画在 cell 上会漏底）。
+ * 单元格文本走 [MdText]（内联粗体/代码/链接不丢）；视觉 token：表头 CodeBg、
+ * 斑马线 BorderSoft、网格 BorderStrong——与代码块同一套底色语言。
+ */
+@Composable
+private fun MdTable(block: MdBlock.Table) {
+    val border = Lx.colors.BorderStrong
+    val zebra = Lx.colors.BorderSoft
+    val headerBg = LxColors.CodeBg
+    val body = mdBodyStyle().copy(lineHeight = (Lx.type.Size13.value * 1.5f).sp)
+    val headerStyle = body.copy(fontWeight = FontWeight.Bold)
+    val padH = Lx.space.s8
+    val padV = Lx.space.s4
+    val ncols = block.header.size
+    // 网格几何：列分隔 x 坐标 / 行分隔 y 坐标 / 总宽高。measure 期写入、
+    // draw 期读取（draw 不反哺 measure，无重排环；首帧 draw 前 measure 已完成）。
+    val grid = remember { mutableStateOf(MdGridGeometry(emptyList(), emptyList(), 0f, 0f)) }
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .clip(RoundedCornerShape(Lx.radius.r8))
+            .border(0.5.dp, border, RoundedCornerShape(Lx.radius.r8))
+            .drawBehind {
+                val g = grid.value
+                // 表头底 + 斑马线（奇数数据行）
+                if (g.height > 0f && g.rowY.isNotEmpty()) {
+                    drawRect(headerBg, topLeft = Offset.Zero, size = Size(g.width, g.rowY.first()))
+                    g.rowY.drop(1).forEachIndexed { idx, y ->
+                        val top = g.rowY[idx]
+                        if (idx % 2 == 0) drawRect(zebra, topLeft = Offset(0f, top), size = Size(g.width, y - top))
+                    }
+                }
+                // 网格线：列分隔（首末不画——外框已画）+ 行分隔（含表头底线）
+                val hairline = 0.5.dp.toPx()
+                g.colX.forEach { x -> drawLine(border, Offset(x, 0f), Offset(x, g.height), hairline) }
+                g.rowY.forEach { y -> drawLine(border, Offset(0f, y), Offset(g.width, y), hairline) }
+            },
+    ) {
+        Layout(
+            content = {
+                block.header.forEach { cell ->
+                    Box(Modifier.padding(horizontal = padH, vertical = padV)) {
+                        MdText(cell, headerStyle, color = Lx.colors.Fg)
+                    }
+                }
+                block.rows.forEach { row ->
+                    row.forEach { cell ->
+                        Box(Modifier.padding(horizontal = padH, vertical = padV)) {
+                            MdText(cell, body, color = Lx.colors.Fg)
+                        }
+                    }
+                }
+            },
+        ) { measurables, _ ->
+            // 1) 列宽 = 该列最宽单元格（单行宽度；超宽靠外层横滚，不挤压）
+            val colW = IntArray(ncols)
+            measurables.forEachIndexed { idx, m ->
+                val w = m.maxIntrinsicWidth(0)
+                val col = idx % ncols
+                if (w > colW[col]) colW[col] = w
+            }
+            // 2) 按列宽测量（固定宽——同列 cell 同宽，右缘对齐成网格；高不限）
+            val placeables = measurables.mapIndexed { idx, m ->
+                val w = colW[idx % ncols]
+                m.measure(Constraints(minWidth = w, maxWidth = w))
+            }
+            // 3) 行高 = 行内最高 cell
+            val rowH = IntArray(block.rows.size + 1) { 0 }
+            placeables.forEachIndexed { idx, p ->
+                val r = idx / ncols
+                if (p.height > rowH[r]) rowH[r] = p.height
+            }
+            val totalW = colW.sum()
+            val totalH = rowH.sum()
+            // 4) 网格几何：列分隔 = 累计列宽（末列前止）；行分隔 = 累计行高（末行前止）
+            val colX = buildList {
+                var x = 0
+                for (c in 0 until ncols - 1) { x += colW[c]; add(x.toFloat()) }
+            }
+            val rowY = buildList {
+                var y = 0
+                for (r in 0 until rowH.size - 1) { y += rowH[r]; add(y.toFloat()) }
+            }
+            grid.value = MdGridGeometry(colX, rowY, totalW.toFloat(), totalH.toFloat())
+            layout(totalW, totalH) {
+                var y = 0
+                for (r in rowH.indices) {
+                    var x = 0
+                    for (c in 0 until ncols) {
+                        val p = placeables[r * ncols + c]
+                        p.place(x, y + (rowH[r] - p.height) / 2) // 行内垂直居中
+                        x += colW[c]
+                    }
+                    y += rowH[r]
+                }
+            }
+        }
+    }
+}
+
+/** 表格网格几何（measure 期产出 → draw 期消费，见 [MdTable]）。 */
+private data class MdGridGeometry(
+    val colX: List<Float>,
+    val rowY: List<Float>,
+    val width: Float,
+    val height: Float,
+)
 
 /** 一个块的 AnnotatedString 渲染（粗/斜/code 样式 + 链接点击）。 */
 @Composable
@@ -1665,25 +1782,109 @@ private fun TypingDots(dotSize: androidx.compose.ui.unit.Dp, gap: androidx.compo
  * LxConfirmDialog（confirm 带 dispatch_id 的子确认正常弹，裁决走 resolveChildConfirm）。
  */
 @Composable
-private fun ChildThreadView(state: MockAppState) {
+private fun ChildThreadView(state: AppState) {
     val real = state.real
     val childId = real.viewChildSessionId ?: return
 
     // 返回键：先回主会话（消费），不退会话页
     BackHandler { real.closeChildSession() }
 
-    // 历史装载完成滚到底
+    // ===== sticky-follow（对齐主会话 ThreadScreen 的同一套语义，2026-12 用户报
+    // 「子会话页里滚动框不跟随」）=====
+    //
+    // 「跟随」状态：进入会话/滚到底之后为 true，用户翻离底部后为 false。
+    // 判定**只看用户拖拽**（DragInteraction）——程序化滚动（补滚/跟随）不产生
+    // 拖拽事件，不会把跟随误伤成"翻历史"（主会话真机复测抓到过的坑）。
+    var sticky by remember { mutableStateOf(true) }
     val listState = rememberLazyListState()
-    LaunchedEffect(real.childHistoryVersion) {
-        if (real.childHistoryVersion > 0 && real.childBlocks.isNotEmpty()) {
-            listState.scrollToItem(real.childBlocks.size - 1)
+
+    /** 最后一个内容条目的下标：块流条目数 = childBlocks.size；忙闲时列表尾部还有
+     *  「生成中」打字点或「正在处理…」条目（二选一，各占一项）——「底部」以最后
+     *  可见条目为准更稳。 */
+    fun lastItemIndex(): Int = real.childBlocks.size + if (real.childBusy) 1 else 0
+
+    /** 是否已在列表**真正的底部**：最后条目的底边进入视口可视区（对齐主会话
+     *  bottomAligned 的口径——最后一个条目可见 ≠ 在底，超高块会误判）。 */
+    fun childBottomAligned(): Boolean {
+        val info = listState.layoutInfo
+        if (info.visibleItemsInfo.isEmpty()) return true
+        val last = info.visibleItemsInfo.lastOrNull { it.index == lastItemIndex() } ?: return false
+        return last.offset + last.size <= info.viewportEndOffset - info.afterContentPadding
+    }
+
+    // 用户拖拽流：开始拖拽时若不在底部 = 在翻历史，解除跟随；拖拽结束停在底部则恢复。
+    LaunchedEffect(listState) {
+        listState.interactionSource.interactions.collect { interaction ->
+            when (interaction) {
+                is DragInteraction.Start -> if (!childBottomAligned()) sticky = false
+                is DragInteraction.Stop, is DragInteraction.Cancel -> sticky = childBottomAligned()
+            }
         }
     }
-    // 流式跟随（同主会话的收敛式补滚，简化版）
-    LaunchedEffect(real.childStreamVersion) {
-        if (real.childStreamVersion > 0 && real.childBlocks.isNotEmpty()) {
+
+    /** 滚到列表**真正的底部**：先 scrollToItem（超高块只顶对齐），再按
+     *  「条目底边 − 视口底」的实测差值逐帧收敛补滚（最多 6 帧——异步内容量高
+     *  的兜底；scrollBy 在可滚范围尽头自动钳住）。 */
+    suspend fun snapToChildBottom() {
+        if (real.childBlocks.isEmpty()) return
+        listState.scrollToItem(lastItemIndex())
+        repeat(6) {
             withFrameNanos { }
-            if (listState.canScrollForward) listState.scrollBy(1_000_000f)
+            if (!listState.canScrollForward) return
+            val info = listState.layoutInfo
+            val last = info.visibleItemsInfo.lastOrNull { it.index == lastItemIndex() } ?: return
+            val delta = last.offset + last.size - (info.viewportEndOffset - info.afterContentPadding)
+            if (delta > 0) listState.scrollBy(delta.toFloat())
+            else listState.scrollBy(1_000_000f)
+        }
+    }
+
+    // 历史装载完成滚到底（初始打开 = 最新消息），并把跟随置真。
+    LaunchedEffect(real.childHistoryVersion) {
+        if (real.childHistoryVersion > 0 && real.childBlocks.isNotEmpty()) {
+            snapToChildBottom()
+            sticky = true
+        }
+    }
+    // 新块到达（块数变化）：sticky 时跟到底。
+    LaunchedEffect(real.childBlocks.size) {
+        if (real.childBlocks.isNotEmpty() && sticky) snapToChildBottom()
+    }
+    // 流式期间内容增长（delta 追加让最后一块变高）：sticky 时收敛式补滚——
+    // 用 scrollBy 差值而不是 scrollToItem（每条 delta 猛跳一次观感差；超高块
+    // 兼容同主会话）。先等一帧再量（effect 触发时新文本往往还没量高，直接量
+    // 会得 delta≈0 漏滚——主会话真机复测抓到过）。
+    LaunchedEffect(real.childStreamVersion) {
+        if (real.childStreamVersion > 0 && sticky) {
+            repeat(3) {
+                withFrameNanos { }
+                if (!listState.canScrollForward) return@LaunchedEffect
+                val info = listState.layoutInfo
+                val last = info.visibleItemsInfo.lastOrNull { it.index == lastItemIndex() }
+                val delta = last?.let { it.offset + it.size - (info.viewportEndOffset - info.afterContentPadding) } ?: 0
+                if (delta > 0) listState.scrollBy(delta.toFloat())
+            }
+        }
+    }
+    // 「回到底部」的轻量入口：用户翻离底部（sticky=false）时浮出，点击回底并恢复跟随
+    //（真正落底由 childBlocks.size 的 effect 在 sticky 置真后补一次——那个 effect
+    // 读 state 值，把 sticky 写成 true 后下一次重组即触发）。
+    val showJumpToBottom = !sticky && real.childBlocks.isNotEmpty()
+    if (showJumpToBottom) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Lx.space.s12, vertical = Lx.space.s2),
+            horizontalArrangement = Arrangement.Center,
+        ) {
+            LxIconButton(onClick = { sticky = true }) {
+                Icon(
+                    imageVector = Icons.Filled.KeyboardArrowDown,
+                    contentDescription = "回到底部",
+                    tint = Lx.colors.FgMuted,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
         }
     }
 

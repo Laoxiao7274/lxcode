@@ -5,7 +5,7 @@
 //  * [ScreenHeader]  ← ag-doc-head（标题 + 关闭/返回）
 //  * [TerminalBlock] ← ApprovalCard.module.css 的 .cmdBlock（深色终端块）
 //  * [CodeBlock]     ← thread.css 的代码/工具输出底（--code-bg #f4f5f7）
-//  * [MockSwitch]    ← 原型的 mock 开关（在线/离线、展开/折叠等）
+//  * [LabelSwitch]   ← 原型的开关（在线/离线、展开/折叠等）
 package com.moyunteng.lxcode.remote.ui
 
 import androidx.compose.animation.core.RepeatMode
@@ -221,9 +221,9 @@ fun CodeBlock(text: String, modifier: Modifier = Modifier) {
     }
 }
 
-/** mock 开关（原型用）：左侧标签 + 右侧小滑块。 */
+/** 带标签的开关：左侧标签 + 右侧小滑块。 */
 @Composable
-fun MockSwitch(
+fun LabelSwitch(
     label: String,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,

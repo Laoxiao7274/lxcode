@@ -140,6 +140,16 @@ export function handleAgentEvent(ev: AgentEvent, c: AgentEventController): void 
     for (const [did, childId] of Object.entries(scanned.dispatchChild)) {
       next = recordChildLink(next, { childId, parentId: next.childParents[childId] ?? "", dispatchId: did });
     }
+    // **运行中派发快照**（running_dispatches）是回放扫不出来的那部分的补集：
+    // 正在跑的派发在历史里没有结果提示行、（回放窗口被截时）也可能没有卡——
+    // 后端按此刻的运行中登记导出，dispatch_id → 子会话 id 直接记进映射，
+    // 后续带归属的子事件按它路由（「进度消失」的修复）。
+    for (const d of ev.history.runningDispatches ?? []) {
+      if (!d.childSessionId) continue;
+      next = recordChildLink(next, {
+        childId: d.childSessionId, parentId: ev.sessionId, dispatchId: d.dispatchId,
+      });
+    }
     c.setChildLinks(next);
   }
   // ---- 发送缓冲区的自动发送（busy true→false 的轮次边界）----

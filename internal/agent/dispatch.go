@@ -30,6 +30,18 @@ import (
 // 一条 edit 的完整正文没必要全进 job 日志——超长会淹没真正的进展）。
 const taskLogArgMax = 400
 
+// RunningDispatch 是一次**进行中**派发的观察快照（内核类型，不涉协议边界——
+// server 在 historyResult 组装时映射成 protocol.RunningDispatch）。观察端
+// （安卓 / 新开的桌面窗口）错过 dispatchStart 广播时，靠 chat.history 的
+// running_dispatches 把回放占位卡补上子会话 id。字段与卡展示一一对应：归属键、
+// 子会话 id、Agent 名、任务描述。
+type RunningDispatch struct {
+	DispatchID     string
+	ChildSessionID string
+	AgentName      string
+	Task           string
+}
+
 // RunAgentTask 在一个**独立子会话**里跑一个内置 Agent 的任务，把子会话的实时输出写进
 // out（后台任务句柄），返回它的最终结论。
 //
@@ -79,7 +91,13 @@ func (s *Session) RunAgentTask(ctx context.Context, agentID, task, workDir strin
 	// 用户从标签页停止（chat.cancel 带子会话 id → CancelChild）。defer 注销
 	// 覆盖 SendWait 的全部收尾路径。
 	s.registerChild(askDispatchID, child)
+	// 观察快照（与 runDispatch 同款）：合并进程的子会话同样是进行中的派发。
+	// 登记与注销都用 askDispatchID（= childID，恰好同键——见 dispatch.go 那侧
+	// 的键纪律注释）。
+	s.registerDispatch(RunningDispatch{DispatchID: askDispatchID, ChildSessionID: childID,
+		AgentName: ac.Def.Name, Task: task})
 	defer s.unregisterChild(askDispatchID)
+	defer s.unregisterDispatch(askDispatchID)
 	child.SetConfirmProxy(func(cctx context.Context, req *ConfirmRequest) (ConfirmOutcome, bool) {
 		stamped := *req
 		stamped.DispatchID = askDispatchID
@@ -241,7 +259,14 @@ func (s *Session) runDispatch(ctx context.Context, call tools.DispatchCall) tool
 		childKey = call.DispatchID
 	}
 	s.registerChild(childKey, child)
+	// 观察快照（chat.history 的 running_dispatches）：登记键 = dispatch_id
+	//（归属键，与客户端回填卡的键同源），**注销也用它**——childKey 是子会话 id，
+	// 两个键在普通派发下不相等，拿 childKey 注销会留下永不消失的僵尸条目
+	//（跑完的派发永远被报成运行中——生命周期是这条修复的命门）。
+	s.registerDispatch(RunningDispatch{DispatchID: call.DispatchID, ChildSessionID: childID,
+		AgentName: ac.Def.Name, Task: call.Task})
 	defer s.unregisterChild(childKey)
+	defer s.unregisterDispatch(call.DispatchID)
 	// 子会话的事件按 dispatch_id 归属进卡；busy/todo/会话切换不上抛（见 childEmitter）
 	tap := &childEvents{}
 	child.SetEmitter(childEmitter(s.emit, call.DispatchID, tap))

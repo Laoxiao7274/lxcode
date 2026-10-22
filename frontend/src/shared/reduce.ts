@@ -1,6 +1,6 @@
 // 事件流 → UI 状态的归约（纯函数，无 React——可直接单测）。
 
-import type { AgentEvent, ConfirmRequest, JobInfo } from "./types";
+import type { AgentEvent, ConfirmRequest, JobInfo, RunningDispatchInfo } from "./types";
 import { type AssistantBlock, type ThreadBlock, type UIState, DISPATCH_TOOL_NAME, initial, nextUid, withBlock, placeConfirm, planRewind, finalizeStreaming, timelineOf } from "./blocks";
 import { DISPATCH_INTERRUPTED, mergeOlderHistory, reduceHistory } from "./history";
 import { isHiddenNotice, noticeBody, noticeLabel } from "./notices";
@@ -556,12 +556,19 @@ const busySnapshot = ev.history.busy;
 // 保留的是本会话状态里的卡（state 本就按会话隔离），位置接在重建后的历史之后。
 const jobs = state.blocks.filter((b) => b.kind === "job");
 const rebuilt = reduceHistory(state, ev.history);
+// **观察端回填**（chat.history 的 running_dispatches）：本窗口错过 dispatchStart
+// 广播（安卓重进会话/新开的桌面窗口）时，回放重建的派发卡没有子会话 id——
+// 点不开子会话、todo/子工具事件按卡反查也无处可投（「任务进度消失」）。
+// 后端导出**此刻正在跑**的派发快照（跑完即注销），按 dispatch_id 补进重建的卡：
+// 只补空缺（id/名字/任务），**绝不**把已收尾的卡翻回运行中（回放占位卡的
+// 运行态由 reviveRunningDispatch 按会话忙碌判定，口径不变）。
+const filled = fillRunningDispatches(rebuilt.blocks, ev.history.runningDispatches);
 // **重建代次号**（Thread 判「同会话全量重建 → 不重播入场动画」的标记）：
 // blocks 被整体换掉（全新 uid）就算一次重建，从旧 state 递增。快照 busy 提前
 // 返回的那条分支不重建 blocks，不递增——它一个块都没换。
 const rebuiltGen = (state.rebuiltGen ?? 0) + 1;
 // 会话仍在跑：最后那张「中断」占位卡其实是执行中（见 reviveRunningDispatch）
-const revived = reviveRunningDispatch(rebuilt.blocks, state.blocks, busySnapshot || state.busy);
+const revived = reviveRunningDispatch(filled, state.blocks, busySnapshot || state.busy);
 // 流式尾巴接回（去重见 appendLiveTail）——它回到 state.streaming，不并入 blocks
 //（之后还有 delta 到达时要继续续写同一块，见 liveTail）。
 const { blocks: withLive, streaming: liveStream } = appendLiveTail(revived, live, ev.history);
@@ -707,6 +714,56 @@ function reviveRunningDispatch(rebuilt: ThreadBlock[], prevBlocks: ThreadBlock[]
     ...(card.todos ?? prev?.todos ? { todos: card.todos ?? prev?.todos } : {}),
     ...(card.attachments ? { attachments: card.attachments } : {}),
   };
+  return next;
+}
+
+/** 观察端回填（chat.history 的 running_dispatches → 重建的派发卡）。
+ *
+ *  归约是**纯函数**：重建只看快照里的消息，而 dispatchStart 是事件、不在历史里
+ *  ——错过它的客户端（安卓重进会话、新开的桌面窗口）重建出来的派发卡没有
+ *  子会话 id。后端在应答里带**此刻正在跑**的派发快照（agent.Session 的运行中
+ *  登记，跑完即注销），这里按 dispatch_id 处理重建结果：
+ *   - 卡不在（回放窗口被 tail 截掉）→ 追加一张运行中卡（那张卡上的进度事件是
+ *     **现在**发出来的，没有卡就全部丢弃）；
+ *   - 卡是回放「中断」占位态（done + isError + 占位文案）→ 恢复成运行中并补
+ *     id/名字/任务——快照是「这个派发**正在跑**」的直接证据，比 reviveRunningDispatch
+ *     的 busy 启发式强（那个只认最后一张卡）；
+ *   - 卡是真终态（成功收尾/带真实错误的失败）→ 绝不碰：快照说"在跑"只对活着
+ *     的派发成立（后端跑完即注销，终态卡被翻回运行中 = 把历史说成现在）；
+ *   - 卡已在运行中 → 只补空缺（id/名字/任务）。 */
+function fillRunningDispatches(
+  blocks: ThreadBlock[],
+  running: RunningDispatchInfo[] | undefined,
+): ThreadBlock[] {
+  if (!running || running.length === 0) return blocks;
+  const next = blocks.slice();
+  for (const r of running) {
+    const idx = next.findIndex((b) => b.kind === "dispatch" && b.id === r.dispatchId);
+    if (idx < 0) {
+      // 卡不在：尾部窗口没截到它的历史（派发在窗口之前发起）——按快照补一张
+      // 运行中卡。agentColor 留空：渲染层按 agentId 从注册表回落（与回放路径
+      // 同一条纪律，纯函数里没有注册表）。
+      next.push({
+        kind: "dispatch", uid: nextUid(), id: r.dispatchId,
+        sessionId: r.childSessionId || undefined,
+        agentId: "", agentName: r.agentName, agentColor: "",
+        task: r.task, status: "running", subBlocks: [],
+      });
+      continue;
+    }
+    const card = next[idx] as Extract<ThreadBlock, { kind: "dispatch" }>;
+    const placeholder = card.status === "done" && card.isError === true && card.result === DISPATCH_INTERRUPTED;
+    if (card.status === "done" && !placeholder) continue; // 真终态绝不翻回运行中
+    next[idx] = {
+      ...card,
+      status: placeholder ? "running" : card.status,
+      isError: placeholder ? undefined : card.isError,
+      result: placeholder ? undefined : card.result,
+      sessionId: card.sessionId ?? (r.childSessionId || undefined),
+      agentName: card.agentName || r.agentName,
+      task: card.task || r.task,
+    };
+  }
   return next;
 }
 

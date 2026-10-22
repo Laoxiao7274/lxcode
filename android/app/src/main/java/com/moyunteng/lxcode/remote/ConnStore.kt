@@ -1,7 +1,7 @@
 // 连接条目持久化 —— SharedPreferences 存 JSON 数组（连接管理 = 真实连接的落地）。
 //
 // 存什么：连接列表（含本机条目）+ 当前连接 id。字段 addr/token/name 逐条落盘，
-// App 重启后连接列表原样恢复——「扫码/表单保存的连接」不再是一次性 mock 草稿。
+// App 重启后连接列表原样恢复——「扫码/表单保存的连接」是持久存档，不是一次性草稿。
 //
 // 选型：SharedPreferences 而非 DataStore——数据就一个 key 列表（<1KB）、读写频率
 // 极低（增删改连接时写一次），引 DataStore + coroutines 是杀鸡用牛刀。

@@ -13,8 +13,11 @@
 //   * 有序列表 `1. item` / `1) item`（桌面端 ordered list 有——补齐）
 //   * 引用    `> text`（行级；连续引用行合并为一段）
 //   * 链接    URL 自动识别（http/https，可点击）+ `[text](url)` 形式
-//   * 表格    桌面端有（md-table）但渲染依赖 HTML table 语义，手机窄屏上
-//             横向滚动体验差——第一版不补（差异已记录，见任务报告）。
+//   * 表格    管道表格（表头 + `|---|---|` 分隔行 + 数据行）：行级解析成
+//             MdBlock.Table，渲染层横滚 + 边框/斑马线（手机窄屏体验优于
+//             桌面端的 HTML table 语义——整表 horizontalScroll 不挤压）。
+//             单元格内联格式保留（parseInline）；转义管道 `\|` 不切列；
+//             不规则列数按最大列数右补空。
 //   * 任务列表 `- [ ]`：桌面端没有（RE_UL 不认）——不做，`- [ ]` 按普通列表项渲染。
 //   * 转义    桌面端没有——不做。
 //
@@ -53,6 +56,11 @@ sealed interface MdBlock {
 
     /** 引用（连续行合并；每段解析行内样式）。 */
     data class Quote(val paragraphs: List<List<MdSpan>>) : MdBlock
+
+    /** 管道表格（表头 + 分隔行 + 数据行；渲染层横滚，见 ThreadScreen.MdTable）。
+     *  [header] = 表头单元格；[rows] = 数据行（不含分隔行）；不规则列数
+     *  已在解析期按最大列数右补空（渲染层不需要再对齐）。 */
+    data class Table(val header: List<List<MdSpan>>, val rows: List<List<List<MdSpan>>>) : MdBlock
 }
 
 /** 列表项：[level] = 缩进级数（2 空格一级，tab 记 2——桌面端同口径）。 */
@@ -152,10 +160,27 @@ fun parseMarkdown(src: String): List<MdBlock> {
                 gap = true
                 i++
             }
+            // 管道表格：本行是表头且下一行是分隔行（|---|---|）才认作表格——
+            // 孤立的管道行（如 `- [ ]` 之外的普通含管道文本）仍按段落渲染。
+            isTableRow(line) && i + 1 < lines.size && isTableDivider(lines[i + 1]) -> {
+                val header = splitTableRow(line)
+                val rawRows = mutableListOf<List<List<MdSpan>>>()
+                i += 2 // 吃掉表头 + 分隔行
+                while (i < lines.size && isTableRow(lines[i])) {
+                    rawRows.add(splitTableRow(lines[i]))
+                    i++
+                }
+                // 不规则列数：按全局最大列数对齐（右补空 / 截断到 max——渲染层每行等列）
+                val ncols = maxOf(header.size, rawRows.maxOfOrNull { it.size } ?: 0)
+                fun pad(cells: List<List<MdSpan>>) =
+                    List(ncols) { c -> cells.getOrElse(c) { emptyList() } }
+                blocks.add(MdBlock.Table(pad(header), rawRows.map(::pad)))
+                gap = true // 表格是块级边界——后续段落带段距（对齐 Hr 的语义）
+            }
             // 普通段落：连续非空非特殊行聚成一段（中间的换行保留——软换行）
             else -> {
                 val parts = mutableListOf<String>()
-                while (i < lines.size && !isBlockBoundary(lines[i])) {
+                while (i < lines.size && !isBlockBoundary(lines[i], lines.getOrNull(i + 1))) {
                     parts.add(lines[i].trim())
                     i++
                 }
@@ -175,6 +200,69 @@ private fun isHr(line: String): Boolean {
     if (c != '-' && c != '*' && c != '_') return false
     return t.all { it == c }
 }
+
+// ===== 表格解析 =====
+
+/** 表格行：至少有一个未转义的管道 `|`（容错：首尾管道可省——GFM 同款）。 */
+private fun isTableRow(line: String): Boolean {
+    val t = line.trim()
+    if (t.isEmpty()) return false
+    // 行内 code 里的管道不算列分隔（`a|b` 在 code 单元格里是文本）
+    var inCode = false
+    var i = 0
+    while (i < t.length) {
+        when {
+            t[i] == '\\' -> i += 2 // 转义：跳过下一字符（`\|` 不算管道）
+            t[i] == '`' -> { inCode = !inCode; i++ }
+            t[i] == '|' && !inCode -> return true
+            else -> i++
+        }
+    }
+    return false
+}
+
+/** 分隔行（`| --- | --- |` / `|---|---|` 等）：去掉首尾管道后每格都是空/冒号/连字符
+ *  且至少含一个 `-`——对齐 GFM 对齐标记（`:---` `:--:` `---:`，对齐信息只丢弃）。 */
+private fun isTableDivider(line: String): Boolean {
+    if (!isTableRow(line)) return false
+    val cells = splitTableRowCells(line)
+    if (cells.isEmpty()) return false
+    return cells.all { c ->
+        val t = c.trim().removePrefix(":").removeSuffix(":").trim()
+        t.isNotEmpty() && t.all { it == '-' }
+    }
+}
+
+/** 表格行 → 单元格文本列表（未转义管道切列；`\|` 还原成 `|`；首尾管道可省）。
+ *  与 [isTableRow]/[isTableDivider] 共享同一套切列逻辑。 */
+private fun splitTableRowCells(line: String): List<String> {
+    val t = line.trim()
+    // 剥掉首尾孤立管道（GFM 容错）——只剥一个，防误伤 `||`
+    val body = if (t.startsWith("|")) t.removePrefix("|") else t
+    val trimmedBody = if (body.endsWith("|") && !body.endsWith("\\|")) body.removeSuffix("|") else body
+    val cells = mutableListOf<String>()
+    val cur = StringBuilder()
+    var inCode = false
+    var i = 0
+    while (i < trimmedBody.length) {
+        val c = trimmedBody[i]
+        when {
+            c == '\\' && i + 1 < trimmedBody.length && trimmedBody[i + 1] == '|' -> {
+                cur.append('|'); i += 2 // 转义管道还原成字面 `|`
+            }
+            c == '\\' -> { cur.append(c); i++ } // 其它转义原样保留（行内解析器不处理转义）
+            c == '`' -> { inCode = !inCode; cur.append(c); i++ }
+            c == '|' && !inCode -> { cells.add(cur.toString()); cur.clear(); i++ }
+            else -> { cur.append(c); i++ }
+        }
+    }
+    cells.add(cur.toString())
+    return cells
+}
+
+/** 表格行 → 单元格行内 span 列表（每格独立 parseInline；空格 trim）。 */
+private fun splitTableRow(line: String): List<List<MdSpan>> =
+    splitTableRowCells(line).map { parseInline(it.trim()) }
 
 /** 有序列表行（`1. ` / `1)`；对齐桌面端 RE_OL）。 */
 private fun isOrderedItem(line: String): Boolean = ORDERED_RE.containsMatchIn(line.trimStart())
@@ -196,15 +284,17 @@ private fun indentLevel(ws: String): Int = ws.replace("\t", "  ").length / 2
 private fun orderedItemText(line: String): String =
     ORDERED_RE.find(line)!!.groupValues[3]
 
-/** 是不是块边界（用于段落聚合）：空行 / 围栏 / 标题 / 列表 / 引用 / 分割线开头。 */
-private fun isBlockBoundary(line: String): Boolean =
+/** 是不是块边界（用于段落聚合）：空行 / 围栏 / 标题 / 列表 / 引用 / 分割线 / 表格开头。 */
+private fun isBlockBoundary(line: String, next: String?): Boolean =
     line.isBlank() ||
         line.trimStart().startsWith("```") ||
         headingLevel(line) > 0 ||
         isHr(line) ||
         isBullet(line) ||
         isOrderedItem(line) ||
-        line.trimStart().startsWith(">")
+        line.trimStart().startsWith(">") ||
+        // 表格：本行是表头行且下一行是分隔行才算（普通含管道的段落文本不拆段）
+        (isTableRow(line) && next != null && isTableDivider(next))
 
 /** ATX 标题级别（0 = 不是标题；# 后必须有空格或行尾）。 */
 private fun headingLevel(line: String): Int {

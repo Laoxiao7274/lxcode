@@ -22,8 +22,8 @@ android {
         applicationId = "com.moyunteng.lxcode.remote"
         minSdk = 26
         targetSdk = 35
-        versionCode = 13
-        versionName = "0.3.5"
+        versionCode = 14
+        versionName = "0.3.6"
     }
 
     // 签名（release）：凭据从 android/keystore.properties 读（gitignore，不入库）。
@@ -68,7 +68,7 @@ android {
 
     buildFeatures {
         compose = true
-        // BuildConfig.DEBUG：连接页/扫码页的 mock 调试控件用它门控（release 不出现）
+        // BuildConfig.DEBUG：连接页「组件展示」调试入口用它门控（release 不出现）
         buildConfig = true
     }
 

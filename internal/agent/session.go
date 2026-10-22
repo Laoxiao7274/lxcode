@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"log"
 	"runtime/debug"
+	"sort"
 	"sync"
 
 	"github.com/moyunteng/lxcode/internal/config"
@@ -205,6 +206,13 @@ type Session struct {
 	//（Cancel 空操作）——停不掉真正在跑的子轮。并行 dispatch 下同一父可有多个
 	// 活子会话，按 id 一对一。
 	children map[string]*Session
+	// dispatches 是运行中派发的**观察快照**登记（dispatch_id → RunningDispatch）。
+	// children 只回答「这个子会话 id 活着吗」（CancelChild 用），观察端要的却是
+	// 「卡长什么样」（子会话 id / Agent 名 / 任务）——元数据没地方放，单独记一份。
+	// 与 children 同生命周期：registerChild/unregisterChild 同步维护（两处调用
+	// 点在 dispatch.go，天然覆盖 runDispatch 与 RunAgentTask 两条路），跑完即注销
+	// ——不会把已结束的派发报成运行中。chat.history 据此导出 running_dispatches。
+	dispatches map[string]RunningDispatch
 	// readState 是本会话的读取观测（read_file 的重复读去重、edit 的「改前先读」
 	// 提示共用）。**会话级**状态：父子会话各持一份（注册表是进程级单例，
 	// 父会话读过的文件不能替子会话满足前置条件——与 todo sink 同一条理由）。
@@ -576,6 +584,53 @@ func (s *Session) registerChild(key string, child *Session) {
 	}
 	s.children[key] = child
 	s.mu.Unlock()
+}
+
+// registerDispatch 登记**运行中派发的观察快照**（runDispatch/RunAgentTask 在
+// registerChild 的同一位置调用；dispatch_id 为空不登记——老载荷没有归属键，
+// 观察端本来就没有可回填的卡）。与 unregisterChild 成对注销。
+func (s *Session) registerDispatch(d RunningDispatch) {
+	if d.DispatchID == "" {
+		return
+	}
+	s.mu.Lock()
+	if s.dispatches == nil {
+		s.dispatches = make(map[string]RunningDispatch)
+	}
+	s.dispatches[d.DispatchID] = d
+	s.mu.Unlock()
+}
+
+// unregisterDispatch 注销（与 registerDispatch 成对，SendWait 收尾路径全覆盖）。
+func (s *Session) unregisterDispatch(key string) {
+	if key == "" {
+		return
+	}
+	s.mu.Lock()
+	delete(s.dispatches, key)
+	s.mu.Unlock()
+}
+
+// RunningDispatches 导出**此刻正在跑**的派发快照（chat.history 的
+// running_dispatches 数据源；server 在 historyResult 组装时调用）。空 = 没有
+//（caller 省略整个键）。顺序：按登记键升序——map 遍历序不稳定，没有这个排序
+// 同一屏两次请求会给出两种顺序（前端/测试按内容比对时看起来像「变了」）。
+func (s *Session) RunningDispatches() []RunningDispatch {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.dispatches) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(s.dispatches))
+	for k := range s.dispatches {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]RunningDispatch, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, s.dispatches[k])
+	}
+	return out
 }
 
 // unregisterChild 注销（SendWait 收尾后调用——正常结束 / 取消 / panic 三条

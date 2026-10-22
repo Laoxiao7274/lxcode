@@ -77,7 +77,7 @@ import java.util.UUID
 
 /** 连接页：本机 + 远程列表 + 添加 + （离线时）后端不可达错误条。 */
 @Composable
-fun ConnectionsScreen(state: MockAppState) {
+fun ConnectionsScreen(state: AppState) {
     Column(
         Modifier
             .fillMaxSize()
@@ -91,13 +91,8 @@ fun ConnectionsScreen(state: MockAppState) {
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(Lx.space.s4),
                 ) {
-                    // ===== mock 调试控件（BuildConfig.DEBUG 门控：release 构建不出现）=====
-                    // 「模拟在线」「动效」都是原型调试位；「组件展示」是组件库调试入口。
-                    // 真实后端开关不在这里——它是功能（见下方 RealBackendSection），保留。
+                    // 「组件展示」是组件库调试入口（保留）。
                     if (BuildConfig.DEBUG) {
-                        MockSwitch("模拟在线", state.online, onCheckedChange = { state.online = it })
-                        // 动效调试开关（原型用）：关掉 = 模拟系统「减少动态效果」（静态到终态）
-                        MockSwitch("动效", state.motionOn, onCheckedChange = { state.motionOn = it })
                         // 调试入口：组件库展示页（开发期用；纯远控壳不进底部导航，从这里进）
                         Text(
                             text = "组件展示",
@@ -123,15 +118,6 @@ fun ConnectionsScreen(state: MockAppState) {
                 .padding(Lx.space.s12),
             verticalArrangement = Arrangement.spacedBy(Lx.space.s10),
         ) {
-            // 断线错误条（DEBUG 的「模拟在线」开关才可能触发；正式包恒在线，
-            // 真实断线的错误条在 RealBackendSection 里）：
-            LxCollapseAway(
-                visible = BuildConfig.DEBUG && !state.online,
-                enter = androidx.compose.animation.EnterTransition.None,
-            ) {
-                UnreachableBar(onRetry = { state.online = true })
-            }
-
             // 扫码配对入口（纯远控壳：配对不再是底部导航 tab，改从连接页进入）
             LxListItem(
                 title = "扫码配对",
@@ -257,12 +243,12 @@ private fun UnreachableBar(onRetry: () -> Unit, message: String? = null) {
  * 「真实后端」调试区：开关 + 地址输入 + 实时连接状态 + 失败重试条。
  *
  * 开：连 `addr`（默认 127.0.0.1:7789）→ hello 握手 → 会话列表换真实数据；
- * 关：断开并回到连接引导态（mock 假数据已随原型退役，无第三条路径）。
+ * 关：断开并回到连接引导态。
  * 断线复用 [UnreachableBar]，
  * 重试按钮真实重连（重发握手）。
  */
 @Composable
-private fun RealBackendSection(state: MockAppState) {
+private fun RealBackendSection(state: AppState) {
     val real = state.real
     Column(
         Modifier
@@ -286,7 +272,7 @@ private fun RealBackendSection(state: MockAppState) {
                     color = Lx.colors.FgFaint,
                 )
             }
-            MockSwitch(
+            LabelSwitch(
                 label = "",
                 checked = state.realOn,
                 onCheckedChange = { on ->
@@ -355,7 +341,7 @@ private fun RealBackendSection(state: MockAppState) {
             )
         }
 
-        // 断线错误条（真实模式专用；mock 断线错误条在页首，两者互斥不并存）
+        // 断线错误条（真实模式专用）
         if (state.realOn && real.phase == com.moyunteng.lxcode.remote.net.RealPhase.Failed) {
             UnreachableBar(
                 onRetry = { real.retry(state.realAddr, state.realToken) },
@@ -503,7 +489,7 @@ private fun DeleteBtn(onConfirm: () -> Unit) {
 
 /** 连接表单页：地址 + 名称 + Token 三字段 + 校验 + 取消/保存（不可保存时禁用）。 */
 @Composable
-fun ConnectionFormScreen(state: MockAppState, fromScan: Boolean) {
+fun ConnectionFormScreen(state: AppState, fromScan: Boolean) {
     val context = LocalContext.current
     val draft = state.editing
     if (draft == null) {
@@ -682,7 +668,7 @@ private fun FormField(
  * 失败 toast（人话原因）。启动时的自动检查在 AppRoot（只有「有新版」出横幅）。
  */
 @Composable
-private fun UpdateCheckItem(state: MockAppState) {
+private fun UpdateCheckItem(state: AppState) {
     val context = LocalContext.current
     fun toast(msg: String) = Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
     val scope = rememberCoroutineScope()

@@ -79,12 +79,10 @@ data class ConnDraft(
  * 全应用状态 —— 页面共享的可变状态（连接列表、当前连接、断线开关、筛选）。
  *
  * 连接列表经 [ConnStore] 持久化（SharedPreferences JSON 数组；addr/token/name 逐条落盘，
- * App 重启保留）：保存/编辑/删除/选当前即写回；没有任何存档时按构建类型播种——
- * DEBUG 播 mock 列表（原型数据迁移，调试区控件同源），release 只播本机条目。
- * 连接信息是 app 唯一持久化的业务状态（用户拍板的远端化原则）；mock 数据已随
- * 原型退役（DEBUG 下播种的就是原 mock 连接条目）。
+ * App 重启保留）：保存/编辑/删除/选当前即写回；没有任何存档时只播本机条目。
+ * 连接信息是 app 唯一持久化的业务状态（用户拍板的远端化原则）。
  */
-class MockAppState(private val store: ConnStore? = null) {
+class AppState(private val store: ConnStore? = null) {
     var route by mutableStateOf<Route>(Route.Sessions)
 
     /** 连接列表（含本机；可增删改；每次变更落盘）。 */
@@ -95,13 +93,10 @@ class MockAppState(private val store: ConnStore? = null) {
     /** 当前连接 id（真实模式「连接」到哪条；落盘，重启保留）。 */
     var activeConnId by mutableStateOf(store?.loadActiveId() ?: "local")
 
-    /** 首次启动（无存档）的播种列表：只有本机一条——mock 假连接已随原型退役，
-     *  连接列表是用户自己的存档（ConnStore 持久化），不播种编造的远程条目。 */
+    /** 首次启动（无存档）的播种列表：只有本机一条——连接列表是用户自己的存档
+     *  （ConnStore 持久化），不播种编造的远程条目。 */
     private fun seedConns(): List<BackendConn> =
         listOf(BackendConn("local", "本机", LOCAL_ADDR, "", local = true))
-
-    /** mock 断线开关：true = 在线（顶栏绿点），false = 离线（灰点 + 连接页错误条）。 */
-    var online by mutableStateOf(true)
 
     /** 会话列表搜索串。 */
     var query by mutableStateOf("")
@@ -120,7 +115,7 @@ class MockAppState(private val store: ConnStore? = null) {
     var scanError by mutableStateOf<String?>(null)
 
     /**
-     * 应用一条配对载荷（真扫码 / mock 扫码 / deep-link 三条入口共用）。
+     * 应用一条配对载荷（真扫码 / deep-link 两条入口共用）。
      *
      * 解析 `lxcode://pair?addr=…&token=…&name=…`：
      *  * 成功 → 预填连接表单（新建草稿）并跳表单页，返回 true；
@@ -147,18 +142,8 @@ class MockAppState(private val store: ConnStore? = null) {
     }
 
     /**
-     * 「动效」调试开关（原型用）。
-     *
-     * `true` = 跟随系统动画缩放；`false` = 强制静态（模拟系统「减少动态效果」），
-     * 用来截取 reduced-motion 下的静态态做对照。真正的系统开关由
-     * [com.moyunteng.lxcode.design.motion.LxMotionGate] 读
-     * `Settings.Global.ANIMATOR_DURATION_SCALE`，两者取严。
-     */
-    var motionOn by mutableStateOf(true)
-
-    /**
      * 「真实后端」开关：开 = 各页面从 [real] 取真实数据（WS JSON-RPC 连后端）；
-     * 关 = 会话页显示连接引导态（mock 假数据已随原型退役，无第三条路径）。
+     * 关 = 会话页显示连接引导态。
      * 写入一律走 [writeRealOn]（开关即落盘）；启动恢复见 [restoreRealConnection]。
      */
     var realOn by mutableStateOf(false)
@@ -216,8 +201,7 @@ class MockAppState(private val store: ConnStore? = null) {
      * ——不展示就是「点了安装没反应」的静默失败（对齐桌面更新脚本教训）。
      */
     var installHint by mutableStateOf<String?>(null)
-    /** 顶栏连接药丸的在线位：跟 WS 实际连接态（未连接 = 灰点——不再有 mock 的
-     *  「模拟在线」在线位）。 */
+    /** 顶栏连接药丸的在线位：跟 WS 实际连接态（未连接 = 灰点）。 */
     fun pillOnline(): Boolean = realOn && real.connected
 
     /**
@@ -337,7 +321,7 @@ class MockAppState(private val store: ConnStore? = null) {
 /** 底部导航项。 */
 private data class NavItem(val route: Route, val label: String, val icon: ImageVector)
 
-private const val TAG = "MockAppState"
+private const val TAG = "AppState"
 
 // 纯远控壳：底部导航只留 会话 + 连接 两个 tab；「配对」改为连接页入口，
 // 「展示」（组件库调试页）改为连接页调试区入口（Route 保留，导航不再直达）。
@@ -356,10 +340,10 @@ private val NAV_ITEMS = listOf(
 @Composable
 fun AppRoot(pairUri: String? = null, onPairUriConsumed: () -> Unit = {}) {
     val context = LocalContext.current
-    // 应用 Context 先注入更新器（MockAppState 构造时要建 ApkDownloader——
+    // 应用 Context 先注入更新器（AppState 构造时要建 ApkDownloader——
     // FileProvider URI 生成依赖它，见 ApkDownloader.AppContextHolder）
     com.moyunteng.lxcode.remote.update.AppContextHolder.init(context.applicationContext)
-    val state = remember { MockAppState(ConnStore(context.applicationContext)) }
+    val state = remember { AppState(ConnStore(context.applicationContext)) }
 
     // 下载器状态 → Compose 可观察（横幅进度/就绪/失败三态渲染）
     LaunchedEffect(state.updater) {
@@ -375,8 +359,8 @@ fun AppRoot(pairUri: String? = null, onPairUriConsumed: () -> Unit = {}) {
 
     // 连接持久化（恢复）：realOn 落盘 + 凭证/列表/activeConnId 早已落盘，重启后
     // 这里按存档自动恢复真实模式——重进 app 不用每次手动点连接。放 LaunchedEffect
-    // 而非 MockAppState 构造函数：构造时发网络连接与 AppContextHolder.init 时序耦合。
-    // 恢复条件与失败语义见 MockAppState.restoreRealConnection。
+    // 而非 AppState 构造函数：构造时发网络连接与 AppContextHolder.init 时序耦合。
+    // 恢复条件与失败语义见 AppState.restoreRealConnection。
     LaunchedEffect(Unit) {
         state.restoreRealConnection()
     }
@@ -426,7 +410,7 @@ fun AppRoot(pairUri: String? = null, onPairUriConsumed: () -> Unit = {}) {
     }
 
     // 返回键路由栈（BackHandler 链）：① 弹层/菜单开着 → 先关弹层（各页面注册的
-    // [MockAppState.backInterceptor]）；② 详情页回上级（线程→会话列表、表单/扫码/展示→连接）；
+    // [AppState.backInterceptor]）；② 详情页回上级（线程→会话列表、表单/扫码/展示→连接）；
     // ③ 连接 tab → 会话 tab；④ 首页（会话列表）不拦截 → 交给系统（退出）。
     // 真实模式连接中返回只是退页面：不断开 WS（连接生命周期归「真实后端」开关管）。
     val backEnabled = state.route !is Route.Sessions || state.backInterceptor != null
@@ -479,9 +463,8 @@ fun AppRoot(pairUri: String? = null, onPairUriConsumed: () -> Unit = {}) {
     }
 
     LxTheme {
-        // 动效门控：跟随系统动画缩放（ANIMATOR_DURATION_SCALE = 0 → 静态），
-        // 原型里的「动效」开关（[MockAppState.motionOn]）关掉时强制静态。
-        LxMotionGate(override = if (state.motionOn) null else false) {
+        // 动效门控：跟随系统动画缩放（ANIMATOR_DURATION_SCALE = 0 → 静态）。
+        LxMotionGate {
             Box(
                 Modifier
                     .fillMaxSize()
@@ -518,7 +501,7 @@ fun AppRoot(pairUri: String? = null, onPairUriConsumed: () -> Unit = {}) {
 
 /** 底部导航栏（两个 tab：会话/连接；发丝上边框 + 当前项近黑字）。 */
 @Composable
-private fun BottomNav(state: MockAppState) {
+private fun BottomNav(state: AppState) {
     Row(
         Modifier
             .fillMaxWidth()
