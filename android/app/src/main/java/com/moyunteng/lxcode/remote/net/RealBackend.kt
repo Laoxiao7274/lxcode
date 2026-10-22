@@ -194,6 +194,13 @@ class RealBackend {
     var childHistoryVersion by mutableStateOf(0)
         private set
 
+    /** 子会话历史**装载中**（openChildSession 发出 chat.history 到应答/失败之间）：
+     *  ChildThreadView 的加载态依据——视图打开后异步拉历史，装载期间 childBlocks
+     *  为空，没有这条 UI 会渲染成全空白页（问题：打开子会话没有 loading 指示）。
+     *  失败（错误块已插入）与装载完成即复位。 */
+    var childHistoryLoading by mutableStateOf(false)
+        private set
+
     /** 子会话视图的流式内容版本（同 streamVersion 的语义，child 块追加时 +1）。 */
     var childStreamVersion by mutableStateOf(0)
         private set
@@ -509,10 +516,11 @@ class RealBackend {
     }
 
     /** 亮屏即时重连（MainActivity onStart/onResume 调）：掉线且非用户主动断开时
-     *  立即重连，不等自动重连的退避定时器。未进真实模式（从未连过）不动作。 */
+     *  立即重连，不等自动重连的退避定时器。未进真实模式（从未连过）不动作。
+     *  走 [connect] 完整语义（重置 userClosed/退避 + newWebSocket 重建）。 */
     fun reconnectIfDown() {
         if (phase == RealPhase.Offline) return
-        client.reconnectIfDown()
+        connect(addr, token)
     }
 
     /** 重试（断线 UI 的按钮；addr 传当前输入框地址——改了地址点重试应连新地址）。 */
@@ -638,7 +646,9 @@ class RealBackend {
         childBusy = false
         childHistoryVersion = 0
         childStreamVersion = 0
+        childHistoryLoading = true
         client.call("chat.history", JSONObject().put("session_id", childId)) { err, result ->
+            childHistoryLoading = false
             if (err != null) {
                 Log.w(TAG, "chat.history(child $childId) 失败: ${err.optString("message")}")
                 childBlocks.add(ThreadBlock.Error("子会话历史加载失败: ${err.optString("message")}"))
@@ -659,6 +669,7 @@ class RealBackend {
         childBusy = false
         childHistoryVersion = 0
         childStreamVersion = 0
+        childHistoryLoading = false
         childViewTitle = ""
     }
 

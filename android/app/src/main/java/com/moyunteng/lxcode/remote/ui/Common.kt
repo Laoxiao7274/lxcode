@@ -206,9 +206,10 @@ fun CodeBlock(text: String, modifier: Modifier = Modifier) {
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(Lx.radius.r8))
+            .clip(RoundedCornerShape(Lx.radius.r10))
             .background(LxColors.CodeBg)
-            .padding(Lx.space.s8),
+            // 对齐 thread.css 代码围栏（.tool-result 同款）：padding 10px 14px
+            .padding(horizontal = Lx.space.s12, vertical = Lx.space.s10),
     ) {
         Text(
             text = text,

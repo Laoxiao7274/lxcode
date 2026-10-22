@@ -83,6 +83,17 @@ class LxWsClient(
 ) {
     private val main = Handler(Looper.getMainLooper())
 
+    /** delta 合帧器：chat.delta 同键聚合、拍末一次投递（非 delta 事件先冲刷——保序）。
+     *  emit 语义与合帧前的 eventListener.onEvent 完全一致（method/params 直通）。 */
+    private val coalescer = DeltaCoalescer(
+        emitRaw = { m, p -> eventListener.onEvent(m, p) },
+        schedule = { flush ->
+            val r = Runnable { flush() }
+            main.postDelayed(r, DELTA_COALESCE_MS)
+            return@DeltaCoalescer { main.removeCallbacks(r) }
+        },
+    )
+
     /** 局域网/本机直连用：默认 OkHttp（系统信任链，行为不变）。 */
     private val client = OkHttpClient.Builder()
         .connectTimeout(5, TimeUnit.SECONDS)
@@ -257,9 +268,24 @@ class LxWsClient(
         currentAddr = addr
         currentToken = token
         closeQuietly()
-        val req = request(addr, token) ?: return // 非法地址：失败态已在 request 里上报
+        val req = request(addr, token) ?: run {
+            // request 返回 null（地址不合法）时失败态已上报，但**不能就此永久卡死**：
+            // 自动重连路径里就此 return = 没有任何下一次重试（UI 永远停在失败态，
+            // 只能手动重试）。继续排退避重试——地址不合法重试也无害（失败态重复
+            // 上报），而暂时性故障（DNS 未就绪等）靠它自愈。
+            scheduleReconnect(addr, token)
+            return
+        }
         val ws = clientFor(addr).newWebSocket(req, listener(addr, token))
         wsRef.set(ws)
+    }
+
+    /**
+     * 自动重连的统一入口：走 [connect] 的完整语义（重置 userClosed/退避、
+     * 重新发起一次 newWebSocket——每次重试都是新的一次「明确要连」）。
+     */
+    private fun connectAuto(addr: String, token: String) {
+        connect(addr, token)
     }
 
     /** 关闭连接（幂等；用户显式断开 = 不自动重连）。 */
@@ -267,6 +293,9 @@ class LxWsClient(
         userClosed = true
         stopHeartbeat()
         stopReconnect()
+        // 清账：挂起的 delta 没有投递对象了（断连后再投只会把半截文本归约进
+        // 旧状态）。
+        coalescer.reset()
         closeQuietly()
     }
 
@@ -370,7 +399,10 @@ class LxWsClient(
         Log.i(TAG, "将在 ${delay}ms 后重连 $addr")
         val r = Runnable {
             reconnectRunnable = null
-            if (!userClosed && !connected) connectOnce(addr, token)
+            // 必须走 connectAuto（= connect 的完整语义），不能直接 connectOnce：
+            // ① 重连自失败后的下一轮要重置 userClosed/退避（connectOnce 不清账）；
+            // ② connectOnce 复用当前 wsRef 关联的客户端形态，失败后的重试要重建。
+            if (!userClosed && !connected) connectAuto(addr, token)
         }
         reconnectRunnable = r
         main.postDelayed(r, delay)
@@ -383,14 +415,15 @@ class LxWsClient(
 
     /**
      * 亮屏即时重连（MainActivity onStart/onResume 调）：掉线且用户没显式断开时
-     * 立即 connectOnce，不等退避定时器走完——退避最长 30s，回手机看一眼要等
+     * 立即重连，不等退避定时器走完——退避最长 30s，回手机看一眼要等
      * 半分钟才重连是不可接受的。已连接 / 用户主动断开（close）时不动作。
      */
     fun reconnectIfDown() {
         if (userClosed || connected) return
-        Log.i(TAG, "亮屏重连：立即 connectOnce $currentAddr（不等退避）")
+        Log.i(TAG, "亮屏重连：立即 connect $currentAddr（不等退避）")
         stopReconnect()
-        connectOnce(currentAddr, currentToken)
+        // 同 scheduleReconnect：走 connect 完整语义（重置 userClosed/退避）。
+        connect(currentAddr, currentToken)
     }
 
     /**
@@ -439,8 +472,10 @@ class LxWsClient(
         if (!frame.has("id")) {
             val method = frame.optString("method")
             val params = frame.optJSONObject("params") ?: JSONObject()
-            Log.d(TAG, "event $method ${params.toString().take(200)}")
-            main.post { eventListener.onEvent(method, params) }
+            if (Log.isLoggable(TAG, Log.DEBUG)) {
+                Log.d(TAG, "event $method ${params.toString().take(200)}")
+            }
+            main.post { coalescer.emit(method, params) }
             return
         }
         val id = frame.optInt("id", -1)

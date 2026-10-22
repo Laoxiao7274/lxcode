@@ -27,6 +27,9 @@ object LxSpace {
     /** 12dp —— 桌面端 12px：卡片内边距、区块内间距 */
     val s12 = 12.dp
 
+    /** 14dp —— 桌面端 14px：正文段距（.md-para 的 1em）、引用左内距（.md-quote padding-left） */
+    val s14 = 14.dp
+
     /** 16dp —— 桌面端 16px：区块之间的间距 */
     val s16 = 16.dp
 

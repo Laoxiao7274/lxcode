@@ -80,9 +80,11 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.distinctUntilChanged
 import com.moyunteng.lxcode.design.component.LxConfirmDialog
 import com.moyunteng.lxcode.design.component.LxIconButton
@@ -109,6 +111,7 @@ import com.moyunteng.lxcode.remote.model.modelIdOfKey
 import com.moyunteng.lxcode.remote.ui.md.MdBlock
 import com.moyunteng.lxcode.remote.ui.md.MdSpan
 import com.moyunteng.lxcode.remote.ui.md.parseMarkdown
+import com.moyunteng.lxcode.remote.ui.md.splitCommitted
 
 /** 对话线程页。 */
 @Composable
@@ -231,24 +234,27 @@ fun ThreadScreen(state: AppState, sessionId: String) {
             sticky = true
         }
     }
-    // 流式期间内容增长（delta 追加让最后一块变高、块数不变）：sticky 时跟随。
-    // 用收敛式补滚（scrollBy 差值）而不是 scrollToItem——避免每条 delta 都把视口
-    // 猛跳一次，也天然兼容超高块（scrollToItem 对它只做顶对齐）。
-    // 先等一帧再量：effect 触发时新文本往往还没量高（layoutInfo 是旧的），
-    // 直接量会得到 delta≈0 而漏滚（真机复测抓到过：流式停在新块开头）。
-    LaunchedEffect(real.streamVersion) {
-        if (real.streamVersion > 0 && sticky) {
-            repeat(3) {
-                withFrameNanos { }
-                if (!listState.canScrollForward) return@LaunchedEffect
-                val info = listState.layoutInfo
-                val last = info.visibleItemsInfo.lastOrNull { it.index == lastBlockItemIndex() }
-                // 真底 = viewportEndOffset - afterContentPadding（含底部输入区 padding，见 bottomAligned）
-                val delta = last?.let {
-                    it.offset + it.size - (info.viewportEndOffset - info.afterContentPadding)
-                } ?: 0
-                if (delta > 0) listState.scrollBy(delta.toFloat())
-            }
+    // 流式期间内容增长（delta 追加让最后一块变高、块数不变）：sticky 时**逐帧**
+    // 收敛式补滚——挂到打字机 reveal 的推进节奏（每帧一次，跟随「已显示高度」，
+    // 不是按原始 delta 速率触发：合帧前每条 delta 重启一次 LaunchedEffect、
+    // 一帧可达十几次，才是「对话好急」的主力）。用 scrollBy 差值而不是
+    // scrollToItem——避免猛跳，也天然兼容超高块；layoutInfo 量到的就是
+    // reveal.text 已渲染的高度，跟随的天然是已显示内容。
+    // 先等一帧再量：循环首帧时新文本往往还没量高，直接量会得 delta≈0 漏滚
+    // （真机复测抓到过：流式停在新块开头）。
+    LaunchedEffect(running) {
+        if (!running) return@LaunchedEffect
+        while (isActive) {
+            withFrameNanos { }
+            if (!sticky) continue
+            if (!listState.canScrollForward) continue
+            val info = listState.layoutInfo
+            val last = info.visibleItemsInfo.lastOrNull { it.index == lastBlockItemIndex() }
+            // 真底 = viewportEndOffset - afterContentPadding（含底部输入区 padding，见 bottomAligned）
+            val delta = last?.let {
+                it.offset + it.size - (info.viewportEndOffset - info.afterContentPadding)
+            } ?: 0
+            if (delta > 0) listState.scrollBy(delta.toFloat())
         }
     }
     LaunchedEffect(imeHeight) {
@@ -374,10 +380,14 @@ fun ThreadScreen(state: AppState, sessionId: String) {
             LazyColumn(
                 Modifier
                     .fillMaxSize()
-                    .padding(horizontal = Lx.space.s12),
+                    // 列两侧留白：桌面端 thread 列 padding 0 24px——手机窄屏取 16dp
+                    // （原 12dp 偏挤，正文几乎贴边）
+                    .padding(horizontal = Lx.space.s16),
                 state = listState,
                 contentPadding = PaddingValues(top = Lx.space.s8, bottom = composerHeightDp),
-                verticalArrangement = Arrangement.spacedBy(Lx.space.s10),
+                // 消息块之间的间距：对齐桌面端 .msg { margin-bottom: 18px }——
+                // 原值 10dp 是「挤」的主力之一（块与块贴在一起没呼吸感）
+                verticalArrangement = Arrangement.spacedBy(18.dp),
             ) {
                 // 头部：离线提示（断网打开会话时显示缓存 + 提示条——缓存是视图加速，
                 // 远端才是事实源；重连后远端 tail 装载会覆盖缓存段）。
@@ -540,8 +550,7 @@ fun ThreadScreen(state: AppState, sessionId: String) {
                         .padding(horizontal = Lx.space.s12),
                 ) {
                     Composer(state, real = real)
-                }
-            }
+                }            }
         }
     }
 
@@ -689,21 +698,34 @@ private fun AssistantBlock(block: ThreadBlock.Assistant, busy: Boolean, stableKe
     // key 稳定时 text 增长只推进循环（revealed 续浇），块定格（streaming=false）整块呈现。
     val reveal = rememberStreamReveal(block.content, enabled = block.streaming, key = stableKey)
 
-    Column(verticalArrangement = Arrangement.spacedBy(Lx.space.s6)) {
+    Column(verticalArrangement = Arrangement.spacedBy(Lx.space.s8)) {
         if (!block.reasoning.isNullOrBlank()) {
             ReasoningRow(text = block.reasoning, elapsedMs = block.reasoningMs, shimmer = busy)
         }
         if (block.content.isNotEmpty()) {
+            // 两段渲染（对齐桌面端 AnswerBody 的 committed/tail 语义）：已显示文本
+            // 切成「已定稿前缀 committed + 尾段 tail」（splitCommitted 纯函数，切点
+            // 回退避开未闭合的围栏/列表/引用/表格——块序列与整段解析逐块一致）。
+            // committed 的 remember 按字符串命中：committed 只在整行完成时前进
+            // （远低于帧率），流式期间每帧真正重解析的只有 tail（≤2 行）——每帧
+            // 排版成本从 O(整块) 降到 O(2 行)。
+            // 积压超阈值（REVEAL_MAX_LAG = 4000 字，桌面端同参）打字机整块对齐，
+            // 两段渲染天然兼容（对齐瞬间 committed=空、tail=全文，单段形态）。
+            val split = remember(reveal.text) { splitCommitted(reveal.text) }
             Row(verticalAlignment = Alignment.Bottom) {
-                // Markdown 渲染（自写子集，见 md/MarkdownParser.kt）：解析在**已显示
-                // 文本**（reveal.text）上进行——打字机揭示到哪，markdown 就渲染到哪，
-                // 两者天然对齐；流式期间每帧重解析整块的已显示前缀（纯字符串扫描，
-                // 微秒级，实测瓶颈在 layout 不在解析）。历史块（streaming=false）
-                // reveal.text = 全文，同样路径一次渲染。
-                MarkdownBody(
-                    text = reveal.text,
-                    modifier = Modifier.weight(1f),
-                )
+                Column(Modifier.weight(1f)) {
+                    // committed 为空串时跳过（短文本 ≤2 行就是单段形态，与原行为一致）
+                    if (split.committed.isNotEmpty()) {
+                        MarkdownBody(
+                            text = split.committed,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                    MarkdownBody(
+                        text = split.tail,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
                 if (reveal.revealing) {
                     // 光标：caret-blink 1s steps(1)（硬切）
                     Box(
@@ -1431,23 +1453,27 @@ private fun mdBodyStyle(): TextStyle = Lx.type.Body.copy(
  * 链接（行内 [text](url) 与裸 URL）走 LinkAnnotation.Url——点击 ACTION_VIEW，
  * 无浏览器时系统弹「没有应用」（与桌面端容错一致，不额外拦截）。
  *
- * 与打字机协同：[text] 是**已显示文本**（reveal.text），流式期间每帧重解析
- * （remember(text)——文本没变不重算；delta 驱动的帧率下是纯字符串扫描，开销微秒级）。
+ * 与打字机协同：[text] 是**已显示文本**（两段渲染的 committed 或 tail，见
+ * AssistantBlock）——committed 只在整行完成时变化（remember 恒命中，零解析），
+ * 每帧重解析的只有 tail；解析本身 remember(text)（文本没变不重算）。
  */
 @Composable
 private fun MarkdownBody(text: String, modifier: Modifier = Modifier) {
     val blocks = remember(text) { parseMarkdown(text) }
     val body = mdBodyStyle()
-    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(Lx.space.s6)) {
+    // 块间呼吸感（对齐桌面端 thread.css markdown 块节奏：列表 margin 12px、
+    // 引用 16px、表格 12~16px——手机窄屏按比例取 12dp 一档）；段间空行的
+    // 段距单独给（.md-para margin-top: 1em ≈ 14px，手机取 14dp）。
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(Lx.space.s12)) {
         blocks.forEach { block ->
             when (block) {
                 is MdBlock.Paragraph -> MdText(
                     block.spans,
                     style = body,
                     color = Lx.colors.Fg,
-                    // 空行后的段落给段距（桌面端 .md-para { margin-top: 1em }——
-                    // 块间呼吸感是 DSH markdown 规范「好看」的核心）
-                    modifier = if (block.gap) Modifier.padding(top = Lx.space.s10) else Modifier,
+                    // 空行后的段落给段距（桌面端 .md-para { margin-top: 1em }，
+                    // 正文 14px → 1em = 14px；手机窄屏取同值 14dp）
+                    modifier = if (block.gap) Modifier.padding(top = 14.dp) else Modifier,
                 )
                 is MdBlock.Heading -> MdText(
                     spans = block.spans,
@@ -1462,9 +1488,10 @@ private fun MarkdownBody(text: String, modifier: Modifier = Modifier) {
                 is MdBlock.CodeBlock -> Box(
                     Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(Lx.radius.r8))
+                        .clip(RoundedCornerShape(Lx.radius.r10))
                         .background(LxColors.CodeBg)
-                        .padding(Lx.space.s8),
+                        // 桌面端 .tool-result（代码围栏同款）：padding 10px 14px
+                        .padding(horizontal = Lx.space.s12, vertical = Lx.space.s10),
                 ) {
                     Text(
                         text = block.code,
@@ -1484,7 +1511,7 @@ private fun MarkdownBody(text: String, modifier: Modifier = Modifier) {
                         .height(0.5.dp)
                         .background(Lx.colors.BorderStrong),
                 )
-                is MdBlock.Listing -> Column(verticalArrangement = Arrangement.spacedBy(Lx.space.s2)) {
+                is MdBlock.Listing -> Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
                     block.items.forEachIndexed { idx, item ->
                         Row(
                             // 嵌套缩进：每级 14dp（桌面端 .md-li { padding-left: level*14 }）
@@ -1519,7 +1546,7 @@ private fun MarkdownBody(text: String, modifier: Modifier = Modifier) {
                                     size = Size(2.dp.toPx(), size.height),
                                 )
                             }
-                            .padding(start = Lx.space.s10),
+                            .padding(start = Lx.space.s14),
                         verticalArrangement = Arrangement.spacedBy(Lx.space.s2),
                     ) {
                         block.paragraphs.forEach { p ->
@@ -1556,8 +1583,10 @@ private fun MdTable(block: MdBlock.Table) {
     val headerBg = LxColors.CodeBg
     val body = mdBodyStyle().copy(lineHeight = (Lx.type.Size13.value * 1.5f).sp)
     val headerStyle = body.copy(fontWeight = FontWeight.Bold)
-    val padH = Lx.space.s8
-    val padV = Lx.space.s4
+    // 单元格内距（桌面端 .md-table th/td { padding: 9px 14px }，首末列去侧距——
+    // 手机窄屏列宽金贵，横向减到 10dp）
+    val padH = 10.dp
+    val padV = 9.dp
     val ncols = block.header.size
     // 网格几何：列分隔 x 坐标 / 行分隔 y 坐标 / 总宽高。measure 期写入、
     // draw 期读取（draw 不反哺 measure，无重排环；首帧 draw 前 measure 已完成）。
@@ -1666,7 +1695,17 @@ private fun MdText(
     val mono = Lx.type.Mono
     val codeBg = Lx.colors.BorderSoft
     val annotated = remember(spans, mono, codeBg) { spansToAnnotatedString(spans, mono, codeBg) }
-    Text(text = annotated, style = style, color = color, modifier = modifier)
+    // 行高：桌面端 markdown 规范 14px/1.71 已在 style 里给足——这里补
+    // lineHeight 缺省兜底（lineHeight 未指定时 Compose 用字体默认 ≈1.2，
+    // 中文正文会显挤；调用方都传了 mdBodyStyle，此兜底只防御其他入口）
+    Text(
+        text = annotated,
+        style = if (style.lineHeight == TextUnit.Unspecified) {
+            style.copy(lineHeight = (style.fontSize.value * 1.45f).sp)
+        } else style,
+        color = color,
+        modifier = modifier,
+    )
 }
 
 /**
@@ -1850,20 +1889,21 @@ private fun ChildThreadView(state: AppState) {
     LaunchedEffect(real.childBlocks.size) {
         if (real.childBlocks.isNotEmpty() && sticky) snapToChildBottom()
     }
-    // 流式期间内容增长（delta 追加让最后一块变高）：sticky 时收敛式补滚——
-    // 用 scrollBy 差值而不是 scrollToItem（每条 delta 猛跳一次观感差；超高块
-    // 兼容同主会话）。先等一帧再量（effect 触发时新文本往往还没量高，直接量
-    // 会得 delta≈0 漏滚——主会话真机复测抓到过）。
-    LaunchedEffect(real.childStreamVersion) {
-        if (real.childStreamVersion > 0 && sticky) {
-            repeat(3) {
-                withFrameNanos { }
-                if (!listState.canScrollForward) return@LaunchedEffect
-                val info = listState.layoutInfo
-                val last = info.visibleItemsInfo.lastOrNull { it.index == lastItemIndex() }
-                val delta = last?.let { it.offset + it.size - (info.viewportEndOffset - info.afterContentPadding) } ?: 0
-                if (delta > 0) listState.scrollBy(delta.toFloat())
-            }
+    // 流式期间内容增长（delta 追加让最后一块变高）：sticky 时**逐帧**收敛式补滚
+    // ——挂到打字机 reveal 的推进节奏（每帧一次，跟随「已显示高度」；不再按
+    // childStreamVersion 触发：合帧前每条 delta 重启一次 LaunchedEffect，才是
+    // 子会话页「滚动框发急」的主力）。用 scrollBy 差值而不是 scrollToItem
+    // （每帧猛跳观感差；超高块兼容同主会话）。
+    LaunchedEffect(real.childBusy) {
+        if (!real.childBusy) return@LaunchedEffect
+        while (isActive) {
+            withFrameNanos { }
+            if (!sticky) continue
+            if (!listState.canScrollForward) continue
+            val info = listState.layoutInfo
+            val last = info.visibleItemsInfo.lastOrNull { it.index == lastItemIndex() }
+            val delta = last?.let { it.offset + it.size - (info.viewportEndOffset - info.afterContentPadding) } ?: 0
+            if (delta > 0) listState.scrollBy(delta.toFloat())
         }
     }
     // 「回到底部」的轻量入口：用户翻离底部（sticky=false）时浮出，点击回底并恢复跟随
@@ -1944,11 +1984,35 @@ private fun ChildThreadView(state: AppState) {
         LazyColumn(
             Modifier
                 .fillMaxSize()
-                .padding(horizontal = Lx.space.s12),
+                // 子会话列两侧留白：与主会话同节奏（16dp）
+                .padding(horizontal = Lx.space.s16),
             state = listState,
             contentPadding = PaddingValues(top = Lx.space.s8, bottom = Lx.space.s16),
-            verticalArrangement = Arrangement.spacedBy(Lx.space.s10),
+            // 子会话块间距：与主会话同节奏（桌面端 .msg margin-bottom 18px）
+            verticalArrangement = Arrangement.spacedBy(18.dp),
         ) {
+            // 历史装载中（openChildSession 异步拉 chat.history）：空态也要有可见的
+            // 「在加载」信号——不显示就是打开后整页空白（用户报的问题 1）。样式对齐
+            // 主会话分页状态行（TypingDots + 文案）。
+            if (real.childHistoryLoading && real.childBlocks.isEmpty()) {
+                item(key = "$childId:loading") {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = Lx.space.s16),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        TypingDots(dotSize = 5.dp, gap = 3.dp)
+                        Text(
+                            text = "正在加载子会话…",
+                            style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size11_5),
+                            color = Lx.colors.FgMuted,
+                            modifier = Modifier.padding(start = Lx.space.s4),
+                        )
+                    }
+                }
+            }
             val blocks: List<ThreadBlock> = real.childBlocks
             itemsIndexed(blocks, key = { i, _ -> "$childId:$i" }) { i, block ->
                 Box(Modifier.lxEnter(spec = LxEnterSpec.BlockIn, delayMillis = 0, key = i)) {
