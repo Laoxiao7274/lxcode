@@ -31,6 +31,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -41,9 +42,12 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Checklist
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -107,6 +111,7 @@ import com.moyunteng.lxcode.design.token.LxColors
 import com.moyunteng.lxcode.remote.model.ThreadBlock
 import com.moyunteng.lxcode.remote.model.canOpenChild
 import com.moyunteng.lxcode.remote.model.formatMs
+import com.moyunteng.lxcode.remote.model.modelDisplayLabel
 import com.moyunteng.lxcode.remote.model.modelIdOfKey
 import com.moyunteng.lxcode.remote.ui.md.MdBlock
 import com.moyunteng.lxcode.remote.ui.md.MdSpan
@@ -1825,6 +1830,10 @@ private fun ChildThreadView(state: AppState) {
     val real = state.real
     val childId = real.viewChildSessionId ?: return
 
+    // ===== 子会话输入框（2026-12 五项能力补齐 ①）：空闲可用，发送 = chat.send
+    // 子会话 id（对子 Agent 直发续跑指令）；busy 时禁用 + 停止钮可见（③ 合并）。
+    var childInput by remember { mutableStateOf("") }
+
     // 返回键：先回主会话（消费），不退会话页
     BackHandler { real.closeChildSession() }
 
@@ -1978,12 +1987,53 @@ private fun ChildThreadView(state: AppState) {
                     color = LxColors.AmberInk,
                 )
             }
+            // 模型选择入口（②）：药丸形态（复用主会话 ModelPill），busy 时禁用
+            //（跑着的一轮已经用定了模型——改了对本轮无效，禁用比「看似生效」诚实）。
+            // 数据源/切法与主会话同源（modelGroups / changeSessionModelFor(childId)）。
+            var childModelMenuOpen by remember { mutableStateOf(false) }
+            Box {
+                ModelPill(
+                    label = modelDisplayLabel(real.allModels, real.childModelId.ifBlank { real.defaultModelId }),
+                    effortDim = null,
+                    expanded = childModelMenuOpen && !real.childBusy,
+                    onToggle = { if (!real.childBusy) childModelMenuOpen = !childModelMenuOpen },
+                )
+                AnchorMenu(
+                    expanded = childModelMenuOpen && !real.childBusy,
+                    onDismiss = { childModelMenuOpen = false },
+                ) {
+                    ModelMenuContent(
+                        groups = real.modelGroups,
+                        currentModelId = real.childModelId.ifBlank { real.defaultModelId },
+                        effortDim = null,
+                        effortPanelOpen = false,
+                        onPickModel = { id ->
+                            childModelMenuOpen = false
+                            real.changeSessionModelFor(childId, id)
+                        },
+                        onToggleEffortPanel = {},
+                    )
+                }
+            }
+            // 停止钮（③）：busy 时顶栏显示——chat.cancel + 子会话 id
+            //（后端 cancelChildAnywhere 按 children 登记寻址真运行时）。
+            if (real.childBusy) {
+                LxIconButton(onClick = { real.cancelChild(childId) }) {
+                    Icon(
+                        imageVector = Icons.Filled.Close,
+                        contentDescription = "停止子会话",
+                        tint = Lx.colors.FgMuted,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            }
         }
 
         // 块流（只读；无输入区）
         LazyColumn(
             Modifier
                 .fillMaxSize()
+                .weight(1f, fill = false)
                 // 子会话列两侧留白：与主会话同节奏（16dp）
                 .padding(horizontal = Lx.space.s16),
             state = listState,
@@ -2036,6 +2086,82 @@ private fun ChildThreadView(state: AppState) {
                 }
             }
         }
+
+        // ===== 底部固定区（④ 置底清单条 + ① 输入区）=====
+        // 清单条：childTodos 非空即显示（busy 时恒可见——busy 本身就说明清单在动），
+        // 时间线不再插新 Todo 块（对齐桌面纪律；历史里的 Todo 块保留）。
+        real.childTodos?.takeIf { it.isNotEmpty() }?.let { todos ->
+            ChildTodoBar(todos)
+        }
+
+        // 输入区（①）：空闲可用，发送 = chat.send 子会话 id（对子 Agent 直发续跑
+        // 指令）；busy 时输入禁用（键盘 action 也拦），停止走顶栏停止钮。
+        val childSendEnabled = !real.childBusy && childInput.isNotBlank()
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .background(LxColors.Bg)
+                .padding(start = Lx.space.s16, end = Lx.space.s16, top = Lx.space.s6, bottom = Lx.space.s8),
+        ) {
+            if (real.childBusy) {
+                Text(
+                    text = "派发执行中…，输入已暂停",
+                    style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size11),
+                    color = Lx.colors.FgFaint,
+                    modifier = Modifier.padding(bottom = Lx.space.s4),
+                )
+            }
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(ComposerCardShape)
+                    .background(Lx.colors.Surface)
+                    .border(1.dp, Lx.colors.BorderStrong, ComposerCardShape)
+                    .padding(start = Lx.space.s12, end = Lx.space.s8, top = Lx.space.s2, bottom = Lx.space.s2),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Lx.space.s6),
+            ) {
+                BasicTextField(
+                    value = childInput,
+                    onValueChange = { if (!real.childBusy) childInput = it },
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 40.dp)
+                        .padding(vertical = Lx.space.s8),
+                    enabled = !real.childBusy,
+                    textStyle = TextStyle(
+                        fontFamily = Lx.type.Sans,
+                        fontSize = Lx.type.Size13,
+                        lineHeight = Lx.type.Size13 * 1.5f,
+                        color = Lx.colors.Fg,
+                    ),
+                    cursorBrush = SolidColor(Lx.colors.Fg),
+                    decorationBox = { inner ->
+                        Box(Modifier.fillMaxWidth()) {
+                            if (childInput.isEmpty()) {
+                                Text(
+                                    text = if (real.childBusy) "派发执行中…" else "给子 Agent 补充指令…",
+                                    style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size12),
+                                    color = Lx.colors.FgFaint,
+                                    maxLines = 1,
+                                )
+                            }
+                            inner()
+                        }
+                    },
+                )
+                // 发送钮（复用主会话 SendButton 的视觉：30dp 正圆黑底）
+                SendButton(
+                    busy = false,
+                    enabled = childSendEnabled,
+                    onClick = {
+                        val t = childInput
+                        childInput = ""
+                        real.sendChild(childId, t)
+                    },
+                )
+            }
+        }
     }
 
     // 子会话的确认请求（confirm 带 dispatch_id）正常弹
@@ -2053,6 +2179,59 @@ private fun ChildThreadView(state: AppState) {
                         .ifBlank { null },
                 )
             },
+        )
+    }
+}
+
+/** 子会话页的**置底清单条**（④）：单行紧凑形态——「清单 N/M」+ 当前项正文，
+ *  busy 时恒可见。与主时间线 TodoCard 的分工：子会话页不往时间线插 Todo 块
+ * （对齐桌面纪律），清单的实时呈现收在这里。
+ */
+@Composable
+private fun ChildTodoBar(items: List<com.moyunteng.lxcode.remote.model.TodoItem>) {
+    val done = items.count { it.status == "done" }
+    val allDone = items.isNotEmpty() && done == items.size
+    val active = items.firstOrNull { it.status == "active" }
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(Lx.radius.CardShape)
+            .background(LxColors.Surface)
+            .border(1.dp, Lx.colors.Border, Lx.radius.CardShape)
+            .padding(horizontal = Lx.space.s10, vertical = Lx.space.s6),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Lx.space.s8),
+    ) {
+        // 进度图标位：完成 ✓ / 进行中进度环 / 未开始清单图标（与 TodoCard 同一套三态）
+        Box(Modifier.size(16.dp), contentAlignment = Alignment.Center) {
+            when {
+                allDone -> Icon(
+                    imageVector = Icons.Filled.CheckCircle,
+                    contentDescription = null,
+                    tint = LxColors.SuccessInk,
+                    modifier = Modifier.size(15.dp),
+                )
+                active != null -> {
+                    val pct = if (items.isEmpty()) 0f else done.toFloat() / items.size
+                    TodoProgressRing(progress = pct, size = 13.dp)
+                }
+                else -> SmallIcon(Icons.Filled.Checklist, Lx.colors.FgFaint, size = 13)
+            }
+        }
+        Text(
+            text = "清单 $done/${items.size}",
+            style = Lx.type.Pill.copy(fontSize = Lx.type.Size10, fontWeight = FontWeight.SemiBold),
+            color = if (allDone) LxColors.SuccessInk else LxColors.Amber,
+        )
+        // 当前项正文（active 项；没有 active 取第一个未完成项；全完成空缺）
+        val current = active ?: items.firstOrNull { it.status != "done" }
+        Text(
+            text = current?.content ?: "",
+            style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size11_5),
+            color = Lx.colors.FgMuted,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
         )
     }
 }

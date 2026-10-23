@@ -572,6 +572,20 @@ func (s *Session) CancelChild(childID string) bool {
 	return true
 }
 
+// RunningChild 返回登记中的活子会话（正在跑的），未命中返回 nil。CancelChild
+// 用它做取消寻址；server 的 send 拦截用它回答「这个子会话 id 此刻是否正在派发
+// 中」（s.session(id) 对子会话 id 会现建一份 busy 恒 false 的新运行时，回答不了
+// 这个问题——真运行时只挂在 children 登记里，生命周期跟着派发走）。
+func (s *Session) RunningChild(childID string) *Session {
+	if childID == "" {
+		return nil
+	}
+	s.mu.Lock()
+	child := s.children[childID]
+	s.mu.Unlock()
+	return child
+}
+
 // registerChild 登记（openChildSession 成功后调用）；key 为空不登记（纯内存
 // 子会话没有 id，外部本来就寻址不到它）。
 func (s *Session) registerChild(key string, child *Session) {

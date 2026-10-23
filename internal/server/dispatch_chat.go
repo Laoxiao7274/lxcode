@@ -57,6 +57,14 @@ func (s *Server) dispatchChat(c *wsClient, req *protocol.Request, params json.Ra
 			s.resetWakes(id)
 			return protocol.NewResult(req.ID, map[string]any{"accepted": true, "session_id": id})
 		}
+		// 子会话安全拦截（先于 s.session）：id 是某个正在派发的子会话时，
+		// s.session(id) 会现建一份 busy 恒 false 的新运行时，放行 = 同一 id
+		// 并行开第二轮、两份运行时并发写库。命中即拒绝；未命中的空闲子会话
+		// 照常走 s.session 的现建 runtime 续跑路径。
+		if s.busyChildAnywhere(id) {
+			return protocol.NewError(req.ID, protocol.CodeBusy,
+				"该子会话正在派发中，请稍候或先停止")
+		}
 		sess, err := s.session(id)
 		if err != nil {
 			return protocol.NewError(req.ID, protocol.CodeInvalidParams, err.Error())

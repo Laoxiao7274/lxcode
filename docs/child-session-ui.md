@@ -216,3 +216,36 @@ b) 附件随**调度结果消息**回流（结构化元数据挂到主会话那�
 - 真链路：`node shell/node_modules/electron/cli.js temp/probe-live-child-tab.cjs --no-sandbox --disable-gpu`
   ——打真实后端 7789，发一条会派发的消息，点卡头进子会话临时视图，两次采样确认它在长（实时流），并检查页头
   两条读数有值、弹层向下开且在视口内。
+
+## 5. 安卓子会话页与桌面契约的差异（2026-12，五项能力补齐）
+
+桌面端子会话页保持**只读输入**（§2.4 的 `readOnly` + `modelInteractive` 语义不变）；
+安卓端按用户诉求放开了续跑输入，并补齐暂停 / 选模型 / 进度置底 / 主会话排队。
+差异逐条记录如下（桌面端暂不跟进，两端不对齐是有意的）：
+
+- **① 续跑输入**：安卓子会话页底部有输入区（`ChildThreadView` 内嵌白卡，复用
+  主会话 `ComposerCardShape`/`SendButton` 视觉）——空闲时可用，发送 =
+  `chat.send` 带**子会话 id**（对子 Agent 直发续跑指令）；busy 时输入禁用、
+  占位「派发执行中…」。**前提是后端 send 拦截**（`internal/server/dispatch_chat.go`
+  的 `busyChildAnywhere`：请求 id 命中某活跃会话 children 登记里正在运行的子会话
+  时返回 `CodeBusy`「该子会话正在派发中，请稍候或先停止」）——没有这道闸，现建
+  运行时会与派发中的真运行时并发写库（静默历史污染）；空闲子会话的 send 维持
+  现建 runtime 续跑路径不变。桌面端打破只读契约需另议，本差异即记录。
+- **② 选模型**：子会话页顶栏加模型药丸（复用主会话 `ModelPill`/`ModelMenuContent`），
+  切换走 `changeSessionModelFor(childId)`（`chat.model` 显式带子会话 id）；busy 时
+  入口禁用。语义与桌面同：**对下一次派发生效**；子会话没选过模型时显示回落
+  default 角色（与主会话 activeModelId 同一条口径）。
+- **③ 暂停**：busy 时顶栏显示停止钮 → `chat.cancel` + 子会话 id
+  （`RealBackend.cancelChild`——后端 `cancelChildAnywhere` 的既有寻址，行为不变）；
+  取消后 `chat.busy=false` 收敛，输入区随之解禁。
+- **④ 进度置底**：子会话清单不再往时间线插 Todo 块（对齐桌面「时间线不出现
+  Todo 块」纪律；**历史快照里的 Todo 块保留**），改为底部固定清单条
+  （`ChildTodoBar`：`清单 N/M` + 当前项正文；busy 恒可见）。数据源 =
+  `RealBackend.childTodos`（todo.updated / chat.history 的 todos 快照落会话级
+  状态，沿用口径按子会话 id 收窄——切子会话不串台）。
+- **⑤ 主会话输入排队**：安卓主会话 Composer 在 busy 时提供独立「排队发送」按钮
+  （发送钮 busy 态仍是「停止」——点停止 ≠ 排队，两个动作不共用控件）。排队后
+  显示「已排队，完成后自动发送：<文本>」+ 撤销（文本回填输入框）；
+  `busy true→false` 边界自动发出（对齐桌面 send-queue 的 autoSendPick：取消/
+  错误/正常收尾都翻 busy=false，排队的消息照发）。单条 pending，不做多队列编辑；
+  生命周期 = 应用会话（与桌面「页面刷新丢失可接受」同口径）。

@@ -86,7 +86,7 @@ import com.moyunteng.lxcode.remote.model.timePillLabel
 import kotlin.math.roundToInt
 
 /** 输入卡片 Shape —— composer.css `.pi { border-radius: 14px }`。 */
-private val ComposerCardShape = RoundedCornerShape(14.dp)
+internal val ComposerCardShape = RoundedCornerShape(14.dp)
 
 /** 输入区。
  *
@@ -98,6 +98,15 @@ fun Composer(state: AppState, real: com.moyunteng.lxcode.remote.net.RealBackend)
     var text by remember { mutableStateOf("") }
     // 忙闲由后端事件驱动（chat.busy / done / error 收敛）
     val busy = real.busy
+
+    // ===== 发送缓冲区（⑤，对齐桌面端 send-queue 语义的最小安卓版）=====
+    // busy 时提交的消息排队（单条 pending），busy true→false 自动发出；队列条目
+    // 可撤销（撤销 = 文本回填输入框）。不做多队列编辑。生命周期 = 应用会话
+    // （remember 无存档，与桌面端「页面刷新丢失可接受」同一口径）。
+    // 注意与发送钮的分工：busy 态发送钮仍是「停止」（取消本轮），排队的唯一
+    // 入口是下方的「排队发送」按钮——两个动作不共用一个控件，语义不冲突。
+    // 自动发送的 LaunchedEffect 挂在 sendEffort 定义之后（见下）。
+    var queuedText by remember { mutableStateOf<String?>(null) }
 
     // ===== 斜杠命令面板（桌面端 SlashPalette.tsx：输入以 / 开头弹出）=====
     // slashClosed = 用户按返回键关掉面板（关面板不清输入，再输入 / 会重新弹出）
@@ -167,6 +176,16 @@ fun Composer(state: AppState, real: com.moyunteng.lxcode.remote.net.RealBackend)
     val effortId = if (effort in effortOptions) effort else effortOptions.lastOrNull() ?: ""
     // 发送携带的档位：模型不支持 effort 时空串（不带键——对非推理端点传参会 400）
     val sendEffort = if (effortOptions.isNotEmpty()) effortId else ""
+    // 自动发送（⑤）：busy true→false 边界发出队首（对齐 send-queue.ts 的
+    // autoSendPick——取消/错误/正常收尾都翻 busy=false，排队的消息照发）。
+    // 挂在 sendEffort 定义之后：闭包捕获当前视图的 effort，发出时带上。
+    LaunchedEffect(busy) {
+        if (!busy && queuedText != null) {
+            val t = queuedText!!
+            queuedText = null
+            if (t.isNotBlank()) real.send(t, sendEffort)
+        }
+    }
     // 药丸灰字「· 中」——模型不支持 effort 时整个不显示（chip-dim 同款隐藏）
     val effortDim = if (effortOptions.isNotEmpty()) "· ${effortLabel(effortId)}" else null
     // 档位名对齐桌面端 APPROVALS（shared/settings.tsx）：默认 / 完全访问 / 只读
@@ -429,6 +448,31 @@ fun Composer(state: AppState, real: com.moyunteng.lxcode.remote.net.RealBackend)
                     StatsCapsule(real.sessionStats)
                 }
                 Spacer(Modifier.width(4.dp))
+                // 发送钮（busy 态 = 停止语义，保持不变）+ busy 时的「排队发送」入口：
+                // 点停止 ≠ 发送排队——排队走这个独立按钮（或键盘 action），不共用控件。
+                if (busy) {
+                    val canQueue = text.trim().isNotEmpty() && !text.startsWith("/") && queuedText == null
+                    Text(
+                        text = "排队发送",
+                        style = TextStyle(
+                            fontFamily = Lx.type.Sans,
+                            fontSize = 11.5.sp,
+                            fontWeight = FontWeight.Medium,
+                        ),
+                        color = if (canQueue) Lx.colors.Fg else Lx.colors.FgFaint,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable(
+                                enabled = canQueue,
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                            ) {
+                                queuedText = text.trim()
+                                text = ""
+                            }
+                            .padding(horizontal = 6.dp, vertical = 4.dp),
+                    )
+                }
                 SendButton(
                     busy = busy,
                     enabled = (text.trim().isNotEmpty() && !text.startsWith("/")) ||
@@ -441,6 +485,47 @@ fun Composer(state: AppState, real: com.moyunteng.lxcode.remote.net.RealBackend)
                             real.send(text, sendEffort)
                             text = ""
                         }
+                    },
+                )
+            }
+        }
+
+        // ===== 排队条（⑤）：busy 时有排队消息才显示——「已排队，完成后自动发送」
+        // + 撤销（文本回填输入框）。单条队列，不做编辑。
+        queuedText?.let { q ->
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(start = 16.dp, end = 16.dp, top = 4.dp)
+                    .clip(ComposerCardShape)
+                    .background(Lx.colors.Surface)
+                    .border(1.dp, Lx.colors.BorderStrong, ComposerCardShape)
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    text = "已排队，完成后自动发送：$q",
+                    style = TextStyle(fontFamily = Lx.type.Sans, fontSize = 11.5.sp),
+                    color = Lx.colors.FgMuted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    text = "撤销",
+                    style = TextStyle(
+                        fontFamily = Lx.type.Sans,
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.Medium,
+                    ),
+                    color = Lx.colors.Fg,
+                    modifier = Modifier.clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                    ) {
+                        queuedText = null
+                        text = q // 撤销 = 取出回填输入框（对齐桌面端 handleQueueEdit）
                     },
                 )
             }
@@ -573,7 +658,7 @@ private fun StatsCapsule(stats: com.moyunteng.lxcode.remote.model.SessionStats?)
  * busy 时同位置换停止钮（白色 11dp 圆角方块图标）；禁用 = 25% 透明度；按压 scale 0.95。
  */
 @Composable
-private fun SendButton(busy: Boolean, enabled: Boolean, onClick: () -> Unit) {
+internal fun SendButton(busy: Boolean, enabled: Boolean, onClick: () -> Unit) {
     val clickable = busy || enabled
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()

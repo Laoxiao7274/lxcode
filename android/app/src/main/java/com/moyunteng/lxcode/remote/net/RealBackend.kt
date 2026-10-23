@@ -208,8 +208,23 @@ class RealBackend {
     /** 子会话视图自己的流式块下标（-1 = 无）。 */
     private var childStreamingIdx = -1
 
+    /** childTodos 当前归属的子会话 id（沿用口径按它收窄——切子会话不清屏但清单不串台）。 */
+    private var childTodoOwner = ""
+
     /** 子会话视图的标题（Agent 名 + 任务摘要，由派发卡带入）。 */
     var childViewTitle by mutableStateOf("")
+
+    /** 子会话**当前清单**（置底清单条的数据源）：todo.updated / chat.history 的
+     *  todos 快照落这里，**不再往时间线插 Todo 块**（对齐桌面纪律——时间线是
+     *  消息流，清单是会话级状态）。null = 没有清单（不渲染清单条）。 */
+    var childTodos by mutableStateOf<List<TodoItem>?>(null)
+        private set
+
+    /** 子会话**选中**的模型 id（chat.modelChanged 按 session_id 归属维护；空 =
+     *  未知 → 显示回落 default 角色，与主会话 activeModelId 同一条口径）。
+     *  子会话页的模型菜单读它、changeSessionModelFor(childId) 切它。 */
+    var childModelId by mutableStateOf("")
+        private set
 
     /**
      * 各会话的实时忙闲（chat.busy 广播；多端共享进度的列表侧投影）：
@@ -462,15 +477,21 @@ class RealBackend {
      *  选中态不本地乐观改：后端成功才广播 chat.modelChanged，归约层按它对齐，
      *  失败时显示自然停在旧模型上，不假装成功）。 */
     fun changeSessionModel(id: String, onDone: ((ok: Boolean, msg: String) -> Unit)? = null) {
-        val sid = currentSessionId
-        if (sid.isEmpty()) {
+        changeSessionModelFor(currentSessionId, id, onDone)
+    }
+
+    /** 切换**指定会话**（含子会话）的模型：changeSessionModel 的带 id 变体。
+     *  子会话页的模型菜单走它——切的是**子会话自己的**会话级模型（对下一次
+     *  派发生效），与主会话选中态互不影响。 */
+    fun changeSessionModelFor(sessionId: String, id: String, onDone: ((ok: Boolean, msg: String) -> Unit)? = null) {
+        if (sessionId.isEmpty()) {
             onDone?.invoke(false, "还没有打开会话")
             return
         }
-        Log.i(TAG, "chat.model session=$sid → $id")
+        Log.i(TAG, "chat.model session=$sessionId → $id")
         client.call(
             "chat.model",
-            JSONObject().put("session_id", sid).put("model_id", id),
+            JSONObject().put("session_id", sessionId).put("model_id", id),
         ) { err, _ ->
             if (err != null) {
                 val msg = err.optString("message")
@@ -646,6 +667,7 @@ class RealBackend {
         childBusy = false
         childHistoryVersion = 0
         childStreamVersion = 0
+        childModelId = ""
         childHistoryLoading = true
         client.call("chat.history", JSONObject().put("session_id", childId)) { err, result ->
             childHistoryLoading = false
@@ -670,6 +692,9 @@ class RealBackend {
         childHistoryVersion = 0
         childStreamVersion = 0
         childHistoryLoading = false
+        childModelId = ""
+        childTodos = null
+        childTodoOwner = ""
         childViewTitle = ""
     }
 
@@ -796,6 +821,39 @@ class RealBackend {
         if (currentSessionId.isEmpty()) return
         Log.i(TAG, "chat.cancel session=$currentSessionId")
         client.call("chat.cancel", JSONObject().put("session_id", currentSessionId)) { _, _ -> }
+    }
+
+    /** 取消**正在跑的子会话**（chat.cancel + 子会话 id）：后端 cancelChildAnywhere
+     *  按 children 登记寻址真运行时（跑完即注销的子会话走普通会话路径兜底）。
+     *  子会话页忙时顶栏的停止钮走它。 */
+    fun cancelChild(childId: String) {
+        if (childId.isEmpty()) return
+        Log.i(TAG, "chat.cancel child=$childId")
+        client.call("chat.cancel", JSONObject().put("session_id", childId)) { _, _ -> }
+    }
+
+    /**
+     * 给**子会话**发一条续跑消息（chat.send + 子会话 id）：子会话页空闲时的
+     * 输入框走它——对子 Agent 直发补指令（后端现建 runtime 续跑）。
+     * 派发运行中后端会以 CodeBusy 拒绝（「该子会话正在派发中」），错误照主
+     * 会话 send 的口径插错误块。
+     */
+    fun sendChild(childId: String, text: String) {
+        val t = text.trim()
+        if (childId.isEmpty() || t.isEmpty()) return
+        Log.i(TAG, "chat.send child=$childId text=${t.take(80)}")
+        childBusy = true
+        client.call(
+            "chat.send",
+            JSONObject().put("session_id", childId).put("text", t),
+        ) { err, _ ->
+            if (err != null) {
+                childBusy = false
+                val msg = err.optString("message")
+                Log.w(TAG, "chat.send(child) 被拒: code=${err.optInt("code")} $msg")
+                childBlocks.add(ThreadBlock.Error("发送失败: $msg"))
+            }
+        }
     }
 
     /**
@@ -1782,7 +1840,6 @@ class RealBackend {
         // 而子会话的 chat.history 走「现建运行时 + AttachTo」，busy 恒 false——
         // 不能拿快照的 busy 判「本地有没有实时块」。判定与去重见 ChildHistoryMerge.kt。
         val prevBlocks = childBlocks.toList()
-        val prevTodos = prevBlocks.filterIsInstance<ThreadBlock.Todo>().lastOrNull()?.items
         val snapshotTodos = todosArr?.let { arr ->
             (0 until arr.length()).map { arr.getJSONObject(it) }
                 .map { TodoItem(it.optString("content"), it.optString("status")) }
@@ -1797,7 +1854,11 @@ class RealBackend {
             -1
         }
         // 清单：空快照 = 未知（omitempty），沿用上一份——否则「重开视图清单消失」。
-        mergeChildTodoList(snapshotTodos, prevTodos)?.let { childBlocks.add(ThreadBlock.Todo(it)) }
+        // 落**会话级状态**（置底清单条数据源），不再往时间线插 Todo 块。
+        // 沿用口径收窄到**同一子会话**（childTodoOwner）：切换子会话视图时上一份
+        // 清单不属于这个子会话，不许串台。
+        childTodos = mergeChildTodoList(snapshotTodos, childTodos.takeIf { childTodoOwner == viewChildSessionId })
+        childTodoOwner = viewChildSessionId ?: ""
         // 忙闲：快照的 busy 键对子会话**不可信**（chat.history 是现建运行时 + AttachTo，
         // busy 恒 false）。接回了流式尾部 = 它确实在跑——别把「生成中」指示抹掉。
         // 翻回 false 仍由轮末那条 chat.busy=false 负责（它无条件发，不会漏）。
@@ -2200,6 +2261,12 @@ class RealBackend {
                 if (childBusy) markChildCardRunning(viewChildSessionId ?: "")
             }
 
+            // 子会话自己的模型变更广播（子会话页切模型的回执，多端同步）：
+            // 按 session_id 归属——别的子会话的变更不改本视图的选中态。
+            "chat.modelChanged" -> {
+                p.optString("model_id", "").takeIf { it.isNotEmpty() }?.let { childModelId = it }
+            }
+
             "todo.updated" -> childMergeTodos(p.optJSONArray("items"))
 
             "chat.compacted" -> childBlocks.add(
@@ -2262,8 +2329,8 @@ class RealBackend {
         if (items == null) return
         val list = (0 until items.length()).map { items.getJSONObject(it) }
             .map { TodoItem(it.optString("content"), it.optString("status")) }
-        val i = childBlocks.indexOfFirst { it is ThreadBlock.Todo }
-        if (i >= 0) childBlocks[i] = ThreadBlock.Todo(list) else childBlocks.add(ThreadBlock.Todo(list))
+        // 落**会话级状态**（置底清单条数据源），不再往时间线插 Todo 块。
+        childTodos = list
     }
 
     private fun parseContext(o: JSONObject): ContextUsage = ContextUsage(

@@ -98,6 +98,33 @@ func (s *Server) cancelChildAnywhere(childID string) bool {
 	return false
 }
 
+// busyChildAnywhere 判断 id 是否是某个**正在跑**的子会话（与 cancelChildAnywhere
+// 同一套查找：子会话运行时不注册进 s.sessions，只挂在父会话 children 登记里，
+// 生命周期跟着派发走）。用于 chat.send 的安全拦截：
+//
+// 派发运行中时真运行时挂在父 children 上，而 s.session(id) 对子会话 id 会
+// **现建**一份新运行时（busy 恒 false）——放行的后果是同一个 session id 并行
+// 开第二轮，两份运行时并发写库 = 静默历史污染。所以 send 前先查：命中即拒绝
+//（ErrBusy 语义）；未命中（子会话已结束 / 从未派发 / 重启恢复）放行，现建
+// runtime 的正常续跑路径不受影响。
+func (s *Server) busyChildAnywhere(childID string) bool {
+	if childID == "" {
+		return false
+	}
+	s.sessionsMu.RLock()
+	sessions := make([]*agent.Session, 0, len(s.sessions))
+	for _, sess := range s.sessions {
+		sessions = append(sessions, sess)
+	}
+	s.sessionsMu.RUnlock()
+	for _, sess := range sessions {
+		if sess.RunningChild(childID) != nil {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Server) createSession(workspace string) (string, *agent.Session, error) {
 	if s.st == nil {
 		if workspace != "" {

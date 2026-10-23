@@ -1,14 +1,14 @@
 {
-  "version": "0.3.8",
-  "versionCode": 16,
-  "name": "lxcode-0.3.8-android.apk",
-  "size": 11721186,
-  "sha256": "b17dfcdea0188e3aaf5602b082cf7f81bf18e919d48b130d8c1d78369bc08519",
-  "url": "downloads/lxcode-0.3.8-android.apk",
+  "version": "0.3.9",
+  "versionCode": 17,
+  "name": "lxcode-0.3.9-android.apk",
+  "size": 11737574,
+  "sha256": "98f1e035fec3b9ef299195a904a6f5c556f380f958797bc0d74ff88482a32d8d",
+  "url": "downloads/lxcode-0.3.9-android.apk",
   "notes": [
-    "流式输出补齐桌面三层平滑：两段渲染 + delta 合帧 + 滚动跟随挂打字机节奏",
-    "排版间距九项对齐桌面（消息块/留白/段距/代码块/列表/引用/表格等）",
-    "子会话页加载中样式与连接恢复修复：自动重试走完整连接入口，不再卡死",
-    "子会话入口兜底：重连重拉历史 + 分页截断时从结果剥子会话 id"
+    "子会话页新增输入框：空闲时续跑子 Agent",
+    "子会话页新增模型选择（对下一次派发生效）与停止钮（chat.cancel 子会话寻址）",
+    "子会话页新增置底任务清单条（N/M 恒可见）",
+    "主会话 busy 时支持排队发送：单条 pending，完成后自动发出，可撤销"
   ]
 }
