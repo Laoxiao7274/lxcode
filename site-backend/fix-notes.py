@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 # 修正 0.1.2 发布记录的 notes（curl 上传时 PowerShell 把中文搞成了乱码）。
+# 数据库路径经环境变量 LXCODE_SITE_DB 传入，不硬编码服务器路径。
 import json, sqlite3, sys
+import os
 
-DB = "/home/linaro/lxcode-site/data/site.db"
+DB = os.environ.get("LXCODE_SITE_DB", "site.db")
 NOTES = [
     "远程访问：局域网直连（访问令牌门）/ 樱花frp 公网穿透 / Tailscale 三模式",
     "更新器：manifest 校验 + 后端热替换 + asar 冷替换 + 自动重启",
