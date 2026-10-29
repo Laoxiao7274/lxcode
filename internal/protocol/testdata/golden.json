@@ -1,0 +1,958 @@
+{
+  "agentEntry": {
+    "_type": "AgentAdminEntry",
+    "value": {
+      "id": "reviewer",
+      "name": "评审员",
+      "desc": "代码评审",
+      "color": "#3b82f6",
+      "model": "deepseek-v3",
+      "tools": [
+        "read_file",
+        "search"
+      ],
+      "workflow": "评审工作流",
+      "skills": [
+        "code-review"
+      ],
+      "delegates": [],
+      "approval": "confirm",
+      "enabled": true,
+      "is_main": true,
+      "prompt": "你是评审 Agent……",
+      "protocol": "主 Agent 协议",
+      "custom": false
+    }
+  },
+  "chatDoneDispatch": {
+    "_type": "AgentEvent",
+    "value": {
+      "session_id": "child-1",
+      "message": {
+        "role": "assistant",
+        "content": "子任务完成。"
+      },
+      "usage_tokens": 210,
+      "finish_reason": "stop",
+      "dispatch_id": "d1"
+    }
+  },
+  "chatDoneFull": {
+    "_type": "AgentEvent",
+    "value": {
+      "session_id": "s1",
+      "message": {
+        "role": "assistant",
+        "content": "改好了，构建通过。",
+        "seq": 7,
+        "parent_seq": 6,
+        "first_token_ms": 420,
+        "duration_ms": 5230,
+        "model": "deepseek-v3",
+        "usage_tokens": 512
+      },
+      "usage_tokens": 512,
+      "finish_reason": "stop",
+      "context": {
+        "used": 48210,
+        "window": 128000,
+        "system": 3120,
+        "tools": 8400,
+        "tool_results": 12200,
+        "messages": 18100,
+        "reasoning": 5590
+      },
+      "stats": {
+        "turns": 3,
+        "steps": 9,
+        "llm_ms": 14200,
+        "tool_ms": 8600,
+        "ttft_ms": 390,
+        "ttft_steps": 9,
+        "decode_ms": 9800,
+        "decode_tokens": 4096,
+        "input_tokens": 120000,
+        "cache_read_tokens": 98000,
+        "cache_write_tokens": 4000,
+        "output_tokens": 8200,
+        "legacy_tokens": 1500
+      },
+      "first_token_ms": 420,
+      "duration_ms": 5230,
+      "model": "deepseek-v3"
+    }
+  },
+  "chatHistoryParamsFull": {
+    "_type": "ChatHistoryParams",
+    "value": {
+      "session_id": "s1",
+      "tail": 50
+    }
+  },
+  "chatHistoryParamsMinimal": {
+    "_type": "ChatHistoryParams",
+    "value": {
+      "session_id": "s1"
+    }
+  },
+  "chatHistoryParamsPaging": {
+    "_type": "ChatHistoryParams",
+    "value": {
+      "session_id": "s1",
+      "tail": 50,
+      "before_seq": 3
+    }
+  },
+  "chatHistoryResultFull": {
+    "_type": "",
+    "value": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "看看这个报错",
+          "seq": 1,
+          "images": [
+            {
+              "path": "s1/ab12cd.png",
+              "mime": "image/png"
+            }
+          ],
+          "attachments": [
+            {
+              "path": "s1/ab12cd.png",
+              "name": "截图.png",
+              "size": 20480,
+              "mime": "image/png",
+              "kind": "image"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "reasoning_content": "先看调用栈……",
+          "tool_calls": [
+            {
+              "id": "call_1",
+              "type": "function",
+              "index": 1,
+              "function": {
+                "name": "read_file",
+                "arguments": "{\"path\":\"main.go\"}"
+              }
+            }
+          ],
+          "seq": 2
+        },
+        {
+          "role": "tool",
+          "content": "…文件内容…",
+          "tool_call_id": "call_1",
+          "seq": 3,
+          "duration_ms": 120
+        },
+        {
+          "role": "assistant",
+          "content": "改好了。",
+          "seq": 4,
+          "first_token_ms": 420,
+          "duration_ms": 5230,
+          "model": "deepseek-v3",
+          "usage_tokens": 512
+        }
+      ],
+      "busy": true,
+      "pending": {
+        "session_id": "s1",
+        "id": "call_2",
+        "name": "bash",
+        "arguments": "{\"command\":\"go test ./...\"}",
+        "prompt": "执行 go test？"
+      },
+      "session_id": "s1",
+      "todos": [
+        {
+          "content": "修 bug",
+          "status": "active"
+        }
+      ],
+      "context": {
+        "used": 48210,
+        "window": 128000,
+        "system": 3120,
+        "tools": 8400,
+        "tool_results": 12200,
+        "messages": 18100,
+        "reasoning": 5590
+      },
+      "stats": {
+        "turns": 3,
+        "steps": 9,
+        "llm_ms": 14200,
+        "tool_ms": 8600,
+        "ttft_ms": 390,
+        "ttft_steps": 9,
+        "decode_ms": 9800,
+        "decode_tokens": 4096,
+        "input_tokens": 120000,
+        "cache_read_tokens": 98000,
+        "cache_write_tokens": 4000,
+        "output_tokens": 8200
+      },
+      "checkpoints": [
+        0
+      ],
+      "model": "deepseek-v3",
+      "approval": "confirm",
+      "leaf_seq": 4,
+      "running_dispatches": [
+        {
+          "dispatch_id": "call_9",
+          "child_session_id": "20261214-091200-ab12",
+          "agent_name": "代码 Agent",
+          "task": "跑测试并修复"
+        }
+      ]
+    }
+  },
+  "chatHistoryResultMinimal": {
+    "_type": "",
+    "value": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "在吗"
+        }
+      ],
+      "busy": false
+    }
+  },
+  "chatHistoryResultPaging": {
+    "_type": "",
+    "value": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "更早的问题",
+          "seq": 1
+        },
+        {
+          "role": "assistant",
+          "content": "更早的回答",
+          "seq": 2
+        }
+      ],
+      "busy": false,
+      "has_more": true,
+      "first_seq": 1
+    }
+  },
+  "chatLeafChanged": {
+    "_type": "",
+    "value": {
+      "session_id": "s1",
+      "leaf_seq": 12,
+      "prev_leaf_seq": 9,
+      "removed": 3,
+      "context": {
+        "used": 1024,
+        "window": 65536
+      },
+      "files": {
+        "child_sessions": [
+          "child-1"
+        ]
+      }
+    }
+  },
+  "chatModelParams": {
+    "_type": "",
+    "value": {
+      "session_id": "s1",
+      "model_id": "deepseek-v3"
+    }
+  },
+  "chatModelResult": {
+    "_type": "",
+    "value": {
+      "session_id": "s1",
+      "model_id": "deepseek-v3"
+    }
+  },
+  "chatRewindResult": {
+    "_type": "RewindOutcome",
+    "value": {
+      "removed": 3,
+      "leaf_seq": 12,
+      "branched": true,
+      "files": {
+        "restored": [
+          {
+            "path": "internal/store/tree.go",
+            "from_seq": 44,
+            "from_owner_seq": 42,
+            "session_id": "s1",
+            "bytes": 2048,
+            "recreated": true
+          }
+        ],
+        "deleted": [
+          {
+            "path": "temp/scratch.go",
+            "session_id": "child-1"
+          }
+        ],
+        "conflicts": [
+          {
+            "path": "docs/a.md",
+            "expected_hash": "aa",
+            "actual_hash": "bb",
+            "session_id": "child-1",
+            "reason": "磁盘内容与快照期望不符（可能被手动修改或 bash 改过）"
+          }
+        ],
+        "skipped": [
+          {
+            "path": "dist/app.exe",
+            "reason": "二进制文件未快照"
+          }
+        ],
+        "child_sessions": [
+          "child-1"
+        ]
+      }
+    }
+  },
+  "chatRewindResultIdempotent": {
+    "_type": "RewindOutcome",
+    "value": {
+      "removed": 0
+    }
+  },
+  "chatSendFileBase64": {
+    "_type": "ChatSendFile",
+    "value": {
+      "name": "报告.pdf",
+      "data": "JVBERi0xLjQ="
+    }
+  },
+  "chatSendFilePathForm": {
+    "_type": "ChatSendFile",
+    "value": {
+      "name": "报告.pdf",
+      "data": "",
+      "path": "C:\\Users\\xzy\\Docs\\报告.pdf"
+    }
+  },
+  "chatSendFileRelPath": {
+    "_type": "ChatSendFile",
+    "value": {
+      "name": "auth.md",
+      "data": "IyBBUEk=",
+      "rel_path": "docs/api/auth.md"
+    }
+  },
+  "chatSendImagePathForm": {
+    "_type": "ChatSendImage",
+    "value": {
+      "mime": "image/png",
+      "data": "",
+      "name": "截图.png",
+      "path": "C:\\Users\\xzy\\Pictures\\shot.png"
+    }
+  },
+  "chatSendParamsFull": {
+    "_type": "SendOptions",
+    "value": {
+      "session_id": "s1",
+      "text": "帮我看看这个报错",
+      "effort": "high",
+      "approval": "auto",
+      "agent": "reviewer",
+      "images": [
+        {
+          "mime": "image/png",
+          "data": "aGVsbG8=",
+          "name": "截图.png"
+        }
+      ],
+      "files": [
+        {
+          "name": "日志.txt",
+          "data": "MjAyNi0xMC0xMw=="
+        }
+      ]
+    }
+  },
+  "chatSendParamsMinimal": {
+    "_type": "SendOptions",
+    "value": {
+      "session_id": "s1",
+      "text": "在吗"
+    }
+  },
+  "chatSetLeafParams": {
+    "_type": "",
+    "value": {
+      "session_id": "s1",
+      "seq": 12,
+      "files": true
+    }
+  },
+  "chatSetLeafResult": {
+    "_type": "",
+    "value": {
+      "session_id": "s1",
+      "leaf_seq": 12,
+      "removed": 2,
+      "files": {
+        "restored": [
+          {
+            "path": "a.go",
+            "from_seq": 13,
+            "bytes": 10
+          }
+        ]
+      }
+    }
+  },
+  "chatTreeParams": {
+    "_type": "",
+    "value": {
+      "session_id": "s1",
+      "include": "compact",
+      "max_nodes": 2000
+    }
+  },
+  "chatTreeResult": {
+    "_type": "",
+    "value": {
+      "leaf_seq": 12,
+      "nodes": [
+        {
+          "seq": 1,
+          "parent_seq": 0,
+          "kind": "user",
+          "turn": 1,
+          "summary": "帮我看看这个报错",
+          "children": 1,
+          "on_path": true
+        },
+        {
+          "seq": 2,
+          "parent_seq": 1,
+          "kind": "assistant",
+          "summary": "好的",
+          "children": 1,
+          "on_path": false,
+          "orphan": true,
+          "files": 2,
+          "child_files": 1,
+          "external": 1
+        },
+        {
+          "seq": 3,
+          "parent_seq": 2,
+          "kind": "checkpoint",
+          "summary": "已压缩",
+          "children": 0,
+          "on_path": true,
+          "shadowed": 4
+        }
+      ],
+      "total": 3,
+      "truncated": true
+    }
+  },
+  "compactResult": {
+    "_type": "CompactOutcome",
+    "value": {
+      "compacted": false,
+      "reason": "历史太短，摘要没有收益",
+      "before": 9100,
+      "after": 9100,
+      "shadowed": 3
+    }
+  },
+  "compactedParams": {
+    "_type": "",
+    "value": {
+      "session_id": "s1",
+      "before": 48210,
+      "after": 12100,
+      "shadowed": 22,
+      "summary": "## 摘要",
+      "manual": true,
+      "dispatch_id": "call_7",
+      "context": {
+        "used": 12100,
+        "window": 128000,
+        "messages": 4200,
+        "estimated": true
+      }
+    }
+  },
+  "confirmRequestAsk": {
+    "_type": "ConfirmRequest",
+    "value": {
+      "session_id": "s1",
+      "id": "ask_1",
+      "name": "ask_user",
+      "arguments": "{\"question\":\"用哪种方案？\"}",
+      "prompt": "用哪种方案？",
+      "dispatch_id": "d1",
+      "kind": "ask",
+      "options": [
+        "方案 A",
+        "方案 B"
+      ]
+    }
+  },
+  "contextUsageEstimated": {
+    "_type": "ContextUsage",
+    "value": {
+      "used": 18200,
+      "window": 65536,
+      "system": 2100,
+      "tools": 4400,
+      "tool_results": 5100,
+      "messages": 5300,
+      "reasoning": 1300,
+      "estimated": true
+    }
+  },
+  "contextUsageUnknown": {
+    "_type": "ContextUsage",
+    "value": {
+      "used": 512
+    }
+  },
+  "dispatchStartParams": {
+    "_type": "",
+    "value": {
+      "owner_session_id": "s1",
+      "dispatch_id": "d1",
+      "session_id": "child-1",
+      "agent_id": "reviewer",
+      "agent_name": "评审员",
+      "agent_color": "#3b82f6",
+      "task": "评审这次的改动",
+      "todos": [
+        {
+          "content": "读改动",
+          "status": "done"
+        },
+        {
+          "content": "写意见",
+          "status": "active"
+        }
+      ]
+    }
+  },
+  "gitBranchInfoMain": {
+    "_type": "GitBranchInfo",
+    "value": {
+      "name": "master",
+      "current": true,
+      "ahead": 0,
+      "behind": 0
+    }
+  },
+  "gitOverviewResult": {
+    "_type": "GitOverview",
+    "value": {
+      "path": "C:\\Users\\xzy\\Desktop\\my\\lxcode",
+      "branch": "master",
+      "dirty": [
+        {
+          "path": "internal/protocol/protocol.go",
+          "kind": "modified"
+        }
+      ],
+      "branches": [
+        {
+          "name": "master",
+          "current": true,
+          "ahead": 2,
+          "behind": 0
+        },
+        {
+          "name": "lxcode/session-s1",
+          "current": false,
+          "ahead": 1,
+          "behind": 3,
+          "session_id": "s1",
+          "session_title": "已归档会话",
+          "archived": true,
+          "has_worktree": true,
+          "worktree_path": "C:\\Sessions\\worktrees\\p1\\s1",
+          "dirty_count": 2,
+          "merged": true
+        }
+      ],
+      "commits": [
+        {
+          "hash": "abc1234",
+          "message": "重构 protocol 包",
+          "author": "xzy",
+          "when": "2026-10-13T10:00:00+08:00"
+        }
+      ]
+    }
+  },
+  "helloResult": {
+    "_type": "HelloResult",
+    "value": {
+      "server": "lxcode",
+      "version": "2",
+      "busy": false,
+      "busy_sessions": [
+        "s1",
+        "s2"
+      ]
+    }
+  },
+  "jobInfo": {
+    "_type": "JobInfo",
+    "value": {
+      "id": "job1",
+      "kind": "bash",
+      "label": "npm run build",
+      "status": "completed",
+      "ended_by": "user",
+      "detail": "退出码 0",
+      "session_id": "s1",
+      "owner_session_id": "s1",
+      "started_at": "2026-10-13T10:00:00+08:00",
+      "finished_at": "2026-10-13T10:01:12+08:00",
+      "output_tail": "vite build 完成",
+      "output_path": "C:\\ProgramData\\lxcode\\logs\\job1.log"
+    }
+  },
+  "jobLogResult": {
+    "_type": "JobLogResult",
+    "value": {
+      "data": "…全量日志…",
+      "truncated": true
+    }
+  },
+  "mcServerEntry": {
+    "_type": "AgentAdminMcServer",
+    "value": {
+      "id": "fs",
+      "desc": "文件系统",
+      "transport": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@mcp/fs"
+      ],
+      "env": {
+        "FS_ROOT": "/tmp"
+      },
+      "enabled": true,
+      "custom": true,
+      "status": "connected",
+      "tool_count": 11,
+      "stderr": "[warn] experimental"
+    }
+  },
+  "mcServerEntrySse": {
+    "_type": "AgentAdminMcServer",
+    "value": {
+      "id": "remote",
+      "desc": "远程 MCP",
+      "transport": "sse",
+      "url": "https://mcp.example.com/sse",
+      "enabled": true,
+      "custom": false,
+      "status": "error",
+      "last_error": "initialize 失败: context deadline exceeded"
+    }
+  },
+  "modelChangedParams": {
+    "_type": "",
+    "value": {
+      "session_id": "s1",
+      "model_id": "deepseek-v3"
+    }
+  },
+  "modelListResult": {
+    "_type": "",
+    "value": {
+      "models": [
+        {
+          "id": "deepseek-v3",
+          "provider": "deepseek",
+          "display_name": "DeepSeek V3",
+          "base_url": "https://api.deepseek.com/v1",
+          "api_key": "sk-**",
+          "format": "openai",
+          "model": "deepseek-chat",
+          "context_window": 128000,
+          "max_output_tokens": 8192,
+          "capabilities": {
+            "tools": true,
+            "vision": false,
+            "json_output": true,
+            "reasoning": true,
+            "stream_tools": true
+          },
+          "enabled": true,
+          "updated_at": "2026-10-13T10:00:00Z"
+        },
+        {
+          "id": "legacy-model",
+          "display_name": "Legacy",
+          "base_url": "http://127.0.0.1:8080/v1",
+          "model": "legacy",
+          "capabilities": {
+            "tools": false,
+            "vision": false,
+            "json_output": false,
+            "reasoning": false
+          },
+          "enabled": false,
+          "updated_at": "0001-01-01T00:00:00Z"
+        }
+      ],
+      "roles": {
+        "default": "deepseek::deepseek-v3"
+      }
+    }
+  },
+  "projectInstructionsResult": {
+    "_type": "ProjectInstructions",
+    "value": {
+      "path": "C:\\Projects\\lxcode\\AGENTS.md",
+      "content": "# 项目守则……",
+      "exists": true,
+      "note": "（示例）上次读取时文件过大被截断"
+    }
+  },
+  "projectRemoveResult": {
+    "_type": "ProjectRemoveResult",
+    "value": {
+      "removed": true,
+      "sessions": 3
+    }
+  },
+  "searchChannelsResult": {
+    "_type": "SearchChannelsSnapshot",
+    "value": {
+      "channels": [
+        {
+          "id": "tavily",
+          "label": "Tavily",
+          "desc": "聚合搜索",
+          "doc_url": "https://tavily.com",
+          "env_var": "TAVILY_API_KEY",
+          "needs_key": true,
+          "needs_url": false,
+          "accepts_key": true,
+          "category": "general",
+          "category_label": "通用",
+          "api_key": "tvly-***",
+          "base_url": "https://api.tavily.com",
+          "option_specs": [
+            {
+              "key": "search_depth",
+              "label": "搜索深度",
+              "placeholder": "basic",
+              "hint": "basic|advanced",
+              "env_var": "TAVILY_DEPTH",
+              "required": true,
+              "default": "basic",
+              "choices": [
+                "basic",
+                "advanced"
+              ]
+            }
+          ],
+          "options": {
+            "search_depth": "basic"
+          },
+          "stored": true,
+          "enabled": true,
+          "primary": true,
+          "configured": true
+        },
+        {
+          "id": "exa-free",
+          "label": "Exa 免配置通道",
+          "desc": "零配置直连",
+          "needs_key": false,
+          "needs_url": false,
+          "accepts_key": false,
+          "default_ready": true,
+          "category": "free",
+          "category_label": "免费",
+          "stored": false,
+          "enabled": true,
+          "primary": false,
+          "configured": true
+        },
+        {
+          "id": "ddg",
+          "label": "DuckDuckGo",
+          "desc": "零配置抓取",
+          "needs_key": false,
+          "needs_url": false,
+          "accepts_key": false,
+          "opt_in": true,
+          "category": "free",
+          "category_label": "免费",
+          "stored": false,
+          "enabled": false,
+          "primary": false,
+          "configured": false
+        }
+      ],
+      "primary": "tavily",
+      "ready": true
+    }
+  },
+  "searchTestResult": {
+    "_type": "SearchTestResult",
+    "value": {
+      "provider": "tavily",
+      "answer": "Go 1.22 于 2024 年发布",
+      "results": [
+        {
+          "title": "Go release notes",
+          "url": "https://go.dev/doc/devel/release",
+          "snippet": "…"
+        }
+      ],
+      "elapsed_ms": 742
+    }
+  },
+  "sessionArchiveResult": {
+    "_type": "",
+    "value": {
+      "archived": true
+    }
+  },
+  "sessionMeta": {
+    "_type": "",
+    "value": {
+      "id": "s1",
+      "title": "修登录 bug",
+      "updated_at": "2026-10-13T10:30:00+08:00",
+      "messages": 24,
+      "archived": true,
+      "workspace": "lxcode",
+      "running": true
+    }
+  },
+  "sessionStatsFull": {
+    "_type": "SessionStats",
+    "value": {
+      "turns": 12,
+      "steps": 34,
+      "llm_ms": 58200,
+      "tool_ms": 21400,
+      "ttft_ms": 380,
+      "ttft_steps": 34,
+      "decode_ms": 41200,
+      "decode_tokens": 18200,
+      "input_tokens": 486000,
+      "cache_read_tokens": 402000,
+      "cache_write_tokens": 18000,
+      "output_tokens": 26400,
+      "legacy_tokens": 3200
+    }
+  },
+  "todoItem": {
+    "_type": "TodoItem",
+    "value": {
+      "content": "拆分 protocol.go",
+      "status": "done"
+    }
+  },
+  "todoPromptResult": {
+    "_type": "",
+    "value": {
+      "todoPrompt": "strict"
+    }
+  },
+  "todoUpdatedParams": {
+    "_type": "",
+    "value": {
+      "session_id": "s1",
+      "items": [
+        {
+          "content": "拆分 protocol.go",
+          "status": "done"
+        },
+        {
+          "content": "golden 往返测试",
+          "status": "active"
+        }
+      ]
+    }
+  },
+  "todoUpdatedParamsDispatched": {
+    "_type": "",
+    "value": {
+      "session_id": "s1",
+      "items": [
+        {
+          "content": "定位泄漏点",
+          "status": "active"
+        }
+      ],
+      "dispatch_id": "d1"
+    }
+  },
+  "toolEntry": {
+    "_type": "AgentAdminTool",
+    "value": {
+      "id": "read_file",
+      "desc": "读文件",
+      "risk": "low",
+      "source": "binary",
+      "params": [
+        {
+          "name": "path",
+          "type": "string",
+          "required": true,
+          "desc": "文件路径"
+        }
+      ],
+      "doc": "按行读取",
+      "server": "smoke-mcp",
+      "command": "rg {pattern} {path}",
+      "example": "{\"path\":\"main.go\"}",
+      "package_file": "pack.yaml",
+      "custom": false
+    }
+  },
+  "toolResultWithAttachments": {
+    "_type": "AgentEvent",
+    "value": {
+      "session_id": "s1",
+      "id": "call_1",
+      "name": "share_file",
+      "content": "已共享到对话",
+      "is_error": false,
+      "dispatch_id": "d1",
+      "attachments": [
+        {
+          "path": "s1/ab12cd.png",
+          "name": "截图.png",
+          "size": 20480,
+          "mime": "image/png",
+          "kind": "image",
+          "caption": "报错截图"
+        },
+        {
+          "path": "s1/ef34gh.log",
+          "name": "日志.txt",
+          "size": 512,
+          "kind": "file"
+        }
+      ]
+    }
+  }
+}

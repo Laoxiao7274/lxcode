@@ -1,0 +1,18 @@
+/* 样式入口：按级联顺序 @import 分文件。
+ * 顺序敏感——:root 必须最先，响应式/动效减免必须在被覆盖的规则之后。
+ * 拆分理由：原先 6362 行单文件 40 个分节，改一处设置样式要找半天。 */
+@import "./base.css";
+@import "./topbar.css";
+@import "./sidebar.css";
+@import "./thread.css";
+@import "./jobs.css";
+@import "./settings.css";
+@import "./composer.css";
+@import "./responsive.css";
+@import "./settings-models.css";
+@import "./search.css";
+@import "./connections.css";
+@import "./agents.css";
+@import "./catalog.css";
+@import "./git.css";
+@import "./panels.css";

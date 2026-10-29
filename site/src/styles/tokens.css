@@ -1,0 +1,130 @@
+/* ============================================================
+ * lxcode 站点设计 token
+ *
+ * 站点不新造一套视觉语言：产品客户端（frontend/）已经有一套成型的
+ * agent-console-v3 语言（白底近黑字、发丝边框、黑主按钮、绿色只作成功语义），
+ * 官网是同一品牌的公开面，**继承**它而不是另起炉灶——用户从官网下载安装后
+ * 打开应用，两者必须一眼同源。
+ *
+ * 站点在继承之上只加三样东西：
+ *   1) 展示级字号（产品界面里不需要 72px 标题）；
+ *   2) 版心与分节节奏（营销页需要留白，应用界面需要密度）；
+ *   3) 后台管理专用的状态语义色（草稿/渠道/校验态，产品里没有这些概念）。
+ *
+ * 形状锁定（Shape Consistency Lock，全站唯一一套圆角规则）：
+ *   控件（按钮/输入/下拉）8px · 面板与卡片 12px · 标签药丸 999px · 行内代码块 6px
+ * 颜色锁定：唯一强调色 = 绿 #10a37f，且**只用于「已验证 / 已发布 / 成功」语义**；
+ *   主操作永远是黑底白字（与产品一致）。全站不出现第二种强调色、不出现渐变与辉光。
+ *
+ * 尺度锁定（Scale Lock，2026-10 视觉重做）：间距只用 --s-1..--s-9 九档，
+ *   字号只用 --fs-* 这几档，层次靠字号对比 + 字重对比 + 留白，不靠新颜色。
+ * ============================================================ */
+
+:root {
+  /* ---- 继承产品 token（frontend/src/styles/base.css 同名同值）---- */
+  --bg: #ffffff;
+  --bg-side: #f9f9f9;
+  --surface: #ffffff;
+  --fg: #0d0d0d;
+  --fg-muted: #6e6e80;
+  /* --fg-faint 对比度约 3.2:1，**只许用于图标/装饰性元素**，不许用于正文或元数据
+     （12px 等宽元数据是真正要读的内容，一律用 --fg-muted，4.8:1 过 AA）。 */
+  --fg-faint: #8e8ea0;
+  --border: #ececec;
+  --border-strong: #e5e5e5;
+  --border-soft: #f4f4f5;
+  --success: #10a37f;
+  --danger: #e02e2a;
+  --term-bg: #1a1a1a;
+  --term-fg: #d4d4d4;
+  --term-dim: #8e8e96;
+  --font-sans: "Inter Variable", -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, "Cascadia Code", monospace;
+
+  /* ---- 站点新增：产品里没有的语义 ---- */
+  /* 交替分节底（营销页需要区分相邻分节，产品界面没有这个需求） */
+  --bg-soft: #fafafa;
+  /* 悬浮/选中底：比 --bg-soft 再深一档，用于表格 hover 与幽灵按钮 hover */
+  --bg-hover: #f6f6f7;
+  /* beta / 草稿 / 待发布：产品只有「成功」与「危险」两档语义，站点需要第三档 */
+  --warn: #9a6700;
+  --warn-bg: #fff8e5;
+  --warn-border: #f0e0b8;
+  /* 已验证（哈希校验通过）用的浅绿底，避免大面积铺强调色 */
+  --ok-bg: #eaf7f2;
+  /* 悬停时的边框色：只用于交互反馈，不是新的一档语义色 */
+  --border-hover: #d6d6da;
+
+  /* ---- 间距尺度（4 起，全站只用这九档）---- */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 24px;
+  --s-6: 32px;
+  --s-7: 48px;
+  --s-8: 64px;
+  --s-9: 96px;
+
+  /* ---- 版心与节奏 ---- */
+  --shell-max: 1200px;
+  --shell-pad: clamp(24px, 5vw, 48px);
+  --nav-h: 64px;
+  /* 分节纵向节奏：小屏 72px，桌面 120px（重做前是 64 → 104，密度太平） */
+  --section-y: clamp(72px, 8vw, 120px);
+
+  /* ---- 字号（展示级，产品界面里没有这些档位）---- */
+  --fs-display: clamp(2.5rem, 6vw, 4.5rem); /* 40 → 72px，hero 标题 */
+  --fs-h1: clamp(2rem, 3.6vw, 2.75rem); /* 32 → 44px，内页标题 */
+  --fs-h2: clamp(1.625rem, 2.6vw, 2.125rem); /* 26 → 34px，分节标题 */
+  --fs-h3: 1.125rem; /* 18px，卡片标题 */
+  --fs-lead: 1.0625rem; /* 17px，hero 与分节导语 */
+  --fs-body: 1rem; /* 16px，正文（重做前 15px，读起来发虚） */
+  --fs-sm: 0.875rem; /* 14px，次要说明 */
+  --fs-meta: 0.8125rem; /* 13px，等宽元数据 */
+  --fs-eyebrow: 0.75rem; /* 12px，小标签 */
+
+  /* ---- 行高与字距（展示级字必须紧字距，否则大字看起来是散的）---- */
+  --lh-display: 1.05;
+  --lh-tight: 1.22;
+  --lh-body: 1.6;
+  --tr-display: -0.032em;
+  --tr-title: -0.02em;
+  --tr-mono: -0.01em;
+
+  /* ---- 度量（正文不超过 65ch，导语更窄）---- */
+  --measure: 65ch;
+  --measure-narrow: 46ch;
+
+  /* ---- 圆角（全站唯一一套，四档，不允许第五种）---- */
+  --r-ctl: 8px;
+  --r-panel: 12px;
+  --r-chip: 6px;
+  --r-pill: 999px;
+
+  /* ---- 发丝线（站点的分节靠它，而不是靠卡片阴影）---- */
+  --hair: 1px solid var(--border);
+  --hair-strong: 1px solid var(--border-strong);
+
+  /* ---- 层次：极轻阴影 + 悬停抬升（重做前卡片完全平，没有质感）---- */
+  --shadow-btn: 0 1px 2px rgba(13, 13, 13, 0.05);
+  --shadow-card: 0 1px 2px rgba(13, 13, 13, 0.04);
+  --shadow-card-hover: 0 10px 28px rgba(13, 13, 13, 0.07), 0 1px 2px rgba(13, 13, 13, 0.05);
+  --ring: 0 0 0 3px rgba(13, 13, 13, 0.09);
+
+  /* ---- 阴影只给「真实浮起的窗口」用：应用窗口预览、弹窗 ---- */
+  --shadow-window:
+    0 0 0 0.5px rgba(0, 0, 0, 0.04), 0 24px 70px rgba(0, 0, 0, 0.16),
+    0 4px 18px rgba(0, 0, 0, 0.08);
+  --shadow-pop: 0 8px 28px rgba(13, 13, 13, 0.12), 0 1px 3px rgba(13, 13, 13, 0.06);
+
+  /* ---- hero 装饰：点阵与网格（克制，不用渐变堆砌）---- */
+  --dot: rgba(13, 13, 13, 0.08);
+  --grid-line: rgba(13, 13, 13, 0.035);
+
+  /* ---- 过渡（reduced-motion 下由 base.css 归零）---- */
+  --t-fast: 120ms;
+  --t-base: 200ms;
+  --t-slow: 320ms;
+  --ease-out: cubic-bezier(0.22, 0.61, 0.36, 1);
+}

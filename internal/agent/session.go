@@ -1,0 +1,990 @@
+// Package agent 实现会话运行时：内存历史 + agent 工具循环 + 确认门 +
+// todo 状态。这是内核的核心循环——上层（CLI、桌面壳）通过 Send 发起一轮，
+// 经 Emitter 收到类型化事件流（流式增量、工具调用、确认请求……），
+// 经 Confirm 裁决高危操作。内核不依赖任何 UI 框架与网络协议。
+//
+// 本文件是 Session 的**外壳**：类型定义、生命周期、公开访问器与状态查询。
+// 一轮生成的四个阶段与它们的支撑函数分在：turn.go（回合循环）、tools.go
+// （工具执行与权限门）、confirm.go（确认门）、resolve.go（Agent/模型解析）、
+// persist.go（落库与附着）、switch.go（会话切换）。拆分的理由是这些职责的
+// 读者与改动者完全不同——改确认门的人不需要读压缩触发逻辑。
+
+package agent
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"runtime/debug"
+	"sort"
+	"sync"
+
+	"github.com/moyunteng/lxcode/internal/config"
+	"github.com/moyunteng/lxcode/internal/llm"
+	"github.com/moyunteng/lxcode/internal/sessiondata"
+	"github.com/moyunteng/lxcode/internal/tools"
+)
+
+const (
+	// maxToolResultBytes 工具结果进入对话历史的上限（执行层 32KB 全文上限，
+	// 历史层再收口——上下文有限）。
+	//
+	// 这里**刻意没有**"工具循环轮数上限"（原 maxToolRounds=16，2026-09-29 用户拍板
+	// 去掉）：轮数区分不了「卡住」与「任务本来就长」——通读仓库的 researcher 16 轮
+	// 每轮参数都不同，却被误杀在半路。防死循环改用**同参数重复调用**判据，见 repeat.go。
+	maxToolResultBytes = 8 * 1024
+)
+
+// StreamFn 是 LLM 调用的抽象缝（单测注入假实现，不碰网络）。
+type StreamFn func(ctx context.Context, m config.ModelConfig, msgs []llm.Message, opts []llm.Option) (<-chan llm.StreamEvent, error)
+
+// AgentResolver 按名单 id 解析 Agent 装配载荷（四层组合的输入）。
+// 消费方定义的接口（server 从 store 注入——agent 不 import store，
+// 分层规则同 Persistence）。返回 ok=false 表示名单里没有该 id。
+type AgentResolver interface {
+	Resolve(agentID string) (*sessiondata.AgentContext, bool)
+	// ResolveByName 按名字解析（容错：模型把名字当 id 传时兜底）。
+	ResolveByName(name string) (*sessiondata.AgentContext, bool)
+}
+
+// 哨兵错误：服务端按类别映射协议错误码（errors.Is 判断，不做字符串匹配）。
+var (
+	// ErrBusy 会话正在生成中（Send/切换会话被拒）。
+	ErrBusy = errors.New("会话正在生成中")
+	// ErrPendingConfirm 有挂起的确认未处理（切换会话被拒）。
+	ErrPendingConfirm = errors.New("有挂起的确认，先处理确认再切换会话")
+	// ErrNoDefaultModel default 角色未绑定模型。
+	ErrNoDefaultModel = errors.New("default 模型未配置")
+	// ErrModelDisabled default 模型已停用。
+	ErrModelDisabled = errors.New("default 模型已停用")
+	// ErrAgentNotFound 指定的 Agent 不在名单中。
+	ErrAgentNotFound = errors.New("Agent 不存在")
+	// ErrAgentDisabled 指定的 Agent 已停用（不可选用）。
+	ErrAgentDisabled = errors.New("Agent 已停用")
+)
+
+// Emitter 是事件出口：内核把类型化事件推给宿主（CLI 打印 / 壳渲染）。
+type Emitter func(ev Event)
+
+// Session 是单会话 agent 运行时：内存历史 + 串行工具循环 + 确认门 + todo。
+// 会话级别的并发语义：同一时刻只有一轮生成（busy），Send 忙时拒绝。
+type Session struct {
+	reg    *config.Registry
+	tools  *tools.Registry
+	stream StreamFn
+	emit   Emitter
+
+	mu      sync.Mutex
+	history []llm.Message
+	busy    bool
+	cancel  context.CancelFunc
+	pending *ConfirmRequest
+	// confirm 是确认门的裁决通道。ack 是「裁决结果」而不再是裸 bool：二元确认
+	// 只填 Allow；ask_user 提问由 Answer 投入文本答案（见 confirm.go 的
+	// ConfirmOutcome）。ask 与确认共用同一个槽位与同一条通道——全应用只有
+	// 「同时一个挂起确认」这条不变式不因新形态而多出出口。
+	confirm chan ConfirmOutcome
+	todos   []tools.TodoItem
+	// approval 是本会话**当前**的权限档（会话级实时状态，不是一轮的快照）：
+	// 用户中途改档要立刻作用于正在跑的那一轮（runTools 每个工具调用现读
+	// LiveApproval）。空 = confirm（与 tools.ApprovalFrom 的缺省语义一致）。
+	approval string
+	// model 是本会话**选中**的模型注册表 id（会话级状态，不是全局 default 角色）：
+	// 用户在某条会话里切模型只改这条会话——原先模型选择走 role.set 改全局 default，
+	// 一个会话切模型所有会话（以及之后新建的会话）全跟着变，是「模型选择作用域」
+	// 那个 bug 的根因。
+	//
+	// 解析优先级见 modelFor：请求级（chat.send 的 model）> 本字段 > Agent 绑定
+	// （AgentDef.Model）> default 角色。空 = 没选过（老会话/新会话）→ 回落
+	// Agent 绑定与 default 角色，与改动前的行为逐字一致。
+	// 落库（sessions.model）——重启后打开同一条会话还得是用户选的模型。
+	model string
+	// todoPrompt 是本会话的 todo-first 提示词档位（config.TodoPrompt*——
+	// 用户在设置里选的内置模板）。chat.send 时由服务端按 behavior.json 现读
+	// 传入（会话级，子会话派发时从父会话继承）；空 = strict。与 approval 的
+	// 区别：它不需要「运行中即时生效」——下一轮读新值即可（提示词每轮现组装）。
+	todoPrompt string
+	// approvalSource 非 nil = 本会话是子会话：档位不自己说了算，而是
+	// 「父会话**此刻**的档位」与 approvalDefault 取严（子执行面不大于请求方）。
+	// 为什么是回调而不是派发那一刻算好的死值：父会话中途改档必须传得到
+	// **正在跑的**子会话——用户实测「跑 dev 的是子 Agent」正是这条。
+	approvalSource func() string
+	// approvalDefault 是子 Agent 自己的权限默认（取严用；空 = 未声明，按
+	// 「继承父会话」处理）。只在 approvalSource 非 nil 时有意义。
+	approvalDefault string
+	// notices 是待投递的自动通告队列（后台任务唤醒）：Notify 忙时排队，
+	// runTurn 在**轮边界**并入历史（见 notify.go）。与 history 同一把锁——
+	// 否则 injectNotices 与 append 会交错。
+	notices []llm.Message
+	// passiveNotices 是**被动通告**队列（永不自动开轮）：与 notices 的差别在
+	// flushNotices——后台任务通告要尽快唤醒 agent（空闲就开一轮），而「用户中断」
+	// 这类注记只该在**下一轮真的开始时**（用户说话/下一次派发）由轮边界
+	// injectNotices 并入历史。进 notices 的话，runTurn 收尾的 flushNotices 会把
+	// 它自动开成一轮——用户刚点了停止，模型又自顾自回复一段，正好违背中断语义。
+	passiveNotices []llm.Message
+	// wakeGate 是「能不能开新一轮」的判定（server 侧的连续唤醒预算；
+	// nil = 不限制）。只约束空闲开新轮，不管轮边界注入。
+	wakeGate func() bool
+
+	// 持久化（st 为 nil = 纯内存模式，兼容不接存储的调用方/单测）。
+	// SQLite 版无句柄概念：会话 = sessions 表一行，按 s.id 追加写。
+	st Persistence
+	id string // 当前会话 id（空 = 尚未创建行）
+	// pendingWorkspace 是「下一个新会话」的归属项目（session.new 时设置，
+	// 会话行首条消息懒建时落库并清空）。单会话架构下的过渡设计——
+	// 多会话并发时归属直接挂在会话对象上。
+	pendingWorkspace string
+	// workDir 是当前会话的工作目录（归属项目的根目录；空 = 后端进程
+	// 目录）。工具的相对路径、bash 默认目录与系统提示词的工作目录说明
+	// 都以它为准——每轮开始时快照进 ctx（tools.WithWorkDir）。
+	workDir string
+	// worktreeBranch/worktreeBase/worktreeNoGit 是本会话的工作区信息：主检出当前
+	// 分支名、会话基线 HEAD 与「目录不是 git 仓库」标志（server 在 prepareWorkspace
+	// 后设置；子会话从父会话继承）。Branch 空 = 未分组会话或非 git 目录（后者
+	// NoGit=true）——提示词零注入或降级告知。与 workDir 的分工：workDir 是
+	// 「工具在哪跑」（直连模式 = 主检出），这些是「模型该怎么看待提交」。
+	worktreeBranch string
+	worktreeBase   string
+	worktreeNoGit  bool
+	// dispatchRoot 是本轮主 Agent 载荷（dispatch 委派名单校验的依据——
+	// runDispatch 在工具执行位读它；busy 期间与 ac 同生命周期）。
+	dispatchRoot *sessiondata.AgentContext
+	// agents 是名单解析器（M2 上下文组装——nil = 无 Agent 语境，走
+	// 全局默认提示词；server 装配时从 store 注入）。
+	agents AgentResolver
+	// projectDocs 是项目守则读取器（项目根 AGENTS.md——server 装配时注入；
+	// nil = 不注入）。agent 不碰文件系统：读取实现由消费方提供。
+	projectDocs ProjectDocsFunc
+	// context 是最近一次主轮请求的上下文占用（P1 计账）：Used 优先取
+	// provider 回报的真实 prompt_tokens，拿不到才用估算。压缩触发与 UI
+	// 指示器都读它——单一事实源，避免两处各算一遍而互相矛盾。
+	context ContextUsage
+	// turnDone 是本轮的收尾信号（SendWait 用）：Send 时新建，runTurn 的
+	// defer 关闭。派发要等子会话给出结论——异步 Send 满足不了这个需求。
+	turnDone chan struct{}
+	// turnEnded 是本轮的收尾信号（**所有路径**用，普通用户轮也有）：Send 时
+	// 新建，runTurn 的 defer 关闭。与 turnDone 的分工：turnDone 只服务
+	// SendWait 的"等结论"，而撤回的"自动取消并等待收尾"需要在**普通用户轮**
+	// 上也能等到收尾——没有它，撤回只能拒掉 busy 会话（用户先点停止再点
+	// 撤回，两步变三步）。panic 也走 runTurn 的 defer，信号同样可靠。
+	turnEnded chan struct{}
+	// confirmProxy 非空时本会话的确认请求交给它裁决（子会话把确认门代理给
+	// 父会话）：全应用只有"同时一个挂起确认"这条不变式，子会话自己持
+	// pending 的话服务端的 tool.confirm 找不到它。
+	confirmProxy func(ctx context.Context, req *ConfirmRequest) (ConfirmOutcome, bool)
+	// compacting 是手动压缩的防并发重入标志（Compact 置位/复位）：runCompaction
+	// 的摘要阶段不持 busy（那是一轮生成的事），没有它的话同一会话并行两个
+	// chat.compact 会跑两次全量 prefill、且后提交的那个撞「压缩期间被改动」
+	// 防线两边一起失败。判定走 ErrBusy，与生成忙同一错误码。
+	compacting bool
+	// confirmMu 串行化确认门本身：上面那条不变式（同时只有一个挂起确认）原先靠
+	// "工具循环是串行的"顺带成立；并行 dispatch（runTools 阶段二）之后多个子会话
+	// 会同时来要确认，不串行化的话后到的会顶掉 s.pending/s.confirm，先到的那次
+	// 永远等不到裁决——子会话卡死在 busy。用户一次只裁决一个，排队符合交互语义。
+	confirmMu sync.Mutex
+	// protectHead 为真时压缩不碰历史第 0 条——子会话的任务说明书（派发时那条
+	// user 任务消息，子 Agent 的全部依据）。它一旦被压进摘要，续跑/长任务里
+	// 子 Agent 就再也看不到原始任务，只能看到一份自己越写越远的转述。
+	// 主会话为假（没有这条头部，压缩前缀从 0 开始）；由 dispatch.openChildSession
+	// 置位（新建与续跑同一入口）。
+	protectHead bool
+	// ownerID 是本会话的**时间线归属**（顶层会话 id）。子 Agent 是独立会话，它起的
+	// 后台任务要挂在父会话的时间线上——唤醒通告投给父会话才有人能行动（子会话不进
+	// 侧栏）。空 = 自己就是顶层（OwnerSessionID 回落自身 id）。
+	// 由 dispatch.openChildSession 置位。
+	ownerID string
+	// agentID 是本会话运行的 Agent 名单 id（子会话 = 它自己的 Agent；主会话 = main）。
+	// 空 = 旧语境/未指定（resolveAgent 把空当主 Agent）。
+	//
+	// 为什么要记它：会话页要显示"这个会话用的是哪个模型"，而子 Agent 可以绑自己的
+	// 模型（AgentDef.Model）——不记归属 Agent 就只能回落主 Agent 的模型，把子会话的
+	// 模型显示错。来源有三处：Send 时解析出的 ac、dispatch 开子会话时显式置位、
+	// 服务端按会话 id 从库里读回（刷新后重新附着同一会话）。
+	agentID string
+	// turnCounters 是本会话按轮（锚点 seq）记的「无法快照的写」计数
+	// （docs/session-tree.md §C.1）。树面板的 ⚠️ 徽标与回滚确认文案都读它。
+	turnCounters *turnCounters
+	// children 是本会话**正在跑的子会话**登记（子会话 id → 运行时）。子会话的
+	// 运行时不进 server.sessions（生命周期跟着 runDispatch 走，跑完即注销），
+	// 不登记的话服务端对子会话 id 调 chat.cancel 会 newRuntime 建一个空对象
+	//（Cancel 空操作）——停不掉真正在跑的子轮。并行 dispatch 下同一父可有多个
+	// 活子会话，按 id 一对一。
+	children map[string]*Session
+	// dispatches 是运行中派发的**观察快照**登记（dispatch_id → RunningDispatch）。
+	// children 只回答「这个子会话 id 活着吗」（CancelChild 用），观察端要的却是
+	// 「卡长什么样」（子会话 id / Agent 名 / 任务）——元数据没地方放，单独记一份。
+	// 与 children 同生命周期：registerChild/unregisterChild 同步维护（两处调用
+	// 点在 dispatch.go，天然覆盖 runDispatch 与 RunAgentTask 两条路），跑完即注销
+	// ——不会把已结束的派发报成运行中。chat.history 据此导出 running_dispatches。
+	dispatches map[string]RunningDispatch
+	// readState 是本会话的读取观测（read_file 的重复读去重、edit 的「改前先读」
+	// 提示共用）。**会话级**状态：父子会话各持一份（注册表是进程级单例，
+	// 父会话读过的文件不能替子会话满足前置条件——与 todo sink 同一条理由）。
+	// 会话生命周期内常驻：跨轮次仍有效（上一轮读过的文件这一轮不必再灌一遍），
+	// 新建/切换会话时由 New / 附着路径换成新实例。
+	readState *tools.ReadState
+}
+
+// New 创建会话；emit 为 nil 时事件被丢弃（单测可只调方法）。
+func New(reg *config.Registry, toolReg *tools.Registry, emit Emitter) *Session {
+	if emit == nil {
+		emit = func(Event) {}
+	}
+	s := &Session{reg: reg, tools: toolReg, stream: streamWithLLM, emit: emit,
+		turnCounters: newTurnCounters(), readState: tools.NewReadState()}
+	// 注意：todo 清单的写回口与技能目录都**不进注册表**（进程级单例），
+	// 而是每轮经 ctx 注入（runTurn 里 WithTodoSink / WithSkillSource）——
+	// 子 Agent 是独立会话后，注册表级全局态会让父子互相踩（见 tools/sessionstate.go）。
+	return s
+}
+
+// SetAgentResolver 挂载名单解析器（M2 上下文组装；server 装配时注入，
+// nil 已挂时是 no-op——幂等）。挂载后 Send 默认走主 Agent 语境。
+func (s *Session) SetAgentResolver(r AgentResolver) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.agents == nil {
+		s.agents = r
+	}
+}
+
+// SetProjectDocs 挂载项目守则读取器（项目根 AGENTS.md；server 装配时注入）。
+// 每轮组装提示词时调用一次——守则改了立刻生效（长命会话里「我刚改了
+// AGENTS.md 它却不知道」是更糟的体验）。
+func (s *Session) SetProjectDocs(fn ProjectDocsFunc) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.projectDocs = fn
+}
+
+// SetProtectHead 声明本会话压缩时是否保护历史第 0 条（子会话的任务说明书）。
+// 只该在会话开始跑之前调用一次——dispatch 开子会话时置位，主会话保持默认 false。
+func (s *Session) SetProtectHead(protect bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.protectHead = protect
+}
+
+// projectDocsFor 取会话工作目录对应的项目守则（未注入或未分组 → 空）。
+func (s *Session) projectDocsFor(workDir string) ProjectDocs {
+	s.mu.Lock()
+	fn := s.projectDocs
+	s.mu.Unlock()
+	if fn == nil || workDir == "" {
+		// 空 workDir = 未分组会话（无项目）：严格项目级——不注入，
+		// 也绝不退化成读后端进程目录的 AGENTS.md（那会把 lxcode 自己的
+		// 仓库守则塞进用户无关的对话）
+		return ProjectDocs{}
+	}
+	return fn(workDir)
+}
+
+// SetEmitter 替换事件出口（宿主构造晚于 Session 时接线用）。
+// 并发安全：emit 只在事件 goroutine 里读——替换发生在任何 Send 之前是
+// 期望用法；startEvents 的锁由宿主自己保证。
+func (s *Session) SetEmitter(emit Emitter) {
+	if emit == nil {
+		emit = func(Event) {}
+	}
+	s.mu.Lock()
+	s.emit = emit
+	s.mu.Unlock()
+}
+
+// SetStream 替换 LLM 调用实现（测试注入假实现，不碰网络；须在 Send 前调用）。
+func (s *Session) SetStream(fn StreamFn) {
+	s.mu.Lock()
+	s.stream = fn
+	s.mu.Unlock()
+}
+
+// SetApprovalSource 声明本会话的权限档来源（子会话 = 父会话的实时档位）。
+// 传回调而不是值：父会话中途改档必须传得到正在跑的子会话。只该在会话开始跑
+// 之前调用一次——dispatch 开子会话时置位，主会话保持 nil（自己说了算）。
+func (s *Session) SetApprovalSource(src func() string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.approvalSource = src
+}
+
+// SetApprovalDefault 声明子 Agent 自己的权限默认（取严用；空 = 未声明）。
+// 与 SetApprovalSource 配套，只该在会话开始跑之前调用一次。
+func (s *Session) SetApprovalDefault(mode string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.approvalDefault = mode
+}
+
+// LiveApproval 返回本会话**此刻**的权限档（每个工具调用现读，不是开轮时的快照）。
+//
+// 为什么要有它（2026-09-29 用户实测）：权限档原先在 Send 里快照进这一轮的 ctx、
+// runTools 每轮读那份快照——用户跑到一半把权限放开，正在跑的那一轮完全不知道，
+// 该弹确认还是弹。改成会话级实时状态后，中途改档立刻作用于运行中的一轮。
+//
+// 子会话：stricterApproval(父会话此刻的档位, 子 Agent 自己的默认)——取严语义
+// （子执行面不大于请求方）保持不变，只是从「派发那一刻」改成「每次现算」。
+//
+// 锁纪律：approvalSource 会回调父会话（父会话要拿自己的 s.mu），**绝不能在持
+// s.mu 时调它**——同锁重入会死锁。所以先把三个字段取出来、解锁，再调。
+func (s *Session) LiveApproval() string {
+	s.mu.Lock()
+	src, def, cur := s.approvalSource, s.approvalDefault, s.approval
+	s.mu.Unlock()
+	if src != nil {
+		return stricterApproval(src(), def)
+	}
+	// 顶层会话：空 = 未指定 → confirm（沿用 effectiveApproval 的缺省单点）。
+	return effectiveApproval(cur, "")
+}
+
+// SetApproval 设置本会话当前的权限档（中途改档立刻生效于运行中的一轮）。
+// 空串 = 未指定（回落 confirm）。返回规范化后的档位。
+//
+// 切到 auto 时顺带放行挂起的确认：用户已经说了「别问我」，留一张卡堵着等于
+// 「说了没用」——那正是这次要修的东西。裁决走**既有的确认通道**（往 s.confirm
+// 投递，与 Confirm 完全同一条路径）：在锁里直接写 channel 会死锁，而绕开通道
+// 另造一条放行路径会让「同时一个挂起确认」这条不变式多出一个出口。
+//
+// **ask 提问不放行**：auto 豁免的是「高危工具的确认打扰」，而 ask_user 是模型
+// 主动向用户要决策——自动替用户编一个回答等于冒充用户表态（合并进程里可能就是
+// 「冲突保哪边」这种不可撤回的取舍）。所以 auto 只放行 Kind=="" 的确认，
+// ask 保持挂起等用户回来。
+func (s *Session) SetApproval(mode string) string {
+	norm := mode
+	if norm == "" {
+		norm = string(tools.ApprovalConfirm)
+	}
+	s.mu.Lock()
+	s.approval = norm
+	// 只在切到 auto 且确实有挂起**确认**（非 ask 提问）时取通道；非阻塞投递
+	//（缓冲已满 = 这次挂起已被裁决过，重复投递没有意义）。
+	var ch chan ConfirmOutcome
+	if norm == string(tools.ApprovalAuto) && s.pending != nil && s.pending.Kind == "" {
+		ch = s.confirm
+	}
+	st, id := s.st, s.id
+	s.mu.Unlock()
+	if ch != nil {
+		select {
+		case ch <- ConfirmOutcome{Allow: true}:
+		default:
+		}
+	}
+	// 落库（不持锁——写盘不该占着会话锁）：审批档是会话的状态，重启后打开这条
+	// 会话还得是改后的档。失败只记日志：内存才是运行真源，落库失败不该让改档
+	// 本身失败（最坏情况是重启后回落默认档）。st 为 nil（纯内存模式）或 id 为空
+	//（会话还没建行）时是 no-op——与 persistContextUsage 同一条接缝模式。
+	persistApproval(st, id, norm)
+	return norm
+}
+
+// SetModel 设置本会话选中的模型（会话级状态：只改这一条会话，不动全局 default
+// 角色——模型选择的作用域就是会话）。
+//
+// 入参是**注册表引用**：组合键（`provider::id`）或纯 id 都接受（解析交给
+// config.Registry.Resolve）——存量 sessions.model 里存的是纯 id，照旧解析。
+// 落库与返回值都是**规范键**（config.ModelConfig.Key()），所以两个不同
+// 提供商的同名模型在会话级选择上互不冲突。
+//
+// 校验模型存在且启用：不存在的引用报错（协议层映射成参数错误），**不静默回落**
+// 到别的模型——那会让用户以为选中的那个在用。
+//
+// 与 SetApproval 同一条接缝模式：改内存 → 落库（不持锁，写盘不该占会话锁）→
+// 调用方广播。落库失败只记日志（内存才是运行真源，最坏情况是重启后回落默认），
+// st 为 nil / id 为空时是 no-op。运行中的一轮不受影响：模型在开轮时解析
+// （streamRound），下一轮才用新模型——与「热切换模型到下一轮生效」一致。
+//
+// 返回规范化后的模型引用（= 注册表主键），调用方据此广播。
+func (s *Session) SetModel(id string) (string, error) {
+	if id == "" {
+		return "", errors.New("model 不能为空（切回默认请传 default 角色的模型引用）")
+	}
+	m, ok := s.reg.Resolve(id)
+	if !ok {
+		return "", fmt.Errorf("模型不存在: %s", id)
+	}
+	if !m.Enabled {
+		return "", fmt.Errorf("%w: %s", ErrModelDisabled, m.Key())
+	}
+	key := m.Key()
+	s.mu.Lock()
+	s.model = key
+	st, sid := s.st, s.id
+	s.mu.Unlock()
+	persistSessionModel(st, sid, key)
+	return key, nil
+}
+
+// SelectedModel 返回本会话**显式选中**的模型引用（注册表主键；空 = 没选过——回落 Agent 绑定 /
+// default 角色）。与 ModelID 的分工：那个是「此刻实际用哪个」（解析后的结果），
+// 这个是「用户给这条会话选了什么」——前端选择器的选中态按它对齐。
+func (s *Session) SelectedModel() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.model
+}
+
+// setModelInMemory 只改内存里的会话级模型槽位，**不落库**——派发链给子会话继承
+// 父会话选择用的内部通道（dispatch.go 的 inheritModel）。
+//
+// 为什么不落库：继承的父模型不是子会话**自己的**选择，落库会让续跑/回放把它当成
+// 子会话显式选中的模型，此后「父会话清掉选择 / 子 Agent 改绑」都反映不到下一次
+// 派发（Agent 绑定永远被压死）。内存级则每轮派发重新按优先级解析。
+//
+// 入参信任调用方（dispatch.go 传的是父会话已解析过的注册表主键），不做注册表校验——
+// 校验失败也不能让派发失败，回落解析链即可。
+func (s *Session) setModelInMemory(id string) {
+	s.mu.Lock()
+	s.model = id
+	s.mu.Unlock()
+}
+
+// TodoPromptMode 返回本会话的 todo-first 提示词档位（config.TodoPrompt*；
+// 空 = strict）。提示词组装（turn/compaction）与子会话派发继承都读它。
+func (s *Session) TodoPromptMode() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.todoPrompt == "" {
+		return config.TodoPromptStrict
+	}
+	return s.todoPrompt
+}
+
+// Send 发起一轮对话（异步）：校验模型 → 入历史 → 后台跑工具循环。
+// 忙时返回 ErrBusy；模型未绑定/停用返回对应哨兵（服务端按类别映射错误码）。
+func (s *Session) Send(text string, opts ...SendOpt) error {
+	if text == "" {
+		return errors.New("text 不能为空")
+	}
+	var cfg sendConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
+	ac, err := s.resolveAgent(cfg.agentID)
+	if err != nil {
+		return err
+	}
+	if _, err := s.modelFor(ac); err != nil {
+		return err // 快速失败（模型缺失在入历史前拒绝——不留半截轮次）
+	}
+
+	// 图片张数上限在入历史前校验（快失败——不留半截轮次）。
+	if len(cfg.images) > llm.MaxImagesPerMessage {
+		return fmt.Errorf("一条消息最多带 %d 张图片（收到 %d 张）", llm.MaxImagesPerMessage, len(cfg.images))
+	}
+
+	s.mu.Lock()
+	if s.busy {
+		s.mu.Unlock()
+		return ErrBusy
+	}
+	s.busy = true
+	// 本轮收尾信号：撤回的「自动取消并等待收尾」在普通用户轮上也能等到
+	// runTurn 真正结束（runTurn 的 defer 负责关闭，panic 路径同样走到）。
+	s.turnEnded = make(chan struct{})
+	// 先落盘拿序号再入历史：chat.userMessage 实时事件要带 seq（前端拿它当撤回
+	// 锚点），只让"刷新后的历史"有序号等于这条消息当场就撤不了——用户点撤回时
+	// 前端手里没有锚点。
+	// Notice 是**注入的提示条**标记（后台任务通告走 flushNotices → Send）：
+	// 它随消息落库，会话统计的轮数按它把注入消息排除在外（见 store.foldSessionStats）。
+	// Images 是图片**文件引用**（视觉请求）：随消息落库与回放，base64 绝不经此路径。
+	// Attachments 是附件**展示元数据**（前端渲染附件卡——实时事件与历史回放同一份）。
+	userMsg := llm.Message{Role: "user", Content: text, Notice: cfg.notice, Images: cfg.images, Attachments: cfg.attachments}
+	userMsg.Seq = s.persistLocked(userMsg)
+	s.history = append(s.history, userMsg)
+	// 记下本轮归属的 Agent（会话页显示的模型按它解析）：主会话空 id 解析出的是
+	// 主 Agent，这里存解析后的 id，之后 ModelID() 走同一条解析路径。
+	if ac != nil {
+		s.agentID = ac.Def.ID
+	}
+	// 权限模式**存进会话**（会话级实时状态，runTools 每次现读——见 LiveApproval）：
+	// 显式给了就按请求级覆盖（chat.send 的参数语义不变，请求级优先），没给则
+	// 只在还没定过时回落 Agent 默认——CLI 路径不带参数，别把用户中途选的档位
+	// 重置掉。Agent 载荷与白名单仍进 runTurn（每轮快照，busy 期间不可变）。
+	if cfg.approval != "" {
+		s.approval = effectiveApproval(cfg.approval, agentDefaultOf(ac))
+	} else if s.approval == "" {
+		s.approval = effectiveApproval("", agentDefaultOf(ac))
+	}
+	// todo-first 档位同 approval 的存法：显式给了就覆盖会话现值（服务端每次
+	// chat.send 按 behavior.json 现读传入——热加载对下一轮自动生效），没给
+	// 则保留现值（CLI 路径/内部通告开轮不该重置用户的档位）。
+	if cfg.todoPrompt != "" {
+		s.todoPrompt = cfg.todoPrompt
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	s.cancel = cancel
+	s.mu.Unlock()
+	// ctx 里这份是「开轮时的请求级档位」——判定来源已改成 LiveApproval（实时），
+	// 这份保留给仍按 ctx 取档的调用方（tools.ApprovalFrom，见契约 E）。
+	ctx = tools.WithApproval(ctx, tools.Approval(s.LiveApproval()))
+
+	s.emit(UserMsgEvent{Message: userMsg})
+	s.emit(BusyEvent{Busy: true})
+	go func() {
+		// panic 防护（健壮性加固，2026-10）：生成 goroutine 里的任何 panic
+		//（工具实现、llm 适配、本包逻辑的 bug）按 Go 语义会打死整个进程——
+		// 所有会话全部陪葬。这里转成 TurnError 事件（用户看到「本轮生成失败」
+		// 的人话），资源收尾仍走 runTurn 自己的 defer（busy 复位 / done 关闭 /
+		// 通告冲刷在 panic 传播路径上照常执行）；stack 完整落日志，不吞信息。
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("会话 %s 本轮生成 panic（已转为本轮错误，进程继续运行）: %v\n%s",
+					s.id, r, debug.Stack())
+				// panic 补配对在前（2026-12 拍板）：runTurn 的 defer 已经把
+				// busy 复位，此时历史不再被本轮写入，补齐是安全的；先补再
+				// 发 TurnError，TurnError 到达前端时配对已闭合——用户立刻
+				// 点撤回也不会撞上「配对不平衡切点」的拒绝。
+				s.repairUnpairedAfterPanic()
+				s.emit(TurnErrorEvent{Message: "本轮生成失败（内部错误），请重试；若反复出现请查看后端日志。"})
+			}
+		}()
+		s.runTurn(ctx, cfg, ac)
+	}()
+	return nil
+}
+
+// Cancel 取消当前生成（aborted 语义：已生成部分保留入历史）。
+func (s *Session) Cancel() {
+	s.mu.Lock()
+	cancel := s.cancel
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+// CancelChild 取消一个**正在跑的**子会话：命中（该 id 是本会话登记中的活子会话）
+// 则取消它并返回 true；未命中返回 false（调用方走原路径——普通会话取消 /
+// 子会话已结束后的兜底）。
+//
+// 为什么挂在父会话上：子会话运行时的生命周期跟着 runDispatch 走（跑完即注销），
+// 不在 server.sessions 里——服务端对子会话 id 直接 s.session(id) 会 newRuntime
+// 建一个空对象，Cancel 是空操作。登记/注销的路径覆盖见 dispatch.go（runDispatch
+// 与 RunAgentTask 都在 openChildSession 成功后登记、defer 注销）。
+func (s *Session) CancelChild(childID string) bool {
+	if childID == "" {
+		return false
+	}
+	s.mu.Lock()
+	child := s.children[childID]
+	s.mu.Unlock()
+	if child == nil {
+		return false
+	}
+	child.Cancel()
+	return true
+}
+
+// RunningChild 返回登记中的活子会话（正在跑的），未命中返回 nil。CancelChild
+// 用它做取消寻址；server 的 send 拦截用它回答「这个子会话 id 此刻是否正在派发
+// 中」（s.session(id) 对子会话 id 会现建一份 busy 恒 false 的新运行时，回答不了
+// 这个问题——真运行时只挂在 children 登记里，生命周期跟着派发走）。
+func (s *Session) RunningChild(childID string) *Session {
+	if childID == "" {
+		return nil
+	}
+	s.mu.Lock()
+	child := s.children[childID]
+	s.mu.Unlock()
+	return child
+}
+
+// registerChild 登记（openChildSession 成功后调用）；key 为空不登记（纯内存
+// 子会话没有 id，外部本来就寻址不到它）。
+func (s *Session) registerChild(key string, child *Session) {
+	if key == "" {
+		return
+	}
+	s.mu.Lock()
+	if s.children == nil {
+		s.children = make(map[string]*Session)
+	}
+	s.children[key] = child
+	s.mu.Unlock()
+}
+
+// registerDispatch 登记**运行中派发的观察快照**（runDispatch/RunAgentTask 在
+// registerChild 的同一位置调用；dispatch_id 为空不登记——老载荷没有归属键，
+// 观察端本来就没有可回填的卡）。与 unregisterChild 成对注销。
+func (s *Session) registerDispatch(d RunningDispatch) {
+	if d.DispatchID == "" {
+		return
+	}
+	s.mu.Lock()
+	if s.dispatches == nil {
+		s.dispatches = make(map[string]RunningDispatch)
+	}
+	s.dispatches[d.DispatchID] = d
+	s.mu.Unlock()
+}
+
+// unregisterDispatch 注销（与 registerDispatch 成对，SendWait 收尾路径全覆盖）。
+func (s *Session) unregisterDispatch(key string) {
+	if key == "" {
+		return
+	}
+	s.mu.Lock()
+	delete(s.dispatches, key)
+	s.mu.Unlock()
+}
+
+// RunningDispatches 导出**此刻正在跑**的派发快照（chat.history 的
+// running_dispatches 数据源；server 在 historyResult 组装时调用）。空 = 没有
+//（caller 省略整个键）。顺序：按登记键升序——map 遍历序不稳定，没有这个排序
+// 同一屏两次请求会给出两种顺序（前端/测试按内容比对时看起来像「变了」）。
+func (s *Session) RunningDispatches() []RunningDispatch {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.dispatches) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(s.dispatches))
+	for k := range s.dispatches {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]RunningDispatch, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, s.dispatches[k])
+	}
+	return out
+}
+
+// unregisterChild 注销（SendWait 收尾后调用——正常结束 / 取消 / panic 三条
+// 路径都经 defer 走到这里）。
+func (s *Session) unregisterChild(key string) {
+	if key == "" {
+		return
+	}
+	s.mu.Lock()
+	delete(s.children, key)
+	s.mu.Unlock()
+}
+
+// SendWait 跑一轮并**等它结束**（派发给子会话时用：主 Agent 要拿子会话的结论）。
+// ctx 取消 → 取消这一轮并等它真正收尾（取消是异步的，不等会读到半截历史）。
+// 与 Send 的差别只有"等"：事件流、历史写入、压缩触发全部走同一条路径。
+func (s *Session) SendWait(ctx context.Context, text string, opts ...SendOpt) error {
+	done := make(chan struct{})
+	s.mu.Lock()
+	s.turnDone = done
+	s.mu.Unlock()
+
+	if err := s.Send(text, opts...); err != nil {
+		s.mu.Lock()
+		s.turnDone = nil
+		s.mu.Unlock()
+		return err
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		s.Cancel()
+		<-done // 等它真正收尾（取消是异步的）——否则父会话会读到半截历史
+		return ctx.Err()
+	}
+}
+
+// AppendForTest 把一条消息直接写进历史并落库（仅测试用：chat.history 的 tail
+// 行为要一段已落库的真实历史——生产路径只有 Send/notify 会写历史）。
+func (s *Session) AppendForTest(m llm.Message) {
+	s.append(m)
+}
+
+// ExternalCount 返回本会话累计的「无法快照的写」数（dispatch 回带父会话用）。
+//
+// 口径见 external.go：只有**成功执行**的变更类工具才计；edit/write_file 的快照
+// 被跳过（大文件/二进制）同样算。子会话的这个数经 DispatchResult.ExternalCount
+// 加到父会话那一轮上——回滚时用户看到的「N 处无法还原」必须包含子 Agent 的 bash。
+func (s *Session) ExternalCount() int {
+	s.mu.Lock()
+	c := s.turnCounters
+	s.mu.Unlock()
+	if c == nil {
+		return 0
+	}
+	total := 0
+	c.mu.Lock()
+	for _, n := range c.bySeq {
+		total += n
+	}
+	c.mu.Unlock()
+	return total
+}
+
+// Busy 返回当前忙闲状态。
+func (s *Session) Busy() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.busy
+}
+
+// History 返回会话快照（消息 + 忙闲 + 挂起的确认 + todo），供宿主初始化视图。
+func (s *Session) History() Snapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	msgs := append([]llm.Message(nil), s.history...)
+	var pending *ConfirmRequest
+	if s.pending != nil {
+		p := *s.pending
+		pending = &p
+	}
+	return Snapshot{
+		Messages: msgs, Busy: s.busy, Pending: pending,
+		SessionID: s.id, Todos: append([]tools.TodoItem(nil), s.todos...),
+		Context: projectedUsage(s.context, msgs), Checkpoints: checkpointIndexes(msgs),
+	}
+}
+
+// TailHistory 返回会话快照的**尾部窗口**（慢链路客户端分页加载的内核配合项）。
+//
+// n ≤ 0 或 n ≥ 历史长度时等价于 History()（全量）。n > 0 时只取尾部 n 条：
+// 起点强制回退到最近的**工具配对平衡切点**（AnalyzeToolPairing 的不变量——
+// 把 assistant 的 tool_calls 切在它的 tool 结果之前是畸形历史，严格端点 400
+// 拒收整轮）。起点落在配对平衡切点上时，前端拿这份窗口当独立历史渲染/配对
+// 都与全量逐字一致；Checkpoint 下标同步平移（窗口里第一个是检查点 → 下标 0）。
+//
+// pending/todo/busy/context 与全量完全一致（它们不是历史区间的函数）：
+// context 的投影基线按**全量历史**算——窗口只是传输裁剪，占用统计不能因为
+// 客户端只拉了尾巴就变小。
+func (s *Session) TailHistory(n int) Snapshot {
+	snap := s.History()
+	if n <= 0 || n >= len(snap.Messages) {
+		return snap
+	}
+	pairing := AnalyzeToolPairing(snap.Messages)
+	start := len(snap.Messages) - n
+	if balanced := pairing.NearestBalancedAtOrBefore(start); balanced >= 0 {
+		start = balanced
+	}
+	// NearestBalancedAtOrBefore 返回 -1 只在 Cuts 全假时（开头恒真，实际不可达）；
+	// 防御性回落全量，不猜。
+	if start < 0 {
+		return snap
+	}
+	tail := append([]llm.Message(nil), snap.Messages[start:]...)
+	snap.Messages = tail
+	snap.Checkpoints = shiftCheckpoints(snap.Checkpoints, start)
+	return snap
+}
+
+// HistoryBefore 返回会话快照里「某条消息之前」的**前缀窗口**（慢链路客户端
+// 向上翻页的内核配合项，与 TailHistory 同一套纪律）。
+//
+// 参数：seq = 客户端已加载窗口最旧一条消息的**库序号**（llm.Message.Seq——
+// store 分配的 messages.seq，chat.history 的每条消息都带着，客户端原样记录）；
+// n = 最多返回多少条。返回 seq 之前（不含 seq）最多 n 条，加三个窗口元数据：
+//
+//   - start 回退到最近的**工具配对平衡切点**（AnalyzeToolPairing 的不变量——
+//     分页窗口同样不能把 assistant 的 tool_calls 切在它的 tool 结果之前，
+//     严格端点 400 拒收整轮）；
+//   - Checkpoints 下标同步平移：窗口里的「已压缩历史」块照常渲染（下标
+//     平移后与该窗口独立成史时的语义逐字一致——桌面端怎么做这里就怎么做），
+//     窗口外的检查点丢弃（它属于还没拉的那段更早历史）；
+//   - hasMore = 窗口起点 > 0（还有更早的没拉）；firstSeq = 窗口首条的 Seq
+//     （客户端下一次分页的 anchor；空窗口时 0）；
+//   - pending/todo/busy/context 与全量完全一致（它们不是历史区间的函数——
+//     窗口只是传输裁剪，TailHistory 的同一条注释在这里逐字成立）。
+//
+// seq 不在历史里（≤0 或查无此号）返回错误：客户端只信任自己记录的 seq，
+// 错误的 anchor 会切出重复或空洞的窗口——静默回落全量只会把错位藏起来。
+// 这是**协议错误**（server 侧映射 CodeInvalidParams），不是内部故障。
+func (s *Session) HistoryBefore(seq int64, n int) (snap Snapshot, hasMore bool, firstSeq int64, err error) {
+	snap = s.History()
+	if seq <= 0 {
+		return snap, false, 0, fmt.Errorf("before_seq 必须是消息序号（正整数），得到 %d", seq)
+	}
+	if n <= 0 {
+		return snap, false, 0, fmt.Errorf("分页条数 n 必须是正整数，得到 %d", n)
+	}
+	// anchor 的库内位置：按 Seq 线性找（Seq 在内存历史里单调不减——store 分配；
+	// 线性扫的代价可忽略：分页请求本来就是慢链路上的低频操作）。
+	anchor := -1
+	for i, m := range snap.Messages {
+		if m.Seq == seq {
+			anchor = i
+			break
+		}
+	}
+	if anchor < 0 {
+		return snap, false, 0, fmt.Errorf("before_seq %d 不在这条会话的历史里（会话可能已被撤回或压缩重建）", seq)
+	}
+	if anchor == 0 {
+		// anchor 就是历史第一条：之前没有内容了。返回空窗口 + has_more=false
+		//（不报错——客户端滚到头继续触发是正常路径，不是异常）。
+		return snap, false, 0, nil
+	}
+	start := anchor - n
+	if start < 0 {
+		start = 0
+	}
+	pairing := AnalyzeToolPairing(snap.Messages)
+	if balanced := pairing.NearestBalancedAtOrBefore(start); balanced >= 0 {
+		start = balanced
+	}
+	if start < 0 {
+		return snap, false, 0, nil // 防御性回落（与 TailHistory 同一条：Cuts 全假不可达）
+	}
+	window := append([]llm.Message(nil), snap.Messages[start:anchor]...)
+	snap.Messages = window
+	snap.Checkpoints = shiftCheckpoints(snap.Checkpoints, start)
+	if len(window) > 0 {
+		firstSeq = window[0].Seq
+	}
+	return snap, start > 0, firstSeq, nil
+}
+
+// shiftCheckpoints 把检查点下标按窗口起点平移：下标 ≥ start 的减 start，
+// 其余丢弃（检查点在窗口外 = 前端看不到那个「已压缩历史」块，正确——
+// 它属于没拉的那段头部）。下标本身有序，顺序保持。
+func shiftCheckpoints(cps []int, start int) []int {
+	var out []int
+	for _, i := range cps {
+		if i >= start {
+			out = append(out, i-start)
+		}
+	}
+	return out
+}
+
+// projectedContext 是**展示用**的占用：真实测量 + 测量之后历史的变化量
+// （projectedUsage，见那里的注释）。调用方必须持锁（它读 s.history）。
+//
+// 与 ContextUsage() 的分工：那个是**判定用**的真实压力值（maybeCompact 拿它比阈值），
+// 这个是给 UI 看的投影值。两个不能混——判定用投影会在"其实还没到"的时候触发压缩。
+func (s *Session) projectedContext() ContextUsage {
+	return projectedUsage(s.context, s.history)
+}
+
+// Todos 返回当前任务清单（UI 渲染用）。
+func (s *Session) Todos() []tools.TodoItem {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]tools.TodoItem(nil), s.todos...)
+}
+
+// ContextUsage 返回最近一次主轮请求的上下文占用（零值 = 本会话还没跑过主轮，
+// 或刚切过会话——那时真实用量未知，UI 应显示中性态而不是编一个数）。
+//
+// **这是判定用的真实值**（压缩压力阈值比的就是它）。要展示给用户请用
+// ProjectedContextUsage——那个把"测量之后历史又长了多少"折进去了。
+func (s *Session) ContextUsage() ContextUsage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.context
+}
+
+// ProjectedContextUsage 返回**展示用**的占用：真实测量 + 测量之后历史的变化量。
+// 事件（chat.done 的 context）与快照都走这个——用户看到的数字要跟着历史走，
+// 不能停在最后一次请求那一刻（工具跑得越久偏得越多）。
+func (s *Session) ProjectedContextUsage() ContextUsage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.projectedContext()
+}
+
+// SetAgentID 声明本会话运行的 Agent 名单 id（空 = 旧语境/主 Agent）。
+// dispatch 开子会话时置位（子会话 = 它自己的 Agent），服务端在按 id 重建运行时
+// 从库里读回（刷新后打开子会话页仍要显示它自己的模型）。只该在会话开始跑之前
+// 或附着之后调用——它决定 ModelID() 的解析路径。
+func (s *Session) SetAgentID(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.agentID = id
+}
+
+// ModelID 返回本会话**实际使用**的模型注册表主键（provider::id；走 resolve.go 那一套：
+// 会话级选择 s.model 优先，其次 Agent 绑定 AgentDef.Model，最后 default 角色）。
+//
+// 空串 = 未知（名单里没这个 Agent / 模型被删或被停用 / 没有 default 角色）——wire 上
+// 整键缺席，前端显示中性态。**绝不**回落成"编一个模型名"：那会让子会话页显示一个
+// 它其实没在用的模型。
+func (s *Session) ModelID() string {
+	s.mu.Lock()
+	agentID := s.agentID
+	s.mu.Unlock()
+	// 锁外解析：resolveAgent/modelFor 读注册表，不碰会话锁（避免与注册表热加载
+	// 的写锁交叉持有）。
+	ac, err := s.resolveAgent(agentID)
+	if err != nil {
+		return ""
+	}
+	m, err := s.modelFor(ac)
+	if err != nil {
+		return ""
+	}
+	// 返回**注册表主键**（provider::id；无 provider 时纯 id）——前端按它对齐
+	// 选择态，两家提供商的同名模型才不会互相高亮/覆盖。
+	return m.Key()
+}
+
+// WorkDir 返回当前会话的工作目录（空 = 后端进程目录）。
+func (s *Session) WorkDir() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.workDir
+}
+
+// SetWorkDir 覆盖当前会话的工具工作目录；运行中的轮次不能改目录。
+// server 在挂载独立 Git worktree 后调用，子 Agent 也用它继承父目录。
+func (s *Session) SetWorkDir(dir string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.busy {
+		return ErrBusy
+	}
+	s.workDir = dir
+	return nil
+}
+
+// SetWorktreeInfo 记录本会话的工作区信息：主检出当前分支名、会话基线 HEAD 与
+// 「目录不是 git 仓库」标志（server 在 prepareWorkspace 后调用；子会话从父会话
+// 继承）。branch 为空 = 未分组会话或非 git 目录（后者 noGit=true，提示词降级告知）。
+func (s *Session) SetWorktreeInfo(branch, base string, noGit bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.worktreeBranch = branch
+	s.worktreeBase = base
+	s.worktreeNoGit = noGit
+}
+
+// worktreeInfo 返回本会话的 Git 工作树信息与「是否子会话」标志。子会话由
+// approvalSource 非 nil 判定（与权限来源同一判据，不另造一个开关）。
+func (s *Session) worktreeInfo() (WorktreeInfo, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return WorktreeInfo{Branch: s.worktreeBranch, Base: s.worktreeBase, NoGit: s.worktreeNoGit}, s.approvalSource != nil
+}
+
+// SessionID 返回当前会话 id（无存储模式为空串）。
+func (s *Session) SessionID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.id
+}
+
+// SetOwner 声明本会话的时间线归属（顶层会话 id）。只该在会话开始跑之前调用一次——
+// dispatch 开子会话时置位，主会话保持空（自己就是顶层）。
+func (s *Session) SetOwner(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ownerID = id
+}
+
+// OwnerSessionID 返回时间线归属：未设（本会话就是顶层）时回落自身 id。
+func (s *Session) OwnerSessionID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ownerID != "" {
+		return s.ownerID
+	}
+	return s.id
+}
+
+// Close 关闭会话资源（进程退出/测试清理时调用；幂等）。
+// SQLite 版句柄概念消失，连接由 store 持有——这里保留空实现维持
+// 宿主的 defer Close() 调用面不变。
+func (s *Session) Close() {}

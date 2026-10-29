@@ -1,0 +1,259 @@
+// 权限模式实时化（契约 D 节）的前端契约：
+// ① 改档必须**同时**发给后端（chat.approval）——只改本地设置的话，正在跑的那一轮
+//    还在按开轮时的档位弹确认（用户实测的 bug）；
+// ② 收到后端广播的 chat.approvalChanged 要反向同步设置（多客户端/壳+浏览器一致）。
+//
+// 两条都钉在「静默走偏」上：方法名/键名写错不会让 tsc 报错，只会变成后端一句
+// 「未知方法」或者前端设置没变——用户看到的就是「我说了别问，它还在问」。
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mapEvent } from '../src/agent/ws/events.ts';
+import { approvalSyncTarget, normalizeApproval, subscribeApprovalSync } from '../src/shared/approval.ts';
+import { WSAgent } from '../src/agent/ws/index.ts';
+import { DemoAgent } from '../src/agent/demo/index.ts';
+
+class FakeSocket {
+  static latest;
+  readyState = 1; sent = []; onopen = null; onmessage = null; onclose = null; onerror = null;
+  constructor(url) { this.url = url; FakeSocket.latest = this; }
+  send(data) { this.sent.push(JSON.parse(data)); }
+  close() { this.readyState = 3; this.onclose?.(); }
+  receive(message) { this.onmessage?.({ data: JSON.stringify({ jsonrpc: '2.0', ...message }) }); }
+  reply(result, error) { this.receive({ id: this.sent.at(-1).id, result, error }); }
+}
+function setup(t) {
+  const original = globalThis.WebSocket;
+  globalThis.WebSocket = FakeSocket;
+  t.after(() => { globalThis.WebSocket = original; });
+  const events = [], agent = new WSAgent('localhost:1234');
+  const off = agent.subscribe((e) => events.push(e));
+  t.after(off);
+  return { agent, events, ws: FakeSocket.latest };
+}
+const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+/** 应答初始化链（hello → 并行清单组 → session.new → chat.history）——
+ *  与 ws.test.mjs 同款：setApproval 要的是**当前会话 id**，只有走完 boot 才有。
+ *  清单刷新已并行化（allSettled）：每轮把**所有未应答**的请求都应答掉。 */
+async function driveInit(socket) {
+  const seen = new Set();
+  const methods = [];
+  for (let i = 0; i < 40; i++) {
+    await flush();
+    const fresh = socket.sent.filter((r) => !seen.has(r.id));
+    if (fresh.length === 0) break; // 没有新请求 → 链已跑完或卡住
+    for (const req of fresh) {
+      seen.add(req.id);
+      methods.push(req.method);
+      if (req.method === 'connection.hello') socket.receive({ id: req.id, result: { version: '2' } });
+      else if (req.method === 'session.new') socket.receive({ id: req.id, result: { session_id: 'boot-session' } });
+      else if (req.method === 'session.resume') socket.receive({ id: req.id, result: { session_id: 'boot-session' } });
+      else socket.receive({ id: req.id, result: {} });
+    }
+  }
+  return methods;
+}
+
+// ---------- ① 改档发给后端 ----------
+
+test('改档发给后端：chat.approval 带当前会话与档位（契约 B1 的键名逐字对齐）', async (t) => {
+  const { agent, ws } = setup(t);
+  ws.onopen();
+  await driveInit(ws);
+  const changing = agent.setApproval('auto');
+  assert.equal(ws.sent.at(-1).method, 'chat.approval');
+  assert.deepEqual(ws.sent.at(-1).params, { session_id: 'boot-session', approval: 'auto' });
+  ws.reply({ approval: 'auto' });
+  await changing;
+  // 三档都照原样上车（后端负责校验；前端不自己改档位名）
+  for (const mode of ['confirm', 'strict']) {
+    const p = agent.setApproval(mode);
+    assert.deepEqual(ws.sent.at(-1).params, { session_id: 'boot-session', approval: mode });
+    ws.reply({ approval: mode });
+    await p;
+  }
+});
+
+test('send 不再带请求级 approval（会话级状态——恒带会静默覆盖会话档且不广播）', async (t) => {
+  const { agent, ws } = setup(t);
+  ws.onopen();
+  await driveInit(ws);
+  const changing = agent.setApproval('auto');
+  ws.reply({ approval: 'auto' });
+  await changing;
+  // 即便调用方传了（老调用方残留），ws 层也把它丢掉——approval 由 chat.approval
+  // / 会话档管，不随 send 上车（持久化/隔离修复的根因之一就是这条上车路径）
+  agent.send('boot-session', 'hi', { approval: 'strict' });
+  const last = ws.sent.at(-1);
+  assert.equal(last.method, 'chat.send');
+  assert.equal(last.params.approval, undefined, '请求级 approval 不允许再上车');
+});
+
+// ---------- ② 收到广播反向同步设置 ----------
+
+test('chat.approvalChanged 的 wire 形状（snake_case）与档位归一', () => {
+  assert.deepEqual(
+    mapEvent('chat.approvalChanged', { session_id: 's1', approval: 'strict' }),
+    { type: 'approvalChanged', sessionId: 's1', approval: 'strict' },
+  );
+  // 空/未知 = confirm（协议：空 = 回落 confirm）——写进设置的是合法档位，不是 undefined
+  assert.equal(mapEvent('chat.approvalChanged', { session_id: 's1' }).approval, 'confirm');
+  assert.equal(normalizeApproval('nonsense'), 'confirm');
+  assert.equal(normalizeApproval(undefined), 'confirm');
+  assert.equal(normalizeApproval('auto'), 'auto');
+});
+
+test('反向同步只认当前会话（多客户端不串台）', () => {
+  const ev = { type: 'approvalChanged', sessionId: 's1', approval: 'auto' };
+  assert.equal(approvalSyncTarget(ev, 's1'), 'auto');
+  assert.equal(approvalSyncTarget(ev, 's2'), null, '别的会话的档位不能改写本端设置');
+  assert.equal(approvalSyncTarget({ ...ev, sessionId: '' }, ''), null, '载荷缺会话 id 时不猜');
+  assert.equal(approvalSyncTarget({ type: 'busy', sessionId: 's1', busy: true }, 's1'), null);
+});
+
+test('收到 chat.approvalChanged 同步设置（订阅路径：事件 → 设置写入）', (t) => {  const listeners = new Set();
+  const fakeSource = { subscribe(l) { listeners.add(l); return () => listeners.delete(l); } };
+  const applied = [];
+  const off = subscribeApprovalSync(fakeSource, (mode) => applied.push(mode));
+  t.after(off);
+  const deliver = (ev) => listeners.forEach((l) => l(ev));
+
+  deliver({ type: 'sessionFocused', id: 's1' });
+  // 后端广播（先过 mapEvent 的纯映射——键名写错这里就会是 confirm/空）
+  deliver(mapEvent('chat.approvalChanged', { session_id: 's1', approval: 'auto' }));
+  assert.deepEqual(applied, ['auto'], '当前会话的广播必须落到设置');
+
+  deliver(mapEvent('chat.approvalChanged', { session_id: 's2', approval: 'strict' }));
+  assert.deepEqual(applied, ['auto'], '别的会话的广播不落本端设置');
+
+  deliver(mapEvent('chat.approvalChanged', { session_id: 's1', approval: '' }));
+  assert.deepEqual(applied, ['auto', 'confirm'], '空档位回落 confirm');
+
+  deliver(mapEvent('chat.delta', { session_id: 's1', kind: 'text', text: 'x' }));
+  assert.deepEqual(applied, ['auto', 'confirm'], '无关事件不触发设置写入');
+});
+
+// ---------- ②b 装载历史按该会话的真实档位对齐显示（主会话之间隔离） ----------
+
+test('切回主会话按 chat.history 的 approval 对齐显示（主会话之间隔离）', (t) => {
+  const listeners = new Set();
+  const fakeSource = { subscribe(l) { listeners.add(l); return () => listeners.delete(l); } };
+  const applied = [];
+  const off = subscribeApprovalSync(fakeSource, (mode) => applied.push(mode));
+  t.after(off);
+  const deliver = (ev) => listeners.forEach((l) => l(ev));
+
+  deliver({ type: 'sessionFocused', id: 's1' });
+  deliver({ type: 'historyLoaded', sessionId: 's1', history: { sessionId: 's1', messages: [], busy: false, pending: null, todos: [], approval: 'strict' } });
+  assert.deepEqual(applied, ['strict'], '装载历史时按该会话后端里的真实档位对齐显示');
+
+  deliver({ type: 'sessionFocused', id: 's2' });
+  deliver({ type: 'historyLoaded', sessionId: 's1', history: { sessionId: 's1', messages: [], busy: false, pending: null, todos: [], approval: 'auto' } });
+  assert.deepEqual(applied, ['strict'], '别的会话的历史不落本端显示（档位不串台）');
+
+  deliver({ type: 'historyLoaded', sessionId: 's2', history: { sessionId: 's2', messages: [], busy: false, pending: null, todos: [] } });
+  assert.deepEqual(applied, ['strict'], '快照没带 approval（老后端/演示源）时不猜');
+
+  deliver({ type: 'historyLoaded', sessionId: 'child-9', history: { sessionId: 'child-9', messages: [], busy: false, pending: null, todos: [], approval: 'auto' } });
+  assert.deepEqual(applied, ['strict'], '子会话的历史装载不改主会话的档位显示');
+});
+
+// ---------- 演示实现（能力接口三个实现都要有） ----------
+
+test('演示模式：改档 → 广播 → 设置同步（真实实现走完整条路径）', async (t) => {
+  const agent = new DemoAgent();
+  const events = [];
+  agent.subscribe((e) => events.push(e));
+  const applied = [];
+  const off = subscribeApprovalSync(agent, (mode) => applied.push(mode));
+  t.after(off);
+
+  await agent.setApproval('strict');
+  const ev = events.at(-1);
+  assert.equal(ev.type, 'approvalChanged', '演示源也要广播（真后端改档会广播给所有端）');
+  assert.equal(ev.approval, 'strict');
+  assert.equal(ev.sessionId, agent.currentId);
+  assert.deepEqual(applied, ['strict'], '演示模式也要走通「改档 → 广播 → 设置同步」');
+
+  // 归一：未知档位不写进事件载荷（写进设置会让选择器静默空掉）
+  await agent.setApproval('nonsense');
+  assert.equal(events.at(-1).approval, 'confirm');
+  assert.deepEqual(applied, ['strict', 'confirm']);
+});
+
+// ---------- 会话状态归约（UIState.approval——按会话隔离） ----------
+
+test('归约：approvalChanged 落进 UIState.approval，reduceSessionStates 按会话路由', async (t) => {
+  const { reduce, reduceSessionStates } = await import('../src/shared/reduce.ts');
+  const { initial } = await import('../src/shared/blocks.ts');
+
+  // 单会话归约：事件档位直接落 state
+  const st = reduce({ ...initial }, { type: 'approvalChanged', sessionId: 's1', approval: 'strict' });
+  assert.equal(st.approval, 'strict');
+
+  // 路由：每个会话只收自己的档位变更（主会话之间不串台）
+  let states = { s1: { ...initial, currentId: 's1' }, s2: { ...initial, currentId: 's2' } };
+  states = reduceSessionStates(states, { type: 'approvalChanged', sessionId: 's1', approval: 'strict' });
+  states = reduceSessionStates(states, { type: 'approvalChanged', sessionId: 's2', approval: 'auto' });
+  assert.equal(states.s1.approval, 'strict');
+  assert.equal(states.s2.approval, 'auto');
+});
+
+test('归约：chat.history 的 approval 对齐 UIState（快照缺席不猜）', async (t) => {
+  const { reduce } = await import('../src/shared/reduce.ts');
+  const { initial } = await import('../src/shared/blocks.ts');
+
+  const rebuilt = reduce({ ...initial }, {
+    type: 'historyLoaded', sessionId: 's1',
+    history: { sessionId: 's1', messages: [], busy: false, pending: null, todos: [], approval: 'strict' },
+  });
+  assert.equal(rebuilt.approval, 'strict', '全量重建按快照对齐');
+
+  const stale = reduce({ ...initial, approval: 'strict' }, {
+    type: 'historyLoaded', sessionId: 's1',
+    history: { sessionId: 's1', messages: [], busy: false, pending: null, todos: [] },
+  });
+  assert.equal(stale.approval, 'strict', '快照没带 approval（老后端/演示源）保持原值不猜');
+});
+
+// ---------- 新会话默认审批档（settings.defaultApproval.*） ----------
+
+test('演示源：defaultApproval/setDefaultApproval 往返 + changed 广播', async (t) => {
+  const agent = new DemoAgent();
+  const events = [];
+  agent.subscribe((e) => events.push(e));
+
+  assert.equal(await agent.defaultApproval(), 'confirm', '缺省默认档 = confirm');
+  await agent.setDefaultApproval('strict');
+  assert.equal(await agent.defaultApproval(), 'strict');
+  const ev = events.at(-1);
+  assert.equal(ev.type, 'defaultApprovalChanged', 'set 后广播（真后端同形状）');
+  assert.equal(ev.approval, 'strict');
+  // 归一：未知档位不进状态
+  await agent.setDefaultApproval('nonsense');
+  assert.equal(await agent.defaultApproval(), 'confirm');
+});
+
+test('历史先到、焦点后切：historyLoaded 先于 sessionFocused 也对齐（resumeSession 帧序）', (t) => {
+  const listeners = new Set();
+  const fakeSource = { subscribe(l) { listeners.add(l); return () => listeners.delete(l); } };
+  const applied = [];
+  const off = subscribeApprovalSync(fakeSource, (mode) => applied.push(mode));
+  t.after(off);
+  const deliver = (ev) => listeners.forEach((l) => l(ev));
+
+  // 当前在看 s1（strict）
+  deliver({ type: 'sessionFocused', id: 's1' });
+  deliver({ type: 'historyLoaded', sessionId: 's1', history: { sessionId: 's1', messages: [], busy: false, pending: null, todos: [], approval: 'strict' } });
+  assert.deepEqual(applied, ['strict']);
+
+  // 点另一个会话：历史先到（此时焦点还没切）→ 焦点后切。对齐必须发生在焦点切换时
+  deliver({ type: 'historyLoaded', sessionId: 's2', history: { sessionId: 's2', messages: [], busy: false, pending: null, todos: [], approval: 'auto' } });
+  assert.deepEqual(applied, ['strict'], '历史先到时焦点还在 s1，不应用 s2 的档位');
+  deliver({ type: 'sessionFocused', id: 's2' });
+  assert.deepEqual(applied, ['strict', 'auto'], '焦点切到 s2 时按已装载的历史对齐');
+
+  // 切回 s1：不重新拉历史也有档位可对齐（known 表）
+  deliver({ type: 'sessionFocused', id: 's1' });
+  assert.deepEqual(applied, ['strict', 'auto', 'strict'], '切回已知会话按记忆的档位对齐');
+});

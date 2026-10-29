@@ -1,0 +1,183 @@
+// 模型配置弹窗：单独编辑一个模型——ID / 显示名称 / 描述 / 上下文窗口 /
+// 最大输出 / 能力标签，附删除与设为默认。弹窗语言复用连接提供商那套。
+import { useEffect, useRef, useState } from "react";
+import { gsap } from "gsap";
+import { useSettings, type ModelMeta, type ProviderMeta } from "../../shared/settings";
+import { motionAllowed } from "../../shared/motion";
+import { useEscape } from "../../shared/popover";
+import { kfmtTokens } from "../../shared/format";
+import { Chips, TextInput } from "../form";
+
+const TAG_CHOICES = ["推理", "工具", "视觉"];
+
+/** 宽松解析 k 记法（"128k" / "128000" → tokens）。空串 = 0 = 未知。 */
+const parseK = (s: string): number | null => {
+  const t = s.trim().toLowerCase();
+  // 空 = 未知（0）：窗口未知时压缩不触发，这是既有语义——编辑一个没配窗口的
+  // 模型（比如刚发现进来、目录里没数据的）不该被迫编一个数才能保存。
+  if (!t) return 0;
+  const m = t.match(/^(\d+(?:\.\d+)?)\s*k?$/);
+  if (!m) return null;
+  return Math.round(parseFloat(m[1]) * (t.endsWith("k") ? 1_000 : 1));
+};
+
+export function ModelEditDialog({ provider, model, onClose }: { provider: ProviderMeta; model: ModelMeta; onClose: () => void }) {
+  const { settings, set, updateModel, removeModel, live, error } = useSettings();
+  const [draft, setDraft] = useState({
+    id: model.modelId,
+    provider: model.provider ?? "",
+    name: model.name,
+    desc: model.desc,
+    // 未知（0）显示空串，不显示「0」——0 会被读成一个真实读数。
+    contextWindow: model.contextWindow > 0 ? kfmtTokens(model.contextWindow) : "",
+    maxOutput: model.maxOutput > 0 ? kfmtTokens(model.maxOutput) : "",
+    tags: [...model.tags],
+  });
+  const [err, setErr] = useState<string | null>(null);
+  const formRef = useRef<HTMLFormElement>(null);
+  const isDefault = settings.model === model.id;
+
+  useEscape(true, onClose);
+
+  // 字段交错入场
+  useEffect(() => {
+    const el = formRef.current;
+    if (!el || !motionAllowed()) return;
+    gsap.fromTo(
+      el.querySelectorAll(".mset-edit-field, .mset-edit-tags"),
+      { opacity: 0, y: 8 },
+      { opacity: 1, y: 0, duration: 0.26, stagger: 0.035, ease: "power2.out", clearProps: "transform,opacity" },
+    );
+  }, []);
+
+  const save = async () => {
+    if (!draft.id.trim()) {
+      setErr("模型 ID 不能为空");
+      return;
+    }
+    if (!draft.name.trim()) {
+      setErr("显示名称不能为空");
+      return;
+    }
+    const ctx = parseK(draft.contextWindow);
+    if (ctx === null) {
+      setErr("上下文窗口格式不对（如 128k，留空 = 未知）");
+      return;
+    }
+    const out = parseK(draft.maxOutput);
+    if (out === null) {
+      setErr("最大输出格式不对（如 8k，留空 = 未知）");
+      return;
+    }
+    if (
+      !await updateModel(provider.id, model.id, {
+        id: draft.id,
+        provider: draft.provider,
+        name: draft.name,
+        desc: draft.desc.trim(),
+        tags: draft.tags,
+        contextWindow: ctx,
+        maxOutput: out,
+      })
+    ) {
+      setErr("保存失败，请检查输入或后端错误");
+      return;
+    }
+    onClose();
+  };
+
+  const patch = (p: Partial<typeof draft>) => {
+    setDraft((d) => ({ ...d, ...p }));
+    setErr(null);
+  };
+
+  return (
+    <div className="mset-connect-mask" role="dialog" aria-label="模型配置" aria-modal="true">
+      <div className="mset-connect">
+        <div className="mset-connect-head">
+          <span className="mset-connect-back-spacer" />
+          <span className="mset-connect-title">模型配置 · {provider.name}</span>
+          {isDefault && <span className="mset-medit-badge">当前默认</span>}
+          <button type="button" className="mset-connect-close" onClick={onClose} aria-label="关闭">×</button>
+        </div>
+        <form
+          className="mset-connect-body mset-form"
+          ref={formRef}
+          onSubmit={(e) => {
+            e.preventDefault();
+            save();
+          }}
+        >
+          <div className="mset-edit-fields">
+            <label className="mset-edit-field">
+              <span>模型 ID</span>
+              <TextInput className="mono" autoFocus disabled={live} title={live ? "后端不支持改 ID，请新增模型" : undefined} value={draft.id} onChange={(v) => patch({ id: v })} spellCheck={false} />
+            </label>
+            <label className="mset-edit-field">
+              <span>提供商标签（选填）</span>
+              <TextInput
+                className="mono"
+                value={draft.provider}
+                onChange={(v) => patch({ provider: v })}
+                placeholder="留空 = 按纯 ID 注册"
+                spellCheck={false}
+                aria-label="提供商标签"
+              />
+            </label>
+            <label className="mset-edit-field">
+              <span>显示名称</span>
+              <TextInput value={draft.name} onChange={(v) => patch({ name: v })} spellCheck={false} />
+            </label>
+            <label className="mset-edit-field wide">
+              <span>描述（真实模式由协议格式派生）</span>
+              <TextInput disabled={live} value={draft.desc} onChange={(v) => patch({ desc: v })} placeholder="例如：通用对话" spellCheck={false} />
+            </label>
+            <label className="mset-edit-field">
+              <span>上下文窗口</span>
+              <TextInput className="mono" value={draft.contextWindow} onChange={(v) => patch({ contextWindow: v })} placeholder="128k" spellCheck={false} />
+            </label>
+            <label className="mset-edit-field">
+              <span>最大输出</span>
+              <TextInput className="mono" value={draft.maxOutput} onChange={(v) => patch({ maxOutput: v })} placeholder="8k" spellCheck={false} />
+            </label>
+          </div>
+          <div className="mset-edit-tags">
+            <span className="mset-chip-label">能力</span>
+            <Chips
+              options={TAG_CHOICES.map((t) => ({
+                value: t,
+                label: t,
+                desc: t === "推理" ? "声明后模型选择器出现推理强度档位（minimal/low/medium/high）" : undefined,
+              }))}
+              value={draft.tags}
+              onChange={(tags) => patch({ tags })}
+              ariaLabel="能力标签"
+            />
+          </div>
+          {(error || err) && <div className="mset-edit-err" role="alert">{error || err}</div>}
+          <div className="mset-medit-foot">
+            <button
+              type="button"
+              className="mset-del-danger"
+              onClick={() => {
+                removeModel(provider.id, model.id);
+                onClose();
+              }}
+            >
+              删除模型
+            </button>
+            <span className="mset-medit-actions">
+              {!isDefault && (
+                <button type="button" className="mset-add-cancel" onClick={() => set({ model: model.id })}>
+                  设为默认
+                </button>
+              )}
+              <button type="button" className="mset-add-cancel" onClick={onClose}>取消</button>
+              <button type="submit" className="mset-add-confirm">保存</button>
+            </span>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}

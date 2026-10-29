@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- lxcode 启动图标（adaptive icon）：从 shell/build/icon.png 派生的位图前景/背景
+     （scripts/gen-app-icons.cjs 生成，mipmap-*/ic_launcher_{foreground,background}.png）。
+     前景 = 母版整图居中缩进 66/108 安全区；背景 = 母版瓷砖纯色铺满。
+     2026-12 替换掉旧的矢量手绘「L」占位（已删除 ic_launcher_foreground.xml）。 -->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@mipmap/ic_launcher_background" />
+    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+</adaptive-icon>

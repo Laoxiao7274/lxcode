@@ -1,0 +1,167 @@
+// Agent 上下文组装（M2——路线图 docs/backend-roadmap.md）：四层组合
+// （协议 → 流程模块 → 技能模块 → 自定义段）+ 动态注入（委派名单），
+// 叠加既有的工作目录说明与动态工具清单。协议层与前端 shared/agent-protocol.ts
+// 的默认文本一致（可定制——AgentDef.Protocol 非空时整段替换）。
+package agent
+
+import (
+	"fmt"
+	"sort"
+	"strings"
+
+	"github.com/moyunteng/lxcode/internal/sessiondata"
+	"github.com/moyunteng/lxcode/internal/tools"
+)
+
+// mainProtocol 是主 Agent 的内置调度协议（决策与分派——不亲自执行）。
+func mainProtocol() string {
+	return strings.Join([]string{
+		"你是主 Agent（调度中枢）。你不亲自执行任务。",
+		"",
+		"收到用户请求后：",
+		"1. 判断意图，从「可委派名单」选最合适的 Agent",
+		"2. 通过 agent_dispatch 下发——任务描述必须自带验收标准",
+		"3. 验收子任务结果（不合格的带着理由重派或自己说明）",
+		"4. 汇总答复用户；没有合适人选时说明缺口，不硬派",
+		"",
+		"选人纪律（名单里各 Agent 的描述就是它的职责边界，按描述选人）：",
+		"- 同一份职责只派给一个 Agent：写/改代码 → 写代码的那个；纯只读调研/排查 → 只读的那个（实现 Agent 的白名单与职责都不含调研）；跑构建测试 → 验证的那个；改 Agent 配置 → 配置维护的那个；提交/推送/回滚 → 仓库管理 Agent",
+		"- 任务跨多个职责就拆成多个 dispatch（互不依赖的可并行下发），不要让一个 Agent 越界完成另一类的活",
+		"- 派出去的任务若需要别类能力（如调研后要改代码），先收结论再按结论另派，不要求同一个 Agent 兼顾",
+		"",
+		"流水线纪律（代码改动默认走三段式）：",
+		"- 调研（researcher）→ 实现（coder）→ 验证（tester），派发之间传递**调研结论原文**而不是转述摘要——转述丢的细节往往是排查的关键",
+		"- 三段式可按任务裁剪：一行文案类小改动不需要完整三段；但**写代码的任务不许跳过 tester 验证**——自己的代码自己测会放水",
+	}, "\n")
+}
+
+// subProtocol 是子 Agent 的内置执行协议（纯执行者，不可委派）。
+func subProtocol() string {
+	return strings.Join([]string{
+		"你是执行 Agent（纯执行者，不可委派）。",
+		"",
+		"- 按收到的任务执行，受工具白名单约束（工具清单随白名单生成）",
+		"- 结果如实回传：做了什么、输出是什么、有什么问题",
+		"- 不确定就问，不编造",
+		"- 收到职责范围外的请求时不动手，在结论里注明「这属于 XX Agent 的职责，建议另行派发」（如写代码的收到纯调研、跑全量测试套件的要求），不越界硬干",
+	}, "\n")
+}
+
+// DefaultProtocol 返回 Agent 的内置协议（主 = 调度 / 子 = 执行）。
+// AgentDef.Protocol 非空时整段替换（「宪法修正案」——保存时与默认
+// 相同则存空）。
+func DefaultProtocol(isMain bool) string {
+	if isMain {
+		return mainProtocol()
+	}
+	return subProtocol()
+}
+
+// ComposeSystemPrompt 组装完整系统提示词：协议层（定制 ?? 内置默认）
+// + 流程模块（单选注入）+ 技能索引（名称 + 一句话——渐进披露，模型
+// 需要时经 read_skill 取全文，没注入的它当没有）+ 自定义段 + 动态注入
+// （主 Agent 的有效委派名单）+ 项目约定（项目根 AGENTS.md）+ 工作目录说明
+// + Git 工作树说明（wt/isChild）+ 工具清单（按白名单过滤）+ 工作守则。ac 为 nil =
+// 无 Agent 语境（兼容旧路径：全局默认提示词）。
+//
+// 项目约定的位置即优先级（2026-09-21 用户拍板「项目约定比 Agent 自己的低」）：
+// 排在 Agent 四层组合之后、环境与工具清单之前，并在段内显式声明。
+func ComposeSystemPrompt(toolReg *tools.Registry, workDir string, ac *sessiondata.AgentContext, allowTools []string, wt WorktreeInfo, isChild bool, docs ProjectDocs, todoMode ...string) string {
+	if ac == nil {
+		return BuildSystemPrompt(toolReg, workDir, wt, isChild, docs, todoMode...)
+	}
+	var b strings.Builder
+
+	// ① 协议层（可定制）
+	protocol := ac.Def.Protocol
+	if strings.TrimSpace(protocol) == "" {
+		protocol = DefaultProtocol(ac.Def.IsMain)
+	}
+	b.WriteString(protocol)
+	b.WriteString("\n")
+
+	// ② 模块层：流程单选（工作方式是原子单元——正文直接注入）+ 技能索引
+	//（渐进披露：只注入名称与摘要，正文经 read_skill 按需获取——上下文
+	// 不被没在用的技能撑爆）。
+	if ac.Workflow != nil {
+		b.WriteString("\n" + strings.TrimSpace(ac.Workflow.Body) + "\n")
+	}
+	if len(ac.Skills) > 0 {
+		b.WriteString("\n可用技能（按需用 read_skill 取完整内容）：\n")
+		for i := range ac.Skills {
+			b.WriteString(fmt.Sprintf("- %s：%s\n", ac.Skills[i].ID, ac.Skills[i].Desc))
+		}
+	}
+
+	// ③ 自定义段
+	if p := strings.TrimSpace(ac.Def.Prompt); p != "" {
+		b.WriteString("\n" + p + "\n")
+	}
+
+	// ④ 动态注入：主 Agent 的有效委派名单（子 Agent 的职责描述 =
+	// 主 Agent 的选人信号）。id 必须在场——agent_dispatch 的入参是
+	// id 不是名字（真实模型实测：只给名字会把名字当 id 传）。
+	if ac.Def.IsMain && len(ac.Delegates) > 0 {
+		b.WriteString("\n可委派名单（agent_dispatch 的 agent 参数填下面的 id）：\n")
+		for i := range ac.Delegates {
+			d := ac.Delegates[i]
+			status := ""
+			if !d.Enabled {
+				status = "（已停用——不可分派）"
+			}
+			b.WriteString(fmt.Sprintf("- %s（%s）：%s%s\n", d.ID, d.Name, d.Desc, status))
+		}
+	}
+
+	// ⑤ 项目约定（项目根 AGENTS.md）——低于上面四层，高于环境与工具清单
+	b.WriteString(projectDocsSection(docs))
+
+	// 环境说明（工作目录 + Git 工作树）+ 工具清单（白名单过滤）+ 守则
+	b.WriteString("\n" + workdirLine(workDir))
+	b.WriteString(worktreeLine(wt, isChild))
+	b.WriteString("\n可用工具：\n")
+	allowed := toolSet(allowTools)
+	for _, name := range toolReg.Order() {
+		if allowed != nil && !allowed[name] {
+			continue
+		}
+		if d, ok := toolReg.Get(name); ok {
+			b.WriteString(toolLine(d))
+		}
+	}
+	// 白名单里勾了但注册表里没有的工具：如实告知，别让模型以为它有
+	//（自定义工具没配 command、MCP 服务器没启用都会落到这里）
+	if missing := missingTools(toolReg, allowTools); len(missing) > 0 {
+		b.WriteString("注意：白名单里的 " + strings.Join(missing, "、") +
+			" 当前不可用（自定义工具需先配置 command，MCP 工具需先启用服务器）——不要调用它们。\n")
+	}
+	b.WriteString(systemPromptFooter(firstTodoMode(todoMode)))
+	return b.String()
+}
+
+// missingTools 返回白名单里未注册的工具名（稳定顺序）。
+func missingTools(toolReg *tools.Registry, allow []string) []string {
+	if len(allow) == 0 {
+		return nil
+	}
+	var out []string
+	for _, name := range allow {
+		if _, ok := toolReg.Get(name); !ok {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// toolSet 把白名单转为集合（nil = 不过滤——兼容无 Agent 语境）。
+func toolSet(allow []string) map[string]bool {
+	if allow == nil {
+		return nil
+	}
+	out := make(map[string]bool, len(allow))
+	for _, n := range allow {
+		out[n] = true
+	}
+	return out
+}

@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 远端客户端：只做网络连接，不跑后端 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- 扫码配对 -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+
+    <application
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.LxRemote"
+        android:usesCleartextTraffic="true">
+        <!-- 旋转不重建（RustDesk 同款）：orientation、screenSize、smallestScreenSize
+             三者必须一起带，漏了 screenSize 旋转照样重建。Compose 的
+             LocalConfiguration 自动更新重组，布局自适应无需手写回调；锁方向
+             （requestedOrientation）触发的配置变更走同一路径，不再 dispose
+             观看态组合树，方向锁与 WS 连接都保得住。 -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.LxRemote"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|uiMode|density|fontScale">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- 扫码结果也可以由系统相机/扫码器直接唤起本应用（自定义 scheme） -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="lxcode" />
+            </intent-filter>
+        </activity>
+
+        <!-- 应用内更新：授权系统安装器读 DownloadManager 落到 app 私有外部 files
+             目录（getExternalFilesDir("updates")）的 APK（ACTION_VIEW +
+             FLAG_GRANT_READ_URI_PERMISSION；authority 与 ApkDownloader.toApkUri
+             一致）。file_paths 只暴露 external-files-path 的 updates 子目录——
+             权限最小化，不给全盘。 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="com.moyunteng.lxcode.remote.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+    </application>
+
+</manifest>

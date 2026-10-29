@@ -1,0 +1,1818 @@
+/* 对话线程：diff 卡、产物卡、消息块、工具行、dispatch 卡、终端卡、代码围栏、edit diff、markdown 行内。 */
+
+/* ===== 代码 diff（edit 工具 + 产物卡的改动可视化）——GitHub 级视觉 ===== */
+.diff-block .diff-file-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.diff-stats {
+  display: inline-flex;
+  gap: 4px;
+  margin-left: auto;
+  flex: none;
+}
+/* 统计徽章（aicss resolvedBadge 同款语言：胶囊底 + 色阶） */
+.stat-badge {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 99px;
+  letter-spacing: 0.01em;
+}
+.stat-add {
+  color: var(--ok-text);
+  background: color-mix(in srgb, #10a37f 10%, transparent);
+}
+.stat-del {
+  color: var(--err-text);
+  background: color-mix(in srgb, #ef4444 9%, transparent);
+}
+/* ===== diff 卡（DSH DiffBlock 对齐：四列网格 + 复制 + footer 统计） ===== */
+.diff-block-card {
+  position: relative;
+  margin: 5px 0 0;
+  border-radius: 12px;
+  border: 0.5px solid var(--border);
+  background: var(--code-bg);
+  overflow: hidden;
+}
+/* 复制按钮：右上角浮动（DSH copyButton） */
+.diff-copy {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  z-index: 1;
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
+  color: var(--fg-muted);
+  cursor: pointer;
+  font-size: 11px;
+}
+.diff-copy:hover {
+  color: var(--fg);
+}
+.diff-body {
+  padding: 12px 14px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  margin: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+/* 四列网格：旧行号 / 新行号 / 符号 / 内容（DSH line 的 grid 模板） */
+.diff-line {
+  display: grid;
+  grid-template-columns: 3.5ch 3.5ch 1ch 1fr;
+  align-items: baseline;
+  column-gap: 4px;
+  min-height: 22px;
+  line-height: 22px;
+  white-space: pre;
+}
+/* 行号列：等宽右对齐，tabular（DSH lineNo） */
+.diff-line .ln {
+  color: color-mix(in srgb, var(--fg-faint) 75%, transparent);
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+  font-size: 10px;
+}
+/* 符号列（− / +）：分色（DSH signDel/signAdd） */
+.diff-line .sign {
+  user-select: none;
+  text-align: center;
+  font-size: 11px;
+}
+.diff-line .sign.del { color: var(--danger); }
+.diff-line .sign.add { color: var(--success); }
+.diff-line .code {
+  min-width: 0;
+  padding-right: 52px; /* 让出右上角复制按钮的位（DSH path 行同款） */
+}
+/* 行文字分色（DSH del/add lineText） */
+.diff-line.del .code { color: var(--danger); }
+.diff-line.add .code { color: var(--success); }
+/* 展开按钮（head-tail 折叠） */
+.diff-expand {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--fg-faint);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  line-height: 22px;
+}
+.diff-expand:hover {
+  color: var(--fg-muted);
+}
+/* footer 统计（+N −M，DSH footer） */
+.diff-footer {
+  padding: 0 14px 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-faint);
+}
+.diff-footer .stat-add { color: var(--success); font-variant-numeric: tabular-nums; }
+.diff-footer .stat-del { color: var(--danger); font-variant-numeric: tabular-nums; }
+/* ===== 产物汇总卡（一轮任务的改动文件——Codex 的 artifact viewer） ===== */
+.files-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--surface);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+}
+.files-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 13px;
+  background: var(--bg-side);
+  border-bottom: 1px solid var(--border);
+  font-size: 11.5px;
+  color: var(--fg-muted);
+}
+.files-head svg { color: var(--fg-faint); }
+.files-title { font-weight: 600; color: var(--fg); }
+.files-row {
+  border-bottom: 1px solid var(--border-soft);
+}
+.files-row:last-child { border-bottom: none; }
+.files-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  padding: 6px 13px;
+  font-size: 11px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 100ms;
+}
+.files-file:hover { background: var(--border-soft); }
+.files-chevron {
+  flex: none;
+  font-size: 9px;
+  color: var(--fg-faint);
+}
+.files-path {
+  font-family: var(--font-mono);
+  color: var(--fg-muted);
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 折叠卡（改动文件 > FILES_COLLAPSE_THRESHOLD）：列表收起时高度归零，
+ * 展开按钮参考 ToolBlock 摘要行的紧凑做法（细字、弱色、hover 提亮）。 */
+.files-list { overflow: hidden; }
+.files-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  border-top: 1px solid var(--border-soft);
+  padding: 5px 13px;
+  font-size: 11px;
+  color: var(--fg-faint);
+  cursor: pointer;
+  text-align: left;
+  transition: background 100ms, color 100ms;
+}
+.files-toggle:hover { background: var(--border-soft); color: var(--fg-muted); }
+.files-summary {
+  font-family: var(--font-mono);
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 会话行 hover ⋯ 与操作菜单 */
+.session-more {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-faint);
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  flex: none;
+  opacity: 0;
+  padding: 0;
+}
+.session-item:hover .session-more,
+.session-more:focus-visible {
+  opacity: 1;
+}
+.session-more:hover {
+  color: var(--fg);
+  background: var(--border);
+}
+.session-menu {
+  position: absolute;
+  top: calc(100% + 3px);
+  right: 6px;
+  z-index: 60;
+  min-width: 110px;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.06);
+  animation: pop-in 140ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.session-menu button {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 6px 9px;
+  font-size: 12px;
+  color: var(--fg);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: left;
+  font-family: var(--font-sans);
+}
+.session-menu button:hover {
+  background: var(--border-soft);
+}
+.session-menu button svg {
+  color: var(--fg-faint);
+  flex: none;
+}
+.session-rename {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--fg);
+  border-radius: 5px;
+  background: var(--surface);
+  padding: 1px 6px;
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  color: var(--fg);
+  outline: none;
+}
+.sidebar-footer {
+  margin-top: auto;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+}
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  border-radius: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.settings-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.settings-row:hover {
+  background: var(--border-soft);
+}
+.settings-row .ver {
+  margin-left: auto;
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--fg-faint);
+}
+/* ===== 主区（对话线程，居中窄栏 + 顶部任务头） ===== */
+.main {
+  /* 显式定位（同 .sidebar——不靠自动排布，标签条缺席时不会顶格） */
+  grid-row: 3;
+  grid-column: 2;
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.workspace-view-panel {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.workspace-view-panel[hidden] {
+  display: none;
+}
+.workspace-chat-panel {
+  flex-direction: column;
+}
+.thread-scroll {
+  flex: 1;
+  overflow-y: auto;
+  /* 注意：这里不能加 position: relative——「回到底部」浮标（.scroll-to-bottom）靠
+   * "定位锚在滚动容器之外"才不跟着内容滚走，锚一进容器它就成了一条会滚出屏幕的装饰。 */
+  /* 底部预留 = 输入区真实高度（Composer 经 ResizeObserver 发布
+   * --composer-h）——清单卡展开多高就留多少，浮层永不遮挡对话内容
+   * （把清单当输入区的一部分）。170px 是无 JS 时的兜底。 */
+  padding: 20px 0 calc(var(--composer-h, 170px) + 14px);
+}
+/* 会话切换装载中（App 的 switching 态）：内容暂缺时给一个安静的加载指示。
+ * 不做内容透明度动画——透明度会让旧内容在替换帧之间透出背景（另一种闪烁）；
+ * 指示条自身的脉冲是极低强度的 opacity 动画（reduced-motion 时停掉）。 */
+.thread-scroll[data-switching="true"] {
+  position: relative;
+}
+.thread-scroll[data-switching="true"]::after {
+  content: "正在载入会话…";
+  position: absolute;
+  top: 40vh;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-size: 12px;
+  color: var(--fg-faint);
+  pointer-events: none;
+  animation: switch-pulse 1.2s ease-in-out infinite;
+}
+@keyframes switch-pulse {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .thread-scroll[data-switching="true"]::after {
+    animation: none;
+  }
+}
+.thread {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+/* 窗口化渲染的顶部哨兵（进入视口自动前插，也可点击） */
+.window-more {
+  text-align: center;
+  font-size: 11px;
+  color: var(--fg-faint);
+  padding: 10px 0 14px;
+  cursor: pointer;
+  user-select: none;
+}
+.window-more:hover {
+  color: var(--fg-muted);
+}
+
+/* ===== 回到底部浮标（主时间线 Thread 与子会话页共用一份组件） =====
+ * 锚在聊天列右下角：底部让出输入区的真实高度（--composer-h 由 Composer 发布），
+ * 所以既压不到输入框，也压不到消息的动作条——消息列是 720px 居中，宽窗口下
+ * 这个浮标落在右侧留白里。子会话页同样有输入区（只读 Composer），同一套机制
+ * （见 panels.css）。
+ * z-index 40 = 与既有浮层同档（catalog 面板、输入区内部菜单都是 40）。 */
+.scroll-to-bottom {
+  position: absolute;
+  /* 水平居中（用户要求「放中间」）：left 50% + translateX(-50%)，不再靠右贴边。
+   * 32px 的圆钮只在离开底部时出现，压住的是消息列底部一小块——这是同类产品
+   * （ChatGPT/Claude）的既有做法。用 transform 居中而不是算宽度：宽度随内容变
+   * （按钮文案/图标换过一次），写死偏移会在改文案时错位。 */
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(var(--composer-h, 170px) + 14px);
+  z-index: 40;
+  /* 浮层盒子不吃指针：消息 hover 才出现的动作条不能被它挡住 */
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 140ms, visibility 140ms;
+}
+.scroll-to-bottom[data-show="true"] {
+  opacity: 1;
+  visibility: visible;
+}
+/* 真按钮（表单套件 Button = .fd-btn-g）：圆形图标按钮，与 .msg-action.fd-btn-g 同款做法
+ * （套件只给外观，尺寸/圆角/底色归使用方）。 */
+.scroll-to-bottom-btn.fd-btn-g {
+  pointer-events: auto;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--fg-muted);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1), 0 0 0 1px var(--border-soft);
+}
+.scroll-to-bottom-btn.fd-btn-g:hover {
+  color: var(--fg);
+  border-color: var(--border-hover);
+}
+.scroll-to-bottom-btn.fd-btn-g:focus-visible {
+  outline: 2px solid var(--fg-muted);
+  outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .scroll-to-bottom {
+    transition: none;
+  }
+}
+
+/* ===== 消息块 ===== */
+.msg {
+  margin-bottom: 18px;
+  animation: block-in 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes block-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+/* 用户消息：右侧气泡（DSH MessageItem 同款几何：22px 圆角、10/16 内距、
+ *  70% 最大宽） */
+.msg.user {
+  display: flex;
+  /* **纵向**：气泡与它下方的动作条要上下排（不是并排）。原来是 display:flex +
+   *  justify-content:flex-end 的**行**布局——气泡与动作条被排成一行，动作条跑到气泡
+   *  **右边**去了（用户报的「应该再消息下面不是右边」）。加 flex-direction: column
+   *  让两者上下叠，align-items: flex-end 让它们共用同一条右边线。 */
+  flex-direction: column;
+  align-items: flex-end;
+  margin-bottom: 14px;
+  /* 动作条（复制/编辑/撤回）的定位锚（历史遗留：动作条曾在气泡上方绝对定位，
+   *  现在在流里，这个 relative 已无必需，但保留不影响任何布局）。 */
+  position: relative;
+}
+.msg.user .bubble {
+  max-width: 70%;
+  background: var(--bg-inset);
+  border-radius: 22px;
+  padding: 10px 16px;
+  font-size: 14px;
+  white-space: pre-wrap;
+  /* 溢出修复：pre-wrap 只保留换行符，不给「长 URL / 长路径 / 无空格长串」断行
+   * 机会——内容宽超过 max-width:70% 时会横向顶出气泡外。anywhere 允许在任意
+   * 字符处断行（比 break-word 更激进，且影响 min-content 尺寸计算）；min-width:0
+   * 是 flex 子元素（.msg.user 是 column flex）正常收缩的前提。 */
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  min-width: 0;
+}
+/* 附件区（DSH MessageImages 语义）：在气泡上方、气泡**外**——独立无底容器，
+ *  图片 gallery + 文件卡行。与气泡的间距 6px。
+ *  max-width:70% 与气泡同宽约束：窄窗口下附件区不能比气泡宽太多顶出列宽
+ *  （溢出修复从气泡内搬到这里——附件已不在气泡内，约束跟着搬）。 */
+.msg.user .user-atts {
+  max-width: 70%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+/* 图片 gallery（DSH ImageGallery 语义）：flex wrap、gap 10px；多图 64px tile、
+ *  单图 240px 自适应（.att-single）。 */
+.att-gallery {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+}
+.att-gallery-item {
+  width: 64px;
+  height: 64px;
+  padding: 0;
+  border: none;
+  border-radius: 16px;
+  overflow: hidden;
+  background: var(--bg-inset);
+  cursor: zoom-in;
+  flex: none;
+}
+.att-grid-item {
+  width: 64px;
+  height: 64px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  overflow: hidden;
+  background: var(--bg-inset);
+  cursor: zoom-in;
+  flex: none;
+  box-sizing: border-box;
+}
+.att-grid-item img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.att-grid-item:hover img {
+  filter: brightness(0.92);
+}
+/* 单图形态（DSH singleFit 语义）：长边 240px、比例钳 [0.25,4]、cover 裁切，
+ *  具体宽高由组件内联给（natural 加载后修正）；radius 16 细边框。 */
+.att-single {
+  display: block;
+  width: 240px;
+  height: 240px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  overflow: hidden;
+  background: var(--bg-inset);
+  cursor: zoom-in;
+  flex: none;
+  box-sizing: border-box;
+}
+.att-single img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.att-single:hover img {
+  filter: brightness(0.92);
+}
+/* 坏图占位格：URL 可构造但源文件已不在——图标占位，不可点开放大。 */
+.att-grid-broken {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-faint);
+  cursor: default;
+  border: 1px dashed var(--border);
+}
+/* +N 溢出层（「查看全部」）：同尺寸方格 + 半透明遮罩 + 计数，点开看全部。 */
+.att-grid-more {
+  width: 64px;
+  height: 64px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--bg-inset);
+  color: var(--fg-muted);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+.att-grid-more:hover {
+  color: var(--fg);
+}
+/* 溢出层展开态的全量网格样式在文件末尾「灯箱」一节（.att-grid-full*）。 */
+/* 文件卡行（DSH FileCard 语义）：横排卡行，多文件 wrap。 */
+.user-att-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+}
+.user-att-files .att-file {
+  max-width: 280px;
+}
+/* 乐观用户气泡（pending——后端还没回执，体验修复批次 2）：整体调淡 + 尾随
+ * 「发送中…」轻量指示。回执（chat.userMessage）一到，归约器按 FIFO 换成本体
+ * 气泡（pending 块移除、真块带上 seq）——这里不需要任何过渡动画，换块即换脸。 */
+.msg.user .bubble.bubble-pending {
+  opacity: 0.55;
+}
+.bubble-pending .pending-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 10px;
+  font-size: 12px;
+  opacity: 0.8;
+  white-space: nowrap;
+}
+.bubble-pending .pending-hint .mset-spinner {
+  width: 10px;
+  height: 10px;
+  border-width: 1px;
+}
+/* 乐观气泡的附件标记（图片批次 B）：「[图片]×N [文件]×M」小 chip 行——
+ * pending 阶段图还发不到历史渲染层，但"这条带着附件"必须当场看得见。 */
+.bubble-atts {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 8px;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+/* 用户气泡**下方**的图标动作条（复制 / 编辑 / 撤回）。
+ *
+ *  **在流里**（不再绝对定位在气泡上方）：图标要贴着气泡下沿排一行，用户明确要求
+ *  "做到消息的下面"；绝对定位到下方又会压住紧接着的下一条消息。代价是每条用户消息
+ *  多占一行（24px + 3px 间距）。
+ *
+ *  **常驻低对比度**而不是 hover 才出现：① 纯 hover 交互对键盘/触屏用户不可达
+ *  （UI/UX 规范把 "Reliance on hover only" 列为反模式）；② hover 显隐会让下方内容
+ *  上下顶动——长会话里整屏位移，比稳定多占 24px 难看得多。所以它一直在，只是淡；
+ *  鼠标移入气泡或键盘聚焦时才提亮。
+ *
+ *  右对齐：用户气泡本身右对齐，动作条跟着贴同一条右边线。 */
+.msg-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 2px;
+  margin-top: 3px;
+  opacity: 0.5;
+  transition: opacity 120ms ease;
+}
+.msg.user:hover .msg-actions,
+.msg-actions:focus-within {
+  opacity: 1;
+}
+/* 图标按钮：正方形、无边框、透明底，悬停才给底色（图标是唯一内容，尺寸即视觉中心）。
+ * 26px 是桌面密集界面的折中——UI/UX 规范给触屏的 44px 在这里会让每条消息多占近一倍
+ * 高度，而本应用的输入设备是鼠标/触控板（Electron 桌面壳）。 */
+/* 图标按钮几何对齐 DSH 的 MessageIconActions（我从它的打包代码里读到的原值）：
+ *  28×28、border-radius 28px（正圆）、padding 6px、图标 15px、透明底、hover 给底色。
+ *  为什么照它：动作行的尺寸/间距/圆度是**同一类产品的肌肉记忆**，自己另发明一套
+ *  会让用户觉得「这不是那种按钮」——而这一处本来就是在对齐它的形态（见 .msg-actions）。 */
+.msg-action.fd-btn-g {
+  width: 28px;
+  height: 28px;
+  padding: 6px;
+  border: none;
+  background: transparent;
+  color: var(--fg-faint);
+  border-radius: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: none;
+}
+.msg-action.fd-btn-g:hover:not(:disabled) {
+  background: var(--border-soft);
+  color: var(--fg);
+}
+.msg-action.fd-btn-g:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+/* 工具行排在正文流里（DSH 形态）：与上下文块呼吸——DSH 的 AssistantMarkdown
+ * body 是 gap:16px flex，工具行对齐这个节奏 */
+.thread > .trow {
+  margin: 8px 0 8px;
+}
+/* 思考折叠行（ThinkingReasoning）底部与后续内容的间距收紧——它自带
+ * 4px 0 10px，工具行再有 margin 会叠加出怪异空隙 */
+.thread > .msg:has(+ .trow) {
+  margin-bottom: 6px;
+}
+/* 子 Agent 卡片与工具行走同一套节奏（上下各 8px）。DispatchCard 是 .thread 的直接子元素
+ * （没有 .trow 包装），原先一条 margin 都没有——卡片下面紧接的「思考中」块只靠
+ * ThinkingReasoning 自带的 4px，视觉上贴在一起（实测间距 0px）。 */
+.thread > .dispatch-card {
+  margin: 8px 0;
+}
+/* ===== 子会话时间线的「任务」块（主 Agent 派发的任务说明书） =====
+ *  为什么不是用户气泡：气泡的语义是「我说的」——任务说明书画进气泡里，用户分不清
+ *  这是 AI 传进去的任务还是自己发的（用户实测报的问题 1）。形态对齐 dispatch 卡
+ *  （同一类"系统注入"的呈现：surface 底 + 边框 + 标签行，左对齐铺满），与用户气泡
+ *  （右对齐、inset 底、22px 圆角、无标签行）明确区分。实时与回放两条路径渲染同一种
+ *  块（blocks.ts 的 kind:"task"），样式只有这一份。 */
+.thread > .task-block {
+  margin: 8px 0;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  background: var(--surface);
+  overflow: hidden;
+  animation: block-in 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.task-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px 0;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+.task-icon {
+  display: inline-flex;
+  color: var(--fg-faint);
+}
+.task-tag {
+  font-weight: 600;
+  color: var(--fg);
+  letter-spacing: 0.02em;
+}
+.task-note {
+  color: var(--fg-faint);
+}
+.task-body {
+  padding: 4px 12px 10px;
+  font-size: 14px;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+/* ===== 工具行（lx-dsh ui-tool 逐项对齐：ToolRow/DisclosureRow/StateDot/TerminalBlock） ===== */
+/* 根：纵向 flex（行 + 展开体） */
+.trow {
+  display: flex;
+  flex-direction: column;
+}
+/* ===== 主 Agent 调度子 Agent 的卡（agent_dispatch——M3 语义） ===== */
+.dispatch-card {
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  background: var(--surface);
+  overflow: hidden;
+  animation: block-in 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.dispatch-card[data-done="true"] {
+  border-color: rgba(16, 163, 127, 0.3);
+}
+.dispatch-card[data-error="true"] {
+  border-color: rgba(224, 46, 42, 0.35);
+}
+/* 卡 = **一行摘要**（2026-09-30 用户拍板两轮收敛后的定案）：卡里没有折叠区、没有
+ *  卡内子时间线、没有结论正文、没有底部按钮——子 Agent 的过程与结论都在它自己的
+ *  工作区标签页里看（而且是实时的），这一行只是"谁在干活 + 干到哪了 + 点它进去"。
+ *  整行两种形态（DispatchCard 按 dispatchPrimaryAction 同一份判定决定）：
+ *    有子会话 id 且接了 onOpenChild → <button>（点它打开独立会话，data-openable="true"）
+ *    否则                          → <div>（静态行：点了没反应的按钮比没有入口更糟）
+ *  所以 hover / cursor 反馈只挂在 [data-openable] 上——静态行不该看起来能点。
+ *  width: 100% + 左对齐：它是这张卡唯一的内容，必须铺满整行（button 默认居中且按内容收缩）。 */
+.dispatch-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 9px 12px;
+  background: none;
+  border: none;
+  font-family: var(--font-sans);
+  text-align: left;
+  color: var(--fg);
+}
+/* 主区 hover 反馈（底色 + 光标）：它是这张卡的**主操作**（进子会话），必须明确。
+ * cursor 由 button 默认给 pointer，这里仍显式写死——将来给 button 加全局 reset
+ * 时不至于把"可点"这个信号一起抹掉。
+ * 可打开时用成功色微染：与"打开一个独立会话"的语义对上。 */
+.dispatch-head[data-openable="true"] {
+  cursor: pointer;
+}
+.dispatch-head[data-openable="true"]:hover {
+  background: rgba(16, 163, 127, 0.09);
+}
+/* 键盘可达：主区是真 <button>，focus-visible 必须看得见（用 outline-offset
+ * 负值把描边收进按钮盒内，卡片有 overflow: hidden，外描边会被裁掉）。 */
+.dispatch-head:focus-visible {
+  outline: 2px solid var(--success);
+  outline-offset: -2px;
+}
+.dispatch-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+.dispatch-agent {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--fg);
+  flex: none;
+}
+.dispatch-task {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--fg-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* todo 契约批②：派发卡上的清单进度徽标（✓ N/M · 进行项）。计数不抢任务摘要
+ *  的戏——faint 色 + tabular-nums；进行项截断省略。 */
+.dispatch-todos {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  font-size: 10.5px;
+  color: var(--success);
+  font-variant-numeric: tabular-nums;
+  max-width: 40%;
+  overflow: hidden;
+}
+.dispatch-todos-focus {
+  color: var(--fg-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dispatch-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  flex: none;
+}
+.dispatch-card[data-done="true"] .dispatch-state {
+  color: var(--success);
+}
+.dispatch-card[data-error="true"] .dispatch-state {
+  color: var(--danger);
+}
+.dispatch-state .mset-spinner {
+  width: 11px;
+  height: 11px;
+  border-width: 1.2px;
+}
+.dispatch-tokens {
+  font-size: 10px;
+  color: var(--fg-faint);
+}
+/* 失败卡的「错误」小标识（2026-10-09）：错误原因全文在卡头 hover title 里，这里给一个
+ *  看得见的入口——点它也打开子会话（错误的完整上下文在子会话里），与整行点击同一个动作。
+ *  形态对齐 .tab-child-kind 的小胶囊语言，走危险色系（与 data-error 的描边同源）。
+ *  DOM 上是 span + role="button"（卡头是 <button>，HTML 不允许按钮嵌按钮）。 */
+.dispatch-error-chip {
+  flex: none;
+  font-size: 9.5px;
+  line-height: 15px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: rgba(224, 46, 42, 0.12);
+  color: var(--danger);
+  cursor: pointer;
+  user-select: none;
+}
+.dispatch-error-chip:hover {
+  background: rgba(224, 46, 42, 0.2);
+}
+/* 子会话 id 徽标（基础样式在 catalog.css：等宽 + 低对比度）——可打开时的"点得进去"
+ * 视觉：成功色 + 描边 + 一个**向外的箭头**（↗）+ 主区 hover 时加下划线。
+ * 只在真能打开时出现（.openable 由 DispatchCard 按 dispatchPrimaryAction 的同一份
+ * 判定挂上）：演示态/老数据不该长出一个点了没反应的箭头。
+ * 选择器带 .dispatch-head 前缀（specificity 高于 catalog.css 的单类规则）：
+ * 这样不必赌 thread.css 与 catalog.css 的加载顺序。 */
+.dispatch-head .dispatch-session {
+  display: inline-flex;
+  align-items: center;
+}
+.dispatch-head .dispatch-session.openable {
+  color: var(--success);
+  border-color: rgba(16, 163, 127, 0.45);
+}
+.dispatch-head[data-openable="true"]:hover .dispatch-session.openable {
+  text-decoration: underline;
+}
+.dispatch-session-go {
+  margin-left: 3px;
+  flex: none;
+}
+/* 卡里渲染的**待裁决确认卡**（子 Agent 的确认由父会话代理，AGENTS.md §2.3）：
+ *  双投之后卡里与子会话视图里各有一份，这里留一点外边距把它与那一行分开——
+ *  它是**操作入口**（用户没打开子会话视图也必须能批），不是过程展示。
+ *  钩子用 ApprovalCard 自己的 data-variant="command"（它的根类名是 CSS Module 哈希，
+ *  样式表里选不中——属性是稳定契约，scripts/check-preview-layout.cjs 也按它定位）。 */
+.dispatch-card [data-variant="command"] {
+  margin: 0 12px 10px;
+}
+/* ===== 派发卡的**成果区**（子会话附件回流，2026-12 用户拍板重做）=====
+ *  附件不是子过程，是成果——但也不能与卡头一行拼在一坨。独立区块：
+ *  发丝分隔线与卡头分开 + 「成果文件」小标题（v3 区块标签语言：小号、faint、
+ *  字距微开）+ 附件卡网格。卡 = 一行摘要的契约不破：这里只有成果，没有子过程。 */
+.dispatch-deliverables {
+  border-top: 1px solid var(--border-soft);
+  padding: 9px 12px 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.dispatch-deliverables-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--fg-faint);
+  user-select: none;
+}
+/* 附件网格：横向流式排布（图片缩略统一尺寸、文件卡等高对齐）——不挤成一坨。
+ *  图片 tile 对齐 DSH 64px 方格；文件卡 = DSH DeliveredFile 语义（72px 高、
+ *  radius 16、48px 图标框——成果区是网格语义，尺寸必须一致才齐）。
+ *  标题藏进 hover title（与主时间线同款 title），卡内不留文字行。 */
+.dispatch-deliverables .att-cards {
+  margin-bottom: 0;
+}
+.dispatch-deliverables .att-image {
+  width: 72px;
+  max-width: 72px;
+  border-radius: 16px;
+}
+.dispatch-deliverables .att-image img {
+  width: 72px;
+  height: 72px;
+  max-width: none;
+  object-fit: cover;
+}
+.dispatch-deliverables .att-image .att-image-cap {
+  display: none;
+}
+/* 成果区的文件卡：DSH DeliveredFile 形态——72px 高、radius 16、图标框 48px
+ *  （边框细线 + 内嵌底），名称 13px；hover 提亮（DeliveredFile 的
+ *  neutral-50 → neutral-100 语义映射到 bg-inset → hover-veil）。 */
+.dispatch-deliverables .att-file {
+  width: 240px;
+  max-width: 240px;
+  height: 72px;
+  border-radius: 16px;
+  align-items: center;
+}
+.dispatch-deliverables .att-file .att-file-icon {
+  width: 48px;
+  height: 48px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.dispatch-deliverables .att-file .att-name {
+  font-size: 13px;
+  line-height: 20px;
+}
+/* 行：24px 高（DSH DisclosureRow 的行高）；运行中扫光在 ::after */
+.trow-row {
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  height: 24px;
+  min-width: 0;
+  cursor: default;
+}
+.trow-row[role="button"] {
+  cursor: pointer;
+}
+.trow-row[role="button"]:hover {
+  background: var(--hover-veil);
+  border-radius: 6px;
+}
+/* 运行中：光带扫过（DSH sweep——bg-base 60% 混色的横带） */
+.trow-running .trow-row::after {
+  content: "";
+  background: linear-gradient(90deg, transparent 0%, rgba(59, 130, 246, 0.06) 55%, transparent 100%);
+  pointer-events: none;
+  width: 300px;
+  animation: trow-sweep 2.6s ease-out infinite;
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+}
+@keyframes trow-sweep {
+  0% { left: -300px; }
+  90%, to { left: 100%; }
+}
+/* leading：16px 盒（DSH leading——图标/状态点/chevron 的家） */
+.trow-leading {
+  position: relative;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 6px;
+  color: var(--fg-faint);
+}
+/* 空闲图标（hover 淡出换 chevron——DSH 的 iconIdle/chevronHover 语义） */
+.trow-icon {
+  display: inline-flex;
+  opacity: 1;
+  transition: opacity 100ms ease;
+}
+.trow-chev {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  opacity: 0;
+  transition: opacity 100ms ease;
+  color: var(--fg-muted);
+}
+.trow-row:hover .trow-icon {
+  opacity: 0;
+}
+.trow-row:hover .trow-chev {
+  opacity: 1;
+}
+/* 展开态：chevron 常驻（leading 就是它） */
+.trow-open .trow-leading .trow-icon {
+  display: none;
+}
+.trow-open .trow-leading .trow-chev {
+  opacity: 1;
+  transform: none;
+}
+/* 标题（DSH title：13px/24 weight 400） */
+.trow-title {
+  flex: none;
+  font-size: 13px;
+  line-height: 24px;
+  font-weight: 400;
+  color: var(--fg-muted);
+}
+/* 2px 分隔点（DSH sep） */
+.trow-sep {
+  background: var(--fg-faint);
+  border-radius: 1px;
+  flex: none;
+  width: 2px;
+  height: 2px;
+  margin: 0 8px;
+}
+/* 摘要（DSH summary：13/24 tertiary + ellipsis） */
+.trow-summary {
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 24px;
+  color: var(--fg-faint);
+  flex: auto;
+  overflow: hidden;
+}
+.trow-summary.err {
+  color: var(--danger);
+}
+/* 状态点（DSH StateDot：10% 光晕 ::before + 20% 内缩实心核 ::after） */
+.sdot {
+  position: relative;
+  display: inline-block;
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+.sdot::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.1;
+}
+.sdot::after {
+  content: "";
+  position: absolute;
+  inset: 20%;
+  border-radius: 50%;
+  background: currentColor;
+}
+.sdot.run {
+  color: var(--info-text);
+  animation: sdot-pulse 1.6s ease-in-out infinite;
+}
+.sdot.err {
+  color: var(--danger);
+}
+@keyframes sdot-pulse {
+  50% { opacity: 0.4; }
+}
+/* 展开体（高度动画由 gsap 驱动；收起保持 height:0） */
+.trow-body {
+  overflow: hidden;
+}
+.trow-body:not(.trow-open .trow-body) {
+  /* gsap inline 接管；此规则只是首帧兜底 */
+}
+/* ===== 终端卡（DSH TerminalBlock 全量对齐：banner + 状态 + 复制 + 折叠） ===== */
+.tterm {
+  position: relative;
+  margin: 4px 0 4px 4px;
+  padding-left: 30px; /* 左 gutter：状态点的一列之地（DSH --dsl-terminal-gutter） */
+  background: var(--code-bg);
+  border: 0.5px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+/* banner：[状态点+命令行] [退出码 pill] [复制按钮]——跨全宽拉回 gutter */
+.tterm-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-left: -30px;
+  padding: 9px 14px 9px 30px;
+  max-height: 150px;
+  overflow-y: auto;
+}
+.tterm:not([data-running]) .tterm-header {
+  border-bottom: 0.5px solid var(--border);
+}
+/* 命令区：多行命令逐行渲染（DSH prompt/promptLine） */
+.tterm-prompt {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.tterm-prompt-line {
+  position: relative;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  line-height: 22px;
+}
+/* 状态点：首行行内（吃 gutter 的位） */
+.tterm-prompt-line .sdot {
+  position: absolute;
+  left: -22px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+.tterm-prompt-line .sdot.ok {
+  color: var(--success);
+}
+.tterm-cwd {
+  flex: none;
+  color: var(--fg-faint);
+}
+.tterm-command {
+  min-width: 0;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: pre;
+}
+/* 退出码 pill（非零退出红底） */
+.tterm-pill {
+  flex: none;
+  position: sticky;
+  top: 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  padding: 2px 8px;
+  border-radius: 99px;
+  line-height: 16px;
+}
+.tterm-pill.err {
+  background: rgba(224, 46, 42, 0.08);
+  color: var(--danger);
+}
+/* 复制按钮（banner 右侧 sticky） */
+.tterm-copy {
+  flex: none;
+  position: sticky;
+  top: 0;
+  background: var(--code-bg);
+  border: none;
+  padding: 0;
+  margin: 0;
+  color: var(--fg-muted);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 22px;
+}
+.tterm-copy:hover {
+  color: var(--fg);
+}
+/* 输出：行式渲染（ANSI 色 + head-tail 折叠） */
+.tterm-output {
+  padding: 12px 14px 12px 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+.tterm-line {
+  min-height: 22px;
+  line-height: 22px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.tterm-expand {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--fg-faint);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  line-height: 22px;
+}
+.tterm-expand:hover {
+  color: var(--fg-muted);
+}
+.tterm-empty {
+  padding: 12px 14px 12px 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-faint);
+}
+/* ===== 代码围栏块（markdown 正文里的 ``` 终端卡，暗色沿用） ===== */
+.tool-result {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--term-fg);
+  background: var(--term-bg);
+  border-radius: 10px;
+  padding: 10px 14px;
+  margin-top: 2px;
+  white-space: pre-wrap;
+  /* 长代码行 / 长路径：pre-wrap 不给无空格串断行机会，会横向顶破卡——
+   * 允许任意字符处断行（代码块保持换行而非横向滚动，与 pre-wrap 语义一致）。 */
+  overflow-wrap: anywhere;
+  min-width: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  transition: border-color 140ms;
+  border: 1px solid transparent;
+}
+.tool-result::-webkit-scrollbar {
+  width: 8px;
+}
+.tool-result::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 4px;
+}
+/* ===== edit 工具的 diff 卡（沿用） ===== */
+.tool-block {
+  margin: 8px 0;
+  border-radius: 10px;
+  padding: 2px 4px;
+  margin-left: -4px;
+  transition: background 120ms;
+}
+.tool-open-hint {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--fg-faint);
+}
+.tool-block.diff-block .diff-file-head .tname {
+  font-family: var(--font-mono);
+}
+/* 错误条 */
+.error-block {
+  margin: 8px 0;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+  color: var(--danger);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.error-block[data-aborted="true"] {
+  color: var(--fg-muted);
+}
+/* 操作提示条（请求级失败的一次性提示）：与 .job-notice 同款形态（左缘竖线 +
+ * 圆角 8 + 全宽），但走危险色——它是「刚才那件事没做成」，不是系统通告。
+ * 刻意**不复用 .error-block**：那条是时间线内的行内文本（Block 与 SettingsPanel
+ * 也在用），给它加底色/圆角会连带改掉那两处的排版。 */
+.op-notice {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 10px 0;
+  padding: 8px 10px 8px 12px;
+  border: 1px solid rgba(224, 46, 42, 0.25);
+  border-left: 2px solid var(--danger);
+  border-radius: 8px;
+  background: rgba(224, 46, 42, 0.05);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--danger);
+}
+.op-notice-icon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+}
+.op-notice-text {
+  flex: 1;
+  min-width: 0;
+  word-break: break-word;
+}
+.op-notice-close.fd-btn-g {
+  flex: none;
+  padding: 2px 9px;
+  font-size: 10.5px;
+  border-radius: 7px;
+}
+/* usage 行 */
+.usage-line {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--fg-faint);
+  margin-top: 14px;
+}
+/* 正文文本：段内换行保留。DSH markdown 规范：14px/24px 行高（1.71），
+ * 段落上下 margin 16px（块间呼吸感是它「好看」的核心）。
+ * 流式逐行成块的形态保留（每行一个 p），段距由 .md-para 提供。 */
+.md-text {
+  white-space: pre-wrap;
+  display: block;
+  font-size: 14px;
+  line-height: 1.71;
+  margin-bottom: 0;
+  /* 与 .prose（TextResponse）同款断行约束——md-text 也出现在 .prose 之外的
+   * 容器（agents 详情等），那里没有 anywhere 继承源，长串同样会顶破列宽。 */
+  overflow-wrap: anywhere;
+}
+/* 连续段落后出现的段落（视觉段距 ≈ DSH 的 16px 段 margin） */
+.md-para {
+  margin-top: 1em;
+}
+/* 正文逐块淡入：与思考句 tr-sentence-in 同参数（420ms 同曲线），
+   每块只在首次挂载播放——已有块文本增长不重挂载。 */
+.md-seg {
+  animation: md-seg-in 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes md-seg-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+/* 流式光标：正文实时 markdown 渲染时挂在末尾 */
+.md-caret {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: -2px;
+  background: var(--fg-muted);
+  animation: md-blink 1s steps(1) infinite;
+}
+@keyframes md-blink {
+  50% { opacity: 0; }
+}
+/* ===== markdown 块级元素（DSH markdown 规范，提取自 lx-dsh 主题 token） =====
+ * 标题：h1 21px/700 · h2 19px/700 · h3 18px/700 · h4 14px/600；
+ * 块间 margin 32px 上 16px 下（标题推开上下文）；表格无线框只有底线
+ * hairline（DSH 表格语言）；列表真实 marker。 */
+.md-h {
+  margin: 24px 0 12px;
+  font-weight: 700;
+  line-height: 1.45;
+  color: var(--fg);
+}
+.md-h:first-child {
+  margin-top: 0;
+}
+.md-h1 { font-size: 21px; line-height: 1.43; }
+.md-h2 { font-size: 19px; }
+.md-h3 { font-size: 18px; }
+.md-h4, .md-h5, .md-h6 { font-size: 14px; font-weight: 600; margin: 16px 0 8px; }
+.md-hr {
+  border: none;
+  height: 0.5px;
+  background: var(--border-strong);
+  margin: 24px 0;
+}
+.md-quote {
+  margin: 16px 0 0;
+  padding: 0 0 0 14px;
+  border-left: 2px solid var(--fg-faint);
+  color: var(--fg-muted);
+}
+.md-quote-line {
+  font-size: 14px;
+  line-height: 1.71;
+  overflow-wrap: anywhere;
+}
+.md-list {
+  margin: 12px 0;
+  padding-left: 18px;
+  list-style: none;
+}
+.md-li {
+  display: flex;
+  align-items: baseline;
+  gap: 2px;
+  font-size: 14px;
+  line-height: 1.71;
+  padding: 0 0 0 0;
+}
+.md-li + .md-li {
+  margin-top: 5px;
+}
+.md-li-marker {
+  color: var(--fg-muted);
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  padding-right: 7px;
+  min-width: 14px;
+  text-align: right;
+}
+.md-li-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+/* 表格（DSH 语言）：无线框——只有行底 hairline；表头 500 字重无底色；
+ * 首列去左内距（对齐正文左缘）；单元格 max-width 防溢出。 */
+.md-table-wrap {
+  overflow-x: auto;
+  margin: 12px 0 16px;
+}
+.md-table {
+  border-collapse: collapse;
+}
+.md-table th,
+.md-table td {
+  padding: 9px 14px;
+  text-align: left;
+  max-width: 320px;
+  border-top: none;
+  border-bottom: 0.5px solid var(--border);
+  line-height: 1.55;
+}
+.md-table tr:first-child th {
+  border-top: none;
+}
+.md-table th {
+  font-weight: 500;
+  color: var(--fg);
+}
+.md-table th:first-child,
+.md-table td:first-child {
+  padding-left: 0;
+}
+.md-table td:last-child,
+.md-table th:last-child {
+  padding-right: 0;
+}
+.md-table tbody tr:last-child td {
+  border-bottom: none;
+}
+.md-table td {
+  font-size: 13px;
+  color: var(--fg);
+}
+/* ===== markdown 行内元素 ===== */
+.md-strong {
+  font-weight: 600;
+}
+.md-em {
+  font-style: italic;
+}
+.md-del {
+  opacity: 0.55;
+}
+.md-code {
+  font-family: var(--font-mono);
+  font-size: 0.875em;
+  background: var(--border-soft);
+  border: 0.5px solid var(--border);
+  padding: 0 5px;
+  border-radius: 6px;
+}
+.md-a {
+  color: var(--info-text);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* ===== 附件卡（DSH 对齐 2026-12）=====
+ *  图片 = 内联缩略图（点击放大）；文件 = 图标框 + 名字 + 大小（点击下载），
+ *  卡几何对齐 DSH DeliveredFile（72px 高、radius 16、细边框、图标框）。
+ *  share_file 工具行 / dispatch 成果区共用一套（实时与回放同一份元数据）。
+ *  用户消息侧已拆到 .user-atts 独立区块（见 .msg.user .user-atts）。 */
+.att-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.att-image {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  max-width: 220px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  overflow: hidden;
+  background: var(--bg-inset);
+  cursor: zoom-in;
+}
+.att-image img {
+  display: block;
+  max-width: 220px;
+  max-height: 180px;
+  object-fit: cover;
+}
+.att-image .att-image-cap {
+  padding: 4px 8px;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 220px;
+}
+.att-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  width: 240px;
+  max-width: 240px;
+  height: 64px;
+  box-sizing: border-box;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--bg-inset);
+  color: var(--fg);
+  text-decoration: none;
+  overflow: hidden;
+}
+.att-file:hover {
+  border-color: var(--border-strong);
+  background: var(--hover-veil);
+}
+.att-file.att-dead {
+  opacity: 0.6;
+  cursor: default;
+}
+.att-file-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  color: var(--fg-muted);
+}
+.att-file-body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+.att-name {
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 22px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.att-sub {
+  font-size: 12px;
+  line-height: 15px;
+  color: var(--fg-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* ===== 灯箱（2026-12 重做，shared/lightbox.tsx）：portal 挂 body，全屏
+ * 深色遮罩 + 轻度 backdrop blur；图 = 原图（natural 尺寸 × transform 缩放），
+ * 适配态 scale=1 由 JS fitSize 保证不超视口。z-index 1000：高于所有既有
+ * 浮层（对话框 200、搜索 90、agents 80）——灯箱是模态终点，不该被盖。 */
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(8, 9, 12, 0.82);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: lightbox-in 0.18s ease-out;
+  cursor: zoom-out;
+  user-select: none;
+}
+.lightbox.lightbox-closing {
+  animation: lightbox-out 0.14s ease-in forwards;
+}
+@keyframes lightbox-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes lightbox-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+/* 舞台：图片层（双击缩放/按住拖动在这里）；点图片不冒泡成关闭。 */
+.lightbox-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  max-width: 92vw;
+  max-height: 92vh;
+  cursor: default;
+  touch-action: none;
+}
+.lightbox-dragging .lightbox-stage {
+  cursor: grabbing;
+}
+.lightbox-stage img,
+.lightbox-img {
+  max-width: none;
+  border-radius: 8px;
+  box-shadow: 0 16px 64px rgba(0, 0, 0, 0.55);
+  animation: lightbox-img-in 0.18s ease-out;
+  will-change: transform;
+}
+@keyframes lightbox-img-in {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+/* 加载中 / 失败态：不白屏。 */
+.lightbox-loading {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.lightbox-spinner {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2.5px solid rgba(255, 255, 255, 0.25);
+  border-top-color: rgba(255, 255, 255, 0.85);
+  animation: lightbox-spin 0.8s linear infinite;
+}
+@keyframes lightbox-spin {
+  to { transform: rotate(360deg); }
+}
+.lightbox-failed {
+  position: absolute;
+  padding: 8px 14px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.6);
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 12.5px;
+}
+/* 顶栏：名字 + 计数 + 关闭（左上/右上贴边，半透明底）。 */
+.lightbox-topbar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: linear-gradient(rgba(8, 9, 12, 0.55), rgba(8, 9, 12, 0));
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 12.5px;
+  pointer-events: none;
+}
+.lightbox-name {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lightbox-count {
+  flex: none;
+  color: rgba(255, 255, 255, 0.6);
+  font-variant-numeric: tabular-nums;
+}
+.lightbox-topbar .lightbox-close {
+  margin-left: auto;
+  pointer-events: auto;
+}
+/* 左右切换箭头（贴边竖排居中，多图才渲染）。 */
+.lightbox-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+}
+.lightbox-prev { left: 12px; }
+.lightbox-next { right: 12px; }
+.lightbox-nav:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+/* 底部工具条：缩放比例 / ± / 提示 / 下载——贴底细条不挡图。 */
+.lightbox-toolbar {
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px;
+  margin-bottom: 12px;
+  border-radius: 12px;
+  background: rgba(20, 22, 27, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 12px;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+.lightbox-scale {
+  min-width: 44px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.75);
+}
+.lightbox-sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 4px;
+  background: rgba(255, 255, 255, 0.14);
+}
+.lightbox-hint {
+  color: rgba(255, 255, 255, 0.45);
+  font-size: 11px;
+}
+/* 通用小按钮（关闭/箭头/缩放/下载）：透明底、悬停微亮。 */
+.lightbox-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.85);
+  cursor: pointer;
+  flex: none;
+}
+.lightbox-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+.lightbox-close {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+}
+/* ===== 溢出层（+N 展开态）：全屏遮罩内的全量网格，点空白处关闭。
+ * 与灯箱分离（这是网格选择器不是查看器）：z-index 300、无 blur。 */
+.att-grid-full {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(8, 9, 12, 0.82);
+  cursor: zoom-out;
+  animation: lightbox-in 0.18s ease-out;
+}
+.att-grid-full-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+  max-width: 80vw;
+  max-height: 82vh;
+  overflow-y: auto;
+  padding: 8px;
+  cursor: default;
+}
+.att-grid-full-item {
+  position: relative;
+  display: inline-flex;
+}
+.att-grid-full-item .att-grid-item {
+  width: 120px;
+  height: 120px;
+}
+/* share_file 的工具行形态：头行 + 附件卡为主体（不用展开就能看到）。 */
+.share-block {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+}
+.share-block .att-cards {
+  margin-bottom: 0;
+  margin-top: 6px;
+}

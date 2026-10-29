@@ -1,0 +1,337 @@
+
+
+.card {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  border-radius: 12px;
+  background: #ffffff;
+  /* Codex 语言：发丝描边取代阴影浮卡（白底页面上阴影等于没边框） */
+  border: 1px solid #ececec;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+  color: #1a1a1a;
+  animation: ap-card-in 380ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes ap-card-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+.head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 24px;
+  overflow: visible;
+}
+.icon {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: #f7f8fa;
+  color: #1a1a1a;
+}
+.icon[data-variant="questions"] {
+  background: color-mix(in srgb, #3b82f6 12%, #ffffff);
+  color: #3b82f6;
+}
+.icon[data-variant="command"] {
+  /* Codex 中性化：琥珀提示色退场，图标底灰、符号近黑 */
+  background: #f0f0f1;
+  color: #0d0d0d;
+}
+.icon[data-variant="plan"] {
+  background: color-mix(in srgb, #15a06a 12%, #ffffff);
+  color: #15a06a;
+}
+.iconSvg { width: 14px; height: 14px; }
+.headText {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+.title {
+  font-size: 13.5px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  line-height: 1.25;
+}
+/* 命令预览 = 对话流同款暗色终端块（审批时看到的就是执行后的样子）。
+   与 .tool-result 同一套 token：bg #1a1a1a / fg #d4d4d4 / dim #8e8e96 / $ 提示符绿。 */
+.cmdBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: #1a1a1a;
+}
+.cwd {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: #8e8e96;
+}
+.cmd {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #d4d4d4;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.cmd::before {
+  content: "$ ";
+  color: #10a37f;
+}
+.actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 0;
+  padding-left: 2px;
+}
+.actionsSpacer { flex: none; width: 0; }
+.actionBtns {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-left: auto;
+}
+.btnGhost,
+.btnPrimary {
+  position: relative;
+  z-index: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0;
+  padding: 5px 11px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.btnSubmitIcon { width: 12px; height: 12px; flex: none; }
+.btnGhost::before,
+.btnPrimary::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: 999px;
+  transition: background 150ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.btnGhost { color: #1a1a1a; }
+.btnGhost::before {
+  background: color-mix(in srgb, #1a1a1a 6%, transparent);
+}
+.btnGhost:hover::before {
+  background: color-mix(in srgb, #1a1a1a 10%, transparent);
+}
+.btnGhost:active,
+.btnPrimary:active:not(:disabled) { transform: scale(0.98); }
+.btnPrimary { color: #ffffff; }
+.btnPrimary::before { background: #0b0d12; }
+.btnPrimary:hover:not(:disabled)::before { background: #2a2f3a; }
+.btnPrimary:disabled { opacity: 0.38; cursor: default; }
+@media (prefers-reduced-motion: reduce) {
+.card { animation: none; }
+.option,
+  .key,
+  .key::before,
+  .btnGhost,
+  .btnPrimary,
+  .btnGhost::before,
+  .btnPrimary::before,
+  .stepArrow { transition: none; }}
+:global([data-theme="dark"]) .card,
+:global(.dark) .card {
+  background: #1a1a1a;
+  box-shadow:
+    0 0 0 0.5px rgba(255, 255, 255, 0.12),
+    0 1px 2px rgba(0, 0, 0, 0.4),
+    0 2px 4px rgba(0, 0, 0, 0.3);
+  color: #f5f5f5;
+}
+:global([data-theme="dark"]) .icon,
+:global(.dark) .icon { background: #101010; color: #f5f5f5; }
+:global([data-theme="dark"]) .icon[data-variant="questions"],
+:global(.dark) .icon[data-variant="questions"] {
+  background: color-mix(in srgb, #3b82f6 18%, #1a1a1a);
+  color: #60a5fa;
+}
+:global([data-theme="dark"]) .icon[data-variant="command"],
+:global(.dark) .icon[data-variant="command"] {
+  background: color-mix(in srgb, #f5b14c 14%, #1a1a1a);
+  color: #f5b14c;
+}
+:global([data-theme="dark"]) .icon[data-variant="plan"],
+:global(.dark) .icon[data-variant="plan"] {
+  background: color-mix(in srgb, #34d399 12%, #1a1a1a);
+  color: #34d399;
+}
+:global([data-theme="dark"]) .cmdBlock,
+:global(.dark) .cmdBlock { background: #101010; }
+:global([data-theme="dark"]) .cwd,
+:global(.dark) .cwd { color: #737373; }
+:global([data-theme="dark"]) .cmd,
+:global(.dark) .cmd { color: #f5f5f5; }
+:global([data-theme="dark"]) .btnGhost,
+:global(.dark) .btnGhost { color: #f5f5f5; }
+:global([data-theme="dark"]) .btnGhost::before,
+:global(.dark) .btnGhost::before {
+  background: color-mix(in srgb, #f5f5f5 6%, transparent);
+}
+:global([data-theme="dark"]) .btnGhost:hover::before,
+:global(.dark) .btnGhost:hover::before {
+  background: color-mix(in srgb, #f5f5f5 10%, transparent);
+}
+:global([data-theme="dark"]) .btnPrimary,
+:global(.dark) .btnPrimary { color: #0a0a0a; }
+:global([data-theme="dark"]) .btnPrimary::before,
+:global(.dark) .btnPrimary::before { background: #f5f5f5; }
+:global([data-theme="dark"]) .btnPrimary:hover:not(:disabled)::before,
+:global(.dark) .btnPrimary:hover:not(:disabled)::before { background: #ffffff; }
+@media (prefers-color-scheme: dark) {
+:global(html:not([data-theme="light"])) .card {
+    background: #1a1a1a;
+    box-shadow:
+      0 0 0 0.5px rgba(255, 255, 255, 0.12),
+      0 1px 2px rgba(0, 0, 0, 0.4),
+      0 2px 4px rgba(0, 0, 0, 0.3);
+    color: #f5f5f5;
+  }
+:global(html:not([data-theme="light"])) .icon { background: #101010; color: #f5f5f5; }
+:global(html:not([data-theme="light"])) .icon[data-variant="questions"] {
+    background: color-mix(in srgb, #3b82f6 18%, #1a1a1a);
+    color: #60a5fa;
+  }
+:global(html:not([data-theme="light"])) .icon[data-variant="command"] {
+    background: color-mix(in srgb, #f5b14c 14%, #1a1a1a);
+    color: #f5b14c;
+  }
+:global(html:not([data-theme="light"])) .icon[data-variant="plan"] {
+    background: color-mix(in srgb, #34d399 12%, #1a1a1a);
+    color: #34d399;
+  }
+:global(html:not([data-theme="light"])) .cmdBlock { background: #101010; }
+:global(html:not([data-theme="light"])) .cwd { color: #737373; }
+:global(html:not([data-theme="light"])) .cmd { color: #f5f5f5; }
+:global(html:not([data-theme="light"])) .btnGhost { color: #f5f5f5; }
+:global(html:not([data-theme="light"])) .btnGhost::before {
+    background: color-mix(in srgb, #f5f5f5 6%, transparent);
+  }
+:global(html:not([data-theme="light"])) .btnGhost:hover::before {
+    background: color-mix(in srgb, #f5f5f5 10%, transparent);
+  }
+:global(html:not([data-theme="light"])) .btnPrimary { color: #0a0a0a; }
+:global(html:not([data-theme="light"])) .btnPrimary::before { background: #f5f5f5; }
+:global(html:not([data-theme="light"])) .btnPrimary:hover:not(:disabled)::before { background: #ffffff; }}
+/* ---- vendor 扩展：resolved 态徽标与补充说明（lxcode 确认门） ---- */
+.resolvedBadge {
+  margin-left: auto;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  letter-spacing: 0.04em;
+}
+.resolvedBadge[data-outcome="allow"] {
+  color: #059669;
+  background: rgba(16, 185, 129, 0.1);
+}
+.resolvedBadge[data-outcome="deny"] {
+  color: #b91c1c;
+  background: rgba(239, 68, 68, 0.1);
+}
+.cmdBlock[data-dim="true"] {
+  opacity: 0.75;
+}
+/* 补充说明在暗色命令块内——琥珀提亮一档 */
+.note {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #d9a441;
+}
+/* ---- ask 变体（ask_user 提问）：提问正文 + 预设选项 + 自由文本回答 ---- */
+.askTool {
+  font-size: 11px;
+  color: #8e8e96;
+  line-height: 1.4;
+}
+.askText {
+  margin: 0;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.65;
+  color: #e8e8e8;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.askBody {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.askOptions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.askInputRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.askInput {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: 6px 12px;
+  border: 1px solid #e0e0e0;
+  border-radius: 999px;
+  background: transparent;
+  font: inherit;
+  font-size: 12.5px;
+  color: inherit;
+  outline: none;
+}
+.askInput:focus {
+  border-color: #3b82f6;
+}
+.askInput::placeholder { color: #a0a0a0; }
+:global([data-theme="dark"]) .resolvedBadge[data-outcome="allow"],
+:global(.dark) .resolvedBadge[data-outcome="allow"] { color: #34d399; }
+:global([data-theme="dark"]) .resolvedBadge[data-outcome="deny"],
+:global(.dark) .resolvedBadge[data-outcome="deny"] { color: #f87171; }
+:global([data-theme="dark"]) .askText,
+:global(.dark) .askText { color: #f0f0f0; }
+:global([data-theme="dark"]) .askInput,
+:global(.dark) .askInput { border-color: #333; }
+:global([data-theme="dark"]) .askInput::placeholder,
+:global(.dark) .askInput::placeholder { color: #6b6b6b; }
+@media (prefers-color-scheme: dark) {
+  :global(html:not([data-theme="light"])) .resolvedBadge[data-outcome="allow"] { color: #34d399; }
+  :global(html:not([data-theme="light"])) .resolvedBadge[data-outcome="deny"] { color: #f87171; }
+  :global(html:not([data-theme="light"])) .askText { color: #f0f0f0; }
+  :global(html:not([data-theme="light"])) .askInput { border-color: #333; }
+  :global(html:not([data-theme="light"])) .askInput::placeholder { color: #6b6b6b; }
+}

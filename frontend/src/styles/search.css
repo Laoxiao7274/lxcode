@@ -1,0 +1,442 @@
+/* 页面级更新提示与网页搜索分区。 */
+
+/* ===== 统一更新弹窗（.upd-dialog，组件 components/update/UpdateDialog.tsx） =====
+   骨架复用 .proj-add-mask / .proj-add（composer.css），这里只加更新自己的
+   版本表、说明列表、进度区与错误行；色全部走 token（亮/暗两套自动跟随）。 */
+.upd-dialog {
+  width: min(480px, calc(100vw - 48px));
+}
+.upd-body {
+  gap: 10px;
+}
+/* 版本表：新版本 / 当前版本 两行，值用等宽 */
+.upd-vers {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  background: var(--bg-side);
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  padding: 9px 12px;
+}
+.upd-vers-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+}
+.upd-vers-label {
+  flex: none;
+  width: 56px;
+  color: var(--fg-faint);
+}
+.upd-vers-new {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.upd-vers-size {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--fg-faint);
+}
+.upd-vers-cur {
+  color: var(--fg-muted);
+}
+/* 更新说明：长列表在框内滚动（不把弹窗撑过一屏） */
+.upd-notes-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  letter-spacing: 0.02em;
+  margin-bottom: 4px;
+}
+.upd-notes {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 12px;
+  max-height: 168px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.upd-notes li {
+  position: relative;
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--fg-muted);
+}
+.upd-notes li::before {
+  content: "";
+  position: absolute;
+  left: -11px;
+  top: 0.72em;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--border-strong);
+}
+/* 进度区 */
+.upd-progress-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.upd-progress-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+.upd-progress-num {
+  flex: none;
+  font-size: 11.5px;
+  color: var(--fg);
+}
+.upd-progress-bytes {
+  font-size: 10.5px;
+  color: var(--fg-faint);
+  min-height: 13px;
+}
+/* 就绪/安装：重启告知 */
+.upd-ready {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--fg-muted);
+  background: color-mix(in srgb, var(--ok-text) 6%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ok-text) 22%, var(--border-soft));
+  border-radius: 9px;
+  padding: 8px 11px;
+}
+.upd-error {
+  padding: 0;
+}
+.upd-hint {
+  font-size: 12px;
+  color: var(--fg-muted);
+  line-height: 1.6;
+}
+.upd-close-hint {
+  font-size: 10.5px;
+  color: var(--fg-faint);
+}
+.upd-btn-spin {
+  width: 11px;
+  height: 11px;
+  margin-right: 5px;
+}
+.proj-add-close:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.proj-add-close:disabled:hover {
+  background: transparent;
+  color: var(--fg-faint);
+}
+/* 侧栏设置行的更新角标 */
+.settings-upd-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--success);
+  animation: pulse 2.4s ease-in-out infinite;
+  flex: none;
+}
+/* ===== 网页搜索分区（设置 .sp-*） ===== */
+.sp-summary {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-size: 12px;
+  color: var(--fg-faint);
+  margin-bottom: 12px;
+}
+.sp-summary-primary {
+  color: var(--fg-muted);
+}
+.sp-card {
+  border: 1px solid var(--border-soft);
+  border-radius: 11px;
+  padding: 12px 14px;
+  margin-bottom: 10px;
+}
+.sp-card[data-primary="true"] {
+  border-color: rgba(16, 163, 127, 0.35);
+}
+.sp-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.sp-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+  flex: none;
+}
+.sp-pills {
+  display: flex;
+  gap: 5px;
+  flex: none;
+}
+.sp-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+.sp-btn.fd-btn-g {
+  padding: 3px 10px;
+  font-size: 10.5px;
+}
+.sp-desc {
+  font-size: 11.5px;
+  color: var(--fg-faint);
+  margin-top: 3px;
+}
+.sp-cred {
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  margin-top: 5px;
+}
+/* 必填设置项的星标：与输入项标题同一行，比标题弱一档但可辨识。 */
+.sp-req {
+  color: var(--danger);
+  margin-left: 4px;
+  font-size: 12px;
+  line-height: 1;
+}
+.sp-edit {
+  border-top: 1px dashed var(--border-soft);
+  margin-top: 10px;
+  padding-top: 10px;
+}
+.sp-edit .cg-field {
+  margin-bottom: 10px;
+}
+.sp-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.sp-add-form {
+  background: var(--bg-side);
+}
+/* 渠道分组（30+ 个渠道必须分组，平铺不可用） */
+.sp-group {
+  margin-bottom: 4px;
+}
+.sp-group-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 7px 2px 6px;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border-soft);
+  margin-bottom: 9px;
+  cursor: pointer;
+  text-align: left;
+  color: var(--fg-muted);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.sp-group-head:hover {
+  color: var(--fg);
+}
+.sp-group-caret {
+  display: inline-flex;
+  flex: none;
+  color: var(--fg-faint);
+  transition: transform 150ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.sp-group-caret.open {
+  transform: rotate(90deg);
+}
+.sp-group-count {
+  margin-left: auto;
+  font-weight: 400;
+  font-family: var(--font-mono);
+  color: var(--fg-faint);
+  font-size: 11px;
+}
+.sp-filter {
+  margin-bottom: 12px;
+}
+/* 单渠道测试结果 */
+.sp-test {
+  border-color: rgba(16, 163, 127, 0.3);
+  background: var(--bg-side);
+}
+.sp-test-answer {
+  font-size: 12px;
+  color: var(--fg-muted);
+  margin-top: 6px;
+  white-space: pre-wrap;
+  max-height: 140px;
+  overflow: auto;
+}
+.sp-test-hit {
+  margin-top: 8px;
+  font-size: 12px;
+}
+.sp-test-hit a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.sp-test-hit a:hover {
+  text-decoration: underline;
+}
+.sp-test-snippet {
+  font-size: 11.5px;
+  color: var(--fg-faint);
+  margin-top: 2px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+/* 操作失败的内联提示（不弹窗：设置在面板里就地反馈） */
+.sp-error {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--danger, #e5534b);
+  border: 1px solid rgba(229, 83, 75, 0.3);
+  border-radius: 9px;
+  padding: 8px 11px;
+  margin-bottom: 10px;
+}
+.sp-error .ag-mini-btn {
+  margin-left: auto;
+}
+.mset-empty {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 0 8px;
+}
+.mset-empty-text {
+  font-size: 12px;
+  color: var(--fg-faint);
+}
+.mset-fetch-btn {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--on-accent);
+  background: var(--fg);
+  border: none;
+  border-radius: 999px;
+  padding: 5px 13px;
+  cursor: pointer;
+  font-family: var(--font-sans);
+  flex: none;
+}
+.mset-fetch-btn:hover {
+  opacity: 0.85;
+}
+/* 模型区底部：添加 / 刷新 */
+.mset-models-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 0 2px;
+}
+.mset-add-model-btn {
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  background: transparent;
+  border: 1px dashed var(--border-strong);
+  border-radius: 8px;
+  padding: 4px 12px;
+  cursor: pointer;
+  font-family: var(--font-sans);
+}
+.mset-add-model-btn:hover {
+  color: var(--fg);
+  border-color: var(--fg-muted);
+}
+.mset-refresh-btn {
+  font-size: 11.5px;
+  color: var(--fg-faint);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-family: var(--font-sans);
+  padding: 4px 6px;
+  border-radius: 6px;
+}
+.mset-refresh-btn:hover {
+  color: var(--fg);
+  background: var(--border-soft);
+}
+/* 添加模型：内联输入行 */
+.mset-add-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 0 3px;
+}
+/* 输入框统一 .fd-input（表单套件）；行内添加沿用等宽紧凑变体 */
+.mset-add-row .fd-input {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 6px 10px;
+  background: var(--bg);
+}
+.mset-add-row .fd-input::placeholder {
+  font-family: var(--font-sans);
+}
+.mset-add-hint {
+  font-size: 10.5px;
+  color: var(--fg-faint);
+  flex: none;
+}
+.mset-add-hint.err {
+  color: var(--danger);
+}
+.mset-add-confirm {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--on-accent);
+  background: var(--fg);
+  border: none;
+  border-radius: 999px;
+  padding: 4px 12px;
+  cursor: pointer;
+  font-family: var(--font-sans);
+  flex: none;
+}
+.mset-add-confirm:not(:disabled):hover {
+  opacity: 0.85;
+}
+/* 禁用态必须有可见反馈：0 勾选时黑色主按钮全饱和看着像能点（探测结果弹窗实测） */
+.mset-add-confirm:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.mset-add-cancel {
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  padding: 4px 12px;
+  cursor: pointer;
+  font-family: var(--font-sans);
+  flex: none;
+}
+.mset-add-cancel:hover {
+  color: var(--fg);
+  border-color: var(--fg-muted);
+}

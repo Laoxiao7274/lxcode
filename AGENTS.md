@@ -1,0 +1,278 @@
+# AGENTS.md — lxcode
+
+> 本文件是本仓库的协作规范：任何 AI agent 或开发者在本仓库工作前，先读此文件。
+> 2026-09-11 定名 **lxcode**（用户拍板，接续 LX 品牌线）；原名 myt-harness，全仓已重命名
+> （module github.com/moyunteng/lxcode、目录、服务名、二进制、环境变量 LXCODE_*、协议身份）。
+
+## 1. 项目定位
+
+**lxcode 是用户自己的个人智能体：Go 后端 + React 客户端 + Electron 薄壳（已实现）。**
+
+- 双定位：**编程助手**（读写代码、改文件、跑构建测试）+ **通用个人助理**（日常事务、检索、自动化）；
+- 跑在用户本机（Windows 开发机为主，兼容类 Unix），单用户；
+- 是 local-myt-agent（`../local-myt-agent`，设备端 Go agent）的**精神续作而非代码分支**：架构模式与实证坑直接继承（LLM 双格式客户端、工具风险分级、JSONL 会话、动态提示词），但为桌面场景重新设计——agent 内核是纯 Go 包，**不依赖 UI 框架与传输协议**；由 Go 服务装配，React 客户端通过 WS JSON-RPC 调用，Electron 不嵌入 Go 内核。
+
+## 2. 架构基线（已定事实）
+
+| 项 | 决策 |
+|---|---|
+| 形态 | **前后台分离**（2026-09-10 用户拍板，对齐 local-myt-agent）：后端 `lxcode --serve` 独立进程（WS JSON-RPC `127.0.0.1:7789/rpc` + 注册表 + 会话运行时 + 工具循环，`/health` 健康检查）；CLI / 桌面壳都是客户端 |
+| 协议 | `internal/protocol`：WS JSON-RPC 2.0（应用协议 Version=2；帧/方法/事件单处定义，客户端服务端共享，不兼容变更递增版本并拒绝握手不匹配的客户端）；扩展 `todo.updated` 事件与 `ChatHistoryResult.Todos`；`chat.send` 可选参数 `effort`（minimal/low/medium/high，仅声明 reasoning 能力的模型生效）与 `approval`（auto/confirm/strict 工具执行三档，空 = confirm；**会话级实时状态**——`chat.approval` 可中途改，跑着的一轮立刻生效）；**模型选择是会话级状态**（`chat.model` 切本会话模型 → 落库 `sessions.model` + 广播 `chat.modelChanged`；`role.set` 只保留全局语义 = 新会话的默认模型；解析优先级 = 会话选择 > Agent 绑定 > default 角色）；`chat.done` 与 `ChatHistoryResult` 携带 `context`（上下文占用测量，见 §2.2；未知时整键缺席）；端口 7789（与 local-myt-agent 的 7788 错开） |
+| 内核 | `internal/agent`：纯 Go 包（typed Event + Emitter + Confirm），由 server 包装广播；客户端不得绕过 JSON-RPC 直接调用内核 |
+| 客户端 | `internal/wsclient`：Backend 接口 + Dial（请求按 id 配对、事件 channel、断连 fast-fail、缓冲满丢最旧）；CLI 是第一个客户端，桌面壳复用同一协议 |
+| 前端 | **React 19 + TypeScript + Vite + gsap**，零 UI 库（手写 CSS 设计 token，设计语言 agent-console-v3）；`AgentSource` 双实现：WSAgent（连 7789 真实后端）/ DemoAgent（纯前端演示，无后端也能全量跑 UI）；渲染纪律：打字机行级 memo + memo(Block) 稳定回调 + motionAllowed 动效门控（reduced-motion/测试开关） |
+| 内核并发 | **多活跃 Session 已实现**：单 Go 进程内每个 session_id 持有独立 `agent.Session` 与生成 goroutine；请求/事件按 session_id 路由，dispatch 事件另带 owner_session_id。无进程级并发上限或全局调度器；单个 Session 同时最多一轮。项目会话在 `<sessions>/worktrees/<project-id>/<session-id>` 从创建时 HEAD 建独立分支/工作树；未分组会话仍使用后端默认工作目录，文件系统不隔离。**不做每会话进程/微服务** |
+| LLM | 双 wire 格式：OpenAI chat completions + Anthropic Messages（`internal/llm`，从 local-myt-agent 整包继承——含 ChatAuto 分流策略：anthropic 恒流式，openai 带工具走非流式回放，依据是真机端点实测 openai 流式丢 tool_calls） |
+| 工具 | `internal/tools` 注册表 + 风险分级：低危自动执行，高危确认门 |
+| 会话 | **SQLite**（modernc.org/sqlite 纯 Go，WAL；2026-12 用户拍板，替换初版 JSONL——为 compaction/语义记忆/多会话并发铺路），重启恢复最近会话，`/new` `/resume` 切换；项目会话由 `sessions.workspace` 解析项目根，并在首次发送时绑定独立 Git worktree（见 §2.1）；工具相对路径、bash 默认目录、系统提示词经会话级 workDir 与 `tools.WithWorkDir` 对齐 |
+| 配置 | `internal/config` 模型注册表（models.json，原子写；default/vision 角色绑定；**主键 = `provider::id`（可选字段 `provider`，省略时就是纯 id——存量零迁移，两家提供商的同名模型可并存；解析只认「组合键精确 → 纯 id 精确」，跨 provider 不猜）**；**30s 热加载** + model.changed 广播；**「提供商」不是磁盘实体**——前端按 base_url 分组投影，连接配置 base_url/api_key/format **逐模型**存，故「改提供商的 key」= 写全组条目）；`internal/websearch` 网页搜索渠道（search.json，同目录，同一套 30s 热加载 + search.changed 广播，见 §3.2）；`internal/modelcatalog` 模型目录 + 端点探测（**只读查询、不写注册表**，见 `docs/model-catalog.md`） |
+| 服务化 | **Windows SCM 服务**（`scripts/service/{install,update,uninstall}.ps1`；开机自启 + 崩溃自动重启；`--probe` 验收；布局 `%ProgramData%\lxcode\{bin,config,sessions,logs}`）；服务形态日志落文件（16MB 轮转 ×3） |
+| 桌面壳 | **Electron + Go sidecar（2026-09-16 用户拍板，推翻 09-10 的 Tauri 2 初选，决策记录见 §2.1；打包定案仅 Windows，2026-12）**；后端可先于壳长期独立运行，壳是薄客户端（窗口/托盘/渲染层直连 7789） |
+| Go 直接依赖 | gorilla/websocket（WS）、golang.org/x/sys（平台接口）、modernc.org/sqlite（纯 Go 存储）；传递依赖以 go.mod 为准 |
+
+### 2.1 语言栈与桌面壳决策记录（2026-09-16 拍板）
+
+- **桌面壳 = Electron + Go sidecar**（推翻 2026-09-10 的 Tauri 2 初选；`frontend/src-tauri` 骨架与 Tauri 构建脚本已于 2026-09-16 清理）。翻案理由：应用内嵌浏览器（人用面板）进入路线图，Electron 的 webContents（同窗口多视图 / session 隔离 / 请求拦截 / 内建 CDP）是唯一不将就的深度；Tauri/Wails 在 Windows 同用系统 WebView2（也是 Chromium），渲染无增益，省的只是占用（内存 ~100-200MB / 磁盘 ~100MB / 冷启动 +0.5s）——用占用换控制权与生态。Electron 开销全在占用层，不在计算热路径（重活在 Go 内核；渲染器=你正在开发的同一个 Chromium 页面）。
+- **Rust 不重写内核、只从进程边界进入**：后端负载 90%+ 是等 LLM/等子进程，唯一 CPU 密集点（search）已由"exec 外部二进制"覆盖——ripgrep 这类外部 Rust 二进制直接接 tools 注册表（"Go 主刀，Rust 武器库"），仓库零 Rust 工具链。**FFI/cgo 严禁入仓**（链接地狱 / panic 边界 / 跨语言调试成本远超收益）；真要第二语言模块，须同时满足三门槛才升 sidecar 服务：占热路径 >30% / 自包含无共享状态 / Go 生态无等效品。依赖基线见 §2 表，**新增依赖须从严评估**。
+- **多活跃会话与 worktree（已实现；worktree 已随直连模式退役）**：单进程内每个顶层 session_id 独立持有 `agent.Session`，可并发运行且没有全局上限；单个会话最多一轮。协议请求与广播事件按 session_id 隔离，dispatch 事件用 `owner_session_id` 标明时间线归属并保留子会话 id。~~项目会话从当时的 Git `HEAD` 建 `lxcode/session-<session-id>` 分支与独立工作树~~——**2026-10 架构修订：per-session worktree 与 `lxcode/session-*` 分支废除**，项目会话直接工作在用户的主检出与当前分支（「不用做隔离，就跟正常一样，也不用创分支」）；**轮末自动检查点提交已移除（2026-10 用户拍板，回滚方案后期重新设计）**——改动留在工作区，提交与推送都由用户显式要求的 workspace_sync 完成。「释放工作区」（`session.worktree.release` / `session.archive` 的 `release_worktree` 参数 / 侧栏与 Git 页入口 / `project.ReleaseWorktree`）**已随直连模式移除（2026-12 用户拍板）**——主场景消失；存量会话的 worktree 元数据、磁盘目录与分支一律保留（用户数据零丢失），遗留目录清理走 temp/ 一次性脚本对照 SQLite 元数据出报告、用户拍板后手工删。恢复会话时切到直连模式，`prepareWorkspace` 的旧元数据兼容路径保留（不创建运行时也能降级）。未分组会话共用后端默认工作目录，不能声称文件系统隔离。当前无供应商预算/公平队列/全局调速器；若以后增加，必须保留 session-scoped 状态与取消语义。
+- **Electron 侧工程纪律**：单窗口 + WebContentsView 做浏览器面板（不开多 BrowserWindow）；contextIsolation 开、renderer 无 node 集成；主进程只做窗口/托盘/sidecar 生命周期，不放业务；后端仍是 SCM 服务优先（壳只是客户端，连不上给启动指引）。窗口 `frame:false`（无系统标题栏，Topbar 自绘拖拽区+窗口控制，经 preload 的 `window.__LX__` IPC 桥）；应用图标 = `shell/build/icon.png`（electron-builder 自动转 ico）；**LOGO 派生链**：icon.png 是全仓唯一 LOGO 母版（无 SVG 源），`scripts/gen-app-icons.cjs` 从它生成前端 favicon/Topbar、安卓启动图标与 adaptive 前景/背景、应用内 `ic_logo.png`、官网 logo/favicon——**禁止再手画/复刻 LOGO**，改母版后重跑脚本即可全链同步（完整契约见 `docs/logo-derivations.md`）。
+- **壳打包定案（2026-12 调研+实测，仅 Windows）**：electron-builder + NSIS（**向导式安装**（oneClick:false——用户报「不能选安装位置」后改定，`allowToChangeInstallationDirectory:true` 可选目录）、per-user、免管理员、托盘常驻（关闭=隐藏，`shell/src/tray.ts`；**托盘图标必须用多尺寸 .ico（`build/tray.ico`，由 `scripts/gen-tray-icon.cjs` 从 icon.png 派生，build.mjs 每次重生）**——直接给 Tray 喂大 PNG 会「撕裂/切碎」：Windows 上 `Tray::SetImage` 走 `NativeImage::GetHICON(SM_CXSMICON)`，非 .ico 路径把整张位图做成 HICON 交给 Shell_NotifyIcon（尺寸参数被忽略），16px 缩放由任务栏 GDI 完成，512px 源图里 2% 宽的笔画缩到 16px 只剩 0.34px → 打成散点；.ico 路径走 `LoadImage(IMAGE_ICON,size,size,LR_LOADFROMFILE)` 由系统挑最接近的条目、不缩放。安装/卸载图标 = build/{installerIcon,uninstallerIcon}.ico））+ **自建 zip 更新机制**（2026-12 用户拍板，替代原定的 electron-updater——重跑完整安装器的更新路径被否；服务端 = 官网 site-backend（`GET /manifest.json` 按契约生成 + `/releases/<file>` 产物，撤回即摘除；源 `https://api.r96314722.nyat.app:15714/site/manifest.json`，`LXCODE_UPDATE_URL` 覆盖；客户端更新器已实现（`shell/src/updater.ts`：manifest 拉取 → sha256 整包+逐文件校验 → **独立 bat 完成全部替换与拉起**（2026-12 重构拍板，替代「壳热替换 bin + 后端引导换 asar」的双进程协作——0.2.14 事故根因是两个进程各做一半替换、状态无法对齐；壳只下载/暂存/排程：待换文件进 `update-pending/staged`（与安装目录同构）+ 生成 `apply-update.bat`（幂等自包含：按 PID 等壳与后端退出（超时 taskkill）→ 原件挪 .old → 落位 → certutil sha256 复核 → 失败整体回滚拉旧壳、成功清 .old/暂存拉新壳、bat 自删除）→ wscript+VBS 隐藏启动（GUI 子系统进程零窗口，依据见 `shell/src/apply-update.ts` 头注）→ 壳退出（后端随 stdin EOF 自行退出，不参与更新）；单测 = bat 生成纯函数断言 + e2e 三路径（成功/失败回滚/超时强杀）真实跑通））+ 壳主进程 **esbuild 单入口直构**（不用 vite-plugin-electron：薄壳无主进程 HMR 价值，且保持 frontend vite 配置与 Electron 零耦合、浏览器模式零条件分支）；Go 后端二进制走 extraResources（asar 归档内不能 spawn 二进制）。本机实测：打包 44~148s（受后台负载影响），安装包 ~87-95MB、更新包 ~12MB。sidecar 生命周期纪律：单实例锁 → 先探测 7789（SCM 服务或旧实例在跑则直连，不 spawn）→ 离线才拉起 bundled exe，且**必须显式传 `--config`/`--sessions` 指向 userData**（否则后端配置解析顺序会落到 `%ProgramData%` 安装形态配置，两形态数据串台）→ 优雅退出 before-quit kill；崩溃兜底 = **`--stdin-watch`**（后端监视 stdin，壳死亡即管道 EOF → 优雅退出——零原生模块的 Job Object 等价物：Electron 主进程没有 Win32 API 面）。版本兼容用协议 hello 的 Version 握手。范围：壳仅 Windows（2026-12 用户拍板；Linux/macOS 不做壳，Linux 上后端二进制独立跑 + CLI/浏览器即可）。
+- **版本号机制（2026-12）**：唯一版本源 = `shell/package.json` 的 `version`（electron-builder 原生读它出安装包名）；`scripts/build.mjs` 构建时经 `-ldflags "-X main.version=<版本>"` 烙进 Go 二进制（`lxcode --version` 可查；dev.mjs 无烙印显示 `dev`）；manifest.json 用同一版本——安装包/二进制/更新清单三方同源。发版流程 = 改 shell/package.json version → build → 产物目录全量上传。
+
+### 2.2 上下文计账与压缩（compaction）（2026-09-22：P1~P5 + 子会话头部保护已落地）
+
+**计账（P1，`internal/agent/context_usage.go`）**：`agent.ContextUsage` 是上下文占用的唯一事实源（压缩触发与 UI 指示器共用它，不各算一遍）：
+
+- **used 优先取 provider 真实用量**（`llm.ChatResult.PromptTokens` = **prompt 侧总量** = 未缓存输入 + 缓存读 + 缓存写；anthropic 的 `input_tokens` **不含**缓存那两桶，漏掉它们会把真实上下文报小一个数量级——2026-09-30 归一），拿不到才回落固定密度估算（`字节数/4 + 每块 4 + 每消息 4`，DSH token-meter 同款）。**按字节算对中文是低估的**（一个汉字 3 字节 ≈ 0.75 token），所以估算值只服务「端点不回报 usage」的回落与分类拆分，不要拿它做精确预算；
+- **分类拆分为五类且工具声明单列**（`system` / `tools` / `tool_results` / `messages` / `reasoning`）——工具声明原先并进 system，但「工具占了窗口多少」是用户最想知道的其中一件事，DSH 的 ContextMeter 同样单列；分类按 used 归一（`anchoredUsage`）——分类之和恒等于 used。不归一的后果是同一屏两个数字互相矛盾（环形来自真实用量、占比条来自估算）；
+- **展示值 = 真实测量 + 测量之后历史的变化量**（`projectedUsage`，DSH 的 `projectedTokens = pressureTokens + surfaceTokens − sampledSurfaceTokens`）：真实用量只在**请求发出前**才有（provider 回报的 prompt 总量），而请求之间历史照样在长（工具结果、注入的通告、助手回复自己）——不投影的话工具跑得越久指示器偏得越多。所以 `ContextUsage` 多一个 `SampledTokens`（采样基线 = 那次请求发出去的历史的估算量，落库随之持久化），展示路径按它把增量折进 `Used`；**判定路径（压缩阈值）读的仍是真实锚点**（`ContextUsage()` vs `ProjectedContextUsage()`）——拿含估算增量的数去比阈值会让压缩在"其实还没到"的时候触发（`TestProjectionDoesNotFeedCompaction` 钉住这条，含正对照）。没有基线（老库）或还没跑过主轮时不投影：算不出增量，编一个"大概长了一点"就是编数；
+- **每个会话记自己的占用**——子会话是真 Session，记它自己的 `s.context`（主会话是另一个对象，碰不到）；原先按 `dispatchID == ""` 收口，而真链路里该值恒为空串（归属由 `childEmitter` 事后盖），那道闸门从不生效。wire：子会话的 `chat.done` 也带它自己的 `context`（前端按 session_id 路由）；
+- **新会话/切会话清零**——沿用上一会话的占用会误导压力判定；`Snapshot.Context` 零值 = 未知，wire 上整键缺席，前端显示中性态「—」而不是编一个数（`ContextIndicator` 的冷态断言钉住这点）；
+- **前端必须把估算与真实分得开**（`estimated` 位 → **悬停说明与无障碍标签**里明说"不是真实用量"；**可见记号只有 `~`**——2026-09-30 用户拍板去掉百分比后面的「估」字，与 DSH 的 ContextMeter 一致）且数字带 `~`（近似值不许看起来像精确读数）；弹层的分类行/读数由 `shared/context-usage.ts` 的纯函数给出（组件只负责画，口径与测试共用一份）；
+- wire：`chat.done`（主轮与子轮**各带自己那份**）与 `ChatHistoryResult` 的 `context` 键。
+
+**工具配对不变量（P2，`internal/agent/toolpair.go`）**：`AnalyzeToolPairing` 扫一遍历史得出每个切点的平衡性——`assistant` 带 N 个 tool_call 则游标 +N，`tool` 结果则 −1，**游标为 0 的切点才是安全切割点**。压缩选区间（P3）与「取消时补配对」（P5）共用这一份判定——判定漂移的代价是静默产生畸形历史（严格端点会 400：assistant 的 tool_calls 必须有配对 tool 消息）。三条纪律：
+
+- **畸形数据不抛异常**（我们的历史来自 SQLite，残缺记录是既成事实，加载路径抛异常会让老会话直接打不开）：游标钳到 0，异常另记诊断（`Unpaired` 未等到结果的调用 id / `Orphans` 无前置调用的结果下标）；
+- **两条判定刻意分开**：`Cuts` 用计数（对端点改写 id 鲁棒——它只回答「能不能在这里切」），`Unpaired` 用 id（精确回答「哪一个调用没等到结果」）。二者在 id 错配时会分叉，这不是 bug；
+- `NearestBalancedAtOrBefore` 是选区间用的回退（保留预算边界往前退到最近的平衡切点）；
+- **取消与失败路径必须补齐配对**（P5，`Session.sinkSkippedToolResults`）：`runTools` 的两个取消出口（循环中发现 ctx 已断 / 确认门等待期间取消）与 `runTurn` 的流式失败分支，都要给**不会执行**的调用补一条合成 tool 结果（「已取消，未执行」/「本轮生成失败」）——与白名单拒绝、strict 拒绝、用户拒绝三处是同款写法、同一个理由。不补的代价不是"不好看"：严格端点 400 拒收整轮，而且游标在缺配对处之后再不平衡 → **压缩切点永久卡在它之前，那个会话从此再也压不动**（`TestPairingRepairUnfreezesCompaction` 钉住这条；子会话走同一条路径，见 §2.3）。
+
+**压缩（P3/P4，`internal/agent/compaction.go` + `compaction_prompt.go`）**：把历史的一段替换成一份摘要检查点。对齐 DSH compaction-basic：
+
+- **触发三条路**：① 轮与轮之间（`runTurn` 的 `round > 0`）按上一次请求的**真实 prompt_tokens** 判压力（阈值 0.8×窗口、保留尾部 0.16×窗口——那时它就是精确值，不用估算）；② 端点报超长（`llm.IsContextOverflow`：4xx + 特征串，字符串匹配关在 llm 层）时强制压一次（保留预算归零）再重试**同一轮**，只重试一次；③ 手动 `chat.compact`（`Session.Compact`）不受阈值约束，空闲才允许（busy → `ErrBusy`）；
+- **窗口未知（模型没配 `context_window`）时不压**——算不出阈值就不猜（单测钉住）；
+- **选区间**：从尾部往前累加到保留预算，再回退到最近的**配对平衡切点**（P2 的不变量）；区间起点通常为 0（主会话压缩前缀），**子会话保护头部任务说明书时从 1 开始**（`Session.protectHead`，见 §2.3）；
+- **摘要调用**：指令作为**最后一条 user 消息**追加在重放历史之后（复用 KV 缓存），八段结构 + 工具声明照发；摘要是**一段文本**，落回历史时包成一条 **user 消息**（`<compacted-summary>` + 前言）——不用 system：anthropic 适配器会把所有 system 消息提到顶层，中途插会语义错位；
+- **缩水检查**：比的是**被压段**与摘要（保留尾部两边都在，抵消）——不是整段历史。摘要不小于被压段就是「没有收益」：回 `compacted=false + reason`（`ErrNothingToCompact` 包装人话原因），**不是错误码**；
+- **fail-closed**：摘要失败、缩水不通过、落库失败，都不改历史（落库失败还把内存回滚）；
+- **落库（影子区间，用户拍板对齐 DSH）**：检查点行记 `shadowed_seqs`（影子掉的 seq 集合，**权威**）+ `shadow_start_seq/shadow_end_seq`（历史位置边界，只写不读——回放只认 `shadowed_seqs`）；被影子的原文**不删**（`Search` 照旧搜全量日志），只是回放（`Load`/`Latest`）跳过它们；
+- **`AppendCheckpoint(skip, count)` 说的是「当前历史里从第 skip 条起的 count 条」**（不是 seq 区间）：`skip/count` 就是 agent 选出的可压区间 `[skip, skip+count)`——主会话 skip=0（前缀），子会话 skip=1（跳过头部任务说明书）。区间越界时报错（那说明落盘落后于内存，写错的影子区间会让回放丢掉不该丢的历史）；
+- **历史顺序按「检查点落在它影子段原本占据的位置上、其余按 seq 升序」重建**（检查点行是追加在末尾的，但它顶替被影子段在历史里的位置 = DSH 的 surface position）：插入锚点 = 影子集合里的最小 seq，无影子集合时回落自身 seq（落尾）；多个检查点按锚点升序（**不是自身 seq**——两次压缩可以「后写的替换更靠前的一段」，按 seq 排会把两份摘要的先后搞反）。skip=0 时锚点就是库内最小 seq → 检查点仍落第一位，**与旧的「一律排最前」逐字节一致**（老库里的检查点行影子集合都是前缀，`TestCheckpointShadowsPrefix` 是这条兼容性的钉子）；
+- **落库口径**：`Load`/`Latest`/`List` 的消息数都按当前历史算（`List` 在 Go 侧复用同一套存活判定——SQL 表达不了 seq 集合）；
+- **压缩后必须更新占用测量**（锚定算术：新占用 = 旧真实占用 − 被压段估算 + 检查点估算）——不更新的话指示器停在压缩前的数字（真链路实测抓到过）；
+- wire：`chat.compact`（方法，参数 `agent` 可选）+ `chat.compacted` 事件（before/after/shadowed/summary/manual）+ `ChatHistoryResult.Checkpoints`（检查点下标，前端渲染「已压缩历史」块而不是用户气泡）；前端入口 = 输入区指示器里的「立即压缩」+ `/compact` 斜杠命令。
+
+**剩余（未做）**：① P3 的确定性裁剪（工具结果写入时已截到 8KB，将来加裁剪接在选区间之前，顺序对齐 DSH）。参考实现 = DSH 的 `dsh-compaction`（引擎接缝 + 配对不变量 + 检查点溯源）/`dsh-compaction-basic`（阈值与选区间策略）/`dsh-compaction-tool-result-pruner`（无模型裁剪）/`dsh-token-meter`（计账），路径 `<本机路径>\AppData\Local\Programs\lx-dsh\resources\dsh\node_modules\@deepseek-ai\`（打包形态；`dsh-compaction` 带 TS 源码 `src/`）。
+
+### 2.3 子会话：子 Agent = 独立会话（2026-09-22 用户拍板）
+
+**一句话**：派发给子 Agent 的任务**不是**内存里的一段临时上下文，而是**一个独立会话**——自己的 `sessions` 行 + 自己的 `messages` 历史 + 自己的压缩检查点。于是进度天然可续（历史在库里，续跑附着同一个 id 接着跑）、压缩同款（子会话就是会话）、子过程可回放/可对账。
+
+**存储**（`sessions` 表加三列，幂等 ALTER）：`parent_id`（派发方；空 = 顶层会话）、`agent_id`（它是哪个 Agent——续跑时按同一套四层组合组装）、`dispatch_id`（哪次调度开的）。`Store.CreateChild(parentID, agentID, dispatchID)` 用 `INSERT ... SELECT ... FROM sessions WHERE id = 父` **在 SQL 里继承父的 workspace**（子会话的工具相对路径与 bash 默认目录必须与父一致，agent 层不需要记住 workspace id）；父不存在时插入 0 行 → 报错（不开孤儿）。
+
+**三条硬纪律**：
+- **`List()`/`Latest()` 只认 `parent_id = ''`**——子会话不进侧栏、不参与「重启恢复最近会话」；漏了这条，重启会把用户恢复到某个子 Agent 的会话上，侧栏也会被子会话淹掉；
+- **归档级联**：子会话不进侧栏、用户没法单独操作，父归档时一并归档（否则库里长期堆积孤儿）；恢复父时子会话一并恢复；
+- **`ChildrenOf(parent)`** 按父查子（对账/将来的子会话视图）。
+
+**运行时**（`internal/agent/dispatch.go`）：
+- `runDispatch` = 解析目标 → 校验有效委派名单 → `openChildSession`（新建或按 `call.Session` 续跑）→ 包一层 emitter → `child.SendWait(ctx, task, WithAgent, WithApproval(取严后的审批))` → 取子会话**最后一条** assistant 消息的正文作结论（是工具调用轮就如实报「没有产出结论」——往回扫会把中间轮的开场白当成结论）；这一轮的错误不只看 SendWait 返回值（它在 done 关闭时恒返回 nil），还要看 tap.err；
+- **子会话是一个真 `*agent.Session`**（自己的 history/id/st/context），所以**压缩、溢出兜底、确认门、工具循环全部免费继承**（不再有子循环特例：`dispatchMaxRounds` 与手写子循环已删除）；
+- **`Session.AttachTo(st, id)`**：按 id 精确附着（子会话新建后历史为空；续跑时历史在库里）——与 `EnablePersistence`（走 Latest 恢复）分工明确；
+- **`Session.SendWait(ctx, ...)`**：跑一轮并等它结束（派发要等子会话给出结论）；ctx 取消 → `child.Cancel()` 并等它真正收尾；
+- **事件归属**（`childEmitter`）：Delta/ToolCall/ToolResult/TurnDone/Compacted 打上 `dispatch_id` 归属进卡；**BusyEvent 不上抛**（子会话的忙闲不是主会话的）、**TodoUpdatedEvent 不上抛**（清单归子会话自己）、**SessionStartedEvent 不上抛**（子会话不进侧栏）、**TurnErrorEvent 转成 DispatchEndEvent**（卡内呈现，不跑到主时间线当独立错误）；
+- **确认门代理**（`SetConfirmProxy`）：子会话的确认请求交给父会话裁决并打上 dispatch_id——全应用只有"同时一个挂起确认"这条不变式，子会话自己持 pending 的话服务端的 `tool.confirm` 找不到它（会话会卡在 busy）；
+- **一轮多个 dispatch 并行跑**（`runTools` 三段式：权限门顺序 → dispatch 并行 → 按原下标回填历史）；确认门 `confirmMu` 串行化。
+- **无存储时退化成内存子会话**（`st == nil`）：仍是一个独立会话（自己的历史与压缩），只是不落库、不能续跑——纯内存模式/未挂 store 的调用方照旧能派发。
+
+**每会话注入态（`internal/tools/sessionstate.go`）**：`todo` 的清单写回口与 `read_skill` 的技能目录**经 ctx 注入**（`tools.WithTodoSink` / `WithSkillSource`），不再挂注册表全局——注册表是进程级单例，而这两者都是**会话级**状态；子 Agent 变独立会话后，注册表级全局态会让父子互相踩（子会话一建就把父的 sink 顶掉、子会话的技能目录污染父会话）。与 `tools.WithWorkDir` 同一套机制与理由。
+
+**续跑（S4）**：`agent_dispatch` 加可选 `session` 参数（续跑既有子会话）；工具结果里回带 `[子会话 id: …]`，主 Agent 下一轮就能显式接着它跑（真链路实测：主 Agent 自发这么做了——它读到工具结果里的子会话 id 后，在下一轮把该 id 填进 `session` 续跑）。
+
+**协议**：`chat.dispatchStart/End` 带 `session_id`（子会话 id 上卡，前端显示 + 续跑依据）；`chat.compacted` 带 `dispatch_id`（子会话自己的压缩归属进卡内，不插主时间线）。
+
+**前端（2026-09-30 用户拍板：子会话标签页看到**实时**流，主会话的卡就是**一行摘要**）**：`reduceSessionStates` **双投**——带 `dispatch_id` 的事件同时归约进子会话自己的 state（清掉 `dispatchId` 当普通事件走），于是标签页看到的是实时流而不是一张快照；配套三条（确认请求的归属键在 `request.dispatch_id` 里、子会话 state 不存在时不建而由 `source.childHistory` 装载历史、裁决两处同时定格 `resolveConfirmEverywhere`）与"卡 = 一行摘要（无折叠区 / 无卡内子时间线 / 无结论正文 / 无底部按钮，整行可点进子会话）"的完整契约见 **`docs/child-session-ui.md`**。
+
+**为什么这个设计省事**：子会话是会话 → 压缩/检查点/影子区间**零特例**（`runCompaction` 只要一个有 st/id/history 的 Session）；子会话的 system 提示词同样每轮现组装（不在历史里），所以**不需要给子上下文加 system 头部保护特例**。注意区分：**任务消息**（`history[0]`，**user** 角色）是另一回事——它确实在历史里，所以需要显式的头部保护：`openChildSession` 给子会话置 `protectHead`（压缩区间起点从 1 开始），任务说明书永远留在 `history[0]`，摘要落在它之后；store 侧配合支持中间段影子（见 §2.2）。
+
+### 2.4 会话统计（2026-09-30，对齐 DSH 的 sessionStats + tokenUsage）
+
+`sessiondata.SessionStats` 是「这条会话一共花了多少」的唯一事实源（轮/步数、模型时间、工具时间、首字、生成速度、计费四桶）；与 `ContextUsage` 的分工：**context 是「此刻窗口里有多少」，stats 是「整条会话一共花了多少」**。**完整契约（每条纪律与理由）见 `docs/session-stats.md`**，只留四条指针：
+
+- **折叠整段日志**（`store.SessionStatsOf`，**含被压缩影子掉的行**）——压缩与翻页都改不了这些数字（DSH 原话：paging and compaction cannot change），**撤回真删行**数字才变小；不做增量累加（撤回/压缩之后累加器就是错的）；
+- **用量语义归一**（`internal/llm`，四条解析路径共用一份）：`UsageTokens` = **输出** token（旧实现填 `total_tokens`，让 tok/s 虚高）、`PromptTokens` = prompt 侧总量（含缓存两桶，见 §2.2）；OpenAI 的 `prompt_tokens` **含**缓存、anthropic 的 `input_tokens` **不含**——差异只在 llm 层抹平一次；
+- **落库**：`messages` 加 `input_tokens`/`cache_read_tokens`/`cache_write_tokens`/`notice`/`usage_split` 五列（幂等 ALTER；老行恒 0 = 未知）；**`notice` 与 `usage_split` 都是写边界的一位标记**（两个前缀常量分别在 agent 与 protocol 包里，而折叠统计的 store 谁都不能 import）——`usage_split` 区分「本功能上线前的行」（那时 `usage_tokens` 装的是 provider 的 `total_tokens`，混算会把速度报得离谱）：那些行单独记 `LegacyTokens`，不进四桶、不进速度，只在明细里如实说明；tool 消息的 `duration_ms` 是工具耗时（`runTools` 计时，没执行的调用不写它）。**细节（含 `LegacyTokens` 的由来与判定）见 `docs/session-stats.md`**；
+- **wire**：`chat.done`（主轮与子轮各带**自己那份**——子会话的统计按它自己的 session_id 折叠）+ `ChatHistoryResult.stats` + `chat.rewound.stats`（重算后）；**零值 = 还没有任何一步 → 整键缺席**（前端不渲染统计胶囊，**不显示一排 0**）；前端三个名字必须分得开：「会话统计」= 时间胶囊（输入框那一行、紧挨上下文环）、「会话消耗」= 上下文环「会话用量」弹层里的那一节（总量 + 四桶 + 缓存命中，没有 token 时整节不渲染）、「会话用量」= 那个弹层（"此刻窗口里有多少" / "整条会话累计花了多少"）；**输入条永不折行**（控件 `flex:none`+`nowrap`，统计胶囊是唯一让位项）。
+
+## 3. 工具面（内置 25 个 + 目录动态注入）
+
+| 工具 | 风险 | 说明 |
+|---|---|---|
+| `read_file` | 低危 | 按行输出（`行号→` 前缀），offset/limit 分页，256KB 上限，二进制拒绝；**会话级重复读去重**：同文件+同 offset/limit+mtime/size 未变 → 只回摘要（`force=true` 或换区间可要原文，见 §3.1） |
+| `search` | 低危 | 纯 Go RE2 检索（files/content/count 三模式），不经过 shell |
+| `session_search` | 低危 | 搜历史会话（带标题/时间/上下文；格式归 store 包） |
+| `web_search` | 低危 | 联网搜索（多渠道降级；渠道与配置见 §3.2） |
+| `web_fetch` | 低危 | 抓取网页正文（HTML 转文本；禁内网地址） |
+| `job_output` | 低危 | 读后台任务输出（增量；`wait` 阻塞等结束，strict 只读可用） |
+| `job_list` | 低危 | 列后台任务（新的在前；跨会话常驻任务也看得见） |
+| `job_kill` | 低危 | 停止一个后台任务（非阻塞；归属记 `agent`，用户点结束记 `user`） |
+| `read_skill` | 低危 | 读技能模块全文（提示词只注入技能索引——渐进披露） |
+| `share_file` | 低危 | 把工作目录里的文件共享到对话（复制进会话附件目录 → 前端附件卡；图片缩略图/文件下载卡；**只读语义**不改任何文件；路径越出工作目录拒绝；单文件 ≤20MB）——落盘与元数据契约见 `docs/attachments.md` |
+| `edit` | 低危 | **精确替换**：old_string 唯一匹配硬校验（0/>1 报错自解释），原子写 |
+| `write_file` | 高危 | 全量覆盖：覆盖已有文件需确认 + 缩水守卫（<50% 告警） |
+| `bash_readonly` | 低危 | **只读执行面**（调研 Agent 的手脚）：与 `bash` 共用执行核，但命令级**白名单**校验（`internal/tools/readonly.go`：只读命令 + git 只读子命令 + sqlite3 查询；重定向/命令替换/管道外的写入口/解释器/包管理一律拒绝并回填出路）；`Mutates=false` → strict 档下可用、不弹确认门 |
+| `bash` | 高危 | 超时 60s/上限 300s、输出 32KB、stdin ≤64KB；**`run_in_background=true` 起后台任务**（见 docs/jobs.md）；**Windows shell 选择 / MSYS 坑 / 编码见 §5 坑 19-20 与 `docs/windows-shell.md`** |
+| `todo` | 低危 | 任务清单全量写入（active 唯一性硬校验）；会话持有状态 + TodoUpdated 事件 |
+| `agent_dispatch` | 低危 | 主 Agent 唯一工具：把任务派给名单里的子 Agent（**子 Agent = 独立会话**，见 §2.3；深度恒 1） |
+| `merge_request` | 低危 | **遗留**（2026-10 架构修订：合并进程退役，会话直连主检出与用户当前分支，不再有分支合并流程）——被调用时如实返回说明、不启动任何任务；合并实现（mergejob.go / merger Agent）**带 `lxmerge` 构建标签隔离**（默认构建不含；恢复方式 `go build -tags lxmerge`，见 docs/jobs.md）。提交/推送用 `workspace_sync`（直接 push 当前分支），回滚用 `workspace_rollback` |
+| `ask_user` | 低危 | 向用户提问并等待回答（确认门的「提问」形态，`Kind="ask"`）：回答文本作为工具结果回填；用户跳过 = 「用户没有回答，自行决策」；**auto 审批档不豁免提问**；与高危确认共用同一个挂起槽位 |
+| `agent_read` | 低危 | 查看 Agent 注册表：不带 id 列出全部（id/名称/职责/白名单/技能），带 id 读单个完整定义（含提示词模板全文）——`agent_write` 前先摸现状；结构与读写链路见 `docs/agents.md` |
+| `agent_write` | 高危 | 按 id 字段级修改 Agent 配置（职责描述/提示词模板/工具白名单/技能绑定；未提供字段不动，id 不可改）：**落库即生效**（该 Agent 下次被派发用新配置）+ 落库后广播 `agent.changed`；硬校验（主 Agent 拒改/白名单不能清空且工具名真实存在/模板非空/技能 id 存在）在共享层 `sessiondata.ValidateAgentFieldUpdate`，store 与工具两条写路径共用；确认门文案列明改动字段与后果；详见 `docs/agents.md` |
+| `workspace_status` | 低危 | 查询项目工作区状态（**只读**）：主检出的未提交/未跟踪文件、各会话分支 ahead/工作树/是否已并入主检出、集成分支的领先/落后；未分组会话报「没有归属项目」 |
+| `workspace_sync` | 中危 | 「帮我提交/推送」的链路：提交主检出当前分支的全部改动（干净则跳过）→（`push=true` 时）直接 `git push origin <当前分支>`（不 force），push 失败如实报错但提交已完成；执行前走确认门。**仓库级推送闸门**：命中 lxcode 本体特征（仓库根同时有 `scripts/push-release.mjs` 与 `docs/git-history.md`）时 `push=true` 被拒绝并返回发版指引（`node scripts/push-release.mjs [version]`）——本地 master 含逐轮检查点，直推即公开；`push=false` 的提交不受影响，普通项目行为完全不变（判据 `project.IsSelfRepo`） |
+| `workspace_rollback` | 中危 | 回滚**主检出当前分支**到 `last-turn`（默认 = 上一个提交）/`session-start`/指定 commit hash：脏工作区拒绝（绝不静默丢弃手工改动）；目标已并入集成分支时警告「要在集成分支上 revert」；绝不 push、绝不动集成分支与主检出；执行前走确认门。**自动检查点已移除（2026-10）**：只有提交过的位置有回滚锚点，`last-turn` 不再是「上一轮对话」，确认文案与执行结果都如实提示 |
+| `workspace_publish` | 中危 | 把会话 worktree 里的产物（构建产物/生成的文件/目录）复制到项目主检出对应相对路径（worktree 里的产物在 gitignore 里、不随合并走）：source/target 都必须是相对路径（绝对路径与 `..` 拒绝）；目录递归复制、exclude 按路径段排除、`.git` 恒排除；单次上限 2000 文件 / 1GB；**覆盖主检出已有文件前走确认门**（文案列出会覆盖的文件）；主检出的写入只经确认门、只落 target 相对路径内 |
+
+后台任务的完整契约（内核 API / 工具 schema / 协议方法事件 / 唤醒投递语义 / 边界 / **实测坑**）见 **docs/jobs.md**——细节留在那里，本文件只留指针。**动进程启停代码前必读 §8**（取消必须杀整棵进程树）。
+
+**自定义工具（M4-1 执行面，2026-09-21）**：目录里 `source=binary` 的条目由 server 在启动与每次 `catalog.tools.*` 变更后经 `syncDynamicTools()` 注册进注册表（`tools.Registry.SetDynamic` 整体替换动态段；内置段不动，同名跳过并记日志）。执行语义：
+
+- **不经过 shell**：`command` 模板按空白切分成 argv，`{param}` 占位替换为参数值——值原样作为单个 argv（含空格不切分），引号/分号/`$` 全是普通字符，注入面在结构上消失；
+- 参数只支持标量（string/number/bool）；缺参/未知参/非标量/null 都自解释报错回填模型，不 spawn；
+- cwd = 会话工作目录（`tools.WorkDir`）；超时 60s、输出 32KB 截断（对齐 bash）；退出码/超时/启动失败以文本回填；
+- `Mutates=true`（strict 只读模式拒绝）；`risk=high` 走确认门，确认文本含**渲染后的完整命令**；
+- 未配置 `command` 的 binary 条目（种子里 `browser` 是「声明了没实现」的形态）跳过并记日志，不影响其余目录；目录页对它标**「未配置」**（amber pill），外部二进制条目**可编辑**（内置只读）——用户勾进白名单前就能看见、也能自己补 command；
+- 白名单勾了但注册表里没有的工具，会在该 Agent 的系统提示词里被点名「当前不可用」——不让模型去调一个不存在的工具。
+- **种子同步**：库非空时跑 `syncCatalogSeeds` 按 id 同步种子行（缺失插入、`custom=0` 全字段更新、`custom=1` 不碰、不删除）——种子只在库空时整套注入会让**代码修好的种子老库永远吃不到**（「给了 ripgrep，模型答注册表没有」）。Agent 名单更严，见 §8。
+
+- **edit 为何低危**：编程 agent 的主编辑通道，确认门会让它不可用；破坏面受 old_string 唯一匹配约束 + 原子写 + 版本控制兜底（与 write_file 的全量覆盖破坏面不同类）。
+- **权限模式三档**（会话级实时状态，`chat.approval` 可中途改）：`confirm`（默认）= 低危自动 + 高危确认；`auto` = 高危也自动执行（仅隔离环境）；`strict` = 只读——变更类工具（`Def.Mutates`：edit/write_file/bash，与风险等级正交）直接拒绝、错误回填模型。
+- **工具循环没有轮数上限**（2026-09-29 用户拍板去掉 maxToolRounds=16）：轮数区分不了「卡住」与「任务本来就长」——通读仓库的 researcher 16 轮里每轮参数都不同，却被误杀在半路且没有结论。防死循环改判**同一批调用连续重复**（工具名 + 参数逐字）：3 次轻提醒、5 次点名提醒、8 次停止；提醒在**轮边界**以 user 消息注入（带 `[重复调用提醒] ` 前缀，前端据此渲染成提示条而不是用户气泡），见 `internal/agent/repeat.go`。
+- 参数坏 JSON 先走保守修复（`internal/jsonrepair`：裸换行/尾逗号/单引号/截断补括号），修复成功注明——弱模型坏参数是高频失败形态。
+- **工具调用参数必须在写边界就合法**（2026-09-23 线上事故，见 §5 坑 12）：三道防线——① `agent.sanitizeToolCallArgs` 在 `s.append` 前清洗（正常轮次与流失败保留 partial 两条路径都走）；② `llm.repairToolArgsForWire` 组装请求时兜底（保守修复，修不动发 `{}`，**绝不报错**）；③ `tools.Execute` 执行前再试一次。三者共用 `jsonrepair` 一份实现。
+- **工具 id 必须匹配 `^[a-zA-Z0-9_-]{1,64}$`**（OpenAI 与 Anthropic 的同一条约束）：违反它会被严格网关 400 拒收整轮——原名 `agent.dispatch` 的点号就栽在这上面（2026-09-23 改成 `agent_dispatch` 并配老库迁移，见 §5 坑 13）。`tools` 的 `TestLLMToolsShape` 已按这条字符集校验全部内置工具 id；新增内置工具或导入目录条目时不要用点号。
+
+### 3.1 重复读去重与「改前先读」（2026-12）
+
+**read_file 会话级去重**（`internal/tools/file_read.go` + `sessionstate.go` 的 `ReadState`）：同一会话内对**同一文件**用**完全相同的 offset/limit** 再读、且 `mtime + size` 未变 → 只回一句摘要（「内容未变（上次读取于第 N 步，共 M 行，区间 …）」），不再灌一遍全文。
+
+- **作用域是会话级**（ctx 注入 `tools.WithReadState`，与 `WithTodoSink` 同一套机制）：注册表是进程级单例，父会话读过的文件不能替子会话满足前置条件——`TestReadDedupDoesNotLeakToChildSession` 钉住这条；
+- **只对完全相同分页参数生效**：换 offset/limit 说明模型在读另一部分（可能在拼接长文件），必须照常返回全文；
+- **判据是 stat（mtime+size）不是内容 hash**：会话内同一纳秒被改回原大小几乎不可能，而 hash 要多读一遍全文（去重本身就是为了省 IO 与上下文）；
+- **模型有显式出口**：`force=true` 跳过判定（它确实要再确认一遍原文时用），摘要文案也提示「换 offset/limit 读其他区间」；
+- **未注入 state 时不去重**（纯内存模式 / 单测直调），行为与改动前逐字节一致；
+- 回摘要的那次**不推进**「上次读取于第 N 步」（它没交付内容，记它会让步号指向一次没给正文的读取）。
+
+**edit 的「改前先读」只做提示、不硬拦**（2026-12 用户拍板，保守取向）：DSH 的 `dsh-fs-observation-policy` 用 `FS_NOT_OBSERVED` 硬拒绝未读过的 edit。lxcode 不照抄——① edit 的 old_string 唯一匹配语义已经自带「必须先看到真实内容」的约束（凭记忆写的几乎必然不匹配）；② 硬拦会打断合法流程（刚 write_file 写完、内容就在上下文里的文件；重启前读过但内存里没有观测的会话）。所以只在 **edit 失败信息**里补关键事实（`readObservationHint`）：本会话还没读过 / 读过但文件此后被改过 / 读过且未变（附步号与区间）。`TestEditDoesNotRequirePriorRead` 是「不硬拦」的钉子。
+
+### 3.2 网页搜索渠道（`internal/websearch`）
+
+`web_search` 背后是**多渠道 + 失败自动降级**的检索层（代码持渠道元数据、磁盘只存用户配置；降级只认错误分类不做字符串匹配；渠道私有设置项走 `OptionSpec` 声明；Exa 是唯一零配置就绪的默认渠道）。**完整契约（每条纪律与理由）见 `docs/websearch.md`**。
+
+协议：`search.channels.list` / `search.channel.save` / `search.channel.remove` / `search.primary.set` / `search.test` + `search.changed` 事件；前端走 `SearchAdminSource` 能力接口（UI 不知道数据来自 WS 还是 Demo）。
+### 3.3 MCP 执行面（`internal/mcp` + `tools/mcp.go`，2026-09-27）
+
+**只依赖标准库**的 MCP 客户端：服务器注册后暴露的能力以工具形式进目录（`source=mcp` + `server` 指回），与 `source=binary` 同一段动态注册（`SetDynamic` 整体替换）。四条最易踩的：**stdio 编码必须紧凑**（缩进破坏换行分帧）、**`initialize` 结果里 `serverInfo` 是嵌套的**（按扁平解析静默拿到空名字）、**`Manager.Sync` 对账且「上次没连上的必须重试」**、**风险一律高危 + `Mutates`、不采信服务器自报注解**。**完整契约（每条纪律与理由）见 `docs/mcp.md`**。
+
+## 4. 开发约定
+
+- **本文件自身有大小上限**：agent 加载本文件时有 **65536 字节**的指令预算（与技能目录等注入内容共享），**超了会被静默截断**——被截的尾部对读它的 agent 完全不存在，而磁盘上文件是好的，极易误判成「写进去了」。往本文件加大段内容后**必须确认加载时没有 truncate 告警**；接近上限时优先**删重复**（已定结论不重复、细节指向 `docs/`）而不是逐句改措辞，并留几百字节余量（实测卡在 65287 会被截，压到 64071 才稳）。量各节大小的脚本：`temp/agents-sections.mjs`。
+- Go，module `github.com/moyunteng/lxcode`；提交前 `go build ./...` + `go vet ./...` + `gofmt -l .`（输出为空）+ `go test ./...` 全绿；
+- 注释解释"为什么"，用中文；提交信息 conventional commits（`feat(工具): …`）；
+- **提交/推送规范（2026-10-19 定案，2026-10 修订：轮末自动提交已移除）**——**每轮对话结束不再自动 `git add -A && git commit`**（用户拍板先砍掉自动提交，回滚方案后期重新设计）：提交只发生在用户/模型显式要求时（`workspace_sync`，默认信息取最近一条用户消息首行）。历史上 master 里已有的逐轮检查点（旧格式 `<type>(<scope>): <摘要>` + 正文 `[checkpoint] 第 N 轮`）**一律保留、不改写**，脚本仍能识别；发版跑 `node scripts/push-release.mjs [version]` 把上次发布以来的改动聚合成一个 `release: <version>` 提交推 `origin/master`（快进；发布线是独立快照线，本地 master 不动）。**推送必须走 `workspace_sync`**，不得直接 `git push` / `--force`（闸门只保护走工具的路径——同时写进提示词 `pushDisciplineLine` 与 coder/tester 种子）；**lxcode 本体的直推被工具闸门拦下**（`project.IsSelfRepo`：仓库根同时有 `scripts/push-release.mjs` 与 `docs/git-history.md`），只拒 `push=true`、本地提交照常，错误与确认文案都给发版指引，普通项目不变。**完整契约（格式规则/脚本语义/闸门/一次性清理 `--bootstrap` 与备份纪律）见 `docs/git-history.md`**；
+- 测试就近放包内（`_test.go` 与源码同目录——Go 项目按包放测试是正确布局）；
+- 后端：`lxcode --serve`（配置默认 `./config/models.json`，`--config` / `LXCODE_CONFIG` 覆盖；会话目录默认 `<config 上级>/sessions`；监听 `--addr`，默认 `127.0.0.1:7789`）；
+- CLI 客户端：`lxcode`（连 `--backend`，默认取 `--addr`；连接失败会给启动指引）；
+- 本地冒烟：起后端 `lxcode --serve --config config/local.json --sessions %LOCALAPPDATA%\lxcode-dev\sessions`（config/local.json gitignored，含 key；dev 会话目录必须在仓库外——会话的项目工作树是别的项目的完整检出，落进仓库会污染 `go build ./...` 与 `gofmt -l .`），然后 `node temp/smoke.mjs "消息"`（端到端）或 `node temp/smoke-confirm.mjs`（确认门）；
+- 壳开发：`node scripts/dev.mjs --electron`（或 frontend 下 `npm run dev:electron`，或仓库根 `./dev.sh`——无参默认壳模式，bash 薄包装）——Go + 壳 TS（esbuild，秒级）→ 后端 → vite → 自动拉起 Electron 连 dev URL；纯浏览器模式 `node scripts/dev.mjs` 不变（首跑需 shell/ 与 frontend/ 各 `npm install` 一次）；
+- 壳打包：`node scripts/build.mjs`（或 `./build.sh`）——Go → 渲染层 → stage 进 shell/ → electron-builder 出 NSIS（shell/release/，向导式可选目录 per-user，Go 后端在 extraResources；无原生模块故 npmRebuild:false 省 rebuild 开销）；
+- 系统提示词：工具清单从注册表动态生成（`agent.BuildSystemPrompt` / `ComposeSystemPrompt`）——内置工具用 `systemPromptTools` 的手写摘要，目录里的动态工具回落 `Def.Description` 首行 + 风险说明（**没有回落 = 自定义工具被静默漏掉**，模型不知道它存在）。两条测试钉住：`TestSystemPromptListsAllTools`（清单与注册表不漂移）+ `TestBuiltinToolsHaveCuratedLine`（内置工具不许落到回落上——那等于丢了风险等级表述）；
+- **项目守则注入（2026-09-21）**：会话所属项目的根 `AGENTS.md` 每轮组装提示词时现读并注入（`project.LoadInstructions` → `Session.SetProjectDocs` → `projectDocsSection`）。规则：**只做项目级**（不向上找父目录、不读全局；未分组会话 `workDir` 为空 → 不注入，避免把后端进程目录的守则串进无关对话）；**优先级低于 Agent 自身**（段落在四层组合之后、环境与工具清单之前，并显式声明「与用户当前指令冲突时以用户为准」）；读不到/超大只记 `Note` 不打断生成；源上限 1MB、注入上限 32KB（超限截断并注明）。子 Agent（dispatch）与主会话同一 `workDir`，自动拿到同一份守则；
+- **项目守则的 UI 入口（同上一并落地）**：`project.instructions.get/save` 两个协议方法——**只按项目 id 寻址**（客户端不传路径，服务端从项目根解析 + 固定文件名 `AGENTS.md`，越权面为零）；写入走 `internal/atomicfile`（同目录临时文件 + fsync + rename，Windows 的 rename 不覆盖语义走备份回退——`tools` 的 write_file/edit 与这里共用同一份实现，**不许复制第二份**）；前端入口在**侧栏项目行的「守则」按钮**（hover 出现）→ 弹窗编辑器（显示项目根 AGENTS.md 路径 + 已存在/新建状态 + 内容编辑），设置面板不再放「自定义指令」那张全局空头支票；
+- 协议改动跑 `internal/protocol` 帧契约测试（字段改名不编译报错、只静默丢字段——测试钉住载荷形状）；
+- **前端工作区标签与会话标签分离**：固定「聊天」工作区标签与可关闭的 Agent/拓展/Git 页面标签，和可并发运行的会话标签是两组独立状态；侧栏入口只负责打开/聚焦，关闭工作区页不得关闭会话或取消生成，关闭当前页回退最近仍打开的页面。状态模型见 `frontend/src/shared/workspace-tabs.ts`，页面保活与切换见 `App.tsx`，标签栏分组见 `components/topbar/TabBar.tsx`；
+- **前后端分离边界（静态守卫，CI 同款）**：`node scripts/check-boundaries.mjs`（TS AST 检查 frontend/src：无 Node/Electron API、网络通信只在 `agent/ws`、`WSAgent` 只许 `agent/index.ts` 工厂引用、`__LX__` 宿主桥只在 Topbar/AddProjectDialog）+ `go test ./internal/architecture`（go/ast 检查 Go 侧：后端不 import frontend/shell；agent 不 import store/server/protocol；store 不 import agent/server/protocol）。改完跑 `node --test scripts/check-boundaries.test.mjs` 验证守卫自身。前端纯函数测试 `cd frontend && npm test`（node:test + 就地 TS 转译，无构建产物）；
+- **栈版本自检（排查协议类诡异 bug 的第一步）**：`node scripts/check-stack.mjs`——比对 `bin/lxcode.exe` 内嵌的 buildvcs 提交与当前 HEAD，**且只把 Go 侧改动（`*.go` / `go.mod` / `go.sum`）算作落后**（纯前端提交改了 commit 但不改后端行为，不算落后——否则会误导人白重启栈）；落后则退出码 1 并列出改过的 Go 文件（改完跑 `node --test scripts/check-stack.test.mjs` 验证它自身）。判定用 Go 构建元数据而非字节搜索：链接器会去重字符串，字节搜索连正对照都能搜不到（2026-09-21 实测）。`dev.mjs` 启动时也会打印后端编译提交；
+- **分层规则**：`sessiondata`（中立业务类型）← `store`/`agent`；`agent.Persistence` 是消费者定义的最小接口（agent 不见 SQL/连接/事务）；`project` 包持目录校验与 git init 业务（server 只是协议转发）；设置面板依赖 `ModelAdminSource` 能力接口而非具体 WSAgent——UI 永远不知道数据来自 WS 还是 Demo；`jsonrepair`（保守修复模型给的坏 JSON 参数）是只依赖标准库的叶子包，`tools`/`agent`/`llm` 三方共用同一份实现（tools 依赖 llm，所以实现不能放 tools 里被 llm 反向引用）。
+
+## 5. 已知坑（改代码前先看）
+
+1. **Windows 的 bash.exe 是 WSL stub**：`LookPath("bash.exe")` 在装了 Git 的机器上也先命中 `C:\Windows\System32\bash.exe`——没装 WSL 发行版时它不执行命令、只打 UTF-16 安装提示。`selectShell` 的候选顺序：sh.exe → 不在系统目录的 bash.exe → 常见 Git Bash 路径 → cmd。
+2. **Windows 的 `os.Rename` 不覆盖已存在文件**：原子写回退必须是"目标先改名备着"（`renameViaBackup`），绝不能"先删再改名"。
+3. **会话存储已由 JSONL 切为 SQLite**：不再按文件名/mtime 恢复；顺序依据数据库 updated_at 与稳定排序。WAL + synchronous=NORMAL 保持一致性，但不保证断电后最近提交不丢。
+4. **race detector 在本机需要 CGO**（无 gcc）：`go test -race` 不可用，并发正确性靠代码评审 + 事件互斥纪律（emit 持 REPL.mu，Session 状态持 s.mu）。
+5. **测试假流的中断契约**：error 事件须携带已生成部分（`Result`）——真实客户端（`llm.emitFinal`）如此，假流不带上会丢 partial（TestCancelPreservesPartial 踩过）。
+6. **手写 models.json 测试必须带 `"version": 1`**：Load 校验磁盘格式版本，缺了整份拒绝且只记日志（表现为"热加载广播没来"）。
+7. **PowerShell 脚本必须 UTF-8 带 BOM**：PS 5.1 对无 BOM 文件按 ANSI 读，中文注释乱码会**破坏语法**（ParseFile 实证）；而 Go/JSON 恰恰相反（BOM 会炸 json.Unmarshal）——两类文件的编码策略相反，别搞混。
+8. **http.Shutdown 不打断 WS 长连接**：服务优雅停机必须先 `closeAllClients()` 再 Shutdown（local-myt-agent 依赖 docker kill 兜底，SCM 等不了）。
+9. **vite 产物不能直接 file:// 加载**：`<script type="module" crossorigin>` 在不透明源（file:// 的 origin 是 null）下被 CORS 拒绝——React 不挂载、页面空白且**无任何报错**（did-fail-load 只管主帧导航，资源级失败静默）。壳产线用 `app://` 特权协议从 asar 提供渲染层（`shell/src/main.ts` 的 protocol.handle）。
+10. **从被 Job Object 包住的宿主拉起 Electron 时必须 `--no-sandbox`**：Chromium 子进程沙箱与外层 Job Object 冲突，GPU 子进程 STATUS_BREAKPOINT（0x80000003）崩溃循环直至整个应用 FATAL（实测：DSH 后台 job 里拉起必崩，交互式启动正常）。本应用渲染层零远程内容，安全面可接受；引入远程内容渲染前必须重新评估。
+11. **后端二进制不会热重载——前端热的、后端可能是几天前的**：dev 栈只在 `dev.mjs` 启动那一刻编译一次 Go 后端，之后 vite 热重载前端、后端进程纹丝不动。**症状是「前端诡异 bug」**：协议新增字段（如 `ConfirmRequest.dispatch_id`）在旧后端里不存在，新前端收到的事件就缺字段（子 Agent 的确认卡跑到外层时间线、卡片永远「执行中…」），而映射代码全是对的（2026-09-21 实测事故，排查代价极大）。**先跑 `node scripts/check-stack.mjs`**（比对二进制内嵌 buildvcs 提交与 HEAD）再动前端代码；处置 = 重启 dev 栈（Windows 下运行中的 exe 被锁，必须先停栈才能重新 `go build`）。**反向坑**：buildvcs 戳记的是**最后一次提交**而非工作树——改完没提交就重启，戳会停在旧提交而代码其实最新，`check-stack` 因此**误报落后**（2026-09-23 实测）；判据是「落后」列出的文件是否已在你手上改完。
+12. **历史里一条参数非法的 tool call 会让会话永久发不出请求**（2026-09-23 线上事故，排查代价极大）：模型输出被 max_tokens 截断时 `arguments` 是半截 JSON，旧实现把它原样写进历史；此后**每一次**请求都在 anthropic 适配器组装阶段硬失败（`工具 X 的 arguments 不是合法 JSON: …`），用户连发三条消息全部无响应，只能新开会话。**症状**：报错的 100 字节前缀与历史里某条 tool call 的参数逐字节相同（只读探针把 `messages.tool_calls` 抠出来比对即可定性）。**处置**：写边界清洗 + 读侧兜底（见 §3）。**教训**：畸形历史条目要么在写边界拦住、要么在读侧兜底，"硬校验 + 无修复路径"会把单个坏数据放大成会话级故障（与坑 5 的配对不变量同类）。
+13. **工具名里的点号会被严格网关 400 拒收**（2026-09-23 实测，已修）：OpenAI 与 Anthropic 都把工具名约束为 `^[a-zA-Z0-9_-]{1,64}$`——调度工具原名 `agent.dispatch` 的点号**违反这条**；宽松网关（旧的 LiteLLM 配置等）过去放过，网关严格化之后即 `Invalid 'tools[0].name': string does not match pattern` + `No fallback model group found`，**每一个带工具的主 Agent 轮次全部失败**（子 Agent 白名单全是下划线名，仍可用——应急旁路）。**修法**：改名 `agent_dispatch`（内核判定 / 提示词表 / 前端渲染判定 / 种子同步全改，`tools.DispatchToolName` 是唯一字面量）+ `Open` 时幂等迁移老库（白名单与历史里的旧名，`internal/store/migration.go`）。**排查手法**：拿同一端点直发两次最小请求（一个带点号名、一个下划线名）对比状态码，一眼定性。新增工具/目录条目一律避开点号。
+14. **分发域守卫必须只作用于自己的方法域**（2026-09-27 实测，已修）：`dispatch` 是按方法前缀依次问各域处理器的链式分发，而 `dispatchAgentCatalog` 早期版本把「未挂会话存储」这道守卫写在了**方法匹配之前**——于是 `--sessions` 缺省时它会**吞掉它之后的所有方法域**（新加的 `search.*` 全部返回「会话存储未挂载」这种驴唇不对马嘴的错误，而 `search.*` 根本不需要存储）。**修法**：每个域处理器**先按方法前缀判「是不是我的」，不是就直接返回 nil 让给下一个**，再做自己的前置校验（`isAgentCatalogMethod`）。新增方法域时照这个顺序写。
+15. **文件编辑工具的原子写会炸运行中的 vite**（2026-09-27 实测两次）：写入器在目标目录建瞬时目录 `.name.<pid>.<uuid>.tmpdir/`，写完即删；vite 的 chokidar 恰好在这个窗口里对它建 watch → `EBUSY: resource busy or locked` → **vite 抛未捕获的 FSWatcher error，整个 dev 栈死掉**（前端热更失效、窗口白屏，而报错里只有一串临时目录路径，极易误判成源码问题）。**修法**：`frontend/vite.config.ts` 的 `server.watch.ignored` 必须含 `**/.*.tmpdir/**` 与 `**/*.tmp`。同类坑：vite watcher 也必须排除 `src-tauri/**` 这类被构建进程锁住的目录。
+16. **vite 会静默供应「陈旧转换结果」——症状是「方法在磁盘上存在、运行时却是 is not a function」**（2026-09-29 实测，排查代价极大）：原子写（临时目录 + rename）让 chokidar 漏掉某次变更后，vite 的**转换缓存**不失效，于是它继续把**旧版本**发给浏览器——磁盘文件是对的、`tsc` 与单测全绿，只有运行时炸（`source.childHistory is not a function`）。**刷新页面没用**（重新请求到的还是那份陈旧结果）。**判据**：`curl http://127.0.0.1:5190/src/<模块路径>` 看 vite 实际供应的 JS 里有没有那个新符号（比读磁盘可靠——它测的是真正跑到浏览器里的东西）。**处置**：碰一下 mtime（`(Get-Item <文件>).LastWriteTime = Get-Date`）逼它重新转换，或重启 dev 栈。**教训**：新符号"运行时不存在"时先怀疑转换缓存，别先怀疑代码——`tsc` 与单测都测不到这一层。
+17. **含密钥的配置文件必须进 .gitignore**（2026-09-27）：`config/search.json` 存各渠道 apikey，与 `config/local.json` 同性质——新增任何「会落盘凭据」的配置文件时，同步加 .gitignore，否则一次测试写入就变成待提交文件。
+18. **CSP 没放行 blob worker 会让 dev 页面「断了就再也回不来」**（2026-10-06 用户报错实测）：vite 的 dev client（`/@vite/client` 的 `waitForSuccessfulPing`）在 **HMR WebSocket 断开**后用 blob 造一个 `SharedWorker` 去轮询服务端，成功后 `location.reload()`；而 `frontend/index.html` 的 CSP 里 `script-src 'self' 'unsafe-inline'` 没有 `blob:`（`worker-src` 回退到 `script-src`）→ `new SharedWorker` 抛异常且**未被 catch** → reload 永不执行，页面停在死状态只能手动刷新（机器休眠导致 socket 断开时必现）。**修法**：CSP 加 `worker-src 'self' blob:`（**别**放宽 `script-src`——blob 仍不能当脚本执行）。**排查提示**：这类「vite 相关的控制台报错」先去 `curl http://127.0.0.1:5190/@vite/client` 看真实行号，别猜。
+
+19. **控制台子进程的输出编码跟代码页走——中文系统是 GBK，不是 UTF-8**（2026-12 真库取证）：后端是 GUI/服务形态，子进程拿到 CREATE_NO_WINDOW 建的隐藏控制台，代码页仍是 936；`ipconfig` / `tasklist` / `powershell -Command "..."` 的中文因此全是 GBK 字节。旧实现 `string(out)` 直接当 UTF-8 拼进工具结果，经 JSON 序列化变成一串 `����`（真库：66193 条工具结果里 431 条是非法 UTF-8，其中 354 条来自 bash、57 条含 U+FFFD 且 **56/57 条紧接着又发了一条 bash 调用**——模型看不懂输出只能盲目重试）。**修法**：`tools.normalizeConsoleOutput`（`internal/tools/encoding*.go`）——合法 UTF-8 原样返回（零回归面），非法段**按行**用 `MultiByteToWideChar(CP_ACP)` 解码，失败回落 U+FFFD。**刻意不做** `chcp 65001` 命令前缀：那会让确认卡展示的命令与实际执行的不一致，且对无视代码页直接写 GBK 的程序无效。
+20. **Windows 的 bash 不是 WSL，但也不是真 bash**（2026-12 取证）：`selectShell` 依次找 `sh.exe`（Git Bash）→ 非系统目录的 `bash.exe` → `C:\Program Files\Git\bin\bash.exe` → `cmd /c`，**从不选 WSL**；本机实测 `bash.exe` 落在 `C:\Program Files\Git\usr\bin\bash.exe`。两处真坑：① **MSYS 路径改写**——参数形如 `/FI`、`/PID`、`/c` 会被 Git Bash 改写成 `C:/Program Files/Git/FI`（真库 12 例 `ERROR: Invalid argument/option - 'C:/Program Files/Git/FI'`），命令里要用 `MSYS_NO_PATHCONV=1` 或 `//FI` 双斜杠；② **`$_` / `$( )` 被 bash 先展开**——`powershell -Command "... $_.Foo ..."` 里的 `$_` 被 sh 换成上一条命令的路径（真库 37 例 `/usr/bin/bash.ProcessName` 之类），必须用单引号包 PS 脚本或写成 `.ps1` 文件。**服务形态**（SCM，只有机器级 PATH）下 Git 不在 PATH 时 `selectShell` 会退到 `cmd /c`——那时模型写的 bash 语法全部失效，`shellSyntaxHint` 会把这件事写进工具描述。
+
+## 6. Windows 服务运维（对齐参考项目的部署形态）
+
+- **布局**（安装形态固定根，= 参考项目的 `/mmc/myt-agent/`）：
+  `%ProgramData%\lxcode\`：`bin\lxcode.exe`（二进制）、`config\models.json`（配置）、`sessions\`（会话）、`logs\lxcode.log`（日志，16MB 轮转 ×3）。
+- **配置解析顺序**（内置了参考项目包装器的语义，免包装器）：`--config` > `LXCODE_CONFIG` > `.\config\models.json`（存在时，开发形态）> `%ProgramData%\lxcode\config\models.json`（安装形态）。
+- **安装**（管理员 PowerShell，在仓库根）：`scripts\service\install.ps1 [-ExePath .\lxcode.exe] [-ConfigPath .\config\local.json]`——端口预检 → 布置文件 → `sc create`（start=auto + 崩溃自动重启 5s/5s/60s）→ `--probe` 验收 → 失败自动回退（停服务 + 删除）。
+- **升级**：`scripts\service\update.ps1 -File <新二进制> [-Sha256 <hex>]`——停 → 校验 → 备份 → 替换 → 起 → 验收 → 失败自动回滚到 `.bak`。
+- **卸载**：`scripts\service\uninstall.ps1`（保留 config/sessions/logs）。
+- **验收探针**：`lxcode --probe [addr]`——连接/ready/hello/model.list/session.list/history；退出码 0=全好、1=协议失败（服务死）、2=活着但没配模型（等热加载）。
+- **服务形态与控制台形态同一条装配路径**（`runServe`）：差异只在 ctx 取消信号来源（SCM Stop vs Ctrl+C）；服务里 `svc.Execute` 薄壳，`serviceName` 常量与 install.ps1 的 `sc create` 名字绑定（两处同步改）。
+- 详见 docs/02-windows-service.md。
+
+## 7. 与 local-myt-agent 的关系
+
+- 参考实现：`<本机路径>\Desktop\gs\local-myt-agent`（设备端 agent，Docker 全权容器部署）；
+- 已继承：llm 双格式客户端（整包）、tools 注册表模式与六件工具、JSONL 会话存储（lxcode 后于 2026-12 切 SQLite）、动态系统提示词、WS JSON-RPC 协议层与客户端库（protocol/wsclient 整体移植）、工程规范（AGENTS.md 奠基/中文注释/测试纪律）；
+- 有意不同：端口 7789（错开 7788）；协议扩展 todo 事件/历史带 todos；去 chat.reset（session.new 覆盖）；agent 哨兵错误供服务端映射错误码（结构化判断不做字符串匹配）；edit 低危自动执行（编程 agent 语义）；bash 按 OS 选 shell（Windows 优先 Git Bash）；模型注册表已有 30s 热加载（代码变更仍需重启后端）。
+
+## 8. 可组装 Agent（2026-09-17 设计定案，前端原型已落地）
+
+Harness 的目标形态：**主 Agent 只做决策与分派，子 Agent 是用户组装的执行单元**。前端原型已完成（内存态，`frontend/src/shared/agents.tsx` + `components/agents/`），后端化路线见 §9 待定。设计决策：
+
+- **两类制**：主 Agent = 唯一调度者（不可被委派）；子 Agent = 纯执行者（不可委派）。委派深度恒为 1——环、成本爆炸、借手提权从结构上消失（未来要局部协作需显式引入新类，不静默改回白名单）。
+- **Agent 上下文四层组合**：① 协议层（**可定制**——预填内置默认，用户可整段替换「宪法修正案」；主=调度协议/子=执行协议）② 模块层（**上下文模块目录**，可插拔：流程模块**单选**——工作方式是完整单元，缺流程就补一个，不拼装；技能模块多选）③ 自定义段（每个 Agent 私有的自由文本）④ 动态注入（主 Agent 的可委派名单 + 会话上下文）。主 Agent 的提示词不是用户写的——用户通过数据控制调度（子 Agent 的职责描述 = 主 Agent 的选人信号）。
+- **委派两层配置**：名单默认（主 Agent 的 `delegates`，编辑器勾选）+ 会话覆盖（输入区 Agent 菜单二级面板，新会话/切换会话自动回落默认）。有效名单 = 覆盖 ?? 默认 ∩ 启用的子 Agent（`shared/agent-delegation.ts` 纯函数，有测试钉住）。
+- **目录条目 = 短摘要 + 完整 markdown 文档**（类 SKILL.md）：工具带参数表与扩展文档，模块带正文；编辑器两级详情（右侧紧凑面板跟随 chip 焦点，点面板开 640px 文档弹窗）。
+- **目录可自建**：技能/模板是纯内容（markdown），用户可创建/编辑/删除（目录管理页 + 模块编写器带实时预览，Provider 状态单源——Agent 组装 chips 即时可选）；模板/技能创建分开口（类型由入口页签定死，不表内切换）。工具走**导入**：固定格式 v1 的 JSON 契约（`shared/tool-import.ts` 的 `parseToolImport` 校验，有测试钉住）——`{"version":1,"tools":[{"id","desc","risk":"low|high","source":"builtin|binary","params"?:[{"name","type","required"?,"desc"?}],"doc"?}]}`，id 目录内唯一，source 只 builtin/binary——**MCP 工具不手动创建/导入**（由 MCP 服务器注册后自动暴露）；后端化后同一格式做插件的分发载荷。**MCP 是目录第四版块**：服务器（`McServerSpec`——id/名称/命令/启停）是接入单元，能力以工具形式进工具目录（`source=mcp` + `server` 字段指回来源），停用服务器 = 能力挂起。
+- **表单组件套件**（`components/form/`，`.fd-` 命名空间）：Button/TextInput/Textarea/Select/Segmented/ColorPicker/Chips/Toggle——项目内表单一律用套件，不再裸写原生控件（chips 有 `exclusive` 单选模式承载流程原子语义）。
+- 字段命名注意：AgentDef 的流程模块字段叫 `workflow` 不叫 `process`——与 Node 全局 `process` 撞形会让边界守卫（scripts/check-boundaries.mjs）误报，属性读取与 `process.env` 结构上无法区分。
+- **种子名单（2026-09-23）**：后端种子 = 主 Agent + 三个执行面 Agent——`coder`（代码，实现）、`researcher`（调研，只读勘察）、`tester`（测试，验证与跑命令）；主 Agent 的 `delegates` = 这三个 id。前端 `agent-seeds.ts` 的演示名单（main/coder/researcher/reviewer/ops）是**演示专属**，live 模式下后端是事实源（`shared/agents.tsx`）。三条种子纪律：
+  - **执行面即白名单**：调研 Agent 的 `tools` 不含 edit/write_file/bash（"不改文件"是结构保证），`approval=strict` 是第二道保险；它读本地数据走 `bash_readonly`（只读执行面——查 SQLite/git log/wc 靠它，写操作由命令级判据拒绝）；测试 Agent 必须含 `bash`（不跑就无从验证）；
+  - **子 Agent 种子不含 `agent_dispatch`**（两类制，深度恒 1）；白名单也不含"声明了没实现"的工具（如 `browser`——注册表里没有它，提示词会点名「当前不可用」）；
+  - **种子必须自洽**：`workflow`/`skills`/`tools` 引用的 id 必须真实存在——server 按 id 解析时**缺失静默跳过**，打错就是一份空提示词且不报任何错（`TestSeedAgentsSelfConsistent` 钉住这条）。
+- **种子同步（Agent 侧，2026-09-23）**：工具/模块按 `custom` 全字段同步（见 §3），Agent 名单**更严**——`ensureSeedAgents` 只插缺失 id（已有行不 UPDATE、不 DELETE：子 Agent 插入即 `custom=1`＝用户所有）；补种只在字段仍等于上一版基线时才补：`topUpMainDelegates` 补主 Agent 委派名单（`seedDelegatesBaseline`），`topUpSeedAgents` 补子 Agent 白名单与职责描述（`seedAgentBaselines`——两者都要补：白名单漏了没人勾得上，描述漏了主 Agent 不知道派给谁，web_search 就栽过）。代价：删过的种子 Agent 下次 Open 会回来（不想要应停用而非删除）。
+- **审批取严（2026-09-23）**：`effectiveApproval` 是"请求级 > Agent 默认 > confirm"（请求级是用户的显式选择，**不在这里取严**）；取严发生在**派发**这一层——`runDispatch` 用 `stricterApproval(父轮审批, 子 Agent 默认)`（auto < confirm < strict；子 Agent 未声明默认 = 继承请求方），子执行面因此不大于请求方。
+- **改名迁移是「不碰用户数据」的唯一例外（2026-09-23）**：调度工具 id 从 `agent.dispatch` 改成 `agent_dispatch`（点号违反工具名字符集，见 §5 坑 13）时，`Open` 会跑一次**幂等**迁移，把**白名单**（`agents.tools`）与**历史**（`messages.tool_calls` 的 `function.name`）里的旧名一起改掉——包括 `custom=1` 的用户行（不迁的话白名单就指着不存在的工具，主 Agent 的派发直接不可用）。这是唯一一处刻意碰用户数据的地方（"种子同步不碰 custom=1"的纪律仍然成立）；只改标识符本身，用 **JSON 层改写而非字符串替换**（正文里完全可能恰好出现同名字面量），`internal/store/migration_test.go` 钉住幂等 + "只改名字、id/参数/正文一律不动"。
+
+## 9. 待定决策
+
+**已定项不在本节重复**（本节只留「还没定/还没做」的事实）：桌面壳框架与打包更新机制见 §2.1；上下文管理 P1~P5 的落地范围与「未做」见 §2.2/§2.3；后端化路线的逐步验收标准见 `docs/backend-roadmap.md`。
+
+- **后端化路线**：已定（2026-09-18），**M1~M5 已落地**（M4 = 自定义工具 spawn / MCP / 网页搜索；M5 远程访问核心 = 后端 token 门 + 本机管理端点 + 局域网/樱花frp/Tailscale 三模式，断线自动重启/流量预警/节点迁移等后续项见 `docs/sakurafrp-integration.md`）；子 Agent 再委派与供应商预算/公平调度器**明确出界**（见 roadmap「明确不做」）。
+- **自更新**：已实现（壳内检查 manifest → 下载 zip 校验 → 独立 bat 完成全部替换与拉起，机制与产物契约见 §2.1）；服务形态走 `scripts\service\update.ps1`。
+- **语义记忆**：未做（会话搜索先行）；**存储底座已定**——会话已切 SQLite（modernc 纯 Go），语义记忆/向量检索（FTS5/sqlite-vec）将在同库扩展，不再单独立项选型。
+- **项目正式名**：工作名 lxcode，用户保留命名权。
+- **未分组会话无文件系统隔离**：顶层多活跃会话与项目 worktree 已落地（§2.1），未分组会话仍共用后端默认工作目录。

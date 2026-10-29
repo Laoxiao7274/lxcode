@@ -1,0 +1,13 @@
+# 壳构建产物（esbuild 输出）
+dist/
+
+# 构建时 stage 进来的渲染层与后端二进制（scripts/build.mjs 生成）
+renderer/
+resources/bin/
+
+# electron-builder 产物
+release/
+
+# node
+node_modules/
+tsconfig.tsbuildinfo

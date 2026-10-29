@@ -1,0 +1,1160 @@
+// UI 事件模型——字段语义与后端 internal/protocol 一一对应（demo 与 live
+// 两个 AgentSource 实现都发这套事件，UI 层不感知数据来源）。
+
+/** 任务清单项（对齐 tools.TodoItem）。 */
+export interface TodoItem {
+  content: string;
+  status: "pending" | "active" | "done";
+}
+
+/** 上下文占用（对齐 protocol.ContextUsage）：used/window 是压力与环形依据
+ *  （used 优先真实 prompt 总量），五个分类是估算拆分（已归一：分类之和 == used）。 */
+export interface ContextUsage {
+  used: number;
+  /** 模型窗口上限（0/缺省 = 未知——不画环形百分比）。 */
+  window?: number;
+  /** 系统提示词。 */
+  system?: number;
+  /** 工具声明（wire 上的 JSON Schema）——与 system 分开一类，因为"工具占了窗口多少"
+   *  是用户最想知道的其中一件事（DSH 的 ContextMeter 同样单列）。 */
+  tools?: number;
+  tool_results?: number;
+  messages?: number;
+  reasoning?: number;
+  /** used 是**估算值**（后端按固定密度折算）：端点没回报用量，或库里没有真实测量、
+   *  按已加载的历史回落（老会话/后端重启前跑过的会话）。UI 必须标注出来——用户
+   *  看不出区别就会拿它做预算判断。缺省/false = 真实用量（provider 回报的
+   *  prompt_tokens）。 */
+  estimated?: boolean;
+}
+
+/** 整段会话的统计（对齐 protocol.SessionStats / DSH 的 sessionStats + tokenUsage）。
+ *
+ *  与 ContextUsage 的分工：context 回答「此刻窗口里有多少」，stats 回答「这条会话
+ *  一共花了多少」。它折叠的是**整段日志**（含被压缩检查点影子掉的消息），所以压缩与
+ *  翻页都改不了这些数字；撤回真删了行，数字跟着变小才是对的。
+ *
+ *  整键缺席 = 还没有任何一步（新会话/纯内存模式）——UI 不渲染统计胶囊，
+ *  **不显示一排 0**（那是个假事实）。 */
+export interface SessionStats {
+  /** 轮数（用户发起的轮数，与右栏「轮次」面板同一口径）与步数（模型调用次数）。 */
+  turns: number;
+  steps: number;
+  /** 墙钟（毫秒）：llm_ms = 各步请求耗时之和；tool_ms = 工具执行耗时之和。 */
+  llm_ms: number;
+  tool_ms: number;
+  /** 首字：ttft_ms / ttft_steps = 均值（只有有首字可测的步才计入）。 */
+  ttft_ms: number;
+  ttft_steps: number;
+  /** 解码：decode_ms = 首字 → 收尾的纯生成耗时，decode_tokens = 同期输出 token。
+   *  生成速度 = decode_tokens / decode_ms（扣掉 prefill 才是"吐字速度"）。 */
+  decode_ms: number;
+  decode_tokens: number;
+  /** 计费四桶（provider 回报；未回报 = 0）：未缓存输入 / 缓存读 / 缓存写 / 输出。 */
+  input_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  output_tokens: number;
+  /** 早期记录（本功能上线前落库的消息）的 token 之和：那时的口径是 provider 的
+   *  total_tokens（输入+输出），与上面四桶不同——**单独给出、不混算**。
+   *  缺席（0）= 这条会话没有早期记录。UI 在明细里如实说明它是什么，不参与速度。 */
+  legacy_tokens?: number;
+}
+
+/** 手动压缩的结果（chat.compact 的应答）。 */
+export interface CompactOutcome {
+  /** false = 没有可压的收益（历史太短 / 摘要不缩水）——不是错误。 */
+  compacted: boolean;
+  /** 为什么没压（人话，直接显示）。 */
+  reason?: string;
+  before?: number;
+  after?: number;
+  shadowed?: number;
+}
+
+/** 文件还原结果（对齐 protocol.FileRestoreResult，chat.rewind / chat.setLeaf 共用）。
+ *
+ *  覆盖范围含**子会话**的改动（2026-12 拍板：父会话回滚要把子 Agent 的改动一起
+ *  还原，子会话的对话历史不动）——每项带 session_id 标明是谁改的。
+ *
+ *  `conflicts` 非空 = **整批未执行**（fail-closed）：leaf 不动、文件不动，清单交给
+ *  用户看。它不是错误码——冲突是正常业务结果（用户手改过文件）。 */
+export interface FileRestoreResult {
+  /** 按快照写回的文件。 */
+  restored?: FileRestoreItem[];
+  /** 回滚到「当时还不存在」→ 删掉的文件（agent 新建的）。 */
+  deleted?: FileDeleteItem[];
+  /** 磁盘现状与快照期望不符（用户手改/bash 改过）：整批拒绝。 */
+  conflicts?: FileConflict[];
+  /** 大文件/二进制：当时没抓快照，如实报「回滚不到」。 */
+  skipped?: FileSkip[];
+  /** 本次回滚涉及的子会话 id（父会话自己不算）。 */
+  child_sessions?: string[];
+}
+
+/** 一项文件还原（写回快照内容）。 */
+export interface FileRestoreItem {
+  path: string;
+  /** 取的是哪个快照的 before（**写它的那个会话**的 seq）。 */
+  from_seq: number;
+  /** 那次写属于父会话的哪一轮之后（缺省 = 0/未知）。 */
+  from_owner_seq?: number;
+  /** 写这个文件的那个会话（父会话自己 = 顶层 id；否则是子会话 id）。 */
+  session_id?: string;
+  bytes: number;
+  /** 磁盘上本来没有，按快照写回。 */
+  recreated?: boolean;
+}
+
+/** 一项「回滚 = 删掉这个文件」。 */
+export interface FileDeleteItem {
+  path: string;
+  /** 谁新建的这个文件（多半是子会话）。 */
+  session_id?: string;
+}
+
+/** 一项冲突（磁盘现状与快照期望不符）。 */
+export interface FileConflict {
+  path: string;
+  expected_hash?: string;
+  actual_hash?: string;
+  /** 期望状态是**哪个会话**写的（冲突提示要说清「这是子 Agent 改的文件」）。 */
+  session_id?: string;
+  reason: string;
+}
+
+/** 一项「当时没抓快照，回滚不到」。 */
+export interface FileSkip {
+  path: string;
+  reason: string;
+}
+
+/** 会话回退的结果（chat.rewind 的应答）。
+ *
+ *  **不用于渲染**——时间线的截断由 rewound 事件驱动（本地乐观 + 后端广播走
+ *  同一条归约路径）。它只回答「后端真删了几条」，供提示与诊断用。
+ *
+ *  语义已随会话树改为「leaf 移到 parent(seq)」（一条不删、旧分支保留）：`removed`
+ *  仍是「离开当前路径的条数」，与旧口径逐例相同（老客户端零影响）。 */
+export interface RewindOutcome {
+  /** 离开当前路径的消息条数（锚点那条 + 它之后的全部）。 */
+  removed: number;
+  /** 移动后的叶（0 = 空路径）。缺省 = 老后端没回这个键。
+   *  **键名保持 wire 的 snake_case**：这个接口是 `chat.rewind` 应答的 wire 形态
+   *  （protocol-golden 的 `_type` 钉住它），与 ChatHistoryParams 同一类"协议形态"
+   *  类型；适配成 camelCase 会在两处各有一份、迟早漂移。 */
+  leaf_seq?: number;
+  /** true = 历史保留为分支（一条没删）——老客户端以为删了，其实还能在树里切回来。 */
+  branched?: boolean;
+  /** 本次带文件还原时的结果（含子会话）。缺省 = 没开 files。 */
+  files?: FileRestoreResult;
+}
+
+/** chat.setLeaf 的结果：**不回 messages**（客户端重拉 chat.history——切 leaf 之后
+ *  要重载的不止消息，还有树/统计/上下文/检查点下标，复制一份必然与 chat.history
+ *  分叉）。 */
+export interface SetLeafOutcome {
+  /** 移动后的叶（0 = 空路径）。 */
+  leafSeq: number;
+  /** 离开当前路径的条数（与 chat.rewind 的 removed 同口径）。 */
+  removed: number;
+  /** 本次带文件还原时的结果（冲突时 conflicts 非空且 leaf 未变）。 */
+  files?: FileRestoreResult;
+}
+
+/** 会话树里的一个节点（对齐 protocol.TreeNode）。`nodes` 按 seq 升序，前端自己按
+ *  parent_seq 建树。 */
+export interface TreeNode {
+  seq: number;
+  /** 0 = root。 */
+  parentSeq: number;
+  /** user | assistant | tool | checkpoint | notice */
+  kind: string;
+  /** 轮次序号（user/notice 才有；与 SessionStats.turns 同口径）。 */
+  turn?: number;
+  /** ≤120 字符的单行摘要（不含正文全文）。 */
+  summary?: string;
+  /** 直接子节点数（>1 = 分支点）。 */
+  children: number;
+  /** 是否在当前 leaf 路径上（false = 废弃分支）。 */
+  onPath: boolean;
+  /** 父节点缺失 / 成环（畸形数据兜底：不丢节点、不抛异常）。 */
+  orphan?: boolean;
+  /** 该轮可还原的文件改动数（含子会话）；0 时整键缺席。 */
+  files?: number;
+  /** 其中来自子会话的改动数（files 的子集）；0 时整键缺席。 */
+  childFiles?: number;
+  /** 该轮无法快照的写（bash/MCP/自定义工具，含子会话里的 bash）；0 时整键缺席。 */
+  external?: number;
+  /** checkpoint 的影子条数。 */
+  shadowed?: number;
+}
+
+/** 会话树骨架（chat.tree 的应答）。 */
+export interface ChatTreeResult {
+  /** 当前叶（0 = 空路径）。 */
+  leafSeq: number;
+  /** 按 seq 升序。 */
+  nodes: TreeNode[];
+  /** 全量节点数（截断时用于「还有 N 个」提示）。 */
+  total: number;
+  /** true = 只回了最近 max_nodes 个节点（**不静默截断**，面板要显示提示）。 */
+  truncated?: boolean;
+}
+
+/** 归档的结果（session.archive 的应答）。 */
+export interface ArchiveOutcome {
+  /** 是否已归档（恒为 true——请求成功即已归档）。 */
+  archived: boolean;
+}
+
+/** 后台任务的运行状态（对齐 protocol/jobs.Status）。 */
+export type JobStatus = "running" | "stopping" | "completed" | "killed" | "failed";
+
+/** 「谁结束的」——空 = 还在跑。用户点「结束」与 agent 自己 kill 在这里分叉：
+ *  前者要唤醒 agent 并告诉它「不要重启」，后者是同一轮内的已知动作。 */
+export type JobEndedBy = "" | "self" | "user" | "agent" | "backend";
+
+/** 后台任务快照（对齐 protocol.JobInfo，见 docs/jobs.md §4）。
+ *
+ * 字段名逐字对齐契约（wire 命名按本协议惯例是 snake_case：session_id /
+ * ended_by / output_tail）；这是**对外快照**，UI 直接消费它，不再另立一份
+ * 视图模型——多一层映射只会让「契约改了前端不知道」多一个静默点。 */
+export interface JobInfo {
+  id: string;
+  /** 任务种类（当前只有 "bash"）。 */
+  kind: string;
+  /** 一行摘要（命令截断——UI 与通告都用它）。 */
+  label: string;
+  status: JobStatus;
+  ended_by: JobEndedBy;
+  /** 退出码 / 信号 / 超时 / 重启（人话，直接显示）。 */
+  detail: string;
+  /** 执行会话（谁起的任务；空 = 不属于任何会话，只进全局面板）。 */
+  session_id: string;
+  /** **时间线归属**（顶层会话）：子 Agent 起的任务挂在父会话上，前端据此把它
+   *  放进**父会话**的时间线——子会话不进侧栏，按执行会话上卡等于用户在主对话里
+   *  什么都看不到。空 = 回落 session_id。 */
+  owner_session_id: string;
+  /** RFC3339；finished_at 空 = 未结束。 */
+  started_at: string;
+  finished_at: string;
+  /** 最近 64KB 输出（面板直接显示，不必往返 job.log）。 */
+  output_tail: string;
+  /** 落盘日志路径（恒有——任务结束后仍可读全量）。 */
+  output_path: string;
+}
+
+/** job.log 的结果：全量输出（后端可能截断，truncated 标明）。 */
+export interface JobLogResult {
+  data: string;
+  truncated: boolean;
+}
+
+/** JobAdminSource：后台任务的查看与结束（后端 job.* 直通）。
+ *
+ * 与 ModelAdminSource / SearchAdminSource 同模式：UI 依赖能力接口而非具体
+ * WSAgent；Demo 也实现（演示模式无后端也要能全量跑 UI——起任务、看输出、
+ * 点结束）。事件（job.started / job.settled）与 job.list 共用同一份缓存。 */
+export interface JobAdminSource {
+  /** 当前任务快照（job.list 结果 + job.started/settled 增量，按开始时间倒序）。 */
+  jobs(): JobInfo[];
+  /** 订阅任务变化（连接建立 / job.started / job.settled；返回退订）。 */
+  onJobsChanged(listener: () => void): () => void;
+  /** 拉取任务清单（sessionId 为空 = 全部）；结果写回缓存。 */
+  listJobs(sessionId?: string): Promise<JobInfo[]>;
+  /** **用户点「结束」**——后端走 Manager.Kill(id, EndedUser)，与 agent 的
+   *  job_kill 同一条路径（只是 by 不同，两条路径行为永远一致）。 */
+  killJob(id: string): Promise<JobInfo>;
+  /** 读全量输出（落盘日志——任务结束后仍可读）。 */
+  readJobLog(id: string): Promise<JobLogResult>;
+}
+
+/** 附件引用（对齐 llm.AttachmentRef）：附件卡的展示元数据（实时事件与历史
+ *  回放同一份）。path 是相对后端 attachments 根的路径，前端经
+ *  /attachments/<path> 取内容（shared/attachments.ts 的 attachmentURL）。
+ *  kind 分流渲染：image = 内联缩略图（点击放大），file = 文件卡（点击下载）。 */
+export interface AttachmentRef {
+  path: string;
+  name: string;
+  /** 字节数（0/缺省 = 未知——文件卡不显示大小，不显示 0 B 假数据）。 */
+  size?: number;
+  mime?: string;
+  kind: "image" | "file";
+  /** 共享者附的一句话说明（share_file 的可选文案）。 */
+  caption?: string;
+}
+
+/** 确认请求（对齐 protocol.ConfirmRequest）。 */
+export interface ConfirmRequest {
+  id: string;
+  name: string;
+  arguments: string;
+  prompt: string;
+  /** 非空 = 子 Agent 的确认（归属 dispatch 卡内）。 */
+  dispatch_id?: string;
+  /** 请求形态：空 = 高危工具确认（批准/拒绝）；"ask" = ask_user 的提问
+   *  （用户以文本回答或跳过）。老后端不带这个键 → 按确认语义处理。 */
+  kind?: string;
+  /** 提问的预设答案（可空）——渲染成可直接点选的选项按钮。 */
+  options?: string[];
+}
+
+/** AgentSource 推给 UI 的事件流（对齐服务端广播事件）。 */
+export type AgentEvent =
+  | { type: "ready"; server: string; version: string; busy: boolean }
+  | { type: "sessionFocused"; id: string }
+  /** seq = 撤回锚点（ChatMessage 上的字段；历史回放与实时事件是**同一个类型**，
+   *  所以两条路径都读 message.seq）。老后端没有它 → 块不可撤回，但绝不炸。 */
+  | { type: "userMessage"; sessionId: string; text: string; seq?: number;
+      /** 随消息的附件引用（对齐 llm.Message.Attachments——后端落盘后的元数据）。
+       *  缺省 = 无附件（老后端/纯文本消息）。渲染附件卡的数据源。 */
+      attachments?: AttachmentRef[];
+      /** dispatchId 非空 = 子会话的消息（派发方注入的任务说明书，后端 childEmitter
+       *  带归属上抛）：主时间线不画（dispatch 卡 = 一行摘要），双投进子会话自己的
+       *  state——子会话视图里「新一轮的任务」靠它出现。 */
+      dispatchId?: string;
+      /** task = 双投进子会话 state 时打的标记（reduceSessionStates：原本带
+       *  dispatch_id 的 userMessage 就是任务说明书）。子会话时间线据此渲染成
+       *  「任务」块而不是用户气泡——用户没法在子会话页发言，带这个标记的消息
+       *  唯一来源是 agent_dispatch 的派发。 */
+      task?: boolean }
+  /** 乐观用户气泡（**本地事件，不经后端**——体验修复批次 2）：send 发起后立即在
+   *  当前会话插一个 pending 用户块，真后端的 userMessage 回执（排在 worktree 准备
+   *  等工作之后）到达时按 FIFO 去重。failed = 发送失败（ws 的 catch）：移除最旧的
+   *  pending 块。demo 模式不发自它——它的 userMessage 是同步 emit 的，没有空窗。 */
+  | { type: "optimisticUser"; sessionId: string; text: string; failed?: boolean;
+      /** 随消息携带的附件（带图/带文件时失败要装回输入框附件区——文本丢了
+       *  附件不能丢，见 store 的 onSendFailed 钩子）。 */
+      atts?: SendAttachments }
+  | { type: "delta"; sessionId: string; kind: "text" | "reasoning"; text: string; dispatchId?: string }
+  | { type: "toolCall"; sessionId: string; id: string; name: string; arguments: string; dispatchId?: string }
+  | { type: "toolResult"; sessionId: string; id: string; name: string; content: string; isError: boolean; dispatchId?: string;
+      /** 这次执行共享的附件（share_file）——与结果消息 llm.Message.Attachments
+       *  同一份元数据。缺省 = 无。 */
+      attachments?: AttachmentRef[] }
+  | { type: "confirmRequest"; sessionId: string; request: ConfirmRequest }
+  | { type: "todoUpdated"; sessionId: string; items: TodoItem[];
+      /** dispatchId 非空 = 子会话的清单更新（带归属）：主时间线更新派发卡徽标，
+       *  子会话页由双投吃到。空 = 主会话自己的计划条。 */
+      dispatchId?: string }
+  | { type: "done"; sessionId: string; usageTokens: number; finishReason: string; dispatchId?: string; context?: ContextUsage;
+      /** 整段会话统计（缺省 = 还没有任何一步 / 纯内存模式）。一轮里的每个 done 都带
+       *  一份最新的，取最后收到的那份即可（与 DSH 的投影随事件推进同语义）。 */
+      stats?: SessionStats;
+      /** 每轮计时（后端 internal/agent/timing.go）：首 token 延迟与本轮耗时。**工具轮/非流式
+       *  回放没有「首字」这个时刻 → 整键缺席**（不是 0——0 会被显示成「首字 0ms」的假数据）。 */
+      firstTokenMs?: number; durationMs?: number;
+      /** 本轮实际使用的模型 id（Agent 绑定优先、否则 default 角色）。 */
+      model?: string }
+  | { type: "error"; sessionId: string; message: string; aborted: boolean }
+  | { type: "dispatchStart"; sessionId: string; dispatchId: string; childSessionId?: string; agentId: string; agentName: string; agentColor: string; task: string;
+      /** 主 Agent 预拆的清单初稿（todo 契约批③；缺席 = 子自拆）。 */
+      todos?: TodoItem[] }
+  | { type: "dispatchEnd"; sessionId: string; dispatchId: string; childSessionId?: string; result: string; isError: boolean; usageTokens?: number;
+      /** 派发结束时子会话清单的定格值（缺席 = 没建过清单）。 */
+      finalTodos?: TodoItem[] }
+  /** 请求失败不代表生成失败：不得清空会话、定格正文或解除确认卡。 */
+  | { type: "operationError"; message: string }
+  /** 传输层连接态翻转（WSAgent 真实 WS 的 open/close——顶栏脉冲点与连接管理
+   *  的「已连接」指示的数据源）。DemoAgent 是本地模拟，恒已连接，订阅即发 true。 */
+  | { type: "connectionChanged"; connected: boolean }
+  /** busy 事件。dispatchId 非空 = 子会话的忙闲翻转（带归属）：主会话侧过滤
+   *  （不翻主会话的「生成中」/不触发发送缓冲区边界），双投进子会话自己的
+   *  state——子会话页的「生成中」行与停止钮靠它出现。 */
+  | { type: "busy"; sessionId: string; busy: boolean; dispatchId?: string }
+  /** 某会话的权限档被改了（后端广播 chat.approvalChanged——多客户端/壳+浏览器
+   *  同时开着时靠它保持一致；载荷是规范化后的档位，空 = confirm）。
+   *  消费方是**会话状态归约**（shared/reduce.ts 按会话落 UIState.approval），
+   *  不再有全局设置可同步。 */
+  | { type: "approvalChanged"; sessionId: string; approval: ApprovalMode }
+  /** 某会话**选中的模型**被改了（后端广播 chat.modelChanged——多客户端/壳+浏览器
+   *  同时看着同一条会话时靠它保持一致）。
+   *
+   *  与 `model.changed` 的分工：那个是全局模型注册表变了（客户端重拉 model.list），
+   *  这个是**会话级**选择变了（只更新那条会话的选择态，不动注册表缓存）。消费方
+   *  是会话状态归约（shared/reduce.ts 按 sessionId 落 UIState.model）。 */
+  | { type: "modelChanged"; sessionId: string; model: string }
+  /** 新会话默认审批档被改了（settings.defaultApproval.changed——后端 behavior.json
+   *  的行为开关，多客户端同步）。只影响**之后新建**的会话；既有会话的档位是
+   *  它们自己的落库值，不受影响。 */
+  | { type: "defaultApprovalChanged"; approval: ApprovalMode }
+  | { type: "sessionChanged"; id: string; reason: string }
+  /** 会话列表本身变了（重命名/归档/恢复）——UI 重读 sessions()。 */
+  | { type: "sessionsChanged"; running?: string[] }
+  /** 项目列表变了（添加）——UI 重读 projects()。 */
+  | { type: "projectsChanged" }
+  /** 一轮任务的产物汇总（改动文件 + diff 统计——验收视图）。 */
+  | { type: "filesChanged"; sessionId: string; files: FileChange[] }
+  /** 历史被压缩（前缀替换成摘要检查点）——UI 插一条「已压缩历史」标记块。
+   *  dispatchId 非空 = 子会话自己的压缩（归属进 dispatch 卡内，不进主时间线）。 */
+  /** 历史被压缩（前缀替换成摘要检查点）——UI 插一条「已压缩历史」标记块。
+   *  dispatchId 非空 = 子会话自己的压缩（归属进 dispatch 卡内，不进主时间线）。
+   *  context = 压缩**后**的占用（后端 runCompaction 已重算——压缩改写了历史形状，
+   *  旧数字一定是错的）；键缺席 = 未知（老后端），归约器保持旧值不编数。 */
+  | { type: "compacted"; sessionId: string; before: number; after: number; shadowed: number; summary: string; manual?: boolean; dispatchId?: string; context?: ContextUsage }
+  /** 会话回退（chat.rewound）：seq 这条用户消息及其之后的全部历史已离开当前路径
+   *  （**一条没删**——旧分支保留在树里，随时能切回来）。
+   *
+   *  归约是**幂等**的：本地乐观截断（发起撤回时立刻清空时间线）已经把锚点删掉了，
+   *  后端广播随后到达时找不到锚点就原样返回——不幂等的话重复到达会再切一刀，
+   *  把更早的消息也一起删掉。 */
+  | { type: "rewound"; sessionId: string; seq: number; removed: number; context?: ContextUsage;
+      /** 重算后的整段统计（口径仍是折叠整段日志——切分支不改数字）。 */
+      stats?: SessionStats }
+  /** 叶指针变更（chat.leafChanged，rewind 与 setLeaf 都发）。
+   *
+   *  **到达时必须重拉 history + tree**（在 ws 层做，不进归约器）：leaf 是**共享
+   *  状态**，可能是别的客户端动的——本地没有"该怎么变"的知识，后端才是事实源。
+   *  setLeaf 只发这个事件（不发 chat.rewound）：老客户端收到 rewound 会截断时间线，
+   *  而切到另一条分支时那个截断是错的。 */
+  | { type: "leafChanged"; sessionId: string; leafSeq: number;
+      /** 移动前的叶（客户端据此判断"是不是别人动的"）。 */
+      prevLeafSeq?: number;
+      removed: number;
+      /** 重算后的上下文占用（缺省 = 未知 → 指示器中性态）。 */
+      context?: ContextUsage;
+      /** 本次带文件还原时的结果（含子会话）。 */
+      files?: FileRestoreResult }
+  /** 历史载入（连接/切会话后）——重建对话视图。
+   *
+   *  `paging: true` = 这是**上翻分页**的增量应答（chat.history 的 before_seq）：
+   *  归约器把这一页**前插**进现有时间线，而不是重建。区分必须靠这个显式标记，
+   *  不能按快照内容猜——`has_more` 在首屏 tail 应答上也会由前端推导出来
+   *  （deriveTailPaging），而重拉（rewind/setLeaf 副作用）必须**重建**（否则
+   *  回放出来的「中断占位卡」永远修不回来）。 */
+  | { type: "historyLoaded"; sessionId: string; history: HistorySnapshot; paging?: boolean }
+  /** 后台任务起了（时间线插一张任务卡）。sessionId = 任务归属会话——
+   *  无归属（空）的任务只进顶栏全局面板，不进任何会话时间线。 */
+  | { type: "jobStarted"; sessionId: string; job: JobInfo }
+  /** 后台任务结束（带 EndedBy——UI 据此显示「你停的 / 它挂了 / 超时 /
+   *  后端重启中断」）。同一个 job 的 started 与 settled 共用一张卡。 */
+  | { type: "jobSettled"; sessionId: string; job: JobInfo };
+
+/** 会话列表条目（对齐 protocol.SessionMeta；workspace 用于侧栏按工作区分组）。 */
+export interface SessionMeta {
+  id: string;
+  title: string;
+  updatedAt: string;
+  messages: number;
+  /** 所属工作区（项目路径的末段；空 = 未分组）。 */
+  workspace?: string;
+  /** 归档态——侧栏不显示，设置「归档任务」里可恢复。 */
+  archived?: boolean;
+  /** 此刻是否在生成（老后端缺席 = 空闲，不编状态）。新连上的客户端错过
+   *  busy=true 广播时，列表据此直接亮运行指示。 */
+  running?: boolean;
+}
+
+/** hello 应答（协议版本匹配 + 连接时刻的忙闲快照）。 */
+export interface HelloResult {
+  server: string;
+  version: string;
+  busy: boolean;
+  /** 握手时刻在生成的会话 id（缺省 = 无在跑，不编状态）。 */
+  busySessions?: string[];
+}
+
+/** 历史快照（chat.history 的载荷——重建视图用）。 */
+export interface HistorySnapshot {
+  sessionId: string;
+  messages: HistoryMessage[];
+  busy: boolean;
+  pending: ConfirmRequest | null;
+  todos: TodoItem[];
+  /** 上下文占用（缺省 = 未知——刚切会话/后端刚重启，指示器显示中性态）。 */
+  context?: ContextUsage;
+  /** 整段会话统计（缺省 = 还没有任何一步——不渲染统计胶囊）。 */
+  stats?: SessionStats;
+  /** 压缩检查点在 messages 里的下标（这些消息渲染成「已压缩历史」块，不是用户气泡）。 */
+  checkpoints?: number[];
+  /** 该会话实际用的模型 id（子会话就是它自己 Agent 的模型）。未知 → 整键缺席，
+   *  显示中性态——不编一个模型名。 */
+  model?: string;
+  /** 该会话**此刻**的权限档（后端 LiveApproval）。缺省 = 后端没报（老后端/演示源）
+   *  ——显示端不猜，保持本地设置不动。主会话之间隔离的显示依据。 */
+  approval?: ApprovalMode;
+  /** child = 这是**子会话**的历史（childHistory 装载的快照）。子会话时间线里
+   *  非通告的 user 消息只有一种来源——主 Agent 派发的任务说明书（子会话页只读，
+   *  用户无法在子会话里发言），渲染成「任务」块而不是用户气泡；主会话快照不带
+   *  这个键，user 消息照旧是用户气泡（两条路径共用 historyBlocks，靠它分流）。 */
+  child?: boolean;
+  /** 这次回放对应的叶（0 = 空路径；缺省 = 老后端没回这个键）。
+   *  树面板拿它高亮「你在这里」，也拿它判断「回到最新」该往哪走。 */
+  leafSeq?: number;
+  /** 分页装载（chat.history 的 tail/before_seq）的窗口元数据。
+   *
+   *  `hasMore` 只在 **before_seq 请求**的应答里出现（协议 HasMore 的 omitempty）：
+   *  缺省 = 这不是一次分页应答（老后端/首次 tail 拉取）——前端按「不再上翻」处理。
+   *  `firstSeq` = 本窗口首条消息的 seq（下一次 before_seq 的 anchor；空窗口 0）。
+   *  两个键都在时才能继续上翻：拿 0 去请求会被后端判 CodeInvalidParams。 */
+  hasMore?: boolean;
+  firstSeq?: number;
+  /** 该会话**此刻正在跑**的派发快照（缺省 = 没有/老后端）。
+   *  观察端（安卓/新开窗口）错过 dispatchStart 广播时靠它把回放重建的
+   *  「中断」占位卡补上子会话 id——点开子会话与卡内进度事件路由由此恢复。
+   *  派发结束即从后端注销（不会把已收尾的报成运行中）。 */
+  runningDispatches?: RunningDispatchInfo[];
+}
+
+/** 一次进行中派发的观察快照（chat.history 的 running_dispatches 元素）。
+ *  与 dispatchStart 事件字段的对应：dispatchId ↔ dispatch_id、childSessionId ↔
+ *  session_id、agentName ↔ agent_name、task ↔ task。 */
+export interface RunningDispatchInfo {
+  dispatchId: string;
+  childSessionId: string;
+  agentName: string;
+  task: string;
+}
+
+/** 历史消息（llm.Message 的 wire 形态）。 */
+export interface HistoryMessage {
+  role: string;
+  content: string;
+  /** 撤回锚点（后端 ChatMessage 的字段，与实时 chat.userMessage 的载荷是同一个
+   *  类型）。老后端没有它 → 块不可撤回（动作禁用），绝不炸（AGENTS.md §5 坑 11）。 */
+  seq?: number;
+  /** 消息级父指针（会话树的边；0/缺省 = root）。与 `sessions.parent_id`（**会话级**
+   *  父子，子 Agent = 独立会话）是两个不同的东西，一眼分得开。老后端没有它。 */
+  parent_seq?: number;
+  /** 每轮计时/用量/模型（后端 messages 表那四列）。**回放路径必须与实时路径给出同一组
+   *  数字**——只填实时不填回放的话，用户刷新一次这些数字就全没了（本仓库吃过三次亏的
+   *  那类 bug）。缺席的项不写这个键（不是 0——0 会被显示成「首字 0ms」的假数据）。 */
+  first_token_ms?: number;
+  duration_ms?: number;
+  model?: string;
+  usage_tokens?: number;
+  reasoning_content?: string;
+  tool_calls?: Array<{
+    id?: string;
+    function?: { name: string; arguments?: string };
+  }>;
+  tool_call_id?: string;
+  /** 附件引用（user 消息 = 用户发的图/文件；tool 消息 = share_file 共享的）。
+   *  缺省 = 无附件（老行/纯文本消息）。 */
+  attachments?: AttachmentRef[];
+  /** 图片引用（对齐 llm.ImageRef——视觉请求通道的老字段）：老后端没有
+   *  attachments 列时的**回落**渲染源（图片缩略图卡）。 */
+  images?: Array<{ path: string; mime: string }>;
+}
+
+/** 改动文件条目（一轮任务结束时的产物汇总——Codex 的 diff 中心形态）。 */
+export interface FileChange {
+  path: string;
+  /** 增加行数 / 删除行数（diff 统计）。 */
+  added: number;
+  deleted: number;
+  /** 精简 diff 文本（Codex 风格渲染：@ 文件头、- 红行、+ 绿行）。 */
+  diff: string;
+}
+
+/** 项目（侧栏「项目」分组的数据源；对应后端 projects 表）。 */
+export interface ProjectMeta {
+  id: string;
+  name: string;
+  path: string;
+}
+
+// ---- Git 管理页（git.overview / git.diff 的 wire 形态；全部只读查询）----
+
+/** 主检出的一条未提交/未跟踪变更。kind: modified | added | deleted | untracked。 */
+export interface GitChange {
+  path: string;
+  kind: string;
+}
+
+/** 一条分支：主检出当前分支（current=true）或某会话分支（带会话元数据）。 */
+export interface GitBranchInfo {
+  name: string;
+  current: boolean;
+  ahead: number;
+  behind: number;
+  /** 会话分支才有（主检出分支整键缺席）。 */
+  session_id?: string;
+  session_title?: string;
+  archived?: boolean;
+  has_worktree?: boolean;
+  worktree_path?: string;
+  dirty_count?: number;
+  merged?: boolean;
+}
+
+/** 一条提交（git log 条目；when 为 ISO，相对时间由前端折算）。 */
+export interface GitCommitInfo {
+  hash: string;
+  message: string;
+  author: string;
+  when: string;
+}
+
+/** git.overview 结果：项目主检出的只读快照。 */
+export interface GitOverview {
+  path: string;
+  branch: string;
+  dirty: GitChange[];
+  branches: GitBranchInfo[];
+  commits: GitCommitInfo[];
+}
+
+/** 权限模式三档（协议值域：chat.send 与 chat.approval 的 approval 参数）。 */
+export type ApprovalMode = "auto" | "confirm" | "strict";
+
+/** chat.send 携带的一张图片附件：data 为纯 base64（不带 data: 前缀）。
+ *  与后端 protocol.ChatSendImage 同形（2026-10 图片批次 B）。
+ *
+ *  **传输形态（2026-12 用户拍板：本地路径优先，base64 兜底）**：Electron 壳里
+ *  有真实磁盘路径的文件走 path 形态（path 非空、data 为空——后端按路径读盘，
+ *  WS 帧里没有文件内容）；粘贴截图、虚拟文件（无路径）与浏览器模式仍走 base64。
+ *  file 是**仅内存**的降级凭据：后端读不到 path（文件在 staging 后被移动/删除）
+ *  时，用它把同一个文件读成 base64 重发一次——绝不序列化（File 过 wire/草稿
+ *  持久化都会退化成 {}，两处注释都钉了这条）。 */
+export interface ChatSendImage {
+  mime: string;
+  data: string;
+  /** 展示名（可选；后端 path 形态没带时回落路径 basename，base64 形态回落「图片」）。 */
+  name?: string;
+  /** 本地真实路径（webUtils.getPathForFile 解析）；非空 = path 形态。 */
+  path?: string;
+  /** File 对象（仅内存，不进 wire）；path 形态发送失败时降级 base64 重发用。 */
+  file?: File;
+}
+
+/** chat.send 携带的一个文件附件：name 为原名（后端净化），data 为纯 base64。
+ *  与后端 protocol.ChatSendFile 同形。path/file 的语义与 ChatSendImage 同款。 */
+export interface ChatSendFile {
+  name: string;
+  data: string;
+  /** 本地真实路径；非空 = path 形态（后端按路径读盘，data 为空）。 */
+  path?: string;
+  /** 文件夹内相对路径（拖文件夹改造，2026-12，wire 键 rel_path）：展示用——
+   *  后端记进消息元数据与「[附件]」行，落盘名仍为随机 hex。空 = 散文件
+   *  （老客户端形态）。 */
+  rel_path?: string;
+  /** File 对象（仅内存，不进 wire）——降级 base64 重发用。 */
+  file?: File;
+}
+
+/** 一条消息的附件集合（Composer 暂存 / 队列条目 / SendOptions 共用同一形状——
+ *  队列里引用同一数组，不再复制）。 */
+export interface SendAttachments {
+  images: ChatSendImage[];
+  files: ChatSendFile[];
+}
+
+/** 发送选项：随消息携带的请求级参数（不传 = 后端默认）。
+ *
+ *  审批档**不在其中**（2026-12 拍板）：approval 是后端持久化的会话级状态
+ *  （chat.approval 改 → 落库 → approvalChanged 广播），会话创建时用 behavior
+ *  默认档初始化——chat.send 再带 approval 会静默覆盖会话档且不广播，正是
+ *  「不持久化/不隔离」的根因之一。协议侧参数仍保留解析（老客户端兼容）。 */
+export interface SendOptions {
+  /** 推理强度（仅对声明 reasoning 能力的模型生效）。 */
+  effort?: string;
+  /** 执行 Agent 的名单 id（空 = 主 Agent——后端按 Agent 四层组合提示词、
+   *  模型绑定与工具白名单跑这一轮）。 */
+  agent?: string;
+  /** 图片附件（视觉请求；空 = 无图）。 */
+  images?: ChatSendImage[];
+  /** 文件附件（后端落盘 + 消息文本追加附件行；空 = 无文件）。 */
+  files?: ChatSendFile[];
+}
+
+/** chat.history 请求参数（wire `ChatHistoryParams`）。session_id 缺省 = 当前焦点会话。 */
+export interface ChatHistoryParams {
+  session_id?: string;
+  /** 尾部窗口：只拉当前历史的最后 N 条（0/缺省 = 全量——老客户端语义不变）。
+   *  慢链路（公网隧道）分页加载用：先拉尾部，上滑到顶再增量补头部。
+   *  与 before_seq 组合时语义变为「anchor 之前最多 N 条」的窗口大小。 */
+  tail?: number;
+  /** 前缀分页 anchor（2026-12 安卓向上翻页）：>0 = 返回这条消息**之前**（不含它）
+   *  最多 tail 条。seq 是 llm.Message.Seq（库序号，每条消息都带），客户端原样记录
+   *  再原样传回；不在历史里 / ≤0 → CodeInvalidParams。缺省 0 = 不分页。 */
+  before_seq?: number;
+}
+
+/**
+ * AgentSource 是数据源抽象：demo（脚本编排）与 live（WS 连后端）实现
+ * 同一接口。浏览器与 Electron 渲染层复用相同 JSON-RPC 适配器。
+ */
+export interface AgentSource {
+  /** 订阅事件流（返回退订函数）。 */
+  subscribe(listener: (ev: AgentEvent) => void): () => void;
+  /** 发送消息（一轮开始；opts 携带 effort 等请求级参数，缺省 = 后端默认）。
+   *  审批档不在 opts 里——它是后端持久化的会话级状态（见 SendOptions）。 */
+  send(sessionId: string, text: string, opts?: SendOptions): void;
+  /** 中途改**当前会话**的权限档（chat.approval：后端落库 + 广播，立刻生效于
+   *  运行中的一轮）。会话档经 approvalChanged 广播 / chat.history 的 approval
+   *  回读——归约层按会话落状态。 */
+  setApproval(mode: ApprovalMode): Promise<void>;
+  /** 改**当前会话**选中的模型（chat.model：后端落库 + 广播，只改这一条会话）。
+   *
+   *  与 ModelAdminSource.setRole 的分工：那个改全局 default 角色（= 新会话的默认
+   *  模型，设置页用），这个改当前会话——原先模型选择只能走 role.set，于是一个会话
+   *  切模型所有会话（含之后新建的）全跟着变，正是"模型选择作用域"那个 bug。
+   *  会话 id 取连接焦点（UI 的操作永远发生在某个已聚焦的会话上）；**显式传
+   *  sessionId 时按它寻址**——子会话页切模型带子会话 id（视图打开期间连接焦点
+   *  仍是父会话，不能落错会话）。 */
+  setSessionModel(modelId: string, sessionId?: string): Promise<void>;
+  /** 读「新会话默认审批档」（后端 behavior.json 的行为开关）。 */
+  defaultApproval(): Promise<ApprovalMode>;
+  /** 写「新会话默认审批档」（settings.defaultApproval.set：落盘 + 广播）。
+   *  只影响之后新建的会话，不改既有会话的档位。 */
+  setDefaultApproval(mode: ApprovalMode): Promise<void>;
+  /** 裁决确认门（目标会话显式传入，避免切换焦点后误投）。 */
+  confirm(sessionId: string, id: string, allow: boolean): Promise<void>;
+  /** 回答 ask_user 的提问（确认门的「提问」形态）：文本答案发给持有挂起
+   *  请求的会话（子会话的提问由父会话代理——与 confirm 同一条路由规则）。 */
+  answer(sessionId: string, id: string, text: string): Promise<void>;
+  /** 取消指定会话的生成。 */
+  cancel(sessionId: string): void;
+  /** 手动压缩指定会话的历史。 */
+  compact(sessionId: string): Promise<CompactOutcome>;
+  /** 重拉一条会话的历史（chat.history → historyLoaded 事件全量重建）。
+   *  压缩成功后用：检查点卡要落到语义位置（前缀处）、被压缩的旧气泡要从时间线
+   *  消失——这两条只能靠重拉对齐（chat.compacted 事件只是往时间线末尾插标记块）。
+   *  可选能力：缺省实现（演示源）没有可拉的后端历史，返回时抛错或 no-op 由
+   *  实现自定——调用方（use-compaction）在缺席时跳过重拉。 */
+  reloadHistory?(sessionId: string): Promise<void>;
+  /** 会话回退（chat.rewind）：把 leaf 移到 seq 的父节点（**一条不删**——旧分支保留
+   *  在树里，随时能在右侧面板切回来）并重算上下文占用。时间线截断由 rewound 事件
+   *  驱动（本地乐观 + 后端广播同一条归约路径）；实现负责在调用失败、或带文件还原
+   *  发生冲突（应答 removed=0）时用后端真相对齐（重放历史）——本地删了而后端没删，
+   *  用户会以为回退了、刷新又全回来。
+   *
+   *  files = true 时同时还原文件（fail-closed：有冲突则整批不执行、leaf 不动）。 */
+  rewind(sessionId: string, seq: number, files?: boolean): Promise<RewindOutcome>;
+  /** 切叶（chat.setLeaf）：leaf 直接指向 seq（**该节点留在路径上**，继续对话即从它
+   *  长出新分支）。seq = 0 = 空路径（回到第一条消息之前）。
+   *
+   *  与 rewind 的差别只有落点差一格：rewind → parent(seq)（那条消息自己离开路径，
+   *  因为它要改写重发）；setLeaf → seq 本身（「从这里接着长」）。
+   *
+   *  **不返回 messages**（后端刻意不回）：切叶之后要重载的不止消息，还有树/统计/
+   *  上下文/检查点下标——实现必须在应答后自己重拉 chat.history。
+   *  老后端没有这个方法 → 实现应抛错（调用方据此禁用行尾按钮，不静默 no-op）。 */
+  setLeaf(sessionId: string, seq: number, files?: boolean): Promise<SetLeafOutcome>;
+  /** 读会话树骨架（chat.tree）：节点 + 父子关系 + 当前 leaf + 分支摘要。
+   *
+   *  `maxNodes` 缺省 2000（0 = 后端缺省；传 0 也用于「加载全部」——后端按 0 回落
+   *  缺省值，**不是**无上限，见 protocol.ChatTreeParams）。老后端没有这个方法 →
+   *  实现应抛错，面板据此回落到线性轮次视图（不报错、不空屏）。 */
+  tree(sessionId: string, opts?: { maxNodes?: number; include?: "compact" | "full" }): Promise<ChatTreeResult>;
+  /** 新会话（可选归属项目 id——会话挂在项目分组下）。 */
+  newSession(workspace?: string): Promise<string>;
+  /** 起一个后台合并进程（**遗留**：合并流程已退役——后端如实回说明并拒绝）。
+   *  保留签名便于将来恢复隔离模式。 */
+  mergeRequest(sessionId: string, targetBranch?: string): Promise<string>;
+  /** 恢复会话。 */
+  resumeSession(id: string): Promise<void>;
+  /** 重命名会话。 */
+  renameSession(id: string, title: string): void;
+  /** 归档会话（当前会话被归档时自动切到新会话）。原先的 releaseWorktree 参数与
+   *  ArchiveOutcome 的 releasedWorktree/releaseError 已随直连模式移除
+   *  （2026-12 用户拍板）：归档不再顺带释放 worktree 目录。 */
+  archiveSession(id: string): Promise<ArchiveOutcome>;
+  /** 从归档恢复。 */
+  unarchiveSession(id: string): void;
+  /** 读**子会话**的历史（子 Agent = 独立会话，AGENTS.md §2.3：它自己的 messages
+   *  与压缩检查点在库里另存一份，父会话历史里没有这些明细）。
+   *
+   *  用途：DispatchCard 展开时懒加载卡内子执行过程。**不落进 store**——它是那张卡
+   *  的只读补充，不参与主时间线归约（实时子事件照旧走 dispatchId 归属）。
+   *  失败必须向上抛（调用方显示明确原因，不许静默降级成"子会话本来就是空的"）：
+   *  子会话不存在 / 老后端没有 chat.history 的这个用法 / 断连超时都要看得见。 */
+  childHistory(sessionId: string, beforeSeq?: number): Promise<HistorySnapshot>;
+  /** 上翻分页：拉 beforeSeq 之前的一页历史（chat.history 的 before_seq + tail），
+   *  结果经 historyLoaded 增量装载（与首屏同一条归约路径）。主时间线与子会话页
+   *  共用；缺省实现（演示源）= 没有更早的历史。 */
+  historyBefore?(sessionId: string, beforeSeq: number): Promise<void>;
+  /** 会话列表。 */
+  sessions(): SessionMeta[];
+  /** 项目列表。 */
+  projects(): ProjectMeta[];
+  /** 添加项目（注册目录为 git 仓库——已有仓库不动，没有则 init）。 */
+  addProject(name: string, path: string): void;
+  /** 从项目列表移除注册（**只解绑**：不删磁盘目录、不删会话——会话留在库里，
+   *  侧栏不再按项目分组）。失败向上抛（有会话在跑时后端拒绝，调用方显示原因）。 */
+  removeProject(id: string): Promise<void>;
+  /** 读项目守则（项目根 AGENTS.md——项目级「自定义指令」，每轮现读进提示词）。 */
+  readInstructions(projectId: string): Promise<ProjectInstructions>;
+  /** 写项目守则（项目根 AGENTS.md，原子写）。 */
+  saveInstructions(projectId: string, content: string): Promise<void>;
+  /** Git 管理页：项目主检出的只读快照（状态 / 分支 / 最近提交）。
+   *  projectId 空 = 当前会话归属的项目（未分组会话报错）。失败向上抛。 */
+  gitOverview(projectId?: string): Promise<GitOverview>;
+  /** Git 管理页：主检出工作区里单个文件的未提交差异（懒加载——点开文件才拉）。
+   *  失败向上抛（文件不可读 / 路径越界等，文案照后端）。 */
+  gitDiff(projectId: string, path: string): Promise<string>;
+  /** 显示名（顶栏徽标）。 */
+  label: string;
+  /** 切换后端地址（连接管理「连谁」——真连接切换，不是 UI 状态）。
+   *  仅 WSAgent 实现：addr 换成远程后端，token 为该连接的凭证（null = 本机
+   *  回落，走宿主 token）。切换即断开重连；会话状态由后端各自持久化。
+   *  缺省（DemoAgent）= 无切换。 */
+  setBackend?(addr: string, token?: string | null): void;
+  /** 模型注册表管理；缺省时设置面板使用独立的本地演示目录。 */
+  modelAdmin?: ModelAdminSource;
+  /** Agent 名单与拓展目录管理（M1）；缺省时前端用内存种子自管（demo）。 */
+  agentAdmin?: AgentAdminSource;
+  /** 网页搜索渠道管理（M4）；缺省时前端用内存演示渠道自管。 */
+  searchAdmin?: SearchAdminSource;
+  /** todo-first 提示词档位（行为开关）；缺省时设置面板用本地状态（demo）。 */
+  todoPromptAdmin?: TodoPromptSource;
+  /** 后台任务（jobs）；两个实现都提供——顶栏面板与时间线卡片共用它。 */
+  jobAdmin?: JobAdminSource;
+}
+
+/** 渠道私有设置项的声明（后端 websearch.OptionSpec 的 wire 形态）。
+ *
+ * 声明来自后端适配器，取值来自用户的 search.json——面板按声明渲染输入项，
+ * 所以「渠道多了一个设置」不需要改前端。
+ *
+ * choices 非空时渲染成下拉：档位/版本这类有限枚举让用户手打，打错了要么被
+ * 后端硬校验拦下（白填一次），要么静默改变计费。 */
+export interface SearchChannelOption {
+  key: string;
+  label: string;
+  placeholder?: string;
+  /** 取值约束与注意事项（渲染在输入项下方）。 */
+  hint?: string;
+  /** 环境变量回退来源（提示用户也可用环境变量配）。 */
+  env_var?: string;
+  /** 缺了它渠道就不就绪（面板据此标必填）。 */
+  required?: boolean;
+  /** 未配置时的默认取值。 */
+  default?: string;
+  /** 有限枚举（非空时渲染成下拉）。 */
+  choices?: string[];
+}
+
+/** 搜索渠道（后端 websearch.Channel 的 wire 形态）。
+ *
+ * 「代码元数据 + 用户配置」合并后的视图：label/desc/doc_url/needs_key 等来自
+ * 后端内置的渠道适配器，api_key/base_url/enabled 来自用户的 search.json。
+ * 前端不持有渠道清单——新增渠道只改后端，UI 自动出现。 */
+export interface SearchChannel {
+  id: string;
+  label: string;
+  desc: string;
+  /** 获取 key 的入口（空 = 无需 key）。 */
+  doc_url?: string;
+  /** 约定环境变量名（提示用户也可用环境变量配）。 */
+  env_var?: string;
+  needs_key: boolean;
+  /** 面板是否应给出 API Key 输入框。
+   *
+   * 多数渠道与 needs_key 同值；Exa 是「缺 key 也就绪、有 key 走直连」——
+   * 只看 needs_key 会把它的输入框藏掉，用户永远进不了直连路径。
+   * 可选是因为老后端（未热重载）没这个字段，此时回落到 needs_key。 */
+  accepts_key?: boolean;
+  /** 需要自填实例地址（自建渠道）。 */
+  needs_url: boolean;
+  /** 零配置渠道：必须由用户手动启用才生效（如 DuckDuckGo 抓取）。 */
+  opt_in?: boolean;
+  /** 刻意默认就绪的零配置渠道（如 Exa 的免配置通道）——不填任何配置即可用。 */
+  default_ready?: boolean;
+  /** 设置面板分组键（free/general/cn/serp/other）。 */
+  category: string;
+  /** 分组显示名（后端给出，前端不内置一份分类表）。 */
+  category_label: string;
+  api_key?: string;
+  base_url?: string;
+  /** 私有设置项的声明（面板据此渲染输入项；空 = 该渠道没有私有设置）。 */
+  option_specs?: SearchChannelOption[];
+  /** 私有设置项的当前取值（已解析：配置 → 环境变量 → 默认值）。
+   *
+   * 注意：**可能包含默认值**（用户没填也有值），所以不能用「有没有值」
+   * 判断「用户配过没有」——那是 stored 的职责。 */
+  options?: Record<string, string>;
+  /** 配置文件里是否真的存在该渠道的条目（用户配过东西）。
+   *
+   * 面板据此决定要不要显示「清除」按钮：零配置渠道（Exa 的免配置通道）
+   * 不填任何东西也就绪，拿 configured 当判据会让按钮出现在空卡片上。 */
+  stored?: boolean;
+  enabled: boolean;
+  primary: boolean;
+  /** 就绪（凭据/端点齐备且已启用）——搜索时会用到它。 */
+  configured: boolean;
+}
+
+/** 渠道快照（search.channels.list 结果 + search.changed 载荷）。 */
+export interface SearchChannelsSnapshot {
+  channels: SearchChannel[];
+  /** 主渠道 id（空 = 未指定，按预设顺序降级）。 */
+  primary?: string;
+  /** 是否存在至少一个就绪渠道——false 时 web_search 不可用。 */
+  ready: boolean;
+}
+
+/** 单渠道测试结果（search.test）。 */
+export interface SearchTestResult {
+  provider: string;
+  answer?: string;
+  results: Array<{ title: string; url: string; snippet?: string }>;
+  elapsed_ms: number;
+}
+
+/** SearchAdminSource：搜索渠道的查看与管理（后端 search.* 直通）。
+ *
+ * 与 ModelAdminSource 同模式：UI 依赖能力接口而非具体 WSAgent；
+ * 测试按钮只测单渠道、不降级（降级会把「这个渠道坏了」测成「搜索正常」）。 */
+export interface SearchAdminSource {
+  /** 当前快照（search.channels.list 结果缓存）。 */
+  channels(): SearchChannelsSnapshot;
+  /** 订阅渠道变化（连接建立/search.changed；返回退订）。 */
+  onChannelsChanged(listener: () => void): () => void;
+  /** 保存（upsert）渠道配置。options 是渠道私有设置（整体覆盖，键名见 option_specs）。 */
+  saveChannel(
+    id: string,
+    patch: { apiKey?: string; baseUrl?: string; options?: Record<string, string>; enabled?: boolean },
+  ): Promise<void>;
+  /** 删除渠道配置（回到未配置状态）。 */
+  removeChannel(id: string): Promise<void>;
+  /** 设主渠道（空 id = 清空）。 */
+  setPrimary(id: string): Promise<void>;
+  /** 测试单个渠道（不降级）。 */
+  testChannel(id: string, query?: string): Promise<SearchTestResult>;
+}
+
+/** todo-first 提示词档位（后端 config/behavior.json 的 todoPrompt 字段——
+ *  内置模板三选一，不靠模型自觉判断任务简不简单）。 */
+export type TodoPromptMode = "strict" | "normal" | "off";
+
+/** TodoPromptSource：todo-first 档位的查看与设置（后端 settings.todoPrompt.* 直通）。
+ *
+ * 与 SearchAdminSource 同模式：live 模式后端是唯一事实源（get/set + changed
+ * 广播）；缺省（demo）时设置面板用本地状态自管。 */
+export interface TodoPromptSource {
+  /** 当前档位（缓存——连接建立与 changed 事件驱动刷新）。 */
+  mode(): TodoPromptMode;
+  /** 订阅档位变化（返回退订）。 */
+  onChange(listener: () => void): () => void;
+  /** 设置档位（后端原子写 + 广播；提示词下一轮生效）。 */
+  set(mode: TodoPromptMode): Promise<void>;
+}
+
+/** project.remove 的结果（**只解绑**：不删磁盘目录、不删会话）。 */
+export interface ProjectRemoveResult {
+  removed: boolean;
+  /** 该项目下**保留在库里**的会话数（侧栏不再按项目分组，历史一条不丢）。 */
+  sessions: number;
+}
+
+/** 项目守则（项目根 AGENTS.md）的读取结果——项目级「自定义指令」。 */
+export interface ProjectInstructions {
+  /** 守则文件绝对路径（服务端解析：项目根 + 固定文件名）。 */
+  path: string;
+  content: string;
+  /** 文件是否存在（false = 该项目还没写守则，不是错误）。 */
+  exists: boolean;
+  /** 读取异常说明（如超大跳过）；空 = 正常。 */
+  note?: string;
+}
+
+/** 后端模型注册表（config.ModelConfig 的 wire 形态，snake_case）。 */
+export interface ModelEntry {
+  id: string;
+  /** 提供商标签（可选）：磁盘主键 = `provider::id`，两家提供商的同名模型可并存。
+   *  省略 = 存量条目，主键就是纯 id。 */
+  provider?: string;
+  display_name?: string;
+  base_url: string;
+  api_key?: string;
+  format?: string;
+  model: string;
+  context_window?: number;
+  max_output_tokens?: number;
+  capabilities?: { tools?: boolean; vision?: boolean; json_output?: boolean; reasoning?: boolean };
+  enabled: boolean;
+}
+
+/** ModelAdminSource：模型注册表的查看与管理（后端 model.* 直通）。
+ * 独立能力接口——UI 面板依赖它而非具体 WSAgent；Demo 不实现。 */
+export interface ModelAdminSource {
+  /** 当前快照（model.list 结果缓存）。 */
+  models(): { models: ModelEntry[]; roles: Record<string, string> };
+  /** 订阅注册表变化（连接建立/model.changed；返回退订）。 */
+  onModelsChanged(listener: () => void): () => void;
+  /** 新增注册表条目；校验失败以 rejected Promise 返回。 */
+  addModel(entry: Partial<Omit<ModelEntry, "id">> & { id: string; base_url?: string }): Promise<void>;
+  /** 更新（以现有条目为底套 patch）。 */
+  updateModel(entry: ModelEntry): Promise<void>;
+  /** 删除。 */
+  removeModel(id: string): Promise<void>;
+  /** 可见性开关。 */
+  setModelEnabled(id: string, enabled: boolean): Promise<void>;
+  /** 角色绑定（default/vision）。 */
+  setRole(role: string, modelId: string): Promise<void>;
+  /** 可选模型目录的厂商清单（refresh = 忽略 TTL 强制重拉）。 */
+  catalogProviders(refresh?: boolean): Promise<CatalogProviderList>;
+  /** 某厂商的模型明细（目录按需拉，不随厂商清单一起下发）。 */
+  catalogModels(provider: string, refresh?: boolean): Promise<CatalogModelList>;
+  /** 探测一个端点**实际**提供的模型清单。
+   *  id = 已注册条目（用它那条的连接配置，key 不过 wire）；
+   *  或 baseUrl + apiKey + format = 还没进注册表的新端点。 */
+  discoverModels(input: { id?: string; baseUrl?: string; apiKey?: string; format?: string }): Promise<DiscoverResult>;
+}
+
+/** 目录里的一个模型（后端 modelcatalog.Model 的 wire 形态）。 */
+export interface CatalogModel {
+  id: string;
+  name?: string;
+  context_window?: number;
+  max_output_tokens?: number;
+  tools?: boolean;
+  vision?: boolean;
+  json_output?: boolean;
+  reasoning?: boolean;
+  /** 非正常状态（deprecated / beta）；空 = 正常。 */
+  status?: string;
+  /** 发布日期 YYYY-MM-DD（目录按它倒序）。 */
+  released?: string;
+}
+
+/** 目录里的一个厂商（后端 modelcatalog.Provider 的 wire 形态）。 */
+export interface CatalogProvider {
+  id: string;
+  name: string;
+  doc?: string;
+  /** 端点地址：注册表 base_url 的建议值。 */
+  api?: string;
+  /** key 的环境变量名（表单提示用）。 */
+  env?: string[];
+  format: string;
+  model_count: number;
+  /** 只在 catalogModels 的结果里有明细。 */
+  models?: CatalogModel[];
+}
+
+/** 厂商清单载荷。 */
+export interface CatalogProviderList {
+  fetched_at: string;
+  /** 手上这份已过期且这次没刷新成功——UI 要如实提示，不假装新鲜。 */
+  stale?: boolean;
+  providers: CatalogProvider[];
+}
+
+/** 某厂商的模型清单载荷。 */
+export interface CatalogModelList {
+  fetched_at: string;
+  stale?: boolean;
+  provider: string;
+  models: CatalogModel[];
+}
+
+/** 探测到的一个模型。元数据由后端按 id 从目录回填（best-effort）；缺省 = 未知。 */
+export interface DiscoveredModel {
+  id: string;
+  name?: string;
+  context_window?: number;
+  max_output_tokens?: number;
+  tools?: boolean;
+  vision?: boolean;
+  json_output?: boolean;
+  reasoning?: boolean;
+}
+
+/** 端点探测结果。 */
+export interface DiscoverResult {
+  /** 实际请求的地址（用户填的 base_url 会被归一化，回显便于核对）。 */
+  endpoint: string;
+  format: string;
+  models: DiscoveredModel[];
+}
+
+/** AgentAdminSource：Agent 名单与拓展目录的查看与管理（后端 agent.与
+ * catalog.两组方法直通——M1 注册表与目录）。与 ModelAdminSource 同模式：
+ * UI 依赖能力接口而非具体 WSAgent；Demo 不实现（前端内存种子自管）。 */
+export interface AgentAdminSource {
+  /** 当前 Agent 名单（agent.list 结果缓存——主 Agent 首位）。 */
+  agents(): AgentAdminEntry[];
+  /** 拓展目录（catalog.*.list 结果缓存）。 */
+  modules(): AgentAdminModule[];
+  tools(): AgentAdminTool[];
+  mcpServers(): AgentAdminMcServer[];
+  /** 订阅名单/目录变化（连接建立/agent.changed/catalog.changed；返回退订）。 */
+  onChanged(listener: () => void): () => void;
+  addAgent(agent: AgentAdminEntry): Promise<void>;
+  updateAgent(agent: AgentAdminEntry): Promise<void>;
+  removeAgent(id: string): Promise<void>;
+  addModule(module: AgentAdminModule): Promise<void>;
+  updateModule(module: AgentAdminModule): Promise<void>;
+  removeModule(id: string): Promise<void>;
+  addTool(tool: AgentAdminTool): Promise<void>;
+  updateTool(tool: AgentAdminTool): Promise<void>;
+  removeTool(id: string): Promise<void>;
+  addMcServer(server: AgentAdminMcServer): Promise<void>;
+  updateMcServer(server: AgentAdminMcServer): Promise<void>;
+  removeMcServer(id: string): Promise<void>;
+}
+
+/** 后端 Agent 名单条目（protocol.AgentEntry 的 wire 形态，snake_case——
+ * is_main 与前端的 isMain 映射在适配层做）。 */
+export interface AgentAdminEntry {
+  id: string;
+  name: string;
+  desc: string;
+  color: string;
+  model: string;
+  tools: string[];
+  workflow: string;
+  skills: string[];
+  delegates: string[];
+  approval: string;
+  enabled: boolean;
+  is_main?: boolean;
+  prompt: string;
+  protocol: string;
+  custom?: boolean;
+}
+
+/** 后端模块目录条目（protocol.ModuleEntry）。 */
+export interface AgentAdminModule {
+  id: string;
+  desc: string;
+  kind: "process" | "skill";
+  body: string;
+  custom: boolean;
+}
+
+/** 后端工具目录条目（protocol.ToolEntry）。 */
+export interface AgentAdminTool {
+  id: string;
+  desc: string;
+  risk: "low" | "high";
+  source: "builtin" | "binary" | "mcp";
+  params?: Array<{ name: string; type: string; required?: boolean; desc?: string }>;
+  doc?: string;
+  server?: string;
+  command?: string;
+  example?: string;
+  package_file?: string;
+  custom: boolean;
+}
+
+/** 后端 MCP 服务器条目（protocol.McServerEntry）。 */
+export interface AgentAdminMcServer {
+  id: string;
+  desc: string;
+  transport: "stdio" | "sse";
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  url?: string;
+  enabled: boolean;
+  custom: boolean;
+  /** 运行期连接状态：connected | error | stopped。
+   *
+   * 与 enabled 是**两件事**：enabled = 用户想开，status = 真的连上了
+   * （连不上时 enabled 仍是 true——卡片必须显示真实状态，否则用户以为能用）。 */
+  status?: McpRuntimeStatus;
+  /** 已列举到的工具数（未连接时为 0）。 */
+  tool_count?: number;
+  /** 最近一次连接/列举失败的原因（成功时为空）。 */
+  last_error?: string;
+  /** stdio 子进程 stderr 的尾部（诊断用）。 */
+  stderr?: string;
+}
+
+/** MCP 服务器的运行期连接状态。 */
+export type McpRuntimeStatus = "connected" | "error" | "stopped";

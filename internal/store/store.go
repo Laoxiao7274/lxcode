@@ -1,0 +1,340 @@
+// Package store 实现会话的磁盘持久化：SQLite 单库（modernc.org/sqlite 纯 Go——
+// 无 CGO，符合仓库 FFI 禁令；性能足够且 WAL 模式下已提交事务断电不丢）。
+//
+// 为什么从初版 JSONL 切到 SQLite（2026-12 用户拍板）：
+//   - compaction（历史摘要改写）在 append-only 格式上只能整文件重写；
+//   - 语义记忆/向量检索（FTS5/sqlite-vec）规划在同库扩展，避免会话与记忆
+//     两个存储并存的分裂；
+//   - List/Latest/Search 从全目录逐文件读降为 SQL 查询；
+//   - 会话重命名/归档是 UPDATE 而不是文件改名。
+//
+// 崩溃安全：WAL 模式 + synchronous=NORMAL——已提交事务不丢；modernc 纯 Go
+// 实现无进程内崩溃面，进程被杀 = 连接断开 = WAL 回放，语义与文件版一致。
+//
+// 本文件只留「打开/关闭 + 库结构 + 类型」；会话、消息、项目、搜索按域拆到
+// sessions.go / messages.go / projects.go / search.go（同包多文件，见 AGENTS.md §四）。
+
+package store
+
+import (
+	crand "crypto/rand"
+	"database/sql"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/moyunteng/lxcode/internal/sessiondata"
+
+	_ "modernc.org/sqlite" // 纯 Go SQLite 驱动（注册 database/sql 接口）
+)
+
+// schema 是库结构（幂等建表）。seq 显式保序——JSONL 的行序语义显式化；
+// title 在写入时维护（首条 user 消息），List 不再逐行全读。
+// workspace 列经 ALTER 兼容追加（旧库升级不炸：已存在时忽略错误）。
+const schema = `
+CREATE TABLE IF NOT EXISTS sessions (
+  id         TEXT PRIMARY KEY,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  title      TEXT NOT NULL DEFAULT '',
+  archived   INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS messages (
+  session_id    TEXT NOT NULL,
+  seq           INTEGER NOT NULL,
+  role          TEXT NOT NULL,
+  content       TEXT NOT NULL DEFAULT '',
+  reasoning     TEXT NOT NULL DEFAULT '',
+  reasoning_sig TEXT NOT NULL DEFAULT '',
+  tool_calls    TEXT NOT NULL DEFAULT '[]', -- llm.ToolCall 数组 JSON
+  tool_call_id  TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (session_id, seq),
+  FOREIGN KEY (session_id) REFERENCES sessions(id)
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at DESC, archived);
+CREATE TABLE IF NOT EXISTS projects (
+  id         TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  path       TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL
+);
+`
+
+// SessionMeta 是会话列表的条目（resume 选择器的数据源）。
+type SessionMeta = sessiondata.SessionMeta
+
+// Store 管理单个 SQLite 库（sessions 目录下的 sessions.db）。
+type Store struct {
+	db  *sql.DB
+	dir string // 会话数据库所在目录；worktree 工作目录放在其独立子目录
+	// treeMigrated 报告本库是否已跑过会话树迁移（parent_seq 链式回填）。
+	// 读路径（pathRows）据它决定「按 leaf 回溯」还是「回落旧的整表 surface」——
+	// 未迁移的库必须与今天逐字节一致（老库打开不炸）。**不靠数据指纹猜**：
+	// 「所有 parent_seq 都是 0」既可能是没迁移，也可能是一条刚建的会话。
+	treeMigrated bool
+	// mu 只保护 Create 的 id 生成竞态；数据库自身并发由
+	// 连接池 + WAL + busy_timeout 保证。
+	mu sync.Mutex
+}
+
+// Open 打开（必要时创建）会话库：建目录、建表、开 WAL。
+func Open(dir string) (*Store, error) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, fmt.Errorf("创建会话目录 %s 失败: %w", dir, err)
+	}
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, fmt.Errorf("解析会话目录失败: %w", err)
+	}
+	// DSN 参数：WAL（读写不互斥、断电回放）；busy_timeout 防 SQLITE_BUSY
+	// （连接池多连接下的写争用）；_txlock=immediate 让事务开始即取写锁——
+	// 默认的延迟升级（deferred→写时升级）在两个事务同时升级时会立刻
+	// SQLITE_BUSY 不等 busy_timeout（实测 TestConcurrentAppend 踩过），
+	// immediate 模式下等待语义才真正生效。_pragma 每连接生效故写在 DSN 里。
+	dsn := "file:" + filepath.ToSlash(filepath.Join(dir, "sessions.db")) +
+		"?_txlock=immediate" +
+		"&_pragma=journal_mode(WAL)" +
+		"&_pragma=busy_timeout(5000)" +
+		"&_pragma=synchronous(NORMAL)" +
+		"&_pragma=foreign_keys(ON)"
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("打开会话库失败: %w", err)
+	}
+	// 连接池上限：SQLite 单写者，但 WAL 下**读不阻塞写、读与读天然并行**——
+	// 多会话并发恢复（每条恢复要跑 SessionParentID/Load/WorkspaceOf/占用/审批档
+	// 等多次顺序查询）时，过小的池会把读排队成串行（2026-12 性能审计钉子
+	// TestConcurrentResumeOfBigSessionsDoesNotSerialize：池=4 时 6 路并发恢复
+	// 明显慢于单条的数倍）。写路径有 _txlock=immediate + busy_timeout(5000) 兜住
+	// BUSY，读连接放宽到 16 不增加写冲突面。
+	db.SetMaxOpenConns(16)
+	if _, err := db.Exec(schema); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("初始化会话表失败: %w", err)
+	}
+	// 列级迁移（旧库升级）：sessions.workspace 追加列。重复执行报 duplicate
+	// column 是预期——忽略即可（幂等）。
+	if _, err := db.Exec(`ALTER TABLE sessions ADD COLUMN workspace TEXT NOT NULL DEFAULT ''`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column") {
+			db.Close()
+			return nil, fmt.Errorf("迁移会话表失败: %w", err)
+		}
+	}
+	// 子会话（2026-09-22）：派发给子 Agent 的任务开一个**独立会话**——自己的行 +
+	// 自己的消息历史 + 自己的压缩检查点，靠 parent_id 挂回父会话。于是：
+	//   - 子 Agent 的进度天然可续（历史在库里，续跑附着同一个 id 继续跑）；
+	//   - 压缩同款（子会话就是会话，走同一套检查点/影子区间）；
+	//   - parent_id = '' 的是顶层会话（用户自己的会话），List/Latest 只认它们，
+	//     否则重启会恢复到子会话、侧栏会被子会话淹没。
+	for _, col := range []string{
+		`ALTER TABLE sessions ADD COLUMN parent_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE sessions ADD COLUMN agent_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE sessions ADD COLUMN dispatch_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE sessions ADD COLUMN worktree_path TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE sessions ADD COLUMN worktree_branch TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE sessions ADD COLUMN worktree_base TEXT NOT NULL DEFAULT ''`,
+		// 上下文占用测量（2026-09-30）：每轮主轮的真实用量落在这里，后端重启后打开
+		// 旧会话仍能显示占用——原先只在内存里，重启后旧会话的指示器就是空的（用户实测）。
+		// 空串 = 从没跑过主轮（老会话）→ 调用方按已加载的历史回落估算，而不是当成 0。
+		`ALTER TABLE sessions ADD COLUMN context_usage TEXT NOT NULL DEFAULT ''`,
+		// 会话级审批档（2026-12）：权限档是**会话的状态**不是请求的参数——用户中途
+		// 改档（chat.approval）后重启，打开同一条会话还得是改后的档。空串 = 没落过
+		// （老会话/默认档）→ 恢复时回落 behavior 默认档。
+		`ALTER TABLE sessions ADD COLUMN approval TEXT NOT NULL DEFAULT ''`,
+		// 任务清单快照（todo 契约，2026-12）：清单是**会话的状态**不是事件流——
+		// 每次 todo 调用全量替换后落一份 JSON 快照，重启恢复读回（计划条还在、
+		// 模型下一轮还能感知残留）。事件级溯源不需要：todo 的每次调用本来就在
+		// messages 历史里（session_search 可搜），再记一份是纯冗余。
+		// 空串 = 无清单（老会话/从没建过）。
+		`ALTER TABLE sessions ADD COLUMN todos TEXT NOT NULL DEFAULT ''`,
+		// 会话选中的模型（2026-12 模型作用域修复）：模型选择是**会话的状态**——
+		// 用户在会话 A 里切到模型 X 后重启，打开 A 还得是 X。原先选择只能改全局
+		// default 角色（role.set），一个会话切模型所有会话跟着变。空串 = 没选过
+		//（老会话/新会话）→ 恢复时回落 Agent 绑定与 default 角色。
+		`ALTER TABLE sessions ADD COLUMN model TEXT NOT NULL DEFAULT ''`,
+		// 会话树（docs/session-tree.md §A.1，批次 1）：
+		//   leaf_seq = 当前叶指针。**0 = 合法状态「空路径」**（用户回到了第一条消息
+		//     之前 / 新会话还没发消息），**不是「未知」**——把两者混起来会让「撤回第一条
+		//     消息」在下次 Load 时整个失效（历史全回来）。未知态由 PRAGMA user_version
+		//     的迁移标记区分（见 store.Open 里的 treeSchemaVersion）。
+		//   leaf_len = 当前路径的节点数（侧栏「消息数」的新口径）。为什么落列：分支之后
+		//     「全表数 − 影子数」不再等于路径长度（废弃分支的行也在表里）。增量维护点
+		//     三处：AppendMsg +1、AppendCheckpoint 重算（形状变了且叶可能不在尾部，
+		//     增量硬算会漂移）、SetLeaf 重算。
+		`ALTER TABLE sessions ADD COLUMN leaf_seq INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE sessions ADD COLUMN leaf_len INTEGER NOT NULL DEFAULT 0`,
+		// 子会话的快照归属（docs/session-tree.md §C.2.1，批次 3）：
+		//   child_owner_id  = 回滚的发起方（沿 parent_id 上溯到顶的顶层会话 id）；
+		//   child_owner_seq = 上一次派发它时，**父会话那条 dispatch 消息的 seq**
+		//                     （每次派发重写——续跑按本次派发算，见 §C.5.1 边界①）。
+		// 空串 / 0 = 老会话或顶层会话（调用方回落「自己就是 owner」）。
+		// 注意这只是**默认值/兜底**：写入点的权威 owner 由 ctx 注入（§C.2.1）。
+		`ALTER TABLE sessions ADD COLUMN child_owner_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE sessions ADD COLUMN child_owner_seq INTEGER NOT NULL DEFAULT 0`,
+	} {
+		if _, err := db.Exec(col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			db.Close()
+			return nil, fmt.Errorf("迁移会话表失败: %w", err)
+		}
+	}
+	// 子会话索引：按父查子（归档级联、将来的子会话列表）
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_id)`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("建子会话索引失败: %w", err)
+	}
+	// 压缩检查点的影子区间（2026-09-22）：checkpoint=1 的行是一条摘要检查点，
+	// 它替换（影子）当前历史里的一段——权威判定是 `shadowed_seqs`（被影子行的 seq
+	// 集合）；`shadow_start_seq/shadow_end_seq` 只记这段在**历史位置**上的首尾，供对账，
+	// 回放不读它们（中间段影子的 seq 集合可以是不连续的，区间形式表达不了）。
+	// 被影子的原文**不删**——翻旧账仍可查（Search 照旧搜全量日志），
+	// 只是历史回放（Load/Latest）跳过它们。
+	// 每轮生成的簿记（2026-09-30）：首 token 延迟 / 总耗时 / 输出 token / 实际用的
+	// 模型。为什么落库而不是只放内存：用户刷新后这些数字不能消失——而本仓库已经为
+	// "live 与 replay 两条路径不一致"吃过三次亏（子 Agent 卡退化、两条路径分叉、seq
+	// 只在一条路径上）。落库后 chat.history 回放与 chat.done 实时是同一份数字。
+	// 零值 = 未知（工具轮没有首 token / provider 不回报用量），回读时原样保留。
+	for _, col := range []string{
+		`ALTER TABLE messages ADD COLUMN checkpoint INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE messages ADD COLUMN shadow_start_seq INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE messages ADD COLUMN shadow_end_seq INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE messages ADD COLUMN shadowed_seqs TEXT NOT NULL DEFAULT '[]'`,
+		`ALTER TABLE messages ADD COLUMN first_token_ms INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE messages ADD COLUMN duration_ms INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE messages ADD COLUMN model TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE messages ADD COLUMN usage_tokens INTEGER NOT NULL DEFAULT 0`,
+		// 输入侧用量三桶（2026-09-30）：会话统计的折叠输入——缓存命中率与计费口径
+		// 都要它们，而 usage_tokens 是**输出**（生成速度的分母）。老行恒 0（未知），
+		// 那正是诚实的值：那时候的适配器根本没解析缓存字段。
+		`ALTER TABLE messages ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE messages ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE messages ADD COLUMN cache_write_tokens INTEGER NOT NULL DEFAULT 0`,
+		// notice（2026-09-30）：这条 user 消息是**注入的提示条**（重复调用提醒 /
+		// 后台任务通告），不是用户说的话。会话统计的「轮数」按它排除——前缀匹配
+		// 在 Go 侧做不了（RepeatNoticePrefix 在 agent、JobNoticePrefix 在 protocol，
+		// 而 store 谁都不能 import：分层规则），所以把判定**记在写边界**。
+		`ALTER TABLE messages ADD COLUMN notice INTEGER NOT NULL DEFAULT 0`,
+		// usage_split（2026-09-30）：这一行的用量是**拆分口径**（usage_tokens 真的是
+		// 输出、输入侧三桶另记）。本功能上线前的行是另一种口径——那时 usage_tokens 装的是
+		// provider 的 total_tokens（输入+输出）——混算会把生成速度报得离谱（实测 687.8 tok/s）。
+		// 为什么用写边界的一位标记而不是"输入桶为 0"去猜：猜在"端点只报 completion_tokens
+		// 不报 prompt_tokens"时会把新行误判成老行（少显示）。ALTER 的 DEFAULT 0 正好把
+		// 所有**已存在的行**标成老口径（它们确实是旧二进制写的），新写入一律置 1。
+		`ALTER TABLE messages ADD COLUMN usage_split INTEGER NOT NULL DEFAULT 0`,
+		// images（图片批次 A）：这条消息携带的图片**文件引用**（JSON 数组
+		// [{"path":"<相对路径>","mime":"image/png"}]）。恒存引用不存 base64——
+		// base64 入库会撑爆 SQLite 行、每次全量历史重复传输、上下文估算失真
+		//（2026-10 用户拍板）。老行默认 '' = 无图（零影响）。
+		`ALTER TABLE messages ADD COLUMN images TEXT NOT NULL DEFAULT ''`,
+		// attachments（附件展示通道，2026-12）：这条消息携带的附件**引用 + 展示
+		// 元数据**（JSON 数组 [{"path","name","size","mime","kind","caption"}]）。
+		// 与 images 的分工：images 服务视觉请求（模型要看到图），attachments 服务
+		// **前端渲染**（缩略图卡/文件卡，实时与回放同一份）。user 消息（用户发的
+		// 图/文件）与 tool 消息（share_file 共享的文件）都写。老行默认 '' = 无附件
+		//（老历史的附件卡由前端从消息文本的「[附件]」行与 images 引用回落解析）。
+		`ALTER TABLE messages ADD COLUMN attachments TEXT NOT NULL DEFAULT ''`,
+		// 会话树（docs/session-tree.md §A.1①，批次 1）：消息级父指针。
+		// 命名为 parent_seq（不是 parent_id）：它与主键 (session_id, seq) 的 seq 同域，
+		// 而 sessions.parent_id 是**会话级**父子（子 Agent = 独立会话）——两个 parent
+		// 必须一眼分得开。0 = root（首条消息 / 被压缩到开头的检查点）。
+		// 存量回填按 surface 顺序（含检查点接入树），见 tree.go 的 migrateSessionTree。
+		`ALTER TABLE messages ADD COLUMN parent_seq INTEGER NOT NULL DEFAULT 0`,
+	} {
+		if _, err := db.Exec(col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			db.Close()
+			return nil, fmt.Errorf("迁移消息表失败: %w", err)
+		}
+	}
+	// 压缩检查点部分索引（2026-10，性能审查 P1-1 的配套）：surfaceCounts 的影子
+	// 扣减只扫检查点行，部分索引让它免于全表扫——53k 行的库上无索引时这条查询
+	// 实测 ~67ms（modernc 是纯 Go 驱动，逐行扫的代价比 C SQLite 高一个量级），
+	// 建索引后 ~0.1ms。老库打开时一次性建（一次全表扫，之后增量为零成本）。
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_checkpoint ON messages(session_id) WHERE checkpoint = 1`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("建检查点索引失败: %w", err)
+	}
+	// 会话统计覆盖索引（2026-10，性能审查 P2-1 的配套）：SessionStatsOf 的聚合
+	// 只用这几个小列，但 SQLite 行式存储下**任何**触表查询都要把整行（含 KB 级
+	// 正文）从页里读出来——6MB 大会话实测仅"读页"就 ~20ms，正文越大越贵，而这
+	// 在 TurnDone 事件路径上每轮收尾都付一遍。把统计列全部放进索引后查询走
+	// COVERING INDEX 扫（只读 ~60B/行的索引项，不触正文页），与正文体积解耦。
+	// 列表与 stats.go 的聚合 SELECT 严格对应——改聚合先改这里（或反过来）。
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_stats ON messages(session_id, role, checkpoint, notice, usage_split, first_token_ms, duration_ms, usage_tokens, input_tokens, cache_read_tokens, cache_write_tokens)`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("建统计覆盖索引失败: %w", err)
+	}
+	// 会话树的父指针索引（docs/session-tree.md §A.1，批次 1）：chat.tree 按父查子、
+	// 以及将来「某节点有几个分支」都要它。老库打开时一次性建（一次全表扫）。
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_parent ON messages(session_id, parent_seq)`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("建父指针索引失败: %w", err)
+	}
+	// 文件快照（docs/session-tree.md §A.1④ + §C，批次 3）：一行 = 一次写操作**之前**的
+	// 文件状态（+ 之后的期望状态，冲突检测用）。blob 落磁盘（<sessions>/fileblobs/<sha256>，
+	// 与 attachments 同一先例），表里只存 hash 引用。
+	//
+	// 为什么 owner_* 两列而不是只有 session_id/seq（§C.2.1）：子会话的 seq 是它自己的
+	// 序号空间，与父会话不可比；回滚切段只能用**父会话的** seq。所以：
+	//   session_id/seq       = 谁写的、在它自己的哪条消息下（追溯/对账用）；
+	//   owner_session_id/seq = 这笔账记在谁的头上、哪一轮之后（**回滚切段用**）。
+	// 合并成一个字段的话，「子会话内部定位」与「父会话回滚定位」必有一个做不到。
+	//
+	// before_hash 为空 = 写之前文件不存在（新建）→ 回滚 = 删掉这个文件；
+	// after_hash  为空 = 写之后文件不存在（删除类写，当前工具没有，留给将来）。
+	// skipped=1 = 没抓内容（超大 / 二进制）：只记「这里发生过写」，回滚时如实报 skipped。
+	if _, err := db.Exec(`
+CREATE TABLE IF NOT EXISTS file_snapshots (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id       TEXT    NOT NULL,
+  seq              INTEGER NOT NULL,
+  owner_session_id TEXT    NOT NULL DEFAULT '',
+  owner_seq        INTEGER NOT NULL DEFAULT 0,
+  tool_call_id     TEXT    NOT NULL DEFAULT '',
+  path             TEXT    NOT NULL,
+  before_hash      TEXT    NOT NULL DEFAULT '',
+  after_hash       TEXT    NOT NULL DEFAULT '',
+  size             INTEGER NOT NULL DEFAULT 0,
+  skipped          INTEGER NOT NULL DEFAULT 0,
+  skip_reason      TEXT    NOT NULL DEFAULT '',
+  created_at       TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_snapshots_path ON file_snapshots(session_id, path, seq);
+CREATE INDEX IF NOT EXISTS idx_snapshots_blob ON file_snapshots(before_hash);
+CREATE INDEX IF NOT EXISTS idx_snapshots_owner ON file_snapshots(owner_session_id, owner_seq);
+CREATE INDEX IF NOT EXISTS idx_snapshots_owner_path ON file_snapshots(owner_session_id, path, owner_seq);
+`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("建文件快照表失败: %w", err)
+	}
+	st := &Store{db: db, dir: absDir}
+	// 会话树的存量迁移（parent_seq 链式回填 + leaf_seq/leaf_len 定值）。
+	// 幂等靠 PRAGMA user_version；**失败则整体回滚并让 Open 报错**（不留半迁移状态）。
+	if err := st.migrateSessionTree(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	// Agent 注册表与拓展目录（M1——四张表 + 首次种子，幂等）
+	if err := st.initAgents(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return st, nil
+}
+
+// Close 关闭库连接（进程退出/测试清理时调用；幂等）。
+func (s *Store) Close() error { return s.db.Close() }
+
+// newSessionID 生成会话 id：时间戳前缀 + 随机后缀防碰撞。
+func newSessionID() string {
+	return time.Now().Format("20060102-150405") + "-" + randomSuffix()
+}
+
+func randomSuffix() string {
+	b := make([]byte, 2)
+	if _, err := crand.Read(b); err != nil {
+		return "0000" // 退化路径：crypto 失败极罕见，时间戳本身已近唯一
+	}
+	return fmt.Sprintf("%x", b)
+}

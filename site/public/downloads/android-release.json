@@ -1,0 +1,14 @@
+{
+  "version": "0.3.33",
+  "versionCode": 40,
+  "name": "lxcode-0.3.33-android.apk",
+  "size": 11879342,
+  "sha256": "0fcfba6771135b36235fa9ad27dc2e9bcea9ea0030d389376a24a3ba56a49f9a",
+  "url": "downloads/lxcode-0.3.33-android.apk",
+  "notes": [
+    "投屏会话页独立化",
+    "- 投屏会话页独立顶栏，与会话列表页分离",
+    "- 统一退出入口",
+    "- 连接断开自动退回会话列表"
+  ]
+}

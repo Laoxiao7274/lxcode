@@ -1,0 +1,1007 @@
+/* 右侧面板（大纲等）与聊天工作区的分栏布局。
+ * 单独一个文件而不是塞进 thread.css：右栏是与时间线并列的工作区结构，
+ * 不是时间线内部的东西；global.css 里放在 @import 列表末尾（覆盖关系最安全）。 */
+
+/* ===== 聊天工作区：左聊天列 + 右大纲栏 ===== */
+.chat-split {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+.chat-main {
+  /* 必须 position: relative：输入区（.composer-zone）是 absolute 定位，它要锚在
+   * **聊天列**上而不是整个 .main——否则输入区会横跨到大纲栏底下（右边多出一条
+   * 输入框背景压在面板上）。 */
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* ===== 大纲栏：固定宽度 + 可收起 ===== */
+/* 收起后保留一条窄轨（不是 0 宽）：收成 0 用户就找不到把它拉回来的入口了。 */
+.outline-aside {
+  flex: none;
+  width: 240px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-left: 1px solid var(--border-soft);
+  background: var(--bg-side);
+  transition: width 160ms ease;
+}
+.outline-aside[data-open="false"] {
+  width: 34px;
+}
+.outline-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  padding: 8px 8px 8px 11px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.outline-aside[data-open="false"] .outline-head {
+  padding: 8px 7px;
+  justify-content: center;
+}
+.outline-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+}
+/* 开合按钮：走表单套件（.fd-btn-g），这里只给紧凑档的布局——套件只给外观，
+ * 布局归使用方（与 .msg-action.fd-btn-g / .job-kill.fd-btn-g 同款做法）。 */
+.outline-toggle.fd-btn-g {
+  flex: none;
+  padding: 2px 5px;
+  border-radius: 6px;
+}
+.outline-toggle svg {
+  transition: transform 160ms;
+}
+/* 展开态箭头翻向：闭合时指左（拉出来），展开时指右（收回去） */
+.outline-toggle[aria-expanded="true"] svg {
+  transform: rotate(180deg);
+}
+/* 列表本体可滚动（条目多时面板不撑高整个工作区） */
+.outline-panel {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px;
+}
+.outline-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+/* 条目：套件按钮的皮在这里被拆掉——它是列表行，不是按钮（无边框、无按钮底色、
+ * 整行可点、左对齐、单行截断）。 */
+.outline-item.fd-btn-g {
+  display: block;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 7px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--fg-muted);
+  background: transparent;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.outline-item.fd-btn-g:hover {
+  color: var(--fg);
+  background: rgba(0, 0, 0, 0.045);
+}
+.outline-item.fd-btn-g.active {
+  color: var(--fg);
+  background: rgba(16, 163, 127, 0.11);
+}
+.outline-empty {
+  padding: 8px 4px;
+  font-size: 11.5px;
+  color: var(--fg-faint);
+}
+
+/* 跳转命中：短暂高亮（App 加 class，1.2s 后移除）。
+ * 用外圈 ring 而不是改背景色：卡片（dispatch/job/compaction）自带底色，
+ * 改背景会被它们自己的规则盖住——ring 画在盒子外面，对所有块形态都可见。 */
+.outline-target {
+  animation: outline-target-flash 1.2s ease-out;
+  border-radius: 10px;
+}
+@keyframes outline-target-flash {
+  0% {
+    box-shadow: 0 0 0 3px rgba(16, 163, 127, 0.45);
+  }
+  100% {
+    box-shadow: 0 0 0 3px rgba(16, 163, 127, 0);
+  }
+}
+/* 动效减免：关掉闪烁，ring 在 class 被移除时消失（高亮本身是信息，不是装饰） */
+@media (prefers-reduced-motion: reduce) {
+  .outline-target {
+    animation: none;
+    box-shadow: 0 0 0 2px rgba(16, 163, 127, 0.5);
+  }
+}
+/* ===== 子 Agent 执行面板（已不再挂载：右栏换成了轮次树 TurnPanel） =====
+ * 这一节的规则与 .aside-sep / .aside-sub-head 一起保留：OutlinePanel / SubAgentPanel 两个
+ * 组件文件也还在（回退用），它们一旦重新挂载就必须有配套样式，删了等于给回退挖坑。 */
+/* 分节线：两个面板同栏并列时用一条发丝线分开（历史形态，见上）。 */
+.aside-sep {
+  flex: none;
+  height: 1px;
+  background: var(--border-soft);
+}
+/* 第二段的标题：与 .outline-head 同排版，但不再画下边框（上面已有分节线） */
+.aside-sub-head {
+  border-bottom: none;
+}
+.subagent-panel {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px;
+}
+.subagent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+/* 条目：与 .outline-item 同款——套件按钮的皮在这里被拆掉（它是列表行，不是按钮）。
+ * 分两排：上排 = 身份（色点 + 名字）与状态，下排 = 任务摘要。
+ * 240px 的栏宽放不下「色点 + 名字 + 任务 + 状态」一行，硬塞只会让每样都看不清。 */
+.subagent-item.fd-btn-g {
+  display: block;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 7px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--fg-muted);
+  background: transparent;
+  text-align: left;
+}
+.subagent-item.fd-btn-g:hover {
+  color: var(--fg);
+  background: rgba(0, 0, 0, 0.045);
+}
+.subagent-item.fd-btn-g.active {
+  color: var(--fg);
+  background: rgba(16, 163, 127, 0.11);
+}
+.subagent-top {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+/* 色点：与时间线卡片同一个视觉语言（agentColor 由内联样式给；老数据缺席时用中性灰，
+ * 不许留一个看不见的空洞） */
+.subagent-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--fg-faint);
+}
+.subagent-agent {
+  flex: none;
+  max-width: 45%;
+  font-weight: 600;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 状态三态一眼分开：运行中（中性）/ 完成（成功色）/ 失败（危险色）——与 .dispatch-state
+ * 同一套色（data-state 由组件按 status + isError 给出）。 */
+.subagent-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  flex: none;
+  font-size: 10.5px;
+  color: var(--fg-muted);
+}
+.subagent-item.fd-btn-g[data-state="done"] .subagent-state {
+  color: var(--success);
+}
+.subagent-item.fd-btn-g[data-state="error"] .subagent-state {
+  color: var(--danger);
+}
+.subagent-state .mset-spinner {
+  width: 10px;
+  height: 10px;
+  border-width: 1.2px;
+}
+.subagent-tokens {
+  font-size: 10px;
+  color: var(--fg-faint);
+}
+/* 任务摘要：单行截断（完整原文在 title 里） */
+.subagent-task {
+  display: block;
+  color: var(--fg-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.subagent-empty {
+  padding: 8px 4px;
+  font-size: 11.5px;
+  color: var(--fg-faint);
+}
+
+/* 小屏：与侧栏同策略——窄屏放不下第三栏，直接不显示（否则聊天列被压成一条） */
+@media (max-width: 768px) {
+  .outline-aside {
+    display: none;
+  }
+}
+
+/* ===== 轮次面板（右栏唯一的面板：把「我说过什么」与「子 Agent 跑到哪」并成一棵按轮次分组的树） =====
+ * 为什么合并：原先并排两个平铺列表，子 Agent 列表里看不出某次派发属于哪一轮（用户原话
+ * 「不方便找到对应的子 Agent」）。分组把「哪一轮」变成结构（组头 + 组内行），而不是靠时间顺序猜。
+ * 为什么是左侧一条竖向导轨线：缩进也能表达层级，但看不出「一组到哪里为止」——导轨线把一组在
+ * 视觉上圈起来，且与「轮次」这个序列语义一致（组头与组内的行都挂在这条线上）。 */
+.turn-panel {
+  /* 运行中的琥珀色没有 :root token（--success / --danger 之外没有语义色 token）。就地声明成
+   * 局部变量：base.css 的 :root 不在本次改动范围，且这个色只属于本面板的运行中状态。 */
+  --turn-run: #d97706;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 8px 8px;
+}
+.turn-list {
+  display: flex;
+  flex-direction: column;
+}
+/* 一轮 = 一个分组：左侧导轨线（::before）串起组头与其下的子 Agent；组间用发丝线分隔
+ * （分组靠线，不靠间距堆叠——十轮以上时纯间距分不出组界）。 */
+.turn-group {
+  position: relative;
+  padding: 2px 0 2px 22px;
+}
+.turn-group + .turn-group {
+  border-top: 1px solid var(--border-soft);
+}
+.turn-group::before {
+  content: "";
+  position: absolute;
+  left: 8px;
+  top: 2px;
+  bottom: 2px;
+  width: 1px;
+  background: var(--border);
+}
+/* 行（组头与组内的子 Agent 共用一套皮）：套件按钮的外观在这里被拆掉——它是列表行不是
+ * 按钮（无边框、无按钮底色、整行可点、左对齐）。行高紧凑：这是导航面板，不是阅读面板。 */
+.turn-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  padding: 4px 6px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--fg-muted);
+  text-align: left;
+}
+.turn-row.fd-btn-g {
+  border: none;
+  background: transparent;
+}
+.turn-row.fd-btn-g:hover {
+  color: var(--fg);
+  background: rgba(0, 0, 0, 0.035);
+}
+/* 键盘可达：Tab 到哪一行要看得见（沿用仓库既有的 focus-visible 描边做法） */
+.turn-row.fd-btn-g:focus-visible {
+  outline: 2px solid var(--fg-muted);
+  outline-offset: 1px;
+}
+/* 当前项：一条左侧高亮条，而不是整块变色——整块变色会与 hover 抢同一份视觉重量，
+ * 而「点过的行」与「正在跑的行」在面板里是两种并存的状态，不该共用一个底色。 */
+.turn-row[data-active="true"]::before {
+  content: "";
+  position: absolute;
+  /* 导轨线在行的左外侧 14px 处（.turn-group 的 padding-left 22px − 导轨 left 8px）：
+   * 高亮条压在导轨上，读起来就是「当前轮/当前行」这个节点。 */
+  left: -14px;
+  top: 3px;
+  bottom: 3px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--success);
+}
+/* 轮次序号：小号等宽徽标（muted）——它是导航用的位置索引，不做成抢注意力的大色块 */
+.turn-badge {
+  flex: none;
+  min-width: 16px;
+  padding: 0 3px;
+  border-radius: 4px;
+  background: var(--border-soft);
+  color: var(--fg-faint);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 15px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+/* 组头正文 = 用户说的话：比组内的行重一档（这一轮的身份） */
+.turn-label {
+  flex: 1;
+  min-width: 0;
+  color: var(--fg);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 「会话开始」组头（第一条 user 之前的派发）：没有可跳的锚点 → 不可点，样式上也与可点的
+ * 组头区分开（muted、无 hover 反馈），否则用户会以为点了没反应是坏了 */
+.turn-head-pre .turn-label {
+  color: var(--fg-faint);
+  font-weight: 400;
+}
+/* 色点：与时间线卡片同一个视觉语言（agentColor 由内联样式给；老数据缺席时用中性灰，
+ * 不许留一个看不见的空洞） */
+.turn-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--fg-faint);
+}
+.turn-agent-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 34%;
+  font-weight: 600;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 状态：颜色 + 形状 + 文字三通道。颜色不能是唯一的信息通道（色盲/灰度屏下「执行中 / 完成 /
+ * 失败」靠脉冲点、对勾、叉号仍然分得开）——这是 UI/UX 规范的硬要求，不是可选项。 */
+.turn-state {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  color: var(--fg-muted);
+}
+.turn-agent[data-state="running"] .turn-state {
+  color: var(--turn-run);
+}
+.turn-agent[data-state="done"] .turn-state {
+  color: var(--success);
+}
+.turn-agent[data-state="error"] .turn-state {
+  color: var(--danger);
+}
+/* 运行中的呼吸点：节奏与 .job-dot / .sdot 一致（1.6s——全应用只有一种「在跑」的节奏） */
+.turn-pulse {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: turn-breathe 1.6s ease-in-out infinite;
+}
+@keyframes turn-breathe {
+  50% { opacity: 0.35; }
+}
+/* 任务摘要：单行截断（完整原文在 title 里） */
+.turn-task {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--fg-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.turn-empty {
+  padding: 8px 4px;
+  font-size: 11.5px;
+  color: var(--fg-faint);
+}
+/* 面板头：标题 + 轮次数竖排（240px 宽横排放不下「轮次」与「共 7 轮 · 12 次派发」两段文字） */
+.turn-head-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+/* 竖排里必须收回 .outline-title 的 flex:1：那是给横排（标题占满、按钮靠右）写的，
+ * 在纵向 flex 容器里 flex-basis 是**高度**——标题会被压成 0 高，整行看不见字。 */
+.turn-head-text .outline-title {
+  flex: none;
+}
+.turn-count {
+  flex: none;
+  font-size: 10.5px;
+  color: var(--fg-faint);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* 动效减免：运行中的呼吸点必须静止。信息不靠动效承载——点还在、文字「执行中」还在、
+ * 颜色与形状都没变，静止同样读得出来。这条减免只能写在本文件内：panels.css 在
+ * responsive.css 之后加载，写在那边的 animation:none 会被这里的 animation 覆盖回去。 */
+@media (prefers-reduced-motion: reduce) {
+  .turn-pulse {
+    animation: none;
+  }
+}
+
+/* ===== 子会话视图（把子 Agent 的独立会话当工作区标签打开） ===== */
+/* 结构：整页 flex 列 + 固定页头 + 内容区自己滚（与 .git-page 同款职责分工：
+ * 页面不撑高工作区，长历史只在内容区滚动）。 */
+.child-session-page {
+  /* position: relative 是「回到底部」浮标（.scroll-to-bottom，绝对定位）的定位锚：
+   * 它必须落在**滚动区之外**的祖先上——否则浮标会跟着历史内容一起滚走。 */
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.child-session-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--bg-side);
+}
+.child-session-title {
+  flex: none;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+}
+/* 页头忙闲点：沿用会话侧栏的 .s-dot（composer.css）+ .live 呼吸蓝（topbar.css
+ * 的 @keyframes pulse，responsive.css 的 reduced-motion 关停同一条规则覆盖）。
+ * 侧栏点的尺寸是给 5px 行距设计的，页头行高更大——这里放大到 6px 让它不显小。 */
+.child-session-head .s-dot {
+  width: 6px;
+  height: 6px;
+}
+/* 子会话 id：等宽 + 低对比度——它是标识符，不是内容（与卡头的 .dispatch-session 同款） */
+.child-session-id {
+  flex: none;
+  font-size: 11px;
+  color: var(--fg-muted);
+  padding: 1px 6px;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: var(--surface);
+}
+/* 只读说明：占满中间并单行截断（窄窗口下不与「返回主会话」抢位） */
+
+/* 子会话页头的模型徽标（子 Agent 可以有独立 model——AgentDef.Model 优先、否则 default 角色）。
+ * 与 .child-session-id 同款等宽小字，但用成功色区分「这是模型」而不是「这是 id」。 */
+.child-session-model {
+  font-size: 11px;
+  line-height: 16px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(16, 163, 127, 0.1);
+  color: var(--ok-strong);
+  white-space: nowrap;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.child-session-readonly {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--fg-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.child-session-back.fd-btn-g {
+  flex: none;
+  padding: 3px 12px;
+  font-size: 11.5px;
+  border-radius: 7px;
+  background: var(--surface);
+}
+.child-session-back.fd-btn-g:hover {
+  color: var(--fg);
+}
+/* 内容区自己滚（整页不许把工作区撑高）。左右内边距留给 .thread 自带的 0 24px——
+ * 时间线本体复用主时间线的容器类，横向排版与聊天列一致。底部预留 = 输入区真实
+ * 高度（Composer 发布 --composer-h 到所在工作区面板）——与主会话的 .thread-scroll
+ * 同一条规则：输入区是 absolute 浮层，滚动区按它留白。 */
+.child-session-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px 0 calc(var(--composer-h, 170px) + 14px);
+}
+/* 「回到底部」浮标让位输入区的真实高度（与主会话同一套机制）——
+ * 输入区在页面底部浮多高，浮标就让多少。 */
+.child-session-page .scroll-to-bottom {
+  bottom: calc(var(--composer-h, 170px) + 14px);
+}
+/* 三态提示（加载中 / 读失败 / 空历史）：一行轻量说明。
+ * 与 .dispatch-child-note 同款形态——同一件事（读子会话历史）在两处不该有两套长相。
+ * 失败用危险色且**必须带原因**：只给「读取失败」四个字等于把排查成本推给用户。 */
+.child-session-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 4px 24px;
+  font-size: 12px;
+  color: var(--fg-faint);
+  line-height: 1.6;
+}
+.child-session-note.error {
+  color: var(--danger);
+}
+.child-session-msg {
+  min-width: 0;
+}
+.child-session-retry.fd-btn-g {
+  flex: none;
+  padding: 2px 10px;
+  font-size: 11px;
+  border-radius: 7px;
+  background: var(--surface);
+}
+.child-session-retry.fd-btn-g:hover {
+  color: var(--fg);
+}
+
+/* ===== 暗色覆盖：运行中琥珀提亮（--turn-run 只在本面板声明，见上） ===== */
+html[data-theme="dark"] .turn-panel { --turn-run: #fbbf24; }
+@media (prefers-color-scheme: dark) {
+  html[data-theme="auto"] .turn-panel { --turn-run: #fbbf24; }
+}
+
+/* ===== 会话树面板（.stree-*，docs/session-tree.md §D.4） =====
+ * 与轮次面板（.turn-*）并存：有 chat.tree 的后端用树、老后端回落轮次列表。视觉沿用
+ * 同一套皮（同字号、同导轨思路、同徽标尺寸），区别只有缩进 + 连接线 + 分支标记。
+ *
+ * 连接线怎么画：每行用 ::before 画**竖线**（按**视觉深度**定位到父行的竖线位置），
+ * 用 ::after 画**横向短枝**；`data-last="true"` 的行把竖线截到行中点（└ 而不是 ├）。
+ * 缩进用 `--stree-depth` 变量（行内 style 给，值是**钳制后的视觉深度** `min(depth, 8)`，
+ * 见 tree-model.ts 的 STREE_MAX_VISUAL_DEPTH），不靠嵌套 DOM——嵌套会让「按 seq 平铺
+ * 的列表」变成递归组件，而行的可见性/折叠已经在纯函数层算完了。
+ *
+ * 为什么缩进与连接线必须用同一个值：竖线要落在**父行的竖线列**上（当前行缩进 - 半级）。
+ * 缩进钳制而连接线按原始 depth 乘算 → 深层行的竖线跑到标签右边去，线就断了。所以两边
+ * 都只读 `--stree-depth`（视觉深度）：depth=8 与 depth=9 相邻时共列，竖线连续贯通。 */
+.stree-panel {
+  /* 与 .turn-panel 同一条局部变量理由：琥珀色没有 :root token（只属于本面板的运行态）。 */
+  --stree-run: #d97706;
+  --stree-indent: 13px;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 4px 6px 8px;
+}
+/* 树模式下右栏加宽（240px 装不下缩进后的行）：只在本面板出现时生效——
+ * 老后端的线性列表维持 240px（那一版不需要更宽）。 */
+.outline-aside[data-tree="true"] {
+  width: 288px;
+}
+.outline-aside[data-tree="true"][data-open="false"] {
+  width: 34px;
+}
+.stree-toolbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 2px 6px;
+  border-bottom: 1px solid var(--border-soft);
+  margin-bottom: 4px;
+}
+.stree-chips {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  gap: 3px;
+  flex-wrap: wrap;
+}
+/* 过滤 chip：小胶囊（比套件的 fd-chip 再紧一档——面板窄，三个 chip 要排得下） */
+.stree-chip {
+  flex: none;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg-faint);
+  font-size: 10.5px;
+  line-height: 16px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.stree-chip:hover {
+  color: var(--fg);
+  border-color: var(--border-hi);
+}
+.stree-chip.on {
+  background: var(--fg);
+  border-color: var(--fg);
+  color: var(--on-accent);
+}
+.stree-chip:focus-visible {
+  outline: 2px solid var(--fg-muted);
+  outline-offset: 1px;
+}
+/* 「回到最新」：常显的次要动作（用户从废弃分支回来只有这一个入口——藏起来就找不到了） */
+.stree-latest.fd-btn-g {
+  flex: none;
+  padding: 1px 7px;
+  font-size: 10.5px;
+  line-height: 16px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+}
+.stree-latest.fd-btn-g:hover:not(:disabled) {
+  border-color: var(--border-hi);
+  color: var(--fg);
+}
+.stree-latest.fd-btn-g:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.stree-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  /* 兜底：钳制之后正常情况装得下（最深层标签仍有 ~118px），但徽标堆满时内容仍可能
+   * 超出面板宽——给一条横向滚动，而不是静默裁掉（`.stree-label` 的最小宽度见下）。 */
+  overflow-x: auto;
+}
+/* 截断提示（「更早的 N 个节点未加载」+ 加载全部）：不静默截断——用户要知道上面还有 */
+.stree-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  font-size: 10.5px;
+  color: var(--fg-faint);
+  border-bottom: 1px dashed var(--border-soft);
+  margin-bottom: 2px;
+}
+.stree-note-warn {
+  color: var(--err-text);
+}
+.stree-loadall.fd-btn-g {
+  flex: none;
+  padding: 0 6px;
+  font-size: 10.5px;
+  line-height: 16px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+}
+/* 一行 = 定位壳（画连接线）+ 行体（可点）+ 行尾操作。 */
+.stree-row-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  /* 缩进：depth 0 时 6px（与 .turn-row 的内边距对齐），每深一级 +13px。
+   * --stree-depth 是**视觉深度**（min(depth, 8)，钳制在 tree-model.ts）：超过上限之后
+   * 不再线性外推，深层行共用同一列缩进 → 标签始终有可读宽度。 */
+  padding-left: calc(6px + var(--stree-depth, 0) * var(--stree-indent));
+}
+/* 竖连接线：落在父行的竖线位置（当前行缩进 - 半级）。depth 0 不画。
+ * 与缩进读同一个 --stree-depth（视觉深度）——否则钳制边界处会错位/断线。 */
+.stree-row-wrap:not([data-depth="0"])::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(6px + (var(--stree-depth, 0) - 1) * var(--stree-indent) + 6px);
+  width: 1px;
+  background: var(--border);
+}
+/* 最后一个子行：竖线只画到行中点（└ 的形状），否则它像还有后继 */
+.stree-row-wrap[data-last="true"]::before {
+  bottom: 50%;
+}
+/* 横向短枝：从竖线连到行体 */
+.stree-row-wrap:not([data-depth="0"])::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: calc(6px + (var(--stree-depth, 0) - 1) * var(--stree-indent) + 6px);
+  width: calc(var(--stree-indent) - 6px);
+  height: 1px;
+  background: var(--border);
+}
+/* 缩进已钳制（depth > 视觉上限）：横向短枝画成**虚线**，说明这条链还在往深处走
+ * （再配标签前的 ⋯ 记号，见 SessionTreePanel 的 .stree-deep）——于是「压平之后像
+ * 兄弟」不会发生：同一列里既有兄弟、也有更深的子孙，虚线短枝就是那条区分线。
+ * 刻意做得很轻，不喧宾夺主；宽度不变，保证竖线仍然接得上。 */
+.stree-row-wrap[data-clamped="true"]::after {
+  background: repeating-linear-gradient(
+    to right,
+    var(--border) 0 3px,
+    transparent 3px 6px
+  );
+}
+.stree-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: 1;
+  min-width: 0;
+  padding: 3px 5px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--fg-muted);
+  text-align: left;
+}
+.stree-row.fd-btn-g {
+  border: none;
+  background: transparent;
+}
+.stree-row.fd-btn-g:hover {
+  color: var(--fg);
+  background: var(--hover-veil);
+}
+.stree-row.fd-btn-g:focus-visible {
+  outline: 2px solid var(--fg-muted);
+  outline-offset: 1px;
+}
+/* 不可点的行（过滤骨架 / 没有 user 祖先）：不当按钮，也不给 hover 反馈 */
+.stree-row-static {
+  cursor: default;
+}
+/* 当前跳转高亮：与 .turn-row 同款——左侧一条高亮条压在连接线上 */
+.stree-row-wrap[data-active="true"] > .stree-row::before {
+  content: "";
+  position: absolute;
+  left: -3px;
+  top: 2px;
+  bottom: 2px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--success);
+}
+/* 当前 leaf（「你在这里」）：高亮条 + 小标，与「刚跳到的行」是两种状态 */
+.stree-row-wrap[data-leaf="true"] > .stree-row {
+  color: var(--fg);
+  font-weight: 500;
+}
+/* 废弃分支：灰化但**不隐藏**（用户明确要求：要能看出有别的分支，且能点过去） */
+.stree-row-wrap[data-off-path="true"] > .stree-row {
+  opacity: 0.55;
+}
+.stree-row-wrap[data-off-path="true"] > .stree-row .stree-label {
+  color: var(--fg-faint);
+  font-weight: 400;
+}
+.stree-row-wrap[data-off-path="true"] > .stree-row:hover {
+  opacity: 1;
+}
+/* 过滤骨架（只因后代命中被保留的祖先）：更低对比度、不可点 */
+.stree-row-wrap[data-skeleton="true"] > .stree-row {
+  opacity: 0.4;
+}
+.stree-caret {
+  flex: none;
+  width: 11px;
+  text-align: center;
+  font-size: 9px;
+  line-height: 1;
+  color: var(--fg-faint);
+  cursor: pointer;
+  border-radius: 3px;
+}
+.stree-caret:hover {
+  color: var(--fg);
+  background: var(--hover-veil-mid);
+}
+.stree-caret:focus-visible {
+  outline: 1px solid var(--fg-muted);
+}
+.stree-caret-empty {
+  cursor: default;
+}
+/* 轮次徽标（与 .turn-badge 同尺寸；检查点/提示条用 ▣ / · 占位，保持缩进对齐） */
+.stree-badge {
+  flex: none;
+  min-width: 16px;
+  padding: 0 3px;
+  border-radius: 4px;
+  background: var(--border-soft);
+  color: var(--fg-faint);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 15px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+.stree-badge-mark {
+  background: transparent;
+}
+.stree-label {
+  flex: 1;
+  /* 兜底可读宽度：正常情况下钳制已保证 ≥ 60px；徽标堆满（分支 + 文件·子 Agent +
+   * 「你在这里」）时这一条不让标签被压没，多出来的部分由 `.stree-list` 的横向滚动兜住。 */
+  min-width: 64px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 缩进已钳制的记号（depth > 视觉上限）：内联在标签开头，不占 flex 槽位、不挤压标签。
+ * 只说明「这条链还有更深的层级」，不是错误态——用最轻的对比度。 */
+.stree-deep {
+  color: var(--fg-faint);
+  opacity: 0.7;
+  margin-right: 3px;
+  letter-spacing: 0.5px;
+}
+/* 徽标组：都是「有就显示、没有就不渲染」（0 不显示——零值 = 没有这个事实） */
+.stree-branch-badge,
+.stree-files,
+.stree-external,
+.stree-hidden,
+.stree-here,
+.stree-orphan {
+  flex: none;
+  padding: 0 4px;
+  border-radius: 4px;
+  font-size: 9.5px;
+  line-height: 14px;
+  white-space: nowrap;
+}
+.stree-branch-badge {
+  background: var(--border-soft);
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+.stree-files {
+  background: color-mix(in srgb, var(--success) 12%, transparent);
+  color: var(--ok-text);
+  font-variant-numeric: tabular-nums;
+}
+.stree-external {
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  color: var(--err-text);
+  font-variant-numeric: tabular-nums;
+}
+.stree-hidden {
+  color: var(--fg-faint);
+  font-variant-numeric: tabular-nums;
+}
+.stree-here {
+  background: color-mix(in srgb, var(--success) 14%, transparent);
+  color: var(--ok-text);
+}
+.stree-orphan {
+  color: var(--warn-text);
+}
+/* 行尾操作：hover / 聚焦时出现（触摸端常驻——见下一条 @media）。
+ * 为什么不是常显：每行两个按钮会把面板撑成按钮墙，而这是**低频**动作（切分支）；
+ * 但「只在 hover 出现」对键盘与触屏不可达，所以 :focus-within 也显示，且触屏常驻。
+ * 出现方式是**覆盖式**（absolute 贴行尾 + 底色），不占 flex 布局：否则 hover 时按钮
+ * 一插进来就把标签挤窄，长标签会在鼠标划过的瞬间被截掉一截（抖动 + 看不全）。 */
+.stree-actions {
+  position: absolute;
+  right: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: none;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 2px;
+  border-radius: 6px;
+  background: var(--bg-side);
+  box-shadow: 0 0 0 1px var(--border-soft);
+}
+.stree-row-wrap:hover > .stree-actions,
+.stree-row-wrap:focus-within > .stree-actions {
+  display: flex;
+}
+@media (hover: none) {
+  .stree-actions {
+    display: flex;
+  }
+}
+.stree-action.fd-btn-g {
+  flex: none;
+  padding: 0 5px;
+  font-size: 10px;
+  line-height: 16px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+.stree-action.fd-btn-g:hover:not(:disabled) {
+  border-color: var(--border-hi);
+  color: var(--fg);
+}
+.stree-action.fd-btn-g:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+/* 二次确认里的「无法还原」警告行（三段文案的第二段） */
+.stree-warn-line {
+  color: var(--err-text);
+}
+/* 冲突清单（fail-closed：整批未执行） */
+.stree-conflict-box .proj-add-body {
+  max-height: 46vh;
+  overflow-y: auto;
+}
+.stree-conflict-list {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.stree-conflict-item {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 5px 7px;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: var(--bg-soft);
+}
+.stree-conflict-path {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg);
+  word-break: break-all;
+}
+.stree-conflict-reason {
+  font-size: 10.5px;
+  color: var(--fg-faint);
+}
+/* 动效减免：树面板没有任何动画（折叠/展开是瞬时切换），这里只钉住"将来别加"。
+ * 与 .turn-pulse 的减免同一条理由：信息不靠动效承载。 */
+@media (prefers-reduced-motion: reduce) {
+  .stree-panel * {
+    transition: none;
+  }
+}
+/* 暗色：树面板的运行态色与轮次面板同档（本文件末尾的暗色覆盖段已按 .turn-panel 声明，
+ * 这里补 .stree-panel —— 两者共用同一套行皮，色值不该分叉）。 */
+html[data-theme="dark"] .stree-panel { --stree-run: #fbbf24; }
+@media (prefers-color-scheme: dark) {
+  html[data-theme="auto"] .stree-panel { --stree-run: #fbbf24; }
+}

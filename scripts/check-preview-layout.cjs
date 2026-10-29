@@ -1,0 +1,1201 @@
+// 使用现有 Electron 的 Chromium 验证浏览器/壳两种形态的真实布局，不启动应用主进程或 Go。
+// 用法：node shell/node_modules/electron/cli.js scripts/check-preview-layout.cjs --no-sandbox --disable-gpu
+// 注意：
+// - Windows 上 Electron 主进程的 stdout 在管道下可能丢失（实测只丢 stdout 不丢 stderr），
+//   所有输出走 stderr；app.exit 前留冲刷时间。
+// - 实测同实例「销毁窗口再建新窗口」会让第二次 loadURL 网络层 ERR_FAILED——
+//   因此全程复用同一个窗口，逐场景改尺寸/UA 后重载。
+// - 隐藏窗口（show:false）里 rAF 不触发，测量不等待，getBoundingClientRect 本就强制同步排布。
+// 场景：在真实 Chromium 里量各形态的布局并断言。骨架（Electron 引导、窗口
+// 生命周期、量测脚本、收尾与控制台错误兜底）在 lib/preview-harness.cjs。
+const assert = require("node:assert/strict");
+const { withPreview } = require("./lib/preview-harness.cjs");
+
+withPreview(async (preview) => {
+  const { win, log, measure, url, electronUA, browserUA } = preview;
+  // [名称, 宽, 高, 是否保留 Electron UA（壳形态渲染路径）]
+  const cases = [
+    ['desktop', 1912, 948, false],
+    ['mobile', 600, 800, false],
+    ['shell', 1440, 900, true],
+  ];
+  for (const [name, width, height, keepUA] of cases) {
+    win.setContentSize(width, height);
+    win.webContents.setUserAgent(keepUA ? electronUA : browserUA);
+    await win.loadURL(url);
+    const result = await measure();
+    log(name, JSON.stringify(result));
+    // 壳形态没有 .app-window 外壳，回退用窗口内容尺寸当边界
+    const bounds = result.outer || { width, height, right: width, bottom: height };
+    assert.ok(result.app && result.app.width >= bounds.width - 3, `${name}: 应用应填满窗口宽度`);
+    assert.ok(result.app.height >= bounds.height - 3, `${name}: 应用应填满窗口高度`);
+    assert.ok(result.topbar && result.topbar.height >= 40, `${name}: 顶栏应存在`);
+    assert.ok(result.main && result.main.width > 200 && result.main.height > 200, `${name}: 主区应可见`);
+    assert.ok(result.workspaceTabs?.width > 0 && result.sessionTabs?.width > 0, `${name}: 工作区与会话标签区都应可见`);
+    assert.ok(result.sessionTabs.x >= result.workspaceTabs.right, `${name}: 两类标签区不得重叠`);
+    assert.ok(result.input && result.input.height > 0 && result.input.bottom <= bounds.bottom + 1, `${name}: 输入框应在窗口内`);
+    assert.ok(result.main.right <= bounds.right + 1, `${name}: 主区不应水平溢出`);
+    assert.equal(result.sidebar ? result.sidebar.display === 'none' : true, width <= 768, `${name}: 侧栏响应式`);
+  }
+  // 空态（上一场景页仍是对话视图）：4 张建议卡 + 纵向光学居中 + Agent 芯片
+  const empty = await win.webContents.executeJavaScript(`(() => {
+    const el = document.querySelector(".empty-state");
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    const ts = document.querySelector(".thread-scroll");
+    const main = document.querySelector(".main");
+    const cz = document.querySelector(".composer-zone");
+    const bar = document.querySelector(".tabbar");
+    const app = document.querySelector(".app");
+    const r2 = (s) => { const e = document.querySelector(s); if (!e) return null; const b = e.getBoundingClientRect(); return { top: Math.round(b.top), bottom: Math.round(b.bottom), h: Math.round(b.height) }; };
+    return {
+      top: Math.round(r.top),
+      bottom: Math.round(r.bottom),
+      cards: document.querySelectorAll(".suggest-card").length,
+      agentChip: !!document.querySelector(".empty-agent"),
+      // 诊断：空态居中依赖线程区 padding-bottom（= 输入区实测高度）
+      win: { w: window.innerWidth, h: window.innerHeight },
+      app: r2(".app"),
+      topbar: r2(".topbar"),
+      main: r2(".main"),
+      mainChildren: main ? [...main.children].map((c) => c.className) : null,
+      tsH: ts ? Math.round(ts.getBoundingClientRect().height) : null,
+      tsPadBottom: ts ? getComputedStyle(ts).paddingBottom : null,
+      composerH: cz ? Math.round(cz.getBoundingClientRect().height) : null,
+      composerVar: main ? main.style.getPropertyValue("--composer-h") : null,
+      barTop: bar ? Math.round(bar.getBoundingClientRect().top) : null,
+    };
+  })()`);
+  log("empty-state", JSON.stringify(empty));
+  assert.ok(empty && empty.cards === 4, "chat: 空态应有 4 张建议卡");
+  assert.ok(empty && empty.agentChip, "chat: 空态应显示当前 Agent 芯片");
+  assert.ok(empty && empty.top > 100 && empty.bottom < 900, "chat: 空态应纵向居中（不贴顶）");
+  // 上下文指示器：还没跑过任何一轮 → 必须是中性态「—」。
+  // 这条才是「假数据被换掉」的硬守卫——mock 数据在任何时刻都会给出百分比，
+  // 只有真接线才会在测量前显示「—」。
+  const ctxCold = await win.webContents.executeJavaScript(
+    `(document.querySelector(".ctx-pct")?.textContent ?? "").trim()`,
+  );
+  log("context-cold", ctxCold);
+  assert.equal(ctxCold, "—", `chat: 未测量时指示器应显示中性态「—」（实际 ${ctxCold}）`);
+  // 侧栏范围：启动即「未分组」（用户拍板——打开软件就是空会话，没有「全部」
+  // 视图），点项目行切换且**不可再点取消**（再点仍是该项目）。
+  // 注意：这一段只点项目行，不打开会话（后面的空态/建议卡用例依赖对话区仍空）。
+  const sidebarBoot = await win.webContents.executeJavaScript(`(() => {
+    const rows = [...document.querySelectorAll(".session-item")];
+    return {
+      rows: rows.length,
+      looseActive: !!document.querySelector(".proj-row.loose.active"),
+      projActive: document.querySelectorAll(".proj-row.active:not(.loose)").length,
+      chip: !!document.querySelector(".group-filter"),
+      subs: document.querySelectorAll(".session-item .session-sub").length,
+    };
+  })()`);
+  log("sidebar-scope", JSON.stringify(sidebarBoot));
+  assert.ok(sidebarBoot.looseActive, "sidebar: 启动态应选中「未分组」");
+  assert.equal(sidebarBoot.projActive, 0, "sidebar: 启动态不应有项目被选中");
+  assert.ok(!sidebarBoot.chip, "sidebar: 不应再有可清除的范围 chip（没有「全部」）");
+  assert.equal(sidebarBoot.subs, 0, "sidebar: 会话行不应再带归属标签（范围恒唯一）");
+
+  const sidebarScoped = await win.webContents.executeJavaScript(`(() => {
+    const proj = document.querySelector(".proj-row:not(.loose)");
+    if (proj) proj.click();
+    return new Promise((res) => setTimeout(() => res({
+      active: document.querySelectorAll(".proj-row.active").length,
+      looseActive: !!document.querySelector(".proj-row.loose.active"),
+      rows: document.querySelectorAll(".session-item").length,
+    }), 250));
+  })()`);
+  log("sidebar-scoped", JSON.stringify(sidebarScoped));
+  assert.equal(sidebarScoped.active, 1, "sidebar: 点项目行后应恰好一个范围选中");
+  assert.ok(!sidebarScoped.looseActive, "sidebar: 选中项目后「未分组」不再选中");
+
+  // 「释放工作区」菜单与确认弹窗已随直连模式移除（2026-12 用户拍板）——
+  // 会话菜单只剩重命名/归档（归档不再带释放复选框）。
+  const sessionMenu = await win.webContents.executeJavaScript(`(() => {
+    document.querySelector(".session-item .session-more")?.click();
+    return new Promise((resolve) => setTimeout(() => {
+      const items = [...document.querySelectorAll('.session-menu [role="menuitem"]')].map((item) => item.textContent.trim());
+      resolve(items);
+    }, 100));
+  })()`);
+  log("session-menu", JSON.stringify(sessionMenu));
+  assert.ok(sessionMenu.some((t) => t.includes("重命名")) && sessionMenu.some((t) => t.includes("归档")), "sidebar: 会话菜单应有重命名与归档");
+  assert.ok(!sessionMenu.some((t) => t.includes("释放工作区")), "sidebar: 释放工作区入口应已移除");
+  await win.webContents.executeJavaScript(`document.querySelector(".session-item .session-more")?.click()`);
+
+  // 再点同一个项目行：不允许取消（仍是该项目选中）
+  const sidebarAgain = await win.webContents.executeJavaScript(`(() => {
+    const proj = document.querySelector(".proj-row.active:not(.loose)") || document.querySelector(".proj-row:not(.loose)");
+    if (proj) proj.click();
+    return new Promise((res) => setTimeout(() => res({
+      active: document.querySelectorAll(".proj-row.active:not(.loose)").length,
+      looseActive: !!document.querySelector(".proj-row.loose.active"),
+    }), 250));
+  })()`);
+  log("sidebar-again", JSON.stringify(sidebarAgain));
+  assert.equal(sidebarAgain.active, 1, "sidebar: 再点已选中的项目行不应取消（必须仍有选中）");
+  assert.ok(!sidebarAgain.looseActive, "sidebar: 再点项目行不应退回未分组");
+
+  // 回到「未分组」范围（点未分组行，同样是单向选择）
+  const sidebarLoose = await win.webContents.executeJavaScript(`(() => {
+    const loose = document.querySelector(".proj-row.loose");
+    if (loose) loose.click();
+    return new Promise((res) => setTimeout(() => res({
+      looseActive: !!document.querySelector(".proj-row.loose.active"),
+      projActive: document.querySelectorAll(".proj-row.active:not(.loose)").length,
+    }), 250));
+  })()`);
+  log("sidebar-loose", JSON.stringify(sidebarLoose));
+  assert.ok(sidebarLoose.looseActive, "sidebar: 点未分组行应选中未分组");
+  assert.equal(sidebarLoose.projActive, 0, "sidebar: 选未分组后项目不再选中");
+
+  // 项目守则（项目级自定义指令）：项目行 hover 入口 → 弹窗 → 编辑保存 → 读回一致。
+  // 这是「设置里那张 AGENTS.md 空头支票」的项目级落点——入口必须在项目行上。
+  const insOpen = await win.webContents.executeJavaScript(`(() => {
+    const btn = document.querySelector(".proj-ins-btn");
+    if (!btn) return { err: "no-entry" };
+    btn.click();
+    return new Promise((res) => setTimeout(() => {
+      const dlg = document.querySelector(".proj-ins");
+      res({
+        dlg: !!dlg,
+        path: (dlg?.querySelector(".proj-ins-path")?.textContent ?? "").includes("AGENTS.md"),
+        state: dlg?.querySelector(".proj-ins-state")?.textContent ?? "",
+        textarea: !!dlg?.querySelector(".fd-textarea"),
+        save: !!dlg?.querySelector('[data-ins="save"]'),
+      });
+    }, 300));
+  })()`);
+  log("proj-instructions", JSON.stringify(insOpen));
+  assert.ok(insOpen.dlg && insOpen.textarea && insOpen.save, `sidebar: 项目行应能打开守则编辑器（${JSON.stringify(insOpen)}）`);
+  assert.ok(insOpen.path, "sidebar: 守则编辑器应显示项目根 AGENTS.md 路径");
+  assert.equal(insOpen.state, "新建", "sidebar: 尚未写过守则时应标「新建」");
+  // 写入 → 保存 → 重开读回（demo 内存态，验的是「保存确实进了数据源」）
+  const insSaved = await win.webContents.executeJavaScript(`(() => {
+    const dlg = document.querySelector(".proj-ins");
+    const ta = dlg.querySelector(".fd-textarea");
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
+    setter.call(ta, "# 项目守则\\n\\n提交信息一律用中文。\\n");
+    ta.dispatchEvent(new Event("input", { bubbles: true }));
+    dlg.querySelector('[data-ins="save"]').click();
+    return new Promise((res) => setTimeout(() => res({
+      state: dlg.querySelector(".proj-ins-state")?.textContent ?? "",
+      tip: dlg.querySelector(".proj-ins-tip")?.textContent ?? "",
+    }), 400));
+  })()`);
+  log("proj-instructions-saved", JSON.stringify(insSaved));
+  assert.equal(insSaved.state, "已存在", "sidebar: 保存后状态应变为「已存在」");
+  await win.webContents.executeJavaScript(`document.querySelector(".proj-add-close").click()`);
+  await new Promise((r) => setTimeout(r, 250));
+  const insReopen = await win.webContents.executeJavaScript(`(() => {
+    document.querySelector(".proj-ins-btn")?.click();
+    return new Promise((res) => setTimeout(() => res({
+      text: document.querySelector(".proj-ins .fd-textarea")?.value ?? "",
+    }), 300));
+  })()`);
+  log("proj-instructions-reopen", JSON.stringify(insReopen));
+  assert.ok(insReopen.text.includes("提交信息一律用中文"), `sidebar: 守则保存后重开应读回同一内容（${JSON.stringify(insReopen)}）`);
+  await win.webContents.executeJavaScript(`document.querySelector(".proj-add-close").click()`);
+  await new Promise((r) => setTimeout(r, 250));
+  // 斜杠命令面板：输入 / → 弹出 → 过滤（/set）→ 键盘导航 → 选中进设置 → 回来
+  await win.webContents.executeJavaScript(`(() => {
+    const ta = document.querySelector(".piInput");
+    if (!ta) throw new Error("输入框缺失");
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
+    setter.call(ta, "/");
+    ta.dispatchEvent(new Event("input", { bubbles: true }));
+  })()`);
+  const slashAll = await win.webContents.executeJavaScript(`(() => ({
+    palette: !!document.querySelector(".slash-palette"),
+    items: document.querySelectorAll(".cmd-item").length,
+    first: document.querySelector(".cmd-item .cmd-name")?.textContent,
+  }))()`);
+  log("slash-open", JSON.stringify(slashAll));
+  assert.ok(slashAll.palette && slashAll.items >= 4 && slashAll.first === "/new", "chat: 输入 / 应弹出命令面板（含 /new）");
+  // 关键字过滤
+  await win.webContents.executeJavaScript(`(() => {
+    const ta = document.querySelector(".piInput");
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
+    setter.call(ta, "/set");
+    ta.dispatchEvent(new Event("input", { bubbles: true }));
+  })()`);
+  const slashFilter = await win.webContents.executeJavaScript(`(() => ({
+    items: document.querySelectorAll(".cmd-item").length,
+    onlySettings: [...document.querySelectorAll(".cmd-item .cmd-name")].every((n) => n.textContent.includes("settings")),
+  }))()`);
+  log("slash-filter", JSON.stringify(slashFilter));
+  assert.ok(slashFilter.items === 1 && slashFilter.onlySettings, "chat: /set 应只匹配 settings");
+  // 键盘：Enter 选中 → 设置面板打开
+  await win.webContents.executeJavaScript(`(() => {
+    const ev = new KeyboardEvent("keydown", { key: "Enter", bubbles: true });
+    window.dispatchEvent(ev);
+  })()`);
+  const settingsOpened = await win.webContents.executeJavaScript(`!!document.querySelector(".settings-view")`);
+  log("slash-picked", settingsOpened);
+  assert.ok(settingsOpened, "chat: Enter 应选中命令（打开设置）");
+  await win.webContents.executeJavaScript(`document.querySelector(".settings-back").click()`);
+  // Esc 关闭路径：再开面板 → 清空关闭
+  await win.webContents.executeJavaScript(`(() => {
+    const ta = document.querySelector(".piInput");
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
+    setter.call(ta, "/");
+    ta.dispatchEvent(new Event("input", { bubbles: true }));
+  })()`);
+  await win.webContents.executeJavaScript(`(() => {
+    const ev = new KeyboardEvent("keydown", { key: "Escape", bubbles: true });
+    window.dispatchEvent(ev);
+  })()`);
+  const slashClosed = await win.webContents.executeJavaScript(`(() => ({
+    palette: !!document.querySelector(".slash-palette"),
+    input: document.querySelector(".piInput")?.value,
+  }))()`);
+  log("slash-escaped", JSON.stringify(slashClosed));
+  assert.ok(!slashClosed.palette && slashClosed.input === "", "chat: Esc 应关闭面板并清输入");
+  // Agent 选择器 + 委派面板：打开菜单 → 可委派入口 → 面板 → 切换（会话级）
+  await win.webContents.executeJavaScript(`(() => {
+    const btn = document.querySelector(".agent-chip");
+    if (!btn) throw new Error("Agent 选择器缺失");
+    btn.click();
+  })()`);
+  const apMenu = await win.webContents.executeJavaScript(`(() => ({
+    menu: !!document.querySelector(".perm-menu"),
+    jump: !!document.querySelector('[data-ap="delegates"]'),
+  }))()`);
+  log("agent-menu", JSON.stringify(apMenu));
+  assert.ok(apMenu.menu, "chat: Agent 菜单应打开");
+  assert.ok(apMenu.jump, "chat: 主 Agent 应有可委派入口");
+  await win.webContents.executeJavaScript(`document.querySelector('[data-ap="delegates"]').click()`);
+  const apPanel = await win.webContents.executeJavaScript(`(() => {
+    const panel = document.querySelector(".ap-panel");
+    return panel ? { items: panel.querySelectorAll(".mp-item").length, checked: panel.querySelectorAll(".mp-item.on").length } : null;
+  })()`);
+  log("agent-delegate-panel", JSON.stringify(apPanel));
+  assert.ok(apPanel && apPanel.items >= 3, "chat: 委派面板应列出启用的子 Agent");
+  assert.ok(apPanel && apPanel.checked >= 3, "chat: 名单默认应有 3 个启用子 Agent 勾选");
+  await win.webContents.executeJavaScript(`document.querySelector(".ap-panel .mp-item").click()`);
+  const afterToggle = await win.webContents.executeJavaScript(`(() => ({
+    stillOpen: !!document.querySelector(".ap-panel"),
+    checked: document.querySelectorAll(".ap-panel .mp-item.on").length,
+  }))()`);
+  log("agent-delegate-toggle", JSON.stringify(afterToggle));
+  assert.ok(afterToggle.stillOpen, "chat: 切换委派不应关闭面板");
+  assert.ok(afterToggle.checked === apPanel.checked - 1, "chat: 切换应改变委派计数");
+
+  // 主 Agent 调度子 Agent（dispatch 卡——M3 形态）：发消息 → 确认门放行
+  // → dispatchStart → 子执行挂卡内 → dispatchEnd 定格（demo 时间轴全程 ~22s）
+  // 隐藏窗口里 gsap ticker（rAF）冻结：点卡头进子会话视图的退场补间永不完成
+  //（displayedView 卡在 chat，子会话面板不渲染）。与下面 Agents 段同款处理：
+  // 关掉动效门控，视图切换走同步分支，断言可测。
+  await win.webContents.executeJavaScript("window.__LX_TEST_MOTION_OFF__ = true");
+  await win.webContents.executeJavaScript(`(() => {
+    const ta = document.querySelector(".piInput");
+    if (!ta) throw new Error("输入框缺失");
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
+    setter.call(ta, "给会话历史加个超时兜底");
+    ta.dispatchEvent(new Event("input", { bubbles: true }));
+  })()`);
+  await win.webContents.executeJavaScript(`document.querySelector(".send-btn").click()`);
+  // 发送后的状态探针（8s：reasoning/工具应已出现——确认门 ~10.4s）
+  await new Promise((r) => setTimeout(r, 8000));
+  const sentState = await win.webContents.executeJavaScript(`(() => ({
+    userMsg: !!document.querySelector(".msg.user .bubble"),
+    busy: !!document.querySelector(".busy-row"),
+    trows: document.querySelectorAll(".trow").length,
+    reasoning: document.querySelectorAll(".msg").length,
+  }))()`);
+  log("dispatch-send-state", JSON.stringify(sentState));
+  assert.ok(sentState.userMsg, "chat: 发送后应出现用户气泡");
+  // 用户气泡溢出守卫：向真实气泡注入一段无空格超长串（模拟长 URL / 长路径 /
+  // 无空格长串），断言气泡不被横向撑破（overflow-wrap:anywhere 生效 →
+  // scrollWidth 不超 clientWidth），且气泡宽度仍在 70% 线宽约束内。
+  // 注入节点量完即移除，不影响后续场景。
+  const bubbleFit = await win.webContents.executeJavaScript(`(() => {
+    const bubble = document.querySelector(".msg.user .bubble");
+    if (!bubble) return null;
+    const probe = document.createElement("span");
+    probe.textContent = "a".repeat(5000) + "://very.long.example.com/path/" + "b".repeat(5000);
+    bubble.appendChild(probe);
+    const out = {
+      overflowWrap: getComputedStyle(bubble).overflowWrap,
+      scrollW: bubble.scrollWidth,
+      clientW: bubble.clientWidth,
+      bubbleW: Math.round(bubble.getBoundingClientRect().width),
+      threadW: Math.round(bubble.closest(".thread").getBoundingClientRect().width),
+    };
+    probe.remove();
+    return out;
+  })()`);
+  log("bubble-fit", JSON.stringify(bubbleFit));
+  assert.ok(bubbleFit, "chat: 用户气泡应可测量");
+  assert.equal(bubbleFit.overflowWrap, "anywhere", "chat: 用户气泡应声明 overflow-wrap:anywhere");
+  assert.ok(bubbleFit.scrollW <= bubbleFit.clientW + 1, "chat: 超长无空格串不得横向溢出气泡");
+  assert.ok(bubbleFit.bubbleW <= bubbleFit.threadW * 0.7 + 1, "chat: 气泡宽度不得超出 70% 线宽约束");
+  // 同类守卫（assistant 侧）：工具结果 / 代码围栏块（.tool-result）同样不许被
+  // 长行撑破——demo 时间轴此刻可能还没有该元素，缺席时跳过（不假绿也不误报）。
+  const toolFit = await win.webContents.executeJavaScript(`(() => {
+    const el = document.querySelector(".tool-result");
+    if (!el) return null;
+    const probe = document.createElement("span");
+    probe.textContent = "x".repeat(3000);
+    el.appendChild(probe);
+    const out = {
+      overflowWrap: getComputedStyle(el).overflowWrap,
+      scrollW: el.scrollWidth,
+      clientW: el.clientWidth,
+    };
+    probe.remove();
+    return out;
+  })()`);
+  log("tool-result-fit", JSON.stringify(toolFit));
+  if (toolFit) {
+    assert.equal(toolFit.overflowWrap, "anywhere", "chat: tool-result 应声明 overflow-wrap:anywhere");
+    assert.ok(toolFit.scrollW <= toolFit.clientW + 1, "chat: tool-result 超长行不得横向溢出");
+  }
+  // 等确认卡（demo ~12.2s 到 bash 确认门）→ 点允许（CSS module 类名
+  // 是哈希——定位用 data-variant 语义锚点；按钮组内第二个 = 允许）。
+  // 断言「卡在 dispatch 卡内」是本段的核心回归守卫：子 Agent 的确认若落到
+  // 外层时间线（旧后端不发 dispatch_id / 归属逻辑坏），全局选择器照样点得到，
+  // 测试会假绿——必须用 closest('.dispatch-card') 判作用域。
+  let confirmScope = null;
+  for (let i = 0; i < 120 && !confirmScope; i++) {
+    await new Promise((r) => setTimeout(r, 250));
+    confirmScope = await win.webContents.executeJavaScript(`(() => {
+      const card = document.querySelector('[data-variant="command"]:not([data-resolved])');
+      if (!card) return null;
+      return { inDispatch: !!card.closest('.dispatch-card'), scope: card.closest('.dispatch-card') ? 'dispatch' : 'main' };
+    })()`);
+  }
+  log("dispatch-confirm-shown", JSON.stringify(confirmScope));
+  assert.ok(confirmScope && confirmScope.inDispatch, `chat: 子 Agent 的确认卡必须落在 dispatch 卡内（实际 ${JSON.stringify(confirmScope)}）`);
+  await win.webContents.executeJavaScript(`(() => {
+    const card = document.querySelector('.dispatch-card');
+    const btn = card && card.querySelector('[data-variant="command"]:not([data-resolved]) button:nth-of-type(2)');
+    if (btn) btn.click();
+  })()`);
+  // 等 dispatch 卡（确认后 ~7s）
+  let dispatch = null;
+  for (let i = 0; i < 60 && !dispatch; i++) {
+    await new Promise((r) => setTimeout(r, 250));
+    dispatch = await win.webContents.executeJavaScript(`(() => {
+      const card = document.querySelector(".dispatch-card");
+      return card ? { agent: card.querySelector(".dispatch-agent")?.textContent, running: card.getAttribute("data-done") !== "true" } : null;
+    })()`);
+  }
+  log("dispatch-card", JSON.stringify(dispatch));
+  assert.ok(dispatch && dispatch.agent === "代码 Agent", "chat: 主 Agent 应派发 dispatch 卡（代码 Agent）");
+  // 等 dispatchEnd（卡定格）。
+  // **卡就是一行**（2026-09-30 用户拍板两轮收敛后的定案）：没有折叠区、没有卡内子
+  // 时间线、**没有结论正文**（用户原话「执行完了还是会展示整个子Agent会话展开」）、
+  // **没有底部按钮**（用户原话「打开子会话这个按钮太丑了，没必要」）——子 Agent 的
+  // 过程与结论都在它自己的标签页里看（而且是实时的）。
+  let done = null;
+  for (let i = 0; i < 60 && !done; i++) {
+    await new Promise((r) => setTimeout(r, 250));
+    done = await win.webContents.executeJavaScript(`(() => {
+      const card = document.querySelector('.dispatch-card[data-done="true"]');
+      if (!card) return null;
+      return {
+        body: !!card.querySelector(".dispatch-body"),
+        chev: !!card.querySelector(".dispatch-chev"),
+        collapseBtn: !!card.querySelector(".dispatch-collapse"),
+        openBtn: !!card.querySelector(".dispatch-open-child"),
+        result: !!card.querySelector(".dispatch-result"),
+        headTag: card.querySelector(".dispatch-head")?.tagName,
+        headOpenable: card.querySelector(".dispatch-head")?.getAttribute("data-openable"),
+        rows: card.querySelectorAll(".dispatch-head").length,
+      };
+    })()`);
+  }
+  log("dispatch-done", JSON.stringify(done));
+  assert.ok(done, "chat: 主 Agent 应派发 dispatch 卡（代码 Agent）");
+  // 一行摘要：卡里**只有**这一行（没有折叠区 / 没有卡内子时间线 / 没有结论正文 / 没有按钮）
+  assert.ok(!done.chev, `chat: 卡里不该有 chevron（${JSON.stringify(done)}）`);
+  assert.ok(!done.body, `chat: 卡里不该有卡内子时间线 .dispatch-body（${JSON.stringify(done)}）`);
+  assert.ok(!done.collapseBtn, `chat: 卡里不该有「收起」按钮（${JSON.stringify(done)}）`);
+  assert.ok(!done.result, `chat: 卡里不该再铺结论正文（要看就进子会话）（${JSON.stringify(done)}）`);
+  assert.ok(!done.openBtn, `chat: 底部不该再有「打开子会话」按钮（整行就是入口）（${JSON.stringify(done)}）`);
+  assert.equal(done.rows, 1, `chat: 卡应只有一行（${JSON.stringify(done)}）`);
+  // 主区必须是**真按钮**（能进子会话：有子会话 id + 接了 onOpenChild）
+  assert.equal(done.headTag, "BUTTON", `chat: 有子会话 id 时整行应渲染成按钮（${JSON.stringify(done)}）`);
+  assert.equal(done.headOpenable, "true", `chat: 整行应标成可打开（${JSON.stringify(done)}）`);
+  // 点这一行 → **打开子会话临时视图**（2026-12：不再进标签栏）：子会话自己的时间线在这一页里，
+  // 而且它是**实时**的（store 把带 dispatch_id 的子事件同时归约进子会话自己的 state）。
+  const child = await win.webContents.executeJavaScript(`(() => {
+    const head = document.querySelector('.dispatch-card[data-done="true"] .dispatch-head');
+    if (head) head.click();
+    return new Promise((res) => setTimeout(() => {
+      const page = document.querySelector('.child-session-page');
+      res({
+        page: !!page,
+        id: (page?.querySelector('.child-session-id')?.textContent ?? '').trim(),
+        blocks: page ? page.querySelectorAll('.child-session-body .thread > *').length : 0,
+        tools: page ? page.querySelectorAll('.child-session-body .trow').length : 0,
+        running: page ? page.querySelectorAll('.child-session-body .trow-running').length : 0,
+        // 卡里那条子时间线**不该**跟着出现（同一段过程不许在两个地方各画一遍）
+        bodyInMain: !!document.querySelector('.thread .dispatch-body'),
+      });
+    }, 600)) })()`);
+  log("dispatch-child-tab", JSON.stringify(child));
+  assert.ok(child && child.page, `chat: 点这一行应打开子会话临时视图（${JSON.stringify(child)}）`);
+  assert.ok(child.id && child.id.length > 0, `chat: 子会话页头应显示子会话 id（${JSON.stringify(child)}）`);
+  assert.ok(child.blocks >= 3, `chat: 子会话临时视图应看到子 Agent 的过程（历史 + 实时同一条时间线）（${JSON.stringify(child)}）`);
+  assert.ok(child.tools >= 2, `chat: 子会话里应看到子 Agent 的工具行（${JSON.stringify(child)}）`);
+  assert.equal(child.running, 0, `chat: 子 Agent 跑完后不该有「执行中」僵尸行（${JSON.stringify(child)}）`);
+  assert.ok(!child.bodyInMain, "chat: 卡内不许再画子时间线（折叠区已去掉）");
+  // 子会话页头的两条读数（2026-09-30 用户报「上下文 会话信息这些展示没有」）：
+  //   ① 会话统计胶囊（整条子会话花了多少）——它自己的数字，不是主会话那份；
+  //   ② 上下文环（此刻它自己的窗口里有多少）。
+  // 两个弹层都必须**向下开且在视口内**：读数在输入条里（2026-10-07 起子会话页挂
+  // 与主会话同一个 Composer，读数随它进了输入条——页头只留身份信息），输入条在
+  // 页面底部，向上开会跑出视口被裁掉（用户原话「上下文展示的下拉框跑上面去被遮
+  // 住了」）——所以这里量真实几何：弹层顶边必须在触发器底边之下，且底边在视口内。
+  const childHead = await win.webContents.executeJavaScript(`(() => {
+    const page = document.querySelector('.child-session-page');
+    const pill = page && page.querySelector('.stats-pill');
+    const chip = page && page.querySelector('.ctx-chip');
+    return {
+      statsPill: !!pill,
+      statsLabel: (pill?.querySelector('.stats-label')?.textContent ?? '').trim(),
+      ctxChip: !!chip,
+      ctxPct: (chip?.querySelector('.ctx-pct')?.textContent ?? '').trim(),
+      // 中性态「—」= 上下文未知（后端没给）：那说明读数链路没接上
+      ctxUnknown: (chip?.querySelector('.ctx-pct')?.textContent ?? '').trim() === '—',
+    };
+  })()`);
+  log("child-head-readouts", JSON.stringify(childHead));
+  assert.ok(childHead.statsPill, `chat: 子会话页应有「会话统计」胶囊（输入条里，与主会话同一份 Composer）（${JSON.stringify(childHead)}）`);
+  assert.ok(childHead.statsLabel.length > 0, `chat: 统计胶囊应有读数（${JSON.stringify(childHead)}）`);
+  assert.ok(childHead.ctxChip, `chat: 子会话页应有上下文环（${JSON.stringify(childHead)}）`);
+  assert.ok(!childHead.ctxUnknown, `chat: 子会话的上下文应是它自己的真实占用，不是中性态「—」（${JSON.stringify(childHead)}）`);
+  // 点开上下文环：读数在输入条（页面**底部**，随 Composer 进来的），弹层必须
+  // **向上**开（顶边 ≤ 触发器顶边）且完整落在视口内——向下开会跑出视口被裁。
+  const popGeom = await win.webContents.executeJavaScript(`(() => {
+    const chip = document.querySelector('.child-session-page .ctx-chip');
+    if (chip) chip.click();
+    return new Promise((res) => setTimeout(() => {
+      const pop = document.querySelector('.child-session-page .ctx-pop');
+      const c = chip?.getBoundingClientRect();
+      const p = pop?.getBoundingClientRect();
+      res(pop && c && p ? {
+        open: true,
+        up: p.bottom <= c.top + 1,
+        topInView: p.top >= 0,
+        bottomInView: p.bottom <= window.innerHeight,
+        vh: window.innerHeight,
+      } : { open: false });
+    }, 400)) })()`);
+  log("child-ctx-pop", JSON.stringify(popGeom));
+  assert.ok(popGeom.open, `chat: 点上下文环应打开弹层（${JSON.stringify(popGeom)}）`);
+  assert.ok(popGeom.up, `chat: 子会话页的上下文弹层应**向上**开（读数在输入条里，页面底部——向下开会跑出视口）（${JSON.stringify(popGeom)}）`);
+  assert.ok(popGeom.topInView && popGeom.bottomInView, `chat: 弹层必须完整落在视口内（被裁掉就是用户报的「跑上面去被遮住」）（${JSON.stringify(popGeom)}）`);
+  // 关掉弹层（点外），免得影响后面的断言
+  await win.webContents.executeJavaScript(`document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))`);
+  await new Promise((r) => setTimeout(r, 400));
+  // 返回主会话（页头「返回主会话」按钮 / 标签栏的「聊天」标签），后面的断言仍在主时间线上做
+  await win.webContents.executeJavaScript(`(() => {
+    const back = document.querySelector('.child-session-back');
+    if (back) back.click();
+  })()`);
+  await new Promise((r) => setTimeout(r, 400));
+  // 等本轮完全结束（streamAnswer + done——demo 计时器不停，中途清屏会串台）
+  for (let i = 0; i < 80; i++) {
+    const idle = await win.webContents.executeJavaScript(`!document.querySelector(".busy-row")`);
+    if (idle) break;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  // 上下文指示器（P1）：一轮跑完必须显示真实占用，而不是中性态「—」。
+  // 这是「mock 数据换成后端测量」的渲染守卫——回落到假数据/不接线都会红。
+  const ctx = await win.webContents.executeJavaScript(`(() => {
+    const chip = document.querySelector(".ctx-chip");
+    if (!chip) return { err: "no-chip" };
+    chip.click();
+    return new Promise((res) => setTimeout(() => {
+      const pop = document.querySelector(".ctx-pop");
+      res({
+        pct: (document.querySelector(".ctx-pct")?.textContent ?? "").trim(),
+        pop: !!pop,
+        segs: document.querySelectorAll(".ctx-bar-seg").length,
+        legend: document.querySelectorAll(".ctx-legend-row").length,
+        foot: (document.querySelector(".ctx-foot")?.textContent ?? "").replace(/\\s+/g, " ").trim(),
+      });
+    }, 300));
+  })()`);
+  log("context-indicator", JSON.stringify(ctx));
+  assert.ok(/^\d+%$/.test(ctx.pct), `chat: 上下文指示器应显示真实百分比（不是中性态「—」）（${JSON.stringify(ctx)}）`);
+  assert.ok(ctx.pop && ctx.segs >= 2, `chat: 点开应见分类占比条（${JSON.stringify(ctx)}）`);
+  assert.ok(/窗口上限/.test(ctx.foot), `chat: 弹层应显示真实窗口上限（${JSON.stringify(ctx)}）`);
+  await win.webContents.executeJavaScript(`document.querySelector(".ctx-chip").click()`);
+  await new Promise((r) => setTimeout(r, 250));
+  // 回到空态（新会话清屏——后续场景不受本轮影响）
+  await win.webContents.executeJavaScript(`(() => {
+    const btn = document.querySelector(".nav-item");
+    if (btn) btn.click();
+  })()`);
+  // Agents 视图点击路径（桌面，浏览器 UA）：选择器在对话视图 → 进名单 → 开组装 → 取消回名单
+  win.setContentSize(1440, 900);
+  win.webContents.setUserAgent(browserUA);
+  await win.loadURL(url);
+  // 隐藏窗口里 gsap ticker（rAF）冻结——退场补间永不完成、菜单不卸载。
+  // 项目动效门控的测试钩子：关掉动效，关闭路径走同步分支，断言可测。
+  await win.webContents.executeJavaScript("window.__LX_TEST_MOTION_OFF__ = true");
+  const chipW = await win.webContents.executeJavaScript(
+    `document.querySelector('.agent-chip') ? document.querySelector('.agent-chip').getBoundingClientRect().width : 0`,
+  );
+  assert.ok(chipW > 10, "chat: 输入区应有 Agent 选择器");
+  await win.webContents.executeJavaScript(`(() => {
+    const btn = document.querySelector('[data-nav="agents"]');
+    if (!btn) throw new Error("agents 导航入口缺失");
+    btn.click();
+  })()`);
+  const roster = await win.webContents.executeJavaScript(`(() => {
+    const r = (s) => {
+      const el = document.querySelector(s);
+      if (!el) return null;
+      const b = el.getBoundingClientRect();
+      return { w: b.width, h: b.height };
+    };
+    return {
+      page: r(".ag-page"),
+      grid: r(".ag-grid"),
+      cards: document.querySelectorAll(".ag-card").length,
+      main: !!document.querySelector(".ag-card.main"),
+      navOn: !!document.querySelector(".nav-item.on"),
+      workspaceTabs: [...document.querySelectorAll(".workspace-tab")].map((tab) => tab.getAttribute("data-workspace-tab")),
+      workspaceLabels: [...document.querySelectorAll(".workspace-tab .tab-title")].map((title) => title.textContent.trim()),
+      sessionTabs: document.querySelectorAll('[data-cg="tab"]').length,
+    };
+  })()`);
+  log("agents-roster", JSON.stringify(roster));
+  assert.ok(roster.page && roster.page.h > 300, "agents: 名单页应可见");
+  assert.ok(roster.grid && roster.grid.w > 300, "agents: 名单网格应可见");
+  assert.ok(roster.cards >= 5, "agents: 演示名单应有至少 5 张卡");
+  assert.ok(roster.main, "agents: 主 Agent 卡应存在");
+  assert.ok(roster.navOn, "agents: 侧栏导航应高亮");
+  assert.ok(roster.workspaceTabs.includes("chat") && roster.workspaceTabs.includes("agents"), "agents: 页面导航应进入独立工作区标签");
+  assert.deepEqual(roster.workspaceLabels, ["聊天", "Agent"], "agents: 工作区标签应显示页面名，不应显示新会话");
+  assert.ok(roster.sessionTabs > 0, "agents: 会话标签区应与工作区标签区并存");
+  await win.webContents.executeJavaScript(`(() => {
+    const btn = document.querySelector('[data-ag="new"]');
+    if (!btn) throw new Error("组装入口缺失");
+    btn.click();
+  })()`);
+  const editor = await win.webContents.executeJavaScript(`(() => {
+    const r = (s) => {
+      const el = document.querySelector(s);
+      return el ? { w: el.getBoundingClientRect().width, h: el.getBoundingClientRect().height } : null;
+    };
+    return { form: r(".ag-form"), preview: r(".ag-preview"), input: !!document.querySelector("#ag-name") };
+  })()`);
+  log("agents-editor", JSON.stringify(editor));
+  assert.ok(editor.form && editor.form.h > 300, "agents: 组装表单应可见");
+  assert.ok(editor.preview && editor.preview.h > 100, "agents: 预览面板应可见");
+  assert.ok(editor.input, "agents: 名称输入框应存在");
+  // 详情两级：chip 点击 → 右侧紧凑面板跟随（参数表）；点面板 → 完整文档弹窗；关闭
+  await win.webContents.executeJavaScript(`(() => {
+    const chip = document.querySelector(".fd-chip");
+    if (!chip) throw new Error("工具 chip 缺失");
+    chip.click();
+  })()`);
+  const panel = await win.webContents.executeJavaScript(`(() => {
+    const el = document.querySelector(".ag-detail");
+    return el ? { h: el.getBoundingClientRect().height, params: el.querySelectorAll(".ag-param").length, hint: !!el.querySelector(".ag-detail-open-hint") } : null;
+  })()`);
+  log("agents-panel", JSON.stringify(panel));
+  assert.ok(panel && panel.h > 60, "agents: chip 点击应有紧凑详情面板");
+  assert.ok(panel && panel.params > 0, "agents: 面板应含参数表");
+  assert.ok(panel && panel.hint, "agents: 面板应有展开提示");
+  await win.webContents.executeJavaScript(`document.querySelector(".ag-detail").click()`);
+  const detail = await win.webContents.executeJavaScript(`(() => {
+    const el = document.querySelector(".ag-doc");
+    return el ? { h: el.getBoundingClientRect().height, params: el.querySelectorAll(".ag-param").length, md: !!el.querySelector(".ag-detail-md") } : null;
+  })()`);
+  log("agents-detail", JSON.stringify(detail));
+  assert.ok(detail && detail.h > 200, "agents: 点面板应打开文档弹窗");
+  assert.ok(detail && detail.params > 0, "agents: 工具文档应含参数表");
+  assert.ok(detail && detail.md, "agents: 工具文档应含 markdown 扩展文档");
+  await win.webContents.executeJavaScript(`(() => {
+    const btn = document.querySelector(".ag-doc-close");
+    if (!btn) throw new Error("文档弹窗关闭钮缺失");
+    btn.click();
+  })()`);
+  // 模型下拉：自绘 Select 打开 → 选中 → 等退场动画收起（插桩：错误带回主进程打印）
+  const fdOpen = await win.webContents.executeJavaScript(`(() => {
+    try {
+      const btn = document.querySelector(".fd-trigger");
+      if (!btn) return { err: "no-trigger" };
+      btn.click();
+      return { ok: true };
+    } catch (e) {
+      return { err: String(e && e.stack || e) };
+    }
+  })()`);
+  log("fd-open", JSON.stringify(fdOpen));
+  const fd = await win.webContents.executeJavaScript(`(() => ({
+    menu: !!document.querySelector(".fd-menu"),
+    items: document.querySelectorAll(".fd-item").length,
+  }))()`);
+  log("agents-select", JSON.stringify(fd));
+  assert.ok(fdOpen.ok, "agents: 模型下拉应可打开 " + JSON.stringify(fdOpen));
+  assert.ok(fd.menu && fd.items > 0, "agents: 模型下拉应有选项");
+  await win.webContents.executeJavaScript(`document.querySelector(".fd-item").click()`);
+  await new Promise((r) => setTimeout(r, 450));
+  const fdClosed = await win.webContents.executeJavaScript(`!document.querySelector(".fd-menu")`);
+  assert.ok(fdClosed, "agents: 选择后下拉应收起");
+  await win.webContents.executeJavaScript(`(() => {
+    const btn = document.querySelector('[data-ag="cancel"]');
+    if (!btn) throw new Error("取消按钮缺失");
+    btn.click();
+  })()`);
+  const backToRoster = await win.webContents.executeJavaScript(
+    `!!document.querySelector(".ag-grid") && !document.querySelector(".ag-form")`,
+  );
+  assert.ok(backToRoster, "agents: 取消应回到名单");
+
+  // 从 Agents 视图点击顶部另一个会话标签，应恢复会话并返回聊天视图。
+  const tabSwitch = await win.webContents.executeJavaScript(`(() => {
+    const tab = document.querySelector('.tab[data-cg="tab"]:not(.on) .tab-main');
+    if (!tab) throw new Error("没有可切换的非当前会话标签");
+    tab.click();
+    return new Promise((res) => setTimeout(() => res({
+      chat: !!document.querySelector('[data-workspace-view="chat"]:not([hidden]) .thread-scroll'),
+      agents: !!document.querySelector('[data-workspace-view="agents"]:not([hidden]) .ag-page'),
+      activeTab: document.querySelector('.tab[data-cg="tab"].on .tab-title')?.textContent ?? "",
+    }), 100));
+  })()`);
+  log("agents-session-tab-switch", JSON.stringify(tabSwitch));
+  assert.ok(tabSwitch.chat && !tabSwitch.agents, `agents: 点击会话标签应返回聊天视图（${JSON.stringify(tabSwitch)}）`);
+  await win.webContents.executeJavaScript(`document.querySelector('[data-nav="agents"]').click()`);
+
+  // （Git 工作台场景已移除：Git 页面在 3aa3bc5 整页删除——断言引用的
+  //  [data-nav=git] / .git-* DOM 已不存在，脚本会直接抛错。）
+
+  // 目录管理页：导航进入 → 页签与条目卡 → 点卡片开文档弹窗 → 切页签
+  await win.webContents.executeJavaScript(`document.querySelector('[data-nav="catalog"]').click()`);
+  const cat = await win.webContents.executeJavaScript(`(() => {
+    const r = (s) => {
+      const el = document.querySelector(s);
+      if (!el) return null;
+      const b = el.getBoundingClientRect();
+      return { w: b.width, h: b.height };
+    };
+    return {
+      page: r(".cg-page"),
+      grid: r(".cg-grid"),
+      cards: document.querySelectorAll(".cg-card").length,
+      navOn: !!document.querySelector('.nav-item.on[data-nav="catalog"]'),
+      workspaceLabels: [...document.querySelectorAll(".workspace-tab .tab-title")].map((title) => title.textContent.trim()),
+    };
+  })()`);
+  log("catalog-page", JSON.stringify(cat));
+  assert.ok(cat.page && cat.page.h > 300, "catalog: 目录页应可见");
+  assert.ok(cat.cards >= 12, "catalog: 工具页签应有至少 12 个条目");
+  assert.ok(cat.navOn, "catalog: 导航应高亮");
+  assert.ok(cat.workspaceLabels.includes("拓展") && !cat.workspaceLabels.some((label) => label.includes("新会话") || label.includes("新对话")), "catalog: 工作区标签应显示页面名，实际标签: " + JSON.stringify(cat.workspaceLabels));
+  // 外部二进制工具缺 command 必须标「未配置」——否则用户勾进 Agent 白名单后
+  // 只会从模型那里听到「注册表没有」（用户报告过的原始现象）
+  const unconfigured = await win.webContents.executeJavaScript(`(() => {
+    const cards = [...document.querySelectorAll(".cg-card")];
+    const hit = cards.find((c) => (c.textContent || "").includes("未配置"));
+    return { count: cards.filter((c) => (c.textContent || "").includes("未配置")).length, has: !!hit };
+  })()`);
+  log("catalog-unconfigured", JSON.stringify(unconfigured));
+  assert.ok(unconfigured.has, `catalog: 缺 command 的外部二进制应标「未配置」（${JSON.stringify(unconfigured)}）`);
+  // 工具导入：坏 JSON → 错误内联；合法 JSON → 入目录（基线 +1）→ 两步删除回基线。
+  // **基线用 cat.cards 而不是硬编码**：演示目录的内置工具会随种子演进（加过
+  // web_search / read_skill），写死数字的话每次改种子都要来改这里（2026-09-28 实测踩过）。
+  await win.webContents.executeJavaScript(`document.querySelector('[data-cg="import"]').click()`);
+  const importDlg = await win.webContents.executeJavaScript(`(() => {
+    return { dialog: !!document.querySelector(".ag-doc"), input: !!document.querySelector(".ti-input") };
+  })()`);
+  log("tool-import-dialog", JSON.stringify(importDlg));
+  assert.ok(importDlg.dialog && importDlg.input, "catalog: 导入弹窗应有粘贴区");
+  await win.webContents.executeJavaScript(`(() => {
+    const el = document.querySelector(".ti-input");
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
+    setter.call(el, '{"version": 1, "tools": []}');
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  })()`);
+  await win.webContents.executeJavaScript(`document.querySelector('[data-cg="do-import"]').click()`);
+  const importErr = await win.webContents.executeJavaScript(`(() => {
+    return { warn: !!document.querySelector(".ag-doc-body .ag-warn") };
+  })()`);
+  log("tool-import-invalid", JSON.stringify(importErr));
+  assert.ok(importErr.warn, "catalog: 空 tools 数组应报错");
+  await win.webContents.executeJavaScript(`(() => {
+    const el = document.querySelector(".ti-input");
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
+    setter.call(el, '{"version":1,"tools":[{"id":"smoke-tool","desc":"冒烟导入工具","risk":"low","source":"binary"}]}');
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  })()`);
+  await win.webContents.executeJavaScript(`document.querySelector('[data-cg="do-import"]').click()`);
+  const afterImport = await win.webContents.executeJavaScript(`(() => {
+    return {
+      cards: document.querySelectorAll(".cg-card").length,
+      del: !!document.querySelector('[data-cg="del"]'),
+    };
+  })()`);
+  log("tool-imported", JSON.stringify(afterImport));
+  assert.strictEqual(afterImport.cards, cat.cards + 1, "catalog: 导入后工具应比基线多 1 个");
+  assert.ok(afterImport.del, "catalog: 导入条目应有删除入口");
+  await win.webContents.executeJavaScript(`document.querySelector('[data-cg="del"]').click()`);
+  await win.webContents.executeJavaScript(`document.querySelector('[data-cg="del"]').click()`);
+  const afterToolDel = await win.webContents.executeJavaScript(`document.querySelectorAll(".cg-card").length`);
+  log("tool-import-deleted", afterToolDel);
+  assert.strictEqual(afterToolDel, cat.cards, "catalog: 删除导入条目后应回到基线");
+  await win.webContents.executeJavaScript(`document.querySelector(".cg-card").click()`);
+  const catDoc = await win.webContents.executeJavaScript(`(() => {
+    const el = document.querySelector(".ag-doc");
+    return el ? { h: el.getBoundingClientRect().height, params: el.querySelectorAll(".ag-param").length } : null;
+  })()`);
+  log("catalog-doc", JSON.stringify(catDoc));
+  assert.ok(catDoc && catDoc.h > 150, "catalog: 点卡片应开文档弹窗");
+  await win.webContents.executeJavaScript(`document.querySelector(".ag-doc-close").click()`);
+  // 切到模板页签：条目数变化 + 重播交错入场
+  await win.webContents.executeJavaScript(`(() => {
+    const btns = document.querySelectorAll(".cg-tabs .seg-btn");
+    if (btns.length < 3) throw new Error("目录页签缺失");
+    btns[2].click();
+  })()`);
+  const catTpl = await win.webContents.executeJavaScript(`document.querySelectorAll(".cg-card").length`);
+  log("catalog-templates", catTpl);
+  assert.strictEqual(catTpl, 4, "catalog: 模板页签应有 4 个条目（种子加了 merge-verify）");
+  // 自建模板全链路：新建 → 编写器 → 填 id → 保存 → 列表出现 → 两步删除（插桩：错误带回）
+  const newClick = await win.webContents.executeJavaScript(`(() => {
+    try {
+      const btn = document.querySelector('[data-cg="new"]');
+      if (!btn) return { err: "no-btn", tab: document.querySelector(".cg-tabs .seg-btn.on")?.textContent };
+      btn.click();
+      return { ok: true };
+    } catch (e) {
+      return { threw: String(e && e.stack || e).slice(0, 400) };
+    }
+  })()`);
+  log("module-new-click", JSON.stringify(newClick));
+  assert.ok(newClick.ok, "catalog: 新建入口应可点击 " + JSON.stringify(newClick));
+  const modEd = await win.webContents.executeJavaScript(`(() => {
+    return {
+      form: !!document.querySelector(".ag-form"),
+      idInput: !!document.querySelector("#cg-mod-id"),
+      save: !!document.querySelector('[data-cg="save"]'),
+    };
+  })()`);
+  log("module-editor", JSON.stringify(modEd));
+  assert.ok(modEd.form && modEd.idInput && modEd.save, "catalog: 新建应打开模块编写器");
+  await win.webContents.executeJavaScript(`(() => {
+    const el = document.querySelector("#cg-mod-id");
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+    setter.call(el, "smoke-template");
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  })()`);
+  // 摘要也是必填（chips 的 tooltip——Agent 靠它判断何时用）
+  await win.webContents.executeJavaScript(`(() => {
+    const el = [...document.querySelectorAll("input.fd-input")].find((i) => i.placeholder.includes("Agent 靠它"));
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+    setter.call(el, "冒烟模板——校验自建链路");
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  })()`);
+  await win.webContents.executeJavaScript(`document.querySelector('[data-cg="save"]').click()`);
+  const afterCreate = await win.webContents.executeJavaScript(`(() => {
+    return {
+      cards: document.querySelectorAll(".cg-card").length,
+      hasCustom: !!document.querySelector('.cg-card [data-cg="del"]'),
+    };
+  })()`);
+  log("module-created", JSON.stringify(afterCreate));
+  assert.strictEqual(afterCreate.cards, 5, "catalog: 保存后模板应有 5 个条目（4 种子 + 1 自建）");
+  assert.ok(afterCreate.hasCustom, "catalog: 自建条目应有删除入口");
+  await win.webContents.executeJavaScript(`(() => {
+    const del = document.querySelector('[data-cg="del"]');
+    if (!del) throw new Error("删除入口缺失");
+    del.click();
+  })()`);
+  // 两步确认必须分两个任务（同步双击会被 React 批成一次更新——第二次点击看不到 confirming）
+  await win.webContents.executeJavaScript(`document.querySelector('[data-cg="del"]').click()`);
+  const afterDelete = await win.webContents.executeJavaScript(`document.querySelectorAll(".cg-card").length`);
+  log("module-deleted", afterDelete);
+  assert.strictEqual(afterDelete, 4, "catalog: 两步删除后应回到种子基线 4 个条目");
+  // 模块导入：入口 → 弹窗 → 填 JSON → 导入 → 列表出现（3→4）→ 删除回 3
+  await win.webContents.executeJavaScript(`document.querySelector('[data-cg="import-modules"]').click()`);
+  const modImportDlg = await win.webContents.executeJavaScript(`(() => {
+    const dlg = document.querySelector(".ag-doc");
+    return dlg ? { title: dlg.querySelector(".ag-doc-title")?.textContent, input: !!dlg.querySelector(".ti-input"), file: !!dlg.querySelector('[data-cg="pick-file"]') } : null;
+  })()`);
+  log("module-import-dialog", JSON.stringify(modImportDlg));
+  assert.ok(modImportDlg && modImportDlg.input && modImportDlg.file, "catalog: 模块导入弹窗应有粘贴区与文件选择");
+  await win.webContents.executeJavaScript(`(() => {
+    const el = document.querySelector(".ag-doc .ti-input");
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
+    setter.call(el, '{"version":1,"modules":[{"id":"smoke-module","desc":"冒烟导入","kind":"process","body":"# 冒烟"}]}');
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  })()`);
+  await win.webContents.executeJavaScript(`document.querySelector(".ag-doc [data-cg=\\"do-import\\"]").click()`);
+  const afterModImport = await win.webContents.executeJavaScript(`(() => {
+    return {
+      cards: document.querySelectorAll(".cg-card").length,
+      dlgClosed: !document.querySelector(".ag-doc"),
+    };
+  })()`);
+  log("module-imported", JSON.stringify(afterModImport));
+  assert.strictEqual(afterModImport.cards, 5, "catalog: 模块导入后应有 5 个条目（4 种子 + 1 导入）");
+  assert.ok(afterModImport.dlgClosed, "catalog: 导入后弹窗应收起");
+  await win.webContents.executeJavaScript(`document.querySelector('[data-cg="del"]').click()`);
+  await win.webContents.executeJavaScript(`document.querySelector('[data-cg="del"]').click()`);
+  const afterModDel = await win.webContents.executeJavaScript(`document.querySelectorAll(".cg-card").length`);
+  log("module-import-deleted", afterModDel);
+  assert.strictEqual(afterModDel, 4, "catalog: 删除导入模块后应回到种子基线 4 个条目");
+
+  // 工具编写器（表单生成，不写 JSON）：切回工具页签 → 新建 → 表单 → 保存（10→11）→ 删除回 10
+  await win.webContents.executeJavaScript(`(() => {
+    const btns = document.querySelectorAll(".cg-tabs .seg-btn");
+    btns[0].click();
+  })()`);
+  await win.webContents.executeJavaScript(`(() => {
+    const btn = document.querySelector('[data-cg="new"]');
+    if (!btn) throw new Error("新建工具入口缺失");
+    btn.click();
+  })()`);
+  const toolEd = await win.webContents.executeJavaScript(`(() => {
+    return {
+      form: !!document.querySelector(".ag-form"),
+      idInput: !!document.querySelector("#cg-tool-id"),
+      save: !!document.querySelector('[data-cg="save"]'),
+    };
+  })()`);
+  log("tool-editor", JSON.stringify(toolEd));
+  assert.ok(toolEd.form && toolEd.idInput && toolEd.save, "catalog: 新建应打开工具编写器");
+  await win.webContents.executeJavaScript(`(() => {
+    const el = document.querySelector("#cg-tool-id");
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+    setter.call(el, "smoke-form-tool");
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  })()`);
+  await win.webContents.executeJavaScript(`(() => {
+    const el = [...document.querySelectorAll("input.fd-input")].find((i) => i.placeholder.includes("一句话说明"));
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+    setter.call(el, "表单生成的冒烟工具");
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  })()`);
+  // 运行命令必填（可执行载体）——按占位符匹配
+  await win.webContents.executeJavaScript(`(() => {
+    const el = [...document.querySelectorAll("input.fd-input")].find((i) => i.placeholder.includes("参数用 {名称} 占位"));
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+    setter.call(el, "smoke-tool {input}");
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  })()`);
+  await win.webContents.executeJavaScript(`document.querySelector('[data-cg="save"]').click()`);
+  const afterToolCreate = await win.webContents.executeJavaScript(`(() => {
+    return {
+      cards: document.querySelectorAll(".cg-card").length,
+      dlgClosed: !document.querySelector(".ag-doc"),
+    };
+  })()`);
+  log("tool-form-created", JSON.stringify(afterToolCreate));
+  assert.strictEqual(afterToolCreate.cards, cat.cards + 1, "catalog: 表单保存后工具应比基线多 1 个");
+  assert.ok(afterToolCreate.dlgClosed, "catalog: 保存后编写器应收起");
+  await win.webContents.executeJavaScript(`document.querySelector('[data-cg="del"]').click()`);
+  await win.webContents.executeJavaScript(`document.querySelector('[data-cg="del"]').click()`);
+  const afterToolFormDel = await win.webContents.executeJavaScript(`document.querySelectorAll(".cg-card").length`);
+  log("tool-form-deleted", afterToolFormDel);
+  assert.strictEqual(afterToolFormDel, cat.cards, "catalog: 删除表单工具后应回到基线");
+
+  // MCP 配置导入：MCP 页签 → 导入配置 → 粘贴 YAML → 导入（4→5）→ 删除回 4
+  const mcTab = await win.webContents.executeJavaScript(`(() => {
+    const btns = document.querySelectorAll(".cg-tabs .seg-btn");
+    if (btns.length < 4) return { err: "seg-不足", n: btns.length };
+    btns[3].click();
+    return { ok: true, tab: btns[3].textContent };
+  })()`);
+  log("mc-tab", JSON.stringify(mcTab));
+  assert.ok(mcTab.ok, "catalog: MCP 页签应存在 " + JSON.stringify(mcTab));
+  const mcBtn = await win.webContents.executeJavaScript(`(() => {
+    const btn = document.querySelector('[data-cg="import-mc"]');
+    if (!btn) return { err: "no-btn" };
+    btn.click();
+    return { ok: true };
+  })()`);
+  log("mc-import-open", JSON.stringify(mcBtn));
+  assert.ok(mcBtn.ok, "catalog: 导入配置入口应可点击");
+  const mcDlg = await win.webContents.executeJavaScript(`(() => {
+    const doc = document.querySelector(".ag-doc");
+    if (!doc) return { err: "no-dialog" };
+    return {
+      dlg: true,
+      input: !!doc.querySelector(".ti-input"),
+      file: !!doc.querySelector('[data-cg="pick-file"]'),
+    };
+  })()`);
+  log("mc-import-dialog", JSON.stringify(mcDlg));
+  assert.ok(mcDlg.dlg && mcDlg.input && mcDlg.file, "catalog: 配置导入弹窗应有粘贴区与文件选择 " + JSON.stringify(mcDlg));
+  const mcFill = await win.webContents.executeJavaScript(`(() => {
+    const el = document.querySelector(".ag-doc .ti-input");
+    if (!el) return { err: "no-input" };
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
+    setter.call(el, "mcpServers:\\n  smoke-mcp:\\n    command: node\\n    args: [\\"server.js\\"]");
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    return { ok: true, len: el.value.length };
+  })()`);
+  log("mc-fill", JSON.stringify(mcFill));
+  assert.ok(mcFill.ok, "catalog: 粘贴区应可填充 " + JSON.stringify(mcFill));
+  const mcDo = await win.webContents.executeJavaScript(`(() => {
+    const b = document.querySelector('.ag-doc [data-cg="do-import"]');
+    if (!b) return { err: "no-btn" };
+    if (b.disabled) return { err: "disabled" };
+    b.click();
+    return { ok: true };
+  })()`);
+  log("mc-do", JSON.stringify(mcDo));
+  assert.ok(mcDo.ok, "catalog: 导入按钮应可点击 " + JSON.stringify(mcDo));
+  const mcImported = await win.webContents.executeJavaScript(`(() => {
+    return {
+      cards: document.querySelectorAll(".cg-card").length,
+      dlgClosed: !document.querySelector(".ag-doc"),
+    };
+  })()`);
+  log("mc-imported", JSON.stringify(mcImported));
+  assert.strictEqual(mcImported.cards, 5, "catalog: 配置导入后 MCP 应有 5 个服务器");
+  assert.ok(mcImported.dlgClosed, "catalog: 全新导入（无跳过）应直接收起");
+  const mcDeleted0 = await win.webContents.executeJavaScript(`document.querySelectorAll(".cg-card").length`);
+  log("mc-import-check", mcDeleted0);
+  // React 提交 + gsap 入场后的短暂间隔（与探针一致——立即查询偶发取不到操作区）
+  await new Promise((r) => setTimeout(r, 250));
+  const mcDel1 = await win.webContents.executeJavaScript(`(() => {
+    const del = document.querySelector('[data-cg="del"]');
+    if (!del) return { err: "no-del", customs: [...document.querySelectorAll(".cg-card-title")].map((t) => t.textContent).join(",") };
+    del.click();
+    return { ok: true };
+  })()`);
+  log("mc-del-1", JSON.stringify(mcDel1));
+  assert.ok(mcDel1.ok, "catalog: 导入条目应有删除入口 " + JSON.stringify(mcDel1));
+  await win.webContents.executeJavaScript(`document.querySelector('[data-cg="del"]').click()`);
+  const mcDeleted = await win.webContents.executeJavaScript(`document.querySelectorAll(".cg-card").length`);
+  log("mc-import-deleted", mcDeleted);
+  assert.strictEqual(mcDeleted, 4, "catalog: 删除导入服务器后应回到 4 个");
+
+  // 连接管理：顶栏指示器 → 弹窗 → 远程访问开关 → 地址/token 展示 → 切换远程 → 添加表单
+  const connPill = await win.webContents.executeJavaScript(`(() => {
+    const pill = document.querySelector('[data-conn="pill"]');
+    if (!pill) return { err: "no-pill" };
+    return { ok: true, name: pill.textContent.trim() };
+  })()`);
+  log("conn-pill", JSON.stringify(connPill));
+  assert.ok(connPill.ok, "topbar: 连接指示器应存在 " + JSON.stringify(connPill));
+  assert.ok(connPill.name.includes("本机"), "topbar: 默认连接应显示本机");
+  await win.webContents.executeJavaScript(`document.querySelector('[data-conn="pill"]').click()`);
+  const connMgr = await win.webContents.executeJavaScript(`(() => {
+    const doc = document.querySelector(".ag-doc");
+    if (!doc) return { err: "no-dialog" };
+    return {
+      title: doc.querySelector(".ag-doc-title")?.textContent,
+      local: doc.textContent.includes("127.0.0.1:7789"),
+      ra: !!doc.querySelector(".toggle"),
+    };
+  })()`);
+  log("conn-dialog", JSON.stringify(connMgr));
+  assert.ok(connMgr.title === "连接" && connMgr.local, "topbar: 连接弹窗应含本机 " + JSON.stringify(connMgr));
+  // 远程访问配置已移到侧栏「远程访问」页（SakuraBlock/LanAccessBlock/TailscaleBlock），
+  // 连接弹窗只列后端与 token（遮罩）+ 指引入口——这里断言现契约：
+  // 弹窗里有遮罩 token（••••）与「远程访问」指引。
+  const ra = await win.webContents.executeJavaScript(`(() => {
+    const doc = document.querySelector(".ag-doc");
+    if (!doc) return { err: "no-dialog" };
+    return {
+      tokenMasked: !!doc.textContent.match(/[0-9a-f]{4}••••[0-9a-f]{4}/),
+      raHint: doc.textContent.includes("远程访问"),
+    };
+  })()`);
+  log("conn-remote-access", JSON.stringify(ra));
+  assert.ok(!ra.err && ra.tokenMasked && ra.raHint, "topbar: 连接弹窗应展示遮罩 token 与远程访问指引 " + JSON.stringify(ra));
+  // 切换到远程连接（演示种子「公司开发机」）→ 指示器名称跟随
+  const connSwitch = await win.webContents.executeJavaScript(`(() => {
+    const btn = document.querySelector('[data-conn="connect"]');
+    if (!btn) return { err: "no-connect-btn", text: document.querySelector(".ag-doc")?.textContent.slice(0, 80) };
+    btn.click();
+    return { ok: true };
+  })()`);
+  log("conn-switch-click", JSON.stringify(connSwitch));
+  assert.ok(connSwitch.ok, "topbar: 远程连接应有连接按钮 " + JSON.stringify(connSwitch));
+  const pillAfter = await win.webContents.executeJavaScript(`(() => {
+    return {
+      name: document.querySelector('[data-conn="pill"]')?.textContent.trim(),
+      dialogTag: !!document.querySelector(".ag-doc .conn-tag"),
+    };
+  })()`);
+  log("conn-switched", JSON.stringify(pillAfter));
+  assert.ok(pillAfter.name.includes("公司开发机"), "topbar: 指示器应显示当前连接名 " + JSON.stringify(pillAfter));
+  assert.ok(pillAfter.dialogTag, "topbar: 当前连接条目应有标记");
+  // 断开回落本机 → 添加表单（名称/地址/token 三字段）
+  await win.webContents.executeJavaScript(`document.querySelector('[data-conn="disconnect"]').click()`);
+  await win.webContents.executeJavaScript(`document.querySelector('[data-conn="add"]').click()`);
+  const connForm = await win.webContents.executeJavaScript(`(() => {
+    return {
+      fields: document.querySelectorAll(".ag-doc .fd-input").length,
+      save: !!document.querySelector(".ag-doc [data-cg=save], .ag-doc .fd-btn-p"),
+    };
+  })()`);
+  log("conn-add-form", JSON.stringify(connForm));
+  assert.ok(connForm.fields >= 3, "topbar: 添加连接表单应有名称/地址/token 字段");
+  await win.webContents.executeJavaScript(`document.querySelector(".ag-doc-close").click()`);
+
+  // 樱花frp 公网穿透（2026-12 改版：块移到侧栏「远程访问」页的 RemoteAccessPage，
+  // 连接弹窗里不再内嵌）——这里断言页面里樱花frp 块存在与登录入口可达。
+  await win.webContents.executeJavaScript(`document.querySelector('[data-nav="remote"]').click()`);
+  await new Promise((r) => setTimeout(r, 250));
+  const skPage = await win.webContents.executeJavaScript(`(() => ({
+    page: !!document.querySelector(".ra-page"),
+    sakura: !!document.querySelector(".ra-page .conn-sakura"),
+    keyInput: !!document.querySelector(".conn-key-input"),
+    loginBtn: !!document.querySelector('[data-conn="sakura-login"]'),
+  }))()`);
+  log("sakura-block", JSON.stringify(skPage));
+  assert.ok(skPage.page && skPage.sakura && skPage.keyInput && skPage.loginBtn, "conn: 远程访问页应含樱花frp 块与登录入口 " + JSON.stringify(skPage));
+  await win.webContents.executeJavaScript(`(() => {
+    const input = document.querySelector(".conn-key-input");
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+    setter.call(input, "demo-access-key");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  })()`);
+  await win.webContents.executeJavaScript(`document.querySelector('[data-conn="sakura-login"]').click()`);
+  await new Promise((r) => setTimeout(r, 300));
+  const skLogged = await win.webContents.executeJavaScript(`(() => {
+    const blk = document.querySelector(".ra-page .conn-sakura");
+    return {
+      loggedIn: blk?.getAttribute("data-on") === "true",
+      traffic: !!blk?.textContent.match(/今日 .+ · 剩余 .+/),
+    };
+  })()`);
+  log("sakura-logged", JSON.stringify(skLogged));
+  assert.ok(skLogged.loggedIn && skLogged.traffic, "conn: 登录后应展示账户流量 " + JSON.stringify(skLogged));
+
+  // 更新提示（页面级 Toast + 侧栏角标 + 设置块）：演示模式**没有**自动检查
+  // （update.tsx 的定时检查只在有壳桥时启动）——从设置里手动「检查更新」进入，
+  //  900ms 演示桩后 available：Toast 弹出 → 立即更新（进度）→ 就绪 → 立即重启。
+  await win.webContents.executeJavaScript(`document.querySelector(".settings-row").click()`);
+  await new Promise((r) => setTimeout(r, 400));
+  await win.webContents.executeJavaScript(`document.querySelector('[data-su="check"]').click()`);
+  await new Promise((r) => setTimeout(r, 1500));
+  const utShown = await win.webContents.executeJavaScript(`(() => {
+    const t = document.querySelector(".upd-toast");
+    return t ? {
+      newVer: t.textContent.includes("0.2.0"),
+      dl: !!t.querySelector('[data-ut="download"]'),
+      badge: !!document.querySelector(".settings-upd-dot"),
+      verLabel: document.querySelector(".settings-row .ver")?.textContent,
+    } : { err: "no-toast", phase: document.querySelector(".set-update")?.getAttribute("data-phase") };
+  })()`);
+  log("update-toast", JSON.stringify(utShown));
+  assert.ok(!utShown.err && utShown.newVer && utShown.dl, "toast: 手动检查后应弹更新提示 " + JSON.stringify(utShown));
+  assert.ok(utShown.badge && utShown.verLabel === "可更新", "sidebar: 有更新时设置行应有角标与「可更新」");
+  // Toast 立即更新 → 内联进度 → 就绪
+  await win.webContents.executeJavaScript(`document.querySelector('[data-ut="download"]').click()`);
+  await new Promise((r) => setTimeout(r, 400));
+  const utDl = await win.webContents.executeJavaScript(`(() => {
+    return {
+      progress: !!document.querySelector(".upd-toast .set-update-progress-bar"),
+      pct: document.querySelector(".upd-toast .upd-toast-title .mono")?.textContent,
+    };
+  })()`);
+  log("update-toast-dl", JSON.stringify(utDl));
+  assert.ok(utDl.progress, "toast: 下载中应有内联进度条");
+  await new Promise((r) => setTimeout(r, 3000));
+  const utReady = await win.webContents.executeJavaScript(`(() => {
+    return { restart: !!document.querySelector('.upd-toast [data-ut="restart"]') };
+  })()`);
+  log("update-toast-ready", JSON.stringify(utReady));
+  assert.ok(utReady.restart, "toast: 下载完成应进入就绪（重启入口）");
+  await win.webContents.executeJavaScript(`document.querySelector('[data-ut="restart"]').click()`);
+  const utAfter = await win.webContents.executeJavaScript(`(() => {
+    return {
+      toastGone: !document.querySelector(".upd-toast"),
+      badgeGone: !document.querySelector(".settings-upd-dot"),
+      ver: document.querySelector(".settings-row .ver")?.textContent,
+    };
+  })()`);
+  log("update-toast-restarted", JSON.stringify(utAfter));
+  assert.ok(utAfter.toastGone && utAfter.badgeGone && !utAfter.ver.includes("可更新"), "toast: 重启后提示与角标应消失");
+  // 设置 · 通用：UpdateBlock 应显示「已是最新版本」
+  await win.webContents.executeJavaScript(`document.querySelector(".settings-row").click()`);
+  await new Promise((r) => setTimeout(r, 400));
+  const suLatest = await win.webContents.executeJavaScript(`(() => {
+    return { latest: document.querySelector(".set-update")?.textContent.includes("已是最新版本") };
+  })()`);
+  log("update-settings-latest", JSON.stringify(suLatest));
+  assert.ok(suLatest.latest, "settings: 重启后设置应显示已是最新");
+  await win.webContents.executeJavaScript(`document.querySelector(".settings-back").click()`);
+
+  // 网页搜索：设置分区 → 渠道卡（Tavily 已配置为主渠道）→ Brave 配置
+  // key（内联表单）→ 设为主渠道 → 添加自定义渠道
+  await win.webContents.executeJavaScript(`document.querySelector(".settings-row").click()`);
+  await new Promise((r) => setTimeout(r, 350));
+  await win.webContents.executeJavaScript(`(() => {
+    const btn = [...document.querySelectorAll(".settings-nav-item")].find((b) => b.textContent.trim() === "网页搜索");
+    if (btn) btn.click();
+  })()`);
+  await new Promise((r) => setTimeout(r, 250));
+  const spInit = await win.webContents.executeJavaScript(`(() => {
+    const cards = [...document.querySelectorAll(".sp-card")];
+    const tavily = cards.find((c) => c.textContent.includes("Tavily"));
+    return {
+      count: cards.length,
+      tavilyPrimary: tavily?.getAttribute("data-primary") === "true",
+      summary: document.querySelector(".sp-summary")?.textContent ?? "",
+    };
+  })()`);
+  log("search-init", JSON.stringify(spInit));
+  assert.ok(spInit.count >= 4 && spInit.tavilyPrimary, "settings: 搜索分区应有预设渠道且 Tavily 为主 " + JSON.stringify(spInit));
+  // Brave 未配置 → 点「配置」→ 内联表单能展开、能填，但**演示模式下保存按钮是禁用的**。
+  //
+  // 为什么这么断言：SearchSection 的保存按钮是 disabled={!live}，旁边配一句
+  //「演示模式：启动后端后这里才会真正写入配置。」——这是**产品有意为之**，不是缺陷；
+  // 而校验脚本跑的就是 demo，所以这里只能断言演示态的诚实形态。写入链（保存后遮罩
+  // key、设为主渠道、自定义渠道）需要真后端，不在本脚本范围内（原先那三段的断言
+  // 与产品门控冲突，且 data-sp="configure"/"save-custom" 这些选择器早已不存在）。
+  await win.webContents.executeJavaScript(`(() => {
+    const brave = [...document.querySelectorAll(".sp-card")].find((c) => c.textContent.includes("Brave"));
+    brave?.querySelector('[data-sp="edit"]')?.click();
+  })()`);
+  const spEdit = await win.webContents.executeJavaScript(`(() => {
+    const brave = [...document.querySelectorAll(".sp-card")].find((c) => c.textContent.includes("Brave"));
+    const form = brave?.querySelector(".sp-edit");
+    const input = form?.querySelector(".fd-input");
+    const save = form?.querySelector('[data-sp="save"]');
+    // 表单里还有别的 cg-field-hint（opt_in / default_ready / 设置项说明），
+    // 取全部再找「演示模式」那条——querySelector 会命中第一个别的提示。
+    const hints = [...(form?.querySelectorAll(".cg-field-hint") ?? [])].map((h) => h.textContent.trim());
+    if (input) {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+      setter.call(input, "BSA-demo-key-12345");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    return {
+      form: !!form,
+      input: !!input,
+      saveDisabled: save ? save.disabled : null,
+      hints,
+    };
+  })()`);
+  log("search-edit-open", JSON.stringify(spEdit));
+  assert.ok(spEdit.form && spEdit.input, "settings: 未配置渠道应可展开配置表单");
+  assert.strictEqual(spEdit.saveDisabled, true, "settings: 演示模式下保存按钮应禁用（无后端可写）");
+  assert.ok(spEdit.hints.some((h) => h.includes("演示模式")), `settings: 禁用时应给出「演示模式」提示（实际 ${JSON.stringify(spEdit.hints)}）`);
+  // 分组展开/收缩：收起后组内卡片从 DOM 卸载（ChannelGroup 的 gsap 收拢）→ 再展开回到原数
+  const groupToggle = await win.webContents.executeJavaScript(`(() => {
+    const g = document.querySelector('.sp-group [data-sp="group"]');
+    const before = document.querySelectorAll(".sp-card").length;
+    if (g) g.click();
+    return { before };
+  })()`);
+  await new Promise((r) => setTimeout(r, 500));
+  const groupAfter = await win.webContents.executeJavaScript(`document.querySelectorAll(".sp-card").length`);
+  log("search-group", JSON.stringify({ ...groupToggle, after: groupAfter }));
+  assert.ok(groupAfter < groupToggle.before, `settings: 收起分组后卡片应变少（${JSON.stringify(groupToggle)} → ${groupAfter}）`);
+  await win.webContents.executeJavaScript(`(() => {
+    const g = document.querySelector('.sp-group [data-sp="group"]');
+    if (g) g.click();
+  })()`);
+  await new Promise((r) => setTimeout(r, 500));
+  const groupBack = await win.webContents.executeJavaScript(`document.querySelectorAll(".sp-card").length`);
+  assert.strictEqual(groupBack, groupToggle.before, "settings: 再展开分组应回到原卡片数");
+  await win.webContents.executeJavaScript(`document.querySelector(".settings-back").click()`);
+
+});

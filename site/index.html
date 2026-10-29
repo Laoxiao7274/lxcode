@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>lxcode · 跑在自己机器上的个人智能体</title>
+    <meta
+      name="description"
+      content="lxcode 是本地优先的个人智能体：编程助手与通用助理合一。Go 内核 + React 客户端 + Electron 薄壳，会话、密钥与文件全部留在本机。"
+    />
+    <meta name="theme-color" content="#ffffff" />
+    <meta name="color-scheme" content="light" />
+    <!-- favicon：正式 LOGO（scripts/gen-app-icons.cjs 从 shell/build/icon.png 派生）。
+         旧的 favicon.svg 是独立设计的「lx」字标，与正式 LOGO 不同源，不再引用。 -->
+    <link rel="icon" type="image/png" href="/favicon-32.png" />
+    <link rel="alternate icon" type="image/x-icon" href="/favicon.ico" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <noscript>本站点原型需要 JavaScript 才能渲染。</noscript>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

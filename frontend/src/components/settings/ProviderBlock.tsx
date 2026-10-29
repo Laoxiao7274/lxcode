@@ -1,0 +1,306 @@
+// 模型分区：提供商卡（可收拢的模型列表 + 可见性开关 + 获取/添加/删除）。
+// 展开状态：**默认全部收缩**，用户点开才展开；状态记 localStorage
+// （shared/provider-expanded.ts）。新建/编辑后自动展开对应项也走同一份存储
+// （rememberExpand）——新建完回来，新卡就是开着的。
+import { useEffect, useRef, useState, type MouseEvent } from "react";
+import { gsap } from "gsap";
+import { useSettings, type ProviderMeta } from "../../shared/settings";
+import { isExpanded, writeExpanded } from "../../shared/provider-expanded";
+import { motionAllowed, staggerIn, enterEase } from "../../shared/motion";
+import { collapseAway, playEnter } from "../../shared/anim";
+import { kfmtLimit } from "../../shared/format";
+import { TextInput, Toggle } from "../form";
+import { IconChevronRight, IconPencil, IconTrash } from "../icons";
+import { ProviderEditDialog } from "./ProviderEditDialog";
+import { ProbeResultDialog, type ProbeModel } from "./ProbeResultDialog";
+import { RemoveProviderDialog } from "./RemoveProviderDialog";
+
+function ProviderBlock({ provider, onEditModel }: { provider: ProviderMeta; onEditModel: (modelId: string) => void }) {
+  const { settings, set, setProviderEnabled, setModelVisible, fetchModels, addModel, removeModel, disconnectProvider } = useSettings();
+  // 初始展开态读记忆；没有记忆 = 收缩（默认收起）
+  const [expanded, setExpanded] = useState(() => isExpanded(provider.id));
+  // 连接配置弹窗（Base URL / API Key / 格式，一次写全组）
+  const [editingConn, setEditingConn] = useState(false);
+  // 添加模型：内联输入行（空 = 未在添加）。draftTag = 可选 provider 标签：
+  // 同一个模型 id 在两家提供商下并存要靠它（主键 `provider::id`）。
+  const [adding, setAdding] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [draftTag, setDraftTag] = useState("");
+  const [draftErr, setDraftErr] = useState<string | null>(null);
+  // 端点探测（获取模型列表）：完整结果交给 ProbeResultDialog 弹窗呈现（null = 没开）。
+  // 已在本提供商注册表里的模型打 added 标（弹窗里置灰禁选），不做过滤——
+  // 藏掉会让用户以为端点没报它。勾选态归弹窗自己管。
+  const [probe, setProbe] = useState<{ endpoint: string; models: ProbeModel[] } | null>(null);
+  const [probing, setProbing] = useState(false);
+  const [probeErr, setProbeErr] = useState<string | null>(null);
+  // 移除提供商：二次确认弹窗（null = 没开）。确认后才断开——该组模型条目
+  // 含 API Key 且不可恢复，直接删是危险的。
+  const [removing, setRemoving] = useState(false);
+
+  const cardRef = useRef<HTMLDivElement>(null);
+  const modelsRef = useRef<HTMLDivElement>(null);
+  const addRef = useRef<HTMLDivElement>(null);
+
+  const enabledCount = provider.models.filter((m) => m.visible).length;
+  const providerVisible = provider.models.length > 0 && provider.models.every((m) => m.visible);
+
+  // 展开/收起（用户切换才动，首挂载由分区交错负责）
+  const firstExpand = useRef(true);
+  useEffect(() => {
+    if (firstExpand.current) {
+      firstExpand.current = false;
+      return;
+    }
+    if (!expanded || !modelsRef.current) return;
+    staggerIn([...modelsRef.current.children], { each: 0.04 });
+  }, [expanded]);
+
+  // 展开状态落 localStorage（用户点开/收起记下来，下次进设置页照旧）
+  useEffect(() => {
+    writeExpanded(provider.id, expanded);
+  }, [provider.id, expanded]);
+
+  // 新建后自动展开由挂载时读记忆完成（新提供商的卡是新组件，key = id）：
+  // 创建路径在打开前已 rememberExpand 该 id，挂载即展开。
+
+  // 收起要有退场：先播高度收拢+淡出，动画结束再卸载（条件渲染直接卸载是瞬灭）
+  const collapsingRef = useRef(false);
+  const toggleExpand = () => {
+    if (!expanded) {
+      setExpanded(true);
+      return;
+    }
+    if (collapsingRef.current) return;
+    collapsingRef.current = true;
+    collapseAway(modelsRef.current, () => {
+      collapsingRef.current = false;
+      setExpanded(false);
+    }, { borderTopWidth: 0, duration: 0.24 });
+  };
+
+  // 新增行（获取合并 / 手动添加）：自上滑入
+  const prevLen = useRef(provider.models.length);
+  useEffect(() => {
+    const added = provider.models.length - prevLen.current;
+    prevLen.current = provider.models.length;
+    if (added <= 0 || !expanded || !modelsRef.current) return;
+    const rows = modelsRef.current.querySelectorAll(".mset-model-row");
+    const fresh = Array.from(rows).slice(Math.max(0, rows.length - added));
+    if (!motionAllowed() || fresh.length === 0) return;
+    gsap.fromTo(fresh, { opacity: 0, y: -8 }, { opacity: 1, y: 0, duration: 0.3, stagger: 0.05, ease: enterEase, clearProps: "transform,opacity" });
+  }, [provider.models.length, expanded]);
+
+  // 添加输入行：出现即上浮
+  useEffect(() => {
+    if (!adding) return;
+    playEnter(addRef.current, { opacity: 0, y: -6 }, { opacity: 1, y: 0, duration: 0.22, ease: enterEase, clearProps: "transform,opacity" });
+  }, [adding]);
+
+  const commitAdd = async () => {
+    if (!draft.trim()) {
+      setDraftErr("模型 ID 不能为空");
+      return;
+    }
+    if (!(await addModel(provider.id, draft, draftTag))) {
+      setDraftErr("添加失败，请检查模型 ID 或上方错误提示");
+      return;
+    }
+    setDraft("");
+    setDraftTag("");
+    setDraftErr(null);
+    setAdding(false);
+  };
+
+  // 删除模型：先收行再移除
+  const handleDelete = (e: MouseEvent<HTMLButtonElement>, modelId: string) => {
+    collapseAway((e.currentTarget as HTMLElement).closest(".mset-model-row"), () => removeModel(provider.id, modelId), { borderBottomWidth: 0, duration: 0.24 });
+  };
+
+  // 移除提供商：先弹确认（本组件管弹窗开关），确认回调成功才收整卡——
+  // 收起动画保持在「删除完成」之后，退场观感与原来一致；失败弹窗不关、点名回显。
+  const handleRemove = () => setRemoving(true);
+
+  // 获取模型列表 = 探测端点**实际**提供什么，结果弹窗让用户勾选要加哪些。
+  // 不自动全部添加：端点可能报 200 个模型（OpenRouter），自动写入会把选择器淹掉；
+  // 默认也不预勾选（可预期胜过聪明——预勾选在 3 个模型时方便，在 200 个时是灾难）。
+  const runProbe = async () => {
+    setProbing(true);
+    setProbeErr(null);
+    try {
+      const res = await fetchModels(provider.id);
+      // 大小写不敏感比对：端点常把 id 的大小写报得跟注册表不一致（实测 myt ↔ MYT），
+      // 精确比对会让已添加的模型混进候选、重复注册一条仅大小写不同的条目。
+      const known = new Set(provider.models.map((m) => m.id.toLowerCase()));
+      const models = res.models.map((m) => ({ ...m, added: known.has(m.id.toLowerCase()) }));
+      setProbe({ endpoint: res.endpoint, models });
+    } catch (e) {
+      setProbe(null);
+      setProbeErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setProbing(false);
+    }
+  };
+
+  return (
+    <div className="mset-provider" ref={cardRef}>
+      <div className="mset-provider-head">
+        <button type="button" className="mset-provider-summary" onClick={toggleExpand} aria-expanded={expanded}>
+          <span className={"mset-chevron" + (expanded ? " open" : "")}>
+            <IconChevronRight />
+          </span>
+          <span className="mset-provider-badge" style={{ background: provider.color }}>{provider.name.slice(0, 1)}</span>
+          <span className="mset-provider-text">
+            <span className="mset-provider-name">{provider.name}</span>
+            <span className="mset-provider-tagline">
+              {provider.tagline}
+              {provider.connected
+                ? ` · ${provider.models.length > 0 ? `${enabledCount}/${provider.models.length} 模型` : "未获取模型"}${provider.fetchedAt && provider.models.length > 0 ? ` · ${provider.fetchedAt}` : ""}`
+                : " · 未连接"}
+            </span>
+          </span>
+        </button>
+        {provider.connected && (
+          <>
+            <span
+              className={"toggle" + (providerVisible ? " on" : "")}
+              role="switch"
+              aria-checked={providerVisible}
+              aria-label={`显示 ${provider.name} 的模型`}
+              tabIndex={0}
+              onClick={() => {
+                const next = !providerVisible;
+                setProviderEnabled(provider.id, next);
+                provider.models.forEach((m) => setModelVisible(provider.id, m.id, next));
+              }}
+              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); (e.target as HTMLElement).click(); } }}
+            >
+              <span className="toggle-knob" />
+            </span>
+            <button type="button" className="mset-provider-edit" title="改连接配置（Base URL / API Key / 格式）" aria-label={`配置 ${provider.name} 的连接`} onClick={() => { setExpanded(true); setEditingConn(true); }}>
+              <IconPencil strokeWidth={2} />
+            </button>
+            <button type="button" className="mset-provider-remove" title="断开并移除凭据" onClick={handleRemove}>
+              移除
+            </button>
+          </>
+        )}
+      </div>
+      {editingConn && <ProviderEditDialog provider={provider} onClose={() => setEditingConn(false)} />}
+      {removing && (
+        <RemoveProviderDialog
+          providerName={provider.name}
+          modelCount={provider.models.length}
+          onRemove={async () => {
+            // 成功后才播退场：动画的 onDone 只负责状态清理，删除已先行完成
+            await disconnectProvider(provider.id);
+            collapseAway(cardRef.current, () => { /* 删除已完成，收起即可 */ }, { marginBottom: 0, duration: 0.28 });
+          }}
+          onClose={() => setRemoving(false)}
+        />
+      )}
+      {expanded && provider.connected && (
+        <div className="mset-models" ref={modelsRef}>
+          {provider.fetching && (
+            <div className="mset-fetching" role="status">
+              <span className="mset-spinner" aria-hidden="true" />
+              正在获取模型列表…
+            </div>
+          )}
+          {!provider.fetching && provider.models.length === 0 && (
+            <div className="mset-empty">
+              <span className="mset-empty-text">{probeErr ? "获取失败" : "尚未获取模型列表"}</span>
+              <button type="button" className="mset-fetch-btn" onClick={runProbe} disabled={probing}>
+                {probing ? "获取中…" : "获取模型列表"}
+              </button>
+            </div>
+          )}
+          {probeErr && <div className="mset-probe-err" role="alert">{probeErr}</div>}
+          {probe && (
+            <ProbeResultDialog
+              provider={provider}
+              endpoint={probe.endpoint}
+              models={probe.models}
+              onClose={() => setProbe(null)}
+            />
+          )}
+          {provider.models.map((m) => (
+            <div key={m.id} className="mset-model-row">
+              <span className="mset-model-text">
+                <span className="mset-model-name">{m.name}</span>
+                <span className="mset-model-meta">
+                  <span className="mset-model-id">{m.id}</span>
+                  {m.provider && <span className="mset-model-tag manual">{m.provider}</span>}
+                  <span className="mset-model-ctx">上下文 {kfmtLimit(m.contextWindow)} · 输出 {kfmtLimit(m.maxOutput)}</span>
+                  {m.tags.map((t) => (
+                    <span key={t} className="mset-model-tag">{t}</span>
+                  ))}
+                  {m.manual && <span className="mset-model-tag manual">手动</span>}
+                </span>
+              </span>
+              {settings.model === m.id ? (
+                <button type="button" className="mset-model-default" title="当前默认模型">默认</button>
+              ) : (
+                <button type="button" className="mset-model-use" onClick={() => set({ model: m.id })}>
+                  设为默认
+                </button>
+              )}
+              <Toggle
+                on={m.visible}
+                onChange={() => setModelVisible(provider.id, m.id, !m.visible)}
+                ariaLabel={`在模型选择器中显示 ${m.name}`}
+              />
+              <button type="button" className="mset-model-edit" title="模型配置" aria-label={`配置 ${m.name}`} onClick={() => onEditModel(m.id)}>
+                <IconPencil strokeWidth={2} />
+              </button>
+              <button type="button" className="mset-model-del" title="删除模型" aria-label={`删除 ${m.name}`} onClick={(e) => handleDelete(e, m.id)}>
+                <IconTrash />
+              </button>
+            </div>
+          ))}
+          {provider.models.length > 0 && (
+            adding ? (
+              <div className="mset-add-row" ref={addRef}>
+                <TextInput
+                  autoFocus
+                  value={draft}
+                  onChange={(v) => { setDraft(v); setDraftErr(null); }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") { e.preventDefault(); commitAdd(); }
+                    if (e.key === "Escape") { setAdding(false); setDraft(""); setDraftTag(""); setDraftErr(null); }
+                  }}
+                  placeholder="模型 ID，如 deepseek-v3.2"
+                  spellCheck={false}
+                  aria-label="新模型 ID"
+                />
+                <TextInput
+                  value={draftTag}
+                  onChange={(v) => { setDraftTag(v); setDraftErr(null); }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") { e.preventDefault(); commitAdd(); }
+                    if (e.key === "Escape") { setAdding(false); setDraft(""); setDraftTag(""); setDraftErr(null); }
+                  }}
+                  placeholder="提供商标签（选填）"
+                  title="同一模型 ID 在不同提供商下并存时用它区分；填了注册表键就是「标签::模型 ID」。留空 = 与原来一样按纯 ID 注册。"
+                  spellCheck={false}
+                  aria-label="提供商标签"
+                />
+                <span className={"mset-add-hint" + (draftErr ? " err" : "")}>{draftErr ?? "回车确认 · Esc 取消"}</span>
+                <button type="button" className="mset-add-confirm" onClick={commitAdd}>添加</button>
+                <button type="button" className="mset-add-cancel" onClick={() => { setAdding(false); setDraft(""); setDraftTag(""); setDraftErr(null); }}>取消</button>
+              </div>
+            ) : (
+              <div className="mset-models-foot">
+                <button type="button" className="mset-add-model-btn" onClick={() => setAdding(true)}>+ 添加模型</button>
+                <button type="button" className="mset-refresh-btn" onClick={runProbe} disabled={probing} title="获取该端点提供的模型清单，勾选想添加的">
+                  {probing ? "获取中…" : "获取模型列表"}
+                </button>
+              </div>
+            )
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export { ProviderBlock };

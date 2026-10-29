@@ -1,0 +1,400 @@
+// 历史快照 → UI 状态：消息序列重建 blocks（回放路径与实时路径必须一致）。
+
+import type { HistorySnapshot, TodoItem } from "./types";
+import { type AssistantBlock, type ThreadBlock, type UIState, DISPATCH_TOOL_NAME, nextUid, checkpointBody, placeConfirm } from "./blocks";
+import { isHiddenNotice, noticeBody, noticeLabel } from "./notices";
+import { attachmentsFromMessage, parseAttachmentLines } from "./attachments";
+
+/** dispatch 调用的参数（后端 internal/tools/dispatch.go 的 JSON 形状：
+ *  `{agent, task, context?, session?, todos?}`）。 */
+export interface DispatchArgs {
+  /** 目标 Agent 的名单 id（空 = 历史里没有 / 参数坏了）。 */
+  agent: string;
+  /** 任务描述与验收标准。 */
+  task: string;
+  /** 续跑的子会话 id（可选）。**不是权威值**——续跑时它可能为空，
+   *  真正用的那个 id 在结果的提示行里（见 splitDispatchResult）。 */
+  session: string;
+  /** 主 Agent 预拆的清单初稿（todo 契约批③；可选）。 */
+  todos?: TodoItem[];
+}
+
+/** 解析 agent_dispatch 的 arguments（纯函数，不 import React——可直接单测）。
+ *
+ *  **坏 JSON 不许抛**：历史来自 SQLite，参数被 max_tokens 截断（AGENTS.md §5
+ *  坑 12）、老库里的旧形状都是既成事实——加载路径抛异常会让**整个会话打不开**
+ *  （用户看到的是"会话坏了"，而不是"这一次调度少了一张卡"）。解析不动就回落
+ *  空值：卡照建，只是没有 Agent 名与任务（比整段历史消失诚实得多）。
+ *
+ *  这里刻意不做保守修复（后端 jsonrepair 那套）：回放是**只读**的，修不了
+ *  也不该改历史——修出来的参数是猜的，而猜错的 task 会被当成真的任务展示。 */
+export function parseDispatchArgs(raw: string | undefined | null): DispatchArgs {
+  const none: DispatchArgs = { agent: "", task: "", session: "" };
+  if (!raw) return none;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return none;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return none;
+  const o = parsed as Record<string, unknown>;
+  const str = (k: string) => (typeof o[k] === "string" ? (o[k] as string) : "");
+  // todos 的判定刻意宽松：形状不对（不是数组/条目缺 content）就整个丢弃——
+  // 徽标是展示信息，坏参数不渲染比渲染成垃圾好；不抛错（与 agent/task/session
+  // 的容错同一条纪律）。
+  let todos: TodoItem[] | undefined;
+  if (Array.isArray(o.todos)) {
+    const items = (o.todos as unknown[]).filter(
+      (it): it is TodoItem =>
+        typeof it === "object" && it !== null &&
+        typeof (it as { content?: unknown }).content === "string" &&
+        typeof (it as { status?: unknown }).status === "string",
+    );
+    if (items.length > 0) todos = items;
+  }
+  // todos 缺席时**不写这个键**（键缺席 = 未知——本仓库 wire 的统一约定）。
+  const out: DispatchArgs = { agent: str("agent"), task: str("task"), session: str("session") };
+  if (todos) out.todos = todos;
+  return out;
+}
+
+/** 子会话 id 提示行（后端 internal/agent/tools.go 在 dispatch 结果末尾追加）：
+ *  `\n\n[子会话 id: <id> —— 只在这次**没做完**时填进 session 参数续跑；已经给出结论就别再派]`
+ *  它是**给模型看的续跑线索**，不是给用户看的结论——回放时剥掉。
+ *  子会话 id 从这里取是**权威**的：续跑时 arguments.session 可能为空，
+ *  而这一行永远是本次真正用的那个子会话。 */
+const SUB_SESSION_HINT = /\[子会话 id:\s*([^\]\s]+)[^\]]*\]/;
+
+/** 拆分 dispatch 的工具结果：结论正文 + 子会话 id（没有提示行时 id 为空串）。 */
+export function splitDispatchResult(raw: string): { body: string; sessionId: string } {
+  const text = raw ?? "";
+  const m = SUB_SESSION_HINT.exec(text);
+  if (!m) return { body: text.replace(/\s+$/, ""), sessionId: "" };
+  // 提示行可能不在末尾（后端目前追加在末尾）——按位置摘除而不是"取最后一行"，
+  // 摘完清掉尾部空行（提示行前面本来就垫了一个空行）
+  const body = (text.slice(0, m.index) + text.slice(m.index + m[0].length)).replace(/\s+$/, "");
+  return { body, sessionId: m[1] };
+}
+
+/** 回放时**没有配对结果**的调度的说明正文。
+ *
+ *  重启后历史里只有 tool_call、没有 role=tool 结果 = 那次派发在结束前就中断了
+ *  （进程被杀 / 用户取消 / 后端崩）。**不许假装 running**：卡片会永远转着
+ *  spinner 让用户干等一个不会来的结果。所以定格成 done + isError，并把
+ *  "为什么没有结论"写在卡里——用户看到的是一句实话。 */
+export const DISPATCH_INTERRUPTED = "这次派发在结束前中断了——历史里没有结果记录（重启前它没跑完）。子 Agent 的执行过程在它自己的会话里，本会话看不到结论。";
+
+/** 有配对结果、但结果正文里没有结论（例如只回了一行子会话 id 提示）时的占位。
+ *  与后端"（子 Agent 没有产出文本结论）"同款口径——是事实陈述，不是编的结论。 */
+export const DISPATCH_NO_TEXT = "（子 Agent 没有产出文本结论）";
+
+/** 派发结果文本里的清单终态行（后端 internal/agent/dispatch.go 的
+ *  dispatchTodoSummary——派发收尾追加在结论之后）：
+ *    `子会话清单最终状态：N/M 完成。`（全部完成）
+ *    `子会话清单最终状态：N/M 完成，未完成：X（进行中）、Y（待办）`（有残留）
+ *  历史回放没有 dispatchEnd 事件可吃 finalTodos，卡上的清单徽标只能从这条文本
+ *  恢复终态——格式与后端钉在同一份实现上（dispatch_todos_test 钉住文案），
+ *  解析不出（老历史/格式漂移）返回 undefined，卡维持初稿展示（诚实的降级）。 */
+export const DISPATCH_TODO_SUMMARY = /子会话清单最终状态：(\d+)\/(\d+) 完成/;
+
+/** 从清单终态行 + 清单初稿恢复回放用的终态清单。
+ *
+ *  三分支：① 解析不到终态行 → undefined（回放保持初稿，不猜）；
+ *  ② 初稿缺位或条数对不上（子会话执行中重写过清单）→ 只能恢复计数能恢复的部分：
+ *     全部完成时返回 undefined 不动初稿（内容无从知晓，编条目是撒谎），
+ *     有残留时同样 undefined（同一条理由）——徽标退回初稿展示；
+ *  ③ 条数对得上 → 以初稿内容为底：点名未完成的项按括号注记改状态
+ *    （进行中→active、待办→pending），其余全部 done。
+ *  条数对得上时这份恢复是**如实**的：终态行是后端按定格清单现算的，未完成项
+ *  点名带状态；对不上的分支宁可不恢复也不编。 */
+export function replayDispatchTodos(
+  raw: string,
+  draft: TodoItem[] | undefined,
+): TodoItem[] | undefined {
+  if (!draft || draft.length === 0) return undefined;
+  const m = DISPATCH_TODO_SUMMARY.exec(raw ?? "");
+  if (!m) return undefined;
+  const done = Number(m[1]);
+  const total = Number(m[2]);
+  if (total !== draft.length) return undefined;
+  // 未完成点名段（可缺席 = 全部完成）
+  const tail = (raw ?? "").slice(m.index + m[0].length);
+  const unfinished = new Map<string, TodoItem["status"]>();
+  const list = /未完成：(.+)$/.exec(tail.split("\n")[0] ?? "");
+  if (list) {
+    for (const part of list[1].split("、")) {
+      const pm = /^(.*)（(进行中|待办)）$/.exec(part.trim());
+      if (pm && pm[1]) unfinished.set(pm[1], pm[2] === "进行中" ? "active" : "pending");
+    }
+  }
+  // 一致性守卫：解析出的未完成数 + done 必须等于总数，对不上说明点名段被截断
+  // 或格式漂移——整体放弃恢复（宁缺毋滥，不许半真半假的清单上卡）。
+  const remaining = total - done;
+  if (unfinished.size !== remaining) return undefined;
+  return draft.map((it) => {
+    const st = unfinished.get(it.content);
+    return st ? { ...it, status: st } : { ...it, status: "done" as const };
+  });
+}
+
+/** 消息序列 → blocks（**唯一一份映射**）。
+ *
+ *  两条路径共用它：① 回放路径 reduceHistory（刷新/切会话重建主时间线）；
+ *  ② 子会话历史的渲染（DispatchCard 展开时懒加载子会话快照，App 的
+ *  handleLoadChild 调它）。**不许写第二份映射**——分叉的代价是同一段历史在
+ *  两条路径上换一张脸（上一轮那个 bug 就是回放路径给 agent_dispatch 建了工具行，
+ *  刷新之后子 Agent 卡退化成一行光秃秃的 `agent_dispatch`）。
+ *  tests/child-history.test.mjs ① 逐字段钉住"两份产出完全一致"。
+ *
+ *  配对规则：assistant 的 tool_calls 先开块；后续 role=tool 的消息
+ *  按 tool_call_id 回填对应块的 result（服务端的存储顺序保证可达）。
+ *  **调度调用（agent_dispatch）建的是 dispatch 卡，不是工具行**——与实时路径
+ *  （reduce.ts 的 toolCall + dispatchStart）形态一致。
+ *  压缩检查点（checkpoints 下标）渲染成 compacted 块——子会话也是会话，
+ *  它自己的压缩检查点走的就是这一条。 */
+export function historyBlocks(h: HistorySnapshot): ThreadBlock[] {
+  const blocks: ThreadBlock[] = [];
+  const checkpoints = new Set(h.checkpoints ?? []);
+  // 缺 messages 键的快照（老后端 / 演示快照）不许让加载路径抛异常——与
+  // 「畸形历史要么在写边界拦住、要么在读侧兜底」同一条纪律（AGENTS.md §5 坑 12）。
+  const messages = h.messages ?? [];
+  let lastAssistant: AssistantBlock | null = null;
+  // 工具调用 id → 块下标的索引（tool / dispatch 分开记）：回填结果时不再对
+  // 整个 blocks 做两次 find。旧写法是 O(消息数 × 块数)——一次 1000 条消息、
+  // 300 次工具调用的会话在装载时是几十万次比较，切会话的卡顿里它是实打实的一块
+  // （而且每次装载都要跑一遍）。索引只在本函数内建一次，语义与 find 完全相同
+  // （同一 id 只对应一条结果；先到的为准由 result === undefined 判定）。
+  const toolIdx = new Map<string, number>();
+  const dispatchIdx = new Map<string, number>();
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    if (m.role === "user") {
+      // 压缩检查点不是用户说的话：渲染成标记块（否则会变成一个巨大的用户气泡，
+      // 把真正的用户消息淹没——这是回放路径与实时路径必须一致的地方）
+      if (checkpoints.has(i)) {
+        blocks.push({ kind: "compacted", uid: nextUid(), before: 0, after: 0, shadowed: 0, summary: checkpointBody(m.content), manual: false });
+      } else {
+        // 提示条（重复调用提醒）是 **user 角色**消息（模型要当作用户回合才能回应），
+        // 但它不是用户说的话——按**前缀表**识别并渲染成提示条（回放路径与实时路径
+        // 必须一致，否则刷新之后同一句话换了张脸）。后台任务通告是 hidden 种类：
+        // 走上面的 isHiddenNotice 分支，不产生任何块（任务状态在任务卡与 Jobs 面板）。
+        // **hidden 的系统注记不产生任何块**（写给模型的，界面上当它不存在——
+        // 与实时路径 reduce.ts 共用同一份判定，两处一致性是本注释的既有纪律）。
+        if (isHiddenNotice(m.content)) {
+          lastAssistant = null;
+          continue;
+        }
+        const label = noticeLabel(m.content);
+        if (label) {
+          blocks.push({ kind: "notice", uid: nextUid(), label, text: noticeBody(m.content) });
+        } else if (h.child) {
+          // 子会话历史里的非通告 user 消息 = 主 Agent 派发的任务说明书：渲染成
+          // 「任务」块而不是用户气泡（用户报的问题 1 的回放路径）。判据是**快照
+          // 的 child 键**（childHistory 装载的快照才带）——子会话页只读，用户无法
+          // 在子会话里发言，所以「非通告的 user 消息」只有派发这一个来源；主会话
+          // 快照不带这个键，user 消息照旧是用户气泡。与实时路径（reduce.ts 的
+          // task 标记）必须给出同一个块种类——两条路径分叉的代价是刷新之后同一条
+          // 任务说明书换了张脸。
+          blocks.push({ kind: "task", uid: nextUid(), text: m.content });
+        } else {
+          // 附件归一化（与实时路径 reduce.ts 共用同一份纯函数）：结构化引用优先，
+          // 老历史回落 images 引用 + 文本「[附件]」行；正文剥掉附件行（卡区渲染）。
+          const atts = attachmentsFromMessage({ attachments: m.attachments, images: m.images, content: m.content });
+          const displayText = atts ? parseAttachmentLines(m.content).text : m.content;
+          // seq = 撤回锚点（后端 ChatMessage 上的字段）。**回放路径与实时路径
+          // 都读它**——少一条的话刷新之后同一条消息就再也撤不回（而界面上看起来
+          // 一切正常）。只在真的给了时才写这个键：`seq: undefined` 会让既有断言
+          // 多出一个键，而 canRewind 判的是 typeof === "number"，行为完全一致。
+          blocks.push(
+            typeof m.seq === "number"
+              ? { kind: "user", uid: nextUid(), text: displayText, seq: m.seq, ...(atts ? { attachments: atts } : {}) }
+              : { kind: "user", uid: nextUid(), text: displayText, ...(atts ? { attachments: atts } : {}) },
+          );
+        }
+      }
+      lastAssistant = null;
+    } else if (m.role === "assistant") {
+      // 每轮的计时/用量/模型随消息落库（后端 messages 表那四列）——**回放路径必须与实时
+      // 路径给出同一组数字**：只填实时不填回放的话，用户刷新一次这些数字就全没了。
+      // 缺席的项**不写这个键**（不是写 0——0 会被显示成「首字 0ms」的假数据）。
+      const a: AssistantBlock = {
+        kind: "assistant", uid: nextUid(), content: m.content,
+        reasoning: m.reasoning_content ?? "", streaming: false,
+        ...(typeof m.usage_tokens === "number" ? { usageTokens: m.usage_tokens } : {}),
+        ...(typeof m.first_token_ms === "number" ? { firstTokenMs: m.first_token_ms } : {}),
+        ...(typeof m.duration_ms === "number" ? { durationMs: m.duration_ms } : {}),
+        ...(typeof m.model === "string" && m.model !== "" ? { model: m.model } : {}),
+      };
+      blocks.push(a);
+      lastAssistant = a;
+      // assistant 携带的工具调用：紧跟块（保持原顺序）
+      for (const tc of m.tool_calls ?? []) {
+        const id = tc.id ?? "";
+        const name = tc.function?.name ?? "";
+        if (name === DISPATCH_TOOL_NAME) {
+          // 调度调用的渲染形态是 dispatch 卡（**不是工具行**）——实时路径同样
+          // 不为它建工具行（reduce.ts 的 toolCall，随后 dispatchStart 挂卡）。
+          // 回放建工具行的后果就是用户报的那个：刷新之后卡片、Agent 名、任务、
+          // 结论全没了，只剩一行 `agent_dispatch`。
+          const args = parseDispatchArgs(tc.function?.arguments);
+          if (!dispatchIdx.has(id)) dispatchIdx.set(id, blocks.length);
+          blocks.push({
+            kind: "dispatch", uid: nextUid(), id,
+            // 续跑时 arguments.session 就是那个子会话；结果里的提示行优先
+            //（role=tool 分支会用 splitDispatchResult 覆盖它）
+            sessionId: args.session || undefined,
+            agentId: args.agent,
+            // 名字与颜色要 Agent 注册表，纯函数里没有——留空，由 DispatchCard
+            // 按 agentId 从 useAgents() 回落（渲染层才有注册表）
+            agentName: "", agentColor: "",
+            task: args.task,
+            // todo 契约批③：主 Agent 预拆的清单初稿（arguments.todos）——回放时
+            // 卡上仍能看到当时的计划。子会话执行中的修订不在父会话历史里（它落
+            // 在子会话自己的消息流），回放定格为初稿是**诚实的降级**（与 subBlocks
+            // 同一条理由）。
+            todos: Array.isArray(args.todos) ? (args.todos as TodoItem[]) : undefined,
+            // 先按"中断"定格：历史里**没有**配对结果 = 那次派发在结束前就断了，
+            // 不是"正在跑"。结果到了（role=tool 分支）再回填成 done + 正文。
+            status: "done", isError: true, result: DISPATCH_INTERRUPTED,
+            // **子块恒为空数组**：子 Agent 是**独立会话**，它自己的 messages
+            // （子过程：思考、工具调用、结果）在库里另存一份，父会话的历史里
+            // 根本没有这些明细——回放无从重建，只能空着。
+            // 这是**诚实的降级**（不是 bug、更不许编内容）：卡里有任务与结论，
+            // 想看子过程就去子会话自己的历史（卡头的子会话 id 是钥匙）。
+            subBlocks: [],
+          });
+          continue;
+        }
+        if (!toolIdx.has(id)) toolIdx.set(id, blocks.length);
+        blocks.push({
+          kind: "tool", uid: nextUid(), id,
+          name, arguments: tc.function?.arguments ?? "",
+        });
+      }
+    } else if (m.role === "tool") {
+      // 工具结果回填（按 tool_call_id 找块；找不到则丢弃——防御坏数据）
+      const id = m.tool_call_id ?? "";
+      // 索引与旧的 blocks.find 同义：命中**第一个**同 id 的块（建索引时
+      // 已按首次出现记录，重复 id 不覆盖）——重复工具调用 id 是坏数据，
+      // 但两条路径必须对同一个块回填（否则刷新前后长不一样）。
+      // ① 普通工具行：原逻辑不动（**只在还没有结果时回填**——重复的结果不该
+      //    覆盖先到的那条）
+      const toolAt = toolIdx.get(id);
+      const target = (toolAt === undefined ? undefined : blocks[toolAt]) as
+        | Extract<ThreadBlock, { kind: "tool" }>
+        | undefined;
+      if (target && target.result === undefined) {
+        target.result = m.content;
+        target.isError = false;
+        // share_file 共享的附件（结果消息上的元数据——与实时 toolResult 同一份形状）
+        if (m.attachments?.length) target.attachments = m.attachments;
+      }
+      // ② 调度卡：同一个调用 id 的 dispatch 块。**这一条不能少**——回放重建的
+      //    卡建出来就是"中断"态，结果到了必须能回填；只找 kind === "tool"
+      //    的话每张卡都停在中断态（用户看到的还是"没有结论"）。
+      //    历史里一个调用 id 只对应一条结果，所以这里直接覆盖，不必判空。
+      const cardAt = dispatchIdx.get(id);
+      const card = (cardAt === undefined ? undefined : blocks[cardAt]) as
+        | Extract<ThreadBlock, { kind: "dispatch" }>
+        | undefined;
+      if (card) {
+        const { body, sessionId } = splitDispatchResult(m.content);
+        // 结论正文（尾部那行"子会话 id"提示是给模型看的续跑线索，已剥掉）。
+        // 正文空 = 子 Agent 没留下文本结论——用占位说明，不留空白。
+        card.result = body || DISPATCH_NO_TEXT;
+        card.status = "done";
+        // 历史里的 tool 消息**不带 is_error**（llm.Message 没有这个字段），
+        // 所以回放分不出"子 Agent 报错"与"正常结束"——不编：报错说明本来就在
+        // 正文里（后端错误路径的正文以"错误: "开头），用户读得到。
+        card.isError = false;
+        // 子会话 id 优先取结果里的（权威值：续跑时 arguments.session 可能为空，
+        // 而这一行永远是本次真正用的那个子会话）
+        if (sessionId) card.sessionId = sessionId;
+        // todo 契约批③（回放侧）：从结果文本里的清单终态行恢复定格清单——
+        // 实时路径吃 dispatchEnd.finalTodos，回放没有那个事件，只能从后端写进
+        // 结果的「子会话清单最终状态：N/M 完成」恢复。恢复不了（没建过清单 /
+        // 初稿条数对不上 / 文本被截断）保持初稿不动——不编。
+        const todos = replayDispatchTodos(m.content, card.todos);
+        if (todos) card.todos = todos;
+        // 子会话共享到对话的附件（调度结果消息上的元数据——与实时 toolResult
+        // 同一份形状）：主时间线渲染附件条（卡 = 一行摘要的例外：附件是成果）。
+        if (m.attachments?.length) card.attachments = m.attachments;
+      }
+      // 工具结果后正文续写：新开 assistant 块（下一条 assistant 自然处理）
+      lastAssistant = null;
+    }
+  }
+  // 没有任何输出的进行中轮次不重现（streaming 重建成本高，历史里也少见）。
+  // 挂起的确认必须重建：刷新/切会话后待裁决的确认卡不能只留在 state.pending
+  //（没有任何组件渲染 pending——只有 blocks 里的 confirm 块才会画出来），
+  // 否则会话卡在 busy=true 且用户无从批准（死锁）。
+  // 用 placeConfirm 就地替换：后端在确认门挂起前已把 assistant 的 tool_calls
+  // 落库，所以历史里必然有一行同 id 的工具行——若直接追加会重现"两行同 id"。
+  const pending = h.pending ?? null;
+  return pending ? placeConfirm(blocks, pending) : blocks;
+}
+
+/** 历史快照 → UI 状态（回放路径的入口）：块重建**复用 historyBlocks**，
+ *  这里只负责把它装进 UIState 并带上快照里的会话级状态。
+ *
+ *  单独一层的理由：子会话历史只需要块（它不参与主时间线的归约——卡内的
+ *  子时间线是**只读补充**），而主时间线需要 busy/pending/todos/context。
+ *  两份产出共用同一个 historyBlocks，映射不可能分叉。 */
+/** 上翻分页：把**更早一页**的块前插到现有时间线（不重建、不动本地实时状态）。
+ *
+ *  与 reduceHistory 的分工：那个是「一份完整基线替换整条时间线」（首屏/重拉），
+ *  这个是「在已有的前面补一段」（before_seq 应答）。两条路径共用同一个
+ *  historyBlocks 映射（块形状不可能分叉）。
+ *
+ *  三条纪律：
+ *  ① **不动 state.streaming**——分页只补头部，正在流式的那一块在尾部，与它无关；
+ *  ② **不重复确认卡**：分页应答同样按 pending 追加确认卡（historyBlocks 末尾的
+ *     placeConfirm），而那张卡本地已经有了——按 request.id 去重，否则同一张待裁决
+ *     卡会在时间线里出现两遍；
+ *  ③ 分页元数据随应答更新（has_more / first_seq），下一次上翻才有 anchor。
+ *  区间不重叠由后端保证（before_seq 是**不含 anchor** 的前缀窗口）。 */
+export function mergeOlderHistory(state: UIState, h: HistorySnapshot): UIState {
+  const existing = new Set<string>();
+  for (const b of state.blocks) {
+    if (b.kind === "confirm") existing.add(b.request.id);
+  }
+  // 分页应答里的检查点下标**已经按窗口平移**（后端 shiftCheckpoints，见
+  // internal/agent/session.go 的 HistoryBefore）——historyBlocks 直接按窗口内下标
+  // 认，压缩历史块不会因分页错位。
+  const older = historyBlocks(h).filter((b) => !(b.kind === "confirm" && existing.has(b.request.id)));
+  return {
+    ...state,
+    blocks: [...older, ...state.blocks],
+    historyMore: Boolean(h.hasMore),
+    historyFirstSeq: h.firstSeq ?? 0,
+    historyReady: true,
+  };
+}
+
+export function reduceHistory(state: UIState, h: HistorySnapshot): UIState {
+  const pending = h.pending ?? null;
+  return {
+    ...state,
+    blocks: historyBlocks(h),
+    // 回放重建 = 一份完整的历史基线：本地那份流式块由 reduceHistoryLoaded 的
+    // appendLiveTail 决定接不接（接回时写回 streaming），这里先清空。
+    streaming: null,
+    // 分页元数据（before_seq 应答才带 has_more/first_seq）：键缺席 = 老后端/
+    // 非分页应答 → 不再上翻（与改造前的行为一致）。
+    historyMore: Boolean(h.hasMore),
+    historyFirstSeq: h.firstSeq ?? 0,
+    busy: false,
+    pending,
+    todos: h.todos ?? [],
+    // 未知占用（后端刚重启/刚切会话）置 null —— 指示器显示中性态，
+    // 不沿用上一会话的数字（那是别人的窗口占用）
+    context: h.context ?? null,
+    // 整段会话统计同样随快照重建：它折叠的是**整段日志**（后端读库），
+    // 所以切走再切回、刷新之后都是同一组数字（不随前端可见的历史长短变）
+    stats: h.stats ?? null,
+    // 这个会话实际用的模型（子会话页头用它——缺席 = 未知，不拿主会话的冒充）
+    model: h.model ?? "",
+    historyReady: true,
+  };
+}

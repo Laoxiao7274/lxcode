@@ -1,0 +1,52 @@
+# 二进制
+*.exe
+bin/
+
+# 本地配置（含 API key）
+config/local.json
+# 网页搜索渠道配置（同样含各渠道 apikey）
+config/search.json
+# 远程访问开关与访问令牌（token 是后端门凭证，同性质）
+config/remote.json
+# 模型目录缓存（models.dev 快照，生成物；删了会自动重拉）
+config/model-catalog.json
+
+# 临时与会话数据
+temp/
+*.tmp
+
+# 前端（node_modules 与构建产物）
+frontend/node_modules/
+frontend/dist/
+frontend/tsconfig.tsbuildinfo
+
+# IDE
+.idea/
+.vscode/
+
+# Agent 私有会话状态（lxcode 自身的工作记忆）
+.lxcode/
+
+# 站点设计预览的浏览器审计转储（444MB 缓存/模型文件，误入库曾顶爆 GitHub 100MB 限制）
+site/.design-preview/
+
+# 安卓签名：keystore 与密码文件只在本地（丢了无法同签名更新，务必自行备份）
+android/keystore.properties
+android/*.keystore
+android/*.jks
+
+# Python 运行时产物与部署凭据（不入库）
+__pycache__/
+*.pyc
+remote.local.json
+# 站点后端运行时数据（SQLite 等）
+site-backend/data/
+# 站点前端依赖（曾被误跟踪）
+site/node_modules/
+# 构建产物与临时文件（2026-10-29 历史重建时不入库）
+site-backend/dist/
+site/dist.bak-*/
+tmp/
+*.log
+# 临时探针工具（不入库）
+cmd/lxprobe-tmp/

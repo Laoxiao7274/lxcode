@@ -1,0 +1,765 @@
+/* 设置·模型分区与软件更新。 */
+
+/* ===== 模型选择器：按提供商分组 ===== */
+.mp-group {
+  margin-bottom: 2px;
+}
+.mp-group-title {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--fg-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  padding: 6px 10px 3px;
+  /* 分组标题吸顶：长列表滚动时仍能看出当前在哪家提供商下。
+     面板底是不透明的 --surface，否则吸顶标题会透出下方内容。 */
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface);
+}
+/* 键盘高亮（↑/↓ 移动的那一行）——与 :hover 同款底，但键盘操作时也要看得见 */
+.mp-item.kbd {
+  background: var(--border-soft);
+}
+.mp-group .mp-item {
+  padding-left: 18px;
+}
+.mp-empty {
+  padding: 10px 12px 12px;
+  font-size: 11.5px;
+  color: var(--fg-faint);
+  line-height: 1.5;
+}
+/* ===== 设置 · 模型分区（提供商 + 模型，OpenCode 式两级开关） ===== */
+.mset-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.mset-count {
+  font-size: 12px;
+  color: var(--fg-faint);
+}
+.mset-connect-btn.fd-btn-p {
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-size: 12.5px;
+}
+.mset-provider {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  margin-bottom: 10px;
+  overflow: hidden;
+  background: var(--surface);
+}
+.mset-provider-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px 10px 8px;
+}
+.mset-provider-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  padding: 0;
+  font-family: var(--font-sans);
+}
+.mset-chevron {
+  color: var(--fg-faint);
+  display: inline-flex;
+  transition: transform 150ms cubic-bezier(0.22, 1, 0.36, 1);
+  flex: none;
+}
+.mset-chevron.open {
+  transform: rotate(90deg);
+}
+.mset-provider-badge {
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  color: #fff;
+  font-size: 11.5px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  line-height: 1;
+}
+.mset-provider-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-width: 0;
+}
+.mset-provider-name {
+  font-size: 13.5px;
+  color: var(--fg);
+  font-weight: 500;
+  line-height: 18px;
+}
+.mset-provider-tagline {
+  font-size: 11px;
+  color: var(--fg-faint);
+  line-height: 15px;
+}
+.mset-provider-remove {
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  padding: 3px 10px;
+  cursor: pointer;
+  font-family: var(--font-sans);
+  flex: none;
+}
+.mset-provider-remove:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+/* 提供商连接配置（Base URL / API Key / 格式）：与模型行的铅笔按钮同规格 */
+.mset-provider-edit {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-faint);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  flex: none;
+}
+.mset-provider-edit:hover {
+  color: var(--fg);
+  background: var(--border-soft);
+}
+.mset-models {
+  border-top: 1px solid var(--border-soft);
+  padding: 2px 12px 8px 40px;
+}
+.mset-model-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+.mset-model-row:last-of-type {
+  border-bottom: none;
+}
+.mset-model-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+.mset-model-name {
+  font-size: 13px;
+  color: var(--fg);
+  line-height: 16px;
+}
+.mset-model-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  line-height: 17px;
+  /* id + 上下文/输出 + 能力标签一行放不下时必须换行：子项全是 flex:none/nowrap，
+     不换行会溢出绘制、叠到行右侧的「设为默认」按钮下面（实测 GLM 长标签行）。 */
+  flex-wrap: wrap;
+  row-gap: 3px;
+}
+.mset-model-id {
+  font-size: 10.5px;
+  color: var(--fg-faint);
+  font-family: var(--font-mono);
+  line-height: 17px;
+}
+.mset-model-ctx {
+  font-size: 10px;
+  color: var(--fg-faint);
+  font-variant-numeric: tabular-nums;
+  line-height: 17px;
+  white-space: nowrap;
+}
+.mset-model-tag {
+  display: inline-flex;
+  align-items: center;
+  height: 17px;
+  font-size: 10px;
+  color: var(--fg-muted);
+  background: var(--bg-side);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 5px;
+  line-height: 1;
+  flex: none;
+}
+.mset-model-tag.manual {
+  color: #8e6fbe;
+  border-color: #e4dcf4;
+  background: #f7f4fc;
+}
+/* 已添加过的模型（探测结果弹窗）：整行降透明——可见、可核对，但不可再勾 */
+.mset-model-row.added {
+  opacity: 0.55;
+}
+.mset-model-row.added .mset-model-name {
+  color: var(--fg-muted);
+}
+.mset-model-tag.done {
+  color: var(--fg-faint);
+  background: transparent;
+  border-style: dashed;
+}
+.mset-model-use {
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  padding: 3px 10px;
+  cursor: pointer;
+  font-family: var(--font-sans);
+  flex: none;
+}
+.mset-model-use:hover {
+  color: var(--fg);
+  border-color: var(--fg);
+}
+.mset-model-default {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--success);
+  background: transparent;
+  border: 1px solid var(--success);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-family: var(--font-sans);
+  flex: none;
+  cursor: default;
+}
+.mset-model-del {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-faint);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  flex: none;
+}
+.mset-model-del:hover {
+  color: var(--danger);
+  background: var(--danger-wash);
+}
+.mset-model-edit {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-faint);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  flex: none;
+}
+.mset-model-edit:hover {
+  color: var(--fg);
+  background: var(--border-soft);
+}
+.mset-edit-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.mset-edit-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.mset-edit-field > span {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--fg-muted);
+}
+/* 输入框统一 .fd-input（表单套件）；弹窗内更紧凑的变体 */
+.mset-edit-field .fd-input {
+  padding: 6px 9px;
+  font-size: 12px;
+}
+.mset-edit-field .fd-input.mono {
+  font-family: var(--font-mono);
+}
+.mset-edit-field.wide {
+  grid-column: 1 / -1;
+}
+/* 模型配置弹窗底栏 */
+.mset-medit-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 2px;
+}
+.mset-medit-actions {
+  display: inline-flex;
+  gap: 7px;
+}
+.mset-del-danger {
+  font-size: 12px;
+  color: var(--danger);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 4px 11px;
+  cursor: pointer;
+  font-family: var(--font-sans);
+}
+.mset-del-danger:hover {
+  border-color: var(--danger);
+  background: var(--danger-wash);
+}
+.mset-medit-badge {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--success);
+  border: 1px solid var(--success);
+  border-radius: 999px;
+  padding: 1px 8px;
+  line-height: 15px;
+  flex: none;
+}
+.mset-edit-field .fd-input:focus {
+  border-color: var(--fg);
+}
+.mset-edit-tags {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 9px;
+  flex-wrap: wrap;
+}
+.mset-chip-label {
+  font-size: 11px;
+  color: var(--fg-muted);
+  flex: none;
+  margin-right: 2px;
+}
+.mset-edit-err {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--danger);
+}
+/* 获取模型：加载态 / 空态 */
+.mset-fetching {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 14px 0;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+.mset-spinner {
+  width: 13px;
+  height: 13px;
+  border: 1.5px solid var(--border-strong);
+  border-top-color: var(--fg-muted);
+  border-radius: 50%;
+  animation: mset-spin 700ms linear infinite;
+  flex: none;
+}
+@keyframes mset-spin {
+  to { transform: rotate(360deg); }
+}
+/* ===== 软件更新（设置 · 通用底部 .set-update） =====
+   六态视觉契约（idle/checking/latest/available/downloading/ready + error）：
+   每种状态一个明确形态，检查按钮恒在场。状态色走语义 token（ok/info/warn/err）。 */
+.set-update {
+  margin-top: 4px;
+}
+/* 头部：标题+版本+时间戳 一行，检查按钮右置 */
+.set-update-head {
+  gap: 8px;
+}
+.set-update-head-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.set-update-head-text {
+  min-width: 0;
+}
+.set-update-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 2px;
+}
+.set-update-ver {
+  font-size: 11px;
+  color: var(--fg-faint);
+}
+.set-update-meta-sep {
+  color: var(--fg-faint);
+  font-size: 11px;
+}
+.set-update-meta-time {
+  font-size: 11px;
+  color: var(--fg-faint);
+}
+/* 检查按钮里的 spinner（复用 .mset-spinner，尺寸随按钮内文字对齐） */
+.set-update-btn-spin {
+  width: 11px;
+  height: 11px;
+}
+/* 状态徽记：圆点/对勾/十字三种形，色由 tone 类给 */
+.set-update-mark {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  color: var(--fg-faint);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-side);
+}
+.set-update-mark.spin {
+  border-color: var(--border-strong);
+  border-top-color: var(--fg-muted);
+  animation: mset-spin 700ms linear infinite;
+}
+.set-update-mark.ok {
+  color: var(--ok-text);
+  border-color: color-mix(in srgb, var(--ok-text) 35%, transparent);
+  background: color-mix(in srgb, var(--ok-text) 8%, transparent);
+}
+.set-update-mark.info {
+  width: 7px;
+  height: 7px;
+  border: none;
+  background: var(--info-text);
+  animation: pulse 2.4s ease-in-out infinite;
+}
+.set-update-mark.err {
+  color: var(--err-text);
+  border-color: color-mix(in srgb, var(--err-text) 35%, transparent);
+  background: color-mix(in srgb, var(--err-text) 8%, transparent);
+}
+.set-update-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  padding: 8px 0 2px;
+}
+.set-update-status.ok {
+  color: var(--ok-text);
+}
+.set-update-status.info {
+  color: var(--fg);
+}
+/* 错误行：warn 色形态 + 重试入口（与成功态绝不共用样式） */
+.set-update-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--warn-text);
+  padding: 8px 0 2px;
+}
+.set-update-error-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.set-update-retry {
+  flex: none;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  padding: 2px 10px;
+  cursor: pointer;
+  font-family: var(--font-sans);
+}
+.set-update-retry:hover {
+  color: var(--fg);
+  border-color: var(--border-hover);
+}
+/* 新版本面板：info/ok 两档 tone——发现新版（info 强调）/就绪（成功色） */
+.set-update-panel {
+  background: var(--bg-side);
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-top: 8px;
+}
+.set-update-panel[data-tone="info"] {
+  border-color: color-mix(in srgb, var(--info-text) 25%, var(--border-soft));
+}
+.set-update-panel[data-tone="ok"] {
+  border-color: color-mix(in srgb, var(--ok-text) 30%, var(--border-soft));
+}
+.set-update-new {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.set-update-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--info-text);
+  animation: pulse 2.4s ease-in-out infinite;
+}
+.set-update-size {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--fg-faint);
+}
+.set-update-notes {
+  margin: 8px 0 0;
+  padding: 0 0 0 16px;
+  list-style: none;
+}
+.set-update-notes li {
+  font-size: 12px;
+  color: var(--fg-muted);
+  line-height: 1.7;
+  position: relative;
+}
+.set-update-notes li::before {
+  content: "";
+  position: absolute;
+  left: -12px;
+  top: 0.7em;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--border-strong);
+}
+.set-update-notes-toggle {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--fg-faint);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 2px 0;
+  font-family: var(--font-sans);
+}
+.set-update-notes-toggle:hover {
+  color: var(--fg);
+}
+.set-update-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+.set-update-progress-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.set-update-progress {
+  flex: 1;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--border-soft);
+  overflow: hidden;
+}
+.set-update-progress-bar {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--fg);
+  transition: width 80ms linear;
+}
+.set-update-progress-num {
+  font-size: 11px;
+  color: var(--fg-muted);
+  min-width: 32px;
+  text-align: right;
+  flex: none;
+}
+.set-update-hint {
+  font-size: 10.5px;
+  color: var(--fg-faint);
+  margin-top: 6px;
+}
+.set-update-hint.inline {
+  margin-top: 0;
+}
+
+/* ---- 端点探测面板（「获取模型列表」→ 勾选候选 → 添加）----
+   候选行复用 .mset-model-row 的版式，这里只加面板自己的头与错误行。 */
+.mset-probe {
+  border-top: 1px solid var(--border-soft);
+  padding: 8px 0 2px;
+  margin-top: 2px;
+}
+.mset-probe-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 3px;
+}
+.mset-probe-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+}
+.mset-probe-text b {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+}
+.mset-probe-endpoint {
+  font-size: 10.5px;
+  color: var(--fg-faint);
+  font-family: var(--font-mono);
+  padding-bottom: 4px;
+  overflow-wrap: anywhere;
+}
+.mset-probe-all {
+  font-size: 11px;
+  color: var(--fg-muted);
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  padding: 2px 9px;
+  cursor: pointer;
+  font-family: var(--font-sans);
+  flex: none;
+}
+.mset-probe-all:hover {
+  color: var(--fg);
+  border-color: var(--fg);
+}
+.mset-probe-close {
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--fg-faint);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  flex: none;
+}
+.mset-probe-close:hover {
+  color: var(--fg);
+  background: var(--border-soft);
+}
+.mset-probe-err {
+  font-size: 11.5px;
+  color: var(--danger);
+  padding: 7px 0 5px;
+  overflow-wrap: anywhere;
+}
+/* 添加按钮禁用态（未勾选任何候选）：disabled 必须有可见反馈 */
+.mset-add-model-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.mset-fetch-btn:disabled,
+.mset-refresh-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* ---- 连接对话框里的候选清单（目录勾选 / 端点探测）----
+   候选可能上百条（OpenRouter 200+），必须能滚，否则「添加选中」按钮被顶到
+   对话框外面点不到。 */
+.mset-candidate-scroll {
+  max-height: 260px;
+  overflow-y: auto;
+  border-top: 1px solid var(--border-soft);
+  border-bottom: 1px solid var(--border-soft);
+  padding: 0 2px;
+}
+.mset-candidate-scroll .mset-model-row {
+  padding: 7px 0;
+}
+/* 加宽弹窗（探测结果）的内部排版：表单骨架的 14px 间距与 body 自滚动在这里
+   都是错的——说明区要紧凑，滚动只发生在候选清单内部，底栏钉在清单下方。 */
+.mset-connect.wide .mset-form {
+  gap: 8px;
+  overflow: hidden;
+}
+.mset-connect.wide .mset-candidate-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+}
+/* 探测弹窗底栏：分隔线 + 与清单的呼吸间距（按钮在右） */
+.mset-probe-foot {
+  margin-top: 0;
+  padding-top: 9px;
+  border-top: 1px solid var(--border-soft);
+}
+/* 探测弹窗的候选区：CandidatePicker 自带「搜索 + 清单 + 计数/全选」三段，
+   外面这层只负责占满剩余高度（清单在内部滚）。 */
+.mset-probe-list {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+/* 候选选择器（CandidatePicker）的搜索框：与清单贴紧，不要 picker 页的 10px 下距 */
+.mset-candidate-search {
+  margin-bottom: 6px;
+  flex: none;
+}
+/* 表单里（非 wide 弹窗）的候选清单：固定上限 + 内部滚动。
+   wide 弹窗里由上面的 flex 规则接管（撑满 + 自身滚）。 */
+.mset-form .mset-candidate-scroll {
+  max-height: 260px;
+}
+/* 表单说明里的端点地址：跟正文同流，不占整行 */
+.mset-probe-endpoint-inline {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-muted);
+  overflow-wrap: anywhere;
+}
+
+/* ===== 暗色覆盖：manual 标签的紫色系（浅紫底在暗色下不可读） ===== */
+html[data-theme="dark"] .mset-model-tag.manual { color: #b9a3e8; border-color: #4a415f; background: #2c2740; }
+@media (prefers-color-scheme: dark) {
+  html[data-theme="auto"] .mset-model-tag.manual { color: #b9a3e8; border-color: #4a415f; background: #2c2740; }
+}

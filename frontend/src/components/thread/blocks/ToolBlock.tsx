@@ -1,0 +1,241 @@
+// 工具行（lx-dsh ui-tool 的 ToolRow/DisclosureRow 逐项对齐）+ 展开体
+// TerminalBlock（primitives/TerminalBlock 全量对齐：$ 提示符 + cwd 段名 +
+// 状态标签 + 退出码 pill + 复制按钮 + ANSI 颜色输出 + head-tail 折叠）。
+// edit 工具走 DiffBody（DSH DiffBlock 同款：双行号列 + footer 统计）。
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { ThreadBlock } from "../../../shared/store";
+import { gsap } from "gsap";
+import { playEnter } from "../../../shared/anim";
+import { motionAllowed } from "../../../shared/motion";
+import { clip, shortArgs } from "../helpers";
+import { DiffBody } from "./DiffBody";
+import { TerminalCard } from "./TerminalCard";
+import { AttachmentCards } from "./AttachmentCard";
+import type { TodoItem } from "../../../shared/types";
+
+const TOOL_TITLES: Record<string, string> = {
+  read_file: "读文件",
+  search: "搜索",
+  session_search: "查历史",
+  edit: "改文件",
+  write_file: "写文件",
+  bash: "bash",
+  todo: "任务清单",
+};
+
+export function ToolBlock({ block, replayed, "data-uid": dataUid }: { block: Extract<ThreadBlock, { kind: "tool" }>; /** 回放帧（换会话）：不播入场动效（见 useEnterRef 的 skip）。 */ replayed?: boolean; "data-uid"?: number }) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  const [bodyMounted, setBodyMounted] = useState(false);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const running = block.result === undefined;
+  const expandable = !running;
+
+  useEffect(() => {
+    // 回放帧不播：切会话的那一帧要尽快画出内容，而 playEnter 要读一遍计算样式
+    // （强制布局）并建一个补间——整屏工具行叠起来就是一次长任务。
+    if (replayed) return;
+    playEnter(rootRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 展开/收起（DSH DisclosureRow 同款节奏：开 0.22s power2.out 补高度，
+  // 关 0.16s power2.in 压到 0 再卸载 body——收起动画完整可见）。
+  // useLayoutEffect：挂载帧前就位起始态，无闪烁。
+  useLayoutEffect(() => {
+    const el = bodyRef.current;
+    if (!el || !motionAllowed()) return;
+    if (open) {
+      gsap.fromTo(el, { height: 0, opacity: 0 }, {
+        height: "auto", opacity: 1, duration: 0.22, ease: "power2.out", overwrite: true,
+        onComplete: () => gsap.set(el, { clearProps: "height,opacity,overflow" }),
+      });
+      gsap.set(el, { overflow: "hidden" });
+    } else if (bodyMounted) {
+      gsap.to(el, {
+        height: 0, opacity: 0, duration: 0.16, ease: "power2.in", overwrite: true,
+        onComplete: () => setBodyMounted(false),
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, bodyMounted]);
+  useEffect(() => {
+    if (open) setBodyMounted(true);
+  }, [open]);
+
+  // 工具参数解析只做一次（memo(Block) 已挡掉大部分重渲染）
+  const args = useMemo(() => {
+    try {
+      return JSON.parse(block.arguments) as Partial<{ command: string; cwd: string; path: string; pattern: string }>;
+    } catch {
+      return {};
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [block.arguments]);
+  const argsSummary = clip(shortArgs(block), 72);
+
+  // edit 工具：diff 视图（改动即所见——不再让用户读 JSON 参数）
+  const editDiff = useMemo((): { path: string; old_string: string; new_string: string } | null => {
+    if (block.name !== "edit" || !block.arguments) return null;
+    try {
+      const a = JSON.parse(block.arguments) as Partial<{ path: string; old_string: string; new_string: string }>;
+      if (!a.path || a.old_string === undefined || a.new_string === undefined) return null;
+      return { path: a.path, old_string: a.old_string, new_string: a.new_string };
+    } catch {
+      return null;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [block.arguments]);
+
+  // share_file：附件卡是**主体**（共享给用户看的东西），工具行收成一行头 +
+  // 卡片——用户不用展开就能看到文件/图片（实时 toolResult 与历史回放同一份元数据）。
+  if (block.name === "share_file" && block.attachments?.length) {
+    return (
+      <div className={"tool-block share-block" + (running ? " trow-running" : "") + (block.isError ? " trow-error" : "")} data-uid={dataUid} ref={rootRef}>
+        <div className="diff-file-head">
+          <span className="ticon" aria-hidden>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z" />
+              <path d="M13 2v7h7" />
+            </svg>
+          </span>
+          <span className="tname">共享文件</span>
+          {running && <span className="tool-open-hint">执行中…</span>}
+        </div>
+        <AttachmentCards atts={block.attachments} />
+      </div>
+    );
+  }
+
+  if (editDiff && block.name === "edit") {
+    return (
+      <div className="tool-block diff-block" data-uid={dataUid} ref={rootRef}>
+        <div className="diff-file-head">
+          <span className="ticon" aria-hidden>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 20h9" />
+              <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+            </svg>
+          </span>
+          <span className="tname">{editDiff.path}</span>
+          <span className="diff-stats">
+            <span className="stat-badge stat-del">−{editDiff.old_string.split("\n").length}</span>
+            <span className="stat-badge stat-add">+{editDiff.new_string.split("\n").length}</span>
+          </span>
+          {running && <span className="tool-open-hint">执行中…</span>}
+        </div>
+        {!running && (
+          <DiffBody oldText={editDiff.old_string} newText={editDiff.new_string} />
+        )}
+      </div>
+    );
+  }
+
+  const title = TOOL_TITLES[block.name] ?? block.name;
+  // 出错：错误输出的首行（DSH 的 errorSummary = firstLine(output)）
+  const errorSummary = !running && block.isError ? (block.result ?? "").split("\n")[0] : null;
+  const summary = errorSummary ?? (running ? "执行中…" : argsSummary);
+
+  // todo 契约批②：todo 调用渲染成**纯摘要行**（拍板⑥——不展开参数）：三态计数
+  // + 当前进行项。清单的完整呈现面是计划条（Composer/子会话页），时间线上留一行
+  // 状态跳变即可——每次 todo 调用 = 一次进度更新，视觉上「清单出来之后有痕迹」。
+  // items 解析放在所有早 return 之前（hooks 规则）。
+  const todoItems = useMemo((): TodoItem[] => {
+    if (block.name !== "todo" || !block.arguments) return [];
+    try {
+      const a = JSON.parse(block.arguments) as { items?: TodoItem[] };
+      return Array.isArray(a.items) ? a.items : [];
+    } catch {
+      return [];
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [block.name, block.arguments]);
+  const todoDone = todoItems.filter((it) => it.status === "done").length;
+  const todoActive = todoItems.filter((it) => it.status === "active").length;
+  const todoPending = todoItems.filter((it) => it.status === "pending").length;
+  const todoFocus = todoItems.find((it) => it.status === "active")?.content;
+
+  if (block.name === "todo") {
+    return (
+      <div className={"tool-block todo-row" + (running ? " trow-running" : "") + (block.isError ? " trow-error" : "")} data-uid={dataUid} ref={rootRef}>
+        <div className="trow-row" role={expandable ? "button" : undefined} tabIndex={expandable ? 0 : undefined}>
+          <span className="trow-leading" aria-hidden>
+            {running || block.isError ? (
+              <span className={"sdot" + (running ? " run" : " err")} />
+            ) : (
+              <svg className="trow-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M13 5h8" /><path d="M13 12h8" /><path d="M13 19h8" />
+                <path d="m3 17 2 2 4-4" /><path d="m3 7 2 2 4-4" />
+              </svg>
+            )}
+          </span>
+          <span className="trow-title">任务清单</span>
+          <span className="trow-sep" aria-hidden />
+          {block.isError ? (
+            <span className="trow-summary err">{errorSummary}</span>
+          ) : (
+            <span className="trow-summary">
+              {todoItems.length === 0
+                ? "清单已清空"
+                : `✓ ${todoDone} · ▶ ${todoActive} · ○ ${todoPending}${todoFocus ? ` → ${todoFocus}` : ""}`}
+            </span>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className={"trow" + (running ? " trow-running" : "") + (block.isError ? " trow-error" : "") + (open ? " trow-open" : "")}
+      data-uid={dataUid}
+      ref={rootRef}
+    >
+      <div
+        className="trow-row"
+        role={expandable ? "button" : undefined}
+        tabIndex={expandable ? 0 : undefined}
+        aria-expanded={expandable ? open : undefined}
+        onClick={expandable ? () => setOpen((o) => !o) : undefined}
+        onKeyDown={(e) => {
+          if (expandable && (e.key === "Enter" || e.key === " ")) {
+            e.preventDefault();
+            setOpen((o) => !o);
+          }
+        }}
+      >
+        {/* leading：运行/出错 = StateDot；空闲 = 图标（hover 淡出换 chevron 提示可展开） */}
+        <span className="trow-leading" aria-hidden>
+          {running || block.isError ? (
+            <span className={"sdot" + (running ? " run" : " err")} />
+          ) : (
+            <>
+              <svg className="trow-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
+              </svg>
+              <svg className="trow-chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <path d="m6 9 6 6 6-6" />
+              </svg>
+            </>
+          )}
+        </span>
+        <span className="trow-title">{title}</span>
+        <span className="trow-sep" aria-hidden />
+        <span className={"trow-summary" + (errorSummary ? " err" : "")}>{summary}</span>
+      </div>
+      {bodyMounted && (
+        <div className="trow-body" ref={bodyRef}>
+          <TerminalCard
+            command={args.command ?? ""}
+            cwd={args.cwd}
+            toolName={block.name}
+            toolArgs={block.arguments}
+            output={block.result}
+            running={running}
+            isError={block.isError}
+          />
+        </div>
+      )}
+    </div>
+  );
+}

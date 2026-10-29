@@ -1,0 +1,440 @@
+/* 设计 token（:root）、应用窗口尺寸、布局骨架。token 必须最先加载。 */
+
+/* lxcode 控制台——布局与 token（Codex 视觉语言，对照 codexui/codex-webui 开源复刻截图精修）
+   安静的中性风：白底近黑字、发丝边框、黑主按钮；绿色只作成功语义。
+   页面以「桌面应用窗口」呈现：1440×900 自适应居中，外层暗底。 */
+:root {
+  color-scheme: light;
+  --bg: #ffffff;
+  --bg-side: #f9f9f9;
+  --surface: #ffffff;
+  --fg: #0d0d0d;
+  --fg-muted: #6e6e80;
+  --fg-faint: #8e8ea0;
+  --border: #ececec;
+  --border-strong: #e5e5e5;
+  --border-soft: #f4f4f5;
+  --success: #10a37f;
+  --danger: #e02e2a;
+  --term-bg: #1a1a1a;
+  --term-fg: #d4d4d4;
+  --term-dim: #8e8e96;
+  --font-sans: "Inter Variable", -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, "Cascadia Code", monospace;
+  /* 派生 token（亮色值 = 原先散落各文件的硬编码值，归并时逐值等值搬运——
+   * 亮色渲染逐像素不变；暗色值在下面 html[data-theme="dark"] 覆盖块里成套给出）。
+   * --hover-veil 三档：中性悬停底（黑 veil → 暗色下翻成白 veil）。 */
+  --hover-veil: rgba(0, 0, 0, 0.04);
+  --hover-veil-mid: rgba(0, 0, 0, 0.06);
+  --hover-veil-strong: rgba(0, 0, 0, 0.08);
+  /* 边框加深档（hover/按压态的灰阶渐进，等值搬运自各文件） */
+  --border-hi: #d4d4d8;
+  --border-hi-strong: #cfcfd4;
+  --border-hover: #c9c9cf;
+  --border-active: #c2c2c8;
+  --border-active-strong: #a8a8b0;
+  --window-outer: #e8e8ea;   /* 浏览器模拟态的外层底 */
+  --window-border: #d8d8db;  /* 应用窗口描边 */
+  --bg-raised: #fafafa;      /* 比 surface 更浅一档的面板底 */
+  --bg-inset: #f1f1f3;       /* 内嵌浅灰底（代码块/嵌入区） */
+  --code-bg: #f4f5f7;        /* 行内/块级代码底 */
+  --scrollbar-thumb: #3a3a3a; /* 内容区滚动条拇指 */
+  --bg-soft: #f7f7f8;         /* 浅灰面板底（比 raised 再深半档） */
+  --danger-wash: #fdeeee;     /* 危险悬停浅红底 */
+  --on-accent: #ffffff;      /* var(--fg) 等深色实底上的文字（暗色下随底色翻深） */
+  --ok-text: #059669;        /* 语义状态字色（亮色档，暗色下给亮一档） */
+  --ok-strong: #0b7a5e;
+  --err-text: #b91c1c;
+  --info-text: #3b82f6;
+  --warn-text: #9a6400;
+  --warm-text: #c2410c;
+}
+/* ===== 主题：暗色 token 双套 =====
+ * 机制（shared/theme.ts）：html data-theme ∈ "auto" | "dark" | "light"。
+ * - :root 保持上面的亮色值不动（默认/亮色系统的渲染与历史版本逐像素一致）；
+ * - 深色：html[data-theme="dark"] 直接覆盖；
+ * - 跟随系统：html[data-theme="auto"] + @media (prefers-color-scheme: dark)
+ *   时应用同一套暗色值（亮色系统下 auto 不命中任何覆盖 = 亮色）。
+ * aicss 的 AI 内容卡模块各自维护双套局部 token，选择器与这里同构。 */
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #18181c;
+  --bg-side: #1e1e23;
+  --surface: #232329;
+  --fg: #ececf1;
+  --fg-muted: #a0a0b0;
+  --fg-faint: #7c7c8c;
+  --border: #2e2e35;
+  --border-strong: #3a3a42;
+  --border-soft: #26262c;
+  --success: #2fbf8f;
+  --danger: #f0564f;
+  --term-bg: #101014;
+  --term-fg: #d4d4d4;
+  --term-dim: #8e8e96;
+  --hover-veil: rgba(255, 255, 255, 0.06);
+  --hover-veil-mid: rgba(255, 255, 255, 0.08);
+  --hover-veil-strong: rgba(255, 255, 255, 0.12);
+  --border-hi: #3e3e47;
+  --border-hi-strong: #474751;
+  --border-hover: #4a4a54;
+  --border-active: #54545e;
+  --border-active-strong: #6a6a76;
+  --window-outer: #0c0c0e;
+  --window-border: #08080a;
+  --bg-raised: #202026;
+  --bg-inset: #1c1c21;
+  --code-bg: #26262c;
+  --scrollbar-thumb: #4a4a54;
+  --on-accent: #101014;
+  --ok-text: #34d399;
+  --ok-strong: #3ddba4;
+  --err-text: #f87171;
+  --info-text: #60a5fa;
+  --warn-text: #fbbf24;
+  --warm-text: #fb923c;
+}
+@media (prefers-color-scheme: dark) {
+  html[data-theme="auto"] {
+    color-scheme: dark;
+    --bg: #18181c;
+    --bg-side: #1e1e23;
+    --surface: #232329;
+    --fg: #ececf1;
+    --fg-muted: #a0a0b0;
+    --fg-faint: #7c7c8c;
+    --border: #2e2e35;
+    --border-strong: #3a3a42;
+    --border-soft: #26262c;
+    --success: #2fbf8f;
+    --danger: #f0564f;
+    --term-bg: #101014;
+    --term-fg: #d4d4d4;
+    --term-dim: #8e8e96;
+    --hover-veil: rgba(255, 255, 255, 0.06);
+    --hover-veil-mid: rgba(255, 255, 255, 0.08);
+    --hover-veil-strong: rgba(255, 255, 255, 0.12);
+    --border-hi: #3e3e47;
+    --border-hi-strong: #474751;
+    --border-hover: #4a4a54;
+    --border-active: #54545e;
+    --border-active-strong: #6a6a76;
+    --window-outer: #0c0c0e;
+    --window-border: #08080a;
+    --bg-raised: #202026;
+    --bg-inset: #1c1c21;
+    --code-bg: #26262c;
+    --scrollbar-thumb: #4a4a54;
+    --bg-soft: #24242a;
+    --danger-wash: rgba(240, 86, 79, 0.16);
+    --on-accent: #101014;
+    --ok-text: #34d399;
+    --ok-strong: #3ddba4;
+    --err-text: #f87171;
+    --info-text: #60a5fa;
+    --warn-text: #fbbf24;
+    --warm-text: #fb923c;
+  }
+}
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+html,
+body,
+#root {
+  height: 100%;
+}
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+/* 浏览器模拟态的外层暗底（Tauri 模式不生效——.app 直接铺满） */
+body:has(.window-stage) {
+  background: var(--window-outer);
+}
+/* ===== 应用窗口（桌面应用尺寸：1440×900，小屏自适应缩小） ===== */
+.window-stage {
+  height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 14px;
+}
+.app-window {
+  width: min(1440px, 100%);
+  height: min(900px, 100%);
+  background: var(--bg);
+  border-radius: 12px;
+  border: 1px solid var(--window-border);
+  box-shadow:
+    0 0 0 0.5px rgba(0, 0, 0, 0.04),
+    0 24px 70px rgba(0, 0, 0, 0.16),
+    0 4px 18px rgba(0, 0, 0, 0.08);
+  overflow: hidden;
+  /* 只做窗口外观（尺寸/圆角/投影），内部网格归 .app 自己定义——
+     这里再定义一份会把 .app 钉进第一个格子（252×44），整页被裁 */
+}
+/* ===== 布局骨架 ===== */
+.app {
+  display: grid;
+  grid-template-columns: 252px 1fr;
+  grid-template-rows: 44px auto 1fr;
+  height: 100%;
+  overflow: hidden;
+}
+/* ===== 会话标签条（浏览器式 tab——Topbar 与侧栏/主区之间） =====
+ * 形态：紧凑药丸（对齐 .trow/.fd- 的扁平语言——不用文件夹式 3D 标签）。
+ * 活动 = surface 实底 + 描边环；关闭钮 hover 出现（活动标签常驻可见）。 */
+.tabbar {
+  grid-row: 2;
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  height: 36px;
+  min-width: 0; /* grid item 的 min-width:auto 会让滚动内容撑破（移动端溢出） */
+  overflow: hidden;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-side);
+  user-select: none;
+}
+.workspace-tab-strip {
+  display: flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 48%;
+  padding: 0 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+.workspace-tab-strip::-webkit-scrollbar { display: none; }
+.workspace-tab {
+  max-width: 132px;
+}
+.workspace-tab-main {
+  min-width: 0;
+  padding-right: 4px;
+}
+.workspace-tab:not(.on) .workspace-tab-main {
+  padding-right: 4px;
+}
+.tabbar-divider {
+  width: 1px;
+  height: 18px;
+  flex: 0 0 auto;
+  margin: 0 3px;
+  background: var(--border);
+}
+.tab-strip {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px;
+  /* 只横向滚动：overflow-x:auto 会让 overflow-y 计算成 auto——一旦出现
+   * 滚动条，24px 的标签可能被纵向滚/裁（字形顶部缺失的另一种成因）。
+   * 显式 hidden 锁死纵向，滚动条本身也隐藏。 */
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+.tab-strip::-webkit-scrollbar { display: none; }
+/* ===== 标签条溢出渐隐（"还有更多"的提示） =====
+ * 两条 strip 都隐藏了滚动条（36px 的栏里塞滚动条更难看），所以溢出必须有别的提示：
+ * 在**还有内容的那一侧**把标签淡出。方向由 TS 按 scrollLeft/scrollWidth 算成
+ * data-overflow——CSS 读不到滚动位置，写死"两侧都渐隐"在没溢出时就是假提示。
+ * 用 mask 而不是伪元素：strip 是滚动容器，伪元素会跟着内容一起滚走。
+ * 默认（data-overflow="none"）不写规则 = 不渐隐。 */
+.workspace-tab-strip[data-overflow="left"],
+.tab-strip[data-overflow="left"] {
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 16px);
+  mask-image: linear-gradient(to right, transparent 0, #000 16px);
+}
+.workspace-tab-strip[data-overflow="right"],
+.tab-strip[data-overflow="right"] {
+  -webkit-mask-image: linear-gradient(to left, transparent 0, #000 16px);
+  mask-image: linear-gradient(to left, transparent 0, #000 16px);
+}
+.workspace-tab-strip[data-overflow="both"],
+.tab-strip[data-overflow="both"] {
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 16px, #000 calc(100% - 16px), transparent 100%);
+  mask-image: linear-gradient(to right, transparent 0, #000 16px, #000 calc(100% - 16px), transparent 100%);
+}
+.tab {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  max-width: 176px;
+  border: 1px solid transparent;
+  border-radius: 12px; /* 药丸 */
+  background: none;
+  font-family: var(--font-sans);
+  /* 可收缩：标签多了先按比例压窄（浏览器的做法），压到 min-width 才开始横向滚动。
+   * flex: none 会让每个标签都占满 max-width，几个标签就把栏撑爆——用户报的
+   * 「标签页还是没有自动变长度」就是这条。标题侧已有 min-width:0 + ellipsis，能跟着收窄。 */
+  flex: 0 1 auto;
+  min-width: 58px;
+  transition: background 120ms, border-color 120ms;
+}
+.tab:hover {
+  background: var(--hover-veil);
+}
+.tab.on {
+  background: var(--surface);
+  border-color: var(--border-soft);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+/* ===== 子会话临时视图叠加态（.viewing） =====
+ * 视图打开期间父会话标签不进普通激活态（高亮互斥），改走**视图态**：
+ * surface 实底 + info 色描边 + ↳ 角标——一眼看出「正在看这个会话的子会话」，
+ * 且与 .on（普通激活）在视觉上可区分（描边带色 vs 发丝灰边）。
+ * 生成中（busy）与视图态叠加不冲突：spinner 在标题前、角标在标题后，各占各的位。 */
+.tab.viewing {
+  background: var(--surface);
+  border-color: color-mix(in srgb, var(--info-text) 45%, var(--border-active));
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  /* 视图态带 ↳ + 子标题，比单标题宽一档——仍封顶，超宽截断省略 */
+  max-width: 220px;
+}
+.tab.viewing .tab-main { padding-right: 11px; }
+/* 两个文本段都要能收窄：min-width:auto 会顶住不缩，标签条就被撑破 */
+.tab.viewing .tab-title { min-width: 0; flex: 0 1 auto; }
+.tab-child-crumb {
+  flex: none;
+  font-size: 11.5px;
+  line-height: 16px; /* 与 .tab-title 同高：行盒容不下中文字形墨迹会裁掉上半截 */
+  color: var(--info-text);
+}
+.tab-child-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 11.5px;
+  line-height: 16px;
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tab-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 100%;
+  padding: 0 4px 0 11px;
+  border: none;
+  background: none;
+  font-family: var(--font-sans);
+  cursor: pointer;
+}
+.tab:not(.on) .tab-main { padding-right: 11px; }
+.workspace-tab:not(.on) .workspace-tab-main { padding-right: 4px; }
+.tab-title {
+  font-size: 11.5px;
+  /* 行高必须容下中文字形墨迹（CJK 约 1.3em）——line-height:1 时行盒
+   * 只有 11.5px，overflow:hidden 会把字的上半截裁掉（实测踩过）。 */
+  line-height: 16px;
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tab.on .tab-title { color: var(--fg); font-weight: 550; }
+.tab-spinner {
+  width: 9px;
+  height: 9px;
+  border-width: 1.2px;
+  flex: none;
+}
+.tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-right: 3px;
+  border: none;
+  border-radius: 50%;
+  background: none;
+  color: var(--fg-faint);
+  cursor: pointer;
+  flex: none;
+  opacity: 0; /* hover 才见——浏览器的惯例（活动标签常驻） */
+  transition: opacity 120ms, background 120ms, color 120ms;
+}
+.tab:hover .tab-close,
+.tab.on .tab-close,
+.tab:focus-within .tab-close { opacity: 1; }
+.tab-close:hover {
+  background: var(--hover-veil-strong);
+  color: var(--fg);
+}
+
+/* ===== 子会话标签的视觉区分（用户报「子会话和主会话表明的不明显」） =====
+ * 固定页签（Agent/拓展/Git）是**页面**，子会话标签是**会话**；两类混在同一条 strip 里
+ * 长得一模一样 = 用户分不出哪个是子会话。三个通道一起用（UI/UX 规范：不能只用颜色
+ * 传达信息——灰度/色盲下要分得开）：
+ *   ① 形状：↳ 前缀（tab-child-mark，由 TS 渲染）
+ *   ② 文字：「子会话」小胶囊（tab-child-kind，由 TS 渲染）
+ *   ③ 颜色：整条标签淡成功色底 + 成功色描边（下面这条规则）
+ * min-width 比普通标签大：↳ + 标题 + 胶囊三样东西塞进 58px 会全被压成省略号。 */
+.workspace-tab[data-child="true"] {
+  min-width: 92px;
+  background: rgba(16, 163, 127, 0.05);
+  border-color: rgba(16, 163, 127, 0.16);
+}
+.workspace-tab[data-child="true"].on {
+  background: var(--surface);
+  border-color: rgba(16, 163, 127, 0.34);
+}
+.tab-child-mark {
+  flex: none;
+  font-size: 11px;
+  line-height: 16px; /* 与 .tab-title 同高：行盒容不下中文字形墨迹会裁掉上半截 */
+  color: var(--fg-faint);
+}
+.workspace-tab[data-child="true"].on .tab-child-mark {
+  color: var(--success);
+}
+.tab-child-kind {
+  flex: none;
+  font-size: 9.5px;
+  line-height: 15px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: rgba(16, 163, 127, 0.12);
+  color: var(--ok-strong);
+  white-space: nowrap;
+}
+.workspace-tab-main:focus-visible,
+.workspace-tab .tab-close:focus-visible {
+  outline: 2px solid var(--fg-muted);
+  outline-offset: 1px;
+}
+.tab-new {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 7px;
+  background: none;
+  color: var(--fg-faint);
+  cursor: pointer;
+  flex: none;
+  transition: background 120ms, color 120ms;
+}
+.tab-new:hover {
+  background: var(--hover-veil-mid);
+  color: var(--fg);
+}

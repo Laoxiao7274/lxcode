@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 库模块清单：只有 namespace（在 build.gradle.kts 里声明），
+     不申请任何权限、不注册任何组件——组件库是纯 UI，不碰系统能力。 -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" />
