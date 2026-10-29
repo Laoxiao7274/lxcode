@@ -29,9 +29,11 @@
 import { spawnSync } from "node:child_process";
 import { cpSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync, copyFileSync, statSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 
-const ROOT = process.cwd();
+// 仓库根 = 脚本自身位置（scripts/ 的上一级），与调用时的 cwd 无关
+const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const SHELL = join(ROOT, "shell");
 const FRONTEND = join(ROOT, "frontend");
 
@@ -54,6 +56,90 @@ console.log("=== lxcode 打包（Windows / NSIS one-click per-user） ===");
 // 版本号（唯一源）
 const { version } = JSON.parse(readFileSync(join(SHELL, "package.json"), "utf8"));
 console.log(`版本: ${version}`);
+
+// --backend-darwin：只产出后端 darwin 交叉编译二进制（落 shell/release/，与
+// update zip 产物同级），不跑渲染层/ffmpeg/electron-builder/tar——macOS 远程
+// 使用场景：后端二进制在 mac 上独立跑 + CLI/浏览器接入。默认（无参数）行为
+// 保持不变。放在依赖前置检查之前：纯 Go 产物不需要 shell/ 与 frontend/ 的
+// node_modules。
+// buildBackendDarwin(dstDir)：交叉编译 darwin arm64+amd64 后端到 dstDir/lxcode-<arch>
+//（CGO_ENABLED=0 纯 Go，modernc.org/sqlite 无 C 依赖）。--backend-darwin 与
+// --mac 共用这一段。
+function buildBackendDarwin(dstDir) {
+  mkdirSync(dstDir, { recursive: true });
+  for (const arch of ["arm64", "amd64"]) {
+    const out = join(dstDir, `lxcode-darwin-${arch}`);
+    console.log(`\n=== Go 后端交叉编译（darwin/${arch}） ===`);
+    // shell:false——ldflags 的 -X 必须空格分隔；
+    // CGO_ENABLED=0：纯 Go 产物，不依赖 mac 侧 C 工具链
+    const r = spawnSync(
+      "go",
+      ["build", "-ldflags", `-X main.version=${version}`, "-o", out, "./cmd/lxcode"],
+      { cwd: ROOT, stdio: "inherit", shell: false, env: { ...process.env, GOOS: "darwin", GOARCH: arch, CGO_ENABLED: "0" } },
+    );
+    if (r.status !== 0) {
+      console.error(`darwin/${arch} 交叉编译失败（exit ${r.status}）`);
+      process.exit(1);
+    }
+    console.log(`--- lxcode-darwin-${arch} 完成（${(statSync(out).size / 1048576).toFixed(2)} MB）`);
+  }
+}
+
+if (process.argv.includes("--backend-darwin")) {
+  buildBackendDarwin(join(SHELL, "release"));
+  console.log("\n=== darwin 后端产物（shell/release/）===");
+  process.exit(0);
+}
+
+// --mac：macOS 壳打包链（2026-10 用户翻案：macOS 壳列入支持）。能在 Windows
+// 开发机上交叉推进的部分全部在这里：后端 darwin 双架构 → 渲染层 → stage →
+// 壳主进程 esbuild → electron-builder --mac。与 Windows 链的差异（都有依据）：
+//   1. 后端二进制落 resources/bin-darwin/（无 .exe；package.json 的
+//      mac.extraResources 从这里取，与 win 的 resources/bin 分开）；
+//   2. 不做 ffmpeg（投屏 darwin 不装配，见 shell/src/screen.ts 平台门）；
+//   3. 不造 update zip / manifest（zip 用 System32 bsdtar 造 Windows 结构
+//      没问题，但 darwin 更新包内是 app.asar + bin/lxcode，且 .app 结构的
+//      更新链未在真机验证过—— darwin 更新 zip 留待 mac 真机补）；
+//   4. 不签名/公证（package.json identity: null；未签名 .app 触发 Gatekeeper
+//      「右键打开」，见 package.json mac 段注释）。
+// 限制（如实）：electron-builder 的 icns 转换与 hdiutil/dmg 制作依赖 mac 工具
+// 链——Windows 上 --mac 只能到「产出未签名 .app 目录」这一步；dmg 目标在
+// Windows 上会失败（app-builder 无 mac 工具链时跳过/报错，实测结论见验收）。
+// 最终 dmg 需在 mac 上跑：cd shell && npx electron-builder --mac。
+if (process.argv.includes("--mac")) {
+  console.log("=== lxcode 打包（macOS / dmg+zip arm64+x64，未签名） ===");
+  if (!existsSync(join(SHELL, "node_modules")) || !existsSync(join(FRONTEND, "node_modules"))) {
+    console.error("依赖未安装：先在 shell/ 与 frontend/ 下各自 npm install");
+    process.exit(1);
+  }
+  // 1. darwin 后端 → resources/bin-darwin/lxcode-<arch>（打包脚本按当前
+  //    electron-builder 目标 arch 从 release/ 产物选一个拷过去——见 afterPack
+  //    替代说明：extraResources 静态目录无法按 arch 区分，这里按 --mac 的
+  //    默认单 arch 产物放。两个 arch 都要打包时跑两轮 --mac --x64 / --mac --arm64）。
+  const macArch = process.argv.includes("--x64") ? "amd64" : "arm64";
+  buildBackendDarwin(join(SHELL, "release"));
+  const binDarwin = join(SHELL, "resources", "bin-darwin");
+  rmSync(binDarwin, { recursive: true, force: true });
+  mkdirSync(binDarwin, { recursive: true });
+  copyFileSync(join(SHELL, "release", `lxcode-darwin-${macArch}`), join(binDarwin, "lxcode"));
+  console.log(`--- 后端就位 resources/bin-darwin/lxcode（${macArch}）`);
+  // 2/3. 渲染层 + stage（与 Windows 链同一套）
+  run("渲染层构建", "npm", ["run", "build"], { cwd: FRONTEND });
+  rmSync(join(SHELL, "renderer"), { recursive: true, force: true });
+  mkdirSync(join(SHELL, "renderer"), { recursive: true });
+  cpSync(join(FRONTEND, "dist"), join(SHELL, "renderer"), { recursive: true });
+  console.log("--- 渲染层 stage 完成（frontend/dist → shell/renderer）");
+  // 4. 壳主进程 esbuild（LOGO 派生链只在 Windows 壳打包时重生——mac 不吃 ico）
+  run("壳主进程构建", "node", ["build.mjs"], { cwd: SHELL });
+  // 5. electron-builder --mac（未签名；产物在 shell/release/）
+  rmSync(join(SHELL, "release", "mac-universal"), { recursive: true, force: true });
+  run("electron-builder 打包（mac）", "npx", ["electron-builder", "--mac", macArch === "amd64" ? "--x64" : "--arm64"], { cwd: SHELL });
+  console.log("\n=== --mac 完成 ===");
+  console.log("产物在 shell/release/（win-unpacked 同级的 mac 目录 / .app）。");
+  console.log("注意：dmg/zip 目标在 Windows 上可能因缺 mac 工具链受限；");
+  console.log("最终 dmg 需在 mac 上跑 cd shell && npx electron-builder --mac。");
+  process.exit(0);
+}
 
 // 前置检查：依赖装过没有
 if (!existsSync(join(SHELL, "node_modules")) || !existsSync(join(FRONTEND, "node_modules"))) {

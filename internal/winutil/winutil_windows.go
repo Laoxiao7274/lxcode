@@ -9,20 +9,19 @@
 // 管不到子进程自己再分配的控制台（如 cmd 跑 tasklist）；且 detached 语义的
 // 孙进程根本不吃这个旗标。创建期旗标 CREATE_NO_WINDOW 是唯一可靠解。
 //
-// 非 Windows 构建返回 nil（调用方在 nil 时照旧设置自己的平台属性）。
+// 非 Windows 构建返回 nil（调用方在 nil 时照旧设置自己的平台属性），实现见
+// winutil_other.go——拆开文件是因为 x/sys/windows 在非 Windows 构建下没有
+// Go 文件（build constraints exclude），无条件 import 会让 darwin/linux
+// 交叉编译直接失败。
 package winutil
 
 import (
-	"runtime"
 	"syscall"
 
 	"golang.org/x/sys/windows"
 )
 
-// NoWindowAttr 返回无窗口的 SysProcAttr；非 Windows 平台返回 nil。
+// NoWindowAttr 返回无窗口的 SysProcAttr（仅 Windows 构建）。
 func NoWindowAttr() *syscall.SysProcAttr {
-	if runtime.GOOS != "windows" {
-		return nil
-	}
 	return &syscall.SysProcAttr{HideWindow: true, CreationFlags: windows.CREATE_NO_WINDOW}
 }

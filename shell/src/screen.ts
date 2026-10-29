@@ -120,13 +120,14 @@ function emitFrame(frame: Buffer): void {
  *  首次 startFfmpeg 现场探测把 start→出流的空窗拉长数秒，用户以为没点上
  *  又点。壳进程常驻，预热一次终身受益（结果模块级缓存）。 */
 export function warmUpEncoderProbe(): void {
-    setTimeout(() => {
-        const bin = ffmpegPath();
-        if (!bin) return;
-        void probeEncoders(bin).then((list) => {
-            console.log(`[screen] 编码器探测预热完成: ${list.join(", ") || "（无）"}`);
-        });
-    }, 3_000); // 壳启动稳定后 3s 再跑（不与启动期 IO 抢）
+  if (!SCREEN_SUPPORTED) return; // mac：无 ffmpeg 捕获链，探测无从谈起
+  setTimeout(() => {
+    const bin = ffmpegPath();
+    if (!bin) return;
+    void probeEncoders(bin).then((list) => {
+      console.log(`[screen] 编码器探测预热完成: ${list.join(", ") || "（无）"}`);
+    });
+  }, 3_000); // 壳启动稳定后 3s 再跑（不与启动期 IO 抢）
 }
 
 /** ffmpeg 可执行文件：LXCODE_FFMPEG 覆盖 → bundled（resources/bin/ffmpeg.exe，
@@ -407,6 +408,7 @@ async function startStreamSocket(): Promise<void> {
 // （单屏/双屏绝大多数场景一致），并在 UI 上给出名称/分辨率让用户核对。
 
 function enumerateMonitors(): ShellState["monitors"] {
+  if (!SCREEN_SUPPORTED) return []; // mac：投屏不存在，空表（手机端按无显示器处理）
   const primary = screen.getPrimaryDisplay();
   return screen.getAllDisplays().map((d, i) => ({
     id: i,
@@ -426,7 +428,19 @@ function enumerateMonitors(): ShellState["monitors"] {
 // start 时计数清零重试。
 let restartFailures = 0;
 
+// ---- 平台门（2026-10 用户拍板：投屏本次不做 macOS）----
+// 依据：捕获链是 Windows 专属（lavfi ddagrab 是 Windows GDI Desktop
+// Duplication 的 ffmpeg 设备；编码器回落链全是 Windows 显卡栈 nvenc/qsv/amf），
+// macOS 上功能按「不存在」处理——轮询循环短路（对 /screen/ctl 的上报恒为
+// running=false），main.ts 侧则不再装配轮询。渲染层/手机端 UI 不需要平台
+// 特判：后端 screen.go 的 monitor 枚举在 mac 侧为空表，入口自然不可达。
+const SCREEN_SUPPORTED = process.platform !== "darwin";
+
 export function startScreenPolling(): void {
+  if (!SCREEN_SUPPORTED) {
+    console.log("[screen] macOS 暂不支持投屏（ddagrab/NVENC 捕获链不可用）——功能未装配");
+    return;
+  }
   if (pollTimer) return;
   const tick = async (): Promise<void> => {
     let nextDelay = POLL_ONLINE_MS;
@@ -468,6 +482,7 @@ export function startScreenPolling(): void {
 export function stopScreenPolling(): void {
   if (pollTimer) clearTimeout(pollTimer);
   pollTimer = null;
+  if (!SCREEN_SUPPORTED) return; // mac：轮询从未起过，stopFfmpeg 也没有可杀的进程
   stopFfmpeg();
 }
 

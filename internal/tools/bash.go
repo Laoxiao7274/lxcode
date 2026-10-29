@@ -173,9 +173,10 @@ func newBashDef(r *Registry, readOnly bool) *Def {
 		// 命令级校验（readonly.go）是它唯一的安全边界，不靠确认门。
 		Risk:    riskOf(readOnly),
 		Mutates: !readOnly,
-		// ConfirmForced：命令命中 HighRiskBashCommand（git push / rm -rf 根目录
-		// / reg add 等高危命令模式）时，**无视权限档也必须人工确认**——auto 档
-		// （完全访问）不是无条件的完全访问。只读面不触发（直接返回空串）。
+		// ConfirmForced：机制保留（Def.ConfirmForced / Registry.ConfirmForced /
+		// HighRiskBashCommand 判定全在）——但 runTools 当前**不消费**它：
+		// auto = 完全无确认（2026-10 用户拍板，高危命令模式也不弹门）。将来若
+		// 设计「auto 但高危仍确认」类新档位，直接接回此回调即可，回滚零成本。
 		ConfirmForced: func(ctx context.Context, args json.RawMessage) string {
 			if readOnly {
 				return ""
@@ -284,10 +285,11 @@ func riskOf(readOnly bool) RiskLevel {
 	return RiskHigh
 }
 
-// bashHighRiskConfirm 是完整 bash 的强制确认文案：命令命中
+// bashHighRiskConfirm 是完整 bash 的高危命令模式确认文案：命令命中
 // HighRiskBashCommand（git push / rm -rf 根目录 / reg add 等高危命令模式）
-// 时返回带模式名与命令原文的提示，未命中返回空串（auto 档照常静默放行）。
-// 用户批准 = 明确逃生；拒绝走现有拒绝路径。放在 newBashDef 之后独立成函数，
+// 时返回带模式名与命令原文的提示，未命中返回空串。
+// **当前无调用方**（runTools 不再消费 ConfirmForced——auto = 完全无确认，
+// 2026-10 拍板），保留待将来档位设计。放在 newBashDef 之后独立成函数，
 // 方便 ConfirmForced 回调直接复用。
 func bashHighRiskConfirm(args json.RawMessage) string {
 	var a struct {
@@ -297,7 +299,7 @@ func bashHighRiskConfirm(args json.RawMessage) string {
 		return "" // 参数不完整走常规 Confirm 的兜底文案，不在这里拦
 	}
 	if pattern, hit := HighRiskBashCommand(a.Command); hit {
-		return fmt.Sprintf("高危命令模式命中【%s】，将执行命令: %s\n即使处于自动执行（auto）模式，此类命令也须人工确认。", pattern, a.Command)
+		return fmt.Sprintf("高危命令模式命中【%s】，将执行命令: %s\n此类命令模式可能造成不可逆影响，建议人工确认。", pattern, a.Command)
 	}
 	return ""
 }

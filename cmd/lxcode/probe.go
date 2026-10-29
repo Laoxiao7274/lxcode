@@ -24,11 +24,12 @@ const (
 )
 
 // runProbe 跑全部检查并返回退出码。addr 形如 127.0.0.1:7789。
-func runProbe(addr string) int {
+// token 非空 = 后端启用远程 token 门时的访问凭证（走 query 参数，与 CLI 同款）。
+func runProbe(addr, token string) int {
 	fail := false
 	unready := false
 
-	be, err := wsclient.Dial(addr)
+	be, err := wsclient.DialWithToken(addr, token)
 	if err != nil {
 		fmt.Printf("✗ 连接后端 %s 失败: %v\n", addr, err)
 		return probeDead
@@ -150,6 +151,6 @@ func waitEvent(be wsclient.Backend, name string, timeout time.Duration) (json.Ra
 }
 
 // main 的入口包装（退出码直达 os.Exit）。
-func probeMain(addr string) {
-	os.Exit(runProbe(addr))
+func probeMain(addr, token string) {
+	os.Exit(runProbe(addr, token))
 }

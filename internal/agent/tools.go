@@ -78,16 +78,13 @@ func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChange
 			finished[i] = true
 			continue
 		}
-		// 确认门：confirm/strict 档按常规 Confirm 文案询问；auto 档跳过常规门
-		// （完全访问），但**强制确认面（ConfirmForced）例外**——bash 命中高危
-		// 命令模式（git push / rm -rf 根目录等）时即使 auto 档也弹门，用户批准
-		// = 明确逃生。两个回调都不会同时返回非空（forced 只覆盖常规覆盖不到的
-		// auto 档；confirm 档下常规文案已覆盖全部高危面），取先到者。
+		// 确认门：confirm/strict 档按常规 Confirm 文案询问。auto = 完全无确认
+		// （2026-10 用户拍板：「我的完全访问就是什么也不弹」）——跳过常规门，
+		// bash 高危命令模式也不再弹（ConfirmForced 硬闸不再被消费，机制保留在
+		// tools 层待将来档位设计）。confirm 档下常规文案已覆盖全部高危面。
 		{
 			var prompt string
-			if policy == tools.ApprovalAuto {
-				prompt = s.tools.ConfirmForced(ctx, tc)
-			} else {
+			if policy != tools.ApprovalAuto {
 				prompt = s.tools.Confirm(ctx, tc)
 			}
 			if prompt != "" {

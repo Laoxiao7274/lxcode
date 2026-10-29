@@ -266,6 +266,15 @@ if (!app.requestSingleInstanceLock()) {
   // 托盘常驻：关窗（隐藏到托盘）不退出——真退出走托盘菜单/更新重启
   // （app.quit() 触发 will-quit 的统一收尾）。应用要常驻的后端/隧道因此保持。
   app.on("window-all-closed", () => { /* 不退出：托盘在 */ });
+  // macOS 专属：Dock 图标点击 → 重新显示主窗口（关闭=隐藏到托盘的语义在
+  // mac 上没有 Dock 退出的习惯，Dock 是 mac 用户找回窗口的主入口；Windows
+  // 无此事件，行为不变）。
+  app.on("activate", () => {
+    if (win && !win.isDestroyed()) {
+      win.show();
+      win.focus();
+    }
+  });
   app.on("will-quit", () => {
     stopUpdatePolling();
     stopScreenPolling(); // 投屏：杀 ffmpeg + 断推流（shell/src/screen.ts）

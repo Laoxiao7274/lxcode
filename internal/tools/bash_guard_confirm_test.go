@@ -9,9 +9,10 @@ import (
 	"github.com/moyunteng/lxcode/internal/llm"
 )
 
-// TestBashConfirmForced：完整 bash 的强制确认面——命中高危命令模式返回带
-// 模式名与命令原文的文案；未命中返回空串（auto 档照常静默放行）；
-// bash_readonly 不触发强制确认（恒空串）。
+// TestBashConfirmForced：完整 bash 的强制确认面（**机制保留**——runTools 不再
+// 消费 ConfirmForced，auto = 完全无确认，2026-10 拍板；本测试钉的是机制本身，
+// 供将来新档位接回）。命中高危命令模式返回带模式名与命令原文的文案；
+// 未命中返回空串；bash_readonly 不触发强制确认（恒空串）。
 func TestBashConfirmForced(t *testing.T) {
 	r := New()
 	ctx := context.Background()

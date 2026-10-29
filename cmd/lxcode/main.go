@@ -26,6 +26,7 @@ func main() {
 	probe := flag.Bool("probe", false, "验收模式：对运行中的后端做协议级检查（装机/升级脚本的健康验收面）")
 	addr := flag.String("addr", "127.0.0.1:7789", "后端监听地址（--serve/--probe）/ 连接地址（客户端，或 --backend）")
 	backendAddr := flag.String("backend", "", "客户端连接的后端地址（默认取 --addr）")
+	token := flag.String("token", "", "远程访问凭证（后端 remote.json 启用 token 门时必带；缺省读环境变量 LXCODE_TOKEN）")
 	sessionsDir := flag.String("sessions", "", "会话存储目录（默认 <config 上级>/sessions，或环境变量 LXCODE_SESSIONS）")
 	stdinWatch := flag.Bool("stdin-watch", false, "监视 stdin：EOF 即优雅退出（桌面壳拉起子进程时用——壳被强杀时管道断开，后端不留孤儿；服务形态忽略此标志）")
 	showVersion := flag.Bool("version", false, "打印版本号并退出（构建时烙入，dev 构建显示 dev）")
@@ -41,8 +42,15 @@ func main() {
 		os.Exit(2)
 	}
 
+	// token flag 为空时读环境变量兜底（macOS 侧 shell 里 export 更方便）
+	if *token == "" {
+		if v, ok := os.LookupEnv("LXCODE_TOKEN"); ok {
+			*token = v
+		}
+	}
+
 	if *probe {
-		probeMain(*addr)
+		probeMain(*addr, *token)
 		return
 	}
 
@@ -95,14 +103,15 @@ func main() {
 	if *backendAddr == "" {
 		*backendAddr = *addr
 	}
-	be, err := wsclient.Dial(*backendAddr)
+	be, err := wsclient.DialWithToken(*backendAddr, *token)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, `连接后端失败: %v
 
 后端进程未运行？先启动它：
   lxcode --serve            # 控制台前台跑
   sc start lxcode           # 已安装的 Windows 服务
-若后端监听在其它地址，用 --backend <host:port> 指定。
+若后端监听在其它地址，用 --backend <host:port> 指定；
+后端启用远程 token 门时，用 --token <凭证> 或环境变量 LXCODE_TOKEN 提供。
 `, err)
 		os.Exit(1)
 	}

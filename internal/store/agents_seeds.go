@@ -329,7 +329,8 @@ var seedAgents = []sessiondata.AgentDef{
 	{
 		// 调研面：只读工具集（无 edit/write_file），所以「不改任何文件」是结构
 		// 保证而不是靠提示词自觉；approval=auto（2026-12 用户拍板全线 auto），
-		// 只读面无写工具，工具层 ConfirmForced 硬闸兜底，需要时可按会话收紧。
+		// 只读面无写工具；auto = 完全无确认（2026-10 拍板），高危命令不再有
+		// ConfirmForced 确认兜底——用户知情选择，需要时可按会话收紧。
 		// web_search 是调研的核心能力之一（本仓库代码之外的资料都靠它）。
 		//
 		// bash_readonly 自 2026-12 起在调研面上（用户反馈：没有执行面就读不了
@@ -378,8 +379,9 @@ var seedAgents = []sessiondata.AgentDef{
 		// lxagent：**专门维护其他 Agent 配置**的内置 Agent——改系统提示词模板、
 		// 工具白名单与技能绑定。它的读写口就是 agent_read / agent_write 两个
 		// 工具（store 直改，与前端编辑器同一套校验）；落库即生效。
-		// 审批档 auto（2026-12 用户拍板全线 auto）：agent_write 走工具层
-		// ConfirmForced 硬闸兜底，需要时可按会话收紧审批档。
+		// 审批档 auto（2026-12 用户拍板全线 auto）：auto = 完全无确认
+		//（2026-10 拍板），agent_write 不再有 ConfirmForced 确认兜底——
+		// 用户知情选择，需要时可按会话收紧审批档。
 		ID: "lxagent", Name: "lxagent", Enabled: true, Color: "#7c3aed", Model: "",
 		// Desc 是**主 Agent 的选人信号**：要说清「改 Agent 配置」该派给谁。
 		Desc:     "改 Agent 配置：查看与修改系统提示词模板、工具白名单与技能绑定（只改配置，不写业务代码、不跑测试），agent_write 落库即生效，对后续派发生效。",
@@ -394,8 +396,9 @@ var seedAgents = []sessiondata.AgentDef{
 		// 回滚（workspace_rollback）。不写业务代码、不做调研——那是 coder /
 		// researcher 的活。工具白名单里没有任何写文件工具，「只做 git 管理
 		// 动作」因此有结构性保证，不只是提示词自觉。
-		// 审批档 auto（2026-12 用户拍板全线 auto）：sync/rollback 属高危，工具层
-		// ConfirmForced 硬闸兜底，需要时可按会话收紧审批档。
+		// 审批档 auto（2026-12 用户拍板全线 auto）：sync/rollback 属高危，但
+		// auto = 完全无确认（2026-10 拍板），不再有 ConfirmForced 确认兜底——
+		// 用户知情选择，需要时可按会话收紧审批档。
 		ID: "repo-manager", Name: "仓库管理 Agent", Enabled: true, Color: "#65a30d", Model: "",
 		// Desc 是**主 Agent 的选人信号**：要说清「提交/推送/回滚」该派给谁。
 		Desc:     "仓库管理 Agent：git 提交与推送（workspace_sync）、状态查看（workspace_status）、回滚（workspace_rollback）——代码管理专属执行面，不写业务代码。",

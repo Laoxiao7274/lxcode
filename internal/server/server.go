@@ -16,6 +16,7 @@ import (
 	"github.com/gorilla/websocket"
 	"log"
 	"net/http"
+	"runtime"
 	"runtime/debug"
 	"sync"
 	"time"
@@ -575,8 +576,12 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/remote-access", s.handleRemoteAccess)
 	// 投屏：壳侧捕屏服务的命令轮询（GET）与推流（POST），均 loopback-only
 	//（screen_shell.go——壳在用户桌面会话内，后端在 session 0 抓不了屏）。
-	mux.HandleFunc("/screen/ctl", s.handleScreenCtl)
-	mux.HandleFunc("/screen/stream", s.handleScreenStream)
+	// 2026-10 用户拍板：macOS 暂不做投屏（捕获链 ddagrab/NVENC 是 Windows 专属），
+	// darwin 不注册端点——404 是「功能不存在」的最诚实表达；Windows 行为不变。
+	if runtime.GOOS != "darwin" {
+		mux.HandleFunc("/screen/ctl", s.handleScreenCtl)
+		mux.HandleFunc("/screen/stream", s.handleScreenStream)
+	}
 	return mux
 }
 

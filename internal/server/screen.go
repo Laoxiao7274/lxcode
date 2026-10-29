@@ -8,12 +8,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"runtime"
 
 	"github.com/moyunteng/lxcode/internal/protocol"
 )
 
 // dispatchScreen 投屏方法域（未命中回落 nil）。
+//
+// 平台门（2026-10 用户拍板）：macOS 暂不做投屏（捕获链 ddagrab/NVENC 是
+// Windows 专属），darwin 上手机端请求一律回明确的 CodeScreenUnavailable，
+// 不进入命令电平/接收者状态机——「按功能不存在处理」。Windows/Linux 不变。
 func (s *Server) dispatchScreen(c *wsClient, req *protocol.Request, params json.RawMessage) *protocol.Response {
+	if runtime.GOOS == "darwin" {
+		return protocol.NewError(req.ID, protocol.CodeScreenUnavailable, "投屏暂不支持此平台（macOS 版暂未包含投屏功能）")
+	}
 	switch req.Method {
 	case protocol.MethodScreenStart:
 		resp := s.startScreen(req, params)

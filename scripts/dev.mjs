@@ -7,7 +7,13 @@
 //      4. 启动 vite dev server（:5190）；壳模式等它就绪后拉起 Electron
 // 渲染层 getAgentSource() 探测环境：壳里 WSAgent 连真实后端；浏览器跑 DemoAgent。
 // 进程纪律：vite/electron 都用 node 直启其 cli.js（不经 npx.cmd/cmd 包装——
-// kill 包装层会留下孙进程孤儿，冒烟实测踩过）；退出统一 taskkill /T 杀整棵树。
+// kill 包装层会留下孙进程孤儿，冒烟实测踩过）；退出 Windows 统一 taskkill /T
+// 杀整棵树，darwin/linux 直接 SIGTERM（子进程都是 node 直启、无中间包装层，
+// 树深只有一层；杀不干净的残留由后端 --stdin-watch 兜底：vite/壳死亡 →
+// 管道 EOF → 后端优雅退出）。
+
+// 后端产物名按平台（darwin/linux 无 .exe——与 shell/src/sidecar.ts 同一规则）。
+const BACKEND_BIN = process.platform === "win32" ? "lxcode.exe" : "lxcode";
 import { spawn, spawnSync, execSync } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
@@ -42,7 +48,7 @@ console.log(`=== lxcode dev 启动${ELECTRON ? "（壳模式）" : ""} ===\n`);
 console.log("[1] 编译 Go 后端...");
 mkdirSync(join(ROOT, "bin"), { recursive: true });
 try {
-  execSync("go build -o bin/lxcode.exe ./cmd/lxcode", { cwd: ROOT, stdio: "inherit" });
+  execSync(`go build -o bin/${BACKEND_BIN} ./cmd/lxcode`, { cwd: ROOT, stdio: "inherit" });
 } catch {
   console.error("Go 后端编译失败");
   process.exit(1);
@@ -75,7 +81,7 @@ const useLocal = existsSync(join(ROOT, "config", "local.json"));
 const sessionsDir = devSessionsDir();
 mkdirSync(sessionsDir, { recursive: true });
 console.log(`    会话目录 ${sessionsDir}`);
-const backend = spawn(join(ROOT, "bin", "lxcode.exe"), [
+const backend = spawn(join(ROOT, "bin", BACKEND_BIN), [
   "--serve",
   ...(useLocal ? ["--config", "config/local.json"] : []),
   "--sessions", sessionsDir,
@@ -98,7 +104,7 @@ if (ELECTRON) {
       env: {
         ...process.env,
         LXCODE_DEV_URL: `http://127.0.0.1:${VITE_PORT}`,
-        LXCODE_BACKEND_EXE: join(ROOT, "bin", "lxcode.exe"),
+        LXCODE_BACKEND_EXE: join(ROOT, "bin", BACKEND_BIN),
       },
     });
     electron.on("close", (code) => process.exit(code ?? 0));

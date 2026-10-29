@@ -52,12 +52,18 @@ export function shutdownBackend(): void {
   }
 }
 
+/** 后端二进制名按平台（Windows 保留 .exe；darwin/linux 无后缀——
+ *  2026-10 用户翻案：macOS 壳列入支持，Go 交叉编译产物命名同步）。 */
+export function backendBinaryName(): string {
+  return process.platform === "win32" ? "lxcode.exe" : "lxcode";
+}
+
 /** 后端 exe 路径（供更新器热替换用）：dev 由 dev.mjs 注入；产线取 extraResources。 */
 export function backendExePath(): string | null {
   const dev = process.env.LXCODE_BACKEND_EXE;
   if (dev && existsSync(dev)) return dev;
   if (app.isPackaged) {
-    const bundled = join(process.resourcesPath, "bin", "lxcode.exe");
+    const bundled = join(process.resourcesPath, "bin", backendBinaryName());
     if (existsSync(bundled)) return bundled;
   }
   return null;

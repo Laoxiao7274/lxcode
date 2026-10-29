@@ -38,10 +38,46 @@
         "to": "bin"
       }
     ],
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "category": "public.app-category.developer-tools",
+      "icon": "build/icon.png",
+      "identity": null,
+      "extendInfo": {
+        "CFBundleName": "Lxcode",
+        "CFBundleDisplayName": "Lxcode",
+        "CFBundleIdentifier": "com.moyunteng.lxcode",
+        "NSHighResolutionCapable": true
+      },
+      "extraResources": [
+        {
+          "from": "resources/bin-darwin",
+          "to": "bin"
+        }
+      ],
+      "minimumSystemVersion": "10.15"
+    },
     "win": {
       "signtoolOptions": {
         "certificateSubjectName": "CN=lxcode-selfsign",
-        "signingHashAlgorithms": ["sha256"]
+        "signingHashAlgorithms": [
+          "sha256"
+        ]
       },
       "target": [
         {
@@ -60,5 +96,10 @@
       "differentialPackage": false,
       "deleteAppDataOnUninstall": false
     }
-  }
+  },
+  "buildMacNotes": [
+    "目标 dmg（分发安装）+ zip（免安装/归档）。arm64+x64 双架构。",
+    "electron-builder 自动把 png 转 icns（在 mac 上转换；Windows 交叉打包的实测结论见 scripts/build.mjs --mac）。2026-10 打包定案：暂不做签名/公证。后果：未签名 .app 首次打开会被 Gatekeeper 拦（无法验证开发者）——用户需右键打开一次放行，或 xattr -cr /Applications/Lxcode.app 清隔离属性。",
+    "darwin 后端二进制（resources/bin/lxcode，无 .exe）由 scripts/build.mjs --mac 交叉编译后落 resources/bin-darwin/，这里按平台覆盖 extraResources 源目录。"
+  ]
 }

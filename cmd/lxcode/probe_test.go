@@ -42,7 +42,7 @@ func TestProbePassesOnHealthyBackend(t *testing.T) {
 	go func() { done <- runServe(ctx, cfg, addr, sessDir) }()
 	dialWait(t, addr).Close() // 等后端可连（有启动窗口期）
 
-	if code := runProbe(addr); code != probeOK {
+	if code := runProbe(addr, ""); code != probeOK {
 		t.Fatalf("健康后端的探针应返回 probeOK(0)，实得 %d", code)
 	}
 

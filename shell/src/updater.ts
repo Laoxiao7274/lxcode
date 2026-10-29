@@ -23,7 +23,7 @@ import { pipeline } from "node:stream/promises";
 import { Readable, Transform } from "node:stream";
 import { app, BrowserWindow, ipcMain } from "electron";
 import { managedBackendPid } from "./sidecar";
-import { buildApplyBat, buildApplyFileEntries, buildApplyManifest, buildApplyVbs, toCrlf, type ApplyFileEntry, type ApplyPlan } from "./apply-update";
+import { buildApplyBat, buildApplyFileEntries, buildApplyManifest, buildApplySh, buildApplyVbs, toCrlf, type ApplyFileEntry, type ApplyPlan } from "./apply-update";
 import { createUpdatePoller, manualCheckOutcome, nextCheckDelayMs, type UpdatePoller } from "./update-poll";
 import { notifyTrayUpdate } from "./tray";
 
@@ -331,7 +331,19 @@ async function applyUpdate(): Promise<{ ok: boolean; needsRestart: boolean }> {
   }
   // 壳 exe 本体不在更新包里（zip 只装 resources/**）——但 bat 成功/回滚都要
   // 拉起壳，必须先确认它在场（拉不起来就是白换，宁可不更新）。
-  const shellExe = join(installDir(), `${app.getName()}.exe`);
+  // Windows = <Name>.exe（安装根，app.getName() 即安装名）。mac 不能拼：
+  // app.getName() 被 main.ts 的 app.setName("lxcode") 定成小写，而
+  // electron-builder 的 mac 产物默认 = productName（"Lxcode"）——case-sensitive
+  // APFS 上大小写对不上就是 existsSync 失败、更新被误中止；且
+  // installDir()+../MacOS 在层级上也是错的（installDir() =
+  // <app>.app/Contents，".." 跳出的是 Contents，不是 .app 根）。所以 darwin
+  // 直接取 app.getPath("exe") 本身：打包态就是 <app>.app/Contents/MacOS/
+  // <真实可执行名>，名字与层级都与实际产物一致。dev 形态走不到这里（上方
+  // guard 已 throw）。
+  const shellExe =
+    process.platform === "darwin"
+      ? app.getPath("exe")
+      : join(installDir(), `${app.getName()}.exe`);
   if (!loadOriginalFs().existsSync(shellExe)) {
     throw new Error(`壳可执行文件不在场（${shellExe}）——无法安排替换后的拉起，更新已中止（现有安装未受影响）`);
   }
@@ -370,30 +382,42 @@ async function applyUpdate(): Promise<{ ok: boolean; needsRestart: boolean }> {
     files,
   };
 
-  const batPath = join(pending, "apply-update.bat");
-  const vbsPath = join(pending, "apply-update.vbs");
-  // bat 必须 CRLF + ASCII 可编码（依据见 buildApplyBat 的 docstring——e2e
-  // 实测 LF 与 UTF-8 中文都会让 cmd 解析出假命令）。这里系统代码页是 GBK：
-  // Buffer.from(utf8) 落盘即可，ASCII 子集下 GBK 与 UTF-8 字节相同。
-  writeFileSync(batPath, Buffer.from(toCrlf(buildApplyBat(plan)), "utf8"));
-  writeFileSync(vbsPath, buildApplyVbs(batPath), "utf8");
-  // 清单（v2）：bat 是可执行真相，这份 JSON 是对账/取证记录（映射、哈希、
-  // PID、版本）。原子写防半份 JSON。
   const manifestTmp = join(pending, "update-manifest.json.tmp");
   writeFileSync(manifestTmp, JSON.stringify(buildApplyManifest(plan, Math.floor(Date.now() / 1000)), null, 2), "utf8");
   renameSync(manifestTmp, join(pending, "update-manifest.json"));
 
-  // 3) wscript 隐藏启动 bat（零窗口，依据见 apply-update.ts 头注）。
-  //    detached + stdio ignore：bat 生命周期与壳无关，壳退出不影响它。
+  // 3) 隐藏启动执行器（平台分支）：Windows = wscript 隐藏启动 bat（GUI 子系统
+  //    进程零窗口，依据见 apply-update.ts 头注）；darwin = /bin/sh 直接跑
+  //    apply-update.sh——Unix 没有「控制台窗口」的概念，detached + stdio
+  //    ignore + unref 让脚本完全脱离壳的进程组与会话（setsid 等价物），壳退出
+  //    不影响它；无需 osascript/nohup 包装（nohup 只防 SIGHUP，对 detached
+  //    spawn 是多余的，见 buildApplySh 头注）。bat 路径的 Windows 行为不变。
   const { spawn } = await import("node:child_process");
-  const vbsRunner = spawn("wscript.exe", [vbsPath], {
-    detached: true,
-    stdio: "ignore",
-    windowsHide: true,
-    windowsVerbatimArguments: false,
-  });
-  vbsRunner.unref();
-  ulog("apply-update.bat 已排程（wscript 隐藏启动）", `目标版本 ${plan.appVersion}，等待 PID ${plan.pids.join(",")}`);
+  if (process.platform === "darwin") {
+    const shPath = join(pending, "apply-update.sh");
+    // 0o755：/bin/sh <path> 直跑其实不依赖执行位，但保留可执行位让排程现场
+    // 可手工复跑（对账/取证时有用）。
+    writeFileSync(shPath, buildApplySh(plan), { mode: 0o755 });
+    const runner = spawn("/bin/sh", [shPath], { detached: true, stdio: "ignore" });
+    runner.unref();
+    ulog("apply-update.sh 已排程（/bin/sh detached 启动）", `目标版本 ${plan.appVersion}，等待 PID ${plan.pids.join(",")}`);
+  } else {
+    const batPath = join(pending, "apply-update.bat");
+    const vbsPath = join(pending, "apply-update.vbs");
+    // bat 必须 CRLF + ASCII 可编码（依据见 buildApplyBat 的 docstring——e2e
+    // 实测 LF 与 UTF-8 中文都会让 cmd 解析出假命令）。这里系统代码页是 GBK：
+    // Buffer.from(utf8) 落盘即可，ASCII 子集下 GBK 与 UTF-8 字节相同。
+    writeFileSync(batPath, Buffer.from(toCrlf(buildApplyBat(plan)), "utf8"));
+    writeFileSync(vbsPath, buildApplyVbs(batPath), "utf8");
+    const vbsRunner = spawn("wscript.exe", [vbsPath], {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+      windowsVerbatimArguments: false,
+    });
+    vbsRunner.unref();
+    ulog("apply-update.bat 已排程（wscript 隐藏启动）", `目标版本 ${plan.appVersion}，等待 PID ${plan.pids.join(",")}`);
+  }
 
   // 4) 收尾：清理本次下载的 dl-<ts>（文件已复制进 pending/staged，这里是
   //    best-effort 清理——占用残留由下次下载的 cleanupStaleStaging 兜底）。
