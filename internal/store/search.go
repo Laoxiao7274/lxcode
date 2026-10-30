@@ -33,10 +33,23 @@ const searchClip = 120
 // role 过滤只作用于**命中判定**，不作用于上下文：过滤掉的行仍然会作为
 // 相邻消息出现在上下文里（否则 role=user 时上下文里只有用户自己的话，
 // 恰好丢掉最该看的助手答复）。
-func (s *Store) Search(q SearchQuery) ([]SearchHit, int, error) {
+//
+// 扫描成本护栏（全扫是 O(全部消息)，629MB 真库平均 4s+）：
+//   - **限时**：超过 deadline（默认 2500ms）即停止扫描，已命中的正常返回，
+//     timedOut=true 告知调用方「扫描未完整」——数「还有多少」的成本
+//     不能无限搭上这一次调用；
+//   - **总数封顶后限时**：超过 max 后仍数总数（「还有更多」是缩小 pattern
+//     的依据），但**服从同一 deadline**——deadline 到了就停，total 是
+//     「已扫到 N 条命中（可能更多）」，timedOut 让调用方如实转告。
+//   - Session/Days/Workspace 过滤在 SQL 层裁剪扫描集（JOIN 子查询 WHERE）。
+//
+// **timedOut 是独立返回值而不是命中上的标记**：零命中 + 超时的场景只标
+// 命中会丢（没有命中可标），而那恰恰是最误导的情况——「没有匹配」会被
+// 模型当成全集，从此不再搜。
+func (s *Store) Search(q SearchQuery) ([]SearchHit, int, bool, error) {
 	re, err := regexp.Compile(q.Pattern)
 	if err != nil {
-		return nil, 0, fmt.Errorf("模式不是合法正则: %w", err)
+		return nil, 0, false, fmt.Errorf("模式不是合法正则: %w", err)
 	}
 	max := q.Max
 	if max <= 0 {
@@ -52,14 +65,49 @@ func (s *Store) Search(q SearchQuery) ([]SearchHit, int, error) {
 	if ctxN > maxSearchContext {
 		ctxN = maxSearchContext
 	}
-	rows, err := s.db.Query(
-		`SELECT m.session_id, m.role, m.content, s.title, s.updated_at
+	// 扫描时限：0 = 默认 2500ms（低于实测均值 4.07s，砍掉最慢尾部；
+	// 负数视为 0 也走默认）。超时后停止扫描、已命中的正常返回。
+	deadline := defaultSearchDeadline
+	if q.DeadlineMS > 0 {
+		deadline = time.Duration(q.DeadlineMS) * time.Millisecond
+	}
+	cutoff := time.Now().Add(deadline)
+
+	// SQL 层过滤：session 精确匹配；days 限定最近 N 天的会话
+	// （按 sessions.updated_at——消息没有 created_at 列，且会话级裁剪
+	// 与既有 idx_sessions_updated 索引对得上）。
+	scan := `SELECT m.session_id, m.role, m.content, s.title, s.updated_at
 		 FROM messages m
-		 JOIN (SELECT id, rowid AS srow, title, updated_at FROM sessions WHERE archived = 0
-		       ORDER BY updated_at DESC, rowid DESC) s ON m.session_id = s.id
-		 ORDER BY s.srow DESC, m.seq`) // 会话从近到远（srow 大 = 近），会话内按 seq
+		 JOIN (SELECT id, rowid AS srow, title, updated_at, workspace FROM sessions WHERE archived = 0
+		       ORDER BY updated_at DESC, rowid DESC) s ON m.session_id = s.id`
+	args := []any{}
+	if q.Session != "" {
+		scan += ` WHERE m.session_id = ?`
+		args = append(args, q.Session)
+	}
+	if q.Days > 0 {
+		cut := time.Now().AddDate(0, 0, -q.Days).Format(time.RFC3339Nano)
+		if q.Session != "" {
+			scan += ` AND s.updated_at >= ?`
+		} else {
+			scan += ` WHERE s.updated_at >= ?`
+		}
+		args = append(args, cut)
+	}
+	if q.Workspace != "" {
+		// workspace 过滤（非空时）：与 Days 同款的三元拼接——已有 WHERE 就 AND。
+		// 子会话在 CreateChild 时拷贝父的 workspace，按它过滤天然涵盖子会话。
+		if q.Session != "" || q.Days > 0 {
+			scan += ` AND s.workspace = ?`
+		} else {
+			scan += ` WHERE s.workspace = ?`
+		}
+		args = append(args, q.Workspace)
+	}
+	scan += ` ORDER BY s.srow DESC, m.seq` // 会话从近到远（srow 大 = 近），会话内按 seq
+	rows, err := s.db.Query(scan, args...)
 	if err != nil {
-		return nil, 0, fmt.Errorf("搜索查询失败: %w", err)
+		return nil, 0, false, fmt.Errorf("搜索查询失败: %w", err)
 	}
 	defer rows.Close()
 
@@ -72,10 +120,15 @@ func (s *Store) Search(q SearchQuery) ([]SearchHit, int, error) {
 	seqIn := map[string]int{}
 	var hits []SearchHit
 	total := 0
+	timedOut := false
 	for rows.Next() {
+		if time.Now().After(cutoff) {
+			timedOut = true
+			break
+		}
 		var sid, role, content, title, updated string
 		if err := rows.Scan(&sid, &role, &content, &title, &updated); err != nil {
-			return nil, 0, fmt.Errorf("读搜索行失败: %w", err)
+			return nil, 0, false, fmt.Errorf("读搜索行失败: %w", err)
 		}
 		seqIn[sid]++
 		line := SearchLine{Index: seqIn[sid], Role: role, Content: clipOneLine(content, searchClip)}
@@ -85,7 +138,8 @@ func (s *Store) Search(q SearchQuery) ([]SearchHit, int, error) {
 		case matched:
 			total++
 			// 超过上限后继续数总数（不早退）——「还有更多」是模型缩小
-			// pattern 的依据，数不出来那句提示就是死的。
+			// pattern 的依据，数不出来那句提示就是死的。但总数服从同一
+			// deadline（见函数注释），超时后 total 是「已扫到 N 条+」。
 			if len(hits) < max {
 				h := SearchHit{
 					SessionID: sid, SessionTitle: title, UpdatedAt: fmtTime(updated),
@@ -120,8 +174,16 @@ func (s *Store) Search(q SearchQuery) ([]SearchHit, int, error) {
 			prev[sid] = buf
 		}
 	}
-	return hits, total, rows.Err()
+	if err := rows.Err(); err != nil && !timedOut {
+		return nil, 0, false, fmt.Errorf("扫描搜索行失败: %w", err)
+	}
+	return hits, total, timedOut, nil
 }
+
+// defaultSearchDeadline 是会话搜索的默认扫描时限。
+// 629MB 真库实测平均 4.07s、最长 12.3s——2500ms 砍掉最慢尾部，
+// 保留大部分完整扫描（小库远不到这个数，恒不受影响）。
+const defaultSearchDeadline = 2500 * time.Millisecond
 
 // maxSearchContext 是每条命中上下文条数的上限（前后各 N 条）。
 // 上下文成倍放大输出（每条命中多 2N 行），不设上限时模型传个 100 就能
@@ -161,6 +223,8 @@ func fmtTime(ts string) string {
 }
 
 // FormatSearchHits 把命中渲染成给模型的文本（session_search 工具的输出）。
-func FormatSearchHits(hits []SearchHit, total int) string {
-	return sessiondata.FormatSearchHits(hits, total)
+// FormatSearchHits 把命中渲染成给模型的文本（session_search 工具的输出）。
+// scope 是范围说明（空 = 无），见 sessiondata.FormatSearchHits。
+func FormatSearchHits(hits []SearchHit, total int, timedOut bool, scope string) string {
+	return sessiondata.FormatSearchHits(hits, total, timedOut, scope)
 }

@@ -770,8 +770,10 @@ export interface AgentSource {
   sessions(): SessionMeta[];
   /** 项目列表。 */
   projects(): ProjectMeta[];
-  /** 添加项目（注册目录为 git 仓库——已有仓库不动，没有则 init）。 */
-  addProject(name: string, path: string): void;
+  /** 添加项目（注册目录为 git 仓库——已有仓库不动，没有则 init）。
+   *  成功 resolve 新项目的 ProjectMeta（含 id——调用方「创建后立即进入」的依据）；
+   *  失败 reject（调用方显示原因，对话框不关）。 */
+  addProject(name: string, path: string): Promise<ProjectMeta>;
   /** 从项目列表移除注册（**只解绑**：不删磁盘目录、不删会话——会话留在库里，
    *  侧栏不再按项目分组）。失败向上抛（有会话在跑时后端拒绝，调用方显示原因）。 */
   removeProject(id: string): Promise<void>;

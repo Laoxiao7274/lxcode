@@ -15,6 +15,13 @@
 //   update-pending 下旧格式残留（manifest.json v1 / apply-update.ps1 /
 //   apply-update.log）在新链路排程时一并清除。
 // 解压用系统自带 bsdtar（与 scripts/build.mjs 造 zip 同一套零依赖纪律）。
+//
+// manifest 按平台分文件（2026-12 拍板，契约见 update-platform.ts 头注与
+// scripts/build.mjs 的 mac 更新包段）：Windows 拉同目录的 manifest.json
+// （老契约一字不动），mac 拉同目录的 manifest-mac.json——两份 manifest 字段
+// 同构、更新包内容不同（lxcode.exe vs lxcode）。site-backend 发版时两份都要
+// 上传。平台守卫（assertStagedPlatform）在排程前把关 staged 清单的平台匹配——
+// 最后一道闸，防 mac 拉到 Windows 包把 exe 替换进 .app。
 import { spawnSync } from "node:child_process";
 import { appendFileSync, createWriteStream, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -24,13 +31,19 @@ import { Readable, Transform } from "node:stream";
 import { app, BrowserWindow, ipcMain } from "electron";
 import { managedBackendPid } from "./sidecar";
 import { buildApplyBat, buildApplyFileEntries, buildApplyManifest, buildApplySh, buildApplyVbs, toCrlf, type ApplyFileEntry, type ApplyPlan } from "./apply-update";
+import { assertStagedPlatform, platformManifestUrl } from "./update-platform";
 import { createUpdatePoller, manualCheckOutcome, nextCheckDelayMs, type UpdatePoller } from "./update-poll";
 import { notifyTrayUpdate } from "./tray";
 
 /** 更新源（env 覆盖；默认 = 官网更新服务器的 manifest——site-backend 按契约生成，
- *  url 为相对文件名，按 manifest 所在目录解析）。 */
+ *  url 为相对文件名，按 manifest 所在目录解析）。
+ *  manifest 按平台分文件：Windows 用 manifest.json（老契约不变）；darwin 把
+ *  base 的末段文件名替换为 manifest-mac.json（同目录，目录与 env 覆盖语义都
+ *  不变——env 指向完整 manifest 路径时只换文件名）。纯函数与契约说明在
+ *  update-platform.ts。 */
 function manifestUrl(): string {
-  return process.env.LXCODE_UPDATE_URL ?? "https://api.r96314722.nyat.app:15714/site/manifest.json";
+  const base = process.env.LXCODE_UPDATE_URL ?? "https://api.r96314722.nyat.app:15714/site/manifest.json";
+  return platformManifestUrl(base, process.platform);
 }
 
 export interface UpdateManifest {
@@ -368,6 +381,14 @@ async function applyUpdate(): Promise<{ ok: boolean; needsRestart: boolean }> {
   // （用户看到「找不到」类报错，磁盘上 staged 却已齐全）。见 buildApplyFileEntries。
   const files: ApplyFileEntry[] = buildApplyFileEntries(installDir(), stagedTarget, manifest.files);
   verifyStagedFiles(files, payloadDir, stagedTarget);
+  // 平台守卫（最后一道闸，紧随暂存复核、先于任何排程写入）：staged 替换清单
+  // 必须与当前平台匹配——mac 上若因故拿到 Windows 的更新包（清单含 .exe 或缺
+  // resources/bin/lxcode），把 exe 替换进 .app 就是坏安装，宁可更新失败。失败
+  // 时排程从未发生（bat/sh/.app 拉起链一个字节都没写），现有安装不受影响；
+  // update-pending/staged 里残留的跨平台包无害（下下次 apply 前守卫会再次拦
+  // 截）。Windows 侧对称把关（缺 lxcode.exe / 混入 darwin 产物同样中止）。
+  // 纯函数见 update-platform.ts（单测钉住四个方向）。
+  assertStagedPlatform(files, process.platform);
   ulog("更新文件已暂存到 update-pending/staged", `${files.length} 个文件（逐文件文件形态+大小复核通过）`);
 
   const plan: ApplyPlan = {
@@ -440,7 +461,15 @@ function installDir(): string {
  *  顶部 import 的被 Electron 补丁版 fs。补丁版 statSync 把 `app.asar` 报成
  *  **目录**、readdirSync 能列出 asar 虚拟内容（build/icon.png 等），于是递归
  *  进了虚拟目录、originalFs copyFileSync 找不到真实文件报 ENOENT。教训：
- *  复制含 *.asar 的目录树，**每一个** fs 调用都必须绕过 asar 补丁，混用即翻车）。 */
+ *  复制含 *.asar 的目录树，**每一个** fs 调用都必须绕过 asar 补丁，混用即翻车）。
+ *
+ *  darwin 执行位兜底：staged 里名为 `lxcode`（无扩展名的后端二进制，即
+ *  resources/bin/lxcode）在复制落位后 chmodSync 0o755——copyFileSync 的源
+ *  是打包 zip 解出来的文件，NTFS（打包机多为 Windows）不持久 POSIX 执行位、
+ *  解出的副本常为 0644，后续 cp 落位链（apply-update.sh 的 do_deploy）虽然
+ *  还有第二道 chmod，这里防线前移：staged 里就绪的副本在任何后续流程
+ *  （手工复跑 sh、对账取证）里都可直接执行。只在 darwin 下做（chmod 在
+ *  Windows 上对无扩展名文件是空转，不做白不做也不做——保持行为零变化）。 */
 function copyTree(src: string, dst: string): void {
   const fs = loadOriginalFs();
   fs.mkdirSync(dst, { recursive: true });
@@ -448,7 +477,17 @@ function copyTree(src: string, dst: string): void {
     const s = join(src, name);
     const d = join(dst, name);
     if (fs.statSync(s).isDirectory()) copyTree(s, d);
-    else fs.copyFileSync(s, d);
+    else {
+      fs.copyFileSync(s, d);
+      if (process.platform === "darwin" && name === "lxcode") {
+        try {
+          fs.chmodSync(d, 0o755);
+        } catch {
+          // 执行位兜底失败不阻断暂存（do_deploy 还有一道 chmod）——但保持
+          // 静默吞错的语义收窄到 chmod 本身：复制失败照旧抛。
+        }
+      }
+    }
   }
 }
 

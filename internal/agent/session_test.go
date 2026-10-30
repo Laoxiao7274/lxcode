@@ -647,6 +647,93 @@ func TestPersistenceMessagesWrittenToFile(t *testing.T) {
 	}
 }
 
+// TestSessionStartedEventFiresOnceOnFirstMessage：首条消息落库成功触发
+// SessionStartedEvent **恰好一次**（侧栏「发消息 → 新对话出现」的信号）。
+//
+// 修复前的缺口：该事件只在 ensureSessionLocked 的懒建路径可达，而 session.new
+// 预建会话行（s.id 已有值、历史为空）的场景永远不发——空会话被 store.List
+// 过滤不进侧栏，用户发完首条消息它却不出现。两条路径（懒建新行 / 预建行
+// 首条）都由 persistLocked 的「历史为空 + 落库成功」判定统一覆盖。
+func TestSessionStartedEventFiresOnceOnFirstMessage(t *testing.T) {
+	s := newPersistSession(t, t.TempDir())
+	var mu sync.Mutex
+	started := 0
+	var startedID string
+	s.SetEmitter(func(ev Event) {
+		if e, ok := ev.(SessionStartedEvent); ok {
+			mu.Lock()
+			started++
+			startedID = e.ID
+			mu.Unlock()
+		}
+	})
+
+	// 首条消息：恰好一次，id 是落库分配的会话 id
+	s.append(llm.Message{Role: "user", Content: "第一条"})
+	mu.Lock()
+	got, id := started, startedID
+	mu.Unlock()
+	if got != 1 {
+		t.Fatalf("首条消息应触发一次 SessionStartedEvent, got %d", got)
+	}
+	if id == "" || id != s.SessionID() {
+		t.Fatalf("事件应携带会话 id: ev=%q session=%q", id, s.SessionID())
+	}
+
+	// 第二条起不再触发（只在「从空到有第一条」发一次）
+	s.append(llm.Message{Role: "assistant", Content: "回复"})
+	s.append(llm.Message{Role: "user", Content: "第三条"})
+	mu.Lock()
+	got = started
+	mu.Unlock()
+	if got != 1 {
+		t.Fatalf("后续消息不应再触发 SessionStartedEvent, got %d", got)
+	}
+}
+
+// TestSessionStartedEventOnSendPath：预建行会话（EnablePersistence 恢复出的
+// 空 id 会话——server 的 session.new 建行后 AttachTo 同款形态）经完整 Send
+// 轮落第一条消息，同样触发一次 SessionStartedEvent。
+func TestSessionStartedEventOnSendPath(t *testing.T) {
+	dir := t.TempDir()
+	// 预建一行空会话（store.Create——与 server.createSession 的 session.new 路径同款）
+	seed := newPersistSession(t, dir)
+	st := seed.st
+	preID, err := st.Create()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 同一 store 上另开 Session 附着到该预建行（历史为空、id 已有值）
+	s, reg := newTestSession(t)
+	bindDefault(t, reg)
+	if err := s.AttachTo(st, preID); err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeStream{script: [][]llm.StreamEvent{textResult("好")}}
+	s.stream = fake.stream
+
+	var mu sync.Mutex
+	started := 0
+	s.SetEmitter(func(ev Event) {
+		if _, ok := ev.(SessionStartedEvent); ok {
+			mu.Lock()
+			started++
+			mu.Unlock()
+		}
+	})
+
+	if err := s.Send("首条消息"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return !s.Busy() })
+	mu.Lock()
+	got := started
+	mu.Unlock()
+	if got != 1 {
+		t.Fatalf("预建行会话的首条消息应触发一次 SessionStartedEvent, got %d", got)
+	}
+}
+
 func TestRestartRestoresLatestSession(t *testing.T) {
 	dir := t.TempDir()
 	s1 := newPersistSession(t, dir)

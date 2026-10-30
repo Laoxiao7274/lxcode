@@ -346,12 +346,14 @@ func (s *Server) AttachSessionStore(st *store.Store) error {
 	// 图片附件：注入 llm 层的图片读取函数（请求构造瞬间按引用读文件 → base64，
 	// 分层纪律见 internal/llm/images.go）。
 	s.bindAttachmentLoader(st)
-	s.treg.SetSessionSearch(func(_ context.Context, q sessiondata.SearchQuery) (string, error) {
-		hits, total, err := st.Search(q)
+	s.treg.SetSessionSearch(func(ctx context.Context, q sessiondata.SearchQuery) (string, error) {
+		hits, total, timedOut, err := st.Search(q)
 		if err != nil {
 			return "", err
 		}
-		return sessiondata.FormatSearchHits(hits, total), nil
+		// 范围说明（限定当前项目时）由工具层经 ctx 传来——非全库扫描要在
+		// 结果头部注明，模型才知道看到的是子集。
+		return sessiondata.FormatSearchHits(hits, total, timedOut, tools.SearchScope(ctx)), nil
 	})
 	// 工作区三件套（workspace_status / workspace_sync / workspace_rollback）的
 	// server 侧实现：与 SetSessionSearch 同款注入模式（tools 是叶子包不 import

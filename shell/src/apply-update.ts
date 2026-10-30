@@ -325,7 +325,15 @@ export function toCrlf(s: string): string {
 //     Windows taskkill /F 无优雅语义可用；
 //   - 哈希用 `shasum -a 256`（macOS 自带，/usr/bin/shasum），没有时回落
 //     `sha256sum`（coreutils，Linux 形态兼容）——输出裸哈希无本地化文本，
-//     直接字符串比较即可（certutil 输出本地化的问题在这不存在）。
+//     直接字符串比较即可（certutil 输出本地化的问题在这不存在）；
+//   - **deploy 落位后对无扩展名可执行文件补 chmod 0755**：cp 在 POSIX 上保留
+//     staged 原件的权限位，但 staged 侧由 Node copyFileSync 落盘——它在
+//     Windows/NTFS 上落的是 0644（执行位对 Windows 无意义，写盘时不持久
+//     POSIX 位），这条 staged 副本被 cp 到 mac 安装目录后就是个不可执行的
+//     lxcode，新壳拉起后端直接 EACCES。所以 deploy 阶段对清单里名为
+//     `lxcode`（无扩展名的后端二进制，即 resources/bin/lxcode）的目标补
+//     chmod 0755，幂等；updater.ts 的 copyTree 在 darwin 下有同款兜底
+//     （防线前移到暂存侧，两层独立，注释与单测互为钉子）。
 
 /** darwin 计划与 bat 共用 ApplyPlan（字段同义；shellExe 在 mac 上是 .app 内的
  *  可执行文件路径，即 <install>/Contents/MacOS/<productName>）。
@@ -434,6 +442,16 @@ do_deploy() {
     log_line "deploy failed: $2"
     return 1
   fi
+  # chmod 0755 the extensionless backend binary (basename "lxcode") after
+  # deploy: cp preserves the staged copy's permission bits, but the staged
+  # tree is written by Node copyFileSync on the packer machine -- on
+  # Windows/NTFS that lands 0644 (no exec bit; Windows ignores it), so the
+  # deployed lxcode would be non-executable and the relaunched shell could
+  # not spawn the backend (EACCES). Idempotent; harmless for every other
+  # entry (app.asar etc. never matches the basename).
+  case "$(basename "$2")" in
+    lxcode) chmod 0755 "$2" 2>>"$LOG" || : ;;
+  esac
   actual=$(sha256_of "$2") || { log_line "sha256 tool missing (shasum/sha256sum)"; return 1; }
   if [ "$actual" != "$3" ]; then
     log_line "sha256 mismatch: $2 (expect $3)"

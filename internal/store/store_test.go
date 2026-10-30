@@ -186,7 +186,7 @@ func TestSearch(t *testing.T) {
 	if _, err := s.AppendMsg(id2, llm.Message{Role: "user", Content: "聊聊 Go 的并发"}); err != nil {
 		t.Fatal(err)
 	}
-	hits, _, err := s.Search(SearchQuery{Pattern: "Go", Max: 10})
+	hits, _, _, err := s.Search(SearchQuery{Pattern: "Go", Max: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,16 +198,16 @@ func TestSearch(t *testing.T) {
 		t.Fatalf("命中排序/序号不符: %+v", hits[0])
 	}
 	// 坏正则报错
-	if _, _, err := s.Search(SearchQuery{Pattern: "[", Max: 10}); err == nil {
+	if _, _, _, err := s.Search(SearchQuery{Pattern: "[", Max: 10}); err == nil {
 		t.Fatal("坏正则应报错")
 	}
 	// 无命中
-	hits, _, _ = s.Search(SearchQuery{Pattern: "不存在的词", Max: 10})
+	hits, _, _, _ = s.Search(SearchQuery{Pattern: "不存在的词", Max: 10})
 	if len(hits) != 0 {
 		t.Fatalf("无命中: %d", len(hits))
 	}
 	// max 钳制
-	hits, _, _ = s.Search(SearchQuery{Pattern: "Go", Max: 1})
+	hits, _, _, _ = s.Search(SearchQuery{Pattern: "Go", Max: 1})
 	if len(hits) != 1 {
 		t.Fatalf("max=1: %d", len(hits))
 	}
@@ -223,7 +223,7 @@ func TestSearchExcludesArchived(t *testing.T) {
 	if err := s.Archive(id, true); err != nil {
 		t.Fatal(err)
 	}
-	hits, _, _ := s.Search(SearchQuery{Pattern: "唯一关键词", Max: 10})
+	hits, _, _, _ := s.Search(SearchQuery{Pattern: "唯一关键词", Max: 10})
 	if len(hits) != 0 {
 		t.Fatalf("归档会话不应被搜到: %+v", hits)
 	}
@@ -256,7 +256,7 @@ func TestSearchContextAndRole(t *testing.T) {
 	}
 
 	// ① 上下文：命中第 4 条，前后各 1 条 → 应含 #3 #4 #5，按时间顺序
-	hits, total, err := s.Search(SearchQuery{Pattern: "关键词", Max: 10, Context: 1})
+	hits, total, _, err := s.Search(SearchQuery{Pattern: "关键词", Max: 10, Context: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,7 +282,7 @@ func TestSearchContextAndRole(t *testing.T) {
 
 	// ② role 过滤只作用于命中判定：role=user 命中两条（#1 与 #4），
 	//    但上下文里仍应看得到 assistant/tool 的行。
-	hits, total, err = s.Search(SearchQuery{Pattern: "句", Max: 10, Role: "user", Context: 1})
+	hits, total, _, err = s.Search(SearchQuery{Pattern: "句", Max: 10, Role: "user", Context: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,7 +301,7 @@ func TestSearchContextAndRole(t *testing.T) {
 	}
 
 	// ③ 总数不受 max 限制：max=1 时只回 1 条，但 total 仍是全部命中数。
-	hits, total, err = s.Search(SearchQuery{Pattern: "句", Max: 1})
+	hits, total, _, err = s.Search(SearchQuery{Pattern: "句", Max: 1})
 	if err != nil {
 		t.Fatal(err)
 	}

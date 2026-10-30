@@ -159,42 +159,56 @@ fun ScreenScreen(state: com.moyunteng.lxcode.remote.ui.AppState) {
     val real = state.real
     val connected = real.phase == com.moyunteng.lxcode.remote.net.RealPhase.Connected
 
-    // 全屏态提升到页面级：观看态 = 视频无边框铺满整页（控制项在悬浮球），
-    // 全屏布尔保留给「设置页视频卡 ↔ 整页观看」的切换语义（0.3.30 拍板后
+    // 全屏态提升到页面级：未投屏的设置页「视频卡 ↔ 整页」切换（0.3.30 拍板，
     // 观看态本身就是整页，fullscreen 只影响设置页入口的双击全屏）。
     var fullscreen by rememberSaveable { mutableStateOf(false) }
     DisposableEffect(Unit) {
         onDispose { fullscreen = false }
     }
 
-    // ===== 观看模式：已在投屏（壳上报 running）= 视频铺满主体 + 悬浮球 =====
-    // 参照 RustDesk/向日葵的标准形态：开始投屏后不再是「视频卡片 + 控制面板」
-    // 的设置页，而是全屏工作区，控制项全收进悬浮球。未开始时仍是原设置页。
-    if (real.screenState?.active == true) {
-        // 方向锁定：进入观看态即按用户在悬浮球菜单选的方向重放 requestedOrientation。
-        // configChanges 后旋转/锁方向不再触发 Activity 重建（AndroidManifest 配置，
-        // RustDesk 同款方案），这条 SideEffect 只是兜底：进程恢复/其他极端路径下
-        // 重建后重组回来，仍靠 RealBackend.screenOrientationLock 找回方向锁。
-        val activity = androidx.compose.ui.platform.LocalContext.current as? android.app.Activity
-        SideEffect {
-            real.screenOrientationLock?.let { lock ->
-                activity?.requestedOrientation = lock
-            }
+    // 观看态（投屏进行中）的「全屏 ↔ 缩小」用 AppState.screenFullscreen（页面级，
+    // AppRoot 返回键与 safeDrawing 豁免都按它判定）；未投屏时的设置页双击全屏
+    // 仍用本地的 fullscreen rememberSaveable。active 翻 false 时两者都复位——
+    // 对端停止后再进投屏页不会卡在全屏态。
+    val watching = real.screenState?.active == true
+    LaunchedEffect(watching) {
+        if (!watching) {
+            state.screenFullscreen = false
+            fullscreen = false
         }
-        // 离开观看态（停止投屏/断线回设置页）恢复用户默认方向——requestedOrientation
-        // 是 Activity 级的，不恢复会让「横屏」泄漏到整个 app 的所有页面。
-        // configChanges 后旋转不再触发 dispose，这里只在真实离开观看态时执行，
-        // 判据（screenOrientationLock != null）不动。
-        DisposableEffect(Unit) {
-            onDispose {
-                if (real.screenOrientationLock != null) {
-                    real.screenOrientationLock = null
-                    activity?.requestedOrientation =
-                        android.content.pm.ActivityInfo.SCREEN_ORIENTATION_FULL_USER
+    }
+
+    if (watching) {
+        if (state.screenFullscreen) {
+            // ===== 全屏观看态：视频铺满整页 + 观看顶栏 + 悬浮球（原观看态形态）=====
+            // 方向锁定：进入观看态即按用户在悬浮球菜单选的方向重放 requestedOrientation。
+            // configChanges 后旋转/锁方向不再触发 Activity 重建（AndroidManifest 配置，
+            // RustDesk 同款方案），这条 SideEffect 只是兜底：进程恢复/其他极端路径下
+            // 重建后重组回来，仍靠 RealBackend.screenOrientationLock 找回方向锁。
+            val activity = androidx.compose.ui.platform.LocalContext.current as? android.app.Activity
+            SideEffect {
+                real.screenOrientationLock?.let { lock ->
+                    activity?.requestedOrientation = lock
                 }
             }
+            // 离开观看态（停止投屏/断线回设置页）恢复用户默认方向——requestedOrientation
+            // 是 Activity 级的，不恢复会让「横屏」泄漏到整个 app 的所有页面。
+            // configChanges 后旋转不再触发 dispose，这里只在真实离开观看态时执行，
+            // 判据（screenOrientationLock != null）不动。
+            DisposableEffect(Unit) {
+                onDispose {
+                    if (real.screenOrientationLock != null) {
+                        real.screenOrientationLock = null
+                        activity?.requestedOrientation =
+                            android.content.pm.ActivityInfo.SCREEN_ORIENTATION_FULL_USER
+                    }
+                }
+            }
+            WatchSurface(real, state, fullscreen = true, onToggleFullscreen = { state.screenFullscreen = false })
+            return
         }
-        WatchSurface(real, state, fullscreen = fullscreen) { fullscreen = !fullscreen }
+        // ===== 缩小观看态（投屏继续）：设置页形态，视频卡继续播同一解码流 =====
+        MinimizedCastScreen(real, state, onExpand = { state.screenFullscreen = true })
         return
     }
     if (fullscreen) {
@@ -342,7 +356,208 @@ fun ScreenScreen(state: com.moyunteng.lxcode.remote.ui.AppState) {
     }
 }
 
+/**
+ * 缩小观看态（投屏进行中，fullscreen=false）：设置页形态 + 投屏继续跑。
+ *
+ * 与未投屏设置页（ScreenScreen 尾段 Column）同构：ScreenHeader + 16:9 视频卡 +
+ * 显示器/清晰度选择 + 「停止投屏」。差异三处：
+ *  * 视频卡带「投屏中」pill，点击/双击卡片 = 放大回全屏观看（[onExpand]）；
+ *  * 底部新增 [AgentControlPanel] 占位（后续在小屏下面做 agent 控制电脑）；
+ *  * 返回键语义（AppRoot BackHandler）：缩小态返回 = 离开投屏页回连接页，
+ *    投屏继续（挂起语义）；从连接页/其它入口再进投屏页回到本形态。
+ *
+ * insets：本形态不在 AppRoot 的 watching 豁免里（watching 要求 fullscreen），
+ * 走正常 safeDrawing，无需页面内自补系统条。
+ */
+@Composable
+private fun MinimizedCastScreen(
+    real: com.moyunteng.lxcode.remote.net.RealBackend,
+    state: com.moyunteng.lxcode.remote.ui.AppState,
+    onExpand: () -> Unit,
+) {
+    val connected = real.phase == com.moyunteng.lxcode.remote.net.RealPhase.Connected
+    Column(
+        Modifier
+            .fillMaxSize()
+            .background(LxColors.Bg),
+    ) {
+        ScreenHeader(
+            title = "投屏",
+            onBack = { state.route = com.moyunteng.lxcode.remote.ui.Route.Connections },
+            trailing = { HeaderConnStatus(real) },
+        )
+
+        Column(
+            Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(Lx.space.s12),
+            verticalArrangement = Arrangement.spacedBy(Lx.space.s10),
+        ) {
+            if (!connected) {
+                com.moyunteng.lxcode.remote.ui.BackendDownBar(
+                    down = real.phase == com.moyunteng.lxcode.remote.net.RealPhase.Failed,
+                    reconnecting = real.reconnecting,
+                    onRetry = { real.retry(state.realAddr, state.realToken) },
+                    message = real.phaseMessage,
+                )
+            }
+
+            // 视频卡：同一解码流（real.screenDecoder 不因形态切换重建——SurfaceView
+            // 销毁重建走 setOutputSurface 热重绑），点击 = 放大回全屏观看。
+            Box {
+                VideoSurface(
+                    real,
+                    fullscreen = false,
+                    onToggleFullscreen = onExpand,
+                )
+                // 「投屏中」pill：叠在视频卡顶部左侧，点击卡片任意处放大
+                LxPill(
+                    "投屏中 · 点击放大",
+                    variant = LxPillVariant.Success,
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(Lx.space.s6),
+                )
+            }
+
+            // 实时状态行：投屏 pill + 显示器/画质/编码器明细
+            StatusLine(real)
+
+            // 诊断面板（黑屏排查数据；默认折叠，点开显示）
+            DiagPanel(real)
+
+            // 显示器选择（壳在线才可选；单屏不罗列选择行，只提示当前显示器）
+            if (!real.screenShellOnline) {
+                Hint("桌面端 Lxcode 壳不在线（电脑上的应用没开或后端连不上壳）——无法投屏")
+            } else if (real.screenMonitors.size > 1) {
+                LxSectionHeader("显示器")
+                real.screenMonitors.forEach { m ->
+                    SelectableRow(
+                        title = m.name,
+                        subtitle = "${m.width}×${m.height}" + if (m.primary) " · 主显示器" else "",
+                        // 投屏中：选中态跟随实际投屏的显示器（切换走悬浮球 setScreenMonitor）
+                        selected = real.screenState?.monitor == m.id,
+                        onClick = {
+                            real.setScreenMonitor(m.id) { err ->
+                                if (err != null) state.screenToast = err
+                                else state.rememberScreenCast(m.id, real.screenState?.quality ?: "medium")
+                            }
+                        },
+                    )
+                }
+            } else if (real.screenMonitors.size == 1) {
+                val m = real.screenMonitors[0]
+                Text(
+                    "显示器：${m.name}（${m.width}×${m.height}）",
+                    style = Lx.type.BodySmall,
+                    color = Lx.colors.FgFaint,
+                )
+            }
+
+            // 清晰度（分段 pill：流畅/标准/高清 → qp 26/22/18；投屏中切换走
+            // setScreenQuality——后端按命令电平重起 ffmpeg，与悬浮球同一语义）
+            LxSectionHeader("清晰度")
+            Row(horizontalArrangement = Arrangement.spacedBy(Lx.space.s4)) {
+                QUALITY_LABELS.forEach { (key, label) ->
+                    val selected = real.screenState?.quality == key
+                    Box(
+                        Modifier
+                            .clip(Lx.radius.FieldShape)
+                            .background(if (selected) Lx.colors.Surface else Lx.colors.BgSide)
+                            .border(
+                                1.dp,
+                                if (selected) Lx.colors.BorderStrong else Lx.colors.Border,
+                                Lx.radius.FieldShape,
+                            )
+                            .clickable {
+                                real.setScreenQuality(key) { err ->
+                                    if (err != null) state.screenToast = err
+                                    else state.rememberScreenCast(real.screenState?.monitor ?: 0, key)
+                                }
+                            }
+                            .padding(horizontal = Lx.space.s6, vertical = Lx.space.s4),
+                    ) {
+                        Text(
+                            label,
+                            style = Lx.type.Button,
+                            color = if (selected) Lx.colors.Fg else Lx.colors.FgFaint,
+                        )
+                    }
+                }
+            }
+
+            // 停止投屏（Large 主行动；busy 时按钮自带 loading 态禁点）
+            val busy = real.screenBusy
+            LxButton(
+                "停止投屏",
+                {
+                    real.stopScreen { err -> if (err != null) state.screenToast = err }
+                },
+                variant = LxButtonVariant.Secondary,
+                size = LxButtonSize.Large,
+                enabled = !busy,
+            )
+
+            Hint("手机只能看，不能控制电脑。投屏运行时电脑托盘会显示「正在向手机投屏」。")
+
+            // Agent 控制区（占位）：后续在小屏下面做 agent 控制电脑
+            AgentControlPanel()
+
+            // 一次性提示（toast 语义：几秒后自动清）
+            state.screenToast?.let { msg ->
+                if (msg.isNotEmpty()) {
+                    Text(msg, style = Lx.type.BodySmall, color = Lx.colors.FgMuted)
+                }
+                LaunchedEffect(msg) {
+                    delay(4000)
+                    state.screenToast = null
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Agent 控制区（占位组件，缩小观看态视频卡下方）。
+ *
+ * 后续形态：在小屏下面做 agent 控制电脑（发指令、看 agent 执行）。本期只落
+ * 结构占位——独立组件 + 明确的「开发中」卡片，后续往里填功能不动外层布局。
+ */
+@Composable
+private fun AgentControlPanel() {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(Lx.radius.CardShape)
+            .background(Lx.colors.BgSide)
+            .border(1.dp, Lx.colors.Border, Lx.radius.CardShape)
+            .padding(Lx.space.s10),
+        verticalArrangement = Arrangement.spacedBy(Lx.space.s4),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Lx.space.s4),
+        ) {
+            Icon(
+                imageVector = Icons.Filled.DesktopWindows,
+                contentDescription = null,
+                tint = Lx.colors.FgFaint,
+                modifier = Modifier.size(16.dp),
+            )
+            Text("Agent 控制", style = Lx.type.ListTitle, color = Lx.colors.FgMuted)
+            LxPill("开发中", variant = LxPillVariant.Muted)
+        }
+        Text(
+            "之后可以在这里用 agent 控制电脑（发指令、执行任务）——敬请期待。",
+            style = Lx.type.BodySmall,
+            color = Lx.colors.FgFaint,
+        )
+    }
+}
+
 /** 顶栏尾部连接状态点：success（已连接）/ run+spinner 语义（连接中）/ idle（离线）。 */
+
 @Composable
 private fun HeaderConnStatus(real: com.moyunteng.lxcode.remote.net.RealBackend) {
     val (status, label) = when (real.phase) {
@@ -383,17 +598,19 @@ private fun WatchSurface(
         // 视频主体：整页根约束（有限高度），fillMaxSize 不会塌条；
         // 比例适配在 VideoSurface 内部按视频真实宽高比 **cover**（最小铺满，超出
         // 部分裁掉——零边框），缩放/平移手势基准同为 cover 语义。
+        // fullscreen 参数按实态传入（不再硬编码 true）：本组件当前只在全屏观看态
+        // 挂载（缩小态走 MinimizedCastScreen），双击 = onToggleFullscreen（回缩小态）。
         Box(
             Modifier.fillMaxSize(),
             contentAlignment = Alignment.Center,
         ) {
-            VideoSurface(real, fullscreen = true, onToggleFullscreen = onToggleFullscreen)
+            VideoSurface(real, fullscreen = fullscreen, onToggleFullscreen = onToggleFullscreen)
         }
 
         // 观看态顶栏（0.3.31 拍板：投屏会话页自带顶栏，不再「包一层」设置页）：
-        // 叠在视频上方的一条 40dp 半透明黑渐变——左「←」断开并退出
-        //（[AppState.endScreenSession]）、中间「正在投屏 · 显示器N · 画质」、
-        // 右侧连接状态点。悬浮球保留为快捷控制。
+        // 叠在视频上方的一条 40dp 半透明黑渐变——左「←」缩小回设置页形态
+        //（投屏继续，不停止）、中间「正在投屏 · 显示器N · 画质」、右侧连接状态点。
+        // 悬浮球保留为快捷控制（停止/清晰度/显示器/方向/缩小）。
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
@@ -411,10 +628,10 @@ private fun WatchSurface(
                 )
                 .padding(horizontal = Lx.space.s4),
         ) {
-            LxIconButton(onClick = { state.endScreenSession() }) {
+            LxIconButton(onClick = onToggleFullscreen) {
                 Icon(
                     imageVector = Icons.Filled.KeyboardArrowLeft,
-                    contentDescription = "停止投屏并退出",
+                    contentDescription = "缩小（保持投屏）",
                     tint = Color.White.copy(alpha = 0.85f),
                     modifier = Modifier.size(20.dp),
                 )
@@ -586,7 +803,8 @@ private fun ScreenFloatingBall(
                     danger = true,
                 ) {
                     menuOpen = false
-                    // 统一退出收口：stopScreen + 回连接页 + toast（与顶栏 ←/返回键同一路径）
+                    // 显式停止动作：stopScreen + 回连接页 + toast（[endScreenSession]）。
+                    // 缩小/放大不走这里——那是纯 UI 态切换，投屏继续。
                     state.endScreenSession()
                 }
                 MenuDivider()
@@ -630,10 +848,11 @@ private fun ScreenFloatingBall(
                 }
                 MenuDivider()
                 MenuRow(
-                    icon = { MenuIcon(if (fullscreen) Icons.Filled.FullscreenExit else Icons.Filled.Fullscreen) },
-                    title = if (fullscreen) "退出全屏" else "进入全屏",
+                    icon = { MenuIcon(Icons.Filled.FullscreenExit) },
+                    title = "缩小（保持投屏）",
                 ) {
                     menuOpen = false
+                    // 缩小回设置页形态，投屏继续跑（不停止）
                     onToggleFullscreen()
                 }
                 MenuRow(
@@ -1366,10 +1585,12 @@ private fun VideoSurface(
                 Text("选择显示器开始查看", style = Lx.type.Pill, color = LxColors.TermDim)
             }
         }
-        // 全屏态退出提示（顶部悬浮角标，整页视频之上）
+        // 全屏态双击提示（顶部悬浮角标，整页视频之上）：文案对齐实际行为——
+        // 观看态全屏下双击 = 缩小回设置页形态（投屏继续），不是「退出全屏」。
+        // 缩小态不显示本角标（双击是进全屏，卡片上有「投屏中 · 点击放大」提示）。
         if (fullscreen) {
             Text(
-                "双击退出全屏 · 双指缩放",
+                "双击缩小 · 双指缩放",
                 style = Lx.type.Pill,
                 color = LxColors.TermDim,
                 modifier = Modifier

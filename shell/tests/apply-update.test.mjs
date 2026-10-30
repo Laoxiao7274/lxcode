@@ -1,7 +1,7 @@
 // apply-update.test.mjs —— apply-update.ts（bat/VBS 生成纯函数）的单测。
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildApplyBat, buildApplyFileEntries, buildApplyVbs, buildApplyManifest, toCrlf } from "../src/apply-update.ts";
+import { buildApplyBat, buildApplyFileEntries, buildApplyVbs, buildApplyManifest, buildApplySh, toCrlf } from "../src/apply-update.ts";
 import { join, relative } from "node:path";
 
 const basePlan = () => ({
@@ -230,4 +230,51 @@ test("install/staged 两个根都不许为空或相对路径（bat 里的路径�
   const files = buildApplyFileEntries("C:\\i", "C:\\i\\staged", { "resources\\app.asar": "c".repeat(64) });
   assert.ok(files[0].staged.startsWith("C:\\i\\staged"), "staged 根参与拼接");
   assert.ok(files[0].target.startsWith("C:\\i"), "install 根参与拼接");
+});
+
+// ---- macOS sh 链（buildApplySh）：deploy 落位后的执行位保障 ----
+
+const shPlan = () => ({
+  pendingDir: "/Users/u/Library/Application Support/lxcode/update-pending",
+  stagedDir: "/Users/u/Library/Application Support/lxcode/update-pending/staged",
+  shellExe: "/Applications/Lxcode.app/Contents/MacOS/Lxcode",
+  shellArgs: [],
+  pids: [4242, 818],
+  appVersion: "0.3.0",
+  files: [
+    {
+      staged: "/Users/u/Library/Application Support/lxcode/update-pending/staged/resources/app.asar",
+      target: "/Applications/Lxcode.app/Contents/Resources/app.asar",
+      sha256: "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111",
+    },
+    {
+      staged: "/Users/u/Library/Application Support/lxcode/update-pending/staged/resources/bin/lxcode",
+      target: "/Applications/Lxcode.app/Contents/Resources/bin/lxcode",
+      sha256: "bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222",
+    },
+  ],
+});
+
+test("sh 链：deploy 阶段对名为 lxcode 的目标补 chmod 0755（cp 不持久执行位的兜底）", () => {
+  const sh = buildApplySh(shPlan());
+  // do_deploy 内：cp 成功后按 basename 判 lxcode → chmod 0755（幂等、失败不中断）
+  assert.match(sh, /case "\$\(basename "\$2"\)" in\s*\n\s*lxcode\) chmod 0755 "\$2" 2>>"\$LOG" \|\| : ;;\s*\n\s*esac/,
+    "chmod 0755 按 basename=lxcode 匹配（只碰后端二进制，app.asar 等不受影响）");
+  // chmod 必须在 cp 之后、sha256 校验之前（位补齐是落位语义的一部分）
+  const cpIdx = sh.indexOf('cp -f "$1" "$2"');
+  const chmodIdx = sh.indexOf("chmod 0755");
+  const hashIdx = sh.indexOf("sha256_of \"$2\"");
+  assert.ok(cpIdx > 0 && chmodIdx > cpIdx && hashIdx > chmodIdx, "cp → chmod → sha256 校验的顺序");
+  // `|| :`：chmod 失败不让 deploy 失败（对账取证路径可用）——但也不能静默丢日志
+  assert.ok(/chmod 0755 "\$2" 2>>"\$LOG" \|\| :/.test(sh), "chmod 失败记入 LOG 不中断 deploy");
+});
+
+test("sh 链：chmod 只对 lxcode，其余文件不受影响（行为面最小）", () => {
+  const sh = buildApplySh(shPlan());
+  // 生成脚本里 chmod 语句出现且仅出现在 do_deploy 的 case 分支里（注释行不算）
+  const stmts = sh.split("\n").filter((l) => { const t = l.trim(); return t && !t.startsWith("#") && /chmod/.test(t); });
+  assert.equal(stmts.length, 1, `全文只有 do_deploy 里的那一处 chmod 语句: ${stmts.join(" | ")}`);
+  assert.ok(!/chmod.*app\.asar/i.test(sh), "app.asar 不被 chmod");
+  // bat 版不受影响：buildApplyBat 里没有任何 chmod
+  assert.ok(!buildApplyBat(shPlan()).includes("chmod"), "bat 版不受影响（Windows 无 POSIX 位语义）");
 });

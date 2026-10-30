@@ -36,7 +36,7 @@ export interface SakuraAccount {
   group: string;
 }
 
-/** 一条公网隧道（tcp——本地 7789 → 樱花frp 节点；命名约定 lxcode-backend）。 */
+/** 一条公网隧道（tcp——本地 7789 → 樱花frp 节点；命名约定 lxcode-<hostname>）。 */
 export interface SakuraTunnel {
   id: number;
   name: string;
@@ -56,6 +56,9 @@ export interface SakuraTunnel {
   used: number | null;
   /** 自动 HTTPS 已配置（extra.auto_https 非空；未配置的隧道 WS 流量会被内地节点 501）。 */
   autoHttps: boolean;
+  /** 本机归属（2026-12 防两端互认：false = 疑似其它设备创建——UI 标注归属提示且
+   *  不允许默认启停操作；删除同样慎用，点击需确认）。 */
+  owned: boolean;
 }
 
 /** 字节数人性化（流量展示）。 */
@@ -359,6 +362,7 @@ export function ConnectionsProvider({ children, sakuraBridge, remoteControlBridg
           load: node.load,
           used: 0,
           autoHttps: true,
+          owned: true,
         }];
       });
       return;

@@ -110,6 +110,8 @@ type Persistence interface {
 	// 磁盘布局——路径形态、随机文件名、大小上限都归实现所有（与 AppendMsg 的
 	// "seq 归实现所有"同一条接缝纪律）。
 	SaveSharedAttachment(sessionID, name string, data []byte) (llm.AttachmentRef, error)
-	// Search 按查询参数检索历史消息，返回 (命中, 总命中数, 错误)。
-	Search(sessiondata.SearchQuery) ([]sessiondata.SearchHit, int, error)
+	// Search 按查询参数检索历史消息，返回 (命中, 总命中数, 扫描是否超时未完整, 错误)。
+	// timedOut 独立成值（而不是命中上的标记）：零命中 + 超时的场景没有命中可标，
+	// 而那恰恰最误导——「没有匹配」会被模型当成全集。
+	Search(sessiondata.SearchQuery) ([]sessiondata.SearchHit, int, bool, error)
 }

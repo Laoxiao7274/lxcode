@@ -273,11 +273,13 @@ func TestServerChatFlow(t *testing.T) {
 		t.Fatalf("chat.send 失败: %+v", resp)
 	}
 	// 等事件序列：userMessage → busy(true) → delta×2 → done → busy(false)。
+	// 2026-12 起**多一条 session.changed("started")**（首条消息落库触发的侧栏
+	// 刷新信号，见 agent.persistLocked）——收 7 条，仍断言原 6 种方法一个不少。
 	seq := []string{}
-	for i := 0; i < 6; i++ {
+	for i := 0; i < 7; i++ {
 		ev := client.waitEventAny()
 		if ev == nil {
-			t.Fatalf("事件不足（%d/6）: %v", i, seq)
+			t.Fatalf("事件不足（%d/7）: %v", i, seq)
 		}
 		seq = append(seq, ev.Method)
 	}

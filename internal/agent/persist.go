@@ -58,6 +58,16 @@ func (s *Session) persistLocked(m llm.Message) int64 {
 		log.Printf("会话落盘失败（继续运行）: %v", err)
 		return 0
 	}
+	// 首条消息（历史此刻仍为空——本条即将成为第一条）落库成功 → 发
+	// SessionStartedEvent：侧栏「发消息 → 新对话出现」的信号。此前该事件只在
+	// ensureSessionLocked 的懒建路径可达，而 session.new 预建行（s.id 已有值）
+	// 的场景永远不发——空会话经 store.List 过滤不进侧栏，用户发完首条消息它
+	// 却不出现。只有「从空到有第一条」发一次（历史非空的追加不触发）；emit 与
+	// ensureSessionLocked 的同款先例一样在持锁下调用（回调只读字段/广播，不回抢
+	// 本会话锁）。子会话的该事件被 childEmitter 过滤（子会话不进侧栏，dispatch.go）。
+	if len(s.history) == 0 {
+		s.emit(SessionStartedEvent{ID: s.id})
+	}
 	return seq
 }
 
@@ -78,8 +88,8 @@ func (s *Session) ensureSessionLocked() error {
 		}
 		s.pendingWorkspace = ""
 	}
-	// 通知宿主：会话行已建（侧栏「发消息 → 新对话出现」的信号）
-	s.emit(SessionStartedEvent{ID: id})
+	// 首条消息的 SessionStartedEvent 由 persistLocked 在落库成功后统一发
+	//（历史为空 + 落库成功——预建行与懒建两条路径同款判定，恰好一次）。
 	return nil
 }
 
@@ -151,9 +161,10 @@ func (s *Session) EnablePersistence(st Persistence) error {
 	if err != nil {
 		return err
 	}
-	var dir string
+	var dir, ws string
 	if id != "" {
-		ws, err := st.WorkspaceOf(id)
+		var err error
+		ws, err = st.WorkspaceOf(id)
 		if err != nil {
 			return err
 		}
@@ -173,6 +184,7 @@ func (s *Session) EnablePersistence(st Persistence) error {
 		return nil // 期间已被挂载（并发调用）：幂等
 	}
 	s.st, s.id, s.history, s.workDir = st, id, msgs, dir
+	s.workspace = ws
 	s.todos, s.pendingWorkspace = restoredTodos(st, id), ""
 	s.context = usage
 	s.approval = approval
@@ -216,6 +228,7 @@ func (s *Session) AttachTo(st Persistence, id string) error {
 		return fmt.Errorf("%w（不能附着到别的会话）", ErrBusy)
 	}
 	s.st, s.id, s.history, s.workDir = st, id, msgs, dir
+	s.workspace = ws
 	s.todos, s.pendingWorkspace = restoredTodos(st, id), ""
 	s.context = usage
 	s.approval = approval

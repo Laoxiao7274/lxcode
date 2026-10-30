@@ -77,6 +77,26 @@ func TestSessionSearchDefaultsAndCaps(t *testing.T) {
 	}
 }
 
+// TestSessionSearchFilterParams：session/days 新过滤参数透传（过滤判定的
+// 真伪在 store 侧测试，这里只验参数链路）。
+func TestSessionSearchFilterParams(t *testing.T) {
+	r := New()
+	var got sessiondata.SearchQuery
+	r.SetSessionSearch(func(_ context.Context, q sessiondata.SearchQuery) (string, error) {
+		got = q
+		return "", nil
+	})
+	r.Execute(context.Background(), call("session_search", `{"pattern":"x","session":"abc","days":7}`))
+	if got.Session != "abc" || got.Days != 7 {
+		t.Fatalf("session/days 未透传: %+v", got)
+	}
+	// 不给 = 空值（默认全库语义）
+	r.Execute(context.Background(), call("session_search", `{"pattern":"x"}`))
+	if got.Session != "" || got.Days != 0 {
+		t.Fatalf("默认应全库（Session 空 / Days 0）: %+v", got)
+	}
+}
+
 // TestSessionSearchErrorPropagates：实现返回的错误变成自解释文本。
 func TestSessionSearchErrorPropagates(t *testing.T) {
 	r := New()
@@ -100,5 +120,76 @@ func TestSessionSearchIsLowRisk(t *testing.T) {
 	}
 	if d.Confirm != nil {
 		t.Fatal("低危工具不该有确认门")
+	}
+}
+
+// TestSessionSearchWorkspace：扫描范围解析——默认取 ctx 注入的当前项目、
+// all_projects=true 放开全库、显式 workspace 优先级最高、未分组注入空串退回全库。
+func TestSessionSearchWorkspace(t *testing.T) {
+	r := New()
+	var got sessiondata.SearchQuery
+	r.SetSessionSearch(func(_ context.Context, q sessiondata.SearchQuery) (string, error) {
+		got = q
+		return "", nil
+	})
+
+	// 注入当前项目：默认限定它
+	r.Execute(WithWorkspace(context.Background(), "proj-a"), call("session_search", `{"pattern":"x"}`))
+	if got.Workspace != "proj-a" {
+		t.Fatalf("注入的当前项目应作为默认过滤: %+v", got)
+	}
+	// all_projects=true：放开全库（Workspace 空，覆盖注入值）
+	r.Execute(WithWorkspace(context.Background(), "proj-a"), call("session_search", `{"pattern":"x","all_projects":true}`))
+	if got.Workspace != "" {
+		t.Fatalf("all_projects=true 应放开全库: %+v", got)
+	}
+	// 显式 workspace 优先级高于注入值与 all_projects
+	r.Execute(WithWorkspace(context.Background(), "proj-a"), call("session_search", `{"pattern":"x","workspace":"proj-b"}`))
+	if got.Workspace != "proj-b" {
+		t.Fatalf("显式 workspace 应优先于注入值: %+v", got)
+	}
+	r.Execute(WithWorkspace(context.Background(), "proj-a"), call("session_search", `{"pattern":"x","workspace":"proj-c","all_projects":true}`))
+	if got.Workspace != "proj-c" {
+		t.Fatalf("显式 workspace 应优先于 all_projects: %+v", got)
+	}
+	// 未分组会话（注入空串）：退回全库——「当前项目」不存在，空值=不限语义
+	r.Execute(WithWorkspace(context.Background(), ""), call("session_search", `{"pattern":"x"}`))
+	if got.Workspace != "" {
+		t.Fatalf("未分组会话（注入空串）应退回全库: %+v", got)
+	}
+	// 未注入（单测直调）：同样全库（不编造一个项目）
+	r.Execute(context.Background(), call("session_search", `{"pattern":"x"}`))
+	if got.Workspace != "" {
+		t.Fatalf("未注入应全库（Workspace 空）: %+v", got)
+	}
+}
+
+// TestSessionSearchScopeNote：非全库扫描应经 ctx 带范围说明（接线侧取它放进
+// 结果头部）；全库扫描说明为空（结果不掺入「限定」字样）。
+func TestSessionSearchScopeNote(t *testing.T) {
+	r := New()
+	var gotCtx context.Context
+	r.SetSessionSearch(func(ctx context.Context, q sessiondata.SearchQuery) (string, error) {
+		gotCtx = ctx // 工具包装过的 ctx（范围说明在里面）——接线侧同款取法
+		return "结果", nil
+	})
+
+	// 限定当前项目：范围说明随 ctx 传出（接线侧 SearchScope 取它放进结果头部）
+	r.Execute(WithWorkspace(context.Background(), "proj-a"), call("session_search", `{"pattern":"x"}`))
+	if scope := SearchScope(gotCtx); scope == "" || !strings.Contains(scope, "proj-a") {
+		t.Fatalf("限定项目时应带范围说明: %q", scope)
+	}
+	if gotCtx == nil || gotCtx == context.Background() {
+		t.Fatalf("工具应包装 ctx 后再调实现")
+	}
+	// 全库：说明为空
+	r.Execute(WithWorkspace(context.Background(), "proj-a"), call("session_search", `{"pattern":"x","all_projects":true}`))
+	if scope := SearchScope(gotCtx); scope != "" {
+		t.Fatalf("全库扫描不应带范围说明: %q", scope)
+	}
+	// 未分组（注入空串）退回全库：同样无说明
+	r.Execute(WithWorkspace(context.Background(), ""), call("session_search", `{"pattern":"x"}`))
+	if scope := SearchScope(gotCtx); scope != "" {
+		t.Fatalf("未分组退回全库不应带范围说明: %q", scope)
 	}
 }

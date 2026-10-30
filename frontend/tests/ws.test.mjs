@@ -665,3 +665,46 @@ test('connectionChanged mirrors transport; setBackend clears caches only after h
   ws2.onclose?.();
   assert.ok(events.some((e) => e.type === 'connectionChanged' && e.connected === false));
 });
+
+// ---- 创建项目返回 ProjectMeta（「创建后立即进入」的依据；失败 reject） ----
+test('addProject resolves the returned ProjectMeta and rejects on error', async (t) => {
+  const { agent, ws, events } = setup(t);
+  const p = agent.addProject('新项目', 'C:\repos\demo');
+  assert.equal(ws.sent.at(-1).method, 'project.add');
+  assert.deepEqual(ws.sent.at(-1).params, { name: '新项目', path: 'C:\repos\demo' });
+  ws.reply({ id: 'proj-1', name: '新项目', path: 'C:\repos\demo' });
+  const meta = await p;
+  assert.deepEqual(meta, { id: 'proj-1', name: '新项目', path: 'C:\repos\demo' });
+  // 本地缓存同步插入（去重）+ projectsChanged：进入链路不等广播重拉
+  assert.deepEqual(agent.projects(), [{ id: 'proj-1', name: '新项目', path: 'C:\repos\demo' }]);
+  assert.ok(events.some((e) => e.type === 'projectsChanged'));
+
+  // 失败原样 reject（不再吞成 operationError——调用方要显示原因）
+  const failed = agent.addProject('坏项目', 'C:\nope');
+  ws.reply(undefined, { code: -1, message: '目录不可用' });
+  await assert.rejects(failed, /目录不可用/);
+});
+
+// ---- 新会话本地插入缓存（点「新对话」当下侧栏立即有行；去重防重复插入） ----
+test('newSession inserts the empty session at the head of the cache (deduped)', async (t) => {
+  const { agent, ws, events } = setup(t);
+  // newSession 拿到 id 后会拉一次 chat.history——立即应答（空历史），
+  // 否则 loadHistoryConn 走 30s 超时把测试拖慢。
+  const run = async () => {
+    const p = agent.newSession('proj-1');
+    ws.reply({ session_id: 's-new' });
+    await flush();
+    ws.reply({ session_id: 's-new', messages: [], busy: false });
+    await p;
+  };
+  await run();
+  const list = agent.sessions();
+  assert.equal(list[0]?.id, 's-new', '新会话应插在缓存头部');
+  assert.equal(list[0]?.workspace, 'proj-1');
+  assert.equal(list[0]?.messages, 0, '空会话零消息');
+  assert.ok(events.some((e) => e.type === 'sessionsChanged'));
+
+  // 去重：同一 id 再走一次 newSession（快速连点/重连重放）不产生第二行
+  await run();
+  assert.equal(agent.sessions().filter((s) => s.id === 's-new').length, 1, '去重后仍只有一行');
+});

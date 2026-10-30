@@ -474,6 +474,20 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
       const result = await this.call("session.new", workspace ? { workspace } : undefined) as { session_id?: string };
       const id = String(result?.session_id ?? "");
       if (!id) throw new Error("服务端未返回 session_id");
+      // 本地插一份空会话进缓存头部（去重）：点「新对话」的当下侧栏立即有这一行，
+      // 不等首条消息的 session.changed("started") 重拉。**权衡（有意接受「闪现又
+      // 消失」）**：后端契约是「没发过消息的会话不算历史会话」（store.List 按
+      // messages 表有无行过滤），且 session.new 的 created 广播随即触发一次重拉——
+      // 用户没发消息就切走的话，这一行会在重拉应答到达时消失。语义正确（空会话
+      // 本就不该占侧栏），消失窗口只有一次 WS 往返；用户发了消息则由 started
+      // 事件的重拉把它带回并留下。去重防的是重连/快速连点场景下的重复插入。
+      if (!this.sessionsCache.some((s) => s.id === id)) {
+        this.sessionsCache = [
+          { id, title: "", updatedAt: "", messages: 0, ...(workspace ? { workspace } : {}) },
+          ...this.sessionsCache,
+        ];
+        this.emit({ type: "sessionsChanged" });
+      }
       // 空会话也拉一次历史（**历史先到、焦点后切**，与 resumeSession 同一条帧序
       // 纪律）：chat.history 回带该会话的初始审批档（behavior 默认档）——不拉的
       // 话显示端沿用上一会话的档位镜像（串台），用户在新会话里看到的权限档是假的。
@@ -581,11 +595,23 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
     return this.projectsCache;
   }
 
-  addProject(name: string, path: string): void {
-    // project.changed 广播回来时刷新列表（后端事实源，见 wireAgentSourceSideEffects）
-    this.call("project.add", { name, path })
-      .then(() => undefined)
-      .catch((e) => this.opError(`添加项目失败: ${e.message}`));
+  /** 添加项目：成功 resolve 新项目的 ProjectMeta（后端 project.add 本来就回，
+   *  此前 fire-and-forget 丢弃了它——「创建后立即进入该项目」需要这个 id）。
+   *  失败 reject（原样上抛，调用方显示原因），不再吞成 opError。
+   *  project.changed 广播回来时刷新列表（后端事实源，见 wireAgentSourceSideEffects）；
+   *  这里同步插一份进 projectsCache（去重）——广播重拉是一次 WS 往返，「创建成功 →
+   *  立即进入」的链路不等它（侧栏项目行立即可见）。 */
+  async addProject(name: string, path: string): Promise<ProjectMeta> {
+    const r = (await this.call("project.add", { name, path })) as { id?: string; name?: string; path?: string } | null;
+    const meta: ProjectMeta = {
+      id: String(r?.id ?? ""),
+      name: String(r?.name ?? name),
+      path: String(r?.path ?? path),
+    };
+    if (!meta.id) throw new Error("服务端未返回项目 id");
+    this.projectsCache = [meta, ...this.projectsCache.filter((p) => p.id !== meta.id)];
+    this.emit({ type: "projectsChanged" });
+    return meta;
   }
 
   /** 从项目列表移除注册（**只解绑，不删磁盘文件、不删会话**）。

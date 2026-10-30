@@ -108,13 +108,18 @@ fun ConnectionsScreen(state: AppState) {
             // 成功投屏过 = 按记忆的显示器/清晰度直接发 screen.start，路由仍切投屏页，
             // active=true 上报后自然进观看态；首次使用落设置页选参数（选过才出现快捷）。
             // 失败回设置页看错误（screenToast），不吞。
+            // 挂起语义：已在投屏（active=true）时点击 = 只进投屏页（缩小态恢复观看，
+            // 可再放大），**不再发 screen.start**——重复 start 会让后端按命令电平
+            // 重起 ffmpeg（画面闪断一拍，纯浪费）。
             LxListItem(
                 title = "投屏（查看电脑画面）",
                 leading = { SmallIcon(Icons.Filled.Cast, Lx.colors.FgMuted, size = 15) },
                 onClick = {
                     val real = state.real
                     real.refreshScreen()
-                    if (state.hasCastBefore() && !real.screenBusy) {
+                    if (real.screenState?.active != true &&
+                        state.hasCastBefore() && !real.screenBusy
+                    ) {
                         real.startScreen(state.screenPickMonitor, state.screenPickQuality) { err ->
                             if (err != null) state.screenToast = err
                             else state.rememberScreenCast(state.screenPickMonitor, state.screenPickQuality)

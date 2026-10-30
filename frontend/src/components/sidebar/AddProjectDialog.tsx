@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { gsap } from "gsap";
 import { motionAllowed } from "../../shared/motion";
 import { useEscape } from "../../shared/popover";
+import type { ProjectMeta } from "../../shared/types";
 import { TextInput } from "../form";
 
 /** 壳桥（preload 注入；浏览器模式无）。node 测试/无 DOM 环境不炸——
@@ -24,12 +25,15 @@ export function AddProjectDialog({
   onAdd,
   onClose,
 }: {
-  onAdd: (name: string, path: string) => void;
+  /** 提交创建：resolve（返回新项目 meta）→ 调用方进入项目；reject → 本框显示原因。 */
+  onAdd: (name: string, path: string) => Promise<ProjectMeta>;
   onClose: () => void;
 }) {
   const [path, setPath] = useState("");
   const [name, setName] = useState("");
   const [error, setError] = useState("");
+  /** 提交中（防重复点「添加」；期间按钮禁用）。 */
+  const [submitting, setSubmitting] = useState(false);
   const dialogRef = useRef<HTMLDivElement>(null);
   const nameRef = useRef<HTMLInputElement>(null);
 
@@ -49,7 +53,7 @@ export function AddProjectDialog({
     if (!name.trim()) setName(basename(dir));
   };
 
-  const submit = () => {
+  const submit = async () => {
     const n = name.trim();
     if (!path.trim()) {
       setError("请填写项目目录");
@@ -59,8 +63,18 @@ export function AddProjectDialog({
       setError("请填写项目名");
       return;
     }
-    onAdd(n, path.trim());
-    onClose();
+    if (submitting) return;
+    setSubmitting(true);
+    setError("");
+    try {
+      // 创建成功才关框（失败留在框内显示原因——用户可改名/改路径重试）
+      await onAdd(n, path.trim());
+      onClose();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -113,7 +127,9 @@ export function AddProjectDialog({
         </div>
         <div className="proj-add-foot">
           <button type="button" className="proj-add-cancel" onClick={onClose}>取消</button>
-          <button type="button" className="proj-add-ok" onClick={submit}>添加</button>
+          <button type="button" className="proj-add-ok" onClick={() => void submit()} disabled={submitting}>
+            {submitting ? "创建中…" : "添加"}
+          </button>
         </div>
       </div>
     </div>

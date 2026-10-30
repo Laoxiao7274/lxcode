@@ -27,7 +27,7 @@ func (s *Session) SwitchNew(workspace string) (string, error) {
 	}
 	// 历史、todo 和项目归属必须在同一锁内提交，Send 不能插入两步之间。
 	s.id, s.history, s.todos = "", nil, nil
-	s.pendingWorkspace, s.workDir = workspace, dir
+	s.pendingWorkspace, s.workDir, s.workspace = workspace, dir, workspace
 	s.context = ContextUsage{} // 新会话：占用清零（下一轮重新测量）
 	// 归属 Agent 同理清零（下一轮 Send 时解析出来）：留着上一会话的会让
 	// ModelID() 报一个这个会话没用过的模型。
@@ -82,6 +82,7 @@ func (s *Session) SwitchTo(id string) error {
 	}
 	// 校验完成再提交；todo 尚未持久化，不能沿用上一会话的内存清单。
 	s.id, s.history, s.workDir = id, msgs, dir
+	s.workspace = ws
 	s.todos, s.pendingWorkspace = nil, ""
 	s.context = usage
 	// 审批档同理是**这条会话自己的**落库值（空列 = 空——回落默认档是读侧语义，
@@ -113,15 +114,17 @@ func (s *Session) SessionList() []sessiondata.SessionMeta {
 // AttachSessionSearch 把会话搜索接进工具注册表（EnablePersistence 后调用）：
 // JSONL 格式归 store 包所有，工具层只拿函数——格式单源不漂移。
 func (s *Session) AttachSessionSearch() {
-	s.tools.SetSessionSearch(func(_ context.Context, q sessiondata.SearchQuery) (string, error) {
+	s.tools.SetSessionSearch(func(ctx context.Context, q sessiondata.SearchQuery) (string, error) {
 		if s.st == nil {
 			return "", errors.New("会话存储未启用，无法搜索历史")
 		}
-		hits, total, err := s.st.Search(q)
+		hits, total, timedOut, err := s.st.Search(q)
 		if err != nil {
 			return "", err
 		}
-		return sessiondata.FormatSearchHits(hits, total), nil
+		// 范围说明（限定当前项目时）由工具层经 ctx 传来——非全库扫描要在
+		// 结果头部注明，模型才知道看到的是子集。
+		return sessiondata.FormatSearchHits(hits, total, timedOut, tools.SearchScope(ctx)), nil
 	})
 }
 

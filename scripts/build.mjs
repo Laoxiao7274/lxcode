@@ -6,6 +6,8 @@
 //      4. 壳主进程 esbuild → shell/dist/main.js
 //      5. electron-builder → NSIS one-click per-user + 签名（shell/release/）
 //      6. 更新制品：update-<version>.zip（app.asar + 后端 exe）+ manifest.json
+//         （--mac 在 mac 上额外产出 update-mac-<version>.zip + manifest-mac.json，
+//         平台契约见 makeUpdateArtifacts 与 shell/src/update-platform.ts）
 //
 // 版本号机制：唯一版本源 = shell/package.json 的 version（electron-builder
 // 原生读它出安装包名），本脚本把它烙进 Go 二进制（--version 可查）并写进
@@ -19,8 +21,11 @@
 // 发版清单（打包前逐条过）：
 //   1. bump shell/package.json 的 version——三方同源（安装包名/二进制 --version/
 //      manifest）全靠它，忘了 bump = 更新器判不出新版本
-//   2. 产物上传：manifest.json + update-<version>.zip 放更新源目录
-//      （壳默认拉仓库 raw 的 release/manifest.json，可用 LXCODE_UPDATE_URL 覆盖）；
+//   2. 产物上传（**两个平台都传，同一更新源目录**）：
+//      manifest.json + update-<version>.zip（Windows，客户端拉 manifest.json）
+//      manifest-mac.json + update-mac-<version>.zip（mac，客户端拉 manifest-mac.json）
+//      两份 manifest 字段同构、url 均为相对文件名；漏传 mac 的会让 mac 客户端
+//      永远停在旧版，漏传 Windows 的会让存量 Windows 客户端永远停在旧版。
 //      安装包全量分发
 //   3. 签名证书：signtoolOptions 按 CN=lxcode-selfsign 找用户证书存储——
 //      换构建机要先导入这张自签证书，否则 electron-builder 签名步骤失败
@@ -50,6 +55,62 @@ function run(label, cmd, args, opts = {}) {
 }
 
 const sha256 = (p) => createHash("sha256").update(readFileSync(p)).digest("hex");
+
+// makeUpdateArtifacts —— 更新包 + manifest 的公共生成段（Windows 链与 --mac
+// 链共用；2026-12 从原 Windows 内联段抽出，Windows 侧字段与顺序一字未动——
+// 老客户端契约见下方 Windows 调用处的注释）。
+//
+// 契约（两端同构，客户端按平台拼 URL，见 shell/src/update-platform.ts）：
+//   Windows：manifest.json     + update-<version>.zip（安装根相对路径）
+//   mac：    manifest-mac.json + update-mac-<version>.zip（.app/Contents 相对路径）
+//   manifest 字段 = {version, url, sha256(zip), size, files{逐文件 sha256}}，
+//   url 为相对文件名，按 manifest 所在目录解析；发版时两份 manifest + 两个
+//   zip 都上传到同一更新源目录。存量 Windows 客户端（只认 manifest.json 的
+//   老版本）不受影响——本函数不改变它读到的任何字段。
+function makeUpdateArtifacts({ unpacked, releaseDir, version, files, manifestName, zipName, stagingDir, backendSrc }) {
+  console.log("\n=== 更新制品 ===");
+  // stage（zip 内要带 resources/ 目录结构，先聚到暂存目录）
+  const staging = join(releaseDir, stagingDir);
+  rmSync(staging, { recursive: true, force: true });
+  for (const f of files) {
+    const src = join(unpacked, f);
+    if (!existsSync(src) && backendSrc && f.endsWith("/lxcode")) {
+      // mac：electron-builder 产物里 resources/bin 缺后端时从 bin-darwin 产物补齐
+      mkdirSync(dirname(join(staging, f)), { recursive: true });
+      copyFileSync(backendSrc, join(staging, f));
+      continue;
+    }
+    if (!existsSync(src)) {
+      console.error(`更新制品缺文件: ${src}（electron-builder 产物结构变了？）`);
+      process.exit(1);
+    }
+    mkdirSync(dirname(join(staging, f)), { recursive: true });
+    copyFileSync(src, join(staging, f));
+  }
+  // zip 生成用当前宿主的系统 tar：
+  //   Windows 显式 System32 tar.exe（bsdtar，-a 按扩展名自动选 zip 格式）——
+  //   Git Bash 的 PATH 会解析到 GNU tar，不认 -a 的 zip 语义，造出来的是
+  //   tar 包改扩展名的假 zip（0.1.3 发版实测踩过，更新器解包失败）；
+  //   mac 自带 bsdtar（`tar -a -c` 直接可用）。
+  // System32 不存在时（非 Windows）回退 PATH 里的 tar。
+  const bsdtar = "C:/Windows/System32/tar.exe";
+  const tarBin = existsSync(bsdtar) ? bsdtar : "tar";
+  run(`更新包 ${zipName}`, tarBin, ["-a", "-c", "-f", zipName, "-C", stagingDir, "resources"], { cwd: releaseDir });
+  rmSync(staging, { recursive: true, force: true });
+
+  const manifest = {
+    version,
+    url: zipName,
+    sha256: sha256(join(releaseDir, zipName)),
+    size: statSync(join(releaseDir, zipName)).size,
+    files: Object.fromEntries(files.map((f) => {
+      const src = join(unpacked, f);
+      return [f, sha256(existsSync(src) ? src : backendSrc)]; // mac 的 bin/lxcode 从 bin-darwin 产物取哈希
+    })),
+  };
+  writeFileSync(join(releaseDir, manifestName), JSON.stringify(manifest, null, 2));
+  console.log(`--- ${manifestName} 完成（版本 ${version}，${files.length} 个文件哈希）`);
+}
 
 console.log("=== lxcode 打包（Windows / NSIS one-click per-user） ===");
 
@@ -97,9 +158,9 @@ if (process.argv.includes("--backend-darwin")) {
 //   1. 后端二进制落 resources/bin-darwin/（无 .exe；package.json 的
 //      mac.extraResources 从这里取，与 win 的 resources/bin 分开）；
 //   2. 不做 ffmpeg（投屏 darwin 不装配，见 shell/src/screen.ts 平台门）；
-//   3. 不造 update zip / manifest（zip 用 System32 bsdtar 造 Windows 结构
-//      没问题，但 darwin 更新包内是 app.asar + bin/lxcode，且 .app 结构的
-//      更新链未在真机验证过—— darwin 更新 zip 留待 mac 真机补）；
+//   3. 更新制品 = update-mac-<version>.zip + manifest-mac.json（2026-12 补齐，
+//      在 mac 上随 --mac 产出——electron-builder 的 mac 产物在那台机器上才有；
+//      zip 内路径 = .app/Contents 相对路径，与客户端 installDir() 对齐）；
 //   4. 不签名/公证（package.json identity: null；未签名 .app 触发 Gatekeeper
 //      「右键打开」，见 package.json mac 段注释）。
 // 限制（如实）：electron-builder 的 icns 转换与 hdiutil/dmg 制作依赖 mac 工具
@@ -134,10 +195,35 @@ if (process.argv.includes("--mac")) {
   // 5. electron-builder --mac（未签名；产物在 shell/release/）
   rmSync(join(SHELL, "release", "mac-universal"), { recursive: true, force: true });
   run("electron-builder 打包（mac）", "npx", ["electron-builder", "--mac", macArch === "amd64" ? "--x64" : "--arm64"], { cwd: SHELL });
+  // 6. mac 更新制品（2026-12：与 Windows 更新链对齐——mac 客户端的更新器
+  //    拉同目录的 manifest-mac.json，见 shell/src/update-platform.ts）。
+  //    .app 的 resources 是 extraResources 平铺（bin/ 不在 Contents/resources
+  //    之下、Contents 不进 zip）——zip 内路径 = Contents 相对路径，与客户端
+  //    installDir()（=<app>.app/Contents）对齐。后端取本分支交叉编译产物
+  //    resources/bin-darwin/lxcode（无 .exe；mac 无 ffmpeg/投屏，不进更新包）。
+  //    zip 用 mac 自带 bsdtar（-a 按扩展名解析 zip 语义）；本段只在 mac 上跑
+  //    （--mac 依赖 electron-builder 的 mac 工具链，Windows 上到不了这里）。
+  const macUnpacked = join(SHELL, "release", macArch === "amd64" ? "mac-x64" : "mac-arm64");
+  if (existsSync(macUnpacked)) {
+    makeUpdateArtifacts({
+      unpacked: macUnpacked,
+      releaseDir: join(SHELL, "release"),
+      version,
+      files: ["resources/app.asar", "resources/bin/lxcode"],
+      manifestName: "manifest-mac.json",
+      stagingDir: ".update-staging-mac",
+      backendSrc: join(binDarwin, "lxcode"), // electron-builder 产物缺 bin 时从这里补齐
+    });
+  } else {
+    // electron-builder 产物目录名不匹配（版本/配置漂移）时不静默——更新链是
+    // 发版交付物，缺了 manifest-mac.json 老 mac 客户端就永远停在旧版。
+    console.error(`[提示] 未找到 ${macUnpacked}（electron-builder 产物结构变了？）——跳过 mac 更新制品，发版前需手工确认`);
+  }
   console.log("\n=== --mac 完成 ===");
   console.log("产物在 shell/release/（win-unpacked 同级的 mac 目录 / .app）。");
   console.log("注意：dmg/zip 目标在 Windows 上可能因缺 mac 工具链受限；");
   console.log("最终 dmg 需在 mac 上跑 cd shell && npx electron-builder --mac。");
+  console.log("发版上传：manifest-mac.json + update-mac-<version>.zip（与 manifest.json/update-<version>.zip 同目录）。");
   process.exit(0);
 }
 
@@ -191,7 +277,9 @@ run("壳主进程构建", "node", ["build.mjs"], { cwd: SHELL });
 rmSync(join(SHELL, "release"), { recursive: true, force: true });
 run("electron-builder 打包", "npx", ["electron-builder", "--win", "--x64"], { cwd: SHELL });
 
-// 6. 更新制品：update-<version>.zip + manifest.json
+// 6. 更新制品：update-<version>.zip + manifest.json（老 Windows 客户端契约，
+//    字段与字段顺序一字未动——见 makeUpdateArtifacts 头注；**不要**在这里改
+//    顶层六键的形状，老客户端会直接解析失败）。
 const unpacked = join(SHELL, "release", "win-unpacked");
 const releaseDir = join(SHELL, "release");
 // zip 内路径=安装目录相对路径；bundled ffmpeg 存在才进更新包（未打包 ffmpeg 的旧版产物不带）
@@ -201,38 +289,15 @@ if (existsSync(join(unpacked, "resources", "bin", "ffmpeg.exe"))) {
 }
 const zipName = `update-${version}.zip`;
 
-console.log("\n=== 更新制品 ===");
-// stage（zip 内要带 resources/ 目录结构，先聚到暂存目录）
-const staging = join(releaseDir, ".update-staging");
-rmSync(staging, { recursive: true, force: true });
-for (const f of UPDATE_FILES) {
-  const src = join(unpacked, f);
-  if (!existsSync(src)) {
-    console.error(`更新制品缺文件: ${src}（electron-builder 产物结构变了？）`);
-    process.exit(1);
-  }
-  mkdirSync(dirname(join(staging, f)), { recursive: true });
-  copyFileSync(src, join(staging, f));
-}
-// 用系统自带 bsdtar 造 zip（-a 按扩展名自动选 zip 格式，保留相对路径，零新增依赖）
-// 必须显式指定 C:/Windows/System32/tar.exe（bsdtar）：Git Bash 的 PATH 会把
-// tar 解析到 GNU tar，它不认 `-a` 的 zip 语义，造出来的是 tar 包改了扩展名的
-// 假 zip（0.1.3 发版实测踩过，更新器解包失败）。System32 不存在时（非 Windows）
-// 回退 PATH 里的 tar。
-const bsdtar = "C:/Windows/System32/tar.exe";
-const tarBin = existsSync(bsdtar) ? bsdtar : "tar";
-run(`更新包 ${zipName}`, tarBin, ["-a", "-c", "-f", zipName, "-C", ".update-staging", "resources"], { cwd: releaseDir });
-rmSync(staging, { recursive: true, force: true });
-
-const manifest = {
+makeUpdateArtifacts({
+  unpacked,
+  releaseDir,
   version,
-  url: zipName,
-  sha256: sha256(join(releaseDir, zipName)),
-  size: statSync(join(releaseDir, zipName)).size,
-  files: Object.fromEntries(UPDATE_FILES.map((f) => [f, sha256(join(unpacked, f))])),
-};
-writeFileSync(join(releaseDir, "manifest.json"), JSON.stringify(manifest, null, 2));
-console.log(`--- manifest.json 完成（版本 ${version}，${UPDATE_FILES.length} 个文件哈希）`);
+  files: UPDATE_FILES,
+  zipName,
+  manifestName: "manifest.json",
+  stagingDir: ".update-staging",
+});
 
 // 产物清单
 console.log("\n=== 全部完成，产物（shell/release/）===");

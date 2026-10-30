@@ -12,10 +12,22 @@
 // 节点选择（2026-12）：列表 + 实测延迟（TCP connect，见 sakura-nodes.ts 头注）
 // 经 sakura:listNodes 拉、延迟结果经 sakura:nodeLatency 异步推；创建隧道可带
 // 显式 nodeId（校验在候选列表里且可用），不传则沿用自动选（负载最低）。
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { hostname } from "node:os";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { app } from "electron";
 import {
   AUTO_HTTPS_EXTRA,
@@ -27,10 +39,21 @@ import {
   type NodeCandidate,
   type RawNode,
 } from "./sakura-nodes";
+import {
+  defaultTunnelName,
+  extractFrpcFromArchive,
+  isFrpcArchive,
+  isOwnTunnel,
+  pickFrpcArchKey,
+} from "./sakura-arch";
 
 const API_BASE = process.env.LXCODE_SAKURA_API ?? "https://api.natfrp.com/v4";
-/** 隧道命名约定：靠它识别「我们的」隧道，复用不重建（文档 §4.3）。 */
-export const TUNNEL_NAME = "lxcode-backend";
+/**
+ * 本机默认隧道名：lxcode-<净化hostname>（2026-12 防两端互认——恒名
+ * lxcode-backend 时两台机器会互相认走对方的隧道；归属判定见 sakura-arch.ts
+ * 的 isOwnTunnel）。LEGACY_TUNNEL_NAME（lxcode-backend）只为历史遗留认领。
+ */
+export const TUNNEL_NAME = defaultTunnelName(hostname());
 const POLL_MS = 60_000; // API 限频：轮询不低于 60s（文档 §7）
 const CONNECT_TIMEOUT_MS = 10_000;
 
@@ -68,6 +91,12 @@ export interface SakuraTunnelView {
   used: number | null;
   /** 自动 HTTPS 已配置（extra.auto_https 非空）——未配置的隧道 WS 流量会被内地节点 501。 */
   autoHttps: boolean;
+  /**
+   * 隧道归属（2026-12 防两端互认）：true = 本机创建（名字 === lxcode-<本机
+   * hostname> 或历史遗留 lxcode-backend）；false = 疑似其它设备创建——UI 应
+   * 标注归属提示且不允许默认操作（启动/停止打到别人隧道上）。
+   */
+  owned: boolean;
 }
 
 /** 节点选择列表项（渲染层投影：候选节点 + 已测出的延迟）。 */
@@ -270,14 +299,18 @@ function saveManaged(): void {
   }
 }
 
-/** 展示 = 本地缓存的隧道集合 ∩ 账户实际存在的隧道。 */
+/** 展示 = 本地缓存的隧道集合 ∩ 账户实际存在的隧道。
+ *
+ *  首次播种（2026-12 收紧）：只认「本机隧道」（isOwnTunnel——名字 ===
+ *  lxcode-<本机hostname> 或历史遗留 lxcode-backend）。原实现按 /^lxcode/i
+ *  前缀播种，两台机器登同一账户时会互相认走对方的隧道（启动/停/删都打到
+ *  别人头上）。播种结果为空 = 缓存文件缺但没有任何本机隧道——展示空列表。 */
 async function fetchTunnels(t: string, nodes: Map<number, RawNode & { load: number | null }>): Promise<SakuraTunnelView[]> {
   const list = await api<RawTunnel[]>("/tunnels", { token: t });
   loadManaged();
   if (!managedLoaded) {
-    // 首次播种：lxcode 前缀模糊匹配（覆盖服务端把连字符规范成下划线的情况）
     managedIds = list
-      .filter((x) => typeof x.id === "number" && /^lxcode/i.test(x.name ?? ""))
+      .filter((x) => typeof x.id === "number" && isOwnTunnel(x.name, hostname()))
       .map((x) => x.id as number);
     managedLoaded = true;
     if (managedIds.length > 0) saveManaged();
@@ -303,6 +336,10 @@ async function fetchTunnels(t: string, nodes: Map<number, RawNode & { load: numb
       load: node?.load ?? null,
       used: null,
       autoHttps: autoHttpsConfigured(x.extra),
+      // 归属：缓存里的 id 恒为本机认领的（播种/创建时已过滤）；历史遗留的
+      // lxcode-backend 可能实际属于别的设备——它进了缓存（老机播种过）但
+      // 在新机上不该能操作。名字判定给 UI 归属提示。
+      owned: isOwnTunnel(x.name, hostname()),
     });
   }
   // 隧道流量：每条一次请求，条数少时直取；失败不挡列表（used 留 null）
@@ -395,6 +432,8 @@ async function createTunnel(nodeId?: number | null): Promise<void> {
     const created = await api<{ id?: number; name?: string; remote?: string }>(`/tunnels`, {
       token: t,
       form: {
+        // 名字带本机 hostname（2026-12 防两端互认）——归属判定靠它；
+        // Windows 上同样生效（名字变化无害，remote 端口独立分配）。
         name: TUNNEL_NAME, type: "tcp", node: String(node.id),
         local_ip: "127.0.0.1", local_port: String(localBackendPort()), remote: "",
         extra: AUTO_HTTPS_EXTRA,
@@ -512,14 +551,31 @@ async function ensureFrpc(): Promise<string> {
   return downloadFrpc(userPath);
 }
 
-/** 从 /system/clients 取下载信息（无鉴权）并校验哈希落盘。失败抛人话错误。 */
+/** 从 /system/clients 取下载信息（无鉴权）并校验哈希落盘。失败抛人话错误。
+ *
+ *  archKey 匹配与压缩包判定在 sakura-arch.ts（纯函数，单测钉住）：win 侧沿用
+ *  原判定（行为不变）；非 win 侧宽松匹配 darwin/mac + 架构词——natfrp 的
+ *  darwin 键真实命名未验证，匹配不到给出可手动放置的出路（frpcHint 同款）。
+ *
+ *  落盘（2026-12 mac 修复）：
+ *  - 直接二进制：非 Windows 补 chmodSync 0o755——writeFileSync 默认 0644，
+ *    spawn 直接 EACCES（第二个坑）；
+ *  - 压缩包（.tar.gz/.tgz/.zip 后缀或 content-type 判断）：spawnSync tar 解包
+ *    （mac 自带 bsdtar，两种格式通吃），取出其中的 frpc 再落 userData/frpc/
+ *    并补执行位；Windows 保持「直接落盘 exe」不变（历史行为，tar 分支不进）。 */
 async function downloadFrpc(dest: string): Promise<string> {
   const clients = await api<Record<string, { ver?: string; archs?: Record<string, { url?: string; hash?: string; size?: number }> }>>("/system/clients");
   const categoryKey = Object.keys(clients).find((k) => /frpc/i.test(k));
   if (!categoryKey) throw new SakuraError("无法获取 frpc 下载信息（/system/clients 无 frpc 分类）");
   const archs = clients[categoryKey].archs ?? {};
-  const archKey = Object.keys(archs).find((k) => /win/i.test(k) && /amd64|x64|64/i.test(k));
-  if (!archKey) throw new SakuraError("无法获取 frpc 的 Windows 下载项");
+  const archKey = pickFrpcArchKey(Object.keys(archs), { platform: process.platform, arch: process.arch });
+  if (!archKey) {
+    throw new SakuraError(
+      process.platform === "win32"
+        ? "无法获取 frpc 的 Windows 下载项"
+        : `无法获取 ${process.platform}/${process.arch} 的 frpc 下载项（可手动放置 frpc 到 ${frpcDir()} 后重试）`,
+    );
+  }
   const { url, hash } = archs[archKey];
   if (!url) throw new SakuraError("frpc 下载链接缺失");
   const res = await fetch(url, { signal: AbortSignal.timeout(120_000) });
@@ -531,8 +587,36 @@ async function downloadFrpc(dest: string): Promise<string> {
     if (actual.toLowerCase() !== hash.toLowerCase()) throw new SakuraError(`frpc 下载校验失败（${algo} 不匹配）——可能被篡改，已丢弃`);
   }
   mkdirSync(frpcDir(), { recursive: true });
-  writeFileSync(dest, buf);
-  return dest;
+  // Windows 行为一字不变：直接落盘 exe（无 mode 参数——NTFS 无 POSIX 位）。
+  if (process.platform === "win32") {
+    writeFileSync(dest, buf);
+    return dest;
+  }
+  // 非 Windows：压缩包则解包取 frpc，直接二进制则原样落盘；两者都补执行位。
+  const isArchive = isFrpcArchive(url, res.headers.get("content-type"));
+  if (!isArchive) {
+    writeFileSync(dest, buf, { mode: 0o755 });
+    chmodSync(dest, 0o755); // writeFileSync 的 mode 受 umask 影响，chmod 显式补齐
+    return dest;
+  }
+  // 压缩包：落临时文件 → tar 解包 → 找 frpc → 移到 dest。sha256 校验的是
+  // **压缩包本身**（服务端清单对压缩包算哈希），解包后的二进制无从校验——
+  // 与「信任服务端清单」的现有口径一致。
+  const tmp = mkdtempSync(join(tmpdir(), "lx-frpc-"));
+  try {
+    const archivePath = join(tmp, "frpc-pkg");
+    writeFileSync(archivePath, buf);
+    const extracted = extractFrpcFromArchive(archivePath, join(tmp, "unpacked"));
+    if (!extracted) {
+      throw new SakuraError("frpc 压缩包里没找到 frpc 可执行文件——可手动解包放置到 userData/frpc/ 后重试");
+    }
+    const buf2 = readFileSync(extracted);
+    writeFileSync(dest, buf2, { mode: 0o755 });
+    chmodSync(dest, 0o755);
+    return dest;
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
 }
 
 /** 启动隧道 = spawn natfrp frpc（官方姿势，frpc 用户手册 /frpc/manual）。
@@ -561,6 +645,16 @@ async function startTunnel(id: number): Promise<void> {
       console.log(`[sakura] 隧道 ${id} auto_https 修复失败（继续启动）: ${errMsg(e)}`);
     });
     const exe = await ensureFrpc();
+    // darwin spawn 前执行位兜底：下载链路已 chmod，但「手动放置」的文件可能
+    // 落成 0644（zip 解压工具行为不定）。忽略错误——chmod 失败时 spawn 会以
+    // EACCES 失败并走既有错误呈现，不该在这里多一层失败形态。Windows 不做。
+    if (process.platform === "darwin") {
+      try {
+        chmodSync(exe, 0o755);
+      } catch (e) {
+        console.log(`[sakura] frpc 执行位兜底失败（继续尝试启动）: ${errMsg(e)}`);
+      }
+    }
     if (state.runningId !== null && state.runningId !== id) stopFrpc();
     mkdirSync(frpcDir(), { recursive: true });
     // frpc 日志落文件：真机排障全靠它（连接失败/端口冲突都在这里）

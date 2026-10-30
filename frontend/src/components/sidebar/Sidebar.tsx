@@ -401,7 +401,15 @@ export const Sidebar = memo(function Sidebar({
       </div>
       {addOpen && (
         <AddProjectDialog
-          onAdd={(name, path) => source.addProject(name, path)}
+          onAdd={async (name, path) => {
+            // 创建成功 → 与「点项目行」等价的进入动作（openProject：setFilter +
+            // 回聊天页；新项目无会话，project-entry 的判定不会触发 resume）+
+            // 立即在该项目下开一条新对话。失败向上抛（对话框内显示原因，不关框）。
+            const meta = await source.addProject(name, path);
+            onOpenProject(meta.id, EMPTY_SESSIONS);
+            void source.newSession(meta.id);
+            return meta;
+          }}
           onClose={() => setAddOpen(false)}
         />
       )}

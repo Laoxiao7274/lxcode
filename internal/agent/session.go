@@ -139,6 +139,12 @@ type Session struct {
 	// 目录）。工具的相对路径、bash 默认目录与系统提示词的工作目录说明
 	// 都以它为准——每轮开始时快照进 ctx（tools.WithWorkDir）。
 	workDir string
+	// workspace 是当前会话归属的项目 id（空 = 未分组）：session_search 的
+	// 默认扫描范围「当前项目」取它——每轮开始时快照进 ctx（tools.WithWorkspace）。
+	// 与 workDir 同批在装配路径维护（SwitchNew 预约 / EnablePersistence·
+	// AttachTo·SwitchTo 按库值恢复）；子会话经 AttachTo 拿到自己行上的值
+	//（CreateChild 拷贝父的值），不在 dispatch 里特判。
+	workspace string
 	// worktreeBranch/worktreeBase/worktreeNoGit 是本会话的工作区信息：主检出当前
 	// 分支名、会话基线 HEAD 与「目录不是 git 仓库」标志（server 在 prepareWorkspace
 	// 后设置；子会话从父会话继承）。Branch 空 = 未分组会话或非 git 目录（后者

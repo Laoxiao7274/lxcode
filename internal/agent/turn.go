@@ -126,6 +126,11 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig, ac *sessiondata.A
 	// 时间线归属也进 ctx：子会话起的后台任务要记在**父会话**名下（通告投给父
 	// 会话才有人能行动），job 事件也按它路由到父会话的时间线。
 	ctx = tools.WithOwnerSessionID(ctx, s.OwnerSessionID())
+	// 会话归属项目也进 ctx（session_search 的默认扫描范围「当前项目」取它）。
+	// 子会话走同一条路径拿到**自己行上的** workspace（CreateChild 拷贝父的值、
+	// AttachTo 恢复进 s.workspace）——不在 dispatch 里特判；未分组会话是空串，
+	// session_search 据此退回全库（「当前项目」不存在）。
+	ctx = tools.WithWorkspace(ctx, s.workspace)
 
 	// 本轮技能目录注入 read_skill（渐进披露的取数源）：模型按 id 取
 	// 完整正文，只暴露白名单内的——没在 ac.Skills 里的它当没有。

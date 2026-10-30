@@ -205,6 +205,20 @@ type SearchQuery struct {
 	Max     int    // 最多返回条数
 	Role    string // 只搜某个角色（user/assistant/tool）；空 = 全部
 	Context int    // 每条命中前后各带 N 条相邻消息；0 = 只给命中本身
+	// Session 限定单会话（精确 session_id）；空 = 全部未归档会话。
+	// 全库扫描是 O(全部消息)，知道目标会话时指定它能把扫描成本砍到该会话。
+	// （父会话查时含其子会话的归属展开是后续项，先做精确过滤。）
+	Session string
+	// Days 限定只搜最近 N 天（按 sessions.updated_at）；0 = 不限。
+	Days int
+	// DeadlineMS 是扫描时限（毫秒）；0 = 默认（2500ms）。超时后停止扫描，
+	// 已命中的正常返回，TimedOut 标记告知调用方「扫描未完整」。
+	DeadlineMS int
+	// Workspace 限定只搜归属某项目的会话（按 sessions.workspace）；空 = 不限
+	// （全库语义，与 Session/Days 空值一致）。项目会话的子会话在 CreateChild
+	// 时从父行拷贝了同一个值，所以按 workspace 过滤**天然涵盖其子会话**——
+	// 不需要按 parent_id 展开。未分组会话（workspace=''）不匹配任何非空过滤值。
+	Workspace string
 }
 
 // SearchHit 是历史消息检索结果。

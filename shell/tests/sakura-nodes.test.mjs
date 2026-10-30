@@ -307,6 +307,38 @@ test("sakura.ts：隧道负载保持 number | null（不强转 0）", () => {
   assert.ok(/load: node\?\.load \?\? null/.test(sakuraSrc), "load 缺失要落 null（不是 0）");
 });
 
+// ---- 隧道归属（2026-12 防两端互认，判定在 sakura-arch.ts 纯函数）----
+
+test("sakura.ts：隧道名带 hostname、播种只认本机隧道、视图带 owned 归属", () => {
+  // 新建隧道名 = lxcode-<净化hostname>（sakura-arch.ts defaultTunnelName）
+  assert.ok(/export const TUNNEL_NAME = defaultTunnelName\(hostname\(\)\)/.test(sakuraSrc),
+    "TUNNEL_NAME 必须来自 defaultTunnelName(hostname())——恒名 lxcode-backend 两台机器互认");
+  // 播种：isOwnTunnel（本机名或历史遗留 lxcode-backend），旧的 /^lxcode/i 前缀播种必须死
+  assert.ok(!/\/\^lxcode\/i\.test\(x\.name/.test(sakuraSrc), "旧的前缀播种（认领任何机器的隧道）必须已删除");
+  assert.ok(/isOwnTunnel\(x\.name, hostname\(\)\)/.test(sakuraSrc), "播种判定走 isOwnTunnel（本机名/历史遗留名）");
+  // 视图：owned 字段进 UI（非本机隧道标注 + 启停禁用的数据来源）
+  assert.ok(/owned: isOwnTunnel\(x\.name, hostname\(\)\)/.test(sakuraSrc), "视图带 owned 归属标注");
+});
+
+test("sakura.ts：darwin 下载链执行位（直接落盘 chmod / 压缩包解包 / spawn 前兜底）", () => {
+  // 下载落盘：非 Windows 直接二进制补 chmodSync（writeFileSync 默认 0644 → spawn EACCES）
+  assert.ok(/writeFileSync\(dest, buf, \{ mode: 0o755 \}\)/.test(sakuraSrc), "直接二进制落盘带 mode 0755");
+  assert.ok(/chmodSync\(dest, 0o755\)/.test(sakuraSrc), "落盘后 chmodSync 补齐（umask 防线）");
+  // Windows 保持「直接落盘 exe」不变：win32 分支无 mode 无 chmod
+  assert.ok(/if \(process\.platform === "win32"\) \{\s*\n\s*writeFileSync\(dest, buf\);\s*\n\s*return dest;/.test(sakuraSrc),
+    "win32 分支保持旧形态（无 mode/chmod）");
+  // 压缩包：tar 解包取 frpc（mac 自带 bsdtar）；Windows 不进解包分支
+  assert.ok(/extractFrpcFromArchive/.test(sakuraSrc), "压缩包走解包取 frpc");
+  assert.ok(/isFrpcArchive\(url/.test(sakuraSrc), "压缩包判定按 URL/CT");
+  // spawn 前兜底：darwin 对最终路径 ensure 执行位（手动放置 0644 的兜底）
+  assert.ok(/process\.platform === "darwin"\)\s*\{[^}]*chmodSync\(exe, 0o755\)/.test(sakuraSrc),
+    "spawn 前对 frpc 路径 darwin 执行位兜底");
+  // archKey 匹配走纯函数（win 判定收敛在 sakura-arch.ts）
+  assert.ok(!/Object\.keys\(archs\)\.find\(\(k\) => \/win\/i\.test/.test(sakuraSrc),
+    "archKey 匹配不得内联在 sakura.ts（走 sakura-arch.ts 纯函数，可单测）");
+  assert.ok(/pickFrpcArchKey\(Object\.keys\(archs\)/.test(sakuraSrc), "archKey 由 pickFrpcArchKey 给出");
+});
+
 test("createLatencyProber：进行中的同一 host 复用同一个探测（面板重开不并发自打）", async () => {
   let connects = 0;
   const prober = createLatencyProber({

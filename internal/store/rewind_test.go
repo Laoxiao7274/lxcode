@@ -217,7 +217,7 @@ func TestRewindKeepsCheckpointBeforeAnchor(t *testing.T) {
 		t.Fatalf("锚点之前的检查点应原样活着: before=%+v after=%+v", shadowsBefore, shadowsAfter)
 	}
 	// 被影子的原文不该复活（它仍在库里，只是不在当前路径上）
-	if hits, _, err := s.Search(SearchQuery{Pattern: "消息A", Max: 10}); err != nil || len(hits) == 0 {
+	if hits, _, _, err := s.Search(SearchQuery{Pattern: "消息A", Max: 10}); err != nil || len(hits) == 0 {
 		t.Fatalf("被影子的原文应留在库里: err=%v hits=%d", err, len(hits))
 	}
 }

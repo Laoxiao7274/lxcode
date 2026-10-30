@@ -7,14 +7,29 @@ import (
 
 // FormatSearchHits 将业务命中转换成工具文本，不依赖数据库格式。
 //
+// scope 是结果范围说明（空 = 无——全库扫描不注明）：限定当前项目等收窄
+// 扫描范围时在**头部**注明一句，让模型知道看到的是子集、不是全集——
+// 不注明的话「没搜到」会被当成「整个历史里没有」。
+//
 // 两种形态：**无上下文**时保持一行一条的紧凑形态（[会话 #序号 角色] 内容）；
 // **有上下文**时命中单独起一行（>>> 标记），前后文按时间顺序缩进列出——
 // 模型据此一眼看出「问题在哪、答案在哪」。
-func FormatSearchHits(hits []SearchHit, total int) string {
-	if len(hits) == 0 {
-		return "没有匹配的历史消息。"
-	}
+//
+// timedOut 报告扫描未完整（Search 命中带 TimedOut 的超时扫描 / 调用方判定）：
+// 结尾追加「结果可能不全」提示并建议缩小范围，模型不能把截断结果当全集。
+func FormatSearchHits(hits []SearchHit, total int, timedOut bool, scope string) string {
 	var b strings.Builder
+	if scope != "" {
+		fmt.Fprintf(&b, "（范围说明：%s）\n", scope)
+	}
+	if len(hits) == 0 {
+		if timedOut {
+			b.WriteString("没有匹配的历史消息（扫描超时，结果可能不全，建议缩小范围：指定 session 或缩短 pattern）。")
+			return b.String()
+		}
+		b.WriteString("没有匹配的历史消息。")
+		return b.String()
+	}
 	for _, h := range hits {
 		if len(h.Context) == 0 {
 			fmt.Fprintf(&b, "[%s #%d %s] %s\n", hitHeader(h), h.Index, h.Role, h.Content)
@@ -31,6 +46,9 @@ func FormatSearchHits(hits []SearchHit, total int) string {
 	}
 	if total > len(hits) {
 		fmt.Fprintf(&b, "\n…（共 %d 条命中，显示前 %d 条：缩小 pattern 或提高 max）", total, len(hits))
+	}
+	if timedOut {
+		fmt.Fprintf(&b, "\n…（扫描超时，结果可能不全，建议缩小范围：指定 session 或缩短 pattern）")
 	}
 	return b.String()
 }

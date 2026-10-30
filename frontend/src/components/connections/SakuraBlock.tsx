@@ -124,7 +124,7 @@ export function SakuraBlock() {
           </div>
         ) : (
           tunnels.map((t) => (
-            <div className="conn-tunnel" key={t.id} data-online={t.online ? "true" : undefined} data-starting={t.starting && !t.online ? "true" : undefined}>
+            <div className="conn-tunnel" key={t.id} data-online={t.online ? "true" : undefined} data-starting={t.starting && !t.online ? "true" : undefined} data-owned={t.owned ? "true" : "other-device"}>
               <div className="conn-tunnel-head">
                 <span className="conn-tunnel-name mono">{t.name}</span>
                 {/* 三态：online = 节点端确认在线；starting = 本机 frpc 在跑但节点未确认
@@ -135,6 +135,13 @@ export function SakuraBlock() {
                   <span className="ag-pill starting">启动中…</span>
                 ) : (
                   <span className="ag-pill src">已断开</span>
+                )}
+                {/* 归属提示（2026-12 防两端互认）：非本机创建的隧道只展示信息，
+                    启停按钮禁用——启动/停止会打到其它设备的隧道上。 */}
+                {!t.owned && (
+                  <span className="ag-pill warn" title="这条隧道疑似在其它设备上创建（名字不带本机主机名）。为避免误操作别的设备的隧道，这里不提供启停；如确属本机，可在 natfrp 面板改名后刷新。">
+                    其它设备创建
+                  </span>
                 )}
                 {t.autoHttps ? (
                   <span className="ag-pill risk-low" title="已配置自动 HTTPS——内地节点对 TCP 隧道上的 WS 流量不再回 501">HTTPS 直通</span>
@@ -154,7 +161,7 @@ export function SakuraBlock() {
               <div className="conn-cred">
                 <span className="conn-cred-label">用量</span>
                 <span className="conn-cred-value">{t.used === null ? "—" : humanBytes(t.used)}</span>
-                <Button variant="ghost" className="conn-tunnel-btn" data-conn="tunnel-toggle" disabled={busy || (!!t.starting && !t.online)} onClick={() => toggleTunnel(t.id)}>
+                <Button variant="ghost" className="conn-tunnel-btn" data-conn="tunnel-toggle" disabled={busy || (!!t.starting && !t.online) || !t.owned} title={t.owned ? undefined : "疑似其它设备创建的隧道，不提供启停（避免误操作）"} onClick={() => toggleTunnel(t.id)}>
                   {t.online ? "断开" : "启动"}
                 </Button>
                 <TunnelDelBtn onConfirm={() => removeTunnel(t.id)} disabled={busy} />

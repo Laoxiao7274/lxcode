@@ -174,6 +174,7 @@ catalog.changed {kind}
 - **远程访问**（已实现，2026-10-11）：config/remote.json `enabled` → 后端监听 **0.0.0.0:\<port\>**（关闭回 127.0.0.1，**热切换**——internal/server/listener.go 巡检 remote.json，翻转先关旧 listener 再重绑，既有连接不断；关远程额外断开非回环客户端）+ 所有 /rpc 与 /attachments 升级/请求必须携带 token（query token 或 Authorization: Bearer，含回环）；token 生成/轮换接口（loopback-only 的 /remote-access，轮换 = 旧失效）；与前端连接管理的远程访问面板对接（地址上报经壳桥）；前端 ws/wss 按地址形态自适应（agent/ws/index.ts wsURL）
   - 遗留：hello 不携带 token 升级后的会话级续期（连接生命周期内 token 轮换不断既有连接——与「关远程即断远端」是两个语义，后者已实现）
 - **更新器客户端**（壳侧）：manifest 检查（版本对比）→ 下载 update-\<version\>.zip → sha256 校验 → 排程独立 bat（update-pending/staged 暂存 + apply-update.bat：等 PID 退出 → 原件挪 .old → 落位 + sha256 复核 → 失败回滚拉旧壳 / 成功拉新壳自删除）→ 壳退出
+  - **manifest 按平台分文件（2026-12 拍板）**：site-backend 更新源目录里两份**字段同构**的 manifest——`manifest.json` = Windows（老契约，存量 Windows 客户端只认它，字段一字不动）、`manifest-mac.json` = mac（同目录）；客户端按平台拼 URL（`shell/src/update-platform.ts` 的 `platformManifestUrl`：Windows 原样，darwin 把 base 末段文件名替换为 `manifest-mac.json`，`LXCODE_UPDATE_URL` 的目录/覆盖语义不变）。字段 = `{version, url, sha256, size, files{逐文件 sha256}}`，url 均为相对文件名。**发版时四件套都要上传到同一目录**：manifest.json + update-\<version\>.zip、manifest-mac.json + update-mac-\<version\>.zip（漏传一侧 = 该平台客户端永远停在旧版）；产物由 `scripts/build.mjs`（Windows）与 `--mac` 分支（mac 真机）产出。安全闸：客户端 apply 前有平台守卫（`assertStagedPlatform`，mac 拒含 .exe 的清单、Windows 拒缺 lxcode.exe 的清单）——服务端按平台出对文件之外，最后一道错装防线在客户端
 - 验收：壳从公网地址连后端（token 对）；更新全流程（检查→下载→校验→替换→重启）真机通过
 
 ## 明确不做（本期范围外）

@@ -10,7 +10,7 @@
 // 复制结果里 app.asar 都必须以普通文件形态落位、大小与源一致。
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, mkdirSync, writeFileSync, rmSync, statSync, readdirSync, existsSync } from "node:fs";
+import { readFileSync, mkdirSync, writeFileSync, rmSync, statSync, readdirSync, existsSync, chmodSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
@@ -167,6 +167,39 @@ test("源码钉子：copyTree 的 readdir/stat 必须 fs.*（originalFs），不
     "copyTree 内所有 fs 调用必须走 fs.xxx（loadOriginalFs 的返回值），不得裸调补丁版");
   assert.ok(fn.includes("fs.readdirSync") && fn.includes("fs.statSync") && fn.includes("fs.copyFileSync"),
     "遍历+复制全程 originalFs");
+});
+
+// ---- darwin 执行位兜底（2026-12 mac 更新链修复）----
+
+test("copyTree darwin 执行位兜底：staged 里名为 lxcode 的文件 chmodSync 0755", () => {
+  const root = mkdtempSync(join(tmpdir(), "lxcode-copytree-chmod-"));
+  try {
+    const payload = join(root, "payload");
+    const staged = join(root, "staged");
+    mkdirSync(join(payload, "resources", "bin"), { recursive: true });
+    writeFileSync(join(payload, "resources", "app.asar"), "ASAR");
+    writeFileSync(join(payload, "resources", "bin", "lxcode"), "ELF-PLACEHOLDER");
+    // 以 0644 写入（模拟 Windows/NTFS 打包机上解出的副本——Node copyFileSync
+    // 落盘不持久 POSIX 执行位），copyTree 之后 darwin 侧必须补回执行位。
+    chmodSync(join(payload, "resources", "bin", "lxcode"), 0o644);
+    const copyTree = buildCopyTreeWith(await0());
+    copyTree(payload, staged);
+    // 本机（win32）不下场验证 chmod 行为——用源码钉子 + win 侧「不执行 chmod」
+    // 的形态断言；darwin 行为由 apply-update-sh e2e 的执行位断言真实覆盖。
+    assert.equal(readFileSync(join(staged, "resources", "bin", "lxcode"), "utf8"), "ELF-PLACEHOLDER");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("源码钉子：copyTree 含 darwin 下 lxcode 的 chmodSync 0o755 兜底（防线前移到暂存侧）", () => {
+  const fn = extractCopyTree(updaterSrc);
+  assert.ok(fn.includes("process.platform === \"darwin\""), "兜底只在 darwin 分支（Windows 行为零变化）");
+  assert.ok(/name === "lxcode"/.test(fn), "按文件名 lxcode 识别无扩展名后端二进制（zip 清单里的 resources/bin/lxcode）");
+  assert.ok(fn.includes("fs.chmodSync(d, 0o755)"), "chmodSync 走 originalFs（asar 补丁规避纪律）");
+  assert.ok(/catch/.test(fn), "chmod 失败吞掉不阻断暂存（do_deploy 还有第二道 chmod）");
+  // 复制本体失败必须照旧抛：chmod 的 try/catch 只包 chmod 自己
+  assert.ok(/fs\.copyFileSync\(s, d\);\s*\n\s*if \(process\.platform/.test(fn), "chmod 在 copyFileSync 之后（先复制成功才兜位）");
 });
 
 test("正对照：旧版混用 copyTree（readdir/stat 走补丁版 fs）在同环境下复现事故 ENOENT", () => {

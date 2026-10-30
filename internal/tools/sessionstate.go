@@ -86,6 +86,32 @@ func OwnerSessionID(ctx context.Context) string {
 	return id
 }
 
+// workspaceKey 是当前会话归属项目的 ctx 键。
+type workspaceKey struct{}
+
+// WithWorkspace 把当前会话归属的项目 id 放进 ctx（session_search 的默认扫描
+// 范围「当前项目」取它）。会话装配路径注入（runTurn 快照，与 WithWorkDir /
+// WithSessionID 同一批），子会话经 AttachTo 恢复出**自己行上的** workspace
+//（CreateChild 拷贝父的值），所以子 Agent 拿到的也是正确的项目 id——
+// 不在 dispatch 里特判。
+//
+// 空串也注入（区别于 WithSessionID 的空值跳过）：未分组会话的「当前项目」
+// 不存在，session_search 据此退回全库扫描（语义：未分组会话本就不属于任何
+// 项目，限定「当前项目」无从谈起）——这是明确语义，不是「没注入」。
+func WithWorkspace(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, workspaceKey{}, id)
+}
+
+// Workspace 取 ctx 里的归属项目 id；空串 = 未分组会话或未注入（两者都按
+// 「没有当前项目」处理——session_search 退回全库）。
+func Workspace(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	id, _ := ctx.Value(workspaceKey{}).(string)
+	return id
+}
+
 // WithSkillSource 把技能目录放进 ctx（本轮 Agent 白名单内的技能）。
 func WithSkillSource(ctx context.Context, fn SkillSourceFn) context.Context {
 	if fn == nil {

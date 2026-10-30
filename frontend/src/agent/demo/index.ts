@@ -501,13 +501,13 @@ export class DemoAgent implements AgentSource, JobAdminSource {
   /** 演示模式的项目守则（内存态：项目 id → 内容）。 */
   private instructions_ = new Map<string, string>();
 
-  addProject(name: string, path: string): void {
-    // 演示模式：本地数组操作（浏览器样式可验；不真碰文件系统/git）
-    this.projects_ = [
-      { id: "proj-" + Math.random().toString(36).slice(2, 8), name, path },
-      ...this.projects_,
-    ];
+  /** 添加项目（演示模式：本地数组操作——可验；不真碰文件系统/git）。
+   *  与真实现同契约：resolve 新项目的 ProjectMeta（含 id），失败 reject。 */
+  async addProject(name: string, path: string): Promise<ProjectMeta> {
+    const meta: ProjectMeta = { id: "proj-" + Math.random().toString(36).slice(2, 8), name, path };
+    this.projects_ = [meta, ...this.projects_];
     this.emit({ type: "projectsChanged" });
+    return meta;
   }
 
   /** 移除项目（演示模式：只从列表拿掉——不删会话、不碰磁盘，与真后端同语义）。 */

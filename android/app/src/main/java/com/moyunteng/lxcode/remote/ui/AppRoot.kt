@@ -213,6 +213,16 @@ class AppState(private val store: ConnStore? = null) {
      */
     var screenWasActive by mutableStateOf(false)
 
+    /**
+     * 投屏页的全屏观看位（页面级 UI 态，纯客户端、不进协议）：投屏进行中
+     * （screenState.active==true）时 true = 全屏观看态（整页铺满 + 悬浮球，
+     * AppRoot 豁免 safeDrawing），false = 缩小态（设置页形态 + 视频卡继续播，
+     * 投屏继续跑）。未投屏时的设置页「双击进全屏」仍用 ScreenScreen 本地的
+     * fullscreen rememberSaveable——两者语义不同（本位只在 active 时生效）。
+     * 返回键语义（AppRoot BackHandler）读它：全屏 → 缩小；缩小 → 离开页面。
+     */
+    var screenFullscreen by mutableStateOf(false)
+
     /** 脱离页面上下文的一次性系统 toast（退出投屏发生在非组合上下文，screenToast 不适用）。 */
     fun showToast(msg: String) {
         android.widget.Toast.makeText(
@@ -223,9 +233,10 @@ class AppState(private val store: ConnStore? = null) {
     }
 
     /**
-     * 退出投屏的唯一收口（三路径统一：观看态顶栏 ← / 悬浮球「停止投屏」/ 返回键）：
+     * 退出投屏的唯一收口（显式停止动作：悬浮球「停止投屏」）：
      * 投屏在跑（或启动 pending 挂着）则 stopScreen——WS 已断线等失败静默（会话已经
      * 结束，不再打扰）；回连接页；曾在投屏则 toast「已停止投屏」。
+     * 缩小/放大（[screenFullscreen]）是纯 UI 态切换，不经过本函数。
      * 断开自动退回（AppRoot 的 LaunchedEffect）负责非用户主动的断开（screen.changed
      * active=false），与本函数互斥：本函数先清 [screenWasActive]，那条路径不再触发。
      */
@@ -531,8 +542,10 @@ fun AppRoot(pairUri: String? = null, onPairUriConsumed: () -> Unit = {}) {
     // [AppState.backInterceptor]）；② 详情页回上级（线程→会话列表、表单/扫码→连接）；
     // ③ 连接 tab → 会话 tab；④ 首页（会话列表）不拦截 → 交给系统（退出）。
     // 真实模式连接中返回只是退页面：不断开 WS（连接生命周期归「真实后端」开关管）。
-    // 投屏页例外：观看态（正在投屏）返回键 = 断开并退出（[AppState.endScreenSession]，
-    // 0.3.31 拍板——投屏会话页语义，「回列表但投屏还在跑」的挂起态废除）；
+    // 投屏页例外：观看态（正在投屏）返回键 = 分形态——全屏观看先缩小回设置页形态
+    //（投屏继续，不停止）；已是缩小态则离开投屏页回连接页，投屏**继续跑**
+    //（挂起语义：恢复 0.3.31 废除前的行为——用户从连接页/入口再进投屏页看到
+    // 「投屏中」，可再放大观看）。停止投屏是显式动作（停止按钮/悬浮球）。
     // 设置态（未在投）仍只是回连接页。
     val backEnabled = state.route !is Route.Sessions || state.backInterceptor != null
     BackHandler(enabled = backEnabled) {
@@ -542,8 +555,11 @@ fun AppRoot(pairUri: String? = null, onPairUriConsumed: () -> Unit = {}) {
             is Route.ConnForm -> state.route = Route.Connections
             Route.Pairing -> state.route = Route.Connections
             Route.Screen ->
-                if (state.real.screenState?.active == true) state.endScreenSession()
-                else state.route = Route.Connections
+                if (state.real.screenState?.active == true && state.screenFullscreen) {
+                    state.screenFullscreen = false // 全屏 → 缩小（投屏继续）
+                } else {
+                    state.route = Route.Connections // 缩小态/设置态 → 离开页面（投屏继续）
+                }
             Route.Connections -> state.route = Route.Sessions
             Route.Sessions -> Unit // 首页语义：交给系统（activity 退出）
         }
@@ -608,13 +624,19 @@ fun AppRoot(pairUri: String? = null, onPairUriConsumed: () -> Unit = {}) {
         }
     }
 
-    val watching = state.route is Route.Screen && state.real.screenState?.active == true
+    // 投屏页的「全屏观看」判定（safeDrawing 豁免与深色系统条的唯一依据）：
+    // 在投屏页 + 投屏进行中 + 全屏观看位。缩小观看态（投屏继续、设置页形态）
+    // 与未投屏设置页一样走正常 safeDrawing——视频卡只是页面内一块 16:9 卡片，
+    // 不需要画面铺到系统条之下。
+    val watching = state.route is Route.Screen &&
+        state.real.screenState?.active == true &&
+        state.screenFullscreen
 
-    // 观看态的系统条外观（豁免 safeDrawing 的配套）：窗口背景是投屏画面（深色），
-    // 状态栏/导航栏图标须转白色（isAppearanceLight=false）；离开观看态还原浅底深字
-    //（窗口背景回 LxColors.Bg 白）。改动只经 WindowInsetsController，不动 themes.xml
-    // 与 Activity 级配置；watching 驱动的 LaunchedEffect 天然覆盖「断开自动退回」
-    // 与「顶栏 ←/悬浮球停止」两条退出路径（watching 翻转即还原）。
+    // 全屏观看的系统条外观（豁免 safeDrawing 的配套）：窗口背景是投屏画面（深色），
+    // 状态栏/导航栏图标须转白色（isAppearanceLight=false）；离开全屏观看（缩小/停止/
+    // 断开退回）还原浅底深字（窗口背景回 LxColors.Bg 白）。改动只经
+    // WindowInsetsController，不动 themes.xml 与 Activity 级配置；
+    // watching 驱动的 LaunchedEffect 天然覆盖所有退出路径（watching 翻转即还原）。
     val window = (context as? android.app.Activity)?.window
     LaunchedEffect(watching) {
         window ?: return@LaunchedEffect
@@ -631,11 +653,12 @@ fun AppRoot(pairUri: String? = null, onPairUriConsumed: () -> Unit = {}) {
                 Modifier
                     .fillMaxSize()
                     .background(if (watching) LxColors.TermBg else LxColors.Bg)
-                    // 观看态豁免 safeDrawing：投屏画面绘制到状态栏/导航栏之下
+                    // 全屏观看态豁免 safeDrawing：投屏画面绘制到状态栏/导航栏之下
                     //（「整个页面全是投屏画面，四周零边框」，2026-12 拍板）。
-                    // 观看态 = 显式空 insets、零 padding——顶栏与悬浮球的系统条
+                    // 全屏观看 = 显式空 insets、零 padding——顶栏与悬浮球的系统条
                     // 间距由 WatchSurface/ScreenFloatingBall 在页面内部自补偿
-                    //（statusBarsPadding / rootWindowInsets 钳制）。
+                    //（statusBarsPadding / rootWindowInsets 钳制）。缩小观看态与
+                    // 未投屏设置页走正常 safeDrawing（页面内自补了系统条预留）。
                     // WindowInsets(0,0,0,0) = 显式空 insets（不用条件跳过修饰符：
                     // 两个分支走同一条修饰符链，切换态不会丢布局参数）。
                     .windowInsetsPadding(
