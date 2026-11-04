@@ -468,13 +468,18 @@ func sessionHasPrefix(srv *Server, id, prefix string) bool {
 	return false
 }
 
-// TestChildJobNoticeGoesToOwner：子 Agent 起的后台任务，结束通告必须投给**父会话**
-// （时间线归属），不是执行它的子会话。
+// TestChildJobNoticeGoesToOwner：子 Agent 起的后台任务，结束通告必须投给
+// **父会话**（时间线归属），且按 2026-12 修订**同时投给执行会话**（双投）。
 //
-// 为什么这是硬要求：子 Agent 是独立会话，它起的任务记的归属会话是子会话；而子会话
-// 不进侧栏、用户根本看不到它——通告投给子会话等于投给一个没人看的会话：用户在**主
-// 对话**里什么都看不到，主 Agent 也永远不知道用户已经把它停了，于是自己脑补下一步
-// （用户实测的原话：「它跑了个 dev，我关掉了，他又跑去接着思考新的」）。
+// 为什么父会话仍是硬要求：子 Agent 是独立会话，它起的任务记的归属会话是子会话；
+// 用户在**主对话**里看着父会话的时间线——通告不投父会话，用户什么都看不到，
+// 主 Agent 也永远不知道用户已经把它停了，于是自己脑补下一步（用户实测的原话：
+// 「它跑了个 dev，我关掉了，他又跑去接着思考新的」）。
+//
+// 为什么执行会话也要收到（双投）：执行会话是事件的**当事方**——原先只投父会话，
+// 子会话永远收不到「它等的那个任务结束了」，只能 sleep 盲等（真库实锤：验收
+// 子会话 sleep 累计 53.5 分钟）。执行会话不进侧栏没关系，通告走内核通道
+// （Notify → 唤醒开新轮/轮边界注入），与用户看不看得到无关。
 func TestChildJobNoticeGoesToOwner(t *testing.T) {
 	rec := &serverRecorder{}
 	srv, client, mgr := newJobTestServer(t, rec.stream)
@@ -499,12 +504,10 @@ func TestChildJobNoticeGoesToOwner(t *testing.T) {
 	}
 	j.Settle(jobs.StatusKilled, jobs.EndedUser, "已取消")
 
-	// 正面对照：通告落在**父会话**的历史里
+	// 正面对照 1：通告落在**父会话**的历史里（时间线归属语义不回退）
 	waitNoticeInSession(t, srv, owner, "用户主动结束了后台任务 npm run dev")
-	// 反面对照：子会话**不该**收到它——归属改了就是改了，不是两边都投
-	if sessionHasPrefix(srv, child, protocol.JobNoticePrefix) {
-		t.Fatal("通告投给了子会话：归属没生效（子会话不进侧栏，用户看不到）")
-	}
+	// 正面对照 2：**执行会话**也收到（双投——子 Agent 不该再盲等）
+	waitNoticeInSession(t, srv, child, "用户主动结束了后台任务 npm run dev")
 }
 
 // TestChildJobListFiltersByOwner：job.list 的按会话过滤走**时间线归属**——
@@ -548,5 +551,74 @@ func TestChildJobListFiltersByOwner(t *testing.T) {
 	mustJSON(t, b2, &res2)
 	if len(res2.Jobs) != 0 {
 		t.Fatalf("别的会话不该看到这个任务: %+v", res2.Jobs)
+	}
+}
+
+// TestJobNoticeExecutorBudgetIndependent：双投时**执行会话**的投递不消耗时间线
+// 归属的唤醒预算——owner 预算耗尽只拦 owner 那一次；执行会话（子会话）仍被唤醒。
+//
+// 这是 2026-12 修订的语义锚点：预算挡的是「agent 空闲时被通告反复开轮」的噪声，
+// 而执行会话是事件的当事方——挡它只会把子会话重新推回 sleep 盲等。
+func TestJobNoticeExecutorBudgetIndependent(t *testing.T) {
+	rec := &serverRecorder{}
+	srv, client, mgr := newJobTestServer(t, rec.stream)
+	owner := newSessionViaChatSend(t, srv, client)
+
+	// 用满 **owner** 的连续唤醒预算
+	for i := 0; i < maxConsecutiveWakes; i++ {
+		before := rec.count()
+		j, err := mgr.Start(jobs.Spec{Kind: "bash", Label: "唤醒", SessionID: owner})
+		if err != nil {
+			t.Fatal(err)
+		}
+		j.Settle(jobs.StatusCompleted, jobs.EndedSelf, "退出码 0")
+		waitCalls(t, srv, rec, before+1)
+	}
+
+	// 子会话起的任务：owner 预算耗尽 → owner 只入队不开轮；执行会话（子会话）
+	// 空闲且不受 owner 预算约束 → 被唤醒开一轮。
+	child, _, err := srv.createSession("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := rec.count()
+	j, err := mgr.Start(jobs.Spec{
+		Kind: "bash", Label: "子会话的任务",
+		SessionID: child, OwnerSessionID: owner,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.Settle(jobs.StatusCompleted, jobs.EndedSelf, "退出码 0")
+	// 子会话的通告唤醒它自己的 LLM 调用（同一个 recorder——子会话也走 stream）
+	waitCalls(t, srv, rec, before+1)
+	// owner 不该被唤醒（预算耗尽、通告留在队列里）
+	if rec.count() > before+1 {
+		t.Fatalf("owner 预算耗尽不该被唤醒（子会话那轮是唯一新增）: %d → %d", before, rec.count())
+	}
+	if !sessionHasPrefix(srv, owner, protocol.JobNoticePrefix) {
+		t.Fatal("owner 的通告应留在队列里（绝不丢弃）")
+	}
+}
+
+// TestJobNoticeTopLevelSingleDelivery：顶层会话自己起的任务（SessionID ==
+// OwnerSessionID）只投一次——双投去重，行为与以前逐字节一致。
+func TestJobNoticeTopLevelSingleDelivery(t *testing.T) {
+	rec := &serverRecorder{}
+	srv, client, mgr := newJobTestServer(t, rec.stream)
+	sessionID := newSessionViaChatSend(t, srv, client)
+
+	before := rec.count()
+	j, err := mgr.Start(jobs.Spec{Kind: "bash", Label: "顶层任务", SessionID: sessionID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.Settle(jobs.StatusCompleted, jobs.EndedSelf, "退出码 0")
+	waitCalls(t, srv, rec, before+1)
+	if rec.count() != before+1 {
+		t.Fatalf("顶层任务只该唤醒一次: %d → %d", before, rec.count())
+	}
+	if !sessionHasPrefix(srv, sessionID, protocol.JobNoticePrefix) {
+		t.Fatal("顶层会话应收到通告")
 	}
 }

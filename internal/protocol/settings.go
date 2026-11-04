@@ -1,7 +1,7 @@
 package protocol
 
 import (
-	"github.com/moyunteng/lxcode/internal/websearch"
+	"github.com/moyunteng/lxcode/internal/searchtypes"
 )
 
 // ---- 网页搜索渠道 ----
@@ -12,7 +12,7 @@ import (
 // Channels 含**全部内置渠道**（含未配置的）——前端要能列出可配置的渠道，
 // 只回已配置的话用户永远看不到「还能配什么」。
 type SearchChannelsResult struct {
-	Channels []websearch.Channel `json:"channels"`
+	Channels []searchtypes.Channel `json:"channels"`
 	// Primary 是主渠道 id（空 = 未指定，按预设顺序降级）。
 	Primary string `json:"primary,omitempty"`
 	// Ready 报告是否存在至少一个就绪渠道——前端据此决定要不要提示去配置。
@@ -54,9 +54,9 @@ type SearchTestParams struct {
 // SearchTestResult 是 search.test 的结果：把渠道真实返回的摘要回给前端，
 // 让用户当场看到「这个 key 到底能不能用」。
 type SearchTestResult struct {
-	Provider string             `json:"provider"`
-	Answer   string             `json:"answer,omitempty"`
-	Results  []websearch.Result `json:"results"`
+	Provider string               `json:"provider"`
+	Answer   string               `json:"answer,omitempty"`
+	Results  []searchtypes.Result `json:"results"`
 	// ElapsedMS 是耗时（用户判断渠道快慢的依据）。
 	ElapsedMS int `json:"elapsed_ms"`
 }

@@ -26,8 +26,8 @@ var toolNameOK = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 func TestLLMToolsShape(t *testing.T) {
 	r := New()
 	toolsWire := r.LLMTools()
-	if len(toolsWire) != 25 {
-		t.Fatalf("应有 25 个工具（read_file / search / web_search / web_fetch / job_output / job_list / job_kill / session_search / read_skill / share_file / read_image / edit / write_file / bash / bash_readonly / todo / ask_user / agent_read / agent_write / agent_dispatch / merge_request / workspace_status / workspace_sync / workspace_rollback / workspace_publish）, got %d", len(toolsWire))
+	if len(toolsWire) != 27 {
+		t.Fatalf("应有 25 个工具（read_file / search / web_search / web_fetch / job_output / job_list / job_kill / session_search / read_skill / share_file / read_image / edit / write_file / bash / bash_readonly / todo / ask_user / agent_read / agent_write / agent_dispatch / merge_request / workspace_status / workspace_sync / workspace_rollback / workspace_publish / db_query / ssh_hosts）, got %d", len(toolsWire))
 	}
 	for _, tw := range toolsWire {
 		if tw.Name == "" || tw.Description == "" || !json.Valid(tw.Parameters) {
@@ -150,8 +150,8 @@ func TestBashTool(t *testing.T) {
 	if !strings.Contains(got, "hello") || !strings.Contains(got, "退出码 3") {
 		t.Fatalf("bash 结果不符: %q", got)
 	}
-	// 超时
-	got = r.Execute(context.Background(), call("bash", `{"command":"sleep 3","timeout_sec":1}`))
+	// 超时（sleep 已被纯 sleep 硬拦——用不退出的读循环触发超时）
+	got = r.Execute(context.Background(), call("bash", `{"command":"tail -f /dev/null","timeout_sec":1}`))
 	if !strings.Contains(got, "超时") {
 		t.Fatalf("超时应终止: %q", got)
 	}

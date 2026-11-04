@@ -375,6 +375,64 @@ func TestCancelPreservesPartial(t *testing.T) {
 	}
 }
 
+// TestInterruptedTurnMarkedForStats：中断/失败的轮**盖 interrupted 位**（2026-12
+// 口径修订）：半截轮的数字照常落库（历史展示用），但统计折叠按它整行排除——
+// 判定记在写边界（agent 的轮错误出口），store 谁都不能 import agent（分层规则）。
+func TestInterruptedTurnMarkedForStats(t *testing.T) {
+	dir := t.TempDir()
+	s, st := newUsageEnv(t, dir)
+	// 流挂住：发一半 delta 后被取消（与 TestCancelPreservesPartial 同款契约）
+	s.SetStream(func(ctx context.Context, m config.ModelConfig, msgs []llm.Message, opts []llm.Option) (<-chan llm.StreamEvent, error) {
+		ch := make(chan llm.StreamEvent, 2)
+		go func() {
+			defer close(ch)
+			ch <- llm.StreamEvent{Type: llm.EventText, TextDelta: "已经生成了"}
+			<-ctx.Done()
+			ch <- llm.StreamEvent{Type: llm.EventError, Err: context.Canceled,
+				Result: &llm.ChatResult{Message: llm.Message{Role: "assistant", Content: "已经生成了"}}}
+		}()
+		return ch, nil
+	})
+	if err := s.Send("慢慢说"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return s.Busy() })
+	s.Cancel()
+	waitFor(t, func() bool { return !s.Busy() })
+
+	// 库里的 assistant 消息带 interrupted 位（统计折叠排除它的依据）
+	msgs, err := st.Load(s.SessionID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var assistant *llm.Message
+	for i := range msgs {
+		if msgs[i].Role == "assistant" {
+			assistant = &msgs[i]
+		}
+	}
+	if assistant == nil {
+		t.Fatal("历史里应有中断的 assistant 消息")
+	}
+	if !assistant.Interrupted {
+		t.Fatalf("中断轮应盖 interrupted 位: %+v", assistant)
+	}
+	if assistant.Content != "已经生成了" {
+		t.Fatalf("部分内容照常保留: %+v", assistant)
+	}
+	// 统计里这步整行不进（半截轮没有步数）
+	stats, err := st.SessionStatsOf(s.SessionID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Steps != 0 {
+		t.Fatalf("中断轮不该产出统计（DSH：取消的 step 不产出统计）: %+v", stats)
+	}
+	if stats.LLMMs != 0 || stats.DecodeTokens != 0 {
+		t.Fatalf("中断轮的耗时/用量不该进统计: %+v", stats)
+	}
+}
+
 // ---------- 取消/失败必须补齐工具配对 ----------
 //
 // 缺配对不是"不好看"：严格端点会 400 拒收整轮，而且压缩的切点会永久卡在缺配对
@@ -950,14 +1008,14 @@ func TestSystemPromptListsAllTools(t *testing.T) {
 			t.Fatalf("提示词应列出工具 %s（清单与注册表不漂移）", name)
 		}
 	}
-	// 二十五个工具的清单行数（read_skill + web_search + web_fetch + agent_read
+	// 二十七个工具的清单行数（read_skill + web_search + web_fetch + agent_read
 	// + agent_write + agent_dispatch + merge_request + ask_user + job_output/
 	// job_list/job_kill + 工作区四件套 + share_file + read_image + bash_readonly
 	// ——渐进披露、联网检索与抓正文、Agent 配置读写、调度、合并进程入口、提问
 	// 通道、后台任务、工作区查询/同步/回滚/产物发布、附件共享、视觉读图、
 	// 只读执行面）
-	if got := strings.Count(prompt, "\n- "); got != 25 {
-		t.Fatalf("工具清单应 25 行, got %d", got)
+	if got := strings.Count(prompt, "\n- "); got != 27 {
+		t.Fatalf("工具清单应 27 行, got %d", got)
 	}
 }
 

@@ -137,15 +137,26 @@ func TestLeafPackagesDoNotImportRuntime(t *testing.T) {
 }
 
 // TestProtocolIsTransportOnly：protocol 只做 wire——不 import server/agent/store
-//（协议层被客户端与服务端共享，依赖运行时会把它拖进后端实现细节）。
+// 等运行时，也不 import llm/tools/websearch 业务实现包（协议层被客户端与服务端
+// 共享，依赖运行时或实现细节会把后端拖进协议）。共享形状走叶包：chatmsg
+// （消息模型）、sessiondata（清单/统计）、searchtypes（搜索渠道视图）、config
+// （模型注册表条目）——它们是纯数据形状，方向是合法的向下依赖。
 func TestProtocolIsTransportOnly(t *testing.T) {
+	banned := map[string]bool{
+		"server":    true,
+		"agent":     true,
+		"store":     true,
+		"llm":       true,
+		"tools":     true,
+		"websearch": true,
+	}
 	walkGoFiles(t, "..", func(path, pkg string, deps []string) {
 		if pkg != "protocol" {
 			return
 		}
 		for _, dep := range deps {
-			if dep == "server" || dep == "agent" || dep == "store" {
-				t.Errorf("%s: protocol 不得依赖 internal/%s", path, dep)
+			if banned[dep] {
+				t.Errorf("%s: protocol 不得依赖 internal/%s（wire 形状走共享叶包：chatmsg/sessiondata/searchtypes/config）", path, dep)
 			}
 		}
 	})

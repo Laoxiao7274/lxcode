@@ -596,7 +596,10 @@ func (s *Server) preparePublish(sessionID, source, target string) (srcRoot, dstR
 	if _, err := os.Stat(filepath.Join(wt.Path, srcRel)); err != nil {
 		return "", "", "", "", fmt.Errorf("会话工作树里不存在 %s（检查路径，或先在工作树里完成构建）", srcRel)
 	}
-	return wt.Path, meta.Path, srcRel, dstRel, nil
+	// 相对路径统一成 `/` 形态再返回：发布对象是相对路径语义，文案（确认门/
+	// 执行结果）在 Windows 上不该出现 dist\app.exe 这种反斜杠形态。
+	// filepath.Join/CleanPublishRel 对 `/` 形态照常处理，仅影响展示。
+	return wt.Path, meta.Path, filepath.ToSlash(srcRel), filepath.ToSlash(dstRel), nil
 }
 
 // publishConfirmText 组 publish 的确认门文案：发布到哪、多少文件、

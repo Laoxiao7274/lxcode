@@ -173,15 +173,14 @@ func TestOutputTokensPerSec(t *testing.T) {
 	if got := OutputTokensPerSec(200, 1200, 100); got != 100 {
 		t.Fatalf("100 token / (1200-200)ms = 100 tok/s, got %v", got)
 	}
-	// 首 token 未知（工具轮没有增量 / 非流式回放）时退化成整轮耗时：拿不到解码段
-	// 的起点，只能给一个**含 prefill 的**整体速率（口径不同，所以只在首 token
-	// 已知时才声称它是"生成速度"）。
-	if got := OutputTokensPerSec(0, 1000, 50); got != 50 {
-		t.Fatalf("首 token 未知时应退化成整轮耗时: got %v", got)
+	// 首 token 未知（工具轮没有增量 / 非流式回放）→ 返回 0（2026-12 口径修订，
+	// 对齐 DSH：退化成整轮耗时是含 prefill 的另一口径，宁可不显示）。
+	if got := OutputTokensPerSec(0, 1000, 50); got != 0 {
+		t.Fatalf("首 token 未知时不应编出含 prefill 的速度: got %v", got)
 	}
-	// 首 token 不比总耗时小（时钟异常/边界）时同样退化，绝不产生负值或除零
-	if got := OutputTokensPerSec(1500, 1000, 10); got != 10 {
-		t.Fatalf("首 token 大于总耗时时应退化: got %v", got)
+	// 首 token 不比总耗时小（时钟异常/边界）→ 没有正的解码窗，同样返回 0
+	if got := OutputTokensPerSec(1500, 1000, 10); got != 0 {
+		t.Fatalf("首 token 大于总耗时时应返回 0: got %v", got)
 	}
 	// 缺任一项就是算不出来——返回 0（未知），不编一个数
 	if got := OutputTokensPerSec(100, 1000, 0); got != 0 {

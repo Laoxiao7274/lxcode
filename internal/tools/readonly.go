@@ -402,7 +402,30 @@ func scanShellCommand(command string) ([][]string, string) {
 		case '(', ')':
 			flushSegment() // 子 shell / 分组：切开后逐段判定
 		case '<', '>':
-			return nil, "重定向（" + string(c) + "）会写文件或读非预期输入，只读模式不允许"
+			// 无害重定向放行（2026-12 用户反馈：调研 Agent 2,947 次调用死在
+			// `2>/dev/null` 上——占 bash_readonly 拒绝量的 16.8%，错误榜第一名）：
+			// 丢弃输出（>/dev/null）与流转（2>&1、1>&2、&>/dev/null）不落盘也不换
+			// 输入源，静态可判定为只读；其余（> file、>> file、< file）仍一律拒绝。
+			// 整个重定向 token 消费掉（不进 word——它是操作符不是命令参数）。
+			// fd 前缀（`2>` 的 2）此刻在 word 缓冲里：紧邻 > 的纯数字 word 按
+			// bash 分词规则是 fd 而不是命令参数——丢弃它，别让它混进下一个词。
+			fdPrefix := hasWord && isAllDigits(word.String())
+			end, reason := redirectScan(runes, i)
+			if reason != "" {
+				return nil, reason
+			}
+			if end <= i {
+				return nil, "重定向（" + string(c) + "）会写文件或读非预期输入，只读模式不允许" +
+					"（放行：>/dev/null、2>/dev/null、2>&1、&>/dev/null；其余会写文件）"
+			}
+			if fdPrefix {
+				word.Reset()
+				hasWord = false
+			} else {
+				flushWord()
+			}
+			i = end - 1 // for 循环的 i++ 会补上
+			continue
 		case '`':
 			return nil, "反引号命令替换的内容无法静态判定，只读模式不允许"
 		case '$':
@@ -431,4 +454,97 @@ func scanShellCommand(command string) ([][]string, string) {
 		return nil, "命令为空"
 	}
 	return segs, ""
+}
+
+// redirectScan 判定 runes[i] 起的重定向是否无害，返回 (end, 拒绝理由)。
+//
+// end > i = 无害，end 是重定向 token 之后的绝对下标（调用方跳到那里）；
+// end == i（空 reason）= 写文件/换输入源（> file、>>、<），按原语义拒绝；
+// reason 非空 = 结构上无法判定，直接拒绝。
+//
+// 放行面（每种形态都对应调研 Agent 的真实调用）：
+//   - `>/dev/null`、`2>/dev/null`（含空格变体 `2> /dev/null`）——丢弃输出
+//   - `2>&1`、`1>&2`、`>&1`——fd 间流转，不落盘（fd 数字紧邻 > 时在
+//     word 缓冲里，由调用方按 fd 丢弃，这里只看 > 之后的部分）
+//
+// 两条防绕过纪律（bash 的分词规则与直觉不同，放宽前必须逐条对齐）：
+//   - **裸数字目标是文件名不是 fd**：`>2` 会建文件 "2"，`>1file` 会建
+//     "1file"——fd 复制只认 `>&N`（& 必须紧跟 >），所以 > 后的数字分支
+//     只存在于 `>&` 形态里；
+//   - **目标必须被分隔符终结**：`>/dev/nullfoo` 与 `>&1file` 都是合法 bash
+//     写法且都落盘——放行的目标后面必须紧跟分隔符（空白/;/|/&/括号/换行/结尾），
+//     否则按「写文件」拒绝。
+//
+// 拒绝面不动：`> file`、`>> file`、`< file`、`<<`（heredoc）、`&>file`（落盘）。
+func redirectScan(runes []rune, i int) (int, string) {
+	// isDelimAt 报告 j 是否越过 token 边界（j==len = 命令结尾，也算边界）
+	isDelimAt := func(j int) bool {
+		if j >= len(runes) {
+			return true
+		}
+		switch runes[j] {
+		case ' ', '\t', '\r', '\n', ';', '|', '&', '(', ')', '<', '>':
+			return true
+		}
+		return false
+	}
+	// isDevNullAt 判断 j 指向的目标是否是 /dev/null 且被分隔符终结
+	//（唯一放行的「文件」——它是设备即丢弃；别的路径都可能是真文件）
+	isDevNullAt := func(j int) bool {
+		const devnull = "/dev/null"
+		if j+len(devnull) > len(runes) {
+			return false
+		}
+		return string(runes[j:j+len(devnull)]) == devnull && isDelimAt(j+len(devnull))
+	}
+	skipSpaces := func(j int) int {
+		for j < len(runes) && (runes[j] == ' ' || runes[j] == '\t') {
+			j++
+		}
+		return j
+	}
+
+	switch runes[i] {
+	case '>':
+		j := i + 1
+		// `>>`（追加）恒为写文件——拒绝
+		if j < len(runes) && runes[j] == '>' {
+			return i, ""
+		}
+		// `>&N`：fd 复制（`>&1`、`>&2`）——N 后面必须被分隔符终结
+		//（`>&1file` 是合法 bash 写法且写文件，不能按前缀放过）
+		if j < len(runes) && runes[j] == '&' {
+			j = skipSpaces(j + 1)
+			if j < len(runes) && runes[j] >= '1' && runes[j] <= '2' && isDelimAt(j+1) {
+				return j + 1, ""
+			}
+			return i, ""
+		}
+		// `>/dev/null`（含空格变体）：丢弃输出
+		j = skipSpaces(j)
+		if isDevNullAt(j) {
+			return j + len("/dev/null"), ""
+		}
+		return i, ""
+	case '<':
+		// `<` 一律拒绝（读非预期输入；`<<` heredoc 结构更复杂）——
+		// 拒绝面保持最小变化。
+		return i, ""
+	}
+	return i, "无法解析的重定向结构"
+}
+
+// isAllDigits 报告 s 是否为纯数字（fd 前缀的判定口径）。丢弃的前提是整个
+// 重定向本身已判定为无害，宽松一点不影响安全——误判的代价只是把一个数字
+// 参数丢了（如 `rg 42` 的 42 紧邻 > 时本就不是 rg 的参数）。
+func isAllDigits(s string) bool {
+	if s == "" || len(s) > 2 {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }

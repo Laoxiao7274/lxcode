@@ -301,3 +301,121 @@ func TestRegistrySetDynamic(t *testing.T) {
 		t.Fatalf("清空后工具数 = %d，应为 %d", len(r.Order()), builtinCount)
 	}
 }
+
+// TestCustomDefMutatesDeclaration（2026-12 P5）：strict 只读档按**目录声明**
+// 判定——确证只读的工具（rg 声明 Mutates=false）放行；未声明的 binary 工具
+// 保持保守默认（Mutates=true）被拒。硬写 true 曾让 rg 在 strict 下被拒
+// 39 次/26 会话。
+func TestCustomDefMutatesDeclaration(t *testing.T) {
+	// 未声明：保守默认 = 变更外部世界（存量行为逐字节一致）
+	undeclared := mustCustomDef(t, binarySpec("probe {pattern}"))
+	if !undeclared.Mutates {
+		t.Fatal("未声明 Mutates 的 binary 工具应保持默认 true（起进程即变更外部世界）")
+	}
+	// 声明只读：strict 放行
+	readonly := binarySpec("rg -n --no-heading {pattern} {path}")
+	f := false
+	readonly.Mutates = &f
+	rd := mustCustomDef(t, readonly)
+	if rd.Mutates {
+		t.Fatal("声明 Mutates=false 的工具应读到 false")
+	}
+	// 声明变更（显式 true）：与默认同语义
+	tr := true
+	mutating := binarySpec("probe {pattern}")
+	mutating.Mutates = &tr
+	mt := mustCustomDef(t, mutating)
+	if !mt.Mutates {
+		t.Fatal("声明 Mutates=true 的工具应读到 true")
+	}
+}
+
+// TestRegistryStrictGateFollowsDeclaration：strict 档的门（IsMutating）按
+// 注册进注册表的声明判定——rg 放行、未声明的 binary 工具仍拒。
+func TestRegistryStrictGateFollowsDeclaration(t *testing.T) {
+	r := New()
+	f := false
+	spec := binarySpec("rg {pattern} {path}")
+	spec.ID = "ripgrep"
+	spec.Mutates = &f
+	d := mustCustomDef(t, spec)
+	r.SetDynamic([]*Def{d})
+	if r.IsMutating("ripgrep") {
+		t.Fatal("rg 声明只读后 strict 门应放行")
+	}
+	// 未声明的 binary 工具仍按变更处理
+	other := binarySpec("probe {pattern}")
+	other.ID = "probe-bin"
+	r.SetDynamic([]*Def{mustCustomDef(t, other)})
+	if !r.IsMutating("probe-bin") {
+		t.Fatal("未声明 Mutates 的 binary 工具 strict 门仍应拒绝")
+	}
+}
+
+// TestRenderCommandSearchStyleFlags（2026-12 P2）：声明了 search 风格参数
+// （mode/max/ignore_case/all）的 binary 工具，转译层把 search 语义翻成 rg 标志
+// ——模型拿 search 的参数面往 rg 上套（124 次「不支持参数 max/mode」）不再报错。
+func TestRenderCommandSearchStyleFlags(t *testing.T) {
+	spec := sessiondata.ToolSpec{
+		ID: "ripgrep", Desc: "rg", Risk: "low", Source: "binary",
+		Command: "rg -n --no-heading --after-context={after} --glob={glob} {pattern} {path}",
+		Params: []sessiondata.ToolParam{
+			{Name: "pattern", Type: "regex", Required: true},
+			{Name: "path", Type: "string"},
+			{Name: "glob", Type: "string"},
+			{Name: "mode", Type: "enum"},
+			{Name: "max", Type: "int"},
+			{Name: "ignore_case", Type: "bool"},
+			{Name: "all", Type: "bool"},
+			{Name: "after", Type: "int"},
+		},
+	}
+	cases := []struct {
+		name string
+		args string
+		want []string
+	}{
+		{"缺省全空=files 默认", `{"pattern":"x"}`, []string{"rg", "-l", "-n", "--no-heading", "x"}},
+		{"mode=content", `{"pattern":"x","mode":"content"}`, []string{"rg", "-n", "--no-heading", "x"}},
+		{"mode=count", `{"pattern":"x","mode":"count"}`, []string{"rg", "-c", "-n", "--no-heading", "x"}},
+		{"max 映射 -m", `{"pattern":"x","mode":"content","max":5}`, []string{"rg", "-m", "5", "-n", "--no-heading", "x"}},
+		{"ignore_case→-i", `{"pattern":"x","mode":"content","ignore_case":true}`, []string{"rg", "-i", "-n", "--no-heading", "x"}},
+		{"all→hidden+no-ignore", `{"pattern":"x","mode":"content","all":true}`, []string{"rg", "--hidden", "--no-ignore", "-n", "--no-heading", "x"}},
+		{"组合", `{"pattern":"x","mode":"content","max":3,"ignore_case":true,"all":true,"glob":"*.go","after":2}`,
+			[]string{"rg", "-m", "3", "-i", "--hidden", "--no-ignore", "-n", "--no-heading", "--after-context=2", "--glob=*.go", "x"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			argv, err := renderCommand(spec, spec.Command, json.RawMessage(c.args))
+			if err != nil {
+				t.Fatalf("渲染失败: %v", err)
+			}
+			if strings.Join(argv, "\x00") != strings.Join(c.want, "\x00") {
+				t.Fatalf("argv = %q，应为 %q", argv, c.want)
+			}
+		})
+	}
+	// 非法 mode：与 search 同口径报错
+	if _, err := renderCommand(spec, spec.Command, json.RawMessage(`{"pattern":"x","mode":"counting"}`)); err == nil || !strings.Contains(err.Error(), "files / content / count") {
+		t.Fatalf("非法 mode 应报与 search 一致的错误，实际: %v", err)
+	}
+	// 非法 max
+	if _, err := renderCommand(spec, spec.Command, json.RawMessage(`{"pattern":"x","max":0,"mode":"content"}`)); err == nil || !strings.Contains(err.Error(), "max") {
+		t.Fatalf("max<=0 应报错，实际: %v", err)
+	}
+	// 模板自己占位了 mode：转译不介入（{mode} 由模板全权处理）
+	ownMode := spec
+	ownMode.Command = "probe --mode={mode} {pattern}"
+	argv, err := renderCommand(ownMode, ownMode.Command, json.RawMessage(`{"pattern":"x","mode":"content"}`))
+	if err != nil {
+		t.Fatalf("模板占位 mode 时不应走转译: %v", err)
+	}
+	if strings.Join(argv, "\x00") != strings.Join([]string{"probe", "--mode=content", "x"}, "\x00") {
+		t.Fatalf("argv = %q，应保留模板占位的原样渲染", argv)
+	}
+	// 未声明 mode 的工具传 mode：仍是未知参数报错（不猜）
+	plain := binarySpec("rg {pattern} {path}")
+	if _, err := renderCommand(plain, plain.Command, json.RawMessage(`{"pattern":"x","mode":"files"}`)); err == nil || !strings.Contains(err.Error(), "不支持参数") {
+		t.Fatalf("未声明 mode 的工具传 mode 应报未知参数，实际: %v", err)
+	}
+}

@@ -10,6 +10,7 @@ import {
   formatStatsTokens, formatDuration, cacheHitPercent, timeDialogRows, usageDialogRows,
   timePillLabel, usageTotalLabel,
 } from '../src/shared/session-stats.ts';
+import { MIN_DECODE_WINDOW_MS } from '../src/shared/turn-stats.ts';
 
 /** 一份"跑过几步、有完整数据"的统计（各测试按需覆盖字段）。 */
 const full = (over = {}) => ({
@@ -43,6 +44,23 @@ test('生成速度：分母扣掉首字延迟；缺数据 → null（不编 0）
   // 没有解码窗口（没有任何一步同时有首字与用量）→ null，调用方不显示
   assert.equal(decodeTokensPerSec(full({ decode_ms: 0 })), null);
   assert.equal(decodeTokensPerSec(full({ decode_tokens: 0 })), null);
+});
+
+test('短窗护栏：解码窗 < 300ms 时速度是计时误差主导的噪声 → null；明细显示「样本过短」', () => {
+  // 299ms 的窗：首字/收尾各 1ms 的计时误差就能让速度抖一倍——不显示，也不显示 0
+  assert.equal(decodeTokensPerSec(full({ decode_ms: 299, decode_tokens: 50 })), null);
+  // 恰好 300ms 是正样本（护栏是 < 300ms）
+  assert.ok(decodeTokensPerSec(full({ decode_ms: 300, decode_tokens: 50 })) > 0);
+  // 短窗时弹层明细给「样本过短」一行（如实说明为什么不显示，不是无声地藏掉）
+  const rows = timeDialogRows(full({ decode_ms: 299, decode_tokens: 50 }));
+  const speed = rows.find((r) => r.label === '生成速度');
+  assert.ok(speed, '短窗时应有一行说明: ' + JSON.stringify(rows));
+  assert.equal(speed.value, '样本过短');
+  // 与轮级共用同一阈值（MIN_DECODE_WINDOW_MS）：改一处必改另一处
+  assert.equal(timeDialogRows(full({ decode_ms: MIN_DECODE_WINDOW_MS - 1, decode_tokens: 50 }))
+    .find((r) => r.label === '生成速度')?.value, '样本过短');
+  assert.ok(!timeDialogRows(full({ decode_ms: MIN_DECODE_WINDOW_MS, decode_tokens: 50 }))
+    .some((r) => r.value === '样本过短'), '正样本不再显示样本过短');
 });
 
 test('首字延迟均值：没有可测的步 → null', () => {

@@ -120,7 +120,11 @@ type ToolEntry struct {
 	Command     string           `json:"command,omitempty"` // binary：{param} 占位模板
 	Example     string           `json:"example,omitempty"`
 	PackageFile string           `json:"package_file,omitempty"`
-	Custom      bool             `json:"custom"`
+	// Mutates 声明「执行会不会变更外部世界」（strict 只读档的拒绝依据）。
+	// 指针三元态：nil = 未声明（按 true 处理），false = 声明只读；
+	// wire 上缺省即未声明——加字段是加法变更，不递增协议 Version。
+	Mutates *bool `json:"mutates,omitempty"`
+	Custom  bool  `json:"custom"`
 }
 
 // ToolAddParams 是 catalog.tools.add/update 的载荷。

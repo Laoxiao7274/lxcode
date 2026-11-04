@@ -10,6 +10,8 @@ config/search.json
 config/remote.json
 # 模型目录缓存（models.dev 快照，生成物；删了会自动重拉）
 config/model-catalog.json
+# ssh_hosts 工具的远程主机凭据文件（主机别名 + 密码，同性质必不入库）
+config/hosts.json
 
 # 临时与会话数据
 temp/

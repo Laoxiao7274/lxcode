@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/moyunteng/lxcode/internal/winutil"
@@ -45,6 +46,12 @@ type stdioTransport struct {
 	closed  bool
 	waitErr error
 	done    chan struct{}
+	// broken 标记连接已失效：某次请求在等待响应时被取消（ctx.Done）后，读取
+	// goroutine 可能仍挂在 stdout 上（等子进程死亡才返回）——此时再起新的
+	// 读取就是两个 goroutine 并发读同一个 bufio.Reader（数据竞争）。取消后
+	// 置位，send/notify 先检查它、直接报错，不再起新的读取。用 atomic 是
+	// 因为 readLine 在 send 持 mu 期间被调用，锁内再锁会死锁。
+	broken atomic.Bool
 }
 
 // maxLineBytes 是单行响应的上限。bufio.Scanner 默认 64KB 会截断大响应
@@ -113,6 +120,9 @@ func (t *stdioTransport) send(ctx context.Context, req []byte, wantID int64) ([]
 	if t.closed {
 		return nil, errors.New("连接已关闭")
 	}
+	if t.broken.Load() {
+		return nil, errors.New("连接已失效（上次请求被取消，读取方状态不可信）——请重新连接")
+	}
 	// 先看进程是不是已经退了（退了就直接报，不必等写失败）。
 	select {
 	case <-t.done:
@@ -143,6 +153,9 @@ func (t *stdioTransport) notify(_ context.Context, frame []byte) error {
 	defer t.mu.Unlock()
 	if t.closed {
 		return errors.New("连接已关闭")
+	}
+	if t.broken.Load() {
+		return errors.New("连接已失效（上次请求被取消，读取方状态不可信）——请重新连接")
 	}
 	if _, err := t.stdin.Write(append(frame, '\n')); err != nil {
 		return fmt.Errorf("写入通知失败: %w", err)
@@ -180,6 +193,10 @@ func (t *stdioTransport) readLine(ctx context.Context) ([]byte, error) {
 		}
 		return r.line, nil
 	case <-ctx.Done():
+		// 取消后读取 goroutine 可能仍挂在 stdout 上（等子进程死亡才返回）——
+		// 连接从此不可复用：标记失效，后续 send/notify 拒绝（见 broken 字段注释），
+		// 然后杀进程让那个 goroutine 尽快收尾。
+		t.broken.Store(true)
 		t.kill()
 		return nil, ctx.Err()
 	}

@@ -47,11 +47,23 @@ func subProtocol() string {
 	}, "\n")
 }
 
-// DefaultProtocol 返回 Agent 的内置协议（主 = 调度 / 子 = 执行）。
+// ProtocolRole 是协议形态的维度枚举（main/sub 现配；assistant 占位待
+// 后续功能提交定文本——返回 sub 文本或空）。DefaultProtocol 按维度选择，
+// 不再按 isMain bool——委派能力与主 Agent 身份解耦后，协议形态是第三个
+// 独立维度（切面 B，纯重构不引入 assistant Agent 定义）。
+type ProtocolRole string
+
+const (
+	ProtocolRoleMain       ProtocolRole = "main"
+	ProtocolRoleSub        ProtocolRole = "sub"
+	ProtocolRoleAssistant  ProtocolRole = "assistant" // 占位：文本待后续功能提交
+)
+
+// DefaultProtocol 返回 Agent 的内置协议（main = 调度 / sub = 执行）。
 // AgentDef.Protocol 非空时整段替换（「宪法修正案」——保存时与默认
 // 相同则存空）。
-func DefaultProtocol(isMain bool) string {
-	if isMain {
+func DefaultProtocol(role ProtocolRole) string {
+	if role == ProtocolRoleMain {
 		return mainProtocol()
 	}
 	return subProtocol()
@@ -75,7 +87,13 @@ func ComposeSystemPrompt(toolReg *tools.Registry, workDir string, ac *sessiondat
 	// ① 协议层（可定制）
 	protocol := ac.Def.Protocol
 	if strings.TrimSpace(protocol) == "" {
-		protocol = DefaultProtocol(ac.Def.IsMain)
+		// 协议形态按维度选择（main/sub 现配——与 IsMain 的映射是现役两类制，
+		// assistant 占位待后续功能提交）
+		role := ProtocolRoleSub
+		if ac.Def.IsMain {
+			role = ProtocolRoleMain
+		}
+		protocol = DefaultProtocol(role)
 	}
 	b.WriteString(protocol)
 	b.WriteString("\n")
@@ -98,10 +116,11 @@ func ComposeSystemPrompt(toolReg *tools.Registry, workDir string, ac *sessiondat
 		b.WriteString("\n" + p + "\n")
 	}
 
-	// ④ 动态注入：主 Agent 的有效委派名单（子 Agent 的职责描述 =
-	// 主 Agent 的选人信号）。id 必须在场——agent_dispatch 的入参是
+	// ④ 动态注入：可委派名单按 Delegates 维度判定（不按 IsMain——委派
+	// 能力与主 Agent 身份解耦，前置 assistant Agent 定义；子 Agent 的职责
+	// 描述 = 委派方的选人信号）。id 必须在场——agent_dispatch 的入参是
 	// id 不是名字（真实模型实测：只给名字会把名字当 id 传）。
-	if ac.Def.IsMain && len(ac.Delegates) > 0 {
+	if len(ac.Def.Delegates) > 0 && len(ac.Delegates) > 0 {
 		b.WriteString("\n可委派名单（agent_dispatch 的 agent 参数填下面的 id）：\n")
 		for i := range ac.Delegates {
 			d := ac.Delegates[i]

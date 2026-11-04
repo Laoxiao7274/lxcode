@@ -77,6 +77,11 @@ func (c *Client) parseOpenAIStream(ctx context.Context, body io.Reader, ch chan<
 					PromptTokens     int `json:"prompt_tokens"`
 					CompletionTokens int `json:"completion_tokens"`
 					TotalTokens      int `json:"total_tokens"`
+					// 推理（thinking）消耗的输出 token：OpenAI 官方的
+					// completion_tokens_details.reasoning_tokens，个别端点用扁平顶层
+					// reasoning_tokens。只用于用量可信性校验（reasoning >
+					// completion ⇒ 整份 usage 不可信，见 openAIUsage）。
+					ReasoningTokens int `json:"reasoning_tokens"`
 					// 缓存命中的 prompt 部分（两家字段都认，见 openaiResponse）
 					PromptTokensDetails struct {
 						CachedTokens int `json:"cached_tokens"`
@@ -129,13 +134,14 @@ func (c *Client) parseOpenAIStream(ctx context.Context, body io.Reader, ch chan<
 			}
 			if delta.Usage != nil {
 				// 分桶归一与**非流式路径共用同一份** openAIUsage（两条路径各写一遍
-				// 必然漂移，而漂移的表现是同一条端点在流式/非流式下给出不一样的数字）
+				// 必然漂移，而漂移的表现是同一条端点在流式/非流式下给出不一样的数字）。
+				// reasoning_tokens 一并解析传出（用量可信性校验用，见 openAIUsage）。
 				cached := delta.Usage.PromptTokensDetails.CachedTokens
 				if cached == 0 {
 					cached = delta.Usage.PromptCacheHitTokens
 				}
 				usage = openAIUsage(delta.Usage.PromptTokens, delta.Usage.CompletionTokens,
-					delta.Usage.TotalTokens, cached)
+					delta.Usage.TotalTokens, cached, delta.Usage.ReasoningTokens)
 			}
 		case line == "":
 			prevBlank = true

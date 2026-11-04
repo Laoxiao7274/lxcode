@@ -113,3 +113,26 @@ func hasTool(list []llm.Tool, name string) bool {
 	}
 	return false
 }
+
+// TestSeedRipgrepNotMutating（2026-12 P5）：种子里 rg 的 Mutates=false 经
+// store → CustomDef 全链传到注册表——strict 只读档的 IsMutating 放行 rg、
+// 拒绝未声明的 binary 工具（默认 true）。此前 custom.go 硬写 true，rg 在
+// strict 下被拒 39 次/26 会话。
+func TestSeedRipgrepNotMutating(t *testing.T) {
+	srv, _, _ := newTestServer(t, nil)
+	def, ok := srv.treg.Get("ripgrep")
+	if !ok {
+		t.Fatal("ripgrep 必须在注册表里")
+	}
+	if def.Mutates {
+		t.Fatal("rg 是纯检索（种子声明 Mutates=false），注册表里的定义应保持只读")
+	}
+	if srv.treg.IsMutating("ripgrep") {
+		t.Fatal("strict 只读档应放行 rg（IsMutating 按声明判定）")
+	}
+	// 未声明的条目默认仍是变更（保守）：read_file 内置 Mutates=false？不——
+	// read_file 只读（内置 Def.Mutates=false）。用一个确实变更的内置工具对照。
+	if !srv.treg.IsMutating("bash") {
+		t.Fatal("bash 是变更类工具，strict 门应拒绝（内置判定不受 rg 修复影响）")
+	}
+}

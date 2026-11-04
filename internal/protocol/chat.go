@@ -1,9 +1,14 @@
 package protocol
 
 import (
-	"github.com/moyunteng/lxcode/internal/llm"
-	"github.com/moyunteng/lxcode/internal/tools"
+	"github.com/moyunteng/lxcode/internal/chatmsg"
+	"github.com/moyunteng/lxcode/internal/sessiondata"
 )
+
+// 消息与清单的 wire 形状直接用共享叶包类型：chatmsg.Message（llm.Message 的
+// 别名来源）、chatmsg.AttachmentRef、sessiondata.TodoItem（tools.TodoItem 的
+// 别名来源）——它们是纯数据形状的叶包，协议层 import 它们是合法的向下依赖；
+// 反向 import llm/tools 业务包才是分层倒置（llm/tools 侧别名照旧，wire 零变化）。
 
 // 推理强度档位（chat.send 可选参数；空 = 模型默认）。
 // 值域对齐 OpenAI reasoning_effort（minimal/low/medium/high）；Anthropic 侧
@@ -38,7 +43,7 @@ type ChatSendImage struct {
 	Data string `json:"data"`
 	// Name 是客户端提供的展示名（可选，向后兼容：老客户端不带 → 服务端回落
 	// "图片"；Path 形态没带 → 回落路径 basename）。它只出现在附件卡的展示
-	// 元数据里（llm.AttachmentRef.Name），永不成为磁盘文件名（磁盘名恒为随机 hex）。
+	// 元数据里（chatmsg.AttachmentRef.Name），永不成为磁盘文件名（磁盘名恒为随机 hex）。
 	Name string `json:"name,omitempty"`
 	// Path 非空 = 本地路径形态：服务端按此路径读盘（大小上限 / 存在性校验同
 	// base64 形态），Data 必须为空。Mime 可空 → 服务端按扩展名推导（推导不出
@@ -134,7 +139,7 @@ type ChatHistoryParams struct {
 	// before_seq 是「从中间某处往前数 N 条」，两者互补：
 	//   - tail=50                    → 进会话的首次加载（最新 50 条）；
 	//   - before_seq=<最旧一条 seq>, tail=50 → 上滑到顶再补更早 50 条。
-	// seq 是 llm.Message.Seq（store 分配的库序号，chat.history 的每条消息都带），
+	// seq 是 chatmsg.Message.Seq（store 分配的库序号，chat.history 的每条消息都带），
 	// 客户端原样记录再原样传回。不在历史里 / ≤0 / n≤0 → CodeInvalidParams
 	//（错误的 anchor 会切出重复或空洞的窗口，静默回落只会把错位藏起来）。
 	// 与 Tail 一样配平与检查点平移在内核（Session.HistoryBefore）。缺省 0 =
@@ -147,12 +152,17 @@ type ChatHistoryResult struct {
 	// Messages 是回放的历史：带图 user 消息的 Images 是**文件引用**
 	//（llm.ImageRef——相对附件根的路径 + mime），不含 base64；前端经
 	// GET /attachments/<sessionID>/<file> 取缩略图（图片批次 B 接 UI）。
-	Messages  []llm.Message    `json:"messages"`
-	Busy      bool             `json:"busy"`
-	Pending   *ConfirmRequest  `json:"pending,omitempty"`
-	SessionID string           `json:"session_id,omitempty"` // 当前会话 id（session.changed 后重拉可拿到新值）
-	Todos     []tools.TodoItem `json:"todos,omitempty"`      // 任务清单（客户端渲染 TodoList）
-	Context   *ContextUsage    `json:"context,omitempty"`    // 上下文占用（无 = 未知——刚切会话/后端刚重启）
+	Messages  []chatmsg.Message `json:"messages"`
+	Busy      bool              `json:"busy"`
+	Pending   *ConfirmRequest   `json:"pending,omitempty"`
+	SessionID string            `json:"session_id,omitempty"` // 当前会话 id（session.changed 后重拉可拿到新值）
+	// Todos 是该会话当前的任务清单快照（客户端渲染 TodoList）。
+	// **无 omitempty**（2026-12 todo 跨派发残留修复）：空清单必须显式上 wire
+	//（`"todos": []`）——「清单为空」与「未知」在 wire 上必须可区分：omitempty
+	// 时代空切片整键缺席，前端只能把两者一起当未知（空快照不覆盖本地），后果
+	// 是用户清空清单后刷新永远复活旧清单。键缺席现在只表示「老后端没报」。
+	Todos   []sessiondata.TodoItem `json:"todos"`
+	Context *ContextUsage          `json:"context,omitempty"` // 上下文占用（无 = 未知——刚切会话/后端刚重启）
 	// Stats 是整段会话的统计（无 = 还没有任何一步——新会话/纯内存模式）。
 	// 与 context 的区别：context 是**此刻窗口里有多少**，stats 是**这条会话一共花了多少**
 	//（压缩/翻页都改不了它，见 SessionStats 的说明）。
@@ -256,8 +266,8 @@ type SessionStats struct {
 // 事件载荷。
 
 type UserMessageParams struct {
-	SessionID string      `json:"session_id"`
-	Message   llm.Message `json:"message"`
+	SessionID string          `json:"session_id"`
+	Message   chatmsg.Message `json:"message"`
 	// DispatchID 非空 = 子会话的消息（派发方注入的任务说明书）：前端投进子会话
 	// 自己的 state，主时间线不画（dispatch 卡 = 一行摘要）。
 	DispatchID string `json:"dispatch_id,omitempty"`
@@ -286,9 +296,9 @@ type ToolResultParams struct {
 	IsError    bool   `json:"is_error"`
 	DispatchID string `json:"dispatch_id,omitempty"`
 	// Attachments 非空 = 这次工具执行共享了附件（share_file）：与结果消息
-	// llm.Message.Attachments 同一份元数据（前端渲染附件卡——实时事件与
+	// chatmsg.Message.Attachments 同一份元数据（前端渲染附件卡——实时事件与
 	// chat.history 回放同一形状）。空 = 无（omitempty：老事件零影响）。
-	Attachments []llm.AttachmentRef `json:"attachments,omitempty"`
+	Attachments []chatmsg.AttachmentRef `json:"attachments,omitempty"`
 }
 
 // ConfirmRequest 是需要人工介入的挂起请求（确认门）；客户端须回 tool.confirm。
@@ -309,18 +319,18 @@ type ConfirmRequest struct {
 }
 
 type DoneParams struct {
-	SessionID    string      `json:"session_id"`
-	Message      llm.Message `json:"message"`
-	UsageTokens  int         `json:"usage_tokens"`
-	FinishReason string      `json:"finish_reason"`
-	DispatchID   string      `json:"dispatch_id,omitempty"` // 非空 = 子 Agent 轮完成
+	SessionID    string          `json:"session_id"`
+	Message      chatmsg.Message `json:"message"`
+	UsageTokens  int             `json:"usage_tokens"`
+	FinishReason string          `json:"finish_reason"`
+	DispatchID   string          `json:"dispatch_id,omitempty"` // 非空 = 子 Agent 轮完成
 	// Context 是本轮之后的上下文占用（仅主轮携带——子轮的占用不进主指示器）。
 	Context *ContextUsage `json:"context,omitempty"`
 	// Stats 是**整段会话**的统计（仅主轮携带，口径见 SessionStats）。它是"到目前为止
 	// 一共花了多少"，所以每条 done 都带一份最新的：一轮里的中间步（工具轮）也会带，
 	// 客户端取最后收到的那份即可（与 DSH 的投影随事件推进同语义）。
 	Stats *SessionStats `json:"stats,omitempty"`
-	// 本轮计时（口径见 llm.Message 的同名字段）。与 message 里那份是**同一组数字**
+	// 本轮计时（口径见 chatmsg.Message 的同名字段）。与 message 里那份是**同一组数字**
 	//（emit 时从同一条消息取，不另算一遍）：单独列出来只是让 chat.done 自解释——
 	// 前端不必从 message 里挖。零值 = 未知（工具轮没有首 token / provider 不回报
 	// 用量），wire 上整键缺席。usage_tokens 已在上面（那一版就有）。
@@ -330,10 +340,10 @@ type DoneParams struct {
 }
 
 type ErrorParams struct {
-	SessionID string       `json:"session_id"`
-	Message   string       `json:"message"`
-	Aborted   bool         `json:"aborted"`
-	Partial   *llm.Message `json:"partial,omitempty"` // 中断时已生成的部分内容（客户端应入历史）
+	SessionID string           `json:"session_id"`
+	Message   string           `json:"message"`
+	Aborted   bool             `json:"aborted"`
+	Partial   *chatmsg.Message `json:"partial,omitempty"` // 中断时已生成的部分内容（客户端应入历史）
 }
 
 type BusyParams struct {
@@ -592,9 +602,9 @@ type ChatRewoundParams struct {
 // DispatchID 非空 = 子会话的清单更新（带归属——前端据此更新主时间线派发卡上的
 // 进度徽标；子会话页由既有双投吃到）。空 = 主会话自己的清单（按 session_id 路由）。
 type TodoUpdatedParams struct {
-	SessionID  string           `json:"session_id"`
-	Items      []tools.TodoItem `json:"items"`
-	DispatchID string           `json:"dispatch_id,omitempty"`
+	SessionID  string                 `json:"session_id"`
+	Items      []sessiondata.TodoItem `json:"items"`
+	DispatchID string                 `json:"dispatch_id,omitempty"`
 }
 
 // ChatModelParams 是 chat.model 的参数（切换本会话选中的模型）。
@@ -652,7 +662,7 @@ type DispatchStartParams struct {
 	AgentColor     string `json:"agent_color"`
 	Task           string `json:"task"`
 	// Todos 非空 = 主 Agent 预拆的清单初稿（todo 契约——卡上第一秒显示计划）。
-	Todos []tools.TodoItem `json:"todos,omitempty"`
+	Todos []sessiondata.TodoItem `json:"todos,omitempty"`
 }
 
 // DispatchEndParams 是 chat.dispatchEnd 的载荷。OwnerSessionID 标明结果归属
@@ -665,5 +675,5 @@ type DispatchEndParams struct {
 	IsError        bool   `json:"is_error"`
 	UsageTokens    int    `json:"usage_tokens,omitempty"`
 	// FinalTodos 是派发结束时子会话清单的定格值（nil = 没建过清单）。
-	FinalTodos []tools.TodoItem `json:"final_todos,omitempty"`
+	FinalTodos []sessiondata.TodoItem `json:"final_todos,omitempty"`
 }

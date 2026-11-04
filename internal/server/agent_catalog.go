@@ -54,7 +54,7 @@ func toProtocolTools(list []sessiondata.ToolSpec) []protocol.ToolEntry {
 		out[i] = protocol.ToolEntry{
 			ID: t.ID, Desc: t.Desc, Risk: t.Risk, Source: t.Source, Params: params,
 			Doc: t.Doc, Server: t.Server, Command: t.Command, Example: t.Example,
-			PackageFile: t.PackageFile, Custom: t.Custom,
+			PackageFile: t.PackageFile, Mutates: t.Mutates, Custom: t.Custom,
 		}
 	}
 	return out
@@ -68,7 +68,7 @@ func fromProtocolTool(e protocol.ToolEntry) sessiondata.ToolSpec {
 	return sessiondata.ToolSpec{
 		ID: e.ID, Desc: e.Desc, Risk: e.Risk, Source: e.Source, Params: params,
 		Doc: e.Doc, Server: e.Server, Command: e.Command, Example: e.Example,
-		PackageFile: e.PackageFile, Custom: e.Custom,
+		PackageFile: e.PackageFile, Mutates: e.Mutates, Custom: e.Custom,
 	}
 }
 

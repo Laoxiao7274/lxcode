@@ -20,6 +20,7 @@ import { Button, Chips, ColorPicker, Select, Segmented, Textarea, TextInput, typ
 import { DocDialog, type Focus } from "../catalog/DocDialog";
 import { AgentCard } from "./AgentCard";
 import { DetailPanel } from "./DetailPanel";
+import { ToolCardPicker } from "./ToolCardPicker";
 
 const APPROVAL_OPTS = [
   { value: "confirm" as const, label: "确认", hint: "低危自动执行，高危弹确认门（默认）" },
@@ -75,19 +76,14 @@ export function AgentEditor({
     });
   }
 
-  // Chips 的载荷（工具/上下文模块——名称在面上，说明进 tooltip）；
-  // 工具按来源分组（内置 / 第三方 / MCP / 自定义）——MCP 是独立接入通道，
-  // 与外部二进制分开展示；组内操作同一个白名单（def.tools）
-  const toToolChip = (t: { id: string; desc: string; risk: "low" | "high" }) => ({
-    value: t.id,
-    label: t.id,
-    desc: `${t.desc}（${t.risk === "high" ? "高危" : "低危"}）`,
-    highRisk: t.risk === "high",
-  });
-  const builtinToolChips = tools.filter((t) => !t.custom && t.source === "builtin").map(toToolChip);
-  const binaryToolChips = tools.filter((t) => !t.custom && t.source === "binary").map(toToolChip);
-  const mcpToolChips = tools.filter((t) => !t.custom && t.source === "mcp").map(toToolChip);
-  const customToolChips = tools.filter((t) => t.custom).map(toToolChip);
+  // 工具卡片选择器的载荷：按来源分组（内置 / 第三方 / MCP / 自定义）——
+  // MCP 是独立接入通道，与外部二进制分开展示；四组操作同一个白名单（def.tools）
+  const toolGroups = [
+    { title: "内置", items: tools.filter((t) => !t.custom && t.source === "builtin") },
+    { title: "第三方 / 插件", items: tools.filter((t) => !t.custom && t.source === "binary") },
+    { title: "MCP", items: tools.filter((t) => !t.custom && t.source === "mcp") },
+    { title: "自定义", items: tools.filter((t) => t.custom) },
+  ].filter((g) => g.items.length > 0);
   // 上下文模块 chips 载荷（拓展状态——自建条目即时出现在这里）
   const toModuleChip = (m: { id: string; desc: string; kind: "process" | "skill" }) => ({
     value: m.id,
@@ -131,7 +127,7 @@ export function AgentEditor({
                 desc: def.desc.trim(),
                 // 协议与内置默认相同（或被清空）→ 不存拷贝，运行时用默认
                 protocol:
-                  def.protocol !== undefined && def.protocol.trim() !== "" && def.protocol.trim() !== defaultProtocol(def.isMain === true).trim()
+                  def.protocol !== undefined && def.protocol.trim() !== "" && def.protocol.trim() !== defaultProtocol(def.isMain === true ? "main" : "sub").trim()
                     ? def.protocol.trim()
                     : undefined,
               })
@@ -190,55 +186,14 @@ export function AgentEditor({
                 <span className="ag-lock-desc">{MAIN_TOOL.desc}——主 Agent 不直接执行任务。</span>
               </div>
             ) : (
-              <>
-                <Chips
-                  options={builtinToolChips}
-                  value={def.tools}
-                  onChange={(tools) => set("tools", tools)}
-                  focusedValue={focus?.kind === "tool" ? focus.id : null}
-                  onFocus={(id) => setFocus({ kind: "tool", id })}
-                  ariaLabel="内置工具"
-                />
-                {binaryToolChips.length > 0 && (
-                  <>
-                    <div className="ag-chip-label">第三方 / 插件</div>
-                    <Chips
-                      options={binaryToolChips}
-                      value={def.tools}
-                      onChange={(tools) => set("tools", tools)}
-                      focusedValue={focus?.kind === "tool" ? focus.id : null}
-                      onFocus={(id) => setFocus({ kind: "tool", id })}
-                      ariaLabel="第三方工具"
-                    />
-                  </>
-                )}
-                {mcpToolChips.length > 0 && (
-                  <>
-                    <div className="ag-chip-label">MCP</div>
-                    <Chips
-                      options={mcpToolChips}
-                      value={def.tools}
-                      onChange={(tools) => set("tools", tools)}
-                      focusedValue={focus?.kind === "tool" ? focus.id : null}
-                      onFocus={(id) => setFocus({ kind: "tool", id })}
-                      ariaLabel="MCP 工具"
-                    />
-                  </>
-                )}
-                {customToolChips.length > 0 && (
-                  <>
-                    <div className="ag-chip-label">自定义</div>
-                    <Chips
-                      options={customToolChips}
-                      value={def.tools}
-                      onChange={(tools) => set("tools", tools)}
-                      focusedValue={focus?.kind === "tool" ? focus.id : null}
-                      onFocus={(id) => setFocus({ kind: "tool", id })}
-                      ariaLabel="自定义工具"
-                    />
-                  </>
-                )}
-              </>
+              <ToolCardPicker
+                groups={toolGroups}
+                value={def.tools}
+                onChange={(tools) => set("tools", tools)}
+                focusedValue={focus?.kind === "tool" ? focus.id : null}
+                onFocus={(id) => setFocus({ kind: "tool", id })}
+                total={tools.length}
+              />
             )}
           </section>
 
@@ -261,7 +216,7 @@ export function AgentEditor({
             </div>
             <Textarea
               className="ag-protocol-input"
-              value={def.protocol ?? defaultProtocol(def.isMain === true)}
+              value={def.protocol ?? defaultProtocol(def.isMain === true ? "main" : "sub")}
               onChange={(v) => set("protocol", v)}
               placeholder="调度/执行的底层规则……"
               ariaLabel="协议"

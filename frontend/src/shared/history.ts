@@ -386,7 +386,10 @@ export function reduceHistory(state: UIState, h: HistorySnapshot): UIState {
     historyFirstSeq: h.firstSeq ?? 0,
     busy: false,
     pending,
-    todos: h.todos ?? [],
+    // 清单：**键在才覆盖**（键缺席 = 未知——老后端/演示源不报，保留本地不猜；
+    // 键在哪怕是空数组 = 后端事实「无清单」，如实覆盖：用户清空清单后刷新
+    // 不该复活旧清单——这就是 omitempty 移除后「空」与「未知」可区分的意义）。
+    ...(h.todos ? { todos: h.todos } : {}),
     // 未知占用（后端刚重启/刚切会话）置 null —— 指示器显示中性态，
     // 不沿用上一会话的数字（那是别人的窗口占用）
     context: h.context ?? null,

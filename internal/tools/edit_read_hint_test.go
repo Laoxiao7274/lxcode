@@ -92,3 +92,61 @@ func TestEditDoesNotRequirePriorRead(t *testing.T) {
 		t.Fatalf("没读过也应允许 edit 成功（保守方案：只提示不硬拦）: %q", got)
 	}
 }
+
+// TestEditNoMatchAttachesNearestLines（2026-12 P6）：未匹配错误回带文件中
+// 最接近的行段（含行号）——568 次「读过文件没变还是抄错」多数是缩进/全半角
+// 的细微出入，把最像的原文行摆在眼前，模型照抄即修，不必再付一次 read_file。
+func TestEditNoMatchAttachesNearestLines(t *testing.T) {
+	r := New()
+	content := "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"hi\")\n}\n"
+	path := writeTemp(t, content)
+	got := r.Execute(context.Background(), call("edit",
+		`{"path":`+quote(path)+`,"old_string":"func main(){","new_string":"x"}`))
+	if !strings.Contains(got, "最接近的几行") {
+		t.Fatalf("未匹配错误应附最接近的行段: %q", got)
+	}
+	// 带行号；最像的 func main() { 行应排在最前
+	if !strings.Contains(got, "[行 5] func main() {") {
+		t.Fatalf("应带行号且最像的行在列: %q", got)
+	}
+	// 批量尾注：多处失败时先核对
+	if !strings.Contains(got, "若本批多处修改都失败，先 read_file") {
+		t.Fatalf("未匹配错误应带批量核对尾注: %q", got)
+	}
+}
+
+// TestEditNoMatchNoSimilarLines：文件里完全没有相似的行时不硬凑——
+// 如实说「可能来自记忆或别的文件」，引导去读而不是猜。
+func TestEditNoMatchNoSimilarLines(t *testing.T) {
+	r := New()
+	path := writeTemp(t, "alpha\nbeta\n")
+	got := r.Execute(context.Background(), call("edit",
+		`{"path":`+quote(path)+`,"old_string":"zzz-完全无关的内容","new_string":"x"}`))
+	if !strings.Contains(got, "没有与 old_string 首行相似的行") {
+		t.Fatalf("无相似行时应如实说明: %q", got)
+	}
+}
+
+// TestEditExistingBranchesUnregressed（2026-12 P6 回归钉）：空 old_string、
+// new==old、多处匹配三条既有分支的错误口径不变（hint 增强只动 n==0 分支）。
+func TestEditExistingBranchesUnregressed(t *testing.T) {
+	r := New()
+	path := writeTemp(t, "dup\ndup\n")
+
+	if got := r.Execute(context.Background(), call("edit",
+		`{"path":`+quote(path)+`,"old_string":"","new_string":"x"}`)); !strings.Contains(got, "old_string 不能为空") {
+		t.Fatalf("空 old_string 分支口径变了: %q", got)
+	}
+	if got := r.Execute(context.Background(), call("edit",
+		`{"path":`+quote(path)+`,"old_string":"dup","new_string":"dup"}`)); !strings.Contains(got, "不会产生任何改动") {
+		t.Fatalf("new==old 分支口径变了: %q", got)
+	}
+	got := r.Execute(context.Background(), call("edit",
+		`{"path":`+quote(path)+`,"old_string":"dup","new_string":"x"}`))
+	if !strings.Contains(got, "匹配了 2 处") {
+		t.Fatalf("多处匹配分支口径变了: %q", got)
+	}
+	if strings.Contains(got, "最接近的几行") {
+		t.Fatalf("多处匹配分支不该带行段（它不是「没匹配到」）: %q", got)
+	}
+}

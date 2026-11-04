@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS tools (
   command      TEXT NOT NULL DEFAULT '',
   example      TEXT NOT NULL DEFAULT '',
   package_file TEXT NOT NULL DEFAULT '',
+  mutates      INTEGER NOT NULL DEFAULT 1,
   custom       INTEGER NOT NULL DEFAULT 1,
   created_at   TEXT NOT NULL,
   updated_at   TEXT NOT NULL

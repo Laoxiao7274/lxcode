@@ -86,9 +86,47 @@ func OwnerSessionID(ctx context.Context) string {
 	return id
 }
 
+// jobNotifyKey 是「后台任务结束通告投给执行会话」回调的 ctx 键。
+type jobNotifyKey struct{}
+
+// WithJobNotify 把执行会话的通告投递口放进 ctx。
+//
+// 为什么需要它（2026-12 修订，根因修复「验收子会话瞎睡 53 分钟」）：后台任务的
+// 结束通告按**时间线归属**（OwnerSessionID）投——子会话起的任务永远投给父会话，
+// 子 Agent 的会话里永远收不到「它等的那个任务结束了」。而**执行会话**才是事件
+// 的当事方：通告唤醒/轮边界注入让子会话立刻看到结果，不用再 sleep 盲等。
+//
+// agent 层不能 import server（分层守卫），所以由 server 在会话装配路径注入
+//（与 todo sink / 技能目录同一条 ctx 注入理由：注册表是进程级单例，而
+// 「通告归哪个会话」是会话级状态）。nil = 未注入（无通告通道——纯内核调用方/
+// 单测，不投也不崩）。
+func WithJobNotify(ctx context.Context, fn func(text string)) context.Context {
+	if fn == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, jobNotifyKey{}, fn)
+}
+
+// JobNotify 取 ctx 里的执行会话通告投递口；nil = 未注入。
+func JobNotify(ctx context.Context) func(string) {
+	if ctx == nil {
+		return nil
+	}
+	fn, _ := ctx.Value(jobNotifyKey{}).(func(string))
+	return fn
+}
+
 // workspaceKey 是当前会话归属项目的 ctx 键。
 type workspaceKey struct{}
-
+// WithWorkspace 把当前会话归属的项目 id 放进 ctx（session_search 的默认扫描
+// 范围「当前项目」取它）。会话装配路径注入（runTurn 快照，与 WithWorkDir /
+// WithSessionID 同一批），子会话经 AttachTo 恢复出**自己行上的** workspace
+//（CreateChild 拷贝父的值），所以子 Agent 拿到的也是正确的项目 id——
+// 不在 dispatch 里特判。
+//
+// 空串也注入（区别于 WithSessionID 的空值跳过）：未分组会话的「当前项目」
+// 不存在，session_search 据此退回全库扫描（语义：未分组会话本就不属于任何
+// 项目，限定「当前项目」无从谈起）——这是明确语义，不是「没注入」。
 // WithWorkspace 把当前会话归属的项目 id 放进 ctx（session_search 的默认扫描
 // 范围「当前项目」取它）。会话装配路径注入（runTurn 快照，与 WithWorkDir /
 // WithSessionID 同一批），子会话经 AttachTo 恢复出**自己行上的** workspace

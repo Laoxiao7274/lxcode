@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/moyunteng/lxcode/internal/llm"
+	"github.com/moyunteng/lxcode/internal/chatmsg"
 	"github.com/moyunteng/lxcode/internal/modelcatalog"
-	"github.com/moyunteng/lxcode/internal/tools"
+	"github.com/moyunteng/lxcode/internal/sessiondata"
 )
 
 // TestFrameShapes 校验三种帧的线格式契约。
@@ -172,7 +172,7 @@ func TestEventPayloadRoundTrip(t *testing.T) {
 				}
 			}},
 		{"done", EventDone, DoneParams{
-			Message:      llm.Message{Role: "assistant", Content: "完成"},
+			Message:      chatmsg.Message{Role: "assistant", Content: "完成"},
 			UsageTokens:  42,
 			FinishReason: "stop",
 		}, func(t *testing.T, raw []byte) {
@@ -187,7 +187,7 @@ func TestEventPayloadRoundTrip(t *testing.T) {
 		{"error(aborted)", EventError, ErrorParams{
 			Message: "已取消",
 			Aborted: true,
-			Partial: &llm.Message{Role: "assistant", Content: "半截"},
+			Partial: &chatmsg.Message{Role: "assistant", Content: "半截"},
 		}, func(t *testing.T, raw []byte) {
 			var v Response
 			mustUnmarshal(t, raw, &v)
@@ -207,7 +207,7 @@ func TestEventPayloadRoundTrip(t *testing.T) {
 					t.Fatalf("busy 载荷不符: %+v", p)
 				}
 			}},
-		{"todo", EventTodo, TodoUpdatedParams{Items: []tools.TodoItem{
+		{"todo", EventTodo, TodoUpdatedParams{Items: []sessiondata.TodoItem{
 			{Content: "第一步", Status: "done"},
 			{Content: "第二步", Status: "active"},
 		}}, func(t *testing.T, raw []byte) {
@@ -250,18 +250,24 @@ func TestEventPayloadRoundTrip(t *testing.T) {
 	}
 }
 
-// TestChatHistoryPayload：history 是重连同步的载荷，pending/todos 必须可省略。
+// TestChatHistoryPayload：history 是重连同步的载荷，pending 必须可省略；
+// todos **不再省略**（2026-12）：空清单显式上 wire（`"todos": []`）——「无清单」
+// 是后端事实，与「老后端没报（未知）」必须可区分（见 ChatHistoryResult.Todos）。
 func TestChatHistoryPayload(t *testing.T) {
-	t.Run("无待确认时 pending 省略", func(t *testing.T) {
+	t.Run("无待确认时 pending 省略；todos 显式空数组（无清单是事实）", func(t *testing.T) {
+		// Todos 用**非 nil 空切片**——生产端（agent.History / server.historyResult）
+		// 恒如此组装（History 的 Todos 注释）：nil 会序列化成 null，前端映射层把
+		// null 当键缺席（未知），把「后端明确无清单」降级成「未知」是语义倒退。
 		b, _ := json.Marshal(ChatHistoryResult{
-			Messages: []llm.Message{{Role: "user", Content: "hi"}},
+			Messages: []chatmsg.Message{{Role: "user", Content: "hi"}},
 			Busy:     false,
+			Todos:    []sessiondata.TodoItem{},
 		})
 		if strings.Contains(string(b), "pending") {
 			t.Fatalf("pending 为 nil 时应省略: %s", b)
 		}
-		if strings.Contains(string(b), "todos") {
-			t.Fatalf("todos 为 nil 时应省略: %s", b)
+		if !strings.Contains(string(b), `"todos":[]`) {
+			t.Fatalf("todos 应显式空数组（omitempty 已移除）: %s", b)
 		}
 		var back ChatHistoryResult
 		mustUnmarshal(t, b, &back)
@@ -273,7 +279,7 @@ func TestChatHistoryPayload(t *testing.T) {
 		b, _ := json.Marshal(ChatHistoryResult{
 			Busy:    true,
 			Pending: &ConfirmRequest{ID: "c9", Name: "bash", Prompt: "将执行命令: ls"},
-			Todos:   []tools.TodoItem{{Content: "干活", Status: "active"}},
+			Todos:   []sessiondata.TodoItem{{Content: "干活", Status: "active"}},
 		})
 		var back ChatHistoryResult
 		mustUnmarshal(t, b, &back)
@@ -530,7 +536,7 @@ func TestDispatchPayloads(t *testing.T) {
 func TestContextUsagePayloads(t *testing.T) {
 	t.Run("DoneParams 带 context（子轮的 done 不带——omitempty）", func(t *testing.T) {
 		b := mustMarshal(t, DoneParams{
-			Message: llm.Message{Role: "assistant", Content: "好"}, UsageTokens: 12, FinishReason: "stop",
+			Message: chatmsg.Message{Role: "assistant", Content: "好"}, UsageTokens: 12, FinishReason: "stop",
 			Context: &ContextUsage{Used: 777, Window: 32768, System: 300, Tools: 200, ToolResults: 200, Messages: 77},
 		})
 		var m map[string]any
@@ -554,7 +560,7 @@ func TestContextUsagePayloads(t *testing.T) {
 		// 自己的 state），所以带上它既不会污染主指示器，又是子会话页唯一能显示占用的来源
 		//（用户报「子Agent的会话里…上下文 会话信息这些展示没有」）。
 		b2 := mustMarshal(t, DoneParams{
-			Message: llm.Message{Role: "assistant"}, DispatchID: "d1",
+			Message: chatmsg.Message{Role: "assistant"}, DispatchID: "d1",
 			Context: &ContextUsage{Used: 1234, Window: 32768},
 		})
 		var m2 map[string]any
@@ -563,7 +569,7 @@ func TestContextUsagePayloads(t *testing.T) {
 			t.Fatalf("子轮 done 应带它自己的 context: %s", b2)
 		}
 		// 但**未知**时依然整键缺席（子会话刚建、还没跑过轮）：不许编一个 used=0
-		b3 := mustMarshal(t, DoneParams{Message: llm.Message{Role: "assistant"}, DispatchID: "d1"})
+		b3 := mustMarshal(t, DoneParams{Message: chatmsg.Message{Role: "assistant"}, DispatchID: "d1"})
 		if strings.Contains(string(b3), "context") {
 			t.Fatalf("未知占用应整键缺席（客户端显示中性态）: %s", b3)
 		}
@@ -625,7 +631,7 @@ func TestSessionStatsPayloads(t *testing.T) {
 
 	t.Run("chat.done 带 stats", func(t *testing.T) {
 		b := mustMarshal(t, DoneParams{
-			Message: llm.Message{Role: "assistant", Content: "好"}, UsageTokens: 12,
+			Message: chatmsg.Message{Role: "assistant", Content: "好"}, UsageTokens: 12,
 			FinishReason: "stop", Stats: stats,
 		})
 		var m map[string]any
@@ -649,7 +655,7 @@ func TestSessionStatsPayloads(t *testing.T) {
 		}
 
 		// 未知（还没有任何一步）：整键缺席——前端不渲染统计胶囊，不显示一排 0
-		b2 := mustMarshal(t, DoneParams{Message: llm.Message{Role: "assistant"}})
+		b2 := mustMarshal(t, DoneParams{Message: chatmsg.Message{Role: "assistant"}})
 		if strings.Contains(string(b2), "stats") {
 			t.Fatalf("未知统计应整键缺席: %s", b2)
 		}
@@ -831,21 +837,21 @@ func TestChatRewindPayloads(t *testing.T) {
 	})
 
 	t.Run("seq 在历史消息与实时用户消息上都在（同一个字段名）", func(t *testing.T) {
-		b := mustMarshal(t, ChatHistoryResult{Messages: []llm.Message{{Role: "user", Content: "hi", Seq: 3}}})
+		b := mustMarshal(t, ChatHistoryResult{Messages: []chatmsg.Message{{Role: "user", Content: "hi", Seq: 3}}})
 		var hist map[string]any
 		mustUnmarshal(t, b, &hist)
 		msgs, ok := hist["messages"].([]any)
 		if !ok || len(msgs) != 1 || msgs[0].(map[string]any)["seq"].(float64) != 3 {
 			t.Fatalf("chat.history 的 messages[].seq 丢了: %s", b)
 		}
-		b2 := mustMarshal(t, UserMessageParams{SessionID: "s1", Message: llm.Message{Role: "user", Content: "hi", Seq: 4}})
+		b2 := mustMarshal(t, UserMessageParams{SessionID: "s1", Message: chatmsg.Message{Role: "user", Content: "hi", Seq: 4}})
 		var ev map[string]any
 		mustUnmarshal(t, b2, &ev)
 		if ev["message"].(map[string]any)["seq"].(float64) != 4 {
 			t.Fatalf("chat.userMessage 的 message.seq 丢了: %s", b2)
 		}
 		// 序号 0 = 还没落库的消息：不发键，不能编一个 0 号让前端当撤回锚点
-		b3 := mustMarshal(t, llm.Message{Role: "assistant", Content: "没落库"})
+		b3 := mustMarshal(t, chatmsg.Message{Role: "assistant", Content: "没落库"})
 		if strings.Contains(string(b3), "seq") {
 			t.Fatalf("未落库的消息不应带 seq: %s", b3)
 		}
@@ -1085,8 +1091,8 @@ func TestJobPayloads(t *testing.T) {
 func TestRoundTimingPayloads(t *testing.T) {
 	t.Run("chat.done 带 first_token_ms / duration_ms / model", func(t *testing.T) {
 		b := mustMarshal(t, DoneParams{
-			SessionID: "s1", Message: llm.Message{Role: "assistant", Content: "hi"},
-			UsageTokens: 12, FinishReason: llm.FinishStop,
+			SessionID: "s1", Message: chatmsg.Message{Role: "assistant", Content: "hi"},
+			UsageTokens: 12, FinishReason: "stop",
 			FirstTokenMs: 210, DurationMs: 1500, Model: "m1",
 		})
 		var m map[string]any
@@ -1096,7 +1102,7 @@ func TestRoundTimingPayloads(t *testing.T) {
 		}
 		// 未知（工具轮没有首 token / provider 不回报用量）时整键缺席——发 0 会被
 		// 前端显示成"0ms 首字"，那是编出来的信息
-		b2 := mustMarshal(t, DoneParams{SessionID: "s1", Message: llm.Message{Role: "assistant", Content: "hi"}})
+		b2 := mustMarshal(t, DoneParams{SessionID: "s1", Message: chatmsg.Message{Role: "assistant", Content: "hi"}})
 		var m2 map[string]any
 		mustUnmarshal(t, b2, &m2)
 		for _, k := range []string{"first_token_ms", "duration_ms", "model"} {
@@ -1107,7 +1113,7 @@ func TestRoundTimingPayloads(t *testing.T) {
 	})
 
 	t.Run("历史消息上同名同义（回放路径）", func(t *testing.T) {
-		b := mustMarshal(t, llm.Message{
+		b := mustMarshal(t, chatmsg.Message{
 			Role: "assistant", Content: "hi",
 			FirstTokenMs: 210, DurationMs: 1500, Model: "m1", UsageTokens: 12,
 		})
@@ -1118,7 +1124,7 @@ func TestRoundTimingPayloads(t *testing.T) {
 			t.Fatalf("消息上的计时字段不符: %s", b)
 		}
 		// 零值（未知）整键缺席：0 不是"很快"，是"没测到"
-		b2 := mustMarshal(t, llm.Message{Role: "assistant", Content: "hi"})
+		b2 := mustMarshal(t, chatmsg.Message{Role: "assistant", Content: "hi"})
 		for _, k := range []string{"first_token_ms", "duration_ms", "model", "usage_tokens"} {
 			if strings.Contains(string(b2), "\""+k+"\"") {
 				t.Fatalf("未知的 %s 应整键缺席: %s", k, b2)

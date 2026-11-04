@@ -33,8 +33,10 @@ import (
 // 已按白名单过滤，正常不会越界；这里是防御层）。
 // dispatchID 非空 = 子 Agent 执行（事件带归属）；写目标经 sink 抽象
 // （主轮 = s.append 进会话历史并落库；子轮 = 写局部历史，隔离）。
-// 返回 false 表示被取消。fileChanges 收集文件改动供轮末产物汇总。
-func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChanges *[]FileChange, ac *sessiondata.AgentContext, dispatchID string, anchor int64, sink func(llm.Message)) bool {
+// ownerSessionID 是**发起调度的会话**的 id（子会话续跑归属校验用——runTools
+// 不知道调用方是谁，父会话 id 在这里显式传）。返回 false 表示被取消。
+// fileChanges 收集文件改动供轮末产物汇总。
+func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChanges *[]FileChange, ac *sessiondata.AgentContext, dispatchID string, anchor int64, sink func(llm.Message), ownerSessionID string) bool {
 	allowed := toolSet(agentToolsOf(ac))
 	// finished 标记哪些调用已经落了结果：取消时剩下的（含已登记但还没跑的 dispatch）
 	// 都要补合成结果，配对不变量不能破（见 sinkSkippedToolResults）。
@@ -131,6 +133,10 @@ func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChange
 				// 父会话这条消息的 seq：子会话的文件快照按它归属到这一轮（§C.2.1）。
 				// 续跑时同样按**本次**派发算（§C.5.1 边界①）。
 				DispatchSeq: anchor,
+				// 发起调度的会话 id：openChildSession 的续跑归属校验按它判等
+				//（SessionParentID(call.Session) 必须等于它——「该 id 是不是
+				// 本会话的子会话」的"本会话"就是发起方）。
+				OwnerSessionID: ownerSessionID,
 			}})
 			continue
 		}
@@ -145,6 +151,15 @@ func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChange
 		images := &tools.ImageCollector{}
 		execCtx := tools.WithImageCollector(tools.WithAttachmentCollector(ctx, collector), images)
 		out := s.tools.Execute(execCtx, tc)
+		// 会话级重复防护（P7）：工具与归一化参数在**本会话**已执行的次数，
+		// 超阈值在结果前缀注入软/硬提醒——只提醒不阻断（文件刚改完重跑是合法
+		// 的；阻断语义只属于单轮 repeatGuard 的死循环判定）。计在执行位而不是
+		// 结果位：被拒绝的调用也如实计入——「反复发起同一个会被拒的调用」同样是
+		// 原地打转，且它没执行过，结果前缀没有别的注入点。
+		// 并行 dispatch 不经过这里（子会话是独立会话，各记各的）。
+		if hint := s.sessionRepeat.observe(tc.Function.Name, tc.Function.Arguments); hint != "" {
+			out = hint + "\n" + out
+		}
 		// 外部操作计数（§C.1）：只有**成功执行**的变更类工具才计——拒绝/取消不计。
 		// Registry.Execute 用 "错误: " 前缀表示失败（工具契约的既有约定，与
 		// finishToolCall 的 isError 同一来源）；失败说明没改动任何东西。

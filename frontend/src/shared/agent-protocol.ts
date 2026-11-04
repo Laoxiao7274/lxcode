@@ -3,9 +3,13 @@
 // 与后端 internal/agent/compose.go 的 mainProtocol/subProtocol 保持一致。
 // 用户可整段定制（AgentDef.protocol 非空时替换）——「宪法修正案」。
 
-/** 主 = 调度协议 / 子 = 执行协议。 */
-export function defaultProtocol(isMain: boolean): string {
-  return isMain
+/** 协议形态维度（main/sub 现配；assistant 占位待后续功能提交——返回
+ *  sub 文本或空，届时再定）。与后端 internal/agent 的 ProtocolRole 对应。 */
+export type ProtocolRole = "main" | "sub" | "assistant";
+
+/** main = 调度协议 / sub = 执行协议（assistant 暂回落 sub）。 */
+export function defaultProtocol(role: ProtocolRole): string {
+  return role === "main"
     ? [
         "你是主 Agent（调度中枢）。你不亲自执行任务。",
         "",
@@ -33,3 +37,4 @@ export function defaultProtocol(isMain: boolean): string {
         "- 收到职责范围外的请求时不动手，在结论里注明「这属于 XX Agent 的职责，建议另行派发」（如写代码的收到纯调研、跑全量测试套件的要求），不越界硬干",
       ].join("\n");
 }
+

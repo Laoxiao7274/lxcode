@@ -153,6 +153,52 @@ func TestUsageBucketsStreamPaths(t *testing.T) {
 	})
 }
 
+// TestUsageInvalidationReasoningExceedsCompletion：用量可信性校验（2026-12，对齐
+// DSH 的 ui-chat 先例）——响应含 completion_tokens_details.reasoning_tokens 且
+// reasoning > completion 时，两个数互相矛盾（字段错位/重复累计），**整份 usage
+// 不可信**：四桶全零（该步按「provider 没回报用量」处理，不进 decode/计费）。
+func TestUsageInvalidationReasoningExceedsCompletion(t *testing.T) {
+	cases := []struct {
+		name    string
+		resp    string
+		wantOut int
+		wantIn  int
+	}{
+		{
+			name:    "reasoning > completion ⇒ 整份作废",
+			resp:    `{"choices":[{"message":{"content":"好"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1000,"completion_tokens":20,"total_tokens":1020,"completion_tokens_details":{"reasoning_tokens":500}}}`,
+			wantOut: 0, wantIn: 0,
+		},
+		{
+			name:    "reasoning <= completion ⇒ 照常解析",
+			resp:    `{"choices":[{"message":{"content":"好"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1000,"completion_tokens":200,"total_tokens":1200,"completion_tokens_details":{"reasoning_tokens":180}}}`,
+			wantOut: 200, wantIn: 1000,
+		},
+		{
+			name:    "reasoning == completion ⇒ 照常解析（全是思考没有正文是合法的）",
+			resp:    `{"choices":[{"message":{"content":"","reasoning_content":"想"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1000,"completion_tokens":300,"total_tokens":1300,"completion_tokens_details":{"reasoning_tokens":300}}}`,
+			wantOut: 300, wantIn: 1000,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, _ := newTestClient(t, FormatOpenAI, tc.resp, 200)
+			res, err := c.Chat(context.Background(), []Message{{Role: "user", Content: "嗨"}})
+			if err != nil {
+				t.Fatalf("Chat: %v", err)
+			}
+			if res.UsageTokens != tc.wantOut || res.InputTokens != tc.wantIn ||
+				res.CacheReadTokens != 0 || res.CacheWriteTokens != 0 {
+				t.Fatalf("分桶不符: in=%d read=%d write=%d out=%d (want in=%d out=%d)",
+					res.InputTokens, res.CacheReadTokens, res.CacheWriteTokens, res.UsageTokens, tc.wantIn, tc.wantOut)
+			}
+			if tc.wantOut == 0 && res.PromptTokens != 0 {
+				t.Fatalf("作废的 usage 不该只废一半: prompt=%d", res.PromptTokens)
+			}
+		})
+	}
+}
+
 // TestStampUsageCarriesBuckets：用量簿记从结果盖到消息上（会话统计的折叠输入是消息上的
 // 这份——落库与会话统计都读它，漏盖一桶就是"统计里那一栏永远是 0"）。
 func TestStampUsageCarriesBuckets(t *testing.T) {

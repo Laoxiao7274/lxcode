@@ -8,6 +8,7 @@
 // 数字格式对齐 DSH 的 StatsPills：轮/步是整数、时长按 45.2s / 2m42s、token 按 1.2k/1.2M、
 // 速度按 tok/s 一位小数、缓存命中率**不许把部分命中四舍五入成 100%**。
 import type { SessionStats } from "./types";
+import { MIN_DECODE_WINDOW_MS } from "./turn-stats";
 
 /** 统计胶囊整行可不可见：**一步都没有就不渲染**（新会话/纯内存模式下后端整键缺席，
  *  显示一排 0 比什么都不显示更坏）。
@@ -38,9 +39,12 @@ export function promptTokens(stats: SessionStats): number {
 
 /** 生成速度（tok/s）：**分母扣掉首字延迟**（首字是 prefill/排队，算进去会把
  *  "排队久"误报成"吐字慢"——口径与后端 agent.OutputTokensPerSec 一致）。
- *  decode_ms/decode_tokens 缺席（没有任何一步同时有首字与用量）→ null，调用方不显示。 */
+ *  decode_ms/decode_tokens 缺席（没有任何一步同时有首字与用量）→ null，调用方不显示。
+ *  短窗护栏：窗口 < 300ms（MIN_DECODE_WINDOW_MS，与轮级共用同一阈值）时速度是
+ *  计时误差主导的噪声 → null；调用方可在明细里显示「样本过短」。 */
 export function decodeTokensPerSec(stats: SessionStats): number | null {
   if (stats.decode_ms <= 0 || stats.decode_tokens <= 0) return null;
+  if (stats.decode_ms < MIN_DECODE_WINDOW_MS) return null;
   return (stats.decode_tokens * 1000) / stats.decode_ms;
 }
 
@@ -107,6 +111,10 @@ export function timeDialogRows(stats: SessionStats): Array<{ label: string; valu
   if (ttft !== null) rows.push({ label: "首字延迟", value: formatDuration(ttft) });
   const tps = decodeTokensPerSec(stats);
   if (tps !== null) rows.push({ label: "生成速度", value: `${tps.toFixed(1)} tok/s` });
+  else if (stats.decode_ms > 0 && stats.decode_ms < MIN_DECODE_WINDOW_MS) {
+    // 短窗护栏：有解码窗但样本太小——如实说明为什么不显示速度（不是无声地藏掉）
+    rows.push({ label: "生成速度", value: "样本过短" });
+  }
   const legacy = legacyTokens(stats);
   if (legacy > 0) {
     rows.push({ label: "早期记录", value: `${formatStatsTokens(legacy)} tok（输入+输出）` });

@@ -63,6 +63,30 @@ func runFakeServer(mode string) {
 	case "exit":
 		// 直接退出：连接必须立即失效。
 		os.Exit(3)
+	case "hang":
+		// 回应握手后挂起：模拟「握手正常、请求挂起」的服务器（取消场景测试用）。
+		for in.Scan() {
+			var probe struct {
+				ID     *int64 `json:"id"`
+				Method string `json:"method"`
+			}
+			if json.Unmarshal([]byte(in.Text()), &probe) != nil || probe.ID == nil {
+				continue
+			}
+			if probe.Method == "initialize" {
+				reply(*probe.ID, map[string]any{
+					"protocolVersion": ProtocolVersion,
+					"capabilities":    map[string]any{"tools": map[string]any{}},
+					"serverInfo":      map[string]any{"name": "fake", "version": "9.9"},
+				})
+				out.Flush()
+				// 之后只读不回：后续请求挂起。
+				for in.Scan() {
+				}
+				return
+			}
+		}
+		return
 	}
 
 	for in.Scan() {
@@ -293,6 +317,31 @@ func TestStdioProcessExitInvalidatesConnection(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 10*time.Second {
 		t.Errorf("失败得太慢（%v）——应在进程退出时立即返回", elapsed)
+	}
+}
+
+func TestStdioCancelMarksConnectionBroken(t *testing.T) {
+	// 请求被取消（ctx.Done）后连接必须失效：读取 goroutine 仍在挂 stdout，
+	// 再起读取就是两个 goroutine 并发读同一个 bufio.Reader（数据竞争）。
+	// 取消后的 send/notify 都必须报「连接已失效」而不是再读。
+	client, err := Dial(context.Background(), stdioCfg("slow", "hang"))
+	if err != nil {
+		t.Fatalf("握手失败: %v", err)
+	}
+	defer client.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	// tools/list 会等响应；假服务器 hang 模式只读不回——请求必然超时。
+	if _, err := client.ListTools(ctx); err == nil {
+		t.Fatal("挂起的服务器 + 超时 ctx 应返回错误")
+	}
+	cancel()
+
+	// 取消后连接已标记失效：后续请求立即报错（不重新起读取）。
+	if _, err := client.ListTools(context.Background()); err == nil {
+		t.Fatal("取消后的请求应立即失败（连接已失效）")
+	} else if !strings.Contains(err.Error(), "失效") {
+		t.Errorf("错误应说明连接已失效，实际: %v", err)
 	}
 }
 

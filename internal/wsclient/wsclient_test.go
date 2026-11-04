@@ -402,3 +402,37 @@ func TestCloseIdempotent(t *testing.T) {
 	be.Close()
 	be.Close() // 不应 panic（close of closed channel）
 }
+
+// TestConcurrentCloseAndWrite：Close 与 Call 并发不 panic、不阻塞成死锁——
+// 写路径用独立写锁、写前检查 closed channel；Call 在连接已关闭时报
+// 「后端连接已断开」。跑 -race 时这也是写/关竞态的回归测试。
+func TestConcurrentCloseAndWrite(t *testing.T) {
+	addr := startFakeServer(t, func(c *wsConn) {
+		for {
+			if _, ok := c.readRequest(); !ok {
+				return
+			}
+		}
+	})
+	be := dialTest(t, addr)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 50; i++ {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			err := be.Call(ctx, "ping", nil, nil)
+			cancel()
+			// 关闭前的调用可能成功也可能失败，但绝不能 panic 或永久阻塞。
+			if err != nil && !strings.Contains(err.Error(), "连接已断开") && !strings.Contains(err.Error(), "发送请求失败") {
+				t.Errorf("Call 错误应是断连/发送失败之一: %v", err)
+				return
+			}
+		}
+	}()
+	// 并发 Close 数次（幂等），再等写循环收尾——若死锁由测试超时兜底。
+	for i := 0; i < 3; i++ {
+		be.Close()
+	}
+	<-done
+}

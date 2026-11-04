@@ -143,6 +143,10 @@ func PublishPathsTo(ctx context.Context, srcRoot, dstRoot, srcRel, dstRel string
 	}
 	names := excludeSet(exclude)
 	if !info.IsDir() {
+		if info.Size() > PublishMaxBytes {
+			return 0, 0, fmt.Errorf("产物过大：%s 有 %s，超过单次发布上限 %s",
+				srcRel, humanSize(info.Size()), humanSize(PublishMaxBytes))
+		}
 		if err := checkDirTarget(filepath.Join(dstRoot, dstRel)); err != nil {
 			return 0, 0, err
 		}
@@ -154,6 +158,7 @@ func PublishPathsTo(ctx context.Context, srcRoot, dstRoot, srcRel, dstRel string
 	if err := checkFileTarget(filepath.Join(dstRoot, dstRel)); err != nil {
 		return 0, 0, err
 	}
+	var totalBytes int64 // 已发布的累计字节数（PublishMaxBytes 软上限的依据）
 	walkErr := filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -166,11 +171,19 @@ func PublishPathsTo(ctx context.Context, srcRoot, dstRoot, srcRel, dstRel string
 			return err
 		}
 		if sub != "." && excludedByNames(sub, names) {
+			// 目录级排除：整棵子树跳过；子目录本身计一次 skipped（根目录
+			// sub=="." 除外——它就是发布对象自己）。
 			if d.IsDir() {
+				if sub != "." {
+					skipped++
+				}
 				return filepath.SkipDir
 			}
 			skipped++
 			return nil
+		}
+		if d.IsDir() {
+			return nil // 目录只是遍历结构，不计入 skipped
 		}
 		if !d.Type().IsRegular() {
 			skipped++ // 非普通文件（符号链接/套接字等）不发布，计入跳过
@@ -183,9 +196,14 @@ func PublishPathsTo(ctx context.Context, srcRoot, dstRoot, srcRel, dstRel string
 		if err != nil {
 			return err
 		}
+		if totalBytes+fi.Size() > PublishMaxBytes {
+			return fmt.Errorf("产物过大：累计 %s 超过单次发布上限 %s，请分批或指定更精确的路径",
+				humanSize(totalBytes+fi.Size()), humanSize(PublishMaxBytes))
+		}
 		if err := copyFile(path, filepath.Join(dstRoot, dstRel, sub), fi); err != nil {
 			return err
 		}
+		totalBytes += fi.Size()
 		published++
 		return nil
 	})
@@ -240,6 +258,20 @@ func copyFile(src, dst string, info fs.FileInfo) error {
 		return fmt.Errorf("复制 %s → %s 失败: %w", src, dst, err)
 	}
 	return nil
+}
+
+// humanSize 把字节数组成人话（「产物过大」错误文案用；不需要精确到字节）。
+func humanSize(n int64) string {
+	switch {
+	case n >= 1<<30:
+		return fmt.Sprintf("%.1fGB", float64(n)/(1<<30))
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1fMB", float64(n)/(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.1fKB", float64(n)/(1<<10))
+	default:
+		return fmt.Sprintf("%dB", n)
+	}
 }
 
 // excludeSet 组排除名集合：`.git` 无条件加入（工作树元数据永不发布）；

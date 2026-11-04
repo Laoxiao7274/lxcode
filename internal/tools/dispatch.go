@@ -26,6 +26,11 @@ type DispatchCall struct {
 	// 子可修订）：作为子会话的清单初稿装载（子会话执行中可全量替换修订）。
 	// 空 = 子 Agent 按 strict 档自拆（与改造前一致）。
 	Todos []sessiondata.TodoItem
+	// OwnerSessionID 是**发起调度的会话** id（agent 内核在 runTools 调用位传入）：
+	// 续跑归属校验按它判等——SessionParentID(call.Session) 必须等于它，否则
+	// 「该 id 不是本会话的子会话」。内核之外的调用方不填 = 跳过校验（防御性
+	// 放行，与 dispatchRoot 为 nil 时跳过委派名单校验同一口径）。
+	OwnerSessionID string
 	// DispatchSeq 是**父会话**那条携带本次 dispatch 的 assistant 消息 seq。
 	// 子会话的文件快照按它归属到父会话的这一轮（docs/session-tree.md §C.2.1）：
 	// 回滚到这一轮之前时，子会话改的文件要一起还原。

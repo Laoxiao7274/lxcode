@@ -63,7 +63,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cast
 import androidx.compose.material.icons.filled.DesktopWindows
-import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.Stop
@@ -78,6 +77,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -168,15 +168,12 @@ fun ScreenScreen(state: com.moyunteng.lxcode.remote.ui.AppState) {
 
     // 观看态（投屏进行中）的「全屏 ↔ 缩小」用 AppState.screenFullscreen（页面级，
     // AppRoot 返回键与 safeDrawing 豁免都按它判定）；未投屏时的设置页双击全屏
-    // 仍用本地的 fullscreen rememberSaveable。active 翻 false 时两者都复位——
-    // 对端停止后再进投屏页不会卡在全屏态。
+    // 仍用本地的 fullscreen rememberSaveable（其复位靠上方 DisposableEffect 的
+    // onDispose）。screenFullscreen 的复位收口在 AppRoot 的 LaunchedEffect(route)
+    // （路由离开投屏页即复位）——这里不再放 effect：路由同步切换时本子树直接
+    // 卸载、effect 根本不会跑（根因 B：伪复位掩盖了收口缺失）。观看中途
+    // active 翻 false 的路径由 AppRoot 的断开自动退回处理（route 离开 → 连带复位）。
     val watching = real.screenState?.active == true
-    LaunchedEffect(watching) {
-        if (!watching) {
-            state.screenFullscreen = false
-            fullscreen = false
-        }
-    }
 
     if (watching) {
         if (state.screenFullscreen) {
@@ -411,9 +408,9 @@ private fun MinimizedCastScreen(
                     fullscreen = false,
                     onToggleFullscreen = onExpand,
                 )
-                // 「投屏中」pill：叠在视频卡顶部左侧，点击卡片任意处放大
+                // 「投屏中」pill：叠在视频卡顶部左侧，双击卡片放大回全屏观看
                 LxPill(
-                    "投屏中 · 点击放大",
+                    "投屏中 · 双击放大",
                     variant = LxPillVariant.Success,
                     modifier = Modifier
                         .align(Alignment.TopStart)
@@ -598,8 +595,8 @@ private fun WatchSurface(
         // 视频主体：整页根约束（有限高度），fillMaxSize 不会塌条；
         // 比例适配在 VideoSurface 内部按视频真实宽高比 **cover**（最小铺满，超出
         // 部分裁掉——零边框），缩放/平移手势基准同为 cover 语义。
-        // fullscreen 参数按实态传入（不再硬编码 true）：本组件当前只在全屏观看态
-        // 挂载（缩小态走 MinimizedCastScreen），双击 = onToggleFullscreen（回缩小态）。
+        // fullscreen 恒为 true：本组件只在全屏观看态挂载（缩小态走
+        // MinimizedCastScreen），双击/左箭头 = onToggleFullscreen（回缩小态）。
         Box(
             Modifier.fillMaxSize(),
             contentAlignment = Alignment.Center,
@@ -655,7 +652,7 @@ private fun WatchSurface(
         }
 
         // 悬浮球（菜单开着时状态行隐藏，避免与菜单项重叠）
-        ScreenFloatingBall(real, state, fullscreen, onToggleFullscreen)
+        ScreenFloatingBall(real, state, onToggleFullscreen)
     }
 }
 
@@ -675,7 +672,6 @@ private fun WatchSurface(
 private fun ScreenFloatingBall(
     real: com.moyunteng.lxcode.remote.net.RealBackend,
     state: com.moyunteng.lxcode.remote.ui.AppState,
-    fullscreen: Boolean,
     onToggleFullscreen: () -> Unit,
 ) {
     val ballSize = 48.dp
@@ -1309,8 +1305,9 @@ private fun VideoSurface(
     onToggleFullscreen: () -> Unit = {},
 ) {
     // 尺寸语义（见下方容器注释）：观看态 cover 铺满 + clipToBounds；设置页卡内态
-    // fit letterbox。手势算术（ScreenGestureMath）对两种语义共用，钳制边界由
-    // panLimit 注入（卡内态 = 0，即 1× 锁中不可拖）。
+    // fit letterbox。手势算术（ScreenGestureMath）共用，边界按态注入：全屏观看 =
+    // fitBaseScale 下限 + coverOverflowAt 真实溢出钳制（可缩回 fit 露黑边）；
+    // 卡内态不进 transform 分支（只留 tap/双击，卡内不需要缩放/平移）。
     // 解码器生命周期与 SurfaceView 绑定：surface 建好即建解码器、销毁即停；
     // 断线 ≥3s 丢弃解码器（重连后等关键帧重建）。
     // 旋转：Surface 销毁重建（Activity 重建 → AndroidView 重 factory）时**不重建
@@ -1321,10 +1318,12 @@ private fun VideoSurface(
     var wasConnected by remember { mutableStateOf(true) }
     // 全屏切换由页面级状态驱动（ScreenScreen 提升所有权后经参数传入——
     // VideoSurface 不再自持状态，双击只回调、不重排外部布局）
-    // 手势缩放（pinch）：cover 基准（1×，已铺满）～5×；配合平移查看被裁的部分。
+    // 手势缩放（pinch）：1×（cover 基准，已铺满）起、上限 5×；全屏观看态下限放宽
+    // 到 fitBaseScale（可缩回完整画面露黑边，见下方手势块注释）。配合平移查看被
+    // 裁的部分。
     // SurfaceView 是连续表面，缩放通过 graphicsLayer 对整块视图做变换（解码帧
-    // 自身按容器比例拉伸）。缩放下限 = cover 基准（不许缩回带黑边的 letterbox）。
-    // 旋转后视口尺寸变化：缩放/平移一律复位 cover 基准 + 居中（无跳变感的可接受行为）
+    // 自身按容器比例拉伸）。
+    // 旋转后视口尺寸变化：缩放/平移一律复位基准 + 居中（无跳变感的可接受行为）
     var scale by remember { mutableStateOf(1f) }
     var offsetX by remember { mutableStateOf(0f) }
     var offsetY by remember { mutableStateOf(0f) }
@@ -1387,18 +1386,28 @@ private fun VideoSurface(
             fitTick++
         }
     }
-    val panLimit = remember(fitTick, containerSize) {
-        if (fullscreen) {
-            coverOverflow(
-                viewportW = containerSize.width.toFloat(),
-                viewportH = containerSize.height.toFloat(),
-                videoW = real.screenDecoder?.stats()?.width ?: 0,
-                videoH = real.screenDecoder?.stats()?.height ?: 0,
-            )
-        } else {
-            0f to 0f
-        }
+    // 手势边界参数（根因 A+C）：全屏观看态允许双指缩回完整画面——缩放下限 =
+    // fitBaseScale（fit/cover 比，通常 <1；缩到底 = 画面完整、四周黑边的 fit 等效），
+    // 平移钳制 = coverOverflowAt(scale)（当前 scale 的真实溢出半程：scale ≥1 时与
+    // 旧 cover 语义一致；scale <1 的黑边态按 fit 边界算——画面小于视口的轴钳 0
+    // 居中，仍有溢出的轴可拖动看被裁内容）。设置页卡内态无缩放/平移（卡内手势
+    // 只留 tap/双击，见 pointerInput），不需要边界。
+    // 视口/视频尺寸都是普通 remember 快照：pointerInput(Unit) 闭包**不直接捕获
+    // 它们**（根因 C：旧 panLimit 是 remember 快照且被闭包捕获，containerSize
+    // 初值 0 时算出 (0,0) 恒死钳居中——全屏放大后拖不动），一律经
+    // rememberUpdatedState 取 current；也不把 containerSize 塞 pointerInput key
+    //（key 变化会取消并重启协程，掐断进行中的手势）。fitTick 每 500ms 递增并作为
+    // remember key（stats() 不是 Compose 状态，解码线程更新——SPS 配置完成即重算，
+    // 同 DiagPanel 的轮询刷新法）。
+    val viewportPx = remember(containerSize) {
+        containerSize.width.toFloat() to containerSize.height.toFloat()
     }
+    val currentViewportPx by rememberUpdatedState(viewportPx)
+    val videoDims = remember(fitTick) {
+        val st = real.screenDecoder?.stats()
+        (st?.width ?: 0) to (st?.height ?: 0)
+    }
+    val currentVideoDims by rememberUpdatedState(videoDims)
     Box(
         Modifier
             .then(
@@ -1419,8 +1428,10 @@ private fun VideoSurface(
             .background(LxColors.TermBg)
             .onSizeChanged { containerSize = android.util.Size(it.width, it.height) }
         // 手势单入口：awaitEachGesture 顺序判定——多指或有移动 = transform（缩放/平移，
-        // 仅放大后消费平移）；单指快速按下抬起×2（<300ms）= 双击全屏。原双
-        // pointerInput 并存时 transform 检测器在双击首按期间以 zoom≈1 微调画面。
+        // 仅全屏观看态；设置页卡内态只留 tap/双击——根因 D：卡内 16:9 卡片不需要
+        // 双指缩放，旧行为能缩到 5× 而 offset 钳 0、且无复位入口，画面永久变形占卡）；
+        // 单指快速按下抬起×2（<300ms）= 双击全屏。原双 pointerInput 并存时 transform
+        // 检测器在双击首按期间以 zoom≈1 微调画面。
         .pointerInput(Unit) {
                 awaitEachGesture {
                     val down = awaitFirstDown()
@@ -1431,7 +1442,9 @@ private fun VideoSurface(
                     var pastSlop = false
                     var upSeen = false
                     // 阶段一：分类本轮手势——出现多指或位移过 touchSlop = transform，
-                    // 否则是 tap（快速抬起 + 300ms 内再来一次 = 双击）
+                    // 否则是 tap（快速抬起 + 300ms 内再来一次 = 双击）。
+                    // 卡内态（fullscreen=false）多指/移动也归类为 tap 的失败分支：
+                    // 不进 transform（不缩放不平移不消费），落空即结束本轮。
                     val classifyDeadline = SystemClock.uptimeMillis() + 300
                     while (true) {
                         val remaining = classifyDeadline - SystemClock.uptimeMillis()
@@ -1448,7 +1461,7 @@ private fun VideoSurface(
                         if (isTransform) break
                         if (upSeen) break
                     }
-                    if (!isTransform) {
+                    if (!isTransform || !fullscreen) {
                         // tap：等第二次按下（300ms）再等抬起
                         var doubleTap = false
                         val second = withTimeoutOrNull(300L) { awaitFirstDown(requireUnconsumed = false) }
@@ -1469,11 +1482,21 @@ private fun VideoSurface(
                             resetGestures()
                         }
                     } else {
-                        // 阶段二：transform——多指围绕质心缩放，放大后平移。
+                        // 阶段二：transform（仅全屏观看态；卡内已被上面的 !fullscreen
+                        // 分支收窄掉）——多指围绕质心缩放，放大（或缩离基准）后平移。
                         // scale/offset 算术在 ScreenGestureMath（纯函数，JVM 单测覆盖）：
                         // zoom 是相对增量、|zoom-1|<ε 的噪声帧不消费（0.3.22 真机
                         // 「缩成一点」根因就是每帧消费 zoom 噪声并塌向质心）；
-                        // 缩放下限 = cover 基准（1× 已铺满，不许缩回 letterbox）。
+                        // 缩放下限 = fitBaseScale（根因 A：cover 布局 SurfaceView
+                        // bounds 本身已是铺满的放大态，允许缩到 fit/cover 比 —— 画面
+                        // 完整、四周黑边（fit 等效）；不许再低——那只是画面变小）。
+                        val minScale = if (fullscreen) {
+                            val (vw, vh) = currentViewportPx
+                            val (dw, dh) = currentVideoDims
+                            fitBaseScale(vw, vh, dw, dh)
+                        } else {
+                            coverBaseScale()
+                        }
                         while (true) {
                             val event = awaitPointerEvent()
                             val pressed = event.changes.count { it.pressed }
@@ -1482,28 +1505,37 @@ private fun VideoSurface(
                             val pan = event.calculatePan()
                             val c = event.calculateCentroid()
                             if (pressed >= 2 && c.isSpecified) {
-                                val (newScale, newOffset) =
-                                    applyPinchZoom(scale, zoom, Offset(offsetX, offsetY), c)
+                                val (newScale, newOffset) = applyPinchZoom(
+                                    scale, zoom, Offset(offsetX, offsetY), c,
+                                    minScale = minScale,
+                                )
                                 scale = newScale
                                 offsetX = newOffset.x
                                 offsetY = newOffset.y
                             }
-                            // 平移只在已放大时消费（cover 基准锁中，不跟手漂移）；
-                            // 钳进 cover 溢出半程——拖动极限 = 画面边缘贴住视口边缘，
-                            // 再拖就露黑底（设置页卡内态 panLimit 为 0，平移恒回 0）
-                            if (scale > coverBaseScale()) {
+                            // 平移在偏离基准 scale 时消费（钳制边界 = 当前 scale 的
+                            // 真实溢出半程——根因 A：scale ≥1 时与旧 cover 语义一致
+                            //（拖回被裁部分）；scale <1 的黑边态按 fit 边界算：画面
+                            // 小于视口的轴钳 0 居中，仍有溢出的轴可拖动看被裁内容）。
+                            // 视口/视频尺寸读 rememberUpdatedState 的 current（根因 C：
+                            // 闭包捕获 remember 快照会钉死初值——containerSize 初值 0
+                            // 时 panLimit 恒 (0,0)，全屏放大后拖不动）。
+                            if (scale > minScale + 1e-4f) {
+                                val (vw, vh) = currentViewportPx
+                                val (dw, dh) = currentVideoDims
+                                val (limX, limY) = coverOverflowAt(scale, vw, vh, dw, dh)
                                 val panned = clampPanToCover(
                                     applyPinchPan(Offset(offsetX, offsetY), pan),
-                                    overflowX = panLimit.first,
-                                    overflowY = panLimit.second,
+                                    overflowX = limX,
+                                    overflowY = limY,
                                 )
                                 offsetX = panned.x
                                 offsetY = panned.y
                                 event.changes.forEach { it.consume() }
                             }
                         }
-                        if (scale <= coverBaseScale() + 0.001f) {
-                            scale = coverBaseScale(); offsetX = 0f; offsetY = 0f
+                        if (scale <= minScale + 0.001f) {
+                            scale = minScale; offsetX = 0f; offsetY = 0f
                         }
                     }
                 }
@@ -1519,7 +1551,7 @@ private fun VideoSurface(
         // 尺寸语义按态分：观看态（fullscreen）= cover（最小铺满，超出被
         // clipToBounds 裁掉）；设置页卡内态 = fit（letterbox 完整画面）。
         // 视频未知（未配置）时 = 视口本身（fill，帧到位后 stats 变化自动重排）。
-        // fitTick/panLimit 见容器声明处。
+        // fitTick/边界参数（currentViewportPx/currentVideoDims）见容器声明处。
         val density = LocalDensity.current
         val surfaceSize = remember(fitTick, containerSize) {
             if (fullscreen) {
@@ -1587,7 +1619,7 @@ private fun VideoSurface(
         }
         // 全屏态双击提示（顶部悬浮角标，整页视频之上）：文案对齐实际行为——
         // 观看态全屏下双击 = 缩小回设置页形态（投屏继续），不是「退出全屏」。
-        // 缩小态不显示本角标（双击是进全屏，卡片上有「投屏中 · 点击放大」提示）。
+        // 缩小态不显示本角标（双击是进全屏，卡片上有「投屏中 · 双击放大」提示）。
         if (fullscreen) {
             Text(
                 "双击缩小 · 双指缩放",

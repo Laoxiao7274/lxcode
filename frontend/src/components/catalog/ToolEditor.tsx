@@ -119,6 +119,21 @@ export function ToolEditor({
                   <span className="cg-field-label">风险</span>
                   <Segmented options={RISK_OPTS} value={tool.risk} onChange={(v) => set("risk", v)} ariaLabel="风险" />
                 </div>
+                <div className="cg-field">
+                  <span className="cg-field-label">副作用</span>
+                  <label className="te-param-req" title="strict 只读档按此声明判定放行或拒绝">
+                    <input
+                      type="checkbox"
+                      checked={tool.mutates !== false}
+                      onChange={(e) => set("mutates", e.target.checked)}
+                    />
+                    会变更外部世界（默认勾选；确证只读的工具如检索器取消勾选）
+                  </label>
+                  <div className="cg-field-hint">
+                    取消勾选 = 声明此工具只读：strict 只读档不再拒绝它（声明错误
+                    等于给只读面开了写入口，只在确证时取消）。
+                  </div>
+                </div>
               </section>
 
               <section className="ag-sec">

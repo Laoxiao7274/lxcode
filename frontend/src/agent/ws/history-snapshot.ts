@@ -102,7 +102,9 @@ export function snapshotFromWire(r: unknown): HistorySnapshot {
     messages: h.messages ?? [],
     busy: Boolean(h.busy),
     pending: h.pending ?? null,
-    todos: h.todos ?? [],
+    // todos：**键在才写**（哪怕是空数组——那是后端的「无清单」事实）；键缺席
+    //（老后端）不写键，归约器据此保留本地清单（键缺席 = 未知，不猜）。
+    ...(Array.isArray(h.todos) ? { todos: h.todos } : {}),
     context: h.context,
     stats: h.stats,
     checkpoints: h.checkpoints ?? [],

@@ -11,14 +11,16 @@
 //     下一个渠道的偶然成功掩盖成「搜索正常」，用户永远查不出问题在哪。
 package websearch
 
-import "strings"
+import (
+	"strings"
 
-// Result 是一条搜索结果（对齐上游 SearchResult）。
-type Result struct {
-	Title   string `json:"title"`
-	URL     string `json:"url"`
-	Snippet string `json:"snippet"`
-}
+	"github.com/moyunteng/lxcode/internal/searchtypes"
+)
+
+// Result 是一条搜索结果（对齐上游 SearchResult）。共享形状（含 Channel/
+// OptionSpec）住在 internal/searchtypes 叶包——protocol 的协议载荷与本项目共
+// 用同一个类型，协议层不必反向 import 本实现包；这里保留别名，既有调用面零改动。
+type Result = searchtypes.Result
 
 // Response 是一次搜索的结果集（对齐上游 SearchResponse）。
 // Answer 是渠道自带的摘要答案：有的渠道返回（Tavily/Perplexity 等），

@@ -35,10 +35,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/moyunteng/lxcode/internal/chatmsg"
 	"github.com/moyunteng/lxcode/internal/config"
-	"github.com/moyunteng/lxcode/internal/llm"
-	"github.com/moyunteng/lxcode/internal/tools"
-	"github.com/moyunteng/lxcode/internal/websearch"
+	"github.com/moyunteng/lxcode/internal/searchtypes"
+	"github.com/moyunteng/lxcode/internal/sessiondata"
 )
 
 var updateGolden = flag.Bool("update", false, "重写 internal/protocol/testdata/golden.json")
@@ -83,7 +83,7 @@ func goldenSamples() map[string]goldenSample {
 		// done 成员的 wire 载荷）。
 		"chatDoneFull": {"AgentEvent", DoneParams{
 			SessionID: "s1",
-			Message: llm.Message{
+			Message: chatmsg.Message{
 				Role: "assistant", Content: "改好了，构建通过。", Seq: 7, ParentSeq: 6,
 				FirstTokenMs: 420, DurationMs: 5230, Model: "deepseek-v3", UsageTokens: 512,
 			},
@@ -101,7 +101,7 @@ func goldenSamples() map[string]goldenSample {
 		//（子轮的占用与统计不进主指示器；没有首字就是没有，不发 0 冒充）。
 		"chatDoneDispatch": {"AgentEvent", DoneParams{
 			SessionID: "child-1", DispatchID: "d1",
-			Message:     llm.Message{Role: "assistant", Content: "子任务完成。"},
+			Message:     chatmsg.Message{Role: "assistant", Content: "子任务完成。"},
 			UsageTokens: 210, FinishReason: "stop",
 		}},
 
@@ -109,10 +109,10 @@ func goldenSamples() map[string]goldenSample {
 		"toolResultWithAttachments": {"AgentEvent", ToolResultParams{
 			SessionID: "s1", ID: "call_1", Name: "share_file",
 			Content: "已共享到对话", IsError: false, DispatchID: "d1",
-			Attachments: []llm.AttachmentRef{
+			Attachments: []chatmsg.AttachmentRef{
 				{Path: "s1/ab12cd.png", Name: "截图.png", Size: 20480, Mime: "image/png",
-					Kind: llm.AttachmentKindImage, Caption: "报错截图"},
-				{Path: "s1/ef34gh.log", Name: "日志.txt", Size: 512, Kind: llm.AttachmentKindFile},
+					Kind: chatmsg.AttachmentKindImage, Caption: "报错截图"},
+				{Path: "s1/ef34gh.log", Name: "日志.txt", Size: 512, Kind: chatmsg.AttachmentKindFile},
 			},
 		}},
 
@@ -123,10 +123,10 @@ func goldenSamples() map[string]goldenSample {
 			DispatchID: "d1", Kind: "ask", Options: []string{"方案 A", "方案 B"},
 		}},
 
-		"todoItem":          {"TodoItem", tools.TodoItem{Content: "拆分 protocol.go", Status: "done"}},
-		"todoUpdatedParams": {"", TodoUpdatedParams{SessionID: "s1", Items: []tools.TodoItem{{Content: "拆分 protocol.go", Status: "done"}, {Content: "golden 往返测试", Status: "active"}}}},
+		"todoItem":          {"TodoItem", sessiondata.TodoItem{Content: "拆分 protocol.go", Status: "done"}},
+		"todoUpdatedParams": {"", TodoUpdatedParams{SessionID: "s1", Items: []sessiondata.TodoItem{{Content: "拆分 protocol.go", Status: "done"}, {Content: "golden 往返测试", Status: "active"}}}},
 		// 带归属（子会话上抛）：dispatch_id 是可选键——缺席 = 主会话自己的清单
-		"todoUpdatedParamsDispatched": {"", TodoUpdatedParams{SessionID: "s1", DispatchID: "d1", Items: []tools.TodoItem{{Content: "定位泄漏点", Status: "active"}}}},
+		"todoUpdatedParamsDispatched": {"", TodoUpdatedParams{SessionID: "s1", DispatchID: "d1", Items: []sessiondata.TodoItem{{Content: "定位泄漏点", Status: "active"}}}},
 
 		// ---- chat 域：历史回放 ----
 
@@ -139,16 +139,16 @@ func goldenSamples() map[string]goldenSample {
 		"chatHistoryParamsPaging":  {"ChatHistoryParams", ChatHistoryParams{SessionID: "s1", Tail: 50, BeforeSeq: 3}},
 
 		// 全量历史：检查点/统计/上下文/权限档/待确认全在。message 数组覆盖
-		// llm.Message 的全部 wire 字段（images/attachments/tool_calls/tool_call_id/
+		// chatmsg.Message 的全部 wire 字段（images/attachments/tool_calls/tool_call_id/
 		// reasoning_content/每轮簿记）。_type 留空：前端 HistorySnapshot 是
 		// camelCase 重映射后的形态，不是逐键镜像（映射在适配层）。
 		"chatHistoryResultFull": {"", ChatHistoryResult{
-			Messages: []llm.Message{
+			Messages: []chatmsg.Message{
 				{Role: "user", Content: "看看这个报错", Seq: 1,
-					Images:      []llm.ImageRef{{Path: "s1/ab12cd.png", Mime: "image/png"}},
-					Attachments: []llm.AttachmentRef{{Path: "s1/ab12cd.png", Name: "截图.png", Size: 20480, Mime: "image/png", Kind: llm.AttachmentKindImage}}},
+					Images:      []chatmsg.ImageRef{{Path: "s1/ab12cd.png", Mime: "image/png"}},
+					Attachments: []chatmsg.AttachmentRef{{Path: "s1/ab12cd.png", Name: "截图.png", Size: 20480, Mime: "image/png", Kind: chatmsg.AttachmentKindImage}}},
 				{Role: "assistant", Content: "", ReasoningContent: "先看调用栈……", Seq: 2,
-					ToolCalls: []llm.ToolCall{{ID: "call_1", Type: "function", Index: 1,
+					ToolCalls: []chatmsg.ToolCall{{ID: "call_1", Type: "function", Index: 1,
 						Function: struct {
 							Name      string `json:"name"`
 							Arguments string `json:"arguments"`
@@ -159,7 +159,7 @@ func goldenSamples() map[string]goldenSample {
 			Busy:        true,
 			Pending:     &ConfirmRequest{SessionID: "s1", ID: "call_2", Name: "bash", Arguments: `{"command":"go test ./..."}`, Prompt: "执行 go test？"},
 			SessionID:   "s1",
-			Todos:       []tools.TodoItem{{Content: "修 bug", Status: "active"}},
+			Todos:       []sessiondata.TodoItem{{Content: "修 bug", Status: "active"}},
 			Context:     &ContextUsage{Used: 48210, Window: 128000, System: 3120, Tools: 8400, ToolResults: 12200, Messages: 18100, Reasoning: 5590},
 			Stats:       &SessionStats{Turns: 3, Steps: 9, LLMMs: 14200, ToolMs: 8600, TTFTMs: 390, TTFTSteps: 9, DecodeMs: 9800, DecodeTokens: 4096, InputTokens: 120000, CacheReadTokens: 98000, CacheWriteTokens: 4000, OutputTokens: 8200},
 			Checkpoints: []int{0},
@@ -173,22 +173,27 @@ func goldenSamples() map[string]goldenSample {
 				DispatchID: "call_9", ChildSessionID: "20261214-091200-ab12", AgentName: "代码 Agent", Task: "跑测试并修复",
 			}},
 		}},
-		// 最小历史：context/stats/pending/todos/checkpoints/model/approval 全部
-		// **整键缺席**（未知 = 缺席，不编数）；busy 是显式 false（无 omitempty）。
-		// running_dispatches 同款：空闲会话不导出（nil 切片不上 wire）。
+		// 最小历史：context/stats/pending/todos/checkpoints/model/approval 中
+		// **老后端没报的键**整键缺席（未知 = 缺席，不编数）；busy 是显式 false
+		//（无 omitempty）；todos 同样是显式空数组（无 omitempty——「无清单」是
+		// 事实不是未知，见 ChatHistoryResult.Todos 的注释）。running_dispatches
+		// 同款缺席：空闲会话不导出（nil 切片不上 wire）。
 		"chatHistoryResultMinimal": {"", ChatHistoryResult{
-			Messages: []llm.Message{{Role: "user", Content: "在吗"}},
+			Messages: []chatmsg.Message{{Role: "user", Content: "在吗"}},
 			Busy:     false,
+			Todos:    []sessiondata.TodoItem{},
 		}},
 		// 分页应答：has_more/first_seq 只在 before_seq 请求的应答里出现
 		//（非分页应答整键缺席——上方 Minimal 样本钉住）。first_seq 是下一次
-		// 请求的 anchor（窗口首条的 seq）。
+		// 请求的 anchor（窗口首条的 seq）。todos 是显式空数组（与 Minimal 同款
+		//——生产路径装配恒非 nil，nil 切片会序列化成 null，与语义矛盾）。
 		"chatHistoryResultPaging": {"", ChatHistoryResult{
-			Messages: []llm.Message{
+			Messages: []chatmsg.Message{
 				{Role: "user", Content: "更早的问题", Seq: 1},
 				{Role: "assistant", Content: "更早的回答", Seq: 2},
 			},
 			Busy:     false,
+			Todos:    []sessiondata.TodoItem{},
 			HasMore:  true,
 			FirstSeq: 1,
 		}},
@@ -300,6 +305,10 @@ func goldenSamples() map[string]goldenSample {
 			Params: []ToolParamEntry{{Name: "path", Type: "string", Required: true, Desc: "文件路径"}},
 			Doc:    "按行读取", Server: "smoke-mcp", Command: "rg {pattern} {path}",
 			Example: `{"path":"main.go"}`, PackageFile: "pack.yaml", Custom: false,
+			// Mutates=false 覆盖新字段（2026-12 P5）：wire 上 omitempty 的指针，
+			// 非 nil 样本钉住键名与布尔序列化；nil（缺省=未声明）的形态由
+			// 模型列表等其它 omitempty 样本同型覆盖。
+			Mutates: &[]bool{false}[0],
 		}},
 		// 模型注册表快照（ModelEntry = config.ModelConfig 的 wire 形态，含嵌套
 		// capabilities 与 updated_at；_type 留空——顶层是注册表不是单条目）。
@@ -338,12 +347,12 @@ func goldenSamples() map[string]goldenSample {
 		// ---- settings 域（搜索渠道 + 行为开关）----
 
 		"searchChannelsResult": {"SearchChannelsSnapshot", SearchChannelsResult{
-			Channels: []websearch.Channel{
+			Channels: []searchtypes.Channel{
 				{ID: "tavily", Label: "Tavily", Desc: "聚合搜索", DocURL: "https://tavily.com", EnvVar: "TAVILY_API_KEY",
 					NeedsKey: true, NeedsURL: false, AcceptsKey: true, OptIn: false, DefaultReady: false,
 					Category: "general", CategoryLabel: "通用",
 					APIKey: "tvly-***", BaseURL: "https://api.tavily.com",
-					OptionSpecs: []websearch.OptionSpec{{Key: "search_depth", Label: "搜索深度", Placeholder: "basic", Hint: "basic|advanced", EnvVar: "TAVILY_DEPTH", Required: true, Default: "basic", Choices: []string{"basic", "advanced"}}},
+					OptionSpecs: []searchtypes.OptionSpec{{Key: "search_depth", Label: "搜索深度", Placeholder: "basic", Hint: "basic|advanced", EnvVar: "TAVILY_DEPTH", Required: true, Default: "basic", Choices: []string{"basic", "advanced"}}},
 					Options:     map[string]string{"search_depth": "basic"},
 					Stored:      true, Enabled: true, Primary: true, Configured: true},
 				{ID: "exa-free", Label: "Exa 免配置通道", Desc: "零配置直连", NeedsKey: false, NeedsURL: false,
@@ -357,7 +366,7 @@ func goldenSamples() map[string]goldenSample {
 		}},
 		"searchTestResult": {"SearchTestResult", SearchTestResult{
 			Provider: "tavily", Answer: "Go 1.22 于 2024 年发布",
-			Results:   []websearch.Result{{Title: "Go release notes", URL: "https://go.dev/doc/devel/release", Snippet: "…"}},
+			Results:   []searchtypes.Result{{Title: "Go release notes", URL: "https://go.dev/doc/devel/release", Snippet: "…"}},
 			ElapsedMS: 742,
 		}},
 		"todoPromptResult": {"", TodoPromptResult{TodoPrompt: "strict"}},
@@ -377,7 +386,7 @@ func goldenSamples() map[string]goldenSample {
 		"dispatchStartParams": {"", DispatchStartParams{
 			OwnerSessionID: "s1", DispatchID: "d1", SessionID: "child-1",
 			AgentID: "reviewer", AgentName: "评审员", AgentColor: "#3b82f6", Task: "评审这次的改动",
-			Todos: []tools.TodoItem{{Content: "读改动", Status: "done"}, {Content: "写意见", Status: "active"}},
+			Todos: []sessiondata.TodoItem{{Content: "读改动", Status: "done"}, {Content: "写意见", Status: "active"}},
 		}},
 
 		// ---- 连接域：握手 ----

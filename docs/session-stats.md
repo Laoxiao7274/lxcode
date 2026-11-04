@@ -24,15 +24,31 @@ DSH 的原话是「full-session figures that paging and compaction cannot change
 - **turns**：真实用户消息数（`notice = 0` 且 `checkpoint = 0`）。与右栏「轮次」面板同一口径（一条用户
   消息开一轮）。**注入的提示条不算**：重复调用提醒与后台任务通告在历史里都是真实 user 角色消息（模型必须把它
   当用户回合才能回应），但它们不是用户说的话；
-- **steps**：assistant 消息数（每次模型调用一条）；
+- **steps**：assistant 消息数（每次模型调用一条）。**interrupted=1 的行整行排除**（2026-12 口径修订）——见下文
+  「中断/失败的半截轮不产出统计」；
 - **llmMs**：assistant 的 `duration_ms` 之和（请求发出 → 收尾）；
 - **toolMs**：tool 消息的 `duration_ms` 之和（`runTools` 执行处计时）。**被拒绝/取消而没执行**的调用不写它
   （0 = 未知，不计入）——把"没跑"算成"0ms"会让工具时间的均值失真；
 - **ttftMs / ttftSteps**：只算**有首字**的步（工具轮与非流式回放没有"首字"这个时刻）；
-- **decodeMs / decodeTokens**：只算**同时有首字与输出 token** 的步——分子分母必须来自同一批步，
-  否则"没报用量的步"会把它稀释成假速度。分母扣掉首字延迟（口径与 `agent.OutputTokensPerSec` 一致：
-  首字是 prefill/排队，算进分母会把"排队久"误报成"吐字慢"）；
+- **decodeMs / decodeTokens**：只算**同时有首字与输出 token、且 `duration_ms > first_token_ms`** 的步——
+  分子分母必须来自同一批步，否则"没报用量的步"会把它稀释成假速度。分母扣掉首字延迟（首字是 prefill/排队，
+  算进分母会把"排队久"误报成"吐字慢"）。`duration > firstToken` 是 2026-12 顺带修的门槛：首字没被总耗时
+  罩住的步没有解码窗，旧实现的 `MAX(...,0)` 把分子钳到 0 却照收 usage_tokens，零窗步的 token 进了分子而窗
+  没进分母（`TestSessionStatsDecodeRequiresPositiveWindow`）；
 - **四桶**：assistant 消息上 provider 回报的用量（未回报 = 0，不计）。
+
+**中断/失败的半截轮不产出统计**（2026-12 口径修订，对齐 DSH 的「取消的 step 不产出统计」）：
+
+- 用户中断 / 流式中断 / 本轮生成失败（`runTurn` 的错误出口，含 `TurnError` 路径）落库的那条 assistant
+  消息**没有完整跑完**——agent 在这个出口给它盖 `interrupted` 位（写边界的一位标记，与 `notice` /
+  `usage_split` 同一套做法：判定在 agent，store 谁都不能 import agent）；
+- 数字本身（`first_token_ms` / `duration_ms` / 用量四桶）**照常落库**——「这轮跑到一半断了，跑了多久、
+  断之前吐了多少」是历史展示的有效观测；
+- 但统计折叠把整行排除（SQL 聚合 `WHERE interrupted = 0` + `foldSessionStats` 的 `continue`，双路同口径，
+  一致性由 `TestSessionStatsAggregationMatchesFullFold` 钉住）：半截轮的耗时（不等 LLM 响应完就断）与
+  不完整的用量会把「模型时间/速度」拉偏成另一件事——**停得快 ≠ 模型吐字快**；
+- 被中断轮**补齐的合成工具结果**（`sinkSkippedToolResults` 的「已取消，未执行」）没有 `duration_ms`
+  （0 = 没执行），本来就不进工具时间——与上面同一条口径的两半。
 
 **为什么不做增量累加**（把累计值存进 `sessions` 行）：撤回会删行、压缩会影子行，累加器在这两种改写之后就是
 错的，而要修正它得反推被删掉的那一段——比每次重算一遍更容易漂移。折叠是纯函数，重算的成本是扫一遍这张会话的
@@ -59,6 +75,11 @@ DSH 的原话是「full-session figures that paging and compaction cannot change
   `prompt_cache_hit_tokens`；`completion_tokens` 缺席时按 `total − prompt` 推，推不出来就是 0（未知）；
 - **anthropic**：`input_tokens` **不含**缓存那两项 → 三桶直接搬运（`cache_read_input_tokens` /
   `cache_creation_input_tokens`）；
+- **用量可信性校验**（2026-12，对齐 DSH 的 ui-chat 先例；仅 openai 侧——anthropic 无此字段）：响应含
+  `completion_tokens_details.reasoning_tokens`（个别端点用扁平的顶层 `reasoning_tokens`，两个都认）且
+  `reasoning_tokens > completion_tokens` 时，两个数互相矛盾（字段错位 / 重复累计），**整份 usage 视为
+  不可信** → 四桶全零：该步按「provider 没回报用量」处理，不进 decode / 计费
+  （`TestUsageInvalidationReasoningExceedsCompletion`，`reasoning <= completion` 照常解析）；
 - **老实现把 `UsageTokens` 填成 `total_tokens`（含输入）**——那会让 tok/s 把输入当输出算（虚高），而
   `llm.Message.UsageTokens` 的注释一直写的是"输出 token"。2026-09-30 归一。
 
@@ -67,8 +88,8 @@ DSH 的原话是「full-session figures that paging and compaction cannot change
 
 ## 4. 落库（`messages` 表）
 
-加五列（幂等 ALTER）：`input_tokens` / `cache_read_tokens` / `cache_write_tokens` / `notice` /
-`usage_split`。输出 token 复用既有的 `usage_tokens` 列（现在它的语义真的是输出）。
+加六列（幂等 ALTER）：`input_tokens` / `cache_read_tokens` / `cache_write_tokens` / `notice` /
+`usage_split` / `interrupted`。输出 token 复用既有的 `usage_tokens` 列（现在它的语义真的是输出）。
 
 **`usage_split` 是「这行的用量是拆分口径」的写边界标记**（与 `notice` 位同一套做法）：
 
@@ -84,6 +105,10 @@ DSH 的原话是「full-session figures that paging and compaction cannot change
   失效模式，而且旧二进制（降级运行）写的行拿列默认值 0，判定依然正确；
 - **首字与耗时与口径无关**（那时也是如实测的）：老行照样计入 `LLMMs`/`TTFTMs`/`TTFTSteps`，
   只有 token 桶与 `decode`（速度的分子分母）把它们排除。
+
+**`interrupted` 位记在写边界**（`runTurn` 的错误出口——中断 / 流中断 / 生成失败三处同一条路）：这条
+assistant 步**没有完整跑完**。数字照常落库（历史展示用），统计折叠把整行排除——详见 §2。老行取列
+默认值 0 = 正常口径，零迁移。
 
 **`notice` 位记在写边界**（`agent.noticeMessage` 与 `runTurn` 的重复提醒注入）：两个前缀常量分别在
 `agent`（`RepeatNoticePrefix`）与 `protocol`（`JobNoticePrefix`）包里，而折叠统计的 `store` 谁都不能 import
@@ -107,9 +132,18 @@ DSH 的原话是「full-session figures that paging and compaction cannot change
 
 - `frontend/src/shared/session-stats.ts`：纯函数口径（组件与 node:test 共用一份）——`statsVisible`（没有步数 →
   整行不渲染）、`hasTokens`（四桶 > 0；决定「会话消耗」一节渲不渲染）、`totalTokens`/`promptTokens`、
-  `decodeTokensPerSec`（缺数据 → null）、`averageTtftMs`、`formatStatsTokens`（1.2k/1.2M）、
+  `decodeTokensPerSec`（缺数据 → null；**短窗护栏**见下）、`averageTtftMs`、`formatStatsTokens`（1.2k/1.2M）、
   `formatDuration`（45.2s / 2m42s）、`cacheHitPercent`、`timeDialogRows`/`usageDialogRows`、
   `timePillLabel`/`usageTotalLabel`；
+- **速度口径（2026-12 修订，对齐 DSH 的 token-meter）**：
+  - **首字缺席不出速度**：`turn-stats.ts` 的 `tokensPerSec` 在 `firstTokenMs` 缺席时返回 null（旧口径退化成
+    整轮耗时，算出来是**含 prefill 的另一口径**——宁可不显示）。轮统计里其它项（模型、tokens）照常。
+    后端日志行的 `agent.OutputTokensPerSec` 同口径（首字未知返回 0）；
+  - **短窗护栏**：解码窗 < 300ms（`MIN_DECODE_WINDOW_MS`，两个纯函数层共用同一阈值，测试钉住同值）时
+    轮级与会话级速度都返回 null——几百 ms 的窗里计时误差就能占掉一大截，算出来是噪声。会话级弹层明细
+    在短窗时显示「样本过短」一行（如实说明为什么不显示，不是无声地藏掉）；
+  - 会话级 `decodeTokensPerSec` 的分母（`decode_ms`）只累加有首字的步（§2 的 decode 条件），与轮级口径
+    同源。
 - `frontend/src/components/stats-pills/`：**输入框那一行**一个胶囊（时间）、**紧挨上下文环**（2026-09-30 用户拍板
   从"输入框上方一行"移进来）——「N 轮 · M 步 · X tok/s」，点开是模型时间 / 工具时间 / 首字延迟 / 生成速度；
 - `frontend/src/components/context-indicator/`：上下文环那个「会话用量」弹层里**多了一节「会话消耗」**
@@ -134,15 +168,22 @@ DSH 的原话是「full-session figures that paging and compaction cannot change
 
 ## 7. 钉子（测试）
 
-- `internal/store/stats_test.go`：折叠口径、**压缩不改统计**、**撤回改统计**、重启后一致、提示条不算轮；
+- `internal/store/stats_test.go`：折叠口径、**压缩不改统计**、**撤回改统计**、重启后一致、提示条不算轮、
+  **中断轮整行排除**（`TestSessionStatsExcludesInterrupted`，含 SQL 聚合与折叠双路一致）、
+  **零解码窗不进 decode**（`TestSessionStatsDecodeRequiresPositiveWindow`）；
 - `internal/agent/session_stats_test.go`：四桶与工具耗时真的落到消息上、提示条带 `notice` 位；
+  `internal/agent/session_test.go` 的 `TestInterruptedTurnMarkedForStats`：中断轮盖 `interrupted` 位
+  （数字照常落库、统计零产出）；
 - `internal/server/session_stats_ws_test.go`：走完整条链（store → server → wire）——live 与 replay 同一份、
   重启后仍在、空会话整键缺席、部分撤回后变小、子会话不写主会话、压缩不改；
 - `internal/protocol/protocol_test.go` 的 `TestSessionStatsPayloads`：逐字断言 snake_case 键名（字段改名不会编译
   失败，只会静默变成一排 0）；
+- `internal/llm/usage_test.go` 的 `TestUsageInvalidationReasoningExceedsCompletion`：reasoning > completion ⇒
+  整份 usage 作废（三例：作废 / 照常 / 全思考边界）；
 - `frontend/tests/session-stats.test.mjs` / `stats-pills.test.mjs` / `context-usage.test.mjs`：纯函数口径与
   组件接线（静态渲染看不到弹层里的字，所以口径抽进纯函数才测得到；`stats-pills.test.mjs` 还渲染真的
-  `Composer` 钉住"胶囊在 `.piBar` 里、紧挨上下文环"这个位置）。
+  `Composer` 钉住"胶囊在 `.piBar` 里、紧挨上下文环"这个位置）。`turn-stats.test.mjs`：首字缺席 → null
+  （2026-12 口径修订时更新了旧退化断言）、短窗护栏 null、两纯函数层同阈值。
 
 **真链路探针**：`node temp/ws-session-stats.mjs [端口]`（前置 = 后端在跑）。它在真实端点 + 真实模型上
 走三轮：① 主轮 `chat.done` 带 stats 且数字是活的；② `chat.history` 与 `chat.done` 逐字段一致；

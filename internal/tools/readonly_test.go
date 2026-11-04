@@ -136,6 +136,54 @@ func TestReadOnlyRejectsWriteCommands(t *testing.T) {
 	}
 }
 
+// TestReadOnlyRedirectMatrix：无害重定向放行矩阵（2026-12 P1：`2>/dev/null`
+// 占 bash_readonly 拒绝量的 16.8%，错误榜第一名）。放行的每一种形态都钉住——
+// 放宽一条 = 调研 Agent 拿到一个写入口，所以拒绝面同样逐条钉住。
+func TestReadOnlyRedirectMatrix(t *testing.T) {
+	allowed := []string{
+		"grep -rn pattern . 2>/dev/null",
+		"grep -rn pattern . 2> /dev/null", // 空格变体
+		"grep -rn pattern . >/dev/null",
+		"grep -rn pattern . > /dev/null",
+		"grep -rn pattern . 2>&1", // stderr 并进 stdout（流转，不落盘）
+		"grep -rn pattern . 1>&2",
+		"grep -rn pattern . >&1",          // csh 风格
+		"grep -rn pattern . 2>&1 | wc -l", // 与只读管道组合
+		"ls 2>/dev/null; ls /",            // 与分号组合
+		"find . -name '*.go' 2>/dev/null", // 真实被拒案例的形态
+	}
+	for _, c := range allowed {
+		if v := readOnlyViolation(c); v != "" {
+			t.Errorf("无害重定向应放行 %q，实际被拒: %s", c, v)
+		}
+	}
+	rejected := []struct {
+		cmd  string
+		want string
+	}{
+		{"echo hi > out.txt", "重定向"},
+		{"cat a.txt >> b.txt", "重定向"},     // 追加仍是写
+		{"grep x . 2>&1 >file", "重定向"},    // 流转之后落盘——组合不豁免
+		{"grep x . >2", "重定向"},            // 裸数字目标是文件名不是 fd
+		{"grep x . >/dev/nullfoo", "重定向"}, // 目标未被分隔符终结 = 另一个文件
+		{"grep x . >&1file", "重定向"},
+		{"grep x . &>out.txt", "重定向"}, // 合并重定向到真文件 = 落盘
+		{"cat < /etc/passwd", "重定向"},  // 换输入源
+		{"cat <secret.txt", "重定向"},
+		{"ls 2> err.log", "重定向"},
+	}
+	for _, c := range rejected {
+		v := readOnlyViolation(c.cmd)
+		if v == "" {
+			t.Errorf("写文件/换输入源的重定向应被拒 %q", c.cmd)
+			continue
+		}
+		if !strings.Contains(v, c.want) {
+			t.Errorf("%q 的拒绝理由应含 %q，实际: %s", c.cmd, c.want, v)
+		}
+	}
+}
+
 // TestBashReadOnlyExecutesAndRejects：端到端——只读工具真能跑只读命令，
 // 写命令被拒且回填「出路」（告诉模型该派给谁）。
 func TestBashReadOnlyExecutesAndRejects(t *testing.T) {

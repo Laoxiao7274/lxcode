@@ -95,6 +95,15 @@ type Registry struct {
 	// store 侧实现——server 装配时接线；零值 = 未装配）。与 workspace 同一批
 	// 装配期注入点。
 	agentCatalog AgentCatalogOps
+	// sshLookup 是注入的 SSH 主机别名解析（ssh_hosts 工具的 hosts.json 读取口
+	// ——server 装配时接线；nil = 未装配，工具回「未配置」自解释错误）。
+	// 配置路径归 server 装配管（与 models.json 同目录），工具层不知道路径。
+	// sshMu 与 sshGuard：探活缓存是**机器事实**（进程级），不是会话状态
+	//（与 jobCursors 的会话级键刻意相反）——两个会话先后查同一台设备，
+	// 后者吃到前者的探测结果。
+	sshMu     sync.Mutex
+	sshLookup sshHostLookup
+	sshGuard  *sshGuard
 }
 
 // SessionSearchFn 是会话搜索的实现约定：在全部会话（含当前）的消息内容里
@@ -123,7 +132,7 @@ func (r *Registry) getSessionSearch() SessionSearchFn {
 // （edit/write/bash），todo 收尾；agent_dispatch 是主 Agent 的调度
 // 通道（子 Agent 白名单不含它——两类制深度恒 1）。
 func New() *Registry {
-	r := &Registry{defs: map[string]*Def{}, builtin: map[string]bool{}}
+	r := &Registry{defs: map[string]*Def{}, builtin: map[string]bool{}, sshGuard: newSSHGuard()}
 	r.register(readFileDef())
 	r.register(searchDef())
 	r.register(webSearchDef(r))
@@ -146,6 +155,9 @@ func New() *Registry {
 	r.register(writeFileDef())
 	r.register(bashDef(r))
 	r.register(bashReadOnlyDef(r))
+	// db_query（低危只读）：对指定 SQLite 文件的只读查询——mode=ro 结构性保证，
+	// 读取类同族（调研 Agent 查库统计的专用口，替代 sqlite3 命令行拼装）。
+	r.register(dbQueryDef())
 	r.register(todoDef(r))
 	// ask_user（确认门的「提问」形态）：模型向用户提问、等用户回答——冲突
 	// 抉择、需要用户决策时用。与 todo 同为会话级交互工具，排在变更类之后。
@@ -166,6 +178,9 @@ func New() *Registry {
 	r.register(workspaceSyncDef(r))
 	r.register(workspaceRollbackDef(r))
 	r.register(workspacePublishDef(r))
+	// ssh_hosts（高危确认门）：按别名在已配置的 SSH 主机上执行命令。默认
+	// 不加给任何 Agent——远程执行由用户在 Agent 编辑器显式勾选。
+	r.register(sshHostsDef(r))
 	return r
 }
 

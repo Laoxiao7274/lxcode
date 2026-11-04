@@ -12,7 +12,7 @@ import (
 )
 
 func (s *Store) ListTools() ([]sessiondata.ToolSpec, error) {
-	rows, err := s.db.Query(`SELECT id, desc, risk, source, params, doc, server, command, example, package_file, custom FROM tools ORDER BY rowid`)
+	rows, err := s.db.Query(`SELECT id, desc, risk, source, params, doc, server, command, example, package_file, mutates, custom FROM tools ORDER BY rowid`)
 	if err != nil {
 		return nil, fmt.Errorf("列出工具失败: %w", err)
 	}
@@ -21,11 +21,16 @@ func (s *Store) ListTools() ([]sessiondata.ToolSpec, error) {
 	for rows.Next() {
 		var t sessiondata.ToolSpec
 		var params string
-		var custom int
-		if err := rows.Scan(&t.ID, &t.Desc, &t.Risk, &t.Source, &params, &t.Doc, &t.Server, &t.Command, &t.Example, &t.PackageFile, &custom); err != nil {
+		var mutates, custom int
+		if err := rows.Scan(&t.ID, &t.Desc, &t.Risk, &t.Source, &params, &t.Doc, &t.Server, &t.Command, &t.Example, &t.PackageFile, &mutates, &custom); err != nil {
 			return nil, fmt.Errorf("读工具行失败: %w", err)
 		}
 		t.Custom = custom == 1
+		// mutates 列默认 1 = 未声明（按变更处理）；0 = 声明为只读。
+		falseFlag := false
+		if mutates == 0 {
+			t.Mutates = &falseFlag
+		}
 		if params != "" && params != "[]" {
 			if err := json.Unmarshal([]byte(params), &t.Params); err != nil {
 				return nil, fmt.Errorf("解析工具参数失败: %w", err)
@@ -62,8 +67,8 @@ func (s *Store) UpdateTool(t sessiondata.ToolSpec) error {
 	if t.Custom {
 		custom = 1
 	}
-	res, err := s.db.Exec(`UPDATE tools SET desc=?, risk=?, source=?, params=?, doc=?, server=?, command=?, example=?, package_file=?, custom=?, updated_at=? WHERE id=?`,
-		t.Desc, t.Risk, t.Source, string(params), t.Doc, t.Server, t.Command, t.Example, t.PackageFile, custom, nowNano(), t.ID)
+	res, err := s.db.Exec(`UPDATE tools SET desc=?, risk=?, source=?, params=?, doc=?, server=?, command=?, example=?, package_file=?, mutates=?, custom=?, updated_at=? WHERE id=?`,
+		t.Desc, t.Risk, t.Source, string(params), t.Doc, t.Server, t.Command, t.Example, t.PackageFile, mutatesFlag(t.Mutates), custom, nowNano(), t.ID)
 	if err != nil {
 		return fmt.Errorf("更新工具失败: %w", err)
 	}
@@ -156,4 +161,13 @@ func validToolID(id string) bool {
 		}
 	}
 	return true
+}
+
+// mutatesFlag 把声明转成列值：nil = 未声明（默认 1 = 按变更处理），
+// false = 0（声明只读），true = 1。
+func mutatesFlag(m *bool) int {
+	if m != nil && !*m {
+		return 0
+	}
+	return 1
 }

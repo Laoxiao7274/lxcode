@@ -119,12 +119,16 @@ func jobOutputDef(r *Registry) *Def {
 				return "", err
 			}
 			r.setJobCursor(sessionID, id, next)
+			// 执行会话通告口：子会话 wait 等任务时，settle 即由 server 把通告
+			// 投进子会话（不按时间线归属——那是 server 广播路径的事）。nil =
+			// 未注入（无通道，行为与以前一致）。
+			notify := JobNotify(ctx)
 			if a.Wait && !snap.Status.Terminal() {
 				timeout := jobWaitDefault
 				if a.TimeoutMS > 0 {
 					timeout = time.Duration(min(a.TimeoutMS, int(jobWaitMax/time.Millisecond))) * time.Millisecond
 				}
-				snap = waitJob(ctx, mgr, id, timeout)
+				snap = waitJob(ctx, mgr, id, timeout, notify)
 				// 等待期间可能又写了输出：把增量补上（游标接着走）
 				if more, next2, snap2, rerr := mgr.Read(id, next, maxBytes); rerr == nil {
 					data, next, snap = data+more, next2, snap2
@@ -140,14 +144,25 @@ func jobOutputDef(r *Registry) *Def {
 //
 // 先订阅再查快照：反过来的话，两者之间发生的 settle 会**丢掉**，
 // 于是 wait=true 白等到超时（返回的 status 还停在 running）。
-func waitJob(ctx context.Context, mgr *jobs.Manager, id string, timeout time.Duration) jobs.Snapshot {
+//
+// onSettle 是等待方的**执行会话通告口**（ctx 注入，见 sessionstate.go 的
+// WithJobNotify）：后台任务的结束通告按时间线归属投递，执行会话（尤其子会话）
+// 自己收不到——子 Agent wait 等到的只是超时快照，之后它不知道任务其实已结束，
+// 只能继续 sleep 盲等（真库实锤：验收子会话 sleep 累计 53.5 分钟、job_output
+// 调用 0 次）。订阅到 settle 即把通告转给执行会话（server 侧 Notify：忙则轮边界
+// 注入、空闲则唤醒——即便本轮 wait 超时返回，任务结束时子会话也会被点亮）。
+func waitJob(ctx context.Context, mgr *jobs.Manager, id string, timeout time.Duration, onSettle func(string)) jobs.Snapshot {
 	done := make(chan jobs.Snapshot, 1)
 	unsub := mgr.Subscribe(func(ev jobs.Event) {
-		if ev.Kind == jobs.EventSettled && ev.Snapshot.ID == id {
-			select {
-			case done <- ev.Snapshot:
-			default:
-			}
+		if ev.Kind != jobs.EventSettled || ev.Snapshot.ID != id {
+			return
+		}
+		select {
+		case done <- ev.Snapshot:
+		default:
+		}
+		if onSettle != nil {
+			onSettle(jobSettleNotice(ev.Snapshot))
 		}
 	})
 	defer unsub()
@@ -306,4 +321,36 @@ func formatJobList(list []jobs.Snapshot) string {
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// jobSettleNotice 把一次 settle 快照翻成**投给执行会话**的通告文本。
+//
+// 措辞对齐 server/jobs.go 的 jobNoticeText（契约 docs/jobs.md §5 的表），
+// 但**独立一份**：分层守卫禁止 tools import server，而 server 的那份按
+// EndedBy 过滤后还要带 protocol 前缀走广播路径；这里只服务 wait 订阅回调
+// ——通告口（JobNotify）本来就是过滤后的（server 只注入给非 agent/非 backend
+// 结束的情形），这里只按状态给一句「结束了 + 下一步」。
+// agent/后端结束的快照不会走到这里（见 job_notify.go 的回调）。
+func jobSettleNotice(snap jobs.Snapshot) string {
+	label := snap.Label
+	if label == "" {
+		label = snap.ID
+	}
+	switch {
+	case snap.Status == jobs.StatusCompleted:
+		return fmt.Sprintf("后台任务 %s 已结束（%s）。用 job_output(job_id=%q) 读输出。",
+			label, detailOrJob(snap.Detail, "退出码 0"), snap.ID)
+	case snap.Detail == jobs.TimeoutDetail:
+		return fmt.Sprintf("后台任务 %s 超时被杀。", label)
+	default:
+		return fmt.Sprintf("后台任务 %s 已结束（%s）。用 job_output(job_id=%q) 读输出。",
+			label, detailOrJob(snap.Detail, string(snap.Status)), snap.ID)
+	}
+}
+
+func detailOrJob(s, fallback string) string {
+	if strings.TrimSpace(s) == "" {
+		return fallback
+	}
+	return s
 }

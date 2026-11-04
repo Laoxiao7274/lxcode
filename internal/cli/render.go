@@ -54,7 +54,7 @@ func (r *REPL) render(ev protocol.Response) {
 		}
 		if p.Kind == "text" {
 			fmt.Print(p.Text)
-		} else if r.showThink {
+		} else if r.getShowThink() {
 			fmt.Print("\x1b[2m" + p.Text + "\x1b[0m")
 		}
 	case protocol.EventToolCall:

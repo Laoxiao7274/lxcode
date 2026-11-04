@@ -101,12 +101,13 @@ func editDef() *Def {
 			switch {
 			case n == 0:
 				return "", fmt.Errorf("old_string 在 %s 中没有匹配。请先 read_file 核对原文"+
-					"（注意缩进、空行、全半角必须逐字符一致）后再试%s", a.Path, readObservationHint(ctx, path, st))
+					"（注意缩进、空行、全半角必须逐字符一致）后再试；文件中最接近的几行：%s"+
+					"（若本批多处修改都失败，先 read_file 逐个核对再改）%s",
+					a.Path, nearestLinesForEdit(string(data), a.OldString), readObservationHint(ctx, path, st))
 			case n > 1 && !a.ReplaceAll:
 				return "", fmt.Errorf("old_string 在 %s 中匹配了 %d 处。要么扩大 old_string 的范围"+
 					"（带上前后行使其唯一），要么确认全部都要改并用 replace_all=true%s", a.Path, n, readObservationHint(ctx, path, st))
 			}
-
 			var out string
 			if a.ReplaceAll {
 				out = strings.ReplaceAll(string(data), a.OldString, a.NewString)

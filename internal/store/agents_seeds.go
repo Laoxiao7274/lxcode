@@ -98,7 +98,21 @@ var seedTools = []sessiondata.ToolSpec{
 			{Name: "stdin", Type: "string", Desc: "标准输入（可选，≤64KB）"},
 			{Name: "timeout_sec", Type: "int", Desc: "超时秒数（默认 60，上限 300）"},
 		},
-		Doc: "只读执行面：命令级白名单校验，写操作（rm/mv/重定向/git commit/git push/包管理/解释器脚本）一律拒绝并说明原因；命令替换、解释器等无法静态判定的结构同样拒绝（只读命令之间的管道可以）。\n\n- 适合读数据：查 SQLite、看 git 历史、统计文件规模\n- 改文件请交给代码 Agent（bash / edit / write_file）",
+		Doc: "只读执行面：命令级白名单校验，写操作（rm/mv/写文件重定向/git commit/git push/包管理/解释器脚本）一律拒绝并说明原因；无害重定向（2>/dev/null、>/dev/null、2>&1、&>/dev/null）与只读命令之间的管道放行；命令替换、heredoc 与写文件重定向（>file、>>file）拒绝（只读命令之间的管道可以）。\n\n- 适合读数据：查 SQLite、看 git 历史、统计文件规模\n- 改文件请交给代码 Agent（bash / edit / write_file）",
+	},
+	{
+		// db_query（只读查询工具，P8-1）：对指定 SQLite 文件的只读查询——mode=ro
+		// 结构性保证（写操作在驱动层被拒），替代 bash_readonly 里 sqlite3 命令行的
+		// 拼装（readonly.go 的 SQL 关键字判据会把 replace() 这类纯函数误拒）。
+		// 必须在目录里：编辑器渲染 chip 只读目录（web_search 栽过的那一跤）。
+		// Mutates=false：只读连接是结构性保证，strict 只读档照常可用。
+		ID: "db_query", Desc: "对指定 SQLite 数据库文件执行只读查询（单条 SELECT/EXPLAIN/WITH）", Risk: "low", Source: "builtin", Custom: false,
+		Mutates: boolPtr(false),
+		Params: []sessiondata.ToolParam{
+			{Name: "path", Type: "string", Required: true, Desc: "SQLite 数据库文件路径（相对会话工作目录或绝对路径）"},
+			{Name: "sql", Type: "string", Required: true, Desc: "单条查询语句：SELECT / EXPLAIN / WITH 开头"},
+		},
+		Doc: "只读连接（mode=ro）打开，任何写操作在驱动层被拒绝——不是靠 SQL 校验。\n\n- 单条语句（多余分号拒绝）；行数上限 100、单元格截断 500 字符、超时 5s\n- 结果以 JSON 返回（columns + rows），NULL 显式为 NULL，BLOB 报大小不吐内容\n- 改库请交给代码 Agent（或明确告知用户）",
 	},
 	{
 		ID: "todo", Desc: "任务清单全量写入", Risk: "low", Source: "builtin", Custom: false,
@@ -239,14 +253,30 @@ var seedTools = []sessiondata.ToolSpec{
 		// command 必须是**可运行**的模板——空 command 的工具进不了注册表，
 		// 模型会如实回答「注册表没有」（用户报告过的原始现象）。
 		// rg 未安装时调用会回填「[启动失败: ...]」，自解释。
+		// Mutates=false（2026-12 P5）：rg 是纯检索（只读不改任何文件），strict
+		// 只读档应放行——此前 custom.go 硬写 Mutates=true，strict 下被拒
+		// 39 次/26 会话，每次代价一整轮重规划。
+		// 参数面（2026-12 P2）：与内置 search 逐字段对齐（pattern/path/mode/max/all
+		// + rg 专属的上下文/类型开关）——124 次调用死在「工具 ripgrep 不支持参数
+		// max/head_limit/mode」上（模型拿 search 的参数面往 rg 上套）。mode/max/
+		// ignore_case/all 由 custom.go 的转译层翻成 rg 标志，模板只放 rg 原生开关。
 		ID: "ripgrep", Desc: "Rust 检索二进制——大仓库全文搜索", Risk: "low", Source: "binary", Custom: false,
-		Command: "rg -n --no-heading --color=never --glob={glob} {pattern} {path}",
+		Mutates: boolPtr(false),
+		Command: "rg -n --no-heading --color=never --after-context={after} --before-context={before} --context={context} --type={type} --glob={glob} {pattern} {path}",
 		Params: []sessiondata.ToolParam{
 			{Name: "pattern", Type: "regex", Required: true, Desc: "检索正则（RE2 语法）"},
 			{Name: "path", Type: "string", Desc: "检索根目录（默认会话工作目录）"},
 			{Name: "glob", Type: "string", Desc: "文件名过滤（如 *.go）"},
+			{Name: "mode", Type: "enum", Desc: "files=只列匹配的文件路径（默认，与 search 一致）；content=列出匹配行（带行号）；count=每个文件的命中数"},
+			{Name: "max", Type: "int", Desc: "每个文件最多命中的行数（rg -m；与 search 的 max=结果条数不同——限输出用 mode=files 或缩小 pattern）"},
+			{Name: "ignore_case", Type: "bool", Desc: "true=大小写不敏感（rg -i）"},
+			{Name: "all", Type: "bool", Desc: "true=连隐藏文件与被 .gitignore 忽略的文件一起搜（rg --hidden --no-ignore）"},
+			{Name: "after", Type: "int", Desc: "命中行之后附带的行数（rg -A）"},
+			{Name: "before", Type: "int", Desc: "命中行之前附带的行数（rg -B）"},
+			{Name: "context", Type: "int", Desc: "命中行前后各附带的行数（rg -C；与 after/before 互斥，context 优先）"},
+			{Name: "type", Type: "string", Desc: "按类型过滤（rg --type，如 go / py / js）"},
 		},
-		Doc: "Rust 检索二进制，经进程边界接入（Go 主刀、Rust 武器库）。\n\n大仓库全文搜索比内置 search 快一个量级；参数与 rg CLI 对齐（path/glob 可选——不给就搜会话工作目录）。\n\n未安装 rg 时调用会报「启动失败」：装法 `winget install BurntSushi.ripgrep.MSVC`（或 `cargo install ripgrep`）。",
+		Doc: "Rust 检索二进制，经进程边界接入（Go 主刀、Rust 武器库）。\n\n大仓库全文搜索比内置 search 快一个量级，**优先用它**做全文检索；参数面与内置 search 对齐（pattern/path/mode/max/all，另有 rg 专属的 after/before/context/type——上下文行用 after/before/context，别再拼 `| head` 或 `-A` 进 pattern）。\n\n- mode 与 search 同语义：files=只列文件（默认）、content=列命中行、count=计数\n- 参数与 rg CLI 的对应：ignore_case→-i、max→-m、all→--hidden --no-ignore\n- 未安装 rg 时调用会报「启动失败」：装法 `winget install BurntSushi.ripgrep.MSVC`（或 `cargo install ripgrep`）。",
 	},
 	{
 		// 声明了但没实现（浏览器面板在路线图上）：command 留空 = 目录里可见但
@@ -254,6 +284,20 @@ var seedTools = []sessiondata.ToolSpec{
 		ID: "browser", Desc: "Chromium 面板驱动（页面勘察与截图）", Risk: "low", Source: "binary", Custom: false,
 		Params: []sessiondata.ToolParam{{Name: "url", Type: "string", Required: true}, {Name: "action", Type: "enum", Desc: "navigate / snapshot / click"}},
 		Doc:    "Chromium 面板驱动。\n\n三段式：navigate 导航 → snapshot 快照定位 → click 操作。\n\n**未配置**：还没有对应的驱动二进制——先在拓展页把 command 填上（或删掉这条）才会进注册表。",
+	},
+	{
+		// ssh_hosts（P8-2）：按别名在已配置的 SSH 主机上执行命令。高危确认门
+		//（远程执行），**默认不进任何 Agent 白名单**——由用户在 Agent 编辑器
+		// 显式勾选。主机清单在 config 目录的 hosts.json（密码支持 ${ENV_VAR}
+		// 引用，避免明文落盘）。必须在目录里：编辑器渲染 chip 只读目录。
+		ID: "ssh_hosts", Desc: "在已配置的 SSH 主机（按别名）上执行命令（凭据集中管理 + 探活缓存）", Risk: "high", Source: "builtin", Custom: false,
+		Params: []sessiondata.ToolParam{
+			{Name: "host", Type: "string", Required: true, Desc: "主机别名（hosts.json 里配置的 alias）"},
+			{Name: "command", Type: "string", Required: true, Desc: "要在远程主机上执行的命令"},
+			{Name: "timeout_s", Type: "int", Desc: "超时秒数（默认 30，上限 300）"},
+			{Name: "fresh", Type: "bool", Desc: "true = 跳过探活缓存，强制先做连接测试"},
+		},
+		Doc: "凭据与端口在 config 目录的 hosts.json 集中管理，不用在命令里拼 sshpass/密码/端口（密码建议用 ${ENV_VAR} 引用避免明文落盘）。\n\n- 同一主机 60 秒内连过会跳过连接测试（fresh=true 强制重探）\n- 声明了 hostkey 就启用严格校验（StrictHostKeyChecking=yes）；未声明用 accept-new\n- 远程执行 = 高危：每次调用走确认门（或按会话权限档）\n- 密码认证需要本机有 sshpass，否则请配置 key_path",
 	},
 }
 
@@ -338,13 +382,17 @@ var seedAgents = []sessiondata.AgentDef{
 		// 统计规模跑不了 wc，只能答「做不到」）。它是**独立的只读工具**
 		//（tools/readonly.go）：命令级白名单校验，写操作一律拒绝并回填出路；
 		// 自身 Mutates=false，不触发确认门（调研查一次库弹一次窗等于不可用）。
+		//
+		// db_query（2026-12 P8-1）：查库的**结构化只读口**——mode=ro 驱动层保证
+		// 写拒绝（readonly.go 的关键字判据会把 replace() 这类纯函数误拒 23 次）。
+		// 查 SQLite 优先用它，bash_readonly 的 sqlite3 留给点命令/特殊形态。
 		ID: "researcher", Name: "调研 Agent", Enabled: true, Color: "#10a37f", Model: "",
 		// Desc 是**主 Agent 的选人信号**（可委派名单按它逐字生成，见 compose.go 的 ④）：
 		// 漏写「联网搜索」的后果是主 Agent 不知道「查外部资料」该派给谁——工具给了、
 		// 白名单勾了，但选人那一步没有信号，这个能力等于不存在。
-		Desc:     "只读调研：检索代码、读文件、查数据库（只读 bash_readonly：sqlite3 查询/git log/wc 等）、联网搜索与抓取网页正文、梳理跨文件脉络，只给结论与出处，不改任何文件。",
-		Prompt:   "你是调研 Agent。只做检索与信息整理，**不修改任何文件、不执行构建测试、不提交推送**。\n\n职责边界：\n- 结论必须带依据：文件路径 + 行号、命令输出或文档链接；查不到就如实说「未找到」，不编造也不推测。\n- bash_readonly 是只读执行面：可以跑读取类命令（ls/cat/grep/find/wc、git log/diff/status、sqlite3 的 SELECT 查询等），写操作（rm/mv/重定向/git commit/git push/包管理/解释器脚本）会被工具直接拒绝。\n- 被拒绝时不要绕过：把「需要什么改动」写进结论，交回主 Agent 派给代码 Agent（coder）或测试 Agent（tester）。",
-		Tools:    []string{"read_file", "search", "session_search", "ripgrep", "web_search", "web_fetch", "bash_readonly"},
+		Desc:     "只读调研：检索代码、读文件、查数据库（db_query 只读查询 / bash_readonly：sqlite3 查询/git log/wc 等）、联网搜索与抓取网页正文、梳理跨文件脉络，只给结论与出处，不改任何文件。",
+		Prompt:   "你是调研 Agent。只做检索与信息整理，**不修改任何文件、不执行构建测试、不提交推送**。\n\n职责边界：\n- 结论必须带依据：文件路径 + 行号、命令输出或文档链接；查不到就如实说「未找到」，不编造也不推测。\n- 查 SQLite 数据库优先用 db_query（只读连接，单条 SELECT/EXPLAIN/WITH；写操作被驱动层拒绝）——不要经 bash 拼 sqlite3 命令行。\n- bash_readonly 是只读执行面：可以跑读取类命令（ls/cat/grep/find/wc、git log/diff/status 等），写操作（rm/mv/重定向/git commit/git push/包管理/解释器脚本）会被工具直接拒绝。\n- 被拒绝时不要绕过：把「需要什么改动」写进结论，交回主 Agent 派给代码 Agent（coder）或测试 Agent（tester）。",
+		Tools:    []string{"read_file", "search", "session_search", "ripgrep", "web_search", "web_fetch", "bash_readonly", "db_query"},
 		Workflow: "research-first", Skills: []string{},
 		Delegates: []string{}, Approval: "auto",
 	},

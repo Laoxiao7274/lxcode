@@ -359,7 +359,7 @@ func TestChildSessionCompactionKeepsTaskBrief(t *testing.T) {
 
 	// 走真实入口开子会话（runDispatch 用的就是它）
 	call := tools.DispatchCall{Agent: "coder", Task: "跑一遍测试", DispatchID: "call-x"}
-	child, childID, err := env.s.openChildSession(call,
+	child, childID, _, err := env.s.openChildSession(call,
 		&sessiondata.AgentContext{Def: sessiondata.AgentDef{ID: "coder"}})
 	if err != nil {
 		t.Fatal(err)
@@ -371,7 +371,7 @@ func TestChildSessionCompactionKeepsTaskBrief(t *testing.T) {
 		t.Fatal("子会话应保护头部任务说明书（openChildSession 置位）")
 	}
 	// 历史第 0 条 = 派发的任务说明书；其后是子会话自己跑出来的长历史
-	task := composeTaskMessage(call)
+	task := composeTaskMessage(call, nil)
 	child.append(llm.Message{Role: "user", Content: task})
 	for _, m := range bigHistory(6) {
 		child.append(m)

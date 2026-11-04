@@ -33,6 +33,9 @@ export interface ToolSpec {
   /** 程序包文件名（zip/exe 上传——原型存声明；后端化时落盘
    *  plugins/ 目录并解压找入口）。 */
   packageFile?: string;
+  /** 执行会不会变更外部世界（strict 只读档的拒绝依据）。undefined = 未声明
+   *  （按 true 处理——起进程即变更的保守默认）；确证只读的工具声明 false。 */
+  mutates?: boolean;
 }
 
 /** MCP 服务器（拓展第四版块的条目）：接入单元——服务器注册后暴露的

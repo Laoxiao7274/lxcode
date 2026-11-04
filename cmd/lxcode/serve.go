@@ -17,6 +17,7 @@ import (
 	"github.com/moyunteng/lxcode/internal/modelcatalog"
 	"github.com/moyunteng/lxcode/internal/server"
 	"github.com/moyunteng/lxcode/internal/store"
+	"github.com/moyunteng/lxcode/internal/tools"
 	"github.com/moyunteng/lxcode/internal/websearch"
 )
 
@@ -120,6 +121,10 @@ func runServe(ctx context.Context, path, addr, sessionsDir string) error {
 	srv.AttachBehavior(behaviorPath)
 	log.Printf("行为配置: %s（todoPrompt=%s）", behaviorPath, srv.BehaviorTodoPrompt())
 
+	// SSH 主机（config/hosts.json，与 models.json 同目录）：ssh_hosts 工具的
+	// 别名与凭据清单。加载失败不拒绝启动（工具回自解释错误）。
+	srv.AttachSSHHostLookup(sshHostLookupOf(path))
+
 	// 后台预热：首次拉取要几秒（实测 5 MB / ~5s），预热过设置面板一开就是热的。
 	// 失败只记日志——真正的错误会在用户打开设置时如实回报。
 	go func() {
@@ -165,6 +170,42 @@ func resolveBehaviorPath(modelsPath string) string {
 	return filepath.Join(filepath.Dir(modelsPath), "behavior.json")
 }
 
+// resolveSSHHostsPath 决定 SSH 主机配置路径：与 models.json 同目录（同一份
+// 部署配置的一部分——ssh_hosts 工具的别名与凭据清单）。LXCODE_SSH_HOSTS
+// 覆盖（测试用）。
+func resolveSSHHostsPath(modelsPath string) string {
+	if env := os.Getenv("LXCODE_SSH_HOSTS"); env != "" {
+		return env
+	}
+	return filepath.Join(filepath.Dir(modelsPath), "hosts.json")
+}
+
+// sshHostLookupOf 读 hosts.json 并返回别名解析函数（ssh_hosts 工具的注入口）。
+// 加载失败不拒绝启动（与搜索渠道同一条理由：坏配置不该拖垮对话主功能），
+// 工具调用时会回「别名不在配置里」的自解释错误。
+//
+// lookup 闭包持有启动时的清单快照：别名清单按 reloadLoop 周期刷新太重，
+// 第一版启动加载（改 hosts.json 后重启后端生效——配置里是凭据，热加载的
+// 收益远小于「凭据悄悄换掉」的审计成本）。
+func sshHostLookupOf(modelsPath string) tools.SSHHostLookupFunc {
+	path := resolveSSHHostsPath(modelsPath)
+	hosts, err := tools.LoadSSHHosts(path)
+	if err != nil {
+		log.Printf("警告: SSH 主机配置加载失败（ssh_hosts 将不可用）: %v", err)
+		hosts = nil
+	} else if len(hosts) > 0 {
+		log.Printf("SSH 主机配置: %s（%d 台）", path, len(hosts))
+	}
+	return func(alias string) (tools.SSHHost, bool) {
+		for _, h := range hosts {
+			if h.Alias == alias {
+				return h, true
+			}
+		}
+		return tools.SSHHost{}, false
+	}
+}
+
 // reloadLoop 周期热加载注册表与搜索渠道配置：手改 models.json /
 // search.json 后无需重启服务。变更才广播；失败保留旧状态（降级可用）。
 func reloadLoop(ctx context.Context, reg *config.Registry, searchSvc *websearch.Service, srv *server.Server) {
@@ -183,11 +224,14 @@ func reloadLoop(ctx context.Context, reg *config.Registry, searchSvc *websearch.
 				srv.NotifyModels()
 				log.Printf("注册表变更已广播: %s", now)
 			}
-			// 搜索渠道：变更广播由 Service 自己的回调触发（AttachSearch 挂的），
-			// 这里只负责让它重读磁盘。
+			// 搜索渠道：热加载发现变更时广播 search.changed（与上面模型
+			// 注册表同一套纪律——手改 search.json 前端要能刷新）。
 			if searchSvc != nil {
-				if _, err := searchSvc.Reload(); err != nil {
+				if changed, err := searchSvc.Reload(); err != nil {
 					log.Printf("搜索渠道配置热加载失败（保留旧状态）: %v", err)
+				} else if changed {
+					srv.NotifySearch()
+					log.Printf("搜索渠道配置变更已广播")
 				}
 			}
 			// 行为开关（behavior.json）：读侧（chat.send）每次现读，这里只负责

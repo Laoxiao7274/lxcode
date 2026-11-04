@@ -232,7 +232,9 @@ test('⑦ DemoAgent.childHistory 返回空快照（演示态没有子会话，�
   assert.deepEqual(snap.messages, [], '演示态没有子会话历史——空快照是实话，编一份过程才是骗人');
   assert.equal(snap.busy, false);
   assert.equal(snap.pending, null);
-  assert.deepEqual(snap.todos, []);
+  // todos 整键缺席 = 未知（wire 统一约定——演示源没有清单事实，键缺席不猜；
+  // 归约器按键缺席保留本地清单）。
+  assert.equal(snap.todos, undefined);
   // 空快照经同一份映射后就是空数组（卡里显示"没有可显示的历史"）
   assert.deepEqual(historyBlocks(snap), []);
 });

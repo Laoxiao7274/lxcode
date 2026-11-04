@@ -124,7 +124,13 @@ export function emptyChildLinks(): ChildLinks {
 }
 
 /** 记一条 dispatch 事实（dispatchStart 或回放块）：两张映射一起更新。
- *  幂等：同样的内容重复记录返回同一对象（不触发无谓的重渲染）。 */
+ *  幂等：同样的内容重复记录返回同一对象（不触发无谓的重渲染）。
+ *
+ *  **dispatch id 碰撞不静默覆盖**（2026-12 todo 跨派发残留批次）：dispatch id 是
+ *  LLM 生成的 tool_call id，**跨会话可能重复**——同一个 id 被两个父会话先后用到
+ *  时，后写者把前者的路由项抢走，前者子会话的实时事件从此投错地方（「进度消失」
+ *  的路由版）。这里保留首次记录（先到先得）：碰撞的两个事实里必有一个是对的，
+ *  静默换向会让先建立的会话整个失联——比后写者降级到卡上反查轻。 */
 export function recordChildLink(
   links: ChildLinks,
   fact: { childId: string; parentId: string; dispatchId?: string },
@@ -132,9 +138,13 @@ export function recordChildLink(
   if (!fact.childId || !fact.parentId) return links;
   const childParents = recordChildParent(links.childParents, fact.childId, fact.parentId);
   const dispatchId = fact.dispatchId ?? "";
-  const dispatchChild = !dispatchId || links.dispatchChild[dispatchId] === fact.childId
+  // 已有记录且指向**不同的**子会话 = 碰撞：保留首次，不覆盖（见函数注释）。
+  const existingChild = dispatchId ? links.dispatchChild[dispatchId] : undefined;
+  const dispatchChild = !dispatchId || existingChild === fact.childId
     ? links.dispatchChild
-    : { ...links.dispatchChild, [dispatchId]: fact.childId };
+    : existingChild
+      ? links.dispatchChild
+      : { ...links.dispatchChild, [dispatchId]: fact.childId };
   if (childParents === links.childParents && dispatchChild === links.dispatchChild) return links;
   return { childParents, dispatchChild };
 }

@@ -71,8 +71,10 @@ func CustomDef(spec sessiondata.ToolSpec) (*Def, error) {
 		Description: desc,
 		Parameters:  declared,
 		Risk:        risk,
-		// 起进程即变更外部世界：strict 只读模式必须拒绝（与 bash 同款语义）
-		Mutates: true,
+		// Mutates 按目录声明判定（2026-12 P5）：nil = 未声明 → 保守默认 true
+		//（起进程即变更外部世界，strict 只读档拒绝）；确证只读的工具（如 rg）
+		// 声明 false → strict 放行。硬写 true 曾让 rg 在 strict 下被拒 39 次。
+		Mutates: mutatesOf(spec.Mutates),
 		Confirm: func(_ context.Context, args json.RawMessage) string {
 			if risk != RiskHigh {
 				return ""
@@ -92,6 +94,12 @@ func CustomDef(spec sessiondata.ToolSpec) (*Def, error) {
 			return runArgv(ctx, argv)
 		},
 	}, nil
+}
+
+// mutatesOf 归一 Mutates 声明：nil = 未声明 → true（变更外部世界的保守默认，
+// 与既有行为逐字节一致）；显式 false = 声明只读。
+func mutatesOf(m *bool) bool {
+	return m == nil || *m
 }
 
 // paramSchema 把目录里的参数描述转成 JSON Schema（透传给模型的工具声明）。
@@ -192,6 +200,13 @@ func placeholders(template string) []string {
 // 可选参数（Required=false）缺省时**丢掉整个 token**——`rg {pattern} {path}`
 // 这类模板里 path 不给就退化成 `rg {pattern}`（默认搜当前目录），而不是报错；
 // 必填参数缺省才报错（错误信息列出可用参数，模型可自行纠正）。
+//
+// search 风格参数转译（2026-12 P2）：模型普遍拿内置 search 的参数面往自定义
+// 检索工具上套（124 次死在「工具 ripgrep 不支持参数 max/head_limit/mode」）。
+// 工具声明了 mode/max/ignore_case/all 之一、且模板没有对应占位符时，按 search
+// 的语义转译成 CLI 标志（mode=files→-l、count→-c、max→-m、ignore_case→-i、
+// all→--hidden --no-ignore）插在程序名之后——作者声明这些名字就是采纳了
+// search 的语义；模板自己占位了（{mode}）则由模板全权处理，转译不介入。
 func renderCommand(spec sessiondata.ToolSpec, template string, args json.RawMessage) ([]string, error) {
 	vals, err := scalarArgs(args)
 	if err != nil {
@@ -213,12 +228,18 @@ func renderCommand(spec sessiondata.ToolSpec, template string, args json.RawMess
 			return nil, fmt.Errorf("工具 %s 不支持参数 %q（可用: %s）", spec.ID, name, strings.Join(paramNames(spec), ", "))
 		}
 	}
+	flags, err := searchStyleFlags(spec.ID, template, spec.Params, vals)
+	if err != nil {
+		return nil, err
+	}
 	tokens := strings.Fields(template)
 	if len(tokens) == 0 {
 		return nil, fmt.Errorf("工具 %s 的 command 模板为空", spec.ID)
 	}
-	argv := make([]string, 0, len(tokens))
-	for _, tok := range tokens {
+	argv := make([]string, 0, len(tokens)+len(flags))
+	argv = append(argv, tokens[0])
+	argv = append(argv, flags...)
+	for _, tok := range tokens[1:] {
 		out, missing, err := substitute(tok, vals, required)
 		if err != nil {
 			return nil, fmt.Errorf("工具 %s: %w", spec.ID, err)
@@ -233,6 +254,71 @@ func renderCommand(spec sessiondata.ToolSpec, template string, args json.RawMess
 		return nil, fmt.Errorf("工具 %s 的可执行文件名渲染为空（command 模板缺了必填参数？）", spec.ID)
 	}
 	return argv, nil
+}
+
+// searchStyleFlags 把声明了 search 风格参数的调用转译成 CLI 标志。
+//
+// 触发条件（逐条）：参数已声明 + 模板不含它的占位符 + 名字在转译表里。
+// 只对 mode / max / ignore_case / all 四个名字生效——这四个与内置 search
+// 的参数面对齐；别的名字不猜（猜错一个就是给任意 binary 工具注入未知标志）。
+// 错误（mode 值非法等）在这里报出，模型看到的是与 search 一致的口径。
+func searchStyleFlags(toolID, template string, params []sessiondata.ToolParam, vals map[string]string) ([]string, error) {
+	declared := func(name string) (sessiondata.ToolParam, bool) {
+		for _, p := range params {
+			if strings.TrimSpace(p.Name) == name {
+				return p, true
+			}
+		}
+		return sessiondata.ToolParam{}, false
+	}
+	hasPlaceholder := func(name string) bool {
+		return strings.Contains(template, "{"+name+"}")
+	}
+	var flags []string
+	// mode：files→-l（--files-with-matches，只列文件路径）、count→-c、
+	// content→无（默认列命中行）。缺省 = files（与 search 的默认一致——
+	// 「最省上下文」的口径两边相同）。
+	if _, ok := declared("mode"); ok && !hasPlaceholder("mode") {
+		mode := vals["mode"]
+		if mode == "" {
+			mode = "files" // 参数缺省时也按 search 的默认走
+		}
+		switch mode {
+		case "files":
+			flags = append(flags, "-l")
+		case "count":
+			flags = append(flags, "-c")
+		case "content":
+			// 默认行为：列命中行（模板里的 -n 提供行号）
+		default:
+			return nil, fmt.Errorf("工具 %s 的 mode 只能是 files / content / count，收到 %q", toolID, mode)
+		}
+	}
+	// max：每个文件最多命中行数（rg -m / --max-count）。值>0 才插入——
+	// 0/缺省 = 不限（rg 的默认），转成 -m 0 反而会报错。
+	if _, ok := declared("max"); ok && !hasPlaceholder("max") {
+		if v := strings.TrimSpace(vals["max"]); v != "" {
+			n, err := strconv.Atoi(v)
+			if err != nil || n <= 0 {
+				return nil, fmt.Errorf("工具 %s 的 max 必须是正整数，收到 %q", toolID, v)
+			}
+			flags = append(flags, "-m", strconv.Itoa(n))
+		}
+	}
+	// ignore_case（bool）：true → -i
+	if _, ok := declared("ignore_case"); ok && !hasPlaceholder("ignore_case") {
+		if vals["ignore_case"] == "true" {
+			flags = append(flags, "-i")
+		}
+	}
+	// all（bool）：true → --hidden --no-ignore（连隐藏文件与被忽略文件一起搜，
+	// 与 search 的 all 同语义）
+	if _, ok := declared("all"); ok && !hasPlaceholder("all") {
+		if vals["all"] == "true" {
+			flags = append(flags, "--hidden", "--no-ignore")
+		}
+	}
+	return flags, nil
 }
 
 // substitute 把单个 token 里的 {name} 全部替换为参数值。

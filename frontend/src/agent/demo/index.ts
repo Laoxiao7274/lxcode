@@ -435,7 +435,7 @@ export class DemoAgent implements AgentSource, JobAdminSource {
   async childHistory(sessionId: string, beforeSeq?: number): Promise<HistorySnapshot> {
     void beforeSeq; // 演示数据源没有更早的历史：ignored（不分页）
     const snapshot: HistorySnapshot = sessionId !== DEMO_CHILD_SESSION
-      ? { sessionId, messages: [], busy: false, pending: null, todos: [] }
+      ? { sessionId, messages: [], busy: false, pending: null }
       : {
         sessionId,
         messages: this.childMsgs_,
@@ -443,7 +443,8 @@ export class DemoAgent implements AgentSource, JobAdminSource {
         // 挂起确认挂在**父会话**（确认门代理，AGENTS.md §2.3）——子会话自己没有 pending，
         // 所以这里如实报 null；子会话视图里那张待裁决卡来自实时事件（store 的双投）。
         pending: null,
-        todos: [],
+        // todos 整键缺席 = 未知（wire 统一约定）：演示子会话的清单来自实时
+        // todo.updated 双投，快照不编一份（键缺席时前端保留本地已显示的清单）。
         model: DEMO_CHILD_MODEL,
         // 子会话**自己的**两份读数（与真链路的 chat.history{子会话} 同契约）：
         // 真后端按子会话自己的 id 折叠它的日志、并把子会话自己的 context 挂上

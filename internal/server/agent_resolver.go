@@ -46,9 +46,10 @@ func (r *storeAgentResolver) resolve(match func(sessiondata.AgentDef) bool) (*se
 			ac.Skills = append(ac.Skills, mods[i])
 		}
 	}
-	// 主 Agent 的默认委派名单（有效 = 默认 ∩ 启用；会话级覆盖是前端
-	// UI 态——协议接入时覆盖名单随 chat.send 计算，M3 dispatch 前够用）
-	if def.IsMain {
+	// 可委派名单按 Delegates 维度判定（不按 IsMain——委派能力与主 Agent
+	// 身份解耦，前置 assistant Agent 定义）（有效 = 默认 ∩ 启用；会话级
+	// 覆盖是前端 UI 态——协议接入时覆盖名单随 chat.send 计算，M3 dispatch 前够用）
+	if len(def.Delegates) > 0 {
 		for i := range agents {
 			if slices.Contains(def.Delegates, agents[i].ID) && agents[i].Enabled {
 				ac.Delegates = append(ac.Delegates, agents[i])

@@ -326,4 +326,93 @@ class ScreenGestureMathTest {
         val (s, _) = applyPinchZoom(1f, 0.5f, Offset.Zero, Offset(100f, 100f))
         assertEquals(1f, s, 1e-6f)
     }
+
+    // ---- fitBaseScale / coverOverflowAt：全屏观看态可缩回 fit（「强制放最大」根因 A）----
+    // 口径：cover 布局下 SurfaceView bounds = cover 尺寸，graphicsLayer scale 相对它；
+    // 画面等效 fit（完整画面、四周黑边）⇔ scale = fit/cover。竖屏 20:9 视口放
+    // 16:9 视频：cover 高贴满（4160×2340），fit 宽贴满（1080×607.5），
+    // fitBase = 1080/4160 ≈ 0.2596（旧版缩放下限钉死 1 → 用户永远只能看被裁 75% 的画面）。
+
+    @Test
+    fun fitBaseScalePortraitViewportForWideVideo() {
+        // 竖视口 1080×2340 放 16:9：cover = 4160×2340，fit = 1080×607.5
+        // → fitBase = min(1080/4160, 607.5/2340) = 0.2596…
+        val base = fitBaseScale(1080f, 2340f, 1920, 1080)
+        assertEquals(1080f / 4160f, base, 1e-4f)
+        assertTrue("fitBase 必须 <1（允许缩回完整画面），实际 $base", base < 1f)
+    }
+
+    @Test
+    fun fitBaseScaleMatchingAspectIsOne() {
+        // 视频比例 == 视口比例：cover == fit == 视口，基准回到 1（无放宽空间）
+        assertEquals(1f, fitBaseScale(1920f, 1080f, 1920, 1080), 1e-6f)
+    }
+
+    @Test
+    fun fitBaseScaleUnknownVideoOrDegenerateViewportIsOne() {
+        // 视频未知/视口退化：cover、fit 都回落为视口本身 → 基准 = 1（1× 已是完整画面）
+        assertEquals(1f, fitBaseScale(1080f, 2340f, 0, 0), 1e-6f)
+        assertEquals(1f, fitBaseScale(0f, 2340f, 1920, 1080), 1e-6f)
+    }
+
+    @Test
+    fun overflowAtScalesWithCurrentScale() {
+        // cover = 4160×2340，视口 1080×2340：
+        //  - scale=1（旧语义基准）：与 coverOverflow 一致 —— (4160-1080)/2 = 1540 / 0
+        //  - scale=2：溢出随 scale 增长 —— (4160*2-1080)/2 = 3620 / (2340*2-2340)/2 = 1170
+        //  - scale=fitBase≈0.2596：高轴画面(607.5) < 视口(2340) 钳 0（居中露黑边），
+        //    宽轴画面(1080) == 视口 溢出 0 → 双轴 0 = fit 等效居中
+        val (ox1, oy1) = coverOverflowAt(1f, 1080f, 2340f, 1920, 1080)
+        assertEquals(1540f, ox1, 1e-3f)
+        assertEquals(0f, oy1, 1e-3f)
+        val (ox2, oy2) = coverOverflowAt(2f, 1080f, 2340f, 1920, 1080)
+        assertEquals(3620f, ox2, 1e-3f)
+        assertEquals(1170f, oy2, 1e-3f)
+        val base = fitBaseScale(1080f, 2340f, 1920, 1080)
+        val (oxf, oyf) = coverOverflowAt(base, 1080f, 2340f, 1920, 1080)
+        assertEquals(0f, oxf, 1e-2f)
+        assertEquals(0f, oyf, 1e-2f)
+    }
+
+    @Test
+    fun overflowAtBelowCoverBaseClampsNegativeToZero() {
+        // scale <1 且画面某轴大于视口的过渡区（scale 略高于 fitBase）：该轴仍给真实
+        // 溢出可拖；画面小于视口的轴钳 0（不许把画面拖离中心露单侧黑边）。
+        // 取 scale = 0.5：宽 4160*0.5 = 2080 > 1080 → (2080-1080)/2 = 500；
+        // 高 2340*0.5 = 1170 < 2340 → 0。
+        val (ox, oy) = coverOverflowAt(0.5f, 1080f, 2340f, 1920, 1080)
+        assertEquals(500f, ox, 1e-3f)
+        assertEquals(0f, oy, 1e-3f)
+    }
+
+    @Test
+    fun overflowAtUnknownVideoFollowsViewportFallback() {
+        // 视频未知：cover 回落 = 整个视口（1080×2340）→ 溢出 = 视口×(scale-1)/2。
+        // scale=1 时 0（不可拖）；scale>1 是真实的放大溢出（可拖回被裁部分）。
+        // 配套不变量：视频未知时 fitBaseScale=1 → minScale=1，scale 不会 <1，
+        // 「画面小于视口」的黑边态在未知视频下不出现。
+        val (ox1, oy1) = coverOverflowAt(1f, 1080f, 2340f, 0, 0)
+        assertEquals(0f, ox1, 1e-6f)
+        assertEquals(0f, oy1, 1e-6f)
+        val (ox3, oy3) = coverOverflowAt(3f, 1080f, 2340f, 0, 0)
+        assertEquals(1080f, ox3, 1e-3f)
+        assertEquals(2340f, oy3, 1e-3f)
+        assertEquals(1f, fitBaseScale(1080f, 2340f, 0, 0), 1e-6f)
+    }
+
+    @Test
+    fun pinchWithFitBaseMinScaleStopsAtFit() {
+        // 全屏观看态（minScale = fitBase）：一路缩小钳在 fitBase，不再往下；
+        // 旧行为（minScale=1）会在 1× 处停住 → 用户永远缩不回完整画面（根因 A 现场）
+        val minScale = fitBaseScale(1080f, 2340f, 1920, 1080)
+        var s = 3f
+        var o = Offset(-80f, 0f)
+        val c = Offset(400f, 800f)
+        repeat(20) {
+            val r = applyPinchZoom(s, 0.6f, o, c, minScale = minScale)
+            s = r.first; o = r.second
+            assertTrue("scale 不得低于 fitBase，实际 $s", s >= minScale - 1e-6f)
+        }
+        assertEquals(minScale, s, 1e-4f)
+    }
 }

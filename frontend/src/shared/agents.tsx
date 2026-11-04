@@ -48,7 +48,7 @@ function fromWireTool(t: AgentAdminTool): ToolSpec {
   return {
     id: t.id, desc: t.desc, risk: t.risk, source: t.source,
     params: t.params, doc: t.doc, server: t.server, command: t.command,
-    example: t.example, packageFile: t.package_file, custom: t.custom,
+    example: t.example, packageFile: t.package_file, mutates: t.mutates, custom: t.custom,
   };
 }
 
@@ -56,7 +56,7 @@ function toWireTool(t: ToolSpec): AgentAdminTool {
   return {
     id: t.id, desc: t.desc, risk: t.risk, source: t.source,
     params: t.params, doc: t.doc, server: t.server, command: t.command,
-    example: t.example, package_file: t.packageFile, custom: t.custom !== false,
+    example: t.example, package_file: t.packageFile, mutates: t.mutates, custom: t.custom !== false,
   };
 }
 

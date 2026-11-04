@@ -114,4 +114,8 @@ type Persistence interface {
 	// timedOut 独立成值（而不是命中上的标记）：零命中 + 超时的场景没有命中可标，
 	// 而那恰恰最误导——「没有匹配」会被模型当成全集。
 	Search(sessiondata.SearchQuery) ([]sessiondata.SearchHit, int, bool, error)
+	// SessionParentID 读会话的派发方 id（"" = 顶层会话；不存在时报错）。续跑
+	// （agent_dispatch 的 session 参数）的**归属校验**用它：只允许续跑本会话的
+	// 子会话，堵「跨会话的 id 污染别人的行」。
+	SessionParentID(sessionID string) (string, error)
 }

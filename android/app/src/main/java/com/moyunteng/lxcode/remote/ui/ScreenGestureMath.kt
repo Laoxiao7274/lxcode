@@ -25,15 +25,18 @@ const val ZOOM_NOISE_EPSILON = 1e-4f
  *  @param centroid 本事件质心（calculateCentroid()；未指定时调用方不进本函数）
  */
 /**
- * 手势边界钳制（cover 语义）——观看态默认就是「放大态」（SurfaceView bounds =
- * cover 尺寸，1× 已铺满视口），缩放下限钉在 [coverBaseScale]，平移钳在 cover
- * 相对视口的溢出量内（放大后能拖回被裁的部分，缩小不许低于铺满基准）。
+ * 手势边界钳制（边界语义由调用方注入）——观看态 SurfaceView bounds = cover 尺寸
+ * （1× 即铺满视口，默认放大态）。缩放下限默认 [coverBaseScale]（不许低于铺满）；
+ * 全屏观看态传 [fitBaseScale]（= fit/cover 比，通常 <1）放宽到「可缩回完整画面
+ * （fit 等效，露黑边）」，平移边界按 [coverOverflowAt] 按当前 scale 给真实溢出
+ * （scale <1 时钳制逻辑按 fit 边界算，scale ≥1 行为与 cover 语义一致）。
  *
- *  @param scale   当前缩放（[coverBaseScale]..5f）
+ *  @param scale   当前缩放（minScale..5f）
  *  @param zoom    本次事件的缩放增量（calculateZoom()，1f = 无缩放）
  *  @param offset  当前平移
  *  @param centroid 本事件质心（calculateCentroid()；未指定时调用方不进本函数）
- *  @param minScale 缩放下限（cover 语义下 = coverBaseScale()；测试可注入）
+ *  @param minScale 缩放下限（cover 语义 = coverBaseScale()；全屏观看可缩回 fit
+ *                  = fitBaseScale()；测试可注入）
  */
 fun applyPinchZoom(
     scale: Float,
@@ -150,3 +153,54 @@ fun coverOverflow(viewportW: Float, viewportH: Float, videoW: Int, videoH: Int):
  * 本函数把这条不变量显式化（纯函数单测钉住「cover 布局下 1× 就是铺满」）。
  */
 fun coverBaseScale(): Float = 1f
+
+/**
+ * 全屏观看态的缩放下限 = fit 尺寸 / cover 尺寸（各轴取更小的那个比值）。
+ *
+ * 口径：graphicsLayer 的 scale 相对 SurfaceView 自身 bounds（= cover 尺寸），
+ * 所以「画面等效 fit（完整画面、四周黑边）」对应 scale = fit/cover <1——
+ * 两个尺寸同比例缩放，任取一轴比值皆等价，取 min 只是数值稳定。
+ * 视频未知或视口退化（cover 退化为视口本身）时返回 1（与 cover 基准重合：
+ * 此时 1× 已是完整画面，无需放宽）。
+ *
+ * 与 [coverBaseScale] 的关系：cover 布局下 SurfaceView bounds 本身已铺满视口，
+ * 故 cover 基准恒 1；本函数给出的是「再往下缩到画面不变形且完整可见」的极限——
+ * 再低只会让黑边变大、画面变小，没有意义。
+ *
+ *  @param viewportW/H 视口尺寸（px，>0）
+ *  @param videoW/H    视频真实尺寸（DecoderStats 的 SPS 解析结果；<=0 = 未知）
+ */
+fun fitBaseScale(viewportW: Float, viewportH: Float, videoW: Int, videoH: Int): Float {
+    if (viewportW <= 0f || viewportH <= 0f) return coverBaseScale()
+    val cover = coverVideoSize(viewportW, viewportH, videoW, videoH)
+    if (cover.isEmpty() || cover.width <= 0f || cover.height <= 0f) return coverBaseScale()
+    val fit = fitVideoSize(viewportW, viewportH, videoW, videoH)
+    return minOf(fit.width / cover.width, fit.height / cover.height)
+}
+
+/**
+ * 当前 scale 下画面相对视口的真实溢出半程（px，每轴 ≥0）——平移钳制边界按它算。
+ *
+ * 口径：画面实际尺寸 = SurfaceView bounds（cover 尺寸）× scale（graphicsLayer
+ * 变换原点 = SurfaceView 中心，与视口中心重合），所以每轴溢出半程 =
+ * (cover轴 × scale − viewport轴)/2：
+ *  - scale ≥1（cover 放大态）：与 [coverOverflow] 一致（cover 轴本来就 ≥ 视口轴，
+ *    再乘 ≥1 的 scale 只会更大）；
+ *  - scale <1（缩回 fit 附近的黑边态）：画面某轴可能小于视口——该轴钳 0（居中，
+ *    不许把画面拖离中心露单侧黑边——fit 等效下该轴本就无内容可拖）；另一轴若
+ *    画面仍大于视口（scale 略高于 fitBase 的过渡区），仍给出真实值允许拖动。
+ *
+ *  @return (overflowX, overflowY)；视频未知或视口退化时两轴均为 0（不可平移）
+ */
+fun coverOverflowAt(
+    scale: Float,
+    viewportW: Float,
+    viewportH: Float,
+    videoW: Int,
+    videoH: Int,
+): Pair<Float, Float> {
+    val cover = coverVideoSize(viewportW, viewportH, videoW, videoH)
+    if (cover.isEmpty()) return 0f to 0f
+    return ((cover.width * scale - viewportW).coerceAtLeast(0f) / 2f) to
+        ((cover.height * scale - viewportH).coerceAtLeast(0f) / 2f)
+}

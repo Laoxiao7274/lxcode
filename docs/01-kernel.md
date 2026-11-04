@@ -87,7 +87,8 @@ error 事件携带 Partial，入历史并随事件带给宿主。
 
 工具层只做校验与格式化（`tools.SetTodoSink` 注入），会话持有状态并广播
 `TodoUpdated`——桌面壳的 TodoList 卡片直接从 Session.Todos() 渲染。
-清单不持久化（规划辅助，非数据）——M2 视体验再定。
+清单**已持久化**（2026-12 todo 契约批①：`sessions.todos` 列，todo 调用即落库、
+AttachTo/Latest 恢复读回；派发收尾定格归档，见 docs/todo-contract.md）。
 
 ### 2.5 系统提示词
 

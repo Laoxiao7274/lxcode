@@ -192,6 +192,17 @@ export const BUILTIN_TOOLS: ToolSpec[] = [
     doc: "只读执行面：命令级白名单校验，写操作（rm/mv/重定向/git commit/git push/包管理/解释器脚本）一律拒绝并说明原因；命令替换、解释器等无法静态判定的结构同样拒绝（只读命令之间的管道可以）。\n\n- 适合读数据：查 SQLite、看 git 历史、统计文件规模\n- 改文件请交给代码 Agent（bash / edit / write_file）",
   },
   {
+    id: "db_query",
+    desc: "对指定 SQLite 数据库文件执行只读查询（单条 SELECT/EXPLAIN/WITH）",
+    risk: "low",
+    source: "builtin",
+    params: [
+      { name: "path", type: "string", required: true, desc: "SQLite 数据库文件路径（相对会话工作目录或绝对路径）" },
+      { name: "sql", type: "string", required: true, desc: "单条查询语句：SELECT / EXPLAIN / WITH 开头" },
+    ],
+    doc: "只读连接（mode=ro）打开，任何写操作在驱动层被拒绝——不是靠 SQL 校验。\n\n- 单条语句（多余分号拒绝）；行数上限 100、单元格截断 500 字符、超时 5s\n- 结果以 JSON 返回（columns + rows），NULL 显式为 NULL，BLOB 报大小不吐内容\n- 改库请交给代码 Agent（或明确告知用户）",
+  },
+  {
     id: "todo",
     desc: "任务清单全量写入（active 唯一性硬校验）",
     risk: "low",
@@ -220,6 +231,22 @@ export const BUILTIN_TOOLS: ToolSpec[] = [
       { name: "skills", type: "array", desc: "新的技能绑定（可选；全量替换，可为空）" },
     ],
     doc: "字段级更新：只写提供的字段，其余不动；id 不可改。\n\n- **高危**：改动落库即生效——该 Agent 下次被派发就按新配置运行\n- 工具白名单增删直接改变目标 Agent 能做什么（加写工具 = 它将能改动文件）\n- 硬校验：白名单不能清空、工具名必须真实存在、模板不能为空、主 Agent 不可改\n- 改之前先 agent_read 摸现状，向用户确认意图",
+  },
+  {
+    // ssh_hosts：按别名在已配置的 SSH 主机上执行命令。高危确认门（远程执行），
+    // **默认不进任何 Agent 白名单**——由用户在 Agent 编辑器显式勾选。与后端
+    // agents_seeds.go 同款文案（种子一致性由对照测试钉）。
+    id: "ssh_hosts",
+    desc: "在已配置的 SSH 主机（按别名）上执行命令（凭据集中管理 + 探活缓存）",
+    risk: "high",
+    source: "builtin",
+    params: [
+      { name: "host", type: "string", required: true, desc: "主机别名（hosts.json 里配置的 alias）" },
+      { name: "command", type: "string", required: true, desc: "要在远程主机上执行的命令" },
+      { name: "timeout_s", type: "int", desc: "超时秒数（默认 30，上限 300）" },
+      { name: "fresh", type: "bool", desc: "true = 跳过探活缓存，强制先做连接测试" },
+    ],
+    doc: "凭据与端口在 config 目录的 hosts.json 集中管理，不用在命令里拼 sshpass/密码/端口（密码建议用 ${ENV_VAR} 引用避免明文落盘）。\n\n- 同一主机 60 秒内连过会跳过连接测试（fresh=true 强制重探）\n- 声明了 hostkey 就启用严格校验（StrictHostKeyChecking=yes）；未声明用 accept-new\n- 远程执行 = 高危：每次调用走确认门（或按会话权限档）\n- 密码认证需要本机有 sshpass，否则请配置 key_path",
   },
 ];
 
@@ -558,9 +585,9 @@ export function seedAgents(): AgentDef[] {
       // 主 Agent 就不知道「查外部资料」该派给谁——工具与白名单都到位，能力照样等于不存在。
       // bash_readonly（2026-12 用户反馈）：调研要查本地数据（sqlite3 聚合、git log、
       // wc 统计），没有执行面就只能答「做不到」；完整 bash 又太危险，所以给只读执行面。
-      desc: "只读调研：检索代码、读文件、查数据库（只读 bash_readonly：sqlite3 查询/git log/wc 等）、联网搜索与抓取网页正文、梳理跨文件脉络，只给结论与出处，不改任何文件。",
-      prompt: "你是调研 Agent。只做检索与信息整理，**不修改任何文件、不执行构建测试、不提交推送**。\n\n职责边界：\n- 结论必须带依据：文件路径 + 行号、命令输出或文档链接；查不到就如实说「未找到」，不编造也不推测。\n- bash_readonly 是只读执行面：可以跑读取类命令（ls/cat/grep/find/wc、git log/diff/status、sqlite3 的 SELECT 查询等），写操作（rm/mv/重定向/git commit/git push/包管理/解释器脚本）会被工具直接拒绝。\n- 被拒绝时不要绕过：把「需要什么改动」写进结论，交回主 Agent 派给代码 Agent（coder）或测试 Agent（tester）。",
-      tools: ["read_file", "search", "session_search", "web_search", "web_fetch", "ripgrep", "bash_readonly"],
+      desc: "只读调研：检索代码、读文件、查数据库（db_query 只读查询 / bash_readonly：sqlite3 查询/git log/wc 等）、联网搜索与抓取网页正文、梳理跨文件脉络，只给结论与出处，不改任何文件。",
+      prompt: "你是调研 Agent。只做检索与信息整理，**不修改任何文件、不执行构建测试、不提交推送**。\n\n职责边界：\n- 结论必须带依据：文件路径 + 行号、命令输出或文档链接；查不到就如实说「未找到」，不编造也不推测。\n- 查 SQLite 数据库优先用 db_query（只读连接，单条 SELECT/EXPLAIN/WITH；写操作被驱动层拒绝）——不要经 bash 拼 sqlite3 命令行。\n- bash_readonly 是只读执行面：可以跑读取类命令（ls/cat/grep/find/wc、git log/diff/status 等），写操作（rm/mv/重定向/git commit/git push/包管理/解释器脚本）会被工具直接拒绝。\n- 被拒绝时不要绕过：把「需要什么改动」写进结论，交回主 Agent 派给代码 Agent（coder）或测试 Agent（tester）。",
+      tools: ["read_file", "search", "session_search", "web_search", "web_fetch", "ripgrep", "bash_readonly", "db_query"],
       workflow: "research-first",
       skills: [],
       delegates: [],

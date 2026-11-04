@@ -84,14 +84,16 @@ func (s *Store) AppendMsg(id string, m llm.Message) (int64, error) {
 	// 输出、输入侧三桶另记）。旧二进制写的行走列默认值 0 = 老口径（那时 usage_tokens
 	// 是 provider 的 total_tokens）——折叠统计按这一位把两种口径分开（见 store.go 的
 	// ALTER 注释与 stats.go 的 legacyUsageRow）。
+	// interrupted 同理是**写边界的一位标记**：agent 在轮的错误出口（中断/失败）给
+	// 这条 assistant 消息盖章，统计折叠按它把整行排除（数字本身照常落库）。
 	if _, err := tx.Exec(
 		`INSERT INTO messages (session_id, seq, parent_seq, role, content, reasoning, reasoning_sig, tool_calls, tool_call_id,
 		                       first_token_ms, duration_ms, model, usage_tokens, images, attachments,
-		                       input_tokens, cache_read_tokens, cache_write_tokens, notice, usage_split)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+		                       input_tokens, cache_read_tokens, cache_write_tokens, notice, usage_split, interrupted)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
 		id, seq, leaf, m.Role, m.Content, m.ReasoningContent, m.ReasoningSignature, string(toolCalls), m.ToolCallID,
 		m.FirstTokenMs, m.DurationMs, m.Model, m.UsageTokens, images, attachments,
-		m.InputTokens, m.CacheReadTokens, m.CacheWriteTokens, boolInt(m.Notice),
+		m.InputTokens, m.CacheReadTokens, m.CacheWriteTokens, boolInt(m.Notice), boolInt(m.Interrupted),
 	); err != nil {
 		return 0, fmt.Errorf("写消息失败: %w", err)
 	}
@@ -167,6 +169,9 @@ type rowData struct {
 	shadowed   []int // 检查点影子掉的 seq 集合（权威；空 = 不是检查点）
 	notice     bool  // 注入的提示条（不是用户说的话——会话统计的轮数按它排除）
 	usageSplit bool  // 这行的用量是**拆分口径**（usage_tokens 是输出）——老行是 total_tokens
+	// interrupted：这一步没有完整跑完（用户中断/流中断/生成失败）——数字照常落库
+	//（历史展示用），统计折叠把整行排除（写边界标记，agent 的轮错误出口盖章）。
+	interrupted bool
 }
 
 // messageCols 是 messages 行读出的**唯一**列清单（按此顺序 Scan）。
@@ -178,7 +183,7 @@ type rowData struct {
 // 是本仓库反复踩的坑）。
 const messageCols = `seq, parent_seq, role, content, reasoning, reasoning_sig, tool_calls, tool_call_id,
 	checkpoint, shadowed_seqs, first_token_ms, duration_ms, model, usage_tokens, images, attachments,
-	input_tokens, cache_read_tokens, cache_write_tokens, notice, usage_split`
+	input_tokens, cache_read_tokens, cache_write_tokens, notice, usage_split, interrupted`
 
 // querier 是 *sql.DB 与 *sql.Tx 的公共读接口（同一份查询在两条路径上跑）。
 type querier interface {
@@ -192,12 +197,12 @@ func scanRows(rows *sql.Rows) ([]rowData, error) {
 	for rows.Next() {
 		var r rowData
 		var toolCalls, shadowedSeqs, images, attachments string
-		var cp, notice, usageSplit int
+		var cp, notice, usageSplit, interrupted int
 		if err := rows.Scan(&r.seq, &r.parentSeq, &r.msg.Role, &r.msg.Content, &r.msg.ReasoningContent,
 			&r.msg.ReasoningSignature, &toolCalls, &r.msg.ToolCallID, &cp, &shadowedSeqs,
 			&r.msg.FirstTokenMs, &r.msg.DurationMs, &r.msg.Model, &r.msg.UsageTokens, &images, &attachments,
 			&r.msg.InputTokens, &r.msg.CacheReadTokens, &r.msg.CacheWriteTokens, &notice,
-			&usageSplit); err != nil {
+			&usageSplit, &interrupted); err != nil {
 			return nil, fmt.Errorf("读消息行失败: %w", err)
 		}
 		// 序号随消息一起回给上层：前端拿它当撤回锚点（chat.rewind 的 seq），
@@ -226,10 +231,14 @@ func scanRows(rows *sql.Rows) ([]rowData, error) {
 		r.checkpoint = cp == 1
 		r.notice = notice == 1
 		r.usageSplit = usageSplit == 1
+		r.interrupted = interrupted == 1
 		// 簿记位要**写回消息**（不只是留在 rowData 上）：Load 出来的历史必须与
 		// 写进去的那条逐字段一致——本仓库的老坑就是"写进去的与读出来的对不上"
 		//（漏这一行的表现是"内存里的历史少了这个位"，而库里其实有）
 		r.msg.Notice = r.notice
+		// interrupted 同理写回：agent 在续跑读回历史时能认出半截轮（而 wire 上
+		// json:"-" 不发——前端不需要它）
+		r.msg.Interrupted = r.interrupted
 		if r.checkpoint && shadowedSeqs != "" && shadowedSeqs != "[]" {
 			if err := json.Unmarshal([]byte(shadowedSeqs), &r.shadowed); err != nil {
 				return nil, fmt.Errorf("解析影子区间失败: %w", err)

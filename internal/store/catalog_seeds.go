@@ -26,6 +26,10 @@ func (s *Store) initAgents() error {
 	for _, col := range []string{
 		`ALTER TABLE agents ADD COLUMN seed_hash TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE agents ADD COLUMN user_modified INTEGER NOT NULL DEFAULT 0`,
+		// 工具的 Mutates 声明（2026-12 P5）：strict 只读档按声明判定「执行是否
+		// 变更外部世界」。默认 1 = 保持既有行为（未声明的 binary 工具按变更处理）；
+		// 只有确证只读的工具（种子里的 ripgrep）写 0。
+		`ALTER TABLE tools ADD COLUMN mutates INTEGER NOT NULL DEFAULT 1`,
 	} {
 		if _, err := s.db.Exec(col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return fmt.Errorf("迁移 agents 表失败: %w", err)
@@ -154,6 +158,10 @@ func topUpMainDelegates(exec execer, now string) error {
 	}
 	added := false
 	for _, a := range seedAgents {
+		// 候选 = 非 main 的种子 Agent（merger 由 producer 拉起，见
+		// seedNonDelegatable）。可委派能力归主 Agent（它自带 Delegates），
+		// 这里的「主 Agent 的名单该有哪些子 Agent」不随委派能力判定维度变
+		// ——种子子 Agent 是委派目标，不是委派方，它们的 Delegates 恒空。
 		if a.IsMain || seedNonDelegatable[a.ID] || slices.Contains(current, a.ID) {
 			continue
 		}
@@ -190,6 +198,11 @@ var seedAgentBaselines = map[string]seedAgentBaseline{
 	// 「一眼能区分」的版本（点明只读 bash 能查库/看历史、不改任何文件）。基线是
 	// 上一版的白名单与描述——老库里没动过这两处的 researcher 由此吃到新工具与
 	// 新描述；用户改过的一律不碰。
+	// 本版（2026-12 用户拍板）给调研 Agent 补了 **db_query**（只读查询工具：
+	// mode=ro 结构性保证，替代 sqlite3 命令行拼装——readonly.go 的 SQL 关键字
+	// 判据会把 replace() 这类纯函数误拒）。基线仍是上一版（bash_readonly 之前）
+	// 的白名单——topUp 只加不减，bash_readonly 与 db_query 都会补上；用户动过
+	// 白名单的行照旧不碰。
 	"researcher": {
 		Tools: []string{"read_file", "search", "session_search", "ripgrep", "web_search", "web_fetch"},
 		Desc:  "代码库与资料勘察：全文检索、历史会话、联网搜索与抓取网页正文、跨文件脉络梳理，只给结论与出处。",
@@ -425,6 +438,9 @@ func updateSeedAgentDef(exec execer, seed sessiondata.AgentDef, hash, now string
 	return nil
 }
 
+// boolPtr 是 Mutates 声明的字面量助手（种子数据里 *bool 无法直接取址）。
+func boolPtr(b bool) *bool { return &b }
+
 func containsAll(list, want []string) bool {
 	for _, w := range want {
 		if !slices.Contains(list, w) {
@@ -450,8 +466,8 @@ func upsertSeedTool(exec execer, t sessiondata.ToolSpec, now string) error {
 	if err != nil {
 		return fmt.Errorf("序列化工具参数失败: %w", err)
 	}
-	if _, err := exec.Exec(`UPDATE tools SET desc=?, risk=?, source=?, params=?, doc=?, server=?, command=?, example=?, package_file=?, updated_at=? WHERE id=?`,
-		t.Desc, t.Risk, t.Source, string(params), t.Doc, t.Server, t.Command, t.Example, t.PackageFile, now, t.ID); err != nil {
+	if _, err := exec.Exec(`UPDATE tools SET desc=?, risk=?, source=?, params=?, doc=?, server=?, command=?, example=?, package_file=?, mutates=?, updated_at=? WHERE id=?`,
+		t.Desc, t.Risk, t.Source, string(params), t.Doc, t.Server, t.Command, t.Example, t.PackageFile, mutatesFlag(t.Mutates), now, t.ID); err != nil {
 		return fmt.Errorf("同步种子工具 %s 失败: %w", t.ID, err)
 	}
 	return nil
@@ -524,9 +540,9 @@ func insertTool(exec execer, t sessiondata.ToolSpec, now string) error {
 		custom = 0
 	}
 	_, err = exec.Exec(`INSERT INTO tools
-		(id, desc, risk, source, params, doc, server, command, example, package_file, custom, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		t.ID, t.Desc, t.Risk, t.Source, string(params), t.Doc, t.Server, t.Command, t.Example, t.PackageFile, custom, now, now)
+		(id, desc, risk, source, params, doc, server, command, example, package_file, mutates, custom, created_at, updated_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		t.ID, t.Desc, t.Risk, t.Source, string(params), t.Doc, t.Server, t.Command, t.Example, t.PackageFile, mutatesFlag(t.Mutates), custom, now, now)
 	if err != nil {
 		return fmt.Errorf("写入工具 %s 失败: %w", t.ID, err)
 	}

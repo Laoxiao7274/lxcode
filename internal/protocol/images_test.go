@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/moyunteng/lxcode/internal/llm"
+	"github.com/moyunteng/lxcode/internal/chatmsg"
 )
 
 // TestChatSendParamsImagesRoundTrip：带图参数解析；Data = 不带前缀的 base64。
@@ -65,9 +65,9 @@ func TestChatSendParamsOmitEmptyImages(t *testing.T) {
 // TestHistoryMessageImagesWire：历史回放的消息带 images **引用**（path + mime），
 // 不含 base64。
 func TestHistoryMessageImagesWire(t *testing.T) {
-	res := ChatHistoryResult{Messages: []llm.Message{
+	res := ChatHistoryResult{Messages: []chatmsg.Message{
 		{Role: "user", Content: "看图", Seq: 1,
-			Images: []llm.ImageRef{{Path: "s1/abc.png", Mime: "image/png"}}},
+			Images: []chatmsg.ImageRef{{Path: "s1/abc.png", Mime: "image/png"}}},
 	}}
 	b, err := json.Marshal(res)
 	if err != nil {
@@ -80,7 +80,7 @@ func TestHistoryMessageImagesWire(t *testing.T) {
 		t.Fatalf("回放应带图片引用: %s", b)
 	}
 	// 无图消息整键缺席
-	b, err = json.Marshal(ChatHistoryResult{Messages: []llm.Message{{Role: "user", Content: "纯文本"}}})
+	b, err = json.Marshal(ChatHistoryResult{Messages: []chatmsg.Message{{Role: "user", Content: "纯文本"}}})
 	if err != nil {
 		t.Fatal(err)
 	}

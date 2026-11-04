@@ -36,6 +36,9 @@ func (s *Session) SwitchNew(workspace string) (string, error) {
 	// 对着一个「模型这次根本没见过内容」的文件回「内容未变」摘要，那是**错误信息**
 	// （模型会以为自己已经看过，直接去 edit 一个没读过的文件）。
 	s.readState = tools.NewReadState()
+	// 跨轮重复计数同理清零：新会话没调用过任何工具，沿用旧计数会让提醒
+	// 凭空出现（「刚开的新会话怎么会重复 25 次」）。
+	s.sessionRepeat = newSessionRepeatGuard()
 	return "", nil
 }
 
@@ -95,6 +98,8 @@ func (s *Session) SwitchTo(id string) error {
 	// 读取观测同理：恢复的会话要重新读（去重的判据是「本会话读过」，
 	// 沿用上一条会话的观测会把没读过的文件报成「内容未变」）。
 	s.readState = tools.NewReadState()
+	// 跨轮重复计数同理：换会话不沿用（见 SwitchNew 的同一条注释）。
+	s.sessionRepeat = newSessionRepeatGuard()
 	return nil
 }
 

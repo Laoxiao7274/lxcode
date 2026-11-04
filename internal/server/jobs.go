@@ -92,26 +92,44 @@ func (s *Server) jobInfo(snap jobs.Snapshot) protocol.JobInfo {
 	return info
 }
 
-// deliverJobNotice 按契约 §5 的表决定投不投递、投什么措辞，并投给归属会话。
+// deliverJobNotice 按契约 §5 的表决定投不投递、投什么措辞，并投给
+// **执行会话 ∪ 时间线归属**（2026-12 修订）。
 //
-// 两条路径的差别只有「开不开新一轮」：
-//   - owner 忙：注入下一步（轮边界），**不消耗预算**（会话已经在跑，注入不额外开轮）；
-//   - owner 空闲且预算允许：开一轮（消耗一点预算）；
-//   - owner 空闲但预算耗尽：只入队（QueueNotice），等下一次轮边界或用户下次
+// 原「只投时间线归属」是「验收子会话瞎睡 53 分钟」事件的根因之一：子会话起的
+// 后台任务结束事件永远回不到子会话（它不进侧栏、没人看），子 Agent 只能 sleep
+// 盲等。双投语义：
+//   - 执行会话（SessionID）：事件的**当事方**——通告唤醒/轮边界注入让它正在跑
+//     或下一轮立刻看到结果，不用再睡。它不进侧栏没关系，投递走的是内核通道
+//     （Notify → 唤醒开新轮 / 轮边界注入），不是给用户看的；
+//   - 时间线归属（OwnerSessionID）：用户看着的主时间线——原语义原样保留
+//     （用户实测「我关掉了，他又跑去接着思考新的」的那条防线不回退）；
+//   - 两者同一个会话（顶层自己起的任务）只投一次，行为与以前逐字节一致。
+//
+// 唤醒预算只约束**时间线归属**那一次：它与 job.kill 重置的键（dispatch_jobs.go
+// 的 resetWakes(snap.OwnerSessionID)）对得上；执行会话是兜底通道、不消耗预算
+// ——子会话的盲等空转正是要消灭的，不该被预算挡住。
+//
+// 「开不开新一轮」的差别（对两个目标都一样）：
+//   - 目标忙：注入下一步（轮边界），**不消耗预算**（会话已经在跑，注入不额外开轮）；
+//   - 目标空闲且预算允许：开一轮（消耗一点预算，仅 owner）；
+//   - 目标空闲但预算耗尽：只入队（QueueNotice），等下一次轮边界或用户下次
 //     说话时投递——**绝不丢弃**。
 func (s *Server) deliverJobNotice(snap jobs.Snapshot) {
 	text, ok := jobNoticeText(snap)
 	if !ok {
 		return // agent 自己杀的 / 后端重启：不投递（契约 §5 的表）
 	}
-	// 投给**时间线归属**（顶层会话），不是执行会话：子 Agent 起的任务挂在父会话
-	// 的时间线上，而子会话不进侧栏——投给子会话等于投给一个没人看的会话，用户
-	// 在主对话里什么都看不到，主 Agent 也永远不知道用户已经把它停了（那正是
-	// 「我关掉了，他又跑去接着思考新的」那一类问题的根）。OwnerSessionID 在
-	// Start 时已定稿（为空才回落 SessionID）。
-	owner := snap.OwnerSessionID
+	executor, owner := snap.SessionID, snap.OwnerSessionID
+	// OwnerSessionID 在 Start 时已定稿（为空才回落 SessionID）。
 	if owner == "" {
-		owner = snap.SessionID
+		owner = executor
+	}
+	if executor != "" && executor != owner {
+		if sess, err := s.session(executor); err != nil {
+			log.Printf("后台任务 %s 的执行会话 %s 不可用（通告丢弃）: %v", snap.ID, executor, err)
+		} else if err := sess.Notify(text); err != nil {
+			log.Printf("后台任务 %s 对执行会话 %s 的通告投递失败: %v", snap.ID, executor, err)
+		}
 	}
 	if owner == "" {
 		log.Printf("后台任务 %s 结束通告未投递：任务没有归属会话", snap.ID)

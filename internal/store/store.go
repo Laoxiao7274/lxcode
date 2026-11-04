@@ -223,6 +223,16 @@ func Open(dir string) (*Store, error) {
 		// 不报 prompt_tokens"时会把新行误判成老行（少显示）。ALTER 的 DEFAULT 0 正好把
 		// 所有**已存在的行**标成老口径（它们确实是旧二进制写的），新写入一律置 1。
 		`ALTER TABLE messages ADD COLUMN usage_split INTEGER NOT NULL DEFAULT 0`,
+		// interrupted（2026-12）：这一步**没有完整跑完**（用户中断 / 流中断 / 本轮
+		// 生成失败）。agent 在轮的错误出口给这条 assistant 消息盖章；数字本身
+		//（first_token_ms / duration_ms / usage 四桶）照常落库——「这轮跑到一半断了，
+		// 跑了多久/断了前吐了多少」是历史展示的有效观测。但**会话统计的折叠把整行
+		// 排除**（stats.go）：半截轮的耗时（不等 LLM 响应完就断）与不完整的用量会把
+		// 「模型时间/速度」拉偏成另一件事——对齐 DSH 的「取消的 step 不产出统计」。
+		// 写边界的一位标记（与 notice / usage_split 同一套做法）：判定在 agent 的
+		// 错误出口，store 谁都不能 import agent（分层规则）。DEFAULT 0 = 老行与
+		// 正常行，零迁移；旧二进制写的行也取 0（正常口径，如实）。
+		`ALTER TABLE messages ADD COLUMN interrupted INTEGER NOT NULL DEFAULT 0`,
 		// images（图片批次 A）：这条消息携带的图片**文件引用**（JSON 数组
 		// [{"path":"<相对路径>","mime":"image/png"}]）。恒存引用不存 base64——
 		// base64 入库会撑爆 SQLite 行、每次全量历史重复传输、上下文估算失真
@@ -261,7 +271,7 @@ func Open(dir string) (*Store, error) {
 	// 在 TurnDone 事件路径上每轮收尾都付一遍。把统计列全部放进索引后查询走
 	// COVERING INDEX 扫（只读 ~60B/行的索引项，不触正文页），与正文体积解耦。
 	// 列表与 stats.go 的聚合 SELECT 严格对应——改聚合先改这里（或反过来）。
-	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_stats ON messages(session_id, role, checkpoint, notice, usage_split, first_token_ms, duration_ms, usage_tokens, input_tokens, cache_read_tokens, cache_write_tokens)`); err != nil {
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_stats ON messages(session_id, role, checkpoint, notice, usage_split, interrupted, first_token_ms, duration_ms, usage_tokens, input_tokens, cache_read_tokens, cache_write_tokens)`); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("建统计覆盖索引失败: %w", err)
 	}

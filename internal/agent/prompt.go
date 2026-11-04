@@ -133,6 +133,10 @@ var systemPromptRules = []string{
 	"工具结果被拒绝（用户拒绝）时，不要原样重试同一操作——换一种方法，或向用户说明为什么需要这个操作。",
 	"工具结果过长会被截断——如需完整内容，把输出写到文件再用 read_file 分段读。",
 	"用户提到\"之前/上次/我们讨论过\"时，先用 session_search 找回上下文，不要让用户复述。",
+	// 等待纪律（2026-12 效率纪律之五，真库取证驱动）：sleep 盲等 5,349 次/89.4h、
+	// 纯盲等 630 次/23.3h——用 sleep 预估等待时长既不准也烧轮次；系统层已硬拦
+	// 纯 sleep（tools/sleepguard.go），守则把「正确的等待姿势」写全。
+	"等待纪律：不要用 sleep 预估等待时长（系统会拒绝纯 sleep 命令）。等后台任务用 job_output(wait=true)（阻塞到它结束，上限 600s）；等外部状态（端口/文件/接口就绪）用 run_in_background 起轮询循环（until cond; do sleep 30; done），任务结束系统会通知你。",
 	"回答用中文，简洁直接；完成操作后向用户报告结果。",
 }
 
@@ -165,6 +169,7 @@ func systemPromptFooter(todoMode string) string {
 var systemPromptTools = map[string]string{
 	"read_file":                     "read_file：读取文件，低危自动执行，支持分页与行号",
 	"search":                        "search：搜索文件内容/文件名，低危自动执行，不经过 shell",
+	"ripgrep":                       "ripgrep：大仓库全文检索（Rust 二进制，比 search 快一个量级），低危自动执行，优先用它做全文搜索",
 	"web_search":                    "web_search：联网搜索网页（多渠道自动降级），低危自动执行",
 	"web_fetch":                     "web_fetch：抓取网页正文（HTML 转文本），低危自动执行",
 	"session_search":                "session_search：搜索历史会话内容（含当前会话），低危自动执行",
@@ -175,6 +180,8 @@ var systemPromptTools = map[string]string{
 	"write_file":                    "write_file：全量写入文件，覆盖已有文件时用户会收到确认提示",
 	"bash":                          "bash：执行 shell 命令，每次执行前用户会收到确认提示",
 	"bash_readonly":                 "bash_readonly：执行**只读** shell 命令（ls/grep/find/wc、git log、sqlite3 查询等），写操作会被拒绝，低危自动执行",
+	"db_query":                      "db_query：对指定 SQLite 文件执行只读查询（单条 SELECT/EXPLAIN/WITH，只读连接打开），低危自动执行、不修改任何文件",
+	"ssh_hosts":                     "ssh_hosts：在已配置的 SSH 主机（按别名）上执行命令（凭据集中管理 + 探活缓存），高危——远程执行，每次执行前用户会收到确认提示",
 	"todo":                          "todo：维护任务清单（全量写入），低危自动执行",
 	"ask_user":                      "ask_user：向用户提问并等待回答（冲突抉择、需要用户决策时用），低危自动执行",
 	"agent_read":                    "agent_read：查看 Agent 注册表（列表或单个完整定义，含提示词模板），低危自动执行",

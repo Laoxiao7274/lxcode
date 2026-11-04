@@ -8,8 +8,13 @@ import type { AgentDef } from "./agents";
  *  调度面，别在调用处各自手拼。名单卡片展示「默认值」时不带会话覆盖，
  *  语义不同，不走这里。 */
 export function effectiveDelegates(agents: AgentDef[], sessionDelegates: string[] | null): string[] {
-  const main = agents.find((a) => a.isMain);
-  if (!main) return [];
   const subIds = new Set(agents.filter((a) => !a.isMain && a.enabled).map((a) => a.id));
-  return (sessionDelegates ?? main.delegates).filter((id) => subIds.has(id));
+  // 委派方按 delegates 维度判定（不按 isMain——委派能力与主 Agent 身份解耦，
+  // 前置 assistant Agent 定义）。多个声明了 delegates 的 Agent 时取第一个
+  // （与后端 resolver 的首匹配一致）；主不可被派的结构约束不在这里。
+  // 会话覆盖优先于委派方查找：agents 里没有 delegates 非空的 Agent（无委派方）
+  // 时仍按覆盖出（与旧实现一致），恢复默认（null）才回落到空名单。
+  const delegating = agents.find((a) => (a.delegates?.length ?? 0) > 0);
+  if (!delegating) return (sessionDelegates ?? []).filter((id) => subIds.has(id));
+  return (sessionDelegates ?? delegating.delegates).filter((id) => subIds.has(id));
 }

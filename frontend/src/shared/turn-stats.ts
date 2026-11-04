@@ -6,18 +6,27 @@
 //
 // 为什么分母扣掉首 token 延迟：首字延迟是 prefill/排队等待，与「每秒吐多少字」不是一回事。
 // 算进分母会把「排队久」误报成「吐字慢」（后端 internal/agent/timing.go 同口径）。
-// 首 token 缺席（工具轮/非流式回放）时退化成整轮耗时——那时口径含 prefill，这一点如实反映：
-// 不假装它也是纯生成速度。
+// 首 token 缺席（工具轮/非流式回放）→ **不出速度**（2026-12 口径修订，对齐 DSH 的
+// token-meter：首字缺席时 gen 退化成整轮耗时=把 prefill 混进吞吐，是另一口径的数字——
+// 宁可不显示，也不显示一个口径不同的假速度）。
 
-/** 每秒输出 token 数（缺任一项 → null：**不编数**，调用方不显示）。 */
+/** 短窗护栏：解码窗小于这个毫秒数时速度不可信（几百 ms 的窗里首字计时误差就能占
+ *  掉一大截，算出来的 tok/s 抖一个数量级）。两个纯函数层各持同一阈值——轮级与
+ *  会话级口径一致，改一处必改另一处（测试钉住同值）。 */
+export const MIN_DECODE_WINDOW_MS = 300;
+
+/** 每秒输出 token 数（缺任一项 → null：**不编数**，调用方不显示）。
+ *  首 token 缺席也返回 null（不再是"退化成整轮耗时"的旧口径）。 */
 export function tokensPerSec(usageTokens?: number, durationMs?: number, firstTokenMs?: number): number | null {
   const tokens = num(usageTokens);
   const total = num(durationMs);
   if (tokens === null || total === null || tokens <= 0) return null;
   const first = num(firstTokenMs);
-  // 首 token 已知就扣掉它（纯生成耗时）；缺席就用整轮耗时（口径含 prefill，注释已说明）
-  const gen = first === null ? total : total - first;
-  if (gen <= 0) return null; // 扣完没有正时长 = 算不出速度，宁可不显示
+  // 首 token 缺席（undefined）或 0（后端 wire 上"没测到"的哨兵——omitempty 缺席与
+  // 显式 0 同义，agent.OutputTokensPerSec 同口径）都算缺席：不出速度
+  if (first === null || first <= 0) return null;
+  const gen = total - first;
+  if (gen < MIN_DECODE_WINDOW_MS) return null; // 短窗护栏：样本过小，算出来是噪声
   return (tokens * 1000) / gen;
 }
 

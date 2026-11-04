@@ -565,6 +565,21 @@ fun AppRoot(pairUri: String? = null, onPairUriConsumed: () -> Unit = {}) {
         }
     }
 
+    // 路由离开投屏页即复位全屏观看位（根因 B 收口点）：screenFullscreen 是页面级
+    // UI 态，所有离开路径（返回键 BackHandler、endScreenSession、断开自动退回、
+    // 任何其它 route 跳转）最终都表现为 route 变化——在这里统一复位，不再依赖
+    // ScreenScreen 子树内的 effect：路由同步切换时子树直接卸载，子树里的
+    // LaunchedEffect(watching) 被跳过、复位从未执行；配合壳侧 ffmpeg 崩溃自愈
+    //（screen-restart.ts 1s 内 active=true 回来）→ 下次点入口直接落全屏。
+    // endScreenSession 与断开退回处**不单独复位**：本 effect 已覆盖——route 变化
+    // 的同一次重组里 watching（route is Route.Screen && ...）已为 false，safeDrawing
+    // 与系统条外观同步还原，不会闪一帧全屏布局。
+    LaunchedEffect(state.route) {
+        if (state.route !is Route.Screen && state.screenFullscreen) {
+            state.screenFullscreen = false
+        }
+    }
+
     // 投屏断开自动退回：曾在观看态（screenWasActive）后 active 变 false——
     // 停止/解码错误/断线（screen.changed active=false 上报）→ 自动回连接页 +
     // toast「投屏已断开」。启动失败（从未 active）留在投屏设置页看错误，不退。

@@ -106,7 +106,17 @@ type usageBuckets struct {
 //
 // completion_tokens 缺席（个别端点只报 total_tokens）时按 total − prompt 推，
 // 推不出来就是 0（未知）。
-func openAIUsage(promptTokens, completionTokens, totalTokens, cachedTokens int) usageBuckets {
+//
+// 用量可信性校验（2026-12，对齐 DSH 的 ui-chat 先例）：响应含
+// completion_tokens_details.reasoning_tokens 且 reasoning_tokens > completion_tokens
+// 时，这份 usage **整份不可信**（某些端点把每步的 reasoning 重复累计，或者字段
+// 错位——两个数互相矛盾）→ 返回全零桶：该步按「provider 没回报用量」处理，
+// 不进 decode/计费四桶。调用方（reasoningBuckets）负责在桶外单列它观察到的
+// reasoning 数。anthropic 侧无此字段，无需处理。
+func openAIUsage(promptTokens, completionTokens, totalTokens, cachedTokens int, reasoningTokens int) usageBuckets {
+	if reasoningTokens > 0 && reasoningTokens > completionTokens {
+		return usageBuckets{}
+	}
 	if cachedTokens < 0 {
 		cachedTokens = 0
 	}

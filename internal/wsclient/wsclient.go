@@ -27,7 +27,8 @@ type Backend interface {
 type wsClient struct {
 	conn *websocket.Conn
 
-	mu      sync.Mutex
+	mu      sync.Mutex // 保护 nextID/pending（注册表状态，不含 conn 写）
+	writeMu sync.Mutex // 保护 conn 写（WriteJSON 不并发安全，独立于 mu：Close 持 mu 清 pending 时不能与写路径互相阻塞成死锁）
 	nextID  int64
 	pending map[int64]chan protocol.Response
 
@@ -118,9 +119,16 @@ func (c *wsClient) Call(ctx context.Context, method string, params any, result a
 		}
 		req.Params = b
 	}
-	c.mu.Lock()
+	// 先检查连接是否已关闭（避免向已关闭的 conn 写）：closed channel 由
+	// Close 一次性关闭，之后任何写都注定失败，直接给可读错误。
+	select {
+	case <-c.closed:
+		return fmt.Errorf("后端连接已断开")
+	default:
+	}
+	c.writeMu.Lock()
 	err := c.conn.WriteJSON(req)
-	c.mu.Unlock()
+	c.writeMu.Unlock()
 	if err != nil {
 		c.mu.Lock()
 		delete(c.pending, id)

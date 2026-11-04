@@ -267,8 +267,8 @@ schema 变更（dispatch.go 的 `DispatchCall` + 参数 schema）：
 | `todo.updated` 载荷 | 加**可选** `dispatch_id` 键 | 老前端忽略未知键 |
 | `chat.dispatchStart` | 加可选 `todos`（主 Agent 传入的初始清单） | 缺省不出现 |
 | `chat.dispatchEnd` | 加可选 `finalTodos` | 缺省不出现 |
-| `chat.history` 的 `todos` | 不变（主会话清单快照，落库后重启也正确） | 无变化 |
-| `agent_dispatch` 参数 | 加可选 `todos` | 老调用不传 = 现状 |
+| `chat.history` 的 `todos` | **去 omitempty**（2026-12 残留批次）：空清单显式上 wire（`"todos": []`）——「无清单」是后端事实，与「老后端没报（未知）」必须可区分；前端只在键缺席时保留本地清单 | 老后端键缺席 = 未知，前端回落保守行为 |
+| `agent_dispatch` 参数 | 加可选 `todos`；续跑（session 参数）归属校验（`st.SessionParentID == 发起会话`）+ 未带新清单时清库并把上一轮定格状态写进任务消息 | 老调用不传 = 现状 |
 | DemoAgent | 演示数据加 todo 流：主拆清单 → dispatch 卡带 todos → 子会话 todo.updated 双投 → 定格 | 演示与真实同构 |
 
 ---

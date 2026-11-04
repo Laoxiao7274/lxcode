@@ -117,8 +117,11 @@ func (r *REPL) runCommand(line string) bool {
 			fmt.Printf(" %s %s  %s  %s  %s\n", mark, m.ID, m.Model, m.EffectiveFormat(), enabledText(m.Enabled))
 		}
 	case "think":
+		r.mu.Lock()
 		r.showThink = !r.showThink
-		fmt.Printf("[思考链显示: %v]\n", r.showThink)
+		show := r.showThink
+		r.mu.Unlock()
+		fmt.Printf("[思考链显示: %v]\n", show)
 	case "help", "":
 		fmt.Print(`命令：
   /new            开新会话（旧的保留可 resume）

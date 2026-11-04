@@ -406,6 +406,22 @@ func (s *Server) newRuntime(id string) (*agent.Session, error) {
 		defer runtimeBuildSpan()()
 	}
 	sess := agent.New(s.reg, s.treg, func(ev agent.Event) { s.emitEvent(id, ev) })
+	// 执行会话通告口（2026-12 修订，根因「验收子会话瞎睡 53 分钟」）：后台任务
+	// 结束通告按时间线归属投给父会话，子会话自己收不到「它等的那个任务结束了」
+	// ——于是 sleep 盲等。挂上本会话的投递口后，job_output(wait=true) 订阅到
+	// settle 时经它把通告转进本会话（Notify：忙则轮边界注入、空闲则唤醒开轮）。
+	// 回调里经 s.session(id) 取**当前**运行时：子会话运行时生命周期跟着派发走
+	//（跑完即注销、续跑时重建），闭包持旧对象会投给死会话。
+	sess.SetJobNotify(func(text string) {
+		cur, err := s.session(id)
+		if err != nil {
+			log.Printf("后台任务通告投递失败（会话 %s 不可用）: %v", id, err)
+			return
+		}
+		if err := cur.Notify(text); err != nil {
+			log.Printf("后台任务通告对会话 %s 的投递失败: %v", id, err)
+		}
+	})
 	sess.SetProjectDocs(projectDocsReader)
 	if s.st != nil {
 		sess.SetAgentResolver(&storeAgentResolver{st: s.st})

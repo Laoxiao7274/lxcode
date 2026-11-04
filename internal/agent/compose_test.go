@@ -112,7 +112,7 @@ func TestComposeMainAgentDelegatesInjection(t *testing.T) {
 	s := newAgentSession(t)
 	ac := &sessiondata.AgentContext{
 		Def: sessiondata.AgentDef{ID: "main", Name: "主 Agent", IsMain: true,
-			Tools: []string{"agent_dispatch"}},
+			Tools: []string{"agent_dispatch"}, Delegates: []string{"coder"}},
 		Delegates: []sessiondata.AgentDef{
 			{ID: "coder", Name: "代码 Agent", Desc: "写代码", Enabled: true},
 			{ID: "ops", Name: "运维 Agent", Desc: "跑命令", Enabled: false},
@@ -128,6 +128,33 @@ func TestComposeMainAgentDelegatesInjection(t *testing.T) {
 	// 主 Agent 内置协议（未定制 → 默认调度协议）
 	if !strings.Contains(prompt, "你是主 Agent（调度中枢）") {
 		t.Fatal("主 Agent 默认协议缺失")
+	}
+}
+
+// 可委派注入按 Delegates 维度判定（不按 IsMain）：委派能力与主 Agent 身份
+// 解耦的前置重构（assistant Agent 定义是后续功能提交）。
+func TestComposeDelegatesInjectionByDelegatesDimension(t *testing.T) {
+	s := newAgentSession(t)
+	// 正例：IsMain=false 但声明了 Delegates → 注入
+	nonMain := &sessiondata.AgentContext{
+		Def: sessiondata.AgentDef{ID: "assistant", Name: "助手 Agent", IsMain: false,
+			Delegates: []string{"coder"}, Tools: []string{"read_file"}},
+		Delegates: []sessiondata.AgentDef{
+			{ID: "coder", Name: "代码 Agent", Desc: "写代码", Enabled: true},
+		},
+	}
+	prompt := ComposeSystemPrompt(s.tools, "", nonMain, nonMain.Def.Tools, WorktreeInfo{}, false, ProjectDocs{})
+	if !strings.Contains(prompt, "可委派名单") || !strings.Contains(prompt, "- coder（代码 Agent）：写代码") {
+		t.Fatal("IsMain=false 但 Delegates 非空 → 应注入委派名单")
+	}
+	// 反例：IsMain=true 但 Delegates 空 → 不注入
+	mainNoDelegates := &sessiondata.AgentContext{
+		Def: sessiondata.AgentDef{ID: "main", Name: "主 Agent", IsMain: true,
+			Tools: []string{"read_file"}},
+	}
+	prompt = ComposeSystemPrompt(s.tools, "", mainNoDelegates, mainNoDelegates.Def.Tools, WorktreeInfo{}, false, ProjectDocs{})
+	if strings.Contains(prompt, "可委派名单（agent_dispatch 的 agent 参数填下面的 id）") {
+		t.Fatal("IsMain=true 但 Delegates 空 → 不应注入委派名单")
 	}
 }
 

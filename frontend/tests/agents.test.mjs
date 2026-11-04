@@ -28,7 +28,9 @@ test('名单默认指向已删除的 Agent 时自动出局', () => {
   assert.deepEqual(effectiveDelegates(agents, null), ['a']);
 });
 
-test('没有主 Agent 时得到空名单', () => {
+test('没有主 Agent（无委派方）时得到空名单', () => {
   assert.deepEqual(effectiveDelegates([sub('a')], null), []);
-  assert.deepEqual(effectiveDelegates([sub('a')], ['a']), []);
+  // 边界：无委派方但会话覆盖非空 → 仍按覆盖 ∩ 启用子 Agent 出
+  //（与旧实现一致：覆盖优先于委派方查找；恢复默认 null 才是空名单）。
+  assert.deepEqual(effectiveDelegates([sub('a')], ['a']), ['a']);
 });

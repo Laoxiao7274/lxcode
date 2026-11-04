@@ -224,7 +224,8 @@
           "content": "在吗"
         }
       ],
-      "busy": false
+      "busy": false,
+      "todos": []
     }
   },
   "chatHistoryResultPaging": {
@@ -243,6 +244,7 @@
         }
       ],
       "busy": false,
+      "todos": [],
       "has_more": true,
       "first_seq": 1
     }
@@ -925,6 +927,7 @@
       "command": "rg {pattern} {path}",
       "example": "{\"path\":\"main.go\"}",
       "package_file": "pack.yaml",
+      "mutates": false,
       "custom": false
     }
   },

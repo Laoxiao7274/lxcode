@@ -38,25 +38,30 @@ func (s *Store) SessionStatsOf(id string) (sessiondata.SessionStats, error) {
 	}
 	// legacy 行 = usage_split=0 AND usage_tokens>0（老二进制把 total_tokens 写进
 	// usage_tokens）：单独记 LegacyTokens，不进四桶、不进 decode（fold 的 continue）。
-	// decode 的条件（有首字 + 有输出 + 非 legacy）与 fold 的同一批步——分子分母同源。
+	// decode 的条件（有首字 + 有输出 + 非 legacy + 未中断）与 fold 的同一批步——分子
+	// 分母同源。
+	// interrupted=1 的行**整行排除**（2026-12 口径修订）：半截轮（用户中断/流中断/
+	// 生成失败）的耗时与不完整的用量会把模型时间/速度拉偏——对齐 DSH 的「取消的
+	// step 不产出统计」。SQL 的 WHERE 排除 + fold 的 continue 双路同口径，
+	// 一致性由 TestSessionStatsAggregationMatchesFullFold 钉住。
 	const agg = `
 		SELECT
 		  COALESCE(SUM(CASE WHEN role='user' AND checkpoint=0 AND notice=0 THEN 1 ELSE 0 END), 0),
-		  COALESCE(SUM(CASE WHEN role='assistant' THEN 1 ELSE 0 END), 0),
-		  COALESCE(SUM(CASE WHEN role='assistant' THEN MAX(duration_ms, 0) ELSE 0 END), 0),
+		  COALESCE(SUM(CASE WHEN role='assistant' AND interrupted=0 THEN 1 ELSE 0 END), 0),
+		  COALESCE(SUM(CASE WHEN role='assistant' AND interrupted=0 THEN MAX(duration_ms, 0) ELSE 0 END), 0),
 		  COALESCE(SUM(CASE WHEN role='tool' THEN MAX(duration_ms, 0) ELSE 0 END), 0),
-		  COALESCE(SUM(CASE WHEN role='assistant' AND first_token_ms > 0 THEN first_token_ms ELSE 0 END), 0),
-		  COALESCE(SUM(CASE WHEN role='assistant' AND first_token_ms > 0 THEN 1 ELSE 0 END), 0),
-		  COALESCE(SUM(CASE WHEN role='assistant' AND usage_split = 0 AND usage_tokens > 0 THEN usage_tokens ELSE 0 END), 0),
-		  COALESCE(SUM(CASE WHEN role='assistant' AND NOT (usage_split = 0 AND usage_tokens > 0) THEN input_tokens ELSE 0 END), 0),
-		  COALESCE(SUM(CASE WHEN role='assistant' AND NOT (usage_split = 0 AND usage_tokens > 0) THEN cache_read_tokens ELSE 0 END), 0),
-		  COALESCE(SUM(CASE WHEN role='assistant' AND NOT (usage_split = 0 AND usage_tokens > 0) THEN cache_write_tokens ELSE 0 END), 0),
-		  COALESCE(SUM(CASE WHEN role='assistant' AND NOT (usage_split = 0 AND usage_tokens > 0) THEN usage_tokens ELSE 0 END), 0),
-		  COALESCE(SUM(CASE WHEN role='assistant' AND usage_split = 1 AND first_token_ms > 0 AND usage_tokens > 0
-		                    THEN MAX(duration_ms - first_token_ms, 0) ELSE 0 END), 0),
-		  COALESCE(SUM(CASE WHEN role='assistant' AND usage_split = 1 AND first_token_ms > 0 AND usage_tokens > 0
+		  COALESCE(SUM(CASE WHEN role='assistant' AND interrupted=0 AND first_token_ms > 0 THEN first_token_ms ELSE 0 END), 0),
+		  COALESCE(SUM(CASE WHEN role='assistant' AND interrupted=0 AND first_token_ms > 0 THEN 1 ELSE 0 END), 0),
+		  COALESCE(SUM(CASE WHEN role='assistant' AND interrupted=0 AND usage_split = 0 AND usage_tokens > 0 THEN usage_tokens ELSE 0 END), 0),
+		  COALESCE(SUM(CASE WHEN role='assistant' AND interrupted=0 AND NOT (usage_split = 0 AND usage_tokens > 0) THEN input_tokens ELSE 0 END), 0),
+		  COALESCE(SUM(CASE WHEN role='assistant' AND interrupted=0 AND NOT (usage_split = 0 AND usage_tokens > 0) THEN cache_read_tokens ELSE 0 END), 0),
+		  COALESCE(SUM(CASE WHEN role='assistant' AND interrupted=0 AND NOT (usage_split = 0 AND usage_tokens > 0) THEN cache_write_tokens ELSE 0 END), 0),
+		  COALESCE(SUM(CASE WHEN role='assistant' AND interrupted=0 AND NOT (usage_split = 0 AND usage_tokens > 0) THEN usage_tokens ELSE 0 END), 0),
+		  COALESCE(SUM(CASE WHEN role='assistant' AND interrupted=0 AND usage_split = 1 AND first_token_ms > 0 AND usage_tokens > 0 AND duration_ms > first_token_ms
+		                    THEN duration_ms - first_token_ms ELSE 0 END), 0),
+		  COALESCE(SUM(CASE WHEN role='assistant' AND interrupted=0 AND usage_split = 1 AND first_token_ms > 0 AND usage_tokens > 0 AND duration_ms > first_token_ms
 		                    THEN usage_tokens ELSE 0 END), 0)
-		FROM messages WHERE session_id = ?`
+		FROM messages WHERE session_id = ? AND interrupted = 0`
 	var st sessiondata.SessionStats
 	if err := s.db.QueryRow(agg, id).Scan(
 		&st.Turns, &st.Steps, &st.LLMMs, &st.ToolMs, &st.TTFTMs, &st.TTFTSteps,
@@ -76,12 +81,17 @@ func (s *Store) SessionStatsOf(id string) (sessiondata.SessionStats, error) {
 //     与右栏「轮次」面板同一口径（一条用户消息开一轮）——两处数不一样会让人以为
 //     有一处在骗他。
 //   - steps：assistant 消息数 = 模型调用次数（每个 assistant 消息就是一次调用）。
+//     **interrupted=1 的行整行跳过**（2026-12 口径修订）：半截轮（用户中断/流中断/
+//     生成失败）的耗时与不完整的用量会把模型时间/速度拉偏——对齐 DSH 的「取消的
+//     step 不产出统计」。数字本身仍在库里（历史展示用），只是不进统计。
 //   - llmMs：assistant 的 duration_ms 之和（请求发出 → 收尾）。
 //   - toolMs：tool 消息的 duration_ms 之和（工具执行耗时）。被拒绝/取消而没执行的
 //     调用没有这个值（0 = 未知），不计入——把"没跑"算成"0ms"会让均值失真。
 //   - ttft/decode：只算**有首字**的步（工具轮与非流式回放没有"首字"这个时刻，
 //     FirstTokenMs 缺席），且 decode 只算同时有输出 token 的步——速度的分母与分子必须
-//     来自同一批步，否则"没报用量的步"会把它稀释成假速度。
+//     来自同一批步，否则"没报用量的步"会把它稀释成假速度。decode 还要求
+//     duration > firstToken（首字没被总耗时罩住的步没有解码窗，分子分母都不进——
+//     旧实现用 MAX(...,0) 把分子钳到 0 却照收 usage_tokens，会稀释速度）。
 //   - 四桶：assistant 消息上 provider 回报的用量（未回报 = 0，不计）。
 //   - 早期记录（本功能上线前落库的行）：那时的 `usage_tokens` 是 provider 的**总量**
 //     （输入+输出），口径与今天的"输出"不同——混进来会把速度报得离谱（实测 687.8 tok/s）。
@@ -96,6 +106,9 @@ func foldSessionStats(rows []rowData) sessiondata.SessionStats {
 			}
 			st.Turns++
 		case "assistant":
+			if r.interrupted {
+				continue // 半截轮不产出统计（数字留在库里供历史展示，见 Interrupted 注释）
+			}
 			st.Steps++
 			st.LLMMs += maxInt64(0, r.msg.DurationMs)
 			// 首字延迟与 token 口径无关（那时也是如实测的）——早期行照样计入
@@ -112,12 +125,15 @@ func foldSessionStats(rows []rowData) sessiondata.SessionStats {
 			st.CacheReadTokens += r.msg.CacheReadTokens
 			st.CacheWriteTokens += r.msg.CacheWriteTokens
 			st.OutputTokens += r.msg.UsageTokens
-			if r.msg.FirstTokenMs > 0 && r.msg.UsageTokens > 0 {
+			if r.msg.FirstTokenMs > 0 && r.msg.UsageTokens > 0 && r.msg.DurationMs > r.msg.FirstTokenMs {
 				// 纯生成耗时 = 整轮耗时 − 首字延迟（口径与 agent.OutputTokensPerSec
 				// 一致：首字延迟是 prefill/排队，算进分母会把"排队久"误报成"吐字慢"）。
 				// 分子与分母必须来自**同一批步**（都有首字与输出 token 的步）——
-				// 早期记录不进这里：它的 usage_tokens 是总量，算进来会把速度报高十倍
-				st.DecodeMs += maxInt64(0, r.msg.DurationMs-r.msg.FirstTokenMs)
+				// 早期记录不进这里：它的 usage_tokens 是总量，算进来会把速度报高十倍。
+				// duration > firstToken 是新加的门槛（2026-12）：首字没被总耗时罩住的
+				// 步没有解码窗——旧实现的 MAX(...,0) 把分子钳到 0 却照收 usage_tokens，
+				// 零窗步的 token 进了分子而窗没进分母，把速度稀释成假值。
+				st.DecodeMs += r.msg.DurationMs - r.msg.FirstTokenMs
 				st.DecodeTokens += r.msg.UsageTokens
 			}
 		case "tool":

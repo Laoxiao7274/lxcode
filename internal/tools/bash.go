@@ -134,7 +134,9 @@ func newBashDef(r *Registry, readOnly bool) *Def {
 	shellDisp := filepath.Base(shellName)
 	name := "bash"
 	description := "在本机执行 shell 命令（" + shellDisp + "），返回合并的 stdout/stderr 与退出码。" +
-		"适合查看状态、文件操作、构建测试、系统管理。多行脚本请用 stdin 传（别在 command 里堆引号）。" +
+		"适合查看状态、文件操作、构建测试、系统管理；文件检索优先用 ripgrep 工具（有则用），读文件用 read_file。" +
+		"多行脚本请用 stdin 传（别在 command 里堆引号）。" +
+		"等待纪律：等后台任务用 job_output(wait=true)；等外部状态用 run_in_background 起轮询循环（until cond; do sleep 30; done）——纯 sleep 命令会被拒绝执行。" +
 		shellSyntaxHint(shellDisp)
 	schema := json.RawMessage(`{
 		"type": "object",
@@ -143,7 +145,7 @@ func newBashDef(r *Registry, readOnly bool) *Def {
 			"cwd": {"type": "string", "description": "工作目录（绝对或相对会话工作目录，可选）；默认会话工作目录（无则为进程当前目录）"},
 			"stdin": {"type": "string", "description": "喂给命令的标准输入（可选，上限 64KB）：可写多行脚本或 heredoc 体，避免引号转义"},
 			"timeout_sec": {"type": "integer", "description": "超时秒数，默认 60，上限 300"},
-			"run_in_background": {"type": "boolean", "description": "true 时立刻返回 job id（长命令：构建、测试、dev server）"}
+			"run_in_background": {"type": "boolean", "description": "true 时立刻返回 job id（长命令：构建、测试、dev server）；后台轮询循环（until cond; do sleep 30; done）也用它——等外部状态的正路"}
 		},
 		"required": ["command"]
 	}`)
@@ -151,8 +153,9 @@ func newBashDef(r *Registry, readOnly bool) *Def {
 		name = bashReadOnlyName
 		description = "在本机执行**只读** shell 命令（" + shellDisp + "），返回合并的 stdout/stderr 与退出码。" +
 			"用于读数据：ls/cat/grep/find/wc、git log/diff/status、sqlite3 的 SELECT 查询等。" +
-			"写操作（rm/mv/重定向/git commit/git push/包管理/解释器脚本）会被拒绝并说明原因；" +
-			"管道与命令替换等无法静态判定的结构同样拒绝。改文件请交给代码 Agent。" +
+			"写操作（rm/mv/写文件重定向/git commit/git push/包管理/解释器脚本）会被拒绝并说明原因；" +
+			"无害重定向（2>/dev/null、>/dev/null、2>&1、&>/dev/null）与只读命令之间的管道放行，" +
+			"命令替换、heredoc（<、<<）与写文件重定向（>file、>>file）拒绝。改文件请交给代码 Agent。" +
 			shellSyntaxHint(shellDisp)
 		schema = json.RawMessage(`{
 		"type": "object",
@@ -222,6 +225,22 @@ func newBashDef(r *Registry, readOnly bool) *Def {
 			}
 			if a.Command == "" {
 				return "", fmt.Errorf("command 不能为空")
+			}
+			// 纯 sleep 硬拦（2026-12，真库取证：5,349 次 sleep 共 89.4h，
+			// 纯盲等 630 次/23.3h——sleep 不检查任何状态，纯粹烧轮次）：
+			// 「命令实质是 sleep N（至多带 echo 尾巴）」且非后台 → 不执行，
+			// 直接给可执行的等待替代。判据在 pureSleepCommand（sleepguard.go），
+			// 单测矩阵见 sleepguard_test.go。后台的 sleep 放行（轮询循环组件）；
+			// 组合命令（sleep 300 && curl check）不算纯 sleep，放行但补提示。
+			if !a.RunInBackground {
+				if hint, blocked := pureSleepCommand(a.Command); blocked {
+					return "", fmt.Errorf("已拒绝执行纯 sleep 命令（盲等烧轮次，不检查任何状态）。%s", hint)
+				} else if hint != "" {
+					// 组合命令带 sleep：放行，但把等待纪律提示附在结果前面——
+					// 模型下次写等待逻辑时直接走对路
+					out, err := runForegroundBash(ctx, shellName, shellFlag, a.Command, a.Cwd, a.Stdin, a.TimeoutSec)
+					return hint + "\n" + out, err
+				}
 			}
 			// 只读面：命令级白名单校验（readonly.go），违规即拒绝并给出出路。
 			// 这是唯一的安全边界——只读工具没有确认门可依赖。

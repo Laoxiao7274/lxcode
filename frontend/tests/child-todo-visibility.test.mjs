@@ -58,7 +58,7 @@ const cardOf = (state, id) => state.blocks.find((b) => b.kind === 'dispatch' && 
 
 // ---------- ① 历史重拉不抹掉本地清单 ----------
 
-test('① 子会话重开（空 todos 快照）不抹掉已显示的清单', () => {
+test('① 子会话重开（todos 键缺席=未知）不抹掉已显示的清单', () => {
   const c = makeController();
   handleAgentEvent({
     type: 'dispatchStart', sessionId: 'parent-1', dispatchId: 'd1', childSessionId: 'child-1',
@@ -68,10 +68,27 @@ test('① 子会话重开（空 todos 快照）不抹掉已显示的清单', () 
   // 子 Agent 建清单（todo.updated 带归属 → 双投进子会话 state）
   handleAgentEvent({ type: 'todoUpdated', sessionId: 'parent-1', dispatchId: 'd1', items: TODOS }, c);
   assert.deepEqual(c.sessionStates['child-1'].todos, TODOS);
-  // 重开视图：快照还没带上清单（omitempty → 空数组）
-  handleAgentEvent({ type: 'historyLoaded', sessionId: 'child-1', history: snapshot('child-1', [{ role: 'user', content: '任务说明书' }]) }, c);
+  // 重开视图：快照没带 todos 键（老后端/演示源 = 未知）
+  const noTodos = snapshot('child-1', [{ role: 'user', content: '任务说明书' }]);
+  delete noTodos.todos;
+  handleAgentEvent({ type: 'historyLoaded', sessionId: 'child-1', history: noTodos }, c);
   assert.deepEqual(c.sessionStates['child-1'].todos, TODOS,
-    '空 todos 快照 = 未知，不许抹掉本地已显示的清单（否则计划条整块消失）');
+    'todos 键缺席 = 未知，不许抹掉本地已显示的清单（否则计划条整块消失）');
+});
+
+test('①a 快照带空数组 = 后端事实「无清单」→ 如实覆盖（用户清空后不复活旧清单）', () => {
+  const c = makeController();
+  handleAgentEvent({
+    type: 'dispatchStart', sessionId: 'parent-1', dispatchId: 'd1', childSessionId: 'child-1',
+    agentId: 'coder', agentName: '代码', agentColor: '#000', task: '改 bug',
+  }, c);
+  handleAgentEvent({ type: 'historyLoaded', sessionId: 'child-1', history: snapshot('child-1', [{ role: 'user', content: '任务说明书' }]) }, c);
+  handleAgentEvent({ type: 'todoUpdated', sessionId: 'parent-1', dispatchId: 'd1', items: TODOS }, c);
+  assert.deepEqual(c.sessionStates['child-1'].todos, TODOS);
+  // 键在、值是空数组：后端明确说「无清单」（新一轮派发已把上一轮定格清单清库）
+  handleAgentEvent({ type: 'historyLoaded', sessionId: 'child-1', history: snapshot('child-1', [{ role: 'user', content: '任务说明书' }], { todos: [] }) }, c);
+  assert.deepEqual(c.sessionStates['child-1'].todos, [],
+    '空数组 = 后端事实，如实覆盖（这是 omitempty 移除后「空」与「未知」可区分的意义）');
 });
 
 test('①b 快照带了清单 → 以快照为准（后端是事实源）', () => {
@@ -161,7 +178,7 @@ test('③ 刷新后 dispatchStart 复用历史卡（不并排长两张同 id 的
   assert.deepEqual(cardOf(s, 'd1').todos, FINAL);
 });
 
-test('③b 续跑（同 id 再派一次）：状态回到 running，旧结论清掉，清单初稿覆盖', () => {
+test('③b 续跑（同 id 再派一次）：状态回到 running，旧结论清掉，清单按派发载荷重置', () => {
   let s = { blocks: [], busy: true, pending: null, todos: [], currentId: 'main-1', operationError: null, context: null, historyReady: true };
   s = reduce(s, { type: 'dispatchStart', sessionId: 'main-1', dispatchId: 'd1', childSessionId: 'child-1', agentId: 'coder', agentName: '代码', agentColor: '#000', task: '第一轮', todos: TODOS });
   s = reduce(s, { type: 'dispatchEnd', sessionId: 'main-1', dispatchId: 'd1', result: '第一轮结论', isError: false, usageTokens: 10, finalTodos: FINAL });
@@ -176,13 +193,38 @@ test('③b 续跑（同 id 再派一次）：状态回到 running，旧结论清
   assert.equal(s.blocks.filter((b) => b.kind === 'dispatch').length, 1);
 });
 
-test('③c dispatchStart 不带初稿时不抹掉卡上已有的清单', () => {
+test('③b-2 续跑不带初稿：卡上旧终态清空（新一轮开跑不该顶着上轮「全部完成」）', () => {
   let s = { blocks: [], busy: true, pending: null, todos: [], currentId: 'main-1', operationError: null, context: null, historyReady: true };
-  s = reduce(s, { type: 'dispatchStart', sessionId: 'main-1', dispatchId: 'd1', childSessionId: 'child-1', agentId: 'coder', agentName: '代码', agentColor: '#000', task: 't', todos: TODOS });
+  s = reduce(s, { type: 'dispatchStart', sessionId: 'main-1', dispatchId: 'd1', childSessionId: 'child-1', agentId: 'coder', agentName: '代码', agentColor: '#000', task: '第一轮', todos: TODOS });
   s = reduce(s, { type: 'todoUpdated', sessionId: 'main-1', dispatchId: 'd1', items: FINAL });
-  // 续跑时主 Agent 没带 todos（nil = 未知）
-  s = reduce(s, { type: 'dispatchStart', sessionId: 'main-1', dispatchId: 'd1', childSessionId: 'child-1', agentId: 'coder', agentName: '代码', agentColor: '#000', task: 't2' });
-  assert.deepEqual(cardOf(s, 'd1').todos, FINAL, '键缺席 = 未知，不猜（别把已有清单抹成空）');
+  s = reduce(s, { type: 'dispatchEnd', sessionId: 'main-1', dispatchId: 'd1', result: '第一轮结论', isError: false, usageTokens: 10, finalTodos: FINAL });
+  assert.deepEqual(cardOf(s, 'd1').todos, FINAL);
+  // 续跑（同一 dispatch_id 再派）：主 Agent 没带新 todos（未知）——卡回到空清单，
+  // 上一轮定格的「全部完成」不再顶着显示；新一轮的进度由后续 todo.updated 喂。
+  s = reduce(s, { type: 'dispatchStart', sessionId: 'main-1', dispatchId: 'd1', childSessionId: 'child-1', agentId: 'coder', agentName: '代码', agentColor: '#000', task: '第二轮' });
+  assert.deepEqual(cardOf(s, 'd1').todos, [], '续跑重置卡清单（旧终态清空，不猜）');
+  // 新一轮的 todo.updated 照常上卡
+  s = reduce(s, { type: 'todoUpdated', sessionId: 'main-1', dispatchId: 'd1', items: TODOS });
+  assert.deepEqual(cardOf(s, 'd1').todos, TODOS);
+});
+
+test('③c 续跑（不带初稿）同时重置子会话自己的计划条（双投路径的残留一并清）', () => {
+  let states = {
+    'main-1': { blocks: [], busy: true, pending: null, todos: [], currentId: 'main-1', operationError: null, context: null, historyReady: true },
+    'child-1': { blocks: [], busy: false, pending: null, todos: [], currentId: 'child-1', operationError: null, context: null, historyReady: true },
+  };
+  // 第一轮派发（带初稿）→ 子会话清单更新 → 派发结束定格
+  states = reduceSessionStates(states, { type: 'dispatchStart', sessionId: 'main-1', dispatchId: 'd1', childSessionId: 'child-1', agentId: 'coder', agentName: '代码', agentColor: '#000', task: 't1', todos: TODOS }, { d1: 'child-1' });
+  states = reduceSessionStates(states, { type: 'todoUpdated', sessionId: 'main-1', dispatchId: 'd1', items: FINAL }, { d1: 'child-1' });
+  states = reduceSessionStates(states, { type: 'dispatchEnd', sessionId: 'main-1', dispatchId: 'd1', childSessionId: 'child-1', result: '结论', isError: false, finalTodos: FINAL }, { d1: 'child-1' });
+  assert.deepEqual(states['child-1'].todos, FINAL, '前置：子会话计划条已定格到终态');
+  // 续跑（同 id 再派一次、没带新 todos）：子会话自己的计划条一并重置——
+  // 上一轮的「全部完成」不该顶着新一轮的进度显示（后端已把库里清单清掉）。
+  states = reduceSessionStates(states, { type: 'dispatchStart', sessionId: 'main-1', dispatchId: 'd1', childSessionId: 'child-1', agentId: 'coder', agentName: '代码', agentColor: '#000', task: 't2' }, { d1: 'child-1' });
+  assert.deepEqual(states['child-1'].todos, [], '续跑重置子会话计划条（旧终态清空）');
+  // 新一轮的 todo.updated 照常进子会话计划条
+  states = reduceSessionStates(states, { type: 'todoUpdated', sessionId: 'main-1', dispatchId: 'd1', items: TODOS }, { d1: 'child-1' });
+  assert.deepEqual(states['child-1'].todos, TODOS);
 });
 
 // ---------- ④ 竞态：todo 事件先于 dispatchStart 到达 ----------

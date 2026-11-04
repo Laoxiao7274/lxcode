@@ -64,16 +64,18 @@ func stampRoundTiming(m *llm.Message, modelID string, start time.Time, firstToke
 // prefill/排队等待，与"每秒吐多少字"不是一回事——把它算进分母，一个只是排队久的
 // 端点会被显示成"吐字慢"，两个完全不同的瓶颈被压成一个数字。
 //
-// 首 token 未知（工具轮没有增量 / 非流式回放）时退化成整轮耗时：那时拿不到解码段
-// 的起点，只能给一个**含 prefill 的**整体速率——调用方要清楚这个值口径不同（这也是
-// 我们只在首 token 已知时才声称它是"生成速度"的原因）。
+// 首 token 未知（工具轮没有增量 / 非流式回放）时返回 0：解码段的起点都拿不到，
+// 拿整轮耗时凑出来的速率是**含 prefill 的另一口径**（2026-12 口径修订，与前端
+// shared/turn-stats.ts 的 tokensPerSec 一致——宁可不显示，也不显示口径不同的数）。
+// 前端纯函数另有 300ms 短窗护栏（MIN_DECODE_WINDOW_MS）；日志行少一次观测没有
+// 消费方，这里不再复制那份阈值。
 func OutputTokensPerSec(firstTokenMs, durationMs int64, usageTokens int) float64 {
-	if usageTokens <= 0 || durationMs <= 0 {
+	if usageTokens <= 0 || durationMs <= 0 || firstTokenMs <= 0 {
 		return 0 // 缺任一项就是算不出来：不编一个数
 	}
 	genMs := durationMs - firstTokenMs
 	if genMs <= 0 {
-		genMs = durationMs
+		return 0
 	}
 	return float64(usageTokens) * 1000 / float64(genMs)
 }

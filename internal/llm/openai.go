@@ -70,6 +70,14 @@ type openaiResponse struct {
 		PromptTokens     int `json:"prompt_tokens"`
 		CompletionTokens int `json:"completion_tokens"`
 		TotalTokens      int `json:"total_tokens"`
+		// 推理（thinking）消耗的输出 token：OpenAI 官方放在
+		// completion_tokens_details.reasoning_tokens；个别端点有扁平的顶层
+		// reasoning_tokens。两个都认——只用于用量可信性校验（reasoning >
+		// completion ⇒ 整份 usage 不可信，见 openAIUsage）。
+		ReasoningTokens         int `json:"reasoning_tokens"`
+		CompletionTokensDetails struct {
+			ReasoningTokens int `json:"reasoning_tokens"`
+		} `json:"completion_tokens_details"`
 		// 缓存命中的 prompt 部分。OpenAI 官方放在 prompt_tokens_details.cached_tokens，
 		// deepseek 另有一个扁平的 prompt_cache_hit_tokens（两家都见过，两个都认）。
 		PromptTokensDetails struct {
@@ -86,6 +94,15 @@ func (u openaiResponse) cachedPromptTokens() int {
 		return u.Usage.PromptTokensDetails.CachedTokens
 	}
 	return u.Usage.PromptCacheHitTokens
+}
+
+// observedReasoningTokens 取响应里的 reasoning token 数：OpenAI 官方的嵌套
+// completion_tokens_details.reasoning_tokens，个别端点用扁平的顶层 reasoning_tokens。
+func (u openaiResponse) observedReasoningTokens() int {
+	if u.Usage.ReasoningTokens > 0 {
+		return u.Usage.ReasoningTokens
+	}
+	return u.Usage.CompletionTokensDetails.ReasoningTokens
 }
 
 // openaiChat 非流式调用（openai 格式）。
@@ -170,7 +187,7 @@ func openAIResult(or *openaiResponse) *ChatResult {
 	}
 	res := &ChatResult{Message: msg, FinishReason: ch.FinishReason}
 	openAIUsage(or.Usage.PromptTokens, or.Usage.CompletionTokens, or.Usage.TotalTokens,
-		or.cachedPromptTokens()).applyTo(res)
+		or.cachedPromptTokens(), or.observedReasoningTokens()).applyTo(res)
 	return res
 }
 

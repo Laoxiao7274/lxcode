@@ -182,6 +182,13 @@ func (r *REPL) currentSessionID() string {
 	return r.session
 }
 
+// getShowThink 读思考链显示开关（事件 goroutine 读、命令路径写，走锁）。
+func (r *REPL) getShowThink() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.showThink
+}
+
 func (r *REPL) setCurrentSession(id string) {
 	r.mu.Lock()
 	r.session = id

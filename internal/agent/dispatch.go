@@ -62,7 +62,7 @@ func (s *Session) RunAgentTask(ctx context.Context, agentID, task, workDir strin
 	if err != nil {
 		return "", err
 	}
-	child, childID, err := s.openChildSession(tools.DispatchCall{Agent: agentID, Task: task}, ac)
+	child, childID, _, err := s.openChildSession(tools.DispatchCall{Agent: agentID, Task: task}, ac)
 	if err != nil {
 		return "", err
 	}
@@ -243,10 +243,11 @@ func (s *Session) runDispatch(ctx context.Context, call tools.DispatchCall) tool
 		}
 	}
 
-	// 开子会话（或按 call.Session 续跑既有子会话）
-	child, childID, err := s.openChildSession(call, ac)
-	if err != nil {
-		return tools.DispatchResult{Output: fmt.Sprintf("错误: %v", err), IsError: true}
+	// 开子会话（或按 call.Session 续跑既有子会话）。续跑时 prevTodos 带回上一轮
+	// 定格清单（清库前捕获——写进任务消息，模型侧信息不丢）。
+	child, childID, prevTodos, derr := s.openChildSession(call, ac)
+	if derr != nil {
+		return tools.DispatchResult{Output: fmt.Sprintf("错误: %v", derr), IsError: true}
 	}
 	// 子会话运行时登记进父会话（CancelChild 的寻址依据）：服务端 chat.cancel
 	// 对子会话 id 取不到 server.sessions（子会话运行时不注册在那里——生命周期
@@ -291,6 +292,8 @@ func (s *Session) runDispatch(ctx context.Context, call tools.DispatchCall) tool
 	// 消息末尾附清单文本，见 composeTaskMessage）。装载后广播一次（带归属——
 	// 卡上的徽标从初稿开始走）。子会话执行中仍可全量替换修订（主拆初稿 +
 	// 子可修订）。同时落库：子会话行有自己的 todos 列。
+	// （续跑残留的清库在 openChildSession 的 AttachTo 之后——残留就是恢复
+	// 进来的，那里才是收口点；这里只管「带了初稿就装载」。）
 	if len(call.Todos) > 0 {
 		child.mu.Lock()
 		child.todos = append([]tools.TodoItem(nil), call.Todos...)
@@ -315,7 +318,9 @@ func (s *Session) runDispatch(ctx context.Context, call tools.DispatchCall) tool
 	child.SetApprovalSource(func() string { return s.LiveApproval() })
 	child.SetApprovalDefault(ac.Def.Approval)
 	// todo-first 档位从父会话继承（配置是后端级的，父子必须同一档）。
-	err = child.SendWait(ctx, composeTaskMessage(call), WithAgent(ac.Def.ID), WithTodoPrompt(s.TodoPromptMode()))
+	// 上一轮定格清单由 openChildSession 在清库**之前**捕获回传（prevTodos）——
+	// 续跑没带新清单时把它写进任务消息（模型侧信息不丢），内存与库里已归零。
+	err = child.SendWait(ctx, composeTaskMessage(call, prevTodos), WithAgent(ac.Def.ID), WithTodoPrompt(s.TodoPromptMode()))
 	// 子会话这一轮的错误**不能只看 SendWait 的返回值**：SendWait 在 done 关闭时恒
 	// 返回 nil（即使这一轮以错误收尾——比如工具循环达上限），真正的错误记在 tap.err 里。
 	//
@@ -371,6 +376,12 @@ func (s *Session) runDispatch(ctx context.Context, call tools.DispatchCall) tool
 			}
 		}
 		result += "\n\n" + dispatchTodoSummary(finalTodos)
+	} else if child.st != nil && child.id != "" {
+		// 没有清单也是**定格**（空清单显式落库——下一次续跑的 TodosOf 查不到
+		// 「确有清单」，清库分支就不会白跑；wire 上同样是显式空数组，不是未知）。
+		if err := child.st.SaveTodos(child.id, nil); err != nil {
+			log.Printf("子会话清单定格落库失败（继续运行）: %v", err)
+		}
 	}
 	// 附件回流：这次派发期间子会话共享到对话的文件（share_file 等）——
 	// ① 结果文本带 [附件] 行（主 Agent 下一轮就知道路径：可转述、可再次 share_file）；
@@ -400,7 +411,10 @@ func (s *Session) runDispatch(ctx context.Context, call tools.DispatchCall) tool
 
 // openChildSession 开/接子会话并挂好存储：call.Session 非空 = 续跑既有子会话
 // （历史在库里，接着跑）；否则新开一个（自己的行 + 自己的历史）。
-func (s *Session) openChildSession(call tools.DispatchCall, ac *sessiondata.AgentContext) (*Session, string, error) {
+// 返回值 prevTodos = **续跑场景下**上一轮定格在库里的清单（清库**之前**捕获）
+// ——runDispatch 把它的状态写进任务消息（模型侧信息不丢），随后清库。新开
+// 子会话 / 无存储 / 库里无清单时为 nil。
+func (s *Session) openChildSession(call tools.DispatchCall, ac *sessiondata.AgentContext) (child *Session, childID string, prevTodos []tools.TodoItem, err error) {
 	s.mu.Lock()
 	st, parentID, stream, workDir := s.st, s.id, s.stream, s.workDir
 	branch, base, noGit := s.worktreeBranch, s.worktreeBase, s.worktreeNoGit
@@ -408,7 +422,13 @@ func (s *Session) openChildSession(call tools.DispatchCall, ac *sessiondata.Agen
 	// 派发之后被改时，子会话会悄悄换成另一个模型（默认漂移）。
 	parentModel := s.model
 	s.mu.Unlock()
-	child := New(s.reg, s.tools, s.emit)
+	// 防御：父会话自身还没有会话行（st 挂了但 s.id 为空）时续跑无从校验归属
+	//（SessionParentID 查不到对照的父 id）——先拒绝，比错附着好。
+	if st != nil && call.Session != "" && parentID == "" {
+		return nil, "", nil, fmt.Errorf("续跑失败: 本会话还没有落库的会话行，无法核对子会话归属；请去掉 session 参数新开一个子会话")
+	}
+	// 清库失败只记日志（落库落后最坏情况是重启后看到旧清单，内存已是新起点）。
+	child = New(s.reg, s.tools, s.emit)
 	// 子会话在父会话的工作树里工作（SetWorkDir 继承同一个目录），提示词要如实说
 	// 「改动与父会话共享」而不是「你有独立分支」——分支信息同样从父会话继承
 	//（非 git 降级标志一并继承：子会话同样没有检查点）。
@@ -454,10 +474,10 @@ func (s *Session) openChildSession(call tools.DispatchCall, ac *sessiondata.Agen
 	}
 	if st == nil {
 		if err := child.SetWorkDir(workDir); err != nil {
-			return nil, "", err
+			return nil, "", nil, err
 		}
 		_ = inheritModel() // 纯内存子会话同样继承（无 id 时落库是 no-op）
-		return child, "", nil
+		return child, "", nil, nil
 	}
 	// 快照归属（docs/session-tree.md §C.2.1）：回滚发起方 = 顶层会话 id，
 	// owner_seq = **父会话那条 dispatch 消息的 seq**。
@@ -470,36 +490,71 @@ func (s *Session) openChildSession(call tools.DispatchCall, ac *sessiondata.Agen
 	if ownerID == "" {
 		ownerID = parentID
 	}
-	childID := call.Session
-	if childID == "" {
-		id, err := st.CreateChild(parentID, ac.Def.ID, call.DispatchID, ownerID, call.DispatchSeq)
-		if err != nil {
-			return nil, "", err
+	id := call.Session
+	if id == "" {
+		newID, cerr := st.CreateChild(parentID, ac.Def.ID, call.DispatchID, ownerID, call.DispatchSeq)
+		if cerr != nil {
+			return nil, "", nil, cerr
 		}
-		childID = id
-	} else if call.DispatchSeq > 0 {
+		id = newID
+	} else {
+		// **续跑归属校验**（id 由模型生成——LLM 可能填错甚至编造）：只允许续跑
+		// **发起调度的会话**的子会话。不校验的后果：跨会话的 id（历史污染）或顶层
+		// 会话 id 被当子会话附着——工具结果与清单写进别人的行。错误文案引导模型
+		// 纠正。OwnerSessionID 为空（内核之外的调用方）时跳过——与 dispatchRoot
+		// 为 nil 时跳过委派名单校验同一口径（防御性放行）。
+		if call.OwnerSessionID != "" {
+			parent, err := st.SessionParentID(id)
+			if err != nil {
+				return nil, "", nil, fmt.Errorf("续跑失败: %v（该 id 不存在，请核对子会话 id 或去掉 session 参数新开）", err)
+			}
+			if parent != call.OwnerSessionID {
+				return nil, "", nil, fmt.Errorf("该 id 不是本会话的子会话（它属于会话 %s），不能从这里续跑；请去掉 session 参数新开一个子会话", parent)
+			}
+		}
+	}
+	if call.DispatchSeq > 0 {
 		// **续跑按本次派发重写 owner_seq**（§C.5.1 边界①）：同一个子会话在第 45 轮
 		// 被续跑时改的文件必须归到 45 而不是 42——否则回滚到 43 轮时会被一起还原
 		//（多还原）。owner_id 不变（仍是顶层）。
 		//
 		// 失败只记日志：归属是回滚对账的元数据，不该让派发失败（回落上一次派发的
 		// owner_seq = 那一批改动归到更早的轮次，回滚会多还原——比派发失败轻）。
-		if err := st.SetSnapshotOwner(childID, ownerID, call.DispatchSeq); err != nil {
+		if err := st.SetSnapshotOwner(id, ownerID, call.DispatchSeq); err != nil {
 			log.Printf("续跑重写快照归属失败（沿用上次派发的 owner_seq）: %v", err)
 		}
 	}
-	if err := child.AttachTo(st, childID); err != nil {
-		return nil, "", err
+	if err := child.AttachTo(st, id); err != nil {
+		return nil, "", nil, err
+	}
+	// **续跑残留的清库**（跨派发 todo 残留修复的主根因，放在 AttachTo 之后——
+	// 残留就是 AttachTo 从库里恢复进来的）：主 Agent 没带新清单（call.Todos 空）
+	// 时，上一轮定格在子会话行里的旧清单**必须清掉**（落库归零 + 内存归零）
+	// ——清单的生命周期锚定「一次派发」，新一轮开跑而 UI/快照注入还顶着上轮
+	// 的「全部完成」是虚假进度。模型侧的信息不丢：定格值先捕获进 prevTodos，
+	// runDispatch 的 composeTaskMessage 把它的状态写进任务消息（todo-contract.md
+	// §2.3 的承诺）。清库失败只记日志（落库落后最坏情况是重启后看到旧清单，
+	// 内存已是新起点）。
+	if call.Session != "" && len(call.Todos) == 0 {
+		if items, ok, err := st.TodosOf(id); err == nil && ok {
+			prevTodos = items
+			if err := st.SaveTodos(id, nil); err != nil {
+				log.Printf("续跑清掉子会话残留清单失败（继续运行）: %v", err)
+			}
+			child.mu.Lock()
+			child.todos = nil
+			child.mu.Unlock()
+		}
 	}
 	if err := child.SetWorkDir(workDir); err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 	if err := inheritModel(); err != nil {
 		// 继承失败不挡派发：子会话回落 Agent 绑定/default（那是改动前的行为），
 		// 比让整次派发失败好——但如实记日志。
 		log.Printf("子会话继承父会话模型失败（回落 Agent 绑定/default）: %v", err)
 	}
-	return child, childID, nil
+	return child, id, prevTodos, nil
 }
 
 // lastAssistantText 取子会话的结论：**最后一条 assistant 消息**的正文。
@@ -520,11 +575,16 @@ func lastAssistantText(msgs []llm.Message) string {
 	return ""
 }
 
-// composeTaskMessage 组任务消息（task + 可选背景 + 可选清单初稿）。子会话的第一条
-// user 消息就是它——子 Agent 的全部依据（它看不到主对话历史）。
+// composeTaskMessage 组任务消息（task + 可选背景 + 可选清单初稿 + 续跑时的上一轮
+// 定格清单状态）。子会话的第一条 user 消息就是它——子 Agent 的全部依据（它看不到
+// 主对话历史）。
 // todos 非空时末尾附清单文本：子 Agent 第一眼依据里就有它（清单初稿在卡上可见，
 // 在任务说明书里可执行——两个通道同一份内容）。
-func composeTaskMessage(call tools.DispatchCall) string {
+// 续跑（call.Session 非空）且没带新清单时末尾附**上一轮定格清单的状态**（§2.3 的
+// 承诺——续跑场景任务消息末尾带上一轮定格清单的残留状态，子 Agent 接着跑才知道
+// 从哪继续）：上一轮的清单已经被清出子会话行（续跑残留的清库），信息只能从这里
+// 带进去。带初稿的新清单时不再附——初稿本身就是最新意图，附旧状态反而混乱。
+func composeTaskMessage(call tools.DispatchCall, prevTodos []tools.TodoItem) string {
 	var b strings.Builder
 	b.WriteString(call.Task)
 	if ctx := strings.TrimSpace(call.Context); ctx != "" {
@@ -536,6 +596,10 @@ func composeTaskMessage(call tools.DispatchCall) string {
 		for _, it := range call.Todos {
 			b.WriteString("- " + it.Content + "\n")
 		}
+	} else if call.Session != "" && len(prevTodos) > 0 {
+		// 续跑 + 上一轮有定格清单：状态摘要写进任务说明书（格式与主会话轮首注入
+		// 同一套口径——N 项全部完成 / N/M 完成带未完成点名）。
+		b.WriteString("\n\n[上一轮清单状态] " + dispatchTodoSummary(prevTodos) + "\n")
 	}
 	return b.String()
 }

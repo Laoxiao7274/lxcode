@@ -429,8 +429,13 @@ if (idx >= 0) {
     isError: undefined,
     result: undefined,
     usageTokens: undefined,
-    // 清单：初稿非空才覆盖（nil = 没带初稿，别把回放/实时已有的清单抹掉）
-    ...(ev.todos && ev.todos.length > 0 ? { todos: ev.todos } : {}),
+    // 清单：这是**同一张卡的新一轮派发**——旧一轮的定格终态必须清掉（新一轮
+    // 开跑还顶着上轮「全部完成」是虚假进度，todo-contract.md 的残留病灶）。
+    //   - ev.todos 非空 = 新初稿，如实装上；
+    //   - ev.todos 缺席 = 主 Agent 没带初稿（键缺席 = 未知不猜**别的卡**，但
+    //     这张卡是本轮派发的事实起点：后端已把库里清单清零，徽标随之归零，
+    //     进度由随后的 todo.updated 实时喂回来）。
+    todos: ev.todos && ev.todos.length > 0 ? [...ev.todos] : [],
   };
   return { ...sealed, blocks };
 }
@@ -539,10 +544,10 @@ if (ev.history.busy && state.busy && state.historyReady) {
   return {
     ...state,
     pending: ev.history.pending ?? state.pending,
-    // 清单：**空快照不覆盖**（键缺席与空数组在 wire 上同形，HistoryResult.todos
-    // 是 omitempty）。否则「子 Agent 建了清单 → 重开视图 → 清单消失」——
-    // 用户报的「任务列表有时不显示」的另一半。
-    todos: ev.history.todos && ev.history.todos.length > 0 ? ev.history.todos : state.todos,
+    // 清单：**键在才覆盖**（历史 todos 是 optional——键缺席 = 未知，保留本地不猜；
+    // 键在哪怕是空数组 = 后端事实「无清单」，如实覆盖：子会话没建清单就不该被
+    // 本地残留顶出计划条，用户清空清单后重拉也不该复活旧清单）。
+    todos: ev.history.todos ? ev.history.todos : state.todos,
     context: ev.history.context ?? state.context,
     // 统计同样保持旧值：忙碌中的快照不带 stats 时（后端读不到库）不该把
     // 已经显示的数字擦掉——读不到 ≠ 没有
@@ -593,8 +598,9 @@ return {
   // 分页元数据随快照走（键缺席 = 老后端/非分页应答 → 不分页，行为不变）
   historyMore: Boolean(ev.history.hasMore),
   historyFirstSeq: ev.history.firstSeq ?? 0,
-  // 清单同上面那条守卫的理由：空快照不覆盖本地清单。
-  todos: ev.history.todos && ev.history.todos.length > 0 ? ev.history.todos : state.todos,
+  // 清单同上面那条守卫的口径：**键在才覆盖**（键缺席 = 未知保留本地；键在哪怕
+  // 空数组 = 后端事实「无清单」，如实覆盖——用户清空后重拉不该复活旧清单）。
+  todos: ev.history.todos ? ev.history.todos : state.todos,
   // 权限档按快照对齐（后端 LiveApproval——会话级状态持久化的显示依据）；
   // 快照没带（老后端/演示源）保持原值不猜。
   approval: ev.history.approval ?? state.approval,
@@ -896,9 +902,18 @@ export function reduceSessionStates(
   const previous = states[id] ?? { ...initial, currentId: id };
   const next = { ...states, [id]: { ...reduce(previous, ev), currentId: id } };
   const did = eventDispatchId(ev);
-  const childId = did ? (dispatchChild?.[did] ?? dispatchChildSession(states, did)) : "";
+  const childId = did ? (dispatchChild?.[did] ?? dispatchChildSession(states, did, id)) : "";
   if (did && childId && childId !== id && states[childId]) {
-    if (ev.type === "dispatchEnd") {
+    if (ev.type === "dispatchStart") {
+      // 续跑（同一 dispatch_id 再派）重开卡时，子会话自己的计划条也要归零：
+      // 后端在 openChildSession 已把上一轮定格清单清库（call.Todos 空时）——
+      // UI 侧同一条事实，两边不许各说各话。带新初稿时如实装上（与卡同款）。
+      const prevTodos = states[childId].todos;
+      next[childId] = {
+        ...next[childId],
+        todos: ev.todos && ev.todos.length > 0 ? [...ev.todos] : (prevTodos.length > 0 ? [] : prevTodos),
+      };
+    } else if (ev.type === "dispatchEnd") {
       // dispatchEnd 是卡生命周期事件（不整投进子会话 state），但它的 `finalTodos`
       // 是**子会话清单的终态**（todo 契约批③），不是卡呈现——按 todoUpdated 的
       // 归约路径写进子会话自己的 state：子会话视图的计划条据此从「最后一次
@@ -984,11 +999,21 @@ function withoutDispatch(ev: AgentEvent): AgentEvent {
  *  热路径已改为 store 维护的 dispatch→子会话映射查表（O(1)，见 reduceSessionStates
  *  的 dispatchChild 参数）——这里只剩两处用：映射还没记上时（理论上不该发生：
  *  dispatchStart 先于一切子事件到达并记映射）、以及没传表的直接调用方（测试）。
- *  反查逻辑保留原样：子会话 id 记在**卡上**（实时 dispatchStart 的 childSessionId，
- *  或历史回放的工具结果里那行 `[子会话 id: …]`——见 history.ts），两处都会把它写进
- *  `block.sessionId`。没见过这张卡（应用刚起、dispatchStart 早于连接）时返回空串
- *  （不猜）。 */
-function dispatchChildSession(states: Record<string, UIState>, dispatchId: string): string {
+ *  反查**限定在事件所属会话（ownerSessionId）的 blocks 内**（2026-12 dispatch id
+ *  碰撞批次）：dispatch id 是 LLM 生成的 tool_call id，跨会话可能重复——全量扫
+ *  所有会话时，另一个会话的同 id 卡会把这个事件的归属抢走（子事件投进别人的
+ *  子会话）。owner 的 blocks 里没有才返回空串（不猜）。 */
+function dispatchChildSession(states: Record<string, UIState>, dispatchId: string, ownerSessionId?: string): string {
+  if (ownerSessionId) {
+    const owner = states[ownerSessionId];
+    if (owner) {
+      for (const b of owner.blocks) {
+        if (b.kind === "dispatch" && b.id === dispatchId) return b.sessionId ?? "";
+      }
+    }
+    return "";
+  }
+  // 没传 owner（直接调用方/测试）：退回全量扫描的旧行为（保守兜底，不再是热路径）。
   for (const st of Object.values(states)) {
     for (const b of st.blocks) {
       if (b.kind === "dispatch" && b.id === dispatchId) return b.sessionId ?? "";

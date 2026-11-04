@@ -287,6 +287,113 @@ func TestSessionStatsMissingSession(t *testing.T) {
 	}
 }
 
+// TestSessionStatsExcludesInterrupted：被中断/失败的半截轮**不产出统计**（2026-12
+// 口径修订，对齐 DSH 的「取消的 step 不产出统计」）——agent 在轮的错误出口给
+// assistant 消息盖 interrupted 位，数字本身照常落库（历史展示用），统计整行排除。
+//
+// 不排除的表现：用户按了停止（不等 LLM 响应完就断），那条半截轮的耗时照进模型
+// 时间——「停得快」被算成「模型吐字快」，会话速度被拉成另一件事。
+func TestSessionStatsExcludesInterrupted(t *testing.T) {
+	s := openTestStore(t)
+	id, err := s.Create()
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendMsg := func(m llm.Message) {
+		t.Helper()
+		if _, err := s.AppendMsg(id, m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 第 1 步：正常轮（有首字有用量）
+	appendMsg(llm.Message{Role: "user", Content: "问"})
+	appendMsg(llm.Message{Role: "assistant", Content: "答", DurationMs: 2000, FirstTokenMs: 400,
+		UsageTokens: 100, InputTokens: 900, CacheReadTokens: 5000})
+	// 第 2 步：用户中断的半截轮（数字齐全——历史展示要它——但 interrupted=1）
+	appendMsg(llm.Message{Role: "user", Content: "再问"})
+	appendMsg(llm.Message{Role: "assistant", Content: "跑到一半被停", DurationMs: 8000, FirstTokenMs: 300,
+		UsageTokens: 700, InputTokens: 50, Interrupted: true})
+	// 第 3 步：生成失败的轮（TurnError 同理排除）
+	appendMsg(llm.Message{Role: "user", Content: "又问"})
+	appendMsg(llm.Message{Role: "assistant", Content: "断流保住的半截", DurationMs: 500, UsageTokens: 30, Interrupted: true})
+
+	st, err := s.SessionStatsOf(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 步数只算完整轮：3 条 assistant 里被中断的 2 条不进
+	if st.Steps != 1 {
+		t.Fatalf("中断轮不该计入步数: %d", st.Steps)
+	}
+	// 模型时间/首字/decode/四桶全部只来自第 1 步——半截轮的 8000ms/700tok 不混入
+	if st.LLMMs != 2000 || st.TTFTMs != 400 || st.TTFTSteps != 1 {
+		t.Fatalf("中断轮不该计入模型时间/首字: %+v", st)
+	}
+	if st.DecodeMs != 1600 || st.DecodeTokens != 100 { // 2000−400, 100 tok
+		t.Fatalf("中断轮不该计入 decode: ms=%d tokens=%d", st.DecodeMs, st.DecodeTokens)
+	}
+	if st.OutputTokens != 100 || st.InputTokens != 900 || st.CacheReadTokens != 5000 {
+		t.Fatalf("中断轮不该计入四桶: %+v", st)
+	}
+	// 数字本身仍在库里（历史展示用「这轮跑到一半断了」是有效观测）
+	msgs, err := s.Load(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var interrupted *llm.Message
+	for i := range msgs {
+		if msgs[i].Role == "assistant" && msgs[i].DurationMs == 8000 {
+			interrupted = &msgs[i]
+		}
+	}
+	if interrupted == nil {
+		t.Fatal("中断轮的消息应仍在历史里（只是不进统计）")
+	}
+
+	// 折叠本体与 SQL 聚合的双路一致性：interrupted 行两边都排除
+	viaAgg, err := s.SessionStatsOf(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.readRows(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if viaAgg != foldSessionStats(rows) {
+		t.Fatalf("SQL 聚合与折叠本体不一致: agg=%+v fold=%+v", viaAgg, foldSessionStats(rows))
+	}
+}
+
+// TestSessionStatsDecodeRequiresPositiveWindow：decode 要求 duration > firstToken
+// （2026-12 顺带修）——首字没被总耗时罩住的步没有解码窗，旧实现的 MAX(...,0) 把
+// 分子钳到 0 却照收 usage_tokens，零窗步的 token 进了分子而窗没进分母，稀释速度。
+func TestSessionStatsDecodeRequiresPositiveWindow(t *testing.T) {
+	s := openTestStore(t)
+	id, err := s.Create()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendMsg(id, llm.Message{Role: "user", Content: "问"}); err != nil {
+		t.Fatal(err)
+	}
+	// duration == firstToken：解码窗为 0——token 不进分子
+	if _, err := s.AppendMsg(id, llm.Message{Role: "assistant", Content: "答",
+		DurationMs: 500, FirstTokenMs: 500, UsageTokens: 99}); err != nil {
+		t.Fatal(err)
+	}
+	st, err := s.SessionStatsOf(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.DecodeTokens != 0 || st.DecodeMs != 0 {
+		t.Fatalf("零解码窗的步不该进 decode: %+v", st)
+	}
+	// 但输出桶照常计入（用量是真实的，只是没有可测的生成窗）
+	if st.OutputTokens != 99 {
+		t.Fatalf("输出桶不应受影响: %+v", st)
+	}
+}
+
 // TestFoldSessionStatsIgnoresCheckpointSteps：检查点自己的 assistant 步不计入（它是摘要，
 // 不是一次模型调用）；而它**影子掉的**那些步仍然计入（整段日志）。
 func TestFoldSessionStatsIgnoresCheckpointSteps(t *testing.T) {

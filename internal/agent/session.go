@@ -126,6 +126,12 @@ type Session struct {
 	// wakeGate 是「能不能开新一轮」的判定（server 侧的连续唤醒预算；
 	// nil = 不限制）。只约束空闲开新轮，不管轮边界注入。
 	wakeGate func() bool
+	// jobNotify 是本会话的**执行会话通告口**（server 注入的回调，每轮经
+	// tools.WithJobNotify 进 ctx）：后台任务结束通告按时间线归属投给父会话
+	// （广播路径），子会话自己收不到——执行会话是事件的当事方，job_output
+	// (wait=true) 订阅到 settle 时经它把通告转进本会话（Notify：忙则轮边界
+	// 注入、空闲则唤醒开轮，复用唤醒预算机制）。nil = 未注入。
+	jobNotify func(text string)
 
 	// 持久化（st 为 nil = 纯内存模式，兼容不接存储的调用方/单测）。
 	// SQLite 版无句柄概念：会话 = sessions 表一行，按 s.id 追加写。
@@ -230,6 +236,12 @@ type Session struct {
 	// 会话生命周期内常驻：跨轮次仍有效（上一轮读过的文件这一轮不必再灌一遍），
 	// 新建/切换会话时由 New / 附着路径换成新实例。
 	readState *tools.ReadState
+	// sessionRepeat 是本会话的**跨轮**重复调用计数（P7）：callKey = 工具名 +
+	// 归一化参数，第 10/25 次起在工具结果前缀注入软/硬提醒——**不阻断**（文件
+	// 刚改完重跑同一条命令是合法流程，停止语义只属于单轮 repeatGuard）。
+	// 会话级状态（与 readState 同一条理由）：父子会话各持一份，各算各的。
+	// 内存有 LRU 上限（sessionRepeatLRUCap），随会话对象生命周期常驻。
+	sessionRepeat *sessionRepeatGuard
 }
 
 // New 创建会话；emit 为 nil 时事件被丢弃（单测可只调方法）。
@@ -238,7 +250,8 @@ func New(reg *config.Registry, toolReg *tools.Registry, emit Emitter) *Session {
 		emit = func(Event) {}
 	}
 	s := &Session{reg: reg, tools: toolReg, stream: streamWithLLM, emit: emit,
-		turnCounters: newTurnCounters(), readState: tools.NewReadState()}
+		turnCounters: newTurnCounters(), readState: tools.NewReadState(),
+		sessionRepeat: newSessionRepeatGuard()}
 	// 注意：todo 清单的写回口与技能目录都**不进注册表**（进程级单例），
 	// 而是每轮经 ctx 注入（runTurn 里 WithTodoSink / WithSkillSource）——
 	// 子 Agent 是独立会话后，注册表级全局态会让父子互相踩（见 tools/sessionstate.go）。
@@ -740,8 +753,12 @@ func (s *Session) History() Snapshot {
 	}
 	return Snapshot{
 		Messages: msgs, Busy: s.busy, Pending: pending,
-		SessionID: s.id, Todos: append([]tools.TodoItem(nil), s.todos...),
-		Context: projectedUsage(s.context, msgs), Checkpoints: checkpointIndexes(msgs),
+		SessionID: s.id,
+		// Todos 恒非 nil（wire 无 omitempty 后 nil 会序列化成 null）：空清单是
+		// 「无清单」的事实，前端按 `todos: []` 覆盖本地；nil/null 会被映射层当成
+		// 键缺席（未知），把「后端明确无清单」降级成「未知」是语义倒退。
+		Todos:      append([]tools.TodoItem{}, s.todos...),
+		Context:    projectedUsage(s.context, msgs), Checkpoints: checkpointIndexes(msgs),
 	}
 }
 
@@ -865,7 +882,8 @@ func (s *Session) projectedContext() ContextUsage {
 	return projectedUsage(s.context, s.history)
 }
 
-// Todos 返回当前任务清单（UI 渲染用）。
+// Todos 返回当前任务清单（UI 渲染用）。nil = 无清单（快照层负责在 wire 上
+// 写成空数组，见 History() 的 Todos 注释）。
 func (s *Session) Todos() []tools.TodoItem {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -988,6 +1006,16 @@ func (s *Session) OwnerSessionID() string {
 		return s.ownerID
 	}
 	return s.id
+}
+
+// SetJobNotify 注入本会话的**执行会话通告口**（server 装配运行时时调用）：
+// 后台任务结束通告按时间线归属投给父会话，子会话自己收不到——job_output
+// (wait=true) 订阅到 settle 时经本回调把通告转进本会话（Notify：忙则轮边界
+// 注入、空闲则唤醒开轮）。nil = 不注入（行为与以前一致）。
+func (s *Session) SetJobNotify(fn func(text string)) {
+	s.mu.Lock()
+	s.jobNotify = fn
+	s.mu.Unlock()
 }
 
 // Close 关闭会话资源（进程退出/测试清理时调用；幂等）。

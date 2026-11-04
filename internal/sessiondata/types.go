@@ -289,10 +289,16 @@ type ToolParam struct {
 // ToolSpec 是工具目录条目（内置与第三方统一形状；M1 只存元数据，
 // 自定义工具的执行面在 M4 落地）。
 type ToolSpec struct {
-	ID          string
-	Desc        string
-	Risk        string // low | high
-	Source      string // builtin | binary | mcp
+	ID     string
+	Desc   string
+	Risk   string // low | high
+	Source string // builtin | binary | mcp
+	// Mutates 声明「执行会不会变更外部世界」（strict 只读档的拒绝依据）。
+	// nil = 未声明，按 true 处理（起进程即变更外部世界的保守默认——存量
+	// 条目零迁移就保持现状）；只有确证只读的工具（如 rg）才声明 false。
+	// 为什么放 ToolSpec 而不是只在 Def 上：声明属于**目录数据**（用户在
+	// 拓展页可改），随条目落库，注册表装配（CustomDef）时读它。
+	Mutates     *bool
 	Params      []ToolParam
 	Doc         string
 	Server      string // source=mcp 时的来源服务器 id

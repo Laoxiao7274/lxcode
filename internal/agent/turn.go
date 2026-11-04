@@ -131,6 +131,15 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig, ac *sessiondata.A
 	// AttachTo 恢复进 s.workspace）——不在 dispatch 里特判；未分组会话是空串，
 	// session_search 据此退回全库（「当前项目」不存在）。
 	ctx = tools.WithWorkspace(ctx, s.workspace)
+	// 后台任务结束通告的**执行会话**投递口（2026-12 修订）：通告按时间线归属
+	// 投给父会话（server 广播路径），子会话自己收不到「它等的那个任务结束了」
+	// ——于是 sleep 盲等（真库实锤：验收子会话 sleep 累计 53.5 分钟）。注入
+	// server 的投递回调（会话级状态，与 todo sink 同一条 ctx 注入理由），让
+	// job_output(wait=true) 订阅到 settle 时把通告转进**本会话**（唤醒开新轮/
+	// 轮边界注入，复用内核的 Notify 机制）。nil = 未注入（纯内核调用方，无通道）。
+	if notify := s.jobNotify; notify != nil {
+		ctx = tools.WithJobNotify(ctx, notify)
+	}
 
 	// 本轮技能目录注入 read_skill（渐进披露的取数源）：模型按 id 取
 	// 完整正文，只暴露白名单内的——没在 ac.Skills 里的它当没有。
@@ -281,6 +290,13 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig, ac *sessiondata.A
 			// 中断也保留已生成的部分内容：入历史并随事件带给宿主
 			var partial *llm.Message
 			if res != nil {
+				// 半截轮的统计口径（2026-12，对齐 DSH 的「取消的 step 不产出统计」）：
+				// 这条 assistant 消息**没有完整跑完**——给它盖 interrupted 位。数字
+				// 本身（首字/耗时/用量四桶）照常落库（「这轮跑到一半断了」是历史展示的
+				// 有效观测），但会话统计的折叠把整行排除——停得快≠模型吐字快，把半截
+				// 轮的耗时算进模型时间会把速度拉成另一件事。写边界的一位标记：判定
+				// 在这里，store 谁都不能 import agent（分层规则，与 notice 位同款）。
+				res.Message.Interrupted = true
 				// 半截 JSON 的调用参数（流被打断、输出被截断）绝不能进历史——
 				// 一条坏参数会让这个会话之后每次请求都发不出去，见 sanitizeToolCallArgs
 				sanitizeToolCallArgs(res.Message.ToolCalls, "流中断保留的部分内容")
@@ -347,7 +363,7 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig, ac *sessiondata.A
 			s.auditTodosAtRoundEnd()
 			return
 		}
-		if !s.runTools(ctx, res.Message.ToolCalls, &fileChanges, ac, "", roundSeq, func(m llm.Message) { s.append(m) }) {
+		if !s.runTools(ctx, res.Message.ToolCalls, &fileChanges, ac, "", roundSeq, func(m llm.Message) { s.append(m) }, s.id) {
 			return // 取消
 		}
 		// 这一轮的调用是不是在原地打转（同工具 + 同参数）？提醒留到**下一个轮边界**

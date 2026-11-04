@@ -106,7 +106,11 @@ test('② 模型下拉面板有 max-height，列表自身 overflow-y:auto（不�
 });
 
 test('② 键盘可达：↑/↓ 移动高亮、Enter 选中、高亮项滚进视野', () => {
-  const src = read('components/model-picker/ModelPicker.tsx');
+  // 键盘导航实现抽在 ModelListPanel（AgentPicker 三级面板共用），断言跟着搬家；
+  // ModelPicker 只断言它确实用了这份实现（不许再长出第二套键盘逻辑）。
+  const src = read('components/model-picker/ModelListPanel.tsx');
+  const host = read('components/model-picker/ModelPicker.tsx');
+  assert.ok(host.includes('ModelListPanel'), 'ModelPicker 必须复用 ModelListPanel（键盘/搜索/分组只有一份实现）');
   assert.ok(src.includes('ArrowDown') && src.includes('ArrowUp'), '必须支持上下键');
   assert.ok(/e\.key === "Enter" && active >= 0/.test(src), 'Enter 选中当前高亮项');
   assert.ok(src.includes('scrollIntoView'), '高亮项要滚进视野（否则键盘光标跑到看不见的地方）');

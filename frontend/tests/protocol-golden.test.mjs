@@ -144,7 +144,9 @@ const FIELD_CHECKS = {
     ['context', 'absent'],
     ['stats', 'absent'],
     ['pending', 'absent'],
-    ['todos', 'absent'],
+    // todos 是显式空数组（无 omitempty）：「无清单」是后端事实，键缺席只代表
+    // 老后端没报（未知）——两者必须可区分。
+    ['todos', ['=', []]],
     ['checkpoints', 'absent'],
     ['model', 'absent'],
     ['approval', 'absent'],

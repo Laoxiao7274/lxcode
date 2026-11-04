@@ -461,7 +461,10 @@ export interface HistorySnapshot {
   messages: HistoryMessage[];
   busy: boolean;
   pending: ConfirmRequest | null;
-  todos: TodoItem[];
+  /** 快照里的任务清单（wire `todos`）。**整键缺席 = 未知**（老后端/演示源）——
+   *  归约器据此保留本地已显示的清单，不猜；键在（哪怕是空数组）= 后端事实
+   *  「无清单」，如实覆盖（用户清空清单后刷新不该复活旧清单）。 */
+  todos?: TodoItem[];
   /** 上下文占用（缺省 = 未知——刚切会话/后端刚重启，指示器显示中性态）。 */
   context?: ContextUsage;
   /** 整段会话统计（缺省 = 还没有任何一步——不渲染统计胶囊）。 */
@@ -1131,6 +1134,8 @@ export interface AgentAdminTool {
   command?: string;
   example?: string;
   package_file?: string;
+  /** 执行会不会变更外部世界（strict 只读档的拒绝依据；缺省 = 未声明，按 true）。 */
+  mutates?: boolean;
   custom: boolean;
 }
 
