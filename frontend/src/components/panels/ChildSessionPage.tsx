@@ -18,7 +18,7 @@
 // 与主会话同一位置。例外是**确认门**：子 Agent 的确认由父会话代理（AGENTS.md
 // §2.3），用户在这一页看到待裁决的确认卡时必须能批（点了没反应比没有按钮更糟）。
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { AgentSource } from "../../shared/types";
+import type { AgentSource, HistorySnapshot } from "../../shared/types";
 import type { UIState } from "../../shared/store";
 import { Button } from "../form";
 import { Composer } from "../composer";
@@ -46,6 +46,8 @@ export function ChildSessionPage({
   onConfirm,
   onAnswer,
   onBack,
+  historyLoader,
+  cancelSession,
 }: {
   /** 子会话 id（视图键 child:<sessionId> 解析出来的那个）。 */
   sessionId: string;
@@ -60,6 +62,13 @@ export function ChildSessionPage({
   onAnswer?: (id: string, text: string) => void;
   /** 返回主会话（关闭临时视图：视图不进标签栏，「返回主会话」是显式的关闭/返回入口）。 */
   onBack: () => void;
+  /** 历史装载口（助手模式 P1）：缺省 = source.childHistory（主域 chat.history）；
+   *  助手域子会话传 assistant 域的装载（assistant.history——域隔离：主域 chat.*
+   *  寻址助手域会话报错）。 */
+  historyLoader?: (sessionId: string, beforeSeq?: number) => Promise<HistorySnapshot>;
+  /** 停止口（助手模式 P1）：缺省 = source.cancel（主域 chat.cancel）；
+   *  助手域子会话传 assistant.cancel（助手会话正在跑的派发经它寻址取消）。 */
+  cancelSession?: (sessionId: string) => void;
 }) {
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [error, setError] = useState("");
@@ -72,12 +81,19 @@ export function ChildSessionPage({
   // 读这个子会话的历史——**通过数据源**读，让 store 按 sessionId 把它的 state 建起来
   //（WSAgent.childHistory 发 historyLoaded，sessionId 是子会话自己的），随后的事件
   // 由 store 的双投续上：所以这一页看到的是**实时流**，不是一张快照。
+  // 装载口可被覆盖（助手模式 P1）：助手域子会话传 assistant 域装载（App 按域判定
+  // 传入），缺省走主域 childHistory。
+  const loadHistory = useCallback(
+    (id: string, beforeSeq?: number) =>
+      historyLoader ? historyLoader(id, beforeSeq) : sourceRef.current.childHistory(id, beforeSeq),
+    [historyLoader],
+  );
   useEffect(() => {
     // alive：切走/卸载后迟到的应答不许再写 state（会画到别的子会话视图上）
     let alive = true;
     setStatus("loading");
     setError("");
-    sourceRef.current.childHistory(sessionId).then(
+    loadHistory(sessionId).then(
       () => { if (alive) setStatus("ready"); },
       (e: unknown) => {
         if (!alive) return;
@@ -87,7 +103,7 @@ export function ChildSessionPage({
       },
     );
     return () => { alive = false; };
-  }, [sessionId, nonce]);
+  }, [sessionId, nonce, loadHistory]);
 
   const handleConfirm = useCallback((id: string, allow: boolean) => {
     onConfirm(id, allow);
@@ -154,8 +170,9 @@ export function ChildSessionPage({
     captureAnchor,
     clearAnchor,
     // 子会话分页必须走 childHistory（带 child 标记——分页补进来的任务说明书
-    // 要渲染成「任务」块，不能变成用户气泡）
-    load: (beforeSeq: number) => source.childHistory(sessionId, beforeSeq).then(() => undefined),
+    // 要渲染成「任务」块，不能变成用户气泡）；助手域子会话走装载口同一条覆盖
+    //（assistant.history——域隔离）
+    load: (beforeSeq: number) => loadHistory(sessionId, beforeSeq).then(() => undefined),
   });
 
   return (
@@ -258,7 +275,7 @@ export function ChildSessionPage({
           // 停在旧模型上（与主会话 pickSessionModel 的「不乐观改」同一条纪律）。
           source.setSessionModel(id, sessionId).catch(() => {})}
         onSend={() => {}}
-        onCancel={() => source.cancel(sessionId)}
+        onCancel={() => (cancelSession ? cancelSession(sessionId) : source.cancel(sessionId))}
       />
     </div>
   );

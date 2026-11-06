@@ -24,6 +24,76 @@
       "custom": false
     }
   },
+  "assistantConfigResultFull": {
+    "_type": "AssistantConfig",
+    "value": {
+      "name": "小灵",
+      "persona": "轻松幽默，回答简洁",
+      "skills": [
+        "gsap"
+      ],
+      "workflow": "research-first",
+      "mcpServers": [
+        "exa"
+      ],
+      "tools": [
+        "my_query"
+      ],
+      "toolWhitelist": [
+        "read_file",
+        "search",
+        "read_image",
+        "bash_readonly",
+        "web_search",
+        "web_fetch",
+        "project_list",
+        "session_search",
+        "todo",
+        "ask_user",
+        "read_skill",
+        "run_task",
+        "update_assistant_config",
+        "mcp_manage"
+      ],
+      "builtinDefaults": [
+        "read_file",
+        "search",
+        "read_image",
+        "bash_readonly",
+        "web_search",
+        "web_fetch",
+        "project_list",
+        "session_search",
+        "todo",
+        "ask_user",
+        "read_skill",
+        "run_task",
+        "update_assistant_config",
+        "mcp_manage"
+      ]
+    }
+  },
+  "assistantConfigResultMinimal": {
+    "_type": "AssistantConfig",
+    "value": {
+      "builtinDefaults": [
+        "read_file",
+        "search",
+        "read_image",
+        "bash_readonly",
+        "web_search",
+        "web_fetch",
+        "project_list",
+        "session_search",
+        "todo",
+        "ask_user",
+        "read_skill",
+        "run_task",
+        "update_assistant_config",
+        "mcp_manage"
+      ]
+    }
+  },
   "chatDoneDispatch": {
     "_type": "AgentEvent",
     "value": {
@@ -551,6 +621,19 @@
       ]
     }
   },
+  "dispatchStartParamsProject": {
+    "_type": "",
+    "value": {
+      "owner_session_id": "s1",
+      "dispatch_id": "d2",
+      "session_id": "child-2",
+      "agent_id": "coder",
+      "agent_name": "代码 Agent",
+      "agent_color": "#3b82f6",
+      "task": "修一下构建",
+      "project_name": "lxcode"
+    }
+  },
   "gitBranchInfoMain": {
     "_type": "GitBranchInfo",
     "value": {
@@ -625,10 +708,23 @@
       "detail": "退出码 0",
       "session_id": "s1",
       "owner_session_id": "s1",
+      "workspace": "lxcode",
       "started_at": "2026-10-13T10:00:00+08:00",
       "finished_at": "2026-10-13T10:01:12+08:00",
       "output_tail": "vite build 完成",
       "output_path": "C:\\ProgramData\\lxcode\\logs\\job1.log"
+    }
+  },
+  "jobInfoUngrouped": {
+    "_type": "",
+    "value": {
+      "id": "job2",
+      "kind": "bash",
+      "label": "go test ./...",
+      "status": "running",
+      "session_id": "s9",
+      "owner_session_id": "s9",
+      "started_at": "2026-10-13T11:00:00+08:00"
     }
   },
   "jobLogResult": {

@@ -18,14 +18,23 @@ function isElectronRenderer(): boolean {
  *  从局域网/远程浏览器打开页面时默认连**宿主机**（页面的 hostname + 后端端口），
  *  免去每次手填地址。Electron 壳不走这里——壳产线加载 app://lxcode/index.html，
  *  hostname === "lxcode" 会误算成 "lxcode:7789"（壳内一律本机地址，token 由壳桥
- *  供给），所以壳内（Electron UA / app: 协议）直接回默认值。 */
+ *  供给），所以壳内（Electron UA / app: 协议）直接回默认值。
+ *
+ *  dev 后端端口：scripts/dev.mjs 起 vite 时注入 LXCODE_DEV_BACKEND_PORT（=7790，
+ *  与生产 7789 隔离——见 dev.mjs 头注），vite.config.ts 的 define 把它暴露成
+ *  VITE_BACKEND_PORT。该注入只在 dev.mjs 传了环境变量的构建里存在——打包产物 /
+ *  壳 / 生产构建读不到该键，恒回 7789。 */
 function defaultLiveAddr(): string {
-  const fallback = "127.0.0.1:7789";
+  // 注意写法：必须精确写 import.meta.env.VITE_BACKEND_PORT（无 ?.、无 as）——
+  // vite.config.ts 的 define 只按这个字面表达式做文本替换；可选链或类型断言
+  // 都会让替换失配，dev 下读不到端口回落 7789 连上生产（隔离失效）。
+  const devPort = import.meta.env.VITE_BACKEND_PORT;
+  const fallback = devPort ? `127.0.0.1:${devPort}` : "127.0.0.1:7789";
   if (isElectronRenderer()) return fallback;
   if (typeof location === "undefined" || location.protocol === "app:") return fallback;
   const h = location.hostname;
   if (!h || h === "localhost" || h === "127.0.0.1" || h === "::1" || h === "[::1]") return fallback;
-  return `${h}:7789`;
+  return `${h}:${devPort ?? "7789"}`;
 }
 
 /** 获取 AgentSource（单例）。 */

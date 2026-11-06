@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/moyunteng/lxcode/internal/config"
 	"github.com/moyunteng/lxcode/internal/sessiondata"
 )
 
@@ -21,7 +20,7 @@ func TestProjectDocsInjectedAfterAgentLayers(t *testing.T) {
 		Protocol: "定制协议：只写 Go。", Prompt: "自定义段：先读再改。",
 	}}
 	docs := ProjectDocs{Path: `C:\proj\demo\AGENTS.md`, Content: docsMarker}
-	prompt := ComposeSystemPrompt(s.tools, `C:\proj\demo`, ac, ac.Def.Tools, WorktreeInfo{}, false, docs)
+	prompt := ComposeSystemPrompt(s.tools, `C:\proj\demo`, ac, ac.Def.Tools, WorktreeInfo{}, false, docs, nil)
 
 	idx := func(sub string) int {
 		i := strings.Index(prompt, sub)
@@ -59,11 +58,11 @@ func TestProjectDocsAbsentNoNoise(t *testing.T) {
 	s := newAgentSession(t)
 	ac := &sessiondata.AgentContext{Def: sessiondata.AgentDef{ID: "coder", Name: "代码 Agent", Tools: []string{"read_file"}}}
 
-	base := ComposeSystemPrompt(s.tools, "/proj/demo", ac, ac.Def.Tools, WorktreeInfo{}, false, ProjectDocs{})
+	base := ComposeSystemPrompt(s.tools, "/proj/demo", ac, ac.Def.Tools, WorktreeInfo{}, false, ProjectDocs{}, nil)
 	if strings.Contains(base, "项目约定") {
 		t.Fatal("没有守则时不该出现「项目约定」段")
 	}
-	empty := ComposeSystemPrompt(s.tools, "/proj/demo", ac, ac.Def.Tools, WorktreeInfo{}, false, ProjectDocs{Path: "/proj/demo/AGENTS.md", Content: "   \n\n"})
+	empty := ComposeSystemPrompt(s.tools, "/proj/demo", ac, ac.Def.Tools, WorktreeInfo{}, false, ProjectDocs{Path: "/proj/demo/AGENTS.md", Content: "   \n\n"}, nil)
 	if empty != base {
 		t.Fatal("守则内容为空白时，提示词应与无守则时逐字节一致")
 	}
@@ -93,9 +92,12 @@ func TestProjectDocsTruncated(t *testing.T) {
 	if !strings.Contains(prompt, "已截断") {
 		t.Fatal("超长守则应截断并注明")
 	}
-	// 注入正文不得超过上限（留出注明行的余量）
-	if got := len(prompt); got > len(systemPromptHeader)+len(systemPromptFooter(config.TodoPromptStrict))+projectDocsCap+4096 {
-		t.Fatalf("截断后提示词仍过大: %d 字节", got)
+	// 注入正文不得超过上限（留出注明行的余量）。预算 = 同参数下「无 docs」的
+	// 提示词实测长 + cap + 4096 余量——不手拼 header/footer 常量（工具清单
+	// 随注册表增减，手拼预算在工具描述加几个字节时就会误伤）。
+	bare := BuildSystemPrompt(s.tools, "/proj/demo", WorktreeInfo{}, false, ProjectDocs{})
+	if got := len(prompt); got > len(bare)+projectDocsCap+4096 {
+		t.Fatalf("截断后提示词仍过大: %d（预算 %d）", got, len(bare)+projectDocsCap+4096)
 	}
 }
 

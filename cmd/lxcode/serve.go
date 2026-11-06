@@ -121,6 +121,12 @@ func runServe(ctx context.Context, path, addr, sessionsDir string) error {
 	srv.AttachBehavior(behaviorPath)
 	log.Printf("行为配置: %s（todoPrompt=%s）", behaviorPath, srv.BehaviorTodoPrompt())
 
+	// 助手性格与拓展配置（config/assistant.json，与 models.json 同目录）：
+	// resolver merge 现读（下一轮生效），reloadLoop 只负责手改后的变更广播。
+	assistantPath := resolveAssistantConfigPath(path)
+	srv.AttachAssistantConfig(assistantPath)
+	log.Printf("助手配置: %s", assistantPath)
+
 	// SSH 主机（config/hosts.json，与 models.json 同目录）：ssh_hosts 工具的
 	// 别名与凭据清单。加载失败不拒绝启动（工具回自解释错误）。
 	srv.AttachSSHHostLookup(sshHostLookupOf(path))
@@ -168,6 +174,12 @@ func resolveRemotePath(modelsPath string) string {
 // resolveRemotePath 的理由——同一份部署配置的一部分，不另开 flag）。
 func resolveBehaviorPath(modelsPath string) string {
 	return filepath.Join(filepath.Dir(modelsPath), "behavior.json")
+}
+
+// resolveAssistantConfigPath 决定助手配置路径：与 models.json 同目录（同
+// resolveBehaviorPath 的理由——同一份部署配置的一部分，不另开 flag）。
+func resolveAssistantConfigPath(modelsPath string) string {
+	return filepath.Join(filepath.Dir(modelsPath), "assistant.json")
 }
 
 // resolveSSHHostsPath 决定 SSH 主机配置路径：与 models.json 同目录（同一份
@@ -238,6 +250,9 @@ func reloadLoop(ctx context.Context, reg *config.Registry, searchSvc *websearch.
 			// 「手改后给其它客户端广播一次变更」——set 路径自己已广播并同步基线，
 			// 不会在这里重复。
 			srv.CheckBehaviorChanged()
+			// 助手配置（assistant.json）：同款纪律——读侧（resolver merge）每次
+			// 现读，这里只负责手改后的变更广播。
+			srv.CheckAssistantConfigChanged()
 		}
 	}
 }

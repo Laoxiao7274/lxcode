@@ -18,9 +18,11 @@ const dispatch = (over = {}) => ({
 const user = (text) => ({ kind: 'user', uid: ++uid, text });
 const assistant = (content) => ({ kind: 'assistant', uid: ++uid, content, reasoning: '', streaming: false });
 const tool = (name) => ({ kind: 'tool', uid: ++uid, id: 't' + uid, name, arguments: '{}' });
-// 反例对照的靶子：一个**非 dispatch** 的块，但它带着 task 字段（后台任务卡的命令摘要在
-// 别处的实现里就叫 task）。把判定放宽成「所有带 task 字段的块」时它会立刻混进列表。
-const jobWithTask = () => ({ kind: 'job', uid: ++uid, job: { id: 'j1', label: '跑测试' }, task: '跑测试' });
+// 反例对照的靶子：一个**非 dispatch** 的块，但它带着 task 字段。时间线任务卡
+// （原 kind 'job'）已随 2026-12 的「时间线不出任务卡」砍掉，这里换一个同样
+// 「不是 dispatch、却带 task 字段」的合成块钉同一条不变量：把判定放宽成
+// 「所有带 task 字段的块」时它会立刻混进列表。
+const jobWithTask = () => ({ kind: 'notice', uid: ++uid, label: '后台任务', text: '跑测试', task: '跑测试' });
 
 // ① 只取 dispatch 块：user / assistant / tool（含 agent_dispatch 工具行）/ 带 task 的 job 都不算
 test('只取 dispatch 块：user / assistant / tool / 带 task 的非 dispatch 块都不进列表', () => {

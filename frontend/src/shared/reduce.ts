@@ -1,6 +1,6 @@
 // 事件流 → UI 状态的归约（纯函数，无 React——可直接单测）。
 
-import type { AgentEvent, ConfirmRequest, JobInfo, RunningDispatchInfo } from "./types";
+import type { AgentEvent, ConfirmRequest, RunningDispatchInfo } from "./types";
 import { type AssistantBlock, type ThreadBlock, type UIState, DISPATCH_TOOL_NAME, initial, nextUid, withBlock, placeConfirm, planRewind, finalizeStreaming, timelineOf } from "./blocks";
 import { DISPATCH_INTERRUPTED, mergeOlderHistory, reduceHistory } from "./history";
 import { isHiddenNotice, noticeBody, noticeLabel } from "./notices";
@@ -66,7 +66,10 @@ export function reduce(state: UIState, ev: AgentEvent): UIState {
       return reduceCompacted(state, ev);
     case "jobStarted":
     case "jobSettled":
-      return upsertJobBlock(state, ev.job);
+      // 时间线不出任务卡（2026-12 用户拍板，docs/jobs.md §6）：任务卡不是持久
+      // 记录、JobsBadge 面板是超集、任务通告已 hidden——时间线投递三重冗余。
+      // 事件仍由面板缓存（job-admin / DemoAgent）与通告链路消费，这里不建块。
+      return state;
     case "rewound":
       return reduceRewound(state, ev);
     case "historyLoaded":
@@ -90,9 +93,9 @@ export function reduce(state: UIState, ev: AgentEvent): UIState {
  *
  * 系统提示条（重复调用提醒）在**历史里与实时流里都是真实 user 角色消息**
  * （模型必须把它当用户回合才能回应），但它不是用户说的话——按**文本前缀**识别
- *（不能按角色，种类表见 shared/notices.ts），渲染成提示条而不是用户气泡，否则用户
- * 会以为是自己发的。后台任务通告是 hidden 种类：不产生任何块（任务状态在任务卡
- * 与 Jobs 面板，不在对话时间线）。
+ * （不能按角色，种类表见 shared/notices.ts），渲染成提示条而不是用户气泡，否则用户
+ * 会以为是自己发的。后台任务通告是 hidden 种类：不产生任何块（任务状态只在
+ * Jobs 面板，不在对话时间线——docs/jobs.md §6）。
  *
  * **hidden 的系统注记（如「用户中断了这次生成」）不产生任何块**：它是写给模型的
  * 注记，用户界面上当它不存在——原样返回 state（连乐观 pending 的去重也不做，
@@ -425,6 +428,9 @@ if (idx >= 0) {
     agentName: ev.agentName || prev.agentName,
     agentColor: ev.agentColor || prev.agentColor,
     task: ev.task || prev.task,
+    // run_task 的项目归属（可选键，缺席 = 常规委派——**清掉**旧值：同一张卡
+    // 续跑时若这次没带项目名，不能顶着上一轮的旧项目显示）。
+    projectName: ev.projectName,
     status: "running",
     isError: undefined,
     result: undefined,
@@ -445,6 +451,9 @@ return {
     kind: "dispatch", uid: nextUid(), id: ev.dispatchId, sessionId: ev.childSessionId,
     agentId: ev.agentId, agentName: ev.agentName, agentColor: ev.agentColor,
     task: ev.task, status: "running", subBlocks: [],
+    // run_task 的项目归属（可选键，缺席 = 常规委派，卡不显示项目；缺席时不写
+    // 这个键——不是写 undefined，键缺席纪律）。
+    ...(ev.projectName ? { projectName: ev.projectName } : {}),
     // todo 契约批③：主 Agent 预拆的清单初稿（卡上第一秒显示计划；子会话修订后
     // 由带 dispatch_id 的 todo.updated 实时覆盖）。
     todos: ev.todos,
@@ -563,11 +572,8 @@ if (ev.history.busy && state.busy && state.historyReady) {
 // rebuilt 展开已带 busy: ev.history.busy）。
 const busySnapshot = ev.history.busy;
 // 冷恢复/空闲会话：messages → blocks（工具调用与结果配对）。
-// **任务卡不在历史里**（契约只把后台任务定义成 job.started/settled 事件，
-// ChatHistoryResult 不带 jobs）——整块重建会把它们一起丢掉：切走再切回一个正在
-// 跑 dev server 的会话，卡片不该凭空消失（它还在跑，顶栏面板里也还看得见）。
-// 保留的是本会话状态里的卡（state 本就按会话隔离），位置接在重建后的历史之后。
-const jobs = state.blocks.filter((b) => b.kind === "job");
+// 任务块不出现在时间线（2026-12 拍板，docs/jobs.md §6）——重建也不再保留
+// 旧 state 里的 job 块（那里也早已不再产生）。
 const rebuilt = reduceHistory(state, ev.history);
 // **观察端回填**（chat.history 的 running_dispatches）：本窗口错过 dispatchStart
 // 广播（安卓重进会话/新开的桌面窗口）时，回放重建的派发卡没有子会话 id——
@@ -585,7 +591,6 @@ const revived = reviveRunningDispatch(filled, state.blocks, busySnapshot || stat
 // 流式尾巴接回（去重见 appendLiveTail）——它回到 state.streaming，不并入 blocks
 //（之后还有 delta 到达时要继续续写同一块，见 liveTail）。
 const { blocks: withLive, streaming: liveStream } = appendLiveTail(revived, live, ev.history);
-const base = jobs.length ? [...withLive, ...jobs] : withLive;
 return {
   ...rebuilt,
   rebuiltGen,
@@ -593,7 +598,7 @@ return {
   // 历史全量重建：pending 乐观块一起被重建抹掉——回放的历史里要么已有这条消息
   //（真块回来了），要么发送还没落库（留着会变僵尸 pending）。发送中态一并结束。
   sending: false,
-  blocks: base,
+  blocks: withLive,
   streaming: liveStream,
   // 分页元数据随快照走（键缺席 = 老后端/非分页应答 → 不分页，行为不变）
   historyMore: Boolean(ev.history.hasMore),
@@ -779,25 +784,6 @@ function fillRunningDispatches(
     };
   }
   return next;
-}
-
-/** jobStarted / jobSettled 共用：同一个任务只留一张卡（就地更新快照）。
- *
- * 两个事件都 upsert 而不是「started 建卡、settled 改卡」：刷新/重连后
- * 只剩 settled 可收（后端不重放历史事件），那时若没有卡，用户就永远看不到
- * 这个任务发生过——补一张已结束的卡比静默丢弃诚实。
- * 块对象必须换新引用（Block 是 memo 的，原地改 job 字段不会触发重渲染）。 */
-function upsertJobBlock(state: UIState, job: JobInfo): UIState {
-  const idx = state.blocks.findIndex((b) => b.kind === "job" && b.job.id === job.id);
-  if (idx < 0) {
-    // 追加前定型流式块（不变量：streaming 恒为逻辑上的最后一块）
-    const sealed = finalizeStreaming(state);
-    return { ...sealed, blocks: [...sealed.blocks, { kind: "job", uid: nextUid(), job }] };
-  }
-  const blocks = state.blocks.slice();
-  const prev = blocks[idx] as Extract<ThreadBlock, { kind: "job" }>;
-  blocks[idx] = { ...prev, job };
-  return { ...state, blocks };
 }
 
 /** 把子事件应用进 dispatch 块的 subBlocks（子上下文隔离的归属路由）。

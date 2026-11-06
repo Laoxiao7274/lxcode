@@ -27,7 +27,7 @@ func TestTodoFirstInMainPrompt(t *testing.T) {
 	}
 	// 主会话：Agent 四层组合路径（定制协议整段替换也不影响——守则在基础层）
 	ac := &sessiondata.AgentContext{Def: sessiondata.AgentDef{ID: "main", Name: "主 Agent", IsMain: true}}
-	if p := ComposeSystemPrompt(s.tools, "", ac, ac.Def.Tools, WorktreeInfo{}, false, ProjectDocs{}); !strings.Contains(p, todoFirstKey) {
+	if p := ComposeSystemPrompt(s.tools, "", ac, ac.Def.Tools, WorktreeInfo{}, false, ProjectDocs{}, nil); !strings.Contains(p, todoFirstKey) {
 		t.Fatal("主会话（ComposeSystemPrompt）提示词缺少 todo-first 关键句")
 	}
 }
@@ -40,7 +40,7 @@ func TestTodoFirstInChildPrompt(t *testing.T) {
 	}
 	// 子会话：dispatch/WithAgent 的真实路径（子 Agent = 独立会话，同一套组合）
 	ac := &sessiondata.AgentContext{Def: sessiondata.AgentDef{ID: "coder", Name: "代码 Agent", IsMain: false, Tools: []string{"read_file"}}}
-	if p := ComposeSystemPrompt(s.tools, "", ac, ac.Def.Tools, WorktreeInfo{}, true, ProjectDocs{}); !strings.Contains(p, todoFirstKey) {
+	if p := ComposeSystemPrompt(s.tools, "", ac, ac.Def.Tools, WorktreeInfo{}, true, ProjectDocs{}, nil); !strings.Contains(p, todoFirstKey) {
 		t.Fatal("子会话（ComposeSystemPrompt isChild）提示词缺少 todo-first 关键句")
 	}
 }
@@ -114,7 +114,7 @@ func TestTodoPromptModesInChildPrompt(t *testing.T) {
 			prompt string
 		}{
 			{"BuildSystemPrompt(isChild)", BuildSystemPrompt(s.tools, "", WorktreeInfo{}, true, ProjectDocs{}, c.mode)},
-			{"ComposeSystemPrompt(isChild)", ComposeSystemPrompt(s.tools, "", ac, ac.Def.Tools, WorktreeInfo{}, true, ProjectDocs{}, c.mode)},
+			{"ComposeSystemPrompt(isChild)", ComposeSystemPrompt(s.tools, "", ac, ac.Def.Tools, WorktreeInfo{}, true, ProjectDocs{}, nil, c.mode)},
 		} {
 			if c.wantKey != "" && !strings.Contains(path.prompt, c.wantKey) {
 				t.Fatalf("%s 档子会话（%s）缺少关键句 %q", c.mode, path.name, c.wantKey)

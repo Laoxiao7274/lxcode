@@ -76,8 +76,8 @@ func (s *Server) jobInfo(snap jobs.Snapshot) protocol.JobInfo {
 		ID: snap.ID, Kind: snap.Kind, Label: snap.Label,
 		Status: string(snap.Status), EndedBy: string(snap.EndedBy), Detail: snap.Detail,
 		SessionID: snap.SessionID, OwnerSessionID: snap.OwnerSessionID,
-		OutputPath: snap.OutputPath,
-		StartedAt:  snap.StartedAt.UTC().Format(time.RFC3339),
+		Workspace: snap.Workspace, OutputPath: snap.OutputPath,
+		StartedAt: snap.StartedAt.UTC().Format(time.RFC3339),
 	}
 	if !snap.FinishedAt.IsZero() {
 		info.FinishedAt = snap.FinishedAt.UTC().Format(time.RFC3339)

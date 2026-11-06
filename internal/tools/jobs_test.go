@@ -232,6 +232,21 @@ func TestBashRunInBackground(t *testing.T) {
 	if list[0].SessionID != "s1" || list[0].Kind != "bash" {
 		t.Fatalf("任务应记归属会话与 kind: %+v", list[0])
 	}
+	if list[0].Workspace != "" {
+		t.Fatalf("ctx 未注入 Workspace 时应为空串（未分组）: %+v", list[0])
+	}
+
+	// 项目归属（面板分组用）：Start 时从执行会话的 ctx 焊进 Spec（docs/jobs.md §4）。
+	r.Execute(WithWorkspace(ctx, "lxcode"), call("bash", `{"command":"echo bg-ws","run_in_background":true}`))
+	var wsJob jobs.Snapshot
+	for _, s := range mgr.List("") {
+		if s.Label == "echo bg-ws" {
+			wsJob = s
+		}
+	}
+	if wsJob.ID == "" || wsJob.Workspace != "lxcode" {
+		t.Fatalf("bash 起任务应把 ctx 的 Workspace 焊进 Spec: %+v", wsJob)
+	}
 	snap := waitJobStatus(t, mgr, list[0].ID, jobs.StatusCompleted)
 	if snap.EndedBy != jobs.EndedSelf || snap.Detail != "退出码 0" {
 		t.Fatalf("正常退出应 settle 成 self/completed: %+v", snap)

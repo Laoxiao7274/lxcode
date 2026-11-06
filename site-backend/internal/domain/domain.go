@@ -34,6 +34,14 @@ const (
 	KindInstaller ArtifactKind = "installer"
 	KindPortable  ArtifactKind = "portable"
 	KindUpdate    ArtifactKind = "update"
+	// mac 侧产物（2026-12 拍板：manifest 按平台分文件，见 shell/src/update-platform.ts）：
+	// mac 不做 NSIS 式增量安装链，安装包 = dmg（arm64/x64 各一份），更新包 =
+	// update-mac-<version>.zip（清单位置 = manifest-mac.json，与 Windows 的
+	// manifest.json 同构同目录）。dmg 按架构拆两个 kind：artifacts 表主键是
+	// (version, kind)，双份 dmg 同 kind 会撞主键；按 arch 拆还让命名校验能精确到架构。
+	KindMacInstallerArm64 ArtifactKind = "mac-installer-arm64"
+	KindMacInstallerX64   ArtifactKind = "mac-installer-x64"
+	KindMacUpdate         ArtifactKind = "mac-update"
 )
 
 // ReleaseStatus 发布状态：草稿不进更新链；撤回 = 从更新链摘掉但保留历史。
@@ -47,6 +55,11 @@ const (
 
 // RequiredUpdateFiles 更新包 zip 内必须存在的路径（= 安装目录相对路径，见 scripts/build.mjs）。
 var RequiredUpdateFiles = []string{"resources/app.asar", "resources/bin/lxcode.exe"}
+
+// RequiredMacUpdateFiles mac 更新包 zip 内必须存在的路径（= <app>.app/Contents
+// 相对路径，见 scripts/build.mjs --mac 段与 shell/src/updater.ts 的 installDir()）。
+// 与 Windows 的差异：后端无 .exe（resources/bin/lxcode），且 mac 无 ffmpeg/投屏。
+var RequiredMacUpdateFiles = []string{"resources/app.asar", "resources/bin/lxcode"}
 
 // Artifact 一个产物。Name 含扩展名；update 包的名字必须与 manifest.url 一致。
 type Artifact struct {
@@ -74,17 +87,21 @@ type Manifest struct {
 
 // Release 一个发布版本。字段名与前端 Release 接口一一对应（camelCase JSON）。
 type Release struct {
-	Version   string        `json:"version"`
-	Channel   Channel       `json:"channel"`
-	Status    ReleaseStatus `json:"status"`
-	PublishedAt *string      `json:"publishedAt"`
-	Notes     []string      `json:"notes"`
-	Artifacts []Artifact    `json:"artifacts"`
-	Manifest  Manifest      `json:"manifest"`
-	MinVersion string        `json:"minVersion"`
-	Required  bool          `json:"required"`
-	ElectronVersion string  `json:"electronVersion"`
-	Downloads int64         `json:"downloads"`
+	Version     string        `json:"version"`
+	Channel     Channel       `json:"channel"`
+	Status      ReleaseStatus `json:"status"`
+	PublishedAt *string       `json:"publishedAt"`
+	Notes       []string      `json:"notes"`
+	Artifacts   []Artifact    `json:"artifacts"`
+	Manifest    Manifest      `json:"manifest"`
+	// ManifestMac mac 更新清单（manifest-mac.json，与 Manifest 同构）：零值 =
+	// 这版没发 mac（老数据/仅 Windows 发版），json 里不输出（omitempty 按零值
+	// 结构体判定——ManifestMac 为零值结构体时整个键省略，老管理台不受影响）。
+	ManifestMac     Manifest `json:"manifestMac,omitempty"`
+	MinVersion      string   `json:"minVersion"`
+	Required        bool     `json:"required"`
+	ElectronVersion string   `json:"electronVersion"`
+	Downloads       int64    `json:"downloads"`
 }
 
 // ChangelogKind 更新日志分类。四类与前端 base.css 的 .tag-* 一一对应。
@@ -121,6 +138,36 @@ func InstallerName(version string) string {
 // PortableName 免安装版（win-unpacked 打包名）。
 func PortableName(version string) string {
 	return "Lxcode-" + version + "-win-x64.zip"
+}
+
+// MacUpdatePackageName mac 更新包文件名（manifest-mac.url 与产物名同源；
+// scripts/build.mjs --mac 产出 update-mac-<version>.zip）。
+func MacUpdatePackageName(version string) string {
+	return "update-mac-" + version + ".zip"
+}
+
+// MacInstallerName mac 安装包（dmg）的 electron-builder 默认产物名，
+// 与 build.mjs --mac 实际产物一致：Lxcode-<version>-<arch>.dmg。
+func MacInstallerName(version, arch string) string {
+	return "Lxcode-" + version + "-" + arch + ".dmg"
+}
+
+// IsMacInstallerName dmg 命名是否匹配 electron-builder mac 默认产物名。
+// 命名不符只提醒不阻断（与 Windows 安装包命名 warn 同口径）。
+func IsMacInstallerName(version, name string) bool {
+	return name == MacInstallerName(version, "arm64") || name == MacInstallerName(version, "x64")
+}
+
+// MacInstallerKindAndArch 从上传字段名解析 dmg 的 kind 与架构；字段名不合法则 ok=false。
+func MacInstallerKindAndArch(field string) (ArtifactKind, string, bool) {
+	switch field {
+	case "macInstallerArm64":
+		return KindMacInstallerArm64, "arm64", true
+	case "macInstallerX64":
+		return KindMacInstallerX64, "x64", true
+	default:
+		return "", "", false
+	}
 }
 
 // IsValidVersion 版本号只认三段数字（与 shell/package.json 的 version 同形）。
@@ -247,19 +294,29 @@ type PublishCheck struct {
 
 // DraftCheckInput 校验入参：与前端 checkReleaseDraft 的 draft 参数一一对应。
 type DraftCheckInput struct {
-	Version                string
-	Channel                Channel
-	Artifacts              []Artifact
-	ElectronVersion        string
+	Version                 string
+	Channel                 Channel
+	Artifacts               []Artifact
+	ElectronVersion         string
 	PreviousElectronVersion *string
-	SHA256OfUpdate         string
+	SHA256OfUpdate          string
+	// SHA256OfMacUpdate mac 更新包的声明哈希（manifest-mac.sha256 应与之一致）。
+	// 与 Windows 的 SHA256OfUpdate 同语义；为空表示这一版不发 mac（mac 校验整段跳过，
+	// 不产生任何 fail/warn——Windows 发版不该被 mac 缺席挡住）。
+	SHA256OfMacUpdate string
 }
 
 // CheckReleaseDraft 发布前校验：与前端 release.ts 的 checkReleaseDraft 同规则同文案。
 // 规则（以 release.ts 注释为准）：
-//   版本号格式（fail）· 版本号唯一性（fail）· 安装包缺失（fail）/ 命名（pass|warn）
-//   更新包缺失（fail）/ 命名不符（fail）/ 哈希不符（fail）/ 齐备（pass）
-//   免安装版缺失（warn）· Electron 版本变化（warn）· 可发布性（pass|warn）
+//
+//	版本号格式（fail）· 版本号唯一性（fail）· 安装包缺失（fail）/ 命名（pass|warn）
+//	更新包缺失（fail）/ 命名不符（fail）/ 哈希不符（fail）/ 齐备（pass）
+//	免安装版缺失（warn）· Electron 版本变化（warn）· 可发布性（pass|warn）
+//
+// mac 段（SHA256OfMacUpdate 非空才校验；Windows 规则不受影响）：
+//
+//	mac 更新包缺失（fail）/ 命名不符（fail）/ 哈希不符（fail）
+//	mac 安装包缺失（warn）/ 命名不符（warn）/ 超量（fail）
 func CheckReleaseDraft(draft DraftCheckInput, existing []Release) []PublishCheck {
 	out := []PublishCheck{}
 
@@ -334,6 +391,48 @@ func CheckReleaseDraft(draft DraftCheckInput, existing []Release) []PublishCheck
 				*draft.PreviousElectronVersion, draft.ElectronVersion)})
 	}
 
+	// ---- mac 段（2026-12）：SHA256OfMacUpdate 非空 = 这版带 mac 发版。
+	// mac 更新链与 Windows 同构（update-mac zip + manifest-mac.json，见
+	// shell/src/update-platform.ts），规则对齐 Windows 更新包三条：缺失/命名/哈希。
+	if draft.SHA256OfMacUpdate != "" {
+		macUpdate := first(KindMacUpdate)
+		switch {
+		case macUpdate == nil:
+			out = append(out, PublishCheck{LevelFail, "mac 更新包",
+				fmt.Sprintf("声明了 mac 发版但缺少 %s：mac 客户端更新链断掉", MacUpdatePackageName(draft.Version))})
+		case macUpdate.Name != MacUpdatePackageName(draft.Version):
+			out = append(out, PublishCheck{LevelFail, "mac 更新包命名",
+				fmt.Sprintf("必须叫 %s，manifest-mac.json 里的 url 直接指向它", MacUpdatePackageName(draft.Version))})
+		case macUpdate.SHA256 != draft.SHA256OfMacUpdate:
+			out = append(out, PublishCheck{LevelFail, "mac 更新包哈希", "manifest-mac.sha256 与 mac 更新包实际哈希不一致"})
+		default:
+			out = append(out, PublishCheck{LevelPass, "mac 更新包",
+				fmt.Sprintf("%s（%s，哈希已核对）", macUpdate.Name, FormatBytes(macUpdate.Size))})
+		}
+
+		macInstallers := []Artifact{}
+		for _, kind := range []ArtifactKind{KindMacInstallerArm64, KindMacInstallerX64} {
+			if a := first(kind); a != nil {
+				macInstallers = append(macInstallers, *a)
+			}
+		}
+		if len(macInstallers) == 0 {
+			// dmg 只影响首次下载，不挡增量更新链：提醒不阻断（与免安装版 warn 同口径）
+			out = append(out, PublishCheck{LevelWarn, "mac 安装包",
+				"缺少 mac dmg 安装包：mac 首次安装没有可下载的安装镜像"})
+		} else {
+			for _, a := range macInstallers {
+				if IsMacInstallerName(draft.Version, a.Name) {
+					out = append(out, PublishCheck{LevelPass, "mac 安装包命名", "文件名与版本一致：" + a.Name})
+				} else {
+					out = append(out, PublishCheck{LevelWarn, "mac 安装包命名",
+						fmt.Sprintf("建议命名为 %s 或 %s（electron-builder 默认产物名），当前 %s",
+							MacInstallerName(draft.Version, "arm64"), MacInstallerName(draft.Version, "x64"), a.Name)})
+				}
+			}
+		}
+	}
+
 	if CanPublish(out) {
 		out = append(out, PublishCheck{LevelPass, "可发布性", "清单齐备，可以发布"})
 	} else {
@@ -370,6 +469,22 @@ func statusText(s ReleaseStatus) string {
 // 客户端拿到 6MB 的 HTML 当更新包（sha256 校验兜底会拦住，但更新永远失败）。
 func ManifestOf(version string, update *Artifact, files map[string]string) Manifest {
 	m := Manifest{Version: version, URL: "releases/" + UpdatePackageName(version), Files: files}
+	if update != nil {
+		m.SHA256 = update.SHA256
+		m.Size = update.Size
+	}
+	return m
+}
+
+// ManifestOfMac 按 mac 契约生成 manifest-mac.json：与 ManifestOf 完全同构
+// （version/url/sha256/size/files，url 为相对文件名、按 manifest 所在目录解析——
+// 客户端契约见 shell/src/update-platform.ts），差别只在指向 mac 更新包产物。
+// files 的键是 <app>.app/Contents 相对路径（RequiredMacUpdateFiles）。
+// update 为 nil 时返回 sha256/size 为零值的形状——调用方（读侧 handler）
+// 必须对 nil 做 404 处理，不能把空 manifest 发给客户端（mac 客户端会按
+// 「更新源指向了 Windows 的 manifest」误解成坏更新，见 update-platform.ts 报错文案）。
+func ManifestOfMac(version string, update *Artifact, files map[string]string) Manifest {
+	m := Manifest{Version: version, URL: "releases/" + MacUpdatePackageName(version), Files: files}
 	if update != nil {
 		m.SHA256 = update.SHA256
 		m.Size = update.Size

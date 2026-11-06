@@ -241,3 +241,87 @@ func TestFullBashStillUnrestricted(t *testing.T) {
 		t.Fatalf("完整 bash 的写命令不该被只读判据拦下: %q", out)
 	}
 }
+
+// TestToolNudgeHintFor：放行路径的反干扰回填（2026-12 工具选择引导修复第 6 项）
+// 的判定纯函数——grep 系/cat 命中回填、其他命令不回填、环境赋值前缀不影响、
+// 会被拒绝的命令不提示（拒绝路径有自己的出路文案）。
+func TestToolNudgeHintFor(t *testing.T) {
+	hits := []string{
+		"grep -rn pattern .",
+		"grep -rn pattern . 2>/dev/null", // 无害重定向放行形态
+		"cat README.md",
+		"EGREP pattern .",    // 大小写归一
+		"grep.exe pattern .", // .exe 后缀
+		"FOO=1 grep -n x .",  // 环境赋值前缀
+		"cat a.txt | wc -l",  // 管道里的 grep/cat
+		"git log | grep fix", // 管道第二段命中
+		"grep a .; grep b .", // 多段命中只提一次（文本相同无信息量）
+	}
+	for _, c := range hits {
+		if got := toolNudgeHintFor(c); got != toolNudgeHint {
+			t.Errorf("命令 %q 应回填专用工具指引，实际: %q", c, got)
+		}
+	}
+	misses := []string{
+		"ls -la",
+		"wc -l internal/*.go",
+		"git log --oneline -5",
+		"sqlite3 db 'select 1'",
+		"jq . data.json",
+		"rg pattern .", // 已经在用 rg，不提示
+		"echo hi",
+		"ls | head -5",
+	}
+	for _, c := range misses {
+		if got := toolNudgeHintFor(c); got != "" {
+			t.Errorf("命令 %q 不应回填提示，实际: %q", c, got)
+		}
+	}
+	// 会被拒绝的命令不提示（走拒绝路径的出路文案）
+	if got := toolNudgeHintFor("grep x . > out.txt"); got != "" {
+		t.Errorf("会被拒绝的重定向命令不应提示: %q", got)
+	}
+}
+
+// TestNudgeStateOncePerSession：会话级一次性——首次 true，之后恒 false；
+// nil 状态恒 false（未注入 = 调用方退化行为，但 nil 不该崩）。
+func TestNudgeStateOncePerSession(t *testing.T) {
+	s := NewNudgeState()
+	if !s.ShouldNudge() {
+		t.Fatal("首次调用应返回 true（该回填）")
+	}
+	for i := 0; i < 3; i++ {
+		if s.ShouldNudge() {
+			t.Fatalf("第 %d 次调用应返回 false（每会话只回填一次）", i+2)
+		}
+	}
+	var nilState *NudgeState
+	if nilState.ShouldNudge() {
+		t.Fatal("nil 状态应返回 false")
+	}
+}
+
+// TestBashReadOnlyNudgeEndToEnd：端到端——grep 命令的结果前有指引，第二次
+// 同类调用不再有（会话级一次）；ls 不触发。
+func TestBashReadOnlyNudgeEndToEnd(t *testing.T) {
+	skipWithoutSh(t)
+	r := New()
+	ctx := context.Background()
+
+	out := r.Execute(ctx, call(bashReadOnlyName, `{"command":"echo grep-result"}`))
+	if strings.Contains(out, "ripgrep") {
+		t.Fatalf("echo 不应触发指引: %q", out)
+	}
+
+	st := NewNudgeState()
+	ctx = WithNudgeState(ctx, st)
+	// grep 命中：提示在结果前（文件不存在也能拿到提示——回填不依赖命令成功）。
+	first := r.Execute(ctx, call(bashReadOnlyName, `{"command":"grep -c pattern no-such-file.txt"}`))
+	if !strings.Contains(first, "ripgrep") {
+		t.Fatalf("grep 命中应回填指引: %q", first)
+	}
+	second := r.Execute(ctx, call(bashReadOnlyName, `{"command":"cat no-such-file.txt"}`))
+	if strings.Contains(second, "ripgrep") {
+		t.Fatalf("同会话第二次命中不应再回填（防刷屏）: %q", second)
+	}
+}

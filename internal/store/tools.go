@@ -115,6 +115,13 @@ func (s *Store) RemoveTool(id string) error {
 	if len(refs) > 0 {
 		return fmt.Errorf("工具 %s 被以下 Agent 的白名单引用，先解除引用: %s", id, strings.Join(refs, "、"))
 	}
+	// 库外引用面（config/assistant.json 的助手工具绑定）：同一道闸的延伸段
+	// ——注入 nil（纯 store 形态/未装配助手配置）跳过。
+	if s.extraToolRefCheck != nil {
+		if err := s.extraToolRefCheck(id); err != nil {
+			return err
+		}
+	}
 	res, err := s.db.Exec(`DELETE FROM tools WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("删除工具失败: %w", err)

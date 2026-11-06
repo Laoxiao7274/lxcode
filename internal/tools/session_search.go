@@ -157,6 +157,16 @@ func sessionSearchDef(r *Registry) *Def {
 				}
 				// 注入值为空（未分组会话/未注入）：不加过滤，也不注明——
 				// 退回全库是此场景的正确行为，见函数注释。
+				//
+				// **例外：助手语境**（sessionSpaceKey=assistant，其 workspace 恒
+				// 空——助手会话不归属任何项目）：全库扫描里助手域被 store 侧
+				// 恒过滤（见 store.Search 的域过滤），实际范围是「全部主域
+				// 会话」。必须注明——不注明的话，命中头里带会话标题的主域
+				// 消息会被助手当成自己与用户的对话（2026-12 实测语义混淆）。
+				// 主域语境（空/未注入）不带这句：行为与文案都不变。
+				if workspace == "" && SessionSpace(ctx) == sessiondata.SpaceAssistant {
+					scope = "全部主域会话（项目模式）——助手域会话（你们的对话）不在扫描范围，这些命中不是当前对话"
+				}
 			}
 			fn := r.getSessionSearch()
 			if fn == nil {

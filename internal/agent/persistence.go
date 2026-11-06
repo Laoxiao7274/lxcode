@@ -104,6 +104,10 @@ type Persistence interface {
 	WorkspaceOf(string) (string, error)
 	// ProjectByID 读项目元数据。
 	ProjectByID(string) (sessiondata.ProjectMeta, bool, error)
+	// ProjectsByName 按项目名精确匹配（run_task 的按名兜底）：模型常常只有
+	// 用户口中的项目名——id 是不可读的时间戳随机串。返回列表（重名消歧归
+	// 调用方），实现不猜。
+	ProjectsByName(string) ([]sessiondata.ProjectMeta, error)
 	// SaveSharedAttachment 把一个文件登记进会话附件目录（share_file 共享通道）：
 	// 落盘到 `<attachments>/<session-id>/<随机id>.<ext>` 并返回**展示元数据**
 	//（相对 attachments 根的路径 + 净化后的名字 + 大小 + 分类）。agent 层不见

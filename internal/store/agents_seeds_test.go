@@ -842,3 +842,48 @@ func idsOf(list []sessiondata.AgentDef) []string {
 	}
 	return out
 }
+
+// TestSeedToolDescriptionsGuideToolChoice（2026-12 工具选择引导修复）：模型可见
+// 信号的**描述层**必须携带工具优先级——模型有 ripgrep 却用 bash grep 的根因是
+// 描述把 grep/cat 列为用途（bash_readonly）、ripgrep 的 Desc 只有技术身份没
+// 有优先级句。三处断言：
+//   - bash_readonly Desc 不再把 grep/cat/读文件列为用途，且点名专用工具；
+//   - ripgrep Desc 带「优先用它」（Desc 是模型可见的，Doc 里的「优先」模型读不到）；
+//   - researcher 提示词不再背书 bash grep（改为兜底执行面）。
+func TestSeedToolDescriptionsGuideToolChoice(t *testing.T) {
+	byID := map[string]sessiondata.ToolSpec{}
+	for _, tl := range seedTools {
+		byID[tl.ID] = tl
+	}
+
+	brDesc := byID["bash_readonly"].Desc
+	for _, banned := range []string{"ls/grep", "cat / grep", "grep/find"} {
+		if strings.Contains(brDesc, banned) {
+			t.Errorf("bash_readonly 的 Desc 不应把 grep/cat 列为用途（反向信号——模型据此选 bash grep）: %q", brDesc)
+		}
+	}
+	for _, want := range []string{"read_file", "ripgrep", "db_query"} {
+		if !strings.Contains(brDesc, want) {
+			t.Errorf("bash_readonly 的 Desc 应点名专用工具 %s: %q", want, brDesc)
+		}
+	}
+
+	rgDesc := byID["ripgrep"].Desc
+	if !strings.Contains(rgDesc, "优先用它") || !strings.Contains(rgDesc, "不要用 bash grep") {
+		t.Errorf("ripgrep 的 Desc 应写明优先级（不要用 bash grep）——Doc 里的优先句模型读不到: %q", rgDesc)
+	}
+
+	researcher := sessiondata.AgentDef{}
+	for _, a := range seedAgents {
+		if a.ID == "researcher" {
+			researcher = a
+		}
+	}
+	prompt := researcher.Prompt
+	if strings.Contains(prompt, "可以跑读取类命令（ls/cat/grep") {
+		t.Errorf("researcher 提示词不应再背书 bash grep/cat（模型会据此走 bash）: %q", prompt)
+	}
+	if !strings.Contains(prompt, "兜底执行面，优先用专用检索/读文件工具") {
+		t.Errorf("researcher 提示词的 bash_readonly 句应改为兜底定位: %q", prompt)
+	}
+}

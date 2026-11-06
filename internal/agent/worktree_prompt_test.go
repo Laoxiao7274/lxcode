@@ -59,12 +59,12 @@ func TestWorktreePromptProjectSession(t *testing.T) {
 
 	// 两条提示词路径必须都注入——漏一条会出现「同一会话不同提示词」。
 	ac := &sessiondata.AgentContext{Def: sessiondata.AgentDef{ID: "coder", Name: "代码 Agent", Tools: []string{"read_file"}}}
-	composed := ComposeSystemPrompt(s.tools, "/proj/demo", ac, ac.Def.Tools, wt, false, ProjectDocs{})
+	composed := ComposeSystemPrompt(s.tools, "/proj/demo", ac, ac.Def.Tools, wt, false, ProjectDocs{}, nil)
 	if !strings.Contains(composed, "直接在用户的项目目录") || !strings.Contains(composed, "不会**自动提交") {
 		t.Fatalf("ComposeSystemPrompt 未注入工作区说明:\n%s", composed)
 	}
 	// ComposeSystemPrompt 的旧语境回落（ac == nil）同样要注入。
-	fallback := ComposeSystemPrompt(s.tools, "/proj/demo", nil, nil, wt, false, ProjectDocs{})
+	fallback := ComposeSystemPrompt(s.tools, "/proj/demo", nil, nil, wt, false, ProjectDocs{}, nil)
 	if !strings.Contains(fallback, "直接在用户的项目目录") {
 		t.Fatalf("ComposeSystemPrompt(ac=nil) 未注入工作区说明:\n%s", fallback)
 	}

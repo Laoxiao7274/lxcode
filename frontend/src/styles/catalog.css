@@ -126,6 +126,10 @@
 .cg-tabs {
   margin: 4px 0 18px;
 }
+/* 页签下方说明行（原在页签上方、条件渲染会推动页签行——抖动根因，已下移） */
+.cg-tabs + .cg-new-note {
+  margin: -10px 0 14px;
+}
 .cg-tabs .fd-seg {
   max-width: 380px;
 }
@@ -204,7 +208,7 @@
 .cg-new-note {
   font-size: 11.5px;
   color: var(--fg-faint);
-  margin: -6px 0 14px;
+  margin: 0 0 14px;
 }
 /* 目录页头部动作行（多按钮时右侧成组） */
 .cg-head-actions {
@@ -545,4 +549,88 @@
   border-radius: 5px;
   font-size: 10.5px;
   color: var(--fg-faint);
+}
+
+/* ---- 助手配置页签（拓展页第五页签：性格与拓展绑定，assistant.config.*） ---- */
+.asstcfg {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 720px;
+}
+.asstcfg .ag-sec {
+  padding: 0;
+  border: none;
+}
+/* 分组空态入口（2026-12 用户反馈：空时不能只有 hint——「还没有自定义工具
+ * ——去建一个」是可点的空态链接，虚线框胶囊视觉呼应 .fd-chip 的可选项感） */
+.ag-chip-empty {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 11px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--fg-faint);
+  background: none;
+  border: 1px dashed var(--border-strong);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color 120ms, border-color 120ms;
+}
+.ag-chip-empty:hover {
+  color: var(--fg);
+  border-color: var(--border-active);
+}
+/* 分组对齐（2026-12 用户反馈：三个管理链接对齐/位置乱）：
+ * 统一「标签行（右端链接）→ chips/空态 → hint」的节奏——标签行同距、
+ * hint 统一贴在 chips/空态之后（空组不再让说明文字贴住链接行）。 */
+.asstcfg .ag-chip-label {
+  margin: 12px 0 6px;
+}
+.asstcfg .ag-hint {
+  margin-top: 6px;
+}
+/* 管理链接：紧凑描边胶囊（2026-12 第三版）——两次被否（悬空按钮 / 纯文字看不出
+ * 是链接）后的定稿：几何对齐 .sp-btn.fd-btn-g（设置页渠道卡动作先例），圆角对齐
+ * .fd-chip（999px 胶囊），与同页 chips/空态胶囊同一视觉语言。基础套件
+ * .fd-btn-g 带 transition，无需重复。 */
+.asstcfg .ag-chip-manage {
+  padding: 2px 9px;
+  height: auto;
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--fg-faint);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+}
+.asstcfg .ag-chip-manage:hover {
+  color: var(--fg);
+  border-color: var(--border-active);
+}
+.asstcfg-error {
+  font-size: 12px;
+  color: #f87171;
+}
+.asstcfg-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.asstcfg-saved {
+  font-size: 12px;
+  color: rgba(16, 163, 127, 0.9);
+}
+/* 工具白名单区的警示行（写类工具 auto 档 / 基础能力三件套去勾后果）：
+   与 error 同一暖红系但降一档——是知情提示不是失败。 */
+.asstcfg-warn {
+  font-size: 12px;
+  color: #fbbf24;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.asstcfg-tools-actions {
+  margin-top: 8px;
 }

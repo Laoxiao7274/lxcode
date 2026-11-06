@@ -103,3 +103,61 @@ func (s *Store) ProjectByID(id string) (meta ProjectMeta, found bool, err error)
 	}
 	return meta, true, nil
 }
+
+// ListProjectStats 列出全部项目的全景统计（id/name/path + 顶层会话数 +
+// 最近活动），按最近活动倒序（活跃项目在前——助手的注入段与 project_list
+// 都按这个顺序展示，用户最可能问的是最近在用的项目）。
+//
+// 会话数口径 = 顶层（parent_id=''）且非助手域（space != 'assistant'）：
+//   - 排除子会话——它们是派发的产物，与侧栏「项目分组」的可见会话一致；
+//   - 排除助手域——助手会话的 workspace 恒为空，这条过滤是防御性口径
+//     （万一有历史行 workspace 带着旧项目 id，也不该算进项目的正经会话）。
+// 无会话的项目照常返回（Sessions=0、UpdatedAt 空——助手说「这个项目还没有
+// 会话」是有效回答，不把零会话项目从全景里藏掉）。
+func (s *Store) ListProjectStats() ([]sessiondata.ProjectStats, error) {
+	rows, err := s.db.Query(`
+		SELECT p.id, p.name, p.path,
+		       COUNT(s.id) AS sessions,
+		       COALESCE(MAX(s.updated_at), '') AS last_activity
+		 FROM projects p
+		 LEFT JOIN sessions s
+		   ON s.workspace = p.id AND s.parent_id = '' AND s.space != 'assistant'
+		 GROUP BY p.id, p.name, p.path
+		 ORDER BY MAX(s.updated_at) DESC, p.created_at DESC, p.rowid DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("统计项目全景失败: %w", err)
+	}
+	defer rows.Close()
+	var out []sessiondata.ProjectStats
+	for rows.Next() {
+		var ps sessiondata.ProjectStats
+		if err := rows.Scan(&ps.ID, &ps.Name, &ps.Path, &ps.Sessions, &ps.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("读项目统计行失败: %w", err)
+		}
+		if ps.UpdatedAt != "" {
+			ps.UpdatedAt = fmtTime(ps.UpdatedAt)
+		}
+		out = append(out, ps)
+	}
+	return out, rows.Err()
+}
+
+// ProjectsByName 按项目名**精确匹配**列出全部条目（run_task 的按名兜底）。
+// 返回列表而不是单个：重名是合法状态（两个目录注册了同一个名字），此时
+// 调用方必须让用户消歧，不能静默选一个——猜错的代价比问一句高得多。
+func (s *Store) ProjectsByName(name string) ([]ProjectMeta, error) {
+	rows, err := s.db.Query(`SELECT id, name, path FROM projects WHERE name = ? ORDER BY created_at ASC, rowid ASC`, name)
+	if err != nil {
+		return nil, fmt.Errorf("按名查询项目失败: %w", err)
+	}
+	defer rows.Close()
+	var out []ProjectMeta
+	for rows.Next() {
+		var p ProjectMeta
+		if err := rows.Scan(&p.ID, &p.Name, &p.Path); err != nil {
+			return nil, fmt.Errorf("读项目行失败: %w", err)
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}

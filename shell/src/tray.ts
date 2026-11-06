@@ -6,6 +6,7 @@
 import { app, Menu, nativeImage, Tray, type BrowserWindow } from "electron";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { IS_DEV_SHELL } from "./main";
 
 let tray: Tray | null = null;
 let quitting = false;
@@ -45,7 +46,7 @@ export function createTray(getWin: () => BrowserWindow | null): void {
   };
 
   tray = new Tray(nativeImage.createFromPath(trayIconPath()));
-  tray.setToolTip("Lxcode");
+  tray.setToolTip(IS_DEV_SHELL ? "Lxcode dev" : "Lxcode");
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: "显示主窗口", click: showMain },
     { type: "separator" },

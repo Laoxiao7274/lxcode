@@ -661,6 +661,9 @@ type DispatchStartParams struct {
 	AgentName      string `json:"agent_name"`
 	AgentColor     string `json:"agent_color"`
 	Task           string `json:"task"`
+	// ProjectName 非空 = run_task（助手 → 项目）派发的目标项目名（可选键，缺席 =
+	// 常规 agent_dispatch 委派——子会话 workspace 继承父，没有项目归属）。
+	ProjectName string `json:"project_name,omitempty"`
 	// Todos 非空 = 主 Agent 预拆的清单初稿（todo 契约——卡上第一秒显示计划）。
 	Todos []sessiondata.TodoItem `json:"todos,omitempty"`
 }

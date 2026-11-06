@@ -376,6 +376,16 @@
   color: var(--fg-faint);
   margin: 10px 0 6px;
 }
+/* 助手配置页签：chip 标签行右侧的「管理 →」入口（去拓展页对应页签）。
+ * 本条只管「标签行右端对齐」这一基础形态；助手配置页（.asstcfg）在
+ * catalog.css 里覆写成紧凑描边胶囊（AgentEditor 等其他使用方不受影响）。 */
+.ag-chip-manage {
+  margin-left: auto;
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 0;
+  height: auto;
+}
 /* 协议字段：可编辑的第一层（预填默认 + 恢复默认入口） */
 .ag-protocol-input {
   min-height: 170px;

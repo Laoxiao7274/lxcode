@@ -68,11 +68,16 @@ type Server struct {
 	ctxMu   sync.RWMutex
 	baseCtx context.Context
 
-	sessionsMu    sync.RWMutex
-	sessions      map[string]*agent.Session
-	lastSessionID string // 仅供测试诊断；协议请求绝不读取全局焦点
-	memoryID      uint64
-	stream        agent.StreamFn
+	sessionsMu sync.RWMutex
+	sessions   map[string]*agent.Session
+	// assistantSessions 是助手域（assistant space）的并列运行时缓存（助手模式
+	// P0）：与主空间同锁（sessionsMu），id 空间两域不重叠（各自建行各自建
+	// 运行时）——主空间的函数（busySessions/cancelChildAnywhere/session(id)）
+	// 不扫这里，零改动。
+	assistantSessions map[string]*agent.Session
+	lastSessionID     string // 仅供测试诊断；协议请求绝不读取全局焦点
+	memoryID          uint64
+	stream            agent.StreamFn
 
 	worktreeMu    sync.Mutex
 	worktreeLocks map[string]*sync.Mutex
@@ -101,6 +106,12 @@ type Server struct {
 	behaviorMu   sync.Mutex
 	behaviorPath string
 	behaviorLast config.Behavior
+
+	// 助手配置（internal/server/assistant_config.go）：assistant.json 路径 +
+	// 互斥 + 热加载比对基线。未装配（路径空）= 各字段空（merge 全走内置值）。
+	assistantCfgMu   sync.Mutex
+	assistantCfgPath string
+	assistantCfgLast config.Assistant
 
 	// 投屏（internal/protocol/screen.go + screen_shell.go）：壳侧捕屏服务的
 	// 后端端（命令轮询 + 推流）。NewServer 时装配，恒非 nil。
@@ -295,12 +306,13 @@ const broadcastWriteTimeout = 5 * time.Second
 
 func NewServer(reg *config.Registry) *Server {
 	return &Server{
-		reg:           reg,
-		treg:          tools.New(),
-		mcpMgr:        mcp.NewManager(),
-		sessions:      map[string]*agent.Session{},
-		worktreeLocks: map[string]*sync.Mutex{},
-		worktreeReady: map[string]bool{},
+		reg:               reg,
+		treg:              tools.New(),
+		mcpMgr:            mcp.NewManager(),
+		sessions:          map[string]*agent.Session{},
+		assistantSessions: map[string]*agent.Session{},
+		worktreeLocks:     map[string]*sync.Mutex{},
+		worktreeReady:     map[string]bool{},
 		upgrader: websocket.Upgrader{
 			// 仅本机/局域网使用，不做 Origin 校验（单用户）
 			CheckOrigin: func(*http.Request) bool { return true },
@@ -355,6 +367,34 @@ func (s *Server) AttachSessionStore(st *store.Store) error {
 		// 结果头部注明，模型才知道看到的是子集。
 		return sessiondata.FormatSearchHits(hits, total, timedOut, tools.SearchScope(ctx)), nil
 	})
+	// project_list（助手项目全景，2026-12）：与 SetSessionSearch 同款注入模式
+	// （tools 是叶子包不 import store）。**实时查询**——与提示词注入的「每轮
+	// 快照」不同口径：长会话里用户中途注册/移除项目，工具查到的是当下。
+	// 统计之上合流「运行中」维度：busy 是 server 层事实（store 只见库不见
+	// 运行时），按会话 id 查库拿当下归属再按项目聚合。锁纪律：busySessions()
+	// （sessionsMu）与 st 查询（st.mu）是两把锁，回调里**先后调用**不嵌套
+	// 持锁（WorkspaceOf 内部自持 st.mu，回调不先拿任何锁）。busy 会话可能
+	// 属未注册 workspace 或归属查不动——不计入任何项目，不硬猜。
+	s.treg.SetProjectList(func(ctx context.Context) ([]sessiondata.ProjectStats, error) {
+		stats, err := st.ListProjectStats()
+		if err != nil {
+			return nil, err
+		}
+		byID := make(map[string]*sessiondata.ProjectStats, len(stats))
+		for i := range stats {
+			byID[stats[i].ID] = &stats[i]
+		}
+		for _, id := range s.busySessions() {
+			ws, err := st.WorkspaceOf(id)
+			if err != nil || ws == "" {
+				continue // 未分组/已清归属的 busy 会话不挂到任何项目上
+			}
+			if ps, ok := byID[ws]; ok {
+				ps.Running++
+			}
+		}
+		return stats, nil
+	})
 	// 工作区三件套（workspace_status / workspace_sync / workspace_rollback）的
 	// server 侧实现：与 SetSessionSearch 同款注入模式（tools 是叶子包不 import
 	// server，回调在装配期写一次）。
@@ -382,6 +422,106 @@ func (s *Server) AttachSessionStore(st *store.Store) error {
 			s.broadcast(protocol.EventAgentChanged, protocol.AgentChangedParams{Reason: "update"})
 			return fmt.Sprintf("已更新 Agent「%s」的配置并落库——该 Agent 下次被派发就按新配置运行（编辑器界面已同步刷新）。", id), nil
 		},
+	})
+	// mcp_manage（MCP 服务器的查询/安装/修改/删除）的 server 侧实现：与
+	// SetAgentCatalogOps 同款注入模式。写操作直调 store CRUD + syncMCPServers
+	// 对账 + 广播 catalog.changed（前端零改动自动刷新）。add 的 bind 联动：
+	// 把服务器 id 追加进 assistant.json 的 mcpServers（复用 saveAssistantConfig
+	// 的写路径 + 热加载基线同步）并广播 assistant.configChanged——绑定变更只经
+	// mcp_manage 一个口（update_assistant_config 的 patch 维持不含 mcpServers，
+	// 防两条写路径漂移）。remove 后绑定里的死 id 无害（resolver merge 现查过滤）
+	// ——结果文本里提示用户绑定项一并失效。
+	s.treg.SetMcpManageOps(tools.McpManageOps{
+		List: st.ListMcServers,
+		Get: func(id string) (sessiondata.McServerSpec, error) {
+			list, err := st.ListMcServers()
+			if err != nil {
+				return sessiondata.McServerSpec{}, err
+			}
+			for i := range list {
+				if list[i].ID == id {
+					return list[i], nil
+				}
+			}
+			return sessiondata.McServerSpec{}, fmt.Errorf("MCP 服务器 %s 不存在", id)
+		},
+		ToolCounts: func() (map[string]int, error) {
+			specs, err := st.ListTools()
+			if err != nil {
+				return nil, err
+			}
+			counts := map[string]int{}
+			for i := range specs {
+				if specs[i].Source == "mcp" {
+					counts[specs[i].Server]++
+				}
+			}
+			return counts, nil
+		},
+		Add: func(m sessiondata.McServerSpec, bind bool) (string, error) {
+			if err := st.AddMcServer(m); err != nil {
+				return "", err
+			}
+			bound := ""
+			if bind {
+				if err := s.bindAssistantMCPServer(m.ID); err != nil {
+					// 服务器已装上、绑定失败不算失败——如实告知（用户可在拓展页手工绑）。
+					return fmt.Sprintf("MCP 服务器 %s 已安装并落目录，但绑定到你的 MCP 列表失败: %v（可在拓展页手工绑定）。", m.ID, err), nil
+				}
+				bound = "已自动绑定到你的 MCP 列表，它的工具下一轮即可用。"
+			}
+			return fmt.Sprintf("MCP 服务器 %s 已安装（transport=%s）。%s", m.ID, m.Transport, bound), nil
+		},
+		Update: func(m sessiondata.McServerSpec) (string, error) {
+			if err := st.UpdateMcServer(m); err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("MCP 服务器 %s 的配置已更新并落库，已重新连接对账。", m.ID), nil
+		},
+		Remove: func(id string) (string, error) {
+			if err := st.RemoveMcServer(id); err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("MCP 服务器 %s 已从目录删除（目录条目级联撤下；你的绑定项一并失效）。", id), nil
+		},
+		SyncAndBroadcast: func(reason string) {
+			s.syncMCPServers()
+			s.broadcast(protocol.EventCatalogChanged, protocol.CatalogChangedParams{Kind: "mcp", Reason: reason})
+		},
+	})
+	// update_assistant_config（助手自改配置）的 server 侧实现：读当前 → 部分
+	// 更新 → 写盘 → 广播 configChanged（与 handleAssistantConfig 的 set 同一条
+	// 广播路径——多客户端同步）。路径未装配时报「未装配」（fail-fast，不静默
+	// 丢改动）。skills/workflow 的 id 校验复用 handleAssistantConfig 的现读校验
+	//（无效 id 报人话错误，模型可自行纠正）。**patch 形状刻意不含 mcpServers**
+	//（AssistantConfigPatch 四字段钉死）——助手不可自改 MCP 绑定（防 auto 档
+	// 自我提权；安装/停用 MCP 服务器始终是用户在拓展页的显式动作）。
+	s.treg.SetAssistantConfigFn(func(p tools.AssistantConfigPatch) error {
+		cur := s.assistantConfig()
+		next := cur
+		if p.Name != nil {
+			next.Name = *p.Name
+		}
+		if p.Persona != nil {
+			next.Persona = *p.Persona
+		}
+		if p.Skills != nil {
+			next.Skills = *p.Skills
+		}
+		if p.Workflow != nil {
+			next.Workflow = *p.Workflow
+		}
+		next = next.Normalized()
+		if next.Workflow != "" || len(next.Skills) > 0 {
+			if err := s.validateAssistantModuleIDs(next.Workflow, next.Skills); err != nil {
+				return err
+			}
+		}
+		if err := s.saveAssistantConfig(next); err != nil {
+			return err
+		}
+		s.broadcast(protocol.EventAssistantConfigChanged, s.assistantConfigResult())
+		return nil
 	})
 	// M4：工具目录里的自定义工具（binary）注册进工具注册表——启动时就位，
 	// 之后的目录变更由 catalog.tools.* 分支触发同步。

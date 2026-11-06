@@ -39,13 +39,13 @@ type SetLeafResult struct {
 }
 
 // rewindSettleTimeout 是撤回「自动取消并等待收尾」的上限：取消是异步的
-//（LLM 请求可能等在流式读上、工具子进程可能等退出），给一轮收尾留 10s；
+// （LLM 请求可能等在流式读上、工具子进程可能等退出），给一轮收尾留 10s；
 // 超时说明收尾本身卡住了（极少数：子进程不响应取消），如实报错让用户重试，
 // 不无限等——错误路径永远比挂死好。
 const rewindSettleTimeout = 10 * time.Second
 
 // settleBusyForRewind 让撤回可以「自动取消并等待收尾」：busy 时先发出取消
-//（幂等——与用户点停止同一份 cancel），再等本轮真正收尾。
+// （幂等——与用户点停止同一份 cancel），再等本轮真正收尾。
 //
 // 锁纪律（死锁自查的关键）：**等待期间绝不持有 s.mu**——锁内只取 cancel 与
 // turnEnded 的引用；close 在 runTurn 的 defer 里做（那里同样先锁内取引用、
@@ -139,6 +139,7 @@ func (s *Session) Rewind(seq int64) (RewindResult, error) {
 		removed = len(s.history) - idx
 		s.history = append([]llm.Message(nil), s.history[:idx]...)
 		leaf = s.leafLocked()
+		s.bumpHistoryLocked() // 历史被截断：派生值缓存失效（history_cache.go）
 	} else {
 		msgs, err := st.Load(id)
 		if err != nil {
@@ -146,6 +147,7 @@ func (s *Session) Rewind(seq int64) (RewindResult, error) {
 			return RewindResult{}, fmt.Errorf("撤回后重载历史失败: %w", err)
 		}
 		s.history = msgs
+		s.bumpHistoryLocked() // 重载了历史：派生值缓存失效（history_cache.go）
 	}
 	s.mu.Unlock()
 
@@ -213,6 +215,7 @@ func (s *Session) SetLeaf(seq int64) (SetLeafResult, error) {
 	}
 	s.mu.Lock()
 	s.history = msgs
+	s.bumpHistoryLocked() // 切叶重载了历史：派生值缓存失效（history_cache.go）
 	s.mu.Unlock()
 
 	if _, err := s.afterLeafMove(st, id, leaf, prevLeaf, removed); err != nil {

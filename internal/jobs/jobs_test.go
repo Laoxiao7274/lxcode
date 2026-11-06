@@ -440,6 +440,27 @@ func TestOwnerOfFallsBackToSession(t *testing.T) {
 	}
 }
 
+// TestSnapshotCarriesWorkspace：Spec.Workspace 是 Start 时定稿的项目归属
+// （面板分组用，docs/jobs.md §4）——快照原样带出，未设时为空串（未分组）。
+func TestSnapshotCarriesWorkspace(t *testing.T) {
+	m := NewManager("")
+	defer m.Shutdown()
+	j, err := m.Start(Spec{Kind: "bash", Label: "项目里的", SessionID: "s1", Workspace: "lxcode"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := j.Snapshot().Workspace; got != "lxcode" {
+		t.Fatalf("快照应带 Spec 里的 Workspace，得到 %q", got)
+	}
+	loose, err := m.Start(Spec{Kind: "bash", Label: "未分组的", SessionID: "s2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := loose.Snapshot().Workspace; got != "" {
+		t.Fatalf("未设 Workspace 应为空串（未分组），得到 %q", got)
+	}
+}
+
 // TestListFiltersByOwner：List 的按会话过滤走**时间线归属**——父会话要看得见子
 // Agent 起的任务（那正是它自己时间线上的卡）；别的会话看不到。
 func TestListFiltersByOwner(t *testing.T) {

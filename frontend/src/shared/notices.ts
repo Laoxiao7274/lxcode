@@ -29,7 +29,7 @@ export const SYSTEM_NOTICE_PREFIX = "[系统通告] ";
  *
  *  2026-12 用户拍板：后台任务通告也归入 hidden。用户原话「后台任务怎么还会展示到
  *  对话界面」——它是写给模型的唤醒注记（模型必须知道任务结束了、去读输出），不是
- *  对话内容；任务状态本来就有自己的界面（时间线上的任务卡 + Jobs 面板，来自
+ *  对话内容；任务状态本来就有自己的界面（顶栏 Jobs 面板，来自
  *  job.started/settled 事件），通告条在对话时间线里是重复呈现。模型侧语义不动：
  *  它照常作为 user 角色消息入历史与上下文。 */
 export const NOTICE_KINDS: Array<{ prefix: string; label: string; hidden?: boolean }> = [

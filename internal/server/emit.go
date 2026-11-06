@@ -11,28 +11,37 @@ import (
 )
 
 func (s *Server) emitEvent(sessionID string, ev agent.Event) {
+	// 事件域映射（助手模式 P0）：助手域会话的事件换 assistant.* 前缀广播
+	//（payload 不变——前端一份归约两域共用）。helper 内部按原名转域名，
+	// 主域会话原样透传（一次 map 查找的代价）。
+	emit := func(method string, params any) {
+		if s.isAssistantSession(sessionID) {
+			method = assistantEventName(method)
+		}
+		s.broadcast(method, params)
+	}
 	switch e := ev.(type) {
 	case agent.UserMsgEvent:
-		s.broadcast(protocol.EventUserMsg, protocol.UserMessageParams{SessionID: sessionID, Message: e.Message, DispatchID: e.DispatchID})
+		emit(protocol.EventUserMsg, protocol.UserMessageParams{SessionID: sessionID, Message: e.Message, DispatchID: e.DispatchID})
 	case agent.DeltaEvent:
-		s.broadcast(protocol.EventDelta, protocol.DeltaParams{SessionID: sessionID, Kind: e.Kind, Text: e.Text, DispatchID: e.DispatchID})
+		emit(protocol.EventDelta, protocol.DeltaParams{SessionID: sessionID, Kind: e.Kind, Text: e.Text, DispatchID: e.DispatchID})
 	case agent.ToolCallEvent:
-		s.broadcast(protocol.EventToolCall, protocol.ToolCallParams{
+		emit(protocol.EventToolCall, protocol.ToolCallParams{
 			SessionID: sessionID, ID: e.ID, Name: e.Name, Arguments: e.Arguments, DispatchID: e.DispatchID,
 		})
 	case agent.ToolResultEvent:
-		s.broadcast(protocol.EventToolRslt, protocol.ToolResultParams{
+		emit(protocol.EventToolRslt, protocol.ToolResultParams{
 			SessionID: sessionID, ID: e.ID, Name: e.Name, Content: e.Content, IsError: e.IsError, DispatchID: e.DispatchID,
 			// share_file 共享的附件元数据（share_file 的结果消息上同一份）：
 			// 前端实时路径据此渲染附件卡，与 chat.history 回放同一形状。
 			Attachments: e.Attachments,
 		})
 	case agent.ConfirmRequestEvent:
-		s.broadcast(protocol.EventConfirm, toProtocolConfirm(sessionID, e.Request))
+		emit(protocol.EventConfirm, toProtocolConfirm(sessionID, e.Request))
 	case agent.BusyEvent:
 		// DispatchID 非空 = 子会话的忙闲（带归属上抛——前端投进子会话自己的
 		// state，主时间线侧过滤）。主会话的 busy 载荷与原先逐字节一致。
-		s.broadcast(protocol.EventBusy, protocol.BusyParams{SessionID: sessionID, Busy: e.Busy, DispatchID: e.DispatchID})
+		emit(protocol.EventBusy, protocol.BusyParams{SessionID: sessionID, Busy: e.Busy, DispatchID: e.DispatchID})
 	case agent.TurnDoneEvent:
 		params := protocol.DoneParams{
 			SessionID: sessionID, Message: e.Message, UsageTokens: e.UsageTokens, FinishReason: e.FinishReason,
@@ -51,19 +60,19 @@ func (s *Server) emitEvent(sessionID string, ev agent.Event) {
 		params.Stats = s.sessionStatsOf(sessionID)
 		// 轮结束**不再**自动提交检查点（2026-10 用户拍板移除，回滚方案后期
 		// 重新设计）：改动留在工作区，等用户显式要求时由 workspace_sync 提交。
-		s.broadcast(protocol.EventDone, params)
+		emit(protocol.EventDone, params)
 	case agent.TurnErrorEvent:
-		s.broadcast(protocol.EventError, protocol.ErrorParams{
+		emit(protocol.EventError, protocol.ErrorParams{
 			SessionID: sessionID, Message: e.Message, Aborted: e.Aborted, Partial: e.Partial,
 		})
 	case agent.DispatchStartEvent:
-		s.broadcast(protocol.EventDispatchStart, protocol.DispatchStartParams{
+		emit(protocol.EventDispatchStart, protocol.DispatchStartParams{
 			OwnerSessionID: sessionID, DispatchID: e.DispatchID, SessionID: e.SessionID,
 			AgentID: e.AgentID, AgentName: e.AgentName, AgentColor: e.AgentColor, Task: e.Task,
-			Todos: e.Todos,
+			Todos: e.Todos, ProjectName: e.ProjectName,
 		})
 	case agent.DispatchEndEvent:
-		s.broadcast(protocol.EventDispatchEnd, protocol.DispatchEndParams{
+		emit(protocol.EventDispatchEnd, protocol.DispatchEndParams{
 			OwnerSessionID: sessionID, DispatchID: e.DispatchID, SessionID: e.SessionID,
 			Result: e.Result, IsError: e.IsError, UsageTokens: e.UsageTokens,
 			FinalTodos: e.FinalTodos,
@@ -80,7 +89,7 @@ func (s *Server) emitEvent(sessionID string, ev agent.Event) {
 		if e.DispatchID == "" {
 			ctx = toProtocolContext(s.sessionContext(sessionID))
 		}
-		s.broadcast(protocol.EventCompacted, protocol.CompactedParams{
+		emit(protocol.EventCompacted, protocol.CompactedParams{
 			SessionID: sessionID, Before: e.Result.Before, After: e.Result.After, Shadowed: e.Result.Shadowed,
 			Summary: e.Result.Summary, Manual: e.Manual, DispatchID: e.DispatchID,
 			Context: ctx,
@@ -89,7 +98,7 @@ func (s *Server) emitEvent(sessionID string, ev agent.Event) {
 		// 叶指针变更（rewind 与 setLeaf 都发）：所有客户端在同一时刻对齐。
 		// setLeaf **只**发这个事件（老客户端忽略未知事件）——因为它没有删除，
 		// 老客户端若按 chat.rewound 截断时间线，切到另一条分支时那个截断是错的。
-		s.broadcast(protocol.EventLeafChanged, protocol.ChatLeafChangedParams{
+		emit(protocol.EventLeafChanged, protocol.ChatLeafChangedParams{
 			SessionID: sessionID, LeafSeq: e.LeafSeq, PrevLeafSeq: e.PrevLeafSeq,
 			Removed: e.Removed,
 			// toProtocolContext 在未知（Used <= 0）时返回 nil → 整键缺席
@@ -97,7 +106,7 @@ func (s *Server) emitEvent(sessionID string, ev agent.Event) {
 		})
 	case agent.RewoundEvent:
 		// 撤回后前端据此截断时间线（seq 之前的保留、之后的丢弃），不必重拉历史
-		s.broadcast(protocol.EventRewound, protocol.ChatRewoundParams{
+		emit(protocol.EventRewound, protocol.ChatRewoundParams{
 			SessionID: sessionID, Seq: e.Seq, Removed: e.Removed, LeafSeq: e.LeafSeq,
 			// toProtocolContext 在未知（Used <= 0）时返回 nil → 整键缺席
 			Context: toProtocolContext(e.Context),
@@ -106,17 +115,58 @@ func (s *Server) emitEvent(sessionID string, ev agent.Event) {
 			Stats: s.sessionStatsOf(sessionID),
 		})
 	case agent.TodoUpdatedEvent:
-		s.broadcast(protocol.EventTodo, protocol.TodoUpdatedParams{SessionID: sessionID, Items: e.Items, DispatchID: e.DispatchID})
+		emit(protocol.EventTodo, protocol.TodoUpdatedParams{SessionID: sessionID, Items: e.Items, DispatchID: e.DispatchID})
 	case agent.FilesChangedEvent:
 		params := protocol.FilesChangedParams{SessionID: sessionID, Files: make([]protocol.FileChangeParams, len(e.Files))}
 		for i, f := range e.Files {
 			params.Files[i] = protocol.FileChangeParams{Path: f.Path, Added: f.Added, Deleted: f.Deleted, Diff: f.Diff}
 		}
-		s.broadcast(protocol.EventFiles, params)
+		emit(protocol.EventFiles, params)
 	case agent.SessionStartedEvent:
 		// 首条消息懒建时刷新列表；这不是服务端的全局焦点变更。
 		s.broadcastSessionChanged(e.ID, "started")
 	}
+}
+
+// assistantEventName 把主域事件名映射成助手域（助手模式 P0，只对助手域会话
+// 调用）：chat.* → assistant.*（逐事件对齐 protocol/assistant.go 的常量表）；
+// todo.updated → assistant.todoUpdated、files.changed → assistant.filesChanged。
+// 全局事件（session.changed / agent.changed 等）原样返回——两域共用一份广播，
+// 前端按事件名前缀路由会话时间线，全局刷新事件不需要域。
+func assistantEventName(method string) string {
+	switch method {
+	case protocol.EventUserMsg:
+		return protocol.EventAssistantUserMsg
+	case protocol.EventDelta:
+		return protocol.EventAssistantDelta
+	case protocol.EventToolCall:
+		return protocol.EventAssistantToolCall
+	case protocol.EventToolRslt:
+		return protocol.EventAssistantToolRslt
+	case protocol.EventConfirm:
+		return protocol.EventAssistantConfirm
+	case protocol.EventDone:
+		return protocol.EventAssistantDone
+	case protocol.EventError:
+		return protocol.EventAssistantError
+	case protocol.EventBusy:
+		return protocol.EventAssistantBusy
+	case protocol.EventDispatchStart:
+		return protocol.EventAssistantDispatchStart
+	case protocol.EventDispatchEnd:
+		return protocol.EventAssistantDispatchEnd
+	case protocol.EventCompacted:
+		return protocol.EventAssistantCompacted
+	case protocol.EventTodo:
+		return protocol.EventAssistantTodo
+	case protocol.EventFiles:
+		return protocol.EventAssistantFilesChanged
+	case protocol.EventApproval:
+		return protocol.EventAssistantApprovalChanged
+	case protocol.EventModelChanged:
+		return protocol.EventAssistantModelChanged
+	}
+	return method
 }
 
 func toProtocolContext(u agent.ContextUsage) *protocol.ContextUsage {

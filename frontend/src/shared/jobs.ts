@@ -2,7 +2,7 @@
 //
 // 单独一个文件（而不是塞进组件）的理由与 mcp-status.ts 同款：这些判定是
 // 「契约改了前端静默走偏」的高发层（字段名、EndedBy 文案、超时识别），
-// 纯函数才能被 node:test 直接钉住。组件（blocks/JobCard、components/jobs/）
+// 纯函数才能被 node:test 直接钉住。组件（components/jobs/）
 // 与数据源（shared/jobs-admin.tsx）都从这里取语义。
 import type { JobEndedBy, JobInfo, JobStatus } from "./types";
 
@@ -55,6 +55,7 @@ export function jobFromWire(raw: unknown): JobInfo {
     detail: str(p, "detail"),
     session_id: str(p, "session_id", "sessionId"),
     owner_session_id: str(p, "owner_session_id", "ownerSessionId"),
+    workspace: str(p, "workspace"),
     started_at: str(p, "started_at", "startedAt"),
     finished_at: str(p, "finished_at", "finishedAt"),
     output_tail: str(p, "output_tail", "outputTail"),
@@ -162,4 +163,63 @@ export function shortSessionId(id: string): string {
 /** 运行中任务数（顶栏角标用）。 */
 export function activeJobCount(list: JobInfo[]): number {
   return list.filter(isJobActive).length;
+}
+
+// ---- 面板按项目分组（docs/jobs.md §6，2026-12）----
+
+/** 分组键：任务起时所属的项目 id；空 = 未分组（与后端 Spec.Workspace 的空串
+ *  同语义——未分组会话或未注入，都按「没有归属项目」处理）。 */
+export const JOB_GROUP_LOOSE = "";
+
+/** 任务 → 组键（workspace 原样；缺键的老后端与空串同语义）。 */
+export function jobGroupKey(job: JobInfo): string {
+  return job.workspace ?? JOB_GROUP_LOOSE;
+}
+
+/** 任务分组的有序结果（key = workspace id，空 = 未分组）。 */
+export interface JobGroup {
+  key: string;
+  /** 组头显示名：项目名（调用方解析）；未分组恒叫「未分组」。 */
+  name: string;
+  jobs: JobInfo[];
+}
+
+/** 把任务清单按项目分组，组内保持传入顺序（调用方先 sortJobs 再进来——
+ *  「在跑的在前」这个纪律只在排序函数里做一次，分组不做二次排序，否则两处分叉）。
+ *
+ * 组间顺序：有归属的组按 **projectIds 的注册顺序**（projects() 的现序，与侧栏
+ * 同源——用户对那个顺序已形成预期），不在表里的 id 按首次出现顺序排在其后
+ * （项目被移除但任务还挂着的瞬间不至于乱跳）；「未分组」恒在最后（兜底组，
+ * 不是一等公民）。组名解析不到时回退显示 id（不冒充名字）。
+ *
+ * 纯函数：不碰 React、不碰 source——projectIds 与名字解析都由面板算好传入。 */
+export function groupJobsByWorkspace(
+  jobs: JobInfo[],
+  projectIds: string[],
+  projectName: (id: string) => string,
+): JobGroup[] {
+  const order: string[] = [];
+  const byKey = new Map<string, JobInfo[]>();
+  for (const job of jobs) {
+    const key = jobGroupKey(job);
+    let list = byKey.get(key);
+    if (!list) {
+      list = [];
+      byKey.set(key, list);
+      order.push(key);
+    }
+    list.push(job);
+  }
+  const rank = (key: string): number => {
+    if (key === JOB_GROUP_LOOSE) return Number.MAX_SAFE_INTEGER;
+    const idx = projectIds.indexOf(key);
+    return idx >= 0 ? idx : Number.MAX_SAFE_INTEGER - 1;
+  };
+  return order
+    .map((key) => ({
+      key,
+      name: key === JOB_GROUP_LOOSE ? "未分组" : (projectName(key) || key),
+      jobs: byKey.get(key)!,
+    }))
+    .sort((a, b) => (rank(a.key) - rank(b.key)) || (order.indexOf(a.key) - order.indexOf(b.key)));
 }

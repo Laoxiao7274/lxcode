@@ -13,7 +13,14 @@
 
 import { useState } from "react";
 
-import { latestPublished, type Channel, type Manifest, type PublishCheck } from "../../shared/release";
+import {
+  latestPublished,
+  macInstallerName,
+  macUpdatePackageName,
+  type Channel,
+  type Manifest,
+  type PublishCheck,
+} from "../../shared/release";
 import { ApiError, apiUpload } from "../../shared/api/client";
 import { reload } from "../../shared/store";
 import { useStore } from "../../shared/useStore";
@@ -29,6 +36,12 @@ interface CheckResult {
   checks: PublishCheck[];
   canPublish: boolean;
   manifest: Manifest;
+  /** mac 更新清单预览：带了 macUpdate 且 zip 内必需路径齐全才返回；否则 null/缺省。 */
+  manifestMac?: Manifest | null;
+  /** manifest.files 的来源（"zip" = 服务端开包实测），展示用。 */
+  filesSource?: string;
+  /** manifestMac.files 的来源；没有 mac 更新包时缺省。 */
+  macFilesSource?: string;
 }
 
 /**
@@ -97,6 +110,12 @@ export default function ReleaseNew() {
   const [installer, setInstaller] = useState<File | null>(null);
   const [portable, setPortable] = useState<File | null>(null);
   const [update, setUpdate] = useState<File | null>(null);
+  // mac 产物：全可缺省（与后端一致——缺 mac 产物只影响 mac 清单，不阻塞 Windows）。
+  const [macUpdate, setMacUpdate] = useState<File | null>(null);
+  const [macInstallerArm64, setMacInstallerArm64] = useState<File | null>(null);
+  const [macInstallerX64, setMacInstallerX64] = useState<File | null>(null);
+  // manifest-mac 的 sha256 声明值：留空后端自动回落 mac 更新包真哈希（推荐留空）。
+  const [manifestMacSha256, setManifestMacSha256] = useState("");
   const [result, setResult] = useState<CheckResult | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [busy, setBusy] = useState<"check" | "upload" | null>(null);
@@ -105,6 +124,10 @@ export default function ReleaseNew() {
     ["installer", installer],
     ["portable", portable],
     ["update", update],
+    // 字段名与后端 multipart 契约逐字对齐（docs/mac-release.md）：
+    ["macUpdate", macUpdate],
+    ["macInstallerArm64", macInstallerArm64],
+    ["macInstallerX64", macInstallerX64],
   ];
 
   function buildForm(): FormData {
@@ -115,6 +138,8 @@ export default function ReleaseNew() {
     form.set("minVersion", minVersion.trim());
     form.set("required", String(required));
     form.set("notes", notes);
+    // manifestSha256 系列是元数据不是文件：只在非空时 set，保持「留空 = 后端按真哈希出清单」。
+    if (manifestMacSha256.trim()) form.set("manifestMacSha256", manifestMacSha256.trim());
     for (const [kind, file] of picked) {
       if (file) form.set(kind, file, file.name);
     }
@@ -259,6 +284,41 @@ export default function ReleaseNew() {
                 onPick={setUpdate}
               />
             </div>
+            <p className="meta" style={{ marginTop: 14 }}>
+              macOS 产物（全部可选：缺了只影响 mac 更新清单 manifest-mac.json，不影响 Windows 发版）
+            </p>
+            <div className="form-grid">
+              <FileField
+                label="mac 更新包（macUpdate）"
+                desc={`发 mac 必填项：${macUpdatePackageName(version.trim())}（含 .app/Contents 相对路径的 app.asar 与 bin/lxcode）`}
+                file={macUpdate}
+                onPick={setMacUpdate}
+              />
+              <FileField
+                label="mac 安装包 arm64（macInstallerArm64）"
+                desc={`建议文件名：${macInstallerName(version.trim(), "arm64")}；没有只是提醒`}
+                file={macInstallerArm64}
+                onPick={setMacInstallerArm64}
+              />
+              <FileField
+                label="mac 安装包 x64（macInstallerX64）"
+                desc={`建议文件名：${macInstallerName(version.trim(), "x64")}；没有只是提醒`}
+                file={macInstallerX64}
+                onPick={setMacInstallerX64}
+              />
+              <label className="field form-span">
+                <span className="lbl">manifest-mac sha256（可选）</span>
+                <input
+                  className="inp mono"
+                  value={manifestMacSha256}
+                  onChange={(e) => setManifestMacSha256(e.target.value)}
+                  placeholder="留空 = 后端按 mac 更新包实际哈希出清单（推荐）"
+                />
+                <span className="hint">
+                  对应 multipart 字段 manifestMacSha256：填了才做一致性核对，留空自动回落真哈希
+                </span>
+              </label>
+            </div>
             <div className="row-actions" style={{ marginTop: 8 }}>
               <button className="btn" type="button" disabled={busy !== null} onClick={check}>
                 {busy === "check" ? "校验中…" : "校验并预览"}
@@ -290,23 +350,57 @@ export default function ReleaseNew() {
             {result ? (
               <>
                 <div className="adm-checks">
-                  {result.checks.map((item) => {
-                    const pill = CHECK_PILL[item.level];
-                    return (
-                      <div className={`adm-check adm-check-${item.level}`} key={item.label}>
-                        <span className="adm-check-k">
-                          <span className={pill.cls}>{pill.label}</span>
-                          {item.label}
-                        </span>
-                        <span className="adm-check-d">{item.detail}</span>
-                      </div>
-                    );
-                  })}
+                  {result.checks
+                    .filter((item) => !item.label.startsWith("mac ") && !item.label.startsWith("dmg"))
+                    .map((item) => {
+                      const pill = CHECK_PILL[item.level];
+                      return (
+                        <div className={`adm-check adm-check-${item.level}`} key={item.label}>
+                          <span className="adm-check-k">
+                            <span className={pill.cls}>{pill.label}</span>
+                            {item.label}
+                          </span>
+                          <span className="adm-check-d">{item.detail}</span>
+                        </div>
+                      );
+                    })}
                 </div>
+                {result.checks.some((item) => item.label.startsWith("mac ") || item.label.startsWith("dmg")) && (
+                  <details style={{ marginTop: 12 }}>
+                    <summary className="meta" style={{ cursor: "pointer" }}>
+                      macOS 校验项（{result.checks.filter((item) => item.label.startsWith("mac ") || item.label.startsWith("dmg")).length} 条，缺 mac 产物时不启用）
+                    </summary>
+                    <div className="adm-checks">
+                      {result.checks
+                        .filter((item) => item.label.startsWith("mac ") || item.label.startsWith("dmg"))
+                        .map((item) => {
+                          const pill = CHECK_PILL[item.level];
+                          return (
+                            <div className={`adm-check adm-check-${item.level}`} key={item.label}>
+                              <span className="adm-check-k">
+                                <span className={pill.cls}>{pill.label}</span>
+                                {item.label}
+                              </span>
+                              <span className="adm-check-d">{item.detail}</span>
+                            </div>
+                          );
+                        })}
+                    </div>
+                  </details>
+                )}
                 <p className="meta" style={{ marginTop: 12 }}>
                   manifest 预览（后端按契约生成：url = 更新包文件名，files 是 zip 内两个路径的真哈希）
                 </p>
                 <pre className="code">{JSON.stringify(result.manifest, null, 2)}</pre>
+                {result.manifestMac && (
+                  <details style={{ marginTop: 12 }}>
+                    <summary className="meta" style={{ cursor: "pointer" }}>
+                      manifest-mac 预览（mac 更新清单，与 manifest 同构；files 来源：
+                      {result.macFilesSource ?? "未知"}）
+                    </summary>
+                    <pre className="code">{JSON.stringify(result.manifestMac, null, 2)}</pre>
+                  </details>
+                )}
               </>
             ) : (
               <p className="muted small">

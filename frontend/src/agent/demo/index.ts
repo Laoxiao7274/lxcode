@@ -1,7 +1,7 @@
 // 演示数据源（M3 叙事）：主 Agent 只调度——思考选人 → agent_dispatch →
 // dispatch 卡（子 Agent 全套执行：思考/读码/改码/确认门/跑测试）→ 验收
 // 汇总。覆盖 UI 全部状态。事件形状与后端协议 1:1——接线换 WSAgent 即可。
-import type { AgentEvent, AgentSource, ApprovalMode, ArchiveOutcome, ChatTreeResult, CompactOutcome, ConfirmRequest, ContextUsage, GitOverview, HistoryMessage, HistorySnapshot, JobAdminSource, JobInfo, JobLogResult, ProjectInstructions, ProjectMeta, RewindOutcome, SendOptions, SessionMeta, SessionStats, SetLeafOutcome, TodoItem, TreeNode } from "../../shared/types";
+import type { AgentEvent, AgentSource, ApprovalMode, ArchiveOutcome, AssistantConfig, AssistantSource, ChatTreeResult, CompactOutcome, ConfirmRequest, ContextUsage, GitOverview, HistoryMessage, HistorySnapshot, JobAdminSource, JobInfo, JobLogResult, ProjectInstructions, ProjectMeta, RewindOutcome, SendOptions, SessionMeta, SessionStats, SetLeafOutcome, TodoItem, TreeNode } from "../../shared/types";
 import { JOB_NOTICE_PREFIX, sortJobs, upsertJob } from "../../shared/jobs";
 import { normalizeApproval } from "../../shared/approval";
 import { MAIN_REASONING, SUB_REASONING, SUB_RESULT, MAIN_ANSWER, TODO_INITIAL, TODO_LATER, DISPATCH_TODOS, DISPATCH_TODOS_RUNNING, DISPATCH_TODOS_FINAL, FILES_CHANGED, SESSIONS } from "./data";
@@ -74,6 +74,22 @@ function demoStats(prev: SessionStats | undefined, usage: number, llmMs: number,
 export class DemoAgent implements AgentSource, JobAdminSource {
   label = "演示模式";
   readonly jobAdmin: JobAdminSource = this;
+  /** 助手域（assistant.*，助手模式 P1）：最小演示实现（一个示例会话 + 固定回复）。 */
+  readonly assistant: AssistantSource = {
+    list: () => this.assistantList(),
+    tasks: (projectId) => this.assistantTasks(projectId),
+    newSession: () => this.assistantNewSession(),
+    send: (sessionId, text) => this.assistantSend(sessionId, text),
+    history: (sessionId, beforeSeq) => this.assistantHistory(sessionId, beforeSeq),
+    childHistory: (sessionId, beforeSeq) => this.assistantChildHistory(sessionId, beforeSeq),
+    cancel: (sessionId) => this.assistantCancel(sessionId),
+    confirm: (sessionId, id, allow, answer) => this.assistantConfirm(sessionId, id, allow, answer),
+    compact: (sessionId) => this.assistantCompact(sessionId),
+    setApproval: (sessionId, mode) => this.assistantSetApproval(sessionId, mode),
+    setModel: (sessionId, modelId) => this.assistantSetModel(sessionId, modelId),
+    getConfig: () => this.assistantGetConfig(),
+    setConfig: (cfg) => this.assistantSetConfig(cfg),
+  };
   private listeners = new Set<Listener>();
   private timers = new Map<string, ReturnType<typeof setTimeout>[]>();
   private confirmCallbacks = new Map<string, (allow: boolean) => void>();
@@ -564,7 +580,8 @@ export class DemoAgent implements AgentSource, JobAdminSource {
     return { data: (this.jobOutput_.get(id) ?? []).join("\n"), truncated: false };
   }
 
-  /** 起一个演示后台任务（runTurn 里调用——UI 的「运行中卡片 + 顶栏角标」由此点亮）。 */
+  /** 起一个演示后台任务（runTurn 里调用——「顶栏角标点亮 + 面板出现任务」由此而来；
+   *  时间线不再出任务卡，事件 emit 只喂面板缓存与通告链路）。 */
   private startDemoJob(sessionId: string): string {
     const id = "job-demo-" + Math.random().toString(36).slice(2, 7);
     this.jobOutput_.set(id, []);
@@ -837,7 +854,7 @@ export class DemoAgent implements AgentSource, JobAdminSource {
         const settled = this.settleDemoJob(jobId, "completed", "self", "退出码 0");
         // 唤醒通告：后端在 settle 后把通告作为**真实 user 角色消息**投进归属会话
         //（模型要当作用户回合才能回应），前端按文本前缀识别、对用户隐藏（hidden：
-        // 不上对话时间线——任务状态在任务卡与 Jobs 面板）。
+        // 不上对话时间线——任务状态只在 Jobs 面板）。
         // 措辞对齐契约 §5：EndedBy=self → 结束通告；EndedBy=user → 「不要重启」。
         this.emit({
           type: "userMessage",
@@ -857,5 +874,138 @@ export class DemoAgent implements AgentSource, JobAdminSource {
       this.emit({ type: "done", usageTokens: usage, finishReason: "stop", context: demoContext(38_400 + usage), stats });
       this.finish(sessionId);
     });
+  }
+
+  // ---- 助手域（assistant.*，助手模式 P1——演示 stub：最小实现） ----
+  //
+  // 演示模式的助手页签要能全量跑 UI（无后端不炸）：一个示例助手会话 + 一轮
+  // 固定文案回复。事件直接 emit（不经 mapEvent——演示源是事件的源头），**必须
+  // 自带 space 标记**（store 按它分流到助手域 assistantStates——与 WS 侧
+  // events.ts 的 assistant 分支同一份约定）。
+
+  /** 演示的助手会话 id（页签进入时建立；新对话再建一个）。 */
+  private assistantSessionId = "";
+  /** 演示助手会话的消息（assistant.history 的回放——发送时同步记录）。 */
+  private assistantMsgs: HistoryMessage[] = [];
+  private assistantSeq = 0;
+  private assistantBusy = false;
+
+  private assistantMark<T extends Record<string, unknown>>(ev: T): AgentEvent {
+    return { ...ev, space: "assistant" } as unknown as AgentEvent;
+  }
+
+  /** 助手域会话列表（演示态）：assistantMsgs 有内容 = 有一个会话（单会话演示——
+   *  与真后端的多会话列表同形状，但如实只出演示态里存在的那条；空 = 空列表）。 */
+  async assistantList(): Promise<SessionMeta[]> {
+    if (this.assistantMsgs.length === 0) return [];
+    return [{
+      id: this.assistantSessionId,
+      title: "演示助手对话",
+      updatedAt: "刚刚",
+      messages: this.assistantMsgs.length,
+      running: this.assistantBusy,
+    }];
+  }
+
+  /** 某项目的助手任务（演示态）：演示助手会话不派发 run_task——如实回空列表
+   *  （项目侧栏不渲染「来自助手」小节），不编演示任务。 */
+  async assistantTasks(_projectId: string): Promise<SessionMeta[]> {
+    return [];
+  }
+
+  async assistantNewSession(): Promise<string> {
+    this.assistantSessionId = "assistant-demo-" + Math.random().toString(36).slice(2, 8);
+    this.assistantMsgs = [];
+    this.assistantSeq = 0;
+    return this.assistantSessionId;
+  }
+
+  assistantSend(sessionId: string, text: string): void {
+    if (!sessionId || !text.trim() || this.assistantBusy) return;
+    this.assistantBusy = true;
+    this.assistantSeq += 1;
+    this.assistantMsgs.push({ role: "user", content: text, seq: this.assistantSeq });
+    this.emit(this.assistantMark({ type: "userMessage", sessionId, text, seq: this.assistantSeq }));
+    this.emit(this.assistantMark({ type: "busy", sessionId, busy: true }));
+    // 一轮固定文案（演示事实——不假装调了模型）：两段 delta + done。
+    setTimeout(() => {
+      this.emit(this.assistantMark({ type: "delta", sessionId, kind: "text", text: "收到（演示模式：助手没有接模型，这里是固定回复）。\n\n" }));
+      this.emit(this.assistantMark({
+        type: "delta", sessionId, kind: "text",
+        text: "接上真实后端（?mode=live 或壳内）后，助手会自己用只读工具处理日常事务，项目任务经 run_task 派给项目的 Agent。\n",
+      }));
+      this.assistantSeq += 1;
+      this.assistantMsgs.push({
+        role: "assistant",
+        content: "收到（演示模式：助手没有接模型，这里是固定回复）。\n\n接上真实后端（?mode=live 或壳内）后，助手会自己用只读工具处理日常事务，项目任务经 run_task 派给项目的 Agent。",
+        seq: this.assistantSeq,
+      });
+      this.emit(this.assistantMark({ type: "busy", sessionId, busy: false }));
+      this.emit(this.assistantMark({ type: "done", sessionId, usageTokens: 128, finishReason: "stop", context: demoContext(4_200) }));
+      this.assistantBusy = false;
+    }, 600);
+  }
+
+  async assistantHistory(sessionId: string, beforeSeq?: number): Promise<HistorySnapshot> {
+    void beforeSeq; // 演示源没有更早的历史（不分页）
+    const snapshot: HistorySnapshot = {
+      sessionId,
+      messages: [...this.assistantMsgs],
+      busy: this.assistantBusy,
+      pending: null,
+      context: demoContext(4_200),
+    };
+    this.emit(this.assistantMark({ type: "historyLoaded", sessionId, history: snapshot }));
+    return snapshot;
+  }
+
+  async assistantChildHistory(sessionId: string, beforeSeq?: number): Promise<HistorySnapshot> {
+    void beforeSeq;
+    // 演示助手会话不派发（run_task 的演示在主域叙事里）——如实回空快照，不编内容。
+    const snapshot: HistorySnapshot = { sessionId, messages: [], busy: false, pending: null };
+    snapshot.child = true;
+    this.emit(this.assistantMark({ type: "historyLoaded", sessionId, history: snapshot }));
+    return snapshot;
+  }
+
+  assistantCancel(sessionId: string): void {
+    if (!this.assistantBusy) return;
+    this.assistantBusy = false;
+    this.emit(this.assistantMark({ type: "error", sessionId, message: "已取消（演示）", aborted: true }));
+    this.emit(this.assistantMark({ type: "busy", sessionId, busy: false }));
+  }
+
+  async assistantConfirm(sessionId: string, id: string, _allow: boolean, _answer?: string): Promise<void> {
+    // 演示助手会话不产生确认门（回复是固定文案）——如实报失效。
+    void sessionId;
+    throw new Error(`确认请求已失效（${id}）：演示模式的助手没有挂起确认`);
+  }
+
+  async assistantCompact(sessionId: string): Promise<CompactOutcome> {
+    if (this.assistantBusy) throw new Error("生成中不能压缩（先停止）");
+    return { compacted: false, reason: "演示助手会话还没有可压缩的历史" };
+  }
+
+  /** 改助手会话执行档位（演示态）：广播同形状的 approvalChanged（带 space 标记
+   *  归约进助手域 assistantStates——「广播 → 状态对齐」的路径演示模式也走得到）。 */
+  assistantSetApproval(sessionId: string, mode: string): void {
+    this.emit(this.assistantMark({ type: "approvalChanged", sessionId, approval: normalizeApproval(mode) }));
+  }
+
+  /** 切助手会话模型（演示态）：广播同形状的 modelChanged（带 space 标记）。
+   *  演示没有模型注册表，如实不校验——归约层照常落 model。 */
+  assistantSetModel(sessionId: string, modelId: string): void {
+    this.emit(this.assistantMark({ type: "modelChanged", sessionId, model: modelId }));
+  }
+
+  /** 演示态的助手配置（内存自管——真后端持在 assistant.json）。 */
+  private assistantCfg_: AssistantConfig = {};
+
+  async assistantGetConfig(): Promise<AssistantConfig> {
+    return { ...this.assistantCfg_ };
+  }
+
+  async assistantSetConfig(cfg: AssistantConfig): Promise<void> {
+    this.assistantCfg_ = { ...cfg };
   }
 }

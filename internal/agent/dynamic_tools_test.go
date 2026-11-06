@@ -49,7 +49,7 @@ func TestPromptListsDynamicTool(t *testing.T) {
 	ac := &sessiondata.AgentContext{Def: sessiondata.AgentDef{
 		ID: "coder", Name: "代码 Agent", Tools: []string{"read_file", "rg_deep"},
 	}}
-	prompt := ComposeSystemPrompt(s.tools, "", ac, ac.Def.Tools, WorktreeInfo{}, false, ProjectDocs{})
+	prompt := ComposeSystemPrompt(s.tools, "", ac, ac.Def.Tools, WorktreeInfo{}, false, ProjectDocs{}, nil)
 	if !strings.Contains(prompt, "rg_deep") {
 		t.Fatal("白名单里的动态工具未出现在 Agent 提示词里")
 	}
@@ -68,7 +68,7 @@ func TestPromptWarnsMissingWhitelistTool(t *testing.T) {
 	ac := &sessiondata.AgentContext{Def: sessiondata.AgentDef{
 		ID: "coder", Name: "代码 Agent", Tools: []string{"read_file", "ripgrep"},
 	}}
-	prompt := ComposeSystemPrompt(s.tools, "", ac, ac.Def.Tools, WorktreeInfo{}, false, ProjectDocs{})
+	prompt := ComposeSystemPrompt(s.tools, "", ac, ac.Def.Tools, WorktreeInfo{}, false, ProjectDocs{}, nil)
 	if !strings.Contains(prompt, "ripgrep") || !strings.Contains(prompt, "当前不可用") {
 		t.Fatalf("未注册的白名单工具应被点名，实际提示词片段:\n%s", tail(prompt, 400))
 	}
@@ -76,7 +76,7 @@ func TestPromptWarnsMissingWhitelistTool(t *testing.T) {
 	ok := &sessiondata.AgentContext{Def: sessiondata.AgentDef{
 		ID: "coder", Name: "代码 Agent", Tools: []string{"read_file", "edit"},
 	}}
-	if p := ComposeSystemPrompt(s.tools, "", ok, ok.Def.Tools, WorktreeInfo{}, false, ProjectDocs{}); strings.Contains(p, "当前不可用") {
+	if p := ComposeSystemPrompt(s.tools, "", ok, ok.Def.Tools, WorktreeInfo{}, false, ProjectDocs{}, nil); strings.Contains(p, "当前不可用") {
 		t.Fatal("白名单全部可用时不该出现「不可用」提示")
 	}
 }

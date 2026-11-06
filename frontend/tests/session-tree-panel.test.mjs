@@ -79,8 +79,9 @@ test('③c 二次确认的 facts 在点击那一刻定格（树刷新不让数�
 test('④ leafChanged 到达 → 重拉本会话的树（leaf 是共享状态）', () => {
   assert.match(hookSrc, /ev\.type === "leafChanged"/, '处理 leafChanged');
   assert.match(hookSrc, /ev\.sessionId === sessionRef\.current\) void fetchTree\(\)/, '只处理本会话的 leafChanged 并重拉树');
-  // 切会话要清掉上一次的树与 loadedAll（否则新会话看到旧会话的分支）
-  assert.match(hookSrc, /setLoadedAll\(false\);[\s\S]{0,200}setTree\(null\);/, '切会话清树与「加载全部」态');
+  // 切会话未命中缓存（新会话/被失效事件清掉）要清掉上一次的树与 loadedAll
+  //（否则新会话看到旧会话的分支）——命中缓存的那条分支不 setTree(null)。
+  assert.match(hookSrc, /setLoadedAll\(false\);[\s\S]{0,200}setTree\(null\);/, '切会话清「加载全部」态与未命中时的树');
 });
 
 test('④b setLeaf 之后重拉树（分支结构变了，而树不在 chat.history 里）', () => {
@@ -130,4 +131,56 @@ test('⑥c 过滤三档 + 截断提示 + 加载全部', () => {
   assert.match(panelSrc, /truncation\.text/, '截断提示文案来自纯函数');
   assert.match(panelSrc, /onLoadAll/, '「加载全部」按钮');
   assert.match(appSrc, /sessionTree\.refresh\(\{ loadAll: true \}\)/, '加载全部真的重新拉树（max_nodes=0）');
+});
+
+// ---------- ⑦ 每会话树缓存（2026-12 会话切换优化批 1） ----------
+//
+// 行为断言在 createTreeCache（纯对象，直测）；hook 的接线（缓存实例随 hook 挂、
+// 切会话先查缓存、失效事件清条目并重拉、connectionChanged true 升代数）按仓库惯例
+// 用源码文本钉住——React effect 在 node 单测里跑不了，钉错了不会编译报错、只静默错。
+import { createTreeCache } from '../src/app-hooks/use-session-tree.ts';
+
+test('⑦a createTreeCache：命中/未命中/覆盖/bust 幂等（纯对象，返回新引用）', () => {
+  const cache = createTreeCache();
+  assert.equal(cache.get('s1'), null, '未拉过 = 未命中');
+  const t1 = { leafSeq: 3, nodes: [], total: 0 };
+  const t2 = { leafSeq: 4, nodes: [], total: 0 };
+  cache.set('s1', t1);
+  assert.equal(cache.get('s1'), t1, '命中返回最近一次成功拉取的树');
+  cache.set('s1', t2);
+  assert.equal(cache.get('s1'), t2, '成功拉取覆盖');
+  cache.set('s2', t1);
+  cache.bust('s1');
+  assert.equal(cache.get('s1'), null, '失效事件清掉该会话条目');
+  assert.equal(cache.get('s2'), t1, '别的会话不受影响');
+  assert.equal(cache.bust('s1'), cache, 'bust 幂等（没有条目返回同一份）');
+  // 空 sessionId 是坏输入：不命中也不进键
+  assert.equal(cache.get(''), null);
+});
+
+test('⑦b 连接代数：换后端（bumpGeneration）后旧代数条目整体落空，新条目独立', () => {
+  const cache = createTreeCache();
+  const t1 = { leafSeq: 1, nodes: [], total: 0 };
+  cache.set('s1', t1);
+  cache.bumpGeneration();
+  assert.equal(cache.get('s1'), null, '旧后端的树对新后端没有意义（旧 id 甚至不存在）');
+  cache.set('s1', { leafSeq: 2, nodes: [], total: 0 });
+  assert.notEqual(cache.get('s1'), null, '新代数照常读写');
+  cache.bust('s1');
+  assert.equal(cache.get('s1'), null, 'bust 只清当前代数的键');
+});
+
+test('⑦c 接线：切会话先查缓存（命中不 setTree(null)）、失效事件清条目并重拉、连接代数升级', () => {
+  // 切会话：命中直接用（渲染立即有树），未命中才清空重拉
+  assert.match(hookSrc, /const cached = cacheRef\.current!\.get\(sessionId\);\s*\n\s*if \(cached\) \{/, '切会话先查缓存');
+  assert.match(hookSrc, /if \(cached\) \{\s*\n\s*setTree\(cached\);\s*\n\s*\} else \{\s*\n\s*setTree\(null\);\s*\n\s*void fetchTree\(\);/, '命中直接用，未命中清空重拉');
+  // 成功拉取写入缓存（失败不写——回落线性视图的纪律不变）
+  assert.match(hookSrc, /cacheRef\.current!\.set\(sid, next\);/, '成功拉取覆盖缓存');
+  // 四类失效事件清条目（宁空勿旧：事件说树变了，缓存里那份就是旧的）
+  for (const ev of ['leafChanged', 'userMessage', 'done']) {
+    assert.ok(new RegExp(`ev\.type === "${ev}" \|\|`).test(hookSrc) && /bust\(ev\.sessionId\)/.test(hookSrc), `${ev} 清缓存条目`);
+  }
+  assert.match(hookSrc, /bust\(ev\.id\);/, 'sessionChanged 清缓存条目');
+  // 换后端清账：connectionChanged true → bumpGeneration（连接代数入键）
+  assert.match(hookSrc, /ev\.type === "connectionChanged" && ev\.connected\) cacheRef\.current!\.bumpGeneration\(\)/, '换后端升连接代数（旧条目作废）');
 });

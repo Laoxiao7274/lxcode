@@ -16,14 +16,25 @@ import (
 
 // Create 开一个新会话（INSERT sessions 行），返回会话 id。
 // 文件版返回追加句柄的概念已消失——写操作按 session id 走库。
+// 主空间入口（space='main'）；助手域用 CreateIn。
 func (s *Store) Create() (string, error) {
+	return s.CreateIn("main")
+}
+
+// CreateIn 按域建会话：space 取 sessiondata.SpaceMain / SpaceAssistant（空 =
+// main 兼容旧调用方）。助手域会话不进 List()/Latest()（主空间只出 main 域），
+// 由 AssistantSessions 列举。
+func (s *Store) CreateIn(space string) (string, error) {
+	if space == "" {
+		space = "main"
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	id := newSessionID()
 	now := nowNano()
 	_, err := s.db.Exec(
-		`INSERT INTO sessions (id, created_at, updated_at, title, archived) VALUES (?, ?, ?, '', 0)`,
-		id, now, now)
+		`INSERT INTO sessions (id, created_at, updated_at, title, archived, space) VALUES (?, ?, ?, '', 0, ?)`,
+		id, now, now, space)
 	if err != nil {
 		return "", fmt.Errorf("创建会话失败: %w", err)
 	}
@@ -56,15 +67,26 @@ func (s *Store) CreateWithID(id, title string) (string, error) {
 // 与子会话行**同一条 INSERT** 落库，避免「子会话建好了但归属没写上」的中间态。
 // 续跑时由 SetSnapshotOwner 按本次派发重写 owner_seq（边界①）。
 func (s *Store) CreateChild(parentID, agentID, dispatchID, ownerID string, ownerSeq int64) (string, error) {
+	return s.CreateChildIn(parentID, agentID, dispatchID, ownerID, ownerSeq, "")
+}
+
+// CreateChildIn 在**指定域**开子会话：CreateChild 的带域版本。子会话的域取
+// 父会话行的 space（SQL 里 SELECT 过来）——助手会话派出的子会话落在助手域、
+// 主会话派出的落主域，与「子会话跟着父的时间线与侧栏域走」一致。space 参数
+// 非空时**覆盖**（run_task 的场景：助手会话派的项目任务子会话要落项目域，
+// 语义上跟主空间的项目会话同侧——侧栏项目分组能看到它）。
+//
+// 父不存在时报错（不开孤儿）——与 CreateChild 同一条不变量。
+func (s *Store) CreateChildIn(parentID, agentID, dispatchID, ownerID string, ownerSeq int64, space string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	id := newSessionID()
 	now := nowNano()
 	res, err := s.db.Exec(
 		`INSERT INTO sessions (id, created_at, updated_at, title, archived, parent_id, agent_id, dispatch_id,
-		                       workspace, child_owner_id, child_owner_seq)
-		 SELECT ?, ?, ?, '', 0, id, ?, ?, workspace, ?, ? FROM sessions WHERE id = ?`,
-		id, now, now, agentID, dispatchID, ownerID, ownerSeq, parentID)
+		                       workspace, child_owner_id, child_owner_seq, space)
+		 SELECT ?, ?, ?, '', 0, id, ?, ?, workspace, ?, ?, COALESCE(NULLIF(?, ''), space) FROM sessions WHERE id = ?`,
+		id, now, now, agentID, dispatchID, ownerID, ownerSeq, space, parentID)
 	if err != nil {
 		return "", fmt.Errorf("创建子会话失败: %w", err)
 	}
@@ -73,6 +95,100 @@ func (s *Store) CreateChild(parentID, agentID, dispatchID, ownerID string, owner
 		return "", fmt.Errorf("父会话 %s 不存在", parentID)
 	}
 	return id, nil
+}
+
+// AssistantSessions 列出**助手域**的顶层会话（按更新时间倒序）——server 的
+// assistant.history 列表入口（助手侧栏）用。过滤口径与 List 同源：parent_id
+// 非空的不出（子会话在派发卡与子会话页里），space != 'assistant' 的不出。
+// 消息数与可见性判定照抄 List（has_rows 才出——空白草稿不进列表）。
+func (s *Store) AssistantSessions() ([]SessionMeta, error) {
+	rows, err := s.db.Query(
+		`SELECT s.id, s.title, s.updated_at, s.archived, s.workspace, s.parent_id, s.agent_id, s.leaf_len,
+		        EXISTS(SELECT 1 FROM messages m WHERE m.session_id = s.id) AS has_rows
+		 FROM sessions s
+		 WHERE s.parent_id = '' AND s.space = 'assistant'
+		 ORDER BY s.archived ASC, s.updated_at DESC, s.rowid DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("列出助手会话失败: %w", err)
+	}
+	defer rows.Close()
+	var out []SessionMeta
+	hasRows := make(map[string]bool)
+	for rows.Next() {
+		var meta SessionMeta
+		var archived, leafLen, has int
+		if err := rows.Scan(&meta.ID, &meta.Title, &meta.UpdatedAt, &archived, &meta.Workspace,
+			&meta.ParentID, &meta.AgentID, &leafLen, &has); err != nil {
+			return nil, fmt.Errorf("读助手会话行失败: %w", err)
+		}
+		meta.Archived = archived == 1
+		if meta.Title == "" {
+			meta.Title = "（空会话）"
+		}
+		meta.UpdatedAt = fmtTime(meta.UpdatedAt)
+		meta.Messages = leafLen
+		hasRows[meta.ID] = has == 1
+		out = append(out, meta)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	visible := out[:0]
+	for i := range out {
+		if hasRows[out[i].ID] {
+			visible = append(visible, out[i])
+		}
+	}
+	return visible, nil
+}
+
+// AssistantTasksOfProject 列出**助手派给某项目**的任务子会话（项目模式侧栏
+// 的「来自助手」小节数据源，2026-12）：space='assistant'（run_task 的子会话
+// 经 CreateChildIn 继承助手父会话的域——落 main 域的旧路径不在本查询口径，
+// 见 TestCreateChildInSpace）+ parent_id 非空（任务 = 派发的产物，不是顶层
+// 会话）+ workspace=项目。按 updated_at 倒序（侧栏展示顺序 = 最新在上）。
+// 可见性判据与 List 同源：「表里有任意行」（不用 leaf_len——撤回后空路径的
+// 会话必须留在入口）。归档态照常返回（列表本身不做归档沉底——小节短，
+// 前端按原序展示；过滤交给调用方）。
+func (s *Store) AssistantTasksOfProject(projectID string) ([]SessionMeta, error) {
+	rows, err := s.db.Query(
+		`SELECT s.id, s.title, s.updated_at, s.archived, s.workspace, s.parent_id, s.agent_id, s.leaf_len,
+		        EXISTS(SELECT 1 FROM messages m WHERE m.session_id = s.id) AS has_rows
+		 FROM sessions s
+		 WHERE s.space = 'assistant' AND s.parent_id != '' AND s.workspace = ?
+		 ORDER BY s.updated_at DESC, s.rowid DESC`, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("列出项目的助手任务失败: %w", err)
+	}
+	defer rows.Close()
+	var out []SessionMeta
+	hasRows := make(map[string]bool)
+	for rows.Next() {
+		var meta SessionMeta
+		var archived, leafLen, has int
+		if err := rows.Scan(&meta.ID, &meta.Title, &meta.UpdatedAt, &archived, &meta.Workspace,
+			&meta.ParentID, &meta.AgentID, &leafLen, &has); err != nil {
+			return nil, fmt.Errorf("读助手任务行失败: %w", err)
+		}
+		meta.Archived = archived == 1
+		if meta.Title == "" {
+			meta.Title = "（无标题任务）"
+		}
+		meta.UpdatedAt = fmtTime(meta.UpdatedAt)
+		meta.Messages = leafLen
+		hasRows[meta.ID] = has == 1
+		out = append(out, meta)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	visible := out[:0]
+	for i := range out {
+		if hasRows[out[i].ID] {
+			visible = append(visible, out[i])
+		}
+	}
+	return visible, nil
 }
 
 // ChildrenOf 列出某会话的子会话（按创建序）——归档级联与将来的子会话视图用。
@@ -116,6 +232,10 @@ func nowNano() string { return time.Now().Format(time.RFC3339Nano) }
 // 子会话（parent_id 非空）不进侧栏——它们是派发的产物，在 dispatch 卡里可见；
 // 列进来会把用户的会话列表淹掉。
 //
+// **域过滤（助手模式 P0）**：只出 space='main' 的会话——助手域会话由
+// AssistantSessions 列举（它有独立的侧栏/入口），漏了这条会把助手会话混进
+// 用户的项目侧栏。
+//
 // 消息数（docs/session-tree.md §E.5）：读 `sessions.leaf_len`（**当前 leaf 路径**的
 // 节点数）——分支之后「全表数 − 影子数」不再等于路径长度（废弃分支的行也在表里），
 // 而 `leaf_len` 由三处写入点维护（AppendMsg +1、AppendCheckpoint 按新路径重算、
@@ -130,7 +250,7 @@ func (s *Store) List() ([]SessionMeta, error) {
 		`SELECT s.id, s.title, s.updated_at, s.archived, s.workspace, s.parent_id, s.agent_id, s.leaf_len,
 		        EXISTS(SELECT 1 FROM messages m WHERE m.session_id = s.id) AS has_rows
 		 FROM sessions s
-		 WHERE s.parent_id = ''
+		 WHERE s.parent_id = '' AND s.space = 'main'
 		 ORDER BY s.archived ASC, s.updated_at DESC, s.rowid DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("列出会话失败: %w", err)
@@ -262,7 +382,7 @@ func (s *Store) surfaceCounts() (map[string]int, error) {
 func (s *Store) Latest() (string, []llm.Message, error) {
 	var id string
 	err := s.db.QueryRow(
-		`SELECT id FROM sessions WHERE archived = 0 AND parent_id = ''
+		`SELECT id FROM sessions WHERE archived = 0 AND parent_id = '' AND space = 'main'
 		 ORDER BY updated_at DESC, rowid DESC LIMIT 1`).Scan(&id)
 	if err == sql.ErrNoRows {
 		return "", nil, nil
@@ -352,6 +472,33 @@ func (s *Store) ListProjects() ([]ProjectMeta, error) {
 		out = append(out, p)
 	}
 	return out, rows.Err()
+}
+
+// SessionMetaOf 返回单个会话的元数据（「当前状态」注入段的运行中会话条目用
+// ——busy 会话的 id 在 server 运行时缓存里，元数据（标题/归属/更新时间）在
+// 库里，按 id 点查拿全）。口径与 List 一致：空标题回落「（空会话）」、时间
+// 已格式化。会话不存在时报错（调用方跳过该条，不硬猜）。
+func (s *Store) SessionMetaOf(id string) (SessionMeta, error) {
+	var meta SessionMeta
+	var archived, leafLen int
+	err := s.db.QueryRow(
+		`SELECT title, updated_at, archived, workspace, parent_id, agent_id, leaf_len
+		 FROM sessions WHERE id = ?`, id).
+		Scan(&meta.Title, &meta.UpdatedAt, &archived, &meta.Workspace, &meta.ParentID, &meta.AgentID, &leafLen)
+	if err == sql.ErrNoRows {
+		return SessionMeta{}, fmt.Errorf("会话 %s 不存在", id)
+	}
+	if err != nil {
+		return SessionMeta{}, fmt.Errorf("查询会话元数据失败: %w", err)
+	}
+	meta.ID = id
+	meta.Archived = archived == 1
+	if meta.Title == "" {
+		meta.Title = "（空会话）"
+	}
+	meta.UpdatedAt = fmtTime(meta.UpdatedAt)
+	meta.Messages = leafLen
+	return meta, nil
 }
 
 // WorkspaceOf 返回会话归属的项目 id（空串 = 未分组）。会话不存在时报错

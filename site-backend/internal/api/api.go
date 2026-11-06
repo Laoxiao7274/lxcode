@@ -1,25 +1,27 @@
 // Package api 是站点的 HTTP 接口层：JSON over HTTP（端口 5201）。
 //
 // 路由一览（细节见 README 与报告）：
-//   公开读：GET /api/releases（仅 published，?include=revoked 带撤回历史）
-//           GET /api/releases/latest（最新已发布 stable，?channel=beta 可切渠道）
-//           GET /api/changelog（仅非草稿版本的条目）
-//           GET /manifest.json（按契约生成：最新 stable 的更新包字段 + files 哈希）
-//           GET /releases/<file>（静态产物，仅已发布版本可取；草稿/撤回 404）
-//   登录会话：POST /api/admin/login（密码 = 现有 token；发 HttpOnly 会话 cookie，24h 续期）
-//             POST /api/admin/logout（销毁会话）
-//             GET  /api/admin/me（会话有效 → {"authenticated":true}，否则 401）
-//   管理写：认证 = **会话 cookie 或 Bearer token 二选一**（cookie 给管理台，Bearer 给脚本/CI）
-//           POST   /api/admin/releases                    multipart 上传（状态=draft）
-//           POST   /api/admin/releases/check               dry-run 校验（不落盘）
-//           POST   /api/admin/releases/{version}/status    publish / revoke
-//           GET    /api/admin/releases                    含草稿与撤回
-//           POST   /api/admin/changelog                    新增
-//           PUT    /api/admin/changelog/{id}                修改
-//           DELETE /api/admin/changelog/{id}                 删除
+//
+//	公开读：GET /api/releases（仅 published，?include=revoked 带撤回历史）
+//	        GET /api/releases/latest（最新已发布 stable，?channel=beta 可切渠道）
+//	        GET /api/changelog（仅非草稿版本的条目）
+//	        GET /manifest.json（按契约生成：最新 stable 的更新包字段 + files 哈希）
+//	        GET /manifest-mac.json（mac 同构清单：manifest-mac.json，无 mac 产物时 404）
+//	        GET /releases/<file>（静态产物，仅已发布版本可取；草稿/撤回 404）
+//	登录会话：POST /api/admin/login（密码 = 现有 token；发 HttpOnly 会话 cookie，24h 续期）
+//	          POST /api/admin/logout（销毁会话）
+//	          GET  /api/admin/me（会话有效 → {"authenticated":true}，否则 401）
+//	管理写：认证 = **会话 cookie 或 Bearer token 二选一**（cookie 给管理台，Bearer 给脚本/CI）
+//	        POST   /api/admin/releases                    multipart 上传（状态=draft）
+//	        POST   /api/admin/releases/check               dry-run 校验（不落盘）
+//	        POST   /api/admin/releases/{version}/status    publish / revoke
+//	        GET    /api/admin/releases                    含草稿与撤回
+//	        POST   /api/admin/changelog                    新增
+//	        PUT    /api/admin/changelog/{id}                修改
+//	        DELETE /api/admin/changelog/{id}                 删除
 //
 // 认证：凭据（密码/token）从 --token 或 LXCODE_SITE_TOKEN 来；**未配置则拒绝所有管理请求**并日志说明
-//（默认拒绝，比默认放行安全：忘了配 token 的代价是没人能改，不是谁都能改）。
+// （默认拒绝，比默认放行安全：忘了配 token 的代价是没人能改，不是谁都能改）。
 // 会话是**内存态**（重启即失效，要重新登录），登录失败同 IP 每分钟 ≤10 次否则 429。
 package api
 
@@ -52,8 +54,8 @@ type Config struct {
 	Token       string
 	CORSOrigins []string
 	// SessionTTL 会话有效期（0 用默认 24h）；LoginPerMinute 登录失败限流（0 用默认 10）。
-	SessionTTL      time.Duration
-	LoginPerMinute  int
+	SessionTTL     time.Duration
+	LoginPerMinute int
 	// StaticDir 非空时托管前端构建产物（--static）：无扩展名的 SPA 路由回落 index.html，
 	// 带扩展名但文件不存在的路径 404（见 staticFiles 注释）。
 	StaticDir    string
@@ -96,6 +98,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/releases/latest", s.latestRelease)
 	mux.HandleFunc("GET /api/changelog", s.listChangelog)
 	mux.HandleFunc("GET /manifest.json", s.manifest)
+	mux.HandleFunc("GET /manifest-mac.json", s.manifestMac)
 	mux.HandleFunc("GET /releases/{file}", s.artifact)
 
 	mux.HandleFunc("POST /api/admin/login", s.login)
@@ -385,6 +388,42 @@ func (s *Server) manifest(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, manifest)
 }
 
+// manifestMac 与 manifest 同一契约的 mac 版（manifest-mac.json）：字段结构逐字段
+// 同构（shell/src/update-platform.ts：url 为相对文件名，按 manifest 所在目录解析），
+// 差别只在更新包产物（mac-update）与 files 路径口径（.app/Contents 相对路径）。
+//
+// 无 mac 更新包时 **404**，绝不发坏格式的 manifest——mac 客户端把「manifest 缺
+// mac 产物」理解成「更新源指向了 Windows 的 manifest」（update-platform.ts 的
+// 报错文案），发空形状只会误导排障方向。notes 语义与 Windows 侧完全一致。
+func (s *Server) manifestMac(w http.ResponseWriter, _ *http.Request) {
+	release, err := s.store.LatestPublished(domain.ChannelStable)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "没有已发布的 stable 版本")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	update := findArtifact(release.Artifacts, domain.KindMacUpdate)
+	if update == nil {
+		writeError(w, http.StatusNotFound,
+			"最新 stable 版本（"+release.Version+"）没有 mac 更新包产物，不提供 manifest-mac.json")
+		return
+	}
+	// files 用 mac 清单自己的口径（.app/Contents 相对路径）：落库在
+	// ManifestMac.Files；老数据 mac 列为空时按「没有 mac 清单」处理（404），
+	// 不发半截 manifest（files 空/口径错会让客户端逐文件校验直接失败）。
+	if release.ManifestMac.Version == "" {
+		writeError(w, http.StatusNotFound,
+			"最新 stable 版本（"+release.Version+"）有 mac 更新包产物但缺 mac 清单数据，不提供 manifest-mac.json")
+		return
+	}
+	manifest := release.ManifestMac
+	manifest.Notes = release.Notes
+	writeJSON(w, http.StatusOK, manifest)
+}
+
 // artifact 静态产物：只有「已发布」版本的产物可取；草稿与已撤回一律 404。
 func (s *Server) artifact(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("file")
@@ -535,9 +574,25 @@ func contentTypeOf(name string) string {
 		return "application/vnd.microsoft.portable-executable"
 	case ".zip":
 		return "application/zip"
+	case ".dmg":
+		// Apple 官方 MIME；传错的话部分浏览器会按八位流内联下载，文件名后缀仍在
+		return "application/x-apple-diskimage"
 	default:
 		return "application/octet-stream"
 	}
+}
+
+// metaMacShaOf 从落库 release 里取「mac 更新包声明哈希」：发布时没有表单，
+// 声明值就是入库的 mac 清单哈希（ManifestMac.SHA256 = 上传时声明的/回落真哈希）。
+func metaMacShaOf(release *domain.Release) string {
+	if release.ManifestMac.SHA256 != "" {
+		return release.ManifestMac.SHA256
+	}
+	// 旧数据（mac 字段为空但有 mac 产物）：回落产物真哈希，不空转校验
+	if a := findArtifact(release.Artifacts, domain.KindMacUpdate); a != nil {
+		return a.SHA256
+	}
+	return ""
 }
 
 /** ---------- 管理读 ---------- */
@@ -562,7 +617,7 @@ type uploadResult struct {
 	TempPath string
 }
 
-// parseUpload 解析 multipart（元数据字段 + 三类产物文件）并落临时文件 + 算真哈希。
+// parseUpload 解析 multipart（元数据字段 + 各类产物文件）并落临时文件 + 算真哈希。
 // upload 与 dry-run 共用它：**同一条解析与校验路径**，预览与真上传不会漂移。
 func (s *Server) parseUpload(w http.ResponseWriter, r *http.Request) (map[string]string, map[domain.ArtifactKind]*uploadResult, string, bool) {
 	limit := s.cfg.MaxUploadMiB << 20
@@ -614,10 +669,12 @@ func (s *Server) parseUpload(w http.ResponseWriter, r *http.Request) (map[string
 	return meta, uploads, tempDir, true
 }
 
-// artifactsFromUpload 把上传结果整理成产物列表（顺序固定：installer / portable / update）。
+// artifactsFromUpload 把上传结果整理成产物列表（顺序固定：installer / portable /
+// update / mac dmg×2 / mac update）。
 func artifactsFromUpload(uploads map[domain.ArtifactKind]*uploadResult) []domain.Artifact {
 	artifacts := make([]domain.Artifact, 0, len(uploads))
-	for _, kind := range []domain.ArtifactKind{domain.KindInstaller, domain.KindPortable, domain.KindUpdate} {
+	for _, kind := range []domain.ArtifactKind{domain.KindInstaller, domain.KindPortable, domain.KindUpdate,
+		domain.KindMacInstallerArm64, domain.KindMacInstallerX64, domain.KindMacUpdate} {
 		uploaded, ok := uploads[kind]
 		if !ok {
 			continue
@@ -661,19 +718,37 @@ func (s *Server) checkDraft(w http.ResponseWriter, r *http.Request) {
 			declared = update.SHA256
 		}
 	}
+	// mac 声明哈希：manifestMacSha256，缺省回落 mac 更新包真哈希（与 Windows 同口径：
+	// 不填就默认「按实际产物出清单」，填了才做一致性核对）。
+	declaredMac := strings.TrimSpace(meta["manifestMacSha256"])
+	if declaredMac == "" {
+		if update := findArtifact(artifacts, domain.KindMacUpdate); update != nil {
+			declaredMac = update.SHA256
+		}
+	}
 	checks := domain.CheckReleaseDraft(domain.DraftCheckInput{
 		Version:                 version,
 		Channel:                 channel,
 		Artifacts:               artifacts,
 		ElectronVersion:         strings.TrimSpace(meta["electronVersion"]),
-		PreviousElectronVersion:  s.previousElectronVersion(existing, channel),
+		PreviousElectronVersion: s.previousElectronVersion(existing, channel),
 		SHA256OfUpdate:          declared,
+		SHA256OfMacUpdate:       declaredMac,
 	}, existing)
+	// mac 预览：有 mac 更新包且 zip 内必需路径齐全才给 manifestMac（与读侧
+	// manifest-mac.json 同规：缺产物发空形状会被 mac 客户端误解成坏更新源）。
+	manifestMac, macSource := s.manifestMacFiles(uploads)
+	var manifestMacShape any
+	if macSource == "zip" {
+		manifestMacShape = domain.ManifestOfMac(version, findArtifact(artifacts, domain.KindMacUpdate), manifestMac)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"checks":      checks,
-		"canPublish":  domain.CanPublish(checks),
-		"manifest":    domain.ManifestOf(version, findArtifact(artifacts, domain.KindUpdate), files),
-		"filesSource": filesSource,
+		"checks":         checks,
+		"canPublish":     domain.CanPublish(checks),
+		"manifest":       domain.ManifestOf(version, findArtifact(artifacts, domain.KindUpdate), files),
+		"filesSource":    filesSource,
+		"manifestMac":    manifestMacShape,
+		"macFilesSource": macSource,
 	})
 }
 
@@ -712,20 +787,43 @@ func (s *Server) uploadRelease(w http.ResponseWriter, r *http.Request) {
 			declared = update.SHA256
 		}
 	}
+	// mac 声明哈希：与 checkDraft 完全同口径（缺省回落真哈希）。
+	declaredMac := strings.TrimSpace(meta["manifestMacSha256"])
+	if declaredMac == "" {
+		if update := findArtifact(artifacts, domain.KindMacUpdate); update != nil {
+			declaredMac = update.SHA256
+		}
+	}
 	checks := domain.CheckReleaseDraft(domain.DraftCheckInput{
 		Version:                 version,
 		Channel:                 channel,
 		Artifacts:               artifacts,
 		ElectronVersion:         strings.TrimSpace(meta["electronVersion"]),
-		PreviousElectronVersion:  s.previousElectronVersion(existing, channel),
+		PreviousElectronVersion: s.previousElectronVersion(existing, channel),
 		SHA256OfUpdate:          declared,
+		SHA256OfMacUpdate:       declaredMac,
 	}, existing)
 	if !domain.CanPublish(checks) {
 		writeErrorChecks(w, http.StatusBadRequest, "发布前校验未通过，已拒绝入库", checks)
 		return
 	}
 
+	// mac 更新包完整性：带 mac 发版时，zip 内必须有 manifest-mac.json 要引用的
+	// 全部路径（app.asar + bin/lxcode）——缺路径的 zip 能过命名/哈希校验（哈希
+	// 校验的是 zip 整体），但 manifest-mac.json 的 files 会是空/坏，所以这里对
+	// 落盘前的临时文件做内容级复核。
+	if findArtifact(artifacts, domain.KindMacUpdate) != nil {
+		if _, ok := uploads[domain.KindMacUpdate]; ok {
+			if complete, err := innerHashes(uploads[domain.KindMacUpdate].TempPath, domain.RequiredMacUpdateFiles); err != nil || complete[domain.RequiredMacUpdateFiles[0]] == "" || complete[domain.RequiredMacUpdateFiles[1]] == "" {
+				writeError(w, http.StatusBadRequest,
+					"mac 更新包内缺少 "+strings.Join(domain.RequiredMacUpdateFiles, " / ")+"（manifest-mac.json 无法生成）")
+				return
+			}
+		}
+	}
+
 	files, filesSource := s.manifestFiles(uploads, meta)
+	macFiles, _ := s.manifestMacFiles(uploads)
 	release := domain.Release{
 		Version:         version,
 		Channel:         channel,
@@ -733,6 +831,7 @@ func (s *Server) uploadRelease(w http.ResponseWriter, r *http.Request) {
 		Notes:           splitLines(meta["notes"]),
 		Artifacts:       artifacts,
 		Manifest:        domain.ManifestOf(version, findArtifact(artifacts, domain.KindUpdate), files),
+		ManifestMac:     domain.ManifestOfMac(version, findArtifact(artifacts, domain.KindMacUpdate), macFiles),
 		MinVersion:      strings.TrimSpace(meta["minVersion"]),
 		Required:        meta["required"] == "true",
 		ElectronVersion: strings.TrimSpace(meta["electronVersion"]),
@@ -769,7 +868,7 @@ func channelOf(raw string) (domain.Channel, bool) {
 // 回落到表单提供的哈希，并如实回报来源（filesSource），不假装是从 zip 里算的。
 func (s *Server) manifestFiles(uploads map[domain.ArtifactKind]*uploadResult, meta map[string]string) (map[string]string, string) {
 	if update, ok := uploads[domain.KindUpdate]; ok {
-		if hashes, err := innerHashes(update.TempPath); err == nil {
+		if hashes, err := innerHashes(update.TempPath, domain.RequiredUpdateFiles); err == nil {
 			complete := true
 			for _, path := range domain.RequiredUpdateFiles {
 				if hashes[path] == "" {
@@ -786,6 +885,45 @@ func (s *Server) manifestFiles(uploads map[domain.ArtifactKind]*uploadResult, me
 		files[path] = strings.TrimSpace(meta[fieldNameOf(path)])
 	}
 	return files, "form"
+}
+
+// manifestMacFiles mac 版（与 manifestFiles 同构）：从 mac 更新包 zip 里取
+// RequiredMacUpdateFiles 的真哈希。**没有表单回落**——manifest-mac.json 读侧
+// 只能从落盘的 zip 现算 files（mac 清单不落库），zip 不齐备时表单哈希救不了
+// 对外契约，所以这里如实返回空来源，由调用方给出阻断项。macSource：
+//
+//	"zip"  = zip 内两个必需路径齐全，哈希可信
+//	""     = 没传 mac 更新包，或 zip 缺路径/读不出（缺路径是阻断项）
+func (s *Server) manifestMacFiles(uploads map[domain.ArtifactKind]*uploadResult) (map[string]string, string) {
+	if update, ok := uploads[domain.KindMacUpdate]; ok {
+		if hashes, err := innerHashes(update.TempPath, domain.RequiredMacUpdateFiles); err == nil {
+			complete := true
+			for _, path := range domain.RequiredMacUpdateFiles {
+				if hashes[path] == "" {
+					complete = false
+				}
+			}
+			if complete {
+				return hashes, "zip"
+			}
+		}
+	}
+	return map[string]string{}, ""
+}
+
+// macUpdateZipComplete 校验落盘的 mac 更新包（上传后 rename 到 releases/ 的那份）
+// 是否包含 manifest-mac.json 需要的全部路径——publish 时从磁盘复核，不信任内存态。
+func (s *Server) macUpdateZipComplete(zipPath string) (bool, error) {
+	hashes, err := innerHashes(zipPath, domain.RequiredMacUpdateFiles)
+	if err != nil {
+		return false, err
+	}
+	for _, path := range domain.RequiredMacUpdateFiles {
+		if hashes[path] == "" {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func fieldNameOf(path string) string {
@@ -842,13 +980,15 @@ func (s *Server) setStatus(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		previous := s.previousElectronVersion(others, release.Channel)
+		declaredMac := strings.TrimSpace(metaMacShaOf(release))
 		checks := domain.CheckReleaseDraft(domain.DraftCheckInput{
-			Version:                release.Version,
-			Channel:                release.Channel,
-			Artifacts:              release.Artifacts,
-			ElectronVersion:        release.ElectronVersion,
+			Version:                 release.Version,
+			Channel:                 release.Channel,
+			Artifacts:               release.Artifacts,
+			ElectronVersion:         release.ElectronVersion,
 			PreviousElectronVersion: previous,
-			SHA256OfUpdate:         release.Manifest.SHA256,
+			SHA256OfUpdate:          release.Manifest.SHA256,
+			SHA256OfMacUpdate:       declaredMac,
 		}, others)
 		if !domain.CanPublish(checks) {
 			// publish 校验清单齐备：不齐备就不许发布
@@ -857,6 +997,21 @@ func (s *Server) setStatus(w http.ResponseWriter, r *http.Request) {
 				"checks": checks,
 			})
 			return
+		}
+		// mac 更新包内容级复核：声明哈希核对的只是「哈希等于入库值」，zip 内
+		// 缺必需路径依然过校验——publish 是进更新链前的最后一道闸，对磁盘上
+		// 真文件复核 manifest-mac.json 依赖的路径（app.asar + bin/lxcode）。
+		if macUpdate := findArtifact(release.Artifacts, domain.KindMacUpdate); macUpdate != nil {
+			complete, err := s.macUpdateZipComplete(filepath.Join(s.store.ReleasesDir(), macUpdate.Name))
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "复核 mac 更新包失败: "+err.Error())
+				return
+			}
+			if !complete {
+				writeError(w, http.StatusConflict,
+					"mac 更新包内缺少 "+strings.Join(domain.RequiredMacUpdateFiles, " / ")+"（manifest-mac.json 无法生成），发布被拦下")
+				return
+			}
 		}
 	}
 
@@ -1021,13 +1176,21 @@ func artifactKindOf(field string) (domain.ArtifactKind, bool) {
 		return domain.KindPortable, true
 	case "update":
 		return domain.KindUpdate, true
+	case "macUpdate":
+		return domain.KindMacUpdate, true
 	default:
+		// mac dmg 按架构两个字段名：macInstallerArm64 / macInstallerX64
+		if kind, _, ok := domain.MacInstallerKindAndArch(field); ok {
+			return kind, true
+		}
 		return "", false
 	}
 }
 
-// innerHashes 从更新包 zip 里取两个必需路径的真实哈希（清单齐备：zip 内路径必须是安装目录相对路径）。
-func innerHashes(zipPath string) (map[string]string, error) {
+// innerHashes 从更新包 zip 里取 requiredPaths 列出的路径的真实哈希
+// （清单齐备：zip 内路径必须是安装目录相对路径——Windows 是安装根相对，
+// mac 是 <app>.app/Contents 相对，见 RequiredMacUpdateFiles）。
+func innerHashes(zipPath string, requiredPaths []string) (map[string]string, error) {
 	reader, err := zip.OpenReader(zipPath)
 	if err != nil {
 		return nil, err
@@ -1036,7 +1199,7 @@ func innerHashes(zipPath string) (map[string]string, error) {
 	out := map[string]string{}
 	for _, file := range reader.File {
 		wanted := false
-		for _, required := range domain.RequiredUpdateFiles {
+		for _, required := range requiredPaths {
 			if file.Name == required {
 				wanted = true
 			}

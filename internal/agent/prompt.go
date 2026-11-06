@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/moyunteng/lxcode/internal/config"
+	"github.com/moyunteng/lxcode/internal/sessiondata"
 	"github.com/moyunteng/lxcode/internal/tools"
 )
 
@@ -114,6 +115,10 @@ var systemPromptRules = []string{
 	// 「什么都并行」。措辞通用，不绑定某个 Agent 的职责。
 	"并行无副作用操作：相互独立且无副作用的检索、阅读、查询必须在同一个回复里一起发出（同一批、不串行等待）；有前后依赖的才分步。",
 	"", // 第 5 条占位：todoPromptRule(mode) 填入
+	// 工具优先级纪律（2026-12 工具选择引导修复）：三层模型可见信号之一——有
+	// 专用工具的场景必须用专用工具，bash 降级为终端操作与组合场景的兜底。
+	// 与 bash/ripgrep/bash_readonly 描述里的反干扰句同源呼应（见 bash.go）。
+	"有专用工具的场景必须用专用工具：检索→ripgrep/search、读文件→read_file、改文件→edit/write_file、查库→db_query、装/管 MCP→mcp_manage；bash 只做终端操作与专用工具覆盖不了的组合场景（管道、点命令）。",
 	// 改动范围最小（2026-12 效率纪律之二）：探索中发现的问题不进本次改动——
 	// 顺手重构会让 diff 与目标脱节，回滚与验收都失去边界。
 	"改动范围最小：只动达成目标所必需的部分，不顺手重构、不顺手清理；探索中发现的其他问题记入总结（指出位置与建议），不在本次改动里修。",
@@ -179,17 +184,21 @@ var systemPromptTools = map[string]string{
 	"edit":                          "edit：精确修改文件片段（唯一匹配替换），低危自动执行",
 	"write_file":                    "write_file：全量写入文件，覆盖已有文件时用户会收到确认提示",
 	"bash":                          "bash：执行 shell 命令，每次执行前用户会收到确认提示",
-	"bash_readonly":                 "bash_readonly：执行**只读** shell 命令（ls/grep/find/wc、git log、sqlite3 查询等），写操作会被拒绝，低危自动执行",
+	"bash_readonly":                 "bash_readonly：执行**只读** shell 命令（终端只读操作专用：git log/diff/status、wc/du、管道组合、jq 等），写操作会被拒绝，低危自动执行",
 	"db_query":                      "db_query：对指定 SQLite 文件执行只读查询（单条 SELECT/EXPLAIN/WITH，只读连接打开），低危自动执行、不修改任何文件",
 	"ssh_hosts":                     "ssh_hosts：在已配置的 SSH 主机（按别名）上执行命令（凭据集中管理 + 探活缓存），高危——远程执行，每次执行前用户会收到确认提示",
 	"todo":                          "todo：维护任务清单（全量写入），低危自动执行",
 	"ask_user":                      "ask_user：向用户提问并等待回答（冲突抉择、需要用户决策时用），低危自动执行",
+	tools.AssistantConfigToolName:   tools.AssistantConfigToolName + "：修改你自己的配置（名字/性格），用户让你改性格、换个称呼时用，改完向用户确认，低危自动执行",
+	tools.McpManageToolName:         tools.McpManageToolName + "：查询/安装/修改/删除用户的 MCP 服务器（list/get/add/update/enable/disable/remove），高危——add/update/remove 前用户会收到确认提示",
 	"agent_read":                    "agent_read：查看 Agent 注册表（列表或单个完整定义，含提示词模板），低危自动执行",
 	"agent_write":                   "agent_write：按 id 修改 Agent 配置（描述/模板/白名单/技能绑定，落库即生效），高危——执行前用户会收到确认提示",
 	"job_output":                    "job_output：读后台任务的增量输出（可 wait 等它结束），低危自动执行",
 	"job_list":                      "job_list：列后台任务（新的在前，可按会话过滤），低危自动执行",
 	"job_kill":                      "job_kill：停止一个后台任务（归属记为 agent），低危自动执行",
 	tools.DispatchToolName:          tools.DispatchToolName + "：把任务派给名单中的子 Agent（任务的完整执行在子上下文里，结果回传验收），低危自动执行",
+	tools.RunTaskToolName:           tools.RunTaskToolName + "：把项目任务派进指定项目执行（project_id 必须用户明确指到；子会话在项目里跑，结论回传），低危自动执行",
+	tools.ProjectListToolName:       tools.ProjectListToolName + "：列出用户的全部项目（id/路径/会话数/最近活动/运行中），用户问「我有哪些项目」时先用它，run_task 的 project_id 从这里取，低危自动执行",
 	tools.MergeRequestToolName:      "merge_request：（遗留）合并流程已退役，调用只会得到说明——提交/推送用 workspace_sync，回滚用 workspace_rollback",
 	tools.WorkspaceStatusToolName:   "workspace_status：查询项目工作区状态（主检出的未提交改动、遗留会话分支），低危自动执行",
 	tools.WorkspaceSyncToolName:     "workspace_sync：提交主检出的改动到当前分支，可选拼直接推送远程，中危——执行前用户会收到确认提示",
@@ -209,6 +218,105 @@ type ProjectDocs struct {
 
 // ProjectDocsFunc 是项目守则的读取约定（按会话工作目录取；空目录 = 无守则）。
 type ProjectDocsFunc func(workDir string) ProjectDocs
+
+// ActivitySnapshot 是「当前状态」注入段的一次快照（助手语境专用——主域会话
+// 有自己的归属上下文，不吃这段）。两份字段都是**已格式化的单行文本**（server
+// 装配侧组装：标题、项目名、时间的解析与拼接都在回调里做，agent 层不查库、
+// 只渲染）——Recent 是最近会话（已按更新时间倒序），Running 是**此刻在生成**
+// 的会话（渲染时单列在段首，「此刻」与「最近」是两种时态）。
+type ActivitySnapshot struct {
+	Recent  []string
+	Running []string
+}
+
+// ProjectPanoramaFunc 是项目全景的查询约定（返回完整统计行数据，渲染归
+// prompt 层的 projectPanoramaSection——与工具/协议注入共用同一份口径）。
+type ProjectPanoramaFunc func() []sessiondata.ProjectStats
+
+// ActivityFunc 是「当前活动」的查询约定（与 ProjectPanoramaFunc 同一套
+// 每轮回调注入模式；server 侧一次回调组装一份完整快照）。
+type ActivityFunc func() ActivitySnapshot
+
+// projectPanoramaCap 是注入段的项目条数上限：项目全景对助手是「定位用索引」，
+// 不是全量账本——超限截断并尾注（模型知道「还有更多」比读到半截却以为完整好；
+// 详查走 project_list 实时工具，不受此限）。
+const projectPanoramaCap = 20
+
+// projectPanoramaHeader 是「可用项目」段的段头（测试用它做精确断言——
+// 助手协议文本里也提「可用项目清单」，子串断言会误伤）。
+const projectPanoramaHeader = "可用项目（run_task 的 project_id 填下面的 id）："
+
+// projectPanoramaSection 渲染「可用项目」注入段（助手语境）。
+//
+// 与可委派名单同一条纪律：**id 必须在场**——run_task 的 project_id 是不可读
+// 的时间戳随机串，实测只给名字/路径模型就会拿名字当 id 传（调研定案）。
+// 空清单返回空串（用户还没有项目时注入一个空段是噪声，助手答「还没有项目」
+// 即可）。
+func projectPanoramaSection(stats []sessiondata.ProjectStats) string {
+	if len(stats) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n" + projectPanoramaHeader + "\n")
+	shown := stats
+	if len(shown) > projectPanoramaCap {
+		shown = shown[:projectPanoramaCap]
+	}
+	for i := range shown {
+		ps := shown[i]
+		activity := "无活动"
+		if ps.UpdatedAt != "" {
+			activity = "最近活动 " + ps.UpdatedAt
+		}
+		fmt.Fprintf(&b, "- %s（%s）：%s，%d 个会话，%s\n", ps.ID, ps.Name, ps.Path, ps.Sessions, activity)
+	}
+	if rest := len(stats) - len(shown); rest > 0 {
+		fmt.Fprintf(&b, "另有 %d 个项目，用 project_list 详查。\n", rest)
+	}
+	return b.String()
+}
+
+// activityCap 是「当前状态」段的会话条数上限（最近会话最多给 3 条——它是
+// 「用户最近在忙什么」的上下文锚点，不是全量账本；详查走 session_search）。
+// 导出常量：server 侧组装快照时按同一口径截断（agent 层渲染兜底再截一次，
+// 两处同值不漂移）。
+const ActivityRecentCap = 3
+
+// CurrentActivityHeader 是「当前状态」段的段头（测试用它做精确断言——
+// 协议文本也提「当前状态」，子串断言会误伤；server 侧测试跨包引用，导出）。
+//
+// 段头必须写明**域归属**（2026-12 用户实测反馈：助手把主域会话「你好啊」说成
+// 「咱俩唠嗑的」——不是数据泄漏，是呈现层缺归属标注的语义混淆）：这段注入的
+// 是用户在项目模式（主域工作区）的会话，与助手模式的当前对话是两回事。
+const CurrentActivityHeader = "当前状态（用户在项目模式最近的活动——这些是项目工作区的会话，不是你们当前这段对话）："
+
+// activitySection 渲染「当前状态」注入段（助手语境）：最近会话 + 此刻运行中
+// 的会话。条目是 server 侧组装的已格式化文本（标题/项目名/时间已解析好，
+// agent 层只加行前缀——「正在运行」与「最近」的标签在这里加，server 不重复）。
+// 最近会话截前 ActivityRecentCap 条；空快照返回空串：无会话无运行时不注入
+// 空段（与全景段同一纪律）。
+func activitySection(snap ActivitySnapshot) string {
+	if len(snap.Recent) == 0 && len(snap.Running) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n" + CurrentActivityHeader + "\n")
+	if len(snap.Running) > 0 {
+		for i := range snap.Running {
+			fmt.Fprintf(&b, "- 正在运行：%s\n", snap.Running[i])
+		}
+	} else {
+		b.WriteString("- 此刻没有正在运行的会话\n")
+	}
+	shown := snap.Recent
+	if len(shown) > ActivityRecentCap {
+		shown = shown[:ActivityRecentCap]
+	}
+	for i := range shown {
+		fmt.Fprintf(&b, "- 最近：%s\n", shown[i])
+	}
+	return b.String()
+}
 
 // projectDocsCap 是注入上限：守则文件可以很长，但不能无节制地吃上下文。
 // 超限截断并如实注明（模型知道「后面还有」比读到半截却以为完整要好）。

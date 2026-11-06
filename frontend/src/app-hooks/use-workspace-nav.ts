@@ -145,7 +145,7 @@ export function useWorkspaceNav({ source, currentId }: { source: AgentSource; /*
   const openSettings = useCallback(() => setSettingsOpen(true), []);
 
   return {
-    view, workspaceState, settingsOpen, setSettingsOpen, filter, setFilter, gitProjectId, setGitProjectId,
+    view, workspaceState, setWorkspaceState, workspaceStateRef, settingsOpen, setSettingsOpen, filter, setFilter, gitProjectId, setGitProjectId,
     openWorkspace, closeWorkspace, openWorkspaceTab, openChildView,
     openAgents, openCatalog, openGit, openRemote, backToChat, focusSession, openProject, openSettings,
   };

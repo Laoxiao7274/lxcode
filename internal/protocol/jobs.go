@@ -24,6 +24,8 @@ type JobInfo struct {
 	// OwnerSessionID 是**时间线归属**（顶层会话）：子 Agent 起的任务挂在父会话上，
 	// 前端据此把它放进父会话的时间线、后端据此把唤醒通告投给父会话。
 	OwnerSessionID string `json:"owner_session_id,omitempty"`
+	// Workspace 是任务起时所属的项目 id（前端面板按它分组渲染）；空 = 未分组会话。
+	Workspace      string `json:"workspace,omitempty"`
 	StartedAt      string `json:"started_at"`
 	FinishedAt     string `json:"finished_at,omitempty"`
 	// OutputTail 是最近 64KB 输出（面板直接显示，不必再拉一次 job.log）。

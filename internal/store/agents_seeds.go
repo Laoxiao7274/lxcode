@@ -91,14 +91,14 @@ var seedTools = []sessiondata.ToolSpec{
 		// 聚合、看 git 历史、统计文件规模都靠它。同样必须在目录里：Agent 编辑器
 		// 渲染内置 chip 只读目录，目录里没有 = 用户勾不上它（web_search 栽过的那一跤）。
 		// 判据与拒绝理由见 internal/tools/readonly.go。
-		ID: "bash_readonly", Desc: "执行只读 shell 命令（读数据：ls/grep/wc、git log、sqlite3 查询）", Risk: "low", Source: "builtin", Custom: false,
+		ID: "bash_readonly", Desc: "执行只读 shell 命令（git log/wc/du/管道组合/jq；读文件用 read_file、内容检索用 ripgrep、查库用 db_query）", Risk: "low", Source: "builtin", Custom: false,
 		Params: []sessiondata.ToolParam{
-			{Name: "command", Type: "string", Required: true, Desc: "只读命令（ls / cat / grep / find / wc / git log / sqlite3 的 SELECT 等）"},
+			{Name: "command", Type: "string", Required: true, Desc: "只读命令（git log / wc / du / 管道组合 / jq 等；读文件、检索与查库用专用工具）"},
 			{Name: "cwd", Type: "string", Desc: "工作目录（绝对或相对会话工作目录，可选）"},
 			{Name: "stdin", Type: "string", Desc: "标准输入（可选，≤64KB）"},
 			{Name: "timeout_sec", Type: "int", Desc: "超时秒数（默认 60，上限 300）"},
 		},
-		Doc: "只读执行面：命令级白名单校验，写操作（rm/mv/写文件重定向/git commit/git push/包管理/解释器脚本）一律拒绝并说明原因；无害重定向（2>/dev/null、>/dev/null、2>&1、&>/dev/null）与只读命令之间的管道放行；命令替换、heredoc 与写文件重定向（>file、>>file）拒绝（只读命令之间的管道可以）。\n\n- 适合读数据：查 SQLite、看 git 历史、统计文件规模\n- 改文件请交给代码 Agent（bash / edit / write_file）",
+		Doc: "只读执行面：命令级白名单校验，写操作（rm/mv/写文件重定向/git commit/git push/包管理/解释器脚本）一律拒绝并说明原因；无害重定向（2>/dev/null、>/dev/null、2>&1、&>/dev/null）与只读命令之间的管道放行；命令替换、heredoc 与写文件重定向（>file、>>file）拒绝（只读命令之间的管道可以）。\n\n- 读文件用 read_file 工具，内容检索用 ripgrep/search 工具，查 SQLite 优先 db_query\n- 本工具留给专用工具覆盖不了的场景：git log/diff/status、wc/du 统计、管道组合、jq 等\n- 改文件请交给代码 Agent（bash / edit / write_file）",
 	},
 	{
 		// db_query（只读查询工具，P8-1）：对指定 SQLite 文件的只读查询——mode=ro
@@ -138,6 +138,13 @@ var seedTools = []sessiondata.ToolSpec{
 			{Name: "role", Type: "enum", Desc: "只搜某个角色：user / assistant / tool"},
 		},
 		Doc: "跨全部会话的消息内容检索（含当前），按会话时间从近到远。\n\n- 命中带**会话标题与时间**（判断是哪个会话的事）\n- 默认附前后各 2 条相邻消息：「怎么修的」通常就在命中后面几条\n- role 过滤只作用于命中判定，上下文里仍能看到其它角色\n- 命中数超过 max 时会提示总数——据此缩小 pattern",
+	},
+	{
+		// project_list（助手项目全景三件套，2026-12）：与 web_search 同理必须在
+		// 目录里——助手 Agent 的种子白名单写着它，编辑器渲染 chip 只读目录。
+		ID: "project_list", Desc: "列出用户的全部项目（id/路径/会话数/最近活动/运行中）", Risk: "low", Source: "builtin", Custom: false,
+		Params:  []sessiondata.ToolParam{},
+		Doc:     "跨项目视角的查询面：返回全部注册项目的 id、名称、根目录、顶层会话数、最近活动与运行中的会话数（按最近活动倒序）。\n\n- 用户问「我有哪些项目」或提到某个项目时先用它\n- run_task 的 project_id 是不可读的时间戳随机串——**只能从本工具（或提示词里的可用项目清单）拿到**，不要拿项目名或路径当 id\n- 顶层会话数不含子会话与助手会话；无会话项目照常列出\n- 「运行中」= 此刻有会话在生成的项目——用户问「现在在跑什么」时用它",
 	},
 	{
 		// 内置的渐进披露读取口：目录里没有它，子 Agent 就「拿到技能索引却没法取正文」
@@ -187,6 +194,19 @@ var seedTools = []sessiondata.ToolSpec{
 		Doc: "字段级更新：只写提供的字段，其余不动；id 不可改。\n\n- **高危**：改动落库即生效——该 Agent 下次被派发就按新配置运行\n- 工具白名单增删直接改变目标 Agent 能做什么（加写工具 = 它将能改动文件）\n- 硬校验：白名单不能清空、工具名必须真实存在、模板不能为空、主 Agent 不可改\n- 改之前先 agent_read 摸现状，向用户确认意图",
 	},
 	{
+		// mcp_manage（MCP 服务器的查询/安装/修改/删除，2026-12）。与
+		// update_assistant_config 同理必须在目录里：助手 Agent 的白名单写着它，
+		// 编辑器渲染 chip 只读目录。单工具高危（add 会真实在本机启动命令/连接
+		// 端点）——add 默认自动绑定 assistant.json 的 mcpServers。
+		ID: "mcp_manage", Desc: "查询/安装/修改/删除用户的 MCP 服务器", Risk: "high", Source: "builtin", Custom: false,
+		Params: []sessiondata.ToolParam{
+			{Name: "action", Type: "string", Required: true, Desc: "list/get/add/update/enable/disable/remove 之一"},
+			{Name: "server", Type: "object", Desc: "服务器参数（get/remove 只需 id；add/update 需完整形状：id/transport/command/url/args/env）"},
+			{Name: "bind", Type: "boolean", Desc: "仅 add 有意义，默认 true：装完自动绑定到 MCP 列表"},
+		},
+		Doc: "MCP 服务器的管理面：用户说「装个 xxx 的 MCP / 看看我有哪些 MCP」时用。\n\n- add 会真实在本机启动命令/连接端点——安装前向用户复述 command/url 并确认\n- 新装的服务器默认自动绑定到 MCP 列表（bind=false 跳过），装完即可用\n- update 是全量替换（先 get 现状再传完整 server）；remove 级联撤下目录条目，绑定项随之失效\n- 只有助手 Agent 的白名单含它；所有动作走高危确认门（auto 档放行）",
+	},
+	{
 		// 调度通道（主 Agent 的唯一工具）。与 web_search 同理必须在目录里：
 		// 主 Agent 的种子白名单直接写着它，但编辑器渲染 chip 也要靠目录
 		//（否则界面上看不到自己有哪些工具）。
@@ -198,6 +218,30 @@ var seedTools = []sessiondata.ToolSpec{
 			{Name: "session", Type: "string", Desc: "可选：续跑既有子会话的 id"},
 		},
 		Doc: "主 Agent 只做决策与分派，不直接执行任务。\n\n- 任务描述必须**自包含**——子 Agent 看不到当前对话历史\n- **并行**：一条消息里发多个 dispatch 调用，它们**真的并行跑**（子会话各自独立）；有前后依赖的才分多轮串行\n- 子 Agent 在独立会话里执行（有自己的历史与压缩），返回值带子会话 id\n- 要接着上次进度继续：把子会话 id 填进 session\n- 两类制：子 Agent 的白名单不含它（委派深度恒 1）",
+	},
+	{
+		// update_assistant_config（助手自改配置，2026-12）。与 run_task 同理必须
+		// 在目录里：助手 Agent 的种子白名单写着它，编辑器渲染 chip 只读目录。
+		ID: "update_assistant_config", Desc: "修改你自己的配置（名字/性格/技能绑定）", Risk: "low", Source: "builtin", Custom: false,
+		Params: []sessiondata.ToolParam{
+			{Name: "name", Type: "string", Desc: "新的显示名（用户怎么称呼你）"},
+			{Name: "persona", Type: "string", Desc: "新的性格/语气设定；空串 = 清除"},
+			{Name: "skills", Type: "array", Desc: "技能绑定 id 清单（全量替换）"},
+			{Name: "workflow", Type: "string", Desc: "流程模板 id（全量替换）"},
+		},
+		Doc: "修改你自己的配置（写 config/assistant.json）——用户让你改性格、换个称呼时用。\n\n- 部分更新：只传要改的字段，其余不动\n- 改完向用户确认已生效；下一轮对话起生效\n- skills/workflow 的 id 必须真实存在（modules 目录里的）；只写配置文件，不碰工作区\n- 只有助手 Agent 的白名单含它",
+	},
+	{
+		// run_task（助手模式 P0 能力桥）。与 agent_dispatch 同理必须在目录里：
+		// 助手 Agent 的种子白名单写着它，编辑器渲染 chip 只读目录。
+		ID: "run_task", Desc: "把项目任务派进指定项目执行（子会话在项目里跑）", Risk: "low", Source: "builtin", Custom: false,
+		Params: []sessiondata.ToolParam{
+			{Name: "project_id", Type: "string", Required: true, Desc: "项目 id（用户明确指到的项目；不确定先问）"},
+			{Name: "task", Type: "string", Required: true, Desc: "任务描述（目标 + 约束 + 验收标准）"},
+			{Name: "agent", Type: "string", Desc: "可选：目标 Agent 的名单 id（不填按任务性质选默认）"},
+			{Name: "session", Type: "string", Desc: "可选：续跑既有子会话的 id（限本项目派出的）"},
+		},
+		Doc: "助手的桥工具：日常事务自己干，项目任务经它派进项目——子会话在项目根里执行（有自己的历史与压缩），结论回传。\n\n- project_id 必须是用户明确指到的项目，没指到就先问，不猜\n- 返回值带子会话 id：这次没做完时可填进 session 续跑\n- 能力隔离：助手白名单只含只读面 + 本工具（不含 edit/write_file/bash）——改动必须经它派进项目；主/子 Agent 的白名单不含它",
 	},
 	{
 		// 合并进程（第二个 producer）的入口工具。与 agent_dispatch 同理必须在目录里：
@@ -260,7 +304,7 @@ var seedTools = []sessiondata.ToolSpec{
 		// + rg 专属的上下文/类型开关）——124 次调用死在「工具 ripgrep 不支持参数
 		// max/head_limit/mode」上（模型拿 search 的参数面往 rg 上套）。mode/max/
 		// ignore_case/all 由 custom.go 的转译层翻成 rg 标志，模板只放 rg 原生开关。
-		ID: "ripgrep", Desc: "Rust 检索二进制——大仓库全文搜索", Risk: "low", Source: "binary", Custom: false,
+		ID: "ripgrep", Desc: "全文检索优先用它——不要用 bash grep；大仓库快一个量级，免 shell 转义、输出定界", Risk: "low", Source: "binary", Custom: false,
 		Mutates: boolPtr(false),
 		Command: "rg -n --no-heading --color=never --after-context={after} --before-context={before} --context={context} --type={type} --glob={glob} {pattern} {path}",
 		Params: []sessiondata.ToolParam{
@@ -391,7 +435,7 @@ var seedAgents = []sessiondata.AgentDef{
 		// 漏写「联网搜索」的后果是主 Agent 不知道「查外部资料」该派给谁——工具给了、
 		// 白名单勾了，但选人那一步没有信号，这个能力等于不存在。
 		Desc:     "只读调研：检索代码、读文件、查数据库（db_query 只读查询 / bash_readonly：sqlite3 查询/git log/wc 等）、联网搜索与抓取网页正文、梳理跨文件脉络，只给结论与出处，不改任何文件。",
-		Prompt:   "你是调研 Agent。只做检索与信息整理，**不修改任何文件、不执行构建测试、不提交推送**。\n\n职责边界：\n- 结论必须带依据：文件路径 + 行号、命令输出或文档链接；查不到就如实说「未找到」，不编造也不推测。\n- 查 SQLite 数据库优先用 db_query（只读连接，单条 SELECT/EXPLAIN/WITH；写操作被驱动层拒绝）——不要经 bash 拼 sqlite3 命令行。\n- bash_readonly 是只读执行面：可以跑读取类命令（ls/cat/grep/find/wc、git log/diff/status 等），写操作（rm/mv/重定向/git commit/git push/包管理/解释器脚本）会被工具直接拒绝。\n- 被拒绝时不要绕过：把「需要什么改动」写进结论，交回主 Agent 派给代码 Agent（coder）或测试 Agent（tester）。",
+		Prompt:   "你是调研 Agent。只做检索与信息整理，**不修改任何文件、不执行构建测试、不提交推送**。\n\n职责边界：\n- 结论必须带依据：文件路径 + 行号、命令输出或文档链接；查不到就如实说「未找到」，不编造也不推测。\n- 查 SQLite 数据库优先用 db_query（只读连接，单条 SELECT/EXPLAIN/WITH；写操作被驱动层拒绝）——不要经 bash 拼 sqlite3 命令行。\n- bash_readonly 是兜底执行面，优先用专用检索/读文件工具（ripgrep/read_file/db_query）；留给它们覆盖不了的场景：git log/diff/status、wc/du 统计、管道组合、jq 等。写操作（rm/mv/重定向/git commit/git push/包管理/解释器脚本）会被工具直接拒绝。\n- 被拒绝时不要绕过：把「需要什么改动」写进结论，交回主 Agent 派给代码 Agent（coder）或测试 Agent（tester）。",
 		Tools:    []string{"read_file", "search", "session_search", "ripgrep", "web_search", "web_fetch", "bash_readonly", "db_query"},
 		Workflow: "research-first", Skills: []string{},
 		Delegates: []string{}, Approval: "auto",

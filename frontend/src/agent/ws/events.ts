@@ -9,6 +9,46 @@ import { normalizeApproval } from "../../shared/approval";
 
 /** 返回 null = 这个事件不产出前端事件（由 reactTo 的副作用分支处理，或与前端无关）。 */
 export function mapEvent(method: string, params: unknown): AgentEvent | null {
+  // 助手域事件（assistant.*，助手模式 P1）：payload 与 chat 同构、只换事件名
+  //（internal/protocol/assistant.go——assistantEventName 的映射表）。归一成
+  // chat.* 等价名走**同一份**映射（一份解析代码两域共用），再打上 space 标记
+  //（store 按它把事件归约进助手域的 assistantStates，不进主域）。方法名表
+  // 必须与后端 assistantEventName 逐字对齐（tests/assistant-reduce.test.mjs
+  // 读两边源码钉住）。未知的 assistant.* 方法名不猜测归属——返回 null（不产出
+  // 前端事件），新事件接入时表里加一行。
+  if (method.startsWith("assistant.")) {
+    const chat = ASSISTANT_TO_CHAT[method];
+    if (!chat) return null;
+    const ev = mapChatEvent(chat, params);
+    // space 标记（store 按它分流到助手域 assistantStates）：AgentEvent 各变体
+    // 没有逐个声明 space 键——标记只在 assistant 路径写入，运行时判定一处
+    //（store.ts 的 handleAgentEvent），与同一份注释互为表里。
+    return ev ? { ...ev, space: "assistant" } as unknown as AgentEvent : null;
+  }
+  return mapChatEvent(method, params);
+}
+
+/** assistant.* → chat.* 等价方法名（与 internal/server/emit.go 的
+ *  assistantEventName 互为逆映射；键 = protocol/assistant.go 的事件名常量）。 */
+const ASSISTANT_TO_CHAT: Record<string, string> = {
+  "assistant.userMessage": "chat.userMessage",
+  "assistant.delta": "chat.delta",
+  "assistant.toolCall": "chat.toolCall",
+  "assistant.toolResult": "chat.toolResult",
+  "assistant.confirmRequest": "chat.confirmRequest",
+  "assistant.done": "chat.done",
+  "assistant.error": "chat.error",
+  "assistant.busy": "chat.busy",
+  "assistant.dispatchStart": "chat.dispatchStart",
+  "assistant.dispatchEnd": "chat.dispatchEnd",
+  "assistant.compacted": "chat.compacted",
+  "assistant.todoUpdated": "todo.updated",
+  "assistant.filesChanged": "files.changed",
+  "assistant.approvalChanged": "chat.approvalChanged",
+  "assistant.modelChanged": "chat.modelChanged",
+};
+
+function mapChatEvent(method: string, params: unknown): AgentEvent | null {
   const p = (params ?? {}) as Record<string, unknown>;
   const sessionId = String(p.session_id ?? "");
   // dispatch_id 归属（子 Agent 执行的事件——store 挂 dispatch 卡）
@@ -59,6 +99,9 @@ export function mapEvent(method: string, params: unknown): AgentEvent | null {
         agentName: String(p.agent_name ?? ""),
         agentColor: String(p.agent_color ?? "#3b82f6"),
         task: String(p.task ?? ""),
+        // run_task（助手 → 项目）派发的目标项目名（可选键，缺席 = 常规委派；
+        // 键缺席纪律：不写这个键，与 todos 同一条约定）。
+        ...(p.project_name ? { projectName: String(p.project_name) } : {}),
         // todo 契约批③：主 Agent 预拆的清单初稿（可选键，缺席 = 子自拆）。
         // 缺席时**不写这个键**（不是写 undefined——deepStrictEqual 按键比对，
         // 且「键缺席 = 未知」是本仓库 wire 的统一约定）。
@@ -167,6 +210,18 @@ export function mapEvent(method: string, params: unknown): AgentEvent | null {
     case "settings.defaultApproval.changed":
       // 新会话默认审批档变了（后端 behavior.json 的行为开关，多客户端同步）。
       return { type: "defaultApprovalChanged", approval: normalizeApproval(p.approval) };
+    case "assistant.configChanged":
+      // 助手配置被改了（set 后 / 手改 assistant.json 被热加载检出——全局事件，
+      // 不带 session_id，所以不进 ASSISTANT_TO_CHAT 的会话事件映射）。
+      return {
+        type: "assistantConfigChanged",
+        config: {
+          ...(typeof p.name === "string" && p.name ? { name: p.name } : {}),
+          ...(typeof p.persona === "string" && p.persona ? { persona: p.persona } : {}),
+          ...(Array.isArray(p.skills) && p.skills.length ? { skills: p.skills.map(String) } : {}),
+          ...(typeof p.workflow === "string" && p.workflow ? { workflow: p.workflow } : {}),
+        },
+      };
     case "session.changed":
       return { type: "sessionChanged", id: String(p.id ?? ""), reason: String(p.reason ?? "") };
     case "files.changed": {

@@ -15,7 +15,15 @@ export type Channel = "stable" | "beta";
  * - update：update-<version>.zip 增量更新包，只含 resources/app.asar 与后端 exe，
  *   由客户端两级替换（后端热替换 / asar 冷替换）。
  */
-export type ArtifactKind = "installer" | "portable" | "update";
+export type ArtifactKind =
+  | "installer"
+  | "portable"
+  | "update"
+  // mac 侧（与 site-backend domain.go 逐字段对齐）：dmg 按架构拆两个 kind，
+  // 更新包独立一个 kind；mac 产物全可缺省——没有只是缺 mac 清单，不阻塞 Windows。
+  | "mac-installer-arm64"
+  | "mac-installer-x64"
+  | "mac-update";
 
 /** 发布状态：草稿不进更新链；撤回 = 从更新链摘掉但保留历史。 */
 export type ReleaseStatus = "draft" | "published" | "revoked";
@@ -51,6 +59,11 @@ export interface Release {
   notes: string[];
   artifacts: Artifact[];
   manifest: Manifest;
+  /**
+   * mac 更新清单（manifest-mac.json，与 manifest 同构）：老数据/仅 Windows
+   * 发版时后端不输出该键（undefined = 这版没发 mac）。
+   */
+  manifestMac?: Manifest;
   /** 低于此版本必须走全量安装包（更新包的替换路径不覆盖旧布局）。 */
   minVersion: string;
   /** 强制更新：客户端不允许跳过。 */
@@ -116,6 +129,16 @@ export function installerName(version: string): string {
 
 export function portableName(version: string): string {
   return `Lxcode-${version}-win-x64.zip`;
+}
+
+/** mac 更新包文件名（manifest-mac.json 的 url 与产物名同源）。 */
+export function macUpdatePackageName(version: string): string {
+  return `update-mac-${version}.zip`;
+}
+
+/** mac 安装包（dmg）的 electron-builder 默认产物名：Lxcode-<version>-<arch>.dmg。 */
+export function macInstallerName(version: string, arch: "arm64" | "x64"): string {
+  return `Lxcode-${version}-${arch}.dmg`;
 }
 
 /**

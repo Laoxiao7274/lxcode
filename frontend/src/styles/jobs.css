@@ -148,7 +148,36 @@
 .job-pop-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
+}
+/* 项目分组：组头（项目名 + 计数）+ 组内行。组与行之间的间距由组内 gap 承担。 */
+.job-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.job-group-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 2px;
+  font-size: 10.5px;
+  color: var(--fg-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.job-group-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.job-group-count {
+  flex: none;
+  font-size: 10px;
+}
+.job-group .job-row + .job-row {
+  margin-top: 0;
 }
 .job-row {
   border: 1px solid var(--border-soft);
@@ -253,61 +282,6 @@
   color: var(--fg-muted);
   word-break: break-word;
 }
-/* ===== 时间线任务卡（本次对话起的任务） ===== */
-.thread > .job-card {
-  margin: 8px 0;
-}
-.job-card {
-  border: 1px solid var(--border-soft);
-  border-radius: 12px;
-  background: var(--surface);
-  overflow: hidden;
-  animation: block-in 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
-}
-.job-card[data-state="run"] {
-  border-color: rgba(59, 130, 246, 0.3);
-}
-.job-card[data-state="ok"] {
-  border-color: rgba(16, 163, 127, 0.3);
-}
-.job-card[data-state="err"] {
-  border-color: rgba(224, 46, 42, 0.32);
-}
-/* 卡头可点：展开/收起输出（时间线形态默认收起——一行摘要） */
-.job-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 9px 13px;
-  cursor: pointer;
-  user-select: none;
-}
-.job-head:focus-visible {
-  outline: 1px solid var(--border-strong, var(--border));
-  outline-offset: -1px;
-}
-.job-caret {
-  flex: none;
-  font-size: 9px;
-  color: var(--fg-faint);
-  line-height: 1;
-}
-.job-head-kill {
-  display: inline-flex;
-  flex: none;
-}
-/* 收起态的一行实时 tail（运行中才有）：单行截断，不撑高卡片 */
-.job-tail {
-  border-top: 1px solid var(--border-soft);
-  background: var(--bg-side);
-  padding: 6px 13px;
-  font-size: 11px;
-  line-height: 1.6;
-  color: var(--fg-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 /* 状态点：运行中呼吸（reduced-motion 下由 responsive.css 关掉） */
 .job-dot {
   width: 8px;
@@ -316,55 +290,18 @@
   flex: none;
   background: var(--fg-faint);
 }
-[data-state="run"] > .job-head > .job-dot,
 [data-state="run"] > .job-row-head > .job-dot {
   background: #3b82f6;
   animation: job-pulse 1.6s ease-in-out infinite;
 }
-[data-state="ok"] > .job-head > .job-dot,
 [data-state="ok"] > .job-row-head > .job-dot {
   background: var(--success);
 }
-[data-state="err"] > .job-head > .job-dot,
 [data-state="err"] > .job-row-head > .job-dot {
   background: var(--danger);
 }
 @keyframes job-pulse {
   50% { opacity: 0.35; }
-}
-.job-label {
-  flex: 1;
-  min-width: 0;
-  font-size: 11.5px;
-  color: var(--fg);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.job-state {
-  flex: none;
-  font-size: 11px;
-  color: var(--fg-muted);
-}
-.job-card[data-state="run"] .job-state {
-  color: var(--info-text);
-}
-.job-card[data-state="ok"] .job-state {
-  color: var(--success);
-}
-.job-card[data-state="err"] .job-state {
-  color: var(--danger);
-}
-.job-detail {
-  flex: none;
-  font-size: 10.5px;
-  color: var(--fg-faint);
-}
-.job-time {
-  flex: none;
-  font-size: 10.5px;
-  color: var(--fg-faint);
-  font-variant-numeric: tabular-nums;
 }
 /* 「结束」：紧凑档的套件按钮（与 .sp-btn.fd-btn-g 同款覆盖），hover 才转危险色
  * ——它不是破坏性操作（任务随时能重起），常驻红字会让整张卡显得紧张 */

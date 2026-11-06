@@ -23,7 +23,15 @@ const ICONS: Record<string, string> = {
   strict: "M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z",
 };
 
-export function PermPicker() {
+export function PermPicker({ approval, onPick }: {
+  /** 受控档位（助手域等独立会话空间传入——显示该会话自己的档位）。缺省 =
+   *  回落全局 settings 路径（主域零变化：settings.approval 镜像 + applyApproval）。 */
+  approval?: ApprovalMode;
+  /** 改档入口（受控时必传）：助手域走 assistant.setApproval——乐观对齐由
+   *  assistant.approvalChanged 广播回写，不写 settings 镜像（那是主域当前
+   *  会话的显示端）。 */
+  onPick?: (mode: ApprovalMode) => void;
+} = {}) {
   const { settings, applyApproval } = useSettings();
   const { open, toggle, requestClose, rootRef } = usePopover();
   // 「完全访问」确认弹窗（只在菜单开着时有意义；菜单收起即复位——下次打开
@@ -33,14 +41,23 @@ export function PermPicker() {
     if (!open) setConfirmOpen(false);
   }, [open]);
 
-  const current = APPROVALS.find((p) => p.id === settings.approval) ?? APPROVALS[0];
+  // 受控档位优先（助手域会话自己的）；缺省回落全局 settings 镜像（主域原路径）
+  const currentApproval = approval ?? settings.approval;
+  const current = APPROVALS.find((p) => p.id === currentApproval) ?? APPROVALS[0];
+  const apply = (mode: ApprovalMode) => {
+    if (onPick) {
+      onPick(mode);
+      return;
+    }
+    applyApproval(mode);
+  };
 
   // 升险到 auto 先弹窗（askConfirm），其余直接改——分流规则与设置面板共用一份
-  const pick = (id: ApprovalMode) => approvalPick(settings.approval, id, applyApproval, () => setConfirmOpen(true));
+  const pick = (id: ApprovalMode) => approvalPick(currentApproval, id, apply, () => setConfirmOpen(true));
 
   const confirmAuto = () => {
     setConfirmOpen(false);
-    applyApproval("auto");
+    apply("auto");
     requestClose();
   };
 
@@ -65,7 +82,7 @@ export function PermPicker() {
                 <button
                   key={p.id}
                   type="button"
-                  className={"perm-item" + (settings.approval === p.id ? " on" : "")}
+                  className={"perm-item" + (currentApproval === p.id ? " on" : "")}
                   role="menuitem"
                   title={p.hint}
                   onClick={() => pick(p.id)}
@@ -77,7 +94,7 @@ export function PermPicker() {
                     <span className="perm-label">{p.label}</span>
                     <span className="perm-desc">{p.hint}</span>
                   </span>
-                  {settings.approval === p.id && <IconCheck />}
+                  {currentApproval === p.id && <IconCheck />}
                 </button>
               );
             })}

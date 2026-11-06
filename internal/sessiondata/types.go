@@ -199,6 +199,29 @@ type ProjectMeta struct {
 	Path string
 }
 
+// ProjectStats 是一条项目的全景统计（侧栏之外的第二个消费方：助手的
+// project_list 工具与系统提示词注入共用它——两处必须同一份口径，否则
+// 「提示词里的会话数」与「工具查回来的」对不上）。
+type ProjectStats struct {
+	ProjectMeta
+	// Sessions 是归属该项目的**顶层**会话数（排除子会话——它们是派发的
+	// 产物，用户对「项目里有多少会话」的认知口径是侧栏那一列；同时排除
+	// 助手域会话——助手的 workspace 为空，这里按防御性口径一并挡掉，
+	// 语义 = 「这个项目里有多少正经会话」）。
+	Sessions int
+	// Running 是归属该项目、**此刻在生成**的顶层会话数。store 不填它
+	//（busy 是 server 层事实，store 只见库不见运行时）——server 装配侧
+	// 把 busySessions() 按项目 id 合流进来；未装配恒 0 = 「无运行中维度」
+	//（注入段/工具渲染按 0 省略）。会话可能在派发中先于会话行绑定 workspace
+	//（Create → SendSessionWorkspace 有窗口），合流按 id 查库拿当下归属，
+	// 查不动的 id 不硬猜（不计入任何项目，不编数）。
+	Running int
+	// UpdatedAt 是该项目最近一次会话活动（顶层非助手会话的 MAX(updated_at)，
+	// 已格式化「2006-01-02 15:04」）；无会话时为空串——调用方展示「无活动」，
+	// 不要编一个时间。
+	UpdatedAt string
+}
+
 // SearchQuery 是历史检索的查询参数。
 type SearchQuery struct {
 	Pattern string // 正则（RE2）
@@ -248,6 +271,14 @@ type SearchLine struct {
 // ---- 可组装 Agent 域（M1 注册表与目录——类型对齐前端 agent-types.ts，
 // 后端为事实源；M2 上下文组装与 M3 dispatch 消费这些结构） ----
 
+// 会话域标记（助手模式 P0）：主空间 = 用户侧栏里的普通会话；助手空间 =
+// 通用助理会话（server 并列 runtime，不进 List()/Latest()）。空 = main
+//（存量行与零值默认都是主空间）。
+const (
+	SpaceMain      = "main"
+	SpaceAssistant = "assistant"
+)
+
 // AgentDef 是组装出的 Agent 名单条目（两类制：主 = 唯一调度者不可被
 // 委派，子 = 纯执行者不可委派——委派深度恒 1）。
 type AgentDef struct {
@@ -266,6 +297,7 @@ type AgentDef struct {
 	Prompt    string // 自定义上下文段（四层组合的第三层）
 	Protocol  string // 定制协议（空 = 内置默认——第一层）
 	Custom    bool   // 用户自建（可删）；主 Agent 是结构成员（custom=0）
+	Space     string // 会话域（main/assistant；空 = main）——协议推导与能力隔离按它分派
 }
 
 // ModuleSpec 是上下文模块目录条目（模板/技能——纯 markdown 内容，

@@ -1,8 +1,10 @@
 import { memo, useState } from "react";
 import type { AgentSource } from "../../shared/types";
+import type { AppMode } from "../../shared/app-mode";
 import { useConnections } from "../../shared/connections";
 import { ConnectionManager } from "../connections/ConnectionManager";
 import { JobsBadge, type MergeEntry } from "../jobs";
+import { AppModeSwitch } from "./AppModeSwitch";
 
 /** 窗口标题栏：左 = 图标 + LxCode + 连接指示器（点击管理连接）；
  *  右 = 窗口控制（最小化/最大化/关闭）。
@@ -15,12 +17,17 @@ export const Topbar = memo(function Topbar({
   source,
   connected,
   merge,
+  mode,
+  onModeChange,
 }: {
   taskTitle: string;
   source: AgentSource;
   connected: boolean;
   /** 「合并请求」入口的数据（App 按当前会话算好传入；无当前会话时不渲染入口）。 */
   merge?: MergeEntry;
+  /** 顶层应用模式（助手模式 P2）：mode-switch 渲染在左区（模式是全局导航）。 */
+  mode?: AppMode;
+  onModeChange?: (mode: AppMode) => void;
 }) {
   const win = (window as unknown as { __LX__?: { minimize: () => void; toggleMaximize: () => void; close: () => void } }).__LX__;
   const ctrl = (fn?: () => void) => () => fn?.();
@@ -33,6 +40,7 @@ export const Topbar = memo(function Topbar({
       <div className="tb-left">
         <img className="brandMark" src="./favicon-32.png" alt="" width={20} height={20} />
         <span className="brandName">LxCode</span>
+        {mode && onModeChange && <AppModeSwitch mode={mode} onChange={onModeChange} />}
         <span className="tb-sep" />
         <button
           type="button"
@@ -54,7 +62,7 @@ export const Topbar = memo(function Topbar({
       <div className="tb-right">
         {/* 后台任务的全局入口（跨会话：dev server 在别的会话里起的也看得到、停得掉；
             「合并请求」入口同面板——只对项目会话可用） */}
-        <JobsBadge merge={merge} />
+        <JobsBadge merge={merge} source={source} />
         <button type="button" className="win-btn" onClick={ctrl(win?.minimize)} aria-label="最小化" title="最小化">
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
             <path d="M5 12h14" />

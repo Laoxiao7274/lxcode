@@ -193,3 +193,46 @@ func TestSessionSearchScopeNote(t *testing.T) {
 		t.Fatalf("未分组退回全库不应带范围说明: %q", scope)
 	}
 }
+
+// TestSessionSearchAssistantScope：助手语境（注入 space=assistant）的全库扫描
+// 应在范围说明里注明「全部主域会话」——不注明的话助手会把主域会话的命中当成
+// 自己与用户的对话（2026-12 实测语义混淆）。主域语境不注入 space，说明恒空
+//（行为与文案都不变）。
+func TestSessionSearchAssistantScope(t *testing.T) {
+	r := New()
+	var gotCtx context.Context
+	r.SetSessionSearch(func(ctx context.Context, q sessiondata.SearchQuery) (string, error) {
+		gotCtx = ctx
+		return "结果", nil
+	})
+
+	// 助手会话：workspace 恒空（不归属项目）+ space=assistant → 范围说明注明主域
+	r.Execute(WithSessionSpace(WithWorkspace(context.Background(), ""), sessiondata.SpaceAssistant),
+		call("session_search", `{"pattern":"x"}`))
+	if scope := SearchScope(gotCtx); !strings.Contains(scope, "全部主域会话") {
+		t.Fatalf("助手语境全库扫描应注明「全部主域会话」: %q", scope)
+	}
+	// 助手语境限定某项目（显式 workspace）：仍按项目口径，不掺助手域文案
+	r.Execute(WithSessionSpace(WithWorkspace(context.Background(), ""), sessiondata.SpaceAssistant),
+		call("session_search", `{"pattern":"x","workspace":"proj-b"}`))
+	if scope := SearchScope(gotCtx); !strings.Contains(scope, "proj-b") || strings.Contains(scope, "主域") {
+		t.Fatalf("显式 workspace 应按项目口径: %q", scope)
+	}
+	// 助手语境显式 all_projects=true：模型点名全库，不加注（与主域同款——
+	// 放开就是放开；域过滤仍由 store 侧恒定执行，不靠文案）
+	r.Execute(WithSessionSpace(WithWorkspace(context.Background(), ""), sessiondata.SpaceAssistant),
+		call("session_search", `{"pattern":"x","all_projects":true}`))
+	if scope := SearchScope(gotCtx); scope != "" {
+		t.Fatalf("all_projects=true 不应带范围说明: %q", scope)
+	}
+	// 主域语境（space=main 或未注入 space）：说明恒空——行为不变
+	r.Execute(WithSessionSpace(WithWorkspace(context.Background(), ""), sessiondata.SpaceMain),
+		call("session_search", `{"pattern":"x"}`))
+	if scope := SearchScope(gotCtx); scope != "" {
+		t.Fatalf("主域未分组退回全库不应带范围说明: %q", scope)
+	}
+	r.Execute(WithWorkspace(context.Background(), ""), call("session_search", `{"pattern":"x"}`))
+	if scope := SearchScope(gotCtx); scope != "" {
+		t.Fatalf("未注入 space 应与改动前一致（无说明）: %q", scope)
+	}
+}

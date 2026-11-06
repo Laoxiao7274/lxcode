@@ -101,7 +101,9 @@ export function DispatchCard({ block, onConfirm, onAnswer, onOpenChild, replayed
   const row = (
     <>
       <span className="dispatch-dot" style={{ background: agentColor }} aria-hidden />
-      <span className="dispatch-agent">{agentName}</span>
+      {/* run_task（助手 → 项目）派发：Agent 名后缀项目名（「coder · lxcode」）——
+       *  用户一眼看出这活是派进项目里的。常规委派 projectName 缺席，现状不变。 */}
+      <span className="dispatch-agent">{block.projectName ? `${agentName} · ${block.projectName}` : agentName}</span>
       <span className="dispatch-task" title={block.task}>{clipTask(block.task)}</span>
       {showTodoBadge && (
         <span

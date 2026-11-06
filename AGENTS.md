@@ -21,6 +21,7 @@
 | 内核 | `internal/agent`：纯 Go 包（typed Event + Emitter + Confirm），由 server 包装广播；客户端不得绕过 JSON-RPC 直接调用内核 |
 | 客户端 | `internal/wsclient`：Backend 接口 + Dial（请求按 id 配对、事件 channel、断连 fast-fail、缓冲满丢最旧）；CLI 是第一个客户端，桌面壳复用同一协议 |
 | 前端 | **React 19 + TypeScript + Vite + gsap**，零 UI 库（手写 CSS 设计 token，设计语言 agent-console-v3）；`AgentSource` 双实现：WSAgent（连 7789 真实后端）/ DemoAgent（纯前端演示，无后端也能全量跑 UI）；渲染纪律：打字机行级 memo + memo(Block) 稳定回调 + motionAllowed 动效门控（reduced-motion/测试开关） |
+| 助手模式 | **顶层模式（2026-11 用户拍板，P2）**：`AppMode = "project" | "assistant"`（`shared/app-mode.ts`，含 lastProjectView 记忆——切回项目模式恢复离开时的视图）；「助手」**不是**主域页签（workspace-tabs 的 WorkspacePage 已摘除），Topbar 左区 AppModeSwitch 切换，助手模式整块让位给 `AssistantWorkspace`（独立会话列表 assistant.list + 时间线 + 子会话临时视图，域判定/装载/裁决在容器内闭环）；后端 `assistant.list`（wire 形状同 session.list + running 位）；样式 `styles/assistant-mode.css`（容器级 `--asst-*` token 覆写，不动 :root）；输入 = 轻量 `AssistantInput`（不复用 Composer——助手域无附件/模型/队列） |
 | 内核并发 | **多活跃 Session 已实现**：单 Go 进程内每个 session_id 持有独立 `agent.Session` 与生成 goroutine；请求/事件按 session_id 路由，dispatch 事件另带 owner_session_id。无进程级并发上限或全局调度器；单个 Session 同时最多一轮。项目会话在 `<sessions>/worktrees/<project-id>/<session-id>` 从创建时 HEAD 建独立分支/工作树；未分组会话仍使用后端默认工作目录，文件系统不隔离。**不做每会话进程/微服务** |
 | LLM | 双 wire 格式：OpenAI chat completions + Anthropic Messages（`internal/llm`，从 local-myt-agent 整包继承——含 ChatAuto 分流策略：anthropic 恒流式，openai 带工具走非流式回放，依据是真机端点实测 openai 流式丢 tool_calls） |
 | 工具 | `internal/tools` 注册表 + 风险分级：低危自动执行，高危确认门 |

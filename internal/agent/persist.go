@@ -35,6 +35,9 @@ func (s *Session) append(m llm.Message) int64 {
 	// 内存与库必须指向同一条消息）
 	m.Seq = s.persistLocked(m)
 	s.history = append(s.history, m)
+	// 历史变了：派生值缓存失效（history_cache.go——historyTokens/配对切点/
+	// History 副本都建立在这条消息序列上）
+	s.bumpHistoryLocked()
 	seq := m.Seq
 	s.mu.Unlock()
 	return seq
@@ -189,6 +192,7 @@ func (s *Session) EnablePersistence(st Persistence) error {
 	s.context = usage
 	s.approval = approval
 	s.model = model
+	s.bumpHistoryLocked() // 装载了新历史：派生值缓存失效（history_cache.go）
 	return nil
 }
 
@@ -233,6 +237,7 @@ func (s *Session) AttachTo(st Persistence, id string) error {
 	s.context = usage
 	s.approval = approval
 	s.model = model
+	s.bumpHistoryLocked() // 装载了新历史：派生值缓存失效（history_cache.go）
 	return nil
 }
 

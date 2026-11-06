@@ -27,6 +27,7 @@ func (s *Session) SwitchNew(workspace string) (string, error) {
 	}
 	// 历史、todo 和项目归属必须在同一锁内提交，Send 不能插入两步之间。
 	s.id, s.history, s.todos = "", nil, nil
+	s.bumpHistoryLocked() // 切到新会话（历史清空）：派生值缓存失效（history_cache.go）
 	s.pendingWorkspace, s.workDir, s.workspace = workspace, dir, workspace
 	s.context = ContextUsage{} // 新会话：占用清零（下一轮重新测量）
 	// 归属 Agent 同理清零（下一轮 Send 时解析出来）：留着上一会话的会让
@@ -39,6 +40,9 @@ func (s *Session) SwitchNew(workspace string) (string, error) {
 	// 跨轮重复计数同理清零：新会话没调用过任何工具，沿用旧计数会让提醒
 	// 凭空出现（「刚开的新会话怎么会重复 25 次」）。
 	s.sessionRepeat = newSessionRepeatGuard()
+	// 反干扰提示记录同理清零：新会话有新的提示资格（与 readState / sessionRepeat
+	// 同一条会话状态纪律）。
+	s.nudgeState = tools.NewNudgeState()
 	return "", nil
 }
 
@@ -85,6 +89,7 @@ func (s *Session) SwitchTo(id string) error {
 	}
 	// 校验完成再提交；todo 尚未持久化，不能沿用上一会话的内存清单。
 	s.id, s.history, s.workDir = id, msgs, dir
+	s.bumpHistoryLocked() // 装载了另一条会话的历史：派生值缓存失效（history_cache.go）
 	s.workspace = ws
 	s.todos, s.pendingWorkspace = nil, ""
 	s.context = usage
@@ -100,6 +105,8 @@ func (s *Session) SwitchTo(id string) error {
 	s.readState = tools.NewReadState()
 	// 跨轮重复计数同理：换会话不沿用（见 SwitchNew 的同一条注释）。
 	s.sessionRepeat = newSessionRepeatGuard()
+	// 反干扰提示记录同理：换会话不沿用（见 SwitchNew 的同一条注释）。
+	s.nudgeState = tools.NewNudgeState()
 	return nil
 }
 

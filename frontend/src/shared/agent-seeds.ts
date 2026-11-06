@@ -82,6 +82,31 @@ export const BUILTIN_TOOLS: ToolSpec[] = [
     doc: "搜历史会话内容，命中带**会话标题与时间**，并默认附前后各 2 条相邻消息。\n\n- 给「之前怎么处理过这类问题」提供依据——先查旧账再开新方\n- 带上下文是因为：命中行常常只是提问，「怎么修的」在它后面几条\n- role 过滤只作用于命中判定，上下文里仍能看到其它角色的行",
   },
   {
+    // update_assistant_config（助手自改配置，2026-12）：与后端 agents_seeds.go
+    // 同款文案（种子一致性由对照测试钉）。助手 Agent 的种子白名单写着它。
+    id: "update_assistant_config",
+    desc: "修改你自己的配置（名字/性格/技能绑定）",
+    risk: "low",
+    source: "builtin",
+    params: [
+      { name: "name", type: "string", desc: "新的显示名（用户怎么称呼你）" },
+      { name: "persona", type: "string", desc: "新的性格/语气设定；空串 = 清除" },
+      { name: "skills", type: "array", desc: "技能绑定 id 清单（全量替换）" },
+      { name: "workflow", type: "string", desc: "流程模板 id（全量替换）" },
+    ],
+    doc: "修改你自己的配置（写 config/assistant.json）——用户让你改性格、换个称呼时用。\n\n- 部分更新：只传要改的字段，其余不动\n- 改完向用户确认已生效；下一轮对话起生效\n- skills/workflow 的 id 必须真实存在（modules 目录里的）；只写配置文件，不碰工作区\n- 只有助手 Agent 的白名单含它",
+  },
+  {
+    // project_list（助手项目全景三件套，2026-12）：与后端 agents_seeds.go
+    // 同款文案（种子一致性由对照测试钉）。助手 Agent 的种子白名单写着它。
+    id: "project_list",
+    desc: "列出用户的全部项目（id/路径/会话数/最近活动/运行中）",
+    risk: "low",
+    source: "builtin",
+    params: [],
+    doc: "跨项目视角的查询面：返回全部注册项目的 id、名称、根目录、顶层会话数、最近活动与运行中的会话数（按最近活动倒序）。\n\n- 用户问「我有哪些项目」或提到某个项目时先用它\n- run_task 的 project_id 是不可读的时间戳随机串——**只能从本工具（或提示词里的可用项目清单）拿到**，不要拿项目名或路径当 id\n- 顶层会话数不含子会话与助手会话；无会话项目照常列出\n- 「运行中」= 此刻有会话在生成的项目——用户问「现在在跑什么」时用它",
+  },
+  {
     id: "read_skill",
     desc: "读取技能模块的完整内容（提示词只列索引）",
     risk: "low",
@@ -231,6 +256,21 @@ export const BUILTIN_TOOLS: ToolSpec[] = [
       { name: "skills", type: "array", desc: "新的技能绑定（可选；全量替换，可为空）" },
     ],
     doc: "字段级更新：只写提供的字段，其余不动；id 不可改。\n\n- **高危**：改动落库即生效——该 Agent 下次被派发就按新配置运行\n- 工具白名单增删直接改变目标 Agent 能做什么（加写工具 = 它将能改动文件）\n- 硬校验：白名单不能清空、工具名必须真实存在、模板不能为空、主 Agent 不可改\n- 改之前先 agent_read 摸现状，向用户确认意图",
+  },
+  {
+    // mcp_manage（MCP 服务器的查询/安装/修改/删除，2026-12）：与后端
+    // agents_seeds.go 同款文案（种子一致性由对照测试钉）。助手 Agent 的
+    // 白名单写着它；单工具高危（add 会真实在本机启动命令/连接端点）。
+    id: "mcp_manage",
+    desc: "查询/安装/修改/删除用户的 MCP 服务器",
+    risk: "high",
+    source: "builtin",
+    params: [
+      { name: "action", type: "string", required: true, desc: "list/get/add/update/enable/disable/remove 之一" },
+      { name: "server", type: "object", desc: "服务器参数（get/remove 只需 id；add/update 需完整形状：id/transport/command/url/args/env）" },
+      { name: "bind", type: "boolean", desc: "仅 add 有意义，默认 true：装完自动绑定到 MCP 列表" },
+    ],
+    doc: "MCP 服务器的管理面：用户说「装个 xxx 的 MCP / 看看我有哪些 MCP」时用。\n\n- add 会真实在本机启动命令/连接端点——安装前向用户复述 command/url 并确认\n- 新装的服务器默认自动绑定到 MCP 列表（bind=false 跳过），装完即可用\n- update 是全量替换（先 get 现状再传完整 server）；remove 级联撤下目录条目，绑定项随之失效\n- 只有助手 Agent 的白名单含它；所有动作走高危确认门（auto 档放行）",
   },
   {
     // ssh_hosts：按别名在已配置的 SSH 主机上执行命令。高危确认门（远程执行），

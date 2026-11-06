@@ -12,6 +12,8 @@ config/remote.json
 config/model-catalog.json
 # ssh_hosts 工具的远程主机凭据文件（主机别名 + 密码，同性质必不入库）
 config/hosts.json
+# 助手性格与拓展配置（运行时由 dev/生产后端各自写出，不入库）
+config/assistant.json
 
 # 临时与会话数据
 temp/

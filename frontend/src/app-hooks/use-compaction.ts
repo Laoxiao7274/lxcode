@@ -18,7 +18,7 @@
 //（检查点卡落位），否则如实提示「仍在后台进行」。重入闸（inFlight）在超时路径上
 // 保持到事件到达或兜底过期——不然用户重试会触发第二次全量 prefill（双倍等待）。
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { AgentSource } from "../shared/types";
+import type { AgentSource, CompactOutcome } from "../shared/types";
 import { COMPACT_TIMEOUT_MS } from "../agent/ws/connection";
 
 /** 超时后的兜底窗口：与 chat.compact 的请求超时同额度（后端没有 deadline，
@@ -26,7 +26,7 @@ import { COMPACT_TIMEOUT_MS } from "../agent/ws/connection";
  *  宽裕的兜底）。期间 inFlight 保持、chat.compacted 到达即认账成功。 */
 const COMPACT_TAIL_GRACE_MS = COMPACT_TIMEOUT_MS;
 
-export function useCompaction({ source, currentId, reportError, reloadHistory }: {
+export function useCompaction({ source, currentId, reportError, reloadHistory, compact }: {
   source: AgentSource;
   currentId: string;
   reportError: (message: string) => void;
@@ -35,7 +35,13 @@ export function useCompaction({ source, currentId, reportError, reloadHistory }:
    *  屏上、检查点卡也不在其语义位置（前缀处）。重拉后历史应答的 checkpoints 让
    *  检查点卡落到正确位置、旧气泡从时间线消失。缺席（演示源）= 不重拉，行为同旧。 */
   reloadHistory?: (sessionId: string) => Promise<void>;
-}) {
+  /** 压缩入口（缺省 = 主域 source.compact——chat.compact）：助手域传
+   *  assistant.compact（assistant.* 方法域——chat.compact 寻址助手会话会串域
+   *  报错）。事件认账口不受影响：assistant.compacted 经 events.ts 归一成
+   *  chat.compacted 等价事件，subscribe 按 sessionId 匹配照常命中。 */
+  compact?: (sessionId: string) => Promise<CompactOutcome>;
+} = { currentId: "", source: undefined as unknown as AgentSource, reportError: () => {} }) {
+  const doCompact = compact ?? ((id: string) => source.compact(id));
   const [compacting, setCompacting] = useState(false);
   /** 重入闸（ref 而不是依赖数组：compacting 进 useCallback 依赖会让入口身份
    *  每次翻转，击穿 ContextIndicator 的 memo——2026-12 渲染性能 Top1 的老坑）。
@@ -87,7 +93,7 @@ export function useCompaction({ source, currentId, reportError, reloadHistory }:
     // 超时路径不复位闸门与反馈态（finally 据此跳过）。
     let keepGate = false;
     try {
-      const res = await source.compact(currentId);
+      const res = await doCompact(currentId);
       settled = true;
       cleanup();
       if (!res.compacted) {
@@ -122,7 +128,7 @@ export function useCompaction({ source, currentId, reportError, reloadHistory }:
         setCompacting(false);
       }
     }
-  }, [source, reportError, currentId, reloadHistory]);
+  }, [source, doCompact, reportError, currentId, reloadHistory]);
   // Composer → ContextIndicator 的压缩入口（2026-12 渲染性能 Top1）：内联箭头
   // 每帧换身份会击穿 ContextIndicator 的 memo，用 useCallback 固定。
   const handleCompactClick = useCallback(() => { void handleCompact(); }, [handleCompact]);

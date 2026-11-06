@@ -78,30 +78,28 @@ func (s *Store) Search(q SearchQuery) ([]SearchHit, int, bool, error) {
 	// 与既有 idx_sessions_updated 索引对得上）。
 	scan := `SELECT m.session_id, m.role, m.content, s.title, s.updated_at
 		 FROM messages m
-		 JOIN (SELECT id, rowid AS srow, title, updated_at, workspace FROM sessions WHERE archived = 0
+		 JOIN (SELECT id, rowid AS srow, title, updated_at, workspace, space FROM sessions WHERE archived = 0
 		       ORDER BY updated_at DESC, rowid DESC) s ON m.session_id = s.id`
 	args := []any{}
 	if q.Session != "" {
 		scan += ` WHERE m.session_id = ?`
 		args = append(args, q.Session)
+	} else {
+		// 域过滤（助手模式 P0）：全库扫描默认**排除助手域**——助手会话的内部
+		// 过程不属于主空间的历史检索范围；精确指定 session 时不滤（跨域找
+		// 某条子会话/助手会话的内容是合法需求）。
+		scan += ` WHERE s.space != 'assistant'`
 	}
 	if q.Days > 0 {
 		cut := time.Now().AddDate(0, 0, -q.Days).Format(time.RFC3339Nano)
-		if q.Session != "" {
-			scan += ` AND s.updated_at >= ?`
-		} else {
-			scan += ` WHERE s.updated_at >= ?`
-		}
+		// WHERE 恒已存在（Session 精确匹配或域过滤都有 WHERE）——恒 AND。
+		scan += ` AND s.updated_at >= ?`
 		args = append(args, cut)
 	}
 	if q.Workspace != "" {
-		// workspace 过滤（非空时）：与 Days 同款的三元拼接——已有 WHERE 就 AND。
+		// workspace 过滤（非空时）：与 Days 同款的拼接——WHERE 恒已存在，恒 AND。
 		// 子会话在 CreateChild 时拷贝父的 workspace，按它过滤天然涵盖子会话。
-		if q.Session != "" || q.Days > 0 {
-			scan += ` AND s.workspace = ?`
-		} else {
-			scan += ` WHERE s.workspace = ?`
-		}
+		scan += ` AND s.workspace = ?`
 		args = append(args, q.Workspace)
 	}
 	scan += ` ORDER BY s.srow DESC, m.seq` // 会话从近到远（srow 大 = 近），会话内按 seq

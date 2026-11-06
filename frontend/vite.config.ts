@@ -7,6 +7,13 @@ import react from "@vitejs/plugin-react";
 export default defineConfig({
   plugins: [react()],
   clearScreen: false,
+  // dev 后端端口（scripts/dev.mjs 注入 LXCODE_DEV_BACKEND_PORT=7790）：
+  // 暴露成 VITE_BACKEND_PORT 供 frontend/src/agent/index.ts 的 defaultLiveAddr
+  // 读——浏览器 live 模式在 dev 栈下默认连隔离的 dev 后端而非生产 7789。
+  // 变量未注入（生产 `vite build` / 其他启动方式）时键不存在，前端回落 7789。
+  define: process.env.LXCODE_DEV_BACKEND_PORT
+    ? { "import.meta.env.VITE_BACKEND_PORT": JSON.stringify(process.env.LXCODE_DEV_BACKEND_PORT) }
+    : {},
   server: {
     port: 5190,
     strictPort: true,

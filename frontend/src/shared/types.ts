@@ -236,6 +236,10 @@ export interface JobInfo {
    *  放进**父会话**的时间线——子会话不进侧栏，按执行会话上卡等于用户在主对话里
    *  什么都看不到。空 = 回落 session_id。 */
   owner_session_id: string;
+  /** 任务起时所属的**项目 id**（后端 Start 时从执行会话的 ctx 焊进 Spec，之后
+   *  不变）。面板据此按项目分组渲染；空 = 未分组会话（收进「未分组」组）。
+   *  omitempty：老后端没有这个键。 */
+  workspace?: string;
   /** RFC3339；finished_at 空 = 未结束。 */
   started_at: string;
   finished_at: string;
@@ -349,6 +353,9 @@ export type AgentEvent =
       model?: string }
   | { type: "error"; sessionId: string; message: string; aborted: boolean }
   | { type: "dispatchStart"; sessionId: string; dispatchId: string; childSessionId?: string; agentId: string; agentName: string; agentColor: string; task: string;
+      /** run_task（助手 → 项目）派发的目标项目名（可选键，缺席 = 常规 agent_dispatch
+       *  委派——主域派发不受影响，卡不显示项目）。 */
+      projectName?: string;
       /** 主 Agent 预拆的清单初稿（todo 契约批③；缺席 = 子自拆）。 */
       todos?: TodoItem[] }
   | { type: "dispatchEnd"; sessionId: string; dispatchId: string; childSessionId?: string; result: string; isError: boolean; usageTokens?: number;
@@ -379,6 +386,11 @@ export type AgentEvent =
    *  的行为开关，多客户端同步）。只影响**之后新建**的会话；既有会话的档位是
    *  它们自己的落库值，不受影响。 */
   | { type: "defaultApprovalChanged"; approval: ApprovalMode }
+  /** 助手配置被改了（assistant.configChanged——set 后 / 手改 assistant.json 被
+   *  热加载检出，多客户端同步）。载荷 = AssistantConfig（get 应答同形状）。
+   *  消费方是拓展页的助手页签（配置视图对齐——别的客户端/助手自己改了性格，
+   *  打开页签时看到的是最新值）。 */
+  | { type: "assistantConfigChanged"; config: AssistantConfig }
   | { type: "sessionChanged"; id: string; reason: string }
   /** 会话列表本身变了（重命名/归档/恢复）——UI 重读 sessions()。 */
   | { type: "sessionsChanged"; running?: string[] }
@@ -424,8 +436,8 @@ export type AgentEvent =
    *  （deriveTailPaging），而重拉（rewind/setLeaf 副作用）必须**重建**（否则
    *  回放出来的「中断占位卡」永远修不回来）。 */
   | { type: "historyLoaded"; sessionId: string; history: HistorySnapshot; paging?: boolean }
-  /** 后台任务起了（时间线插一张任务卡）。sessionId = 任务归属会话——
-   *  无归属（空）的任务只进顶栏全局面板，不进任何会话时间线。 */
+  /** 后台任务起了/结束（时间线**不**再建任务卡——面板缓存与通告链路消费事件）。
+   *  sessionId = 任务归属会话；无归属（空）的任务只进顶栏全局面板。 */
   | { type: "jobStarted"; sessionId: string; job: JobInfo }
   /** 后台任务结束（带 EndedBy——UI 据此显示「你停的 / 它挂了 / 超时 /
    *  后端重启中断」）。同一个 job 的 started 与 settled 共用一张卡。 */
@@ -807,6 +819,60 @@ export interface AgentSource {
   todoPromptAdmin?: TodoPromptSource;
   /** 后台任务（jobs）；两个实现都提供——顶栏面板与时间线卡片共用它。 */
   jobAdmin?: JobAdminSource;
+  /** 助手域（assistant.* 方法域，助手模式 P1）；缺省时助手页签显示"当前源不支持"。
+   *  DemoAgent 也实现（演示模式无后端也要能全量跑助手页签）。 */
+  assistant?: AssistantSource;
+}
+
+/** 助手域（assistant.* 方法域，助手模式 P1 前端接线）。
+ *
+ * 后端（internal/server/dispatch_assistant.go）：assistant.* 是**独立方法域**，
+ * 只寻址助手域运行时（space='assistant' 的会话）——主会话 id 传进来报错，
+ * 主域 chat.* 传助手会话 id 同样报错（域隔离，前端按域路由，不交叉）。
+ * 参数与应答**复用 chat 既有 wire 形状**（ChatSendParams / ChatHistoryParams /
+ * SessionResult / ToolConfirmParams / CompactResult——只换方法名），事件
+ * （assistant.* 十四事件）payload 与 chat 同构、只换事件名——所以本接口的
+ * 类型面全部复用 chat 域类型，不另立 wire 形状（golden 也因此无需新样本：
+ * 复用的每个 wire 类型都已有样本覆盖）。
+ *
+ * 与 AgentSource 的分工：AgentSource 是主域（chat.*）的门面；助手域是另一套
+ * 会话空间（侧栏不出现、id 空间隔离），经这个可选能力口挂载——与 modelAdmin /
+ * jobAdmin 同模式。DemoAgent 也实现（演示模式无后端也要能全量跑 UI）。 */
+export interface AssistantSource {
+  /** 助手域会话列表（assistant.list → SessionMeta[] + running 位；wire 形状
+   *  与 session.list 同源——一份解析代码两域共用）。 */
+  list(): Promise<SessionMeta[]>;
+  /** 某项目的助手任务子会话（assistant.tasks → 同构应答）：项目模式侧栏
+   *  「来自助手」小节的数据源。按 updated_at 倒序；空数组 = 该项目没有
+   *  助手任务（小节不渲染）。 */
+  tasks(projectId: string): Promise<SessionMeta[]>;
+  /** 新助手会话（assistant.new → SessionResult）。 */
+  newSession(): Promise<string>;
+  /** 发送一轮（assistant.send，参数 = ChatSendParams 的子集：无附件——P0 范围外）。 */
+  send(sessionId: string, text: string, opts?: { effort?: string; approval?: string }): void;
+  /** 装载助手会话历史（assistant.history → historyLoaded 事件，助手域路由）。
+   *  失败向上抛（AssistantPage 显示原因，不静默降级成"空历史"）。 */
+  history(sessionId: string, beforeSeq?: number): Promise<HistorySnapshot>;
+  /** 装载助手会话 run_task 子会话的历史（子会话库行继承父 space='assistant'，
+   *  域内寻址走 assistant.history——与主域 childHistory 同形状）。 */
+  childHistory(sessionId: string, beforeSeq?: number): Promise<HistorySnapshot>;
+  /** 取消（assistant.cancel：寻址助手会话或它正在跑的 run_task 子会话）。 */
+  cancel(sessionId: string): void;
+  /** 裁决助手会话的确认门（assistant.confirm；answer 非空 = ask_user 提问回答）。 */
+  confirm(sessionId: string, id: string, allow: boolean, answer?: string): Promise<void>;
+  /** 手动压缩（assistant.compact）。 */
+  compact(sessionId: string): Promise<CompactOutcome>;
+  /** 改助手会话的执行档位（assistant.approval——chat.approval 同款只换域）。
+   *  乐观对齐由 assistant.approvalChanged 广播回写（与主域同一纪律）。 */
+  setApproval(sessionId: string, mode: string): void;
+  /** 切助手会话的模型（assistant.model——chat.model 同款只换域，助手内置
+   *  Agent 不做 BindAgentModel）。不乐观改，由 assistant.modelChanged 对齐。 */
+  setModel(sessionId: string, modelId: string): void;
+  /** 读助手配置（assistant.config.get → AssistantConfig；各字段空 = 未设置）。 */
+  getConfig(): Promise<AssistantConfig>;
+  /** 写助手配置（assistant.config.set——**全量替换**：带什么存什么；
+   *  后端校验 skills/workflow 的 id 真实存在，无效报错上抛）。 */
+  setConfig(cfg: AssistantConfig): Promise<void>;
 }
 
 /** 渠道私有设置项的声明（后端 websearch.OptionSpec 的 wire 形态）。
@@ -936,6 +1002,32 @@ export interface TodoPromptSource {
   onChange(listener: () => void): () => void;
   /** 设置档位（后端原子写 + 广播；提示词下一轮生效）。 */
   set(mode: TodoPromptMode): Promise<void>;
+}
+
+/** 助手性格与拓展配置（后端 config/assistant.json 的 wire 形态）。
+ *
+ * 各字段空 = 未设置（用内置值），不是错误。与 AgentDef 的 skills/workflow
+ * 同一目录 id 语义（拓展页的技能/模板）。 */
+export interface AssistantConfig {
+  name?: string;
+  persona?: string;
+  skills?: string[];
+  workflow?: string;
+  /** 绑定的 MCP 服务器 id（服务器粒度——该服务器的全部已物化工具对助手
+   *  可用，暴露名 <server>_<tool>）。空 = 不绑定。 */
+  mcpServers?: string[];
+  /** 绑定的自定义命令工具 id（条目粒度——**仅在 toolWhitelist 为空时生效**
+   *  （双字段正交过渡：白名单非空时旧通道停用，防双源叠加）。custom binary
+   *  条目才可选；后端 set 校验 + resolver 过滤兜底。空 = 不绑定。 */
+  tools?: string[];
+  /** 工具白名单完整覆盖（2026-12 用户拍板：助手默认工具完全可配——内置
+   *  bash/edit 也可勾入，用户担责）。非空 = 它就是助手的全部静态工具面；
+   *  空 = 用内置默认 14 项（builtinDefaults——服务端是事实源，前端不写死）。
+   *  MCP 工具仍由 mcpServers 独立合入（动态面与静态面正交）。 */
+  toolWhitelist?: string[];
+  /** 内置默认工具白名单（assistant.config.get 恒带回——UI 预填与「恢复默认」
+   *  的事实源）。缺席 = 老服务端（未带回，前端回落既有展示）。 */
+  builtinDefaults?: string[];
 }
 
 /** project.remove 的结果（**只解绑**：不删磁盘目录、不删会话）。 */

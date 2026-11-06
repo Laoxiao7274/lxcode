@@ -333,7 +333,7 @@ func TestPublishRejectsIncompleteDraft(t *testing.T) {
 func TestWritesRejectedWhenTokenUnconfigured(t *testing.T) {
 	srv := newServer(t, "")
 	res, body := postMultipart(t, srv, "/api/admin/releases", "any",
-		map[string]string{"version": "0.3.0", "channel": "stable"}, nil)
+		map[string]string{"version": "0.2.0", "channel": "stable"}, nil)
 	if res.StatusCode != http.StatusServiceUnavailable {
 		t.Errorf("未配 token 应 503（默认拒绝所有写），got %d %s", res.StatusCode, string(body))
 	}
@@ -653,5 +653,246 @@ func TestStaticFilesFallback(t *testing.T) {
 				t.Errorf("GET %s 404 响应体不该是 HTML 入口页（会把假文件存下来）: %.80q", tc.path, string(body))
 			}
 		})
+	}
+}
+
+/** ---------- mac 链路（2026-12：manifest-mac.json 契约） ---------- */
+
+// makeMacUpdateZip 造一个**真 mac 更新包**（只含 RequiredMacUpdateFiles 两个路径）。
+// 时间戳固定成 0：与 makeUpdateZip 同理由——哈希可复现。
+func makeMacUpdateZip(t *testing.T, version string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	writer := zip.NewWriter(&buf)
+	for _, path := range domain.RequiredMacUpdateFiles {
+		header := &zip.FileHeader{Name: path, Method: zip.Deflate}
+		header.Modified = time.Unix(0, 0).UTC()
+		part, err := writer.CreateHeader(header)
+		if err != nil {
+			t.Fatalf("造 mac zip 条目失败: %v", err)
+		}
+		if _, err := part.Write([]byte("dummy-mac " + version + " " + path)); err != nil {
+			t.Fatalf("写 mac zip 条目失败: %v", err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("关 mac zip 失败: %v", err)
+	}
+	return buf.Bytes()
+}
+
+func macUploadFiles(t *testing.T, version string) map[string]uploadFile {
+	t.Helper()
+	return map[string]uploadFile{
+		"installer":          {name: domain.InstallerName(version), content: bytes.Repeat([]byte("i"), 1024)},
+		"update":             {name: domain.UpdatePackageName(version), content: makeUpdateZip(t, version)},
+		"macInstallerArm64":  {name: domain.MacInstallerName(version, "arm64"), content: bytes.Repeat([]byte("a"), 512)},
+		"macInstallerX64":    {name: domain.MacInstallerName(version, "x64"), content: bytes.Repeat([]byte("x"), 512)},
+		"macUpdate":          {name: domain.MacUpdatePackageName(version), content: makeMacUpdateZip(t, version)},
+	}
+}
+
+// TestMacReleaseFullFlow 上传带 mac 产物 → 发布 → manifest-mac.json 契约全链路：
+// 版本/字段与 Windows manifest 同构；sha256/size 与下载到的真文件一致；
+// files 与 zip 内逐文件哈希一致（客户端 verifyStagedFiles 的输入就是它）。
+func TestMacReleaseFullFlow(t *testing.T) {
+	srv := newServer(t, testToken)
+	const version = "0.3.0"
+	files := macUploadFiles(t, version)
+	macSHA := sha256Hex(files["macUpdate"].content)
+
+	res, body := postMultipart(t, srv, "/api/admin/releases", testToken, map[string]string{
+		"version": version, "channel": "stable", "electronVersion": "40.10.2", "minVersion": "0.0.1",
+		"notes": "mac 支持\n更新日志第二行",
+	}, files)
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("上传状态 %d，body=%s", res.StatusCode, string(body))
+	}
+	created := decode[struct {
+		Release domain.Release `json:"release"`
+	}](t, body)
+	if created.Release.ManifestMac.SHA256 != macSHA {
+		t.Errorf("入库 manifest-mac.sha256 = %s，want %s", created.Release.ManifestMac.SHA256, macSHA)
+	}
+	if len(created.Release.ManifestMac.Files) != len(domain.RequiredMacUpdateFiles) {
+		t.Errorf("入库 manifest-mac.files 键数 = %d，want %d",
+			len(created.Release.ManifestMac.Files), len(domain.RequiredMacUpdateFiles))
+	}
+	if len(created.Release.Artifacts) != 5 {
+		t.Errorf("入库产物应含 win3 件（无 portable）+ mac dmg×2 + mac 更新包 = 5 件？实际 %d：%+v",
+			len(created.Release.Artifacts), created.Release.Artifacts)
+	}
+
+	if res, body = sendJSON(t, http.MethodPost, srv, "/api/admin/releases/"+version+"/status", testToken,
+		`{"status":"publish"}`); res.StatusCode != http.StatusOK {
+		t.Fatalf("发布状态 %d，body=%s", res.StatusCode, string(body))
+	}
+
+	// 读侧契约：manifest-mac.json 与 Windows manifest.json 同构
+	var manifest domain.Manifest
+	if err := json.Unmarshal(mustGet(t, srv, "/manifest-mac.json", ""), &manifest); err != nil {
+		t.Fatalf("manifest-mac.json 不是合法 JSON: %v", err)
+	}
+	if manifest.Version != version {
+		t.Errorf("manifest-mac.version = %s，want %s", manifest.Version, version)
+	}
+	if manifest.URL != "releases/"+domain.MacUpdatePackageName(version) {
+		t.Errorf("manifest-mac.url = %s，want releases/%s", manifest.URL, domain.MacUpdatePackageName(version))
+	}
+	if len(manifest.SHA256) != 64 || manifest.Size <= 0 {
+		t.Errorf("manifest-mac 哈希/体积不合法：size=%d sha=%q", manifest.Size, manifest.SHA256)
+	}
+	if len(manifest.Notes) != 2 {
+		t.Errorf("manifest-mac.notes 应与 release 一致（2 行），got %v", manifest.Notes)
+	}
+	// Windows manifest 不受影响：版本与哈希仍是 Windows 更新包的
+	winManifest := decode[domain.Manifest](t, mustGet(t, srv, "/manifest.json", ""))
+	if winManifest.URL != "releases/"+domain.UpdatePackageName(version) {
+		t.Errorf("Windows manifest.url 被影响 = %s", winManifest.URL)
+	}
+	if winManifest.SHA256 == manifest.SHA256 {
+		t.Errorf("两个平台的更新包内容不同，sha256 不应相同")
+	}
+
+	// 关键：按客户端真实解析方式下载 mac 更新包，全量核对 sha256/size/files
+	res, zipBody := get(t, srv, "/"+manifest.URL, "")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("下载 mac 更新包状态 %d", res.StatusCode)
+	}
+	if ct := res.Header.Get("Content-Type"); ct != "application/zip" {
+		t.Errorf("mac 更新包 Content-Type = %q，want application/zip", ct)
+	}
+	if int64(len(zipBody)) != manifest.Size || sha256Hex(zipBody) != manifest.SHA256 {
+		t.Errorf("mac 更新包与 manifest-mac 不一致：size %d vs %d", len(zipBody), manifest.Size)
+	}
+	reader, err := zip.NewReader(bytes.NewReader(zipBody), int64(len(zipBody)))
+	if err != nil {
+		t.Fatalf("mac 更新包不是合法 zip: %v", err)
+	}
+	inner := map[string]string{}
+	for _, file := range reader.File {
+		opened, err := file.Open()
+		if err != nil {
+			t.Fatalf("打开 zip 内 %s 失败: %v", file.Name, err)
+		}
+		content, err := io.ReadAll(opened)
+		opened.Close()
+		if err != nil {
+			t.Fatalf("读 zip 内 %s 失败: %v", file.Name, err)
+		}
+		inner[file.Name] = sha256Hex(content)
+	}
+	for _, path := range domain.RequiredMacUpdateFiles {
+		if manifest.Files[path] != inner[path] {
+			t.Errorf("mac %s 的 files 哈希不一致：manifest=%q 实际=%q", path, manifest.Files[path], inner[path])
+		}
+	}
+	// dmg 可下载（按产物路由），Content-Type 是 Apple 官方 MIME
+	res, _ = get(t, srv, "/releases/"+domain.MacInstallerName(version, "arm64"), "")
+	if res.StatusCode != http.StatusOK || res.Header.Get("Content-Type") != "application/x-apple-diskimage" {
+		t.Errorf("dmg 下载 = %d %s", res.StatusCode, res.Header.Get("Content-Type"))
+	}
+}
+
+// TestManifestMac404WithoutMacArtifacts 没发 mac 的版本 → 404 + 明确错误说明，
+// 绝不发空/坏格式的 manifest（mac 客户端会把坏 manifest 理解成「更新源指向了
+// Windows 的 manifest」，见 shell/src/update-platform.ts 报错文案）。
+func TestManifestMac404WithoutMacArtifacts(t *testing.T) {
+	srv := newServer(t, testToken)
+	// 种子里最新 stable 0.1.0 没有 mac 产物
+	res, body := get(t, srv, "/manifest-mac.json", "")
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("无 mac 产物应 404，got %d", res.StatusCode)
+	}
+	if !strings.Contains(string(body), "mac") {
+		t.Errorf("404 说明应点明缺 mac 产物：%.120s", string(body))
+	}
+}
+
+// TestMacCheckDraftDryRun dry-run 带 mac 产物：canPublish=true、manifestMac 预览
+// 与真上传一致（filesSource=zip 的同源口径）、Windows 字段不受影响。
+func TestMacCheckDraftDryRun(t *testing.T) {
+	srv := newServer(t, testToken)
+	files := macUploadFiles(t, "0.3.0")
+	res, out := postMultipart(t, srv, "/api/admin/releases/check", testToken, map[string]string{
+		"version": "0.3.0", "channel": "stable", "electronVersion": "40.10.2", "minVersion": "0.0.1",
+	}, files)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("dry-run 状态 %d，body=%s", res.StatusCode, string(out))
+	}
+	result := decode[struct {
+		CanPublish    bool            `json:"canPublish"`
+		Checks        []domain.PublishCheck `json:"checks"`
+		Manifest      domain.Manifest `json:"manifest"`
+		FilesSource   string          `json:"filesSource"`
+		ManifestMac   *domain.Manifest `json:"manifestMac"`
+		MacFilesSource string         `json:"macFilesSource"`
+	}](t, out)
+	if !result.CanPublish {
+		t.Errorf("带 mac 产物的齐备 dry-run 应可发布：%+v", result.Checks)
+	}
+	if result.ManifestMac == nil {
+		t.Fatalf("带 mac 更新包的 dry-run 应给 manifestMac 预览")
+	}
+	if result.ManifestMac.URL != "releases/"+domain.MacUpdatePackageName("0.3.0") {
+		t.Errorf("dry-run manifestMac.url = %s", result.ManifestMac.URL)
+	}
+	if result.MacFilesSource != "zip" || result.ManifestMac.SHA256 != sha256Hex(files["macUpdate"].content) {
+		t.Errorf("dry-run manifestMac 应与真 zip 同源：%q %q", result.MacFilesSource, result.ManifestMac.SHA256)
+	}
+	// Windows 侧不受 mac 字段影响
+	if result.FilesSource != "zip" || result.Manifest.URL != "releases/"+domain.UpdatePackageName("0.3.0") {
+		t.Errorf("Windows dry-run 字段被 mac 引入影响：%q %q", result.FilesSource, result.Manifest.URL)
+	}
+	// 不带 mac 产物时 manifestMac 不出现（nil），也不产生 mac 阻断项
+	res, out = postMultipart(t, srv, "/api/admin/releases/check", testToken, map[string]string{
+		"version": "0.2.1", "channel": "stable", "electronVersion": "40.10.2", "minVersion": "0.0.1",
+	}, uploadFiles(t, "0.2.1"))
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("纯 Windows dry-run 状态 %d，body=%s", res.StatusCode, string(out))
+	}
+	result2 := decode[struct {
+		CanPublish  bool             `json:"canPublish"`
+		ManifestMac *domain.Manifest `json:"manifestMac"`
+	}](t, out)
+	if !result2.CanPublish || result2.ManifestMac != nil {
+		t.Errorf("纯 Windows dry-run：canPublish=%v manifestMac=%+v", result2.CanPublish, result2.ManifestMac)
+	}
+}
+
+// TestMacUploadRejections mac 侧阻断项：mac 哈希声明不符 → 拒绝入库（400 + 阻断项）；
+// mac 更新包缺必需路径（zip 里没有 bin/lxcode）→ 内容级复核拦下。
+func TestMacUploadRejections(t *testing.T) {
+	srv := newServer(t, testToken)
+	files := macUploadFiles(t, "0.3.0")
+	res, body := postMultipart(t, srv, "/api/admin/releases", testToken, map[string]string{
+		"version": "0.3.0", "channel": "stable", "electronVersion": "40.10.2", "minVersion": "0.0.1",
+		"manifestMacSha256": strings.Repeat("0", 64),
+	}, files)
+	if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(body), "mac 更新包哈希") {
+		t.Errorf("mac 哈希不符应 400 + mac 更新包哈希，got %d %s", res.StatusCode, string(body))
+	}
+
+	// 只含 app.asar 的 mac 更新包：命名/哈希都过，但缺 bin/lxcode 被拦
+	var buf bytes.Buffer
+	writer := zip.NewWriter(&buf)
+	header := &zip.FileHeader{Name: domain.RequiredMacUpdateFiles[0], Method: zip.Deflate}
+	header.Modified = time.Unix(0, 0).UTC()
+	part, err := writer.CreateHeader(header)
+	if err != nil {
+		t.Fatalf("造 zip 条目失败: %v", err)
+	}
+	if _, err := part.Write([]byte("only-asar")); err != nil {
+		t.Fatalf("写 zip 条目失败: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("关 zip 失败: %v", err)
+	}
+	files["macUpdate"] = uploadFile{name: domain.MacUpdatePackageName("0.3.0"), content: buf.Bytes()}
+	res, body = postMultipart(t, srv, "/api/admin/releases", testToken, map[string]string{
+		"version": "0.3.0", "channel": "stable", "electronVersion": "40.10.2", "minVersion": "0.0.1",
+	}, files)
+	if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(body), "bin/lxcode") {
+		t.Errorf("mac 更新包缺必需路径应 400 + 点明缺哪个，got %d %s", res.StatusCode, string(body))
 	}
 }

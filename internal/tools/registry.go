@@ -74,6 +74,9 @@ type Registry struct {
 	// 与 sessionSearch 共用一把锁：两者都是「装配期写一次、运行期只读」的
 	// 注入点，各配一把锁只是多一处可能忘记加锁的地方。
 	webSearch WebSearchFn
+	// projectList 是注入的项目全景查询实现（server 装配时接线，同上一条
+	// 的「装配期写一次、运行期只读」——与 searchMu 共锁同理由）。
+	projectList ProjectListFn
 
 	// jobsMgr 是注入的后台任务管理器（server 装配时接线；nil = 未装配）。
 	// jobCursors 是 job_output 的读游标，键是「会话 id + 任务 id」——游标是
@@ -95,6 +98,15 @@ type Registry struct {
 	// store 侧实现——server 装配时接线；零值 = 未装配）。与 workspace 同一批
 	// 装配期注入点。
 	agentCatalog AgentCatalogOps
+	// mcpManage 是注入的 MCP 管理实现（mcp_manage 工具的 store/server 侧
+	// 实现——server 装配时接线；零值 = 未装配，工具回「未装配」自解释错误）。
+	// 与 workspace / agentCatalog 同一批装配期注入点。
+	mcpManage McpManageOps
+	// assistantConfigFn 是注入的助手配置写入实现（update_assistant_config 工具
+	// 的「读当前 → 部分更新 → 写盘 → 广播」口——server 装配时接线；nil = 未装配，
+	// 工具回「未装配」自解释错误）。与 sessionSearch 共用 searchMu（同一批
+	// 装配期注入点）。配置路径归 server 装配管，工具层不知道路径。
+	assistantConfigFn AssistantConfigSaveFn
 	// sshLookup 是注入的 SSH 主机别名解析（ssh_hosts 工具的 hosts.json 读取口
 	// ——server 装配时接线；nil = 未装配，工具回「未配置」自解释错误）。
 	// 配置路径归 server 装配管（与 models.json 同目录），工具层不知道路径。
@@ -144,6 +156,9 @@ func New() *Registry {
 	r.register(jobListDef(r))
 	r.register(jobKillDef(r))
 	r.register(sessionSearchDef(r))
+	// project_list（助手项目全景，2026-12）：读取类同族（一条 SELECT，只读）。
+	// 排在 session_search 之后——都是「查状态数据」的读取面。
+	r.register(projectListDef(r))
 	r.register(readSkillDef(r))
 	// share_file（低危只读）：把工作目录里的产物文件共享到对话（前端附件卡）。
 	// 与读取类同族——它不改任何工作区文件，只是复制登记 + 展示。
@@ -162,12 +177,25 @@ func New() *Registry {
 	// ask_user（确认门的「提问」形态）：模型向用户提问、等用户回答——冲突
 	// 抉择、需要用户决策时用。与 todo 同为会话级交互工具，排在变更类之后。
 	r.register(askUserDef())
+	// update_assistant_config（助手自改配置）：助手 Agent 改自己的名字/性格
+	//（写 assistant.json）。与 agent_read / agent_write 同为「管理面」工具
+	//（管的是助手配置本身，不是工作区）——排在 ask_user 之后、dispatch 之前。
+	// 只有助手 Agent 的白名单装配它（主/子 Agent 语境过滤掉）。
+	r.register(assistantConfigDef(r))
 	// agent_read / agent_write：Agent 配置的读与字段级写（lxagent 的手脚）。
 	// 读取类在前、变更类在后，插在 ask_user 之后、dispatch 之前——它们是
 	// 「管理面」工具（管的是 Agent 注册表本身，不是工作区）。
 	r.register(agentReadDef(r))
 	r.register(agentWriteDef(r))
+	// mcp_manage（MCP 服务器的查询/安装/修改/删除，助手的 MCP 管理面）。
+	// 与 agent_read / agent_write 同为「管理面」工具（管的是用户的 MCP 目录，
+	// 不是工作区），单工具 RiskHigh + 确认门——排在这里同族位置。
+	r.register(mcpManageDef(r))
 	r.register(dispatchDef(r))
+	// run_task（助手模式 P0 能力桥）：助手 Agent 把项目任务派进项目执行。
+	// 与 agent_dispatch 同为调度类、同一套「注册表有它、白名单决定谁能看到」
+	// 机制——主/子语境的白名单不含它，只有助手 Agent 的白名单装配。
+	r.register(runTaskDef())
 	// 合并进程入口（第二个 producer）：起一个后台合并任务，任务体是内置合并 Agent
 	// 的独立子会话。与 agent_dispatch 同为调度类，排在最后。
 	r.register(mergeRequestDef(r))

@@ -7,6 +7,10 @@ func TestNaming(t *testing.T) {
 		{InstallerName("0.1.0"), "Lxcode Setup 0.1.0.exe"},
 		{PortableName("0.1.0"), "Lxcode-0.1.0-win-x64.zip"},
 		{UpdatePackageName("0.1.0"), "update-0.1.0.zip"},
+		// mac（2026-12）：与 scripts/build.mjs --mac 产物名一致
+		{MacUpdatePackageName("0.1.0"), "update-mac-0.1.0.zip"},
+		{MacInstallerName("0.1.0", "arm64"), "Lxcode-0.1.0-arm64.dmg"},
+		{MacInstallerName("0.1.0", "x64"), "Lxcode-0.1.0-x64.dmg"},
 	}
 	for _, c := range cases {
 		if c.got != c.want {
@@ -17,6 +21,24 @@ func TestNaming(t *testing.T) {
 		RequiredUpdateFiles[0] != "resources/app.asar" ||
 		RequiredUpdateFiles[1] != "resources/bin/lxcode.exe" {
 		t.Errorf("更新包内路径口径变了：%v", RequiredUpdateFiles)
+	}
+	// mac 更新包内路径：后端无 .exe（darwin 二进制叫 lxcode）
+	if len(RequiredMacUpdateFiles) != 2 ||
+		RequiredMacUpdateFiles[0] != "resources/app.asar" ||
+		RequiredMacUpdateFiles[1] != "resources/bin/lxcode" {
+		t.Errorf("mac 更新包内路径口径变了：%v", RequiredMacUpdateFiles)
+	}
+	if !IsMacInstallerName("0.1.0", "Lxcode-0.1.0-arm64.dmg") ||
+		!IsMacInstallerName("0.1.0", "Lxcode-0.1.0-x64.dmg") ||
+		IsMacInstallerName("0.1.0", "Lxcode-0.1.0.dmg") ||
+		IsMacInstallerName("0.1.0", "Lxcode-0.1.0-arm64.zip") {
+		t.Error("IsMacInstallerName 的匹配范围不对")
+	}
+	if kind, arch, ok := MacInstallerKindAndArch("macInstallerArm64"); !ok || kind != KindMacInstallerArm64 || arch != "arm64" {
+		t.Errorf("macInstallerArm64 解析不对：%v %v %v", kind, arch, ok)
+	}
+	if _, _, ok := MacInstallerKindAndArch("installer"); ok {
+		t.Error("Windows 字段不该被当成 mac dmg 字段")
 	}
 }
 
@@ -110,12 +132,12 @@ func TestFormatBytes(t *testing.T) {
 func draft(version string, artifacts []Artifact, sha string) DraftCheckInput {
 	previous := "40.10.2"
 	return DraftCheckInput{
-		Version:                version,
-		Channel:                ChannelStable,
-		Artifacts:              artifacts,
-		ElectronVersion:        "40.10.2",
+		Version:                 version,
+		Channel:                 ChannelStable,
+		Artifacts:               artifacts,
+		ElectronVersion:         "40.10.2",
 		PreviousElectronVersion: &previous,
-		SHA256OfUpdate:         sha,
+		SHA256OfUpdate:          sha,
 	}
 }
 
@@ -192,12 +214,12 @@ func TestCheckReleaseDraftWarnOnly(t *testing.T) {
 	// 缺免安装版 + Electron 换代：只是提醒，不该阻断发布
 	previous := "39.0.0"
 	checks := CheckReleaseDraft(DraftCheckInput{
-		Version:         "0.2.0",
-		Channel:         ChannelStable,
-		Artifacts:       goodArtifacts("0.2.0", sha)[:1],
-		ElectronVersion: "40.10.2",
+		Version:                 "0.2.0",
+		Channel:                 ChannelStable,
+		Artifacts:               goodArtifacts("0.2.0", sha)[:1],
+		ElectronVersion:         "40.10.2",
 		PreviousElectronVersion: &previous,
-		SHA256OfUpdate: sha,
+		SHA256OfUpdate:          sha,
 	}, nil)
 	// 上面的 Artifacts 只有安装包，所以会同时缺更新包（阻断）；这里改成只缺免安装版
 	artifacts := []Artifact{
@@ -205,12 +227,12 @@ func TestCheckReleaseDraftWarnOnly(t *testing.T) {
 		{Kind: KindUpdate, Name: UpdatePackageName("0.2.0"), Size: 1, SHA256: sha},
 	}
 	checks = CheckReleaseDraft(DraftCheckInput{
-		Version:         "0.2.0",
-		Channel:         ChannelStable,
-		Artifacts:       artifacts,
-		ElectronVersion: "40.10.2",
+		Version:                 "0.2.0",
+		Channel:                 ChannelStable,
+		Artifacts:               artifacts,
+		ElectronVersion:         "40.10.2",
 		PreviousElectronVersion: &previous,
-		SHA256OfUpdate:  sha,
+		SHA256OfUpdate:          sha,
 	}, nil)
 	if !CanPublish(checks) {
 		t.Fatalf("只缺免安装版不该阻断，实际阻断项：%v", labels(checks))
@@ -233,7 +255,7 @@ func TestCheckReleaseDraftWarnOnly(t *testing.T) {
 func TestManifestOf(t *testing.T) {
 	update := Artifact{Kind: KindUpdate, Name: UpdatePackageName("0.1.0"), Size: 2048, SHA256: "cc"}
 	files := map[string]string{
-		"resources/app.asar":     "aa",
+		"resources/app.asar":       "aa",
 		"resources/bin/lxcode.exe": "bb",
 	}
 	m := ManifestOf("0.1.0", &update, files)
@@ -247,5 +269,95 @@ func TestManifestOf(t *testing.T) {
 	}
 	if len(m.Files) != 2 || m.Files["resources/app.asar"] != "aa" {
 		t.Errorf("manifest.files 应是两个安装目录相对路径：%+v", m.Files)
+	}
+}
+
+func TestManifestOfMac(t *testing.T) {
+	update := Artifact{Kind: KindMacUpdate, Name: MacUpdatePackageName("0.1.0"), Size: 4096, SHA256: "dd"}
+	files := map[string]string{
+		"resources/app.asar":   "aa",
+		"resources/bin/lxcode": "bb",
+	}
+	m := ManifestOfMac("0.1.0", &update, files)
+	// 与 Windows 同构：url 同为相对文件名（按 manifest 所在目录解析），指向产物路由
+	if m.URL != "releases/"+MacUpdatePackageName("0.1.0") {
+		t.Errorf("manifest-mac.url 必须指向产物路由 releases/<file>，got %q", m.URL)
+	}
+	if m.Version != "0.1.0" || m.SHA256 != "dd" || m.Size != 4096 {
+		t.Errorf("manifest-mac 字段要与更新包一致：%+v", m)
+	}
+	if len(m.Files) != 2 || m.Files["resources/bin/lxcode"] != "bb" {
+		t.Errorf("manifest-mac.files 应是 Contents 相对路径（无 .exe）：%+v", m.Files)
+	}
+}
+
+// mac 校验段：SHA256OfMacUpdate 非空才启用；Windows 规则不受影响。
+func TestCheckReleaseDraftMac(t *testing.T) {
+	sha := "aa"
+	base := goodArtifacts("0.2.0", sha)
+
+	macGood := func() []Artifact {
+		return append(append([]Artifact{}, base...),
+			Artifact{Kind: KindMacUpdate, Name: MacUpdatePackageName("0.2.0"), Size: 2048, SHA256: sha},
+			Artifact{Kind: KindMacInstallerArm64, Name: MacInstallerName("0.2.0", "arm64"), Size: 1, SHA256: sha},
+			Artifact{Kind: KindMacInstallerX64, Name: MacInstallerName("0.2.0", "x64"), Size: 1, SHA256: sha},
+		)
+	}
+
+	// 1. 不带 mac：行为与原来完全一致（不受 mac 字段引入影响）
+	if checks := CheckReleaseDraft(draft("0.2.0", base, sha), nil); !CanPublish(checks) {
+		t.Errorf("不带 mac 的齐备草稿应可发布，阻断项：%v", labels(checks))
+	}
+	// 2. 带 mac 且齐备：可发布
+	if checks := CheckReleaseDraft(draft("0.2.0", macGood(), sha), nil); !CanPublish(checks) {
+		t.Errorf("带 mac 的齐备草稿应可发布，阻断项：%v", labels(checks))
+	}
+	// draft() 的 SHA256OfUpdate 同时充当 mac 声明哈希；上面第 2 例的 mac 哈希确实被核对过：
+	// 声明值与产物一致。下面逐条验阻断项。
+	cases := []struct {
+		name      string
+		artifacts []Artifact
+		macSHA    string
+		want      string
+	}{
+		{"缺 mac 更新包", base, sha, "mac 更新包"},
+		{"mac 更新包命名不符", append(append([]Artifact{}, base...),
+			Artifact{Kind: KindMacUpdate, Name: "update-0.1.9.zip", Size: 1, SHA256: sha}), sha, "mac 更新包命名"},
+		{"mac 哈希不符", append(append([]Artifact{}, base...),
+			Artifact{Kind: KindMacUpdate, Name: MacUpdatePackageName("0.2.0"), Size: 1, SHA256: sha}), "bb", "mac 更新包哈希"},
+	}
+	for _, c := range cases {
+		d := draft("0.2.0", c.artifacts, sha)
+		d.SHA256OfMacUpdate = c.macSHA
+		checks := CheckReleaseDraft(d, nil)
+		if CanPublish(checks) || !has(labels(checks), c.want) {
+			t.Errorf("%s：应阻断且含 %q，实际 %v", c.name, c.want, labels(checks))
+		}
+	}
+
+	// 缺 dmg / 命名不符 = warn，不阻断
+	d := draft("0.2.0", append(append([]Artifact{}, base...),
+		Artifact{Kind: KindMacUpdate, Name: MacUpdatePackageName("0.2.0"), Size: 1, SHA256: sha}), sha)
+	d.SHA256OfMacUpdate = sha
+	checks := CheckReleaseDraft(d, nil)
+	if !CanPublish(checks) {
+		t.Errorf("缺 dmg 不该阻断：%v", labels(checks))
+	}
+	d2 := draft("0.2.0", append(append([]Artifact{}, base...),
+		Artifact{Kind: KindMacUpdate, Name: MacUpdatePackageName("0.2.0"), Size: 1, SHA256: sha},
+		Artifact{Kind: KindMacInstallerArm64, Name: "Lxcode.dmg", Size: 1, SHA256: sha}), sha)
+	d2.SHA256OfMacUpdate = sha
+	checks = CheckReleaseDraft(d2, nil)
+	if !CanPublish(checks) {
+		t.Errorf("dmg 命名不符只该 warn：%v", labels(checks))
+	}
+	found := false
+	for _, c := range checks {
+		if c.Level == LevelWarn && c.Label == "mac 安装包命名" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("dmg 命名不符应有 warn 提醒：%+v", checks)
 	}
 }

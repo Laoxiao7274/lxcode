@@ -10,8 +10,10 @@ import { downloadJson } from "../../shared/download";
 import { serializeModuleExport } from "../../shared/module-import";
 import { serializeToolExport } from "../../shared/tool-import";
 import { staggerIn } from "../../shared/motion";
+import { takeCatalogTabPref } from "./catalog-tab-pref";
 import { Button, Segmented } from "../form";
 import { McServerCard, ModuleCard, ToolCard, useMcpRuntime, useMcpToolCounts } from "./cards";
+import { AssistantConfigTab } from "./AssistantConfigTab";
 import { DocDialog, type Focus } from "./DocDialog";
 import { McConfigImportDialog } from "./McConfigImportDialog";
 import { McServerEditor } from "./McServerEditor";
@@ -21,13 +23,13 @@ import { ToolEditor } from "./ToolEditor";
 import { ToolImportDialog } from "./ToolImportDialog";
 import { IconDownload } from "../icons";
 
-type Tab = "tools" | "skills" | "templates" | "mcp";
+type Tab = "tools" | "skills" | "templates" | "mcp" | "assistant";
 
 export function CatalogPage() {
   const { modules, addModule, updateModule, removeModule, tools, addTools, updateTool, removeTool, mcpServers, addMcServer, updateMcServer, removeMcServer } = useAgents();
   const toolCountOf = useMcpToolCounts();
   const runtimeOf = useMcpRuntime();
-  const [tab, setTab] = useState<Tab>("tools");
+  const [tab, setTab] = useState<Tab>(() => (takeCatalogTabPref() as Tab | null) ?? "tools");
   const [focus, setFocus] = useState<Focus | null>(null);
   const [editing, setEditing] = useState<{ mod: ContextModuleSpec; isNew: boolean } | null>(null);
   const [editingTool, setEditingTool] = useState<{ tool: ToolSpec; isNew: boolean } | null>(null);
@@ -55,6 +57,7 @@ export function CatalogPage() {
     { value: "skills" as const, label: `技能 · ${skills.length}`, hint: "领域知识与方法（多选注入）" },
     { value: "templates" as const, label: `模板 · ${templates.length}`, hint: "工作方式模板（单选注入）" },
     { value: "mcp" as const, label: `MCP · ${mcpServers.length}`, hint: "MCP 服务器接入（能力以工具进拓展）" },
+    { value: "assistant" as const, label: "助手", hint: "助手的性格与拓展绑定（config/assistant.json）" },
   ];
 
   const exportModules = () => {
@@ -140,15 +143,28 @@ export function CatalogPage() {
           )}
         </div>
       </div>
+      {/* 页签行紧跟页头、位置恒定（页签抖动修复 2026-12：原先条件渲染的
+          cg-new-note 说明行在页签上方、只在 tools/mcp 出现，切页签时页签行
+          整体上下跳）。各页签的说明行统一放页签下方——属于内容区，随页签
+          变化不再推动页签行。assistant 页签的说明内置于 AssistantConfigTab。 */}
+      <div className="cg-tabs">
+        <Segmented options={tabs} value={tab} onChange={setTab} ariaLabel="拓展页签" />
+      </div>
       {tab === "tools" && (
         <div className="cg-new-note">单个工具用「新建工具」表单；导入/导出是分发通道（固定格式 v1 的 JSON 文件）；自定义工具的可执行承载随后端化接插件机制。</div>
       )}
       {tab === "mcp" && (
         <div className="cg-new-note">注册 = 贴配置片段（mcpServers 标准形态：stdio = 命令 + 参数 + 环境变量；SSE = 端点 URL）；注册后暴露的能力以工具形式进工具拓展；停用 = 能力挂起（工具保留）。</div>
       )}
-      <div className="cg-tabs">
-        <Segmented options={tabs} value={tab} onChange={setTab} ariaLabel="拓展页签" />
-      </div>
+      {tab === "skills" && (
+        <div className="cg-new-note">领域知识与方法（多选注入）。</div>
+      )}
+      {tab === "templates" && (
+        <div className="cg-new-note">工作方式模板（单选注入）。</div>
+      )}
+      {tab === "assistant" ? (
+        <AssistantConfigTab onOpenCatalog={(target) => setTab(target as Tab)} />
+      ) : (
       <div className="cg-grid" ref={gridRef}>
         {tab === "tools" && tools.map((t) => (
           <ToolCard
@@ -194,6 +210,7 @@ export function CatalogPage() {
           />
         ))}
       </div>
+      )}
       {focus && <DocDialog focus={focus} onClose={() => setFocus(null)} />}
       {editingServer && (
         <McServerEditor

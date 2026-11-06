@@ -38,6 +38,7 @@ import { request as httpRequest } from "node:http";
 import type { Socket } from "node:net";
 import { screen, type Tray } from "electron";
 import { getTray } from "./tray";
+import { IS_DEV_SHELL } from "./main";
 import { cachedToken } from "./backend-remote";
 import { feedAnnexB, flushAu, resetAu, FRAME_FLAG_KEYFRAME } from "./screen-au";
 import { restartTripped, afterRestartAttempt, tripMessage, MAX_CONSECUTIVE_ERRORS } from "./screen-restart";
@@ -530,6 +531,9 @@ function clearRestartFailures(): void {
 
 let hintShown = false;
 
+/** 托盘 tooltip 基名：dev 壳带 dev 后缀（与 main.ts 窗口 title 同一套判定）。 */
+const BASE_TOOLTIP = IS_DEV_SHELL ? "Lxcode dev" : "Lxcode";
+
 /** 投屏运行指示：托盘 tooltip + 一次性气泡；主窗口状态经 console 转发由
  *  渲染层 Toast 自行展示（Stage 1 最小化：托盘是必显的，窗口提示是增强）。 */
 function updateCapturingHint(on: boolean): void {
@@ -538,7 +542,7 @@ function updateCapturingHint(on: boolean): void {
   const tray: Tray | null = getTray();
   if (!tray) return;
   try {
-    tray.setToolTip(on ? "Lxcode — 正在向手机投屏" : "Lxcode");
+    tray.setToolTip(on ? `${BASE_TOOLTIP} — 正在向手机投屏` : BASE_TOOLTIP);
     if (on) {
       tray.displayBalloon({
         title: "Lxcode 正在投屏",

@@ -134,7 +134,7 @@ func newBashDef(r *Registry, readOnly bool) *Def {
 	shellDisp := filepath.Base(shellName)
 	name := "bash"
 	description := "在本机执行 shell 命令（" + shellDisp + "），返回合并的 stdout/stderr 与退出码。" +
-		"适合查看状态、文件操作、构建测试、系统管理；文件检索优先用 ripgrep 工具（有则用），读文件用 read_file。" +
+		"终端操作专用（git/npm/构建/系统管理）；文件操作与检索用专用工具（read_file/ripgrep/edit）。" +
 		"多行脚本请用 stdin 传（别在 command 里堆引号）。" +
 		"等待纪律：等后台任务用 job_output(wait=true)；等外部状态用 run_in_background 起轮询循环（until cond; do sleep 30; done）——纯 sleep 命令会被拒绝执行。" +
 		shellSyntaxHint(shellDisp)
@@ -152,8 +152,10 @@ func newBashDef(r *Registry, readOnly bool) *Def {
 	if readOnly {
 		name = bashReadOnlyName
 		description = "在本机执行**只读** shell 命令（" + shellDisp + "），返回合并的 stdout/stderr 与退出码。" +
-			"用于读数据：ls/cat/grep/find/wc、git log/diff/status、sqlite3 的 SELECT 查询等。" +
-			"写操作（rm/mv/写文件重定向/git commit/git push/包管理/解释器脚本）会被拒绝并说明原因；" +
+			"读文件用 read_file 工具，内容检索用 ripgrep/search 工具（免 shell 转义、输出定界、行号可直接引用），查 SQLite 优先 db_query；" +
+			"本工具留给它们覆盖不了的场景：git log/diff/status、wc/du 统计、管道组合、jq 等。" +
+			"写操作会被拒绝" +
+			"（rm/mv/写文件重定向/git commit/git push/包管理/解释器脚本），拒绝时说明原因；" +
 			"无害重定向（2>/dev/null、>/dev/null、2>&1、&>/dev/null）与只读命令之间的管道放行，" +
 			"命令替换、heredoc（<、<<）与写文件重定向（>file、>>file）拒绝。改文件请交给代码 Agent。" +
 			shellSyntaxHint(shellDisp)
@@ -291,7 +293,18 @@ func newBashDef(r *Registry, readOnly bool) *Def {
 			if a.RunInBackground {
 				return startBackground(r, ctx, shellName, shellFlag, a.Command, a.Cwd, a.Stdin, a.TimeoutSec)
 			}
-			return runForegroundBash(ctx, shellName, shellFlag, a.Command, a.Cwd, a.Stdin, a.TimeoutSec)
+			out, err := runForegroundBash(ctx, shellName, shellFlag, a.Command, a.Cwd, a.Stdin, a.TimeoutSec)
+			// 反干扰回填（2026-12 工具选择引导修复第 6 项）：只读面上 grep/cat
+			// 命中时在结果前提示专用工具——每会话只回填一次（NudgeState 防刷屏；
+			// 未注入 = 单测/纯内存模式，退化为每个命中结果都提示）。
+			if readOnly {
+				if hint := toolNudgeHintFor(a.Command); hint != "" {
+					if nudge := nudgeStateFrom(ctx); nudge == nil || nudge.ShouldNudge() {
+						return hint + "\n" + out, err
+					}
+				}
+			}
+			return out, err
 		},
 	}
 }
@@ -419,6 +432,9 @@ func startBackground(r *Registry, parent context.Context, shellName, shellFlag, 
 		// 行动）。OwnerOf 会在为空时回落 SessionID——顶层会话起的任务 owner
 		// 就是它自己，行为与以前逐字节一致。
 		OwnerSessionID: OwnerSessionID(parent),
+		// 项目归属（面板分组用，docs/jobs.md §4）：从执行会话的 ctx 焊进 Spec，
+		// 之后不变。未分组会话为空串——前端收进「未分组」组。
+		Workspace: Workspace(parent),
 	})
 	if err != nil {
 		return "", fmt.Errorf("启动后台任务失败: %w", err)

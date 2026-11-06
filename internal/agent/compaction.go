@@ -156,7 +156,6 @@ func selectCompactRange(history []llm.Message, retainTokens int, protectHead boo
 	return firstIdx, keepFrom - 1, true
 }
 
-
 // compactionSystemPrompt 组装摘要调用用的系统提示词（与真实请求同一套组装，
 // 唯一目的就是让这次辅助调用成为上次请求的前缀——KV 缓存可复用）。
 func (s *Session) compactionSystemPrompt(ac *sessiondata.AgentContext, workDir string) string {
@@ -164,7 +163,7 @@ func (s *Session) compactionSystemPrompt(ac *sessiondata.AgentContext, workDir s
 	docs := s.projectDocsFor(workDir)
 	wt, isChild := s.worktreeInfo()
 	if ac != nil {
-		return ComposeSystemPrompt(s.tools, workDir, ac, allow, wt, isChild, docs, s.TodoPromptMode())
+		return composeSystemPrompt(s.tools, workDir, ac, allow, wt, isChild, docs, s.projectPanoramaFor(ac), s.activityFor(ac), s.TodoPromptMode())
 	}
 	return BuildSystemPrompt(s.tools, workDir, wt, isChild, docs, s.TodoPromptMode())
 }
@@ -299,16 +298,19 @@ func (s *Session) runCompaction(ctx context.Context, ac *sessiondata.AgentContex
 	replaced = append(replaced, checkpoint)
 	replaced = append(replaced, s.history[end+1:]...)
 	s.history = replaced
+	s.bumpHistoryLocked() // 历史被压缩改写：派生值缓存失效（history_cache.go）
 	if s.st != nil && id != "" {
 		seq, err := s.st.AppendCheckpoint(id, checkpoint, start, shadowed)
 		if err != nil {
-			s.history = snapshot // 回滚：内存与库必须一致
+			s.history = snapshot  // 回滚：内存与库必须一致
+			s.bumpHistoryLocked() // 回滚也是一次改写：缓存同样失效
 			s.mu.Unlock()
 			return CompactResult{}, fmt.Errorf("检查点落库失败（历史未改动）: %w", err)
 		}
 		// 检查点的序号也要进内存那一条（chat.history 直接回放内存历史）：
 		// 不写的话"刷新后"与"不刷新"的同一条摘要有两个不同的号
 		s.history[start].Seq = seq
+		s.bumpHistoryLocked() // Seq 回填改了消息内容（快照里的副本要跟着换）
 	}
 	after := 0
 	for _, m := range s.history {

@@ -51,9 +51,9 @@ func TestEfficiencyRulesInBothPromptPaths(t *testing.T) {
 	prompts := map[string]string{
 		"BuildSystemPrompt(主)":             BuildSystemPrompt(s.tools, "", WorktreeInfo{}, false, ProjectDocs{}),
 		"BuildSystemPrompt(子)":             BuildSystemPrompt(s.tools, "", WorktreeInfo{}, true, ProjectDocs{}),
-		"ComposeSystemPrompt(主)":           ComposeSystemPrompt(s.tools, "", ac, ac.Def.Tools, WorktreeInfo{}, false, ProjectDocs{}),
-		"ComposeSystemPrompt(子)":           ComposeSystemPrompt(s.tools, "", ac, ac.Def.Tools, WorktreeInfo{}, true, ProjectDocs{}),
-		"ComposeSystemPrompt(主, custom模板)": ComposeSystemPrompt(s.tools, "", withCustomPrompt(ac), ac.Def.Tools, WorktreeInfo{}, false, ProjectDocs{}),
+		"ComposeSystemPrompt(主)":           ComposeSystemPrompt(s.tools, "", ac, ac.Def.Tools, WorktreeInfo{}, false, ProjectDocs{}, nil),
+		"ComposeSystemPrompt(子)":           ComposeSystemPrompt(s.tools, "", ac, ac.Def.Tools, WorktreeInfo{}, true, ProjectDocs{}, nil),
+		"ComposeSystemPrompt(主, custom模板)": ComposeSystemPrompt(s.tools, "", withCustomPrompt(ac), ac.Def.Tools, WorktreeInfo{}, false, ProjectDocs{}, nil),
 	}
 	for name, p := range prompts {
 		for _, c := range efficiencyKeys {

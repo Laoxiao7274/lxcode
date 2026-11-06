@@ -48,6 +48,15 @@ func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChange
 		call tools.DispatchCall
 	}
 	var dispatches []dispatchJob
+	// run_task（助手模式 P0 能力桥）：与 dispatch 同款「阶段一登记、阶段二并行」
+	//——子会话是独立会话，本来就能并发；助手一轮里多个项目任务并行跑。
+	type runTaskJob struct {
+		idx   int
+		call  tools.RunTaskCall
+		tcID  string
+		abort bool // 解析失败已就地回填（阶段二跳过）
+	}
+	var runTasks []runTaskJob
 
 	// 阶段一（顺序）：权限门 + 非 dispatch 工具**就地执行并立即落结果**。
 	// 非 dispatch 的就地落结果不能推到阶段三——emit 回调里取消会话（用户点停止）
@@ -140,6 +149,28 @@ func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChange
 			}})
 			continue
 		}
+		// run_task 走内核直连（工具声明的 Exec 是未接线兜底）：执行体需要
+		// ctx/项目解析/事件归属，json.RawMessage 给不了——在调用位展开，
+		// 攒到阶段二与 dispatch 一起并行跑。
+		if tc.Function.Name == tools.RunTaskToolName {
+			var p tools.RunTaskCall
+			if err := json.Unmarshal([]byte(tc.Function.Arguments), &p); err != nil {
+				s.finishToolCall(tc,
+					fmt.Sprintf("错误: %s 参数解析失败: %v", tools.RunTaskToolName, err),
+					"", true, 0, nil, nil, fileChanges, dispatchID, sink)
+				finished[i] = true
+				continue
+			}
+			if p.ProjectID == "" || p.Task == "" {
+				s.finishToolCall(tc,
+					fmt.Sprintf("错误: %s 必须提供 project_id 与 task（project_id 必须是用户明确指到的项目，不确定先问）", tools.RunTaskToolName),
+					"", true, 0, nil, nil, fileChanges, dispatchID, sink)
+				finished[i] = true
+				continue
+			}
+			runTasks = append(runTasks, runTaskJob{idx: i, call: p, tcID: tc.ID})
+			continue
+		}
 		// 工具耗时在这里测（会话统计的「工具时间」按它折叠）：起点 = 执行前一刻，
 		// 终点 = 结果回来那一刻。工具自己不知道被计了多久，也不该知道。
 		// 附件收集器按**每次调用**新建：收集到的引用只挂到这一条结果消息上
@@ -220,8 +251,42 @@ func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChange
 		wg.Wait()
 	}
 
-	// 阶段三（顺序）：dispatch 的结果按原下标顺序落历史 + 发事件。
-	// dispatch 期间被取消的，runDispatch 已回带取消说明（子会话中断），这里照常落。
+	// 阶段二并行（run_task）：与 dispatch 同一个 wg 语义的话就并发了——但
+	// dispatch 的 wg 已 Wait 完，这里用**第二个并行组**：逻辑同构（独立
+	// goroutine + panic 防护 + 结果按下标攒），不复用同一 wg 是为了错误
+	// 口径分开（run_task 的结果转成文本回填，与 DispatchResult 的形状不同）。
+	if len(runTasks) > 0 {
+		var wg sync.WaitGroup
+		for _, j := range runTasks {
+			wg.Add(1)
+			go func(j runTaskJob) {
+				started := time.Now()
+				defer wg.Done()
+				defer func() {
+					if r := recover(); r != nil {
+						log.Printf("run_task 子会话 panic（已转为失败工具结果，进程继续运行）: %v\n%s",
+							r, debug.Stack())
+						dispatched[j.idx] = toolOutcome{
+							result:  fmt.Sprintf("错误: 项目任务因内部错误中断（%v）", r),
+							isError: true, executed: true, durationMs: msSince(started),
+						}
+					}
+				}()
+				res, err := s.RunProjectTask(ctx, j.call.ProjectID, j.call.Task, j.call.Agent, j.call.Session)
+				out := res.Output
+				if out == "" {
+					out = err.Error()
+				}
+				elapsed := msSince(started)
+				_ = j.tcID // tc.ID 在阶段三经 calls[j.idx] 取（这里只占位防误用）
+				dispatched[j.idx] = toolOutcome{result: out, isError: res.IsError || err != nil, executed: true, durationMs: elapsed}
+			}(j)
+		}
+		wg.Wait()
+	}
+
+	// 阶段三（顺序）：dispatch 与 run_task 的结果按原下标顺序落历史 + 发事件。
+	// 派发期间被取消的，执行体已回带取消说明（子会话中断），这里照常落。
 	for _, j := range dispatches {
 		if !dispatched[j.idx].executed {
 			continue
@@ -229,6 +294,15 @@ func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChange
 		s.finishToolCall(calls[j.idx], dispatched[j.idx].result, dispatched[j.idx].uiText,
 			dispatched[j.idx].isError, dispatched[j.idx].durationMs,
 			dispatched[j.idx].attachments, nil, fileChanges, dispatchID, sink)
+		finished[j.idx] = true
+	}
+	for _, j := range runTasks {
+		if !dispatched[j.idx].executed {
+			continue
+		}
+		s.finishToolCall(calls[j.idx], dispatched[j.idx].result, dispatched[j.idx].uiText,
+			dispatched[j.idx].isError, dispatched[j.idx].durationMs,
+			nil, nil, fileChanges, dispatchID, sink)
 		finished[j.idx] = true
 	}
 	return true

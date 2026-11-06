@@ -123,7 +123,7 @@ function renderPanel(t, merge) {
   const demo = new DemoAgent();
   const html = renderToStaticMarkup(
     createElement(JobsProvider, { source: demo },
-      createElement(JobsPanel, { merge })),
+      createElement(JobsPanel, { merge, source: demo })),
   );
   t.after(() => demo.close?.());
   return html;

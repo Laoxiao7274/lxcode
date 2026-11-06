@@ -582,6 +582,92 @@
   color: var(--fg);
 }
 
+/* ===== 助手页签（.assistant-*，助手模式 P1） =====
+ * 布局与子会话视图同款职责分工（整页 flex 列 + 页头 + 内容区自滚）；页面级样式
+ * 只写与 .child-session-* 的差异——其余（.thread 排版、Composer、.s-dot）复用。
+ * 页头已精简（2026-12 视觉对齐）：标题/说明文案的职责交给顶栏 taskTitle（App 的
+ * viewTitle 对助手模式显示助手会话标题），这里只留标题 + 忙闲点一条薄页头。
+ * .assistant-id / .assistant-note 样式随 JSX 摘除保留在此，存量老会话页还引用
+ * （页签形态的后端老版本兼容路径）——不删。 */
+.assistant-page {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.assistant-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--bg-side);
+}
+.assistant-title {
+  flex: none;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.assistant-head .s-dot {
+  width: 6px;
+  height: 6px;
+}
+.assistant-id {
+  flex: none;
+  font-size: 11px;
+  color: var(--fg-muted);
+  padding: 1px 6px;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: var(--surface);
+}
+/* 页头精简后不再渲染 .assistant-id/.assistant-note（见节首注释）——样式保留是
+ * 兼容面，此处不留死规则块。 */
+.assistant-new.fd-btn-g {
+  flex: none;
+  padding: 3px 12px;
+  font-size: 11.5px;
+  border-radius: 7px;
+  background: var(--surface);
+}
+.assistant-new.fd-btn-g:hover {
+  color: var(--fg);
+}
+.assistant-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  /* 底部 padding 照抄了主域的 --composer-h 预留（那条是给 absolute 浮层输入区的
+   * 机制，变量由主域 Composer 发布）。助手模式的输入 AssistantInput 是流内
+   * flex 项、助手域没有 Composer → 变量恒为 170px 兜底，输入框上方凭空一条
+   * 大空白（2026-12 截图崩坏根因之一）。归零动作收在 assistant-mode.css 的
+   * .assistant-ws-main .assistant-body（助手模式专属分支，不影响其它沿用方）。 */
+  padding: 14px 0 calc(var(--composer-h, 170px) + 14px);
+}
+/* 浮标底部让位同样按 --composer-h 预留——在助手模式下被同一分支归零对齐
+ *（.assistant-ws-main .assistant-page .scroll-to-bottom，见 assistant-mode.css）。 */
+.assistant-page .scroll-to-bottom {
+  bottom: calc(var(--composer-h, 170px) + 14px);
+}
+.assistant-note-body {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 4px 24px;
+  font-size: 12px;
+  color: var(--fg-faint);
+  line-height: 1.6;
+}
+.assistant-note-body.error {
+  color: var(--danger);
+}
+
 /* ===== 暗色覆盖：运行中琥珀提亮（--turn-run 只在本面板声明，见上） ===== */
 html[data-theme="dark"] .turn-panel { --turn-run: #fbbf24; }
 @media (prefers-color-scheme: dark) {

@@ -4,6 +4,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -65,7 +66,7 @@ func TestComposeSystemPromptFourLayers(t *testing.T) {
 		Workflow: &sessiondata.ModuleSpec{ID: "mc", Kind: "process", Desc: "最小改动", Body: "# 最小改动\n\n只动必需的部分。"},
 		Skills:   []sessiondata.ModuleSpec{{ID: "gsap", Kind: "skill", Desc: "GSAP 动效", Body: "# GSAP\n\n入场收尾 clearProps。"}},
 	}
-	prompt := ComposeSystemPrompt(s.tools, "/proj/demo", ac, ac.Def.Tools, WorktreeInfo{}, false, ProjectDocs{})
+	prompt := ComposeSystemPrompt(s.tools, "/proj/demo", ac, ac.Def.Tools, WorktreeInfo{}, false, ProjectDocs{}, nil)
 
 	// ① 协议层（定制替换内置默认）
 	if !strings.Contains(prompt, "定制协议：只写 Go。") {
@@ -118,7 +119,7 @@ func TestComposeMainAgentDelegatesInjection(t *testing.T) {
 			{ID: "ops", Name: "运维 Agent", Desc: "跑命令", Enabled: false},
 		},
 	}
-	prompt := ComposeSystemPrompt(s.tools, "", ac, ac.Def.Tools, WorktreeInfo{}, false, ProjectDocs{})
+	prompt := ComposeSystemPrompt(s.tools, "", ac, ac.Def.Tools, WorktreeInfo{}, false, ProjectDocs{}, nil)
 	if !strings.Contains(prompt, "可委派名单") || !strings.Contains(prompt, "- coder（代码 Agent）：写代码") {
 		t.Fatal("委派名单未注入（第四层动态注入——id（名字）：描述）")
 	}
@@ -143,7 +144,7 @@ func TestComposeDelegatesInjectionByDelegatesDimension(t *testing.T) {
 			{ID: "coder", Name: "代码 Agent", Desc: "写代码", Enabled: true},
 		},
 	}
-	prompt := ComposeSystemPrompt(s.tools, "", nonMain, nonMain.Def.Tools, WorktreeInfo{}, false, ProjectDocs{})
+	prompt := ComposeSystemPrompt(s.tools, "", nonMain, nonMain.Def.Tools, WorktreeInfo{}, false, ProjectDocs{}, nil)
 	if !strings.Contains(prompt, "可委派名单") || !strings.Contains(prompt, "- coder（代码 Agent）：写代码") {
 		t.Fatal("IsMain=false 但 Delegates 非空 → 应注入委派名单")
 	}
@@ -152,7 +153,7 @@ func TestComposeDelegatesInjectionByDelegatesDimension(t *testing.T) {
 		Def: sessiondata.AgentDef{ID: "main", Name: "主 Agent", IsMain: true,
 			Tools: []string{"read_file"}},
 	}
-	prompt = ComposeSystemPrompt(s.tools, "", mainNoDelegates, mainNoDelegates.Def.Tools, WorktreeInfo{}, false, ProjectDocs{})
+	prompt = ComposeSystemPrompt(s.tools, "", mainNoDelegates, mainNoDelegates.Def.Tools, WorktreeInfo{}, false, ProjectDocs{}, nil)
 	if strings.Contains(prompt, "可委派名单（agent_dispatch 的 agent 参数填下面的 id）") {
 		t.Fatal("IsMain=true 但 Delegates 空 → 不应注入委派名单")
 	}
@@ -228,11 +229,287 @@ func TestEffectiveApprovalTakesStricter(t *testing.T) {
 	}
 }
 
+// ---- 助手协议（P0 地基）----
+
+func TestDefaultProtocolAssistant(t *testing.T) {
+	main := DefaultProtocol(ProtocolRoleMain)
+	sub := DefaultProtocol(ProtocolRoleSub)
+	assistant := DefaultProtocol(ProtocolRoleAssistant)
+	if strings.TrimSpace(assistant) == "" {
+		t.Fatal("assistant 协议文本不应为空")
+	}
+	if assistant == sub {
+		t.Fatal("assistant 协议不应与 sub 相同（助理不是纯执行者——小事自己干、项目任务派发）")
+	}
+	if assistant == main {
+		t.Fatal("assistant 协议不应与 main 相同（助手不是纯调度中枢）")
+	}
+	// 关键词钉子：run_task 是能力桥；派发与先问是纪律锚点；「感知用户当前
+	// 活动」教法（2026-12）：当前状态/可用项目段是「我在做什么」的答案权，
+	// session_search 是「聊过什么」的答案权，git log 不是；mcp_manage 是
+	// MCP 管理面（2026-12）：助手知道自己有这功能、装前复述确认、不派发。
+	for _, kw := range []string{"run_task", "派给", "先问", "当前状态", "session_search", "git log", "mcp_manage", "MCP 服务器", "复述 command/url", "自动绑定"} {
+		if !strings.Contains(assistant, kw) {
+			t.Fatalf("assistant 协议缺关键词 %q", kw)
+		}
+	}
+	// ComposeSystemPrompt 的 role 推导：Space=assistant → 助手协议
+	s := newAgentSession(t)
+	ac := &sessiondata.AgentContext{
+		Def: sessiondata.AgentDef{ID: "assistant", Name: "助手", Space: sessiondata.SpaceAssistant,
+			Tools: []string{"run_task", "read_file"}, Delegates: []string{"coder"},
+			Approval: "auto"},
+		Delegates: []sessiondata.AgentDef{{ID: "coder", Name: "代码", Desc: "写代码", Enabled: true}},
+	}
+	prompt := ComposeSystemPrompt(s.tools, "", ac, ac.Def.Tools, WorktreeInfo{}, false, ProjectDocs{}, nil)
+	if !strings.Contains(prompt, "个人智能体助手") {
+		t.Fatal("Space=assistant 的 Agent 应使用助手内置协议")
+	}
+}
+
+// 助手协议边界句按白名单条件化（2026-12 用户拍板：助手默认工具完全可配，
+// 内置写类工具也可勾入）：
+//   - 无写类工具（默认态）=「不能改项目里的文件——改动必须经 run_task 派进项目」；
+//   - 白名单含 bash/edit/write_file 任一 =「你有写类工具……项目内的代码改动
+//     仍优先经 run_task 派给项目里的 Agent」；
+//   - 「你的工作目录不是任何项目」句两态恒保留（写类工具不改变助手域归属）；
+//   - 其余段落两态同文（run_task 纪律/感知活动/MCP 管理不随边界句变）。
+func TestAssistantProtocolBoundaryByAllowTools(t *testing.T) {
+	readOnly := DefaultProtocol(ProtocolRoleAssistant)
+	if !strings.Contains(readOnly, "不能改项目里的文件——改动必须经 run_task 派进项目") {
+		t.Fatalf("默认态边界句应在（只读面）:\n%s", readOnly)
+	}
+	if strings.Contains(readOnly, "你有写类工具") {
+		t.Fatalf("默认态不应出现写类边界句:\n%s", readOnly)
+	}
+	if !strings.Contains(readOnly, "你的工作目录不是任何项目") {
+		t.Fatal("域归属句两态恒保留（只读态）")
+	}
+	for _, with := range [][]string{
+		{"bash"}, {"edit"}, {"write_file"}, {"bash", "read_file", "run_task"},
+	} {
+		p := DefaultProtocol(ProtocolRoleAssistant, with)
+		if !strings.Contains(p, "你有写类工具") || !strings.Contains(p, "项目内的代码改动仍优先经 run_task 派给项目里的 Agent") {
+			t.Fatalf("含写类工具 %v 的白名单应换写类边界句:\n%s", with, p)
+		}
+		if strings.Contains(p, "不能改项目里的文件") {
+			t.Fatalf("写类态不应保留只读边界句:\n%s", p)
+		}
+		if !strings.Contains(p, "你的工作目录不是任何项目") {
+			t.Fatal("域归属句两态恒保留（写类态）")
+		}
+		// 其余段落与只读态同文：掐掉边界句后逐字一致。
+		if trimBoundary(p) != trimBoundary(readOnly) {
+			t.Fatalf("非边界段两态应同文:\n---只读---\n%s\n---写类---\n%s", readOnly, p)
+		}
+	}
+	// ComposeSystemPrompt 端到端：allowTools 决定两态。
+	s := newAgentSession(t)
+	mkAC := func(tools []string) *sessiondata.AgentContext {
+		return &sessiondata.AgentContext{
+			Def: sessiondata.AgentDef{ID: "assistant", Name: "助手", Space: sessiondata.SpaceAssistant, Tools: tools},
+		}
+	}
+	prompt := ComposeSystemPrompt(s.tools, "", mkAC([]string{"read_file"}), []string{"read_file"},
+		WorktreeInfo{}, false, ProjectDocs{}, nil)
+	if !strings.Contains(prompt, "不能改项目里的文件") {
+		t.Fatalf("只读白名单的组装提示词应带只读边界句:\n%s", prompt)
+	}
+	prompt = ComposeSystemPrompt(s.tools, "", mkAC([]string{"bash"}), []string{"bash"},
+		WorktreeInfo{}, false, ProjectDocs{}, nil)
+	if !strings.Contains(prompt, "你有写类工具") {
+		t.Fatalf("含 bash 的白名单组装提示词应带写类边界句:\n%s", prompt)
+	}
+}
+
+// trimBoundary 掐掉两态边界句（按行掐，剩余文本用于同文比较）。
+func trimBoundary(protocol string) string {
+	var out []string
+	for _, line := range strings.Split(protocol, "\n") {
+		if strings.Contains(line, "不能改项目里的文件") || strings.Contains(line, "你有写类工具") {
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n")
+}
+
+// 项目全景注入段（2026-12 助手项目全景三件套之三）：
+//   - 助手语境注入（id 必须在场——run_task 的 project_id 是不可读随机串）；
+//   - 上限 20 截断 + 尾注（详查走 project_list）；
+//   - 非助手语境不注入（主域项目会话不吃这段上下文）；
+//   - 空清单整段缺席（注入一个空段是噪声）。
+func TestComposeProjectPanorama(t *testing.T) {
+	s := newAgentSession(t)
+	one := func(id, name string) sessiondata.ProjectStats {
+		return sessiondata.ProjectStats{
+			ProjectMeta: sessiondata.ProjectMeta{ID: id, Name: name, Path: "/repo/" + name},
+			Sessions:    2, UpdatedAt: "2026-12-20 10:30",
+		}
+	}
+	assistantAC := &sessiondata.AgentContext{
+		Def: sessiondata.AgentDef{ID: "assistant", Name: "助手", Space: sessiondata.SpaceAssistant,
+			Tools: []string{"run_task", "read_file"}},
+	}
+	// 助手语境：注入，id 在场
+	prompt := ComposeSystemPrompt(s.tools, "", assistantAC, assistantAC.Def.Tools, WorktreeInfo{}, false,
+		ProjectDocs{}, []sessiondata.ProjectStats{one("p-1", "lxcode")})
+	for _, want := range []string{
+		projectPanoramaHeader,
+		"- p-1（lxcode）：/repo/lxcode，2 个会话，最近活动 2026-12-20 10:30",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("助手提示词缺 %q:\n%s", want, prompt)
+		}
+	}
+	// 上限：21 个项目 → 前 20 行 + 尾注
+	many := make([]sessiondata.ProjectStats, 0, 21)
+	for i := 0; i < 21; i++ {
+		many = append(many, one(fmt.Sprintf("p-%02d", i), fmt.Sprintf("proj%02d", i)))
+	}
+	prompt = ComposeSystemPrompt(s.tools, "", assistantAC, assistantAC.Def.Tools, WorktreeInfo{}, false, ProjectDocs{}, many)
+	if got := strings.Count(prompt, "- p-"); got != 20 {
+		t.Fatalf("注入应截到 20 行, got %d", got)
+	}
+	if !strings.Contains(prompt, "另有 1 个项目，用 project_list 详查") {
+		t.Fatal("截断应带尾注（模型知道还有更多，详查走工具）")
+	}
+	// 非助手语境：同数据不注入（主域项目会话已有归属与 AGENTS.md 注入）
+	mainAC := &sessiondata.AgentContext{
+		Def: sessiondata.AgentDef{ID: "main", Name: "主 Agent", IsMain: true,
+			Tools: []string{"agent_dispatch"}},
+	}
+	prompt = ComposeSystemPrompt(s.tools, "", mainAC, mainAC.Def.Tools, WorktreeInfo{}, false,
+		ProjectDocs{}, []sessiondata.ProjectStats{one("p-1", "lxcode")})
+	if strings.Contains(prompt, projectPanoramaHeader) {
+		t.Fatalf("非助手语境不应注入项目全景:\n%s", prompt)
+	}
+	// 空清单：整段缺席（助手语境也没有空段噪声）
+	prompt = ComposeSystemPrompt(s.tools, "", assistantAC, assistantAC.Def.Tools, WorktreeInfo{}, false, ProjectDocs{}, nil)
+	if strings.Contains(prompt, projectPanoramaHeader) {
+		t.Fatal("空清单不应注入空段")
+	}
+}
+
+// 「当前状态」注入段（2026-12 感知用户当前活动三）：
+//   - 助手语境注入（最近会话 + 此刻运行中，条目是 server 侧格式化好的文本）；
+//   - 最近会话上限 3 条截断；
+//   - 运行中的会话单列段首（与「最近」区分时态）；
+//   - 非助手语境不注入；空快照整段缺席（与全景段同一纪律）。
+func TestComposeCurrentActivity(t *testing.T) {
+	s := newAgentSession(t)
+	assistantAC := &sessiondata.AgentContext{
+		Def: sessiondata.AgentDef{ID: "assistant", Name: "助手", Space: sessiondata.SpaceAssistant,
+			Tools: []string{"run_task", "read_file"}},
+	}
+	snap := ActivitySnapshot{
+		Running: []string{`「重构登录」（lxcode，2026-12-20 11:00）`},
+		Recent: []string{
+			`「重构登录」（lxcode，2026-12-20 11:00）`,
+			`「修打包脚本」（site，2026-12-19 18:20）`,
+			`「写周报」（主域 · 未分组，2026-12-19 09:00）`,
+			`「更早的会话」（site，2026-12-18 09:00）`,
+		},
+	}
+	prompt := ComposeSystemPrompt(s.tools, "", assistantAC, assistantAC.Def.Tools, WorktreeInfo{}, false,
+		ProjectDocs{}, nil)
+	if strings.Contains(prompt, CurrentActivityHeader) {
+		t.Fatal("零值快照不应注入当前状态段")
+	}
+	// 有活动：注入——运行中在段首、最近条目在场
+	prompt = composeSystemPrompt(s.tools, "", assistantAC, assistantAC.Def.Tools, WorktreeInfo{}, false,
+		ProjectDocs{}, nil, snap)
+	if !strings.Contains(prompt, CurrentActivityHeader) {
+		t.Fatalf("助手提示词应注入当前状态段:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "- 正在运行：「重构登录」（lxcode，2026-12-20 11:00）") {
+		t.Fatalf("运行中的会话应在段首:\n%s", prompt)
+	}
+	for _, want := range []string{
+		"- 最近：「重构登录」（lxcode，2026-12-20 11:00）",
+		"- 最近：「修打包脚本」（site，2026-12-19 18:20）",
+		"- 最近：「写周报」（主域 · 未分组，2026-12-19 09:00）",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("最近会话条目缺 %q:\n%s", want, prompt)
+		}
+	}
+	// 上限：最近会话最多 3 条（第 4 条不注入）
+	if strings.Contains(prompt, "更早的会话") {
+		t.Fatalf("最近会话应截到 3 条:\n%s", prompt)
+	}
+	// 非助手语境：同快照不注入
+	mainAC := &sessiondata.AgentContext{
+		Def: sessiondata.AgentDef{ID: "main", Name: "主 Agent", IsMain: true,
+			Tools: []string{"agent_dispatch"}},
+	}
+	prompt = composeSystemPrompt(s.tools, "", mainAC, mainAC.Def.Tools, WorktreeInfo{}, false,
+		ProjectDocs{}, nil, snap)
+	if strings.Contains(prompt, CurrentActivityHeader) {
+		t.Fatalf("非助手语境不应注入当前状态段:\n%s", prompt)
+	}
+	// 只有运行中、无最近（如全新库）：运行中条目在场
+	runningOnly := ActivitySnapshot{Running: []string{`「跑测试」（lxcode）`}}
+	prompt = composeSystemPrompt(s.tools, "", assistantAC, assistantAC.Def.Tools, WorktreeInfo{}, false,
+		ProjectDocs{}, nil, runningOnly)
+	if !strings.Contains(prompt, "- 正在运行：「跑测试」（lxcode）") {
+		t.Fatalf("只有运行中会话时也应注入:\n%s", prompt)
+	}
+}
+
 func waitIdle(t *testing.T, s *Session) {
 	t.Helper()
 	for i := 0; i < 50 && s.Busy(); i++ {
 		ch := make(chan struct{})
 		go func() { time.Sleep(20 * time.Millisecond); close(ch) }()
 		<-ch
+	}
+}
+
+// ---- 助手首次初始化（persona 为空时注入主动询问指令）----
+
+func TestComposeAssistantOnboardingEmptyPersona(t *testing.T) {
+	s := newAgentSession(t)
+	assistantAC := &sessiondata.AgentContext{
+		Def: sessiondata.AgentDef{ID: "assistant", Name: "助手", Space: sessiondata.SpaceAssistant,
+			Tools: []string{"run_task", "read_file", "update_assistant_config"}},
+	}
+	prompt := ComposeSystemPrompt(s.tools, "", assistantAC, assistantAC.Def.Tools, WorktreeInfo{}, false,
+		ProjectDocs{}, nil)
+	if !strings.Contains(prompt, assistantOnboardingSection) {
+		t.Fatalf("persona 为空的助手提示词应注入首次初始化指令:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "update_assistant_config") {
+		t.Fatal("指令应指明保存通道（update_assistant_config）")
+	}
+}
+
+func TestComposeAssistantOnboardingPersonaSet(t *testing.T) {
+	s := newAgentSession(t)
+	assistantAC := &sessiondata.AgentContext{
+		Def: sessiondata.AgentDef{ID: "assistant", Name: "小灵", Space: sessiondata.SpaceAssistant,
+			Prompt: "说话轻松幽默，回答简洁",
+			Tools:  []string{"run_task", "read_file", "update_assistant_config"}},
+	}
+	prompt := ComposeSystemPrompt(s.tools, "", assistantAC, assistantAC.Def.Tools, WorktreeInfo{}, false,
+		ProjectDocs{}, nil)
+	if strings.Contains(prompt, assistantOnboardingSection) {
+		t.Fatalf("persona 非空时不应再注入初始化指令:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "说话轻松幽默") {
+		t.Fatalf("persona 应在自定义段出现:\n%s", prompt)
+	}
+}
+
+func TestComposeOnboardingMainAgentNotInjected(t *testing.T) {
+	s := newAgentSession(t)
+	mainAC := &sessiondata.AgentContext{
+		Def: sessiondata.AgentDef{ID: "main", Name: "主 Agent", IsMain: true,
+			Tools: []string{"agent_dispatch"}},
+	}
+	prompt := ComposeSystemPrompt(s.tools, "", mainAC, mainAC.Def.Tools, WorktreeInfo{}, false,
+		ProjectDocs{}, nil)
+	if strings.Contains(prompt, assistantOnboardingSection) {
+		t.Fatalf("主域 Agent 不该吃初始化指令:\n%s", prompt)
 	}
 }

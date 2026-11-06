@@ -488,3 +488,92 @@ func TestSessionStatsAggregationMatchesFullFold(t *testing.T) {
 		t.Fatalf("老口径行应单独记账: %+v", want)
 	}
 }
+
+// 统计缓存的写后读一致性（2026-12 会话切换优化批 3）：缓存在 AppendMsg /
+// AppendCheckpoint 两个写点失效——写之后读必须立刻反映新行，绝不允许命中旧值。
+func TestSessionStatsCacheInvalidatedOnAppend(t *testing.T) {
+	s := openTestStore(t)
+	id, err := s.Create()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 首读建立缓存（空会话零值不进缓存——Empty 的语义见 SessionStatsOf 的注释）
+	if _, err := s.AppendMsg(id, llm.Message{Role: "user", Content: "第一轮"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendMsg(id, llm.Message{Role: "assistant", Content: "答"}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := s.SessionStatsOf(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Turns != 1 || before.Steps != 1 {
+		t.Fatalf("首读应为 1 轮 1 步: %+v", before)
+	}
+	// 追加一轮：读必须看到 2 轮 2 步（缓存已失效）
+	if _, err := s.AppendMsg(id, llm.Message{Role: "user", Content: "第二轮"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendMsg(id, llm.Message{Role: "assistant", Content: "再答"}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := s.SessionStatsOf(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Turns != 2 || after.Steps != 2 {
+		t.Fatalf("append 后统计必须反映新行（缓存失效）: %+v", after)
+	}
+}
+
+func TestSessionStatsCacheInvalidatedOnCheckpoint(t *testing.T) {
+	s := openTestStore(t)
+	id, err := s.Create()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range []llm.Message{
+		{Role: "user", Content: "一"},
+		{Role: "assistant", Content: "答一"},
+		{Role: "user", Content: "二"},
+	} {
+		if _, err := s.AppendMsg(id, m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before, err := s.SessionStatsOf(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Turns != 2 {
+		t.Fatalf("检查点前应为 2 轮: %+v", before)
+	}
+	// 压缩：影子掉前 2 条，检查点行落库——整段日志折叠的口径下统计不变
+	//（压缩不删行），但缓存必须按新行集重建（检查点行本身也是一次 INSERT）
+	cp := llm.Message{Role: "user", Content: "<compacted-summary>摘要</compacted-summary>"}
+	if _, err := s.AppendCheckpoint(id, cp, 0, 2); err != nil {
+		t.Fatal(err)
+	}
+	after, err := s.SessionStatsOf(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Turns != before.Turns {
+		t.Fatalf("压缩不改统计（整段日志折叠）: before=%d after=%d", before.Turns, after.Turns)
+	}
+	// 压缩之后继续追加：新行必须进统计（缓存按检查点后的新行集重建）
+	if _, err := s.AppendMsg(id, llm.Message{Role: "user", Content: "压缩后一轮"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendMsg(id, llm.Message{Role: "assistant", Content: "压缩后答"}); err != nil {
+		t.Fatal(err)
+	}
+	final, err := s.SessionStatsOf(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.Turns != before.Turns+1 {
+		t.Fatalf("检查点后的追加必须进统计（缓存失效）: %d != %d+1", final.Turns, before.Turns)
+	}
+}

@@ -168,10 +168,25 @@ type Session struct {
 	// projectDocs 是项目守则读取器（项目根 AGENTS.md——server 装配时注入；
 	// nil = 不注入）。agent 不碰文件系统：读取实现由消费方提供。
 	projectDocs ProjectDocsFunc
+	// projectPanorama 是项目全景提供者（助手语境注入「可用项目」段——
+	// server 只在助手运行时挂载，主域项目会话不挂：项目会话已有自己的
+	// 归属与 AGENTS.md 注入，跨项目全景对它没有行动价值）。agent 不见
+	// store：数据由消费方查询后传入（与 projectDocs 同一条分层规则）。
+	// 每轮组装提示词时调用一次 = 每轮快照（与工具 project_list 的实时查询
+	// 分工：快照进提示词、实时靠工具，口径同源 ListProjectStats）。
+	projectPanorama ProjectPanoramaFunc
+	// currentActivity 是「当前活动」提供者（助手语境注入「当前状态」段——
+	// 最近会话 + 此刻运行中）。与 projectPanorama 同一套每轮回调注入：
+	// server 装配侧组装快照（busy 是 server 层事实），每轮现调、每轮快照。
+	currentActivity ActivityFunc
 	// context 是最近一次主轮请求的上下文占用（P1 计账）：Used 优先取
 	// provider 回报的真实 prompt_tokens，拿不到才用估算。压缩触发与 UI
 	// 指示器都读它——单一事实源，避免两处各算一遍而互相矛盾。
 	context ContextUsage
+	// histCache 是历史序列派生值的版本号缓存（historyTokens / 配对切点 /
+	// History 的消息副本与检查点下标）——失效点清单见 history_cache.go 的
+	// 包注释。改写 s.history 的临界区必须调 bumpHistoryLocked。
+	histCache histDerived
 	// turnDone 是本轮的收尾信号（SendWait 用）：Send 时新建，runTurn 的
 	// defer 关闭。派发要等子会话给出结论——异步 Send 满足不了这个需求。
 	turnDone chan struct{}
@@ -242,6 +257,11 @@ type Session struct {
 	// 会话级状态（与 readState 同一条理由）：父子会话各持一份，各算各的。
 	// 内存有 LRU 上限（sessionRepeatLRUCap），随会话对象生命周期常驻。
 	sessionRepeat *sessionRepeatGuard
+	// nudgeState 是本会话的「bash_readonly 反干扰提示已给过」记录（2026-12 工具
+	// 选择引导修复第 6 项）：grep/cat 命中时结果前回填一行专用工具指引，每会话
+	// 只回填一次——每个结果都回填会很吵，一次足以改向。会话级状态（与 readState
+	// 同一条理由）：父子会话各持一份，各算各的。
+	nudgeState *tools.NudgeState
 }
 
 // New 创建会话；emit 为 nil 时事件被丢弃（单测可只调方法）。
@@ -251,7 +271,7 @@ func New(reg *config.Registry, toolReg *tools.Registry, emit Emitter) *Session {
 	}
 	s := &Session{reg: reg, tools: toolReg, stream: streamWithLLM, emit: emit,
 		turnCounters: newTurnCounters(), readState: tools.NewReadState(),
-		sessionRepeat: newSessionRepeatGuard()}
+		sessionRepeat: newSessionRepeatGuard(), nudgeState: tools.NewNudgeState()}
 	// 注意：todo 清单的写回口与技能目录都**不进注册表**（进程级单例），
 	// 而是每轮经 ctx 注入（runTurn 里 WithTodoSink / WithSkillSource）——
 	// 子 Agent 是独立会话后，注册表级全局态会让父子互相踩（见 tools/sessionstate.go）。
@@ -275,6 +295,57 @@ func (s *Session) SetProjectDocs(fn ProjectDocsFunc) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.projectDocs = fn
+}
+
+// SetProjectPanorama 挂载项目全景提供者（助手语境的「可用项目」注入段）。
+// 只该在运行时装配路径调用一次（newAssistantRuntime）。每轮组装提示词时
+// 调用一次——每轮快照（注册新项目下一轮就可见），实时详查走 project_list
+// 工具（无条数上限）。
+func (s *Session) SetProjectPanorama(fn ProjectPanoramaFunc) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.projectPanorama = fn
+}
+
+// SetCurrentActivity 挂载「当前活动」提供者（助手语境的「当前状态」注入段
+// 数据源：最近会话 + 此刻运行中）。与 SetProjectPanorama 同一套每轮回调注入
+// 模式：每轮组装提示词时现调一次——快照总是当下（正在跑的会话下一轮就可见）。
+// 只该在运行时装配路径调用一次（newAssistantRuntime）。
+func (s *Session) SetCurrentActivity(fn ActivityFunc) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.currentActivity = fn
+}
+
+// projectPanoramaFor 取本轮的项目全景（nil = 未挂载或 ac 为 nil——非助手
+// 语境不调不注入，主域会话不吃这段上下文）。
+func (s *Session) projectPanoramaFor(ac *sessiondata.AgentContext) []sessiondata.ProjectStats {
+	if ac == nil {
+		return nil
+	}
+	s.mu.Lock()
+	fn := s.projectPanorama
+	s.mu.Unlock()
+	if fn == nil || ac.Def.Space != sessiondata.SpaceAssistant {
+		return nil
+	}
+	return fn()
+}
+
+// activityFor 取本轮的「当前状态」快照（助手语境限定——与 projectPanoramaFor
+// 同一条二次判定：未挂载或非助手语境返回零值，activitySection 对零值整段
+// 缺席）。每轮现调一次——运行中的会话下一轮就可见。
+func (s *Session) activityFor(ac *sessiondata.AgentContext) ActivitySnapshot {
+	if ac == nil {
+		return ActivitySnapshot{}
+	}
+	s.mu.Lock()
+	fn := s.currentActivity
+	s.mu.Unlock()
+	if fn == nil || ac.Def.Space != sessiondata.SpaceAssistant {
+		return ActivitySnapshot{}
+	}
+	return fn()
 }
 
 // SetProtectHead 声明本会话压缩时是否保护历史第 0 条（子会话的任务说明书）。
@@ -512,6 +583,7 @@ func (s *Session) Send(text string, opts ...SendOpt) error {
 	userMsg := llm.Message{Role: "user", Content: text, Notice: cfg.notice, Images: cfg.images, Attachments: cfg.attachments}
 	userMsg.Seq = s.persistLocked(userMsg)
 	s.history = append(s.history, userMsg)
+	s.bumpHistoryLocked() // 首条用户消息进历史：派生值缓存失效（history_cache.go）
 	// 记下本轮归属的 Agent（会话页显示的模型按它解析）：主会话空 id 解析出的是
 	// 主 Agent，这里存解析后的 id，之后 ModelID() 走同一条解析路径。
 	if ac != nil {
@@ -651,7 +723,7 @@ func (s *Session) unregisterDispatch(key string) {
 
 // RunningDispatches 导出**此刻正在跑**的派发快照（chat.history 的
 // running_dispatches 数据源；server 在 historyResult 组装时调用）。空 = 没有
-//（caller 省略整个键）。顺序：按登记键升序——map 遍历序不稳定，没有这个排序
+// （caller 省略整个键）。顺序：按登记键升序——map 遍历序不稳定，没有这个排序
 // 同一屏两次请求会给出两种顺序（前端/测试按内容比对时看起来像「变了」）。
 func (s *Session) RunningDispatches() []RunningDispatch {
 	s.mu.Lock()
@@ -745,7 +817,10 @@ func (s *Session) Busy() bool {
 func (s *Session) History() Snapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	msgs := append([]llm.Message(nil), s.history...)
+	// 消息副本与检查点下标走会话级缓存（history_cache.go）：历史没变就直接
+	// 复用上一次的拷贝——大会话每次切会话都全量复制一遍是切换卡顿的一块。
+	d := s.histDerivedFor()
+	msgs := d.msgs
 	var pending *ConfirmRequest
 	if s.pending != nil {
 		p := *s.pending
@@ -757,8 +832,8 @@ func (s *Session) History() Snapshot {
 		// Todos 恒非 nil（wire 无 omitempty 后 nil 会序列化成 null）：空清单是
 		// 「无清单」的事实，前端按 `todos: []` 覆盖本地；nil/null 会被映射层当成
 		// 键缺席（未知），把「后端明确无清单」降级成「未知」是语义倒退。
-		Todos:      append([]tools.TodoItem{}, s.todos...),
-		Context:    projectedUsage(s.context, msgs), Checkpoints: checkpointIndexes(msgs),
+		Todos:   append([]tools.TodoItem{}, s.todos...),
+		Context: projectedUsageTokens(s.context, d.msgs, d.tokens), Checkpoints: d.checkpoints,
 	}
 }
 
@@ -778,7 +853,11 @@ func (s *Session) TailHistory(n int) Snapshot {
 	if n <= 0 || n >= len(snap.Messages) {
 		return snap
 	}
-	pairing := AnalyzeToolPairing(snap.Messages)
+	// 配对切点走会话级缓存（history_cache.go）：历史没变就不重扫。这里刻意
+	// 再取一次派生值——History() 已命中过缓存，这一步是 O(1)。
+	s.mu.Lock()
+	pairing := s.histDerivedFor().pairing
+	s.mu.Unlock()
 	start := len(snap.Messages) - n
 	if balanced := pairing.NearestBalancedAtOrBefore(start); balanced >= 0 {
 		start = balanced
@@ -844,7 +923,10 @@ func (s *Session) HistoryBefore(seq int64, n int) (snap Snapshot, hasMore bool, 
 	if start < 0 {
 		start = 0
 	}
-	pairing := AnalyzeToolPairing(snap.Messages)
+	// 配对切点走会话级缓存（与 TailHistory 同一条理由）。
+	s.mu.Lock()
+	pairing := s.histDerivedFor().pairing
+	s.mu.Unlock()
 	if balanced := pairing.NearestBalancedAtOrBefore(start); balanced >= 0 {
 		start = balanced
 	}
@@ -879,7 +961,7 @@ func shiftCheckpoints(cps []int, start int) []int {
 // 与 ContextUsage() 的分工：那个是**判定用**的真实压力值（maybeCompact 拿它比阈值），
 // 这个是给 UI 看的投影值。两个不能混——判定用投影会在"其实还没到"的时候触发压缩。
 func (s *Session) projectedContext() ContextUsage {
-	return projectedUsage(s.context, s.history)
+	return projectedUsageTokens(s.context, s.history, s.histDerivedFor().tokens)
 }
 
 // Todos 返回当前任务清单（UI 渲染用）。nil = 无清单（快照层负责在 wire 上

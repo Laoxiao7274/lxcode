@@ -142,6 +142,10 @@ type DispatchStartEvent struct {
 	Task       string
 	// Todos 非空 = 主 Agent 预拆的清单初稿（卡上第一秒就显示「这次派发要做什么」）。
 	Todos []tools.TodoItem
+	// ProjectName 非空 = run_task（助手 → 项目）派发的目标项目名——派发卡显示
+	// 「coder · lxcode」消解「助手自己派了代码 Agent」的误读。agent_dispatch
+	// 的常规委派不带（子会话 workspace 继承父，没有项目归属——键缺席 = 无）。
+	ProjectName string
 }
 
 // DispatchEndEvent：子 Agent 执行收尾（Result = 最终回复——主 Agent 的

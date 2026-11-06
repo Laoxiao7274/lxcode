@@ -86,6 +86,10 @@ type Spec struct {
 	// 父会话才有人能行动（子会话不进侧栏，投给它等于投给一个没人看的
 	// 会话）。空 = 与 SessionID 同（顶层会话起的任务，owner 就是它自己）。
 	OwnerSessionID string
+	// Workspace 是任务起时所属的**项目 id**（producer 从执行会话的 ctx 取
+	// tools.Workspace，Start 时定稿、之后不变）。面板据此按项目分组；空 =
+	// 未分组会话或未注入（两者都按「没有归属项目」处理）。
+	Workspace      string
 	OutputLimit    int // 内存保留字节数（0 = 默认 64KB）
 }
 
@@ -101,6 +105,8 @@ type Snapshot struct {
 	// OwnerSessionID 是时间线归属（见 Spec.OwnerSessionID）：事件路由、唤醒
 	// 投递、job.list 的按会话过滤都按它，不按 SessionID。
 	OwnerSessionID string
+	// Workspace 是任务起时所属的项目 id（见 Spec.Workspace；Start 时定稿）。
+	Workspace      string
 	StartedAt      time.Time
 	FinishedAt     time.Time // 零值 = 未结束
 	// OutputPath 是落盘日志路径；**落盘失败降级为纯内存时为空串**
@@ -258,6 +264,7 @@ func (j *job) snapshotLocked() Snapshot {
 		ID: j.id, Kind: j.spec.Kind, Label: j.spec.Label,
 		Status: j.status, EndedBy: j.endedBy, Detail: j.detail,
 		SessionID: j.spec.SessionID, OwnerSessionID: OwnerOf(j.spec),
+		Workspace: j.spec.Workspace,
 		StartedAt: j.startedAt, FinishedAt: j.finishedAt, OutputPath: j.logPath,
 	}
 }

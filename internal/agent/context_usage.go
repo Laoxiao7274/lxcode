@@ -132,17 +132,23 @@ func historyTokens(history []llm.Message) int {
 //   - SampledTokens <= 0：那次测量没留下采样基线（老库里的值），算不出增量；
 //   - 历史没变：增量本来就是 0，原样返回省一次重算（也保证"没变就不动"这条可断言）。
 func projectedUsage(u ContextUsage, history []llm.Message) ContextUsage {
+	return projectedUsageTokens(u, history, historyTokens(history))
+}
+
+// projectedUsageTokens 是 projectedUsage 的**预算版**：历史部分的 token 数由调用方
+// 给（会话级缓存里现成的 historyTokens——大会话上省一次逐消息扫描；语义与
+// projectedUsage 逐字一致，见那里的注释）。
+func projectedUsageTokens(u ContextUsage, history []llm.Message, nowTokens int) ContextUsage {
 	if u.Used <= 0 || u.SampledTokens <= 0 {
 		return u
 	}
-	now := historyTokens(history)
-	if now == u.SampledTokens {
+	if nowTokens == u.SampledTokens {
 		return u
 	}
 	// 复用锚定算术：removedTokens 为负 = 历史变长（reanchoredUsage 只做减法，
 	// 负数天然就是加法），分类按当前历史重新估算后归一——分类之和恒等于 Used
 	// 这条不变式在投影之后同样成立。
-	return reanchoredUsage(u, u.SampledTokens-now, history)
+	return reanchoredUsage(u, u.SampledTokens-nowTokens, history)
 }
 
 // reanchoredUsage 按锚定算术把"历史少了一段"这件事折算进占用测量：

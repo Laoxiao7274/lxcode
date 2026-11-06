@@ -18,7 +18,6 @@ import { FilesCard } from "./FilesCard";
 import { AnswerBody } from "./AnswerBody";
 import { DispatchCard } from "./DispatchCard";
 import { CompactionCard } from "./CompactionCard";
-import { JobCard } from "./JobCard";
 import { NoticeBar } from "./NoticeBar";
 import { TaskBlock } from "./TaskBlock";
 import { UserAttachmentSection } from "./AttachmentCard";
@@ -158,9 +157,6 @@ export const Block = memo(
 
     case "compacted":
       return <CompactionCard block={block} data-uid={dataUid} />;
-
-    case "job":
-      return <JobCard block={block} data-uid={dataUid} />;
 
     case "notice":
       return <NoticeBar block={block} data-uid={dataUid} />;

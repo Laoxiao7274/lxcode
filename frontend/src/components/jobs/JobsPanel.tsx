@@ -1,17 +1,23 @@
 // 后台任务面板（顶栏角标的弹层内容）：**跨会话**的常驻任务清单。
 //
 // 为什么要有全局入口：dev server / 长构建是在某个会话里起的，但用户切到别的
-// 会话（甚至开着别的页面）时依然要能看到它、能停它——只做时间线卡片的话，
-// 你必须在那个会话里才管得着它。
+// 会话（甚至开着别的页面）时依然要能看到它、能停它——只看时间线的话，你必须在
+// 那个会话里才管得着它（时间线任务卡已砍，docs/jobs.md §6——本面板是唯一 UI）。
+//
+// **按项目分组**（2026-12）：任务快照带 workspace（后端 Start 时定稿），按它
+// 分组渲染，组头 = 项目名（projects() 缓存 id → name）。分组纯函数在 shared/jobs
+// （groupJobsByWorkspace，可独立单测）——组件只负责画。
 //
 // 「合并请求」入口已摘除（2026-10 架构修订：合并进程退役，会话直连主检出）。
 // MergeRow 组件保留（协议方法 chat.mergeRequest 在，后端如实回说明），只是
 // App 不再传入 merge prop——将来恢复隔离模式时把它接回即可。
 //
 // 顺序由 Provider 定（在跑的在前）——这里不再排一次，否则两处会分叉。
-import { useState } from "react";
-import type { JobInfo } from "../../shared/types";
-import { formatDuration, isJobActive, jobElapsedMs, jobOutcomeText, jobTone, shortSessionId } from "../../shared/jobs";
+import { useMemo, useState } from "react";
+import type { AgentSource, JobInfo } from "../../shared/types";
+import {
+  formatDuration, groupJobsByWorkspace, isJobActive, jobElapsedMs, jobOutcomeText, jobTone, shortSessionId,
+} from "../../shared/jobs";
 import { useJobClock, useJobs } from "../../shared/jobs-admin";
 import { JobKillButton } from "./JobKillButton";
 import { JobOutput } from "./JobOutput";
@@ -31,8 +37,15 @@ export interface MergeEntry {
 /** 合并的默认目标分支（与后端 defaultIntegrationBranch 一致）。 */
 const DEFAULT_MERGE_BRANCH = "lxcode/integration";
 
-export function JobsPanel({ merge }: { merge?: MergeEntry }) {
+export function JobsPanel({ merge, source }: { merge?: MergeEntry; source: AgentSource }) {
   const { jobs, live } = useJobs();
+  // 项目表（id → name / 注册顺序）：分组名与组间顺序的依据。projects() 是缓存
+  // 读（projectsChanged 广播时 source 落新缓存并发事件——订阅方会重渲染）。
+  const projects = useMemo(() => source.projects(), [source]);
+  const groups = useMemo(
+    () => groupJobsByWorkspace(jobs, projects.map((p) => p.id), (id) => projects.find((p) => p.id === id)?.name ?? ""),
+    [jobs, projects],
+  );
   return (
     <>
       <div className="job-pop-head">
@@ -51,7 +64,15 @@ export function JobsPanel({ merge }: { merge?: MergeEntry }) {
         </div>
       ) : (
         <div className="job-pop-list">
-          {jobs.map((job) => <JobRow key={job.id} job={job} />)}
+          {groups.map((g) => (
+            <div className="job-group" key={g.key || "(loose)"}>
+              <div className="job-group-head" title={g.key ? `项目 ${g.key}` : "未分组会话起的任务"}>
+                <span className="job-group-name">{g.name}</span>
+                <span className="job-group-count mono">{g.jobs.length}</span>
+              </div>
+              {g.jobs.map((job) => <JobRow key={job.id} job={job} />)}
+            </div>
+          ))}
         </div>
       )}
       {!live && <div className="job-pop-hint">演示模式：任务与输出由前端脚本生成。</div>}

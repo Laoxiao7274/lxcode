@@ -40,6 +40,10 @@ func (s *Server) dispatch(c *wsClient, req *protocol.Request) *protocol.Response
 		}
 		return protocol.NewResult(req.ID, map[string]any{"pong": true})
 	}
+	// assistant.*（助手模式 P0——独立方法域，命中即返回；放 chat 之前）
+	if resp := s.dispatchAssistant(c, req, params); resp != nil {
+		return resp
+	}
 	if resp := s.dispatchModels(req, params); resp != nil {
 		return resp
 	}

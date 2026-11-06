@@ -23,7 +23,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AgentEvent, AgentSource, SendAttachments, SendOptions } from "./types";
 import { type UIState, initial } from "./blocks";
-import { reduceHistory } from "./history";
 import { reduceSessionStates, allowAllPendingConfirms, resolveConfirm, resolveConfirmEverywhere } from "./reduce";
 import { childLinksFromBlocks, emptyChildLinks, recordChildLink, type ChildLinks, type ChildParents } from "./workspace-tabs";
 import {
@@ -48,11 +47,15 @@ export type { SendQueueItem } from "./send-queue";
 export interface AgentEventController {
   getCurrentId(): string;
   getSessionStates(): Record<string, UIState>;
+  /** 助手域的会话状态表（assistant.* 事件归约的目标 map——与主域空间隔离，
+   *  reducer 复用同一份 reduceSessionStates）。 */
+  getAssistantStates(): Record<string, UIState>;
   getChildLinks(): ChildLinks;
   getSendQueues(): Record<string, SendQueueItem[]>;
   getPrevBusy(): Record<string, boolean>;
   setCurrentId(id: string): void;
   setSessionStates(next: Record<string, UIState>): void;
+  setAssistantStates(next: Record<string, UIState>): void;
   setOperationError(message: string): void;
   bumpRevision(): void;
   setChildLinks(next: ChildLinks): void;
@@ -88,6 +91,16 @@ export function drainQueueHead(c: AgentEventController, sessionId: string): void
 
 /** store 订阅回调的本体（每条服务端事件走一次；无 React、无 I/O——可单测）。 */
 export function handleAgentEvent(ev: AgentEvent, c: AgentEventController): void {
+  // 助手域分流（助手模式 P1）：assistant.* 事件经 mapEvent 归一成 chat 同构形状
+  // 后打上 space 标记——归约进**独立的** assistantStates（reducer 复用同一份
+  // reduceSessionStates 与同一份 dispatchChild 映射），绝不进主域 sessionStates
+  //（两域的会话 id 空间隔离，混流会让侧栏/主时间线被助手会话污染）。
+  // 断言说明：AgentEvent 各变体没有逐个声明 space 键（机械地给 20 个变体加可选键
+  // 的噪声远大于收益）——标记只在 events.ts 的 assistant 分支写入，运行时判定一处。
+  if ((ev as { space?: string }).space === "assistant") {
+    handleAssistantEvent(ev, c);
+    return;
+  }
   if (ev.type === "sessionFocused") {
     c.setCurrentId(ev.id);
     const all = c.getSessionStates();
@@ -122,17 +135,24 @@ export function handleAgentEvent(ev: AgentEvent, c: AgentEventController): void 
   }
   if (ev.type === "historyLoaded") {
     // 历史回放路径（刷新/冷恢复/切回老会话）：dispatchStart 早于本次连接，
-    // 事件侧没有映射可记——从回放重建的 blocks 里一次性扫出该会话派发的
+    // 事件侧没有映射可记——从重建的 blocks 里一次性扫出该会话派发的
     // 子会话（dispatch 块的 sessionId 就是子会话 id）。只在回放时跑，
     // 不是逐事件扫描。
     //
-    // 注意：这里会建一份块用于扫接链，紧接着的归约器还会再建一份
-    // （两次都是 O(n)；historyBlocks 内部的 tool/dispatch 查找已改成
-    // 建索引，不再是 O(n²)）。就地缓存会让两份 UIState 共享同一批
-    // 块对象（后续归约若原地修改就会互相影响）——不值得为一次
-    // O(n) 业务带来这个隐形共享。
-    const rebuilt = reduceHistory({ ...initial, currentId: ev.sessionId }, ev.history);
-    const scanned = childLinksFromBlocks(ev.sessionId, rebuilt.blocks);
+    // **归约先行，扫描消费归约产出的 blocks**（2026-12 会话切换优化批 1）：
+    // 原实现在这里额外跑一遍 reduceHistory 只为扫接链——两次 O(n)，大会话
+    // 装载多一份整时间线的复制。blocks 是不可变共享的（后续事件只 slice /
+    // 换对象，绝不改写块对象），扫描直接拿归约结果安全。归约在前、扫接链在后
+    // 对语义无影响：historyLoaded 不带 dispatchId，双投路由用不到本次扫出的
+    // 映射；扫描范围（含分页前插与 running_dispatches 补卡后的终态 blocks）
+    // 是旧扫描范围（纯快照重建）的超集，recordChildLink 幂等——记录的事实一致。
+    // 本分支**自己归约并提前 return**：落到底部通用归约会把重建再跑一遍
+    //（两份 UIState 各自 rebuiltGen 递增——恰好是要消灭的那份重复）。
+    c.setSessionStates(reduceSessionStates(c.getSessionStates(), ev, c.getChildLinks().dispatchChild));
+    const rebuilt = c.getSessionStates()[ev.sessionId]?.blocks ?? [];
+    // 回放的 dispatch 卡带两把键（子会话 id + 调用 id）——childLinksFromBlocks
+    // 一次扫出两张映射，这里全量记（与旧实现逐条 recordChildLink 等价）。
+    const scanned = childLinksFromBlocks(ev.sessionId, rebuilt);
     let next = c.getChildLinks();
     for (const [childId, parentId] of Object.entries(scanned.childParents)) {
       next = recordChildLink(next, { childId, parentId });
@@ -151,6 +171,7 @@ export function handleAgentEvent(ev: AgentEvent, c: AgentEventController): void 
       });
     }
     c.setChildLinks(next);
+    return;
   }
   // ---- 发送缓冲区的自动发送（busy true→false 的轮次边界）----
   if (ev.type === "busy") {
@@ -173,6 +194,47 @@ export function handleAgentEvent(ev: AgentEvent, c: AgentEventController): void 
   if ("sessionId" in ev) c.setSessionStates(reduceSessionStates(c.getSessionStates(), ev, c.getChildLinks().dispatchChild));
 }
 
+/** 助手域事件处理（assistant.*，space 标记已由 events.ts 打上）。
+ *
+ * 与主域 handleAgentEvent 的差别只有三点，其余语义**逐条对齐**：
+ * ① 归约目标是 assistantStates（独立 map，同一份 reducer）；
+ * ② 没有 sessionFocused / 发送缓冲区（助手页签自己持有当前会话 id，
+ *    assistant.send 显式寻址——不存在「连接焦点」这个概念）；
+ * ③ dispatchStart 同样记 childLinks（run_task 子会话与主域子会话共用同一张
+ *    子→父映射——child:<id> 临时视图的反查与双投路由都要用）。 */
+function handleAssistantEvent(ev: AgentEvent, c: AgentEventController): void {
+  if (ev.type === "dispatchStart" && ev.childSessionId) {
+    c.setChildLinks(recordChildLink(c.getChildLinks(), {
+      childId: ev.childSessionId, parentId: ev.sessionId, dispatchId: ev.dispatchId,
+    }));
+  }
+  if (ev.type === "historyLoaded") {
+    // 助手会话/助手子会话的历史回放：子→父映射同主域一条纪律——**归约先行，
+    // 扫描消费归约产出的 blocks**（两域同一条注释、同一份理由，见
+    // handleAgentEvent 的 historyLoaded 分支）。回放的 blocks 属于助手域
+    // state——映射记录本身是跨域索引（childLinks），照常进同一张表。
+    c.setAssistantStates(reduceSessionStates(c.getAssistantStates(), ev, c.getChildLinks().dispatchChild));
+    const rebuilt = c.getAssistantStates()[ev.sessionId]?.blocks ?? [];
+    const scanned = childLinksFromBlocks(ev.sessionId, rebuilt);
+    let next = c.getChildLinks();
+    for (const [childId, parentId] of Object.entries(scanned.childParents)) {
+      next = recordChildLink(next, { childId, parentId });
+    }
+    for (const [did, childId] of Object.entries(scanned.dispatchChild)) {
+      next = recordChildLink(next, { childId, parentId: next.childParents[childId] ?? "", dispatchId: did });
+    }
+    for (const d of ev.history.runningDispatches ?? []) {
+      if (!d.childSessionId) continue;
+      next = recordChildLink(next, {
+        childId: d.childSessionId, parentId: ev.sessionId, dispatchId: d.dispatchId,
+      });
+    }
+    if (next !== c.getChildLinks()) c.setChildLinks(next);
+    return;
+  }
+  c.setAssistantStates(reduceSessionStates(c.getAssistantStates(), ev, c.getChildLinks().dispatchChild));
+}
+
 /** useAgent 的旁路回调。onAutoSend：缓冲区自动发送的出口——store 判定「该发了」
  *  之后只负责喊一声，真正怎么发（带哪些请求级参数）由调用方（App 的
  *  sendWithOptions）决定，store 不碰发送配置。onSendFailed：发送失败时把附件
@@ -185,12 +247,17 @@ export interface AgentHooks {
 export function useAgent(source: AgentSource, hooks?: AgentHooks): {
   state: UIState;
   sessionStates: Record<string, UIState>;
+  /** 助手域的会话状态表（assistant.* 事件的归约目标——与主域空间隔离）。 */
+  assistantStates: Record<string, UIState>;
   /** 子会话 id → 父会话 id（子会话视图标题反查与双投路由的唯一事实源）。 */
   childParents: ChildParents;
   /** 发送缓冲区（按会话隔离；busy 期间提交的文本在这里排队）。 */
   sendQueues: Record<string, SendQueueItem[]>;
   send: AgentSource["send"];
   resolve: (sessionId: string, id: string, outcome: "allow" | "deny", answer?: string) => void;
+  /** 助手域版本的 resolve（两处定格落在 assistantStates——助手会话与它的
+   *  run_task 子会话的确认卡都在助手域）。 */
+  resolveAssistant: (sessionId: string, id: string, outcome: "allow" | "deny", answer?: string) => void;
   clearError: () => void;
   reportError: (message: string) => void;
   /** 入队一条缓冲消息（busy/sending 期间 Composer 的 submit 走这里）。
@@ -202,6 +269,7 @@ export function useAgent(source: AgentSource, hooks?: AgentHooks): {
   moveQueuedToFront: (sessionId: string, id: string) => void;
 } {
   const [sessionStates, setSessionStates] = useState<Record<string, UIState>>({});
+  const [assistantStates, setAssistantStates] = useState<Record<string, UIState>>({});
   const [currentId, setCurrentId] = useState("");
   const [operationError, setOperationError] = useState<string | null>(null);
   const [childLinks, setChildLinks] = useState<ChildLinks>(emptyChildLinks);
@@ -211,11 +279,13 @@ export function useAgent(source: AgentSource, hooks?: AgentHooks): {
   // ref 镜像：controller 的写口同步刷 ref（同一 tick 内连续事件读到最新值），
   // 渲染期再同步一次（兜住 React 侧其他 setState 路径——如 resolve 的函数式更新）。
   const sessionStatesRef = useRef(sessionStates);
+  const assistantStatesRef = useRef(assistantStates);
   const currentIdRef = useRef(currentId);
   const childLinksRef = useRef(childLinks);
   const sendQueuesRef = useRef(sendQueues);
   const prevBusyRef = useRef<Record<string, boolean>>({});
   sessionStatesRef.current = sessionStates;
+  assistantStatesRef.current = assistantStates;
   currentIdRef.current = currentId;
   childLinksRef.current = childLinks;
   sendQueuesRef.current = sendQueues;
@@ -232,11 +302,13 @@ export function useAgent(source: AgentSource, hooks?: AgentHooks): {
     controllerRef.current = {
       getCurrentId: () => currentIdRef.current,
       getSessionStates: () => sessionStatesRef.current,
+      getAssistantStates: () => assistantStatesRef.current,
       getChildLinks: () => childLinksRef.current,
       getSendQueues: () => sendQueuesRef.current,
       getPrevBusy: () => prevBusyRef.current,
       setCurrentId: (id) => { currentIdRef.current = id; setCurrentId(id); },
       setSessionStates: (next) => { sessionStatesRef.current = next; setSessionStates(next); },
+      setAssistantStates: (next) => { assistantStatesRef.current = next; setAssistantStates(next); },
       setOperationError: (message) => setOperationError(message),
       bumpRevision: () => setRevision((n) => n + 1),
       setChildLinks: (next) => { childLinksRef.current = next; setChildLinks(next); },
@@ -246,6 +318,7 @@ export function useAgent(source: AgentSource, hooks?: AgentHooks): {
       sendFailed: (sessionId, atts) => sendFailedRef.current?.(sessionId, atts),
       reset: () => {
         controllerRef.current?.setSessionStates({});
+        controllerRef.current?.setAssistantStates({});
         controllerRef.current?.setCurrentId("");
         setOperationError(null);
         controllerRef.current?.setPrevBusy({});
@@ -275,6 +348,12 @@ export function useAgent(source: AgentSource, hooks?: AgentHooks): {
       return resolveConfirmEverywhere(base, id, outcome, answer);
     });
   }, []);
+  // 助手域版本：确认 id 在助手域可能是跨会话的（父会话卡 + 子会话双投 state 各
+  // 一份）——resolveConfirmEverywhere 按持有者逐个定格，跨会话两处同时收口。
+  const resolveAssistant = useCallback((sessionId: string, id: string, outcome: "allow" | "deny", answer?: string) => {
+    void sessionId; // 参数保留与主域 resolve 同形（调用点一致）；定格按持有者扫全表
+    controller.setAssistantStates(resolveConfirmEverywhere(controller.getAssistantStates(), id, outcome, answer));
+  }, [controller]);
   const clearError = useCallback(() => setOperationError(null), []);
   const reportError = useCallback((message: string) => setOperationError(message), []);
   const enqueueSend = useCallback((sessionId: string, text: string, atts?: { images?: ChatSendImage[]; files?: ChatSendFile[] }) => {
@@ -299,10 +378,12 @@ export function useAgent(source: AgentSource, hooks?: AgentHooks): {
   return {
     state,
     sessionStates,
+    assistantStates,
     childParents: childLinks.childParents,
     sendQueues,
     send,
     resolve,
+    resolveAssistant,
     clearError,
     reportError,
     enqueueSend,

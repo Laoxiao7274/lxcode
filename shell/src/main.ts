@@ -16,6 +16,18 @@ import { startScreenPolling, stopScreenPolling, warmUpEncoderProbe } from "./scr
 // userData 目录名与应用身份（单实例锁、任务栏、通知都吃这个）
 app.setName("lxcode");
 
+// dev 形态判定（scripts/dev.mjs --electron 注入 LXCODE_DEV_USER_DATA）。
+// 导出给 tray/screen 拼 dev 后缀 tooltip 用——同一份判定，不各判一遍。
+export const devUserData = process.env.LXCODE_DEV_USER_DATA;
+export const IS_DEV_SHELL = !!devUserData;
+if (devUserData) {
+  // 必须同步执行、且在 requestSingleInstanceLock 之前：userData 决定单实例锁
+  // 的锁文件位置，重定向后 dev/生产壳的锁互不相干，两壳可并存。独立 userData
+  // 同时隔离 models.json/sessions/frpc/更新暂存等一切落盘状态（与
+  // dev.mjs 的 devSessionsDir 同一条纪律）。
+  app.setPath("userData", devUserData);
+}
+
 // 产线渲染层经 app:// 特权协议加载（必须 ready 前注册）：vite 产物是
 // <script type="module" crossorigin>，file:// 是不透明源（null），模块脚本
 // 的同源检查会失败——React 根本不挂载、页面空白且无报错（did-fail-load
@@ -90,7 +102,9 @@ if (!app.requestSingleInstanceLock()) {
   app.on("second-instance", () => win?.focus());
 
   app.whenReady().then(async () => {
-    app.setAppUserModelId("com.moyunteng.lxcode");
+    // 任务栏分组身份：dev 壳用独立 AUMID，与生产壳不并入同一任务栏组
+    if (IS_DEV_SHELL) app.setAppUserModelId("com.moyunteng.lxcode.dev");
+    else app.setAppUserModelId("com.moyunteng.lxcode");
 
     // app:// → asar 内渲染层（app://lxcode/index.html → renderer/index.html）
     protocol.handle("app", (req) => {
@@ -111,7 +125,7 @@ if (!app.requestSingleInstanceLock()) {
       minWidth: 1024,
       minHeight: 700,
       autoHideMenuBar: true,
-      title: "Lxcode",
+      title: IS_DEV_SHELL ? "Lxcode dev" : "Lxcode",
       // 启动瞬间的窗口底色（页面加载前）：按当前系统亮暗取对应 token 基色，
       // 避免与首帧主题相反的闪块（页面自身的防闪由 index.html 内联脚本负责）。
       backgroundColor: nativeTheme.shouldUseDarkColors ? "#18181c" : "#ffffff",

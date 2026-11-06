@@ -24,9 +24,11 @@
 package tools
 
 import (
+	"context"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 )
 
 // readOnlyRejectHint 是被拒时给模型的出路（拒绝不是死路，模型要知道下一步）。
@@ -114,6 +116,104 @@ func readOnlyViolation(command string) string {
 		}
 	}
 	return ""
+}
+
+// toolNudgeHint 是 bash_readonly 放行路径的**反干扰回填**（2026-12 工具选择
+// 引导修复的第 6 项）：命令首词是 grep/cat（含 egrep/fgrep）时，在结果前回填
+// 一行「专用工具」指引——模型有 ripgrep/read_file 却走 bash grep/cat 的根因
+// 是三层模型可见信号全缺席/反向（描述、守则、清单），这是执行时的第四层兜底。
+//
+// 为什么做成纯函数：判定可单测（命中词表、环境赋值前缀跳过），注入与否由调用方
+// 的会话级状态决定——本函数不做任何状态记忆。
+//
+// 为什么只回填一次（调用方负责）：每个结果都回填会很吵，一个会话提示一次已足够
+// 改向；重复防刷屏由会话级 nudgeState（见下）承担，本函数只回答「该不该提示」。
+const toolNudgeHint = "[提示] 内容检索可用 ripgrep 工具（大仓库快、免 shell 转义、行号可直接引用）；读文件用 read_file。"
+
+// toolNudgeCommands 是需要回填指引的首词（小写、去 .exe 后缀后比较）。
+// 只列「有专用工具且被大量误用」的：grep 系（→ripgrep）与 cat（→read_file）。
+// head/tail/ls 不列——它们没有一一对应的专用工具或并非高频误用。
+var toolNudgeCommands = map[string]bool{
+	"grep": true, "egrep": true, "fgrep": true, "cat": true,
+}
+
+// toolNudgeHintFor 判定一条命令是否该回填专用工具指引（纯函数，无状态）。
+// 返回提示文本；空串 = 不提示。取**第一个**命中段（管道里两侧都是 grep 也只提
+// 一次——文本相同，重复回填没有信息量）。
+func toolNudgeHintFor(command string) string {
+	segs, reason := scanShellCommand(command)
+	if reason != "" {
+		return "" // 会被拒绝的命令不提示（拒绝路径有自己的出路文案）
+	}
+	for _, words := range segs {
+		i := 0
+		for i < len(words) && envAssignRe.MatchString(words[i]) {
+			i++ // 跳过前缀环境变量赋值（与 readOnlySegmentViolation 同款）
+		}
+		if i >= len(words) {
+			continue
+		}
+		name := strings.ToLower(filepath.Base(words[i]))
+		name = strings.TrimSuffix(name, ".exe")
+		if toolNudgeCommands[name] {
+			return toolNudgeHint
+		}
+	}
+	return ""
+}
+
+// nudgeStateKey 是「本会话 bash_readonly 反干扰提示已给过」的 ctx 键。
+type nudgeStateKey struct{}
+
+// NudgeState 记「本会话已回填过专用工具指引」，保证每会话只提示一次。
+//
+// 为什么是会话级 ctx 注入态（与 ReadState / todo sink 同一套机制与理由）：
+// 注册表是进程级单例，父子会话并存时「提示过没有」必须各算各的——调研子会话
+// 第一次被提示不该让主会话失去提示资格，反之亦然。
+//
+// 并发：同一会话的工具调用可能并行，自带互斥。
+type NudgeState struct {
+	mu     sync.Mutex
+	nudged bool
+}
+
+// NewNudgeState 创建一个空的会话级提示记录。
+func NewNudgeState() *NudgeState { return &NudgeState{} }
+
+// WithNudgeState 把会话级提示记录放进 ctx（nil = 不注入——单测直调时不注入，
+// 退化为每个结果都提示，行为与没有会话状态时一致）。
+func WithNudgeState(ctx context.Context, st *NudgeState) context.Context {
+	if st == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, nudgeStateKey{}, st)
+}
+
+// nudgeStateFrom 取 ctx 里的会话级提示记录（nil = 未注入）。
+func nudgeStateFrom(ctx context.Context) *NudgeState {
+	if ctx == nil {
+		return nil
+	}
+	st, _ := ctx.Value(nudgeStateKey{}).(*NudgeState)
+	return st
+}
+
+// ShouldNudge 记录并返回「本会话是否该回填提示」：首次调用返回 true（调用方
+// 回填），之后返回 false——一次会话一条提示，靠这个状态防刷屏。
+//
+// 为什么不是「按命令去重」（同一命令提示一次）：模型的误用形态是多样的
+// （先 cat 再 grep），按命令去重会提示好几遍；目的是**改向**，一次足够。
+func (s *NudgeState) ShouldNudge() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.nudged {
+		return false
+	}
+	s.nudged = true
+	return true
 }
 
 // readOnlySegmentViolation 判定一条简单命令（已按管道/分号/子 shell 切开）。

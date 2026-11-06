@@ -1,7 +1,7 @@
 // 块与 UI 状态的定义 + 纯工具函数（不含事件归约——那是 reduce.ts）。
 // 单独一个文件：组件只依赖类型与这几个 helper，不必把整个 reducer 拖进依赖图。
 
-import type { ApprovalMode, ConfirmRequest, ContextUsage, FileChange, JobInfo, SessionStats, TodoItem } from "./types";
+import type { ApprovalMode, ConfirmRequest, ContextUsage, FileChange, SessionStats, TodoItem } from "./types";
 import type { AttachmentMeta } from "./attachments";
 
 export interface AssistantBlock {
@@ -80,13 +80,6 @@ export type ThreadBlock =
       text: string;
     }
   | {
-      /** 后台任务卡（本次对话起的任务：命令摘要 + 计时 + 输出 tail + 结束）。
-       *  job 直接是后端快照（JobInfo）——started/settled 都是它，卡就地更新。 */
-      kind: "job";
-      uid: number;
-      job: JobInfo;
-    }
-  | {
       kind: "dispatch";
       uid: number;
       /** dispatch 调用 id（子事件归属键）。 */
@@ -96,6 +89,9 @@ export type ThreadBlock =
       agentId: string;
       agentName: string;
       agentColor: string;
+      /** run_task（助手 → 项目）派发的目标项目名（可选键，缺席 = 常规委派——
+       *  派发卡显示「coder · lxcode」；主域派发不显示项目）。 */
+      projectName?: string;
       /** 下发的任务描述（主 Agent 的验收标准在这里）。 */
       task: string;
       /** running | done（done 带 result——子 Agent 的最终回复）。 */

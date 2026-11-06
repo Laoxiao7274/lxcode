@@ -375,9 +375,17 @@ func goldenSamples() map[string]goldenSample {
 
 		"jobInfo": {"JobInfo", JobInfo{
 			ID: "job1", Kind: "bash", Label: "npm run build", Status: "completed", EndedBy: "user",
-			Detail: "退出码 0", SessionID: "s1", OwnerSessionID: "s1",
+			Detail: "退出码 0", SessionID: "s1", OwnerSessionID: "s1", Workspace: "lxcode",
 			StartedAt: "2026-10-13T10:00:00+08:00", FinishedAt: "2026-10-13T10:01:12+08:00",
 			OutputTail: "vite build 完成", OutputPath: `C:\ProgramData\lxcode\logs\job1.log`,
+		}},
+		// 最小样本：未分组会话（Workspace 空 → 整键缺席，前端收进「未分组」组）。
+		// _type 留空（同 chatHistoryResultMinimal）：JobInfo 的其余键是非可选的，
+		// 键级声明检查只对全量样本有意义，缺席语义由前端抽检表钉住。
+		"jobInfoUngrouped": {"", JobInfo{
+			ID: "job2", Kind: "bash", Label: "go test ./...", Status: "running",
+			SessionID: "s9", OwnerSessionID: "s9",
+			StartedAt: "2026-10-13T11:00:00+08:00",
 		}},
 		"jobLogResult": {"JobLogResult", JobLogResult{Data: "…全量日志…", Truncated: true}},
 
@@ -387,6 +395,13 @@ func goldenSamples() map[string]goldenSample {
 			OwnerSessionID: "s1", DispatchID: "d1", SessionID: "child-1",
 			AgentID: "reviewer", AgentName: "评审员", AgentColor: "#3b82f6", Task: "评审这次的改动",
 			Todos: []sessiondata.TodoItem{{Content: "读改动", Status: "done"}, {Content: "写意见", Status: "active"}},
+		}},
+		// run_task 派发：project_name 是可选键，**带值样本**覆盖它（agent_dispatch
+		// 的常规委派缺席——上面的样本不设，两份并集覆盖新字段）。
+		"dispatchStartParamsProject": {"", DispatchStartParams{
+			OwnerSessionID: "s1", DispatchID: "d2", SessionID: "child-2",
+			AgentID: "coder", AgentName: "代码 Agent", AgentColor: "#3b82f6", Task: "修一下构建",
+			ProjectName: "lxcode",
 		}},
 
 		// ---- 连接域：握手 ----
@@ -398,6 +413,20 @@ func goldenSamples() map[string]goldenSample {
 			Server: "lxcode", Version: Version, Busy: false,
 			BusySessions: []string{"s1", "s2"},
 		}},
+
+		// ---- 助手配置域（assistant.config.get 应答 = configChanged 载荷同形状；
+		// wire 键与 types.ts 的 AssistantConfig 一一对应）----
+
+		// 全量样本：六个绑定字段全部带值（omitempty 才落键，覆盖检查才有依据）。
+		"assistantConfigResultFull": {"AssistantConfig", AssistantConfigResult{
+			Name: "小灵", Persona: "轻松幽默，回答简洁", Skills: []string{"gsap"},
+			Workflow: "research-first", MCPServers: []string{"exa"}, Tools: []string{"my_query"},
+			ToolWhitelist: append([]string(nil), BuiltinAssistantToolIDs...), BuiltinDefaults: BuiltinAssistantToolIDs,
+		}},
+		// 最小样本：全空 = 未设置（各键整键缺席——空 = 用内置值，不是错误）。
+		// builtinDefaults 是**内置默认值**不是用户设置——缺席 = 服务端未带回
+		//（老服务端），在场时 UI 用它预填/恢复默认。
+		"assistantConfigResultMinimal": {"AssistantConfig", AssistantConfigResult{BuiltinDefaults: BuiltinAssistantToolIDs}},
 	}
 }
 

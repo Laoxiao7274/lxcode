@@ -1,0 +1,208 @@
+/* ===== 助手模式（顶层模式，助手模式 P2） =====
+ * 设计语言：与主域同 token 基座（颜色全部引用 :root/--bg 系 token，双主题自动
+ * 生效），视觉可辨识度靠**容器级 token 覆写**（.assistant-ws 域内 --asst-*）——
+ * 不动 :root（base.css 的逐像素纪律）。助手紫（#8b5cf6，assistantAgentDef.Color）
+ * 是助手模式的识别色。
+ *
+ * 布局：AssistantWorkspace = 左侧会话列表（主域 .sidebar 同款 252px）+ 右侧
+ * 时间线（assistant-page 复用 panels.css 的既有 .assistant-* 规则——本文件
+ * 只新增顶层容器/输入的差异面，不重写时间线排版）。 */
+
+.assistant-ws {
+  /* 容器级 token（--asst-*）：助手模式的识别色与差量面。 */
+  --asst-accent: #8b5cf6;       /* 助手紫（识别色） */
+  --asst-accent-soft: rgba(139, 92, 246, 0.14); /* 选中底（亮暗主题共用 wash） */
+  /* 显式 grid 定位（同 .sidebar/.main 的纪律）：.app 是 grid
+   *（rows: 44px auto 1fr），不写 grid-row 会自动排布进 row 2（auto 行 =
+   * TabBar 那行）——高度塌成内容高，主区大片空白（2026-12 截图崩坏根因）。
+   * 助手模式没有 TabBar，row 2 留空；工作区占满 row 3 的两列。 */
+  grid-row: 3;
+  grid-column: 1 / -1;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* ---- 左侧会话列表（主域 .sidebar 同款骨架） ----
+ * 外壳直接用主域 .sidebar 类（252px 列 + border-right var(--border) +
+ * bg var(--bg-side)——sidebar.css 的既有规则逐像素复用）。差量只有：
+ * ① grid 定位在 .assistant-ws 上声明（助手模式整块占 row 3 两列），侧栏自身
+ *    的 grid-row/grid-column 在 flex 父容器里无害，不覆盖；
+ * ② 列表宽度 --asst-side-w 248→252 对齐主域列宽（差量只在变量）。 */
+.assistant-ws-side {
+  --asst-side-w: 252px;
+  flex: none;
+  width: var(--asst-side-w);
+  min-height: 0;
+}
+/* 列表加载失败：搜索框下方的一行提示（主域没有对应物——助手域独有） */
+.assistant-ws-list-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  font-size: 11px;
+  color: var(--err-text);
+}
+/* 会话行 = 手写 DOM 用主域 .session-item 系类（sidebar.css）：
+ * 中性灰 hover/选中态、busy 蓝点加大 + spinner + 标题加重——全部复用。
+ * 助手域没有 ⋯ 菜单（assistant.* 无 rename/archive），渲染行数比 SessionRow 少。 */
+.assistant-ws-sessions {
+  padding: 0;
+}
+.assistant-ws-sessions-empty {
+  padding: 10px 14px;
+  font-size: 11.5px;
+  color: var(--fg-faint);
+  line-height: 1.6;
+}
+
+/* ---- 右侧主区（时间线由 .assistant-page 既有规则承担） ---- */
+.assistant-ws-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.assistant-ws-main .assistant-page {
+  flex: 1;
+  min-height: 0;
+}
+/* 对话流容器（flex:1 滚动）：.assistant-body 只在助手模式挂载——
+ * 铺满页头与输入区之间的剩余空间，底部只留流内输入区的自然间距
+ *（AssistantInput 不是 absolute 浮层，不需要按 --composer-h 预留——那个变量
+ * 由主域 Composer 发布，助手域从没人写它，恒为 170px 兜底 → 输入框上方凭空
+ * 一条大空白，2026-12 截图崩坏根因之二）。 */
+.assistant-ws-main .assistant-body {
+  padding-bottom: 14px;
+}
+/* 流内输入区（AssistantInput——Composer 视觉壳）：flex 列的最后一项 = 自然贴底；
+ * 盒子本体 720px 居中（与 .thread 同轴心）。底距在容器上给（原来挂在
+ * .assistant-input 的 margin-bottom 移到这里——类名换了，间距语义不变），
+ * 上面补与最后一条消息的间距。 */
+.assistant-ws-main .assistant-input {
+  max-width: 720px;
+  width: calc(100% - 48px);
+  margin: 10px auto 14px;
+}
+/* 浮标让位对齐归零后的滚动区底距（panels.css 那条按 --composer-h 预留，
+ * 助手模式没有该变量——与 .assistant-ws-main .assistant-body 同步归零）。 */
+.assistant-ws-main .assistant-page .scroll-to-bottom {
+  bottom: 14px;
+}
+/* 助手模式的子会话视图：页头（返回 + 标题）+ ChildSessionPage。
+ * ChildSessionPage 自带的「返回主会话」按钮在这里没有意义（返回 = 回助手会话，
+ * 由本页头承担）——隐藏它（display:none 不是删组件：域口覆盖仍要透传 onBack）。 */
+.assistant-ws-child-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--bg-side);
+}
+.assistant-ws-child-head .child-session-back {
+  display: none;
+}
+.assistant-ws-back.fd-btn-g {
+  flex: none;
+  padding: 3px 10px;
+  font-size: 11.5px;
+  border-radius: 7px;
+  background: var(--surface);
+}
+.assistant-ws-child-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.assistant-child-page {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+/* 拓展页内嵌视图：CatalogPage（.cg-page，padding 24/30 是项目模式 TabBar 页
+ * 的内边距）铺满返回头下方的剩余空间——滚动容器 flex:1 已就位，无需差量。 */
+.assistant-ws-main .cg-page {
+  flex: 1;
+  min-height: 0;
+}
+/* 助手配置独立页（不经 CatalogPage）：滚动容器对齐 .cg-page 的内边距与
+ * 滚动形态——.asstcfg（组件自带 max-width:720px）在其内正常布局。 */
+.assistant-config-page {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 24px 30px 64px;
+}.assistant-child-page .child-session-page {
+  flex: 1;
+  min-height: 0;
+}
+
+/* ---- 空态（数据源不支持助手） ---- */
+.assistant-ws-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--fg-faint);
+}
+.assistant-ws-empty-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--asst-accent);
+}
+
+/* ---- 输入区（AssistantInput = Composer 视觉壳，视觉全走 composer.css 全局类） ----
+ * .pi / .pi-row / .piInput / .piBar / .piTips / .send-btn / .busy-row 的样式
+ * 一行都不复制——composer.css 是全局加载的，助手域直接吃到逐像素一致的白卡。
+ * 这里只有两件差量：
+ * ① 专属覆写：基态 .piInput 的 padding-left:0 是给主域「+」按钮让位的——助手
+ *    域没有「+」，补回与 piBar 一致的左内距（主域 :disabled 分支同款值）。
+ * ② 流内定位：不套 .composer-zone（absolute 会破坏 flex 贴底），容器外距见上。 */
+.assistant-ws .pi-row textarea.piInput {
+  padding-left: 16px;
+}
+
+/* ---- 顶层模式切换（Topbar 左区；no-drag 豁免——同 .conn-pill 纪律） ---- */
+.mode-switch {
+  flex: none;
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--surface);
+  -webkit-app-region: no-drag;
+}
+.mode-switch-item {
+  padding: 3px 12px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.mode-switch-item:hover {
+  color: var(--fg);
+}
+.mode-switch-item.on {
+  background: var(--asst-accent-soft, rgba(139, 92, 246, 0.14));
+  color: var(--fg);
+  font-weight: 600;
+}
+.mode-switch-item.on[aria-selected="true"][title^="助手"] {
+  color: var(--asst-accent, #8b5cf6);
+}

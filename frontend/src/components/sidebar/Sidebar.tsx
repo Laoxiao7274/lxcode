@@ -11,6 +11,12 @@ import { ProjectInstructionsDialog } from "./ProjectInstructionsDialog";
 import { RemoveProjectDialog } from "./RemoveProjectDialog";
 import { SessionRow } from "./SessionRow";
 
+/** 「来自助手」小节标题行与行类（session-item 骨架复用——视觉与对话行同款）。
+ *  行点击 = 跨模式跳转 onOpenAssistantChild(childId)：App 切助手模式 +
+ *  AssistantWorkspace 直接落在该任务的子会话视图（域纪律：行是「看/跳」入口，
+ *  不接 chat.* 历史装载；进的是 AssistantChildPage → assistant.childHistory）。 */
+const ASSISTANT_SECTION_HEAD = "assistant-tasks-head";
+
 /** 空列表常量：没有该分组的会话时返回同一个引用（不每次新建数组——
  *  否则「项目列表里的空分组」每次渲染都换引用，下游 memo 全部失效）。 */
 const EMPTY_SESSIONS: SessionMeta[] = [];
@@ -56,6 +62,7 @@ export const Sidebar = memo(function Sidebar({
   onOpenGit,
   remoteActive,
   onOpenRemote,
+  onOpenAssistantChild,
 }: {
   source: AgentSource;
   currentId: string;
@@ -85,6 +92,10 @@ export const Sidebar = memo(function Sidebar({
   /** 远程访问页当前激活（局域网/樱花frp/Tailscale 模式配置）。 */
   remoteActive: boolean;
   onOpenRemote: () => void;
+  /** 「来自助手」任务行点击（2026-12）：跨模式跳转——App 切助手模式 +
+   *  AssistantWorkspace 直接落在该子会话视图。助手域能力缺席（演示源）时
+   *  整个小节不渲染，回调不会被触发。 */
+  onOpenAssistantChild: (childId: string) => void;
 }) {
   const [query, setQuery] = useState("");
   const [menuFor, setMenuFor] = useState<string | null>(null);
@@ -176,6 +187,28 @@ export const Sidebar = memo(function Sidebar({
     const name = s.workspace ? projectById.get(s.workspace)?.name : undefined;
     return name ? `${name} · ${s.title}` : undefined;
   }, [projectById]);
+
+  // ---- 「来自助手」小节（2026-12）----
+  // 当前范围是真实项目时拉 assistant.tasks(projectId)——run_task 派给该项目的
+  // 任务子会话（updated_at 倒序）。空列表 = 该项目没有助手任务 → 小节不渲染。
+  // 未分组（LOOSE）不拉：助手任务的 workspace 恒是具体项目 id。失败静默 =
+  // 小节不出现（数据源缺席/后端老版本没有 assistant.tasks——不把侧栏变成
+  // 错误横幅；列表是锦上添花的入口，子会话本体在助手模式里不丢）。
+  const assistant = source.assistant;
+  const [assistantTasks, setAssistantTasks] = useState<SessionMeta[]>(EMPTY_SESSIONS);
+  useEffect(() => {
+    if (!assistant || filter === LOOSE || filter === "") {
+      setAssistantTasks(EMPTY_SESSIONS);
+      return;
+    }
+    let alive = true;
+    setAssistantTasks(EMPTY_SESSIONS); // 切范围先清旧项目的小节（迟到的应答不画到别的项目下）
+    assistant.tasks(filter).then(
+      (tasks) => { if (alive) setAssistantTasks(tasks.length ? tasks : EMPTY_SESSIONS); },
+      () => { if (alive) setAssistantTasks(EMPTY_SESSIONS); },
+    );
+    return () => { alive = false; };
+  }, [assistant, filter]);
 
   // 后出现的会话行（首轮消息建会话、归档区恢复）单独入场；
   // 首屏整列由 staggerIn 接管，boot 窗口内跳过避免双份动画打架。
@@ -445,6 +478,42 @@ export const Sidebar = memo(function Sidebar({
           </svg>
         </span>
       </div>
+      {/* 「来自助手」小节（2026-12）：当前项目有助手派的任务子会话时才出现
+          （空分组不渲染）。行 = SessionRow 骨架（busy 点同款），点击 = 跨模式
+          跳转到助手模式的子会话视图（域纪律：这里不接 chat.* 历史装载——
+          assistant 任务的历史走 assistant.childHistory，在助手域内闭环）。 */}
+      {assistantTasks.length > 0 && (
+        <div className={ASSISTANT_SECTION_HEAD}>
+          <div className="sidebar-label group-head assistant-tasks-label">
+            来自助手
+            <span className="group-actions" aria-hidden>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="9" />
+                <path d="M12 8v4l3 2" />
+              </svg>
+            </span>
+          </div>
+          {assistantTasks.map((t) => (
+            <div
+              key={t.id}
+              className="session-item assistant-task-row"
+              role="button"
+              tabIndex={0}
+              title={`助手派的任务：${t.title}`}
+              aria-label={`来自助手的任务：${t.title}${t.running ? "（正在运行）" : ""}`}
+              onClick={() => onOpenAssistantChild(t.id)}
+              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpenAssistantChild(t.id); } }}
+            >
+              <div className="session-line">
+                <span className={"s-dot" + (t.running ? " live" : "")} aria-hidden />
+                <span className="title">{t.title}</span>
+                {t.running && <span className="mset-spinner session-spinner" aria-hidden />}
+                <span className="time">{t.updatedAt}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="sess-scroll">
       {list.map((s) => (
         <SessionRow

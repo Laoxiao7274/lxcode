@@ -13,6 +13,7 @@ package store
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/moyunteng/lxcode/internal/sessiondata"
 )
@@ -26,12 +27,23 @@ import (
 // 会话 24ms/轮、50MB ≈ 200ms，而这段代码在 TurnDone 的事件路径上每轮收尾都要
 // 跑一遍；逐行 Scan 的固定开销（modernc 纯 Go 驱动 ~4.7µs/行）也一并省掉。
 //
+// **会话级缓存（2026-12 会话切换优化批 3）**：聚合输入是这张会话的 messages 行集，
+// 它只在两个写点变化——AppendMsg 与 AppendCheckpoint（INSERT；SetLeaf/RewindTo
+// 只移叶指针不动行，撤回删行的旧行为早已退役）。缓存在这两个写点失效：
+// 读多写少的会话（切会话回放、轮末 done 各读一次）命中缓存 = 零 SQL；
+// 写一次失效一次，失效后下一次读重算——写后读一致性由
+// TestSessionStatsCacheInvalidatedOnAppend / OnCheckpoint 钉住。
+// （会话不存在报错的语义不变：缓存只存成功折叠的结果。）
+//
 // **口径的参照物是 foldSessionStats**（本文件下方）：下面每个 CASE 的条件与它
 // 逐条对应（含 legacyUsageRow 的老口径判定），两条路径的一致性由
 // TestSessionStatsAggregationMatchesFullFold 钉住——改任何一边先跑那个测试。
 // 折叠输入是**整段日志**（含被压缩影子掉的行）：WHERE 只按 session_id 过滤，
 // 不做任何影子/存活过滤，与 foldSessionStats 喂 readRows 全量行同口径。
 func (s *Store) SessionStatsOf(id string) (sessiondata.SessionStats, error) {
+	if st, ok := s.statsCacheGet(id); ok {
+		return st, nil
+	}
 	var exists int
 	if err := s.db.QueryRow(`SELECT 1 FROM sessions WHERE id = ?`, id).Scan(&exists); err != nil {
 		return sessiondata.SessionStats{}, fmt.Errorf("会话 %s 不存在", id)
@@ -70,7 +82,60 @@ func (s *Store) SessionStatsOf(id string) (sessiondata.SessionStats, error) {
 	); err != nil {
 		return sessiondata.SessionStats{}, fmt.Errorf("折叠会话 %s 统计失败: %w", id, err)
 	}
+	s.statsCachePut(id, st)
 	return st, nil
+}
+
+// statsCache 是 SessionStatsOf 的会话级缓存（见上——失效点只有两个 INSERT 写点）。
+// 键 = 会话 id；值 = 折叠结果。上限保护：只记最近 statsCacheMax 条（本地单用户
+// 的活跃会话远小于这个数；超出按写入顺序淘汰——LRU 的近似，不值得为此多一层链表）。
+type statsCache struct {
+	mu      sync.Mutex
+	entries map[string]sessiondata.SessionStats
+	order   []string // 写入顺序（淘汰用）
+}
+
+const statsCacheMax = 256
+
+func (s *Store) statsCacheGet(id string) (sessiondata.SessionStats, bool) {
+	if s.stats == nil {
+		return sessiondata.SessionStats{}, false
+	}
+	s.stats.mu.Lock()
+	defer s.stats.mu.Unlock()
+	st, ok := s.stats.entries[id]
+	return st, ok
+}
+
+func (s *Store) statsCachePut(id string, st sessiondata.SessionStats) {
+	if s.stats == nil {
+		s.stats = &statsCache{entries: map[string]sessiondata.SessionStats{}}
+	}
+	s.stats.mu.Lock()
+	defer s.stats.mu.Unlock()
+	if _, exists := s.stats.entries[id]; !exists {
+		s.stats.order = append(s.stats.order, id)
+	}
+	s.stats.entries[id] = st
+	// 容量保护：超限按写入顺序淘汰最旧的（活跃会话集合远小于上限，实际走不到）。
+	for len(s.stats.order) > statsCacheMax {
+		oldest := s.stats.order[0]
+		s.stats.order = s.stats.order[1:]
+		delete(s.stats.entries, oldest)
+	}
+}
+
+// statsCacheInvalidate 让一条会话的统计缓存失效（AppendMsg / AppendCheckpoint
+// 的写后调用——见 SessionStatsOf 的缓存注释）。没有缓存时 no-op。
+func (s *Store) statsCacheInvalidate(id string) {
+	if s.stats == nil {
+		return
+	}
+	s.stats.mu.Lock()
+	defer s.stats.mu.Unlock()
+	if _, exists := s.stats.entries[id]; exists {
+		delete(s.stats.entries, id)
+	}
 }
 
 // foldSessionStats 是折叠本体（纯函数，单测直接喂行）。

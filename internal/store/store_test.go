@@ -138,6 +138,33 @@ func TestListOrderAndTitle(t *testing.T) {
 	}
 }
 
+// TestSessionMetaOf：按 id 点查单条会话元数据（「当前状态」注入段的运行中
+// 会话条目用）。口径与 List 一致：标题/时间/归属；不存在的 id 报错（调用方
+// 跳过该条，不硬猜）。
+func TestSessionMetaOf(t *testing.T) {
+	s := openTestStore(t)
+	id, _ := s.Create()
+	if _, err := s.AppendMsg(id, llm.Message{Role: "user", Content: "第一条消息"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SessionWorkspace(id, "proj-1"); err != nil {
+		t.Fatal(err)
+	}
+	meta, err := s.SessionMetaOf(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.ID != id || meta.Title != "第一条消息" || meta.Workspace != "proj-1" {
+		t.Fatalf("元数据不符: %+v", meta)
+	}
+	if meta.UpdatedAt == "" {
+		t.Fatal("UpdatedAt 应已格式化（非空）")
+	}
+	if _, err := s.SessionMetaOf("no-such-id"); err == nil {
+		t.Fatal("不存在的会话应报错")
+	}
+}
+
 func TestRenameAndArchive(t *testing.T) {
 	s := openTestStore(t)
 	id, _ := s.Create()

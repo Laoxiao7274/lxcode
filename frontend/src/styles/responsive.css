@@ -23,6 +23,11 @@
   .main {
     grid-column: 1 / -1;
   }
+  /* 助手工作区同陷阱：桌面声明 grid-column: 1 / -1 在 1fr 单列网格里
+     同样造隐式列，必须钉回唯一列。 */
+  .assistant-ws {
+    grid-column: 1;
+  }
   /* 顶栏面板在小屏占满可用宽度（400px 固定宽在 600px 窗口里贴边太紧） */
   .job-pop {
     width: min(400px, calc(100vw - 24px));
@@ -36,7 +41,6 @@
   .session-spinner,
   .proj-run-spinner,
   .msg,
-  .job-card,
   .job-pop {
     animation: none;
   }

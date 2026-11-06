@@ -119,6 +119,13 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig, ac *sessiondata.A
 	readState := s.readState
 	s.mu.Unlock()
 	ctx = tools.WithReadState(ctx, readState)
+	// bash_readonly 反干扰提示的会话级一次性记录（2026-12 工具选择引导修复
+	// 第 6 项）：grep/cat 命中时每会话只回填一次专用工具指引——每个结果都
+	// 回填会很吵，一次足以改向。
+	s.mu.Lock()
+	nudgeState := s.nudgeState
+	s.mu.Unlock()
+	ctx = tools.WithNudgeState(ctx, nudgeState)
 	// 会话 id 也进 ctx：后台任务（bash 的 run_in_background）要记**归属会话**，
 	// 唤醒投递按它找回会话。注册表是进程级单例，多会话并发时不能把归属
 	// 挂在注册表上（与 workdir / todo sink 同一条理由）。
@@ -131,6 +138,12 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig, ac *sessiondata.A
 	// AttachTo 恢复进 s.workspace）——不在 dispatch 里特判；未分组会话是空串，
 	// session_search 据此退回全库（「当前项目」不存在）。
 	ctx = tools.WithWorkspace(ctx, s.workspace)
+	// 会话域也进 ctx（session_search 的助手语境范围注明取它）：助手会话
+	// （space=assistant）的全库扫描实际是「全部主域会话」，要在结果头部注明
+	// 域归属——不注明的话助手会把主域会话的内容当成自己与用户的对话。
+	if ac != nil {
+		ctx = tools.WithSessionSpace(ctx, ac.Def.Space)
+	}
 	// 后台任务结束通告的**执行会话**投递口（2026-12 修订）：通告按时间线归属
 	// 投给父会话（server 广播路径），子会话自己收不到「它等的那个任务结束了」
 	// ——于是 sleep 盲等（真库实锤：验收子会话 sleep 累计 53.5 分钟）。注入
@@ -405,7 +418,7 @@ func (s *Session) streamRound(ctx context.Context, workDir, effort, requestedMod
 	wt, isChild := s.worktreeInfo()
 	var prompt string
 	if ac != nil {
-		prompt = ComposeSystemPrompt(s.tools, workDir, ac, allow, wt, isChild, docs, s.TodoPromptMode())
+		prompt = composeSystemPrompt(s.tools, workDir, ac, allow, wt, isChild, docs, s.projectPanoramaFor(ac), s.activityFor(ac), s.TodoPromptMode())
 	} else {
 		prompt = BuildSystemPrompt(s.tools, workDir, wt, isChild, docs, s.TodoPromptMode())
 	}

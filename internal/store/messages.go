@@ -105,6 +105,9 @@ func (s *Store) AppendMsg(id string, m llm.Message) (int64, error) {
 	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
+	// 写后失效统计缓存（见 stats.go SessionStatsOf 的缓存注释）：这条 INSERT
+	// 改变了折叠的输入（轮数/步数/用量桶都可能变）。
+	s.statsCacheInvalidate(id)
 	return int64(seq), nil
 }
 
@@ -512,6 +515,8 @@ func (s *Store) AppendCheckpoint(id string, m llm.Message, skip, count int) (int
 	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
+	// 写后失效统计缓存（AppendMsg 同一条理由——检查点行也是一次 INSERT）
+	s.statsCacheInvalidate(id)
 	return int64(seq), nil
 }
 

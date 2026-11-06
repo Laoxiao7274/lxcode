@@ -1,13 +1,13 @@
 // 后台任务（jobs）前端契约：wire 映射、EndedBy 文案、时长/输出切片、
-// 归约（同一任务一张卡）、WSAgent 的 job.* 三个方法与 DemoAgent 的演示链路。
+// 归约（时间线不出任务卡）、WSAgent 的 job.* 三个方法与 DemoAgent 的演示链路。
 //
 // 这些是最容易「静默走偏」的一层：后端改一个键名不会让前端编译失败，只会
 // 变成空字符串（超时文案不显示、结束原因显示成「正常结束」）。
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  JOB_NOTICE_PREFIX, activeJobCount, formatDuration, isJobActive, isJobNotice, isJobTimeout,
-  jobElapsedMs, jobFromWire, jobNoticeBody, jobOutcomeText, jobTone, shortSessionId, sortJobs, tailOf, upsertJob,
+  JOB_NOTICE_PREFIX, JOB_GROUP_LOOSE, activeJobCount, formatDuration, groupJobsByWorkspace, isJobActive, isJobNotice,
+  isJobTimeout, jobElapsedMs, jobFromWire, jobNoticeBody, jobOutcomeText, jobTone, shortSessionId, sortJobs, tailOf, upsertJob,
 } from '../src/shared/jobs.ts';
 import { mapEvent } from '../src/agent/ws/events.ts';
 import { reduce, reduceSessionStates } from '../src/shared/store.ts';
@@ -20,6 +20,7 @@ const base = { blocks: [], busy: false, pending: null, todos: [], currentId: '',
 const WIRE = {
   id: 'j1', kind: 'bash', label: 'go test ./... -count=1',
   status: 'running', ended_by: '', detail: '', session_id: 's1', owner_session_id: 's1',
+  workspace: 'lxcode',
   started_at: '2026-09-29T10:00:00Z', finished_at: '',
   output_tail: 'ok  internal/agent\t4.106s', output_path: 'C:/sessions/jobs/j1.log',
 };
@@ -31,23 +32,27 @@ test('jobFromWire 逐字读契约字段（snake_case）', () => {
   assert.deepEqual(job, {
     id: 'j1', kind: 'bash', label: 'go test ./... -count=1',
     status: 'running', ended_by: '', detail: '', session_id: 's1', owner_session_id: 's1',
+    workspace: 'lxcode',
     started_at: '2026-09-29T10:00:00Z', finished_at: '',
     output_tail: 'ok  internal/agent\t4.106s', output_path: 'C:/sessions/jobs/j1.log',
   });
 });
 
 test('jobFromWire 容忍 camelCase（并行实现期 tag 分叉不至于静默成空串）', () => {
-  const job = jobFromWire({ id: 'j2', endedBy: 'user', sessionId: 's9', ownerSessionId: 's-root', startedAt: 'T', outputTail: 'x' });
+  const job = jobFromWire({ id: 'j2', endedBy: 'user', sessionId: 's9', ownerSessionId: 's-root', startedAt: 'T', outputTail: 'x', workspace: 'p2' });
   assert.equal(job.ended_by, 'user');
   assert.equal(job.session_id, 's9');
   assert.equal(job.owner_session_id, 's-root');
   assert.equal(job.started_at, 'T');
   assert.equal(job.output_tail, 'x');
+  assert.equal(job.workspace, 'p2');
 });
 
 test('jobFromWire 对缺字段/坏载荷不抛异常（空串是中性态，不是崩溃）', () => {
   assert.equal(jobFromWire(null).id, '');
   assert.equal(jobFromWire({ id: 42 }).id, '', '非字符串一律空串');
+  // workspace 缺键（老后端 omitempty）= 空串（未分组），不炸
+  assert.equal(jobFromWire({ id: 'j3' }).workspace, '');
 });
 
 // ---------- 状态与文案 ----------
@@ -123,6 +128,34 @@ test('upsertJob 保位置、sortJobs 在跑的在前', () => {
   assert.equal(shortSessionId('20260929-abcdef'), '20260929');
 });
 
+// ---------- 面板按项目分组（groupJobsByWorkspace——纯函数） ----------
+
+test('分组：workspace 归组、空 = 未分组、组名解析失败回退 id、未分组恒最后', () => {
+  const job = (id, workspace) => jobFromWire({ ...WIRE, id, workspace });
+  const groups = groupJobsByWorkspace(
+    [job('a', 'p-b'), job('b', ''), job('c', 'p-a'), job('d', 'p-ghost')],
+    ['p-a', 'p-b'],
+    (id) => ({ 'p-a': '项目A', 'p-b': '项目B' })[id] ?? '',
+  );
+  assert.deepEqual(groups.map((g) => g.key), ['p-a', 'p-b', 'p-ghost', ''], '有归属的组按注册顺序，未知 id 按首现顺序，未分组恒最后');
+  assert.deepEqual(groups.map((g) => g.name), ['项目A', '项目B', 'p-ghost', '未分组'], '解析不到名字回退 id（不冒充）');
+  assert.deepEqual(groups.find((g) => g.key === 'p-b').jobs.map((j) => j.id), ['a'], '组内成员正确');
+  assert.deepEqual(groups.find((g) => g.key === '').jobs.map((j) => j.id), ['b']);
+  // 组内顺序 = 传入顺序（排序纪律只在 sortJobs 里做一次，分组不二次排）
+  const two = groupJobsByWorkspace([job('x', 'p-a'), job('y', 'p-a')], ['p-a'], () => '项目A');
+  assert.deepEqual(two[0].jobs.map((j) => j.id), ['x', 'y']);
+});
+
+test('分组：workspace 键缺席（老后端）与空串同语义——都进未分组', () => {
+  const missing = jobFromWire({ id: 'm1', status: 'running' });
+  const empty = jobFromWire({ ...WIRE, id: 'm2', workspace: '' });
+  const groups = groupJobsByWorkspace([missing, empty], [], () => '');
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].key, JOB_GROUP_LOOSE);
+  assert.equal(groups[0].name, '未分组');
+  assert.deepEqual(groups[0].jobs.map((j) => j.id), ['m1', 'm2']);
+});
+
 // ---------- 唤醒通告（user 角色消息 + 文本前缀识别） ----------
 
 test('JOB_NOTICE_PREFIX 与后端 protocol.JobNoticePrefix 逐字一致（含尾空格）', () => {
@@ -144,7 +177,7 @@ test('通告识别只看文本前缀，不看角色', () => {
 
 test('通告在实时路径上不产生任何块（hidden：不上对话时间线，也不能变用户气泡）', () => {
   const s = reduce(base, { type: 'userMessage', sessionId: 's1', text: '[后台任务通告] 用户主动结束了后台任务 X。不要重启它。' });
-  assert.equal(s.blocks.length, 0, '写给模型的唤醒注记，界面上当它不存在（任务状态在任务卡与 Jobs 面板）');
+  assert.equal(s.blocks.length, 0, '写给模型的唤醒注记，界面上当它不存在（任务状态只在 Jobs 面板）');
   // 普通用户消息照旧是气泡
   const s2 = reduce(s, { type: 'userMessage', sessionId: 's1', text: '帮我看下构建' });
   assert.equal(s2.blocks.length, 1);
@@ -203,51 +236,46 @@ test('owner_session_id 缺席时回落 session_id（老后端/顶层会话起的
 
 // ---------- 归约（reduce.ts） ----------
 
-test('jobStarted 建卡；jobSettled 就地更新同一张卡（不追加第二张）', () => {
+test('jobStarted/jobSettled 不在时间线上建任何块（2026-12 拍板：面板是唯一 UI）', () => {
   let s = reduce(base, { type: 'jobStarted', sessionId: 's1', job: jobFromWire(WIRE) });
-  assert.equal(s.blocks.length, 1);
-  assert.equal(s.blocks[0].kind, 'job');
-  const uid = s.blocks[0].uid;
+  assert.equal(s.blocks.length, 0, '时间线不出任务卡（docs/jobs.md §6）');
+  assert.deepEqual(s, base, '原样返回 state（没有变化就不该触发重渲染）');
 
   s = reduce(s, {
     type: 'jobSettled', sessionId: 's1',
     job: jobFromWire({ ...WIRE, status: 'completed', ended_by: 'self', detail: '退出码 0', finished_at: 'T' }),
   });
-  assert.equal(s.blocks.length, 1, '同一个任务只该有一张卡');
-  assert.equal(s.blocks[0].uid, uid, 'uid 稳定（React key 不重挂）');
-  assert.equal(s.blocks[0].job.status, 'completed');
-  assert.equal(s.blocks[0].job.detail, '退出码 0');
+  assert.equal(s.blocks.length, 0, 'settled 同样不建块');
 });
 
-test('只收到 settled（重连后）也要补一张已结束的卡——不能静默丢弃', () => {
+test('只收到 settled（重连后）同样不出块——任务只在面板可见', () => {
   const s = reduce(base, {
     type: 'jobSettled', sessionId: 's1',
     job: jobFromWire({ ...WIRE, status: 'killed', ended_by: 'user' }),
   });
-  assert.equal(s.blocks.length, 1);
-  assert.equal(jobOutcomeText(s.blocks[0].job), '你停的');
+  assert.equal(s.blocks.length, 0);
 });
 
-test('任务卡按归属会话路由（不串到别的会话时间线）', () => {
+test('任务事件按归属会话路由，但不再影响任何会话的 blocks（面板缓存另走 job-admin）', () => {
   let all = {};
   all = reduceSessionStates(all, { type: 'jobStarted', sessionId: 's1', job: jobFromWire(WIRE) });
-  assert.equal(all.s1.blocks.length, 1);
+  assert.deepEqual(all.s1.blocks, []);
   assert.equal(all.s2, undefined, '别的会话不该凭空多出状态');
-  // 无归属（session_id 为空）的任务不进任何会话时间线
+  // 无归属（session_id 为空）的任务也不进任何会话时间线
   all = reduceSessionStates(all, { type: 'jobStarted', sessionId: '', job: jobFromWire({ ...WIRE, id: 'j9' }) });
-  assert.equal(all.s1.blocks.length, 1);
+  assert.deepEqual(all.s1.blocks, []);
   assert.equal(Object.keys(all).length, 1);
 });
 
-test('冷回放（切走再切回）不丢任务卡——历史里没有 jobs', () => {
+test('冷回放（切走再切回）不再保留/重建任务块——历史与归约都不出 job 卡', () => {
   let s = reduce(base, { type: 'jobStarted', sessionId: 's1', job: jobFromWire(WIRE) });
   s = reduce(s, { type: 'userMessage', sessionId: 's1', text: '问题' });
   s = reduce(s, {
     type: 'historyLoaded', sessionId: 's1',
     history: { sessionId: 's1', messages: [{ role: 'user', content: '问题' }], busy: false, pending: null, todos: [] },
   });
-  assert.equal(s.blocks.filter((b) => b.kind === 'job').length, 1, '重建历史不该丢掉任务卡');
-  assert.equal(s.blocks.at(-1).kind, 'job');
+  assert.equal(s.blocks.filter((b) => b.kind === 'job').length, 0, '重建后没有任务块');
+  assert.deepEqual(s.blocks.map((b) => b.kind), ['user']);
 });
 
 // ---------- WSAgent（live） ----------
@@ -337,7 +365,7 @@ test('演示模式：起后台任务 → 读输出 → 用户点「结束」→ 
   t.mock.timers.tick(30_000);
 
   const started = events.find((e) => e.type === 'jobStarted');
-  assert.ok(started, '演示轮次应起一个后台任务（否则 UI 无卡可看）');
+  assert.ok(started, '演示轮次应起一个后台任务（否则面板无任务可看）');
   const id = started.job.id;
   assert.equal(started.sessionId, session, '任务归属当前会话');
   assert.equal(agent.jobAdmin.jobs()[0].status, 'running');

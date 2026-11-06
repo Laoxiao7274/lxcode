@@ -13,7 +13,7 @@
 // 不动 blocks/pending。
 import type {
   AgentAdminEntry, AgentAdminMcServer, AgentAdminModule, AgentAdminSource, AgentAdminTool, AgentEvent, AgentSource,
-  ApprovalMode, ArchiveOutcome, CatalogModelList, CatalogProviderList, ChatTreeResult, CompactOutcome, DiscoverResult,
+  ApprovalMode, ArchiveOutcome, AssistantSource, CatalogModelList, CatalogProviderList, ChatTreeResult, CompactOutcome, DiscoverResult,
   FileRestoreResult, GitOverview, HistorySnapshot, JobAdminSource, JobInfo, JobLogResult, ModelAdminSource, ModelEntry,
   ProjectInstructions, ProjectMeta, RewindOutcome, SearchAdminSource, SearchChannel, SearchChannelsSnapshot,
   SearchTestResult, SendAttachments, SendOptions, SessionMeta, SetLeafOutcome, TodoItem, TodoPromptMode,
@@ -29,6 +29,7 @@ import { AgentAdminDomain } from "./agent-admin";
 import { SearchAdmin } from "./search-admin";
 import { JobAdminDomain } from "./job-admin";
 import { TodoPrompt } from "./todo-prompt";
+import { AssistantDomain } from "./assistant";
 import { treeFromWire } from "./tree";
 
 export { wsURL } from "./connection";
@@ -46,6 +47,8 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
   readonly searchAdmin: SearchAdminSource;
   readonly jobAdmin: JobAdminSource;
   readonly todoPromptAdmin: TodoPromptSource;
+  /** 助手域（assistant.*，助手模式 P1）——AgentSource.assistant 的实现。 */
+  readonly assistant: AssistantSource;
   // 管理域转发（implements 六接口——成员在域对象上，这里逐个转发以满足接口
   // 与既有调用方 `agent.modelAdmin.*` / `agent.jobAdmin.*` 两种访问形态）。
   models(): ReturnType<ModelAdminSource["models"]> { return this.modelAdmin.models(); }
@@ -112,6 +115,7 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
     this.searchAdmin = new SearchAdmin(this.conn);
     this.jobAdmin = new JobAdminDomain(this.conn);
     this.todoPromptAdmin = new TodoPrompt(this.conn);
+    this.assistant = new AssistantDomain(this.conn, (ev) => this.emit(ev), (m) => this.opError(m));
     this.wireAgentSourceSideEffects();
   }
 
@@ -238,7 +242,9 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
   }
 
   /** 连接层的历史重放（boot/resume 链内部用——不经测试插桩口）。
-   *  装载成功同样记入 loadedSessions（与插桩口同一份记忆——resume 链的秒回）。 */
+   *  装载成功记入 loadedSessions（与插桩口同一份记忆——新建会话链的秒回；
+   *  resumeSession 的并行装载不经过它——那里的记账按 resume+history 双成功
+   *  判定，见 resumeSession 注释）。 */
   private loadHistoryConn(sessionId: string): Promise<void> {
     return this.conn.loadHistory(sessionId).then(() => { this.loadedSessions.add(sessionId); });
   }
@@ -544,23 +550,36 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
       this.focusSession(id);
       return;
     }
-    try {
-      await this.call("session.resume", { id });
-    } catch (e) {
-      this.opError(`恢复会话失败: ${e instanceof Error ? e.message : String(e)}`);
+    // **首次装载并行化**（2026-12 会话切换优化批 1）：session.resume 与
+    // chat.history 两路并行发——切换耗时从「两个串行往返」变成「一个往返」。
+    //
+    // 保留 session.resume 的**语义**（占用/焦点广播/会话列表元数据回填都在它
+    // 的应答路径上），只是不再等它完成才发 history：
+    //  ① session.resume 失败 → 照旧 opError + 放弃本次切换（history 的结果不用
+    //     ——那个会话可能根本不存在，只切焦点会渲染一个空壳）；
+    //  ② chat.history 失败 → 照旧 opError（历史读不到也要说话）。
+    // 两条失败**互不吞**（allSettled 各自记账）；帧序纪律「历史先到、焦点后切」
+    // 由 resumeAll 串行段保持：装载完成后才 focusSession。
+    // 记账（loadedSessions）不放进 loadHistoryConn——它在 history 应答成功时
+    // 无条件记入，而这里 resume 失败的那次不算装载（会话可能根本不存在）。
+    // 双成功才记：resume 失败 / history 失败都留在全量装载路径上。
+    const resume = this.call("session.resume", { id }).then(
+      () => undefined,
+      (e) => ({ resumeError: e instanceof Error ? e.message : String(e) }),
+    );
+    const history = this.conn.loadHistory(id).then(
+      () => undefined,
+      (e) => ({ historyError: e instanceof Error ? e.message : String(e) }),
+    );
+    const [r, h] = await Promise.all([resume, history]);
+    if (r && "resumeError" in r) {
+      this.opError(`恢复会话失败: ${r.resumeError}`);
       return;
     }
-    // **历史先到、焦点后切**。焦点一换，UI 渲染的就是这个会话的状态，而它的
-    // 历史还在路上——先渲染出的是"空会话"（EmptyState「我们做点什么？」），
-    // 一个 WS 往返后再被真历史顶掉。帧级实测（点击会话后采样）：+20ms 整块
-    // 对话消失、空态出现，+48ms 空态消失、内容回来——用户看到的就是
-    // 「进入会话闪两下」。焦点推迟到历史之后，这个中间态根本不会出现。
-    // 与 boot 链同一条纪律（session.new 必须先于 chat.history，见 ws.test.mjs）。
-    // 历史读失败也照切焦点：点了会话没反应，比闪一下更糟。
-    try {
-      await this.loadHistoryConn(id);
-    } catch (e) {
-      this.opError(`读取会话历史失败: ${e instanceof Error ? e.message : String(e)}`);
+    if (h && "historyError" in h) {
+      this.opError(`读取会话历史失败: ${h.historyError}`);
+    } else {
+      this.loadedSessions.add(id);
     }
     this.focusSession(id);
   }

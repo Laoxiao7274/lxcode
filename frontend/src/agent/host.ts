@@ -24,10 +24,16 @@ interface RawBridge {
   refresh(): Promise<unknown>;
 }
 
-/** WS 连接用的后端 token（同步——主进程启动时已缓存）。null = 无桥/未就绪。 */
+/** WS 连接用的后端 token（同步——主进程启动时已缓存）。
+ *  优先级：壳桥 > URL `?token=`。URL 兜底只服务浏览器 dev/局域网调试
+ *  （浏览器无 __LX__ 桥，拿不到 tokenSync）；壳内正常取桥不读 URL。
+ *  null = 无桥且 URL 未带 token。 */
 export function backendToken(): string | null {
   const h = (window as unknown as { __LX__?: { backendRemote?: RawBridge } }).__LX__;
-  return h?.backendRemote?.tokenSync() ?? null;
+  const bridged = h?.backendRemote?.tokenSync() ?? null;
+  if (bridged) return bridged;
+  const url = new URLSearchParams(window.location.search).get("token");
+  return url && url.length > 0 ? url : null;
 }
 
 export function getRemoteControlBridge(): RemoteControlBridge | null {

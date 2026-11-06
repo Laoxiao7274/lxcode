@@ -5,8 +5,9 @@
 // 一个文件 + WAL 就能拿到事务与并发读，备份 = 复制文件。
 //
 // 表结构：releases（版本/渠道/状态/发布时间/下载计数/min_version/required/
-// electron_version/notes/清单字段）+ artifacts（kind/name/size/sha256/文件路径，
-// 每个版本最多三条）+ changelog_entries（版本/分类/文案/日期）+ meta（seed 标记等）。
+// electron_version/notes/清单字段 + mac 清单字段，mac 列可空——老数据/未发
+// mac 的版本两列为 NULL，读侧按「没有 mac 清单」处理）+ artifacts（kind/name/
+// size/sha256/文件路径）+ changelog_entries（版本/分类/文案/日期）+ meta（seed 标记等）。
 package store
 
 import (
@@ -16,6 +17,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	_ "modernc.org/sqlite"
 
@@ -73,7 +75,13 @@ CREATE TABLE IF NOT EXISTS releases (
   manifest_url     TEXT NOT NULL,
   manifest_sha256  TEXT NOT NULL,
   manifest_size    INTEGER NOT NULL,
-  manifest_files   TEXT NOT NULL
+  manifest_files   TEXT NOT NULL,
+  -- mac 清单（manifest-mac.json）：可空列 = 未发 mac 的版本没有 mac 清单。
+  -- 新库直接建出这四列，老库由 migrate() 的 ALTER 补齐。
+  manifest_mac_url     TEXT,
+  manifest_mac_sha256  TEXT,
+  manifest_mac_size    INTEGER,
+  manifest_mac_files   TEXT
 );
 CREATE TABLE IF NOT EXISTS artifacts (
   version   TEXT NOT NULL,
@@ -101,6 +109,20 @@ func (s *Store) migrate() error {
 	if _, err := s.db.Exec(schema); err != nil {
 		return fmt.Errorf("建表失败: %w", err)
 	}
+	// mac 清单列（2026-12 增补）：ALTER 只在列缺失时执行（SQLite 无 ADD COLUMN IF NOT EXISTS）。
+	for _, ddl := range []string{
+		`ALTER TABLE releases ADD COLUMN manifest_mac_url TEXT`,
+		`ALTER TABLE releases ADD COLUMN manifest_mac_sha256 TEXT`,
+		`ALTER TABLE releases ADD COLUMN manifest_mac_size INTEGER`,
+		`ALTER TABLE releases ADD COLUMN manifest_mac_files TEXT`,
+	} {
+		if _, err := s.db.Exec(ddl); err != nil {
+			// duplicate column = 已经加过，正常
+			if !strings.Contains(err.Error(), "duplicate column") {
+				return fmt.Errorf("加 mac 清单列失败: %w", err)
+			}
+		}
+	}
 	return nil
 }
 
@@ -108,21 +130,27 @@ func (s *Store) migrate() error {
 
 type releaseRow struct {
 	version, channel, status, minVersion, electronVersion string
-	publishedAt                                          sql.NullString
-	required                                             bool
-	downloads                                            int64
-	notes                                                string
+	publishedAt                                           sql.NullString
+	required                                              bool
+	downloads                                             int64
+	notes                                                 string
 	manifestURL, manifestSHA256                           string
-	manifestSize                                         int64
-	manifestFiles                                        string
+	manifestSize                                          int64
+	manifestFiles                                         string
+	// mac 清单四列可空：NULL = 该版本没有 mac 清单（未发 mac 或老数据）。
+	manifestMacURL, manifestMacSHA256 sql.NullString
+	manifestMacSize                   sql.NullInt64
+	manifestMacFiles                  sql.NullString
 }
 
 // ListReleases 列版本。includeDrafts=false 时草稿不出现（公开接口）；
 // includeRevoked=true 时连已撤回一起给（下载页的历史版本要用，撤回版保留历史）。
+const releaseColumns = `version, channel, status, published_at, min_version, required,
+		electron_version, downloads, notes, manifest_url, manifest_sha256, manifest_size, manifest_files,
+		manifest_mac_url, manifest_mac_sha256, manifest_mac_size, manifest_mac_files`
+
 func (s *Store) ListReleases(includeDrafts, includeRevoked bool) ([]domain.Release, error) {
-	rows, err := s.db.Query(`SELECT version, channel, status, published_at, min_version, required,
-		electron_version, downloads, notes, manifest_url, manifest_sha256, manifest_size, manifest_files
-		FROM releases`)
+	rows, err := s.db.Query(`SELECT ` + releaseColumns + ` FROM releases`)
 	if err != nil {
 		return nil, err
 	}
@@ -133,7 +161,8 @@ func (s *Store) ListReleases(includeDrafts, includeRevoked bool) ([]domain.Relea
 		var r releaseRow
 		if err := rows.Scan(&r.version, &r.channel, &r.status, &r.publishedAt, &r.minVersion,
 			&r.required, &r.electronVersion, &r.downloads, &r.notes, &r.manifestURL,
-			&r.manifestSHA256, &r.manifestSize, &r.manifestFiles); err != nil {
+			&r.manifestSHA256, &r.manifestSize, &r.manifestFiles,
+			&r.manifestMacURL, &r.manifestMacSHA256, &r.manifestMacSize, &r.manifestMacFiles); err != nil {
 			return nil, err
 		}
 		release, err := s.assemble(r)
@@ -157,11 +186,11 @@ func (s *Store) ListReleases(includeDrafts, includeRevoked bool) ([]domain.Relea
 // GetRelease 取单个版本（含草稿与已撤回；调用方自己决定要不要对外）。
 func (s *Store) GetRelease(version string) (*domain.Release, error) {
 	var r releaseRow
-	err := s.db.QueryRow(`SELECT version, channel, status, published_at, min_version, required,
-		electron_version, downloads, notes, manifest_url, manifest_sha256, manifest_size, manifest_files
-		FROM releases WHERE version = ?`, version).Scan(&r.version, &r.channel, &r.status,
-		&r.publishedAt, &r.minVersion, &r.required, &r.electronVersion, &r.downloads,
-		&r.notes, &r.manifestURL, &r.manifestSHA256, &r.manifestSize, &r.manifestFiles)
+	err := s.db.QueryRow(`SELECT `+releaseColumns+` FROM releases WHERE version = ?`, version).
+		Scan(&r.version, &r.channel, &r.status, &r.publishedAt, &r.minVersion, &r.required,
+			&r.electronVersion, &r.downloads, &r.notes, &r.manifestURL, &r.manifestSHA256,
+			&r.manifestSize, &r.manifestFiles,
+			&r.manifestMacURL, &r.manifestMacSHA256, &r.manifestMacSize, &r.manifestMacFiles)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -219,6 +248,21 @@ func (s *Store) assemble(r releaseRow) (domain.Release, error) {
 			Files:   files,
 		},
 	}
+	// mac 清单（可空列）：四列都非空才算有——部分为 NULL 视为没有（写入侧是
+	// 整组一起写，不该出现半组；防御半旧数据让 manifest-mac 出一半字段）。
+	if r.manifestMacURL.Valid && r.manifestMacSHA256.Valid && r.manifestMacSize.Valid && r.manifestMacFiles.Valid {
+		var macFiles map[string]string
+		if err := json.Unmarshal([]byte(r.manifestMacFiles.String), &macFiles); err != nil {
+			return domain.Release{}, fmt.Errorf("%s 的 manifest-mac.files 不是合法 JSON: %w", r.version, err)
+		}
+		release.ManifestMac = domain.Manifest{
+			Version: r.version,
+			URL:     r.manifestMacURL.String,
+			SHA256:  r.manifestMacSHA256.String,
+			Size:    r.manifestMacSize.Int64,
+			Files:   macFiles,
+		}
+	}
 	if r.publishedAt.Valid {
 		published := r.publishedAt.String
 		release.PublishedAt = &published
@@ -228,7 +272,9 @@ func (s *Store) assemble(r releaseRow) (domain.Release, error) {
 
 func (s *Store) artifactsOf(version string) ([]domain.Artifact, error) {
 	rows, err := s.db.Query(`SELECT kind, name, size, sha256, file_path FROM artifacts
-		WHERE version = ? ORDER BY CASE kind WHEN 'installer' THEN 0 WHEN 'portable' THEN 1 ELSE 2 END`, version)
+		WHERE version = ? ORDER BY CASE kind
+			WHEN 'installer' THEN 0 WHEN 'portable' THEN 1 WHEN 'update' THEN 2
+			WHEN 'mac-installer-arm64' THEN 3 WHEN 'mac-installer-x64' THEN 4 ELSE 5 END`, version)
 	if err != nil {
 		return nil, err
 	}
@@ -254,6 +300,17 @@ func (s *Store) UpsertRelease(r domain.Release) error {
 	if err != nil {
 		return err
 	}
+	// mac 清单可空：ManifestMac 零值（Version==""）= 这版没发 mac，四列写 NULL。
+	macFilesJSON := []byte("null")
+	mac := r.ManifestMac
+	if mac.Version != "" {
+		macFilesJSON, err = json.Marshal(mac.Files)
+		if err != nil {
+			return err
+		}
+	} else {
+		mac = domain.Manifest{}
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -264,17 +321,25 @@ func (s *Store) UpsertRelease(r domain.Release) error {
 	if r.PublishedAt != nil {
 		publishedAt = *r.PublishedAt
 	}
+	var macURL, macSHA any
+	var macSize any
+	if mac.Version != "" {
+		macURL, macSHA, macSize = mac.URL, mac.SHA256, mac.Size
+	}
 	if _, err := tx.Exec(`INSERT INTO releases (version, channel, status, published_at, min_version,
-		required, electron_version, downloads, notes, manifest_url, manifest_sha256, manifest_size, manifest_files)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		required, electron_version, downloads, notes, manifest_url, manifest_sha256, manifest_size, manifest_files,
+		manifest_mac_url, manifest_mac_sha256, manifest_mac_size, manifest_mac_files)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(version) DO UPDATE SET channel=excluded.channel, status=excluded.status,
 		published_at=excluded.published_at, min_version=excluded.min_version, required=excluded.required,
 		electron_version=excluded.electron_version, notes=excluded.notes, manifest_url=excluded.manifest_url,
 		manifest_sha256=excluded.manifest_sha256, manifest_size=excluded.manifest_size,
-		manifest_files=excluded.manifest_files`,
+		manifest_files=excluded.manifest_files, manifest_mac_url=excluded.manifest_mac_url,
+		manifest_mac_sha256=excluded.manifest_mac_sha256, manifest_mac_size=excluded.manifest_mac_size,
+		manifest_mac_files=excluded.manifest_mac_files`,
 		r.Version, string(r.Channel), string(r.Status), publishedAt, r.MinVersion, r.Required,
 		r.ElectronVersion, r.Downloads, string(notes), r.Manifest.URL, r.Manifest.SHA256,
-		r.Manifest.Size, string(files)); err != nil {
+		r.Manifest.Size, string(files), macURL, macSHA, macSize, string(macFilesJSON)); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`DELETE FROM artifacts WHERE version = ?`, r.Version); err != nil {

@@ -42,8 +42,8 @@ test('② reloadHistory 在压缩成功时被调（compacted=false 不重拉）'
 test('③ 重入闸在 ref 上（compacting 不进依赖数组，保住 memo 身份）', () => {
   assert.match(hookSrc, /inFlight = useRef\(false\)/);
   assert.match(hookSrc, /if \(inFlight\.current\) return;/);
-  // handleCompact 的依赖数组不含 compacting
-  assert.match(hookSrc, /\[source, reportError, currentId, reloadHistory\]/);
+  // handleCompact 的依赖数组不含 compacting（压缩入口可注入助手域 assistant.compact）
+  assert.match(hookSrc, /\[source, doCompact, reportError, currentId, reloadHistory\]/);
 });
 
 test('③b 超时但成功的尾巴：超时路径保留事件监听与重入闸，chat.compacted 到达即认账成功', () => {

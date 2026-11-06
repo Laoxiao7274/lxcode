@@ -15,11 +15,14 @@ import { timelineOf } from "./shared/blocks";
 import { draftOf } from "./shared/session-drafts";
 import { visionBlockNotice } from "./shared/attachments";
 import { AgentsProvider, useAgents } from "./shared/agents";
+import { enterAssistantMode, enterProjectMode, type AppMode } from "./shared/app-mode";
+import { setAssistantChildPref } from "./components/assistant/assistant-child-pref";
 import { AgentsPage } from "./components/agents/AgentsPage";
 import { CatalogPage } from "./components/catalog/CatalogPage";
 import { GitWorkbenchPage } from "./components/git/GitWorkbenchPage";
 import { RemoteAccessPage } from "./components/remote/RemoteAccessPage";
 import { Topbar } from "./components/topbar";
+import { AppModeSwitch } from "./components/topbar/AppModeSwitch";
 import { Sidebar, LOOSE } from "./components/sidebar";
 import { Thread } from "./components/thread";
 import { Composer } from "./components/composer";
@@ -35,6 +38,7 @@ import { RewindConfirmDialog, RewindConflictDialog } from "./components/panels/R
 import { latestSeq, truncationNote, type TreeRow } from "./components/panels/tree-model";
 import type { RewindPlanFacts } from "./components/panels/rewind-confirm";
 import { ChildSessionPage } from "./components/panels/ChildSessionPage";
+import { AssistantWorkspace } from "./components/assistant/AssistantWorkspace";
 import { SettingsProvider, useSettings } from "./shared/settings";
 import { ConnectionsProvider } from "./shared/connections";
 import { UpdateProvider } from "./shared/update";
@@ -92,6 +96,15 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
   // 不上车（会话级状态，见 sendToSession 的注释）。
   // atts = 队首条目携带的附件（图片批次 B——按引用透传）。
   const autoSendBridgeRef = useRef<(sessionId: string, text: string, atts?: SendAttachments) => void>(() => {});
+  /** 顶层应用模式（助手模式 P2）：项目 | 助手——助手不再是主域页签，是并列模式。
+   *  切到助手模式时 Sidebar/TabBar/主时间线让位给 AssistantWorkspace；lastProjectView
+   *  记忆由 app-mode.ts 承担（切回项目模式恢复离开时的视图）。
+   *  handleModeChange 在 useWorkspaceNav 之后定义（要读写工作区状态）。 */
+  const [appMode, setAppMode] = useState<AppMode>("project");
+  // appMode 的 ref 镜像（openAssistantChild 要在回调里读当前模式——state 闭包
+  // 读到的是旧值；与 currentIdRef 同一套「ref 镜像供回调读最新值」的纪律）。
+  const appModeRef = useRef<AppMode>("project");
+  appModeRef.current = appMode;
   /** 发送失败的附件回滚（store 钩子 → Composer 的 attsDraft）：文本丢了附件不能丢。
    *  per-session 记账（drafts）之下它只服务「正看着的那个会话」——失败发生在别的
    *  会话时只落记账键（切回去由初始草稿还原），不装给挂载中的 Composer。 */
@@ -104,7 +117,7 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
   /** 右侧「已发送消息」大纲的开合：**纯 UI 状态**（不进会话历史、不落库、切会话不
    *  清——它只是当前窗口的查看方式）。 */
   const [outlineOpen, setOutlineOpen] = useState(true);
-  const { state, sessionStates, childParents, sendQueues, send, resolve, clearError, reportError, enqueueSend, removeQueuedSend, moveQueuedToFront } = useAgent(source, {
+  const { state, sessionStates, assistantStates, childParents, sendQueues, send, resolve, resolveAssistant, clearError, reportError, enqueueSend, removeQueuedSend, moveQueuedToFront } = useAgent(source, {
     onAutoSend: (sessionId, text, atts) => autoSendBridgeRef.current(sessionId, text, atts),
     onSendFailed: (sessionId, atts) => onSendFailedBridgeRef.current(sessionId, atts),
   });
@@ -159,9 +172,37 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
   }, [switching, state.historyReady]);
 
   const {
-    view, workspaceState, settingsOpen, setSettingsOpen, filter, setFilter, gitProjectId, setGitProjectId,
+    view, workspaceState, setWorkspaceState, workspaceStateRef, settingsOpen, setSettingsOpen, filter, setFilter, gitProjectId, setGitProjectId,
     closeWorkspace, openWorkspaceTab, openChildView, openAgents, openCatalog, openGit, openRemote, backToChat, focusSession, openProject, openSettings,
   } = useWorkspaceNav({ source, currentId });
+
+  // ---- 顶层模式切换（助手模式 P2：useWorkspaceNav 之后定义——要读写工作区状态）----
+  const handleModeChange = useCallback((next: AppMode) => {
+    setAppMode((cur) => {
+      if (cur === next) return cur;
+      if (next === "assistant") {
+        // 记住项目模式当前视图（app-mode.ts 的模块级记忆——切回时恢复）
+        enterAssistantMode(workspaceStateRef.current.active);
+      } else {
+        // 恢复离开时的视图：focusHistoryView 是项目模式导航的唯一收口（popstate
+        // 同款），它处理「chat / 固定页签 / 子会话临时视图」三种键——不各写一份。
+        const restored = enterProjectMode().restoredView;
+        if (restored !== workspaceStateRef.current.active) {
+          setWorkspaceState(focusHistoryView(workspaceStateRef.current, restored as WorkspaceView));
+        }
+      }
+      return next;
+    });
+  }, [workspaceStateRef, setWorkspaceState]);
+
+  // 项目模式侧栏「来自助手」任务行 → 助手模式的子会话视图（2026-12 跨模式
+  // 跳转）：先记一次性偏好（assistant-child-pref，take 语义——AssistantWorkspace
+  // 挂载时 useState 初始化器消费），再切助手模式。顺序不能反：切模式引发
+  // AssistantWorkspace 挂载，偏好必须先落。
+  const openAssistantChild = useCallback((childId: string) => {
+    setAssistantChildPref(childId);
+    if (appModeRef.current !== "assistant") handleModeChange("assistant");
+  }, [handleModeChange]);
 
   // live 写失败桥（AgentsProvider 的乐观更新 WS 调用失败 → 一次性提示）
   useEffect(() => {
@@ -252,6 +293,11 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
   const { handleConfirm, handleAnswer, handleChildConfirm, handleChildAnswer } = useConfirmFlow({
     source, resolve, reportError, currentId, sessionStatesRef,
   });
+
+  // ---- 助手域的确认裁决（助手模式 P2）----
+  // 已迁进 AssistantWorkspace（顶层模式容器）：助手 run_task 子会话的确认卡
+  //（dispatch_id 归属反查父 + assistant.confirm 裁决 + 两处定格）在助手模式
+  // 内部闭环——项目模式 App 不再持助手域回调。
 
   // ---- 手动压缩（use-compaction）----
   // reloadHistory：压缩成功后重拉历史（检查点卡落位 + 旧气泡出时间线 + 上下文环
@@ -626,11 +672,11 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
     // focusChildView 只切 active）：渲染子会话自己的完整时间线。
     // key=childId：不同子会话各自一份实例（切走再回来不串历史；返回后视图卸载，
     // store 里的子会话 state 与实时流缓存不受影响，重新打开由 ChildSessionPage 重新装载）。
+    // 助手 run_task 的子会话**不经过这里**（助手模式 P2）：它的临时视图在
+    // AssistantWorkspace 内部（域判定/装载/裁决都收进助手模式）——项目模式的
+    // 主域子会话走原路径。
     const childId = childTabSession(activeView);
     if (childId === null) return null; // 坏键（不该出现）：不渲染，也不炸
-    // state 来自 store 的 sessionStates[childId]——**实时**（store 把带 dispatch_id 的
-    // 子事件同时归约进子会话自己的 state），历史由这一页装载（source.childHistory 发
-    // historyLoaded）。裁决走这个子会话自己的 session id（父会话代理确认门）。
     return (
       <ChildSessionPage
         key={childId}
@@ -650,43 +696,61 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
         taskTitle={viewTitle}
         source={source}
         connected={wsConnected}
+        mode={appMode}
+        onModeChange={handleModeChange}
       />
-      <TabBar
-        source={source}
-        currentId={currentId}
-        busyBySession={busyBySessionMerged}
-        onNewChat={() => { void source.newSession(filter); backToChat(); }}
-        onFocusSession={focusSession}
-        workspaceTabs={workspaceState.tabs}
-        activeWorkspaceView={view}
-        childView={childView}
-        onFocusChat={backToChat}
-        onFocusWorkspaceTab={openWorkspaceTab}
-        onCloseWorkspaceTab={closeWorkspace}
-      />
-      <Sidebar
-        source={source}
-        currentId={currentId}
-        busyBySession={busyBySessionMerged}
-        filter={filter}
-        setFilter={setFilter}
-        onOpenProject={openProject}
-        onOpenSettings={openSettings}
-        agentsActive={view === "agents"}
-        onOpenAgents={openAgents}
-        onOpenChat={backToChat}
-        catalogActive={view === "catalog"}
-        onOpenCatalog={openCatalog}
-        gitActive={view === "git"}
-        onOpenGit={openGit}
-        remoteActive={view === "remote"}
-        onOpenRemote={openRemote}
-      />
-      <WorkspaceViewPanels
-        activeView={view}
-        openTabs={workspaceState.tabs}
-        renderView={renderView}
-      />
+      {appMode === "assistant" ? (
+        // 助手模式（顶层）：Sidebar/TabBar/主时间线整块让位给助手工作区——
+        // 会话列表 + 时间线 + 子会话临时视图都在 AssistantWorkspace 内部。
+        <AssistantWorkspace
+          source={source}
+          assistantStates={assistantStates}
+          resolveAssistant={resolveAssistant}
+          childParents={childParents}
+          reportError={reportError}
+          onOpenSettings={openSettings}
+        />
+      ) : (
+        <>
+          <TabBar
+            source={source}
+            currentId={currentId}
+            busyBySession={busyBySessionMerged}
+            onNewChat={() => { void source.newSession(filter); backToChat(); }}
+            onFocusSession={focusSession}
+            workspaceTabs={workspaceState.tabs}
+            activeWorkspaceView={view}
+            childView={childView}
+            onFocusChat={backToChat}
+            onFocusWorkspaceTab={openWorkspaceTab}
+            onCloseWorkspaceTab={closeWorkspace}
+          />
+          <Sidebar
+            source={source}
+            currentId={currentId}
+            busyBySession={busyBySessionMerged}
+            filter={filter}
+            setFilter={setFilter}
+            onOpenProject={openProject}
+            onOpenSettings={openSettings}
+            agentsActive={view === "agents"}
+            onOpenAgents={openAgents}
+            onOpenChat={backToChat}
+            catalogActive={view === "catalog"}
+            onOpenCatalog={openCatalog}
+            gitActive={view === "git"}
+            onOpenGit={openGit}
+            remoteActive={view === "remote"}
+            onOpenRemote={openRemote}
+            onOpenAssistantChild={openAssistantChild}
+          />
+          <WorkspaceViewPanels
+            activeView={view}
+            openTabs={workspaceState.tabs}
+            renderView={renderView}
+          />
+        </>
+      )}
       <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} source={source} />
       {/* 「回到这里 + 还原文件」的二次确认（破坏性动作：磁盘 IO + fail-closed 整批拒绝）。
           数字来自树节点（这一轮的文件/外部操作计数）——文案由 panels/rewind-confirm 的

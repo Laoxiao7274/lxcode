@@ -237,8 +237,18 @@ const FIELD_CHECKS = {
   searchChannelsResult: [['channels', 'array'], ['primary', 'string'], ['ready', ['=', true]], ['channels.2.opt_in', ['=', true]]],
   searchTestResult: [['elapsed_ms', 'number'], ['results', 'array']],
   todoPromptResult: [['todoPrompt', 'string']],
-  // jobs 域。
-  jobInfo: [['ended_by', ['=', 'user']], ['finished_at', 'string'], ['output_tail', 'string']],
+  // 助手配置：全量样本五字段带值；最小样本全空 = 各键整键缺席（空 = 用内置值）。
+  assistantConfigResultFull: [
+    ['name', 'string'], ['persona', 'string'], ['workflow', 'string'],
+    ['skills', 'array'], ['mcpServers', 'array'], ['tools', 'array'],
+  ],
+  assistantConfigResultMinimal: [
+    ['name', 'absent'], ['persona', 'absent'], ['workflow', 'absent'],
+    ['skills', 'absent'], ['mcpServers', 'absent'], ['tools', 'absent'],
+  ],
+  // jobs 域。workspace：全量样本带值；最小样本（未分组）整键缺席（omitempty）。
+  jobInfo: [['ended_by', ['=', 'user']], ['finished_at', 'string'], ['output_tail', 'string'], ['workspace', 'string']],
+  jobInfoUngrouped: [['workspace', 'absent'], ['ended_by', 'absent'], ['finished_at', 'absent'], ['status', ['=', 'running']]],
   jobLogResult: [['truncated', ['=', true]], ['data', 'string']],
   // 派发。
   dispatchStartParams: [['owner_session_id', 'string'], ['session_id', 'string'], ['dispatch_id', 'string']],

@@ -65,6 +65,31 @@ func SessionID(ctx context.Context) string {
 // ownerSessionIDKey 是时间线归属的 ctx 键。
 type ownerSessionIDKey struct{}
 
+// sessionSpaceKey 是当前会话域（main/assistant）的 ctx 键。
+type sessionSpaceKey struct{}
+
+// WithSessionSpace 把当前会话域放进 ctx（session_search 的助手语境范围注明
+// 取它）。与 WithWorkspace 同一批快照注入、同一条 ctx 注入理由。
+//
+// 为什么 session_search 需要它：助手会话（space=assistant，注入 workspace 恒空）
+// 的全库扫描与主域未分组会话的全库扫描在 Workspace 维度上无法区分——但助手
+// 语境下「全库」实际是「排除助手域的全部主域会话」（store.Search 对无 session
+// 参数的扫描恒过滤 space != 'assistant'），不注明的话助手会把命中头里带会话
+// 标题的主域消息当成自己与用户的对话（2026-12 实测：助手把主域会话「你好啊」
+// 说成「咱俩唠嗑的」）。
+func WithSessionSpace(ctx context.Context, space string) context.Context {
+	return context.WithValue(ctx, sessionSpaceKey{}, space)
+}
+
+// SessionSpace 取 ctx 里的会话域；空串 = 未注入（主域路径不注明，行为不变）。
+func SessionSpace(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	space, _ := ctx.Value(sessionSpaceKey{}).(string)
+	return space
+}
+
 // WithOwnerSessionID 把**时间线归属**（顶层会话 id）放进 ctx。
 //
 // 为什么需要它：子 Agent 是独立会话，它起的后台任务记的归属会话是子会话；但用户

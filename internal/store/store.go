@@ -78,6 +78,22 @@ type Store struct {
 	// mu 只保护 Create 的 id 生成竞态；数据库自身并发由
 	// 连接池 + WAL + busy_timeout 保证。
 	mu sync.Mutex
+	// stats 是 SessionStatsOf 的会话级缓存（见 stats.go——失效点只有
+	// AppendMsg / AppendCheckpoint 两个 INSERT 写点）。nil = 未初始化，
+	// 首次写入时惰性建。
+	stats *statsCache
+	// extraToolRefCheck 是 RemoveTool 的**库外引用检查**注入口（server 装配层
+	// 注入，nil = 跳过）：tools 表的引用面（agents 表白名单）库内可查，但
+	// config/assistant.json 的助手工具绑定（tools 数组，条目粒度）在磁盘上
+	// ——store 不知道配置路径，经这个口把「工具被助手绑定就拒删」补进同一
+	// 道闸。返回非 nil = 删除被拒（错误文案原样上报）。
+	extraToolRefCheck func(toolID string) error
+}
+
+// SetExtraToolRefCheck 注入 RemoveTool 的库外引用检查（server 装配层调用一次；
+// 并发纪律：装配期写一次、运行期只读——与注册表注入槽同一条惯例）。
+func (s *Store) SetExtraToolRefCheck(fn func(toolID string) error) {
+	s.extraToolRefCheck = fn
 }
 
 // Open 打开（必要时创建）会话库：建目录、建表、开 WAL。
@@ -174,6 +190,10 @@ func Open(dir string) (*Store, error) {
 		// 注意这只是**默认值/兜底**：写入点的权威 owner 由 ctx 注入（§C.2.1）。
 		`ALTER TABLE sessions ADD COLUMN child_owner_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE sessions ADD COLUMN child_owner_seq INTEGER NOT NULL DEFAULT 0`,
+		// 会话域标记（助手模式 P0）：main = 用户侧栏的普通会话；assistant =
+		// 助手域会话（通用助理，不进 List()/Latest()——主空间只出 main 域）。
+		// DEFAULT 'main' = 存量行与零值全部落在主空间，零迁移语义。
+		`ALTER TABLE sessions ADD COLUMN space TEXT NOT NULL DEFAULT 'main'`,
 	} {
 		if _, err := db.Exec(col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			db.Close()
@@ -184,6 +204,12 @@ func Open(dir string) (*Store, error) {
 	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_id)`); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("建子会话索引失败: %w", err)
+	}
+	// 域标记索引（助手模式 P0）：主空间 List/Latest 的 space='main' 过滤 +
+	// 助手域的 AssistantSessions 列举共用。
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_sessions_space ON sessions(space)`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("建会话域索引失败: %w", err)
 	}
 	// 压缩检查点的影子区间（2026-09-22）：checkpoint=1 的行是一条摘要检查点，
 	// 它替换（影子）当前历史里的一段——权威判定是 `shadowed_seqs`（被影子行的 seq

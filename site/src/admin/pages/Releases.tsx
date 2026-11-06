@@ -6,11 +6,24 @@
 
 import { useState } from "react";
 
-import { findArtifact, formatBytes, sortByVersionDesc } from "../../shared/release";
+import {
+  findArtifact,
+  formatBytes,
+  sortByVersionDesc,
+  type Artifact,
+} from "../../shared/release";
 import { CHANNEL_PILL, STATUS_PILL, dateOf } from "../../shared/labels";
 import { setReleaseStatus } from "../../shared/store";
 import { useStore } from "../../shared/useStore";
 import { AdminScopeNote, DataStatus } from "../../components/DataStatus";
+import { ArtifactLink } from "../../components/ArtifactLink";
+
+/** mac 产物的列表顺序与展示名（kind 与 site-backend domain.go 逐字对齐）。 */
+const MAC_KINDS: Array<[Artifact["kind"], string]> = [
+  ["mac-installer-arm64", "dmg arm64"],
+  ["mac-installer-x64", "dmg x64"],
+  ["mac-update", "mac 更新包"],
+];
 
 export default function Releases() {
   const state = useStore();
@@ -44,6 +57,7 @@ export default function Releases() {
                 <th>发布日期</th>
                 <th>安装包</th>
                 <th>更新包</th>
+                <th>mac 产物</th>
                 <th>操作</th>
               </tr>
             </thead>
@@ -68,6 +82,22 @@ export default function Releases() {
                     <td className="meta">{dateOf(release.publishedAt)}</td>
                     <td className="meta">{installer ? formatBytes(installer.size) : "—"}</td>
                     <td className="meta">{update ? formatBytes(update.size) : "—"}</td>
+                    <td className="meta">
+                      {/* mac 产物有则逐个列出（可下载），全无则「—」，与纯 Windows 版本视觉不变 */}
+                      {MAC_KINDS.map(([kind, label]) => {
+                        const artifact = findArtifact(release, kind);
+                        if (!artifact) return null;
+                        return (
+                          <div key={kind}>
+                            <ArtifactLink artifact={artifact} className="mono small">
+                              {label}
+                            </ArtifactLink>
+                            <span className="meta"> {formatBytes(artifact.size)}</span>
+                          </div>
+                        );
+                      })}
+                      {release.artifacts.every((a) => !MAC_KINDS.some(([kind]) => kind === a.kind)) && "—"}
+                    </td>
                     <td>
                       <div className="row-actions">
                         {release.status === "draft" && (
