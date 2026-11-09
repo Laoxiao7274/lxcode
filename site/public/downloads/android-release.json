@@ -1,11 +1,11 @@
 {
-  "version": "0.3.34",
-  "versionCode": 41,
-  "name": "lxcode-0.3.34-android.apk",
-  "size": 11879338,
-  "sha256": "112190501e005a4fdbdf3afec63780d33bc967c7ad0cb8cf7262ed9d0d8daf8b",
-  "url": "downloads/lxcode-0.3.34-android.apk",
+  "version": "0.3.40",
+  "versionCode": 42,
+  "name": "lxcode-0.3.40-android.apk",
+  "size": 11928503,
+  "sha256": "7c7d6ef1955455f96d89ea1fd908a5ff3d2f2fea9257e23c4eece69261af6e80",
+  "url": "downloads/lxcode-0.3.40-android.apk",
   "notes": [
-    "投屏观看页铺满全屏——整个页面全是投屏画面，修复四周边框"
+    "助手适配：手机端助手会话列表与对话页、流式聊天、任务派发、图片上传"
   ]
 }
