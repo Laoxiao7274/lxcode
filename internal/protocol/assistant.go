@@ -3,12 +3,16 @@
 // 设计（用户拍板）：payload **复用 chat 既有结构**只换事件名——前端按事件名
 // 前缀路由到助手时间线，字段形状与主域完全一致（一份渲染代码两域共用）。
 // dispatchAssistant 域处理器放在 dispatchChat 之前（六方法都命中即返回）。
+//
+// 附件（2026-12）：assistant.send 与 chat.send 一样接受 images/files（同款
+// ChatSendImage/ChatSendFile wire 形状与校验）——payload 复用的自然延伸。
 package protocol
 
 // assistant 方法名（客户端 → 服务端）。与 chat.* 一一对应：
 //
 //	assistant.new       = chat.send 的建会话位（新助手会话，space=assistant）
-//	assistant.send      = chat.send（无 images/files——P0 不做附件）
+//	assistant.send      = chat.send（含 images/files 附件——2026-12 用户拍板，wire 形状
+//	                      与校验/落盘/视觉门全部同款）
 //	assistant.history   = chat.history
 //	assistant.cancel    = chat.cancel
 //	assistant.confirm   = tool.confirm（助手会话的确认裁决）

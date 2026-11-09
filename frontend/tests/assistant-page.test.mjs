@@ -70,9 +70,27 @@ test('① 输入区是 Composer 视觉壳：.pi/.pi-row/.piInput/.send-btn + bus
   assert.ok(/rect x="5" y="5" width="14" height="14"/.test(src), '停止方块图标与主域同源');
 });
 
-test('① 覆写钉子：padding-left:16px 收在 assistant-mode.css（基态左 0 是给「+」让位的）', () => {
+test('① 覆写钉子：助手域有「+」（附件 2026-12）——padding-left:16px 覆写必须已移除', () => {
   const css = fs.readFileSync(new URL('../src/styles/assistant-mode.css', import.meta.url), 'utf8');
-  assert.ok(/\.assistant-ws \.pi-row textarea\.piInput\s*\{[^}]*padding-left:\s*16px/.test(css), css.slice(0, 400));
+  assert.ok(!/\.assistant-ws \.pi-row textarea\.piInput/.test(css), 'piInput 左内距覆写已删（att-add 自带 margin，覆写会双重左距）');
+});
+
+test('① 助手附件接线（2026-12）：「+」按钮 + 预览 + 发送带 images', () => {
+  const src = fs.readFileSync(new URL('../src/components/assistant/AssistantInput.tsx', import.meta.url), 'utf8');
+  assert.ok(/className="att-add"/.test(src), '附件按钮用主域 .att-add');
+  assert.ok(/className="att-preview"/.test(src), '预览行用主域 .att-preview');
+  assert.ok(/className="att-thumbs"/.test(src), '缩略图轨道用主域 .att-thumbs');
+  assert.ok(/AttachmentThumb/.test(src), '缩略图复用主域 AttachmentThumb（不另写）');
+  assert.ok(/attsFromPending\(/.test(src), '发送组装走 shared/attachments 的 wire 组装');
+  assert.ok(/stageFile\(/.test(src), '读入走 shared/attachment-read 的暂存通道（路径优先）');
+  assert.ok(/visionBlocked/.test(src), 'vision 能力门透传（与主域同一判定链）');
+  // 精简版边界：不带文件入口与队列（助手域范围外的两条不变量）
+  assert.ok(!/fileInputRef/.test(src), '不带文件入口（图片精简版）');
+  assert.ok(!/send-queue|onQueue/.test(src), '不带发送队列');
+  const pageSrc = fs.readFileSync(new URL('../src/components/assistant/AssistantPage.tsx', import.meta.url), 'utf8');
+  assert.ok(/opts\.images = atts\.images/.test(pageSrc), 'AssistantPage 把附件装进 assistant.send 参数');
+  const wsSrc = fs.readFileSync(new URL('../src/agent/ws/assistant.ts', import.meta.url), 'utf8');
+  assert.ok(/wireImage/.test(wsSrc), 'WS 域 send 用主域 wireImage 组装（path 剥 file）');
 });
 
 test('① 带状态渲染：时间线块复用 Block 渲染（user 气泡 + 正文）', async () => {
@@ -114,7 +132,8 @@ test('② 接线：输入走 assistant.send、取消走 assistant.cancel、装�
 test('② 接线：助手是顶层模式（AppModeSwitch + AssistantWorkspace），不再走主域页签', () => {
   const appSrc = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
   assert.ok(!/activeView === "assistant"/.test(appSrc), 'renderView 不再有 assistant 分支（页签已摘除）');
-  assert.ok(/appMode === "assistant"/.test(appSrc), '顶层模式分流：appMode === "assistant" → AssistantWorkspace');
+  // 保活渲染（2026-12 卸载竞态防御）：两分支都常驻，appMode 只决定 hidden。
+  assert.ok(/appMode !== "assistant"/.test(appSrc), '顶层模式分流：appMode !== "assistant" → hidden（保活常驻）');
   assert.ok(/AssistantWorkspace/.test(appSrc), '顶层容器挂载');
   assert.ok(/AppModeSwitch/.test(appSrc) || /onModeChange=\{handleModeChange\}/.test(appSrc), '模式切换控件已接');
   // 域 state 仍来自 store 双投的 assistantStates（经 AssistantWorkspace 传下去）

@@ -58,6 +58,11 @@ private val HEAVY_METHODS = setOf(
     "chat.compact",
     "chat.rewind",
     "session.list",
+    // 助手域同构方法（assistant.* 与 chat.* 逐字段同构、只换方法名——
+    // assistant.history 同样要全量加载历史 + 折叠统计，assistant.compact 同样
+    // 现建运行时做压缩；不带会让手机弱链路偶发 10s 超时）。
+    "assistant.history",
+    "assistant.compact",
 )
 
 /** 事件监听：method = 事件名（如 "chat.delta"），params = 载荷。 */

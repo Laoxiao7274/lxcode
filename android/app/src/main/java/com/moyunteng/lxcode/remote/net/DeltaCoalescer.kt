@@ -42,16 +42,19 @@ class DeltaCoalescer(
     private var flushing = false
 
     private class QueuedDelta(
+        val method: String,
         val sessionId: String,
         val kind: String,
         val dispatchId: String,
         var text: String,
     )
 
-    /** 事件入口：delta 走合帧，其他事件先冲刷挂起的 delta 再直发（保序）。 */
+    /** 事件入口：delta 走合帧，其他事件先冲刷挂起的 delta 再直发（保序）。
+     *  assistant.delta（助手域事件，payload 与 chat.delta 同构）同样认领——
+     *  合帧键含 session_id，助手会话与主域会话天然各占一位互不串文本。 */
     fun emit(method: String, params: JSONObject) {
-        if (method == "chat.delta") {
-            enqueue(params)
+        if (method == "chat.delta" || method == "assistant.delta") {
+            enqueue(method, params)
             return
         }
         // 非 delta 事件先冲刷挂起的 delta 再发（保序纪律：先到先发，delta 合并
@@ -62,8 +65,9 @@ class DeltaCoalescer(
     }
 
     /** delta 合帧入队（同键拼接，异键各占一位——不同会话/不同 kind/主子会话
-     *  的 delta 互不合并）。 */
-    private fun enqueue(params: JSONObject) {
+     *  /主域与助手域的 delta 互不合并）。[method] 原样保留：冲刷时按它投递
+     *  （chat.delta / assistant.delta 各回各的域——RealBackend onEvent 按前缀分流）。 */
+    private fun enqueue(method: String, params: JSONObject) {
         val key = "${params.optString("session_id")}\u0000${params.optString("kind", "text")}\u0000${params.optString("dispatch_id")}"
         val text = params.optString("text")
         val queued = queue[key]
@@ -71,6 +75,7 @@ class DeltaCoalescer(
             queued.text += text
         } else {
             queue[key] = QueuedDelta(
+                method = method,
                 sessionId = params.optString("session_id"),
                 kind = params.optString("kind", "text"),
                 dispatchId = params.optString("dispatch_id"),
@@ -104,7 +109,7 @@ class DeltaCoalescer(
                 if (q.kind != "text") params.put("kind", q.kind)
                 if (q.dispatchId.isNotEmpty()) params.put("dispatch_id", q.dispatchId)
                 params.put("text", q.text)
-                emitRaw("chat.delta", params)
+                emitRaw(q.method, params)
             }
         } finally {
             flushing = false

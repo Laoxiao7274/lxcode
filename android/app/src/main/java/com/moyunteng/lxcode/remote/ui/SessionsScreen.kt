@@ -32,6 +32,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Archive
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.ChatBubbleOutline
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
@@ -261,6 +262,10 @@ fun SessionsScreen(state: AppState) {
                         onReady = { id -> state.route = Route.Thread(id) },
                     )
                 },
+                // 助手入口（固定 NavRow，与「新对话」同款形态）：进助手域会话列表
+                NavEntry("助手", Icons.Filled.AutoAwesome) {
+                    state.route = Route.Assistant
+                },
             )
             itemsIndexed(navItems) { i, entry ->
                 NavRow(entry, Modifier.lxStaggerEnter(count = navItems.size, index = i))
@@ -449,11 +454,11 @@ fun SessionsScreen(state: AppState) {
     }
 }
 
-private data class NavEntry(val label: String, val icon: ImageVector, val onTap: (() -> Unit)?)
+internal data class NavEntry(val label: String, val icon: ImageVector, val onTap: (() -> Unit)?)
 
 /** 导航项一行（图标 + 文字；对齐 .nav-item）。 */
 @Composable
-private fun NavRow(entry: NavEntry, modifier: Modifier = Modifier) {
+internal fun NavRow(entry: NavEntry, modifier: Modifier = Modifier) {
     LxListItem(
         title = entry.label,
         modifier = modifier,

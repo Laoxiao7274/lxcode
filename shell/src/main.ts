@@ -4,7 +4,7 @@
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { app, BrowserWindow, dialog, ipcMain, nativeTheme, net, protocol } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, nativeTheme, net, Notification, protocol } from "electron";
 import { ensureBackend, shutdownBackend } from "./sidecar";
 import { initSakura, sakuraHandlers, shutdownSakura } from "./sakura";
 import { initTailscale, tailscaleHandlers } from "./tailscale";
@@ -167,6 +167,31 @@ if (!app.requestSingleInstanceLock()) {
       win.isMaximized() ? win.unmaximize() : win.maximize();
     });
     ipcMain.on("win:close", () => win?.close());
+
+    // 对话完成系统通知（preload 的 __LX__.notify.done）：渲染层已判定（主轮
+    // done + 失焦 + 开关），这里只管弹。isSupported 闸——不支持通知的环境
+    //（极旧系统/无通知中心）静默跳过；点击聚焦主窗口（复用 tray.ts showMain
+    // 的 show+focus 模式）；失败静默 catch（通知弹不出不影响生成本身，
+    // 对齐 tray.ts:86-88 纪律）。dev 壳 AUMID 无注册快捷方式时 Windows 可能
+    // 弹不出——平台特性，验收以打包形态为准。
+    ipcMain.on("notify:done", (_e, n: unknown) => {
+      try {
+        if (!Notification.isSupported()) return;
+        const r = (n ?? {}) as { title?: unknown; body?: unknown };
+        if (typeof r.title !== "string" || !r.title) return;
+        const notification = new Notification({
+          title: r.title,
+          body: typeof r.body === "string" ? r.body : "",
+        });
+        notification.on("click", () => {
+          win?.show();
+          win?.focus();
+        });
+        notification.show();
+      } catch {
+        // 弹不出不影响生成流程本身（渲染层时间线照常展示结果）
+      }
+    });
 
     // 主题偏好（渲染层设置面板 → shared/theme.ts → 此处）：同步
     // nativeTheme.themeSource，壳侧原生控件/对话框跟随渲染层主题。

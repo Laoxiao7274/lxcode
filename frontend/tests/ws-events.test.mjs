@@ -37,8 +37,16 @@ test("done 只在后端报了 context 时才带 context", () => {
   assert.equal(mapEvent("chat.done", { session_id: "s" }).finishReason, "stop");
 });
 
-test("context 原样透传（含 estimated——估算标记不能在映射层丢掉）", () => {
-  // 映射层一旦只挑 used/window 之类的字段转发，estimated 就会被静默吃掉，
+test("done 的 content 预览：message.content 截 200 字符，缺席整键缺席（通知正文来源）", () => {
+  const long = "x".repeat(300);
+  const ev = mapEvent("chat.done", { session_id: "s", usage_tokens: 1, message: { content: long } });
+  assert.equal(ev.content, "x".repeat(200));
+  // 缺席 = 键不写（键缺席纪律），不是编空串
+  assert.equal(mapEvent("chat.done", { session_id: "s", usage_tokens: 1 }).content, undefined);
+  assert.equal("content" in mapEvent("chat.done", { session_id: "s", usage_tokens: 1 }), false);
+});
+
+test("context 原样透传（含 estimated——估算标记不能在映射层丢掉）", () => {  // 映射层一旦只挑 used/window 之类的字段转发，estimated 就会被静默吃掉，
   // 前端于是把估算值当真实用量展示（后端标了、前端丢了 = 白标）
   const ctx = { used: 4096, window: 8192, estimated: true };
   assert.deepEqual(mapEvent("chat.done", { session_id: "s", context: ctx }).context, ctx);

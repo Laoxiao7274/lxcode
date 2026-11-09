@@ -187,6 +187,11 @@ function mapChatEvent(method: string, params: unknown): AgentEvent | null {
         durationMs: typeof p.duration_ms === "number" ? p.duration_ms : undefined,
         model: typeof p.model === "string" && p.model !== "" ? p.model : undefined,
         dispatchId,
+        // 正文预览（done 的 Message.Content——通知正文的来源）。截 ~200 字符：
+        // 通知是预览不是全文；undefined = 后端没给（老后端/工具轮），不编空串。
+        ...(p.message && typeof (p.message as { content?: unknown }).content === "string"
+          ? { content: String((p.message as { content: string }).content).slice(0, 200) }
+          : {}),
         // 上下文占用只随主轮来（子轮的 done 不带——后端已按 dispatch 归属收口）
         context: (p.context as ContextUsage | undefined) ?? undefined,
         // 整段会话统计同样只随主轮来（口径见 shared/types.ts 的 SessionStats）

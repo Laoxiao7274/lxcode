@@ -53,9 +53,17 @@ func (s *Server) dispatchAssistant(c *wsClient, req *protocol.Request, params js
 			return protocol.NewError(req.ID, protocol.CodeInvalidParams,
 				"approval 必须是 auto/confirm/strict 之一（空 = confirm）")
 		}
-		if p.Images != nil || p.Files != nil {
-			return protocol.NewError(req.ID, protocol.CodeInvalidParams,
-				"assistant.send 暂不支持附件（images/files）——P0 范围外")
+		// 图片/文件附件（2026-12 用户拍板：助手也带附件——chat.send 同款 wire 形状）：
+		// 校验与 chat.send 同一道闸（mime 白名单 / 张数 / 大小 / path-data 互斥），
+		// 参数不合法时连消息都不入历史（入历史前拒绝，不留半截状态）。落盘与
+		// 视觉校验在 sendAttachments（下方）。
+		decodedImgs, err := validateChatImages(p.Images)
+		if err != nil {
+			return protocol.NewError(req.ID, protocol.CodeInvalidParams, err.Error())
+		}
+		decodedFiles, fileNames, fileRelPaths, err := validateChatFiles(p.Files)
+		if err != nil {
+			return protocol.NewError(req.ID, protocol.CodeInvalidParams, err.Error())
 		}
 		if p.SessionID == "" {
 			return protocol.NewError(req.ID, protocol.CodeInvalidParams, "缺少 session_id（助手会话不设连接焦点，先 assistant.new）")
@@ -76,7 +84,12 @@ func (s *Server) dispatchAssistant(c *wsClient, req *protocol.Request, params js
 		if p.Agent == "" {
 			opts = append(opts, agent.WithAgent(assistantAgentDef.ID))
 		}
-		if err := sess.Send(p.Text, opts...); err != nil {
+		// 附件（图片/文件）走 chat.send 同一条统一发送路径 sendAttachments：
+		// vision 能力校验、落盘、展示元数据、「[附件]」行全部免费继承（助手会话
+		// 是真 Session——内核的 WithImages/WithAttachments 通道不需要特例）。
+		// opts 作 extraOpts 传入（默认 Agent = 助手等 SendOpt 在内部合入），
+		// sendAttachments 成功即开轮；失败（vision 门/落盘）时消息未入历史。
+		if err := s.sendAttachments(p.SessionID, sess, p, decodedImgs, decodedFiles, fileNames, fileRelPaths, opts...); err != nil {
 			return protocol.NewError(req.ID, errorCode(err), err.Error())
 		}
 		s.resetWakes(p.SessionID)
@@ -144,7 +157,8 @@ func (s *Server) dispatchAssistant(c *wsClient, req *protocol.Request, params js
 			return protocol.NewError(req.ID, protocol.CodeInvalidParams,
 				"before_seq 分页必须同时给 tail（窗口大小，正整数）")
 		}
-		// prepareWorkspace 不做：助手会话没有项目归属，工作目录就是后端默认目录。
+		// prepareWorkspace 不做：助手会话没有项目归属，工作目录是助手专属目录
+		//（<sessions>/../assistant，newAssistantRuntime 注入——不落库不造伪项目行）。
 		res, err := s.history(p.SessionID, sess, p.Tail, p.BeforeSeq)
 		if err != nil {
 			return protocol.NewError(req.ID, protocol.CodeInvalidParams, err.Error())

@@ -167,13 +167,11 @@
 /* ---- 输入区（AssistantInput = Composer 视觉壳，视觉全走 composer.css 全局类） ----
  * .pi / .pi-row / .piInput / .piBar / .piTips / .send-btn / .busy-row 的样式
  * 一行都不复制——composer.css 是全局加载的，助手域直接吃到逐像素一致的白卡。
- * 这里只有两件差量：
- * ① 专属覆写：基态 .piInput 的 padding-left:0 是给主域「+」按钮让位的——助手
- *    域没有「+」，补回与 piBar 一致的左内距（主域 :disabled 分支同款值）。
- * ② 流内定位：不套 .composer-zone（absolute 会破坏 flex 贴底），容器外距见上。 */
-.assistant-ws .pi-row textarea.piInput {
-  padding-left: 16px;
-}
+ * 附件（2026-12 助手附件）：基态 .piInput 的 padding-left:0 本来就是给主域「+」
+ * 让位的——助手域现在也有「+」（图片精简版，att-add 自带 margin），覆写随之
+ * 移除（这条规则不再存在就是回归钉子）。 */
+/* ---- 流内定位差量：不套 .composer-zone（absolute 会破坏 flex 贴底），
+ *    容器外距见 .assistant-ws-main .assistant-input。 */
 
 /* ---- 顶层模式切换（Topbar 左区；no-drag 豁免——同 .conn-pill 纪律） ---- */
 .mode-switch {

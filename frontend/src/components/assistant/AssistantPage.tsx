@@ -18,8 +18,8 @@
 // （AssistantWorkspace 渲染提示，本组件不渲染——仍保留空 id 的静默处理以稳住
 // boot runner 的契约）。重挂/重复 effect await 同一个 promise，结果照常写 state；
 // 失败的 boot 清掉缓存，显式重试（reset + nonce）能重新走。
-import { useCallback, useEffect, useRef, useState } from "react";
-import type { AgentSource, SessionMeta } from "../../shared/types";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { AgentSource, ChatSendImage, SendAttachments, SessionMeta } from "../../shared/types";
 import type { UIState } from "../../shared/store";
 import { Button } from "../form";
 import { AssistantInput } from "./AssistantInput";
@@ -31,6 +31,8 @@ import { useWindowedHistory } from "../thread/useWindowedHistory";
 import { useLoadOlderHistory, loadOlderLabel } from "../thread/useLoadOlderHistory";
 import { useStickyFollow } from "../thread/useStickyFollow";
 import { useCompaction } from "../../app-hooks/use-compaction";
+import { useSettings } from "../../shared/settings";
+import { visionBlockNotice } from "../../shared/attachments";
 
 export type AssistantUIState = UIState;
 
@@ -124,6 +126,14 @@ export function AssistantPage({
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [error, setError] = useState("");
   const [nonce, setNonce] = useState(0);
+  // vision 可用性感知（2026-12 助手附件）：与主域 App 同一条判定链
+  //（visionBlockNotice 纯函数）——助手会话实际模型（state.model）优先，回落全局
+  // default 角色。非空 = 「+」禁用 + title 说明；未知/查不到不禁用（后端兜底）。
+  const { settings, providers } = useSettings();
+  const visionBlocked = useMemo(
+    () => visionBlockNotice(state?.model || settings.model, providers.flatMap((p) => p.models)),
+    [state?.model, settings.model, providers],
+  );
   // 手动压缩（assistant.compact——assistant.* 方法域；chat.compact 寻址助手
   // 会话会串域报错）。超时尾巴/重入闸/compacting 反馈全在 useCompaction 钩子里
   //（与主域同一份）；事件认账口用 compacted 等价事件（assistant.compacted 归一），
@@ -188,10 +198,13 @@ export function AssistantPage({
     );
   }, [sessionId, nonce]);
 
-  const handleSend = useCallback((text: string) => {
+  const handleSend = useCallback((text: string, atts: SendAttachments) => {
     if (!sessionId || !sourceRef.current.assistant) return;
-    // 助手域不发送附件/effort（P0 范围外——assistant.send 对 images/files 报错）
-    sourceRef.current.assistant.send(sessionId, text);
+    // 助手域附件（2026-12 用户拍板）：images 随 assistant.send 上 wire（与
+    // chat.send 同款校验与 vision 门）；files 不接（输入区是图片精简版）。
+    const opts: { effort?: string; images?: ChatSendImage[] } = {};
+    if (atts?.images.length) opts.images = atts.images;
+    sourceRef.current.assistant.send(sessionId, text, Object.keys(opts).length ? opts : undefined);
   }, [sessionId]);
 
   const handleCancel = useCallback(() => {
@@ -305,6 +318,7 @@ export function AssistantPage({
         stats={state?.stats}
         onCompact={handleCompactClick}
         compacting={compacting}
+        visionBlocked={visionBlocked}
       />
     </div>
   );

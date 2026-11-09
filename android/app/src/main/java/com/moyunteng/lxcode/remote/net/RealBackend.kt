@@ -348,6 +348,733 @@ class RealBackend {
     var streamVersion by mutableStateOf(0)
         private set
 
+    // ===== 助手域（assistant.*，协议见 internal/protocol/assistant.go）=====
+    //
+    // 助手是**另一个域**（internal/server/assistant.go 的硬约束）：assistant.* 只
+    // 寻址 space='assistant' 的会话，主域 chat.* 传助手会话 id 报错，反之亦然——
+    // 本域的每个请求都显式带 session_id，绝不混用主域的连接焦点（对齐桌面端
+    // frontend/src/agent/ws/assistant.ts 的域隔离注释）。
+    //
+    // 事件归约（assistantRouteEvent）：assistant.* 的 payload 与 chat.* 逐字段同构、
+    // 只换事件名——归一成 chat.* 等价名后走同一份块语义（八类块 + 派发卡 + 确认门
+    // 先行 + 子事件归并），数据桶换助手域自己的。块构建逻辑与主 reducer 逐条同源；
+    // 子会话临时视图（viewChildSessionId / child* 桶）**复用主域那套**：任何时刻
+    // 只有一个打开的子会话视图（UI 单页面），主域与助手域不可能同时开——子会话
+    // 的归属判定按 session_id（全局唯一），与域无关；带 dispatch_id 的子事件归属
+    // 判定按卡反查（两域的卡各查各的，见 assistantRouteEvent 的子事件分支）。
+
+    /** 助手域状态桶（会话列表/当前会话/时间线/忙闲/确认/模型/权限档——与主域
+     *  同名成员一一对应，独立实例防串台）。 */
+    class AssistantDomain {
+        /** 助手域会话列表（assistant.list；wire 形状与 session.list 同源）。 */
+        val sessions = mutableStateListOf<SessionMeta>()
+
+        /** 助手域会话级忙闲投影（assistant.busy 广播维护；列表 running 位的并集来源）。 */
+        val busyMap = androidx.compose.runtime.mutableStateMapOf<String, Boolean>()
+
+        /** 当前打开的助手会话（assistant.new / 点会话行；空 = 没打开）。 */
+        var currentId by mutableStateOf("")
+            internal set
+
+        /** 助手会话时间线（八类块 + 派发卡）。 */
+        val blocks = mutableStateListOf<ThreadBlock>()
+
+        /** 忙闲（assistant.busy / done/error 收敛——当前打开的助手会话）。 */
+        var busy by mutableStateOf(false)
+            internal set
+
+        /** 挂起确认（assistant.confirmRequest；裁决走 assistant.confirm）。 */
+        var confirm by mutableStateOf<PendingConfirm?>(null)
+            internal set
+
+        /** 上下文占用（assistant.done / assistant.history 的 context 键）。 */
+        var contextUsage by mutableStateOf<ContextUsage?>(null)
+            internal set
+
+        /** 整段会话统计（stats 键；null = 无）。 */
+        var sessionStats by mutableStateOf<SessionStats?>(null)
+            internal set
+
+        /** 当前会话模型（assistant.history 的 model / assistant.modelChanged）。 */
+        var sessionModel by mutableStateOf("")
+            internal set
+
+        /** 模型菜单选中态（会话选择 → 回落 default 角色，同主域 activeModelId 口径）。 */
+        var pickedModelId by mutableStateOf("")
+            internal set
+
+        /** 权限档（assistant.history 的 approval 回读 / assistant.approvalChanged）。 */
+        var approval by mutableStateOf<String?>(null)
+            internal set
+
+        /** 历史装载版本号（ThreadScreen 据此滚到底）。 */
+        var historyVersion by mutableStateOf(0)
+            internal set
+
+        /** 流式内容版本号（sticky-follow 的逐帧补滚数据源）。 */
+        var streamVersion by mutableStateOf(0)
+            internal set
+
+        /** 当前流式 assistant 块下标（-1 = 无）。 */
+        var streamingIdx = -1
+
+        /** 已收尾派发集合（迟到的子事件不许把卡翻回运行中；生命周期 = 当前时间线）。 */
+        val endedDispatches = mutableSetOf<String>()
+
+        /** 某助手会话此刻是否在生成（快照 running 位 ∪ busy 投影——与主域
+         *  isSessionRunning 同一条并集口径）。 */
+        fun isRunning(id: String): Boolean = busyMap[id] == true
+
+        /** 切入助手会话：清当前时间线与域内状态（对齐主域 switchTo 的同一套清账）。 */
+        fun switchTo(id: String) {
+            if (currentId == id) return
+            currentId = id
+            blocks.clear()
+            streamingIdx = -1
+            endedDispatches.clear()
+            confirm = null
+            busy = false
+            contextUsage = null
+            sessionStats = null
+            sessionModel = ""
+            pickedModelId = ""
+            approval = null
+            historyVersion = 0
+            streamVersion = 0
+        }
+    }
+
+    /** 助手域状态（UI 页面与 Composer 瘦身版的数据源）。 */
+    val asst = AssistantDomain()
+
+    /** 刷新助手域会话列表（assistant.list；打开助手页时调）。 */
+    fun refreshAssistantSessions() {
+        client.call("assistant.list", null) { err, result ->
+            if (err != null) {
+                Log.w(TAG, "assistant.list 失败: ${err.optString("message")}")
+                return@call
+            }
+            applyAssistantSessionList(result)
+        }
+    }
+
+    /** 新建助手会话并切入（assistant.new；助手列表「新对话」/ 发送前无会话时也走这里）。 */
+    fun assistantNew(onReady: (String) -> Unit = {}) {
+        client.call("assistant.new", null) { err, result ->
+            if (err != null) {
+                Log.w(TAG, "assistant.new 失败: ${err.optString("message")}")
+                asst.blocks.add(ThreadBlock.Error("新建助手会话失败: ${err.optString("message")}"))
+                return@call
+            }
+            val id = (result as? JSONObject)?.optString("session_id").orEmpty()
+            Log.i(TAG, "assistant.new → $id")
+            if (id.isNotEmpty()) {
+                asst.switchTo(id)
+                onReady(id)
+            }
+        }
+    }
+
+    /** 打开既有助手会话：assistant.history 装载（不发 session.resume——助手域没有
+     *  连接焦点语义，切换就是换 currentId + 拉历史）。 */
+    fun openAssistantSession(id: String) {
+        if (id != asst.currentId) asst.switchTo(id)
+        asstHistoryLoading = true
+        client.call("assistant.history", JSONObject().put("session_id", id).put("tail", TAIL_WINDOW)) { err, result ->
+            asstHistoryLoading = false
+            if (id != asst.currentId) return@call
+            if (err != null) {
+                Log.w(TAG, "assistant.history($id) 失败: ${err.optString("message")}")
+                asst.blocks.clear()
+                asst.blocks.add(ThreadBlock.Error("历史加载失败: ${err.optString("message")}（返回后重新进入可重试）"))
+                asst.historyVersion++
+                return@call
+            }
+            applyAssistantHistory(result as? JSONObject)
+        }
+    }
+
+    /** 助手历史装载中（助手页的「正在加载…」态；openAssistantSession 发出到应答之间）。 */
+    var asstHistoryLoading by mutableStateOf(false)
+        private set
+
+    /** 给当前助手会话发一条消息（assistant.send）。
+     *  effort 是**请求级参数**（protocol.ChatSendParams.Effort——与桌面端同语义）。
+     *  附件（2026-12 助手附件）：pendingImages 非空时随消息带上（images base64
+     *  形态——手机与后端不同机，path 形态不适用；与主域 send 同一套暂存桶与
+     *  wire 组装），发送受理即清暂存。 */
+    fun assistantSend(text: String, effort: String = "") {
+        val t = text.trim()
+        if (t.isEmpty() && pendingImages.isEmpty()) return
+        if (asst.currentId.isEmpty()) {
+            assistantNew(onReady = { assistantSend(t, effort) })
+            return
+        }
+        asst.busy = true
+        val images = pendingImages.toList()
+        Log.i(TAG, "assistant.send session=${asst.currentId} text=${t.take(80)} effort=$effort img=${images.size}")
+        val params = JSONObject().put("session_id", asst.currentId).put("text", t)
+        // 空串不带 effort 键（wire 纪律：值缺省整键缺席）
+        if (effort.isNotBlank()) params.put("effort", effort)
+        if (images.isNotEmpty()) {
+            params.put(
+                "images",
+                org.json.JSONArray().apply {
+                    images.forEach {
+                        put(
+                            JSONObject()
+                                .put("mime", it.mime)
+                                .put("data", it.data)
+                                .put("name", it.name),
+                        )
+                    }
+                },
+            )
+        }
+        client.call("assistant.send", params) { err, _ ->
+            if (err != null) {
+                asst.busy = false
+                val msg = err.optString("message")
+                Log.w(TAG, "assistant.send 被拒: code=${err.optInt("code")} $msg")
+                asst.blocks.add(ThreadBlock.Error("发送失败: $msg"))
+            } else {
+                // 发送受理才清暂存（被拒时保留——用户可改完重发，不丢已选附件）
+                pendingImages.clear()
+                attachNotice = null
+                Log.i(TAG, "assistant.send accepted")
+            }
+        }
+    }
+
+    /** 取消当前助手会话的轮（assistant.cancel）。 */
+    fun assistantCancel(onDone: ((ok: Boolean, msg: String) -> Unit)? = null) {
+        if (asst.currentId.isEmpty()) {
+            onDone?.invoke(false, "还没有打开助手会话")
+            return
+        }
+        Log.i(TAG, "assistant.cancel session=${asst.currentId}")
+        client.call("assistant.cancel", JSONObject().put("session_id", asst.currentId)) { err, _ ->
+            if (err != null) {
+                val msg = err.optString("message").ifBlank { "后端未连接" }
+                onDone?.invoke(false, msg)
+            } else {
+                onDone?.invoke(true, "")
+            }
+        }
+    }
+
+    /** 裁决助手域确认门（assistant.confirm；allow=false = 拒绝）。 */
+    fun resolveAssistantConfirm(allow: Boolean) {
+        val c = asst.confirm ?: return
+        Log.i(TAG, "assistant.confirm id=${c.id} allow=$allow")
+        client.call(
+            "assistant.confirm",
+            JSONObject().put("session_id", c.sessionId).put("id", c.id).put("allow", allow),
+        ) { err, _ ->
+            if (err != null) {
+                Log.w(TAG, "assistant.confirm 失败: ${err.optString("message")}")
+                asst.blocks.add(ThreadBlock.Error("确认裁决失败: ${err.optString("message")}"))
+            }
+            asst.confirm = null
+        }
+    }
+
+    /** 手动压缩当前助手会话（assistant.compact）。结果经 onDone 回调；压缩成功本身
+     *  由 assistant.compacted 事件插「已压缩历史」块。 */
+    fun assistantCompact(onDone: ((compacted: Boolean, reason: String) -> Unit)? = null) {
+        if (asst.currentId.isEmpty()) return
+        Log.i(TAG, "assistant.compact session=${asst.currentId}")
+        client.call("assistant.compact", JSONObject().put("session_id", asst.currentId)) { err, result ->
+            if (err != null) {
+                val msg = err.optString("message")
+                Log.w(TAG, "assistant.compact 失败: $msg")
+                asst.blocks.add(ThreadBlock.Error("压缩失败: $msg"))
+                onDone?.invoke(false, msg)
+                return@call
+            }
+            val compacted = (result as? JSONObject)?.optBoolean("compacted") ?: false
+            val reason = (result as? JSONObject)?.optString("reason").orEmpty()
+            if (!compacted && reason.isNotEmpty()) {
+                asst.blocks.add(ThreadBlock.Error("压缩未执行：$reason"))
+            }
+            onDone?.invoke(compacted, reason)
+        }
+    }
+
+    /** 改当前助手会话的权限档（assistant.approval；乐观置位，广播回来再对齐）。 */
+    fun changeAssistantApproval(mode: String) {
+        val sid = asst.currentId
+        if (sid.isEmpty()) return
+        asst.approval = mode
+        client.call(
+            "assistant.approval",
+            JSONObject().put("session_id", sid).put("approval", mode),
+        ) { err, _ ->
+            if (err != null) Log.w(TAG, "assistant.approval 失败: ${err.optString("message")}")
+        }
+    }
+
+    /** 切当前助手会话的模型（assistant.model；选中态由 assistant.modelChanged 对齐）。 */
+    fun changeAssistantModel(id: String, onDone: ((ok: Boolean, msg: String) -> Unit)? = null) {
+        val sid = asst.currentId
+        if (sid.isEmpty()) {
+            onDone?.invoke(false, "还没有打开助手会话")
+            return
+        }
+        client.call(
+            "assistant.model",
+            JSONObject().put("session_id", sid).put("model_id", id),
+        ) { err, _ ->
+            if (err != null) {
+                val msg = err.optString("message")
+                Log.w(TAG, "assistant.model 失败: $msg")
+                onDone?.invoke(false, msg)
+            } else {
+                onDone?.invoke(true, "")
+            }
+        }
+    }
+
+    /** 打开助手域的子会话临时视图：与主域 openChildSession 同语义，历史走
+     *  **assistant.history** 域内寻址（子会话库行继承父 space='assistant'）——
+     *  chat.history 主域寻址助手子会话会报错。child* 状态桶复用主域那套。 */
+    fun openAssistantChildSession(childId: String, title: String) {
+        if (viewChildSessionId == childId) return
+        viewChildSessionId = childId
+        childViewTitle = title
+        childBlocks.clear()
+        childStreamingIdx = -1
+        childConfirm = null
+        childBusy = false
+        childHistoryVersion = 0
+        childStreamVersion = 0
+        childModelId = ""
+        childHistoryLoading = true
+        client.call("assistant.history", JSONObject().put("session_id", childId)) { err, result ->
+            childHistoryLoading = false
+            if (viewChildSessionId != childId) return@call
+            if (err != null) {
+                Log.w(TAG, "assistant.history(child $childId) 失败: ${err.optString("message")}")
+                childBlocks.add(ThreadBlock.Error("子会话历史加载失败: ${err.optString("message")}"))
+                return@call
+            }
+            applyChildHistory(result as? JSONObject)
+        }
+    }
+
+    /** assistant.list / assistant.tasks 的应答解析（wire 与 session.list 同源——
+     *  复用 applySessionList 的逐字段口径，落进助手域列表；running 位并入 busy 投影）。 */
+    private fun applyAssistantSessionList(r: Any?) {
+        val arr: org.json.JSONArray = when (r) {
+            is org.json.JSONArray -> r
+            is JSONObject -> r.optJSONArray("sessions") ?: return
+            else -> return
+        }
+        val list = (0 until arr.length()).mapNotNull { idx ->
+            val o = arr.getJSONObject(idx)
+            val id = o.optString("id")
+            if (id.isEmpty()) return@mapNotNull null
+            if (o.optBoolean("running")) asst.busyMap[id] = true
+            SessionMeta(
+                id = id,
+                title = o.optString("title").ifBlank { "新对话" },
+                updatedAt = relativeTime(o.optString("updated_at")),
+                messages = o.optInt("messages"),
+                archived = o.optBoolean("archived"),
+                workspace = "",
+                running = o.optBoolean("running") || asst.busyMap[id] == true,
+            )
+        }.filter { !it.archived }
+        asst.sessions.clear()
+        asst.sessions.addAll(list)
+        Log.i(TAG, "assistant.list → ${list.size} 条")
+    }
+
+    /** assistant.history → 块（与主域 applyHistory 同一份解析器 parseHistoryBlocks；
+     *  无分页/缓存薄记——助手会话通常较短，TAIL_WINDOW 内一次装完）。 */
+    private fun applyAssistantHistory(r: JSONObject?) {
+        if (r == null) return
+        val (parsed, todosArr, _, _) = parseHistoryBlocks(r)
+        asst.endedDispatches.clear()
+        asst.blocks.clear()
+        asst.blocks.addAll(parsed)
+        asst.streamingIdx = -1
+        todosArr?.let { arr ->
+            val list = (0 until arr.length()).map { arr.getJSONObject(it) }
+                .map { TodoItem(it.optString("content"), it.optString("status")) }
+            asst.blocks.add(ThreadBlock.Todo(list))
+        }
+        r.optJSONObject("context")?.let { asst.contextUsage = parseContext(it) }
+        r.optJSONObject("stats")?.let { asst.sessionStats = parseStats(it) }
+        asst.sessionModel = r.optString("model", "")
+        asst.pickedModelId = asst.sessionModel
+        asst.busy = r.optBoolean("busy")
+        if (asst.currentId.isNotEmpty()) asst.busyMap[asst.currentId] = asst.busy
+        r.optString("approval", "").takeIf { it.isNotEmpty() }?.let { asst.approval = it }
+        r.optJSONObject("pending")?.let { pend ->
+            asst.confirm = PendingConfirm(
+                sessionId = pend.optString("session_id", asst.currentId),
+                id = pend.optString("id"),
+                name = pend.optString("name"),
+                arguments = pend.optString("arguments"),
+                prompt = pend.optString("prompt"),
+            )
+        }
+        Log.i(TAG, "assistant.history(${asst.currentId}): ${parsed.size} 条消息 → ${asst.blocks.size} 块 busy=${asst.busy}")
+        asst.historyVersion++
+    }
+
+    /**
+     * 助手域事件归约：[chat] = 归一后的 chat.* 等价事件名（ASSISTANT_TO_CHAT 反查），
+     * [p] = 原始载荷（与 chat.* 同构）。块构建逻辑与主 reducer（onEvent）逐条同源，
+     * 数据桶全部落 [asst]——两域的 currentSessionId 过滤互不污染。
+     */
+    private fun assistantRouteEvent(chat: String, p: JSONObject) {
+        val dispatchId = p.optString("dispatch_id", "")
+        // 确认门先行（重放主 reducer onEvent 同一条纪律）：子 Agent 的确认请求必带
+        // dispatch_id，不能进下面的子会话丢弃分支——助手域的高危确认同样全来自
+        // 子派发（助手 Agent 内置 run_task/委派），漏了这条确认弹窗永不出现。
+        if (chat == "chat.confirmRequest") {
+            if (dispatchId.isNotEmpty()) {
+                // 归属判定两域各查各的卡（主域在跑的派发与助手域的派发互不可见）
+                val idx = dispatchCardIdx(dispatchId)
+                val aidx = dispatchCardIdx(dispatchId, asst.blocks)
+                if (idx < 0 && aidx < 0) {
+                    Log.w(TAG, "assistant.confirmRequest 无归属派发卡 dispatch=$dispatchId")
+                    return
+                }
+            } else if (p.optString("session_id", "") != asst.currentId) {
+                return
+            }
+            val pc = PendingConfirm(
+                sessionId = p.optString("session_id", ""),
+                id = p.optString("id"),
+                name = p.optString("name"),
+                arguments = p.optString("arguments"),
+                prompt = p.optString("prompt"),
+            )
+            asst.confirm = pc
+            // 子会话视图双投（对齐主 reducer：卡上的子会话 id 与 viewChildSessionId 相等）
+            val ownerChild = dispatchChildSessionOf(dispatchId)
+                .ifBlank { dispatchChildSessionOf(dispatchId, asst.blocks) }
+            if (dispatchId.isNotEmpty() && ownerChild == viewChildSessionId) {
+                childConfirm = pc
+            }
+            return
+        }
+        // 派发卡事件：归属键是 owner_session_id——先于子会话过滤器处理
+        if (chat == "chat.dispatchStart" || chat == "chat.dispatchEnd") {
+            if (p.optString("owner_session_id") != asst.currentId) return
+            if (chat == "chat.dispatchStart") {
+                val todos = p.optJSONArray("todos")
+                val (tDone, tTotal) = if (todos != null) {
+                    val list = (0 until todos.length()).map { todos.getJSONObject(it) }
+                    list.count { it.optString("status") == "done" } to list.size
+                } else {
+                    -1 to 0
+                }
+                val cardId = p.optString("dispatch_id", "")
+                val idx = if (cardId.isNotEmpty()) {
+                    dispatchCardIdx(cardId, asst.blocks)
+                } else {
+                    asst.blocks.indexOfLast { it is ThreadBlock.Dispatch && it.done.not() }
+                }
+                val fresh = ThreadBlock.Dispatch(
+                    agentName = p.optString("agent_name"),
+                    task = p.optString("task"),
+                    conclusion = "",
+                    sessionId = p.optString("session_id", ""),
+                    done = false,
+                    isError = false,
+                    dispatchId = cardId,
+                    childTodosDone = tDone,
+                    childTodosTotal = tTotal,
+                )
+                if (idx >= 0) {
+                    val prev = asst.blocks[idx] as ThreadBlock.Dispatch
+                    asst.blocks[idx] = prev.copy(
+                        agentName = fresh.agentName.ifBlank { prev.agentName },
+                        task = fresh.task.ifBlank { prev.task },
+                        sessionId = fresh.sessionId.ifBlank { prev.sessionId },
+                        done = false,
+                        isError = false,
+                        conclusion = "",
+                        dispatchId = cardId.ifBlank { prev.dispatchId },
+                        childTodosDone = if (tDone >= 0) tDone else prev.childTodosDone,
+                        childTodosTotal = if (tTotal > 0) tTotal else prev.childTodosTotal,
+                    )
+                } else {
+                    asst.blocks.add(fresh)
+                }
+            } else {
+                val exact = dispatchCardIdx(dispatchId, asst.blocks)
+                val i = if (exact >= 0) {
+                    exact
+                } else {
+                    Log.w(TAG, "assistant.dispatchEnd 无 dispatch_id 配对卡 dispatch=$dispatchId")
+                    asst.blocks.indexOfLast { it is ThreadBlock.Dispatch && it.done.not() }
+                }
+                if (i >= 0) {
+                    val d = asst.blocks[i] as ThreadBlock.Dispatch
+                    val finalTodos = p.optJSONArray("final_todos")
+                    val (fDone, fTotal) = if (finalTodos != null && finalTodos.length() > 0) {
+                        val list = (0 until finalTodos.length()).map { finalTodos.getJSONObject(it) }
+                        list.count { it.optString("status") == "done" } to list.size
+                    } else {
+                        d.childTodosDone to d.childTodosTotal
+                    }
+                    asst.endedDispatches.add(dispatchId)
+                    asst.blocks[i] = d.copy(
+                        conclusion = p.optString("result"),
+                        sessionId = p.optString("session_id", "").ifBlank { d.sessionId },
+                        done = true,
+                        isError = p.optBoolean("is_error"),
+                        childTodosDone = fDone,
+                        childTodosTotal = fTotal,
+                    )
+                } else {
+                    Log.w(TAG, "assistant.dispatchEnd 无配对卡 dispatch=$dispatchId")
+                }
+            }
+            return
+        }
+        // 子会话事件（dispatch_id 非空）不进助手时间线；toolCall/toolResult 归并进
+        // **助手域**派发卡（asst.blocks——主域的卡查不到它）。todo.updated 归并清单进度。
+        if (dispatchId.isNotEmpty()) {
+            markDispatchRunning(dispatchId, asst.blocks)
+            // 子会话视图双投：归属判定两域各查各的卡（与确认门同一条口径）
+            val ownerChild = dispatchChildSessionOf(dispatchId)
+                .ifBlank { dispatchChildSessionOf(dispatchId, asst.blocks) }
+            val routeToChild = viewChildSessionId != null &&
+                (ownerChild == viewChildSessionId || dispatchId == viewChildSessionId)
+            if (routeToChild) childRouteEvent(chat, p)
+            when (chat) {
+                "chat.toolCall" -> {
+                    upsertChildTool(
+                        asst.blocks,
+                        dispatchId,
+                        id = p.optString("id"),
+                        name = p.optString("name"),
+                        argsSummary = argsSummary(p.optString("arguments")),
+                        running = true,
+                        isError = false,
+                        durationMs = 0,
+                    )
+                }
+                "chat.toolResult" -> {
+                    finishChildTool(asst.blocks, dispatchId, p.optString("id"), p.optBoolean("is_error"))
+                }
+                "todo.updated" -> {
+                    mergeChildTodos(asst.blocks, dispatchId, p.optJSONArray("items"))
+                }
+            }
+            return
+        }
+        val sid = p.optString("session_id", "")
+        // 子会话视图双投：子会话自己的事件（无 dispatch_id、session_id == 子会话 id）
+        // 投进 child 状态（与域无关——子会话 id 全局唯一）。
+        if (viewChildSessionId != null && sid == viewChildSessionId) {
+            childRouteEvent(chat, p)
+            return
+        }
+        when (chat) {
+            "chat.userMessage" -> {
+                if (sid != asst.currentId) return
+                val msg = p.optJSONObject("message") ?: return
+                val text = msg.optString("content")
+                if (text.startsWith(HIDDEN_NOTICE_PREFIX)) return
+                val notice = noticeKind(text)
+                if (notice != null) {
+                    asst.blocks.add(ThreadBlock.Notice(label = notice.second, text = text.removePrefix(notice.first).trim()))
+                    asst.streamingIdx = -1
+                    return
+                }
+                val last = asst.blocks.lastOrNull()
+                if (last !is ThreadBlock.User || last.text != text) {
+                    asst.blocks.add(ThreadBlock.User(text, emptyList()))
+                    asst.streamingIdx = -1
+                }
+            }
+
+            "chat.delta" -> {
+                if (sid != asst.currentId) return
+                val kind = p.optString("kind", "text")
+                val text = p.optString("text")
+                if (text.isEmpty()) return
+                val i = asstEnsureStreamingBlock()
+                val cur = asst.blocks[i] as ThreadBlock.Assistant
+                asst.blocks[i] = if (kind == "reasoning") {
+                    cur.copy(reasoning = (cur.reasoning ?: "") + text, streaming = true)
+                } else {
+                    cur.copy(content = cur.content + text, streaming = true)
+                }
+                asst.streamVersion++
+            }
+
+            "chat.toolCall" -> {
+                if (sid != asst.currentId) return
+                asst.streamingIdx = -1
+                val name = p.optString("name")
+                if (name == "agent_dispatch") return
+                val args = p.optString("arguments")
+                asst.blocks.add(
+                    ThreadBlock.Tool(
+                        id = p.optString("id"),
+                        name = name,
+                        title = toolTitle(name),
+                        argsSummary = argsSummary(args),
+                        command = argsCommand(args),
+                        cwd = argsCwd(args),
+                        output = null,
+                        running = true,
+                        isError = false,
+                        durationMs = 0,
+                    ),
+                )
+            }
+
+            "chat.toolResult" -> {
+                if (sid != asst.currentId) return
+                if (p.optString("name") == "agent_dispatch") {
+                    // 调度结果：剥子会话 id 回填卡（与主 reducer 同一条口径）
+                    val (body, childSid) = splitDispatchResult(p.optString("content"))
+                    val i = dispatchCardIdx(p.optString("id"), asst.blocks)
+                    if (i >= 0) {
+                        val d = asst.blocks[i] as ThreadBlock.Dispatch
+                        asst.blocks[i] = d.copy(
+                            conclusion = d.conclusion.ifBlank { body },
+                            sessionId = childSid.ifBlank { d.sessionId },
+                        )
+                    }
+                    return
+                }
+                val id = p.optString("id")
+                val i = asst.blocks.indexOfFirst { it is ThreadBlock.Tool && it.id == id }
+                if (i >= 0) {
+                    val t = asst.blocks[i] as ThreadBlock.Tool
+                    asst.blocks[i] = t.copy(
+                        output = p.optString("content").take(4_000),
+                        running = false,
+                        isError = p.optBoolean("is_error"),
+                    )
+                } else {
+                    Log.w(TAG, "assistant.toolResult 无配对调用块 id=$id")
+                }
+            }
+
+            "chat.done" -> {
+                if (sid != asst.currentId) return
+                val msg = p.optJSONObject("message")
+                if (msg != null) {
+                    val i = asst.blocks.indexOfLast { it is ThreadBlock.Assistant }
+                    if (i >= 0) {
+                        val cur = asst.blocks[i] as ThreadBlock.Assistant
+                        val content = msg.optString("content")
+                        val reasoning = msg.optString("reasoning_content", "")
+                        val model = msg.optString("model", cur.model)
+                        val ftms = msg.optLong("first_token_ms", 0L)
+                        val dur = msg.optLong("duration_ms", 0L)
+                        val utok = msg.optInt("usage_tokens", 0)
+                        asst.blocks[i] = cur.copy(
+                            content = content.ifBlank { cur.content },
+                            reasoning = reasoning.ifBlank { cur.reasoning },
+                            reasoningMs = ftms,
+                            model = model,
+                            firstTokenMs = if (ftms > 0) ftms else null,
+                            tokPerSec = if (utok > 0 && dur > 0) utok * 1000.0 / dur else null,
+                            streaming = false,
+                        )
+                    }
+                }
+                p.optJSONObject("context")?.let { asst.contextUsage = parseContext(it) }
+                p.optJSONObject("stats")?.let { asst.sessionStats = parseStats(it) }
+                msg?.optString("model", "")?.takeIf { it.isNotEmpty() }?.let { asst.sessionModel = it }
+                asst.busy = false
+                if (sid.isNotEmpty()) {
+                    asst.busyMap[sid] = false
+                }
+                asst.streamingIdx = -1
+            }
+
+            "chat.error" -> {
+                if (sid != asst.currentId) return
+                asst.streamingIdx = -1
+                val aborted = p.optBoolean("aborted")
+                val message = p.optString("message")
+                p.optJSONObject("partial")?.let { partial ->
+                    val content = partial.optString("content")
+                    if (content.isNotEmpty()) {
+                        val i = asst.blocks.indexOfLast { it is ThreadBlock.Assistant }
+                        if (i >= 0) {
+                            val cur = asst.blocks[i] as ThreadBlock.Assistant
+                            asst.blocks[i] = cur.copy(content = content, streaming = false)
+                        } else {
+                            asst.blocks.add(ThreadBlock.Assistant(content, null, 0, asst.sessionModel))
+                        }
+                    }
+                }
+                asst.blocks.add(ThreadBlock.Error(if (aborted) "已中断" else message))
+                asst.busy = false
+                if (sid.isNotEmpty()) {
+                    asst.busyMap[sid] = false
+                }
+            }
+
+            "chat.busy" -> {
+                if (sid.isNotEmpty()) {
+                    asst.busyMap[sid] = p.optBoolean("busy")
+                }
+                if (sid != asst.currentId) return
+                asst.busy = p.optBoolean("busy")
+            }
+
+            "chat.modelChanged" -> {
+                if (sid != asst.currentId) return
+                p.optString("model_id", "").takeIf { it.isNotEmpty() }?.let { asst.pickedModelId = it }
+            }
+
+            "chat.approvalChanged" -> {
+                if (sid != asst.currentId) return
+                p.optString("approval", "").takeIf { it.isNotEmpty() }?.let { asst.approval = it }
+            }
+
+            "todo.updated" -> {
+                if (sid != asst.currentId) return
+                val items = p.optJSONArray("items") ?: return
+                val list = (0 until items.length()).map { items.getJSONObject(it) }
+                    .map { TodoItem(it.optString("content"), it.optString("status")) }
+                val i = asst.blocks.indexOfFirst { it is ThreadBlock.Todo }
+                if (i >= 0) asst.blocks[i] = ThreadBlock.Todo(list) else asst.blocks.add(ThreadBlock.Todo(list))
+            }
+
+            "chat.compacted" -> {
+                if (sid != asst.currentId) return
+                asst.blocks.add(
+                    ThreadBlock.Compaction(
+                        summary = p.optString("summary"),
+                        shadowed = p.optInt("shadowed"),
+                        before = p.optInt("before"),
+                        after = p.optInt("after"),
+                        manual = p.optBoolean("manual"),
+                    ),
+                )
+            }
+
+            else -> Log.d(TAG, "助手域忽略事件 $chat")
+        }
+    }
+
+    private fun asstEnsureStreamingBlock(): Int {
+        if (asst.streamingIdx >= 0 && asst.streamingIdx < asst.blocks.size &&
+            asst.blocks[asst.streamingIdx] is ThreadBlock.Assistant
+        ) {
+            return asst.streamingIdx
+        }
+        asst.blocks.add(ThreadBlock.Assistant(content = "", reasoning = null, reasoningMs = 0, model = asst.sessionModel, streaming = true))
+        asst.streamingIdx = asst.blocks.size - 1
+        return asst.streamingIdx
+    }
+
     // ===== 子会话临时视图（对齐桌面端「临时视图」语义）=====
     //
     // 点派发卡进入子会话：数据源切到 child* 状态，主会话 blocks/busy/confirm
@@ -1137,6 +1864,16 @@ class RealBackend {
     private var streamingIdx = -1
 
     private fun onEvent(method: String, p: JSONObject) {
+        // ===== 助手域分流（assistant.*，协议见 internal/protocol/assistant.go）=====
+        // payload 与 chat.* 逐字段同构、只换事件名（assistantEventName 的映射表）——
+        // 归一成 chat.* 等价名后走**同一份**块语义（assistantRouteEvent），数据桶
+        // 换助手域自己的（asst.*）——与主域 currentSessionId 过滤互不污染。
+        // 未知 assistant.* 事件名不猜归属（对齐桌面端 mapEvent：表里没有就忽略）。
+        if (method.startsWith("assistant.")) {
+            val chat = ASSISTANT_TO_CHAT[method]
+            if (chat != null) assistantRouteEvent(chat, p)
+            return
+        }
         val dispatchId = p.optString("dispatch_id", "")
         // 确认门先行：子 Agent 的确认请求**必带 dispatch_id**（协议契约 protocol.ConfirmRequest、
         // dispatch_ws_test.go 钉住），不能进下面的子会话丢弃分支——否则真实模式（主 Agent 唯一
@@ -1297,6 +2034,7 @@ class RealBackend {
             when (method) {
                 "chat.toolCall" -> {
                     upsertChildTool(
+                        blocks,
                         dispatchId,
                         id = p.optString("id"),
                         name = p.optString("name"),
@@ -1307,10 +2045,10 @@ class RealBackend {
                     )
                 }
                 "chat.toolResult" -> {
-                    finishChildTool(dispatchId, p.optString("id"), p.optBoolean("is_error"))
+                    finishChildTool(blocks, dispatchId, p.optString("id"), p.optBoolean("is_error"))
                 }
                 "todo.updated" -> {
-                    mergeChildTodos(dispatchId, p.optJSONArray("items"))
+                    mergeChildTodos(blocks, dispatchId, p.optJSONArray("items"))
                 }
             }
             return
@@ -2201,9 +2939,11 @@ class RealBackend {
     private fun lastAssistantIndex(): Int =
         blocks.indexOfLast { it is ThreadBlock.Assistant }
 
-    /** 当前会话时间线里 dispatch_id 对应的派发卡下标（-1 = 无）。 */
-    private fun dispatchCardIdx(dispatchId: String): Int =
-        blocks.indexOfFirst { it is ThreadBlock.Dispatch && it.dispatchId == dispatchId }
+    /** 当前会话时间线里 dispatch_id 对应的派发卡下标（-1 = 无）。
+     *  [list] = 目标域的块列表（主域 blocks / 助手域 asst.blocks——同一套派发卡
+     *  归约两域共用，归属判定必须查**各自域**的时间线）。 */
+    private fun dispatchCardIdx(dispatchId: String, list: List<ThreadBlock> = blocks): Int =
+        list.indexOfFirst { it is ThreadBlock.Dispatch && it.dispatchId == dispatchId }
 
     /**
      * dispatch_id → 卡上的**子会话 id**（空 = 没有这张卡 / 卡上没有 id）。
@@ -2213,8 +2953,8 @@ class RealBackend {
      * 子事件属不属于当前打开的子会话视图"的判定都必须走这里（桌面端按卡反查，
      * 见 shared/reduce.ts 的 dispatchChildSession）。
      */
-    private fun dispatchChildSessionOf(dispatchId: String): String =
-        (blocks.firstOrNull { it is ThreadBlock.Dispatch && it.dispatchId == dispatchId }
+    private fun dispatchChildSessionOf(dispatchId: String, list: List<ThreadBlock> = blocks): String =
+        (list.firstOrNull { it is ThreadBlock.Dispatch && it.dispatchId == dispatchId }
             as? ThreadBlock.Dispatch)?.sessionId.orEmpty()
 
     /**
@@ -2229,13 +2969,13 @@ class RealBackend {
      * 按**子会话 id** 找派发卡并恢复成运行中（`chat.busy` 无归属键的那条走这里：
      * 普通派发的 dispatch_id 是工具调用 id，与子会话 id 不同，不能拿它当键）。
      */
-    private fun markChildCardRunning(childSessionId: String) {
+    private fun markChildCardRunning(childSessionId: String, list: MutableList<ThreadBlock> = blocks) {
         if (childSessionId.isEmpty()) return
-        val i = blocks.indexOfLast { it is ThreadBlock.Dispatch && it.sessionId == childSessionId }
+        val i = list.indexOfLast { it is ThreadBlock.Dispatch && it.sessionId == childSessionId }
         if (i < 0) return
-        val d = blocks[i] as ThreadBlock.Dispatch
+        val d = list[i] as ThreadBlock.Dispatch
         if (!isDispatchPlaceholder(d.done, d.isError, d.conclusion)) return
-        blocks[i] = d.copy(conclusion = "", done = false, isError = false)
+        list[i] = d.copy(conclusion = "", done = false, isError = false)
     }
 
     /**
@@ -2252,13 +2992,13 @@ class RealBackend {
      * 正常结束的卡（成功或真失败）绝不会被迟到事件改成运行中；收到过 dispatchEnd
      * 的 id 直接跳过（`endedDispatches`）。
      */
-    private fun markDispatchRunning(dispatchId: String) {
+    private fun markDispatchRunning(dispatchId: String, list: MutableList<ThreadBlock> = blocks) {
         if (dispatchId.isEmpty() || dispatchId in endedDispatches) return
-        val i = dispatchCardIdx(dispatchId)
+        val i = dispatchCardIdx(dispatchId, list)
         if (i < 0) return
-        val d = blocks[i] as ThreadBlock.Dispatch
+        val d = list[i] as ThreadBlock.Dispatch
         if (!isDispatchPlaceholder(d.done, d.isError, d.conclusion)) return
-        blocks[i] = d.copy(conclusion = "", done = false, isError = false)
+        list[i] = d.copy(conclusion = "", done = false, isError = false)
     }
 
     /** chat.history 的 running_dispatches → 观察快照列表（键缺席/空数组 = 没有 → null，
@@ -2282,8 +3022,10 @@ class RealBackend {
         return out.ifEmpty { null }
     }
 
-    /** 子会话工具实时流：调用到达即插行/标记运行中（归属派发卡；卡不存在只记日志）。 */
+    /** 子会话工具实时流：调用到达即插行/标记运行中（归属派发卡；卡不存在只记日志）。
+     *  [list] = 目标域的块列表（主域 / 助手域——两域的派发卡归约共用同一套）。 */
     private fun upsertChildTool(
+        list: MutableList<ThreadBlock>,
         dispatchId: String,
         id: String,
         name: String,
@@ -2292,12 +3034,12 @@ class RealBackend {
         isError: Boolean,
         durationMs: Long,
     ) {
-        val i = dispatchCardIdx(dispatchId)
+        val i = dispatchCardIdx(dispatchId, list)
         if (i < 0) {
             Log.w(TAG, "子会话工具事件无归属派发卡 dispatch=$dispatchId")
             return
         }
-        val d = blocks[i] as ThreadBlock.Dispatch
+        val d = list[i] as ThreadBlock.Dispatch
         if (running) childStarts[id] = android.os.SystemClock.elapsedRealtime()
         val existing = d.childRuns.indexOfFirst { it.id == id }
         val entry = ChildTool(
@@ -2314,7 +3056,7 @@ class RealBackend {
         } else {
             d.childRuns + entry
         }
-        blocks[i] = d.copy(childRuns = runs, childTools = runs.size)
+        list[i] = d.copy(childRuns = runs, childTools = runs.size)
     }
 
     /**
@@ -2323,13 +3065,13 @@ class RealBackend {
      */
     private val childStarts = mutableMapOf<String, Long>()
 
-    private fun finishChildTool(dispatchId: String, id: String, isError: Boolean) {
-        val i = dispatchCardIdx(dispatchId)
+    private fun finishChildTool(list: MutableList<ThreadBlock>, dispatchId: String, id: String, isError: Boolean) {
+        val i = dispatchCardIdx(dispatchId, list)
         if (i < 0) {
             Log.w(TAG, "子会话工具结果无归属派发卡 dispatch=$dispatchId")
             return
         }
-        val d = blocks[i] as ThreadBlock.Dispatch
+        val d = list[i] as ThreadBlock.Dispatch
         val idx = d.childRuns.indexOfFirst { it.id == id }
         if (idx < 0) {
             Log.w(TAG, "子会话工具结果无配对调用行 id=$id dispatch=$dispatchId")
@@ -2339,7 +3081,7 @@ class RealBackend {
         val dur = if (start > 0) android.os.SystemClock.elapsedRealtime() - start else 0L
         val runs = d.childRuns.toMutableList()
         runs[idx] = runs[idx].copy(running = false, isError = isError, durationMs = dur)
-        blocks[i] = d.copy(childRuns = runs, childTools = runs.size)
+        list[i] = d.copy(childRuns = runs, childTools = runs.size)
     }
 
     /**
@@ -2347,14 +3089,14 @@ class RealBackend {
      * 完成数/总数归进归属派发卡（卡上「清单 2/4」一行的数据源）；卡不存在只记日志
      * （跨会话的旧广播、历史里没有卡的派发——丢弃是正确行为，不建孤儿卡）。
      */
-    private fun mergeChildTodos(dispatchId: String, items: org.json.JSONArray?) {
+    private fun mergeChildTodos(tl: MutableList<ThreadBlock>, dispatchId: String, items: org.json.JSONArray?) {
         if (items == null) return
-        val i = dispatchCardIdx(dispatchId)
+        val i = dispatchCardIdx(dispatchId, tl)
         if (i < 0) {
             Log.w(TAG, "子会话清单事件无归属派发卡 dispatch=$dispatchId")
             return
         }
-        val d = blocks[i] as ThreadBlock.Dispatch
+        val d = tl[i] as ThreadBlock.Dispatch
         // 迟到守卫只挡**真终态**（成功 / 带真实错误正文的失败）：终态以 dispatchEnd
         // 的 final_todos 为准。回放占位态（done + isError + 那句「中断」文案）不是
         // 终态——会话仍在跑时它刚被 markDispatchRunning 翻回运行中，清单必须能写上去
@@ -2362,7 +3104,7 @@ class RealBackend {
         if (isDispatchFinal(d.done, d.isError, d.conclusion)) return
         val list = (0 until items.length()).map { items.getJSONObject(it) }
             .map { TodoItem(it.optString("content"), it.optString("status")) }
-        blocks[i] = d.copy(
+        tl[i] = d.copy(
             childTodosDone = list.count { it.status == "done" },
             childTodosTotal = list.size,
         )
@@ -2633,6 +3375,29 @@ class RealBackend {
 
     companion object {
         private const val TAG = "LxReal"
+
+        /**
+         * assistant.* 事件 → chat.* 等价事件名（与 internal/server/emit.go 的
+         * assistantEventName **互为逆映射**，对齐桌面端 frontend/src/agent/ws/events.ts
+         * 的 ASSISTANT_TO_CHAT——表里没有的方法名不猜归属，忽略）。
+         * assistant.filesChanged / assistant.configChanged 本批不消费（第三批）。
+         */
+        private val ASSISTANT_TO_CHAT = mapOf(
+            "assistant.userMessage" to "chat.userMessage",
+            "assistant.delta" to "chat.delta",
+            "assistant.toolCall" to "chat.toolCall",
+            "assistant.toolResult" to "chat.toolResult",
+            "assistant.confirmRequest" to "chat.confirmRequest",
+            "assistant.done" to "chat.done",
+            "assistant.error" to "chat.error",
+            "assistant.busy" to "chat.busy",
+            "assistant.dispatchStart" to "chat.dispatchStart",
+            "assistant.dispatchEnd" to "chat.dispatchEnd",
+            "assistant.compacted" to "chat.compacted",
+            "assistant.todoUpdated" to "todo.updated",
+            "assistant.approvalChanged" to "chat.approvalChanged",
+            "assistant.modelChanged" to "chat.modelChanged",
+        )
 
         /** 历史尾部窗口（chat.history 的 tail 参数）：进会话只拉最近 N 条（慢链路
          *  分页——公网隧道带宽有限，全量大会话历史秒级传输；桌面局域网无感）。

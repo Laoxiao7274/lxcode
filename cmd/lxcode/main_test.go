@@ -189,3 +189,48 @@ func dialWait(t *testing.T, addr string) wsclient.Backend {
 		time.Sleep(50 * time.Millisecond)
 	}
 }
+
+// TestResolveAssistantDir：环境变量覆盖 > <sessions>/../assistant 兄弟推导
+//（三形态零新 flag——dev / SCM 安装 / 手动控制台各自从 sessionsDir 派生）。
+func TestResolveAssistantDir(t *testing.T) {
+	t.Setenv("LXCODE_ASSISTANT_DIR", `X:\env-assistant`)
+	if got := resolveAssistantDir(`X:\sessions`); got != `X:\env-assistant` {
+		t.Fatalf("env 应覆盖: %s", got)
+	}
+	t.Setenv("LXCODE_ASSISTANT_DIR", "")
+	if got := resolveAssistantDir(filepath.Join(`C:\PD\lxcode`, "sessions")); got != filepath.Join(`C:\PD\lxcode`, "assistant") {
+		t.Fatalf("默认应推导 sessions 的兄弟目录: %s", got)
+	}
+}
+
+// TestRunServeCreatesAssistantDir：runServe 装配期必须建出助手专属目录
+//（<sessions>/../assistant）——助手会话的工具相对路径与 bash 默认目录以它
+// 为基准，目录缺席 = 助手悄悄落回进程 cwd（那正是本改动要修的 bug）。
+func TestRunServeCreatesAssistantDir(t *testing.T) {
+	addr := freeAddr(t)
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "config", "models.json")
+	writeConfig(t, cfg, "m1")
+	sessionsDir := filepath.Join(dir, "sessions")
+	assistantDir := filepath.Join(dir, "assistant")
+
+	done := make(chan error, 1)
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	go func() { done <- runServe(ctx, cfg, addr, sessionsDir) }()
+
+	be := dialWait(t, addr)
+	be.Close()
+	stop()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runServe 返回错误: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ctx 取消后 5s 未退出")
+	}
+	if fi, err := os.Stat(assistantDir); err != nil || !fi.IsDir() {
+		t.Fatalf("助手专属目录应被创建: %v", err)
+	}
+}

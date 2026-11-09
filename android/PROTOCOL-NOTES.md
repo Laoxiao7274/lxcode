@@ -307,3 +307,103 @@ chat.userMessage → (chat.delta{kind:"reasoning"})* → (chat.delta{kind:"text"
   disconnect 不重连）。多端常驻的前提：手机息屏/切后台导致连接死掉时能自己恢复，
   事件流随之续上。后端每请求一个 goroutine（TestSlowRequestDoesNotHeadOfLineBlockPing
   钉住），心跳不会被慢请求队头阻塞。
+
+## 9. 助手域（assistant.*，2026-12 第一+二批适配）
+
+权威定义：`internal/protocol/assistant.go`（方法/事件常量）与
+`internal/server/dispatch_assistant.go`（域处理器）；桌面端参考实现
+`frontend/src/agent/ws/assistant.ts`（方法编排）与 `events.ts` 的 `ASSISTANT_TO_CHAT`
+（事件反查表）。安卓侧实现：`net/RealBackend.kt` 的助手域（`AssistantDomain` +
+`assistantRouteEvent`）与 `ui/AssistantScreens.kt`（两页式 UI）。
+
+### 9.1 域隔离（硬约束）
+
+助手是**另一个域**（internal/server/assistant.go）：`assistant.*` 只寻址
+space='assistant' 的会话；主域 `chat.*` 传助手会话 id 报错，反之亦然。
+**助手域不设连接焦点**——每个请求都显式带 `session_id`，没有「空 = 当前会话」
+语义；`session.resume` 对助手会话同样无效（安卓侧切换 = 换 currentId + 拉
+assistant.history，不发 resume）。
+
+安卓侧纪律：助手域状态桶（`RealBackend.asst`：sessions/blocks/busy/confirm/
+contextUsage/stats/model/approval）与主域成员一一对应、独立实例——
+`assistant.*` 事件按前缀分流进助手域归约器，与主域 `currentSessionId` 过滤
+互不污染。
+
+### 9.2 方法清单（安卓已接）
+
+| 方法 | 参数 | 结果 | 说明 |
+|---|---|---|---|
+| `assistant.list` | 无 | `{"sessions":[SessionMeta…]}` | wire 与 session.list 同源 + `running` 位 |
+| `assistant.tasks` | `{"project_id":"…"}` | 同 assistant.list | 项目侧「来自助手」任务子会话（安卓本批未接 UI，协议在） |
+| `assistant.new` | 无 | `{"session_id":"…"}` | 建行即注册运行时 |
+| `assistant.send` | `ChatSendParams` 子集：`session_id`/`text` 必带，`effort`/`approval` 可选 | `{"session_id":"…"}` | **images/files 传了报 CodeInvalidParams**（P0 无附件） |
+| `assistant.history` | 同 chat.history（`session_id`/`tail`/`before_seq`） | `ChatHistoryResult` 同构 | 子会话域内寻址同走此方法（子会话库行继承父 space） |
+| `assistant.cancel` | `{"session_id":"…"}` | `{}` | 先寻址「正在跑的 run_task 子会话」，未命中走普通会话路径 |
+| `assistant.confirm` | 同 tool.confirm（+`answer` 位，ask_user 提问回答；安卓本批未接 ask_user） | `{}` | 助手会话的确认裁决 |
+| `assistant.compact` | 同 chat.compact | `CompactResult` | |
+| `assistant.approval` | `{"session_id","approval"}` | `{"approval"}` | 会话级实时档，广播 assistant.approvalChanged |
+| `assistant.model` | `{"session_id","model_id"}` | `ChatModelResult` | model_id 空 = CodeInvalidParams；省略主域的 BindAgentModel 分支 |
+| `assistant.config.get/set` | 见 protocol.AssistantConfigResult | 同形状 | **第三批**（配置页），安卓未接 |
+
+安卓侧 `assistant.history` / `assistant.compact` 已加入 HEAVY_METHODS（30s 超时，
+与 chat.history/chat.compact 同理由：全量历史加载 + 折叠统计/现建运行时压缩）。
+
+### 9.3 事件域（服务端 → 客户端）
+
+`internal/server/emit.go` 的 `assistantEventName` 把助手域会话的内核事件换
+assistant 前缀广播，**payload 与 chat.* 逐字段同构、只换事件名**。安卓侧
+`ASSISTANT_TO_CHAT` 反查表（与桌面端 events.ts 同一份语义，与 emit.go 互为逆映射）：
+
+| assistant 事件 | 等价 chat 事件 | 安卓消费 |
+|---|---|---|
+| `assistant.userMessage` | `chat.userMessage` | ✓（User 块） |
+| `assistant.delta` | `chat.delta` | ✓（合帧器认领——合帧键含 session_id，两域天然隔离） |
+| `assistant.toolCall` / `.toolResult` | `chat.toolCall` / `.toolResult` | ✓（Tool 块 + 派发卡子工具流） |
+| `assistant.confirmRequest` | `chat.confirmRequest` | ✓（确认门先行；裁决走 assistant.confirm） |
+| `assistant.done` / `.error` | `chat.done` / `.error` | ✓ |
+| `assistant.busy` | `chat.busy` | ✓（助手域 busy 投影 + 列表 running 位） |
+| `assistant.dispatchStart/End` | `chat.dispatchStart/End` | ✓（派发卡；归属键 owner_session_id = 助手会话 id） |
+| `assistant.compacted` | `chat.compacted` | ✓ |
+| `assistant.todoUpdated` | `todo.updated` | ✓（Todo 块 + 子派发卡进度） |
+| `assistant.approvalChanged` | `chat.approvalChanged` | ✓ |
+| `assistant.modelChanged` | `chat.modelChanged` | ✓ |
+| `assistant.filesChanged` | `files.changed` | ✗（第三批，忽略） |
+| `assistant.configChanged` | — | ✗（第三批，忽略） |
+
+未知的 assistant.* 事件名**不猜归属、静默忽略**（对齐桌面端 mapEvent 的表纪律）。
+
+**确认门先行纪律（重放主域同一条）**：子 Agent 的确认请求必带 `dispatch_id`
+（协议契约），不能进「子会话事件丢弃」分支——助手域的高危确认同样全来自
+子派发（run_task/委派）。归属判定按卡反查（`dispatch_id` 是工具调用 id，与子
+会话 id 是两回事）；子会话视图打开时双投确认（同一把 LxConfirmDialog，
+裁决走 assistant.confirm）。安卓侧主域与助手域各查各的卡（两域的派发卡
+互不可见，`dispatchCardIdx(idx, list)` 按域传块列表）。
+
+### 9.4 hello 快照与列表 running 位
+
+`connection.hello` 的 `busy_sessions` 快照**只含主域**（`busySessions()` 只扫
+`s.sessions`）——助手会话的运行态从 `assistant.list` 的 `running` 位 +
+`assistant.busy` 广播投影取并集（与主域同一条口径：快照 ∪ 实时广播）。
+
+### 9.5 安卓侧 UI 映射（第一+二批落地形态）
+
+* **入口**：SessionsScreen 导航区固定 NavRow「助手」（新对话旁）→ Route.Assistant；
+* **Route.Assistant**：助手会话列表（标题 + 「新对话」= assistant.new + 会话行，
+  running 状态点同主域口径）；无搜索/项目分组/重命名归档（协议无助手域对应方法，
+  不造）；
+* **Route.AssistantThread**：对话页——八类块渲染 / 确认门 / 派发卡 / 子会话
+  临时视图全部复用主域组件（child* 状态桶两域共用：子会话视图任何时刻只开一个，
+  子会话历史按域走 assistant.history）；Composer 瘦身版（无附件/斜杠/排队，
+  模型/effort/approval/上下文环按 assistant.* 换数据源）；
+* 返回栈：AssistantThread → Assistant → Sessions（BackHandler 链）。
+
+### 9.6 协议缺口（只记录不造）
+
+1. 助手域**没有**会话操作方法（rename/archive/delete/pin 都没有）——助手列表
+   行无 ⋯ 菜单；
+2. `assistant.send` 不收附件（P0）；前端能力扩展前安卓侧同样不显示附件入口；
+3. `assistant.tasks`（项目任务子会话）安卓本批未接 UI——项目模式侧栏的
+   「来自助手」小节在手机端缺位；
+4. `assistant.confirm` 的 `answer` 位（ask_user 提问回答）安卓本批未接——
+   ask_user 的提问卡在手机上只能看不能答（桌面端可答）；
+5. `assistant.config.get/set`（第三批配置页）未接。

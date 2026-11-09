@@ -63,6 +63,11 @@ sealed interface Route {
     data object Screen : Route { override val showBottomBar get() = false }
     data class Thread(val sessionId: String) : Route { override val showBottomBar get() = false }
     data class ConnForm(val fromScan: Boolean) : Route { override val showBottomBar get() = false }
+
+    /** 助手模式（两页式）：会话列表 + 对话页——数据/操作全走 assistant.* 域，
+     *  与主域的 Thread 互不混用。 */
+    data object Assistant : Route { override val showBottomBar get() = false }
+    data class AssistantThread(val sessionId: String) : Route { override val showBottomBar get() = false }
 }
 
 /** 连接表单草稿（新建/编辑共用；[isNew] 决定保存是新增还是覆盖）。 */
@@ -552,6 +557,8 @@ fun AppRoot(pairUri: String? = null, onPairUriConsumed: () -> Unit = {}) {
         if (state.backInterceptor?.invoke() == true) return@BackHandler
         when (val r = state.route) {
             is Route.Thread -> state.route = Route.Sessions
+            is Route.AssistantThread -> state.route = Route.Assistant
+            Route.Assistant -> state.route = Route.Sessions
             is Route.ConnForm -> state.route = Route.Connections
             Route.Pairing -> state.route = Route.Connections
             Route.Screen ->
@@ -696,6 +703,9 @@ fun AppRoot(pairUri: String? = null, onPairUriConsumed: () -> Unit = {}) {
                                 Route.Screen -> ScreenScreen(state)
                                 is Route.Thread -> ThreadScreen(state, route.sessionId)
                                 is Route.ConnForm -> ConnectionFormScreen(state, route.fromScan)
+                                // 助手模式（assistant.* 域）：列表 + 对话两页
+                                Route.Assistant -> AssistantScreen(state)
+                                is Route.AssistantThread -> AssistantThreadScreen(state, route.sessionId)
                             }
                         }
                     }

@@ -350,7 +350,10 @@ func (r *assistantAgentResolver) resolveStoredByName(name string) (*sessiondata.
 //     随机串，注入段是它唯一的常驻来源（主域项目会话不挂：已有归属与
 //     AGENTS.md 注入，跨项目全景对它没有行动价值）；
 //   - AttachTo 之外，新会话首次 send 前允许懒建（EnablePersistence 的空 id 路径
-//     不适用——助手会话必须显式建行落 space=assistant，由 assistantSession 创建）。
+//     不适用——助手会话必须显式建行落 space=assistant，由 assistantSession 创建）；
+//   - AttachTo 成功后注入助手专属工作目录（assistantWorkDir 非空时）——
+//     AttachTo 每次都按库值重写 workDir，注入必须在其后（顺序反了会被
+//     AttachTo 的空 workspace 解析覆盖回进程目录）。
 //
 // 审批档恢复与主域同款（behavior 默认档兜底）。
 func (s *Server) newAssistantRuntime(id string) (*agent.Session, error) {
@@ -437,6 +440,18 @@ func (s *Server) newAssistantRuntime(id string) (*agent.Session, error) {
 	if s.st != nil {
 		if err := sess.AttachTo(s.st, id); err != nil {
 			return nil, err
+		}
+		// 助手专属工作目录（<sessions>/../assistant，runServe 装配）：助手会话
+		// 没有项目归属，AttachTo 解析出的 workDir 是空——工具的相对路径与
+		// bash 默认目录此前落后端进程 cwd（dev=仓库根、SCM=System32，都不该）。
+		// 必须在 AttachTo **之后**（它每次重写 workDir）。不落库纯内存注入：
+		// 不造伪项目行，重启由同一装配路径重注入。空 = 未装配（内存测试模式
+		// 保持旧行为）。注意 run_task 子会话不受影响——RunProjectTask 在
+		// openChildSession 之后显式 SetWorkDir(项目根) 覆盖。
+		if s.assistantWorkDir != "" {
+			if err := sess.SetWorkDir(s.assistantWorkDir); err != nil {
+				return nil, err
+			}
 		}
 		if stored, err := s.st.ApprovalOf(id); err != nil {
 			log.Printf("读助手会话审批档失败（回落默认档）: %v", err)

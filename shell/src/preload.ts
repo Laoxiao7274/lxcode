@@ -81,6 +81,13 @@ contextBridge.exposeInMainWorld("__LX__", {
     rotate: (): Promise<unknown> => ipcRenderer.invoke("backendRemote:rotate"),
     refresh: (): Promise<unknown> => ipcRenderer.invoke("backendRemote:refresh"),
   },
+  // 对话完成系统通知：渲染层判定（主轮 done + 失焦 + 开关）后经这里发
+  // fire-and-forget 意图，主进程弹 Electron Notification（点击聚焦主窗口）。
+  // 不用 invoke——弹通知没有应答语义，弹不出也无需向渲染层回报。
+  notify: {
+    done: (n: { title: string; body: string; sessionId?: string }) =>
+      ipcRenderer.send("notify:done", n),
+  },
   // 自更新：check/download(含校验+暂存)/apply(热替换+排程冷替换)/restart；
   // 下载进度经 update:progress 事件推送；运行期周期检查发现新版本经
   // update:available 推送（主进程编排，见 updater.ts 的 startUpdatePolling）

@@ -543,7 +543,7 @@ fun Composer(state: AppState, real: com.moyunteng.lxcode.remote.net.RealBackend)
  * （到上限才内部滚动）/ 颜色 #0d0d0d / placeholder #8e8ea0 三态文案。
  */
 @Composable
-private fun ComposerTextField(
+internal fun ComposerTextField(
     value: String,
     onValueChange: (String) -> Unit,
     busy: Boolean,
@@ -598,7 +598,7 @@ private fun ComposerTextField(
  * 窗口未知显示「—」。
  */
 @Composable
-private fun ContextRing(usage: com.moyunteng.lxcode.remote.model.ContextUsage?) {
+internal fun ContextRing(usage: com.moyunteng.lxcode.remote.model.ContextUsage?) {
     val known = (usage?.window ?: 0) > 0
     val target = if (!known) 0f else (usage!!.used.toFloat() / usage.window).coerceIn(0f, 1f)
     // 环读数变化 220ms 动画过渡（桌面端 ContextIndicator 的环不瞬跳）
@@ -642,7 +642,7 @@ private fun ContextRing(usage: com.moyunteng.lxcode.remote.model.ContextUsage?) 
 
 /** 会话统计胶囊 —— ghost 药丸（.stats-pill：11sp、#8e8ea0、tabular-nums；步数 0 整个胶囊不渲染）。 */
 @Composable
-private fun StatsCapsule(stats: com.moyunteng.lxcode.remote.model.SessionStats?) {
+internal fun StatsCapsule(stats: com.moyunteng.lxcode.remote.model.SessionStats?) {
     if (stats == null || stats.steps <= 0) return
     Text(
         text = stats.timePillLabel(), // 「N 轮 · M 步 · X.X tok/s」，缺哪段省哪段

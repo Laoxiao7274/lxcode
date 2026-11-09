@@ -210,7 +210,7 @@ func chatSendOptions(p protocol.ChatSendParams) []agent.SendOpt {
 // 落盘的每一份都同时生成**展示元数据**（llm.AttachmentRef——前端渲染附件卡），
 // 经 WithAttachments 随 user 消息落库与广播：实时事件与 chat.history 回放
 // 是同一份，两条路径渲染同一张卡。
-func (s *Server) sendAttachments(sessionID string, sess *agent.Session, p protocol.ChatSendParams, decodedImgs, decodedFiles [][]byte, fileNames, fileRelPaths []string) error {
+func (s *Server) sendAttachments(sessionID string, sess *agent.Session, p protocol.ChatSendParams, decodedImgs, decodedFiles [][]byte, fileNames, fileRelPaths []string, extraOpts ...agent.SendOpt) error {
 	var refs []llm.ImageRef
 	var atts []llm.AttachmentRef
 	if len(p.Images) > 0 {
@@ -293,6 +293,9 @@ func (s *Server) sendAttachments(sessionID string, sess *agent.Session, p protoc
 	if len(atts) > 0 {
 		opts = append(opts, agent.WithAttachments(atts))
 	}
+	// extraOpts：域发送方的额外 SendOpt（assistant.send 的默认 Agent = 助手——
+	// 助手域的「空 = 助手」与主域的「空 = main」缺省语义不同，显式钉在调用方）。
+	opts = append(opts, extraOpts...)
 	return s.sendSession(sessionID, sess, text, opts...)
 }
 

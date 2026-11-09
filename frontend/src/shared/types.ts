@@ -350,7 +350,10 @@ export type AgentEvent =
        *  回放没有「首字」这个时刻 → 整键缺席**（不是 0——0 会被显示成「首字 0ms」的假数据）。 */
       firstTokenMs?: number; durationMs?: number;
       /** 本轮实际使用的模型 id（Agent 绑定优先、否则 default 角色）。 */
-      model?: string }
+      model?: string;
+      /** 助手最终正文的预览（done 携带的 Message.Content，截 ~200 字符）——
+       *  系统通知正文的来源。缺席 = 后端没给（老后端/工具轮），不编空串。 */
+      content?: string }
   | { type: "error"; sessionId: string; message: string; aborted: boolean }
   | { type: "dispatchStart"; sessionId: string; dispatchId: string; childSessionId?: string; agentId: string; agentName: string; agentColor: string; task: string;
       /** run_task（助手 → 项目）派发的目标项目名（可选键，缺席 = 常规 agent_dispatch
@@ -848,8 +851,9 @@ export interface AssistantSource {
   tasks(projectId: string): Promise<SessionMeta[]>;
   /** 新助手会话（assistant.new → SessionResult）。 */
   newSession(): Promise<string>;
-  /** 发送一轮（assistant.send，参数 = ChatSendParams 的子集：无附件——P0 范围外）。 */
-  send(sessionId: string, text: string, opts?: { effort?: string; approval?: string }): void;
+  /** 发送一轮（assistant.send，参数 = ChatSendParams 的子集）。images = 随消息的
+   *  图片附件（2026-12 助手附件——wire 形状与校验和 chat.send 同款；空 = 无图）。 */
+  send(sessionId: string, text: string, opts?: { effort?: string; approval?: string; images?: ChatSendImage[] }): void;
   /** 装载助手会话历史（assistant.history → historyLoaded 事件，助手域路由）。
    *  失败向上抛（AssistantPage 显示原因，不静默降级成"空历史"）。 */
   history(sessionId: string, beforeSeq?: number): Promise<HistorySnapshot>;

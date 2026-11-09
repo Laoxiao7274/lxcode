@@ -19,6 +19,12 @@
 // 的 assistant 页签——secondaryView = "assistant-config" 直接渲染独立页面壳
 // （返回头 + AssistantConfigTab 自包含组件）。两个二级视图互斥语义由单 state
 // 的枚举取值天然保证（点会话行/新对话/派发卡清一切二级视图）。
+//
+// **保活常驻（2026-12 卸载竞态防御）**：本组件不再随模式切换卸载——App.tsx
+// 的两个模式分支都常驻渲染，显隐由 CSS display:none 承担（workspace-view-panel
+// 的冻结保活先例）。切走/切回是纯显示切换，内部订阅（refreshList、
+// session.changed、use-done-notify 的 hasFocus 判定）与全部组件状态（含时间线
+// 流式渲染的中间态）跨模式存活——「切模式后生成停掉」一类卸载竞态整类消灭。
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentSource, SessionMeta } from "../../shared/types";
 import type { UIState } from "../../shared/store";
@@ -77,6 +83,18 @@ export function AssistantWorkspace({
   // 的子会话视图（历史由 AssistantChildPage → assistant.childHistory 装载）。
   // 消费即清：之后用户在助手模式里的常规导航不再受影响。
   const [childViewId, setChildViewId] = useState<string | null>(() => takeAssistantChildPref());
+  // 保活渲染（2026-12 卸载竞态防御）下的运行期消费：本组件常驻不随模式卸载，
+  // 「挂载时初始化消费」只发生在应用启动——运行期「来自助手」跳转（App 的
+  // openAssistantChild 先 setAssistantChildPref 再切模式）引发 App 重渲染，
+  // 本组件随之重渲染，渲染后检查并 take 待消费的偏好。无偏好时 take 返回
+  // null、不 setState（无自激循环）。
+  useEffect(() => {
+    const pending = takeAssistantChildPref();
+    if (pending !== null) {
+      setChildViewId(pending);
+      setSecondaryView(null);
+    }
+  });
   /** 助手模式内的二级视图（形态照抄 childViewId）："catalog" = 拓展页
    *  （CatalogPage），"assistant-config" = 助手配置独立页（AssistantConfigTab
    *  直接挂载，不经 CatalogPage）。null = 无二级视图。单 state 枚举：三个值
@@ -108,6 +126,24 @@ export function AssistantWorkspace({
       if (ev.type === "sessionChanged") void refreshList();
     });
   }, [source, refreshList]);
+
+  // 卸载取证（一次性，2026-12「切回项目模式生成停掉」排查）：组件挂载起一个
+  // 一次性标志，cleanup 触发时打日志。保活改造后正常使用永不卸载——这条日志
+  // 出现即意味着真的发生了卸载（React 严格模式的双挂载例外：dev 下挂载→卸载
+  // →重挂载各打一条，属预期），可据此区分「组件被卸载」与「仅隐藏」。
+  const everMountedRef = useRef(false);
+  useEffect(() => {
+    if (!everMountedRef.current) {
+      everMountedRef.current = true;
+      console.log("[asst-ws] mounted");
+    }
+    return () => {
+      if (everMountedRef.current) {
+        everMountedRef.current = false;
+        console.warn("[asst-ws] unmounted @", new Date().toISOString());
+      }
+    };
+  }, []);
 
   const handleSessionId = useCallback((id: string) => {
     knownTick(id);

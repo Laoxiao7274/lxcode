@@ -231,7 +231,9 @@ func composeSystemPrompt(toolReg *tools.Registry, workDir string, ac *sessiondat
 	b.WriteString(projectDocsSection(docs))
 
 	// 环境说明（工作目录 + Git 工作树）+ 工具清单（白名单过滤）+ 守则
-	b.WriteString("\n" + workdirLine(workDir))
+	// 助手语境的工作目录措辞不同（「专属目录」而不是「项目根」——助手会话
+	// 没有项目归属，ac 为 nil 时不可能走到这行）。
+	b.WriteString("\n" + workdirLine(workDir, ac != nil && ac.Def.Space == sessiondata.SpaceAssistant))
 	b.WriteString(worktreeLine(wt, isChild))
 	b.WriteString("\n可用工具：\n")
 	allowed := toolSet(allowTools)

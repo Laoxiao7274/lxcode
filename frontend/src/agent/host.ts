@@ -98,8 +98,7 @@ interface RawUpdateBridge {
 }
 
 /** 自更新桥；null = 浏览器模式（演示回落）。 */
-export function getUpdateBridge(): UpdateBridge | null {
-  const s = (window as unknown as { __LX__?: { update?: RawUpdateBridge } }).__LX__?.update;
+export function getUpdateBridge(): UpdateBridge | null {  const s = (window as unknown as { __LX__?: { update?: RawUpdateBridge } }).__LX__?.update;
   if (!s) return null;
   const cast = <T,>(p: Promise<unknown>): Promise<T> => p as Promise<T>;
   const normalize = (m: unknown): UpdateManifestView | null => {
@@ -156,4 +155,19 @@ export function getUpdateBridge(): UpdateBridge | null {
         })
       : undefined,
   };
+}
+
+// ---- 对话完成系统通知（壳主进程弹 Electron Notification，点击聚焦主窗口） ----
+
+export interface NotifyBridge {
+  /** 弹一条系统通知（fire-and-forget：弹不出无需向渲染层回报——通知不参与
+   *  生成流程，时间线照常展示结果）。判定（主轮 done + 失焦 + 开关）在渲染层。 */
+  done(n: { title: string; body: string; sessionId?: string }): void;
+}
+
+/** 通知桥；null = 浏览器模式（无壳可弹，静默跳过——demo 模式自然走这里）。 */
+export function getNotifyBridge(): NotifyBridge | null {
+  const s = (window as unknown as { __LX__?: { notify?: { done?: (n: unknown) => void } } }).__LX__?.notify;
+  if (!s?.done) return null;
+  return { done: (n) => s.done!(n) };
 }

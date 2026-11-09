@@ -63,6 +63,16 @@ func runServe(ctx context.Context, path, addr, sessionsDir string) error {
 	if err != nil {
 		return fmt.Errorf("加载配置失败: %w", err)
 	}
+
+	// 助手专属工作目录（<sessions>/../assistant 兄弟目录——三形态零新 flag
+	// 推导）：助手会话没有项目归属，此前工具的相对路径与 bash 默认目录落
+	// 后端进程 cwd（dev=仓库根、SCM=System32——都不该）。目录创建失败拒绝
+	// 启动（与 store.Open 同一条 fail-fast 理由：保证不了不变量的环境问题
+	// 该当场暴露，而不是让助手悄悄落回进程目录）。
+	assistantDir := resolveAssistantDir(sessionsDir)
+	if err := os.MkdirAll(assistantDir, 0o755); err != nil {
+		return fmt.Errorf("助手工作目录创建失败: %w", err)
+	}
 	// 空注册表不拒绝启动（服务形态崩溃重启循环比明确报错更糟）：
 	// 记警告，chat.send 会按请求返回 CodeNoDefaultModel。
 	if len(reg.List()) == 0 {
@@ -71,6 +81,7 @@ func runServe(ctx context.Context, path, addr, sessionsDir string) error {
 	}
 
 	srv := server.NewServer(reg)
+	srv.SetAssistantWorkDir(assistantDir)
 	st, err := store.Open(sessionsDir)
 	if err != nil {
 		return fmt.Errorf("会话存储初始化失败: %w", err)
@@ -281,6 +292,16 @@ func resolveSessionsDir(flagVal, configPath string) string {
 		return env
 	}
 	return filepath.Join(filepath.Dir(filepath.Dir(configPath)), "sessions")
+}
+
+// resolveAssistantDir 决定助手专属工作目录：<sessions>/../assistant 兄弟目录。
+// 环境变量 LXCODE_ASSISTANT_DIR 覆盖（对齐 LXCODE_SESSIONS 先例——测试与
+// 特殊部署用，正常形态零新 flag 零新配置）。
+func resolveAssistantDir(sessionsDir string) string {
+	if env := os.Getenv("LXCODE_ASSISTANT_DIR"); env != "" {
+		return env
+	}
+	return filepath.Join(filepath.Dir(sessionsDir), "assistant")
 }
 
 // ensureRunnable 校验：空配置警告已在 runServe 内记日志，这里只挡

@@ -626,7 +626,7 @@ fun ThreadScreen(state: AppState, sessionId: String) {
  *  [stableKey] 会话 id + 块下标：打字机的稳定身份——delta 整块替换（data class
  *  copy）时 key 不变，reveal 状态保持继续浇而不是重播。 */
 @Composable
-private fun ThreadBlockView(
+internal fun ThreadBlockView(
     state: AppState,
     block: ThreadBlock,
     busy: Boolean,
@@ -652,7 +652,7 @@ private fun ThreadBlockView(
  * 消息但不是用户说的话，按前缀识别后在这里以提示条形态出现。
  */
 @Composable
-private fun NoticeBar(block: ThreadBlock.Notice) {
+internal fun NoticeBar(block: ThreadBlock.Notice) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -685,7 +685,7 @@ private fun NoticeBar(block: ThreadBlock.Notice) {
  * 动效：回弹入场 —— 桌面端 `back.out(1.8)`（低阻尼 spring，等价 [LxEnterSpec.BubbleIn]）。
  */
 @Composable
-private fun UserBubble(
+internal fun UserBubble(
     state: AppState,
     text: String,
     attachments: List<com.moyunteng.lxcode.remote.model.AttachmentMeta> = emptyList(),
@@ -735,7 +735,7 @@ private fun UserBubble(
 
 /** 助手块（思考块 + 正文 + 轮末统计行）。 */
 @Composable
-private fun AssistantBlock(block: ThreadBlock.Assistant, busy: Boolean, stableKey: String) {
+internal fun AssistantBlock(block: ThreadBlock.Assistant, busy: Boolean, stableKey: String) {
     // 助手正文逐字揭示：桌面端 stream-reveal（REVEAL_* 常量），**不受 reduced-motion 门控**。
     // 打字机只用于**实时流式增量**（block.streaming = true）：历史回放的 assistant 块
     // 直接整块呈现全文（对齐桌面端 AnswerBody 的 committed/tail 语义——历史 = snap
@@ -883,7 +883,7 @@ private fun ReasoningRow(text: String, elapsedMs: Long, shimmer: Boolean) {
 
 /** 工具调用卡（工具名 + 参数摘要 + 输出块 + 耗时 + 状态点）。 */
 @Composable
-private fun ToolCard(block: ThreadBlock.Tool) {
+internal fun ToolCard(block: ThreadBlock.Tool) {
     val status = when {
         block.running -> LxStatus.Run
         block.isError -> LxStatus.Danger
@@ -1000,7 +1000,7 @@ private fun FoldableOutput(text: String, danger: Boolean) {
  *    归并进来的轻量投影——桌面端「子会话标签页实时流」的安卓单页等价物）。
  */
 @Composable
-private fun DispatchCard(
+internal fun DispatchCard(
     block: ThreadBlock.Dispatch,
     onOpenChild: (String, String, String) -> Unit,
 ) {
@@ -1228,7 +1228,7 @@ private fun ChildToolRow(run: com.moyunteng.lxcode.remote.model.ChildTool) {
 
 /** 压缩检查点块（「已压缩历史」标签 + 摘要正文）。 */
 @Composable
-private fun CompactionCard(block: ThreadBlock.Compaction) {
+internal fun CompactionCard(block: ThreadBlock.Compaction) {
     Column(
         Modifier
             .fillMaxWidth()
@@ -1276,7 +1276,7 @@ private fun CompactionCard(block: ThreadBlock.Compaction) {
  *    （done = muted + 删除线）。
  */
 @Composable
-private fun TodoCard(items: List<com.moyunteng.lxcode.remote.model.TodoItem>) {
+internal fun TodoCard(items: List<com.moyunteng.lxcode.remote.model.TodoItem>) {
     val done = items.count { it.status == "done" }
     val active = items.count { it.status == "active" }
     val pending = items.size - done - active
@@ -1463,7 +1463,7 @@ private fun TodoProgressRing(progress: Float, size: androidx.compose.ui.unit.Dp)
 
 /** 错误块（--danger 色 + 错误文案）。 */
 @Composable
-private fun ErrorBlock(message: String) {
+internal fun ErrorBlock(message: String) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -1505,7 +1505,7 @@ private fun mdBodyStyle(): TextStyle = Lx.type.Body.copy(
  * 每帧重解析的只有 tail；解析本身 remember(text)（文本没变不重算）。
  */
 @Composable
-private fun MarkdownBody(text: String, modifier: Modifier = Modifier) {
+internal fun MarkdownBody(text: String, modifier: Modifier = Modifier) {
     val blocks = remember(text) { parseMarkdown(text) }
     val body = mdBodyStyle()
     // 块间呼吸感（对齐桌面端 thread.css markdown 块节奏：列表 margin 12px、
@@ -1808,7 +1808,7 @@ private fun spansToAnnotatedString(
 
 /** 「生成中」打字指示：三个 6dp 圆点波动（跳字机节奏），motionAllowed 门控。 */
 @Composable
-private fun TypingIndicator(modifier: Modifier = Modifier) {
+internal fun TypingIndicator(modifier: Modifier = Modifier) {
     Row(modifier = modifier, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
         TypingDots(dotSize = 6.dp, gap = 4.dp)
     }
@@ -1820,7 +1820,7 @@ private fun TypingIndicator(modifier: Modifier = Modifier) {
  * 但「动效关了指示也该看得见」与 lxCaret 的 reduced-motion 纪律同源）。
  */
 @Composable
-private fun TypingDots(dotSize: androidx.compose.ui.unit.Dp, gap: androidx.compose.ui.unit.Dp) {
+internal fun TypingDots(dotSize: androidx.compose.ui.unit.Dp, gap: androidx.compose.ui.unit.Dp) {
     val motion = LocalLxMotionEnabled.current
     Row(horizontalArrangement = Arrangement.spacedBy(gap)) {
         repeat(3) { i ->
@@ -1868,7 +1868,7 @@ private fun TypingDots(dotSize: androidx.compose.ui.unit.Dp, gap: androidx.compo
  * LxConfirmDialog（confirm 带 dispatch_id 的子确认正常弹，裁决走 resolveChildConfirm）。
  */
 @Composable
-private fun ChildThreadView(state: AppState) {
+internal fun ChildThreadView(state: AppState) {
     val real = state.real
     val childId = real.viewChildSessionId ?: return
 

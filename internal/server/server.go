@@ -113,6 +113,12 @@ type Server struct {
 	assistantCfgPath string
 	assistantCfgLast config.Assistant
 
+	// assistantWorkDir 是助手域会话的专属工作目录（runServe 装配；空 = 未
+	// 装配——内存测试模式回落旧行为，工具路径按进程目录解析）。与主域
+	// workDir 同一语义：工具相对路径、bash 默认目录与提示词的工作目录说明
+	// 都以它为准（newAssistantRuntime 在 AttachTo 之后注入）。
+	assistantWorkDir string
+
 	// 投屏（internal/protocol/screen.go + screen_shell.go）：壳侧捕屏服务的
 	// 后端端（命令轮询 + 推流）。NewServer 时装配，恒非 nil。
 	shell *screenShell
@@ -334,6 +340,10 @@ func (s *Server) Session() *agent.Session {
 }
 
 func (s *Server) SetStream(stream agent.StreamFn) { s.stream = stream }
+
+// SetAssistantWorkDir 装配助手域会话的专属工作目录（runServe 装配期一次；
+// 空 = 未装配，助手会话保持旧行为——工具路径按后端进程目录解析）。
+func (s *Server) SetAssistantWorkDir(dir string) { s.assistantWorkDir = dir }
 
 func (s *Server) CloseSessions() {
 	s.sessionsMu.RLock()

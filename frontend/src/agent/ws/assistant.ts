@@ -9,7 +9,8 @@
 // 事件回放：assistant.history 的应答经 snapshotFromWire（与主域 loadHistory /
 // childHistory 共用同一份 wire → HistorySnapshot 映射）后发 historyLoaded，
 // 打上 space 标记——store 据此把回放归约进助手域 assistantStates。
-import type { AgentEvent, AssistantConfig, AssistantSource, CompactOutcome, HistorySnapshot, SendOptions, SessionMeta } from "../../shared/types";
+import type { AgentEvent, AssistantConfig, AssistantSource, ChatSendImage, CompactOutcome, HistorySnapshot, SendOptions, SessionMeta } from "../../shared/types";
+import { wireImage } from "../../shared/attachment-send";
 import { deriveTailPaging, historyParams, HISTORY_TAIL, snapshotFromWire } from "./history-snapshot";
 import type { WsConnection } from "./connection";
 
@@ -72,13 +73,15 @@ export class AssistantDomain implements AssistantSource {
     return id;
   }
 
-  send(sessionId: string, text: string, opts?: { effort?: string; approval?: string }): void {
-    if (!sessionId || !text.trim()) return;
-    // 参数 = ChatSendParams 的子集：session_id/text 必带，effort/approval 可选，
-    // images/files 恒不发（assistant.send 对附件报 CodeInvalidParams——P0 范围外）。
+  send(sessionId: string, text: string, opts?: { effort?: string; approval?: string; images?: ChatSendImage[] }): void {
+    if (!sessionId || (!text.trim() && !(opts?.images?.length))) return;
+    // 参数 = ChatSendParams 的子集：session_id/text 必带，effort/approval/images
+    // 可选（2026-12 助手附件：images 走与 chat.send 同款 wireImage——path 形态只带
+    // 路径，file 对象在 wireImage 里剥掉，绝不上 wire）。
     const params: Record<string, unknown> = { session_id: sessionId, text };
     if (opts?.effort) params.effort = opts.effort;
     if (opts?.approval) params.approval = opts.approval;
+    if (opts?.images?.length) params.images = opts.images.map(wireImage);
     // 无乐观气泡：助手域的 userMessage 回执也排在准备工作之后，但助手页签是
     // 独立时间线、无发送缓冲区，首条消息的空窗用 busy 事件的「正在处理」行呈现
     //（与 ChildSessionPage 同款）——不引入主域的 pending 机制（第二份 FIFO 去重
@@ -184,7 +187,10 @@ export class AssistantDomain implements AssistantSource {
 }
 
 /** SendOptions 到 assistant.send 参数的收敛（AssistantPage 用——SendOptions 的
- *  images/files 在助手域不可用，这里显式只透传 effort，防止误传附件被后端拒）。 */
-export function assistantSendOpts(opts?: SendOptions): { effort?: string } | undefined {
-  return opts?.effort ? { effort: opts.effort } : undefined;
+ *  files 在助手域不接（输入区是图片精简版），显式只透传 effort 与 images）。 */
+export function assistantSendOpts(opts?: SendOptions): { effort?: string; images?: SendOptions["images"] } | undefined {
+  const out: { effort?: string; images?: SendOptions["images"] } = {};
+  if (opts?.effort) out.effort = opts.effort;
+  if (opts?.images?.length) out.images = opts.images;
+  return Object.keys(out).length ? out : undefined;
 }

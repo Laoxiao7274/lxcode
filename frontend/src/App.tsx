@@ -15,7 +15,7 @@ import { timelineOf } from "./shared/blocks";
 import { draftOf } from "./shared/session-drafts";
 import { visionBlockNotice } from "./shared/attachments";
 import { AgentsProvider, useAgents } from "./shared/agents";
-import { enterAssistantMode, enterProjectMode, type AppMode } from "./shared/app-mode";
+import { enterAssistantMode, enterProjectMode, readLastAssistantSession, writeLastAssistantSession, type AppMode } from "./shared/app-mode";
 import { setAssistantChildPref } from "./components/assistant/assistant-child-pref";
 import { AgentsPage } from "./components/agents/AgentsPage";
 import { CatalogPage } from "./components/catalog/CatalogPage";
@@ -51,6 +51,7 @@ import { useSessionTree } from "./app-hooks/use-session-tree";
 import { useSendQueue } from "./app-hooks/use-send-queue";
 import { useRewind } from "./app-hooks/use-rewind";
 import { useCompaction } from "./app-hooks/use-compaction";
+import { useDoneNotify } from "./app-hooks/use-done-notify";
 import { getSakuraBridge } from "./agent/sakura";
 import { getTailscaleBridge } from "./agent/tailscale";
 import { getRemoteControlBridge } from "./agent/host";
@@ -191,14 +192,29 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
           setWorkspaceState(focusHistoryView(workspaceStateRef.current, restored as WorkspaceView));
         }
       }
+      // 取证日志（复现「切回项目模式生成停掉」用）：模式切换零副作用——本回调
+      // 只改显隐状态，不触碰任何 WS/订阅/cancel 路径；配合 connection.ts 的
+      // [ws] connect 行一起看：切换之后若出现 [ws] connect（重连），问题在
+      // 连接层而不是模式切换本身。
+      console.log(`[mode] ${cur} -> ${next} @${new Date().toISOString()}`);
+      if (next === "assistant") {
+        // 保活渲染下的记忆直写（2026-12 卸载竞态防御）：AssistantWorkspace
+        // 常驻不再随模式卸载/挂载，「挂载时读 lastAssistantSession 恢复」只会
+        // 发生在应用启动——切走期间用户在助手模式里的会话选择收不进来。由
+        // 模式切换统一落 localStorage：写在 setAppMode 之后、会话行点击的
+        // writeLastAssistantSession 之后（同一渲染批次内用户最后一次交互是
+        // 最新状态），下次启动恢复的就是离开前的选择。
+        writeLastAssistantSession(readLastAssistantSession() ?? "");
+      }
       return next;
     });
   }, [workspaceStateRef, setWorkspaceState]);
 
   // 项目模式侧栏「来自助手」任务行 → 助手模式的子会话视图（2026-12 跨模式
-  // 跳转）：先记一次性偏好（assistant-child-pref，take 语义——AssistantWorkspace
-  // 挂载时 useState 初始化器消费），再切助手模式。顺序不能反：切模式引发
-  // AssistantWorkspace 挂载，偏好必须先落。
+  // 跳转）：先记一次性偏好（assistant-child-pref，take 语义），再切助手模式。
+  // 顺序不能反：偏好必须先落（AssistantWorkspace 保活常驻——2026-12 卸载竞态
+  // 防御后「挂载时消费偏好」只发生在应用启动；运行期经由 handleModeChange 的
+  // 直写路径生效，时序不变：先 setAssistantChildPref 再切模式）。
   const openAssistantChild = useCallback((childId: string) => {
     setAssistantChildPref(childId);
     if (appModeRef.current !== "assistant") handleModeChange("assistant");
@@ -307,6 +323,10 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
     [source],
   );
   const { handleCompact, handleCompactClick, compacting } = useCompaction({ source, currentId, reportError, reloadHistory: reloadCurrentHistory });
+
+  // ---- 对话完成系统通知（use-done-notify：主轮 done + 失焦 + 开关）----
+  // 浏览器/demo 模式无壳桥 → hook 内静默跳过。
+  useDoneNotify({ source });
 
   // ---- 用户气泡的编辑/撤回 + 草稿域（use-rewind）----
   const {
@@ -699,9 +719,24 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
         mode={appMode}
         onModeChange={handleModeChange}
       />
-      {appMode === "assistant" ? (
-        // 助手模式（顶层）：Sidebar/TabBar/主时间线整块让位给助手工作区——
-        // 会话列表 + 时间线 + 子会话临时视图都在 AssistantWorkspace 内部。
+      {/* 模式分支保活（2026-12 卸载竞态防御）：两分支**都常驻渲染**，显隐用
+          hidden（CSS display:none——workspace-view-panel 同款机制）。背景：
+          条件卸载 AssistantWorkspace 会拆掉其内部全部订阅/状态（AssistantPage
+          的 key 防重闸门、AssistantInput 的输入法合成守卫、子会话视图），且
+          「切回项目模式生成停掉」一类卸载竞态无法静态定位——保活后模式切换
+          变成纯显示切换，整类竞态消失。轻量代价可接受：隐藏时 refreshList
+          等订阅照常跑（都是轻量列表调用）。结构形态 = workspace-view-panel
+          的先例延伸：*.app 是 grid（rows: 44px auto 1fr），两个分支的顶层元素
+          都是它的网格项（assistant-ws 占 row3 两列；project 侧三件套各自定位）——
+          包裹层用 display:contents 让子元素保持网格项身份（布局零改动），
+          隐藏时由 .app-mode-branch[hidden] 整体 display:none。也解决
+          takeAssistantChildPref 的「挂载时消费一次性偏好」语义被保活改变的问题
+          ——下方 modeRef 副作用在模式切换时把 pref 落进 state。 */}
+      <div
+        className="app-mode-branch"
+        hidden={appMode !== "assistant"}
+        style={{ display: appMode !== "assistant" ? undefined : "contents" }}
+      >
         <AssistantWorkspace
           source={source}
           assistantStates={assistantStates}
@@ -710,47 +745,46 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
           reportError={reportError}
           onOpenSettings={openSettings}
         />
-      ) : (
-        <>
-          <TabBar
-            source={source}
-            currentId={currentId}
-            busyBySession={busyBySessionMerged}
-            onNewChat={() => { void source.newSession(filter); backToChat(); }}
-            onFocusSession={focusSession}
-            workspaceTabs={workspaceState.tabs}
-            activeWorkspaceView={view}
-            childView={childView}
-            onFocusChat={backToChat}
-            onFocusWorkspaceTab={openWorkspaceTab}
-            onCloseWorkspaceTab={closeWorkspace}
-          />
-          <Sidebar
-            source={source}
-            currentId={currentId}
-            busyBySession={busyBySessionMerged}
-            filter={filter}
-            setFilter={setFilter}
-            onOpenProject={openProject}
-            onOpenSettings={openSettings}
-            agentsActive={view === "agents"}
-            onOpenAgents={openAgents}
-            onOpenChat={backToChat}
-            catalogActive={view === "catalog"}
-            onOpenCatalog={openCatalog}
-            gitActive={view === "git"}
-            onOpenGit={openGit}
-            remoteActive={view === "remote"}
-            onOpenRemote={openRemote}
-            onOpenAssistantChild={openAssistantChild}
-          />
-          <WorkspaceViewPanels
-            activeView={view}
-            openTabs={workspaceState.tabs}
-            renderView={renderView}
-          />
-        </>
-      )}
+      </div>
+      <div className="app-mode-branch" hidden={appMode !== "project"} style={{ display: "contents" }}>
+        <TabBar
+          source={source}
+          currentId={currentId}
+          busyBySession={busyBySessionMerged}
+          onNewChat={() => { void source.newSession(filter); backToChat(); }}
+          onFocusSession={focusSession}
+          workspaceTabs={workspaceState.tabs}
+          activeWorkspaceView={view}
+          childView={childView}
+          onFocusChat={backToChat}
+          onFocusWorkspaceTab={openWorkspaceTab}
+          onCloseWorkspaceTab={closeWorkspace}
+        />
+        <Sidebar
+          source={source}
+          currentId={currentId}
+          busyBySession={busyBySessionMerged}
+          filter={filter}
+          setFilter={setFilter}
+          onOpenProject={openProject}
+          onOpenSettings={openSettings}
+          agentsActive={view === "agents"}
+          onOpenAgents={openAgents}
+          onOpenChat={backToChat}
+          catalogActive={view === "catalog"}
+          onOpenCatalog={openCatalog}
+          gitActive={view === "git"}
+          onOpenGit={openGit}
+          remoteActive={view === "remote"}
+          onOpenRemote={openRemote}
+          onOpenAssistantChild={openAssistantChild}
+        />
+        <WorkspaceViewPanels
+          activeView={view}
+          openTabs={workspaceState.tabs}
+          renderView={renderView}
+        />
+      </div>
       <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} source={source} />
       {/* 「回到这里 + 还原文件」的二次确认（破坏性动作：磁盘 IO + fail-closed 整批拒绝）。
           数字来自树节点（这一轮的文件/外部操作计数）——文案由 panels/rewind-confirm 的

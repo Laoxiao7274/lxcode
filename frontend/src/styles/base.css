@@ -188,6 +188,15 @@ body:has(.window-stage) {
   height: 100%;
   overflow: hidden;
 }
+/* 顶层模式分支的保活显隐（2026-12 卸载竞态防御——App.tsx 的两分支都常驻
+ * 渲染）：wrapper 是 display:contents（子元素保持 .app 的网格项身份，布局
+ * 零改动——AssistantWorkspace 的 .assistant-ws 自带 grid-row/column 定位，
+ * project 侧三件套同款）；hidden 时整分支 display:none。规则必须在
+ * .app-mode-branch[hidden] 上写 display:none 并加 !important：[hidden] 属性
+ * 的 UA 默认值会被内联 display:contents 覆盖。 */
+.app-mode-branch[hidden] {
+  display: none !important;
+}
 /* ===== 会话标签条（浏览器式 tab——Topbar 与侧栏/主区之间） =====
  * 形态：紧凑药丸（对齐 .trow/.fd- 的扁平语言——不用文件夹式 3D 标签）。
  * 活动 = surface 实底 + 描边环；关闭钮 hover 出现（活动标签常驻可见）。 */

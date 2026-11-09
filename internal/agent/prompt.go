@@ -21,7 +21,16 @@ const systemPromptHeader = `你是 lxcode，运行在用户本机（Windows/类 
 // workdirLine 是工作目录说明：模型必须知道相对路径与 bash 默认目录的
 // 解析基准，否则会按自己的猜测编路径。项目会话显式给出项目根
 // （session.new 带 workspace 注入），未分组会话是后端进程目录。
-func workdirLine(workDir string) string {
+// assistant 为 true = 助手语境（助手会话没有项目归属，工作目录是它的
+// 专属目录 <sessions>/../assistant——措辞不能说「归属一个项目」）。
+func workdirLine(workDir string, assistant bool) string {
+	if assistant {
+		if workDir == "" {
+			return "工作目录就是用户启动后端的目录。\n"
+		}
+		return fmt.Sprintf("这是助手会话，工作目录是你的专属目录（不属于任何项目）：%s\n"+
+			"相对路径一律按此目录解析，bash 未指定 cwd 时也在此目录执行；产出文件放这里，项目外的文件用绝对路径访问。\n", workDir)
+	}
 	if workDir == "" {
 		return "工作目录就是用户启动后端的目录。\n"
 	}
@@ -389,7 +398,7 @@ func BuildSystemPrompt(toolReg *tools.Registry, workDir string, wt WorktreeInfo,
 	var b strings.Builder
 	b.WriteString(systemPromptHeader)
 	b.WriteString(projectDocsSection(docs))
-	b.WriteString(workdirLine(workDir))
+	b.WriteString(workdirLine(workDir, false)) // 无 Agent 语境：项目措辞（助手语境只走 composeSystemPrompt）
 	b.WriteString(worktreeLine(wt, isChild))
 	b.WriteString("\n可用工具：\n")
 	for _, name := range toolReg.Order() {
