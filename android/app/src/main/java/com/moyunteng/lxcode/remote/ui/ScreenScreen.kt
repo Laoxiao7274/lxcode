@@ -128,7 +128,6 @@ import com.moyunteng.lxcode.design.component.LxStatusDot
 import com.moyunteng.lxcode.design.motion.lxAnimateColor
 import com.moyunteng.lxcode.design.motion.lxAnimateFloat
 import com.moyunteng.lxcode.design.token.Lx
-import com.moyunteng.lxcode.design.token.LxColors
 import com.moyunteng.lxcode.design.token.LxMotion
 import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
@@ -217,7 +216,7 @@ fun ScreenScreen(state: com.moyunteng.lxcode.remote.ui.AppState) {
     Column(
         Modifier
             .fillMaxSize()
-            .background(LxColors.Bg),
+            .background(Lx.colors.Bg),
     ) {
         ScreenHeader(
             title = "投屏",
@@ -376,7 +375,7 @@ private fun MinimizedCastScreen(
     Column(
         Modifier
             .fillMaxSize()
-            .background(LxColors.Bg),
+            .background(Lx.colors.Bg),
     ) {
         ScreenHeader(
             title = "投屏",
@@ -591,7 +590,7 @@ private fun WatchSurface(
     // navigationBars/mime insets 补偿（吸边不贴进手势条）。退出观看态（顶栏 ←/
     // 悬浮球「停止投屏」/返回键/断开自动退回）后 AppRoot 恢复 safeDrawing，
     // 这里的补偿只作用于观看态。
-    Box(Modifier.fillMaxSize().background(LxColors.TermBg)) {
+    Box(Modifier.fillMaxSize().background(Lx.colors.TermBg)) {
         // 视频主体：整页根约束（有限高度），fillMaxSize 不会塌条；
         // 比例适配在 VideoSurface 内部按视频真实宽高比 **cover**（最小铺满，超出
         // 部分裁掉——零边框），缩放/平移手势基准同为 cover 语义。
@@ -763,7 +762,7 @@ private fun ScreenFloatingBall(
                 // 菜单开着：全屏半透明遮罩（0.22，淡入淡出），点遮罩 = 关菜单
                 Modifier
                     .graphicsLayer { alpha = if (scrimAlpha > 0.01f) 1f else 0f }
-                    .background(LxColors.TermBg.copy(alpha = scrimAlpha))
+                    .background(Lx.colors.TermBg.copy(alpha = scrimAlpha))
                     .let { m ->
                         if (menuOpen) m.pointerInput(Unit) {
                             awaitEachGesture {
@@ -878,8 +877,8 @@ private fun ScreenFloatingBall(
                 .size(ballSize)
                 .offset { IntOffset(px.x.roundToInt(), px.y.roundToInt()) }
                 .clip(CircleShape)
-                .background(LxColors.TermDim.copy(alpha = ballBgAlpha))
-                .border(1.dp, LxColors.TermBg.copy(alpha = 0.6f), CircleShape)
+                .background(Lx.colors.TermDim.copy(alpha = ballBgAlpha))
+                .border(1.dp, Lx.colors.TermBg.copy(alpha = 0.6f), CircleShape)
                 .pointerInput(Unit) {
                     awaitEachGesture {
                         val down = awaitFirstDown()
@@ -1050,8 +1049,8 @@ private fun MenuColumn(content: @Composable () -> Unit) {
                 elevation = 8.dp,
                 shape = BallMenuPanelShape,
                 clip = false,
-                ambientColor = Color(0x14000000),
-                spotColor = Color(0x1F000000),
+                ambientColor = Lx.shadow.Float.copy(alpha = 0.08f),
+                spotColor = Lx.shadow.Float.copy(alpha = 0.12f),
             )
             .clip(BallMenuPanelShape)
             .background(Lx.colors.Surface)
@@ -1425,7 +1424,7 @@ private fun VideoSurface(
                         .clip(Lx.radius.CardShape)
                 },
             )
-            .background(LxColors.TermBg)
+            .background(Lx.colors.TermBg)
             .onSizeChanged { containerSize = android.util.Size(it.width, it.height) }
         // 手势单入口：awaitEachGesture 顺序判定——多指或有移动 = transform（缩放/平移，
         // 仅全屏观看态；设置页卡内态只留 tap/双击——根因 D：卡内 16:9 卡片不需要
@@ -1610,11 +1609,11 @@ private fun VideoSurface(
                     Icon(
                         imageVector = Icons.Filled.Cast,
                         contentDescription = null,
-                        tint = LxColors.TermDim,
+                        tint = Lx.colors.TermDim,
                         modifier = Modifier.size(20.dp),
                     )
                 }
-                Text("选择显示器开始查看", style = Lx.type.Pill, color = LxColors.TermDim)
+                Text("选择显示器开始查看", style = Lx.type.Pill, color = Lx.colors.TermDim)
             }
         }
         // 全屏态双击提示（顶部悬浮角标，整页视频之上）：文案对齐实际行为——
@@ -1624,7 +1623,7 @@ private fun VideoSurface(
             Text(
                 "双击缩小 · 双指缩放",
                 style = Lx.type.Pill,
-                color = LxColors.TermDim,
+                color = Lx.colors.TermDim,
                 modifier = Modifier
                     .align(Alignment.TopEnd)
                     .padding(Lx.space.s6),
@@ -1715,8 +1714,8 @@ private fun DiagPopup(real: com.moyunteng.lxcode.remote.net.RealBackend, trigger
                             elevation = 8.dp,
                             shape = BallMenuPanelShape,
                             clip = false,
-                            ambientColor = Color(0x14000000),
-                            spotColor = Color(0x1F000000),
+                            ambientColor = Lx.shadow.Float.copy(alpha = 0.08f),
+                            spotColor = Lx.shadow.Float.copy(alpha = 0.12f),
                         )
                         .clip(BallMenuPanelShape)
                         .background(Lx.colors.Surface)

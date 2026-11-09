@@ -220,14 +220,14 @@ private fun buttonLook(
     pressed: Boolean,
 ): ButtonLook = when (variant) {
     LxButtonVariant.Primary -> ButtonLook(
-        container = Lx.colors.Fg,
+        container = Lx.colors.Accent,
         border = null,
-        content = Lx.colors.Bg, // #fff
+        content = Lx.colors.AccentInk,
     )
 
     LxButtonVariant.Secondary -> ButtonLook(
         container = if (hovered || pressed) Lx.colors.BorderSoft else Lx.colors.Surface,
-        border = if (hovered) Lx.colors.BorderGhostHover else Lx.colors.BorderStrong,
+        border = if (hovered) Lx.colors.BorderStrong else Lx.colors.BorderStrong,
         content = Lx.colors.Fg,
     )
 
@@ -240,6 +240,6 @@ private fun buttonLook(
     LxButtonVariant.Danger -> ButtonLook(
         container = Lx.colors.Danger,
         border = null,
-        content = Lx.colors.Bg,
+        content = Lx.colors.Bg, // 维持旧观感（暗色下 = 深色字压亮红，与旧版一致）
     )
 }

@@ -45,8 +45,10 @@ import com.moyunteng.lxcode.design.motion.lxAnimateColor
 import com.moyunteng.lxcode.design.motion.lxEnter
 import com.moyunteng.lxcode.design.motion.lxPressScale
 import com.moyunteng.lxcode.design.token.Lx
-import com.moyunteng.lxcode.design.token.LxColors
+import com.moyunteng.lxcode.design.token.LxIcons
+import com.moyunteng.lxcode.design.token.LxTemp
 import com.moyunteng.lxcode.design.token.LxTheme
+import com.moyunteng.lxcode.design.token.LxVariant
 import com.moyunteng.lxcode.remote.model.BackendConn
 import com.moyunteng.lxcode.remote.model.LOCAL_ADDR
 import com.moyunteng.lxcode.remote.model.SessionMeta
@@ -54,19 +56,20 @@ import java.util.UUID
 
 /** 屏幕（路由）。 */
 sealed interface Route {
-    /** 顶部 tab 页（会话/连接）与从连接页进入的配对页显示底部导航栏；详情页（线程/表单）不显示。 */
+    /** 顶部 tab 页（会话/助手/连接/设置）与从连接页进入的配对页显示底部导航栏；详情页（线程/表单）不显示。 */
     val showBottomBar: Boolean get() = true
 
     data object Sessions : Route
     data object Connections : Route
+    data object Settings : Route
     data object Pairing : Route
     data object Screen : Route { override val showBottomBar get() = false }
     data class Thread(val sessionId: String) : Route { override val showBottomBar get() = false }
     data class ConnForm(val fromScan: Boolean) : Route { override val showBottomBar get() = false }
 
     /** 助手模式（两页式）：会话列表 + 对话页——数据/操作全走 assistant.* 域，
-     *  与主域的 Thread 互不混用。 */
-    data object Assistant : Route { override val showBottomBar get() = false }
+     *  与主域的 Thread 互不混用；列表页作为 tab 直达（底部导航可见）。 */
+    data object Assistant : Route
     data class AssistantThread(val sessionId: String) : Route { override val showBottomBar get() = false }
 }
 
@@ -88,6 +91,48 @@ data class ConnDraft(
  */
 class AppState(private val store: ConnStore? = null) {
     var route by mutableStateOf<Route>(Route.Sessions)
+
+    // ===== 主题（变体 × 色温；P1 落存储与恢复，切换 UI 在 Settings 页下一批）=====
+
+    /** 当前变体（ConnStore 落盘，启动恢复；默认 A）。 */
+    var themeVariant by mutableStateOf(
+        store?.loadThemePick()?.variant?.let { v ->
+            LxVariant.entries.firstOrNull { it.name == v }
+        } ?: LxVariant.A,
+    )
+        private set
+
+    /** 当前色温（ConnStore 落盘，启动恢复；默认 Dark——原型暗色是主要对照形态）。 */
+    var themeTemp by mutableStateOf(
+        store?.loadThemePick()?.temp?.let { t ->
+            LxTemp.entries.firstOrNull { it.name == t }
+        } ?: LxTemp.Dark,
+    )
+        private set
+
+    /** 切主题（唯一写口：写内存 + 落盘；Settings 页下一批接 UI）。 */
+    fun setTheme(variant: LxVariant, temp: LxTemp) {
+        themeVariant = variant
+        themeTemp = temp
+        store?.saveThemePick(variant, temp)
+    }
+
+    // ===== 动效开关（P2 设置页）：app 级覆盖 LxMotionGate 的门控 =====
+    // null = 跟随系统动画缩放（无障碍）；true/false = 显式覆盖（LxMotionGate.override）。
+    // Settings 页开关写这里（落 ConnStore）；AppRoot 的 LxMotionGate 读它。
+
+    /** 动效覆盖（null = 跟随系统）。启动按存档恢复。 */
+    var motionOverride by mutableStateOf(store?.loadMotionOverride())
+        private set
+
+    /**
+     * 切动效开关（唯一写口：写内存 + 落盘）。命名避属性 setter：`setMotionOverride`
+     * 与 `var motionOverride` 的 JVM setter 签名撞车（writeRealOn 同款前例）。
+     */
+    fun writeMotionOverride(override: Boolean?) {
+        motionOverride = override
+        store?.saveMotionOverride(override)
+    }
 
     /** 连接列表（含本机；可增删改；每次变更落盘）。 */
     val conns = mutableStateListOf<BackendConn>().apply {
@@ -441,11 +486,13 @@ private const val TAG = "AppState"
 @Volatile
 private var applicationScopedAppState: AppState? = null
 
-// 纯远控壳：底部导航只留 会话 + 连接 两个 tab；「配对」改为连接页入口，
-// 「展示」（组件库调试页）改为连接页调试区入口（Route 保留，导航不再直达）。
+// 底部导航三 tab（0.4.x 安卓 UI 重做 P1：会话/助手/连接）；
+// 「设置」从连接页入口改为 Route（本批先留路由，Settings 页 UI 下一批）；
+// 「配对」改为连接页入口，「展示」（组件库调试页）改为连接页调试区入口。
 private val NAV_ITEMS = listOf(
-    NavItem(Route.Sessions, "会话", Icons.Filled.ChatBubbleOutline),
-    NavItem(Route.Connections, "连接", Icons.Filled.Dns),
+    NavItem(Route.Sessions, "会话", LxIcons.Chat),
+    NavItem(Route.Assistant, "助手", LxIcons.Bulb),
+    NavItem(Route.Connections, "连接", LxIcons.Server),
 )
 
 /**
@@ -552,13 +599,15 @@ fun AppRoot(pairUri: String? = null, onPairUriConsumed: () -> Unit = {}) {
     //（挂起语义：恢复 0.3.31 废除前的行为——用户从连接页/入口再进投屏页看到
     // 「投屏中」，可再放大观看）。停止投屏是显式动作（停止按钮/悬浮球）。
     // 设置态（未在投）仍只是回连接页。
-    val backEnabled = state.route !is Route.Sessions || state.backInterceptor != null
+    val backEnabled = state.backInterceptor != null ||
+        (state.route !is Route.Sessions && state.route !is Route.Assistant)
     BackHandler(enabled = backEnabled) {
         if (state.backInterceptor?.invoke() == true) return@BackHandler
         when (val r = state.route) {
             is Route.Thread -> state.route = Route.Sessions
             is Route.AssistantThread -> state.route = Route.Assistant
             Route.Assistant -> state.route = Route.Sessions
+            Route.Settings -> state.route = Route.Sessions
             is Route.ConnForm -> state.route = Route.Connections
             Route.Pairing -> state.route = Route.Connections
             Route.Screen ->
@@ -568,6 +617,7 @@ fun AppRoot(pairUri: String? = null, onPairUriConsumed: () -> Unit = {}) {
                     state.route = Route.Connections // 缩小态/设置态 → 离开页面（投屏继续）
                 }
             Route.Connections -> state.route = Route.Sessions
+            Route.Settings -> state.route = Route.Sessions
             Route.Sessions -> Unit // 首页语义：交给系统（activity 退出）
         }
     }
@@ -656,7 +706,7 @@ fun AppRoot(pairUri: String? = null, onPairUriConsumed: () -> Unit = {}) {
 
     // 全屏观看的系统条外观（豁免 safeDrawing 的配套）：窗口背景是投屏画面（深色），
     // 状态栏/导航栏图标须转白色（isAppearanceLight=false）；离开全屏观看（缩小/停止/
-    // 断开退回）还原浅底深字（窗口背景回 LxColors.Bg 白）。改动只经
+    // 断开退回）还原浅底深字（窗口背景回 Lx.colors.Bg 白）。改动只经
     // WindowInsetsController，不动 themes.xml 与 Activity 级配置；
     // watching 驱动的 LaunchedEffect 天然覆盖所有退出路径（watching 翻转即还原）。
     val window = (context as? android.app.Activity)?.window
@@ -668,13 +718,14 @@ fun AppRoot(pairUri: String? = null, onPairUriConsumed: () -> Unit = {}) {
             .isAppearanceLightNavigationBars = !watching
     }
 
-    LxTheme {
-        // 动效门控：跟随系统动画缩放（ANIMATOR_DURATION_SCALE = 0 → 静态）。
-        LxMotionGate {
+    LxTheme(variant = state.themeVariant, temp = state.themeTemp) {
+        // 动效门控：app 级开关（设置页）覆盖 > 跟随系统动画缩放（ANIMATOR_DURATION_SCALE
+        // = 0 → 静态）。override = null 时 LxMotionGate 内部读系统。
+        LxMotionGate(override = state.motionOverride) {
             Box(
                 Modifier
                     .fillMaxSize()
-                    .background(if (watching) LxColors.TermBg else LxColors.Bg)
+                    .background(if (watching) Lx.colors.TermBg else Lx.colors.Bg)
                     // 全屏观看态豁免 safeDrawing：投屏画面绘制到状态栏/导航栏之下
                     //（「整个页面全是投屏画面，四周零边框」，2026-12 拍板）。
                     // 全屏观看 = 显式空 insets、零 padding——顶栏与悬浮球的系统条
@@ -699,6 +750,9 @@ fun AppRoot(pairUri: String? = null, onPairUriConsumed: () -> Unit = {}) {
                             when (route) {
                                 Route.Sessions -> SessionsScreen(state)
                                 Route.Connections -> ConnectionsScreen(state)
+                                // 设置页（P2 新建）：外观（变体/色温分段 + 动效开关）、
+                                // 通知占位、模型/连接入口、版本与检查更新
+                                Route.Settings -> SettingsScreen(state)
                                 Route.Pairing -> PairingScreen(state)
                                 Route.Screen -> ScreenScreen(state)
                                 is Route.Thread -> ThreadScreen(state, route.sessionId)
@@ -724,7 +778,7 @@ private fun BottomNav(state: AppState) {
     Row(
         Modifier
             .fillMaxWidth()
-            .background(LxColors.Surface)
+            .background(Lx.colors.Surface)
             .border(width = 1.dp, color = Lx.colors.Border)
             .padding(vertical = Lx.space.s6),
         horizontalArrangement = Arrangement.SpaceEvenly,

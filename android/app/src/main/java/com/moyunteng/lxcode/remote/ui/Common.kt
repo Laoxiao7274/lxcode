@@ -60,7 +60,6 @@ import com.moyunteng.lxcode.design.motion.lxAnimateColor
 import com.moyunteng.lxcode.design.motion.lxEnter
 import com.moyunteng.lxcode.design.motion.lxPressScale
 import com.moyunteng.lxcode.design.token.Lx
-import com.moyunteng.lxcode.design.token.LxColors
 import com.moyunteng.lxcode.design.token.LxMotion
 
 /**
@@ -148,7 +147,7 @@ fun ScreenHeader(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .background(LxColors.Surface)
+            .background(Lx.colors.Surface)
             .padding(horizontal = Lx.space.s8, vertical = Lx.space.s6),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(Lx.space.s6),
@@ -184,7 +183,7 @@ fun TerminalBlock(command: String, modifier: Modifier = Modifier, cwd: String? =
         modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(Lx.radius.r10))
-            .background(LxColors.TermBg)
+            .background(Lx.colors.TermBg)
             .padding(horizontal = Lx.space.s10, vertical = Lx.space.s8),
         verticalArrangement = Arrangement.spacedBy(Lx.space.s4),
     ) {
@@ -193,7 +192,7 @@ fun TerminalBlock(command: String, modifier: Modifier = Modifier, cwd: String? =
                 text = cwd,
                 style = Lx.type.Mono12.copy(
                     fontSize = Lx.type.Size11,
-                    color = LxColors.TermDim,
+                    color = Lx.colors.TermDim,
                 ),
             )
         }
@@ -202,7 +201,7 @@ fun TerminalBlock(command: String, modifier: Modifier = Modifier, cwd: String? =
             Text(
                 text = command,
                 style = Lx.type.Mono12,
-                color = LxColors.TermFg,
+                color = Lx.colors.TermFg,
             )
         }
     }
@@ -215,7 +214,7 @@ fun CodeBlock(text: String, modifier: Modifier = Modifier) {
         modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(Lx.radius.r10))
-            .background(LxColors.CodeBg)
+            .background(Lx.colors.CodeBg)
             // 对齐 thread.css 代码围栏（.tool-result 同款）：padding 10px 14px
             .padding(horizontal = Lx.space.s12, vertical = Lx.space.s10),
     ) {
@@ -270,7 +269,7 @@ fun LabelSwitch(
             Box(
                 Modifier
                     .size(14.dp)
-                    .background(LxColors.Surface, CircleShape),
+                    .background(Lx.colors.Surface, CircleShape),
             )
         }
     }

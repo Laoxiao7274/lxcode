@@ -59,7 +59,6 @@ import com.moyunteng.lxcode.design.component.LxButton
 import com.moyunteng.lxcode.design.component.LxButtonSize
 import com.moyunteng.lxcode.design.component.LxButtonVariant
 import com.moyunteng.lxcode.design.token.Lx
-import com.moyunteng.lxcode.design.token.LxColors
 import com.moyunteng.lxcode.remote.BuildConfig
 
 import com.moyunteng.lxcode.remote.model.addrValid
@@ -108,7 +107,7 @@ fun PairingScreen(state: AppState) {
     Column(
         Modifier
             .fillMaxSize()
-            .background(LxColors.Bg),
+            .background(Lx.colors.Bg),
     ) {
         ScreenHeader(title = "扫码配对", onBack = { state.route = Route.Connections })
 
@@ -183,7 +182,7 @@ private fun Viewfinder(onResult: (String) -> Unit) {
             .fillMaxWidth()
             .aspectRatio(1f)
             .clip(RoundedCornerShape(Lx.radius.r10))
-            .background(LxColors.TermBg),
+            .background(Lx.colors.TermBg),
         contentAlignment = Alignment.Center,
     ) {
         when {
@@ -228,11 +227,11 @@ private fun ViewfinderPlaceholder(text: String) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(Lx.space.s6),
     ) {
-        SmallIcon(Icons.Filled.QrCode2, LxColors.TermDim, size = 22)
+        SmallIcon(Icons.Filled.QrCode2, Lx.colors.TermDim, size = 22)
         Text(
             text = text,
             style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size11),
-            color = LxColors.TermDim,
+            color = Lx.colors.TermDim,
             textAlign = TextAlign.Center,
             modifier = Modifier.padding(horizontal = Lx.space.s12),
         )

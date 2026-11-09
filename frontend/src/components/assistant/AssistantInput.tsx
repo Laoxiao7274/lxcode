@@ -29,6 +29,8 @@ import { ModelPicker } from "../model-picker";
 import { ContextIndicator } from "../context-indicator";
 import { StatsPills } from "../stats-pills";
 import { AttachmentThumb } from "../composer";
+import { TodoList } from "../../aicss/TodoList";
+import type { TodoItem } from "../../shared/types";
 import {
   addPendingImages,
   attsFromPending,
@@ -58,6 +60,7 @@ export function AssistantInput({
   onCompact,
   compacting = false,
   visionBlocked = null,
+  todos = [],
 }: {
   busy: boolean;
   /** 发送中态（乐观气泡已插、busy 还没到）：与主域 Composer 同语义——
@@ -87,6 +90,9 @@ export function AssistantInput({
   /** 非空 = 当前模型未声明 vision 能力（值为人话原因）：「+」禁用；null/undefined =
    *  能力未知（老后端/模型没配）→ 不禁用，发送时依赖后端 vision 校验兜底。 */
   visionBlocked?: string | null;
+  /** 任务清单（state.todos；空数组 = 无清单——照主域 Composer 的 .pi-plan 形态，
+   *  白卡顶部区块不渲染，.pi 形态与无清单时一致）。 */
+  todos?: TodoItem[];
 }) {
   const [text, setText] = useState("");
   const [images, setImages] = useState<PendingImage[]>([]);
@@ -188,6 +194,13 @@ export function AssistantInput({
         </div>
       )}
       <div className="pi">
+        {/* 任务清单区：照抄主域 Composer 的 .pi-plan 形态（白卡顶部区块，
+            清单 + 发丝分隔线 + 输入区 = 一张卡）；todos 为空不渲染。 */}
+        {todos.length > 0 && (
+          <div className="pi-plan">
+            <TodoList items={todos} />
+          </div>
+        )}
         {(images.length > 0 || notice) && (
           <div className="att-preview" role="region" aria-label="附件预览">
             {notice && <div className="att-notice" role="status">{notice}</div>}

@@ -50,6 +50,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -85,7 +86,6 @@ import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
 import com.moyunteng.lxcode.design.motion.lxAnimateColor
 import com.moyunteng.lxcode.design.token.Lx
-import com.moyunteng.lxcode.design.token.LxColors
 import com.moyunteng.lxcode.design.token.LxMotion
 
 import com.moyunteng.lxcode.remote.model.ModelGroup
@@ -100,10 +100,12 @@ private val MenuPanelShape = RoundedCornerShape(12.dp)
 private val MenuItemShape = RoundedCornerShape(7.dp)
 
 /** 「完全访问」confirming 态底色 —— `.perm-item.confirming { background: rgba(220,38,38,0.08) }`。 */
-private val ConfirmingBg = Color(0x14DC2626)
+private val ConfirmingBg: Color
+    @Composable @ReadOnlyComposable get() = Lx.colors.Danger.copy(alpha = 0.08f)
 
-/** 审批档橙色 —— composer.css `.perm-chip { color: #c2410c }`。 */
-private val ApprovalOrange = Color(0xFFC2410C)
+/** 审批档橙色 —— composer.css `.perm-chip { color: #c2410c }`（与 --warn 同族的深一档）。 */
+private val ApprovalOrange: Color
+    @Composable @ReadOnlyComposable get() = Lx.colors.Amber
 
 /** 面板与触发器的间距 —— `.mp-left { bottom: calc(100% + 8px) }`。 */
 private val MenuGap = 8.dp
@@ -234,8 +236,8 @@ private fun Modifier.menuPanel(width: Dp): Modifier =
             elevation = 8.dp,
             shape = MenuPanelShape,
             clip = false,
-            ambientColor = Color(0x14000000),
-            spotColor = Color(0x1F000000),
+            ambientColor = Lx.shadow.Float.copy(alpha = 0.08f),
+            spotColor = Lx.shadow.Float.copy(alpha = 0.12f),
         )
         .clip(MenuPanelShape)
         .background(Lx.colors.Surface)
@@ -574,7 +576,7 @@ private fun PermMenuItem(
             size = 14.dp,
             // .perm-item svg:first-child：默认 --fg-faint、选中 --fg、confirming --danger
             color = when {
-                armed -> LxColors.Danger
+                armed -> Lx.colors.Danger
                 selected -> Lx.colors.Fg
                 else -> Lx.colors.FgFaint
             },
@@ -591,7 +593,7 @@ private fun PermMenuItem(
                     fontSize = 12.5.sp,
                     lineHeight = 17.sp,
                     fontWeight = if (armed) FontWeight.SemiBold else if (selected) FontWeight.Medium else FontWeight.Normal,
-                    color = if (armed) LxColors.Danger else Lx.colors.Fg,
+                    color = if (armed) Lx.colors.Danger else Lx.colors.Fg,
                 ),
             )
             Text(

@@ -12,6 +12,8 @@ package com.moyunteng.lxcode.remote
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
+import com.moyunteng.lxcode.design.token.LxTemp
+import com.moyunteng.lxcode.design.token.LxVariant
 import com.moyunteng.lxcode.remote.model.BackendConn
 import org.json.JSONArray
 import org.json.JSONObject
@@ -130,6 +132,45 @@ class ConnStore(context: Context) {
         prefs.edit().putBoolean(KEY_REAL_ON, on).apply()
     }
 
+    /**
+     * 主题（变体 × 色温）的持久化（0.4.x 安卓 UI 重做 P1）：
+     * 存两个枚举名的字符串（"A"/"B"/"C" + "Light"/"Dark"/"Warm"），解析失败
+     * （旧档/手改）回默认 A+Dark——不崩、不编造第三种值。
+     * 切换 UI 在 Settings 页（P2）。
+     */
+    data class ThemePick(val variant: String, val temp: String)
+
+    fun loadThemePick(): ThemePick = ThemePick(
+        variant = prefs.getString(KEY_THEME_VARIANT, null) ?: LxVariant.A.name,
+        temp = prefs.getString(KEY_THEME_TEMP, null) ?: LxTemp.Dark.name,
+    )
+
+    fun saveThemePick(variant: LxVariant, temp: LxTemp) {
+        prefs.edit()
+            .putString(KEY_THEME_VARIANT, variant.name)
+            .putString(KEY_THEME_TEMP, temp.name)
+            .apply()
+    }
+
+    /**
+     * 动效开关（设置页「动效」，P2）：app 级覆盖门控。
+     * null = 跟随系统动画缩放（LxMotionGate 默认）；true/false = 显式覆盖。
+     * 三态落盘（KEY 存 -1/0/1），解析失败回 null（跟随系统）。
+     */
+    fun loadMotionOverride(): Boolean? = when (prefs.getInt(KEY_MOTION_OVERRIDE, -1)) {
+        1 -> true
+        0 -> false
+        else -> null
+    }
+
+    fun saveMotionOverride(override: Boolean?) {
+        prefs.edit().putInt(KEY_MOTION_OVERRIDE, when (override) {
+            true -> 1
+            false -> 0
+            null -> -1
+        }).apply()
+    }
+
     companion object {
         private const val TAG = "ConnStore"
         private const val KEY_CONNS = "conns"
@@ -139,5 +180,8 @@ class ConnStore(context: Context) {
         private const val KEY_SCREEN_CASTED = "screenCasted"
         private const val KEY_SCREEN_MONITOR = "screenMonitor"
         private const val KEY_SCREEN_QUALITY = "screenQuality"
+        private const val KEY_THEME_VARIANT = "themeVariant"
+        private const val KEY_THEME_TEMP = "themeTemp"
+        private const val KEY_MOTION_OVERRIDE = "motionOverride"
     }
 }

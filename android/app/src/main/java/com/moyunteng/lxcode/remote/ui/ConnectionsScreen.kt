@@ -65,7 +65,6 @@ import com.moyunteng.lxcode.design.motion.lxEnter
 import com.moyunteng.lxcode.design.motion.lxPressScale
 import com.moyunteng.lxcode.design.motion.lxStaggerEnter
 import com.moyunteng.lxcode.design.token.Lx
-import com.moyunteng.lxcode.design.token.LxColors
 import com.moyunteng.lxcode.remote.BuildConfig
 import com.moyunteng.lxcode.remote.model.BackendConn
 
@@ -82,7 +81,7 @@ fun ConnectionsScreen(state: AppState) {
     Column(
         Modifier
             .fillMaxSize()
-            .background(LxColors.Bg),
+            .background(Lx.colors.Bg),
     ) {
         ScreenHeader(
             title = "连接",
@@ -174,7 +173,7 @@ fun ConnectionsScreen(state: AppState) {
                     )
                     .fillMaxWidth()
                     .clip(Lx.radius.FieldShape)
-                    .background(LxColors.Surface)
+                    .background(Lx.colors.Surface)
                     .border(1.dp, Lx.colors.BorderStrong, Lx.radius.FieldShape)
                     .clickable(
                         interactionSource = addInteraction,
@@ -315,7 +314,7 @@ fun BackendDownBar(
             Text(
                 text = "连接已断开，正在重连…",
                 style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size12),
-                color = LxColors.AmberInk,
+                color = Lx.colors.AmberInk,
                 modifier = Modifier.weight(1f),
             )
         }
@@ -348,7 +347,7 @@ private fun ConnCard(
         modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(Lx.radius.r10 + 1.dp))
-            .background(LxColors.Surface)
+            .background(Lx.colors.Surface)
             .border(
                 width = 1.dp,
                 color = if (active) Lx.colors.FgMuted else Lx.colors.BorderSoft,
@@ -423,7 +422,7 @@ private fun CurrentTag() {
     Text(
         text = "当前",
         style = Lx.type.Pill,
-        color = LxColors.Bg,
+        color = Lx.colors.Bg,
         modifier = Modifier
             // 裁决/当前徽标回弹入场：桌面端 back.out(2)（低阻尼 spring）
             .lxEnter(spec = LxEnterSpec.BubbleIn)
@@ -518,7 +517,7 @@ fun ConnectionFormScreen(state: AppState, fromScan: Boolean) {
     Column(
         Modifier
             .fillMaxSize()
-            .background(LxColors.Bg),
+            .background(Lx.colors.Bg),
     ) {
         ScreenHeader(
             title = if (draft.isNew) "添加远程后端" else "编辑远程后端",
@@ -544,7 +543,7 @@ fun ConnectionFormScreen(state: AppState, fromScan: Boolean) {
                     Text(
                         text = "已从扫码结果填入地址与 Token，确认后保存。",
                         style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size12),
-                        color = LxColors.SuccessInk,
+                        color = Lx.colors.SuccessInk,
                     )
                 }
             }

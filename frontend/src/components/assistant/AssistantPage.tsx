@@ -319,6 +319,7 @@ export function AssistantPage({
         onCompact={handleCompactClick}
         compacting={compacting}
         visionBlocked={visionBlocked}
+        todos={state?.todos ?? []}
       />
     </div>
   );

@@ -4,6 +4,8 @@
 // 类型定义——页面层只消费这些类型，接真后端时（RealBackend）不需要改页面。
 package com.moyunteng.lxcode.remote.model
 
+import androidx.compose.runtime.Immutable
+
 // ===== 连接（对齐桌面端 shared/connections.tsx 的 RemoteConn + 内置本机）=====
 
 /**
@@ -73,6 +75,7 @@ data class ProjectMeta(val id: String, val name: String, val path: String)
 // ===== 对话块（对齐 llm.Message / protocol 事件 / 桌面端 ThreadBlock）=====
 
 /** todo 条目（对齐 `tools.TodoItem`：`content` / `status`）。 */
+@Immutable
 data class TodoItem(val content: String, val status: String) // pending | active | done
 
 /**
@@ -93,6 +96,7 @@ data class AttachmentMeta(
  * [running] = 已调用未回结果；[durationMs] 在结果到达时按本地计时补齐（协议 toolResult
  * 不带耗时，tool 消息的 duration_ms 只在历史里有——实时流用本地计时，可回放历史对齐）。
  */
+@Immutable
 data class ChildTool(
     val id: String,
     val name: String,
@@ -117,6 +121,7 @@ data class ChildTool(
  *  * [Notice] → 通告前缀的 user 消息（对齐桌面端 shared/notices.ts）；
  *  * [Error] → `chat.error`（或连接层错误）。
  */
+@Immutable
 sealed interface ThreadBlock {
     /**
      * 用户消息的附件（图片/文件卡）。
@@ -125,9 +130,11 @@ sealed interface ThreadBlock {
      * 引用（`<session-id>/<文件名>`），取件走 `GET /attachments/<path>?token=...`。
      * 实时（chat.userMessage）与回放（chat.history）两条路径共用这一个块字段。
      */
-    data class User(val text: String, val attachments: List<AttachmentMeta> = emptyList()) : ThreadBlock
+    @Immutable
+data class User(val text: String, val attachments: List<AttachmentMeta> = emptyList()) : ThreadBlock
 
-    data class Assistant(
+    @Immutable
+data class Assistant(
         val content: String,
         val reasoning: String?,
         val reasoningMs: Long,
@@ -143,6 +150,7 @@ sealed interface ThreadBlock {
         val streaming: Boolean = false,
     ) : ThreadBlock
 
+    @Immutable
     data class Tool(
         // 调用 id（chat.toolCall/toolResult 与 llm.ToolCall.id 配对用）
         val id: String = "",
@@ -157,6 +165,7 @@ sealed interface ThreadBlock {
         val durationMs: Long,
     ) : ThreadBlock
 
+    @Immutable
     data class Dispatch(
         val agentName: String,
         val task: String,
@@ -177,6 +186,7 @@ sealed interface ThreadBlock {
         val childTodosTotal: Int = 0,
     ) : ThreadBlock
 
+    @Immutable
     data class Compaction(
         val summary: String,
         val shadowed: Int,
@@ -185,7 +195,8 @@ sealed interface ThreadBlock {
         val manual: Boolean,
     ) : ThreadBlock
 
-    data class Todo(val items: List<TodoItem>) : ThreadBlock
+    @Immutable
+data class Todo(val items: List<TodoItem>) : ThreadBlock
 
     /**
      * 系统提示条（后台任务通告 / 重复调用提醒）。
@@ -194,8 +205,10 @@ sealed interface ThreadBlock {
      * 才会回应——后端硬约束），但它不是用户说的话：按**文本前缀**识别（前缀表在
      * RealBackend，对齐桌面端 shared/notices.ts），渲染成一行提示条而不是用户气泡。
      */
+    @Immutable
     data class Notice(val label: String, val text: String) : ThreadBlock
 
+    @Immutable
     data class Error(val message: String) : ThreadBlock
 }
 

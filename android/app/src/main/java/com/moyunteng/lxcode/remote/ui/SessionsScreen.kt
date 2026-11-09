@@ -79,8 +79,126 @@ import com.moyunteng.lxcode.design.component.LxStatus
 import com.moyunteng.lxcode.design.component.LxStatusDot
 import com.moyunteng.lxcode.design.component.LxTextField
 import com.moyunteng.lxcode.design.token.Lx
-import com.moyunteng.lxcode.design.token.LxColors
 import com.moyunteng.lxcode.remote.model.SessionMeta
+
+/** 行组卡（原型 `.rows-card`：Surface 底 + 1px 边 + 圆角 12 + 卡片阴影 + 行间 1px 分隔线；
+ *  margin 0 10px → 手机取 6dp 外边距、行内清零）。 */
+@Composable
+private fun RowsCard(
+    modifier: Modifier = Modifier,
+    content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit,
+) {
+    Column(
+        modifier
+            .padding(horizontal = Lx.space.s6)
+            .fillMaxWidth()
+            .shadow(
+                elevation = 3.dp,
+                shape = Lx.radius.CardShape,
+                clip = false,
+                ambientColor = Lx.shadow.Card,
+                spotColor = Lx.shadow.Card,
+            )
+            .clip(Lx.radius.CardShape)
+            .background(Lx.colors.Surface)
+            .border(1.dp, Lx.colors.Border, Lx.radius.CardShape),
+        content = content,
+    )
+}
+
+/** 行间分隔线（`.rows-card .row + .row { border-top: 1px solid var(--line) }`）。 */
+@Composable
+private fun RowDivider() {
+    Box(
+        Modifier
+            .padding(start = 58.dp) // 首列（36dp 头像 + 12 gap + 10 边距）之后起线——对齐原型缩进
+            .fillMaxWidth()
+            .height(1.dp)
+            .background(Lx.colors.Border),
+    )
+}
+
+/** 搜索框（原型 `.search`：--soft 底、无边、圆角 9、放大镜 + placeholder --fg3；
+ *  触摸端无「Ctrl K」角标——键盘提示在手机上没有意义，查询非空时保留「清除」）。 */
+@Composable
+private fun SearchField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    androidx.compose.foundation.text.BasicTextField(
+        value = value,
+        onValueChange = onValueChange,
+        singleLine = true,
+        textStyle = androidx.compose.ui.text.TextStyle(
+            fontFamily = Lx.type.Sans,
+            fontSize = Lx.type.Size12_5,
+            color = Lx.colors.Fg,
+        ),
+        cursorBrush = androidx.compose.ui.graphics.SolidColor(Lx.colors.Fg),
+        modifier = modifier,
+        decorationBox = { inner ->
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(Lx.radius.FieldShape)
+                    .background(Lx.colors.BorderSoft)
+                    .padding(horizontal = Lx.space.s12, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(9.dp),
+            ) {
+                SmallIcon(Icons.Filled.Search, Lx.colors.FgFaint, size = 15)
+                Box(Modifier.weight(1f)) {
+                    if (value.isEmpty()) {
+                        Text(
+                            text = "搜索对话与项目",
+                            style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size12_5),
+                            color = Lx.colors.FgFaint,
+                        )
+                    }
+                    inner()
+                }
+                if (value.isNotEmpty()) {
+                    Text(
+                        text = "清除",
+                        style = Lx.type.Button.copy(fontSize = Lx.type.Size10_5),
+                        color = Lx.colors.FgFaint,
+                        modifier = Modifier.clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                        ) { onValueChange("") },
+                    )
+                }
+            }
+        },
+    )
+}
+
+/** 分组标题 + 计数（原型 `.sect .count`：计数同色弱化，跟在标题后）。 */
+@Composable
+private fun SectionHeaderWithCount(
+    title: String,
+    count: Int,
+    topPadding: androidx.compose.ui.unit.Dp = Lx.space.s6,
+) {
+    Row(
+        Modifier
+            .padding(start = Lx.space.s10, end = Lx.space.s10, top = topPadding, bottom = Lx.space.s4),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            text = title.uppercase(),
+            style = Lx.type.SectionTitle,
+            color = Lx.colors.FgMuted,
+        )
+        Text(
+            text = "$count",
+            style = Lx.type.SectionTitle.copy(fontWeight = FontWeight.Medium),
+            color = Lx.colors.FgFaint,
+        )
+    }
+}
 
 /** 会话列表页（首页）。 */
 @Composable
@@ -118,13 +236,13 @@ fun SessionsScreen(state: AppState) {
     Column(
         Modifier
             .fillMaxSize()
-            .background(LxColors.Bg),
+            .background(Lx.colors.Bg),
     ) {
         // 顶部：品牌 + 连接药丸
         Row(
             Modifier
                 .fillMaxWidth()
-                .background(LxColors.Surface)
+                .background(Lx.colors.Surface)
                 .padding(horizontal = Lx.space.s10, vertical = Lx.space.s6),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(Lx.space.s8),
@@ -271,7 +389,7 @@ fun SessionsScreen(state: AppState) {
                 NavRow(entry, Modifier.lxStaggerEnter(count = navItems.size, index = i))
             }
 
-            // ② 搜索框
+            // ② 搜索框（浅填充形态：--soft 底无边框，对齐原型 `.search`）
             item {
                 Box(
                     Modifier
@@ -281,72 +399,57 @@ fun SessionsScreen(state: AppState) {
                         )
                         .padding(horizontal = Lx.space.s4, vertical = Lx.space.s6),
                 ) {
-                    LxTextField(
+                    SearchField(
                         value = state.query,
                         onValueChange = { state.query = it },
-                        placeholder = "搜索对话与项目",
-                        trailing = {
-                            if (state.query.isEmpty()) {
-                                Text(
-                                    text = "Ctrl K",
-                                    style = Lx.type.Pill.copy(fontSize = Lx.type.Size10),
-                                    color = Lx.colors.FgFaint,
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(Lx.radius.r4))
-                                        .background(Lx.colors.BorderSoft)
-                                        .padding(horizontal = 5.dp, vertical = 1.dp),
-                                )
-                            } else {
-                                Text(
-                                    text = "清除",
-                                    style = Lx.type.Button.copy(fontSize = Lx.type.Size10_5),
-                                    color = Lx.colors.FgFaint,
-                                    modifier = Modifier.clickable(
-                                        interactionSource = remember { MutableInteractionSource() },
-                                        indication = null,
-                                    ) { state.query = "" },
-                                )
-                            }
-                        },
                     )
                 }
             }
 
-            // ③ 「项目」分组标题（只读：项目属于远程后端，手机端不提供新增入口）
-            item { LxSectionHeader("项目") }
+            // ③ 「项目」分组标题（带计数；只读：项目属于远程后端，手机端不提供新增入口）
+            item {
+                SectionHeaderWithCount(
+                    title = "项目",
+                    count = state.real.projects.size + 1, // + 未分组
+                )
+            }
 
-            // ④ 项目行 + 未分组
+            // ④ 项目行 + 未分组（rows-card 组卡：行间 1px 分隔线）
             // 项目来自 project.list（真数据）；会话按 workspace（= 项目 id）归组，
             // 各组计数 = 该项目 id 下的会话数（对齐桌面端 Sidebar 的 count 口径）；
             // 无归属（workspace 空）进「未分组」。
-            itemsIndexed(state.real.projects) { i, project ->
-                ProjectRow(
-                    modifier = Modifier.lxStaggerEnter(count = state.real.projects.size + 1, index = i),
-                    name = project.name,
-                    count = state.realProjectSessionCount(project.id),
-                    runningCount = state.realProjectRunningCount(project.id),
-                    active = state.scope == project.id,
-                    onClick = { state.scope = project.id },
-                )
-            }
             item {
-                ProjectRow(
-                    modifier = Modifier.lxEnter(
-                        spec = LxEnterSpec.StaggerItem,
-                        delayMillis = LxStagger.delayMillis(state.real.projects.size + 1, state.real.projects.size),
-                    ),
-                    name = "未分组",
-                    count = state.realLooseSessionCount(),
-                    runningCount = state.realLooseRunningCount(),
-                    active = state.scope.isEmpty(),
-                    onClick = { state.scope = "" },
-                )
+                RowsCard {
+                    state.real.projects.forEachIndexed { i, project ->
+                        if (i > 0) RowDivider()
+                        ProjectRow(
+                            modifier = Modifier.lxStaggerEnter(count = state.real.projects.size + 1, index = i),
+                            name = project.name,
+                            count = state.realProjectSessionCount(project.id),
+                            runningCount = state.realProjectRunningCount(project.id),
+                            active = state.scope == project.id,
+                            onClick = { state.scope = project.id },
+                        )
+                    }
+                    if (state.real.projects.isNotEmpty()) RowDivider()
+                    ProjectRow(
+                        modifier = Modifier.lxEnter(
+                            spec = LxEnterSpec.StaggerItem,
+                            delayMillis = LxStagger.delayMillis(state.real.projects.size + 1, state.real.projects.size),
+                        ),
+                        name = "未分组",
+                        count = state.realLooseSessionCount(),
+                        runningCount = state.realLooseRunningCount(),
+                        active = state.scope.isEmpty(),
+                        onClick = { state.scope = "" },
+                    )
+                }
             }
 
-            // ⑤ 「对话」分组标题
-            item { LxSectionHeader("对话", topPadding = Lx.space.s12) }
+            // ⑤ 「对话」分组标题（带计数）
+            item { SectionHeaderWithCount("对话", state.realSessionsInScope().size, topPadding = Lx.space.s12) }
 
-            // ⑥ 会话行（搜索过滤）：列表来自 session.list（真数据）
+            // ⑥ 会话行（rows-card 组卡；搜索过滤）：列表来自 session.list（真数据）
             val sessions = state.realSessionsInScope().filter {
                 state.query.trim().isEmpty() ||
                     it.title.contains(state.query.trim(), ignoreCase = true)
@@ -354,36 +457,41 @@ fun SessionsScreen(state: AppState) {
             if (sessions.isEmpty()) {
                 item { SmallEmpty(if (state.query.trim().isEmpty()) "还没有对话——点上方「新对话」开始" else "没有匹配「${state.query.trim()}」的对话") }
             } else {
-                itemsIndexed(sessions) { i, s ->
-                    Box {
-                        SessionRowItem(
-                            s,
-                            Modifier.lxStaggerEnter(count = sessions.size, index = i),
-                            // 状态点 = 快照位 **或** 实时 busy 投影（并集）：
-                            // 投影是 Compose 可观察的 state map，电脑端在这条会话里
-                            // 开跑时手机上立刻亮，不必点进去（chat.history）才补上。
-                            running = s.running || state.real.isSessionRunning(s.id),
-                            onClick = { state.route = Route.Thread(s.id) },
-                            onMenu = { menuFor = s },
-                        )
-                        // 行尾 ⋯ 菜单（对齐桌面端 SessionRow.tsx 的 hover 菜单；触摸端改为点按弹出）
-                        AnchorMenu(expanded = menuFor?.id == s.id, onDismiss = { menuFor = null }) {
-                            SessionOpsMenu(
-                                onRename = {
-                                    menuFor = null
-                                    renaming = s
-                                },
-                                onArchive = {
-                                    menuFor = null
-                                    state.real.archiveSession(s.id)
-                                },
-                            )
+                item {
+                    RowsCard {
+                        sessions.forEachIndexed { i, s ->
+                            if (i > 0) RowDivider()
+                            Box {
+                                SessionRowItem(
+                                    s,
+                                    Modifier.lxStaggerEnter(count = sessions.size, index = i),
+                                    // 状态点 = 快照位 **或** 实时 busy 投影（并集）：
+                                    // 投影是 Compose 可观察的 state map，电脑端在这条会话里
+                                    // 开跑时手机上立刻亮，不必点进去（chat.history）才补上。
+                                    running = s.running || state.real.isSessionRunning(s.id),
+                                    onClick = { state.route = Route.Thread(s.id) },
+                                    onMenu = { menuFor = s },
+                                )
+                                // 行尾 ⋯ 菜单（对齐桌面端 SessionRow.tsx 的 hover 菜单；触摸端改为点按弹出）
+                                AnchorMenu(expanded = menuFor?.id == s.id, onDismiss = { menuFor = null }) {
+                                    SessionOpsMenu(
+                                        onRename = {
+                                            menuFor = null
+                                            renaming = s
+                                        },
+                                        onArchive = {
+                                            menuFor = null
+                                            state.real.archiveSession(s.id)
+                                        },
+                                    )
+                                }
+                            }
                         }
                     }
                 }
             }
 
-            // ⑦ 底部「设置」行
+            // ⑦ 底部「设置」行（接 Route.Settings——P2 设置页）
             item {
                 Row(
                     Modifier
@@ -392,7 +500,7 @@ fun SessionsScreen(state: AppState) {
                         .clickable(
                             interactionSource = remember { MutableInteractionSource() },
                             indication = null,
-                        ) {}
+                        ) { state.route = Route.Settings }
                         .padding(horizontal = Lx.space.s8, vertical = Lx.space.s8),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(Lx.space.s8),
@@ -413,7 +521,7 @@ fun SessionsScreen(state: AppState) {
         var draft by remember(target.id) { mutableStateOf(target.title) }
         AlertDialog(
             onDismissRequest = { renaming = null },
-            containerColor = LxColors.Surface,
+            containerColor = Lx.colors.Surface,
             title = {
                 Text(
                     text = "重命名会话",
@@ -512,7 +620,7 @@ private fun ProjectRow(
                     Text(
                         text = "$runningCount 运行中",
                         style = Lx.type.Badge.copy(fontSize = Lx.type.Size10_5),
-                        color = LxColors.Amber,
+                        color = Lx.colors.Amber,
                     )
                 }
                 Text(
@@ -588,11 +696,11 @@ private fun SessionOpsMenu(onRename: () -> Unit, onArchive: () -> Unit) {
                 elevation = 8.dp,
                 shape = SessionOpsShape,
                 clip = false,
-                ambientColor = Color(0x14000000),
-                spotColor = Color(0x1F000000),
+                ambientColor = Lx.shadow.Float.copy(alpha = 0.08f),
+                spotColor = Lx.shadow.Float.copy(alpha = 0.12f),
             )
             .clip(SessionOpsShape)
-            .background(LxColors.Surface)
+            .background(Lx.colors.Surface)
             .border(1.dp, Lx.colors.BorderStrong, SessionOpsShape)
             .padding(5.dp),
         verticalArrangement = Arrangement.spacedBy(1.dp),
@@ -651,7 +759,7 @@ private fun UpdateBanner(
         modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(11.dp))
-            .background(LxColors.Surface)
+            .background(Lx.colors.Surface)
             .border(1.dp, Lx.colors.Border, RoundedCornerShape(11.dp))
             .padding(horizontal = Lx.space.s10, vertical = Lx.space.s8),
         verticalAlignment = Alignment.CenterVertically,
@@ -931,7 +1039,7 @@ private fun UpdateDialogProgress(
                     .fillMaxWidth()
                     .shadow(2.dp, RoundedCornerShape(Lx.radius.r10 + 2.dp))
                     .clip(RoundedCornerShape(Lx.radius.r10 + 2.dp))
-                    .background(LxColors.Surface)
+                    .background(Lx.colors.Surface)
                     .border(1.dp, Lx.colors.Border, RoundedCornerShape(Lx.radius.r10 + 2.dp))
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
@@ -1087,7 +1195,7 @@ private fun ConnectGuide(
             onClick = onScan,
             variant = LxButtonVariant.Primary,
             size = LxButtonSize.Large,
-            leadingIcon = { SmallIcon(Icons.Filled.QrCode2, LxColors.Bg, size = 16) },
+            leadingIcon = { SmallIcon(Icons.Filled.QrCode2, Lx.colors.Bg, size = 16) },
         )
         Box(Modifier.height(Lx.space.s4))
         LxButton(

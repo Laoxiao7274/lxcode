@@ -55,7 +55,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.moyunteng.lxcode.design.token.Lx
-import com.moyunteng.lxcode.design.token.LxColors
 import com.moyunteng.lxcode.remote.net.RealBackend
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -64,13 +63,23 @@ import java.net.URL
 /** 附件卡 Shape —— thread.css .att-file/.att-thumb 的 border-radius: 16px。 */
 private val AttShape = RoundedCornerShape(16.dp)
 
-/** url → ImageBitmap（HTTP 同步取件 + BitmapFactory 解码，IO 线程）。
+/** 附件位图缓存（P3 性能）：url → Bitmap 的 LruCache（128 条目上限——附件图尺寸不一，
+ *  条目数上限 + Compose LazyList 的可见窗口规模匹配；滚出窗口的图被逐出，滚回来重取）。
+ *  之前每张缩略图各发一次 HTTP + 解码且滚出视口就丢——列表回滚重解码、流式期间
+ *  同一 url 的 gallery 网格重复解码（单图 + 灯箱两处同 url 各一份）。命中缓存 = 零 IO。 */
+private val attachmentBitmapCache = androidx.collection.LruCache<String, Bitmap>(128)
+
+/** url → ImageBitmap（HTTP 同步取件 + BitmapFactory 解码，IO 线程；LruCache 命中免 IO）。
  *  null = 失败（占位态）；produceState 在 url 变化时重取——调用方读 .value。 */
 @Composable
 private fun rememberAttachmentBitmap(url: String?): ImageBitmap? =
     produceState<ImageBitmap?>(initialValue = null, url) {
         if (url == null) return@produceState
-        value = withContext(Dispatchers.IO) {
+        attachmentBitmapCache.get(url)?.let {
+            value = it.asImageBitmap()
+            return@produceState
+        }
+        val bmp = withContext(Dispatchers.IO) {
             try {
                 val conn = URL(url).openConnection() as java.net.HttpURLConnection
                 conn.connectTimeout = 5_000
@@ -80,13 +89,15 @@ private fun rememberAttachmentBitmap(url: String?): ImageBitmap? =
                     conn.disconnect()
                     return@withContext null
                 }
-                val bmp: Bitmap? = BitmapFactory.decodeStream(conn.inputStream)
+                val decoded: Bitmap? = BitmapFactory.decodeStream(conn.inputStream)
                 conn.disconnect()
-                bmp?.asImageBitmap()
+                decoded
             } catch (_: Exception) {
                 null
             }
         }
+        if (bmp != null) attachmentBitmapCache.put(url, bmp)
+        value = bmp?.asImageBitmap()
     }.value
 
 /** 消息侧用户附件区（对齐桌面端 UserAttachmentSection）：
@@ -154,7 +165,7 @@ private fun SingleImage(url: String, onClick: () -> Unit) {
             .width(240.dp)
             .aspectRatio(ratio.coerceIn(0.25f, 4f))
             .clip(AttShape)
-            .background(LxColors.BgSide)
+            .background(Lx.colors.BgSide)
             .border(1.dp, Lx.colors.Border, AttShape)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
@@ -180,7 +191,7 @@ private fun GridImage(url: String, badge: String?, onClick: () -> Unit) {
         Modifier
             .size(64.dp)
             .clip(AttShape)
-            .background(LxColors.BgSide)
+            .background(Lx.colors.BgSide)
             .border(1.dp, Lx.colors.Border, AttShape)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
@@ -199,7 +210,7 @@ private fun GridImage(url: String, badge: String?, onClick: () -> Unit) {
             Box(
                 Modifier
                     .fillMaxSize()
-                    .background(Color(0x66000000)),
+                    .background(Color.Black.copy(alpha = 0.40f)),
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
@@ -233,7 +244,7 @@ fun AttFileCard(name: String, sub: String, onClick: () -> Unit) {
             .width(240.dp)
             .height(64.dp)
             .clip(AttShape)
-            .background(LxColors.BgSide)
+            .background(Lx.colors.BgSide)
             .border(1.dp, Lx.colors.Border, AttShape)
             .clickable(onClick = onClick)
             .padding(horizontal = 12.dp),
@@ -298,7 +309,7 @@ fun PendingImageThumb(
         Box(
             Modifier
                 .fillMaxSize()
-                .background(LxColors.BgSide)
+                .background(Lx.colors.BgSide)
                 .border(1.dp, Lx.colors.Border, AttShape),
             contentAlignment = Alignment.Center,
         ) {
@@ -325,7 +336,7 @@ fun PendingImageThumb(
                 .padding(4.dp)
                 .size(18.dp)
                 .clip(RoundedCornerShape(9.dp))
-                .background(Color(0xB8000000)) // rgba(0,0,0,0.72)
+                .background(Color.Black.copy(alpha = 0.72f)) // 桌面端 .lightbox 遮罩同值
                 .clickable(onClick = onRemove),
             contentAlignment = Alignment.Center,
         ) {
@@ -350,7 +361,7 @@ fun PendingFileCard(name: String, sub: String, onRemove: () -> Unit) {
                 .padding(4.dp)
                 .size(18.dp)
                 .clip(RoundedCornerShape(9.dp))
-                .background(Color(0xB8000000))
+                .background(Color.Black.copy(alpha = 0.72f))
                 .clickable(onClick = onRemove),
             contentAlignment = Alignment.Center,
         ) {
@@ -380,7 +391,7 @@ fun ImageLightbox(
         Box(
             Modifier
                 .fillMaxSize()
-                .background(Color(0xD208090C)) // rgba(8,9,12,0.82)——桌面端 .lightbox 同值
+                .background(Lx.colors.TermBg.copy(alpha = 0.82f)) // 桌面端 .lightbox 同值
                 .clickable(onClick = onDismiss),
             contentAlignment = Alignment.Center,
         ) {
@@ -413,7 +424,7 @@ fun ImageLightbox(
                     Modifier
                         .size(36.dp)
                         .clip(RoundedCornerShape(18.dp))
-                        .background(Color(0x33000000))
+                        .background(Color.Black.copy(alpha = 0.20f))
                         .clickable(onClick = onDismiss),
                     contentAlignment = Alignment.Center,
                 ) {
@@ -433,7 +444,7 @@ fun ImageLightbox(
                             .padding(8.dp)
                             .size(36.dp)
                             .clip(RoundedCornerShape(18.dp))
-                            .background(Color(0x33000000))
+                            .background(Color.Black.copy(alpha = 0.20f))
                             .clickable { index-- },
                         contentAlignment = Alignment.Center,
                     ) {
@@ -452,7 +463,7 @@ fun ImageLightbox(
                             .padding(8.dp)
                             .size(36.dp)
                             .clip(RoundedCornerShape(18.dp))
-                            .background(Color(0x33000000))
+                            .background(Color.Black.copy(alpha = 0.20f))
                             .clickable { index++ },
                         contentAlignment = Alignment.Center,
                     ) {

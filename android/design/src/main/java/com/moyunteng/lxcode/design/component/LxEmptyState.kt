@@ -65,6 +65,7 @@ fun LxEmptyState(
         Text(
             text = text,
             style = Lx.type.BodyMuted.copy(color = Lx.colors.FgFaint), // 空态主文案 = --fg-faint
+            color = Lx.colors.FgFaint,
             textAlign = TextAlign.Center,
             modifier = Modifier.widthIn(max = 340.dp), // 桌面端 `max-width: 340px`
         )
@@ -73,6 +74,7 @@ fun LxEmptyState(
             Text(
                 text = description,
                 style = Lx.type.BodySmall,
+                color = Lx.colors.FgFaint,
                 textAlign = TextAlign.Center,
                 modifier = Modifier
                     .padding(top = Lx.space.s6)

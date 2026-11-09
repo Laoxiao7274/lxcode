@@ -59,10 +59,10 @@ fun LxTextField(
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
 
-    // 聚焦才提亮边框：桌面端唯一的输入框状态反馈
+    // 聚焦才提亮边框：桌面端唯一的输入框状态反馈（主题的 focus 环色，随变体/色温切换）
     val borderColor = when {
-        focused -> Lx.colors.FocusRing // #a8a8b0
-        else -> Lx.colors.BorderStrong // #e5e5e5
+        focused -> Lx.colors.Ring
+        else -> Lx.colors.BorderStrong
     }
     val minHeight: Dp = if (singleLine) 38.dp else 110.dp // 桌面端 textarea min-height: 110px
 
@@ -89,7 +89,7 @@ fun LxTextField(
                 onValueChange = onValueChange,
                 enabled = enabled,
                 singleLine = singleLine,
-                textStyle = Lx.type.Field,
+                textStyle = Lx.type.Field.copy(color = Lx.colors.Fg),
                 cursorBrush = SolidColor(Lx.colors.Fg),
                 interactionSource = interaction,
                 keyboardOptions = KeyboardOptions(imeAction = if (singleLine) ImeAction.Done else ImeAction.Default),

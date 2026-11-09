@@ -91,12 +91,14 @@ data class LxEnterSpec(
         val SettingsMaskIn = LxEnterSpec("settings-mask-in", 160)
 
         /**
-         * 页面切换 —— 底部导航切页时内容淡入 + 轻微上浮，200ms 标准曲线。
+         * 页面切换 —— 底部导航切页时内容淡入 + 轻微上浮，240ms 标准曲线
+         * （原型 `pagein .24s cubic-bezier(.22,.8,.36,1)`，P2 对齐——原 200ms 是
+         * 桌面端 mp-slide-in 的搬运，安卓页切的原型档是 240ms）。
          *
          * 桌面端没有对应 keyframes（桌面端是侧栏切路由，无页面切换动画）；
-         * 6dp 是规格未给数值时的取档：落在 `block-in` 的 4px 与 `ap-card-in` 的 8px 之间。
+         * 8dp 是原型 pagein 的 translateY 起点（from { transform: translateY(8px) }）。
          */
-        val PageIn = LxEnterSpec("page-in（规格未给数值，取 6dp）", 200, fromTranslateYDp = 6f)
+        val PageIn = LxEnterSpec("page-in（原型 pagein .24s）", 240, fromTranslateYDp = 8f)
 
         /** `staggerIn` 的单条目 —— y 8dp + 淡入，300ms 标准曲线（延迟由 [LxStagger] 给） */
         val StaggerItem = LxEnterSpec("staggerIn item", 300, fromTranslateYDp = 8f)

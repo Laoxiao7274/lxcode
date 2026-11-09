@@ -129,6 +129,7 @@ fun LxListItem(
             Text(
                 text = title,
                 style = Lx.type.ListTitle,
+                color = Lx.colors.Fg,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -136,6 +137,7 @@ fun LxListItem(
                 Text(
                     text = subtitle,
                     style = Lx.type.ListSubtitle,
+                    color = Lx.colors.FgFaint,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )

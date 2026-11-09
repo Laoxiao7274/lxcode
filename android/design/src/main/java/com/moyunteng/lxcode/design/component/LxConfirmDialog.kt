@@ -99,7 +99,7 @@ fun LxConfirmDialog(
                     .padding(horizontal = Lx.space.s24)
                     .widthIn(max = 420.dp)
                     .fillMaxWidth()
-                    .lxShadow(LxElevation.Modal, Lx.radius.CardShape)
+                    .lxShadow(LxElevation.Modal, Lx.radius.CardShape, Lx.shadow.Modal)
                     .clip(Lx.radius.CardShape)
                     .background(Lx.colors.Surface)
                     .border(1.dp, Lx.colors.Border, Lx.radius.CardShape)
@@ -109,6 +109,7 @@ fun LxConfirmDialog(
             Text(
                 text = title,
                 style = Lx.type.DialogTitle,
+                color = Lx.colors.Fg,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -117,6 +118,7 @@ fun LxConfirmDialog(
                 Text(
                     text = text,
                     style = Lx.type.BodyMuted,
+                    color = Lx.colors.FgMuted,
                 )
             }
 

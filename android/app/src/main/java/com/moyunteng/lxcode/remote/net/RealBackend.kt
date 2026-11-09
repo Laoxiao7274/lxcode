@@ -47,14 +47,21 @@ import java.time.temporal.ChronoUnit
 /** 连接阶段（连接页/顶栏药丸的依据）。 */
 enum class RealPhase { Offline, Connecting, Connected, Failed }
 
-/** 挂起的工具确认（对齐 protocol.ConfirmRequest）。 */
+/** 挂起的工具确认（对齐 protocol.ConfirmRequest）。
+ *  [kind] 空 = 高危工具确认（批准/拒绝）；"ask" = ask_user 提问（打字回答或点选）。
+ *  [options] = 提问的预设答案（可空）——AskCard 渲染成可点选的选项按钮。 */
 data class PendingConfirm(
     val sessionId: String,
     val id: String,
     val name: String,
     val arguments: String,
     val prompt: String,
-)
+    val kind: String = "",
+    val options: List<String> = emptyList(),
+) {
+    /** 是否 ask_user 提问形态。 */
+    val isAsk: Boolean get() = kind == "ask"
+}
 
 /**
  * 真实后端状态机。一个实例挂在 [com.moyunteng.lxcode.remote.ui.AppState] 上，
@@ -563,13 +570,18 @@ class RealBackend {
         }
     }
 
-    /** 裁决助手域确认门（assistant.confirm；allow=false = 拒绝）。 */
-    fun resolveAssistantConfirm(allow: Boolean) {
+    /** 裁决助手域确认门（assistant.confirm；allow=false = 拒绝；answer 非空 = ask_user 的文本回答）。 */
+    fun resolveAssistantConfirm(allow: Boolean, answer: String = "") {
         val c = asst.confirm ?: return
-        Log.i(TAG, "assistant.confirm id=${c.id} allow=$allow")
+        Log.i(TAG, "assistant.confirm id=${c.id} allow=$allow answer=${answer.isNotEmpty()}")
+        val params = JSONObject()
+            .put("session_id", c.sessionId)
+            .put("id", c.id)
+            .put("allow", allow)
+        if (answer.isNotEmpty()) params.put("answer", answer)
         client.call(
             "assistant.confirm",
-            JSONObject().put("session_id", c.sessionId).put("id", c.id).put("allow", allow),
+            params,
         ) { err, _ ->
             if (err != null) {
                 Log.w(TAG, "assistant.confirm 失败: ${err.optString("message")}")
@@ -718,6 +730,10 @@ class RealBackend {
                 name = pend.optString("name"),
                 arguments = pend.optString("arguments"),
                 prompt = pend.optString("prompt"),
+            kind = pend.optString("kind"),
+            options = pend.optJSONArray("options")?.let { a ->
+                (0 until a.length()).map { a.optString(it) }
+            } ?: emptyList(),
             )
         }
         Log.i(TAG, "assistant.history(${asst.currentId}): ${parsed.size} 条消息 → ${asst.blocks.size} 块 busy=${asst.busy}")
@@ -752,6 +768,10 @@ class RealBackend {
                 name = p.optString("name"),
                 arguments = p.optString("arguments"),
                 prompt = p.optString("prompt"),
+            kind = p.optString("kind"),
+            options = p.optJSONArray("options")?.let { a ->
+                (0 until a.length()).map { a.optString(it) }
+            } ?: emptyList(),
             )
             asst.confirm = pc
             // 子会话视图双投（对齐主 reducer：卡上的子会话 id 与 viewChildSessionId 相等）
@@ -1736,13 +1756,19 @@ class RealBackend {
         }
     }
 
-    /** 裁决确认门（tool.confirm；allow=false = 拒绝，后端合成「已取消，未执行」）。 */
-    fun resolveConfirm(allow: Boolean) {
+    /** 裁决确认门（tool.confirm；allow=false = 拒绝，后端合成「已取消，未执行」；
+     *  answer 非空 = ask_user 提问的文本回答——走会话的 Answer 路径）。 */
+    fun resolveConfirm(allow: Boolean, answer: String = "") {
         val c = confirm ?: return
-        Log.i(TAG, "tool.confirm id=${c.id} allow=$allow")
+        Log.i(TAG, "tool.confirm id=${c.id} allow=$allow answer=${answer.isNotEmpty()}")
+        val params = JSONObject()
+            .put("session_id", c.sessionId)
+            .put("id", c.id)
+            .put("allow", allow)
+        if (answer.isNotEmpty()) params.put("answer", answer)
         client.call(
             "tool.confirm",
-            JSONObject().put("session_id", c.sessionId).put("id", c.id).put("allow", allow),
+            params,
         ) { err, _ ->
             if (err != null) {
                 Log.w(TAG, "tool.confirm 失败: ${err.optString("message")}")
@@ -1902,6 +1928,10 @@ class RealBackend {
                 name = p.optString("name"),
                 arguments = p.optString("arguments"),
                 prompt = p.optString("prompt"),
+            kind = p.optString("kind"),
+            options = p.optJSONArray("options")?.let { a ->
+                (0 until a.length()).map { a.optString(it) }
+            } ?: emptyList(),
             )
             // 子会话视图打开时双投确认（子会话页内的确认请求正常弹——契约要求）。
             // 归属判定同样要看**卡上的子会话 id**：dispatch_id 是工具调用 id，
@@ -2174,6 +2204,10 @@ class RealBackend {
                     name = p.optString("name"),
                     arguments = p.optString("arguments"),
                     prompt = p.optString("prompt"),
+                kind = p.optString("kind"),
+                options = p.optJSONArray("options")?.let { a ->
+                    (0 until a.length()).map { a.optString(it) }
+                } ?: emptyList(),
                 )
             }
 
@@ -2737,6 +2771,10 @@ class RealBackend {
                 name = pend.optString("name"),
                 arguments = pend.optString("arguments"),
                 prompt = pend.optString("prompt"),
+            kind = pend.optString("kind"),
+            options = pend.optJSONArray("options")?.let { a ->
+                (0 until a.length()).map { a.optString(it) }
+            } ?: emptyList(),
             )
         }
         Log.i(TAG, "history($currentSessionId): ${parsed.size} 条消息 → ${blocks.size} 块 busy=$busy")
@@ -2844,6 +2882,10 @@ class RealBackend {
                 name = pend.optString("name"),
                 arguments = pend.optString("arguments"),
                 prompt = pend.optString("prompt"),
+            kind = pend.optString("kind"),
+            options = pend.optJSONArray("options")?.let { a ->
+                (0 until a.length()).map { a.optString(it) }
+            } ?: emptyList(),
             )
         }
         Log.i(TAG, "child history($viewChildSessionId): ${parsed.size} 条消息 → ${childBlocks.size} 块 busy=$childBusy")

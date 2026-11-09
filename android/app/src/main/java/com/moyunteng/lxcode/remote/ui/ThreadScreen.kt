@@ -94,6 +94,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.distinctUntilChanged
 import com.moyunteng.lxcode.design.component.LxConfirmDialog
 import com.moyunteng.lxcode.design.component.LxIconButton
+import com.moyunteng.lxcode.design.component.LxSpinner
 import com.moyunteng.lxcode.design.component.LxStatus
 import com.moyunteng.lxcode.design.component.LxStatusDot
 import com.moyunteng.lxcode.design.motion.LxEnterSpec
@@ -109,7 +110,6 @@ import com.moyunteng.lxcode.design.motion.lxStaggerEnter
 import com.moyunteng.lxcode.design.motion.lxSweep
 import com.moyunteng.lxcode.design.motion.rememberStreamReveal
 import com.moyunteng.lxcode.design.token.Lx
-import com.moyunteng.lxcode.design.token.LxColors
 import com.moyunteng.lxcode.remote.model.ThreadBlock
 import com.moyunteng.lxcode.remote.model.canOpenChild
 import com.moyunteng.lxcode.remote.model.formatMs
@@ -119,6 +119,62 @@ import com.moyunteng.lxcode.remote.ui.md.MdBlock
 import com.moyunteng.lxcode.remote.ui.md.MdSpan
 import com.moyunteng.lxcode.remote.ui.md.parseMarkdown
 import com.moyunteng.lxcode.remote.ui.md.splitCommitted
+
+/**
+ * 消息块 stagger 的条目数上限（P3 性能）：超过它入场不再逐条延迟。
+ * 全量历史（几百条）逐条错开 = 装载后整屏都在播动画，且总延迟随条目数线性涨——
+ * 错开只对「首批可见的少量块」有观感价值。
+ */
+internal const val STAGGER_BLOCK_LIMIT = 20
+
+/**
+ * 运行状态条（原型 `.runbar`）—— 运行中时在顶栏下方显示：spinner + 「正在执行」
+ * + 当前工具步摘要（`.step`）。
+ *
+ * 数据源 = 历史里**最后一行运行中的工具卡**（倒序找第一个 running 的 Tool 块；
+ * 没有则显示通用「正在执行」——模型思考中/等首字）。步计数用运行中工具的序数
+ *（blocks 里第 N 个 Tool 块 / Tool 总数），对齐原型「3/5 · bash — go vet」形态。
+ */
+@Composable
+private fun RunBar(blocks: List<ThreadBlock>) {
+    val tools = blocks.filterIsInstance<ThreadBlock.Tool>()
+    val runningIdx = tools.indexOfLast { it.running }
+    val step = if (runningIdx >= 0) "${runningIdx + 1}/${tools.size}" else null
+    val current = tools.getOrNull(runningIdx)
+    Row(
+        Modifier
+            .padding(horizontal = Lx.space.s16, vertical = Lx.space.s2)
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(Lx.radius.r8))
+            .background(Lx.colors.Amber.copy(alpha = 0.10f))
+            .border(
+                1.dp,
+                Lx.colors.Amber.copy(alpha = 0.22f),
+                RoundedCornerShape(Lx.radius.r8),
+            )
+            .padding(horizontal = 13.dp, vertical = 9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(9.dp),
+    ) {
+        LxSpinner(size = 12.dp)
+        Text(
+            text = "正在执行",
+            style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size11_5, fontWeight = FontWeight.SemiBold),
+            color = Lx.colors.Amber,
+        )
+        Text(
+            text = buildString {
+                step?.let { append("$it · ") }
+                current?.let { append("${it.title} — ${it.argsSummary}".trim()) }
+            },
+            style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size11_5, fontWeight = FontWeight.Medium),
+            color = Lx.colors.FgMuted,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
 
 /** 对话线程页。 */
 @Composable
@@ -328,13 +384,13 @@ fun ThreadScreen(state: AppState, sessionId: String) {
     Column(
         Modifier
             .fillMaxSize()
-            .background(LxColors.Bg),
+            .background(Lx.colors.Bg),
     ) {
         // 顶栏：返回 + 连接药丸 + 会话标题 + 确认门触发入口
         Row(
             Modifier
                 .fillMaxWidth()
-                .background(LxColors.Surface)
+                .background(Lx.colors.Surface)
                 .padding(horizontal = Lx.space.s6, vertical = Lx.space.s6),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(Lx.space.s6),
@@ -364,7 +420,7 @@ fun ThreadScreen(state: AppState, sessionId: String) {
             Icon(
                 imageVector = Icons.Filled.WarningAmber,
                 contentDescription = "确认门",
-                tint = if (pendingConfirm != null) LxColors.Amber else Lx.colors.BorderStrong,
+                tint = if (pendingConfirm != null) Lx.colors.Amber else Lx.colors.BorderStrong,
                 modifier = Modifier.size(18.dp),
             )
         }
@@ -383,6 +439,12 @@ fun ThreadScreen(state: AppState, sessionId: String) {
                 pairingInvalid = real.pairingInvalid,
                 onRepair = { state.route = Route.Pairing },
             )
+        }
+
+        // 运行状态条（原型 `.runbar`：P2 新增——运行中时在顶栏下方显示 spinner +
+        // 「正在执行」+ 当前工具步摘要；数据源 = 尾部运行中的工具行）。
+        if (running) {
+            RunBar(real.blocks)
         }
 
         // 中部消息流 + 底部输入区（悬浮，对齐桌面端 composer-zone 机制）：
@@ -422,7 +484,7 @@ fun ThreadScreen(state: AppState, sessionId: String) {
                                 fontSize = Lx.type.Size11_5,
                                 fontWeight = FontWeight.Medium,
                             ),
-                            color = LxColors.Amber,
+                            color = Lx.colors.Amber,
                             modifier = Modifier.fillMaxWidth().padding(vertical = Lx.space.s2),
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                         )
@@ -482,12 +544,19 @@ fun ThreadScreen(state: AppState, sessionId: String) {
                 // 延迟按 `staggerIn`（min(40ms, 360ms/条目数)）逐项错开。
                 // key 用下标：流式 delta 会整块替换（data class copy），
                 // 用块实例当 key 会让入场动画/打字机每个 delta 重播——下标才是稳定身份。
+                // stagger 限首次装载路径（P3 性能）：块数超上限（20，原型全量历史
+                // 逐条错开等价于整屏都在播动画）时不再逐条延迟——直接各自 BlockIn，
+                // 装载几百条历史不再多花 `count × 步长` 的整段延迟。
                 val blocks: List<ThreadBlock> = real.blocks
                 itemsIndexed(blocks, key = { i, _ -> "$sessionId:$i" }) { i, block ->
                     Box(
                         Modifier.lxEnter(
                             spec = LxEnterSpec.BlockIn,
-                            delayMillis = LxStagger.delayMillis(blocks.size, i),
+                            delayMillis = if (blocks.size <= STAGGER_BLOCK_LIMIT) {
+                                LxStagger.delayMillis(blocks.size, i)
+                            } else {
+                                0
+                            },
                             key = i,
                         ),
                     ) {
@@ -535,8 +604,8 @@ fun ThreadScreen(state: AppState, sessionId: String) {
                         Brush.verticalGradient(
                             colorStops = arrayOf(
                                 0f to androidx.compose.ui.graphics.Color.Transparent,
-                                0.24f to LxColors.Bg,
-                                1f to LxColors.Bg,
+                                0.24f to Lx.colors.Bg,
+                                1f to Lx.colors.Bg,
                             ),
                         ),
                     ),
@@ -577,7 +646,7 @@ fun ThreadScreen(state: AppState, sessionId: String) {
                         Icon(
                             imageVector = Icons.Filled.Stop,
                             contentDescription = "停止",
-                            tint = LxColors.Danger,
+                            tint = Lx.colors.Danger,
                             modifier = Modifier.size(12.dp),
                         )
                         TypingDots(dotSize = 5.dp, gap = 3.dp)
@@ -716,7 +785,7 @@ internal fun UserBubble(
                         .lxEnter(spec = LxEnterSpec.BubbleIn, key = text)
                         .fillMaxWidth(0.78f)
                         .clip(RoundedCornerShape(22.dp))
-                        .background(LxColors.BubbleUser)
+                        .background(Lx.colors.BubbleUser)
                         .padding(horizontal = Lx.space.s16, vertical = Lx.space.s10),
                 ) {
                     Text(
@@ -894,6 +963,11 @@ internal fun ToolCard(block: ThreadBlock.Tool) {
         block.isError -> "失败"
         else -> "成功"
     }
+    // 展开态按调用 id 记忆（对齐原型 `.toolrow.open`：点行切换输出可见性）；
+    // 流式整块 copy 重建不重置展开。
+    var open by remember(block.id.ifBlank { block.title + block.argsSummary }) { mutableStateOf(false) }
+    // 无输出的运行中行没有可展开的内容——展开钮只对有输出的行有意义
+    val canExpand = block.output != null
 
     Column(verticalArrangement = Arrangement.spacedBy(Lx.space.s6)) {
         Row(
@@ -901,19 +975,44 @@ internal fun ToolCard(block: ThreadBlock.Tool) {
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(Lx.radius.r8))
                 // 「运行中」扫光：tool-sweep —— 300dp 宽渐变带从左扫到右，2.6s ease-out infinite
-                .lxSweep(enabled = block.running),
+                .lxSweep(enabled = block.running)
+                // 有输出时整行可点 = 展开/收起输出（原型 `.toolrow` cursor:pointer + `.tw` 旋转）
+                .then(
+                    if (canExpand) {
+                        Modifier.clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                        ) { open = !open }
+                    } else {
+                        Modifier
+                    },
+                )
+                .padding(horizontal = 11.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(Lx.space.s8),
         ) {
+            if (canExpand) {
+                // 展开指示 chevron（`.tw`：默认朝右，open 旋转 90°，200ms 过渡）
+                Icon(
+                    imageVector = Icons.Filled.KeyboardArrowRight,
+                    contentDescription = if (open) "收起输出" else "展开输出",
+                    tint = Lx.colors.FgFaint,
+                    modifier = Modifier
+                        .size(12.dp)
+                        .graphicsLayer {
+                            rotationZ = if (open) 90f else 0f
+                        },
+                )
+            }
             LxStatusDot(status = status, size = 8.dp)
             Text(
                 text = block.title,
-                style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size12_5, fontWeight = FontWeight.Medium),
+                style = Lx.type.Mono12.copy(fontSize = Lx.type.Size12, fontWeight = FontWeight.Bold),
                 color = Lx.colors.Fg,
             )
             Text(
                 text = block.argsSummary,
-                style = Lx.type.Mono12.copy(fontSize = Lx.type.Size11, color = Lx.colors.FgFaint),
+                style = Lx.type.Mono12.copy(fontSize = Lx.type.Size11, color = Lx.colors.FgMuted),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
@@ -922,9 +1021,9 @@ internal fun ToolCard(block: ThreadBlock.Tool) {
                 text = statusText,
                 style = Lx.type.Pill.copy(fontSize = Lx.type.Size10, fontWeight = FontWeight.SemiBold),
                 color = when (status) {
-                    LxStatus.Run -> LxColors.Amber
+                    LxStatus.Run -> Lx.colors.Amber
                     LxStatus.Danger -> Lx.colors.Danger
-                    else -> LxColors.SuccessInk
+                    else -> Lx.colors.SuccessInk
                 },
             )
             if (!block.running) {
@@ -935,10 +1034,12 @@ internal fun ToolCard(block: ThreadBlock.Tool) {
             }
         }
 
+        // 输出（`.toolrow.open + .toolout`：默认收起，展开显示）。
+        // 错误输出恒显（失败是必须看见的信息，藏起来就是「工具明明失败了却像成功」）。
         val output = block.output
         when {
             output != null && block.isError -> FoldableOutput(output, danger = true)
-            output != null -> FoldableOutput(output, danger = false)
+            output != null -> if (open) FoldableOutput(output, danger = false) else Unit
             else -> SmallEmpty("等待工具输出…")
         }
     }
@@ -963,7 +1064,7 @@ private fun FoldableOutput(text: String, danger: Boolean) {
                 Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(Lx.radius.r8))
-                    .background(LxColors.DangerSoft)
+                    .background(Lx.colors.DangerSoft)
                     .padding(Lx.space.s8),
             ) {
                 Text(
@@ -1038,7 +1139,7 @@ internal fun DispatchCard(
         Modifier
             .fillMaxWidth()
             .clip(Lx.radius.CardShape)
-            .background(LxColors.Surface)
+            .background(Lx.colors.Surface)
             .border(
                 width = 1.dp,
                 color = if (status == LxStatus.Run) accent else accent.copy(alpha = 0.32f),
@@ -1090,8 +1191,8 @@ internal fun DispatchCard(
                 style = Lx.type.Pill.copy(fontSize = Lx.type.Size10, fontWeight = FontWeight.SemiBold),
                 color = when (status) {
                     LxStatus.Danger -> Lx.colors.Danger
-                    LxStatus.Success -> LxColors.SuccessInk
-                    else -> LxColors.AmberInk
+                    LxStatus.Success -> Lx.colors.SuccessInk
+                    else -> Lx.colors.AmberInk
                 },
             )
             // 子 Agent 清单进度（todo.updated 带 dispatch_id 的广播归并；-1 = 没有清单）：
@@ -1100,7 +1201,7 @@ internal fun DispatchCard(
                 Text(
                     text = "清单 ${block.childTodosDone}/${block.childTodosTotal}",
                     style = Lx.type.Pill.copy(fontSize = Lx.type.Size10, fontWeight = FontWeight.SemiBold),
-                    color = if (block.childTodosDone == block.childTodosTotal) LxColors.SuccessInk else LxColors.Amber,
+                    color = if (block.childTodosDone == block.childTodosTotal) Lx.colors.SuccessInk else Lx.colors.Amber,
                 )
             }
             // 展开箭头（次级操作：展开卡内子工具流）。它有自己的点击区，不抢
@@ -1289,16 +1390,20 @@ internal fun TodoCard(items: List<com.moyunteng.lxcode.remote.model.TodoItem>) {
         if (running) collapsed = false
         else if (allDone) collapsed = true
     }
+    // 当前任务（`.pnow`）：第一个 active 条目；全部完成时显示「全部完成」
+    val currentTask = items.firstOrNull { it.status == "active" }?.content
+    // 进度条动画（`.pbar i`：width 300ms 标准曲线过渡）
+    val barProgress by lxAnimateFloat(target = pct)
 
     Column(
         Modifier
             .fillMaxWidth()
             .clip(Lx.radius.CardShape)
-            .background(LxColors.Surface)
+            .background(Lx.colors.Surface)
             .border(1.dp, Lx.colors.Border, Lx.radius.CardShape)
             .padding(horizontal = Lx.space.s12, vertical = Lx.space.s6),
     ) {
-        // 头部（可点折叠）
+        // 头部（可点折叠；`.ph`：状态图标位 + 标题 + 当前任务 + N/M 进度 + caret）
         Row(
             Modifier
                 .fillMaxWidth()
@@ -1310,13 +1415,13 @@ internal fun TodoCard(items: List<com.moyunteng.lxcode.remote.model.TodoItem>) {
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(Lx.space.s8),
         ) {
-            // 状态图标位：16dp 槽位里三态切换
+            // 状态图标位：16dp 槽位里三态切换（完成勾 / 运行进度扇 / 清单图标）
             Box(Modifier.size(16.dp), contentAlignment = Alignment.Center) {
                 when {
                     allDone -> Icon(
                         imageVector = Icons.Filled.CheckCircle,
                         contentDescription = null,
-                        tint = LxColors.SuccessInk,
+                        tint = Lx.colors.SuccessInk,
                         modifier = Modifier.size(15.dp),
                     )
                     running -> TodoProgressRing(progress = pct, size = 13.dp)
@@ -1327,10 +1432,21 @@ internal fun TodoCard(items: List<com.moyunteng.lxcode.remote.model.TodoItem>) {
                 text = "任务清单",
                 style = Lx.type.BodySmall.copy(
                     fontSize = Lx.type.Size13,
-                    fontWeight = FontWeight.Medium,
+                    fontWeight = FontWeight.Bold,
                 ),
                 color = Lx.colors.Fg,
             )
+            // 当前任务（`.pnow`：灰字、截断、只在头部行宽允许时可见）
+            if (currentTask != null) {
+                Text(
+                    text = currentTask,
+                    style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size10_5),
+                    color = Lx.colors.FgMuted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+            }
             Spacer(Modifier.weight(1f))
             if (allDone) {
                 Text(
@@ -1339,24 +1455,50 @@ internal fun TodoCard(items: List<com.moyunteng.lxcode.remote.model.TodoItem>) {
                         fontSize = Lx.type.Size12,
                         fontWeight = FontWeight.Medium,
                     ),
-                    color = LxColors.SuccessInk,
+                    color = Lx.colors.SuccessInk,
                 )
             } else {
-                // 三段计数：✓ N · ▶ M · ○ K（段间点分隔；为 0 的段仍显示）
-                TodoCountSegment("✓", done.toString(), LxColors.SuccessInk)
-                Text(text = "·", style = Lx.type.BodySmall, color = Lx.colors.FgFaint)
-                TodoCountSegment("▶", active.toString(), Lx.colors.Fg)
-                Text(text = "·", style = Lx.type.BodySmall, color = Lx.colors.FgFaint)
-                TodoCountSegment("○", pending.toString(), Lx.colors.FgFaint)
+                // N/M 进度（`.pprog`：done 数加重 + /total，成功绿）
+                Row(verticalAlignment = Alignment.Bottom) {
+                    Text(
+                        text = "$done",
+                        style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size12_5, fontWeight = FontWeight.Bold),
+                        color = Lx.colors.SuccessInk,
+                    )
+                    Text(
+                        text = "/${items.size}",
+                        style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size10_5, fontWeight = FontWeight.SemiBold),
+                        color = Lx.colors.SuccessInk,
+                    )
+                }
             }
             Icon(
-                imageVector = if (collapsed) Icons.Filled.KeyboardArrowDown else Icons.Filled.KeyboardArrowUp,
+                imageVector = Icons.Filled.KeyboardArrowDown,
                 contentDescription = if (collapsed) "展开任务清单" else "折叠任务清单",
                 tint = Lx.colors.FgFaint,
-                modifier = Modifier.size(12.dp),
+                modifier = Modifier
+                    .size(14.dp)
+                    .graphicsLayer { rotationZ = if (collapsed) 0f else 180f },
             )
         }
-        // 条目列表（折叠：高度 + 淡入淡出）
+        // 进度条（`.pbar`：4dp 高、圆角全、--soft 轨道 + 成功绿进度；宽度 300ms 过渡）
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .padding(top = Lx.space.s2)
+                .height(4.dp)
+                .clip(RoundedCornerShape(999.dp))
+                .background(Lx.colors.BorderSoft),
+        ) {
+            Box(
+                Modifier
+                    .fillMaxWidth(barProgress)
+                    .height(4.dp)
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(Lx.colors.SuccessInk),
+            )
+        }
+        // 条目列表（折叠：高度 + 淡入淡出；展开头部一行汇总「已完成 N · 进行中 M · 待办 K」）
         LxExpandable(visible = !collapsed) {
             Column(
                 Modifier
@@ -1364,6 +1506,11 @@ internal fun TodoCard(items: List<com.moyunteng.lxcode.remote.model.TodoItem>) {
                     .padding(top = Lx.space.s4, bottom = Lx.space.s6),
                 verticalArrangement = Arrangement.spacedBy(Lx.space.s8),
             ) {
+                Text(
+                    text = "已完成 $done · 进行中 $active · 待办 $pending",
+                    style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size10_5, fontWeight = FontWeight.SemiBold),
+                    color = Lx.colors.FgFaint,
+                )
                 items.forEachIndexed { i, item ->
                     val isDone = item.status == "done"
                     val isActive = item.status == "active"
@@ -1380,7 +1527,7 @@ internal fun TodoCard(items: List<com.moyunteng.lxcode.remote.model.TodoItem>) {
                             isDone -> Icon(
                                 imageVector = Icons.Filled.CheckCircle,
                                 contentDescription = null,
-                                tint = LxColors.SuccessInk,
+                                tint = Lx.colors.SuccessInk,
                                 modifier = Modifier.size(15.dp),
                             )
                             isActive -> SmallIcon(Icons.Filled.KeyboardArrowRight, Lx.colors.Fg, size = 15)
@@ -1407,23 +1554,6 @@ internal fun TodoCard(items: List<com.moyunteng.lxcode.remote.model.TodoItem>) {
                 }
             }
         }
-    }
-}
-
-/** 三段计数的一段（图形字符 + 数字；对齐桌面端 CountSegment 的着色语义）。 */
-@Composable
-private fun TodoCountSegment(glyph: String, value: String, color: androidx.compose.ui.graphics.Color) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text(
-            text = glyph,
-            style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size11_5, fontWeight = FontWeight.SemiBold),
-            color = color,
-        )
-        Text(
-            text = value,
-            style = Lx.type.Badge.copy(fontSize = Lx.type.Size11_5),
-            color = color,
-        )
     }
 }
 
@@ -1468,7 +1598,7 @@ internal fun ErrorBlock(message: String) {
         Modifier
             .fillMaxWidth()
             .clip(Lx.radius.RowShape)
-            .background(LxColors.DangerSoft)
+            .background(Lx.colors.DangerSoft)
             .padding(horizontal = Lx.space.s10, vertical = Lx.space.s8),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(Lx.space.s8),
@@ -1495,7 +1625,7 @@ private fun mdBodyStyle(): TextStyle = Lx.type.Body.copy(
 /**
  * Markdown 块渲染：把 [parseMarkdown] 的块列表映射成 Compose 组件。
  *
- * 视觉对齐 design token：代码块底 = --code-bg（LxColors.CodeBg，Common.CodeBlock 同源）、
+ * 视觉对齐 design token：代码块底 = --code-bg（Lx.colors.CodeBg，Common.CodeBlock 同源）、
  * 行内 code 底 = --border-soft 派生、引用 = --border-soft 底、标题按级别加粗缩放。
  * 链接（行内 [text](url) 与裸 URL）走 LinkAnnotation.Url——点击 ACTION_VIEW，
  * 无浏览器时系统弹「没有应用」（与桌面端容错一致，不额外拦截）。
@@ -1536,7 +1666,7 @@ internal fun MarkdownBody(text: String, modifier: Modifier = Modifier) {
                     Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(Lx.radius.r10))
-                        .background(LxColors.CodeBg)
+                        .background(Lx.colors.CodeBg)
                         // 桌面端 .tool-result（代码围栏同款）：padding 10px 14px
                         .padding(horizontal = Lx.space.s12, vertical = Lx.space.s10),
                 ) {
@@ -1627,7 +1757,7 @@ internal fun MarkdownBody(text: String, modifier: Modifier = Modifier) {
 private fun MdTable(block: MdBlock.Table) {
     val border = Lx.colors.BorderStrong
     val zebra = Lx.colors.BorderSoft
-    val headerBg = LxColors.CodeBg
+    val headerBg = Lx.colors.CodeBg
     val body = mdBodyStyle().copy(lineHeight = (Lx.type.Size13.value * 1.5f).sp)
     val headerStyle = body.copy(fontWeight = FontWeight.Bold)
     // 单元格内距（桌面端 .md-table th/td { padding: 9px 14px }，首末列去侧距——
@@ -1741,7 +1871,8 @@ private fun MdText(
     // token 读取在 composable 上下文，字符串组装是纯函数（remember 记住成品）
     val mono = Lx.type.Mono
     val codeBg = Lx.colors.BorderSoft
-    val annotated = remember(spans, mono, codeBg) { spansToAnnotatedString(spans, mono, codeBg) }
+    val linkInk = Lx.colors.SuccessInk
+    val annotated = remember(spans, mono, codeBg, linkInk) { spansToAnnotatedString(spans, mono, codeBg, linkInk) }
     // 行高：桌面端 markdown 规范 14px/1.71 已在 style 里给足——这里补
     // lineHeight 缺省兜底（lineHeight 未指定时 Compose 用字体默认 ≈1.2，
     // 中文正文会显挤；调用方都传了 mdBodyStyle，此兜底只防御其他入口）
@@ -1764,8 +1895,8 @@ private fun spansToAnnotatedString(
     spans: List<MdSpan>,
     mono: androidx.compose.ui.text.font.FontFamily,
     codeBg: androidx.compose.ui.graphics.Color,
+    linkInk: androidx.compose.ui.graphics.Color,
 ): androidx.compose.ui.text.AnnotatedString {
-    val linkInk = LxColors.SuccessInk
     val builder = androidx.compose.ui.text.AnnotatedString.Builder()
     for (s in spans) {
         val start = builder.length
@@ -1985,13 +2116,13 @@ internal fun ChildThreadView(state: AppState) {
     Column(
         Modifier
             .fillMaxSize()
-            .background(LxColors.Bg),
+            .background(Lx.colors.Bg),
     ) {
         // 顶栏：返回主会话 + 「子会话」标签 + Agent 名/任务摘要
         Row(
             Modifier
                 .fillMaxWidth()
-                .background(LxColors.Surface)
+                .background(Lx.colors.Surface)
                 .padding(horizontal = Lx.space.s6, vertical = Lx.space.s6),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(Lx.space.s6),
@@ -2029,7 +2160,7 @@ internal fun ChildThreadView(state: AppState) {
                 Text(
                     text = "执行中",
                     style = Lx.type.Pill.copy(fontSize = Lx.type.Size10, fontWeight = FontWeight.SemiBold),
-                    color = LxColors.AmberInk,
+                    color = Lx.colors.AmberInk,
                 )
             }
             // 模型选择入口（②）：药丸形态（复用主会话 ModelPill），busy 时禁用
@@ -2160,7 +2291,7 @@ internal fun ChildThreadView(state: AppState) {
         Column(
             Modifier
                 .fillMaxWidth()
-                .background(LxColors.Bg)
+                .background(Lx.colors.Bg)
                 .padding(start = Lx.space.s16, end = Lx.space.s16, top = Lx.space.s6, bottom = Lx.space.s8),
         ) {
             if (real.childBusy) {
@@ -2256,7 +2387,7 @@ private fun ChildTodoBar(items: List<com.moyunteng.lxcode.remote.model.TodoItem>
         Modifier
             .fillMaxWidth()
             .clip(Lx.radius.CardShape)
-            .background(LxColors.Surface)
+            .background(Lx.colors.Surface)
             .border(1.dp, Lx.colors.Border, Lx.radius.CardShape)
             .padding(horizontal = Lx.space.s10, vertical = Lx.space.s6),
         verticalAlignment = Alignment.CenterVertically,
@@ -2268,7 +2399,7 @@ private fun ChildTodoBar(items: List<com.moyunteng.lxcode.remote.model.TodoItem>
                 allDone -> Icon(
                     imageVector = Icons.Filled.CheckCircle,
                     contentDescription = null,
-                    tint = LxColors.SuccessInk,
+                    tint = Lx.colors.SuccessInk,
                     modifier = Modifier.size(15.dp),
                 )
                 active != null -> {
@@ -2281,7 +2412,7 @@ private fun ChildTodoBar(items: List<com.moyunteng.lxcode.remote.model.TodoItem>
         Text(
             text = "清单 $done/${items.size}",
             style = Lx.type.Pill.copy(fontSize = Lx.type.Size10, fontWeight = FontWeight.SemiBold),
-            color = if (allDone) LxColors.SuccessInk else LxColors.Amber,
+            color = if (allDone) Lx.colors.SuccessInk else Lx.colors.Amber,
         )
         // 当前项正文（active 项；没有 active 取第一个未完成项；全完成空缺）
         val current = active ?: items.firstOrNull { it.status != "done" }

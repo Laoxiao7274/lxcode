@@ -54,13 +54,13 @@ fun LxSurface(
 
     val borderColor = when {
         onClick == null -> Lx.colors.Border
-        hovered -> Lx.colors.BorderCardHover
+        hovered -> Lx.colors.BorderStrong
         else -> Lx.colors.Border
     }
 
     Column(
         modifier = modifier
-            .lxShadow(shadow, shape)
+            .lxShadow(shadow, shape, Lx.shadow.Card)
             .clip(shape)
             .background(Lx.colors.Surface)
             .border(1.dp, borderColor, shape)
@@ -104,8 +104,7 @@ fun LxCard(
         modifier = modifier,
         padding = padding,
         shape = Lx.radius.CardShape,
-        shadow = LxElevation.Card,
-        onClick = onClick,
+        shadow = LxElevation.Card,        onClick = onClick,
         content = content,
     )
 }

@@ -112,6 +112,45 @@ test('① 带状态渲染：时间线块复用 Block 渲染（user 气泡 + 正�
   assert.ok(html.includes('thread'), '复用主时间线容器类');
   assert.ok(html.includes('帮我看看今天的日程'), '用户气泡');
   assert.ok(html.includes('今天有两件事'), 'assistant 正文');
+  // todos 为空（[]）不渲染 .pi-plan（与主域 Composer 同一条「无清单不占位」纪律）
+  assert.ok(!html.includes('pi-plan'), '空 todos 不渲染 .pi-plan');
+});
+
+test('① todos 非空：AssistantInput 白卡顶部渲染 .pi-plan + TodoList（任务清单显示修复）', async () => {
+  const state = {
+    blocks: [{ kind: 'assistant', uid: 1, content: '好，我来处理。', reasoning: '', streaming: false }],
+    streaming: null,
+    busy: false, pending: null, currentId: 'a1',
+    todos: [
+      { content: '查日程', status: 'done' },
+      { content: '写周报', status: 'active' },
+    ],
+    operationError: null, context: null, stats: null,
+  };
+  const html = renderToStaticMarkup(createElement(SettingsProvider, { source: sourceStub },
+    createElement(AgentsProvider, { source: sourceStub },
+    createElement(AssistantPage, {
+      source: sourceStub, sessionId: 'a1', state,
+      onSessionId: noop, onConfirm: noop, onAnswer: noop,
+    }))));
+  assert.ok(html.includes('pi-plan'), '非空 todos 渲染 .pi-plan 白卡顶部区块');
+  assert.ok(html.includes('查日程') && html.includes('写周报'), 'TodoList 清单项渲染');
+});
+
+test('① todos 接线钉子：AssistantInput 挂 todos prop、AssistantPage 传 state.todos', () => {
+  const inputSrc = fs.readFileSync(new URL('../src/components/assistant/AssistantInput.tsx', import.meta.url), 'utf8');
+  assert.ok(/todos = \[\]/.test(inputSrc), 'AssistantInput 有 todos prop（默认空数组）');
+  assert.ok(/TodoItem\[\]/.test(inputSrc), 'todos 类型 = TodoItem[]');
+  assert.ok(/className="pi-plan"/.test(inputSrc), '白卡顶部区块用主域全局类 .pi-plan');
+  assert.ok(/<TodoList items=\{todos\} \/>/.test(inputSrc), '清单渲染复用 TodoList（不另写）');
+  // 区块位置：在 .pi 白卡内、att-preview 之前（与主域 Composer 同一形态；
+  // 用 JSX 类名匹配，避开文件头注释里的提法）
+  assert.ok(
+    inputSrc.indexOf('className="pi-plan"') < inputSrc.indexOf('className="att-preview"'),
+    '.pi-plan 在 att-preview 之前',
+  );
+  const pageSrc = fs.readFileSync(new URL('../src/components/assistant/AssistantPage.tsx', import.meta.url), 'utf8');
+  assert.ok(/todos=\{state\?\.todos \?\? \[\]\}/.test(pageSrc), 'AssistantPage 传 todos={state?.todos ?? []}');
 });
 
 // ---------- ② 接线断言（源码文本——接线在 App.tsx 与组件内） ----------

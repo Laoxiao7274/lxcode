@@ -40,6 +40,7 @@ fun LxSectionHeader(
             bottom = bottomPadding,
         ),
         style = Lx.type.SectionTitle,
+        color = Lx.colors.FgMuted,
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,
     )

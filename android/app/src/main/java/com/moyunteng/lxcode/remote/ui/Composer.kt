@@ -44,6 +44,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -77,7 +78,6 @@ import com.moyunteng.lxcode.design.motion.lxAnimateColor
 import com.moyunteng.lxcode.design.motion.lxAnimateFloat
 import com.moyunteng.lxcode.design.motion.lxEnter
 import com.moyunteng.lxcode.design.token.Lx
-import com.moyunteng.lxcode.design.token.LxColors
 
 import com.moyunteng.lxcode.remote.model.EFFORT_IDS
 import com.moyunteng.lxcode.remote.model.effortLabel
@@ -135,23 +135,21 @@ fun Composer(state: AppState, real: com.moyunteng.lxcode.remote.net.RealBackend)
     // 回读 + approvalChanged 广播维护，切会话即随会话走）。
     // null = 后端没报（老后端/刚切会话还没装载历史）→ 回落「默认」，不猜。
     val approval = real.approval
-    var modelMenuOpen by remember { mutableStateOf(false) }
-    var effortPanelOpen by remember { mutableStateOf(false) } // 模型菜单里的二级推理强度面板
-    var permMenuOpen by remember { mutableStateOf(false) }
-    // 「完全访问」两步确认态——菜单收起即复位（对齐 PermPicker 的 useEffect(open)）
+    // Composer 弹层统一收口成**一个 bottom sheet 位**（P2：替代锚定 Popup 菜单——
+    // 移动端惯例；打开哪类内容由 sheetKind 决定，同一时刻只开一个）。
+    var sheetKind by remember { mutableStateOf<ComposerSheet?>(null) }
+    // 「自动执行」两步确认态——sheet 收起即复位（对齐 PermPicker 的 useEffect(open)）
     var permConfirming by remember { mutableStateOf(false) }
-    LaunchedEffect(permMenuOpen) {
-        if (!permMenuOpen) permConfirming = false
+    LaunchedEffect(sheetKind) {
+        if (sheetKind != ComposerSheet.Approval) permConfirming = false
     }
 
-    // 返回键第一层：输入区的弹层（模型/权限菜单、斜杠面板）开着 → 返回先关弹层
-    LaunchedEffect(modelMenuOpen, effortPanelOpen, permMenuOpen, slashOpen) {
+    // 返回键第一层：bottom sheet / 斜杠面板开着 → 返回先关弹层
+    LaunchedEffect(sheetKind, slashOpen) {
         state.backInterceptor =
-            if (modelMenuOpen || effortPanelOpen || permMenuOpen || slashOpen) {
+            if (sheetKind != null || slashOpen) {
                 {
-                    modelMenuOpen = false
-                    effortPanelOpen = false
-                    permMenuOpen = false
+                    sheetKind = null
                     slashClosed = true
                     true
                 }
@@ -291,7 +289,7 @@ fun Composer(state: AppState, real: com.moyunteng.lxcode.remote.net.RealBackend)
             Modifier
                 .fillMaxWidth()
                 // 微投影 —— `.pi { box-shadow: 0 1px 3px rgba(0,0,0,0.04) }`
-                .shadow(elevation = 3.dp, shape = ComposerCardShape, clip = false, spotColor = Color(0x0A000000))
+                .shadow(elevation = 3.dp, shape = ComposerCardShape, clip = false, spotColor = Lx.shadow.Card.copy(alpha = 0.04f))
                 .clip(ComposerCardShape)
                 .background(Lx.colors.Surface)
                 .border(width = ringWidth, color = ringColor, shape = ComposerCardShape),
@@ -347,103 +345,49 @@ fun Composer(state: AppState, real: com.moyunteng.lxcode.remote.net.RealBackend)
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    // 模型药丸 + 模型菜单（左面板）+ 推理强度二级右面板 —— 见 PickerMenus.kt
-                    Box {
-                        ModelPill(
-                            // 药丸显示**显示名**，绝不显示注册表主键：查得到条目用它的
-                            // name（display_name/model/纯 id 的回落）；查不到（刚切会话、
-                            // 注册表还没拉到）时把组合键剥成纯 id（对齐桌面端
-                            // modelIdOfKey）——否则药丸上会出现 `openai::gpt-4o` 这种串。
-                            label = modelDisplayLabel(
-                                real.allModels,
-                                real.activeModelId,
-                            ),
-                            effortDim = effortDim,
-                            expanded = modelMenuOpen,
-                            onToggle = {
-                                modelMenuOpen = !modelMenuOpen
-                                if (modelMenuOpen) effortPanelOpen = false // 重新打开回到模型面板
+                    // ===== 药丸组（P2：点按开 bottom sheet，不再锚定 Popup）=====
+                    // 模型药丸（唯一带描边）——点开模型 sheet
+                    ModelPill(
+                        // 药丸显示**显示名**，绝不显示注册表主键：查得到条目用它的
+                        // name（display_name/model/纯 id 的回落）；查不到（刚切会话、
+                        // 注册表还没拉到）时把组合键剥成纯 id（对齐桌面端
+                        // modelIdOfKey）——否则药丸上会出现 `openai::gpt-4o` 这种串。
+                        label = modelDisplayLabel(
+                            real.allModels,
+                            real.activeModelId,
+                        ),
+                        effortDim = effortDim,
+                        expanded = sheetKind == ComposerSheet.Model,
+                        onToggle = {
+                            sheetKind =
+                                if (sheetKind == ComposerSheet.Model) null else ComposerSheet.Model
+                        },
+                    )
+                    // effort 药丸（ghost）——点开思考力度 sheet（模型不支持 effort 时不显）
+                    if (effortOptions.isNotEmpty()) {
+                        ComposerGhostPill(
+                            label = effortLabel(effortId),
+                            onClick = {
+                                sheetKind =
+                                    if (sheetKind == ComposerSheet.Effort) null else ComposerSheet.Effort
                             },
                         )
-                        AnchorMenu(expanded = modelMenuOpen, onDismiss = { modelMenuOpen = false }) {
-                            ModelMenuContent(
-                                groups = real.modelGroups,
-                                currentModelId = real.activeModelId,
-                                effortDim = effortDim,
-                                effortPanelOpen = effortPanelOpen,
-                                onPickModel = { id ->
-                                    // 切模型：**会话级**（chat.model：后端落库 + 广播，
-                                    // 只改这一条会话——不是 role.set 的全局 default 角色，
-                                    // 那会让所有会话跟着变）；当前档位在新模型上不存在 →
-                                    // 本地回落（优先「中」，否则首档）
-                                    val m = real.allModels.find { it.id == id }
-                                    val supported = m?.efforts?.filter { it in EFFORT_IDS } ?: emptyList()
-                                    if (supported.isNotEmpty() && effort !in supported) {
-                                        effort = if ("medium" in supported) "medium" else supported.first()
-                                    }
-                                    real.changeSessionModel(id) { ok, msg ->
-                                        // 失败要给反馈：选中态由 chat.modelChanged 广播对齐
-                                        //（后端没改成功就不会广播），本地乐观选中会永远停在
-                                        // 旧模型上——toast 说明，不假装成功
-                                        if (!ok) toast("切换模型失败${if (msg.isNotBlank()) "：$msg" else ""}")
-                                    }
-                                    modelMenuOpen = false // 选完带退场动画收起
-                                },
-                                onToggleEffortPanel = { effortPanelOpen = !effortPanelOpen },
-                            )
-                        }
-                        // 二级推理强度面板：紧贴左面板右缘 +8dp（shiftX = 200 + 8），从左滑入；
-                        // 超屏钳到屏右缘。不抢焦点（focusable = false）：左面板条目保持可点、
-                        // 跳转行可确定性地往返切换（可聚焦版实测有两处 ACTION_OUTSIDE 收起竞态）
-                        AnchorMenu(
-                            expanded = modelMenuOpen && effortPanelOpen,
-                            onDismiss = { effortPanelOpen = false },
-                            focusable = false,
-                            shiftXDp = 208.dp,
-                            enter = mpSlideInEnter(),
-                        ) {
-                            EffortMenuContent(
-                                effortIds = effortOptions,
-                                currentEffort = effortId,
-                                onPick = { id ->
-                                    effort = id
-                                    modelMenuOpen = false // 选完连左面板一起收起
-                                },
-                            )
-                        }
                     }
-                    // 审批档药丸 + 权限菜单（三档 + 「完全访问」两步确认）—— 见 PickerMenus.kt
-                    Box {
-                        ApprovalPill(
-                            label = approvalLabel,
-                            expanded = permMenuOpen,
-                            onToggle = { permMenuOpen = !permMenuOpen },
-                        )
-                        AnchorMenu(expanded = permMenuOpen, onDismiss = { permMenuOpen = false }) {
-                            PermMenuContent(
-                                current = approval ?: "confirm",
-                                confirming = permConfirming,
-                                onPick = { id ->
-                                    if (id == "auto" && approval != "auto") {
-                                        // 危险方向才拦：首次点击进 confirming 态，再点才生效；
-                                        // 从完全访问切回安全档不需要确认（收权总是安全的）
-                                        if (!permConfirming) {
-                                            permConfirming = true
-                                            return@PermMenuContent
-                                        }
-                                    }
-                                    permConfirming = false
-                                    // 走协议（chat.approval：后端落库 + 广播，
-                                    // approvalChanged 回来对齐药丸）
-                                    real.changeApproval(id)
-                                    permMenuOpen = false
-                                },
-                            )
-                        }
-                    }
-                    // 上下文环 + 百分比（.ctx-chip / .ctx-pct）
+                    // 审批档药丸（橙）——点开审批档 sheet
+                    ApprovalPill(
+                        label = approvalLabel,
+                        expanded = sheetKind == ComposerSheet.Approval,
+                        onToggle = {
+                            sheetKind =
+                                if (sheetKind == ComposerSheet.Approval) null else ComposerSheet.Approval
+                        },
+                    )
+                    // 上下文环 + 百分比（.ctx-chip / .ctx-pct）——点开明细 sheet
                     // 实测值（context 键缺席 = null → 环显示「—」）
-                    ContextRing(real.contextUsage)
+                    ContextRing(
+                        usage = real.contextUsage,
+                        onClick = { sheetKind = ComposerSheet.Context },
+                    )
                     // 会话统计胶囊（.stats-pill：步数 0 整个胶囊不渲染）
                     StatsCapsule(real.sessionStats)
                 }
@@ -535,6 +479,77 @@ fun Composer(state: AppState, real: com.moyunteng.lxcode.remote.net.RealBackend)
             }
         }
     }
+
+    // ===== Composer 弹层（P2：bottom sheet，替代锚定 Popup 菜单）=====
+    // 挂在输入区组合的最外层（遮罩覆盖整个页面）；四类内容按 sheetKind 切换。
+    LxBottomSheet(
+        visible = sheetKind != null,
+        onDismiss = { sheetKind = null },
+        title = when (sheetKind) {
+            ComposerSheet.Model -> "选择模型"
+            ComposerSheet.Effort -> "思考力度"
+            ComposerSheet.Approval -> "工具审批档"
+            ComposerSheet.Context -> "上下文占用"
+            null -> ""
+        },
+        subtitle = when (sheetKind) {
+            ComposerSheet.Model -> "chat.model · 仅本会话"
+            ComposerSheet.Effort -> "chat.send effort · 仅声明 reasoning 的模型生效"
+            ComposerSheet.Approval -> "chat.approval · 会话级实时状态，当轮生效"
+            else -> null
+        },
+    ) {
+        when (sheetKind) {
+            ComposerSheet.Model -> ModelSheetBody(
+                groups = real.modelGroups,
+                currentModelId = real.activeModelId,
+                onPick = { id ->
+                    // 切模型：**会话级**（chat.model：后端落库 + 广播，只改这一条会话
+                    // ——不是 role.set 的全局 default 角色）；当前档位在新模型上
+                    // 不存在 → 本地回落（优先「中」，否则首档）
+                    val m = real.allModels.find { it.id == id }
+                    val supported = m?.efforts?.filter { it in EFFORT_IDS } ?: emptyList()
+                    if (supported.isNotEmpty() && effort !in supported) {
+                        effort = if ("medium" in supported) "medium" else supported.first()
+                    }
+                    real.changeSessionModel(id) { ok, msg ->
+                        // 失败要给反馈：选中态由 chat.modelChanged 广播对齐（后端没改
+                        // 成功就不会广播），本地乐观选中会永远停在旧模型上——toast 说明
+                        if (!ok) toast("切换模型失败${if (msg.isNotBlank()) "：$msg" else ""}")
+                    }
+                    sheetKind = null
+                },
+            )
+            ComposerSheet.Effort -> EffortSheetBody(
+                effortOptions = effortOptions,
+                currentEffort = effortId,
+                onPick = { id ->
+                    effort = id
+                    sheetKind = null
+                },
+            )
+            ComposerSheet.Approval -> ApprovalSheetBody(
+                current = approval ?: "confirm",
+                confirming = permConfirming,
+                onPick = { id ->
+                    if (id == "auto" && approval != "auto") {
+                        // 危险方向才拦：首次点击进 armed 态，再点才生效；
+                        // 从自动执行切回安全档不需要确认（收权总是安全的）
+                        if (!permConfirming) {
+                            permConfirming = true
+                            return@ApprovalSheetBody
+                        }
+                    }
+                    permConfirming = false
+                    // 走协议（chat.approval：后端落库 + 广播，approvalChanged 回来对齐药丸）
+                    real.changeApproval(id)
+                    sheetKind = null
+                },
+            )
+            ComposerSheet.Context -> ContextSheetBody(real.contextUsage)
+            null -> {}
+        }
+    }
 }
 
 /**
@@ -595,18 +610,36 @@ internal fun ComposerTextField(
  * 上下文占用环 —— 16dp 自绘 Canvas（桌面端 ContextIndicator 的 SVG 环：
  * viewBox 20 / r=8 / 线宽 2.5 / 圆头，从 12 点方向顺时针）。
  * 轨道 #e5e5e5、进度弧正常 #6e6e80、>80% 变 #e02e2a；右侧 10sp mono 百分比；
- * 窗口未知显示「—」。
+ * 窗口未知显示「—」。[onClick] 非空 = 整个 chip 可点（P2：打开上下文明细 sheet）。
  */
 @Composable
-internal fun ContextRing(usage: com.moyunteng.lxcode.remote.model.ContextUsage?) {
+internal fun ContextRing(
+    usage: com.moyunteng.lxcode.remote.model.ContextUsage?,
+    onClick: (() -> Unit)? = null,
+) {
     val known = (usage?.window ?: 0) > 0
     val target = if (!known) 0f else (usage!!.used.toFloat() / usage.window).coerceIn(0f, 1f)
     // 环读数变化 220ms 动画过渡（桌面端 ContextIndicator 的环不瞬跳）
     val pct by lxAnimateFloat(target = target)
     val track = Lx.colors.BorderStrong // #e5e5e5
     // >80% 变红（#e02e2a = --danger），否则 #6e6e80 = --fg-muted
-    val ink = if (target > 0.8f) LxColors.Danger else Lx.colors.FgMuted
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+    val ink = if (target > 0.8f) Lx.colors.Danger else Lx.colors.FgMuted
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        modifier = if (onClick != null) {
+            Modifier
+                .clip(Lx.radius.PillShape)
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = onClick,
+                )
+                .padding(horizontal = 2.dp, vertical = 2.dp)
+        } else {
+            Modifier
+        },
+    ) {
         Box(Modifier.size(16.dp), contentAlignment = Alignment.Center) {
             Canvas(Modifier.size(16.dp)) {
                 // viewBox 20 / r 8 / stroke 2.5 → 16dp 下 stroke = 2dp
@@ -658,18 +691,18 @@ internal fun StatsCapsule(stats: com.moyunteng.lxcode.remote.model.SessionStats?
 }
 
 /**
- * 发送 / 停止按钮 —— 30dp 正圆、黑底 #0d0d0d、白色向上箭头（stroke 2.2 圆头）；
- * busy 时同位置换停止钮（白色 11dp 圆角方块图标）；禁用 = 25% 透明度；按压 scale 0.95。
+ * 发送 / 停止按钮 —— 32dp 正圆、accent 底 + accent-ink 前景（原型 `.send`，P2 改：
+ * 旧版 30dp 黑底是桌面端 send-btn 的搬运，原型把移动端 send 统一成 accent 圆钮）；
+ * busy 时同位置换停止钮（accent-ink 11dp 圆角方块图标）；禁用 = 25% 透明度；按压 scale 0.88。
  */
 @Composable
 internal fun SendButton(busy: Boolean, enabled: Boolean, onClick: () -> Unit) {
     val clickable = busy || enabled
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
-    // 按压缩放 0.95（.send-btn:active { transform: scale(0.95) }，120ms）
-    // —— :design 的 lxPressScale 固定 0.98 token，这里规格要求 0.95，app 内私有实现
+    // 按压缩放 0.88（.send:active { transform: scale(.88) }，120ms）
     val scale by animateFloatAsState(
-        targetValue = if (pressed && clickable) 0.95f else 1f,
+        targetValue = if (pressed && clickable) 0.88f else 1f,
         animationSpec = tween(120),
         label = "send-press-scale",
     )
@@ -688,9 +721,9 @@ internal fun SendButton(busy: Boolean, enabled: Boolean, onClick: () -> Unit) {
             }
             // 无障碍标签（对齐桌面端 aria-label：「发送」/「停止生成」）
             .semantics { contentDescription = if (busy) "停止生成" else "发送" }
-            .size(30.dp)
+            .size(32.dp)
             .clip(androidx.compose.foundation.shape.CircleShape)
-            .background(Lx.colors.Fg)
+            .background(Lx.colors.Accent)
             .clickable(
                 enabled = clickable,
                 interactionSource = interaction,
@@ -700,27 +733,57 @@ internal fun SendButton(busy: Boolean, enabled: Boolean, onClick: () -> Unit) {
         contentAlignment = Alignment.Center,
     ) {
         if (busy) {
-            // 停止图标：白色 11dp 圆角方块（rx 2.5）
+            // 停止图标：accent-ink 11dp 圆角方块（rx 2.5）
             Box(
                 Modifier
                     .size(11.dp)
                     .clip(RoundedCornerShape(2.5.dp))
-                    .background(LxColors.Bg),
+                    .background(Lx.colors.AccentInk),
             )
         } else {
-            // 向上箭头：M12 19V5 + m5 12 7-7 7 7（stroke 2.2 圆头），自绘对齐桌面端 SVG
+            // 向上箭头：M12 19V5 + m5 12 7-7 7 7（stroke 2.2 圆头），自绘对齐原型 SVG
+            //（DrawScope 不是 composable 上下文——色值在组合期读好再传进 lambda）
+            val arrowColor = Lx.colors.AccentInk
             Canvas(Modifier.size(14.dp)) {
                 val s = size.width / 24f
                 val stroke = 2.2f * s
-                drawLine(LxColors.Bg, Offset(12 * s, 19 * s), Offset(12 * s, 5 * s), strokeWidth = stroke, cap = StrokeCap.Round)
-                drawLine(LxColors.Bg, Offset(5 * s, 12 * s), Offset(12 * s, 5 * s), strokeWidth = stroke, cap = StrokeCap.Round)
-                drawLine(LxColors.Bg, Offset(19 * s, 12 * s), Offset(12 * s, 5 * s), strokeWidth = stroke, cap = StrokeCap.Round)
+                drawLine(arrowColor, Offset(12 * s, 19 * s), Offset(12 * s, 5 * s), strokeWidth = stroke, cap = StrokeCap.Round)
+                drawLine(arrowColor, Offset(5 * s, 12 * s), Offset(12 * s, 5 * s), strokeWidth = stroke, cap = StrokeCap.Round)
+                drawLine(arrowColor, Offset(19 * s, 12 * s), Offset(12 * s, 5 * s), strokeWidth = stroke, cap = StrokeCap.Round)
             }
         }
     }
 }
 
 // ===== 斜杠命令面板（桌面端 SlashPalette.tsx / composer.css .slash-palette）=====
+
+/** effort ghost 药丸 —— 原型 `.cpill`（无边框 ghost、11sp/600、--fg2 + 下 chevron）。 */
+@Composable
+internal fun ComposerGhostPill(label: String, onClick: () -> Unit) {
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val bg by lxAnimateColor(target = if (pressed) Lx.colors.BorderSoft else Color.Transparent)
+    Row(
+        Modifier
+            .clip(Lx.radius.PillShape)
+            .background(bg)
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Text(
+            text = label,
+            style = TextStyle(fontFamily = Lx.type.Sans, fontSize = 11.sp, color = Lx.colors.FgMuted),
+        )
+        Icon(
+            imageVector = Icons.Filled.KeyboardArrowDown,
+            contentDescription = null,
+            tint = Lx.colors.FgFaint,
+            modifier = Modifier.size(10.dp),
+        )
+    }
+}
 
 /** 斜杠命令（桌面端 SlashCommand：name 不含 /；desc 一句话描述）。 */
 private data class SlashCmd(val name: String, val desc: String, val action: () -> Unit)
@@ -755,8 +818,8 @@ private fun SlashPalette(
                 elevation = 12.dp,
                 shape = SlashPaletteShape,
                 clip = false,
-                ambientColor = Color(0x24000000),
-                spotColor = Color(0x14000000),
+                ambientColor = Lx.shadow.Float.copy(alpha = 0.14f),
+                spotColor = Lx.shadow.Float.copy(alpha = 0.08f),
             )
             .clip(SlashPaletteShape)
             .background(Lx.colors.Surface)

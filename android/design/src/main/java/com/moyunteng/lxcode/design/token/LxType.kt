@@ -76,59 +76,53 @@ object LxType {
     /** 等宽族 —— 桌面端 `--font-mono`（JetBrains Mono / Cascadia）；安卓回落系统 monospace */
     val Mono: FontFamily = FontFamily.Monospace
 
-    // ===== 组合样式（token 化的成品，组件直接消费）=====
+    // ===== 组合样式（token 化的成品，组件直接消费；颜色不带——走主题 Lx.colors 上色）=====
 
-    /** 正文 —— 14sp / 行高 1.6 / 400 / `--fg` */
+    /** 正文 —— 14sp / 行高 1.6 / 400 */
     val Body = TextStyle(
         fontFamily = Sans,
         fontSize = Size14,
         lineHeight = (Size14.value * LineHeight16).sp,
         fontWeight = W400,
-        color = LxColors.Fg,
     )
 
-    /** 次要正文 —— 14sp / 1.6 / 400 / `--fg-muted` */
+    /** 次要正文 —— 14sp / 1.6 / 400 */
     val BodyMuted = TextStyle(
         fontFamily = Sans,
         fontSize = Size14,
         lineHeight = (Size14.value * LineHeight16).sp,
         fontWeight = W400,
-        color = LxColors.FgMuted,
     )
 
-    /** 小号正文 —— 12.5sp / 1.5 / 400 / `--fg-muted` */
+    /** 小号正文 —— 12.5sp / 1.5 / 400 */
     val BodySmall = TextStyle(
         fontFamily = Sans,
         fontSize = Size12_5,
         lineHeight = (Size12_5.value * LineHeight15).sp,
         fontWeight = W400,
-        color = LxColors.FgMuted,
     )
 
-    /** 输入框文字 —— 13sp / 1.5 / 400 / `--fg`（.fd-input 的 font-size: 13px） */
+    /** 输入框文字 —— 13sp / 1.5 / 400（.fd-input 的 font-size: 13px） */
     val Field = TextStyle(
         fontFamily = Sans,
         fontSize = Size13,
         lineHeight = (Size13.value * LineHeight15).sp,
         fontWeight = W400,
-        color = LxColors.Fg,
     )
 
-    /** 列表行主标题 —— 13sp / 1.5 / 500 / `--fg`（.mset-connect-row 的 13px） */    val ListTitle = TextStyle(
+    /** 列表行主标题 —— 13sp / 1.5 / 500（.mset-connect-row 的 13px） */    val ListTitle = TextStyle(
         fontFamily = Sans,
         fontSize = Size13,
         lineHeight = (Size13.value * LineHeight15).sp,
         fontWeight = W500,
-        color = LxColors.Fg,
     )
 
-    /** 列表行副标题 —— 11.5sp / 1.5 / 400 / `--fg-faint`（.mset-connect-row-tagline） */
+    /** 列表行副标题 —— 11.5sp / 1.5 / 400（.mset-connect-row-tagline） */
     val ListSubtitle = TextStyle(
         fontFamily = Sans,
         fontSize = Size11_5,
         lineHeight = (Size11_5.value * LineHeight15).sp,
         fontWeight = W400,
-        color = LxColors.FgFaint,
     )
 
     /** 按钮文字 —— 12.5sp / 1.5 / 500（.fd-btn-p / .fd-btn-g 的 font-size: 12.5px） */
@@ -139,14 +133,13 @@ object LxType {
         fontWeight = W500,
     )
 
-    /** 分组小标题 —— 11sp / 1.5 / 600 / `--fg-muted`，大写 + 0.07em 字距
+    /** 分组小标题 —— 11sp / 1.5 / 600，大写 + 0.07em 字距
      *（桌面端 .mset-connect-group-title 是 10px / --fg-faint，移动端上浮一档到 11 / --fg-muted） */
     val SectionTitle = TextStyle(
         fontFamily = Sans,
         fontSize = Size11,
         lineHeight = (Size11.value * LineHeight15).sp,
         fontWeight = W600,
-        color = LxColors.FgMuted,
         letterSpacing = Size11 * 0.07f,
     )
 
@@ -172,15 +165,13 @@ object LxType {
         fontSize = 13.5.sp,
         lineHeight = 17.sp,
         fontWeight = W500,
-        color = LxColors.Fg,
     )
 
-    /** 等宽正文 —— 12sp / 1.6 / 400 / `--term-fg`（终端块 .cmd 的 12px） */
+    /** 等宽正文 —— 12sp / 1.6 / 400（终端块 .cmd 的 12px） */
     val Mono12 = TextStyle(
         fontFamily = Mono,
         fontSize = Size12,
         lineHeight = (Size12.value * LineHeight16).sp,
         fontWeight = W400,
-        color = LxColors.TermFg,
     )
 }
