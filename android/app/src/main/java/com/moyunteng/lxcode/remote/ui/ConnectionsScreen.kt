@@ -469,7 +469,7 @@ private fun ConnRow(
                     Modifier
                 },
             )
-            .padding(horizontal = Lx.space.s10, vertical = Lx.space.s8),
+            .padding(horizontal = Lx.space.s12, vertical = 11.dp), // 原型 .row：11px 12px
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(Lx.space.s10),
     ) {
@@ -485,7 +485,11 @@ private fun ConnRow(
             ) {
                 Text(
                     text = conn.name,
-                    style = Lx.type.ListTitle.copy(fontWeight = FontWeight.SemiBold),
+                    // 原型 `.row .t1`：14px / 600
+                    style = Lx.type.ListTitle.copy(
+                        fontSize = Lx.type.Size14,
+                        fontWeight = FontWeight.SemiBold,
+                    ),
                     color = Lx.colors.Fg,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -498,8 +502,9 @@ private fun ConnRow(
                 } else {
                     "${conn.addr} · ${maskToken(conn.token)}"
                 },
-                style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size11_5),
-                color = Lx.colors.FgFaint,
+                // 原型 `.row .t2`：12.5px / --fg2
+                style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size12_5),
+                color = Lx.colors.FgMuted,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )

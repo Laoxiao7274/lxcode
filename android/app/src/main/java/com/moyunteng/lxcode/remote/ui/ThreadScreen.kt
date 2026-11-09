@@ -5,14 +5,14 @@
 // 压缩检查点 / todo 清单 / 错误块。
 package com.moyunteng.lxcode.remote.ui
 
-import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.StartOffset
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.keyframes
 import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -56,6 +56,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.WarningAmber
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -71,6 +72,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
@@ -83,6 +89,9 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.style.TextDecoration
@@ -110,6 +119,8 @@ import com.moyunteng.lxcode.design.motion.lxStaggerEnter
 import com.moyunteng.lxcode.design.motion.lxSweep
 import com.moyunteng.lxcode.design.motion.rememberStreamReveal
 import com.moyunteng.lxcode.design.token.Lx
+import com.moyunteng.lxcode.design.token.LxElevation
+import com.moyunteng.lxcode.remote.model.daySepLabel
 import com.moyunteng.lxcode.remote.model.ThreadBlock
 import com.moyunteng.lxcode.remote.model.canOpenChild
 import com.moyunteng.lxcode.remote.model.formatMs
@@ -143,14 +154,15 @@ private fun RunBar(blocks: List<ThreadBlock>) {
     val current = tools.getOrNull(runningIdx)
     Row(
         Modifier
-            .padding(horizontal = Lx.space.s16, vertical = Lx.space.s2)
+            // 原型 `.runbar`：margin 2px 16px 6px、padding 9px 13px、r12、12.5sp/600
+            .padding(start = Lx.space.s16, end = Lx.space.s16, top = Lx.space.s2, bottom = 6.dp)
             .fillMaxWidth()
-            .clip(RoundedCornerShape(Lx.radius.r8))
+            .clip(RoundedCornerShape(Lx.radius.r12))
             .background(Lx.colors.Amber.copy(alpha = 0.10f))
             .border(
                 1.dp,
                 Lx.colors.Amber.copy(alpha = 0.22f),
-                RoundedCornerShape(Lx.radius.r8),
+                RoundedCornerShape(Lx.radius.r12),
             )
             .padding(horizontal = 13.dp, vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -159,7 +171,7 @@ private fun RunBar(blocks: List<ThreadBlock>) {
         LxSpinner(size = 12.dp)
         Text(
             text = "正在执行",
-            style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size11_5, fontWeight = FontWeight.SemiBold),
+            style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size12_5, fontWeight = FontWeight.SemiBold),
             color = Lx.colors.Amber,
         )
         Text(
@@ -167,7 +179,7 @@ private fun RunBar(blocks: List<ThreadBlock>) {
                 step?.let { append("$it · ") }
                 current?.let { append("${it.title} — ${it.argsSummary}".trim()) }
             },
-            style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size11_5, fontWeight = FontWeight.Medium),
+            style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size12_5, fontWeight = FontWeight.Medium),
             color = Lx.colors.FgMuted,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -229,10 +241,12 @@ fun ThreadScreen(state: AppState, sessionId: String) {
      *  判成「已在底」（真机复测抓到过：流式跟随因此在块开头卡住）。 */
     /** 最后一个消息块在 LazyColumn 里的条目下标：头部固定有「分页状态行」item
      *  （恒在列表头；离线提示条打开时它占 index 0、header 退居 1）——消息块下标 =
-     *  头部条目数 + 块下标。「真底」判定与 snapToBottom 共用这一份口径。 */
+     *  头部条目数 + 块下标。「真底」判定与 snapToBottom 共用这一份口径。
+     *  块数取 [threadBlocksWithDaySeps] 展示层的同一份（daysep 是展示层插入的
+     *  条目，最后条目的真实下标要算上它）。 */
     fun lastBlockItemIndex(): Int {
         val headerCount = if (real.showingCached) 2 else 1
-        return headerCount + real.blocks.size - 1
+        return headerCount + threadBlocksWithDaySeps(real.blocks).size - 1
     }
 
     fun bottomAligned(): Boolean {
@@ -547,7 +561,9 @@ fun ThreadScreen(state: AppState, sessionId: String) {
                 // stagger 限首次装载路径（P3 性能）：块数超上限（20，原型全量历史
                 // 逐条错开等价于整屏都在播动画）时不再逐条延迟——直接各自 BlockIn，
                 // 装载几百条历史不再多花 `count × 步长` 的整段延迟。
-                val blocks: List<ThreadBlock> = real.blocks
+                // daysep 插入在展示层做（不进 real.blocks）：流式期间 blocks 逐
+                // delta 替换，模型层插块会让下标键（"$sessionId:$i"）随插入平移。
+                val blocks: List<ThreadBlock> = threadBlocksWithDaySeps(real.blocks)
                 itemsIndexed(blocks, key = { i, _ -> "$sessionId:$i" }) { i, block ->
                     Box(
                         Modifier.lxEnter(
@@ -704,30 +720,119 @@ internal fun ThreadBlockView(
 ) {
     when (block) {
         is ThreadBlock.User -> UserBubble(state, block.text, block.attachments)
-        is ThreadBlock.Assistant -> AssistantBlock(block, busy, stableKey)
+        is ThreadBlock.Assistant -> AssistantRow(block, busy, stableKey)
         is ThreadBlock.Tool -> ToolCard(block)
         is ThreadBlock.Dispatch -> DispatchCard(block, onOpenChild)
         is ThreadBlock.Notice -> NoticeBar(block)
         is ThreadBlock.Compaction -> CompactionCard(block)
         is ThreadBlock.Todo -> TodoCard(block.items)
         is ThreadBlock.Error -> ErrorBlock(block.message)
+        is ThreadBlock.DaySep -> DaySepBar(block)
     }
 }
 
 /**
+ * 日分隔线（原型 `.daysep`：flex + 两侧 1px --line 线 + --fg3 11px/600 小字，
+ * margin 4px 0）——由 [threadBlocksWithDaySeps] 按实时收到的时间锚点插在消息前。
+ */
+@Composable
+internal fun DaySepBar(block: ThreadBlock.DaySep) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // 两侧发丝线 = 原型 `.daysep::before/::after`（flex:1 + 1px --line）
+        Box(
+            Modifier
+                .weight(1f)
+                .height(1.dp)
+                .background(Lx.colors.Border),
+        )
+        Text(
+            text = block.label,
+            // 原型 `.daysep`：font-size var(--t-xs)=11px / 600 / --fg3 / gap 12
+            style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size11, fontWeight = FontWeight.SemiBold),
+            color = Lx.colors.FgFaint,
+            modifier = Modifier.padding(horizontal = 12.dp),
+        )
+        Box(
+            Modifier
+                .weight(1f)
+                .height(1.dp)
+                .background(Lx.colors.Border),
+        )
+    }
+}
+
+/**
+ * 给实时收到的 user 消息（带 localEpochMs 锚点）在它**前面**插一条日分隔线：
+ * 同一段里连续的锚点只画第一条，同一天（localDate 相同）不重复画——去重键是
+ * 日期而不是含 HH:mm 的完整 label，同一分钟内连发多条也只落一条线。历史回放
+ * （localEpochMs == null）不产生锚点——wire/落库都没有 per-message 时间戳，
+ * 不给老历史编时间（数据面诚实缺口，等后端补时间列再接）。
+ *
+ * [nowMs] 时间基准注入（默认系统时钟）——纯函数可测，测试固定「现在」断言
+ * 「今天/昨天」分支（与 daySepLabel 的测法同一口径）。
+ */
+internal fun threadBlocksWithDaySeps(
+    blocks: List<ThreadBlock>,
+    nowMs: Long = System.currentTimeMillis(),
+): List<ThreadBlock> {
+    if (blocks.none { it is ThreadBlock.User && it.localEpochMs != null }) return blocks
+    val zone = java.time.ZoneId.systemDefault()
+    fun localDate(ms: Long) = java.time.Instant.ofEpochMilli(ms).atZone(zone).toLocalDate()
+    val today = localDate(nowMs)
+    val out = mutableListOf<ThreadBlock>()
+    var lastDate: java.time.LocalDate? = null
+    for (b in blocks) {
+        val u = b as? ThreadBlock.User
+        if (u?.localEpochMs != null) {
+            val d = localDate(u.localEpochMs)
+            if (d != lastDate) {
+                out.add(ThreadBlock.DaySep(daySepLabel(u.localEpochMs, nowMs), u.localEpochMs))
+                lastDate = d
+            }
+        }
+        out.add(b)
+    }
+    return out
+}
+
+/** 通告条 Shape（原型 `.notice`：r12）。 */
+private val NoticeShape = RoundedCornerShape(12.dp)
+
+/** 派发卡 Shape（原型 `.dispatchcard { border-radius: var(--r-md) }` = 12dp）。 */
+private val DispatchCardShape = RoundedCornerShape(12.dp)
+
+/** planbar / 派发卡的卡影（原型 `box-shadow: var(--shadow-card)`）。 */
+@Composable
+private fun Modifier.cardShadow(shape: androidx.compose.ui.graphics.Shape): Modifier =
+    shadow(
+        elevation = LxElevation.Card.elevation,
+        shape = shape,
+        clip = false,
+        ambientColor = Lx.shadow.Card,
+        spotColor = Lx.shadow.Card,
+    )
+
+/**
  * 系统提示条（后台任务通告 / 重复调用提醒）：一行浅底提示，不是用户气泡。
  *
- * 对齐桌面端 NoticeBar.tsx（.job-notice：图标 + 标签 + 正文）——通告是 user 角色
- * 消息但不是用户说的话，按前缀识别后在这里以提示条形态出现。
+ * 对齐原型 `.notice`（2026-12）：**虚线**边框（`border: 1px dashed var(--line2)`）
+ * + --soft 底 + r12 + padding 9/12 +「**标签** 正文」一行——虚线是「系统注入的
+ * 临时信息」的视觉语言，与实线的卡片/工具行区分开。
  */
 @Composable
 internal fun NoticeBar(block: ThreadBlock.Notice) {
     Row(
         Modifier
             .fillMaxWidth()
-            .clip(Lx.radius.RowShape)
+            .clip(NoticeShape)
             .background(Lx.colors.BorderSoft)
-            .padding(horizontal = Lx.space.s10, vertical = Lx.space.s8),
+            .lxDashBorder(color = Lx.colors.BorderStrong, shape = NoticeShape)
+            .padding(horizontal = Lx.space.s12, vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(Lx.space.s8),
     ) {
@@ -735,11 +840,11 @@ internal fun NoticeBar(block: ThreadBlock.Notice) {
         Text(
             text = block.label,
             style = Lx.type.Pill.copy(fontSize = Lx.type.Size10_5, fontWeight = FontWeight.SemiBold),
-            color = Lx.colors.FgMuted,
+            color = Lx.colors.Fg,
         )
         Text(
             text = block.text,
-            style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size11_5),
+            style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size12_5),
             color = Lx.colors.FgMuted,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
@@ -749,7 +854,19 @@ internal fun NoticeBar(block: ThreadBlock.Notice) {
 }
 
 /**
- * 用户气泡（底 #f1f1f3、右对齐、圆角 22、最大宽 70%）。
+ * 用户气泡 Shape（原型 `.msg-user .bub`：`border-radius: 18px 18px 6px 18px`——
+ * 左上/右上/右下/左下，右下角收口）。
+ */
+internal val UserBubbleShape = RoundedCornerShape(
+    topStart = 18.dp,
+    topEnd = 18.dp,
+    bottomEnd = 6.dp,
+    bottomStart = 18.dp,
+)
+
+/**
+ * 用户气泡（底 #f1f1f3、右对齐、最大宽 82%、非对称圆角 18/18/6/18——见
+ * [UserBubbleShape] 的原型出处）。
  *
  * 动效：回弹入场 —— 桌面端 `back.out(1.8)`（低阻尼 spring，等价 [LxEnterSpec.BubbleIn]）。
  */
@@ -783,14 +900,20 @@ internal fun UserBubble(
                 Box(
                     Modifier
                         .lxEnter(spec = LxEnterSpec.BubbleIn, key = text)
-                        .fillMaxWidth(0.78f)
-                        .clip(RoundedCornerShape(22.dp))
+                        // 原型 `.msg-user`：max-width 82%（桌面端 70% 是 720px 宽窗口的
+                        // 比例，手机窄屏原型取 82%——两口径矛盾时选原型移动端值）
+                        .fillMaxWidth(0.82f)
+                        // 原型 `.msg-user .bub`：非对称圆角 18/18/6/18（右下角收口
+                        // 指向自己——气泡在右、缺口朝发言方向）
+                        .clip(UserBubbleShape)
                         .background(Lx.colors.BubbleUser)
-                        .padding(horizontal = Lx.space.s16, vertical = Lx.space.s10),
+                        // 原型 `.msg-user .bub`：padding 10px 14px
+                        .padding(horizontal = Lx.space.s14, vertical = Lx.space.s10),
                 ) {
                     Text(
                         text = text,
-                        style = Lx.type.Body.copy(lineHeight = (Lx.type.Size14.value * 1.6f).sp),
+                        // 原型 `.msg-user .bub`：font-size 14px / line-height 1.55
+                        style = Lx.type.Body.copy(lineHeight = (Lx.type.Size14.value * 1.55f).sp),
                         color = Lx.colors.Fg,
                     )
                 }
@@ -802,7 +925,39 @@ internal fun UserBubble(
     }
 }
 
-/** 助手块（思考块 + 正文 + 轮末统计行）。 */
+/** 助手块（思考块 + 正文 + 轮末统计行）。
+ *
+ * 2026-12 原型对齐（`.msg-ai`）：左列 26dp LOGO 头像（圆角 9、上沿 2dp）+ gap 9 +
+ * body 列——助手消息不再是裸文本流，一眼能分清谁在说话（头像位只加在
+ * 助手正文块上；思考块/工具卡等从属块跟随同一缩进）。 */
+@Composable
+internal fun AssistantRow(block: ThreadBlock.Assistant, busy: Boolean, stableKey: String) {
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(9.dp),
+    ) {
+        Box(
+            Modifier
+                .padding(top = 2.dp)
+                .size(26.dp)
+                .clip(RoundedCornerShape(9.dp))
+                .background(Lx.colors.Surface)
+                .border(1.dp, Lx.colors.Border, RoundedCornerShape(9.dp)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Image(
+                painter = painterResource(com.moyunteng.lxcode.remote.R.drawable.ic_logo),
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+        Box(Modifier.weight(1f)) {
+            AssistantBlock(block, busy, stableKey)
+        }
+    }
+}
+
 @Composable
 internal fun AssistantBlock(block: ThreadBlock.Assistant, busy: Boolean, stableKey: String) {
     // 助手正文逐字揭示：桌面端 stream-reveal（REVEAL_* 常量），**不受 reduced-motion 门控**。
@@ -855,7 +1010,9 @@ internal fun AssistantBlock(block: ThreadBlock.Assistant, busy: Boolean, stableK
             }
         }
         if (!block.content.isNullOrBlank()) {
-            // 署名行：真实模式用实测值（first_token_ms / usage_tokens÷duration_ms），
+            // 署名行（原型 `.msg-time`：font-size 10.5px、margin-top 5px——「时间 ·
+            // 模型 · tok」一行浅灰小字；格式保持现有实测值口径，不抄原型静态示意）：
+            // 真实模式用实测值（first_token_ms / usage_tokens÷duration_ms），
             // 未知段省略（wire 类型该字段缺省 → 走旧硬编码，回归保障）。
             val footer = if (block.firstTokenMs != null || block.tokPerSec != null) {
                 listOfNotNull(
@@ -873,6 +1030,7 @@ internal fun AssistantBlock(block: ThreadBlock.Assistant, busy: Boolean, stableK
                 text = footer,
                 style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size10_5),
                 color = Lx.colors.FgFaint,
+                modifier = Modifier.padding(top = 5.dp),
             )
         }
     }
@@ -973,7 +1131,10 @@ internal fun ToolCard(block: ThreadBlock.Tool) {
         Row(
             Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(Lx.radius.r8))
+                .clip(RoundedCornerShape(Lx.radius.r12))
+                // 容器样式（原型 `.toolrow`：描边 + surface 底 + 12px 圆角）
+                .background(Lx.colors.Surface)
+                .border(1.dp, Lx.colors.Border, RoundedCornerShape(Lx.radius.r12))
                 // 「运行中」扫光：tool-sweep —— 300dp 宽渐变带从左扫到右，2.6s ease-out infinite
                 .lxSweep(enabled = block.running)
                 // 有输出时整行可点 = 展开/收起输出（原型 `.toolrow` cursor:pointer + `.tw` 旋转）
@@ -1019,11 +1180,13 @@ internal fun ToolCard(block: ThreadBlock.Tool) {
             )
             Text(
                 text = statusText,
-                style = Lx.type.Pill.copy(fontSize = Lx.type.Size10, fontWeight = FontWeight.SemiBold),
+                // 原型 `.toolrow .ts`：font-size var(--t-xs)=11px / 700；成功色
+                // `.ts.ok { color: var(--ok) }` = --ok（不是深一档的 SuccessInk）
+                style = Lx.type.Pill.copy(fontSize = Lx.type.Size11, fontWeight = FontWeight.Bold),
                 color = when (status) {
                     LxStatus.Run -> Lx.colors.Amber
                     LxStatus.Danger -> Lx.colors.Danger
-                    else -> Lx.colors.SuccessInk
+                    else -> Lx.colors.Success
                 },
             )
             if (!block.running) {
@@ -1059,23 +1222,8 @@ private fun FoldableOutput(text: String, danger: Boolean) {
     var open by remember(text) { mutableStateOf(false) }
     Column(verticalArrangement = Arrangement.spacedBy(Lx.space.s4)) {
         val shown = if (foldable && !open) lines.take(2).joinToString("\n") + "\n…" else text
-        if (danger) {
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(Lx.radius.r8))
-                    .background(Lx.colors.DangerSoft)
-                    .padding(Lx.space.s8),
-            ) {
-                Text(
-                    text = shown,
-                    style = Lx.type.Mono12.copy(fontSize = Lx.type.Size11),
-                    color = Lx.colors.Danger,
-                )
-            }
-        } else {
-            CodeBlock(shown)
-        }
+        // 输出 = 深色终端形态（原型 `.toolout`：TermBg/TermFg/r12）；错误染危险色
+        ToolOut(text = shown, danger = danger)
         if (foldable) {
             Text(
                 text = if (open) "收起" else "展开",
@@ -1135,15 +1283,33 @@ internal fun DispatchCard(
     // 进不去就渲染成静态行——点了没反应的按钮比没有入口更糟（桌面端
     // dispatch-primary.ts 的同一条判定，纯函数在 DispatchState.kt，单测钉住）。
     val canOpen = canOpenChild(block.sessionId)
+    // 左标条颜色（组合期读好；drawBehind lambda 里读不了 CompositionLocal）
+    val barColor = when (status) {
+        LxStatus.Danger -> Lx.colors.Danger
+        LxStatus.Success -> Lx.colors.Success
+        else -> Lx.colors.Amber
+    }
+    val borderColor = if (status == LxStatus.Run) Lx.colors.Border else accent.copy(alpha = 0.32f)
     Column(
         Modifier
             .fillMaxWidth()
-            .clip(Lx.radius.CardShape)
+            // 原型 `.dispatchcard`：`box-shadow: var(--shadow-card)` 卡影
+            .cardShadow(DispatchCardShape)
+            .clip(DispatchCardShape)
             .background(Lx.colors.Surface)
+            // 原型 `.dispatchcard { border-left: 3px solid var(--accent) }`——左标条
+            // 用完成/失败/运行中的状态色（accent 在 A 变体就是墨黑，运行中给琥珀）
+            .drawBehind {
+                drawRect(
+                    color = barColor,
+                    topLeft = Offset.Zero,
+                    size = Size(3.dp.toPx(), size.height),
+                )
+            }
             .border(
                 width = 1.dp,
-                color = if (status == LxStatus.Run) accent else accent.copy(alpha = 0.32f),
-                shape = Lx.radius.CardShape,
+                color = borderColor,
+                shape = DispatchCardShape,
             ),
         verticalArrangement = Arrangement.spacedBy(Lx.space.s8),
     ) {
@@ -1327,31 +1493,57 @@ private fun ChildToolRow(run: com.moyunteng.lxcode.remote.model.ChildTool) {
     }
 }
 
-/** 压缩检查点块（「已压缩历史」标签 + 摘要正文）。 */
+/** 压缩块（原型 `.compactblock`：虚线边框 + 图标 +「**已压缩历史** · …」一行 + 可折叠摘要）。 */
+/** 压缩块 Shape（原型 `.compactblock`：r12）。 */
+private val CompactBlockShape = RoundedCornerShape(12.dp)
+
 @Composable
 internal fun CompactionCard(block: ThreadBlock.Compaction) {
-    Column(
+    // 摘要可折叠（原型 `.compactblock` 点按整块切换；历史回放无摘要时点了也无展开体）
+    var open by remember { mutableStateOf(false) }
+    // 原型 `.compactblock`：**虚线**边框 + --soft 底 + r12 + padding 10/12 +
+    // 图标（折叠线 SVG）+「**已压缩历史** · …」一行——可折叠行内块，不是卡片
+    Row(
         Modifier
             .fillMaxWidth()
-            .clip(Lx.radius.CardShape)
+            .clip(CompactBlockShape)
             .background(Lx.colors.BorderSoft)
-            .padding(Lx.space.s10),
-        verticalArrangement = Arrangement.spacedBy(Lx.space.s6),
+            .lxDashBorder(color = Lx.colors.BorderStrong, shape = CompactBlockShape)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+            ) { open = !open }
+            .padding(horizontal = Lx.space.s12, vertical = Lx.space.s10),
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(Lx.space.s10),
     ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(Lx.space.s6),
-        ) {
-            Text(
-                text = if (block.manual) "已压缩历史（手动）" else "已压缩历史",
-                style = Lx.type.Pill.copy(fontSize = Lx.type.Size11, fontWeight = FontWeight.SemiBold),
-                color = Lx.colors.FgMuted,
-            )
-            Text(
-                text = "${block.shadowed} 条 · ${block.before} → ${block.after}",
-                style = Lx.type.Mono12.copy(fontSize = Lx.type.Size10, color = Lx.colors.FgFaint),
-            )
-        }
+        // 图标位（原型 `.compactblock .cic`：折叠线 + 箭头，15dp、--fg3）
+        SmallIcon(
+            Icons.AutoMirrored.Filled.KeyboardArrowRight,
+            Lx.colors.FgFaint,
+            size = 15,
+        )
+        Text(
+            buildAnnotatedString {
+                withStyle(SpanStyle(fontWeight = FontWeight.Bold, color = Lx.colors.Fg)) {
+                    append(if (block.manual) "已压缩历史（手动）" else "已压缩历史")
+                }
+                if (block.shadowed > 0 || block.before > 0) {
+                    withStyle(SpanStyle(color = Lx.colors.FgMuted)) {
+                        append(" · ${block.shadowed} 条 · ${block.before} → ${block.after}")
+                    }
+                }
+                if (block.summary.isNotBlank()) {
+                    withStyle(SpanStyle(color = Lx.colors.FgMuted)) {
+                        append(" · ${block.summary}")
+                    }
+                }
+            },
+            style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size12_5),
+            color = Lx.colors.FgMuted,
+        )
+    }
+    LxExpandable(visible = open && block.summary.isNotBlank()) {
         Text(
             text = block.summary,
             style = Lx.type.BodySmall.copy(
@@ -1359,6 +1551,7 @@ internal fun CompactionCard(block: ThreadBlock.Compaction) {
                 lineHeight = (Lx.type.Size12.value * 1.6f).sp,
             ),
             color = Lx.colors.Fg,
+            modifier = Modifier.padding(top = Lx.space.s6, start = 15.dp + Lx.space.s10),
         )
     }
 }
@@ -1398,10 +1591,12 @@ internal fun TodoCard(items: List<com.moyunteng.lxcode.remote.model.TodoItem>) {
     Column(
         Modifier
             .fillMaxWidth()
+            // 原型 `.planbar`：`box-shadow: var(--shadow-card)` + r12 + padding 10/13
+            .cardShadow(Lx.radius.CardShape)
             .clip(Lx.radius.CardShape)
             .background(Lx.colors.Surface)
             .border(1.dp, Lx.colors.Border, Lx.radius.CardShape)
-            .padding(horizontal = Lx.space.s12, vertical = Lx.space.s6),
+            .padding(horizontal = 13.dp, vertical = 10.dp),
     ) {
         // 头部（可点折叠；`.ph`：状态图标位 + 标题 + 当前任务 + N/M 进度 + caret）
         Row(
@@ -1873,6 +2068,48 @@ private fun MdText(
     val codeBg = Lx.colors.BorderSoft
     val linkInk = Lx.colors.SuccessInk
     val annotated = remember(spans, mono, codeBg, linkInk) { spansToAnnotatedString(spans, mono, codeBg, linkInk) }
+    // 行内 code 的区间表（AnnotatedString 坐标）：draw 期按行盒逐行画边框圆角
+    //（原型 `.msg-ai .txt code`：1px --line 边 + radius 5 + padding 1px 5px）。
+    // SpanStyle 画不出边框，边框只能自绘——drawWithContent 在文本内容**之前**
+    // 画（边框垫底，文字叠在上面），layoutResult 由 onTextLayout 捕获。
+    val codeRanges = remember(annotated) {
+        annotated.spanStyles
+            .filter { it.item.background == codeBg }
+            .map { it.start..it.end }
+    }
+    val codeBorder = Lx.colors.Border
+    val layoutState = remember { mutableStateOf<androidx.compose.ui.text.TextLayoutResult?>(null) }
+    val codeDecoration = if (codeRanges.isEmpty()) Modifier else Modifier
+        .drawWithContent {
+            val layout = layoutState.value ?: return@drawWithContent
+            // 逐行求交画每行的 code 段：同一区间跨行时每行各画一段；x 用区间内
+            // 字符的包围盒取（getLineLeft/Right 是整行盒，行内 code 不占满一行）；
+            // 上下沿用行盒（行高 1.71 里 code 与正文同行高）。padding 1px 5px 对应
+            // 边框向外扩的 pad（原型 `.msg-ai .txt code` 同一几何）。
+            val padX = 5.dp.toPx()
+            val padY = 1.dp.toPx()
+            val rPx = 5.dp.toPx()
+            for (range in codeRanges) {
+                for (i in 0 until layout.lineCount) {
+                    val lineStart = layout.getLineStart(i)
+                    val lineEnd = layout.getLineEnd(i, visibleEnd = true)
+                    val s = maxOf(range.first, lineStart)
+                    val e = minOf(range.last, lineEnd)
+                    if (s >= e) continue
+                    val x0 = layout.getBoundingBox(s).left - padX
+                    val x1 = layout.getBoundingBox(e - 1).right + padX
+                    val top = layout.getLineTop(i) - padY
+                    val bottom = layout.getLineBottom(i) + padY
+                    drawRoundRect(
+                        color = codeBorder,
+                        topLeft = Offset(x0, top),
+                        size = Size(x1 - x0, bottom - top),
+                        cornerRadius = CornerRadius(rPx, rPx),
+                        style = Stroke(width = 1.dp.toPx()),
+                    )
+                }
+            }
+        }
     // 行高：桌面端 markdown 规范 14px/1.71 已在 style 里给足——这里补
     // lineHeight 缺省兜底（lineHeight 未指定时 Compose 用字体默认 ≈1.2，
     // 中文正文会显挤；调用方都传了 mdBodyStyle，此兜底只防御其他入口）
@@ -1882,7 +2119,8 @@ private fun MdText(
             style.copy(lineHeight = (style.fontSize.value * 1.45f).sp)
         } else style,
         color = color,
-        modifier = modifier,
+        onTextLayout = { layoutState.value = it },
+        modifier = modifier.then(codeDecoration),
     )
 }
 
@@ -1937,16 +2175,25 @@ private fun spansToAnnotatedString(
 
 // ===== 生成中指示（三点跳动；design 动效门控复用）=====
 
-/** 「生成中」打字指示：三个 6dp 圆点波动（跳字机节奏），motionAllowed 门控。 */
+/** 「生成中」打字指示：三个 6dp 圆点波动（跳字机节奏），motionAllowed 门控。
+ *  原型 `.typing`：inline-flex gap 4 + padding 4px 0——垂直 padding 给上浮的
+ *  3dp 留出余量（不垫的话上浮帧会被裁）。 */
 @Composable
 internal fun TypingIndicator(modifier: Modifier = Modifier) {
-    Row(modifier = modifier, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+    Row(
+        modifier = modifier.padding(vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
         TypingDots(dotSize = 6.dp, gap = 4.dp)
     }
 }
 
 /**
- * 三点跳动圆点（typing dots）：每点按 150ms 相位差做透明度 + 位移波动。
+ * 三点跳动圆点（typing dots）：对齐原型 `.typing i { animation: tp 1.2s
+ * ease-in-out infinite }` + `@keyframes tp { 0%,60%,100% { opacity:.3;
+ * translateY(0) } 30% { opacity:1; translateY(-3px) } }`——周期 1.2s 的非对称
+ * 波（30% 处到峰：亮 + 上浮 3px，其余时间回落到 0.3 透明度），点色 --fg3，
+ * 相位差 0.15s/点（Compose 无 startDelay，用 StartOffset 实现）。
  * 门控关闭（reduced-motion / 调试开关）时三点恒亮静态——不消失（空闲≠在动，
  * 但「动效关了指示也该看得见」与 lxCaret 的 reduced-motion 纪律同源）。
  */
@@ -1963,16 +2210,21 @@ internal fun TypingDots(dotSize: androidx.compose.ui.unit.Dp, gap: androidx.comp
                     initialValue = 0.3f,
                     targetValue = 1f,
                     animationSpec = infiniteRepeatable(
-                        animation = tween(durationMillis = 450, easing = Lx.motion.Easing),
-                        repeatMode = RepeatMode.Reverse,
-                        // 相位差：起始延迟按 i 递增（Compose 的 infiniteRepeatable 无
-                        // startDelay，用 keyframes 偏移实现——每点前 150ms 静止）
-                        initialStartOffset = androidx.compose.animation.core.StartOffset(i * 150),
+                        // 0%→30% 升到峰（Opacity 0.3→1），30%→100% 落回：
+                        // keyframes 按原型 tp 的三个停靠点折算（整轮 1200ms）
+                        animation = keyframes {
+                            durationMillis = 1200
+                            0.0f at 0
+                            1.0f at 360 // 30%：峰 = 全亮 + 上浮 3dp
+                            0.3f at 1200 // 100%：落回基线
+                        },
+                        // 相位差：每点前移 i*150ms（nth-child 2/3 的 .15s/.3s delay）
+                        initialStartOffset = StartOffset(i * 150),
                     ),
                     label = "lx-typing-alpha-$i",
                 )
                 alpha = a
-                dy = (1f - a) * 2f // 亮 = 上浮 2dp，暗 = 落回
+                dy = (1f - a) * 3f / 0.7f // 峰值 a=1 → 上浮 3dp，谷值 a=0.3 → 落回
             } else {
                 alpha = 0.6f
                 dy = 0f
@@ -1982,7 +2234,7 @@ internal fun TypingDots(dotSize: androidx.compose.ui.unit.Dp, gap: androidx.comp
                     .offset(y = dy.dp)
                     .size(dotSize)
                     .alpha(alpha)
-                    .background(Lx.colors.FgMuted, CircleShape),
+                    .background(Lx.colors.FgFaint, CircleShape),
             )
         }
     }
@@ -2024,8 +2276,8 @@ internal fun ChildThreadView(state: AppState) {
 
     /** 最后一个内容条目的下标：块流条目数 = childBlocks.size；忙闲时列表尾部还有
      *  「生成中」打字点或「正在处理…」条目（二选一，各占一项）——「底部」以最后
-     *  可见条目为准更稳。 */
-    fun lastItemIndex(): Int = real.childBlocks.size + if (real.childBusy) 1 else 0
+     *  可见条目为准更稳。块数取展示层同一份（daysep 展示层插入的条目要算上）。 */
+    fun lastItemIndex(): Int = threadBlocksWithDaySeps(real.childBlocks).size + if (real.childBusy) 1 else 0
 
     /** 是否已在列表**真正的底部**：最后条目的底边进入视口可视区（对齐主会话
      *  bottomAligned 的口径——最后一个条目可见 ≠ 在底，超高块会误判）。 */
@@ -2254,7 +2506,8 @@ internal fun ChildThreadView(state: AppState) {
                     }
                 }
             }
-            val blocks: List<ThreadBlock> = real.childBlocks
+            // 子会话视图同样按实时锚点插 daysep（展示层，理由同主时间线）
+            val blocks: List<ThreadBlock> = threadBlocksWithDaySeps(real.childBlocks)
             itemsIndexed(blocks, key = { i, _ -> "$childId:$i" }) { i, block ->
                 Box(Modifier.lxEnter(spec = LxEnterSpec.BlockIn, delayMillis = 0, key = i)) {
                     ThreadBlockView(state, block, busy = real.childBusy, stableKey = "$childId:$i")

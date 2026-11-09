@@ -911,7 +911,7 @@ class RealBackend {
                 }
                 val last = asst.blocks.lastOrNull()
                 if (last !is ThreadBlock.User || last.text != text) {
-                    asst.blocks.add(ThreadBlock.User(text, emptyList()))
+                    asst.blocks.add(ThreadBlock.User(text, emptyList(), localEpochMs = System.currentTimeMillis()))
                     asst.streamingIdx = -1
                 }
             }
@@ -1396,15 +1396,34 @@ class RealBackend {
     }
 
     /** 切换**当前会话**的模型（chat.model：后端落库 + 广播，只改这一条会话）。
-     *
      *  与 role.set 的分工：role.set 改的是全局 default 角色（= 新会话的默认模型，
      *  设置页语义），拿它切模型会让所有会话跟着变——这正是用户报的那个 bug。
-     *
      *  [onDone] 回调结果（ok=false 时 msg 是错误信息——调用方给用户反馈；
      *  选中态不本地乐观改：后端成功才广播 chat.modelChanged，归约层按它对齐，
      *  失败时显示自然停在旧模型上，不假装成功）。 */
     fun changeSessionModel(id: String, onDone: ((ok: Boolean, msg: String) -> Unit)? = null) {
         changeSessionModelFor(currentSessionId, id, onDone)
+    }
+
+    /** 设置**全局 default 角色**的模型（role.set：新会话的默认模型——设置页语义；
+     *  与 [changeSessionModel] 的会话级切换分工明确，混用正是「一个会话切模型所有
+     *  会话跟着变」那个 bug）。成功后 model.list 快照刷新回读对齐 defaultModelId。 */
+    fun setDefaultModel(id: String, onDone: ((ok: Boolean, msg: String) -> Unit)? = null) {
+        Log.i(TAG, "role.set role=default model=$id")
+        client.call(
+            "role.set",
+            JSONObject().put("role", "default").put("model_id", id),
+        ) { err, _ ->
+            if (err != null) {
+                val msg = err.optString("message")
+                Log.w(TAG, "role.set 失败: $msg")
+                onDone?.invoke(false, msg)
+            } else {
+                // 选中态以后端为准：role.set 成功后端即广播 model.changed，
+                // 归约层 refreshModels 重拉快照对齐 defaultModelId，本地不乐观改
+                onDone?.invoke(true, "")
+            }
+        }
     }
 
     /** 切换**指定会话**（含子会话）的模型：changeSessionModel 的带 id 变体。
@@ -2108,7 +2127,7 @@ class RealBackend {
                 val atts = parseAttachments(msg.optJSONArray("attachments"))
                 val last = blocks.lastOrNull()
                 if (last !is ThreadBlock.User || last.text != text || last.attachments != atts) {
-                    blocks.add(ThreadBlock.User(text, atts))
+                    blocks.add(ThreadBlock.User(text, atts, localEpochMs = System.currentTimeMillis()))
                     streamingIdx = -1
                 }
             }
@@ -3175,7 +3194,7 @@ class RealBackend {
                 val atts = parseAttachments(msg.optJSONArray("attachments"))
                 val last = childBlocks.lastOrNull()
                 if (last !is ThreadBlock.User || last.text != text) {
-                    childBlocks.add(ThreadBlock.User(text, atts))
+                    childBlocks.add(ThreadBlock.User(text, atts, localEpochMs = System.currentTimeMillis()))
                     childStreamingIdx = -1
                 }
             }

@@ -1,8 +1,8 @@
 // SegmentedControl —— 三态分段（设置页色温：亮 / 暗 / 暖），对齐原型 `.seg/.segbtn`。
 //
-// 容器：--soft 底、圆角 10（--r-md）、padding 3、gap 4；按钮：flex-1、padding 7/0、
-// 圆角 8、选中 = Surface 底 + 卡片阴影 + --fg 字色，未选中 --fg2；
-// 过渡：background/color .15s（150ms 标准曲线）。
+// 容器：--soft 底、圆角 12（--r-md）、padding 3、gap 4；按钮：flex-1、高 36（padding 7/0
+// 的实测高）、圆角 8、选中 = Surface 底 + 卡片阴影 + --fg 字色，未选中 --fg2；
+// 字号 --t-sm = 12.5sp/600；过渡：background/color .15s（150ms 标准曲线）。
 package com.moyunteng.lxcode.remote.ui
 
 import androidx.compose.animation.core.tween
@@ -36,7 +36,7 @@ import com.moyunteng.lxcode.design.motion.lxAnimateColor
 import com.moyunteng.lxcode.design.token.Lx
 import com.moyunteng.lxcode.design.token.LxMotion
 
-private val SegContainerShape = RoundedCornerShape(10.dp)
+private val SegContainerShape = RoundedCornerShape(12.dp)
 private val SegButtonShape = RoundedCornerShape(8.dp)
 
 /**
@@ -94,7 +94,7 @@ private fun RowScope.SegButton(
     Row(
         Modifier
             .weight(1f)
-            .height(30.dp)
+            .height(36.dp) // 原型 `.segbtn`：padding 7px 0 + 12.5sp 行高的实测高 ≈ 36px
             .clip(SegButtonShape)
             .background(bg)
             .then(
@@ -128,7 +128,8 @@ private fun RowScope.SegButton(
         }
         Text(
             text = label,
-            style = TextStyle(fontFamily = Lx.type.Sans, fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold),
+            // 原型 `.segbtn`：font-size var(--t-sm) = 12.5px / 600
+            style = TextStyle(fontFamily = Lx.type.Sans, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold),
             color = fg,
         )
     }

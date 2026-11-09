@@ -32,11 +32,14 @@ import com.moyunteng.lxcode.design.token.Lx
  *  * [trailing] → 尾部插槽（清空按钮、可见性切换）；
  *  * [enabled] = false → 降透明度且不可聚焦。
  *
- * 状态：默认边框 `--border-strong`，聚焦边框 `#a8a8b0`（桌面端 `:focus { border-color: #a8a8b0 }`）。
+ * 状态：默认边框 `--line2`，聚焦 `--fg3`（原型 `.field input:focus { border-color: var(--fg3) }`）。
  *
- * 桌面端对应：`.fd-input { font-size: 13px; color: var(--fg); background: var(--surface);
- * border: 1px solid var(--border-strong); border-radius: 9px; padding: 8px 10px;
- * transition: border-color 120ms }`。
+ * 移动端规格（原型 `.field input`）：soft 底 + 1px --line2 边 + 圆角 12（--r-md）+
+ * padding 10/12 + 14sp 文字——「soft 底浅边」是移动端输入控件的统一语言，
+ * 与列表行（--soft hover）、分段容器（--soft）同一套。
+ *
+ * 桌面端原型源：`.field input { border: 1px solid var(--line2); background: var(--soft);
+ * border-radius: var(--r-md); padding: 10px 12px; font-size: var(--t-md) }`。
  *
  * @param value 当前文本
  * @param onValueChange 文本变化回调
@@ -59,27 +62,30 @@ fun LxTextField(
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
 
-    // 聚焦才提亮边框：桌面端唯一的输入框状态反馈（主题的 focus 环色，随变体/色温切换）
+    // 聚焦才提亮边框：原型 `.field input:focus { border-color: var(--fg3) }`（主题的
+    // focus 边框色，随变体/色温切换）
     val borderColor = when {
-        focused -> Lx.colors.Ring
+        focused -> Lx.colors.FgFaint
         else -> Lx.colors.BorderStrong
     }
-    val minHeight: Dp = if (singleLine) 38.dp else 110.dp // 桌面端 textarea min-height: 110px
+    val minHeight: Dp = if (singleLine) 40.dp else 110.dp
 
     Row(
         modifier = modifier
             .fillMaxWidth()
             .heightIn(min = minHeight)
-            .background(Lx.colors.Surface, Lx.radius.FieldShape)
-            .border(1.dp, borderColor, Lx.radius.FieldShape)
-            .padding(horizontal = Lx.space.s10, vertical = Lx.space.s8), // 桌面端 8px 10px
+            // 原型 `.field input`：`background: var(--soft); border-radius: var(--r-md)`（12px）
+            .background(Lx.colors.BorderSoft, Lx.radius.CardShape)
+            .border(1.dp, borderColor, Lx.radius.CardShape)
+            .padding(horizontal = Lx.space.s12, vertical = 10.dp), // 原型：10px 12px
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(modifier = Modifier.weight(1f)) {
             if (value.isEmpty() && placeholder.isNotEmpty()) {
                 Text(
                     text = placeholder,
-                    style = Lx.type.Field,
+                    // 原型 `.field input`：font-size var(--t-md) = 14px
+                    style = Lx.type.Body.copy(fontSize = Lx.type.Size14),
                     color = Lx.colors.FgFaint,
                     maxLines = 1,
                 )
@@ -89,7 +95,8 @@ fun LxTextField(
                 onValueChange = onValueChange,
                 enabled = enabled,
                 singleLine = singleLine,
-                textStyle = Lx.type.Field.copy(color = Lx.colors.Fg),
+                // 原型 `.field input`：font-size 14px / --fg
+                textStyle = Lx.type.Body.copy(fontSize = Lx.type.Size14, color = Lx.colors.Fg),
                 cursorBrush = SolidColor(Lx.colors.Fg),
                 interactionSource = interaction,
                 keyboardOptions = KeyboardOptions(imeAction = if (singleLine) ImeAction.Done else ImeAction.Default),

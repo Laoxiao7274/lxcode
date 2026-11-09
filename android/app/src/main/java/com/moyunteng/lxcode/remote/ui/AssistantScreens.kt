@@ -91,6 +91,7 @@ import com.moyunteng.lxcode.design.motion.LxStagger
 import com.moyunteng.lxcode.design.motion.lxEnter
 import com.moyunteng.lxcode.design.motion.lxStaggerEnter
 import com.moyunteng.lxcode.design.token.Lx
+import com.moyunteng.lxcode.design.token.LxVariant
 import com.moyunteng.lxcode.remote.model.SessionMeta
 import com.moyunteng.lxcode.remote.model.ThreadBlock
 import com.moyunteng.lxcode.remote.model.effortLabel
@@ -172,6 +173,12 @@ fun AssistantScreen(state: AppState) {
                 HeroCard(
                     greeting = heroGreeting(),
                     sub = heroSub(real.asst.sessions.size),
+                    // 渐变止点按变体（原型 `--grad-hero`：A=100%、B=58%、C=62%）
+                    gradientStop = when (state.themeVariant) {
+                        LxVariant.B -> 0.58f
+                        LxVariant.C -> 0.62f
+                        else -> 1f
+                    },
                     modifier = Modifier.padding(horizontal = Lx.space.s4, vertical = Lx.space.s4),
                 )
             }
@@ -191,41 +198,13 @@ fun AssistantScreen(state: AppState) {
             val sessions = real.asst.sessions
             if (sessions.isEmpty()) {
                 item {
-                    // 空态（原型 `.empty`：图标框 + 标题 + 副行）
-                    Column(
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 44.dp, horizontal = 30.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        Box(
-                            Modifier
-                                .size(52.dp)
-                                .clip(RoundedCornerShape(16.dp))
-                                .background(Lx.colors.BorderSoft)
-                                .border(1.dp, Lx.colors.Border, RoundedCornerShape(16.dp)),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.AutoAwesome,
-                                contentDescription = null,
-                                tint = Lx.colors.FgFaint,
-                                modifier = Modifier.size(22.dp),
-                            )
-                        }
-                        Text(
-                            text = "随时开新对话",
-                            style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size13, fontWeight = FontWeight.Bold),
-                            color = Lx.colors.FgMuted,
-                            modifier = Modifier.padding(top = 8.dp),
-                        )
-                        Text(
-                            text = "日程、检索、写作、自动化——都是我的活",
-                            style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size11_5),
-                            color = Lx.colors.FgFaint,
-                        )
-                    }
+                    // 空态（原型 `.empty`：图标框 + 标题 + 副行）——抽到 Common.SmallEmpty 共用
+                    SmallEmpty(
+                        text = "随时开新对话",
+                        icon = Icons.Filled.AutoAwesome,
+                        title = "随时开新对话",
+                        description = "日程、检索、写作、自动化——都是我的活",
+                    )
                 }
             } else {
                 itemsIndexed(sessions) { i, s ->
@@ -273,7 +252,14 @@ fun AssistantThreadScreen(state: AppState, sessionId: String) {
     val imeHeight = WindowInsets.ime.getBottom(LocalDensity.current)
     var sticky by remember { mutableStateOf(true) }
 
-    fun lastBlockItemIndex(): Int = asst.blocks.size - 1
+    fun lastBlockItemIndex(): Int {
+        // 流内确认卡（pendingConfirm != null 时插在最后一块之后）：它是「真底」，
+        // sticky 跟随与 snapToBottom 都要把它算进去，否则卡到不了可视区。
+        // 块数取展示层同一份（daysep 展示层插入的条目要算上）。
+        var i = threadBlocksWithDaySeps(asst.blocks).size - 1
+        if (pendingConfirm != null) i++
+        return i
+    }
 
     fun bottomAligned(): Boolean {
         val info = listState.layoutInfo
@@ -293,8 +279,7 @@ fun AssistantThreadScreen(state: AppState, sessionId: String) {
 
     suspend fun snapToBottom(recheckDelayMs: Long = 0) {
         val count = asst.blocks.size
-        if (count <= 0) return
-        listState.scrollToItem(lastBlockItemIndex())
+        if (count <= 0) return        listState.scrollToItem(lastBlockItemIndex())
         suspend fun converge() {
             repeat(6) {
                 withFrameNanos { }
@@ -324,6 +309,14 @@ fun AssistantThreadScreen(state: AppState, sessionId: String) {
     LaunchedEffect(asst.blocks.size) {
         if (asst.blocks.isNotEmpty() && sticky) {
             snapToBottom()
+            sticky = true
+        }
+    }
+    // 确认卡入流/出流（pendingConfirm 翻转）也是流尾高度变化——sticky 时补滚一次，
+    // 卡不悬在可视区外（历史在 scrim 时代由 composerHeightDp 承担这件事）。
+    LaunchedEffect(pendingConfirm) {
+        if (asst.blocks.isNotEmpty() && sticky) {
+            snapToBottom(recheckDelayMs = 400)
             sticky = true
         }
     }
@@ -437,7 +430,8 @@ fun AssistantThreadScreen(state: AppState, sessionId: String) {
                     }
                 }
                 // stagger 限首次装载路径（P3 性能，同 ThreadScreen：超上限不逐条延迟）
-                val blocks: List<ThreadBlock> = asst.blocks
+                // daysep 插入在展示层（不进 asst.blocks，理由同 ThreadScreen）
+                val blocks: List<ThreadBlock> = threadBlocksWithDaySeps(asst.blocks)
                 itemsIndexed(blocks, key = { i, _ -> "$sessionId:$i" }) { i, block ->
                     Box(
                         Modifier.lxEnter(
@@ -462,6 +456,37 @@ fun AssistantThreadScreen(state: AppState, sessionId: String) {
                                 )
                             },
                         )
+                    }
+                }
+                // 确认门（assistant.confirmRequest → assistant.confirm 裁决）——
+                // **消息流内卡片**（2026-12 用户拍板：挂 scrim 里会「挤」且形态偏离
+                // 原型；pending 是会话级状态，流内按「最后一条块之后」插卡，随消息
+                // spacing 节奏）。ask 形态走 AskCard（点选/打字回答），工具确认走
+                // ConfirmCard；scrim 里只留 busy 条。
+                if (pendingConfirm != null) {
+                    item(key = "$sessionId:confirm") {
+                        val c = pendingConfirm!!
+                        if (c.isAsk) {
+                            AskCard(
+                                confirm = c,
+                                onAnswer = { answer ->
+                                    // answer 非空 = 文本回答；空 = 跳过（allow=false，后端合成跳过结果）
+                                    real.resolveAssistantConfirm(allow = answer.isNotEmpty(), answer = answer)
+                                },
+                            )
+                        } else {
+                            ConfirmCard(
+                                confirm = c,
+                                onAllow = { real.resolveAssistantConfirm(allow = true) },
+                                onDeny = { real.resolveAssistantConfirm(allow = false) },
+                                terminal = {
+                                    TerminalBlock(
+                                        command = RealBackend.argsCommand(c.arguments).ifBlank { c.arguments },
+                                        cwd = RealBackend.argsCwd(c.arguments).ifBlank { null },
+                                    )
+                                },
+                            )
+                        }
                     }
                 }
                 if (running && asst.streamVersion > 0) {
@@ -533,36 +558,7 @@ fun AssistantThreadScreen(state: AppState, sessionId: String) {
                         )
                     }
                 }
-                // 确认门（assistant.confirmRequest → assistant.confirm 裁决；P2：内联卡片形态——
-                // ask 形态走 AskCard（点选/打字回答），工具确认走 ConfirmCard。
-                // 挂在 scrim 内、输入卡上方：卡片高度计入 composerHeightDp（onSizeChanged
-                // 量整个 scrim Column），消息流不会被它盖住。
-                if (pendingConfirm != null) {
-                    val c = pendingConfirm
-                    if (c.isAsk) {
-                        AskCard(
-                            confirm = c,
-                            modifier = Modifier.padding(horizontal = Lx.space.s12, vertical = Lx.space.s4),
-                            onAnswer = { answer ->
-                                // answer 非空 = 文本回答；空 = 跳过（allow=false，后端合成跳过结果）
-                                real.resolveAssistantConfirm(allow = answer.isNotEmpty(), answer = answer)
-                            },
-                        )
-                    } else {
-                        ConfirmCard(
-                            confirm = c,
-                            modifier = Modifier.padding(horizontal = Lx.space.s12, vertical = Lx.space.s4),
-                            onAllow = { real.resolveAssistantConfirm(allow = true) },
-                            onDeny = { real.resolveAssistantConfirm(allow = false) },
-                            terminal = {
-                                TerminalBlock(
-                                    command = RealBackend.argsCommand(c.arguments).ifBlank { c.arguments },
-                                    cwd = RealBackend.argsCwd(c.arguments).ifBlank { null },
-                                )
-                            },
-                        )
-                    }
-                }
+                // （确认卡已移进消息流 itemsIndexed 渲染——scrim 里只留 busy 条与输入区）
                 Box(
                     Modifier
                         .fillMaxWidth()
@@ -596,8 +592,9 @@ private fun AssistantComposer(state: AppState) {
     val context = LocalContext.current
     fun toast(msg: String) = android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
 
-    // Composer 弹层统一收口成**一个 bottom sheet 位**（P2：与主域 Composer 同款）。
-    var sheetKind by remember { mutableStateOf<ComposerSheet?>(null) }
+    // Composer 弹层统一收口成**应用级 bottom sheet 单槽**（2026-12 用户拍板：
+    // 与主域 Composer 同一条提升——本组合只写 state.openAppSheet；挂载点与返回键
+    // 收口都在 AppRoot）。effort 视图 = state.assistantEffort（提升到 AppState）。
     // 附件（2026-12 助手附件）：图片走 PickVisualMedia（Photo Picker，免存储权限），
     // 读入暂存与预览复用主域同一套（real.pendingImages / attachNotice / PendingImageThumb），
     // 随 assistant.send 上 wire（见 RealBackend.assistantSend——base64 形态，手机与
@@ -612,27 +609,12 @@ private fun AssistantComposer(state: AppState) {
             )
         }
     }
-    var permConfirming by remember { mutableStateOf(false) }
-    LaunchedEffect(sheetKind) { if (sheetKind != ComposerSheet.Approval) permConfirming = false }
-
-    // 返回键第一层：bottom sheet 开着 → 返回先关弹层（与主域 Composer 同一条链）
-    LaunchedEffect(sheetKind) {
-        state.backInterceptor =
-            if (sheetKind != null) {
-                {
-                    sheetKind = null
-                    true
-                }
-            } else {
-                null
-            }
-    }
 
     // 模型/effort 投影（与主域 Composer 同一条口径，数据源换 asst 桶）
     val asstModelId = asst.pickedModelId.ifBlank { real.defaultModelId }
     val currentModel = real.allModels.find { it.id == asstModelId }
     val effortOptions = currentModel?.efforts?.filter { it in EFFORT_IDS } ?: emptyList()
-    var effort by remember { mutableStateOf("medium") }
+    val effort = state.assistantEffort
     val effortId = if (effort in effortOptions) effort else effortOptions.lastOrNull() ?: ""
     val sendEffort = if (effortOptions.isNotEmpty()) effortId else ""
     val effortDim = if (effortOptions.isNotEmpty()) "· ${effortLabel(effortId)}" else null
@@ -673,27 +655,30 @@ private fun AssistantComposer(state: AppState) {
         }
         val input = remember { MutableInteractionSource() }
         val focused by input.collectIsFocusedAsState()
-        val ringWidth by androidx.compose.animation.core.animateDpAsState(
-            targetValue = if (focused) 1.5.dp else 1.dp,
-            animationSpec = androidx.compose.animation.core.tween(150),
-            label = "assistant-ring-width",
-        )
+        // 助手输入卡与主域同规格：r22 卡 + 聚焦 ring 光环（`.inputcard:focus-within`）
         val ringColor by com.moyunteng.lxcode.design.motion.lxAnimateColor(
-            target = if (focused) Lx.colors.Fg else Lx.colors.BorderStrong,
-            durationMillis = 150,
+            target = if (focused) Lx.colors.FgFaint else Lx.colors.BorderStrong,
+            durationMillis = 180,
         )
+        val haloAlpha by androidx.compose.animation.core.animateFloatAsState(
+            targetValue = if (focused) 0.28f else 0f,
+            animationSpec = androidx.compose.animation.core.tween(180),
+            label = "assistant-halo",
+        )
+        val haloColor = Lx.colors.Ring
         Column(
             Modifier
                 .fillMaxWidth()
+                .drawHalo(haloAlpha, haloColor, 22.dp)
                 .shadow(
                     elevation = 3.dp,
                     shape = ComposerCardShape,
                     clip = false,
-                    spotColor = Lx.shadow.Card.copy(alpha = 0.04f),
+                    spotColor = Lx.shadow.Card.copy(alpha = 0.06f),
                 )
                 .clip(ComposerCardShape)
                 .background(Lx.colors.Surface)
-                .border(width = ringWidth, color = ringColor, shape = ComposerCardShape),
+                .border(width = 1.dp, color = ringColor, shape = ComposerCardShape),
         ) {
             ComposerTextField(
                 value = text,
@@ -736,29 +721,29 @@ private fun AssistantComposer(state: AppState) {
                     ModelPill(
                         label = modelDisplayLabel(real.allModels, asstModelId),
                         effortDim = effortDim,
-                        expanded = sheetKind == ComposerSheet.Model,
+                        expanded = state.appSheet == AppSheet.AssistantModel,
                         onToggle = {
-                            sheetKind = if (sheetKind == ComposerSheet.Model) null else ComposerSheet.Model
+                            if (state.appSheet == AppSheet.AssistantModel) state.closeAppSheet() else state.openAppSheet(AppSheet.AssistantModel)
                         },
                     )
                     if (effortOptions.isNotEmpty()) {
                         ComposerGhostPill(
                             label = effortLabel(effortId),
                             onClick = {
-                                sheetKind = if (sheetKind == ComposerSheet.Effort) null else ComposerSheet.Effort
+                                if (state.appSheet == AppSheet.AssistantEffort) state.closeAppSheet() else state.openAppSheet(AppSheet.AssistantEffort)
                             },
                         )
                     }
                     ApprovalPill(
                         label = approvalLabel,
-                        expanded = sheetKind == ComposerSheet.Approval,
+                        expanded = state.appSheet == AppSheet.AssistantApproval,
                         onToggle = {
-                            sheetKind = if (sheetKind == ComposerSheet.Approval) null else ComposerSheet.Approval
+                            if (state.appSheet == AppSheet.AssistantApproval) state.closeAppSheet() else state.openAppSheet(AppSheet.AssistantApproval)
                         },
                     )
                     ContextRing(
                         usage = asst.contextUsage,
-                        onClick = { sheetKind = ComposerSheet.Context },
+                        onClick = { state.openAppSheet(AppSheet.AssistantContext) },
                     )
                     StatsCapsule(asst.sessionStats)
                 }
@@ -783,67 +768,6 @@ private fun AssistantComposer(state: AppState) {
         }
     }
 
-    // ===== Composer 弹层（P2：bottom sheet；assistant.* 域语义）=====
-    LxBottomSheet(
-        visible = sheetKind != null,
-        onDismiss = { sheetKind = null },
-        title = when (sheetKind) {
-            ComposerSheet.Model -> "选择模型"
-            ComposerSheet.Effort -> "思考力度"
-            ComposerSheet.Approval -> "工具审批档"
-            ComposerSheet.Context -> "上下文占用"
-            null -> ""
-        },
-        subtitle = when (sheetKind) {
-            ComposerSheet.Model -> "assistant.model · 助手域语义"
-            ComposerSheet.Effort -> "assistant.send effort"
-            ComposerSheet.Approval -> "assistant.approval · 助手域语义"
-            else -> null
-        },
-    ) {
-        when (sheetKind) {
-            ComposerSheet.Model -> ModelSheetBody(
-                groups = real.modelGroups,
-                currentModelId = asstModelId,
-                onPick = { id ->
-                    val m = real.allModels.find { it.id == id }
-                    val supported = m?.efforts?.filter { it in EFFORT_IDS } ?: emptyList()
-                    if (supported.isNotEmpty() && effort !in supported) {
-                        effort = if ("medium" in supported) "medium" else supported.first()
-                    }
-                    real.changeAssistantModel(id) { ok, msg ->
-                        // 选中态由 assistant.modelChanged 广播对齐；失败 toast
-                        if (!ok) toast("切换模型失败${if (msg.isNotBlank()) "：$msg" else ""}")
-                    }
-                    sheetKind = null
-                },
-            )
-            ComposerSheet.Effort -> EffortSheetBody(
-                effortOptions = effortOptions,
-                currentEffort = effortId,
-                onPick = { id ->
-                    effort = id
-                    sheetKind = null
-                },
-            )
-            ComposerSheet.Approval -> ApprovalSheetBody(
-                current = asst.approval ?: "confirm",
-                confirming = permConfirming,
-                onPick = { id ->
-                    if (id == "auto" && asst.approval != "auto") {
-                        // 危险方向才拦（两步确认，与主域同一纪律）
-                        if (!permConfirming) {
-                            permConfirming = true
-                            return@ApprovalSheetBody
-                        }
-                    }
-                    permConfirming = false
-                    real.changeAssistantApproval(id)
-                    sheetKind = null
-                },
-            )
-            ComposerSheet.Context -> ContextSheetBody(asst.contextUsage)
-            null -> {}
-        }
-    }
+    // （Composer 弹层已提升为应用级 bottom sheet——AppSheetHost 在 AppRoot 唯一挂载，
+    // assistant.* 域语义在 AppSheet.Assistant* 四个条目；本组合只负责药丸的写口。）
 }

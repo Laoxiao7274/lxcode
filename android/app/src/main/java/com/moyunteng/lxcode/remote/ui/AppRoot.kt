@@ -3,8 +3,14 @@
 // 纯远控壳：底部导航只有 会话/连接；配对与组件展示从连接页进入。
 package com.moyunteng.lxcode.remote.ui
 
+import android.os.Build
 import android.util.Log
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -37,6 +43,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -44,6 +54,7 @@ import com.moyunteng.lxcode.remote.BuildConfig
 import com.moyunteng.lxcode.remote.ConnStore
 import com.moyunteng.lxcode.design.motion.LxEnterSpec
 import com.moyunteng.lxcode.design.motion.LxMotionGate
+import com.moyunteng.lxcode.design.motion.LocalLxMotionEnabled
 import com.moyunteng.lxcode.design.motion.lxAnimateColor
 import com.moyunteng.lxcode.design.motion.lxEnter
 import com.moyunteng.lxcode.design.motion.lxPressScale
@@ -76,6 +87,40 @@ sealed interface Route {
      *  与主域的 Thread 互不混用；列表页作为 tab 直达（底部导航可见）。 */
     data object Assistant : Route
     data class AssistantThread(val sessionId: String) : Route { override val showBottomBar get() = false }
+}
+
+/**
+ * 应用级 bottom sheet 的种类（AppState.appSheet 单槽按 kind 渲染不同内容；
+ * 2026-12 用户拍板：ComposerSheet 枚举提升为 AppSheet——弹层不再挂 Composer 内部，
+ * 遮罩盖整个窗口含顶栏/底栏，任何页面都能唤起）。
+ */
+enum class AppSheet {
+    /** 模型选择（chat.model · 会话级；主域 Composer 药丸） */
+    Model,
+
+    /** 思考力度（chat.send effort 四档） */
+    Effort,
+
+    /** 工具审批档（chat.approval 三档） */
+    Approval,
+
+    /** 上下文占用明细（五类拆分） */
+    Context,
+
+    /** 助手域模型选择（assistant.model · 助手域语义） */
+    AssistantModel,
+
+    /** 助手域思考力度（assistant.send effort） */
+    AssistantEffort,
+
+    /** 助手域工具审批档（assistant.approval） */
+    AssistantApproval,
+
+    /** 助手域上下文占用明细 */
+    AssistantContext,
+
+    /** 设置页「默认模型」（role.set · 全局 default 角色——新会话的默认模型） */
+    SettingsModel,
 }
 
 /** 连接表单草稿（新建/编辑共用；[isNew] 决定保存是新增还是覆盖）。 */
@@ -368,6 +413,47 @@ class AppState(private val store: ConnStore? = null) {
      */
     var backInterceptor by mutableStateOf<(() -> Boolean)?>(null)
 
+    // ===== 应用级 bottom sheet 单槽（2026-12 用户拍板，从 Composer 内部提升）=====
+    // 非空 = 开着一个 sheet（同一时刻只开一个——单槽位写法天然保证；置 null 关闭）。
+    // 挂载点唯一在 AppRoot（fillMaxSize 覆盖整窗，遮罩含顶栏/底栏，对齐原型 .sheet-wrap）；
+    // 返回键收口在 AppRoot BackHandler 链的第一层（先于各页面注册的 backInterceptor）。
+
+    /** 当前打开的 sheet（null = 关闭）。写口走 [openAppSheet]/[closeAppSheet]。 */
+    var appSheet by mutableStateOf<AppSheet?>(null)
+        private set
+
+    /** 「自动执行」两步确认态——Approval/AssistantApproval sheet 用；
+     *  开非审批档 sheet 或关 sheet 时复位（原 Composer 局部 remember 提升于此）。
+     *  写口走 [writeAppSheetPermConfirming]。 */
+    var appSheetPermConfirming by mutableStateOf(false)
+
+    /**
+     * effort 本地视图（内存态，不落盘）：协议里 effort 只是 chat.send 的请求级参数
+     * （后端没有会话级 effort 方法——远端无读写通道），发送时带上当前视图。
+     * 主域与助手域各一份（原 Composer/AssistantComposer 的局部 remember 提升于此——
+     * sheet body 挂在 AppRoot 作用域，写口要能跨出输入区组合）。
+     * App 重启回落模型默认（与「远端化」原则一致）。
+     */
+    var composerEffort by mutableStateOf("medium")
+
+    /** 助手域 effort 视图（语义见 [composerEffort]）。 */
+    var assistantEffort by mutableStateOf("medium")
+
+    /** 打开应用级 sheet（已开着其它 sheet 时直接替换——同一时刻只开一个不变式）；
+     *  开非审批档 sheet 时复位两步确认态。 */
+    fun openAppSheet(kind: AppSheet) {
+        appSheet = kind
+        if (kind != AppSheet.Approval && kind != AppSheet.AssistantApproval) {
+            appSheetPermConfirming = false
+        }
+    }
+
+    /** 关闭应用级 sheet（两步确认态一并复位）。 */
+    fun closeAppSheet() {
+        appSheet = null
+        appSheetPermConfirming = false
+    }
+
     /** 顶栏连接药丸的显示名：已连接标「真实后端」，未连接标当前选中条目名。 */
     fun pillName(): String = if (realOn) "真实后端" else activeName
 
@@ -595,8 +681,10 @@ fun AppRoot(pairUri: String? = null, onPairUriConsumed: () -> Unit = {}) {
         }
     }
 
-    // 返回键路由栈（BackHandler 链）：① 弹层/菜单开着 → 先关弹层（各页面注册的
-    // [AppState.backInterceptor]）；② 详情页回上级（线程→会话列表、表单/扫码→连接）；
+    // 返回键路由栈（BackHandler 链）：① 应用级 bottom sheet 开着 → 先关它（唯一挂载点
+    // 在 AppRoot，返回键收口也在这——原 Composer 局部 sheetKind 的 backInterceptor 注册
+    // 已随应用级提升删除）；② 弹层/菜单开着 → 先关弹层（各页面注册的
+    // [AppState.backInterceptor]）；③ 详情页回上级（线程→会话列表、表单/扫码→连接）；
     // ③ 连接 tab → 会话 tab；④ 首页（会话列表）不拦截 → 交给系统（退出）。
     // 真实模式连接中返回只是退页面：不断开 WS（连接生命周期归「真实后端」开关管）。
     // 投屏页例外：观看态（正在投屏）返回键 = 分形态——全屏观看先缩小回设置页形态
@@ -604,9 +692,14 @@ fun AppRoot(pairUri: String? = null, onPairUriConsumed: () -> Unit = {}) {
     //（挂起语义：恢复 0.3.31 废除前的行为——用户从连接页/入口再进投屏页看到
     // 「投屏中」，可再放大观看）。停止投屏是显式动作（停止按钮/悬浮球）。
     // 设置态（未在投）仍只是回连接页。
-    val backEnabled = state.backInterceptor != null ||
+    val backEnabled = state.appSheet != null ||
+        state.backInterceptor != null ||
         (state.route !is Route.Sessions && state.route !is Route.Assistant)
     BackHandler(enabled = backEnabled) {
+        if (state.appSheet != null) {
+            state.closeAppSheet()
+            return@BackHandler
+        }
         if (state.backInterceptor?.invoke() == true) return@BackHandler
         when (val r = state.route) {
             is Route.Thread -> state.route = Route.Sessions
@@ -772,23 +865,40 @@ fun AppRoot(pairUri: String? = null, onPairUriConsumed: () -> Unit = {}) {
                         BottomNav(state)
                     }
                 }
+
+                // ===== 应用级 bottom sheet（唯一挂载点，2026-12 从 Composer 内部提升）=====
+                // 最外层 Box 内挂载：fillMaxSize 覆盖整个窗口（遮罩含顶栏/底栏，对齐原型
+                // .sheet-wrap——遮罩只盖消息区是用户报的形态偏差）。内容按 AppSheet 分发，
+                // 数据源在闭包里直读 state.real（真实后端对象替换时重组自动跟随）。
+                AppSheetHost(state)
             }
         }
     }
 }
 
 /**
- * 底部导航栏（三 tab：会话/助手/连接；发丝上边框）。
- * 2026-12 形态修正（对齐原型）：选中项 = 40×30 accent-soft 药丸底 + float 上投阴影；
- * 运行中红点 badge（会话 tab：任一会话在跑就亮——对齐会话页状态点语义）。
+ * 底部导航栏（三 tab：会话/助手/连接）。
+ * 2026-12 形态修正（对齐原型 `.bottomnav`）：整条 = Bg 86% 半透明底 + 毛玻璃
+ * （API 31+ RenderEffect blur 14dp；低版本回落不透明 Bg——Android 12 以下
+ * 无窗口级 blur API，`blurRadius` 静默不生效，不能假装磨砂）+ shadow-float 上投；
+ * 选中项 = 40×30 accent-soft 药丸底 + float 上投阴影；运行中 badge = 7dp 琥珀
+ * （`--warn`）呼吸脉冲（`pulse 1.8s ease-in-out infinite`），不再用红点
+ * （Danger 只给失败语义）。
  */
 @Composable
 private fun BottomNav(state: AppState) {
+    val frosted = rememberFrostedNavBg()
     Row(
         Modifier
             .fillMaxWidth()
-            .background(Lx.colors.Surface)
-            .border(width = 1.dp, color = Lx.colors.Border)
+            .then(frosted)
+            .shadow(
+                elevation = LxElevation.Menu.elevation,
+                shape = RectangleShape,
+                clip = false,
+                ambientColor = Lx.shadow.Float,
+                spotColor = Lx.shadow.Float,
+            )
             .padding(vertical = Lx.space.s4),
         horizontalArrangement = Arrangement.SpaceEvenly,
         verticalAlignment = Alignment.CenterVertically,
@@ -797,7 +907,10 @@ private fun BottomNav(state: AppState) {
             val selected = state.route::class == item.route::class
             val interaction = remember { MutableInteractionSource() }
             // 选中态颜色过渡 120ms（门控关闭时瞬变）—— 桌面端 `.nav-item { transition: color .12s }`
+            // 图标色走 accent 档；label 色对齐原型 `.navitem.on { color: var(--fg) }`
+            // ——accent 只给图标底，label 用主文字色（原型 2026-12 扫尾条目 27）。
             val tint by lxAnimateColor(target = if (selected) Lx.colors.Accent else Lx.colors.FgFaint)
+            val labelTint by lxAnimateColor(target = if (selected) Lx.colors.Fg else Lx.colors.FgFaint)
             // 会话 tab 的运行中 badge：任一会话在跑就亮（快照 ∪ busy 投影同一口径）
             val anyRunning = item.route::class == Route.Sessions::class &&
                 state.real.sessions.any { it.running || state.real.isSessionRunning(it.id) }
@@ -831,24 +944,81 @@ private fun BottomNav(state: AppState) {
                             modifier = Modifier.size(20.dp),
                         )
                         if (anyRunning) {
-                            // 运行中红点 badge（右上角；Danger 只给失败语义——这里
-                            // 用 DangerSoft 描边 + Danger 点，与错误条同色系）
+                            // 运行中 badge（原型 `.navitem .badge`：7dp 圆点、`--warn`
+                            // 琥珀 + `pulse 1.8s ease-in-out infinite` 呼吸环——运行是
+                            // 「进行中」语义，红点是错误色）
+                            val pulse = if (LocalLxMotionEnabled.current) {
+                                val transition = rememberInfiniteTransition(label = "nav-badge")
+                                val ring by transition.animateFloat(
+                                    initialValue = 0f,
+                                    targetValue = 4.dp.value,
+                                    animationSpec = infiniteRepeatable(
+                                        animation = tween(900, easing = Lx.motion.Easing),
+                                        repeatMode = RepeatMode.Restart,
+                                    ),
+                                    label = "nav-badge-ring",
+                                )
+                                ring
+                            } else {
+                                0f
+                            }
                             Box(
                                 Modifier
                                     .align(Alignment.TopEnd)
                                     .offset(x = 6.dp, y = (-2).dp)
-                                    .size(8.dp)
-                                    .background(Lx.colors.Danger, CircleShape),
+                                    .size(7.dp)
+                                    .lxPulseRing(color = Lx.colors.Amber, alphaScale = pulse)
+                                    .background(Lx.colors.Amber, CircleShape),
                             )
                         }
                     }
                 }
                 Text(
                     text = item.label,
-                    style = Lx.type.Pill.copy(fontSize = Lx.type.Size10),
-                    color = tint,
+                    // 原型 `.navitem`：font-size 10.5px / 600；选中色 var(--fg)
+                    style = Lx.type.Pill.copy(fontSize = Lx.type.Size10_5),
+                    color = labelTint,
                 )
             }
         }
     }
 }
+
+/**
+ * 毛玻璃导航底（原型 `.bottomnav`：`background: color-mix(in srgb, var(--bg) 86%,
+ * transparent); backdrop-filter: blur(14px)`）。
+ *
+ * 安卓实现：先铺 `Bg.copy(alpha = 0.86)` 半透明底；API 31+ 在 graphicsLayer 上挂
+ * `BlurEffect`（Compose RenderEffect——本层自我模糊近似磨砂：底色被柔化，滚动内容
+ * 掠过时的边缘由半透明底透出）；低版本没有 RenderEffect，保持半透明底不动
+ * （不降级成不透明：86% 的底已足够保证可读性，只是少了磨砂质感）。
+ */
+@Composable
+private fun rememberFrostedNavBg(): Modifier {
+    val bg = Lx.colors.Bg.copy(alpha = 0.86f)
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+        return Modifier.background(bg)
+    }
+    return Modifier
+        .graphicsLayer {
+            renderEffect = androidx.compose.ui.graphics.BlurEffect(
+                14f,
+                14f,
+                androidx.compose.ui.graphics.TileMode.Clamp,
+            )
+        }
+        .background(bg)
+}
+
+/** badge 呼吸环：`pulse` keyframes（0% → 50% 时 box-shadow 扩到 4px）。
+ *  颜色组合期读好传入（DrawScope 里读不了 CompositionLocal）。 */
+private fun Modifier.lxPulseRing(color: androidx.compose.ui.graphics.Color, alphaScale: Float): Modifier =
+    drawWithContent {
+        drawContent()
+        if (alphaScale > 0.01f) {
+            drawCircle(
+                color = color.copy(alpha = ((1f - alphaScale / 4f).coerceIn(0f, 1f)) * 0.35f),
+                radius = size.minDimension / 2f + alphaScale.dp.toPx(),
+            )
+        }
+    }

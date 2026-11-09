@@ -42,8 +42,14 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.RoundRect
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -70,21 +76,25 @@ import com.moyunteng.lxcode.design.token.LxMotion
 @Composable
 fun ConnPill(online: Boolean, name: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val motion = LocalLxMotionEnabled.current
-    val alpha = if (online && motion) {
+    // 光环扩散进度（原型 `.pill .dot.pulse { animation: pulse 2s ease-in-out
+    // infinite }`：点**自身恒亮**，外圈 box-shadow 0→4px→0 扩散 alpha 渐隐——
+    // 2026-12 扫尾条目 28 与 LxStatusDot 统一成光环形态，不再点自身透明度呼吸）。
+    val ringProgress = if (online && motion) {
         val transition = rememberInfiniteTransition(label = "conn-pill-dot")
-        val a by transition.animateFloat(
-            initialValue = 1f,
-            targetValue = 0.45f,
+        val p by transition.animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
             animationSpec = infiniteRepeatable(
-                // 一轮 = 2.4s（RepeatMode.Reverse 下单程取一半）
-                animation = tween(durationMillis = 1200, easing = Lx.motion.Easing),
-                repeatMode = RepeatMode.Reverse,
+                // 一轮 = 2s（RepeatMode.Restart：0→50% 扩散、50→100% 收回，
+                // 与 pulse keyframes 的 0%,100%/50% 三停靠同形）
+                animation = tween(durationMillis = 1000, easing = Lx.motion.Easing),
+                repeatMode = RepeatMode.Restart,
             ),
-            label = "conn-pill-dot-alpha",
+            label = "conn-pill-dot-ring",
         )
-        a
+        p
     } else {
-        1f
+        -1f // 无光环
     }
     // 状态切换时圆点颜色 160ms 过渡（不是瞬变）—— 桌面端 `transition: background .16s`
     val dotColor by lxAnimateColor(
@@ -102,19 +112,35 @@ fun ConnPill(online: Boolean, name: String, onClick: () -> Unit, modifier: Modif
                 indication = null,
                 onClick = onClick,
             )
-            .padding(horizontal = Lx.space.s8, vertical = Lx.space.s4),
+            // 原型 `.pill`：1px --line2 边 + --surface 底（2026-12 规格修正——
+            // 原先裸排无边框，与顶栏品牌行的分隔感不够）
+            .border(1.dp, Lx.colors.BorderStrong, Lx.radius.PillShape)
+            .background(Lx.colors.Surface)
+            .padding(horizontal = Lx.space.s10, vertical = Lx.space.s4),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(Lx.space.s6),
     ) {
         Box(
             Modifier
                 .size(6.dp)
-                .alpha(alpha)
+                .drawWithContent {
+                    // 光环扩散（原型 `.pill .dot.pulse` 的 box-shadow 等价物）：
+                    // 半径从点缘扩到 +4dp、alpha 随扩散渐隐；点内容恒亮叠在其上
+                    if (ringProgress >= 0f) {
+                        val t = ringProgress
+                        drawCircle(
+                            color = dotColor.copy(alpha = (1f - t).coerceIn(0f, 1f) * 0.35f),
+                            radius = size.minDimension / 2f + 4.dp.toPx() * t,
+                        )
+                    }
+                    drawContent()
+                }
                 .background(dotColor, CircleShape),
         )
         Text(
             text = name,
-            style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size11_5, fontWeight = FontWeight.Medium),
+            // 原型 `.pill`：font-size var(--t-sm) = 12.5px / 600
+            style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size12_5, fontWeight = FontWeight.SemiBold),
             color = Lx.colors.FgMuted,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -207,7 +233,8 @@ fun TerminalBlock(command: String, modifier: Modifier = Modifier, cwd: String? =
     }
 }
 
-/** 浅色代码块（对齐 thread.css `--code-bg #f4f5f7`）：等宽、可横向滚动。 */
+/** 浅色代码块（对齐 thread.css `--code-bg #f4f5f7`）：等宽、可横向滚动。
+ *  只服务 Markdown 围栏块（```）——工具输出走 [ToolOut]（深色终端形态）。 */
 @Composable
 fun CodeBlock(text: String, modifier: Modifier = Modifier) {
     Box(
@@ -223,6 +250,40 @@ fun CodeBlock(text: String, modifier: Modifier = Modifier) {
             style = Lx.type.Mono12.copy(
                 color = Lx.colors.FgMuted,
                 fontSize = Lx.type.Size11,
+            ),
+            modifier = Modifier.horizontalScroll(rememberScrollState()),
+        )
+    }
+}
+
+/**
+ * 工具输出深色终端块（原型 `.toolout`）：TermBg 底 + TermFg 等宽字 + r12 圆角。
+ *
+ * 原型把工具输出画成终端（`background: var(--code); color: var(--code-fg)`），
+ * 与 Markdown 围栏块的浅色底（--code-bg）刻意分两套——前者是「机器吐的原文」，
+ * 后者是「正文里的代码」。pad = 10/12、mono 11.5sp、行高 1.6、错误输出整块
+ * 危险色染（TermBg 上 danger 提亮保证可读）。
+ */
+@Composable
+fun ToolOut(
+    text: String,
+    modifier: Modifier = Modifier,
+    danger: Boolean = false,
+) {
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(Lx.radius.r12))
+            .background(Lx.colors.TermBg)
+            // 原型 `.toolout`：padding 10px 12px；文本在卡内横滚（长行不折行）
+            .padding(horizontal = Lx.space.s12, vertical = Lx.space.s10),
+    ) {
+        Text(
+            text = text,
+            style = Lx.type.Mono12.copy(
+                fontSize = Lx.type.Size11_5,
+                lineHeight = (Lx.type.Size11_5.value * 1.6f).sp,
+                color = if (danger) Lx.colors.Danger else Lx.colors.TermFg,
             ),
             modifier = Modifier.horizontalScroll(rememberScrollState()),
         )
@@ -311,11 +372,62 @@ fun LabeledRow(
     }
 }
 
-/** 空态占位（本地实现，避免依赖 :design 的空态样式差异）。 */
+/**
+ * 空态占位（原型 `.empty` 形态，抽共用——助手页/会话页同一套）：
+ *
+ *   * 图标框 52dp / r16 / --soft 底 + 1px --line 边 + 22dp 图标（`--fg3`）；
+ *   * 主行 14px/700（--fg2）、副行 12.5px（--fg3，`margin-top 4px`）；
+ *   * 整块居中、padding 44/30。
+ *
+ * [title]/[description] 双行都给时是助手页那套全量形态；只给 text 时回落为
+ * 单行居中灰字（原 SmallEmpty 语义，工具输出等待位这类小场景）。
+ */
 @Composable
-fun SmallEmpty(text: String, modifier: Modifier = Modifier) {
-    Box(modifier = modifier.fillMaxWidth().padding(Lx.space.s16), contentAlignment = Alignment.Center) {
-        Text(text = text, style = Lx.type.BodySmall, color = Lx.colors.FgFaint)
+fun SmallEmpty(
+    text: String,
+    modifier: Modifier = Modifier,
+    icon: androidx.compose.ui.graphics.vector.ImageVector? = null,
+    title: String? = null,
+    description: String? = null,
+) {
+    if (icon == null && title == null && description == null) {
+        Box(modifier = modifier.fillMaxWidth().padding(Lx.space.s16), contentAlignment = Alignment.Center) {
+            Text(text = text, style = Lx.type.BodySmall, color = Lx.colors.FgFaint)
+        }
+        return
+    }
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(vertical = 44.dp, horizontal = 30.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        if (icon != null) {
+            Box(
+                Modifier
+                    .size(52.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(Lx.colors.BorderSoft)
+                    .border(1.dp, Lx.colors.Border, RoundedCornerShape(16.dp)),
+                contentAlignment = Alignment.Center,
+            ) {
+                SmallIcon(icon, Lx.colors.FgFaint, size = 22)
+            }
+        }
+        Text(
+            text = title ?: text,
+            style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size14, fontWeight = FontWeight.Bold),
+            color = Lx.colors.FgMuted,
+            modifier = Modifier.padding(top = 8.dp),
+        )
+        if (description != null) {
+            Text(
+                text = description,
+                style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size12_5),
+                color = Lx.colors.FgFaint,
+            )
+        }
     }
 }
 
@@ -334,6 +446,39 @@ fun SmallIcon(icon: ImageVector, tint: androidx.compose.ui.graphics.Color, size:
 @Composable
 fun VSpace(dp: androidx.compose.ui.unit.Dp) {
     Box(Modifier.height(dp))
+}
+
+/**
+ * 虚线边框（原型 `.compactblock` / `.notice`：`border: 1px dashed`）。
+ *
+ * Compose 的 border 没有 dash 样式——Canvas 按 [dashLen]/[gapLen] 手画四段圆角
+ * 描边（PathEffect.dashPathEffect）。挂 clip 之后画在内容层下面，颜色/圆角由
+ * 调用方给（随主题）。
+ */
+fun Modifier.lxDashBorder(
+    color: androidx.compose.ui.graphics.Color,
+    shape: androidx.compose.ui.graphics.Shape,
+    dashLen: Float = 5f,
+    gapLen: Float = 4f,
+    width: Float = 1f,
+): Modifier = drawBehind {
+    val outline = shape.createOutline(size, layoutDirection, this)
+    val path = Path().apply {
+        // Outline.Rounded → Path（通用路径），直线/椭圆回落也支持
+        when (outline) {
+            is androidx.compose.ui.graphics.Outline.Rounded -> addRoundRect(outline.roundRect)
+            is androidx.compose.ui.graphics.Outline.Generic -> addPath(outline.path)
+            else -> addRect(Rect(0f, 0f, size.width, size.height))
+        }
+    }
+    drawPath(
+        path = path,
+        color = color,
+        style = Stroke(
+            width = width * density,
+            pathEffect = PathEffect.dashPathEffect(floatArrayOf(dashLen * density, gapLen * density)),
+        ),
+    )
 }
 
 /** 文本片段（可指定字号/字重/颜色）。 */

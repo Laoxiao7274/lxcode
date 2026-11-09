@@ -32,6 +32,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Archive
+import androidx.compose.material.icons.filled.ChatBubbleOutline
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.MoreVert
@@ -49,6 +50,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -387,6 +389,8 @@ fun SessionsScreen(state: AppState) {
                         count = state.realLooseSessionCount(),
                         runningCount = state.realLooseRunningCount(),
                         active = state.scope.isEmpty(),
+                        // 弱化形态（原型未分组行：plus 头像 + fg2 标题 + opacity .6）
+                        muted = true,
                         onClick = { state.scope = "" },
                     )
                 }
@@ -436,7 +440,19 @@ fun SessionsScreen(state: AppState) {
                     it.title.contains(state.query.trim(), ignoreCase = true)
             }
             if (sessions.isEmpty()) {
-                item { SmallEmpty(if (state.query.trim().isEmpty()) "还没有对话——点上方「新对话」开始" else "没有匹配「${state.query.trim()}」的对话") }
+                item {
+                    // 空态（原型 `.empty` 形态：图标框 + 标题 + 副行）
+                    SmallEmpty(
+                        text = "还没有对话",
+                        icon = Icons.Filled.ChatBubbleOutline,
+                        title = if (state.query.trim().isEmpty()) "还没有对话" else "没有匹配的对话",
+                        description = if (state.query.trim().isEmpty()) {
+                            "点上方「新对话」开始"
+                        } else {
+                            "试试换一个关键词"
+                        },
+                    )
+                }
             } else {
                 item {
                     RowsCard {
@@ -550,6 +566,9 @@ private fun ProjectRow(
     active: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    // 弱化形态（原型未分组行：头像 opacity .6 + 内放 plus 图标、标题 --fg2——
+    // 「未分组」不是真项目，视觉退半档；2026-12 扫尾条目 31）
+    muted: Boolean = false,
 ) {
     val interaction = remember { MutableInteractionSource() }
     Row(
@@ -559,23 +578,36 @@ private fun ProjectRow(
             .background(if (active) Lx.colors.BorderSoft else androidx.compose.ui.graphics.Color.Transparent)
 
             .clickable(interactionSource = interaction, indication = null, onClick = onClick)
-            .padding(horizontal = Lx.space.s10, vertical = Lx.space.s8),
+            // 原型 `.row`：padding 11px 12px
+            .padding(horizontal = Lx.space.s12, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(Lx.space.s10),
     ) {
-        // 36dp 字母 pavatar（.pavatar：accent-soft 底 + 首字符）
+        // 36dp 字母 pavatar（.pavatar：radius 11 + 1px --line 边框 + accent-soft 底 + 首字符）
         Box(
             Modifier
                 .size(36.dp)
-                .clip(Lx.radius.FieldShape)
-                .background(Lx.colors.AccentSoft),
+                .alpha(if (muted) 0.6f else 1f)
+                .clip(ProjectAvatarShape)
+                .background(Lx.colors.AccentSoft)
+                .border(1.dp, Lx.colors.Border, ProjectAvatarShape),
             contentAlignment = Alignment.Center,
         ) {
-            Text(
-                text = name.firstOrNull()?.toString() ?: "·",
-                style = Lx.type.ListTitle.copy(fontWeight = FontWeight.Bold, fontSize = Lx.type.Size14),
-                color = Lx.colors.Accent,
-            )
+            if (muted) {
+                // 弱化形态：头像位放 plus 图标（原型未分组行的 `<svg #i-plus>`）
+                Icon(
+                    imageVector = Icons.Filled.Add,
+                    contentDescription = null,
+                    tint = Lx.colors.FgMuted,
+                    modifier = Modifier.size(16.dp),
+                )
+            } else {
+                Text(
+                    text = name.firstOrNull()?.toString() ?: "·",
+                    style = Lx.type.ListTitle.copy(fontWeight = FontWeight.Bold, fontSize = Lx.type.Size14),
+                    color = Lx.colors.Accent,
+                )
+            }
         }
         Column(Modifier.weight(1f)) {
             Row(
@@ -584,8 +616,12 @@ private fun ProjectRow(
             ) {
                 Text(
                     text = name,
-                    style = Lx.type.ListTitle.copy(fontWeight = FontWeight.SemiBold),
-                    color = Lx.colors.Fg,
+                    // 原型 `.row .t1`：14px / 600；弱化形态标题 --fg2（--fg-muted）
+                    style = Lx.type.ListTitle.copy(
+                        fontSize = Lx.type.Size14,
+                        fontWeight = FontWeight.SemiBold,
+                    ),
+                    color = if (muted) Lx.colors.FgMuted else Lx.colors.Fg,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -595,8 +631,9 @@ private fun ProjectRow(
             }
             Text(
                 text = "$count 条会话",
-                style = Lx.type.ListSubtitle,
-                color = Lx.colors.FgFaint,
+                // 原型 `.row .t2`：12.5px / --fg2
+                style = Lx.type.ListSubtitle.copy(fontSize = Lx.type.Size12_5),
+                color = Lx.colors.FgMuted,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -648,22 +685,28 @@ private fun SessionRowItem(
             .fillMaxWidth()
             .clip(Lx.radius.RowShape)
             .clickable(interactionSource = interaction, indication = null, onClick = onClick)
-            .padding(horizontal = Lx.space.s10, vertical = Lx.space.s8),
+            // 原型 `.row`：padding 11px 12px（2026-12 规格修正——原 8/10 偏挤）
+            .padding(horizontal = Lx.space.s12, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(Lx.space.s10),
     ) {
         Column(Modifier.weight(1f)) {
             Text(
                 text = session.title,
-                style = Lx.type.ListTitle.copy(fontWeight = FontWeight.SemiBold),
+                // 原型 `.row .t1`：14px / 600
+                style = Lx.type.ListTitle.copy(
+                    fontSize = Lx.type.Size14,
+                    fontWeight = FontWeight.SemiBold,
+                ),
                 color = Lx.colors.Fg,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
                 text = "${session.messages} 条消息",
-                style = Lx.type.ListSubtitle,
-                color = Lx.colors.FgFaint,
+                // 原型 `.row .t2`：12.5px / --fg2
+                style = Lx.type.ListSubtitle.copy(fontSize = Lx.type.Size12_5),
+                color = Lx.colors.FgMuted,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -701,6 +744,9 @@ private fun SessionRowItem(
 
 /** 行操作菜单 Shape —— 对齐 PickerMenus 的 .mp-panel（圆角 12、1px 边、菜单级阴影）。 */
 private val SessionOpsShape = RoundedCornerShape(12.dp)
+
+/** 项目头像 Shape（原型 `.pavatar`：`border-radius: 11px`）。 */
+private val ProjectAvatarShape = RoundedCornerShape(11.dp)
 
 /** 会话行操作菜单（重命名 / 归档；删除与置顶协议没有——缺口记 PROTOCOL-NOTES.md，不造）。 */
 @Composable

@@ -9,6 +9,9 @@
 //    首次点击进 armed 态，文案换「再次点击确认」，切回安全档免确认）；
 //  * ctx：五类明细条（system/tools/tool_results/messages/reasoning，占窗口比例条形）
 //    + 脚注（真实实现读 agent.ContextUsage；估算值带 ~ 记号）。
+//
+// 2026-12：sheet 的 kind 枚举提升为 AppSheet（AppRoot.kt），body 全部参数化、
+// 挂载点唯一在 AppRoot 的 AppSheetHost——本文件只剩纯内容组件。
 package com.moyunteng.lxcode.remote.ui
 
 import androidx.compose.foundation.layout.Arrangement
@@ -28,21 +31,6 @@ import com.moyunteng.lxcode.design.token.Lx
 import com.moyunteng.lxcode.remote.model.ContextUsage
 import com.moyunteng.lxcode.remote.model.ModelGroup
 import com.moyunteng.lxcode.remote.model.effortLabel
-
-/** Composer sheet 的种类（一个 sheet 位按 kind 渲染不同内容）。 */
-internal enum class ComposerSheet {
-    /** 模型选择（chat.model · 会话级） */
-    Model,
-
-    /** 思考力度（chat.send effort 四档） */
-    Effort,
-
-    /** 工具审批档（chat.approval 三档） */
-    Approval,
-
-    /** 上下文占用明细（五类拆分） */
-    Context,
-}
 
 /** 五类上下文拆分的展示配置（对齐原型 CTX_CLASSES：label + 条形色）。 */
 

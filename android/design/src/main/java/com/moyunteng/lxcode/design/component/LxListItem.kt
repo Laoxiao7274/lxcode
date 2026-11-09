@@ -21,6 +21,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -121,14 +122,18 @@ fun LxListItem(
                     Modifier
                 },
             )
-            .padding(horizontal = Lx.space.s8, vertical = Lx.space.s8),
+            .padding(horizontal = Lx.space.s12, vertical = 11.dp), // 原型 .row：11px 12px
         leading = leading,
         trailing = trailing,
     ) {
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = title,
-                style = Lx.type.ListTitle,
+                // 原型 `.row .t1`：14px / 600
+                style = Lx.type.ListTitle.copy(
+                    fontSize = Lx.type.Size14,
+                    fontWeight = FontWeight.SemiBold,
+                ),
                 color = Lx.colors.Fg,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -136,8 +141,11 @@ fun LxListItem(
             if (subtitle != null) {
                 Text(
                     text = subtitle,
-                    style = Lx.type.ListSubtitle,
-                    color = Lx.colors.FgFaint,
+                    // 原型 `.row .t2`：12.5px / --fg2
+                    style = Lx.type.ListSubtitle.copy(
+                        fontSize = Lx.type.Size12_5,
+                    ),
+                    color = Lx.colors.FgMuted,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )

@@ -129,9 +129,28 @@ sealed interface ThreadBlock {
      * 对齐桌面端 `llm.Message.Attachments`（AttachmentRef）：`path` 是相对附件根的
      * 引用（`<session-id>/<文件名>`），取件走 `GET /attachments/<path>?token=...`。
      * 实时（chat.userMessage）与回放（chat.history）两条路径共用这一个块字段。
+     *
+     * [localEpochMs] = 本机**收到这条消息的时刻**（事件到达 / 发送受理时现场记，
+     * 毫秒时间戳）。它是**端侧簿记**不是后端事实：wire 与落库都没有 per-message
+     * 时间戳，历史回放（chat.history）拿不到——回放路径恒 null，UI 如实不画日
+     * 分隔线（不编数）；只有本会话当场收发的新消息有值，支撑 daysep 的「今天 HH:mm」。
      */
     @Immutable
-data class User(val text: String, val attachments: List<AttachmentMeta> = emptyList()) : ThreadBlock
+data class User(
+        val text: String,
+        val attachments: List<AttachmentMeta> = emptyList(),
+        val localEpochMs: Long? = null,
+    ) : ThreadBlock
+
+    /**
+     * 日分隔线（原型 `.daysep`：flex + 两侧 1px --line 线 + --fg3 11px/600 小字，
+     * margin 4px 0）：一条 user 消息**实时收到**时落一个时间锚点，渲染「今天 HH:mm」
+     * 这类当次会话的相对标尺。历史回放没有消息级时间戳（wire/落库都没有），不给
+     * 它编——锚点缺失就不画，老历史（回放段）之间没有日分隔是数据面的诚实缺口，
+     * 等后端补 messages 时间列后再接。
+     */
+    @Immutable
+data class DaySep(val label: String, val epochMs: Long) : ThreadBlock
 
     @Immutable
 data class Assistant(
@@ -266,6 +285,24 @@ fun SessionStats.timePillLabel(): String {
 /** 工具耗时人性化（毫秒 → 「1.2s」/「820ms」）。 */
 fun formatMs(ms: Long): String =
     if (ms < 1000) "${ms}ms" else String.format("%.1fs", ms / 1000.0)
+
+/**
+ * 日分隔线文案（原型 `.daysep` 示例「今天 14:28」）：当天消息 = 「今天 HH:mm」，
+ * 昨天的锚点（跨夜会话少见但真实存在）= 「昨天 HH:mm」，更早 = 「M 月 D 日 HH:mm」。
+ * 只对**当场收到**的 user 消息生成（[ThreadBlock.User.localEpochMs]），
+ * 所以「今天」分支是绝对主流——昨天/日期分支只为跨夜挂着的长会话兜底。
+ */
+fun daySepLabel(epochMs: Long, nowMs: Long = System.currentTimeMillis()): String {
+    val t = java.time.Instant.ofEpochMilli(epochMs).atZone(java.time.ZoneId.systemDefault())
+    val today = java.time.Instant.ofEpochMilli(nowMs).atZone(java.time.ZoneId.systemDefault()).toLocalDate()
+    val d = t.toLocalDate()
+    val hhmm = String.format("%02d:%02d", t.hour, t.minute)
+    return when (d) {
+        today -> "今天 $hhmm"
+        today.minusDays(1) -> "昨天 $hhmm"
+        else -> "${t.monthValue} 月 ${t.dayOfMonth} 日 $hhmm"
+    }
+}
 
 // ===== 模型注册表（composer 模型菜单数据源，对齐桌面端 settings 的 providers 投影）=====
 

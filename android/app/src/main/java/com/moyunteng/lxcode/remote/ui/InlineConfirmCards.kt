@@ -17,6 +17,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -48,7 +49,10 @@ import com.moyunteng.lxcode.design.token.Lx
 import com.moyunteng.lxcode.design.token.LxIcons
 import com.moyunteng.lxcode.remote.net.PendingConfirm
 
-private val CardShape = RoundedCornerShape(10.dp)
+
+// 原型 `.confirmcard/.askcard` 的节奏（2026-12 修「挤」的对齐值）：
+// 卡 radius 12、内距 13、选项间 7、按钮行上 10（此前 10/11/5/5 全面紧于原型）。
+private val CardShape = RoundedCornerShape(12.dp)
 private val OptShape = RoundedCornerShape(7.dp)
 
 /**
@@ -74,7 +78,7 @@ fun ConfirmCard(
             .clip(CardShape)
             .background(Lx.colors.Amber.copy(alpha = 0.07f).compositeOver(Lx.colors.Surface))
             .border(1.dp, Lx.colors.Amber.copy(alpha = 0.40f), CardShape)
-            .padding(11.dp),
+            .padding(13.dp),
         verticalArrangement = Arrangement.spacedBy(5.dp),
     ) {
         Row(
@@ -89,7 +93,8 @@ fun ConfirmCard(
             )
             Text(
                 text = "需要你确认",
-                style = TextStyle(fontFamily = Lx.type.Sans, fontSize = 11.5.sp, fontWeight = FontWeight.Bold),
+                // 原型 `.confirmcard .ct`：继承卡的 font-size var(--t-sm)=12.5px / 700
+                style = TextStyle(fontFamily = Lx.type.Sans, fontSize = 12.5.sp, fontWeight = FontWeight.Bold),
                 color = Lx.colors.Amber,
             )
             Text(
@@ -107,7 +112,7 @@ fun ConfirmCard(
         )
         terminal?.invoke()
         Row(
-            Modifier.padding(top = 5.dp),
+            Modifier.padding(top = 10.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Box(Modifier.weight(1f)) {
@@ -116,6 +121,10 @@ fun ConfirmCard(
                     onClick = onDeny,
                     variant = LxButtonVariant.Secondary,
                     size = LxButtonSize.Medium,
+                    // 原型 `.cbtn`：radius var(--r-sm)=8 / padding 8px 0 / 12.5px 700
+                    //（2026-12 扫尾条目 29；覆写 Medium 档的 9/7·14）
+                    shapeOverride = RoundedCornerShape(8.dp),
+                    paddingOverride = PaddingValues(vertical = 8.dp),
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
@@ -125,6 +134,8 @@ fun ConfirmCard(
                     onClick = onAllow,
                     variant = LxButtonVariant.Primary,
                     size = LxButtonSize.Medium,
+                    shapeOverride = RoundedCornerShape(8.dp),
+                    paddingOverride = PaddingValues(vertical = 8.dp),
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
@@ -135,8 +146,9 @@ fun ConfirmCard(
 /**
  * 内联提问卡（`.askcard`，ask_user 形态）：问题 + 预设选项按钮 + 「自己打字回答」。
  *
- * 选项点选即回答（tool.confirm 带 answer）；「打字回答」展开一个小输入框，
- * 提交同样走 answer（空回答提交 = 跳过 → allow=false）。
+ * 选项**点选即回答**（tool.confirm 带 answer）——预设选项列表下方不再常驻
+ * 「跳过/回答选中项」按钮行（2026-12 用户拍板缩小常驻高度）；「打字回答」展开
+ * 一个小输入框（提交同样走 answer，空回答提交 = 跳过 → allow=false）。
  *
  * @param confirm ask 形态的挂起确认（prompt = 问题、options = 预设答案）
  * @param onAnswer 文本回答提交（非空 = 该文本；空 = 跳过）
@@ -147,7 +159,6 @@ fun AskCard(
     onAnswer: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var selected by remember(confirm.id) { mutableStateOf<String?>(null) }
     var typing by remember(confirm.id) { mutableStateOf(false) }
     var draft by remember(confirm.id) { mutableStateOf("") }
 
@@ -158,7 +169,7 @@ fun AskCard(
             .clip(CardShape)
             .background(Lx.colors.AccentSoft)
             .border(1.dp, Lx.colors.Border, CardShape)
-            .padding(11.dp),
+            .padding(13.dp),
         verticalArrangement = Arrangement.spacedBy(5.dp),
     ) {
         Row(
@@ -173,7 +184,8 @@ fun AskCard(
             )
             Text(
                 text = "需要你的回答",
-                style = TextStyle(fontFamily = Lx.type.Sans, fontSize = 11.5.sp, fontWeight = FontWeight.Bold),
+                // 原型 `.confirmcard .ct` 同族：12.5px / 700（ask 卡标题同规格）
+                style = TextStyle(fontFamily = Lx.type.Sans, fontSize = 12.5.sp, fontWeight = FontWeight.Bold),
                 color = Lx.colors.Fg,
             )
         }
@@ -182,6 +194,7 @@ fun AskCard(
             style = TextStyle(fontFamily = Lx.type.Sans, fontSize = 11.5.sp, lineHeight = 11.5.sp * 1.5f),
             color = Lx.colors.FgMuted,
         )
+        // 选项 = 点选即答（对齐原型 `.askopt`：点选即发送 answer，不再两步选+确认）
         confirm.options.forEach { opt ->
             Row(
                 Modifier
@@ -190,31 +203,23 @@ fun AskCard(
                     .background(Lx.colors.Surface)
                     .border(
                         1.dp,
-                        if (selected == opt) Lx.colors.Accent else Lx.colors.BorderStrong,
+                        Lx.colors.BorderStrong,
                         OptShape,
                     )
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
-                    ) { selected = opt }
-                    .padding(horizontal = 11.dp, vertical = 9.dp),
+                    ) { onAnswer(opt) }
+                    .padding(horizontal = 13.dp, vertical = 9.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Text(
                     text = opt,
                     style = TextStyle(fontFamily = Lx.type.Sans, fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold),
-                    color = if (selected == opt) Lx.colors.Accent else Lx.colors.Fg,
+                    color = Lx.colors.Fg,
                     modifier = Modifier.weight(1f),
                 )
-                if (selected == opt) {
-                    Icon(
-                        imageVector = LxIcons.Check,
-                        contentDescription = null,
-                        tint = Lx.colors.Accent,
-                        modifier = Modifier.size(12.dp),
-                    )
-                }
             }
         }
         if (confirm.options.isNotEmpty()) {
@@ -277,28 +282,25 @@ fun AskCard(
                 )
             }
         }
-        Row(
-            Modifier.padding(top = 5.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Box(Modifier.weight(1f)) {
-                LxButton(
-                    text = "跳过",
-                    onClick = { onAnswer("") },
-                    variant = LxButtonVariant.Secondary,
-                    size = LxButtonSize.Medium,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-            Box(Modifier.weight(1f)) {
-                LxButton(
-                    text = "回答选中项",
-                    onClick = { onAnswer(selected ?: "") },
-                    variant = LxButtonVariant.Primary,
-                    size = LxButtonSize.Medium,
-                    enabled = selected != null,
-                    modifier = Modifier.fillMaxWidth(),
-                )
+        // 无预设选项的 ask 才需要常驻按钮行（跳过 = 空回答提交）；有选项时点选
+        // 即答 + 打字回答已覆盖两条回答路径，不再常驻「跳过/回答选中项」。
+        if (confirm.options.isEmpty()) {
+            Row(
+                Modifier.padding(top = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Box(Modifier.weight(1f)) {
+                    LxButton(
+                        text = "跳过",
+                        onClick = { onAnswer("") },
+                        variant = LxButtonVariant.Secondary,
+                        size = LxButtonSize.Medium,
+                        // 与 ConfirmCard 同款 `.cbtn` 规格（radius 8 / padding 8 0）
+                        shapeOverride = RoundedCornerShape(8.dp),
+                        paddingOverride = PaddingValues(vertical = 8.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
             }
         }
     }

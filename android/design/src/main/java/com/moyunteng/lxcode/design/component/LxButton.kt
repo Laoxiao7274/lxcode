@@ -102,6 +102,11 @@ fun LxButton(
     enabled: Boolean = true,
     loading: Boolean = false,
     leadingIcon: (@Composable () -> Unit)? = null,
+    // 尺寸档覆写（默认空 = 完全走 size 档）：确认卡按钮（原型 `.cbtn`：radius 8 /
+    // padding 8px 0 / 12.5px 700）与通用按钮档不同，又不宜为它单开一档——
+    // 内联卡传覆写值，其余调用方零变化（2026-12 扫尾条目 29）。
+    shapeOverride: Shape? = null,
+    paddingOverride: PaddingValues? = null,
 ) {
     val interaction = remember { MutableInteractionSource() }
     val hovered by interaction.collectIsHoveredAsState()
@@ -109,6 +114,8 @@ fun LxButton(
 
     val look = buttonLook(variant = variant, hovered = hovered, pressed = pressed)
     val metrics = sizeMetrics(size)
+    val shape = shapeOverride ?: metrics.shape
+    val padding = paddingOverride ?: metrics.padding
     val clickable = enabled && !loading
 
     // 禁用透明度：填充档 0.35（.fd-btn-p:disabled），描边/幽灵档 0.6（.fd-trigger:disabled）
@@ -137,10 +144,10 @@ fun LxButton(
                 scaleY = animatedScale
             }
             .heightIn(min = metrics.minHeight)
-            .clip(metrics.shape)
+            .clip(shape)
             .background(look.container)
             .then(
-                if (look.border != null) Modifier.border(1.dp, look.border, metrics.shape) else Modifier,
+                if (look.border != null) Modifier.border(1.dp, look.border, shape) else Modifier,
             )
             .clickable(
                 enabled = clickable,
@@ -148,7 +155,7 @@ fun LxButton(
                 indication = null,
                 onClick = onClick,
             )
-            .padding(metrics.padding),
+            .padding(padding),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(Lx.space.s6, Alignment.CenterHorizontally), // 桌面端 gap: 6~7px
     ) {

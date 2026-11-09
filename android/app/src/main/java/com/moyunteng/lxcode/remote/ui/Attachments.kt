@@ -23,9 +23,11 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
@@ -44,6 +46,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.ImageBitmap
@@ -62,6 +65,9 @@ import java.net.URL
 
 /** 附件卡 Shape —— thread.css .att-file/.att-thumb 的 border-radius: 16px。 */
 private val AttShape = RoundedCornerShape(16.dp)
+
+/** 消息侧缩略 tile Shape —— 原型 `.uatt img { border-radius: var(--r-md) }` = 12px。 */
+private val AttTileShape = RoundedCornerShape(12.dp)
 
 /** 附件位图缓存（P3 性能）：url → Bitmap 的 LruCache（128 条目上限——附件图尺寸不一，
  *  条目数上限 + Compose LazyList 的可见窗口规模匹配；滚出窗口的图被逐出，滚回来重取）。
@@ -114,30 +120,21 @@ fun UserAttachmentSection(
     val files = atts.filter { it !in images }
     Column(
         Modifier
-            .fillMaxWidth(0.78f)
+            .fillMaxWidth(0.82f)
+            // 原型 `.msg-user .uatt`：附件行右对齐、与气泡间距 6px
             .padding(bottom = 6.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         if (images.isNotEmpty()) {
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                if (images.size == 1) {
-                    // 单图 = 长边 240dp 自适应（对齐 .att-single；比例钳 [0.25,4]）
-                    SingleImage(
-                        url = urlOf(images[0].path)!!,
-                        onClick = {
-                            onOpenImage(images.mapNotNull { urlOf(it.path) }, 0)
-                        },
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                // 原型 `.uatt img`：96×68 cover tile（r12 + 1px --line 边 + --soft 底），
+                // 不再区分单图/多图两档——移动端窄屏 96×68 统一网格
+                images.take(4).forEachIndexed { i, att ->
+                    GridImage(
+                        url = urlOf(att.path)!!,
+                        badge = if (i == minOf(images.size, 4) - 1 && images.size > 4) "+${images.size - 4}" else null,
+                        onClick = { onOpenImage(images.mapNotNull { urlOf(it.path) }, i) },
                     )
-                } else {
-                    // 多图 = 64dp 方 tile（object-fit cover 语义；超过 4 张收 +N 溢出层）
-                    val shown = images.take(4)
-                    shown.forEachIndexed { i, att ->
-                        GridImage(
-                            url = urlOf(att.path)!!,
-                            badge = if (i == shown.lastIndex && images.size > shown.size) "+${images.size - shown.size}" else null,
-                            onClick = { onOpenImage(images.mapNotNull { urlOf(it.path) }, i) },
-                        )
-                    }
                 }
             }
         }
@@ -155,44 +152,16 @@ fun UserAttachmentSection(
     }
 }
 
-/** 单图形态：宽 240dp、按原图比例（钳 [0.25,4]）、radius 16 细边框。 */
-@Composable
-private fun SingleImage(url: String, onClick: () -> Unit) {
-    val bmp = rememberAttachmentBitmap(url)
-    val ratio = bmp?.let { it.width.toFloat() / it.height } ?: 1f
-    Box(
-        Modifier
-            .width(240.dp)
-            .aspectRatio(ratio.coerceIn(0.25f, 4f))
-            .clip(AttShape)
-            .background(Lx.colors.BgSide)
-            .border(1.dp, Lx.colors.Border, AttShape)
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        if (bmp != null) {
-            androidx.compose.foundation.Image(
-                bitmap = bmp,
-                contentDescription = "图片附件",
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize(),
-            )
-        } else {
-            LoadingOrBroken()
-        }
-    }
-}
-
-/** 多图 tile：64dp 方格 + cover 裁切；[badge] = 溢出层计数（+N）。 */
+/** 消息侧图片 tile（原型 `.uatt img`：96×68、object-fit cover、r12 + 1px --line 边）。 */
 @Composable
 private fun GridImage(url: String, badge: String?, onClick: () -> Unit) {
     val bmp = rememberAttachmentBitmap(url)
     Box(
         Modifier
-            .size(64.dp)
-            .clip(AttShape)
-            .background(Lx.colors.BgSide)
-            .border(1.dp, Lx.colors.Border, AttShape)
+            .size(width = 96.dp, height = 68.dp)
+            .clip(AttTileShape)
+            .background(Lx.colors.BorderSoft)
+            .border(1.dp, Lx.colors.Border, AttTileShape)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
@@ -283,8 +252,9 @@ fun fileSub(size: Long, mime: String): String {
     return if (ext.isNotEmpty()) "$ext · $sizeText" else sizeText
 }
 
-/** Composer 暂存的图片缩略图（对齐 .att-thumb：64dp 方、radius 16、cover；
- *  右上 18dp 正圆深底白叉移除钮——触摸端恒显，桌面端的 hover 显在手机上不可达）。 */
+/** Composer 暂存的图片缩略图（原型 `.atts img`：76×56 cover tile、r12、1px --line 边；
+ *  右上**外角** 18dp 正圆 fg 底白叉移除钮（`.atts .x`：top/right -5px、`box-shadow` 浮起）
+ *  ——触摸端恒显，桌面端的 hover 显在手机上不可达）。 */
 @Composable
 fun PendingImageThumb(
     image: RealBackend.PendingImage,
@@ -303,50 +273,46 @@ fun PendingImageThumb(
     }
     Box(
         Modifier
-            .size(64.dp)
-            .clip(AttShape),
+            .size(width = 76.dp, height = 56.dp)
+            .clip(AttTileShape)
+            .background(Lx.colors.BorderSoft)
+            .border(1.dp, Lx.colors.Border, AttTileShape),
+        contentAlignment = Alignment.Center,
     ) {
-        Box(
-            Modifier
-                .fillMaxSize()
-                .background(Lx.colors.BgSide)
-                .border(1.dp, Lx.colors.Border, AttShape),
-            contentAlignment = Alignment.Center,
-        ) {
-            if (bmp != null) {
-                androidx.compose.foundation.Image(
-                    bitmap = bmp,
-                    contentDescription = image.name,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize(),
-                )
-            } else {
-                Icon(
-                    imageVector = Icons.Filled.Image,
-                    contentDescription = null,
-                    tint = Lx.colors.FgFaint,
-                    modifier = Modifier.size(18.dp),
-                )
-            }
-        }
-        // 移除钮：18dp 正圆、深底白叉、卡内 4px（.att-remove 触摸端恒显变体）
-        Box(
-            Modifier
-                .align(Alignment.TopEnd)
-                .padding(4.dp)
-                .size(18.dp)
-                .clip(RoundedCornerShape(9.dp))
-                .background(Color.Black.copy(alpha = 0.72f)) // 桌面端 .lightbox 遮罩同值
-                .clickable(onClick = onRemove),
-            contentAlignment = Alignment.Center,
-        ) {
+        if (bmp != null) {
+            androidx.compose.foundation.Image(
+                bitmap = bmp,
+                contentDescription = image.name,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+        } else {
             Icon(
-                imageVector = Icons.Filled.Close,
-                contentDescription = "移除",
-                tint = Color.White,
-                modifier = Modifier.size(11.dp),
+                imageVector = Icons.Filled.Image,
+                contentDescription = null,
+                tint = Lx.colors.FgFaint,
+                modifier = Modifier.size(18.dp),
             )
         }
+    }
+    // 移除钮骑在 tile 外角（原型 `.atts .x`：top -5 / right -5；正圆 fg 底 + bg 叉）
+    // ——外层再包一层 Box 承载负偏移（Compose 无负 padding，用 offset 出血）。
+    Box(
+        Modifier
+            .offset(x = 5.dp, y = (-5).dp)
+            .size(18.dp)
+            .shadow(elevation = 2.dp, shape = CircleShape, clip = false)
+            .clip(CircleShape)
+            .background(Lx.colors.Fg)
+            .clickable(onClick = onRemove),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = Icons.Filled.Close,
+            contentDescription = "移除",
+            tint = Lx.colors.Bg,
+            modifier = Modifier.size(10.dp),
+        )
     }
 }
 

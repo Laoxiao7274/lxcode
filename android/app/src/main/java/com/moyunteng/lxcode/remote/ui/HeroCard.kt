@@ -53,21 +53,34 @@ import com.moyunteng.lxcode.remote.R
 /**
  * 助手页头部 hero 卡。
  *
+ * 原型 `.hero`：padding 18/20/14、渐变底、**只画底边**（`border-bottom: 1px solid
+ * var(--line)`，不再整圈描边）；渐变止点按变体（A=100%、B=58%、C=62%，原型
+ * `--grad-hero` 逐值）。
+ *
  * @param greeting 问候语（如「下午好」；原型带 👋 波浪图标——表情随平台字体，不画图标）
  * @param sub 副行（日期/挂起事项摘要）
+ * @param gradientStop 渐变第二色止点（0~1；按 LxVariant 给 A=1f/B=0.58f/C=0.62f）
  */
 @Composable
 fun HeroCard(
     greeting: String,
     sub: String,
     modifier: Modifier = Modifier,
+    gradientStop: Float = 1f,
 ) {
     val colors = Lx.colors.GradHero
     Column(
         modifier
             .fillMaxWidth()
-            .background(Brush.linearGradient(colors))
-            .border(width = 1.dp, color = Lx.colors.Border)
+            .background(
+                Brush.linearGradient(
+                    colorStops = arrayOf(
+                        0f to colors[0],
+                        gradientStop.coerceIn(0.01f, 1f) to colors[1],
+                        1f to colors[1],
+                    ),
+                ),
+            )
             .padding(horizontal = 20.dp, vertical = 18.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
@@ -90,9 +103,10 @@ fun HeroCard(
             }
             Text(
                 text = greeting,
+                // 原型 `.hero .hi`：font-size var(--t-xl) = 19px / 800 / -.02em
                 style = TextStyle(
                     fontFamily = Lx.type.Sans,
-                    fontSize = 17.sp,
+                    fontSize = 19.sp,
                     fontWeight = FontWeight.ExtraBold,
                     letterSpacing = (-0.02).em,
                 ),
@@ -101,10 +115,18 @@ fun HeroCard(
         }
         Text(
             text = sub,
-            style = TextStyle(fontFamily = Lx.type.Sans, fontSize = 11.5.sp),
+            // 原型 `.hero .sub`：font-size var(--t-sm) = 12.5px / --fg2
+            style = TextStyle(fontFamily = Lx.type.Sans, fontSize = 12.5.sp),
             color = Lx.colors.FgMuted,
         )
     }
+    // 原型 `.hero { border-bottom: 1px solid var(--line) }`——只画底边
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .height(1.dp)
+            .background(Lx.colors.Border),
+    )
 }
 
 /** 助手会话卡（`.asstcard`）：accent 左标条 + 标题/副行 + 时间；整卡可点进对话。 */
@@ -142,7 +164,10 @@ fun AsstCard(
             .clip(AsstCardShape)
             .background(Lx.colors.Surface)
             .border(1.dp, Lx.colors.Border, AsstCardShape)
-            .clickable(interactionSource = interaction, indication = null, onClick = onClick),
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
+            // 原型 `.asstcard`：padding 13px 14px（2026-12 规格修正——原无内距，
+            // 内容贴边；左标条 3dp 吃掉首列，主列再 14dp 起步）
+            .padding(start = 14.dp, end = 14.dp, top = 13.dp, bottom = 13.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -183,4 +208,5 @@ fun AsstCard(
     }
 }
 
-private val AsstCardShape = RoundedCornerShape(12.dp)
+/** 卡 Shape —— 原型 `.asstcard { border-radius: var(--r-lg) }` = 16px。 */
+private val AsstCardShape = RoundedCornerShape(16.dp)

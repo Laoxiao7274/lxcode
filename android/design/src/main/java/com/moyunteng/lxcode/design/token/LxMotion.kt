@@ -97,6 +97,10 @@ object LxMotion {
     /** 1600ms —— 桌面端呼吸（`job-pulse`，`opacity 1 → .35 → 1`，`ease-in-out infinite`） */
     const val DurationPulse = 1600
 
+    /** 1800ms —— 桌面端状态点光环扩散（`pulse 1.8s ease-in-out infinite`：
+     * box-shadow 0→4px→0 扩散渐隐；2026-12 扫尾条目 28 统一形态） */
+    const val DurationStatusRing = 1800
+
     /** 1000ms —— 桌面端光标闪烁（`caret-blink`，`1s steps(1) infinite`：硬切，不是渐变） */
     const val DurationCaret = 1000
 

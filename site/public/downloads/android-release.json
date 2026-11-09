@@ -1,11 +1,11 @@
 {
-  "version": "0.3.42",
-  "versionCode": 44,
-  "name": "lxcode-0.3.42-android.apk",
-  "size": 12010428,
-  "sha256": "99097cfa4205a0178cbd120bd17a4af845a3cfc9a23ea3a0caa6b6ac026dc4a5",
-  "url": "downloads/lxcode-0.3.42-android.apk",
+  "version": "0.3.43",
+  "versionCode": 45,
+  "name": "lxcode-0.3.43-android.apk",
+  "size": 12026806,
+  "sha256": "e322b18bd31e7e8aa1be03e49c0d7244b6202cafc860068917ba498f92c49c2a",
+  "url": "downloads/lxcode-0.3.43-android.apk",
   "notes": [
-    "会话页与连接页 UI 对齐：ListKit 共用组卡规格、品牌条顶栏、会话行/项目行副标题、底部导航药丸选中态"
+    "样式全面对齐设计稿：消息形态、工具输出终端底、毛玻璃导航、日分隔线等 32 项"
   ]
 }

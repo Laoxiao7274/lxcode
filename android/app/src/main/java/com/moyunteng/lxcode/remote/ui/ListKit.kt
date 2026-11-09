@@ -3,7 +3,7 @@
 // 原型规格（原型页 12/13 的 `.rows-card` / `.row` 家族）：
 //   * RowsCard：Surface 底 + 1px --line 边 + 圆角 16 + 双层柔影（y1 小 + y20 大）
 //     + 外边距 10dp；行间分隔线**通宽**（原型 `.row + .row` 无缩进）。
-//   * SectionHeader（`.sect`）：10.5sp / 700 / 字距 0.1em / --fg3、上留白 18dp；
+//   * SectionHeader（`.sect`）：11sp / 700 / 字距 0.1em / --fg3、上留白 18dp；
 //     尾插槽给「新对话」等行内动作。
 //   * InfoLine：页面底部提示行 —— 12.5sp / --fg2，可携带 AnnotatedString 强调段
 //    （关键词加粗 / 变色），不再是 10.5sp 的浅灰小字。
@@ -103,7 +103,7 @@ internal fun RowDivider() {
 }
 
 /**
- * 分组标题（原型 `.sect`）：10.5sp / 700 / 字距 0.1em / --fg3，上留白 18dp、下 8dp。
+ * 分组标题（原型 `.sect`）：11sp / 700 / 字距 0.1em / --fg3，上留白 18dp、下 8dp。
  * [trailing] 尾插槽 —— 「新对话」「扫码配对」这类行内动作（替代原 NavRow 独立行）。
  */
 @Composable
@@ -121,9 +121,11 @@ internal fun SectionHeader(
     ) {
         Text(
             text = title.uppercase(),
+            // 原型 `.sect`：font-size var(--t-xs)=11px / 700 / 字距 .1em
+            //（2026-12 扫尾条目 33：10.5→11 对齐 --t-xs 刻度）
             style = TextStyle(
                 fontFamily = Lx.type.Sans,
-                fontSize = 10.5.sp,
+                fontSize = 11.sp,
                 fontWeight = FontWeight.Bold,
                 letterSpacing = 0.1.em,
             ),
@@ -152,7 +154,9 @@ internal fun InfoLine(
             fontWeight = FontWeight.Normal,
         ),
         color = Lx.colors.FgMuted,
-        modifier = modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+        // 原型 `.infoline { padding: 2px 20px 10px }`（2026-12 扫尾条目 30：
+        // 上 2 / 左右 20 / 下 10——旧值 4/12 侧距不足，底部不留白）
+        modifier = modifier.padding(top = 2.dp, start = 20.dp, end = 20.dp, bottom = 10.dp),
     )
 }
 

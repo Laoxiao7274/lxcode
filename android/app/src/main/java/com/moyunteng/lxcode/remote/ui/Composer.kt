@@ -15,7 +15,6 @@ package com.moyunteng.lxcode.remote.ui
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
@@ -56,12 +55,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.semantics.contentDescription
@@ -85,8 +86,24 @@ import com.moyunteng.lxcode.remote.model.modelDisplayLabel
 import com.moyunteng.lxcode.remote.model.timePillLabel
 import kotlin.math.roundToInt
 
-/** 输入卡片 Shape —— composer.css `.pi { border-radius: 14px }`。 */
-internal val ComposerCardShape = RoundedCornerShape(14.dp)
+/** 输入卡片 Shape —— 原型 `.inputcard { border-radius: var(--r-xl) }` = 22px。 */
+internal val ComposerCardShape = RoundedCornerShape(22.dp)
+
+/** 聚焦光环：`0 0 0 3px var(--ring)`——卡外沿 3dp Ring 半透明描边。
+ *  颜色在组合期读好传入（DrawScope 里读不了 CompositionLocal）；
+ *  画法 = 圆角描边外扩 1.5dp（描边中线即卡外沿 + 1.5dp，等效 CSS box-spread 3px）。 */
+internal fun Modifier.drawHalo(alpha: Float, ringColor: androidx.compose.ui.graphics.Color, radius: androidx.compose.ui.unit.Dp): Modifier =
+    drawBehind {
+        if (alpha <= 0.01f) return@drawBehind
+        val spread = 1.5.dp.toPx()
+        drawRoundRect(
+            color = ringColor.copy(alpha = alpha),
+            topLeft = Offset(-spread, -spread),
+            size = Size(size.width + spread * 2, size.height + spread * 2),
+            cornerRadius = androidx.compose.ui.geometry.CornerRadius(radius.toPx() + spread),
+            style = Stroke(width = 3.dp.toPx()),
+        )
+    }
 
 /** 输入区。
  *
@@ -135,21 +152,18 @@ fun Composer(state: AppState, real: com.moyunteng.lxcode.remote.net.RealBackend)
     // 回读 + approvalChanged 广播维护，切会话即随会话走）。
     // null = 后端没报（老后端/刚切会话还没装载历史）→ 回落「默认」，不猜。
     val approval = real.approval
-    // Composer 弹层统一收口成**一个 bottom sheet 位**（P2：替代锚定 Popup 菜单——
-    // 移动端惯例；打开哪类内容由 sheetKind 决定，同一时刻只开一个）。
-    var sheetKind by remember { mutableStateOf<ComposerSheet?>(null) }
-    // 「自动执行」两步确认态——sheet 收起即复位（对齐 PermPicker 的 useEffect(open)）
-    var permConfirming by remember { mutableStateOf(false) }
-    LaunchedEffect(sheetKind) {
-        if (sheetKind != ComposerSheet.Approval) permConfirming = false
-    }
+    // Composer 弹层统一收口成**应用级 bottom sheet 单槽**（2026-12 用户拍板：
+    // ComposerSheet 提升为 AppSheet、唯一挂载点在 AppRoot——遮罩盖整个窗口，
+    // 其他页面也能用；本组合只写 state.openAppSheet，返回键收口也在 AppRoot）。
+    // 「自动执行」两步确认态在 state.appSheetPermConfirming（sheet 挂到应用层后
+    // 原局部 remember 提升到 AppState）。
 
-    // 返回键第一层：bottom sheet / 斜杠面板开着 → 返回先关弹层
-    LaunchedEffect(sheetKind, slashOpen) {
+    // 返回键第一层：斜杠面板开着 → 返回先关面板（bottom sheet 的返回收口在
+    // AppRoot 的应用级链——本组合不再注册 sheet 相关拦截器）
+    LaunchedEffect(slashOpen) {
         state.backInterceptor =
-            if (sheetKind != null || slashOpen) {
+            if (slashOpen) {
                 {
-                    sheetKind = null
                     slashClosed = true
                     true
                 }
@@ -157,8 +171,6 @@ fun Composer(state: AppState, real: com.moyunteng.lxcode.remote.net.RealBackend)
                 null
             }
     }
-
-    // 当前模型元数据与 effort 投影（对齐 ModelPicker.tsx）：
     // 模型注册表来自后端 model.list（RealBackend.modelGroups）。**选中态取当前会话
     // 的模型**（activeModelId = 会话选择 → 回落全局 default 角色）——不是全局
     // default 角色：拿它当选中态正是「一个会话切模型所有会话跟着变」那个 bug。
@@ -168,9 +180,9 @@ fun Composer(state: AppState, real: com.moyunteng.lxcode.remote.net.RealBackend)
     // 会话本轮的 effort（内存视图，不落盘）：协议里 effort 只是 chat.send 的
     // 请求级参数（后端没有会话级 effort 方法、chat.history 不回它——远端无
     // 读写通道），所以本地只在**发送时**把当前视图带上，不发明持久化语义。
-    // remember 无存档：App 重启回落模型默认（与「远端化」原则一致——连接
-    // 信息之外不持久化业务状态）。
-    var effort by remember { mutableStateOf("medium") }
+    // 视图在 state.composerEffort（sheet body 挂到应用层后原局部 remember 提升）；
+    // App 重启回落模型默认（与「远端化」原则一致——连接信息之外不持久化业务状态）。
+    val effort = state.composerEffort
     val effortId = if (effort in effortOptions) effort else effortOptions.lastOrNull() ?: ""
     // 发送携带的档位：模型不支持 effort 时空串（不带键——对非推理端点传参会 400）
     val sendEffort = if (effortOptions.isNotEmpty()) effortId else ""
@@ -231,13 +243,14 @@ fun Composer(state: AppState, real: com.moyunteng.lxcode.remote.net.RealBackend)
             )
         }
 
-        // ===== 附件预览区（.att-preview：卡内、文本行上方；有暂存或有提示才渲染）=====
-        // 图片 = 64dp 方缩略图（radius 16）+ 右上 18dp 移除钮；文件 = 240×64 卡。
+        // ===== 附件预览区（原型 `.atts`：卡内、文本行上方、gap 8、底 padding 8）=====
+        // 图片 = 76×56 缩略图（r12）+ 右上**外角** 18dp 移除钮（负偏移出血）；
+        // 文件 = 240×64 卡。预览区顶部多留 5dp 给移除钮出血。
         if (real.pendingImages.isNotEmpty() || real.pendingFiles.isNotEmpty() || real.attachNotice != null) {
             Column(
                 Modifier
                     .fillMaxWidth()
-                    .padding(start = 16.dp, end = 16.dp, top = 12.dp),
+                    .padding(start = 16.dp, end = 16.dp, top = 17.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 real.attachNotice?.let { notice ->
@@ -248,7 +261,7 @@ fun Composer(state: AppState, real: com.moyunteng.lxcode.remote.net.RealBackend)
                     )
                 }
                 if (real.pendingImages.isNotEmpty()) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         real.pendingImages.forEach { im ->
                             PendingImageThumb(
                                 image = im,
@@ -275,24 +288,35 @@ fun Composer(state: AppState, real: com.moyunteng.lxcode.remote.net.RealBackend)
         // ===== 白卡 =====
         val input = remember { MutableInteractionSource() }
         val focused by input.collectIsFocusedAsState()
-        // 聚焦环：1px #e5e5e5 → 1.5px #0d0d0d，150ms 过渡（`.pi` / `.pi:focus-within` 的 box-shadow）
-        val ringWidth by animateDpAsState(
-            targetValue = if (focused) 1.5.dp else 1.dp,
-            animationSpec = tween(150),
-            label = "composer-ring-width",
-        )
+        // 聚焦环（原型 `.inputcard:focus-within`：`border-color: var(--fg3)` +
+        // `box-shadow: 0 0 0 3px var(--ring)` 光环）——180ms 过渡。
+        // 光环 = 外圈 3dp 半透明 Ring（drawBehind 画在卡外沿，border 内圈不变）。
         val ringColor by lxAnimateColor(
-            target = if (focused) Lx.colors.Fg else Lx.colors.BorderStrong,
-            durationMillis = 150,
+            target = if (focused) Lx.colors.FgFaint else Lx.colors.BorderStrong,
+            durationMillis = 180,
         )
+        // 光环 alpha：聚焦时 3dp Ring 半透明环，失焦 0（过渡由 haloAlpha 承担）
+        val haloAlpha by animateFloatAsState(
+            targetValue = if (focused) 0.28f else 0f,
+            animationSpec = tween(180),
+            label = "composer-halo",
+        )
+        val haloColor = Lx.colors.Ring
         Column(
             Modifier
                 .fillMaxWidth()
-                // 微投影 —— `.pi { box-shadow: 0 1px 3px rgba(0,0,0,0.04) }`
-                .shadow(elevation = 3.dp, shape = ComposerCardShape, clip = false, spotColor = Lx.shadow.Card.copy(alpha = 0.04f))
+                // 微投影 + 聚焦光环 —— `.inputcard { box-shadow: var(--shadow-card) }` +
+                // `:focus-within { box-shadow: 0 0 0 3px var(--ring), var(--shadow-card) }`
+                .drawHalo(haloAlpha, haloColor, 22.dp)
+                .shadow(
+                    elevation = 3.dp,
+                    shape = ComposerCardShape,
+                    clip = false,
+                    spotColor = Lx.shadow.Card.copy(alpha = 0.06f),
+                )
                 .clip(ComposerCardShape)
                 .background(Lx.colors.Surface)
-                .border(width = ringWidth, color = ringColor, shape = ComposerCardShape),
+                .border(width = 1.dp, color = ringColor, shape = ComposerCardShape),
         ) {
             // ===== 文本输入区（透明无边框；.piInput）=====
             ComposerTextField(
@@ -357,10 +381,9 @@ fun Composer(state: AppState, real: com.moyunteng.lxcode.remote.net.RealBackend)
                             real.activeModelId,
                         ),
                         effortDim = effortDim,
-                        expanded = sheetKind == ComposerSheet.Model,
+                        expanded = state.appSheet == AppSheet.Model,
                         onToggle = {
-                            sheetKind =
-                                if (sheetKind == ComposerSheet.Model) null else ComposerSheet.Model
+                            if (state.appSheet == AppSheet.Model) state.closeAppSheet() else state.openAppSheet(AppSheet.Model)
                         },
                     )
                     // effort 药丸（ghost）——点开思考力度 sheet（模型不支持 effort 时不显）
@@ -368,25 +391,23 @@ fun Composer(state: AppState, real: com.moyunteng.lxcode.remote.net.RealBackend)
                         ComposerGhostPill(
                             label = effortLabel(effortId),
                             onClick = {
-                                sheetKind =
-                                    if (sheetKind == ComposerSheet.Effort) null else ComposerSheet.Effort
+                                if (state.appSheet == AppSheet.Effort) state.closeAppSheet() else state.openAppSheet(AppSheet.Effort)
                             },
                         )
                     }
                     // 审批档药丸（橙）——点开审批档 sheet
                     ApprovalPill(
                         label = approvalLabel,
-                        expanded = sheetKind == ComposerSheet.Approval,
+                        expanded = state.appSheet == AppSheet.Approval,
                         onToggle = {
-                            sheetKind =
-                                if (sheetKind == ComposerSheet.Approval) null else ComposerSheet.Approval
+                            if (state.appSheet == AppSheet.Approval) state.closeAppSheet() else state.openAppSheet(AppSheet.Approval)
                         },
                     )
                     // 上下文环 + 百分比（.ctx-chip / .ctx-pct）——点开明细 sheet
                     // 实测值（context 键缺席 = null → 环显示「—」）
                     ContextRing(
                         usage = real.contextUsage,
-                        onClick = { sheetKind = ComposerSheet.Context },
+                        onClick = { state.openAppSheet(AppSheet.Context) },
                     )
                     // 会话统计胶囊（.stats-pill：步数 0 整个胶囊不渲染）
                     StatsCapsule(real.sessionStats)
@@ -480,76 +501,8 @@ fun Composer(state: AppState, real: com.moyunteng.lxcode.remote.net.RealBackend)
         }
     }
 
-    // ===== Composer 弹层（P2：bottom sheet，替代锚定 Popup 菜单）=====
-    // 挂在输入区组合的最外层（遮罩覆盖整个页面）；四类内容按 sheetKind 切换。
-    LxBottomSheet(
-        visible = sheetKind != null,
-        onDismiss = { sheetKind = null },
-        title = when (sheetKind) {
-            ComposerSheet.Model -> "选择模型"
-            ComposerSheet.Effort -> "思考力度"
-            ComposerSheet.Approval -> "工具审批档"
-            ComposerSheet.Context -> "上下文占用"
-            null -> ""
-        },
-        subtitle = when (sheetKind) {
-            ComposerSheet.Model -> "chat.model · 仅本会话"
-            ComposerSheet.Effort -> "chat.send effort · 仅声明 reasoning 的模型生效"
-            ComposerSheet.Approval -> "chat.approval · 会话级实时状态，当轮生效"
-            else -> null
-        },
-    ) {
-        when (sheetKind) {
-            ComposerSheet.Model -> ModelSheetBody(
-                groups = real.modelGroups,
-                currentModelId = real.activeModelId,
-                onPick = { id ->
-                    // 切模型：**会话级**（chat.model：后端落库 + 广播，只改这一条会话
-                    // ——不是 role.set 的全局 default 角色）；当前档位在新模型上
-                    // 不存在 → 本地回落（优先「中」，否则首档）
-                    val m = real.allModels.find { it.id == id }
-                    val supported = m?.efforts?.filter { it in EFFORT_IDS } ?: emptyList()
-                    if (supported.isNotEmpty() && effort !in supported) {
-                        effort = if ("medium" in supported) "medium" else supported.first()
-                    }
-                    real.changeSessionModel(id) { ok, msg ->
-                        // 失败要给反馈：选中态由 chat.modelChanged 广播对齐（后端没改
-                        // 成功就不会广播），本地乐观选中会永远停在旧模型上——toast 说明
-                        if (!ok) toast("切换模型失败${if (msg.isNotBlank()) "：$msg" else ""}")
-                    }
-                    sheetKind = null
-                },
-            )
-            ComposerSheet.Effort -> EffortSheetBody(
-                effortOptions = effortOptions,
-                currentEffort = effortId,
-                onPick = { id ->
-                    effort = id
-                    sheetKind = null
-                },
-            )
-            ComposerSheet.Approval -> ApprovalSheetBody(
-                current = approval ?: "confirm",
-                confirming = permConfirming,
-                onPick = { id ->
-                    if (id == "auto" && approval != "auto") {
-                        // 危险方向才拦：首次点击进 armed 态，再点才生效；
-                        // 从自动执行切回安全档不需要确认（收权总是安全的）
-                        if (!permConfirming) {
-                            permConfirming = true
-                            return@ApprovalSheetBody
-                        }
-                    }
-                    permConfirming = false
-                    // 走协议（chat.approval：后端落库 + 广播，approvalChanged 回来对齐药丸）
-                    real.changeApproval(id)
-                    sheetKind = null
-                },
-            )
-            ComposerSheet.Context -> ContextSheetBody(real.contextUsage)
-            null -> {}
-        }
-    }
+    // （Composer 弹层已提升为应用级 bottom sheet——AppSheetHost 在 AppRoot 唯一挂载，
+    // 遮罩盖整个窗口；本组合只负责药丸的 open/close 写口。）
 }
 
 /**

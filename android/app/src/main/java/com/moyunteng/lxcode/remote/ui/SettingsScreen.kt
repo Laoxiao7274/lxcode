@@ -188,7 +188,9 @@ fun SettingsScreen(state: AppState) {
                         modifier = Modifier.size(14.dp),
                     )
                 },
-                onClick = { /* 模型默认值管理在桌面端 settings；手机端只读展示 */ },
+                // 应用级 sheet 第一个受益页（2026-12 用户拍板）：死行接 ModelSheetBody
+                // ——role.set 改全局 default 角色（新会话的默认模型），AppSheetHost 收口
+                onClick = { state.openAppSheet(AppSheet.SettingsModel) },
             )
             RowDivider()
             SettingRow(
@@ -248,7 +250,7 @@ fun SettingsScreen(state: AppState) {
     }
 }
 
-/** 分组标题（原型 `.sect`：10.5sp/700/字距 .1em/--fg3、上留白 18dp）—— ListKit.SectionHeader。 */
+/** 分组标题（原型 `.sect`：11sp/700/字距 .1em/--fg3、上留白 18dp）—— ListKit.SectionHeader。 */
 @Composable
 private fun SettingSection(label: String) {
     SectionHeader(label)

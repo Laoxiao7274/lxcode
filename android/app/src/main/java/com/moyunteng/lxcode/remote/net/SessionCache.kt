@@ -248,6 +248,7 @@ object BlockCodec {
                 o.put("kind", K_USER)
                 o.put("text", b.text)
                 o.put("attachments", attachmentsToJson(b.attachments))
+                b.localEpochMs?.let { o.put("local_ts", it) }
             }
             is ThreadBlock.Assistant -> {
                 o.put("kind", K_ASSISTANT)
@@ -309,6 +310,10 @@ object BlockCodec {
                 o.put("kind", K_ERROR)
                 o.put("message", b.message)
             }
+            is ThreadBlock.DaySep -> throw IllegalArgumentException(
+                "DaySep 是展示层插入的块（threadBlocksWithDaySeps），不属于会话缓存数据面——" +
+                    "缓存只存 real.blocks/asst.blocks/childBlocks，出现它说明插入层泄漏进了模型层",
+            )
         }
         return o
     }
@@ -318,6 +323,9 @@ object BlockCodec {
             K_USER -> ThreadBlock.User(
                 text = o.optString("text"),
                 attachments = attachmentsFromJson(o.optJSONArray("attachments")),
+                // 缓存的锚点 = 编码当时的本机时刻（systemTimeMs 同源口径）；缺席 = 老
+                // 缓存，回放无锚点不画 daysep（不编）
+                localEpochMs = o.optLong("local_ts", 0L).takeIf { it > 0 },
             )
             K_ASSISTANT -> ThreadBlock.Assistant(
                 content = o.optString("content"),
