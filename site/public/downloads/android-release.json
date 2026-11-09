@@ -1,11 +1,11 @@
 {
-  "version": "0.3.40",
-  "versionCode": 42,
-  "name": "lxcode-0.3.40-android.apk",
-  "size": 11928503,
-  "sha256": "7c7d6ef1955455f96d89ea1fd908a5ff3d2f2fea9257e23c4eece69261af6e80",
-  "url": "downloads/lxcode-0.3.40-android.apk",
+  "version": "0.3.41",
+  "versionCode": 43,
+  "name": "lxcode-0.3.41-android.apk",
+  "size": 12010421,
+  "sha256": "f140ce437b2073183d483c76af0067615fbe3432c8bc74b46263e988a2dc5dff",
+  "url": "downloads/lxcode-0.3.41-android.apk",
   "notes": [
-    "助手适配：手机端助手会话列表与对话页、流式聊天、任务派发、图片上传"
+    "安卓 UI 重做：三套主题（深/浅/跟系统 × 三色温）、底部三 tab 导航、bottom sheet 选择器（模型/effort/审批/上下文）、任务清单条、性能优化"
   ]
 }
