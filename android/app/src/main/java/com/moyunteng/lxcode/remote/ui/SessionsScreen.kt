@@ -28,21 +28,18 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Archive
-import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.ChatBubbleOutline
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -54,13 +51,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import android.widget.Toast
 import androidx.core.net.toUri
 import androidx.compose.ui.res.painterResource
@@ -68,11 +65,13 @@ import com.moyunteng.lxcode.remote.R
 import com.moyunteng.lxcode.design.component.LxButton
 import com.moyunteng.lxcode.design.component.LxButtonSize
 import com.moyunteng.lxcode.design.component.LxButtonVariant
+import com.moyunteng.lxcode.design.component.LxIconButton
 import com.moyunteng.lxcode.design.component.LxListItem
 import com.moyunteng.lxcode.design.component.LxSpinner
 import com.moyunteng.lxcode.design.motion.LxEnterSpec
 import com.moyunteng.lxcode.design.motion.LxStagger
 import com.moyunteng.lxcode.design.motion.lxEnter
+import com.moyunteng.lxcode.design.motion.lxPressScale
 import com.moyunteng.lxcode.design.motion.lxStaggerEnter
 import com.moyunteng.lxcode.design.component.LxSectionHeader
 import com.moyunteng.lxcode.design.component.LxStatus
@@ -81,45 +80,11 @@ import com.moyunteng.lxcode.design.component.LxTextField
 import com.moyunteng.lxcode.design.token.Lx
 import com.moyunteng.lxcode.remote.model.SessionMeta
 
-/** 行组卡（原型 `.rows-card`：Surface 底 + 1px 边 + 圆角 12 + 卡片阴影 + 行间 1px 分隔线；
- *  margin 0 10px → 手机取 6dp 外边距、行内清零）。 */
-@Composable
-private fun RowsCard(
-    modifier: Modifier = Modifier,
-    content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit,
-) {
-    Column(
-        modifier
-            .padding(horizontal = Lx.space.s6)
-            .fillMaxWidth()
-            .shadow(
-                elevation = 3.dp,
-                shape = Lx.radius.CardShape,
-                clip = false,
-                ambientColor = Lx.shadow.Card,
-                spotColor = Lx.shadow.Card,
-            )
-            .clip(Lx.radius.CardShape)
-            .background(Lx.colors.Surface)
-            .border(1.dp, Lx.colors.Border, Lx.radius.CardShape),
-        content = content,
-    )
-}
+// RowsCard / RowDivider / SectionHeader 抽到 ListKit.kt 页面共用（会话页与连接页同规格）。
 
-/** 行间分隔线（`.rows-card .row + .row { border-top: 1px solid var(--line) }`）。 */
-@Composable
-private fun RowDivider() {
-    Box(
-        Modifier
-            .padding(start = 58.dp) // 首列（36dp 头像 + 12 gap + 10 边距）之后起线——对齐原型缩进
-            .fillMaxWidth()
-            .height(1.dp)
-            .background(Lx.colors.Border),
-    )
-}
-
-/** 搜索框（原型 `.search`：--soft 底、无边、圆角 9、放大镜 + placeholder --fg3；
- *  触摸端无「Ctrl K」角标——键盘提示在手机上没有意义，查询非空时保留「清除」）。 */
+/** 搜索框（原型 `.search`：--soft 底、无边、圆角 12、放大镜 + placeholder --fg3；
+ *  触摸端无「Ctrl K」角标——键盘提示在手机上没有意义，查询非空时保留「清除」）。
+ *  2026-12 规格修正：圆角 9→12、字号 12.5→14、放大镜 15→17dp。 */
 @Composable
 private fun SearchField(
     value: String,
@@ -132,7 +97,7 @@ private fun SearchField(
         singleLine = true,
         textStyle = androidx.compose.ui.text.TextStyle(
             fontFamily = Lx.type.Sans,
-            fontSize = Lx.type.Size12_5,
+            fontSize = Lx.type.Size14,
             color = Lx.colors.Fg,
         ),
         cursorBrush = androidx.compose.ui.graphics.SolidColor(Lx.colors.Fg),
@@ -141,18 +106,18 @@ private fun SearchField(
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .clip(Lx.radius.FieldShape)
+                    .clip(RowsCardShape)
                     .background(Lx.colors.BorderSoft)
                     .padding(horizontal = Lx.space.s12, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(9.dp),
             ) {
-                SmallIcon(Icons.Filled.Search, Lx.colors.FgFaint, size = 15)
+                SmallIcon(Icons.Filled.Search, Lx.colors.FgFaint, size = 17)
                 Box(Modifier.weight(1f)) {
                     if (value.isEmpty()) {
                         Text(
                             text = "搜索对话与项目",
-                            style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size12_5),
+                            style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size14),
                             color = Lx.colors.FgFaint,
                         )
                     }
@@ -174,24 +139,16 @@ private fun SearchField(
     )
 }
 
-/** 分组标题 + 计数（原型 `.sect .count`：计数同色弱化，跟在标题后）。 */
+/** 分组标题（ListKit 的 SectionHeader；计数弱化跟在尾部动作之后）。 */
 @Composable
 private fun SectionHeaderWithCount(
     title: String,
     count: Int,
-    topPadding: androidx.compose.ui.unit.Dp = Lx.space.s6,
+    topPadding: androidx.compose.ui.unit.Dp = 18.dp,
+    trailing: (@Composable () -> Unit)? = null,
 ) {
-    Row(
-        Modifier
-            .padding(start = Lx.space.s10, end = Lx.space.s10, top = topPadding, bottom = Lx.space.s4),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Text(
-            text = title.uppercase(),
-            style = Lx.type.SectionTitle,
-            color = Lx.colors.FgMuted,
-        )
+    SectionHeader(title = title, topPadding = topPadding) {
+        if (trailing != null) trailing()
         Text(
             text = "$count",
             style = Lx.type.SectionTitle.copy(fontWeight = FontWeight.Medium),
@@ -238,7 +195,8 @@ fun SessionsScreen(state: AppState) {
             .fillMaxSize()
             .background(Lx.colors.Bg),
     ) {
-        // 顶部：品牌 + 连接药丸
+        // 顶部：品牌 + 连接药丸（品牌条形态：LxCode 15.5sp/700 + 尾部齿轮→设置，
+        // 与助手页/连接页同一形态；底部导航选中态不再摆「设置」行）
         Row(
             Modifier
                 .fillMaxWidth()
@@ -263,7 +221,10 @@ fun SessionsScreen(state: AppState) {
             }
             Text(
                 text = "LxCode",
-                style = Lx.type.ListTitle.copy(fontWeight = FontWeight.SemiBold),
+                style = Lx.type.ListTitle.copy(
+                    fontSize = 15.5.sp,
+                    fontWeight = FontWeight.Bold,
+                ),
                 color = Lx.colors.Fg,
             )
             Box(
@@ -276,6 +237,16 @@ fun SessionsScreen(state: AppState) {
                 name = state.pillName(),
                 onClick = { state.route = Route.Connections },
             )
+            Box(Modifier.weight(1f))
+            // 齿轮 → 设置页（2026-12 拍板：替代列表底部「设置」行——入口上浮到顶栏）
+            LxIconButton(onClick = { state.route = Route.Settings }) {
+                Icon(
+                    imageVector = Icons.Filled.Settings,
+                    contentDescription = "设置",
+                    tint = Lx.colors.FgMuted,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
         }
 
         // 未连接任何后端：连接引导态——居中引导（logo + 文案 +
@@ -304,10 +275,22 @@ fun SessionsScreen(state: AppState) {
             }
         }
 
+        // 搜索框固定顶栏下（2026-12 规格修正：移出 LazyColumn——滚动列表时搜索框
+        // 不随内容滚走，与原型固定筛选区一致）
+        Box(
+            Modifier
+                .lxEnter(spec = LxEnterSpec.StaggerItem)
+                .padding(horizontal = Lx.space.s12, vertical = Lx.space.s6),
+        ) {
+            SearchField(
+                value = state.query,
+                onValueChange = { state.query = it },
+            )
+        }
+
         LazyColumn(
             Modifier
-                .fillMaxSize()
-                .padding(horizontal = Lx.space.s8),
+                .fillMaxSize(),
         ) {
             // ⓪ 更新横幅（启动自动检查发现新版本时出现；非阻断，可关）：
             // 新版本号 + 大小 + 「下载并安装」（应用内 DownloadManager → sha256 校验 →
@@ -366,45 +349,8 @@ fun SessionsScreen(state: AppState) {
                 }
             }
 
-            // ① 导航项
-            // 纯远控壳：侧栏导航项只留「新对话」（对远程后端开新会话）；
-            // Agents/拓展/Git 管理/远程访问/自动化 是桌面端管理本机的面板，不进手机。
-            // （未连接时整页已是引导态，到不了这里——新对话只在连接后可用。）
-            val navItems = listOf(
-                NavEntry("新对话", Icons.Filled.ChatBubbleOutline) {
-                    // 项目组内新建：scope 是当前范围的项目 id（未分组 = ""）——
-                    // session.new 的 workspace 参数，会话归属该项目（对齐桌面端
-                    // Sidebar 的 filter 语义：在哪个范围里点的新对话就归哪个项目）
-                    state.real.newSession(
-                        workspace = state.scope,
-                        onReady = { id -> state.route = Route.Thread(id) },
-                    )
-                },
-                // 助手入口（固定 NavRow，与「新对话」同款形态）：进助手域会话列表
-                NavEntry("助手", Icons.Filled.AutoAwesome) {
-                    state.route = Route.Assistant
-                },
-            )
-            itemsIndexed(navItems) { i, entry ->
-                NavRow(entry, Modifier.lxStaggerEnter(count = navItems.size, index = i))
-            }
-
-            // ② 搜索框（浅填充形态：--soft 底无边框，对齐原型 `.search`）
-            item {
-                Box(
-                    Modifier
-                        .lxEnter(
-                            spec = LxEnterSpec.StaggerItem,
-                            delayMillis = LxStagger.delayMillis(navItems.size + 1, navItems.size),
-                        )
-                        .padding(horizontal = Lx.space.s4, vertical = Lx.space.s6),
-                ) {
-                    SearchField(
-                        value = state.query,
-                        onValueChange = { state.query = it },
-                    )
-                }
-            }
+            // （导航项已并入分组标题尾插槽：2026-12 规格修正——「新对话」迁到
+            // 「对话」SectionHeader 的尾插槽，替代独立 NavRow 行；助手入口 = 底部导航。）
 
             // ③ 「项目」分组标题（带计数；只读：项目属于远程后端，手机端不提供新增入口）
             item {
@@ -446,8 +392,43 @@ fun SessionsScreen(state: AppState) {
                 }
             }
 
-            // ⑤ 「对话」分组标题（带计数）
-            item { SectionHeaderWithCount("对话", state.realSessionsInScope().size, topPadding = Lx.space.s12) }
+            // ⑤ 「对话」分组标题（带计数；尾插槽 = 「新对话」——2026-12 迁回此处）
+            item {
+                val newChatInteraction = remember { MutableInteractionSource() }
+                SectionHeaderWithCount(
+                    "对话",
+                    state.realSessionsInScope().size,
+                    trailing = {
+                        Row(
+                            Modifier
+                                .lxPressScale(newChatInteraction)
+                                .clip(Lx.radius.PillShape)
+                                .clickable(
+                                    interactionSource = newChatInteraction,
+                                    indication = null,
+                                    // 项目组内新建：scope 是当前范围的项目 id（未分组 = ""）——
+                                    // session.new 的 workspace 参数，会话归属该项目（对齐桌面端
+                                    // Sidebar 的 filter 语义：在哪个范围里点的新对话就归哪个项目）
+                                ) {
+                                    state.real.newSession(
+                                        workspace = state.scope,
+                                        onReady = { id -> state.route = Route.Thread(id) },
+                                    )
+                                }
+                                .padding(horizontal = Lx.space.s8, vertical = Lx.space.s4),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(Lx.space.s4),
+                        ) {
+                            SmallIcon(Icons.Filled.Add, Lx.colors.Accent, size = 13)
+                            Text(
+                                text = "新对话",
+                                style = Lx.type.Button.copy(fontSize = Lx.type.Size11_5, fontWeight = FontWeight.SemiBold),
+                                color = Lx.colors.Accent,
+                            )
+                        }
+                    },
+                )
+            }
 
             // ⑥ 会话行（rows-card 组卡；搜索过滤）：列表来自 session.list（真数据）
             val sessions = state.realSessionsInScope().filter {
@@ -491,28 +472,8 @@ fun SessionsScreen(state: AppState) {
                 }
             }
 
-            // ⑦ 底部「设置」行（接 Route.Settings——P2 设置页）
-            item {
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .clip(Lx.radius.RowShape)
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                        ) { state.route = Route.Settings }
-                        .padding(horizontal = Lx.space.s8, vertical = Lx.space.s8),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(Lx.space.s8),
-                ) {
-                    SmallIcon(Icons.Filled.Settings, Lx.colors.FgMuted, size = 14)
-                    Text(
-                        text = "设置",
-                        style = Lx.type.ListTitle,
-                        color = Lx.colors.Fg,
-                    )
-                }
-            }
+            // （底部「设置」行已摘除——入口上浮到顶栏齿轮，2026-12 拍板）
+            item { Box(Modifier.height(18.dp)) }
         }
     }
 
@@ -575,9 +536,12 @@ internal fun NavRow(entry: NavEntry, modifier: Modifier = Modifier) {
     )
 }
 
-/** 项目行（文件夹图标 + 名字 + 守则 + 会话数；对齐 .proj-row）。
+/** 项目行（36dp 字母 pavatar + 名字 + 副标题会话数 + 「守则」药丸 chip；对齐 .proj-row）。
  *  [runningCount] > 0 时标题旁亮运行中 spinner + 计数（对齐桌面端侧栏项目行的
- *  spinner——项目内任一会话在生成就亮，多端共享进度）。 */
+ *  spinner——项目内任一会话在生成就亮，多端共享进度）。
+ *  2026-12 规格修正：首列从 14dp 文件夹图标升级为 36dp 字母头像（取项目名首字符、
+ *  accent-soft 底）；副标题 = 「N 条会话」（project.list 协议不带分支字段——
+ *  副标题只用会话数，不编造分支信息）；「守则」从裸文字升级为 chip 药丸。 */
 @Composable
 private fun ProjectRow(
     name: String,
@@ -587,54 +551,89 @@ private fun ProjectRow(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    LxListItem(
-        title = name,
-        modifier = modifier,
-        selected = active,
-        leading = {
+    val interaction = remember { MutableInteractionSource() }
+    Row(
+        modifier
+            .fillMaxWidth()
+            .clip(Lx.radius.RowShape)
+            .background(if (active) Lx.colors.BorderSoft else androidx.compose.ui.graphics.Color.Transparent)
+
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
+            .padding(horizontal = Lx.space.s10, vertical = Lx.space.s8),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Lx.space.s10),
+    ) {
+        // 36dp 字母 pavatar（.pavatar：accent-soft 底 + 首字符）
+        Box(
+            Modifier
+                .size(36.dp)
+                .clip(Lx.radius.FieldShape)
+                .background(Lx.colors.AccentSoft),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = name.firstOrNull()?.toString() ?: "·",
+                style = Lx.type.ListTitle.copy(fontWeight = FontWeight.Bold, fontSize = Lx.type.Size14),
+                color = Lx.colors.Accent,
+            )
+        }
+        Column(Modifier.weight(1f)) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(Lx.space.s6),
             ) {
-                SmallIcon(
-                    if (active) Icons.Filled.FolderOpen else Icons.Filled.Folder,
-                    Lx.colors.FgMuted,
-                    size = 14,
+                Text(
+                    text = name,
+                    style = Lx.type.ListTitle.copy(fontWeight = FontWeight.SemiBold),
+                    color = Lx.colors.Fg,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
                 if (runningCount > 0) {
                     LxSpinner(size = 10.dp)
                 }
             }
-        },
-        trailing = {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(Lx.space.s8),
-            ) {
+            Text(
+                text = "$count 条会话",
+                style = Lx.type.ListSubtitle,
+                color = Lx.colors.FgFaint,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Lx.space.s8),
+        ) {
+            if (runningCount > 0) {
                 Text(
-                    text = "守则",
-                    style = Lx.type.Button.copy(fontSize = Lx.type.Size10_5),
-                    color = Lx.colors.FgFaint,
-                )
-                if (runningCount > 0) {
-                    Text(
-                        text = "$runningCount 运行中",
-                        style = Lx.type.Badge.copy(fontSize = Lx.type.Size10_5),
-                        color = Lx.colors.Amber,
-                    )
-                }
-                Text(
-                    text = "$count",
-                    style = Lx.type.Badge,
-                    color = Lx.colors.FgFaint,
+                    text = "$runningCount 运行中",
+                    style = Lx.type.Badge.copy(fontSize = Lx.type.Size10_5),
+                    color = Lx.colors.Amber,
                 )
             }
-        },
-        onClick = onClick,
-    )
+            // 「守则」chip 药丸（原型 .chip：边框药丸 + 10.5sp）
+            Text(
+                text = "守则",
+                style = Lx.type.Button.copy(fontSize = Lx.type.Size10_5, fontWeight = FontWeight.SemiBold),
+                color = Lx.colors.FgMuted,
+                modifier = Modifier
+                    .clip(Lx.radius.PillShape)
+                    .border(1.dp, Lx.colors.BorderStrong, Lx.radius.PillShape)
+                    .padding(horizontal = Lx.space.s8, vertical = 2.dp),
+            )
+            Text(
+                text = "$count",
+                style = Lx.type.Badge,
+                color = Lx.colors.FgFaint,
+            )
+        }
+    }
 }
 
-/** 会话行（状态点 + 标题 + 时间 + ⋯；对齐 .session-item）。 */
+/** 会话行（标题 + 副标题 N 条消息 + 行尾时间/状态点/⋯；对齐 .session-item）。
+ *  2026-12 规格修正：加副标题 .t2（messages 计数派生「N 条消息」）；状态点从
+ *  行首移到行尾时间旁（运行中才亮，空闲不占位）。 */
 @Composable
 private fun SessionRowItem(
     session: SessionMeta,
@@ -643,44 +642,61 @@ private fun SessionRowItem(
     onClick: () -> Unit,
     onMenu: () -> Unit,
 ) {
-    LxListItem(
-        title = session.title,
-        modifier = modifier,
-        leading = {
-            // 运行中 = 琥珀呼吸点（LxStatus.Run），空闲 = 灰点——红色只给失败态，
-            // 这里没有失败语义，永远不出现 Danger。
-            LxStatusDot(
-                status = if (running) LxStatus.Run else LxStatus.Idle,
-                size = 7.dp,
+    val interaction = remember { MutableInteractionSource() }
+    Row(
+        modifier
+            .fillMaxWidth()
+            .clip(Lx.radius.RowShape)
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
+            .padding(horizontal = Lx.space.s10, vertical = Lx.space.s8),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Lx.space.s10),
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = session.title,
+                style = Lx.type.ListTitle.copy(fontWeight = FontWeight.SemiBold),
+                color = Lx.colors.Fg,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
-        },
-        trailing = {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(Lx.space.s6),
-            ) {
-                Text(
-                    text = session.updatedAt,
-                    style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size10_5),
-                    color = Lx.colors.FgFaint,
-                )
-                // 行尾操作入口（桌面端 SessionRow 的 hover 菜单 → 触摸端点按弹出）
-                Box(
-                    Modifier
-                        .clip(RoundedCornerShape(Lx.radius.r6))
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                            onClick = onMenu,
-                        )
-                        .padding(2.dp),
-                ) {
-                    SmallIcon(Icons.Filled.MoreVert, Lx.colors.FgFaint, size = 12)
-                }
+            Text(
+                text = "${session.messages} 条消息",
+                style = Lx.type.ListSubtitle,
+                color = Lx.colors.FgFaint,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Lx.space.s6),
+        ) {
+            // 状态点移到行尾（时间旁）：运行中 = 琥珀呼吸点，空闲不渲染——
+            // 行首常驻灰点改为按需出现在时间旁边（红色只给失败态，这里没有失败语义）
+            if (running) {
+                LxStatusDot(status = LxStatus.Run, size = 7.dp)
             }
-        },
-        onClick = onClick,
-    )
+            Text(
+                text = session.updatedAt,
+                style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size10_5),
+                color = Lx.colors.FgFaint,
+            )
+            // 行尾操作入口（桌面端 SessionRow 的 hover 菜单 → 触摸端点按弹出）
+            Box(
+                Modifier
+                    .clip(RoundedCornerShape(Lx.radius.r6))
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onMenu,
+                    )
+                    .padding(2.dp),
+            ) {
+                SmallIcon(Icons.Filled.MoreVert, Lx.colors.FgFaint, size = 12)
+            }
+        }
+    }
 }
 
 /** 行操作菜单 Shape —— 对齐 PickerMenus 的 .mp-panel（圆角 12、1px 边、菜单级阴影）。 */
@@ -1024,7 +1040,7 @@ private fun UpdateDialogProgress(
         Box(
             Modifier
                 .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.22f))
+                .background(androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.22f))
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,

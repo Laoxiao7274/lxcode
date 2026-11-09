@@ -16,10 +16,12 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChatBubbleOutline
 import androidx.compose.material.icons.filled.Dns
@@ -34,6 +36,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -45,7 +48,9 @@ import com.moyunteng.lxcode.design.motion.lxAnimateColor
 import com.moyunteng.lxcode.design.motion.lxEnter
 import com.moyunteng.lxcode.design.motion.lxPressScale
 import com.moyunteng.lxcode.design.token.Lx
+import com.moyunteng.lxcode.design.token.LxElevation
 import com.moyunteng.lxcode.design.token.LxIcons
+import com.moyunteng.lxcode.design.token.lxShadow
 import com.moyunteng.lxcode.design.token.LxTemp
 import com.moyunteng.lxcode.design.token.LxTheme
 import com.moyunteng.lxcode.design.token.LxVariant
@@ -772,7 +777,11 @@ fun AppRoot(pairUri: String? = null, onPairUriConsumed: () -> Unit = {}) {
     }
 }
 
-/** 底部导航栏（两个 tab：会话/连接；发丝上边框 + 当前项近黑字）。 */
+/**
+ * 底部导航栏（三 tab：会话/助手/连接；发丝上边框）。
+ * 2026-12 形态修正（对齐原型）：选中项 = 40×30 accent-soft 药丸底 + float 上投阴影；
+ * 运行中红点 badge（会话 tab：任一会话在跑就亮——对齐会话页状态点语义）。
+ */
 @Composable
 private fun BottomNav(state: AppState) {
     Row(
@@ -780,7 +789,7 @@ private fun BottomNav(state: AppState) {
             .fillMaxWidth()
             .background(Lx.colors.Surface)
             .border(width = 1.dp, color = Lx.colors.Border)
-            .padding(vertical = Lx.space.s6),
+            .padding(vertical = Lx.space.s4),
         horizontalArrangement = Arrangement.SpaceEvenly,
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -788,7 +797,10 @@ private fun BottomNav(state: AppState) {
             val selected = state.route::class == item.route::class
             val interaction = remember { MutableInteractionSource() }
             // 选中态颜色过渡 120ms（门控关闭时瞬变）—— 桌面端 `.nav-item { transition: color .12s }`
-            val tint by lxAnimateColor(target = if (selected) Lx.colors.Fg else Lx.colors.FgFaint)
+            val tint by lxAnimateColor(target = if (selected) Lx.colors.Accent else Lx.colors.FgFaint)
+            // 会话 tab 的运行中 badge：任一会话在跑就亮（快照 ∪ busy 投影同一口径）
+            val anyRunning = item.route::class == Route.Sessions::class &&
+                state.real.sessions.any { it.running || state.real.isSessionRunning(it.id) }
             Column(
                 Modifier
                     .weight(1f)
@@ -800,12 +812,37 @@ private fun BottomNav(state: AppState) {
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(Lx.space.s2),
             ) {
-                Icon(
-                    imageVector = item.icon,
-                    contentDescription = item.label,
-                    tint = tint,
-                    modifier = Modifier.size(20.dp),
-                )
+                // 选中项 = 40×30 accent-soft 药丸底 + float 上投阴影；未选中 = 裸图标
+                Row(
+                    Modifier
+                        .lxShadow(LxElevation.Menu, Lx.radius.PillShape, Lx.shadow.Float.copy(alpha = 0.12f))
+                        .clip(Lx.radius.PillShape)
+                        .background(if (selected) Lx.colors.AccentSoft else androidx.compose.ui.graphics.Color.Transparent)
+                        // 触摸目标：图标区 40×30 药丸 + 内边距，点击热区不小于 44dp 高
+                        .padding(horizontal = 10.dp, vertical = 5.dp),
+                    horizontalArrangement = Arrangement.spacedBy(0.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = item.icon,
+                            contentDescription = item.label,
+                            tint = tint,
+                            modifier = Modifier.size(20.dp),
+                        )
+                        if (anyRunning) {
+                            // 运行中红点 badge（右上角；Danger 只给失败语义——这里
+                            // 用 DangerSoft 描边 + Danger 点，与错误条同色系）
+                            Box(
+                                Modifier
+                                    .align(Alignment.TopEnd)
+                                    .offset(x = 6.dp, y = (-2).dp)
+                                    .size(8.dp)
+                                    .background(Lx.colors.Danger, CircleShape),
+                            )
+                        }
+                    }
+                }
                 Text(
                     text = item.label,
                     style = Lx.type.Pill.copy(fontSize = Lx.type.Size10),

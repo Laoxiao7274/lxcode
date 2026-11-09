@@ -163,6 +163,7 @@ fun SettingsScreen(state: AppState) {
                 sub = "一轮跑完 / 高危工具等待确认时推送（推送通道未接，开关暂存本机）",
                 trailing = { SettingSwitch(checked = notifRun, onChecked = { notifRun = it }) },
             )
+            RowDivider()
             SettingRow(
                 icon = Icons.Filled.Mail,
                 title = "子会话进度",
@@ -189,6 +190,7 @@ fun SettingsScreen(state: AppState) {
                 },
                 onClick = { /* 模型默认值管理在桌面端 settings；手机端只读展示 */ },
             )
+            RowDivider()
             SettingRow(
                 icon = Icons.Filled.Dns,
                 title = "连接与投屏",
@@ -246,35 +248,17 @@ fun SettingsScreen(state: AppState) {
     }
 }
 
-/** 分组标题（原型 `.sect`：10.5sp/700/字距 .1em/--fg3、padding 18/20/8）。 */
+/** 分组标题（原型 `.sect`：10.5sp/700/字距 .1em/--fg3、上留白 18dp）—— ListKit.SectionHeader。 */
 @Composable
 private fun SettingSection(label: String) {
-    Text(
-        text = label,
-        style = TextStyle(
-            fontFamily = Lx.type.Sans,
-            fontSize = 10.5.sp,
-            fontWeight = FontWeight.Bold,
-            letterSpacing = 0.1.em,
-        ),
-        color = Lx.colors.FgFaint,
-        modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 18.dp, bottom = 8.dp),
-    )
+    SectionHeader(label)
 }
 
-/** 行组卡（`.rows-card`：Surface 底 + 1px 边 + 圆角 12 + 行间 1px 分隔线）。 */
+/** 行组卡（`.rows-card`）—— 抽到 ListKit.RowsCard（圆角 16 + 双层柔影 + 通宽分隔线，
+ *  会话页/连接页/设置页同一规格；SettingRow 之间手放 RowDivider）。 */
 @Composable
-private fun SettingRows(content: @Composable () -> Unit) {
-    Column(
-        Modifier
-            .padding(horizontal = 10.dp)
-            .fillMaxWidth()
-            .clip(Lx.radius.CardShape)
-            .background(Lx.colors.Surface)
-            .border(1.dp, Lx.colors.Border, Lx.radius.CardShape),
-    ) {
-        content()
-    }
+private fun SettingRows(content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit) {
+    RowsCard(content = content)
 }
 
 /** 设置行（`.row .ic/.tx/.t1/.t2` + trailing 插槽）。 */

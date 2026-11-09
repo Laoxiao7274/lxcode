@@ -1,11 +1,11 @@
 {
-  "version": "0.3.41",
-  "versionCode": 43,
-  "name": "lxcode-0.3.41-android.apk",
-  "size": 12010421,
-  "sha256": "f140ce437b2073183d483c76af0067615fbe3432c8bc74b46263e988a2dc5dff",
-  "url": "downloads/lxcode-0.3.41-android.apk",
+  "version": "0.3.42",
+  "versionCode": 44,
+  "name": "lxcode-0.3.42-android.apk",
+  "size": 12010428,
+  "sha256": "99097cfa4205a0178cbd120bd17a4af845a3cfc9a23ea3a0caa6b6ac026dc4a5",
+  "url": "downloads/lxcode-0.3.42-android.apk",
   "notes": [
-    "安卓 UI 重做：三套主题（深/浅/跟系统 × 三色温）、底部三 tab 导航、bottom sheet 选择器（模型/effort/审批/上下文）、任务清单条、性能优化"
+    "会话页与连接页 UI 对齐：ListKit 共用组卡规格、品牌条顶栏、会话行/项目行副标题、底部导航药丸选中态"
   ]
 }

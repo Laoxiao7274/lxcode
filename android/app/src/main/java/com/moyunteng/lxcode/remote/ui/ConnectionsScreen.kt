@@ -1,16 +1,17 @@
 // 连接页（ConnectionsScreen）+ 连接表单（ConnectionFormScreen）。
 //
-// 结构照桌面端连接管理弹窗（ConnectionManager.tsx / RemoteForm.tsx）做成一整页：
-//   ① 本机卡（绿点 + 「本机」+ mono「127.0.0.1:7789」+ active 时「当前」黑底小标签 +
-//      非 active 时右侧「连接」按钮）
-//   ② 每条远程连接（点 + 名字 + mono「{地址} · {掩码Token}」+ active 时「当前」+
-//      「断开」/「连接」+「编辑」+ 删除（两步确认变「确认」））
-//   ③ 底部「添加远程后端」
-//   ④ 提示行
-// 行视觉（对齐 .conn-item）：1px --border-soft 边、圆角 11、active 时边框 --fg-muted、
-// 点 7px（绿 = --success）。Token 掩码 = 保头尾各 4 位、中间 ••••。
+// 2026-12 形态改造（对齐原型「连接」页，与会话页/设置页统一组卡规格）：
+//   ① 品牌条顶栏（LOGO + LxCode + 连接药丸 + 齿轮→设置；tab 页不摆返回箭头）
+//   ② 「已连接」组卡（RowsCard 圆角 16 + 双层柔影 + 通宽分隔线）：每条 = 行形态
+//     （36dp .ic 图标容器 + 名字 + mono 地址·掩码Token + 右侧 8dp 状态点 + 行尾
+//     连接/断开与删除小操作；远程条目行点击进编辑页——编辑按钮不再占一行）
+//   ③ 「添加连接」组卡：扫码配对 / 手动新建（副标题 + 行尾 chevron）
+//   ④ 投屏 / 检查更新并入工具组卡（不再裸排）
+//   ⑤ 提示行 = InfoLine（12.5sp / --fg2 / AnnotatedString 强调段）
+// Token 掩码 = 保头尾各 4 位、中间 ••••。
 package com.moyunteng.lxcode.remote.ui
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -23,7 +24,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -31,11 +31,13 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Cast
+import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -49,13 +51,21 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.moyunteng.lxcode.design.component.LxButton
 import com.moyunteng.lxcode.design.component.LxButtonSize
 import com.moyunteng.lxcode.design.component.LxButtonVariant
 import com.moyunteng.lxcode.design.component.LxConfirmDialog
+import com.moyunteng.lxcode.design.component.LxIconButton
 import com.moyunteng.lxcode.design.component.LxListItem
 import com.moyunteng.lxcode.design.component.LxSpinner
 import com.moyunteng.lxcode.design.component.LxTextField
@@ -65,7 +75,9 @@ import com.moyunteng.lxcode.design.motion.lxEnter
 import com.moyunteng.lxcode.design.motion.lxPressScale
 import com.moyunteng.lxcode.design.motion.lxStaggerEnter
 import com.moyunteng.lxcode.design.token.Lx
+import com.moyunteng.lxcode.design.token.LxIcons
 import com.moyunteng.lxcode.remote.BuildConfig
+import com.moyunteng.lxcode.remote.R
 import com.moyunteng.lxcode.remote.model.BackendConn
 
 import com.moyunteng.lxcode.remote.model.LOCAL_ADDR
@@ -75,7 +87,16 @@ import com.moyunteng.lxcode.remote.model.nameFromAddr
 import kotlinx.coroutines.launch
 import java.util.UUID
 
-/** 连接页：头部 → 扫码配对 → 检查更新 → （失败错误条）→ 连接卡片列表 → 添加远程后端 → 提示行。 */
+/**
+ * 连接页（2026-12 形态改造，对齐原型「连接」页）：
+ *   顶栏 = 品牌条形态（LOGO + LxCode + 连接药丸 + 尾部齿轮→设置，与会话页统一——
+ *   tab 直达页不再摆返回箭头）；
+ *   「已连接」组卡 = 本机 + 远程连接条目（行形态：36dp .ic 图标容器 + 名字/地址
+ *   + 右侧 8dp 状态点 + 行尾小操作；行点击进编辑页——操作按钮不再各占一行）；
+ *   「添加连接」组卡 = 扫码配对 / 手动新建（副标题 + 行尾 chevron）；
+ *   工具组卡 = 投屏 / 检查更新（并入组卡，不再裸排）；
+ *   提示行 = InfoLine 规格（12.5sp / --fg2 / AnnotatedString 强调段）。
+ */
 @Composable
 fun ConnectionsScreen(state: AppState) {
     Column(
@@ -83,102 +104,130 @@ fun ConnectionsScreen(state: AppState) {
             .fillMaxSize()
             .background(Lx.colors.Bg),
     ) {
-        ScreenHeader(
-            title = "连接",
-            onBack = { state.route = Route.Sessions },
-        )
+        // 品牌条顶栏（与会话页同一形态；连接页是底部导航 tab——不摆返回键）
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .background(Lx.colors.Surface)
+                .padding(horizontal = Lx.space.s10, vertical = Lx.space.s6),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Lx.space.s8),
+        ) {
+            Box(
+                Modifier
+                    .size(20.dp)
+                    .clip(RoundedCornerShape(Lx.radius.r6)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Image(
+                    painter = painterResource(R.drawable.ic_logo),
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop,
+                )
+            }
+            Text(
+                text = "LxCode",
+                style = Lx.type.ListTitle.copy(
+                    fontSize = 15.5.sp,
+                    fontWeight = FontWeight.Bold,
+                ),
+                color = Lx.colors.Fg,
+            )
+            Box(
+                Modifier
+                    .size(width = 1.dp, height = 14.dp)
+                    .background(Lx.colors.Border),
+            )
+            ConnPill(
+                online = state.pillOnline(),
+                name = state.pillName(),
+                onClick = { state.route = Route.Connections },
+            )
+            Box(Modifier.weight(1f))
+            LxIconButton(onClick = { state.route = Route.Settings }) {
+                Icon(
+                    imageVector = Icons.Filled.Settings,
+                    contentDescription = "设置",
+                    tint = Lx.colors.FgMuted,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
 
         Column(
             Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(Lx.space.s12),
-            verticalArrangement = Arrangement.spacedBy(Lx.space.s10),
+                .padding(vertical = Lx.space.s4),
+            verticalArrangement = Arrangement.spacedBy(Lx.space.s4),
         ) {
-            // 扫码配对入口（纯远控壳：配对不再是底部导航 tab，改从连接页进入）
-            LxListItem(
-                title = "扫码配对",
-                leading = { SmallIcon(Icons.Filled.QrCode2, Lx.colors.FgMuted, size = 15) },
-                onClick = { state.route = Route.Pairing },
-            )
-
-            // 投屏（第一阶段：只看——手机实时看电脑画面；screen.* 协议）。
-            // 0.3.30 拍板：入口点击 = 直接开始（远程工具语义——点了就是看画面）。
-            // 成功投屏过 = 按记忆的显示器/清晰度直接发 screen.start，路由仍切投屏页，
-            // active=true 上报后自然进观看态；首次使用落设置页选参数（选过才出现快捷）。
-            // 失败回设置页看错误（screenToast），不吞。
-            // 挂起语义：已在投屏（active=true）时点击 = 只进投屏页（缩小态恢复观看，
-            // 可再放大），**不再发 screen.start**——重复 start 会让后端按命令电平
-            // 重起 ffmpeg（画面闪断一拍，纯浪费）。
-            LxListItem(
-                title = "投屏（查看电脑画面）",
-                leading = { SmallIcon(Icons.Filled.Cast, Lx.colors.FgMuted, size = 15) },
-                onClick = {
-                    val real = state.real
-                    real.refreshScreen()
-                    if (real.screenState?.active != true &&
-                        state.hasCastBefore() && !real.screenBusy
-                    ) {
-                        real.startScreen(state.screenPickMonitor, state.screenPickQuality) { err ->
-                            if (err != null) state.screenToast = err
-                            else state.rememberScreenCast(state.screenPickMonitor, state.screenPickQuality)
-                        }
-                    }
-                    state.route = Route.Screen
-                },
-            )
-
-            // 检查更新（手动入口）：启动时也会自动检查（失败/已最新都静默）；
-            // 这里三态齐全——有新版弹层给详情 + 下载按钮，已最新/失败给 toast。
-            UpdateCheckItem(state)
-
             // 后端不可达错误条（全局态：连接失败时浮在卡片列表上方；重试重连当前凭证）
             val real = state.real
             if (real.phase == com.moyunteng.lxcode.remote.net.RealPhase.Failed) {
-                UnreachableBar(
-                    onRetry = { real.retry(state.realAddr, state.realToken) },
-                    message = real.phaseMessage ?: "后端不可达：无法连接 ws://${state.realAddr}/rpc",
-                )
-            }
-
-            state.conns.forEachIndexed { i, conn ->
-                ConnCard(
-                    modifier = Modifier.lxStaggerEnter(count = state.conns.size + 1, index = i),
-                    conn = conn,
-                    // 「当前」标签：正在连接的条目，或最后选中（重启后未连也标记，作为
-                    // 重连目标）；「连接/断开」按钮看 connected——见 ConnCard 的 KDoc
-                    active = (state.realOn && state.isCurrentConn(conn.id)) ||
-                        (!state.realOn && conn.id == state.activeConnId),
-                    connected = state.realOn && state.isCurrentConn(conn.id),
-                    // 「连接」动作 = 真实连接：把条目的 addr/token 设为真实模式凭证并连
-                    // （等价于调试区开关 + 手填地址，入口从调试区收口到连接列表）
-                    onConnect = { state.connectTo(conn) },
-                    onDisconnect = { state.disconnectReal() },
-                    onEdit = {
-                        state.editing = ConnDraft(conn.id, conn.addr, conn.name, conn.token, isNew = false)
-                        state.route = Route.ConnForm(fromScan = false)
-                    },
-                    onDelete = { state.removeConn(conn.id) },
-                )
-            }
-
-            // ③ 底部「+ 添加远程后端」（弹层入场 pop-in：translateY(-4dp) + scale .98，160ms）
-            val addInteraction = remember { MutableInteractionSource() }
-            Row(
-                Modifier
-                    .lxPressScale(addInteraction)
-                    .lxEnter(
-                        spec = LxEnterSpec.PopIn,
-                        delayMillis = LxStagger.delayMillis(state.conns.size + 1, state.conns.size),
+                Box(Modifier.padding(horizontal = Lx.space.s8)) {
+                    UnreachableBar(
+                        onRetry = { real.retry(state.realAddr, state.realToken) },
+                        message = real.phaseMessage ?: "后端不可达：无法连接 ws://${state.realAddr}/rpc",
                     )
-                    .fillMaxWidth()
-                    .clip(Lx.radius.FieldShape)
-                    .background(Lx.colors.Surface)
-                    .border(1.dp, Lx.colors.BorderStrong, Lx.radius.FieldShape)
-                    .clickable(
-                        interactionSource = addInteraction,
-                        indication = null,
-                    ) {
+                }
+            }
+
+            // 「已连接」分组标题 + 连接组卡
+            SectionHeader("已连接")
+            RowsCard {
+                state.conns.forEachIndexed { i, conn ->
+                    if (i > 0) RowDivider()
+                    ConnRow(
+                        modifier = Modifier.lxStaggerEnter(count = state.conns.size, index = i),
+                        conn = conn,
+                        // 「当前」标签：正在连接的条目，或最后选中（重启后未连也标记，作为
+                        // 重连目标）；「连接/断开」按钮看 connected——见 ConnRow 的 KDoc
+                        active = (state.realOn && state.isCurrentConn(conn.id)) ||
+                            (!state.realOn && conn.id == state.activeConnId),
+                        connected = state.realOn && state.isCurrentConn(conn.id),
+                        // 「连接」动作 = 真实连接：把条目的 addr/token 设为真实模式凭证并连
+                        // （等价于调试区开关 + 手填地址，入口从调试区收口到连接列表）
+                        onConnect = { state.connectTo(conn) },
+                        onDisconnect = { state.disconnectReal() },
+                        // 行点击进编辑页（远程条目）——编辑不再占独立按钮行
+                        onEdit = if (conn.local) null else {
+                            {
+                                state.editing = ConnDraft(conn.id, conn.addr, conn.name, conn.token, isNew = false)
+                                state.route = Route.ConnForm(fromScan = false)
+                            }
+                        },
+                        onDelete = { state.removeConn(conn.id) },
+                    )
+                }
+            }
+
+            // 「添加连接」分组标题 + 入口组卡（扫码 / 手动新建：副标题 + 行尾 chevron）
+            SectionHeader("添加连接")
+            RowsCard {
+                // 扫码配对入口（纯远控壳：配对不再是底部导航 tab，改从连接页进入）
+                LxListItem(
+                    title = "扫码配对",
+                    subtitle = "扫桌面端「远程访问」页的二维码，凭证自动填入",
+                    leading = { SmallIconContainer(icon = Icons.Filled.QrCode2) },
+                    trailing = { Chevron() },
+                    onClick = { state.route = Route.Pairing },
+                )
+                RowDivider()
+                // 手动新建（弹层入场 pop-in：translateY(-4dp) + scale .98，160ms）
+                val addInteraction = remember { MutableInteractionSource() }
+                LxListItem(
+                    title = "手动新建",
+                    subtitle = "填后端地址与 Token（如 10.0.0.8:7789）",
+                    leading = { SmallIconContainer(icon = Icons.Filled.Add) },
+                    trailing = { Chevron() },
+                    modifier = Modifier
+                        .lxPressScale(addInteraction)
+                        .lxEnter(
+                            spec = LxEnterSpec.PopIn,
+                            delayMillis = LxStagger.delayMillis(2, 1),
+                        ),
+                    onClick = {
                         state.editing = ConnDraft(
                             id = UUID.randomUUID().toString(),
                             addr = "",
@@ -187,28 +236,89 @@ fun ConnectionsScreen(state: AppState) {
                             isNew = true,
                         )
                         state.route = Route.ConnForm(fromScan = false)
-                    }
-                    .padding(vertical = Lx.space.s10),
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                SmallIcon(Icons.Filled.Add, Lx.colors.FgMuted)
-                Box(Modifier.width(Lx.space.s6))
-                Text(
-                    text = "添加远程后端",
-                    style = Lx.type.Button,
-                    color = Lx.colors.FgMuted,
+                    },
                 )
             }
 
-            // ④ 提示行
-            Text(
-                text = "要连接一台桌面端？在它的「连接 → 远程访问」页展示二维码，" +
-                    "点上方「扫码配对」扫它，凭证自动填入。",
-                style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size10_5),
-                color = Lx.colors.FgFaint,
+            // 投屏 / 检查更新并入组卡（2026-12：不再裸排 LxListItem）
+            RowsCard {
+                // 投屏（第一阶段：只看——手机实时看电脑画面；screen.* 协议）。
+                // 0.3.30 拍板：入口点击 = 直接开始（远程工具语义——点了就是看画面）。
+                // 成功投屏过 = 按记忆的显示器/清晰度直接发 screen.start，路由仍切投屏页，
+                // active=true 上报后自然进观看态；首次使用落设置页选参数（选过才出现快捷）。
+                // 失败回设置页看错误（screenToast），不吞。
+                // 挂起语义：已在投屏（active=true）时点击 = 只进投屏页（缩小态恢复观看，
+                // 可再放大），**不再发 screen.start**——重复 start 会让后端按命令电平
+                // 重起 ffmpeg（画面闪断一拍，纯浪费）。
+                LxListItem(
+                    title = "投屏（查看电脑画面）",
+                    leading = { SmallIconContainer(icon = Icons.Filled.Cast) },
+                    trailing = { Chevron() },
+                    onClick = {
+                        val r = state.real
+                        r.refreshScreen()
+                        if (r.screenState?.active != true &&
+                            state.hasCastBefore() && !r.screenBusy
+                        ) {
+                            r.startScreen(state.screenPickMonitor, state.screenPickQuality) { err ->
+                                if (err != null) state.screenToast = err
+                                else state.rememberScreenCast(state.screenPickMonitor, state.screenPickQuality)
+                            }
+                        }
+                        state.route = Route.Screen
+                    },
+                )
+                RowDivider()
+                // 检查更新（手动入口）：启动时也会自动检查（失败/已最新都静默）；
+                // 这里三态齐全——有新版弹层给详情 + 下载按钮，已最新/失败给 toast。
+                UpdateCheckItem(state)
+            }
+
+            // 提示行（InfoLine 规格：12.5sp / --fg2 / AnnotatedString 强调段）
+            InfoLine(
+                text = buildAnnotatedString {
+                    append("要连接一台桌面端？在它的「连接 → 远程访问」页展示二维码，")
+                    withStyle(SpanStyle(fontWeight = FontWeight.SemiBold, color = Lx.colors.Fg)) {
+                        append("点「扫码配对」扫它")
+                    }
+                    append("，凭证自动填入。")
+                },
+                modifier = Modifier.padding(top = Lx.space.s8),
             )
         }
+    }
+}
+
+/** 行尾 chevron（对齐原型行尾箭头：14dp、--fg-faint）。 */
+@Composable
+private fun Chevron() {
+    Icon(
+        imageVector = LxIcons.ChevronRight,
+        contentDescription = null,
+        tint = Lx.colors.FgFaint,
+        modifier = Modifier.size(14.dp),
+    )
+}
+
+/** 36dp .ic 图标容器（对齐 `.row .ic`：--soft 底 + 1px 边 + 圆角 10）。 */
+@Composable
+private fun SmallIconContainer(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    accent: Boolean = false,
+) {
+    Box(
+        Modifier
+            .size(36.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(if (accent) Lx.colors.AccentSoft else Lx.colors.BorderSoft)
+            .border(
+                1.dp,
+                if (accent) androidx.compose.ui.graphics.Color.Transparent else Lx.colors.Border,
+                RoundedCornerShape(10.dp),
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        SmallIcon(icon, if (accent) Lx.colors.Accent else Lx.colors.FgMuted, size = 16)
     }
 }
 
@@ -327,91 +437,91 @@ private fun UnreachableBar(onRetry: () -> Unit, message: String? = null) {
     BackendDownBar(down = true, reconnecting = false, onRetry = onRetry, message = message)
 }
 
-/** 一条连接卡（本机与远程共用；本机不显示编辑/删除）。
- *  [active] = 「当前」标签（最后选中/正在连接的条目）；[connected] = 真实连接
- *  正跑在这条上（决定「断开」/「连接」按钮——重启后按 realOn 持久化自动恢复连接，
- *  恢复失败/条目被删时当前条目仍显示「连接」按钮可一键重连，而不是卡在
- *  没有意义的「断开」上）。 */
+/**
+ * 一条连接行（本机与远程共用；本机不显示编辑/删除）。行形态（2026-12 改造）：
+ * 36dp .ic 图标容器（本机 = accent-soft 底）+ 名字/mono 地址 + 右侧 8dp 状态点 +
+ * 行尾小操作（连接/断开、删除——两步确认）；行点击（远程条目）进编辑页。
+ * [active] = 「当前」标签（最后选中/正在连接的条目）；[connected] = 真实连接
+ * 正跑在这条上（决定「断开」/「连接」按钮——重启后按 realOn 持久化自动恢复连接，
+ * 恢复失败/条目被删时当前条目仍显示「连接」按钮可一键重连，而不是卡在
+ * 没有意义的「断开」上）。
+ */
 @Composable
-private fun ConnCard(
+private fun ConnRow(
     conn: BackendConn,
     active: Boolean,
     connected: Boolean,
     modifier: Modifier = Modifier,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
-    onEdit: () -> Unit,
+    onEdit: (() -> Unit)?,
     onDelete: () -> Unit,
 ) {
-    Column(
+    val interaction = remember { MutableInteractionSource() }
+    Row(
         modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(Lx.radius.r10 + 1.dp))
-            .background(Lx.colors.Surface)
-            .border(
-                width = 1.dp,
-                color = if (active) Lx.colors.FgMuted else Lx.colors.BorderSoft,
-                shape = RoundedCornerShape(Lx.radius.r10 + 1.dp),
+            .clip(Lx.radius.RowShape)
+            .then(
+                if (onEdit != null) {
+                    Modifier.clickable(interactionSource = interaction, indication = null, onClick = onEdit)
+                } else {
+                    Modifier
+                },
             )
-            .padding(horizontal = Lx.space.s12, vertical = Lx.space.s10),
-        verticalArrangement = Arrangement.spacedBy(Lx.space.s8),
+            .padding(horizontal = Lx.space.s10, vertical = Lx.space.s8),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Lx.space.s10),
     ) {
-        Row(
-            Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(Lx.space.s10),
-        ) {
+        // 36dp 图标容器（本机 = accent-soft 底 + accent 图标；远程 = --soft 底）
+        SmallIconContainer(
+            icon = if (conn.local) Icons.Filled.Computer else Icons.Filled.Dns,
+            accent = conn.local,
+        )
+        Column(Modifier.weight(1f)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Lx.space.s6),
+            ) {
+                Text(
+                    text = conn.name,
+                    style = Lx.type.ListTitle.copy(fontWeight = FontWeight.SemiBold),
+                    color = Lx.colors.Fg,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (active) CurrentTag()
+            }
+            Text(
+                text = if (conn.local) {
+                    LOCAL_ADDR
+                } else {
+                    "${conn.addr} · ${maskToken(conn.token)}"
+                },
+                style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size11_5),
+                color = Lx.colors.FgFaint,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        // 右侧 8dp 状态点（已连接 = --success 绿；未连接不占位）
+        if (connected) {
             Box(
                 Modifier
-                    .size(7.dp)
-                    .background(if (active) Lx.colors.Success else Lx.colors.BorderStrong, CircleShape),
+                    .size(8.dp)
+                    .background(Lx.colors.Success, CircleShape),
             )
-            Column(Modifier.weight(1f)) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(Lx.space.s6),
-                ) {
-                    Text(
-                        text = conn.name,
-                        style = Lx.type.ListTitle,
-                        color = Lx.colors.Fg,
-                    )
-                    if (active) CurrentTag()
-                }
-                Text(
-                    text = if (conn.local) {
-                        LOCAL_ADDR
-                    } else {
-                        "${conn.addr} · ${maskToken(conn.token)}"
-                    },
-                    style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size11_5),
-                    color = Lx.colors.FgFaint,
-                )
-            }
         }
-
-        Row(
-            Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(Lx.space.s6, Alignment.End),
-        ) {
-            if (connected) {
-                if (!conn.local) {
-                    LxButton("断开", onDisconnect, variant = LxButtonVariant.Ghost, size = LxButtonSize.Small)
-                }
-            } else {
-                LxButton("连接", onConnect, variant = LxButtonVariant.Ghost, size = LxButtonSize.Small)
-            }
+        // 行尾小操作（行内紧凑：连接/断开 + 删除；编辑 = 行点击进表单页）
+        if (connected) {
             if (!conn.local) {
-                LxButton(
-                    text = "编辑",
-                    onClick = onEdit,
-                    variant = LxButtonVariant.Secondary,
-                    size = LxButtonSize.Small,
-                    leadingIcon = { SmallIcon(Icons.Filled.Edit, Lx.colors.FgMuted, size = 12) },
-                )
-                DeleteBtn(onDelete)
+                LxButton("断开", onDisconnect, variant = LxButtonVariant.Ghost, size = LxButtonSize.Small)
             }
+        } else {
+            LxButton("连接", onConnect, variant = LxButtonVariant.Ghost, size = LxButtonSize.Small)
+        }
+        if (!conn.local) {
+            DeleteBtn(onDelete)
         }
     }
 }
@@ -654,7 +764,7 @@ private fun UpdateCheckItem(state: AppState) {
     LxListItem(
         title = "检查更新",
         subtitle = "当前 v${BuildConfig.VERSION_NAME}",
-        leading = { SmallIcon(Icons.Filled.SystemUpdate, Lx.colors.FgMuted, size = 15) },
+        leading = { SmallIconContainer(icon = Icons.Filled.SystemUpdate) },
         trailing = { if (checking) LxSpinner() },
         onClick = {
             if (checking) return@LxListItem
