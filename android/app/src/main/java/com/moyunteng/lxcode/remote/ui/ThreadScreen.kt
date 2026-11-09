@@ -1124,8 +1124,9 @@ internal fun ToolCard(block: ThreadBlock.Tool) {
     // 展开态按调用 id 记忆（对齐原型 `.toolrow.open`：点行切换输出可见性）；
     // 流式整块 copy 重建不重置展开。
     var open by remember(block.id.ifBlank { block.title + block.argsSummary }) { mutableStateOf(false) }
-    // 无输出的运行中行没有可展开的内容——展开钮只对有输出的行有意义
-    val canExpand = block.output != null
+    // 无输出/空白输出的行没有可展开的内容——展开钮只对有内容的行有意义
+    //（空判定与下方输出区同一口径：全行 trim 空 = 无内容）
+    val canExpand = block.output != null && !block.output.split("\n").all { it.isBlank() }
 
     Column(verticalArrangement = Arrangement.spacedBy(Lx.space.s6)) {
         Row(
@@ -1199,11 +1200,17 @@ internal fun ToolCard(block: ThreadBlock.Tool) {
 
         // 输出（`.toolrow.open + .toolout`：默认收起，展开显示）。
         // 错误输出恒显（失败是必须看见的信息，藏起来就是「工具明明失败了却像成功」）。
+        // 空判定对齐桌面 TerminalCard 的 empty 口径：**全行 trim 空才算空**
+        //（只有空白/换行的输出 != null 也不是内容）——空框是「光有框里面空」的
+        // 另一个来源。未结束 = 等待语义；已结束而空白 = 「（无输出）」占位
+        //（错误输出除外：失败状态行本身就是要显示的信息，保留）。
         val output = block.output
+        val outputBlank = output != null && output.split("\n").all { it.isBlank() }
         when {
-            output != null && block.isError -> FoldableOutput(output, danger = true)
-            output != null -> if (open) FoldableOutput(output, danger = false) else Unit
-            else -> SmallEmpty("等待工具输出…")
+            block.isError && output != null && !outputBlank -> FoldableOutput(output, danger = true)
+            output != null && !outputBlank -> if (open) FoldableOutput(output, danger = false) else Unit
+            block.running -> SmallEmpty("等待工具输出…")
+            else -> SmallEmpty("（无输出）")
         }
     }
 }
@@ -1571,6 +1578,10 @@ internal fun CompactionCard(block: ThreadBlock.Compaction) {
  */
 @Composable
 internal fun TodoCard(items: List<com.moyunteng.lxcode.remote.model.TodoItem>) {
+    // 空清单 = 还没有可显示的任务——渲染出来就是「光有框里面空」（用户报的现象）。
+    // 空清单一律不画；「清单清空」的语义由 reducer 处理（todo.updated 空 items
+    // 移除既有 Todo 块，恢复到无清单态），UI 不再兜一层占位框。
+    if (items.isEmpty()) return
     val done = items.count { it.status == "done" }
     val active = items.count { it.status == "active" }
     val pending = items.size - done - active

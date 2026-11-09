@@ -1,11 +1,12 @@
 {
-  "version": "0.3.43",
-  "versionCode": 45,
-  "name": "lxcode-0.3.43-android.apk",
-  "size": 12026806,
-  "sha256": "e322b18bd31e7e8aa1be03e49c0d7244b6202cafc860068917ba498f92c49c2a",
-  "url": "downloads/lxcode-0.3.43-android.apk",
+  "version": "0.3.44",
+  "versionCode": 46,
+  "name": "lxcode-0.3.44-android.apk",
+  "size": 12026800,
+  "sha256": "ab36903ce179c6bce448e07ce9ee3302b4dff02696554419ab5e6bf6eff1179f",
+  "url": "downloads/lxcode-0.3.44-android.apk",
   "notes": [
-    "样式全面对齐设计稿：消息形态、工具输出终端底、毛玻璃导航、日分隔线等 32 项"
+    "安卓空框修复 9 处：TodoCard 空清单、空输出占位、派发卡结论兜底、图片失败态等",
+    "底部导航去 blur：图标文字被模糊的根因修复，保留 86% 半透明底"
   ]
 }

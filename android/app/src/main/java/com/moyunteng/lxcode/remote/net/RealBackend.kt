@@ -32,6 +32,7 @@ import com.moyunteng.lxcode.remote.model.SessionMeta
 import com.moyunteng.lxcode.remote.model.SessionStats
 import com.moyunteng.lxcode.remote.model.ThreadBlock
 import com.moyunteng.lxcode.remote.model.TodoItem
+import com.moyunteng.lxcode.remote.model.todoItemOf
 import com.moyunteng.lxcode.remote.model.applyRunningDispatches
 import com.moyunteng.lxcode.remote.model.isDispatchFinal
 import com.moyunteng.lxcode.remote.model.isDispatchPlaceholder
@@ -713,7 +714,7 @@ class RealBackend {
         asst.streamingIdx = -1
         todosArr?.let { arr ->
             val list = (0 until arr.length()).map { arr.getJSONObject(it) }
-                .map { TodoItem(it.optString("content"), it.optString("status")) }
+                .map { todoItemOf(it.optString("content"), it.optString("status")) }
             asst.blocks.add(ThreadBlock.Todo(list))
         }
         r.optJSONObject("context")?.let { asst.contextUsage = parseContext(it) }
@@ -845,7 +846,8 @@ class RealBackend {
                     }
                     asst.endedDispatches.add(dispatchId)
                     asst.blocks[i] = d.copy(
-                        conclusion = p.optString("result"),
+                        // 空 result = 子 Agent 没产出文本结论（对齐历史路径的既有兜底）
+                        conclusion = p.optString("result").ifBlank { "（子 Agent 没有产出文本结论）" },
                         sessionId = p.optString("session_id", "").ifBlank { d.sessionId },
                         done = true,
                         isError = p.optBoolean("is_error"),
@@ -962,7 +964,9 @@ class RealBackend {
                     if (i >= 0) {
                         val d = asst.blocks[i] as ThreadBlock.Dispatch
                         asst.blocks[i] = d.copy(
-                            conclusion = d.conclusion.ifBlank { body },
+                            // 空 result = 子 Agent 没产出文本结论（dispatchEnd 同款兜底；
+                            // toolResult 先到，不兜则卡上结论行在 dispatchEnd 前空白）
+                            conclusion = d.conclusion.ifBlank { body.ifBlank { "（子 Agent 没有产出文本结论）" } },
                             sessionId = childSid.ifBlank { d.sessionId },
                         )
                     }
@@ -1062,9 +1066,14 @@ class RealBackend {
                 if (sid != asst.currentId) return
                 val items = p.optJSONArray("items") ?: return
                 val list = (0 until items.length()).map { items.getJSONObject(it) }
-                    .map { TodoItem(it.optString("content"), it.optString("status")) }
+                    .map { todoItemOf(it.optString("content"), it.optString("status")) }
                 val i = asst.blocks.indexOfFirst { it is ThreadBlock.Todo }
-                if (i >= 0) asst.blocks[i] = ThreadBlock.Todo(list) else asst.blocks.add(ThreadBlock.Todo(list))
+                when {
+                    // 空清单 = 清空：移除既有块（与主域 reducer 同一条口径）
+                    list.isEmpty() -> if (i >= 0) asst.blocks.removeAt(i)
+                    i >= 0 -> asst.blocks[i] = ThreadBlock.Todo(list)
+                    else -> asst.blocks.add(ThreadBlock.Todo(list))
+                }
             }
 
             "chat.compacted" -> {
@@ -2043,7 +2052,9 @@ class RealBackend {
                     }
                     if (dispatchId.isNotEmpty()) endedDispatches.add(dispatchId)
                     blocks[i] = d.copy(
-                        conclusion = p.optString("result"),
+                        // 空 result = 子 Agent 没产出文本结论（对齐历史路径的既有兜底），
+                        // 不兜就是卡上结论行整行空白
+                        conclusion = p.optString("result").ifBlank { "（子 Agent 没有产出文本结论）" },
                         // 子会话 id 以 dispatchEnd 的为准（续跑时 arguments.session 可能
                         // 为空，而这里永远是本次真正用的那个）——缺了就保留卡上的。
                         sessionId = p.optString("session_id", "").ifBlank { d.sessionId },
@@ -2339,9 +2350,15 @@ class RealBackend {
                 if (sid != currentSessionId) return
                 val items = p.optJSONArray("items") ?: return
                 val list = (0 until items.length()).map { items.getJSONObject(it) }
-                    .map { TodoItem(it.optString("content"), it.optString("status")) }
+                    .map { todoItemOf(it.optString("content"), it.optString("status")) }
                 val i = blocks.indexOfFirst { it is ThreadBlock.Todo }
-                if (i >= 0) blocks[i] = ThreadBlock.Todo(list) else blocks.add(ThreadBlock.Todo(list))
+                when {
+                    // 空清单 = Agent 把清单清空了：移除既有 Todo 块恢复到无清单态
+                    //（照旧替换/追加空块就是「光有框里面空」的空框）
+                    list.isEmpty() -> if (i >= 0) blocks.removeAt(i)
+                    i >= 0 -> blocks[i] = ThreadBlock.Todo(list)
+                    else -> blocks.add(ThreadBlock.Todo(list))
+                }
             }
 
             "session.changed" -> refreshSessions()
@@ -2756,7 +2773,7 @@ class RealBackend {
         // 会找到并替换它）；缺席/空 = 不插（老后端或没建过清单——不编空块）。
         todosArr?.let { arr ->
             val list = (0 until arr.length()).map { arr.getJSONObject(it) }
-                .map { TodoItem(it.optString("content"), it.optString("status")) }
+                .map { todoItemOf(it.optString("content"), it.optString("status")) }
             blocks.add(ThreadBlock.Todo(list))
         }
         r.optJSONObject("context")?.let { contextUsage = parseContext(it) }
@@ -2872,7 +2889,7 @@ class RealBackend {
         val prevBlocks = childBlocks.toList()
         val snapshotTodos = todosArr?.let { arr ->
             (0 until arr.length()).map { arr.getJSONObject(it) }
-                .map { TodoItem(it.optString("content"), it.optString("status")) }
+                .map { todoItemOf(it.optString("content"), it.optString("status")) }
         }
         val merged = mergeChildLiveTail(parsed, prevBlocks)
         childBlocks.clear()
@@ -3164,7 +3181,7 @@ class RealBackend {
         //（用户报的「任务列表有时不显示」：刷新后清单永远停在初稿）。
         if (isDispatchFinal(d.done, d.isError, d.conclusion)) return
         val list = (0 until items.length()).map { items.getJSONObject(it) }
-            .map { TodoItem(it.optString("content"), it.optString("status")) }
+            .map { todoItemOf(it.optString("content"), it.optString("status")) }
         tl[i] = d.copy(
             childTodosDone = list.count { it.status == "done" },
             childTodosTotal = list.size,
@@ -3366,7 +3383,7 @@ class RealBackend {
     private fun childMergeTodos(items: org.json.JSONArray?) {
         if (items == null) return
         val list = (0 until items.length()).map { items.getJSONObject(it) }
-            .map { TodoItem(it.optString("content"), it.optString("status")) }
+            .map { todoItemOf(it.optString("content"), it.optString("status")) }
         // 落**会话级状态**（置底清单条数据源），不再往时间线插 Todo 块。
         childTodos = list
     }

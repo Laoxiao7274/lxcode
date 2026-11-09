@@ -79,6 +79,14 @@ data class ProjectMeta(val id: String, val name: String, val path: String)
 data class TodoItem(val content: String, val status: String) // pending | active | done
 
 /**
+ * 后端载荷构造 [TodoItem] 的唯一入口：content 空白兜「（无内容）」——
+ * 渲染侧（TodoCard 条目行 / ChildTodoBar 当前任务）没有各自的兜底，空 content
+ * 就是清单里一行看不见字（用户报的「里面空」的另一来源）。
+ */
+fun todoItemOf(content: String, status: String): TodoItem =
+    TodoItem(content.ifBlank { "（无内容）" }, status)
+
+/**
  * 附件元数据（对齐 `llm.AttachmentRef` / 桌面端 AttachmentMeta）。
  * [path] = 相对附件根的引用（`<session-id>/<文件名>`）；[kind] = image | file。
  */

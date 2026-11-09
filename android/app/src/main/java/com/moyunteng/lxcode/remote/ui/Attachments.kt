@@ -30,6 +30,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.BrokenImage
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Image
@@ -75,14 +76,21 @@ private val AttTileShape = RoundedCornerShape(12.dp)
  *  同一 url 的 gallery 网格重复解码（单图 + 灯箱两处同 url 各一份）。命中缓存 = 零 IO。 */
 private val attachmentBitmapCache = androidx.collection.LruCache<String, Bitmap>(128)
 
-/** url → ImageBitmap（HTTP 同步取件 + BitmapFactory 解码，IO 线程；LruCache 命中免 IO）。
- *  null = 失败（占位态）；produceState 在 url 变化时重取——调用方读 .value。 */
+/** url → ImageBitmap + 加载状态（IO 线程取件，LruCache 命中免 IO）。
+ *  返回 null = 还在加载（produceState 未产出，暂态）；Failure = 已失败（HTTP 非 2xx /
+ *  解码异常 / url 缺席，终态）。两个态必须分得开：加载中是 spinner 语义，失败是
+ *  坏消息要看得见（对齐桌面端 att-dead 语义；不区分的话失败图永远转圈）。 */
+private enum class AttLoadState { Done, Failure }
+
 @Composable
-private fun rememberAttachmentBitmap(url: String?): ImageBitmap? =
-    produceState<ImageBitmap?>(initialValue = null, url) {
-        if (url == null) return@produceState
+private fun rememberAttachmentState(url: String?): Pair<ImageBitmap?, AttLoadState>? {
+    val state = produceState<Pair<ImageBitmap?, AttLoadState>?>(initialValue = null, url) {
+        if (url == null) {
+            value = null to AttLoadState.Failure
+            return@produceState
+        }
         attachmentBitmapCache.get(url)?.let {
-            value = it.asImageBitmap()
+            value = it.asImageBitmap() to AttLoadState.Done
             return@produceState
         }
         val bmp = withContext(Dispatchers.IO) {
@@ -103,8 +111,10 @@ private fun rememberAttachmentBitmap(url: String?): ImageBitmap? =
             }
         }
         if (bmp != null) attachmentBitmapCache.put(url, bmp)
-        value = bmp?.asImageBitmap()
-    }.value
+        value = bmp?.asImageBitmap() to (if (bmp != null) AttLoadState.Done else AttLoadState.Failure)
+    }
+    return state.value
+}
 
 /** 消息侧用户附件区（对齐桌面端 UserAttachmentSection）：
  *  图片 gallery（多图 64dp 方 tile 网格 / 单图长边 240dp）+ 文件卡行（240×64）。
@@ -155,7 +165,7 @@ fun UserAttachmentSection(
 /** 消息侧图片 tile（原型 `.uatt img`：96×68、object-fit cover、r12 + 1px --line 边）。 */
 @Composable
 private fun GridImage(url: String, badge: String?, onClick: () -> Unit) {
-    val bmp = rememberAttachmentBitmap(url)
+    val state = rememberAttachmentState(url)
     Box(
         Modifier
             .size(width = 96.dp, height = 68.dp)
@@ -165,15 +175,17 @@ private fun GridImage(url: String, badge: String?, onClick: () -> Unit) {
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        if (bmp != null) {
-            androidx.compose.foundation.Image(
-                bitmap = bmp,
+        when {
+            state != null && state.first != null -> androidx.compose.foundation.Image(
+                bitmap = state.first!!,
                 contentDescription = "图片附件",
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize(),
             )
-        } else {
-            LoadingOrBroken()
+            // 失败 = 终态：BrokenImage 图标（看得见的坏消息，不是一直转圈）
+            state != null -> LoadingOrBroken(loading = false)
+            // 加载中 = 暂态：spinner
+            else -> LoadingOrBroken(loading = true)
         }
         if (badge != null) {
             Box(
@@ -192,16 +204,25 @@ private fun GridImage(url: String, badge: String?, onClick: () -> Unit) {
     }
 }
 
-/** 图片加载中/失败占位：灰底 + 图标（加载完成的帧会被 Image 盖住）。 */
+/** 图片加载/失败占位：加载中 = 旋转扇（暂态）；失败 = BrokenImage 图标（终态——
+ *  加载完成的帧会被 Image 盖住，这里的两个态只服务于没加载出图的窗口）。 */
 @Composable
-private fun LoadingOrBroken() {
+private fun LoadingOrBroken(loading: Boolean) {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Icon(
-            imageVector = Icons.Filled.Image,
-            contentDescription = null,
-            tint = Lx.colors.FgFaint,
-            modifier = Modifier.size(18.dp),
-        )
+        if (loading) {
+            androidx.compose.material3.CircularProgressIndicator(
+                modifier = Modifier.size(16.dp),
+                strokeWidth = 2.dp,
+                color = Lx.colors.FgFaint,
+            )
+        } else {
+            Icon(
+                imageVector = Icons.Filled.BrokenImage,
+                contentDescription = "图片加载失败",
+                tint = Lx.colors.FgFaint,
+                modifier = Modifier.size(18.dp),
+            )
+        }
     }
 }
 
@@ -362,10 +383,10 @@ fun ImageLightbox(
             contentAlignment = Alignment.Center,
         ) {
             val url = urls.getOrNull(index)
-            val bmp = rememberAttachmentBitmap(url)
-            if (bmp != null) {
+            val state = rememberAttachmentState(url)
+            if (state?.first != null) {
                 androidx.compose.foundation.Image(
-                    bitmap = bmp,
+                    bitmap = state.first!!,
                     contentDescription = "图片预览",
                     // 原图适配视口（fit 语义——与桌面端 fitSize 一致），点击不关闭
                     modifier = Modifier
@@ -373,12 +394,19 @@ fun ImageLightbox(
                         .clickable(onClick = { /* 吞掉：点图不冒泡成关闭 */ }),
                     contentScale = ContentScale.Fit,
                 )
-            } else {
+            } else if (state != null) {
+                // 失败（终态）：坏消息要看得见
                 Icon(
-                    imageVector = Icons.Filled.Image,
-                    contentDescription = null,
+                    imageVector = Icons.Filled.BrokenImage,
+                    contentDescription = "图片加载失败",
                     tint = Lx.colors.FgFaint,
                     modifier = Modifier.size(40.dp),
+                )
+            } else {
+                // 加载中（暂态）
+                androidx.compose.material3.CircularProgressIndicator(
+                    modifier = Modifier.size(40.dp),
+                    color = Color.White,
                 )
             }
             Row(

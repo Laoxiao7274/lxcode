@@ -200,7 +200,13 @@ object SessionCacheCodec {
         entry.todosJson?.let { o.put("todos", it) }
         entry.statsJson?.let { o.put("stats", it) }
         val arr = JSONArray()
-        entry.blocks.forEach { arr.put(BlockCodec.encode(it)) }
+        entry.blocks.forEach { b ->
+            // 可丢弃块（空 Todo / 双空 Notice）encode 返回空 JSONObject（无 kind）——
+            // 它们不进存档数组：decode 读到无 kind 对象会走「未知缓存块类型」抛
+            // IllegalStateException，load 层会把整个缓存档当损坏删掉重拉（等于白存）。
+            val encoded = BlockCodec.encode(b)
+            if (encoded.length() > 0) arr.put(encoded)
+        }
         o.put("blocks", arr)
         return o.toString()
     }
@@ -214,8 +220,11 @@ object SessionCacheCodec {
         val arr = o.optJSONArray("blocks") ?: JSONArray()
         val blocks = mutableListOf<ThreadBlock>()
         for (i in 0 until arr.length()) {
-            blocks.add(BlockCodec.decode(arr.getJSONObject(i)))
+            // 单块可被丢弃（双空 Notice / 老存档残留）——null 跳过不进块列表
+            BlockCodec.decode(arr.getJSONObject(i))?.let { blocks.add(it) }
         }
+        // 空清单块不还原（编码侧就不写）：留着的唯一效果是渲染一个空框
+        blocks.removeAll { it is ThreadBlock.Todo && it.items.isEmpty() }
         return SessionCacheEntry(
             sessionId = sessionId,
             blocks = blocks,
@@ -296,12 +305,18 @@ object BlockCodec {
                 o.put("manual", b.manual)
             }
             is ThreadBlock.Todo -> {
+                // 空清单不缓存：它只是「清单被清空」的瞬时态（下一帧 Todo 块就被
+                // 移除），缓存还原时渲染出来就是「光有框里面空」的空框——丢弃
+                //（快照里的 Todo 一律还原为「无清单」，语义等价）。
+                if (b.items.isEmpty()) return JSONObject()
                 o.put("kind", K_TODO)
                 val arr = JSONArray()
                 b.items.forEach { arr.put(JSONObject().put("content", it.content).put("status", it.status)) }
                 o.put("items", arr)
             }
             is ThreadBlock.Notice -> {
+                // 双空通告没有可渲染的内容（一条只有边框的空提示条），不缓存
+                if (b.label.isBlank() && b.text.isBlank()) return JSONObject()
                 o.put("kind", K_NOTICE)
                 o.put("label", b.label)
                 o.put("text", b.text)
@@ -318,7 +333,7 @@ object BlockCodec {
         return o
     }
 
-    fun decode(o: JSONObject): ThreadBlock {
+    fun decode(o: JSONObject): ThreadBlock? {
         return when (o.optString("kind")) {
             K_USER -> ThreadBlock.User(
                 text = o.optString("text"),
@@ -371,16 +386,20 @@ object BlockCodec {
                 val arr = o.optJSONArray("items") ?: JSONArray()
                 val items = (0 until arr.length()).map {
                     val it = arr.getJSONObject(it)
-                    com.moyunteng.lxcode.remote.model.TodoItem(
+                    com.moyunteng.lxcode.remote.model.todoItemOf(
                         it.optString("content"), it.optString("status"),
                     )
                 }
                 ThreadBlock.Todo(items)
             }
-            K_NOTICE -> ThreadBlock.Notice(
-                label = o.optString("label"),
-                text = o.optString("text"),
-            )
+            // 双空通告不还原（编码侧就不写；老存档里若有也丢弃——渲染是空提示条）
+            K_NOTICE -> {
+                val notice = ThreadBlock.Notice(
+                    label = o.optString("label"),
+                    text = o.optString("text"),
+                )
+                if (notice.label.isNotBlank() || notice.text.isNotBlank()) notice else null
+            }
             K_ERROR -> ThreadBlock.Error(message = o.optString("message"))
             else -> throw IllegalStateException("未知缓存块类型: ${o.optString("kind")}")
         }

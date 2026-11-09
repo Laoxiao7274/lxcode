@@ -3,7 +3,6 @@
 // 纯远控壳：底部导航只有 会话/连接；配对与组件展示从连接页进入。
 package com.moyunteng.lxcode.remote.ui
 
-import android.os.Build
 import android.util.Log
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.RepeatMode
@@ -46,7 +45,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.RectangleShape
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -878,9 +876,9 @@ fun AppRoot(pairUri: String? = null, onPairUriConsumed: () -> Unit = {}) {
 
 /**
  * 底部导航栏（三 tab：会话/助手/连接）。
- * 2026-12 形态修正（对齐原型 `.bottomnav`）：整条 = Bg 86% 半透明底 + 毛玻璃
- * （API 31+ RenderEffect blur 14dp；低版本回落不透明 Bg——Android 12 以下
- * 无窗口级 blur API，`blurRadius` 静默不生效，不能假装磨砂）+ shadow-float 上投；
+ * 2026-12 形态修正（对齐原型 `.bottomnav`）：整条 = Bg 86% 半透明底
+ * （原型还有 backdrop-filter blur——安卓不复刻，见 rememberFrostedNavBg 注释）
+ * + shadow-float 上投；
  * 选中项 = 40×30 accent-soft 药丸底 + float 上投阴影；运行中 badge = 7dp 琥珀
  * （`--warn`）呼吸脉冲（`pulse 1.8s ease-in-out infinite`），不再用红点
  * （Danger 只给失败语义）。
@@ -985,30 +983,17 @@ private fun BottomNav(state: AppState) {
 }
 
 /**
- * 毛玻璃导航底（原型 `.bottomnav`：`background: color-mix(in srgb, var(--bg) 86%,
+ * 导航底（原型 `.bottomnav`：`background: color-mix(in srgb, var(--bg) 86%,
  * transparent); backdrop-filter: blur(14px)`）。
  *
- * 安卓实现：先铺 `Bg.copy(alpha = 0.86)` 半透明底；API 31+ 在 graphicsLayer 上挂
- * `BlurEffect`（Compose RenderEffect——本层自我模糊近似磨砂：底色被柔化，滚动内容
- * 掠过时的边缘由半透明底透出）；低版本没有 RenderEffect，保持半透明底不动
- * （不降级成不透明：86% 的底已足够保证可读性，只是少了磨砂质感）。
+ * 安卓实现：只铺 `Bg.copy(alpha = 0.86)` 半透明底，**不复刻 blur**——
+ * 本应用 Column 布局下导航底下没有内容延伸，只有纯色背景，blur 纯色零收益，
+ * 挂在本层反而把图标/文字一起模糊（2026-12 定案移除）；真毛玻璃需要内容
+ * 延伸到导航之下 + backdrop 方案，属独立改造，需要时再立项。
  */
 @Composable
-private fun rememberFrostedNavBg(): Modifier {
-    val bg = Lx.colors.Bg.copy(alpha = 0.86f)
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
-        return Modifier.background(bg)
-    }
-    return Modifier
-        .graphicsLayer {
-            renderEffect = androidx.compose.ui.graphics.BlurEffect(
-                14f,
-                14f,
-                androidx.compose.ui.graphics.TileMode.Clamp,
-            )
-        }
-        .background(bg)
-}
+private fun rememberFrostedNavBg(): Modifier =
+    Modifier.background(Lx.colors.Bg.copy(alpha = 0.86f))
 
 /** badge 呼吸环：`pulse` keyframes（0% → 50% 时 box-shadow 扩到 4px）。
  *  颜色组合期读好传入（DrawScope 里读不了 CompositionLocal）。 */
