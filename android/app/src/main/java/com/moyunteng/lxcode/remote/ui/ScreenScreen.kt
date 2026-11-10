@@ -61,10 +61,16 @@ import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardReturn
+import androidx.compose.material.icons.filled.Backspace
 import androidx.compose.material.icons.filled.Cast
 import androidx.compose.material.icons.filled.DesktopWindows
 import androidx.compose.material.icons.filled.FullscreenExit
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.KeyboardTab
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material.icons.outlined.ScreenRotation
@@ -91,6 +97,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.isSpecified
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.TransformOrigin
@@ -722,12 +729,21 @@ private fun ControlKeyboardBar(
                     onClick = { toggleLock(mod) },
                 )
             }
+            // 键帽字形一律用 Material 图标：⇥/⏎/⌫ 不在 Roboto 里，国产 ROM
+            // 缺 Noto Sans Symbols 补位字体时渲染成空白（0.3.46 实测）。
+            // 方向键虽 Roboto 有 ↑↓←→，也统一走图标，不赌各 ROM 字体覆盖。
             listOf(
-                "tab" to "⇥", "esc" to "esc", "up" to "↑", "down" to "↓",
-                "left" to "←", "right" to "→", "enter" to "⏎", "backspace" to "⌫",
-            ).forEach { (key, label) ->
-                KeyBarChip(label = label, active = false) { sendKey(key) }
+                "tab" to Icons.Filled.KeyboardTab,
+                "up" to Icons.Filled.KeyboardArrowUp,
+                "down" to Icons.Filled.KeyboardArrowDown,
+                "left" to Icons.Filled.KeyboardArrowLeft,
+                "right" to Icons.Filled.KeyboardArrowRight,
+                "enter" to Icons.AutoMirrored.Filled.KeyboardReturn,
+                "backspace" to Icons.Filled.Backspace,
+            ).forEach { (key, icon) ->
+                KeyBarChip(icon = icon, active = false) { sendKey(key) }
             }
+            KeyBarChip(label = "esc", active = false) { sendKey("esc") }
         }
         // 文本输入行：输入框 + 发送（IME 组好词后整段经 char 事件转发）
         Row(
@@ -765,9 +781,14 @@ private fun ControlKeyboardBar(
     }
 }
 
-/** 键盘条上的单颗键（锁定式修饰键 active 高亮）。 */
+/** 键盘条上的单颗键（锁定式修饰键 active 高亮）。label / icon 二选一。 */
 @Composable
-private fun KeyBarChip(label: String, active: Boolean, onClick: () -> Unit) {
+private fun KeyBarChip(
+    label: String? = null,
+    icon: ImageVector? = null,
+    active: Boolean,
+    onClick: () -> Unit,
+) {
     Box(
         Modifier
             .clip(Lx.radius.FieldShape)
@@ -776,7 +797,11 @@ private fun KeyBarChip(label: String, active: Boolean, onClick: () -> Unit) {
             .clickable { onClick() }
             .padding(horizontal = Lx.space.s4, vertical = Lx.space.s2),
     ) {
-        Text(label, style = Lx.type.Button, color = Color.White.copy(alpha = 0.9f))
+        if (icon != null) {
+            Icon(icon, contentDescription = label, tint = Color.White.copy(alpha = 0.9f))
+        } else {
+            Text(label.orEmpty(), style = Lx.type.Button, color = Color.White.copy(alpha = 0.9f))
+        }
     }
 }
 

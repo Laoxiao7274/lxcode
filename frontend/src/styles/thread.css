@@ -1409,19 +1409,16 @@
   list-style: none;
 }
 .md-li {
-  display: flex;
-  align-items: baseline;
-  gap: 2px;
   font-size: 14px;
   line-height: 1.71;
-  padding: 0 0 0 0;
 }
 .md-li + .md-li {
   margin-top: 5px;
 }
+/* marker 是行内真实文本（复制可见），inline-block 只为 min-width/text-align 生效 */
 .md-li-marker {
+  display: inline-block;
   color: var(--fg-muted);
-  flex: none;
   font-family: var(--font-mono);
   font-size: 12.5px;
   padding-right: 7px;

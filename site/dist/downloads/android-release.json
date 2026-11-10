@@ -1,12 +1,12 @@
 {
-  "version": "0.3.46",
-  "versionCode": 48,
-  "name": "lxcode-0.3.46-android.apk",
-  "size": 12026814,
-  "sha256": "aa0eebef32189bc14f779f87a486acf34bb340549bc7d53ed4400b3e398efe35",
-  "url": "downloads/lxcode-0.3.46-android.apk",
+  "version": "0.3.47",
+  "versionCode": 49,
+  "name": "lxcode-0.3.47-android.apk",
+  "size": 12043587,
+  "sha256": "8c07315fb3990115cd7d5f98c1982177ba8c68222e0d468ef09419481c983bb4",
+  "url": "downloads/lxcode-0.3.47-android.apk",
   "notes": [
-    "投屏控制——手机操作电脑：手势映射（点按/右键/拖动/滚轮）与虚拟键盘",
-    "三层安全门：仅当前接收者、允许控制开关默认关、壳在线；长轮询低延迟下发"
+    "AI 消息复制功能——长按 AI 消息或点复制按钮复制 markdown 原文，代码块长按单独复制",
+    "控制键盘条字形修复——特殊 Unicode 字形换 Material 图标，解决部分 ROM 显示空白"
   ]
 }

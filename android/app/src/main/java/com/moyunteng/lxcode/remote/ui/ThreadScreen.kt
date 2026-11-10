@@ -5,6 +5,10 @@
 // 压缩检查点 / todo 清单 / 错误块。
 package com.moyunteng.lxcode.remote.ui
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.widget.Toast
 import androidx.compose.animation.core.StartOffset
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -16,6 +20,8 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
@@ -48,6 +54,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -88,6 +95,7 @@ import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -120,6 +128,7 @@ import com.moyunteng.lxcode.design.motion.lxSweep
 import com.moyunteng.lxcode.design.motion.rememberStreamReveal
 import com.moyunteng.lxcode.design.token.Lx
 import com.moyunteng.lxcode.design.token.LxElevation
+import com.moyunteng.lxcode.remote.R
 import com.moyunteng.lxcode.remote.model.daySepLabel
 import com.moyunteng.lxcode.remote.model.ThreadBlock
 import com.moyunteng.lxcode.remote.model.canOpenChild
@@ -137,6 +146,13 @@ import com.moyunteng.lxcode.remote.ui.md.splitCommitted
  * 错开只对「首批可见的少量块」有观感价值。
  */
 internal const val STAGGER_BLOCK_LIMIT = 20
+
+/** 复制文本到系统剪贴板 + Toast 反馈（「已复制」）。 */
+internal fun copyToClipboard(context: Context, text: String, toast: String) {
+    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+    cm.setPrimaryClip(ClipData.newPlainText("text", text))
+    Toast.makeText(context, toast, Toast.LENGTH_SHORT).show()
+}
 
 /**
  * 运行状态条（原型 `.runbar`）—— 运行中时在顶栏下方显示：spinner + 「正在执行」
@@ -959,53 +975,69 @@ internal fun AssistantRow(block: ThreadBlock.Assistant, busy: Boolean, stableKey
 }
 
 @Composable
+@OptIn(ExperimentalFoundationApi::class)
 internal fun AssistantBlock(block: ThreadBlock.Assistant, busy: Boolean, stableKey: String) {
-    // 助手正文逐字揭示：桌面端 stream-reveal（REVEAL_* 常量），**不受 reduced-motion 门控**。
-    // 打字机只用于**实时流式增量**（block.streaming = true）：历史回放的 assistant 块
-    // 直接整块呈现全文（对齐桌面端 AnswerBody 的 committed/tail 语义——历史 = snap
-    // 全量落下，只有实时 delta 才 reveal），否则打开会话时所有旧消息重播一遍打字。
-    // key 用**稳定身份**（会话 id + 块下标）：流式 delta 每次整块替换（data class copy），
-    // key 用块对象会让 remember(key) 每 delta 重置 revealed → 每条 delta 从头重播打字。
-    // key 稳定时 text 增长只推进循环（revealed 续浇），块定格（streaming=false）整块呈现。
-    val reveal = rememberStreamReveal(block.content, enabled = block.streaming, key = stableKey)
+    // 长按复制（安卓端此前零复制能力）：长按 = 复制整条 markdown 原文（block.content
+    // 是零损路径——两段渲染/流式中间态都由它派生，原文天然完整），Toast「已复制」。
+    // 桌面等价 = thread.css 消息块的 copy 菜单。
+    val context = LocalContext.current
+    val copied = stringResource(R.string.copied)
+    Column(
+        verticalArrangement = Arrangement.spacedBy(Lx.space.s8),
+        modifier = Modifier.combinedClickable(
+            interactionSource = remember { MutableInteractionSource() },
+            indication = null,
+            onClick = {},
+            onLongClick = { copyToClipboard(context, block.content, copied) },
+        ),
+    ) {
+        // 助手正文逐字揭示：桌面端 stream-reveal（REVEAL_* 常量），**不受 reduced-motion 门控**。
+        // 打字机只用于**实时流式增量**（block.streaming = true）：历史回放的 assistant 块
+        // 直接整块呈现全文（对齐桌面端 AnswerBody 的 committed/tail 语义——历史 = snap
+        // 全量落下，只有实时 delta 才 reveal），否则打开会话时所有旧消息重播一遍打字。
+        // key 用**稳定身份**（会话 id + 块下标）：流式 delta 每次整块替换（data class copy），
+        // key 用块对象会让 remember(key) 每 delta 重置 revealed → 每条 delta 从头重播打字。
+        // key 稳定时 text 增长只推进循环（revealed 续浇），块定格（streaming=false）整块呈现。
+        val reveal = rememberStreamReveal(block.content, enabled = block.streaming, key = stableKey)
 
-    Column(verticalArrangement = Arrangement.spacedBy(Lx.space.s8)) {
-        if (!block.reasoning.isNullOrBlank()) {
-            ReasoningRow(text = block.reasoning, elapsedMs = block.reasoningMs, shimmer = busy)
-        }
-        if (block.content.isNotEmpty()) {
-            // 两段渲染（对齐桌面端 AnswerBody 的 committed/tail 语义）：已显示文本
-            // 切成「已定稿前缀 committed + 尾段 tail」（splitCommitted 纯函数，切点
-            // 回退避开未闭合的围栏/列表/引用/表格——块序列与整段解析逐块一致）。
-            // committed 的 remember 按字符串命中：committed 只在整行完成时前进
-            // （远低于帧率），流式期间每帧真正重解析的只有 tail（≤2 行）——每帧
-            // 排版成本从 O(整块) 降到 O(2 行)。
-            // 积压超阈值（REVEAL_MAX_LAG = 4000 字，桌面端同参）打字机整块对齐，
-            // 两段渲染天然兼容（对齐瞬间 committed=空、tail=全文，单段形态）。
-            val split = remember(reveal.text) { splitCommitted(reveal.text) }
-            Row(verticalAlignment = Alignment.Bottom) {
-                Column(Modifier.weight(1f)) {
-                    // committed 为空串时跳过（短文本 ≤2 行就是单段形态，与原行为一致）
-                    if (split.committed.isNotEmpty()) {
+        Column(verticalArrangement = Arrangement.spacedBy(Lx.space.s8)) {
+            if (!block.reasoning.isNullOrBlank()) {
+                ReasoningRow(text = block.reasoning, elapsedMs = block.reasoningMs, shimmer = busy)
+            }
+            if (block.content.isNotEmpty()) {
+                // 两段渲染（对齐桌面端 AnswerBody 的 committed/tail 语义）：已显示文本
+                // 切成「已定稿前缀 committed + 尾段 tail」（splitCommitted 纯函数，切点
+                // 回退避开未闭合的围栏/列表/引用/表格——块序列与整段解析逐块一致）。
+                // committed 的 remember 按字符串命中：committed 只在整行完成时前进
+                // （远低于帧率），流式期间每帧真正重解析的只有 tail（≤2 行）——每帧
+                // 排版成本从 O(整块) 降到 O(2 行)。
+                // 积压超阈值（REVEAL_MAX_LAG = 4000 字，桌面端同参）打字机整块对齐，
+                // 两段渲染天然兼容（对齐瞬间 committed=空、tail=全文，单段形态）。
+                val split = remember(reveal.text) { splitCommitted(reveal.text) }
+                Row(verticalAlignment = Alignment.Bottom) {
+                    Column(Modifier.weight(1f)) {
+                        // committed 为空串时跳过（短文本 ≤2 行就是单段形态，与原行为一致）
+                        if (split.committed.isNotEmpty()) {
+                            MarkdownBody(
+                                text = split.committed,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
                         MarkdownBody(
-                            text = split.committed,
+                            text = split.tail,
                             modifier = Modifier.fillMaxWidth(),
                         )
                     }
-                    MarkdownBody(
-                        text = split.tail,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                }
-                if (reveal.revealing) {
-                    // 光标：caret-blink 1s steps(1)（硬切）
-                    Box(
-                        Modifier
-                            .padding(start = 1.dp, bottom = 3.dp)
-                            .size(width = 2.dp, height = 14.dp)
-                            .lxCaret()
-                            .background(Lx.colors.Fg),
-                    )
+                    if (reveal.revealing) {
+                        // 光标：caret-blink 1s steps(1)（硬切）
+                        Box(
+                            Modifier
+                                .padding(start = 1.dp, bottom = 3.dp)
+                                .size(width = 2.dp, height = 14.dp)
+                                .lxCaret()
+                                .background(Lx.colors.Fg),
+                        )
+                    }
                 }
             }
         }
@@ -1026,12 +1058,25 @@ internal fun AssistantBlock(block: ThreadBlock.Assistant, busy: Boolean, stableK
             } else {
                 "${modelIdOfKey(block.model)} · 首字 812ms · 13.7 tok/s"
             }
-            Text(
-                text = footer,
-                style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size10_5),
-                color = Lx.colors.FgFaint,
-                modifier = Modifier.padding(top = 5.dp),
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Lx.space.s4),
+            ) {
+                Text(
+                    text = footer,
+                    style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size10_5),
+                    color = Lx.colors.FgFaint,
+                )
+                // 署名行末的显式复制入口（长按之外的可见入口——长按是隐藏手势，
+                // 必须有一个看得见的按钮）。
+                LxIconButton(
+                    onClick = { copyToClipboard(context, block.content, copied) },
+                    modifier = Modifier.size(20.dp),
+                    content = {
+                        SmallIcon(Icons.Filled.ContentCopy, Lx.colors.FgFaint, size = 13)
+                    },
+                )
+            }
         }
     }
 }
@@ -1840,6 +1885,7 @@ private fun mdBodyStyle(): TextStyle = Lx.type.Body.copy(
  * AssistantBlock）——committed 只在整行完成时变化（remember 恒命中，零解析），
  * 每帧重解析的只有 tail；解析本身 remember(text)（文本没变不重算）。
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun MarkdownBody(text: String, modifier: Modifier = Modifier) {
     val blocks = remember(text) { parseMarkdown(text) }
@@ -1868,14 +1914,25 @@ internal fun MarkdownBody(text: String, modifier: Modifier = Modifier) {
                     ),
                     color = Lx.colors.Fg,
                 )
-                is MdBlock.CodeBlock -> Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(Lx.radius.r10))
-                        .background(Lx.colors.CodeBg)
-                        // 桌面端 .tool-result（代码围栏同款）：padding 10px 14px
-                        .padding(horizontal = Lx.space.s12, vertical = Lx.space.s10),
-                ) {
+                is MdBlock.CodeBlock -> {
+                    val context = LocalContext.current
+                    val copied = stringResource(R.string.copied)
+                    Box(
+                        Modifier
+                            .combinedClickable(
+                                // 长按复制代码原文（ClipboardManager）——与 Common.CodeBlock
+                                // 同一手势，两处渲染路径都要覆盖。
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                                onClick = {},
+                                onLongClick = { copyToClipboard(context, block.code, copied) },
+                            )
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(Lx.radius.r10))
+                            .background(Lx.colors.CodeBg)
+                            // 桌面端 .tool-result（代码围栏同款）：padding 10px 14px
+                            .padding(horizontal = Lx.space.s12, vertical = Lx.space.s10),
+                    ) {
                     Text(
                         text = block.code,
                         style = Lx.type.Mono12.copy(
@@ -1885,6 +1942,7 @@ internal fun MarkdownBody(text: String, modifier: Modifier = Modifier) {
                         color = Lx.colors.FgMuted,
                         modifier = Modifier.horizontalScroll(rememberScrollState()),
                     )
+                }
                 }
                 is MdBlock.Hr -> Box(
                     // .md-hr：0.5px hairline、--border-strong、上下 24px margin

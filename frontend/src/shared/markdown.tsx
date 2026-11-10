@@ -252,17 +252,19 @@ const QuoteBlock = memo(function QuoteBlock({ src }: { src: string }) {
 
 const ListBlock = memo(function ListBlock({ ordered, src }: { ordered: boolean; src: string }) {
   const items: MdListItem[] = JSON.parse(src);
+  // 原生 ol/ul + li：marker 是行内真实文本（非 aria-hidden、非 flex 并列块），
+  // 保证 Chromium 复制时编号与内容在同一文本流里（div+flex 自绘 marker 会把
+  // 编号拆成独立块、aria-hidden 内容不进剪贴板）。
+  const Tag = ordered ? "ol" : "ul";
   return (
-    <div className="md-list md-seg">
+    <Tag className="md-list md-seg">
       {items.map((it, i) => (
-        <div key={i} className="md-li" style={{ paddingLeft: it.level * 14 }}>
-          <span className="md-li-marker" aria-hidden>
-            {ordered ? `${i + 1}.` : "·"}
-          </span>
+        <li key={i} className="md-li" style={{ paddingLeft: it.level * 14 }}>
+          <span className="md-li-marker">{ordered ? `${i + 1}.` : "·"}</span>
           <span className="md-li-text">{renderInline(it.text)}</span>
-        </div>
+        </li>
       ))}
-    </div>
+    </Tag>
   );
 });
 

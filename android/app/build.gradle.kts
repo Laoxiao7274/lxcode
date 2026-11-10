@@ -22,8 +22,8 @@ android {
         applicationId = "com.moyunteng.lxcode.remote"
         minSdk = 26
         targetSdk = 35
-        versionCode = 48
-        versionName = "0.3.46"
+        versionCode = 49
+        versionName = "0.3.47"
     }
 
     // 签名（release）：凭据从 android/keystore.properties 读（gitignore，不入库）。

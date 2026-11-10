@@ -8,6 +8,10 @@
 //  * [LabelSwitch]   ← 原型的开关（在线/离线、展开/折叠等）
 package com.moyunteng.lxcode.remote.ui
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.widget.Toast
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -15,6 +19,8 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -40,6 +46,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -235,10 +243,24 @@ fun TerminalBlock(command: String, modifier: Modifier = Modifier, cwd: String? =
 
 /** 浅色代码块（对齐 thread.css `--code-bg #f4f5f7`）：等宽、可横向滚动。
  *  只服务 Markdown 围栏块（```）——工具输出走 [ToolOut]（深色终端形态）。 */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun CodeBlock(text: String, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    val copied = stringResource(android.R.string.copy)
     Box(
         modifier = modifier
+            .combinedClickable(
+                // 长按复制代码原文（ClipboardManager）——安卓端此前对代码块没有任何复制路径。
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = {},
+                onLongClick = {
+                    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    cm.setPrimaryClip(ClipData.newPlainText("text", text))
+                    Toast.makeText(context, copied, Toast.LENGTH_SHORT).show()
+                },
+            )
             .fillMaxWidth()
             .clip(RoundedCornerShape(Lx.radius.r10))
             .background(Lx.colors.CodeBg)
