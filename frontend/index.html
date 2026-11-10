@@ -34,6 +34,27 @@
           window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
         document.documentElement.setAttribute("data-theme", pref === "system" ? "auto" : pref);
         document.documentElement.style.background = dark ? "#18181c" : "#ffffff";
+        // 界面字体/字号防闪（shared/ui-fonts.ts 的 UI_FONT_KEY/UI_FONT_SCALE_KEY，
+        // 两边必须一致）：首帧前把持久化偏好落到 html 根属性，避免字体跳变。
+        try {
+          var fid = localStorage.getItem("lxcode.ui.font");
+          var sid = localStorage.getItem("lxcode.ui.fontScale");
+          if (fid && fid !== "default") {
+            var FONTS = {
+              system: 'system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif',
+              msyh: '"Microsoft YaHei", "PingFang SC", "Noto Sans SC", sans-serif',
+              cascadia: '"Cascadia Mono", "Cascadia Code", Consolas, monospace',
+              jetbrains: '"JetBrains Mono", "JetBrains Mono Variable", monospace'
+            };
+            var stack = FONTS[fid];
+            if (stack) {
+              document.documentElement.style.setProperty("--app-font-sans", stack);
+              if (/mono|Consolas/i.test(stack)) document.documentElement.style.setProperty("--app-font-mono", stack);
+            }
+          }
+          var SCALES = { compact: 0.92, large: 1.1, xlarge: 1.2 };
+          if (sid && SCALES[sid]) document.documentElement.style.setProperty("--app-font-scale", String(SCALES[sid]));
+        } catch (e) { /* 无 localStorage——保持默认 */ }
       })();
     </script>
   </head>

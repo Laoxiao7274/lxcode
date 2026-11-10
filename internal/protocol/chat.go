@@ -475,39 +475,40 @@ type ChatTreeParams struct {
 }
 
 // ChatTreeResult 是会话树骨架（按 seq 升序；前端自己按 parent 建树）。
+//
+// **只回 user 节点**（2026-12 用户拍板）：assistant/tool/notice/checkpoint 都不
+// 在树上；parent = 树上最近前驱 user；分支结构保留（废弃分支 on_path=false）。
 type ChatTreeResult struct {
 	LeafSeq int64      `json:"leaf_seq"`
 	Nodes   []TreeNode `json:"nodes"`
-	// Total 是全量节点数（截断时用于「还有 N 个」提示）。
+	// Total 是全量 **user 节点数**（截断时用于「还有 N 个」提示）。
 	Total     int  `json:"total"`
 	Truncated bool `json:"truncated,omitempty"`
 }
 
-// TreeNode 是树里的一个节点。
+// TreeNode 是树里的一个节点（恒 kind="user"）。
 type TreeNode struct {
 	Seq       int64 `json:"seq"`
-	ParentSeq int64 `json:"parent_seq"` // 0 = root
-	// Kind = user | assistant | tool | checkpoint | notice
+	ParentSeq int64 `json:"parent_seq"` // 0 = root（树上最近前驱 user 不存在）
+	// Kind 恒为 "user"（字段保留：前端按 kind 渲染，历史载荷兼容）。
 	Kind string `json:"kind"`
-	// Turn 是轮次序号（user/notice 才有；与 SessionStats.turns 同口径）。
+	// Turn 是轮次序号（真实 user 消息从 1 起；与 SessionStats.turns 同口径）。
 	Turn int `json:"turn,omitempty"`
 	// Summary 是 ≤120 字符的单行摘要（不含正文全文）。
 	Summary string `json:"summary,omitempty"`
-	// Children 是直接子节点数（>1 = 分支点）。
+	// Children 是直接子节点数（>1 = 这个问题有多个分支）。
 	Children int `json:"children"`
 	// OnPath = 是否在当前 leaf 路径上（废弃分支 = false）。
 	OnPath bool `json:"on_path"`
-	// Orphan = 父节点缺失 / 成环（畸形数据的兜底：不丢节点、不抛异常）。
+	// Orphan = parent 链断掉/成环（畸形数据的兜底：不丢节点、不抛异常）。
 	Orphan bool `json:"orphan,omitempty"`
-	// Files = 该轮（owner_seq 落在这一轮的区间内）**可还原**的文件改动数，
-	// 含子会话的改动。批次 3 填充；为 0 时整键缺席（前端不渲染徽标，不显示 0）。
+	// Files = 该轮**可还原**的文件改动数，含子会话的改动（快照 owner_seq 按
+	// 「≤ owner_seq 的最大 user seq」投影归轮）；为 0 时整键缺席。
 	Files int `json:"files,omitempty"`
 	// ChildFiles = 其中来自子会话的改动数（Files 的子集）。
 	ChildFiles int `json:"child_files,omitempty"`
-	// External = 该轮无法快照的写（bash/MCP/自定义工具，含子会话里的 bash）。
+	// External 恒 0（字段保留做载荷兼容；user-only 树上无数据源）。
 	External int `json:"external,omitempty"`
-	// Shadowed = checkpoint 的影子条数。
-	Shadowed int `json:"shadowed,omitempty"`
 }
 
 // ChatLeafChangedParams 是 chat.leafChanged 事件的载荷（rewind 与 setLeaf 都发）。

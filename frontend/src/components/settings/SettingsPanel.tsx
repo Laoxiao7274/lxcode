@@ -3,6 +3,7 @@
 // 两个二级弹窗在 ./ConnectProviderDialog / ./ModelEditDialog。
 import { useEffect, useRef, useState, type ReactElement } from "react";
 import { gsap } from "gsap";
+import { initUiFont, UI_FONTS, FONT_SCALES } from "../../shared/ui-fonts";
 import { useSettings, EFFORTS, APPROVALS } from "../../shared/settings";
 import { approvalPick } from "../../shared/approval";
 import { Button, Segmented } from "../form";
@@ -208,8 +209,20 @@ export function SettingsPanel({ open, onClose, source }: { open: boolean; onClos
                     ariaLabel="主题"
                   />
                 </SegRow>
-                <ValueRow label="界面字体" value="Inter" hint="13px" />
-                <ValueRow label="代码字体" value="JetBrains Mono" hint="11px" />
+                <SelectRow
+                  label="界面字体"
+                  value={settings.uiFont}
+                  onChange={(v) => set({ uiFont: v as typeof settings.uiFont })}
+                  options={UI_FONTS.map((f) => ({ value: f.id, label: f.label }))}
+                  hint="作用于全局；选等宽栈时代码字体一并跟随"
+                />
+                <SelectRow
+                  label="界面字号"
+                  value={settings.fontScale}
+                  onChange={(v) => set({ fontScale: v })}
+                  options={FONT_SCALES.map((s) => ({ value: s.id, label: s.label }))}
+                  hint="整体缩放界面（含字号与布局）；窄窗下大档位会更早触发小屏断点"
+                />
               </Section>
             )}
 

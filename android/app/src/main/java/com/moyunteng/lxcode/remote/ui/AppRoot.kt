@@ -474,7 +474,13 @@ class AppState(private val store: ConnStore? = null) {
 
     fun removeConn(id: String) {
         conns.removeAll { it.id == id }
-        if (activeConnId == id) setActiveConn("local")
+        if (activeConnId == id) {
+            // 删的是活跃条目：真实连接还跑在它读的凭证上，先断 WS + 退真实模式，
+            // 再把「当前」指向剩余第一条（没有了就空串——不再盲目写 "local"，
+            // 那会让 restoreRealConnection 以为条目还在而命中失配路径）。
+            disconnectReal()
+            setActiveConn(conns.firstOrNull()?.id ?: "")
+        }
         store?.saveConns(conns.toList())
     }
 
@@ -524,7 +530,9 @@ class AppState(private val store: ConnStore? = null) {
      * 启动恢复连接（AppRoot 冷启动 LaunchedEffect 调一次）：上次退出处于真实模式
      * （realOn 落盘 true）且当前连接 id 命中现存条目 → 直接 connectTo 恢复连接。
      * 放这里而非构造函数：构造时发网络连接与 AppContextHolder.init 时序耦合（AppRoot）。
-     * 条目已被删 → 不动作，保持 Offline 引导态（不编造）；连接失败不回写
+     * 条目失配（已被删/activeConnId 与现存列表对不上）→ 回落连接草稿凭证
+     * （draft.addr 非空 → 按草稿连；这是上次退出时真实连接在用的那套），
+     * 两者都没有 → 不动作，保持 Offline 引导态（不编造）。连接失败不回写
      * realOn=false（Failed 态持续退避 + 亮屏即拉），只有用户显式断开才清。
      */
     fun restoreRealConnection() {
@@ -536,7 +544,21 @@ class AppState(private val store: ConnStore? = null) {
         if (real.phase != com.moyunteng.lxcode.remote.net.RealPhase.Offline &&
             real.phase != com.moyunteng.lxcode.remote.net.RealPhase.Failed
         ) return
-        conns.firstOrNull { it.id == activeConnId }?.let { connectTo(it) }
+        conns.firstOrNull { it.id == activeConnId }?.let {
+            connectTo(it)
+            return
+        }
+        // 兜底：activeConnId 失配但凭证还在草稿里 → 用草稿恢复（不再静默放弃）。
+        val draft = store?.loadDraft()
+        if (draft != null && draft.addr.isNotEmpty()) {
+            Log.w(TAG, "restoreRealConnection: activeConnId 失配（'$activeConnId'），回落连接草稿凭证 ${draft.addr}")
+            realAddr = draft.addr
+            realToken = draft.token
+            writeRealOn(true)
+            real.connect(realAddr, realToken)
+        } else {
+            Log.w(TAG, "restoreRealConnection: realOn=true 但 activeConnId 失配且无草稿凭证，保持引导态")
+        }
     }
 
     /** 这条条目是不是「当前」连接：真实模式 targeting 它才算（调试开关手填地址

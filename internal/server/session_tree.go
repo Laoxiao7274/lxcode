@@ -33,7 +33,7 @@ func (s *Server) leafOf(sessionID string) int64 {
 	return leaf
 }
 
-// toProtocolTree 把内核树骨架转成 wire 形态。
+// toProtocolTree 把内核树骨架转成 wire 形态（内核已只回 user 节点）。
 func toProtocolTree(t agent.Tree) protocol.ChatTreeResult {
 	nodes := make([]protocol.TreeNode, len(t.Nodes))
 	for i, n := range t.Nodes {
@@ -41,7 +41,6 @@ func toProtocolTree(t agent.Tree) protocol.ChatTreeResult {
 			Seq: n.Seq, ParentSeq: n.ParentSeq, Kind: n.Kind, Turn: n.Turn,
 			Summary: n.Summary, Children: n.Children, OnPath: n.OnPath,
 			Orphan: n.Orphan, Files: n.Files, ChildFiles: n.ChildFiles,
-			External: n.External, Shadowed: n.Shadowed,
 		}
 	}
 	return protocol.ChatTreeResult{LeafSeq: t.LeafSeq, Nodes: nodes, Total: t.Total, Truncated: t.Truncated}

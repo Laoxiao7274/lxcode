@@ -88,8 +88,7 @@ test('treeFromWire：snake_case → camelCase，可选键缺席不落成假零�
     truncated: true,
     nodes: [
       { seq: 1, parent_seq: 0, kind: 'user', turn: 1, summary: '你好', children: 1, on_path: true },
-      { seq: 2, parent_seq: 1, kind: 'assistant', children: 1, on_path: true, files: 2, child_files: 1, external: 1 },
-      { seq: 3, parent_seq: 2, kind: 'checkpoint', children: 0, on_path: true, shadowed: 4 },
+      { seq: 2, parent_seq: 1, kind: 'user', children: 1, on_path: true, files: 2, child_files: 1 },
     ],
   });
   assert.equal(tree.leafSeq, 3);
@@ -98,9 +97,7 @@ test('treeFromWire：snake_case → camelCase，可选键缺席不落成假零�
   assert.equal(tree.nodes[0].summary, '你好');
   assert.equal(tree.nodes[0].files, undefined, '没有 files 的节点不带这个键（不显示「0 文件」）');
   assert.equal(tree.nodes[1].childFiles, 1);
-  assert.equal(tree.nodes[1].external, 1);
-  assert.equal(tree.nodes[2].shadowed, 4);
-  assert.equal(tree.nodes[2].turn, undefined, 'checkpoint 没有轮次');
+  assert.equal(tree.nodes[1].turn, undefined, '轮次缺席（后端可以不给）');
 });
 
 test('treeFromWire 容错：畸形载荷不抛（未知 kind / 缺 seq / 非数组 nodes）', () => {

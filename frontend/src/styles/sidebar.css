@@ -34,6 +34,29 @@
   min-height: 0;
   overflow-y: auto;
 }
+/* ===== 细滚动条（proj-scroll / sess-scroll）：与 mp-list/ap-list 同语言 =====
+ * token = --scrollbar-thumb（base.css 双主题各一份）。Firefox 走 scrollbar-width
+ * thin；Chromium 走 ::-webkit-scrollbar 5px（4-6px 区间取中，侧栏窄列不占宽）。
+ * thumb hover 加深用 color-mix 向 --fg 混：亮色主题 fg 近黑 → 变深，暗色主题
+ * fg 近白 → 变亮——两档主题下 hover 都是「更醒目」，不需要各写一套字面色。 */
+.proj-scroll,
+.sess-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+.proj-scroll::-webkit-scrollbar,
+.sess-scroll::-webkit-scrollbar {
+  width: 5px;
+}
+.proj-scroll::-webkit-scrollbar-thumb,
+.sess-scroll::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 3px;
+}
+.proj-scroll::-webkit-scrollbar-thumb:hover,
+.sess-scroll::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--scrollbar-thumb) 75%, var(--fg));
+}
 .sidebar-pad {
   padding: 12px 12px 10px;
 }

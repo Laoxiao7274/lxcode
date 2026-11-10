@@ -513,23 +513,15 @@
         {
           "seq": 2,
           "parent_seq": 1,
-          "kind": "assistant",
-          "summary": "好的",
-          "children": 1,
+          "kind": "user",
+          "turn": 2,
+          "summary": "改成 X 之后还是报错",
+          "children": 2,
           "on_path": false,
           "orphan": true,
           "files": 2,
           "child_files": 1,
           "external": 1
-        },
-        {
-          "seq": 3,
-          "parent_seq": 2,
-          "kind": "checkpoint",
-          "summary": "已压缩",
-          "children": 0,
-          "on_path": true,
-          "shadowed": 4
         }
       ],
       "total": 3,

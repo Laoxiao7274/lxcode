@@ -331,7 +331,10 @@ private fun SmallIconContainer(
  *  * [pairingInvalid] = 配对已失效（401：token 错/被吊销）——重连必再 401，
  *    「重新配对」按钮跳扫码页重新配对（不显示「立即重连」——那是无用动作）。
  *
- * 三条互斥显示；都为 false 时本组件不渲染（调用方包 if）。
+ * 优先级（2026-12 修正）：pairingInvalid 最高（重连无用，必须引导重新配对）>
+ * down && reconnecting 同真 → 琥珀「正在重连…」+ 小重试兜底（自动重连在跑，
+ * 红色断线横幅会误导用户以为没有任何自动动作）> down > reconnecting。
+ * 三条全 false 时本组件不渲染（调用方包 if）。
  */
 @Composable
 fun BackendDownBar(
@@ -368,6 +371,31 @@ fun BackendDownBar(
             LxButton(
                 text = "重新配对",
                 onClick = onRepair,
+                variant = LxButtonVariant.Secondary,
+                size = LxButtonSize.Small,
+            )
+        }
+        down && reconnecting -> Row(
+            Modifier
+                .fillMaxWidth()
+                .lxEnter(spec = LxEnterSpec.ErrorBarIn)
+                .clip(Lx.radius.FieldShape)
+                .background(Lx.colors.AmberSoft)
+                .padding(horizontal = Lx.space.s10, vertical = Lx.space.s8),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Lx.space.s8),
+        ) {
+            LxSpinner(size = 12.dp)
+            Text(
+                text = "正在重连…",
+                style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size12),
+                color = Lx.colors.AmberInk,
+                modifier = Modifier.weight(1f),
+            )
+            // 小重试按钮兜底：自动重连按退避最长 30s，用户等不及可手动触发。
+            LxButton(
+                text = "重试",
+                onClick = onRetry,
                 variant = LxButtonVariant.Secondary,
                 size = LxButtonSize.Small,
             )

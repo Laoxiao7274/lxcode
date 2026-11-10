@@ -1,16 +1,16 @@
-// 会话树面板的接线钉子（App.tsx / use-session-tree.ts / SessionTreePanel.tsx）。
+// 会话树面板的接线钉子（App.tsx / use-session-tree.ts / SessionTreePanel.tsx）——
+// user-only 纯导航版。
 //
 // hook 与组件都是 React（node 单测里没有 DOM 跑不了交互），按本仓库惯例用**源码文本
 // 钉子**钉住接线（同 app-hooks-rewind.test.mjs / project-entry.test.mjs 的做法）；
-// 纯函数语义（flattenTree / 徽标 / 截断 / 确认文案）在 tree-model.test.mjs 与
-// rewind-confirm.test.mjs 里钉。
+// 纯函数语义（flattenTree / 徽标 / 截断）在 tree-model.test.mjs 里钉。
 //
 // 这里钉五条**错了不会编译报错、只静默错**的纪律：
 // ① 老后端没有 chat.tree → 回落 TurnPanel（不报错、不空屏）；
-// ② 「回到最新」传树里最大的 seq，**绝不传 0**（0 = 空路径）；
-// ③ files:true 走二次确认，冲突时弹清单（不静默覆盖）；
-// ④ leafChanged 到达 → 重拉（leaf 是共享状态）；
-// ⑤ 废弃分支单击 = 先切过去再跳（纯滚动跳转在别分支上是静默 no-op）。
+// ② leafChanged 到达 → 重拉（leaf 是共享状态）；
+// ③ off_path 单击 = 先切过去再跳（纯滚动跳转在别分支上是静默 no-op）；
+// ④ 面板是纯导航：没有过滤 chips、没有行尾按钮、没有「回到最新」（删了就是删了）；
+// ⑤ 每会话树缓存：失效事件清条目并重拉、connectionChanged true 升代数。
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -39,44 +39,9 @@ test('①b chat.tree 的失败不清空时间线：只把 tree 置 null 并回�
   assert.ok(!/loadHistory|historyLoaded/.test(catchBlock), '拉树失败不该去重放历史（那是 rewind/setLeaf 的对齐路径）');
 });
 
-// ---------- ② 「回到最新」 ----------
+// ---------- ② leafChanged 重拉 ----------
 
-test('② 「回到最新」传树里最大的 seq，绝不传 0', () => {
-  // App 侧：落点来自 latestSeq(tree)，且有 <= 0 的守卫（空树不动作）
-  assert.match(appSrc, /const latestSeqInTree = useMemo\(\(\) => latestSeq\(sessionTree\.tree\)/, '落点 = 树里最大 seq');
-  assert.match(appSrc, /if \(latestSeqInTree <= 0\) return;/, '空树不传 0 去 setLeaf（0 是空路径）');
-  assert.match(appSrc, /sessionTree\.setLeaf\(latestSeqInTree\)/, '真正切到最新');
-  // 面板侧：按钮禁用判据是「已经在最新处」（不是「树为空」）
-  assert.match(panelSrc, /disabled=\{!canLatest \|\| busy \|\| loading\}/, '已在最新处时按钮禁用');
-});
-
-// ---------- ③ 二次确认与冲突清单 ----------
-
-test('③ files:true 先二次确认，数字来自「这一行之后」的回滚量', () => {
-  assert.match(appSrc, /if \(files\) \{/, '带文件走确认分支');
-  assert.match(appSrc, /setRewindPlan\(\{/, '确认框状态被设置');
-  assert.match(appSrc, /files: row\.rollbackFiles/, '数字用 rollbackFiles（不含本行——严格大于的切段口径）');
-  assert.match(appSrc, /<RewindConfirmDialog/, '确认框真的被渲染');
-  // 不带文件的「切到此」不弹确认（它是可逆的视觉动作）
-  assert.match(appSrc, /void sessionTree\.setLeaf\(row\.seq\)\.catch/, '不带文件时直接切（无二次确认）');
-});
-
-test('③b 冲突时弹清单、不静默覆盖（fail-closed 的展示）', () => {
-  assert.match(appSrc, /const conflicts = r\.files\?\.conflicts \?\? \[\];/, '从应答里取冲突清单');
-  assert.match(appSrc, /if \(conflicts\.length > 0\) setRewindConflicts/, '非空就弹清单');
-  assert.match(appSrc, /<RewindConflictDialog/, '冲突弹窗被渲染');
-  assert.match(appSrc, /只切历史，不动文件|onHistoryOnly=/, '失败时给「只切历史」的退路（不是默认动作）');
-});
-
-test('③c 二次确认的 facts 在点击那一刻定格（树刷新不让数字跳）', () => {
-  // setRewindPlan 里直接带 facts（而不是渲染时再算一次）
-  assert.match(appSrc, /setRewindPlan\(\{\s*row,\s*facts: \{/, 'facts 与 row 一起定格');
-  assert.match(appSrc, /facts=\{rewindPlan\.facts\}/, '渲染时读定格值（不重算）');
-});
-
-// ---------- ④ leafChanged 重拉 ----------
-
-test('④ leafChanged 到达 → 重拉本会话的树（leaf 是共享状态）', () => {
+test('② leafChanged 到达 → 重拉本会话的树（leaf 是共享状态）', () => {
   assert.match(hookSrc, /ev\.type === "leafChanged"/, '处理 leafChanged');
   assert.match(hookSrc, /ev\.sessionId === sessionRef\.current\) void fetchTree\(\)/, '只处理本会话的 leafChanged 并重拉树');
   // 切会话未命中缓存（新会话/被失效事件清掉）要清掉上一次的树与 loadedAll
@@ -84,63 +49,71 @@ test('④ leafChanged 到达 → 重拉本会话的树（leaf 是共享状态）
   assert.match(hookSrc, /setLoadedAll\(false\);[\s\S]{0,200}setTree\(null\);/, '切会话清「加载全部」态与未命中时的树');
 });
 
-test('④b setLeaf 之后重拉树（分支结构变了，而树不在 chat.history 里）', () => {
+test('②b setLeaf 之后重拉树（分支结构变了，而树不在 chat.history 里）', () => {
   assert.match(hookSrc, /await fetchTree\(\{ loadAll: loadedAll \}\)/, 'setLeaf 之后重拉树，并保持「加载全部」档位');
 });
 
-// ---------- ⑤ 跳转与切分支 ----------
+// ---------- ③ off_path 单击 = 先切过去再跳 ----------
 
-test('⑤ 废弃分支单击 = 先 setLeaf 再跳（纯滚动跳转在别分支上是静默 no-op）', () => {
+test('③ 另一条分支单击 = 先 setLeaf 再跳（纯滚动跳转在别分支上是静默 no-op）', () => {
   assert.match(appSrc, /if \(row\.onPath\) \{/, '当前路径上直接跳');
   assert.match(appSrc, /pendingJumpSeqRef\.current = row\.userSeq;/, '别分支记下待跳 seq');
   assert.match(appSrc, /void sessionTree\.setLeaf\(row\.seq\)/, '先切过去');
   assert.match(appSrc, /const uid = seqToUid\.get\(seq\);/, '历史重载后兑现跳转（读最新映射，不靠定时器猜）');
 });
 
-test('⑤b 「从此分支」走 rewind（setLeaf 会让重发出现两条一模一样的用户消息）', () => {
-  assert.match(appSrc, /const handleTreeBranchFrom = useCallback/, '有「从此分支」的接线');
-  assert.match(appSrc, /handleRewind\(block\)/, '复用 handleRewind（rewind = setLeaf(parent)，含原文回填）');
-  assert.match(panelSrc, /onBranchFrom\(row\)/, '面板调用它');
-  assert.match(panelSrc, /row\.kind === "user" && row\.onPath/, '只对当前路径上的 user 行给（别分支上 rewind 是 no-op）');
-});
-
-test('⑤c 跳转锚点只来自 user 块（dispatch/assistant 块没有 seq）', () => {
+test('③b 跳转锚点只来自 user 块（dispatch/assistant 块没有 seq）', () => {
   assert.match(outlineHookSrc, /userSeqUid\(blocks\)/, 'seqToUid 由 userSeqUid 建（只收 user 块）');
   assert.match(outlineHookSrc, /activeSeq/, '当前高亮行的 seq 由块反查（树面板按 seq 判高亮）');
 });
 
-// ---------- ⑥ 面板交互纪律 ----------
+// ---------- ④ 面板 = 纯导航 ----------
 
-test('⑥ 否决双击：切分支是显式行尾按钮（可 Tab、可触摸）', () => {
-  assert.ok(!/onDoubleClick/.test(panelSrc), '不用双击（不可发现、触摸端冲突、键盘不可达）');
-  assert.match(panelSrc, /⟲ 切到此/, '显式按钮「切到此」');
-  assert.match(panelSrc, /disabled=\{atLeaf \|\| busy\}/, '已在叶上/生成中时禁用（不做成点了没反应）');
-});
-
-test('⑥b 徽标 omitempty：0 不渲染（不显示「0 文件」）', () => {
-  assert.match(panelSrc, /const files = filesBadge\(row\);/, '文件徽标走纯函数（0 → null）');
-  assert.match(panelSrc, /\{files && <span className="stree-files"/, 'null 不渲染');
-  assert.match(panelSrc, /\{external && \(/, '外部操作徽标同理');
-  assert.match(panelSrc, /\{branch && <span className="stree-branch-badge"/, '分支徽标同理');
-});
-
-test('⑥c 过滤三档 + 截断提示 + 加载全部', () => {
-  for (const label of ['全部', '只看用户消息', '只看有改动']) {
-    assert.ok(panelSrc.includes(label), `过滤档「${label}」存在`);
+test('④ 面板上没有过滤 chips、没有行尾按钮、没有「回到最新」（删了就是删了）', () => {
+  for (const gone of ['stree-chips', 'stree-chip', 'stree-latest', 'stree-actions', 'stree-action',
+    '切到此', '回到最新', '从此分支', '只看用户消息', '只看有改动', 'onFilter', 'onSetLeaf',
+    'onBranchFrom', 'onLatest', 'onToggle']) {
+    assert.ok(!panelSrc.includes(gone), `面板不应再有「${gone}」`);
   }
+  // App 侧不再接这些口（树的切叶只剩跳转与加载全部）
+  assert.ok(!appSrc.includes('handleTreeSetLeaf'), 'App 不再有「切到此」的接线');
+  assert.ok(!appSrc.includes('handleTreeBranchFrom'), 'App 不再有「从此分支」的接线');
+  assert.ok(!appSrc.includes('handleTreeLatest'), 'App 不再有「回到最新」的接线');
+  assert.ok(!appSrc.includes('RewindConfirmDialog'), '树不再触发文件还原确认弹窗');
+  assert.ok(!appSrc.includes('RewindConflictDialog'), '树不再触发冲突弹窗');
+});
+
+test('④b off_path 行常显 + 灰化（可见、可点，不隐藏）', () => {
+  // 减负后「在分支上」不再是行内徽标：灰化 + 行 title 承担提示（App 先切过去再跳）
+  assert.ok(!panelSrc.includes('stree-onbranch'), '不再有「在分支上」文本徽标');
+  assert.ok(!panelSrc.includes('stree-branch-badge'), '不再有「N 分支」徽标');
+  assert.match(panelSrc, /data-off-path=\{row\.onPath \? "false" : "true"\}/, '灰化由 CSS 按 off-path 渲染');
+  assert.ok(!panelSrc.includes('collapsib'), '没有折叠（树上全是 user 行，无需折叠）');
+});
+
+test('④c 平级列表：没有缩进/连接线/分支圆点/钳制（2026-12 用户拍板，线性时间线）', () => {
+  for (const gone of ['stree-depth', 'stree-extra', 'visualDepth', 'clampedSteps', 'depthClamped',
+    'data-depth', 'data-vdepth', 'data-clamped', 'data-branch', 'data-last', 'stree-indent']) {
+    assert.ok(!panelSrc.includes(gone), `面板不应再有「${gone}」（缩进层级已删）`);
+  }
+  // 行不再带内联 style（缩进变量已删）
+  assert.ok(!/style=\{/.test(panelSrc), '行上没有内联 style（无 --stree-* 缩进变量）');
+});
+
+test('④c 截断提示 + 加载全部（不静默截断）', () => {
   assert.match(panelSrc, /truncation\.text/, '截断提示文案来自纯函数');
   assert.match(panelSrc, /onLoadAll/, '「加载全部」按钮');
   assert.match(appSrc, /sessionTree\.refresh\(\{ loadAll: true \}\)/, '加载全部真的重新拉树（max_nodes=0）');
 });
 
-// ---------- ⑦ 每会话树缓存（2026-12 会话切换优化批 1） ----------
+// ---------- ⑤ 每会话树缓存（2026-12 会话切换优化批 1） ----------
 //
 // 行为断言在 createTreeCache（纯对象，直测）；hook 的接线（缓存实例随 hook 挂、
 // 切会话先查缓存、失效事件清条目并重拉、connectionChanged true 升代数）按仓库惯例
 // 用源码文本钉住——React effect 在 node 单测里跑不了，钉错了不会编译报错、只静默错。
 import { createTreeCache } from '../src/app-hooks/use-session-tree.ts';
 
-test('⑦a createTreeCache：命中/未命中/覆盖/bust 幂等（纯对象，返回新引用）', () => {
+test('⑤a createTreeCache：命中/未命中/覆盖/bust 幂等（纯对象，返回新引用）', () => {
   const cache = createTreeCache();
   assert.equal(cache.get('s1'), null, '未拉过 = 未命中');
   const t1 = { leafSeq: 3, nodes: [], total: 0 };
@@ -158,7 +131,7 @@ test('⑦a createTreeCache：命中/未命中/覆盖/bust 幂等（纯对象，�
   assert.equal(cache.get(''), null);
 });
 
-test('⑦b 连接代数：换后端（bumpGeneration）后旧代数条目整体落空，新条目独立', () => {
+test('⑤b 连接代数：换后端（bumpGeneration）后旧代数条目整体落空，新条目独立', () => {
   const cache = createTreeCache();
   const t1 = { leafSeq: 1, nodes: [], total: 0 };
   cache.set('s1', t1);
@@ -167,20 +140,5 @@ test('⑦b 连接代数：换后端（bumpGeneration）后旧代数条目整体�
   cache.set('s1', { leafSeq: 2, nodes: [], total: 0 });
   assert.notEqual(cache.get('s1'), null, '新代数照常读写');
   cache.bust('s1');
-  assert.equal(cache.get('s1'), null, 'bust 只清当前代数的键');
-});
-
-test('⑦c 接线：切会话先查缓存（命中不 setTree(null)）、失效事件清条目并重拉、连接代数升级', () => {
-  // 切会话：命中直接用（渲染立即有树），未命中才清空重拉
-  assert.match(hookSrc, /const cached = cacheRef\.current!\.get\(sessionId\);\s*\n\s*if \(cached\) \{/, '切会话先查缓存');
-  assert.match(hookSrc, /if \(cached\) \{\s*\n\s*setTree\(cached\);\s*\n\s*\} else \{\s*\n\s*setTree\(null\);\s*\n\s*void fetchTree\(\);/, '命中直接用，未命中清空重拉');
-  // 成功拉取写入缓存（失败不写——回落线性视图的纪律不变）
-  assert.match(hookSrc, /cacheRef\.current!\.set\(sid, next\);/, '成功拉取覆盖缓存');
-  // 四类失效事件清条目（宁空勿旧：事件说树变了，缓存里那份就是旧的）
-  for (const ev of ['leafChanged', 'userMessage', 'done']) {
-    assert.ok(new RegExp(`ev\.type === "${ev}" \|\|`).test(hookSrc) && /bust\(ev\.sessionId\)/.test(hookSrc), `${ev} 清缓存条目`);
-  }
-  assert.match(hookSrc, /bust\(ev\.id\);/, 'sessionChanged 清缓存条目');
-  // 换后端清账：connectionChanged true → bumpGeneration（连接代数入键）
-  assert.match(hookSrc, /ev\.type === "connectionChanged" && ev\.connected\) cacheRef\.current!\.bumpGeneration\(\)/, '换后端升连接代数（旧条目作废）');
+  assert.equal(cache.get('s1'), null, 'bust 只清新代数');
 });

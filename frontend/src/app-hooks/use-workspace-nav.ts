@@ -27,6 +27,7 @@ import {
 } from "../shared/workspace-tabs";
 import { LOOSE } from "../components/sidebar";
 import { openProject as openProjectEntry } from "../shared/project-entry";
+import { readLastProject, writeLastProject } from "../shared/sidebar-persist";
 import type { AgentSource, SessionMeta } from "../shared/types";
 
 export function useWorkspaceNav({ source, currentId }: { source: AgentSource; /** 当前会话 id（App 渲染值——openProject 的幂等判定用，App 侧保证传入的就是最新值）。 */ currentId: string }) {
@@ -41,8 +42,16 @@ export function useWorkspaceNav({ source, currentId }: { source: AgentSource; /*
   settingsOpenRef.current = settingsOpen;
   /** 对话范围（项目 id / ""=未分组）——App 持有：侧栏过滤、「新对话」归属、
    *  空态项目标签三处共用。用户拍板：**恒有范围**（启动即「未分组」，点项目行
-   *  切换且不可取消——没有「全部」视图）。 */
-  const [filter, setFilter] = useState<string>(LOOSE);
+   *  切换且不可取消——没有「全部」视图）。
+   *  持久化（sidebar-persist.ts）：初始值从 localStorage 恢复（"" = 未分组，
+   *  也算一次有效记忆）；每次切换落盘。恢复值不校验项目还存在——启动时项目
+   *  列表没回来无法校验，Sidebar 的「项目被移除 → 回未分组」effect 收口（项目
+   *  真被删了启动后第一次渲染就会退回 LOOSE，落盘也随之更新）。 */
+  const [filter, setFilterState] = useState<string>(readLastProject());
+  const setFilter = useCallback((f: string) => {
+    setFilterState(f);
+    writeLastProject(f);
+  }, []);
   /** Git 工作台当前聚焦的项目 id（侧栏「Git 管理」打开时选中）。 */
   const [gitProjectId, setGitProjectId] = useState("");
 

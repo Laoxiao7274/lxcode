@@ -202,10 +202,8 @@ const FIELD_CHECKS = {
     ['nodes.1.files', 'number'],
     ['nodes.1.child_files', 'number'],
     ['nodes.1.external', 'number'],
-    ['nodes.2.shadowed', 'number'],
     // 缺席语义：没有文件改动的节点不带 files（0 不落成假事实）
     ['nodes.0.files', 'absent'],
-    ['nodes.2.files', 'absent'],
   ],
   chatLeafChanged: [
     ['leaf_seq', 'number'],

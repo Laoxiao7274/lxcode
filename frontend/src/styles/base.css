@@ -9,8 +9,8 @@
   --bg-side: #f9f9f9;
   --surface: #ffffff;
   --fg: #0d0d0d;
-  --fg-muted: #6e6e80;
-  --fg-faint: #8e8ea0;
+  --fg-muted: #5c5c75;  /* 6.48:1 @ 白底（原 #6e6e80 3.9:1 → #62627a 5.92:1，第二轮加深） */
+  --fg-faint: #66667e;  /* 5.58:1 @ 白底（原 #8e8ea0 3.2:1 → #74748a 4.56:1，第二轮加深） */
   --border: #ececec;
   --border-strong: #e5e5e5;
   --border-soft: #f4f4f5;
@@ -19,8 +19,8 @@
   --term-bg: #1a1a1a;
   --term-fg: #d4d4d4;
   --term-dim: #8e8e96;
-  --font-sans: "Inter Variable", -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
-  --font-mono: "JetBrains Mono Variable", ui-monospace, "Cascadia Code", monospace;
+  --font-sans: var(--app-font-sans, "Inter Variable"), -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  --font-mono: var(--app-font-mono, "JetBrains Mono Variable"), ui-monospace, "Cascadia Code", monospace;
   /* 派生 token（亮色值 = 原先散落各文件的硬编码值，归并时逐值等值搬运——
    * 亮色渲染逐像素不变；暗色值在下面 html[data-theme="dark"] 覆盖块里成套给出）。
    * --hover-veil 三档：中性悬停底（黑 veil → 暗色下翻成白 veil）。 */
@@ -62,8 +62,8 @@ html[data-theme="dark"] {
   --bg-side: #1e1e23;
   --surface: #232329;
   --fg: #ececf1;
-  --fg-muted: #a0a0b0;
-  --fg-faint: #7c7c8c;
+  --fg-muted: #a8a8b8;  /* 7.55:1 @ #18181c（原 #7c7c8c 3.2:1 → #a0a0b0 6.87:1，第二轮加深） */
+  --fg-faint: #93939f;  /* 5.83:1 @ #18181c（原 #7c7c8c 3.2:1 → #8a8a9a 5.21:1，第二轮加深） */
   --border: #2e2e35;
   --border-strong: #3a3a42;
   --border-soft: #26262c;
@@ -101,8 +101,8 @@ html[data-theme="dark"] {
     --bg-side: #1e1e23;
     --surface: #232329;
     --fg: #ececf1;
-    --fg-muted: #a0a0b0;
-    --fg-faint: #7c7c8c;
+    --fg-muted: #a8a8b8;  /* 7.55:1 @ #18181c（原 #7c7c8c 3.2:1 → #a0a0b0 6.87:1，第二轮加深） */
+    --fg-faint: #93939f;  /* 5.83:1 @ #18181c（原 #7c7c8c 3.2:1 → #8a8a9a 5.21:1，第二轮加深） */
     --border: #2e2e35;
     --border-strong: #3a3a42;
     --border-soft: #26262c;
@@ -145,6 +145,13 @@ html,
 body,
 #root {
   height: 100%;
+}
+/* 字号档（设置 → 外观 --app-font-scale）：html 上的 zoom 是 Chromium 标准
+ * 属性，缩放整个渲染面（含各组件散写的 px 字号与布局尺寸）——body 的
+ * font-size calc 对 471 处散写 px 无消费者，已还原为固定 14px。注意 zoom
+ * 会缩放布局：窄窗下大档位（1.1/1.2）会比默认档更早触发小屏断点。 */
+html {
+  zoom: var(--app-font-scale, 1);
 }
 body {
   background: var(--bg);

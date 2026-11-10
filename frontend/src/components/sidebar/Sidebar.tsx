@@ -4,7 +4,7 @@ import { playEnter } from "../../shared/anim";
 import { useDismissal } from "../../shared/popover";
 import { useUpdate } from "../../shared/update";
 import { busyCountsByWorkspace } from "../../shared/busy-summary";
-import { LOOSE } from "../../shared/project-entry";
+import { LOOSE, openProject as openProjectEntry } from "../../shared/project-entry";
 import type { AgentSource, ProjectMeta, SessionMeta } from "../../shared/types";
 import { AddProjectDialog } from "./AddProjectDialog";
 import { ProjectInstructionsDialog } from "./ProjectInstructionsDialog";
@@ -165,6 +165,46 @@ export const Sidebar = memo(function Sidebar({
     () => (trimmedQuery ? projectFiltered.filter((s) => s.title.toLowerCase().includes(trimmedQuery)) : projectFiltered),
     [projectFiltered, trimmedQuery],
   );
+  // ---- 全局搜索（跨项目）：查询命中项目名 → 直接切到该项目；命中会话标题 →
+  // 「项目 · 会话」两级行，点击 = 切项目 + 开该会话（openProject 语义）。数据源
+  // 就是上面的分组结果（byWorkspace + projectById），不另发请求。助手域不进
+  // （搜索的是项目模式的双列表；assistant 任务子会话不进 byWorkspace 的顶层键）。
+  // 结果渲染接管 sess-scroll 区（query 非空且全局命中时），空查询回原双列表。
+  /** 全局命中的会话（跨所有项目，含未分组），按列表原序 = updated_at 倒序。 */
+  const globalHits = useMemo(() => {
+    if (!trimmedQuery) return EMPTY_SESSIONS;
+    return all.filter((s) => s.title.toLowerCase().includes(trimmedQuery));
+  }, [all, trimmedQuery]);
+  /** 全局命中的项目（名称匹配；id 不匹配——id 不是用户口中的名字）。 */
+  const projectHits = useMemo(
+    () => (trimmedQuery ? projects.filter((p) => p.name.toLowerCase().includes(trimmedQuery)) : []),
+    [projects, trimmedQuery],
+  );
+  /** 全局搜索态（结果列表替换会话区）：查询非空即接管——当前范围内没命中也
+   *  显示「全局没有匹配」，不给用户「搜了个寂寞却以为只有本范围在搜」的歧义。 */
+  const searchActive = trimmedQuery.length > 0;
+  /** 全局搜索态的行点击（两级行同一条收口）：
+   *  - 会话行：切到归属项目 + 打开**该会话**（targetId 已知——不走「第一条」
+   *    判定；已是当前会话则零副作用，不重触发 resume）；
+   *  - 项目行（targetId 缺省）：openProject 语义（切该项目 + 落到第一条会话；
+   *    无会话只切范围空态如实；幂等判定在 project-entry）。
+   *  助手域排除：搜索的是项目模式双列表，assistant 任务子会话不进。 */
+  const openSearchHit = useCallback((workspace: string, targetId?: string) => {
+    if (targetId) {
+      setFilter(workspace);
+      onOpenChat();
+      if (targetId !== currentId) void source.resumeSession(targetId);
+      return;
+    }
+    openProjectEntry({
+      workspace,
+      list: workspace === LOOSE ? loose : (byWorkspace.get(workspace) ?? EMPTY_SESSIONS),
+      currentId,
+      setFilter,
+      resumeSession: (id) => { void source.resumeSession(id); },
+      onOpenChat,
+    });
+  }, [byWorkspace, currentId, loose, onOpenChat, setFilter, source]);
   // 项目 id → 元数据（会话 workspace 指向项目 id，显示时取名）
   const projectById = useMemo(() => new Map(projects.map((p) => [p.id, p])), [projects]);
   /** 会话 id → 会话（归档区「恢复」要按 id 找它的归属范围——每次 O(n) 扫描
@@ -209,6 +249,21 @@ export const Sidebar = memo(function Sidebar({
     );
     return () => { alive = false; };
   }, [assistant, filter]);
+
+  // Ctrl/Cmd+K → 聚焦搜索框并全选（search-kbd 角标做活）。挂在 document 的
+  // keydown 上（全局快捷键——焦点在会话/时间线/设置里都要生效）；
+  // input 本身聚焦时浏览器编辑键组合不受影响（Ctrl+A 全选等不拦）。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === "k" || e.key === "K")) {
+        e.preventDefault();
+        searchRef.current?.focus();
+        searchRef.current?.select();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
 
   // 后出现的会话行（首轮消息建会话、归档区恢复）单独入场；
   // 首屏整列由 staggerIn 接管，boot 窗口内跳过避免双份动画打架。
@@ -515,7 +570,59 @@ export const Sidebar = memo(function Sidebar({
         </div>
       )}
       <div className="sess-scroll">
-      {list.map((s) => (
+      {searchActive ? (
+        // 全局搜索态：结果列表替换双列表（项目区也换命中项目行——见下方
+        // proj-scroll 内的分支）。行 =「项目名 · 会话标题」两级，点击 = 切项目
+        // + 打开该会话；当前范围内无命中也走这里（全局口径，不给「只有本范围
+        // 在搜」的歧义）。
+        <>
+          {projectHits.map((p) => (
+            <div
+              key={p.id}
+              className="proj-row search-hit"
+              role="button"
+              tabIndex={0}
+              title={p.path}
+              onClick={() => openSearchHit(p.id)}
+              onKeyDown={(e) => { if (e.key === "Enter") openSearchHit(p.id); }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+              </svg>
+              <span className="proj-name">{p.name}</span>
+              <span className="proj-count">{(byWorkspace.get(p.id) ?? EMPTY_SESSIONS).length}</span>
+            </div>
+          ))}
+          {globalHits.map((s) => {
+            const ws = s.workspace ?? "";
+            const wsName = ws ? projectById.get(ws)?.name : undefined;
+            return (
+              <div
+                key={s.id}
+                className={"session-item search-hit" + (s.id === currentId ? " active" : "")}
+                role="button"
+                tabIndex={0}
+                title={wsName ? `${wsName} · ${s.title}` : s.title}
+                aria-label={wsName ? `${wsName} · ${s.title}` : s.title}
+                onClick={() => openSearchHit(ws, s.id)}
+                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openSearchHit(ws, s.id); } }}
+              >
+                <div className="session-line">
+                  <span className={"s-dot" + (busyBySession[s.id] ? " live" : "")} aria-hidden />
+                  {/* 两级行：`项目名 · 会话标题`（未分组显示标题本身——不伪装归属） */}
+                  <span className="title">{wsName ? `${wsName} · ${s.title}` : s.title}</span>
+                  {busyBySession[s.id] && <span className="mset-spinner session-spinner" aria-hidden />}
+                  <span className="time">{s.updatedAt}</span>
+                </div>
+              </div>
+            );
+          })}
+          {projectHits.length === 0 && globalHits.length === 0 && (
+            <div className="sidebar-empty">没有匹配「{query.trim()}」的项目或对话</div>
+          )}
+        </>
+      ) : (
+        list.map((s) => (
         <SessionRow
           key={s.id}
           session={s}
@@ -537,9 +644,7 @@ export const Sidebar = memo(function Sidebar({
           }}
           enterRow={enterRow}
         />
-      ))}
-      {list.length === 0 && query.trim() && (
-        <div className="sidebar-empty">没有匹配「{query.trim()}」的对话</div>
+        ))
       )}
       </div>
 

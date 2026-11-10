@@ -163,31 +163,30 @@ export interface SetLeafOutcome {
 }
 
 /** 会话树里的一个节点（对齐 protocol.TreeNode）。`nodes` 按 seq 升序，前端自己按
- *  parent_seq 建树。 */
+ *  parent_seq 建树。**只回 user 节点**（2026-12 用户拍板）：一轮对话（user + 它背后
+ *  的 assistant/tool）在树上是一行。 */
 export interface TreeNode {
   seq: number;
-  /** 0 = root。 */
+  /** 0 = root（树上最近前驱 user 不存在）。 */
   parentSeq: number;
-  /** user | assistant | tool | checkpoint | notice */
+  /** 恒 "user"（字段保留：历史载荷兼容）。 */
   kind: string;
-  /** 轮次序号（user/notice 才有；与 SessionStats.turns 同口径）。 */
+  /** 轮次序号（真实 user 消息从 1 起；与 SessionStats.turns 同口径）。 */
   turn?: number;
   /** ≤120 字符的单行摘要（不含正文全文）。 */
   summary?: string;
-  /** 直接子节点数（>1 = 分支点）。 */
+  /** 直接子节点数（>1 = 这个问题有多个分支）。 */
   children: number;
   /** 是否在当前 leaf 路径上（false = 废弃分支）。 */
   onPath: boolean;
   /** 父节点缺失 / 成环（畸形数据兜底：不丢节点、不抛异常）。 */
   orphan?: boolean;
-  /** 该轮可还原的文件改动数（含子会话）；0 时整键缺席。 */
+  /** 该轮可还原的文件改动数（含子会话，快照 owner_seq 投影归轮）；0 时整键缺席。 */
   files?: number;
   /** 其中来自子会话的改动数（files 的子集）；0 时整键缺席。 */
   childFiles?: number;
-  /** 该轮无法快照的写（bash/MCP/自定义工具，含子会话里的 bash）；0 时整键缺席。 */
+  /** 恒缺席（字段保留兼容；user-only 树上无数据源）。 */
   external?: number;
-  /** checkpoint 的影子条数。 */
-  shadowed?: number;
 }
 
 /** 会话树骨架（chat.tree 的应答）。 */

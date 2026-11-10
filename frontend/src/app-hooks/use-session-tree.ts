@@ -1,37 +1,27 @@
-// 会话树面板的数据域（docs/session-tree.md §D.2）：拉 chat.tree、维护过滤/折叠状态、
-// 执行「切到此」「回到最新」。
+// 会话树面板的数据域：拉 chat.tree、维护「加载全部」态、执行切叶（供跳转/回最新）。
 //
-// 三条纪律：
+// **user-only 纯导航改版**（2026-12 用户拍板）：过滤/折叠是旧模型的 UI（assistant
+// 行需要过滤与折叠才看得下去）——树上只剩 user 行之后它们失去了对象，整体删除；
+// 面板只剩「跳转 + 截断加载」，切叶只服务跳转与「回到最新」。
+//
+// 保留的三条纪律：
 //  ① **老后端没有 chat.tree → tree 保持 null，面板回落线性轮次视图**（不报错、不空屏
 //     ——AGENTS.md §5 坑 11「老后端 + 新前端不许炸」）；
-//  ② 折叠/过滤态是**纯 UI 偏好**：放局部 state、按会话记、不落库（它们不影响任何
-//     数据事实，进了 UIState 就要跟着历史归约走，白白多一处可能漂移的状态）；
-//  ③ `chat.leafChanged` 到达时**重拉**（leaf 是共享状态，可能是别的客户端动的）——
-//     事件是唯一的触发源，本地不猜"该怎么变"。
-//
-// 切换性能（2026-12 会话切换优化批 1）：每次切换 `setTree(null) + refetch` 是
-// 「空右栏 + 一次全表扫描往返」（大会话 ~195ms）。现在**按会话缓存树**：切回已拉过
-// 的会话直接用缓存（渲染立即可用），后台照常向事件失效点重拉——不减少任何一次
-// 「该拉的时候拉」，只消灭「不该空的时候空」。缓存键带连接代数（换后端 = 旧会话的
-// 树整体作废，与 WSAgent.loadedSessions 的 onHelloReset 清账同一条纪律）。
+//  ② `chat.leafChanged` 到达时**重拉**（leaf 是共享状态，可能是别的客户端动的）——
+//     事件是唯一的触发源，本地不猜"该怎么变"；
+//  ③ 按会话缓存树（2026-12 会话切换优化批 1）：切回已拉过的会话直接用缓存（渲染
+//     立即可用），后台照常向事件失效点重拉。缓存键带连接代数（换后端 = 旧会话的
+//     树整体作废，与 WSAgent.loadedSessions 的 onHelloReset 清账同一条纪律）。
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentEvent, AgentSource, ChatTreeResult, FileRestoreResult } from "../shared/types";
-import { flattenTree, latestSeq, type TreeFilter, type TreeRow, type TreeViewState } from "../components/panels/tree-model";
-
-/** 每会话的树视图偏好（过滤 + 折叠/展开集合）——切走再切回保持，不落库。 */
-interface ViewState {
-  filter: TreeFilter;
-  collapsed: Set<number>;
-  expanded: Set<number>;
-}
-const DEFAULT_VIEW: ViewState = { filter: "all", collapsed: new Set(), expanded: new Set() };
+import { flattenTree, type TreeRow } from "../components/panels/tree-model";
 
 /** 首屏请求的节点上限（大会话少传一半以上的骨架，面板出得快）。
  *
  *  为什么首屏不是后端缺省的 2000：`chat.tree` 要扫全表算骨架与分支摘要，超大会话
  *  （几千条消息）首屏等一个整骨架会让右栏空着好几秒。先要最近 400 个（后端按 seq
- *  从大到小取最近 N 个并**补齐祖先**，所以近处结构一定完整），truncated 时面板顶部
- *  显示「更早的 N 个节点未加载」+「加载全部」按钮。
+ *  从大到小取最近 N 个，truncated 时面板顶部显示「更早的 N 条消息未加载」+「加载全部」
+ *  按钮）。
  *
  *  「加载全部」传 `max_nodes: 0` = 让后端用它自己的缺省上限（2000，见
  *  protocol.ChatTreeParams）——**不是**无上限，后端没有那个选项。 */
@@ -104,20 +94,14 @@ export interface SessionTreeApi {
   /** 上一次拉取失败的原因（人话；null = 正常）。面板显示成一行提示而不是空屏。 */
   error: string | null;
   loading: boolean;
-  view: TreeViewState;
-  setFilter: (filter: TreeFilter) => void;
-  /** 折叠/展开一行（on_path 行改 collapsed，off_path 行改 expanded）。 */
-  toggle: (seq: number, onPath: boolean) => void;
   /** 重新拉树（`loadAll` = 传 max_nodes=0 让后端用缺省上限；后端没有"无上限"）。 */
   refresh: (opts?: { loadAll?: boolean }) => Promise<void>;
   /** 切到此（chat.setLeaf）：该节点留在路径上。返回后端应答（含文件还原结果）。 */
   setLeaf: (seq: number, files?: boolean) => Promise<{ leafSeq: number; removed: number; files?: FileRestoreResult }>;
-  /** 「回到最新」的落点 = 树里最大的 seq（**绝不传 0**——0 是空路径）。 */
-  latest: number;
   /** 是否已加载全部节点（truncated=false 或点过「加载全部」）。 */
   loadedAll: boolean;
-  /** 面板要画的行（树 + 视图态 → 行）。**只在这里算一次**——App 的 renderView 被
-   *  「冻结渲染」缓存，在那里 useMemo 会把行冻在上一次的值上（切分支之后树不刷新）。 */
+  /** 面板要画的行（树 → 行）。**只在这里算一次**——App 的 renderView 被「冻结渲染」
+   *  缓存，在那里 useMemo 会把行冻在上一次的值上（切分支之后树不刷新）。 */
   rows: TreeRow[];
 }
 
@@ -129,8 +113,6 @@ export function useSessionTree({ source, sessionId }: {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadedAll, setLoadedAll] = useState(false);
-  /** 每会话的视图偏好（按会话记：切走再切回保持过滤/折叠态）。 */
-  const [views, setViews] = useState<Record<string, ViewState>>({});
   /** 每会话的树缓存（语义见 createTreeCache——命中直接用，消灭「空右栏 +
    *  全表扫描往返」；实例随 hook 挂一次）。 */
   const cacheRef = useRef<TreeCache | null>(null);
@@ -190,7 +172,7 @@ export function useSessionTree({ source, sessionId }: {
   // 树会变的四个时机（**只认本会话**——别的会话的事件与这块面板无关）：
   //   ① chat.leafChanged：leaf 是共享状态，可能别的客户端动的；
   //   ② chat.userMessage（主会话）：新消息落库 → 长出一个新节点，leaf 也跟着走；
-  //   ③ chat.done（主轮）：一轮结束，assistant/tool 节点补齐（分支摘要稳定下来）；
+  //   ③ chat.done（主轮）：一轮结束，assistant/tool 节点补齐（徽标稳定下来）；
   //   ④ session.changed：元数据变化（含新消息落库后的刷新）。
   // 子轮的事件（带 dispatchId）不触发——它们改的是子会话，主会话的树没变。
   // **缓存失效**：这四类也清掉该会话的缓存条目——事件说树变了，缓存里那份就是旧的
@@ -231,30 +213,6 @@ export function useSessionTree({ source, sessionId }: {
     });
   }, [source]);
 
-  const view = useMemo<TreeViewState>(() => {
-    const v = views[sessionId] ?? DEFAULT_VIEW;
-    return { filter: v.filter, collapsed: v.collapsed, expanded: v.expanded };
-  }, [views, sessionId]);
-
-  const setFilter = useCallback((filter: TreeFilter) => {
-    setViews((cur) => ({ ...cur, [sessionId]: { ...(cur[sessionId] ?? DEFAULT_VIEW), filter } }));
-  }, [sessionId]);
-
-  const toggle = useCallback((seq: number, onPath: boolean) => {
-    setViews((cur) => {
-      const v = cur[sessionId] ?? DEFAULT_VIEW;
-      // on_path 行改 collapsed（默认展开），off_path 行改 expanded（默认折叠）——
-      // 两个集合的默认值相反，混用一个集合会让「切分支之后默认态反转」变成静默
-      // 的行为改变（见 tree-model.ts 的 TreeViewState 注释）。
-      const collapsed = new Set(v.collapsed);
-      const expanded = new Set(v.expanded);
-      const target = onPath ? collapsed : expanded;
-      if (target.has(seq)) target.delete(seq);
-      else target.add(seq);
-      return { ...cur, [sessionId]: { filter: v.filter, collapsed, expanded } };
-    });
-  }, [sessionId]);
-
   const setLeaf = useCallback(async (seq: number, files?: boolean) => {
     const r = await source.setLeaf(sessionId, seq, files);
     // 切叶之后树的分支结构/on_path 全变了：重拉一次（setLeaf 内部已重拉历史，
@@ -263,8 +221,7 @@ export function useSessionTree({ source, sessionId }: {
     return r;
   }, [source, sessionId, fetchTree, loadedAll]);
 
-  const latest = useMemo(() => latestSeq(tree), [tree]);
-  const rows = useMemo(() => flattenTree(tree, view), [tree, view]);
+  const rows = useMemo(() => flattenTree(tree), [tree]);
 
-  return { tree, error, loading, view, setFilter, toggle, refresh: fetchTree, setLeaf, latest, loadedAll, rows };
+  return { tree, error, loading, refresh: fetchTree, setLeaf, loadedAll, rows };
 }

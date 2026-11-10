@@ -6,11 +6,14 @@
 //
 // 容错纪律（与 snapshotFromWire / parseDispatchArgs 同一条）：畸形载荷不许抛。
 // 树骨架来自后端库表，残缺记录是既成事实——抛异常的下场是右栏整块白屏。
+//
+// user-only（2026-12 用户拍板）：后端只回 user 节点，这里容错保留 assistant 等
+// 历史 kind 的兜底归类（老后端载荷），但树模型只按 user 渲染。
 import type { ChatTreeResult, TreeNode } from "../../shared/types";
 
 /** 一个节点的合法 kind（协议值域，见 protocol.TreeNode.Kind 的注释）。
- *  未知 kind 不丢节点：归到 "assistant"（它本来也不成行，见 tree-model 的粒度规则）
- *  ——丢掉节点会让它的子节点变成孤儿，那才是真正的信息丢失。 */
+ *  未知 kind 不丢节点：归到 "assistant"（user-only 模型下它不会成行——
+ *  丢掉节点会让它的子节点变成孤儿，那才是真正的信息丢失）。 */
 const KINDS = new Set(["user", "assistant", "tool", "checkpoint", "notice"]);
 
 function num(v: unknown): number {
@@ -45,8 +48,6 @@ export function treeFromWire(r: unknown): ChatTreeResult {
     if (n.orphan === true) node.orphan = true;
     if (typeof n.files === "number" && n.files > 0) node.files = n.files;
     if (typeof n.child_files === "number" && n.child_files > 0) node.childFiles = n.child_files;
-    if (typeof n.external === "number" && n.external > 0) node.external = n.external;
-    if (typeof n.shadowed === "number" && n.shadowed > 0) node.shadowed = n.shadowed;
     nodes.push(node);
   }
   return {

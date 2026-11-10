@@ -300,12 +300,12 @@ export class DemoAgent implements AgentSource, JobAdminSource {
    *  所以「第 N 轮 = seq N」；树节点用同一套号，`setLeaf`/`rewind` 的 seq 才与树上的
    *  节点对得上（两套号会让"点第 3 轮切过去"落到别的轮）。
    *
-   *  为什么造一条废弃分支：分支/灰化/「你在这里」/「回到最新」是本面板的主要信息，
-   *  单链直线演示不出它们（AGENTS.md §2：演示要能全量跑 UI）。分支节点用
-   *  `turns + 1` 当 seq（在演示态里不与任何真实消息冲突——它只活在树里）。
+   *  为什么造一条废弃分支：分支/灰化/「你在这里」是本面板的主要信息，单链直线演示
+   *  不出它们（AGENTS.md §2：演示要能全量跑 UI）。分支节点用 `turns + 1` 当 seq
+   *  （在演示态里不与任何真实消息冲突——它只活在树里）。
    *
-   *  文件/外部操作徽标也按演示事实给：第 3 轮「改了 2 个文件」、分支节点「1 处外部
-   *  操作」——徽标与过滤档在演示模式里才有内容可看。 */
+   *  user-only（2026-12 用户拍板）：树上只有 user 节点；文件徽标按演示事实给
+   *  （第 3 轮「改了 2 个文件」）。 */
   async tree(sessionId: string, opts?: { maxNodes?: number; include?: "compact" | "full" }): Promise<ChatTreeResult> {
     const turns = this.seqBySession.get(sessionId) ?? 0;
     const leaf = this.leaf_.get(sessionId) ?? turns;
@@ -320,10 +320,8 @@ export class DemoAgent implements AgentSource, JobAdminSource {
         summary: `演示消息 ${t}`,
         children: 0, // 下面统一按 parent 计数
         onPath: false, // 下面按 leaf 回溯统一算
-        // 第 3 轮演「改了 2 个文件（含 1 个子 Agent）」——徽标与「只看有改动」有内容
+        // 第 3 轮演「改了 2 个文件（含 1 个子 Agent）」——徽标有内容
         ...(t === 3 ? { files: 2, childFiles: 1 } : {}),
-        // 第 4 轮演「1 处无法还原的 bash 写」——⚠️ 徽标与确认文案的警告段有内容
-        ...(t === 4 ? { external: 1 } : {}),
       });
     }
     // 废弃分支：从第 2 轮分叉（轮数够多时才造，否则一个分支点都没有意义）
@@ -336,7 +334,6 @@ export class DemoAgent implements AgentSource, JobAdminSource {
         summary: "（废弃分支）换个方向试试",
         children: 0,
         onPath: false,
-        files: 1,
       });
     }
     const bySeq = new Map(raw.map((n) => [n.seq, n]));

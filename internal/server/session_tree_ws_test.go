@@ -288,7 +288,8 @@ func TestChatSetLeafRejectsUnbalancedCut(t *testing.T) {
 
 // ---- chat.tree ----
 
-// TestChatTreeShapeOverWS：节点/父子/on_path/轮次/摘要形状正确，废弃分支 on_path=false。
+// TestChatTreeShapeOverWS：只回 user 节点（user-only 模型），parent = 树上最近
+// 前驱 user，废弃分支 on_path=false，分支结构保留。
 func TestChatTreeShapeOverWS(t *testing.T) {
 	srv, client, _ := newTestServer(t, rewindStream(5000))
 	id := createTestSession(t, client, "")
@@ -302,11 +303,17 @@ func TestChatTreeShapeOverWS(t *testing.T) {
 
 	var tree protocol.ChatTreeResult
 	callResult(t, client, protocol.MethodChatTree, protocol.ChatTreeParams{SessionID: id}, &tree)
-	if len(tree.Nodes) != 8 { // 6 条旧 + 2 条新分支
-		t.Fatalf("树应有 8 个节点（含废弃分支），实际 %d: %+v", len(tree.Nodes), tree.Nodes)
+	// user-only：6 条旧消息 + 2 条新分支消息 = 4 条 user
+	if len(tree.Nodes) != 4 {
+		t.Fatalf("树应只有 4 个 user 节点，实际 %d: %+v", len(tree.Nodes), tree.Nodes)
 	}
-	if tree.Total != 8 {
-		t.Fatalf("total 应为 8，实际 %d", tree.Total)
+	if tree.Total != 4 {
+		t.Fatalf("total 应按 user 计 = 4，实际 %d", tree.Total)
+	}
+	for _, n := range tree.Nodes {
+		if n.Kind != "user" {
+			t.Fatalf("树上应只有 user 节点: %+v", n)
+		}
 	}
 	// 父链：root 是第一条 user（parent 0）
 	if tree.Nodes[0].ParentSeq != 0 {
@@ -315,7 +322,7 @@ func TestChatTreeShapeOverWS(t *testing.T) {
 	if tree.Nodes[0].Kind != "user" || tree.Nodes[0].Turn != 1 {
 		t.Fatalf("首节点应是第 1 轮的 user: %+v", tree.Nodes[0])
 	}
-	// 分支点：第一轮的 assistant 有两个孩子（旧第二轮 user + 新分支 user）
+	// 分支点：第一轮 user 有两个孩子（旧第二轮 user + 新分支 user）
 	branchAt := -1
 	for i, n := range tree.Nodes {
 		if n.Children > 1 {
@@ -330,15 +337,16 @@ func TestChatTreeShapeOverWS(t *testing.T) {
 	for _, n := range tree.Nodes {
 		onPath[n.Seq] = n.OnPath
 	}
-	if !onPath[seq2] == true {
-		t.Logf("旧分支节点 seq=%d on_path=%v（期望 false）", seq2, onPath[seq2])
+	if onPath[seq2] {
+		t.Fatalf("旧分支 user seq=%d 应 on_path=false", seq2)
 	}
 	if tree.LeafSeq == 0 {
 		t.Fatal("leaf_seq 不该是 0")
 	}
 }
 
-// TestChatTreeTruncated：max_nodes 生效时只回最近 N 个（补齐祖先）并置 truncated。
+// TestChatTreeTruncated：max_nodes 生效时只回最近 N 个 user（前驱缺位钳到 root）
+// 并置 truncated；total 按 user 计。
 func TestChatTreeTruncated(t *testing.T) {
 	srv, client, _ := newTestServer(t, rewindStream(5000))
 	id := createTestSession(t, client, "")
@@ -353,19 +361,19 @@ func TestChatTreeTruncated(t *testing.T) {
 		t.Fatal("应置 truncated")
 	}
 	if tree.Total != 10 {
-		t.Fatalf("total 应是全量 10，实际 %d", tree.Total)
+		t.Fatalf("total 应是全量 user 数 10，实际 %d", tree.Total)
 	}
-	if len(tree.Nodes) < 3 || len(tree.Nodes) > 10 {
-		t.Fatalf("截断后节点数应在 3..10，实际 %d", len(tree.Nodes))
+	if len(tree.Nodes) != 3 {
+		t.Fatalf("截断后应只回 3 个 user 节点，实际 %d", len(tree.Nodes))
 	}
-	// 截断必须补齐祖先：每个保留节点的父节点要么在结果里、要么是 0
+	// 每个保留节点的父节点要么在结果里、要么是 0（前驱被截断 → 钳 root）
 	have := map[int64]bool{}
 	for _, n := range tree.Nodes {
 		have[n.Seq] = true
 	}
 	for _, n := range tree.Nodes {
 		if n.ParentSeq != 0 && !have[n.ParentSeq] {
-			t.Fatalf("截断后节点 %d 的父 %d 不在结果里（没补齐祖先）", n.Seq, n.ParentSeq)
+			t.Fatalf("截断后节点 %d 的父 %d 不在结果里（应钳到 root）", n.Seq, n.ParentSeq)
 		}
 	}
 }

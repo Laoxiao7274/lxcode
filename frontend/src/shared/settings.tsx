@@ -4,6 +4,7 @@ import type { AgentSource, ApprovalMode, CatalogModel, CatalogModelList, Catalog
 import { subscribeApprovalSync } from "./approval";
 import { applyModelPatch, applyProviderPatch, catalogMetadata, mapModels, modelForProvider, modelKey, providerKey, validateProviderPatch, type ModelPatch, type ProviderMeta, type ProviderPatch, type EffortId } from "./settings-models";
 import { initTheme, setTheme } from "./theme";
+import { initUiFont, setUiFont, setUiFontScale, type UiFontId } from "./ui-fonts";
 import { demoCatalogModelList, demoCatalogProviderList, demoModel, demoProviders, CONNECTABLE_PROVIDERS } from "./settings-catalog";
 export type { ModelMeta, ModelPatch, ProviderMeta, ProviderPatch, EffortId } from "./settings-models";
 export { CONNECTABLE_PROVIDERS } from "./settings-catalog";
@@ -18,9 +19,13 @@ export interface Settings {
   enterToSend: boolean;
   /** 主题（浅色/深色/跟随系统——前端态，后端化时落配置）。 */
   theme: "light" | "dark" | "system";
+  /** 界面字体（shared/ui-fonts.ts 的预置 id；default = token 默认栈）。 */
+  uiFont: UiFontId;
+  /** 字号档 id（ui-fonts 的 FONT_SCALES；default = 1）。 */
+  fontScale: string;
 }
 const DEFAULTS: Settings = { model: "MYT", effort: "medium", approval: "confirm", showThinking: true,
-  showFullOutput: true, keepAwake: false, enterToSend: true, theme: "system" };
+  showFullOutput: true, keepAwake: false, enterToSend: true, theme: "system", uiFont: "default", fontScale: "default" };
 // DEFAULTS.approval = 镜像的初始值（confirm 是协议缺省档）——真实档位以
 // chat.history 回带的 approval 为准（反向同步覆盖它），这里只是首屏占位。
 // 档位目录（后端协议值域——chat.send 的 effort 参数；仅对声明 reasoning
@@ -96,12 +101,17 @@ export function SettingsProvider({ source, children }: { source: AgentSource; ch
     // DOM + localStorage + Electron 壳（setTheme：改完立刻生效，不重渲染等）
     const { model, ...supported } = patch;
     if (supported.theme) setTheme(supported.theme);
+    if (supported.uiFont) setUiFont(supported.uiFont, supported.fontScale);
+    if (supported.fontScale) setUiFontScale(supported.fontScale);
     setLocal((s) => ({ ...s, ...supported, ...(!admin && model ? { model } : {}) }));
     if (admin && model) void run(() => admin.setRole("default", model));
   }, [admin, run]);
   // 主题：挂载时从 localStorage 恢复（index.html 内联脚本已先行应用，
   // 这里对齐 React 侧状态并接管系统亮暗变化监听）
   useEffect(() => initTheme(), []);
+  // 界面字体/字号：挂载时从 localStorage 恢复（index.html 内联脚本已先行应用，
+  // 这里对齐 React 侧状态——applyUiFont 是幂等的 DOM 写，不重渲染）
+  useEffect(() => { initUiFont(); }, []);
   // 反向同步：后端广播的权限档变更落到本地设置（多客户端/壳+浏览器同时开着时
   // 两边一致）。当前会话从事件流里跟——sessionFocused 是它的唯一事实源。
   useEffect(() => subscribeApprovalSync(source, (mode) => {

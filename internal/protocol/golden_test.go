@@ -255,15 +255,15 @@ func goldenSamples() map[string]goldenSample {
 		"chatSetLeafResult": {"", ChatSetLeafResult{SessionID: "s1", LeafSeq: 12, Removed: 2,
 			Files: &FileRestoreResult{Restored: []FileRestoreItem{{Path: "a.go", FromSeq: 13, Bytes: 10}}}}},
 		"chatTreeParams": {"", ChatTreeParams{SessionID: "s1", Include: "compact", MaxNodes: 2000}},
-		// 树结果：一个节点覆盖全部 wire 键（kind/turn/summary/children/on_path/orphan
-		// 与批次 3 的 files/child_files/external/shadowed）。
+		// 树结果（user-only 模型）：一个节点覆盖全部 wire 键（kind/turn/summary/
+		// children/on_path/orphan 与 files/child_files/external——external 字段
+		// 保留兼容、user-only 树上恒 0，样本给非零值只为覆盖检查）。
 		"chatTreeResult": {"", ChatTreeResult{
 			LeafSeq: 12, Total: 3, Truncated: true,
 			Nodes: []TreeNode{
 				{Seq: 1, ParentSeq: 0, Kind: "user", Turn: 1, Summary: "帮我看看这个报错", Children: 1, OnPath: true},
-				{Seq: 2, ParentSeq: 1, Kind: "assistant", Summary: "好的", Children: 1, OnPath: false, Orphan: true,
+				{Seq: 2, ParentSeq: 1, Kind: "user", Turn: 2, Summary: "改成 X 之后还是报错", Children: 2, OnPath: false, Orphan: true,
 					Files: 2, ChildFiles: 1, External: 1},
-				{Seq: 3, ParentSeq: 2, Kind: "checkpoint", Summary: "已压缩", Children: 0, OnPath: true, Shadowed: 4},
 			},
 		}},
 		"chatLeafChanged": {"", ChatLeafChangedParams{SessionID: "s1", LeafSeq: 12, PrevLeafSeq: 9, Removed: 3,

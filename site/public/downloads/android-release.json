@@ -1,12 +1,11 @@
 {
-  "version": "0.3.44",
-  "versionCode": 46,
-  "name": "lxcode-0.3.44-android.apk",
-  "size": 12026800,
-  "sha256": "ab36903ce179c6bce448e07ce9ee3302b4dff02696554419ab5e6bf6eff1179f",
-  "url": "downloads/lxcode-0.3.44-android.apk",
+  "version": "0.3.45",
+  "versionCode": 47,
+  "name": "lxcode-0.3.45-android.apk",
+  "size": 12026795,
+  "sha256": "a22c284d441d54488f27a72062cfe483d73e7e4109b3b162f8eebebfc4c40453",
+  "url": "downloads/lxcode-0.3.45-android.apk",
   "notes": [
-    "安卓空框修复 9 处：TodoCard 空清单、空输出占位、派发卡结论兜底、图片失败态等",
-    "底部导航去 blur：图标文字被模糊的根因修复，保留 86% 半透明底"
+    "连接自动恢复修复：退出后重连回落草稿凭证不再静默失败、重连过程横幅可见"
   ]
 }

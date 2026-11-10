@@ -6,7 +6,7 @@
   --todo-bg: #fff;
   --todo-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.05),
     0 2px 4px rgba(0, 0, 0, 0.02);
-  --todo-muted: #a1a1a1;
+  --todo-muted: #7d7d86;  /* 4.08:1 @ 白底（原 #a1a1a1 2.1:1 → #8b8b93 3.38:1，第二轮加深） */
   --todo-check: #15a06a;
   --todo-strong: #1a1a1a;
   --todo-pie-fg: #1a1a1a;
@@ -39,7 +39,7 @@
   }
 }
 
-.todo { width: 100%; max-width: 100%; font-family: "Inter", system-ui, sans-serif; font-size: 13px; color: var(--todo-fg, #1a1a1a); background: var(--todo-bg, #fff); border-radius: 12px; padding: 6px 12px 12px; box-shadow: var(--todo-shadow); }
+.todo { width: 100%; max-width: 100%; font-family: var(--font-sans, "Inter", system-ui, sans-serif); font-size: 13px; color: var(--todo-fg, #1a1a1a); background: var(--todo-bg, #fff); border-radius: 12px; padding: 6px 12px 12px; box-shadow: var(--todo-shadow); }
 .todoHead {
   display: flex; width: 100%; align-items: center; gap: 8px;
   padding: 0; border: 0; background: transparent; cursor: pointer;
