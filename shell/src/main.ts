@@ -8,10 +8,12 @@ import { app, BrowserWindow, dialog, ipcMain, nativeTheme, net, Notification, pr
 import { ensureBackend, shutdownBackend } from "./sidecar";
 import { initSakura, sakuraHandlers, shutdownSakura } from "./sakura";
 import { initTailscale, tailscaleHandlers } from "./tailscale";
-import { cachedState, cachedToken, disable as remoteDisable, enable as remoteEnable, initBackendRemote, refresh as remoteRefresh, rotate as remoteRotate } from "./backend-remote";
+import { cachedState, cachedToken, disable as remoteDisable, enable as remoteEnable, initBackendRemote, refresh as remoteRefresh, rotate as remoteRotate, setAllowControl } from "./backend-remote";
 import { startUpdatePolling, stopUpdatePolling, updateHandlers, consumePendingUpdateFailure } from "./updater";
 import { createTray } from "./tray";
 import { startScreenPolling, stopScreenPolling, warmUpEncoderProbe } from "./screen";
+import { startInputPolling, stopInputPolling, setControllingCallback } from "./input";
+import { setTrayHint } from "./tray";
 
 // userData 目录名与应用身份（单实例锁、任务栏、通知都吃这个）
 app.setName("lxcode");
@@ -249,11 +251,12 @@ if (!app.requestSingleInstanceLock()) {
 
     // 后端远程访问管理（token 同步取给渲染层拼 WS URL；开关/轮换走 invoke）
     ipcMain.on("backendRemote:tokenSync", (e) => { e.returnValue = cachedToken(); });
-    ipcMain.handle("backendRemote:get", () => cachedState() ?? { enabled: false, token: "", lanAddr: "" });
+    ipcMain.handle("backendRemote:get", () => cachedState() ?? { enabled: false, token: "", allowControl: false, lanAddr: "" });
     ipcMain.handle("backendRemote:enable", () => remoteEnable());
     ipcMain.handle("backendRemote:disable", () => remoteDisable());
     ipcMain.handle("backendRemote:rotate", () => remoteRotate());
     ipcMain.handle("backendRemote:refresh", () => remoteRefresh());
+    ipcMain.handle("backendRemote:allowControl", (_e, on: unknown) => setAllowControl(on === true));
 
     // 自更新（manifest → 下载校验 → 后端热替换 → asar 退出冷替换，见 updater.ts）
     updateHandlers();
@@ -271,6 +274,14 @@ if (!app.requestSingleInstanceLock()) {
     // 编码器探测预热（screen.ts probeEncoders 结果缓存）：把首次 start 的
     // 数秒探测空窗挪到壳启动后台，用户点「开始投屏」即起 ffmpeg
     warmUpEncoderProbe();
+    // 投屏控制（第二阶段）：输入事件长轮询消费（shell/src/input.ts）——
+    // 手机端 screen.input 经后端队列到这里被 SendInput 注入。koffi 不可用时
+    // startInputPolling 返回 false（安全降级 = 不注入，控制事件无人取走）。
+    if (!startInputPolling()) {
+      console.log("[input] 控制注入不可用（koffi 加载失败）——投屏仍可观看，控制不可用");
+    }
+    // 控制态翻转 → 托盘 tooltip（「正在被控制」优先于「正在向手机投屏」）
+    setControllingCallback((controlled) => setTrayHint(/* capturing */ true, controlled));
 
     // 产线诊断通道：渲染层控制台与加载失败转发到主进程 stdout
     // （打包后无 DevTools 场景排查渲染层问题全靠它）
@@ -317,6 +328,7 @@ if (!app.requestSingleInstanceLock()) {
   app.on("will-quit", () => {
     stopUpdatePolling();
     stopScreenPolling(); // 投屏：杀 ffmpeg + 断推流（shell/src/screen.ts）
+    stopInputPolling(); // 投屏控制：停输入长轮询（shell/src/input.ts）
     shutdownBackend();
     shutdownSakura(); // frpc 与后端同一条退出路径：壳走，隧道进程跟着收
   });

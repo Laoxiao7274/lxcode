@@ -749,6 +749,7 @@ func (s *Server) routes() http.Handler {
 	if runtime.GOOS != "darwin" {
 		mux.HandleFunc("/screen/ctl", s.handleScreenCtl)
 		mux.HandleFunc("/screen/stream", s.handleScreenStream)
+		mux.HandleFunc("/screen/input", s.handleScreenInput)
 	}
 	return mux
 }

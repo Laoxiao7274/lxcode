@@ -321,6 +321,14 @@ class AppState(private val store: ConnStore? = null) {
      */
     var screenFullscreen by mutableStateOf(false)
 
+    /**
+     * 投屏控制模式（观看/控制切换；2026-12 拍板）：true = 控制模式——手机端
+     * 触摸手势映射为电脑键鼠输入（screen.input），false = 纯观看。
+     * 纯客户端 UI 态，不进协议；后端「允许控制」关时 screen.input 会被拒
+     * （错误 toast 提示去电脑端开开关），模式本身可自由切换。
+     */
+    var screenControlMode by mutableStateOf(false)
+
     /** 脱离页面上下文的一次性系统 toast（退出投屏发生在非组合上下文，screenToast 不适用）。 */
     fun showToast(msg: String) {
         android.widget.Toast.makeText(
@@ -752,6 +760,9 @@ fun AppRoot(pairUri: String? = null, onPairUriConsumed: () -> Unit = {}) {
     LaunchedEffect(state.route) {
         if (state.route !is Route.Screen && state.screenFullscreen) {
             state.screenFullscreen = false
+        }
+        if (state.route !is Route.Screen && state.screenControlMode) {
+            state.screenControlMode = false // 离开投屏页回观看态（控制是观看态内的一档）
         }
     }
 

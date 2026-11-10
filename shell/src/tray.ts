@@ -11,6 +11,28 @@ import { IS_DEV_SHELL } from "./main";
 let tray: Tray | null = null;
 let quitting = false;
 
+/** 托盘 tooltip 的状态合成：投屏中 / 被控制中（最高优先级）/ 默认。
+ *  状态由 screen.ts（capturing）与 input.ts（controlled）经 setTrayHint 推，
+ *  这里只管按优先级渲染成 tooltip 文案。 */
+let trayCapturing = false;
+let trayControlled = false;
+
+/** 更新托盘提示（screen.ts 投屏启停 / input.ts 控制事件到达时调）。
+ *  被控制优先于单纯投屏（用户更需要知道「手机在操作我电脑」）；
+ *  controlled=false 且 capturing=true 时回「正在向手机投屏」。 */
+export function setTrayHint(capturing: boolean, controlled: boolean): void {
+  trayCapturing = capturing;
+  trayControlled = controlled;
+  if (!tray) return;
+  const base = IS_DEV_SHELL ? "Lxcode dev" : "Lxcode";
+  let tip = base;
+  if (controlled) tip = `${base} — 正在被控制（手机输入注入中）`;
+  else if (capturing) tip = `${base} — 正在向手机投屏`;
+  try {
+    tray.setToolTip(tip);
+  } catch { /* 托盘已销毁等边缘态：不影响功能 */ }
+}
+
 /** 当前托盘实例（screen.ts 的投屏隐私指示用它改 tooltip/弹气泡；
  *  托盘未装配 = null）。 */
 export function getTray(): Tray | null {

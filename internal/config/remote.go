@@ -19,6 +19,10 @@ import (
 type RemoteAccess struct {
 	Enabled bool   `json:"enabled"`
 	Token   string `json:"token"`
+	// AllowControl 投屏控制开关（默认关）：手机端在投屏画面上注入键鼠输入
+	// 的总闸。关闭时 screen.input 一律回 CodeScreenControlDisabled——「允许
+	// 控制」是被控（手机操作电脑）能力的显式授权，不能随投屏一起默认打开。
+	AllowControl bool `json:"allow_control"`
 }
 
 // LoadRemoteAccess 读远程访问配置。文件缺失/损坏 = 未启用（不拒绝启动——

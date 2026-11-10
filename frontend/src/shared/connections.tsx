@@ -94,6 +94,10 @@ interface ConnectionsValue {
   /** 本机远程访问（被连）：开启后所有连接须携带 token（后端强制校验）。 */
   remoteAccess: boolean;
   setRemoteAccess: (on: boolean) => void;
+  /** 投屏控制开关（allow_control，默认关）：手机端可在投屏画面上注入键鼠。
+   *  开启时电脑托盘会在被控期间显示「正在被控制」。 */
+  remoteAllowControl: boolean;
+  setRemoteAllowControl: (on: boolean) => void;
   /** 远程访问开关/token 操作进行中。 */
   remoteBusy: boolean;
   /** 对外地址（局域网 IP:端口——壳上报；无桥时演示值）。 */
@@ -181,6 +185,7 @@ export function ConnectionsProvider({ children, sakuraBridge, remoteControlBridg
   const [remotes, setRemotes] = useState<RemoteConn[]>(loadRemotes);
   const [active, setActiveState] = useState<ActiveConn>(loadActive);
   const [remoteAccess, setRemoteAccessState] = useState(false);
+  const [remoteAllowControl, setRemoteAllowControlState] = useState(false);
   const [remoteToken, setRemoteToken] = useState(demoToken);
   const [remoteAddr, setRemoteAddr] = useState("192.168.1.105:7789");
   const [remoteBusy, setRemoteBusy] = useState(false);
@@ -258,6 +263,7 @@ export function ConnectionsProvider({ children, sakuraBridge, remoteControlBridg
       if (!alive) return;
       setRemoteAccessState(s.enabled);
       setRemoteToken(s.token);
+      setRemoteAllowControlState(!!s.allowControl);
       if (s.lanAddr) setRemoteAddr(s.lanAddr);
     };
     b.get().then(apply).catch(() => { /* 主进程未就绪时保持演示态 */ });
@@ -285,6 +291,17 @@ export function ConnectionsProvider({ children, sakuraBridge, remoteControlBridg
     setRemoteBusy(true);
     b.rotate()
       .then((s) => { setRemoteToken(s.token); })
+      .catch(remoteFail)
+      .finally(() => setRemoteBusy(false));
+  }, [remoteFail]);
+
+  /** 投屏控制开关（allow_control）：无桥时仅 UI 态（演示）。 */
+  const setRemoteAllowControl = useCallback((on: boolean) => {
+    const b = remoteCtlRef.current;
+    if (!b) { setRemoteAllowControlState(on); return; }
+    setRemoteBusy(true);
+    b.allowControl(on)
+      .then((s) => { setRemoteAllowControlState(!!s.allowControl); })
       .catch(remoteFail)
       .finally(() => setRemoteBusy(false));
   }, [remoteFail]);
@@ -429,7 +446,7 @@ export function ConnectionsProvider({ children, sakuraBridge, remoteControlBridg
     () => ({
       remotes, addRemote, updateRemote, removeRemote,
       active, setActive,
-      remoteAccess, setRemoteAccess, remoteBusy, remoteAddr, remoteToken, regenerateRemoteToken,
+      remoteAccess, setRemoteAccess, remoteAllowControl, setRemoteAllowControl, remoteBusy, remoteAddr, remoteToken, regenerateRemoteToken,
       sakura, loginSakura, logoutSakura, sakuraBusy, sakuraError, refreshSakura,
       tunnels, createTunnel, toggleTunnel, removeTunnel,
       listSakuraNodes, onSakuraNodeLatency,
@@ -437,7 +454,7 @@ export function ConnectionsProvider({ children, sakuraBridge, remoteControlBridg
     [
       remotes, addRemote, updateRemote, removeRemote,
       active, setActive,
-      remoteAccess, setRemoteAccess, remoteBusy, remoteAddr, remoteToken, regenerateRemoteToken,
+      remoteAccess, setRemoteAccess, remoteAllowControl, setRemoteAllowControl, remoteBusy, remoteAddr, remoteToken, regenerateRemoteToken,
       sakura, loginSakura, logoutSakura, sakuraBusy, sakuraError, refreshSakura,
       tunnels, createTunnel, toggleTunnel, removeTunnel,
       listSakuraNodes, onSakuraNodeLatency,

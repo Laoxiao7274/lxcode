@@ -66,6 +66,7 @@ import androidx.compose.material.icons.filled.DesktopWindows
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material.icons.outlined.ScreenRotation
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -84,6 +85,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.isSpecified
@@ -209,7 +211,7 @@ fun ScreenScreen(state: com.moyunteng.lxcode.remote.ui.AppState) {
     }
     if (fullscreen) {
         // 整页视频：VideoSurface 自带黑底 + 顶部悬浮提示条 + 双击/双指手势
-        VideoSurface(real, fullscreen = true, onToggleFullscreen = { fullscreen = !fullscreen })
+        VideoSurface(real, fullscreen = true, onToggleFullscreen = { fullscreen = !fullscreen }, state = state)
         return
     }
 
@@ -336,7 +338,7 @@ fun ScreenScreen(state: com.moyunteng.lxcode.remote.ui.AppState) {
                 )
             }
 
-            Hint("手机只能看，不能控制电脑。投屏运行时电脑托盘会显示「正在向手机投屏」。")
+            Hint("投屏默认只观看。悬浮球菜单里可开「控制模式」用手机操作电脑——电脑端需在远程访问设置里打开「允许控制」（默认关），被控时电脑托盘会显示「正在被控制」。")
 
             // 一次性提示（toast 语义：几秒后自动清）
             state.screenToast?.let { msg ->
@@ -495,7 +497,7 @@ private fun MinimizedCastScreen(
                 enabled = !busy,
             )
 
-            Hint("手机只能看，不能控制电脑。投屏运行时电脑托盘会显示「正在向手机投屏」。")
+            Hint("投屏默认只观看。悬浮球菜单里可开「控制模式」用手机操作电脑——电脑端需在远程访问设置里打开「允许控制」（默认关），被控时电脑托盘会显示「正在被控制」。")
 
             // Agent 控制区（占位）：后续在小屏下面做 agent 控制电脑
             AgentControlPanel()
@@ -600,7 +602,7 @@ private fun WatchSurface(
             Modifier.fillMaxSize(),
             contentAlignment = Alignment.Center,
         ) {
-            VideoSurface(real, fullscreen = fullscreen, onToggleFullscreen = onToggleFullscreen)
+            VideoSurface(real, fullscreen = fullscreen, onToggleFullscreen = onToggleFullscreen, state = state)
         }
 
         // 观看态顶栏（0.3.31 拍板：投屏会话页自带顶栏，不再「包一层」设置页）：
@@ -652,6 +654,129 @@ private fun WatchSurface(
 
         // 悬浮球（菜单开着时状态行隐藏，避免与菜单项重叠）
         ScreenFloatingBall(real, state, onToggleFullscreen)
+
+        // 虚拟键盘条（控制模式时显示）：常用键一行 + 文本输入转发。
+        // 键序：Ctrl Alt Win Tab Esc ← ↑ ↓ → Enter Backspace + 「键入」输入框。
+        if (state.screenControlMode) {
+            Box(Modifier.align(Alignment.BottomCenter)) {
+                ControlKeyboardBar(real, state)
+            }
+        }
+    }
+}
+
+/**
+ * 虚拟键盘条（投屏控制模式）：屏幕底部半透明条，常用修饰键（锁定式：点一下
+ * 按下、再点抬起——对应组合键按住场景）+ 单发键 + 文本输入框（IME 文本经
+ * char 事件逐条转发，中文/表情走 Unicode 注入，不依赖电脑端键盘布局）。
+ */
+@Composable
+private fun ControlKeyboardBar(
+    real: com.moyunteng.lxcode.remote.net.RealBackend,
+    state: com.moyunteng.lxcode.remote.ui.AppState,
+) {
+    // 锁定的修饰键（点击切换按下/抬起；组合键 = 修饰键按下状态 + 单发键）
+    val locked = remember { mutableStateOf(setOf<String>()) }
+    var textDraft by remember { mutableStateOf("") }
+    val focus = remember { androidx.compose.ui.focus.FocusRequester() }
+
+    fun sendKey(key: String) {
+        real.sendScreenInput(com.moyunteng.lxcode.remote.net.ScreenInputParams(
+            type = "key",
+            key = key,
+            modifiers = locked.value.toList(),
+            monitor = 0,
+        ))
+    }
+
+    fun toggleLock(mod: String) {
+        val next = locked.value.toMutableSet()
+        if (!next.remove(mod)) next.add(mod)
+        locked.value = next
+        // 锁定切换时同步电脑端按下/抬起状态（key 事件 = down+up，锁定键单独用 down/up）
+        real.sendScreenInput(com.moyunteng.lxcode.remote.net.ScreenInputParams(
+            type = if (mod in next) "down" else "up",
+            key = mod,
+            monitor = 0,
+        ))
+    }
+
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .navigationBarsPadding()
+            .background(Color.Black.copy(alpha = 0.72f)),
+    ) {
+        // 单发键行
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Lx.space.s4, vertical = Lx.space.s2),
+            horizontalArrangement = Arrangement.spacedBy(Lx.space.s2),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            listOf("ctrl", "alt", "shift", "win").forEach { mod ->
+                KeyBarChip(
+                    label = mod.uppercase(),
+                    active = mod in locked.value,
+                    onClick = { toggleLock(mod) },
+                )
+            }
+            listOf(
+                "tab" to "⇥", "esc" to "esc", "up" to "↑", "down" to "↓",
+                "left" to "←", "right" to "→", "enter" to "⏎", "backspace" to "⌫",
+            ).forEach { (key, label) ->
+                KeyBarChip(label = label, active = false) { sendKey(key) }
+            }
+        }
+        // 文本输入行：输入框 + 发送（IME 组好词后整段经 char 事件转发）
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Lx.space.s4, vertical = Lx.space.s2),
+            horizontalArrangement = Arrangement.spacedBy(Lx.space.s2),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            androidx.compose.material3.OutlinedTextField(
+                value = textDraft,
+                onValueChange = { textDraft = it },
+                modifier = Modifier
+                    .weight(1f)
+                    .height(52.dp)
+                    .focusRequester(focus),                placeholder = { Text("键入文本发到电脑…", style = Lx.type.BodySmall, color = Lx.colors.FgFaint) },
+                textStyle = Lx.type.BodySmall.copy(color = Color.White),
+                singleLine = true,
+            )
+            LxButton(
+                "发送",
+                {
+                    if (textDraft.isNotEmpty()) {
+                        real.sendScreenInput(com.moyunteng.lxcode.remote.net.ScreenInputParams(
+                            type = "char", text = textDraft, monitor = 0,
+                        ))
+                        textDraft = ""
+                        focus.requestFocus()
+                    }
+                },
+                variant = LxButtonVariant.Secondary,
+                enabled = textDraft.isNotEmpty(),
+            )
+        }
+    }
+}
+
+/** 键盘条上的单颗键（锁定式修饰键 active 高亮）。 */
+@Composable
+private fun KeyBarChip(label: String, active: Boolean, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .clip(Lx.radius.FieldShape)
+            .background(if (active) Lx.colors.Surface else Color.White.copy(alpha = 0.10f))
+            .border(1.dp, if (active) Lx.colors.BorderStrong else Color.White.copy(alpha = 0.16f), Lx.radius.FieldShape)
+            .clickable { onClick() }
+            .padding(horizontal = Lx.space.s4, vertical = Lx.space.s2),
+    ) {
+        Text(label, style = Lx.type.Button, color = Color.White.copy(alpha = 0.9f))
     }
 }
 
@@ -792,6 +917,17 @@ private fun ScreenFloatingBall(
                 androidx.compose.ui.platform.LocalConfiguration.current.orientation ==
                     android.content.res.Configuration.ORIENTATION_LANDSCAPE
             MenuColumn {
+                // 控制模式开关（观看/控制切换；2026-12 第二阶段拍板）：控制模式下
+                // 触摸手势映射为电脑键鼠（VideoSurface 的控制手势分支）+ 底部虚拟
+                // 键盘条出现。后端「允许控制」关时手势的 screen.input 会被拒——
+                // 首个错误 toast 提示，模式本身不阻止切。
+                MenuRow(
+                    icon = { MenuIcon(Icons.Filled.TouchApp) },
+                    title = if (state.screenControlMode) "关闭控制（只观看）" else "控制模式（操作电脑）",
+                ) {
+                    menuOpen = false
+                    state.screenControlMode = !state.screenControlMode
+                }
                 MenuRow(
                     icon = { MenuIcon(Icons.Filled.Stop) },
                     title = "停止投屏",
@@ -1302,6 +1438,9 @@ private fun VideoSurface(
     real: com.moyunteng.lxcode.remote.net.RealBackend,
     fullscreen: Boolean = false,
     onToggleFullscreen: () -> Unit = {},
+    /** AppState（控制模式开关与 toast 写入口）——控制手势分支用；观看/卡内
+     *  手势分支不碰它。 */
+    state: com.moyunteng.lxcode.remote.ui.AppState? = null,
 ) {
     // 尺寸语义（见下方容器注释）：观看态 cover 铺满 + clipToBounds；设置页卡内态
     // fit letterbox。手势算术（ScreenGestureMath）共用，边界按态注入：全屏观看 =
@@ -1407,6 +1546,39 @@ private fun VideoSurface(
         (st?.width ?: 0) to (st?.height ?: 0)
     }
     val currentVideoDims by rememberUpdatedState(videoDims)
+    // SurfaceView bounds（cover/fit 尺寸）提前到手势层：控制模式的坐标换算
+    // （touchToNormalized）与 AndroidView 的布局用同一份（fitTick 驱动重算）。
+    // state == null（理论不可达：两处调用都传）→ 控制模式退化为观看。
+    val controlMode = state?.screenControlMode == true && fullscreen
+    val surfaceSize = remember(fitTick, containerSize) {
+        if (fullscreen) {
+            coverVideoSize(
+                viewportW = containerSize.width.toFloat(),
+                viewportH = containerSize.height.toFloat(),
+                videoW = real.screenDecoder?.stats()?.width ?: 0,
+                videoH = real.screenDecoder?.stats()?.height ?: 0,
+            )
+        } else {
+            fitVideoSize(
+                viewportW = containerSize.width.toFloat(),
+                viewportH = containerSize.height.toFloat(),
+                videoW = real.screenDecoder?.stats()?.width ?: 0,
+                videoH = real.screenDecoder?.stats()?.height ?: 0,
+            )
+        }
+    }
+    val currentSurfaceSize by rememberUpdatedState(surfaceSize)
+    // 控制事件上报（sendScreenInput）：控制模式下首个错误 toast 提示（后续错误
+    // 静默——「控制未开启」的提示弹一次就够，move 高频失败不能刷屏）。
+    var controlErrorShown by remember { mutableStateOf(false) }
+    val sendInput: (com.moyunteng.lxcode.remote.net.ScreenInputParams) -> Unit = { p ->
+        real.sendScreenInput(p) { err ->
+            if (!controlErrorShown && state != null) {
+                controlErrorShown = true
+                state.screenToast = err
+            }
+        }
+    }
     Box(
         Modifier
             .then(
@@ -1432,7 +1604,120 @@ private fun VideoSurface(
         // 单指快速按下抬起×2（<300ms）= 双击全屏。原双 pointerInput 并存时 transform
         // 检测器在双击首按期间以 zoom≈1 微调画面。
         .pointerInput(Unit) {
-                awaitEachGesture {
+                if (controlMode && fullscreen) {
+                    // ===== 控制模式手势（2026-12 第二阶段拍板）=====
+                    // 映射：单指 tap = 左键单击；双指 tap（无位移）= 右键单击；
+                    // 单指按下移动 = 按住左键拖动（down→move×N→up）；双指移动 =
+                    // 滚轮（双指整体位移 → 滚轮刻度，dy 每 ~40px 一刻度）；
+                    // 双指捏合 = 本地缩放（观看需要，不发给电脑）。
+                    // 坐标换算：touchToNormalized（ScreenGestureMath，纯函数）——
+                    // 触点视口 px 反变换 graphicsLayer（scale/translation）再除
+                    // cover 尺寸归一化。
+                    awaitEachGesture {
+                        val first = awaitFirstDown()
+                        first.consume()
+                        var sentDown = false
+                        var sawSecond = false
+                        var isScroll = false
+                        var isPinch = false
+                        var lastScrollY = first.position.y
+                        var lastScrollX = first.position.x
+                        // 拖动阈值前先记起点（没过 slop 且快速抬起 = tap）
+                        val startX = first.position.x
+                        val startY = first.position.y
+                        var moved = false
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val pressed = event.changes.count { it.pressed }
+                            if (pressed == 0) break
+                            val pos = event.changes.firstOrNull()?.position ?: break
+                            if (pressed >= 2) {
+                                sawSecond = true
+                                // 双指：区分滚轮（同向整体位移）与捏合（间距变化）
+                                val zoom = event.calculateZoom()
+                                if (kotlin.math.abs(zoom - 1f) > ZOOM_NOISE_EPSILON) {
+                                    isPinch = true
+                                }
+                                if (!isPinch) {
+                                    // 滚轮：双指位移累积（以任一指的位移近似整体位移）
+                                    val dy = pos.y - lastScrollY
+                                    val dx = pos.x - lastScrollX
+                                    lastScrollY = pos.y
+                                    lastScrollX = pos.x
+                                    if (kotlin.math.abs(dy) > 8f || kotlin.math.abs(dx) > 8f) {
+                                        isScroll = true
+                                        val (nx, ny) = touchToNormalized(
+                                            pos.x, pos.y,
+                                            currentViewportPx.first, currentViewportPx.second,
+                                            scale, offsetX, offsetY,
+                                            currentSurfaceSize.width, currentSurfaceSize.height,
+                                        ) ?: continue
+                                        sendInput(com.moyunteng.lxcode.remote.net.ScreenInputParams(
+                                            type = "scroll", x = nx.toDouble(), y = ny.toDouble(),
+                                            dx = 0.0, dy = (-dy / 40.0), // 双指上滑 = 内容上滚 = 滚轮上（dy 正）；触点 y 减小（上滑）→ 内容上滚
+                                            monitor = 0,
+                                        ))
+                                    }
+                                }
+                                event.changes.forEach { it.consume() }
+                                continue
+                            }
+                            // 单指：过 slop = 按住拖动（首次先发 down）
+                            if (moved || (pos - Offset(startX, startY)).getDistance() > viewConfiguration.touchSlop) {
+                                moved = true
+                                val (nx, ny) = touchToNormalized(
+                                    pos.x, pos.y,
+                                    currentViewportPx.first, currentViewportPx.second,
+                                    scale, offsetX, offsetY,
+                                    currentSurfaceSize.width, currentSurfaceSize.height,
+                                ) ?: continue
+                                if (!sentDown) {
+                                    sentDown = true
+                                    sendInput(com.moyunteng.lxcode.remote.net.ScreenInputParams(
+                                        type = "down", x = nx.toDouble(), y = ny.toDouble(), button = "left", monitor = 0,
+                                    ))
+                                }
+                                sendInput(com.moyunteng.lxcode.remote.net.ScreenInputParams(
+                                    type = "move", x = nx.toDouble(), y = ny.toDouble(), monitor = 0,
+                                ))
+                                event.changes.forEach { it.consume() }
+                            }
+                        }
+                        // 抬起：按拖动类型收尾
+                        if (sentDown) {
+                            // 按住拖动 → up（up 只发按键 up；坐标无效字段被壳忽略）
+                            sendInput(com.moyunteng.lxcode.remote.net.ScreenInputParams(
+                                type = "up", button = "left", monitor = 0,
+                            ))
+                        } else if (sawSecond) {
+                            // 双指快速 tap（无位移/未捏合）= 右键单击（点在首指位置）
+                            touchToNormalized(
+                                startX, startY,
+                                currentViewportPx.first, currentViewportPx.second,
+                                scale, offsetX, offsetY,
+                                currentSurfaceSize.width, currentSurfaceSize.height,
+                            )?.let { (nx, ny) ->
+                                sendInput(com.moyunteng.lxcode.remote.net.ScreenInputParams(
+                                    type = "click", x = nx.toDouble(), y = ny.toDouble(), button = "right", monitor = 0,
+                                ))
+                            }
+                        } else if (!isScroll && !isPinch) {
+                            // 单指快速 tap = 左键单击
+                            touchToNormalized(
+                                startX, startY,
+                                currentViewportPx.first, currentViewportPx.second,
+                                scale, offsetX, offsetY,
+                                currentSurfaceSize.width, currentSurfaceSize.height,
+                            )?.let { (nx, ny) ->
+                                sendInput(com.moyunteng.lxcode.remote.net.ScreenInputParams(
+                                    type = "click", x = nx.toDouble(), y = ny.toDouble(), button = "left", monitor = 0,
+                                ))
+                            }
+                        }
+                    }
+                } else {
+                    // ===== 观看/卡内模式手势（原逻辑不动）=====
+                    awaitEachGesture {
                     val down = awaitFirstDown()
                     down.consume()
                     var pan = Offset.Zero
@@ -1537,10 +1822,12 @@ private fun VideoSurface(
                             scale = minScale; offsetX = 0f; offsetY = 0f
                         }
                     }
+                    }
                 }
             },
         contentAlignment = Alignment.Center,
     ) {
+        // （SurfaceView bounds 已提前到手势层——见上方 surfaceSize 注释）
         // SurfaceView 的 bounds = 视频按真实比例的尺寸（居中）。视口 = 容器实测
         // bounds（onSizeChanged 本地回写，px）：不用 BoxWithConstraints 的
         // maxWidth/maxHeight——configChanges 旋转只重组不重建，重组瞬间
@@ -1552,23 +1839,6 @@ private fun VideoSurface(
         // 视频未知（未配置）时 = 视口本身（fill，帧到位后 stats 变化自动重排）。
         // fitTick/边界参数（currentViewportPx/currentVideoDims）见容器声明处。
         val density = LocalDensity.current
-        val surfaceSize = remember(fitTick, containerSize) {
-            if (fullscreen) {
-                coverVideoSize(
-                    viewportW = containerSize.width.toFloat(),
-                    viewportH = containerSize.height.toFloat(),
-                    videoW = real.screenDecoder?.stats()?.width ?: 0,
-                    videoH = real.screenDecoder?.stats()?.height ?: 0,
-                )
-            } else {
-                fitVideoSize(
-                    viewportW = containerSize.width.toFloat(),
-                    viewportH = containerSize.height.toFloat(),
-                    videoW = real.screenDecoder?.stats()?.width ?: 0,
-                    videoH = real.screenDecoder?.stats()?.height ?: 0,
-                )
-            }
-        }
         AndroidView(
             factory = { ctx ->
                 SurfaceView(ctx).apply {

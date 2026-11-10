@@ -11,7 +11,7 @@ import { CopyBtn } from "../connections/CopyBtn";
 import { Toggle } from "../form";
 
 export function LanAccessBlock() {
-  const { remoteAccess, remoteBusy, setRemoteAccess, remoteAddr, remoteToken, regenerateRemoteToken } = useConnections();
+  const { remoteAccess, remoteAllowControl, setRemoteAllowControl, remoteBusy, setRemoteAccess, remoteAddr, remoteToken, regenerateRemoteToken } = useConnections();
   const [reveal, setReveal] = useState(false);
   // 面板 ref：恒定回调（useCallback + playEnter 模块函数）——内联 ref 每次渲染
   // 都会被 React 重调（旧 ref 传 null、新 ref 传 el），里面若触发动画就会随
@@ -87,6 +87,15 @@ export function LanAccessBlock() {
               </div>
             </div>
           )}
+          <div className="conn-ra-row">
+            <div className="conn-ra-text">
+              <div className="conn-name">允许控制</div>
+              <div className="conn-sub">
+                手机端在投屏画面上操控此电脑（点击/滚动/键盘）。默认关闭；开启后被控期间电脑托盘会显示「正在被控制」。
+              </div>
+            </div>
+            <Toggle on={remoteAllowControl} onChange={setRemoteAllowControl} disabled={remoteBusy} ariaLabel="允许投屏控制" />
+          </div>
           <div className="conn-ra-hint">把地址和 Token 给要连你的设备；重置后旧 Token 立即失效。本机的 lxcode 窗口不受影响。</div>
         </div>
       )}

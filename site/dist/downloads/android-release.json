@@ -1,11 +1,12 @@
 {
-  "version": "0.3.45",
-  "versionCode": 47,
-  "name": "lxcode-0.3.45-android.apk",
-  "size": 12026795,
-  "sha256": "a22c284d441d54488f27a72062cfe483d73e7e4109b3b162f8eebebfc4c40453",
-  "url": "downloads/lxcode-0.3.45-android.apk",
+  "version": "0.3.46",
+  "versionCode": 48,
+  "name": "lxcode-0.3.46-android.apk",
+  "size": 12026814,
+  "sha256": "aa0eebef32189bc14f779f87a486acf34bb340549bc7d53ed4400b3e398efe35",
+  "url": "downloads/lxcode-0.3.46-android.apk",
   "notes": [
-    "连接自动恢复修复：退出后重连回落草稿凭证不再静默失败、重连过程横幅可见"
+    "投屏控制——手机操作电脑：手势映射（点按/右键/拖动/滚轮）与虚拟键盘",
+    "三层安全门：仅当前接收者、允许控制开关默认关、壳在线；长轮询低延迟下发"
   ]
 }

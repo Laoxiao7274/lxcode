@@ -42,6 +42,8 @@ import { IS_DEV_SHELL } from "./main";
 import { cachedToken } from "./backend-remote";
 import { feedAnnexB, flushAu, resetAu, FRAME_FLAG_KEYFRAME } from "./screen-au";
 import { restartTripped, afterRestartAttempt, tripMessage, MAX_CONSECUTIVE_ERRORS } from "./screen-restart";
+import { setTrayHint } from "./tray";
+import { lastInputInjectedAt } from "./input";
 
 const BACKEND = process.env.LXCODE_ADDR ?? "127.0.0.1:7789";
 
@@ -50,6 +52,8 @@ const BACKEND = process.env.LXCODE_ADDR ?? "127.0.0.1:7789";
 function token(): string {
   return cachedToken() ?? "";
 }
+/** 导出给 input.ts（投屏控制的注入通道与命令轮询同一份后端地址/凭证）。 */
+export { BACKEND, token as screenToken };
 const POLL_ONLINE_MS = 1000;
 const POLL_OFFLINE_MS = 5000;
 const QUALITY_QP: Record<string, string> = { low: "26", medium: "22", high: "18" };
@@ -527,6 +531,13 @@ function clearRestartFailures(): void {
   restartFailures = 0;
 }
 
+/** 最近 3s 内有过输入注入 = 手机正在控制（input.ts 的长轮询循环在注入事件）。
+ *  3s 阈值：人手连续操作事件间隔远小于它，停手 3s 即回「仅投屏」态。 */
+function isRemoteControlling(): boolean {
+  const last = lastInputInjectedAt();
+  return last > 0 && Date.now() - last < 3000;
+}
+
 // ---- 桌面轻提示（隐私指示）----
 
 let hintShown = false;
@@ -542,7 +553,8 @@ function updateCapturingHint(on: boolean): void {
   const tray: Tray | null = getTray();
   if (!tray) return;
   try {
-    tray.setToolTip(on ? `${BASE_TOOLTIP} — 正在向手机投屏` : BASE_TOOLTIP);
+    // tooltip 合流到 tray.ts 的 setTrayHint（被控制态优先级更高，input.ts 也写它）
+    setTrayHint(on, isRemoteControlling());
     if (on) {
       tray.displayBalloon({
         title: "Lxcode 正在投屏",

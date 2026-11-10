@@ -28,6 +28,10 @@ const (
 	// 注意：这个查询的**权威数据在壳**（桌面会话内才看得到显示器），后端回缓存的
 	// 上一次壳上报值；壳不在时 active 布尔全空。
 	MethodScreenMonitors = "screen.monitors"
+	// MethodScreenInput 投屏控制：手机端注入一次输入事件（params:
+	// ScreenInputParams）。应答 result: {"queued": true}——入队即应答，真实执行
+	// 在壳（用户会话内才注得了输入，见 server/screen_input.go 的安全门注释）。
+	MethodScreenInput = "screen.input"
 )
 
 // 事件名（后端 → 客户端广播）。
@@ -47,6 +51,9 @@ const (
 	CodeScreenEncoderUnavailable = -32082
 	// CodeScreenNoMonitor 请求的显示器索引不存在。
 	CodeScreenNoMonitor = -32083
+	// CodeScreenControlDisabled 「允许控制」开关未开启（默认关——被控是高危
+	// 能力，须用户在桌面端显式授权；见 config.RemoteAccess.AllowControl）。
+	CodeScreenControlDisabled = -32084
 )
 
 // 码率档（Stage 1 三档；kbit）。
@@ -109,6 +116,33 @@ type ScreenState struct {
 // ScreenChangedParams screen.changed 事件载荷。
 type ScreenChangedParams struct {
 	State ScreenState `json:"state"`
+}
+
+// ScreenInputParams screen.input 的参数——一次输入事件（触屏/键鼠语义的并集，
+// 按 type 取用相应字段；未取用的字段忽略）。
+type ScreenInputParams struct {
+	// Type 事件类型：move / click / dblclick / down / up / scroll / key / char。
+	Type string `json:"type"`
+	// X/Y 视频画面上的归一化坐标（0-1，相对被投的显示器画面——不是全虚拟桌面）。
+	// move/click/dblclick/down/up/scroll 需要。
+	X float64 `json:"x,omitempty"`
+	Y float64 `json:"y,omitempty"`
+	// Button 按键：left / right / middle（click/dblclick/down/up 用；空 = left）。
+	Button string `json:"button,omitempty"`
+	// Dx/Dy 滚轮增量（scroll 用；正向 = 上滚，单位 = 滚轮刻度）。
+	Dx float64 `json:"dx,omitempty"`
+	Dy float64 `json:"dy,omitempty"`
+	// Key 键名（key 用）：命名键（enter/esc/tab/backspace/delete/up/down/left/
+	// right/home/end/pgup/pgdn/space/f1-f12/ctrl/alt/shift/win 或 "a"-"z"、
+	// "0"-"9" 等单字符），modifiers 里按住时也用它。
+	Key string `json:"key,omitempty"`
+	// Modifiers 组合键（key 用）：ctrl/alt/shift/win 的组合（数组，次序无关）。
+	Modifiers []string `json:"modifiers,omitempty"`
+	// Text 要注入的文本（char 用；按 Unicode 逐字符注入——不依赖目标端键盘布局）。
+	Text string `json:"text,omitempty"`
+	// Monitor 目标显示器（可选；缺省 = 当前投屏命令的显示器）。归一化坐标的
+	// 参照物与投屏画面一致，通常留空。
+	Monitor int `json:"monitor,omitempty"`
 }
 
 // FrameHeader 是 WS 二进制帧的自定义头（13 字节），紧跟其后的 payload 是一个

@@ -8,6 +8,8 @@ const BASE = `http://${ADDR}`;
 export interface BackendRemoteState {
   enabled: boolean;
   token: string;
+  /** 投屏控制开关（remote.json 的 allow_control；默认关）。 */
+  allowControl: boolean;
   /** 本机局域网地址（供「局域网直连」模式展示；可能是空串——无可用网卡时）。 */
   lanAddr: string;
 }
@@ -36,8 +38,8 @@ async function call(method: "GET" | "POST", body?: unknown): Promise<BackendRemo
     const text = await res.text().catch(() => "");
     throw new Error(text.trim() || `后端 /remote-access 返回 HTTP ${res.status}`);
   }
-  const ra = (await res.json()) as { enabled: boolean; token: string };
-  cached = { enabled: ra.enabled, token: ra.token, lanAddr: lanAddress() };
+  const ra = (await res.json()) as { enabled: boolean; token: string; allow_control?: boolean };
+  cached = { enabled: ra.enabled, token: ra.token, allowControl: ra.allow_control ?? false, lanAddr: lanAddress() };
   return cached;
 }
 
@@ -69,6 +71,11 @@ export async function disable(): Promise<BackendRemoteState> {
 
 export async function rotate(): Promise<BackendRemoteState> {
   return call("POST", { rotate: true });
+}
+
+/** 投屏控制开关（remote.json 的 allow_control；后端 /remote-access POST 直改）。 */
+export async function setAllowControl(on: boolean): Promise<BackendRemoteState> {
+  return call("POST", { allow_control: on });
 }
 
 export async function refresh(): Promise<BackendRemoteState> {

@@ -3,6 +3,8 @@
 export interface RemoteControlState {
   enabled: boolean;
   token: string;
+  /** 投屏控制开关（remote.json 的 allow_control；默认关）。 */
+  allowControl: boolean;
   /** 本机局域网地址 lanIp:port（无可用网卡时为空串）。 */
   lanAddr: string;
 }
@@ -13,6 +15,8 @@ export interface RemoteControlBridge {
   disable(): Promise<RemoteControlState>;
   rotate(): Promise<RemoteControlState>;
   refresh(): Promise<RemoteControlState>;
+  /** 投屏控制开关（allow_control）。 */
+  allowControl(on: boolean): Promise<RemoteControlState>;
 }
 
 interface RawBridge {
@@ -22,6 +26,7 @@ interface RawBridge {
   disable(): Promise<unknown>;
   rotate(): Promise<unknown>;
   refresh(): Promise<unknown>;
+  allowControl(on: boolean): Promise<unknown>;
 }
 
 /** WS 连接用的后端 token（同步——主进程启动时已缓存）。
@@ -46,6 +51,7 @@ export function getRemoteControlBridge(): RemoteControlBridge | null {
     disable: () => cast<RemoteControlState>(s.disable()),
     rotate: () => cast<RemoteControlState>(s.rotate()),
     refresh: () => cast<RemoteControlState>(s.refresh()),
+    allowControl: (on: boolean) => cast<RemoteControlState>(s.allowControl(on)),
   };
 }
 

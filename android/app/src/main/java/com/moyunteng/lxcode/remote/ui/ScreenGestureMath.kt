@@ -204,3 +204,44 @@ fun coverOverflowAt(
     return ((cover.width * scale - viewportW).coerceAtLeast(0f) / 2f) to
         ((cover.height * scale - viewportH).coerceAtLeast(0f) / 2f)
 }
+
+// ===== 投屏控制（2026-12 第二阶段）：触点 → 视频像素 → 0-1 归一化 =====
+//
+// 触点在**视口坐标系**（Compose px，含 graphicsLayer 的 scale/translation 变换——
+// pointerInput 给的是变换后视口坐标），要反变换回 SurfaceView 内容坐标再归一化：
+//   视口 → SurfaceView bounds：viewPx = (touchPx - viewport/2 - translation) / scale + coverSize/2
+//（graphicsLayer 变换原点 = SurfaceView 中心 = cover 尺寸中心，与视口中心重合）
+//   SurfaceView bounds → 视频像素：videoPx = viewPx * (videoSize / coverSize)
+//（SurfaceView bounds 就是 cover 尺寸；视频按 bounds 拉伸）
+//   视频像素 → 0-1：norm = videoPx / videoSize
+// 合并：norm = ((touch - viewport/2 - translation)/scale + cover/2) / cover = 
+//        (touch - viewport/2 - translation) / (scale * cover) + 1/2
+
+/**
+ * 触点（视口 px）→ 视频画面归一化坐标（0-1）。
+ *
+ * @param touchX/Y      触点在视口坐标系的 px（event.changes[].position）
+ * @param viewportW/H   容器实测 bounds（onSizeChanged，px）
+ * @param scale         当前 graphicsLayer 缩放（1f..5f）
+ * @param translationX/Y 当前 graphicsLayer 平移（px）
+ * @param coverW/H      SurfaceView bounds（coverVideoSize / fitVideoSize 的结果，px）
+ * @return (nx, ny)；视口/cover 退化（<=0）返回 null（发不了）
+ */
+fun touchToNormalized(
+    touchX: Float,
+    touchY: Float,
+    viewportW: Float,
+    viewportH: Float,
+    scale: Float,
+    translationX: Float,
+    translationY: Float,
+    coverW: Float,
+    coverH: Float,
+): Pair<Float, Float>? {
+    if (viewportW <= 0f || viewportH <= 0f || coverW <= 0f || coverH <= 0f || scale == 0f) return null
+    val nx = (touchX - viewportW / 2f - translationX) / (scale * coverW) + 0.5f
+    val ny = (touchY - viewportH / 2f - translationY) / (scale * coverH) + 0.5f
+    // 触点在画面外（黑边/裁掉区）：钳到 0-1（点黑边 = 点画面最近的边——比丢弃
+    // 手势体验好：拖动跨出画面边缘时输入连续）
+    return nx.coerceIn(0f, 1f) to ny.coerceIn(0f, 1f)
+}

@@ -133,8 +133,9 @@ func (s *Server) handleRemoteAccess(w http.ResponseWriter, r *http.Request) {
 	ra := config.LoadRemoteAccess(path)
 	if r.Method == http.MethodPost {
 		var body struct {
-			Enabled *bool `json:"enabled"`
-			Rotate  bool  `json:"rotate"`
+			Enabled      *bool `json:"enabled"`
+			Rotate       bool  `json:"rotate"`
+			AllowControl *bool `json:"allow_control"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, "请求体不是合法 JSON: "+err.Error(), http.StatusBadRequest)
@@ -145,6 +146,9 @@ func (s *Server) handleRemoteAccess(w http.ResponseWriter, r *http.Request) {
 		ra = config.LoadRemoteAccess(path)
 		if body.Enabled != nil {
 			ra.Enabled = *body.Enabled
+		}
+		if body.AllowControl != nil {
+			ra.AllowControl = *body.AllowControl
 		}
 		if body.Rotate || (ra.Enabled && ra.Token == "") {
 			token, err := config.GenerateRemoteToken()

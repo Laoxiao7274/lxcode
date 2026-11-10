@@ -80,6 +80,7 @@ contextBridge.exposeInMainWorld("__LX__", {
     disable: (): Promise<unknown> => ipcRenderer.invoke("backendRemote:disable"),
     rotate: (): Promise<unknown> => ipcRenderer.invoke("backendRemote:rotate"),
     refresh: (): Promise<unknown> => ipcRenderer.invoke("backendRemote:refresh"),
+    allowControl: (on: boolean): Promise<unknown> => ipcRenderer.invoke("backendRemote:allowControl", on),
   },
   // 对话完成系统通知：渲染层判定（主轮 done + 失焦 + 开关）后经这里发
   // fire-and-forget 意图，主进程弹 Electron Notification（点击聚焦主窗口）。

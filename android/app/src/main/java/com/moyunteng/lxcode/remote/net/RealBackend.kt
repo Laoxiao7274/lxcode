@@ -215,6 +215,46 @@ class RealBackend {
         }
     }
 
+    // ===== 投屏控制（screen.input；internal/protocol/screen.go 的 ScreenInputParams）=====
+
+    /** move 事件上次发送时刻（节流到 ~30Hz：手指滑动一次产生上百个 move，
+     *  WS 请求与后端队列都吃不消；30Hz 与视频帧率对齐，视觉上已连续）。 */
+    private var lastMoveSentAt = 0L
+
+    /**
+     * 注入一条输入事件（fire-and-forget——控制事件高频，不逐条等应答；
+     * 错误只对非 move 类弹 toast：move 失败通常是「控制未开启」，逐条弹会把
+     * 用户 toast 刷爆，首次失败由 click/key 等显式动作兜住提示）。
+     *
+     * 后端安全门（server/screen.go screenInput）：非接收者 / 「允许控制」关 /
+     * 壳不在线 → 错误应答。error toast 由调用方（ScreenScreen 的手势层）在
+     * [onError] 里接（仅首个错误提示，避免连点刷屏）。
+     */
+    fun sendScreenInput(
+        params: com.moyunteng.lxcode.remote.net.ScreenInputParams,
+        onError: ((String) -> Unit)? = null,
+    ) {
+        if (params.type == "move") {
+            val now = android.os.SystemClock.uptimeMillis()
+            if (now - lastMoveSentAt < 33) return // 30Hz 节流
+            lastMoveSentAt = now
+        }
+        val o = JSONObject()
+        o.put("type", params.type)
+        if (params.x != null) o.put("x", params.x)
+        if (params.y != null) o.put("y", params.y)
+        if (params.button != null) o.put("button", params.button)
+        if (params.dx != null) o.put("dx", params.dx)
+        if (params.dy != null) o.put("dy", params.dy)
+        if (params.key != null) o.put("key", params.key)
+        if (params.modifiers.isNotEmpty()) o.put("modifiers", JSONArray(params.modifiers))
+        if (params.text != null) o.put("text", params.text)
+        o.put("monitor", params.monitor)
+        client.call("screen.input", o) { err, _ ->
+            if (err != null) onError?.invoke(err.optString("message"))
+        }
+    }
+
     private fun applyScreenState(o: JSONObject) {
         screenState = com.moyunteng.lxcode.remote.ui.ScreenStateInfo(
             active = o.optBoolean("active", false),

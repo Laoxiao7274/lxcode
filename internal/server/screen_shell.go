@@ -75,6 +75,12 @@ type screenShell struct {
 
 	// streaming 壳推流端点当前是否在途（诊断；壳状态上报的 Running 互为校验）。
 	streaming bool
+
+	// inputQueue 投屏控制事件队列（screen.input 入队 → 壳长轮询取走注入）。
+	// 锁与本结构同把 mu。
+	inputQueue []protocol.ScreenInputParams
+	// inputWakers 长轮询等待者唤醒组（enqueueInput 广播）。
+	inputWakers inputWaitGroup
 }
 
 func newScreenShell() *screenShell {

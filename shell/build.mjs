@@ -22,7 +22,10 @@ await build({
   platform: "node",
   format: "cjs",
   target: "node22",
-  external: ["electron", "original-fs"], // electron 运行时注入；original-fs = Electron 内置的未打补丁 fs（updater 绕开 asar 补丁用）
+  // electron/original-fs：运行时注入；koffi：原生 .node 模块（SendInput FFI，
+  // shell/src/input.ts）不能 bundle——external 后 require("koffi") 运行时从
+  // node_modules 解析，electron-builder 需把 koffi 目录带上（asar 外）。
+  external: ["electron", "original-fs", "koffi"], // electron 运行时注入；original-fs = Electron 内置的未打补丁 fs（updater 绕开 asar 补丁用）
   outfile: "dist/main.js",
   sourcemap: true,
   logLevel: "info",
