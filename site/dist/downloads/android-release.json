@@ -1,12 +1,12 @@
 {
-  "version": "0.3.47",
-  "versionCode": 49,
-  "name": "lxcode-0.3.47-android.apk",
-  "size": 12043587,
-  "sha256": "8c07315fb3990115cd7d5f98c1982177ba8c68222e0d468ef09419481c983bb4",
-  "url": "downloads/lxcode-0.3.47-android.apk",
+  "version": "0.3.48",
+  "versionCode": 50,
+  "name": "lxcode-0.3.48-android.apk",
+  "size": 12043598,
+  "sha256": "d1a2af9357e70abcfe3580cc7df32ee3dad7e0439a7a80b15fdf247251938251",
+  "url": "downloads/lxcode-0.3.48-android.apk",
   "notes": [
-    "AI 消息复制功能——长按 AI 消息或点复制按钮复制 markdown 原文，代码块长按单独复制",
-    "控制键盘条字形修复——特殊 Unicode 字形换 Material 图标，解决部分 ROM 显示空白"
+    "修复含行内代码的文本与表格单元格不显示——MdText 绘制接管遗漏 drawContent()",
+    "修复表格空白：同一根因，补绘制后整段恢复渲染"
   ]
 }

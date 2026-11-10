@@ -2139,8 +2139,9 @@ private fun MdText(
     val annotated = remember(spans, mono, codeBg, linkInk) { spansToAnnotatedString(spans, mono, codeBg, linkInk) }
     // 行内 code 的区间表（AnnotatedString 坐标）：draw 期按行盒逐行画边框圆角
     //（原型 `.msg-ai .txt code`：1px --line 边 + radius 5 + padding 1px 5px）。
-    // SpanStyle 画不出边框，边框只能自绘——drawWithContent 在文本内容**之前**
-    // 画（边框垫底，文字叠在上面），layoutResult 由 onTextLayout 捕获。
+    // SpanStyle 画不出边框，边框只能自绘——drawWithContent 先 drawContent()
+    // 再画边框（边框叠在文字之上；不调 drawContent 会让整个 Text 不绘制），
+    // layoutResult 由 onTextLayout 捕获。
     val codeRanges = remember(annotated) {
         annotated.spanStyles
             .filter { it.item.background == codeBg }
@@ -2150,6 +2151,7 @@ private fun MdText(
     val layoutState = remember { mutableStateOf<androidx.compose.ui.text.TextLayoutResult?>(null) }
     val codeDecoration = if (codeRanges.isEmpty()) Modifier else Modifier
         .drawWithContent {
+            drawContent()
             val layout = layoutState.value ?: return@drawWithContent
             // 逐行求交画每行的 code 段：同一区间跨行时每行各画一段；x 用区间内
             // 字符的包围盒取（getLineLeft/Right 是整行盒，行内 code 不占满一行）；
