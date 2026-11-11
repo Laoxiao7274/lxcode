@@ -7,6 +7,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { beginEdit, canRewind, planRewind, rewindThenRestore, type EditDraft } from "../shared/blocks";
 import { draftOf, writeDraft, writeDraftAtts, writeDraftText, type SessionDraft, type SessionDrafts } from "../shared/session-drafts";
+
+/** 草稿落库的防抖窗口（ms）：打字高频写，800ms 静默后发一次（与安卓端同值）。 */
+const DRAFT_FLUSH_DELAY_MS = 800;
 import type { ThreadBlock } from "../shared/store";
 import type { SendAttachments } from "../shared/types";
 import type { ComposerAttsDraft } from "../components/composer";
@@ -47,13 +50,30 @@ export function useRewind({ source, currentId, currentIdRef, reportError, sendWi
    *  键 = session id，值 = 文本 + 暂存附件。切走保留、切回还原、发送清空、失败
    *  回填落原会话键。 */
   const [drafts, setDrafts] = useState<SessionDrafts>({});
+  /** 防抖落库的辅助引用：drafts 的镜像（闭包里读最新值不进依赖）+ 挂起定时器。 */
+  const draftsRef = useRef<SessionDrafts>({});
+  draftsRef.current = drafts;
+  const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** 立即落库某会话的草稿（撤回注入/回滚这类**终值明确**的写——顺手取消挂起的
+   *  防抖，旧值不再补发）。失败静默：落库是尽力而为的同步，失败不影响本地记账。 */
+  const flushDraftNow = useCallback((sid: string, text: string) => {
+    if (draftTimerRef.current) {
+      clearTimeout(draftTimerRef.current);
+      draftTimerRef.current = null;
+    }
+    if (!sid) return;
+    void source.setDraft(sid, text).catch(() => {});
+  }, [source]);
   const injectDraft = useCallback((sid: string, text: string, atts?: SendAttachments) => {
     setDrafts((cur) => writeDraftAtts(writeDraftText(cur, sid, text), sid, atts));
+    // 撤回注入的文本也落库（终值明确 → 立即发 + 取消挂起防抖）：后端拿到的是
+    // 回填后的草稿，换端/重启捡回时输入框里是原文而不是半截。
+    flushDraftNow(sid, text);
     if (sid === currentIdRef.current) {
       draftIdRef.current += 1;
       setDraft({ id: draftIdRef.current, text, ...(atts ? { atts } : {}) });
     }
-  }, [currentIdRef]);
+  }, [currentIdRef, flushDraftNow]);
   /** 注入草稿的失败回滚（撤回被后端拒绝时把注入的原文撤出输入框）：sid 的记账
    *  键文本清零（附件暂存保留——注入本来就不该动它）；sid 正是当前会话时再清
    *  挂载 Composer 的注入态（清零 = 一条新 id 的空文本注入——Composer 只在 id
@@ -61,24 +81,57 @@ export function useRewind({ source, currentId, currentIdRef, reportError, sendWi
    *  只清掉本 hook 持有的注入态，不碰那个会话。 */
   const rollbackDraft = useCallback((sid: string) => {
     setDrafts((cur) => writeDraftText(cur, sid, ""));
+    // 回滚 = 草稿清零，落库同步清（否则换端会捡回已被撤回注入又撤掉的文本）
+    flushDraftNow(sid, "");
     if (sid === currentIdRef.current) {
       draftIdRef.current += 1;
       setDraft({ id: draftIdRef.current, text: "" });
     } else {
       setDraft(null);
     }
-  }, [currentIdRef]);
+  }, [currentIdRef, flushDraftNow]);
   /** Composer 的草稿实时回写 → 当前会话的记账键（采集端见 Composer.onDraftChange：
    *  打字/注入/清空/回填全汇聚到那一个 effect）。身份恒定——写哪个会话由
-   *  currentIdRef 在调用瞬间决定，不进依赖。 */
+   *  currentIdRef 在调用瞬间决定，不进依赖。
+   *
+   *  **防抖 800ms 落库（chat.draft）**：打字是高频写，逐键发请求是协议洪水；
+   *  800ms 静默后才发最后一次的值。挂起定时器按会话记账——切会话时 flush 旧
+   *  会话的挂起值（否则最后 800ms 的打字会跟着新会话的落库一起发错地方）。
+   *  纯内存记账保留不动：它管附件 + 即时还原，后端只存 text。 */
   const handleDraftChange = useCallback((d: SessionDraft) => {
-    setDrafts((cur) => writeDraft(cur, currentIdRef.current, d));
-  }, [currentIdRef]);
+    const sid = currentIdRef.current;
+    setDrafts((cur) => writeDraft(cur, sid, d));
+    if (draftTimerRef.current) clearTimeout(draftTimerRef.current);
+    draftTimerRef.current = setTimeout(() => {
+      draftTimerRef.current = null;
+      // 取发那一刻的记账值（ref 跟随最新 drafts——闭包里没有 drafts 依赖）
+      const latest = draftsRef.current[sid];
+      void source.setDraft(sid, latest?.text ?? "").catch(() => {});
+    }, DRAFT_FLUSH_DELAY_MS);
+  }, [currentIdRef, source]);
+
+  /** history 装载预填（chat.history 的 draft 键，多端共享）：键有值**且内存无该
+   *  会话记账**时才注入——injectDraft 同时落记账键与挂载中的 Composer（切会话
+   *  时 Composer 先重挂载、历史后到，只写记账的话挂载中的输入框看不到）。
+   *  缺席/空串 = 后端没存过，**不写**：后写覆盖语义下缺席 = 后端没话语权，
+   *  不能把本地未落库的草稿清掉。子会话历史（history.child）不参与——子会话页
+   *  只读，没有输入框。 */
+  useEffect(() => {
+    return source.subscribe((ev) => {
+      if (ev.type !== "historyLoaded" || ev.history.child) return;
+      const text = ev.history.draft;
+      if (!text) return;
+      const sid = ev.sessionId;
+      if ((draftsRef.current[sid]?.text ?? "").length > 0) return; // 内存已有 = 本地权威
+      injectDraft(sid, text);
+    });
+  }, [source, injectDraft]);
 
   /** 发送失败的附件回滚钩子（store 的 onSendFailed → 装回输入框附件区）。 */
   const onSendFailed = useCallback((sessionId: string, atts: SendAttachments) => {
     // 失败回填落在**原会话**的记账键（shared/session-drafts.ts）：不管用户此刻
-    // 看的是哪个会话，切回去文本不丢、附件也在。
+    // 看的是哪个会话，切回去文本不丢、附件也在。文本（含回填附件名）不动——
+    // send 之前 Composer 的清空已经走 handleDraftChange("") 防抖落库，这里只补附件。
     setDrafts((cur) => writeDraftAtts(cur, sessionId, atts));
     // 正看着这个会话才经 attsDraft 把附件装回**挂载中**的 Composer——装给别的
     // 会话的 Composer 就是串会话（这正是本次要修的 bug）。
@@ -152,6 +205,20 @@ export function useRewind({ source, currentId, currentIdRef, reportError, sendWi
   // 注入态（draft / attsDraft）同理一并清：它们是「当前会话」的一次性动作，注入
   // 的内容已实时同步进那个会话的草稿记账键，切回来由初始草稿还原；不清的话重挂
   // 载的新 Composer 会把上一个会话的注入草稿再吃一遍（串会话）。
+  //
+  // 同时 flush 旧会话防抖窗口里的草稿（立即落库后再走）：延迟 flush 若跟着新会话
+  // 的写点走，旧会话最后 800ms 的打字会落错会话（竞态防线，安卓端同款）。
+  useEffect(() => {
+    return () => {
+      if (draftTimerRef.current) {
+        clearTimeout(draftTimerRef.current);
+        draftTimerRef.current = null;
+        const sid = currentIdRef.current;
+        const latest = draftsRef.current[sid];
+        void source.setDraft(sid, latest?.text ?? "").catch(() => {});
+      }
+    };
+  }, [currentId, currentIdRef, source]);
   useEffect(() => {
     setEditDraft(null);
     setDraft(null);

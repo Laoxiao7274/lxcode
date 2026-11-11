@@ -335,6 +335,13 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
     return this.call("chat.approval", { session_id: this.conn.sessionFocus, approval: mode }).then(() => undefined);
   }
 
+  /** 落库会话草稿（chat.draft）：显式带 session_id（写哪个会话由调用方决定）。
+   *  text 允许空串——发送清空时显式写 '' 清掉落库值。 */
+  setDraft(sessionId: string, text: string): Promise<void> {
+    if (!sessionId) return Promise.resolve();
+    return this.call("chat.draft", { session_id: sessionId, text }).then(() => undefined);
+  }
+
   /** 改**当前会话**选中的模型（chat.model）：后端落库 + 广播 chat.modelChanged，
    *  只改这一条会话（全局 default 角色不受影响——那是「新会话的默认模型」）。
    *

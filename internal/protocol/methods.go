@@ -41,6 +41,11 @@ const (
 	// 与 chat.send 的 approval 参数的区别：那个是「这一轮用哪一档」，这个是
 	// 「从现在起这个会话用哪一档」——用户的当前意图是会话级实时状态。
 	MethodChatApproval = "chat.approval"
+	// MethodChatDraft 落库本会话的输入草稿（Composer 未发送的文本）。**不广播**：
+	// 打字是高频写，广播会让另一端收到回声覆盖自己正在打的字——草稿的多端语义
+	// 是「后写覆盖」，各端在切会话/装载历史时经 chat.history 的 draft 键拿别人的
+	// 最新值即可，不打断正在打字的那一端。附件不同步（各端本地）。
+	MethodChatDraft = "chat.draft"
 	// MethodChatRewind 撤回（rewind）：**保留方法名，语义改为「移 leaf」**——
 	// 把叶移到 seq 的父节点（那条消息自己也离开路径，因为它是用户要改写的那条）。
 	// **一条消息都不删**：旧分支完整保留在树里，切回去就回来。

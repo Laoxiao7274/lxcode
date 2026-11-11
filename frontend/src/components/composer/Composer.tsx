@@ -505,45 +505,13 @@ export function Composer({
       onDrop={onDrop}
     >
       <div className="composer-inner">
-        {/* 发送缓冲区：busy 期间提交的消息排队在这里（等空闲自动发出）。
-            每条一行：序号 + 单行摘要 + 附件标记 + 直接发送/编辑/删除三个动作。 */}
-        {queue && queue.length > 0 && (
-          <div className="send-queue" role="list" aria-label="发送缓冲区">
-            {queueNotice && (
-              <div className="send-queue-notice" role="status">{queueNotice}</div>
-            )}
-            {queue.map((item, index) => (
-              <div className="send-queue-item" role="listitem" key={item.id}>
-                <span className="send-queue-index" aria-hidden="true">{index + 1}</span>
-                <span className="send-queue-text" title={item.text}>{clipOneLine(item.text, 80)}</span>
-                {(item.images?.length || item.files?.length) ? (
-                  <span className="send-queue-atts" aria-label={`附件：图片 ${item.images?.length ?? 0} 张，文件 ${item.files?.length ?? 0} 个`}>
-                    {item.images?.map((im, i) => (
-                      <AttachmentThumb key={i} mime={im.mime} data={im.data} file={im.file} alt="排队消息的图片附件" small />
-                    ))}
-                    {item.files?.map((f, i) => (
-                      <span key={i} className="send-queue-file" title={f.name}>{clipOneLine(f.name, 18)}</span>
-                    ))}
-                  </span>
-                ) : null}
-                <button type="button" className="send-queue-act" title="直接发送" aria-label="直接发送该条" onClick={() => onQueueSend?.(item.id)}>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                    <path d="M12 19V5" />
-                    <path d="m5 12 7-7 7 7" />
-                  </svg>
-                </button>
-                <button type="button" className="send-queue-act" title="编辑（放回输入框）" aria-label="编辑该条（放回输入框）" onClick={() => onQueueEdit?.(item.id)}>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                    <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
-                  </svg>
-                </button>
-                <button type="button" className="send-queue-act" title="删除" aria-label="删除该条" onClick={() => onQueueDelete?.(item.id)}>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true">
-                    <path d="M18 6 6 18M6 6l12 12" />
-                  </svg>
-                </button>
-              </div>
-            ))}
+        {/* busy/sending 状态行：浮在输入卡正上方（发送中 + 生成中共用一行——
+            busy 到达后文案无缝从「发送中…」切到「生成中」）。卡外贴卡顺序：
+            busy-row → edit-row → 输入卡（.pi）。 */}
+        {(busy || sending) && (
+          <div className="busy-row" ref={busyRowRef}>
+            <span className="mset-spinner" aria-hidden />
+            <span className="busy-text">{busy ? "生成中" : "发送中…"}</span>
           </div>
         )}
         {/* 编辑态提示行：必须说清"发送会先撤回它及其之后的对话"——不写清楚
@@ -554,19 +522,53 @@ export function Composer({
             <Button className="edit-cancel" onClick={onCancelEdit}>取消编辑</Button>
           </div>
         )}
-        {/* busy/sending 状态行：浮在输入框上方（发送中 + 生成中共用一行——
-            busy 到达后文案无缝从「发送中…」切到「生成中」） */}
-        {(busy || sending) && (
-          <div className="busy-row" ref={busyRowRef}>
-            <span className="mset-spinner" aria-hidden />
-            <span className="busy-text">{busy ? "生成中" : "发送中…"}</span>
-          </div>
-        )}
         {/* 附件预览区：千问 topContent 槽位——在输入卡**内部**、文本行上方
             （2026-12 千问对齐：附件区与输入同卡，不再浮在卡外）。图片 96px 方格
             （与消息侧 UserAttachmentSection 同一套视觉语言）+ 文件卡行，点 × 移除；
             一次性提示（超限拒绝等）也显示在这里。 */}
         <div className="pi">
+          {/* 发送缓冲区：busy 期间提交的消息排队在这里（等空闲自动发出）。
+              卡内顶部区块（照 .pi-plan 融合先例：去胶囊底、发丝线与输入区分隔）；
+              每条一行：序号 + 单行摘要 + 附件标记 + 直接发送/编辑/删除三个动作。 */}
+          {queue && queue.length > 0 && (
+            <div className="send-queue" role="list" aria-label="发送缓冲区">
+              {queueNotice && (
+                <div className="send-queue-notice" role="status">{queueNotice}</div>
+              )}
+              {queue.map((item, index) => (
+                <div className="send-queue-item" role="listitem" key={item.id}>
+                  <span className="send-queue-index" aria-hidden="true">{index + 1}</span>
+                  <span className="send-queue-text" title={item.text}>{clipOneLine(item.text, 80)}</span>
+                  {(item.images?.length || item.files?.length) ? (
+                    <span className="send-queue-atts" aria-label={`附件：图片 ${item.images?.length ?? 0} 张，文件 ${item.files?.length ?? 0} 个`}>
+                      {item.images?.map((im, i) => (
+                        <AttachmentThumb key={i} mime={im.mime} data={im.data} file={im.file} alt="排队消息的图片附件" small />
+                      ))}
+                      {item.files?.map((f, i) => (
+                        <span key={i} className="send-queue-file" title={f.name}>{clipOneLine(f.name, 18)}</span>
+                      ))}
+                    </span>
+                  ) : null}
+                  <button type="button" className="send-queue-act" title="直接发送" aria-label="直接发送该条" onClick={() => onQueueSend?.(item.id)}>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="M12 19V5" />
+                      <path d="m5 12 7-7 7 7" />
+                    </svg>
+                  </button>
+                  <button type="button" className="send-queue-act" title="编辑（放回输入框）" aria-label="编辑该条（放回输入框）" onClick={() => onQueueEdit?.(item.id)}>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+                    </svg>
+                  </button>
+                  <button type="button" className="send-queue-act" title="删除" aria-label="删除该条" onClick={() => onQueueDelete?.(item.id)}>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true">
+                      <path d="M18 6 6 18M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
           {/* 任务清单区：白卡顶部区块（清单 + 发丝分隔线 + 输入区 = 一张卡）。
               在 .pi 的 relative 内——斜杠面板锚点不受影响；todos 为空不渲染。 */}
           {todos.length > 0 && (

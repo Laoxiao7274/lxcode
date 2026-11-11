@@ -673,6 +673,40 @@ func (s *Store) ApprovalOf(id string) (string, error) {
 	return approval, nil
 }
 
+// SaveDraft 落库会话当前的输入草稿（chat.draft 防抖写入；客户端发送清空时也写
+// 空串）。为什么落库：草稿是**会话的状态**——切会话/重启/换端（壳↔手机）回来，
+// 未发送的文本应该还在。后端只存 text：附件等富状态留在各端本地内存（各端记账
+// 模式不同），草稿的多端语义 = 「最后打字的那一端说了算」（后写覆盖）。
+//
+// **刻意不动 updated_at**：与 SaveApproval 同一条理由——存草稿是会话的附属状态
+// 变化，不是"用户刚用过这个会话"，写它会把会话顶到侧栏最前面。
+func (s *Store) SaveDraft(id, text string) error {
+	res, err := s.db.Exec(`UPDATE sessions SET draft = ? WHERE id = ?`, text, id)
+	if err != nil {
+		return fmt.Errorf("写会话草稿失败: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("会话 %s 不存在", id)
+	}
+	return nil
+}
+
+// DraftOf 读回会话落库的草稿。空串 = 没存过（老会话/从没打过草稿）——调用方
+// 据此缺席 wire 的 draft 键，客户端回落本地内存记账，而不是当成"草稿是空的"
+// 去清掉本地那份（后写覆盖语义下，缺席 = 后端没话语权）。会话不存在时报错
+// （与 ApprovalOf 的语义一致）。
+func (s *Store) DraftOf(id string) (string, error) {
+	var draft string
+	err := s.db.QueryRow(`SELECT draft FROM sessions WHERE id = ?`, id).Scan(&draft)
+	if err == sql.ErrNoRows {
+		return "", fmt.Errorf("会话 %s 不存在", id)
+	}
+	if err != nil {
+		return "", fmt.Errorf("查询会话草稿失败: %w", err)
+	}
+	return draft, nil
+}
+
 // SaveSessionModel 落库会话**选中的模型**（chat.model 切模型 / 子会话继承父会话）。
 // 为什么落库：模型选择是会话的状态——用户把某条会话切到模型 X 后重启，打开这条
 // 会话还得是 X（原先选择只能改全局 default 角色，一个会话切模型所有会话跟着变）。

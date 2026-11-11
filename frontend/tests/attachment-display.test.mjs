@@ -24,6 +24,7 @@ import { initial } from '../src/shared/blocks.ts';
 import { SettingsProvider } from '../src/shared/settings.tsx';
 import { Block } from '../src/components/thread/blocks/Block.tsx';
 import { ToolBlock } from '../src/components/thread/blocks/ToolBlock.tsx';
+import { JobsProvider } from '../src/shared/jobs-admin.tsx';
 
 const base = { blocks: [], busy: false, pending: null, todos: [], currentId: '', operationError: null, context: null, historyReady: false };
 
@@ -168,7 +169,11 @@ function fakeSource() {
   };
 }
 
-const renderBlock = (el) => renderToStaticMarkup(createElement(SettingsProvider, { source: fakeSource() }, el));
+const renderBlock = (el) => renderToStaticMarkup(
+  createElement(SettingsProvider, { source: fakeSource() },
+    // ToolBlock 读了 useJobs（job_output 等待态的 label 反查）——渲染测试也要包 Provider
+    createElement(JobsProvider, { source: { jobAdmin: undefined } }, el)),
+);
 
 test('⑥ 用户消息附件区与气泡分离（千问式独立区块）：气泡外 user-atts + 图片网格 + 文件卡行', () => {
   const atts = [imgAtt(), fileAtt()];
@@ -232,14 +237,14 @@ test('⑥ 纯图片只出网格、纯文件只出卡行（不渲染空段）；�
 });
 
 test('⑥ share_file 工具行渲染附件卡为主体（含 caption）', () => {
-  const html = renderToStaticMarkup(createElement(ToolBlock, {
+  const html = renderBlock(createElement(ToolBlock, {
     block: { kind: 'tool', uid: 3, id: 'c1', name: 'share_file', arguments: '{}', result: '已共享', isError: false, attachments: [{ ...imgAtt(), caption: '本月数据' }] },
   }));
   assert.ok(html.includes('共享文件'));
   assert.ok(html.includes('att-image'));
   assert.ok(html.includes('本月数据'));
   // 普通工具不受影响
-  const plain = renderToStaticMarkup(createElement(ToolBlock, {
+  const plain = renderBlock(createElement(ToolBlock, {
     block: { kind: 'tool', uid: 4, id: 'c2', name: 'read_file', arguments: '{}', result: 'x', isError: false },
   }));
   assert.ok(!plain.includes('att-cards'));

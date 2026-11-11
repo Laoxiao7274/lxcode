@@ -196,6 +196,10 @@ export class DemoAgent implements AgentSource, JobAdminSource, LogsSource {
     this.emit({ type: "approvalChanged", sessionId, approval });
   }
 
+  /** 落库草稿（演示模式没有后端）：no-op。签名与 WS 版对齐（AgentSource 契约），
+   *  调用方（use-rewind 的防抖写点）不感知数据来源。 */
+  async setDraft(_sessionId: string, _text: string): Promise<void> {}
+
   /** 改**当前会话**选中的模型（演示态：本地记下 + 广播同形状的事件）。
    *
    *  广播这一步是刻意的——真后端 chat.model 会广播 chat.modelChanged 给所有端，

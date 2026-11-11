@@ -84,6 +84,8 @@ export function snapshotFromWire(r: unknown): HistorySnapshot {
     model?: string;
     /** 该会话此刻的权限档（老后端没有 → 缺席，显示端不猜）。 */
     approval?: string;
+    /** 该会话落库的输入草稿（chat.draft 写的；老后端/没存过 → 缺席）。 */
+    draft?: string;
     /** 这次回放对应的叶（0 = 空路径；老后端缺席）。 */
     leaf_seq?: number;
     /** 分页窗口元数据（只在 before_seq 请求的应答里出现，见 HistorySnapshot.hasMore）。 */
@@ -110,6 +112,9 @@ export function snapshotFromWire(r: unknown): HistorySnapshot {
     checkpoints: h.checkpoints ?? [],
     model: h.model,
     approval: h.approval === undefined ? undefined : normalizeApproval(h.approval),
+    // 落库草稿：**键在才写**（空串会被后端 omitempty 吃掉，wire 上缺席 = 没存过
+    //——归约/预填侧据此保留本地记账，不把缺席当"草稿为空"去清）。
+    ...(typeof h.draft === "string" && h.draft !== "" ? { draft: h.draft } : {}),
     // 叶指针（0 = 空路径，是**合法状态**不是"未知"）：树面板拿它高亮「你在这里」，
     // 也拿它决定「回到最新」的落点。老后端缺席时**不写这个键**——显示端据此
     // 退回"不知道叶在哪"（树面板用 chat.tree 自己的 leaf_seq 兜底）。

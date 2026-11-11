@@ -112,7 +112,20 @@ internal fun Modifier.drawHalo(alpha: Float, ringColor: androidx.compose.ui.grap
  */
 @Composable
 fun Composer(state: AppState, real: com.moyunteng.lxcode.remote.net.RealBackend) {
-    var text by remember { mutableStateOf("") }
+    // ===== 草稿（per-session）=====
+    // 初值从 RealBackend 的 per-session map 取——**必须 key(sessionId)**：无 key 的
+    // remember 是全局单值，切会话时串内容（实锤 bug：在会话 A 打的字出现在会话 B）。
+    // key 变化 = Compose 丢弃旧组合状态、以新会话的草稿重新 remember。
+    val sessionId = real.currentSessionId
+    var text by remember(sessionId) { mutableStateOf(real.draftOf(sessionId)) }
+    // 打字 → 内存记账 + 防抖落库（chat.draft）；初值注入与还原不触发（值相同时
+    // onValueChange 不会被调）。跨会话还原已由 key(sessionId) 保证。
+    // 注意：这里**不**发"清空"——发送路径显式清草稿（见下），typing 空串也照发
+    //（用户删光输入框 = 草稿确实变空，语义成立）。
+    val onTextChange: (String) -> Unit = { t ->
+        text = t
+        real.noteDraft(sessionId, t)
+    }
     // 忙闲由后端事件驱动（chat.busy / done / error 收敛）
     val busy = real.busy
 
@@ -237,7 +250,7 @@ fun Composer(state: AppState, real: com.moyunteng.lxcode.remote.net.RealBackend)
                 query = slashQuery,
                 commands = slashCommands,
                 onPick = { cmd ->
-                    text = "" // 选中清输入（对齐桌面端 Composer.pick）
+                    onTextChange("") // 选中清输入（对齐桌面端 Composer.pick；同步清草稿落库）
                     cmd.action()
                 },
             )
@@ -321,7 +334,7 @@ fun Composer(state: AppState, real: com.moyunteng.lxcode.remote.net.RealBackend)
             // ===== 文本输入区（透明无边框；.piInput）=====
             ComposerTextField(
                 value = text,
-                onValueChange = { text = it },
+                onValueChange = onTextChange,
                 busy = busy,
                 interactionSource = input,
                 modifier = Modifier.fillMaxWidth(),
@@ -433,7 +446,7 @@ fun Composer(state: AppState, real: com.moyunteng.lxcode.remote.net.RealBackend)
                                 indication = null,
                             ) {
                                 queuedText = text.trim()
-                                text = ""
+                                onTextChange("") // 排队取出即清输入（含草稿记账）
                             }
                             .padding(horizontal = 6.dp, vertical = 4.dp),
                     )
@@ -452,7 +465,7 @@ fun Composer(state: AppState, real: com.moyunteng.lxcode.remote.net.RealBackend)
                             }
                         } else {
                             real.send(text, sendEffort)
-                            text = ""
+                            onTextChange("") // 发送即清草稿（内存 + 防抖落库）
                         }
                     },
                 )
@@ -494,7 +507,7 @@ fun Composer(state: AppState, real: com.moyunteng.lxcode.remote.net.RealBackend)
                         indication = null,
                     ) {
                         queuedText = null
-                        text = q // 撤销 = 取出回填输入框（对齐桌面端 handleQueueEdit）
+                        onTextChange(q) // 撤销 = 取出回填输入框（对齐桌面端 handleQueueEdit）
                     },
                 )
             }

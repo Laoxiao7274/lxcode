@@ -373,6 +373,10 @@ func (s *Server) historyResult(sessionID string, sess *agent.Session, snap agent
 		// 会话**此刻**的权限档（子会话 = 取严(父实时, 自身默认)）：切会话时前端
 		// 按它同步显示——档位显示必须跟随后端事实，而不是上一会话的本地残留。
 		Approval: sess.LiveApproval(),
+		// 落库的输入草稿（chat.draft 写的）：切会话/换端装载时预填。空串 →
+		// omitempty 整键缺席（与 model 缺席同一条语义：不编一个"草稿是空的"——
+		// 那会清掉客户端本地内存记账里还没落库的草稿）。st 未挂载时同缺席。
+		Draft: s.draftOf(sessionID),
 		// 这次回放对应的叶（0 = 空路径）：新客户端拿它对齐树面板的高亮与
 		// 「回到最新」的落点。老客户端忽略（未知键）。
 		LeafSeq: s.leafOf(sessionID),
@@ -389,6 +393,20 @@ func (s *Server) historyResult(sessionID string, sess *agent.Session, snap agent
 		res.FirstSeq = *firstSeq
 	}
 	return res
+}
+
+// draftOf 读会话落库的草稿（chat.history 组装用）。读失败/未挂载返回空串——
+// 空串经 omitempty 整键缺席，客户端回落本地记账；不把存储故障伪装成「无草稿」
+// 之外的新错误码（这条路径已在组装业务结果）。
+func (s *Server) draftOf(sessionID string) string {
+	if s.st == nil {
+		return ""
+	}
+	draft, err := s.st.DraftOf(sessionID)
+	if err != nil {
+		return ""
+	}
+	return draft
 }
 
 // toProtocolRunningDispatches 把内核的观察快照映射成 wire 形态（agent 类型不过

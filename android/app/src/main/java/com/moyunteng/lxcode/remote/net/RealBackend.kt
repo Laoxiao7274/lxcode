@@ -1836,6 +1836,51 @@ class RealBackend {
         }
     }
 
+    // ===== 输入草稿（chat.draft：per-session 落库，多端共享）=====
+
+    /** per-session 草稿（内存记账层，对齐桌面端 SessionDrafts 模式）：Composer 切
+     *  会话按 sessionId 取初值/写回。落库经 chat.draft 防抖（[noteDraft]）——后端
+     *  只存 text，附件等富状态仍在本端内存。 */
+    private val sessionDrafts = mutableMapOf<String, String>()
+
+    /** 当前会话的草稿（Composer 初值/读写口；无会话 = 空串）。 */
+    fun draftOf(sessionId: String): String = sessionDrafts[sessionId] ?: ""
+
+    /** 草稿写入口：更新内存记账 + 防抖 800ms 落库（chat.draft）。防抖窗口内的
+     *  连续打字只发一次请求；切走会话由 [flushDraft] 立即补发本会话的最终值。 */
+    fun noteDraft(sessionId: String, text: String) {
+        if (sessionId.isEmpty()) return
+        sessionDrafts[sessionId] = text
+        draftFlushPending = true
+        draftHandler.removeCallbacks(draftFlushRunnable)
+        draftHandler.postDelayed(draftFlushRunnable, DRAFT_FLUSH_DELAY_MS)
+    }
+
+    /** 立即把挂起的草稿落库（切会话/断连前调用——防抖窗口里的最后状态不能丢）。 */
+    fun flushDraft() {
+        if (!draftFlushPending) return
+        draftFlushPending = false
+        draftHandler.removeCallbacks(draftFlushRunnable)
+        val sid = currentSessionId
+        if (sid.isEmpty()) return
+        sendDraft(sid, sessionDrafts[sid] ?: "")
+    }
+
+    private val draftHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var draftFlushPending = false
+    private val draftFlushRunnable = Runnable { flushDraft() }
+
+    private fun sendDraft(sid: String, text: String) {
+        if (phase != RealPhase.Connected) return // 断线时草稿留在内存，重连装载历史即回填
+        Log.d(TAG, "chat.draft session=$sid len=${text.length}")
+        client.call(
+            "chat.draft",
+            JSONObject().put("session_id", sid).put("text", text),
+        ) { err, _ ->
+            if (err != null) Log.w(TAG, "chat.draft 失败: ${err.optString("message")}")
+        }
+    }
+
     /** 裁决确认门（tool.confirm；allow=false = 拒绝，后端合成「已取消，未执行」；
      *  answer 非空 = ask_user 提问的文本回答——走会话的 Answer 路径）。 */
     fun resolveConfirm(allow: Boolean, answer: String = "") {
@@ -2584,6 +2629,9 @@ class RealBackend {
     }
 
     private fun switchTo(id: String) {        if (currentSessionId == id) return
+        // 切走前把旧会话防抖窗口里的草稿立即落库（竞态防线：否则 800ms 窗口里的
+        // 最后状态会跟着新会话的 flush 一起发错地方）。
+        flushDraft()
         currentSessionId = id
         blocks.clear()
         streamingIdx = -1
@@ -2852,6 +2900,15 @@ class RealBackend {
         // 该会话此刻的权限档（后端 LiveApproval——会话级状态持久化的显示依据）；
         // 空串 = 老后端没报，保持 null（UI 回落「默认」，不猜）
         r.optString("approval", "").takeIf { it.isNotEmpty() }?.let { approval = it }
+        // 落库草稿（chat.draft 写的，多端共享）：**键有值且内存无该会话记账**时才
+        // 预填——缺席/空串 = 后端没存过，不能清掉本端内存里还没落库的草稿（后写
+        // 覆盖语义下，缺席 = 后端没话语权）。发送清空路径已经把内存记账清了，
+        // 这里只在「换端/重启捡回别人的草稿」时生效。
+        r.optString("draft", "").takeIf { it.isNotEmpty() }?.let { remote ->
+            if ((sessionDrafts[currentSessionId] ?: "").isEmpty()) {
+                sessionDrafts[currentSessionId] = remote
+            }
+        }
         r.optJSONObject("pending")?.let { pend ->
             confirm = PendingConfirm(
                 sessionId = pend.optString("session_id", currentSessionId),
@@ -3505,6 +3562,9 @@ class RealBackend {
 
     companion object {
         private const val TAG = "LxReal"
+
+        /** 草稿落库的防抖窗口（ms）：打字高频写，800ms 静默后发一次。 */
+        private const val DRAFT_FLUSH_DELAY_MS = 800L
 
         /**
          * assistant.* 事件 → chat.* 等价事件名（与 internal/server/emit.go 的

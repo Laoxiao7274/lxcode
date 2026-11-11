@@ -274,6 +274,7 @@
       ],
       "model": "deepseek-v3",
       "approval": "confirm",
+      "draft": "帮我看看这个报错，还没发",
       "leaf_seq": 4,
       "running_dispatches": [
         {

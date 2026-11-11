@@ -8,12 +8,12 @@
 //
 // 修复分两层：
 //   - 硬拦（这里）：命令**实质**是 sleep N（至多带 echo 尾巴）且非后台 → 不
-//     执行，返回可执行的等待替代（等后台任务用 job_output(wait=true)、等外部
-//     状态用 run_in_background 起轮询循环）。run_in_background=true 的 sleep
-//     放行——它是轮询循环的合法组件；
+//     执行，返回可执行的等待替代（等已有任务进度用 job_output(wait=true,
+//     wait_condition=…) 等待原语；真的无任务句柄才起 run_in_background 轮询
+//     循环）。run_in_background=true 的 sleep 放行——它是轮询循环的合法组件；
 //   - 提示（也在这里）：组合命令带 sleep（sleep 300 && curl check）不算纯
 //     sleep，放行执行，但把等待纪律附在结果前——研究数据里 sleep+ssh/curl
-//     占比很高，那是在「勉强检查状态」，指引它换成轮询循环。
+//     占比很高，那是在「勉强检查状态」，指引它换成等待原语或轮询循环。
 //
 // 为什么拦在工具层而不是靠提示词：提示词每轮都读得到但模型实测仍大量盲睡
 //（守则写上等待纪律只是根因③的补充，不构成防线）——系统层硬拦是唯一不可绕
@@ -26,15 +26,15 @@ import (
 )
 
 // sleepJobWaitHint 是硬拦时给模型的替代路径（可执行，不是空话）。
-const sleepJobWaitHint = "等待的正确姿势：" +
-	"等后台任务 → job_output(job_id=…, wait=true)（阻塞到它结束，上限 600s，结束后立刻返回）；" +
-	"等外部状态（端口/文件/接口就绪）→ 用 run_in_background=true 起轮询循环 " +
+const sleepJobWaitHint = "等待的正确姿势（一等原语，别再写 sleep）：\n" +
+	"等已有后台任务的进度/结束 → job_output(job_id=…, wait=true, wait_condition=…)（阻塞等待原语：exit 等结束 / exit_ok 等成功 / output 等新输出 / idle 等静默 / {\"pattern\": \"…\"} 等输出命中正则——OR 组合谁先到返回谁，上限 600s）；\n" +
+	"真的无任务句柄可等（外部状态）→ 才用 run_in_background=true 起轮询循环" +
 	"（如 `until curl -s http://… ; do sleep 30; done`），系统会在任务结束时通知你。" +
 	"纯 sleep 不检查任何状态、纯烧轮次，一律不执行。"
 
 // sleepComboHint 是组合命令（sleep + 别的真动作）放行时附在结果前的提示。
-const sleepComboHint = "[等待纪律] 命令里带 sleep：等后台任务用 job_output(wait=true)（上限 600s），" +
-	"等外部状态用 run_in_background=true 起轮询循环（until cond; do sleep 30; done）——" +
+const sleepComboHint = "[等待纪律] 命令里带 sleep：等已有后台任务用 job_output(wait=true, wait_condition=…)（等待原语：exit/exit_ok/output/idle/{pattern}，上限 600s）；" +
+	"真的无任务句柄才用 run_in_background=true 起轮询循环（until cond; do sleep 30; done）——" +
 	"不要用 sleep 预估等待时长。"
 
 // pureSleepCommand 判定「命令实质是纯 sleep」：

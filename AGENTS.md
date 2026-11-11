@@ -125,7 +125,7 @@
 | `session_search` | 低危 | 搜历史会话（带标题/时间/上下文；格式归 store 包） |
 | `web_search` | 低危 | 联网搜索（多渠道降级；渠道与配置见 §3.2） |
 | `web_fetch` | 低危 | 抓取网页正文（HTML 转文本；禁内网地址） |
-| `job_output` | 低危 | 读后台任务输出（增量；`wait` 阻塞等结束，strict 只读可用） |
+| `job_output` | 低危 | 读后台任务输出（增量；`wait=true` + `wait_condition` 是阻塞等待原语：exit=等结束（默认）/exit_ok=等退出码0/output=等新输出/idle=等静默 idle_ms/{pattern}=等全量日志命中正则（带回命中行）——OR 组合谁先到返回谁，默认 30s 上限 600s，strict 只读可用） |
 | `job_list` | 低危 | 列后台任务（新的在前；跨会话常驻任务也看得见） |
 | `job_kill` | 低危 | 停止一个后台任务（非阻塞；归属记 `agent`，用户点结束记 `user`） |
 | `read_skill` | 低危 | 读技能模块全文（提示词只注入技能索引——渐进披露） |

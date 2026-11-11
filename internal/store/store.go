@@ -171,6 +171,10 @@ func Open(dir string) (*Store, error) {
 		// default 角色（role.set），一个会话切模型所有会话跟着变。空串 = 没选过
 		//（老会话/新会话）→ 恢复时回落 Agent 绑定与 default 角色。
 		`ALTER TABLE sessions ADD COLUMN model TEXT NOT NULL DEFAULT ''`,
+		// 输入草稿（2026-12 草稿持久化）：Composer 里未发送的文本是**会话的状态**——
+		// 切会话/重启/换端（壳↔手机）回来草稿还在。空串 = 没存过草稿 → chat.history
+		// 的 draft 键缺席，前端回落本地内存记账（桌面端原有的纯内存层保留）。
+		`ALTER TABLE sessions ADD COLUMN draft TEXT NOT NULL DEFAULT ''`,
 		// 会话树（docs/session-tree.md §A.1，批次 1）：
 		//   leaf_seq = 当前叶指针。**0 = 合法状态「空路径」**（用户回到了第一条消息
 		//     之前 / 新会话还没发消息），**不是「未知」**——把两者混起来会让「撤回第一条

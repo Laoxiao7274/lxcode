@@ -515,6 +515,9 @@ export interface HistorySnapshot {
   /** 该会话**此刻**的权限档（后端 LiveApproval）。缺省 = 后端没报（老后端/演示源）
    *  ——显示端不猜，保持本地设置不动。主会话之间隔离的显示依据。 */
   approval?: ApprovalMode;
+  /** 该会话落库的输入草稿（chat.draft 写的）。缺省 = 后端没存过（老后端/空串）
+   *  ——预填侧据此保留本地内存记账，不把缺席当"草稿为空"去清。 */
+  draft?: string;
   /** child = 这是**子会话**的历史（childHistory 装载的快照）。子会话时间线里
    *  非通告的 user 消息只有一种来源——主 Agent 派发的任务说明书（子会话页只读，
    *  用户无法在子会话里发言），渲染成「任务」块而不是用户气泡；主会话快照不带
@@ -727,6 +730,11 @@ export interface AgentSource {
    *  运行中的一轮）。会话档经 approvalChanged 广播 / chat.history 的 approval
    *  回读——归约层按会话落状态。 */
   setApproval(mode: ApprovalMode): Promise<void>;
+  /** 落库某会话的输入草稿（chat.draft：防抖写入，后端只存 text——多端共享的
+   * 「后写覆盖」语义；不广播，切会话/装载历史时经 chat.history 的 draft 键取别人的
+   *  最新值）。sessionId 显式传入——写哪个会话由调用方在事件发生那一刻决定，
+   *  不取连接焦点（防抖回调时焦点可能已经切走）。demo 源 no-op（无后端）。 */
+  setDraft(sessionId: string, text: string): Promise<void>;
   /** 改**当前会话**选中的模型（chat.model：后端落库 + 广播，只改这一条会话）。
    *
    *  与 ModelAdminSource.setRole 的分工：那个改全局 default 角色（= 新会话的默认

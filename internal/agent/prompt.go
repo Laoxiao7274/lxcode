@@ -150,7 +150,10 @@ var systemPromptRules = []string{
 	// 等待纪律（2026-12 效率纪律之五，真库取证驱动）：sleep 盲等 5,349 次/89.4h、
 	// 纯盲等 630 次/23.3h——用 sleep 预估等待时长既不准也烧轮次；系统层已硬拦
 	// 纯 sleep（tools/sleepguard.go），守则把「正确的等待姿势」写全。
-	"等待纪律：不要用 sleep 预估等待时长（系统会拒绝纯 sleep 命令）。等后台任务用 job_output(wait=true)（阻塞到它结束，上限 600s）；等外部状态（端口/文件/接口就绪）用 run_in_background 起轮询循环（until cond; do sleep 30; done），任务结束系统会通知你。",
+	// 2026-12 用户拍板：等待原语对齐业界——job_output 加 wait_condition 谓词
+	//（exit/exit_ok/output/idle/{pattern}），「等已有任务进度」是一等原语，
+	// 轮询循环降级为「真的无任务句柄」时的最后手段。
+	"等待纪律：不要用 sleep 预估等待时长（系统会拒绝纯 sleep 命令）。等已有后台任务的进度/结束用 job_output(wait=true, wait_condition=…)（阻塞等待原语：exit=任务结束（默认）/ exit_ok=退出码 0 / output=有新输出即回 / idle=输出静默 idle_ms / {\"pattern\": \"…\"}=输出命中正则即回（带回命中行）——OR 组合谁先到返回谁，默认 30s 上限 600s）；真的无任务句柄可等（外部状态：端口/文件/接口就绪）才用 run_in_background 起轮询循环（until cond; do sleep 30; done），任务结束系统会通知你。",
 	"回答用中文，简洁直接；完成操作后向用户报告结果。",
 }
 
@@ -202,7 +205,7 @@ var systemPromptTools = map[string]string{
 	tools.McpManageToolName:         tools.McpManageToolName + "：查询/安装/修改/删除用户的 MCP 服务器（list/get/add/update/enable/disable/remove），高危——add/update/remove 前用户会收到确认提示",
 	"agent_read":                    "agent_read：查看 Agent 注册表（列表或单个完整定义，含提示词模板），低危自动执行",
 	"agent_write":                   "agent_write：按 id 修改 Agent 配置（描述/模板/白名单/技能绑定，落库即生效），高危——执行前用户会收到确认提示",
-	"job_output":                    "job_output：读后台任务的增量输出（可 wait 等它结束），低危自动执行",
+	"job_output":                    "job_output：读后台任务的增量输出；wait=true + wait_condition 是阻塞等待原语（exit/exit_ok/output/idle/{pattern}——等进度/等结束都靠它，别起轮询循环），低危自动执行",
 	"job_list":                      "job_list：列后台任务（新的在前，可按会话过滤），低危自动执行",
 	"job_kill":                      "job_kill：停止一个后台任务（归属记为 agent），低危自动执行",
 	tools.DispatchToolName:          tools.DispatchToolName + "：把任务派给名单中的子 Agent（任务的完整执行在子上下文里，结果回传验收），低危自动执行",

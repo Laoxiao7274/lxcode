@@ -223,3 +223,48 @@ export function groupJobsByWorkspace(
     }))
     .sort((a, b) => (rank(a.key) - rank(b.key)) || (order.indexOf(a.key) - order.indexOf(b.key)));
 }
+
+// ---- 等待原语的呈现（wait_condition——job_output 工具块的等待态）----
+
+/** job_output 的 wait_condition 参数形状（与后端 schema 的 oneOf 对齐：
+ *  枚举字符串 / {"pattern": "..."} / 数组（OR 组合）——宽容解析与后端一致）。 */
+export type JobWaitConditionValue = string | { pattern: string } | Array<string | { pattern: string }>;
+
+/** 从 job_output 的参数 JSON 里取等待呈现所需的信息（wait / wait_condition / idle_ms）。
+ *  坏参数/缺席字段都回缺省——这个函数只服务显示，解析失败不该炸时间线。 */
+export function jobWaitArgs(
+  argsJson: string,
+): { wait: boolean; condition?: JobWaitConditionValue; idleMs?: number } {
+  try {
+    const a = JSON.parse(argsJson) as { wait?: boolean; wait_condition?: JobWaitConditionValue; idle_ms?: number };
+    return { wait: Boolean(a.wait), condition: a.wait_condition, idleMs: a.idle_ms };
+  } catch {
+    return { wait: false };
+  }
+}
+
+/** wait_condition → 人话（等待态行的条件描述）。
+ *  多条件 OR 组合用「/」并列——谁先到返回谁，单数描述会撒谎。 */
+export function jobWaitConditionLabel(cond: JobWaitConditionValue | undefined, idleMs?: number): string {
+  const parts: string[] = [];
+  const one = (c: string | { pattern: string }): string => {
+    if (typeof c === "string") {
+      switch (c) {
+        case "exit": return "任务完成";
+        case "exit_ok": return "任务成功";
+        case "output": return "新输出";
+        case "idle": return `静默 ${Math.max(0, Math.round((idleMs ?? 5000) / 1000))} 秒`;
+        default: return c; // 认不出的谓词原样显示（不编语义）
+      }
+    }
+    // 对象形态：pattern 显示截短的原文（超长正则不做文章，截 40 字符）
+    const p = (c as { pattern?: string }).pattern ?? "";
+    return `匹配「${p.length > 40 ? p.slice(0, 40) + "…" : p}」`;
+  };
+  if (cond === undefined || cond === null) parts.push("任务完成"); // 缺省 = exit
+  else if (Array.isArray(cond)) {
+    if (cond.length === 0) parts.push("任务完成");
+    else cond.forEach((c) => parts.push(one(c)));
+  } else parts.push(one(cond));
+  return parts.join(" / ");
+}

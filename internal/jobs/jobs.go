@@ -106,9 +106,13 @@ type Snapshot struct {
 	// 投递、job.list 的按会话过滤都按它，不按 SessionID。
 	OwnerSessionID string
 	// Workspace 是任务起时所属的项目 id（见 Spec.Workspace；Start 时定稿）。
-	Workspace      string
-	StartedAt      time.Time
-	FinishedAt     time.Time // 零值 = 未结束
+	Workspace  string
+	StartedAt  time.Time
+	FinishedAt time.Time // 零值 = 未结束
+	// LastOutputAt 是最近一次写输出的时刻（零值 = 从未写过）。job_output 的
+	// idle 谓词（wait_condition）按它判静默——从任务起点开始静默的「从未写过」
+	// 用 StartedAt 兜底，不在这里编一个假时间。
+	LastOutputAt time.Time
 	// OutputPath 是落盘日志路径；**落盘失败降级为纯内存时为空串**
 	//（契约里写的是「恒有」，但那与「落盘失败不能让任务起不来」冲突——
 	// 实现按后者：降级后这里为空，消费方据此判断有无全量日志）。
@@ -168,9 +172,11 @@ type job struct {
 	detail     string
 	startedAt  time.Time
 	finishedAt time.Time
-	file       *os.File
-	diskErr    bool // 落盘出错：只记一次日志，之后纯内存
-	cancel     func()
+	// lastOutputAt 是最近一次写输出的时刻（Write 时更新；idle 谓词的数据源）。
+	lastOutputAt time.Time
+	file         *os.File
+	diskErr      bool // 落盘出错：只记一次日志，之后纯内存
+	cancel       func()
 }
 
 func (j *job) ID() string { return j.id }
@@ -191,6 +197,7 @@ func (j *job) Write(p []byte) (int, error) {
 		j.buf = append(j.buf[:0], j.buf[len(j.buf)-j.limit:]...)
 	}
 	j.total += int64(len(p))
+	j.lastOutputAt = time.Now()
 	if f := j.file; f != nil {
 		if _, err := f.Write(p); err != nil {
 			if !j.diskErr {
@@ -265,7 +272,8 @@ func (j *job) snapshotLocked() Snapshot {
 		Status: j.status, EndedBy: j.endedBy, Detail: j.detail,
 		SessionID: j.spec.SessionID, OwnerSessionID: OwnerOf(j.spec),
 		Workspace: j.spec.Workspace,
-		StartedAt: j.startedAt, FinishedAt: j.finishedAt, OutputPath: j.logPath,
+		StartedAt: j.startedAt, FinishedAt: j.finishedAt, LastOutputAt: j.lastOutputAt,
+		OutputPath: j.logPath,
 	}
 }
 
@@ -377,6 +385,16 @@ func (m *Manager) Read(id string, from int64, maxBytes int) (string, int64, Snap
 	}
 	data := string(j.buf[from-start : from-start+n])
 	return data, from + n, j.snapshotLocked(), nil
+}
+
+// Snapshot 单取一份任务快照（不读输出——condHit 的快照判定只需要状态与时间戳；
+// output 谓词的基线比对走 curOutputOf，不走这里）。
+func (m *Manager) Snapshot(id string) (Snapshot, error) {
+	j := m.get(id)
+	if j == nil {
+		return Snapshot{}, fmt.Errorf("任务 %s 不存在", id)
+	}
+	return j.snapshot(), nil
 }
 
 // List 列任务（sessionID 为空 = 全部，按开始时间倒序）。

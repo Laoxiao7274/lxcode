@@ -360,6 +360,33 @@ func (s *Server) dispatchChat(c *wsClient, req *protocol.Request, params json.Ra
 		})
 		return protocol.NewResult(req.ID, protocol.ChatApprovalResult{Approval: approval})
 
+	case protocol.MethodChatDraft:
+		var p protocol.ChatDraftParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return protocol.NewError(req.ID, protocol.CodeInvalidParams, "参数解析失败: "+err.Error())
+		}
+		id := p.SessionID
+		if id == "" {
+			id = c.focus()
+		}
+		if id == "" {
+			return protocol.NewError(req.ID, protocol.CodeInvalidParams, "缺少 session_id（没有当前会话）")
+		}
+		// 校验会话归属（与 chat.approval 同款）：不存在的会话/坏 id 在这里报出，
+		// 而不是静默丢草稿——静默丢会让「换端回来草稿没了」无从排查。运行时
+		// 本身无内存草稿态（草稿只在客户端输入框里），要的是「这个 id 有效」。
+		if _, err := s.session(id); err != nil {
+			return protocol.NewError(req.ID, protocol.CodeInvalidParams, err.Error())
+		}
+		// 落库；**不广播**：打字是高频写，广播会让另一端收到回声覆盖自己正在打的
+		// 字。多端同步走 chat.history 的 draft 键（装载时读取）。
+		if s.st != nil {
+			if err := s.st.SaveDraft(id, p.Text); err != nil {
+				return protocol.NewError(req.ID, protocol.CodeInternal, err.Error())
+			}
+		}
+		return protocol.NewResult(req.ID, map[string]any{})
+
 	case protocol.MethodChatMergeRequest:
 		var p protocol.ChatMergeRequestParams
 		if err := json.Unmarshal(params, &p); err != nil {

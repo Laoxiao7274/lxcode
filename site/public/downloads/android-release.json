@@ -1,12 +1,12 @@
 {
-  "version": "0.3.49",
-  "versionCode": 51,
-  "name": "lxcode-0.3.49-android.apk",
-  "size": 12043596,
-  "sha256": "afef55998b9efab1319702414adf0149f1bf5a4f9840c440a57e21c5f93394bb",
-  "url": "downloads/lxcode-0.3.49-android.apk",
+  "version": "0.3.50",
+  "versionCode": 52,
+  "name": "lxcode-0.3.50-android.apk",
+  "size": 12043591,
+  "sha256": "60ed0ca5f33fd40cf5ddde42723b64c93b0aee2dfee4349c7509bf44f673da46",
+  "url": "downloads/lxcode-0.3.50-android.apk",
   "notes": [
-    "自动重连根治：超时/并发场景不再烙死重连，断线后自动恢复",
-    "重连横幅对齐真实状态（连接中/已恢复/失败不再误报）"
+    "草稿持久化+多端共享：输入未发送的草稿按会话保存，切换会话不再串内容，桌面与安卓互通",
+    "桌面 0.3.50 同步更新：等待原语、Composer 缓冲区并入输入卡"
   ]
 }

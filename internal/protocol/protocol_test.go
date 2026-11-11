@@ -323,6 +323,7 @@ func TestProtocolConstants(t *testing.T) {
 	methods := []string{MethodHello, MethodModelList, MethodModelAdd, MethodModelUpdate,
 		MethodModelRemove, MethodModelEnable, MethodRoleSet, MethodChatSend,
 		MethodChatCancel, MethodChatHistory, MethodToolConfirm, MethodChatApproval, MethodChatModel,
+		MethodChatDraft,
 		MethodSessionList, MethodSessionNew, MethodSessionResume,
 		MethodJobList, MethodJobKill, MethodJobLog}
 	events := []string{EventReady, EventUserMsg, EventDelta, EventToolCall, EventToolRslt,
@@ -944,6 +945,38 @@ func TestChatApprovalPayloads(t *testing.T) {
 		mustUnmarshal(t, b, &got)
 		if got.SessionID != "s1" || got.Approval != ApprovalConfirm {
 			t.Fatalf("事件往返丢字段: %+v", got)
+		}
+	})
+
+	t.Run("ChatDraftParams 键名与往返（text 恒发，空串也要能清草稿）", func(t *testing.T) {
+		b := mustMarshal(t, ChatDraftParams{SessionID: "s1", Text: "没写完的想法"})
+		var m map[string]any
+		mustUnmarshal(t, b, &m)
+		if m["session_id"] != "s1" || m["text"] != "没写完的想法" {
+			t.Fatalf("参数键名不符: %s", b)
+		}
+		var got ChatDraftParams
+		mustUnmarshal(t, b, &got)
+		if got.SessionID != "s1" || got.Text != "没写完的想法" {
+			t.Fatalf("参数往返丢字段: %+v", got)
+		}
+		// text 不是 omitempty：发送清空时显式写空串清落库值，键必须显式上 wire
+		b2 := mustMarshal(t, ChatDraftParams{SessionID: "s1"})
+		if !strings.Contains(string(b2), `"text"`) {
+			t.Fatalf("text 应恒发（空串 = 清草稿）: %s", b2)
+		}
+	})
+
+	t.Run("ChatHistoryResult 带 draft（空时整键缺席）", func(t *testing.T) {
+		b := mustMarshal(t, ChatHistoryResult{SessionID: "s1", Draft: "写一半"})
+		var got ChatHistoryResult
+		mustUnmarshal(t, b, &got)
+		if got.Draft != "写一半" {
+			t.Fatalf("history draft 往返失真: %+v", got.Draft)
+		}
+		b2 := mustMarshal(t, ChatHistoryResult{SessionID: "s1"})
+		if strings.Contains(string(b2), "draft") {
+			t.Fatalf("无落库草稿应整键缺席（客户端回落本地记账）: %s", b2)
 		}
 	})
 }

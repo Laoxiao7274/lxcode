@@ -12,6 +12,8 @@ import { DiffBody } from "./DiffBody";
 import { TerminalCard } from "./TerminalCard";
 import { AttachmentCards } from "./AttachmentCard";
 import type { TodoItem } from "../../../shared/types";
+import { useJobClock, useJobs } from "../../../shared/jobs-admin";
+import { jobWaitArgs, jobWaitConditionLabel } from "../../../shared/jobs";
 
 const TOOL_TITLES: Record<string, string> = {
   read_file: "读文件",
@@ -30,6 +32,9 @@ export function ToolBlock({ block, replayed, "data-uid": dataUid }: { block: Ext
   const bodyRef = useRef<HTMLDivElement>(null);
   const running = block.result === undefined;
   const expandable = !running;
+  // 任务缓存（label 反查）：ToolBlock 恒在 JobsProvider 子树里（App 装配），
+  // 演示模式同样提供——查不到就回落只显示条件，等待态不受影响。
+  const { jobs } = useJobs();
 
   useEffect(() => {
     // 回放帧不播：切会话的那一帧要尽快画出内容，而 playEnter 要读一遍计算样式
@@ -73,6 +78,24 @@ export function ToolBlock({ block, replayed, "data-uid": dataUid }: { block: Ext
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [block.arguments]);
   const argsSummary = clip(shortArgs(block), 72);
+
+  // 等待原语的等待态（job_output 执行中且 wait=true）：显示「⏳ 等待 <条件>… 已等 Xs」。
+  // 条件描述是 wait_condition 的人话映射（纯函数 jobWaitConditionLabel——口径与
+  // tests/jobs.test.mjs 共用）；label 从任务缓存（args.job_id 反查）补全，查不到
+  // 就只显示条件——两处都查不到不该卡住等待态本身。计时只在等待期间跳（挂载起算）。
+  const waitInfo = useMemo(() => {
+    if (block.name !== "job_output") return null;
+    const w = jobWaitArgs(block.arguments);
+    if (!w.wait) return null;
+    return { label: jobWaitConditionLabel(w.condition, w.idleMs), jobId: (JSON.parse(block.arguments) as { job_id?: string }).job_id ?? "" };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [block.name, block.arguments]);
+  const jobLabel = useMemo(() => {
+    if (!waitInfo?.jobId) return "";
+    return jobs.find((j) => j.id === waitInfo.jobId)?.label ?? "";
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [waitInfo?.jobId, jobs]);
+  const waitedSec = useJobClock(Boolean(waitInfo && running));
 
   // edit 工具：diff 视图（改动即所见——不再让用户读 JSON 参数）
   const editDiff = useMemo((): { path: string; old_string: string; new_string: string } | null => {
@@ -134,7 +157,13 @@ export function ToolBlock({ block, replayed, "data-uid": dataUid }: { block: Ext
   const title = TOOL_TITLES[block.name] ?? block.name;
   // 出错：错误输出的首行（DSH 的 errorSummary = firstLine(output)）
   const errorSummary = !running && block.isError ? (block.result ?? "").split("\n")[0] : null;
-  const summary = errorSummary ?? (running ? "执行中…" : argsSummary);
+  // 等待态摘要（job_output + wait 执行中）：「⏳ 等待 <条件>… 已等 Xs」；
+  // 任务 label 反查得到时补在条件前（「等 go build」比「等任务完成」更有信息量）。
+  const waitingSummary =
+    waitInfo && running
+      ? `⏳ 等待 ${waitInfo.label}… 已等 ${waitedSec}s${jobLabel ? `（${clip(jobLabel, 40)}）` : ""}`
+      : null;
+  const summary = errorSummary ?? waitingSummary ?? (running ? "执行中…" : argsSummary);
 
   // todo 契约批②：todo 调用渲染成**纯摘要行**（拍板⑥——不展开参数）：三态计数
   // + 当前进行项。清单的完整呈现面是计划条（Composer/子会话页），时间线上留一行

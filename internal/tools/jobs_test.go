@@ -319,3 +319,211 @@ func TestBashConfirmMentionsBackground(t *testing.T) {
 		t.Fatalf("前台确认卡不该说后台运行: %q", got)
 	}
 }
+
+// ---- wait_condition（等待原语，2026-12 用户拍板）----
+
+// TestWaitConditionOutput：output 谓词——有新输出即返回（不等任务结束）。
+func TestWaitConditionOutput(t *testing.T) {
+	r, mgr := newJobRegistry(t)
+	ctx := WithSessionID(context.Background(), "s1")
+	j, err := mgr.Start(jobs.Spec{Kind: "bash", Label: "跑批", SessionID: "s1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 200ms 后写一行（不 settle——任务继续跑）
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		_, _ = j.Write([]byte("phase 1 done\n"))
+	}()
+	start := time.Now()
+	got := r.Execute(ctx, call("job_output", `{"job_id":`+quote(j.ID())+`,"wait":true,"timeout_ms":5000,"wait_condition":"output"}`))
+	if !strings.Contains(got, "[hit: output") || !strings.Contains(got, "phase 1 done") {
+		t.Fatalf("output 谓词应在新输出时命中: %q", got)
+	}
+	if !strings.Contains(got, "[status: running]") {
+		t.Fatalf("任务未结束应仍是 running（不等 settle）: %q", got)
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("output 命中不该等到超时: %v", elapsed)
+	}
+}
+
+// TestWaitConditionExitOK：exit_ok——结束且成功才命中；失败结束不命中、等到超时。
+func TestWaitConditionExitOK(t *testing.T) {
+	r, mgr := newJobRegistry(t)
+	ctx := WithSessionID(context.Background(), "s1")
+	j, err := mgr.Start(jobs.Spec{Kind: "bash", Label: "会挂的", SessionID: "s1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		j.Settle(jobs.StatusFailed, jobs.EndedSelf, "退出码 2")
+	}()
+	got := r.Execute(ctx, call("job_output", `{"job_id":`+quote(j.ID())+`,"wait":true,"timeout_ms":400,"wait_condition":"exit_ok"}`))
+	if !strings.Contains(got, "[status: failed]") || strings.Contains(got, "[hit:") {
+		t.Fatalf("exit_ok 在失败结束时不该命中（应超时返回 failed、无 hit）: %q", got)
+	}
+
+	// 成功结束：命中
+	j2, err := mgr.Start(jobs.Spec{Kind: "bash", Label: "会成的", SessionID: "s1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		j2.Settle(jobs.StatusCompleted, jobs.EndedSelf, "退出码 0")
+	}()
+	got = r.Execute(ctx, call("job_output", `{"job_id":`+quote(j2.ID())+`,"wait":true,"timeout_ms":4000,"wait_condition":"exit_ok"}`))
+	if !strings.Contains(got, "[hit: exit_ok") || !strings.Contains(got, "[status: completed]") {
+		t.Fatalf("exit_ok 应在成功结束时命中: %q", got)
+	}
+}
+
+// TestWaitConditionIdle：idle——输出静默 idle_ms 即返回；静默被打断则重计。
+func TestWaitConditionIdle(t *testing.T) {
+	r, mgr := newJobRegistry(t)
+	ctx := WithSessionID(context.Background(), "s1")
+	j, err := mgr.Start(jobs.Spec{Kind: "bash", Label: "断续输出", SessionID: "s1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 100ms 写一行，之后静默（idle_ms=150 → 250ms 左右命中）
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		_, _ = j.Write([]byte("last line\n"))
+	}()
+	start := time.Now()
+	got := r.Execute(ctx, call("job_output", `{"job_id":`+quote(j.ID())+`,"wait":true,"timeout_ms":5000,"wait_condition":"idle","idle_ms":150}`))
+	if !strings.Contains(got, "[hit: idle") || !strings.Contains(got, "[status: running]") {
+		t.Fatalf("idle 谓词应在静默超窗时命中: %q", got)
+	}
+	if elapsed := time.Since(start); elapsed < 200*time.Millisecond || elapsed > 4*time.Second {
+		t.Fatalf("idle 应在最后一次输出之后 idle_ms 命中: %v", elapsed)
+	}
+}
+
+// TestWaitConditionPattern：pattern——对全量落盘日志匹配（含等待前已存在的行），
+// 结果带回命中行原文。
+func TestWaitConditionPattern(t *testing.T) {
+	r, mgr := newJobRegistry(t)
+	ctx := WithSessionID(context.Background(), "s1")
+	j, err := mgr.Start(jobs.Spec{Kind: "bash", Label: "构建", SessionID: "s1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 等待**之前**就写好命中行——pattern 是全量匹配，历史行也命中（快照预判定）
+	if _, err := j.Write([]byte("compiling...\nBUILD DONE in 3s\n")); err != nil {
+		t.Fatal(err)
+	}
+	got := r.Execute(ctx, call("job_output", `{"job_id":`+quote(j.ID())+`,"wait":true,"timeout_ms":3000,"wait_condition":{"pattern":"BUILD DONE"}}`))
+	if !strings.Contains(got, `[hit: pattern "BUILD DONE" 命中] BUILD DONE in 3s`) {
+		t.Fatalf("pattern 谓词应带回命中行原文: %q", got)
+	}
+	// 未编译成功的正则：超时返回、无 hit
+	got = r.Execute(ctx, call("job_output", `{"job_id":`+quote(j.ID())+`,"wait":true,"timeout_ms":200,"wait_condition":{"pattern":"NEVER APPEARS"}}`))
+	if !strings.Contains(got, "[status: running]") || strings.Contains(got, "[hit:") {
+		t.Fatalf("pattern 未命中应超时返回无 hit: %q", got)
+	}
+}
+
+// TestWaitConditionOrFirstWins：OR 组合——谁先到返回谁。
+func TestWaitConditionOrFirstWins(t *testing.T) {
+	r, mgr := newJobRegistry(t)
+	ctx := WithSessionID(context.Background(), "s1")
+	j, err := mgr.Start(jobs.Spec{Kind: "bash", Label: "两路赛跑", SessionID: "s1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 100ms 写输出（output 先到），500ms 才 settle（exit 后到）
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		_, _ = j.Write([]byte("early line\n"))
+		time.Sleep(400 * time.Millisecond)
+		j.Settle(jobs.StatusCompleted, jobs.EndedSelf, "退出码 0")
+	}()
+	start := time.Now()
+	got := r.Execute(ctx, call("job_output", `{"job_id":`+quote(j.ID())+`,"wait":true,"timeout_ms":5000,"wait_condition":["output","exit"]}`))
+	if !strings.Contains(got, "[hit: output") || !strings.Contains(got, "early line") {
+		t.Fatalf("OR 组合应先到的 output 命中: %q", got)
+	}
+	if !strings.Contains(got, "[status: running]") {
+		t.Fatalf("output 先到时任务应仍在跑: %q", got)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("先到的条件应立刻返回（不等后到的 exit）: %v", elapsed)
+	}
+}
+
+// TestWaitConditionSnapshotPreSatisfied：快照预判定——条件在 wait 调用前已满足
+// 也要命中（不能白等到超时）。output 用已读基线判定，pattern 用全量日志判定。
+func TestWaitConditionSnapshotPreSatisfied(t *testing.T) {
+	r, mgr := newJobRegistry(t)
+	ctx := WithSessionID(context.Background(), "s1")
+	j, err := mgr.Start(jobs.Spec{Kind: "bash", Label: "早就写完了", SessionID: "s1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := j.Write([]byte("already here\n")); err != nil {
+		t.Fatal(err)
+	}
+	// 先读一次建立基线（游标推进——「已有输出读过」）
+	r.Execute(ctx, call("job_output", `{"job_id":`+quote(j.ID())+`}`))
+	// output：等待期间没有新输出 → 不该命中（基线已读到最新）——超时返回
+	got := r.Execute(ctx, call("job_output", `{"job_id":`+quote(j.ID())+`,"wait":true,"timeout_ms":250,"wait_condition":"output"}`))
+	if strings.Contains(got, "[hit: output") {
+		t.Fatalf("基线之后无新输出，output 不该命中: %q", got)
+	}
+	// 前一次超时返回**补读了等待期间无新输出**（wait 路径的增量补读把游标又推进
+	// 了一次，语义不变）；再写一行：**不读**直接 wait——基线之上的新输出必须命中
+	if _, err := j.Write([]byte("fresh line\n")); err != nil {
+		t.Fatal(err)
+	}
+	got = r.Execute(ctx, call("job_output", `{"job_id":`+quote(j.ID())+`,"wait":true,"timeout_ms":3000,"wait_condition":"output"}`))
+	if !strings.Contains(got, "[hit: output") || !strings.Contains(got, "fresh line") {
+		t.Fatalf("基线之上的新输出应命中（含等待前已写入的）: %q", got)
+	}
+	// pattern 同理：命中行早已在日志里，wait 之前就该判中
+	got = r.Execute(ctx, call("job_output", `{"job_id":`+quote(j.ID())+`,"wait":true,"timeout_ms":3000,"wait_condition":{"pattern":"fresh line"}}`))
+	if !strings.Contains(got, `[hit: pattern "fresh line" 命中]`) {
+		t.Fatalf("pattern 的快照预判定应命中历史行: %q", got)
+	}
+}
+
+// TestWaitConditionParamErrors：非法谓词 / 非法正则报参数错（模型当场重试，
+// 不是静默等到超时）。
+func TestWaitConditionParamErrors(t *testing.T) {
+	r, mgr := newJobRegistry(t)
+	ctx := WithSessionID(context.Background(), "s1")
+	j, err := mgr.Start(jobs.Spec{Kind: "bash", Label: "x", SessionID: "s1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := r.Execute(ctx, call("job_output", `{"job_id":`+quote(j.ID())+`,"wait":true,"wait_condition":"nope"}`)); !strings.Contains(got, "未知谓词") {
+		t.Fatalf("未知谓词应报参数错: %q", got)
+	}
+	if got := r.Execute(ctx, call("job_output", `{"job_id":`+quote(j.ID())+`,"wait":true,"wait_condition":{"pattern":"([bad"}}`)); !strings.Contains(got, "不是合法正则") {
+		t.Fatalf("非法正则应报参数错: %q", got)
+	}
+}
+
+// TestWaitConditionLastOutputAt：idle 的静默锚是 lastOutputAt（jobs 快照暴露）——
+// 从未写过输出的任务从 startedAt 起算（不编零值时刻）。
+func TestWaitConditionLastOutputAt(t *testing.T) {
+	_, mgr := newJobRegistry(t)
+	j, err := mgr.Start(jobs.Spec{Kind: "bash", Label: "沉默的", SessionID: "s1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap := j.Snapshot()
+	if !snap.LastOutputAt.IsZero() {
+		t.Fatalf("未写过输出时 LastOutputAt 应为零值: %v", snap.LastOutputAt)
+	}
+	if _, err := j.Write([]byte("x\n")); err != nil {
+		t.Fatal(err)
+	}
+	snap = j.Snapshot()
+	if snap.LastOutputAt.IsZero() {
+		t.Fatalf("写过输出后 LastOutputAt 应有值: %+v", snap)
+	}
+}

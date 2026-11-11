@@ -136,7 +136,7 @@ func newBashDef(r *Registry, readOnly bool) *Def {
 	description := "在本机执行 shell 命令（" + shellDisp + "），返回合并的 stdout/stderr 与退出码。" +
 		"终端操作专用（git/npm/构建/系统管理）；文件操作与检索用专用工具（read_file/ripgrep/edit）。" +
 		"多行脚本请用 stdin 传（别在 command 里堆引号）。" +
-		"等待纪律：等后台任务用 job_output(wait=true)；等外部状态用 run_in_background 起轮询循环（until cond; do sleep 30; done）——纯 sleep 命令会被拒绝执行。" +
+		"等待纪律：等已有后台任务用 job_output(wait=true, wait_condition=…)（阻塞等待原语：exit/exit_ok/output/idle/{pattern}）；真的无任务句柄才用 run_in_background 起轮询循环（until cond; do sleep 30; done）——纯 sleep 命令会被拒绝执行。" +
 		shellSyntaxHint(shellDisp)
 	schema := json.RawMessage(`{
 		"type": "object",
@@ -145,7 +145,7 @@ func newBashDef(r *Registry, readOnly bool) *Def {
 			"cwd": {"type": "string", "description": "工作目录（绝对或相对会话工作目录，可选）；默认会话工作目录（无则为进程当前目录）"},
 			"stdin": {"type": "string", "description": "喂给命令的标准输入（可选，上限 64KB）：可写多行脚本或 heredoc 体，避免引号转义"},
 			"timeout_sec": {"type": "integer", "description": "超时秒数，默认 60，上限 300"},
-			"run_in_background": {"type": "boolean", "description": "true 时立刻返回 job id（长命令：构建、测试、dev server）；后台轮询循环（until cond; do sleep 30; done）也用它——等外部状态的正路"}
+			"run_in_background": {"type": "boolean", "description": "true 时立刻返回 job id（长命令：构建、测试、dev server）；等外部状态的正路是先用它把检查命令变后台任务、再用 job_output(wait_condition) 等进度——真的无任务句柄才起轮询循环（until cond; do sleep 30; done）"}
 		},
 		"required": ["command"]
 	}`)
@@ -545,14 +545,14 @@ func normalizeWaitErr(cmd *exec.Cmd, err error) error {
 	}
 }
 
-// backgroundStartedText 是立刻返回给模型的文本：job id + 怎么读输出。
+// backgroundStartedText 是立刻返回给模型的文本：job id + 怎么读输出/等进度。
 // 必须显式说「不要在这里等」——否则模型会立刻 job_output(wait=true)，
 // 把后台任务当同步命令用（那就白起了）。
 func backgroundStartedText(id, command string) string {
 	return fmt.Sprintf("后台任务已启动: %s\n命令: %s\n"+
 		"它是异步的——现在不要等它，可以继续做别的事；结束后系统会通知你结果。\n"+
 		"  job_output(job_id=%q)             读增量输出（无新输出回 (no new output)）\n"+
-		"  job_output(job_id=%q, wait=true)  阻塞等它结束（默认 30s，上限 600s）\n"+
+		"  job_output(job_id=%q, wait=true, wait_condition=…)  阻塞等待原语（exit=等结束（默认）/ exit_ok=等退出码 0 / output=等新输出 / idle=等静默 N 秒 / {\"pattern\": \"…\"}=等输出命中正则；OR 组合谁先到返回谁；默认 30s，上限 600s）\n"+
 		"  job_list                         看全部任务；job_kill(job_id=%q) 停止它",
 		id, commandLabel(command), id, id, id)
 }

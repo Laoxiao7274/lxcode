@@ -7,7 +7,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   JOB_NOTICE_PREFIX, JOB_GROUP_LOOSE, activeJobCount, formatDuration, groupJobsByWorkspace, isJobActive, isJobNotice,
-  isJobTimeout, jobElapsedMs, jobFromWire, jobNoticeBody, jobOutcomeText, jobTone, shortSessionId, sortJobs, tailOf, upsertJob,
+  isJobTimeout, jobElapsedMs, jobFromWire, jobNoticeBody, jobOutcomeText, jobTone, jobWaitArgs, jobWaitConditionLabel,
+  shortSessionId, sortJobs, tailOf, upsertJob,
 } from '../src/shared/jobs.ts';
 import { mapEvent } from '../src/agent/ws/events.ts';
 import { reduce, reduceSessionStates } from '../src/shared/store.ts';
@@ -413,4 +414,38 @@ test('演示模式：未知任务 id 不静默成功（抛错给 UI 提示）', 
   await assert.rejects(agent.jobAdmin.killJob('nope'), /任务不存在/);
   await assert.rejects(agent.jobAdmin.readJobLog('nope'), /任务不存在/);
   assert.deepEqual(agent.jobAdmin.jobs(), []);
+});
+
+// ---------- 等待原语的呈现（wait_condition 人话映射） ----------
+
+test('jobWaitArgs 解析 wait/wait_condition/idle_ms（坏 JSON 回缺省不炸）', () => {
+  assert.deepEqual(jobWaitArgs('{"wait":true,"wait_condition":"idle","idle_ms":8000}'),
+    { wait: true, condition: 'idle', idleMs: 8000 });
+  assert.deepEqual(jobWaitArgs('{"wait":true}'), { wait: true, condition: undefined, idleMs: undefined });
+  assert.equal(jobWaitArgs('{"job_id":"j1"}').wait, false);
+  assert.equal(jobWaitArgs('not json').wait, false);
+});
+
+test('jobWaitConditionLabel 五谓词的人话映射', () => {
+  assert.equal(jobWaitConditionLabel(undefined), '任务完成');            // 缺省 = exit
+  assert.equal(jobWaitConditionLabel('exit'), '任务完成');
+  assert.equal(jobWaitConditionLabel('exit_ok'), '任务成功');
+  assert.equal(jobWaitConditionLabel('output'), '新输出');
+  assert.equal(jobWaitConditionLabel('idle'), '静默 5 秒');             // 默认 5000ms
+  assert.equal(jobWaitConditionLabel('idle', 12000), '静默 12 秒');
+  assert.equal(jobWaitConditionLabel({ pattern: 'BUILD DONE' }), '匹配「BUILD DONE」');
+});
+
+test('jobWaitConditionLabel OR 组合用 / 并列（谁先到返回谁，单数描述会撒谎）', () => {
+  assert.equal(jobWaitConditionLabel(['output', { pattern: 'done in \d+s' }]),
+    '新输出 / 匹配「done in \d+s」');
+  assert.equal(jobWaitConditionLabel(['exit', 'exit_ok']), '任务完成 / 任务成功');
+  // 数组缺省与空数组都回落「任务完成」
+  assert.equal(jobWaitConditionLabel([]), '任务完成');
+});
+
+test('jobWaitConditionLabel 认不出的谓词原样显示（不编语义）+ 超长 pattern 截断', () => {
+  assert.equal(jobWaitConditionLabel('weird'), 'weird');
+  const long = 'x'.repeat(60);
+  assert.equal(jobWaitConditionLabel({ pattern: long }), '匹配「' + 'x'.repeat(40) + '…」');
 });

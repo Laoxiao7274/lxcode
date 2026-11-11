@@ -163,13 +163,21 @@
   font-size: 11px;
 }
 /* 发送缓冲区（体验修复批次 5）：busy 期间提交的消息排队等空闲自动发出。
- * 与 busy-row / edit-row 同层（输入框上方的浮层区），条目是紧凑行——
- * 序号 + 单行摘要 + 三个小动作钮。配色全部沿用既有 token，不新增颜色值。 */
+ * 方案 A（2026-12）：移进 .pi 白卡内部顶部（照 .pi-plan 融合先例）——
+ * 区块自身透明、无胶囊底，条目是紧凑行（序号 + 单行摘要 + 三个小动作钮）；
+ * 卡内 padding 用 10px 16px 0 对齐 att-preview/pi-plan 的内距节奏。
+ * 分隔线：区块尾 border-bottom（发丝线，同 pi-plan 手法）。与 pi-plan 相邻时
+ * 两条线只隔 0px 会贴成一条 2px——用相邻兄弟选择器把后者的线去掉（双线
+ * 防御：两者都有内容时只留 queue 的线，视觉上仍是单条发丝线）。 */
 .send-queue {
-  padding: 0 4px 8px;
+  padding: 10px 16px 0;
   display: flex;
   flex-direction: column;
   gap: 4px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.pi > .send-queue + .pi-plan {
+  border-bottom: none;
 }
 .send-queue-notice {
   font-size: 11.5px;
@@ -181,9 +189,7 @@
   align-items: center;
   gap: 8px;
   padding: 4px 8px;
-  border: 1px solid var(--border-soft);
-  border-radius: 8px;
-  background: var(--bg-side);
+  border-radius: 6px;
   font-size: 12px;
 }
 .send-queue-index {

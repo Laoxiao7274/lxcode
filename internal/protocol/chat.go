@@ -180,6 +180,10 @@ type ChatHistoryResult struct {
 	// 前端据此做「主会话之间隔离」的档位显示——每个会话显示它自己后端里的真实档位，
 	// 而不是上一会话残留的本地值。空 = 后端没报（老后端），前端回落 confirm。
 	Approval string `json:"approval,omitempty"`
+	// Draft 是该会话落库的输入草稿（chat.draft 的写入）。空 = 后端没存过 → 整键
+	// 缺席，客户端回落本地内存记账（**不要**把缺席当成"草稿为空"去清本地——后写
+	// 覆盖语义下，缺席 = 后端没话语权）。多端共享：切会话/换端装载时预填。
+	Draft string `json:"draft,omitempty"`
 	// HasMore 仅分页应答（before_seq 请求）携带：true = anchor 之前还有更早的
 	// 历史（客户端继续上滑还能拉）；false = 已经到头（显示「已加载全部历史」）。
 	// 非分页应答整键缺席（omitempty——老客户端与桌面端零影响）。
@@ -644,6 +648,13 @@ type ChatApprovalParams struct {
 // 对齐本地设置（不自己再猜一遍空值该落哪一档）。
 type ChatApprovalResult struct {
 	Approval string `json:"approval"`
+}
+
+// ChatDraftParams 是 chat.draft 的参数：把本会话当前输入框的草稿落库。
+// Text 允许空串——发送清空时显式写 '' 清掉落库值（空串 = 该会话无草稿）。
+type ChatDraftParams struct {
+	SessionID string `json:"session_id"`
+	Text      string `json:"text"`
 }
 
 // ApprovalChangedParams 是 chat.approvalChanged 事件的载荷（多客户端同步）。

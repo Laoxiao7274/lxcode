@@ -105,12 +105,12 @@ func repeatHintFor(n int, isSleep bool) string {
 	if isSleep {
 		if n >= sessionSleepHard {
 			return fmt.Sprintf("%s该 sleep 类调用（含变体）本会话已执行 %d 次。sleep 不检查任何状态、纯烧轮次，不是等待——"+
-				"等后台任务用 job_output(wait=true)（上限 600s），等外部状态用 run_in_background 起轮询循环。停下来换正确的等待方式。",
+				"等已有后台任务用 job_output(wait=true, wait_condition=…)（等待原语，上限 600s），真的无任务句柄才用 run_in_background 起轮询循环。停下来换正确的等待方式。",
 				RepeatNoticePrefix, n)
 		}
 		if n >= sessionSleepSoft {
 			return fmt.Sprintf("%s该 sleep 类调用（含变体）本会话已执行 %d 次。sleep 不会带来新信息——"+
-				"等后台任务用 job_output(wait=true)，等外部状态用 run_in_background 起轮询循环（until cond; do sleep 30; done）。",
+				"等已有后台任务用 job_output(wait=true, wait_condition=…)（等待原语），真的无任务句柄才用 run_in_background 起轮询循环（until cond; do sleep 30; done）。",
 				RepeatNoticePrefix, n)
 		}
 		return ""

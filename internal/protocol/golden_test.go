@@ -165,6 +165,8 @@ func goldenSamples() map[string]goldenSample {
 			Checkpoints: []int{0},
 			Model:       "deepseek-v3",
 			Approval:    ApprovalConfirm,
+			// 落库草稿（chat.draft 写的；多端共享——切会话/换端装载时预填）。
+			Draft: "帮我看看这个报错，还没发",
 			// 批次 2：回放对应的叶（新客户端对齐树面板用）。
 			LeafSeq: 4,
 			// 观察端回填（安卓/新开窗口错过 dispatchStart 时重建卡用）：全量样本
