@@ -5,6 +5,7 @@ import { useDismissal } from "../../shared/popover";
 import { useUpdate } from "../../shared/update";
 import { busyCountsByWorkspace } from "../../shared/busy-summary";
 import { LOOSE, openProject as openProjectEntry } from "../../shared/project-entry";
+import { readSidebarSections, writeSidebarSections, type SidebarSectionsCollapsed } from "../../shared/sidebar-persist";
 import type { AgentSource, ProjectMeta, SessionMeta } from "../../shared/types";
 import { AddProjectDialog } from "./AddProjectDialog";
 import { ProjectInstructionsDialog } from "./ProjectInstructionsDialog";
@@ -107,6 +108,17 @@ export const Sidebar = memo(function Sidebar({
    *  语义 = 只解绑（不删磁盘文件、不删会话），文案见 RemoveProjectDialog。 */
   const [removeFor, setRemoveFor] = useState<ProjectMeta | null>(null);
   const [projectsTick, setProjectsTick] = useState(0); // projectsChanged 事件驱动重读
+  /** 分节折叠态（2026-12 分层重构）：「项目」与「助手」两节的节头可点击收缩/
+   *  展开，localStorage 记忆（sidebar-persist 的 sections 键）。单 state 一次
+   *  读、落盘收口在同一个 toggle。 */
+  const [collapsed, setCollapsed] = useState<SidebarSectionsCollapsed>(() => readSidebarSections());
+  const toggleSection = useCallback((section: keyof SidebarSectionsCollapsed) => {
+    setCollapsed((cur) => {
+      const next = { ...cur, [section]: !cur[section] };
+      writeSidebarSections(next);
+      return next;
+    });
+  }, []);
   const searchRef = useRef<HTMLInputElement>(null);
   const { phase: updPhase } = useUpdate();
   const hasUpdate = updPhase === "available" || updPhase === "downloading" || updPhase === "ready";
@@ -398,9 +410,32 @@ export const Sidebar = memo(function Sidebar({
         </div>
       </div>
 
-      {/* 项目区（上分组）：标题行常驻，行列表独立滚动（proj-scroll）——
-          项目再多也不把下方的会话区/设置入口挤出视口 */}
+      {/* 项目区（上分组）：标题行可点击收缩/展开（collapsed.projects，localStorage
+          记忆）；行列表独立滚动（proj-scroll）——项目再多也不把下方的会话区/
+          设置入口挤出视口。 */}
       <div className="sidebar-label project-head">
+        <button
+          type="button"
+          className="section-toggle"
+          aria-expanded={!collapsed.projects}
+          title={collapsed.projects ? "展开项目列表" : "收起项目列表"}
+          onClick={() => toggleSection("projects")}
+        >
+          <svg
+            width="10"
+            height="10"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.4"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+            style={{ transform: collapsed.projects ? "rotate(-90deg)" : undefined, transition: "transform 140ms" }}
+          >
+            <path d="m6 9 6 6 6-6" />
+          </svg>
+        </button>
         项目
         <button type="button" className="proj-add-btn" aria-label="添加项目" title="添加项目" onClick={() => setAddOpen(true)}>
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
@@ -408,6 +443,7 @@ export const Sidebar = memo(function Sidebar({
           </svg>
         </button>
       </div>
+      {collapsed.projects ? null : (
       <div className="proj-scroll">
       {projects.map((p) => {
         // 该项目的会话列表（分组结果直接取——不再每个项目扫一遍全部会话；
@@ -487,6 +523,7 @@ export const Sidebar = memo(function Sidebar({
         <div className="proj-empty">还没有项目——点右上 + 添加</div>
       )}
       </div>
+      )}
       {addOpen && (
         <AddProjectDialog
           onAdd={async (name, path) => {
@@ -522,56 +559,19 @@ export const Sidebar = memo(function Sidebar({
         />
       )}
 
-      {/* 对话分组（下）——列表恒属于当前范围（项目 / 未分组）；范围在项目区
+      {/* 对话分组（中）——列表恒属于当前范围（项目 / 未分组）；范围在项目区
           用选中态表达，这里不再放可清除的 chip（没有「全部」可退）。
-          会话列表独立滚动（sess-scroll）：全部会话都可滚到，不再截断前 8 条。 */}
+          会话列表独立滚动（sess-scroll）：全部会话都可滚到，不再截断前 8 条。
+          节名改「项目」（2026-12 用户拍板⑤：非助手节会话都归属项目/未分组，
+          原名「对话」与节内容不符）。 */}
       <div className="sidebar-label group-head">
-        对话
+        项目
         <span className="group-actions" aria-hidden>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
             <path d="M3 6h18M6 12h12M10 18h4" />
           </svg>
         </span>
       </div>
-      {/* 「来自助手」小节（2026-12）：当前项目有助手派的任务子会话时才出现
-          （空分组不渲染）。行 = SessionRow 骨架（busy 点同款），点击 = 跨模式
-          跳转到助手模式的子会话视图（域纪律：这里不接 chat.* 历史装载——
-          assistant 任务的历史走 assistant.childHistory，在助手域内闭环）。 */}
-      {assistantTasks.length > 0 && (
-        <div className={ASSISTANT_SECTION_HEAD}>
-          <div className="sidebar-label group-head assistant-tasks-label">
-            助手
-            <span className="group-actions" aria-hidden>
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
-                <circle cx="12" cy="12" r="9" />
-                <path d="M12 8v4l3 2" />
-              </svg>
-            </span>
-          </div>
-          {assistantTasks.map((t) => (
-            <div
-              key={t.id}
-              className="session-item assistant-task-row"
-              role="button"
-              tabIndex={0}
-              title={`助手派的任务：${t.title}`}
-              aria-label={`来自助手的任务：${t.title}${t.running ? "（正在运行）" : ""}`}
-              onClick={() => onOpenAssistantChild(t.id)}
-              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpenAssistantChild(t.id); } }}
-            >
-              <div className="session-line">
-                <span className={"s-dot" + (t.running ? " live" : "")} aria-hidden />
-                <span className="title">{t.title}</span>
-                {/* 来源徽标：标题旁小 pill「助手」（助手紫 wash——与助手模式
-                    识别色同源；aria 已在行级 label 里说明来源，pill 冗余不读）。 */}
-                <span className="assistant-src-pill" aria-hidden>助手</span>
-                {t.running && <span className="mset-spinner session-spinner" aria-hidden />}
-                <span className="time">{t.updatedAt}</span>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
       <div className="sess-scroll">
       {searchActive ? (
         // 全局搜索态：结果列表替换双列表（项目区也换命中项目行——见下方
@@ -650,6 +650,64 @@ export const Sidebar = memo(function Sidebar({
         ))
       )}
       </div>
+
+      {/* 助手节（2026-12 分层重构：移到会话区**下方**——用户主诉求是位置感：
+          项目/会话主域在上，助手任务在下；节头可点击收缩/展开（记忆态同项目节）。
+          小节仍只在当前项目有助手派的任务子会话时出现（空分组不渲染）。
+          行点击 = 跨模式跳转到助手模式的子会话视图（域纪律：这里不接 chat.*
+          历史装载——assistant 任务的历史走 assistant.childHistory，在助手域内
+          闭环）。 */}
+      {assistantTasks.length > 0 && (
+        <div className={ASSISTANT_SECTION_HEAD}>
+          <div className="sidebar-label group-head assistant-tasks-label">
+            <button
+              type="button"
+              className="section-toggle"
+              aria-expanded={!collapsed.assistants}
+              title={collapsed.assistants ? "展开助手任务" : "收起助手任务"}
+              onClick={() => toggleSection("assistants")}
+            >
+              <svg
+                width="10"
+                height="10"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.4"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+                style={{ transform: collapsed.assistants ? "rotate(-90deg)" : undefined, transition: "transform 140ms" }}
+              >
+                <path d="m6 9 6 6 6-6" />
+              </svg>
+            </button>
+            助手
+          </div>
+          {collapsed.assistants ? null : assistantTasks.map((t) => (
+            <div
+              key={t.id}
+              className="session-item assistant-task-row"
+              role="button"
+              tabIndex={0}
+              title={`助手派的任务：${t.title}`}
+              aria-label={`来自助手的任务：${t.title}${t.running ? "（正在运行）" : ""}`}
+              onClick={() => onOpenAssistantChild(t.id)}
+              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpenAssistantChild(t.id); } }}
+            >
+              <div className="session-line">
+                {/* 来源徽标（2026-12 ④整齐化）：统一放**行首图标位**（原来在标题
+                    之后，点/时间都被它挤压错位）——与会话行的 s-dot 同位，三节
+                    （项目会话/助手任务/全局搜索）行首对齐。 */}
+                <span className="assistant-src-pill" aria-hidden>助手</span>
+                <span className="title">{t.title}</span>
+                {t.running && <span className="mset-spinner session-spinner" aria-hidden />}
+                <span className="time">{t.updatedAt}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="sidebar-footer">
         <div className="settings-row" role="button" tabIndex={0} onClick={onOpenSettings}>

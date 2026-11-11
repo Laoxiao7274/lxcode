@@ -21,18 +21,46 @@
 .sidebar-footer {
   flex: none;
 }
-/* 项目区滚动：空间充裕时按内容自然高（flex:none），项目多时封顶让位会话区 */
+/* 项目区滚动：空间充裕时按内容自然高（flex:none），项目多时封顶让位会话区。
+ * 2026-12 分层重构：flex 由 none 改 0 1 auto（内容自适应 + 可被压缩），
+ * max-height 42%→55%——会话区（flex:1）恒吃剩余空间，项目区折叠后自动让出，
+ * 不再「42% 封顶把对话区挤扁」。 */
 .proj-scroll {
-  flex: none;
+  flex: 0 1 auto;
   min-height: 0;
-  max-height: 42%;
+  max-height: 55%;
   overflow-y: auto;
 }
-/* 会话区滚动：吃掉剩余全部空间（列表长时在这里滚，设置入口永远钉在底部） */
+/* 会话区滚动：吃掉剩余全部空间（列表长时在这里滚，设置入口永远钉在底部）。
+ * flex:1 = 对话区为主（分层重构的拍板：对话优先于项目列表）。 */
 .sess-scroll {
   flex: 1 1 0;
   min-height: 0;
   overflow-y: auto;
+}
+/* 分节折叠开关（2026-12 分层重构）：节头内的小箭头钮——hover 显形、点击
+ * 切换节折叠（旋转 -90° 收拢），aria-expanded 表达状态。 */
+.section-toggle {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-left: -4px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg-faint);
+  cursor: pointer;
+  opacity: 0.55;
+  transition: opacity 120ms, background 120ms;
+}
+.section-toggle:hover {
+  opacity: 1;
+  background: var(--border-soft);
+  color: var(--fg);
 }
 /* ===== 细滚动条（proj-scroll / sess-scroll）：与 mp-list/ap-list 同语言 =====
  * token = --scrollbar-thumb（base.css 双主题各一份）。Firefox 走 scrollbar-width
@@ -129,6 +157,16 @@
   color: var(--fg-muted);
   padding: 8px 14px 4px;
 }
+/* 带折叠开关的节头（项目/助手）：开关钮 + 标题 + 右缘动作横向排布 */
+.sidebar-label.project-head,
+.assistant-tasks-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.sidebar-label.project-head .proj-add-btn {
+  margin-left: auto;
+}
 .session-item {
   position: relative;
   display: flex;
@@ -217,11 +255,16 @@
   color: var(--fg-faint, var(--fg-muted));
   font-style: normal;
 }
-/* 来源徽标：任务行标题旁的小 pill「助手」（ag-pill 同款密度：
+/* 来源徽标：任务行**行首图标位**的小 pill「助手」（ag-pill 同款密度：
    9.5px/600/圆角小胶囊；颜色用助手紫 wash——--asst-accent 系只在
-   助手模式容器上生效，这里直接写同值，亮暗主题共用）。 */
+   助手模式容器上生效，这里直接写同值，亮暗主题共用）。
+   2026-12 ④整齐化：从标题之后挪到行首（原 s-dot 位）——三节行首对齐，
+   标题/时间不再被徽标挤压错位。宽度用 min-width 而不是定宽：二字徽标
+   「助手」恒等宽，行首视觉整齐。 */
 .assistant-src-pill {
   flex: none;
+  min-width: 30px;
+  text-align: center;
   font-size: 9.5px;
   font-weight: 600;
   line-height: 1;

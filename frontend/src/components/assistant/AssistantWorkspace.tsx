@@ -261,10 +261,17 @@ export function AssistantWorkspace({
   const childId = childViewId !== null ? childTabSession(`child:${childViewId}`) : null;
 
   /** 子会话标题：父会话（childParents 反查）时间线里的 dispatch 块（与主域
-   *  childTabTitleOf 同一份纯函数；映射缺失时回落 sessionId 前缀）。 */
+   *  childTabTitleOf 同一份纯函数；映射缺失时回落 sessionId 前缀）。
+   *  **父 state 必须兜底**（2026-12 白屏修复）：侧栏「助手」节点任务行跳进来时，
+   *  父助手会话从未打开过（assistantStates 没有条目）、childParents 也可能没有
+   *  映射（主域/助手域的回放扫描只在装载过历史的会话上跑）——parent 落到当前
+   *  sessionId 甚至空串，assistantStates[parent] 是 undefined。timelineOf 直接读
+   *  state.streaming 会抛 TypeError，React 整树卸载 = 用户看到的白屏。主域
+   *  childTabTitleOf 有 `?? state` 兜底，这里补同款（空时间线 → childTabTitle
+   *  自己回落「子会话 <id 前 8 位>」，不许空白）。 */
   const childTitleOf = useCallback((id: string) => {
     const parent = childParents[id] ?? sessionId;
-    const parentState = assistantStates[parent];
+    const parentState = assistantStates[parent] ?? { blocks: [], streaming: null };
     return childTabTitle(timelineOf(parentState), id);
   }, [childParents, sessionId, assistantStates]);
 

@@ -213,3 +213,26 @@ test('⑤ AssistantWorkspace：子会话视图的 *partial* 包装是 useCallbac
   const earlyReturn = acSrc.indexOf('if (!assistant) return null;');
   assert.ok(earlyReturn > hooksEnd, 'early return 必须在全部 hooks 之后');
 });
+
+// ---------- ⑥ 白屏修复钉子（2026-12）：子会话标题反查的父 state 兜底 ----------
+//
+// 背景（用户报「侧栏助手节点会话行点击 → 白屏」）：childTitleOf 按 childParents
+// 反查父助手会话的 state，父会话从未打开过（assistantStates 无条目）、映射也
+// 可能缺失 → parentState 是 undefined，直接传 timelineOf 读 state.streaming 抛
+// TypeError，React 整树卸载 = 白屏。钉两条：① 反查结果必须有兜底（?? 空时间线
+// 形状——与主域 App 的 childTabTitleOf `?? state` 同款纪律）；② 行为上空时间线
+// 的 childTabTitle 不抛、回落「子会话 <id 前 8 位>」。
+
+test('⑥ childTitleOf：父 state 反查有兜底（undefined 不可达 timelineOf）', () => {
+  const src = fs.readFileSync(new URL('../src/components/assistant/AssistantWorkspace.tsx', import.meta.url), 'utf8');
+  const at = src.indexOf('const childTitleOf = useCallback');
+  const seg = src.slice(at, src.indexOf('}, [childParents', at));
+  assert.match(seg, /assistantStates\[parent\] \?\? \{ blocks: \[\], streaming: null \}/,
+    '父 state 反查必须兜底空时间线（undefined 进 timelineOf = 白屏）');
+});
+
+test('⑥ childTabTitle：空时间线 + 无映射不抛，回落「子会话 <id 前 8 位>」', async () => {
+  const { childTabTitle } = await import('../src/shared/workspace-tabs.ts');
+  assert.doesNotThrow(() => childTabTitle([], 'abc12345-def6'));
+  assert.equal(childTabTitle([], 'abc12345-def6'), '子会话 abc12345');
+});

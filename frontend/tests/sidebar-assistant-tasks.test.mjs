@@ -88,14 +88,15 @@ test('② Sidebar：小节数据源 = source.assistant.tasks(filter)，行点击
   assert.match(sidebarSrc, /filter === LOOSE \|\| filter === ""/, '未分组不拉 assistant.tasks');
 });
 
-test('② 小节标题缩短为「助手」+ 行内来源徽标 assistant-src-pill（2026-12 侧栏区分）', () => {
+test('② 小节标题缩短为「助手」+ 行首来源徽标 assistant-src-pill（2026-12 侧栏区分 + ④整齐化）', () => {
   const section = sidebarSrc.slice(sidebarSrc.indexOf('assistantTasks.length > 0'));
-  const end = section.indexOf('sess-scroll');
+  const end = section.indexOf('sidebar-footer');
   const seg = section.slice(0, end);
-  assert.ok(seg.includes('>助手<'), '分节标题文案 =「助手」（与「对话」同密度）');
+  assert.ok(seg.includes('>助手<'), '分节标题文案 =「助手」（与「项目」同密度）');
   assert.ok(!seg.includes('>来自助手<'), '不再用「来自助手」长标题（aria 语义文案不受限）');
   assert.match(seg, /assistant-src-pill/, '任务行带来源徽标 pill');
-  assert.ok(seg.indexOf('assistant-src-pill') > seg.indexOf('className="title"'), 'pill 在标题之后（行内标题旁）');
+  // ④整齐化：徽标统一在**行首**（title 之前）——与会话行的 s-dot 同位
+  assert.ok(seg.indexOf('assistant-src-pill') < seg.indexOf('className="title"'), 'pill 在标题之前（行首图标位）');
 });
 
 test('② App：onOpenAssistantChild = setAssistantChildPref 先落 + handleModeChange 后切（顺序不能反）', () => {

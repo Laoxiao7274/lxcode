@@ -14,6 +14,47 @@
 
 const KEY = "lxcode.ui.lastProject";
 
+/** 侧栏分节折叠态的持久化键（2026-12 分层重构）：JSON {"projects":bool,"assistants":bool}
+ *  ——值 true = 收起。整键 JSON 而不是每节一个键：后续加节不用再扩键名，读写一处收口。 */
+const COLLAPSED_KEY = "lxcode.ui.sidebarSections";
+
+/** 分节折叠态（Sidebar 的「项目」与「助手」两节头可点击收缩/展开）。 */
+export interface SidebarSectionsCollapsed {
+  projects: boolean;
+  assistants: boolean;
+}
+
+const DEFAULT_COLLAPSED: SidebarSectionsCollapsed = { projects: false, assistants: false };
+
+function normalizeCollapsed(raw: unknown): SidebarSectionsCollapsed {
+  const v = (raw ?? {}) as Partial<Record<keyof SidebarSectionsCollapsed, unknown>>;
+  // 逐字段归一：坏值（非布尔）按「展开」处理——不编造「记住收起」。
+  return {
+    projects: typeof v.projects === "boolean" ? v.projects : false,
+    assistants: typeof v.assistants === "boolean" ? v.assistants : false,
+  };
+}
+
+/** 读分节折叠态（无记忆/坏值 = 两节都展开——展开是默认态，不猜用户收过）。 */
+export function readSidebarSections(): SidebarSectionsCollapsed {
+  try {
+    const raw = localStorage.getItem(COLLAPSED_KEY);
+    if (!raw) return DEFAULT_COLLAPSED;
+    return normalizeCollapsed(JSON.parse(raw));
+  } catch {
+    return DEFAULT_COLLAPSED;
+  }
+}
+
+/** 写分节折叠态（写失败只是记不住，不影响折叠动作本身）。 */
+export function writeSidebarSections(state: SidebarSectionsCollapsed): void {
+  try {
+    localStorage.setItem(COLLAPSED_KEY, JSON.stringify(state));
+  } catch {
+    // 存不下就只是记不住
+  }
+}
+
 /** 读上次选中的项目范围（"" = 未分组也算一次有效记忆）。 */
 export function readLastProject(): string {
   try {
