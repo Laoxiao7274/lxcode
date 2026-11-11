@@ -12,6 +12,12 @@
 // React 侧把 setState 包装成 controller（写口同步刷新 ref——同一 tick 内
 // 连续事件读到的是最新值），测试侧用可变对象直填。
 //
+// operationError 之外还维护 operationErrors 环形缓冲（最近 50 条带时间戳，
+// 2026-12 桌面错误日志查看器）：设置页「日志」分区的数据源——提示条是
+// 一次性提示（从末条取，行为不变），环形缓冲让用户回头翻看连续失败的历史。
+// **所有写点收敛在 controller 的 setOperationError 一个口**（事件侧、
+// reportError、失败回滚共用它），缓冲不会漏记。
+//
 // 两份**独立于归约流**的会话级状态也挂在这里（都是键值表，事件只读不写、
 // 用户操作只写不读，互不干扰）：
 // - childParents：子→父会话映射（子会话视图的标题反查 + 双投路由，见
@@ -41,6 +47,23 @@ export { reduce, reduceSessionStates, pendingConfirmIds, allowAllPendingConfirms
 export type { ChildLinks, ChildParents } from "./workspace-tabs";
 export type { SendQueueItem } from "./send-queue";
 
+/** 一条操作错误的历史记录（operationErrors 环形缓冲的条目）。
+ *  at 是发生时刻（ISO 字符串——设置页「日志」分区按它展示时间）。 */
+export interface OperationErrorEntry {
+  message: string;
+  at: string;
+}
+
+/** operationErrors 环形缓冲的容量（最近 50 条——设置页翻得动的量）。 */
+export const OPERATION_ERRORS_MAX = 50;
+
+/** 追加一条操作错误进环形缓冲（纯函数——写点收敛与测试共用这一份逻辑）。
+ *  超 50 条丢最旧（末条永远最新，提示条从末条取的行为不受影响）。 */
+export function pushOperationError(buf: OperationErrorEntry[], message: string, at = new Date().toISOString()): OperationErrorEntry[] {
+  const next = [...buf, { message, at }];
+  return next.length > OPERATION_ERRORS_MAX ? next.slice(next.length - OPERATION_ERRORS_MAX) : next;
+}
+
 /** 事件处理的进出状态口。React 侧的写口**同步刷新 ref**（同一 tick 内连续事件
  *  读到最新值——自动发送逐条发出就靠这个：队首移除后立刻可见）；测试侧用
  *  可变对象直填（get 返回可变对象本身、set 原地覆盖字段）。 */
@@ -56,7 +79,11 @@ export interface AgentEventController {
   setCurrentId(id: string): void;
   setSessionStates(next: Record<string, UIState>): void;
   setAssistantStates(next: Record<string, UIState>): void;
+  /** 报一条操作错误（**所有写点的收敛口**）：提示条照旧置末条，同时追加进
+   *  operationErrors 环形缓冲（设置页「日志」分区读它）。 */
   setOperationError(message: string): void;
+  /** 读取环形缓冲（同一 tick 内连续事件读到最新值——ref 镜像同款纪律）。 */
+  getOperationErrors(): OperationErrorEntry[];
   bumpRevision(): void;
   setChildLinks(next: ChildLinks): void;
   setSendQueues(next: Record<string, SendQueueItem[]>): void;
@@ -258,6 +285,9 @@ export function useAgent(source: AgentSource, hooks?: AgentHooks): {
   /** 助手域版本的 resolve（两处定格落在 assistantStates——助手会话与它的
    *  run_task 子会话的确认卡都在助手域）。 */
   resolveAssistant: (sessionId: string, id: string, outcome: "allow" | "deny", answer?: string) => void;
+  /** 操作错误环形缓冲（最近 50 条带时间戳——设置页「日志」分区的数据源；
+   *  提示条从 state.operationError 末条取，行为不变）。 */
+  operationErrors: OperationErrorEntry[];
   clearError: () => void;
   reportError: (message: string) => void;
   /** 入队一条缓冲消息（busy/sending 期间 Composer 的 submit 走这里）。
@@ -272,6 +302,7 @@ export function useAgent(source: AgentSource, hooks?: AgentHooks): {
   const [assistantStates, setAssistantStates] = useState<Record<string, UIState>>({});
   const [currentId, setCurrentId] = useState("");
   const [operationError, setOperationError] = useState<string | null>(null);
+  const [operationErrors, setOperationErrors] = useState<OperationErrorEntry[]>([]);
   const [childLinks, setChildLinks] = useState<ChildLinks>(emptyChildLinks);
   const [sendQueues, setSendQueues] = useState<Record<string, SendQueueItem[]>>({});
   const [, setRevision] = useState(0);
@@ -284,11 +315,13 @@ export function useAgent(source: AgentSource, hooks?: AgentHooks): {
   const childLinksRef = useRef(childLinks);
   const sendQueuesRef = useRef(sendQueues);
   const prevBusyRef = useRef<Record<string, boolean>>({});
+  const operationErrorsRef = useRef(operationErrors);
   sessionStatesRef.current = sessionStates;
   assistantStatesRef.current = assistantStates;
   currentIdRef.current = currentId;
   childLinksRef.current = childLinks;
   sendQueuesRef.current = sendQueues;
+  operationErrorsRef.current = operationErrors;
   /** 自动发送出口（App 的 sendWithOptions）：身份随设置变化，经 ref 进 controller。 */
   const autoSendRef = useRef(hooks?.onAutoSend);
   autoSendRef.current = hooks?.onAutoSend;
@@ -309,7 +342,14 @@ export function useAgent(source: AgentSource, hooks?: AgentHooks): {
       setCurrentId: (id) => { currentIdRef.current = id; setCurrentId(id); },
       setSessionStates: (next) => { sessionStatesRef.current = next; setSessionStates(next); },
       setAssistantStates: (next) => { assistantStatesRef.current = next; setAssistantStates(next); },
-      setOperationError: (message) => setOperationError(message),
+      setOperationError: (message) => {
+        // 写点收敛（2026-12 错误日志查看器）：提示条置末条 + 环形缓冲追加，
+        // 同一 tick 内连续事件读 ref——写口先刷 ref 再 setState。
+        operationErrorsRef.current = pushOperationError(operationErrorsRef.current, message);
+        setOperationErrors(operationErrorsRef.current);
+        setOperationError(message);
+      },
+      getOperationErrors: () => operationErrorsRef.current,
       bumpRevision: () => setRevision((n) => n + 1),
       setChildLinks: (next) => { childLinksRef.current = next; setChildLinks(next); },
       setSendQueues: (next) => { sendQueuesRef.current = next; setSendQueues(next); },
@@ -321,6 +361,10 @@ export function useAgent(source: AgentSource, hooks?: AgentHooks): {
         controllerRef.current?.setAssistantStates({});
         controllerRef.current?.setCurrentId("");
         setOperationError(null);
+        // 重挂订阅（source 变化）清运行态：环形缓冲一并清——缓冲是本连接的
+        // 运行态（换后端 = 旧后端的错误历史作废），与 operationError 同语义。
+        operationErrorsRef.current = [];
+        setOperationErrors([]);
         controllerRef.current?.setPrevBusy({});
       },
     };
@@ -384,6 +428,7 @@ export function useAgent(source: AgentSource, hooks?: AgentHooks): {
     send,
     resolve,
     resolveAssistant,
+    operationErrors,
     clearError,
     reportError,
     enqueueSend,

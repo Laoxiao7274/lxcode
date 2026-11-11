@@ -248,6 +248,9 @@ const FIELD_CHECKS = {
   jobInfo: [['ended_by', ['=', 'user']], ['finished_at', 'string'], ['output_tail', 'string'], ['workspace', 'string']],
   jobInfoUngrouped: [['workspace', 'absent'], ['ended_by', 'absent'], ['finished_at', 'absent'], ['status', ['=', 'running']]],
   jobLogResult: [['truncated', ['=', true]], ['data', 'string']],
+  // logs.tail：bytes 缺省样本整键缺席（= 16KB）；result 三键恒发。
+  logsTailParams: [['bytes', 'absent']],
+  logsTailResult: [['path', 'string'], ['content', 'string'], ['truncated', ['=', true]]],
   // 派发。
   dispatchStartParams: [['owner_session_id', 'string'], ['session_id', 'string'], ['dispatch_id', 'string']],
   projectInstructionsResult: [['exists', ['=', true]], ['note', 'string']],

@@ -217,6 +217,19 @@
   color: var(--fg-faint, var(--fg-muted));
   font-style: normal;
 }
+/* 来源徽标：任务行标题旁的小 pill「助手」（ag-pill 同款密度：
+   9.5px/600/圆角小胶囊；颜色用助手紫 wash——--asst-accent 系只在
+   助手模式容器上生效，这里直接写同值，亮暗主题共用）。 */
+.assistant-src-pill {
+  flex: none;
+  font-size: 9.5px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 5px;
+  color: #7c3aed;
+  background: rgba(139, 92, 246, 0.14);
+}
 /* ===== 会话行结构：行内容 + 当前会话的分支展开条 ===== */
 .session-line {
   display: flex;

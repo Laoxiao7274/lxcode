@@ -228,3 +228,97 @@
   background: var(--fg);
   border-color: var(--fg);
 }
+
+/* ===== 日志分区（桌面错误日志查看器，2026-12） ===== */
+.ls-block {
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  padding: 10px 13px;
+  margin-bottom: 14px;
+  background: var(--bg-side);
+}
+.ls-block-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.ls-block-title {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+.ls-block-actions {
+  display: flex;
+  gap: 6px;
+}
+.ls-btn.fd-btn-g {
+  padding: 2px 9px;
+  font-size: 10.5px;
+  border-radius: 7px;
+}
+/* 日志尾：等宽 pre + 有界滚动（看日志永远是看最后发生了什么） */
+.ls-log {
+  max-height: 320px;
+  overflow-y: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--fg-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+}
+.ls-log-empty {
+  font-size: 11px;
+  color: var(--fg-faint);
+  padding: 6px 0;
+}
+.ls-note {
+  font-size: 10.5px;
+  color: var(--fg-faint);
+  margin-bottom: 6px;
+}
+.ls-path {
+  margin-top: 6px;
+  font-size: 10px;
+  color: var(--fg-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ls-err {
+  margin-top: 6px;
+  font-size: 10.5px;
+  color: var(--danger);
+}
+/* 操作错误历史：时间 + 消息一行一条（末条最新 = 提示条取的那条） */
+.ls-err-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.ls-err-item {
+  display: flex;
+  gap: 10px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border-soft);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.ls-err-item:last-child {
+  border-bottom: none;
+}
+.ls-err-at {
+  flex-shrink: 0;
+  color: var(--fg-faint);
+  font-size: 10.5px;
+  padding-top: 1px;
+}
+.ls-err-msg {
+  min-width: 0;
+  word-break: break-word;
+  color: var(--fg-muted);
+}

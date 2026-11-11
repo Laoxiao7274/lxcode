@@ -5,6 +5,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -16,9 +17,17 @@ const (
 	logKeep     = 3        // 保留 lxcode.log.1/.2/.3
 )
 
-// setupFileLogging 把标准 log 输出切到轮转文件。返回错误时（目录不可写）
-// 退回 stderr——服务形态下 stderr 无人看，但至少 SCM 事件日志里能留下
-// 启动失败痕迹。
+// currentLogPath 是当前日志文件的绝对路径（setupFileLogging 设置；空 =
+// 文件日志未初始化——logs.tail 用它判「日志不可用」，不猜路径）。
+// 包级变量的并发性：写只发生在 runServe 装配期（listen 之前），读发生在
+// 协议请求里——无竞争窗口，不需要锁。
+var currentLogPath string
+
+// setupFileLogging 把标准 log 输出切到轮转文件并**同时**回显 stderr
+//（io.MultiWriter——2026-12 错误日志查看器）：服务形态没有 stdout，
+// 文件是唯一落点；控制台/壳内直跑形态的 stderr 行为必须不变，MultiWriter
+// 让两处同时拿到同一条日志。返回错误时（目录不可写）退回 stderr——服务
+// 形态下 stderr 无人看，但至少 SCM 事件日志里能留下启动失败痕迹。
 func setupFileLogging(root string) error {
 	dir := filepath.Join(root, "logs")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -26,7 +35,8 @@ func setupFileLogging(root string) error {
 		return fmt.Errorf("创建日志目录 %s 失败: %w", dir, err)
 	}
 	w := &rotatingWriter{path: filepath.Join(dir, "lxcode.log")}
-	log.SetOutput(w)
+	log.SetOutput(io.MultiWriter(os.Stderr, w))
+	currentLogPath = w.path
 	return nil
 }
 

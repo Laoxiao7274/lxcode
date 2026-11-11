@@ -1525,12 +1525,14 @@ class RealBackend {
         phaseMessage = null
         reconnecting = false // 用户显式发起 = 不在自动重连态（成功或失败由 onState 重述）
         pairingInvalid = false // 手动 connect 重置配对失效态（重新配对后凭证已换）
+        // 连接层守卫：握手在途（connectingInFlight）时 connectOnce 跳过，不再
+        // 各发一次 newWebSocket 互相作废（旧路径里作废 hello 回调会反杀新连接）。
         client.connect(addr, token = token)
     }
 
     /** 断开（真实开关关闭）。 */
     fun disconnect() {
-        client.close()
+        client.disconnect() // 显式断开 = userClosed，不再自动重连
         phase = RealPhase.Offline
         phaseMessage = null
         reconnecting = false
@@ -1541,7 +1543,10 @@ class RealBackend {
      *  立即重连，不等自动重连的退避定时器。未进真实模式（从未连过）/已连接
      *  （守卫：回前台不拆活连接——connect 会 closeQuietly 重建，白扔一次握手）
      *  /配对已失效（401 后重连必再 401）时不动作。
-     *  走 [connect] 完整语义（重置 userClosed/退避 + newWebSocket 重建）。 */
+     *  走 [connect] 完整语义（重置 userClosed/退避 + newWebSocket 重建）。
+     *  连接层还有一道 connectingInFlight 守卫（握手在途时 connectOnce 跳过）：
+     *  这里的 phase 检查挡住 Connected/Offline，握手在途是 Connecting 之外的
+     *  Failed 态反复回调（自动重连尝试中），放行到连接层由 epoch 守卫裁决。 */
     fun reconnectIfDown() {
         if (phase == RealPhase.Offline || phase == RealPhase.Connected || pairingInvalid) return
         connect(addr, token)
@@ -1599,11 +1604,18 @@ class RealBackend {
         } else if (phase != RealPhase.Offline) {
             // 用户主动 disconnect 后的迟到回调不再标失败
             if (pairingInvalid) return // 401 后的补发失败回调不覆盖失效态
+            val wasConnected = phase == RealPhase.Connected
             phase = RealPhase.Failed
             phaseMessage = message
             // 自动重连已在后台排程（LxWsClient.scheduleReconnect）——UI 把
             // 「正在重连…」表达出来，用户不用去连接页手动重连。
-            reconnecting = true
+            // ** Connecting 阶段除外**：刚点开开关/重试的首次连接失败后，用户
+            // 看到的是失败态 + 重试按钮（显式 connect 已把 reconnecting 复位）；
+            // 若此刻置 reconnecting=true，横幅说「正在重连」而失败态把按钮顶掉，
+            // 用户没有任何可操作入口。只有「已连过又断了」（断线事件，此前是
+            // Connected）或本来就在自动重连态（断线后的后续尝试又失败）才是
+            // 自动重连语义。
+            if (wasConnected || reconnecting) reconnecting = true
         }
     }
 
@@ -1613,7 +1625,7 @@ class RealBackend {
         reconnecting = false
         phase = RealPhase.Failed
         phaseMessage = "配对已失效：请在电脑端重新生成配对码"
-        client.close() // 停掉自动重连排程（close = userClosed，不再 scheduleReconnect）
+        client.disconnect() // 显式断开 = userClosed，不再 scheduleReconnect
     }
 
     // ===== 对外操作 =====

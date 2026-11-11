@@ -1,7 +1,9 @@
 // updater.ts —— 自更新编排（AGENTS.md §2.1 的 zip 产物契约）：
 //   manifest.json {version,url,sha256,size,files{逐文件 sha256}}
 //   update-<version>.zip 内路径 = 安装目录相对路径（resources/app.asar、
-//   resources/bin/lxcode.exe）
+//   resources/bin/lxcode.exe、resources/app.asar.unpacked/**——asarUnpack 的
+//   原生模块等运行时依赖全量，用户拍板 2026-12：应用内更新必须自足；本文件的
+//   校验/暂存/替换链路全是相对路径语义，子目录文件天然支持，无需特判）
 // 更新链路（2026-12 重构拍板：**独立 bat 完成全部替换与拉起**）：
 //   下载校验 → 全部待换文件暂存到 update-pending/staged（与安装目录同构）
 //   → 生成 apply-update.bat（幂等自包含：等 PID 退出 → 原件挪 .old → 落位 →
@@ -334,7 +336,8 @@ async function applyUpdate(): Promise<{ ok: boolean; needsRestart: boolean }> {
   if (!app.isPackaged) throw new Error("开发形态不执行应用内更新（请手动拉取最新构建）");
 
   // 1) 组装替换计划。待换文件 = 暂存 payload 的全部文件（zip 内路径 = 安装目录
-  //    相对路径；通常为 resources/app.asar + resources/bin/lxcode.exe）。
+  //    相对路径；resources/app.asar + resources/bin/** + resources/app.asar.unpacked/**
+  //    ——asarUnpack 的原生模块全量在更新包里，子目录文件经 :deploy 的 mkdir 落位）。
   //    逐文件哈希以暂存清单为准（下载时已按它校验过 payload——同一哈希在
   //    bat 的 certutil 复核里再次把关，两级都过才收尾）。
   const manifest = stagedManifest;

@@ -82,7 +82,11 @@ export function useWorkspaceNav({ source, currentId }: { source: AgentSource; /*
       window.history.replaceState({ lxView: pushedViewRef.current }, "");
     } catch { /* 同上：没有历史就没有侧键，应用照常 */ }
     const onPop = (e: PopStateEvent) => {
-      const target = (e.state?.lxView as WorkspaceView | undefined) ?? "chat";
+      // 守卫（2026-12 侧键修复）：条目无 lxView 键 = 不是项目域写的（历史里还有
+      // 首屏前的裸条目 / 别的域写的条目）——不动项目域 state。原先把 undefined
+      // 回落成 "chat"，侧键/浏览器后退退到这种条目会触发隐藏分支上的视图重置。
+      if (!e.state || typeof e.state.lxView === "undefined") return;
+      const target = e.state.lxView as WorkspaceView;
       const cur = workspaceStateRef.current;
       if (cur.active === target) return;
       const next = focusHistoryView(cur, target);

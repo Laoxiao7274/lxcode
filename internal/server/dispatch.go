@@ -82,6 +82,11 @@ func (s *Server) dispatch(c *wsClient, req *protocol.Request) *protocol.Response
 		return resp
 	}
 
+	// logs.tail（后端日志尾——桌面错误日志查看器，未命中回落 unknown）
+	if resp := s.dispatchLogs(req, params); resp != nil {
+		return resp
+	}
+
 	// screen.*（投屏第一阶段：只看——方法域见 screen.go）
 	if resp := s.dispatchScreen(c, req, params); resp != nil {
 		return resp

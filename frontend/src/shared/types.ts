@@ -273,6 +273,30 @@ export interface JobAdminSource {
   readJobLog(id: string): Promise<JobLogResult>;
 }
 
+/** 后端日志尾（logs.tail——桌面错误日志查看器，2026-12）。content 是文件
+ *  尾部的字节（可能跨行截断，原样展示）；truncated = 文件比请求的字节数大
+ *  （读的只是尾部）；path 是当前日志文件路径（展示用）。 */
+export interface LogsTailResult {
+  path: string;
+  content: string;
+  truncated: boolean;
+}
+
+/** logs.tail 的请求参数（对齐 protocol.LogsTailParams）：bytes = 要读的尾部
+ *  字节数，0/缺省 = 后端缺省 16KB。 */
+export interface LogsTailParams {
+  bytes?: number;
+}
+
+/** LogsSource：后端日志查看（logs.tail 直通）。
+ *
+ * 与 JobAdminSource 同模式：UI 依赖能力接口而非具体 WSAgent；缺省（demo）
+ * 时设置面板「日志」分区回自解释文案（演示模式没有后端日志可看）。 */
+export interface LogsSource {
+  /** 读后端当前日志文件的尾部。bytes 缺省 = 16KB；失败向上抛（文案照后端）。 */
+  tail(bytes?: number): Promise<LogsTailResult>;
+}
+
 /** 附件引用（对齐 llm.AttachmentRef）：附件卡的展示元数据（实时事件与历史
  *  回放同一份）。path 是相对后端 attachments 根的路径，前端经
  *  /attachments/<path> 取内容（shared/attachments.ts 的 attachmentURL）。
@@ -821,6 +845,13 @@ export interface AgentSource {
   todoPromptAdmin?: TodoPromptSource;
   /** 后台任务（jobs）；两个实现都提供——顶栏面板与时间线卡片共用它。 */
   jobAdmin?: JobAdminSource;
+  /** 后端日志查看（logs.tail，桌面错误日志查看器 2026-12）；缺省（demo）时
+   *  设置面板「日志」分区回自解释文案（演示模式没有后端日志可看）。
+   *  两个实现都提供：WSAgent 转发 LogsAdmin 域；DemoAgent 实现自解释拒绝。 */
+  logsAdmin?: LogsSource;
+  /** 读后端日志尾（logs.tail 的顶层转发——与 jobAdmin 的 readJobLog 同款
+   *  双路访问形态）。缺省（demo 无后端日志）= undefined。 */
+  tail?(bytes?: number): Promise<LogsTailResult>;
   /** 助手域（assistant.* 方法域，助手模式 P1）；缺省时助手页签显示"当前源不支持"。
    *  DemoAgent 也实现（演示模式无后端也要能全量跑助手页签）。 */
   assistant?: AssistantSource;

@@ -148,17 +148,23 @@ if (!app.requestSingleInstanceLock()) {
     });
     win.once("ready-to-show", () => win?.show());
 
-    // 鼠标侧键（Windows WM_APPCOMMAND）→ 页面浏览器历史。Electron 把侧键转成
+    // 鼠标侧键（Windows WM_APPCOMMAND）→ 页面导航。Electron 把侧键转成
     // app-command 事件后**不做默认导航**；且它的 navigationHistory/goBack **不包含
     // pushState 的同文档条目**（electron#24899：webContents 栈与页面栈是两套，
     // 实测 canGoBack=false 而 CDP 的 Page.getNavigationHistory 满条目）——所以
-    // 直接在页面里调 history.back()/forward()：同文档遍历触发 popstate，App 把
-    // 工作区视图落回来（App.tsx 的 History API 接线）。页面里调用本身是安全的：
-    // 退到首条是 no-op，无需 canGo 判定。
+    // 项目域在页面里调 history.back()/forward()：同文档遍历触发 popstate，App 把
+    // 工作区视图落回来（use-workspace-nav 的 History API 接线）。
+    // **探针优先（2026-12 侧键修复）**：助手域是纯 useState 导航、从不写历史，
+    // history.back() 会消费项目模式遗留的旧条目、改到隐藏分支的 state。页面挂
+    // __lxNavBack/__lxNavForward 探针（AssistantWorkspace 在助手模式可见时注册，
+    // 卸载/切走注销）——探针存在优先调用（助手域接管），不存在回落 history
+    // （项目域/首屏）。可选链在注入串里手写 `?` 不行——executeJavaScript 的
+    // 目标页面是 JS，直接写即可。
     win.on("app-command", (_e, cmd) => {
       if (cmd !== "browser-backward" && cmd !== "browser-forward") return;
+      const probe = cmd === "browser-backward" ? "__lxNavBack" : "__lxNavForward";
       void win?.webContents
-        .executeJavaScript(`history.${cmd === "browser-backward" ? "back" : "forward"}()`)
+        .executeJavaScript(`(window.${probe}?.() ?? history.${cmd === "browser-backward" ? "back" : "forward"}())`)
         .catch(() => { /* 页面正在跳转/销毁时注入失败无害 */ });
     });
 

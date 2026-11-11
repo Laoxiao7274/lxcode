@@ -28,6 +28,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentSource, SessionMeta } from "../../shared/types";
 import type { UIState } from "../../shared/store";
+import type { AppMode } from "../../shared/app-mode";
 import { childTabSession, type WorkspaceView } from "../../shared/workspace-tabs";
 import { readLastAssistantSession, writeLastAssistantSession } from "../../shared/app-mode";
 import { takeAssistantChildPref } from "./assistant-child-pref";
@@ -50,6 +51,7 @@ export function AssistantWorkspace({
   childParents,
   reportError,
   onOpenSettings,
+  mode,
 }: {
   source: AgentSource;
   /** 助手域 states（store 双投——assistant.* 事件的归约目标）。 */
@@ -61,6 +63,9 @@ export function AssistantWorkspace({
   reportError: (message: string) => void;
   /** 侧栏底部设置行（主域 Sidebar 同款入口——SettingsPanel 由 App 持有）。 */
   onOpenSettings: () => void;
+  /** 顶层模式（App 的 appMode 直传）：本组件保活常驻、不随模式卸载，侧键探针
+   *  的注册/注销不能以挂载为准——以「助手模式可见」为准（mode === "assistant"）。 */
+  mode: AppMode;
 }) {
   const assistant = source.assistant;
   /** 当前助手会话 id（"" 起始 = 中性态「未选择」；进入助手模式恢复上次会话
@@ -160,6 +165,80 @@ export function AssistantWorkspace({
     setChildViewId(null);
     setSecondaryView(null);
   }, [knownTick]);
+
+  // ---- 鼠标侧键（2026-12 修复）：助手域导航探针 ----
+  // 助手域是纯 useState 导航、从不写浏览器历史——壳层的侧键注入默认走
+  // history.back()，消费的是项目模式遗留条目、改到隐藏分支的 state。壳层已改为
+  // 探针优先（main.ts：window.__lxNavBack?.() ?? history.back()），本组件在
+  // **助手模式可见时**注册探针、切走时注销（保活常驻：不能挂载/卸载判——组件
+  // 不知道自身显隐，由 App 传 mode 进来——见 props 注释）。
+  //
+  // back 语义（从最深到最浅）：子会话临时视图 → 关它；二级视图（拓展/助手配置）
+  // → 关它；否则回上一会话（prevAssistantSessionRef 记忆，若有）→ 否则回会话
+  // 列表（sessionId 清空 = 中性态）。forward 最小实现：只在 back 刚离开的会话
+  // 记忆里对称恢复，无栈则 no-op（与项目域 forward 只能沿浏览器栈对称是同一取舍）。
+  // 设计要点：只在**可见**时注册，两个模式不会同时接管——项目域的 popstate 路径
+  // 在助手模式里永远不会被侧键命中（壳层先查探针）。
+  const prevAssistantSessionRef = useRef("");
+  const lastLeftAssistantSessionRef = useRef("");
+  // 上一落点记忆：sessionId 变化时把旧值记进 prevAssistantSessionRef（侧键 back
+  // 的「回上一落点」依据；空串 = 上一落点是会话列表——back 回中性态）。effect
+  // 每渲染比对——与 App 的 prevFocusedRef 同款纪律。探针 back 分支里先手工对齐
+  // prevTrackedRef 再切落点（防本 effect 把刚离开的会话又记成 prev——那样反复
+  // 按侧键会在两会话之间弹跳而不是逐级回退）。
+  const prevTrackedRef = useRef(sessionId);
+  useEffect(() => {
+    if (prevTrackedRef.current !== sessionId) {
+      prevAssistantSessionRef.current = prevTrackedRef.current;
+      prevTrackedRef.current = sessionId;
+    }
+  });
+
+  // ---- 鼠标侧键（2026-12 修复）：助手域导航探针 ----
+  // 助手域是纯 useState 导航、从不写浏览器历史——壳层的侧键注入默认走
+  // history.back()，消费的是项目模式遗留条目、改到隐藏分支的 state。壳层已改为
+  // 探针优先（main.ts：window.__lxNavBack?.() ?? history.back()），本组件在
+  // **助手模式可见时**注册探针、切走时注销（保活常驻：不能挂载/卸载判——组件
+  // 不知道自身显隐，由 App 传 mode 进来——见 props 注释）。
+  //
+  // back 语义（从最深到最浅）：子会话临时视图 → 关它；二级视图（拓展/助手配置）
+  // → 关它；否则回上一落点（prevAssistantSessionRef——空串 = 回会话列表中性态）。
+  // forward 最小实现：只在 back 刚离开的会话记忆里对称恢复，无栈则 no-op（与
+  // 项目域 forward 只能沿浏览器栈对称是同一取舍）。
+  // 设计要点：只在**可见**时注册，两个模式不会同时接管——项目域的 popstate 路径
+  // 在助手模式里永远不会被侧键命中（壳层先查探针）。
+  useEffect(() => {
+    if (mode !== "assistant") return;
+    window.__lxNavBack = () => {
+      if (childViewId !== null) { setChildViewId(null); return; }
+      if (secondaryView !== null) { setSecondaryView(null); return; }
+      if (sessionId) {
+        const prev = prevAssistantSessionRef.current;
+        // forward 依据 + 手工对齐 prevTrackedRef（见上方 effect 注释），再切落点。
+        lastLeftAssistantSessionRef.current = sessionId;
+        prevTrackedRef.current = prev;
+        prevAssistantSessionRef.current = "";
+        if (prev) {
+          handleSelect(prev);
+        } else {
+          // 回会话列表（中性态）：不写 lastAssistantSession 记忆——那是「上次
+          // 在哪个会话」的记忆，重进助手模式恢复的还是它；这里只是视图退回列表。
+          setSessionId("");
+        }
+      }
+      // 已在中性态：无可后退（no-op——不碰项目域历史）。
+    };
+    window.__lxNavForward = () => {
+      const left = lastLeftAssistantSessionRef.current;
+      if (!left || left === sessionId) return;
+      lastLeftAssistantSessionRef.current = "";
+      handleSelect(left);
+    };
+    return () => {
+      delete window.__lxNavBack;
+      delete window.__lxNavForward;
+    };
+  }, [mode, childViewId, secondaryView, sessionId, handleSelect]);
 
   const handleNewSession = useCallback(async () => {
     if (!assistant) return;

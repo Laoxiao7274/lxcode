@@ -7,3 +7,11 @@
 interface ImportMetaEnv {
   readonly VITE_BACKEND_PORT?: string;
 }
+
+/** 壳层侧键探针（2026-12 侧键修复）：AssistantWorkspace 在助手模式可见时注册、
+ *  切走注销；壳层 app-command（shell/src/main.ts）探针优先调用、回落 history。
+ *  项目域不注册——它的侧键走浏览器历史 + popstate 原生路径。 */
+interface Window {
+  __lxNavBack?: () => void;
+  __lxNavForward?: () => void;
+}

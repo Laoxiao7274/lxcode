@@ -31,6 +31,9 @@ export function SearchIcon({ size = 15 }: IconProps) {
 export function LinkIcon({ size = 15 }: IconProps) {
   return <svg {...base(size)}><path d="M9 17H7A5 5 0 0 1 7 7h2" /><path d="M15 7h2a5 5 0 1 1 0 10h-2" /><path d="M8 12h8" /></svg>;
 }
+export function LogIcon({ size = 15 }: IconProps) {
+  return <svg {...base(size)}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6" /><path d="M9 13h6" /><path d="M9 17h6" /><path d="M9 9h.01" /></svg>;
+}
 export function CubeIcon({ size = 15 }: IconProps) {
   return <svg {...base(size)}><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" /><path d="m3.3 7 8.7 5 8.7-5" /><path d="M12 22V12" /></svg>;
 }

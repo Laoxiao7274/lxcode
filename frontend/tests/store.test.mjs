@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { reduce, reduceSessionStates, pendingConfirmIds, allowAllPendingConfirms, resolveConfirmEverywhere, checkpointBody } from '../src/shared/store.ts';
+import { reduce, reduceSessionStates, pendingConfirmIds, allowAllPendingConfirms, resolveConfirmEverywhere, checkpointBody, pushOperationError, OPERATION_ERRORS_MAX, handleAgentEvent } from '../src/shared/store.ts';
 import { timelineOf } from '../src/shared/blocks.ts';
 const state = { blocks: [{ kind: 'assistant', uid: 1, content: 'partial', reasoning: '', streaming: true }], busy: true, pending: { id: 'c' }, todos: [{ content: 'work', status: 'active' }], currentId: 's1', operationError: null, context: null };
 test('会话列表变化不改变任何 Session 的运行态', () => {
@@ -369,3 +369,46 @@ test('切完全访问：本会话所有未裁决确认定格为已允许（含�
   assert.equal(allowAllPendingConfirms(all, 'nope'), all);
 });
 
+
+// ---------- operationErrors 环形缓冲（桌面错误日志查看器，2026-12） ----------
+
+test('pushOperationError 追加带时间戳；超 50 条丢最旧（末条永远最新）', () => {
+  let buf = pushOperationError([], '第一条');
+  assert.equal(buf.length, 1);
+  assert.equal(buf[0].message, '第一条');
+  assert.match(buf[0].at, /^\d{4}-\d{2}-\d{2}T/, '时间戳是 ISO 形态');
+  for (let i = 0; i < OPERATION_ERRORS_MAX + 10; i++) {
+    buf = pushOperationError(buf, `错误-${i}`);
+  }
+  assert.equal(buf.length, OPERATION_ERRORS_MAX, '环形缓冲不超过 50 条');
+  assert.equal(buf.at(-1).message, `错误-${OPERATION_ERRORS_MAX + 9}`, '末条最新');
+  assert.equal(buf[0].message, '错误-10', '最旧的被丢弃');
+});
+
+test('事件侧 operationError 走 setOperationError（缓冲在 controller 里追加）', () => {
+  // 手搭一个最小 controller（与 store.test 其他用例的可变对象直填同款）——
+  // 驱动真实现 handleAgentEvent，验证事件侧写点确实收敛到 setOperationError。
+  const errors = [];
+  const c = {
+    getCurrentId: () => 's1',
+    getSessionStates: () => ({}),
+    getAssistantStates: () => ({}),
+    getChildLinks: () => ({ childParents: {}, dispatchChild: {} }),
+    getSendQueues: () => ({}),
+    getPrevBusy: () => ({}),
+    setCurrentId: () => {},
+    setSessionStates: () => {},
+    setAssistantStates: () => {},
+    setOperationError: (message) => errors.push(message),
+    bumpRevision: () => {},
+    setChildLinks: () => {},
+    setSendQueues: () => {},
+    setPrevBusy: () => {},
+    autoSend: () => {},
+    sendFailed: () => {},
+    reset: () => {},
+  };
+  handleAgentEvent({ type: 'operationError', message: '发送失败: busy' }, c);
+  handleAgentEvent({ type: 'operationError', message: '连接断开' }, c);
+  assert.deepEqual(errors, ['发送失败: busy', '连接断开'], '事件侧逐条进缓冲');
+});

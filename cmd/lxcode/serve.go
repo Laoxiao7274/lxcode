@@ -73,6 +73,10 @@ func runServe(ctx context.Context, path, addr, sessionsDir string) error {
 	if err := os.MkdirAll(assistantDir, 0o755); err != nil {
 		return fmt.Errorf("助手工作目录创建失败: %w", err)
 	}
+	// 日志路径注入（logs.tail——桌面错误日志查看器，2026-12）：setupFileLogging
+	// 在 main/service 两处装配期已把路径记进包级变量，这里带给服务端。控制台
+	// /壳内直跑形态同样落盘（io.MultiWriter），所以三种形态都有路径可报；
+	// 日志初始化失败（目录不可写）时路径为空——logs.tail 回「日志不可用」。
 	// 空注册表不拒绝启动（服务形态崩溃重启循环比明确报错更糟）：
 	// 记警告，chat.send 会按请求返回 CodeNoDefaultModel。
 	if len(reg.List()) == 0 {
@@ -82,6 +86,7 @@ func runServe(ctx context.Context, path, addr, sessionsDir string) error {
 
 	srv := server.NewServer(reg)
 	srv.SetAssistantWorkDir(assistantDir)
+	srv.SetLogPath(currentLogPath)
 	st, err := store.Open(sessionsDir)
 	if err != nil {
 		return fmt.Errorf("会话存储初始化失败: %w", err)

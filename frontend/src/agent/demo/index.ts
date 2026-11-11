@@ -1,7 +1,7 @@
 // 演示数据源（M3 叙事）：主 Agent 只调度——思考选人 → agent_dispatch →
 // dispatch 卡（子 Agent 全套执行：思考/读码/改码/确认门/跑测试）→ 验收
 // 汇总。覆盖 UI 全部状态。事件形状与后端协议 1:1——接线换 WSAgent 即可。
-import type { AgentEvent, AgentSource, ApprovalMode, ArchiveOutcome, AssistantConfig, AssistantSource, ChatSendImage, ChatTreeResult, CompactOutcome, ConfirmRequest, ContextUsage, GitOverview, HistoryMessage, HistorySnapshot, JobAdminSource, JobInfo, JobLogResult, ProjectInstructions, ProjectMeta, RewindOutcome, SendOptions, SessionMeta, SessionStats, SetLeafOutcome, TodoItem, TreeNode } from "../../shared/types";
+import type { AgentEvent, AgentSource, ApprovalMode, ArchiveOutcome, AssistantConfig, AssistantSource, ChatSendImage, ChatTreeResult, CompactOutcome, ConfirmRequest, ContextUsage, GitOverview, HistoryMessage, HistorySnapshot, JobAdminSource, JobInfo, JobLogResult, LogsSource, LogsTailResult, ProjectInstructions, ProjectMeta, RewindOutcome, SendOptions, SessionMeta, SessionStats, SetLeafOutcome, TodoItem, TreeNode } from "../../shared/types";
 import { JOB_NOTICE_PREFIX, sortJobs, upsertJob } from "../../shared/jobs";
 import { normalizeApproval } from "../../shared/approval";
 import { MAIN_REASONING, SUB_REASONING, SUB_RESULT, MAIN_ANSWER, TODO_INITIAL, TODO_LATER, DISPATCH_TODOS, DISPATCH_TODOS_RUNNING, DISPATCH_TODOS_FINAL, FILES_CHANGED, SESSIONS } from "./data";
@@ -71,9 +71,16 @@ function demoStats(prev: SessionStats | undefined, usage: number, llmMs: number,
   };
 }
 
-export class DemoAgent implements AgentSource, JobAdminSource {
+export class DemoAgent implements AgentSource, JobAdminSource, LogsSource {
   label = "演示模式";
   readonly jobAdmin: JobAdminSource = this;
+  /** 后端日志查看（logs.tail）：演示模式没有后端日志可看——tail 回明确文案，
+   *  设置面板「日志」分区原样展示（与真后端「日志不可用」同语义）。 */
+  readonly logsAdmin: LogsSource = {
+    tail: () => Promise.reject(new Error("演示模式没有后端日志可看")),
+  };
+  /** logs.tail 的顶层转发（AgentSource.tail——WSAgent 同款双路访问形态）。 */
+  tail(): Promise<LogsTailResult> { return this.logsAdmin.tail(); }
   /** 助手域（assistant.*，助手模式 P1）：最小演示实现（一个示例会话 + 固定回复）。 */
   readonly assistant: AssistantSource = {
     list: () => this.assistantList(),

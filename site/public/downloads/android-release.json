@@ -1,12 +1,12 @@
 {
-  "version": "0.3.48",
-  "versionCode": 50,
-  "name": "lxcode-0.3.48-android.apk",
-  "size": 12043598,
-  "sha256": "d1a2af9357e70abcfe3580cc7df32ee3dad7e0439a7a80b15fdf247251938251",
-  "url": "downloads/lxcode-0.3.48-android.apk",
+  "version": "0.3.49",
+  "versionCode": 51,
+  "name": "lxcode-0.3.49-android.apk",
+  "size": 12043596,
+  "sha256": "afef55998b9efab1319702414adf0149f1bf5a4f9840c440a57e21c5f93394bb",
+  "url": "downloads/lxcode-0.3.49-android.apk",
   "notes": [
-    "修复含行内代码的文本与表格单元格不显示——MdText 绘制接管遗漏 drawContent()",
-    "修复表格空白：同一根因，补绘制后整段恢复渲染"
+    "自动重连根治：超时/并发场景不再烙死重连，断线后自动恢复",
+    "重连横幅对齐真实状态（连接中/已恢复/失败不再误报）"
   ]
 }

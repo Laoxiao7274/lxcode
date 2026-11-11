@@ -33,6 +33,15 @@ test('子轮不弹（dispatchId 非空——dispatch 卡不是"你的对话完�
   assert.equal(shouldNotify(childDone, false, true), false);
 });
 
+test('tool_calls 轮不弹（中间轮——主 Agent 发起派发的那轮没有 dispatchId，只滤 dispatchId 会误弹）', () => {
+  const midTurn = { type: 'done', sessionId: 's1', usageTokens: 1, finishReason: 'tool_calls', content: '' };
+  assert.equal(shouldNotify(midTurn, false, true), false);
+});
+
+test('stop 轮照常弹（派发收尾后的最终轮——runTools 阻塞语义保证 stop 到达时派发已收尾）', () => {
+  assert.equal(shouldNotify(mainDone, false, true), true);
+});
+
 test('开关关不弹', () => {
   assert.equal(shouldNotify(mainDone, false, false), false);
 });

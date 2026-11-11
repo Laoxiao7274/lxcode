@@ -423,8 +423,11 @@ fun BackendDownBar(
                 color = Lx.colors.Danger,
                 modifier = Modifier.weight(1f),
             )
+            // 「重试」而非「立即重连」：down 且非 reconnecting = 刚发起的首次
+            // 连接失败（Connecting→Failed，用户显式动作的收尾），不是自动重连
+            // 在跑——按钮与失败态语义一致（用户主动重试），不暗示后台有动作。
             LxButton(
-                text = "立即重连",
+                text = "重试",
                 onClick = onRetry,
                 variant = LxButtonVariant.Secondary,
                 size = LxButtonSize.Small,

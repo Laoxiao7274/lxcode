@@ -64,7 +64,7 @@ const renderSidebar = (sessions, projects, extra = {}) => renderToStaticMarkup(
 test('① 助手域能力缺席 / 未分组 / 无任务：小节不渲染（空分组不显示）', () => {
   const html = renderSidebar([meta('a')], [{ id: 'p1', name: '项目一', path: '/p1' }]);
   assert.ok(!html.includes('assistant-tasks-head'), '助手域能力缺席（source.assistant 为空）不渲染小节');
-  assert.ok(!html.includes('来自助手'), '不出现「来自助手」标题');
+  assert.ok(!html.includes('assistant-tasks-label'), '不出现「助手」分节标题');
 });
 
 // ---------- ② 接线钉子（源码文本） ----------
@@ -86,6 +86,16 @@ test('② Sidebar：小节数据源 = source.assistant.tasks(filter)，行点击
   assert.ok(!/resumeSession|loadHistory|childHistory/.test(seg), '小节行不接历史装载（域纪律）');
   // 未分组不拉取（LOOSE 分支显式清空）
   assert.match(sidebarSrc, /filter === LOOSE \|\| filter === ""/, '未分组不拉 assistant.tasks');
+});
+
+test('② 小节标题缩短为「助手」+ 行内来源徽标 assistant-src-pill（2026-12 侧栏区分）', () => {
+  const section = sidebarSrc.slice(sidebarSrc.indexOf('assistantTasks.length > 0'));
+  const end = section.indexOf('sess-scroll');
+  const seg = section.slice(0, end);
+  assert.ok(seg.includes('>助手<'), '分节标题文案 =「助手」（与「对话」同密度）');
+  assert.ok(!seg.includes('>来自助手<'), '不再用「来自助手」长标题（aria 语义文案不受限）');
+  assert.match(seg, /assistant-src-pill/, '任务行带来源徽标 pill');
+  assert.ok(seg.indexOf('assistant-src-pill') > seg.indexOf('className="title"'), 'pill 在标题之后（行内标题旁）');
 });
 
 test('② App：onOpenAssistantChild = setAssistantChildPref 先落 + handleModeChange 后切（顺序不能反）', () => {

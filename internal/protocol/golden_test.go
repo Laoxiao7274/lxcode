@@ -389,6 +389,12 @@ func goldenSamples() map[string]goldenSample {
 		}},
 		"jobLogResult": {"JobLogResult", JobLogResult{Data: "…全量日志…", Truncated: true}},
 
+		// ---- 后端日志（logs.tail——桌面错误日志查看器，2026-12）----
+
+		"logsTailParams":    {"LogsTailParams", LogsTailParams{Bytes: 32768}},
+		"logsTailParamsMin": {"LogsTailParams", LogsTailParams{}},
+		"logsTailResult":    {"LogsTailResult", LogsTailResult{Path: "C:\\ProgramData\\lxcode\\logs\\lxcode.log", Content: "2026-12-08 10:00:00 会话存储初始化完成\n2026-12-08 10:00:01 警告: 模型 m1 端点不可达\n", Truncated: true}},
+
 		// ---- 子会话派发（chat 域）----
 
 		"dispatchStartParams": {"", DispatchStartParams{

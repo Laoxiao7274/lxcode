@@ -7,7 +7,8 @@ import { initUiFont, UI_FONTS, FONT_SCALES } from "../../shared/ui-fonts";
 import { useSettings, EFFORTS, APPROVALS } from "../../shared/settings";
 import { approvalPick } from "../../shared/approval";
 import { Button, Segmented } from "../form";
-import type { AgentSource, ApprovalMode, SessionMeta, TodoPromptMode } from "../../shared/types";
+import type { AgentSource, ApprovalMode, LogsTailResult, SessionMeta, TodoPromptMode } from "../../shared/types";
+import type { OperationErrorEntry } from "../../shared/store";
 import { motionAllowed, staggerIn, enterEase } from "../../shared/motion";
 import { useEscape } from "../../shared/popover";
 import { ApprovalConfirmDialog } from "../perm-picker/ApprovalConfirmDialog";
@@ -15,17 +16,19 @@ import { ConnectProviderDialog } from "./ConnectProviderDialog";
 import { ModelEditDialog } from "./ModelEditDialog";
 import { ProviderBlock } from "./ProviderBlock";
 import { SearchSection } from "./SearchSection";
+import { LogsSection } from "./LogsSection";
 import { UpdateBlock } from "./UpdateBlock";
 import { Section, SegRow, SelectRow, ToggleRow, ValueRow } from "./rows";
-import { CubeIcon, GearIcon, SearchIcon, SunIcon } from "./icons";
+import { CubeIcon, GearIcon, LogIcon, SearchIcon, SunIcon } from "./icons";
 
-type SectionId = "general" | "appearance" | "models" | "search";
+type SectionId = "general" | "appearance" | "models" | "search" | "logs";
 
 const SECTIONS: { id: SectionId; label: string; icon: ReactElement }[] = [
   { id: "general", label: "通用", icon: <GearIcon /> },
   { id: "appearance", label: "外观", icon: <SunIcon /> },
   { id: "models", label: "模型", icon: <CubeIcon /> },
   { id: "search", label: "网页搜索", icon: <SearchIcon /> },
+  { id: "logs", label: "日志", icon: <LogIcon /> },
 ];
 
 /** 任务清单模板三档（后端 behavior.json 的 todoPrompt——内置模板，不靠模型
@@ -36,7 +39,7 @@ const TODO_PROMPT_MODES: { value: TodoPromptMode; label: string; hint: string }[
   { value: "off", label: "关闭", hint: "不注入清单指令，模型自行决定是否使用 todo" },
 ];
 
-export function SettingsPanel({ open, onClose, source }: { open: boolean; onClose: () => void; source: AgentSource }) {
+export function SettingsPanel({ open, onClose, source, operationErrors }: { open: boolean; onClose: () => void; source: AgentSource; operationErrors: OperationErrorEntry[] }) {
   const { settings, set, providers, error } = useSettings();
   const [section, setSection] = useState<SectionId>("general");
   const [connectOpen, setConnectOpen] = useState(false);
@@ -242,6 +245,7 @@ export function SettingsPanel({ open, onClose, source }: { open: boolean; onClos
             )}
 
             {section === "search" && <SearchSection />}
+            {section === "logs" && <LogsSection operationErrors={operationErrors} tail={source.tail} />}
           </div>
         </div>
       </div>

@@ -122,6 +122,11 @@ type Server struct {
 	// 投屏（internal/protocol/screen.go + screen_shell.go）：壳侧捕屏服务的
 	// 后端端（命令轮询 + 推流）。NewServer 时装配，恒非 nil。
 	shell *screenShell
+
+	// 后端日志路径（logs.tail——桌面错误日志查看器，2026-12）：runServe 装配期
+	// 经 SetLogPath 注入；空 = 文件日志未启用（logs.tail 回明确错误，不猜路径）。
+	logMu   sync.RWMutex
+	logPath string
 }
 
 // runtimeBuildSpan 仅供测试观测「运行时构建」的真实并发度（性能审计钉子：

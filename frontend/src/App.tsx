@@ -116,7 +116,7 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
   /** 右侧「已发送消息」大纲的开合：**纯 UI 状态**（不进会话历史、不落库、切会话不
    *  清——它只是当前窗口的查看方式）。 */
   const [outlineOpen, setOutlineOpen] = useState(true);
-  const { state, sessionStates, assistantStates, childParents, sendQueues, send, resolve, resolveAssistant, clearError, reportError, enqueueSend, removeQueuedSend, moveQueuedToFront } = useAgent(source, {
+  const { state, sessionStates, assistantStates, childParents, sendQueues, send, resolve, resolveAssistant, operationErrors, clearError, reportError, enqueueSend, removeQueuedSend, moveQueuedToFront } = useAgent(source, {
     onAutoSend: (sessionId, text, atts) => autoSendBridgeRef.current(sessionId, text, atts),
     onSendFailed: (sessionId, atts) => onSendFailedBridgeRef.current(sessionId, atts),
   });
@@ -663,6 +663,7 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
           childParents={childParents}
           reportError={reportError}
           onOpenSettings={openSettings}
+          mode={appMode}
         />
       </div>
       <div className="app-mode-branch" hidden={appMode !== "project"} style={{ display: "contents" }}>
@@ -704,7 +705,7 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
           renderView={renderView}
         />
       </div>
-      <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} source={source} />
+      <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} source={source} operationErrors={operationErrors} />
     </div>
   );
 

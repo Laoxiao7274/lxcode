@@ -726,6 +726,24 @@
       "truncated": true
     }
   },
+  "logsTailParams": {
+    "_type": "LogsTailParams",
+    "value": {
+      "bytes": 32768
+    }
+  },
+  "logsTailParamsMin": {
+    "_type": "LogsTailParams",
+    "value": {}
+  },
+  "logsTailResult": {
+    "_type": "LogsTailResult",
+    "value": {
+      "path": "C:\\ProgramData\\lxcode\\logs\\lxcode.log",
+      "content": "2026-12-08 10:00:00 会话存储初始化完成\n2026-12-08 10:00:01 警告: 模型 m1 端点不可达\n",
+      "truncated": true
+    }
+  },
   "mcServerEntry": {
     "_type": "AgentAdminMcServer",
     "value": {

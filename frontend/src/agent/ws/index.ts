@@ -14,7 +14,7 @@
 import type {
   AgentAdminEntry, AgentAdminMcServer, AgentAdminModule, AgentAdminSource, AgentAdminTool, AgentEvent, AgentSource,
   ApprovalMode, ArchiveOutcome, AssistantSource, CatalogModelList, CatalogProviderList, ChatTreeResult, CompactOutcome, DiscoverResult,
-  FileRestoreResult, GitOverview, HistorySnapshot, JobAdminSource, JobInfo, JobLogResult, ModelAdminSource, ModelEntry,
+  FileRestoreResult, GitOverview, HistorySnapshot, JobAdminSource, JobInfo, JobLogResult, LogsSource, LogsTailResult, ModelAdminSource, ModelEntry,
   ProjectInstructions, ProjectMeta, RewindOutcome, SearchAdminSource, SearchChannel, SearchChannelsSnapshot,
   SearchTestResult, SendAttachments, SendOptions, SessionMeta, SetLeafOutcome, TodoItem, TodoPromptMode,
   TodoPromptSource,
@@ -28,6 +28,7 @@ import { ModelAdmin } from "./model-admin";
 import { AgentAdminDomain } from "./agent-admin";
 import { SearchAdmin } from "./search-admin";
 import { JobAdminDomain } from "./job-admin";
+import { LogsAdmin } from "./logs-admin";
 import { TodoPrompt } from "./todo-prompt";
 import { AssistantDomain } from "./assistant";
 import { treeFromWire } from "./tree";
@@ -40,13 +41,15 @@ export { wsURL } from "./connection";
  *  马上有别的来源动叶」的正常重拉吞掉。 */
 const REWIND_ECHO_WINDOW_MS = 5000;
 
-export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource, SearchAdminSource, JobAdminSource, TodoPromptSource {
+export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource, SearchAdminSource, JobAdminSource, TodoPromptSource, LogsSource {
   label = "真实后端";
   readonly modelAdmin: ModelAdminSource;
   readonly agentAdmin: AgentAdminSource;
   readonly searchAdmin: SearchAdminSource;
   readonly jobAdmin: JobAdminSource;
   readonly todoPromptAdmin: TodoPromptSource;
+  /** 后端日志查看（logs.tail）——AgentSource.logsAdmin 的实现（无状态直通）。 */
+  readonly logsAdmin: LogsSource;
   /** 助手域（assistant.*，助手模式 P1）——AgentSource.assistant 的实现。 */
   readonly assistant: AssistantSource;
   // 管理域转发（implements 六接口——成员在域对象上，这里逐个转发以满足接口
@@ -89,6 +92,7 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
   listJobs(...a: Parameters<JobAdminSource["listJobs"]>): Promise<JobInfo[]> { return this.jobAdmin.listJobs(...a); }
   killJob(...a: Parameters<JobAdminSource["killJob"]>): Promise<JobInfo> { return this.jobAdmin.killJob(...a); }
   readJobLog(...a: Parameters<JobAdminSource["readJobLog"]>): Promise<JobLogResult> { return this.jobAdmin.readJobLog(...a); }
+  tail(...a: Parameters<LogsSource["tail"]>): Promise<LogsTailResult> { return this.logsAdmin.tail(...a); }
   mode(): ReturnType<TodoPromptSource["mode"]> { return this.todoPromptAdmin.mode(); }
   onChange(l: Parameters<TodoPromptSource["onChange"]>[0]): () => void { return this.todoPromptAdmin.onChange(l); }
   set(...a: Parameters<TodoPromptSource["set"]>): Promise<void> { return this.todoPromptAdmin.set(...a); }
@@ -114,6 +118,7 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
     this.agentAdmin = new AgentAdminDomain(this.conn);
     this.searchAdmin = new SearchAdmin(this.conn);
     this.jobAdmin = new JobAdminDomain(this.conn);
+    this.logsAdmin = new LogsAdmin(this.conn);
     this.todoPromptAdmin = new TodoPrompt(this.conn);
     this.assistant = new AssistantDomain(this.conn, (ev) => this.emit(ev), (m) => this.opError(m));
     this.wireAgentSourceSideEffects();

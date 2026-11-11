@@ -540,7 +540,7 @@ export const Sidebar = memo(function Sidebar({
       {assistantTasks.length > 0 && (
         <div className={ASSISTANT_SECTION_HEAD}>
           <div className="sidebar-label group-head assistant-tasks-label">
-            来自助手
+            助手
             <span className="group-actions" aria-hidden>
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
                 <circle cx="12" cy="12" r="9" />
@@ -562,6 +562,9 @@ export const Sidebar = memo(function Sidebar({
               <div className="session-line">
                 <span className={"s-dot" + (t.running ? " live" : "")} aria-hidden />
                 <span className="title">{t.title}</span>
+                {/* 来源徽标：标题旁小 pill「助手」（助手紫 wash——与助手模式
+                    识别色同源；aria 已在行级 label 里说明来源，pill 冗余不读）。 */}
+                <span className="assistant-src-pill" aria-hidden>助手</span>
                 {t.running && <span className="mset-spinner session-spinner" aria-hidden />}
                 <span className="time">{t.updatedAt}</span>
               </div>

@@ -5,7 +5,8 @@
 //      3. stage：frontend/dist → shell/renderer（electron-builder files 源）
 //      4. 壳主进程 esbuild → shell/dist/main.js
 //      5. electron-builder → NSIS one-click per-user + 签名（shell/release/）
-//      6. 更新制品：update-<version>.zip（app.asar + 后端 exe）+ manifest.json
+//      6. 更新制品：update-<version>.zip（app.asar + 后端 exe + app.asar.unpacked
+//         全树——原生模块等运行时依赖，用户拍板：应用内更新必须自足）+ manifest.json
 //         （--mac 在 mac 上额外产出 update-mac-<version>.zip + manifest-mac.json，
 //         平台契约见 makeUpdateArtifacts 与 shell/src/update-platform.ts）
 //
@@ -14,7 +15,8 @@
 // manifest——三方（安装包/二进制/更新清单）永远同源。
 //
 // 更新包约定（客户端更新器已实现——shell/src/updater.ts）：
-//   zip 内路径 = 安装目录相对路径（resources/app.asar、resources/bin/lxcode.exe）
+//   zip 内路径 = 安装目录相对路径（resources/app.asar、resources/bin/lxcode.exe、
+//   resources/app.asar.unpacked/**——asarUnpack 的原生模块等全量，见步骤 6 注释）
 //   manifest   = {version, url, sha256(zip), size, files{逐文件 sha256}}
 //   Electron/Chromium 升级不走 zip（发全量安装包）。
 //
@@ -110,6 +112,18 @@ function makeUpdateArtifacts({ unpacked, releaseDir, version, files, manifestNam
   };
   writeFileSync(join(releaseDir, manifestName), JSON.stringify(manifest, null, 2));
   console.log(`--- ${manifestName} 完成（版本 ${version}，${files.length} 个文件哈希）`);
+}
+
+// listFilesRecursive —— 目录下全部文件的相对路径（无目录条目；深度优先，
+// 顺序稳定不依赖排序语义，manifest 只是哈希键集合，顺序无契约意义）。
+function listFilesRecursive(dir) {
+  const out = [];
+  for (const name of readdirSync(dir)) {
+    const p = join(dir, name);
+    if (statSync(p).isDirectory()) out.push(...listFilesRecursive(p).map((r) => join(name, r)));
+    else out.push(name);
+  }
+  return out;
 }
 
 console.log("=== lxcode 打包（Windows / NSIS one-click per-user） ===");
@@ -286,6 +300,21 @@ const releaseDir = join(SHELL, "release");
 const UPDATE_FILES = ["resources/app.asar", "resources/bin/lxcode.exe"];
 if (existsSync(join(unpacked, "resources", "bin", "ffmpeg.exe"))) {
   UPDATE_FILES.push("resources/bin/ffmpeg.exe");
+}
+// app.asar.unpacked 下的东西整体进更新包（用户拍板 2026-12：**应用内更新必须
+// 自足，不允许需要重装**）。asarUnpack 里的文件是运行时硬依赖——壳 require
+// 的原生模块（koffi/@koromix/koffi-win32-x64，SendInput FFI）就在那里，漏了
+// 它们新 asar 一落位应用直接起不来。这是**通用规则**而不是 koffi 特判：将来
+// 任何走 extraResources/asarUnpack 语义进安装目录的依赖（新原生模块、原生
+// 二进制等）都自动被这条规则覆盖，不再出现「装包有、更新包没有」的缺口。
+// 逐文件展开为相对路径清单——manifest.files 的契约就是逐文件 sha256（updater
+// 按文件核对，目录条目没法算哈希）。
+const UNPACKED_ROOT = "resources/app.asar.unpacked";
+if (existsSync(join(unpacked, ...UNPACKED_ROOT.split("/")))) {
+  const asarUnpackedDir = join(unpacked, ...UNPACKED_ROOT.split("/"));
+  for (const rel of listFilesRecursive(asarUnpackedDir)) {
+    UPDATE_FILES.push(`${UNPACKED_ROOT}/${rel.replace(/\\/g, "/")}`);
+  }
 }
 const zipName = `update-${version}.zip`;
 

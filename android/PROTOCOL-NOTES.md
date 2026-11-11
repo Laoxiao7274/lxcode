@@ -307,6 +307,21 @@ chat.userMessage → (chat.delta{kind:"reasoning"})* → (chat.delta{kind:"text"
   disconnect 不重连）。多端常驻的前提：手机息屏/切后台导致连接死掉时能自己恢复，
   事件流随之续上。后端每请求一个 goroutine（TestSlowRequestDoesNotHeadOfLineBlockPing
   钉住），心跳不会被慢请求队头阻塞。
+  **重连状态机纪律（2026-12 修订，修「自动重连像假的」）**：
+  - `userClosed` 只由 `disconnect()` 置位——传输层失败路径一律不得碰它；
+    hello 失败按来源分流：版本不匹配（code 1007）→ `disconnect()` 停重连，
+    超时/作废（code -1 本地错误）→ `closeTransport()` + `scheduleReconnect`；
+  - `close()` 已改名拆分：`disconnect()`（显式断开=停重连）与 `closeTransport()`
+    （纯传输层关闭，不置 userClosed/不停排程）；
+  - 并发防打架：`connectOnce` 有 `connectingInFlight` 在途守卫；listener 回调带
+    epoch（本次 ws 实例）守卫——被顶掉的旧尝试的 onFailure/onClosed/作废 hello
+    回调只清账，不做状态迁移（不杀新连接、不排重连、不复位在途标志）；
+  - `scheduleReconnect` 已有排程时跳过（退避不翻倍）+ 消费后自愈兜底
+    （未连接且无在途尝试 → 再排下一次）；
+  - `reconnectIfDown`（亮屏）在握手在途时跳过；
+  - UI：RealBackend `onState(false)` 只在「已连过又断」（wasConnected）或已在
+    自动重连态时置 `reconnecting=true`——Connecting 阶段的首次失败显示失败态
+    + 重试按钮，不再琥珀横幅谎报后台有动作。
 
 ## 9. 助手域（assistant.*，2026-12 第一+二批适配）
 
