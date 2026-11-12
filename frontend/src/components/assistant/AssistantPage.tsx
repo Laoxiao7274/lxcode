@@ -41,6 +41,17 @@ function lastIsStreamingAssistant(state?: AssistantUIState): boolean {
   return Boolean(state?.streaming);
 }
 
+/** 连接类错误判定（boot 自动重试的门槛）：与 connection.ts 的三类失败串同源
+ *  （「后端未连接」= call 的 WS 未 open 同步 reject；「后端连接已断开」= 断连
+ *  rejectAllPending；「切换后端连接」= setBackend rejectAllPending）。
+ *  「请求超时」不在此列——后端活着、只是慢/挂了，自动重试时机不可预判，
+ *  留给手动重试。 */
+export function isConnectionError(message: string): boolean {
+  return message === "后端未连接"
+    || message === "后端连接已断开"
+    || message === "切换后端连接";
+}
+
 /**
  * boot 流程（装载历史）：从组件里抽出的纯异步函数，让 StrictMode
  * 双挂载场景可以被测试直接驱动（见 tests/assistant-page.test.mjs）。
@@ -197,6 +208,30 @@ export function AssistantPage({
       },
     );
   }, [sessionId, nonce]);
+
+  // boot 失败的连接恢复自动重试（2026-12「每次点开都显示后端未连接」修复）：
+  // 记忆的助手会话使本页在启动即 boot assistant.history——WS 未 open 时同步
+  // reject「后端未连接」，status 落 error。重试条件按错误类型分：**连接类**
+  //（isConnectionError：后端未连接/连接断开/切换后端连接——重连层（固定 5s +
+  // 回可见重连）保证连接态一定会翻转回来，恢复后 boot 必然重试且必成功，自动
+  // 重试是收尾而非赌博）；**非连接类**（请求超时/会话不存在/业务错误）不自动
+  // 重试——盲目重试对不存在会话是无限循环，仍走既有的手动「重试」按钮。
+  const [connected, setConnected] = useState(false);
+  useEffect(() => source.subscribe((ev) => {
+    if (ev.type === "connectionChanged") setConnected(ev.connected);
+  }), [source]);
+  const retryNonceRef = useRef(nonce);
+  useEffect(() => {
+    if (status !== "error" || !connected) return;
+    if (!isConnectionError(error)) return;
+    // 同一个错误只自动重试一次：retryNonceRef 对齐到当前 nonce——连接态翻转的
+    // 多次事件（断连→连上→又断→又连上）在同一错误下不反复 reset。
+    if (retryNonceRef.current !== nonce) return;
+    retryNonceRef.current = nonce + 1;
+    bootRef.current?.reset();
+    setNonce((n) => n + 1);
+    setStatus("loading");
+  }, [status, connected, error, nonce]);
 
   const handleSend = useCallback((text: string, atts: SendAttachments) => {
     if (!sessionId || !sourceRef.current.assistant) return;

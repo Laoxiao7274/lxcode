@@ -132,6 +132,42 @@ export function AssistantWorkspace({
     });
   }, [source, refreshList]);
 
+  // 连接恢复后重拉列表（2026-12「每次点开都显示后端未连接」修复）：本组件保活
+  // 常驻、启动即拉 assistant.list——启动时 WS 还没 open，connection.call 同步
+  // reject「后端未连接」，listError 落地常驻；而连接层的握手初始化链不含
+  // assistant.list，恢复后无人重拉。挂在 AgentSource 的 connectionChanged 事件上
+  //（WSAgent 的 open/close 翻转；DemoAgent 订阅即发 true——恰好像挂载刷新一样
+  // 补一次拉取）：①只在 connected 翻 true 时发（断线路径不发请求）；②只在当前
+  // 有 listError 时发——正常情况下列表已有数据，恢复时多拉一次是纯浪费，且会与
+  // sessionChanged 的刷新撞车；③connectedRef 去重（同一次连接里 onopen 可能
+  // 连发）；④失败静默落回 listError——弹层已有的错误不需要再报一次。
+  const connectedRef = useRef(false);
+  const listErrorRef = useRef(listError);
+  listErrorRef.current = listError;
+  useEffect(() => {
+    return source.subscribe((ev) => {
+      if (ev.type !== "connectionChanged") return;
+      if (!ev.connected) {
+        connectedRef.current = false;
+        return;
+      }
+      if (connectedRef.current) return;
+      connectedRef.current = true;
+      if (!listErrorRef.current) return;
+      void refreshList().catch(() => undefined);
+    });
+  }, [source, refreshList]);
+
+  // 切入助手模式的兜底重拉（2026-12「每次点开都显示后端未连接」修复的第三条
+  // 路径）：mode 变为 "assistant" 时若仍挂着 listError 就再拉一次——覆盖前面
+  // 两条路径没覆盖到的时序（如「应用离线期间启动 → 用户在重连成功前切进助手
+  // 模式」）。廉价：只在有错误时发一次请求；静默失败（弹层已有错误提示）。
+  useEffect(() => {
+    if (mode !== "assistant") return;
+    if (!listErrorRef.current) return;
+    void refreshList().catch(() => undefined);
+  }, [mode, refreshList]);
+
   // 卸载取证（一次性，2026-12「切回项目模式生成停掉」排查）：组件挂载起一个
   // 一次性标志，cleanup 触发时打日志。保活改造后正常使用永不卸载——这条日志
   // 出现即意味着真的发生了卸载（React 严格模式的双挂载例外：dev 下挂载→卸载

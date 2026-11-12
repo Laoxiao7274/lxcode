@@ -124,21 +124,27 @@ export function SakuraBlock() {
           </div>
         ) : (
           tunnels.map((t) => (
-            <div className="conn-tunnel" key={t.id} data-online={t.online ? "true" : undefined} data-starting={t.starting && !t.online ? "true" : undefined} data-owned={t.owned ? "true" : "other-device"}>
+            <div className="conn-tunnel" key={t.id} data-online={t.online ? "true" : undefined} data-starting={t.starting && !t.online ? "true" : undefined} data-foreign-busy={t.foreignBusy ? "true" : undefined} data-owned={t.owned ? "true" : "other-device"}>
               <div className="conn-tunnel-head">
                 <span className="conn-tunnel-name mono">{t.name}</span>
-                {/* 三态：online = 节点端确认在线；starting = 本机 frpc 在跑但节点未确认
-                    （地址扫了还连不上）；都不满足 = 已断开 */}
-                {t.online ? (
+                {/* 四态（2026-12 用户报障）：online && running = 本机连上节点；starting =
+                    本机 frpc 在跑但节点未确认（地址扫了还连不上）；foreignBusy = 节点
+                    报在线但本机 frpc 没在跑——在线的是其它设备（同一条隧道只允许一个
+                    frpc 连接）；其余 = 已断开。优先级从上到下。 */}
+                {t.online && t.running ? (
                   <span className="ag-pill risk-low">在线</span>
-                ) : t.starting ? (
+                ) : t.starting && !t.online ? (
                   <span className="ag-pill starting">启动中…</span>
+                ) : t.foreignBusy ? (
+                  <span className="ag-pill warn" title="该隧道正由其它设备运行；同一条隧道只能有一个 frpc 连接">其它设备使用中</span>
                 ) : (
                   <span className="ag-pill src">已断开</span>
                 )}
                 {/* 归属提示（2026-12 防两端互认）：非本机创建的隧道只展示信息，
-                    启停按钮禁用——启动/停止会打到其它设备的隧道上。 */}
-                {!t.owned && (
+                    启停按钮禁用——启动/停止会打到其它设备的隧道上。与「其它设备
+                    使用中」重合时不渲染第二个 pill（foreignBusy 的 warn 已含归属
+                    语义；owned 语义保留在 data-owned 与启停禁用上）。 */}
+                {!t.owned && !t.foreignBusy && (
                   <span className="ag-pill warn" title="这条隧道疑似在其它设备上创建（名字不带本机主机名）。为避免误操作别的设备的隧道，这里不提供启停；如确属本机，可在 natfrp 面板改名后刷新。">
                     其它设备创建
                   </span>
@@ -161,8 +167,14 @@ export function SakuraBlock() {
               <div className="conn-cred">
                 <span className="conn-cred-label">用量</span>
                 <span className="conn-cred-value">{t.used === null ? "—" : humanBytes(t.used)}</span>
-                <Button variant="ghost" className="conn-tunnel-btn" data-conn="tunnel-toggle" disabled={busy || (!!t.starting && !t.online) || !t.owned} title={t.owned ? undefined : "疑似其它设备创建的隧道，不提供启停（避免误操作）"} onClick={() => toggleTunnel(t.id)}>
-                  {t.online ? "断开" : "启动"}
+                <Button variant="ghost" className="conn-tunnel-btn" data-conn="tunnel-toggle" disabled={busy || (!!t.starting && !t.online) || !t.owned || t.foreignBusy} title={
+                  t.foreignBusy
+                    ? "该隧道正由其它设备运行——本机启动会与其冲突（proxy conflict），先在其它设备上停止"
+                    : t.owned
+                      ? undefined
+                      : "疑似其它设备创建的隧道，不提供启停（避免误操作）"
+                } onClick={() => toggleTunnel(t.id)}>
+                  {t.online && t.running ? "断开" : t.foreignBusy ? "使用中" : "启动"}
                 </Button>
                 <TunnelDelBtn onConfirm={() => removeTunnel(t.id)} disabled={busy} />
               </div>

@@ -1525,8 +1525,9 @@ class RealBackend {
         phaseMessage = null
         reconnecting = false // 用户显式发起 = 不在自动重连态（成功或失败由 onState 重述）
         pairingInvalid = false // 手动 connect 重置配对失效态（重新配对后凭证已换）
-        // 连接层守卫：握手在途（connectingInFlight）时 connectOnce 跳过，不再
-        // 各发一次 newWebSocket 互相作废（旧路径里作废 hello 回调会反杀新连接）。
+        // 连接层语义：connect 以 force 作废旧在途 socket 并立即发起新尝试
+        //（epoch 守卫保证旧回调只清账、不反杀新连接）——并发触发源各自 connect
+        // 不会出现「无在途尝试且无重连排程」的保障空窗（重连不变式见 LxWsClient.connect）。
         client.connect(addr, token = token)
     }
 
@@ -1544,9 +1545,10 @@ class RealBackend {
      *  （守卫：回前台不拆活连接——connect 会 closeQuietly 重建，白扔一次握手）
      *  /配对已失效（401 后重连必再 401）时不动作。
      *  走 [connect] 完整语义（重置 userClosed/退避 + newWebSocket 重建）。
-     *  连接层还有一道 connectingInFlight 守卫（握手在途时 connectOnce 跳过）：
-     *  这里的 phase 检查挡住 Connected/Offline，握手在途是 Connecting 之外的
-     *  Failed 态反复回调（自动重连尝试中），放行到连接层由 epoch 守卫裁决。 */
+     *  连接层以 force 作废旧在途 socket 并发起新尝试（epoch 守卫防旧回调
+     *  反杀，重连保障不变式见 LxWsClient.connect）：这里的 phase 检查挡住
+     *  Connected/Offline，握手在途是 Connecting 之外的 Failed 态反复回调
+     * （自动重连尝试中），放行到连接层由 epoch 守卫裁决。 */
     fun reconnectIfDown() {
         if (phase == RealPhase.Offline || phase == RealPhase.Connected || pairingInvalid) return
         connect(addr, token)

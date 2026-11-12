@@ -85,6 +85,13 @@ export interface SakuraTunnelView {
    * ——二维码入口只认 online。
    */
   starting?: boolean;
+  /**
+   * 节点报在线但本机 frpc 没在跑（foreignBusy = online && !running，渲染层
+   * 可自行推导；壳里直接给出省得两端各推一遍）——真在线的是**其它设备**
+   * （natfrp 同一条隧道只允许一个 frpc 连接，本机再启动会撞 proxy conflict）。
+   * UI 显示「其它设备使用中」并禁启停（删除仍走两步确认）。
+   */
+  foreignBusy?: boolean;
   /** 节点负载百分比（/node/stats 拉不到时为 null——UI 显示「—」，不是 0%）。 */
   load: number | null;
   /** 隧道累计用量（字节，双向计费）。 */
@@ -333,6 +340,11 @@ async function fetchTunnels(t: string, nodes: Map<number, RawNode & { load: numb
       online,
       running,
       starting: running && !online,
+      // 四态补位（2026-12 用户报障）：节点报在线但本机 frpc 没在跑 = 真在线的
+      // 是**另一台设备**（natfrp 同一条隧道只允许一个 frpc 连接——本机再启动
+      // 会撞 proxy conflict）。UI 显示「其它设备使用中」并禁启停；渲染层可自行
+      // 推导（online && !running），壳里直接给出省得两端各推一遍。
+      foreignBusy: online && !running,
       load: node?.load ?? null,
       used: null,
       autoHttps: autoHttpsConfigured(x.extra),

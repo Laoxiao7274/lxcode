@@ -245,7 +245,7 @@ export function SettingsPanel({ open, onClose, source, operationErrors }: { open
             )}
 
             {section === "search" && <SearchSection />}
-            {section === "logs" && <LogsSection operationErrors={operationErrors} tail={source.tail} />}
+            {section === "logs" && <LogsSection operationErrors={operationErrors} tail={(bytes) => (source.tail ? source.tail(bytes) : Promise.reject(new Error("当前数据源不支持查看后端日志")))} />}
           </div>
         </div>
       </div>

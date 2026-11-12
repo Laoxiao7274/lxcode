@@ -234,10 +234,13 @@ class LxWsClient(
         if (resetBackoff) reconnectBackoffMs = 1_000L
         stopHeartbeat()
         stopReconnect()
-        // 在途守卫在 connectOnce 内（连接中再 connect 直接跳过）；但显式 connect
-        // 的 stopReconnect 已把旧排程清掉，在途尝试失败后不会再自动排下一次——
-        // 这正是显式动作的语义（用户接管），不需要兜底。
-        connectOnce(addr, token)
+        // **重连保障不变式**：连接未成功（!connected）且未显式断开（!userClosed）
+        // 的任意时刻，必须存在「一次在途尝试」或「一次排定的重连」，二者不可
+        // 同时缺席。显式 connect 撞上在途握手时不能只清排程了事——connectOnce
+        // 以 force 作废旧在途 socket（epoch 守卫保证旧回调只清账、不迁移状态、
+        // 不污染新连接）并发起新尝试：旧尝试哪怕已冻死在 Doze/frp 半开里、
+        // onFailure 永远不来，重连保障也即刻由新尝试接管，不存在空窗。
+        connectOnce(addr, token, force = true)
     }
 
     /** 按 addr 形态构造升级请求（对齐桌面端 connection.ts 的 wsURL 自适应）：
@@ -339,15 +342,19 @@ class LxWsClient(
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 val msg = "连接失败: ${t.message ?: t.javaClass.simpleName}"
                 Log.w(TAG, msg)
-                failAllPending("后端连接已断开")
                 // epoch 作废：这是被顶掉的旧尝试的失败回调——只清账，不做任何
                 // 状态迁移（不碰 connected/心跳——新尝试可能已握手成功，把它
                 // 置回 false 会让活连接被 UI 当成断线；也不报失败态、不排重连、
                 // 不复位 connectingInFlight——它属于在途的新尝试）。
+                // **failAllPending 必须在作废判定之后**：旧 socket 的迟到失败若先
+                // 清账，会把新尝试刚发出的 hello/ping pending 一并 fast-fail
+                //（新回调自身的 epoch 相符，守卫拦不住这种污染——force 重连路径）。
+                // 旧尝试自己的 pending 在它被 closeQuietly 顶掉时已清过账，不欠。
                 if (stale(webSocket)) {
                     Log.i(TAG, "旧连接尝试的 onFailure 已作废（epoch 不匹配），忽略")
                     return
                 }
+                failAllPending("后端连接已断开")
                 connected = false
                 stopHeartbeat()
                 // 401 = token 错/被吊销：重连必再 401，上报调用方停自动重连
@@ -366,12 +373,14 @@ class LxWsClient(
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 Log.i(TAG, "ws closed code=$code reason=$reason")
-                failAllPending("后端连接已断开")
-                // epoch 作废：同 onFailure——被顶掉的旧尝试的 closed 回调不迁移状态。
+                // epoch 作废：同 onFailure——被顶掉的旧尝试的 closed 回调不迁移
+                // 状态，也**不得先清账**（会把新尝试的 pending 一并 fast-fail，
+                // 见 onFailure 侧注释）。
                 if (stale(webSocket)) {
                     Log.i(TAG, "旧连接尝试的 onClosed 已作废（epoch 不匹配），忽略")
                     return
                 }
+                failAllPending("后端连接已断开")
                 connected = false
                 stopHeartbeat()
                 connectingInFlight = false
@@ -382,23 +391,27 @@ class LxWsClient(
 
     /** 连接后端（addr 形如 127.0.0.1:7789 或 wss://公网入口；token 可空 = 后端未开远程门）。
      *
-     *  **在途守卫**：握手已在进行中（connectingInFlight）时直接返回——并发触发
-     *  源（reconnectIfDown 亮屏 / onAvailable 网络恢复 / 退避 runnable 同刻到达）
-     *  各自调一次 connect 会互相 closeQuietly 作废对方：hello pending 被作废 →
+     *  **在途守卫与 force**：force=false 的直接调用方（若有未来新增的非强制入口）
+     *  在握手在途（connectingInFlight）时直接返回——并发触发源各自发一次
+     *  newWebSocket 会互相 closeQuietly 作废对方：hello pending 被作废 →
      *  错误回调在主线程排队 → 关掉刚建好的新连接，重连看似在跑实则自拆。
-     *  守卫只挡「同一次重连目标」的无谓并发；用户显式 connect（改地址/换 token）
-     *  仍要能打断在途尝试——listener 回调侧的 epoch 守卫负责让被打断的旧尝试
-     *  不反杀新连接。 */
-    private fun connectOnce(addr: String, token: String) {
-        // 尚未成功过一次握手但 socket 已建 = 上一次尝试还在途，不重复发起。
-        if (connectingInFlight) {
+     *  force=true（[connect] 的所有入口：改地址/换 token/亮屏重连/自动重试）时
+     *  把在途 socket 视为**可作废**：closeQuietly 顶掉旧 socket（其后续回调被
+     *  epoch 守卫识别为作废，只清账、不迁移状态、不排重连——不会反杀新连接），
+     *  立即发起新尝试。**这是重连保障不变式的实现点**：connect 的 stopReconnect
+     *  已清掉旧排程，若守卫只跳过，就出现「无排程 + 无在途（或旧在途已冻死，
+     *  回调永远不来）」的双重缺席窗口——force 保证 connect 永远有新尝试在途接管。
+     *  旧注释宣称「守卫跳过 = 用户接管语义，不需要兜底」是错的：跳过 ≠ 接管，
+     *  排程已清而新连接未发，正好制造不变式的破口。 */
+    private fun connectOnce(addr: String, token: String, force: Boolean = false) {
+        if (!force && connectingInFlight) {
             Log.i(TAG, "connectOnce 跳过：上一次连接尝试在途（$currentAddr）")
             return
         }
         currentAddr = addr
         currentToken = token
         connectingInFlight = true
-        closeQuietly()
+        closeQuietly(keepInFlight = true)
         val req = request(addr, token) ?: run {
             // request 返回 null（地址不合法）时失败态已上报，但**不能就此永久卡死**：
             // 自动重连路径里就此 return = 没有任何下一次重试（UI 永远停在失败态，
@@ -452,9 +465,12 @@ class LxWsClient(
     }
 
     /** 只关连接不清重连标记（closeTransport 的机械部分；connectOnce 开场清账用）。
-     *  复位 connectingInFlight：下一次 connectOnce 必须能发起新尝试。 */
-    private fun closeQuietly() {
-        connectingInFlight = false
+     *  默认复位 connectingInFlight（断线收尾路径：下一次 connectOnce 必须能发起新
+     *  尝试）；keepInFlight=true（connectOnce 开场：标志刚置位代表**即将发起的**
+     *  新尝试）不复位——closeQuietly 是同步函数，旧写法在这里无条件复位，等于
+     *  新尝试还没发起就把守卫标志清了，在途守卫从未真正生效（实测发现的死守卫）。 */
+    private fun closeQuietly(keepInFlight: Boolean = false) {
+        if (!keepInFlight) connectingInFlight = false
         connected = false
         val ws = wsRef.getAndSet(null) ?: return
         try {
@@ -596,8 +612,8 @@ class LxWsClient(
      * 亮屏即时重连（MainActivity onStart/onResume 调）：掉线且用户没显式断开时
      * 立即重连，不等退避定时器走完——退避最长 30s，回手机看一眼要等
      * 半分钟才重连是不可接受的。已连接 / 用户主动断开（disconnect）/ **握手
-     * 在途**（Connecting——此时再发起只会互相作废，见 connectOnce 的守卫）时
-     * 不动作。
+     * 在途**（Connecting）时不动作：在途尝试已满足重连保障不变式（见
+     * [connect] 的注释），此时 force 重发只会白扔一次可能即将成功的握手。
      */
     fun reconnectIfDown() {
         if (userClosed || connected || connectingInFlight) return

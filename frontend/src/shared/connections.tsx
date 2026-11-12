@@ -48,8 +48,11 @@ export interface SakuraTunnel {
   online: boolean;
   /** 本机 frpc 正在服务这条隧道（runningId===id）。 */
   running: boolean;
-  /** 本机 frpc 在跑但节点端还没确认在线（启动中——pill 三态的中间态）。 */
+  /** 本机 frpc 在跑但节点端还没确认在线（启动中——pill 四态之一）。 */
   starting: boolean;
+  /** 节点报在线但本机 frpc 没在跑（在线的是其它设备——natfrp 同一条隧道只允许
+   *  一个 frpc 连接；UI 显示「其它设备使用中」并禁启停）。 */
+  foreignBusy: boolean;
   /** 节点负载百分比（选节点时的参考；null = 负载表拉不到，UI 显示「—」）。 */
   load: number | null;
   /** 隧道累计用量（字节——双向计费；null = 还没取到）。 */
@@ -376,6 +379,7 @@ export function ConnectionsProvider({ children, sakuraBridge, remoteControlBridg
           online: true,
           running: true,
           starting: false,
+          foreignBusy: false,
           load: node.load,
           used: 0,
           autoHttps: true,
@@ -418,7 +422,7 @@ export function ConnectionsProvider({ children, sakuraBridge, remoteControlBridg
   const toggleTunnel = useCallback((id: number) => {
     const b = bridgeRef.current;
     if (!b) {
-      setTunnels((list) => list.map((t) => (t.id === id ? { ...t, online: !t.online, running: !t.online, starting: false } : t)));
+      setTunnels((list) => list.map((t) => (t.id === id && !t.foreignBusy ? { ...t, online: !t.online, running: !t.online, starting: false } : t)));
       return;
     }
     setSakuraError(null);
