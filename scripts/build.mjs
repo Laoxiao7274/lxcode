@@ -38,6 +38,7 @@ import { cpSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync, cop
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
+import { missingFfmpegEncoders } from "./ffmpeg-encoders.mjs";
 
 // 仓库根 = 脚本自身位置（scripts/ 的上一级），与调用时的 cwd 无关
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -57,6 +58,21 @@ function run(label, cmd, args, opts = {}) {
 }
 
 const sha256 = (p) => createHash("sha256").update(readFileSync(p)).digest("hex");
+
+/** bundled ffmpeg 编码器校验（纯函数在 ./ffmpeg-encoders.mjs，node --test 直测）：
+ *  回落链依赖的四个编码器必须真的编进这份 exe——精简构建漏掉 libx264 的代价
+ *  是无独显机器投屏四路全败；漏掉硬编三路则有卡机器也退化到软编。 */
+async function verifyFfmpegEncoders(ffmpegExe, required) {
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  let output;
+  try {
+    output = (await promisify(execFile)(ffmpegExe, ["-hide_banner", "-encoders"], { maxBuffer: 16 * 1024 * 1024, windowsHide: true })).stdout;
+  } catch (e) {
+    return required; // exe 跑不起来 = 全部视为缺失，build 失败并指路文档
+  }
+  return missingFfmpegEncoders(output, required);
+}
 
 // makeUpdateArtifacts —— 更新包 + manifest 的公共生成段（Windows 链与 --mac
 // 链共用；2026-12 从原 Windows 内联段抽出，Windows 侧字段与顺序一字未动——
@@ -266,6 +282,17 @@ if (existsSync(bundledFfmpeg)) {
   mkdirSync(join(SHELL, "resources", "bin"), { recursive: true });
   copyFileSync(bundledFfmpeg, ffmpegDst);
   console.log("--- bundled ffmpeg 已拷入 shell/resources/bin/ffmpeg.exe");
+  // 打包校验（防静默劣化）：回落链依赖的四个编码器必须真的编进这份 exe。
+  // 精简构建漏掉 libx264 的代价是无独显机器投屏四路全败；漏掉硬编三路则
+  // 有卡机器也退化到软编。校验失败 fail build，修构建参数见 docs/ffmpeg-build.md。
+  const missing = await verifyFfmpegEncoders(ffmpegDst, [
+    "h264_nvenc", "h264_qsv", "h264_amf", "libx264",
+  ]);
+  if (missing.length > 0) {
+    console.error(`--- bundled ffmpeg 缺少编码器: ${missing.join(", ")}——精简构建参数有误，见 docs/ffmpeg-build.md`);
+    process.exit(1);
+  }
+  console.log("--- bundled ffmpeg 编码器校验通过（nvenc/qsv/amf/libx264 都在列）");
 } else if (!existsSync(ffmpegDst)) {
   console.warn("--- [提示] 无 bundled ffmpeg（temp/ffmpeg/ffmpeg.exe 不存在）：安装包不含 ffmpeg，投屏回落用户 PATH");
 }

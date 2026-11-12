@@ -130,6 +130,19 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
     // session.list 的刷新同时服务握手并行组与两条事件副作用（chat.done 主轮 /
     // session.changed——applySessionList 自己会广播 sessionsChanged，这里不重复发）。
     this.conn.onInitList("session.list", (r) => this.applySessionList(r));
+    // busy_sessions（hello 握手快照，组件 B）：补拉链的另一半。session.list 的
+    // running 位在握手**并行组**才拉（十几个清单之一，最慢一步可能 1~2s），
+    // busy_sessions 在握手应答里就有——先到先用：立即发 sessionsChanged 建
+    // busy 投影并对 busy 会话补拉 history。两者拉同一次 chat.history 由
+    // loadedSessions 判重收敛（先到者装载，后到者跳过），不会双倍装载。
+    this.conn.onBusySnapshot((busy) => {
+      if (busy.length === 0) return;
+      this.emit({ type: "sessionsChanged", running: busy });
+      for (const id of busy) {
+        if (this.loadedSessions.has(id)) continue;
+        this.loadHistory(id).catch(() => undefined);
+      }
+    });
     // 后端切换清账：握手成功那一刻清旧后端的会话缓存（连接层清焦点，缓存在这里）
     this.conn.onHelloReset(() => {
       this.sessionsCache = [];
@@ -703,6 +716,19 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
       running: Boolean(s.running),
     }));
     this.emit({ type: "sessionsChanged", running });
+    // **busy 会话补拉历史**（2026-12「第二客户端看不到会话实时执行过程」修复，组件 B）：
+    // running 位只让列表亮运行指示；正点开看到的时间线要点进会话（触发
+    // chat.history）才有——第二客户端（远程/新开窗口）切换后没点进去，busy 会话
+    // 的实时流（delta/toolCall）归约进一个不存在的 state，全被丢弃，执行完
+    // session.list 刷新才见结果。这里对**此刻在跑**且尚未装载的会话各补拉一次
+    // chat.history：快照带 busy=true + running_dispatches——store 的
+    // historyLoaded 分支据此建「正在跑」投影（reviveRunningDispatch 回填卡、
+    // 扫 runningDispatches 记 dispatch→子会话映射），之后的实时事件就有着落点。
+    // 已装载的跳过（焦点会话的 boot 链已拉过；重复拉只会重放一遍动画）。
+    for (const id of running) {
+      if (this.loadedSessions.has(id)) continue;
+      this.loadHistory(id).catch(() => undefined);
+    }
   }
 
   /** 后端 project.list 结果 → 缓存。 */

@@ -112,12 +112,19 @@ strip ffmpeg.exe
 - **冒烟（真实抓屏 90 帧，1920×1080@30）**：
   - `ddagrab → h264_amf`（-usage ultralowlatency -rc cqp）：✅ 345KB Annex B 裸流，
     NAL 起始码 + SPS 头确认，30fps 速度 0.999x；
-  - `ddagrab + hwdownload,format=bgra → libx264`（screen.ts 同款参数）：✅ 254KB，
-    SPS `00 00 00 01 67 ...` 确认；
+  //  - `ddagrab + hwdownload,format=bgra,format=yuv420p → libx264`（screen.ts 同款
+  //    参数；末尾 format=yuv420p 必须有——x264 high profile 只收 4:2:0）✅
+  //    SPS `00 00 00 01 67 ...` 确认；
   - `h264_nvenc`：本机无 NVIDIA 卡，`Cannot load nvcuda.dll`（预期内的回落路径，
     screen.ts 探测会跳过）；`h264_qsv` 同理（无 Intel 卡 + 其不接受 `-preset p1`）。
     两路在本机验证不了编译后行为，但编码器编入、探测逻辑（`-encoders` 文本匹配）
     已验证。
+- **libx264 回落链依赖 `hwdownload,format=bgra,format=yuv420p`**：ddagrab
+  输出 D3D11 硬件帧，libx264 只吃系统内存帧——screen.ts 的 probeArgs/ffmpegArgs
+  libx264 分支必须带 `-vf hwdownload,format=bgra,format=yuv420p`（ddagrab 之后、
+  编码器之前；**末尾的 yuv420p 不能省**：x264 high profile 只收 4:2:0，BGRA 直灌
+  报「high profile doesn't support 4:4:4」，2026-11 本机实测）。
+  **改动回落链/新增软编候选时记得同步带上这条下载+转换链**，否则无独显机器四路全败。
 - 注意：qsv/amf 编码器**不认** NVENC 风格的 `-preset p1 -tune ull -rc constqp`
   参数（`Undefined constant or missing '(' in 'p1'`）——screen.ts 当前对回落链的
   所有硬编都发 NVENC 参数，真机回落到 amf/qsv 时会参数解析失败（本次实测 amd 上

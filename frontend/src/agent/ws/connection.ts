@@ -256,6 +256,13 @@ export class WsConnection {
             this.booted = false;
             this.currentSessionId = "";
           }
+          // busy_sessions（握手快照，组件 B）：此刻在跑的会话 id——立即发
+          // sessionsChanged 让 App 建 busy 投影 + busy 会话补拉 history（域层
+          // 经 onBusySnapshot 注册处理；老后端键缺席 = 空集，无副作用）。
+          const busySessions = (result as { busy_sessions?: string[] } | null)?.busy_sessions ?? [];
+          if (busySessions.length > 0 && this.ws === ws) {
+            for (const fn of this.onBusySnapshotFns) fn(busySessions);
+          }
           const refresh = async (method: string, apply: (r: unknown) => void, params?: unknown) => {
             if (this.ws !== ws) return;
             try { const r = await this.call(method, params); if (this.ws === ws) apply(r); }
@@ -365,6 +372,17 @@ export class WsConnection {
     };
   }
   private onHelloResetFns: (() => void)[] = [];
+
+  /** 握手快照钩子（组件 B）：hello 应答的 busy_sessions（此刻在跑的会话）。
+   *  域层据此建 busy 投影并对 busy 会话补拉 history——重连/切换后立即看见
+   *  「正在跑」的会话与其过程（不等轮次边界的 chat.busy 广播，那个早就错过了）。 */
+  onBusySnapshot(fn: (busySessions: string[]) => void): () => void {
+    this.onBusySnapshotFns.push(fn);
+    return () => {
+      this.onBusySnapshotFns = this.onBusySnapshotFns.filter((f) => f !== fn);
+    };
+  }
+  private onBusySnapshotFns: ((busySessions: string[]) => void)[] = [];
 
   // ---- 心跳与窗口恢复钩子（体验修复批次 3：消除「最小化一段时间后界面卡死」）----
   //

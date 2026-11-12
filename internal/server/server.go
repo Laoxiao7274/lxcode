@@ -173,6 +173,19 @@ type wsClient struct {
 	lastVideoAnchorTs uint64
 	done              chan struct{}
 	closeOnce         sync.Once
+
+	// delta 合帧缓冲（2026-12 远程第二客户端看不到实时流的修复，组件 A）：
+	// 广播路径上同键（session|kind|dispatch）的连续 delta 攒批（100ms / 8KB
+	// 先到先发），合成一条同形状事件再入队——帧数缩两个量级，慢隧道上的
+	// 发送队列不再被 delta 洪水灌满（队满 fast-fail → 重连 → 只见快照的死循环）。
+	// 设计与兼容纪律见 delta_coalesce.go 文件头。
+	bc *deltaCoalescer
+	// bcTimer 是时间冲刷的 AfterFunc 句柄（缓冲非空时恒有且仅有一个）。
+	bcTimer *time.Timer
+	// bcMu 串行化合帧缓冲的访问：三条路径（broadcast 广播 / serve 的请求应答
+	// 屏障 / AfterFunc 定时回调）并发进入。临界区内可能调 enqueueBytes（对
+	// c.out 的 select 不持 c.mu——enqueueBytes 自身无锁，锁序无环）。
+	bcMu sync.Mutex
 }
 
 // binaryQueueSize 二进制视频帧队列容量（帧 ≈ 数 KB~数十 KB，8 帧约一两个
@@ -628,7 +641,10 @@ func (s *Server) Handler() http.Handler {
 			log.Printf("ws 升级失败: %v", err)
 			return
 		}
-		c := &wsClient{conn: conn, out: make(chan []byte, clientQueueSize), bin: make(chan []byte, binaryQueueSize), done: make(chan struct{})}
+		c := &wsClient{
+			conn: conn, out: make(chan []byte, clientQueueSize), bin: make(chan []byte, binaryQueueSize),
+			done: make(chan struct{}), bc: newDeltaCoalescer(),
+		}
 		s.mu.Lock()
 		s.clients[c] = struct{}{}
 		s.mu.Unlock()
@@ -692,6 +708,9 @@ func (s *Server) serve(c *wsClient) {
 			if resp != nil {
 				// 应答同样走队列（单写者纪律——gorilla 连接不允许两个并发写者）：
 				// 队列满被 fast-fail 时连接已由 enqueue 关闭，读循环随即收尾。
+				// 应答也是合帧屏障：先冲刷攒批的 delta，再入队应答——否则 delta
+				// 洪水期间攒批的文本会排在（比如）心跳应答之后，被堵回去。
+				c.barrierDeltaFlush()
 				c.enqueue(resp)
 			}
 		}(req)
@@ -713,6 +732,20 @@ func (s *Server) broadcastSessionChanged(id, reason string) {
 }
 
 func (s *Server) broadcast(method string, params any) {
+	// delta 单独分流进该客户端的合帧缓冲（组件 A）：不直接入队，攒批后由
+	// 时间/字节阈值或屏障事件冲刷。序列化在合帧冲刷时按合并帧做（只做一次）。
+	if dp, ok := params.(protocol.DeltaParams); ok && isDeltaMethod(method) {
+		s.mu.Lock()
+		clients := make([]*wsClient, 0, len(s.clients))
+		for c := range s.clients {
+			clients = append(clients, c)
+		}
+		s.mu.Unlock()
+		for _, c := range clients {
+			c.enqueueDeltaCoalesced(method, dp)
+		}
+		return
+	}
 	ev := protocol.NewEvent(method, params)
 	// 序列化**一次**、每客户端只做入队（O(1)）：原先在这里同步逐客户端
 	// WriteJSON，慢客户端会把生成流卡满 5s deadline（见 wsClient.out 的注释）。
@@ -728,6 +761,9 @@ func (s *Server) broadcast(method string, params any) {
 	}
 	s.mu.Unlock()
 	for _, c := range clients {
+		// 非 delta 事件是合帧屏障：先冲刷该客户端攒批的 delta（保序——
+		// done/toolCall 不能插到已到达文本的前面），再入队本帧。
+		c.barrierDeltaFlush()
 		c.enqueueBytes(b)
 	}
 }

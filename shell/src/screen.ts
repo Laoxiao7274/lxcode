@@ -13,7 +13,10 @@
 //     -c:v <encoder> <编码器分支码控参数，见 ffmpegArgs> 
 //     -bf 0 -g 60 -f h264 pipe:1
 // 回落链 h264_nvenc → h264_qsv → h264_amf → libx264（libx264 追加
-// -x264-params keyint=60:repeat-headers=1 保证 SPS/PPS 周期重发）。
+// -x264-params keyint=60:repeat-headers=1 保证 SPS/PPS 周期重发；**且依赖
+// -vf hwdownload,format=bgra,format=yuv420p**——ddagrab 出 D3D11 硬件帧，
+// libx264 只吃系统内存帧且 high profile 只收 4:2:0，改动回落链/新增软编候选
+// 时记得带这条下载+转换链，见 probeArgs 注释）。
 //   * 码控参数按编码器分支发：qsv/amf 不认 NVENC 风格参数（详见 ffmpegArgs 注释）：
 //     nvenc  -preset p1 -tune ull -rc constqp -qp X
 //     qsv    -preset veryfast -low_power 0 -async_depth 1 -global_quality X（CQP）
@@ -176,11 +179,25 @@ function existsExecutable(p: string): boolean {
  *  `-encoders` 列出的是编译进 exe 的编码器名，与机器上有没有对应显卡无关
  *  （2026-10 真机：AMD 卡上 `-encoders` 照列 h264_nvenc → 回落链选中它 →
  *  运行时 `Cannot load nvcuda.dll` → 立即异常退出，手机端只见「ffmpeg 异常
- *  退出」）。所以每个候选编码器跑一次最小真实管线（同款参数 + -frames:v 1，
- *  只开路到 muxer 就收，~1s），实际能出帧的才进回落链。libx264 静态链入
- *  恒可用（兜底永不落空）。结果缓存——探测一次之后的起停不再打子进程。 */
+ *  退出」）。所以先用 `-encoders` 预筛掉编译期就缺的候选（零成本、同时支撑
+ *  「真的缺编码器」的判定），再对剩下的逐个跑最小真实管线（同款参数 +
+ *  -frames:v 1，只开路到 muxer 就收，~1s），实际能出帧的才进回落链。
+ *  缓存：成功终身（显卡能力不会中途消失）；全失败带 TTL（60s，驱动瞬时
+ *  故障不该把投屏钉死），且失败时按原因写 lastError（见 probeEncoders）。 */
 let encoderProbe: string[] | null = null;
 const PROBE_CHAIN = ["h264_nvenc", "h264_qsv", "h264_amf", "libx264"] as const;
+
+/** 探测结果缓存：成功终身（显卡能力不会中途消失），失败带 TTL——
+ *  驱动瞬时故障（如独显休眠唤醒瞬间 nvcuda.dll 拉不起来）不该把投屏钉死，
+ *  TTL 过后下次 reconcile 重探。 */
+const PROBE_FAIL_TTL_MS = 60_000;
+let encoderProbeFailedAt = 0;
+/** 探测失败要区分「真的缺编码器」与「编码器在列但起不来」——文案完全不同
+ *  （前者让用户重装 ffmpeg，后者指向显卡驱动/桌面复制）。 */
+export type ProbeFailureKind = "encoders_missing" | "encoders_unavailable";
+export function probeFailureKind(missing: string[]): ProbeFailureKind {
+  return missing.length > 0 ? "encoders_missing" : "encoders_unavailable";
+}
 
 /** 单个编码器的最小真实管线（返回码 0 = 编码器真的能出帧）。
  *  参数与 ffmpegArgs 各分支一致（改码控参数时两处同步）。 */
@@ -200,7 +217,12 @@ function probeArgs(encoder: string, qp: string): string[] {
   } else if (encoder === "h264_qsv") {
     args.push("-preset", "veryfast", "-low_power", "0", "-async_depth", "1", "-global_quality", qp);
   } else {
-    args.push(
+    // libx264 只吃系统内存帧：ddagrab 输出 D3D11 硬件帧，必须先
+    // hwdownload,format=bgra 落回内存，**再 format=yuv420p**——x264 的
+    // high profile 只收 4:2:0（BGRA 直灌会报「high profile doesn't support
+    // 4:4:4」，本机实测 2026-11）；硬编三路（nvenc/qsv/amf）直接吃 D3D11 帧，
+    // 不加。**改动回落链时注意**：新增纯软编候选同样需要这条下载+转换链。
+    args.push("-vf", "hwdownload,format=bgra,format=yuv420p",
       "-preset", "veryfast", "-tune", "zerolatency",
       "-x264-params", "keyint=60:min-keyint=60:repeat-headers=1:scenecut=0",
       "-qp", qp,
@@ -216,15 +238,29 @@ function probeArgs(encoder: string, qp: string): string[] {
   return args;
 }
 
-async function probeOne(bin: string, encoder: string): Promise<boolean> {
-  return new Promise<boolean>((resolve) => {
+/** 单候选探测 + stderr 尾行收集（probeOne 与崩溃上报共用同款缓冲策略）。 */
+interface ProbeOutcome {
+  ok: boolean;
+  stderrTail: string;
+}
+
+function probeOne(bin: string, encoder: string): Promise<ProbeOutcome> {
+  return new Promise<ProbeOutcome>((resolve) => {
     const p = spawn(bin, probeArgs(encoder, "26"), {
-      stdio: ["ignore", "ignore", "ignore"],
+      stdio: ["ignore", "ignore", "pipe"],
       windowsHide: true,
+    });
+    const tail: string[] = [];
+    p.stderr?.on("data", (d: Buffer) => {
+      for (const line of d.toString().split(/\r?\n/)) {
+        const msg = line.trim();
+        if (msg) tail.push(msg);
+      }
+      if (tail.length > STDERR_TAIL_MAX * 2) tail.splice(0, tail.length - STDERR_TAIL_MAX);
     });
     let settled = false;
     const done = (ok: boolean): void => {
-      if (!settled) { settled = true; try { p.kill(); } catch { /* already dead */ } resolve(ok); }
+      if (!settled) { settled = true; try { p.kill(); } catch { /* already dead */ } resolve({ ok, stderrTail: tail.slice(-STDERR_TAIL_MAX).join(" | ") }); }
     };
     p.on("error", () => done(false));
     p.on("close", (code) => done(code === 0));
@@ -232,14 +268,60 @@ async function probeOne(bin: string, encoder: string): Promise<boolean> {
   });
 }
 
+/** `-encoders` 输出的文本匹配预筛：编译期就没编进去的候选直接跳过（不必
+ *  再花 1s 真实例化吃一次必然的失败）。**只做预筛不做判定**——在列不代表
+ *  机器上能用（AMD 卡照样列 nvenc，运行时才炸），最终仍以真实例化为准。 */
+export function parseEncodersList(output: string, candidates: readonly string[]): { present: string[]; missing: string[] } {
+  const present: string[] = [];
+  const missing: string[] = [];
+  for (const e of candidates) {
+    // -encoders 行形如「 V....D h264_nvenc  NVIDIA NVENC H.264 encoder (codec h264)」；
+    // 用带边界的匹配避免前缀撞名（如未来出现 h264_nvenc2）。
+    const re = new RegExp(`^\\s*[VAFS.]+[.\\w]*\\s+${e}\\s`, "m");
+    (re.test(output) ? present : missing).push(e);
+  }
+  return { present, missing };
+}
+
+function listEncoders(bin: string): Promise<string> {
+  return new Promise<string>((resolve) => {
+    const p = spawn(bin, ["-hide_banner", "-encoders"], { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
+    let out = "";
+    p.stdout?.on("data", (d: Buffer) => { out += d.toString(); });
+    let settled = false;
+    const done = (): void => { if (!settled) { settled = true; resolve(out); } };
+    p.on("error", () => done());
+    p.on("close", () => done());
+    setTimeout(done, 10_000);
+  });
+}
+
 async function probeEncoders(bin: string): Promise<string[]> {
   if (encoderProbe) return encoderProbe;
+  if (encoderProbeFailedAt && Date.now() - encoderProbeFailedAt < PROBE_FAIL_TTL_MS) return [];
+  const { present } = parseEncodersList(await listEncoders(bin), PROBE_CHAIN);
   const available: string[] = [];
-  for (const e of PROBE_CHAIN) {
-    if (await probeOne(bin, e)) available.push(e);
+  const failedTails: string[] = [];
+  for (const e of present) {
+    const r = await probeOne(bin, e);
+    if (r.ok) available.push(e);
+    else failedTails.push(`${e}: ${r.stderrTail || "无输出"}`);
   }
-  encoderProbe = available;
-  return encoderProbe;
+  if (available.length > 0) {
+    encoderProbe = available;
+    return encoderProbe;
+  }
+  // 全失败：区分「exe 里根本没编这些编码器」（重装 ffmpeg）与「在列但起不
+  // 来」（显卡驱动/桌面复制），并附 ffmpeg 输出摘要。失败带 TTL 缓存。
+  encoderProbeFailedAt = Date.now();
+  const kind = probeFailureKind(PROBE_CHAIN.filter((e) => !present.includes(e)));
+  const summary = failedTails.join(" || ");
+  lastError = kind === "encoders_missing"
+    ? "ffmpeg 缺少 H.264 编码器（nvenc/qsv/amf/libx264 都不在编译产物里）——请重新安装完整版 ffmpeg（见 docs/ffmpeg-build.md）"
+    : `屏幕捕获/编码器启动失败（软编码已自动尝试）——可能是显卡驱动或桌面复制不可用。ffmpeg 输出：${summary || "（无输出）"}`;
+  lastErrKind = "encoder_unavailable";
+  console.log(`[screen] 编码器探测全失败（${kind}）：${lastError}`);
+  return [];
 }
 
 /** 组装 ffmpeg 参数（monitor/quality/encoder）。码控参数**按编码器分支**发——
@@ -283,7 +365,10 @@ function ffmpegArgs(monitor: number, quality: string, encoder: string): string[]
       "-global_quality", qp,
     );
   } else if (encoder === "libx264") {
-    args.push(
+    // 同 probeArgs libx264 分支：纯软编只吃系统内存帧，先 hwdownload,format=bgra
+    // 落回内存再 format=yuv420p（high profile 只收 4:2:0——两处参数面同步，
+    // 改这里必须改那里）。
+    args.push("-vf", "hwdownload,format=bgra,format=yuv420p",
       "-preset", "veryfast", "-tune", "zerolatency",
       "-x264-params", "keyint=60:min-keyint=60:repeat-headers=1:scenecut=0",
       "-qp", qp,
@@ -315,8 +400,12 @@ async function startFfmpeg(monitor: number, quality: string): Promise<void> {
   const chain = ["h264_nvenc", "h264_qsv", "h264_amf", "libx264"];
   const encoder = chain.find((e) => available.includes(e));
   if (!encoder) {
-    lastError = "ffmpeg 里没有可用的 H.264 编码器（nvenc/qsv/amf/libx264 都没有）——请重新安装完整版 ffmpeg";
-    lastErrKind = "encoder_unavailable";
+    // 探测失败时 probeEncoders 已按原因写好 lastError（缺编码器 vs 驱动/桌面
+    // 复制起不来，附 ffmpeg 输出摘要）——这里只兜探测与本次之间竞态的空档。
+    if (!lastError) {
+      lastError = "ffmpeg 里没有可用的 H.264 编码器（nvenc/qsv/amf/libx264 都没有）——请重新安装完整版 ffmpeg（见 docs/ffmpeg-build.md）";
+      lastErrKind = "encoder_unavailable";
+    }
     console.log(`[screen] ${lastError}`);
     return;
   }

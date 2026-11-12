@@ -520,10 +520,10 @@ func (s *Server) isAssistantSession(id string) bool {
 	if id == "" {
 		return false
 	}
-	if sess := s.peekAssistantSession(id); sess != nil {
-		return true
-	}
-	return false
+	s.sessionsMu.RLock()
+	_, ok := s.assistantSessions[id]
+	s.sessionsMu.RUnlock()
+	return ok
 }
 
 // broadcastAssistant 是助手域会话状态的广播入口（approval/model 等会话级
