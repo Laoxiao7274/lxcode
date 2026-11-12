@@ -11,6 +11,7 @@ import { initTailscale, tailscaleHandlers } from "./tailscale";
 import { cachedState, cachedToken, disable as remoteDisable, enable as remoteEnable, initBackendRemote, refresh as remoteRefresh, rotate as remoteRotate, setAllowControl } from "./backend-remote";
 import { startUpdatePolling, stopUpdatePolling, updateHandlers, consumePendingUpdateFailure } from "./updater";
 import { createTray } from "./tray";
+import { shouldAllowSelfSigned } from "./cert-allow";
 import { startScreenPolling, stopScreenPolling, warmUpEncoderProbe } from "./screen";
 import { startInputPolling, stopInputPolling, setControllingCallback } from "./input";
 import { setTrayHint } from "./tray";
@@ -64,20 +65,14 @@ if (!app.isPackaged) {
 //    wsURL 会把 wss 地址用于 WS，httpOrigin 会把它换成 https 用于附件下载）；
 //  * host 非回环（回环 = 本机后端，永远是 ws:// 明文，不该走到这里）；
 //  * 错误属于自签特征（信任链无效 / 主机名不匹配——frpc 自签证书两者都会中）。
+//    Electron 40 实测：事件给的 error 带 `net::` 前缀（wss 握手错误与导航同源
+//    报 net::ERR_*），比对前必须剥掉——2026-11 用户「一直重连」的根因就是
+//    白名单里存裸名、`Set.has()` 恒 false，放行条件从未命中。
 // 其余证书错误（app:// 主帧、公网导航、过期证书等）照常拒绝，行为不变。
-const SELF_SIGNED_CERT_ERRORS = new Set(["ERR_CERT_AUTHORITY_INVALID", "ERR_CERT_COMMON_NAME_INVALID"]);
+// 判定抽在 ./cert-allow.ts（纯函数——main.ts 顶部 import electron，测试没法
+// 整体引入本文件；用例见 tests/cert-allow.test.mjs）。
 app.on("certificate-error", (event, _webContents, url, error, _certificate, callback) => {
-  let allow = false;
-  try {
-    const u = new URL(url);
-    const loopback = u.hostname === "localhost" || u.hostname === "127.0.0.1" || u.hostname === "::1";
-    allow =
-      (u.protocol === "wss:" || u.protocol === "https:") &&
-      !loopback &&
-      SELF_SIGNED_CERT_ERRORS.has(error);
-  } catch {
-    // 非法 URL：不放行
-  }
+  const allow = shouldAllowSelfSigned(url, error);
   if (allow) event.preventDefault();
   callback(allow);
 });

@@ -87,15 +87,59 @@ const KINDS: Array<{
   },
 ];
 
+/**
+ * macOS 产物卡（与 KINDS 同构：同一 panel 结构、同一 findArtifact/ArtifactLink 路径）。
+ * mac 产物全部可选（docs/mac-release.md）：这版没发 mac（或只发了部分架构）时，
+ * 对应的卡自然缺席；一个 mac 产物都没有时整块不渲染——不摆灰色占位。
+ */
+const MAC_KINDS: Array<{
+  kind: Artifact["kind"];
+  title: string;
+  short: string;
+  desc: string;
+  cta: string;
+}> = [
+  {
+    kind: "mac-installer-arm64",
+    title: "安装包 · Apple silicon（推荐）",
+    short: "dmg (arm64)",
+    desc: "适用于 Apple silicon（M 系列芯片）的 dmg 安装包。",
+    cta: "下载 dmg",
+  },
+  {
+    kind: "mac-installer-x64",
+    title: "安装包 · Intel",
+    short: "dmg (x64)",
+    desc: "适用于 Intel 芯片 Mac 的 dmg 安装包。",
+    cta: "下载 dmg",
+  },
+  {
+    kind: "mac-update",
+    title: "更新包",
+    short: "更新包",
+    desc: "mac 增量更新包，zip 内只含 app.asar 与后端二进制（lxcode），由 mac 客户端按 manifest-mac.json 两级替换。",
+    cta: "下载更新包",
+  },
+];
+
 /** 一块产物：文件名 + 体积 + 下载按钮 + 可折叠的 sha256。 */
-function ArtifactBlock({ release, kind }: { release: Release; kind: Artifact["kind"] }) {
+function ArtifactBlock({
+  release,
+  kind,
+  meta,
+}: {
+  release: Release;
+  kind: Artifact["kind"];
+  /** 卡片文案来源：Windows 三卡走 KINDS，mac 卡走 MAC_KINDS（结构同构）。 */
+  meta?: (typeof KINDS)[number];
+}) {
   const artifact = findArtifact(release, kind);
-  const meta = KINDS.find((k) => k.kind === kind);
-  if (!artifact || !meta) return null;
+  const card = meta ?? KINDS.find((k) => k.kind === kind);
+  if (!artifact || !card) return null;
   return (
     <div className="panel panel-lift">
       <div className="panel-head">
-        <span className="panel-title">{meta.title}</span>
+        <span className="panel-title">{card.title}</span>
         {kind === "installer" && (
           <span className="pill pill-ok">
             <span className="pill-dot" aria-hidden="true" />
@@ -104,15 +148,15 @@ function ArtifactBlock({ release, kind }: { release: Release; kind: Artifact["ki
         )}
       </div>
       <div className="panel-pad dl-block">
-        <p className="small muted">{meta.desc}</p>
+        <p className="small muted">{card.desc}</p>
         <div className="dl-file">
           <span className="dl-name">{artifact.name}</span>
           <span className="meta">{formatBytes(artifact.size)}</span>
         </div>
-        <HashLine label={meta.short} hash={artifact.sha256} />
+        <HashLine label={card.short} hash={artifact.sha256} />
         <div className="dl-actions">
           <ArtifactLink artifact={artifact} className="btn btn-p">
-            {meta.cta}
+            {card.cta}
           </ArtifactLink>
           <span className="meta">渠道 {release.channel}</span>
         </div>
@@ -193,6 +237,8 @@ export default function Download() {
   const history = sortByVersionDesc(state.releases).filter(
     (r) => r.version !== latest?.version && r.status !== "draft",
   );
+  // 最新 stable 是否带了任意 mac 产物——决定系统要求文案里的 macOS 字样（有才说）。
+  const hasMac = latest != null && MAC_KINDS.some((k) => findArtifact(latest, k.kind) != null);
 
   if (state.status !== "ready") {
     return (
@@ -232,7 +278,7 @@ export default function Download() {
             </h2>
             <p className="sec-lede">
               {latest
-                ? `${dateOf(latest.publishedAt)} 发布 · Electron ${latest.electronVersion} · 系统要求：Windows 10 / 11（x64）`
+                ? `${dateOf(latest.publishedAt)} 发布 · Electron ${latest.electronVersion} · 系统要求：Windows 10 / 11（x64）${hasMac ? " · macOS（Apple silicon / Intel）" : ""}`
                 : "发布数据暂时不可读，版本号显示为回落值，产物列表以接口恢复后为准。系统要求：Windows 10 / 11（x64）。"}
             </p>
           </div>
@@ -252,6 +298,31 @@ export default function Download() {
           )}
         </div>
       </section>
+
+      {/* macOS：只在最新 stable 里真的带了 mac 产物时渲染（产物全可选，没发就不出现，不摆占位）。 */}
+      {latest && MAC_KINDS.some((k) => findArtifact(latest, k.kind)) && (
+        <section className="sec">
+          <div className="wrap">
+            <div className="sec-head">
+              <h2>
+                macOS 桌面版{" "}
+                <span className="pill pill-ok">
+                  <span className="pill-dot" aria-hidden="true" />
+                  v{latest.version}
+                </span>
+              </h2>
+              <p className="sec-lede">
+                与 Windows 同版本发布 · Apple silicon 与 Intel 的 dmg 分开下载，装哪个看你的芯片。
+              </p>
+            </div>
+            <div className="grid-3">
+              {MAC_KINDS.filter((k) => findArtifact(latest, k.kind)).map((k) => (
+                <ArtifactBlock key={k.kind} release={latest} kind={k.kind} meta={k} />
+              ))}
+            </div>
+          </div>
+        </section>
+      )}
 
       {/* Android：版本号与产物来自 android-release.json（安卓独立版本源，与桌面 releases 接口无关）。 */}
       <section className="sec">

@@ -3,16 +3,16 @@
 // 开启态附带配对二维码（lxcode://pair?addr=…&token=…）——手机端扫码自动填入。
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import QRCode from "qrcode";
-import { maskToken, useConnections } from "../../shared/connections";
+import { useConnections } from "../../shared/connections";
 import { pairPayload } from "../../shared/pairing";
 import { playEnter } from "../../shared/anim";
 import { staggerIn } from "../../shared/motion";
 import { CopyBtn } from "../connections/CopyBtn";
 import { Toggle } from "../form";
+import { TokenCred } from "./TokenCred";
 
 export function LanAccessBlock() {
   const { remoteAccess, remoteAllowControl, setRemoteAllowControl, remoteBusy, setRemoteAccess, remoteAddr, remoteToken, regenerateRemoteToken } = useConnections();
-  const [reveal, setReveal] = useState(false);
   // 面板 ref：恒定回调（useCallback + playEnter 模块函数）——内联 ref 每次渲染
   // 都会被 React 重调（旧 ref 传 null、新 ref 传 el），里面若触发动画就会随
   // 父级每次重渲染重播，卡片反复淡入即「远程访问页一直闪」。
@@ -67,17 +67,7 @@ export function LanAccessBlock() {
             <span className="conn-cred-value mono">{remoteAddr}</span>
             <CopyBtn value={remoteAddr} label="地址" />
           </div>
-          <div className="conn-cred">
-            <span className="conn-cred-label">Token</span>
-            <span className="conn-cred-value mono">{reveal ? remoteToken : maskToken(remoteToken)}</span>
-            <button type="button" className="conn-copy" onClick={() => setReveal((v) => !v)} title={reveal ? "隐藏" : "显示明文"}>
-              {reveal ? "隐藏" : "显示"}
-            </button>
-            <CopyBtn value={remoteToken} label="Token" />
-            <button type="button" className="conn-copy" disabled={remoteBusy} onClick={regenerateRemoteToken} title="重新生成（旧 Token 立即失效）">
-              重置
-            </button>
-          </div>
+          <TokenCred token={remoteToken} busy={remoteBusy} onRegenerate={regenerateRemoteToken} />
           {qrDataUrl && (
             <div className="conn-qr" role="img" aria-label="配对二维码：扫此码在手机端填入连接信息">
               <img className="conn-qr-img" src={qrDataUrl} alt="" width={160} height={160} />

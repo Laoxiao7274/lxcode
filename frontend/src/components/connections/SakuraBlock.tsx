@@ -12,6 +12,7 @@ import { useConfirmClick } from "../../shared/confirm-click";
 import { Button, TextInput } from "../form";
 import { CopyBtn } from "./CopyBtn";
 import { SakuraNodePicker } from "./SakuraNodePicker";
+import { TokenCred } from "../remote/TokenCred";
 import { loadText } from "../../shared/sakura-nodes";
 
 /** 隧道删除钮（两步确认——useConfirmClick 统一行为）。 */
@@ -32,7 +33,7 @@ function TunnelDelBtn({ onConfirm, disabled }: { onConfirm: () => void; disabled
 }
 
 export function SakuraBlock() {
-  const { sakura, sakuraBusy, sakuraError, loginSakura, logoutSakura, refreshSakura, tunnels, createTunnel, toggleTunnel, removeTunnel, remoteToken, listSakuraNodes, onSakuraNodeLatency } = useConnections();
+  const { sakura, sakuraBusy, sakuraError, loginSakura, logoutSakura, refreshSakura, tunnels, createTunnel, toggleTunnel, removeTunnel, remoteToken, regenerateRemoteToken, listSakuraNodes, onSakuraNodeLatency } = useConnections();
   const [key, setKey] = useState("");
   // 创建流程：先开节点选择面板（节点是隧道级属性，建完改不了），确认后才创建
   const [picking, setPicking] = useState(false);
@@ -207,7 +208,10 @@ export function SakuraBlock() {
             </div>
           </div>
         )}
-        <div className="conn-ra-hint">创建时可选节点（自动 = 按负载最低）并自动分配端口，本地指向 127.0.0.1:7789；删除不连带本机地址。隧道在线后可用上方二维码配对（公网入口 + 同一把 Token）。</div>
+        {/* 公网入口与局域网入口共用同一把 Token（frp 只是隧道，门是同一把）——
+            隧道卡上同款展示/复制/重置，重置后局域网入口的旧 Token 一并失效。 */}
+        {remoteToken && <TokenCred token={remoteToken} busy={busy} onRegenerate={regenerateRemoteToken} />}
+        <div className="conn-ra-hint">公网入口与局域网入口共用同一把 Token——重置后两个入口的旧 Token 立即失效。创建时可选节点（自动 = 按负载最低）并自动分配端口，本地指向 127.0.0.1:7789；删除不连带本机地址。隧道在线后可用上方二维码配对（公网入口 + 同一把 Token）。</div>
       </div>
     </div>
   );

@@ -1,12 +1,13 @@
 {
-  "version": "0.3.50",
-  "versionCode": 52,
-  "name": "lxcode-0.3.50-android.apk",
-  "size": 12043591,
-  "sha256": "60ed0ca5f33fd40cf5ddde42723b64c93b0aee2dfee4349c7509bf44f673da46",
-  "url": "downloads/lxcode-0.3.50-android.apk",
+  "version": "0.3.52",
+  "versionCode": 53,
+  "name": "lxcode-0.3.52-android.apk",
+  "size": 12043593,
+  "sha256": "d19d1aeb0a9ac42edb391fe0ef312557d94921002381a838de18cd8bdfbf83dd",
+  "url": "downloads/lxcode-0.3.52-android.apk",
   "notes": [
-    "草稿持久化+多端共享：输入未发送的草稿按会话保存，切换会话不再串内容，桌面与安卓互通",
-    "桌面 0.3.50 同步更新：等待原语、Composer 缓冲区并入输入卡"
+    "修复安卓端重开App后不自动重连后端的问题",
+    "WS 重连竞态修复：close 拆分与在途守卫，避免重连并发打架",
+    "樱花frp 隧道名净化与设备占用状态区分；助手模式连接恢复自动重拉"
   ]
 }
