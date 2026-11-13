@@ -99,14 +99,47 @@ test('② 小节标题缩短为「助手」+ 行首来源徽标 assistant-src-pi
   assert.ok(seg.indexOf('assistant-src-pill') < seg.indexOf('className="title"'), 'pill 在标题之前（行首图标位）');
 });
 
-test('② App：onOpenAssistantChild = setAssistantChildPref 先落 + handleModeChange 后切（顺序不能反）', () => {
+test('② App：onOpenAssistantChild = 留在项目模式开 astchild 临时视图（openAstChildView，不切模式）', () => {
   assert.match(appSrc, /onOpenAssistantChild=\{openAssistantChild\}/, 'Sidebar props 接线');
   const fn = appSrc.slice(appSrc.indexOf('const openAssistantChild = useCallback'));
-  const end = fn.indexOf('}, [handleModeChange]');
-  const seg = fn.slice(0, end);
-  const prefAt = seg.indexOf('setAssistantChildPref(childId)');
-  const modeAt = seg.indexOf('handleModeChange("assistant")');
-  assert.ok(prefAt > -1 && modeAt > prefAt, '先记一次性偏好再切模式（AssistantWorkspace 挂载时才消费得到）');
+  const seg = fn.slice(0, fn.indexOf('}, [openAstChildView]'));
+  // 方案 A（2026-12）：不再 setAssistantChildPref + 切助手模式——与主域子会话
+  // 同语义：留在项目模式开 astchild 临时视图（pushState 进浏览器历史）。
+  assert.match(seg, /openAstChildView\(childId\)/, '点击 = openAstChildView（项目模式内临时视图）');
+  assert.ok(!seg.includes('setAssistantChildPref'), '不再落一次性偏好（跨模式跳转已退役）');
+  assert.ok(!seg.includes('handleModeChange'), '不再切助手模式（不跳模式）');
+});
+
+test('② App：renderView 有 astchild 分支（AssistantChildPage + 返回头，state 源 = assistantStates）', () => {
+  // 漏加分支 = astchild 键落到「坏键 return null」渲染空白（测试必红）。
+  const fn = appSrc.slice(appSrc.indexOf('const renderView = (activeView'));
+  const seg = fn.slice(0, fn.indexOf('const childId = childTabSession(activeView)'));
+  assert.match(seg, /astChildSession\(activeView\)/, 'astchild 键在主域 child 分支之前解析');
+  assert.match(seg, /<AssistantChildPage/, '渲染 AssistantChildPage（域口钉死助手域）');
+  assert.match(seg, /state=\{assistantStates\[astId\]\}/, 'state 源 = assistantStates（不是主域 sessionStates）');
+  assert.match(seg, /onClick=\{backToChat\}/, '返回头 = backToChat（回聊天视图）');
+  assert.match(seg, /childConfirmOf\(astId\)/, '裁决走助手域口（useAssistantConfirm 的 partial 包装）');
+  // 主域子会话分支仍走 ChildSessionPage + 主域口（两类临时视图不混）
+  const mainSeg = fn.slice(fn.indexOf('const childId = childTabSession(activeView)'));
+  assert.match(mainSeg, /<ChildSessionPage/, '主域 child:<id> 仍渲染 ChildSessionPage');
+});
+
+test('② App：astchild 裁决走助手域口（useAssistantConfirm），不接主域 chat.confirm', () => {
+  // 串域实害防御：astchild 视图渲染点附近的 onConfirm 必须来自 useAssistantConfirm。
+  assert.match(appSrc, /useAssistantConfirm\(\{[\s\S]*?assistantStates[\s\S]*?resolveAssistant/, 'App 挂 useAssistantConfirm（数据源 assistantStates）');
+  const astSeg = appSrc.slice(appSrc.indexOf('astChildSession(activeView)')).slice(0, appSrc.slice(appSrc.indexOf('astChildSession(activeView)')).indexOf('ChildSessionPage'));
+  assert.ok(!/handleChildConfirm/.test(astSeg), 'astchild 分支不接主域 handleChildConfirm（chat.confirm 串域）');
+  assert.ok(!/handleChildAnswer/.test(astSeg), 'astchild 分支不接主域 handleChildAnswer');
+});
+
+test('② AssistantWorkspace：子会话裁决走公共 hook（useAssistantConfirm），数据源 assistantStates', () => {
+  // 方案 A：裁决桥抽成 app-hooks/use-assistant-confirm.ts——助手模式内与项目
+  // 模式 astchild 视图消费同一个 hook；AssistantWorkspace 不再自持 owner 反查组。
+  assert.match(wsSrc, /useAssistantConfirm\(\{/, '消费 useAssistantConfirm（单一裁决实现）');
+  assert.ok(!/resolveAssistantChildOwner = useCallback/.test(wsSrc), '自持 owner 反查组已迁出（不回潮）');
+  // partial 包装仍从 hook 返回（身份稳定纪律不动）
+  assert.match(wsSrc, /onConfirm=\{childConfirmOf\(childId\)\}/, 'onConfirm 走稳定化的 childConfirmOf');
+  assert.match(wsSrc, /onAnswer=\{childAnswerOf\(childId\)\}/, 'onAnswer 走稳定化的 childAnswerOf');
 });
 
 test('② AssistantWorkspace：挂载时 take 偏好直接落子会话视图；偏好模块 take 即清', () => {

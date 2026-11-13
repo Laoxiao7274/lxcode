@@ -223,8 +223,13 @@ func goldenSamples() map[string]goldenSample {
 		// chat.compacted 事件：context 是压缩**后**的占用（RunCompaction 已重算，
 		// 客户端指示器立刻对上）；未知时整键缺席（与 chat.rewound 同一套语义）。
 		"compactedParams": {"", CompactedParams{SessionID: "s1", Before: 48210, After: 12100, Shadowed: 22,
-			Summary: "## 摘要", Manual: true, DispatchID: "call_7",
+			Summary: "## 摘要", Manual: true, DispatchID: "call_7", Reason: "自动压缩（摘要）",
 			Context: &ContextUsage{Used: 12100, Window: 128000, Messages: 4200, Estimated: true}}},
+		// chat.compacting 事件：压缩开始/结束信号（阻塞发送 + 多客户端感知）。
+		// 结束样本演示 dispatch_id 缺席 = 主会话压缩；compacting 无 omitempty
+		//（true/false 都必须显式上 wire，缺键不等于 false 的"未知"）。
+		"compactingParamsStart": {"", CompactingParams{SessionID: "s1", Compacting: true}},
+		"compactingParamsEnd":   {"", CompactingParams{SessionID: "child-1", Compacting: false, DispatchID: "call_7"}},
 
 		// ---- chat 域：会话级模型（chat.model / chat.modelChanged）----
 		//

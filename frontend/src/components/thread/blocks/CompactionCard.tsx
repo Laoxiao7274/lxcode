@@ -11,7 +11,8 @@ export function CompactionCard({ block, "data-uid": dataUid }: { block: Extract<
   const cardRef = useEnterRef<HTMLDivElement>();
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const hasSummary = block.summary.trim().length > 0;
-  // 历史回放时拿不到前后用量（后端只带摘要正文）——那时不显示统计行
+  // 历史回放时拿不到前后用量（后端只带摘要正文）——那时不显示统计行。
+  // 只裁剪的降级路径（reason=「只裁剪」/ shadowed=0）也要显示统计行（有 before/after）。
   const hasStats = block.before > 0 || block.shadowed > 0;
 
   return (
@@ -33,6 +34,7 @@ export function CompactionCard({ block, "data-uid": dataUid }: { block: Extract<
         <span className="compact-title">
           {block.manual ? "已压缩历史（手动）" : "已压缩历史"}
         </span>
+        {block.reason && <span className="compact-reason">{block.reason}</span>}
         {hasStats ? (
           <span className="compact-stats mono">
             {block.shadowed} 条 · {fmt(block.before)} → {fmt(block.after)}

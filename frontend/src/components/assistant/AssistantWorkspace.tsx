@@ -25,15 +25,24 @@
 // 的冻结保活先例）。切走/切回是纯显示切换，内部订阅（refreshList、
 // session.changed、use-done-notify 的 hasFocus 判定）与全部组件状态（含时间线
 // 流式渲染的中间态）跨模式存活——「切模式后生成停掉」一类卸载竞态整类消灭。
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { AgentSource, SessionMeta } from "../../shared/types";
 import type { UIState } from "../../shared/store";
 import type { AppMode } from "../../shared/app-mode";
 import { childTabSession, type WorkspaceView } from "../../shared/workspace-tabs";
+import {
+  appendSessionTab,
+  pruneSessionTabs,
+  seedSessionTabs,
+  sessionTabFallback,
+  visibleSessionTabs,
+} from "../../shared/session-tabs";
 import { readLastAssistantSession, writeLastAssistantSession } from "../../shared/app-mode";
+import { useAssistantConfirm } from "../../app-hooks/use-assistant-confirm";
 import { takeAssistantChildPref } from "./assistant-child-pref";
 import { AssistantChildPage } from "./AssistantChildPage";
 import { AssistantPage } from "./AssistantPage";
+import { AssistantTabStrip, type AssistantTabItem as AssistantTabStripItem } from "./AssistantTabStrip";
 import { CatalogPage } from "../catalog/CatalogPage";
 import { AssistantConfigTab } from "../catalog/AssistantConfigTab";
 import { setCatalogTabPref } from "../catalog/catalog-tab-pref";
@@ -69,8 +78,28 @@ export function AssistantWorkspace({
 }) {
   const assistant = source.assistant;
   /** 当前助手会话 id（"" 起始 = 中性态「未选择」；进入助手模式恢复上次会话
-   *  记忆——lastAssistantSession，app-mode.ts 的 localStorage 记忆层）。 */
+   *  记忆——lastAssistantSession，app-mode.ts 的 localStorage 记忆层）。
+   *  方案 B（2026-12 多标签）：它同时是**活跃标签**——lastAssistantSession 的
+   *  语义自动升级为「活跃标签记忆」（启动恢复 = 开单标签）。 */
   const [sessionId, setSessionId] = useState(() => readLastAssistantSession());
+  // ---- 会话标签条（方案 B）----
+  // order = 标签打开顺序（新标签追加在右，容量满丢最老——session-tabs 纯函数）；
+  // closed = 用户关掉的标签（纯 UI 态：会话本体留在侧栏，可从侧栏再开）。
+  // 首次拿到列表铺开标签（seedSessionTabs 一次）；未打开过的会话不挂载。
+  const [tabOrder, setTabOrder] = useState<string[]>([]);
+  const [tabClosed, setTabClosed] = useState<Set<string>>(new Set());
+  const tabSeededRef = useRef(false);
+  // handleCloseTab 读最新值用（useCallback 不进依赖——回调身份稳定）。
+  const tabOrderRef = useRef(tabOrder);
+  tabOrderRef.current = tabOrder;
+  const tabClosedRef = useRef(tabClosed);
+  tabClosedRef.current = tabClosed;
+  /** 常驻挂载的会话页集合（点开过才挂—— AssistantPage 实例 key=sessionId，
+   *  boot 只跑一次；隐藏标签 display:none + 冻结渲染，流式 delta 不逐帧重渲染
+   *  所有标签）。frozenRef 复用 App WorkspaceViewPanels 的先例：隐藏页缓存上一次
+   *  渲染的元素对象，React 对同引用元素跳过整棵子树协调。 */
+  const [mountedIds, setMountedIds] = useState<string[]>([]);
+  const frozenRef = useRef(new Map<string, ReactNode>());
   /** 记账：本工作区见过的助手会话 id（子会话域判定的依据——与 App 旧
    *  assistantIdsRef 同语义，只是收进助手模式内部）。 */
   const knownIdsRef = useRef<Set<string>>(new Set());
@@ -186,14 +215,54 @@ export function AssistantWorkspace({
     };
   }, []);
 
+  // ---- 标签条规则（方案 B：session-tabs 纯函数收口）----
+  // 首次拿到会话列表铺开标签：后端序最近在前 → 反转成「新的在右」（只铺一次——
+  // 之后顺序由用户操作决定）。活跃会话记忆（lastAssistantSession）恢复时它已经
+  // 在列表里，seed 即含它——启动恢复 = 单标签场景。
+  const sessionListRef = useRef(sessionList);
+  sessionListRef.current = sessionList;
+  useEffect(() => {
+    if (tabSeededRef.current || sessionList.length === 0) return;
+    tabSeededRef.current = true;
+    setTabOrder(seedSessionTabs(sessionList));
+  }, [sessionList]);
+
+  // 活跃会话不在标签条（侧栏点进来/新建/容量挤出）→ 追加到右侧 + 挂载实例。
+  // 已在列表则不动（点标签不重排——浏览器语义）。活跃会话恒挂载（正在看）。
+  useEffect(() => {
+    if (!sessionId) return;
+    setTabOrder((prev) => appendSessionTab(prev, sessionId));
+    setMountedIds((prev) => (prev.includes(sessionId) ? prev : [...prev, sessionId]));
+  }, [sessionId]);
+
+  // 死标签不占容量：归档/关闭后从 order 剔掉（无变化时返回同一引用——不触发循环）。
+  useEffect(() => {
+    setTabOrder((prev) => pruneSessionTabs(prev, sessionList, tabClosed, sessionId));
+  }, [sessionList, tabClosed, sessionId]);
+
+  // 活跃会话被用户关掉后从 mountedIds 摘除（由 handleClose 走 handleSelect 回退时
+  // 自动完成；这里兜 prune 的另一条路径：会话被归档 → 标签消失，若它是活跃的，
+  // 焦点回退交给 visibleSessionTabs 的「当前会话恒显示」与侧栏点击，不强切）。
+  // 冻结缓存清理：mountedIds 里已消失的会话把 frozenRef 的条目一并摘掉（内存
+  // 卫生——挂载层收窄后不会再渲染它）。
+  const mountedIdsRef = useRef(mountedIds);
+  mountedIdsRef.current = mountedIds;
+  useEffect(() => {
+    for (const id of [...frozenRef.current.keys()]) {
+      if (!mountedIdsRef.current.includes(id)) frozenRef.current.delete(id);
+    }
+  }, [mountedIds]);
+
   const handleSessionId = useCallback((id: string) => {
     knownTick(id);
     setSessionId(id);
     void refreshList();
   }, [knownTick, refreshList]);
 
-  // 列表选中一个会话：切 sessionId（AssistantPage 按 key 重挂 → boot 装载历史），
-  // 收掉子会话临时视图与拓展页内嵌视图；记忆更新（进入助手模式恢复的就是它）。
+  // 列表选中一个会话（方案 B 升级：**append 标签 + 切活跃**，不再是「清一切切
+  // 单值」）：切 sessionId（活跃标签高亮跟随），收掉子会话临时视图与拓展页内嵌
+  // 视图（互斥语义按现语义保留——childView/secondaryView 是全局覆盖层，让位于
+  // 会话时间线）；记忆更新（= 活跃标签记忆，启动恢复开单标签）。
   const handleSelect = useCallback((id: string) => {
     knownTick(id);
     writeLastAssistantSession(id);
@@ -201,6 +270,26 @@ export function AssistantWorkspace({
     setChildViewId(null);
     setSecondaryView(null);
   }, [knownTick]);
+
+  // 关闭一个标签（× 按钮）：只摘标签（UI 态），会话本体留在侧栏。关掉**当前**
+  // 标签：焦点让给最近打开的另一个标签（sessionTabFallback——最右优先），没有
+  // 可让对象就不动（最后标签关不掉）——**绝不新建会话**（session-tabs.ts 的
+  // 原缺陷①②：关一个冒一个/别的标签一起没，规则已钉在 session-tabs.test.mjs）。
+  const handleCloseTab = useCallback((id: string) => {
+    setTabClosed((prev) => {
+      if (prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.add(id);
+      return next;
+    });
+    if (id !== sessionId) return;
+    const fallback = sessionTabFallback(
+      visibleSessionTabs(tabOrderRef.current, sessionListRef.current, tabClosedRef.current, sessionId),
+      id,
+    );
+    if (!fallback) return;
+    handleSelect(fallback);
+  }, [sessionId, handleSelect]);
 
   // ---- 鼠标侧键（2026-12 修复）：助手域导航探针 ----
   // 助手域是纯 useState 导航、从不写浏览器历史——壳层的侧键注入默认走
@@ -311,43 +400,16 @@ export function AssistantWorkspace({
     return childTabTitle(timelineOf(parentState), id);
   }, [childParents, sessionId, assistantStates]);
 
-  // ---- 助手域子会话的确认裁决（原 App.tsx 的 resolveAssistantChildOwner 组）----
-  const assistantStatesRef = useRef(assistantStates);
-  assistantStatesRef.current = assistantStates;
-  const resolveAssistantChildOwner = useCallback((id: string): string => {
-    const did = assistantStatesRef.current[id]?.pending?.dispatch_id ?? "";
-    if (!did) return id;
-    const owner = Object.entries(assistantStatesRef.current).find(([, st]) =>
-      st.blocks.some((b) => b.kind === "dispatch" && b.id === did))?.[0];
-    return owner ?? id;
-  }, []);
-  const handleChildConfirm = useCallback((id: string, confirmId: string, allow: boolean) => {
-    void assistant?.confirm(resolveAssistantChildOwner(id), confirmId, allow)
-      .then(() => resolveAssistant(id, confirmId, allow ? "allow" : "deny"))
-      .catch((e) => reportError(e instanceof Error ? e.message : String(e)));
-  }, [assistant, resolveAssistantChildOwner, resolveAssistant, reportError]);
-  const handleChildAnswer = useCallback((id: string, confirmId: string, text: string) => {
-    void assistant?.confirm(resolveAssistantChildOwner(id), confirmId, true, text)
-      .then(() => resolveAssistant(id, confirmId, "allow", text))
-      .catch((e) => reportError(e instanceof Error ? e.message : String(e)));
-  }, [assistant, resolveAssistantChildOwner, resolveAssistant, reportError]);
-  // 子会话视图的 *partial* 包装（AssistantChildPage 要的是 (id, allow) 签名）。
-  // **必须 useCallback**（2026-12 闪烁修复）：内联箭头每帧换身份 → ChildSessionPage
-  // 的 handleConfirm/handleAnswer（useCallback 依赖 onConfirm/onAnswer）跟着换 →
-  // 时间线上的确认卡 Block 逐帧失忆重挂。childId 变化时重生成（依赖它是语义需要）。
-  const childConfirmOf = useCallback(
-    (childId: string) => (id: string, allow: boolean) => handleChildConfirm(childId, id, allow),
-    [handleChildConfirm],
-  );
-  const childAnswerOf = useCallback(
-    (childId: string) => (id: string, text: string) => handleChildAnswer(childId, id, text),
-    [handleChildAnswer],
-  );
-
-  const activeMeta = useMemo(
-    () => sessionList.find((s) => s.id === sessionId),
-    [sessionList, sessionId],
-  );
+  // ---- 助手域子会话的确认裁决（2026-12 方案 A：抽成公共 hook use-assistant-confirm）----
+  // 项目模式的 astchild 视图（App 的 renderView 分支）与这里消费**同一个 hook、
+  // 同一份数据源**（assistantStates）——裁决恒走助手域口（assistant.confirm +
+  // resolveAssistant 两处定格），不许项目侧走主域 chat.confirm（串域实害）。
+  const { handleChildConfirm, handleChildAnswer, childConfirmOf, childAnswerOf } = useAssistantConfirm({
+    assistant,
+    assistantStates,
+    resolveAssistant,
+    reportError,
+  });
 
   /** 搜索过滤后的列表（按标题包含——与主域 Sidebar 的 query 语义一致）。 */
   const filteredSessions = useMemo(() => {
@@ -355,6 +417,30 @@ export function AssistantWorkspace({
     if (!q) return sessionList;
     return sessionList.filter((s) => s.title.toLowerCase().includes(q));
   }, [sessionList, query]);
+
+  // ---- 标签条可见集合（session-tabs 纯函数：剔除归档与用户关掉的；当前会话恒显示）----
+  // busy 位走**签名**依赖（App 的 busyBySession 同款纪律）：流式 delta 每帧换
+  // assistantStates[id] 对象但 busy 位不变——签名不变就不重建数组，
+  // AssistantTabStrip 的 memo 不被击穿。
+  const tabBusySig = useMemo(
+    () => visibleSessionTabs(tabOrder, sessionList, tabClosed, sessionId)
+      .map((id) => `${id}:${assistantStates[id]?.busy ? 1 : 0}`)
+      .join("|"),
+    [tabOrder, sessionList, tabClosed, sessionId, assistantStates],
+  );
+  const stripTabs = useMemo<AssistantTabStripItem[]>(() => {
+    const busySet = new Set(
+      tabBusySig.split("|").filter(Boolean).map((entry) => entry.split(":")[0]),
+    );
+    return visibleSessionTabs(tabOrder, sessionList, tabClosed, sessionId).map((id) => ({
+      id,
+      title: sessionList.find((s) => s.id === id)?.title || "新对话",
+      busy: busySet.has(id) && Boolean(assistantStates[id]?.busy),
+    }));
+    // tabBusySig 是真实依赖（busy 位变化才重建）；assistantStates/tabOrder 等
+    // 出现在签名/列表的派生里，直接依赖会产生每帧重建。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tabBusySig, tabOrder, sessionList, tabClosed, sessionId, assistantStates]);
 
   if (!assistant) {
     return (
@@ -562,30 +648,58 @@ export function AssistantWorkspace({
         </main>
       ) : sessionId ? (
         <main className="assistant-ws-main">
-          {/* key = sessionId：按会话强制重挂——bootRef 随实例新建，isBooted 的
-              「每实例一次」闸门不再挡住切会话后的历史装载（2026-12 修复：
-              切回会话 assistant.history 永不再调的根因）。 */}
-          <AssistantPage
-            key={sessionId}
-            source={source}
-            state={assistantStates[sessionId]}
-            sessionId={sessionId}
-            sessionMeta={activeMeta}
-            onSessionId={handleSessionId}
-            onOpenChild={(id) => { setChildViewId(id); setSecondaryView(null); }}
-            onConfirm={(id, allow) => {
-              if (!sessionId) return;
-              resolveAssistant(sessionId, id, allow ? "allow" : "deny");
-              assistant.confirm(sessionId, id, allow).catch((e) =>
-                reportError(`裁决失败: ${e instanceof Error ? e.message : String(e)}`));
-            }}
-            onAnswer={(id, text) => {
-              if (!sessionId) return;
-              resolveAssistant(sessionId, id, "allow", text);
-              assistant.confirm(sessionId, id, true, text).catch((e) =>
-                reportError(`回答失败: ${e instanceof Error ? e.message : String(e)}`));
-            }}
+          {/* 标签条（方案 B）：多会话并存，点标签 = handleSelect（append + 切活跃）。
+              空列表（单会话也可不显——只在 ≥1 个时渲染条）不占高度。 */}
+          <AssistantTabStrip
+            tabs={stripTabs}
+            activeId={sessionId}
+            onSelect={handleSelect}
+            onClose={handleCloseTab}
           />
+          {/* 常驻挂载层（方案 B 保活）：每个点开过的会话一个 AssistantPage 实例
+              （key=sessionId，boot 只跑一次），切标签是纯显示切换（hidden）+
+              **冻结渲染**（frozenRef 复用 App WorkspaceViewPanels 的先例：隐藏页
+              缓存上一次渲染的元素对象，React 对同引用元素跳过整棵子树协调——
+              没有这层，流式 delta 每帧重渲染所有标签）。活跃页每次渲染新内容。 */}
+          {mountedIds.map((id) => {
+            const isActive = id === sessionId;
+            const meta = sessionList.find((s) => s.id === id);
+            if (isActive || !frozenRef.current.has(id)) {
+              frozenRef.current.set(id, (
+                <AssistantPage
+                  key={id}
+                  source={source}
+                  state={assistantStates[id]}
+                  sessionId={id}
+                  sessionMeta={meta}
+                  onSessionId={handleSessionId}
+                  onOpenChild={(id) => { setChildViewId(id); setSecondaryView(null); }}
+                  onConfirm={(confirmId, allow) => {
+                    resolveAssistant(id, confirmId, allow ? "allow" : "deny");
+                    assistant.confirm(id, confirmId, allow).catch((e) =>
+                      reportError(`裁决失败: ${e instanceof Error ? e.message : String(e)}`));
+                  }}
+                  onAnswer={(answerId, text) => {
+                    resolveAssistant(id, answerId, "allow", text);
+                    assistant.confirm(id, answerId, true, text).catch((e) =>
+                      reportError(`回答失败: ${e instanceof Error ? e.message : String(e)}`));
+                  }}
+                />
+              ));
+            }
+            return (
+              <div
+                key={id}
+                className="asst-tab-page"
+                data-asst-session={id}
+                hidden={!isActive}
+              >
+                {frozenRef.current.get(id) ?? null}
+              </div>
+            );
+          })}
+          {/* 已卸载页的冻结缓存随 mountedIds 清理（ref 清理不在渲染路径——由
+              effect 兜底，见下方 syncedMounted effect）。 */}
         </main>
       ) : (
         /* 中性态：未选择会话——不自动 assistant.new（进入助手模式建空会话

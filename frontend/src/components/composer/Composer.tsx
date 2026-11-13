@@ -186,11 +186,13 @@ export function Composer({
   // 「+」按钮的弹出菜单（点外/Esc 关闭 + 退场动画——shared/popover 的通用接线）
   const addMenu = usePopover();
   // submit 的去向判定在 send-queue.ts 的 routeSubmit（纯函数，测试直测同一份）：
-  // 空闲 → 正常发送路径；busy/sending → 入发送缓冲区（原先 busy 时 Enter 是
+  // 空闲 → 正常发送路径；busy/sending/压缩中 → 入发送缓冲区（原先 busy 时 Enter 是
   // no-op 且输入文本已清空，被后端拒收的发送连文本都找不回来）。发送中（sending）
   // 不可直发：消息已经交出去，再点发送会插第二条乐观块并可能被后端以 busy 拒收。
+  // 压缩中（compacting）同样不可直发：压缩改写历史，这期间发出的 chat.send 会撞
+  // 「压缩期间被改动」防线让整次压缩作废（prefill 白跑）——入队等压缩结束补发。
   // hasAttachments：只附件没文本也允许发（后端以「[附件]」行充当正文）。
-  const route = (text: string) => routeSubmit({ text, busy, sending, locked, hasQueue: Boolean(onQueue), hasAttachments: hasPendingAtts(images, files) });
+  const route = (text: string) => routeSubmit({ text, busy, sending, locked, hasQueue: Boolean(onQueue), hasAttachments: hasPendingAtts(images, files), compacting });
   const canSend = route(value.trim()) === "send";
 
   // 斜杠面板：输入以 / 开头（单行——/ 出现在行中不算命令）时开
@@ -680,7 +682,7 @@ export function Composer({
             <textarea
               ref={taRef}
               className="piInput"
-              placeholder={locked ? "只读视图——回到主会话才能发消息" : busy ? "生成中… 可先输入，Enter 排队发送" : "让智能体构建、审查或解释点什么…"}
+              placeholder={locked ? "只读视图——回到主会话才能发消息" : busy ? "生成中… 可先输入，Enter 排队发送" : compacting ? "正在压缩历史，请稍候… 可先输入，Enter 排队发送" : "让智能体构建、审查或解释点什么…"}
               rows={1}
               value={value}
               disabled={locked}

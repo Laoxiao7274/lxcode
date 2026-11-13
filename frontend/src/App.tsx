@@ -16,7 +16,8 @@ import { draftOf } from "./shared/session-drafts";
 import { visionBlockNotice } from "./shared/attachments";
 import { AgentsProvider, useAgents } from "./shared/agents";
 import { enterAssistantMode, enterProjectMode, readLastAssistantSession, writeLastAssistantSession, type AppMode } from "./shared/app-mode";
-import { setAssistantChildPref } from "./components/assistant/assistant-child-pref";
+import { astChildSession } from "./shared/workspace-tabs";
+import { useAssistantConfirm } from "./app-hooks/use-assistant-confirm";
 import { AgentsPage } from "./components/agents/AgentsPage";
 import { CatalogPage } from "./components/catalog/CatalogPage";
 import { GitWorkbenchPage } from "./components/git/GitWorkbenchPage";
@@ -37,6 +38,7 @@ import { SessionTreePanel } from "./components/panels/SessionTreePanel";
 import { truncationNote, type TreeRow } from "./components/panels/tree-model";
 import { ChildSessionPage } from "./components/panels/ChildSessionPage";
 import { AssistantWorkspace } from "./components/assistant/AssistantWorkspace";
+import { AssistantChildPage } from "./components/assistant/AssistantChildPage";
 import { SettingsProvider, useSettings } from "./shared/settings";
 import { ConnectionsProvider } from "./shared/connections";
 import { UpdateProvider } from "./shared/update";
@@ -100,10 +102,8 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
    *  记忆由 app-mode.ts 承担（切回项目模式恢复离开时的视图）。
    *  handleModeChange 在 useWorkspaceNav 之后定义（要读写工作区状态）。 */
   const [appMode, setAppMode] = useState<AppMode>("project");
-  // appMode 的 ref 镜像（openAssistantChild 要在回调里读当前模式——state 闭包
-  // 读到的是旧值；与 currentIdRef 同一套「ref 镜像供回调读最新值」的纪律）。
-  const appModeRef = useRef<AppMode>("project");
-  appModeRef.current = appMode;
+  // appMode 的 ref 镜像（回调里读当前模式——state 闭包读到的是旧值；与
+  // currentIdRef 同一套「ref 镜像供回调读最新值」的纪律）。
   /** 发送失败的附件回滚（store 钩子 → Composer 的 attsDraft）：文本丢了附件不能丢。
    *  per-session 记账（drafts）之下它只服务「正看着的那个会话」——失败发生在别的
    *  会话时只落记账键（切回去由初始草稿还原），不装给挂载中的 Composer。 */
@@ -172,7 +172,7 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
 
   const {
     view, workspaceState, setWorkspaceState, workspaceStateRef, settingsOpen, setSettingsOpen, filter, setFilter, gitProjectId, setGitProjectId,
-    closeWorkspace, openWorkspaceTab, openChildView, openAgents, openCatalog, openGit, openRemote, backToChat, focusSession, openProject, openSettings,
+    closeWorkspace, openWorkspaceTab, openChildView, openAstChildView, openAgents, openCatalog, openGit, openRemote, backToChat, focusSession, openProject, openSettings,
   } = useWorkspaceNav({ source, currentId });
 
   // ---- 顶层模式切换（助手模式 P2：useWorkspaceNav 之后定义——要读写工作区状态）----
@@ -208,15 +208,13 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
     });
   }, [workspaceStateRef, setWorkspaceState]);
 
-  // 项目模式侧栏「来自助手」任务行 → 助手模式的子会话视图（2026-12 跨模式
-  // 跳转）：先记一次性偏好（assistant-child-pref，take 语义），再切助手模式。
-  // 顺序不能反：偏好必须先落（AssistantWorkspace 保活常驻——2026-12 卸载竞态
-  // 防御后「挂载时消费偏好」只发生在应用启动；运行期经由 handleModeChange 的
-  // 直写路径生效，时序不变：先 setAssistantChildPref 再切模式）。
+  // 项目模式侧栏「来自助手」任务行 → **留在项目模式**开 astchild 临时视图
+  //（2026-12 方案 A，推翻旧的「落一次性偏好 + 切助手模式」跨模式跳转）：与主域
+  // 子会话同语义——pushState 进浏览器历史、不进标签栏；渲染与裁决走 App 的
+  // astchild 分支（助手域口，见 use-assistant-confirm）。
   const openAssistantChild = useCallback((childId: string) => {
-    setAssistantChildPref(childId);
-    if (appModeRef.current !== "assistant") handleModeChange("assistant");
-  }, [handleModeChange]);
+    openAstChildView(childId);
+  }, [openAstChildView]);
 
   // live 写失败桥（AgentsProvider 的乐观更新 WS 调用失败 → 一次性提示）
   useEffect(() => {
@@ -308,6 +306,19 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
     source, resolve, reportError, currentId, sessionStatesRef,
   });
 
+  // ---- 助手域子会话的确认裁决（方案 A）：项目模式的 astchild 临时视图与助手
+  // 模式内的 AssistantWorkspace 消费**同一个** hook（use-assistant-confirm）——
+  // 裁决恒走助手域口（assistant.confirm + resolveAssistant 两处定格）。绝不能让
+  // astchild 视图走主域 use-confirm-flow 的 handleChildConfirm（chat.confirm 寻址
+  // 助手域会话 = 串域实害：会话不在主域注册表里，tool.confirm 找不到它）。
+  const assistantSource = source.assistant;
+  const { childConfirmOf, childAnswerOf } = useAssistantConfirm({
+    assistant: assistantSource,
+    assistantStates,
+    resolveAssistant,
+    reportError,
+  });
+
   // ---- 助手域的确认裁决（助手模式 P2）----
   // 已迁进 AssistantWorkspace（顶层模式容器）：助手 run_task 子会话的确认卡
   //（dispatch_id 归属反查父 + assistant.confirm 裁决 + 两处定格）在助手模式
@@ -343,7 +354,7 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
   // ---- 发送缓冲区条目动作（use-send-queue）----
   const { queueNotice, handleQueueEdit, handleQueueDelete, handleQueueSend, currentQueue } = useSendQueue({
     sendQueues, currentId, removeQueuedSend, moveQueuedToFront, injectDraft, sendWithOptions,
-    busy: state.busy, sending: state.sending,
+    busy: state.busy, sending: state.sending, compacting: state.compacting,
   });
 
 
@@ -437,13 +448,25 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
     const parentState = sessionStates[parent] ?? state;
     return childTabTitle(timelineOf(parentState), sessionId, (agentId) => agents.find((a) => a.id === agentId)?.name ?? "");
   }, [childParents, currentId, sessionStates, state, agents]);
+  // 助手子会话（astchild 临时视图）的标题：与主域子会话同一份 childTabTitle 纯
+  // 函数，父会话反查 childParents + assistantStates（映射缺失时兜底空时间线——
+  // 不许 undefined 进 timelineOf 抛 TypeError = 白屏）。
+  const astChildTitleOf = useCallback((sessionId: string) => {
+    const parent = childParents[sessionId];
+    const parentState = assistantStates[parent ?? ""] ?? { blocks: [], streaming: null };
+    return childTabTitle(timelineOf(parentState), sessionId);
+  }, [childParents, assistantStates]);
+
   // 顶栏标题与临时视图页头身份走**同一个**函数：各算一次早晚分叉。
   // 子会话标题加「子会话 · 」前缀（用户报「子会话和主会话表明的不明显」）：临时视图
   // 有自己的页头与「返回主会话」按钮，而**顶栏只有一行文字**，所以在这里补一个文字前缀。
   // 标题正文仍来自同一个 childTabTitleOf（不各算一次）。
-  const viewTitle = activeChildId !== null
-    ? `子会话 · ${childTabTitleOf(activeChildId)}`
-    : view === "agents" ? "Agent 名单" : view === "catalog" ? "拓展" : view === "git" ? "Git 管理" : view === "remote" ? "远程访问" : currentTitle;
+  const activeAstChildId = astChildSession(view);
+  const viewTitle = activeAstChildId !== null
+    ? `助手任务 · ${astChildTitleOf(activeAstChildId)}`
+    : activeChildId !== null
+      ? `子会话 · ${childTabTitleOf(activeChildId)}`
+      : view === "agents" ? "Agent 名单" : view === "catalog" ? "拓展" : view === "git" ? "Git 管理" : view === "remote" ? "远程访问" : currentTitle;
 
   // TabBar 侧主会话标签的「视图态」信息：临时视图活跃时给父会话标签追加
   // 「↳ 子标题」与描边角标（sessionTabAction 让点击 = 返回主会话）。标题与
@@ -479,7 +502,10 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
   // 压缩进行中状态条（/compact 斜杠命令与弹层按钮共用同一条链路——入口在哪触发
   // 都能看到）。与 errorNotice 同层同形态，走中性色：它不是失败，是「正在做」。
   // 完成后由 compacting 复位摘除（检查点卡由 chat.compacted 事件 + 历史重拉接管呈现）。
-  const compactingNotice = compacting && view === "chat" && (
+  // 两处反馈态合并（2026-12 阻塞发送）：本地发起态（useCompaction——发起方即时
+  // 反馈，超时兜底语义）与归约态（chat.compacting 事件——其它客户端/刷新后的
+  // 感知通道）取或；本地发起时归约事件也会到达，两态同值不打架，归约态兜底。
+  const compactingNotice = (compacting || state.compacting) && view === "chat" && (
     <div className="op-notice compacting" role="status">
       <span className="mset-spinner" aria-hidden />
       <span className="op-notice-text">正在压缩历史…（要等一次摘要调用，大会话可能要几十秒）</span>
@@ -515,6 +541,7 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
               key={currentId}
               busy={state.busy}
               sending={state.sending}
+              compacting={compacting || state.compacting}
               todos={state.todos}
               context={state.context}
               stats={state.stats}
@@ -611,9 +638,35 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
     // focusChildView 只切 active）：渲染子会话自己的完整时间线。
     // key=childId：不同子会话各自一份实例（切走再回来不串历史；返回后视图卸载，
     // store 里的子会话 state 与实时流缓存不受影响，重新打开由 ChildSessionPage 重新装载）。
-    // 助手 run_task 的子会话**不经过这里**（助手模式 P2）：它的临时视图在
-    // AssistantWorkspace 内部（域判定/装载/裁决都收进助手模式）——项目模式的
-    // 主域子会话走原路径。
+    // 主域子会话的裁决走 use-confirm-flow 的主域口（chat.confirm——父会话代理确认门）。
+    // **助手 run_task 的子会话走 astchild 分支**（键 astchild:<sessionId>，方案 A）：
+    // 裁决走助手域口（useAssistantConfirm），state 源 = assistantStates——绝不能让
+    // 助手域子会话落到主域 ChildSessionPage 的确认链上（chat.confirm 串域实害）。
+    const astId = astChildSession(activeView);
+    if (astId !== null) {
+      return (
+        <div className="assistant-ws-main ast-child-view">
+          <div className="assistant-ws-child-head">
+            <Button
+              className="assistant-ws-back"
+              onClick={backToChat}
+              title="返回主会话"
+            >
+              ← 返回
+            </Button>
+            <span className="assistant-ws-child-title">{astChildTitleOf(astId)}</span>
+          </div>
+          <AssistantChildPage
+            key={astId}
+            source={source}
+            sessionId={astId}
+            state={assistantStates[astId]}
+            onConfirm={childConfirmOf(astId)}
+            onAnswer={childAnswerOf(astId)}
+          />
+        </div>
+      );
+    }
     const childId = childTabSession(activeView);
     if (childId === null) return null; // 坏键（不该出现）：不渲染，也不炸
     return (
@@ -769,9 +822,8 @@ function WorkspaceViewPanels({
     return () => { context.revert(); };
   }, [displayedView]);
 
-  const renderedPages: WorkspaceTab[] = [...openTabs];
-  if (displayedView !== "chat" && !renderedPages.includes(displayedView)) renderedPages.push(displayedView);
-  const renderedViews: WorkspaceView[] = ["chat", ...renderedPages];
+  const renderedViews: WorkspaceView[] = ["chat", ...openTabs];
+  if (displayedView !== "chat" && !renderedViews.includes(displayedView)) renderedViews.push(displayedView);
 
   // 冻结渲染：隐藏面板复用**上一次渲染的同一元素对象**——React 对引用相同的
   // 元素直接跳过整棵子树的协调。没有这层，每个聊天流式 delta 都会把所有

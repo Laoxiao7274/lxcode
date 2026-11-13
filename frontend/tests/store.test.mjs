@@ -412,3 +412,28 @@ test('事件侧 operationError 走 setOperationError（缓冲在 controller 里�
   handleAgentEvent({ type: 'operationError', message: '连接断开' }, c);
   assert.deepEqual(errors, ['发送失败: busy', '连接断开'], '事件侧逐条进缓冲');
 });
+
+// ---------- chat.compacting：压缩期间阻塞发送的归约态（2026-12） ----------
+
+test('compacting 事件归约：true/false 都写会话级 compacting；子会话的（带 dispatchId）不碰主会话', () => {
+  let s = { blocks: [], busy: false, pending: null, todos: [], currentId: '', operationError: null, context: null };
+  s = reduce(s, { type: 'compacting', sessionId: 's1', compacting: true });
+  assert.equal(s.compacting, true, '压缩开始置位');
+  s = reduce(s, { type: 'compacting', sessionId: 's1', compacting: false });
+  assert.equal(s.compacting, false, '压缩结束复位（失败路径也发 false——状态不卡死）');
+  // 子会话的压缩：主会话的 compacting 不动
+  s = reduce(s, { type: 'compacting', sessionId: 's1', compacting: true, dispatchId: 'd1' });
+  assert.equal(s.compacting, false, '带归属的 compacting 不碰主会话态（子会话由双投吃到）');
+});
+
+test('子会话自己的 compacting 经双投落进子会话 state（state 已建——先开过子会话视图）', () => {
+  let all = {};
+  all = reduceSessionStates(all, { type: 'dispatchStart', sessionId: 'parent', dispatchId: 'd1', childSessionId: 'child-1', agentId: 'coder', agentName: 'c', agentColor: '#000', task: 't' });
+  // 子会话 state 须先有基线（装载子会话历史时建立——双投「不建」规则）
+  all = reduceSessionStates(all, { type: 'historyLoaded', sessionId: 'child-1', history: { sessionId: 'child-1', messages: [{ role: 'user', content: '任务' }], busy: false, pending: null, todos: [] } });
+  all = reduceSessionStates(all, { type: 'compacting', sessionId: 'parent', compacting: true, dispatchId: 'd1' });
+  assert.equal(all['child-1'].compacting, true, '子会话 state 置位（双投）');
+  all = reduceSessionStates(all, { type: 'compacting', sessionId: 'parent', compacting: false, dispatchId: 'd1' });
+  assert.equal(all['child-1'].compacting, false, '子会话 state 复位');
+  assert.equal(all['parent'].compacting, false, '主会话不受影响');
+});

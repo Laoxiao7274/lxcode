@@ -57,6 +57,102 @@
   line-height: 1.6;
 }
 
+/* ---- 会话标签条（方案 B：助手侧多标签） ----
+ * 形态对齐主域 .tab 药丸语言（base.css 的 .tab 逐像素参照），但类名独立
+ *（.asst-tab*）——语义不同（无工作区页签/视图态/溢出动效），混用类名会让
+ * base.css 的规则（.tab.viewing/.tab-child-* 等）误伤助手域。颜色全部走
+ * --asst-* 容器级 token（选中态 --asst-accent-soft 助手紫 wash），不动 :root。 */
+.asst-tabstrip {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 12px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+.asst-tabstrip::-webkit-scrollbar { display: none; }
+.asst-tab {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  max-width: 176px;
+  min-width: 58px;
+  flex: 0 1 auto;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  transition: background 120ms, border-color 120ms;
+}
+.asst-tab:hover { background: var(--hover-veil); }
+.asst-tab.on {
+  background: var(--asst-accent-soft);
+  border-color: color-mix(in srgb, var(--asst-accent) 32%, transparent);
+}
+.asst-tab-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 100%;
+  padding: 0 4px 0 11px;
+  border: none;
+  background: none;
+  font-family: var(--font-sans);
+  cursor: pointer;
+}
+.asst-tab:not(.on) .asst-tab-main { padding-right: 11px; }
+.asst-tab.on .asst-tab-main { padding-right: 4px; }
+.asst-tab-title {
+  font-size: 11.5px;
+  line-height: 16px;
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.asst-tab.on .asst-tab-title { color: var(--fg); font-weight: 550; }
+.asst-tab-spinner { width: 9px; height: 9px; border-width: 1.2px; flex: none; }
+.asst-tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-right: 3px;
+  border: none;
+  border-radius: 50%;
+  background: none;
+  color: var(--fg-faint);
+  cursor: pointer;
+  flex: none;
+  opacity: 0;
+  transition: opacity 120ms, background 120ms, color 120ms;
+}
+.asst-tab:hover .asst-tab-close,
+.asst-tab.on .asst-tab-close,
+.asst-tab:focus-within .asst-tab-close { opacity: 1; }
+.asst-tab-close:hover {
+  background: var(--hover-veil-strong);
+  color: var(--fg);
+}
+/* 常驻挂载层（方案 B 保活）：隐藏标签 display:none（hidden 属性由
+ * .workspace-view-panel[hidden] 同款机制——这里独立类避免误伤 base 规则），
+ * 活跃页撑满主区剩余空间。 */
+.asst-tab-page {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.asst-tab-page[hidden] { display: none; }
+.asst-tab-page .assistant-page {
+  flex: 1;
+  min-height: 0;
+}
+
 /* ---- 右侧主区（时间线由 .assistant-page 既有规则承担） ---- */
 .assistant-ws-main {
   flex: 1;
@@ -102,6 +198,13 @@
   padding: 8px 14px;
   border-bottom: 1px solid var(--border-soft);
   background: var(--bg-side);
+}
+/* 项目模式的 astchild 临时视图（2026-12 方案 A）：App 的 renderView 分支包了
+ * 同一枚页头（assistant-ws-child-head 复用），主区容器同样走 assistant-ws-main
+ * 骨架（flex column 撑满 workspace-view-panel）——视觉与助手模式内的子会话
+ * 视图逐像素一致，不另写第二套。 */
+.ast-child-view {
+  height: 100%;
 }
 .assistant-ws-child-head .child-session-back {
   display: none;

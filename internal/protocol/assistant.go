@@ -69,6 +69,7 @@ const (
 	EventAssistantDispatchStart   = "assistant.dispatchStart"
 	EventAssistantDispatchEnd     = "assistant.dispatchEnd"
 	EventAssistantCompacted       = "assistant.compacted"
+	EventAssistantCompacting      = "assistant.compacting"
 	EventAssistantTodo            = "assistant.todoUpdated"
 	EventAssistantFilesChanged    = "assistant.filesChanged"
 	EventAssistantApprovalChanged = "assistant.approvalChanged"

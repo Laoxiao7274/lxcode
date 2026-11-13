@@ -97,3 +97,18 @@ test("未知方法与 null 载荷都安全", () => {
   assert.equal(mapEvent("connection.ready", null).type, "ready");
   assert.equal(mapEvent("connection.ready", null).busy, false);
 });
+
+// ---------- chat.compacting 映射（2026-12 阻塞发送） ----------
+
+test('chat.compacting → { type: compacting }（compacting 显式布尔；dispatch_id 缺席不写键）', () => {
+  const start = mapEvent('chat.compacting', { session_id: 's1', compacting: true });
+  assert.deepEqual(start, { type: 'compacting', sessionId: 's1', compacting: true, dispatchId: undefined });
+  const end = mapEvent('chat.compacting', { session_id: 's1', compacting: false, dispatch_id: 'd1' });
+  assert.equal(end.type, 'compacting');
+  assert.equal(end.compacting, false);
+  assert.equal(end.dispatchId, 'd1');
+  // assistant 域同构事件归一成 chat 等价名 + space 标记（两域共用一份映射）
+  const asst = mapEvent('assistant.compacting', { session_id: 'a1', compacting: true });
+  assert.equal(asst.type, 'compacting');
+  assert.equal(asst.space, 'assistant');
+});

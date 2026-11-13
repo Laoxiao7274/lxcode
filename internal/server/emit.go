@@ -64,6 +64,7 @@ func (s *Server) emitEvent(sessionID string, ev agent.Event) {
 	case agent.TurnErrorEvent:
 		emit(protocol.EventError, protocol.ErrorParams{
 			SessionID: sessionID, Message: e.Message, Aborted: e.Aborted, Partial: e.Partial,
+			Force: e.Force,
 		})
 	case agent.DispatchStartEvent:
 		emit(protocol.EventDispatchStart, protocol.DispatchStartParams{
@@ -92,7 +93,14 @@ func (s *Server) emitEvent(sessionID string, ev agent.Event) {
 		emit(protocol.EventCompacted, protocol.CompactedParams{
 			SessionID: sessionID, Before: e.Result.Before, After: e.Result.After, Shadowed: e.Result.Shadowed,
 			Summary: e.Result.Summary, Manual: e.Manual, DispatchID: e.DispatchID,
-			Context: ctx,
+			Reason: e.Reason, Context: ctx,
+		})
+	case agent.CompactingEvent:
+		// 压缩开始/结束信号（compacting true/false）：多客户端同步——观察端
+		//（另一窗口/刷新后的客户端）也把该会话的提交入队。DispatchID 非空 =
+		// 子会话自己的压缩（照 CompactedEvent 分支模式，带归属上 wire）。
+		emit(protocol.EventCompacting, protocol.CompactingParams{
+			SessionID: sessionID, Compacting: e.Compacting, DispatchID: e.DispatchID,
 		})
 	case agent.LeafChangedEvent:
 		// 叶指针变更（rewind 与 setLeaf 都发）：所有客户端在同一时刻对齐。
@@ -157,6 +165,8 @@ func assistantEventName(method string) string {
 		return protocol.EventAssistantDispatchEnd
 	case protocol.EventCompacted:
 		return protocol.EventAssistantCompacted
+	case protocol.EventCompacting:
+		return protocol.EventAssistantCompacting
 	case protocol.EventTodo:
 		return protocol.EventAssistantTodo
 	case protocol.EventFiles:

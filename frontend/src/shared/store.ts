@@ -88,6 +88,9 @@ export interface AgentEventController {
   setChildLinks(next: ChildLinks): void;
   setSendQueues(next: Record<string, SendQueueItem[]>): void;
   setPrevBusy(next: Record<string, boolean>): void;
+  /** 压缩信号的边沿基线（per-session）：compacting true→false 触发缓冲区补发。 */
+  getPrevCompacting(): Record<string, boolean>;
+  setPrevCompacting(next: Record<string, boolean>): void;
   /** 缓冲区自动发送的出口（App 的 sendWithOptions 经 ref 桥接）。
    *  atts = 队首条目携带的附件（按引用透传——不复制 base64）。 */
   autoSend(sessionId: string, text: string, atts?: SendAttachments): void;
@@ -200,7 +203,7 @@ export function handleAgentEvent(ev: AgentEvent, c: AgentEventController): void 
     c.setChildLinks(next);
     return;
   }
-  // ---- 发送缓冲区的自动发送（busy true→false 的轮次边界）----
+  // ---- 发送缓冲区的自动发送（busy true→false / compacting true→false 边界）----
   if (ev.type === "busy") {
     // 带归属的 busy = 子会话的忙闲：**不记 prevBusy、不触发自动发送**——
     // 子会话跑完不代表主会话空闲（主会话此刻多半还在等 dispatch 结论），
@@ -211,8 +214,39 @@ export function handleAgentEvent(ev: AgentEvent, c: AgentEventController): void 
       c.setPrevBusy({ ...c.getPrevBusy(), [ev.sessionId]: ev.busy });
       // done/error 与 busy=false 可能同 tick——这里只消费 busy 事件，且只有
       // true→false 的翻转才算边界（false→false 是重播/重复事件）；队首发出
-      // 即移除，重复触发空队列无副作用（幂等）。
-      const head = autoSendPick(prev, ev.busy, c.getSendQueues()[ev.sessionId]);
+      // 即移除，重复触发空队列无副作用（幂等）。压缩结束后到达的 busy=false
+      //（busy 与 compacting 边沿同 tick）也走这里——与 compacting 分支汇到
+      // 同一个出口，不双发。
+      const head = autoSendPick(prev, ev.busy, c.getSendQueues()[ev.sessionId],
+        c.getPrevCompacting()[ev.sessionId], c.getSessionStates()[ev.sessionId]?.compacting);
+      if (head) drainQueueHead(c, ev.sessionId);
+    }
+    c.setSessionStates(reduceSessionStates(c.getSessionStates(), ev, c.getChildLinks().dispatchChild));
+    return;
+  }
+  if (ev.type === "compacting") {
+    // 压缩开始/结束信号：带归属（子会话压缩）不触发主会话补发——子会话自己的
+    // 归约照走（双投）。主会话的 compacting true→false 也是发信边界：压缩期间
+    // 没有 busy 事件，压缩后排队的消息靠它补发（与 busy 边沿同时到不双发——
+    // 发出即移除 + 空队列幂等）。prevCompacting 在归约**之前**读（归约后的新值
+    // 是这条事件自己的产物，用它判边沿就永远是 false→false）。
+    //
+    // busy 读会话**真实**的归约态（2026-12 修复，原先是硬编码 false）：busy=true
+    // 期间也可能收到 compacting=false（压缩降级序列在轮间结束时逐级到达）——
+    // 那时补发会被后端以 busy 拒收、消息丢失（失败不回队）。还忙就不发，等
+    // busy 边沿兜。注意在归约**之前**读（归约后读的是这条事件自己的产物，
+    // 已与读 prevCompacting 的理由相同）。
+    //
+    // 已知边界（不改机制）：压缩降级序列每级发一对 compacting 翻转，中间的
+    // false 翻转若恰逢 busy 已 false 且队列非空会立即补发，而下一级压缩随即
+    // 又置 compacting=true——补发的消息会撞上那级压缩的「压缩期间被改动」
+    // 防线让该级作废（消息不丢，浪费一次压缩）。降级序列罕见且手动压缩才是
+    // 主要场景，接受。
+    if (!ev.dispatchId) {
+      const prevCompacting = c.getPrevCompacting()[ev.sessionId];
+      c.setPrevCompacting({ ...c.getPrevCompacting(), [ev.sessionId]: ev.compacting });
+      const busyNow = c.getSessionStates()[ev.sessionId]?.busy ?? false;
+      const head = autoSendPick(undefined, busyNow, c.getSendQueues()[ev.sessionId], prevCompacting, ev.compacting);
       if (head) drainQueueHead(c, ev.sessionId);
     }
     c.setSessionStates(reduceSessionStates(c.getSessionStates(), ev, c.getChildLinks().dispatchChild));
@@ -315,6 +349,10 @@ export function useAgent(source: AgentSource, hooks?: AgentHooks): {
   const childLinksRef = useRef(childLinks);
   const sendQueuesRef = useRef(sendQueues);
   const prevBusyRef = useRef<Record<string, boolean>>({});
+  /** 压缩信号的边沿基线（per-session，与 prevBusy 同一套机制）：compacting
+   *  true→false 触发缓冲区补发——压缩期间没有 busy 事件，只靠 busy 边沿的话
+   *  压缩后排队的消息要等下一次轮结束。 */
+  const prevCompactingRef = useRef<Record<string, boolean>>({});
   const operationErrorsRef = useRef(operationErrors);
   sessionStatesRef.current = sessionStates;
   assistantStatesRef.current = assistantStates;
@@ -339,6 +377,7 @@ export function useAgent(source: AgentSource, hooks?: AgentHooks): {
       getChildLinks: () => childLinksRef.current,
       getSendQueues: () => sendQueuesRef.current,
       getPrevBusy: () => prevBusyRef.current,
+      getPrevCompacting: () => prevCompactingRef.current,
       setCurrentId: (id) => { currentIdRef.current = id; setCurrentId(id); },
       setSessionStates: (next) => { sessionStatesRef.current = next; setSessionStates(next); },
       setAssistantStates: (next) => { assistantStatesRef.current = next; setAssistantStates(next); },
@@ -354,6 +393,7 @@ export function useAgent(source: AgentSource, hooks?: AgentHooks): {
       setChildLinks: (next) => { childLinksRef.current = next; setChildLinks(next); },
       setSendQueues: (next) => { sendQueuesRef.current = next; setSendQueues(next); },
       setPrevBusy: (next) => { prevBusyRef.current = next; },
+      setPrevCompacting: (next) => { prevCompactingRef.current = next; },
       autoSend: (sessionId, text, atts) => autoSendRef.current?.(sessionId, text, atts),
       sendFailed: (sessionId, atts) => sendFailedRef.current?.(sessionId, atts),
       reset: () => {
@@ -366,6 +406,7 @@ export function useAgent(source: AgentSource, hooks?: AgentHooks): {
         operationErrorsRef.current = [];
         setOperationErrors([]);
         controllerRef.current?.setPrevBusy({});
+        controllerRef.current?.setPrevCompacting({});
       },
     };
   }

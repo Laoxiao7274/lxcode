@@ -138,9 +138,11 @@ test('④ 二级视图与会话/子会话视图互斥：点会话行/新对话/�
 
 test('③ 同一实例切 sessionId → AssistantPage key 变化（重挂→重装载）', () => {
   const src = fs.readFileSync(new URL('../src/components/assistant/AssistantWorkspace.tsx', import.meta.url), 'utf8');
-  // key = sessionId：key 变化 → React 强制重挂 → bootRef 随实例新建 →
-  // isBooted 闸门不挡，boot 重新走 assistant.history（装载历史）。
-  assert.ok(/<AssistantPage\s*\n\s*key=\{sessionId\}/.test(src), 'AssistantPage 按 sessionId 强制重挂（key）');
+  // 方案 B（2026-12 多标签）：常驻挂载层里 AssistantPage key=id（每个会话一个
+  // 实例，key 随实例固定）——「切会话 → key 变化 → 重挂 → 重新装载」的旧语义由
+  // 「点开过的会话各自常驻一个实例」承接：切标签不卸载不重挂，boot 不再重发
+  //（isLoaded 秒回），装载语义由 mountIds 追加时的新实例承担。
+  assert.ok(/<AssistantPage\s*\n\s*key=\{id\}/.test(src), 'AssistantPage 按会话实例挂载（key=会话 id，常驻层）');
   // 空 sessionId 渲染中性态而不是 AssistantPage（空 key 会误触发 boot 新建的
   // 风险由条件分支挡住——key 只在 sessionId 非空分支出现）。
   assert.ok(/\) : sessionId \? \(/.test(src), 'sessionId 为空走中性态分支（不渲染 AssistantPage，避免空 key）');
@@ -195,8 +197,12 @@ test('⑤ AssistantChildPage：onConfirm/onAnswer 经 ref 转发（调用方回�
 
 test('⑤ AssistantWorkspace：子会话视图的 *partial* 包装是 useCallback（每帧不换身份）', () => {
   const src = fs.readFileSync(new URL('../src/components/assistant/AssistantWorkspace.tsx', import.meta.url), 'utf8');
-  assert.match(src, /const childConfirmOf = useCallback\(/, 'childConfirmOf 用 useCallback');
-  assert.match(src, /const childAnswerOf = useCallback\(/, 'childAnswerOf 用 useCallback');
+  const hookSrc = fs.readFileSync(new URL('../src/app-hooks/use-assistant-confirm.ts', import.meta.url), 'utf8');
+  // 方案 A：partial 包装迁进公共 hook（use-assistant-confirm.ts）——AssistantWorkspace
+  // 消费它；稳定性纪律不变（hook 内 childConfirmOf/childAnswerOf 都是 useCallback）。
+  assert.match(hookSrc, /const childConfirmOf = useCallback\(/, 'childConfirmOf 用 useCallback（公共 hook 内）');
+  assert.match(hookSrc, /const childAnswerOf = useCallback\(/, 'childAnswerOf 用 useCallback（公共 hook 内）');
+  assert.match(src, /useAssistantConfirm\(\{/, 'AssistantWorkspace 消费公共 hook');
   // 内联回潮防御：<AssistantChildPage> 的 onConfirm/onAnswer 不得内联箭头
   // （切片到它的闭合 /> 为止——AssistantPage 的内联包装是另一处 props 面，
   // 不属于子会话视图的装载路径，不在本钉子范围）。
@@ -235,4 +241,77 @@ test('⑥ childTabTitle：空时间线 + 无映射不抛，回落「子会话 <i
   const { childTabTitle } = await import('../src/shared/workspace-tabs.ts');
   assert.doesNotThrow(() => childTabTitle([], 'abc12345-def6'));
   assert.equal(childTabTitle([], 'abc12345-def6'), '子会话 abc12345');
+});
+
+// ---------- ⑦ 方案 B：助手侧多标签（2026-12）----------
+// 标签模型 = shared/session-tabs 纯规则（seed/append/visible/prune/fallback 零
+// 改动复用——session-tabs.test.mjs 已钉住纯函数），这里的钉子是**接线**：
+// strip 渲染、保活挂载层 + 冻结渲染、互斥语义升级、活跃标签记忆。
+
+test('⑦ 标签条接线：session-tabs 纯函数收口（seed/append/visible/prune/fallback 全在）', () => {
+  const src = fs.readFileSync(new URL('../src/components/assistant/AssistantWorkspace.tsx', import.meta.url), 'utf8');
+  assert.match(src, /setTabOrder\(seedSessionTabs\(sessionList\)\)/, '首次铺开走 seedSessionTabs（只铺一次）');
+  assert.match(src, /setTabOrder\(\(prev\) => appendSessionTab\(prev, sessionId\)\)/, '活跃会话追加走 appendSessionTab（点标签不重排）');
+  assert.match(src, /setTabOrder\(\(prev\) => pruneSessionTabs\(prev, sessionList, tabClosed, sessionId\)\)/, '死标签剔容量走 pruneSessionTabs');
+  assert.match(src, /visibleSessionTabs\(tabOrder, sessionList, tabClosed, sessionId\)/, '可见集合走 visibleSessionTabs');
+  assert.match(src, /sessionTabFallback\(/, '关当前标签回退走 sessionTabFallback（绝不新建会话）');
+  // 回退后走 handleSelect（不 setSessionId("") 也不 assistant.new）
+  const closeFn = src.slice(src.indexOf('const handleCloseTab = useCallback'));
+  const closeSeg = closeFn.slice(0, closeFn.indexOf('}, [sessionId, handleSelect]'));
+  assert.match(closeSeg, /handleSelect\(fallback\)/, '回退目标经 handleSelect（append+切活跃+清覆盖层）');
+  assert.ok(!closeSeg.includes('handleNewSession'), '关标签不新建会话（session-tabs 原缺陷①）');
+});
+
+test('⑦ AssistantTabStrip：轻量标签条挂 assistant-ws-main 顶部（onSelect/onClose 接线）', () => {
+  const src = fs.readFileSync(new URL('../src/components/assistant/AssistantWorkspace.tsx', import.meta.url), 'utf8');
+  assert.match(src, /<AssistantTabStrip\s*\n\s*tabs=\{stripTabs\}/, '标签条在常驻层之前（主区顶部）');
+  assert.match(src, /onSelect=\{handleSelect\}/, '点标签 = handleSelect（append 标签 + 切活跃）');
+  assert.match(src, /onClose=\{handleCloseTab\}/, '× = handleCloseTab');
+  // 渲染层类名独立（不混主域 .tab——防 base.css 的 .viewing/.child-* 误伤）
+  const stripSrc = fs.readFileSync(new URL('../src/components/assistant/AssistantTabStrip.tsx', import.meta.url), 'utf8');
+  assert.match(stripSrc, /className="asst-tabstrip"/, 'strip 用 asst-tabstrip 独立类');
+  assert.ok(!/className=\{"tab|className="tab"/.test(stripSrc), '不混用主域 .tab 类');
+});
+
+test('⑦ 保活挂载层：点开过的会话常驻 AssistantPage（hidden 切换 + 冻结渲染）', () => {
+  const src = fs.readFileSync(new URL('../src/components/assistant/AssistantWorkspace.tsx', import.meta.url), 'utf8');
+  assert.match(src, /mountedIds\.map\(\(id\) => \{/, '常驻层按 mountedIds 渲染（未打开过的会话不挂载）');
+  assert.match(src, /hidden=\{!isActive\}/, '隐藏标签 display:none（切标签纯显示切换）');
+  // 冻结渲染（App WorkspaceViewPanels 先例）：隐藏页缓存上一次渲染的元素对象
+  assert.match(src, /if \(isActive \|\| !frozenRef\.current\.has\(id\)\)/, '冻结判定：只有活跃页/未渲染页才重新渲染');
+  assert.match(src, /frozenRef\.current\.set\(id,/, '冻结缓存写入');
+  assert.match(src, /frozenRef\.current\.get\(id\) \?\? null/, '渲染读冻结缓存');
+  // busy 流式 delta 不逐帧击穿标签条（busy 签名依赖）
+  assert.match(src, /tabBusySig/, '标签条 busy 走签名依赖（不每帧重建）');
+});
+
+test('⑦ lastAssistantSession = 活跃标签记忆：handleSelect/handleNewSession 仍写（启动恢复开单标签）', () => {
+  const src = fs.readFileSync(new URL('../src/components/assistant/AssistantWorkspace.tsx', import.meta.url), 'utf8');
+  assert.match(src, /useState\(\(\) => readLastAssistantSession\(\)\)/, '启动恢复 = 活跃标签（单标签场景）');
+  assert.match(src, /handleSelect = [\s\S]*?writeLastAssistantSession\(id\)/, '活跃标签切换 → 记忆更新');
+  assert.match(src, /handleNewSession = [\s\S]*?writeLastAssistantSession\(id\)/, '新建会话 → 记忆更新');
+  // 新会话也要进标签条（appendSessionTab 由 sessionId effect 承接——上面钉过）
+});
+
+test('⑦ 互斥语义保留：childView/secondaryView 恒为全局覆盖层（点标签/新对话/派发卡清掉）', () => {
+  const src = fs.readFileSync(new URL('../src/components/assistant/AssistantWorkspace.tsx', import.meta.url), 'utf8');
+  // handleSelect 清一切（切标签让位给会话时间线）
+  assert.match(src, /handleSelect = [\s\S]*?setChildViewId\(null\);[\s\S]*?setSecondaryView\(null\)/, 'handleSelect 清覆盖层（互斥语义按现语义保留）');
+  // 派发卡开子会话视图仍清二级视图
+  assert.match(src, /onOpenChild=\{\(id\) => \{ setChildViewId\(id\); setSecondaryView\(null\); \}\}/, '子会话卡开临时视图清二级视图');
+  // 二级视图/子会话视图覆盖在活跃标签上（渲染在常驻层之前的分支里）
+  const mainAt = src.indexOf('secondaryView === "assistant-config" ? (');
+  const keepAt = src.indexOf('mountedIds.map(');
+  assert.ok(mainAt > -1 && keepAt > mainAt, '覆盖层分支在常驻挂载层之前（叠加语义）');
+});
+
+test('⑦ 样式：asst-tab* 只进 assistant-mode.css 且只用 --asst-* token（不动 :root）', () => {
+  const css = fs.readFileSync(new URL('../src/styles/assistant-mode.css', import.meta.url), 'utf8');
+  assert.match(css, /\.asst-tabstrip \{/, 'strip 样式存在');
+  assert.match(css, /\.asst-tab\.on \{[\s\S]*?var\(--asst-accent-soft\)/, '选中态用 --asst-accent-soft（助手紫 wash）');
+  assert.match(css, /\.asst-tab-page\[hidden\] \{\s*display: none; \}/, '常驻层 hidden 机制');
+  // 不引入新的 :root 级 token（容器级纪律）
+  assert.ok(!/^\s*--asst/.test(css.split('.assistant-ws {')[1]?.split('}')[0] === undefined ? '' : css.split('.assistant-ws {')[0]), '占位（防止误判）') || true;
+  const rootNew = css.match(/:root\s*\{[\s\S]*?\}/g) ?? [];
+  assert.equal(rootNew.length, 0, 'assistant-mode.css 不写 :root 规则');
 });

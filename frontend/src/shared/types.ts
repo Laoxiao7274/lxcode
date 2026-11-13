@@ -377,7 +377,10 @@ export type AgentEvent =
       /** 助手最终正文的预览（done 携带的 Message.Content，截 ~200 字符）——
        *  系统通知正文的来源。缺席 = 后端没给（老后端/工具轮），不编空串。 */
       content?: string }
-  | { type: "error"; sessionId: string; message: string; aborted: boolean }
+  | { type: "error"; sessionId: string; message: string; aborted: boolean;
+      /** force = 超窗强制压缩仍失败的告警（非一轮生成失败）：可选键（老后端缺席），
+       *  客户端可据此把提示条做成更强的样式。 */
+      force?: boolean }
   | { type: "dispatchStart"; sessionId: string; dispatchId: string; childSessionId?: string; agentId: string; agentName: string; agentColor: string; task: string;
       /** run_task（助手 → 项目）派发的目标项目名（可选键，缺席 = 常规 agent_dispatch
        *  委派——主域派发不受影响，卡不显示项目）。 */
@@ -430,7 +433,14 @@ export type AgentEvent =
    *  dispatchId 非空 = 子会话自己的压缩（归属进 dispatch 卡内，不进主时间线）。
    *  context = 压缩**后**的占用（后端 runCompaction 已重算——压缩改写了历史形状，
    *  旧数字一定是错的）；键缺席 = 未知（老后端），归约器保持旧值不编数。 */
-  | { type: "compacted"; sessionId: string; before: number; after: number; shadowed: number; summary: string; manual?: boolean; dispatchId?: string; context?: ContextUsage }
+  | { type: "compacted"; sessionId: string; before: number; after: number; shadowed: number; summary: string; manual?: boolean; dispatchId?: string;
+      /** 压缩路径的人话说明（"自动压缩（摘要）" / "自动压缩（只裁剪）"——只裁剪降级
+       *  路径 shadowed=0，标记块用它区分形态）。可选键（老后端缺席）。 */
+      reason?: string; context?: ContextUsage }
+  /** 压缩开始/结束信号（chat.compacting）：阻塞发送 + 多客户端感知。
+   *  compacting=true = 开始（该会话提交入队），false = 结束（成功失败都发——
+   *  前端状态复位）。dispatchId 非空 = 子会话自己的压缩（双投进子会话 state）。 */
+  | { type: "compacting"; sessionId: string; compacting: boolean; dispatchId?: string }
   /** 会话回退（chat.rewound）：seq 这条用户消息及其之后的全部历史已离开当前路径
    *  （**一条没删**——旧分支保留在树里，随时能切回来）。
    *

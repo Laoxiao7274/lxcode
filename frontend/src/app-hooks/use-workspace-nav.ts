@@ -11,9 +11,11 @@
 // 就是我们的栈，侧键/Alt+方向/浏览器后退全部原生生效。
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  astChildSession,
   childTabSession,
   closeWorkspacePage,
   createWorkspaceTabs,
+  focusAstChildView,
   focusChatTab,
   focusChildView,
   focusHistoryView,
@@ -122,6 +124,13 @@ export function useWorkspaceNav({ source, currentId }: { source: AgentSource; /*
   const openChildView = useCallback((sessionId: string) => {
     pushWorkspace(focusChildView(workspaceStateRef.current, sessionId));
   }, [pushWorkspace]);
+  /** 项目模式侧栏「来自助手」行 → 助手子会话**临时视图**（2026-12 方案 A：
+   *  与 openChildView 同语义——留在项目模式、不切助手模式、不进 tabs，
+   *  pushState 进浏览器历史（侧键/后退可退回）。渲染与裁决在 App 的 astchild
+   *  分支收口（走助手域口，不串主域 chat.confirm）。 */
+  const openAstChildView = useCallback((sessionId: string) => {
+    pushWorkspace(focusAstChildView(workspaceStateRef.current, sessionId));
+  }, [pushWorkspace]);
   const openAgents = useCallback(() => openWorkspace("agents"), [openWorkspace]);
   const openCatalog = useCallback(() => openWorkspace("catalog"), [openWorkspace]);
   const openGit = useCallback(() => {
@@ -159,11 +168,11 @@ export function useWorkspaceNav({ source, currentId }: { source: AgentSource; /*
 
   return {
     view, workspaceState, setWorkspaceState, workspaceStateRef, settingsOpen, setSettingsOpen, filter, setFilter, gitProjectId, setGitProjectId,
-    openWorkspace, closeWorkspace, openWorkspaceTab, openChildView,
+    openWorkspace, closeWorkspace, openWorkspaceTab, openChildView, openAstChildView,
     openAgents, openCatalog, openGit, openRemote, backToChat, focusSession, openProject, openSettings,
   };
 }
 
 // childTabSession 从 workspace-tabs 再导出（App 判子会话临时视图用）——
 // 仅为保持 App.tsx 原有的单一 import 面；不新增语义。
-export { childTabSession };
+export { childTabSession, astChildSession };

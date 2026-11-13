@@ -42,6 +42,7 @@ const ASSISTANT_TO_CHAT: Record<string, string> = {
   "assistant.dispatchStart": "chat.dispatchStart",
   "assistant.dispatchEnd": "chat.dispatchEnd",
   "assistant.compacted": "chat.compacted",
+  "assistant.compacting": "chat.compacting",
   "assistant.todoUpdated": "todo.updated",
   "assistant.filesChanged": "files.changed",
   "assistant.approvalChanged": "chat.approvalChanged",
@@ -132,9 +133,18 @@ function mapChatEvent(method: string, params: unknown): AgentEvent | null {
         summary: String(p.summary ?? ""),
         manual: Boolean(p.manual),
         dispatchId: p.dispatch_id ? String(p.dispatch_id) : undefined,
+        // reason：压缩路径的人话说明（可选键，老后端缺席 → undefined）。
+        ...(typeof p.reason === "string" && p.reason ? { reason: p.reason } : {}),
         // context：压缩**后**的占用（后端已重算并落库——压缩改写了历史形状，旧数字
         // 一定是错的）。老后端缺席 → undefined，归约器保持旧值不编数。
         context: (p.context as ContextUsage | undefined) ?? undefined,
+      };
+    case "chat.compacting":
+      // 压缩开始/结束信号（compacting true/false，阻塞发送 + 多客户端感知）。
+      // dispatch_id 非空 = 子会话自己的压缩（双投进子会话 state）。compacting
+      // 显式 Boolean——true/false 都必须上 wire（后端无 omitempty）。
+      return {
+        type: "compacting", sessionId, compacting: Boolean(p.compacting), dispatchId,
       };
     // 后台任务：载荷**就是 JobInfo 本身**（不是包一层）。时间线归属取
     // owner_session_id（子 Agent 起的任务挂在**父会话**的时间线上——子会话不进
@@ -198,7 +208,9 @@ function mapChatEvent(method: string, params: unknown): AgentEvent | null {
         stats: (p.stats as SessionStats | undefined) ?? undefined,
       };
     case "chat.error":
-      return { type: "error", sessionId, message: String(p.message ?? ""), aborted: Boolean(p.aborted) };
+      return { type: "error", sessionId, message: String(p.message ?? ""), aborted: Boolean(p.aborted),
+        // force：超窗强制压缩仍失败的告警（可选键，老后端缺席）。
+        ...(p.force === true ? { force: true } : {}) };
     case "chat.busy":
       // dispatchId 非空 = 子会话的忙闲（带归属）：归约侧与发送缓冲区边界都按它
       // 过滤（主会话的忙闲不被子会话翻动），双投路径把它送进子会话自己的 state。

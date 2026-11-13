@@ -13,10 +13,14 @@ import type { ThreadBlock } from "./blocks";
 export type WorkspacePage = "agents" | "catalog" | "git" | "remote";
 /** 子会话视图键（模板字面量类型：手写拼接的键在编译期就能被发现）。 */
 export type ChildTabKey = `child:${string}`;
+/** 助手子会话视图键（2026-12 方案 A：项目侧「来自助手」行点击开**临时视图**——
+ *  与主域子会话同语义：留在项目模式、不切助手模式、不进标签栏）。 */
+export type AstChildTabKey = `astchild:${string}`;
 /** 可关闭的工作区标签：固定页签（子会话临时视图不进 tabs，见 focusChildView）。 */
 export type WorkspaceTab = WorkspacePage | ChildTabKey;
-/** 工作区视图：聊天（恒在）+ 可关闭标签。 */
-export type WorkspaceView = "chat" | WorkspaceTab;
+/** 工作区视图：聊天（恒在）+ 可关闭标签 + 助手子会话临时视图（astchild:*，
+ *  只切 active 不进 tabs——与 child:* 同语义，见 focusAstChildView）。 */
+export type WorkspaceView = "chat" | WorkspaceTab | AstChildTabKey;
 
 export interface WorkspaceTabsState {
   /** 按打开顺序排列；聚焦不会改变顺序。 */
@@ -42,6 +46,19 @@ export function childTabKey(sessionId: string): ChildTabKey {
 export function childTabSession(key: string): string | null {
   if (!key.startsWith("child:")) return null;
   const sessionId = key.slice("child:".length);
+  return sessionId === "" ? null : sessionId;
+}
+
+/** 助手子会话视图的键（**唯一**的拼键处——与主域 `child:` 前缀刻意区分：
+ *  两类临时视图的渲染分流与裁决域口完全不同，混用前缀 = 串域实害）。 */
+export function astChildTabKey(sessionId: string): AstChildTabKey {
+  return `astchild:${sessionId}`;
+}
+
+/** astchild 键 → 助手子会话 id（非该前缀返回 null；空 id = 坏键 → null）。 */
+export function astChildSession(key: string): string | null {
+  if (!key.startsWith("astchild:")) return null;
+  const sessionId = key.slice("astchild:".length);
   return sessionId === "" ? null : sessionId;
 }
 
@@ -78,6 +95,19 @@ export function focusChildView(state: WorkspaceTabsState, sessionId: string): Wo
   return focusView(state, childTabKey(sessionId), state.tabs);
 }
 
+/** 打开/聚焦**助手子会话临时视图**（项目模式侧栏「来自助手」行的唯一入口）。
+ *
+ *  与 focusChildView 同语义（2026-12 方案 A：不跳助手模式、不进 tabs）：
+ *  只切 active，标签栏长度不变；返回（backToChat / popstate）后视图消失。重复
+ *  打开同一个任务回到同一个视图键。助手子会话的 state 源是 store 双投的
+ *  assistantStates（App 持有），视图打开与否不影响它。
+ *
+ *  空 id 不是合法子会话：no-op（开一个空键视图只会得到「子会话 未知」的空页）。 */
+export function focusAstChildView(state: WorkspaceTabsState, sessionId: string): WorkspaceTabsState {
+  if (sessionId === "") return state;
+  return focusView(state, astChildTabKey(sessionId), state.tabs);
+}
+
 export function focusChatTab(state: WorkspaceTabsState): WorkspaceTabsState {
   return focusView(state, "chat", state.tabs);
 }
@@ -89,10 +119,10 @@ export function closeWorkspacePage(state: WorkspaceTabsState, tab: WorkspaceTab)
   if (!state.tabs.includes(tab)) return state;
 
   const tabs = state.tabs.filter((item) => item !== tab);
-  const history = state.history.filter((item) => item === "chat" || (item !== tab && tabs.includes(item)));
+  const history = state.history.filter((item) => item === "chat" || (item !== tab && tabs.includes(item as WorkspaceTab)));
   if (state.active !== tab) return { ...state, tabs, history };
 
-  const active = history.find((item) => item === "chat" || tabs.includes(item)) ?? "chat";
+  const active = history.find((item) => item === "chat" || tabs.includes(item as WorkspaceTab)) ?? "chat";
   return {
     tabs,
     active,
@@ -228,7 +258,10 @@ function focusView(state: WorkspaceTabsState, active: WorkspaceView, tabs: Works
  *  重新装载）。 */
 export function focusHistoryView(state: WorkspaceTabsState, target: WorkspaceView): WorkspaceTabsState {
   if (target === "chat") return focusChatTab(state);
-  if (isWorkspacePage(target)) return focusWorkspacePage(state, target);
+  if (isWorkspacePage(target as WorkspaceTab)) return focusWorkspacePage(state, target as WorkspacePage);
+  // astchild 临时视图（方案 A）：浏览器后退到该条目 = 把它恢复出来——漏掉这个
+  // 分支的话 lastProjectView/popstate 恢复是静默 no-op（active 原地不动）。
+  if (astChildSession(target) !== null) return focusAstChildView(state, astChildSession(target) ?? "");
   return focusChildView(state, childTabSession(target) ?? "");
 }
 

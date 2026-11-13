@@ -17,7 +17,7 @@ function attsOf(item: SendQueueItem): SendAttachments | undefined {
 }
 
 /** 发送缓冲区条目的三个动作（编辑/删除/直接发送）+ 一次性提示。 */
-export function useSendQueue({ sendQueues, currentId, removeQueuedSend, moveQueuedToFront, injectDraft, sendWithOptions, busy, sending }: {
+export function useSendQueue({ sendQueues, currentId, removeQueuedSend, moveQueuedToFront, injectDraft, sendWithOptions, busy, sending, compacting = false }: {
   sendQueues: Record<string, SendQueueItem[]>;
   currentId: string;
   removeQueuedSend: (sessionId: string, id: string) => void;
@@ -28,6 +28,9 @@ export function useSendQueue({ sendQueues, currentId, removeQueuedSend, moveQueu
   sendWithOptions: (text: string, atts?: SendAttachments) => void;
   busy: boolean;
   sending: boolean;
+  /** 压缩进行中（会话级归约态）：与 busy 同判——压缩期间后端会作废并发的
+   *  chat.send，「直接发送」也走置顶（等 compacting=false 边界补发）。 */
+  compacting?: boolean;
 }) {
   // 一次性提示（「已置顶，本轮结束后立即发送」）——4s 自动消失。
   const [queueNotice, setQueueNotice] = useState("");
@@ -55,16 +58,16 @@ export function useSendQueue({ sendQueues, currentId, removeQueuedSend, moveQueu
     if (!item) return;
     // 附件按引用透传（队列条目与发送参数共享同一数组——不复制 base64）
     // 去向判定在 send-queue.ts 的 queueSendAction（纯函数，测试直测同一份）：
-    // 空闲 → 立即按正常路径发（乐观气泡照常）；忙/发送中 → 置顶（自动发送在
-    // busy true→false 时先发它）+ 一次性提示。
-    if (queueSendAction({ busy, sending }) === "send-now") {
+    // 空闲 → 立即按正常路径发（乐观气泡照常）；忙/发送中/压缩中 → 置顶（自动
+    // 发送在 busy true→false 或 compacting true→false 边界先发它）+ 一次性提示。
+    if (queueSendAction({ busy, sending, compacting }) === "send-now") {
       removeQueuedSend(currentId, id);
       sendWithOptions(item.text, attsOf(item));
       return;
     }
     moveQueuedToFront(currentId, id);
     flashQueueNotice("当前会话正在生成，已置顶，本轮结束后立即发送");
-  }, [sendQueues, currentId, busy, sending, removeQueuedSend, sendWithOptions, moveQueuedToFront, flashQueueNotice]);
+  }, [sendQueues, currentId, busy, sending, compacting, removeQueuedSend, sendWithOptions, moveQueuedToFront, flashQueueNotice]);
 
   /** 当前会话的队列（Composer 直读）。 */
   const currentQueue = sendQueues[currentId] ?? [];

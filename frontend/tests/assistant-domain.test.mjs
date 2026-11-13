@@ -116,7 +116,7 @@ test('② ASSISTANT_TO_CHAT 的键与后端 assistant.go 事件常量逐字对�
   for (const m of eventsSrc.matchAll(/"(assistant\.[a-zA-Z]+)":\s*"(chat\.[a-zA-Z]+|todo\.updated|files\.changed)",/g)) {
     feTable.set(m[1], m[2]);
   }
-  assert.equal(feTable.size, 15, `前端映射表应恰好 15 条（十五事件），实得 ${feTable.size}`);
+  assert.equal(feTable.size, 16, `前端映射表应恰好 16 条（十六事件——2026-12 加 chat.compacting），实得 ${feTable.size}`);
   // 每条后端映射在两边都存在且键一致（wire 名漂移即爆）。主域事件常量
   //（EventUserMsg 等）声明在 methods.go——字面量查表放宽到两个源文件。
   const goMethodsSrc = readFileSync(join(here, '../../internal/protocol/methods.go'), 'utf8');

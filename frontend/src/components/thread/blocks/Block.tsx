@@ -179,7 +179,9 @@ export const Block = memo(
 
     case "error":
       return (
-        <div className="error-block" data-uid={dataUid} data-aborted={block.aborted ? "true" : undefined}>
+        <div className="error-block" data-uid={dataUid}
+          data-aborted={block.aborted ? "true" : undefined}
+          data-force={block.force ? "true" : undefined}>
           {block.message}
         </div>
       );

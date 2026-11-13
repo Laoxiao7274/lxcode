@@ -96,10 +96,14 @@ type TurnDoneEvent struct {
 }
 
 // TurnErrorEvent：一轮以错误收尾（Aborted = 用户取消，已生成部分在 Partial）。
+// Force = **超窗强制压缩仍失败**的告警（maybeCompact 的降级序列全失败时发，
+// compaction.go）：不是一轮生成失败，而是「上下文已超窗且压不动」的运维提示——
+// 借 chat.error 通道送达前端（错误条渲染），wire 兼容（老客户端当普通错误显示）。
 type TurnErrorEvent struct {
 	Message string
 	Aborted bool
 	Partial *llm.Message
+	Force   bool
 }
 
 // TodoUpdatedEvent：任务清单更新（宿主渲染 TodoList 卡片）。
@@ -164,9 +168,22 @@ type DispatchEndEvent struct {
 // CompactedEvent：一次压缩事务收尾（历史的前缀已被摘要检查点替换）。
 // 宿主广播给客户端（前端插一条「已压缩历史」标记），Manual = 用户主动触发。
 // DispatchID 非空 = **子会话自己的压缩**（归属进 dispatch 卡，不进主时间线）。
+// Reason 是压缩路径的人话说明（"自动压缩（摘要）" / "自动压缩（只裁剪）"）——
+// 透传到 chat.compacted 的 reason 键，随事件落前端标记块。
 type CompactedEvent struct {
 	Result     CompactResult
 	Manual     bool
+	DispatchID string
+	Reason     string
+}
+
+// CompactingEvent：压缩开始/结束信号（compacting true/false）——宿主广播给
+// 客户端（chat.compacting），前端把该会话的提交入队并显示反馈。单一发出点在
+// runCompaction / runPruneOnly 入口 + defer：覆盖自动与手动、成功与失败、panic
+// 全部出口。自动压缩发生在轮间（busy=true 中）天然被阻塞，但事件照发——多客户端
+// 一致性（观察端也要知道"正在压缩"）。DispatchID 非空 = 子会话自己的压缩。
+type CompactingEvent struct {
+	Compacting bool
 	DispatchID string
 }
 
@@ -216,6 +233,7 @@ func (SessionStartedEvent) isEvent() {}
 func (DispatchStartEvent) isEvent()  {}
 func (DispatchEndEvent) isEvent()    {}
 func (CompactedEvent) isEvent()      {}
+func (CompactingEvent) isEvent()     {}
 func (RewoundEvent) isEvent()        {}
 func (LeafChangedEvent) isEvent()    {}
 

@@ -65,11 +65,14 @@ export function queuedHead(queue: SendQueueItem[] | undefined): SendQueueItem | 
 // 真实现，测试直接驱动同一份判定，不复刻副本）----
 
 /** Composer submit 的去向：send = 正常发送路径（乐观气泡照常）；queue = 入发送
- *  缓冲区（busy/sending 期间后端会拒收 chat.send）；none = 不发（空文本/锁定视图/
- *  斜杠命令——命令由面板接管，不进对话流）。hasQueue = 调用方接了缓冲区
- *  （onQueue 传了）；没接的调用方保持旧语义：忙时不发。
+ *  缓冲区（busy/sending/压缩中——这些窗口里后端都会拒收或作废 chat.send）；
+ *  none = 不发（空文本/锁定视图/斜杠命令——命令由面板接管，不进对话流）。
+ *  hasQueue = 调用方接了缓冲区（onQueue 传了）；没接的调用方保持旧语义：忙时不发。
  *  hasAttachments = 输入框里挂了附件（图片批次 B）：只附件没文本也允许发送
- *  （后端把附件落盘并以「[附件]」行充当消息正文）——锁定与斜杠命令的门不变。 */
+ *  （后端把附件落盘并以「[附件]」行充当消息正文）——锁定与斜杠命令的门不变。
+ *  compacting = 历史压缩进行中（chat.compacting 事件归约态）：压缩改写历史，
+ *  这期间发出的 chat.send 会撞「压缩期间被改动」防线让整次压缩作废（prefill
+ *  白跑）——与 busy 同判：入队，等 compacting=false 边界再发。 */
 export type SubmitRoute = "send" | "queue" | "none";
 export function routeSubmit(opts: {
   text: string;
@@ -78,25 +81,29 @@ export function routeSubmit(opts: {
   locked: boolean;
   hasQueue: boolean;
   hasAttachments?: boolean;
+  compacting?: boolean;
 }): SubmitRoute {
   if ((!opts.text && !opts.hasAttachments) || opts.locked) return "none";
   if (opts.text.startsWith("/")) return "none";
-  if (opts.busy || opts.sending) return opts.hasQueue ? "queue" : "none";
+  if (opts.busy || opts.sending || Boolean(opts.compacting)) return opts.hasQueue ? "queue" : "none";
   return "send";
 }
 
 /** 队列条目「直接发送」的去向：send-now = 会话空闲，立即按正常路径发送；
- *  to-front = 忙（或发送中——sending 期间后端同样拒收），把该条置顶等本轮结束。 */
-export function queueSendAction(opts: { busy: boolean; sending: boolean }): "send-now" | "to-front" {
-  return opts.busy || opts.sending ? "to-front" : "send-now";
+ *  to-front = 忙（或发送中/压缩中——这些窗口里后端同样拒收），把该条置顶等本轮结束。 */
+export function queueSendAction(opts: { busy: boolean; sending: boolean; compacting?: boolean }): "send-now" | "to-front" {
+  return opts.busy || opts.sending || Boolean(opts.compacting) ? "to-front" : "send-now";
 }
 
 /** 自动发送的**触发判定**（store 订阅层调用——绝不在归约器里做副作用）。
  *
  *  触发条件全部满足才发：
- *  - 这是一条 busy 事件（busy 翻转是「可以发下一条」的权威信号——done/error
- *    与 busy=false 可能同 tick，但只有 busy=false 事件被这里消费，天然幂等）；
- *  - 该会话 busy 由 true → false（false → false 是重播/重复事件，不是轮次边界）；
+ *  - 这是一条 busy 或 compacting 事件（事件翻转是「可以发下一条」的权威信号）；
+ *  - busy：该会话 busy 由 true → false（false → false 是重播/重复事件）；
+ *  - compacting：压缩结束（compacting true → false）也是发信边界——压缩期间
+ *    没有 busy 事件（手动压缩不持 busy），只靠 busy 边沿的话压缩后排队的消息
+ *    要等到下一次轮结束才发。busy 边沿与 compacting 边沿同时到时只发一次
+ *    （两条路径汇到同一个「该发了」出口，发出即移除、空队列幂等）；
  *  - 队列非空。
  *
  *  **不看当前活跃会话**（2026-12 修复）：store 的订阅收到的是全部会话的事件
@@ -110,7 +117,15 @@ export function autoSendPick(
   prevBusy: boolean | undefined,
   busy: boolean,
   queue: SendQueueItem[] | undefined,
+  prevCompacting?: boolean,
+  compacting?: boolean,
 ): SendQueueItem | null {
-  if (prevBusy !== true || busy !== false) return null;
-  return queuedHead(queue);
+  const busyEdge = prevBusy === true && busy === false;
+  const compactingEdge = prevCompacting === true && compacting === false;
+  if (busyEdge) return queuedHead(queue);
+  // compacting 边沿只在**当前不忙**时才发：自动压缩发生在轮间（busy=true 中），
+  // 那时 compacting=false 到达也不能发（后端 busy 会拒收）——等轮次边界的
+  // busyEdge 兜（busy 与 compacting 边沿同 tick 时走上面那支，不双发）。
+  if (compactingEdge && !busy) return queuedHead(queue);
+  return null;
 }

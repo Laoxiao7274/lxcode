@@ -64,6 +64,12 @@ export function reduce(state: UIState, ev: AgentEvent): UIState {
     }
     case "compacted":
       return reduceCompacted(state, ev);
+    case "compacting":
+      // 压缩开始/结束信号：会话级状态（busy 同层）。带 dispatch_id 的是子会话
+      // 的压缩——子会话自己的 state 由双投路径（withoutDispatch 副本）吃到，
+      // 主会话不碰（子会话在压缩不代表主会话要阻塞提交）。
+      if (ev.dispatchId) return state;
+      return { ...state, compacting: ev.compacting };
     case "jobStarted":
     case "jobSettled":
       // 时间线不出任务卡（2026-12 用户拍板，docs/jobs.md §6）：任务卡不是持久
@@ -397,7 +403,7 @@ const sealed = finalizeStreaming(state);
 return {
   ...sealed,
   sending: false, // 轮已出错收尾：发送中态一并结束（错误条随后渲染）
-  blocks: [...sealed.blocks, { kind: "error", uid: nextUid(), message: ev.message, aborted: ev.aborted }],
+  blocks: [...sealed.blocks, { kind: "error", uid: nextUid(), message: ev.message, aborted: ev.aborted, force: ev.force === true }],
 };
 }
 
@@ -508,6 +514,7 @@ function reduceCompacted(state: UIState, ev: Ev<"compacted">): UIState {
 const block = {
   kind: "compacted" as const, uid: nextUid(), before: ev.before, after: ev.after,
   shadowed: ev.shadowed, summary: ev.summary, manual: Boolean(ev.manual),
+  reason: ev.reason,
 };
 // 子会话自己的压缩：归属进 dispatch 卡（主时间线只标主会话的压缩）
 // ——子会话的占用不写主指示器（chat.done 同一条纪律）。
@@ -848,7 +855,7 @@ function reduceSub(blocks: ThreadBlock[], subStreaming: AssistantBlock | null, e
       return {
         blocks: [...base, {
           kind: "compacted" as const, uid: nextUid(), before: ev.before, after: ev.after,
-          shadowed: ev.shadowed, summary: ev.summary, manual: Boolean(ev.manual),
+          shadowed: ev.shadowed, summary: ev.summary, manual: Boolean(ev.manual), reason: ev.reason,
         }],
         streaming: null,
       };

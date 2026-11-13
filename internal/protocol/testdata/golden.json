@@ -549,12 +549,28 @@
       "summary": "## 摘要",
       "manual": true,
       "dispatch_id": "call_7",
+      "reason": "自动压缩（摘要）",
       "context": {
         "used": 12100,
         "window": 128000,
         "messages": 4200,
         "estimated": true
       }
+    }
+  },
+  "compactingParamsEnd": {
+    "_type": "",
+    "value": {
+      "session_id": "child-1",
+      "compacting": false,
+      "dispatch_id": "call_7"
+    }
+  },
+  "compactingParamsStart": {
+    "_type": "",
+    "value": {
+      "session_id": "s1",
+      "compacting": true
     }
   },
   "confirmRequestAsk": {

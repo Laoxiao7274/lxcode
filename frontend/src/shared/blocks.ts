@@ -42,7 +42,9 @@ export type ThreadBlock =
        *  二元确认永远没有它）。 */
       resolvedAnswer?: string }
   | { kind: "files"; uid: number; files: FileChange[] }
-  | { kind: "error"; uid: number; message: string; aborted: boolean }
+  | { kind: "error"; uid: number; message: string; aborted: boolean;
+      /** 超窗强制压缩仍失败的告警（可选，老后端缺席）：渲染为更强的提示样式。 */
+      force?: boolean }
   | {
       /** 历史压缩的标记块（前缀被摘要检查点替换）——可展开看摘要正文。 */
       kind: "compacted";
@@ -56,6 +58,9 @@ export type ThreadBlock =
       summary: string;
       /** 用户主动触发（/compact 或指示器入口）。 */
       manual: boolean;
+      /** 压缩路径的人话说明（可选键——老后端/历史回放缺席）：
+       *  "自动压缩（摘要）" / "自动压缩（只裁剪）"。 */
+      reason?: string;
     }
   | {
       /** 子会话时间线的「任务」块：主 Agent 派发的任务说明书（user 角色消息，
@@ -188,6 +193,11 @@ export interface UIState {
    *  chat.history 的 approval 键（回放对齐）与 chat.approvalChanged 事件
    *  （实时改档）——reduceSessionStates 按 sessionId 路由，天然按会话隔离。 */
   approval: ApprovalMode | null;
+  /** 压缩进行中（chat.compacting 事件归约；会话级）：true = 历史正在压缩，
+   *  routeSubmit 与 busy 同判（提交入队）。发起方（手动压缩）另有本地即时态
+   *  （use-compaction），这里的是**归约态**——其它客户端/刷新后的感知通道，
+   *  压缩失败（后端 emit false）自然复位。 */
+  compacting: boolean;
   /** 时间线**重建代次号**（2026-12「撤回闪回来」的配套）：blocks 被全量重建
    *  （historyLoaded 重建分支）时递增；增量路径（分页前插、实时追加）不动它。
    *  Thread 据此区分「换会话的整块回放」（要播入场动画）与「同会话重拉的全量
@@ -195,7 +205,7 @@ export interface UIState {
   rebuiltGen: number;
 }
 
-export const initial: UIState = { blocks: [], streaming: null, historyMore: false, historyFirstSeq: 0, busy: false, pending: null, todos: [], currentId: "", operationError: null, context: null, stats: null, historyReady: false, model: "", sending: false, approval: null, rebuiltGen: 0 };
+export const initial: UIState = { blocks: [], streaming: null, historyMore: false, historyFirstSeq: 0, busy: false, pending: null, todos: [], currentId: "", operationError: null, context: null, stats: null, historyReady: false, model: "", sending: false, approval: null, compacting: false, rebuiltGen: 0 };
 
 /** 逻辑时间线 = 已定型块 + 正在流式的那一块（拼在末尾）。
  *

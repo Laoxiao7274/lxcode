@@ -703,6 +703,11 @@ func childEmitter(parent Emitter, dispatchID string, tap *childEvents) Emitter {
 		case CompactedEvent:
 			e.DispatchID = dispatchID
 			parent(e)
+		case CompactingEvent:
+			// 子会话的压缩开始/结束信号：带归属上抛（照 CompactedEvent 同款）——
+			// 前端双投进子会话自己的 compacting 态，主会话侧按 dispatch_id 过滤。
+			e.DispatchID = dispatchID
+			parent(e)
 		case BusyEvent:
 			e.DispatchID = dispatchID
 			parent(e)

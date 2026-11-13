@@ -69,7 +69,10 @@ test('④ 指示器按钮：压缩中禁用 + spinner + 文案变化', () => {
 
 test('⑤ App：重拉口接进 hook，进行中状态条挂在 chat 视图（/compact 与按钮共用）', () => {
   assert.match(appSrc, /useCompaction\(\{ source, currentId, reportError, reloadHistory: reloadCurrentHistory \}\)/);
-  assert.match(appSrc, /const compactingNotice = compacting && view === "chat"/);
-  // Composer 收 compacting（ContextIndicator 的按钮态从这来）
+  // 本地发起态与归约态（chat.compacting 事件——其它客户端/刷新后的感知通道）合并：
+  // 两态取或，发起方即时反馈优先，归约态兜底多客户端
+  assert.match(appSrc, /const compactingNotice = \(compacting \|\| state\.compacting\) && view === "chat"/);
+  // Composer 收 compacting（ContextIndicator 的按钮态从这来）——App 传入合并值
+  assert.match(appSrc, /compacting=\{compacting \|\| state\.compacting\}/);
   assert.match(composerSrc, /compacting=\{compacting\}/);
 });

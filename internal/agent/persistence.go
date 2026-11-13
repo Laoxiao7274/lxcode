@@ -49,6 +49,10 @@ type Persistence interface {
 	// 被影子段原本占据的位置（主会话 skip=0 即前缀，子会话 skip=1 以保护头部任务）。
 	// 同样回传检查点自己的序号（它也要进内存历史，见 AppendMsg 的理由）。
 	AppendCheckpoint(sessionID string, m llm.Message, skip, count int) (int64, error)
+	// PruneToolResults 把指定 seq 的 tool 结果行正文原地替换为占位（确定性裁剪的
+	// 落库口）：行数与配对结构不变（占位仍是合法 tool 消息内容），原文不删（回放
+	// 从此显示占位，但历史形状不变）。失败回滚（fail-closed：内存与库必须一起动）。
+	PruneToolResults(sessionID string, seqs []int64, contents []string) error
 	// SetLeaf 把叶指针移到 seq（0 = 空路径），返回 (离开路径的条数, 新叶)。
 	// **只动指针，一行不删**——旧分支完整保留，切回去就回来。
 	SetLeaf(sessionID string, seq int64) (removed int, leaf int64, err error)

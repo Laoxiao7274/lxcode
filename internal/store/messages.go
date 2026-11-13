@@ -520,6 +520,67 @@ func (s *Store) AppendCheckpoint(id string, m llm.Message, skip, count int) (int
 	return int64(seq), nil
 }
 
+// PruneToolResults 把一批存活 tool 结果行的正文**原地替换**为占位文本（确定性
+// 工具结果裁剪的落库口，AGENTS.md §2.2 P3）。
+//
+// 为什么走「按 seq 原地 UPDATE」而不是影子区间：裁剪**不缩短历史**（行数、配对
+// 结构、检查点位置全不变），影子机制的「区间替换成检查点」形态套不上它——硬造
+// 一个「影子成自身」的检查点行只会让回放/统计的口径分叉。占位是合法 tool 消息
+// 内容（id 与调用侧不动），配对不变量天然成立（toolpair 判定不读 content）。
+// 原文不删（UPDATE 不带条件回写）——与检查点的影子行同一立场：翻旧账（Search
+// 折叠的是被影子原文，本行仍是原文）优先，占位损失由调用方控制（只裁更早的、
+// 保留最近 K 条）。
+//
+// 幂等性：同一批 seq 重复调用只是把占位再写一遍（调用方按内存历史算出要写的
+// 内容，重复调用时内存已裁剪、占位相同）。session 不存在时返回错误——与
+// AppendCheckpoint 的「拒绝写错的区间」同一立场，不静默成功。
+//
+// agent 层不见 seq，调用方用返回的 seq（历史下标在 agent 侧无用——内存裁剪
+// 按下标做）。事务失败（如磁盘）回滚，历史不变。
+func (s *Store) PruneToolResults(id string, seqs []int64, contents []string) error {
+	if len(seqs) != len(contents) {
+		return fmt.Errorf("PruneToolResults: seqs 与 contents 数量不一致: %d != %d", len(seqs), len(contents))
+	}
+	if len(seqs) == 0 {
+		return nil
+	}
+	var exists int
+	if err := s.db.QueryRow(`SELECT 1 FROM sessions WHERE id = ?`, id).Scan(&exists); err != nil {
+		return fmt.Errorf("查询会话 %s 失败: %w", id, err)
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("开事务失败: %w", err)
+	}
+	defer tx.Rollback() // 已提交时是 no-op
+	for i, seq := range seqs {
+		res, err := tx.Exec(`UPDATE messages SET content = ? WHERE session_id = ? AND seq = ? AND role = 'tool'`,
+			contents[i], id, int(seq))
+		if err != nil {
+			return fmt.Errorf("裁剪消息 %d 失败: %w", seq, err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("读裁剪影响行数失败: %w", err)
+		}
+		if n != 1 {
+			// 行不在了（撤回重载后内存落后于库）或不是 tool 行——拒绝而不是
+			// 静默跳过：半裁半留的中间态比失败更难归因。
+			return fmt.Errorf("裁剪目标 seq %d 不存在或不是 tool 行（拒绝半裁中间态）", seq)
+		}
+	}
+	if _, err := tx.Exec(`UPDATE sessions SET updated_at = ? WHERE id = ?`, nowNano(), id); err != nil {
+		return fmt.Errorf("更新会话时间戳失败: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// 写后失效统计缓存（AppendMsg / AppendCheckpoint 同一条理由——内容变了的行
+	// 折叠出的 token 数也会变）
+	s.statsCacheInvalidate(id)
+	return nil
+}
+
 // readRowsTx 是 readRows 的事务版（落库要在同一事务里读存活集）。
 // 与 readRows **共用 messageCols + scanRows**（2026-12 批次 1 收敛）：原先两处各写
 // 一遍 SELECT，而 readRowsTx 已经漏过 images / attachments 两列（注释却写着「必须

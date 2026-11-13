@@ -74,6 +74,7 @@ function makeController() {
     childLinks: { childParents: {}, dispatchChild: {} },
     sendQueues: {},
     prevBusy: {},
+    prevCompacting: {},
     revisions: 0,
     sent: [],
     operationError: null,
@@ -89,6 +90,8 @@ function makeController() {
     setChildLinks(next) { this.childLinks = next; },
     setSendQueues(next) { this.sendQueues = next; },
     setPrevBusy(next) { this.prevBusy = next; },
+    getPrevCompacting() { return this.prevCompacting; },
+    setPrevCompacting(next) { this.prevCompacting = next; },
     autoSend(sessionId, text) { this.sent.push({ sessionId, text }); },
     reset() {},
   };
@@ -229,4 +232,104 @@ test('③ queueSendAction：空闲立即发；busy/sending 置顶', () => {
   assert.equal(queueSendAction({ busy: false, sending: false }), 'send-now');
   assert.equal(queueSendAction({ busy: true, sending: false }), 'to-front');
   assert.equal(queueSendAction({ busy: false, sending: true }), 'to-front', 'sending 期间后端同样拒收');
+  assert.equal(queueSendAction({ busy: false, sending: false, compacting: true }), 'to-front', '压缩期间后端会作废并发 chat.send——同样置顶');
+  assert.equal(queueSendAction({ busy: false, sending: false, compacting: false }), 'send-now');
+});
+
+// ---------- ⑦ 压缩期间阻塞发送（chat.compacting 信号，2026-12） ----------
+
+const compactingEv = (sessionId, compacting) => ({ type: 'compacting', sessionId, compacting });
+
+test('⑦ routeSubmit：压缩中入队（与 busy 同判）', () => {
+  const base = { text: '压缩期间的消息', busy: false, sending: false, locked: false, hasQueue: true };
+  assert.equal(routeSubmit({ ...base, compacting: true }), 'queue', '压缩中 → 入队（发出去会撞「压缩期间被改动」防线）');
+  assert.equal(routeSubmit({ ...base, compacting: false }), 'send', '压缩结束 → 正常发送');
+  assert.equal(routeSubmit({ ...base, compacting: true, hasQueue: false }), 'none', '未接缓冲区的调用方保持旧语义');
+  assert.equal(routeSubmit({ ...base, compacting: true, locked: true }), 'none', '锁定门优先');
+  assert.equal(routeSubmit({ ...base, compacting: true, text: '/compact' }), 'none', '斜杠命令仍由面板接管');
+});
+
+test('⑦ compacting true→false 触发缓冲区补发；压缩开始（true）不触发', () => {
+  const c = makeController();
+  c.currentId = 's1';
+  c.sendQueues = { s1: [item('a', '压缩后排队的一条'), item('b', '第二条')] };
+  // 压缩开始：不补发（历史还在压缩，发出去也是白跑）
+  handleAgentEvent(compactingEv('s1', true), c);
+  assert.deepEqual(c.sent, [], '压缩开始不触发');
+  assert.equal(c.sessionStates.s1.compacting, true, '归约态已置位');
+  // 压缩结束（true→false）：队首补发
+  handleAgentEvent(compactingEv('s1', false), c);
+  assert.deepEqual(c.sent, [{ sessionId: 's1', text: '压缩后排队的一条' }]);
+  assert.deepEqual(c.sendQueues.s1, [item('b', '第二条')], '发出即移除');
+  assert.equal(c.sessionStates.s1.compacting, false, '归约态已复位');
+  // 重复 false（失败路径与结果应答同 tick 之类）：不重发（false→false 不是边界）
+  handleAgentEvent(compactingEv('s1', false), c);
+  assert.equal(c.sent.length, 1, 'false→false 不重发');
+});
+
+test('⑦ 带归属的 compacting（子会话压缩）不触发主会话补发、不置主会话态', () => {
+  const c = makeController();
+  c.currentId = 's1';
+  c.sendQueues = { s1: [item('a', '主会话的排队消息')] };
+  handleAgentEvent({ type: 'compacting', sessionId: 's1', compacting: true, dispatchId: 'd1' }, c);
+  assert.deepEqual(c.sent, [], '子会话压缩开始不触发');
+  assert.equal(c.sessionStates.s1?.compacting ?? false, false, '主会话的 compacting 不被子会话翻动');
+  handleAgentEvent({ type: 'compacting', sessionId: 's1', compacting: false, dispatchId: 'd1' }, c);
+  assert.deepEqual(c.sent, [], '子会话压缩结束也不触发主会话补发');
+});
+
+test('⑦ busy=true 期间 compacting false 边沿不补发（消息留队列，等 busy false 边沿再发）', () => {
+  // 降级序列在轮间结束的形态：自动压缩发生在 busy=true 的轮间，逐级降级的
+  // compacting=false 在轮次结束**之前**到达——此时补发会被后端以 busy 拒收、
+  // 消息丢失（失败不回队）。2026-12 修复前这里硬编码 busy=false 会误发。
+  const c = makeController();
+  c.currentId = 's1';
+  c.sendQueues = { s1: [item('a', '轮间压缩后的排队消息')] };
+  handleAgentEvent(busyEv('s1', true), c);
+  handleAgentEvent(compactingEv('s1', true), c);
+  handleAgentEvent(compactingEv('s1', false), c); // 轮间：busy 仍 true
+  assert.deepEqual(c.sent, [], '还在生成中（busy=true）→ 不补发');
+  assert.deepEqual(c.sendQueues.s1, [item('a', '轮间压缩后的排队消息')], '消息留队列');
+  assert.equal(c.sessionStates.s1.busy, true, 'busy 归约态未被动过');
+  // 轮次结束的 busy 边沿接手：这时才发
+  handleAgentEvent(busyEv('s1', false), c);
+  assert.deepEqual(c.sent, [{ sessionId: 's1', text: '轮间压缩后的排队消息' }]);
+  assert.deepEqual(c.sendQueues.s1, []);
+});
+
+test('⑦ compacting 与 busy 边沿交错的会合：两个边界都到只发一次', () => {
+  const c = makeController();
+  c.currentId = 's1';
+  c.sendQueues = { s1: [item('a', '唯一一条')] };
+  // 压缩与轮次交错的形态：busy=false 先到——轮次边界立即补发；
+  // 随后 compacting=false 到达时队列已空，不双发（空队列幂等）。
+  handleAgentEvent(busyEv('s1', true), c);
+  handleAgentEvent(compactingEv('s1', true), c);
+  assert.deepEqual(c.sent, []);
+  handleAgentEvent(busyEv('s1', false), c);
+  assert.deepEqual(c.sent, [{ sessionId: 's1', text: '唯一一条' }], 'busy false 先到：立即补发');
+  handleAgentEvent(compactingEv('s1', false), c);
+  assert.equal(c.sent.length, 1, 'compacting false 后到：队列已空，不双发');
+  // 反序：compacting=false 先到但 busy 仍 true（轮间降级序列）→ 不补发（2026-12
+  // 修复——原先这里硬编码 busy=false 会误发、被后端拒收丢消息），等 busy 边沿。
+  const c2 = makeController();
+  c2.currentId = 's1';
+  c2.sendQueues = { s1: [item('a', '唯一一条')] };
+  handleAgentEvent(busyEv('s1', true), c2);
+  handleAgentEvent(compactingEv('s1', true), c2);
+  handleAgentEvent(compactingEv('s1', false), c2);
+  assert.deepEqual(c2.sent, [], 'compacting false 先到但 busy=true：不补发');
+  handleAgentEvent(busyEv('s1', false), c2);
+  assert.deepEqual(c2.sent, [{ sessionId: 's1', text: '唯一一条' }], 'busy 边沿接手补发，仍只发一次');
+});
+
+test('⑦ autoSendPick 的 compacting 边沿判定（store 分支的同一份判定）', () => {
+  assert.equal(autoSendPick(undefined, false, [item('a', 'x')], undefined, true), null, '压缩开始不是边界');
+  assert.equal(autoSendPick(undefined, false, [item('a', 'x')], undefined, false), null, '初值 false→false 不是边界');
+  assert.deepEqual(autoSendPick(undefined, false, [item('a', 'x')], true, false), item('a', 'x'), 'compacting true→false 是边界');
+  assert.equal(autoSendPick(undefined, false, [item('a', 'x')], false, false), null, 'false→false 不是边界');
+  assert.equal(autoSendPick(undefined, false, [], true, false), null, '空队列不触发');
+  assert.equal(autoSendPick(true, true, [item('a', 'x')], true, false), null, 'busy 侧不满足仍不触发');
+  assert.equal(autoSendPick(undefined, true, [item('a', 'x')], true, false), null, '压缩结束时还在生成中（自动压缩在轮间）→ 不发，等轮次边界');
+  assert.deepEqual(autoSendPick(true, false, [item('a', 'x')], undefined, false), item('a', 'x'), 'busy 边沿照旧触发');
 });

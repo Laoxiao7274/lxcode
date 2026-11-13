@@ -9,6 +9,7 @@ import (
 
 	"github.com/moyunteng/lxcode/internal/config"
 	"github.com/moyunteng/lxcode/internal/llm"
+	"github.com/moyunteng/lxcode/internal/store"
 )
 
 // ---------- 选区间（纯函数） ----------
@@ -733,5 +734,166 @@ func TestCompactMergesRegionContainingCheckpoint(t *testing.T) {
 	hist := s.History().Messages
 	if len(hist) != 1 || !isCheckpointContent(hist[0].Content) {
 		t.Fatalf("压缩后应只剩新检查点: %+v", hist)
+	}
+}
+
+// ---------- chat.compacting 事件（压缩期间阻塞发送的信号，2026-12） ----------
+
+// compactingEvents 抽出事件流里的 CompactingEvent。
+func (e *compactionEnv) compactingEvents() []CompactingEvent {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	var out []CompactingEvent
+	for _, ev := range e.events {
+		if c, ok := ev.(CompactingEvent); ok {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// TestCompactingEventsEmittedOnSuccess：手动压缩成功路径上，开始/结束信号各一条，
+// 且先 true 后 false（前端靠 false 复位阻塞态）。
+func TestCompactingEventsEmittedOnSuccess(t *testing.T) {
+	s, reg := newTestSession(t)
+	bindDefaultWithWindow(t, reg, 100000)
+	env := &compactionEnv{}
+	s.emit = env.emitter()
+	s.history = bigHistory(6)
+	s.stream = compactionStream(t, env, nil, summaryText, false)
+
+	if _, err := s.Compact(""); err != nil {
+		t.Fatal(err)
+	}
+	got := env.compactingEvents()
+	if len(got) != 2 || !got[0].Compacting || got[1].Compacting {
+		t.Fatalf("成功路径应恰好 true→false 各一条: %+v", got)
+	}
+}
+
+// TestCompactingEventsEmittedOnFailure：失败出口（摘要报错 / 无收益）也必须发
+// 结束信号——否则前端阻塞态卡死（defer 语义的钉子）。
+func TestCompactingEventsEmittedOnFailure(t *testing.T) {
+	cases := []struct {
+		name string
+		sum  string
+		err  bool
+	}{
+		{"摘要报错", summaryText, true},
+		{"摘要无收益", strings.Repeat("很长的摘要内容", 4000), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, reg := newTestSession(t)
+			bindDefaultWithWindow(t, reg, 100000)
+			env := &compactionEnv{}
+			s.emit = env.emitter()
+			s.history = bigHistory(6)
+			s.stream = compactionStream(t, env, nil, tc.sum, tc.err)
+
+			if _, err := s.Compact(""); err == nil {
+				t.Fatal("该路径应失败")
+			}
+			got := env.compactingEvents()
+			if len(got) != 2 || !got[0].Compacting || got[1].Compacting {
+				t.Fatalf("失败路径也必须 true→false（前端复位）: %+v", got)
+			}
+		})
+	}
+}
+
+// TestCompactingEventsEmittedOnPanic：摘要调用 panic 时 defer 仍要发结束信号
+//（panic 路径是「状态卡死」最隐蔽的来源）。
+func TestCompactingEventsEmittedOnPanic(t *testing.T) {
+	s, reg := newTestSession(t)
+	bindDefaultWithWindow(t, reg, 100000)
+	env := &compactionEnv{}
+	s.emit = env.emitter()
+	s.history = bigHistory(6)
+	s.stream = func(ctx context.Context, m config.ModelConfig, msgs []llm.Message, opts []llm.Option) (<-chan llm.StreamEvent, error) {
+		panic("摘要引擎炸了")
+	}
+
+	func() {
+		defer func() { _ = recover() }() // Compact 自身不兜 panic——由测试兜住
+		_, _ = s.Compact("")
+	}()
+	got := env.compactingEvents()
+	if len(got) != 2 || !got[0].Compacting || got[1].Compacting {
+		t.Fatalf("panic 路径也必须 true→false（defer 保证）: %+v", got)
+	}
+}
+
+// TestCompactingEventsOnPruneOnly：只裁剪降级路径同样是压缩流程——也发开始/结束
+//（它耗时短但也要阻塞发送，与 runCompaction 同款语义）。
+func TestCompactingEventsOnPruneOnly(t *testing.T) {
+	s, reg := newTestSession(t)
+	bindDefaultWithWindow(t, reg, 100000)
+	env := &compactionEnv{}
+	s.emit = env.emitter()
+	for _, m := range bigToolHistory(12) {
+		s.AppendForTest(m)
+	}
+
+	if _, err := s.runPruneOnly(context.Background(), nil, "", 16000); err != nil {
+		t.Fatalf("只裁剪应成功: %v", err)
+	}
+	got := env.compactingEvents()
+	if len(got) != 2 || !got[0].Compacting || got[1].Compacting {
+		t.Fatalf("runPruneOnly 也应 true→false 各一条: %+v", got)
+	}
+}
+
+// TestCompactingEventsOnPruneOnlyFailure：只裁剪失败（落库失败）也发结束信号。
+func TestCompactingEventsOnPruneOnlyFailure(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	s, reg := newTestSession(t)
+	bindDefaultWithWindow(t, reg, 100000)
+	if err := s.EnablePersistence(st); err != nil {
+		t.Fatal(err)
+	}
+	env := &compactionEnv{}
+	s.emit = env.emitter()
+	for _, m := range bigToolHistory(12) {
+		s.AppendForTest(m)
+	}
+	s.st = &failingPruneStore{Persistence: st} // 落库必败
+
+	if _, err := s.runPruneOnly(context.Background(), nil, "", 16000); err == nil {
+		t.Fatal("落库失败应返回错误")
+	}
+	got := env.compactingEvents()
+	if len(got) != 2 || !got[0].Compacting || got[1].Compacting {
+		t.Fatalf("只裁剪失败路径也必须 true→false: %+v", got)
+	}
+}
+
+// TestCompactingNotDuplicatedAcrossRetryLevels：降级序列（常规摘要 → 只裁剪 →
+// 缩小 retain 重试）里每个入口各自发一对信号是**正确**语义（每次压缩事务都
+// 要阻塞）；但同一入口不允许重发——用超窗强制路径验证：压缩失败重试只可能
+// 出现整数对 true/false 交替，且 true 总是紧跟在 false 或流首。
+func TestCompactingSignalAlternates(t *testing.T) {
+	s, reg := newTestSession(t)
+	bindDefaultWithWindow(t, reg, 100000)
+	env := &compactionEnv{}
+	s.emit = env.emitter()
+	s.history = bigHistory(6)
+	s.stream = compactionStream(t, env, nil, summaryText, false) // 走无收益再降级
+
+	if _, err := s.Compact(""); err != nil {
+		t.Fatal(err)
+	}
+	got := env.compactingEvents()
+	if len(got)%2 != 0 {
+		t.Fatalf("信号必须成对（true/false 交替）: %+v", got)
+	}
+	for i := 0; i < len(got); i += 2 {
+		if !got[i].Compacting || got[i+1].Compacting {
+			t.Fatalf("第 %d 对信号不是 true→false: %+v", i/2, got[i:i+2])
+		}
 	}
 }

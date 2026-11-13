@@ -348,6 +348,10 @@ type ErrorParams struct {
 	Message   string           `json:"message"`
 	Aborted   bool             `json:"aborted"`
 	Partial   *chatmsg.Message `json:"partial,omitempty"` // 中断时已生成的部分内容（客户端应入历史）
+	// Force = 超窗强制压缩仍失败的告警（agent 的 TurnErrorEvent.Force）：不是一轮
+	// 生成失败，而是「上下文已超窗且压不动」的运维提示。可选键（老客户端忽略），
+	// 客户端可据此把提示条做成更强的样式。
+	Force bool `json:"force,omitempty"`
 }
 
 type BusyParams struct {
@@ -388,11 +392,25 @@ type CompactedParams struct {
 	Summary    string `json:"summary"`
 	Manual     bool   `json:"manual,omitempty"`
 	DispatchID string `json:"dispatch_id,omitempty"`
+	// Reason 是压缩路径的人话说明（"自动压缩（摘要）" / "自动压缩（只裁剪）"——
+	// 只裁剪降级路径 Shadowed=0，前端用它区分形态）。可选键，老客户端忽略。
+	Reason string `json:"reason,omitempty"`
 	// Context 是压缩**之后**的上下文占用（runCompaction 已按锚定算术重算并落库）。
 	// 压缩改变了历史形状，旧数字一定是错的——客户端拿它直接刷新指示器，不必等
 	// 下一次重拉历史。未知（本会话没跑过主轮/纯内存模式）时整键缺席——与
 	// chat.rewound / ChatHistoryResult 的 context 同一套语义（nil = 不编数）。
 	Context *ContextUsage `json:"context,omitempty"`
+}
+
+// CompactingParams 是 chat.compacting 事件的载荷：Compacting=true = 压缩开始
+// （客户端把该会话的提交入队/显示反馈），false = 压缩结束（无论成功失败——
+// 失败路径也发，前端状态自然复位）。DispatchID 非空 = 子会话自己的压缩。
+// wire 兼容：老客户端忽略未知事件；前端对缺失键安全降级（照 compacted 的
+// reason 模式，Compacting 无 omitempty——显式 true/false 都要上 wire）。
+type CompactingParams struct {
+	SessionID  string `json:"session_id"`
+	Compacting bool   `json:"compacting"`
+	DispatchID string `json:"dispatch_id,omitempty"`
 }
 
 // ChatRewindParams 是 chat.rewind 的参数：seq 是要撤回的那条消息的序号

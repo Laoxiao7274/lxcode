@@ -33,6 +33,13 @@ const (
 	compactionRetainRatio = 0.16
 	// compactionMaxTokens 摘要单次生成的输出上限（对齐 DSH 默认 8192）。
 	compactionMaxTokens = 8192
+	// pruneKeepRecentToolResults 确定性裁剪保留的最近工具结果条数（对齐 DSH
+	// dsh-compaction-tool-result-pruner 的"keep recent"策略）：更早的结果替换为
+	// 占位——模型保留"做过什么"的线索，需要细节时重跑该工具。
+	pruneKeepRecentToolResults = 8
+	// prunePlaceholderMinBytes 参与裁剪的 tool 结果最小字节数：占位文本本身有
+	// 几十字节，比它短的原文裁了没有收益（甚至更长）。
+	prunePlaceholderMinBytes = 256
 )
 
 // ErrNothingToCompact 没有可压的收益（历史太短，或摘要并不比被压缩段更小）。
@@ -46,6 +53,11 @@ type CompactResult struct {
 	After    int    // 压缩后（估算）
 	Shadowed int    // 被替换的历史条数（影子区间长度）
 	Summary  string // 摘要正文
+	// Saved 是本次压缩省下的空间估算（before − after，含裁剪收益）：>0 才算
+	// 真的有收益——「压了没降下来」（a9db 案例）的归因就靠它。
+	Saved int
+	// Pruned 是确定性裁剪的行数（摘要路径与只裁剪路径都填）。0 = 本次没有裁剪。
+	Pruned int
 }
 
 // compactionBudgets 按模型窗口换算两个预算（窗口未知返回 false）。
@@ -156,6 +168,67 @@ func selectCompactRange(history []llm.Message, retainTokens int, protectHead boo
 	return firstIdx, keepFrom - 1, true
 }
 
+// toolNameOf 从配对 id 找工具名（占位文案要写清楚被裁的是哪个工具的结果）。
+func toolNameOf(region []llm.Message, callID string) string {
+	for _, m := range region {
+		if m.Role != "assistant" {
+			continue
+		}
+		for _, tc := range m.ToolCalls {
+			if tc.ID == callID && tc.Function.Name != "" {
+				return tc.Function.Name
+			}
+		}
+	}
+	return ""
+}
+
+// pruneRegionCandidates 分析一段区间的 tool 结果，返回可裁剪（要替换成占位）的
+// 下标集合：**保留最近 K 条**（按出现顺序），且原文必须够长（比占位短没有收益）。
+// 区间末尾的「最近」按工具结果出现的先后数——同一次调用群（并行工具）的结果
+// 相邻，数到最后 K 个即最近的 K 次。
+func pruneRegionCandidates(region []llm.Message) (pruneIdx []int, origLen []int) {
+	var toolIdx []int
+	for i, m := range region {
+		if m.Role == "tool" {
+			toolIdx = append(toolIdx, i)
+		}
+	}
+	if len(toolIdx) <= pruneKeepRecentToolResults {
+		return nil, nil // 总数不到 K 条：不裁（保留侧本来就该看到全部）
+	}
+	keepFrom := len(toolIdx) - pruneKeepRecentToolResults
+	for _, i := range toolIdx[:keepFrom] {
+		m := region[i]
+		if len(m.Content) < prunePlaceholderMinBytes {
+			continue // 比占位还短的原文裁了没收益
+		}
+		pruneIdx = append(pruneIdx, i)
+		origLen = append(origLen, len(m.Content))
+	}
+	return pruneIdx, origLen
+}
+
+// prunedRegion 返回裁剪后的区间副本（区间本体不动——fail-closed 的原则：提交前
+// 只动副本）与节省的 token 估算。占位是合法 tool 消息内容（Role/ToolCallID 不动），
+// 配对不变量天然成立：toolpair 的游标按 id 计数，不读 content。
+func prunedRegion(region []llm.Message, pruneIdx []int, names []string) (out []llm.Message, savedTokens int) {
+	out = make([]llm.Message, len(region))
+	copy(out, region)
+	for k, i := range pruneIdx {
+		m := region[i]
+		placeholder := fmt.Sprintf("[工具结果已裁剪：原 %d 字节，%s。需要细节时重新发起该工具调用。]",
+			len(m.Content), names[k])
+		out[i] = llm.Message{Role: "tool", ToolCallID: m.ToolCallID, Content: placeholder,
+			Seq: m.Seq, DurationMs: m.DurationMs}
+		savedTokens += estimateMessageTokens(m) - estimateMessageTokens(out[i])
+		if savedTokens < 0 {
+			savedTokens = 0 // 防御：原文本应远大于占位，不该出现负收益
+		}
+	}
+	return out, savedTokens
+}
+
 // compactionSystemPrompt 组装摘要调用用的系统提示词（与真实请求同一套组装，
 // 唯一目的就是让这次辅助调用成为上次请求的前缀——KV 缓存可复用）。
 func (s *Session) compactionSystemPrompt(ac *sessiondata.AgentContext, workDir string) string {
@@ -233,6 +306,13 @@ func (s *Session) summarizeRange(ctx context.Context, ac *sessiondata.AgentConte
 // 替换 + 检查点落库，同一临界区）。任何一步失败都不改历史（fail-closed），
 // 错误交回调用方决定是记日志还是回给人。
 func (s *Session) runCompaction(ctx context.Context, ac *sessiondata.AgentContext, workDir string, retainTokens int) (CompactResult, error) {
+	// chat.compacting 开始/结束信号（单一发出点，覆盖全部出口）：入口发 true，
+	// defer 发 false——成功/失败/panic 都经过 defer，前端状态不会卡死。自动压缩
+	// 发生在轮间（busy=true 中）天然被阻塞，但事件照发（多客户端一致性）；
+	// runCompaction 是自动路径的唯一入口（maybeCompact / 超窗重试 / 降级序列
+	// 都汇到这里），所以不会对同一会话重复发 true。
+	s.emit(CompactingEvent{Compacting: true})
+	defer s.emit(CompactingEvent{Compacting: false})
 	s.repairUnpairedAtCompaction()
 
 	s.mu.Lock()
@@ -267,16 +347,41 @@ func (s *Session) runCompaction(ctx context.Context, ac *sessiondata.AgentContex
 	for _, m := range snapshot {
 		beforeTotal += estimateMessageTokens(m)
 	}
-	summary, err := s.summarizeRange(ctx, ac, workDir, repairRegionForSummary(region))
+	// 确定性裁剪（A，治本对齐 DSH dsh-compaction-tool-result-pruner）：摘要**之前**
+	// 先把区间里更早的工具结果替换成占位。两条纪律：
+	//   - 只改摘要输入的副本，区间本体不动——摘要失败时历史与内存都原样（fail-closed）；
+	//   - 缩水检查的「被压段」按**裁剪后**的区间算：裁剪省下的字节也算压缩收益
+	//     ——这正是联合路径的意义（摘要 + 裁剪保证有收益，a9db 案例形态）。
+	// 占位是合法 tool 消息内容（id/角色不动），配对不变量不受影响。
+	pruneIdx, _ := pruneRegionCandidates(region)
+	var names []string
+	if pruneIdx != nil {
+		names = make([]string, len(pruneIdx))
+		for k, i := range pruneIdx {
+			names[k] = toolNameOf(region, region[i].ToolCallID)
+		}
+	}
+	summaryInput := region
+	prunedTokens := regionTokens
+	if pruneIdx != nil {
+		trimmed, _ := prunedRegion(region, pruneIdx, names)
+		summaryInput = trimmed
+		prunedTokens = 0
+		for _, m := range trimmed {
+			prunedTokens += estimateMessageTokens(m)
+		}
+	}
+	summary, err := s.summarizeRange(ctx, ac, workDir, repairRegionForSummary(summaryInput))
 	if err != nil {
 		return CompactResult{}, fmt.Errorf("摘要失败（历史未改动）: %w", err)
 	}
 	// 缩水检查：替换后必须真的更小，否则这次压缩只花了一次调用却让上下文更大。
-	// 比的是**被压段**与摘要（保留尾部两边都在，抵消）——不是整段历史。
+	// 比的是**被压段（裁剪后口径）**与摘要（保留尾部两边都在，抵消）——不是整段
+	// 历史。被压段按裁剪后算：裁剪的收益已计入，摘要只需小于「占位化后的区间」。
 	summaryTokens := blockOverhead + estimateText(checkpointPreamble) + estimateText(summary)
-	if summaryTokens >= regionTokens {
+	if summaryTokens >= prunedTokens {
 		return CompactResult{}, fmt.Errorf(
-			"%w（摘要 %d tokens 不小于被压缩的 %d tokens）", ErrNothingToCompact, summaryTokens, regionTokens)
+			"%w（摘要 %d tokens 不小于被压缩的 %d tokens）", ErrNothingToCompact, summaryTokens, prunedTokens)
 	}
 
 	checkpoint := llm.Message{Role: "user", Content: buildCheckpoint(summary)}
@@ -318,8 +423,8 @@ func (s *Session) runCompaction(ctx context.Context, ac *sessiondata.AgentContex
 	}
 	// 占用测量要跟着压缩走：不更新的话指示器会一直停在压缩前的数字
 	//（实测踩过——压缩成功了但环里还是旧占用）。锚定算术见 reanchoredUsage：
-	// 被压段换成摘要，差值 = 被压段估算 − 摘要估算。
-	s.context = reanchoredUsage(prev, regionTokens-summaryTokens, s.history)
+	// 被压段换成摘要，差值 = 被压段估算（裁剪后口径）− 摘要估算。
+	s.context = reanchoredUsage(prev, prunedTokens-summaryTokens, s.history)
 	updated, st := s.context, s.st
 	s.mu.Unlock()
 
@@ -328,11 +433,28 @@ func (s *Session) runCompaction(ctx context.Context, ac *sessiondata.AgentContex
 	// 落库失败只记日志：占用是展示信息，压缩本身已经成功，不能因此回滚历史。
 	persistContextUsage(st, id, updated)
 
-	return CompactResult{Before: beforeTotal, After: after, Shadowed: shadowed, Summary: summary}, nil
+	// CompactResult 是「估算占用」口径：before − after = 真实省下的空间
+	//（摘要 + 裁剪联合），事件与日志按它说话。
+	saved := regionTokens - after
+	if saved < 0 {
+		saved = 0
+	}
+	res := CompactResult{Before: beforeTotal, After: after, Shadowed: shadowed, Summary: summary, Saved: saved}
+	if pruneIdx != nil {
+		res.Pruned = len(pruneIdx)
+	}
+	return res, nil
 }
 
 // maybeCompact 是自动触发（轮与轮之间）：上一次请求的真实用量超阈值才压。
 // 窗口未知（模型没配 context_window）时不压——算不出阈值就不猜。
+//
+// 正常压力（0.8~1.0×窗口）走常规摘要压缩（无收益是正常态，DEBUG 留痕不惊动用户）。
+// **超窗强制模式**（used > 1.0×窗口，fa6d 案例：端点真实容量大于配置窗口、超窗请求
+// 照常成功，IsContextOverflow 永不触发——常规摘要又因「摘要≥被压段」没收益，旧版
+// 在这里静默 return，占用一路涨到 129% 跑完全程）下失败不再静默：走降级序列
+// （摘要+裁剪 → 只裁剪 → 减小 retain 重试一次），仍失败则 WARN 日志 + TurnError
+// 事件（走既有 chat.error 通道，前端已有错误条渲染，不新发明事件形态）。
 func (s *Session) maybeCompact(ctx context.Context, ac *sessiondata.AgentContext, workDir string) {
 	usage := s.ContextUsage()
 	threshold, retain, ok := compactionBudgets(usage.Window)
@@ -342,15 +464,159 @@ func (s *Session) maybeCompact(ctx context.Context, ac *sessiondata.AgentContext
 	if usage.Used < threshold {
 		return
 	}
+	forced := usage.Window > 0 && usage.Used > usage.Window
 	res, err := s.runCompaction(ctx, ac, workDir, retain)
-	if err != nil {
-		if errors.Is(err, ErrNothingToCompact) {
-			return // 没得压（历史还短/配对回退吃掉整段）——正常态
-		}
-		log.Printf("自动压缩失败（历史未改动，下一轮再试）: %v", err)
+	if err == nil {
+		s.logAndEmitCompaction(res, "自动压缩（摘要）")
 		return
 	}
-	s.emit(CompactedEvent{Result: res})
+	if !errors.Is(err, ErrNothingToCompact) {
+		if forced {
+			s.compactEscalation(ctx, ac, workDir, err, retain)
+		} else {
+			log.Printf("会话 %s 自动压缩失败（历史未改动，下一轮再试）: %v", s.SessionID(), err)
+		}
+		return
+	}
+	// 常规摘要无收益：正常压力下这是正常态（历史太短/配对回退吃掉整段）——留痕不升级。
+	if !forced {
+		log.Printf("会话 %s 自动压缩无收益（DEBUG 级常态，占用 %.0f%%）: %v",
+			s.SessionID(), float64(usage.Used)/float64(usage.Window)*100, err)
+		return
+	}
+	// 超窗 + 常规摘要无收益：a9db 案例形态——自动降级「只裁剪不摘要」，有收益就落库。
+	log.Printf("会话 %s 超窗（%.0f%%）且常规摘要无收益，降级只裁剪: %v",
+		s.SessionID(), float64(usage.Used)/float64(usage.Window)*100, err)
+	pres, perr := s.runPruneOnly(ctx, ac, workDir, retain)
+	if perr == nil {
+		s.logAndEmitCompaction(pres, "自动压缩（只裁剪）")
+		return
+	}
+	s.compactEscalation(ctx, ac, workDir, perr, retain)
+}
+
+// compactEscalation 是强制模式的最后两级：减小 retain 再试一次常规压缩，仍失败
+// 则 WARN 日志 + TurnError 事件给前端（错误条渲染，不再静默——用户至少知道
+// 「上下文已经满了而且压不动，该手动 /compact 或开新会话了」）。
+func (s *Session) compactEscalation(ctx context.Context, ac *sessiondata.AgentContext, workDir string, cause error, retain int) {
+	// 减小 retain 重试一次：保留预算减半（再退配对切点自己会兜）——区间更宽，
+	// 有机会压出收益。只重试一次：连降级都压不动的历史，多试只是多花 prefill。
+	if retain > 0 {
+		if res, err := s.runCompaction(ctx, ac, workDir, retain/2); err == nil {
+			s.logAndEmitCompaction(res, "自动压缩（强制·缩小保留）")
+			return
+		} else {
+			cause = err
+		}
+	}
+	id := s.SessionID()
+	log.Printf("会话 %s 上下文已超窗且自动压缩全部失败（历史未改动）: %v", id, cause)
+	s.emit(TurnErrorEvent{Message: "上下文占用已超过模型窗口，且自动压缩未能降低占用（" +
+		cause.Error() + "）。建议手动压缩（/compact）或开新会话继续。", Force: true})
+}
+
+// logAndEmitCompaction 统一「压缩成功」的收尾：INFO 日志（session id、before/after、
+// 是否含裁剪）+ CompactedEvent 广播。原先成功只发事件不打日志——a9db 案例排查时
+// 「压了没降下来」完全无法归因（失败有日志、成功反而没有）。
+func (s *Session) logAndEmitCompaction(res CompactResult, via string) {
+	log.Printf("会话 %s %s完成: %d → %d tokens（省 %d，裁剪 %d 条工具结果）",
+		s.SessionID(), via, res.Before, res.After, res.Saved, res.Pruned)
+	s.emit(CompactedEvent{Result: res, Reason: via})
+}
+
+// runPruneOnly 是「只裁剪不摘要」的降级路径（a9db 案例的解药）：确定性把更早的
+// 工具结果替换成占位，不调用模型、不产生检查点。
+//
+// 落库形态（与影子机制的共存设计）：裁剪**不缩短历史**——行数、配对结构、检查点
+// 位置全不变，影子机制的「区间替换成检查点」形态套不上它，硬造成本远大于收益。
+// 所以独立落库：store.PruneToolResults 按 seq 原地 UPDATE 正文（占位是合法 tool
+// 消息内容，配对不变量天然成立），内存同临界区替换 + bumpHistoryLocked；失败回滚
+// 内存（fail-closed 与检查点路径同一条纪律）。原文行被 UPDATE 覆盖——比检查点的
+// 影子行「原文永久保留」弱一档，这是有意的取舍：占位写明原字节数与工具名，Search
+// 翻旧账仍有线索；换来的是不引入第二种历史形状。
+//
+// 裁剪后的占用走锚定算术（同 runCompaction）：被压段变小，真实锚点保留、差值折算。
+func (s *Session) runPruneOnly(ctx context.Context, ac *sessiondata.AgentContext, workDir string, retainTokens int) (CompactResult, error) {
+	_ = ctx     // 摘要降级路径不调用模型；ctx 保留在签名上与 runCompaction 同形
+	_ = ac      // 同上
+	_ = workDir // 同上
+	// 只裁剪降级路径也是压缩流程的一部分（耗时短但同样要阻塞发送）：
+	// 开始/结束事件与 runCompaction 同款（入口 true + defer false）。
+	s.emit(CompactingEvent{Compacting: true})
+	defer s.emit(CompactingEvent{Compacting: false})
+	s.repairUnpairedAtCompaction()
+
+	s.mu.Lock()
+	snapshot := append([]llm.Message(nil), s.history...)
+	id := s.id
+	protectHead := s.protectHead
+	st := s.st
+	prev := s.context
+	s.mu.Unlock()
+
+	start, end, ok := selectCompactRange(snapshot, retainTokens, protectHead)
+	if !ok {
+		return CompactResult{}, fmt.Errorf("%w（历史还太短，裁剪无从下手）", ErrNothingToCompact)
+	}
+	region := snapshot[start : end+1]
+	pruneIdx, _ := pruneRegionCandidates(region)
+	if pruneIdx == nil {
+		return CompactResult{}, fmt.Errorf(
+			"%w（区间内没有可裁剪的工具结果：不足 %d 条或全部短于 %d 字节）",
+			ErrNothingToCompact, pruneKeepRecentToolResults+1, prunePlaceholderMinBytes)
+	}
+	names := make([]string, len(pruneIdx))
+	for k, i := range pruneIdx {
+		names[k] = toolNameOf(region, region[i].ToolCallID)
+	}
+	trimmed, savedTokens := prunedRegion(region, pruneIdx, names)
+	if savedTokens <= 0 {
+		return CompactResult{}, fmt.Errorf("%w（裁剪没有收益）", ErrNothingToCompact)
+	}
+
+	// 提交：库先动、内存随后——落库失败时内存还没动（与「AppendCheckpoint 失败回滚
+	// 内存」同一条 fail-closed 纪律，顺序反过来能省一次回滚）。
+	beforeTotal := 0
+	for _, m := range snapshot {
+		beforeTotal += estimateMessageTokens(m)
+	}
+	seqs := make([]int64, 0, len(pruneIdx))
+	contents := make([]string, 0, len(pruneIdx))
+	for _, i := range pruneIdx {
+		msg := region[i]
+		if msg.Seq <= 0 {
+			// 没落库的消息（纯内存模式 Seq==0）：库侧无从裁剪。内存照裁（降级路径
+			// 的收益主体在内存历史），库侧行跳过——下一次压缩会再处理。
+			continue
+		}
+		seqs = append(seqs, msg.Seq)
+		contents = append(contents, trimmed[i].Content)
+	}
+	if st != nil && len(seqs) > 0 {
+		if err := st.PruneToolResults(id, seqs, contents); err != nil {
+			return CompactResult{}, fmt.Errorf("裁剪落库失败（历史未改动）: %w", err)
+		}
+	}
+	s.mu.Lock()
+	if len(s.history) != len(snapshot) {
+		// 裁剪期间会话被改动（撞上并发的 Send）：放弃，两边都不动
+		s.mu.Unlock()
+		return CompactResult{}, errors.New("会话在裁剪期间被改动，已放弃（历史未改动）")
+	}
+	copy(s.history[start:end+1], trimmed)
+	s.bumpHistoryLocked() // 内容改写：派生值缓存失效（history_cache.go）
+	s.context = reanchoredUsage(prev, savedTokens, s.history)
+	updated := s.context
+	s.mu.Unlock()
+	persistContextUsage(st, id, updated)
+
+	return CompactResult{
+		Before:   beforeTotal,
+		After:    beforeTotal - savedTokens,
+		Shadowed: 0, // 不替换行
+		Saved:    savedTokens,
+		Pruned:   len(pruneIdx),
+	}, nil
 }
 
 // Compact 手动压缩（用户 /compact 或前端入口）：不受阈值约束，空闲才允许。

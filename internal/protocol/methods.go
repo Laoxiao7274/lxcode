@@ -188,6 +188,13 @@ const (
 	EventDispatchStart  = "chat.dispatchStart" // 主 Agent 派发子 Agent——客户端渲染 dispatch 卡
 	EventDispatchEnd    = "chat.dispatchEnd"   // 子 Agent 执行收尾——dispatch 卡定格带结果
 	EventCompacted      = "chat.compacted"     // 历史被压缩（前缀替换成摘要检查点）——客户端插标记块
+	// EventCompacting 压缩开始/结束信号（compacting true/false，多客户端同步）。
+	// 背景：压缩开始本来无事件——手动压缩期间 busy=false，其它客户端（或同一
+	// 客户端刷新后）感知不到「正在压缩」，会在这个窗口提交 chat.send，撞上
+	// 「压缩期间历史被改动」防线让整次压缩作废（prefill 白跑）。有了它，前端
+	// 归约 per-session 的 compacting 态并把提交入队（与 busy 同判）。自动压缩
+	// 发生在轮间（busy=true 中）天然被阻塞，但事件照发（多客户端一致性）。
+	EventCompacting = "chat.compacting"
 	EventRewound        = "chat.rewound"       // 会话被撤回（叶已移到 anchor 之前；一行未删）——客户端截断时间线
 	// EventLeafChanged 叶指针变更（rewind 与 setLeaf 都发）。与 chat.rewound 的分工：
 	// setLeaf 是**无删除**的指针移动，老客户端收到 chat.rewound 会截断时间线——

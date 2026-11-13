@@ -178,6 +178,8 @@ const FIELD_CHECKS = {
     ['summary', 'string'],
     ['manual', ['=', true]],
     ['dispatch_id', 'string'],
+    // reason：压缩路径的人话说明（可选键——老后端缺席）。
+    ['reason', 'string'],
     ['context.used', 'number'],
     ['context.estimated', ['=', true]],
   ],
