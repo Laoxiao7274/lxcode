@@ -1603,6 +1603,26 @@ class RealBackend {
                 Log.i(TAG, "重连后重拉当前会话历史: $currentSessionId")
                 loadHistory(currentSessionId)
             }
+            // 助手域同款恢复链（对标上面的主域动作）：断线期间 assistant.* 事件
+            // 同样一次性丢失，重连后无人重拉的话时间线停在断线前快照。三步：
+            //   ① 清助手域忙闲投影——与主域 sessionBusy.clear() 同一条清账纪律
+            //     （断线期间的 assistant.busy 收不到，旧值会让助手会话卡在「生成中」）；
+            //   ② 列表 running 位以服务端事实重建（assistant.list 应答经
+            //     applyAssistantSessionList 逐条补 busyMap）；
+            //   ③ currentId 非空则**强制**重拉 assistant.history——与主域恢复链
+            //     同理，断线期间错过的 assistant.dispatchStart 不重放，只有
+            //     assistant.history 能按此刻的运行中登记把卡补回来。注意不走
+            //     openAssistantSession 的「id != currentId 才拉」守卫（那是用户
+            //     切换语义；恢复链即使 id 相同也要拉）——直接发请求，应答由
+            //     applyAssistantHistory 按此刻 busy 键重建 asst.busy/busyMap
+            //     （applyAssistantHistory 内已有该修正），投影正确归位。
+            asst.busyMap.clear()
+            asst.busy = false
+            refreshAssistantSessions()
+            if (asst.currentId.isNotEmpty()) {
+                Log.i(TAG, "重连后重拉助手会话历史: ${asst.currentId}")
+                openAssistantSession(asst.currentId)
+            }
         } else if (phase != RealPhase.Offline) {
             // 用户主动 disconnect 后的迟到回调不再标失败
             if (pairingInvalid) return // 401 后的补发失败回调不覆盖失效态

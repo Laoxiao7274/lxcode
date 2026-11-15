@@ -264,8 +264,15 @@ func toProtocolSessionList(metas []store.SessionMeta) []protocol.SessionMeta {
 // busySessions 返回**此刻**在生成的顶层会话 id 快照（运行时缓存里 Busy()==true 的）。
 // 消费方：hello 快照（BusySessions）与 session.list 的 running 位——两者的语义
 // 必须同源（同一份判定），否则同一时刻两处报的运行状态会分叉。
-// 注意：只扫 s.sessions（活跃运行时缓存）。不活跃的会话必然不在生成（进程内
-// 只有缓存里的 Session 能跑轮次），不需要查库——库里的 busy 位没有事实源。
+// 注意：只扫两域的运行时缓存（s.sessions + assistantSessions，同锁并扫——
+// 2026-12 安卓重连恢复链补的盲区：断线期间助手域 assistant.* 事件一次性丢失，
+// 客户端重连后靠握手快照识别「此刻还在跑」的会话并补拉历史，快照漏助手域 =
+// 助手会话的运行态永远恢复不了）。主域消费方对助手 id 的安全性：id 只被写进
+// busy 投影/列表 running 位（未在主域列表里的 id 不显示、不触发任何动作），
+// 桌面端 onBusySnapshot 对陌生 id 会发一次 chat.history，按库 space 列解析
+// 回真运行时（ReadModel 按 space 分流过滤），不建影子运行时、不丢任何事件。
+// 不活跃的会话必然不在生成（进程内只有缓存里的 Session 能跑轮次），不需要
+// 查库——库里的 busy 位没有事实源。
 // 子会话运行时不进缓存（生命周期跟派发走），不出现在快照里——它们的忙闲经
 // chat.busy（带 dispatch_id）广播，前端投进子会话自己的 state。
 func (s *Server) busySessions() []string {
@@ -273,6 +280,11 @@ func (s *Server) busySessions() []string {
 	defer s.sessionsMu.RUnlock()
 	var out []string
 	for id, sess := range s.sessions {
+		if sess.Busy() {
+			out = append(out, id)
+		}
+	}
+	for id, sess := range s.assistantSessions {
 		if sess.Busy() {
 			out = append(out, id)
 		}

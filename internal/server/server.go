@@ -72,8 +72,10 @@ type Server struct {
 	sessions   map[string]*agent.Session
 	// assistantSessions 是助手域（assistant space）的并列运行时缓存（助手模式
 	// P0）：与主空间同锁（sessionsMu），id 空间两域不重叠（各自建行各自建
-	// 运行时）——主空间的函数（busySessions/cancelChildAnywhere/session(id)）
-	// 不扫这里，零改动。
+	// 运行时）——主空间的跨域动作函数（cancelChildAnywhere/session(id)）不扫
+	// 这里；**busySessions 例外**（2026-12 安卓重连恢复链拍板并入并扫）：它
+	// 只是握手快照/列表 running 位的 busy id 清单，主域消费方对助手 id 无动作
+	// （安全性论证见 emit.go busySessions 注释）。
 	assistantSessions map[string]*agent.Session
 	lastSessionID     string // 仅供测试诊断；协议请求绝不读取全局焦点
 	memoryID          uint64

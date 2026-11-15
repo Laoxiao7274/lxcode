@@ -99,6 +99,8 @@ func (s *Server) dispatchAssistant(c *wsClient, req *protocol.Request, params js
 		// 助手域会话列表：wire 形状与 session.list 同源（[]SessionMeta +
 		// running 位），busy 判定扫 assistantSessions（与主域 busySessions
 		// 同一套「活跃运行时缓存」事实源——不活跃必不在生成，不查库）。
+		// 这里维持只扫助手域（主域会话本来就不在 assistant.list 里）；主域
+		// busySessions 反向并入助手域是另一回事（emit.go，2026-12）。
 		if s.st == nil {
 			return protocol.NewError(req.ID, protocol.CodeInvalidParams, "会话存储未启用")
 		}

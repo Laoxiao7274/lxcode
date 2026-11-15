@@ -183,6 +183,107 @@ func waitAssistantIdle(srv *Server, id string) error {
 	return errors.New("助手会话 10s 未收尾")
 }
 
+// busyGateStream 造「卡在 gate 里」的假流：会话发出去后停在生成中，直到
+// close(gate) 才放行收尾——制造一个稳定的 busy 窗口供快照断言。
+func busyGateStream(gate chan struct{}) testStream {
+	return func(_ context.Context, _ config.ModelConfig, _ []llm.Message, _ []llm.Option) (<-chan llm.StreamEvent, error) {
+		ch := make(chan llm.StreamEvent, 2)
+		go func() {
+			<-gate
+			ch <- llm.StreamEvent{Type: llm.EventText, TextDelta: "ok"}
+			ch <- llm.StreamEvent{Type: llm.EventDone, Result: &llm.ChatResult{
+				Message: llm.Message{Role: "assistant", Content: "ok"}, FinishReason: llm.FinishStop,
+			}}
+			close(ch)
+		}()
+		return ch, nil
+	}
+}
+
+// TestBusySessionsIncludeAssistant（hello 快照并入助手域）：助手会话在跑时，
+// busySessions 的快照里必须有它的 id——安卓端重连恢复链靠握手快照识别「此刻
+// 还在跑」的助手会话并补拉 assistant.history，快照漏助手域 = 断线期间错过
+// assistant.busy 的客户端永远恢复不了助手的运行态。两域 id 空间不重叠
+// （各自建行），快照只是 busy id 清单，主域消费方对助手 id 无动作（论证见
+// emit.go busySessions 注释）。
+func TestBusySessionsIncludeAssistant(t *testing.T) {
+	gate := make(chan struct{})
+	var closeOnce sync.Once
+	srv, client, _ := newTestServer(t, busyGateStream(gate))
+	t.Cleanup(func() { closeOnce.Do(func() { close(gate) }) })
+
+	// 助手会话跑起来（busy）
+	resp := client.call(protocol.MethodAssistantNew, map[string]any{})
+	if resp == nil || resp.Error != nil {
+		t.Fatalf("assistant.new: %v", resp.Error)
+	}
+	var created struct {
+		SessionID string `json:"session_id"`
+	}
+	if err := unmarshalResult(resp, &created); err != nil {
+		t.Fatal(err)
+	}
+	if r := client.call(protocol.MethodAssistantSend, protocol.ChatSendParams{
+		SessionID: created.SessionID, Text: "跑起来"}); r == nil || r.Error != nil {
+		t.Fatalf("assistant.send: %v", r.Error)
+	}
+	if err := waitAssistantBusy(srv, created.SessionID); err != nil {
+		t.Fatal(err)
+	}
+
+	// hello 应答的 busy_sessions 含助手会话 id
+	hello := client.call(protocol.MethodHello, protocol.HelloParams{Client: "test", Version: protocol.Version})
+	if hello == nil || hello.Error != nil {
+		t.Fatalf("hello 失败: %+v", hello)
+	}
+	var h protocol.HelloResult
+	if err := unmarshalResult(hello, &h); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, id := range h.BusySessions {
+		if id == created.SessionID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("hello 的 busy_sessions 应含助手会话 %q: %v", created.SessionID, h.BusySessions)
+	}
+
+	// 主域 session.list 的 running 位不折进助手会话（主域列表只含主域会话，
+	// running 位只在它自己的条目上生效——并扫对主域列表无副作用）
+	list := client.call(protocol.MethodSessionList, map[string]any{})
+	if list.Error != nil {
+		t.Fatalf("session.list: %v", list.Error)
+	}
+	var metas []protocol.SessionMeta
+	if err := unmarshalResult(list, &metas); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range metas {
+		if m.ID == created.SessionID {
+			t.Fatal("助手会话不应出现在主域 session.list")
+		}
+	}
+
+	closeOnce.Do(func() { close(gate) })
+	if err := waitAssistantIdle(srv, created.SessionID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// waitAssistantBusy 等助手会话进入运行中（gate 流卡住时即为 busy）。
+func waitAssistantBusy(srv *Server, id string) error {
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if sess := srv.peekAssistantSession(id); sess != nil && sess.Busy() {
+			return nil
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return errors.New("助手会话 10s 未进入运行中")
+}
+
 // TestAssistantWSApprovalAndModel：assistant.approval / assistant.model 两个
 // 会话级状态方法的端到端验收（域隔离 + 事件换名 + 落库）：
 //   - assistant.approval 改档 → 广播 assistant.approvalChanged（不是 chat 前缀

@@ -3,9 +3,10 @@
 // 与主空间的分工：助手会话是**另一个域**——独立的运行时缓存（assistantSessions，
 // 与主空间的 sessions 并列同锁）、独立的 Agent 语境（assistantAgentResolver，
 // 内置常量 + 从库里现读 Delegates）、独立的方法域（assistant.*，dispatch_assistant.go）
-// 与事件域（emit.go 的 assistantEventName 前缀映射）。主空间的函数
-// （busySessions/cancelChildAnywhere/session(id) 等）**零改动**——两域的 id 空间
-// 不会重叠（各自建行各自建运行时），不需要跨域互查。
+// 与事件域（emit.go 的 assistantEventName 前缀映射）。主空间的跨域动作函数
+// （cancelChildAnywhere/session(id) 等）**零改动**——两域的 id 空间
+// 不会重叠（各自建行各自建运行时），不需要跨域互查。**busySessions 例外**
+// （emit.go，2026-12 并入助手域并扫）：它只产 busy id 快照，不是跨域动作。
 package server
 
 import (
