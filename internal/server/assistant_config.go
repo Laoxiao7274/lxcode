@@ -64,7 +64,7 @@ func (s *Server) assistantConfig() config.Assistant {
 }
 
 // assistantConfigResult 生成 get 应答 / changed 广播的载荷（已归一）。
-// builtinDefaults 恒带回——内置默认 14 项的事实源在服务端（UI 预填与恢复默认
+// builtinDefaults 恒带回——内置默认清单的事实源在服务端（UI 预填与恢复默认
 // 用它，前端不写死，防漂移）。
 func (s *Server) assistantConfigResult() protocol.AssistantConfigResult {
 	a := s.assistantConfig()

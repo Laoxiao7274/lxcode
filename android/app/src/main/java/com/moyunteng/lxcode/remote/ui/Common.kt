@@ -12,6 +12,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
+import com.moyunteng.lxcode.remote.R
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -26,6 +27,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -34,9 +36,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowLeft
@@ -45,7 +49,9 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.Alignment
@@ -55,6 +61,7 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.RoundRect
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -242,7 +249,9 @@ fun TerminalBlock(command: String, modifier: Modifier = Modifier, cwd: String? =
 }
 
 /** 浅色代码块（对齐 thread.css `--code-bg #f4f5f7`）：等宽、可横向滚动。
- *  只服务 Markdown 围栏块（```）——工具输出走 [ToolOut]（深色终端形态）。 */
+ *  只服务 Markdown 围栏块（```）——工具输出走 [ToolOut]（深色终端形态）。
+ *  复制路径双轨：右上角可见复制角标（点按整块复制 + Toast）+ 长按整块复制；
+ *  文本再包 [SelectionContainer] 支持部分选中（角标是主要复制入口，选中是补充）。 */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun CodeBlock(text: String, modifier: Modifier = Modifier) {
@@ -275,7 +284,31 @@ fun CodeBlock(text: String, modifier: Modifier = Modifier) {
             ),
             modifier = Modifier.horizontalScroll(rememberScrollState()),
         )
+        CodeCopyBadge(text = text)
     }
+}
+
+/** 代码块右上角的可见复制角标（Material ContentCopy 图标，Faint 淡色）：
+ *  点按 = 整块复制 + Toast「已复制」；长按整块复制手势保留（见各调用方）。
+ *  角标自身 clickable 会消费手势，不会冒泡到外层的 combinedClickable。
+ *  BoxScope 接收者：调用方都在 Box 里，align 在此解析（Icon 链上没有全局 align）。 */
+@Composable
+fun BoxScope.CodeCopyBadge(text: String, tint: Color = Lx.colors.FgFaint, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    val copied = stringResource(R.string.copied)
+    Icon(
+        imageVector = Icons.Filled.ContentCopy,
+        contentDescription = "复制",
+        tint = tint,
+        modifier = modifier
+            .align(Alignment.TopEnd)
+            .size(14.dp)
+            .clip(CircleShape)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+            ) { copyToClipboard(context, text, copied) },
+    )
 }
 
 /**
@@ -300,15 +333,19 @@ fun ToolOut(
             // 原型 `.toolout`：padding 10px 12px；文本在卡内横滚（长行不折行）
             .padding(horizontal = Lx.space.s12, vertical = Lx.space.s10),
     ) {
-        Text(
-            text = text,
-            style = Lx.type.Mono12.copy(
-                fontSize = Lx.type.Size11_5,
-                lineHeight = (Lx.type.Size11_5.value * 1.6f).sp,
-                color = if (danger) Lx.colors.Danger else Lx.colors.TermFg,
-            ),
-            modifier = Modifier.horizontalScroll(rememberScrollState()),
-        )
+        SelectionContainer {
+            Text(
+                text = text,
+                style = Lx.type.Mono12.copy(
+                    fontSize = Lx.type.Size11_5,
+                    lineHeight = (Lx.type.Size11_5.value * 1.6f).sp,
+                    color = if (danger) Lx.colors.Danger else Lx.colors.TermFg,
+                ),
+                modifier = Modifier.horizontalScroll(rememberScrollState()),
+            )
+        }
+        // 工具输出此前没有任何复制路径——补同款可见复制角标（整块复制 + Toast）
+        CodeCopyBadge(text = text)
     }
 }
 

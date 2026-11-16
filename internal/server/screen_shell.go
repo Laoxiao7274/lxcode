@@ -40,6 +40,11 @@ type screenCommand struct {
 	Monitor int `json:"monitor"`
 	// Quality 码率档 low/medium/high。
 	Quality string `json:"quality"`
+	// StartEpoch 手机端「开始投屏」意图代数：每次 screen.start（want=true）
+	// 递增。电平协议下壳无法区分「电平未变」与「用户又点了一次开始」——熔断
+	// 态（want 保持 true）下用户点「重新开始投屏」就是靠 epoch 变化被壳感知
+	// 为显式重试（P1-5）。老壳忽略该字段（向后兼容）。
+	StartEpoch int `json:"start_epoch"`
 }
 
 // shellState 是壳在轮询里上报的自身状态（ffmpeg 进程与编码器事实源在壳）。
@@ -49,6 +54,10 @@ type shellState struct {
 	Encoder string `json:"encoder"`
 	Width   int    `json:"width"`
 	Height  int    `json:"height"`
+	// Quality 壳当前执行的码率档（随轮询上报；P1-1：screenState 填
+	// ScreenState.Quality——手机端 UI 与「切显示器沿用当前档」以此为据，
+	// 缺失时不编造 medium，避免 UI 显示与重置把清晰度打回默认档）。
+	Quality string `json:"quality,omitempty"`
 	// Error 非空 = 最近一次失败原因（人话）。
 	Error string `json:"error,omitempty"`
 	// ErrKind 错误分类（reason/ffmpeg_missing/encoder_unavailable），空 = 普通原因。
@@ -138,10 +147,19 @@ func (sh *screenShell) report(st shellState) ([]protocol.ScreenMonitor, bool) {
 	return st.Monitors, changed
 }
 
-// setCommand 设置命令电平（start/stop 共用）。monitor 仅 want=true 时生效。
+// setCommand 设置命令电平（start/stop 共用）。monitor 仅 want=true 时生效；
+// want=true 时递增意图代数（start epoch，P1-5：壳据此识别「用户又点了一次
+// 开始」——熔断态下的显式重试）。want=false 时 epoch 保持（壳在停止分支清零
+// 计数，epoch 无消费者）。
 func (sh *screenShell) setCommand(want bool, monitor int, quality string) error {
 	sh.mu.Lock()
-	sh.cmd = screenCommand{Want: want, Monitor: monitor, Quality: quality}
+	if want {
+		sh.cmd = screenCommand{Want: want, Monitor: monitor, Quality: quality, StartEpoch: sh.cmd.StartEpoch + 1}
+	} else {
+		// stop 保留 epoch（递增计数只属于 start；清零会让「stop 后 start」
+		// 的两次动作在壳侧看起来像同一次）。
+		sh.cmd = screenCommand{Want: want, Monitor: monitor, Quality: quality, StartEpoch: sh.cmd.StartEpoch}
+	}
 	sh.mu.Unlock()
 	return nil
 }
@@ -233,6 +251,9 @@ func (s *Server) screenState() protocol.ScreenState {
 		st.Width = sh.Width
 		st.Height = sh.Height
 		st.Error = sh.Error
+		// P1-1：壳上报当前档随状态回传（老壳不上报该键 → 空串，json omitempty
+		// 整键缺席——安卓端按「未知，沿用」处理，不重置清晰度）。
+		st.Quality = sh.Quality
 	}
 	st.Receiver = s.shell.receiverId
 	return st

@@ -5,7 +5,9 @@
 //                            复用 ThreadScreen 那套；Composer 是瘦身版——无斜杠
 //                            面板、无排队发送，数据源按 assistant.* 换 asst 桶；
 //                            2026-12 助手附件：图片入口照主域 Composer 接入——
-//                            PickVisualMedia 暂存 + 预览行，随 assistant.send 上 wire）
+//                            PickVisualMedia 暂存 + 预览行，随 assistant.send 上 wire；
+//                            批次 1 补齐文件入口——OpenMultipleDocuments 暂存 +
+//                            PendingFileCard 预览，files 与 images 同款 base64 上 wire）
 //
 // 域纪律：本页一切数据/操作走 RealBackend.asst 与 assistant.* 方法，不碰主域
 // 的 currentSessionId/blocks——两域的状态桶互不污染（见 RealBackend 助手域注释）。
@@ -46,6 +48,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.ChatBubbleOutline
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.Stop
@@ -575,11 +578,13 @@ fun AssistantThreadScreen(state: AppState, sessionId: String) {
 // ===== 助手输入区（Composer 瘦身版）=====
 
 /**
- * 助手输入卡片：白卡形态与主域 Composer 同源（同一套 ring/圆角/内距），裁掉三块
+ * 助手输入卡片：白卡形态与主域 Composer 同源（同一套 ring/圆角/内距），裁掉两块
  * 助手域用不上的能力：
- *  * 文件附件（桌面端 AssistantInput 同样不带——助手输入区是图片精简版）；
  *  * 斜杠面板 / 排队发送（桌面端 AssistantInput 同样没有——助手页是轻量输入）；
  *  * 发送缓冲区。
+ * 附件（批次 1 补齐）：图片 + 文件两个入口与主域 Composer 同款；文件暂存
+ * （real.pendingFiles）与预览（PendingFileCard）复用主域同一套，随 assistant.send
+ * 上 wire（files 与 images 同款 base64 形态）。
  * 保留：模型药丸（assistant.model 会话级切）/ effort 二级面板 / 审批档药丸
  * （assistant.approval）/ 上下文环 / 统计胶囊 / 发送钮（busy = 停止语义）。
  */
@@ -595,10 +600,12 @@ private fun AssistantComposer(state: AppState) {
     // Composer 弹层统一收口成**应用级 bottom sheet 单槽**（2026-12 用户拍板：
     // 与主域 Composer 同一条提升——本组合只写 state.openAppSheet；挂载点与返回键
     // 收口都在 AppRoot）。effort 视图 = state.assistantEffort（提升到 AppState）。
-    // 附件（2026-12 助手附件）：图片走 PickVisualMedia（Photo Picker，免存储权限），
-    // 读入暂存与预览复用主域同一套（real.pendingImages / attachNotice / PendingImageThumb），
+    // 附件（2026-12 助手附件，本次补齐文件入口）：图片走 PickVisualMedia（Photo
+    // Picker，免存储权限）、文件走 OpenMultipleDocuments（SAF，免权限）——与主域
+    // Composer 同一套入口；读入暂存与预览复用主域同一套（real.pendingImages /
+    // real.pendingFiles / attachNotice / PendingImageThumb / PendingFileCard），
     // 随 assistant.send 上 wire（见 RealBackend.assistantSend——base64 形态，手机与
-    // 后端不同机，path 形态不适用）；不带文件入口（桌面端 AssistantInput 同款精简边界）。
+    // 后端不同机，path 形态不适用）。
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(maxItems = 4)) { uris ->
         if (uris.isNotEmpty()) {
             real.addPendingImages(
@@ -608,6 +615,9 @@ private fun AssistantComposer(state: AppState) {
                 },
             )
         }
+    }
+    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isNotEmpty()) real.addPendingFiles(uris)
     }
 
     // 模型/effort 投影（与主域 Composer 同一条口径，数据源换 asst 桶）
@@ -626,7 +636,7 @@ private fun AssistantComposer(state: AppState) {
 
     Column(Modifier.fillMaxWidth().padding(bottom = 14.dp)) {
         // ===== 附件预览行（对齐主域 Composer 的 .att-preview 区：卡外、有暂存或有提示才渲染）=====
-        if (real.pendingImages.isNotEmpty() || real.attachNotice != null) {
+        if (real.pendingImages.isNotEmpty() || real.pendingFiles.isNotEmpty() || real.attachNotice != null) {
             Column(
                 Modifier
                     .fillMaxWidth()
@@ -647,6 +657,18 @@ private fun AssistantComposer(state: AppState) {
                                 image = im,
                                 urlOf = { real.attachmentURL(it) },
                                 onRemove = { real.removePendingImage(im.id) },
+                            )
+                        }
+                    }
+                }
+                // 文件暂存卡（主域 Composer 的 pendingFiles 同款——240×64 卡 + 移除钮）
+                if (real.pendingFiles.isNotEmpty()) {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        real.pendingFiles.forEach { f ->
+                            PendingFileCard(
+                                name = f.name,
+                                sub = fileSub(f.size, f.mime),
+                                onRemove = { real.removePendingFile(f.id) },
                             )
                         }
                     }
@@ -701,8 +723,9 @@ private fun AssistantComposer(state: AppState) {
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    // 「＋」添加图片（对齐主域 Composer 的 att-add：输入区左端图标；
-                    // 只带图片入口——助手域不带文件，与桌面端 AssistantInput 同一精简边界）
+                    // 「＋」添加图片（对齐主域 Composer 的 att-add：输入区左端图标）
+                    // ＋ 文件入口（主域 Composer 的文件图标同款——批次 1 补齐助手域
+                    // 文件附件；上限口径与主域同源：≤4 个、单个 20MB，无类型白名单）
                     LxIconButton(onClick = {
                         imagePicker.launch(
                             androidx.activity.result.PickVisualMediaRequest(
@@ -713,6 +736,14 @@ private fun AssistantComposer(state: AppState) {
                         Icon(
                             imageVector = Icons.Filled.Add,
                             contentDescription = "添加图片",
+                            tint = Lx.colors.FgMuted,
+                            modifier = Modifier.size(16.dp),
+                        )
+                    }
+                    LxIconButton(onClick = { filePicker.launch(arrayOf("*/*")) }) {
+                        Icon(
+                            imageVector = Icons.Filled.Description,
+                            contentDescription = "添加文件",
                             tint = Lx.colors.FgMuted,
                             modifier = Modifier.size(16.dp),
                         )
@@ -752,7 +783,7 @@ private fun AssistantComposer(state: AppState) {
                     busy = busy,
                     // 只附件没文本也允许发（与桌面端 AssistantInput 同语义——
                     // 后端以「[附件]」行充当正文）
-                    enabled = text.trim().isNotEmpty() || real.pendingImages.isNotEmpty(),
+                    enabled = text.trim().isNotEmpty() || real.pendingImages.isNotEmpty() || real.pendingFiles.isNotEmpty(),
                     onClick = {
                         if (busy) {
                             real.assistantCancel { ok, msg ->

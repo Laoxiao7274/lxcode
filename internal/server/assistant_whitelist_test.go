@@ -46,7 +46,7 @@ func saveCfg(t *testing.T, path string, a config.Assistant) {
 }
 
 // TestWhitelistOverrides：whitelist 非空 = 完整覆盖——勾 bash（+ read_file）
-// 后白名单就是这两项（内置 14 项不回来），悬空 id（nope）被过滤。
+// 后白名单就是这两项（内置清单不回来），悬空 id（nope）被过滤。
 func TestWhitelistOverrides(t *testing.T) {
 	srv, _, path := newWhitelistStack(t)
 	saveCfg(t, path, config.Assistant{ToolWhitelist: []string{"bash", "read_file", "nope"}})
@@ -60,12 +60,12 @@ func TestWhitelistOverrides(t *testing.T) {
 		t.Fatalf("whitelist 应完整覆盖（悬空 id 过滤）: got %v want %v", ac.Def.Tools, want)
 	}
 	// 常量本体不被写坏。
-	if len(assistantAgentDef.Tools) != 14 {
+	if len(assistantAgentDef.Tools) != 15 {
 		t.Fatalf("内置常量 Tools 不该被写坏: %v", assistantAgentDef.Tools)
 	}
 }
 
-// TestWhitelistEmptyKeepsLegacyTools：whitelist 空 → 内置 14 项 + 旧 cfg.Tools
+// TestWhitelistEmptyKeepsLegacyTools：whitelist 空 → 内置清单 + 旧 cfg.Tools
 // 追加（custom binary 命中、内置名被滤——旧行为不回归）。
 func TestWhitelistEmptyKeepsLegacyTools(t *testing.T) {
 	srv, _, path := newWhitelistStack(t)
@@ -155,7 +155,7 @@ func TestSetWhitelistAcceptsBuiltin(t *testing.T) {
 	if !slices.Equal(res.ToolWhitelist, []string{"bash", "read_file"}) {
 		t.Fatalf("应答应回带 toolWhitelist: %+v", res)
 	}
-	if len(res.BuiltinDefaults) != 14 {
+	if len(res.BuiltinDefaults) != 15 {
 		t.Fatalf("应答应带 builtinDefaults（内置默认事实源）: %v", res.BuiltinDefaults)
 	}
 	if a := config.LoadAssistant(path); !slices.Equal(a.ToolWhitelist, []string{"bash", "read_file"}) {
@@ -186,7 +186,7 @@ func TestSetWhitelistAcceptsBuiltin(t *testing.T) {
 
 	// ④ get 应答带 builtinDefaults。
 	res = decode[protocol.AssistantConfigResult](t, client.call(protocol.MethodAssistantConfigGet, map[string]any{}).Result)
-	if len(res.BuiltinDefaults) != 14 || res.BuiltinDefaults[0] != "read_file" {
+	if len(res.BuiltinDefaults) != 15 || res.BuiltinDefaults[0] != "read_file" {
 		t.Fatalf("get 应答应带 builtinDefaults: %v", res.BuiltinDefaults)
 	}
 }

@@ -118,12 +118,15 @@ private fun rememberAttachmentState(url: String?): Pair<ImageBitmap?, AttLoadSta
 
 /** 消息侧用户附件区（对齐桌面端 UserAttachmentSection）：
  *  图片 gallery（多图 64dp 方 tile 网格 / 单图长边 240dp）+ 文件卡行（240×64）。
- *  atts 为空不渲染。[onOpenImage] 打开全屏查看（灯箱）。 */
+ *  atts 为空不渲染。[onOpenImage] 打开全屏查看（灯箱）。
+ *  [onOpenFile] 非空 = 文件卡可点（下载/打开）；缺省 = 静态卡（无入口不装死——
+ *  没有下载能力的调用方不该渲染成点了没反应的卡）。 */
 @Composable
 fun UserAttachmentSection(
     atts: List<com.moyunteng.lxcode.remote.model.AttachmentMeta>,
     urlOf: (String) -> String?,
     onOpenImage: (List<String>, Int) -> Unit = { _, _ -> },
+    onOpenFile: ((com.moyunteng.lxcode.remote.model.AttachmentMeta) -> Unit)? = null,
 ) {
     if (atts.isEmpty()) return
     val images = atts.filter { it.kind == "image" && urlOf(it.path) != null }
@@ -154,7 +157,7 @@ fun UserAttachmentSection(
                     AttFileCard(
                         name = att.name.ifBlank { "文件" },
                         sub = fileSub(att.size, att.mime),
-                        onClick = { /* 手机端下载入口：系统浏览器打开（token 在 query 里） */ },
+                        onClick = onOpenFile?.let { cb -> { cb(att) } } ?: {},
                     )
                 }
             }
@@ -471,5 +474,42 @@ fun ImageLightbox(
                 }
             }
         }
+    }
+}
+
+/** 附件文件下载（批次 2：文件卡的打开入口）。
+ *
+ *  **实现选择 = DownloadManager 落系统下载目录，不用 Intent ACTION_VIEW**：
+ *  附件 URL 是 `http://<addr>/attachments/<path>?token=...`——ACTION_VIEW 会把
+ *  整个带 token 的 URL 交给外部浏览器（token 进浏览器历史/外部应用可见），且
+ *  设备上没有浏览器的形态（车机/电视/极简 ROM）点了没反应；DownloadManager 由
+ *  系统托管（通知栏进度 + 断点续传），落 `Downloads/` 后用户经系统下载记录或
+ *  文件管理器取件——token 不出系统服务进程。缩略图同 URL 已走明文 http
+ *  （rememberAttachmentState），下载走同一张网，不引入新的传输面。
+ *
+ *  立即 Toast 反馈（DownloadManager 本身有完成通知，这里只报「已开始/失败」）。
+ *  失败最常见原因 = 经樱花隧道的明文 http 被节点 501（与缩略图加载失败同根源，
+ *  已知限制，如实提示）。 */
+fun downloadAttachment(context: android.content.Context, url: String, name: String) {
+    if (url.isBlank()) {
+        android.widget.Toast.makeText(context, "附件地址无效", android.widget.Toast.LENGTH_SHORT).show()
+        return
+    }
+    try {
+        val req = android.app.DownloadManager.Request(android.net.Uri.parse(url))
+            .setTitle(name.ifBlank { "附件" })
+            .setDescription("lxcode 附件")
+            .setNotificationVisibility(android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+            .setAllowedOverMetered(true)
+            .setAllowedOverRoaming(true)
+        // 目标名：保持后端落盘名（Display 名若与磁盘名不一致，以 URL 末段为准
+        // ——setDestinationUri 的文件名决定最终落盘名）。
+        val fileName = url.substringAfterLast('/').substringBefore('?').ifBlank { "attachment" }
+        req.setDestinationInExternalPublicDir(android.os.Environment.DIRECTORY_DOWNLOADS, fileName)
+        val dm = context.getSystemService(android.content.Context.DOWNLOAD_SERVICE) as android.app.DownloadManager
+        dm.enqueue(req)
+        android.widget.Toast.makeText(context, "已开始下载：$fileName", android.widget.Toast.LENGTH_SHORT).show()
+    } catch (e: Exception) {
+        android.widget.Toast.makeText(context, "下载失败：${e.message ?: "未知错误"}", android.widget.Toast.LENGTH_SHORT).show()
     }
 }

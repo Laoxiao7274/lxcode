@@ -154,7 +154,9 @@ data class ScreenMonitorInfo(
 data class ScreenStateInfo(
     val active: Boolean,
     val monitor: Int,
-    val quality: String,
+    // P1-1：quality 可为 null——后端壳未上报档位时保持「未知」，UI 显示与
+    // 「沿用当前档」逻辑据此不把清晰度重置回 medium（老壳不上报该键）。
+    val quality: String?,
     val encoder: String,
     val error: String?,
 )
@@ -446,7 +448,7 @@ private fun MinimizedCastScreen(
                         onClick = {
                             real.setScreenMonitor(m.id) { err ->
                                 if (err != null) state.screenToast = err
-                                else state.rememberScreenCast(m.id, real.screenState?.quality ?: "medium")
+                                else state.rememberScreenCast(m.id, real.screenState?.quality ?: state.screenPickQuality)
                             }
                         },
                     )
@@ -642,7 +644,7 @@ private fun WatchSurface(
                 )
             }
             Text(
-                text = "正在投屏 · 显示器 ${(real.screenState?.monitor ?: 0) + 1} · ${qualityLabel(real.screenState?.quality ?: "medium")}",
+                text = "正在投屏 · 显示器 ${(real.screenState?.monitor ?: 0) + 1} · ${(real.screenState?.quality ?: "medium").let { qualityLabel(it) }}",
                 style = Lx.type.Pill,
                 color = Color.White.copy(alpha = 0.85f),
                 maxLines = 1,
@@ -692,7 +694,7 @@ private fun ControlKeyboardBar(
             type = "key",
             key = key,
             modifiers = locked.value.toList(),
-            monitor = 0,
+            monitor = real.screenState?.monitor ?: 0, // P0-2：跟当前投屏命令的显示器
         ))
     }
 
@@ -704,7 +706,7 @@ private fun ControlKeyboardBar(
         real.sendScreenInput(com.moyunteng.lxcode.remote.net.ScreenInputParams(
             type = if (mod in next) "down" else "up",
             key = mod,
-            monitor = 0,
+            monitor = real.screenState?.monitor ?: 0, // P0-2：跟当前投屏命令的显示器
         ))
     }
 
@@ -768,7 +770,8 @@ private fun ControlKeyboardBar(
                 {
                     if (textDraft.isNotEmpty()) {
                         real.sendScreenInput(com.moyunteng.lxcode.remote.net.ScreenInputParams(
-                            type = "char", text = textDraft, monitor = 0,
+                            type = "char", text = textDraft,
+                            monitor = real.screenState?.monitor ?: 0, // P0-2：跟当前投屏命令的显示器
                         ))
                         textDraft = ""
                         focus.requestFocus()
@@ -996,7 +999,7 @@ private fun ScreenFloatingBall(
                             onClick = {
                                 real.setScreenMonitor(m.id) { err ->
                                     if (err != null) state.screenToast = err
-                                    else state.rememberScreenCast(m.id, real.screenState?.quality ?: "medium")
+                                    else state.rememberScreenCast(m.id, real.screenState?.quality ?: state.screenPickQuality)
                                 }
                             },
                         )
@@ -1429,7 +1432,7 @@ private fun StatusLine(real: com.moyunteng.lxcode.remote.net.RealBackend) {
         ) {
             LxPill("正在投屏", variant = LxPillVariant.Success)
             Text(
-                "显示器 ${st.monitor + 1} · ${qualityLabel(st.quality)}" +
+                "显示器 ${st.monitor + 1} · ${st.quality?.let { qualityLabel(it) } ?: "标准（未上报）"}" +
                     (st.encoder.takeIf { it.isNotEmpty() }?.let { " · $it" } ?: ""),
                 style = Lx.type.BodySmall,
                 color = Lx.colors.FgMuted,
@@ -1596,8 +1599,12 @@ private fun VideoSurface(
     // 控制事件上报（sendScreenInput）：控制模式下首个错误 toast 提示（后续错误
     // 静默——「控制未开启」的提示弹一次就够，move 高频失败不能刷屏）。
     var controlErrorShown by remember { mutableStateOf(false) }
+    // P0-2：统一在出口把 monitor 换成当前投屏命令的显示器（real.screenState?.monitor
+    // ——applyScreenState 由 screen.start 应答 / screen.changed / screen.state 刷新，
+    // 恒是最新命令态）。各调用点硬编码 0 在多显示器下把事件注错屏；后端还有
+    // 缺省兜底（screen_input.go enqueueInput），显式传准确值是第一层。
     val sendInput: (com.moyunteng.lxcode.remote.net.ScreenInputParams) -> Unit = { p ->
-        real.sendScreenInput(p) { err ->
+        real.sendScreenInput(p.copy(monitor = real.screenState?.monitor ?: 0)) { err ->
             if (!controlErrorShown && state != null) {
                 controlErrorShown = true
                 state.screenToast = err

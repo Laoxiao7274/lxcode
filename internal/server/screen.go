@@ -180,8 +180,14 @@ func (s *Server) deliverBinary(target string, frame []byte) {
 
 // enqueueBinary 把一帧二进制数据排进客户端发送队列（与文本帧同一条队列、
 // 同一个 writeLoop 按序写——WS 帧类型不同但顺序语义一致）。队列满 = 手机端
-// 跟不上：**丢这条帧**而不是 fast-fail 关连接——视频流丢一帧只是卡顿一下，
-// 关连接是灾难（重连+重协商）。文本帧的 fast-fail 语义不变。
+// 跟不上：**丢最旧**（P1-4，对齐 screen_input.go 的队满丢最旧语义）而不是
+// 丢新帧——新帧带着最新画面，丢它等于把延迟再往后推一帧且下一帧马上又满；
+// 丢最旧把积压维持在一帧内。关键帧保护：优先丢最旧的非关键帧（丢一个 P 帧
+// 只是轻微卡顿）；队列全是关键帧时才丢最旧的关键帧（代价从丢整个 GOP 的
+// 2s 黑屏降为丢 1 帧——下一关键帧最多 2s 后到）。实现：非阻塞排干再回填
+// （容量 8，单次开销可忽略）；排干期间 writeLoop 可能抢走个别帧——那帧
+// 已开始写出，相当于正常消费，回填放不下的帧按「丢新」兜底（不阻塞）。
+// 文本帧的 fast-fail 语义不变。
 func (c *wsClient) enqueueBinary(frame []byte) bool {
 	select {
 	case c.bin <- frame:
@@ -189,7 +195,56 @@ func (c *wsClient) enqueueBinary(frame []byte) bool {
 	case <-c.done:
 		return false
 	default:
-		return false // 队列满：丢帧（视频流的背压丢弃语义）
+	}
+	// 队满：排干 → 挑一个非关键帧丢掉 → 其余按原序回填 → 新帧入队。
+	drained := make([][]byte, 0, cap(c.bin))
+drain:
+	for {
+		select {
+		case f := <-c.bin:
+			drained = append(drained, f)
+		default:
+			break drain
+		}
+	}
+	if len(drained) == 0 {
+		select {
+		case c.bin <- frame:
+			return true
+		case <-c.done:
+			return false
+		default:
+			return false // writeLoop 抢空了又塞满（不可能走到）：保守丢新帧
+		}
+	}
+	dropIdx := -1
+	for i, f := range drained {
+		if len(f) < protocol.FrameHeaderSize || f[1]&protocol.FrameFlagKeyframe == 0 {
+			dropIdx = i // 最旧的非关键帧
+			break
+		}
+	}
+	if dropIdx < 0 {
+		dropIdx = 0 // 全是关键帧：丢最旧（GOP 代价见上注）
+	}
+	drained = append(drained[:dropIdx], drained[dropIdx+1:]...)
+	for _, f := range drained {
+		select {
+		case c.bin <- f:
+		case <-c.done:
+			return false
+		default:
+			// writeLoop 排干期间消费了帧、回填又塞满：剩余帧已有正常出路，
+			// 丢弃失败的部分（罕见且无害——丢的是最旧的帧）。
+		}
+	}
+	select {
+	case c.bin <- frame:
+		return true
+	case <-c.done:
+		return false
+	default:
+		return false
 	}
 }
 

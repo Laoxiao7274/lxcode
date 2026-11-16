@@ -134,6 +134,77 @@ func TestScreenStartStopLifecycle(t *testing.T) {
 	}
 }
 
+// TestScreenBinaryQueueDropOldest 队满丢最旧（P1-4）：新帧在队、最旧被丢，
+// 关键帧优先保护（有非关键帧时绝不丢关键帧；全是关键帧才丢最旧）。
+// 原行为丢新帧：新帧带着最新画面，丢它等于延迟再推一帧且下一帧马上又满。
+func TestScreenBinaryQueueDropOldest(t *testing.T) {
+	mk := func(ts uint64, key bool) []byte {
+		flags := byte(0)
+		if key {
+			flags = protocol.FrameFlagKeyframe
+		}
+		f := make([]byte, protocol.FrameHeaderSize+4)
+		protocol.FrameHeader{Version: 1, Flags: flags, Len24: protocol.PutLen24(4), TimestampMs: ts}.Marshal(f)
+		return f
+	}
+	// 用例 1：队满后新帧入队成功，且队首是最旧帧被丢后的次旧帧。
+	s := newScreenTestServer(t)
+	rx := &wsClient{conn: nil, out: make(chan []byte, 4), bin: make(chan []byte, 2), done: make(chan struct{})}
+	s.mu.Lock()
+	s.clients[rx] = struct{}{}
+	s.mu.Unlock()
+	s.shell.mu.Lock()
+	s.shell.receiverId = clientKey(rx)
+	s.shell.mu.Unlock()
+	// 三帧 P 帧塞满 2 容量队列再溢出：[P1, P2] → P3 触发丢 P1 → [P2, P3]
+	for ts := uint64(1); ts <= 3; ts++ {
+		if !rx.enqueueBinary(mk(ts, false)) {
+			t.Fatalf("帧 %d 应经丢最旧入队成功", ts)
+		}
+	}
+	if len(rx.bin) != 2 {
+		t.Fatalf("队列应保持满容 2: %d", len(rx.bin))
+	}
+	got1 := <-rx.bin
+	got2 := <-rx.bin
+	if h1, _ := protocol.UnmarshalFrameHeader(got1); h1.TimestampMs != 2 {
+		t.Fatalf("最旧帧应被丢（队首=次旧 ts=2）: %d", h1.TimestampMs)
+	}
+	if h2, _ := protocol.UnmarshalFrameHeader(got2); h2.TimestampMs != 3 {
+		t.Fatalf("新帧应在队尾（ts=3）: %d", h2.TimestampMs)
+	}
+
+	// 用例 2：关键帧保护——队里有非关键帧时，丢非关键帧、保住关键帧。
+	rx2 := &wsClient{conn: nil, out: make(chan []byte, 4), bin: make(chan []byte, 2), done: make(chan struct{})}
+	// 队列 [K1(关键), P2] 满；P3 到 → 丢 P2（首个非关键帧）→ [K1, P3]
+	if !rx2.enqueueBinary(mk(1, true)) || !rx2.enqueueBinary(mk(2, false)) {
+		t.Fatal("预热入队失败")
+	}
+	if !rx2.enqueueBinary(mk(3, false)) {
+		t.Fatal("队满应丢最旧后入队成功")
+	}
+	h := func() (uint64, byte) {
+		f := <-rx2.bin
+		hh, _ := protocol.UnmarshalFrameHeader(f)
+		return hh.TimestampMs, hh.Flags
+	}
+	if ts, flags := h(); ts != 1 || flags&protocol.FrameFlagKeyframe == 0 {
+		t.Fatalf("关键帧应被保护在队首: ts=%d flags=%d", ts, flags)
+	}
+	if ts, flags := h(); ts != 3 || flags&protocol.FrameFlagKeyframe != 0 {
+		t.Fatalf("非关键帧 P2 应被丢、P3 在队尾: ts=%d flags=%d", ts, flags)
+	}
+
+	// 用例 3：全是关键帧时回退丢最旧（GOP 代价从 2s 降为 1 帧）。
+	rx3 := &wsClient{conn: nil, out: make(chan []byte, 4), bin: make(chan []byte, 2), done: make(chan struct{})}
+	if !rx3.enqueueBinary(mk(10, true)) || !rx3.enqueueBinary(mk(11, true)) || !rx3.enqueueBinary(mk(12, true)) {
+		t.Fatal("预热入队失败")
+	}
+	if h := func() protocol.FrameHeader { f := <-rx3.bin; hh, _ := protocol.UnmarshalFrameHeader(f); return hh }(); h.TimestampMs != 11 {
+		t.Fatalf("全是关键帧时应丢最旧 K10（队首=K11）: %d", h.TimestampMs)
+	}
+}
+
 // TestScreenFrameForwarderRoutesToReceiver 转发只投给接收者的二进制队列，
 // 非接收者不受影响；队列满丢帧不阻塞。
 func TestScreenFrameForwarderRoutesToReceiver(t *testing.T) {
@@ -164,6 +235,62 @@ func TestScreenFrameForwarderRoutesToReceiver(t *testing.T) {
 	h, ok := protocol.UnmarshalFrameHeader(got)
 	if !ok || h.Flags&protocol.FrameFlagKeyframe == 0 {
 		t.Fatalf("收到的帧头不对: %+v ok=%v", h, ok)
+	}
+}
+
+// TestScreenStartEpochIncrements P1-5：每次 screen.start（want=true）递增
+// start_epoch——熔断态下 want 电平不变，壳靠 epoch 变化识别「用户又点了一次
+// 开始」为显式重试；stop 不递增（epoch 无消费者）。
+func TestScreenStartEpochIncrements(t *testing.T) {
+	s := newScreenTestServer(t)
+	s.shell.report(fakeShellState(false))
+
+	start := func() {
+		req := &protocol.Request{ID: json.RawMessage(`1`), Method: protocol.MethodScreenStart,
+			Params: json.RawMessage(`{"monitor":0,"quality":"high"}`)}
+		s.dispatch(&wsClient{conn: nil, out: make(chan []byte, 4), bin: make(chan []byte, 4), done: make(chan struct{})}, req)
+	}
+	start()
+	e1 := s.shell.currentCommand().StartEpoch
+	start()
+	e2 := s.shell.currentCommand().StartEpoch
+	if e2 != e1+1 {
+		t.Fatalf("两次 start 应递增 epoch: %d → %d", e1, e2)
+	}
+	s.stopScreen(&protocol.Request{ID: json.RawMessage(`2`), Method: protocol.MethodScreenStop}, nil)
+	e3 := s.shell.currentCommand().StartEpoch
+	if e3 != e2 {
+		t.Fatalf("stop 不应递增 epoch: %d → %d", e2, e3)
+	}
+	start()
+	if e4 := s.shell.currentCommand().StartEpoch; e4 != e3+1 {
+		t.Fatalf("stop 后再 start 应继续递增: %d → %d", e3, e4)
+	}
+}
+
+// TestScreenStateQualityPassthrough P1-1：壳上报的 quality 随 screenState 透传；
+// 壳未上报（老壳）时整键缺席（omitempty），不编造 medium。
+func TestScreenStateQualityPassthrough(t *testing.T) {
+	s := newScreenTestServer(t)
+	sh := fakeShellState(true)
+	sh.Quality = "high"
+	s.shell.report(sh)
+	st := s.screenState()
+	if st.Quality != "high" {
+		t.Fatalf("quality 应透传壳上报值: %+v", st)
+	}
+	b, err := json.Marshal(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"quality":"high"`) {
+		t.Fatalf("wire 形状缺 quality: %s", b)
+	}
+	s2 := newScreenTestServer(t)
+	s2.shell.report(fakeShellState(true)) // 老壳：无 quality 键
+	b2, _ := json.Marshal(s2.screenState())
+	if strings.Contains(string(b2), "quality") {
+		t.Fatalf("壳未上报时 quality 整键缺席（不编造 medium）: %s", b2)
 	}
 }
 

@@ -1236,6 +1236,7 @@
 }
 /* ===== 代码围栏块（markdown 正文里的 ``` 终端卡，暗色沿用） ===== */
 .tool-result {
+  cursor: text;
   font-family: var(--font-mono);
   font-size: 11px;
   line-height: 1.7;
@@ -1260,6 +1261,32 @@
 .tool-result::-webkit-scrollbar-thumb {
   background: var(--scrollbar-thumb);
   border-radius: 4px;
+}
+/* 代码围栏的 hover 复制按钮：absolute 右上角，非 hover 态隐藏不干扰阅读 */
+.md-codeseg {
+  position: relative;
+}
+.md-copy {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  border: none;
+  background: transparent;
+  color: var(--fg-faint);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1.6;
+  padding: 1px 6px;
+  border-radius: 6px;
+  opacity: 0;
+  transition: opacity 120ms, color 120ms;
+}
+.md-codeseg:hover .md-copy {
+  opacity: 1;
+}
+.md-copy:hover {
+  color: var(--fg);
+  background: rgba(127, 127, 127, 0.12);
 }
 /* ===== edit 工具的 diff 卡（沿用） ===== */
 .tool-block {

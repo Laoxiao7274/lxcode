@@ -53,7 +53,8 @@
         "read_skill",
         "run_task",
         "update_assistant_config",
-        "mcp_manage"
+        "mcp_manage",
+        "share_file"
       ],
       "builtinDefaults": [
         "read_file",
@@ -69,7 +70,8 @@
         "read_skill",
         "run_task",
         "update_assistant_config",
-        "mcp_manage"
+        "mcp_manage",
+        "share_file"
       ]
     }
   },
@@ -90,7 +92,8 @@
         "read_skill",
         "run_task",
         "update_assistant_config",
-        "mcp_manage"
+        "mcp_manage",
+        "share_file"
       ]
     }
   },

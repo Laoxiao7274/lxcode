@@ -49,6 +49,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
@@ -737,8 +738,29 @@ internal fun ThreadBlockView(
     when (block) {
         is ThreadBlock.User -> UserBubble(state, block.text, block.attachments)
         is ThreadBlock.Assistant -> AssistantRow(block, busy, stableKey)
-        is ThreadBlock.Tool -> ToolCard(block)
-        is ThreadBlock.Dispatch -> DispatchCard(block, onOpenChild)
+        is ThreadBlock.Tool -> ToolCard(
+            block,
+            urlOf = { state.real.attachmentURL(it) },
+            onOpenFile = { att ->
+                downloadAttachment(
+                    com.moyunteng.lxcode.remote.update.AppContextHolder.context,
+                    state.real.attachmentURL(att.path) ?: "",
+                    att.name,
+                )
+            },
+        )
+        is ThreadBlock.Dispatch -> DispatchCard(
+            block,
+            onOpenChild,
+            urlOf = { state.real.attachmentURL(it) },
+            onOpenFile = { att ->
+                downloadAttachment(
+                    com.moyunteng.lxcode.remote.update.AppContextHolder.context,
+                    state.real.attachmentURL(att.path) ?: "",
+                    att.name,
+                )
+            },
+        )
         is ThreadBlock.Notice -> NoticeBar(block)
         is ThreadBlock.Compaction -> CompactionCard(block)
         is ThreadBlock.Todo -> TodoCard(block.items)
@@ -906,6 +928,13 @@ internal fun UserBubble(
                 atts = attachments,
                 urlOf = { real.attachmentURL(it) },
                 onOpenImage = { urls, i -> lightbox = urls to i },
+                onOpenFile = { att ->
+                    downloadAttachment(
+                        com.moyunteng.lxcode.remote.update.AppContextHolder.context,
+                        real.attachmentURL(att.path) ?: "",
+                        att.name,
+                    )
+                },
             )
         }
         if (text.isNotEmpty()) {
@@ -1153,9 +1182,15 @@ private fun ReasoningRow(text: String, elapsedMs: Long, shimmer: Boolean) {
     }
 }
 
-/** 工具调用卡（工具名 + 参数摘要 + 输出块 + 耗时 + 状态点）。 */
+/** 工具调用卡（工具名 + 参数摘要 + 输出块 + 耗时 + 状态点）。
+ *  [urlOf] = 附件取件 URL（share_file 的附件条渲染缩略图用）；[onOpenFile]
+ *  非空 = 附件文件卡可点（下载）。 */
 @Composable
-internal fun ToolCard(block: ThreadBlock.Tool) {
+internal fun ToolCard(
+    block: ThreadBlock.Tool,
+    urlOf: (String) -> String? = { null },
+    onOpenFile: ((com.moyunteng.lxcode.remote.model.AttachmentMeta) -> Unit)? = null,
+) {
     val status = when {
         block.running -> LxStatus.Run
         block.isError -> LxStatus.Danger
@@ -1257,6 +1292,17 @@ internal fun ToolCard(block: ThreadBlock.Tool) {
             block.running -> SmallEmpty("等待工具输出…")
             else -> SmallEmpty("（无输出）")
         }
+
+        // 这次执行共享的附件（share_file——桌面端 ToolBlock 的 share-file 分支同
+        // 语义：附件卡是主体，不展开就能看到文件/图片）。实时 toolResult 与历史
+        // 回放同一份元数据；文件卡点按走 onOpenFile（下载）。
+        if (block.attachments.isNotEmpty()) {
+            UserAttachmentSection(
+                atts = block.attachments,
+                urlOf = urlOf,
+                onOpenFile = onOpenFile,
+            )
+        }
     }
 }
 
@@ -1304,6 +1350,8 @@ private fun FoldableOutput(text: String, danger: Boolean) {
 internal fun DispatchCard(
     block: ThreadBlock.Dispatch,
     onOpenChild: (String, String, String) -> Unit,
+    urlOf: (String) -> String? = { null },
+    onOpenFile: ((com.moyunteng.lxcode.remote.model.AttachmentMeta) -> Unit)? = null,
 ) {
     // 展开态按 dispatchId 记忆：同一张卡流式更新（copy 重建）不重置展开
     var open by remember(block.dispatchId) { mutableStateOf(false) }
@@ -1496,6 +1544,23 @@ internal fun DispatchCard(
                         style = Lx.type.Mono12.copy(fontSize = Lx.type.Size10, color = Lx.colors.FgFaint),
                     )
                 }
+            }
+
+            // 这次派发共享到对话的附件（子会话 share_file 等的产物，随调度结果
+            // 回流——桌面端 DispatchDeliverables 同语义）：卡 = 一行摘要的**例外**
+            // ——附件不是子过程，是成果。实时（toolResult 回流）与回放（调度结果
+            // 消息上的同一份元数据）两条路径同一份形状；文件卡点按走 onOpenFile。
+            if (block.attachments.isNotEmpty()) {
+                Text(
+                    text = "成果文件",
+                    style = Lx.type.Pill.copy(fontSize = Lx.type.Size10, fontWeight = FontWeight.SemiBold),
+                    color = Lx.colors.FgFaint,
+                )
+                UserAttachmentSection(
+                    atts = block.attachments,
+                    urlOf = urlOf,
+                    onOpenFile = onOpenFile,
+                )
             }
         }
     }
@@ -1933,15 +1998,21 @@ internal fun MarkdownBody(text: String, modifier: Modifier = Modifier) {
                             // 桌面端 .tool-result（代码围栏同款）：padding 10px 14px
                             .padding(horizontal = Lx.space.s12, vertical = Lx.space.s10),
                     ) {
-                    Text(
-                        text = block.code,
-                        style = Lx.type.Mono12.copy(
-                            fontSize = Lx.type.Size11,
-                            lineHeight = (Lx.type.Size11.value * 1.5f).sp,
-                        ),
-                        color = Lx.colors.FgMuted,
-                        modifier = Modifier.horizontalScroll(rememberScrollState()),
-                    )
+                    SelectionContainer {
+                        Text(
+                            text = block.code,
+                            style = Lx.type.Mono12.copy(
+                                fontSize = Lx.type.Size11,
+                                lineHeight = (Lx.type.Size11.value * 1.5f).sp,
+                            ),
+                            color = Lx.colors.FgMuted,
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        )
+                    }
+                    // 可见复制角标（Material ContentCopy，浅色淡显）：点按 = 整块
+                    // 复制 + Toast；长按整块复制手势保留（combinedClickable 在外层
+                    // Box 上，角标自己的 clickable 会消费点按不冒泡）。
+                    CodeCopyBadge(text = block.code)
                 }
                 }
                 is MdBlock.Hr -> Box(

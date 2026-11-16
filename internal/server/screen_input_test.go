@@ -121,6 +121,44 @@ func TestScreenInputValidation(t *testing.T) {
 	}
 }
 
+// TestScreenInputMonitorFallback 缺省 monitor 兜底（P0-2）：事件 monitor==0 且
+// 命令电平指向别的显示器 → 以 cmd.Monitor 填充（protocol/screen.go 注释承诺的
+// 「缺省 = 当前投屏命令的显示器」）；命令 monitor==0 时结果一致无需填充。
+func TestScreenInputMonitorFallback(t *testing.T) {
+	s := newScreenTestServer(t)
+	attachAllowControl(t, s, true)
+	s.shell.report(fakeShellState(true))
+	c := &wsClient{out: make(chan []byte, 4), bin: make(chan []byte, 4), done: make(chan struct{})}
+	s.mu.Lock()
+	s.clients[c] = struct{}{}
+	s.mu.Unlock()
+	s.shell.setReceiver(c)
+
+	// 命令电平指向显示器 1
+	s.shell.mu.Lock()
+	s.shell.cmd = screenCommand{Want: true, Monitor: 1, Quality: "medium"}
+	s.shell.mu.Unlock()
+	resp := s.dispatch(c, inputReq(`1`, `{"type":"click","x":0.5,"y":0.5}`))
+	if resp.Error != nil {
+		t.Fatalf("入队应成功: %+v", resp.Error)
+	}
+	if got := s.shell.takeInputs(0); len(got) != 1 || got[0].Monitor != 1 {
+		t.Fatalf("缺省 monitor 应兜底为命令电平的显示器 1: %+v", got)
+	}
+
+	// 命令电平指向显示器 0：不改变（结果一致）
+	s.shell.mu.Lock()
+	s.shell.cmd = screenCommand{Want: true, Monitor: 0, Quality: "medium"}
+	s.shell.mu.Unlock()
+	resp = s.dispatch(c, inputReq(`2`, `{"type":"click","x":0.5,"y":0.5}`))
+	if resp.Error != nil {
+		t.Fatalf("入队应成功: %+v", resp.Error)
+	}
+	if got := s.shell.takeInputs(0); len(got) != 1 || got[0].Monitor != 0 {
+		t.Fatalf("命令 monitor=0 时事件应保持 0: %+v", got)
+	}
+}
+
 // TestScreenInputQueueDropOldest 队列满丢最旧（move 时序语义）。
 func TestScreenInputQueueDropOldest(t *testing.T) {
 	s := newScreenTestServer(t)

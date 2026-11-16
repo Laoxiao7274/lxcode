@@ -899,9 +899,10 @@ export interface AssistantSource {
   tasks(projectId: string): Promise<SessionMeta[]>;
   /** 新助手会话（assistant.new → SessionResult）。 */
   newSession(): Promise<string>;
-  /** 发送一轮（assistant.send，参数 = ChatSendParams 的子集）。images = 随消息的
-   *  图片附件（2026-12 助手附件——wire 形状与校验和 chat.send 同款；空 = 无图）。 */
-  send(sessionId: string, text: string, opts?: { effort?: string; approval?: string; images?: ChatSendImage[] }): void;
+  /** 发送一轮（assistant.send，参数 = ChatSendParams 的子集）。images/files =
+   *  随消息的附件（2026-12 助手附件——wire 形状与校验和 chat.send 同款；
+   *  空 = 无附件；只附件不打字也允许）。 */
+  send(sessionId: string, text: string, opts?: { effort?: string; approval?: string; images?: ChatSendImage[]; files?: ChatSendFile[] }): void;
   /** 装载助手会话历史（assistant.history → historyLoaded 事件，助手域路由）。
    *  失败向上抛（AssistantPage 显示原因，不静默降级成"空历史"）。 */
   history(sessionId: string, beforeSeq?: number): Promise<HistorySnapshot>;
@@ -1074,7 +1075,7 @@ export interface AssistantConfig {
   tools?: string[];
   /** 工具白名单完整覆盖（2026-12 用户拍板：助手默认工具完全可配——内置
    *  bash/edit 也可勾入，用户担责）。非空 = 它就是助手的全部静态工具面；
-   *  空 = 用内置默认 14 项（builtinDefaults——服务端是事实源，前端不写死）。
+   *  空 = 用内置默认清单（builtinDefaults——服务端是事实源，前端不写死）。
    *  MCP 工具仍由 mcpServers 独立合入（动态面与静态面正交）。 */
   toolWhitelist?: string[];
   /** 内置默认工具白名单（assistant.config.get 恒带回——UI 预填与「恢复默认」

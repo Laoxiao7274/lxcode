@@ -93,12 +93,12 @@ type AssistantConfigResult struct {
 	Tools []string `json:"tools,omitempty"`
 	// ToolWhitelist 是助手工具白名单的完整覆盖（非空 = 助手的全部静态工具面）；
 	// 空 = 用内置默认。get 应答总是同时带回 BuiltinDefaults——UI 预填与
-	// 「恢复默认」的事实源是**服务端**，前端不写死内置 14 项（防漂移）。
+	// 「恢复默认」的事实源是**服务端**，前端不写死内置清单（防漂移）。
 	ToolWhitelist  []string `json:"toolWhitelist,omitempty"`
 	BuiltinDefaults []string `json:"builtinDefaults,omitempty"`
 }
 
-// BuiltinAssistantToolIDs 是内置助手工具白名单默认 14 项（wire 事实源——
+// BuiltinAssistantToolIDs 是内置助手工具白名单默认清单（wire 事实源——
 // assistant.config.get 的 builtinDefaults 恒带回，前端预填/恢复默认用它，
 // 不自己写死）。与 internal/server 的 assistantAgentDef.Tools 是同一份清单：
 // server 侧的常量是运行时事实源，这里是协议面投影——golden 样本用它设值，
@@ -107,7 +107,7 @@ type AssistantConfigResult struct {
 var BuiltinAssistantToolIDs = []string{
 	"read_file", "search", "read_image", "bash_readonly",
 	"web_search", "web_fetch", "project_list", "session_search", "todo", "ask_user", "read_skill", "run_task",
-	"update_assistant_config", "mcp_manage",
+	"update_assistant_config", "mcp_manage", "share_file",
 }
 
 // AssistantConfigSetParams 是 assistant.config.set 的参数：**全量替换**——

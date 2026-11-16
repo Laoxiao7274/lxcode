@@ -742,8 +742,10 @@ export function Composer({
  *  原先的文件卡形态。文件夹卡的整卡移除 = 移除该文件夹全部内部文件。
  *  散文件卡对齐 DSH FileCard（2026-12）：240×64 定宽高、radius 16 细边框、
  *  28px 图标框 + 名称 14px/500 + 扩展名·大小 meta 行；移除钮 = 卡内右上角
- *  18px 深底圆钮、悬停显（与图片缩略图同款交互）。 */
-function FolderFileCards({ files, onRemoveFolder, onRemoveFile }: {
+ *  18px 深底圆钮、悬停显（与图片缩略图同款交互）。
+ *  助手输入区（2026-12）也复用同一份（经 composer/index 导出）——暂存文件区
+ *  的渲染一份实现两处用。 */
+export function FolderFileCards({ files, onRemoveFolder, onRemoveFile }: {
   files: PendingFile[];
   onRemoveFolder: (folder: string) => void;
   onRemoveFile: (id: string) => void;

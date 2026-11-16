@@ -142,6 +142,13 @@ type ScreenInputParams struct {
 	Text string `json:"text,omitempty"`
 	// Monitor 目标显示器（可选；缺省 = 当前投屏命令的显示器）。归一化坐标的
 	// 参照物与投屏画面一致，通常留空。
+	//
+	// 反序列化局限（P0-2 后端兜底的边界）：int 类型下 JSON 键缺席与显式 0
+	// 均落 0，服务端无法精确判缺——发送侧（安卓）必须传准确 monitor；
+	// 服务端 enqueueInput 的兜底按「monitor==0 且命令 monitor 非 0 → 以命令
+	// 值为准」近似（显式 0 会被命令值覆盖，仅在命令 monitor≠0 时可观察，
+	// 实际投屏场景用户指到的就是命令显示器，语义无损）。要精确判缺需把
+	// 字段改成 *int，属协议形状变更（会破坏客户端兼容），暂不做。
 	Monitor int `json:"monitor,omitempty"`
 }
 

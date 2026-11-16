@@ -102,13 +102,13 @@ test('⑤ golden：assistantConfigResult 样本的 toolWhitelist/builtinDefaults
   const full = golden.assistantConfigResultFull?.value;
   assert.ok(Array.isArray(full?.toolWhitelist) && full.toolWhitelist.includes('read_file'),
     '全量样本带 toolWhitelist 数组');
-  assert.ok(Array.isArray(full?.builtinDefaults) && full.builtinDefaults.length === 14,
-    '全量样本带 builtinDefaults（内置默认 14 项）');
+  assert.ok(Array.isArray(full?.builtinDefaults) && full.builtinDefaults.length === 15,
+    '全量样本带 builtinDefaults（内置默认 15 项，share_file 入列）');
   // 最小样本：用户设置缺席（空 = 用内置值），但 builtinDefaults 在场（服务端
   // 恒带回——UI 预填与恢复默认的事实源）。
   const minimal = golden.assistantConfigResultMinimal?.value ?? {};
   assert.ok(!('toolWhitelist' in minimal), '最小样本 toolWhitelist 整键缺席（空 = 用内置值）');
-  assert.ok(Array.isArray(minimal.builtinDefaults) && minimal.builtinDefaults.length === 14,
+  assert.ok(Array.isArray(minimal.builtinDefaults) && minimal.builtinDefaults.length === 15,
     '最小样本 builtinDefaults 在场（get 恒带回）');
 });
 

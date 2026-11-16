@@ -190,6 +190,10 @@ data class Assistant(
         val running: Boolean,
         val isError: Boolean,
         val durationMs: Long,
+        // 这次工具执行共享的附件（share_file——ToolResultParams.Attachments /
+        // 结果消息 llm.Message.Attachments 同一份元数据；桌面端 ToolBlock 的
+        // share_file 分支同语义：附件卡是主体）。空 = 无附件（键缺席纪律）。
+        val attachments: List<AttachmentMeta> = emptyList(),
     ) : ThreadBlock
 
     @Immutable
@@ -211,6 +215,9 @@ data class Assistant(
         val childRuns: List<ChildTool> = emptyList(),
         val childTodosDone: Int = -1,
         val childTodosTotal: Int = 0,
+        // 这次派发期间子会话共享到对话的附件（share_file 等的产物——随调度结果
+        // 回流主会话，桌面端 DispatchCard 的成果区同语义）。空 = 无（键缺席纪律）。
+        val attachments: List<AttachmentMeta> = emptyList(),
     ) : ThreadBlock
 
     @Immutable

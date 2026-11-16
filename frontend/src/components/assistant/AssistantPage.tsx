@@ -19,7 +19,7 @@
 // boot runner 的契约）。重挂/重复 effect await 同一个 promise，结果照常写 state；
 // 失败的 boot 清掉缓存，显式重试（reset + nonce）能重新走。
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { AgentSource, ChatSendImage, SendAttachments, SessionMeta } from "../../shared/types";
+import type { AgentSource, ChatSendFile, ChatSendImage, SendAttachments, SessionMeta } from "../../shared/types";
 import type { UIState } from "../../shared/store";
 import { Button } from "../form";
 import { AssistantInput } from "./AssistantInput";
@@ -235,10 +235,11 @@ export function AssistantPage({
 
   const handleSend = useCallback((text: string, atts: SendAttachments) => {
     if (!sessionId || !sourceRef.current.assistant) return;
-    // 助手域附件（2026-12 用户拍板）：images 随 assistant.send 上 wire（与
-    // chat.send 同款校验与 vision 门）；files 不接（输入区是图片精简版）。
-    const opts: { effort?: string; images?: ChatSendImage[] } = {};
+    // 助手域附件（2026-12 用户拍板）：images/files 都随 assistant.send 上 wire
+    //（与 chat.send 同款校验与 vision 门——vision 门只管图片，文件不受限）。
+    const opts: { effort?: string; images?: ChatSendImage[]; files?: ChatSendFile[] } = {};
     if (atts?.images.length) opts.images = atts.images;
+    if (atts?.files.length) opts.files = atts.files;
     sourceRef.current.assistant.send(sessionId, text, Object.keys(opts).length ? opts : undefined);
   }, [sessionId]);
 

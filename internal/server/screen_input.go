@@ -73,11 +73,23 @@ func (w *inputWaitGroup) broadcast() {
 // enqueueInput 一条输入事件入队（仅当前接收者的会话可入——安全门在 screen.go
 // 的 screenInput 已校验 token/开关/壳在线，这里做最后的身份对齐：队列属于
 // 接收者，不是属于「最近一个投屏者」）。返回 false = 调用者不是当前接收者。
+//
+// monitor 缺省兜底（P0-2，protocol/screen.go ScreenInputParams.Monitor 的注释
+// 语义「缺省 = 当前投屏命令的显示器」在此兑现）：Monitor 是 int，JSON 键缺席
+// 与显式 0 都落 0、服务端无法精确判缺——取近似：monitor==0 且命令电平指向
+// 别的显示器时以 cmd.Monitor 填充（用户指到的就是被投的显示器，语义无损）；
+// 安卓端已在发送侧传准确 monitor（P0-2 第一层），兜底只服务老客户端。
 func (sh *screenShell) enqueueInput(caller string, p protocol.ScreenInputParams) bool {
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
 	if sh.receiverId == "" || sh.receiverId != caller {
 		return false
+	}
+	// P0-2 兜底：monitor==0 且命令电平指向别的显示器 = 客户端没填（或缺席），
+	// 以当前投屏命令的显示器填充（protocol/screen.go 注释承诺的缺省语义）；
+	// 命令 monitor 也是 0（或无命令电平）时无需填充，结果一致。
+	if p.Monitor == 0 && sh.cmd.Want && sh.cmd.Monitor != 0 {
+		p.Monitor = sh.cmd.Monitor
 	}
 	if len(sh.inputQueue) >= inputQueueCap {
 		sh.inputQueue = sh.inputQueue[1:] // 丢最旧（move 时序语义见 inputQueueCap 注释）

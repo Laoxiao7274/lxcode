@@ -1,7 +1,7 @@
 // 演示数据源（M3 叙事）：主 Agent 只调度——思考选人 → agent_dispatch →
 // dispatch 卡（子 Agent 全套执行：思考/读码/改码/确认门/跑测试）→ 验收
 // 汇总。覆盖 UI 全部状态。事件形状与后端协议 1:1——接线换 WSAgent 即可。
-import type { AgentEvent, AgentSource, ApprovalMode, ArchiveOutcome, AssistantConfig, AssistantSource, ChatSendImage, ChatTreeResult, CompactOutcome, ConfirmRequest, ContextUsage, GitOverview, HistoryMessage, HistorySnapshot, JobAdminSource, JobInfo, JobLogResult, LogsSource, LogsTailResult, ProjectInstructions, ProjectMeta, RewindOutcome, SendOptions, SessionMeta, SessionStats, SetLeafOutcome, TodoItem, TreeNode } from "../../shared/types";
+import type { AgentEvent, AgentSource, ApprovalMode, ArchiveOutcome, AssistantConfig, AssistantSource, ChatSendFile, ChatSendImage, ChatTreeResult, CompactOutcome, ConfirmRequest, ContextUsage, GitOverview, HistoryMessage, HistorySnapshot, JobAdminSource, JobInfo, JobLogResult, LogsSource, LogsTailResult, ProjectInstructions, ProjectMeta, RewindOutcome, SendOptions, SessionMeta, SessionStats, SetLeafOutcome, TodoItem, TreeNode } from "../../shared/types";
 import { JOB_NOTICE_PREFIX, sortJobs, upsertJob } from "../../shared/jobs";
 import { normalizeApproval } from "../../shared/approval";
 import { MAIN_REASONING, SUB_REASONING, SUB_RESULT, MAIN_ANSWER, TODO_INITIAL, TODO_LATER, DISPATCH_TODOS, DISPATCH_TODOS_RUNNING, DISPATCH_TODOS_FINAL, FILES_CHANGED, SESSIONS } from "./data";
@@ -928,16 +928,20 @@ export class DemoAgent implements AgentSource, JobAdminSource, LogsSource {
     return this.assistantSessionId;
   }
 
-  assistantSend(sessionId: string, text: string, opts?: { effort?: string; images?: ChatSendImage[] }): void {
-    if (!sessionId || (!text.trim() && !(opts?.images?.length)) || this.assistantBusy) return;
+  assistantSend(sessionId: string, text: string, opts?: { effort?: string; images?: ChatSendImage[]; files?: ChatSendFile[] }): void {
+    if (!sessionId || (!text.trim() && !(opts?.images?.length || opts?.files?.length)) || this.assistantBusy) return;
     this.assistantBusy = true;
     this.assistantSeq += 1;
-    // 附件（2026-12 助手附件）：演示源没有落盘后端，图片引用不编造——只在用户
-    // 气泡的乐观计数（atts）与正文标记里如实呈现张数。
+    // 附件（2026-12 助手附件，本次补齐文件入口）：演示源没有落盘后端，图片/
+    // 文件引用不编造——只在用户气泡的乐观计数（atts）与正文标记里如实呈现数量。
     const n = opts?.images?.length ?? 0;
-    const marker = n > 0 ? `${text ? "\n\n" : ""}[图片]×${n}（演示模式：图片未真实落盘）` : "";
-    this.assistantMsgs.push({ role: "user", content: text + marker, seq: this.assistantSeq });
-    this.emit(this.assistantMark({ type: "userMessage", sessionId, text: text + marker, seq: this.assistantSeq }));
+    const m = opts?.files?.length ?? 0;
+    const marker = [
+      ...(n > 0 ? [`[图片]×${n}（演示模式：图片未真实落盘）`] : []),
+      ...(m > 0 ? [`[文件]×${m}（演示模式：文件未真实落盘）`] : []),
+    ].join("\n");
+    this.assistantMsgs.push({ role: "user", content: text + (marker ? (text ? "\n\n" : "") + marker : ""), seq: this.assistantSeq });
+    this.emit(this.assistantMark({ type: "userMessage", sessionId, text: text + (marker ? (text ? "\n\n" : "") + marker : ""), seq: this.assistantSeq }));
     this.emit(this.assistantMark({ type: "busy", sessionId, busy: true }));
     // 一轮固定文案（演示事实——不假装调了模型）：两段 delta + done。
     setTimeout(() => {

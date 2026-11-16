@@ -44,9 +44,18 @@ import { getTray } from "./tray";
 import { IS_DEV_SHELL } from "./main";
 import { cachedToken } from "./backend-remote";
 import { feedAnnexB, flushAu, resetAu, FRAME_FLAG_KEYFRAME } from "./screen-au";
-import { restartTripped, afterRestartAttempt, tripMessage, MAX_CONSECUTIVE_ERRORS } from "./screen-restart";
+import { restartTripped, afterRestartAttempt, attemptSucceeded, newStartIntent, tripMessage, MAX_CONSECUTIVE_ERRORS } from "./screen-restart";
 import { setTrayHint } from "./tray";
 import { lastInputInjectedAt } from "./input";
+import {
+  probeFailureKind,
+  probeFailMessage,
+  probeFailCacheHit,
+  type ProbeFailureKind,
+  type ProbeFailMemory,
+} from "./screen-probe";
+export type { ProbeFailureKind } from "./screen-probe";
+export { probeFailureKind };
 
 const BACKEND = process.env.LXCODE_ADDR ?? "127.0.0.1:7789";
 
@@ -68,6 +77,10 @@ interface ShellState {
   encoder: string;
   width: number;
   height: number;
+  // P1-1：当前命令档位随轮询上报——后端 screenState 填 ScreenState.Quality，
+  // 手机端 UI 与 setScreenMonitor/setScreenQuality 的「沿用当前档」以此为准；
+  // 不上报的话切显示器会用 quality 缺省值重置清晰度。
+  quality?: string;
   error?: string;
   err_kind?: "reason" | "ffmpeg_missing" | "encoder_unavailable";
   monitors: Array<{ id: number; name: string; primary: boolean; width: number; height: number; attached: boolean }>;
@@ -77,6 +90,8 @@ interface Command {
   want: boolean;
   monitor: number;
   quality: string;
+  /** P1-5：开始意图代数（后端每次 screen.start 递增；老后端无此键）。 */
+  start_epoch?: number;
 }
 
 let ffmpeg: ChildProcess | null = null;
@@ -187,17 +202,11 @@ function existsExecutable(p: string): boolean {
 let encoderProbe: string[] | null = null;
 const PROBE_CHAIN = ["h264_nvenc", "h264_qsv", "h264_amf", "libx264"] as const;
 
-/** 探测结果缓存：成功终身（显卡能力不会中途消失），失败带 TTL——
- *  驱动瞬时故障（如独显休眠唤醒瞬间 nvcuda.dll 拉不起来）不该把投屏钉死，
- *  TTL 过后下次 reconcile 重探。 */
-const PROBE_FAIL_TTL_MS = 60_000;
-let encoderProbeFailedAt = 0;
-/** 探测失败要区分「真的缺编码器」与「编码器在列但起不来」——文案完全不同
- *  （前者让用户重装 ffmpeg，后者指向显卡驱动/桌面复制）。 */
-export type ProbeFailureKind = "encoders_missing" | "encoders_unavailable";
-export function probeFailureKind(missing: string[]): ProbeFailureKind {
-  return missing.length > 0 ? "encoders_missing" : "encoders_unavailable";
-}
+// 探测失败记忆（真实原因 + TTL 起点）：类型与纯逻辑在 screen-probe.ts。
+// TTL 内不能只返回 []——reconcile 每次 start 前会清 lastError，TTL 命中若
+// 不复述原因，startFfmpeg 会落到「缺编码器」方向的兜底文案（0.3.56 实撞：
+// 驱动问题被误报成重装 ffmpeg）。TTL 命中时以它重建 lastError/lastErrKind。
+let probeFailMemory: ProbeFailMemory | null = null;
 
 /** 单个编码器的最小真实管线（返回码 0 = 编码器真的能出帧）。
  *  参数与 ffmpegArgs 各分支一致（改码控参数时两处同步）。 */
@@ -298,7 +307,14 @@ function listEncoders(bin: string): Promise<string> {
 
 async function probeEncoders(bin: string): Promise<string[]> {
   if (encoderProbe) return encoderProbe;
-  if (encoderProbeFailedAt && Date.now() - encoderProbeFailedAt < PROBE_FAIL_TTL_MS) return [];
+  // TTL 命中：复述上次探测的真实失败原因（reconcile 每轮 start 前清了
+  // lastError，不复述的话 startFfmpeg 会落「缺编码器」兜底——0.3.56 实撞）。
+  const hit = probeFailCacheHit(probeFailMemory, Date.now());
+  if (hit) {
+    lastError = hit.message;
+    lastErrKind = "encoder_unavailable";
+    return [];
+  }
   const { present } = parseEncodersList(await listEncoders(bin), PROBE_CHAIN);
   const available: string[] = [];
   const failedTails: string[] = [];
@@ -309,16 +325,17 @@ async function probeEncoders(bin: string): Promise<string[]> {
   }
   if (available.length > 0) {
     encoderProbe = available;
+    probeFailMemory = null; // 显卡能力恢复：清掉旧失败记忆，不再复述
     return encoderProbe;
   }
   // 全失败：区分「exe 里根本没编这些编码器」（重装 ffmpeg）与「在列但起不
-  // 来」（显卡驱动/桌面复制），并附 ffmpeg 输出摘要。失败带 TTL 缓存。
-  encoderProbeFailedAt = Date.now();
+  // 来」（显卡驱动/桌面复制），并附 ffmpeg 输出摘要。失败带 TTL 缓存，
+  // **真实原因与时间戳一起缓存**——TTL 内的重试要报同一真实原因。
   const kind = probeFailureKind(PROBE_CHAIN.filter((e) => !present.includes(e)));
   const summary = failedTails.join(" || ");
-  lastError = kind === "encoders_missing"
-    ? "ffmpeg 缺少 H.264 编码器（nvenc/qsv/amf/libx264 都不在编译产物里）——请重新安装完整版 ffmpeg（见 docs/ffmpeg-build.md）"
-    : `屏幕捕获/编码器启动失败（软编码已自动尝试）——可能是显卡驱动或桌面复制不可用。ffmpeg 输出：${summary || "（无输出）"}`;
+  const message = probeFailMessage(kind, summary);
+  probeFailMemory = { kind, message, at: Date.now() };
+  lastError = message;
   lastErrKind = "encoder_unavailable";
   console.log(`[screen] 编码器探测全失败（${kind}）：${lastError}`);
   return [];
@@ -401,7 +418,10 @@ async function startFfmpeg(monitor: number, quality: string): Promise<void> {
   const encoder = chain.find((e) => available.includes(e));
   if (!encoder) {
     // 探测失败时 probeEncoders 已按原因写好 lastError（缺编码器 vs 驱动/桌面
-    // 复制起不来，附 ffmpeg 输出摘要）——这里只兜探测与本次之间竞态的空档。
+    // 复制起不来，附 ffmpeg 输出摘要；TTL 命中分支也会复述上次缓存的真实
+    // 原因，见 probeFailCacheHit）——这里只兜「无任何探测记录的极端竞态」
+    // （探测与本次判定之间 lastError 被并发清写、或 probeEncoders 走到
+    // available 为空却没写 lastError 的不可能路径），不再有 TTL 误报窗口。
     if (!lastError) {
       lastError = "ffmpeg 里没有可用的 H.264 编码器（nvenc/qsv/amf/libx264 都没有）——请重新安装完整版 ffmpeg（见 docs/ffmpeg-build.md）";
       lastErrKind = "encoder_unavailable";
@@ -420,6 +440,8 @@ async function startFfmpeg(monitor: number, quality: string): Promise<void> {
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
   });
+  const thisSpawn = ffmpeg; // 实例身份：close 回调迟到时对照当前实例
+  ffmpegSpawnedAt = Date.now();
   ffmpeg.stdout?.on("data", (d: Buffer) => feedStdout(d));
   stderrTail.length = 0;
   ffmpeg.stderr?.on("data", (d: Buffer) => {
@@ -437,6 +459,22 @@ async function startFfmpeg(monitor: number, quality: string): Promise<void> {
   });
   ffmpeg.on("close", (code) => {
     console.log(`[screen] ffmpeg 退出 code=${code}`);
+    // 实例一致性闸门：close 是异步事件——旧进程被 stopFfmpeg kill（或参数
+    // 变化重启被替换）后，它的 close 回调可能迟到，此刻 ffmpeg 已指向新实例
+    // 或已置 null。旧实例的退出**不属于当前会话**：不计成败（否则 stop→start
+    // 场景下旧进程的短命算到新会话头上，多累加一次连败）、不发错误上报，只做
+    // 清理（若它还是当前实例才置 null；不是则绝不能碰新实例的引用）。
+    if (ffmpeg !== thisSpawn) {
+      console.log(`[screen] 忽略旧实例退出（已被停止或替换）code=${code}`);
+      return;
+    }
+    // P0-1：按**存活时长**判定本次尝试成败——spawn 成功但存活 < 2s（锁屏/
+    // 驱动坏的常态）算失败，连败计数累加，达上限熔断；存活 ≥ 2s 才清零。
+    const lifetime = ffmpegSpawnedAt > 0 ? Date.now() - ffmpegSpawnedAt : 0;
+    ffmpegSpawnedAt = 0;
+    const ok = attemptSucceeded(lifetime);
+    if (ok) restartFailures = 0;
+    else restartFailures = afterRestartAttempt(false, restartFailures);
     ffmpeg = null;
     ffmpegEncoder = "";
     if (wantCmd.want) {
@@ -444,7 +482,6 @@ async function startFfmpeg(monitor: number, quality: string): Promise<void> {
       // stderr 尾行并入上报——手机端「异常退出」要能看到原因（如
       // Cannot load nvcuda.dll），否则轮询环里反复炸一次就-blind 重启一次。
       const tail = stderrTailText();
-      restartFailures++;
       lastError =
         restartFailures >= MAX_CONSECUTIVE_ERRORS
           ? tripMessage(restartFailures)
@@ -462,8 +499,16 @@ function stopFfmpeg(): void {
     try { ffmpeg.kill(); } catch { /* already dead */ }
     ffmpeg = null;
   }
+  ffmpegSpawnedAt = 0;
   ffmpegEncoder = "";
-  if (streamSocket && !streamSocket.destroyed) streamSocket.end();
+  if (streamSocket) {
+    // P1-3：无论 destroyed 与否都 end() 后立即置 null——只 end() 不置 null 时
+    // 下一次 startStreamSocket 看到非 destroyed 的半关闭 socket 直接复用，
+    // 后续帧写进一个 writableEnded 的连接全部被丢弃（壳重启 ffmpeg 后手机
+    // 端收不到新流）。writableEnded 的显式判定双保险（见 startStreamSocket）。
+    try { if (!streamSocket.destroyed) streamSocket.end(); } catch { /* already dead */ }
+    streamSocket = null;
+  }
 }
 
 // ---- 推流通道（本地回环 HTTP POST 长体 → 后端 /screen/stream）----
@@ -473,7 +518,9 @@ function stopFfmpeg(): void {
 // chunked POST 一次开路后当纯可写流用，开销可忽略。
 
 async function startStreamSocket(): Promise<void> {
-  if (streamSocket && !streamSocket.destroyed) return;
+  // P1-3：复用判定加 writableEnded——end() 过的 socket 仍「未 destroyed」，
+  // 只判 destroyed 会复用半关闭连接（后续帧全丢）。与 stopFfmpeg 置 null 双保险。
+  if (streamSocket && !streamSocket.destroyed && !streamSocket.writableEnded) return;
   await new Promise<void>((resolve) => {
     const [host, port] = BACKEND.split(":");
     const req = httpRequest({
@@ -518,9 +565,17 @@ function enumerateMonitors(): ShellState["monitors"] {
 
 // ffmpeg 重启连败熔断（判定逻辑在 screen-restart.ts 纯函数，node:test 直测）：
 // 连续崩溃重启达 3 次后停止重启并上报错误——否则轮询环里每秒炸一次重启一次
-// （编码器坏/驱动崩时无限循环），手机端只见「正在自动重启」闪烁。用户重新
-// start 时计数清零重试。
+// （编码器坏/驱动崩时无限循环），手机端只见「正在自动重启」闪烁。计数按
+// **存活时长**判定（P0-1）：spawn 同步成功不算成功——锁屏/驱动坏时 ffmpeg
+// 异步立即退出是常态，spawn 成功即清零会让计数 0↔1 震荡、熔断永不触发；
+// 只有存活 ≥ FFMPEG_MIN_ALIVE_MS 的尝试才清零。用户在熔断态点「开始投屏」
+// （want 电平 false→true 边沿）= 显式重试：清零并再给一次机会（P1-5）。
 let restartFailures = 0;
+/** 最近见过的 start epoch（P1-5：变化 = 用户显式点开始 = 显式重试；老后端
+ *  不下发该字段时 undefined === undefined 恒不触发，行为与旧版一致）。 */
+let lastStartEpoch: number | undefined = undefined;
+/** 当前 ffmpeg 的 spawn 时刻（close 回调算存活时长；0 = 无进程在跑）。 */
+let ffmpegSpawnedAt = 0;
 
 // ---- 平台门（2026-10 用户拍板：投屏本次不做 macOS）----
 // 依据：捕获链是 Windows 专属（lavfi ddagrab 是 Windows GDI Desktop
@@ -545,6 +600,7 @@ export function startScreenPolling(): void {
         encoder: ffmpegEncoder,
         width: 0,
         height: 0,
+        quality: wantCmd.quality || undefined,
         error: lastError,
         err_kind: lastErrKind,
         monitors: enumerateMonitors(),
@@ -582,12 +638,26 @@ export function stopScreenPolling(): void {
 
 /** reconcile：把命令电平对齐到进程现实（start/stop/参数变化重启）。 */
 async function reconcile(): Promise<void> {
+  // P1-5：start epoch 变化 = 用户在手机端显式点了「开始投屏」（后端每次
+  // screen.start 递增 start_epoch）——即使熔断态（want 保持 true、电平不变）
+  // 也视为显式重试：清零连败计数再给一次机会。原实现只在 want=false 清零，
+  // 熔断态点开始被熔断门挡回，恢复指引走不通。
+  if (wantCmd.want && newStartIntent(lastStartEpoch, wantCmd.start_epoch)) {
+    if (restartFailures > 0) {
+      console.log(`[screen] 用户显式重新开始投屏（epoch ${lastStartEpoch}→${wantCmd.start_epoch}）——清零连败计数（原 ${restartFailures}）重试`);
+      restartFailures = 0;
+      lastError = "";
+      lastErrKind = undefined;
+    }
+  }
+  if (wantCmd.start_epoch !== undefined) lastStartEpoch = wantCmd.start_epoch;
   if (wantCmd.want) {
     const q = wantCmd.quality || "medium";
     if (!ffmpeg) {
       if (restartTripped(wantCmd.want, restartFailures)) {
         // 熔断：不再自动重启，错误保持上报（err_kind=reason），手机端可见；
-        // 用户重新 start（want 电平重置）时 reconcile 的 stop 分支清零重试。
+        // 恢复路径 = 用户在手机端再点一次「开始投屏」→ 后端递增 start_epoch
+        // → 本函数入口的 epoch 变化判定（P1-5）清零计数后走到这里正常重试。
         console.log(`[screen] 连续 ${restartFailures} 次启动失败，熔断——等待用户重新开始投屏`);
         updateCapturingHint(true);
         return;
@@ -595,7 +665,13 @@ async function reconcile(): Promise<void> {
       lastError = "";
       lastErrKind = undefined;
       await startFfmpeg(wantCmd.monitor, q);
-      restartFailures = afterRestartAttempt(!!ffmpeg, restartFailures);
+      // P0-1：此处**只对 spawn 本身失败**（缺 ffmpeg/缺编码器，lastError 非空）
+      // 计数——spawn 同步成功不判成功也不清零：存活时长未到 2s 前无从判定，
+      // 在这里清零会让「spawn 成功→立即退出」的震荡把熔断计数 0↔1 打平
+      // （熔断永不触发）。存活判定统一在 close 回调按存活时长做（≥2s 清零）。
+      if (!ffmpeg || lastError) {
+        restartFailures = afterRestartAttempt(false, restartFailures);
+      }
       updateCapturingHint(true);
     } else if (wantCmd.monitor !== ffmpegMonitor || q !== ffmpegQuality) {
       // 参数变化：重启（Stop 再 Start，下一轮询周期生效）
@@ -664,6 +740,7 @@ export function screenStateSnapshot(): ShellState {
     encoder: ffmpegEncoder,
     width: 0,
     height: 0,
+    quality: wantCmd.quality || undefined,
     error: lastError,
     err_kind: lastErrKind,
     monitors: monitorsCache,

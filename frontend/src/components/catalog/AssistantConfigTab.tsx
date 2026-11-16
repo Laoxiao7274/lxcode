@@ -111,7 +111,7 @@ export function AssistantConfigTab({ onOpenCatalog }: { onOpenCatalog?: (tab: As
   const mcpChips = mcpServers.map((s) => ({ value: s.id, label: s.id, desc: s.desc || "MCP 服务器" }));
   // 工具白名单（2026-12 用户拍板：默认工具完全可配）：
   //   - 预填 = whitelist 非空 ? whitelist :（builtinDefaults ∪ 旧 cfg.tools）
-  //     ——builtinDefaults 来自服务端 get 应答（事实源，前端不写死 14 项）；
+  //     ——builtinDefaults 来自服务端 get 应答（事实源，前端不写死内置清单）；
   //     旧 tools 并入预填是迁移路径（保存时写 whitelist、清空旧 tools，防双源）；
   //   - 「恢复默认」= 清空 whitelist（回到内置默认）。
   const builtinDefaults = cfg.builtinDefaults ?? [];
@@ -231,7 +231,7 @@ export function AssistantConfigTab({ onOpenCatalog }: { onOpenCatalog?: (tab: As
             AgentEditor 同款 ToolCardPicker，四组内置/第三方/MCP/自定义全目录可选，
             含内置写类 bash/edit——用户担责）。
             预填 = whitelist 非空 ? whitelist :（builtinDefaults ∪ 旧 tools）——
-            builtinDefaults 是服务端带回的内置默认 14 项（前端不写死，防漂移）；
+            builtinDefaults 是服务端带回的内置默认清单（前端不写死，防漂移）；
             旧 cfg.tools 并入预填（迁移路径：保存时写 whitelist 并清空旧 tools）。 */}
         <ToolCardPicker
           groups={toolGroups}

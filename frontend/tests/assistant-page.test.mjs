@@ -75,7 +75,7 @@ test('① 覆写钉子：助手域有「+」（附件 2026-12）——padding-le
   assert.ok(!/\.assistant-ws \.pi-row textarea\.piInput/.test(css), 'piInput 左内距覆写已删（att-add 自带 margin，覆写会双重左距）');
 });
 
-test('① 助手附件接线（2026-12）：「+」按钮 + 预览 + 发送带 images', () => {
+test('① 助手附件接线（2026-12，批次 1 补齐文件入口）：图片+文件 + 预览 + 发送带 images/files', () => {
   const src = fs.readFileSync(new URL('../src/components/assistant/AssistantInput.tsx', import.meta.url), 'utf8');
   assert.ok(/className="att-add"/.test(src), '附件按钮用主域 .att-add');
   assert.ok(/className="att-preview"/.test(src), '预览行用主域 .att-preview');
@@ -84,13 +84,21 @@ test('① 助手附件接线（2026-12）：「+」按钮 + 预览 + 发送带 i
   assert.ok(/attsFromPending\(/.test(src), '发送组装走 shared/attachments 的 wire 组装');
   assert.ok(/stageFile\(/.test(src), '读入走 shared/attachment-read 的暂存通道（路径优先）');
   assert.ok(/visionBlocked/.test(src), 'vision 能力门透传（与主域同一判定链）');
-  // 精简版边界：不带文件入口与队列（助手域范围外的两条不变量）
-  assert.ok(!/fileInputRef/.test(src), '不带文件入口（图片精简版）');
+  // 批次 1（2026-12）：文件入口补齐——「+」菜单有文件项、文件 input、paste/drop
+  // 与暂存文件卡（FolderFileCards）；文件项不受 vision 门限
+  assert.ok(/fileInputRef/.test(src), '带文件入口（文件 input）');
+  assert.ok(/从本地选择文件/.test(src), '菜单有「文件」项');
+  assert.ok(/onPaste=\{onPaste\}/.test(src), 'textarea 挂 onPaste（剪贴板图片进暂存）');
+  assert.ok(/onDrop=\{onDrop\}/.test(src), '容器挂 onDrop（文件/图片/文件夹拖入）');
+  assert.ok(/FolderFileCards/.test(src), '文件暂存渲染主域同款 FolderFileCards');
+  // 精简版边界（不变量保留）：不带发送队列（助手域范围外）
   assert.ok(!/send-queue|onQueue/.test(src), '不带发送队列');
   const pageSrc = fs.readFileSync(new URL('../src/components/assistant/AssistantPage.tsx', import.meta.url), 'utf8');
   assert.ok(/opts\.images = atts\.images/.test(pageSrc), 'AssistantPage 把附件装进 assistant.send 参数');
+  assert.ok(/opts\.files = atts\.files/.test(pageSrc), 'files 同样装进 assistant.send 参数（批次 1）');
   const wsSrc = fs.readFileSync(new URL('../src/agent/ws/assistant.ts', import.meta.url), 'utf8');
   assert.ok(/wireImage/.test(wsSrc), 'WS 域 send 用主域 wireImage 组装（path 剥 file）');
+  assert.ok(/wireFile/.test(wsSrc), 'WS 域 send 用主域 wireFile 组装 files（批次 1）');
 });
 
 test('① 带状态渲染：时间线块复用 Block 渲染（user 气泡 + 正文）', async () => {

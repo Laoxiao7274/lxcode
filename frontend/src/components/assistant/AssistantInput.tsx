@@ -10,13 +10,15 @@
 // stats 由同一份归约器写入 assistantStates），改档/切模型走 assistant.* 方法域。
 // 斜杠面板 / 发送队列仍是助手域范围外，刻意不渲染。
 //
-// 附件（2026-12 用户拍板：assistant.send 也带 images/files）：「+」按钮 = 主域
-// Composer 附件区的**图片精简版**（single-menu-item——助手域不带文件入口）；
-// 暂存/读入/上限校验复用 shared/attachments + shared/attachment-read 的同一份纯
-// 函数与暂存通道（不另写副本），预览行复用 .att-preview 样式与 AttachmentThumb
-// 组件（Composer 导出的同一份）；发送组装 attsFromPending → onSend。
-// vision 能力门照主域：visionBlocked 非空时「+」禁用 + title 说明（感知尽力而为，
-// 后端 vision 校验兜底）。
+// 附件（2026-12 用户拍板：assistant.send 也带 images/files；本次补齐文件入口）：
+// 「+」按钮 = 主域 Composer 附件区的同款菜单（图片 + 文件两项——与主域
+// Composer.tsx 的 .pi-row 附件区同一形态）；图片/文件的暂存、读入、上限校验、
+// 粘贴、拖拽（含文件夹拖入）全部复用 shared/attachments + shared/attachment-read
+// + shared/folder-drop 的同一份纯函数与暂存通道（不另写副本），文件预览行复用
+// Composer 导出的 FolderFileCards（文件夹卡 + 散文件卡同一份渲染）；发送组装
+// attsFromPending → onSend（images 与 files 都上）。
+// vision 能力门照主域：只禁**图片菜单项**（visionBlocked 非空时该项目禁用 +
+// title 说明）——文件不受 vision 门限（感知尽力而为，后端 vision 校验兜底）。
 //
 // 保持流内定位（不套 .composer-zone absolute——会破坏 flex 贴底）；
 // 不发布 --composer-h（AssistantWorkspace 的归零规则保持）。
@@ -28,20 +30,25 @@ import { PermPicker } from "../perm-picker";
 import { ModelPicker } from "../model-picker";
 import { ContextIndicator } from "../context-indicator";
 import { StatsPills } from "../stats-pills";
-import { AttachmentThumb } from "../composer";
+import { AttachmentThumb, FolderFileCards } from "../composer";
 import { TodoList } from "../../aicss/TodoList";
 import type { TodoItem } from "../../shared/types";
 import {
+  addPendingFiles,
   addPendingImages,
   attsFromPending,
   formatBytes,
   hasPendingAtts,
   isImageMime,
+  MAX_FILE_BYTES,
+  MAX_FILE_COUNT,
   MAX_IMAGE_BYTES,
   MAX_IMAGE_COUNT,
   removePending,
+  type PendingFile,
   type PendingImage,
 } from "../../shared/attachments";
+import { collectFolderEntries, defaultFolderDeps, type EntryLike } from "../../shared/folder-drop";
 import { stageFile } from "../../shared/attachment-read";
 import type { ApprovalMode, ContextUsage, SessionStats, SendAttachments } from "../../shared/types";
 
@@ -96,12 +103,16 @@ export function AssistantInput({
 }) {
   const [text, setText] = useState("");
   const [images, setImages] = useState<PendingImage[]>([]);
+  const [files, setFiles] = useState<PendingFile[]>([]);
   const [notice, setNotice] = useState("");
   const taRef = useRef<HTMLTextAreaElement>(null);
   const imgInputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   /** 暂存区的 ref 镜像（异步读文件期间 state 可能已变——追加要基于最新值）。 */
   const imagesRef = useRef(images);
   imagesRef.current = images;
+  const filesRef = useRef(files);
+  filesRef.current = files;
   /** 一次性提示的计时器（4s 自动消失，与主域 Composer 同款节奏）。 */
   const noticeTimerRef = useRef<number | null>(null);
   // 「生成中」状态行挂载即上浮淡入（与 Composer 的 busyRowRef 同一件 shared/anim）
@@ -112,7 +123,7 @@ export function AssistantInput({
   // 发送中不可直发（消息已交出去）——与 Composer 的 route 语义一致（简化版：
   // 助手域没有队列，busy/sending 之外只有「有没有文本/附件」一个维度；
   // hasAttachments：只附件没文本也允许发——后端以「[附件]」行充当正文）。
-  const canSend = !locked && !sending && !busy && (text.trim().length > 0 || hasPendingAtts(images, []));
+  const canSend = !locked && !sending && !busy && (text.trim().length > 0 || hasPendingAtts(images, files));
 
   // 压缩中态（compacting）由上层持有（useCompaction——超时尾巴/重入闸在钩子里，
   // 这里只透传；与主域 Composer 的 onCompact/compacting 同一形状）。
@@ -137,10 +148,11 @@ export function AssistantInput({
 
   const submit = () => {
     const t = text.trim();
-    if ((!t && images.length === 0) || locked || sending) return;
-    onSend(t, attsFromPending(images, []));
+    if ((!t && images.length === 0 && files.length === 0) || locked || sending) return;
+    onSend(t, attsFromPending(images, files));
     setText("");
     setImages([]);
+    setFiles([]);
     requestAnimationFrame(() => taRef.current?.focus());
   };
 
@@ -152,39 +164,195 @@ export function AssistantInput({
     }
   };
 
-  // 图片选入（「+」菜单触发；与主域 Composer 的 ingest 同一条暂存路径——
-  // 路径优先、base64 兜底、上限先于读入拦截）：
-  const pickFiles = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const list = Array.from(e.target.files ?? []);
-    e.target.value = ""; // 允许重复选同一个文件
+  // 附件选入/粘贴/拖入（与主域 Composer 的 ingest 同一条暂存路径——路径优先、
+  // base64 兜底、上限先于读入拦截）：图片走 addPendingImages、其余走
+  // addPendingFiles，各自校验各自的口径（单图 5MB / 单文件 20MB / 各 4 个）。
+  const ingest = async (list: File[]) => {
     if (list.length === 0) return;
-    const oversize = list.find((f) => isImageMime(f.type) && f.size > MAX_IMAGE_BYTES);
-    if (oversize) {
-      flashNotice(`图片 ${oversize.name} 超过 5MB 上限（当前 ${formatBytes(oversize.size)}）`);
+    // 尺寸先于暂存拦截：超大文件不碰内容（读 100MB 只为报错是浪费）
+    const oversizeImg = list.find((f) => isImageMime(f.type) && f.size > MAX_IMAGE_BYTES);
+    if (oversizeImg) {
+      flashNotice(`图片 ${oversizeImg.name} 超过 5MB 上限（当前 ${formatBytes(oversizeImg.size)}）`);
       return;
     }
-    void (async () => {
-      try {
-        const staged = await Promise.all(list.map((f) => stageFile(f)));
+    const oversizeFile = list.find((f) => !isImageMime(f.type) && f.size > MAX_FILE_BYTES);
+    if (oversizeFile) {
+      flashNotice(`文件 ${oversizeFile.name} 超过 20MB 上限（当前 ${formatBytes(oversizeFile.size)}）`);
+      return;
+    }
+    try {
+      const imgs = list.filter((f) => isImageMime(f.type));
+      const others = list.filter((f) => !isImageMime(f.type));
+      if (imgs.length > 0) {
+        const staged = await Promise.all(imgs.map((f) => stageFile(f)));
         // 追加基于 ref 镜像（await 期间用户可能又加了/删了附件）
         const res = addPendingImages(
           imagesRef.current,
           staged.map((s, i) => s.path
-            ? { mime: list[i].type, name: list[i].name, path: s.path, file: s.file, size: s.file.size }
-            : { mime: list[i].type, name: list[i].name, data: s.data ?? "" }),
+            ? { mime: imgs[i].type, name: imgs[i].name, path: s.path, file: s.file, size: s.file.size }
+            : { mime: imgs[i].type, name: imgs[i].name, data: s.data ?? "" }),
         );
         setImages(res.images);
         if (res.notice) flashNotice(res.notice);
-      } catch (err) {
-        flashNotice(`读取文件失败: ${err instanceof Error ? err.message : String(err)}`);
       }
-    })();
+      if (others.length > 0) {
+        const staged = await Promise.all(others.map((f) => stageFile(f)));
+        const res = addPendingFiles(
+          filesRef.current,
+          staged.map((s, i) => s.path
+            ? { name: others[i].name, size: others[i].size, path: s.path, file: s.file }
+            : { name: others[i].name, size: others[i].size, data: s.data ?? "" }),
+        );
+        setFiles(res.files);
+        if (res.notice) flashNotice(res.notice);
+      }
+    } catch (err) {
+      flashNotice(`读取文件失败: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
+  const pickFiles = (e: React.ChangeEvent<HTMLInputElement>) => {
+    void ingest(Array.from(e.target.files ?? []));
+    e.target.value = ""; // 允许重复选同一个文件
+  };
+
+  // 粘贴：剪贴板里的**图片文件**走附件流程（与 Composer.tsx 的 onPaste 同款——
+  // 多张也支持；文本粘贴照常不拦，非图片的剪贴板文件忽略）。
+  const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    if (locked) return;
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    const imgs: File[] = [];
+    for (const item of Array.from(items)) {
+      if (item.kind !== "file") continue;
+      const f = item.getAsFile();
+      if (f && isImageMime(f.type)) imgs.push(f);
+    }
+    if (imgs.length === 0) return;
+    e.preventDefault();
+    void ingest(imgs);
+  };
+
+  // 拖拽（与 Composer.tsx 的 onDragOver/onDragLeave/onDrop 同款）：文件拖到
+  // 输入卡直接进附件区。dragover 必须 preventDefault——否则浏览器用默认行为
+  // （打开文件）顶掉 drop。文件夹拖入复用 folder-drop 的展开收集（与主域同一
+  // 口径：≤16 个 / 总量 ≤20MB、隐藏项与超限跳过、截断给人话提示）。
+  const [dragOver, setDragOver] = useState(false);
+  const onDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    if (locked) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+    setDragOver(true);
+  };
+  const onDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    if (e.currentTarget === e.target) setDragOver(false);
+  };
+
+  /** 文件夹拖入：展开收集 → 逐个读入（个别失败跳过并说明）→ 进附件区。
+   *  与 Composer.tsx 的 ingestFolders 同一条判定（folder-drop 纯函数 + 逐个
+   *  stageFile），条目带 group（文件夹名）+ relPath（相对路径）——暂存区渲染
+   *  成文件夹卡，发送时 relPath 进 wire 的 rel_path。 */
+  const ingestFolders = async (dirs: EntryLike[], plain: File[]) => {
+    if (plain.length > 0) await ingest(plain); // 文件夹混着散文件：散文件照旧路径
+    const notices: string[] = [];
+    const folders: { name: string; items: { file: File; relPath: string }[] }[] = [];
+    for (const dir of dirs) {
+      const r = await collectFolderEntries(dir, defaultFolderDeps);
+      if (r.files.length > 0) {
+        folders.push({ name: dir.name, items: r.files.map((file, i) => ({ file, relPath: r.relPaths[i] })) });
+      }
+      if (r.notice) notices.push(`「${dir.name}」${r.notice}`);
+    }
+    if (folders.length === 0) {
+      if (notices.length > 0) flashNotice(notices.join("；"));
+      return;
+    }
+    // 逐个暂存：路径优先（不读内容），无路径的才读 base64——个别失败跳过并
+    // 说明，不整批失败。
+    const read: { file: File; path: string | null; data: string | null; folder: string; relPath: string }[] = [];
+    let readFailed = 0;
+    for (const folder of folders) {
+      for (const item of folder.items) {
+        try {
+          const staged = await stageFile(item.file);
+          read.push({ file: item.file, path: staged.path, data: staged.data, folder: folder.name, relPath: item.relPath });
+        } catch {
+          readFailed++;
+        }
+      }
+    }
+    if (readFailed > 0) notices.push(`${readFailed} 个文件读取失败已跳过`);
+    const imgs = read.filter((r) => isImageMime(r.file.type) && r.file.size <= MAX_IMAGE_BYTES);
+    const oversizeImgs = read.filter((r) => isImageMime(r.file.type) && r.file.size > MAX_IMAGE_BYTES).length;
+    if (oversizeImgs > 0) notices.push(`${oversizeImgs} 张图片超过 5MB 上限已跳过`);
+    const others = read.filter((r) => !isImageMime(r.file.type));
+    const roomImgs = Math.max(0, MAX_IMAGE_COUNT - imagesRef.current.length);
+    const roomFiles = Math.max(0, MAX_FILE_COUNT - filesRef.current.length);
+    if (imgs.length > roomImgs) notices.push(`一条消息最多 ${MAX_IMAGE_COUNT} 张图片：已添加前 ${roomImgs} 张，其余未加入`);
+    if (others.length > roomFiles) notices.push(`一条消息最多 ${MAX_FILE_COUNT} 个文件：已添加前 ${roomFiles} 个，其余未加入`);
+    if (imgs.length > 0 && roomImgs > 0) {
+      const res = addPendingImages(
+        imagesRef.current,
+        imgs.slice(0, roomImgs).map((r) => r.path
+          ? { mime: r.file.type, name: r.file.name, path: r.path, file: r.file, size: r.file.size }
+          : { mime: r.file.type, name: r.file.name, data: r.data ?? "" }),
+      );
+      setImages(res.images);
+      if (res.notice) flashNotice(res.notice);
+    }
+    if (others.length > 0 && roomFiles > 0) {
+      const res = addPendingFiles(
+        filesRef.current,
+        others.slice(0, roomFiles).map((r) => ({
+          name: r.file.name,
+          size: r.file.size,
+          ...(r.path ? { path: r.path, file: r.file } : { data: r.data ?? "" }),
+          group: r.folder,
+          relPath: r.relPath,
+        })),
+      );
+      setFiles(res.files);
+      if (res.notice) flashNotice(res.notice);
+    }
+    if (notices.length > 0) flashNotice(notices.join("；"));
+  };
+
+  const onDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setDragOver(false);
+    if (locked) return;
+    const dt = e.dataTransfer;
+    if (!dt) return;
+    // webkitGetAsEntry 必须在 drop 事件的同步栈里调用——异步再取会被
+    // Chromium 置空（该 API 的经典坑），文件夹就识别不出来了。
+    const dirs: EntryLike[] = [];
+    const plain: File[] = [];
+    for (const item of Array.from(dt.items ?? [])) {
+      if (item.kind !== "file") continue;
+      const entry = (item.webkitGetAsEntry?.() ?? null) as unknown as EntryLike | null;
+      if (entry?.isDirectory) {
+        dirs.push(entry);
+        continue;
+      }
+      const f = item.getAsFile();
+      if (f) plain.push(f);
+    }
+    // 拿不到 entry 的来源（虚拟文件/旧引擎）回落 dt.files——单文件行为与原先一致
+    const files = dirs.length === 0 && plain.length === 0 ? Array.from(dt.files ?? []) : plain;
+    if (dirs.length > 0) void ingestFolders(dirs, files);
+    else if (files.length > 0) void ingest(files);
   };
 
   const removeImage = (id: string) => setImages((cur) => removePending(cur, id));
+  const removeFile = (id: string) => setFiles((cur) => removePending(cur, id));
 
   return (
-    <div className="assistant-input">
+    <div
+      className={"assistant-input" + (dragOver ? " composer-dragover" : "")}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
       {/* busy/sending 状态行：浮在输入卡上方（与主域 Composer 同一拍——
           busy 到达后文案无缝从「发送中…」切到「生成中」） */}
       {(busy || sending) && (
@@ -201,7 +369,7 @@ export function AssistantInput({
             <TodoList items={todos} />
           </div>
         )}
-        {(images.length > 0 || notice) && (
+        {(images.length > 0 || files.length > 0 || notice) && (
           <div className="att-preview" role="region" aria-label="附件预览">
             {notice && <div className="att-notice" role="status">{notice}</div>}
             {images.length > 0 && (
@@ -211,20 +379,28 @@ export function AssistantInput({
                 ))}
               </div>
             )}
+            {files.length > 0 && (
+              <FolderFileCards
+                files={files}
+                onRemoveFolder={(folder) => setFiles((cur) => cur.filter((f) => f.group !== folder))}
+                onRemoveFile={(id) => removeFile(id)}
+              />
+            )}
           </div>
         )}
         <div className="pi-row">
-          {/* 「+」添加图片（2026-12 助手附件）：主域 att-add 的图片精简版——
-              32px 正圆、菜单向上弹、vision 门禁用。locked（不可用会话）不渲染
-              （与主域 Composer 的 locked 语义一致）。 */}
+          {/* 「+」添加附件（2026-12 助手附件补齐文件入口）：图片 + 文件两项，
+              与主域 Composer 的 .pi-row 附件区同一形态——图片项受 vision 门
+              （禁用 + title 说明），文件项不受 vision 门限；文件入主域同款
+              上限口径（≤4 个、单个 20MB，无类型白名单）。locked（不可用会话）
+              不渲染（与主域 Composer 的 locked 语义一致）。 */}
           {!locked && (
             <span className="pop-wrap att-add-wrap" ref={addMenu.rootRef}>
               <button
                 type="button"
                 className="att-add"
-                disabled={Boolean(visionBlocked)}
-                title={visionBlocked ?? "添加图片"}
-                aria-label="添加图片"
+                title="添加图片或文件"
+                aria-label="添加图片或文件"
                 aria-haspopup="menu"
                 aria-expanded={addMenu.open}
                 onClick={addMenu.toggle}
@@ -239,7 +415,8 @@ export function AssistantInput({
                     type="button"
                     className="att-menu-item"
                     role="menuitem"
-                    title="从本地选择图片（png/jpeg/webp/gif，最多 4 张，单张 5MB 内）"
+                    disabled={Boolean(visionBlocked)}
+                    title={visionBlocked ?? "从本地选择图片（png/jpeg/webp/gif，最多 4 张，单张 5MB 内）"}
                     onClick={() => { imgInputRef.current?.click(); addMenu.requestClose(); }}
                   >
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -249,6 +426,19 @@ export function AssistantInput({
                     </svg>
                     图片
                   </button>
+                  <button
+                    type="button"
+                    className="att-menu-item"
+                    role="menuitem"
+                    title="从本地选择文件（最多 4 个，单个 20MB 内；交给智能体读取）"
+                    onClick={() => { fileInputRef.current?.click(); addMenu.requestClose(); }}
+                  >
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                      <path d="M14 2v6h6" />
+                    </svg>
+                    文件
+                  </button>
                 </div>
               )}
               {/* 隐藏的文件选择入口（菜单项触发；multiple 一次选多个） */}
@@ -256,6 +446,15 @@ export function AssistantInput({
                 ref={imgInputRef}
                 type="file"
                 accept="image/png,image/jpeg,image/webp,image/gif"
+                multiple
+                className="att-input"
+                aria-hidden="true"
+                tabIndex={-1}
+                onChange={pickFiles}
+              />
+              <input
+                ref={fileInputRef}
+                type="file"
                 multiple
                 className="att-input"
                 aria-hidden="true"
@@ -273,6 +472,7 @@ export function AssistantInput({
             disabled={locked}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={onKey}
+            onPaste={onPaste}
           />
         </div>
         <div className="piBar">

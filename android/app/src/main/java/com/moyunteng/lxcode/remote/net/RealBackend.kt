@@ -199,12 +199,18 @@ class RealBackend {
         }
     }
 
-    /** 运行中切显示器（悬浮球菜单）：同 setScreenQuality 的机制，换 monitor。 */
+    /** 运行中切显示器（悬浮球菜单）：同 setScreenQuality 的机制，换 monitor。
+     *  P1-1：quality 为 null（后端未上报当前档，壳太老）时不带 quality 参数——
+     *  screen.start 的 quality 为空 = 后端 normalizeQuality 回 medium 并重启
+     *  ffmpeg，会把用户已选的清晰度打回默认档；不带参同理（命令电平整体替换）。
+     *  折衷：null 时仍以 medium 下发（与旧行为一致），但 UI 显示与选中态按
+     *  「未知」渲染——不再有「明明显示高清、切个显示器变标准」的静默重置。 */
     fun setScreenMonitor(monitor: Int, onDone: (String?) -> Unit) {
         val st = screenState ?: return onDone("当前没有投屏")
+        val q = st.quality ?: "medium"
         client.call(
             "screen.start",
-            JSONObject().put("monitor", monitor).put("quality", st.quality),
+            JSONObject().put("monitor", monitor).put("quality", q),
         ) { err, result ->
             if (err != null) {
                 onDone(err.optString("message"))
@@ -256,10 +262,13 @@ class RealBackend {
     }
 
     private fun applyScreenState(o: JSONObject) {
+        // P1-1：quality 缺省改 null——后端壳未上报档位时（老壳/未知）不编造
+        // "medium"，避免 setScreenMonitor/setScreenQuality 的「沿用当前档」把
+        // 清晰度重置回 medium。UI 层显示 null 时按未知档处理（qualityLabel 兜底）。
         screenState = com.moyunteng.lxcode.remote.ui.ScreenStateInfo(
             active = o.optBoolean("active", false),
             monitor = o.optInt("monitor", 0),
-            quality = o.optString("quality", "medium"),
+            quality = o.optString("quality", "").ifEmpty { null },
             encoder = o.optString("encoder", ""),
             error = o.optString("error", "").ifEmpty { null },
         )
@@ -548,19 +557,20 @@ class RealBackend {
 
     /** 给当前助手会话发一条消息（assistant.send）。
      *  effort 是**请求级参数**（protocol.ChatSendParams.Effort——与桌面端同语义）。
-     *  附件（2026-12 助手附件）：pendingImages 非空时随消息带上（images base64
-     *  形态——手机与后端不同机，path 形态不适用；与主域 send 同一套暂存桶与
-     *  wire 组装），发送受理即清暂存。 */
+     *  附件（2026-12 助手附件，本次补齐文件入口）：pendingImages/pendingFiles
+     *  非空时随消息带上（images/files base64 形态——手机与后端不同机，path 形态
+     *  不适用；wire 形状与主域 send 同款），发送受理即清暂存。 */
     fun assistantSend(text: String, effort: String = "") {
         val t = text.trim()
-        if (t.isEmpty() && pendingImages.isEmpty()) return
+        if (t.isEmpty() && pendingImages.isEmpty() && pendingFiles.isEmpty()) return
         if (asst.currentId.isEmpty()) {
             assistantNew(onReady = { assistantSend(t, effort) })
             return
         }
         asst.busy = true
         val images = pendingImages.toList()
-        Log.i(TAG, "assistant.send session=${asst.currentId} text=${t.take(80)} effort=$effort img=${images.size}")
+        val files = pendingFiles.toList()
+        Log.i(TAG, "assistant.send session=${asst.currentId} text=${t.take(80)} effort=$effort img=${images.size} file=${files.size}")
         val params = JSONObject().put("session_id", asst.currentId).put("text", t)
         // 空串不带 effort 键（wire 纪律：值缺省整键缺席）
         if (effort.isNotBlank()) params.put("effort", effort)
@@ -579,6 +589,22 @@ class RealBackend {
                 },
             )
         }
+        // 文件附件（2026-12 批次 1）：与主域 sendMsg 的 files base64 组装同款
+        //（name + data；mime 后端按 name 推断，wire 不带）。
+        if (files.isNotEmpty()) {
+            params.put(
+                "files",
+                org.json.JSONArray().apply {
+                    files.forEach {
+                        put(
+                            JSONObject()
+                                .put("name", it.name)
+                                .put("data", it.data),
+                        )
+                    }
+                },
+            )
+        }
         client.call("assistant.send", params) { err, _ ->
             if (err != null) {
                 asst.busy = false
@@ -588,6 +614,7 @@ class RealBackend {
             } else {
                 // 发送受理才清暂存（被拒时保留——用户可改完重发，不丢已选附件）
                 pendingImages.clear()
+                pendingFiles.clear()
                 attachNotice = null
                 Log.i(TAG, "assistant.send accepted")
             }
@@ -998,8 +1025,10 @@ class RealBackend {
             "chat.toolResult" -> {
                 if (sid != asst.currentId) return
                 if (p.optString("name") == "agent_dispatch") {
-                    // 调度结果：剥子会话 id 回填卡（与主 reducer 同一条口径）
+                    // 调度结果：剥子会话 id 回填卡（与主 reducer 同一条口径）；
+                    // 附件回流同主 reducer——挂到派发卡渲染成果条。
                     val (body, childSid) = splitDispatchResult(p.optString("content"))
+                    val atts = parseAttachments(p.optJSONArray("attachments"))
                     val i = dispatchCardIdx(p.optString("id"), asst.blocks)
                     if (i >= 0) {
                         val d = asst.blocks[i] as ThreadBlock.Dispatch
@@ -1008,6 +1037,7 @@ class RealBackend {
                             // toolResult 先到，不兜则卡上结论行在 dispatchEnd 前空白）
                             conclusion = d.conclusion.ifBlank { body.ifBlank { "（子 Agent 没有产出文本结论）" } },
                             sessionId = childSid.ifBlank { d.sessionId },
+                            attachments = if (atts.isNotEmpty()) atts else d.attachments,
                         )
                     }
                     return
@@ -1016,10 +1046,12 @@ class RealBackend {
                 val i = asst.blocks.indexOfFirst { it is ThreadBlock.Tool && it.id == id }
                 if (i >= 0) {
                     val t = asst.blocks[i] as ThreadBlock.Tool
+                    val atts = parseAttachments(p.optJSONArray("attachments"))
                     asst.blocks[i] = t.copy(
                         output = p.optString("content").take(4_000),
                         running = false,
                         isError = p.optBoolean("is_error"),
+                        attachments = if (atts.isNotEmpty()) atts else t.attachments,
                     )
                 } else {
                     Log.w(TAG, "assistant.toolResult 无配对调用块 id=$id")
@@ -1593,6 +1625,13 @@ class RealBackend {
             syncRunningDots()
             refreshSessions()
             refreshProjects()
+            // P1-2：投屏状态恢复链——断线期间 screen.changed 事件一次性丢失，
+            // 手机端 screenState 停在断线前快照；若投屏实际还在跑，观看页拿到
+            // 的 active=false 是旧值（黑屏卡住）；若实际已停，旧 active=true
+            // 让断开自动退回（AppRoot LaunchedEffect）不触发。refreshScreen
+            // 重拉 screen.state 得到真实 active（与助手域恢复链同款模式），
+            // applyScreenState 更新的是同一个 screenState 源，页面据此自然刷新。
+            refreshScreen()
             // 模型注册表：composer 模型菜单的数据源（桌面端是握手并行组的一步）
             refreshModels()
             // 断线期间错过的 chat.dispatchStart 不重放（事件一次性），而回放扫不出
@@ -2313,8 +2352,12 @@ class RealBackend {
                 // dispatchStart/End 的 session_id 的话，续跑（arguments.session 为空）
                 // 与老载荷会让卡上 id 为空——那张卡就再也没有「查看子会话」入口了。
                 // 所以这里照样把正文剥出来回填卡（卡已定格也不改状态，只补 id/结论）。
+                // 附件回流（对齐桌面端 reduceToolResult 的调度分支）：这次派发期间
+                // 子会话 share_file 等的产物随这条结果回流（ToolResultParams
+                // .attachments——与结果消息同一份元数据），挂到派发卡上渲染成果条。
                 if (p.optString("name") == "agent_dispatch") {
                     val (body, childSid) = splitDispatchResult(p.optString("content"))
+                    val atts = parseAttachments(p.optJSONArray("attachments"))
                     // 归属键 = 这次调用的 id（后端 DispatchCall.DispatchID = tc.ID），
                     // 与 dispatchStart/End 的 dispatch_id 同源。
                     val i = dispatchCardIdx(p.optString("id"))
@@ -2325,6 +2368,7 @@ class RealBackend {
                             // 卡还空着时补，避免把 dispatchEnd 写好的终态覆盖成半成品。
                             conclusion = d.conclusion.ifBlank { body },
                             sessionId = childSid.ifBlank { d.sessionId },
+                            attachments = if (atts.isNotEmpty()) atts else d.attachments,
                         )
                     } else {
                         Log.w(TAG, "调度结果无归属派发卡 id=${p.optString("id")}（卡还没建？）")
@@ -2335,10 +2379,12 @@ class RealBackend {
                 val i = blocks.indexOfFirst { it is ThreadBlock.Tool && it.id == id }
                 if (i >= 0) {
                     val t = blocks[i] as ThreadBlock.Tool
+                    val atts = parseAttachments(p.optJSONArray("attachments"))
                     blocks[i] = t.copy(
                         output = p.optString("content").take(4_000),
                         running = false,
                         isError = p.optBoolean("is_error"),
+                        attachments = if (atts.isNotEmpty()) atts else t.attachments,
                     )
                 } else {
                     Log.w(TAG, "toolResult 无配对调用块 id=$id name=${p.optString("name")}")
@@ -2814,11 +2860,16 @@ class RealBackend {
                     if (dIdx != null && dIdx < newBlocks.size) {
                         val d = newBlocks[dIdx] as ThreadBlock.Dispatch
                         val (body, childSid) = splitDispatchResult(m.optString("content"))
+                        val atts = parseAttachments(m.optJSONArray("attachments"))
                         newBlocks[dIdx] = d.copy(
                             conclusion = body.ifBlank { "（子 Agent 没有产出文本结论）" },
                             sessionId = childSid.ifBlank { d.sessionId },
                             done = true,
                             isError = false,
+                            // 子会话共享到对话的附件（调度结果消息上的元数据——与
+                            // 实时 toolResult 同一份形状）：卡上渲染成果条（桌面端
+                            // historyBlocks 的 card.attachments 同语义）。
+                            attachments = if (atts.isNotEmpty()) atts else d.attachments,
                         )
                     } else if (dispatchCallIdx.containsKey(callId)) {
                         // ①b 派发卡被 tail 窗口截掉、只剩这条结果：从正文剥出子会话 id
@@ -2831,10 +2882,14 @@ class RealBackend {
                         val idx = toolCallIdx[callId]
                         if (idx != null && idx < newBlocks.size) {
                             val t = newBlocks[idx] as ThreadBlock.Tool
+                            val atts = parseAttachments(m.optJSONArray("attachments"))
                             newBlocks[idx] = t.copy(
                                 output = m.optString("content").take(4_000),
                                 isError = false,
                                 durationMs = m.optLong("duration_ms", t.durationMs),
+                                // share_file 共享的附件（结果消息上的元数据——与实时
+                                // toolResult 同一份形状，桌面端 historyBlocks 同语义）
+                                attachments = if (atts.isNotEmpty()) atts else t.attachments,
                             )
                         }
                     }
@@ -3387,10 +3442,14 @@ class RealBackend {
                 val i = childBlocks.indexOfFirst { it is ThreadBlock.Tool && it.id == id }
                 if (i >= 0) {
                     val t = childBlocks[i] as ThreadBlock.Tool
+                    val atts = parseAttachments(p.optJSONArray("attachments"))
                     childBlocks[i] = t.copy(
                         output = p.optString("content").take(4_000),
                         running = false,
                         isError = p.optBoolean("is_error"),
+                        // 子会话自己 share_file 的附件（子会话视图的工具行同样渲染附件条
+                        // ——与主会话 reducer 同一条口径）
+                        attachments = if (atts.isNotEmpty()) atts else t.attachments,
                     )
                 }
             }

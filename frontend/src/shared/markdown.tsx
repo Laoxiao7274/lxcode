@@ -9,7 +9,7 @@
 //
 // 性能纪律（对齐 blocks.tsx 的行级 memo）：块组件 memo 在序列化 src 上
 // （字符串 primitive 比较），打字期间只有增长的尾块重渲染。
-import { memo, type ReactNode } from "react";
+import { memo, useState, type ReactNode } from "react";
 
 // ---------- 描述符（纯数据，测试直接断言） ----------
 
@@ -206,9 +206,43 @@ export function Markdown({ text, keyPrefix = "" }: { text: string; keyPrefix?: s
   );
 }
 
-/** 代码围栏：去语言行，其余原样（.tool-result 终端风格，样式沿用）。 */
+/** 代码围栏：去语言行，其余原样（.tool-result 终端风格，样式沿用）。
+ *  hover 出现右上角复制按钮（终端卡同款写法：clipboard 可选链 + 短反馈）；
+ *  按钮独立 memo 子组件 + stopPropagation，CodeSeg 本体 memo 纪律不变
+ *  （text 变化才重渲，按钮显隐由 CSS :hover 承担）。 */
 const CodeSeg = memo(function CodeSeg({ text }: { text: string }) {
-  return <pre className="tool-result md-seg">{text.replace(/^\w*\n/, "")}</pre>;
+  return (
+    <pre className="tool-result md-seg md-codeseg">
+      <CodeCopyButton text={text.replace(/^\w*\n/, "")} />
+      {text.replace(/^\w*\n/, "")}
+    </pre>
+  );
+});
+
+const CodeCopyButton = memo(function CodeCopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  const onCopy = () => {
+    if (copied) return;
+    void navigator.clipboard?.writeText(text).then(() => {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1200);
+    });
+  };
+  return (
+    <button
+      type="button"
+      className="md-copy"
+      aria-label="复制代码"
+      onClick={(e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        onCopy();
+      }}
+      onMouseDown={(e) => e.stopPropagation()}
+    >
+      {copied ? "已复制" : "复制"}
+    </button>
+  );
 });
 
 const TextBlocks = memo(function TextBlocks({ text }: { text: string }) {

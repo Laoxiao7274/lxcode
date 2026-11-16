@@ -38,11 +38,13 @@ var assistantAgentDef = sessiondata.AgentDef{
 	// 是助手自改配置（2026-12 用户拍板：助手能自己改自己的性格/称呼——只写
 	// assistant.json，低危）；mcp_manage 是 MCP 服务器的查询/安装/修改/删除
 	//（2026-12 用户拍板：助手有 MCP 管理能力且知道自己有——add 默认自动绑定，
-	// 单工具高危确认门，auto 档放行）。
+	// 单工具高危确认门，auto 档放行）；share_file 是产物交付通道（2026-12
+	// 产物交付改造：助手 write_file 写进专属目录的文件只有它能渲染到对话——
+	// 低危只读，与只读面不冲突）。
 	Tools: []string{
 		"read_file", "search", "read_image", "bash_readonly",
 		"web_search", "web_fetch", "project_list", "session_search", "todo", "ask_user", "read_skill", "run_task",
-		"update_assistant_config", "mcp_manage",
+		"update_assistant_config", "mcp_manage", "share_file",
 	},
 	Delegates: []string{}, // 现读：st.ListAgents() ∩ 启用（assistantAgentResolver 现算）
 	Approval:  "auto",
@@ -145,7 +147,7 @@ func (r *assistantAgentResolver) resolveAssistant() *sessiondata.AgentContext {
 // 为空，追加与替换等价，但语义上 persona 是「补充设定」不是「重写职责边界」）。
 //
 // 工具白名单（2026-12 用户拍板：助手默认工具完全可配）按三段合成：
-//   - base = cfg.ToolWhitelist 非空 ? whitelist : 内置 14 项——whitelist 是
+//   - base = cfg.ToolWhitelist 非空 ? whitelist : 内置 15 项——whitelist 是
 //     **完整覆盖**（内置 bash/edit 也可勾入，用户担责）；whitelist 里悬空的
 //     id（配置声明了但工具已不在目录）按目录过滤掉，st 为 nil 不过滤（纯内存
 //     模式无从查，照常放行）；
