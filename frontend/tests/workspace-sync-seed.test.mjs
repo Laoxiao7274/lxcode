@@ -7,7 +7,7 @@
 // ——这条必须出现在工具说明里，模型读到工具结果时才不会把闸门当故障去绕过。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BUILTIN_TOOLS, seedAgents } from '../src/shared/agent-seeds.ts';
+import { BUILTIN_TOOLS, CONTEXT_MODULES, seedAgents } from '../src/shared/agent-seeds.ts';
 
 const toolOf = (id) => BUILTIN_TOOLS.find((t) => t.id === id);
 
@@ -100,4 +100,29 @@ test('仓库管理 Agent 的种子契约：工作区三件套 + auto + 进委派
   assert.match(rm.prompt, /丢用户的工作/, '回滚纪律要落到结尾（曾被发现被截断成「都可能」）');
   const main = seedAgents().find((a) => a.id === 'main');
   assert.ok(main.delegates.includes('repo-manager'), 'main 的委派名单应含 repo-manager');
+});
+
+// Ponytail 方法论迁到模板层（2026-12 用户拍板，与后端 agents_seeds.go 同款）：
+// coder/researcher/tester 的 workflow 绑模板 lazy-senior-dev（方法论是工作方式，
+// 可跨 Agent 复用；职责边界留在各自 prompt 里），模板条目三小节齐全。
+// 前端种子是后端种子的镜像（agents_seeds.go 头注声称两者对齐），这里钉住一致性。
+test('种子 workflow 绑 lazy-senior-dev，模板条目三小节齐全', () => {
+  const agents = seedAgents();
+  for (const id of ['coder', 'researcher', 'tester']) {
+    const a = agents.find((x) => x.id === id);
+    assert.ok(a, `种子里必须有 ${id}`);
+    assert.equal(a.workflow, 'lazy-senior-dev', `${id} 的 workflow 应绑 lazy-senior-dev`);
+    assert.doesNotMatch(a.prompt, /复用梯子|性价比爬梯子/, `${id} 的提示词不应再含方法论段（已迁到模板层）`);
+  }
+  const tmpl = CONTEXT_MODULES.find((m) => m.id === 'lazy-senior-dev');
+  assert.ok(tmpl, '种子模板 lazy-senior-dev 缺失（方法论迁移只做了一半）');
+  assert.equal(tmpl.kind, 'process');
+  assert.match(tmpl.body, /能不能改变结论/, '调研小节缺「每条线索先问它能不能改变结论」');
+  for (const need of ['## 工程实现', '## 调研', '## 测试']) {
+    assert.ok(tmpl.body.includes(need), `模板缺角色小节「${need}」`);
+  }
+  // 旧三条模板本体保留（与后端一致不删）。
+  for (const id of ['plan-execute-verify', 'research-first', 'minimal-change']) {
+    assert.ok(CONTEXT_MODULES.some((m) => m.id === id), `旧模板 ${id} 应保留`);
+  }
 });

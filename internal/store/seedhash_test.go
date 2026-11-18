@@ -47,6 +47,16 @@ func seedAgentOf(id string) sessiondata.AgentDef {
 	panic("种子里没有 " + id)
 }
 
+// seedModuleOf 按 id 取种子模块定义。
+func seedModuleOf(id string) sessiondata.ModuleSpec {
+	for _, m := range seedModules {
+		if m.ID == id {
+			return m
+		}
+	}
+	panic("种子里没有模块 " + id)
+}
+
 // TestSeedHashWrittenOnFreshDB：新库建库 → 每个种子 Agent 的 seed_hash 非空、
 // user_modified=0，且 hash 与当前种子定义一致。
 func TestSeedHashWrittenOnFreshDB(t *testing.T) {
@@ -213,5 +223,92 @@ func TestSeedHotUpdateToolWhitelist(t *testing.T) {
 		if !slices.Contains(tools, want) {
 			t.Fatalf("整条热更新后白名单应对齐当前 seed: got %v want 含 %v", tools, want)
 		}
+	}
+}
+
+// TestLazySeniorDevTemplateSeeded：方法论模板的播种——新库有、老库补、用户自建
+// 同名条目不碰（upsertSeedModule 的 custom=1 纪律）。
+func TestLazySeniorDevTemplateSeeded(t *testing.T) {
+	// 新库：模板在库、kind=process、custom=0
+	s := openAt(t, t.TempDir())
+	t.Cleanup(func() { _ = s.Close() })
+	var kind string
+	var custom int
+	if err := s.db.QueryRow(`SELECT kind, custom FROM modules WHERE id = 'lazy-senior-dev'`).Scan(&kind, &custom); err != nil {
+		t.Fatalf("新库应有种子模板 lazy-senior-dev: %v", err)
+	}
+	if kind != "process" {
+		t.Fatalf("lazy-senior-dev 应是 process: %s", kind)
+	}
+	if custom != 0 {
+		t.Fatalf("种子模板应为内置（custom=0）: %d", custom)
+	}
+
+	// 老库：模板缺失 → 重开库补上；用户自建同名（custom=1）→ 不碰
+	dir := t.TempDir()
+	s1 := openAt(t, dir)
+	if _, err := s1.db.Exec(`DELETE FROM modules WHERE id = 'lazy-senior-dev'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s1.db.Exec(`INSERT INTO modules (id, desc, kind, body, custom, created_at, updated_at)
+		VALUES ('lazy-senior-dev', '用户自建', 'skill', '用户自己的内容', 1, 't', 't')`); err != nil {
+		t.Fatal(err)
+	}
+	_ = s1.Close()
+
+	s2 := openAt(t, dir)
+	t.Cleanup(func() { _ = s2.Close() })
+	var desc, mkind, body string
+	var mcustom int
+	if err := s2.db.QueryRow(`SELECT desc, kind, body, custom FROM modules WHERE id = 'lazy-senior-dev'`).Scan(&desc, &mkind, &body, &mcustom); err != nil {
+		t.Fatalf("老库重开应有模板行: %v", err)
+	}
+	if mcustom != 1 || desc != "用户自建" || body != "用户自己的内容" {
+		t.Fatalf("用户自建的同名模块不得被种子覆盖: custom=%d desc=%q body=%q", mcustom, desc, body)
+	}
+}
+
+// TestSeedWorkflowSyncBindsTemplate：workflow 绑定的老库同步——新库三个种子绑定
+// lazy-senior-dev；老库 user_modified=0 的行随 hash 热更新整条对齐（workflow 列
+// 在 updateSeedAgentDef 的覆盖面里）；user_modified=1 的行 workflow 与 Prompt 均
+// 不动。
+func TestSeedWorkflowSyncBindsTemplate(t *testing.T) {
+	// 新库：三种子 workflow = lazy-senior-dev
+	s := openAt(t, t.TempDir())
+	t.Cleanup(func() { _ = s.Close() })
+	for _, id := range []string{"coder", "researcher", "tester"} {
+		if got := agentColOf(t, s, id, "workflow"); got != "lazy-senior-dev" {
+			t.Fatalf("新库 %s 的 workflow 应绑 lazy-senior-dev: %s", id, got)
+		}
+		if got := agentColOf(t, s, id, "prompt"); strings.Contains(got, "复用梯子") {
+			t.Fatalf("新库 %s 的 Prompt 不应再含方法论段: %s", id, got)
+		}
+	}
+
+	// 老库：user_modified=0 行 workflow 退回旧值 + Prompt 退回旧版 → 热更新整条跟上；
+	// user_modified=1 行不动
+	dir := t.TempDir()
+	s1 := openAt(t, dir)
+	if _, err := s1.db.Exec(`UPDATE agents SET workflow='minimal-change', prompt='旧版提示词', seed_hash='' WHERE id='coder'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s1.db.Exec(`UPDATE agents SET workflow='research-first', prompt='用户改过的提示词', user_modified=1, seed_hash='' WHERE id='researcher'`); err != nil {
+		t.Fatal(err)
+	}
+	_ = s1.Close()
+
+	s2 := openAt(t, dir)
+	t.Cleanup(func() { _ = s2.Close() })
+	if got := agentColOf(t, s2, "coder", "workflow"); got != "lazy-senior-dev" {
+		t.Fatalf("user_modified=0 的行 workflow 应随热更新对齐种子: %s", got)
+	}
+	if got := agentColOf(t, s2, "coder", "prompt"); got != seedAgentOf("coder").Prompt {
+		t.Fatalf("user_modified=0 的行 Prompt 应随热更新对齐种子: %q", got)
+	}
+	if got := agentColOf(t, s2, "researcher", "workflow"); got != "research-first" {
+		t.Fatalf("user_modified=1 的行 workflow 不得被碰: %s", got)
+	}
+	if got := agentColOf(t, s2, "researcher", "prompt"); got != "用户改过的提示词" {
+		t.Fatalf("user_modified=1 的行 Prompt 不得被碰: %q", got)
 	}
 }

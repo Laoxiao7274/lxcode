@@ -382,6 +382,18 @@ var seedModules = []sessiondata.ModuleSpec{
 		Body: "# shadcn/ui\n\n组件库工程与注册表。\n\n- 组件按 registry 分发，不整包引入\n- 主题走 CSS 变量，不 fork 组件改样式\n- 升级以 diff 合并，不锁定版本",
 	},
 	{
+		// lazy-senior-dev（2026-12 用户拍板）：Ponytail（lazy senior dev）方法论
+		// 从 coder/researcher/tester 三个种子的 Prompt 迁到模板层——方法论是
+		// 工作方式（可跨 Agent 复用），不是某个 Agent 的职责边界；职责边界
+		//（不跑测试/不改文件/不做调研）留在各种子 Prompt 里。三条纪律按角色
+		// 小节组织：绑定它的 Agent 各取自己角色的小节，其余小节是给其他角色
+		// 的（复用最大化 vs 上下文干净的折中——单值 workflow 列只能绑一个
+		// 模板，拆三条会让三个 Agent 都得绑满各自那条，实体多且不能混用）。
+		ID: "lazy-senior-dev", Kind: "process", Custom: false,
+		Desc: "懒惰高级工程师方法论——复用梯子、调研懒纪律、测试性价比爬梯子，按角色小节取用",
+		Body: "# lazy senior dev（懒惰高级工程师）\n\n方法论按角色取用：只读与自己角色对应的小节，其余小节是给其他角色的，忽略。\n\n## 工程实现（代码 Agent 的梯子）\n写代码前先爬复用梯子，取第一级完全够用的：\n- ①这功能真需要存在吗——没人要求的特性、选项、预留灵活性一律不加，跳过了什么用一句话点名；\n- ②代码库里已有同类实现（helper/组件/服务/模式）就按周边代码的用法直接复用；\n- ③标准库或平台能力优先于自写（项目自有组件优先于平台组件）；\n- ④已装依赖能解决就用，绝不为几行代码新增依赖；\n- ⑤一行能让读的人看懂就一行；等大的方案里，选边界情况处理正确的那一个；\n- ⑥都到头了才写最少能跑的代码。\n\n对方案要懒，对改动本身不能懒：任务波及的调用方、测试、配置、导出都要改到位。\n- 不做没人要求的抽象、包装、类型转换、兼容层或「以后用得上」的代码；删除优于新增；\n- 保持仓库既有分层、接口与惯例；最短的可工作 diff 胜出，但需要解读才能懂的一行不算短；\n- 修 bug 先 grep 被改函数的所有调用方，在共享代码里一次修到根因；\n- 移动或合并代码要保留原有的错误处理与校验；\n- 新写的非平凡逻辑（分支、循环、解析、涉及钱或安全）留下一个小测试文件（只是写，不执行——验证是测试 Agent 的职责）；\n- 留了捷径就加注释：`shortcut: <限制>, <何时升级>`。\n\n绝不砍：信任边界校验、防数据丢失的错误处理、安全、可访问性、用户明确要求的东西。\n\n回复结尾用一两行说明：跳过了什么、没验证什么、有什么风险。\n\n## 调研（调研 Agent 的纪律）\n调研要「懒」：用最少的检索拿到可用的结论。\n- ①先用已有信息——任务里给的材料、session_search 的历史结论，能回答就不重新查；\n- ②动手查之前先想清楚缺哪一条信息，一次查准，不做撒网式的大面积勘察；\n- ③每步检索要有明确目的，与结论无关的来源不打开、不追——每条线索先问它能不能改变结论；\n- ④宁可结论简短、把缺口写清楚，也不堆砌无关材料。\n\n回复结尾用一两行说明：哪些没查、还差什么信息。\n\n## 测试（测试 Agent 的梯子）\n测试按性价比爬梯子，先便宜后贵：\n- ①只测改动真正碰到的行为，不为没改的路径铺新用例；\n- ②风险高的逻辑（分支、循环、解析、涉及钱或安全）优先覆盖；\n- ③报告写清：测了什么、没测什么、剩余风险。",
+	},
+	{
 		// 合并进程的内置流程（merger 的 Workflow）：合并纪律是硬约束，不是可选项
 		//（不用 --force/-X 掩盖冲突、失败不谎报成功）。
 		ID: "merge-verify", Kind: "process", Custom: false,
@@ -409,9 +421,11 @@ var seedAgents = []sessiondata.AgentDef{
 		// 连编译都过不了就交出去，等于把最基本的收尾甩给下游。
 		ID: "coder", Name: "代码 Agent", Enabled: true, Color: "#3b82f6", Model: "",
 		Desc:     "写代码：新增功能、修 bug、重构与改配置（只改文件：测试交给测试 Agent、查资料交给调研 Agent），能把产物文件共享到对话、能读图片内容（视觉）。",
+		// 方法论（复用梯子等）已迁到模板 lazy-senior-dev（Workflow 绑定，见
+		// seedModules）——Prompt 只留职责边界与自检底线，不重复方法论。
 		Prompt:   "你是代码 Agent。改动前先读相关代码，遵守仓库规范；每步改动可解释、可回退。你只负责实现与重构，**不跑测试**——验证（跑构建与测试、补用例、验收）是测试 Agent 的职责，把改动与改动说明如实交回即可；也不需要做大面积资料勘察（那是调研 Agent 的活，任务里没给的信息直接说明缺口）。唯一的自检底线：改完确认代码能编译、无明显语法错误（如 go build / tsc 级别的编译检查），不要让连编译都过不了的代码流到下游。绝不执行 git push（含 --force）：推送只由用户经 workspace_sync 发起；lxcode 本体仓库的发版只走 scripts/push-release.mjs。",
 		Tools:    []string{"read_file", "search", "read_image", "edit", "write_file", "bash", "todo", "share_file"},
-		Workflow: "minimal-change", Skills: []string{"frontend-design", "gsap"},
+		Workflow: "lazy-senior-dev", Skills: []string{"frontend-design", "gsap"},
 		Delegates: []string{}, Approval: "auto",
 	},
 	{
@@ -437,7 +451,7 @@ var seedAgents = []sessiondata.AgentDef{
 		Desc:     "只读调研：检索代码、读文件、查数据库（db_query 只读查询 / bash_readonly：sqlite3 查询/git log/wc 等）、联网搜索与抓取网页正文、梳理跨文件脉络，只给结论与出处，不改任何文件。",
 		Prompt:   "你是调研 Agent。只做检索与信息整理，**不修改任何文件、不执行构建测试、不提交推送**。\n\n职责边界：\n- 结论必须带依据：文件路径 + 行号、命令输出或文档链接；查不到就如实说「未找到」，不编造也不推测。\n- 查 SQLite 数据库优先用 db_query（只读连接，单条 SELECT/EXPLAIN/WITH；写操作被驱动层拒绝）——不要经 bash 拼 sqlite3 命令行。\n- bash_readonly 是兜底执行面，优先用专用检索/读文件工具（ripgrep/read_file/db_query）；留给它们覆盖不了的场景：git log/diff/status、wc/du 统计、管道组合、jq 等。写操作（rm/mv/重定向/git commit/git push/包管理/解释器脚本）会被工具直接拒绝。\n- 被拒绝时不要绕过：把「需要什么改动」写进结论，交回主 Agent 派给代码 Agent（coder）或测试 Agent（tester）。",
 		Tools:    []string{"read_file", "search", "session_search", "ripgrep", "web_search", "web_fetch", "bash_readonly", "db_query"},
-		Workflow: "research-first", Skills: []string{},
+		Workflow: "lazy-senior-dev", Skills: []string{},
 		Delegates: []string{}, Approval: "auto",
 	},
 	{
@@ -450,7 +464,7 @@ var seedAgents = []sessiondata.AgentDef{
 		Desc:     "验证与测试：跑构建与测试（代码 Agent 交回的改动由你验收）、按验收标准补用例，如实回传失败与复现命令（不改实现；查资料交给调研 Agent），能把产物文件共享到对话、能读图片内容（视觉）。",
 		Prompt:   "你是测试 Agent，负责验证与测试（代码 Agent 只写代码、不跑测试，改动交回后由你跑构建与测试验收）。跑构建与测试，断言行为与契约而不是实现细节；失败如实回传（关键输出 + 复现命令）。绝不为了让测试变绿而删除、跳过或弱化断言——测试与实现冲突时先判断谁对：实现错了改实现，需求变了先改方案；改实现超出「补用例/修测试」的范围时，如实交回主 Agent 派给代码 Agent，不自己重写功能。只读调研（查资料、查历史、梳理跨文件脉络）也不是你的活，派给调研 Agent。绝不执行 git push（含 --force）：推送只由用户经 workspace_sync 发起。",
 		Tools:    []string{"read_file", "search", "read_image", "edit", "write_file", "bash", "todo", "share_file"},
-		Workflow: "plan-execute-verify", Skills: []string{},
+		Workflow: "lazy-senior-dev", Skills: []string{},
 		Delegates: []string{}, Approval: "auto",
 	},
 	{

@@ -887,3 +887,64 @@ func TestSeedToolDescriptionsGuideToolChoice(t *testing.T) {
 		t.Errorf("researcher 提示词的 bash_readonly 句应改为兜底定位: %q", prompt)
 	}
 }
+
+// TestPonytailMethodologyTemplate（2026-12 方法论迁移复核）：Ponytail 方法论已
+// 从 coder/researcher/tester 三个种子的 Prompt 迁到模板 lazy-senior-dev（模板层
+// 可跨 Agent 复用），锚词随之挪到模板——种子 Prompt 是单行常量，模板 Body 同样
+// 是单行常量，改动容易在重排时被无声丢掉，钉住关键锚词让「文案回退」当场报错。
+func TestPonytailMethodologyTemplate(t *testing.T) {
+	// ① 模板本体在种子里且关键锚词在位（复用梯子 / 等大方案 / 分支判据 / 梯子首条）
+	var tmpl *sessiondata.ModuleSpec
+	for i := range seedModules {
+		if seedModules[i].ID == "lazy-senior-dev" {
+			tmpl = &seedModules[i]
+		}
+	}
+	if tmpl == nil {
+		t.Fatal("种子模板 lazy-senior-dev 缺失（方法论迁移只做了一半）")
+	}
+	if tmpl.Kind != "process" {
+		t.Errorf("lazy-senior-dev 应是 process 模板: %s", tmpl.Kind)
+	}
+	body := tmpl.Body
+	// coder 段：复用梯子 + 「等大的方案」这条（Ponytail 第 7 条）
+	if !strings.Contains(body, "复用梯子") {
+		t.Errorf("模板应保留「复用梯子」: %s", body)
+	}
+	if !strings.Contains(body, "等大的方案") {
+		t.Errorf("模板应包含「等大的方案」这条梯子: %s", body)
+	}
+	// researcher 段：分支线索判据（原 TestResearcherSeedBranchDiscipline 的锚词）
+	if !strings.Contains(body, "能不能改变结论") {
+		t.Errorf("模板应包含分支线索判据「能不能改变结论」: %s", body)
+	}
+	// tester 段：梯子删①后新首条在位
+	if !strings.Contains(body, "①只测改动真正碰到的行为") {
+		t.Errorf("tester 段梯子应以「只测改动真正碰到的行为」为首条: %s", body)
+	}
+	// ② 旧文案不应残留在任何种子 Agent 的 Prompt 里（残留 = 回退只做了一半）
+	for _, a := range seedAgents {
+		if strings.Contains(a.Prompt, "先做针对性检查（单个用例、单个文件、静态检查）") {
+			t.Errorf("种子 %s 的提示词仍含旧①文案（与全局守则第 10 条重复，已删）: %s", a.ID, a.Prompt)
+		}
+		for _, banned := range []string{"复用梯子", "爬梯子", "能不能改变结论"} {
+			if strings.Contains(a.Prompt, banned) {
+				t.Errorf("种子 %s 的提示词不应再含方法论段（已迁到模板 lazy-senior-dev）: %q", a.ID, a.Prompt)
+			}
+		}
+	}
+	// ③ 三个种子的 workflow 都绑到新模板
+	for _, id := range []string{"coder", "researcher", "tester"} {
+		if got := seedAgentOf(id).Workflow; got != "lazy-senior-dev" {
+			t.Errorf("种子 %s 应绑定 lazy-senior-dev: %s", id, got)
+		}
+	}
+}
+
+// TestResearcherSeedBranchDiscipline：调研 Agent 的「分支线索」条要有判据——
+// 「果断放下」是口号不是判据，改动后的锚词是「先问它能不能改变结论」。
+func TestResearcherSeedBranchDiscipline(t *testing.T) {
+	if got := seedModuleOf("lazy-senior-dev").Body; !strings.Contains(got, "能不能改变结论") {
+		t.Errorf("方法论模板应含分支线索判据「能不能改变结论」: %s", got)
+	}
+}

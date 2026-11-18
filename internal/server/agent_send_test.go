@@ -35,7 +35,7 @@ func TestChatSendWithAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 直选 coder（种子子 Agent，workflow=minimal-change，skills=frontend-design/gsap）
+	// 直选 coder（种子子 Agent，workflow=lazy-senior-dev，skills=frontend-design/gsap）
 	resp := client.call(protocol.MethodChatSend, protocol.ChatSendParams{Text: "干活", Agent: "coder"})
 	if resp == nil || resp.Error != nil {
 		t.Fatalf("chat.send 带 agent 失败: %+v", resp)
@@ -44,8 +44,14 @@ func TestChatSendWithAgent(t *testing.T) {
 	if !strings.Contains(gotPrompt, "你是执行 Agent") {
 		t.Fatal("应走子 Agent 执行协议（四层组合）")
 	}
-	if !strings.Contains(gotPrompt, "最小改动") {
-		t.Fatal("workflow 模块（minimal-change）应注入提示词")
+	if !strings.Contains(gotPrompt, "lazy senior dev") || !strings.Contains(gotPrompt, "复用梯子") {
+		t.Fatal("workflow 模块（lazy-senior-dev）的 Body 全文应注入提示词")
+	}
+	// Prompt 回退后的边界：方法论整体走模板（经 Workflow 注入），Prompt 只留职责
+	// 边界——判据用 Prompt 独有的开头句与职责边界句，而不是方法论子句
+	//（模板 Body 里同样有「对方案要懒」这类子句，不能拿它们区分来源）。
+	if !strings.Contains(gotPrompt, "你是代码 Agent。改动前先读相关代码") {
+		t.Fatal("coder 的职责边界段应保留在提示词里")
 	}
 	if !strings.Contains(gotPrompt, "前端视觉设计") || !strings.Contains(gotPrompt, "GSAP") {
 		t.Fatal("skills 模块应注入提示词")

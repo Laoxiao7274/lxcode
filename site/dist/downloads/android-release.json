@@ -1,11 +1,14 @@
 {
-  "version": "0.3.56",
-  "versionCode": 57,
-  "name": "lxcode-0.3.56-android.apk",
+  "version": "0.3.57",
+  "versionCode": 58,
+  "name": "lxcode-0.3.57-android.apk",
   "size": 12043592,
-  "sha256": "5f7c1dc7b4d03ad4bf5d5388f4ccd188c841ccb6764053765e9dfa2c54e72c65",
-  "url": "downloads/lxcode-0.3.56-android.apk",
+  "sha256": "ef7cbc90f3d65cb8663b3586ec228a9361e1ab58177a7e93fa8dd925e44d95e5",
+  "url": "downloads/lxcode-0.3.57-android.apk",
   "notes": [
-    "修复手机端助手会话离开App后回来不显示最新进度的问题（重连后自动恢复最新状态）"
+    "对话里代码块可一键复制；助手支持发文件、粘贴图片、拖拽文件",
+    "手机端可查看并下载 Agent 共享的图片与文件",
+    "投屏稳定性修复：熔断判定、多显示器控制落点、清晰度保持、断线恢复、丢帧策略",
+    "投屏失败提示真实原因，不再误导重装 ffmpeg"
   ]
 }
