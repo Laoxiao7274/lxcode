@@ -12,6 +12,7 @@ import {
   filesBadge,
   flattenTree,
   latestSeq,
+  markRunningRounds,
   onBranchBadge,
   truncationNote,
   userSeqUid,
@@ -162,4 +163,42 @@ test('seq → uid 只收 user 块（dispatch/assistant 块没有 seq）', () => 
   ];
   const map = userSeqUid(blocks);
   assert.deepEqual([...map.entries()], [[1, 11], [2, 13]]);
+});
+
+// ---------- 8. 运行指示（markRunningRounds，2026-12） ----------
+
+test('markRunningRounds：本轮有 running 派发（busy）→ 该 user 行标 running', () => {
+  const rows = flattenTree({
+    leafSeq: 2, total: 2,
+    nodes: [node(1, 0, 'user', { turn: 1 }), node(2, 1, 'user', { turn: 2 })],
+  });
+  const blocks = [
+    { kind: 'user', uid: 11, text: 'a', seq: 1 },
+    // 第一轮的派发：running（busy）+ done 各一
+    { kind: 'dispatch', uid: 12, id: 'd1', status: 'running' },
+    { kind: 'dispatch', uid: 13, id: 'd2', status: 'done' },
+    { kind: 'user', uid: 14, text: 'b', seq: 2 },
+    // 第二轮的派发：结束了的（不标）
+    { kind: 'dispatch', uid: 15, id: 'd3', status: 'done' },
+  ];
+  const marked = markRunningRounds(rows, blocks, { d1: true, d2: false, d3: false });
+  assert.equal(marked.find((r) => r.seq === 1).running, true, '第一轮有 busy 派发 → running');
+  assert.equal(marked.find((r) => r.seq === 2).running, undefined, '第二轮派发已结束 → 不标');
+  assert.equal(rows.find((r) => r.seq === 1).running, undefined, '不改入参行（返回新数组）');
+});
+
+test('markRunningRounds：dispatchBusy 空/undefined → 原数组引用（不击穿面板 memo）', () => {
+  const rows = [{ seq: 1, parentSeq: 0, kind: 'user', label: 'a', userSeq: 1, children: 0, onPath: true, isLeaf: true, files: 0, childFiles: 0, external: 0, orphan: false, onBranch: false }];
+  assert.equal(markRunningRounds(rows, [], undefined), rows, 'undefined → 原引用');
+  assert.equal(markRunningRounds(rows, [], {}), rows, '空表 → 原引用');
+});
+
+test('markRunningRounds：dispatch 块在第一条 user 之前（round=-1）不误标', () => {
+  const rows = flattenTree({ leafSeq: 1, total: 1, nodes: [node(1, 0, 'user', { turn: 1 })] });
+  const blocks = [
+    { kind: 'dispatch', uid: 10, id: 'd0', status: 'running' },
+    { kind: 'user', uid: 11, text: 'a', seq: 1 },
+  ];
+  const marked = markRunningRounds(rows, blocks, { d0: true });
+  assert.equal(marked.find((r) => r.seq === 1).running, undefined, '无归属的派发不标到任何轮');
 });

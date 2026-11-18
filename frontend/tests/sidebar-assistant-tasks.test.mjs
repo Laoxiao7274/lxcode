@@ -74,8 +74,8 @@ const appSrc = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
 const wsSrc = readFileSync(new URL('../src/components/assistant/AssistantWorkspace.tsx', import.meta.url), 'utf8');
 const prefSrc = readFileSync(new URL('../src/components/assistant/assistant-child-pref.ts', import.meta.url), 'utf8');
 
-test('② Sidebar：小节数据源 = source.assistant.tasks(filter)，行点击/Enter 交给 onOpenAssistantChild', () => {
-  assert.match(sidebarSrc, /assistant\.tasks\(filter\)/, '数据源是 assistant 域的 tasks（assistant.* 寻址，不接 chat.*）');
+test('② Sidebar：小节数据源 = source.assistant.tasks(filter)（经 asstFetch），行点击/Enter 交给 onOpenAssistantChild', () => {
+  assert.match(sidebarSrc, /assistant\?\.tasks\(projectId\)/, '数据源是 assistant 域的 tasks（assistant.* 寻址，不接 chat.*）');
   // 行点击与键盘都走 onOpenAssistantChild（跨模式跳转的唯一收口）
   assert.match(sidebarSrc, /onClick=\{\(\) => onOpenAssistantChild\(t\.id\)\}/);
   assert.match(sidebarSrc, /onOpenAssistantChild\(t\.id\); \}/, 'Enter/Space 同一收口');
@@ -86,6 +86,32 @@ test('② Sidebar：小节数据源 = source.assistant.tasks(filter)，行点击
   assert.ok(!/resumeSession|loadHistory|childHistory/.test(seg), '小节行不接历史装载（域纪律）');
   // 未分组不拉取（LOOSE 分支显式清空）
   assert.match(sidebarSrc, /filter === LOOSE \|\| filter === ""/, '未分组不拉 assistant.tasks');
+});
+
+// 位置上移（2026-12 拍板）：小节在「未分组」行**之前**（项目分组列表之后、
+// 未分组之上）——不用滚到侧栏底部就能看到助手派的任务。
+test('② 助手小节位置：项目分组列表之后、未分组行之上', () => {
+  const projScroll = sidebarSrc.indexOf('className="proj-scroll"');
+  const asst = sidebarSrc.indexOf('assistantTasks.length > 0');
+  const loose = sidebarSrc.indexOf('className={"proj-row loose"');
+  assert.ok(projScroll >= 0 && asst > projScroll, '助手小节在项目滚动区之后（不再贴底）');
+  assert.ok(loose > asst, '助手小节在未分组行之前');
+});
+
+// 实时刷新（2026-12 拍板）：订阅派发事件重拉 assistant.tasks（防轰炸 = 在途
+// 合并 + debounce），主域事件（无 space 标记）不触发。
+test('② 实时刷新：assistant.dispatchStart/End（space 标记）到达 → 重拉 assistant.tasks', () => {
+  assert.match(sidebarSrc, /ev\.type !== "dispatchStart" && ev\.type !== "dispatchEnd"/, '只认派发事件');
+  assert.match(sidebarSrc, /space !== "assistant"/, '主域派发不触发（助手域事件带 space 标记才重拉）');
+  assert.match(sidebarSrc, /inFlight/, '在途守卫（有一发未回来不重入——防轰炸）');
+  assert.match(sidebarSrc, /setTimeout/, 'debounce 合并（任务空窗内最多一次拉取）');
+});
+
+// 运行指示（2026-12 拍板）：running 行补 s-dot live 呼吸蓝点——与主域会话行
+// 的 busy 态同款视觉（s-dot live + spinner，不发明新视觉）。
+test('② 运行指示：t.running 行 = s-dot live + mset-spinner（与主域会话行一致）', () => {
+  assert.match(sidebarSrc, /\{t\.running && <span className="s-dot live" aria-hidden \/>}/, 'running 时行首补 s-dot live');
+  assert.match(sidebarSrc, /\{t\.running && <span className="mset-spinner session-spinner" aria-hidden \/>}/, 'running 时标题旁 spinner');
 });
 
 test('② 小节标题缩短为「助手」+ 行首来源徽标 assistant-src-pill（2026-12 侧栏区分 + ④整齐化）', () => {
@@ -124,8 +150,7 @@ test('② App：renderView 有 astchild 分支（AssistantChildPage + 返回头�
   assert.match(mainSeg, /<ChildSessionPage/, '主域 child:<id> 仍渲染 ChildSessionPage');
 });
 
-test('② App：astchild 裁决走助手域口（useAssistantConfirm），不接主域 chat.confirm', () => {
-  // 串域实害防御：astchild 视图渲染点附近的 onConfirm 必须来自 useAssistantConfirm。
+test('② App：astchild 裁决走助手域口（useAssistantConfirm），不接主域 chat.confirm', () => {  // 串域实害防御：astchild 视图渲染点附近的 onConfirm 必须来自 useAssistantConfirm。
   assert.match(appSrc, /useAssistantConfirm\(\{[\s\S]*?assistantStates[\s\S]*?resolveAssistant/, 'App 挂 useAssistantConfirm（数据源 assistantStates）');
   const astSeg = appSrc.slice(appSrc.indexOf('astChildSession(activeView)')).slice(0, appSrc.slice(appSrc.indexOf('astChildSession(activeView)')).indexOf('ChildSessionPage'));
   assert.ok(!/handleChildConfirm/.test(astSeg), 'astchild 分支不接主域 handleChildConfirm（chat.confirm 串域）');

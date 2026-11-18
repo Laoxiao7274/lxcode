@@ -34,7 +34,9 @@ var assistantAgentDef = sessiondata.AgentDef{
 	// bash（改动必须经 run_task 派进项目）。ask_user 在冲突抉择时向用户提问；
 	// todo 是会话级清单；ssh_hosts 不默认给（远程执行要显式勾选）；
 	// project_list 是项目全景查询（「我有哪些项目」的直接答案权 + run_task
-	// 的 project_id 来源，2026-12 助手项目全景三件套）；update_assistant_config
+	// 的 project_id 来源，2026-12 助手项目全景三件套）；project_create 是项目
+	// 创建（三件套之三：mkdir + git init + 注册，ConfirmForced 硬闸——auto 档
+	// 也弹确认门）；update_assistant_config
 	// 是助手自改配置（2026-12 用户拍板：助手能自己改自己的性格/称呼——只写
 	// assistant.json，低危）；mcp_manage 是 MCP 服务器的查询/安装/修改/删除
 	//（2026-12 用户拍板：助手有 MCP 管理能力且知道自己有——add 默认自动绑定，
@@ -43,7 +45,7 @@ var assistantAgentDef = sessiondata.AgentDef{
 	// 低危只读，与只读面不冲突）。
 	Tools: []string{
 		"read_file", "search", "read_image", "bash_readonly",
-		"web_search", "web_fetch", "project_list", "session_search", "todo", "ask_user", "read_skill", "run_task",
+		"web_search", "web_fetch", "project_list", "project_create", "session_search", "todo", "ask_user", "read_skill", "run_task",
 		"update_assistant_config", "mcp_manage", "share_file",
 	},
 	Delegates: []string{}, // 现读：st.ListAgents() ∩ 启用（assistantAgentResolver 现算）

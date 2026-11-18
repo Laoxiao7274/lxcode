@@ -216,6 +216,7 @@ var systemPromptTools = map[string]string{
 	tools.DispatchToolName:          tools.DispatchToolName + "：把任务派给名单中的子 Agent（任务的完整执行在子上下文里，结果回传验收），低危自动执行",
 	tools.RunTaskToolName:           tools.RunTaskToolName + "：把项目任务派进指定项目执行（project_id 必须用户明确指到；子会话在项目里跑，结论回传），低危自动执行",
 	tools.ProjectListToolName:       tools.ProjectListToolName + "：列出用户的全部项目（id/路径/会话数/最近活动/运行中），用户问「我有哪些项目」时先用它，run_task 的 project_id 从这里取，低危自动执行",
+	tools.ProjectCreateToolName:     tools.ProjectCreateToolName + "：在指定父目录下新建项目文件夹（mkdir + git init + 注册进项目列表），用户说「在 xxx 下建一个 yyy 项目」时用它，高危——执行前用户会收到确认提示（auto 档也弹）",
 	tools.MergeRequestToolName:      "merge_request：（遗留）合并流程已退役，调用只会得到说明——提交/推送用 workspace_sync，回滚用 workspace_rollback",
 	tools.WorkspaceStatusToolName:   "workspace_status：查询项目工作区状态（主检出的未提交改动、遗留会话分支），低危自动执行",
 	tools.WorkspaceSyncToolName:     "workspace_sync：提交主检出的改动到当前分支，可选拼直接推送远程，中危——执行前用户会收到确认提示",

@@ -13,6 +13,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"github.com/gorilla/websocket"
 	"log"
 	"net/http"
@@ -424,6 +426,47 @@ func (s *Server) AttachSessionStore(st *store.Store) error {
 			}
 		}
 		return stats, nil
+	})
+	// project_create（助手项目全景三件套之三，2026-12）：与 SetProjectList 同款
+	// 注入模式。执行链 = parent 校验（project.ValidateDirectory）→ 目标不存在或
+	// 为空目录 → os.MkdirAll → project.EnsureRepo → st.AddProject → 广播
+	// project.changed（前端 project.changed 副作用自动重拉列表，零前端改动）。
+	// name 的安全校验（禁路径分隔符/..）在工具层（validateProjectName）——注入
+	// 实现收到的 name 视为已过闸，但仍不信任：拼路径后统一用 filepath 清洗。
+	s.treg.SetProjectCreate(func(ctx context.Context, name, parent string) (tools.ProjectCreateResult, error) {
+		absParent, err := project.ValidateDirectory(parent)
+		if err != nil {
+			return tools.ProjectCreateResult{}, fmt.Errorf("父目录不可用: %w", err)
+		}
+		target := filepath.Join(absParent, filepath.Clean(name))
+		if info, err := os.Stat(target); err == nil {
+			if !info.IsDir() {
+				return tools.ProjectCreateResult{}, fmt.Errorf("目标路径已存在且不是文件夹: %s", target)
+			}
+			entries, err := os.ReadDir(target)
+			if err != nil {
+				return tools.ProjectCreateResult{}, err
+			}
+			if len(entries) > 0 {
+				return tools.ProjectCreateResult{}, fmt.Errorf(
+					"目标目录已存在且非空（%d 个条目）——只在空目录或不存在的路径上创建", len(entries))
+			}
+		} else if !os.IsNotExist(err) {
+			return tools.ProjectCreateResult{}, err
+		}
+		if err := os.MkdirAll(target, 0o755); err != nil {
+			return tools.ProjectCreateResult{}, fmt.Errorf("创建目录失败: %w", err)
+		}
+		if err := project.EnsureRepo(target); err != nil {
+			return tools.ProjectCreateResult{}, err
+		}
+		meta, err := st.AddProject(name, target)
+		if err != nil {
+			return tools.ProjectCreateResult{}, err
+		}
+		// 与 project.add 同一条广播（前端零改动自动重拉列表）。
+		s.broadcast(protocol.EventProjectChanged, map[string]any{})
+		return tools.ProjectCreateResult{ID: meta.ID, Name: meta.Name, Path: meta.Path}, nil
 	})
 	// 工作区三件套（workspace_status / workspace_sync / workspace_rollback）的
 	// server 侧实现：与 SetSessionSearch 同款注入模式（tools 是叶子包不 import

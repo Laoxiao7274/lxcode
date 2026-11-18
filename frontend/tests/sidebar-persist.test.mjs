@@ -159,12 +159,12 @@ test('④ Sidebar：两节折叠头接线——section-toggle 钮 + collapsed �
   assert.ok(!groupHead.includes('\n        对话\n'), '不再叫「对话」');
 });
 
-test('④ CSS：分节开关钮 + 高度分配（项目区 0 1 auto / 55% 封顶，会话区 flex:1 为主）', () => {
+test('④ CSS：分节开关钮 + 高度分配（项目区 0 1 auto / min(240px,40%) 封顶，会话区 flex:1 为主）', () => {
   const toggle = rule(sidebarCss, '.section-toggle {');
   assert.ok(toggle?.includes('cursor: pointer'), toggle ?? '缺失');
   const proj = rule(sidebarCss, '.proj-scroll {');
   assert.ok(proj?.includes('flex: 0 1 auto'), '项目区内容自适应可压缩: ' + (proj ?? ''));
-  assert.ok(proj?.includes('max-height: 55%'), '项目区封顶放宽到 55%: ' + (proj ?? ''));
+  assert.ok(proj?.includes('max-height: min(240px, 40%)'), '项目区封顶收紧（240px/40%），超出内部滚动: ' + (proj ?? ''));
   const sess = rule(sidebarCss, '.sess-scroll {');
   assert.ok(sess?.includes('flex: 1 1 0'), '会话区恒吃剩余空间（对话优先）: ' + (sess ?? ''));
   // 徽标行首：min-width 定宽对齐

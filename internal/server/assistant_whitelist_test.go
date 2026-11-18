@@ -60,7 +60,7 @@ func TestWhitelistOverrides(t *testing.T) {
 		t.Fatalf("whitelist 应完整覆盖（悬空 id 过滤）: got %v want %v", ac.Def.Tools, want)
 	}
 	// 常量本体不被写坏。
-	if len(assistantAgentDef.Tools) != 15 {
+	if len(assistantAgentDef.Tools) != 16 {
 		t.Fatalf("内置常量 Tools 不该被写坏: %v", assistantAgentDef.Tools)
 	}
 }
@@ -155,7 +155,7 @@ func TestSetWhitelistAcceptsBuiltin(t *testing.T) {
 	if !slices.Equal(res.ToolWhitelist, []string{"bash", "read_file"}) {
 		t.Fatalf("应答应回带 toolWhitelist: %+v", res)
 	}
-	if len(res.BuiltinDefaults) != 15 {
+	if len(res.BuiltinDefaults) != 16 {
 		t.Fatalf("应答应带 builtinDefaults（内置默认事实源）: %v", res.BuiltinDefaults)
 	}
 	if a := config.LoadAssistant(path); !slices.Equal(a.ToolWhitelist, []string{"bash", "read_file"}) {
@@ -186,7 +186,7 @@ func TestSetWhitelistAcceptsBuiltin(t *testing.T) {
 
 	// ④ get 应答带 builtinDefaults。
 	res = decode[protocol.AssistantConfigResult](t, client.call(protocol.MethodAssistantConfigGet, map[string]any{}).Result)
-	if len(res.BuiltinDefaults) != 15 || res.BuiltinDefaults[0] != "read_file" {
+	if len(res.BuiltinDefaults) != 16 || res.BuiltinDefaults[0] != "read_file" {
 		t.Fatalf("get 应答应带 builtinDefaults: %v", res.BuiltinDefaults)
 	}
 }

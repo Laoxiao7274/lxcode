@@ -142,6 +142,15 @@ test('CSS：.sidebar 整列不滚动（overflow:hidden），滚动职责下沉�
   assert.ok(sess?.includes('overflow-y: auto') && sess.includes('min-height: 0'), sess ?? '');
 });
 
+test('CSS：项目区有高度上限（不随项目数量撑满整栏，超出内部滚动）', () => {
+  const proj = rule(sidebarCss, '.proj-scroll {');
+  // 封顶必须收紧：max-height 存在（min() 双约束 = 小窗口按比例、常规窗口定值），
+  // 且不再是 55% 这种「内容多时占侧栏大半」的宽松值。
+  assert.ok(proj?.includes('max-height: min(240px, 40%)'),
+    '项目区必须有紧的 max-height 封顶: ' + (proj ?? ''));
+  assert.ok(!proj.includes('55%'), '不许回退到 55% 宽松封顶: ' + proj);
+});
+
 test('CSS：固定区（导航/搜索/设置入口）flex:none——不在滚动容器内也不被压缩', () => {
   const fixed = rule(sidebarCss, '.nav-list,\n.sidebar-pad,\n.sidebar-footer {');
   assert.ok(fixed?.includes('flex: none'), '三个固定区必须一起 flex:none: ' + (fixed ?? '缺失'));

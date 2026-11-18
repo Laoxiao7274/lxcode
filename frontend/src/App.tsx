@@ -35,7 +35,7 @@ import { Button } from "./components/form";
 // 那两个组件与它们的测试仍在（回退用），只是不再挂载。
 import { TurnPanel } from "./components/panels/TurnPanel";
 import { SessionTreePanel } from "./components/panels/SessionTreePanel";
-import { truncationNote, type TreeRow } from "./components/panels/tree-model";
+import { markRunningRounds, truncationNote, type TreeRow } from "./components/panels/tree-model";
 import { ChildSessionPage } from "./components/panels/ChildSessionPage";
 import { AssistantWorkspace } from "./components/assistant/AssistantWorkspace";
 import { AssistantChildPage } from "./components/assistant/AssistantChildPage";
@@ -116,7 +116,7 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
   /** 右侧「已发送消息」大纲的开合：**纯 UI 状态**（不进会话历史、不落库、切会话不
    *  清——它只是当前窗口的查看方式）。 */
   const [outlineOpen, setOutlineOpen] = useState(true);
-  const { state, sessionStates, assistantStates, childParents, sendQueues, send, resolve, resolveAssistant, operationErrors, clearError, reportError, enqueueSend, removeQueuedSend, moveQueuedToFront } = useAgent(source, {
+  const { state, sessionStates, assistantStates, childParents, dispatchChild, sendQueues, send, resolve, resolveAssistant, operationErrors, clearError, reportError, enqueueSend, removeQueuedSend, moveQueuedToFront } = useAgent(source, {
     onAutoSend: (sessionId, text, atts) => autoSendBridgeRef.current(sessionId, text, atts),
     onSendFailed: (sessionId, atts) => onSendFailedBridgeRef.current(sessionId, atts),
   });
@@ -159,6 +159,9 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
   // 数组的代价因此按「流式块变化」而不是按帧计（每帧仍会新建一个短数组，
   // 但不再影响渲染路径；见下面的 useMemo 依赖）。
   const timeline = useMemo(() => timelineOf(state), [state.blocks, state.streaming]);
+  // 会话树面板的「运行中」指示（2026-12 拍板）：树行只回 user 节点，派发的
+  // running 态挂在 dispatch 块上——把「dispatch id → 子会话 id」映射喂给面板，
+  // 子会话 state.busy（与 busyBySession 同一数据源）就是行上的 spinner 依据。
   const [switching, setSwitching] = useState(false);
   const prevFocusedRef = useRef(currentId);
   useEffect(() => {
@@ -376,6 +379,35 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
   // 不报错、不空屏：AGENTS.md §5 坑 11「老后端 + 新前端不许炸」）。
   const sessionTree = useSessionTree({ source, sessionId: currentId });
   const treeTruncation = useMemo(() => truncationNote(sessionTree.tree), [sessionTree.tree]);
+
+  /** dispatch id → 该子会话此刻是否在跑（2026-12 拍板：会话树面板的运行指示）。
+   *
+   *  数据源与既有 busy 完全同源：dispatchChild（store 维护的 dispatch id → 子会话
+   *  id 映射）+ sessionStates[子会话].busy——不新增请求。记忆化按「映射键 + busy
+   *  位」的签名：派发进行中 sessionStates 每帧换引用（流式 delta），但 busy 位
+   *  不变的帧返回同一份对象（与 busyBySession 的签名纪律同款——不然每帧新建
+   *  会击穿 SessionTreePanel 的 memo）。 */
+  const dispatchBusySignature = useMemo(
+    () => Object.entries(dispatchChild).map(([did, cid]) => `${did}:${sessionStates[cid]?.busy ? 1 : 0}`).join("|"),
+    [dispatchChild, sessionStates],
+  );
+  const dispatchBusy = useMemo(
+    () => {
+      const out: Record<string, boolean> = {};
+      for (const [did, cid] of Object.entries(dispatchChild)) {
+        out[did] = sessionStates[cid]?.busy ?? false;
+      }
+      return out;
+    },
+    [dispatchChild, dispatchBusySignature], // eslint-disable-line react-hooks/exhaustive-deps
+  );
+  /** 树行 + 运行指示（markRunningRounds 的接线点）：给「这一轮有子任务在跑」
+   *  的 user 行标 running——面板按它补 spinner。空 busy 表时纯函数恒返回原数组
+   *  引用（不击穿面板 memo）。 */
+  const treeRows = useMemo(
+    () => markRunningRounds(sessionTree.rows, timeline, dispatchBusy),
+    [sessionTree.rows, timeline, dispatchBusy],
+  );
 
   /** 树行的单击：**跳转**（在别的分支上则先切过去再跳——纯滚动跳转在别分支上是
    *  静默 no-op，比报错更坏，见 docs §D.5）。
@@ -600,7 +632,7 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
              *  跳转复用同一个 handleOutlineJump（扩窗 + 滚 + 高亮都在 Thread 里，面板不碰 DOM）。 */}
             {outlineOpen && sessionTree.tree !== null && (
               <SessionTreePanel
-                rows={sessionTree.rows}
+                rows={treeRows}
                 activeSeq={activeSeq}
                 onJump={handleTreeJump}
                 onLoadAll={() => { void sessionTree.refresh({ loadAll: true }); }}

@@ -179,9 +179,9 @@ func newBashDef(r *Registry, readOnly bool) *Def {
 		Risk:    riskOf(readOnly),
 		Mutates: !readOnly,
 		// ConfirmForced：机制保留（Def.ConfirmForced / Registry.ConfirmForced /
-		// HighRiskBashCommand 判定全在）——但 runTools 当前**不消费**它：
-		// auto = 完全无确认（2026-10 用户拍板，高危命令模式也不弹门）。将来若
-		// 设计「auto 但高危仍确认」类新档位，直接接回此回调即可，回滚零成本。
+		// HighRiskBashCommand 判定全在）——runTools 在 auto 档消费它（2026-12
+		// 起：project_create 是第一个消费者）。bash 的高危命令模式是否在 auto 档
+		// 弹门，仍是 2026-10 拍板的「不弹」——将来若改主意，接回此回调即可。
 		ConfirmForced: func(ctx context.Context, args json.RawMessage) string {
 			if readOnly {
 				return ""
@@ -320,8 +320,9 @@ func riskOf(readOnly bool) RiskLevel {
 // bashHighRiskConfirm 是完整 bash 的高危命令模式确认文案：命令命中
 // HighRiskBashCommand（git push / rm -rf 根目录 / reg add 等高危命令模式）
 // 时返回带模式名与命令原文的提示，未命中返回空串。
-// **当前无调用方**（runTools 不再消费 ConfirmForced——auto = 完全无确认，
-// 2026-10 拍板），保留待将来档位设计。放在 newBashDef 之后独立成函数，
+// **当前 auto 档不弹**（2026-10 拍板：bash 高危命令模式在 auto 档也不确认；
+// runTools 只对声明了 ConfirmForced 且确要弹的工具询问——首个消费者是
+// project_create）。放在 newBashDef 之后独立成函数，
 // 方便 ConfirmForced 回调直接复用。
 func bashHighRiskConfirm(args json.RawMessage) string {
 	var a struct {

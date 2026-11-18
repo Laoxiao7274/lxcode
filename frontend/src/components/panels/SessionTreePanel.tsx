@@ -100,13 +100,19 @@ export function SessionTreePanel({
  *  **平级列表（2026-12 用户拍板）**：不做缩进层级（无深度变量/连接线/分支圆点/钳制
  *  错位）——所有行按 seq 平铺、全宽，一百条消息线性可滚。分叉信息只靠 off_path 的
  *  灰化 + 行 title（「在分支上」）表达，纯导航无需表达父子。
- *  减负后的行内容：轮次号 = 轻量等宽序号；徽标只留「你在这里/文件 N/orphan」。 */
+ *  减负后的行内容：轮次号 = 轻量等宽序号；徽标只留「你在这里/文件 N/orphan」。
+ *  2026-12 运行指示：row.running（App 经 markRunningRounds 按「本轮 dispatch +
+ *  子会话 busy」合成，数据源与既有 busy 同源）为真时行上补 spinner。 */
 function TreeNodeRow({ row, active, onJump }: {
   row: TreeRow;
   active: boolean;
   onJump: (row: TreeRow) => void;
 }) {
   const files = filesBadge(row);
+  // running = 这一轮有正在跑的派发（App 按本轮区间内的 dispatch 块 + 子会话
+  // busy 合成，见 tree-model.ts 的 runningTreeRows；行内不自己算——树行只有
+  // seq，拿不到 dispatch id）。
+  const running = Boolean(row.running);
 
   return (
     <div
@@ -122,14 +128,15 @@ function TreeNodeRow({ row, active, onJump }: {
         className="stree-row"
         // 悬停显示完整摘要（列表里是截断后的单行）；off_path 行 title 说明在分支上
         title={row.onPath
-          ? `第 ${row.turn ?? "?"} 轮：${row.label}`
-          : `在分支上 · 第 ${row.turn ?? "?"} 轮：${row.label}`}
+          ? `第 ${row.turn ?? "?"} 轮：${row.label}${running ? "（子任务运行中）" : ""}`
+          : `在分支上 · 第 ${row.turn ?? "?"} 轮：${row.label}${running ? "（子任务运行中）" : ""}`}
         onClick={() => onJump(row)}
       >
         <span className="stree-num">{row.turn ?? "·"}</span>
         <span className="stree-label">{row.label || "（空消息）"}</span>
         {/* 徽标全部 omitempty 语义：0 不渲染（**不显示「0 文件」**）。 */}
         {files && <span className="stree-files" title="这一轮可还原的文件改动（含子 Agent 的）">{files}</span>}
+        {running && <span className="mset-spinner session-spinner" title="这一轮有子任务正在运行" aria-hidden />}
         {row.isLeaf && <span className="stree-here">你在这里</span>}
         {row.orphan && <span className="stree-orphan" title="这条记录的父节点缺失（历史数据不完整），仍按原样显示">⚠</span>}
       </button>

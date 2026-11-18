@@ -246,21 +246,68 @@ export const Sidebar = memo(function Sidebar({
   // 未分组（LOOSE）不拉：助手任务的 workspace 恒是具体项目 id。失败静默 =
   // 小节不出现（数据源缺席/后端老版本没有 assistant.tasks——不把侧栏变成
   // 错误横幅；列表是锦上添花的入口，子会话本体在助手模式里不丢）。
+  //
+  // **实时刷新（2026-12 拍板）**：订阅助手的派发事件（assistant.dispatchStart/
+  // dispatchEnd → mapEvent 归一成 dispatchStart/End，带 space:"assistant"）——
+  // 事件到达即重拉 assistant.tasks（任务开始/结束都会改列表与 running 位），
+  // 替换原先「只在切范围时拉一次」的一次性语义。防轰炸：在途守卫（有一发
+  // assistant.tasks 未回来就不重入）+ 任务空窗（500ms 内最多一次，中间事件
+  // 合并成一次拉取）。主域的 dispatchStart/End（无 space 标记）不触发——
+  // 那些子会话不进 assistant.tasks。
   const assistant = source.assistant;
   const [assistantTasks, setAssistantTasks] = useState<SessionMeta[]>(EMPTY_SESSIONS);
+  const asstFetchRef = useRef<{ inFlight: boolean; timer: ReturnType<typeof setTimeout> | null; pending: boolean }>({
+    inFlight: false, timer: null, pending: false,
+  });
+  const asstFetch = useCallback((projectId: string, alive: { current: boolean }) => {
+    const st = asstFetchRef.current;
+    if (st.inFlight) {
+      st.pending = true; // 在途：合并本次请求（回来后按 pending 再拉一次）
+      return;
+    }
+    st.inFlight = true;
+    assistant?.tasks(projectId).then(
+      (tasks) => {
+        st.inFlight = false;
+        if (alive.current) setAssistantTasks(tasks.length ? tasks : EMPTY_SESSIONS);
+        if (st.pending) {
+          st.pending = false;
+          asstFetch(projectId, alive);
+        }
+      },
+      () => {
+        st.inFlight = false;
+        st.pending = false;
+        if (alive.current) setAssistantTasks(EMPTY_SESSIONS);
+      },
+    );
+  }, [assistant]);
   useEffect(() => {
     if (!assistant || filter === LOOSE || filter === "") {
       setAssistantTasks(EMPTY_SESSIONS);
       return;
     }
-    let alive = true;
+    const alive = { current: true };
     setAssistantTasks(EMPTY_SESSIONS); // 切范围先清旧项目的小节（迟到的应答不画到别的项目下）
-    assistant.tasks(filter).then(
-      (tasks) => { if (alive) setAssistantTasks(tasks.length ? tasks : EMPTY_SESSIONS); },
-      () => { if (alive) setAssistantTasks(EMPTY_SESSIONS); },
-    );
-    return () => { alive = false; };
-  }, [assistant, filter]);
+    asstFetch(filter, alive);
+    return () => { alive.current = false; };
+  }, [assistant, filter, asstFetch]);
+  // 派发事件 → 重拉（debounce 500ms 合并 + 切范围清账）
+  useEffect(() => {
+    if (!assistant) return;
+    const alive = { current: true };
+    return source.subscribe((ev) => {
+      if (ev.type !== "dispatchStart" && ev.type !== "dispatchEnd") return;
+      if ((ev as { space?: string }).space !== "assistant") return;
+      if (filter === LOOSE || filter === "") return;
+      const st = asstFetchRef.current;
+      if (st.timer) clearTimeout(st.timer);
+      st.timer = setTimeout(() => {
+        st.timer = null;
+        if (alive.current) asstFetch(filter, alive);
+      }, 500);
+    });
+  }, [source, assistant, filter, asstFetch]);
 
   // Ctrl/Cmd+K → 聚焦搜索框并全选（search-kbd 角标做活）。挂在 document 的
   // keydown 上（全局快捷键——焦点在会话/时间线/设置里都要生效）；
@@ -499,6 +546,67 @@ export const Sidebar = memo(function Sidebar({
           </div>
         );
       })}
+      {/* 助手节（2026-12 分层重构 → 位置上移）：移到「未分组」分组**之前**
+          （项目分组列表之后、未分组之上——用户主诉求是更显眼：不用滚到侧栏
+          底部就能看到助手派的任务）。节头可点击收缩/展开（记忆态同项目节）。
+          小节仍只在当前项目有助手派的任务子会话时出现（空分组不渲染）。
+          行点击 = 跨模式跳转到助手模式的子会话视图（域纪律：这里不接 chat.*
+          历史装载——assistant 任务的历史走 assistant.childHistory，在助手域内
+          闭环）。 */}
+      {assistantTasks.length > 0 && (
+        <div className={ASSISTANT_SECTION_HEAD}>
+          <div className="sidebar-label group-head assistant-tasks-label">
+            <button
+              type="button"
+              className="section-toggle"
+              aria-expanded={!collapsed.assistants}
+              title={collapsed.assistants ? "展开助手任务" : "收起助手任务"}
+              onClick={() => toggleSection("assistants")}
+            >
+              <svg
+                width="10"
+                height="10"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.4"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+                style={{ transform: collapsed.assistants ? "rotate(-90deg)" : undefined, transition: "transform 140ms" }}
+              >
+                <path d="m6 9 6 6 6-6" />
+              </svg>
+            </button>
+            助手
+          </div>
+          {collapsed.assistants ? null : assistantTasks.map((t) => (
+            <div
+              key={t.id}
+              className="session-item assistant-task-row"
+              role="button"
+              tabIndex={0}
+              title={`助手派的任务：${t.title}`}
+              aria-label={`来自助手的任务：${t.title}${t.running ? "（正在运行）" : ""}`}
+              onClick={() => onOpenAssistantChild(t.id)}
+              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpenAssistantChild(t.id); } }}
+            >
+              <div className="session-line">
+                {/* 来源徽标（2026-12 ④整齐化）：统一放**行首图标位**（原来在标题
+                    之后，点/时间都被它挤压错位）——与会话行的 s-dot 同位，三节
+                    （项目会话/助手任务/全局搜索）行首对齐。
+                    2026-12 运行指示：running 时在徽标前补 s-dot live 呼吸蓝点
+                    ——与主域会话行的 busy 态同款视觉（s-dot live + spinner）。 */}
+                {t.running && <span className="s-dot live" aria-hidden />}
+                <span className="assistant-src-pill" aria-hidden>助手</span>
+                <span className="title">{t.title}</span>
+                {t.running && <span className="mset-spinner session-spinner" aria-hidden />}
+                <span className="time">{t.updatedAt}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
       {/* 未分组：无归属会话的家。**常驻显示**（它是启动时的默认范围——
           范围恒有选中，没有「全部」可退；会话为 0 时它仍代表当前范围）。 */}
       <div
@@ -650,64 +758,6 @@ export const Sidebar = memo(function Sidebar({
         ))
       )}
       </div>
-
-      {/* 助手节（2026-12 分层重构：移到会话区**下方**——用户主诉求是位置感：
-          项目/会话主域在上，助手任务在下；节头可点击收缩/展开（记忆态同项目节）。
-          小节仍只在当前项目有助手派的任务子会话时出现（空分组不渲染）。
-          行点击 = 跨模式跳转到助手模式的子会话视图（域纪律：这里不接 chat.*
-          历史装载——assistant 任务的历史走 assistant.childHistory，在助手域内
-          闭环）。 */}
-      {assistantTasks.length > 0 && (
-        <div className={ASSISTANT_SECTION_HEAD}>
-          <div className="sidebar-label group-head assistant-tasks-label">
-            <button
-              type="button"
-              className="section-toggle"
-              aria-expanded={!collapsed.assistants}
-              title={collapsed.assistants ? "展开助手任务" : "收起助手任务"}
-              onClick={() => toggleSection("assistants")}
-            >
-              <svg
-                width="10"
-                height="10"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.4"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden="true"
-                style={{ transform: collapsed.assistants ? "rotate(-90deg)" : undefined, transition: "transform 140ms" }}
-              >
-                <path d="m6 9 6 6 6-6" />
-              </svg>
-            </button>
-            助手
-          </div>
-          {collapsed.assistants ? null : assistantTasks.map((t) => (
-            <div
-              key={t.id}
-              className="session-item assistant-task-row"
-              role="button"
-              tabIndex={0}
-              title={`助手派的任务：${t.title}`}
-              aria-label={`来自助手的任务：${t.title}${t.running ? "（正在运行）" : ""}`}
-              onClick={() => onOpenAssistantChild(t.id)}
-              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpenAssistantChild(t.id); } }}
-            >
-              <div className="session-line">
-                {/* 来源徽标（2026-12 ④整齐化）：统一放**行首图标位**（原来在标题
-                    之后，点/时间都被它挤压错位）——与会话行的 s-dot 同位，三节
-                    （项目会话/助手任务/全局搜索）行首对齐。 */}
-                <span className="assistant-src-pill" aria-hidden>助手</span>
-                <span className="title">{t.title}</span>
-                {t.running && <span className="mset-spinner session-spinner" aria-hidden />}
-                <span className="time">{t.updatedAt}</span>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
 
       <div className="sidebar-footer">
         <div className="settings-row" role="button" tabIndex={0} onClick={onOpenSettings}>

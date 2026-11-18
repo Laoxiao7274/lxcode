@@ -43,6 +43,9 @@ export interface TreeRow {
   orphan: boolean;
   /** 在另一条分支上（on_path=false 的显示语义，组件按它渲染「在分支上」徽标）。 */
   onBranch: boolean;
+  /** 这一轮有正在跑的派发（子任务运行中——2026-12 运行指示；行上补 spinner）。
+   *  缺省 false：历史回放的树行不带它（纯导航数据零变化）。 */
+  running?: boolean;
 }
 
 /** 树 → 面板行（按 seq 升序 = 时间顺序；后端已保证 parent 恒小于 seq）。
@@ -138,4 +141,45 @@ export function userSeqUid(blocks: ThreadBlock[]): Map<number, number> {
     if (b.kind === "user" && typeof b.seq === "number") map.set(b.seq, b.uid);
   }
   return map;
+}
+
+/** 给树行标注「这一轮有正在跑的派发」（2026-12 运行指示的**纯函数层**——
+ *  组件与 node:test 共用同一份判定）。
+ *
+ *  轮次区间的判定与 turns.ts 同一条规则：一条 user 开一轮，其后到下一条 user
+ *  之前的 dispatch 块都归它——但这里不依赖 turns.ts（树行的 seq 与块的 seq 是
+ *  两个空间：树行按 seq 排序给出边界，块列表按时间顺序切区间）。对每个 user
+ *  seq，检查本轮区间内的 dispatch 块，任一 dispatch id 命中 dispatchBusy=true
+ *  即该轮 running。
+ *
+ *  dispatchBusy 的数据源与既有 busy 同源（dispatchChild 映射 + 子会话 state.busy
+ *  ——见 App 的 dispatchBusy），不新增请求。返回**新行数组**（不原处改——
+ *  sessionTree.rows 的引用属于缓存语义，React 状态里不可变）。 */
+export function markRunningRounds(
+  rows: TreeRow[],
+  blocks: ThreadBlock[],
+  dispatchBusy: Record<string, boolean> | undefined,
+): TreeRow[] {
+  if (!dispatchBusy || Object.keys(dispatchBusy).length === 0) return rows;
+  // user seq 升序（树行本来就是按 seq 升序的）+ 各轮的 dispatch id 集合。
+  const userSeqs: number[] = [];
+  for (const b of blocks) {
+    if (b.kind === "user" && typeof b.seq === "number") userSeqs.push(b.seq);
+  }
+  if (userSeqs.length === 0) return rows;
+  // 每轮区间 [userSeqs[i], userSeqs[i+1])（按下标切，不重不漏）内的 dispatch id。
+  const busyByRound = new Map<number, boolean>();
+  let round = -1;
+  for (const b of blocks) {
+    if (b.kind === "user") {
+      round++;
+      continue;
+    }
+    if (round < 0 || b.kind !== "dispatch" || b.status === "done") continue;
+    if (dispatchBusy[b.id]) busyByRound.set(userSeqs[round], true);
+  }
+  if (busyByRound.size === 0) return rows;
+  return rows.map((row) =>
+    busyByRound.get(row.seq) ? { ...row, running: true } : row,
+  );
 }

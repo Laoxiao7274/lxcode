@@ -19,6 +19,16 @@ import (
 	"github.com/moyunteng/lxcode/internal/tools"
 )
 
+// confirmForcedAutoNames 是 auto 档也强制弹确认门的工具名单（ConfirmForced
+// 例外口的消费者名单）：机制在 tools 层（Def.ConfirmForced），这里显式点名——
+// 不是「有回调就弹」（bash 也带回调但按 2026-10 拍板 auto 档不弹），防误伤。
+var confirmForcedAutoNames = map[string]bool{
+	tools.ProjectCreateToolName: true,
+}
+
+// confirmForcedAuto 报告该工具在 auto 档是否仍弹强制确认门。
+func confirmForcedAuto(name string) bool { return confirmForcedAutoNames[name] }
+
 // runTools 执行本轮工具调用，按权限模式门控：
 //   - strict 只读：变更类工具（IsMutating）直接拒绝，错误回填模型
 //   - auto 完全访问：高危跳过确认门
@@ -90,13 +100,19 @@ func (s *Session) runTools(ctx context.Context, calls []llm.ToolCall, fileChange
 			continue
 		}
 		// 确认门：confirm/strict 档按常规 Confirm 文案询问。auto = 完全无确认
-		// （2026-10 用户拍板：「我的完全访问就是什么也不弹」）——跳过常规门，
-		// bash 高危命令模式也不再弹（ConfirmForced 硬闸不再被消费，机制保留在
-		// tools 层待将来档位设计）。confirm 档下常规文案已覆盖全部高危面。
+		//（2026-10 用户拍板：「我的完全访问就是什么也不弹」，bash 高危命令模式
+		// 也不弹）——**例外口 ConfirmForced**（2026-12 消费）：白名单里的工具
+		// 在 auto 档也弹强制确认门（当前唯一消费者 project_create——助手 auto
+		// 档下写磁盘新建项目目录的面，调研定案：不给助手留一个无确认就能 mkdir
+		// + git init 的口子）。**bash 也有 ConfirmForced 回调但按 2026-10 拍板
+		// 不消费**——所以名单显式列出而不是「有回调就弹」，防误伤。弹出后的
+		// 裁决同常规门（拒绝 = 不执行 + 人话结果回填）。
 		{
 			var prompt string
 			if policy != tools.ApprovalAuto {
 				prompt = s.tools.Confirm(ctx, tc)
+			} else if confirmForcedAuto(tc.Function.Name) {
+				prompt = s.tools.ConfirmForced(ctx, tc)
 			}
 			if prompt != "" {
 				req := &ConfirmRequest{

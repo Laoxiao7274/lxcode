@@ -238,13 +238,13 @@ func TestAssistantResolverMergeMCPTools(t *testing.T) {
 	}
 	// ② 新建切片：内置常量的 Tools 底层不被写坏（长度/内容与常量本体一致，
 	// 且二次解析后常量仍纯内置——append 共享底层的回归钉子）。
-	if len(assistantAgentDef.Tools) != 15 {
+	if len(assistantAgentDef.Tools) != 16 {
 		t.Fatalf("内置常量 Tools 不该被写坏（len=%d）: %v", len(assistantAgentDef.Tools), assistantAgentDef.Tools)
 	}
 	for i := 0; i < 3; i++ {
 		r.Resolve("assistant")
 	}
-	if len(assistantAgentDef.Tools) != 15 {
+	if len(assistantAgentDef.Tools) != 16 {
 		t.Fatalf("多次解析后常量 Tools 被写坏: %v", assistantAgentDef.Tools)
 	}
 	// ③ 服务器停用（工具条目仍在目录）→ 白名单悬空名照旧合入——消费点在
@@ -375,13 +375,13 @@ func TestAssistantResolverMergeCustomTools(t *testing.T) {
 		}
 	}
 	// ② 新建切片：内置常量的 Tools 底层不被写坏。
-	if len(assistantAgentDef.Tools) != 15 {
+	if len(assistantAgentDef.Tools) != 16 {
 		t.Fatalf("内置常量 Tools 不该被写坏（len=%d）: %v", len(assistantAgentDef.Tools), assistantAgentDef.Tools)
 	}
 	for i := 0; i < 3; i++ {
 		r.Resolve("assistant")
 	}
-	if len(assistantAgentDef.Tools) != 15 {
+	if len(assistantAgentDef.Tools) != 16 {
 		t.Fatalf("多次解析后常量 Tools 被写坏: %v", assistantAgentDef.Tools)
 	}
 	// ③ 目录条目删除后悬空：解除绑定（改配置文件）→ 删除放行 → 声明与目录

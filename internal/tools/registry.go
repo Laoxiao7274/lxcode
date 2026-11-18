@@ -77,6 +77,9 @@ type Registry struct {
 	// projectList 是注入的项目全景查询实现（server 装配时接线，同上一条
 	// 的「装配期写一次、运行期只读」——与 searchMu 共锁同理由）。
 	projectList ProjectListFn
+	// projectCreate 是注入的项目创建实现（project_create 工具——server 装配时
+	// 接线；与 projectList 同一批注入点、同一把锁）。
+	projectCreate ProjectCreateFn
 
 	// jobsMgr 是注入的后台任务管理器（server 装配时接线；nil = 未装配）。
 	// jobCursors 是 job_output 的读游标，键是「会话 id + 任务 id」——游标是
@@ -159,6 +162,9 @@ func New() *Registry {
 	// project_list（助手项目全景，2026-12）：读取类同族（一条 SELECT，只读）。
 	// 排在 session_search 之后——都是「查状态数据」的读取面。
 	r.register(projectListDef(r))
+	// project_create（助手项目全景三件套之三，2026-12）：创建并注册项目——
+	// 变更类，紧跟 project_list（同一能力族的查与建）。
+	r.register(projectCreateDef(r))
 	r.register(readSkillDef(r))
 	// share_file（低危只读）：把工作目录里的产物文件共享到对话（前端附件卡）。
 	// 与读取类同族——它不改任何工作区文件，只是复制登记 + 展示。

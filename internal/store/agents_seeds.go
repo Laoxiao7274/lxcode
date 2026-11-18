@@ -147,6 +147,16 @@ var seedTools = []sessiondata.ToolSpec{
 		Doc:     "跨项目视角的查询面：返回全部注册项目的 id、名称、根目录、顶层会话数、最近活动与运行中的会话数（按最近活动倒序）。\n\n- 用户问「我有哪些项目」或提到某个项目时先用它\n- run_task 的 project_id 是不可读的时间戳随机串——**只能从本工具（或提示词里的可用项目清单）拿到**，不要拿项目名或路径当 id\n- 顶层会话数不含子会话与助手会话；无会话项目照常列出\n- 「运行中」= 此刻有会话在生成的项目——用户问「现在在跑什么」时用它",
 	},
 	{
+		// project_create（助手项目全景三件套之三，2026-12）：必须在目录里——
+		// 助手 Agent 的种子白名单写着它，编辑器渲染 chip 只读目录。
+		ID: "project_create", Desc: "在指定父目录下新建项目文件夹并注册（mkdir + git init）", Risk: "high", Source: "builtin", Custom: false,
+		Params: []sessiondata.ToolParam{
+			{Name: "name", Type: "string", Required: true, Desc: "项目名=文件夹名（单层，禁路径分隔符与 ..）"},
+			{Name: "parent", Type: "string", Required: true, Desc: "父目录的绝对路径（必须已存在）"},
+		},
+		Doc: "项目创建面：在父目录下新建项目文件夹（mkdir + git init + 注册进项目列表）。\n\n- 用户说「在 xxx 下建一个 yyy 项目」时用它\n- name 是文件夹名（禁路径分隔符与 ..）；目标已存在且非空时拒绝\n- **高危**：执行前用户会收到确认提示（auto 档也弹——ConfirmForced 硬闸）\n- 创建成功后返回 project_id，可立即用 run_task 往它派任务",
+	},
+	{
 		// 内置的渐进披露读取口：目录里没有它，子 Agent 就「拿到技能索引却没法取正文」
 		// （技能多选注入因此形同虚设）——用户拍板顺手补上。
 		ID: "read_skill", Desc: "读取技能模块的完整内容（提示词只列索引）", Risk: "low", Source: "builtin", Custom: false,

@@ -106,7 +106,7 @@ type AssistantConfigResult struct {
 // 这里不 import internal/server（protocol 是叶子包，server import protocol）。
 var BuiltinAssistantToolIDs = []string{
 	"read_file", "search", "read_image", "bash_readonly",
-	"web_search", "web_fetch", "project_list", "session_search", "todo", "ask_user", "read_skill", "run_task",
+	"web_search", "web_fetch", "project_list", "project_create", "session_search", "todo", "ask_user", "read_skill", "run_task",
 	"update_assistant_config", "mcp_manage", "share_file",
 }
 

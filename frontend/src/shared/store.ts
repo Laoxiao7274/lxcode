@@ -312,6 +312,9 @@ export function useAgent(source: AgentSource, hooks?: AgentHooks): {
   assistantStates: Record<string, UIState>;
   /** 子会话 id → 父会话 id（子会话视图标题反查与双投路由的唯一事实源）。 */
   childParents: ChildParents;
+  /** dispatch id → 子会话 id（双投归属映射，与 reduceSessionStates 同源——
+   *  会话树面板按它反查子会话 state.busy 给运行中的派发行补 spinner）。 */
+  dispatchChild: Record<string, string>;
   /** 发送缓冲区（按会话隔离；busy 期间提交的文本在这里排队）。 */
   sendQueues: Record<string, SendQueueItem[]>;
   send: AgentSource["send"];
@@ -465,6 +468,9 @@ export function useAgent(source: AgentSource, hooks?: AgentHooks): {
     sessionStates,
     assistantStates,
     childParents: childLinks.childParents,
+    /** dispatch id → 子会话 id（store 维护的归属映射——会话树面板按它取
+     *  子会话自己的 state.busy，不新增请求；见 reduceSessionStates 同一映射）。 */
+    dispatchChild: childLinks.dispatchChild,
     sendQueues,
     send,
     resolve,
