@@ -12,6 +12,8 @@ import {
   MAX_CRASH_RECOVERIES,
   consoleLevelName,
   crashRecovery,
+  fatalMainLine,
+  nextBootCount,
   rendererLogLine,
   rendererLogPaths,
   shouldRotate,
@@ -58,4 +60,41 @@ test("crashRecovery：退避 5s/15s/30s（第 1~3 次连崩）", () => {
 test(`crashRecovery：第 ${MAX_CRASH_RECOVERIES + 1} 次连崩停止自动恢复（防崩溃循环刷爆日志/CPU）`, () => {
   assert.deepEqual(crashRecovery(MAX_CRASH_RECOVERIES + 1), { recover: false, waitMs: 0 });
   assert.deepEqual(crashRecovery(100), { recover: false, waitMs: 0 });
+});
+
+// ===== 主进程死亡取证（2026-12：0.3.60 两次整壳静默死亡）=====
+
+test("nextBootCount：空日志首启 = boot #1", () => {
+  assert.equal(nextBootCount([]), 1);
+});
+
+test("nextBootCount：取上一次 boot 行 +1（含 renderer 层杂行不误判）", () => {
+  const lines = [
+    "[2026-12-01T00:00:00.000Z] [info] [main] boot #7 — 主进程启动（minidump 目录：X）",
+    "[2026-12-01T00:05:00.000Z] [info] [main] graceful quit（will-quit 正常收尾）",
+  ];
+  assert.equal(nextBootCount(lines), 8);
+});
+
+test("nextBootCount：两代日志（.old + .log）里取最大值，序号只求单调不求连续", () => {
+  const lines = [
+    "[main] boot #3",
+    "[main] boot #12",
+    "[main] boot #4",
+  ];
+  assert.equal(nextBootCount(lines), 13);
+});
+
+test("nextBootCount：非 boot 的数字行 / 损坏序号不误判", () => {
+  assert.equal(nextBootCount(["[main] boot #abc", "[main] boot #-1", "boot #999 无 [main] 前缀"]), 1);
+  assert.equal(nextBootCount(["[main] boot #2", "[main] boot #oops"]), 3);
+});
+
+test("fatalMainLine：Error 带 name/message/stack；非 Error 字符串化", () => {
+  const err = new TypeError("boom");
+  err.stack = "TypeError: boom\n    at x";
+  const line = fatalMainLine(err, "uncaughtException");
+  assert.match(line, /^FATAL main: uncaughtException TypeError: boom\n/);
+  assert.match(line, /    at x$/);
+  assert.equal(fatalMainLine("plain", "unhandledRejection"), "FATAL main: unhandledRejection plain");
 });

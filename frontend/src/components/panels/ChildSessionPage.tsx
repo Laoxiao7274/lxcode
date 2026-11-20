@@ -139,24 +139,29 @@ export function ChildSessionPage({
   // 子 Agent 流式跑工具/输出时页面纹丝不动（用户报「子会话尤其明显」的根因）。
   // empty 传「当前有没有内容」：加载态→内容就绪会替换 endRef 所在子树，
   // 状态机必须随这个边界重装（否则装在空态上永不生效）。
+  // onStick → restoreTail 走 ref 间接：useStickyFollow 调用点在
+  // useWindowedHistory 之前，restoreTail（const）彼时还未声明（TDZ）。
+  const restoreTailRef = useRef<() => void>(() => {});
   const { endRef, stickyRef, scrollRef } = useStickyFollow({
     empty: total === 0,
     composerScope: ".child-session-page",
     // 子会话标签页之间/从主会话切进来同样要重装状态机并贴底——否则视口停在
     // 上一个会话的滚动位置（与主时间线同款 bug）。
     sessionKey: sessionId,
+    onStick: () => restoreTailRef.current(),
   });
   // **窗口化渲染 + 上翻扩窗的滚动锚定**：与主时间线**同一份实现**
   // （useWindowedHistory——窗口按会话派生，前插后按高度差补偿 scrollTop）。
   // 之前这页自己写一份 useState + useEffect 重置：既在切换首帧挂着上一份
   // 窗口，又没有锚定——子会话上翻照样“跳顶”。S4：窗口有上界，上翻到上界后
   // 转滑动窗口（头部补/尾部丢）；被丢块仍在 state，滚回底部时整备恢复。
-  const { hidden, end, expandOlder, captureAnchor, clearAnchor } = useWindowedHistory({
+  const { hidden, end, expandOlder, restoreTail, captureAnchor, clearAnchor } = useWindowedHistory({
     sessionKey: sessionId,
     total,
     scrollRef,
     isSticky: () => stickyRef.current,
   });
+  restoreTailRef.current = restoreTail;
   // 窗口只切已定型块；流式块恒在末尾、永远落在窗口内（hidden 按逻辑时间线算，
   // 已包含那一块——见 Thread.tsx 的同款说明）；切片终点 = end（S4 滑动窗口的
   // 底部边缘——被丢的尾部块不渲染）。

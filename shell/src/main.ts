@@ -5,7 +5,7 @@ import { appendFile, readFile, rename, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { app, BrowserWindow, dialog, ipcMain, nativeTheme, net, Notification, protocol } from "electron";
+import { app, BrowserWindow, crashReporter, dialog, ipcMain, nativeTheme, net, Notification, protocol } from "electron";
 import { ensureBackend, shutdownBackend } from "./sidecar";
 import { initSakura, sakuraHandlers, shutdownSakura } from "./sakura";
 import { initTailscale, tailscaleHandlers } from "./tailscale";
@@ -16,7 +16,7 @@ import { shouldAllowSelfSigned } from "./cert-allow";
 import { startScreenPolling, stopScreenPolling, warmUpEncoderProbe } from "./screen";
 import { startInputPolling, stopInputPolling, setControllingCallback } from "./input";
 import { setTrayHint } from "./tray";
-import { consoleLevelName, crashRecovery, rendererLogLine, rendererLogPaths, shouldRotate } from "./renderer-log";
+import { consoleLevelName, crashRecovery, fatalMainLine, nextBootCount, rendererLogLine, rendererLogPaths, shouldRotate } from "./renderer-log";
 
 // userData 目录名与应用身份（单实例锁、任务栏、通知都吃这个）
 app.setName("lxcode");
@@ -57,6 +57,32 @@ if (!app.isPackaged) {
   app.commandLine.appendSwitch("remote-debugging-port", process.env.LXCODE_CDP_PORT ?? "9229");
 }
 
+// ===== 主进程死亡取证（2026-12：0.3.60 两次整壳静默死亡，转储零落盘）=====
+// 三层覆盖（各有盲区，缺一不可）：
+//  * crashReporter → native 层崩溃（段错误/GPU/Chromium FATAL）的 minidump；
+//    必须在 app.ready 之前 start（晚了渲染进程不受监控）。落点
+//    app.getPath("crashDumps")：Windows 默认 <userData>/Crashpad
+//    （打包壳 = %APPDATA%\lxcode\Crashpad，app.setName 已定身份），
+//    uploadToServer:false 纯本地留证。boot 行会记下实际路径。
+//  * process 兜底 → JS 层 uncaughtException/unhandledRejection（Electron
+//    默认只弹框/静默，转储与日志都没有；crashReporter 只截 native 崩溃，
+//    JS 异常没触发 native 崩溃就只能靠这里）。走 fatalExit：**先落盘 FATAL
+//    行（JS 异常的唯一证据）再 app.exit(1)**——不 rethrow（默认错误框对
+//    常驻壳没意义），让用户/外部机制接管重启。
+//  * will-quit 的 `graceful quit` 行 → 区分「走了优雅退出」vs「静默死亡」。
+// 三类标记（boot #N / graceful quit / FATAL main:）与 minidump 落点记在
+// renderer-log.ts 头注（目录地图注释）。
+crashReporter.start({ uploadToServer: false, compress: true });
+
+process.on("uncaughtException", (err) => {
+  console.error("[shell] 主进程未捕获异常，退出：", err);
+  void fatalExit("uncaughtException", err);
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("[shell] 主进程未处理的 Promise 拒绝，退出：", reason);
+  void fatalExit("unhandledRejection", reason);
+});
+
 // wss 配对连接的自签证书放行（樱花frp 隧道，定向）。
 // 背景：隧道 extra 是 auto_https=auto，节点对外 TLS 终结用 frpc **自签**证书；
 // 渲染层 WsConnection 的 WebSocket 走 Chromium 网络栈，自签证书默认直接拒绝
@@ -88,10 +114,29 @@ let win: BrowserWindow | null = null;
 const LOG_PATHS = rendererLogPaths(app.getPath("userData"));
 let crashStreak = 0; // 连崩计数（did-finish-load 成功清零；超过上限停止自动 reload）
 
+// 启动计数（闪退循环取证）：boot 序号从 renderer.log / .log.old 两代里的
+// `boot #N` 最大值 +1 推出（判定逻辑 nextBootCount 在 ./renderer-log.ts，可单测）。
+// 连续多条 boot 而中间无 `graceful quit`，就是闪退循环；boot 行同时记下
+// crashDumps 实际路径——崩溃后照着它找 minidump。
+void (async () => {
+  const lines: string[] = [];
+  for (const p of [LOG_PATHS.old, LOG_PATHS.log]) {
+    try {
+      lines.push(...(await readFile(p, "utf8")).split("\n"));
+    } catch { /* 文件不存在/占用——首启或暂时读不到，序号从 1 起即可 */ }
+  }
+  const n = nextBootCount(lines);
+  const dumps = (() => { try { return app.getPath("crashDumps"); } catch { return "(crashDumps 目录未知)"; } })();
+  appendRendererLog(rendererLogLine(new Date(), "info",
+    `[main] boot #${n} — 主进程启动（minidump 目录：${dumps}）`));
+})();
+
 /** 异步追加一行渲染层日志；超 5MB 先两代轮转（.log → .log.old 覆盖）。
- *  全程 fire-and-forget：日志写不进去不能影响主进程任何流程。 */
-function appendRendererLog(line: string): void {
-  void (async () => {
+ *  常规路径 fire-and-forget 不 await；FATAL 取证路径（fatalExit）await 返回的
+ *  Promise 确保落盘后再退出。内部全 catch 不 reject——写失败静默，观测通道
+ *  自身不可信源。 */
+function appendRendererLog(line: string): Promise<void> {
+  return (async () => {
     try {
       if (existsSync(LOG_PATHS.log)) {
         const s = await stat(LOG_PATHS.log);
@@ -102,6 +147,21 @@ function appendRendererLog(line: string): void {
       await appendFile(LOG_PATHS.log, line);
     } catch { /* 日志失败静默——观测通道自身不可信源 */ }
   })();
+}
+
+/** FATAL 收尾（uncaughtException/unhandledRejection 共用）：先落盘 FATAL 行再
+ *  app.exit(1)。**FATAL 行是 JS 异常的唯一证据**——JS 异常不产 minidump
+ *  （crashReporter 只截 native 崩溃），这条丢了就零证据，所以必须等写完。
+ *  appendRendererLog 内部全 catch 不 reject，这里仍兜 try/catch + 2s 超时：
+ *  日志通道挂死（fs 卡住）也必须能退出，不能把进程卡死在崩溃路径上。 */
+async function fatalExit(kind: "uncaughtException" | "unhandledRejection", err: unknown): Promise<void> {
+  try {
+    await Promise.race([
+      appendRendererLog(rendererLogLine(new Date(), "error", fatalMainLine(err, kind))),
+      new Promise<void>((resolve) => setTimeout(resolve, 2_000)),
+    ]);
+  } catch { /* 日志失败也要退出 */ }
+  app.exit(1);
 }
 
 /** 渲染进程崩溃后的自动恢复时序：记日志 → 按连崩退避 reload → 超限停止。
@@ -399,6 +459,9 @@ if (!app.requestSingleInstanceLock()) {
     }
   });
   app.on("will-quit", () => {
+    // 正常退出取证：下次排障时用它区分「走了优雅退出」vs「静默死亡」
+    //（0.3.60 两次死亡都没有这行——进程被强杀/原生崩溃）。
+    appendRendererLog(rendererLogLine(new Date(), "info", "[main] graceful quit（will-quit 正常收尾）"));
     stopUpdatePolling();
     stopScreenPolling(); // 投屏：杀 ffmpeg + 断推流（shell/src/screen.ts）
     stopInputPolling(); // 投屏控制：停输入长轮询（shell/src/input.ts）

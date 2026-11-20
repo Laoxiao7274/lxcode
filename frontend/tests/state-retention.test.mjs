@@ -10,6 +10,7 @@
 // （historyReady 缺失）与子会话视图装载 effect 本就按 state 缺失重拉。
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import {
   SESSION_STATES_MAX,
   SESSION_STATES_TTL_MS,
@@ -22,6 +23,7 @@ import {
   isBusyState,
 } from '../src/shared/state-retention.ts';
 import { handleAgentEvent } from '../src/shared/store.ts';
+import { SESSIONS } from '../src/agent/demo/data.ts';
 
 const HOUR = 60 * 60 * 1000;
 /** 造一批不忙的占位 state（evictableSessionIds 只读忙闲位）。 */
@@ -306,3 +308,83 @@ test('事件层：sessionFocused 刷新活跃表（聚焦即续命）', () => {
   assert.ok(state.active.project.s1 > 0, '聚焦刷新活跃时间戳');
   assert.equal(state.currentId, 's1');
 });
+
+// ---------- ⑤ forgetLoaded 的 source 桥（2026-12 审查修复） ----------
+
+// 闭包捕获首渲染 source 的热换 bug：controller 只建一次，旧实现把首渲染的
+// source 捕进 ref 里的闭包——热换 source 后淘汰通知仍打到旧源（旧源的
+// loadedSessions 记忆没清，新源又没记装载 → 被淘汰会话重进秒回空 state）。
+// 修复 = ref 存 source 本体、每渲染同步、调用时解引用（与 autoSendRef 同款）。
+// hook 内部状态驱动不了（useAgent 是 React hook，测试基建没有渲染期副作用
+// 的执行器）——钉子钉源码形状：ref 必须存 source 本体且每渲染同步，调用点
+// 必须经 ref 解引用；旧写法（ref 里存捕获 source 的闭包）会让这两条断言红。
+test('forgetLoaded 桥：ref 存 source 本体、每渲染同步、调用时解引用（热换不指向旧源）', () => {
+  const src = fs.readFileSync(new URL('../src/shared/store.ts', import.meta.url), 'utf8');
+  assert.match(src, /const forgetLoadedSourceRef = useRef\(source\);/,
+    'ref 初始值必须是 source 本体（不是捕获 source 的闭包）');
+  assert.match(src, /forgetLoadedSourceRef\.current = source;/,
+    '每渲染同步 ref——热换 source 后读到当前源');
+  assert.match(src, /forgetLoaded: \(ids\) => forgetLoadedSourceRef\.current\?\.forgetLoadedSessions\?\.\(ids\)/,
+    'controller 调用时经 ref 解引用到当前 source');
+  assert.ok(!src.includes('forgetLoadedRef.current(ids)'),
+    '旧写法（ref 里存闭包、调用时 blind 转发）必须移除');
+});
+
+// ---------- ⑥ demo 源的淘汰恢复（2026-12 审查修复） ----------
+
+// S3 淘汰在 demo 模式的下场：demo 没有连接层 loadedSessions 记忆（forgetLoadedSessions
+// 对它 no-op），resumeSession 又只发 sessionFocused 不重拉历史 → state 被淘汰后重进
+// 永远空白。修复 = demo 自录主会话历史 + resumeSession 在重进时重放（state 还在的
+// 会话不发 historyLoaded——重放会把正在跑的时间线重建一遍）。
+test('demo 源：forgetLoadedSessions 空实现 + resumeSession 重放录制的历史', async () => {
+  const { DemoAgent } = await import('../src/agent/demo/index.ts');
+  const demo = new DemoAgent();
+  assert.equal(typeof demo.forgetLoadedSessions, 'function',
+    '接口对齐：AgentSource.forgetLoadedSessions 可选能力要有实现（淘汰通知可达）');
+  // 空实现语义：对任意 id 调用不炸、不改会话状态
+  demo.forgetLoadedSessions(['s1', 's2']);
+  assert.equal(demo.currentId, SESSIONS[0].id, 'forgetLoadedSessions 是 no-op（demo 没有 loadedSessions 记忆）');
+
+  // 重放契约：send 一轮 → 录制历史；resumeSession 重进 → 发 historyLoaded（重建 blocks）
+  const events = [];
+  const off = demo.subscribe((ev) => { if (ev.type !== 'ready') events.push(ev); });
+  // 空会话：send 一轮（不等播完——录制随事件序同步发生）
+  const sid = '20260911-test-demo-01';
+  demo.send(sid, '修一个 bug');
+  assert.ok(events.some((ev) => ev.type === 'userMessage' && ev.sessionId === sid), 'send 的 userMessage 已发出');
+  // 主会话录制的两处写点随事件序同步发生：todoUpdated（t+300）与派发文本
+  //（t+900）落地后，user + assistant(tool_calls) + assistant 正文就都在录制里
+  // 了（不等整轮播完——验收 delta 在 6s 以后；思考段 4 行 × ~0.5s + 300ms ≈ 3s）。
+  await new Promise((r) => setTimeout(r, 4500));
+  // 模拟 store 淘汰：state 表清掉该会话 + forgetLoaded 通知 demo（no-op）
+  demo.forgetLoadedSessions([sid]);
+  // 重进：resumeSession 必须重放录制的历史（historyLoaded 先到、sessionFocused 后切）
+  events.length = 0;
+  await demo.resumeSession(sid);
+  const loaded = events.filter((ev) => ev.type === 'historyLoaded' && ev.sessionId === sid);
+  assert.equal(loaded.length, 1, '重进发一次 historyLoaded（淘汰后重进恢复时间线的依据）');
+  const msgs = loaded[0].history.messages;
+  assert.equal(msgs[0]?.role, 'user', '录制历史首条是用户消息');
+  assert.ok(msgs.some((m) => m.role === 'assistant' && m.tool_calls?.[0]?.function?.name === 'agent_dispatch'),
+    '主会话的工具调用（agent_dispatch）也在录制里——dispatch 卡可重建');
+  assert.ok(msgs.every((m) => m.role !== 'tool'),
+    'demo 的主会话不录 tool 行（agent_dispatch 的结果由 dispatchEnd 呈现，store 不建工具行）');
+  const focusIdx = events.findIndex((ev) => ev.type === 'sessionFocused');
+  const loadIdx = events.findIndex((ev) => ev.type === 'historyLoaded');
+  assert.ok(loadIdx !== -1 && focusIdx !== -1 && loadIdx < focusIdx, '历史先到、焦点后切（resumeSession 帧序纪律）');
+  off();
+});
+
+test('demo 源：没有录制历史的会话重进不发 historyLoaded（不编空快照抹时间线）', async () => {
+  const { DemoAgent } = await import('../src/agent/demo/index.ts');
+  const demo = new DemoAgent();
+  const events = [];
+  const off = demo.subscribe((ev) => { if (ev.type !== 'ready') events.push(ev); });
+  const sid = '20260911-test-demo-02';
+  await demo.resumeSession(sid);
+  assert.ok(!events.some((ev) => ev.type === 'historyLoaded'),
+    '没有录制（未发过消息/新会话）不发 historyLoaded——空快照会把演示对话流抹掉');
+  assert.ok(events.some((ev) => ev.type === 'sessionFocused'), '焦点照常切换');
+  off();
+});
+

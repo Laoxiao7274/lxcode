@@ -56,3 +56,26 @@ test("成功探测清掉失败记忆后，同刻不再复述旧失败", () => {
   assert.notEqual(probeFailCacheHit(memory, Date.now()), null);
   assert.equal(probeFailCacheHit(null, Date.now()), null, "成功后清缓存——显卡能力恢复不再复述旧失败");
 });
+
+// ---- 0.3.61：encoders_missing 误报（模拟器场景「一直存在」）的钉子 ----
+import { encodersListOutcome } from "../src/screen-probe.ts";
+
+test("listEncoders 收口判定：执行失败/超时零输出 = ok:false（不与「真没编码器」混淆）", () => {
+  // close（正常退出）恒成功——即使输出为空（老 ffmpeg 可能无候选输出）。
+  assert.deepEqual(encodersListOutcome(true, ""), { ok: true, out: "" });
+  // spawn error / 超时且零输出：ok=false——曾 resolve 空串被判 encoders_missing。
+  assert.equal(encodersListOutcome(false, "").ok, false);
+  // 超时但有部分输出：残串按实际内容判定，ok=true。
+  const partial = encodersListOutcome(false, " V....D libx264 ......... libx264 H.264");
+  assert.equal(partial.ok, true);
+  assert.ok(partial.out.includes("libx264"));
+});
+
+test("三分类文案分叉：list_unavailable 指 ffmpeg 本体执行失败，不判缺编译产物", () => {
+  const lu = probeFailMessage("encoders_list_unavailable", "");
+  assert.ok(lu.includes("ffmpeg 本体执行失败"), "第三分类必须说清是 -encoders 都跑不起来");
+  assert.ok(lu.includes("重新安装"), "修复路径仍是重装完整版");
+  assert.ok(!lu.includes("nvenc/qsv/amf/libx264 都不在编译产物里"), "不能把执行失败说成缺编译产物");
+  const missing = probeFailMessage("encoders_missing", "");
+  assert.ok(!missing.includes("本体执行失败"), "两类文案不能互换");
+});

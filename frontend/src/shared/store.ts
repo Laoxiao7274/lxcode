@@ -451,10 +451,11 @@ export function useAgent(source: AgentSource, hooks?: AgentHooks): {
     project: new Set(), assistant: new Set(),
   });
   /** 主域淘汰 → 连接层 forgetLoadedSessions（loadedSessions 记忆清账——被淘汰
-   *  会话重进时走全量装载）。source 经 ref 桥（与 autoSendRef 同款纪律）。 */
-  const forgetLoadedRef = useRef((ids: readonly string[]) => {
-    if (ids.length > 0) source?.forgetLoadedSessions?.(ids);
-  });
+   *  会话重进时走全量装载）。source 经 ref 桥（与 autoSendRef 同款纪律）：
+   *  ref 每渲染同步 source 本体，热换 source 后读到的是当前源——ref 里存的是
+   *  source（可测的查证点），闭包在调用时才解引用，不捕获首渲染的 source。 */
+  const forgetLoadedSourceRef = useRef(source);
+  forgetLoadedSourceRef.current = source;
   const operationErrorsRef = useRef(operationErrors);
   sessionStatesRef.current = sessionStates;
   assistantStatesRef.current = assistantStates;
@@ -489,7 +490,7 @@ export function useAgent(source: AgentSource, hooks?: AgentHooks): {
         const same = prev.size === next.size && [...next].every((id) => prev.has(id));
         if (!same) keepRef.current[space] = next;
       },
-      forgetLoaded: (ids) => forgetLoadedRef.current(ids),
+      forgetLoaded: (ids) => forgetLoadedSourceRef.current?.forgetLoadedSessions?.(ids),
       setCurrentId: (id) => { currentIdRef.current = id; setCurrentId(id); },
       setSessionStates: (next) => { sessionStatesRef.current = next; setSessionStates(next); },
       setAssistantStates: (next) => { assistantStatesRef.current = next; setAssistantStates(next); },

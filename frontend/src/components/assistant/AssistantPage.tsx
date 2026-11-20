@@ -261,23 +261,29 @@ export function AssistantPage({
 
   // 滚动跟随：与主时间线同一份状态机（useStickyFollow）——scrollRef 由它自己定位
   //（endRef 的祖先），这里的 ref 引用未使用（保持与 ChildSessionPage 同款解构）。
+  // onStick → restoreTail 走 ref 间接：useStickyFollow 调用点在 useWindowedHistory
+  // 之前，restoreTail（const）彼时还未声明（TDZ）——与 ChildSessionPage 同款。
+  const restoreTailRef = useRef<() => void>(() => {});
   const total = (state?.blocks.length ?? 0) + (state?.streaming ? 1 : 0);
   const { endRef, stickyRef, scrollRef } = useStickyFollow({
     empty: total === 0,
     composerScope: ".assistant-page",
     sessionKey: sessionId,
+    onStick: () => restoreTailRef.current(),
   });
   // **窗口化渲染 + 上翻扩窗的滚动锚定**（2026-12 会话切换优化批 2）：助手会话
   // 与主时间线/子会话页共用同一份机制（useWindowedHistory——窗口按会话派生，
   // 切会话首帧就是 40 块；上翻前插按高度差补偿 scrollTop）。之前助手页整列表
   // 全量挂载，大会话切进来一次挂上千个块（markdown 解析 + 工具行全在里面）。
-  // S4：窗口有上界，上翻到上界后转滑动窗口（头部补/尾部丢）；滚回底部整备恢复。
-  const { hidden, end, expandOlder, captureAnchor, clearAnchor } = useWindowedHistory({
+  // S4：窗口有上界，上翻到上界后转滑动窗口（头部补/尾部丢）；滚回底部整备恢复
+  //（onStick → restoreTail：滚动本身零渲染，恢复触发器挂在滚动事件的翻转上）。
+  const { hidden, end, expandOlder, restoreTail, captureAnchor, clearAnchor } = useWindowedHistory({
     sessionKey: sessionId,
     total,
     scrollRef,
     isSticky: () => stickyRef.current,
   });
+  restoreTailRef.current = restoreTail;
   // 上翻触顶：先补后端更早一页（assistant.history 的 before_seq 分页，与主域
   // chat.history 同协议），补不到再扩本地窗口——共用 useLoadOlderHistory。
   const loadOlder = useLoadOlderHistory({

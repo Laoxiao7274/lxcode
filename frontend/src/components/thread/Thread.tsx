@@ -70,12 +70,18 @@ export function Thread({
   // 发送缓动滚底：窗口内 RO 不瞬跳，由 tween 自己推进
   const smoothUntilRef = useRef(-1e9);
   const scrollTweenRef = useRef<gsap.core.Tween | null>(null);
+  // onStick → restoreTail 走 ref 间接：useStickyFollow 调用点在 useWindowedHistory
+  // 之前，restoreTail（const）彼时还未声明（TDZ）——回调走 ref 是本仓库惯例。
+  const restoreTailRef = useRef<() => void>(() => {});
   const { endRef, stickyRef, scrollRef, progRef } = useStickyFollow({
     empty,
     composerScope: ".main",
     sessionKey: state.currentId,
     holdScroll: () => performance.now() < smoothUntilRef.current,
     onDetach: () => scrollTweenRef.current?.kill(),
+    // 用户滚回底部（sticky false→true 翻转）→ 恢复被滑动窗口丢掉的尾部块。
+    // 判定复用 isNearBottom 现值（restoreTail 里自己读 stickyRef），不吃翻转沿。
+    onStick: () => restoreTailRef.current(),
   });
   // **换会话 = 程序置底而不是用户滚动**：useStickyFollow 的 scroll 兜底判定会在
   // 置底后 120ms 内把任何 scroll 事件当成程序自己的（prog 时间窗），但窗口重置
@@ -153,12 +159,15 @@ export function Thread({
   // 前插更早的块时按高度差补偿 scrollTop，视口内容不动）。
   // S4：窗口有上界（WINDOW_MAX）——上翻扩到上界后转滑动窗口（头部补/尾部丢），
   // 挂载块数不随上翻深度增长；被丢块仍在 state，滚回底部时贴底帧整备恢复。
-  const { windowSize, hidden, end, update: updateWindow, expandOlder, captureAnchor, clearAnchor } = useWindowedHistory({
+  // onStick（sticky false→true 翻转）→ restoreTail：滚动本身零渲染，恢复触发器
+  // 必须挂在滚动事件上，否则上翻后回底时定型尾块无限期缺失（S4 回归）。
+  const { windowSize, hidden, end, update: updateWindow, expandOlder, restoreTail, captureAnchor, clearAnchor } = useWindowedHistory({
     sessionKey: state.currentId,
     total,
     scrollRef,
     isSticky: () => stickyRef.current,
   });
+  restoreTailRef.current = restoreTail;
   // 窗口只切**已定型块**；流式块恒在末尾、永远落在窗口内——所以 hidden（按
   // 逻辑时间线算，已包含流式那一块）直接就是 blocks 的切片起点：
   //   hidden = total - windowSize = blocks.length + 1 - windowSize

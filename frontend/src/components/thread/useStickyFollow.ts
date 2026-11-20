@@ -23,6 +23,13 @@ export function useStickyFollow(opts: {
   holdScroll?: () => boolean;
   /** 容器即将换代时的额外清理（杀进行中的 tween，别让 onUpdate 写游离节点）。 */
   onDetach?: () => void;
+  /** sticky false→true 翻转时回调（userIntent 与 scroll 兜底两处各触发）。
+   *  S4 回归的恢复触发器：用户上翻（sticky=false）期间定型尾块落进窗口外
+   *  不渲染；恢复唯一触发器原是「渲染 + sticky 同时成立」——上翻后滚动本身
+   *  零渲染，永不满足。回调里消费方调 restoreTail()（setWin 触发渲染），
+   *  恢复判定**复用 isNearBottom 现值**（消费方在回调里自己读，而非翻转沿
+   *  瞬时值）——防用户正在上翻时 sticky 短暂误判导致恢复打架。 */
+  onStick?: () => void;
   /** 会话键（currentId / 子会话 id）：**进 effect 依赖**。只传 empty/composerScope
    *  的话，两个非空会话之间切换 effect 不重跑——只把 stickyRef 置真、指望
    *  ResizeObserver 跟随，而新旧会话内容高度接近时 RO 不触发 → 视口留在上一个
@@ -41,6 +48,9 @@ export function useStickyFollow(opts: {
   holdRef.current = opts.holdScroll;
   const detachRef = useRef(opts.onDetach);
   detachRef.current = opts.onDetach;
+  // onStick 同款走 ref（身份每渲染都变，理由同上）。
+  const stickCbRef = useRef(opts.onStick);
+  stickCbRef.current = opts.onStick;
   useEffect(() => {
     const el = endRef.current?.parentElement?.parentElement ?? null;
     scrollRef.current = el;
@@ -52,7 +62,12 @@ export function useStickyFollow(opts: {
     const userIntent = () => {
       // 贴底判定与「回到底部」按钮（ScrollToBottom）**同源**：同一个常量、同一个
       // 函数（shared/scroll-metrics）。在这里再写一个 200 就是分叉的开始。
+      const was = stickyRef.current;
       stickyRef.current = isNearBottom(el);
+      // false→true 翻转 = 用户滚回了底部：恢复触发器（S4）——上翻期间尾块
+      // 落进窗口外不渲染，滚动本身零渲染，原「渲染+sticky 同时成立」的恢复
+      // 路径永不满足；setWin 走这条回调触发渲染，恢复才算接上了。
+      if (!was && stickyRef.current) stickCbRef.current?.();
     };
     const onWheel = () => userIntent();
     const onTouch = () => userIntent();

@@ -51,6 +51,7 @@ import {
   probeFailureKind,
   probeFailMessage,
   probeFailCacheHit,
+  encodersListOutcome,
   type ProbeFailureKind,
   type ProbeFailMemory,
 } from "./screen-probe";
@@ -141,13 +142,17 @@ function emitFrame(frame: Buffer): void {
 /** 编码器探测预热：投屏未启动时提前在后台把 probeEncoders 跑完（每个候选
  *  ~1s，串行最长 4 个 ≈ 数秒），真机「点开始要等好几秒」的根因之一——
  *  首次 startFfmpeg 现场探测把 start→出流的空窗拉长数秒，用户以为没点上
- *  又点。壳进程常驻，预热一次终身受益（结果模块级缓存）。 */
+ *  又点。壳进程常驻，预热一次终身受益（结果模块级缓存）。
+ *  **预热失败不置 lastError**（0.3.61「一直存在」误报的另一半根因）：用户没
+ *  点投屏就开始报错，且渲染层 st.error 非空即显示——失败只进失败记忆
+ *  （probeFailMemory，TTL 复述机制不变），等用户真点开始（startFfmpeg →
+ *  probeEncoders 的 reportFailure=true 路径）时再以真实原因上报。 */
 export function warmUpEncoderProbe(): void {
   if (!SCREEN_SUPPORTED) return; // mac：无 ffmpeg 捕获链，探测无从谈起
   setTimeout(() => {
     const bin = ffmpegPath();
     if (!bin) return;
-    void probeEncoders(bin).then((list) => {
+    void probeEncoders(bin, { reportFailure: false }).then((list) => {
       console.log(`[screen] 编码器探测预热完成: ${list.join(", ") || "（无）"}`);
     });
   }, 3_000); // 壳启动稳定后 3s 再跑（不与启动期 IO 抢）
@@ -292,30 +297,73 @@ export function parseEncodersList(output: string, candidates: readonly string[])
   return { present, missing };
 }
 
-function listEncoders(bin: string): Promise<string> {
-  return new Promise<string>((resolve) => {
+/** `-encoders` 子命令的执行结果。ok=false = ffmpeg 本体都跑不起来（spawn
+ *  失败 / 超时且零输出）——此时预筛不可信，**绝不能**拿空输出判「缺编码器」
+ *  （0.3.61 实撞：模拟器场景 spawn 失败 → out="" → 四候选全 missing →
+ *  encoders_missing 误报「缺编译产物请重装」）。ok=true 但超时截断时 out 可能
+ *  是残串——残串按实际内容判定（文本匹配是子串/行首匹配，截断只可能漏、
+ *  不会多报）。 */
+export interface EncodersListResult {
+  ok: boolean;
+  out: string;
+}
+
+function listEncoders(bin: string): Promise<EncodersListResult> {
+  return new Promise<EncodersListResult>((resolve) => {
     const p = spawn(bin, ["-hide_banner", "-encoders"], { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
     let out = "";
     p.stdout?.on("data", (d: Buffer) => { out += d.toString(); });
     let settled = false;
-    const done = (): void => { if (!settled) { settled = true; resolve(out); } };
-    p.on("error", () => done());
-    p.on("close", () => done());
-    setTimeout(done, 10_000);
+    // 判真伪：正常退出（close）= 成功；spawn error 与超时只有真的收到了输出
+    // 才算成功（残串按实际内容判定）——零输出时 ok=false，预筛不可信。
+    // 判定收口在 screen-probe.ts 的 encodersListOutcome（测试与生产同一份）。
+    const done = (ranToCompletion: boolean): void => {
+      if (settled) return;
+      settled = true;
+      resolve(encodersListOutcome(ranToCompletion, out));
+    };
+    p.on("error", () => done(false));
+    p.on("close", () => done(true));
+    setTimeout(() => done(false), 10_000);
   });
 }
 
-async function probeEncoders(bin: string): Promise<string[]> {
+/** reportFailure：失败时是否写 lastError 上报。startFfmpeg 路径（用户点了
+ *  开始）= true；warmUp 预热路径 = false——预热失败只进失败记忆不置
+ *  lastError，避免用户没点投屏就「一直存在」地报错（0.3.61）。TTL 命中分支
+ *  里的复述同样受它约束：预热阶段命中 TTL 复述也不会把错误顶进 lastError。
+ *  在途去重：warmUp（壳启动 3s）与轮询循环触发的探测可能并发重入，共用同
+ *  一个 promise（settle 时清空）——否则双份 4×15s 的 ffmpeg 实例探测。 */
+let probeInFlight: Promise<string[]> | null = null;
+async function probeEncoders(bin: string, opts: { reportFailure?: boolean } = {}): Promise<string[]> {
+  const report = opts.reportFailure ?? true;
   if (encoderProbe) return encoderProbe;
+  if (probeInFlight) return probeInFlight;
+  probeInFlight = doProbeEncoders(bin, report).finally(() => { probeInFlight = null; });
+  return probeInFlight;
+}
+
+async function doProbeEncoders(bin: string, report: boolean): Promise<string[]> {
   // TTL 命中：复述上次探测的真实失败原因（reconcile 每轮 start 前清了
   // lastError，不复述的话 startFfmpeg 会落「缺编码器」兜底——0.3.56 实撞）。
   const hit = probeFailCacheHit(probeFailMemory, Date.now());
   if (hit) {
-    lastError = hit.message;
-    lastErrKind = "encoder_unavailable";
+    if (report) {
+      lastError = hit.message;
+      lastErrKind = "encoder_unavailable";
+    }
     return [];
   }
-  const { present } = parseEncodersList(await listEncoders(bin), PROBE_CHAIN);
+  const enc = await listEncoders(bin);
+  if (!enc.ok) {
+    // ffmpeg 本体跑不起来（spawn 失败/超时零输出）——预筛不可信，**跳过
+    // 预筛**：四候选全部送真实例化探测。真实例化同样跑不起来的话按
+    // encoders_list_unavailable 报（「ffmpeg 本体执行失败」），与「缺编译
+    // 产物」（重装 ffmpeg）明确区分——空输出判 missing 是 0.3.61 的误报根因。
+    console.log("[screen] -encoders 执行失败（无有效输出）——跳过预筛，全部候选走真实例化探测");
+    return probeAll(bin, [...PROBE_CHAIN], "encoders_list_unavailable", report);
+  }
+  const { present } = parseEncodersList(enc.out, PROBE_CHAIN);
   const available: string[] = [];
   const failedTails: string[] = [];
   for (const e of present) {
@@ -331,13 +379,45 @@ async function probeEncoders(bin: string): Promise<string[]> {
   // 全失败：区分「exe 里根本没编这些编码器」（重装 ffmpeg）与「在列但起不
   // 来」（显卡驱动/桌面复制），并附 ffmpeg 输出摘要。失败带 TTL 缓存，
   // **真实原因与时间戳一起缓存**——TTL 内的重试要报同一真实原因。
-  const kind = probeFailureKind(PROBE_CHAIN.filter((e) => !present.includes(e)));
+  return recordProbeFailure(
+    probeFailureKind(PROBE_CHAIN.filter((e) => !present.includes(e))),
+    failedTails,
+    report,
+  );
+}
+
+/** 预筛不可信（-encoders 跑不起来）时的全量探测：四候选全送真实例化；任一
+ *  成功即成功缓存，全失败按 fallbackKind（encoders_list_unavailable）收口。 */
+async function probeAll(
+  bin: string, candidates: string[], fallbackKind: ProbeFailureKind, report: boolean,
+): Promise<string[]> {
+  const available: string[] = [];
+  const failedTails: string[] = [];
+  for (const e of candidates) {
+    const r = await probeOne(bin, e);
+    if (r.ok) available.push(e);
+    else failedTails.push(`${e}: ${r.stderrTail || "无输出"}`);
+  }
+  if (available.length > 0) {
+    encoderProbe = available;
+    probeFailMemory = null; // 显卡能力恢复：清掉旧失败记忆，不再复述
+    return encoderProbe;
+  }
+  return recordProbeFailure(fallbackKind, failedTails, report);
+}
+
+/** 探测全失败的收口：组装真实原因文案 + 写失败记忆（TTL 起点）+ 按需上报
+ *  lastError（warmUp 预热路径 report=false——失败只进记忆，等用户真点开始
+ *  再报）。所有失败出口共用（kind 分类与文案不得漂移）。 */
+function recordProbeFailure(kind: ProbeFailureKind, failedTails: string[], report: boolean): string[] {
   const summary = failedTails.join(" || ");
   const message = probeFailMessage(kind, summary);
   probeFailMemory = { kind, message, at: Date.now() };
-  lastError = message;
-  lastErrKind = "encoder_unavailable";
-  console.log(`[screen] 编码器探测全失败（${kind}）：${lastError}`);
+  if (report) {
+    lastError = message;
+    lastErrKind = "encoder_unavailable";
+  }
+  console.log(`[screen] 编码器探测全失败（${kind}${report ? "" : "，预热不上报"}）：${message}`);
   return [];
 }
 
@@ -687,7 +767,16 @@ async function reconcile(): Promise<void> {
   } else {
     // want=false 且未在跑：计数清零（下次 start 是全新尝试）。
     // 熔断态的 lastError 保留上报——手机端要能看到「为什么停了」。
+    // 编码器探测类错误（err_kind=encoder_unavailable）例外：它是 probeEncoders
+    // （含 TTL 复述）写的，只该在「用户真点开始」的尝试里出现。用户没点
+    // 投屏（want 恒 false，如模拟器场景只在观看页停留）时它不该报——预热
+    // 失败已不再置 lastError（0.3.61），这里清掉的是历史残留/TTL 复述的
+    // 旧错误：want=false 意味着没有任何 start 尝试在等待展示原因。
     clearRestartFailures();
+    if (lastErrKind === "encoder_unavailable") {
+      lastError = "";
+      lastErrKind = undefined;
+    }
   }
 }
 

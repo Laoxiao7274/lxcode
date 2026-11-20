@@ -287,9 +287,12 @@ export function AssistantWorkspace({
   // 部分测试桩）静默跳过——淘汰策略本身在 store 收口，这里只是喂豁免名单。
   useEffect(() => {
     if (!retainAssistant) return;
-    const ids = childViewId !== null ? [...mountedIds, childViewId] : [...mountedIds];
+    // 活跃标签的 sessionId 一并豁免：它与 mountedIds 不是同一条路径——未挂载
+    // 就先活跃（列表点击瞬间 / 挂载 effect 尚未提交）也存在短暂窗口，而主域
+    // store 的豁免集合恒含 getCurrentId()，两域对齐。
+    const ids = childViewId !== null ? [...mountedIds, sessionId, childViewId] : [...mountedIds, sessionId];
     retainAssistant(ids);
-  }, [mountedIds, childViewId, retainAssistant]);
+  }, [mountedIds, childViewId, sessionId, retainAssistant]);
 
   const handleSessionId = useCallback((id: string) => {
     knownTick(id);

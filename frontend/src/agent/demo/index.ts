@@ -115,6 +115,8 @@ export class DemoAgent implements AgentSource, JobAdminSource, LogsSource {
   private emittingSession = "";
   /** 子会话的消息（演示态的「子会话历史」，见 childEmit / childHistory）。 */
   private childMsgs_: HistoryMessage[] = [];
+  /** 主会话的消息（每会话一份——S3 淘汰后的恢复源，见 resumeSession）。 */
+  private mainMsgs_ = new Map<string, HistoryMessage[]>();
   /** 演示态每个会话独立计轮（compact 用：累计过几轮就当作有可压区间）。 */
   private turns = new Map<string, number>();
   /** 演示态的整段会话统计（每会话一份——与真后端"整段日志折叠"同形状）。 */
@@ -171,8 +173,11 @@ export class DemoAgent implements AgentSource, JobAdminSource, LogsSource {
       this.emit({ type: "sessionsChanged" });
     }
     this.emit({ type: "userMessage", sessionId, text: display, seq: this.nextSeq(sessionId) });
+    // 主会话历史同步录制（resumeSession 重放的数据源）：userMessage 占一个 seq，
+    // 与事件同一条事实——不另编一份。
+    this.recordMain(sessionId, { role: "user", content: display, seq: this.seqBySession.get(sessionId) });
     this.emit({ type: "busy", sessionId, busy: true });
-    this.runTurn(sessionId);
+    this.runTurn(sessionId, display, this.seqBySession.get(sessionId) ?? 0);
   }
 
   /** 下一条消息的 seq（每会话自增——与真后端的库内序号同语义：只要求同一会话内
@@ -422,7 +427,21 @@ export class DemoAgent implements AgentSource, JobAdminSource, LogsSource {
     // 重建时间线，空快照会把演示的对话流抹掉。
     const picked = this.models_.get(id);
     if (picked) this.emit({ type: "modelChanged", sessionId: id, model: picked });
+    // S3 淘汰恢复：demo 没有连接层 loadedSessions 记忆，淘汰通知对它是 no-op；
+    // 恢复靠**重放录制的历史**——只在 store 里没有该会话的 state 时发（state 还
+    // 在的会话走「本地秒回」语义，重放会把正在跑的时间线重建一遍）。
+    const msgs = this.mainMsgs_.get(id) ?? [];
+    if (msgs.length > 0) {
+      this.emit({ type: "historyLoaded", sessionId: id, history: { sessionId: id, messages: msgs, busy: this.busySessions.has(id), pending: this.pendingConfirms.get(id) ?? null } });
+    }
     this.emit({ type: "sessionFocused", id });
+  }
+
+  /** S3 淘汰通知（AgentSource 可选能力，接口对齐）：演示没有连接层的
+   *  loadedSessions 记忆——淘汰清账对它无事可做；恢复走 resumeSession 的历史
+   *  重放（见上）。 */
+  forgetLoadedSessions(ids: readonly string[]): void {
+    void ids;
   }
 
   renameSession(id: string, title: string): void {
@@ -681,7 +700,27 @@ export class DemoAgent implements AgentSource, JobAdminSource, LogsSource {
     this.emit({ type: "busy", sessionId, busy: false });
   }
 
-  private runTurn(sessionId: string) {
+  // ---- 主会话历史录制/重放（S3 淘汰的恢复源，见 resumeSession / forgetLoadedSessions）----
+
+  /** 录一条主会话消息（按会话分表；与真实链路的「事件序即历史」对齐——这里录的
+   *  就是 emit 过的事件，不预先编一份）。 */
+  private recordMain(sessionId: string, msg: HistoryMessage): void {
+    const list = this.mainMsgs_.get(sessionId) ?? [];
+    list.push(msg);
+    this.mainMsgs_.set(sessionId, list);
+  }
+
+  /** 续写指定会话历史最后一条 assistant 消息（delta 流的录制形态——与 childEmit
+   *  同一份映射：无正文先开一条，续写补 content）。 */
+  private appendMainText(sessionId: string, text: string): void {
+    const list = this.mainMsgs_.get(sessionId) ?? [];
+    const last = list[list.length - 1];
+    if (last && last.role === "assistant" && !last.tool_calls) last.content += text;
+    else list.push({ role: "assistant", content: text });
+    this.mainMsgs_.set(sessionId, list);
+  }
+
+  private runTurn(sessionId: string, task: string, seq: number) {
     // ---- 主 Agent：思考（选人与拟任务）----
     let t = 300;
     MAIN_REASONING.forEach((line) => {
@@ -690,10 +729,16 @@ export class DemoAgent implements AgentSource, JobAdminSource, LogsSource {
     });
 
     // ---- 主 Agent：任务清单（调度视角）----
-    this.at(sessionId, t + 300, () => this.emit({ type: "todoUpdated", items: TODO_INITIAL }));
+    this.at(sessionId, t + 300, () => {
+      this.recordMain(sessionId, { role: "assistant", reasoning_content: "", content: "", tool_calls: [{ id: "d1", function: { name: "agent_dispatch", arguments: JSON.stringify({ agent: "coder", task: "给 internal/agent 的工具循环加 per-tool 120s 超时兜底" }) } }] });
+      this.emit({ type: "todoUpdated", items: TODO_INITIAL });
+    });
 
     // ---- 主 Agent：派发（dispatch 卡开）----
-    this.at(sessionId, t + 900, () => this.emit({ type: "delta", kind: "text", text: "这个任务边界清晰，我派**代码 Agent**去做，稍等。\n\n" }));
+    this.at(sessionId, t + 900, () => {
+      this.appendMainText(sessionId, "这个任务边界清晰，我派**代码 Agent**去做，稍等。\n\n");
+      this.emit({ type: "delta", kind: "text", text: "这个任务边界清晰，我派**代码 Agent**去做，稍等。\n\n" });
+    });
     // 事件序与真实后端一致：模型先发工具调用（agent_dispatch），内核再开
     // 子上下文。store 对 agent_dispatch 不建工具行（卡才是它的渲染形态）
     // ——这里照发，保证 demo 复现真实链路的事件序（重复渲染类回归可测）。
@@ -844,10 +889,17 @@ export class DemoAgent implements AgentSource, JobAdminSource, LogsSource {
     });
 
     // ---- 主 Agent：验收汇总 ----
-    this.at(sessionId, 2600, () => this.emit({ type: "delta", kind: "text", text: "代码 Agent 完成了，我核对过结果：\n\n" }));
+    this.at(sessionId, 2600, () => {
+      this.appendMainText(sessionId, "代码 Agent 完成了，我核对过结果：\n\n");
+      this.emit({ type: "delta", kind: "text", text: "代码 Agent 完成了，我核对过结果：\n\n" });
+    });
     let t = 3200;
     MAIN_ANSWER.forEach((p) => {
-      this.at(sessionId, t, () => this.emit({ type: "delta", kind: "text", text: (p === "" ? "\n" : p) + "\n" }));
+      this.at(sessionId, t, () => {
+        const text = (p === "" ? "\n" : p) + "\n";
+        this.appendMainText(sessionId, text);
+        this.emit({ type: "delta", kind: "text", text });
+      });
       t += 240 + p.length * 6;
     });
     // 产物汇总（子 Agent 的改动——验收视图）+ 轮完成
@@ -864,16 +916,18 @@ export class DemoAgent implements AgentSource, JobAdminSource, LogsSource {
         //（模型要当作用户回合才能回应），前端按文本前缀识别、对用户隐藏（hidden：
         // 不上对话时间线——任务状态只在 Jobs 面板）。
         // 措辞对齐契约 §5：EndedBy=self → 结束通告；EndedBy=user → 「不要重启」。
+        const noticeText = JOB_NOTICE_PREFIX + (settled.ended_by === "user"
+          ? `用户主动结束了后台任务 ${settled.label}。这不是失败，不要重启它；等用户指示。`
+          : `后台任务 ${settled.label} 结束（退出码 0）。用 job_output 读输出。`);
         this.emit({
           type: "userMessage",
           sessionId,
-          // 通告在历史里是**真实 user 角色消息**（模型要当用户回合才能回应），
+          // 通告在历史里是**真实 user 角色消息**（模型要当作用户回合才能回应），
           // 所以它同样占一个 seq——撤回一条更早的消息会把它一起带走。
           seq: this.nextSeq(sessionId),
-          text: JOB_NOTICE_PREFIX + (settled.ended_by === "user"
-            ? `用户主动结束了后台任务 ${settled.label}。这不是失败，不要重启它；等用户指示。`
-            : `后台任务 ${settled.label} 结束（退出码 0）。用 job_output 读输出。`),
+          text: noticeText,
         });
+        this.recordMain(sessionId, { role: "user", content: noticeText, seq: this.seqBySession.get(sessionId) });
       }
       const usage = 2545 + Math.floor(Math.random() * 400);
       // 整段统计按轮累加（演示事实——与真后端的「读库折叠整段日志」同形状）

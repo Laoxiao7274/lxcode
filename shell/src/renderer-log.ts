@@ -9,6 +9,14 @@
 //     MAX_CRASH_RECOVERIES 停止（防止崩溃循环把日志刷爆/把 CPU 吃满）。
 // main.ts 只做事件接线与实际 reload/写盘（Electron 依赖没法在 node:test 里引入，
 // 判定逻辑全部收在这里——与 cert-allow.ts 同一条纪律）。
+//
+// 崩溃取证（2026-12 用户 0.3.60 两次整壳静默死亡、转储零落盘）补充两条约定：
+//   * 主进程 minidump 由 crashReporter（main.ts 启动）落在 **crashDumps 目录**
+//     （Windows 默认 <userData>/Crashpad，打包壳即 %APPDATA%\lxcode\Crashpad），
+//     每次启动的 boot 行会记下实际路径；
+//   * renderer.log 尾部的退出语义：`boot #N` = 启动；`graceful quit` = 走了
+//     will-quit 正常收尾；`FATAL main:` = 主进程 JS 异常兜底。三者全无即
+//     「整壳被外部强杀/原生崩溃」，去 crashDumps 目录找 .dmp。
 import { join } from "node:path";
 
 export const RENDERER_LOG_MAX_BYTES = 5 << 20; // 5MB
@@ -38,6 +46,31 @@ export function consoleLevelName(level: number | string): string {
 /** 轮转判定：shouldRotate(logSize) — 超 5MB 就轮转（两代：.log → .log.old 覆盖）。 */
 export function shouldRotate(logSize: number): boolean {
   return logSize >= RENDERER_LOG_MAX_BYTES;
+}
+
+/** 启动序号判定（闪退循环检测）：bootCounter 看本文件的 `boot #N` 行。
+ *
+ *  0.3.60 两次整壳静默死亡后加的取证：主进程每次启动往 renderer.log 写一行
+ *  `boot #N`——序号从本文件上一次 boot 行 +1 推出（简单幂等，不另开状态文件；
+ *  日志轮转后 .old 里还有旧 boot 行，取两代里的最大值，序号只求单调不求连续）。
+ *  连续启动而中间没有 graceful quit，就是闪退循环。 */
+export function nextBootCount(previousLines: string[]): number {
+  let max = 0;
+  for (const line of previousLines) {
+    const m = /\[main\] boot #(\d+)/.exec(line);
+    if (m) {
+      const n = Number.parseInt(m[1]!, 10);
+      if (Number.isFinite(n) && n > max) max = n;
+    }
+  }
+  return max + 1;
+}
+
+/** 主进程 JS 异常兜底行的正文（main.ts 拼 rendererLogLine 用）：`FATAL main:`
+ *  前缀 + 错误类型与堆栈，便于和渲染层错误区分。 */
+export function fatalMainLine(err: unknown, kind: "uncaughtException" | "unhandledRejection"): string {
+  if (err instanceof Error) return `FATAL main: ${kind} ${err.name}: ${err.message}\n${err.stack ?? "(无堆栈)"}`;
+  return `FATAL main: ${kind} ${String(err)}`;
 }
 
 /** 连崩退避状态机的判定：第 n 次（从 1 计）连崩后要不要自动恢复、等多久。

@@ -123,11 +123,30 @@ export function useWindowedHistory(opts: {
   // 不需要锚定；贴底跟随的 RO 自会把视口带回底部）。恢复后窗口回到「尾部窗口」
   // 形态，与切会话重置同款；③ end 本就应 ≤ total（slice 越界会被 React/TS 静默
   // 吞掉，先在这里钳住）。
+  //
+  // 恢复触发器有两条：本渲染期判定（渲染帧 + sticky 同时成立——内容增高/追加
+  // 引发的渲染）与 restoreTail（onStick 回调——滚动事件引发的 false→true 翻转，
+  // **滚动本身零渲染**，S4 回归「上翻后回底时定型尾块无限期缺失」的修复口）。
+  // 两条路的条件一致（sticky && end < total，不再附加 span < total——span≥total
+  // 时恢复本无害，且保证「sticky ⇒ 窗口为尾部窗口」不变式：贴底时看到的永远是
+  // 完整尾部）。恢复帧 sticky=true：captureSlideAnchor / shouldAnchorForExpand
+  // 都对 sticky 短路（不记锚），与贴底跟随不打架。
+  const restoreTail = useCallback(() => {
+    const sticky = isSticky?.() ?? false;
+    if (!sticky) return;
+    setWin((cur) => {
+      if (cur.key !== sessionKey) return cur;
+      const end = Math.min(cur.end, total);
+      // 已是尾部窗口（没有被丢的尾部块）就不动——避免无谓的整备渲染。
+      if (end >= total) return cur;
+      return { key: sessionKey, span: clampSpan(WINDOW_INITIAL, total), end: total };
+    });
+  }, [sessionKey, total, isSticky]);
   if (sameKey) {
     const sticky = isSticky?.() ?? false;
     if (win.end > total) {
       setWin({ ...win, end: total, span: clampSpan(win.span, total) });
-    } else if (sticky && win.end < total && win.span < total) {
+    } else if (sticky && win.end < total) {
       setWin({ key: sessionKey, span: clampSpan(WINDOW_INITIAL, total), end: total });
     }
   }
@@ -228,5 +247,5 @@ export function useWindowedHistory(opts: {
     // 只补"内容长高"的那部分：高度没变（窗口已到底、没有更早的块）不动滚动位置。
     if (grew > 0) el.scrollTop = anchor.top + grew;
   }, [hidden, scrollRef]);
-  return { windowSize: span, hidden, end, update, expandOlder, captureAnchor, clearAnchor };
+  return { windowSize: span, hidden, end, update, expandOlder, restoreTail, captureAnchor, clearAnchor };
 }
