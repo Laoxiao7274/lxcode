@@ -272,6 +272,11 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
     this.conn.focus(id);
   }
 
+  /** 忘掉一批会话的已装载记忆（S3 states 淘汰的配套，见 AgentSource 注释）。 */
+  forgetLoadedSessions(ids: readonly string[]): void {
+    for (const id of ids) this.loadedSessions.delete(id);
+  }
+
   // ---- AgentSource 接口 ----
 
   send(sessionId: string, text: string, opts?: SendOptions): void {

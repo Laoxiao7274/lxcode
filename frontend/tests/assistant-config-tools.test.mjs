@@ -92,7 +92,7 @@ test('③ WSAgent wire：get 解析 toolWhitelist/builtinDefaults、set 透传 t
 });
 
 test('④ shared 类型：AssistantConfig.toolWhitelist / builtinDefaults（可选 string[]）', () => {
-  const src = fs.readFileSync(new URL('../src/shared/types.ts', import.meta.url), 'utf8');
+  const src = fs.readFileSync(new URL('../src/shared/types/settings.ts', import.meta.url), 'utf8');
   assert.match(src, /toolWhitelist\?: string\[];/, 'toolWhitelist 类型字段在场');
   assert.match(src, /builtinDefaults\?: string\[];/, 'builtinDefaults 类型字段在场');
 });

@@ -20,10 +20,13 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 const GOLDEN = new URL('../../internal/protocol/testdata/golden.json', import.meta.url);
-const TYPES = new URL('../src/shared/types.ts', import.meta.url);
+const TYPES_DIR = new URL('../src/shared/types/', import.meta.url);
 
 const golden = JSON.parse(readFileSync(GOLDEN, 'utf8'));
-const typesSrc = readFileSync(TYPES, 'utf8');
+// 类型按协议域拆在 types/ 下（types.ts 是桶导出）——_type 校验要扫全部域文件。
+const typesSrc = ['context','rewind','jobs','attachments','events','chat','git','source','search','settings','catalog','agent-admin']
+  .map((f) => readFileSync(new URL(`./${f}.ts`, TYPES_DIR), 'utf8'))
+  .join('\n');
 
 // ---- types.ts 解析辅助 ----
 

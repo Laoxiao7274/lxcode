@@ -1,7 +1,8 @@
 // main.ts —— Electron 壳主进程：只做窗口/单实例/sidecar 生命周期，不放业务
 // （AGENTS.md §2.1 Electron 侧工程纪律）。渲染层复用 frontend/ 同一套
 // React 应用，经 WS 直连 127.0.0.1:7789，与浏览器/CLI 客户端同权。
-import { readFile, stat } from "node:fs/promises";
+import { appendFile, readFile, rename, stat } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, net, Notification, protocol } from "electron";
@@ -15,6 +16,7 @@ import { shouldAllowSelfSigned } from "./cert-allow";
 import { startScreenPolling, stopScreenPolling, warmUpEncoderProbe } from "./screen";
 import { startInputPolling, stopInputPolling, setControllingCallback } from "./input";
 import { setTrayHint } from "./tray";
+import { consoleLevelName, crashRecovery, rendererLogLine, rendererLogPaths, shouldRotate } from "./renderer-log";
 
 // userData 目录名与应用身份（单实例锁、任务栏、通知都吃这个）
 app.setName("lxcode");
@@ -78,6 +80,52 @@ app.on("certificate-error", (event, _webContents, url, error, _certificate, call
 });
 
 let win: BrowserWindow | null = null;
+
+// ===== 渲染层可观测性 + 崩溃自动恢复（2026-12「跑一段时间全白屏」止血）=====
+// 白屏的两条根因（渲染进程崩溃/OOM、React 渲染期未捕获异常卸掉整树）原先都
+// 无恢复、无日志：打包壳的 stdout 无处落盘，渲染层 console 全部蒸发。这里把
+// 渲染层日志写进 <userData>/renderer.log（判定逻辑在 ./renderer-log.ts，可单测）。
+const LOG_PATHS = rendererLogPaths(app.getPath("userData"));
+let crashStreak = 0; // 连崩计数（did-finish-load 成功清零；超过上限停止自动 reload）
+
+/** 异步追加一行渲染层日志；超 5MB 先两代轮转（.log → .log.old 覆盖）。
+ *  全程 fire-and-forget：日志写不进去不能影响主进程任何流程。 */
+function appendRendererLog(line: string): void {
+  void (async () => {
+    try {
+      if (existsSync(LOG_PATHS.log)) {
+        const s = await stat(LOG_PATHS.log);
+        if (shouldRotate(s.size)) {
+          await rename(LOG_PATHS.log, LOG_PATHS.old).catch(() => { /* .old 被占用等——放弃旧代，直接续写 */ });
+        }
+      }
+      await appendFile(LOG_PATHS.log, line);
+    } catch { /* 日志失败静默——观测通道自身不可信源 */ }
+  })();
+}
+
+/** 渲染进程崩溃后的自动恢复时序：记日志 → 按连崩退避 reload → 超限停止。
+ *  reload 前再查 isLoading：loadURL/did-fail-load 期间（页面根本没起来）不叠
+ *  reload——加载在飞时再叠一次会打架；此时本次恢复放弃，不重排定时器（下一次
+ *  崩溃会再走这里，用户手动重启兜底）。 */
+function scheduleRendererRecovery(details: { reason: string; exitCode: number }): void {
+  crashStreak += 1;
+  const decision = crashRecovery(crashStreak);
+  if (!decision.recover) {
+    appendRendererLog(rendererLogLine(new Date(), "error",
+      `render-process-gone reason=${details.reason} exitCode=${details.exitCode} —— 连崩 ${crashStreak} 次超过上限，停止自动恢复（请手动重启）`));
+    console.log(`[shell] 渲染进程连崩 ${crashStreak} 次，停止自动恢复（reason=${details.reason}）`);
+    return;
+  }
+  appendRendererLog(rendererLogLine(new Date(), "error",
+    `render-process-gone reason=${details.reason} exitCode=${details.exitCode} —— ${decision.waitMs}ms 后自动 reload（连崩第 ${crashStreak} 次）`));
+  console.log(`[shell] 渲染进程崩溃（reason=${details.reason} exitCode=${details.exitCode}），${decision.waitMs}ms 后自动恢复`);
+  setTimeout(() => {
+    const w = win;
+    if (!w || w.isDestroyed() || w.webContents.isLoading()) return;
+    w.webContents.reload();
+  }, decision.waitMs);
+}
 
 /** 主进程 → 渲染层的统一推送出口：窗口/webContents 已销毁时静默跳过。
  *
@@ -284,11 +332,35 @@ if (!app.requestSingleInstanceLock()) {
     // 控制态翻转 → 托盘 tooltip（「正在被控制」优先于「正在向手机投屏」）
     setControllingCallback((controlled) => setTrayHint(/* capturing */ true, controlled));
 
-    // 产线诊断通道：渲染层控制台与加载失败转发到主进程 stdout
-    // （打包后无 DevTools 场景排查渲染层问题全靠它）
-    win.webContents.on("console-message", (_e, _lvl, msg) => console.log(`[renderer] ${msg}`));
-    win.webContents.on("did-fail-load", (_e, code, desc, url) =>
-      console.log(`[shell] 加载失败 ${url}: ${code} ${desc}`));
+    // 产线诊断通道：渲染层控制台/加载失败/崩溃转发到 <userData>/renderer.log
+    // （判定逻辑在 ./renderer-log.ts；打包后无 DevTools，渲染层问题全靠它）。
+    // console-message 回调在主进程侧执行（event.level/message/lineNumber/sourceId），
+    // error 级同时进 stdout 便于 dev 观察；frame 可能已销毁，读 frame 前先判。
+    win.webContents.on("console-message", (e) => {
+      const src = e.frame && !e.frame.url ? "" : e.frame ? ` ${e.frame.url}` : "";
+      const line = rendererLogLine(new Date(), consoleLevelName(e.level), `${e.message} (${e.sourceId}:${e.lineNumber})${src}`);
+      appendRendererLog(line);
+      if (e.level === "error") console.log(`[renderer] ${e.message}`);
+    });
+    win.webContents.on("did-fail-load", (_e, code, desc, url) => {
+      appendRendererLog(rendererLogLine(new Date(), "error", `did-fail-load ${url}: ${code} ${desc}`));
+      console.log(`[shell] 加载失败 ${url}: ${code} ${desc}`);
+    });
+    // 渲染进程崩溃（白屏根因①）：记日志 + 连崩退避自动 reload（scheduleRendererRecovery）
+    win.webContents.on("render-process-gone", (_e, details) => scheduleRendererRecovery(details));
+    // 恢复成功（页面重新加载完成）→ 连崩计数清零：退避窗口只对「连着崩」累计
+    win.webContents.on("did-finish-load", () => { crashStreak = 0; });
+    // 页面无响应（白屏根因②的近亲：主线程卡死/长任务阻塞）——只记日志不动作
+    win.webContents.on("unresponsive", () => {
+      appendRendererLog(rendererLogLine(new Date(), "warning", "webContents unresponsive（渲染进程无响应）"));
+      console.log("[shell] 渲染进程无响应（unresponsive）");
+    });
+    // GPU 等子进程崩溃：只记日志不重启（Chromium 自己会拉起新的 GPU 进程）
+    app.on("child-process-gone", (_e, details) => {
+      appendRendererLog(rendererLogLine(new Date(), "error",
+        `child-process-gone type=${details.type} name=${details.name ?? "?"} reason=${details.reason} exitCode=${details.exitCode}`));
+      console.log(`[shell] 子进程退出（${details.type}/${details.name ?? "?"} reason=${details.reason}）`);
+    });
 
     // 上次更新失败（apply-update.bat 留下的失败标记）→ 开屏推给渲染层，
     // 统一更新弹窗展示可读原因 + 重试/手工安装指引。必须在窗口加载完之后发，

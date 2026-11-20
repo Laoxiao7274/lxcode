@@ -13,7 +13,7 @@ import {
 } from "../../shared/agents";
 import { useSettings } from "../../shared/settings";
 import { defaultProtocol } from "../../shared/agent-protocol";
-import { Markdown } from "../../shared/markdown";
+import { Markdown } from "../markdown";
 import { useEnterRef } from "../../shared/anim";
 import { staggerIn } from "../../shared/motion";
 import { Button, Chips, ColorPicker, Select, Segmented, Textarea, TextInput, type SelectGroup } from "../form";

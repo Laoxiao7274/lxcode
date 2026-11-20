@@ -4,7 +4,7 @@
 // 注入、技能多选注入），不在表单里切换。
 import { useEffect, useRef, useState } from "react";
 import { useAgents, type ContextModuleSpec } from "../../shared/agents";
-import { Markdown } from "../../shared/markdown";
+import { Markdown } from "../markdown";
 import { useEscape } from "../../shared/popover";
 import { Button, TextInput, Textarea } from "../form";
 import { staggerIn } from "../../shared/motion";

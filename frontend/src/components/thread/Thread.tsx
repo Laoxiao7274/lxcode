@@ -151,7 +151,9 @@ export function Thread({
   // 渲染窗口 + 上翻扩窗的滚动锚定（共用实现见 ./useWindowedHistory：
   // 窗口按会话派生——切会话的首帧就是 40 块，不靠 effect 事后重置；
   // 前插更早的块时按高度差补偿 scrollTop，视口内容不动）。
-  const { windowSize, hidden, update: updateWindow, expandOlder, captureAnchor, clearAnchor } = useWindowedHistory({
+  // S4：窗口有上界（WINDOW_MAX）——上翻扩到上界后转滑动窗口（头部补/尾部丢），
+  // 挂载块数不随上翻深度增长；被丢块仍在 state，滚回底部时贴底帧整备恢复。
+  const { windowSize, hidden, end, update: updateWindow, expandOlder, captureAnchor, clearAnchor } = useWindowedHistory({
     sessionKey: state.currentId,
     total,
     scrollRef,
@@ -161,7 +163,10 @@ export function Thread({
   // 逻辑时间线算，已包含流式那一块）直接就是 blocks 的切片起点：
   //   hidden = total - windowSize = blocks.length + 1 - windowSize
   //   ⇒ blocks.slice(hidden) 给出 windowSize - 1 块，加上流式块正好一窗。
-  const visible = hidden > 0 ? state.blocks.slice(hidden) : state.blocks;
+  // S4：切片终点是 end（滑动窗口的底部边缘——被丢的尾部块不渲染）；
+  // end < total 时（上翻过、丢过尾部）流式块仍单独挂在末尾（下面的 streaming
+  // 渲染分支），[end, total) 的已定型块暂不渲染（用户在上翻看头部）。
+  const visible = hidden > 0 ? state.blocks.slice(hidden, Math.min(end, state.blocks.length)) : state.blocks.slice(0, Math.min(end, state.blocks.length));
   // 上翻触顶时先补**更早一页历史**（后端还有），补不到再扩本地窗口——
   // 分页的结果经 historyLoaded 增量前插（reduce.ts 的 mergeOlderHistory），
   // 前插后的滚动锚定由 expandOlder 的同一套补偿负责（见 useWindowedHistory）。
@@ -189,8 +194,10 @@ export function Thread({
     let idx = state.blocks.findIndex((b) => b.uid === revealUid);
     if (idx < 0 && streaming && streaming.uid === revealUid) idx = state.blocks.length;
     if (idx < 0) return;
-    if (idx < hidden) {
-      updateWindow((prev) => expandWindowForJump(prev, idx, total));
+    // S4：目标可能在窗口外**两侧**——上方（idx < hidden，扩窗）或下方（idx ≥ end，
+    // 尾部被滑动窗口丢过）。update 都会把 end 恢复到 total 再按需扩 span。
+    if (idx < hidden || idx >= end) {
+      updateWindow((prev) => (idx >= end ? Math.min(total, total - idx + WINDOW_BATCH) : expandWindowForJump(prev, idx, total)));
       return; // 元素这一帧还不在 DOM 里，扩窗后本 effect 会再跑一次
     }
     const el = document.querySelector<HTMLElement>(`[data-uid="${revealUid}"]`);
@@ -199,7 +206,7 @@ export function Thread({
     el.scrollIntoView({ block: "center" });
     el.classList.add("outline-target");
     window.setTimeout(() => el.classList.remove("outline-target"), 1200);
-  }, [revealUid, hidden, state.blocks, streaming, total, windowSize]);
+  }, [revealUid, hidden, end, state.blocks, streaming, total, windowSize]);
   // 空态的身份芯片：当前 Agent（谁来干活）+ 归属项目；主 Agent 带有效委派计数
   const { agents, activeAgentId, sessionDelegates } = useAgents();
   const activeAgent = agents.find((a) => a.id === activeAgentId) ?? agents.find((a) => a.isMain);

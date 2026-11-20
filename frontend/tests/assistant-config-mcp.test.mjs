@@ -66,6 +66,6 @@ test('③ WSAgent wire：get 解析 mcpServers、set 透传 mcpServers 键', () 
 });
 
 test('③ shared 类型：AssistantConfig.mcpServers（可选 string[]）', () => {
-  const src = fs.readFileSync(new URL('../src/shared/types.ts', import.meta.url), 'utf8');
+  const src = fs.readFileSync(new URL('../src/shared/types/settings.ts', import.meta.url), 'utf8');
   assert.match(src, /mcpServers\?: string\[];/, '类型字段在场');
 });

@@ -11,7 +11,7 @@ import { ThinkingReasoning } from "../../../aicss/ThinkingReasoning";
 import { ApprovalCard } from "../../../aicss/ApprovalCard";
 import { playEnter } from "../../../shared/anim";
 import { useSettings } from "../../../shared/settings";
-import { Markdown } from "../../../shared/markdown";
+import { Markdown } from "../../markdown";
 import { prettyCommand, prettyCwd } from "../helpers";
 import { ToolBlock } from "./ToolBlock";
 import { FilesCard } from "./FilesCard";

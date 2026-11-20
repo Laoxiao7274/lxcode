@@ -546,16 +546,41 @@ export const Sidebar = memo(function Sidebar({
           </div>
         );
       })}
-      {/* 助手节（2026-12 分层重构 → 位置上移）：移到「未分组」分组**之前**
-          （项目分组列表之后、未分组之上——用户主诉求是更显眼：不用滚到侧栏
-          底部就能看到助手派的任务）。节头可点击收缩/展开（记忆态同项目节）。
+      {/* 未分组：无归属会话的家。**常驻显示**（它是启动时的默认范围——
+          范围恒有选中，没有「全部」可退；会话为 0 时它仍代表当前范围）。 */}
+      <div
+        className={"proj-row loose" + (filter === LOOSE ? " active" : "")}
+        title={looseRun > 0 ? `未归属项目的对话（${looseRun} 个会话正在运行）` : "未归属项目的对话"}
+        role="button"
+        tabIndex={0}
+        aria-pressed={filter === LOOSE}
+        aria-label={looseRun > 0 ? `未分组，${looseRun} 个会话正在运行` : undefined}
+        onClick={() => { onOpenProject(LOOSE, loose); }}
+        onKeyDown={(e) => { if (e.key === "Enter") onOpenProject(LOOSE, loose); }}
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+          <path d="M9 13.5h6" strokeDasharray="1.5 2.2" />
+        </svg>
+        <span className="proj-name">未分组</span>
+        <ProjectRunBadge count={looseRun} />
+        <span className="proj-count">{loose.length}</span>
+      </div>
+      {projects.length === 0 && loose.length === 0 && (
+        <div className="proj-empty">还没有项目——点右上 + 添加</div>
+      )}
+      </div>
+      )}
+      {/* 助手节（2026-12）：与项目会话区平级的独立分节，移出 proj-scroll
+          与 collapsed.projects 条件（收起「项目」不连带隐藏助手，也不受项目区
+          高度约束）。节头可点击收缩/展开（记忆态同项目节）。
           小节仍只在当前项目有助手派的任务子会话时出现（空分组不渲染）。
           行点击 = 跨模式跳转到助手模式的子会话视图（域纪律：这里不接 chat.*
           历史装载——assistant 任务的历史走 assistant.childHistory，在助手域内
           闭环）。 */}
       {assistantTasks.length > 0 && (
         <div className={ASSISTANT_SECTION_HEAD}>
-          <div className="sidebar-label group-head assistant-tasks-label">
+          <div className="sidebar-label assistant-tasks-label">
             <button
               type="button"
               className="section-toggle"
@@ -606,31 +631,6 @@ export const Sidebar = memo(function Sidebar({
             </div>
           ))}
         </div>
-      )}
-      {/* 未分组：无归属会话的家。**常驻显示**（它是启动时的默认范围——
-          范围恒有选中，没有「全部」可退；会话为 0 时它仍代表当前范围）。 */}
-      <div
-        className={"proj-row loose" + (filter === LOOSE ? " active" : "")}
-        title={looseRun > 0 ? `未归属项目的对话（${looseRun} 个会话正在运行）` : "未归属项目的对话"}
-        role="button"
-        tabIndex={0}
-        aria-pressed={filter === LOOSE}
-        aria-label={looseRun > 0 ? `未分组，${looseRun} 个会话正在运行` : undefined}
-        onClick={() => { onOpenProject(LOOSE, loose); }}
-        onKeyDown={(e) => { if (e.key === "Enter") onOpenProject(LOOSE, loose); }}
-      >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
-          <path d="M9 13.5h6" strokeDasharray="1.5 2.2" />
-        </svg>
-        <span className="proj-name">未分组</span>
-        <ProjectRunBadge count={looseRun} />
-        <span className="proj-count">{loose.length}</span>
-      </div>
-      {projects.length === 0 && loose.length === 0 && (
-        <div className="proj-empty">还没有项目——点右上 + 添加</div>
-      )}
-      </div>
       )}
       {addOpen && (
         <AddProjectDialog

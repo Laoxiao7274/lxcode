@@ -146,19 +146,21 @@ export function ChildSessionPage({
     // 上一个会话的滚动位置（与主时间线同款 bug）。
     sessionKey: sessionId,
   });
-  // 窗口化渲染 + 上翻扩窗的滚动锚定：与主时间线**同一份实现**
+  // **窗口化渲染 + 上翻扩窗的滚动锚定**：与主时间线**同一份实现**
   // （useWindowedHistory——窗口按会话派生，前插后按高度差补偿 scrollTop）。
   // 之前这页自己写一份 useState + useEffect 重置：既在切换首帧挂着上一份
-  // 窗口，又没有锚定——子会话上翻照样“跳顶”。
-  const { hidden, expandOlder, captureAnchor, clearAnchor } = useWindowedHistory({
+  // 窗口，又没有锚定——子会话上翻照样“跳顶”。S4：窗口有上界，上翻到上界后
+  // 转滑动窗口（头部补/尾部丢）；被丢块仍在 state，滚回底部时整备恢复。
+  const { hidden, end, expandOlder, captureAnchor, clearAnchor } = useWindowedHistory({
     sessionKey: sessionId,
     total,
     scrollRef,
     isSticky: () => stickyRef.current,
   });
   // 窗口只切已定型块；流式块恒在末尾、永远落在窗口内（hidden 按逻辑时间线算，
-  // 已包含那一块——见 Thread.tsx 的同款说明）
-  const visible = hidden > 0 ? sealed.slice(hidden) : sealed;
+  // 已包含那一块——见 Thread.tsx 的同款说明）；切片终点 = end（S4 滑动窗口的
+  // 底部边缘——被丢的尾部块不渲染）。
+  const visible = hidden > 0 ? sealed.slice(hidden, Math.min(end, sealed.length)) : sealed.slice(0, Math.min(end, sealed.length));
   // 上翻触顶：先补后端更早一页（子会话也是会话，chat.history 同一个方法），
   // 补不到再扩本地窗口——与主时间线共用一份实现（useLoadOlderHistory）。
   const loadOlder = useLoadOlderHistory({

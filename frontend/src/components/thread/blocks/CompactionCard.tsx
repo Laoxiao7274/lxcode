@@ -4,7 +4,7 @@
 import { useRef, useState } from "react";
 import type { ThreadBlock } from "../../../shared/store";
 import { useEnterRef } from "../../../shared/anim";
-import { Markdown } from "../../../shared/markdown";
+import { Markdown } from "../../markdown";
 
 export function CompactionCard({ block, "data-uid": dataUid }: { block: Extract<ThreadBlock, { kind: "compacted" }>; "data-uid"?: number }) {
   const [open, setOpen] = useState(false);

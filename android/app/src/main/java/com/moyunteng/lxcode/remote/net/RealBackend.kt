@@ -1,5 +1,9 @@
 // RealBackend —— 真实后端会话态（安卓端）。
 //
+// facade：投屏、助手域、附件、模型、连接与对外操作仍留在这里；事件/子会话归约见
+// Reducers.kt，历史装载见 HistoryLoader.kt。后续步再评估投屏域与 AssistantDomain
+// 内嵌类抽出；它们是有状态域，本轮不与纯逻辑段一起搬动。
+//
 // 职责：把 LxWsClient 的事件流归约成 UI 可观察状态（Compose mutableState），
 // 类型复用 model 包里「逐字段对齐协议」的 SessionMeta / ThreadBlock / ContextUsage /
 // SessionStats（Wire.kt 开头的纪律：接真后端时这一层换成 WS 解析结果，页面不动）。
@@ -70,7 +74,7 @@ data class PendingConfirm(
  */
 class RealBackend {
 
-    private val client = LxWsClient(
+    internal val client = LxWsClient(
         eventListener = { m, p -> onEvent(m, p) },
         stateListener = { connected, msg -> onState(connected, msg) },
         unauthorized = { onPairingInvalid() },
@@ -86,11 +90,11 @@ class RealBackend {
 
     /** 显示器枚举缓存（screen.monitors；壳不在线时空表）。 */
     var screenMonitors by mutableStateOf<List<com.moyunteng.lxcode.remote.ui.ScreenMonitorInfo>>(emptyList())
-        private set
+        internal set
 
     /** 壳侧捕屏模块是否在线（screen.monitors 的 shell_online）。 */
     var screenShellOnline by mutableStateOf(false)
-        private set
+        internal set
 
     /** 当前投屏状态（screen.state / screen.changed；null = 未知）。
      *  可写：ScreenScreen 的解码错误就地落错误态（active=false）。 */
@@ -105,7 +109,7 @@ class RealBackend {
 
     /** screen.start/stop 在途（按钮防抖）。 */
     var screenBusy by mutableStateOf(false)
-        private set
+        internal set
 
     /**
      * 悬浮球菜单「横屏观看」的方向锁定（null = 跟随用户默认）。
@@ -124,7 +128,7 @@ class RealBackend {
      *  置位 = start 应答成功且 active=false（壳还没上报 running）；复位 = 壳
      *  上报 running（screen.changed/state 的 active=true）或超时（见置位处）。 */
     var screenStartPending by mutableStateOf(false)
-        private set
+        internal set
 
     /** 拉显示器枚举 + 当前状态（投屏页进入时调）。 */
     fun refreshScreen() {
@@ -225,7 +229,7 @@ class RealBackend {
 
     /** move 事件上次发送时刻（节流到 ~30Hz：手指滑动一次产生上百个 move，
      *  WS 请求与后端队列都吃不消；30Hz 与视频帧率对齐，视觉上已连续）。 */
-    private var lastMoveSentAt = 0L
+    internal var lastMoveSentAt = 0L
 
     /**
      * 注入一条输入事件（fire-and-forget——控制事件高频，不逐条等应答；
@@ -261,7 +265,7 @@ class RealBackend {
         }
     }
 
-    private fun applyScreenState(o: JSONObject) {
+    internal fun applyScreenState(o: JSONObject) {
         // P1-1：quality 缺省改 null——后端壳未上报档位时（老壳/未知）不编造
         // "medium"，避免 setScreenMonitor/setScreenQuality 的「沿用当前档」把
         // 清晰度重置回 medium。UI 层显示 null 时按未知档处理（qualityLabel 兜底）。
@@ -287,9 +291,9 @@ class RealBackend {
     // ===== 可观察状态 =====
 
     var phase by mutableStateOf(RealPhase.Offline)
-        private set
+        internal set
     var phaseMessage by mutableStateOf<String?>(null)
-        private set
+        internal set
 
     /** 连接地址（默认本机；连接页可改）。 */
     var addr by mutableStateOf("127.0.0.1:7789")
@@ -305,24 +309,24 @@ class RealBackend {
 
     /** 当前会话（session.new / session.resume / 点会话行）。 */
     var currentSessionId by mutableStateOf("")
-        private set
+        internal set
 
     /** 当前会话时间线（真实块）。 */
     val blocks = mutableStateListOf<ThreadBlock>()
 
     /** 上下文占用（chat.done / chat.history 的 context 键；null = 未知 → UI 显示「—」）。 */
     var contextUsage by mutableStateOf<ContextUsage?>(null)
-        private set
+        internal set
 
     /** 整段会话统计（stats 键；null = 还没有任何一步 → 统计胶囊不渲染）。 */
     var sessionStats by mutableStateOf<SessionStats?>(null)
-        private set
+        internal set
 
     /** 会话此刻**实际使用**的模型（chat.history.model / chat.done.model）——后端
      *  解析后的结果（会话选择 > Agent 绑定 > default 角色）。消息气泡上的模型徽标
      *  读它；模型菜单的选中态读 [pickedModelId]（用户给这条会话选了什么）。 */
     var sessionModel by mutableStateOf("")
-        private set
+        internal set
 
     /** 模型菜单的选中态：本会话选中的模型优先，没选过（老会话/新会话）才回落
      *  全局 default 角色——与桌面端 ModelPicker 的 `model ?? settings.model` 同一条。 */
@@ -333,11 +337,11 @@ class RealBackend {
      *  广播；null = 后端没报——UI 回落「默认」，不猜）。会话级状态：switchTo 切会话
      *  即复位，切回时由历史快照重新对齐——两会话各持各的档，不串台。 */
     var approval by mutableStateOf<String?>(null)
-        private set
+        internal set
 
     /** 会话忙闲（chat.busy / done/error 收敛）。 */
     var busy by mutableStateOf(false)
-        private set
+        internal set
 
     /**
      * 自动重连进行中（真实开关开着、后端断线、后台自动重试在跑）：会话页/
@@ -347,7 +351,7 @@ class RealBackend {
      * 复位 = 连接成功（onState(true)）/ 用户显式 disconnect() / 显式 connect()。
      */
     var reconnecting by mutableStateOf(false)
-        private set
+        internal set
 
     /**
      * 配对已失效（后端对升级请求回 HTTP 401 = token 错/被吊销）：重连必然再
@@ -356,7 +360,7 @@ class RealBackend {
      * （重新配对成功后保存/连接即走 connect）。
      */
     var pairingInvalid by mutableStateOf(false)
-        private set
+        internal set
 
     /**
      * 历史**装载版本号**（applyHistory 每次完成 +1）：ThreadScreen 据此在历史装载
@@ -365,37 +369,37 @@ class RealBackend {
      *（装载后必滚，流式期间跟随），但首个装载事件里两者都会发生，这里只服务 ①。
      */
     var historyVersion by mutableStateOf(0)
-        private set
+        internal set
 
     // ===== 向上翻页（chat.history 的 before_seq 分页，2026-12）=====
 
     /** 已加载窗口最旧一条消息的 seq（下一次 before_seq 的 anchor；0 = 还没装载过）。
      *  取值来源：tail 装载 = tail 段首条消息的 seq；分页装载 = min(旧值, 新窗口首条)。 */
     var oldestLoadedSeq by mutableStateOf(0L)
-        private set
+        internal set
 
     /** anchor 之前还有没有更早的历史（远端 has_more；false = 列表头显示「已加载全部历史」）。 */
     var hasMoreHistory by mutableStateOf(true)
-        private set
+        internal set
 
     /** 分页装载中（LazyColumn 顶部 spinner）。 */
     var loadingEarlier by mutableStateOf(false)
-        private set
+        internal set
 
     /** 上一次分页装载失败的原因（非空 = 顶部显示重试；成功装载即清）。 */
     var loadEarlierError by mutableStateOf<String?>(null)
-        private set
+        internal set
 
     /** 分页装载版本号（更早的块插入头部时 +1；ThreadScreen 据此做不跳屏补偿）。 */
     var earlierVersion by mutableStateOf(0)
-        private set
+        internal set
 
     /** 会话本地缓存（视图加速；与 ConnStore 分开存储——cache/sessions/<会话 id>.json）。 */
-    private val sessionCache = SessionCache(com.moyunteng.lxcode.remote.update.AppContextHolder.context)
+    internal val sessionCache = SessionCache(com.moyunteng.lxcode.remote.update.AppContextHolder.context)
 
     /** 当前会话是否在展示缓存（断网打开会话时置位；远端装载成功即清）。 */
     var showingCached by mutableStateOf(false)
-        private set
+        internal set
 
     /**
      * 流式**内容版本号**（当前会话的流式块每次被 delta 改写 +1）：ThreadScreen 据此在
@@ -403,7 +407,7 @@ class RealBackend {
      * （blocks.size 不触发），不监听它的话视口会停在该块开头、最新内容在屏外。
      */
     var streamVersion by mutableStateOf(0)
-        private set
+        internal set
 
     // ===== 助手域（assistant.*，协议见 internal/protocol/assistant.go）=====
     //
@@ -553,7 +557,7 @@ class RealBackend {
 
     /** 助手历史装载中（助手页的「正在加载…」态；openAssistantSession 发出到应答之间）。 */
     var asstHistoryLoading by mutableStateOf(false)
-        private set
+        internal set
 
     /** 给当前助手会话发一条消息（assistant.send）。
      *  effort 是**请求级参数**（protocol.ChatSendParams.Effort——与桌面端同语义）。
@@ -738,13 +742,13 @@ class RealBackend {
                 childBlocks.add(ThreadBlock.Error("子会话历史加载失败: ${err.optString("message")}"))
                 return@call
             }
-            applyChildHistory(result as? JSONObject)
+            historyLoader.applyChildHistory(result as? JSONObject)
         }
     }
 
     /** assistant.list / assistant.tasks 的应答解析（wire 与 session.list 同源——
-     *  复用 applySessionList 的逐字段口径，落进助手域列表；running 位并入 busy 投影）。 */
-    private fun applyAssistantSessionList(r: Any?) {
+     *  复用 historyLoader.applySessionList 的逐字段口径，落进助手域列表；running 位并入 busy 投影）。 */
+    internal fun applyAssistantSessionList(r: Any?) {
         val arr: org.json.JSONArray = when (r) {
             is org.json.JSONArray -> r
             is JSONObject -> r.optJSONArray("sessions") ?: return
@@ -770,11 +774,11 @@ class RealBackend {
         Log.i(TAG, "assistant.list → ${list.size} 条")
     }
 
-    /** assistant.history → 块（与主域 applyHistory 同一份解析器 parseHistoryBlocks；
+    /** assistant.history → 块（与主域 applyHistory 同一份解析器 historyLoader.parseHistoryBlocks；
      *  无分页/缓存薄记——助手会话通常较短，TAIL_WINDOW 内一次装完）。 */
-    private fun applyAssistantHistory(r: JSONObject?) {
+    internal fun applyAssistantHistory(r: JSONObject?) {
         if (r == null) return
-        val (parsed, todosArr, _, _) = parseHistoryBlocks(r)
+        val (parsed, todosArr, _, _) = historyLoader.parseHistoryBlocks(r)
         asst.endedDispatches.clear()
         asst.blocks.clear()
         asst.blocks.addAll(parsed)
@@ -784,7 +788,7 @@ class RealBackend {
                 .map { todoItemOf(it.optString("content"), it.optString("status")) }
             asst.blocks.add(ThreadBlock.Todo(list))
         }
-        r.optJSONObject("context")?.let { asst.contextUsage = parseContext(it) }
+        r.optJSONObject("context")?.let { asst.contextUsage = reducers.parseContext(it) }
         r.optJSONObject("stats")?.let { asst.sessionStats = parseStats(it) }
         asst.sessionModel = r.optString("model", "")
         asst.pickedModelId = asst.sessionModel
@@ -813,7 +817,7 @@ class RealBackend {
      * [p] = 原始载荷（与 chat.* 同构）。块构建逻辑与主 reducer（onEvent）逐条同源，
      * 数据桶全部落 [asst]——两域的 currentSessionId 过滤互不污染。
      */
-    private fun assistantRouteEvent(chat: String, p: JSONObject) {
+    internal fun assistantRouteEvent(chat: String, p: JSONObject) {
         val dispatchId = p.optString("dispatch_id", "")
         // 确认门先行（重放主 reducer onEvent 同一条纪律）：子 Agent 的确认请求必带
         // dispatch_id，不能进下面的子会话丢弃分支——助手域的高危确认同样全来自
@@ -821,8 +825,8 @@ class RealBackend {
         if (chat == "chat.confirmRequest") {
             if (dispatchId.isNotEmpty()) {
                 // 归属判定两域各查各的卡（主域在跑的派发与助手域的派发互不可见）
-                val idx = dispatchCardIdx(dispatchId)
-                val aidx = dispatchCardIdx(dispatchId, asst.blocks)
+                val idx = reducers.dispatchCardIdx(dispatchId)
+                val aidx = reducers.dispatchCardIdx(dispatchId, asst.blocks)
                 if (idx < 0 && aidx < 0) {
                     Log.w(TAG, "assistant.confirmRequest 无归属派发卡 dispatch=$dispatchId")
                     return
@@ -843,8 +847,8 @@ class RealBackend {
             )
             asst.confirm = pc
             // 子会话视图双投（对齐主 reducer：卡上的子会话 id 与 viewChildSessionId 相等）
-            val ownerChild = dispatchChildSessionOf(dispatchId)
-                .ifBlank { dispatchChildSessionOf(dispatchId, asst.blocks) }
+            val ownerChild = reducers.dispatchChildSessionOf(dispatchId)
+                .ifBlank { reducers.dispatchChildSessionOf(dispatchId, asst.blocks) }
             if (dispatchId.isNotEmpty() && ownerChild == viewChildSessionId) {
                 childConfirm = pc
             }
@@ -863,7 +867,7 @@ class RealBackend {
                 }
                 val cardId = p.optString("dispatch_id", "")
                 val idx = if (cardId.isNotEmpty()) {
-                    dispatchCardIdx(cardId, asst.blocks)
+                    reducers.dispatchCardIdx(cardId, asst.blocks)
                 } else {
                     asst.blocks.indexOfLast { it is ThreadBlock.Dispatch && it.done.not() }
                 }
@@ -895,7 +899,7 @@ class RealBackend {
                     asst.blocks.add(fresh)
                 }
             } else {
-                val exact = dispatchCardIdx(dispatchId, asst.blocks)
+                val exact = reducers.dispatchCardIdx(dispatchId, asst.blocks)
                 val i = if (exact >= 0) {
                     exact
                 } else {
@@ -930,16 +934,16 @@ class RealBackend {
         // 子会话事件（dispatch_id 非空）不进助手时间线；toolCall/toolResult 归并进
         // **助手域**派发卡（asst.blocks——主域的卡查不到它）。todo.updated 归并清单进度。
         if (dispatchId.isNotEmpty()) {
-            markDispatchRunning(dispatchId, asst.blocks)
+            reducers.markDispatchRunning(dispatchId, asst.blocks)
             // 子会话视图双投：归属判定两域各查各的卡（与确认门同一条口径）
-            val ownerChild = dispatchChildSessionOf(dispatchId)
-                .ifBlank { dispatchChildSessionOf(dispatchId, asst.blocks) }
+            val ownerChild = reducers.dispatchChildSessionOf(dispatchId)
+                .ifBlank { reducers.dispatchChildSessionOf(dispatchId, asst.blocks) }
             val routeToChild = viewChildSessionId != null &&
                 (ownerChild == viewChildSessionId || dispatchId == viewChildSessionId)
-            if (routeToChild) childRouteEvent(chat, p)
+            if (routeToChild) reducers.childRouteEvent(chat, p)
             when (chat) {
                 "chat.toolCall" -> {
-                    upsertChildTool(
+                    reducers.upsertChildTool(
                         asst.blocks,
                         dispatchId,
                         id = p.optString("id"),
@@ -951,10 +955,10 @@ class RealBackend {
                     )
                 }
                 "chat.toolResult" -> {
-                    finishChildTool(asst.blocks, dispatchId, p.optString("id"), p.optBoolean("is_error"))
+                    reducers.finishChildTool(asst.blocks, dispatchId, p.optString("id"), p.optBoolean("is_error"))
                 }
                 "todo.updated" -> {
-                    mergeChildTodos(asst.blocks, dispatchId, p.optJSONArray("items"))
+                    reducers.mergeChildTodos(asst.blocks, dispatchId, p.optJSONArray("items"))
                 }
             }
             return
@@ -963,7 +967,7 @@ class RealBackend {
         // 子会话视图双投：子会话自己的事件（无 dispatch_id、session_id == 子会话 id）
         // 投进 child 状态（与域无关——子会话 id 全局唯一）。
         if (viewChildSessionId != null && sid == viewChildSessionId) {
-            childRouteEvent(chat, p)
+            reducers.childRouteEvent(chat, p)
             return
         }
         when (chat) {
@@ -1029,7 +1033,7 @@ class RealBackend {
                     // 附件回流同主 reducer——挂到派发卡渲染成果条。
                     val (body, childSid) = splitDispatchResult(p.optString("content"))
                     val atts = parseAttachments(p.optJSONArray("attachments"))
-                    val i = dispatchCardIdx(p.optString("id"), asst.blocks)
+                    val i = reducers.dispatchCardIdx(p.optString("id"), asst.blocks)
                     if (i >= 0) {
                         val d = asst.blocks[i] as ThreadBlock.Dispatch
                         asst.blocks[i] = d.copy(
@@ -1082,7 +1086,7 @@ class RealBackend {
                         )
                     }
                 }
-                p.optJSONObject("context")?.let { asst.contextUsage = parseContext(it) }
+                p.optJSONObject("context")?.let { asst.contextUsage = reducers.parseContext(it) }
                 p.optJSONObject("stats")?.let { asst.sessionStats = parseStats(it) }
                 msg?.optString("model", "")?.takeIf { it.isNotEmpty() }?.let { asst.sessionModel = it }
                 asst.busy = false
@@ -1165,7 +1169,7 @@ class RealBackend {
         }
     }
 
-    private fun asstEnsureStreamingBlock(): Int {
+    internal fun asstEnsureStreamingBlock(): Int {
         if (asst.streamingIdx >= 0 && asst.streamingIdx < asst.blocks.size &&
             asst.blocks[asst.streamingIdx] is ThreadBlock.Assistant
         ) {
@@ -1191,32 +1195,32 @@ class RealBackend {
 
     /** 子会话视图的忙闲（chat.busy / done/error 收敛——该子会话自己的）。 */
     var childBusy by mutableStateOf(false)
-        private set
+        internal set
 
     /** 子会话视图的挂起确认（confirm 带 dispatch_id 的子确认，正常弹）。 */
     var childConfirm by mutableStateOf<PendingConfirm?>(null)
-        private set
+        internal set
 
     /** 子会话视图的历史装载版本（ThreadScreen 据此滚到底）。 */
     var childHistoryVersion by mutableStateOf(0)
-        private set
+        internal set
 
     /** 子会话历史**装载中**（openChildSession 发出 chat.history 到应答/失败之间）：
      *  ChildThreadView 的加载态依据——视图打开后异步拉历史，装载期间 childBlocks
      *  为空，没有这条 UI 会渲染成全空白页（问题：打开子会话没有 loading 指示）。
      *  失败（错误块已插入）与装载完成即复位。 */
     var childHistoryLoading by mutableStateOf(false)
-        private set
+        internal set
 
     /** 子会话视图的流式内容版本（同 streamVersion 的语义，child 块追加时 +1）。 */
     var childStreamVersion by mutableStateOf(0)
-        private set
+        internal set
 
     /** 子会话视图自己的流式块下标（-1 = 无）。 */
-    private var childStreamingIdx = -1
+    internal var childStreamingIdx = -1
 
     /** childTodos 当前归属的子会话 id（沿用口径按它收窄——切子会话不清屏但清单不串台）。 */
-    private var childTodoOwner = ""
+    internal var childTodoOwner = ""
 
     /** 子会话视图的标题（Agent 名 + 任务摘要，由派发卡带入）。 */
     var childViewTitle by mutableStateOf("")
@@ -1225,14 +1229,14 @@ class RealBackend {
      *  todos 快照落这里，**不再往时间线插 Todo 块**（对齐桌面纪律——时间线是
      *  消息流，清单是会话级状态）。null = 没有清单（不渲染清单条）。 */
     var childTodos by mutableStateOf<List<TodoItem>?>(null)
-        private set
+        internal set
 
     /** 子会话**选中**的模型 id（chat.history 顶层 model 键回读 / chat.modelChanged
      *  按 session_id 归属维护；空 = 未知（老后端/未装载）→ 显示回落 default 角色，
      *  与主会话 activeModelId 同一条口径）。子会话页的模型菜单读它、
      *  changeSessionModelFor(childId) 切它（切了会同步更新 Agent 绑定）。 */
     var childModelId by mutableStateOf("")
-        private set
+        internal set
 
     /**
      * 各会话的实时忙闲（chat.busy 广播；多端共享进度的列表侧投影）：
@@ -1242,13 +1246,13 @@ class RealBackend {
     // Compose 可观察的 map（mutableStateMapOf）：投影本身就是 UI 状态的一部分，
     // 任何在组合里读它的地方（列表状态点/项目行计数）都随 busy 事件自动重组——
     // 用户报的「必须点进去再退出才亮」就是这条链断在"投影只是普通 map"上。
-    private val sessionBusy = androidx.compose.runtime.mutableStateMapOf<String, Boolean>()
+    internal val sessionBusy = androidx.compose.runtime.mutableStateMapOf<String, Boolean>()
 
     /**
      * 某会话此刻是否在生成（**投影口径**，与列表状态点同源）。
      *
      * UI 读它而不是只读 `SessionMeta.running`：`SessionMeta` 是不可变值，只有
-     * `syncRunningDots()` 重建条目时才变；投影是 Compose 可观察的 state map，
+     * `historyLoader.syncRunningDots()` 重建条目时才变；投影是 Compose 可观察的 state map，
      * 任何在组合里读它的地方都会随 busy 事件重组。两条都读（`session.running ||
      * isSessionRunning(id)`）= 服务端快照与实时广播取并集，任一来源更新都能点亮。
      */
@@ -1256,7 +1260,7 @@ class RealBackend {
 
     /** 挂起的工具确认（chat.confirmRequest；null = 无）。 */
     var confirm by mutableStateOf<PendingConfirm?>(null)
-        private set
+        internal set
 
     /** 当前会话标题（会话列表条目；未找到 = 新对话占位）。 */
     val sessionTitle: String
@@ -1266,7 +1270,7 @@ class RealBackend {
 
     /** 当前连接凭证（remote.json Enabled 的后端要求 query token；空 = 未开远程）。 */
     var token by mutableStateOf("")
-        private set
+        internal set
 
     // ===== 附件（图片/文件上传 + 渲染元数据；对齐 docs/attachments.md）=====
 
@@ -1397,7 +1401,7 @@ class RealBackend {
     }
 
     /** content:// Uri 的显示名（OpenableColumns.DISPLAY_NAME；取不到回落 null）。 */
-    private fun queryDisplayName(context: android.content.Context, uri: android.net.Uri): String? {
+    internal fun queryDisplayName(context: android.content.Context, uri: android.net.Uri): String? {
         try {
             context.contentResolver.query(uri, null, null, null, null)?.use { c ->
                 val idx = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
@@ -1421,7 +1425,7 @@ class RealBackend {
     }
 
     /** llm.Message 的 attachments JSON → AttachmentMeta 列表（缺键 = 空表）。 */
-    private fun parseAttachments(arr: org.json.JSONArray?): List<AttachmentMeta> {
+    internal fun parseAttachments(arr: org.json.JSONArray?): List<AttachmentMeta> {
         if (arr == null) return emptyList()
         return (0 until arr.length()).mapNotNull { i ->
             val a = arr.optJSONObject(i) ?: return@mapNotNull null
@@ -1447,19 +1451,19 @@ class RealBackend {
 
     /** 注册表快照（enabled 条目按端点分组；model.changed 时重拉）。 */
     var modelGroups by mutableStateOf<List<ModelGroup>>(emptyList())
-        private set
+        internal set
 
     /** 全局 default 角色绑定的模型 id（后端是唯一事实源；空 = 未绑定）。
      *  语义 = **新会话的默认模型**（设置页管），不是当前会话的选中态——当前会话
      *  看 [sessionModel]（chat.history.model / chat.modelChanged）。 */
     var defaultModelId by mutableStateOf("")
-        private set
+        internal set
 
     /** 当前会话**选中**的模型 id（会话级状态：chat.history 的 model 键回读 /
      *  chat.modelChanged 广播）。空 = 未知（刚建会话/老后端）→ 显示回落
      *  [defaultModelId]。与 defaultModelId 的分工见上——混用正是「一个会话切
      *  模型所有会话跟着变」那个 bug。 */
-    private var pickedModelId by mutableStateOf("")
+    internal var pickedModelId by mutableStateOf("")
 
     /** 平铺的全部模型（按 id 查找用）。 */
     val allModels: List<ModelMeta>
@@ -1532,7 +1536,7 @@ class RealBackend {
         }
     }
 
-    private fun applyModelList(r: JSONObject?) {
+    internal fun applyModelList(r: JSONObject?) {
         if (r == null) return
         // 投影口径（组合键主键 / 显示名 / 选中态比较）在纯函数里，JVM 单测钉住：
         // model.list 的 `id` 是**条目自己的 model id**，注册表主键是
@@ -1599,7 +1603,7 @@ class RealBackend {
         connect(addr, token)
     }
 
-    private fun onState(connected: Boolean, message: String?) {
+    internal fun onState(connected: Boolean, message: String?) {
         if (connected) {
             phase = RealPhase.Connected
             phaseMessage = null
@@ -1622,7 +1626,7 @@ class RealBackend {
                     if (id.isNotEmpty()) sessionBusy[id] = true
                 }
             }
-            syncRunningDots()
+            historyLoader.syncRunningDots()
             refreshSessions()
             refreshProjects()
             // P1-2：投屏状态恢复链——断线期间 screen.changed 事件一次性丢失，
@@ -1681,7 +1685,7 @@ class RealBackend {
     }
 
     /** WS 层上报「升级请求被 401 拒」（token 错/被吊销）：停重连 + UI 失效态。 */
-    private fun onPairingInvalid() {
+    internal fun onPairingInvalid() {
         pairingInvalid = true
         reconnecting = false
         phase = RealPhase.Failed
@@ -1698,7 +1702,7 @@ class RealBackend {
                 Log.w(TAG, "session.list 失败: ${err.optString("message")}")
                 return@call
             }
-            applySessionList(result)
+            historyLoader.applySessionList(result)
         }
     }
 
@@ -1710,7 +1714,7 @@ class RealBackend {
                 Log.w(TAG, "project.list 失败: ${err.optString("message")}")
                 return@call
             }
-            applyProjectList(result)
+            historyLoader.applyProjectList(result)
         }
     }
 
@@ -1732,7 +1736,7 @@ class RealBackend {
             val id = (result as? JSONObject)?.optString("session_id").orEmpty()
             Log.i(TAG, "session.new → $id workspace=$workspace")
             if (id.isNotEmpty()) {
-                switchTo(id)
+                historyLoader.switchTo(id)
                 onReady(id)
             }
         }
@@ -1775,7 +1779,7 @@ class RealBackend {
             }
             // 请求在途时已切走/关闭视图：过期响应作废
             if (viewChildSessionId != childId) return@call
-            applyChildHistory(result as? JSONObject)
+            historyLoader.applyChildHistory(result as? JSONObject)
         }
     }
 
@@ -1902,7 +1906,7 @@ class RealBackend {
     /** per-session 草稿（内存记账层，对齐桌面端 SessionDrafts 模式）：Composer 切
      *  会话按 sessionId 取初值/写回。落库经 chat.draft 防抖（[noteDraft]）——后端
      *  只存 text，附件等富状态仍在本端内存。 */
-    private val sessionDrafts = mutableMapOf<String, String>()
+    internal val sessionDrafts = mutableMapOf<String, String>()
 
     /** 当前会话的草稿（Composer 初值/读写口；无会话 = 空串）。 */
     fun draftOf(sessionId: String): String = sessionDrafts[sessionId] ?: ""
@@ -1927,11 +1931,11 @@ class RealBackend {
         sendDraft(sid, sessionDrafts[sid] ?: "")
     }
 
-    private val draftHandler = android.os.Handler(android.os.Looper.getMainLooper())
-    private var draftFlushPending = false
-    private val draftFlushRunnable = Runnable { flushDraft() }
+    internal val draftHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    internal var draftFlushPending = false
+    internal val draftFlushRunnable = Runnable { flushDraft() }
 
-    private fun sendDraft(sid: String, text: String) {
+    internal fun sendDraft(sid: String, text: String) {
         if (phase != RealPhase.Connected) return // 断线时草稿留在内存，重连装载历史即回填
         Log.d(TAG, "chat.draft session=$sid len=${text.length}")
         client.call(
@@ -2070,1524 +2074,19 @@ class RealBackend {
         }
     }
 
-    // ===== 事件归约 =====
+    // ===== 事件归约（facade；实现见 Reducers.kt）=====
 
-    /** 当前流式 assistant 块的下标（-1 = 无；toolCall/done 后归 -1，下一步开新块）。 */
-    private var streamingIdx = -1
+    internal val reducers = Reducers(this)
 
-    private fun onEvent(method: String, p: JSONObject) {
-        // ===== 助手域分流（assistant.*，协议见 internal/protocol/assistant.go）=====
-        // payload 与 chat.* 逐字段同构、只换事件名（assistantEventName 的映射表）——
-        // 归一成 chat.* 等价名后走**同一份**块语义（assistantRouteEvent），数据桶
-        // 换助手域自己的（asst.*）——与主域 currentSessionId 过滤互不污染。
-        // 未知 assistant.* 事件名不猜归属（对齐桌面端 mapEvent：表里没有就忽略）。
-        if (method.startsWith("assistant.")) {
-            val chat = ASSISTANT_TO_CHAT[method]
-            if (chat != null) assistantRouteEvent(chat, p)
-            return
-        }
-        val dispatchId = p.optString("dispatch_id", "")
-        // 确认门先行：子 Agent 的确认请求**必带 dispatch_id**（协议契约 protocol.ConfirmRequest、
-        // dispatch_ws_test.go 钉住），不能进下面的子会话丢弃分支——否则真实模式（主 Agent 唯一
-        // 工具是 agent_dispatch，高危确认全来自子派发）确认弹窗永不出现、会话挂死。
-        // 归属照桌面端契约（AGENTS.md §2.3）：子确认按 request.dispatch_id 归到本会话的派发卡，
-        // 主会话自己的确认（dispatch_id 空）仍按 session_id 归属；裁决经 resolveConfirm 原样回
-        // tool.confirm（session_id 取载荷里的子会话 id）。
-        // 投屏状态变化（screen.changed，internal/protocol/screen.go）：接收者断开/
-        // 壳异常退出时后端会推——投屏页据此把 UI 收回「未投屏」并提示原因。
-        if (method == "screen.changed") {
-            applyScreenState(p.optJSONObject("state") ?: return)
-            return
-        }
-        if (method == "chat.confirmRequest") {
-            if (dispatchId.isNotEmpty()) {
-                if (dispatchCardIdx(dispatchId) < 0) {
-                    Log.w(TAG, "confirmRequest 无归属派发卡（非当前会话的子派发？）dispatch=$dispatchId")
-                    return
-                }
-            } else if (p.optString("session_id", "") != currentSessionId) {
-                return
-            }
-            confirm = PendingConfirm(
-                sessionId = p.optString("session_id", ""),
-                id = p.optString("id"),
-                name = p.optString("name"),
-                arguments = p.optString("arguments"),
-                prompt = p.optString("prompt"),
-            kind = p.optString("kind"),
-            options = p.optJSONArray("options")?.let { a ->
-                (0 until a.length()).map { a.optString(it) }
-            } ?: emptyList(),
-            )
-            // 子会话视图打开时双投确认（子会话页内的确认请求正常弹——契约要求）。
-            // 归属判定同样要看**卡上的子会话 id**：dispatch_id 是工具调用 id，
-            // 与子会话 id 不相等（旧代码直接比两者，普通派发的子确认因此永远
-            // 弹不到子会话视图里）。
-            if (dispatchId.isNotEmpty() && dispatchChildSessionOf(dispatchId) == viewChildSessionId) {
-                childConfirm = confirm
-            }
-            return
-        }
-        // 派发卡事件（dispatchStart/End）自身也带 dispatch_id，但归属键是 owner_session_id——
-        // 必须先于下面的子会话过滤器处理，否则派发卡建不出来、后续子事件全部无归属。
-        if (method == "chat.dispatchStart" || method == "chat.dispatchEnd") {
-            if (p.optString("owner_session_id") != currentSessionId) return
-            if (method == "chat.dispatchStart") {
-                // todos 非空 = 主 Agent 预拆的清单初稿（todo 契约——卡上第一秒显示计划）
-                val todos = p.optJSONArray("todos")
-                val (tDone, tTotal) = if (todos != null) {
-                    val list = (0 until todos.length()).map { todos.getJSONObject(it) }
-                    list.count { it.optString("status") == "done" } to list.size
-                } else {
-                    -1 to 0
-                }
-                // **建卡与是否有工具调用无关**：dispatchStart 一到就挂卡（一行摘要 +
-                // 「查看子会话 ›」）。子 Agent 只输出文字、一个工具都没调的派发同样
-                // 需要一个进得去的入口——卡只在 toolCall 里建/显示的话，那种派发在
-                // 主时间线上完全不可见（用户报的现象）。
-                //
-                // 去重：历史回放（parseHistoryBlocks）已经从 assistant 的
-                // agent_dispatch 调用建过一张同 dispatch_id 的卡（实时与回放同一张脸）；
-                // 本轮实时事件又到一次 dispatchStart 时**复用**它（把"中断"占位改回
-                // 运行中 + 回填实时字段），绝不并排长两张卡。dispatch_id 为空的
-                // 老载荷没有归属键，只能按「最后一张未完结卡」兜底。
-                val cardId = p.optString("dispatch_id", "")
-                val idx = if (cardId.isNotEmpty()) {
-                    dispatchCardIdx(cardId)
-                } else {
-                    blocks.indexOfLast { it is ThreadBlock.Dispatch && it.done.not() }
-                }
-                val fresh = ThreadBlock.Dispatch(
-                    agentName = p.optString("agent_name"),
-                    task = p.optString("task"),
-                    conclusion = "",
-                    sessionId = p.optString("session_id", ""),
-                    done = false,
-                    isError = false,
-                    dispatchId = cardId,
-                    childTodosDone = tDone,
-                    childTodosTotal = tTotal,
-                )
-                if (idx >= 0) {
-                    val prev = blocks[idx] as ThreadBlock.Dispatch
-                    blocks[idx] = prev.copy(
-                        agentName = fresh.agentName.ifBlank { prev.agentName },
-                        task = fresh.task.ifBlank { prev.task },
-                        // 子会话 id：实时载荷是权威值（回放时可能只有 arguments.session）
-                        sessionId = fresh.sessionId.ifBlank { prev.sessionId },
-                        // 重新开跑（续跑同一 dispatch_id）：状态回到运行中，旧结论清掉
-                        done = false,
-                        isError = false,
-                        conclusion = "",
-                        dispatchId = cardId.ifBlank { prev.dispatchId },
-                        childTodosDone = if (tDone >= 0) tDone else prev.childTodosDone,
-                        childTodosTotal = if (tTotal > 0) tTotal else prev.childTodosTotal,
-                    )
-                } else {
-                    blocks.add(fresh)
-                }
-            } else {
-                // 先按 dispatch_id 精确配对（协议契约：dispatchStart/End 的
-                // dispatch_id 同源）；找不到（历史重建后的卡没有 dispatch_id、
-                // 或跨会话的旧广播）才回落「最后一张未完结卡」并记日志。
-                val exact = dispatchCardIdx(dispatchId)
-                val i = if (exact >= 0) {
-                    exact
-                } else {
-                    Log.w(TAG, "dispatchEnd 无 dispatch_id 配对卡，回落未完结卡 dispatch=$dispatchId")
-                    blocks.indexOfLast { it is ThreadBlock.Dispatch && it.done.not() }
-                }
-                if (i >= 0) {
-                    val d = blocks[i] as ThreadBlock.Dispatch
-                    // 清单终态（DispatchEnd.FinalTodos）：定格卡上的「清单 N/M」。
-                    // 空 = 子会话没建过清单，保持实时进度不动（不把已有徽标擦成 0）。
-                    val finalTodos = p.optJSONArray("final_todos")
-                    val (fDone, fTotal) = if (finalTodos != null && finalTodos.length() > 0) {
-                        val list = (0 until finalTodos.length()).map { finalTodos.getJSONObject(it) }
-                        list.count { it.optString("status") == "done" } to list.size
-                    } else {
-                        d.childTodosDone to d.childTodosTotal
-                    }
-                    if (dispatchId.isNotEmpty()) endedDispatches.add(dispatchId)
-                    blocks[i] = d.copy(
-                        // 空 result = 子 Agent 没产出文本结论（对齐历史路径的既有兜底），
-                        // 不兜就是卡上结论行整行空白
-                        conclusion = p.optString("result").ifBlank { "（子 Agent 没有产出文本结论）" },
-                        // 子会话 id 以 dispatchEnd 的为准（续跑时 arguments.session 可能
-                        // 为空，而这里永远是本次真正用的那个）——缺了就保留卡上的。
-                        sessionId = p.optString("session_id", "").ifBlank { d.sessionId },
-                        done = true,
-                        isError = p.optBoolean("is_error"),
-                        childTodosDone = fDone,
-                        childTodosTotal = fTotal,
-                    )
-                } else {
-                    Log.w(TAG, "dispatchEnd 无配对卡 dispatch=$dispatchId")
-                }
-            }
-            return
-        }
-        // 子会话事件（dispatch_id 非空）不进主时间线；toolCall/toolResult 归并进派发卡的
-        // 子工具实时流（卡内展开可见子工具名/状态/耗时——桌面端「子会话标签页实时流」的
-        // 安卓单页等价物）。todo.updated（带 dispatch_id = 子 Agent 的清单更新）：
-        // 归并进**归属派发卡**（轻量派发进度——手机上看子 Agent 跑到哪一步，
-        // 与桌面端 TodoUpdatedParams.DispatchID 的归属契约一致；卡不存在只记日志）。
-        if (dispatchId.isNotEmpty()) {
-            // 「这个派发还在跑」的证据：任何带归属的子事件（delta/toolCall/toolResult/
-            // todo.updated/busy）都只可能来自**正在执行**的子会话。历史回放建的卡
-            // 先按"中断"定格（那时不知道它是死是活），一旦有子事件到达就说明它还活着
-            // ——把卡恢复成运行中（否则用户看到的是一张红着的"中断"卡，子 Agent 其实
-            // 正在干活；用户报的「子 Agent 在运行时总是红色」就是这条）。
-            markDispatchRunning(dispatchId)
-            // ===== 子会话视图双投（对齐桌面端 reduceSessionStates）=====
-            // 归属判定必须用**卡上的子会话 id**：dispatch_id 是**工具调用 id**
-            // （runDispatch 的 call.DispatchID = tc.ID），与子会话 id 是两回事——
-            // 旧代码拿 `dispatchId == viewChildSessionId` 比，普通派发永远不相等，
-            // 于是「进了子会话视图只有打开那一刻的历史快照、看不到实时流」（文字
-            // 流式、工具流全都停在原地）。桌面端同样是按卡反查子会话 id。
-            val ownerChild = dispatchChildSessionOf(dispatchId)
-            val routeToChild = viewChildSessionId != null &&
-                (ownerChild == viewChildSessionId || dispatchId == viewChildSessionId)
-            if (routeToChild) childRouteEvent(method, p)
-            when (method) {
-                "chat.toolCall" -> {
-                    upsertChildTool(
-                        blocks,
-                        dispatchId,
-                        id = p.optString("id"),
-                        name = p.optString("name"),
-                        argsSummary = argsSummary(p.optString("arguments")),
-                        running = true,
-                        isError = false,
-                        durationMs = 0,
-                    )
-                }
-                "chat.toolResult" -> {
-                    finishChildTool(blocks, dispatchId, p.optString("id"), p.optBoolean("is_error"))
-                }
-                "todo.updated" -> {
-                    mergeChildTodos(blocks, dispatchId, p.optJSONArray("items"))
-                }
-            }
-            return
-        }
-        val sid = p.optString("session_id", "")
-        // 子会话视图双投：子会话自己的事件（无 dispatch_id、session_id == 子会话 id）
-        // 在**不进主时间线**的前提下投进 child 状态——子会话标签页看实时流。
-        if (viewChildSessionId != null && sid == viewChildSessionId) {
-            childRouteEvent(method, p)
-            return
-        }
-        when (method) {
-            "chat.userMessage" -> {
-                if (sid != currentSessionId) return
-                val msg = p.optJSONObject("message") ?: return
-                val text = msg.optString("content")
-                // 通告前缀识别（对齐桌面端 shared/notices.ts 的前缀表）：user 角色 ≠
-                // 用户说的话——后台任务完成通告渲染成提示条，不进用户气泡。
-                // hidden 前缀（[系统通告] ）是写给模型的注记：不产生任何块。
-                if (text.startsWith(HIDDEN_NOTICE_PREFIX)) return
-                val notice = noticeKind(text)
-                if (notice != null) {
-                    blocks.add(ThreadBlock.Notice(label = notice.second, text = text.removePrefix(notice.first).trim()))
-                    streamingIdx = -1
-                    return
-                }
-                val atts = parseAttachments(msg.optJSONArray("attachments"))
-                val last = blocks.lastOrNull()
-                if (last !is ThreadBlock.User || last.text != text || last.attachments != atts) {
-                    blocks.add(ThreadBlock.User(text, atts, localEpochMs = System.currentTimeMillis()))
-                    streamingIdx = -1
-                }
-            }
+    internal fun onEvent(method: String, p: JSONObject) = reducers.onEvent(method, p)
 
-            "chat.delta" -> {
-                if (sid != currentSessionId) return
-                val kind = p.optString("kind", "text")
-                val text = p.optString("text")
-                if (text.isEmpty()) return
-                val i = ensureStreamingBlock()
-                val cur = blocks[i] as ThreadBlock.Assistant
-                blocks[i] = if (kind == "reasoning") {
-                    cur.copy(reasoning = (cur.reasoning ?: "") + text, streaming = true)
-                } else {
-                    cur.copy(content = cur.content + text, streaming = true)
-                }
-                streamVersion++
-            }
+    // ===== 历史装载（facade；实现见 HistoryLoader.kt）=====
 
-            "chat.toolCall" -> {
-                if (sid != currentSessionId) return
-                streamingIdx = -1 // 工具轮开始：下一步 delta 开新 assistant 块
-                val name = p.optString("name")
-                // 调度工具不建工具行（对齐桌面端 reduce.ts）：它的渲染形态就是派发卡
-                //（dispatchStart 已建卡）——两处都建 = 同一个调度渲染两遍，且
-                // toolResult 会把子会话结论全文塞进 output（4000 字符）。
-                if (name == "agent_dispatch") return
-                val id = p.optString("id")
-                val args = p.optString("arguments")
-                blocks.add(
-                    ThreadBlock.Tool(
-                        id = id,
-                        name = name,
-                        title = toolTitle(name),
-                        argsSummary = argsSummary(args),
-                        command = argsCommand(args),
-                        cwd = argsCwd(args),
-                        output = null,
-                        running = true,
-                        isError = false,
-                        durationMs = 0,
-                    ),
-                )
-            }
+    internal val historyLoader = HistoryLoader(this)
 
-            "chat.toolResult" -> {
-                if (sid != currentSessionId) return
-                // 调度结果不进主时间线（对齐桌面端）：全文是子会话结论，由
-                // dispatchEnd 回填派发卡的 conclusion 行（卡上截一行显示）。
-                //
-                // 但**子会话 id 的权威来源就是这条结果**（后端在 agent_dispatch 的
-                // 结果末尾追加 `[子会话 id: …]`，见 internal/agent/tools.go）：只靠
-                // dispatchStart/End 的 session_id 的话，续跑（arguments.session 为空）
-                // 与老载荷会让卡上 id 为空——那张卡就再也没有「查看子会话」入口了。
-                // 所以这里照样把正文剥出来回填卡（卡已定格也不改状态，只补 id/结论）。
-                // 附件回流（对齐桌面端 reduceToolResult 的调度分支）：这次派发期间
-                // 子会话 share_file 等的产物随这条结果回流（ToolResultParams
-                // .attachments——与结果消息同一份元数据），挂到派发卡上渲染成果条。
-                if (p.optString("name") == "agent_dispatch") {
-                    val (body, childSid) = splitDispatchResult(p.optString("content"))
-                    val atts = parseAttachments(p.optJSONArray("attachments"))
-                    // 归属键 = 这次调用的 id（后端 DispatchCall.DispatchID = tc.ID），
-                    // 与 dispatchStart/End 的 dispatch_id 同源。
-                    val i = dispatchCardIdx(p.optString("id"))
-                    if (i >= 0) {
-                        val d = blocks[i] as ThreadBlock.Dispatch
-                        blocks[i] = d.copy(
-                            // 结论以 dispatchEnd 为准（它有 is_error 语义）；这里只在
-                            // 卡还空着时补，避免把 dispatchEnd 写好的终态覆盖成半成品。
-                            conclusion = d.conclusion.ifBlank { body },
-                            sessionId = childSid.ifBlank { d.sessionId },
-                            attachments = if (atts.isNotEmpty()) atts else d.attachments,
-                        )
-                    } else {
-                        Log.w(TAG, "调度结果无归属派发卡 id=${p.optString("id")}（卡还没建？）")
-                    }
-                    return
-                }
-                val id = p.optString("id")
-                val i = blocks.indexOfFirst { it is ThreadBlock.Tool && it.id == id }
-                if (i >= 0) {
-                    val t = blocks[i] as ThreadBlock.Tool
-                    val atts = parseAttachments(p.optJSONArray("attachments"))
-                    blocks[i] = t.copy(
-                        output = p.optString("content").take(4_000),
-                        running = false,
-                        isError = p.optBoolean("is_error"),
-                        attachments = if (atts.isNotEmpty()) atts else t.attachments,
-                    )
-                } else {
-                    Log.w(TAG, "toolResult 无配对调用块 id=$id name=${p.optString("name")}")
-                }
-            }
+    internal fun loadHistory(id: String) = historyLoader.loadHistory(id)
 
-            "chat.confirmRequest" -> {
-                if (sid != currentSessionId) return
-                confirm = PendingConfirm(
-                    sessionId = sid,
-                    id = p.optString("id"),
-                    name = p.optString("name"),
-                    arguments = p.optString("arguments"),
-                    prompt = p.optString("prompt"),
-                kind = p.optString("kind"),
-                options = p.optJSONArray("options")?.let { a ->
-                    (0 until a.length()).map { a.optString(it) }
-                } ?: emptyList(),
-                )
-            }
-
-            "chat.done" -> {
-                if (sid != currentSessionId) return
-                // 用最终 message 对齐流式块（修 delta 丢字的尾差）。
-                // 覆盖语义对齐桌面端 reduce.ts 的 reduceDone：**content 非空才覆盖**
-                //——中间步 done（带 tool_calls、content 空）不得把已流式的正文
-                // 清成空串；空 content 时只关 streaming + 填元数据。
-                val msg = p.optJSONObject("message")
-                if (msg != null) {
-                    val i = lastAssistantIndex()
-                    if (i >= 0) {
-                        val cur = blocks[i] as ThreadBlock.Assistant
-                        val content = msg.optString("content")
-                        val reasoning = msg.optString("reasoning_content", "")
-                        val model = msg.optString("model", cur.model)
-                        val ftms = msg.optLong("first_token_ms", 0L)
-                        val dur = msg.optLong("duration_ms", 0L)
-                        val utok = msg.optInt("usage_tokens", 0)
-                        blocks[i] = cur.copy(
-                            content = content.ifBlank { cur.content },
-                            reasoning = reasoning.ifBlank { cur.reasoning },
-                            reasoningMs = ftms,
-                            model = model,
-                            firstTokenMs = if (ftms > 0) ftms else null,
-                            tokPerSec = if (utok > 0 && dur > 0) utok * 1000.0 / dur else null,
-                            // 轮结束 = 打字机收尾：整块呈现（streaming=false）
-                            streaming = false,
-                        )
-                    }
-                }
-                p.optJSONObject("context")?.let { contextUsage = parseContext(it) }
-                p.optJSONObject("stats")?.let { sessionStats = parseStats(it) }
-                Log.i(TAG, "done: ctx=$contextUsage stats=$sessionStats")
-                // 轮结束即刷新缓存快照（断网可看的最新性）：cache 落盘不在关键路径，
-                // 失败只影响下次打开的秒开质量，不影响正确性（远端是事实源）。
-                if (oldestLoadedSeq > 0) {
-                    saveHistoryCache(currentSessionId, currentTodosJson(), currentStatsJson())
-                }
-                msg?.optString("model", "")?.takeIf { it.isNotEmpty() }?.let { sessionModel = it }
-                busy = false
-                // 投影同款收敛：done 就是本会话这一轮的结束（chat.busy 广播可能晚到
-                // 或在断线窗口里丢掉）——列表状态点不该等它。chat.done **不带**
-                // dispatch_id（子轮有），所以这条只可能是主轮，归属 = sid。
-                if (sid.isNotEmpty()) {
-                    sessionBusy[sid] = false
-                    syncRunningDots()
-                }
-                // 主轮结束重拉会话列表（对齐桌面端 ws/index.ts 的 chat.done →
-                // refreshSessionList）：新对话的首条消息落库后侧栏才出得来
-                //（后端语义：未发过消息的空会话不进 session.list；而 session.new
-                // 建的会话首条消息不发 SessionStarted 事件——唯一刷新信号就是 done）
-                refreshSessions()
-                streamingIdx = -1
-            }
-
-            "chat.error" -> {
-                if (sid != currentSessionId) return
-                streamingIdx = -1
-                val aborted = p.optBoolean("aborted")
-                val message = p.optString("message")
-                p.optJSONObject("partial")?.let { partial ->
-                    val content = partial.optString("content")
-                    if (content.isNotEmpty()) {
-                        val i = lastAssistantIndex()
-                        if (i >= 0) {
-                            val cur = blocks[i] as ThreadBlock.Assistant
-                            blocks[i] = cur.copy(content = content, streaming = false)
-                        } else {
-                            blocks.add(ThreadBlock.Assistant(content, null, 0, sessionModel))
-                        }
-                    }
-                }
-                blocks.add(ThreadBlock.Error(if (aborted) "已中断" else message))
-                busy = false
-                // 投影同款收敛（与 chat.done 同一条纪律：错误收尾也是这一轮结束）
-                if (sid.isNotEmpty()) {
-                    sessionBusy[sid] = false
-                    syncRunningDots()
-                }
-            }
-
-            "chat.busy" -> {
-                // 多端共享进度：忙闲广播**先记进会话级投影**（列表运行中状态点，
-                // 所有会话都记——不只是当前打开的），当前会话再同步本页的 busy。
-                if (sid.isNotEmpty()) {
-                    sessionBusy[sid] = p.optBoolean("busy")
-                    syncRunningDots()
-                }
-                if (sid != currentSessionId) return
-                busy = p.optBoolean("busy")
-            }
-
-            "chat.modelChanged" -> {
-                // 会话级模型变更广播（多端同步——本端切模型后的回执也走这条）：
-                // 按会话归属，别的会话的变更不改本会话的选中态（不串台）
-                if (sid != currentSessionId) return
-                p.optString("model_id", "").takeIf { it.isNotEmpty() }?.let { pickedModelId = it }
-            }
-
-            "chat.approvalChanged" -> {
-                // 权限档变更广播（多端同步——本端改档后的回执也走这条）：按会话
-                // 归属，别的会话的变更不改本会话药丸
-                if (sid != currentSessionId) return
-                p.optString("approval", "").takeIf { it.isNotEmpty() }?.let { approval = it }
-            }
-
-            "todo.updated" -> {
-                if (sid != currentSessionId) return
-                val items = p.optJSONArray("items") ?: return
-                val list = (0 until items.length()).map { items.getJSONObject(it) }
-                    .map { todoItemOf(it.optString("content"), it.optString("status")) }
-                val i = blocks.indexOfFirst { it is ThreadBlock.Todo }
-                when {
-                    // 空清单 = Agent 把清单清空了：移除既有 Todo 块恢复到无清单态
-                    //（照旧替换/追加空块就是「光有框里面空」的空框）
-                    list.isEmpty() -> if (i >= 0) blocks.removeAt(i)
-                    i >= 0 -> blocks[i] = ThreadBlock.Todo(list)
-                    else -> blocks.add(ThreadBlock.Todo(list))
-                }
-            }
-
-            "session.changed" -> refreshSessions()
-
-            "project.changed" -> refreshProjects()
-
-            // 模型注册表变更（多端同步：桌面端加了模型/改了绑定，手机端重拉对齐）
-            "model.changed" -> refreshModels()
-
-            "chat.compacted" -> {
-                if (sid != currentSessionId) return
-                blocks.add(
-                    ThreadBlock.Compaction(
-                        summary = p.optString("summary"),
-                        shadowed = p.optInt("shadowed"),
-                        before = p.optInt("before"),
-                        after = p.optInt("after"),
-                        manual = p.optBoolean("manual"),
-                    ),
-                )
-            }
-
-            else -> Log.d(TAG, "忽略事件 $method")
-        }
-    }
-
-    // ===== 历史装载 =====
-
-    /** chat.history → 块（含 checkpoints → 压缩块、pending → 挂起确认）。
-     *  打开流程（2026-12 缓存秒开）：先把缓存渲染出来（如果有），再拉远端 tail——
-     *  远端返回后 tail 窗口替换缓存尾部（分页加载的更早部分保留）。 */
-    private fun loadHistory(id: String) {
-        // 先切再拉：currentSessionId 必须在**发起请求前**就指向目标会话——否则
-        // 回调里的过期响应守卫（id != currentSessionId）会把这次响应整个丢掉，
-        // 从 A 切 B 永远切不动（A 开着时点 B，resume 成功但 history 被丢弃，
-        // 界面停在 A——本批 e2e 实测抓到）。
-        if (id != currentSessionId) switchTo(id)
-        // 缓存秒开：有缓存先渲染（快于任何网络往返）；远端回来后按 tailAnchorSeq
-        // 合并。缓存块与远端块的「分界」由 anchor 保证——anchor 之前的块是历史
-        // 分页段（信任缓存），之后整段以远端为准。
-        val cached = sessionCache.load(id)
-        cachedBlocks = emptyList()
-        cachedOldestSeq = null
-        if (cached != null && cached.blocks.isNotEmpty()) {
-            blocks.clear()
-            blocks.addAll(cached.blocks)
-            cached.statsJson?.let { sj ->
-                try {
-                    sessionStats = parseStats(JSONObject(sj))
-                } catch (_: Exception) {
-                }
-            }
-            oldestLoadedSeq = cached.oldestSeq
-            hasMoreHistory = cached.hasMore
-            // 记住缓存段：远端 tail 回来后 anchor 之前（= 分页段）要合并保留
-            cachedBlocks = cached.blocks
-            if (cached.oldestSeq < cached.tailAnchorSeq) cachedOldestSeq = cached.oldestSeq
-            showingCached = true
-            // 缓存装载也算一次「历史就绪」：ThreadScreen 滚到底（进会话停在最底）。
-            historyVersion++
-            Log.i(TAG, "cache($id): ${cached.blocks.size} 块 anchor=${cached.tailAnchorSeq}")
-        }
-        // 慢链路优化（2026-10 公网性能排查）：先拉尾部 TAIL_WINDOW 条（公网 frp
-        // 隧道限速 10 Mbit/s，大会话全量 1.4~1.7MB 要秒级传输），进会话即刻可见；
-        // tail 是可选参数、缺省全量（wire 向后兼容，老后端忽略未知键）。
-        client.call("chat.history", JSONObject().put("session_id", id).put("tail", TAIL_WINDOW)) { err, result ->
-            if (err != null) {
-                Log.w(TAG, "chat.history($id) 失败: ${err.optString("message")}")
-                if (id != currentSessionId) return@call
-                if (showingCached) {
-                    // 缓存已在屏上：不插整屏 Error（那会把秒开的缓存盖掉）——
-                    // 只标记离线展示态，UI 顶部出「离线，显示缓存」提示条。
-                    showingCached = true
-                    return@call
-                }
-                // 失败不能静默（原实现只 log——用户看到的就是白屏「加载不出来」）：
-                // 插一块 Error 给人话反馈；重试 = 返回后重新进入会话（openSession 重拉）。
-                blocks.clear()
-                blocks.add(ThreadBlock.Error("历史加载失败: ${err.optString("message")}（返回后重新进入可重试）"))
-                historyVersion++
-                return@call
-            }
-            // 请求在途时用户又点了别的会话：currentSessionId 已指向新目标，
-            // 这份旧响应作废（守卫语义保留，判定对象不变）
-            if (id != currentSessionId) return@call
-            applyHistory(result as? JSONObject)
-        }
-    }
-
-    /**
-     * 向上翻页：拉取已加载窗口（oldestLoadedSeq）之前更早 TAIL_WINDOW 条
-     * （chat.history 的 before_seq 分页——内核 HistoryBefore 负责配平与检查点平移）。
-     *
-     * 状态机：loadingEarlier 置位（UI spinner）→ 成功后新块**插入头部** +
-     * oldestLoadedSeq 推进 + earlierVersion++（ThreadScreen 做不跳屏补偿）；
-     * has_more=false → hasMoreHistory=false（「已加载全部历史」）；失败 →
-     * loadEarlierError 置位（UI 重试按钮），loadingEarlier 复位。
-     * 忙碌会话也可翻页（读路径不冲突）；重复触发被 loadingEarlier 闸住。
-     */
-    fun loadEarlier() {
-        if (loadingEarlier) return
-        val id = currentSessionId
-        val anchor = oldestLoadedSeq
-        if (id.isEmpty() || anchor <= 0 || !hasMoreHistory) return
-        loadingEarlier = true
-        loadEarlierError = null
-        client.call(
-            "chat.history",
-            JSONObject()
-                .put("session_id", id)
-                .put("tail", TAIL_WINDOW)
-                .put("before_seq", anchor),
-        ) { err, result ->
-            loadingEarlier = false
-            if (id != currentSessionId) return@call
-            if (err != null) {
-                Log.w(TAG, "chat.history(before_seq=$anchor) 失败: ${err.optString("message")}")
-                loadEarlierError = err.optString("message").ifBlank { "加载失败" }
-                return@call
-            }
-            val r = result as? JSONObject ?: return@call
-            val (parsed, _, _, _) = parseHistoryBlocks(r)
-            if (parsed.isEmpty()) {
-                // 空窗口 = 已到头（防御：后端 has_more 缺席的老版本）
-                hasMoreHistory = false
-                earlierVersion++
-                return@call
-            }
-            // 插入头部（LazyColumn 顶部）；seq 薄记推进到新窗口首条（分页应答的
-            // first_seq 是权威值——配平回退后窗口首条可能比 anchor-N 更旧）
-            blocks.addAll(0, parsed)
-            val newFirstSeq = r.optLong("first_seq", 0L)
-            if (newFirstSeq > 0) oldestLoadedSeq = newFirstSeq
-            hasMoreHistory = r.optBoolean("has_more", false)
-            loadEarlierError = null
-            earlierVersion++
-            Log.i(TAG, "loadEarlier($id): +${parsed.size} 块 has_more=$hasMoreHistory anchor=$oldestLoadedSeq")
-            saveHistoryCache(id, currentTodosJson(), currentStatsJson())
-        }
-    }
-
-    /** 当前 blocks 里的 Todo 块序列化（缓存落盘用；无 = null）。 */
-    private fun currentTodosJson(): String? {
-        val todo = blocks.firstOrNull { it is ThreadBlock.Todo } as? ThreadBlock.Todo ?: return null
-        val arr = JSONArray()
-        todo.items.forEach { arr.put(JSONObject().put("content", it.content).put("status", it.status)) }
-        return arr.toString()
-    }
-
-    /** 当前 stats 序列化（缓存落盘用；无 = null）。 */
-    private fun currentStatsJson(): String? = try {
-        sessionStats?.let { s ->
-            JSONObject()
-                .put("turns", s.turns)
-                .put("steps", s.steps)
-                .put("llm_ms", s.llmMs)
-                .put("tool_ms", s.toolMs)
-                .put("ttft_ms", s.ttftMs)
-                .put("ttft_steps", s.ttftSteps)
-                .put("decode_ms", s.decodeMs)
-                .put("decode_tokens", s.decodeTokens)
-                .put("input_tokens", s.inputTokens)
-                .put("cache_read_tokens", s.cacheReadTokens)
-                .put("cache_write_tokens", s.cacheWriteTokens)
-                .put("output_tokens", s.outputTokens)
-                .put("legacy_tokens", s.legacyTokens)
-                .toString()
-        }
-    } catch (_: Exception) {
-        null
-    }
-
-    private fun switchTo(id: String) {        if (currentSessionId == id) return
-        // 切走前把旧会话防抖窗口里的草稿立即落库（竞态防线：否则 800ms 窗口里的
-        // 最后状态会跟着新会话的 flush 一起发错地方）。
-        flushDraft()
-        currentSessionId = id
-        blocks.clear()
-        streamingIdx = -1
-        // 已收尾派发集合是"这份时间线"的簿记：切会话即清（否则上一条会话的
-        // dispatch_id 会在这里越积越多，且语义上属于另一份时间线）
-        endedDispatches.clear()
-        confirm = null
-        busy = false
-        contextUsage = null
-        sessionStats = null
-        sessionModel = ""
-        // 会话级模型同款：切会话即清（切回时由 chat.history 的 model 重新对齐）
-        // ——沿用上一会话的模型显示是串台
-        pickedModelId = ""
-        // 权限档是会话级状态：切会话即清（切回时由 chat.history 的 approval 重新
-        // 对齐）——沿用上一会话的档位显示是串台
-        approval = null
-        // 历史装载版本也清零：新会话的历史还没装载，滚动触发条件（historyVersion>0）
-        // 必须等下一次 applyHistory 才成立——沿用上一会话的版本号会让 ThreadScreen
-        // 在 blocks 还是空的时候去滚
-        historyVersion = 0
-        // 分页薄记同会话复位（上一会话的 anchor/has_more/错误状态不能带过来）
-        oldestLoadedSeq = 0
-        hasMoreHistory = true
-        loadingEarlier = false
-        loadEarlierError = null
-        showingCached = false
-    }
-
-    /** 解析 chat.history 的 messages → 块列表 + todos JSON + 首条消息 seq（主会话与
-     *  子会话视图共用）。首条 seq 是分页薄记的 anchor（老后端缺 seq = 0）。
-     *  第四个返回值 = 「窗口外派发结果剥出的子会话 id」（callId → childSid）：
-     *  派发卡被 tail 窗口截掉时，结果正文里的「[子会话 id: …]」提示行是卡重建后
-     *  兜底补 id 的最后一道来源（applyHistory 里并进 mergeKnownChildIds 的口径）。 */
-    private fun parseHistoryBlocks(r: JSONObject?): Quad<List<ThreadBlock>, org.json.JSONArray?, Long, Map<String, String>> {
-        if (r == null) return Quad(emptyList(), null, 0L, emptyMap())
-        val msgs = r.optJSONArray("messages") ?: return Quad(emptyList(), null, 0L, emptyMap())
-        val firstSeq = msgs.optJSONObject(0)?.optLong("seq", 0L) ?: 0L
-        val checkpoints = r.optJSONArray("checkpoints")
-            ?.let { cp -> (0 until cp.length()).map { cp.optInt(it) } }
-            ?.toSet() ?: emptySet()
-        // tool 消息先到调用块后到结果的配对表（历史里调用在前、结果紧随）
-        val toolCallIdx = mutableMapOf<String, Int>()
-        val dispatchCallIdx = mutableMapOf<String, Int>()
-        // 窗口外的派发结果剥出的子会话 id（callId → childSid）：卡被 tail 截掉时
-        // dispatchCallIdx 里没有它的调用——applyRunningDispatches 的兜底第三来源。
-        val orphanChildIds = mutableMapOf<String, String>()
-        val newBlocks = mutableListOf<ThreadBlock>()
-        for (i in 0 until msgs.length()) {
-            val m = msgs.getJSONObject(i)
-            val role = m.optString("role")
-            if (i in checkpoints) {
-                newBlocks.add(
-                    ThreadBlock.Compaction(
-                        summary = m.optString("content"),
-                        shadowed = 0,
-                        before = 0,
-                        after = 0,
-                        manual = false,
-                    ),
-                )
-                continue
-            }
-            when (role) {
-                "user" -> {
-                    // 通告前缀识别（对齐桌面端 history.ts 的 notices 分支）：
-                    // hidden 注记不产生任何块；通告渲染成提示条，其余才是用户气泡。
-                    val content = m.optString("content")
-                    if (content.startsWith(HIDDEN_NOTICE_PREFIX)) continue
-                    val notice = noticeKind(content)
-                    if (notice != null) {
-                        newBlocks.add(ThreadBlock.Notice(label = notice.second, text = content.removePrefix(notice.first).trim()))
-                    } else {
-                        newBlocks.add(ThreadBlock.User(content, parseAttachments(m.optJSONArray("attachments"))))
-                    }
-                }
-                "assistant" -> {
-                    val ftms = m.optLong("first_token_ms", 0L)
-                    val dur = m.optLong("duration_ms", 0L)
-                    val utok = m.optInt("usage_tokens", 0)
-                    if (m.optString("content").isNotEmpty() || !m.optString("reasoning_content").isBlank()) {
-                        newBlocks.add(
-                            ThreadBlock.Assistant(
-                                content = m.optString("content"),
-                                reasoning = m.optString("reasoning_content").ifBlank { null },
-                                reasoningMs = ftms,
-                                model = m.optString("model", ""),
-                                firstTokenMs = if (ftms > 0) ftms else null,
-                                tokPerSec = if (utok > 0 && dur > 0) utok * 1000.0 / dur else null,
-                            ),
-                        )
-                    }
-                    val calls = m.optJSONArray("tool_calls")
-                    if (calls != null) {
-                        for (k in 0 until calls.length()) {
-                            val c = calls.getJSONObject(k)
-                            val fn = c.optJSONObject("function") ?: continue
-                            val callId = c.optString("id")
-                            val name = fn.optString("name")
-                            val args = fn.optString("arguments")
-                            // 调度调用重建的是**派发卡**，不是工具行（对齐桌面端 history.ts
-                            // 的 DISPATCH_TOOL_NAME 分支）——回放建工具行的后果：每次刷新
-                            // 派发都退化成一张 4000 字 output 的全文工具卡，卡、Agent 名、
-                            // 子会话 id 全没了。先按"中断"定格，配对结果到了再回填。
-                            if (name == "agent_dispatch") {
-                                val parsed = try {
-                                    JSONObject(args)
-                                } catch (_: Exception) {
-                                    null
-                                }
-                                dispatchCallIdx[callId] = newBlocks.size
-                                newBlocks.add(
-                                    ThreadBlock.Dispatch(
-                                        agentName = parsed?.optString("agent").orEmpty().ifBlank { "子 Agent" },
-                                        task = parsed?.optString("task").orEmpty(),
-                                        // 先按"中断"定格：历史里没有配对结果 = 那次派发在
-                                        // 结束前就断了，不是"正在跑"（不许假装 running）。
-                                        // 结果到了（tool 分支）再回填成 done + 正文。
-                                        conclusion = DISPATCH_INTERRUPTED,
-                                        sessionId = parsed?.optString("session").orEmpty(),
-                                        done = true,
-                                        isError = true,
-                                        // 归属键 = 这次工具调用的 id（后端 DispatchCall.DispatchID
-                                        // = tc.ID，与 dispatchStart/End 的 dispatch_id 同源）：
-                                        // 有了它，本轮稍后到达的实时 dispatchStart 才能按 id
-                                        // **复用**这张卡（而不是并排再长一张），tool 结果分支也
-                                        // 才能精确回填。老代码这里留空 = 每次刷新后卡与实时事件
-                                        // 断链。
-                                        dispatchId = callId,
-                                    ),
-                                )
-                                continue
-                            }
-                            toolCallIdx[callId] = newBlocks.size
-                            newBlocks.add(
-                                ThreadBlock.Tool(
-                                    id = callId,
-                                    name = name,
-                                    title = toolTitle(name),
-                                    argsSummary = argsSummary(args),
-                                    command = argsCommand(args),
-                                    cwd = argsCwd(args),
-                                    output = null,
-                                    running = false,
-                                    isError = false,
-                                    durationMs = m.optLong("duration_ms", 0L),
-                                ),
-                            )
-                        }
-                    }
-                }
-
-                "tool" -> {
-                    val callId = m.optString("tool_call_id")
-                    // ① 调度卡回填：结果正文剥掉「[子会话 id: …]」提示行（给模型看的
-                    //    续跑线索），子会话 id 从提示行取（权威值）；正文空 = 没有文本结论。
-                    val dIdx = dispatchCallIdx[callId]
-                    if (dIdx != null && dIdx < newBlocks.size) {
-                        val d = newBlocks[dIdx] as ThreadBlock.Dispatch
-                        val (body, childSid) = splitDispatchResult(m.optString("content"))
-                        val atts = parseAttachments(m.optJSONArray("attachments"))
-                        newBlocks[dIdx] = d.copy(
-                            conclusion = body.ifBlank { "（子 Agent 没有产出文本结论）" },
-                            sessionId = childSid.ifBlank { d.sessionId },
-                            done = true,
-                            isError = false,
-                            // 子会话共享到对话的附件（调度结果消息上的元数据——与
-                            // 实时 toolResult 同一份形状）：卡上渲染成果条（桌面端
-                            // historyBlocks 的 card.attachments 同语义）。
-                            attachments = if (atts.isNotEmpty()) atts else d.attachments,
-                        )
-                    } else if (dispatchCallIdx.containsKey(callId)) {
-                        // ①b 派发卡被 tail 窗口截掉、只剩这条结果：从正文剥出子会话 id
-                        //    兜底记进配对表——稍后 applyRunningDispatches 用它补回放卡
-                        //    （老后端快照键缺席时的最后一道兜底；不编造，提示行缺失不动）。
-                        val (_, childSid) = splitDispatchResult(m.optString("content"))
-                        if (childSid.isNotEmpty()) orphanChildIds[callId] = childSid
-                    } else {
-                        // ② 普通工具行：调用在前、结果紧随，按 id 配对回填
-                        val idx = toolCallIdx[callId]
-                        if (idx != null && idx < newBlocks.size) {
-                            val t = newBlocks[idx] as ThreadBlock.Tool
-                            val atts = parseAttachments(m.optJSONArray("attachments"))
-                            newBlocks[idx] = t.copy(
-                                output = m.optString("content").take(4_000),
-                                isError = false,
-                                durationMs = m.optLong("duration_ms", t.durationMs),
-                                // share_file 共享的附件（结果消息上的元数据——与实时
-                                // toolResult 同一份形状，桌面端 historyBlocks 同语义）
-                                attachments = if (atts.isNotEmpty()) atts else t.attachments,
-                            )
-                        }
-                    }
-                }
-            }
-        }
-        // 历史快照的任务清单（todos 原样返回，调用方决定插不插 Todo 块）
-        val todosArr = r.optJSONArray("todos")?.takeIf { it.length() > 0 }
-        return Quad(newBlocks.toList(), todosArr, firstSeq, orphanChildIds.toMap())
-    }
-
-    /** 四元组（Triple 的扩展——parseHistoryBlocks 还要带「窗口外剥出的子会话 id」）。 */
-    private data class Quad<A, B, C, D>(val first: A, val second: B, val third: C, val fourth: D)
-
-    private fun applyHistory(r: JSONObject?) {
-        if (r == null) return
-        val (parsed, todosArr, firstSeq, orphanChildIds) = parseHistoryBlocks(r)
-        // 分页薄记：tail 段首条消息的 seq 是「tail 窗口」的锚点——缓存合并时 anchor
-        // 之前的块（历史分页段）保留、之后整段以远端为准。缺 seq（老后端）= 记 0
-        //（缓存退化为整段替换——正确性不受影响，只是丢掉分页复用）。
-        val tailAnchor = firstSeq
-        val cacheTodos = todosArr?.toString()
-        val cacheStats = r.optJSONObject("stats")?.toString()
-        val hadEarlierBlocks = cachedOldestSeq != null && tailAnchor > 0 &&
-            (cachedOldestSeq ?: 0L) < tailAnchor
-        // 子会话 id 的跨重载记忆：历史里只有消息（没有 dispatchStart），正在跑
-        // 的派发在历史里既没有结果提示行、也没有子会话 id——直接整段替换的话，
-        // 用户打开这个会话就看不到任何能进子会话的入口（问题 2）。把上一份块里
-        // 同一 dispatch_id 已知的 id 合并回来（只补空值，不编造）。
-        // 第三来源：窗口外的派发结果正文剥出的 id（parseHistoryBlocks 的
-        // orphanChildIds）——卡被 tail 截掉时它可能是唯一线索，同口径「只补空缺」。
-        val knownChildIds = blocks.toList()
-        val previousBlocks = if (orphanChildIds.isEmpty()) knownChildIds else {
-            knownChildIds + orphanChildIds.map { (callId, sid) ->
-                ThreadBlock.Dispatch(
-                    agentName = "", task = "", conclusion = "",
-                    sessionId = sid, done = true, isError = false, dispatchId = callId,
-                )
-            }
-        }
-        val merged = mergeKnownChildIds(parsed, previousBlocks)
-        // 观察端回填（chat.history 的 running_dispatches，2026-12 用户报「安卓
-        // 点不开电脑发起的子会话」的主修）：历史回放扫不出正在跑的派发（结果
-        // 提示行要派发结束才落库、dispatchStart 是本机不在场时错过的事件）——
-        // 后端按**此刻的运行中登记**导出快照，按 dispatch_id 补卡/补 id。
-        // 回放占位卡被恢复成运行中（后端事实，比「只认最后一张」的 busy 启发式
-        // 强——多派发并行时每张都能恢复）；已收尾的真终态卡绝不被翻回。
-        val runningDispatches = parseRunningDispatches(r.optJSONArray("running_dispatches"))
-        val filled = applyRunningDispatches(merged, runningDispatches, previousBlocks)
-        // 已收尾集合属于"当前这一份时间线"：重载之后旧记录无意义（且不清理会
-        // 随会话长度无限增长）
-        endedDispatches.clear()
-        blocks.clear()
-        blocks.addAll(filled)
-        streamingIdx = -1
-        // 历史快照的任务清单（ChatHistoryResult.todos——对齐桌面端 history-snapshot
-        // 的 todos 装载）：非空插一块 Todo（当前清单的定格视图，随后的 todo.updated
-        // 会找到并替换它）；缺席/空 = 不插（老后端或没建过清单——不编空块）。
-        todosArr?.let { arr ->
-            val list = (0 until arr.length()).map { arr.getJSONObject(it) }
-                .map { todoItemOf(it.optString("content"), it.optString("status")) }
-            blocks.add(ThreadBlock.Todo(list))
-        }
-        r.optJSONObject("context")?.let { contextUsage = parseContext(it) }
-        r.optJSONObject("stats")?.let { sessionStats = parseStats(it) }
-        sessionModel = r.optString("model", "")
-        // 模型菜单的选中态：快照里带的 model 是**后端解析后**的（会话选择 > Agent
-        // 绑定 > default 角色）。老后端不带键 = 未知，保持空（显示回落 default）。
-        pickedModelId = sessionModel
-        busy = r.optBoolean("busy")
-        // 历史的 busy 键是服务端事实：同步进会话级忙闲投影（列表状态点对齐）
-        if (currentSessionId.isNotEmpty()) {
-            sessionBusy[currentSessionId] = busy
-            syncRunningDots()
-        }
-        // 卡里的占位态同样按快照修正：本会话在跑 + **最后一张**派发卡还是"中断"
-        // 占位 = 那次派发其实正在跑（子事件可能还没到，而 history 的 busy 已经是
-        // 服务端事实）。只认最后一张：更早的占位卡是历史上真断掉的派发，本会话
-        // 后来的忙碌与它无关——把它们一起点亮就是"把中断说成在跑"。
-        if (busy) {
-            blocks.indexOfLast { it is ThreadBlock.Dispatch && (it as ThreadBlock.Dispatch).done }
-                .takeIf { it >= 0 }
-                ?.let { markDispatchRunning((blocks[it] as ThreadBlock.Dispatch).dispatchId) }
-        }
-        // 该会话此刻的权限档（后端 LiveApproval——会话级状态持久化的显示依据）；
-        // 空串 = 老后端没报，保持 null（UI 回落「默认」，不猜）
-        r.optString("approval", "").takeIf { it.isNotEmpty() }?.let { approval = it }
-        // 落库草稿（chat.draft 写的，多端共享）：**键有值且内存无该会话记账**时才
-        // 预填——缺席/空串 = 后端没存过，不能清掉本端内存里还没落库的草稿（后写
-        // 覆盖语义下，缺席 = 后端没话语权）。发送清空路径已经把内存记账清了，
-        // 这里只在「换端/重启捡回别人的草稿」时生效。
-        r.optString("draft", "").takeIf { it.isNotEmpty() }?.let { remote ->
-            if ((sessionDrafts[currentSessionId] ?: "").isEmpty()) {
-                sessionDrafts[currentSessionId] = remote
-            }
-        }
-        r.optJSONObject("pending")?.let { pend ->
-            confirm = PendingConfirm(
-                sessionId = pend.optString("session_id", currentSessionId),
-                id = pend.optString("id"),
-                name = pend.optString("name"),
-                arguments = pend.optString("arguments"),
-                prompt = pend.optString("prompt"),
-            kind = pend.optString("kind"),
-            options = pend.optJSONArray("options")?.let { a ->
-                (0 until a.length()).map { a.optString(it) }
-            } ?: emptyList(),
-            )
-        }
-        Log.i(TAG, "history($currentSessionId): ${parsed.size} 条消息 → ${blocks.size} 块 busy=$busy")
-        // 分页薄记 + 缓存落盘（在 historyVersion++ 之前——UI 读到的状态要一次到位）：
-        // 远端 tail 窗口替换缓存尾部（tailAnchor 之后整段以远端为准），anchor 之前的
-        // 分页段（打开会话时缓存秒开的部分）保留——缓存与远端合并口径。
-        if (hadEarlierBlocks) {
-            val earlier = cachedBlocksBefore(tailAnchor)
-            if (earlier.isNotEmpty()) {
-                blocks.addAll(0, earlier)
-            }
-            oldestLoadedSeq = cachedOldestSeq ?: tailAnchor
-        } else {
-            oldestLoadedSeq = tailAnchor
-        }
-        hasMoreHistory = oldestLoadedSeq > 0 // tail 首条 > 0 即可能还有更早的（hasMore 由分页应答精化）
-        showingCached = false
-        saveHistoryCache(currentSessionId, cacheTodos, cacheStats)
-        // 历史装载完成：ThreadScreen 据此滚动到底（进会话停在最底，对齐桌面端）
-        historyVersion++
-    }
-
-    /** 缓存合并薄记：loadHistory 渲染缓存时记住「分页段块列表」与「分页段最旧
-     *  seq」——远端 tail 回来后把分页段合并回头部（tail 段以远端为准）。 */
-    private var cachedBlocks: List<ThreadBlock> = emptyList()
-    private var cachedOldestSeq: Long? = null
-
-    private fun cachedBlocksBefore(anchor: Long): List<ThreadBlock> {
-        if (cachedBlocks.isEmpty() || anchor <= 0) return emptyList()
-        // 分页段 = 缓存里 anchor 之前的部分（缓存的 blocks 布局就是「分页段 + tail 段」，
-        // tail 段的长度 == 本次远端 tail 装载的块数——按位置从尾部对齐切除 tail 段）
-        val tailCount = blocks.size
-        return if (cachedBlocks.size > tailCount) {
-            cachedBlocks.subList(0, cachedBlocks.size - tailCount)
-        } else {
-            emptyList()
-        }
-    }
-
-    /** 当前 blocks 落缓存（会话 id + 分页薄记一起存）。Todo 块不缓存（todos 单独
-     *  存 JSON——它的更新走 todo.updated 事件，块列表快照里的 Todo 是定格视图）。 */
-    private fun saveHistoryCache(sessionId: String, todosJson: String?, statsJson: String?) {
-        if (sessionId.isEmpty()) return
-        val snapshot = blocks.toList().filterNot { it is ThreadBlock.Todo || it is ThreadBlock.Error }
-        // tailAnchor = 分页段与 tail 段的分界（最旧已加载 seq）：缓存合并按
-        // 「缓存块数 − 远端 tail 块数」的位置切分——anchor 语义等价记录
-        val anchor = oldestLoadedSeq
-        sessionCache.save(
-            SessionCacheEntry(
-                sessionId = sessionId,
-                blocks = snapshot.filterNot { it is ThreadBlock.Todo },
-                todosJson = todosJson,
-                statsJson = statsJson,
-                tailAnchorSeq = anchor,
-                oldestSeq = anchor,
-                hasMore = hasMoreHistory,
-                savedAt = System.currentTimeMillis(),
-            ),
-        )
-    }
-
-    /** 子会话视图的历史装载（与主会话同一解析器；副作用落在 child* 状态上）。 */
-    private fun applyChildHistory(r: JSONObject?) {
-        val (parsed, todosArr, _, _) = parseHistoryBlocks(r)
-        // 模型选中态回读（对齐桌面端 history.ts 读 h.model 的口径 / 主会话
-        // applyHistory 的 sessionModel 落法）：chat.history 顶层的 model 键是
-        // 后端**解析后**的模型（会话选择 > Agent 绑定 > default 角色）。不读它的
-        // 后果：重开子会话页 childModelId 恒空起步，药丸回落 default 角色——
-        // 落库的显式选择显示不出来（用户看到「没切上」）。老后端不带键 = 未知，
-        // 保持现状不编。
-        r?.optString("model", "")?.takeIf { it.isNotEmpty() }?.let { childModelId = it }
-        // 重载**不许抹掉本地实时内容**（2026-12 用户报「子 Agent 正文输出后消失」）：
-        // assistant 是整轮结束才落库的，正在流式的那段永远不在 chat.history 里；
-        // 而子会话的 chat.history 走「现建运行时 + AttachTo」，busy 恒 false——
-        // 不能拿快照的 busy 判「本地有没有实时块」。判定与去重见 ChildHistoryMerge.kt。
-        val prevBlocks = childBlocks.toList()
-        val snapshotTodos = todosArr?.let { arr ->
-            (0 until arr.length()).map { arr.getJSONObject(it) }
-                .map { todoItemOf(it.optString("content"), it.optString("status")) }
-        }
-        val merged = mergeChildLiveTail(parsed, prevBlocks)
-        childBlocks.clear()
-        childBlocks.addAll(merged)
-        // 流式块的续写下标：接回来的尾巴就是尾块（否则后续 delta 会另开一块）。
-        childStreamingIdx = if ((merged.lastOrNull() as? ThreadBlock.Assistant)?.streaming == true) {
-            merged.size - 1
-        } else {
-            -1
-        }
-        // 清单：空快照 = 未知（omitempty），沿用上一份——否则「重开视图清单消失」。
-        // 落**会话级状态**（置底清单条数据源），不再往时间线插 Todo 块。
-        // 沿用口径收窄到**同一子会话**（childTodoOwner）：切换子会话视图时上一份
-        // 清单不属于这个子会话，不许串台。
-        childTodos = mergeChildTodoList(snapshotTodos, childTodos.takeIf { childTodoOwner == viewChildSessionId })
-        childTodoOwner = viewChildSessionId ?: ""
-        // 忙闲：快照的 busy 键对子会话**不可信**（chat.history 是现建运行时 + AttachTo，
-        // busy 恒 false）。接回了流式尾部 = 它确实在跑——别把「生成中」指示抹掉。
-        // 翻回 false 仍由轮末那条 chat.busy=false 负责（它无条件发，不会漏）。
-        val liveTail = childStreamingIdx >= 0
-        childBusy = (r?.optBoolean("busy") ?: false) || liveTail
-        r?.optJSONObject("pending")?.let { pend ->
-            childConfirm = PendingConfirm(
-                sessionId = pend.optString("session_id", viewChildSessionId ?: ""),
-                id = pend.optString("id"),
-                name = pend.optString("name"),
-                arguments = pend.optString("arguments"),
-                prompt = pend.optString("prompt"),
-            kind = pend.optString("kind"),
-            options = pend.optJSONArray("options")?.let { a ->
-                (0 until a.length()).map { a.optString(it) }
-            } ?: emptyList(),
-            )
-        }
-        Log.i(TAG, "child history($viewChildSessionId): ${parsed.size} 条消息 → ${childBlocks.size} 块 busy=$childBusy")
-        // 装载完成：ThreadScreen 据此把子会话视图滚到底
-        childHistoryVersion++
-    }
-
-
-    private fun applySessionList(r: Any?) {
-        // session.list 的 result 是**裸数组**（toProtocolSessionList 直接回 []SessionMeta）
-        val arr: org.json.JSONArray? = when (r) {
-            is org.json.JSONArray -> r
-            is JSONObject -> r.optJSONArray("sessions")
-            else -> null
-        } ?: return
-        val list = (0 until arr!!.length()).mapNotNull { idx ->
-            val o = arr.getJSONObject(idx)
-            val id = o.optString("id")
-            if (id.isEmpty()) return@mapNotNull null
-            // 快照说在跑 → 顺手把投影补成 true：否则下一次 syncRunningDots 会按
-            // 空投影把它抹掉（状态点闪一下就灭），也覆盖不到「连上时已经在跑」。
-            if (o.optBoolean("running")) sessionBusy[id] = true
-            SessionMeta(
-                id = id,
-                title = o.optString("title").ifBlank { "新对话" },
-                updatedAt = relativeTime(o.optString("updated_at")),
-                messages = o.optInt("messages"),
-                archived = o.optBoolean("archived"),
-                workspace = o.optString("workspace", ""),
-                // 运行中状态点 = **服务端事实**（session.list 的 running 位，
-                // 与 hello 的 busy_sessions 同源，见 internal/server/dispatch_sessions.go）
-                // **或** chat.busy 广播的会话级投影。
-                //
-                // 两个来源都要认：running 位覆盖「连上时那轮已经在跑」（客户端错过
-                // 了 busy=true 广播）；投影覆盖「列表拉到之后才开跑/跑完」（新广播
-                // 到，列表不必重拉）。只认投影 = 冷启动/重连后状态点不亮（用户报的
-                // 「必须点进去再退出才亮」的其中一条路径）；只认快照 = 广播到了
-                // 状态点不动。
-                running = o.optBoolean("running") || sessionBusy[id] == true,
-            )
-        }.filter { !it.archived }
-        sessions.clear()
-        sessions.addAll(list)
-        Log.i(TAG, "session.list → ${list.size} 条")
-    }
-
-    private fun applyProjectList(r: Any?) {
-        // project.list 的 result 是**裸数组**（dispatchProjects 直接回 []ProjectMeta：
-        // {id,name,path}；workspace 字段是项目 id 而不是路径——见 SessionMeta.workspace）
-        val arr: org.json.JSONArray? = when (r) {
-            is org.json.JSONArray -> r
-            is JSONObject -> r.optJSONArray("projects")
-            else -> null
-        } ?: return
-        val list = (0 until arr!!.length()).mapNotNull { idx ->
-            val o = arr.getJSONObject(idx)
-            val id = o.optString("id")
-            if (id.isEmpty()) return@mapNotNull null
-            ProjectMeta(id = id, name = o.optString("name"), path = o.optString("path"))
-        }
-        projects.clear()
-        projects.addAll(list)
-        Log.i(TAG, "project.list → ${list.size} 个: ${list.joinToString { it.name }}")
-    }
-
-    /** 会话列表的运行中状态点随 busy 事件刷新（SessionMeta 是不可变值，重建条目）。
-     *
-     *  两条路径都靠它：
-     *   ① `chat.busy`（任何会话，不只当前打开的）——投影变了就重算；
-     *   ② `session.list` 回来时（[applySessionList] 直接按投影填 running）。
-     *  投影本身是 Compose 可观察的（mutableStateMapOf），所以「列表还没拉到 / 该会话
-     *  还不在列表里」时投影变化照样能驱动读它的 UI（项目行计数等），不靠这里重建条目。 */
-    private fun syncRunningDots() {
-        for (i in sessions.indices) {
-            val s = sessions[i]
-            val running = sessionBusy[s.id] == true
-            if (s.running != running) sessions[i] = s.copy(running = running)
-        }
-    }
-
-    // ===== 工具函数 =====
-
-    private fun ensureStreamingBlock(): Int {
-        if (streamingIdx >= 0 && streamingIdx < blocks.size && blocks[streamingIdx] is ThreadBlock.Assistant) {
-            return streamingIdx
-        }
-        // 新流式块 streaming=true：打字机只对实时增量揭示（历史回放的块是 false）
-        blocks.add(ThreadBlock.Assistant(content = "", reasoning = null, reasoningMs = 0, model = sessionModel, streaming = true))
-        streamingIdx = blocks.size - 1
-        return streamingIdx
-    }
-
-    private fun lastAssistantIndex(): Int =
-        blocks.indexOfLast { it is ThreadBlock.Assistant }
-
-    /** 当前会话时间线里 dispatch_id 对应的派发卡下标（-1 = 无）。
-     *  [list] = 目标域的块列表（主域 blocks / 助手域 asst.blocks——同一套派发卡
-     *  归约两域共用，归属判定必须查**各自域**的时间线）。 */
-    private fun dispatchCardIdx(dispatchId: String, list: List<ThreadBlock> = blocks): Int =
-        list.indexOfFirst { it is ThreadBlock.Dispatch && it.dispatchId == dispatchId }
-
-    /**
-     * dispatch_id → 卡上的**子会话 id**（空 = 没有这张卡 / 卡上没有 id）。
-     *
-     * 两个 id 是**不同的东西**：dispatch_id = 这次工具调用的 id（后端
-     * `DispatchCall.DispatchID = tc.ID`），子会话 id = 独立会话行 id。凡是"这条
-     * 子事件属不属于当前打开的子会话视图"的判定都必须走这里（桌面端按卡反查，
-     * 见 shared/reduce.ts 的 dispatchChildSession）。
-     */
-    private fun dispatchChildSessionOf(dispatchId: String, list: List<ThreadBlock> = blocks): String =
-        (list.firstOrNull { it is ThreadBlock.Dispatch && it.dispatchId == dispatchId }
-            as? ThreadBlock.Dispatch)?.sessionId.orEmpty()
-
-    /**
-     * 已经收尾（收到过 dispatchEnd）的 dispatch_id：迟到的子事件不许把卡翻回运行中。
-     *
-     * 生命周期 = 当前这一份时间线：历史重载（[applyHistory]）时清空——重载之后
-     * 的卡是新的，旧的"已收尾"记录没有意义（也顺手把内存账收掉）。
-     */
-    private val endedDispatches = mutableSetOf<String>()
-
-    /**
-     * 按**子会话 id** 找派发卡并恢复成运行中（`chat.busy` 无归属键的那条走这里：
-     * 普通派发的 dispatch_id 是工具调用 id，与子会话 id 不同，不能拿它当键）。
-     */
-    private fun markChildCardRunning(childSessionId: String, list: MutableList<ThreadBlock> = blocks) {
-        if (childSessionId.isEmpty()) return
-        val i = list.indexOfLast { it is ThreadBlock.Dispatch && it.sessionId == childSessionId }
-        if (i < 0) return
-        val d = list[i] as ThreadBlock.Dispatch
-        if (!isDispatchPlaceholder(d.done, d.isError, d.conclusion)) return
-        list[i] = d.copy(conclusion = "", done = false, isError = false)
-    }
-
-    /**
-     * 「这个派发还活着」的信号：带 dispatch_id 的子事件（delta/toolCall/toolResult/
-     * todo.updated）只可能来自**正在执行**的子会话。
-     *
-     * 为什么需要它：历史回放建的卡先按"中断"定格（`parseHistoryBlocks` 里那条
-     * 占位结论——那时不知道它是死是活），而**实时事件里并没有 dispatchStart 可吃**
-     * 的情形真实存在（回放刚建完卡、子事件紧接着到；或连接建立时那轮已经在跑）。
-     * 不翻回来的话，用户看到的是一张红色的"中断"卡，而子 Agent 明明正在干活
-     * （用户报的「子 Agent 在运行时总是红色，看起来像中断了」）。
-     *
-     * 判据刻意收窄：只翻**占位态**（done + isError + 结论就是那句占位文案）——
-     * 正常结束的卡（成功或真失败）绝不会被迟到事件改成运行中；收到过 dispatchEnd
-     * 的 id 直接跳过（`endedDispatches`）。
-     */
-    private fun markDispatchRunning(dispatchId: String, list: MutableList<ThreadBlock> = blocks) {
-        if (dispatchId.isEmpty() || dispatchId in endedDispatches) return
-        val i = dispatchCardIdx(dispatchId, list)
-        if (i < 0) return
-        val d = list[i] as ThreadBlock.Dispatch
-        if (!isDispatchPlaceholder(d.done, d.isError, d.conclusion)) return
-        list[i] = d.copy(conclusion = "", done = false, isError = false)
-    }
-
-    /** chat.history 的 running_dispatches → 观察快照列表（键缺席/空数组 = 没有 → null，
-     *  让 applyRunningDispatches 的「原样返回」路径生效）。残缺条目（无 dispatch_id）丢弃。 */
-    private fun parseRunningDispatches(arr: org.json.JSONArray?): List<com.moyunteng.lxcode.remote.model.RunningDispatchInfo>? {
-        if (arr == null || arr.length() == 0) return null
-        val out = mutableListOf<com.moyunteng.lxcode.remote.model.RunningDispatchInfo>()
-        for (k in 0 until arr.length()) {
-            val o = arr.optJSONObject(k) ?: continue
-            val id = o.optString("dispatch_id")
-            if (id.isEmpty()) continue
-            out.add(
-                com.moyunteng.lxcode.remote.model.RunningDispatchInfo(
-                    dispatchId = id,
-                    childSessionId = o.optString("child_session_id"),
-                    agentName = o.optString("agent_name"),
-                    task = o.optString("task"),
-                ),
-            )
-        }
-        return out.ifEmpty { null }
-    }
-
-    /** 子会话工具实时流：调用到达即插行/标记运行中（归属派发卡；卡不存在只记日志）。
-     *  [list] = 目标域的块列表（主域 / 助手域——两域的派发卡归约共用同一套）。 */
-    private fun upsertChildTool(
-        list: MutableList<ThreadBlock>,
-        dispatchId: String,
-        id: String,
-        name: String,
-        argsSummary: String,
-        running: Boolean,
-        isError: Boolean,
-        durationMs: Long,
-    ) {
-        val i = dispatchCardIdx(dispatchId, list)
-        if (i < 0) {
-            Log.w(TAG, "子会话工具事件无归属派发卡 dispatch=$dispatchId")
-            return
-        }
-        val d = list[i] as ThreadBlock.Dispatch
-        if (running) childStarts[id] = android.os.SystemClock.elapsedRealtime()
-        val existing = d.childRuns.indexOfFirst { it.id == id }
-        val entry = ChildTool(
-            id = id,
-            name = name,
-            title = toolTitle(name),
-            argsSummary = argsSummary,
-            running = running,
-            isError = isError,
-            durationMs = durationMs,
-        )
-        val runs = if (existing >= 0) {
-            d.childRuns.toMutableList().also { it[existing] = entry }
-        } else {
-            d.childRuns + entry
-        }
-        list[i] = d.copy(childRuns = runs, childTools = runs.size)
-    }
-
-    /**
-     * 子会话工具结果到达：标记完成/出错，耗时按本地计时补齐（协议 toolResult 不带
-     * duration_ms；[childStarts] 记录调用到达时刻，回放历史时才用消息里的耗时）。
-     */
-    private val childStarts = mutableMapOf<String, Long>()
-
-    private fun finishChildTool(list: MutableList<ThreadBlock>, dispatchId: String, id: String, isError: Boolean) {
-        val i = dispatchCardIdx(dispatchId, list)
-        if (i < 0) {
-            Log.w(TAG, "子会话工具结果无归属派发卡 dispatch=$dispatchId")
-            return
-        }
-        val d = list[i] as ThreadBlock.Dispatch
-        val idx = d.childRuns.indexOfFirst { it.id == id }
-        if (idx < 0) {
-            Log.w(TAG, "子会话工具结果无配对调用行 id=$id dispatch=$dispatchId")
-            return
-        }
-        val start = childStarts.remove(id) ?: 0L
-        val dur = if (start > 0) android.os.SystemClock.elapsedRealtime() - start else 0L
-        val runs = d.childRuns.toMutableList()
-        runs[idx] = runs[idx].copy(running = false, isError = isError, durationMs = dur)
-        list[i] = d.copy(childRuns = runs, childTools = runs.size)
-    }
-
-    /**
-     * 子 Agent 的清单进度归并（todo.updated 带 dispatch_id 的广播，多端共享进度）：
-     * 完成数/总数归进归属派发卡（卡上「清单 2/4」一行的数据源）；卡不存在只记日志
-     * （跨会话的旧广播、历史里没有卡的派发——丢弃是正确行为，不建孤儿卡）。
-     */
-    private fun mergeChildTodos(tl: MutableList<ThreadBlock>, dispatchId: String, items: org.json.JSONArray?) {
-        if (items == null) return
-        val i = dispatchCardIdx(dispatchId, tl)
-        if (i < 0) {
-            Log.w(TAG, "子会话清单事件无归属派发卡 dispatch=$dispatchId")
-            return
-        }
-        val d = tl[i] as ThreadBlock.Dispatch
-        // 迟到守卫只挡**真终态**（成功 / 带真实错误正文的失败）：终态以 dispatchEnd
-        // 的 final_todos 为准。回放占位态（done + isError + 那句「中断」文案）不是
-        // 终态——会话仍在跑时它刚被 markDispatchRunning 翻回运行中，清单必须能写上去
-        //（用户报的「任务列表有时不显示」：刷新后清单永远停在初稿）。
-        if (isDispatchFinal(d.done, d.isError, d.conclusion)) return
-        val list = (0 until items.length()).map { items.getJSONObject(it) }
-            .map { todoItemOf(it.optString("content"), it.optString("status")) }
-        tl[i] = d.copy(
-            childTodosDone = list.count { it.status == "done" },
-            childTodosTotal = list.size,
-        )
-    }
-
-    // ===== 子会话视图的事件归约（主会话 reducer 的 child 影子；块语义同款）=====
-
-    /**
-     * 子会话自己的事件（session_id == viewChildSessionId、无 dispatch_id）归约进
-     * child 状态。类型集 = 子会话会产生的全部事件（delta/toolCall/toolResult/
-     * done/error/busy/todo.updated/compacted）；块构建逻辑与主会话 reducer 逐条
-     * 同源——子会话是真 Session，协议上与主会话发同一套事件。
-     */
-    private fun childRouteEvent(method: String, p: JSONObject) {
-        when (method) {
-            "chat.userMessage" -> {
-                val msg = p.optJSONObject("message") ?: return
-                val text = msg.optString("content")
-                if (text.startsWith(HIDDEN_NOTICE_PREFIX)) return
-                val notice = noticeKind(text)
-                if (notice != null) {
-                    childBlocks.add(ThreadBlock.Notice(label = notice.second, text = text.removePrefix(notice.first).trim()))
-                    childStreamingIdx = -1
-                    return
-                }
-                val atts = parseAttachments(msg.optJSONArray("attachments"))
-                val last = childBlocks.lastOrNull()
-                if (last !is ThreadBlock.User || last.text != text) {
-                    childBlocks.add(ThreadBlock.User(text, atts, localEpochMs = System.currentTimeMillis()))
-                    childStreamingIdx = -1
-                }
-            }
-
-            "chat.delta" -> {
-                val kind = p.optString("kind", "text")
-                val text = p.optString("text")
-                if (text.isEmpty()) return
-                val i = childEnsureStreamingBlock()
-                val cur = childBlocks[i] as ThreadBlock.Assistant
-                childBlocks[i] = if (kind == "reasoning") {
-                    cur.copy(reasoning = (cur.reasoning ?: "") + text, streaming = true)
-                } else {
-                    cur.copy(content = cur.content + text, streaming = true)
-                }
-                childStreamVersion++
-            }
-
-            "chat.toolCall" -> {
-                childStreamingIdx = -1
-                val name = p.optString("name")
-                if (name == "agent_dispatch") return // 子会话再派发不会发生（深度恒 1），防御性丢弃
-                childBlocks.add(
-                    ThreadBlock.Tool(
-                        id = p.optString("id"),
-                        name = name,
-                        title = toolTitle(name),
-                        argsSummary = argsSummary(p.optString("arguments")),
-                        command = argsCommand(p.optString("arguments")),
-                        cwd = argsCwd(p.optString("arguments")),
-                        output = null,
-                        running = true,
-                        isError = false,
-                        durationMs = 0,
-                    ),
-                )
-            }
-
-            "chat.toolResult" -> {
-                if (p.optString("name") == "agent_dispatch") return
-                val id = p.optString("id")
-                val i = childBlocks.indexOfFirst { it is ThreadBlock.Tool && it.id == id }
-                if (i >= 0) {
-                    val t = childBlocks[i] as ThreadBlock.Tool
-                    val atts = parseAttachments(p.optJSONArray("attachments"))
-                    childBlocks[i] = t.copy(
-                        output = p.optString("content").take(4_000),
-                        running = false,
-                        isError = p.optBoolean("is_error"),
-                        // 子会话自己 share_file 的附件（子会话视图的工具行同样渲染附件条
-                        // ——与主会话 reducer 同一条口径）
-                        attachments = if (atts.isNotEmpty()) atts else t.attachments,
-                    )
-                }
-            }
-
-            "chat.done" -> {
-                val msg = p.optJSONObject("message")
-                if (msg != null) {
-                    val i = childBlocks.indexOfLast { it is ThreadBlock.Assistant }
-                    if (i >= 0) {
-                        val cur = childBlocks[i] as ThreadBlock.Assistant
-                        val content = msg.optString("content")
-                        val reasoning = msg.optString("reasoning_content", "")
-                        val model = msg.optString("model", cur.model)
-                        val ftms = msg.optLong("first_token_ms", 0L)
-                        val dur = msg.optLong("duration_ms", 0L)
-                        val utok = msg.optInt("usage_tokens", 0)
-                        childBlocks[i] = cur.copy(
-                            content = content.ifBlank { cur.content },
-                            reasoning = reasoning.ifBlank { cur.reasoning },
-                            reasoningMs = ftms,
-                            model = model,
-                            firstTokenMs = if (ftms > 0) ftms else null,
-                            tokPerSec = if (utok > 0 && dur > 0) utok * 1000.0 / dur else null,
-                            streaming = false,
-                        )
-                    }
-                }
-                childBusy = false
-                childStreamingIdx = -1
-            }
-
-            "chat.error" -> {
-                childStreamingIdx = -1
-                val aborted = p.optBoolean("aborted")
-                val message = p.optString("message")
-                p.optJSONObject("partial")?.let { partial ->
-                    val content = partial.optString("content")
-                    if (content.isNotEmpty()) {
-                        val i = childBlocks.indexOfLast { it is ThreadBlock.Assistant }
-                        if (i >= 0) {
-                            val cur = childBlocks[i] as ThreadBlock.Assistant
-                            childBlocks[i] = cur.copy(content = content, streaming = false)
-                        }
-                    }
-                }
-                childBlocks.add(ThreadBlock.Error(if (aborted) "已中断" else message))
-                childBusy = false
-            }
-
-            // 子会话自己的忙闲（无归属键、session_id == 子会话 id 的那条）。
-            // 带 dispatch_id 的那条走主 reducer 的子会话分支（同样双投到 childBusy）。
-            "chat.busy" -> {
-                childBusy = p.optBoolean("busy")
-                if (childBusy) markChildCardRunning(viewChildSessionId ?: "")
-            }
-
-            // 子会话自己的模型变更广播（子会话页切模型的回执，多端同步）：
-            // 按 session_id 归属——别的子会话的变更不改本视图的选中态。
-            "chat.modelChanged" -> {
-                p.optString("model_id", "").takeIf { it.isNotEmpty() }?.let { childModelId = it }
-            }
-
-            "todo.updated" -> childMergeTodos(p.optJSONArray("items"))
-
-            "chat.compacted" -> childBlocks.add(
-                ThreadBlock.Compaction(
-                    summary = p.optString("summary"),
-                    shadowed = p.optInt("shadowed"),
-                    before = p.optInt("before"),
-                    after = p.optInt("after"),
-                    manual = p.optBoolean("manual"),
-                ),
-            )
-        }
-    }
-
-    private fun childEnsureStreamingBlock(): Int {
-        if (childStreamingIdx >= 0 && childStreamingIdx < childBlocks.size && childBlocks[childStreamingIdx] is ThreadBlock.Assistant) {
-            return childStreamingIdx
-        }
-        childBlocks.add(ThreadBlock.Assistant(content = "", reasoning = null, reasoningMs = 0, model = "", streaming = true))
-        childStreamingIdx = childBlocks.size - 1
-        return childStreamingIdx
-    }
-
-    /** 子会话视图的实时工具行（派发卡 childRuns 的同源投影，进子会话时间线）。 */
-    private fun childUpsertTool(
-        id: String,
-        name: String,
-        argsSummary: String,
-        running: Boolean,
-        isError: Boolean,
-        durationMs: Long,
-    ) {
-        val i = childBlocks.indexOfFirst { it is ThreadBlock.Tool && it.id == id }
-        val entry = ThreadBlock.Tool(
-            id = id,
-            name = name,
-            title = toolTitle(name),
-            argsSummary = argsSummary,
-            command = "",
-            cwd = "",
-            output = null,
-            running = running,
-            isError = isError,
-            durationMs = durationMs,
-        )
-        if (i >= 0) childBlocks[i] = entry else childBlocks.add(entry)
-        childStarts[id] = android.os.SystemClock.elapsedRealtime()
-    }
-
-    private fun childFinishTool(id: String, isError: Boolean) {
-        val i = childBlocks.indexOfFirst { it is ThreadBlock.Tool && it.id == id }
-        if (i < 0) return
-        val t = childBlocks[i] as ThreadBlock.Tool
-        val start = childStarts.remove(id) ?: 0L
-        val dur = if (start > 0) android.os.SystemClock.elapsedRealtime() - start else 0L
-        childBlocks[i] = t.copy(running = false, isError = isError, durationMs = dur)
-    }
-
-    private fun childMergeTodos(items: org.json.JSONArray?) {
-        if (items == null) return
-        val list = (0 until items.length()).map { items.getJSONObject(it) }
-            .map { todoItemOf(it.optString("content"), it.optString("status")) }
-        // 落**会话级状态**（置底清单条数据源），不再往时间线插 Todo 块。
-        childTodos = list
-    }
-
-    private fun parseContext(o: JSONObject): ContextUsage = ContextUsage(
-        used = o.optInt("used"),
-        window = o.optInt("window"),
-        system = o.optInt("system"),
-        tools = o.optInt("tools"),
-        toolResults = o.optInt("tool_results"),
-        messages = o.optInt("messages"),
-        reasoning = o.optInt("reasoning"),
-        estimated = o.optBoolean("estimated"),
-    )
+    fun loadEarlier() = historyLoader.loadEarlier()
 
     // ===== 网络可用性监听（缺口5：掉线期间网络恢复 → 立即重连，不等退避）=====
     //
@@ -3595,13 +2094,13 @@ class RealBackend {
     // 会在「网络还没回来」上空转并一路涨到 30s 封顶——网络恢复时用户还得等退避
     // 走完。onAvailable 回调补上这个缺口：网络一恢复立即 reconnectIfDown。
 
-    private var netCallback: android.net.ConnectivityManager.NetworkCallback? = null
+    internal var netCallback: android.net.ConnectivityManager.NetworkCallback? = null
 
     /** 主线程 Handler（网络回调在系统 binder 线程到达，重连须切主线程）。 */
-    private val main = android.os.Handler(android.os.Looper.getMainLooper())
+    internal val main = android.os.Handler(android.os.Looper.getMainLooper())
 
     /** 启动 pending 的兜底超时回调（重新 start 时先撤旧的，防多条并存）。 */
-    private var startPendingTimeout: Runnable? = null
+    internal var startPendingTimeout: Runnable? = null
 
     /** 注册网络可用回调（进程内一次；AppRoot 构造 AppState 后调）。
      *  ACCESS_NETWORK_STATE 权限已在 Manifest。注册失败（无系统服务）静默：
@@ -3625,7 +2124,7 @@ class RealBackend {
         }
     }
 
-    private fun parseStats(o: JSONObject): SessionStats = SessionStats(
+    internal fun parseStats(o: JSONObject): SessionStats = SessionStats(
         turns = o.optInt("turns"),
         steps = o.optInt("steps"),
         llmMs = o.optLong("llm_ms"),
@@ -3642,10 +2141,10 @@ class RealBackend {
     )
 
     companion object {
-        private const val TAG = "LxReal"
+        internal const val TAG = "LxReal"
 
         /** 草稿落库的防抖窗口（ms）：打字高频写，800ms 静默后发一次。 */
-        private const val DRAFT_FLUSH_DELAY_MS = 800L
+        internal const val DRAFT_FLUSH_DELAY_MS = 800L
 
         /**
          * assistant.* 事件 → chat.* 等价事件名（与 internal/server/emit.go 的
@@ -3653,7 +2152,7 @@ class RealBackend {
          * 的 ASSISTANT_TO_CHAT——表里没有的方法名不猜归属，忽略）。
          * assistant.filesChanged / assistant.configChanged 本批不消费（第三批）。
          */
-        private val ASSISTANT_TO_CHAT = mapOf(
+        internal val ASSISTANT_TO_CHAT = mapOf(
             "assistant.userMessage" to "chat.userMessage",
             "assistant.delta" to "chat.delta",
             "assistant.toolCall" to "chat.toolCall",
@@ -3673,7 +2172,7 @@ class RealBackend {
         /** 历史尾部窗口（chat.history 的 tail 参数）：进会话只拉最近 N 条（慢链路
          *  分页——公网隧道带宽有限，全量大会话历史秒级传输；桌面局域网无感）。
          *  50 条 ≈ 一次长对话的工具往返量，覆盖「进会话看最新」的绝大多数场景。 */
-        private const val TAIL_WINDOW = 50
+        internal const val TAIL_WINDOW = 50
 
         // ===== 附件上限（与后端 server 侧校验同一套常量，见 docs/attachments.md）=====
 
@@ -3696,16 +2195,16 @@ class RealBackend {
          * 这类消息是**真实 user 角色消息**（模型必须当用户回合回应），但不是用户说的
          * 话——按文本前缀识别，渲染成提示条。命中取第一个前缀（顺序敏感：更长的排前）。
          */
-        private val NOTICE_KINDS = listOf(
+        internal val NOTICE_KINDS = listOf(
             "[后台任务通告] " to "后台任务通告",
             "[重复调用提醒] " to "重复调用提醒",
         )
 
         /** hidden 注记前缀（写给模型的系统注记，界面上不产生任何块）。 */
-        private const val HIDDEN_NOTICE_PREFIX = "[系统通告] "
+        internal const val HIDDEN_NOTICE_PREFIX = "[系统通告] "
 
         /** 命中的通告种类（label, 剩余正文）；没命中 = null（普通用户消息）。 */
-        private fun noticeKind(text: String): Pair<String, String>? =
+        internal fun noticeKind(text: String): Pair<String, String>? =
             NOTICE_KINDS.firstOrNull { text.startsWith(it.first) }
 
         /** 子会话 id 提示行（后端 internal/agent/tools.go 在 dispatch 结果末尾追加）：
@@ -3719,7 +2218,7 @@ class RealBackend {
             com.moyunteng.lxcode.remote.model.splitDispatchResult(raw)
 
         /** 工具显示名（对齐桌面端工具卡标题；未知工具原样显示 id）。 */
-        private val TOOL_TITLES = mapOf(
+        internal val TOOL_TITLES = mapOf(
             "read_file" to "读文件",
             "search" to "搜索",
             "session_search" to "搜会话",

@@ -61,6 +61,7 @@ export function AssistantWorkspace({
   reportError,
   onOpenSettings,
   mode,
+  retainAssistant,
 }: {
   source: AgentSource;
   /** 助手域 states（store 双投——assistant.* 事件的归约目标）。 */
@@ -75,6 +76,11 @@ export function AssistantWorkspace({
   /** 顶层模式（App 的 appMode 直传）：本组件保活常驻、不随模式卸载，侧键探针
    *  的注册/注销不能以挂载为准——以「助手模式可见」为准（mode === "assistant"）。 */
   mode: AppMode;
+  /** S3 保留集合的挂载层入口：把 mountedIds（常驻挂载的会话页）+ 子会话临时
+   *  视图喂进 store 的豁免表——这些会话的 states 不参与淘汰（淘汰 = 正看着的
+   *  时间线变空白，AssistantPage 的 boot 闸门不会重跑）。App 传入（useAgent 的
+   *  retainSessions 部分应用——身份稳定）。 */
+  retainAssistant?: (ids: string[]) => void;
 }) {
   const assistant = source.assistant;
   /** 当前助手会话 id（"" 起始 = 中性态「未选择」；进入助手模式恢复上次会话
@@ -82,6 +88,10 @@ export function AssistantWorkspace({
    *  方案 B（2026-12 多标签）：它同时是**活跃标签**——lastAssistantSession 的
    *  语义自动升级为「活跃标签记忆」（启动恢复 = 开单标签）。 */
   const [sessionId, setSessionId] = useState(() => readLastAssistantSession());
+  /** 记忆的最新 sessionId（handleNewSession 读它取「新建前的活跃会话」——闭包
+   *  里的 sessionId 在 setState 之后不可靠，ref 每渲染对齐是本仓库的既有惯例）。 */
+  const sessionIdRef = useRef(sessionId);
+  sessionIdRef.current = sessionId;
   // ---- 会话标签条（方案 B）----
   // order = 标签打开顺序（新标签追加在右，容量满丢最老——session-tabs 纯函数）；
   // closed = 用户关掉的标签（纯 UI 态：会话本体留在侧栏，可从侧栏再开）。
@@ -240,6 +250,24 @@ export function AssistantWorkspace({
     setTabOrder((prev) => pruneSessionTabs(prev, sessionList, tabClosed, sessionId));
   }, [sessionList, tabClosed, sessionId]);
 
+  // 挂载层与标签条同步收敛（OOM 三件套 S2 的归档路径）：会话归档/从列表消失时把
+  // mountedIds 里的条目一并摘掉（AssistantPage 实例随之卸载、内存可回收）。口径与
+  // pruneSessionTabs 一致：活跃会话恒保留（焦点回退交给侧栏点击，不强切）；列表
+  // 还没到（空表）判不出死活，不动。用户关标签的摘除走 handleCloseTab（含焦点
+  // 转移时序），这里只是兜底 + 覆盖归档这条不经 handleCloseTab 的路径。
+  useEffect(() => {
+    setMountedIds((prev) => {
+      if (sessionList.length === 0) return prev;
+      const next = prev.filter((id) => {
+        if (id === sessionId) return true;
+        if (tabClosed.has(id)) return false;
+        const meta = sessionList.find((s) => s.id === id);
+        return Boolean(meta && !meta.archived);
+      });
+      return next.length === prev.length ? prev : next;
+    });
+  }, [sessionList, tabClosed, sessionId]);
+
   // 活跃会话被用户关掉后从 mountedIds 摘除（由 handleClose 走 handleSelect 回退时
   // 自动完成；这里兜 prune 的另一条路径：会话被归档 → 标签消失，若它是活跃的，
   // 焦点回退交给 visibleSessionTabs 的「当前会话恒显示」与侧栏点击，不强切）。
@@ -252,6 +280,16 @@ export function AssistantWorkspace({
       if (!mountedIdsRef.current.includes(id)) frozenRef.current.delete(id);
     }
   }, [mountedIds]);
+
+  // S3 保留集合（助手域挂载层的豁免表）：常驻挂载的会话页 + 子会话临时视图的
+  // states 不参与淘汰（store 的 evictStaleStates——assistant 域）。App 传入
+  // retainAssistant（useAgent 的 retainSessions 部分应用）；缺席（旧调用方/
+  // 部分测试桩）静默跳过——淘汰策略本身在 store 收口，这里只是喂豁免名单。
+  useEffect(() => {
+    if (!retainAssistant) return;
+    const ids = childViewId !== null ? [...mountedIds, childViewId] : [...mountedIds];
+    retainAssistant(ids);
+  }, [mountedIds, childViewId, retainAssistant]);
 
   const handleSessionId = useCallback((id: string) => {
     knownTick(id);
@@ -275,6 +313,12 @@ export function AssistantWorkspace({
   // 标签：焦点让给最近打开的另一个标签（sessionTabFallback——最右优先），没有
   // 可让对象就不动（最后标签关不掉）——**绝不新建会话**（session-tabs.ts 的
   // 原缺陷①②：关一个冒一个/别的标签一起没，规则已钉在 session-tabs.test.mjs）。
+  // **卸载挂载实例**（2026-12 OOM 三件套 S2）：关标签把 mountedIds 里的条目真摘掉
+  // ——AssistantPage 实例随之卸载，blocks/定时器/订阅整体可回收；之前只加 tabClosed
+  // 导致 mountedIds 只增不删（真泄漏）。摘除在 handleSelect（焦点转移）**之后**跑
+  // ——handleSelect 内的 sessionId-effect 会把 fallback 追加进 mountedIds，先摘
+  // 再切会被那条 effect 立刻补回。frozenRef 缓存由 mountedIds 同步 effect 统一清
+  //（mount 收窄后不会再渲染它）。
   const handleCloseTab = useCallback((id: string) => {
     setTabClosed((prev) => {
       if (prev.has(id)) return prev;
@@ -282,13 +326,20 @@ export function AssistantWorkspace({
       next.add(id);
       return next;
     });
-    if (id !== sessionId) return;
+    if (id !== sessionId) {
+      // 非当前标签：直接摘实例（卸载该 AssistantPage）。
+      setMountedIds((prev) => prev.filter((m) => m !== id));
+      return;
+    }
     const fallback = sessionTabFallback(
       visibleSessionTabs(tabOrderRef.current, sessionListRef.current, tabClosedRef.current, sessionId),
       id,
     );
     if (!fallback) return;
     handleSelect(fallback);
+    // 焦点已转移（handleSelect → sessionId-effect 已把 fallback 补进 mountedIds），
+    // 现在安全摘掉被关标签的实例。
+    setMountedIds((prev) => prev.filter((m) => m !== id));
   }, [sessionId, handleSelect]);
 
   // ---- 鼠标侧键（2026-12 修复）：助手域导航探针 ----
@@ -306,6 +357,11 @@ export function AssistantWorkspace({
   // 在助手模式里永远不会被侧键命中（壳层先查探针）。
   const prevAssistantSessionRef = useRef("");
   const lastLeftAssistantSessionRef = useRef("");
+  /** 侧键 back 离开当前会话时旧会话的去留标记：prevAssistantSessionRef 只在
+   *  back 到另一会话/列表时记录「来路」，离场会话标签是否保留由这里驱动
+   *  （back = 导航离开 ≠ 用户关标签，S2 起同样摘挂载实例——离场的会话页不再
+   *  常驻，重进由侧栏点击重建）。 */
+  const leavingAssistantRef = useRef("");
   // 上一落点记忆：sessionId 变化时把旧值记进 prevAssistantSessionRef（侧键 back
   // 的「回上一落点」依据；空串 = 上一落点是会话列表——back 回中性态）。effect
   // 每渲染比对——与 App 的 prevFocusedRef 同款纪律。探针 back 分支里先手工对齐
@@ -343,6 +399,9 @@ export function AssistantWorkspace({
         lastLeftAssistantSessionRef.current = sessionId;
         prevTrackedRef.current = prev;
         prevAssistantSessionRef.current = "";
+        // 离场会话标记：切换后由 cleanup 摘掉它的挂载实例（与关标签同语义——
+        // 侧键离开也回收内存）。
+        leavingAssistantRef.current = sessionId;
         if (prev) {
           handleSelect(prev);
         } else {
@@ -365,11 +424,29 @@ export function AssistantWorkspace({
     };
   }, [mode, childViewId, secondaryView, sessionId, handleSelect]);
 
+  // 离场会话的挂载实例摘除（side-key 导航）：effect re-run（sessionId 已变）时，
+  // leavingAssistantRef 指向的是**上一个**活跃会话——摘掉它的实例（tabClosed 不动：
+  // 标签仍开、内容重进时重建）。先摘再清标记，防止下次 re-run 误摘新活跃会话。
+  useEffect(() => {
+    const left = leavingAssistantRef.current;
+    if (left && left !== sessionId) {
+      leavingAssistantRef.current = "";
+      setMountedIds((prev) => (prev.includes(left) ? prev.filter((m) => m !== left) : prev));
+    }
+  }, [sessionId]);
+
   const handleNewSession = useCallback(async () => {
     if (!assistant) return;
     try {
       const id = await assistant.newSession();
       knownTick(id);
+      if (sessionIdRef.current) {
+        // 新建 = 离开旧会话：旧标签按用户语义关掉（tabClosed + 摘实例）。焦点
+        // 先切（setSessionId(id)），摘除放在其后——顺序与 handleCloseTab 同一条
+        // 纪律（sessionId-effect 先把新 id 补进 mountedIds，摘旧的不会被回补）。
+        setTabClosed((prev) => (prev.has(sessionIdRef.current) ? prev : new Set(prev).add(sessionIdRef.current)));
+        setMountedIds((prev) => prev.filter((m) => m !== sessionIdRef.current));
+      }
       writeLastAssistantSession(id);
       setSessionId(id);
       setChildViewId(null);

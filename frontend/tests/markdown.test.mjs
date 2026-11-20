@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseBlocks, parseInline, parseTable, splitRow } from '../src/shared/markdown.tsx';
+import { parseBlocks, parseInline, parseTable, splitRow } from '../src/components/markdown.tsx';
 
 const kinds = (blocks) => blocks.map((b) => b.kind);
 

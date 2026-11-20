@@ -13,7 +13,7 @@
 import { useMemo } from "react";
 import { TextResponse } from "../../../aicss/TextResponse";
 import { splitCommitted, useStreamReveal } from "../../../shared/stream-reveal";
-import { Markdown } from "../../../shared/markdown";
+import { Markdown } from "../../markdown";
 
 export function AnswerBody({ text, streaming }: { text: string; streaming: boolean }) {
   const shown = useStreamReveal(text);

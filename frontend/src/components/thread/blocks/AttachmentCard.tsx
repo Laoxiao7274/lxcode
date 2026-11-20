@@ -4,7 +4,7 @@
 // 路径共用这一个组件——两条路径各写一套渲染就必然分叉。
 //
 // 灯箱（2026-12 重做）：三处内联灯箱实现收口到一个全局 ImageLightbox
-// （shared/lightbox.tsx，portal + 缩放/平移/多图切换/工具条）。缩略图只负责
+// （components/lightbox.tsx，portal + 缩放/平移/多图切换/工具条）。缩略图只负责
 // openImageLightbox(images, index)——「放大看」的状态不再散在每张卡里：
 //  - ImageCard / GridImage（卡内自足形态）不带 onClick 时打开以自身为
 //    单元素集合的灯箱（与旧行为等价）；
@@ -13,7 +13,7 @@
 //  - 溢出层（+N 展开态）点单张同样进灯箱（集合 = 全区图片）。
 import { memo, useState, type CSSProperties } from "react";
 import { attachmentURL, formatBytes, groupMetaFolders, type AttachmentMeta } from "../../../shared/attachments";
-import { lightboxImages, openImageLightbox } from "../../../shared/lightbox";
+import { lightboxImages, openImageLightbox } from "../../lightbox";
 import { FolderCard } from "./FolderCard";
 
 /** 一组附件卡（share_file 工具行 / dispatch 成果区共用）。atts 为空不渲染。 */

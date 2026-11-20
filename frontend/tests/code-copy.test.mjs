@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { Markdown } from '../src/shared/markdown.tsx';
+import { Markdown } from '../src/components/markdown.tsx';
 
 test('Markdown 代码围栏渲染复制按钮（位置与 aria 可见）', () => {
   const html = renderToStaticMarkup(createElement(Markdown, { text: '```js\nconst a = 1;\nconst b = 2;\n```' }));
@@ -28,7 +28,7 @@ test('纯文本不渲染复制按钮（TextBlocks 路径不受影响）', () => 
 });
 
 test('markdown.tsx 的复制逻辑与 TerminalCard 同款（可选链 + 反馈 + stopPropagation）', () => {
-  const src = readFileSync(new URL('../src/shared/markdown.tsx', import.meta.url), 'utf8');
+  const src = readFileSync(new URL('../src/components/markdown.tsx', import.meta.url), 'utf8');
   assert.ok(src.includes('navigator.clipboard?.writeText'), '必须走 clipboard 可选链');
   assert.ok(src.includes('setCopied(true)'), '必须有已复制反馈');
   assert.ok(src.includes('已复制'), '反馈文案必须是「已复制」');

@@ -136,7 +136,10 @@ fun Composer(state: AppState, real: com.moyunteng.lxcode.remote.net.RealBackend)
     // 注意与发送钮的分工：busy 态发送钮仍是「停止」（取消本轮），排队的唯一
     // 入口是下方的「排队发送」按钮——两个动作不共用一个控件，语义不冲突。
     // 自动发送的 LaunchedEffect 挂在 sendEffort 定义之后（见下）。
-    var queuedText by remember { mutableStateOf<String?>(null) }
+    // **必须 key(sessionId)**：无 key 的 remember 是全局单值，切会话后撤销回填会把
+    // A 排队的那条注进 B 的输入框（与上方 text 的 key 同款实锤 bug——文本草稿修了
+    // key，这条漏了，2026-12 补）。
+    var queuedText by remember(sessionId) { mutableStateOf<String?>(null) }
 
     // ===== 斜杠命令面板（桌面端 SlashPalette.tsx：输入以 / 开头弹出）=====
     // slashClosed = 用户按返回键关掉面板（关面板不清输入，再输入 / 会重新弹出）

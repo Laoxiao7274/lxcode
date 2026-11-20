@@ -16,6 +16,8 @@ config/hosts.json
 config/assistant.json
 
 # 临时与会话数据
+# temp/ 合法居民：ffmpeg/（build.mjs 打包输入）、git bundle 备份（push-release 写入）、
+# 被 docs 引用的 *.cjs 验证脚本；清理一次性产物时勿删这三类。
 temp/
 *.tmp
 
@@ -48,6 +50,8 @@ site-backend/data/
 # 站点前端依赖（曾被误跟踪）
 site/node_modules/
 # 构建产物与临时文件（2026-10-29 历史重建时不入库）
+# 例外：site/dist/ 与 site-backend/lxcode-*-linux-arm64 是官网部署通道产物，
+# 有意跟踪，勿加 ignore。
 site-backend/dist/
 site/dist.bak-*/
 tmp/

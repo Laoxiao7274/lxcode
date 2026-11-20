@@ -271,7 +271,8 @@ export function AssistantPage({
   // 与主时间线/子会话页共用同一份机制（useWindowedHistory——窗口按会话派生，
   // 切会话首帧就是 40 块；上翻前插按高度差补偿 scrollTop）。之前助手页整列表
   // 全量挂载，大会话切进来一次挂上千个块（markdown 解析 + 工具行全在里面）。
-  const { hidden, expandOlder, captureAnchor, clearAnchor } = useWindowedHistory({
+  // S4：窗口有上界，上翻到上界后转滑动窗口（头部补/尾部丢）；滚回底部整备恢复。
+  const { hidden, end, expandOlder, captureAnchor, clearAnchor } = useWindowedHistory({
     sessionKey: sessionId,
     total,
     scrollRef,
@@ -297,8 +298,9 @@ export function AssistantPage({
   const busy = Boolean(state?.busy);
   const sending = Boolean(state?.sending);
   // 窗口只切已定型块；流式块恒在末尾、永远落在窗口内（hidden 按逻辑时间线算，
-  // 已包含那一块——与 Thread/ChildSessionPage 同一条注释）
-  const visible = hidden > 0 ? sealed.slice(hidden) : sealed;
+  // 已包含那一块——与 Thread/ChildSessionPage 同一条注释）；切片终点 = end
+  //（S4 滑动窗口的底部边缘——被丢的尾部块不渲染）。
+  const visible = hidden > 0 ? sealed.slice(hidden, Math.min(end, sealed.length)) : sealed.slice(0, Math.min(end, sealed.length));
 
   return (
     <div className="assistant-page">

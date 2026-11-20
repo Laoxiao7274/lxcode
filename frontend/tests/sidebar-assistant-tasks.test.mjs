@@ -88,14 +88,25 @@ test('② Sidebar：小节数据源 = source.assistant.tasks(filter)（经 asstF
   assert.match(sidebarSrc, /filter === LOOSE \|\| filter === ""/, '未分组不拉 assistant.tasks');
 });
 
-// 位置上移（2026-12 拍板）：小节在「未分组」行**之前**（项目分组列表之后、
-// 未分组之上）——不用滚到侧栏底部就能看到助手派的任务。
-test('② 助手小节位置：项目分组列表之后、未分组行之上', () => {
+// 独立分节（2026-12 拍板）：助手块在 proj-scroll 之外、collapsed.projects
+// 条件之外，与项目会话区平级——收起「项目」不连带隐藏助手，也不受项目区
+// 240px 高度约束；节头不含 group-head（其 space-between 会把文字推到行右）。
+test('② 助手小节位置：proj-scroll 之外的独立分节，节头无 group-head', () => {
   const projScroll = sidebarSrc.indexOf('className="proj-scroll"');
+  const projScrollEnd = sidebarSrc.indexOf('</div>', sidebarSrc.indexOf('proj-empty'));
   const asst = sidebarSrc.indexOf('assistantTasks.length > 0');
-  const loose = sidebarSrc.indexOf('className={"proj-row loose"');
-  assert.ok(projScroll >= 0 && asst > projScroll, '助手小节在项目滚动区之后（不再贴底）');
-  assert.ok(loose > asst, '助手小节在未分组行之前');
+  const sessScroll = sidebarSrc.indexOf('className="sess-scroll"');
+  assert.ok(projScroll >= 0 && asst > projScrollEnd, '助手小节在 proj-scroll 闭合之后');
+  assert.ok(asst < sessScroll, '助手小节在项目会话区（sess-scroll）之前');
+  // 节头类不含 group-head（sidebar-label assistant-tasks-label 默认左对齐）
+  const head = sidebarSrc.slice(asst, asst + 400);
+  assert.match(head, /className="sidebar-label assistant-tasks-label"/, '节头 = sidebar-label assistant-tasks-label');
+  assert.ok(!head.includes('group-head'), '节头不含 group-head（space-between 右推 bug 修复）');
+  // 折叠条件不再被 collapsed.projects 包裹：proj-scroll 条件块已闭合，
+  // 助手块与它平级（between 里允许出现箭头旋转样式里的 collapsed.projects，
+  // 但不允许出现「{collapsed.projects ? null : (」这种条件渲染包裹）。
+  const between = sidebarSrc.slice(projScrollEnd, asst);
+  assert.ok(!/\{collapsed\.projects \? null : \(/.test(between), '助手块不在 collapsed.projects 条件渲染内');
 });
 
 // 实时刷新（2026-12 拍板）：订阅派发事件重拉 assistant.tasks（防轰炸 = 在途
@@ -174,7 +185,7 @@ test('② AssistantWorkspace：挂载时 take 偏好直接落子会话视图；�
 });
 
 test('② AssistantSource.tasks 接口与两域实现：WS 走 assistant.tasks，演示源如实回空', () => {
-  const typesSrc = readFileSync(new URL('../src/shared/types.ts', import.meta.url), 'utf8');
+  const typesSrc = readFileSync(new URL('../src/shared/types/source.ts', import.meta.url), 'utf8');
   assert.match(typesSrc, /tasks\(projectId: string\): Promise<SessionMeta\[\]>;/, 'AssistantSource.tasks 接口声明');
   const wsSrc2 = readFileSync(new URL('../src/agent/ws/assistant.ts', import.meta.url), 'utf8');
   assert.match(wsSrc2, /call\("assistant\.tasks", \{ project_id: projectId \}\)/, 'WS 域走 assistant.tasks');

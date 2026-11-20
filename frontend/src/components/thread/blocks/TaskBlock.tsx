@@ -10,7 +10,7 @@
 // 快照的 child 键（history.ts）——两处必须落到同一个块种类。
 import type { ThreadBlock } from "../../../shared/store";
 import { useEnterRef } from "../../../shared/anim";
-import { Markdown } from "../../../shared/markdown";
+import { Markdown } from "../../markdown";
 
 export function TaskBlock({ block, "data-uid": dataUid }: { block: Extract<ThreadBlock, { kind: "task" }>; "data-uid"?: number }) {
   const ref = useEnterRef<HTMLDivElement>();

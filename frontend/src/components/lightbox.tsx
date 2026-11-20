@@ -1,4 +1,4 @@
-// 灯箱（图片点击放大）shared/lightbox.tsx：全屏遮罩 + 原图 + 缩放/平移/
+// 灯箱（图片点击放大）components/lightbox.tsx：全屏遮罩 + 原图 + 缩放/平移/
 // 多图切换/工具条。千问式体验的手写实现——零新依赖、纯 React + CSS，动效经
 // motionAllowed 门控；纯函数（钳制/索引/偏移算术）在同目录 lightbox.ts。
 //
@@ -14,9 +14,9 @@
 // body（防父容器 overflow/transform 裁剪），Body 滚动锁定，Esc/遮罩点击关闭。
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import type { AttachmentMeta } from "./attachments";
-import { attachmentURL } from "./attachments";
-import { motionAllowed } from "./motion";
+import type { AttachmentMeta } from "../shared/attachments";
+import { attachmentURL } from "../shared/attachments";
+import { motionAllowed } from "../shared/motion";
 import {
   anchorZoomOffset,
   clampOffset,
@@ -26,7 +26,7 @@ import {
   scaleLabel,
   stepIndex,
   wheelScale,
-} from "./lightbox-math";
+} from "../shared/lightbox-math";
 
 /** 灯箱里的一张图：附件元数据 + 可用 URL（构造失败的不进集合）。 */
 export interface LightboxItem {

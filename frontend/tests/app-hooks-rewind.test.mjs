@@ -38,7 +38,7 @@ test('①a injectDraft 的第一个参是归属会话 sid（不再读回调时�
 test('①b 挂载 Composer 的注入只在 sid 正是当前会话时发生（切走不串屏）', () => {
   assert.match(
     hookSrc,
-    /if \(sid === currentIdRef\.current\) \{\s*\n\s*draftIdRef\.current \+= 1;\s*\n\s*setDraft\(\{ id: draftIdRef\.current, text,/,
+    /if \(sid === currentIdRef\.current\) \{\s*\n\s*draftIdRef\.current \+= 1;\s*\n\s*setDraft\(\{ sid, id: draftIdRef\.current, text,/,
     '注入挂载中的 Composer 前必须校验 sid === currentIdRef.current',
   );
 });
@@ -69,7 +69,31 @@ test('② rewindThenRestore：inject 在 rewind() 之前发生（乐观回填）
 test('③ rollbackDraft：清 sid 的记账键文本；当前会话再清挂载 Composer 的注入态', () => {
   assert.match(hookSrc, /const rollbackDraft = useCallback\(\(sid: string\)/, '回滚按 sid 落');
   assert.match(hookSrc, /setDrafts\(\(cur\) => writeDraftText\(cur, sid, ""\)\)/, '记账键文本清零（附件暂存保留）');
-  assert.match(hookSrc, /setDraft\(\{ id: draftIdRef\.current, text: "" \}\)/, '当前会话用新 id 注入空文本（Composer 只在 id 变化时应用）');
+  assert.match(hookSrc, /setDraft\(\{ sid, id: draftIdRef\.current, text: "" \}\)/, '当前会话用新 id 注入空文本（Composer 只在 id 变化时应用）');
+});
+
+// ---------- ③b 注入态带会话归属：App 层在消费时刻过滤（切会话竞态的根治） ----------
+//
+// 时序：切会话 → Composer 以 key={currentId} 重挂载 → **React effect 子先于父**，
+// 新 Composer 的注入消费 effect（draft.id 判重）跑在 App 父级清除 effect
+// （setDraft(null)）**之前**——注入态若不带归属，B1 的新输入框就吃进 A 的文本。
+// 钉子：注入态必须携带 sid（RewindDraft），App 层按 draft.sid === currentId 过滤。
+
+test('③b 注入态带 sid（RewindDraft = ComposerDraft & { sid }），写入时打上归属', () => {
+  assert.match(hookSrc, /RewindDraft = ComposerDraft & \{ sid: string \}/, '注入态类型必须携带会话归属');
+  assert.match(hookSrc, /useState<RewindDraft \| null>\(null\)/, 'draft 注入态用 RewindDraft');
+  assert.match(hookSrc, /setDraft\(\{ sid, id: draftIdRef\.current, text,\s*\.\.\.\(atts \? \{ atts \} : \{\}\) \}\)/, 'injectDraft 写入时打上 sid');
+});
+
+// App 接线：守卫移到消费时刻（draft={draft && draft.sid === currentId ? draft : null}）
+const appSrc = readFileSync(join(here, '../src/App.tsx'), 'utf8');
+
+test('③c App 层按 draft.sid === currentId 过滤后再喂给挂载中的 Composer', () => {
+  assert.match(
+    appSrc,
+    /draft=\{draft && draft\.sid === currentId \? draft : null\}/,
+    '守卫必须在消费时刻：任何切会话后的陈旧注入自动失配，不靠清除 effect 的时序',
+  );
 });
 
 // ---------- ④ Composer 的注入消费契约（回滚能清掉输入框的前提） ----------

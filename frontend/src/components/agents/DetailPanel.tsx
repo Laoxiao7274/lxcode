@@ -2,7 +2,7 @@
 // 跟随 chip 焦点（选中与查看的快速通道）；点整卡打开完整文档弹窗——
 // 预览截断，长文进弹窗（DocDialog）。挂载入场 0.2s 上浮。
 import { useAgents } from "../../shared/agents";
-import { Markdown } from "../../shared/markdown";
+import { Markdown } from "../markdown";
 import { useEnterRef } from "../../shared/anim";
 import type { Focus } from "../catalog/DocDialog";
 

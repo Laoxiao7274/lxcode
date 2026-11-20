@@ -12,7 +12,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { splitCommitted, revealPlan, REVEAL_RESUME_JUMP } from '../src/shared/stream-reveal.ts';
-import { parseBlocks } from '../src/shared/markdown.tsx';
+import { parseBlocks } from '../src/components/markdown.tsx';
 
 const check = (text) => {
   const { committed, tail } = splitCommitted(text);

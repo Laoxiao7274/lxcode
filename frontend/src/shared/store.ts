@@ -32,6 +32,14 @@ import { type UIState, initial } from "./blocks";
 import { reduceSessionStates, allowAllPendingConfirms, resolveConfirm, resolveConfirmEverywhere } from "./reduce";
 import { childLinksFromBlocks, emptyChildLinks, recordChildLink, type ChildLinks, type ChildParents } from "./workspace-tabs";
 import {
+  evictableSessionIds,
+  pruneActivity,
+  pruneChildLinksFor,
+  pruneSessionKeys,
+  touchActivity,
+  touchActivityMany,
+} from "./state-retention";
+import {
   autoSendPick,
   enqueueSend as enqueueSendItem,
   moveQueuedToFront as moveQueuedToFrontItem,
@@ -91,6 +99,22 @@ export interface AgentEventController {
   /** 压缩信号的边沿基线（per-session）：compacting true→false 触发缓冲区补发。 */
   getPrevCompacting(): Record<string, boolean>;
   setPrevCompacting(next: Record<string, boolean>): void;
+  /** ---- 保留策略（S3：states 表的 LRU 淘汰）----
+   *  active = 会话 id → 最后活跃毫秒（sessionFocused / 任何带 sessionId 的事件
+   *  刷新，handleAgentEvent 维护）；keep = 豁免集合（当前活跃会话、打开的标签、
+   *  AssistantWorkspace 常驻挂载层——App / AssistantWorkspace 经 retainSessions
+   *  批量喂进来）。两个域（project / assistant）各一份。
+   *  **可缺席**：手搭 controller 的旧测试桩可以不实现这组槽——handleAgentEvent
+   *  对缺席的 controller 跳过保留策略（行为与引入前一致），不炸事件流。 */
+  getActive?(space: "project" | "assistant"): Record<string, number>;
+  setActive?(space: "project" | "assistant", next: Record<string, number>): void;
+  getKeep?(space: "project" | "assistant"): ReadonlySet<string>;
+  setKeep?(space: "project" | "assistant", ids: readonly string[]): void;
+  /** 主域淘汰通知（useAgent 里桥接到 source.forgetLoadedSessions——把连接层的
+   *  loadedSessions 记忆一并清掉，被淘汰的会话重进时走全量装载而不是「本地
+   *  秒回」到一份空 state）。助手域不需要：AssistantPage 的 boot 与子会话视图
+   *  的装载 effect 本就按 state 缺失重拉。 */
+  forgetLoaded?(ids: readonly string[]): void;
   /** 缓冲区自动发送的出口（App 的 sendWithOptions 经 ref 桥接）。
    *  atts = 队首条目携带的附件（按引用透传——不复制 base64）。 */
   autoSend(sessionId: string, text: string, atts?: SendAttachments): void;
@@ -133,6 +157,8 @@ export function handleAgentEvent(ev: AgentEvent, c: AgentEventController): void 
   }
   if (ev.type === "sessionFocused") {
     c.setCurrentId(ev.id);
+    const getActive = c.getActive;
+    if (getActive && c.setActive) c.setActive("project", touchActivity(getActive("project"), ev.id, Date.now()));
     const all = c.getSessionStates();
     const existed = Boolean(all[ev.id]);
     if (!existed) c.setSessionStates({ ...all, [ev.id]: { ...initial, currentId: ev.id } });
@@ -252,7 +278,60 @@ export function handleAgentEvent(ev: AgentEvent, c: AgentEventController): void 
     c.setSessionStates(reduceSessionStates(c.getSessionStates(), ev, c.getChildLinks().dispatchChild));
     return;
   }
-  if ("sessionId" in ev) c.setSessionStates(reduceSessionStates(c.getSessionStates(), ev, c.getChildLinks().dispatchChild));
+  if ("sessionId" in ev) {
+    c.setSessionStates(reduceSessionStates(c.getSessionStates(), ev, c.getChildLinks().dispatchChild));
+    touch(c, "project", ev.sessionId);
+  }
+  evict(c, "project");
+}
+
+/** 活跃时间戳的防御性刷新（controller 的保留策略槽是后加的——手搭 controller
+ *  的旧测试桩没有这些方法，缺席就跳过，不炸事件流）。 */
+function touch(c: AgentEventController, space: "project" | "assistant", id: string): void {
+  const get = c.getActive;
+  if (!get || !c.setActive) return;
+  c.setActive(space, touchActivity(get(space), id, Date.now()));
+}
+
+/** 淘汰的防御性收口（同上——槽位缺席视为该 controller 不参与淘汰）。 */
+function evict(c: AgentEventController, space: "project" | "assistant"): void {
+  if (!c.getActive || !c.setActive || !c.getKeep || !c.forgetLoaded) return;
+  evictStaleStates(c, space);
+}
+
+/** states 表的淘汰 + 配套清理（S3，纯逻辑收口——两个域共用这一份）。
+ *
+ *  时机：每条事件处理完跑一次（表内条目 ≤ 上限 + 豁免，O(条目) 的扫描可忽略）。
+ *  豁免 = keep 集合 ∪ 忙着的会话（busy/pending/streaming/sending——增量流需要
+ *  落点）∪ 主域的非空发送队列（队列挂着就淘汰，缓冲的文本会跟着丢）。
+ *  无淘汰时不产生任何写（引用不变——不触发无谓的重渲染）。 */
+function evictStaleStates(c: AgentEventController, space: "project" | "assistant"): void {
+  if (!c.getActive || !c.setActive) return;
+  const states = space === "project" ? c.getSessionStates() : c.getAssistantStates();
+  const keep = new Set(c.getKeep?.(space) ?? []);
+  if (space === "project") {
+    keep.add(c.getCurrentId());
+    for (const [id, queue] of Object.entries(c.getSendQueues())) {
+      if (queue && queue.length > 0) keep.add(id);
+    }
+  }
+  const evicted = evictableSessionIds(states, c.getActive(space), { now: Date.now(), keep });
+  if (evicted.length === 0) return;
+  const nextStates = pruneSessionKeys(states, evicted);
+  const nextActive = pruneActivity(c.getActive(space), evicted);
+  // 配套清理：childLinks 两张映射（父子任一端被淘汰）、prevBusy/prevCompacting。
+  const nextLinks = pruneChildLinksFor(c.getChildLinks(), evicted);
+  if (space === "project") {
+    c.setSessionStates(nextStates);
+    c.setChildLinks(nextLinks);
+    c.setPrevBusy(pruneSessionKeys(c.getPrevBusy(), evicted));
+    c.setPrevCompacting(pruneSessionKeys(c.getPrevCompacting(), evicted));
+    c.forgetLoaded?.(evicted);
+  } else {
+    c.setAssistantStates(nextStates);
+    c.setChildLinks(nextLinks);
+  }
+  c.setActive(space, nextActive);
 }
 
 /** 助手域事件处理（assistant.*，space 标记已由 events.ts 打上）。
@@ -294,6 +373,8 @@ function handleAssistantEvent(ev: AgentEvent, c: AgentEventController): void {
     return;
   }
   c.setAssistantStates(reduceSessionStates(c.getAssistantStates(), ev, c.getChildLinks().dispatchChild));
+  if ("sessionId" in ev) touch(c, "assistant", ev.sessionId);
+  evict(c, "assistant");
 }
 
 /** useAgent 的旁路回调。onAutoSend：缓冲区自动发送的出口——store 判定「该发了」
@@ -334,6 +415,10 @@ export function useAgent(source: AgentSource, hooks?: AgentHooks): {
   removeQueuedSend: (sessionId: string, id: string) => void;
   /** 把一条移到队首（「直接发送」在忙时按下：本轮结束后第一个发它）。 */
   moveQueuedToFront: (sessionId: string, id: string) => void;
+  /** 声明一组「不可淘汰」的会话（S3 保留集合的跨模块入口）：App 喂打开的
+   *  子会话标签 + astchild 临时视图；AssistantWorkspace 喂常驻挂载层
+   *  （mountedIds + 子会话临时视图）。身份稳定（ref 写入不触发渲染）。 */
+  retainSessions: (space: "project" | "assistant", ids: readonly string[]) => void;
 } {
   const [sessionStates, setSessionStates] = useState<Record<string, UIState>>({});
   const [assistantStates, setAssistantStates] = useState<Record<string, UIState>>({});
@@ -356,6 +441,20 @@ export function useAgent(source: AgentSource, hooks?: AgentHooks): {
    *  true→false 触发缓冲区补发——压缩期间没有 busy 事件，只靠 busy 边沿的话
    *  压缩后排队的消息要等下一次轮结束。 */
   const prevCompactingRef = useRef<Record<string, boolean>>({});
+  // ---- 保留策略（S3）----
+  // 活跃表与豁免集合都走 ref（事件侧只写不读 React 态；keep 由 App /
+  // AssistantWorkspace 每渲染经 retainSessions 批量刷新——ref 写入不触发渲染）。
+  const activeRef = useRef<Record<"project" | "assistant", Record<string, number>>>({
+    project: {}, assistant: {},
+  });
+  const keepRef = useRef<Record<"project" | "assistant", Set<string>>>({
+    project: new Set(), assistant: new Set(),
+  });
+  /** 主域淘汰 → 连接层 forgetLoadedSessions（loadedSessions 记忆清账——被淘汰
+   *  会话重进时走全量装载）。source 经 ref 桥（与 autoSendRef 同款纪律）。 */
+  const forgetLoadedRef = useRef((ids: readonly string[]) => {
+    if (ids.length > 0) source?.forgetLoadedSessions?.(ids);
+  });
   const operationErrorsRef = useRef(operationErrors);
   sessionStatesRef.current = sessionStates;
   assistantStatesRef.current = assistantStates;
@@ -381,6 +480,16 @@ export function useAgent(source: AgentSource, hooks?: AgentHooks): {
       getSendQueues: () => sendQueuesRef.current,
       getPrevBusy: () => prevBusyRef.current,
       getPrevCompacting: () => prevCompactingRef.current,
+      getActive: (space) => activeRef.current[space],
+      setActive: (space, next) => { activeRef.current[space] = next; },
+      getKeep: (space) => keepRef.current[space],
+      setKeep: (space, ids) => {
+        const prev = keepRef.current[space];
+        const next = new Set(ids);
+        const same = prev.size === next.size && [...next].every((id) => prev.has(id));
+        if (!same) keepRef.current[space] = next;
+      },
+      forgetLoaded: (ids) => forgetLoadedRef.current(ids),
       setCurrentId: (id) => { currentIdRef.current = id; setCurrentId(id); },
       setSessionStates: (next) => { sessionStatesRef.current = next; setSessionStates(next); },
       setAssistantStates: (next) => { assistantStatesRef.current = next; setAssistantStates(next); },
@@ -410,6 +519,9 @@ export function useAgent(source: AgentSource, hooks?: AgentHooks): {
         setOperationErrors([]);
         controllerRef.current?.setPrevBusy({});
         controllerRef.current?.setPrevCompacting({});
+        // 保留策略的运行态一并清：新连接的新会话空间（换后端 = 旧会话 id 作废）。
+        activeRef.current = { project: {}, assistant: {} };
+        keepRef.current = { project: new Set(), assistant: new Set() };
       },
     };
   }
@@ -463,6 +575,13 @@ export function useAgent(source: AgentSource, hooks?: AgentHooks): {
       [sessionId]: moveQueuedToFrontItem(controller.getSendQueues()[sessionId] ?? [], id),
     });
   }, [controller]);
+  /** S3 保留集合的跨模块入口：批量刷新豁免集合 + 活跃时间戳（豁免的会话顺手
+   *  视为「刚活跃」——挂在标签条上本身就是访问）。 */
+  const retainSessions = useCallback((space: "project" | "assistant", ids: readonly string[]) => {
+    controller.setKeep?.(space, ids);
+    const get = controller.getActive;
+    if (get && controller.setActive) controller.setActive(space, touchActivityMany(get(space), ids, Date.now()));
+  }, [controller]);
   return {
     state,
     sessionStates,
@@ -481,5 +600,6 @@ export function useAgent(source: AgentSource, hooks?: AgentHooks): {
     enqueueSend,
     removeQueuedSend,
     moveQueuedToFront,
+    retainSessions,
   };
 }

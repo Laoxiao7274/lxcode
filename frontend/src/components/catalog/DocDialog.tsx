@@ -4,7 +4,7 @@
 // 灰底画布 + 纸面内容卡 + 头部来源图标——文档就该有文档的质感。
 import type { ReactNode } from "react";
 import { useAgents, type ToolSpec } from "../../shared/agents";
-import { Markdown } from "../../shared/markdown";
+import { Markdown } from "../markdown";
 import { useEscape } from "../../shared/popover";
 
 /** 文档焦点的指向（工具 / 上下文模块）。 */

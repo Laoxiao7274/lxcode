@@ -31,7 +31,7 @@ import {
   openImageLightbox,
   LightboxHost,
   ImageLightbox,
-} from '../src/shared/lightbox.tsx';
+} from '../src/components/lightbox.tsx';
 import { setAttachmentOrigin, setAttachmentToken } from '../src/shared/attachments.ts';
 
 setAttachmentOrigin('http://127.0.0.1:7789');
@@ -180,7 +180,7 @@ test('⑧ ImageLightbox：SSR 降级返回 null（portal 是纯客户端）；�
   assert.equal(empty, '');
 
   // 结构装配钉子：遮罩根 / 顶栏 / 工具条 / 切换箭头 / 计数都在组件 JSX 里
-  const src = fs.readFileSync('src/shared/lightbox.tsx', 'utf8');
+  const src = fs.readFileSync('src/components/lightbox.tsx', 'utf8');
   assert.ok(src.includes('createPortal(') && src.includes('document.body'), '渲染走 portal 挂 body');
   assert.ok(src.includes('"lightbox"'), '遮罩根类名');
   assert.ok(src.includes('lightbox-topbar'), '顶栏');

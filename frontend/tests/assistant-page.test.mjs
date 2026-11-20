@@ -339,7 +339,7 @@ test('⑤ 接线：AssistantPage 用 useWindowedHistory + 哨兵 + assistant 域
   const src = fs.readFileSync(new URL('../src/components/assistant/AssistantPage.tsx', import.meta.url), 'utf8');
   assert.match(src, /useWindowedHistory\(\{/, '窗口化渲染接进来了');
   assert.match(src, /sessionKey: sessionId,/, '窗口按会话派生（切会话首帧 40 块）');
-  assert.match(src, /const visible = hidden > 0 \? sealed\.slice\(hidden\) : sealed;/, '窗口切片渲染（不整列表挂载）');
+  assert.match(src, /const visible = hidden > 0 \? sealed\.slice\(hidden/, '窗口切片渲染（不整列表挂载）');
   assert.match(src, /<WindowSentinel onExpand=\{loadOlder\}/, '顶部哨兵触发上翻');
   assert.match(src, /loadOlderLabel\(Boolean\(state\?\.historyMore\), hidden\)/, '哨兵文案与主时间线同一份');
   // 分页走助手域（域隔离）：load 传 assistant.history（带 before_seq）

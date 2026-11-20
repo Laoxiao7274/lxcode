@@ -12,9 +12,12 @@ import { draftOf, writeDraft, writeDraftAtts, writeDraftText, type SessionDraft,
 const DRAFT_FLUSH_DELAY_MS = 800;
 import type { ThreadBlock } from "../shared/store";
 import type { SendAttachments } from "../shared/types";
-import type { ComposerAttsDraft } from "../components/composer";
-import type { ComposerDraft } from "../components/composer";
+import type { ComposerAttsDraft, ComposerDraft } from "../components/composer";
 
+/** 注入态（use-rewind 的 draft）：ComposerDraft 之上多一个 `sid` = 注入归属的
+ *  会话——App 层按 `draft.sid === currentId` 过滤后再喂给挂载中的 Composer
+ *  （守卫在消费时刻，切会话后的陈旧注入自动失配，见 use-rewind.ts 顶部注释）。 */
+export type RewindDraft = ComposerDraft & { sid: string };
 /** 编辑/撤回/草稿域（AppBody 装配——参数即它持有的闭包依赖，显式化）。 */
 export function useRewind({ source, currentId, currentIdRef, reportError, sendWithOptions }: {
   source: import("../shared/types").AgentSource;
@@ -41,10 +44,15 @@ export function useRewind({ source, currentId, currentIdRef, reportError, sendWi
    *  B 的挂载 Composer（或 B 的记账键）就是跨会话泄漏（用户实测报的问题 1：
    *  撤回 A 里的消息，文本出现在 B 的输入框/时间线里）。
    *
+   *  **注入态携带 sid**（RewindDraft）：切会话时新 Composer 的消费 effect 先于
+   *  App 父级的清除 effect 跑（React effect 子先于父），陈旧注入若不带归属就
+   *  会被新会话的输入框吃掉——守卫必须移到消费时刻（App.tsx 按 draft.sid ===
+   *  currentId 过滤），任何切会话后的陈旧注入自动失配。
+   *
    *  注入同时落 sid 的草稿记账键（drafts，shared/session-drafts.ts）：挂载中
    *  的那份由 draft prop 即时生效，记账键服务「切走再切回」的还原——两处写的
    *  是同一份语义。 */
-  const [draft, setDraft] = useState<ComposerDraft | null>(null);
+  const [draft, setDraft] = useState<RewindDraft | null>(null);
   const draftIdRef = useRef(0);
   /** per-session 草稿记账（照 sendQueues 的模式，独立于 reduce 流——纯 UI 状态）：
    *  键 = session id，值 = 文本 + 暂存附件。切走保留、切回还原、发送清空、失败
@@ -71,7 +79,7 @@ export function useRewind({ source, currentId, currentIdRef, reportError, sendWi
     flushDraftNow(sid, text);
     if (sid === currentIdRef.current) {
       draftIdRef.current += 1;
-      setDraft({ id: draftIdRef.current, text, ...(atts ? { atts } : {}) });
+      setDraft({ sid, id: draftIdRef.current, text, ...(atts ? { atts } : {}) });
     }
   }, [currentIdRef, flushDraftNow]);
   /** 注入草稿的失败回滚（撤回被后端拒绝时把注入的原文撤出输入框）：sid 的记账
@@ -85,7 +93,7 @@ export function useRewind({ source, currentId, currentIdRef, reportError, sendWi
     flushDraftNow(sid, "");
     if (sid === currentIdRef.current) {
       draftIdRef.current += 1;
-      setDraft({ id: draftIdRef.current, text: "" });
+      setDraft({ sid, id: draftIdRef.current, text: "" });
     } else {
       setDraft(null);
     }
@@ -203,8 +211,9 @@ export function useRewind({ source, currentId, currentIdRef, reportError, sendWi
   // 切会话必须退出编辑态：编辑锚点（seq）只在它所属的那个会话里有意义，带着它
   // 切走再发送会去撤回**另一个会话**的那条消息（静默删错历史——比不生效坏得多）。
   // 注入态（draft / attsDraft）同理一并清：它们是「当前会话」的一次性动作，注入
-  // 的内容已实时同步进那个会话的草稿记账键，切回来由初始草稿还原；不清的话重挂
-  // 载的新 Composer 会把上一个会话的注入草稿再吃一遍（串会话）。
+  // 的内容已实时同步进那个会话的草稿记账键，切回来由初始草稿还原。清除与重挂
+  // 载的竞态由 draft 自带的 sid 兜底（App 层按 sid 过滤——React effect 子先于
+  // 父，新 Composer 的消费 effect 可能先于本清除 effect 跑，这层是双保险）。
   //
   // 同时 flush 旧会话防抖窗口里的草稿（立即落库后再走）：延迟 flush 若跟着新会话
   // 的写点走，旧会话最后 800ms 的打字会落错会话（竞态防线，安卓端同款）。

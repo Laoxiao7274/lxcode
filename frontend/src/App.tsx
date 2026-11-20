@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";import { gsap } from "gsap";
 import { motionAllowed } from "./shared/motion";
-import { LightboxHost } from "./shared/lightbox";
+import { LightboxHost } from "./components/lightbox";
 import {
   childTabSession,
   childTabTitle,
@@ -116,7 +116,7 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
   /** 右侧「已发送消息」大纲的开合：**纯 UI 状态**（不进会话历史、不落库、切会话不
    *  清——它只是当前窗口的查看方式）。 */
   const [outlineOpen, setOutlineOpen] = useState(true);
-  const { state, sessionStates, assistantStates, childParents, dispatchChild, sendQueues, send, resolve, resolveAssistant, operationErrors, clearError, reportError, enqueueSend, removeQueuedSend, moveQueuedToFront } = useAgent(source, {
+  const { state, sessionStates, assistantStates, childParents, dispatchChild, sendQueues, send, resolve, resolveAssistant, operationErrors, clearError, reportError, enqueueSend, removeQueuedSend, moveQueuedToFront, retainSessions } = useAgent(source, {
     onAutoSend: (sessionId, text, atts) => autoSendBridgeRef.current(sessionId, text, atts),
     onSendFailed: (sessionId, atts) => onSendFailedBridgeRef.current(sessionId, atts),
   });
@@ -177,6 +177,29 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
     view, workspaceState, setWorkspaceState, workspaceStateRef, settingsOpen, setSettingsOpen, filter, setFilter, gitProjectId, setGitProjectId,
     closeWorkspace, openWorkspaceTab, openChildView, openAstChildView, openAgents, openCatalog, openGit, openRemote, backToChat, focusSession, openProject, openSettings,
   } = useWorkspaceNav({ source, currentId });
+
+  /** S3 保留集合的助手域入口（AssistantWorkspace 的挂载层——部分应用让 prop
+   *  身份稳定，retainSessions 本身是 useCallback 稳定引用）。 */
+  const retainAssistant = useCallback(
+    (ids: string[]) => retainSessions("assistant", ids),
+    [retainSessions],
+  );
+
+  // ---- S3 保留集合（states 淘汰的豁免表——跨模块入口）----
+  // 项目域：打开的子会话标签（workspaceState.tabs 的 child:* 键）——用户正看着
+  // 的临时视图时间线不能被淘汰（淘汰 = 视图变空白，装载 effect 不会重跑）。
+  // 助手域：项目侧打开的 astchild 临时视图（同一理由，state 源是 assistantStates）。
+  // 助手模式的常驻挂载层由 AssistantWorkspace 自己经 retainAssistant 补充。
+  useEffect(() => {
+    const childIds = workspaceState.tabs
+      .map((tab) => childTabSession(tab))
+      .filter((id): id is string => Boolean(id));
+    retainSessions("project", childIds);
+  }, [workspaceState.tabs, retainSessions]);
+  const activeAstChildKeep = astChildSession(view);
+  useEffect(() => {
+    retainSessions("assistant", activeAstChildKeep ? [activeAstChildKeep] : []);
+  }, [activeAstChildKeep, retainSessions]);
 
   // ---- 顶层模式切换（助手模式 P2：useWorkspaceNav 之后定义——要读写工作区状态）----
   const handleModeChange = useCallback((next: AppMode) => {
@@ -581,7 +604,9 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
               onCancel={() => source.cancel(currentId)}
               onCompact={handleCompactClick}
               commands={slashCommands}
-              draft={draft}
+              // draft 带 sid：守卫在消费时刻——切会话重挂载后陈旧注入 sid 失配，
+              // 不会泄进新会话的输入框（React effect 子先于父，仅靠清除 effect 不够）。
+              draft={draft && draft.sid === currentId ? draft : null}
               editing={editDraft !== null}
               onCancelEdit={handleCancelEdit}
               queue={currentQueue}
@@ -749,6 +774,7 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
           reportError={reportError}
           onOpenSettings={openSettings}
           mode={appMode}
+          retainAssistant={retainAssistant}
         />
       </div>
       <div className="app-mode-branch" hidden={appMode !== "project"} style={{ display: "contents" }}>
