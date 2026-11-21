@@ -15,15 +15,15 @@ import { TextResponse } from "../../../aicss/TextResponse";
 import { splitCommitted, useStreamReveal } from "../../../shared/stream-reveal";
 import { Markdown } from "../../markdown";
 
-export function AnswerBody({ text, streaming }: { text: string; streaming: boolean }) {
+export function AnswerBody({ text, streaming, block }: { text: string; streaming: boolean; /** 定型块的缓存键（块对象，immutable）——非流式时透传给 Markdown 的围栏外段做块键控解析缓存（切来切去零重复解析）；流式块不传（每帧文本都在变，缓存即垃圾）。 */ block?: object }) {
   const shown = useStreamReveal(text);
   const { committed, tail } = useMemo(() => splitCommitted(shown), [shown]);
   return (
     <TextResponse>
       {/* keyPrefix 区分两段的段序号（撞 key 会让 React 复用错段）；committed 为
           空串时第一段渲染 null——短文本（≤2 行）就是单段形态，与原行为一致 */}
-      <Markdown text={committed} keyPrefix="c" />
-      <Markdown text={tail} keyPrefix="t" />
+      <Markdown text={committed} keyPrefix="c" scope={streaming ? undefined : block} />
+      <Markdown text={tail} keyPrefix="t" scope={streaming ? undefined : block} />
       {streaming && <span className="md-caret" aria-hidden />}
     </TextResponse>
   );

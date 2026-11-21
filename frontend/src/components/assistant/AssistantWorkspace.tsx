@@ -443,12 +443,17 @@ export function AssistantWorkspace({
     try {
       const id = await assistant.newSession();
       knownTick(id);
-      if (sessionIdRef.current) {
+      // 离开的会话在**调用时刻捕获**（不能在 updater 里读 sessionIdRef——
+      // setSessionId(id) 已入队，React 并发渲染会重放 updater，重放时 ref 已
+      // 对齐到新 id，摘除就变成摘新会话、旧的留下。实锤：偶发的
+      // mountedIds=['a1','new-1']——a1 没被摘（wait 计数看到的就是它））。
+      const leaving = sessionIdRef.current;
+      if (leaving) {
         // 新建 = 离开旧会话：旧标签按用户语义关掉（tabClosed + 摘实例）。焦点
         // 先切（setSessionId(id)），摘除放在其后——顺序与 handleCloseTab 同一条
         // 纪律（sessionId-effect 先把新 id 补进 mountedIds，摘旧的不会被回补）。
-        setTabClosed((prev) => (prev.has(sessionIdRef.current) ? prev : new Set(prev).add(sessionIdRef.current)));
-        setMountedIds((prev) => prev.filter((m) => m !== sessionIdRef.current));
+        setTabClosed((prev) => (prev.has(leaving) ? prev : new Set(prev).add(leaving)));
+        setMountedIds((prev) => prev.filter((m) => m !== leaving));
       }
       writeLastAssistantSession(id);
       setSessionId(id);

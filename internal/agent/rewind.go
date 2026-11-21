@@ -93,6 +93,10 @@ func (s *Session) Rewind(seq int64) (RewindResult, error) {
 	if err := s.settleBusyForRewind(); err != nil {
 		return RewindResult{}, err
 	}
+	// 窗口态补载（windowed.go）：撤回要在全量历史上定位锚点与判配对。
+	if err := s.ensureFullHistory(); err != nil {
+		return RewindResult{}, err
+	}
 	s.mu.Lock()
 	if s.busy {
 		// settle 成功返回后、拿锁前，flushNotices 可能已开新一轮：如实拒绝
@@ -147,6 +151,7 @@ func (s *Session) Rewind(seq int64) (RewindResult, error) {
 			return RewindResult{}, fmt.Errorf("撤回后重载历史失败: %w", err)
 		}
 		s.history = msgs
+		s.windowed = false    // 全量重载：窗口态结束（windowed.go）
 		s.bumpHistoryLocked() // 重载了历史：派生值缓存失效（history_cache.go）
 	}
 	s.mu.Unlock()
@@ -215,6 +220,7 @@ func (s *Session) SetLeaf(seq int64) (SetLeafResult, error) {
 	}
 	s.mu.Lock()
 	s.history = msgs
+	s.windowed = false    // 全量重载：窗口态结束（windowed.go）
 	s.bumpHistoryLocked() // 切叶重载了历史：派生值缓存失效（history_cache.go）
 	s.mu.Unlock()
 

@@ -443,7 +443,9 @@ func (s *Server) newAssistantRuntime(id string) (*agent.Session, error) {
 		})
 	}
 	if s.st != nil {
-		if err := sess.AttachTo(s.st, id); err != nil {
+		// **窗口化附着**（会话切换优化批 4）：与主域 newRuntime 同一条纪律——
+		// 助手会话恢复只装载尾部窗口，首次发送/压缩时补载全量。
+		if err := sess.AttachToWindowed(s.st, id); err != nil {
 			return nil, err
 		}
 		// 助手专属工作目录（<sessions>/../assistant，runServe 装配）：助手会话

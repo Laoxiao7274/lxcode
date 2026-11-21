@@ -25,6 +25,30 @@ const TOOL_TITLES: Record<string, string> = {
   todo: "任务清单",
 };
 
+// 工具参数的**块键控解析缓存**（2026-12 会话切换优化批 4）：arguments 字符串
+// 不可变（块对象不可突变），按块对象 WeakMap 缓存 JSON.parse 结果——memo(Block)
+// 挡掉重渲染，但切会话重挂载仍会逐块重 parse；键 = 块对象，S3 骨架化淘汰 /
+// rebuiltGen 重建时块对象被 GC → 缓存随之释放（与 markdown.tsx 同一条纪律）。
+// 解析失败按 `{}` 缓存（失败结果也是纯函数——每次 parse 都失败，缓存它避免重复抛）。
+type ToolArgs = Partial<{ command: string; cwd: string; path: string; pattern: string; job_id: string; wait: boolean; condition: string; idleMs: number; items: unknown }>;
+const toolArgsCache = new WeakMap<ToolBlockArgs, ToolArgs>();
+/** ToolBlock 的 block 形状（Extract<ThreadBlock, {kind:"tool"}> 的结构子集——
+ *  WeakMap 键只要对象即可，这里只约束真正用到的两个字段）。 */
+interface ToolBlockArgs { name: string; arguments: string }
+function toolArgs(block: ToolBlockArgs): ToolArgs {
+  let hit = toolArgsCache.get(block);
+  if (hit === undefined) {
+    try {
+      const parsed: unknown = JSON.parse(block.arguments);
+      hit = parsed && typeof parsed === "object" ? (parsed as ToolArgs) : {};
+    } catch {
+      hit = {};
+    }
+    toolArgsCache.set(block, hit);
+  }
+  return hit;
+}
+
 export function ToolBlock({ block, replayed, "data-uid": dataUid }: { block: Extract<ThreadBlock, { kind: "tool" }>; /** 回放帧（换会话）：不播入场动效（见 useEnterRef 的 skip）。 */ replayed?: boolean; "data-uid"?: number }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
@@ -68,15 +92,9 @@ export function ToolBlock({ block, replayed, "data-uid": dataUid }: { block: Ext
     if (open) setBodyMounted(true);
   }, [open]);
 
-  // 工具参数解析只做一次（memo(Block) 已挡掉大部分重渲染）
-  const args = useMemo(() => {
-    try {
-      return JSON.parse(block.arguments) as Partial<{ command: string; cwd: string; path: string; pattern: string }>;
-    } catch {
-      return {};
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [block.arguments]);
+  // 工具参数解析只做一次（memo(Block) 挡重渲染；块键控缓存挡切会话重挂载的
+  // 重复 parse——见 toolArgs 的注释）
+  const args = useMemo(() => toolArgs(block), [block]);
   const argsSummary = clip(shortArgs(block), 72);
 
   // 等待原语的等待态（job_output 执行中且 wait=true）：显示「⏳ 等待 <条件>… 已等 Xs」。
@@ -87,7 +105,7 @@ export function ToolBlock({ block, replayed, "data-uid": dataUid }: { block: Ext
     if (block.name !== "job_output") return null;
     const w = jobWaitArgs(block.arguments);
     if (!w.wait) return null;
-    return { label: jobWaitConditionLabel(w.condition, w.idleMs), jobId: (JSON.parse(block.arguments) as { job_id?: string }).job_id ?? "" };
+    return { label: jobWaitConditionLabel(w.condition, w.idleMs), jobId: toolArgs(block).job_id ?? "" };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [block.name, block.arguments]);
   const jobLabel = useMemo(() => {
@@ -100,15 +118,23 @@ export function ToolBlock({ block, replayed, "data-uid": dataUid }: { block: Ext
   // edit 工具：diff 视图（改动即所见——不再让用户读 JSON 参数）
   const editDiff = useMemo((): { path: string; old_string: string; new_string: string } | null => {
     if (block.name !== "edit" || !block.arguments) return null;
-    try {
-      const a = JSON.parse(block.arguments) as Partial<{ path: string; old_string: string; new_string: string }>;
-      if (!a.path || a.old_string === undefined || a.new_string === undefined) return null;
-      return { path: a.path, old_string: a.old_string, new_string: a.new_string };
-    } catch {
-      return null;
-    }
+    const a = toolArgs(block) as Partial<{ path: string; old_string: string; new_string: string }>;
+    if (!a.path || a.old_string === undefined || a.new_string === undefined) return null;
+    return { path: a.path, old_string: a.old_string, new_string: a.new_string };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [block.arguments]);
+
+  // todo 契约批②：todo 调用渲染成**纯摘要行**（拍板⑥——不展开参数）：三态计数
+  // + 当前进行项。清单的完整呈现面是计划条（Composer/子会话页），时间线上留一行
+  // 状态跳变即可——每次 todo 调用 = 一次进度更新，视觉上「清单出来之后有痕迹」。
+  // items 解析放在所有早 return 之前（hooks 规则——React #300：hook 数在
+  // share_file 带附件 / edit 参数齐的分支上 13↔14 漂移触发渲染错乱）。
+  const todoItems = useMemo((): TodoItem[] => {
+    if (block.name !== "todo" || !block.arguments) return [];
+    const items = toolArgs(block).items;
+    return Array.isArray(items) ? (items as TodoItem[]) : [];
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [block.name, block.arguments]);
 
   // share_file：附件卡是**主体**（共享给用户看的东西），工具行收成一行头 +
   // 卡片——用户不用展开就能看到文件/图片（实时 toolResult 与历史回放同一份元数据）。
@@ -169,16 +195,6 @@ export function ToolBlock({ block, replayed, "data-uid": dataUid }: { block: Ext
   // + 当前进行项。清单的完整呈现面是计划条（Composer/子会话页），时间线上留一行
   // 状态跳变即可——每次 todo 调用 = 一次进度更新，视觉上「清单出来之后有痕迹」。
   // items 解析放在所有早 return 之前（hooks 规则）。
-  const todoItems = useMemo((): TodoItem[] => {
-    if (block.name !== "todo" || !block.arguments) return [];
-    try {
-      const a = JSON.parse(block.arguments) as { items?: TodoItem[] };
-      return Array.isArray(a.items) ? a.items : [];
-    } catch {
-      return [];
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [block.name, block.arguments]);
   const todoDone = todoItems.filter((it) => it.status === "done").length;
   const todoActive = todoItems.filter((it) => it.status === "active").length;
   const todoPending = todoItems.filter((it) => it.status === "pending").length;

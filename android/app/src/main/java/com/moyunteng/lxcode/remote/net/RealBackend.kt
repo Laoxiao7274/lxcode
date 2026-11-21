@@ -44,6 +44,8 @@ import com.moyunteng.lxcode.remote.model.mergeChildLiveTail
 import com.moyunteng.lxcode.remote.model.mergeChildTodoList
 import com.moyunteng.lxcode.remote.model.mergeKnownChildIds
 import com.moyunteng.lxcode.remote.model.parseModelList
+import com.moyunteng.lxcode.remote.model.parseScreenMonitors
+import com.moyunteng.lxcode.remote.model.parseScreenState
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.Instant
@@ -134,15 +136,9 @@ class RealBackend {
     fun refreshScreen() {
         client.call("screen.monitors", JSONObject()) { err, result ->
             if (err == null && result is JSONObject) {
-                screenShellOnline = result.optBoolean("shell_online", false)
-                val arr = result.optJSONArray("monitors")
-                screenMonitors = if (arr == null) emptyList() else (0 until arr.length()).mapNotNull { i ->
-                    val m = arr.optJSONObject(i) ?: return@mapNotNull null
-                    com.moyunteng.lxcode.remote.ui.ScreenMonitorInfo(
-                        id = m.optInt("id"), name = m.optString("name"),
-                        primary = m.optBoolean("primary"), width = m.optInt("width"), height = m.optInt("height"),
-                    )
-                }
+                val (monitors, shellOnline) = parseScreenMonitors(result)
+                screenShellOnline = shellOnline
+                screenMonitors = monitors
             }
         }
         client.call("screen.state", JSONObject()) { err, result ->
@@ -266,16 +262,9 @@ class RealBackend {
     }
 
     internal fun applyScreenState(o: JSONObject) {
-        // P1-1：quality 缺省改 null——后端壳未上报档位时（老壳/未知）不编造
-        // "medium"，避免 setScreenMonitor/setScreenQuality 的「沿用当前档」把
-        // 清晰度重置回 medium。UI 层显示 null 时按未知档处理（qualityLabel 兜底）。
-        screenState = com.moyunteng.lxcode.remote.ui.ScreenStateInfo(
-            active = o.optBoolean("active", false),
-            monitor = o.optInt("monitor", 0),
-            quality = o.optString("quality", "").ifEmpty { null },
-            encoder = o.optString("encoder", ""),
-            error = o.optString("error", "").ifEmpty { null },
-        )
+        // 字段映射口径在纯函数里（model/ScreenParsing.kt，JVM 单测钉住——对齐
+        // parseModelList 的同款拆法）；这里只做副作用装配。
+        screenState = parseScreenState(o)
         // 壳上报 running（任意路径：start 应答 / screen.changed / screen.state 轮询）
         // 即退出启动 pending，并记「曾经 active 过」——断开自动退回（AppRoot 的
         // LaunchedEffect）与观看态返回键（endScreenSession）都据此判定；

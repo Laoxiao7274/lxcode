@@ -399,5 +399,10 @@ export function reduceHistory(state: UIState, h: HistorySnapshot): UIState {
     // 这个会话实际用的模型（子会话页头用它——缺席 = 未知，不拿主会话的冒充）
     model: h.model ?? "",
     historyReady: true,
+    // **骨架态随全量装载清除**（S3 淘汰骨架化，2026-12）：`...state` 展开会把
+    // lightweight 标志带进重建结果——重建后时间线已就位、EmptyState 语义恢复
+    //（空会话该显示「我们做点什么？」），骨架标志留着会让真正空的历史永远
+    // 显示加载态。分页前插（mergeOlderHistory）只动 blocks 前缀，标志天然不适用。
+    lightweight: false,
   };
 }

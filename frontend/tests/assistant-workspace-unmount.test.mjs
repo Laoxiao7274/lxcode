@@ -63,6 +63,16 @@ const App = (source) => createElement(SettingsProvider, { source }, createElemen
 }));
 
 const settle = () => new Promise((r) => setTimeout(r, 30));
+/** 轮询直到断言通过或超时（async 链的真实时钟落定时间随负载波动——固定 30ms
+ *  的 settle 在满负荷机器上偶发不够，正确性断言改为条件等待，不是放宽容忍）。 */
+const waitFor = async (fn, desc) => {
+  for (let i = 0; i < 50; i++) {
+    const v = fn();
+    if (v) return v;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  return null; // 500ms 仍未满足——交给断言如实红（不掩盖真实回归）
+};
 const mountedIdsIn = (container) =>
   [...container.querySelectorAll('[data-asst-session]')].map((el) => el.dataset.asstSession);
 /** 点击 + 等一拍（微任务调度的 setState 与 promise 链都要真实时钟落定）。 */
@@ -129,10 +139,17 @@ test('S2：新建会话 = 关掉旧会话语义（旧实例摘除 + 新实例挂
   await click(rowOf(container, 'a1'));
   assert.deepEqual(mountedIdsIn(container), ['a1']);
 
-  // 侧栏「新对话」nav → 新建后旧实例摘除（不是留着两个常驻页）
+  // 侧栏「新对话」nav → 新建后旧实例摘除（不是留着两个常驻页）。
+  // newSession + refreshList 是两条 async 链，摘除断言用条件等待（见 waitFor）。
   const navNew = [...container.querySelectorAll('.nav-item')].find((el) => el.textContent.includes('新对话'));
   await click(navNew);
-  assert.deepEqual(mountedIdsIn(container), ['new-1'], '新建后旧实例摘除、新实例挂载');
+  let lastSeen = null;
+  const ids = await waitFor(() => {
+    const cur = mountedIdsIn(container);
+    lastSeen = cur;
+    return cur.length === 1 && cur[0] === 'new-1' ? cur : null;
+  }, '新建后旧实例摘除');
+  assert.deepEqual(ids, ['new-1'], `新建后旧实例摘除、新实例挂载（等待结束时 mountedIds=${JSON.stringify(lastSeen)}）`);
 });
 
 test('S2：鼠标侧键 back 离开当前会话 → 离场实例摘除（回列表中性态）', async () => {

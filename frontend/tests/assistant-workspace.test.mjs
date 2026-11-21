@@ -315,3 +315,21 @@ test('⑦ 样式：asst-tab* 只进 assistant-mode.css 且只用 --asst-* token�
   const rootNew = css.match(/:root\s*\{[\s\S]*?\}/g) ?? [];
   assert.equal(rootNew.length, 0, 'assistant-mode.css 不写 :root 规则');
 });
+
+// ---------- 摘除 updater 的纯函数性（2026-12 会话切换优化批 4）----------
+//
+// handleNewSession 的摘除 updater 原先在函数体里读 sessionIdRef.current——
+// setSessionId(id) 已入队，React 并发渲染重放 updater 时 ref 已对齐到新 id，
+// 摘除变成摘新会话、旧的留下（偶发 mountedIds=['a1','new-1']，全量测试
+// assistant-workspace-unmount 的 S2 新建用例偶发红）。修复 = 调用时刻捕获
+// leaving，updater 闭包只用捕获值（纯函数——重放安全）。
+test('S2 新建会话：摘除 updater 不读可变 ref（调用时刻捕获 leaving——并发重放安全）', () => {
+  const src = fs.readFileSync(new URL('../src/components/assistant/AssistantWorkspace.tsx', import.meta.url), 'utf8');
+  const fn = src.slice(src.indexOf('const handleNewSession = useCallback'), src.indexOf('const handleNewSession = useCallback') + 1400);
+  assert.match(fn, /const leaving = sessionIdRef\.current;/,
+    '离开的会话必须在调用时刻捕获（await newSession 之后、setSessionId 之前）');
+  assert.match(fn, /prev\.filter\(\(m\) => m !== leaving\)/,
+    '摘除 updater 只能用捕获值（并发渲染重放 updater 时 ref 已变——读到新 id 就摘错）');
+  assert.ok(!/setMountedIds\(\(prev\) => prev\.filter\(\(m\) => m !== sessionIdRef\.current\)\)/.test(fn),
+    'updater 内不得读可变 ref（React 重放 = 纯函数性破坏）');
+});

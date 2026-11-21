@@ -36,6 +36,7 @@ import {
   pruneActivity,
   pruneChildLinksFor,
   pruneSessionKeys,
+  skeletonizeState,
   touchActivity,
   touchActivityMany,
 } from "./state-retention";
@@ -304,7 +305,13 @@ function evict(c: AgentEventController, space: "project" | "assistant"): void {
  *  时机：每条事件处理完跑一次（表内条目 ≤ 上限 + 豁免，O(条目) 的扫描可忽略）。
  *  豁免 = keep 集合 ∪ 忙着的会话（busy/pending/streaming/sending——增量流需要
  *  落点）∪ 主域的非空发送队列（队列挂着就淘汰，缓冲的文本会跟着丢）。
- *  无淘汰时不产生任何写（引用不变——不触发无谓的重渲染）。 */
+ *  无淘汰时不产生任何写（引用不变——不触发无谓的重渲染）。
+ *
+ *  **淘汰 = 骨架化**（2026-12 会话切换优化批 4）：pruneSessionKeys 的「删键」
+ *  升级为「换骨架」（skeletonizeState）——被淘汰条目保留元数据、丢弃时间线，
+ *  切回不空窗（详见 state-retention.ts 的骨架注释）。配套清理不变：childLinks/
+ *  prevBusy/prevCompacting 仍按原 id 清（骨架态的会话重进走全量装载，回放重建
+ *  这两张映射）；forgetLoaded 照发（连接层 loadedSessions 记忆清掉，全量装载）。 */
 function evictStaleStates(c: AgentEventController, space: "project" | "assistant"): void {
   if (!c.getActive || !c.setActive) return;
   const states = space === "project" ? c.getSessionStates() : c.getAssistantStates();
@@ -317,7 +324,12 @@ function evictStaleStates(c: AgentEventController, space: "project" | "assistant
   }
   const evicted = evictableSessionIds(states, c.getActive(space), { now: Date.now(), keep });
   if (evicted.length === 0) return;
-  const nextStates = pruneSessionKeys(states, evicted);
+  // 骨架化：有块（或正在流式）的条目换骨架；没块可丢的（已骨架/空默认态）保持
+  // 原引用（skeletonizeState 幂等）——引用不变 = 不触发无谓的重渲染。
+  const nextStates = { ...states };
+  for (const id of evicted) {
+    nextStates[id] = skeletonizeState(states[id]) ?? states[id];
+  }
   const nextActive = pruneActivity(c.getActive(space), evicted);
   // 配套清理：childLinks 两张映射（父子任一端被淘汰）、prevBusy/prevCompacting。
   const nextLinks = pruneChildLinksFor(c.getChildLinks(), evicted);

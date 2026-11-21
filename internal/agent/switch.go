@@ -89,6 +89,7 @@ func (s *Session) SwitchTo(id string) error {
 	}
 	// 校验完成再提交；todo 尚未持久化，不能沿用上一会话的内存清单。
 	s.id, s.history, s.workDir = id, msgs, dir
+	s.windowed = false    // 全量装载：窗口态结束（windowed.go）
 	s.bumpHistoryLocked() // 装载了另一条会话的历史：派生值缓存失效（history_cache.go）
 	s.workspace = ws
 	s.todos, s.pendingWorkspace = nil, ""

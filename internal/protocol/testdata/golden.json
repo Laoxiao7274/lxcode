@@ -868,6 +868,67 @@
       "sessions": 3
     }
   },
+  "screenInputParamsFull": {
+    "_type": "ScreenInputParams",
+    "value": {
+      "type": "key",
+      "x": 0.5,
+      "y": 0.25,
+      "button": "right",
+      "dx": -1,
+      "dy": 2,
+      "key": "enter",
+      "modifiers": [
+        "ctrl",
+        "shift"
+      ],
+      "text": "你好",
+      "monitor": 1
+    }
+  },
+  "screenMonitorsResult": {
+    "_type": "ScreenMonitorsResult",
+    "value": {
+      "monitors": [
+        {
+          "id": 0,
+          "name": "内置显示器",
+          "primary": true,
+          "width": 2560,
+          "height": 1440,
+          "attached": true
+        },
+        {
+          "id": 1,
+          "name": "外接 4K",
+          "primary": false,
+          "width": 3840,
+          "height": 2160,
+          "attached": false
+        }
+      ],
+      "shell_online": true
+    }
+  },
+  "screenStateFull": {
+    "_type": "ScreenState",
+    "value": {
+      "active": true,
+      "monitor": 1,
+      "quality": "high",
+      "encoder": "h264_nvenc",
+      "width": 1920,
+      "height": 1080,
+      "receiver": "rcpt_1"
+    }
+  },
+  "screenStateStoppedWithError": {
+    "_type": "ScreenState",
+    "value": {
+      "active": false,
+      "error": "壳已退出（投屏中断）"
+    }
+  },
   "searchChannelsResult": {
     "_type": "SearchChannelsSnapshot",
     "value": {

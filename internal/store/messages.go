@@ -153,6 +153,56 @@ func (s *Store) Load(id string) ([]llm.Message, error) {
 	return messagesOf(surfaceRows(rows)), nil
 }
 
+// LoadTail 读当前历史的**尾部/分页窗口**（surface 顺序，agent.TailLoader 的实现；
+// 会话切换优化批 4：切会话只装载尾部窗口，第一次真正需要全量历史时——发送/撤回/
+// 压缩——由 agent 层补载全量）。
+//
+// 语义：
+//   - before ≤ 0：从 leaf 起（含）取路径尾部 n 行；
+//   - before > 0：取 seq=before **之前**的路径行（不含锚点——分页窗口与已装载段
+//     不重叠），至多 n 行；
+//   - atRoot = 窗口已覆盖到路径根（前面没有更多历史；分页的 has_more 判据）。
+//
+// 影子/检查点语义与全量 Load **同一份判定**（surfaceRows，一字不改）：窗口是
+// seq 连续的一段路径行，影子掉窗口行的检查点行必然也在窗口里（检查点 seq 大于
+// 它影子的行、小于其后追加的行——seq 连续窗口必含它），所以窗口内的影子判定
+// 与全量一致。检查点锚点在窗口边界之外时，surfaceRows 把它排在子集首位（锚点
+// 语义的退化形态），由 agent 层的配对回退决定它进不进最终窗口。
+//
+// 返回**至多 n 行 surface 后的消息**（n 是行数预算：surface 只会减行——影子；
+// 或加行——检查点。检查点加行使 surface 数可能略超 n，配对回退由 agent 层做）。
+func (s *Store) LoadTail(id string, before int64, n int) (msgs []llm.Message, atRoot bool, err error) {
+	seed := int(before)
+	if before <= 0 {
+		leaf, e := s.LeafSeq(id)
+		if e != nil {
+			return nil, false, e
+		}
+		if leaf <= 0 {
+			return []llm.Message{}, true, nil // 空路径
+		}
+		seed = int(leaf)
+	} else {
+		// 分页锚点必须存在（agent 层传来的都是客户端见过的 seq）：坏号如实报错
+		//（错误的 anchor 会切出重复或空洞的窗口——与 HistoryBefore 同一条纪律）。
+		var exists int
+		if err := s.db.QueryRow(`SELECT 1 FROM messages WHERE session_id = ? AND seq = ?`, id, before).Scan(&exists); err != nil {
+			if err == sql.ErrNoRows {
+				return nil, false, fmt.Errorf("分页锚点 %d 不在会话 %s 里（会话可能已被撤回）", before, id)
+			}
+			return nil, false, fmt.Errorf("查询会话 %s 的分页锚点失败: %w", id, err)
+		}
+	}
+	rows, err := queryPathRowsTail(s.db, id, seed, before <= 0, n)
+	if err != nil {
+		return nil, false, err
+	}
+	// atRoot = 取到的行数 < n（深度上限没触到 = 已回溯到根；n 行恰好取满时前面
+	// 可能还有）。注意行数是路径行数——比 surface 数稳定（surface 受影子影响）。
+	atRoot = len(rows) < n
+	return messagesOf(surfaceRows(rows)), atRoot, nil
+}
+
 // messagesOf 把行集拷成消息切片（空行集也返回**非 nil** 的空切片：wire 上是 `[]`
 // 而不是 `null`，与改动前的载荷形状一致）。
 func messagesOf(rows []rowData) []llm.Message {
@@ -191,6 +241,7 @@ const messageCols = `seq, parent_seq, role, content, reasoning, reasoning_sig, t
 // querier 是 *sql.DB 与 *sql.Tx 的公共读接口（同一份查询在两条路径上跑）。
 type querier interface {
 	Query(query string, args ...any) (*sql.Rows, error)
+	QueryRow(query string, args ...any) *sql.Row
 }
 
 // scanRows 把消息行扫成 rowData（唯一一份扫描逻辑，与 messageCols 严格对应）。
@@ -304,6 +355,71 @@ func queryPathRows(q querier, id string, leaf int) ([]rowData, error) {
 		return nil, fmt.Errorf("查询会话 %s 的路径失败: %w", id, err)
 	}
 	return scanRows(rows)
+}
+
+// tailPairingMargin 是尾部窗口取行时的**配对回退余量**（LoadTail）：窗口起点要
+// 回退到工具配对平衡切点（agent 层 AnalyzeToolPairing 的不变量——切在 assistant
+// 的 tool_calls 与它的 tool 结果之间是畸形历史），余量保证回退有行可退。
+// 一轮的工具调用常见 <30 条，40 覆盖绝大多数；agent 层取数边界仍不平衡时按倍数
+// 重取（bounded retry），这里只是第一跳的余量。
+const tailPairingMargin = 40
+
+// readPathRowsTail 读**当前 leaf 路径**的尾部 n 行（按 seq 降序取，返回升序），
+// LoadTail（会话切换优化批 4：切会话不全量装载）的取数口。
+//
+// 与 readPathRows 的分工：那个回答「整条路径上哪些行可达」（Load 全量回放），
+// 这个回答「路径**最后** n 行是什么」。实现上用递归 CTE 的**深度上限**截断回溯
+// （路径是 parent_seq < seq 的链——从叶往根走 seq 严格递减，取前 n 步就是尾部
+// n 行），SQL 不再扫路径前缀的行正文（大会话 53k 行时全表读是秒级，尾部窗口
+// 只读 ≤n 行的 KB 级正文——这正是本优化的收益）。深度谓词是 `r.depth < n-1`：
+// 递归行在产生时刻检查的是**父行**的深度，`< n-1` 恰好让种子（depth 0）到
+// depth n-1 共 n 行进入结果集（`< n` 会放进 n+1 行——多退一行）。
+//
+// seed/includeSeed：窗口锚点。includeSeed=true（尾部窗口）从 seed（= leaf）开始
+// 包含它自己；includeSeed=false（before_seq 分页）从 seed 的**父**开始（不含锚点
+// 自身——分页窗口与已装载段不重叠）。seed ≤ 0 返回空（调用方语义：空路径）。
+//
+// 剩余纪律与 readPathRows 一字不差：断链即停（CTE JOIN 断了自然终止）；影子集合
+// 跳过与检查点锚点插入仍只由 surfaceRows 做（本函数不判影子——窗口内检查点影子
+// 窗口外行的情形见 LoadTail 的注释）。
+func queryPathRowsTail(q querier, id string, seed int, includeSeed bool, n int) ([]rowData, error) {
+	if n <= 0 || seed <= 0 {
+		return nil, nil
+	}
+	// includeSeed=false（分页）：窗口从锚点**之前**的路径行开始（锚点自身留在
+	// 已装载段）——锚点的 parent 恰是那一行，以它为种子继续走（含种子）。
+	if !includeSeed {
+		var parent int
+		if err := q.QueryRow(`SELECT parent_seq FROM messages WHERE session_id = ? AND seq = ?`, id, seed).Scan(&parent); err != nil {
+			if err == sql.ErrNoRows {
+				return nil, nil // 锚点行不存在（刚被撤回/压缩）：空窗口
+			}
+			return nil, fmt.Errorf("查询会话 %s 的分页锚点失败: %w", id, err)
+		}
+		if parent <= 0 {
+			return nil, nil // 锚点是根：之前没有内容
+		}
+		seed, includeSeed = parent, true
+	}
+	rows, err := q.Query(`WITH RECURSIVE reach(seq, parent_seq, depth) AS (
+			SELECT seq, parent_seq, 0 FROM messages WHERE session_id = ? AND seq = ?
+			UNION ALL
+			SELECT m.seq, m.parent_seq, r.depth + 1 FROM messages m JOIN reach r ON m.seq = r.parent_seq
+			 WHERE m.session_id = ? AND r.depth < ?
+		)
+		SELECT `+messageCols+` FROM messages
+		 WHERE session_id = ? AND seq IN (SELECT seq FROM reach)
+		 ORDER BY seq DESC LIMIT ?`, id, seed, id, n-1, id, n)
+	if err != nil {
+		return nil, fmt.Errorf("查询会话 %s 的尾部窗口失败: %w", id, err)
+	}
+	rowsData, err := scanRows(rows)
+	if err != nil {
+		return nil, err
+	}
+	// 降序取 → 升序返回（回放语义：路径按 seq 升序）。
+	slices.Reverse(rowsData)
+	return rowsData, nil
 }
 
 // shadowSet 把所有检查点的影子区间取并集（权威判定：seq 在集合里 = 已被压缩掉）。

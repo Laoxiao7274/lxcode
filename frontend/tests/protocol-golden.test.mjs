@@ -24,7 +24,7 @@ const TYPES_DIR = new URL('../src/shared/types/', import.meta.url);
 
 const golden = JSON.parse(readFileSync(GOLDEN, 'utf8'));
 // 类型按协议域拆在 types/ 下（types.ts 是桶导出）——_type 校验要扫全部域文件。
-const typesSrc = ['context','rewind','jobs','attachments','events','chat','git','source','search','settings','catalog','agent-admin']
+const typesSrc = ['context','rewind','jobs','attachments','events','chat','git','source','search','settings','catalog','agent-admin','screen']
   .map((f) => readFileSync(new URL(`./${f}.ts`, TYPES_DIR), 'utf8'))
   .join('\n');
 
@@ -259,6 +259,31 @@ const FIELD_CHECKS = {
   // 派发。
   dispatchStartParams: [['owner_session_id', 'string'], ['session_id', 'string'], ['dispatch_id', 'string']],
   projectInstructionsResult: [['exists', ['=', true]], ['note', 'string']],
+  // screen 域（types/screen.ts；投屏消费端是安卓 App——桌面端只钉契约）。
+  // 全量样本演示 omitempty 键在带值时的形态；停止样本演示缺席 vs 显式 false：
+  // active=false 是显式零值（无 omitempty 恒发），其余键整键缺席。
+  screenStateFull: [
+    ['active', ['=', true]],
+    ['monitor', 'number'],
+    ['quality', 'string'],
+    ['encoder', 'string'],
+    ['width', 'number'],
+    ['height', 'number'],
+    ['receiver', 'string'],
+    ['error', 'absent'],
+  ],
+  screenStateStoppedWithError: [
+    ['active', ['=', false]],
+    ['error', 'string'],
+    ['monitor', 'absent'],
+    ['quality', 'absent'],
+  ],
+  screenMonitorsResult: [['monitors', 'array'], ['shell_online', ['=', true]],
+    ['monitors.0.attached', ['=', true]], ['monitors.1.primary', ['=', false]]],
+  screenInputParamsFull: [
+    ['type', 'string'], ['x', 'number'], ['modifiers', 'array'], ['text', 'string'],
+    ['button', 'string'], ['dx', 'number'], ['key', 'string'], ['monitor', 'number'],
+  ],
 };
 
 // ---- 工具 ----
@@ -307,7 +332,7 @@ test('golden 文件存在且样本齐全（覆盖各域）', () => {
     'chatSendParamsFull', 'chatDoneFull', 'chatHistoryResultFull', 'confirmRequestAsk',
     'todoItem', 'agentEntry', 'modelListResult', 'gitOverviewResult', 'gitBranchInfoMain',
     'jobInfo', 'searchChannelsResult', 'todoPromptResult', 'dispatchStartParams',
-    'contextUsageEstimated', 'sessionStatsFull',
+    'contextUsageEstimated', 'sessionStatsFull', 'screenStateFull', 'screenInputParamsFull',
   ];
   for (const a of anchors) assert.ok(a in golden, `缺少覆盖锚点样本 ${a}`);
   for (const [name, sample] of Object.entries(golden)) {

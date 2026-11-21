@@ -56,11 +56,15 @@ export function useRewind({ source, currentId, currentIdRef, reportError, sendWi
   const draftIdRef = useRef(0);
   /** per-session 草稿记账（照 sendQueues 的模式，独立于 reduce 流——纯 UI 状态）：
    *  键 = session id，值 = 文本 + 暂存附件。切走保留、切回还原、发送清空、失败
-   *  回填落原会话键。 */
-  const [drafts, setDrafts] = useState<SessionDrafts>({});
-  /** 防抖落库的辅助引用：drafts 的镜像（闭包里读最新值不进依赖）+ 挂起定时器。 */
+   *  回填落原会话键。
+   *
+   *  **记账走 ref 而不是 state**（2026-12 会话切换优化批 4）：打字是高频写，
+   *  每键 setState 会把 App 整树重渲染一遍（流式 delta 每帧的 re-render 再叠
+   *  一层）。记账的消费点只有两处——Composer 挂载时的初始还原（key=currentId
+   *  重挂载那一刻经 App 的 useMemo 读 ref）与 historyLoaded 的多端预填判定
+   *  （本就是读 ref）——两者都不需要「记账变化触发渲染」，ref 化安全。
+   *  写入保持**不可变替换**（writeDraft 系列的纯函数语义不变），只是不再 setState。 */
   const draftsRef = useRef<SessionDrafts>({});
-  draftsRef.current = drafts;
   const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** 立即落库某会话的草稿（撤回注入/回滚这类**终值明确**的写——顺手取消挂起的
    *  防抖，旧值不再补发）。失败静默：落库是尽力而为的同步，失败不影响本地记账。 */
@@ -73,7 +77,7 @@ export function useRewind({ source, currentId, currentIdRef, reportError, sendWi
     void source.setDraft(sid, text).catch(() => {});
   }, [source]);
   const injectDraft = useCallback((sid: string, text: string, atts?: SendAttachments) => {
-    setDrafts((cur) => writeDraftAtts(writeDraftText(cur, sid, text), sid, atts));
+    draftsRef.current = writeDraftAtts(writeDraftText(draftsRef.current, sid, text), sid, atts);
     // 撤回注入的文本也落库（终值明确 → 立即发 + 取消挂起防抖）：后端拿到的是
     // 回填后的草稿，换端/重启捡回时输入框里是原文而不是半截。
     flushDraftNow(sid, text);
@@ -88,7 +92,7 @@ export function useRewind({ source, currentId, currentIdRef, reportError, sendWi
    *  变化时应用草稿，同 id no-op）；用户已切走时挂载 Composer 是别的会话的，
    *  只清掉本 hook 持有的注入态，不碰那个会话。 */
   const rollbackDraft = useCallback((sid: string) => {
-    setDrafts((cur) => writeDraftText(cur, sid, ""));
+    draftsRef.current = writeDraftText(draftsRef.current, sid, "");
     // 回滚 = 草稿清零，落库同步清（否则换端会捡回已被撤回注入又撤掉的文本）
     flushDraftNow(sid, "");
     if (sid === currentIdRef.current) {
@@ -108,7 +112,8 @@ export function useRewind({ source, currentId, currentIdRef, reportError, sendWi
    *  纯内存记账保留不动：它管附件 + 即时还原，后端只存 text。 */
   const handleDraftChange = useCallback((d: SessionDraft) => {
     const sid = currentIdRef.current;
-    setDrafts((cur) => writeDraft(cur, sid, d));
+    // **ref 记账，不 setState**（见 draftsRef 的注释——打字高频写不触发全树）。
+    draftsRef.current = writeDraft(draftsRef.current, sid, d);
     if (draftTimerRef.current) clearTimeout(draftTimerRef.current);
     draftTimerRef.current = setTimeout(() => {
       draftTimerRef.current = null;
@@ -140,7 +145,7 @@ export function useRewind({ source, currentId, currentIdRef, reportError, sendWi
     // 失败回填落在**原会话**的记账键（shared/session-drafts.ts）：不管用户此刻
     // 看的是哪个会话，切回去文本不丢、附件也在。文本（含回填附件名）不动——
     // send 之前 Composer 的清空已经走 handleDraftChange("") 防抖落库，这里只补附件。
-    setDrafts((cur) => writeDraftAtts(cur, sessionId, atts));
+    draftsRef.current = writeDraftAtts(draftsRef.current, sessionId, atts);
     // 正看着这个会话才经 attsDraft 把附件装回**挂载中**的 Composer——装给别的
     // 会话的 Composer 就是串会话（这正是本次要修的 bug）。
     if (sessionId === currentIdRef.current) {
@@ -217,17 +222,22 @@ export function useRewind({ source, currentId, currentIdRef, reportError, sendWi
   //
   // 同时 flush 旧会话防抖窗口里的草稿（立即落库后再走）：延迟 flush 若跟着新会话
   // 的写点走，旧会话最后 800ms 的打字会落错会话（竞态防线，安卓端同款）。
+  // **归属用闭包捕获的 currentId（旧会话）**，不读 currentIdRef：cleanup 在
+  // **渲染提交后**执行，而 currentIdRef 的写入在渲染期先行——cleanup 跑时 ref
+  // 已经是新会话 id，读它会把旧会话挂起的草稿写成空串发到新会话（多端场景
+  // 覆盖掉手机端留的草稿）。闭包里的 currentId 是上一次渲染的值 = 被切走的
+  // 旧会话，正是挂起防抖的归属。
   useEffect(() => {
+    const prevId = currentId;
     return () => {
       if (draftTimerRef.current) {
         clearTimeout(draftTimerRef.current);
         draftTimerRef.current = null;
-        const sid = currentIdRef.current;
-        const latest = draftsRef.current[sid];
-        void source.setDraft(sid, latest?.text ?? "").catch(() => {});
+        const latest = draftsRef.current[prevId];
+        void source.setDraft(prevId, latest?.text ?? "").catch(() => {});
       }
     };
-  }, [currentId, currentIdRef, source]);
+  }, [currentId, source]);
   useEffect(() => {
     setEditDraft(null);
     setDraft(null);
@@ -261,7 +271,10 @@ export function useRewind({ source, currentId, currentIdRef, reportError, sendWi
   return {
     attsDraft,
     draft,
-    drafts,
+    /** 草稿记账的 ref 镜像（**可变对象**——App 在渲染里读它组 initialDraft）。
+     *  记账变化不触发渲染（见 draftsRef 的注释）；App 的 useMemo 按 currentId
+     *  读取那一刻的最新值。 */
+    draftsRef,
     editDraft,
     injectDraft,
     rollbackDraft,

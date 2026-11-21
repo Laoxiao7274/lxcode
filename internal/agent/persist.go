@@ -29,8 +29,23 @@ func checkpointIndexes(msgs []llm.Message) []int {
 // append 是值传递，调用方手里的 llm.Message 副本不会被写上 Seq——而文件快照的
 // 锚点（docs/session-tree.md §C.2）就是这条 assistant 消息的 seq，拿不到就不抓
 // （诚实降级：这一轮的改动回滚不了）。
+// append 是**所有历史写收敛点**（内存 + 落库 + 派生缓存失效）。窗口态守卫：
+// windowed=true 时内存里只有尾部窗口，此刻写历史 = 撕裂内存与库的一致性
+//（窗口里新消息接在窗口首条之前的历史后面「看不见」，库却是全量——回放与
+// 内存分叉）。合法入口（Send/Rewind/SetLeaf/Compact）都在动历史前先
+// ensureFullHistory（fail-closed，补载失败即拒绝动作）；守卫只在「新增入口
+// 忘了补载」或「补载失败仍继续」的 bug 场景触发——从静默撕裂变成当轮显式报错。
+//
+// 错误经 panic 出（append 的签名是 int64，调用方分布在工具循环热路径上，
+// 逐点改签名要动十几处且每处都得补错误处理；窗口态 append 一定是不变量
+// 违反 = 编程错误，不是可恢复的业务失败——与 session.go switchGuardLocked
+// 的 panic 先例同款判定）。
 func (s *Session) append(m llm.Message) int64 {
 	s.mu.Lock()
+	if s.windowed {
+		s.mu.Unlock()
+		panic(fmt.Sprintf("窗口态会话 %q 不允许 append（需先 ensureFullHistory 补载全量历史）", s.id))
+	}
 	// 序号归 store：先落盘拿到号再入内存历史，两边同号（前端按 seq 撤回时
 	// 内存与库必须指向同一条消息）
 	m.Seq = s.persistLocked(m)
@@ -187,6 +202,7 @@ func (s *Session) EnablePersistence(st Persistence) error {
 		return nil // 期间已被挂载（并发调用）：幂等
 	}
 	s.st, s.id, s.history, s.workDir = st, id, msgs, dir
+	s.windowed = false // 全量装载：窗口态结束（windowed.go）
 	s.workspace = ws
 	s.todos, s.pendingWorkspace = restoredTodos(st, id), ""
 	s.context = usage
@@ -232,6 +248,7 @@ func (s *Session) AttachTo(st Persistence, id string) error {
 		return fmt.Errorf("%w（不能附着到别的会话）", ErrBusy)
 	}
 	s.st, s.id, s.history, s.workDir = st, id, msgs, dir
+	s.windowed = false // 全量装载：窗口态结束（windowed.go）
 	s.workspace = ws
 	s.todos, s.pendingWorkspace = restoredTodos(st, id), ""
 	s.context = usage

@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";import { gsap } from "gsap";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { gsap } from "gsap";
 import { motionAllowed } from "./shared/motion";
 import { LightboxHost } from "./components/lightbox";
 import {
@@ -324,6 +325,16 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
     if (sessionId) send(sessionId, text, opts);
   }, [providers, sessionModel, settings.effort, send, activeAgentId]);
   const sendWithOptions = useCallback((text: string, atts?: SendAttachments) => sendToSession(currentId, text, atts), [sendToSession, currentId]);
+  // 取消当前会话的生成（Composer 的停止钮）：身份恒定（ref 读当前会话）——
+  // inline 箭头每渲染换身份会把 Composer 的 memo 击穿（会话切换优化批 4）。
+  const handleCancel = useCallback(() => {
+    if (currentIdRef.current) source.cancel(currentIdRef.current);
+  }, [source]);
+  // busy/sending 时的入队去向（Composer 的 submit 路由）：同上，身份恒定。
+  const handleQueueEnqueue = useCallback(
+    (text: string, atts?: SendAttachments) => enqueueSend(currentIdRef.current, text, atts),
+    [enqueueSend],
+  );
   // 桥接（渲染期同步赋值——store 的订阅闭包经 ref 读到最新身份）
   autoSendBridgeRef.current = sendToSession;
 
@@ -365,10 +376,16 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
 
   // ---- 用户气泡的编辑/撤回 + 草稿域（use-rewind）----
   const {
-    attsDraft, draft, drafts, editDraft, injectDraft,
+    attsDraft, draft, draftsRef, editDraft, injectDraft,
     handleDraftChange, onSendFailed, syncBlocks,
     handleRewind, handleEdit, handleCancelEdit, handleSend,
   } = useRewind({ source, currentId, currentIdRef, reportError, sendWithOptions });
+  // Composer 的初始草稿（**ref 读取 + useMemo 钉身份**，2026-12 会话切换优化批 4）：
+  // 记账在 ref 里（打字不触发渲染——见 use-rewind 的 draftsRef 注释），这里只在
+  // currentId 变化时读一次（此刻 ref 里是全量记账，含刚切离会话的最后一次写入）。
+  // 打字期间 App 因流式 delta 重渲染时引用不变 → Composer 的 memo 不被击穿；
+  // prop 只在 Composer 挂载那一刻被 useState 初始化器消费，陈旧引用无害。
+  const initialDraftMemo = useMemo(() => draftOf(draftsRef.current, currentId), [currentId, draftsRef]);
   // 发送失败的附件回滚（store 钩子 → 草稿域）：桥接（渲染期同步赋值——store 的
   // 订阅闭包经 ref 读到最新身份）
   onSendFailedBridgeRef.current = onSendFailed;
@@ -601,7 +618,7 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
               context={state.context}
               stats={state.stats}
               onSend={handleSend}
-              onCancel={() => source.cancel(currentId)}
+              onCancel={handleCancel}
               onCompact={handleCompactClick}
               commands={slashCommands}
               // draft 带 sid：守卫在消费时刻——切会话重挂载后陈旧注入 sid 失配，
@@ -611,12 +628,16 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
               onCancelEdit={handleCancelEdit}
               queue={currentQueue}
               queueNotice={queueNotice}
-              onQueue={(text, atts) => enqueueSend(currentId, text, atts)}
+              onQueue={handleQueueEnqueue}
               onQueueEdit={handleQueueEdit}
               onQueueDelete={handleQueueDelete}
               onQueueSend={handleQueueSend}
               attsDraft={attsDraft}
-              initialDraft={draftOf(drafts, currentId)}
+              // 初始草稿按会话切换读一次记账（**ref 读取**——记账变化不触发渲染，
+              // 见 use-rewind 的 draftsRef 注释；useMemo 钉住引用身份：打字期间
+              // App 因其它原因重渲染时，Composer 的 memo 不会被这个 prop 击穿——
+              // 它只在挂载那一刻被 useState 初始化器消费，运行中的变化走注入态）。
+              initialDraft={initialDraftMemo}
               onDraftChange={handleDraftChange}
               visionBlocked={visionBlocked}
               model={sessionModel}

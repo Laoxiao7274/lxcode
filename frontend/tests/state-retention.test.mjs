@@ -21,6 +21,7 @@ import {
   touchActivity,
   touchActivityMany,
   isBusyState,
+  skeletonizeState,
 } from '../src/shared/state-retention.ts';
 import { handleAgentEvent } from '../src/shared/store.ts';
 import { SESSIONS } from '../src/agent/demo/data.ts';
@@ -32,8 +33,8 @@ const busy = () => ({ busy: true, pending: null, streaming: null, sending: false
 
 // ---------- ① 常量契约 ----------
 
-test('淘汰参数：24 个上限 / 24h 时长上限（LRU + 时长的三参数形态）', () => {
-  assert.equal(SESSION_STATES_MAX, 24);
+test('淘汰参数：48 个上限 / 24h 时长上限（LRU + 时长的三参数形态）', () => {
+  assert.equal(SESSION_STATES_MAX, 48);
   assert.equal(SESSION_STATES_TTL_MS, 24 * HOUR);
 });
 
@@ -208,18 +209,23 @@ test('事件层：keep 集合 + 忙碌的会话不会被淘汰（每事件收口
   handleAgentEvent({ type: 'ready' }, c);
   handleAgentEvent({ type: 'userMessage', sessionId: 'closed', text: 'x' }, c);
   // closed 未被淘汰（active 刚刷新）……但 keep 里只有 open——closed 不在 keep、
-  // 不忙、不超 TTL → 数量上限（24）远未到 → 留着。
+  // 不忙、不超 TTL → 数量上限（48）远未到 → 留着。
   assert.ok(state.sessionStates.closed, '上限内不淘汰');
-  // 超上限驱动淘汰：闭集外补 25 个非豁免会话 → closed（最旧）被淘汰
+  // 超上限驱动淘汰：闭集外补「上限 + 1」个非豁免会话 → closed（最旧）被淘汰
   const now = Date.now();
-  for (let i = 0; i < 25; i++) {
+  const flood = SESSION_STATES_MAX + 1; // 已有 open 豁免：flood 个非豁免 > 上限 1 个 → 最旧的 closed 被淘汰
+  for (let i = 0; i < flood; i++) {
     state.sessionStates[`f${i}`] = { ...idle(), blocks: [] };
   }
   state.active.project = { open: now, closed: now - 10_000 };
-  for (let i = 0; i < 25; i++) state.active.project[`f${i}`] = now;
+  for (let i = 0; i < flood; i++) state.active.project[`f${i}`] = now;
   handleAgentEvent({ type: 'userMessage', sessionId: 'f0', text: 'x' }, c);
   assert.ok(state.sessionStates.open, 'keep 豁免不被淘汰');
-  assert.ok(!state.sessionStates.closed, '最久未活跃的被淘汰（LRU）');
+  // 骨架化（2026-12）：被淘汰 ≠ 消失——closed 留下骨架，时间线已丢
+  const closedSk = state.sessionStates.closed;
+  assert.ok(closedSk, '最久未活跃的被淘汰（LRU）——留下骨架');
+  assert.equal(closedSk.lightweight, true, '骨架标志');
+  assert.deepEqual(closedSk.blocks, []);
   assert.ok(state.sessionStates.f0, '刚活跃的留下');
 });
 
@@ -238,13 +244,13 @@ test('事件层：主域淘汰同步清 childLinks / prevBusy / prevCompacting �
   const now = Date.now();
   state.active.project = { gone: now, stay: now };
   c.setKeep('project', ['stay']);
-  // 25 个新会话把 gone 挤出去（gone 最旧）
-  for (let i = 0; i < 25; i++) {
+  // 上限 + 1 个新会话把 gone 挤出去（gone 最旧）
+  for (let i = 0; i < SESSION_STATES_MAX + 1; i++) {
     state.sessionStates[`x${i}`] = { ...idle(), blocks: [] };
     state.active.project[`x${i}`] = now;
   }
   handleAgentEvent({ type: 'userMessage', sessionId: 'x0', text: 'x' }, c);
-  assert.ok(!state.sessionStates.gone, 'gone 被淘汰');
+  assert.equal(state.sessionStates.gone?.lightweight, true, 'gone 被淘汰（骨架化，不消失）');
   assert.deepEqual(state.childLinks.childParents, { other: 'stay' }, 'childParents：父端被淘汰的条目清');
   assert.deepEqual(state.childLinks.dispatchChild, { d2: 'stay' }, 'dispatchChild：子端被淘汰的条目清');
   assert.deepEqual(state.prevBusy, { stay: true }, 'prevBusy 配套清');
@@ -257,7 +263,7 @@ test('事件层：忙着的会话永不淘汰（增量流需要落点）', () =>
   const now = Date.now();
   state.sessionStates = { busyOne: { ...busy(), blocks: [] } };
   state.active.project = { busyOne: now };
-  for (let i = 0; i < 30; i++) {
+  for (let i = 0; i < SESSION_STATES_MAX + 4; i++) {
     state.sessionStates[`f${i}`] = { ...idle(), blocks: [] };
     state.active.project[`f${i}`] = now;
   }
@@ -275,7 +281,7 @@ test('事件层：非空发送队列的会话不淘汰（缓冲的文本不能�
   state.sessionStates = { queued: { ...idle(), blocks: [] } };
   state.active.project = { queued: now };
   state.sendQueues = { queued: [{ id: 'q1', text: '等忙完再发' }] };
-  for (let i = 0; i < 30; i++) {
+  for (let i = 0; i < SESSION_STATES_MAX + 4; i++) {
     state.sessionStates[`f${i}`] = { ...idle(), blocks: [] };
     state.active.project[`f${i}`] = now;
   }
@@ -288,15 +294,15 @@ test('事件层：助手域淘汰独立收口（assistant 事件归约后跑 ass
   const now = Date.now();
   state.assistantStates = { old: { ...idle(), blocks: [] } };
   state.active.assistant = { old: now };
-  // 25 个新助手会话
-  for (let i = 0; i < 25; i++) {
+  // 上限 + 1 个新助手会话
+  for (let i = 0; i < SESSION_STATES_MAX + 1; i++) {
     state.assistantStates[`a${i}`] = { ...idle(), blocks: [] };
     state.active.assistant[`a${i}`] = now;
   }
   state.childLinks = { childParents: { old: 'x' }, dispatchChild: {} };
   // 一条助手域事件（space 标记）驱动 assistantStates 的归约 + 淘汰
   handleAgentEvent({ type: 'userMessage', sessionId: 'a0', text: 'x', space: 'assistant' }, c);
-  assert.ok(!state.assistantStates.old, '最旧的助手会话被淘汰（LRU）');
+  assert.equal(state.assistantStates.old?.lightweight, true, '最旧的助手会话被淘汰（LRU，骨架化）');
   assert.ok(state.assistantStates.a0, '刚活跃的留下');
   assert.deepEqual(state.childLinks.childParents, {}, '助手域淘汰同样清 childLinks');
   assert.deepEqual(state.forgotten, [], '助手域不通知 forgetLoaded（AssistantPage boot 按 state 缺失重拉）');
@@ -388,3 +394,93 @@ test('demo 源：没有录制历史的会话重进不发 historyLoaded（不编�
   off();
 });
 
+
+// ---------- ⑧ 骨架化淘汰（2026-12 会话切换优化批 4：消除「点开空会话」空窗） ----------
+
+// 淘汰不再是整体删除：被淘汰条目保留轻量元数据（busy/sending/compacting/model/
+// approval/todos + lightweight 标志），丢弃 blocks 时间线。切回时 historyReady=
+// false && blocks 空 → switching 判定照常成立（装载指示），但 Thread 不画
+// EmptyState（骨架不是空会话——那是假信息），显示「正在载入会话」。
+
+const fullState = () => ({
+  ...idle(),
+  blocks: [{ kind: 'user', uid: 1, text: 'hi' }],
+  streaming: null,
+  todos: [{ id: 't1', text: 'x', state: 'pending' }],
+  model: 'm1',
+  approval: 'auto',
+  historyReady: true,
+  context: { used: 100 },
+  stats: { turns: 1 },
+  rebuiltGen: 3,
+});
+
+test('骨架化：块与派生值丢弃，元数据保留，lightweight 打上，代次递增', () => {
+  const slim = skeletonizeState(fullState());
+  assert.deepEqual(slim.blocks, [], '时间线丢弃（内存大头）');
+  assert.equal(slim.streaming, null);
+  assert.equal(slim.historyReady, false, '装载闸门据此重拉');
+  assert.equal(slim.lightweight, true, '骨架标志');
+  assert.equal(slim.rebuiltGen, 4, '代次递增（重建语义不变式：骨架化也是一次换血）');
+  // 元数据保留：切回时侧栏/计划条/模型/权限档立即正确
+  assert.deepEqual(slim.todos, [{ id: 't1', text: 'x', state: 'pending' }]);
+  assert.equal(slim.model, 'm1');
+  assert.equal(slim.approval, 'auto');
+  assert.equal(slim.busy, false);
+  // 派生值清零：不沿用淘汰前的占用/统计编数
+  assert.equal(slim.context, null);
+  assert.equal(slim.stats, null);
+});
+
+test('骨架化幂等：骨架/空默认态（无块可丢）返回原引用（不触发无谓重渲染）', () => {
+  const skeleton = skeletonizeState(fullState());
+  const again = skeletonizeState(skeleton);
+  assert.equal(again, skeleton, '已是骨架 → 原引用');
+  const emptyish = { ...idle(), blocks: [], streaming: null, historyReady: false, rebuiltGen: 0 };
+  assert.equal(skeletonizeState(emptyish), emptyish, '空默认态（无块、未装载）→ 原引用');
+  assert.equal(skeletonizeState(undefined), undefined);
+});
+
+test('事件层：被淘汰的会话留下骨架（不消失），切回装载闸门照常触发', () => {
+  const { c, state } = makeController();
+  const now = Date.now();
+  state.sessionStates = { gone: fullState() };
+  state.active.project = { gone: now - 10_000 };
+  for (let i = 0; i < SESSION_STATES_MAX; i++) {
+    state.sessionStates[`f${i}`] = { ...fullState(), blocks: [] };
+    state.active.project[`f${i}`] = now;
+  }
+  handleAgentEvent({ type: 'userMessage', sessionId: 'f0', text: 'x' }, c);
+  const skeleton = state.sessionStates.gone;
+  assert.ok(skeleton, '被淘汰会话不再是「无 state」而是骨架（切回不空窗的依据）');
+  assert.equal(skeleton.lightweight, true);
+  assert.deepEqual(skeleton.blocks, []);
+  assert.equal(skeleton.historyReady, false);
+  assert.deepEqual(state.forgotten, ['gone'], 'forgetLoaded 照发（全量装载而非秒回）');
+  // 配套清理仍按原 id 清（骨架态的会话重进走回放重建）
+  assert.ok(!state.prevBusy.gone);
+});
+
+test('骨架态的会话收到 historyLoaded：全量重建 + 清 lightweight（不空窗不残留）', () => {
+  const { c, state } = makeController();
+  // 预置一个骨架态
+  state.sessionStates = { s1: { ...skeletonizeState(fullState()) } };
+  state.active.project = { s1: Date.now() };
+  handleAgentEvent({
+    type: 'historyLoaded', sessionId: 's1',
+    history: { messages: [{ role: 'user', content: '问' }], busy: false },
+  }, c);
+  const next = state.sessionStates.s1;
+  assert.equal(next.lightweight, false, '骨架标志随全量装载清除');
+  assert.equal(next.historyReady, true);
+  assert.equal(next.blocks.length > 0, true, '时间线重建');
+});
+
+test('骨架不进 keep、可被再次淘汰（整体移除——TTL/上限对骨架同样生效）', () => {
+  const now = 1_000_000_000;
+  const states = { sk: skeletonizeState(fullState()), f: idle() };
+  const active = { sk: now - 48 * HOUR, f: now };
+  // 骨架超 TTL：整体移除（回无 state 形态；重进仍走全量装载，只是少了元数据）
+  const evicted = evictableSessionIds(states, active, { now });
+  assert.deepEqual(evicted, ['sk'], '骨架超 TTL 照常淘汰（不豁免）');
+});

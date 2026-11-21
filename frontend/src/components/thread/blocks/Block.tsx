@@ -135,7 +135,7 @@ export const Block = memo(
               elapsedMs={4200}
             />
           )}
-          {block.content === "" ? null : <AnswerBody text={block.content} streaming={block.streaming} />}
+          {block.content === "" ? null : <AnswerBody text={block.content} streaming={block.streaming} block={block} />}
           {!block.streaming && stats.length > 0 ? (
             <div className="usage-line">{stats.join(" · ")}</div>
           ) : null}

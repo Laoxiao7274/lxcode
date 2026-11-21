@@ -11,8 +11,10 @@ import assert from "node:assert/strict";
 import {
   PROBE_FAIL_TTL_MS,
   probeFailureKind,
+  probeFailureKindOf,
   probeFailMessage,
   probeFailCacheHit,
+  encodersListOutcome,
 } from "../src/screen-probe.ts";
 
 
@@ -58,7 +60,6 @@ test("成功探测清掉失败记忆后，同刻不再复述旧失败", () => {
 });
 
 // ---- 0.3.61：encoders_missing 误报（模拟器场景「一直存在」）的钉子 ----
-import { encodersListOutcome } from "../src/screen-probe.ts";
 
 test("listEncoders 收口判定：执行失败/超时零输出 = ok:false（不与「真没编码器」混淆）", () => {
   // close（正常退出）恒成功——即使输出为空（老 ffmpeg 可能无候选输出）。
@@ -78,4 +79,75 @@ test("三分类文案分叉：list_unavailable 指 ffmpeg 本体执行失败，�
   assert.ok(!lu.includes("nvenc/qsv/amf/libx264 都不在编译产物里"), "不能把执行失败说成缺编译产物");
   const missing = probeFailMessage("encoders_missing", "");
   assert.ok(!missing.includes("本体执行失败"), "两类文案不能互换");
+});
+
+test("listEncoders 收口判定：非零退出 + 零输出 = ok:false（进程被拉起但失败≠成功）", () => {
+  // close 且 code=0：成功。
+  assert.equal(encodersListOutcome(true, "", 0).ok, true);
+  // 0.3.62 复现路径：进程被拉起、close 正常回调但 code 非 0、stdout 空——
+  // 曾判 ok:true → parseEncodersList("") → encoders_missing 误报。
+  assert.equal(encodersListOutcome(true, "", 1).ok, false);
+  assert.equal(encodersListOutcome(true, "", -1).ok, false);
+  assert.equal(encodersListOutcome(true, "", 3221225786).ok, false);
+  // 非零退出但有输出：残串按实际内容判定（截断只可能漏、不会多报）。
+  assert.equal(encodersListOutcome(true, " V....D libx264 ....", 1).ok, true);
+  // 超时/spawn error 语义不变（code 缺省 0 仅在 close 前超时时使用）。
+  assert.equal(encodersListOutcome(false, "").ok, false);
+  assert.equal(encodersListOutcome(false, "partial", 0).ok, true);
+});
+
+test("probeFailureKindOf：全部候选缺失才判 encoders_missing，部分缺失走驱动方向", () => {
+  const chain = ["h264_nvenc", "h264_qsv", "h264_amf", "libx264"];
+  assert.equal(probeFailureKindOf(chain, chain), "encoders_missing");
+  // 部分缺失（如 nvenc 没编进去，其他三个在列）——文案写「部分/点名缺失」，
+  // 修复方向是驱动/装机不配套，不是一律重装。
+  assert.equal(probeFailureKindOf(["h264_nvenc"], chain), "encoders_unavailable");
+  assert.equal(probeFailureKindOf([], chain), "encoders_unavailable");
+});
+
+test("部分缺失文案点名缺失候选且不写「都不在编译产物里」", () => {
+  const msg = probeFailMessage("encoders_unavailable", "", ["h264_nvenc"]);
+  assert.ok(msg.includes("h264_nvenc"), "必须点名缺失候选");
+  assert.ok(!msg.includes("都不在编译产物里"), "部分缺失不能说「都不在」");
+  assert.ok(msg.includes("驱动"), "方向指向驱动/桌面复制");
+  // 全部缺失文案不变（旧契约）：仍写「都不在编译产物里」+ 重装指引。
+  const missing = probeFailMessage("encoders_missing", "", ["h264_nvenc", "h264_qsv", "h264_amf", "libx264"]);
+  assert.ok(missing.includes("都不在编译产物里"));
+  assert.ok(missing.includes("重新安装"));
+});
+
+// ---- 0.3.62 P3 排查：真实 -encoders 输出的预筛钉子 ----
+// 背景：误报深挖时怀疑 parseEncodersList 正则与真实行格式失配（P3）。
+// 实测**未坐实**（下述夹具四候选全命中），钉住它防未来 ffmpeg 行格式变化
+// 引入真失配。夹具是装机 ffmpeg 实测原文（含行首空格/标志位差异：
+// h264_qsv 无 D 标志、libx264 无 h264_ 前缀）。
+// 注：正则构造在 screen.ts:314（import 链含 electron，node:test 直载会炸），
+// 夹具复刻同一模板串；screen.ts 有 tsc 类型校验兜底两处不同步。
+
+/** 装机 ffmpeg（0.3.61 bundled，2026-11-20 实测）的 -encoders 输出原文。 */
+const REAL_ENCODERS_OUTPUT = [
+  "Encoders:",
+  " V..... = Video",
+  " A..... = Audio",
+  " S..... = Subtitle",
+  " .F.... = Frame-level multithreading",
+  " ..S... = Slice-level multithreading",
+  " ...X.. = Codec is experimental",
+  " ....B. = Supports draw_horiz_band",
+  " .....D = Supports direct rendering method 1",
+  " ------",
+  " V....D libx264              libx264 H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10 (codec h264)",
+  " V....D h264_amf             AMD AMF H.264 Encoder (codec h264)",
+  " V....D h264_nvenc           NVIDIA NVENC H.264 encoder (codec h264)",
+  " V..... h264_qsv             H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10 (Intel Quick Sync Video acceleration) (codec h264)",
+  "",
+].join("\n");
+
+test("预筛正则匹配真实 -encoders 输出（P3 排查夹具）：PROBE_CHAIN 四候选全命中", () => {
+  const chain = ["h264_nvenc", "h264_qsv", "h264_amf", "libx264"];
+  for (const e of chain) {
+    // 模板串逐字符同 screen.ts parseEncodersList——改生产正则必须同步这里
+    const re = new RegExp(`^\\s*[VAFS.]+[.\\w]*\\s+${e}\\s`, "m");
+    assert.ok(re.test(REAL_ENCODERS_OUTPUT), `${e} 必须命中真实输出（含行首空格与标志位）`);
+  }
 });

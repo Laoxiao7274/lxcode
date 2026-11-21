@@ -374,6 +374,18 @@
   margin: 0 auto;
   padding: 0 24px;
 }
+/* 骨架态的装载指示（Thread：被 LRU 淘汰会话切回时的占位——不是空会话，
+ * 不画 EmptyState；与 data-switching 的外层指示同文案同节奏，谁先到都是它） */
+.thread-skeleton-loading {
+  padding-top: 40vh;
+  text-align: center;
+  font-size: 12px;
+  color: var(--fg-faint);
+  animation: switch-pulse 1.2s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .thread-skeleton-loading { animation: none; }
+}
 /* 窗口化渲染的顶部哨兵（进入视口自动前插，也可点击） */
 .window-more {
   text-align: center;

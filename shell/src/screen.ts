@@ -49,6 +49,7 @@ import { setTrayHint } from "./tray";
 import { lastInputInjectedAt } from "./input";
 import {
   probeFailureKind,
+  probeFailureKindOf,
   probeFailMessage,
   probeFailCacheHit,
   encodersListOutcome,
@@ -59,6 +60,25 @@ export type { ProbeFailureKind } from "./screen-probe";
 export { probeFailureKind };
 
 const BACKEND = process.env.LXCODE_ADDR ?? "127.0.0.1:7789";
+
+// ---- 观测：screen 模块的日志出口（可被 main.ts 接线到 renderer.log）----
+// 主进程 console.log 不经过 webContents（main.ts 的 console-message 捕获不到
+// 它），壳在打包形态下 stdout 不可见——探测/启动失败的原因就丢了。默认仍走
+// console；main.ts 在装配时 SetScreenLogFn 注入 renderer.log 通道（与
+// SetProjectCreate 同款模式），诊断不再依赖用户在终端里盯着 stdout。
+
+/** screen 模块日志函数（默认 console.log；可被 SetScreenLogFn 替换）。 */
+let screenLog: (line: string) => void = (line) => console.log(line);
+
+/** 注入日志出口（main.ts 接线 appendRendererLog 用；传 null 回落 console）。 */
+export function SetScreenLogFn(fn: ((line: string) => void) | null): void {
+  screenLog = fn ?? ((line) => console.log(line));
+}
+
+/** screen 模块内部统一日志出口（前缀 [screen] 由调用方自带）。 */
+function log(line: string): void {
+  screenLog(line);
+}
 
 /** 壳↔后端屏端点用的 token（与 /rpc 同一份 remote.json 门）。每次现取缓存：
  *  token 轮换/开关后下一次轮询即生效——不要在模块加载时快照。 */
@@ -153,7 +173,7 @@ export function warmUpEncoderProbe(): void {
     const bin = ffmpegPath();
     if (!bin) return;
     void probeEncoders(bin, { reportFailure: false }).then((list) => {
-      console.log(`[screen] 编码器探测预热完成: ${list.join(", ") || "（无）"}`);
+      log(`[screen] 编码器探测预热完成: ${list.join(", ") || "（无）"}`);
     });
   }, 3_000); // 壳启动稳定后 3s 再跑（不与启动期 IO 抢）
 }
@@ -314,16 +334,19 @@ function listEncoders(bin: string): Promise<EncodersListResult> {
     let out = "";
     p.stdout?.on("data", (d: Buffer) => { out += d.toString(); });
     let settled = false;
-    // 判真伪：正常退出（close）= 成功；spawn error 与超时只有真的收到了输出
-    // 才算成功（残串按实际内容判定）——零输出时 ok=false，预筛不可信。
-    // 判定收口在 screen-probe.ts 的 encodersListOutcome（测试与生产同一份）。
-    const done = (ranToCompletion: boolean): void => {
+    let code: number | null = null;
+    // 判真伪（收口在 screen-probe.ts 的 encodersListOutcome，测试与生产同一份）：
+    // 正常零退出 = 成功；spawn error、非零退出、超时只有真的收到了输出才算
+    // 成功（残串按实际内容判定）——**退出码必须看**：进程被拉起但非零退出
+    // + stdout 空 = ffmpeg 本体坏了/被杀软拦截，判 ok=true 会重演「缺编码器」
+    // 误报（0.3.62 复现路径）。
+    const done = (ranToCompletion: boolean, exitCode: number | null = null): void => {
       if (settled) return;
       settled = true;
-      resolve(encodersListOutcome(ranToCompletion, out));
+      resolve(encodersListOutcome(ranToCompletion, out, exitCode ?? code));
     };
     p.on("error", () => done(false));
-    p.on("close", () => done(true));
+    p.on("close", (c) => { code = c; done(true, c); });
     setTimeout(() => done(false), 10_000);
   });
 }
@@ -360,7 +383,7 @@ async function doProbeEncoders(bin: string, report: boolean): Promise<string[]> 
     // 预筛**：四候选全部送真实例化探测。真实例化同样跑不起来的话按
     // encoders_list_unavailable 报（「ffmpeg 本体执行失败」），与「缺编译
     // 产物」（重装 ffmpeg）明确区分——空输出判 missing 是 0.3.61 的误报根因。
-    console.log("[screen] -encoders 执行失败（无有效输出）——跳过预筛，全部候选走真实例化探测");
+    log("[screen] -encoders 执行失败（无有效输出）——跳过预筛，全部候选走真实例化探测");
     return probeAll(bin, [...PROBE_CHAIN], "encoders_list_unavailable", report);
   }
   const { present } = parseEncodersList(enc.out, PROBE_CHAIN);
@@ -379,10 +402,14 @@ async function doProbeEncoders(bin: string, report: boolean): Promise<string[]> 
   // 全失败：区分「exe 里根本没编这些编码器」（重装 ffmpeg）与「在列但起不
   // 来」（显卡驱动/桌面复制），并附 ffmpeg 输出摘要。失败带 TTL 缓存，
   // **真实原因与时间戳一起缓存**——TTL 内的重试要报同一真实原因。
+  // 分类用 probeFailureKindOf：**全部**候选都缺才判 missing（文案说「都不在
+  // 编译产物里」），部分缺失走驱动方向并点名缺失名单——任一缺失就报
+  // missing 的旧语义与文案不匹配（0.3.62）。
   return recordProbeFailure(
-    probeFailureKind(PROBE_CHAIN.filter((e) => !present.includes(e))),
+    probeFailureKindOf(PROBE_CHAIN.filter((e) => !present.includes(e)), PROBE_CHAIN),
     failedTails,
     report,
+    PROBE_CHAIN.filter((e) => !present.includes(e)),
   );
 }
 
@@ -408,16 +435,17 @@ async function probeAll(
 
 /** 探测全失败的收口：组装真实原因文案 + 写失败记忆（TTL 起点）+ 按需上报
  *  lastError（warmUp 预热路径 report=false——失败只进记忆，等用户真点开始
- *  再报）。所有失败出口共用（kind 分类与文案不得漂移）。 */
-function recordProbeFailure(kind: ProbeFailureKind, failedTails: string[], report: boolean): string[] {
+ *  再报）。所有失败出口共用（kind 分类与文案不得漂移）。missing=预筛判缺
+ *  的候选名单（部分缺失时文案点名，见 probeFailMessage）。 */
+function recordProbeFailure(kind: ProbeFailureKind, failedTails: string[], report: boolean, missing: string[] = []): string[] {
   const summary = failedTails.join(" || ");
-  const message = probeFailMessage(kind, summary);
+  const message = probeFailMessage(kind, summary, missing);
   probeFailMemory = { kind, message, at: Date.now() };
   if (report) {
     lastError = message;
     lastErrKind = "encoder_unavailable";
   }
-  console.log(`[screen] 编码器探测全失败（${kind}${report ? "" : "，预热不上报"}）：${message}`);
+  log(`[screen] 编码器探测全失败（${kind}${report ? "" : "，预热不上报"}）：${message}`);
   return [];
 }
 
@@ -489,11 +517,11 @@ async function startFfmpeg(monitor: number, quality: string): Promise<void> {
   if (!bin) {
     lastError = "找不到 ffmpeg——请安装 ffmpeg 并加入 PATH（或设置 LXCODE_FFMPEG 指向 ffmpeg.exe）";
     lastErrKind = "ffmpeg_missing";
-    console.log(`[screen] ${lastError}`);
+    log(`[screen] ${lastError}`);
     return;
   }
   const available = await probeEncoders(bin);
-  console.log(`[screen] 编码器探测（真实例化）: ${available.join(", ") || "（无）"}`);
+  log(`[screen] 编码器探测（真实例化）: ${available.join(", ") || "（无）"}`);
   const chain = ["h264_nvenc", "h264_qsv", "h264_amf", "libx264"];
   const encoder = chain.find((e) => available.includes(e));
   if (!encoder) {
@@ -506,7 +534,7 @@ async function startFfmpeg(monitor: number, quality: string): Promise<void> {
       lastError = "ffmpeg 里没有可用的 H.264 编码器（nvenc/qsv/amf/libx264 都没有）——请重新安装完整版 ffmpeg（见 docs/ffmpeg-build.md）";
       lastErrKind = "encoder_unavailable";
     }
-    console.log(`[screen] ${lastError}`);
+    log(`[screen] ${lastError}`);
     return;
   }
   await startStreamSocket();
@@ -515,7 +543,7 @@ async function startFfmpeg(monitor: number, quality: string): Promise<void> {
   ffmpegEncoder = encoder;
   resetAu();
   auTs = 0;
-  console.log(`[screen] 启动 ffmpeg: monitor=${monitor} encoder=${encoder} quality=${quality}`);
+  log(`[screen] 启动 ffmpeg: monitor=${monitor} encoder=${encoder} quality=${quality}`);
   ffmpeg = spawn(bin, ffmpegArgs(monitor, quality, encoder), {
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
@@ -528,7 +556,7 @@ async function startFfmpeg(monitor: number, quality: string): Promise<void> {
     for (const line of d.toString().split(/\r?\n/)) {
       const msg = line.trim();
       if (!msg) continue;
-      console.log(`[screen][ffmpeg] ${msg}`);
+      log(`[screen][ffmpeg] ${msg}`);
       stderrTail.push(msg);
       if (stderrTail.length > STDERR_TAIL_MAX * 2) stderrTail.splice(0, stderrTail.length - STDERR_TAIL_MAX);
     }
@@ -538,14 +566,14 @@ async function startFfmpeg(monitor: number, quality: string): Promise<void> {
     lastErrKind = "reason";
   });
   ffmpeg.on("close", (code) => {
-    console.log(`[screen] ffmpeg 退出 code=${code}`);
+    log(`[screen] ffmpeg 退出 code=${code}`);
     // 实例一致性闸门：close 是异步事件——旧进程被 stopFfmpeg kill（或参数
     // 变化重启被替换）后，它的 close 回调可能迟到，此刻 ffmpeg 已指向新实例
     // 或已置 null。旧实例的退出**不属于当前会话**：不计成败（否则 stop→start
     // 场景下旧进程的短命算到新会话头上，多累加一次连败）、不发错误上报，只做
     // 清理（若它还是当前实例才置 null；不是则绝不能碰新实例的引用）。
     if (ffmpeg !== thisSpawn) {
-      console.log(`[screen] 忽略旧实例退出（已被停止或替换）code=${code}`);
+      log(`[screen] 忽略旧实例退出（已被停止或替换）code=${code}`);
       return;
     }
     // P0-1：按**存活时长**判定本次尝试成败——spawn 成功但存活 < 2s（锁屏/
@@ -573,7 +601,7 @@ async function startFfmpeg(monitor: number, quality: string): Promise<void> {
 
 function stopFfmpeg(): void {
   if (ffmpeg) {
-    console.log("[screen] 停止 ffmpeg");
+    log("[screen] 停止 ffmpeg");
     // 尾帧收尾（flushAu）要在 kill 之前：stdout 数据泵可能还有缓冲帧
     try { flushAu(emitFrame); } catch { /* 流已坏，放弃尾帧 */ }
     try { ffmpeg.kill(); } catch { /* already dead */ }
@@ -611,7 +639,7 @@ async function startStreamSocket(): Promise<void> {
     }, (res) => {
       res.resume();
     });
-    req.on("error", (e) => { console.log(`[screen] 推流连接失败: ${e.message}`); resolve(); });
+    req.on("error", (e) => { log(`[screen] 推流连接失败: ${e.message}`); resolve(); });
     // 流式请求对象本身就是可写端——直接当 streamSocket 用（Node http
     // ClientRequest 实现 Writable；chunked 编码自动处理）。
     streamSocket = req as unknown as Socket;
@@ -667,7 +695,7 @@ const SCREEN_SUPPORTED = process.platform !== "darwin";
 
 export function startScreenPolling(): void {
   if (!SCREEN_SUPPORTED) {
-    console.log("[screen] macOS 暂不支持投屏（ddagrab/NVENC 捕获链不可用）——功能未装配");
+    log("[screen] macOS 暂不支持投屏（ddagrab/NVENC 捕获链不可用）——功能未装配");
     return;
   }
   if (pollTimer) return;
@@ -724,7 +752,7 @@ async function reconcile(): Promise<void> {
   // 熔断态点开始被熔断门挡回，恢复指引走不通。
   if (wantCmd.want && newStartIntent(lastStartEpoch, wantCmd.start_epoch)) {
     if (restartFailures > 0) {
-      console.log(`[screen] 用户显式重新开始投屏（epoch ${lastStartEpoch}→${wantCmd.start_epoch}）——清零连败计数（原 ${restartFailures}）重试`);
+      log(`[screen] 用户显式重新开始投屏（epoch ${lastStartEpoch}→${wantCmd.start_epoch}）——清零连败计数（原 ${restartFailures}）重试`);
       restartFailures = 0;
       lastError = "";
       lastErrKind = undefined;
@@ -738,7 +766,7 @@ async function reconcile(): Promise<void> {
         // 熔断：不再自动重启，错误保持上报（err_kind=reason），手机端可见；
         // 恢复路径 = 用户在手机端再点一次「开始投屏」→ 后端递增 start_epoch
         // → 本函数入口的 epoch 变化判定（P1-5）清零计数后走到这里正常重试。
-        console.log(`[screen] 连续 ${restartFailures} 次启动失败，熔断——等待用户重新开始投屏`);
+        log(`[screen] 连续 ${restartFailures} 次启动失败，熔断——等待用户重新开始投屏`);
         updateCapturingHint(true);
         return;
       }

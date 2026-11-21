@@ -54,7 +54,9 @@ func (s *Server) dispatchSessions(c *wsClient, req *protocol.Request, params jso
 		if err != nil {
 			return protocol.NewError(req.ID, protocol.CodeInvalidParams, err.Error())
 		}
-		if len(sess.History().Messages) > 0 {
+		// 有无历史用轻量计数（HasMessages）——见 dispatch_chat.go 的同款注释：
+		// 窗口态会话在这两个入口不触发全量补载。
+		if sess.HasMessages() {
 			if err := s.prepareWorkspace(p.ID, sess); err != nil {
 				return protocol.NewError(req.ID, protocol.CodeInvalidParams, err.Error())
 			}

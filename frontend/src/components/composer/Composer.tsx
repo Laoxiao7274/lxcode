@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { Button } from "../form";
 import { AgentPicker } from "../agents/AgentPicker";
 import { PermPicker } from "../perm-picker";
@@ -42,7 +42,13 @@ import type { SendAttachments, ContextUsage, SessionStats, TodoItem } from "../.
  *  本地选择）；输入区监听 paste（剪贴板图片走附件流程，文本粘贴照常）；暂存附件在
  *  输入卡**内部**、文本行上方预览（96px 方格 + 文件卡行，与消息侧 UserAttachmentSection
  *  同一套视觉语言，点击 × 移除），随发送组装进 chat.send 的 images/files 参数，
- *  busy 时入队**携带附件**。 */
+ *  busy 时入队**携带附件**。
+ *
+ *  **memo**（2026-12 会话切换优化批 4）：App 每帧（流式 delta）都重渲染，而
+ *  Composer 的子树不小（TodoList / ContextIndicator / StatsPills / 队列区）——
+ *  memo + 调用方稳定回调（App 的 handleCancel/handleQueueEnqueue 等 useCallback）
+ *  让它在流式期间零重渲染：props 里会变的只有 busy/sending/compacting/todos/
+ *  context/stats/queue/draft 这几个真正表达的值。 */
 /** 外部注入输入框的草稿（撤回/编辑把原文放回输入框）。
  *
  *  **用单调递增的 id 而不是按文本比较**：同一条消息连续撤回两次（或撤回后再编辑
@@ -61,7 +67,7 @@ export interface ComposerAttsDraft {
   atts: SendAttachments;
 }
 
-export function Composer({
+export const Composer = memo(function Composer({
   busy,
   sending = false,
   disabled,
@@ -735,7 +741,7 @@ export function Composer({
       </div>
     </div>
   );
-}
+});
 
 /** 暂存文件区（拖文件夹改造，2026-12）：按 group 分组——文件夹成员渲染成
  *  **文件夹卡**（FolderCard，可折叠清单 + 截断说明），散文件（无 group）维持

@@ -13,7 +13,7 @@ import { cachedState, cachedToken, disable as remoteDisable, enable as remoteEna
 import { startUpdatePolling, stopUpdatePolling, updateHandlers, consumePendingUpdateFailure } from "./updater";
 import { createTray } from "./tray";
 import { shouldAllowSelfSigned } from "./cert-allow";
-import { startScreenPolling, stopScreenPolling, warmUpEncoderProbe } from "./screen";
+import { startScreenPolling, stopScreenPolling, warmUpEncoderProbe, SetScreenLogFn } from "./screen";
 import { startInputPolling, stopInputPolling, setControllingCallback } from "./input";
 import { setTrayHint } from "./tray";
 import { consoleLevelName, crashRecovery, fatalMainLine, nextBootCount, rendererLogLine, rendererLogPaths, shouldRotate } from "./renderer-log";
@@ -379,6 +379,13 @@ if (!app.requestSingleInstanceLock()) {
     // 投屏（第一阶段只看，shell/src/screen.ts）：壳轮询后端 /screen/ctl 接命令、
     // 起 ffmpeg 捕屏推流。托盘实例经 tray.ts 的 getTray() 取（投屏的隐私指示
     // 改 tooltip + 弹气泡）；投屏运行状态变化由 screen 模块直接更新托盘。
+    // 日志接线：主进程 console 不走 webContents（下面的 console-message 捕获
+    // 不到它），把 [screen] 探测/启动/退出日志桥到 renderer.log——探测失败的
+    // 真实原因（kind/输出摘要）不再依赖终端 stdout。
+    SetScreenLogFn((line) => {
+      void appendRendererLog(rendererLogLine(new Date(), "info", line));
+      console.log(line); // 保留 stdout（dev 形态调试用）
+    });
     startScreenPolling();
     // 编码器探测预热（screen.ts probeEncoders 结果缓存）：把首次 start 的
     // 数秒探测空窗挪到壳启动后台，用户点「开始投屏」即起 ffmpeg

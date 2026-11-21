@@ -124,7 +124,7 @@ const alignOf = (cell: string): "left" | "center" | "right" =>
  * 第二行是分隔行则解析对齐并跳过，其余为表体。 */
 export function parseTable(lines: string[]): MdTable {
   const rows = lines.map(splitRow);
-  let header = rows[0] ?? [];
+  const header = rows[0] ?? [];
   let aligns: ("left" | "center" | "right")[] = header.map(() => "left");
   let body: string[][] = rows.slice(1);
   if (rows.length >= 2 && isSeparatorRow(rows[1])) {
@@ -194,13 +194,17 @@ function renderInline(text: string): ReactNode {
 
 /** 正文入口：``` 围栏先切（围栏内不解析任何语法），其余走块级解析。
  *  keyPrefix：同一段正文切成两段渲染（AnswerBody 的已定稿前缀 + 尾段）时，
- *  两段的段序号会撞 key——前缀用 "c"、尾段用 "t" 区分（单段调用不传，行为不变）。 */
-export function Markdown({ text, keyPrefix = "" }: { text: string; keyPrefix?: string }): ReactNode {
+ *  两段的段序号会撞 key——前缀用 "c"、尾段用 "t" 区分（单段调用不传，行为不变）。
+ *  scope：定型块的缓存键（块对象）——非空时围栏外段走块键控解析缓存
+ *  （parseBlocksCached），切来切去零重复解析；流式段不传（现解析）。 */
+export function Markdown({ text, keyPrefix = "", scope }: { text: string; keyPrefix?: string; scope?: object }): ReactNode {
   const parts = text.split("```");
   return (
     <>
       {parts.map((part, i) =>
-        i % 2 === 1 ? <CodeSeg key={keyPrefix + i} text={part} /> : <TextBlocks key={keyPrefix + i} text={part} />,
+        i % 2 === 1
+          ? <CodeSeg key={keyPrefix + i} text={part} />
+          : <TextBlocks key={keyPrefix + i} text={part} scope={scope} />,
       )}
     </>
   );
@@ -245,10 +249,50 @@ const CodeCopyButton = memo(function CodeCopyButton({ text }: { text: string }) 
   );
 });
 
-const TextBlocks = memo(function TextBlocks({ text }: { text: string }) {
+// ---------- 定型块解析缓存（2026-12 会话切换优化批 4）----------
+//
+// 切来切去零重复解析：定型（非流式）assistant 块的 parseBlocks 结果按**块对象**
+// 缓存。键用 WeakMap<block, …> 的三条理由：
+//   ① 块对象不可变共享（reduce 只给变化的块换新引用）——同一块切走再切回，引用
+//     不变 → 二次挂载直接命中，整段 O(块数) 的逐行解析省掉；
+//   ② rebuiltGen 全量重建会为每个块造全新对象 → WeakMap 自动失效、新对象重新
+//     解析（正确行为：重建意味着历史形状可能变了，旧解析不可信）；
+//   ③ S3 骨架化淘汰把 blocks 整表丢弃 → 块对象被 GC，缓存条目随之释放——
+//     缓存本身不会变成第二个「只增不删」的泄漏源（这也是不用 string 键 +
+//     手动上限 Map 的理由：块身份由 React 渲染树免费维护，无回收纪律要守）。
+//
+// 缓存按**围栏切段**存放（Markdown 入口先按 ``` 切、奇数段是代码原样渲染不解析，
+// 偶数段才是 parseBlocks 的输入）：committed/tail 两段渲染（AnswerBody）把整段
+// 正文切在行边界上，与围栏切段不对齐——按整段缓存没法对齐 Markdown 的 split。
+// 每块最多缓存「两段渲染 × 围栏段数」个条目，有界。
+//
+// 注意 memo 边界：命中时返回**同一个 MdBlock[] 引用** → TextBlocks 的浅比较
+// memo 恒命中（预解析数组与 text 同源同变，不出现 text 命中/数组漂移的错配）。
+const settledParseCache = new WeakMap<object, Map<string, MdBlock[]>>();
+
+/** 定型块的围栏段解析（命中直接返回缓存引用；未命中解析并落缓存）。
+ *  block = 块对象（缓存键——不可变共享）；text = 围栏切段文本。
+ *  流式块不经过这里（调用方只在 `!streaming` 时传 scope）。 */
+export function parseBlocksCached(scope: object, text: string): MdBlock[] {
+  let byText = settledParseCache.get(scope);
+  if (!byText) {
+    byText = new Map();
+    settledParseCache.set(scope, byText);
+  }
+  const hit = byText.get(text);
+  if (hit) return hit;
+  const blocks = parseBlocks(text);
+  byText.set(text, blocks);
+  return blocks;
+}
+
+const TextBlocks = memo(function TextBlocks({ text, scope }: { text: string; scope?: object }) {
+  // 定型块走缓存（命中返回同一引用——本组件 memo 命中 + 子块 memo 全命中）；
+  // 无 scope（流式/老调用方）照旧现解析。
+  const blocks = scope ? parseBlocksCached(scope, text) : parseBlocks(text);
   return (
     <>
-      {parseBlocks(text).map((b, i) => {
+      {blocks.map((b, i) => {
         switch (b.kind) {
           case "heading":
             return <Heading key={i} level={b.level} text={b.text} />;

@@ -113,7 +113,9 @@ func (s *Server) dispatchChat(c *wsClient, req *protocol.Request, params json.Ra
 		if err != nil {
 			return protocol.NewError(req.ID, protocol.CodeInvalidParams, err.Error())
 		}
-		if len(sess.History().Messages) > 0 {
+		// 有无历史用轻量计数（HasMessages）：窗口态会话全量补载才是关键路径
+		// 上最重的一步——这里只为「有历史才准备工作区」的判定，不碰全量。
+		if sess.HasMessages() {
 			if err := s.prepareWorkspace(id, sess); err != nil {
 				return protocol.NewError(req.ID, protocol.CodeInvalidParams, err.Error())
 			}

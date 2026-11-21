@@ -655,7 +655,12 @@ func (s *Server) newRuntime(id string) (*agent.Session, error) {
 			log.Printf("读会话归属 Agent 失败（模型显示回落主 Agent）: %v", err)
 		}
 		sess.SetAgentID(agentID)
-		if err := sess.AttachTo(s.st, id); err != nil {
+		// **窗口化附着**（会话切换优化批 4）：恢复运行时只装载尾部窗口
+		//（chat.history(tail) 的首屏要的就是它），全量历史在第一次发送/撤回/
+		// 压缩时由 agent 层补载（ensureFullHistory，fail-closed）——切大会话
+		// 的全量路径读（几十毫秒到秒级）从关键路径上挪走。存储不支持时
+		//（AttachToWindowed 内部）自动降级全量，行为与改造前一致。
+		if err := sess.AttachToWindowed(s.st, id); err != nil {
 			return nil, err
 		}
 		// 审批档恢复（会话级状态持久化）：AttachTo 已把**落库值**恢复进内存；

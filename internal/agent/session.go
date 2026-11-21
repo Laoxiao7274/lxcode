@@ -137,6 +137,11 @@ type Session struct {
 	// SQLite 版无句柄概念：会话 = sessions 表一行，按 s.id 追加写。
 	st Persistence
 	id string // 当前会话 id（空 = 尚未创建行）
+	// windowed 是**窗口化装载**标志（会话切换优化批 4，windowed.go）：true =
+	// 内存里只有尾部窗口（AttachToWindowed 装载），第一次真正需要全量历史时
+	//（Send/Rewind/SetLeaf/Compact）由 ensureFullHistory 补载。全量装载路径
+	// （AttachTo/SwitchTo/EnablePersistence/补载本身）恒置 false。
+	windowed bool
 	// pendingWorkspace 是「下一个新会话」的归属项目（session.new 时设置，
 	// 会话行首条消息懒建时落库并清空）。单会话架构下的过渡设计——
 	// 多会话并发时归属直接挂在会话对象上。
@@ -564,6 +569,13 @@ func (s *Session) Send(text string, opts ...SendOpt) error {
 		return fmt.Errorf("一条消息最多带 %d 张图片（收到 %d 张）", llm.MaxImagesPerMessage, len(cfg.images))
 	}
 
+	// 窗口态补载全量（windowed.go，会话切换优化批 4）：切会话只装载了尾部窗口，
+	// 第一轮请求要完整历史——在拿锁前补载（读库不占会话锁）。失败如实拒绝
+	//（fail-closed：历史不全就开轮 = 用半截历史发请求）。
+	if err := s.ensureFullHistory(); err != nil {
+		return err
+	}
+
 	s.mu.Lock()
 	if s.busy {
 		s.mu.Unlock()
@@ -781,7 +793,12 @@ func (s *Session) SendWait(ctx context.Context, text string, opts ...SendOpt) er
 
 // AppendForTest 把一条消息直接写进历史并落库（仅测试用：chat.history 的 tail
 // 行为要一段已落库的真实历史——生产路径只有 Send/notify 会写历史）。
+// 窗口态（AttachToWindowed 恢复的会话）先补载全量再写——生产写路径同一条
+// 前置（ensureFullHistory，fail-closed）；直接写会撞 append 的窗口态守卫。
 func (s *Session) AppendForTest(m llm.Message) {
+	if err := s.ensureFullHistory(); err != nil {
+		panic(fmt.Sprintf("AppendForTest 补载全量历史失败: %v", err))
+	}
 	s.append(m)
 }
 
@@ -895,6 +912,12 @@ func (s *Session) TailHistory(n int) Snapshot {
 // 错误的 anchor 会切出重复或空洞的窗口——静默回落全量只会把错位藏起来。
 // 这是**协议错误**（server 侧映射 CodeInvalidParams），不是内部故障。
 func (s *Session) HistoryBefore(seq int64, n int) (snap Snapshot, hasMore bool, firstSeq int64, err error) {
+	// 窗口态（windowed.go）走**存储侧分页**：内存里只有尾部窗口，锚点之前的
+	// 历史不在内存——全量补载再分页会把「上翻一页」变成「整段全量读」。取数
+	// 与配平共用 loadWindowBalanced（与 TailHistory 同一套不变量）。
+	if s.windowed {
+		return s.historyBeforeWindowed(seq, n)
+	}
 	snap = s.History()
 	if seq <= 0 {
 		return snap, false, 0, fmt.Errorf("before_seq 必须是消息序号（正整数），得到 %d", seq)
@@ -953,6 +976,114 @@ func shiftCheckpoints(cps []int, start int) []int {
 		}
 	}
 	return out
+}
+
+// historyBeforeWindowed 是 HistoryBefore 的窗口态实现（windowed.go）：锚点之前
+// 的分页窗口直接从存储取（内存里没有那段历史）。快照的 busy/pending/todo/占用
+// 与全量同口径（它们不是历史区间的函数——与 TailHistory 同一条注释）。
+func (s *Session) historyBeforeWindowed(seq int64, n int) (Snapshot, bool, int64, error) {
+	if seq <= 0 {
+		return Snapshot{}, false, 0, fmt.Errorf("before_seq 必须是消息序号（正整数），得到 %d", seq)
+	}
+	if n <= 0 {
+		return Snapshot{}, false, 0, fmt.Errorf("分页条数 n 必须是正整数，得到 %d", n)
+	}
+	s.mu.Lock()
+	st, id := s.st, s.id
+	s.mu.Unlock()
+	if st == nil || id == "" {
+		// 窗口态必经存储附着（windowed=true 只有 AttachToWindowed 会置）：
+		// 防御性回落全量路径（与 TailHistory 的防御性回落同款，不猜）。
+		return s.historyBeforeInMemory(seq, n)
+	}
+	tl, ok := st.(TailLoader)
+	if !ok {
+		// 附着时降级成了全量（AttachToWindowed 的回退），此刻 windowed 应为
+		// false——防御性回落全量路径。
+		return s.historyBeforeInMemory(seq, n)
+	}
+	msgs, atRoot, err := loadWindowBalanced(tl, id, seq, n)
+	if err != nil {
+		return Snapshot{}, false, 0, fmt.Errorf("读取会话 %s 的分页窗口失败: %w", id, err)
+	}
+	// 组装快照：消息 = 分页窗口；元数据取当前会话态（与全量一致）。
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	snap := s.windowSnapshot(msgs)
+	if len(msgs) > 0 {
+		return snap, !atRoot, msgs[0].Seq, nil
+	}
+	return snap, false, 0, nil
+}
+
+// windowSnapshot 用**外部窗口消息**组装快照（historyBeforeWindowed 用——窗口
+// 不在 s.history 里，不走派生值缓存）。元数据与 History() 同源；占用投影按
+// 窗口估算走同一条 projectedUsageTokens（窗口只是传输裁剪——与 TailHistory
+// 的同一条注释：占用统计不因客户端拉了窗口而变小）。
+// 调用方持锁。
+func (s *Session) windowSnapshot(msgs []llm.Message) Snapshot {
+	var pending *ConfirmRequest
+	if s.pending != nil {
+		p := *s.pending
+		pending = &p
+	}
+	tokens := historyTokens(msgs)
+	return Snapshot{
+		Messages: msgs, Busy: s.busy, Pending: pending,
+		SessionID: s.id,
+		Todos:     append([]tools.TodoItem{}, s.todos...),
+		Context:   projectedUsageTokens(s.context, msgs, tokens), Checkpoints: checkpointIndexes(msgs),
+	}
+}
+
+// historyBeforeInMemory 是 HistoryBefore 的全量实现（原逻辑提出来——窗口态
+// 防御性回落共用）。
+func (s *Session) historyBeforeInMemory(seq int64, n int) (snap Snapshot, hasMore bool, firstSeq int64, err error) {
+	snap = s.History()
+	if seq <= 0 {
+		return snap, false, 0, fmt.Errorf("before_seq 必须是消息序号（正整数），得到 %d", seq)
+	}
+	if n <= 0 {
+		return snap, false, 0, fmt.Errorf("分页条数 n 必须是正整数，得到 %d", n)
+	}
+	// anchor 的库内位置：按 Seq 线性找（Seq 在内存历史里单调不减——store 分配；
+	// 线性扫的代价可忽略：分页请求本来就是慢链路上的低频操作）。
+	anchor := -1
+	for i, m := range snap.Messages {
+		if m.Seq == seq {
+			anchor = i
+			break
+		}
+	}
+	if anchor < 0 {
+		return snap, false, 0, fmt.Errorf("before_seq %d 不在这条会话的历史里（会话可能已被撤回或压缩重建）", seq)
+	}
+	if anchor == 0 {
+		// anchor 就是历史第一条：之前没有内容了。返回空窗口 + has_more=false
+		//（不报错——客户端滚到头继续触发是正常路径，不是异常）。
+		return snap, false, 0, nil
+	}
+	start := anchor - n
+	if start < 0 {
+		start = 0
+	}
+	// 配对切点走会话级缓存（与 TailHistory 同一条理由）。
+	s.mu.Lock()
+	pairing := s.histDerivedFor().pairing
+	s.mu.Unlock()
+	if balanced := pairing.NearestBalancedAtOrBefore(start); balanced >= 0 {
+		start = balanced
+	}
+	if start < 0 {
+		return snap, false, 0, nil // 防御性回落（与 TailHistory 同一条：Cuts 全假不可达）
+	}
+	window := append([]llm.Message(nil), snap.Messages[start:anchor]...)
+	snap.Messages = window
+	snap.Checkpoints = shiftCheckpoints(snap.Checkpoints, start)
+	if len(window) > 0 {
+		firstSeq = window[0].Seq
+	}
+	return snap, start > 0, firstSeq, nil
 }
 
 // projectedContext 是**展示用**的占用：真实测量 + 测量之后历史的变化量

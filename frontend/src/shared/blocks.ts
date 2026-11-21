@@ -203,6 +203,16 @@ export interface UIState {
    *  Thread 据此区分「换会话的整块回放」（要播入场动画）与「同会话重拉的全量
    *  重建」（不播——用户看着的时间线闪一遍弹跳动画只表达"界面抽风"）。 */
   rebuiltGen: number;
+  /** **骨架态**（2026-12 会话切换优化批 4 / OOM S3 淘汰升级）：该会话的 state 被
+   *  LRU 淘汰时不是整体删除，而是保留一份**轻量元数据**（busy/sending/compacting/
+   *  model/approval/todos），时间线（blocks/streaming/分页元数据/占用/统计）丢弃，
+   *  并打上本标志。作用：切回被淘汰会话时 `historyReady=false && blocks 空` 的
+   *  switching 判定照常成立（进装载指示），但 Thread **不画 EmptyState**——
+   *  骨架态显示的是「正在载入会话」而不是「我们做点什么？」（后者暗示这是个
+   *  空会话，是假信息）。全量装载（historyLoaded 重建）到达时清除。
+   *  骨架态**不进任何 keep 豁免**（state-retention.ts）——它就是淘汰的产物，
+   *  把它豁免会变成「永不淘汰」。 */
+  lightweight?: boolean;
 }
 
 export const initial: UIState = { blocks: [], streaming: null, historyMore: false, historyFirstSeq: 0, busy: false, pending: null, todos: [], currentId: "", operationError: null, context: null, stats: null, historyReady: false, model: "", sending: false, approval: null, compacting: false, rebuiltGen: 0 };

@@ -266,6 +266,14 @@ export function Thread({
   }, [total]);
 
   if (empty) {
+    // **骨架态不画 EmptyState**（S3 淘汰骨架化，2026-12）：lightweight = 这个
+    // 会话的 state 被 LRU 淘汰过、只剩元数据——它不是空会话，画「我们做点
+    // 什么？」是假信息（用户会以为对话丢了）。画装载指示，配合 App 的
+    // data-switching 外层指示（双保险：App 那层只在焦点切换那帧生效，这里是
+    // 同会话内骨架态的真实呈现）。全量装载（historyLoaded 重建）到达后清标志。
+    if (state.lightweight) {
+      return <div className="thread thread-skeleton-loading" role="status">正在载入会话…</div>;
+    }
     return (
       <EmptyState
         emptyRef={emptyRef}

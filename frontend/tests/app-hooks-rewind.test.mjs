@@ -31,8 +31,11 @@ test('①a injectDraft 的第一个参是归属会话 sid（不再读回调时�
     /const injectDraft = useCallback\(\(sid: string, text: string, atts\?: SendAttachments\)/,
     'injectDraft 签名必须显式收 sid',
   );
-  // 记账键恒落 sid（不落 currentIdRef.current）
-  assert.match(hookSrc, /writeDraftAtts\(writeDraftText\(cur, sid, text\), sid, atts\)/);
+  // 记账键恒落 sid（不落 currentIdRef.current）。记账走 ref（2026-12 会话切换
+  // 优化批 4：打字高频写不触发全树 setState），写入仍是不可变替换（writeDraft
+  // 纯函数语义）——钉住「ref 读取 + 不可变写」的新形态。
+  assert.match(hookSrc, /draftsRef\.current = writeDraftAtts\(writeDraftText\(draftsRef\.current, sid, text\), sid, atts\)/,
+    'injectDraft 的记账落 sid 键（ref 写，不可变替换）');
 });
 
 test('①b 挂载 Composer 的注入只在 sid 正是当前会话时发生（切走不串屏）', () => {
@@ -68,7 +71,7 @@ test('② rewindThenRestore：inject 在 rewind() 之前发生（乐观回填）
 
 test('③ rollbackDraft：清 sid 的记账键文本；当前会话再清挂载 Composer 的注入态', () => {
   assert.match(hookSrc, /const rollbackDraft = useCallback\(\(sid: string\)/, '回滚按 sid 落');
-  assert.match(hookSrc, /setDrafts\(\(cur\) => writeDraftText\(cur, sid, ""\)\)/, '记账键文本清零（附件暂存保留）');
+  assert.match(hookSrc, /draftsRef\.current = writeDraftText\(draftsRef\.current, sid, ""\)/, '记账键文本清零（附件暂存保留；ref 写）');
   assert.match(hookSrc, /setDraft\(\{ sid, id: draftIdRef\.current, text: "" \}\)/, '当前会话用新 id 注入空文本（Composer 只在 id 变化时应用）');
 });
 
@@ -124,4 +127,69 @@ test('⑤b Block 的撤回/编辑按钮 busy 时可用（title 提示「停止�
   assert.match(blockSrc, /停止本轮并编辑/, 'busy 时编辑按钮的 title 应说明会停止本轮');
   assert.doesNotMatch(blockSrc, /lockedByBusy/, 'busy 不再参与 disabled（变量也撤掉，避免留死代码）');
   assert.doesNotMatch(blockSrc, /生成中不可撤回，请先停止当前生成/, '旧禁用文案必须移除');
+});
+
+// ---------- ⑥ 草稿记账出树 + Composer memo（2026-12 会话切换优化批 4）----------
+//
+// 打字是高频写：handleDraftChange 每键触发 App 全树 setState（原实现）在流式
+// delta 每帧 re-render 之上再叠一层全树协调。修复两条：
+// ① 记账走 ref（draftsRef）——消费点只有「Composer 挂载还原」与「historyLoaded
+//    预填判定」，都不需要渲染响应；ref 化后打字零渲染。
+// ② Composer 包 memo——props 里流式期间会变的只有真正表达的值（busy/todos/
+//    context/stats…），回调身份恒定（App 的 useCallback）。
+
+test('⑥a 草稿记账是 ref（不是 useState）：打字路径零 setState', () => {
+  assert.match(hookSrc, /const draftsRef = useRef<SessionDrafts>\(\{\}\)/,
+    '记账必须走 ref（打字高频写不触发全树渲染）');
+  assert.doesNotMatch(hookSrc, /const \[drafts, setDrafts\] = useState/,
+    '记账不得再是 state（每键 setState = 全树重渲染）');
+  assert.match(hookSrc, /draftsRef\.current = writeDraft\(draftsRef\.current, sid, d\)/,
+    'handleDraftChange 的记账是 ref 写（不可变替换）');
+  // 防抖落库读 ref（闭包里没有 drafts 依赖——原来的镜像纪律保留）
+  assert.match(hookSrc, /draftsRef\.current\[sid\]/, '防抖落库从 ref 取最新值');
+});
+
+test('⑥b Composer 是 memo：App 的回调身份恒定（inline 箭头不进 props）', () => {
+  assert.match(composerSrc, /export const Composer = memo\(function Composer\(/,
+    'Composer 必须包 memo（流式期间 App 每帧重渲染，Composer 子树不小）');
+  // App 接线：原本的 inline 箭头（每渲染新身份 → 击穿 memo）必须换成 useCallback
+  assert.doesNotMatch(appSrc, /onCancel=\{\(\) => source\.cancel\(currentId\)\}/,
+    'onCancel 不得是 inline 箭头（每渲染新身份击穿 memo）');
+  assert.doesNotMatch(appSrc, /onQueue=\{\(text, atts\) => enqueueSend\(currentId, text, atts\)\}/,
+    'onQueue 不得是 inline 箭头');
+  assert.match(appSrc, /onCancel=\{handleCancel\}/, 'onCancel 走 useCallback 的 handleCancel');
+  assert.match(appSrc, /onQueue=\{handleQueueEnqueue\}/, 'onQueue 走 useCallback 的 handleQueueEnqueue');
+});
+
+test('⑥c initialDraft 按 currentId 用 useMemo 钉身份（ref 读取，打字不换引用）', () => {
+  assert.match(appSrc, /useMemo\(\(\) => draftOf\(draftsRef\.current, currentId\), \[currentId, draftsRef\]\)/,
+    'initialDraft 的身份必须与打字解耦（memo 按会话切换重算）');
+  // prop 只在挂载那一刻消费的语义没变（Composer 内 useState 初始化器）
+  assert.match(composerSrc, /useState\(initialDraft\?\.text \?\? ""\)/,
+    'Composer 仍在挂载时消费 initialDraft（运行中变化走注入态）');
+});
+
+// ---------- ⑦ 切会话 flush 的归属 = 旧会话（2026-12 缺陷修复）----------
+//
+// 缺陷：cleanup 里读 currentIdRef.current——cleanup 在渲染提交后执行，而
+// currentIdRef 的写入在渲染期先行，cleanup 跑时 ref 已是新会话 id。后果两头坏：
+// 旧会话挂起的防抖草稿（最后 800ms 打字）落不进旧会话；更糟的是把旧会话记账里
+// 的**空串**发到新会话——服务端 draft 被覆盖清空（多端场景会清掉手机端留的草稿）。
+// 钉子：flush 必须用闭包捕获的旧会话 id（currentId 的上一次渲染值），不读 ref。
+
+test('⑦a 切会话 cleanup 的 flush 归属是闭包捕获的旧会话 id，不读 currentIdRef', () => {
+  // flush effect 本体：捕获 + 按 prevId 落库
+  assert.match(hookSrc, /const prevId = currentId;/,
+    'cleanup 前必须把 currentId 捕获进闭包（cleanup 跑时它就是旧会话）');
+  assert.match(hookSrc, /draftsRef\.current\[prevId\]/,
+    'flush 按捕获的 prevId 取记账值');
+  assert.match(hookSrc, /source\.setDraft\(prevId, latest\?\.text \?\? ""\)/,
+    'setDraft 发往 prevId（旧会话），不读 currentIdRef');
+  // flush effect 块内不得再读 currentIdRef（整个块摘出来断言，防回退成 ref 读）
+  const flushEffect = hookSrc.slice(
+    hookSrc.indexOf('const prevId = currentId;'),
+    hookSrc.indexOf('useEffect(() => {\n    setEditDraft(null);'),
+  );
+  assert.doesNotMatch(flushEffect, /currentIdRef/,
+    'flush 路径不得读 currentIdRef（cleanup 时 ref 已是新会话 id——缺陷根因）');
 });

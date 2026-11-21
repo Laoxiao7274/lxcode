@@ -15,3 +15,4 @@ export * from "./types/search";
 export * from "./types/settings";
 export * from "./types/catalog";
 export * from "./types/agent-admin";
+export * from "./types/screen";

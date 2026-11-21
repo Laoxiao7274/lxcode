@@ -11,6 +11,13 @@
 //   - 活跃时间戳 = 该会话最后一次**事件到达**（sessionFocused / 任何带
 //     sessionId 的事件都会刷新，见 store.ts 的 handleAgentEvent）。
 //
+// **淘汰 = 骨架化而非整体删除**（2026-12 会话切换优化批 4）：被淘汰条目保留
+// 一份轻量元数据（busy/sending/compacting/model/approval/todos + lightweight
+// 标志），时间线丢弃——内存收益不变（大头是 blocks），但用户切回被淘汰会话时
+// 不再看到「点开空会话」的空窗（EmptyState 闪帧）：侧栏元数据立即正确、时间线
+// 直接进装载指示、后台拉 tail。骨架不进任何 keep 豁免；再次超时/超上限时骨架
+// 整体移除（回到无 state 形态，重进仍走全量装载）。
+//
 // 淘汰的三条纪律：
 //   ① **豁免优先**：keep 集合（当前活跃会话、打开的标签、AssistantWorkspace 的
 //     常驻挂载层）与「忙着的会话」（busy/pending/streaming/sending——淘汰会让
@@ -20,15 +27,19 @@
 //     两张映射）；prevBusy / prevCompacting / sendQueues 的对应键清（per-session
 //     键值表的卫生）；清不干净的下场是它们自己变成下一处只增不删的泄漏；
 //   ③ **恢复走既有装载路径**：被淘汰的会话重进时——助手域 AssistantPage 的
-//     boot（historyReady 缺失 → assistant.history 全量装载）、子会话视图的装载
-//     effect（childHistory）、主域走 resumeSession（store 淘汰时经 source 的
-//     forgetLoadedSessions 把 loadedSessions 记忆一并清掉 → 全量装载而不是
-//     「本地秒回」到一份空 state）——重进无感或短暂 loading。
+//     boot（骨架 historyReady=false → assistant.history 重拉）、子会话视图的
+//     装载 effect（childHistory）、主域走 resumeSession（store 淘汰时经 source
+//     的 forgetLoadedSessions 把 loadedSessions 记忆一并清掉 → 全量装载）——
+//     骨架态下各装载闸门照常触发（historyReady=false 就是它们的判据）。
 
 /** 数量上限：states 表最多保留多少个会话的完整状态（含 blocks 时间线）。
- *  取值 = 助手标签容量（SESSION_TAB_LIMIT=8）的 3 倍余量：常驻标签 + 近期
- *  上翻过的会话 + 在跑的后台会话都装得下，再多就是无人再看的时间线在占内存。 */
-export const SESSION_STATES_MAX = 24;
+ *  2026-12 会话切换优化批 4：24 → 48（用户会话多，此前会话频繁点开时 LRU
+ *  过早把还能秒回的条目挤掉），且淘汰不再是整体删除而是**骨架化**（见
+ *  skeletonStateOf——留下的骨架只占一份元数据，真正的 blocks 时间线才占内存），
+ *  上限放宽的成本很低。取值仍是助手标签容量（SESSION_TAB_LIMIT=8）的 6 倍余量。 */
+import type { UIState } from "./blocks";
+
+export const SESSION_STATES_MAX = 48;
 
 /** 时长上限：多久没有活动（聚焦/事件）的会话状态可淘汰。 */
 export const SESSION_STATES_TTL_MS = 24 * 60 * 60 * 1000;
@@ -156,4 +167,40 @@ export function pruneSessionKeys<T>(
   const next = { ...table };
   for (const id of evicted) delete next[id];
   return next;
+}
+
+/** 把一条完整 state **骨架化**（2026-12 会话切换优化批 4）：丢弃 blocks 时间线
+ *  （内存大头）与随它派生的展示值（streaming/分页元数据/占用/统计/操作错误），
+ *  保留会话级元数据（busy/sending/compacting/model/approval/todos）并打上
+ *  `lightweight` 标志。切回时侧栏的忙闲/模型/权限档立即正确，时间线进入
+ *  「正在载入会话」而不是先闪一帧 EmptyState（详见 blocks.ts 的 lightweight 注）。
+ *
+ *  **豁免语义不变**：isBusyState 的四项在骨架里原样保留——忙碌的会话在淘汰判定
+ *  就被豁免，骨架里只可能出现 false（或 null pending——同属豁免前的检查对象，
+ *  保留是为了防御未来口径变化）。骨架**不进 keep**（store.ts 不为它加豁免）：
+ *  它是淘汰的产物，再豁免就永不淘汰；超 TTL / 超上限时骨架整体移除（回到
+ *  「无 state」形态，重进同样走全量装载，只是少了元数据，无害）。
+ *
+ *  纯函数：测试直测「块被丢弃、元数据保留、标志打上、无块时返回原引用」。 */
+export function skeletonizeState(prev: UIState | undefined): UIState | undefined {
+  if (!prev) return prev;
+  const slim: UIState = {
+    ...prev,
+    blocks: [],
+    streaming: null,
+    pending: null,
+    historyMore: false,
+    historyFirstSeq: 0,
+    context: null,
+    stats: null,
+    operationError: null,
+    historyReady: false,
+    rebuiltGen: (prev.rebuiltGen ?? 0) + 1,
+    lightweight: true,
+  };
+  // 没有时间线可丢（已是骨架/刚建的默认态）：丢弃不为它产生任何收益——返回
+  // 原引用，调用方据此跳过无意义的条目替换（引用不变 = 不触发重渲染）。
+  return (prev.blocks?.length ?? 0) === 0 && !prev.streaming && prev.historyReady === false
+    ? prev
+    : slim;
 }

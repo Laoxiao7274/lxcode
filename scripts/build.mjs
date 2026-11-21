@@ -297,7 +297,8 @@ if (existsSync(bundledFfmpeg)) {
   console.warn("--- [提示] 无 bundled ffmpeg（temp/ffmpeg/ffmpeg.exe 不存在）：安装包不含 ffmpeg，投屏回落用户 PATH");
 }
 
-// 2. 渲染层（tsc -b 类型检查 + vite build）
+// 2. 渲染层（eslint（react-hooks/rules-of-hooks——React #300 防再犯）+ tsc 类型检查 + vite build）
+run("渲染层 lint", "npm", ["run", "lint"], { cwd: FRONTEND });
 run("渲染层构建", "npm", ["run", "build"], { cwd: FRONTEND });
 
 // 3. stage 渲染层进壳目录（electron-builder 的 files 均相对 shell/，不跨目录引用）

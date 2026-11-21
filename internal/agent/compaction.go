@@ -634,6 +634,10 @@ func (s *Session) Compact(agentID string) (CompactResult, error) {
 	if _, err := s.modelFor(ac); err != nil {
 		return CompactResult{}, err
 	}
+	// 窗口态补载（windowed.go）：压缩在全量历史上选区间。
+	if err := s.ensureFullHistory(); err != nil {
+		return CompactResult{}, err
+	}
 	s.mu.Lock()
 	if s.busy {
 		s.mu.Unlock()

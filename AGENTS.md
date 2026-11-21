@@ -30,6 +30,7 @@
 | 服务化 | **Windows SCM 服务**（`scripts/service/{install,update,uninstall}.ps1`；开机自启 + 崩溃自动重启；`--probe` 验收；布局 `%ProgramData%\lxcode\{bin,config,sessions,logs}`）；服务形态日志落文件（16MB 轮转 ×3） |
 | 桌面壳 | **Electron + Go sidecar（2026-09-16 用户拍板，推翻 09-10 的 Tauri 2 初选，决策记录见 §2.1；打包定案仅 Windows，2026-12）**；后端可先于壳长期独立运行，壳是薄客户端（窗口/托盘/渲染层直连 7789） |
 | Go 直接依赖 | gorilla/websocket（WS）、golang.org/x/sys（平台接口）、modernc.org/sqlite（纯 Go 存储）；传递依赖以 go.mod 为准 |
+| 性能 | 会话历史装载窗口化（2026-12 切会话优化批 4：后端 LoadTail/AttachToWindowed/ensureFullHistory 按需补载 + 前端 state-retention 骨架化淘汰）——完整契约见 `internal/agent/windowed.go` 与 `frontend/src/shared/state-retention.ts` 头注 |
 
 ### 2.1 语言栈与桌面壳决策记录（2026-09-16 拍板）
 
