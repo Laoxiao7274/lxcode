@@ -82,10 +82,19 @@ strip ffmpeg.exe
 
 ### 3. 预期产物
 
-单文件静态 `ffmpeg.exe`，**实测 5.4MB**（full 版 gyan build ~90MB+，精简主要省在
-解码器/滤镜库/网络协议）。二进制静态链接（`--enable-static --disable-shared`），
-用户机器零 DLL 依赖，仅运行时动态加载显卡驱动 DLL（不存在则该编码器探测不到、
-走回落）。
+单文件 `ffmpeg.exe`，**实测 5.4MB**（full 版 gyan build ~90MB+，精简主要省在
+解码器/滤镜库/网络协议）。`--enable-static --disable-shared` 只覆盖本项目
+依赖库（x264/vpl 静态链入），但 C++ 运行时与线程/GCC 支持层仍是动态链接的：
+exe 的 import table 里有 `libwinpthread-1.dll / libstdc++-6.dll / libgcc_s_seh-1.dll`
+三个 MinGW 运行时 DLL（`-lstdc++` 是 libvpl 静态库要求带上的，坑 3）——
+**目标机没有这些 DLL（PATH 无 mingw64）就 STATUS_DLL_NOT_FOUND（0xC0000135）
+秒退**，0.3.62 发版实撞：投屏在所有非开发机上必挂，开发者机器装了 MSYS2
+测不出来。治本在打包链：`scripts/dll/` 入库这三个 DLL（~2.6MB，来自构建机
+MSYS2 mingw64/bin 的副本），`scripts/build.mjs` 拷 ffmpeg.exe 时随拷进
+`shell/resources/bin/`（Windows 加载器查 ffmpeg.exe 同目录），并在
+electron-builder 之后校验产物里 exe+三 DLL 成套（缺则 fail build）。显卡
+驱动 DLL（nvenc/amf/qsv 运行时动态加载的那几个）不存在则该编码器探测不到、
+走回落，不影响 exe 启动。
 
 ### 4. 三个非显而易见的坑（2026-10-27 实测踩过）
 
@@ -159,6 +168,14 @@ strip ffmpeg.exe
   `scripts/build.mjs` 打包时自动拷进 `shell/resources/bin/`（与 lxcode 后端同一
   extraResources 目录，`shell/package.json` 的 `extraResources` 整目录拷贝，无需改；
   没有预编译产物则跳过并打警告，壳回落 PATH 查找，功能不劣化）；
+- **MinGW 运行时 DLL 随拷 + 校验闸**：三个 MinGW DLL 的入库副本在
+  `scripts/dll/`（与 ffmpeg.exe 同目录分发——目标机 PATH 无 mingw64 时缺它们
+  就是 0xC0000135 秒退，见上「预期产物」）。`scripts/build.mjs` 拷 exe 时把
+  `scripts/dll/` 的三个 DLL 一并拷进 `shell/resources/bin/`（入库目录不齐也
+  fail），electron-builder 之后再校验 `win-unpacked/resources/bin/` 里
+  ffmpeg.exe + 三 DLL 成套（判定纯函数 `scripts/ffmpeg-runtime.mjs`，
+  `node --test scripts/ffmpeg-runtime.test.mjs` 直测）。更新包 UPDATE_FILES
+  同步把三 DLL 与 ffmpeg.exe 成套打进去；
 - 更新 zip 的 `UPDATE_FILES` 追加 `resources/bin/ffmpeg.exe`（存在才打进去）。
 
 ### screen.ts 查找顺序（已改）

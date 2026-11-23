@@ -46,28 +46,48 @@ export function probeFailureKindOf(missing: string[], candidates: readonly strin
     : "encoders_unavailable";
 }
 
-/** 上次探测全失败的记忆：分类 + 已组装的真实文案 + 失败时刻（TTL 起点）。
- *  与「成功缓存」互斥：成功探测必须清掉它（显卡能力恢复后不再复述旧失败）。 */
+/** 上次探测全失败的记忆：分类 + 已组装的真实文案 + 失败时刻（TTL 起点）+ 文案
+ *  分叉用的退出码（list_unavailable 细分 0xC0000135）。与「成功缓存」互斥：
+ *  成功探测必须清掉它（显卡能力恢复后不再复述旧失败）。 */
 export interface ProbeFailMemory {
   kind: ProbeFailureKind;
   message: string;
   at: number;
+  exitCode?: number | null;
 }
 
 /** 探测全失败的真实原因文案（按 kind 三选一，附 ffmpeg 输出摘要）。
  *  encoders_unavailable 且有部分缺失时点名缺失候选——「部分缺失」的修复方向
  *  可能是装了阉割版 ffmpeg 或驱动不配套，不能一律「重装完整版」。 */
-export function probeFailMessage(kind: ProbeFailureKind, summary: string, missing: string[] = []): string {
+export function probeFailMessage(kind: ProbeFailureKind, summary: string, missing: string[] = [], exitCode: number | null = null): string {
   switch (kind) {
     case "encoders_missing":
       return "ffmpeg 缺少 H.264 编码器（nvenc/qsv/amf/libx264 都不在编译产物里）——请重新安装完整版 ffmpeg（见 docs/ffmpeg-build.md）";
     case "encoders_list_unavailable":
+      if (isDllNotFoundExit(exitCode)) {
+        // 0.3.63 投屏事故的观测增强：0xC0000135（STATUS_DLL_NOT_FOUND）=
+        // ffmpeg 被拉起但加载器找不到依赖 DLL 立即退出、零输出——bundled
+        // ffmpeg 动态依赖的 MinGW 运行时 DLL（libwinpthread-1/libstdc++-6/
+        // libgcc_s_seh-1）不在 ffmpeg.exe 同目录（安装不完整）。翻译成明确
+        // 文案，别让用户对着「损坏/杀毒拦截」瞎猜；治本在打包链（scripts/
+        // build.mjs 随 ffmpeg.exe 分发这三个 DLL 并有校验闸）。
+        return "ffmpeg 无法启动：缺少运行时 DLL（安装不完整——ffmpeg.exe 同目录应有 libwinpthread-1.dll / libstdc++-6.dll / libgcc_s_seh-1.dll），请重新安装完整版 ffmpeg（见 docs/ffmpeg-build.md）";
+      }
       return `ffmpeg 本体执行失败（-encoders 都跑不起来）——安装可能损坏或被杀毒拦截，请重新安装完整版 ffmpeg（见 docs/ffmpeg-build.md）。ffmpeg 输出：${summary || "（无输出）"}`;
     default: {
       const partial = missing.length > 0 ? `（缺失: ${missing.join(", ")}，其余候选在列但未能启动）` : "";
       return `屏幕捕获/编码器启动失败${partial}（软编码已自动尝试）——可能是显卡驱动或桌面复制不可用。ffmpeg 输出：${summary || "（无输出）"}`;
     }
   }
+}
+
+/** 退出码是否 = 0xC0000135（STATUS_DLL_NOT_FOUND）。Windows 上 Node 子进程
+ *  的 exit code 可能以无符号（3221225785）或有符号（-1073741515）两种形式
+ *  上报（libuv 取 GetExitCodeProcess 的 DWORD，负数形态见于 int 截断路径），
+ *  两种都认——漏认一种这条细分就白做。其余退出码返回 false（保持现有分类
+ *  文案）。exitCode 为 null（spawn error/超时）不是 DLL 缺失的证据。 */
+export function isDllNotFoundExit(exitCode: number | null): boolean {
+  return exitCode === 3221225785 || exitCode === -1073741515;
 }
 
 /** TTL 命中判定 + 复述：命中返回记忆（调用方以其 message 重建 lastError、

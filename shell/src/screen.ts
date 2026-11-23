@@ -326,6 +326,10 @@ export function parseEncodersList(output: string, candidates: readonly string[])
 export interface EncodersListResult {
   ok: boolean;
   out: string;
+  /** 进程退出码（spawn error / 超时出口为 null）——list_unavailable 细分
+   *  0xC0000135（STATUS_DLL_NOT_FOUND → 「缺运行时 DLL」）要用，见
+   *  probeFailMessage。 */
+  exitCode: number | null;
 }
 
 function listEncoders(bin: string): Promise<EncodersListResult> {
@@ -334,7 +338,7 @@ function listEncoders(bin: string): Promise<EncodersListResult> {
     let out = "";
     p.stdout?.on("data", (d: Buffer) => { out += d.toString(); });
     let settled = false;
-    let code: number | null = null;
+    let code0: number | null = null;
     // 判真伪（收口在 screen-probe.ts 的 encodersListOutcome，测试与生产同一份）：
     // 正常零退出 = 成功；spawn error、非零退出、超时只有真的收到了输出才算
     // 成功（残串按实际内容判定）——**退出码必须看**：进程被拉起但非零退出
@@ -343,10 +347,11 @@ function listEncoders(bin: string): Promise<EncodersListResult> {
     const done = (ranToCompletion: boolean, exitCode: number | null = null): void => {
       if (settled) return;
       settled = true;
-      resolve(encodersListOutcome(ranToCompletion, out, exitCode ?? code));
+      const code = exitCode ?? code0;
+      resolve({ ...encodersListOutcome(ranToCompletion, out, code), exitCode: code });
     };
     p.on("error", () => done(false));
-    p.on("close", (c) => { code = c; done(true, c); });
+    p.on("close", (c) => { code0 = c; done(true, c); });
     setTimeout(() => done(false), 10_000);
   });
 }
@@ -384,7 +389,7 @@ async function doProbeEncoders(bin: string, report: boolean): Promise<string[]> 
     // encoders_list_unavailable 报（「ffmpeg 本体执行失败」），与「缺编译
     // 产物」（重装 ffmpeg）明确区分——空输出判 missing 是 0.3.61 的误报根因。
     log("[screen] -encoders 执行失败（无有效输出）——跳过预筛，全部候选走真实例化探测");
-    return probeAll(bin, [...PROBE_CHAIN], "encoders_list_unavailable", report);
+    return probeAll(bin, [...PROBE_CHAIN], "encoders_list_unavailable", report, enc.exitCode);
   }
   const { present } = parseEncodersList(enc.out, PROBE_CHAIN);
   const available: string[] = [];
@@ -414,9 +419,12 @@ async function doProbeEncoders(bin: string, report: boolean): Promise<string[]> 
 }
 
 /** 预筛不可信（-encoders 跑不起来）时的全量探测：四候选全送真实例化；任一
- *  成功即成功缓存，全失败按 fallbackKind（encoders_list_unavailable）收口。 */
+ *  成功即成功缓存，全失败按 fallbackKind（encoders_list_unavailable）收口。
+ *  exitCode = 触发失败的 `-encoders` 退出码（list_unavailable 细分
+ *  0xC0000135 文案要穿过 recordProbeFailure 到 probeFailMessage）。 */
 async function probeAll(
   bin: string, candidates: string[], fallbackKind: ProbeFailureKind, report: boolean,
+  exitCode: number | null = null,
 ): Promise<string[]> {
   const available: string[] = [];
   const failedTails: string[] = [];
@@ -430,17 +438,18 @@ async function probeAll(
     probeFailMemory = null; // 显卡能力恢复：清掉旧失败记忆，不再复述
     return encoderProbe;
   }
-  return recordProbeFailure(fallbackKind, failedTails, report);
+  return recordProbeFailure(fallbackKind, failedTails, report, [], exitCode);
 }
 
 /** 探测全失败的收口：组装真实原因文案 + 写失败记忆（TTL 起点）+ 按需上报
  *  lastError（warmUp 预热路径 report=false——失败只进记忆，等用户真点开始
  *  再报）。所有失败出口共用（kind 分类与文案不得漂移）。missing=预筛判缺
- *  的候选名单（部分缺失时文案点名，见 probeFailMessage）。 */
-function recordProbeFailure(kind: ProbeFailureKind, failedTails: string[], report: boolean, missing: string[] = []): string[] {
+ *  的候选名单（部分缺失时文案点名，见 probeFailMessage）；exitCode=触发
+ *  失败的 `-encoders` 退出码（0xC0000135 → 「缺运行时 DLL」细分文案）。 */
+function recordProbeFailure(kind: ProbeFailureKind, failedTails: string[], report: boolean, missing: string[] = [], exitCode: number | null = null): string[] {
   const summary = failedTails.join(" || ");
-  const message = probeFailMessage(kind, summary, missing);
-  probeFailMemory = { kind, message, at: Date.now() };
+  const message = probeFailMessage(kind, summary, missing, exitCode);
+  probeFailMemory = { kind, message, at: Date.now(), exitCode };
   if (report) {
     lastError = message;
     lastErrKind = "encoder_unavailable";

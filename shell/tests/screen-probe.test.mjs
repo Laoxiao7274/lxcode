@@ -15,6 +15,7 @@ import {
   probeFailMessage,
   probeFailCacheHit,
   encodersListOutcome,
+  isDllNotFoundExit,
 } from "../src/screen-probe.ts";
 
 
@@ -150,4 +151,41 @@ test("预筛正则匹配真实 -encoders 输出（P3 排查夹具）：PROBE_CHA
     const re = new RegExp(`^\\s*[VAFS.]+[.\\w]*\\s+${e}\\s`, "m");
     assert.ok(re.test(REAL_ENCODERS_OUTPUT), `${e} 必须命中真实输出（含行首空格与标志位）`);
   }
+});
+
+// ---- 0.3.63 投屏事故的观测增强：0xC0000135（STATUS_DLL_NOT_FOUND）细分文案 ----
+// 背景：bundled ffmpeg.exe 动态依赖 MinGW 运行时 DLL（libwinpthread-1/
+// libstdc++-6/libgcc_s_seh-1），不在 ffmpeg.exe 同目录时进程加载器直接
+// 0xC0000135 秒退、零输出——旧文案「安装可能损坏或被杀毒拦截」让用户瞎猜。
+// 治本在打包链（scripts/build.mjs 随拷三 DLL + 校验闸）；这条钉住文案分叉。
+
+test("isDllNotFoundExit：0xC0000135 有符号/无符号两种形态都认，其余不认", () => {
+  assert.equal(isDllNotFoundExit(3221225785), true, "无符号形态（libuv GetExitCodeProcess DWORD 直取）");
+  assert.equal(isDllNotFoundExit(-1073741515), true, "有符号形态（int 截断路径）");
+  assert.equal(isDllNotFoundExit(3221225786), false, "0xC0000136 不是——不能把相邻 NTSTATUS 误翻译");
+  assert.equal(isDllNotFoundExit(-1073741516), false);
+  assert.equal(isDllNotFoundExit(1), false);
+  assert.equal(isDllNotFoundExit(0), false);
+  assert.equal(isDllNotFoundExit(null), false, "spawn error/超时没有退出码，不是 DLL 缺失的证据");
+});
+
+test("list_unavailable + 0xC0000135：文案翻译成「缺运行时 DLL/安装不完整」，不再误导去查杀毒", () => {
+  const dll = probeFailMessage("encoders_list_unavailable", "", [], 3221225785);
+  assert.ok(dll.includes("运行时 DLL"), "必须点名缺的是运行时 DLL");
+  assert.ok(dll.includes("libwinpthread-1.dll") && dll.includes("libstdc++-6.dll") && dll.includes("libgcc_s_seh-1.dll"), "必须列出三个 DLL 名——用户/支持能直接核对");
+  assert.ok(dll.includes("安装不完整"), "指向安装不完整而非杀毒/损坏");
+  assert.ok(dll.includes("重新安装"), "修复路径仍是重装完整版");
+  assert.ok(!dll.includes("杀毒"), "0xC0000135 不该再指向杀毒拦截");
+  // 有符号形态同款文案。
+  assert.ok(probeFailMessage("encoders_list_unavailable", "", [], -1073741515).includes("运行时 DLL"));
+  // 其余退出码保持现有分类文案（不连带改变）。
+  const other = probeFailMessage("encoders_list_unavailable", "boom", [], 1);
+  assert.ok(!other.includes("运行时 DLL"), "非 0xC0000135 退出码走原文案");
+  assert.ok(other.includes("杀毒") && other.includes("boom"), "原文案保留输出摘要");
+  // null（spawn error/超时）也走原文案。
+  const none = probeFailMessage("encoders_list_unavailable", "", [], null);
+  assert.ok(!none.includes("运行时 DLL") && none.includes("本体执行失败"));
+  // 0xC0000135 细分只作用于 list_unavailable：其他 kind 不受 exitCode 影响。
+  assert.ok(probeFailMessage("encoders_missing", "", [], 3221225785).includes("编译产物"));
+  assert.ok(probeFailMessage("encoders_unavailable", "", [], 3221225785).includes("驱动"));
 });

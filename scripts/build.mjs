@@ -39,6 +39,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { missingFfmpegEncoders } from "./ffmpeg-encoders.mjs";
+import { FFMPEG_RUNTIME_DLLS, missingFfmpegRuntimeDlls } from "./ffmpeg-runtime.mjs";
 
 // 仓库根 = 脚本自身位置（scripts/ 的上一级），与调用时的 cwd 无关
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -282,6 +283,21 @@ if (existsSync(bundledFfmpeg)) {
   mkdirSync(join(SHELL, "resources", "bin"), { recursive: true });
   copyFileSync(bundledFfmpeg, ffmpegDst);
   console.log("--- bundled ffmpeg 已拷入 shell/resources/bin/ffmpeg.exe");
+  // MinGW 运行时 DLL（0.3.62 发版实撞）：ffmpeg.exe 动态依赖
+  // libwinpthread-1/libstdc++-6/libgcc_s_seh-1 三个 MinGW DLL——开发者机器
+  // 装了 MSYS2 才跑得起来，普通用户机器 STATUS_DLL_NOT_FOUND 秒退（投屏全挂）。
+  // 治本 = 入库副本（scripts/dll/，~2.6MB 一次性成本）与 ffmpeg.exe 同目录
+  // 分发——Windows 加载器查 ffmpeg.exe 同目录，不依赖目标机 PATH。
+  const dllSrc = join(ROOT, "scripts", "dll");
+  const srcMissing = missingFfmpegRuntimeDlls(readdirSync, dllSrc);
+  if (srcMissing.length > 0) {
+    console.error(`--- scripts/dll/ 缺少 ffmpeg 运行时 DLL: ${srcMissing.join(", ")}——从构建机 MSYS2 mingw64/bin 补齐（见 docs/ffmpeg-build.md）`);
+    process.exit(1);
+  }
+  for (const dll of FFMPEG_RUNTIME_DLLS) {
+    copyFileSync(join(dllSrc, dll), join(SHELL, "resources", "bin", dll));
+  }
+  console.log("--- ffmpeg 运行时 DLL 已随拷（libwinpthread-1/libstdc++-6/libgcc_s_seh-1，scripts/dll/ 入库副本）");
   // 打包校验（防静默劣化）：回落链依赖的四个编码器必须真的编进这份 exe。
   // 精简构建漏掉 libx264 的代价是无独显机器投屏四路全败；漏掉硬编三路则
   // 有卡机器也退化到软编。校验失败 fail build，修构建参数见 docs/ffmpeg-build.md。
@@ -319,15 +335,32 @@ run("壳主进程构建", "node", ["build.mjs"], { cwd: SHELL });
 rmSync(join(SHELL, "release"), { recursive: true, force: true });
 run("electron-builder 打包", "npx", ["electron-builder", "--win", "--x64"], { cwd: SHELL });
 
+// 5b. 校验闸——win-unpacked/resources/bin/ 必须含 ffmpeg.exe + 三个 MinGW
+//     运行时 DLL（判定纯函数在 ./ffmpeg-runtime.mjs）。bundled ffmpeg 在而
+//     DLL 没落位的安装包发出去就是 0.3.62 的事故形态：普通用户机器
+//     ffmpeg STATUS_DLL_NOT_FOUND 秒退、投屏全挂，而开发者机器有 MSYS2
+//     测不出来——必须在构建机这边把住。
+if (existsSync(ffmpegDst)) {
+  const unpackedBin = join(SHELL, "release", "win-unpacked", "resources", "bin");
+  const missingInBin = missingFfmpegRuntimeDlls(readdirSync, unpackedBin)
+    .concat(existsSync(join(unpackedBin, "ffmpeg.exe")) ? [] : ["ffmpeg.exe"]);
+  if (missingInBin.length > 0) {
+    console.error(`--- 打包产物缺文件: resources/bin/${missingInBin.join(", ")}——bundled ffmpeg 在但运行时 DLL 没落位，投屏在无 MSYS2 机器上必挂（0.3.62 事故），见 docs/ffmpeg-build.md`);
+    process.exit(1);
+  }
+  console.log("--- 打包产物校验通过：resources/bin/ 含 ffmpeg.exe + 3 个 MinGW 运行时 DLL");
+}
+
 // 6. 更新制品：update-<version>.zip + manifest.json（老 Windows 客户端契约，
 //    字段与字段顺序一字未动——见 makeUpdateArtifacts 头注；**不要**在这里改
 //    顶层六键的形状，老客户端会直接解析失败）。
 const unpacked = join(SHELL, "release", "win-unpacked");
 const releaseDir = join(SHELL, "release");
 // zip 内路径=安装目录相对路径；bundled ffmpeg 存在才进更新包（未打包 ffmpeg 的旧版产物不带）
+// ——DLL 必须与 ffmpeg.exe 成套：只带 exe 不带 DLL 的更新包 = 更新后 ffmpeg 秒退（0.3.62 同因）。
 const UPDATE_FILES = ["resources/app.asar", "resources/bin/lxcode.exe"];
 if (existsSync(join(unpacked, "resources", "bin", "ffmpeg.exe"))) {
-  UPDATE_FILES.push("resources/bin/ffmpeg.exe");
+  UPDATE_FILES.push("resources/bin/ffmpeg.exe", ...FFMPEG_RUNTIME_DLLS.map((d) => `resources/bin/${d}`));
 }
 // app.asar.unpacked 下的东西整体进更新包（用户拍板 2026-12：**应用内更新必须
 // 自足，不允许需要重装**）。asarUnpack 里的文件是运行时硬依赖——壳 require
