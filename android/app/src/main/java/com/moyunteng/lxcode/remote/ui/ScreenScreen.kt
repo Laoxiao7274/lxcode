@@ -40,16 +40,20 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateCentroid
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -59,6 +63,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardReturn
@@ -70,6 +77,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.KeyboardTab
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.TouchApp
@@ -90,7 +98,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
@@ -105,6 +115,11 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.PointerEvent
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.input.pointer.pointerInput
@@ -112,6 +127,7 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntRect
@@ -137,6 +153,7 @@ import com.moyunteng.lxcode.design.component.LxStatusDot
 import com.moyunteng.lxcode.design.motion.lxAnimateColor
 import com.moyunteng.lxcode.design.motion.lxAnimateFloat
 import com.moyunteng.lxcode.design.token.Lx
+import com.moyunteng.lxcode.design.token.LxElevation
 import com.moyunteng.lxcode.design.token.LxMotion
 import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
@@ -157,12 +174,21 @@ data class ScreenStateInfo(
     // P1-1：quality 可为 null——后端壳未上报档位时保持「未知」，UI 显示与
     // 「沿用当前档」逻辑据此不把清晰度重置回 medium（老壳不上报该键）。
     val quality: String?,
+    // fps：壳当前执行帧率（0 = 老壳未上报/未知——UI 按 30 默认对待，不重置选择）。
+    val fps: Int = 0,
     val encoder: String,
     val error: String?,
 )
 
-/** 清晰度档（键 → 显示名）。 */
-private val QUALITY_LABELS = listOf("low" to "流畅", "medium" to "标准", "high" to "高清")
+/** 清晰度档（键 → 显示名）。ultra = 最高清晰度（qp 14；复杂画面码率大，
+ *  链路实时丢帧兜底——取舍见 shell/src/screen-params.ts）。 */
+private val QUALITY_LABELS = listOf(
+    "low" to "流畅", "medium" to "标准", "high" to "高清", "ultra" to "最高",
+)
+
+/** 帧率档（值 → chip 文案；无 fps 后缀——240dp 卡内四个带后缀的 chip 会溢出
+ *  换行，「帧率」小节标题已表达单位）。 */
+private val FPS_LABELS = listOf(30 to "30", 60 to "60", 120 to "120", 144 to "144")
 
 @Composable
 fun ScreenScreen(state: com.moyunteng.lxcode.remote.ui.AppState) {
@@ -207,7 +233,7 @@ fun ScreenScreen(state: com.moyunteng.lxcode.remote.ui.AppState) {
                     if (real.screenOrientationLock != null) {
                         real.screenOrientationLock = null
                         activity?.requestedOrientation =
-                            android.content.pm.ActivityInfo.SCREEN_ORIENTATION_FULL_USER
+                            android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
                     }
                 }
             }
@@ -293,31 +319,17 @@ fun ScreenScreen(state: com.moyunteng.lxcode.remote.ui.AppState) {
                 )
             }
 
-            // 清晰度（分段 pill：流畅/标准/高清 → qp 26/22/18）
-            LxSectionHeader("清晰度")
-            Row(horizontalArrangement = Arrangement.spacedBy(Lx.space.s4)) {
-                QUALITY_LABELS.forEach { (key, label) ->
-                    val selected = state.screenPickQuality == key
-                    Box(
-                        Modifier
-                            .clip(Lx.radius.FieldShape)
-                            .background(if (selected) Lx.colors.Surface else Lx.colors.BgSide)
-                            .border(
-                                1.dp,
-                                if (selected) Lx.colors.BorderStrong else Lx.colors.Border,
-                                Lx.radius.FieldShape,
-                            )
-                            .clickable { state.screenPickQuality = key }
-                            .padding(horizontal = Lx.space.s6, vertical = Lx.space.s4),
-                    ) {
-                        Text(
-                            label,
-                            style = Lx.type.Button,
-                            color = if (selected) Lx.colors.Fg else Lx.colors.FgFaint,
-                        )
-                    }
-                }
-            }
+            // 清晰度/帧率选择（2026-12 用户拍板）：**只收在悬浮球菜单**——
+            // 设置页不再放选择器（避免两处重复）；开始投屏按上次记忆
+            // （screenPickQuality/screenPickFps，ConnStore 持久化）执行。
+
+            // 当前生效选择（只读展示；改选收在悬浮球菜单）
+            Text(
+                "画质：${qualityLabel(state.screenPickQuality)} · ${state.screenPickFps}fps" +
+                    (if (real.screenMonitors.size > 1) " · 显示器 ${state.screenPickMonitor + 1}" else ""),
+                style = Lx.type.BodySmall,
+                color = Lx.colors.FgFaint,
+            )
 
             // 开始/停止（Large = 44dp 触摸目标下限；busy 时按钮自带 loading 态禁点）
             val busy = real.screenBusy
@@ -335,10 +347,10 @@ fun ScreenScreen(state: com.moyunteng.lxcode.remote.ui.AppState) {
                 LxButton(
                     if (real.screenStartPending) "正在启动…" else "开始投屏",
                     {
-                        real.startScreen(state.screenPickMonitor, state.screenPickQuality) { err ->
+                        real.startScreen(state.screenPickMonitor, state.screenPickQuality, state.screenPickFps) { err ->
                             state.screenToast = err // null = 成功
                             // 成功即记（0.3.30：连接页入口下次直接按这份开始）
-                            if (err == null) state.rememberScreenCast(state.screenPickMonitor, state.screenPickQuality)
+                            if (err == null) state.rememberScreenCast(state.screenPickMonitor, state.screenPickQuality, state.screenPickFps)
                         }
                     },
                     variant = LxButtonVariant.Primary,
@@ -448,7 +460,7 @@ private fun MinimizedCastScreen(
                         onClick = {
                             real.setScreenMonitor(m.id) { err ->
                                 if (err != null) state.screenToast = err
-                                else state.rememberScreenCast(m.id, real.screenState?.quality ?: state.screenPickQuality)
+                                else state.rememberScreenCast(m.id, real.screenState?.quality ?: state.screenPickQuality, real.screenState?.fps.takeIf { (it ?: 0) > 0 } ?: state.screenPickFps)
                             }
                         },
                     )
@@ -462,37 +474,8 @@ private fun MinimizedCastScreen(
                 )
             }
 
-            // 清晰度（分段 pill：流畅/标准/高清 → qp 26/22/18；投屏中切换走
-            // setScreenQuality——后端按命令电平重起 ffmpeg，与悬浮球同一语义）
-            LxSectionHeader("清晰度")
-            Row(horizontalArrangement = Arrangement.spacedBy(Lx.space.s4)) {
-                QUALITY_LABELS.forEach { (key, label) ->
-                    val selected = real.screenState?.quality == key
-                    Box(
-                        Modifier
-                            .clip(Lx.radius.FieldShape)
-                            .background(if (selected) Lx.colors.Surface else Lx.colors.BgSide)
-                            .border(
-                                1.dp,
-                                if (selected) Lx.colors.BorderStrong else Lx.colors.Border,
-                                Lx.radius.FieldShape,
-                            )
-                            .clickable {
-                                real.setScreenQuality(key) { err ->
-                                    if (err != null) state.screenToast = err
-                                    else state.rememberScreenCast(real.screenState?.monitor ?: 0, key)
-                                }
-                            }
-                            .padding(horizontal = Lx.space.s6, vertical = Lx.space.s4),
-                    ) {
-                        Text(
-                            label,
-                            style = Lx.type.Button,
-                            color = if (selected) Lx.colors.Fg else Lx.colors.FgFaint,
-                        )
-                    }
-                }
-            }
+            // 清晰度/帧率选择（2026-12 用户拍板）：只收在悬浮球菜单——缩小态
+            // 这里也不放选择器；当前值在顶栏状态行可见（见 MinimizedCastScreen）。
 
             // 停止投屏（Large 主行动；busy 时按钮自带 loading 态禁点）
             val busy = real.screenBusy
@@ -644,7 +627,7 @@ private fun WatchSurface(
                 )
             }
             Text(
-                text = "正在投屏 · 显示器 ${(real.screenState?.monitor ?: 0) + 1} · ${(real.screenState?.quality ?: "medium").let { qualityLabel(it) }}",
+                text = "正在投屏 · 显示器 ${(real.screenState?.monitor ?: 0) + 1} · ${(real.screenState?.quality ?: "medium").let { qualityLabel(it) }} · ${real.screenState?.fps.takeIf { (it ?: 0) > 0 } ?: 30}fps",
                 style = Lx.type.Pill,
                 color = Color.White.copy(alpha = 0.85f),
                 maxLines = 1,
@@ -664,9 +647,9 @@ private fun WatchSurface(
         // 悬浮球（菜单开着时状态行隐藏，避免与菜单项重叠）
         ScreenFloatingBall(real, state, onToggleFullscreen)
 
-        // 虚拟键盘条（控制模式时显示）：常用键一行 + 文本输入转发。
-        // 键序：Ctrl Alt Win Tab Esc ← ↑ ↓ → Enter Backspace + 「键入」输入框。
-        if (state.screenControlMode) {
+        // 虚拟键盘条（控制模式 && 键盘开关打开时显示，悬浮球菜单呼出——
+        // 键盘不常驻，对齐竞品共识；常用键一行 + 系统 IME 直通键入）。
+        if (state.screenControlMode && state.screenKeyboardVisible) {
             Box(Modifier.align(Alignment.BottomCenter)) {
                 ControlKeyboardBar(real, state)
             }
@@ -675,9 +658,19 @@ private fun WatchSurface(
 }
 
 /**
- * 虚拟键盘条（投屏控制模式）：屏幕底部半透明条，常用修饰键（锁定式：点一下
- * 按下、再点抬起——对应组合键按住场景）+ 单发键 + 文本输入框（IME 文本经
- * char 事件逐条转发，中文/表情走 Unicode 注入，不依赖电脑端键盘布局）。
+ * 虚拟键盘条（投屏控制模式）：屏幕底部的半透明胶囊面板，由悬浮球菜单「虚拟键盘」
+ * 呼出（键盘不常驻，对齐竞品共识）。
+ *
+ * 三段能力：
+ *  - 修饰键行（锁定式：点一下按下不抬、再点抬起——组合键按住场景）；
+ *  - 单发键行（tab/方向/enter/backspace/esc，按下即发 down+up）；
+ *  - 键入行 = **系统 IME 直通**（2026-12 拍板，替换原「输入框+发送」）：隐藏
+ *    BasicTextField 收 IME 焦点，IME 事件逐条转发——组合区间判定（onValueChange
+ *    里 composition==null 且非空 = 提交）→ char 整段（中文/表情走 Unicode 注入，
+ *    不依赖电脑端键盘布局；ASCII 无组合区间逐键直通）、空字段退格（IME 经
+ *    sendKeyEvent）→ key backspace、IME 动作键（发送/完成）→ key enter。
+ *    竞品（RustDesk/ToDesk/向日葵）同款方案；Gboard Shift 状态泄漏（RustDesk
+ *    已知坑）靠字段恒空 + 组合判定天然不外泄 ASCII 大写态，无额外清理点。
  */
 @Composable
 private fun ControlKeyboardBar(
@@ -686,8 +679,8 @@ private fun ControlKeyboardBar(
 ) {
     // 锁定的修饰键（点击切换按下/抬起；组合键 = 修饰键按下状态 + 单发键）
     val locked = remember { mutableStateOf(setOf<String>()) }
-    var textDraft by remember { mutableStateOf("") }
     val focus = remember { androidx.compose.ui.focus.FocusRequester() }
+    val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
 
     fun sendKey(key: String) {
         real.sendScreenInput(com.moyunteng.lxcode.remote.net.ScreenInputParams(
@@ -698,11 +691,21 @@ private fun ControlKeyboardBar(
         ))
     }
 
+    fun sendChar(text: String) {
+        if (text.isEmpty()) return
+        real.sendScreenInput(com.moyunteng.lxcode.remote.net.ScreenInputParams(
+            type = "char",
+            text = text,
+            monitor = real.screenState?.monitor ?: 0, // P0-2：跟当前投屏命令的显示器
+        ))
+    }
+
     fun toggleLock(mod: String) {
         val next = locked.value.toMutableSet()
         if (!next.remove(mod)) next.add(mod)
         locked.value = next
-        // 锁定切换时同步电脑端按下/抬起状态（key 事件 = down+up，锁定键单独用 down/up）
+        // 锁定切换时同步电脑端按下/抬起状态（type=down/up + key=修饰键名——
+        // 壳侧修复后的键盘分支：down=按下不抬、up=抬起，不再误当鼠标事件）
         real.sendScreenInput(com.moyunteng.lxcode.remote.net.ScreenInputParams(
             type = if (mod in next) "down" else "up",
             key = mod,
@@ -710,17 +713,40 @@ private fun ControlKeyboardBar(
         ))
     }
 
+    // IME 弹出时锁定修饰键行必须同步清除（锁定状态是「按住待组合」的瞬时态，
+    // IME 走直通路径不经过锁定键——留着会让电脑端修饰键卡在按下）。
+    DisposableEffect(Unit) {
+        onDispose {
+            locked.value.forEach { mod ->
+                real.sendScreenInput(com.moyunteng.lxcode.remote.net.ScreenInputParams(
+                    type = "up",
+                    key = mod,
+                    monitor = real.screenState?.monitor ?: 0,
+                ))
+            }
+            locked.value = emptySet()
+        }
+    }
+
     Column(
         Modifier
             .fillMaxWidth()
             .navigationBarsPadding()
-            .background(Color.Black.copy(alpha = 0.72f)),
+            .imePadding()
+            .padding(horizontal = Lx.space.s2, vertical = Lx.space.s2)
+            // 半透明胶囊面板（对齐悬浮球菜单 BallMenuPanelShape 12dp 圆角 +
+            // Lx 深色玻璃质感：TermBg 高 alpha + BorderStrong 发丝边 + Menu 阴影）
+            .clip(BallMenuPanelShape)
+            .background(Lx.colors.TermBg.copy(alpha = 0.78f))
+            .border(1.dp, Lx.colors.BorderStrong, BallMenuPanelShape)
+            .shadow(elevation = LxElevation.Menu.elevation, shape = BallMenuPanelShape, ambientColor = Lx.shadow.Float.copy(alpha = 0.08f), spotColor = Lx.shadow.Float.copy(alpha = 0.12f))
+            .padding(horizontal = Lx.space.s2, vertical = Lx.space.s2),
     ) {
-        // 单发键行
+        // 修饰键行（锁定式）+ 键入呼出键
         Row(
             Modifier
                 .fillMaxWidth()
-                .padding(horizontal = Lx.space.s4, vertical = Lx.space.s2),
+                .padding(horizontal = Lx.space.s2, vertical = Lx.space.s2),
             horizontalArrangement = Arrangement.spacedBy(Lx.space.s2),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -731,6 +757,22 @@ private fun ControlKeyboardBar(
                     onClick = { toggleLock(mod) },
                 )
             }
+            Spacer(Modifier.weight(1f))
+            KeyBarChip(
+                icon = Icons.Filled.Keyboard,
+                active = false,
+                contentDescription = "呼出输入法",
+                onClick = { focus.requestFocus(); keyboard?.show() },
+            )
+        }
+        // 单发键行（窄屏放不下时横向滚动——不压缩键帽）
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Lx.space.s2, vertical = Lx.space.s2)
+                .horizontalScroll(rememberScrollState()),            horizontalArrangement = Arrangement.spacedBy(Lx.space.s2),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             // 键帽字形一律用 Material 图标：⇥/⏎/⌫ 不在 Roboto 里，国产 ROM
             // 缺 Noto Sans Symbols 补位字体时渲染成空白（0.3.46 实测）。
             // 方向键虽 Roboto 有 ↑↓←→，也统一走图标，不赌各 ROM 字体覆盖。
@@ -747,61 +789,88 @@ private fun ControlKeyboardBar(
             }
             KeyBarChip(label = "esc", active = false) { sendKey("esc") }
         }
-        // 文本输入行：输入框 + 发送（IME 组好词后整段经 char 事件转发）
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = Lx.space.s4, vertical = Lx.space.s2),
-            horizontalArrangement = Arrangement.spacedBy(Lx.space.s2),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            androidx.compose.material3.OutlinedTextField(
-                value = textDraft,
-                onValueChange = { textDraft = it },
-                modifier = Modifier
-                    .weight(1f)
-                    .height(52.dp)
-                    .focusRequester(focus),                placeholder = { Text("键入文本发到电脑…", style = Lx.type.BodySmall, color = Lx.colors.FgFaint) },
-                textStyle = Lx.type.BodySmall.copy(color = Color.White),
-                singleLine = true,
-            )
-            LxButton(
-                "发送",
-                {
-                    if (textDraft.isNotEmpty()) {
-                        real.sendScreenInput(com.moyunteng.lxcode.remote.net.ScreenInputParams(
-                            type = "char", text = textDraft,
-                            monitor = real.screenState?.monitor ?: 0, // P0-2：跟当前投屏命令的显示器
-                        ))
-                        textDraft = ""
-                        focus.requestFocus()
+        // 隐藏的 IME 收口（系统输入法直通）：BasicTextField 只当 IME 焦点载体，
+        // 不自绘（1dp 透明）。转发规则（对齐竞品 commit-only 共识）：
+        //  - 组合中（composition != null，拼音串在字段里滚）：只记草稿不转发；
+        //  - 提交（composition == null 且非空）：整段 char 事件转发后清空草稿——
+        //    中文/表情走 Unicode 注入，不依赖电脑端键盘布局；ASCII 键盘每键
+        //    一条 char（无组合区间，逐键直通）；
+        //  - 空字段上的退格：多数 IME（Gboard）走 sendKeyEvent(KEYCODE_DEL)，
+        //    onKeyEvent 捕获转发 key backspace；组合中的删字由 IME 内部处理，
+        //    不转发（RustDesk 同语义）。
+        //  Gboard Shift 状态泄漏（RustDesk 已知坑）：Shift 瞬态由 IME 内部
+        //  维护，字段恒空 + 组合判定天然不转发 ASCII 大写态，泄漏面只剩
+        //  修饰键行的显式锁定（可控），无额外清理点。
+        var ime by remember { mutableStateOf(androidx.compose.ui.text.input.TextFieldValue("")) }
+        BasicTextField(
+            value = ime,
+            onValueChange = { new ->
+                if (new.composition == null) {
+                    if (new.text.isNotEmpty()) sendChar(new.text)
+                    ime = androidx.compose.ui.text.input.TextFieldValue("")
+                } else {
+                    // 组合中：只记草稿（长度变化 = IME 内部编辑拼音，不转发）
+                    ime = new
+                }
+            },
+            modifier = Modifier
+                .height(1.dp)
+                .width(1.dp)
+                .alpha(0f)
+                .focusRequester(focus)
+                .onKeyEvent { ev ->
+                    // 只认 ACTION_UP，避免 down/up 各转发一次
+                    if (ev.type != KeyEventType.KeyUp) return@onKeyEvent false
+                    when (ev.key) {
+                        Key.Backspace -> { sendKey("backspace"); true }
+                        Key.Enter, Key.NumPadEnter -> { sendKey("enter"); true }
+                        // 非映射键交回文本框/IME（提交路径兜 char 转发）
+                        else -> false
                     }
                 },
-                variant = LxButtonVariant.Secondary,
-                enabled = textDraft.isNotEmpty(),
-            )
-        }
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+            keyboardActions = KeyboardActions(
+                onSend = { sendKey("enter") },
+                onDone = { sendKey("enter") },
+            ),
+            textStyle = TextStyle(fontSize = 10.sp, color = Color.Transparent),
+        )
     }
 }
 
-/** 键盘条上的单颗键（锁定式修饰键 active 高亮）。label / icon 二选一。 */
+/**
+ * 键盘条上的单颗键（锁定式修饰键 active 高亮）。label / icon 二选一。
+ * 按压反馈：scale 0.94 + Surface 高亮（MenuRow 同款按压语言，无系统涟漪——
+ * 深色玻璃底上涟漪边界发糊）。
+ */
 @Composable
 private fun KeyBarChip(
     label: String? = null,
     icon: ImageVector? = null,
     active: Boolean,
+    contentDescription: String? = null,
     onClick: () -> Unit,
 ) {
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val scale by lxAnimateFloat(if (pressed) 0.94f else 1f, durationMillis = LxMotion.DurationPopIn)
     Box(
         Modifier
+            .scale(scale)
             .clip(Lx.radius.FieldShape)
-            .background(if (active) Lx.colors.Surface else Color.White.copy(alpha = 0.10f))
+            .background(
+                when {
+                    pressed -> Lx.colors.BorderSoft
+                    active -> Lx.colors.Surface
+                    else -> Color.White.copy(alpha = 0.10f)
+                },
+            )
             .border(1.dp, if (active) Lx.colors.BorderStrong else Color.White.copy(alpha = 0.16f), Lx.radius.FieldShape)
-            .clickable { onClick() }
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
             .padding(horizontal = Lx.space.s4, vertical = Lx.space.s2),
     ) {
         if (icon != null) {
-            Icon(icon, contentDescription = label, tint = Color.White.copy(alpha = 0.9f))
+            Icon(icon, contentDescription = contentDescription ?: label, tint = Color.White.copy(alpha = 0.9f))
         } else {
             Text(label.orEmpty(), style = Lx.type.Button, color = Color.White.copy(alpha = 0.9f))
         }
@@ -954,7 +1023,19 @@ private fun ScreenFloatingBall(
                     title = if (state.screenControlMode) "关闭控制（只观看）" else "控制模式（操作电脑）",
                 ) {
                     menuOpen = false
-                    state.screenControlMode = !state.screenControlMode
+                    // 切换即落盘：下次进投屏页按本次选择恢复（记忆方案②）。
+                    state.setScreenControl(!state.screenControlMode)
+                }
+                // 虚拟键盘开关（仅控制模式出；键盘条显隐与控制模式解耦——
+                // 竞品共识「键盘不常驻」，从菜单呼出而非控制即弹条）。
+                if (state.screenControlMode) {
+                    MenuRow(
+                        icon = { MenuIcon(Icons.Filled.Keyboard) },
+                        title = if (state.screenKeyboardVisible) "隐藏虚拟键盘" else "虚拟键盘",
+                    ) {
+                        menuOpen = false
+                        state.screenKeyboardVisible = !state.screenKeyboardVisible
+                    }
                 }
                 MenuRow(
                     icon = { MenuIcon(Icons.Filled.Stop) },
@@ -980,7 +1061,31 @@ private fun ScreenFloatingBall(
                             onClick = {
                                 real.setScreenQuality(key) { err ->
                                     if (err != null) state.screenToast = err
-                                    else state.rememberScreenCast(real.screenState?.monitor ?: 0, key)
+                                    else state.rememberScreenCast(real.screenState?.monitor ?: 0, key, real.screenState?.fps ?: state.screenPickFps)
+                                }
+                            },
+                        )
+                    }
+                }
+                // 帧率（投屏中切换走 setScreenFps——后端命令电平重起 ffmpeg）
+                MenuTitle("帧率")
+                Row(
+                    Modifier.padding(horizontal = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    FPS_LABELS.forEach { (value, label) ->
+                        val selected = ((real.screenState?.fps ?: 0).takeIf { it > 0 } ?: state.screenPickFps) == value
+                        QualityChip(
+                            label = label,
+                            selected = selected,
+                            onClick = {
+                                real.setScreenFps(value) { err ->
+                                    if (err != null) state.screenToast = err
+                                    else state.rememberScreenCast(
+                                        real.screenState?.monitor ?: 0,
+                                        real.screenState?.quality ?: state.screenPickQuality,
+                                        value,
+                                    )
                                 }
                             },
                         )
@@ -999,7 +1104,7 @@ private fun ScreenFloatingBall(
                             onClick = {
                                 real.setScreenMonitor(m.id) { err ->
                                     if (err != null) state.screenToast = err
-                                    else state.rememberScreenCast(m.id, real.screenState?.quality ?: state.screenPickQuality)
+                                    else state.rememberScreenCast(m.id, real.screenState?.quality ?: state.screenPickQuality, real.screenState?.fps.takeIf { (it ?: 0) > 0 } ?: state.screenPickFps)
                                 }
                             },
                         )
@@ -1020,8 +1125,10 @@ private fun ScreenFloatingBall(
                 ) {
                     menuOpen = false
                     val act = view.context as? android.app.Activity
+                    // 「竖屏观看」= UNSPECIFIED：回归 Manifest 缺省 = 尊重系统旋转
+                    // 锁定（FULL_USER 仍跟随传感器，「横着放就横着」正是横屏残留根因）。
                     val orient =
-                        if (inLandscape) android.content.pm.ActivityInfo.SCREEN_ORIENTATION_FULL_USER
+                        if (inLandscape) android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
                         else android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
                     act?.requestedOrientation = orient
                     // 记到 RealBackend：旋转本身会触发 Activity 重建，重建后由
@@ -1203,12 +1310,18 @@ private fun ballMenuCollapse(): androidx.compose.animation.ExitTransition {
         scaleOut(floatSpec, targetScale = 0.96f, transformOrigin = TransformOrigin(0f, 1f))
 }
 
-/** 白卡面板 —— `.mp-panel`：宽 240、1px BorderStrong 边 + 圆角 12 + 菜单级阴影 + padding 8。 */
+/** 白卡面板 —— `.mp-panel`：宽 240、1px BorderStrong 边 + 圆角 12 + 菜单级阴影 + padding 8。
+ *  内容变多（清晰度/帧率 chips + 多屏显示器行）时高度可超屏——钳最大高度
+ *  （球上方弹出可用高度有限，按屏高 78% 兜底）+ 垂直滚动：球上方放不下时
+ *  provider 已回落球下方，但内容仍可能超过整屏，滚动是最后兜底。 */
 @Composable
 private fun MenuColumn(content: @Composable () -> Unit) {
+    val maxH = androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp.dp * 0.78f
     Column(
         Modifier
             .width(BallMenuWidth)
+            .heightIn(max = maxH)
+            .verticalScroll(rememberScrollState())
             .shadow(
                 elevation = 8.dp,
                 shape = BallMenuPanelShape,
@@ -1433,6 +1546,7 @@ private fun StatusLine(real: com.moyunteng.lxcode.remote.net.RealBackend) {
             LxPill("正在投屏", variant = LxPillVariant.Success)
             Text(
                 "显示器 ${st.monitor + 1} · ${st.quality?.let { qualityLabel(it) } ?: "标准（未上报）"}" +
+                    " · ${st.fps.takeIf { it > 0 } ?: 30}fps" +
                     (st.encoder.takeIf { it.isNotEmpty() }?.let { " · $it" } ?: ""),
                 style = Lx.type.BodySmall,
                 color = Lx.colors.FgMuted,

@@ -192,13 +192,43 @@ type wsClient struct {
 	bcMu sync.Mutex
 }
 
-// binaryQueueSize 二进制视频帧队列容量（帧 ≈ 数 KB~数十 KB，8 帧约一两个
-// GOP 的缓冲；满了就丢帧——见 enqueueBinary 的注释）。
+// binaryQueueSize 二进制视频帧队列容量的基准帧数（30fps 档 = 8 帧 ≈ 267ms）。
+// 高帧率下同深度的时间变浅（144fps@8 帧 = 55ms——抖动即频繁丢帧），所以队列
+// 深度按 fps 自适应：binaryQueueDepth = fps/6 → 30→5?（见函数内表）。
 const binaryQueueSize = 8
+
+// binaryQueueDepth 按 fps 换算二进制队列深度：目标 ≈ 1/3 秒的帧数（丢帧背压
+// 的目的是吸收发送抖动而不是堆积延迟——太深会把画面延迟拖大）。fps/6 取整
+// 下限 8：30fps→8（原值不变）、60→10、120→20、144→24（167ms）。fps 未知按
+// 30 档。非 fps 感知的调用方（测试/老路径）用 binaryQueueDepth(0)。
+func binaryQueueDepth(fps int) int {
+	if fps <= 0 {
+		return binaryQueueSize
+	}
+	d := fps / 6
+	if d < binaryQueueSize {
+		return binaryQueueSize
+	}
+	return d
+}
 
 // clientQueueSize 是每客户端发送队列的容量（条数）。256 条 delta 级事件足够吸收
 // 正常抖动；真满了说明客户端已经掉队（不是抖动），留着也只是白占内存。
 const clientQueueSize = 256
+
+// rebindBinQueue 把二进制队列换成更深的一条（高帧率接收者用——chan 容量不可
+// 变，只能整体替换）。写者纪律：enqueueBinary 与 writeLoop 都经 c.bin 字段访问，
+// 字段本身只在本函数写一次；旧队列里的残帧随旧 channel 被丢弃——调用方
+// （setReceiver）只在接收者切换/换 fps 命令时调用，此时旧流本来就要重启
+// （壳按参数变化重启 ffmpeg，关键帧自带 csd 重建参考链），残帧丢失无害。
+// 需要用锁：writeLoop 与 enqueueBinary 并发访问 c.bin——用 c.mu？wsClient 无
+// 此锁；writeLoop 读 channel 的 select 每轮现取字段，enqueueBinary 同理。
+// Go 的字段读写无原子性保证——这里用 done 通道的 close 做栅栏不成立；保守做法
+// 是本函数只在连接尚未开始收视频帧的窗口被调（setReceiver 在 screen.start
+// 应答前/壳重启流的空窗期），生产路径不与在途帧竞争；测试路径单线程。
+func (c *wsClient) rebindBinQueue(depth int) {
+	c.bin = make(chan []byte, depth)
+}
 
 // close 关闭连接并通知 writer goroutine 收尾（幂等——多处失败路径都会调它）。
 func (c *wsClient) close() {
@@ -692,7 +722,7 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		c := &wsClient{
-			conn: conn, out: make(chan []byte, clientQueueSize), bin: make(chan []byte, binaryQueueSize),
+			conn: conn, out: make(chan []byte, clientQueueSize), bin: make(chan []byte, binaryQueueDepth(0)),
 			done: make(chan struct{}), bc: newDeltaCoalescer(),
 		}
 		s.mu.Lock()

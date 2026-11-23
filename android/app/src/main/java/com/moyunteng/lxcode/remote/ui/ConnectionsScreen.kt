@@ -260,9 +260,9 @@ fun ConnectionsScreen(state: AppState) {
                         if (r.screenState?.active != true &&
                             state.hasCastBefore() && !r.screenBusy
                         ) {
-                            r.startScreen(state.screenPickMonitor, state.screenPickQuality) { err ->
+                            r.startScreen(state.screenPickMonitor, state.screenPickQuality, state.screenPickFps) { err ->
                                 if (err != null) state.screenToast = err
-                                else state.rememberScreenCast(state.screenPickMonitor, state.screenPickQuality)
+                                else state.rememberScreenCast(state.screenPickMonitor, state.screenPickQuality, state.screenPickFps)
                             }
                         }
                         state.route = Route.Screen

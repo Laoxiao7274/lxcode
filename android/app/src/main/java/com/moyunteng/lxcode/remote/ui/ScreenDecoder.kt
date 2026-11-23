@@ -19,6 +19,7 @@ package com.moyunteng.lxcode.remote.ui
 
 import android.media.MediaCodec
 import android.media.MediaCodecList
+import android.media.MediaCodecInfo.CodecProfileLevel
 import android.media.MediaFormat
 import android.util.Log
 import android.view.Surface
@@ -530,8 +531,76 @@ class ScreenDecoder(
     }
 
     companion object {
-        /** 待压帧队列上限（≈1s @30fps）。 */
+        /** 待压帧队列上限（≈1s @30fps；高帧率下仍按帧数上限——解码跟不上时
+         *  更早触发丢最旧，与后端/壳侧的「按时间深度」口径不同但方向一致）。 */
         private const val MAX_QUEUE = 30
+
+        /**
+         * H.264 level 分级值（level ×10 的整数，如 52 = 5.2）→ 每秒宏块上限
+         * （Annex A MaxMBPS）。比 SPS 解析出的 level_idc 与设备解码器声明时用。
+         */
+        internal val LEVEL_MAX_MBPS = mapOf(
+            30 to 40_500, 31 to 108_000, 32 to 216_000,
+            40 to 245_760, 41 to 245_760, 42 to 522_240,
+            50 to 589_824, 51 to 983_040, 52 to 2_073_600,
+        )
+
+        /**
+         * 给定流规模（宽×高×fps）与解码器声明支持的 level 集合，返回**实际可用**的
+         * 帧率（≤请求值；不支持则 0）。供「解码器 level 声明查询」诊断与将来
+         * 手机端预检：设备只声明到 5.1（MaxMBPS 983k）时 1080p@144（1.175M MB/s）
+         * 会算出 0（不可用）、1080p@120（0.98M ≈ 压线）算出 120。
+         * 纯函数（levels 参数注入），JVM 单测覆盖。
+         */
+        fun supportableFps(width: Int, height: Int, requestedFps: Int, declaredMaxLevel: Int): Int {
+            if (width <= 0 || height <= 0 || requestedFps <= 0) return 0
+            val mbPerFrame = ((width + 15) / 16) * ((height + 15) / 16)
+            val maxMbps = LEVEL_MAX_MBPS[declaredMaxLevel] ?: return 0
+            val fpsCap = maxMbps / mbPerFrame
+            return minOf(requestedFps, fpsCap)
+        }
+
+        /**
+         * 查询本机 AVC 解码器声明的最高 level（level ×10；-1 = 查询失败）。
+         * MediaCodecList（REGULAR_CODECS）→ 找 AVC 硬解 → profileLevels 里取
+         * CodecProfileLevel.AVCLevel* 的最大值。诊断面板用它对照 SPS level：
+         * SPS level 高于声明 → configure 可能被拒（降级链兜底）或 vendor 宽容放行。
+         */
+        fun deviceMaxAvcLevel(): Int {
+            return try {
+                val list = MediaCodecList(MediaCodecList.REGULAR_CODECS)
+                var best = -1
+                for (info in list.codecInfos) {
+                    if (info.isEncoder || !info.supportedTypes.contains(MediaFormat.MIMETYPE_VIDEO_AVC)) continue
+                    val caps = try {
+                        info.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC)
+                    } catch (_: IllegalArgumentException) {
+                        continue // 类型能力查询失败：跳过该解码器
+                    }
+                    for (pl in caps.profileLevels) {
+                        if (pl.profile == CodecProfileLevel.AVCProfileHigh) {
+                            best = maxOf(best, avcLevelConstToIdc(pl.level))
+                        }
+                    }
+                }
+                best
+            } catch (_: Exception) {
+                -1
+            }
+        }
+
+        /** AVCLevel* 常量 → level_idc 风格整数（×10）。API 里没有 AVCLevel30/3x
+         *  低档常量名（3.0/3.1/3.2 合并在 AVCLevel31/32 表述外另有命名差异），
+         *  这里只映射本功能相关的 4.0+ 档。 */
+        private fun avcLevelConstToIdc(level: Int): Int = when {
+            level == CodecProfileLevel.AVCLevel4 -> 40
+            level == CodecProfileLevel.AVCLevel41 -> 41
+            level == CodecProfileLevel.AVCLevel42 -> 42
+            level == CodecProfileLevel.AVCLevel5 -> 50
+            level == CodecProfileLevel.AVCLevel51 -> 51
+            level == CodecProfileLevel.AVCLevel52 -> 52
+            else -> -1
+        }
 
         /** 软编 AVC 解码器名（configure 降级链末级兜底；AOSP 全设备自带——
          *  c2.android.avc.decoder 是 Android 12+ 的标准名，老设备为

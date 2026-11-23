@@ -45,6 +45,7 @@ import { IS_DEV_SHELL } from "./main";
 import { cachedToken } from "./backend-remote";
 import { feedAnnexB, flushAu, resetAu, FRAME_FLAG_KEYFRAME } from "./screen-au";
 import { restartTripped, afterRestartAttempt, attemptSucceeded, newStartIntent, tripMessage, MAX_CONSECUTIVE_ERRORS } from "./screen-restart";
+import { normalizeFps, normalizeQuality, gopSize, h264Level, backpressureBytes, QUALITY_QP } from "./screen-params";
 import { setTrayHint } from "./tray";
 import { lastInputInjectedAt } from "./input";
 import {
@@ -89,7 +90,8 @@ function token(): string {
 export { BACKEND, token as screenToken };
 const POLL_ONLINE_MS = 1000;
 const POLL_OFFLINE_MS = 5000;
-const QUALITY_QP: Record<string, string> = { low: "26", medium: "22", high: "18" };
+// 清晰度档 → qp 表移到 screen-params.ts（纯函数、可单测）；此处 re-export 供既有引用。
+export { QUALITY_QP };
 
 /** 帧头（与 Go protocol.FrameHeader 一致）：1 版本 + 1 flags + 3 保留 + 8 ts。 */
 interface ShellState {
@@ -102,6 +104,8 @@ interface ShellState {
   // 手机端 UI 与 setScreenMonitor/setScreenQuality 的「沿用当前档」以此为准；
   // 不上报的话切显示器会用 quality 缺省值重置清晰度。
   quality?: string;
+  // 当前执行帧率（screen-params 的 fps 链路；0 = 老协议，按 30 对待）。
+  fps?: number;
   error?: string;
   err_kind?: "reason" | "ffmpeg_missing" | "encoder_unavailable";
   monitors: Array<{ id: number; name: string; primary: boolean; width: number; height: number; attached: boolean }>;
@@ -111,6 +115,8 @@ interface Command {
   want: boolean;
   monitor: number;
   quality: string;
+  /** 目标帧率（30/60/120/144；0/缺席 = 默认 30——老后端不带该键）。 */
+  fps?: number;
   /** P1-5：开始意图代数（后端每次 screen.start 递增；老后端无此键）。 */
   start_epoch?: number;
 }
@@ -119,6 +125,8 @@ let ffmpeg: ChildProcess | null = null;
 let ffmpegMonitor = -1;
 let ffmpegEncoder = "";
 let ffmpegQuality = "";
+/** 当前 ffmpeg 的帧率（reconcile 参数变化判定 + 背压阈值 + 状态上报用）。 */
+let ffmpegFps = 0;
 let lastError = "";
 let lastErrKind: ShellState["err_kind"] = undefined;
 /** ffmpeg stderr 尾行环形缓冲（每次起进程清空）——崩溃时并入错误上报，
@@ -130,7 +138,7 @@ const stderrTail: string[] = [];
 function stderrTailText(): string {
   return stderrTail.slice(-STDERR_TAIL_MAX).join(" | ");
 }
-let wantCmd: Command = { want: false, monitor: 0, quality: "medium" };
+let wantCmd: Command = { want: false, monitor: 0, quality: "medium", fps: 0 };
 let pollTimer: NodeJS.Timeout | null = null;
 let streamSocket: Socket | null = null;
 let monitorsCache: ShellState["monitors"] = [];
@@ -145,15 +153,14 @@ function feedStdout(chunk: Buffer): void {
   feedAnnexB(chunk, emitFrame);
 }
 
-/** emitFrame：帧 → 推流连接（背压丢帧：非关键帧优先丢，关键帧压着也要写）。 */
+/** emitFrame：帧 → 推流连接（背压丢帧：非关键帧优先丢，关键帧压着也要写）。
+ *  字节阈值按帧率缩放（backpressureBytes——144fps 下同字节阈值深度太浅）。 */
 function emitFrame(frame: Buffer): void {
   if (!streamSocket || streamSocket.destroyed) return;
   const isKey = (frame[1] & FRAME_FLAG_KEYFRAME) !== 0;
-  auTs += 33; // 30fps 恒定帧距（诊断用；手机端不依赖它做解码时序）
+  auTs += Math.round(1000 / normalizeFps(ffmpegFps)); // 恒定帧距（诊断用；手机端不依赖它做解码时序）
   frame.writeBigUInt64BE(BigInt(auTs % 0xffffffffffff), 5);
-  // 背压：写缓冲超过 ~400KB（约 10-40 帧）就丢非关键帧——丢一帧只是轻微
-  // 卡顿，丢关键帧要等下一个 GOP（2s）才能恢复画面。
-  if (!isKey && streamSocket.writableLength > 400_000) return;
+  if (!isKey && streamSocket.writableLength > backpressureBytes(ffmpegFps)) return;
   streamSocket.write(frame);
 }
 
@@ -234,7 +241,8 @@ const PROBE_CHAIN = ["h264_nvenc", "h264_qsv", "h264_amf", "libx264"] as const;
 let probeFailMemory: ProbeFailMemory | null = null;
 
 /** 单个编码器的最小真实管线（返回码 0 = 编码器真的能出帧）。
- *  参数与 ffmpegArgs 各分支一致（改码控参数时两处同步）。 */
+ *  参数与 ffmpegArgs 各分支一致（改码控参数时两处同步）。探测恒按 30fps/
+ *  1080p 基准跑——它只验证「编码器能出帧」，与目标帧率/分辨率无关。 */
 function probeArgs(encoder: string, qp: string): string[] {
   const args = [
     "-hide_banner", "-loglevel", "error",
@@ -265,7 +273,8 @@ function probeArgs(encoder: string, qp: string): string[] {
   // 兼容性约束（与 ffmpegArgs 同步——改这里必须改那里）：显式钉死 profile/level，
   // 不让编码器用默认值（AMF 默认可能报 High 5.2 级别，超出部分手机解码器的
   // profileLevels 支持表 → MediaCodec.configure「该设备不支持此流参数」）。
-  args.push("-profile:v", "high", "-level:v", "4.1");
+  // 探测基准 1080p@30 → level 4.2（h264Level 的最小档）。
+  args.push("-profile:v", "high", "-level:v", "4.2");
   // 1 帧就收：不落盘、不给壳的 stdout 泵喂帧（走单独子进程）；null 化由
   // "-frames:v 1 -f h264 pipe:1" + 立即 drain 实现（精简构建没有 null muxer）。
   args.push("-bf", "0", "-g", "60", "-frames:v", "1", "-f", "h264", "pipe:1");
@@ -458,18 +467,27 @@ function recordProbeFailure(kind: ProbeFailureKind, failedTails: string[], repor
   return [];
 }
 
-/** 组装 ffmpeg 参数（monitor/quality/encoder）。码控参数**按编码器分支**发——
- *  qsv/amf 不认 NVENC 风格的 `-preset p1 -tune ull -rc constqp`（本机 AMD 实测
- *  `Undefined constant or missing '(' in 'p1'`），回落编码器必须各用各的参数面。
- *  清晰度档统一为 qp 档（QUALITY_QP），各分支落到自己的码控参数：
+/** 组装 ffmpeg 参数（monitor/quality/encoder/fps + 实际输出分辨率）。码控参数
+ *  **按编码器分支**发——qsv/amf 不认 NVENC 风格的 `-preset p1 -tune ull -rc
+ *  constqp`（本机 AMD 实测 `Undefined constant or missing '(' in 'p1'`），回落
+ *  编码器必须各用各的参数面。清晰度档统一为 qp 档（QUALITY_QP），各分支落到
+ *  自己的码控参数：
  *    nvenc  → constqp + -qp；amf → cqp + -qp_i/-qp_p；qsv → CQP + -global_quality
  *    （qsv 顶层无 -rc/-qp_i 选项，CQP 经 AVCodecContext.global_quality 表达）；
- *    libx264 → -qp（zerolatency tune）。 */
-function ffmpegArgs(monitor: number, quality: string, encoder: string): string[] {
-  const qp = QUALITY_QP[quality] ?? QUALITY_QP.medium;
+ *    libx264 → -qp（zerolatency tune）。
+ *  ultra 档（qp 14）不带额外 maxrate 上限——取舍见 screen-params.ts 的
+ *  isUltra 注释。
+ *
+ *  level 自适应：不钉 4.1——按「每秒宏块数」选最小满足档（h264Level）。
+ *  原值 4.1 在 1080p@30 下兼容面最广，但 144fps 需要 5.2、4K@30 本身就超
+ *  4.1 上限（此前靠编码器宽容度在跑）；安卓端 MediaCodec 拒绝 level 时走
+ *  configure 降级链/报错，诊断面板可见 SPS level。 */
+function ffmpegArgs(monitor: number, quality: string, encoder: string, fps: number, width = 0, height = 0): string[] {
+  const qp = QUALITY_QP[normalizeQuality(quality)] ?? QUALITY_QP.medium;
+  const f = normalizeFps(fps);
   const args = [
     "-hide_banner", "-loglevel", "error",
-    "-f", "lavfi", "-i", `ddagrab=output_idx=${monitor}:framerate=30:draw_mouse=1`,
+    "-f", "lavfi", "-i", `ddagrab=output_idx=${monitor}:framerate=${f}:draw_mouse=1`,
     "-c:v", encoder,
   ];
   if (encoder === "h264_nvenc") {
@@ -501,10 +519,10 @@ function ffmpegArgs(monitor: number, quality: string, encoder: string): string[]
   } else if (encoder === "libx264") {
     // 同 probeArgs libx264 分支：纯软编只吃系统内存帧，先 hwdownload,format=bgra
     // 落回内存再 format=yuv420p（high profile 只收 4:2:0——两处参数面同步，
-    // 改这里必须改那里）。
+    // 改这里必须改那里）。keyint 按 2s GOP 换算（帧率可配置后不再恒 60）。
     args.push("-vf", "hwdownload,format=bgra,format=yuv420p",
       "-preset", "veryfast", "-tune", "zerolatency",
-      "-x264-params", "keyint=60:min-keyint=60:repeat-headers=1:scenecut=0",
+      "-x264-params", `keyint=${gopSize(f)}:min-keyint=${gopSize(f)}:repeat-headers=1:scenecut=0`,
       "-qp", qp,
     );
   } else {
@@ -512,16 +530,17 @@ function ffmpegArgs(monitor: number, quality: string, encoder: string): string[]
     // 通用参数——不给编码器专有选项，靠 -g/-bf 公共段 + 默认码控。
     args.push("-qp", qp);
   }
-  // 兼容性约束：显式 -profile:v high -level:v 4.1（覆盖几乎所有手机的解码器
-  // profileLevels；AMF 默认可能输出 level 5.x，个别手机 MediaCodec.configure
-  // 直接拒——「该设备不支持此流参数」。不明示就让编码器报默认值，出问题不可控）。
-  args.push("-profile:v", "high", "-level:v", "4.1");
-  args.push("-bf", "0", "-g", "60", "-f", "h264", "pipe:1");
+  // 兼容性约束：显式 -profile:v high + level 自适应（不让编码器用默认值；
+  // level 按 fps×分辨率算最小满足档——4.2 覆盖 ≤60fps@1080p，120/144fps
+  // 或更高分辨率升 5.1/5.2，见 screen-params.ts h264Level。安卓端
+  // MediaCodec 不支持所选 level 时 configure 拒绝 → 降级链/诊断可见）。
+  args.push("-profile:v", "high", "-level:v", h264Level(f, width, height));
+  args.push("-bf", "0", "-g", String(gopSize(f)), "-f", "h264", "pipe:1");
   return args;
 }
 
-/** 起 ffmpeg（monitor/quality/encoder 已定）。编码器按可用性回落。 */
-async function startFfmpeg(monitor: number, quality: string): Promise<void> {
+/** 起 ffmpeg（monitor/quality/encoder/fps 已定）。编码器按可用性回落。 */
+async function startFfmpeg(monitor: number, quality: string, fps: number): Promise<void> {
   const bin = ffmpegPath();
   if (!bin) {
     lastError = "找不到 ffmpeg——请安装 ffmpeg 并加入 PATH（或设置 LXCODE_FFMPEG 指向 ffmpeg.exe）";
@@ -550,10 +569,17 @@ async function startFfmpeg(monitor: number, quality: string): Promise<void> {
   ffmpegQuality = quality;
   ffmpegMonitor = monitor;
   ffmpegEncoder = encoder;
+  ffmpegFps = normalizeFps(fps);
   resetAu();
   auTs = 0;
-  log(`[screen] 启动 ffmpeg: monitor=${monitor} encoder=${encoder} quality=${quality}`);
-  ffmpeg = spawn(bin, ffmpegArgs(monitor, quality, encoder), {
+  // level 自适应需要输出分辨率：显示器原生素材不缩放（清晰度基线）。枚举表
+  // 顺序与 DXGI 不保证一致（见 enumerateMonitors 注释），但 level 只用于量级
+  // 判定，近似分辨率足够。
+  const mon = monitorsCache.find((m) => m.id === monitor) ?? monitorsCache[monitor];
+  const monW = mon?.width ?? 0;
+  const monH = mon?.height ?? 0;
+  log(`[screen] 启动 ffmpeg: monitor=${monitor} encoder=${encoder} quality=${quality} fps=${ffmpegFps} level=${h264Level(ffmpegFps, monW, monH)}`);
+  ffmpeg = spawn(bin, ffmpegArgs(monitor, quality, encoder, ffmpegFps, monW, monH), {
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
   });
@@ -618,6 +644,7 @@ function stopFfmpeg(): void {
   }
   ffmpegSpawnedAt = 0;
   ffmpegEncoder = "";
+  ffmpegFps = 0;
   if (streamSocket) {
     // P1-3：无论 destroyed 与否都 end() 后立即置 null——只 end() 不置 null 时
     // 下一次 startStreamSocket 看到非 destroyed 的半关闭 socket 直接复用，
@@ -718,6 +745,7 @@ export function startScreenPolling(): void {
         width: 0,
         height: 0,
         quality: wantCmd.quality || undefined,
+        fps: ffmpeg ? ffmpegFps : undefined,
         error: lastError,
         err_kind: lastErrKind,
         monitors: enumerateMonitors(),
@@ -770,6 +798,7 @@ async function reconcile(): Promise<void> {
   if (wantCmd.start_epoch !== undefined) lastStartEpoch = wantCmd.start_epoch;
   if (wantCmd.want) {
     const q = wantCmd.quality || "medium";
+    const f = normalizeFps(wantCmd.fps);
     if (!ffmpeg) {
       if (restartTripped(wantCmd.want, restartFailures)) {
         // 熔断：不再自动重启，错误保持上报（err_kind=reason），手机端可见；
@@ -781,7 +810,7 @@ async function reconcile(): Promise<void> {
       }
       lastError = "";
       lastErrKind = undefined;
-      await startFfmpeg(wantCmd.monitor, q);
+      await startFfmpeg(wantCmd.monitor, q, f);
       // P0-1：此处**只对 spawn 本身失败**（缺 ffmpeg/缺编码器，lastError 非空）
       // 计数——spawn 同步成功不判成功也不清零：存活时长未到 2s 前无从判定，
       // 在这里清零会让「spawn 成功→立即退出」的震荡把熔断计数 0↔1 打平
@@ -790,10 +819,10 @@ async function reconcile(): Promise<void> {
         restartFailures = afterRestartAttempt(false, restartFailures);
       }
       updateCapturingHint(true);
-    } else if (wantCmd.monitor !== ffmpegMonitor || q !== ffmpegQuality) {
+    } else if (wantCmd.monitor !== ffmpegMonitor || q !== ffmpegQuality || f !== ffmpegFps) {
       // 参数变化：重启（Stop 再 Start，下一轮询周期生效）
       stopFfmpeg();
-      await startFfmpeg(wantCmd.monitor, q);
+      await startFfmpeg(wantCmd.monitor, q, f);
     }
   } else if (ffmpeg) {
     stopFfmpeg();
@@ -867,6 +896,7 @@ export function screenStateSnapshot(): ShellState {
     width: 0,
     height: 0,
     quality: wantCmd.quality || undefined,
+    fps: ffmpeg ? ffmpegFps : undefined,
     error: lastError,
     err_kind: lastErrKind,
     monitors: monitorsCache,

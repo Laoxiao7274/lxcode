@@ -22,6 +22,8 @@ fun parseScreenState(o: JSONObject): com.moyunteng.lxcode.remote.ui.ScreenStateI
         active = o.optBoolean("active", false),
         monitor = o.optInt("monitor", 0),
         quality = o.optString("quality", "").ifEmpty { null },
+        // fps 缺席/0 = 老壳未上报（omitempty 整键缺席）→ 0，UI 按「未知，30」对待。
+        fps = o.optInt("fps", 0),
         encoder = o.optString("encoder", ""),
         error = o.optString("error", "").ifEmpty { null },
     )

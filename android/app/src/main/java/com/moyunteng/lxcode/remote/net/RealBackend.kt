@@ -146,9 +146,9 @@ class RealBackend {
         }
     }
 
-    fun startScreen(monitor: Int, quality: String, onDone: (String?) -> Unit) {
+    fun startScreen(monitor: Int, quality: String, fps: Int, onDone: (String?) -> Unit) {
         screenBusy = true
-        client.call("screen.start", JSONObject().put("monitor", monitor).put("quality", quality)) { err, result ->
+        client.call("screen.start", JSONObject().put("monitor", monitor).put("quality", quality).put("fps", fps)) { err, result ->
             screenBusy = false
             if (err != null) {
                 screenStartPending = false
@@ -183,12 +183,32 @@ class RealBackend {
     }
 
     /** 运行中切清晰度（悬浮球菜单）：重发 screen.start 换 quality——后端命令电平
-     *  变化会驱动壳重启 ffmpeg（monitor/quality 任一变化即重起），应答带新状态。 */
+     *  变化会驱动壳重启 ffmpeg（monitor/quality/fps 任一变化即重起），应答带新状态。 */
     fun setScreenQuality(quality: String, onDone: (String?) -> Unit) {
+        val st = screenState ?: return onDone("当前没有投屏")
+        val params = JSONObject().put("monitor", st.monitor).put("quality", quality)
+        // 帧率沿用当前执行值（0 = 老壳未上报 → 不带，后端按默认 30 处理）。
+        if (st.fps > 0) params.put("fps", st.fps)
+        client.call("screen.start", params) { err, result ->
+            if (err != null) {
+                onDone(err.optString("message"))
+            } else {
+                if (result is JSONObject) applyScreenState(result)
+                onDone(null)
+            }
+        }
+    }
+
+    /** 运行中切帧率（设置页/悬浮球菜单）：机制同 setScreenQuality——重发
+     *  screen.start 换 fps，后端命令电平驱动壳重启 ffmpeg。quality 沿用当前
+     *  档（null = 老壳未上报 → medium，与 setScreenMonitor 的折衷一致）。 */
+    fun setScreenFps(fps: Int, onDone: (String?) -> Unit) {
         val st = screenState ?: return onDone("当前没有投屏")
         client.call(
             "screen.start",
-            JSONObject().put("monitor", st.monitor).put("quality", quality),
+            JSONObject().put("monitor", st.monitor)
+                .put("quality", st.quality ?: "medium")
+                .put("fps", fps),
         ) { err, result ->
             if (err != null) {
                 onDone(err.optString("message"))
@@ -208,10 +228,10 @@ class RealBackend {
     fun setScreenMonitor(monitor: Int, onDone: (String?) -> Unit) {
         val st = screenState ?: return onDone("当前没有投屏")
         val q = st.quality ?: "medium"
-        client.call(
-            "screen.start",
-            JSONObject().put("monitor", monitor).put("quality", q),
-        ) { err, result ->
+        val params = JSONObject().put("monitor", monitor).put("quality", q)
+        // fps 同 quality 的沿用逻辑（老壳未上报 → 不带，按默认 30）。
+        if (st.fps > 0) params.put("fps", st.fps)
+        client.call("screen.start", params) { err, result ->
             if (err != null) {
                 onDone(err.optString("message"))
             } else {

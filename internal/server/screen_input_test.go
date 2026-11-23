@@ -90,6 +90,54 @@ func TestScreenInputReceiverOnly(t *testing.T) {
 	}
 }
 
+// TestScreenInputValidationDownUpKeyboard 修饰键锁定链路的校验分支：down/up
+// 带 key = 键盘事件（校验 key/modifiers，不要求 x/y）；带非法键名/修饰键拒绝；
+// key 空 = 鼠标事件仍按坐标域校验（存量鼠标按下/抬起语义不变）。
+func TestScreenInputValidationDownUpKeyboard(t *testing.T) {
+	s := newScreenTestServer(t)
+	attachAllowControl(t, s, true)
+	s.shell.report(fakeShellState(true))
+	c := &wsClient{out: make(chan []byte, 4), bin: make(chan []byte, 4), done: make(chan struct{})}
+	s.mu.Lock()
+	s.clients[c] = struct{}{}
+	s.mu.Unlock()
+	s.shell.setReceiver(c)
+
+	// 合法：键盘 down/up 无需 x/y（锁定语义 down=按下不抬 / up=抬起）
+	for _, body := range []string{
+		`{"type":"down","key":"ctrl"}`,
+		`{"type":"up","key":"shift"}`,
+		`{"type":"down","key":"enter"}`,
+		`{"type":"up","key":"f5"}`,
+	} {
+		resp := s.dispatch(c, inputReq(`1`, body))
+		if resp.Error != nil {
+			t.Fatalf("合法键盘 down/up 应入队成功: %s → %+v", body, resp.Error)
+		}
+	}
+	// 非法：键名不在白名单 / 修饰键未知（key:"" 与键缺席不可区分——按鼠标
+	// 事件语义走 x/y 域校验，不在此列）
+	for _, body := range []string{
+		`{"type":"down","key":"super"}`,
+		`{"type":"up","key":"ctrl","modifiers":["hyper"]}`,
+		`{"type":"down","key":"ctrl","modifiers":["ctrl","mega"]}`,
+	} {
+		resp := s.dispatch(c, inputReq(`1`, body))
+		if resp.Error == nil || resp.Error.Code != protocol.CodeInvalidParams {
+			t.Fatalf("非法键盘 down/up 应回 CodeInvalidParams: %s → %+v", body, resp.Error)
+		}
+	}
+	// 鼠标 down/up（key 空 + 合法坐标）照旧入队（存量语义）
+	resp := s.dispatch(c, inputReq(`1`, `{"type":"down","x":0.5,"y":0.5}`))
+	if resp.Error != nil {
+		t.Fatalf("鼠标 down 应入队成功: %+v", resp.Error)
+	}
+	resp = s.dispatch(c, inputReq(`1`, `{"type":"up","x":0.5,"y":0.5}`))
+	if resp.Error != nil {
+		t.Fatalf("鼠标 up 应入队成功: %+v", resp.Error)
+	}
+}
+
 // TestScreenInputValidation 畸形参数在入口拒掉（不进队列）。
 func TestScreenInputValidation(t *testing.T) {
 	s := newScreenTestServer(t)

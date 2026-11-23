@@ -75,19 +75,9 @@ const KEYEVENTF_KEYUP = 0x0002;
 const KEYEVENTF_UNICODE = 0x0004;
 
 // ---- 虚拟键码表（命名键 → VK；单字符走 Unicode 注入，不查布局）----
+// 表本体在 screen-keys.ts（无 electron 依赖——node:test 直接加载；唯一事实源）。
 
-const VK_MAP: Record<string, number> = {
-  backspace: 0x08, tab: 0x09, enter: 0x0d, return: 0x0d, esc: 0x1b, escape: 0x1b,
-  space: 0x20, pgup: 0x21, pgdn: 0x22, end: 0x23, home: 0x24,
-  left: 0x25, up: 0x26, right: 0x27, down: 0x28, insert: 0x2d, delete: 0x2e,
-  win: 0x5b, lwin: 0x5b, rwin: 0x5c, ctrl: 0x11, control: 0x11, alt: 0x12, shift: 0x10,
-  volumeup: 0xaf, volumedown: 0xae, volumemute: 0xad,
-  medianext: 0xb0, mediaprev: 0xb1, mediaplay: 0xb3,
-};
-for (let i = 1; i <= 24; i++) VK_MAP[`f${i}`] = 0x6f + i; // F1=0x70
-
-/** 修饰键名 → VK（key 事件的 modifiers 组合）。 */
-const VK_MOD: Record<string, number> = { ctrl: 0x11, control: 0x11, alt: 0x12, shift: 0x10, win: 0x5b };
+import { VK_MAP, VK_MOD } from "./screen-keys.ts";
 
 // ---- koffi 绑定（惰性初始化：加载失败 = 控制不可用，安全降级为不注入）----
 
@@ -212,22 +202,56 @@ export function injectEvent(ev: ScreenInputEvent): boolean {
         return sendInput(1, [mouseInput(p.ax, p.ay, MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK, 0)], inputSize) === 1;
       }
       case "click":
-      case "dblclick":
-      case "down":
-      case "up": {
+      case "dblclick": {
         const p = toVirtualDesktop(x, y, monitor);
         if (!p) return false;
         const btn = ev.button ?? "left";
         const inputs: unknown[] = [mouseInput(p.ax, p.ay, MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK, 0)];
-        if (ev.type === "down" || ev.type === "up") {
-          inputs.push(mouseInput(0, 0, buttonFlags(btn, ev.type === "down"), 0));
-        } else {
-          const n = ev.type === "dblclick" ? 2 : 1;
-          for (let i = 0; i < n; i++) {
-            inputs.push(mouseInput(0, 0, buttonFlags(btn, true), 0));
-            inputs.push(mouseInput(0, 0, buttonFlags(btn, false), 0));
-          }
+        const n = ev.type === "dblclick" ? 2 : 1;
+        for (let i = 0; i < n; i++) {
+          inputs.push(mouseInput(0, 0, buttonFlags(btn, true), 0));
+          inputs.push(mouseInput(0, 0, buttonFlags(btn, false), 0));
         }
+        return sendInput(inputs.length, inputs, inputSize) === inputs.length;
+      }
+      // down/up：key 非空 = 键盘事件（修饰键锁定链路——安卓端点 CTRL 发
+      // type=down/up + key=ctrl，锁定语义 down=按下不抬、up=抬起），否则鼠标
+      // 按下/抬起。此前 key 非空也走鼠标分支：SendInput MOVE 到左上角 + 左键
+      // 按下，「点 CTRL 实际是鼠标移到 0,0 再点左键」（存量缺陷，2026-12 修复）。
+      case "down":
+      case "up": {
+        const keyName = (ev.key ?? "").toLowerCase();
+        if (keyName !== "") {
+          const down = ev.type === "down";
+          // modifiers 伴随（按下修饰键的同时带修饰键——罕见但合法）：先按住
+          // modifiers 再按 key，方向取反时先抬 key 的修饰不适用（down/up 各自
+          // 独立），modifiers 一律按 down=按下 / up=抬起对称处理。
+          const inputs: unknown[] = [];
+          for (const m of ev.modifiers ?? []) {
+            const vkM = VK_MOD[m];
+            if (vkM) inputs.push(keyInput(vkM, 0, down ? 0 : KEYEVENTF_KEYUP));
+          }
+          const vk = VK_MAP[keyName];
+          if (vk !== undefined) {
+            inputs.push(keyInput(vk, 0, down ? 0 : KEYEVENTF_KEYUP));
+          } else if (keyName.length === 1) {
+            // 单字符键名（后端白名单允许，与 key 事件同规则）：Unicode 注入
+            // 按下/抬起各一条（VK 0，scan = 码位），保持按住语义。
+            const cp = keyName.codePointAt(0) ?? 0;
+            if (cp > 0) {
+              inputs.push(keyInput(0, cp, KEYEVENTF_UNICODE));
+              if (!down) inputs.push(keyInput(0, cp, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP));
+            }
+          } else {
+            return false;
+          }
+          return sendInput(inputs.length, inputs, inputSize) === inputs.length;
+        }
+        const p = toVirtualDesktop(x, y, monitor);
+        if (!p) return false;
+        const btn = ev.button ?? "left";
+        const inputs: unknown[] = [mouseInput(p.ax, p.ay, MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK, 0)];
+        inputs.push(mouseInput(0, 0, buttonFlags(btn, ev.type === "down"), 0));
         return sendInput(inputs.length, inputs, inputSize) === inputs.length;
       }
       case "scroll": {

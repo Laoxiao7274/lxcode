@@ -56,19 +56,40 @@ const (
 	CodeScreenControlDisabled = -32084
 )
 
-// 码率档（Stage 1 三档；kbit）。
+// 码率档（Stage 1 三档；kbit）。ultra 不在此列——它是 qp 档（constqp 14），
+// 码率随内容浮动没有定值，见 shell/src/screen-params.ts 的 QUALITY_QP 注释。
 const (
 	BitrateLow    = 1500
 	BitrateMedium = 3000
 	BitrateHigh   = 6000
 )
 
-// 帧率（定帧率，Stage 1 不做动态调整；ddagrab 与安卓低延迟解码都以恒定帧率最稳）。
-const ScreenFPS = 30
+// 帧率（定帧率，不做动态调整；ddagrab 与安卓低延迟解码都以恒定帧率最稳）。
+// ScreenFPSDefault 是缺省帧率（用户不选 = 30，避免所有用户无感知吃带宽）；
+// ScreenFPSOptions 是 screen.start 的 fps 白名单（后端归一，未知值回落默认）。
+// 144fps 需要 H.264 level 5.2（1080p@144 = 1.18M MB/s，超 5.1 的 983k），
+// 壳侧按分辨率×帧率自适应选 level，见 shell/src/screen-params.ts。
+const ScreenFPSDefault = 30
+
+// ScreenFPS 历史别名（帧率可配置前的唯一值）——语义 = 默认帧率。
+const ScreenFPS = ScreenFPSDefault
+
+// ScreenFPSOptions screen.start 的 fps 白名单（升序）。
+var ScreenFPSOptions = []int{30, 60, 120, 144}
+
+// NormalizeFPS 帧率归一：白名单精确命中才生效，其余（含 0 = 缺席）回落默认。
+func NormalizeFPS(fps int) int {
+	for _, v := range ScreenFPSOptions {
+		if v == fps {
+			return v
+		}
+	}
+	return ScreenFPSDefault
+}
 
 // ResolutionParams 分辨率/码率档（Stage 1：分辨率定 1080p 档，只开码率三档）。
 type ResolutionParams struct {
-	// Quality：low / medium / high（BitrateLow/Medium/High）。空 = medium。
+	// Quality：low / medium / high / ultra（qp 档；空 = medium）。
 	Quality string `json:"quality"`
 }
 
@@ -76,8 +97,10 @@ type ResolutionParams struct {
 type ScreenStartParams struct {
 	// Monitor 显示器索引（screen.monitors 返回的 id）。空 = 主显示器（0）。
 	Monitor int `json:"monitor,omitempty"`
-	// Quality 码率档（low/medium/high；空 = medium）。
+	// Quality 清晰度档（low/medium/high/ultra；空 = medium）。
 	Quality string `json:"quality,omitempty"`
+	// Fps 目标帧率（30/60/120/144 白名单；0/缺席 = ScreenFPSDefault）。
+	Fps int `json:"fps,omitempty"`
 }
 
 // ScreenMonitorsResult 显示器枚举（screen.monitors）。
@@ -102,6 +125,8 @@ type ScreenState struct {
 	Active  bool   `json:"active"`
 	Monitor int    `json:"monitor,omitempty"`
 	Quality string `json:"quality,omitempty"`
+	// Fps 实际执行帧率（壳随状态上报；0/缺席 = 老壳或未知——按 30 对待）。
+	Fps int `json:"fps,omitempty"`
 	// Encoder 实际选中的编码器名（h264_nvenc / h264_qsv / ...；壳上报）。
 	Encoder string `json:"encoder,omitempty"`
 	// Width/Height 实际输出分辨率（壳上报；0 = 未知）。

@@ -284,4 +284,35 @@ class ScreenDecoderTest {
         gate.onKeyframeAccepted()
         assertTrue(onParsedFrame(0))
     }
+
+    // ---- supportableFps：解码器 level 声明 → 可支持帧率（帧率上限扩展钉子）----
+
+    @Test
+    fun supportableFps_1080p144_at_5_2() {
+        // 1080p = 8160 MB/帧；5.2 MaxMBPS = 2,073,600 → 上限 254fps ≥ 144
+        assertEquals(144, ScreenDecoder.supportableFps(1920, 1080, 144, 52))
+    }
+
+    @Test
+    fun supportableFps_1080p144_at_5_1_cappedTo120() {
+        // 5.1 MaxMBPS = 983,040 → 1080p 上限 120fps（983040/8160 = 120.49）：
+        // 请求 144 实际只能 120（截到能力上限，不报 0——预检可据此降帧率）。
+        assertEquals(120, ScreenDecoder.supportableFps(1920, 1080, 144, 51))
+    }
+
+    @Test
+    fun supportableFps_cappedAtRequested() {
+        // 4.2 MaxMBPS = 522,240 → 1080p 上限 64fps：请求 30 得 30（≤请求值）
+        assertEquals(30, ScreenDecoder.supportableFps(1920, 1080, 30, 42))
+        // 请求 60 → 实际可 60（8160×60=489,600 ≤ 522,240）
+        assertEquals(60, ScreenDecoder.supportableFps(1920, 1080, 60, 42))
+    }
+
+    @Test
+    fun supportableFps_degenerateInputsZero() {
+        assertEquals(0, ScreenDecoder.supportableFps(0, 1080, 144, 52))
+        assertEquals(0, ScreenDecoder.supportableFps(1920, 0, 144, 52))
+        assertEquals(0, ScreenDecoder.supportableFps(1920, 1080, 0, 52))
+        assertEquals(0, ScreenDecoder.supportableFps(1920, 1080, 144, -1))
+    }
 }

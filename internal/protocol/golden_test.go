@@ -135,7 +135,7 @@ func goldenSamples() map[string]goldenSample {
 		// 完整形态——monitor/quality/encoder/分辨率/接收者；monitor=1 才能让
 		// omitempty 键在 wire 上出现，0 会缺席——与 monitor 缺席 = 主屏语义一致）。
 		"screenStateFull": {"ScreenState", ScreenState{
-			Active: true, Monitor: 1, Quality: "high", Encoder: "h264_nvenc",
+			Active: true, Monitor: 1, Quality: "high", Fps: 144, Encoder: "h264_nvenc",
 			Width: 1920, Height: 1080, Receiver: "rcpt_1",
 		}},
 		// 停止后带失败原因：active=false 且 error 非空（state 应答——上一轮为什么停）。

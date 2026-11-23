@@ -52,11 +52,23 @@ func (s *Server) dispatchScreen(c *wsClient, req *protocol.Request, params json.
 }
 
 // setReceiver / clearReceiver（receiverId 在 screen_shell.go 的锁内维护）。
+// c 可为 nil（清接收者路径沿用同一函数——测试即如此调用）：nil 只跳过队列
+// 加深，换人清队列（dropInputQueue）照常。
 func (sh *screenShell) setReceiver(c *wsClient) {
 	sh.mu.Lock()
 	prev := sh.receiverId
 	sh.receiverId = clientKey(c)
+	fps := sh.cmd.Fps
 	sh.mu.Unlock()
+	// 高帧率下加深接收者的二进制队列（144fps@8 帧 = 55ms 太浅，抖动即丢帧；
+	// 见 binaryQueueDepth）。连接创建时还不知道 fps，接收者确定时按当前命令
+	// 深度重建（chan 容量不可变——换新的换进 wsClient.bin，writeLoop 消费的
+	// 是同一个 channel 变量，原子替换后旧 channel 里残帧自然排空）。
+	if c != nil {
+		if depth := binaryQueueDepth(fps); depth > cap(c.bin) {
+			c.rebindBinQueue(depth)
+		}
+	}
 	// 旧接收者退出订阅：订阅表以「channel」为单位，接收者切换由 sendBinary
 	// 的目标判定兜底——Stage 1 单接收者，直接全量订阅新接收者即可。
 	// 换接收者：旧接收者积压的控制事件清掉（事件是针对「看时的画面」发出的，
@@ -121,11 +133,36 @@ func (s *Server) screenInput(c *wsClient, req *protocol.Request, params json.Raw
 	return protocol.NewResult(req.ID, map[string]bool{"queued": true})
 }
 
+// isScreenKeyName 键名白名单：命名键 + 单字符（壳侧 VK_MAP 与 Unicode 注入能
+// 执行的名字，与 input.ts 的 VK_MAP 保持同一集合；F1-F24 由 fN 模式覆盖）。
+func isScreenKeyName(k string) bool {
+	switch k {
+	case "backspace", "tab", "enter", "return", "esc", "escape", "space",
+		"pgup", "pgdn", "end", "home", "left", "up", "right", "down",
+		"insert", "delete", "win", "lwin", "rwin",
+		"ctrl", "control", "alt", "shift",
+		"volumeup", "volumedown", "volumemute",
+		"medianext", "mediaprev", "mediaplay":
+		return true
+	}
+	if (k[0] == 'f' || k[0] == 'F') && len(k) >= 2 && len(k) <= 3 {
+		n := 0
+		for _, r := range k[1:] {
+			if r < '0' || r > '9' {
+				return false
+			}
+			n = n*10 + int(r-'0')
+		}
+		return n >= 1 && n <= 24
+	}
+	return len([]rune(k)) == 1
+}
+
 // validateScreenInput 参数域校验（安全门的一部分：畸形事件在入口拒掉，
 // 不进队列——壳侧注入器收到的每条事件都必须是可直接执行的）。
 func validateScreenInput(p protocol.ScreenInputParams) string {
 	switch p.Type {
-	case "move", "click", "dblclick", "down", "up":
+	case "move", "click", "dblclick":
 		if p.X < 0 || p.X > 1 || p.Y < 0 || p.Y > 1 {
 			return "x/y 必须在 0-1 范围内"
 		}
@@ -133,6 +170,33 @@ func validateScreenInput(p protocol.ScreenInputParams) string {
 		case "", "left", "right", "middle":
 		default:
 			return "未知按键: " + p.Button
+		}
+	case "down", "up":
+		// key 非空 = 键盘事件（修饰键锁定链路：安卓端点 CTRL 发 type=down/up +
+		// key=ctrl，锁定语义 down=按下不抬 / up=抬起），校验 key/modifiers 而非
+		// x/y；key 空 = 鼠标按下/抬起，仍按坐标域校验。
+		if p.Key != "" {
+			if !isScreenKeyName(p.Key) {
+				return "未知键名: " + p.Key
+			}
+			// down/up 的 modifiers：只认修饰键（与 key 事件同一份白名单）——
+			// 常规键名单字符等非修饰键无意义，拒绝畸形组合。
+			for _, m := range p.Modifiers {
+				switch m {
+				case "ctrl", "alt", "shift", "win":
+				default:
+					return "未知修饰键: " + m
+				}
+			}
+		} else {
+			if p.X < 0 || p.X > 1 || p.Y < 0 || p.Y > 1 {
+				return "x/y 必须在 0-1 范围内"
+			}
+			switch p.Button {
+			case "", "left", "right", "middle":
+			default:
+				return "未知按键: " + p.Button
+			}
 		}
 	case "scroll":
 		if p.Dx == 0 && p.Dy == 0 {

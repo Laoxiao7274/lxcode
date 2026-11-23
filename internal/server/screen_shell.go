@@ -38,8 +38,10 @@ type screenCommand struct {
 	Want bool `json:"want"`
 	// Monitor 目标显示器（Want=true 时有效）。
 	Monitor int `json:"monitor"`
-	// Quality 码率档 low/medium/high。
+	// Quality 码率档 low/medium/high/ultra。
 	Quality string `json:"quality"`
+	// Fps 目标帧率（30/60/120/144；0 = 老协议默认 30）。
+	Fps int `json:"fps"`
 	// StartEpoch 手机端「开始投屏」意图代数：每次 screen.start（want=true）
 	// 递增。电平协议下壳无法区分「电平未变」与「用户又点了一次开始」——熔断
 	// 态（want 保持 true）下用户点「重新开始投屏」就是靠 epoch 变化被壳感知
@@ -54,10 +56,12 @@ type shellState struct {
 	Encoder string `json:"encoder"`
 	Width   int    `json:"width"`
 	Height  int    `json:"height"`
-	// Quality 壳当前执行的码率档（随轮询上报；P1-1：screenState 填
+	// Quality 壳当前执行的清晰度档（随轮询上报；P1-1：screenState 填
 	// ScreenState.Quality——手机端 UI 与「切显示器沿用当前档」以此为据，
 	// 缺失时不编造 medium，避免 UI 显示与重置把清晰度打回默认档）。
 	Quality string `json:"quality,omitempty"`
+	// Fps 壳当前执行的帧率（随轮询上报；0 = 老壳未上报——按默认 30 对待）。
+	Fps int `json:"fps,omitempty"`
 	// Error 非空 = 最近一次失败原因（人话）。
 	Error string `json:"error,omitempty"`
 	// ErrKind 错误分类（reason/ffmpeg_missing/encoder_unavailable），空 = 普通原因。
@@ -147,18 +151,18 @@ func (sh *screenShell) report(st shellState) ([]protocol.ScreenMonitor, bool) {
 	return st.Monitors, changed
 }
 
-// setCommand 设置命令电平（start/stop 共用）。monitor 仅 want=true 时生效；
+// setCommand 设置命令电平（start/stop 共用）。monitor/fps 仅 want=true 时生效；
 // want=true 时递增意图代数（start epoch，P1-5：壳据此识别「用户又点了一次
 // 开始」——熔断态下的显式重试）。want=false 时 epoch 保持（壳在停止分支清零
 // 计数，epoch 无消费者）。
-func (sh *screenShell) setCommand(want bool, monitor int, quality string) error {
+func (sh *screenShell) setCommand(want bool, monitor int, quality string, fps int) error {
 	sh.mu.Lock()
 	if want {
-		sh.cmd = screenCommand{Want: want, Monitor: monitor, Quality: quality, StartEpoch: sh.cmd.StartEpoch + 1}
+		sh.cmd = screenCommand{Want: want, Monitor: monitor, Quality: quality, Fps: fps, StartEpoch: sh.cmd.StartEpoch + 1}
 	} else {
 		// stop 保留 epoch（递增计数只属于 start；清零会让「stop 后 start」
 		// 的两次动作在壳侧看起来像同一次）。
-		sh.cmd = screenCommand{Want: want, Monitor: monitor, Quality: quality, StartEpoch: sh.cmd.StartEpoch}
+		sh.cmd = screenCommand{Want: want, Monitor: monitor, Quality: quality, Fps: fps, StartEpoch: sh.cmd.StartEpoch}
 	}
 	sh.mu.Unlock()
 	return nil
@@ -199,7 +203,7 @@ func (s *Server) startScreen(req *protocol.Request, params json.RawMessage) *pro
 	if !s.shell.shellOnline() {
 		return protocol.NewError(req.ID, protocol.CodeScreenUnavailable, errScreenShellOffline.Error())
 	}
-	if err := s.shell.setCommand(true, p.Monitor, normalizeQuality(p.Quality)); err != nil {
+	if err := s.shell.setCommand(true, p.Monitor, normalizeQuality(p.Quality), normalizeFPS(p.Fps)); err != nil {
 		return protocol.NewError(req.ID, protocol.CodeScreenNoMonitor, err.Error())
 	}
 	return protocol.NewResult(req.ID, s.screenState())
@@ -210,7 +214,7 @@ func (s *Server) stopScreen(req *protocol.Request, _ json.RawMessage) *protocol.
 	if s.shell == nil {
 		return protocol.NewError(req.ID, protocol.CodeScreenUnavailable, "投屏未装配")
 	}
-	s.shell.setCommand(false, 0, "")
+	s.shell.setCommand(false, 0, "", 0)
 	return protocol.NewResult(req.ID, s.screenState())
 }
 
@@ -254,6 +258,9 @@ func (s *Server) screenState() protocol.ScreenState {
 		// P1-1：壳上报当前档随状态回传（老壳不上报该键 → 空串，json omitempty
 		// 整键缺席——安卓端按「未知，沿用」处理，不重置清晰度）。
 		st.Quality = sh.Quality
+		// Fps：壳上报当前帧率（老壳不上报 → 0，omitempty 整键缺席——安卓端按
+		// 默认 30 对待，不重置帧率选择）。
+		st.Fps = sh.Fps
 	}
 	st.Receiver = s.shell.receiverId
 	return st
@@ -264,15 +271,18 @@ func (s *Server) broadcastScreenChanged() {
 	s.broadcast(protocol.EventScreenChanged, protocol.ScreenChangedParams{State: s.screenState()})
 }
 
-// normalizeQuality 码率档归一（未知值回落 medium）。
+// normalizeQuality 清晰度档归一（未知值回落 medium）。
 func normalizeQuality(q string) string {
 	switch q {
-	case "low", "high":
+	case "low", "high", "ultra":
 		return q
 	default:
 		return "medium"
 	}
 }
+
+// normalizeFPS 帧率归一（白名单外含 0 = 缺席 → 默认 30；口径在 protocol.NormalizeFPS）。
+func normalizeFPS(fps int) int { return protocol.NormalizeFPS(fps) }
 
 // ---- 壳推流端点（POST /screen/stream） ----
 

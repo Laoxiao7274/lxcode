@@ -68,6 +68,22 @@ class ScreenParsingTest {
         assertNull(st.quality)
     }
 
+    // ===== fps（帧率上限扩展）=====
+
+    @Test
+    fun fpsParsedWhenPresent() {
+        val st = parseScreenState(JSONObject().put("active", true).put("fps", 144))
+        assertEquals(144, st.fps)
+    }
+
+    @Test
+    fun fpsMissingOrZeroIsUnknownNotFabricated() {
+        // 老壳不上报 fps（omitempty 整键缺席）→ 0，UI 按「未知，默认 30」对待；
+        // 不编造 30（与 quality 的「未知沿用」同款纪律）。
+        assertEquals(0, parseScreenState(JSONObject().put("active", true)).fps)
+        assertEquals(0, parseScreenState(JSONObject().put("active", true).put("fps", 0)).fps)
+    }
+
     // ===== parseScreenMonitors：golden screenMonitorsResult 形态 =====
 
     @Test

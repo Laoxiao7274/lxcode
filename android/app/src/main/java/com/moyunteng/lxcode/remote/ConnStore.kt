@@ -101,7 +101,7 @@ class ConnStore(context: Context) {
      *    不提供清除——分流只负责「老用户少一步」，想换参数走悬浮球菜单。
      *  * [monitor]/[quality] —— 上次的选择（quality 空 = 尚无记忆，用默认 medium）。
      */
-    data class ScreenPick(val hasCast: Boolean, val monitor: Int, val quality: String)
+    data class ScreenPick(val hasCast: Boolean, val monitor: Int, val quality: String, val fps: Int = 30)
 
     fun loadScreenPick(): ScreenPick {
         if (!prefs.getBoolean(KEY_SCREEN_CASTED, false)) return ScreenPick(false, 0, "")
@@ -109,15 +109,28 @@ class ConnStore(context: Context) {
             hasCast = true,
             monitor = prefs.getInt(KEY_SCREEN_MONITOR, 0),
             quality = prefs.getString(KEY_SCREEN_QUALITY, "").orEmpty(),
+            fps = if (prefs.contains(KEY_SCREEN_FPS)) prefs.getInt(KEY_SCREEN_FPS, 30) else 30,
         )
     }
 
-    fun saveScreenPick(monitor: Int, quality: String) {
+    fun saveScreenPick(monitor: Int, quality: String, fps: Int = 30) {
         prefs.edit()
             .putBoolean(KEY_SCREEN_CASTED, true)
             .putInt(KEY_SCREEN_MONITOR, monitor)
             .putString(KEY_SCREEN_QUALITY, quality)
+            .putInt(KEY_SCREEN_FPS, fps)
             .apply()
+    }
+
+    /**
+     * 投屏控制模式的持久化（true = 手机触摸映射为电脑键鼠输入）。
+     * 记住用户的选择（2026-12 拍板：默认开 + 记忆，比硬编码默认开合理）——
+     * 进投屏页时按存档恢复，退出不写 false（不污染记忆）。
+     */
+    fun loadScreenControl(): Boolean = prefs.getBoolean(KEY_SCREEN_CONTROL, true)
+
+    fun saveScreenControl(on: Boolean) {
+        prefs.edit().putBoolean(KEY_SCREEN_CONTROL, on).apply()
     }
 
     /**
@@ -180,6 +193,8 @@ class ConnStore(context: Context) {
         private const val KEY_SCREEN_CASTED = "screenCasted"
         private const val KEY_SCREEN_MONITOR = "screenMonitor"
         private const val KEY_SCREEN_QUALITY = "screenQuality"
+        private const val KEY_SCREEN_FPS = "screenFps"
+        private const val KEY_SCREEN_CONTROL = "screenControl"
         private const val KEY_THEME_VARIANT = "themeVariant"
         private const val KEY_THEME_TEMP = "themeTemp"
         private const val KEY_MOTION_OVERRIDE = "motionOverride"

@@ -295,10 +295,13 @@ class AppState(private val store: ConnStore? = null) {
      */
     var screenPickMonitor by mutableStateOf(store?.loadScreenPick()?.monitor ?: 0)
 
-    /** 投屏清晰度档（low/medium/high）。预填上次选择，没有记忆 = medium。 */
+    /** 投屏清晰度档（low/medium/high/ultra）。预填上次选择，没有记忆 = medium。 */
     var screenPickQuality by mutableStateOf(
         store?.loadScreenPick()?.quality?.takeIf { it.isNotEmpty() } ?: "medium",
     )
+
+    /** 投屏帧率档（30/60/120/144）。预填上次选择，没有记忆 = 30（默认不增带宽）。 */
+    var screenPickFps by mutableStateOf(store?.loadScreenPick()?.fps ?: 30)
 
     /** 投屏页的一次性提示（null/空 = 无；ScreenScreen 里几秒后自动清）。 */
     var screenToast by mutableStateOf<String?>(null)
@@ -326,8 +329,31 @@ class AppState(private val store: ConnStore? = null) {
      * 触摸手势映射为电脑键鼠输入（screen.input），false = 纯观看。
      * 纯客户端 UI 态，不进协议；后端「允许控制」关时 screen.input 会被拒
      * （错误 toast 提示去电脑端开开关），模式本身可自由切换。
+     * 带记忆（ConnStore，默认 true = 首次使用即开）：进投屏页时恢复存档，
+     * 离开投屏页只清本次会话内存态、不写 false（不污染记忆）。
      */
-    var screenControlMode by mutableStateOf(false)
+    var screenControlMode by mutableStateOf(store?.loadScreenControl() ?: true)
+
+    /** 切换控制模式 + 落盘（记忆方案②：悬浮球菜单切换时调用）。 */
+    fun setScreenControl(on: Boolean) {
+        screenControlMode = on
+        store?.saveScreenControl(on)
+    }
+
+    /** 进投屏页时按存档恢复控制模式（默认 true = 首次使用即开）。 */
+    fun restoreScreenControl() {
+        screenControlMode = store?.loadScreenControl() ?: true
+    }
+
+    /**
+     * 虚拟键盘条显隐（与控制模式解耦；2026-12 拍板对齐竞品共识——键盘不常驻，
+     * 收进悬浮球菜单可呼出）。只在控制模式内生效（键盘条挂载条件 =
+     * screenControlMode && screenKeyboardVisible），纯客户端 UI 态、不落盘。
+     * 普通 mutableStateOf：AppState 是 applicationScoped 单例，状态天然活在整个
+     * 进程生命周期——Activity 旋转重建不丢（单例不随组合销毁），无需
+     * rememberSaveable；仅在投屏页离开重入的语义上等同「记忆」。
+     */
+    var screenKeyboardVisible by mutableStateOf(false)
 
     /** 脱离页面上下文的一次性系统 toast（退出投屏发生在非组合上下文，screenToast 不适用）。 */
     fun showToast(msg: String) {
@@ -362,10 +388,11 @@ class AppState(private val store: ConnStore? = null) {
     fun hasCastBefore(): Boolean = store?.loadScreenPick()?.hasCast == true
 
     /** 投屏成功后记下选择 + hasCast（下次入口点击直接开始）。 */
-    fun rememberScreenCast(monitor: Int, quality: String) {
+    fun rememberScreenCast(monitor: Int, quality: String, fps: Int = 30) {
         screenPickMonitor = monitor
         screenPickQuality = quality
-        store?.saveScreenPick(monitor, quality)
+        screenPickFps = fps
+        store?.saveScreenPick(monitor, quality, fps)
     }
 
     /**
@@ -762,9 +789,28 @@ fun AppRoot(pairUri: String? = null, onPairUriConsumed: () -> Unit = {}) {
             state.screenFullscreen = false
         }
         if (state.route !is Route.Screen && state.screenControlMode) {
-            state.screenControlMode = false // 离开投屏页回观看态（控制是观看态内的一档）
+            // 方向锁的收口点（见下）：离开投屏页恢复系统缺省方向。UNSPECIFIED =
+            // 回归 Manifest 缺省 = 尊重系统旋转锁定（FULL_USER 仍跟随传感器，
+            // 「横着放就横着」绕过锁，正是横屏残留的根因）。
+            // 控制模式只清本次会话内存态，不写 false——记忆值在下次进 Screen
+            // 路由时按 ConnStore 恢复，这里落 false 会把用户的选择抹掉。
+            if (state.real.screenOrientationLock != null) {
+                state.real.screenOrientationLock = null
+                (context as? android.app.Activity)?.requestedOrientation =
+                    android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            }
+            state.screenControlMode = false
+        }
+        if (state.route is Route.Screen) {
+            // 进投屏页：控制模式按存档恢复（默认 true）；方向锁从干净状态开始。
+            state.restoreScreenControl()
         }
     }
+
+    // 方向锁收口的兜底说明：ScreenScreen 全屏观看分支的 DisposableEffect
+    // （子树卸载时清锁）保留为快速路径，本 effect 是唯一权威收口——route 变化
+    // 覆盖全部退出路径（返回键/停止投屏/断开退回/任何跳转），且不依赖子树
+    // dispose 的时序（部分 ROM 上 dispose 可能被吞或延迟）。
 
     // 投屏断开自动退回：曾在观看态（screenWasActive）后 active 变 false——
     // 停止/解码错误/断线（screen.changed active=false 上报）→ 自动回连接页 +

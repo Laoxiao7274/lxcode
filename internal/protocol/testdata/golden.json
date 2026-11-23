@@ -916,6 +916,7 @@
       "active": true,
       "monitor": 1,
       "quality": "high",
+      "fps": 144,
       "encoder": "h264_nvenc",
       "width": 1920,
       "height": 1080,
