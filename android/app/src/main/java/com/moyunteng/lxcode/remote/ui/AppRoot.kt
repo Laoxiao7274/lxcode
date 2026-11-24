@@ -300,8 +300,11 @@ class AppState(private val store: ConnStore? = null) {
         store?.loadScreenPick()?.quality?.takeIf { it.isNotEmpty() } ?: "medium",
     )
 
-    /** 投屏帧率档（30/60/120/144）。预填上次选择，没有记忆 = 30（默认不增带宽）。 */
-    var screenPickFps by mutableStateOf(store?.loadScreenPick()?.fps ?: 30)
+    /** 投屏帧率档（30/60/120）。预填上次选择（存量 144 钳到 120——真机
+     *  ACCESS_LOST 摘档），没有记忆 = 30（默认不增带宽）。 */
+    var screenPickFps by mutableStateOf(
+        store?.loadScreenPick()?.fps?.let { if (it > 120) 120 else it } ?: 30,
+    )
 
     /** 投屏页的一次性提示（null/空 = 无；ScreenScreen 里几秒后自动清）。 */
     var screenToast by mutableStateOf<String?>(null)
@@ -387,12 +390,13 @@ class AppState(private val store: ConnStore? = null) {
     /** 用户是否成功投屏过（持久化；连接页入口据此直接开始而非落设置页）。 */
     fun hasCastBefore(): Boolean = store?.loadScreenPick()?.hasCast == true
 
-    /** 投屏成功后记下选择 + hasCast（下次入口点击直接开始）。 */
+    /** 投屏成功后记下选择 + hasCast（下次入口点击直接开始）。fps 钳到 120
+     *  （存量/旧 APK 路径可能带 144——真机 ACCESS_LOST 摘档后的防御）。 */
     fun rememberScreenCast(monitor: Int, quality: String, fps: Int = 30) {
         screenPickMonitor = monitor
         screenPickQuality = quality
-        screenPickFps = fps
-        store?.saveScreenPick(monitor, quality, fps)
+        screenPickFps = if (fps > 120) 120 else fps
+        store?.saveScreenPick(monitor, quality, screenPickFps)
     }
 
     /**

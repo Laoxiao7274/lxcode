@@ -1,14 +1,13 @@
 {
-  "version": "0.3.57",
-  "versionCode": 58,
-  "name": "lxcode-0.3.57-android.apk",
-  "size": 12043592,
-  "sha256": "ef7cbc90f3d65cb8663b3586ec228a9361e1ab58177a7e93fa8dd925e44d95e5",
-  "url": "downloads/lxcode-0.3.57-android.apk",
+  "version": "0.3.64",
+  "versionCode": 65,
+  "name": "lxcode-0.3.64-android.apk",
+  "size": 12059977,
+  "sha256": "702c6ff7bcf719dd0d480ea217e46069cca40b7b3c7399eae5f7a81087d4ece3",
+  "url": "downloads/lxcode-0.3.64-android.apk",
   "notes": [
-    "对话里代码块可一键复制；助手支持发文件、粘贴图片、拖拽文件",
-    "手机端可查看并下载 Agent 共享的图片与文件",
-    "投屏稳定性修复：熔断判定、多显示器控制落点、清晰度保持、断线恢复、丢帧策略",
-    "投屏失败提示真实原因，不再误导重装 ffmpeg"
+    "投屏控制升级：虚拟键盘收进悬浮菜单，文字输入支持系统输入法直通（中文更顺）",
+    "修复组合键（Ctrl+C 等）失效的问题",
+    "投屏帧率可选 30/60/120/144，新增「极致」清晰度档"
   ]
 }

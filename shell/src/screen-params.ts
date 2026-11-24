@@ -17,15 +17,21 @@
 //   不支持 5.2 的设备 configure 拒绝后降级或报错可见，不静默花屏）。
 //   放到 5.2 而不是 5.1 的理由：144fps 需要 5.2，5.1 只覆盖 120fps；少一档
 //   分支少一处组合，且主流中高端手机（2020+）硬解声明普遍到 5.2。
+//   144 已从白名单摘档（ACCESS_LOST），但 h264Level 的算术按任意 fps 保留
+//   ——防御旧 APK 直发 144 的请求（normalizeFps 钳在 ffmpegArgs 入口，
+//   h264Level 只在兜底失效时才会见到 144）。
 
-/** 帧率白名单（升序；与 Go protocol.ScreenFPSOptions 逐值对齐）。 */
-export const FPS_OPTIONS = [30, 60, 120, 144] as const;
+/** 帧率白名单（升序；与 Go protocol.ScreenFPSOptions 逐值对齐）。
+ *  最高 120：144 真机触发 DXGI ACCESS_LOST 连环失败（2026-12 摘档）。 */
+export const FPS_OPTIONS = [30, 60, 120] as const;
 
 /** 默认帧率（用户不选 = 30——避免所有用户无感知吃带宽）。 */
 export const FPS_DEFAULT = 30;
 
-/** 帧率归一：白名单精确命中才生效，其余（含 0/undefined = 老后端不带该键）回落默认。 */
+/** 帧率归一：白名单精确命中才生效；144 钳到 120（防御旧安卓 APK 发 144——
+ *  摘档前的存量）；其余（含 0/undefined = 老后端不带该键）回落默认。 */
 export function normalizeFps(fps: number | undefined): number {
+  if (fps === 144) return 120;
   return (FPS_OPTIONS as readonly number[]).includes(fps ?? 0) ? (fps as number) : FPS_DEFAULT;
 }
 
@@ -57,6 +63,8 @@ export function gopSize(fps: number): number {
  * 直接被编码器拒或超规。所以 level 不能只看 fps，还要看分辨率规模：
  * 用「每秒宏块数」与各 level 的 MaxMBPS 比，选最小的满足档。
  * 宏块 = 16×16 像素；帧 MB = ceil(w/16)×ceil(h/16)。
+ * （fps 经 normalizeFps 钳制——144 已摘档，输入 144 按 120 算：5.2 分支在
+ * 当前白名单下不可达，保留作分辨率维度超 5.1 时的兜底（4K@120 等）。）
  */
 export function h264Level(fps: number, width: number, height: number): string {
   const f = normalizeFps(fps);

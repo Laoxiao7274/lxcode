@@ -10,12 +10,17 @@ import (
 	"github.com/moyunteng/lxcode/internal/protocol"
 )
 
-// TestNormalizeFPSWhitelist 白名单精确命中才生效，未知/缺席回落默认 30。
+// TestNormalizeFPSWhitelist 白名单精确命中才生效；144 钳到 120（存量兼容）；
+// 未知/缺席回落默认 30。
 func TestNormalizeFPSWhitelist(t *testing.T) {
-	for _, f := range []int{30, 60, 120, 144} {
+	for _, f := range []int{30, 60, 120} {
 		if got := protocol.NormalizeFPS(f); got != f {
 			t.Fatalf("fps %d 应原样通过，得 %d", f, got)
 		}
+	}
+	// 144 已摘档（真机 ACCESS_LOST）——存量请求钳到次高档 120。
+	if got := protocol.NormalizeFPS(144); got != 120 {
+		t.Fatalf("fps 144 应钳到 120，得 %d", got)
 	}
 	for _, f := range []int{0, 24, 90, 240, -1} {
 		if got := protocol.NormalizeFPS(f); got != protocol.ScreenFPSDefault {
@@ -39,13 +44,18 @@ func TestScreenStartFpsParams(t *testing.T) {
 		}
 	}
 
-	start(`{"monitor":0,"quality":"ultra","fps":144}`)
+	start(`{"monitor":0,"quality":"ultra","fps":120}`)
 	cmd := s.shell.currentCommand()
-	if cmd.Fps != 144 {
-		t.Fatalf("fps 144 应进命令电平: %+v", cmd)
+	if cmd.Fps != 120 {
+		t.Fatalf("fps 120 应进命令电平: %+v", cmd)
 	}
 	if cmd.Quality != "ultra" {
 		t.Fatalf("ultra 档应被接受: %+v", cmd)
+	}
+
+	start(`{"monitor":0,"quality":"ultra","fps":144}`)
+	if got := s.shell.currentCommand().Fps; got != 120 {
+		t.Fatalf("存量 fps 144 应钳到 120，得 %d", got)
 	}
 
 	start(`{"monitor":0,"fps":90}`)
@@ -70,17 +80,17 @@ func TestScreenStateFpsPassthrough(t *testing.T) {
 	s := newScreenTestServer(t)
 	sh := fakeShellState(true)
 	sh.Quality = "ultra"
-	sh.Fps = 144
+	sh.Fps = 120
 	s.shell.report(sh)
 	st := s.screenState()
-	if st.Fps != 144 {
+	if st.Fps != 120 {
 		t.Fatalf("fps 应透传壳上报值: %+v", st)
 	}
 	b, err := json.Marshal(st)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(b), `"fps":144`) {
+	if !strings.Contains(string(b), `"fps":120`) {
 		t.Fatalf("wire 形状缺 fps: %s", b)
 	}
 	s2 := newScreenTestServer(t)
@@ -88,6 +98,32 @@ func TestScreenStateFpsPassthrough(t *testing.T) {
 	b2, _ := json.Marshal(s2.screenState())
 	if strings.Contains(string(b2), "fps") {
 		t.Fatalf("壳未上报时 fps 整键缺席（不编造 30）: %s", b2)
+	}
+}
+
+// TestScreenStateFallbackActivePassthrough 壳上报的 fallback_active 随
+// screenState 透传；老壳（无该键）时整键缺席（omitempty），不编造 false。
+func TestScreenStateFallbackActivePassthrough(t *testing.T) {
+	s := newScreenTestServer(t)
+	sh := fakeShellState(true)
+	sh.FallbackActive = true
+	s.shell.report(sh)
+	st := s.screenState()
+	if !st.FallbackActive {
+		t.Fatalf("fallback_active 应透传壳上报值: %+v", st)
+	}
+	b, err := json.Marshal(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"fallback_active":true`) {
+		t.Fatalf("wire 形状缺 fallback_active: %s", b)
+	}
+	s2 := newScreenTestServer(t)
+	s2.shell.report(fakeShellState(true)) // 老壳：无 fallback_active 键
+	b2, _ := json.Marshal(s2.screenState())
+	if strings.Contains(string(b2), "fallback_active") {
+		t.Fatalf("壳未上报时 fallback_active 整键缺席: %s", b2)
 	}
 }
 

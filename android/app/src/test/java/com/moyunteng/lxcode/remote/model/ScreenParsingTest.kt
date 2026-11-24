@@ -72,8 +72,12 @@ class ScreenParsingTest {
 
     @Test
     fun fpsParsedWhenPresent() {
-        val st = parseScreenState(JSONObject().put("active", true).put("fps", 144))
-        assertEquals(144, st.fps)
+        // 帧率上限 120（144 已摘档）——解析层原样透传 wire 值，钳制在上层
+        // （AppRoot screenPickFps / rememberScreenCast / 后端 NormalizeFPS）。
+        val st = parseScreenState(JSONObject().put("active", true).put("fps", 120))
+        assertEquals(120, st.fps)
+        // 旧壳/旧记忆仍可能带 144：解析层不编造，值照传（防御性钳制在 UI 层）。
+        assertEquals(144, parseScreenState(JSONObject().put("active", true).put("fps", 144)).fps)
     }
 
     @Test
@@ -82,6 +86,25 @@ class ScreenParsingTest {
         // 不编造 30（与 quality 的「未知沿用」同款纪律）。
         assertEquals(0, parseScreenState(JSONObject().put("active", true)).fps)
         assertEquals(0, parseScreenState(JSONObject().put("active", true).put("fps", 0)).fps)
+    }
+
+    // ===== fallback_active（兼容模式捕获位，三端透传）=====
+
+    @Test
+    fun fallbackActiveParsedWhenPresent() {
+        val st = parseScreenState(
+            JSONObject().put("active", true).put("fallback_active", true)
+        )
+        assertTrue(st.fallbackActive)
+        assertFalse(parseScreenState(JSONObject().put("active", true)).fallbackActive)
+    }
+
+    @Test
+    fun fallbackActiveMissingIsFalseNotFabricated() {
+        // 老壳不上报该键（omitempty 整键缺席）→ false；错误键值（字符串等）
+        // optBoolean 也回落 false，不编造兼容模式态。
+        assertEquals(false, parseScreenState(JSONObject()).fallbackActive)
+        assertEquals(false, parseScreenState(JSONObject().put("fallback_active", "yes")).fallbackActive)
     }
 
     // ===== parseScreenMonitors：golden screenMonitorsResult 形态 =====

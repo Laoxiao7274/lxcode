@@ -8,6 +8,7 @@
 | 能力 | 用途 | 开关 |
 |---|---|---|
 | `lavfi` indev | `-f lavfi -i ddagrab=...` | `--enable-indev=lavfi` |
+| `gdigrab` indev | `-f gdigrab -i desktop`（ACCESS_LOST 预算耗尽后的软捕获兜底，只吃系统内存帧） | `--enable-indev=gdigrab` |
 | `ddagrab` 滤镜 | DXGI Desktop Duplication 抓屏（Windows only），输出 D3D11 硬帧 | `--enable-filter=ddagrab` |
 | `h264_nvenc` | NVIDIA 硬编 | `--enable-nvenc --enable-ffnvcodec --enable-encoder=h264_nvenc` |
 | `h264_qsv` | Intel 硬编 | `--enable-libvpl --enable-encoder=h264_qsv` |
@@ -67,7 +68,7 @@ export PKG_CONFIG_PATH=/mingw64/lib/pkgconfig
   --disable-network --disable-iconv --disable-lzma --disable-zlib --disable-bzlib \
   --disable-sdl2 --disable-outdevs \
   --enable-gpl --enable-static --disable-shared --enable-ffmpeg \
-  --enable-indev=lavfi \
+  --enable-indev=lavfi,gdigrab \
   --enable-filter=ddagrab,hwdownload,format,scale \
   --enable-encoder=h264_nvenc,h264_qsv,h264_amf,libx264 \
   --enable-muxer=h264 --enable-protocol=file,pipe \
@@ -110,7 +111,37 @@ electron-builder 之后校验产物里 exe+三 DLL 成套（缺则 fail build）
    另外 MSYS2 的 `windres` 在部分环境 popen 管道失败，make 时传
    `WINDRES='windres --use-temp-file'`。
 
-## 四、验证状态（2026-10-27 本机实测，全绿）
+## 四、验证状态（2026-10-27 本机实测，全绿；2026-11-24 重编复测补录）
+
+**2026-11-24 重编（加 gdigrab indev，产物 5.73MB）**：configure 一次踩坑——脚本把
+`PKG_CONFIG_PATH` 指向隔离目录（只有 x264/vpl.pc）后遮蔽了 mingw64 自带的
+`ffnvcodec.pc`，nvenc 依赖检查报 `ffnvcodec requested, but not all dependencies
+are satisfied`。修法：把 `/mingw64/lib/pkgconfig/ffnvcodec.pc` 一并拷进
+`temp/ffmpeg-static/pkgconfig/`（建议下次直接改进脚本）。复测结论：
+
+- `-formats` 含 `D d gdigrab`；`-h encoder=h264_amf` 像素格式含 `bgra`（兜底内存帧直灌通路在）；
+- ddagrab→h264_amf（5 帧）与 gdigrab→h264_amf（5/10/65 帧）真实抓屏冒烟 ✅；
+  **amf 分支 repeat-headers 复测（上次欠账）**：按 screen-restart.ts `gdigrabArgs`
+  真实参数（ultralowlatency + forced_idr + force_key_frames `gte(t,n_forced*2)`）
+  跑 65 帧 → NAL 扫描 SPS/PPS/IDR 各 2 个（t=0 首帧 + 2s 周期 IDR 各自带头）✅——
+  ultralowlatency 抑制周期头，靠 force_key_frames 补，语义成立；
+  注意 amf 编码器没有 repeat-headers 选项，`-x264-params` 对它静默无效（别指望）；
+- gdigrab→libx264（壳参数带 `-profile:v high`）**报 -22**：gdigrab 输出带 alpha 的
+  bgra，ffmpeg 自动缩放挑了 yuv444p（alpha:1），与 high profile 的 4:2:0 冲突——
+  screen-restart.ts 兜底链 libx264 分支的**既有 bug**（与重编无关，旧产物同样会踩），
+  修法须在 gdigrab 分支给 x264 也显式 `format=yuv420p`（或去掉 profile 限制），
+  待修记入 screen-restart.ts；
+- ddagrab→libx264（hwdownload,format=bgra,format=yuv420p，screen.ts 主链参数）：✅
+  65 帧 SPS/PPS ×2（repeat-headers 生效；x264 关键帧是 I 帧非 IDR，属常规）；
+- 依赖核对：新 exe import table 相比旧产物只多 GDI32/USER32（系统 DLL，零新依赖）；
+  MinGW 运行时三件套不变，`scripts/dll/` 无需动；
+- 真机端到端（壳重启装新 exe 后）：`screen.start` → ffmpeg（安装目录 exe）→
+  WS 二进制帧 15s 450 帧（≈30fps 无断流）→ 真机 `c2.rk.avc.decoder 1920x1080`
+  收帧、BufferPool 30s 循环 600+ 帧 ✅；接收者断开 → ffmpeg 进程自动退出 ✅。
+
+---
+
+### 2026-10-27 首次构建记录
 
 - 工具链：MSYS2 mingw64 gcc 16.2.0 / nasm 2.16 / ffmpeg 8.0（GitHub release tarball）；
 - configure 退出码 0，`config_components.h` 确认
@@ -119,6 +150,11 @@ electron-builder 之后校验产物里 exe+三 DLL 成套（缺则 fail build）
 - 编译产物 `ffmpeg.exe` **5.4MB**（stripped，静态）；
 - `-encoders` 列出 `libx264 / h264_amf / h264_nvenc / h264_qsv` 四编码器全在列；
 - **冒烟（真实抓屏 90 帧，1920×1080@30）**：
+  - `gdigrab → h264_amf`（2026-12 兜底管线冒烟，内存帧直灌 + repeat-headers）：✅
+    5 帧出流（本机 AMD 卡，`-f gdigrab -i desktop`）；那次冒烟用的是旧精简构建
+    （**gdigrab 须按新版脚本重编后复测**——产物未重编前 gdigrab 会报
+    `Unknown input format: 'gdigrab'`），且 amf 分支带
+    `repeat-headers=1` 复测未跑）。
   - `ddagrab → h264_amf`（-usage ultralowlatency -rc cqp）：✅ 345KB Annex B 裸流，
     NAL 起始码 + SPS 头确认，30fps 速度 0.999x；
   //  - `ddagrab + hwdownload,format=bgra,format=yuv420p → libx264`（screen.ts 同款

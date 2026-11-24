@@ -44,7 +44,15 @@ import { getTray } from "./tray";
 import { IS_DEV_SHELL } from "./main";
 import { cachedToken } from "./backend-remote";
 import { feedAnnexB, flushAu, resetAu, FRAME_FLAG_KEYFRAME } from "./screen-au";
-import { restartTripped, afterRestartAttempt, attemptSucceeded, newStartIntent, tripMessage, MAX_CONSECUTIVE_ERRORS } from "./screen-restart";
+import {
+  restartTripped, afterRestartAttempt, attemptSucceeded, newStartIntent, tripMessage,
+  MAX_CONSECUTIVE_ERRORS, isAccessLostExit, highFpsHintMessage, FFMPEG_MIN_ALIVE_MS,
+  ACCESS_LOST_SHORT_BACKOFF_MS, HIGH_FPS_HINT_THRESHOLD,
+  emptyAccessLostBudget, accessLostFail, accessLostRestartIssued, accessLostOnSuccess,
+  accessLostFallbackDue, accessLostBudgetSurvivesParamChange, accessLostFallbackMessage,
+  fallbackActiveMessage, FALLBACK_FPS, FALLBACK_ENCODER_CHAIN, gdigrabArgs,
+  graceUntil, graceExempt, type AccessLostBudget,
+} from "./screen-restart";
 import { normalizeFps, normalizeQuality, gopSize, h264Level, backpressureBytes, QUALITY_QP } from "./screen-params";
 import { setTrayHint } from "./tray";
 import { lastInputInjectedAt } from "./input";
@@ -106,6 +114,9 @@ interface ShellState {
   quality?: string;
   // 当前执行帧率（screen-params 的 fps 链路；0 = 老协议，按 30 对待）。
   fps?: number;
+  // ACCESS_LOST 预算耗尽后的 GDI 兼容模式兜底态（诊断面板可见「兼容模式
+  // 捕获中」；后端不识别该键时忽略，不影响协议兼容）。
+  fallback_active?: boolean;
   error?: string;
   err_kind?: "reason" | "ffmpeg_missing" | "encoder_unavailable";
   monitors: Array<{ id: number; name: string; primary: boolean; width: number; height: number; attached: boolean }>;
@@ -583,6 +594,15 @@ async function startFfmpeg(monitor: number, quality: string, fps: number): Promi
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
   });
+  accessLostBudget = accessLostRestartIssued(accessLostBudget);
+  // 重启 grace（2s）：**只在 ACCESS_LOST 链上授予**（窗口未结 = 本次启动是
+  // ACCESS_LOST 失败后的重启/参数变化重启——后者窗口内预算保留，同属链上）。
+  // 首启/窗口过期后的启动不授予：spawn 即崩的持久故障每次都拿 2s 免计重试
+  // 会让通用熔断永远够不着（graceExempt 注释）。grace 内的非 ACCESS_LOST
+  // 失败中性处理（不记账不清零），close 回调消费。
+  if (accessLostBudget.windowStarted !== 0) {
+    graceUntilTs = graceUntil(Date.now());
+  }
   const thisSpawn = ffmpeg; // 实例身份：close 回调迟到时对照当前实例
   ffmpegSpawnedAt = Date.now();
   ffmpeg.stdout?.on("data", (d: Buffer) => feedStdout(d));
@@ -613,24 +633,141 @@ async function startFfmpeg(monitor: number, quality: string, fps: number): Promi
     }
     // P0-1：按**存活时长**判定本次尝试成败——spawn 成功但存活 < 2s（锁屏/
     // 驱动坏的常态）算失败，连败计数累加，达上限熔断；存活 ≥ 2s 才清零。
+    // ACCESS_LOST 补丁（2026-11-24 真机诊断）：存活过门槛但以 ACCESS_LOST
+    // 退出（stderr 特征 887a0026/AcquireNextFrame failed）也算**失败**——
+    // 否则 144fps 下 ~4.8s 一死的连环重启每次都被清零，熔断永不触发。
     const lifetime = ffmpegSpawnedAt > 0 ? Date.now() - ffmpegSpawnedAt : 0;
     ffmpegSpawnedAt = 0;
-    const ok = attemptSucceeded(lifetime);
-    if (ok) restartFailures = 0;
-    else restartFailures = afterRestartAttempt(false, restartFailures);
+    const tail = stderrTailText();
+    const accessLost = isAccessLostExit(tail);
+    const ok = attemptSucceeded(lifetime, accessLost);
+    // grace 豁免：跟随 ACCESS_LOST 重启后 2s 内的非 ACCESS_LOST 失败不计
+    // 预算（中性处理——不当成功清零、不当失败累加），区分「存活了」与
+    // 「不算失败」；ACCESS_LOST 退出不受豁免（靠预算累计判定的病）。
+    const exempted = graceExempt(graceUntilTs, Date.now(), accessLost);
+    graceUntilTs = 0;
+    if (exempted) {
+      log(`[screen] 重启后 grace 窗口内的非 ACCESS_LOST 退出（存活 ${lifetime}ms）——不计入失败预算`);
+    } else if (accessLost && !ok) {
+      // ACCESS_LOST 时间窗预算：窗口内记账，超预算转 gdigrab 兜底（不停流）。
+      accessLostBudget = accessLostFail(accessLostBudget, Date.now());
+      accessLostRetryAt = Date.now() + ACCESS_LOST_SHORT_BACKOFF_MS;
+      const due = accessLostFallbackDue(accessLostBudget);
+      const hint = ffmpegFps > 60 && accessLostBudget.attempts >= HIGH_FPS_HINT_THRESHOLD
+        ? `（${highFpsHintMessage()}）`
+        : "";
+      lastError = due
+        ? accessLostFallbackMessage()
+        : `桌面复制失效（ACCESS_LOST），${ACCESS_LOST_SHORT_BACKOFF_MS}ms 后自动重试（窗口内第 ${accessLostBudget.attempts} 次）${hint}`;
+      lastErrKind = "reason";
+      if (ffmpegFps > 60 && accessLostBudget.attempts >= HIGH_FPS_HINT_THRESHOLD) {
+        log(`[screen] 高帧率不稳提示：${highFpsHintMessage()}（fps=${ffmpegFps}，窗口内失效 ${accessLostBudget.attempts} 次）`);
+      }
+      if (due) log("[screen] ACCESS_LOST 预算耗尽——下次重启切 GDI 兼容模式捕获（gdigrab，30fps）");
+    } else if (ok) {
+      restartFailures = 0;
+      // 真实成功：预算只在窗口自然过期后清（窗口内不清——周期性抖动的
+      // 存活空档恰恰呈成功形态，清了预算就永远凑不满，见
+      // accessLostOnSuccess 注释）。
+      accessLostBudget = accessLostOnSuccess(accessLostBudget, Date.now());
+    } else {
+      restartFailures = afterRestartAttempt(false, restartFailures);
+    }
     ffmpeg = null;
     ffmpegEncoder = "";
-    if (wantCmd.want) {
+    if (wantCmd.want && !(accessLost && !ok)) {
       // 崩溃重启：命令电平还在（手机还要求投屏）→ 下个轮询周期自动重启。
       // stderr 尾行并入上报——手机端「异常退出」要能看到原因（如
       // Cannot load nvcuda.dll），否则轮询环里反复炸一次就-blind 重启一次。
-      const tail = stderrTailText();
+      // ACCESS_LOST 路径的 lastError 已在上面写好（含重试节奏说明），不覆盖。
       lastError =
         restartFailures >= MAX_CONSECUTIVE_ERRORS
           ? tripMessage(restartFailures)
           : `ffmpeg 异常退出（code=${code}）${tail ? `：${tail}` : ""}，正在自动重启`;
       lastErrKind = "reason";
     }
+  });
+}
+
+/** 兜底重启：预算耗尽后的 GDI 兼容模式捕获（gdigrab，恒 30fps、全桌面）。
+ *  与 startFfmpeg 的差异：命令走 gdigrabArgs（内存帧直灌 amf/x264，无
+ *  hwdownload）、fps 恒 FALLBACK_FPS（不管原档位）、编码器走兜底回落链
+ *  （amf → libx264，无 nvenc/qsv）、spawn 时授予重启 grace（跟随 ACCESS_LOST
+ *  失败链的重启，见 graceUntil）。**兜底态不再走 ACCESS_LOST 失败记账**：
+ *  gdigrab 不产生 ACCESS_LOST（无 AcquireNextFrame），非 ACCESS_LOST 崩溃
+ *  落通用连败通道（兜底下的编码器/参数故障语义）。 */
+async function startFallbackFfmpeg(quality: string): Promise<void> {
+  const bin = ffmpegPath();
+  if (!bin) {
+    lastError = "找不到 ffmpeg——请安装 ffmpeg 并加入 PATH（或设置 LXCODE_FFMPEG 指向 ffmpeg.exe）";
+    lastErrKind = "ffmpeg_missing";
+    log(`[screen] ${lastError}`);
+    return;
+  }
+  // 兜底不再跑主链探测（probeEncoders 探测的是 ddagrab 硬帧管线，与 gdigrab
+  // 内存帧管线不是一回事）——按兜底回落链发参，起不来走通用崩溃通道。
+  const available = encoderProbe;
+  const encoder = FALLBACK_ENCODER_CHAIN.find((e) => !available || available.includes(e))
+    ?? FALLBACK_ENCODER_CHAIN[FALLBACK_ENCODER_CHAIN.length - 1];
+  await startStreamSocket();
+  ffmpegQuality = quality;
+  ffmpegMonitor = -1; // 全桌面：不挑显示器（兜底降级语义，见 gdigrabArgs 注释）
+  ffmpegEncoder = `${encoder}+gdigrab`; // 上报带捕获方式标记（诊断面板可辨）
+  ffmpegFps = FALLBACK_FPS;
+  resetAu();
+  auTs = 0;
+  log(`[screen] 启动 ffmpeg（GDI 兼容模式兜底）: encoder=${encoder} fps=${FALLBACK_FPS} 全桌面`);
+  ffmpeg = spawn(bin, gdigrabArgs(encoder, QUALITY_QP[normalizeQuality(quality)] ?? QUALITY_QP.medium, FALLBACK_FPS), {
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  });
+  accessLostBudget = accessLostRestartIssued(accessLostBudget);
+  graceUntilTs = graceUntil(Date.now()); // 跟随 ACCESS_LOST 链的重启：2s 内非 AL 失败不计预算
+  const thisSpawn = ffmpeg;
+  ffmpegSpawnedAt = Date.now();
+  ffmpeg.stdout?.on("data", (d: Buffer) => feedStdout(d));
+  stderrTail.length = 0;
+  ffmpeg.stderr?.on("data", (d: Buffer) => {
+    for (const line of d.toString().split(/\r?\n/)) {
+      const msg = line.trim();
+      if (!msg) continue;
+      log(`[screen][ffmpeg] ${msg}`);
+      stderrTail.push(msg);
+      if (stderrTail.length > STDERR_TAIL_MAX * 2) stderrTail.splice(0, stderrTail.length - STDERR_TAIL_MAX);
+    }
+  });
+  ffmpeg.on("error", (e) => {
+    lastError = `ffmpeg 进程启动失败: ${e.message}`;
+    lastErrKind = "reason";
+  });
+  ffmpeg.on("close", (code) => {
+    log(`[screen] ffmpeg（兜底）退出 code=${code}`);
+    if (ffmpeg !== thisSpawn) {
+      log(`[screen] 忽略旧实例退出（已被停止或替换）code=${code}`);
+      return;
+    }
+    const lifetime = ffmpegSpawnedAt > 0 ? Date.now() - ffmpegSpawnedAt : 0;
+    ffmpegSpawnedAt = 0;
+    const tail = stderrTailText();
+    const exempted = graceExempt(graceUntilTs, Date.now(), false);
+    graceUntilTs = 0;
+    if (exempted) {
+      log(`[screen] 兜底重启后 grace 窗口内的退出（存活 ${lifetime}ms）——不计入失败预算`);
+    } else if (lifetime >= FFMPEG_MIN_ALIVE_MS) {
+      restartFailures = 0;
+      lastError = fallbackActiveMessage(); // 兜底态周期性上报（诊断面板可见）
+      lastErrKind = "reason";
+    } else {
+      restartFailures = afterRestartAttempt(false, restartFailures);
+      if (restartFailures >= MAX_CONSECUTIVE_ERRORS) {
+        lastError = tripMessage(restartFailures);
+      } else {
+        lastError = `GDI 兼容模式捕获异常退出（code=${code}）${tail ? `：${tail}` : ""}，正在自动重试（${restartFailures}/${MAX_CONSECUTIVE_ERRORS}）`;
+      }
+      lastErrKind = "reason";
+    }
+    ffmpeg = null;
+    ffmpegEncoder = "";
   });
 }
 
@@ -645,6 +782,19 @@ function stopFfmpeg(): void {
   ffmpegSpawnedAt = 0;
   ffmpegEncoder = "";
   ffmpegFps = 0;
+  // ACCESS_LOST 预算与参数变化重启：**预算跨重启保留**（参数变化重启本身
+  // 就是 ACCESS_LOST 的最常见诱因——显示器增删的 PnP 抖动，洗掉预算会让
+  // 病态循环永远走不到兜底，见 accessLostBudgetSurvivesParamChange）；窗口
+  // 已过期才清。stopFfmpeg 的 stopFfmpeg 调用方既有「用户停投」（want=false，
+  // clearRestartFailures 全量清）也有「参数变化重启」（预算保留）——这里
+  // 按窗口过期与否判定。restartPending 的排程已由进程停止落地，清位。
+  if (!accessLostBudgetSurvivesParamChange(accessLostBudget, Date.now())) {
+    accessLostBudget = emptyAccessLostBudget();
+  } else {
+    accessLostBudget = accessLostRestartIssued(accessLostBudget);
+  }
+  accessLostRetryAt = 0;
+  graceUntilTs = 0;
   if (streamSocket) {
     // P1-3：无论 destroyed 与否都 end() 后立即置 null——只 end() 不置 null 时
     // 下一次 startStreamSocket 看到非 destroyed 的半关闭 socket 直接复用，
@@ -715,6 +865,25 @@ function enumerateMonitors(): ShellState["monitors"] {
 // 只有存活 ≥ FFMPEG_MIN_ALIVE_MS 的尝试才清零。用户在熔断态点「开始投屏」
 // （want 电平 false→true 边沿）= 显式重试：清零并再给一次机会（P1-5）。
 let restartFailures = 0;
+/** 熔断态日志去重位（模式 D，2026-11-24 取证：熔断态 reconcile 每秒走到
+ *  熔断分支一次，同一条「连续失败熔断」日志每秒刷一条——真机 57 连发）。
+ *  true = 本段熔断已报过日志；进正常重启路径（退避门之后）时清位，下次
+ *  再熔断仍报一次。lastError 上报不走此位——手机端每次轮询都要看到熔断态。 */
+let restartTrippedLogged = false;
+/** ACCESS_LOST 时间窗预算（RustDesk DxgiRecoveryState 同款四字段，2026-12
+ *  重构取代旧 accessLostStreak 连败计数——~5s 周期抖动每次都过 2s 存活门槛、
+ *  连败计数永远凑不满；10s 滑动窗 ≤3 次超窗转 gdigrab 兜底而非熔断停流）。
+ *  纯函数见 screen-restart.ts；预算跨参数变化重启保留（窗口过期才清，
+ *  见 accessLostBudgetSurvivesParamChange）。 */
+let accessLostBudget: AccessLostBudget = emptyAccessLostBudget();
+/** ACCESS_LOST 短退避门（Date.now() 毫秒）：短于此时刻的重试请求被跳过。
+ *  实际重试节奏 = max(轮询间隔, 退避值)——重试仍经 reconcile 的轮询环
+ *  单一 spawn 入口（绕过它会有并发 reconcile 双 spawn 竞态），这里只作下限。 */
+let accessLostRetryAt = 0;
+/** 重启后 grace 截止时刻：grace 内的非 ACCESS_LOST 失败不计预算（中性处理）。
+ *  只授予跟随 ACCESS_LOST 失败的重启（见 graceUntil 注释——正常首启/参数
+ *  变化重启不授予，否则 spawn 即崩的持久故障拿到无限免计重试）。 */
+let graceUntilTs = 0;
 /** 最近见过的 start epoch（P1-5：变化 = 用户显式点开始 = 显式重试；老后端
  *  不下发该字段时 undefined === undefined 恒不触发，行为与旧版一致）。 */
 let lastStartEpoch: number | undefined = undefined;
@@ -746,6 +915,7 @@ export function startScreenPolling(): void {
         height: 0,
         quality: wantCmd.quality || undefined,
         fps: ffmpeg ? ffmpegFps : undefined,
+        fallback_active: accessLostFallbackDue(accessLostBudget) || ffmpegEncoder.includes("+gdigrab"),
         error: lastError,
         err_kind: lastErrKind,
         monitors: enumerateMonitors(),
@@ -788,9 +958,11 @@ async function reconcile(): Promise<void> {
   // 也视为显式重试：清零连败计数再给一次机会。原实现只在 want=false 清零，
   // 熔断态点开始被熔断门挡回，恢复指引走不通。
   if (wantCmd.want && newStartIntent(lastStartEpoch, wantCmd.start_epoch)) {
-    if (restartFailures > 0) {
-      log(`[screen] 用户显式重新开始投屏（epoch ${lastStartEpoch}→${wantCmd.start_epoch}）——清零连败计数（原 ${restartFailures}）重试`);
+    if (restartFailures > 0 || accessLostBudget.attempts > 0 || accessLostFallbackDue(accessLostBudget)) {
+      log(`[screen] 用户显式重新开始投屏（epoch ${lastStartEpoch}→${wantCmd.start_epoch}）——全量清零失败账（通用 ${restartFailures}，ACCESS_LOST 预算 ${accessLostBudget.attempts}${accessLostFallbackDue(accessLostBudget) ? "，退出 GDI 兼容模式回 DXGI 主路径" : ""}）重试`);
       restartFailures = 0;
+      accessLostBudget = emptyAccessLostBudget(); // 显式重试 = 人的明确意图，兜底态一并退出
+      accessLostRetryAt = 0;
       lastError = "";
       lastErrKind = undefined;
     }
@@ -801,16 +973,38 @@ async function reconcile(): Promise<void> {
     const f = normalizeFps(wantCmd.fps);
     if (!ffmpeg) {
       if (restartTripped(wantCmd.want, restartFailures)) {
-        // 熔断：不再自动重启，错误保持上报（err_kind=reason），手机端可见；
-        // 恢复路径 = 用户在手机端再点一次「开始投屏」→ 后端递增 start_epoch
-        // → 本函数入口的 epoch 变化判定（P1-5）清零计数后走到这里正常重试。
-        log(`[screen] 连续 ${restartFailures} 次启动失败，熔断——等待用户重新开始投屏`);
+        // 通用熔断（非 ACCESS_LOST 短命失败 3 次）：不再自动重启，错误保持
+        // 上报（err_kind=reason），手机端可见；恢复路径 = 用户在手机端再点
+        // 一次「开始投屏」→ 后端递增 start_epoch → 本函数入口的 epoch 变化
+        // 判定（P1-5）清零计数后走到这里正常重试。
+        // ACCESS_LOST 不再熔断停流——预算耗尽转 gdigrab 兜底（下方）。
+        // 模式 D 去重（2026-11-24 取证：renderer.log 同一条熔断日志每秒刷 57
+        // 次）——熔断态 reconcile 每轮都会走到这里，日志只在状态切换时打
+        // 一次（上一轮非熔断 → 本轮熔断）；退出熔断（显式重试/停投）时清位，
+        // 下次再熔断仍会如实报一次。
+        if (!restartTrippedLogged) {
+          restartTrippedLogged = true;
+          log(`[screen] 连续失败熔断（通用 ${restartFailures}）——等待用户重新开始投屏`);
+        }
         updateCapturingHint(true);
         return;
       }
+      // ACCESS_LOST 短退避门：退避期内的再次 spawn 跳过本轮（实际重试节奏 =
+      // max(轮询间隔, 退避值)——快速重试仍走轮询环单一 spawn 入口，只是轮询
+      // 比 500ms 快时被这道门压住节奏）。退避期间 lastError 保持
+      // 「…后自动重试」上报，手机端状态不闪变。
+      if (Date.now() < accessLostRetryAt) {
+        return;
+      }
+      restartTrippedLogged = false; // 正常重启路径：熔断已解除，允许下次再报
       lastError = "";
       lastErrKind = undefined;
-      await startFfmpeg(wantCmd.monitor, q, f);
+      if (accessLostFallbackDue(accessLostBudget)) {
+        // 兜底：预算耗尽不停流——gdigrab 软捕获重启（GDI 兼容模式）。
+        await startFallbackFfmpeg(q);
+      } else {
+        await startFfmpeg(wantCmd.monitor, q, f);
+      }
       // P0-1：此处**只对 spawn 本身失败**（缺 ffmpeg/缺编码器，lastError 非空）
       // 计数——spawn 同步成功不判成功也不清零：存活时长未到 2s 前无从判定，
       // 在这里清零会让「spawn 成功→立即退出」的震荡把熔断计数 0↔1 打平
@@ -846,9 +1040,13 @@ async function reconcile(): Promise<void> {
   }
 }
 
-/** 用户显式重新开始投屏时清零连败计数（命令 want 电平 false→true 边沿）。 */
+/** 用户显式重新开始投屏时清零失败账（命令 want 电平 false→true 边沿）。
+ *  显式重试 = 人的明确意图：通用连败、ACCESS_LOST 预算（含兜底态）全量
+ *  清零——兜底态借此退出、回 DXGI 主路径。 */
 function clearRestartFailures(): void {
   restartFailures = 0;
+  accessLostBudget = emptyAccessLostBudget();
+  accessLostRetryAt = 0;
 }
 
 /** 最近 3s 内有过输入注入 = 手机正在控制（input.ts 的长轮询循环在注入事件）。
@@ -897,6 +1095,7 @@ export function screenStateSnapshot(): ShellState {
     height: 0,
     quality: wantCmd.quality || undefined,
     fps: ffmpeg ? ffmpegFps : undefined,
+    fallback_active: accessLostFallbackDue(accessLostBudget) || ffmpegEncoder.includes("+gdigrab"),
     error: lastError,
     err_kind: lastErrKind,
     monitors: monitorsCache,

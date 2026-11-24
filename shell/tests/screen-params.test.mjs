@@ -12,6 +12,10 @@ test("normalizeFps: 白名单命中原样返回", () => {
   for (const f of FPS_OPTIONS) assert.equal(normalizeFps(f), f);
 });
 
+test("normalizeFps: 144 钳到 120（旧 APK 存量兼容）", () => {
+  assert.equal(normalizeFps(144), 120);
+});
+
 test("normalizeFps: 未知值/缺席回落默认 30", () => {
   assert.equal(normalizeFps(0), FPS_DEFAULT);
   assert.equal(normalizeFps(90), FPS_DEFAULT);
@@ -40,7 +44,6 @@ test("gopSize: 2s GOP 按帧率换算", () => {
   assert.equal(gopSize(30), 60);
   assert.equal(gopSize(60), 120);
   assert.equal(gopSize(120), 240);
-  assert.equal(gopSize(144), 288);
   assert.equal(gopSize(0), 60); // 未知按默认 30fps
 });
 
@@ -55,9 +58,9 @@ test("h264Level: 1080p@120 = 5.1（983k 上限内）", () => {
   assert.equal(h264Level(120, 1920, 1080), "5.1");
 });
 
-test("h264Level: 1080p@144 = 5.2（超 5.1 上限）", () => {
-  // 144×8160 = 1,175,040 > 983,040 → 必须 5.2（钉住 level 自适应的核心断言）
-  assert.equal(h264Level(144, 1920, 1080), "5.2");
+test("h264Level: 1080p@144 按钳制后 120 算 = 5.1（144 已摘档）", () => {
+  // h264Level 入口经 normalizeFps：144 钳到 120 → 979,200 ≤ 983,040 → 5.1
+  assert.equal(h264Level(144, 1920, 1080), "5.1");
 });
 
 test("h264Level: 4K@30 超出 4.2（分辨率维度生效，不只看 fps）", () => {
@@ -67,7 +70,12 @@ test("h264Level: 4K@30 超出 4.2（分辨率维度生效，不只看 fps）", (
 
 test("h264Level: 未知分辨率按 1080p 基准", () => {
   assert.equal(h264Level(30, 0, 0), "4.2");
-  assert.equal(h264Level(144, 0, 0), "5.2");
+  assert.equal(h264Level(120, 0, 0), "5.1");
+});
+
+test("h264Level: 4K@120 = 5.2（分辨率维度兜底——5.2 分支的可达路径）", () => {
+  // 3840×2160 = 32400 MB/帧 ×120 = 3,888,000 > 983,040 → 5.2
+  assert.equal(h264Level(120, 3840, 2160), "5.2");
 });
 
 test("isUltra: ultra 档判定", () => {
@@ -78,6 +86,6 @@ test("isUltra: ultra 档判定", () => {
 test("backpressureBytes: 按帧率线性放大、有上限", () => {
   assert.equal(backpressureBytes(30), 400_000); // 基准不变
   assert.equal(backpressureBytes(0), 400_000); // 未知按 30
-  assert.equal(backpressureBytes(144), 1_200_000); // 400k×144/30=1.92M → 上限 1.2M
+  assert.equal(backpressureBytes(120), 1_200_000); // 400k×120/30=1.6M → 上限 1.2M
   assert.equal(backpressureBytes(60), 800_000);
 });

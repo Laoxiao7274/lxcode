@@ -30,9 +30,13 @@ export interface ScreenState {
   active: boolean;
   monitor?: number;
   quality?: string;
+  /** 实际执行帧率（壳上报；0/缺席 = 老壳或未知——按 30 对待）。 */
+  fps?: number;
   encoder?: string;
   width?: number;
   height?: number;
+  /** 壳侧兼容模式捕获中（主捕获路径失败后的回落；缺席 = 老壳未上报）。 */
+  fallback_active?: boolean;
   /** 最近一次失败的人话原因（active=false 时可能非空）。 */
   error?: string;
   receiver?: string;

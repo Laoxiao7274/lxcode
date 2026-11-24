@@ -3,6 +3,8 @@
 #
 # 只保留投屏第一阶段（shell/src/screen.ts）真正用到的能力：
 #   * lavfi indev + ddagrab 滤镜（DXGI Desktop Duplication 抓屏，Windows only）
+#   * gdigrab indev（GDI 抓屏——ACCESS_LOST 预算耗尽后的软捕获兜底，见
+#     screen-restart.ts 的 fallbackPending 语义；只吃系统内存帧）
 #   * 编码器 h264_nvenc / h264_qsv / h264_amf / libx264（screen.ts 的回落链）
 #   * h264 raw muxer（-f h264 裸 Annex B 流）+ file/pipe 协议（pipe:1 推流）
 #   * wrapped_avframe 解码器（**必需**：lavfi indev 把滤镜输出标成
@@ -91,6 +93,11 @@ sed "s|^libdir=.*|libdir=$BUILD_TMP/x264|" "$PREFIX/lib/pkgconfig/x264.pc" \
   | sed 's/ -DX264_API_IMPORTS//' > "$BUILD_TMP/pkgconfig/x264.pc"
 sed "s|^libdir=.*|libdir=$BUILD_TMP/vpl|"  "$PREFIX/lib/pkgconfig/vpl.pc" \
   > "$BUILD_TMP/pkgconfig/vpl.pc"
+# ffnvcodec.pc 必须随拷：PKG_CONFIG_PATH 指向隔离目录后，mingw64 默认
+# pkgconfig 目录被遮蔽——nvenc 依赖检查报
+# 「ERROR: nvenc requested, but not all dependencies are satisfied: ffnvcodec」
+#（2026-11-24 重编 gdigrab 时实测踩过；它不需要 libdir 改写，原样拷即可）。
+cp "$PREFIX/lib/pkgconfig/ffnvcodec.pc" "$BUILD_TMP/pkgconfig/" 2>/dev/null || true
 
 # ---- 2. configure + make ----
 cd "$SRC_DIR"
@@ -114,7 +121,7 @@ echo "== configure =="
   --enable-static \
   --disable-shared \
   --enable-ffmpeg \
-  --enable-indev=lavfi \
+  --enable-indev=lavfi,gdigrab \
   --enable-decoder=wrapped_avframe \
   --enable-filter=ddagrab,hwdownload,format,scale \
   --enable-encoder=h264_nvenc,h264_qsv,h264_amf,libx264 \

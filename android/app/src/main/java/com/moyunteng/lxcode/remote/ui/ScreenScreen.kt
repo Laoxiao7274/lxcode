@@ -102,6 +102,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.isSpecified
@@ -125,6 +126,7 @@ import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -178,6 +180,9 @@ data class ScreenStateInfo(
     val fps: Int = 0,
     val encoder: String,
     val error: String?,
+    // 兼容模式捕获中：壳侧主捕获路径失败后的回落（fallback_active；false/缺席
+    // = 老壳未上报或未触发——UI 不显示提示条）。
+    val fallbackActive: Boolean = false,
 )
 
 /** 清晰度档（键 → 显示名）。ultra = 最高清晰度（qp 14；复杂画面码率大，
@@ -187,8 +192,9 @@ private val QUALITY_LABELS = listOf(
 )
 
 /** 帧率档（值 → chip 文案；无 fps 后缀——240dp 卡内四个带后缀的 chip 会溢出
- *  换行，「帧率」小节标题已表达单位）。 */
-private val FPS_LABELS = listOf(30 to "30", 60 to "60", 120 to "120", 144 to "144")
+ *  换行，「帧率」小节标题已表达单位）。最高 120：144 真机触发 DXGI
+ *  ACCESS_LOST 连环失败（2026-12 摘档）。 */
+private val FPS_LABELS = listOf(30 to "30", 60 to "60", 120 to "120")
 
 @Composable
 fun ScreenScreen(state: com.moyunteng.lxcode.remote.ui.AppState) {
@@ -1552,6 +1558,20 @@ private fun StatusLine(real: com.moyunteng.lxcode.remote.net.RealBackend) {
                 color = Lx.colors.FgMuted,
             )
         }
+        // 兼容模式捕获中（fallback_active）：投屏在跑但壳用的是回落路径——
+        // 结构性提示独立于 error 文案位（error 非空时失败提示仍优先展示）。
+        st?.active == true && st.fallbackActive -> Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Lx.space.s6),
+        ) {
+            LxPill("兼容模式捕获中", variant = LxPillVariant.Amber)
+            Text(
+                "主捕获路径不可用，已回落兼容模式（画质/性能可能下降）",
+                style = Lx.type.BodySmall,
+                color = Lx.colors.FgMuted,
+                modifier = Modifier.weight(1f),
+            )
+        }
         st?.error != null -> Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(Lx.space.s6),
@@ -1725,6 +1745,8 @@ private fun VideoSurface(
             }
         }
     }
+    // 长按确认右键的触觉反馈（仓库无 Vibrator 先例，用 Compose 平台 API，零新依赖）。
+    val haptics = LocalHapticFeedback.current
     Box(
         Modifier
             .then(
@@ -1752,10 +1774,13 @@ private fun VideoSurface(
         .pointerInput(Unit) {
                 if (controlMode && fullscreen) {
                     // ===== 控制模式手势（2026-12 第二阶段拍板）=====
-                    // 映射：单指 tap = 左键单击；双指 tap（无位移）= 右键单击；
-                    // 单指按下移动 = 按住左键拖动（down→move×N→up）；双指移动 =
-                    // 滚轮（双指整体位移 → 滚轮刻度，dy 每 ~40px 一刻度）；
-                    // 双指捏合 = 本地缩放（观看需要，不发给电脑）。
+                    // 映射：单指 tap = 左键单击；单指按下移动（过 slop 前即移动）
+                    // = 按住左键拖动（down→move×N→up）；单指按住不动超
+                    // longPressTimeoutMillis（跟随系统 ~500ms）= 右键按下
+                    // （down right + 触觉反馈，之后移动 = 右键拖拽、抬起 = 右键
+                    // up——不动直接抬起构成完整右键单击弹菜单）；双指 tap（无位移）
+                    // = 右键单击；双指移动 = 滚轮（双指整体位移 → 滚轮刻度，
+                    // dy 每 ~40px 一刻度）；双指捏合 = 本地缩放（观看需要，不发给电脑）。
                     // 坐标换算：touchToNormalized（ScreenGestureMath，纯函数）——
                     // 触点视口 px 反变换 graphicsLayer（scale/translation）再除
                     // cover 尺寸归一化。
@@ -1763,6 +1788,7 @@ private fun VideoSurface(
                         val first = awaitFirstDown()
                         first.consume()
                         var sentDown = false
+                        var rightDownSent = false
                         var sawSecond = false
                         var isScroll = false
                         var isPinch = false
@@ -1771,14 +1797,57 @@ private fun VideoSurface(
                         // 拖动阈值前先记起点（没过 slop 且快速抬起 = tap）
                         val startX = first.position.x
                         val startY = first.position.y
+                        // 单指长按：down 时刻起算（SystemClock.uptimeMillis，同观看
+                        // 态 classifyDeadline 先例），超系统长按时长（跟随系统设置，
+                        // ~500ms）且未过 slop → 确认右键：发 down right + 触觉反馈，
+                        // 此后不再转左键（与左键拖拽互斥）。等待期用 withTimeoutOrNull
+                        // 限时挂起——手指完全静止、事件流停住时也能准时触发。
+                        val downAt = SystemClock.uptimeMillis()
+                        val longPressTimeout = viewConfiguration.longPressTimeoutMillis
+                        var lastX = first.position.x
+                        var lastY = first.position.y
                         var moved = false
                         while (true) {
-                            val event = awaitPointerEvent()
+                            // 长按未决（未发任何 down、未过 slop）时限时等下一帧：
+                            // 超时 = 长按确认；事件先到则照常处理。
+                            val pendingLongPress = !moved && !sentDown && !rightDownSent
+                            val event = if (pendingLongPress) {
+                                val remaining = longPressTimeout - (SystemClock.uptimeMillis() - downAt)
+                                if (remaining > 0) withTimeoutOrNull(remaining) { awaitPointerEvent() } else null
+                            } else {
+                                awaitPointerEvent()
+                            }
+                            if (event == null) {
+                                // 长按超时（无新事件）：用最后已知触点发 down right
+                                val n = touchToNormalized(
+                                    lastX, lastY,
+                                    currentViewportPx.first, currentViewportPx.second,
+                                    scale, offsetX, offsetY,
+                                    currentSurfaceSize.width, currentSurfaceSize.height,
+                                )
+                                if (n != null) {
+                                    rightDownSent = true
+                                    sendInput(com.moyunteng.lxcode.remote.net.ScreenInputParams(
+                                        type = "down", x = n.first.toDouble(), y = n.second.toDouble(), button = "right", monitor = 0,
+                                    ))
+                                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                } else {
+                                    // 坐标换算不可用（视口/画面尺寸未就绪）：放弃长按判定，
+                                    // 退回 tap/拖拽路径（避免超时分支空转）
+                                    moved = true
+                                }
+                                continue
+                            }
                             val pressed = event.changes.count { it.pressed }
                             if (pressed == 0) break
                             val pos = event.changes.firstOrNull()?.position ?: break
+                            lastX = pos.x
+                            lastY = pos.y
                             if (pressed >= 2) {
                                 sawSecond = true
+                                // 长按已确认右键按下后第二指落下：忽略（防「右键
+                                // 按住 + 滚轮」怪态——此时滚轮/捏合对右键态无意义）。
+                                if (!rightDownSent) {
                                 // 双指：区分滚轮（同向整体位移）与捏合（间距变化）
                                 val zoom = event.calculateZoom()
                                 if (kotlin.math.abs(zoom - 1f) > ZOOM_NOISE_EPSILON) {
@@ -1806,10 +1875,16 @@ private fun VideoSurface(
                                     }
                                 }
                                 event.changes.forEach { it.consume() }
+                                }
                                 continue
                             }
-                            // 单指：过 slop = 按住拖动（首次先发 down）
-                            if (moved || (pos - Offset(startX, startY)).getDistance() > viewConfiguration.touchSlop) {
+                            // 单指：两种互斥路径——
+                            //  ① 过 slop（长按确认前移动）：左键拖拽（现有路径不动）；
+                            //  ② 右键已确认（rightDownSent）：move = 右键拖拽。
+                            // 长按确认在等待分支（event == null）处理。
+                            if (rightDownSent || moved ||
+                                (pos - Offset(startX, startY)).getDistance() > viewConfiguration.touchSlop
+                            ) {
                                 moved = true
                                 val (nx, ny) = touchToNormalized(
                                     pos.x, pos.y,
@@ -1817,7 +1892,7 @@ private fun VideoSurface(
                                     scale, offsetX, offsetY,
                                     currentSurfaceSize.width, currentSurfaceSize.height,
                                 ) ?: continue
-                                if (!sentDown) {
+                                if (!rightDownSent && !sentDown) {
                                     sentDown = true
                                     sendInput(com.moyunteng.lxcode.remote.net.ScreenInputParams(
                                         type = "down", x = nx.toDouble(), y = ny.toDouble(), button = "left", monitor = 0,
@@ -1830,7 +1905,13 @@ private fun VideoSurface(
                             }
                         }
                         // 抬起：按拖动类型收尾
-                        if (sentDown) {
+                        if (rightDownSent) {
+                            // 右键态收尾：up right（不动→抬起 = 完整右键单击弹菜单；
+                            // 长按后移动 = 右键拖拽结束）。up 只发按键 up，坐标无效字段被壳忽略。
+                            sendInput(com.moyunteng.lxcode.remote.net.ScreenInputParams(
+                                type = "up", button = "right", monitor = 0,
+                            ))
+                        } else if (sentDown) {
                             // 按住拖动 → up（up 只发按键 up；坐标无效字段被壳忽略）
                             sendInput(com.moyunteng.lxcode.remote.net.ScreenInputParams(
                                 type = "up", button = "left", monitor = 0,

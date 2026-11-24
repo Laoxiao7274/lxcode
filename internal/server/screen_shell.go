@@ -62,6 +62,10 @@ type shellState struct {
 	Quality string `json:"quality,omitempty"`
 	// Fps 壳当前执行的帧率（随轮询上报；0 = 老壳未上报——按默认 30 对待）。
 	Fps int `json:"fps,omitempty"`
+	// FallbackActive 壳侧主捕获路径失败、正在用兼容模式捕获（GDI 回落等）。
+	// 缺省 = 老壳未上报（false 语义），透传到 ScreenState.FallbackActive 供
+	// 手机端显示「兼容模式捕获中」。
+	FallbackActive bool `json:"fallback_active,omitempty"`
 	// Error 非空 = 最近一次失败原因（人话）。
 	Error string `json:"error,omitempty"`
 	// ErrKind 错误分类（reason/ffmpeg_missing/encoder_unavailable），空 = 普通原因。
@@ -261,6 +265,8 @@ func (s *Server) screenState() protocol.ScreenState {
 		// Fps：壳上报当前帧率（老壳不上报 → 0，omitempty 整键缺席——安卓端按
 		// 默认 30 对待，不重置帧率选择）。
 		st.Fps = sh.Fps
+		// 兼容模式捕获位：老壳不上报 → false，omitempty 整键缺席（安卓端不编造）。
+		st.FallbackActive = sh.FallbackActive
 	}
 	st.Receiver = s.shell.receiverId
 	return st

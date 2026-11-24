@@ -67,18 +67,22 @@ const (
 // 帧率（定帧率，不做动态调整；ddagrab 与安卓低延迟解码都以恒定帧率最稳）。
 // ScreenFPSDefault 是缺省帧率（用户不选 = 30，避免所有用户无感知吃带宽）；
 // ScreenFPSOptions 是 screen.start 的 fps 白名单（后端归一，未知值回落默认）。
-// 144fps 需要 H.264 level 5.2（1080p@144 = 1.18M MB/s，超 5.1 的 983k），
-// 壳侧按分辨率×帧率自适应选 level，见 shell/src/screen-params.ts。
+// 白名单不含 144：真机实测 144fps 触发 DXGI ACCESS_LOST 连环失败（2026-12
+// 用户拍板摘档，最高 120）；存量请求/记忆里的 144 由 NormalizeFPS 钳到 120。
 const ScreenFPSDefault = 30
 
 // ScreenFPS 历史别名（帧率可配置前的唯一值）——语义 = 默认帧率。
 const ScreenFPS = ScreenFPSDefault
 
 // ScreenFPSOptions screen.start 的 fps 白名单（升序）。
-var ScreenFPSOptions = []int{30, 60, 120, 144}
+var ScreenFPSOptions = []int{30, 60, 120}
 
-// NormalizeFPS 帧率归一：白名单精确命中才生效，其余（含 0 = 缺席）回落默认。
+// NormalizeFPS 帧率归一：白名单精确命中才生效，144 钳到 120（存量兼容），
+// 其余（含 0 = 缺席）回落默认。
 func NormalizeFPS(fps int) int {
+	if fps == 144 {
+		return 120 // 存量 144 兼容：真机 ACCESS_LOST 摘档，钳到次高档
+	}
 	for _, v := range ScreenFPSOptions {
 		if v == fps {
 			return v
@@ -127,6 +131,9 @@ type ScreenState struct {
 	Quality string `json:"quality,omitempty"`
 	// Fps 实际执行帧率（壳随状态上报；0/缺席 = 老壳或未知——按 30 对待）。
 	Fps int `json:"fps,omitempty"`
+	// FallbackActive 壳侧正在用兼容模式捕获（主捕获路径失败后的回落）。
+	// 缺席 = 老壳未上报（false 语义）；手机端据此显示「兼容模式捕获中」。
+	FallbackActive bool `json:"fallback_active,omitempty"`
 	// Encoder 实际选中的编码器名（h264_nvenc / h264_qsv / ...；壳上报）。
 	Encoder string `json:"encoder,omitempty"`
 	// Width/Height 实际输出分辨率（壳上报；0 = 未知）。

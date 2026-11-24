@@ -15,7 +15,8 @@ import org.json.JSONObject
  *  * `quality` 缺席或空 = null（P1-1：壳未上报档位时保持「未知」，UI 的
  *    「沿用当前档」逻辑据此不把清晰度重置回 medium）；
  *  * `error` 缺席或空 = null（无失败就是无失败，不发空串冒充）；
- *  * `monitor` 缺席 = 0（主显示器——无 omitempty 语义下缺席与 0 同义）。
+ *  * `monitor` 缺席 = 0（主显示器——无 omitempty 语义下缺席与 0 同义）；
+ *  * `fallback_active` 缺席 = false（老壳未上报该键——不编造兼容模式态）。
  */
 fun parseScreenState(o: JSONObject): com.moyunteng.lxcode.remote.ui.ScreenStateInfo =
     com.moyunteng.lxcode.remote.ui.ScreenStateInfo(
@@ -26,6 +27,7 @@ fun parseScreenState(o: JSONObject): com.moyunteng.lxcode.remote.ui.ScreenStateI
         fps = o.optInt("fps", 0),
         encoder = o.optString("encoder", ""),
         error = o.optString("error", "").ifEmpty { null },
+        fallbackActive = o.optBoolean("fallback_active", false),
     )
 
 /** screen.monitors 应答 → 显示器列表（shell_online 缺席 = false）。 */

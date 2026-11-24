@@ -5,7 +5,7 @@ import { appendFile, readFile, rename, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { app, BrowserWindow, crashReporter, dialog, ipcMain, nativeTheme, net, Notification, protocol } from "electron";
+import { app, BrowserWindow, crashReporter, dialog, ipcMain, nativeTheme, net, Notification, protocol, screen } from "electron";
 import { ensureBackend, shutdownBackend } from "./sidecar";
 import { initSakura, sakuraHandlers, shutdownSakura } from "./sakura";
 import { initTailscale, tailscaleHandlers } from "./tailscale";
@@ -385,6 +385,22 @@ if (!app.requestSingleInstanceLock()) {
     SetScreenLogFn((line) => {
       void appendRendererLog(rendererLogLine(new Date(), "info", line));
       console.log(line); // 保留 stdout（dev 形态调试用）
+    });
+    // 显示器拓扑变化取证（2026-12）：ACCESS_LOST 连环失效的最常见诱因是
+    // 显示器 PnP（插拔/模式切换/DWM 全屏独占）。Electron 主进程侧监听
+    // display-added/removed（纯 Electron API，无原生模块），时间戳 + 几何
+    // 写 renderer.log——下次复现时与 [screen] 的 ACCESS_LOST 重启日志对照，
+    // ±1s 内即「疑似显示拓扑变化触发」，根因（PnP 抖动 vs 其它）直接可判。
+    // 事件经 SetScreenLogFn 同一通道落 log（[screen] 前缀统一检索）。
+    screen.on("display-added", (_e, d) => {
+      const line = `[screen] display topology changed: display-added (id=${d.id}, ${d.size.width}x${d.size.height})`;
+      appendRendererLog(rendererLogLine(new Date(), "info", line));
+      console.log(line);
+    });
+    screen.on("display-removed", (_e, d) => {
+      const line = `[screen] display topology changed: display-removed (id=${d.id}, ${d.size.width}x${d.size.height})`;
+      appendRendererLog(rendererLogLine(new Date(), "info", line));
+      console.log(line);
     });
     startScreenPolling();
     // 编码器探测预热（screen.ts probeEncoders 结果缓存）：把首次 start 的
