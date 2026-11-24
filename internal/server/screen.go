@@ -24,6 +24,13 @@ func (s *Server) dispatchScreen(c *wsClient, req *protocol.Request, params json.
 	}
 	switch req.Method {
 	case protocol.MethodScreenStart:
+		// 调用者门（2026-12）：只有观看端（安卓 App）能成为投屏接收者。
+		// 此前任何连接（探活 probe 等）调 screen.start 都会抢占接收者位，它断开
+		// 即停投屏——手机端收到 active=false 自动退回（真机「已连接就断开」根因）。
+		if !screenReceiverAllowed(c) {
+			return protocol.NewError(req.ID, protocol.CodeScreenReceiverDenied,
+				"此客户端类型不能开始投屏——投屏接收者须为安卓观看端")
+		}
 		resp := s.startScreen(req, params)
 		if resp.Error == nil {
 			// start 成功：本连接成为视频接收者（订阅在应答**之前**挂上，
@@ -75,6 +82,7 @@ func (sh *screenShell) setReceiver(c *wsClient) {
 	// 投给新人 = 错投）。
 	if prev != sh.receiverId {
 		sh.dropInputQueue()
+		log.Printf("投屏接收者切换（%s）", clientTag(c))
 	}
 }
 
@@ -97,6 +105,33 @@ func clientKey(c *wsClient) string {
 		return ""
 	}
 	return fmt.Sprintf("%p", c)
+}
+
+// screenReceiverAllowed screen.start 调用者白名单（dispatchScreen 的接收者门）：
+// 只有安卓观看端（hello 的 client=android）能成为接收者。无 hello 的旧/异常连接
+// 视为未识别，一律拒绝（fail-closed——放行未识别客户端等于没修）。将来加 web
+// 观看端时扩展此函数（web 前端目前自报 "lxcode-web"，但它不调 screen.start）。
+func screenReceiverAllowed(c *wsClient) bool {
+	return c != nil && c.clientID == "android"
+}
+
+// clientTag 接收者日志定位用：client 标识 + 远端地址（指针 %p 无法对应到具体
+// 客户端来源——真机排查需要知道是安卓还是探活连接断开）。
+func clientTag(c *wsClient) string {
+	if c == nil {
+		return "unknown"
+	}
+	remote := "unknown"
+	if c.conn != nil {
+		if addr := c.conn.RemoteAddr(); addr != nil {
+			remote = addr.String()
+		}
+	}
+	tag := c.clientID
+	if tag == "" {
+		tag = "unidentified"
+	}
+	return tag + "/" + remote
 }
 
 // screenInput 手机端注入一次输入事件（screen.input）。
@@ -399,7 +434,7 @@ func (s *Server) onScreenClientGone(c *wsClient) {
 	s.shell.mu.Unlock()
 	if wasReceiver {
 		s.shell.dropInputQueue()
-		log.Printf("投屏接收者断开，已停止投屏命令")
+		log.Printf("投屏接收者断开（%s），已停止投屏命令", clientTag(c))
 		s.broadcastScreenChanged()
 	}
 }

@@ -38,7 +38,7 @@ func TestScreenStartFpsParams(t *testing.T) {
 	start := func(params string) {
 		req := &protocol.Request{ID: json.RawMessage(`1`), Method: protocol.MethodScreenStart,
 			Params: json.RawMessage(params)}
-		resp := s.dispatch(&wsClient{conn: nil, out: make(chan []byte, 4), bin: make(chan []byte, 4), done: make(chan struct{})}, req)
+		resp := s.dispatch(gateTestClient(t, "android"), req)
 		if resp.Error != nil {
 			t.Fatalf("start(%s) 应成功: %v", params, resp.Error)
 		}

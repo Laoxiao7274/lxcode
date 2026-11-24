@@ -158,6 +158,10 @@ type wsClient struct {
 	conn      *websocket.Conn
 	mu        sync.Mutex
 	sessionID string // 连接本地焦点，仅兼容没有显式 session_id 的客户端
+	// clientID hello 握手时客户端自报的身份（connection.hello 的 client 参数，
+	// 如 android / lxcode-web / probe）。投屏接收者白名单（screen.start 调用者门）
+	// 与接收者断开日志都靠它定位来源——此前只有 %p 指针无法对应到具体客户端。
+	clientID string
 
 	// 每客户端**有界发送队列 + 独立 writer goroutine**（性能审查 P1-2，2026-10）：
 	// 原先 broadcast 在流式转发 goroutine 里同步逐客户端 WriteJSON，慢客户端

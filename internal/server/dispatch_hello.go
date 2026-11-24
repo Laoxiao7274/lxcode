@@ -10,7 +10,7 @@ import (
 	"github.com/moyunteng/lxcode/internal/protocol"
 )
 
-func (s *Server) handleHello(req *protocol.Request, params json.RawMessage, isNotification bool) *protocol.Response {
+func (s *Server) handleHello(c *wsClient, req *protocol.Request, params json.RawMessage, isNotification bool) *protocol.Response {
 	switch req.Method {
 	case protocol.MethodHello:
 		var p protocol.HelloParams
@@ -25,6 +25,9 @@ func (s *Server) handleHello(req *protocol.Request, params json.RawMessage, isNo
 			return protocol.NewError(req.ID, protocol.CodeVersionMismatch,
 				fmt.Sprintf("协议版本不兼容：客户端 %q，服务端 %q", p.Version, protocol.Version))
 		}
+		// 客户端自报身份记在连接上（取值自由——投屏接收者白名单按它判定，
+		// 断开日志按它定位来源；见 screen.go 的 screenReceiverAllowed）。
+		c.clientID = p.Client
 		// busy_sessions：连接建立时的逐会话忙闲快照。chat.busy 只在轮次边界发——
 		// 客户端连上时错过了进行中轮次的那次广播，就永远不知道它在跑（手机列表
 		// 的运行指示要点进会话才补上）。握手即给事实，客户端直接建投影。

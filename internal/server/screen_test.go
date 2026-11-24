@@ -86,7 +86,7 @@ func TestScreenShellReportAndStale(t *testing.T) {
 func TestScreenStartRequiresShellOnline(t *testing.T) {
 	s := newScreenTestServer(t)
 	req := &protocol.Request{ID: json.RawMessage(`1`), Method: protocol.MethodScreenStart}
-	resp := s.dispatch(nil, req)
+	resp := s.dispatch(gateTestClient(t, "android"), req)
 	if resp.Error == nil || resp.Error.Code != protocol.CodeScreenUnavailable {
 		t.Fatalf("壳离线应回 CodeScreenUnavailable: %+v", resp.Error)
 	}
@@ -97,7 +97,7 @@ func TestScreenStartStopLifecycle(t *testing.T) {
 	s := newScreenTestServer(t)
 	s.shell.report(fakeShellState(false))
 
-	c := &wsClient{conn: nil, out: make(chan []byte, 4), bin: make(chan []byte, 4), done: make(chan struct{})}
+	c := gateTestClient(t, "android")
 	s.mu.Lock()
 	s.clients[c] = struct{}{}
 	s.mu.Unlock()
@@ -248,7 +248,7 @@ func TestScreenStartEpochIncrements(t *testing.T) {
 	start := func() {
 		req := &protocol.Request{ID: json.RawMessage(`1`), Method: protocol.MethodScreenStart,
 			Params: json.RawMessage(`{"monitor":0,"quality":"high"}`)}
-		s.dispatch(&wsClient{conn: nil, out: make(chan []byte, 4), bin: make(chan []byte, 4), done: make(chan struct{})}, req)
+		s.dispatch(gateTestClient(t, "android"), req)
 	}
 	start()
 	e1 := s.shell.currentCommand().StartEpoch

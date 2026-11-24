@@ -1,13 +1,13 @@
 {
-  "version": "0.3.64",
-  "versionCode": 65,
-  "name": "lxcode-0.3.64-android.apk",
-  "size": 12059977,
-  "sha256": "702c6ff7bcf719dd0d480ea217e46069cca40b7b3c7399eae5f7a81087d4ece3",
-  "url": "downloads/lxcode-0.3.64-android.apk",
+  "version": "0.3.65",
+  "versionCode": 66,
+  "name": "lxcode-0.3.65-android.apk",
+  "size": 12059975,
+  "sha256": "2090295ab6348509bdbfff116d13723498c71a0659e3d7179ca386bdd0ac4b19",
+  "url": "downloads/lxcode-0.3.65-android.apk",
   "notes": [
-    "投屏控制升级：虚拟键盘收进悬浮菜单，文字输入支持系统输入法直通（中文更顺）",
-    "修复组合键（Ctrl+C 等）失效的问题",
-    "投屏帧率可选 30/60/120/144，新增「极致」清晰度档"
+    "投屏稳定性大版本：桌面捕获中断自动恢复，极端情况下自动切换兼容模式不再断流",
+    "修复长按时误发左键的问题，新增长按右键",
+    "投屏帧率上限调整为 120"
   ]
 }

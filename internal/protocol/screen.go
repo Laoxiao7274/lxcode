@@ -54,6 +54,12 @@ const (
 	// CodeScreenControlDisabled 「允许控制」开关未开启（默认关——被控是高危
 	// 能力，须用户在桌面端显式授权；见 config.RemoteAccess.AllowControl）。
 	CodeScreenControlDisabled = -32084
+	// CodeScreenReceiverDenied 调用者不是投屏接收者的合法客户端（2026-12 用户
+	// 拍板：白名单 android）。背景：任何 WS 连接都能调 screen.start 抢接收者位，
+	// probe 之类的探活客户端连上又断开 → onScreenClientGone 停投屏 → 手机端
+	// 收到 active=false 自动退回（真机「已连接就断开」根因）。将来加 web 观看端
+	// 时扩展白名单。
+	CodeScreenReceiverDenied = -32085
 )
 
 // 码率档（Stage 1 三档；kbit）。ultra 不在此列——它是 qp 档（constqp 14），

@@ -30,7 +30,7 @@ func (s *Server) dispatch(c *wsClient, req *protocol.Request) *protocol.Response
 	// hello 内联而不进域处理器：它是唯一「命中后可能合法地返回 nil」的方法
 	// （通知形态不回响应），与「nil = 不是我的方法」的回落约定撞形。
 	if req.Method == protocol.MethodHello {
-		return s.handleHello(req, params, isNotification)
+		return s.handleHello(c, req, params, isNotification)
 	}
 	// connection.ping 心跳：同 hello 一样「通知形态合法地返回 nil」（无 id 不回
 	// 应答），所以也内联在域处理器链之前。纯内存应答，供客户端判定连接活性。

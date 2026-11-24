@@ -60,7 +60,20 @@ func TestReproOnlyFirstFrameArrives(t *testing.T) {
 		resp.Body.Close()
 	}
 	reportState(true)
-	sendReq(1, protocol.MethodScreenStart, `{"monitor":0,"quality":"medium"}`)
+	sendReq(1, "connection.hello", `{"client":"android","version":"`+protocol.Version+`"}`)
+	// 等 hello 应答落地（连接的 clientID 由 hello 写入——start 必须排在它后面）
+	_ = ws.SetReadDeadline(time.Now().Add(5 * time.Second))
+	for {
+		_, p, err := ws.ReadMessage()
+		if err != nil {
+			t.Fatalf("读 hello 应答前断: %v", err)
+		}
+		if strings.Contains(string(p), `"id":1`) {
+			break
+		}
+	}
+	_ = ws.SetReadDeadline(time.Time{})
+	sendReq(2, protocol.MethodScreenStart, `{"monitor":0,"quality":"medium"}`)
 	// 等 screen.start 应答落地（异步 dispatch；不等的话接收者可能还没挂上）
 	time.Sleep(200 * time.Millisecond)
 	if s.receiverOf() == "" {
