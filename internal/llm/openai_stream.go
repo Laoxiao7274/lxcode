@@ -182,8 +182,14 @@ done:
 		emitFinal(ch, StreamEvent{Type: EventError, Err: fmt.Errorf("流为空（端点没有返回任何内容）")})
 		return
 	}
+	// finish_reason 空串兜底：`??` 语义的坑在带工具调用的轮——空串归 stop 会把
+	// 中间轮伪装成正常完成（前端按 finishReason 弹完成通知，2026-12 误触发修复）。
 	if finish == "" {
-		finish = FinishStop
+		if len(toolCalls) > 0 {
+			finish = FinishToolCalls
+		} else {
+			finish = FinishStop
+		}
 	}
 	// 聚合完成的工具调用在收尾前投递（OpenAI 协议没有块级 stop 信号，
 	// finish_reason 到达即全部参数已齐）

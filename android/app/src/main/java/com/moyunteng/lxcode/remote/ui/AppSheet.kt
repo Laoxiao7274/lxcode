@@ -160,7 +160,17 @@ fun AppSheetHost(state: AppState) {
                     state.closeAppSheet()
                 },
             )
-            AppSheet.AssistantContext -> ContextSheetBody(asst.contextUsage)
+            AppSheet.AssistantContext -> ContextSheetBody(
+                usage = asst.contextUsage,
+                // 立即压缩（assistant.compact——域钉死，chat.compact 串域报错）。
+                // 压缩中（assistant.compacting 归约态）禁用 + 文案；结果/无收益说明
+                // 由 assistantCompact 的回调插块（时间线呈现），弹层即关。
+                onCompact = {
+                    state.closeAppSheet()
+                    real.assistantCompact()
+                },
+                compacting = asst.compacting,
+            )
 
             // ===== 设置页「默认模型」（role.set · 全局 default 角色）=====
             AppSheet.SettingsModel -> ModelSheetBody(

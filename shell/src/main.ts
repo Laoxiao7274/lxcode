@@ -260,14 +260,17 @@ if (!app.requestSingleInstanceLock()) {
     // **探针优先（2026-12 侧键修复）**：助手域是纯 useState 导航、从不写历史，
     // history.back() 会消费项目模式遗留的旧条目、改到隐藏分支的 state。页面挂
     // __lxNavBack/__lxNavForward 探针（AssistantWorkspace 在助手模式可见时注册，
-    // 卸载/切走注销）——探针存在优先调用（助手域接管），不存在回落 history
-    // （项目域/首屏）。可选链在注入串里手写 `?` 不行——executeJavaScript 的
-    // 目标页面是 JS，直接写即可。
+    // 卸载/切走注销）——**存在性分流**：探针存在才调用、不存在回落 history
+    // （项目域/首屏）。不能写成 `?.() ?? history.back()`：探针**已处理**时返回
+    // undefined（no-op 路径）或 true 都会落进 `??` 的右支，双重导航——侧键把
+    // 项目域历史栈耗尽后整个失灵（实测过的回归路径）。可选链在注入串里手写
+    // `?` 不行——executeJavaScript 的目标页面是 JS，直接写即可。
     win.on("app-command", (_e, cmd) => {
       if (cmd !== "browser-backward" && cmd !== "browser-forward") return;
       const probe = cmd === "browser-backward" ? "__lxNavBack" : "__lxNavForward";
+      const historyFn = cmd === "browser-backward" ? "back" : "forward";
       void win?.webContents
-        .executeJavaScript(`(window.${probe}?.() ?? history.${cmd === "browser-backward" ? "back" : "forward"}())`)
+        .executeJavaScript(`(typeof window.${probe} === "function" ? window.${probe}() : history.${historyFn}())`)
         .catch(() => { /* 页面正在跳转/销毁时注入失败无害 */ });
     });
 

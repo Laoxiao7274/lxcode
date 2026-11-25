@@ -168,6 +168,25 @@ func TestOpenAIChatToolCalls(t *testing.T) {
 	}
 }
 
+// TestOpenAIChatEmptyFinishReasonWithToolCalls：端点缺省 finish_reason（空串）
+// 时带工具调用的轮必须归 tool_calls——空串归 stop 会把中间轮伪装成正常完成
+//（前端完成通知误触发，2026-12）。
+func TestOpenAIChatEmptyFinishReasonWithToolCalls(t *testing.T) {
+	resp := `{"choices":[{"message":{"tool_calls":[{"id":"call_1","type":"function",
+		"function":{"name":"echo","arguments":"{}"}}]}}]}`
+	c, _ := newTestClient(t, FormatOpenAI, resp, 200)
+	res, err := c.Chat(context.Background(), []Message{{Role: "user", Content: "调用工具"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Message.ToolCalls) != 1 {
+		t.Fatalf("tool_calls 不符: %+v", res.Message.ToolCalls)
+	}
+	if res.FinishReason != FinishToolCalls {
+		t.Fatalf("空 finish_reason + tool_calls 应归 tool_calls, got %q", res.FinishReason)
+	}
+}
+
 func TestOpenAIChatReasoningFallback(t *testing.T) {
 	// vLLM thinking 怪癖：content 空、思考链有值 → 思考链当正文
 	resp := `{"choices":[{"message":{"content":"","reasoning_content":"思考结果"},"finish_reason":"stop"}]}`

@@ -9,9 +9,11 @@ package com.moyunteng.lxcode.remote.ui
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -25,6 +27,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -129,7 +133,10 @@ fun HeroCard(
     )
 }
 
-/** 助手会话卡（`.asstcard`）：accent 左标条 + 标题/副行 + 时间；整卡可点进对话。 */
+/** 助手会话卡（`.asstcard`）：accent 左标条 + 标题/副行 + 时间；整卡可点进对话。
+ *  2026-12 行操作：长按弹菜单（onLongClick）+ 行尾 ⋯ 点按（onMenu，可选——
+ *  缺省时不渲染入口，保持卡片纯点击进对话的原形态）。 */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun AsstCard(
     title: String,
@@ -138,6 +145,8 @@ fun AsstCard(
     running: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    onLongClick: (() -> Unit)? = null,
+    onMenu: (() -> Unit)? = null,
 ) {
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
@@ -164,8 +173,14 @@ fun AsstCard(
             .clip(AsstCardShape)
             .background(Lx.colors.Surface)
             .border(1.dp, Lx.colors.Border, AsstCardShape)
-            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
-            // 原型 `.asstcard`：padding 13px 14px（2026-12 规格修正——原无内距，
+            .combinedClickable(
+                interactionSource = interaction,
+                indication = null,
+                onClick = onClick,
+                // 长按 = 行操作菜单入口（onMenu 的 ⋯ 触点小，长按是触摸端主入口——
+                // 与 SessionsScreen 的 SessionRowItem 同一条纪律）
+                onLongClick = onLongClick,
+            )            // 原型 `.asstcard`：padding 13px 14px（2026-12 规格修正——原无内距，
             // 内容贴边；左标条 3dp 吃掉首列，主列再 14dp 起步）
             .padding(start = 14.dp, end = 14.dp, top = 13.dp, bottom = 13.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -205,6 +220,22 @@ fun AsstCard(
             style = TextStyle(fontFamily = Lx.type.Sans, fontSize = 10.5.sp),
             color = Lx.colors.FgFaint,
         )
+        // 行操作入口（⋯）：触摸端点按弹出菜单（桌面端 SessionRow hover 菜单的
+        // 移动端形态，与 SessionsScreen 的 SessionRowItem 同款）
+        if (onMenu != null) {
+            Box(
+                Modifier
+                    .clip(RoundedCornerShape(Lx.radius.r6))
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onMenu,
+                    )
+                    .padding(2.dp),
+            ) {
+                SmallIcon(Icons.Filled.MoreVert, Lx.colors.FgFaint, size = 12)
+            }
+        }
     }
 }
 

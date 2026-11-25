@@ -16,6 +16,7 @@ package com.moyunteng.lxcode.remote.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
@@ -27,6 +28,9 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.moyunteng.lxcode.design.component.LxButton
+import com.moyunteng.lxcode.design.component.LxButtonSize
+import com.moyunteng.lxcode.design.component.LxButtonVariant
 import com.moyunteng.lxcode.design.token.Lx
 import com.moyunteng.lxcode.remote.model.ContextUsage
 import com.moyunteng.lxcode.remote.model.ModelGroup
@@ -152,9 +156,17 @@ internal val APPROVAL_SHEET_OPTIONS = listOf(
     ApprovalOption("strict", "严格模式", "所有工具执行前都要求确认"),
 )
 
-/** 上下文占用明细 sheet 内容：头部读数 + 五类条形 + 脚注。 */
+/** 上下文占用明细 sheet 内容：头部读数 + 五类条形 + 脚注。
+ *
+ *  [onCompact] 非空 = 底部给「立即压缩」入口（chat.compact / assistant.compact——
+ *  域由调用方钉住）；[compacting] = 压缩进行中（按钮禁用 + 文案「压缩中…」，
+ *  chat.compacting 事件的归约态——无反馈的压缩就是「点了没反应」）。 */
 @Composable
-internal fun ContextSheetBody(usage: ContextUsage?) {
+internal fun ContextSheetBody(
+    usage: ContextUsage?,
+    onCompact: (() -> Unit)? = null,
+    compacting: Boolean = false,
+) {
     val known = usage != null && usage.window > 0
     LazyColumn(Modifier.fillMaxWidth()) {
         item {
@@ -182,13 +194,33 @@ internal fun ContextSheetBody(usage: ContextUsage?) {
                     color = ctxColor(i),
                 )
             }
-            item {
-                ContextUsageFoot(
-                    text = "窗口 ${u.window} tok · 已用 ${(u.used.toFloat() / u.window * 100).toInt()}%" +
-                        "（${u.used} tok）。条宽 = 占窗口比例；读 agent.ContextUsage 五类拆分" +
-                        if (u.estimated) "，估算值带 ~ 记号。" else "。",
-                )
+        }
+        item {
+            if (onCompact != null) {
+                // 立即压缩入口（对齐桌面端 ContextIndicator 的按钮：压缩中禁用 +
+                // spinner 文案，防重复点击触发第二次全量 prefill）。
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 22.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.Center,
+                ) {
+                    LxButton(
+                        text = if (compacting) "压缩中…" else "立即压缩历史",
+                        onClick = onCompact,
+                        variant = if (compacting) LxButtonVariant.Secondary else LxButtonVariant.Primary,
+                        size = LxButtonSize.Medium,
+                        enabled = !compacting,
+                    )
+                }
             }
+            ContextUsageFoot(
+                text = "窗口 ${usage?.window ?: 0} tok · 已用 ${
+                    if (known) "${(usage!!.used.toFloat() / usage.window * 100).toInt()}%" else "—"
+                }" +
+                    "（${usage?.used ?: 0} tok）。条宽 = 占窗口比例；读 agent.ContextUsage 五类拆分" +
+                    if (usage?.estimated == true) "，估算值带 ~ 记号。" else "。",
+            )
         }
     }
 }

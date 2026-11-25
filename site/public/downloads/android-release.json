@@ -1,11 +1,13 @@
 {
-  "version": "0.3.66",
-  "versionCode": 67,
-  "name": "lxcode-0.3.66-android.apk",
-  "size": 12059979,
-  "sha256": "44e6f7a07b73435b0014a69afe91645de34819a0eecb32707dc382c9cfcc7d2b",
-  "url": "downloads/lxcode-0.3.66-android.apk",
+  "version": "0.3.68",
+  "versionCode": 69,
+  "name": "lxcode-0.3.68-android.apk",
+  "size": 12076363,
+  "sha256": "915737ce16b2e222b139c5e923b7b08bfb3fbe18a9bac4579f17b4417b018969",
+  "url": "downloads/lxcode-0.3.68-android.apk",
   "notes": [
-    "修复投屏偶发被误停的问题（非观看端不再能干扰投屏会话）"
+    "助手会话支持重命名与归档，侧键返回修复",
+    "投屏全屏不再有遮挡盲区，切后台回来自动恢复",
+    "修复完成通知过于频繁的问题"
   ]
 }

@@ -65,6 +65,63 @@ func TestOpenAIStreamToolCallsSingle(t *testing.T) {
 	}
 }
 
+// TestOpenAIStreamEmptyFinishReasonWithToolCalls：干净 EOF 且端点没发
+// finish_reason（空串）时，聚合出工具调用的轮必须归 tool_calls——
+// 兜底先判 toolCalls 再落 stop（空串归 stop 会把中间轮伪装成正常完成，2026-12）。
+func TestOpenAIStreamEmptyFinishReasonWithToolCalls(t *testing.T) {
+	lines := []string{
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"北京\"}"}}]}}]}`,
+		`data: {"choices":[{"delta":{}}]}`,
+		`data: [DONE]`,
+	}
+	srv := sseServer(t, lines)
+	c := mustClient(t, srv.URL, FormatOpenAI)
+	tool := Tool{Name: "get_weather", Description: "查天气", Parameters: json.RawMessage(`{"type":"object"}`)}
+	ch, err := c.ChatStream(context.Background(), []Message{{Role: "user", Content: "北京天气"}},
+		WithTools([]Tool{tool}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var done *ChatResult
+	for ev := range ch {
+		if ev.Type == EventDone {
+			done = ev.Result
+		}
+	}
+	if done == nil {
+		t.Fatal("没有 done 事件")
+	}
+	if len(done.Message.ToolCalls) != 1 {
+		t.Fatalf("tool_calls 不符: %+v", done.Message.ToolCalls)
+	}
+	if done.FinishReason != FinishToolCalls {
+		t.Fatalf("空 finish_reason + toolCalls 应归 tool_calls, got %q", done.FinishReason)
+	}
+}
+
+// TestOpenAIStreamEmptyFinishReasonText：纯文本轮空 finish_reason 仍归 stop（回归钉子）。
+func TestOpenAIStreamEmptyFinishReasonText(t *testing.T) {
+	lines := []string{
+		`data: {"choices":[{"delta":{"content":"你好"}}]}`,
+		`data: [DONE]`,
+	}
+	srv := sseServer(t, lines)
+	c := mustClient(t, srv.URL, FormatOpenAI)
+	ch, err := c.ChatStream(context.Background(), []Message{{Role: "user", Content: "嗨"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var done *ChatResult
+	for ev := range ch {
+		if ev.Type == EventDone {
+			done = ev.Result
+		}
+	}
+	if done == nil || done.FinishReason != FinishStop {
+		t.Fatalf("纯文本空 finish_reason 应归 stop: %+v", done)
+	}
+}
+
 // TestOpenAIStreamToolCallsParallel：并行多工具——两个 index 各自聚合、
 // id/name 各自齐全（GLM 实测：每个 index 独立 id）。
 func TestOpenAIStreamToolCallsParallel(t *testing.T) {

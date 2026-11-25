@@ -1428,7 +1428,13 @@ internal fun DispatchCard(
         ) {
             LxStatusDot(status = status, size = 8.dp)
             Text(
-                text = "已派发 → ${block.agentName}",
+                // run_task（助手 → 项目）派发：Agent 名后缀项目名（「coder · lxcode」）
+                // ——用户一眼看出这活是派进项目里的。常规委派 projectName 空，现状不变。
+                text = if (block.projectName.isNotBlank()) {
+                    "已派发 → ${block.agentName} · ${block.projectName}"
+                } else {
+                    "已派发 → ${block.agentName}"
+                },
                 style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size12_5, fontWeight = FontWeight.SemiBold),
                 color = Lx.colors.Fg,
             )

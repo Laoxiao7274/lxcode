@@ -742,15 +742,16 @@ private fun SessionRowItem(
     }
 }
 
-/** 行操作菜单 Shape —— 对齐 PickerMenus 的 .mp-panel（圆角 12、1px 边、菜单级阴影）。 */
-private val SessionOpsShape = RoundedCornerShape(12.dp)
+/** 行操作菜单 Shape —— 对齐 PickerMenus 的 .mp-panel（圆角 12、1px 边、菜单级阴影）。
+ *  internal：助手列表页（AssistantScreens.kt）复用同一只菜单（2026-12）。 */
+internal val SessionOpsShape = RoundedCornerShape(12.dp)
 
 /** 项目头像 Shape（原型 `.pavatar`：`border-radius: 11px`）。 */
 private val ProjectAvatarShape = RoundedCornerShape(11.dp)
 
 /** 会话行操作菜单（重命名 / 归档；删除与置顶协议没有——缺口记 PROTOCOL-NOTES.md，不造）。 */
 @Composable
-private fun SessionOpsMenu(onRename: () -> Unit, onArchive: () -> Unit) {
+internal fun SessionOpsMenu(onRename: () -> Unit, onArchive: () -> Unit) {
     Column(
         Modifier
             .width(150.dp)
@@ -774,7 +775,7 @@ private fun SessionOpsMenu(onRename: () -> Unit, onArchive: () -> Unit) {
 
 /** 菜单条目（图标 + 文字；对齐 .mp-item：padding 8/10、圆角 8、12sp）。 */
 @Composable
-private fun SessionOpsRow(label: String, icon: ImageVector, onClick: () -> Unit) {
+internal fun SessionOpsRow(label: String, icon: ImageVector, onClick: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()

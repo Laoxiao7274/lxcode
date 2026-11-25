@@ -9,9 +9,11 @@ interface ImportMetaEnv {
 }
 
 /** 壳层侧键探针（2026-12 侧键修复）：AssistantWorkspace 在助手模式可见时注册、
- *  切走注销；壳层 app-command（shell/src/main.ts）探针优先调用、回落 history。
+ *  切走注销；壳层 app-command（shell/src/main.ts）**存在性分流**——探针存在
+ *  调用它、不存在回落 history（不用 `??`：探针处理完返回 undefined 会误触发
+ *  history.back 双重导航）。探针返回 true = 已处理（双保险，壳层可据此判）；
  *  项目域不注册——它的侧键走浏览器历史 + popstate 原生路径。 */
 interface Window {
-  __lxNavBack?: () => void;
-  __lxNavForward?: () => void;
+  __lxNavBack?: () => boolean | void;
+  __lxNavForward?: () => boolean | void;
 }

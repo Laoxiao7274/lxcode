@@ -53,6 +53,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.WarningAmber
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -84,11 +85,15 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.isActive
 import com.moyunteng.lxcode.design.component.LxConfirmDialog
+import com.moyunteng.lxcode.design.component.LxButton
+import com.moyunteng.lxcode.design.component.LxButtonSize
+import com.moyunteng.lxcode.design.component.LxButtonVariant
 import com.moyunteng.lxcode.design.component.LxIconButton
 import com.moyunteng.lxcode.design.component.LxListItem
 import com.moyunteng.lxcode.design.component.LxSectionHeader
 import com.moyunteng.lxcode.design.component.LxStatus
 import com.moyunteng.lxcode.design.component.LxStatusDot
+import com.moyunteng.lxcode.design.component.LxTextField
 import com.moyunteng.lxcode.design.motion.LxEnterSpec
 import com.moyunteng.lxcode.design.motion.LxStagger
 import com.moyunteng.lxcode.design.motion.lxEnter
@@ -123,11 +128,31 @@ private fun heroSub(runningCount: Int): String {
     return if (runningCount > 0) "今天是 $date · 有 $runningCount 件事还挂着" else "今天是 $date"
 }
 
-/** 助手会话列表页（SessionsScreen 的瘦身克隆：标题 + 新对话 + 会话行）。 */
+/** 助手会话列表页（SessionsScreen 的瘦身克隆：标题 + 新对话 + 会话行）。
+ *  2026-12 补齐行操作（对齐桌面端 AssistantSessionList 的 ⋯ 菜单）：行**长按**
+ *  或行尾 ⋯ 点按弹 SessionOpsMenu（重命名/归档——session.rename/archive 不分
+ *  space，走 RealBackend 的助手域封装）；归档即从列表收起（刷新已过滤）。 */
 @Composable
 fun AssistantScreen(state: AppState) {
     val real = state.real
     LaunchedEffect(Unit) { real.refreshAssistantSessions() }
+
+    // 行操作菜单 / 重命名弹窗（与 SessionsScreen 同款三件套）
+    var menuFor by remember { mutableStateOf<SessionMeta?>(null) }
+    var renaming by remember { mutableStateOf<SessionMeta?>(null) }
+    // 返回键第一层：行菜单 / 重命名弹窗开着 → 返回先关弹层（AppRoot 的 BackHandler 链）
+    LaunchedEffect(menuFor, renaming) {
+        state.backInterceptor =
+            if (menuFor != null || renaming != null) {
+                {
+                    menuFor = null
+                    renaming = null
+                    true
+                }
+            } else {
+                null
+            }
+    }
 
     Column(
         Modifier
@@ -211,18 +236,81 @@ fun AssistantScreen(state: AppState) {
                 }
             } else {
                 itemsIndexed(sessions) { i, s ->
-                    AsstCard(
-                        title = s.title,
-                        sub = if (s.running || real.asst.isRunning(s.id)) "运行中…" else "轻点继续对话",
-                        time = s.updatedAt,
-                        running = s.running || real.asst.isRunning(s.id),
-                        modifier = Modifier.lxStaggerEnter(count = sessions.size, index = i),
-                        onClick = { state.route = Route.AssistantThread(s.id) },
-                    )
+                    Box {
+                        AsstCard(
+                            title = s.title,
+                            sub = if (s.running || real.asst.isRunning(s.id)) "运行中…" else "轻点继续对话",
+                            time = s.updatedAt,
+                            running = s.running || real.asst.isRunning(s.id),
+                            modifier = Modifier.lxStaggerEnter(count = sessions.size, index = i),
+                            onClick = { state.route = Route.AssistantThread(s.id) },
+                            onLongClick = { menuFor = s },
+                            onMenu = { menuFor = s },
+                        )
+                        // 行操作菜单（对齐桌面端 AssistantSessionList 的 ⋯ 菜单：
+                        // 重命名/归档；SessionOpsMenu 与 SessionsScreen 共用一只）
+                        AnchorMenu(expanded = menuFor?.id == s.id, onDismiss = { menuFor = null }) {
+                            SessionOpsMenu(
+                                onRename = {
+                                    menuFor = null
+                                    renaming = s
+                                },
+                                onArchive = {
+                                    menuFor = null
+                                    real.archiveAssistantSession(s.id, archived = true)
+                                },
+                            )
+                        }
+                    }
                 }
             }
             item { Box(Modifier.height(12.dp)) }
         }
+    }
+
+    // 重命名弹窗（session.rename 不分 space；成功后刷助手域列表）
+    renaming?.let { target ->
+        var draft by remember(target.id) { mutableStateOf(target.title) }
+        AlertDialog(
+            onDismissRequest = { renaming = null },
+            containerColor = Lx.colors.Surface,
+            title = {
+                Text(
+                    text = "重命名助手对话",
+                    style = Lx.type.ListTitle.copy(fontWeight = FontWeight.SemiBold),
+                    color = Lx.colors.Fg,
+                )
+            },
+            text = {
+                LxTextField(
+                    value = draft,
+                    onValueChange = { draft = it },
+                    placeholder = "对话标题",
+                )
+            },
+            confirmButton = {
+                LxButton(
+                    text = "保存",
+                    onClick = {
+                        val title = draft.trim()
+                        if (title.isNotEmpty()) {
+                            real.renameAssistantSession(target.id, title)
+                        }
+                        renaming = null
+                    },
+                    variant = LxButtonVariant.Primary,
+                    size = LxButtonSize.Medium,
+                )
+            },
+            dismissButton = {
+                LxButton(
+                    text = "取消",
+                    onClick = { renaming = null },
+                    variant = LxButtonVariant.Secondary,
+                    size = LxButtonSize.Medium,
+                )
+            },
+        )
     }
 }
 
@@ -348,6 +436,51 @@ fun AssistantThreadScreen(state: AppState, sessionId: String) {
     var composerHeightDp by remember { mutableStateOf(0.dp) }
     val density = LocalDensity.current
 
+    // ===== 向上翻页（assistant.history 的 before_seq 分页——2026-12 P2 补齐）=====
+    //
+    // 触发/补偿与主域 ThreadScreen 同一套（index ≤ 1 且还有更早 → loadAssistantEarlier；
+    // earlierVersion 变化 → 按插入前快照恢复视觉位置）。
+    val earlierVersion = asst.earlierVersion
+    var prePagingFirstIndex by remember { mutableStateOf(0) }
+    var prePagingFirstOffset by remember { mutableStateOf(0) }
+    var prePagingBlockCount by remember { mutableStateOf(0) }
+    var pendingScrollCompensation by remember { mutableStateOf(false) }
+
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
+            .distinctUntilChanged()
+            .collect { (index, offset) ->
+                if (index <= 1 && asst.hasMoreHistory && !asst.loadingEarlier &&
+                    asst.oldestLoadedSeq > 0 && asst.blocks.isNotEmpty()
+                ) {
+                    prePagingFirstIndex = index
+                    prePagingFirstOffset = offset
+                    prePagingBlockCount = asst.blocks.size
+                    pendingScrollCompensation = true
+                    real.loadAssistantEarlier()
+                }
+            }
+    }
+    LaunchedEffect(earlierVersion) {
+        if (!pendingScrollCompensation) return@LaunchedEffect
+        pendingScrollCompensation = false
+        val inserted = asst.blocks.size - prePagingBlockCount
+        if (inserted <= 0) return@LaunchedEffect
+        val targetIndex = prePagingFirstIndex + inserted
+        repeat(8) {
+            withFrameNanos { }
+            val info = listState.layoutInfo
+            if (info.visibleItemsInfo.isEmpty()) return@LaunchedEffect
+            val target = info.visibleItemsInfo.firstOrNull { it.index == targetIndex }
+            if (target != null) {
+                val delta = target.offset - prePagingFirstOffset
+                if (delta != 0) listState.scrollBy(delta.toFloat())
+                return@LaunchedEffect
+            }
+            listState.scrollToItem(targetIndex, prePagingFirstOffset)
+        }
+    }
+
     Column(
         Modifier
             .fillMaxSize()
@@ -434,6 +567,54 @@ fun AssistantThreadScreen(state: AppState, sessionId: String) {
                 }
                 // stagger 限首次装载路径（P3 性能，同 ThreadScreen：超上限不逐条延迟）
                 // daysep 插入在展示层（不进 asst.blocks，理由同 ThreadScreen）
+                // 头部：分页状态行（spinner / 重试 / 「已加载全部历史」）——主域
+                // ThreadScreen 的 header 同款（key 固定，插入更早块时恒在 index 0）。
+                item(key = "$sessionId:header") {
+                    when {
+                        asst.loadingEarlier -> Row(
+                            Modifier.fillMaxWidth().padding(vertical = Lx.space.s4),
+                            horizontalArrangement = Arrangement.Center,
+                        ) {
+                            TypingDots(dotSize = 5.dp, gap = 3.dp)
+                            Text(
+                                text = "加载更早的历史…",
+                                style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size11_5),
+                                color = Lx.colors.FgMuted,
+                                modifier = Modifier.padding(start = Lx.space.s4),
+                            )
+                        }
+                        asst.loadEarlierError != null -> Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = "更早的历史加载失败",
+                                style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size11_5),
+                                color = Lx.colors.FgMuted,
+                            )
+                            Text(
+                                text = "重试",
+                                style = Lx.type.BodySmall.copy(
+                                    fontSize = Lx.type.Size11_5,
+                                    fontWeight = FontWeight.Medium,
+                                    textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline,
+                                ),
+                                color = Lx.colors.Fg,
+                                modifier = Modifier
+                                    .padding(start = Lx.space.s4)
+                                    .clickable { real.loadAssistantEarlier() },
+                            )
+                        }
+                        !asst.hasMoreHistory && asst.oldestLoadedSeq > 0 -> Text(
+                            text = "已加载全部历史",
+                            style = Lx.type.BodySmall.copy(fontSize = Lx.type.Size11_5),
+                            color = Lx.colors.FgMuted,
+                            modifier = Modifier.fillMaxWidth().padding(vertical = Lx.space.s2),
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        )
+                    }
+                }
                 val blocks: List<ThreadBlock> = threadBlocksWithDaySeps(asst.blocks)
                 itemsIndexed(blocks, key = { i, _ -> "$sessionId:$i" }) { i, block ->
                     Box(

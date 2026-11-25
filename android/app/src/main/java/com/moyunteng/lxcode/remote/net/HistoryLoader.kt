@@ -491,6 +491,7 @@ internal class HistoryLoader(private val owner: RealBackend) {
             options = pend.optJSONArray("options")?.let { a ->
                 (0 until a.length()).map { a.optString(it) }
             } ?: emptyList(),
+            dispatchId = pend.optString("dispatch_id", ""),
             )
         }
         Log.i(RealBackend.TAG, "history($currentSessionId): ${parsed.size} 条消息 → ${blocks.size} 块 busy=$busy")
@@ -608,6 +609,7 @@ internal class HistoryLoader(private val owner: RealBackend) {
             options = pend.optJSONArray("options")?.let { a ->
                 (0 until a.length()).map { a.optString(it) }
             } ?: emptyList(),
+            dispatchId = pend.optString("dispatch_id", ""),
             )
         }
         Log.i(RealBackend.TAG, "child history($viewChildSessionId): ${parsed.size} 条消息 → ${childBlocks.size} 块 busy=$childBusy")

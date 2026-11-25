@@ -56,7 +56,9 @@ enum class RealPhase { Offline, Connecting, Connected, Failed }
 
 /** 挂起的工具确认（对齐 protocol.ConfirmRequest）。
  *  [kind] 空 = 高危工具确认（批准/拒绝）；"ask" = ask_user 提问（打字回答或点选）。
- *  [options] = 提问的预设答案（可空）——AskCard 渲染成可点选的选项按钮。 */
+ *  [options] = 提问的预设答案（可空）——AskCard 渲染成可点选的选项按钮。
+ *  [dispatchId] = 子会话确认的归属键（子确认由父会话代理挂起，带 dispatch_id
+ *  上卡——归属反查的钥匙；主会话自己的确认不带）。 */
 data class PendingConfirm(
     val sessionId: String,
     val id: String,
@@ -65,6 +67,7 @@ data class PendingConfirm(
     val prompt: String,
     val kind: String = "",
     val options: List<String> = emptyList(),
+    val dispatchId: String = "",
 ) {
     /** 是否 ask_user 提问形态。 */
     val isAsk: Boolean get() = kind == "ask"
@@ -603,6 +606,35 @@ class RealBackend {
         var streamVersion by mutableStateOf(0)
             internal set
 
+        // ===== 向上翻页（assistant.history 的 before_seq 分页——2026-12 P2 补齐，
+        // 与主域 oldestLoadedSeq 组同一套状态机，实现在 RealBackend.loadAssistantEarlier）=====
+
+        /** 已加载窗口最旧一条消息的 seq（下一次 before_seq 的 anchor；0 = 还没装载过）。 */
+        var oldestLoadedSeq by mutableStateOf(0L)
+            internal set
+
+        /** anchor 之前还有没有更早的历史（远端 has_more）。 */
+        var hasMoreHistory by mutableStateOf(false)
+            internal set
+
+        /** 分页装载中（LazyColumn 顶部 spinner）。 */
+        var loadingEarlier by mutableStateOf(false)
+            internal set
+
+        /** 上一次分页装载失败的原因（非空 = 顶部显示重试）。 */
+        var loadEarlierError by mutableStateOf<String?>(null)
+            internal set
+
+        /** 分页装载版本号（更早的块插入头部时 +1；页面据此做不跳屏补偿）。 */
+        var earlierVersion by mutableStateOf(0)
+            internal set
+
+        /** 压缩进行中（assistant.compacting 事件归约；会话级）：true = 历史正在
+         *  压缩——上下文弹层的「立即压缩」按钮据此禁用 + 显示「压缩中…」（对齐
+         *  桌面端 ContextIndicator 的 compacting 反馈）。 */
+        var compacting by mutableStateOf(false)
+            internal set
+
         /** 当前流式 assistant 块下标（-1 = 无）。 */
         var streamingIdx = -1
 
@@ -629,6 +661,14 @@ class RealBackend {
             approval = null
             historyVersion = 0
             streamVersion = 0
+            // 分页薄记同会话复位（上一会话的 anchor/has_more/错误状态不能带过来——
+            // 主域 switchTo 的同一条纪律）
+            oldestLoadedSeq = 0
+            hasMoreHistory = false
+            loadingEarlier = false
+            loadEarlierError = null
+            // 压缩进行中是会话级瞬时态：切会话即清（与主域 switchTo 清账同一条纪律）
+            compacting = false
         }
     }
 
@@ -643,6 +683,37 @@ class RealBackend {
                 return@call
             }
             applyAssistantSessionList(result)
+        }
+    }
+
+    /** 重命名助手会话（session.rename 不分 space；成功后刷助手域列表——
+     *  session.changed 广播只触发主域 refreshSessions，助手列表要自己补拉）。
+     *  对齐桌面端 AssistantWorkspace 的 commitRename（2026-12 补齐行操作）。 */
+    fun renameAssistantSession(id: String, title: String) {
+        Log.i(TAG, "session.rename (assistant) id=$id title=$title")
+        client.call(
+            "session.rename",
+            JSONObject().put("id", id).put("title", title),
+        ) { err, _ ->
+            if (err != null) Log.w(TAG, "session.rename (assistant) 失败: ${err.optString("message")}")
+            refreshAssistantSessions()
+        }
+    }
+
+    /** 归档/恢复助手会话（session.archive archived 位；恢复=archived=false）。
+     *  归档后列表刷新即消失（applyAssistantSessionList 已过滤 archived）；
+     *  手机端不做「已归档」折叠区（桌面端有）——归档即从列表收起，要恢复
+     *  在桌面端操作（同一条数据，跨端可见）。 */
+    fun archiveAssistantSession(id: String, archived: Boolean) {
+        Log.i(TAG, "session.archive (assistant) id=$id archived=$archived")
+        client.call(
+            "session.archive",
+            JSONObject().put("id", id).put("archived", archived),
+        ) { err, _ ->
+            if (err != null) {
+                Log.w(TAG, "session.archive (assistant) 失败: ${err.optString("message")}")
+            }
+            refreshAssistantSessions()
         }
     }
 
@@ -812,6 +883,58 @@ class RealBackend {
         }
     }
 
+    /**
+     * 助手域向上翻页（assistant.history 的 before_seq 分页——2026-12 P2 补齐，
+     * 与主域 loadEarlier 同一套状态机，方法与状态桶换助手域）。
+     *
+     * 状态机：loadingEarlier 置位（UI spinner）→ 成功后新块**插入头部** +
+     * oldestLoadedSeq 推进 + earlierVersion++（AssistantThreadScreen 做不跳屏补偿）；
+     * has_more=false → hasMoreHistory=false；失败 → loadEarlierError 置位（UI 重试）。
+     * 忙碌会话也可翻页（读路径不冲突）；重复触发被 loadingEarlier 闸住。
+     * 后端契约（dispatch_assistant.go）：before_seq > 0 必须同时带 tail（窗口大小）。
+     */
+    fun loadAssistantEarlier() {
+        if (asst.loadingEarlier) return
+        val id = asst.currentId
+        val anchor = asst.oldestLoadedSeq
+        if (id.isEmpty() || anchor <= 0 || !asst.hasMoreHistory) return
+        asst.loadingEarlier = true
+        asst.loadEarlierError = null
+        client.call(
+            "assistant.history",
+            JSONObject()
+                .put("session_id", id)
+                .put("tail", TAIL_WINDOW)
+                .put("before_seq", anchor),
+        ) { err, result ->
+            asst.loadingEarlier = false
+            // 请求在途时切走了会话：过期响应作废（与主域 loadEarlier 的守卫同款）
+            if (id != asst.currentId) return@call
+            if (err != null) {
+                Log.w(TAG, "assistant.history(before_seq=$anchor) 失败: ${err.optString("message")}")
+                asst.loadEarlierError = err.optString("message").ifBlank { "加载失败" }
+                return@call
+            }
+            val r = result as? JSONObject ?: return@call
+            val (parsed, _, _, _) = historyLoader.parseHistoryBlocks(r)
+            if (parsed.isEmpty()) {
+                // 空窗口 = 已到头（防御：后端 has_more 缺席的老版本）
+                asst.hasMoreHistory = false
+                asst.earlierVersion++
+                return@call
+            }
+            // 插入头部（LazyColumn 顶部）；anchor 推进到新窗口首条（分页应答的
+            // first_seq 是权威值——配平回退后窗口首条可能比 anchor-N 更旧）
+            asst.blocks.addAll(0, parsed)
+            val newFirstSeq = r.optLong("first_seq", 0L)
+            if (newFirstSeq > 0) asst.oldestLoadedSeq = newFirstSeq
+            asst.hasMoreHistory = r.optBoolean("has_more", false)
+            asst.loadEarlierError = null
+            asst.earlierVersion++
+            Log.i(TAG, "loadAssistantEarlier($id): +${parsed.size} 块 has_more=${asst.hasMoreHistory} anchor=${asst.oldestLoadedSeq}")
+        }
+    }
+
     /** 改当前助手会话的权限档（assistant.approval；乐观置位，广播回来再对齐）。 */
     fun changeAssistantApproval(mode: String) {
         val sid = asst.currentId
@@ -852,6 +975,7 @@ class RealBackend {
     fun openAssistantChildSession(childId: String, title: String) {
         if (viewChildSessionId == childId) return
         viewChildSessionId = childId
+        childViewIsAssistant = true // 域标记随装载口走（三操作分路的依据）
         childViewTitle = title
         childBlocks.clear()
         childStreamingIdx = -1
@@ -902,14 +1026,20 @@ class RealBackend {
     }
 
     /** assistant.history → 块（与主域 applyHistory 同一份解析器 historyLoader.parseHistoryBlocks；
-     *  无分页/缓存薄记——助手会话通常较短，TAIL_WINDOW 内一次装完）。 */
+     *  分页薄记同主域 applyHistory 的口径——tail 段首条 seq 记 anchor、has_more 精化
+     *  hasMoreHistory，上翻分页（loadAssistantEarlier）据此拉更早窗口。缓存薄记不做
+     *  （助手会话无缓存秒开路径，与主域的分页缓存合并无关）。 */
     internal fun applyAssistantHistory(r: JSONObject?) {
         if (r == null) return
-        val (parsed, todosArr, _, _) = historyLoader.parseHistoryBlocks(r)
+        val (parsed, todosArr, firstSeq, _) = historyLoader.parseHistoryBlocks(r)
         asst.endedDispatches.clear()
         asst.blocks.clear()
         asst.blocks.addAll(parsed)
         asst.streamingIdx = -1
+        // 分页薄记（主域 applyHistory 同款）：tail 段首条 seq 是 anchor；has_more
+        // 非分页应答（首次装载）缺席 → 按「anchor>0 即可能还有更早」的保守口径。
+        asst.oldestLoadedSeq = firstSeq
+        asst.hasMoreHistory = firstSeq > 0 && r.optBoolean("has_more", firstSeq > 0)
         todosArr?.let { arr ->
             val list = (0 until arr.length()).map { arr.getJSONObject(it) }
                 .map { todoItemOf(it.optString("content"), it.optString("status")) }
@@ -933,6 +1063,7 @@ class RealBackend {
             options = pend.optJSONArray("options")?.let { a ->
                 (0 until a.length()).map { a.optString(it) }
             } ?: emptyList(),
+            dispatchId = pend.optString("dispatch_id", ""),
             )
         }
         Log.i(TAG, "assistant.history(${asst.currentId}): ${parsed.size} 条消息 → ${asst.blocks.size} 块 busy=${asst.busy}")
@@ -971,6 +1102,7 @@ class RealBackend {
             options = p.optJSONArray("options")?.let { a ->
                 (0 until a.length()).map { a.optString(it) }
             } ?: emptyList(),
+            dispatchId = dispatchId,
             )
             asst.confirm = pc
             // 子会话视图双投（对齐主 reducer：卡上的子会话 id 与 viewChildSessionId 相等）
@@ -1008,6 +1140,8 @@ class RealBackend {
                     dispatchId = cardId,
                     childTodosDone = tDone,
                     childTodosTotal = tTotal,
+                    // run_task 的目标项目名（可选键——助手域的派发卡同款展示「coder · 项目名」）
+                    projectName = p.optString("project_name", ""),
                 )
                 if (idx >= 0) {
                     val prev = asst.blocks[idx] as ThreadBlock.Dispatch
@@ -1021,6 +1155,8 @@ class RealBackend {
                         dispatchId = cardId.ifBlank { prev.dispatchId },
                         childTodosDone = if (tDone >= 0) tDone else prev.childTodosDone,
                         childTodosTotal = if (tTotal > 0) tTotal else prev.childTodosTotal,
+                        // 项目名以实时载荷为准（续跑没带 = 清掉旧值，主域同一条口径）
+                        projectName = fresh.projectName,
                     )
                 } else {
                     asst.blocks.add(fresh)
@@ -1290,6 +1426,15 @@ class RealBackend {
                         manual = p.optBoolean("manual"),
                     ),
                 )
+            }
+
+            "chat.compacting" -> {
+                // 压缩开始/结束信号（会话级瞬时态——上下文弹层「立即压缩」的禁用
+                // 依据，对齐桌面端 reduce 的 compacting 分支）。带 dispatch_id 的是
+                // 子会话自己的压缩——不属于助手会话级状态，忽略（桌面端同口径）。
+                if (sid != asst.currentId) return
+                if (dispatchId.isNotEmpty()) return
+                asst.compacting = p.optBoolean("compacting")
             }
 
             else -> Log.d(TAG, "助手域忽略事件 $chat")
@@ -1718,10 +1863,16 @@ class RealBackend {
     }
 
     /** 回前台（ON_START）统一入口：掉线立即重连；已连接做 ping 体检（3s 超时
-     *  无应答 = 死连接——TCP 没断但后端不回帧，主动断开走自动重连）。 */
+     *  无应答 = 死连接——TCP 没断但后端不回帧，主动断开走自动重连）。
+     *  投屏恢复：曾 active 而此刻未投（切后台被系统掐断 WS → 后端停投屏）则
+     *  按记忆参数重投一次。active==true 时 no-op；重连在途（Failed 态）时 no-op——
+     *  连上后由 onState 的恢复路径补（避免与连接竞争）。 */
     fun onForeground() {
         reconnectIfDown()
-        if (phase == RealPhase.Connected) client.healthCheck()
+        if (phase == RealPhase.Connected) {
+            client.healthCheck()
+            resumeScreenIfInterrupted()
+        }
     }
 
     /** 重试（断线 UI 的按钮；addr 传当前输入框地址——改了地址点重试应连新地址）。 */
@@ -1763,7 +1914,10 @@ class RealBackend {
             // 让断开自动退回（AppRoot LaunchedEffect）不触发。refreshScreen
             // 重拉 screen.state 得到真实 active（与助手域恢复链同款模式），
             // applyScreenState 更新的是同一个 screenState 源，页面据此自然刷新。
+            // **自动恢复投屏必须在 refreshScreen 之后**：它按 screenState.active
+            // 判定「曾 active 而此刻未投」——在快照刷新前判定用的是断线前的旧值。
             refreshScreen()
+            resumeScreenIfInterrupted()
             // 模型注册表：composer 模型菜单的数据源（桌面端是握手并行组的一步）
             refreshModels()
             // 断线期间错过的 chat.dispatchStart 不重放（事件一次性），而回放扫不出
@@ -1892,6 +2046,7 @@ class RealBackend {
     fun openChildSession(childId: String, title: String) {
         if (viewChildSessionId == childId) return
         viewChildSessionId = childId
+        childViewIsAssistant = false // 域标记随装载口走（三操作分路的依据）
         childViewTitle = title
         childBlocks.clear()
         childStreamingIdx = -1
@@ -1917,6 +2072,7 @@ class RealBackend {
     /** 关闭子会话视图（返回主会话）：清 child 状态，主会话状态从未动过。 */
     fun closeChildSession() {
         viewChildSessionId = null
+        childViewIsAssistant = false
         childBlocks.clear()
         childStreamingIdx = -1
         childConfirm = null
@@ -1930,9 +2086,66 @@ class RealBackend {
         childViewTitle = ""
     }
 
+    // ===== 子会话域判定（助手域子会话的三操作必须走 assistant.*——安卓 P0 漏网修复）=====
+    //
+    // ChildThreadView 是主域与助手域**共用**的视图（child* 状态桶单开）：历史装载
+    // 两域早按调用口分开了（openChildSession=chat.history / openAssistantChildSession
+    // =assistant.history），但停止/直发/确认裁决三个口此前恒走主域方法——助手域
+    // 子会话传过去后主域 s.session 会为助手行现建一份**主域**运行时（库行
+    // space='assistant' 不在主域解析面），结果：① 停止/续跑打到空运行时上（Cancel
+    // 空操作、续跑另开一轮——两份运行时并发写库 = 静默历史污染）；② tool.confirm
+    // 找不到助手域挂起的确认（子确认由助手父会话代理——桌面端 use-assistant-confirm
+    // 的父反查模式），点了没反应、会话卡在 busy。
+    //
+    // 判定（不猜 id 前缀、不查库）：记录视图打开时走的装载口——open* 只有两个
+    //（主域 / 助手域），一个布尔就够了；视图关了即清。
+
+    /** 当前打开的子会话视图是否来自**助手域**（openAssistantChildSession 置位，
+     *  openChildSession / closeChildSession 复位——三操作据此分路）。 */
+    var childViewIsAssistant by mutableStateOf(false)
+        internal set
+
+    /** 子会话视图里的确认归属：确认门由**父会话代理**（桌面端同契约），裁决必须
+     *  发给持有挂起确认的那个会话——助手域按确认的 dispatch_id 反查卡所在的助手
+     *  会话（两域的卡各查各的），查不到退回子会话 id（发出去顶多报「没有挂起的
+     *  确认」，不会出现「点了没反应」）。判定逻辑收进纯函数
+     *  [RealBackend.assistantChildConfirmTarget]（JVM 单测钉住）。 */
+    private fun assistantChildConfirmOwner(c: PendingConfirm): String {
+        val did = c.dispatchId
+        return RealBackend.assistantChildConfirmTarget(
+            dispatchId = did,
+            inAsst = did.isNotEmpty() && asst.blocks.any { it is ThreadBlock.Dispatch && it.dispatchId == did },
+            inMain = did.isNotEmpty() && reducers.dispatchCardIdx(did) >= 0,
+            asstId = asst.currentId,
+            mainId = currentSessionId,
+            fallback = c.sessionId,
+        )
+    }
+
     /** 裁决子会话视图里挂起的确认（与主会话 resolveConfirm 同款，session_id 取载荷）。 */
     fun resolveChildConfirm(allow: Boolean) {
         val c = childConfirm ?: return
+        // 域分路：助手域子会话的确认由助手父会话代理挂起（assistant.confirmRequest
+        // 带 dispatch_id → asst.confirm），裁决走 assistant.confirm + 归属反查；主域
+        // 子会话照旧 tool.confirm（session_id = 子会话 id——主域代理方原口径不变）。
+        if (childViewIsAssistant) {
+            val owner = assistantChildConfirmOwner(c)
+            Log.i(TAG, "assistant.confirm(child) owner=$owner id=${c.id} allow=$allow")
+            client.call(
+                "assistant.confirm",
+                JSONObject().put("session_id", owner).put("id", c.id).put("allow", allow),
+            ) { err, _ ->
+                if (err != null) {
+                    Log.w(TAG, "assistant.confirm(child) 失败: ${err.optString("message")}")
+                    childBlocks.add(ThreadBlock.Error("确认裁决失败: ${err.optString("message")}"))
+                }
+                // 两处同时定格（桌面端 resolveAssistant 同款）：子会话视图的卡与
+                // 助手父会话时间线上那张，一起清（只清一处卡会挂着永不消失）。
+                asst.confirm = null
+                childConfirm = null
+            }
+            return
+        }
         Log.i(TAG, "tool.confirm(child) id=${c.id} allow=$allow")
         client.call(
             "tool.confirm",
@@ -2119,24 +2332,51 @@ class RealBackend {
         }
     }
 
-    /** 取消**正在跑的子会话**（chat.cancel + 子会话 id）：后端 cancelChildAnywhere
-     *  按 children 登记寻址真运行时（跑完即注销的子会话走普通会话路径兜底）。
-     *  子会话页忙时顶栏的停止钮走它。 */
+    /** 取消**正在跑的子会话**（chat.cancel / assistant.cancel + 子会话 id）：后端
+     *  cancelChildAnywhere / cancelChildOfAssistant 按 children 登记寻址真运行时
+     *  （跑完即注销的子会话走普通会话路径兜底）。子会话页忙时顶栏的停止钮走它。
+     *  域分路（安卓 P0 漏网修复）：助手域子会话运行时挂在**助手**会话的 children
+     *  登记里——主域 chat.cancel 对它现建一份空运行时，Cancel 是空操作、停不掉
+     *  真正在跑的子轮；必须走 assistant.cancel（后端只扫 assistantSessions）。 */
     fun cancelChild(childId: String) {
         if (childId.isEmpty()) return
+        if (childViewIsAssistant) {
+            Log.i(TAG, "assistant.cancel child=$childId")
+            client.call("assistant.cancel", JSONObject().put("session_id", childId)) { _, _ -> }
+            return
+        }
         Log.i(TAG, "chat.cancel child=$childId")
         client.call("chat.cancel", JSONObject().put("session_id", childId)) { _, _ -> }
     }
 
     /**
-     * 给**子会话**发一条续跑消息（chat.send + 子会话 id）：子会话页空闲时的
-     * 输入框走它——对子 Agent 直发补指令（后端现建 runtime 续跑）。
+     * 给**子会话**发一条续跑消息（chat.send / assistant.send + 子会话 id）：子会话
+     * 页空闲时的输入框走它——对子 Agent 直发补指令（后端现建 runtime 续跑）。
      * 派发运行中后端会以 CodeBusy 拒绝（「该子会话正在派发中」），错误照主
      * 会话 send 的口径插错误块。
+     * 域分路（安卓 P0 漏网修复）：助手域子会话走 assistant.send——后端域隔离
+     *（chat.* 只寻址主域运行时），且 assistant.send 按 busyChildOfAssistant 先拦
+     * 派发中的子会话、空闲时现建 runtime 续跑（语义与主域 chat.send 镜像同构）。
      */
     fun sendChild(childId: String, text: String) {
         val t = text.trim()
         if (childId.isEmpty() || t.isEmpty()) return
+        if (childViewIsAssistant) {
+            Log.i(TAG, "assistant.send child=$childId text=${t.take(80)}")
+            childBusy = true
+            client.call(
+                "assistant.send",
+                JSONObject().put("session_id", childId).put("text", t),
+            ) { err, _ ->
+                if (err != null) {
+                    childBusy = false
+                    val msg = err.optString("message")
+                    Log.w(TAG, "assistant.send(child) 被拒: code=${err.optInt("code")} $msg")
+                    childBlocks.add(ThreadBlock.Error("发送失败: $msg"))
+                }
+            }
+            return
+        }
         Log.i(TAG, "chat.send child=$childId text=${t.take(80)}")
         childBusy = true
         client.call(
@@ -2233,6 +2473,37 @@ class RealBackend {
     /** 启动 pending 的兜底超时回调（重新 start 时先撤旧的，防多条并存）。 */
     internal var startPendingTimeout: Runnable? = null
 
+    /**
+     * 投屏自动恢复（onForeground 调）：WS 因切后台被系统掐断时，后端的接收者断开
+     * 处理（onScreenClientGone）会把投屏命令停掉——重连回来后 screenState.active
+     * 已是 false，用户面对的是「怎么投都断了」的静默废墟。回前台时若本进程曾
+     * 在投屏（screenWasActive）而此刻未投，重发一次 start（按会话记忆参数）——
+     * 用户「回来继续看」是切后台的最高频意图，显式重投一次比让用户手动走
+     * 连接页 → 投屏页 → 开始快得多。恢复失败不重试：与手动投失败同语义
+     * （toast 错误，用户自己决定）。
+     */
+    internal fun resumeScreenIfInterrupted() {
+        val st = appStateRef?.get() ?: return
+        if (!st.screenWasActive || screenState?.active == true) return
+        // 未连接时不硬发（会直接吃到 -1 错误 toast）：等下一次 onForeground 或
+        // onState 重连成功路径。用户此刻看到的连接页本身就在提示重连中。
+        if (phase != RealPhase.Connected) return
+        // 切换 pending 挂着说明有参数切换在途，别插队。
+        if (screenPendingQuality != null || screenBusy || screenStartPending) return
+        val monitor = st.screenPickMonitor
+        val quality = st.screenPickQuality
+        val fps = st.screenPickFps
+        screenEvent("回前台自动恢复投屏（曾 active 而此刻未投）→ screen.start")
+        startScreen(monitor, quality, fps) { err ->
+            if (err != null) st.screenToast = "自动恢复投屏失败: $err"
+        }
+        // 断开自动退回（AppRoot LaunchedEffect）可能在后台就已把路由踢回连接页
+        //（active=false + wasActive 的组合在后台也会评估）——恢复重投即把用户
+        // 带回投屏页：active=true 到达后那里自然显示观看态（全屏位在路由离开时
+        // 已被复位，落在缩小态，用户可双击放大）。
+        st.route = com.moyunteng.lxcode.remote.ui.Route.Screen
+    }
+
     /** 切换 pending 的兜底超时回调（与 [startPendingTimeout] 同款：单条、先撤旧）。 */
     internal var pendingTimeout: Runnable? = null
 
@@ -2301,6 +2572,7 @@ class RealBackend {
             "assistant.dispatchStart" to "chat.dispatchStart",
             "assistant.dispatchEnd" to "chat.dispatchEnd",
             "assistant.compacted" to "chat.compacted",
+            "assistant.compacting" to "chat.compacting",
             "assistant.todoUpdated" to "todo.updated",
             "assistant.approvalChanged" to "chat.approvalChanged",
             "assistant.modelChanged" to "chat.modelChanged",
@@ -2353,6 +2625,34 @@ class RealBackend {
         /** 拆分 dispatch 结果：结论正文 + 子会话 id（没有提示行时 id 为空串）。 */
         fun splitDispatchResult(raw: String): Pair<String, String> =
             com.moyunteng.lxcode.remote.model.splitDispatchResult(raw)
+
+        /**
+         * 子会话确认的**归属裁决目标**（纯函数，JVM 单测钉住——助手域子会话的
+         * 确认由助手父会话代理挂起，裁决必须发给持有它的那个会话）。
+         *
+         * 判定与桌面端 resolveAssistantChildOwner 同构：按确认的 dispatch_id 反查
+         * 卡落在哪条会话的时间线里（助手域优先），查不到退回确认载荷的 session_id
+         * ——发出去顶多报「没有挂起的确认」，不会「点了没反应」。
+         *
+         * @param dispatchId 确认载荷的归属键（子确认必带）
+         * @param inAsst     卡是否落在助手域时间线（asst.blocks 反查的结果）
+         * @param inMain     卡是否落在主域时间线（主域 blocks 反查的结果）
+         * @param asstId / mainId  两域当前会话 id（空 = 域没开着）
+         * @param fallback   确认载荷自带的 session_id（两域都查不到时的兜底）
+         */
+        internal fun assistantChildConfirmTarget(
+            dispatchId: String,
+            inAsst: Boolean,
+            inMain: Boolean,
+            asstId: String,
+            mainId: String,
+            fallback: String,
+        ): String = when {
+            dispatchId.isEmpty() -> fallback
+            inAsst && asstId.isNotEmpty() -> asstId
+            inMain && mainId.isNotEmpty() -> mainId
+            else -> fallback
+        }
 
         /** 工具显示名（对齐桌面端工具卡标题；未知工具原样显示 id）。 */
         internal val TOOL_TITLES = mapOf(

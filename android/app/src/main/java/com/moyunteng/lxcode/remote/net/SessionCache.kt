@@ -295,6 +295,7 @@ object BlockCodec {
                 o.put("child_tools", b.childTools)
                 o.put("child_todos_done", b.childTodosDone)
                 o.put("child_todos_total", b.childTodosTotal)
+                if (b.projectName.isNotEmpty()) o.put("project_name", b.projectName)
             }
             is ThreadBlock.Compaction -> {
                 o.put("kind", K_COMPACTION)
@@ -374,6 +375,7 @@ object BlockCodec {
                 childTools = o.optInt("child_tools", 0),
                 childTodosDone = o.optInt("child_todos_done", -1),
                 childTodosTotal = o.optInt("child_todos_total", 0),
+                projectName = o.optString("project_name", ""),
             )
             K_COMPACTION -> ThreadBlock.Compaction(
                 summary = o.optString("summary"),

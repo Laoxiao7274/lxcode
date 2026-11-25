@@ -333,10 +333,13 @@ export function AssistantPage({
                 <WindowSentinel onExpand={loadOlder} label={loadOlderLabel(Boolean(state?.historyMore), hidden)} />
               )}
               {visible.map((block) => (
-                <Block key={block.uid} block={block} onConfirm={onConfirm} onAnswer={onAnswer} onOpenChild={onOpenChild} />
+                // readOnly + allowCopy：助手域没有 rewind 方法（刻意精简）——不传
+                // 的话编辑/撤回按钮照常渲染但点了没反应（no-op 违反 Block 纪律）；
+                // readOnly 摘掉全部动作条又损失常用的复制钮。变体语义见 Block.tsx。
+                <Block key={block.uid} block={block} onConfirm={onConfirm} onAnswer={onAnswer} onOpenChild={onOpenChild} readOnly allowCopy />
               ))}
               {streaming && (
-                <Block key={streaming.uid} block={streaming} onConfirm={onConfirm} onAnswer={onAnswer} onOpenChild={onOpenChild} />
+                <Block key={streaming.uid} block={streaming} onConfirm={onConfirm} onAnswer={onAnswer} onOpenChild={onOpenChild} readOnly allowCopy />
               )}
               {busy && !streaming && (
                 <div className="msg">

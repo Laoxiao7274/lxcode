@@ -29,6 +29,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import type { AgentSource, SessionMeta } from "../../shared/types";
 import type { UIState } from "../../shared/store";
 import type { AppMode } from "../../shared/app-mode";
+import { useDismissal } from "../../shared/popover";
 import { childTabSession, type WorkspaceView } from "../../shared/workspace-tabs";
 import {
   appendSessionTab,
@@ -348,7 +349,8 @@ export function AssistantWorkspace({
   // ---- 鼠标侧键（2026-12 修复）：助手域导航探针 ----
   // 助手域是纯 useState 导航、从不写浏览器历史——壳层的侧键注入默认走
   // history.back()，消费的是项目模式遗留条目、改到隐藏分支的 state。壳层已改为
-  // 探针优先（main.ts：window.__lxNavBack?.() ?? history.back()），本组件在
+  // **存在性分流**（main.ts：探针存在就调用、不存在才回落 history——不用
+  // `??`：探针处理完返回 undefined/true 都不能触发回落），本组件在
   // **助手模式可见时**注册探针、切走时注销（保活常驻：不能挂载/卸载判——组件
   // 不知道自身显隐，由 App 传 mode 进来——见 props 注释）。
   //
@@ -381,7 +383,8 @@ export function AssistantWorkspace({
   // ---- 鼠标侧键（2026-12 修复）：助手域导航探针 ----
   // 助手域是纯 useState 导航、从不写浏览器历史——壳层的侧键注入默认走
   // history.back()，消费的是项目模式遗留条目、改到隐藏分支的 state。壳层已改为
-  // 探针优先（main.ts：window.__lxNavBack?.() ?? history.back()），本组件在
+  // **存在性分流**（main.ts：探针存在就调用、不存在才回落 history——不用
+  // `??`：探针处理完返回 undefined/true 都不能触发回落），本组件在
   // **助手模式可见时**注册探针、切走时注销（保活常驻：不能挂载/卸载判——组件
   // 不知道自身显隐，由 App 传 mode 进来——见 props 注释）。
   //
@@ -393,9 +396,9 @@ export function AssistantWorkspace({
   // 在助手模式里永远不会被侧键命中（壳层先查探针）。
   useEffect(() => {
     if (mode !== "assistant") return;
-    window.__lxNavBack = () => {
-      if (childViewId !== null) { setChildViewId(null); return; }
-      if (secondaryView !== null) { setSecondaryView(null); return; }
+    window.__lxNavBack = (): boolean => {
+      if (childViewId !== null) { setChildViewId(null); return true; }
+      if (secondaryView !== null) { setSecondaryView(null); return true; }
       if (sessionId) {
         const prev = prevAssistantSessionRef.current;
         // forward 依据 + 手工对齐 prevTrackedRef（见上方 effect 注释），再切落点。
@@ -412,14 +415,19 @@ export function AssistantWorkspace({
           // 在哪个会话」的记忆，重进助手模式恢复的还是它；这里只是视图退回列表。
           setSessionId("");
         }
+        return true;
       }
-      // 已在中性态：无可后退（no-op——不碰项目域历史）。
+      // 已在中性态：无可后退。返回 true 表示「已处理（no-op）」——壳层存在性
+      // 分流后不会回落 history.back()；显式布尔是双保险，探针被处理过的那次
+      // 绝不再让浏览器历史被消费。
+      return true;
     };
-    window.__lxNavForward = () => {
+    window.__lxNavForward = (): boolean => {
       const left = lastLeftAssistantSessionRef.current;
-      if (!left || left === sessionId) return;
+      if (!left || left === sessionId) return true;
       lastLeftAssistantSessionRef.current = "";
       handleSelect(left);
+      return true;
     };
     return () => {
       delete window.__lxNavBack;
@@ -496,12 +504,36 @@ export function AssistantWorkspace({
     reportError,
   });
 
-  /** 搜索过滤后的列表（按标题包含——与主域 Sidebar 的 query 语义一致）。 */
+  /** 列表数据（搜索过滤 + 归档过滤）：未归档会话进主列表（对齐主域侧栏语义
+   *  ——归档了不再挂在列表里）；归档的沉到「已归档」折叠分组。 */
   const filteredSessions = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return sessionList;
-    return sessionList.filter((s) => s.title.toLowerCase().includes(q));
+    return sessionList.filter((s) => !s.archived && (!q || s.title.toLowerCase().includes(q)));
   }, [sessionList, query]);
+  const archivedSessions = useMemo(() => sessionList.filter((s) => s.archived), [sessionList]);
+
+  // ---- 行操作（重命名/归档/恢复，2026-12）：session.rename/archive 不分
+  // space，直接走 AgentSource 的现成方法；列表更新靠 session.changed 广播
+  // （上面已订阅 refreshList），本地只管菜单/重命名两个 UI 态。归档走
+  // SessionRow 的确认弹窗（Promise<ArchiveOutcome>，失败弹窗不关）。 ----
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [menuForId, setMenuForId] = useState<string | null>(null);
+  const commitRename = useCallback((s: { id: string; title: string }, value: string) => {
+    const t = value.trim();
+    if (t && t !== s.title) source.renameSession(s.id, t);
+    setRenamingId(null);
+  }, [source]);
+  const archiveSession = useCallback(
+    (id: string) => source.archiveSession(id),
+    [source],
+  );
+  const restoreSession = useCallback(
+    (id: string) => source.unarchiveSession(id),
+    [source],
+  );
+  // 行菜单点外/Esc 关闭（主域 Sidebar 同款 hook；退场动画在 SessionRow 内部）。
+  const sideRef = useRef<HTMLElement>(null);
+  useDismissal(sideRef, !!menuForId, () => setMenuForId(null));
 
   // ---- 标签条可见集合（session-tabs 纯函数：剔除归档与用户关掉的；当前会话恒显示）----
   // busy 位走**签名**依赖（App 的 busyBySession 同款纪律）：流式 delta 每帧换
@@ -543,7 +575,7 @@ export function AssistantWorkspace({
       {/* 左侧 = 主域 .sidebar 同款骨架（助手域无项目分组）：nav「新对话」→
           搜索框 → 「对话」分组标题 → 会话滚动区 → 底部设置行。全部类名走
           sidebar.css/composer.css 的既有规则，视觉逐像素对齐主域侧栏。 */}
-      <aside className="sidebar assistant-ws-side">
+      <aside className="sidebar assistant-ws-side" ref={sideRef}>
         <nav className="nav-list">
           <button type="button" className="nav-item" onClick={() => { void handleNewSession(); }}>
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -650,8 +682,17 @@ export function AssistantWorkspace({
         </div>
         <AssistantSessionList
           sessions={filteredSessions}
+          archived={archivedSessions}
           activeId={sessionId}
+          renamingId={renamingId}
+          menuForId={menuForId}
+          onOpenMenu={setMenuForId}
+          onCloseMenu={() => setMenuForId(null)}
+          onStartRename={setRenamingId}
+          onRename={commitRename}
+          onArchive={archiveSession}
           onSelect={handleSelect}
+          onRestore={restoreSession}
         />
         <div className="sidebar-footer">
           <div className="settings-row" role="button" tabIndex={0} onClick={onOpenSettings} onKeyDown={(e) => { if (e.key === "Enter") onOpenSettings(); }}>

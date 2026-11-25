@@ -27,7 +27,7 @@ import { UserAttachmentSection } from "./AttachmentCard";
 const NO_SEQ_HINT = "这条消息来自旧版后端（没有 seq），无法定位要回到的位置";
 
 export const Block = memo(
-  function Block({ block, onConfirm, onAnswer, replayed, onEdit, onRewind, onOpenChild, readOnly, busy, "data-uid": dataUid }: {
+  function Block({ block, onConfirm, onAnswer, replayed, onEdit, onRewind, onOpenChild, readOnly, allowCopy, busy, "data-uid": dataUid }: {
     block: ThreadBlock;
     onConfirm: (id: string, allow: boolean) => void;
     /** ask_user 提问的回答（ask 变体的确认卡用）：文本答案 + 请求 id。
@@ -54,6 +54,11 @@ export const Block = memo(
      *  title 提示在多数浏览器里根本不弹（禁用的元素不派发鼠标事件），而整页一句只读说明
      *  （ChildSessionPage 顶部）比每条消息重复一遍原因更清楚。 */
     readOnly?: boolean;
+    /** 只读视图的**复制豁免**（2026-12 助手域 P1）：readOnly + allowCopy = 动作条
+     *  照画但只留复制钮（copyOnly）——助手域没有 rewind 方法，编辑/撤回按钮渲染
+     *  出来是 no-op；复制是纯本端动作，保留它的收益（复制挺常用）大于摘除它的
+     *  损失。子会话视图不传 allowCopy（保持整条动作条不画——历史契约不变）。 */
+    allowCopy?: boolean;
   }) {
   const bubbleRef = useRef<HTMLDivElement>(null);
   const { settings } = useSettings();
@@ -115,8 +120,14 @@ export const Block = memo(
               </span>
             )}
           </div>
-          {/* 只读视图（子会话视图）与 pending 气泡都不画动作条：见各自说明 */}
-          {!readOnly && !block.pending && <MessageActions block={block} onEdit={onEdit} onRewind={onRewind} busy={busy} />}
+          {/* 只读视图（子会话视图）与 pending 气泡都不画动作条：见各自说明。
+           *  例外（2026-12 助手域 P1）：readOnly + allowCopy 变体——助手域没有
+           *  rewind 方法（刻意精简），编辑/撤回按钮渲染出来是点了没反应的 no-op
+           *  （违反 Block 自己的纪律）；该视图传 readOnly + allowCopy：动作条照画，
+           *  但编辑/撤回两钮摘除、复制保留（复制是纯本端动作，不依赖任何方法域）。 */}
+          {!block.pending && (!readOnly || allowCopy) && (
+            <MessageActions block={block} onEdit={onEdit} onRewind={onRewind} busy={busy} copyOnly={readOnly && allowCopy} />
+          )}
         </div>
       );
 
@@ -202,8 +213,10 @@ export const Block = memo(
     // （依赖数组变了）就会让整屏块全部重渲染一遍。
     prev.onOpenChild === next.onOpenChild &&
     prev.busy === next.busy &&
-    // readOnly 是布尔（只读视图恒定），漏比会让切换视图时留下上一种的渲染结果
-    prev.readOnly === next.readOnly,
+    // readOnly 是布尔（只读视图恒定），漏比会让切换视图时留下上一种的渲染结果；
+    // allowCopy 同层（readOnly + allowCopy 变体——助手域的复制豁免，见 props 注释）
+    prev.readOnly === next.readOnly &&
+    prev.allowCopy === next.allowCopy,
 );
 
 /** 用户气泡**下方**的三个动作（图标）：复制 / 编辑 / 撤回。
@@ -222,13 +235,17 @@ export const Block = memo(
  *  复制走与 DiffBody / TerminalCard 同一套写法（navigator.clipboard 的可选链 + 1.2s 反馈，
  *  不弹 toast）。没有 seq 的块把撤回/编辑**禁用**并给出原因（title）：老后端 + 新前端不许炸
  *  （AGENTS.md §5 坑 11）——复制照常可用。 */
-function MessageActions({ block, onEdit, onRewind, busy }: {
+function MessageActions({ block, onEdit, onRewind, busy, copyOnly }: {
   block: ThreadBlock;
   onEdit?: (block: ThreadBlock) => void;
   onRewind?: (block: ThreadBlock) => void;
   /** 会话生成中：撤回/编辑**仍然可用**（后端 Rewind 现在会自动取消当前轮并等它
    *  收尾，2026-12 拍板）——busy 只改 title 措辞，告知点击会发生「停止本轮」。 */
   busy?: boolean;
+  /** 只读视图的复制豁免（readOnly + allowCopy 变体）：只画复制钮——编辑/撤回
+   *  在该视图没有对应方法域，渲染出来是 no-op（Block.tsx 顶部注释的纪律）。
+   *  复制是纯本端动作，保留。 */
+  copyOnly?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
   const rewindable = canRewind(block);
@@ -250,33 +267,37 @@ function MessageActions({ block, onEdit, onRewind, busy }: {
         onClick={copy}>
         {copied ? <IconCheck /> : <IconCopy />}
       </Button>
-      <Button
-        className="msg-action"
-        aria-label="编辑"
-        disabled={!rewindable}
-        title={busyNow
-          ? "停止本轮并编辑（当前生成会先被取消）"
-          : rewindable ? "编辑这条消息（发送时才会把之后的内容移出当前对话——不会删除，右侧会话树里能切回来）" : NO_SEQ_HINT}
-        onClick={() => onEdit?.(block)}
-      >
-        <IconEdit />
-      </Button>
-      <Button
-        className="msg-action"
-        aria-label="回到这里"
-        disabled={!rewindable}
-        title={busyNow
-          ? "撤回并停止本轮（当前生成会先被取消）"
-          : rewindable
-          // 文案口径（docs/session-tree.md §D.8）：分支化之后「撤回」不再删除任何东西
-          // ——之后的消息只是离开当前对话，右侧树面板里随时能切回来。说「撤回」会让
-          // 用户以为数据没了（那是最不该被误解的一件事）。
-          ? "回到这里：这条及其之后会从当前对话里移开，但**不会删除**——可以在右侧会话树里再切回来；原文回到输入框"
-          : NO_SEQ_HINT}
-        onClick={() => onRewind?.(block)}
-      >
-        <IconUndo />
-      </Button>
+      {!copyOnly && (
+        <Button
+          className="msg-action"
+          aria-label="编辑"
+          disabled={!rewindable}
+          title={busyNow
+            ? "停止本轮并编辑（当前生成会先被取消）"
+            : rewindable ? "编辑这条消息（发送时才会把之后的内容移出当前对话——不会删除，右侧会话树里能切回来）" : NO_SEQ_HINT}
+          onClick={() => onEdit?.(block)}
+        >
+          <IconEdit />
+        </Button>
+      )}
+      {!copyOnly && (
+        <Button
+          className="msg-action"
+          aria-label="回到这里"
+          disabled={!rewindable}
+          title={busyNow
+            ? "撤回并停止本轮（当前生成会先被取消）"
+            : rewindable
+            // 文案口径（docs/session-tree.md §D.8）：分支化之后「撤回」不再删除任何东西
+            // ——之后的消息只是离开当前对话，右侧树面板里随时能切回来。说「撤回」会让
+            // 用户以为数据没了（那是最不该被误解的一件事）。
+            ? "回到这里：这条及其之后会从当前对话里移开，但**不会删除**——可以在右侧会话树里再切回来；原文回到输入框"
+            : NO_SEQ_HINT}
+          onClick={() => onRewind?.(block)}
+        >
+          <IconUndo />
+        </Button>
+      )}
     </div>
   );
 }

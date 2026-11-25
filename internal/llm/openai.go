@@ -185,7 +185,13 @@ func openAIResult(or *openaiResponse) *ChatResult {
 	if msg.Content == "" && reasoning != "" && len(msg.ToolCalls) == 0 {
 		msg.Content, msg.ReasoningContent = reasoning, ""
 	}
-	res := &ChatResult{Message: msg, FinishReason: ch.FinishReason}
+	// finish_reason 空串兜底：端点缺省时带工具调用必须归 tool_calls 而不是 stop
+	//（中间轮被当成完成——前端完成通知误触发，2026-12）。
+	finish := ch.FinishReason
+	if finish == "" && len(ch.Message.ToolCalls) > 0 {
+		finish = FinishToolCalls
+	}
+	res := &ChatResult{Message: msg, FinishReason: finish}
 	openAIUsage(or.Usage.PromptTokens, or.Usage.CompletionTokens, or.Usage.TotalTokens,
 		or.cachedPromptTokens(), or.observedReasoningTokens()).applyTo(res)
 	return res

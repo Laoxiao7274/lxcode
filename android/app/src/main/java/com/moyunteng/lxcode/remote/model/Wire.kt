@@ -215,6 +215,9 @@ data class Assistant(
         val childRuns: List<ChildTool> = emptyList(),
         val childTodosDone: Int = -1,
         val childTodosTotal: Int = 0,
+        // run_task（助手 → 项目）派发的目标项目名（可选，空 = 常规委派——
+        // 卡头显示「coder · lxcode」，用户一眼看出这活派进了哪个项目）。
+        val projectName: String = "",
         // 这次派发期间子会话共享到对话的附件（share_file 等的产物——随调度结果
         // 回流主会话，桌面端 DispatchCard 的成果区同语义）。空 = 无（键缺席纪律）。
         val attachments: List<AttachmentMeta> = emptyList(),

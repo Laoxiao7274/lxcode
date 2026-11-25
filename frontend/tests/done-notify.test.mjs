@@ -38,6 +38,13 @@ test('tool_calls 轮不弹（中间轮——主 Agent 发起派发的那轮没�
   assert.equal(shouldNotify(midTurn, false, true), false);
 });
 
+test('白名单制：空串/unknown/aborted 都不弹（`?? "stop"` 兜不住空串——OpenAI 端点缺省 finish_reason 透传空串）', () => {
+  for (const fr of ['', 'unknown', 'aborted', 'length']) {
+    const ev = { type: 'done', sessionId: 's1', usageTokens: 1, finishReason: fr, content: '' };
+    assert.equal(shouldNotify(ev, false, true), false, `finishReason=${JSON.stringify(fr)} 不应弹`);
+  }
+});
+
 test('stop 轮照常弹（派发收尾后的最终轮——runTools 阻塞语义保证 stop 到达时派发已收尾）', () => {
   assert.equal(shouldNotify(mainDone, false, true), true);
 });
@@ -96,6 +103,12 @@ test('hook：标题从 source.sessions() 查，归属按事件 sessionId', () =>
 
 test('App.tsx 挂载 useDoneNotify', () => {
   assert.match(appSrc, /useDoneNotify\(\{ source \}\)/);
+});
+
+// ---------- events.ts 的 finish_reason 归一化（空串兜 stop，与后端归一对齐） ----------
+
+test('events.ts：finish_reason 空串兜 stop（?? 不兜 ""，需显式判空串）', () => {
+  assert.match(eventsSrc, /p\.finish_reason === "" \? "stop" : String\(p\.finish_reason \?\? "stop"\)/);
 });
 
 // ---------- events.ts 的 content 归一化（通知正文的来源） ----------

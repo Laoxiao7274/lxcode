@@ -488,6 +488,13 @@ func (s *Server) modulesSnapshot() []sessiondata.ModuleSpec {
 // assistantSession 取助手会话运行时（未打开的现建一份——与主域 session(id)
 // 同一语义；子会话库行继承父 space='assistant'，故子会话历史同样走
 // assistant.history 域内寻址，CreateChildIn 落库时已继承该域）。
+//
+// 子会话（run_task 任务子会话，parent_id 非空）**现建现用、不进缓存**——与
+// 主域 session(id) 同一条不变量：派发运行时不在 assistantSessions（生命周期
+// 跟派发走），这里为 assistant.history 现建的那份一旦缓存，就成了 AttachTo
+// 时刻的**静态快照**（子会话生成中打开视图 → 快照定格 → 之后轮次落库推进但
+// 缓存不动 → 重进命中陈旧快照只见定格时的尾部）。每次重新 AttachToWindowed
+// （读库即最新状态），不注册。
 func (s *Server) assistantSession(id string) (*agent.Session, error) {
 	s.sessionsMu.RLock()
 	sess := s.assistantSessions[id]
@@ -497,6 +504,9 @@ func (s *Server) assistantSession(id string) (*agent.Session, error) {
 	}
 	if s.st == nil {
 		return nil, errors.New("会话存储未启用")
+	}
+	if parent, err := s.st.SessionParentID(id); err == nil && parent != "" {
+		return s.newAssistantRuntime(id)
 	}
 	sess, err := s.newAssistantRuntime(id)
 	if err != nil {

@@ -5,12 +5,14 @@
 // 触发规则（shouldNotify 纯函数，测试直测同一份）：
 //  - ev.type === "done" 且 dispatchId 为空——子会话轮完成不弹（dispatch 卡归
 //    父时间线，不是"你的对话完成了"）；
-//  - finishReason !== "tool_calls"——中间轮不弹（2026-12 通知误触发修复）：
+//  - finishReason === "stop"——白名单制（2026-12 通知误触发修复二段）：
 //    后端每轮都发 done，中间轮 finish_reason=tool_calls 表示「模型在等工具
 //    结果，对话没完成」；主 Agent 发起派发的那轮（工具 = dispatch）没有
-//    dispatchId 却是 tool_calls 轮，只滤 dispatchId 会误弹。stop done 到达时
-//    派发必然已收尾（runTools 的阻塞语义保证），所以 tool_calls 过滤同时
-//    覆盖了派发场景，不会出现「先弹 tool_calls、再弹 stop」的重复通知；
+//    dispatchId 却是 tool_calls 轮，只滤 dispatchId 会误弹。黑名单写成白名单
+//    是因为 `?? "stop"` 兜不住空串（`??` 不兜 ""）——OpenAI 端点缺省
+//    finish_reason 会透传空串，黑名单下空串漏网照弹；白名单下只有明确
+//    stop 才弹，unknown/aborted/空串一律静默。stop done 到达时派发必然
+//    已收尾（runTools 的阻塞语义保证），不会出现重复通知；
 //  - document.hasFocus() 为 false——正看着的会话完成不弹（弹了是打扰）；
 //  - 开关开（localStorage lx.notify.done，默认开）。
 //
@@ -48,7 +50,7 @@ export function shouldNotify(
   return (
     ev.type === "done" &&
     !ev.dispatchId &&
-    ev.finishReason !== "tool_calls" &&
+    ev.finishReason === "stop" &&
     !focused &&
     enabled
   );

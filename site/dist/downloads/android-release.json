@@ -1,11 +1,12 @@
 {
-  "version": "0.3.66",
-  "versionCode": 67,
-  "name": "lxcode-0.3.66-android.apk",
-  "size": 12059979,
-  "sha256": "44e6f7a07b73435b0014a69afe91645de34819a0eecb32707dc382c9cfcc7d2b",
-  "url": "downloads/lxcode-0.3.66-android.apk",
+  "version": "0.3.67",
+  "versionCode": 68,
+  "name": "lxcode-0.3.67-android.apk",
+  "size": 12059980,
+  "sha256": "a4181b4931c0ff43d3d3a74735cd5d72853f40fcc8e3acb3a1b40228040bea9b",
+  "url": "downloads/lxcode-0.3.67-android.apk",
   "notes": [
-    "修复投屏偶发被误停的问题（非观看端不再能干扰投屏会话）"
+    "投屏切换画质/帧率即时反馈，切换成功有提示",
+    "诊断面板新增最近事件记录，排查断开问题更方便"
   ]
 }

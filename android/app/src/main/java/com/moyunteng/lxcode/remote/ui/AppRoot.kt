@@ -856,15 +856,20 @@ fun AppRoot(pairUri: String? = null, onPairUriConsumed: () -> Unit = {}) {
     // 不是断开，此刻不能退回（否则每次切参数都被踢出观看页，是「切个参数要点
     // 很多次」的另一半根因）；pending 收口/超时清位后 active 仍 false = 真断开，
     // 本 effect 因键含 pending 再评估，照常退回。
+    // screenBusy 同理守卫：回前台自动恢复投屏（RealBackend.resumeScreenIfInterrupted，
+    // start 在途 busy=true）发出的瞬间 active 仍是 false——busy=true 时不能判死
+    // 退出，否则自动恢复刚发出就被「投屏已断开」踢回连接页（恢复链自拆）。
     LaunchedEffect(
         state.real.screenState?.active,
         state.screenWasActive,
         state.real.screenPendingQuality,
+        state.real.screenBusy,
         state.route,
     ) {
         if (state.screenWasActive &&
             state.real.screenState?.active == false &&
             state.real.screenPendingQuality == null &&
+            !state.real.screenBusy &&
             state.route is Route.Screen
         ) {
             state.screenWasActive = false
@@ -925,18 +930,37 @@ fun AppRoot(pairUri: String? = null, onPairUriConsumed: () -> Unit = {}) {
         state.real.screenState?.active == true &&
         state.screenFullscreen
 
-    // 全屏观看的系统条外观（豁免 safeDrawing 的配套）：窗口背景是投屏画面（深色），
-    // 状态栏/导航栏图标须转白色（isAppearanceLight=false）；离开全屏观看（缩小/停止/
-    // 断开退回）还原浅底深字（窗口背景回 Lx.colors.Bg 白）。改动只经
-    // WindowInsetsController，不动 themes.xml 与 Activity 级配置；
+    // 全屏观看的系统条外观与**沉浸**（豁免 safeDrawing 的配套）：
+    //  - 图标转白（isAppearanceLight=false）——窗口背景是投屏画面（深色）；
+    //  - **隐藏状态栏与导航栏**（0.3.68 拍板修「遮挡+点击盲区」）：edge-to-edge 下
+    //    系统条本就画在视频上（顶部时钟/电量盖住画面、底部手势条吞触摸——手势条
+    //    区域的触摸被系统优先消费，是坐标映射修不掉的盲区），隐藏后画面完整可见、
+    //    触摸全部到达视频。BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE = 从边缘滑动
+    //    临时呼出（半透明悬浮，几秒自动收回，不回流布局）；
+    //  - 刘海区渲染 SHORT_EDGES：cutout 内也铺画面（沉浸才真正全屏）。
+    // 离开全屏观看（缩小/停止/断开退回）全量还原：show 两栏 + cutout 默认。
     // watching 驱动的 LaunchedEffect 天然覆盖所有退出路径（watching 翻转即还原）。
     val window = (context as? android.app.Activity)?.window
     LaunchedEffect(watching) {
         window ?: return@LaunchedEffect
-        androidx.core.view.WindowCompat.getInsetsController(window, window.decorView)
-            .isAppearanceLightStatusBars = !watching
-        androidx.core.view.WindowCompat.getInsetsController(window, window.decorView)
-            .isAppearanceLightNavigationBars = !watching
+        val ctl = androidx.core.view.WindowCompat.getInsetsController(window, window.decorView)
+        ctl.isAppearanceLightStatusBars = !watching
+        ctl.isAppearanceLightNavigationBars = !watching
+        if (watching) {
+            ctl.systemBarsBehavior =
+                androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            ctl.hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+            window.attributes = window.attributes.apply {
+                layoutInDisplayCutoutMode =
+                    android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+        } else {
+            ctl.show(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+            window.attributes = window.attributes.apply {
+                layoutInDisplayCutoutMode =
+                    android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT
+            }
+        }
     }
 
     LxTheme(variant = state.themeVariant, temp = state.themeTemp) {

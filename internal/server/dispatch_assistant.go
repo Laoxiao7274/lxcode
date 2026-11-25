@@ -81,8 +81,20 @@ func (s *Server) dispatchAssistant(c *wsClient, req *protocol.Request, params js
 		opts := chatSendOptions(p)
 		// 助手会话的默认执行 Agent = 助手（助手域的「空 = 助手」；主域的
 		// resolveAgent 空 = main——两域的缺省语义不同，这里显式钉住）。
+		// **例外 = 子会话续跑**（session_id 是 run_task 任务子会话）：默认执行
+		// Agent 取子会话行落库的 agent_id——它当初被派给谁，续跑就还是谁。
+		// 按助手默认打的话，coder 子会话的续跑轮会被换成助手语境（只读白名单
+		// + run_task），「补指令让它接着干」退化成「另起一轮只读派发」。
 		if p.Agent == "" {
-			opts = append(opts, agent.WithAgent(assistantAgentDef.ID))
+			if parent, perr := s.st.SessionParentID(p.SessionID); perr == nil && parent != "" {
+				if agentID, aerr := s.st.SessionAgentID(p.SessionID); aerr == nil && agentID != "" {
+					opts = append(opts, agent.WithAgent(agentID))
+				} else {
+					opts = append(opts, agent.WithAgent(assistantAgentDef.ID))
+				}
+			} else {
+				opts = append(opts, agent.WithAgent(assistantAgentDef.ID))
+			}
 		}
 		// 附件（图片/文件）走 chat.send 同一条统一发送路径 sendAttachments：
 		// vision 能力校验、落盘、展示元数据、「[附件]」行全部免费继承（助手会话

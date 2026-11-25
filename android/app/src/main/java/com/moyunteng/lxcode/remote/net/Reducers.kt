@@ -82,6 +82,7 @@ internal class Reducers(private val owner: RealBackend) {
             options = p.optJSONArray("options")?.let { a ->
                 (0 until a.length()).map { a.optString(it) }
             } ?: emptyList(),
+            dispatchId = dispatchId,
             )
             // 子会话视图打开时双投确认（子会话页内的确认请求正常弹——契约要求）。
             // 归属判定同样要看**卡上的子会话 id**：dispatch_id 是工具调用 id，
@@ -131,6 +132,8 @@ internal class Reducers(private val owner: RealBackend) {
                     dispatchId = cardId,
                     childTodosDone = tDone,
                     childTodosTotal = tTotal,
+                    // run_task 的目标项目名（可选键，缺席 = 常规委派——卡头不显示）
+                    projectName = p.optString("project_name", ""),
                 )
                 if (idx >= 0) {
                     val prev = blocks[idx] as ThreadBlock.Dispatch
@@ -146,6 +149,9 @@ internal class Reducers(private val owner: RealBackend) {
                         dispatchId = cardId.ifBlank { prev.dispatchId },
                         childTodosDone = if (tDone >= 0) tDone else prev.childTodosDone,
                         childTodosTotal = if (tTotal > 0) tTotal else prev.childTodosTotal,
+                        // 项目名以实时载荷为准（续跑没带 = 本轮无项目名，**清掉**旧值——
+                        // 同一张卡续跑时不能顶着上一轮的旧项目显示，对齐桌面端 reduce.ts）
+                        projectName = fresh.projectName,
                     )
                 } else {
                     blocks.add(fresh)
@@ -367,6 +373,7 @@ internal class Reducers(private val owner: RealBackend) {
                 options = p.optJSONArray("options")?.let { a ->
                     (0 until a.length()).map { a.optString(it) }
                 } ?: emptyList(),
+                dispatchId = dispatchId,
                 )
             }
 

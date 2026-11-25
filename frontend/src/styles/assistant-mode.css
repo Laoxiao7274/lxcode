@@ -57,6 +57,61 @@
   line-height: 1.6;
 }
 
+/* ---- 「已归档」折叠分组（2026-12）：归档 ≠ 消失，沉底可找回 ----
+ * 节头对齐 .sidebar-label group-head 的低调形态（按钮化——可点收展）；行复用
+ * 主域 .session-item 骨架（弱化态：标题 --fg-faint），恢复入口 = 行内文字钮。 */
+.asst-archived {
+  flex: none;
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+}
+.asst-archived-head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  padding: 8px 14px 6px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-family: var(--font-sans);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--fg-faint);
+  text-align: left;
+}
+.asst-archived-head:hover {
+  color: var(--fg);
+}
+.asst-archived-head svg {
+  transition: transform 0.14s ease;
+}
+.asst-archived-head[aria-expanded="true"] svg {
+  transform: rotate(90deg);
+}
+.asst-archived-row {
+  opacity: 0.72;
+}
+.asst-archived-restore {
+  flex: none;
+  padding: 2px 7px;
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: var(--font-sans);
+  font-size: 10.5px;
+  color: var(--fg-faint);
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.asst-archived-row:hover .asst-archived-restore,
+.asst-archived-restore:focus-visible {
+  opacity: 1;
+  color: var(--fg);
+}
+
 /* ---- 会话标签条（方案 B：助手侧多标签） ----
  * 形态对齐主域 .tab 药丸语言（base.css 的 .tab 逐像素参照），但类名独立
  *（.asst-tab*）——语义不同（无工作区页签/视图态/溢出动效），混用类名会让

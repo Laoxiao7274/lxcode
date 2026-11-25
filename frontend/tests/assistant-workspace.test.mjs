@@ -26,7 +26,7 @@ const noop = () => {};
 test('AssistantSessionList：行用主域 .session-item 系类（active/busy 态 + 全量 updatedAt）', () => {
   const sessions = [meta('a1', { running: true }), meta('a2')];
   const html = renderToStaticMarkup(
-    createElement(AssistantSessionList, { sessions, activeId: 'a2', onSelect: noop }),
+    createElement(AssistantSessionList, { sessions, archived: [], activeId: 'a2', renamingId: null, menuForId: null, onOpenMenu: noop, onCloseMenu: noop, onStartRename: noop, onRename: noop, onArchive: async () => ({ archived: true }), onSelect: noop, onRestore: noop }),
   );
   assert.ok(html.includes('sess-scroll'), '滚动容器用主域 .sess-scroll');
   assert.ok(html.includes('session-item'), '会话行用主域 .session-item');
@@ -36,7 +36,43 @@ test('AssistantSessionList：行用主域 .session-item 系类（active/busy 态
   assert.ok(html.includes('s-dot live'), '运行蓝点用主域 .s-dot.live');
   assert.ok(html.includes('session-spinner'), '运行中标题旁 spinner（主域同款）');
   assert.ok(html.includes('2026-12-08 12:00'), '时间是全量 updatedAt（不截断，对齐主域）');
-  assert.ok(!html.includes('session-more'), '助手域无 ⋯ 菜单（路 A：assistant.* 无 rename/archive）');
+  assert.ok(html.includes('session-more'), '行操作走主域 SessionRow（⋯ 菜单——session.* 不分 space，2026-12 补齐）');
+});
+
+// ---------- ③ 行操作与「已归档」折叠分组（2026-12）：归档 ≠ 消失 ----------
+
+test('③ 行渲染：⋯ 菜单 + 重命名态 + 归档分组齐全（SessionRow 复用）', () => {
+  const sessions = [meta('a1'), meta('a2', { running: true })];
+  const html = renderToStaticMarkup(
+    createElement(AssistantSessionList, {
+      sessions,
+      archived: [meta('z1', { archived: true })],
+      activeId: 'a1',
+      renamingId: null,
+      menuForId: null,
+      onOpenMenu: noop, onCloseMenu: noop, onStartRename: noop, onRename: noop,
+      onArchive: async () => ({ archived: true }), onSelect: noop, onRestore: noop,
+    }),
+  );
+  assert.ok(html.includes('session-menu') === false, '菜单默认收起（menuForId 未命中）');
+  assert.ok(html.includes('asst-archived-head'), '列表尾有「已归档」折叠分组节头');
+  assert.ok(html.includes('已归档（1）'), '节头带计数');
+  assert.ok(!html.includes('对话 z1'), '折叠态默认收起（归档行与恢复钮不渲染——纯 UI 态，进场收起）');
+});
+
+test('③ 恢复入口接线：unarchiveSession（源码断言——恢复钮在折叠分组展开后渲染）', () => {
+  const src = fs.readFileSync(new URL('../src/components/assistant/AssistantSessionList.tsx', import.meta.url), 'utf8');
+  assert.match(src, /className="asst-archived-restore"/, '恢复按钮（折叠分组行内）');
+  assert.match(src, /onClick=\{\(\) => onRestore\(s\.id\)\}/, '恢复点击回调 = onRestore（unarchiveSession 接线）');
+});
+
+test('③ 过滤接线：filteredSessions 剔除 archived、归档沉到分组（源码断言）', () => {
+  const src = fs.readFileSync(new URL('../src/components/assistant/AssistantWorkspace.tsx', import.meta.url), 'utf8');
+  assert.match(src, /sessionList\.filter\(\(s\) => !s\.archived/, '主列表过滤 archived（对齐主域侧栏语义）');
+  assert.match(src, /sessionList\.filter\(\(s\) => s\.archived/, '归档会话单独成组');
+  assert.match(src, /source\.renameSession\(s\.id, t\)/, '重命名走 AgentSource.renameSession');
+  assert.match(src, /source\.archiveSession\(id\)/, '归档走 AgentSource.archiveSession（SessionRow 确认弹窗）');
+  assert.match(src, /source\.unarchiveSession\(id\)/, '恢复走 AgentSource.unarchiveSession');
 });
 
 // ---------- ② 源码断言：自创类不回潮、外壳用主域 .sidebar ----------
