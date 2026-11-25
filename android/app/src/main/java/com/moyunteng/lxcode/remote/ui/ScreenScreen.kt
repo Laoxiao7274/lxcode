@@ -215,7 +215,10 @@ fun ScreenScreen(state: com.moyunteng.lxcode.remote.ui.AppState) {
     // （路由离开投屏页即复位）——这里不再放 effect：路由同步切换时本子树直接
     // 卸载、effect 根本不会跑（根因 B：伪复位掩盖了收口缺失）。观看中途
     // active 翻 false 的路径由 AppRoot 的断开自动退回处理（route 离开 → 连带复位）。
-    val watching = real.screenState?.active == true
+    // 切换参数（画质/帧率/显示器）重启 ffmpeg 的空窗里壳短暂上报 active=false——
+    // pending 期间保持观看态（UI 不闪回设置页；真断开由 AppRoot 的退回 effect
+    // 在 pending 清位后处理，超时 10s 兜底）。
+    val watching = real.screenState?.active == true || real.screenPendingQuality != null
 
     if (watching) {
         if (state.screenFullscreen) {
@@ -633,7 +636,13 @@ private fun WatchSurface(
                 )
             }
             Text(
-                text = "正在投屏 · 显示器 ${(real.screenState?.monitor ?: 0) + 1} · ${(real.screenState?.quality ?: "medium").let { qualityLabel(it) }} · ${real.screenState?.fps.takeIf { (it ?: 0) > 0 } ?: 30}fps",
+                // 乐观显示：切换 pending 时按目标值显示并带「切换中」标记——
+                // 状态行绑定壳回显的话空窗里显示旧值，与菜单选中态互相矛盾。
+                text = if (real.screenPendingQuality != null) {
+                    "正在投屏 · ${(real.screenPendingQuality ?: "medium").let { qualityLabel(it) }} · ${real.screenPendingFps ?: 30}fps（切换中）"
+                } else {
+                    "正在投屏 · 显示器 ${(real.screenState?.monitor ?: 0) + 1} · ${(real.screenState?.quality ?: "medium").let { qualityLabel(it) }} · ${real.screenState?.fps.takeIf { (it ?: 0) > 0 } ?: 30}fps"
+                },
                 style = Lx.type.Pill,
                 color = Color.White.copy(alpha = 0.85f),
                 maxLines = 1,
@@ -652,6 +661,29 @@ private fun WatchSurface(
 
         // 悬浮球（菜单开着时状态行隐藏，避免与菜单项重叠）
         ScreenFloatingBall(real, state, onToggleFullscreen)
+
+        // 观看态的一次性提示（screenToast 的渲染位——成功「已切换至 …」toast
+        // 在观看态也要能看到：设置页/缩小态的渲染位在本组件不挂载）。
+        // 顶栏下方居中，半透明黑底白字胶囊，几秒后自动清（写法与设置页一致）。
+        state.screenToast?.takeIf { it.isNotEmpty() }?.let { msg ->
+            LaunchedEffect(msg) {
+                delay(3000)
+                state.screenToast = null
+            }
+            Text(
+                msg,
+                style = Lx.type.Pill,
+                color = Color.White,
+                maxLines = 1,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .statusBarsPadding()
+                    .padding(top = 44.dp)
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(Color.Black.copy(alpha = 0.62f))
+                    .padding(horizontal = Lx.space.s4, vertical = 6.dp),
+            )
+        }
 
         // 虚拟键盘条（控制模式 && 键盘开关打开时显示，悬浮球菜单呼出——
         // 键盘不常驻，对齐竞品共识；常用键一行 + 系统 IME 直通键入）。
@@ -1060,7 +1092,10 @@ private fun ScreenFloatingBall(
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     QUALITY_LABELS.forEach { (key, label) ->
-                        val selected = real.screenState?.quality == key
+                        // 乐观选中态：优先读切换 pending 的目标值（点击即变），
+                        // 无 pending 才回落壳上报的当前执行档——绑定服务端回显的
+                        // 话，重启 ffmpeg 的空窗里选中态显示旧值，用户会以为没点上。
+                        val selected = (real.screenPendingQuality ?: real.screenState?.quality) == key
                         QualityChip(
                             label = label,
                             selected = selected,
@@ -1080,7 +1115,8 @@ private fun ScreenFloatingBall(
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     FPS_LABELS.forEach { (value, label) ->
-                        val selected = ((real.screenState?.fps ?: 0).takeIf { it > 0 } ?: state.screenPickFps) == value
+                        // 乐观选中态：同清晰度——pending 目标值优先（见上）。
+                        val selected = (real.screenPendingFps ?: (real.screenState?.fps ?: 0).takeIf { it > 0 } ?: state.screenPickFps) == value
                         QualityChip(
                             label = label,
                             selected = selected,
@@ -1094,6 +1130,23 @@ private fun ScreenFloatingBall(
                                     )
                                 }
                             },
+                        )
+                    }
+                }
+                // 切换中提示（start 重发到壳重启 ffmpeg 上报新参数之间的空窗，
+                // 数秒）：选中态已乐观变化，这行让用户明确知道「生效中，稍等」，
+                // 不用再点。收口（applyScreenState）或超时（10s）后消失。
+                if (real.screenPendingQuality != null) {
+                    Row(
+                        Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        LxSpinner(size = 12.dp)
+                        Text(
+                            "切换中，画面将在数秒内生效…",
+                            style = Lx.type.Pill,
+                            color = Lx.colors.FgMuted,
                         )
                     }
                 }
@@ -1544,6 +1597,8 @@ private fun BallStrokePathIcon(
 @Composable
 private fun StatusLine(real: com.moyunteng.lxcode.remote.net.RealBackend) {
     val st = real.screenState
+    // fallback_active 入环去重位（组合复用时上次是否已记过；null = 尚未记过）
+    var lastFallbackLogged by rememberSaveable { mutableStateOf<Boolean?>(null) }
     when {
         st?.active == true -> Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -1560,17 +1615,25 @@ private fun StatusLine(real: com.moyunteng.lxcode.remote.net.RealBackend) {
         }
         // 兼容模式捕获中（fallback_active）：投屏在跑但壳用的是回落路径——
         // 结构性提示独立于 error 文案位（error 非空时失败提示仍优先展示）。
-        st?.active == true && st.fallbackActive -> Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(Lx.space.s6),
-        ) {
-            LxPill("兼容模式捕获中", variant = LxPillVariant.Amber)
-            Text(
-                "主捕获路径不可用，已回落兼容模式（画质/性能可能下降）",
-                style = Lx.type.BodySmall,
-                color = Lx.colors.FgMuted,
-                modifier = Modifier.weight(1f),
-            )
+        // 翻转入环（Prev 无该位 / 本帧有）：诊断面板的「最近事件」可回放兜底
+        // 提示出现的时间点。
+        st?.active == true && st.fallbackActive -> {
+            if (lastFallbackLogged != true) {
+                lastFallbackLogged = true
+                real.screenEvent("兜底提示 fallback_active：主捕获路径不可用，壳已回落兼容模式")
+            }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Lx.space.s6),
+            ) {
+                LxPill("兼容模式捕获中", variant = LxPillVariant.Amber)
+                Text(
+                    "主捕获路径不可用，已回落兼容模式（画质/性能可能下降）",
+                    style = Lx.type.BodySmall,
+                    color = Lx.colors.FgMuted,
+                    modifier = Modifier.weight(1f),
+                )
+            }
         }
         st?.error != null -> Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -2143,6 +2206,7 @@ private fun VideoSurface(
                 real.screenDecoder = null
             }
             val d = ScreenDecoder(onError = { msg ->
+                real.screenEvent("解码器: $msg")
                 real.screenState = real.screenState?.copy(error = msg, active = false)
             })
             d.start(s)
@@ -2228,7 +2292,9 @@ private fun DiagPopup(real: com.moyunteng.lxcode.remote.net.RealBackend, trigger
 
 /** 诊断面板（黑屏排查的数据来源）：默认折叠一行，点开显示全部计数。
  *  帧到达（received>0）而黑屏 → 问题在解码/渲染；received 恒 0 → 问题在
- *  网络/后端转发（用户回报面板即可定位断点侧）。 */
+ *  网络/后端转发（用户回报面板即可定位断点侧）。
+ *  点开后附「最近事件」区（[RingLog] 投屏环形日志）——断开原因链回放 +
+ *  一键复制；无解码器数据（d==null 提前返回）时不渲染，事件照旧在环里。 */
 @Composable
 private fun DiagPanel(real: com.moyunteng.lxcode.remote.net.RealBackend) {
     var expanded by remember { mutableStateOf(false) }
@@ -2280,6 +2346,39 @@ private fun DiagPanel(real: com.moyunteng.lxcode.remote.net.RealBackend) {
         Text(if (expanded) "收起" else "详情", style = Lx.type.Pill, color = Lx.colors.FgFaint)
     }
     if (expanded) {
+        // 最近事件（投屏环形日志）：断开原因链在此回放——start/stop 收发、
+        // active 翻转（带 error/fallback_active）、WS 断连、解码器错误。整块
+        // 点击复制全文到剪贴板（回报给开发者，零权限零文件写入）。
+        val logVersion = remember(tick) { real.screenLog.version() }
+        val events = remember(logVersion) { real.screenLog.snapshot() }
+        if (events.isNotEmpty()) {
+            val context = androidx.compose.ui.platform.LocalContext.current
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = Lx.space.s4)
+                    .clip(Lx.radius.FieldShape)
+                    .background(Lx.colors.BgSide)
+                    .clickable {
+                        val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                        cm.setPrimaryClip(android.content.ClipData.newPlainText("lxcode screen events", events.joinToString("\n")))
+                        android.widget.Toast.makeText(context, "已复制投屏事件", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                    .padding(horizontal = Lx.space.s6, vertical = Lx.space.s4),
+            ) {
+                Text(
+                    "最近事件（点击复制）",
+                    style = Lx.type.Pill,
+                    color = Lx.colors.FgFaint,
+                )
+                Text(
+                    events.takeLast(12).joinToString("\n"),
+                    style = Lx.type.Pill,
+                    color = Lx.colors.FgMuted,
+                    modifier = Modifier.padding(top = Lx.space.s2),
+                )
+            }
+        }
         Text(
             "丢弃：等关键帧 ${d.framesDroppedGate} · 队列满 ${d.framesDroppedQueue} · 压入失败 ${d.framesDroppedFeed}\n" +
                 "帧到达 = 0：检查桌面端是否在推流/隧道是否断；\n" +

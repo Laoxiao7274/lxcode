@@ -114,6 +114,22 @@ class RealBackend {
         internal set
 
     /**
+     * 投屏参数切换 pending（运行中切画质/帧率/显示器）：screen.start 重发到壳
+     * 重启 ffmpeg 上报新参数之间有数秒空窗（壳轮询 + Stop/Start）。此间壳上报的
+     * 仍是**旧参数**（后端 screenState 照实回显壳上报）——UI 选中态须按
+     * [screenPendingQuality]/[screenPendingFps] 的乐观值渲染，否则用户看选中态
+     * 没变会以为没点上再点（「要点很多次」的根因）。复位 = active=true 的
+     * screenState 到达且参数与乐观值一致（[applyScreenState] 收口）；壳轮询 1s +
+     * 重启 ~2s，10s 兜底超时防永久锁死。null = 无切换在途。
+     */
+    var screenPendingQuality: String? by mutableStateOf(null)
+        internal set
+
+    /** 切换 pending 的目标帧率（与 [screenPendingQuality] 同生命周期；见其注释）。 */
+    var screenPendingFps: Int? by mutableStateOf(null)
+        internal set
+
+    /**
      * 悬浮球菜单「横屏观看」的方向锁定（null = 跟随用户默认）。
      * requestedOrientation 是 Activity 级的（单 Activity 应用 = 全 app 跟着横），
      * 观看页内的其他页面此刻不可见，影响被限定在投屏观看态；但旋转触发 Activity
@@ -132,6 +148,58 @@ class RealBackend {
     var screenStartPending by mutableStateOf(false)
         internal set
 
+    /**
+     * 投屏事件环形日志（诊断面板「最近事件」的数据源）：screen.start/stop 收发、
+     * screen.changed 状态翻转（含 error/fallback_active）、WS 断连/重连、解码器
+     * configure 失败/降级都入环——投屏断开的原因链在 App 内可见（此前只有
+     * toast「投屏已断开」，原因不留痕，排查全靠 logcat 且环形缓冲易冲掉）。
+     * 内存环形（上限 200 条），零权限零文件写入；导出 = 诊断面板一键复制。
+     */
+    val screenLog = RingLog()
+
+    /** 入环 + logcat 同步（诊断点统一走这里——一条代码路径两边留痕）。 */
+    fun screenEvent(text: String) {
+        screenLog.add(text)
+        Log.i(TAG, "[screen] $text")
+    }
+
+    /**
+     * 切换 pending 兜底超时 + 确认轮询：壳重启 ffmpeg 的参数变化**不会广播**
+     * screen.changed（后端 report 的 changed 判定不含 quality/fps——重启的
+     * stop/start 都落在壳两次轮询之间，Running 没翻转过，后端视为无变化），
+     * 被动的 screen.changed 等不到确认 → pending 期间主动轮询 screen.state
+     * （1.5s 间隔，对齐壳 1s 轮询节奏），applyScreenState 里参数一致时收口。
+     * 10s 超时静默清位（UI 退回壳上报的真实值），不复位会让「切换中」永久挂着。
+     */
+    internal fun armScreenPendingTimeout() {
+        pendingTimeout?.let { main.removeCallbacks(it) }
+        pendingPoll?.let { main.removeCallbacks(it) }
+        val timeout = Runnable { clearScreenPending() }
+        val poll = object : Runnable {
+            override fun run() {
+                if (screenPendingQuality == null) return
+                client.call("screen.state", JSONObject()) { err, result ->
+                    if (err == null && result is JSONObject) applyScreenState(result)
+                    if (screenPendingQuality != null) main.postDelayed(this, 1_500L)
+                }
+            }
+        }
+        pendingTimeout = timeout
+        pendingPoll = poll
+        main.postDelayed(timeout, 10_000L)
+        main.post(poll)
+    }
+
+    /** 清切换 pending（成功收口/超时/失败共用）：撤超时与轮询两条回调。 */
+    internal fun clearScreenPending() {
+        screenPendingQuality = null
+        screenPendingFps = null
+        pendingTimeout?.let { main.removeCallbacks(it) }
+        pendingTimeout = null
+        pendingPoll?.let { main.removeCallbacks(it) }
+        pendingPoll = null
+    }
+
     /** 拉显示器枚举 + 当前状态（投屏页进入时调）。 */
     fun refreshScreen() {
         client.call("screen.monitors", JSONObject()) { err, result ->
@@ -148,10 +216,12 @@ class RealBackend {
 
     fun startScreen(monitor: Int, quality: String, fps: Int, onDone: (String?) -> Unit) {
         screenBusy = true
+        screenEvent("→ screen.start monitor=$monitor quality=$quality fps=$fps")
         client.call("screen.start", JSONObject().put("monitor", monitor).put("quality", quality).put("fps", fps)) { err, result ->
             screenBusy = false
             if (err != null) {
                 screenStartPending = false
+                screenEvent("✗ screen.start 失败: ${err.optString("message")}")
                 onDone(err.optString("message"))
             } else {
                 if (result is JSONObject) applyScreenState(result)
@@ -171,9 +241,11 @@ class RealBackend {
 
     fun stopScreen(onDone: (String?) -> Unit) {
         screenBusy = true
+        screenEvent("→ screen.stop（手机端发起）")
         client.call("screen.stop", JSONObject()) { err, result ->
             screenBusy = false
             if (err != null) {
+                screenEvent("✗ screen.stop 失败: ${err.optString("message")}")
                 onDone(err.optString("message"))
             } else {
                 if (result is JSONObject) applyScreenState(result)
@@ -183,17 +255,24 @@ class RealBackend {
     }
 
     /** 运行中切清晰度（悬浮球菜单）：重发 screen.start 换 quality——后端命令电平
-     *  变化会驱动壳重启 ffmpeg（monitor/quality/fps 任一变化即重起），应答带新状态。 */
+     *  变化会驱动壳重启 ffmpeg（monitor/quality/fps 任一变化即重起）。应答带的是
+     *  **壳旧状态**（目标参数还没生效）——成功即置切换 pending（乐观 UI：选中态
+     *  立即变、菜单显示「切换中」，到壳上报新参数才复位，见 applyScreenState）。 */
     fun setScreenQuality(quality: String, onDone: (String?) -> Unit) {
         val st = screenState ?: return onDone("当前没有投屏")
+        screenEvent("→ screen.start（切画质 $quality）")
         val params = JSONObject().put("monitor", st.monitor).put("quality", quality)
         // 帧率沿用当前执行值（0 = 老壳未上报 → 不带，后端按默认 30 处理）。
+        val fps = if (st.fps > 0) st.fps else 30
         if (st.fps > 0) params.put("fps", st.fps)
         client.call("screen.start", params) { err, result ->
             if (err != null) {
+                clearScreenPending()
                 onDone(err.optString("message"))
             } else {
-                if (result is JSONObject) applyScreenState(result)
+                screenPendingQuality = quality
+                screenPendingFps = fps
+                armScreenPendingTimeout()
                 onDone(null)
             }
         }
@@ -201,9 +280,11 @@ class RealBackend {
 
     /** 运行中切帧率（设置页/悬浮球菜单）：机制同 setScreenQuality——重发
      *  screen.start 换 fps，后端命令电平驱动壳重启 ffmpeg。quality 沿用当前
-     *  档（null = 老壳未上报 → medium，与 setScreenMonitor 的折衷一致）。 */
+     *  档（null = 老壳未上报 → medium，与 setScreenMonitor 的折衷一致）。
+     *  成功即置切换 pending（同 setScreenQuality）。 */
     fun setScreenFps(fps: Int, onDone: (String?) -> Unit) {
         val st = screenState ?: return onDone("当前没有投屏")
+        screenEvent("→ screen.start（切帧率 $fps）")
         client.call(
             "screen.start",
             JSONObject().put("monitor", st.monitor)
@@ -211,9 +292,12 @@ class RealBackend {
                 .put("fps", fps),
         ) { err, result ->
             if (err != null) {
+                clearScreenPending()
                 onDone(err.optString("message"))
             } else {
-                if (result is JSONObject) applyScreenState(result)
+                screenPendingQuality = st.quality ?: "medium"
+                screenPendingFps = fps
+                armScreenPendingTimeout()
                 onDone(null)
             }
         }
@@ -227,15 +311,21 @@ class RealBackend {
      *  「未知」渲染——不再有「明明显示高清、切个显示器变标准」的静默重置。 */
     fun setScreenMonitor(monitor: Int, onDone: (String?) -> Unit) {
         val st = screenState ?: return onDone("当前没有投屏")
+        screenEvent("→ screen.start（切显示器 $monitor）")
         val q = st.quality ?: "medium"
         val params = JSONObject().put("monitor", monitor).put("quality", q)
         // fps 同 quality 的沿用逻辑（老壳未上报 → 不带，按默认 30）。
         if (st.fps > 0) params.put("fps", st.fps)
         client.call("screen.start", params) { err, result ->
             if (err != null) {
+                clearScreenPending()
                 onDone(err.optString("message"))
             } else {
-                if (result is JSONObject) applyScreenState(result)
+                // 显示器切换不影响画质/帧率选中态，但同在切换空窗里——置 pending
+                // 让菜单显示「切换中」+ 成功 toast 生效（quality/fps 用下发值）。
+                screenPendingQuality = q
+                screenPendingFps = if (st.fps > 0) st.fps else 30
+                armScreenPendingTimeout()
                 onDone(null)
             }
         }
@@ -284,7 +374,21 @@ class RealBackend {
     internal fun applyScreenState(o: JSONObject) {
         // 字段映射口径在纯函数里（model/ScreenParsing.kt，JVM 单测钉住——对齐
         // parseModelList 的同款拆法）；这里只做副作用装配。
+        val prev = screenState
         screenState = parseScreenState(o)
+        // active 翻转入环（诊断面板「最近事件」）：投屏断开的原因链要点——
+        // error 键 = 后端给的人话原因（active=false 时可能非空），fallback_active
+        // = 壳在用兼容模式捕获。prev=null（进页首拉 state）只记基线不记「翻转」。
+        val cur = screenState
+        if (prev != null && cur != null && prev.active != cur.active) {
+            val dir = if (cur.active) "active=true（壳上报 running）" else "active=false"
+            val bits = buildList {
+                cur.error?.let { add("error=$it") }
+                if (cur.fallbackActive) add("fallback_active")
+                cur.quality?.let { add("quality=$it") }
+            }
+            screenEvent(if (bits.isEmpty()) dir else "$dir · ${bits.joinToString(" ")}")
+        }
         // 壳上报 running（任意路径：start 应答 / screen.changed / screen.state 轮询）
         // 即退出启动 pending，并记「曾经 active 过」——断开自动退回（AppRoot 的
         // LaunchedEffect）与观看态返回键（endScreenSession）都据此判定；
@@ -294,6 +398,20 @@ class RealBackend {
             startPendingTimeout?.let { main.removeCallbacks(it) }
             startPendingTimeout = null
             appStateRef?.get()?.screenWasActive = true
+            // 切换 pending 收口：壳已上报 running 且执行参数与乐观值一致 = 新参数
+            // 真正生效。驱动成功 toast（文案由 AppState 纯函数给——网络层不持文案）；
+            // 不一致（如 GDI 兜底强制 30fps）不弹成功 toast，pending 靠超时兜底复位。
+            val pq = screenPendingQuality
+            if (pq != null && cur != null && cur.quality != null && cur.quality == pq &&
+                (screenPendingFps ?: 0) == (cur.fps.takeIf { it > 0 } ?: 30)
+            ) {
+                clearScreenPending()
+                appStateRef?.get()?.onScreenParamsApplied(cur.quality!!, cur.fps.takeIf { it > 0 } ?: 30)
+            } else if (pq == null) {
+                // 无切换在途的 active 上报：静默播种 toast 基线（首次进观看态不弹
+                // 「已切换」；之后的切换以这份基线判定哪个维度真变了）。
+                cur?.let { appStateRef?.get()?.seedScreenToastBaseline(it.quality, it.fps.takeIf { f -> f > 0 } ?: 30) }
+            }
         }
     }
 
@@ -1617,6 +1735,7 @@ class RealBackend {
             phase = RealPhase.Connected
             phaseMessage = null
             reconnecting = false
+            screenEvent("WS 已连接（重连成功——投屏状态重拉中）")
             // 重连后忙闲以服务端事实为准（切入既有会话时 chat.history 会带回真实
             // busy 键重设）：留着断线前的 busy=true 会让「发送」一直当「停止」用，
             // 而停止的收敛依赖后端事件——假后端/断线场景会卡死在生成中。
@@ -1681,6 +1800,9 @@ class RealBackend {
             val wasConnected = phase == RealPhase.Connected
             phase = RealPhase.Failed
             phaseMessage = message
+            // WS 断连入环：投屏断开的常见根因——断连时序上紧挨着 active 翻转的话，
+            // 诊断面板的「最近事件」一眼看出是 WS 掉了而不是后端拉停。
+            screenEvent(if (message.isNullOrBlank()) "WS 断开（自动重连中）" else "WS 断开: $message")
             // 自动重连已在后台排程（LxWsClient.scheduleReconnect）——UI 把
             // 「正在重连…」表达出来，用户不用去连接页手动重连。
             // ** Connecting 阶段除外**：刚点开开关/重试的首次连接失败后，用户
@@ -2110,6 +2232,12 @@ class RealBackend {
 
     /** 启动 pending 的兜底超时回调（重新 start 时先撤旧的，防多条并存）。 */
     internal var startPendingTimeout: Runnable? = null
+
+    /** 切换 pending 的兜底超时回调（与 [startPendingTimeout] 同款：单条、先撤旧）。 */
+    internal var pendingTimeout: Runnable? = null
+
+    /** 切换 pending 的确认轮询回调（见 [armScreenPendingTimeout]）。 */
+    internal var pendingPoll: Runnable? = null
 
     /** 注册网络可用回调（进程内一次；AppRoot 构造 AppState 后调）。
      *  ACCESS_NETWORK_STATE 权限已在 Manifest。注册失败（无系统服务）静默：

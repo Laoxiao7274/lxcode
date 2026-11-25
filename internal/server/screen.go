@@ -28,6 +28,7 @@ func (s *Server) dispatchScreen(c *wsClient, req *protocol.Request, params json.
 		// 此前任何连接（探活 probe 等）调 screen.start 都会抢占接收者位，它断开
 		// 即停投屏——手机端收到 active=false 自动退回（真机「已连接就断开」根因）。
 		if !screenReceiverAllowed(c) {
+			log.Printf("[screen] start denied (非安卓观看端) by %s", clientTag(c))
 			return protocol.NewError(req.ID, protocol.CodeScreenReceiverDenied,
 				"此客户端类型不能开始投屏——投屏接收者须为安卓观看端")
 		}
@@ -37,9 +38,15 @@ func (s *Server) dispatchScreen(c *wsClient, req *protocol.Request, params json.
 			// 视频帧随应答之后立刻开始到达——不丢首帧）。
 			s.shell.setReceiver(c)
 		}
+		log.Printf("[screen] start %s by %s%s",
+			resultWord(resp.Error == nil), clientTag(c), screenStartDetail(params))
+
 		return resp
 
 	case protocol.MethodScreenStop:
+		// 诊断钉子：stop 的发起者此前不可指认（2026-12 投屏被拉停观测盲区）。
+		// stop 无参数、无成功/失败之分（壳不在线也回成功），收到即记。
+		log.Printf("[screen] stop by %s", clientTag(c))
 		resp := s.stopScreen(req, params)
 		if resp.Error == nil {
 			s.shell.clearReceiver(c)
@@ -132,6 +139,25 @@ func clientTag(c *wsClient) string {
 		tag = "unidentified"
 	}
 	return tag + "/" + remote
+}
+
+// resultWord 日志用成功/失败词。
+func resultWord(ok bool) string {
+	if ok {
+		return "ok"
+	}
+	return "fail"
+}
+
+// screenStartDetail start 日志的参数段（解析失败回空串——失败详情已由
+// 应答错误码携带，日志只求指认发起者）。
+func screenStartDetail(params json.RawMessage) string {
+	var p protocol.ScreenStartParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return ""
+	}
+	return fmt.Sprintf(" (monitor=%d quality=%s fps=%d)",
+		p.Monitor, normalizeQuality(p.Quality), normalizeFPS(p.Fps))
 }
 
 // screenInput 手机端注入一次输入事件（screen.input）。

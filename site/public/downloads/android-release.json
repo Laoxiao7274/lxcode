@@ -1,13 +1,11 @@
 {
-  "version": "0.3.65",
-  "versionCode": 66,
-  "name": "lxcode-0.3.65-android.apk",
-  "size": 12059975,
-  "sha256": "2090295ab6348509bdbfff116d13723498c71a0659e3d7179ca386bdd0ac4b19",
-  "url": "downloads/lxcode-0.3.65-android.apk",
+  "version": "0.3.66",
+  "versionCode": 67,
+  "name": "lxcode-0.3.66-android.apk",
+  "size": 12059979,
+  "sha256": "44e6f7a07b73435b0014a69afe91645de34819a0eecb32707dc382c9cfcc7d2b",
+  "url": "downloads/lxcode-0.3.66-android.apk",
   "notes": [
-    "投屏稳定性大版本：桌面捕获中断自动恢复，极端情况下自动切换兼容模式不再断流",
-    "修复长按时误发左键的问题，新增长按右键",
-    "投屏帧率上限调整为 120"
+    "修复投屏偶发被误停的问题（非观看端不再能干扰投屏会话）"
   ]
 }

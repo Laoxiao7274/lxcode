@@ -400,6 +400,38 @@ class AppState(private val store: ConnStore? = null) {
     }
 
     /**
+     * 投屏参数切换成功的收口（RealBackend.applyScreenState 在壳上报新参数时调）：
+     * 与基线（上次已提示过的参数，见 [seedScreenToastBaseline]）比对，哪个维度
+     * 真变了就在文案里报哪个——防重复的基线是上次提示值而不是当前生效值：GDI
+     * 兜底等路径壳上报的 quality 可能与预期不符（上次提示过 high、壳回落上报
+     * medium → 不弹「已切换至标准」）。切换失败 = pending 被清且参数不变 →
+     * 到不了这里，与失败提示（error 仍走 screenToast 文案位）不打架。
+     */
+    fun onScreenParamsApplied(quality: String, fps: Int) {
+        val qChanged = quality != lastScreenToastQuality
+        val fChanged = fps != lastScreenToastFps
+        if (!qChanged && !fChanged) return
+        lastScreenToastQuality = quality
+        lastScreenToastFps = fps
+        screenToast = when {
+            qChanged && fChanged -> "已切换至 ${qualityLabel(quality)} · ${fps}fps"
+            qChanged -> "已切换至 ${qualityLabel(quality)}（帧率 ${fps}fps 不变）"
+            else -> "已切换至 ${fps}fps（画质 ${qualityLabel(quality)} 不变）"
+        }
+    }
+
+    /** 静默更新 toast 防重复基线（无切换在途的 active 上报——进页首拉 state、
+     *  首次开始投屏的 running 上报等；不弹 toast）。 */
+    fun seedScreenToastBaseline(quality: String?, fps: Int) {
+        quality?.let { lastScreenToastQuality = it }
+        lastScreenToastFps = fps
+    }
+
+    /** 上一次成功 toast 提示过的参数（防重复基线，见 [onScreenParamsApplied]）。 */
+    private var lastScreenToastQuality: String? = null
+    private var lastScreenToastFps: Int = 30
+
+    /**
      * 应用内更新下载器（DownloadManager + sha256 校验 + 拉起系统安装器）。
      * downloadState 是横幅的渲染源（Running=进度 / Ready=可安装 / Failed=提示重试）。
      * [AppContextHolder] 由 AppRoot 在构造本状态前 init（上下文时序见 AppRoot）。
@@ -820,9 +852,19 @@ fun AppRoot(pairUri: String? = null, onPairUriConsumed: () -> Unit = {}) {
     // 停止/解码错误/断线（screen.changed active=false 上报）→ 自动回连接页 +
     // toast「投屏已断开」。启动失败（从未 active）留在投屏设置页看错误，不退。
     // endScreenSession 先清 wasActive 再 stop，用户主动退不触发本路径。
-    LaunchedEffect(state.real.screenState?.active, state.screenWasActive, state.route) {
+    // 切换参数（画质/帧率/显示器）会重启 ffmpeg：壳短暂上报 running=false——
+    // 不是断开，此刻不能退回（否则每次切参数都被踢出观看页，是「切个参数要点
+    // 很多次」的另一半根因）；pending 收口/超时清位后 active 仍 false = 真断开，
+    // 本 effect 因键含 pending 再评估，照常退回。
+    LaunchedEffect(
+        state.real.screenState?.active,
+        state.screenWasActive,
+        state.real.screenPendingQuality,
+        state.route,
+    ) {
         if (state.screenWasActive &&
             state.real.screenState?.active == false &&
+            state.real.screenPendingQuality == null &&
             state.route is Route.Screen
         ) {
             state.screenWasActive = false

@@ -5,6 +5,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -50,6 +51,22 @@ func newScreenTestServer(t *testing.T) *Server {
 	t.Helper()
 	s := NewServer(nil)
 	return s
+}
+
+// captureStdLog 截获标准日志输出（供日志钉子用例断言），返回可读写的缓冲；
+// 测试结束时恢复原输出。
+func captureStdLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := log.Writer()
+	prevFlags := log.Flags()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(prev)
+		log.SetFlags(prevFlags)
+	})
+	return &buf
 }
 
 // fakeShellState 构造一份壳上报。
@@ -415,5 +432,60 @@ func TestStaleVideoDropNonKeyframeOnly(t *testing.T) {
 	}
 	if c.dropStaleVideoFrame(mk(1000-400, false)) {
 		t.Fatal("落后锚点 400ms 内的帧不应丢（阈值 500ms）")
+	}
+}
+
+// TestScreenStartStopLogNails 观测盲区修复的日志钉子：screen.start（成功/失败/
+// 接收者门拒绝）与 screen.stop 都必须留一行带 clientTag 的日志——18:31:14 的
+// 投屏被拉停事件后端无日志无法指认发起者，从此 stop 的发起者可指认。
+func TestScreenStartStopLogNails(t *testing.T) {
+	s := newScreenTestServer(t)
+	s.shell.report(fakeShellState(false))
+	c := gateTestClient(t, "android")
+	s.mu.Lock()
+	s.clients[c] = struct{}{}
+	s.mu.Unlock()
+
+	r := captureStdLog(t)
+	// start 成功
+	reqStart := &protocol.Request{ID: json.RawMessage(`1`), Method: protocol.MethodScreenStart,
+		Params: json.RawMessage(`{"monitor":1,"quality":"high","fps":120}`)}
+	if resp := s.dispatch(c, reqStart); resp.Error != nil {
+		t.Fatalf("start 应成功: %+v", resp.Error)
+	}
+	startLog := r.String()
+	if !strings.Contains(startLog, "[screen] start ok by android/") {
+		t.Fatalf("start 成功应有日志: %q", startLog)
+	}
+	if !strings.Contains(startLog, "monitor=1 quality=high fps=120") {
+		t.Fatalf("start 日志应带参数: %q", startLog)
+	}
+	// stop：无参数无成败，收到即记（盲区修复的核心一行）
+	r.Reset()
+	if resp := s.dispatch(c, &protocol.Request{ID: json.RawMessage(`2`), Method: protocol.MethodScreenStop}); resp.Error != nil {
+		t.Fatalf("stop 应成功: %+v", resp.Error)
+	}
+	if !strings.Contains(r.String(), "[screen] stop by android/") {
+		t.Fatalf("stop 应有发起者日志: %q", r.String())
+	}
+	// start 失败（壳下线）
+	s.shell.mu.Lock()
+	s.shell.lastSeen = time.Now().Add(-shellStale - time.Second)
+	s.shell.mu.Unlock()
+	r.Reset()
+	if resp := s.dispatch(c, reqStart); resp.Error == nil {
+		t.Fatal("壳下线后 start 应失败")
+	}
+	if !strings.Contains(r.String(), "[screen] start fail by android/") {
+		t.Fatalf("start 失败应有日志: %q", r.String())
+	}
+	// 接收者门拒绝（非安卓客户端）
+	r.Reset()
+	probe := gateTestClient(t, "probe")
+	if resp := s.dispatch(probe, reqStart); resp.Error == nil {
+		t.Fatal("probe 调 start 应被拒")
+	}
+	if !strings.Contains(r.String(), "[screen] start denied") {
+		t.Fatalf("start 被门拒绝应有日志: %q", r.String())
 	}
 }
