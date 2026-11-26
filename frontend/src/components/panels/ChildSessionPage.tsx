@@ -19,9 +19,10 @@
 // §2.3），用户在这一页看到待裁决的确认卡时必须能批（点了没反应比没有按钮更糟）。
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AgentSource, HistorySnapshot } from "../../shared/types";
+import type { SendQueueItem } from "../../shared/send-queue";
 import type { UIState } from "../../shared/store";
 import { Button } from "../form";
-import { Composer } from "../composer";
+import { Composer, SendQueueBar } from "../composer";
 import { Block } from "../thread/blocks/Block";
 import { ScrollToBottom } from "../thread/ScrollToBottom";
 import { ThinkingState } from "../../aicss/ThinkingState";
@@ -48,6 +49,8 @@ export function ChildSessionPage({
   onBack,
   historyLoader,
   cancelSession,
+  astChildQueue,
+  onAstChildQueueDelete,
 }: {
   /** 子会话 id（视图键 child:<sessionId> 解析出来的那个）。 */
   sessionId: string;
@@ -69,6 +72,11 @@ export function ChildSessionPage({
   /** 停止口（助手模式 P1）：缺省 = source.cancel（主域 chat.cancel）；
    *  助手域子会话传 assistant.cancel（助手会话正在跑的派发经它寻址取消）。 */
   cancelSession?: (sessionId: string) => void;
+  /** 助手会话队列（astchild 分支）：当前子会话的排队条目（队列键 = 子会话 id）。
+   *  非空才渲染排队条——渲染位置 = 输入区上方（见返回 JSX 的注释）。 */
+  astChildQueue?: SendQueueItem[];
+  /** 队列条目「删除」（astchild 分支：store.removeQueuedSend 直通）。 */
+  onAstChildQueueDelete?: (id: string) => void;
 }) {
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [error, setError] = useState("");
@@ -184,6 +192,23 @@ export function ChildSessionPage({
 
   return (
     <div className="child-session-page">
+      {/* 发送缓冲区排队条（astchild 子会话视图，2026-12 用户报「排队条遮住对话」）：
+       *  助手会话的队列键 = 该子会话自己的 id，而 ChildSessionPage 里挂的
+       *  Composer 收不到队列（它也不该收：子会话只读，发送被锁，队列没有入口）——
+       *  之前唯一挂载点是本页页头下的浮动条（absolute 遮在时间线上）。现在挂到
+       *  输入区上方（flex 流内：页头 → 队列条 → 时间线 → Composer），排队条
+       *  作为输入框区域的一部分，不再浮在时间线上遮挡消息。动作 = 只读视图
+       *  的最小集合：置顶/删除（编辑回填没意义——输入框锁定，「直接发送」对
+       *  只读子会话同样不该出现：它经 drain 自动发出，条目排在队里等父会话
+       *  结束即可，所以这里不传 onQueueSend）。 */}
+      {(astChildQueue?.length ?? 0) > 0 && (
+        <div className="child-session-queue-row">
+          <SendQueueBar
+            queue={astChildQueue}
+            onQueueDelete={onAstChildQueueDelete}
+          />
+        </div>
+      )}
       <div className="child-session-head">
         <span className="child-session-title">子会话</span>
         {/* 忙闲点：与会话侧栏同一套件（.s-dot，busy 时加 .live 呼吸蓝点）——

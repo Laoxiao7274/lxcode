@@ -19,6 +19,7 @@
 // 一层 ref 兜底：调用方将来传不稳定回调也不回到自激循环。
 import { useCallback, useRef } from "react";
 import type { AgentSource } from "../../shared/types";
+import type { SendQueueItem } from "../../shared/send-queue";
 import type { UIState } from "../../shared/store";
 import { ChildSessionPage } from "../panels/ChildSessionPage";
 
@@ -28,12 +29,17 @@ export function AssistantChildPage({
   state,
   onConfirm,
   onAnswer,
+  astChildQueue,
+  onAstChildQueueDelete,
 }: {
   source: AgentSource;
   sessionId: string;
   state?: UIState;
   onConfirm: (id: string, allow: boolean) => void;
   onAnswer?: (id: string, text: string) => void;
+  /** 排队条（astchild 分支）与「删除」动作：props 全透传（见 App.tsx 分支的注释）。 */
+  astChildQueue?: SendQueueItem[];
+  onAstChildQueueDelete?: (id: string) => void;
 }) {
   const assistant = source.assistant;
   // 调用方回调进 ref：读取口恒走 ref.current（最新身份、零依赖）——ref.current
@@ -78,6 +84,8 @@ export function AssistantChildPage({
         onBack={() => {}}
         historyLoader={historyLoader}
         cancelSession={cancelSession}
+        astChildQueue={astChildQueue}
+        onAstChildQueueDelete={onAstChildQueueDelete}
       />
     </div>
   );

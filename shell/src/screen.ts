@@ -47,7 +47,8 @@ import { feedAnnexB, flushAu, resetAu, FRAME_FLAG_KEYFRAME } from "./screen-au";
 import {
   restartTripped, afterRestartAttempt, attemptSucceeded, newStartIntent, tripMessage,
   MAX_CONSECUTIVE_ERRORS, isAccessLostExit, highFpsHintMessage, FFMPEG_MIN_ALIVE_MS,
-  ACCESS_LOST_SHORT_BACKOFF_MS, HIGH_FPS_HINT_THRESHOLD,
+  ACCESS_LOST_SHORT_BACKOFF_MS, ACCESS_LOST_BACKOFF_MAX_MS, accessLostBackoffMs,
+  fallbackParamChangeExempt, fallbackCaptureActive, HIGH_FPS_HINT_THRESHOLD,
   emptyAccessLostBudget, accessLostFail, accessLostRestartIssued, accessLostOnSuccess,
   accessLostFallbackDue, accessLostBudgetSurvivesParamChange, accessLostFallbackMessage,
   fallbackActiveMessage, FALLBACK_FPS, FALLBACK_ENCODER_CHAIN, gdigrabArgs,
@@ -150,6 +151,15 @@ function stderrTailText(): string {
   return stderrTail.slice(-STDERR_TAIL_MAX).join(" | ");
 }
 let wantCmd: Command = { want: false, monitor: 0, quality: "medium", fps: 0 };
+/** 上一轮 reconcile 见过的 want 电平快照（参数变化判定的基准，0.3.68 Bug A）。
+ *  兜底存续期间（runningFallback）豁免参数变化重启的判据 = want 电平轮间
+ *  未变（不是与兜底进程的降级参数比）。 */
+let lastWant: Command | null = null;
+/** 当前 ffmpeg 是否为 GDI 兜底（gdigrab）进程：startFallbackFfmpeg 置位、
+ *  stopFfmpeg 清位。兜底进程的参数（monitor=-1/fps=30）是降级语义、与命令
+ *  电平天然不一致——0.3.68 Bug A 修：reconcile 的参数变化分支据此豁免
+ *  （want 电平未变不杀兜底；电平变了/显式重试仍回主路径）。 */
+let runningFallback = false;
 let pollTimer: NodeJS.Timeout | null = null;
 let streamSocket: Socket | null = null;
 let monitorsCache: ShellState["monitors"] = [];
@@ -184,16 +194,57 @@ function emitFrame(frame: Buffer): void {
  *  **预热失败不置 lastError**（0.3.61「一直存在」误报的另一半根因）：用户没
  *  点投屏就开始报错，且渲染层 st.error 非空即显示——失败只进失败记忆
  *  （probeFailMemory，TTL 复述机制不变），等用户真点开始（startFfmpeg →
- *  probeEncoders 的 reportFailure=true 路径）时再以真实原因上报。 */
+ *  probeEncoders 的 reportFailure=true 路径）时再以真实原因上报。
+ *
+ *  0.3.68 Bug B 修：预热改为**兜底重探**语义——首次预热失败（驱动瞬时故障）
+ *  原实现壳启动后就再也不试，空闲段 probeFailMemory TTL 过期也没有触发者，
+ *  成功结果可能永远缺席；现在空闲时每 PROBE_FAIL_TTL_MS 过后后台重探一次
+ *  （全部在 `void` 链上，不阻塞轮询心跳，probeInFlight 去重防叠加）。
+ *  main.ts 的显式调用保留为**首次触发**入口（首启 3s 那次预热），成功后
+ *  ensureEncoderProbe 幂等短路。 */
 export function warmUpEncoderProbe(): void {
   if (!SCREEN_SUPPORTED) return; // mac：无 ffmpeg 捕获链，探测无从谈起
   setTimeout(() => {
-    const bin = ffmpegPath();
-    if (!bin) return;
-    void probeEncoders(bin, { reportFailure: false }).then((list) => {
+    void ensureEncoderProbe(false).then((list) => {
       log(`[screen] 编码器探测预热完成: ${list.join(", ") || "（无）"}`);
     });
   }, 3_000); // 壳启动稳定后 3s 再跑（不与启动期 IO 抢）
+}
+
+/** 探测失败重探间隔：空闲预热按它后台重试（失败记忆 TTL 同款节奏）。 */
+const PROBE_WARM_RETRY_MS = 60_000;
+/** 后台预热是否已排程（幂等：main.ts 显式调用 + 轮询环触发只排一次）。 */
+let warmRetryScheduled = false;
+
+/** 确保编码器探测结论可用（screen.ts 各 spawn 路径统一入口）：
+ *  - 成功缓存（encoderProbe 非空）→ 同步返回，不 spawn 不等待；
+ *  - 失败记忆 TTL 内 → 同步复述（doProbeEncoders 内部），不真实例化；
+ *  - 其余 → 现场探测（probeInFlight 去重），完成后若仍失败**且**失败是新的
+ *    （记忆时间戳前进 = 这次真实跑过），排一次后台重探（空闲段自愈）。
+ *  report=false（预热语义）失败不置 lastError，只进失败记忆。 */
+async function ensureEncoderProbe(report: boolean): Promise<string[]> {
+  const bin = ffmpegPath();
+  if (!bin) return [];
+  const before = probeFailMemory?.at ?? 0;
+  const list = await probeEncoders(bin, { reportFailure: report });
+  if (list.length === 0 && (probeFailMemory?.at ?? 0) > before) {
+    scheduleWarmRetry(); // 这次是真跑失败（非 TTL 复述）：空闲段后台重探一次
+  }
+  return list;
+}
+
+/** 失败后的一次性后台重探排程：延迟 = 失败 TTL（到期重试，不白跑）；
+ *  probeInFlight 在途时跳过（自愈重探与用户触发的探测天然共用去重）。 */
+function scheduleWarmRetry(): void {
+  if (warmRetryScheduled || probeInFlight) return;
+  warmRetryScheduled = true;
+  setTimeout(() => {
+    warmRetryScheduled = false;
+    if (encoderProbe) return; // 已被别的路径探成
+    void ensureEncoderProbe(false).then((list) => {
+      log(`[screen] 编码器探测预热完成: ${list.join(", ") || "（无）"}`);
+    });
+  }, PROBE_WARM_RETRY_MS);
 }
 
 /** ffmpeg 可执行文件：LXCODE_FFMPEG 覆盖 → bundled（resources/bin/ffmpeg.exe，
@@ -383,11 +434,20 @@ function listEncoders(bin: string): Promise<EncodersListResult> {
  *  在途去重：warmUp（壳启动 3s）与轮询循环触发的探测可能并发重入，共用同
  *  一个 promise（settle 时清空）——否则双份 4×15s 的 ffmpeg 实例探测。 */
 let probeInFlight: Promise<string[]> | null = null;
+/** 探测关键路径打点（0.3.68 Bug B 诊断探针）：探测任务在轮询环上 await 的
+ *  真实时长（ticker 启动到结束）。probeEncoders 有多层缓存短路，正常路径
+ *  <1ms；打点让「探测拖死轮询心跳」在 renderer.log 里直接可见（>2s 告警），
+ *  不用再靠症状猜。*/
+let probeBlockMs = 0;
 async function probeEncoders(bin: string, opts: { reportFailure?: boolean } = {}): Promise<string[]> {
   const report = opts.reportFailure ?? true;
   if (encoderProbe) return encoderProbe;
   if (probeInFlight) return probeInFlight;
-  probeInFlight = doProbeEncoders(bin, report).finally(() => { probeInFlight = null; });
+  const t0 = Date.now();
+  probeInFlight = doProbeEncoders(bin, report).finally(() => {
+    probeBlockMs = Date.now() - t0;
+    probeInFlight = null;
+  });
   return probeInFlight;
 }
 
@@ -559,8 +619,12 @@ async function startFfmpeg(monitor: number, quality: string, fps: number): Promi
     log(`[screen] ${lastError}`);
     return;
   }
-  const available = await probeEncoders(bin);
-  log(`[screen] 编码器探测（真实例化）: ${available.join(", ") || "（无）"}`);
+  const available = await ensureEncoderProbe(true);
+  // 日志如实化（0.3.68 Bug B）：探测有三层缓存（成功缓存 / TTL / 在途去重），
+  // 这里绝大多数时候是**命中**，只有首次才真实例化——「（真实例化）」字样
+  // 曾让 0.3.68 的事故取证误判「每次重启都跑 4×~1s 探测」。真实例化耗时
+  // 见 probeBlockMs（关键路径打点）。
+  log(`[screen] 编码器探测${probeBlockMs > 50 ? `（真实例化 ${probeBlockMs}ms）` : "（缓存命中）"}: ${available.join(", ") || "（无）"}`);
   const chain = ["h264_nvenc", "h264_qsv", "h264_amf", "libx264"];
   const encoder = chain.find((e) => available.includes(e));
   if (!encoder) {
@@ -651,17 +715,22 @@ async function startFfmpeg(monitor: number, quality: string, fps: number): Promi
     } else if (accessLost && !ok) {
       // ACCESS_LOST 时间窗预算：窗口内记账，超预算转 gdigrab 兜底（不停流）。
       accessLostBudget = accessLostFail(accessLostBudget, Date.now());
-      accessLostRetryAt = Date.now() + ACCESS_LOST_SHORT_BACKOFF_MS;
+      // 0.3.68 Bug B 修：退避序列化（500ms → 1s → 2s → 4s → 封顶 8s）——
+      // 固定 500ms 的高频 DDA 会话重建本身易诱发瞬态失败（拓扑抖动下的
+      // 重启风暴病根之一）；退避逐次拉开失败间隔，10s 窗口预算内给
+      // DWM/DXGI 收敛时间。非 AL 路径维持旧节奏（500ms 下限门不动）。
+      const backoff = ffmpegFps > 60 ? accessLostBackoffMs(accessLostBudget.attempts) : ACCESS_LOST_SHORT_BACKOFF_MS;
+      accessLostRetryAt = Date.now() + backoff;
       const due = accessLostFallbackDue(accessLostBudget);
       const hint = ffmpegFps > 60 && accessLostBudget.attempts >= HIGH_FPS_HINT_THRESHOLD
         ? `（${highFpsHintMessage()}）`
         : "";
       lastError = due
         ? accessLostFallbackMessage()
-        : `桌面复制失效（ACCESS_LOST），${ACCESS_LOST_SHORT_BACKOFF_MS}ms 后自动重试（窗口内第 ${accessLostBudget.attempts} 次）${hint}`;
+        : `桌面复制失效（ACCESS_LOST），${backoff}ms 后自动重试（窗口内第 ${accessLostBudget.attempts} 次）${hint}`;
       lastErrKind = "reason";
       if (ffmpegFps > 60 && accessLostBudget.attempts >= HIGH_FPS_HINT_THRESHOLD) {
-        log(`[screen] 高帧率不稳提示：${highFpsHintMessage()}（fps=${ffmpegFps}，窗口内失效 ${accessLostBudget.attempts} 次）`);
+        log(`[screen] ACCESS_LOST 退避 ${backoff}ms（序列 500ms→${ACCESS_LOST_BACKOFF_MAX_MS / 1000}s 封顶，窗口内第 ${accessLostBudget.attempts} 次）`);
       }
       if (due) log("[screen] ACCESS_LOST 预算耗尽——下次重启切 GDI 兼容模式捕获（gdigrab，30fps）");
     } else if (ok) {
@@ -714,6 +783,7 @@ async function startFallbackFfmpeg(quality: string): Promise<void> {
   ffmpegMonitor = -1; // 全桌面：不挑显示器（兜底降级语义，见 gdigrabArgs 注释）
   ffmpegEncoder = `${encoder}+gdigrab`; // 上报带捕获方式标记（诊断面板可辨）
   ffmpegFps = FALLBACK_FPS;
+  runningFallback = true; // 兜底态：reconcile 的参数变化分支据此豁免（Bug A）
   resetAu();
   auTs = 0;
   log(`[screen] 启动 ffmpeg（GDI 兼容模式兜底）: encoder=${encoder} fps=${FALLBACK_FPS} 全桌面`);
@@ -782,6 +852,7 @@ function stopFfmpeg(): void {
   ffmpegSpawnedAt = 0;
   ffmpegEncoder = "";
   ffmpegFps = 0;
+  runningFallback = false; // 兜底态随进程停止退出（显式重试/显式停投/参数变化重启都经此）
   // ACCESS_LOST 预算与参数变化重启：**预算跨重启保留**（参数变化重启本身
   // 就是 ACCESS_LOST 的最常见诱因——显示器增删的 PnP 抖动，洗掉预算会让
   // 病态循环永远走不到兜底，见 accessLostBudgetSurvivesParamChange）；窗口
@@ -887,6 +958,11 @@ let graceUntilTs = 0;
 /** 最近见过的 start epoch（P1-5：变化 = 用户显式点开始 = 显式重试；老后端
  *  不下发该字段时 undefined === undefined 恒不触发，行为与旧版一致）。 */
 let lastStartEpoch: number | undefined = undefined;
+/** 探测关键路径被饿计数（0.3.68 Bug B 观测探针）：某轮 tick 里探测阻塞
+ *  >2s（即本轮心跳间隔被拖过 shellStale 4s 保鲜窗的一半）+1，心跳补偿
+ *  （同一轮 tick 的第二次上报）后清零——诊断面板/renderer.log 可见，验证
+ *  「探测不再饿死上报」的长期探针。 */
+let probeStallCount = 0;
 /** 当前 ffmpeg 的 spawn 时刻（close 回调算存活时长；0 = 无进程在跑）。 */
 let ffmpegSpawnedAt = 0;
 
@@ -904,6 +980,13 @@ export function startScreenPolling(): void {
     return;
   }
   if (pollTimer) return;
+  /** 0.3.68 Bug B 修：控制面（上报+拉命令）与数据面（startFfmpeg 的探测/
+   *  spawn，秒级）解耦——原实现 `await reconcile()` 跑在 tick 链上，探测
+   *  被饿过 shellStale（4s）保鲜窗，后端报壳离线拒绝手机 start。现在：
+   *  控制面每轮必走（先上报再拉命令）；reconcile 的耗时段在后台 `void` 跑，
+   *  跑的期间额外发一次空 ShellState 心跳（如实在报——探测期没有新事实，
+   *  保持 lastSeen 新鲜比编造状态诚实）；跑完下轮 ticker 才对齐新现实。 */
+  let reconciling = false;
   const tick = async (): Promise<void> => {
     let nextDelay = POLL_ONLINE_MS;
     try {
@@ -915,7 +998,7 @@ export function startScreenPolling(): void {
         height: 0,
         quality: wantCmd.quality || undefined,
         fps: ffmpeg ? ffmpegFps : undefined,
-        fallback_active: accessLostFallbackDue(accessLostBudget) || ffmpegEncoder.includes("+gdigrab"),
+        fallback_active: fallbackCaptureActive(runningFallback, accessLostFallbackDue(accessLostBudget)),
         error: lastError,
         err_kind: lastErrKind,
         monitors: enumerateMonitors(),
@@ -932,7 +1015,35 @@ export function startScreenPolling(): void {
         wantCmd = body.cmd;
         const interval = wantCmd.want ? (body.poll_ms ?? POLL_ONLINE_MS) : (body.idle_poll_ms ?? POLL_OFFLINE_MS);
         nextDelay = interval;
-        await reconcile();
+        if (reconciling) {
+          // 上一轮的 reconcile 还在跑（探测/重连链 >1s）：直接对齐——重复
+          // 入队会在同一条异步链上叠 spawn 竞态，与"单一 spawn 入口"纪律冲突。
+        } else {
+          reconciling = true;
+          const t0 = Date.now();
+          void reconcile().finally(() => {
+            reconciling = false;
+            const dt = Date.now() - t0;
+            if (dt > 2000) {
+              // 探测/重连链拖了本轮 >2s（>shellStale 一半）：补一次心跳把
+              // lastSeen 推进保鲜窗 + 探针计数（验证修复的长期观测）。
+              probeStallCount++;
+              void postState({
+                running: !!ffmpeg,
+                monitor: ffmpegMonitor,
+                encoder: ffmpegEncoder,
+                width: 0,
+                height: 0,
+                quality: wantCmd.quality || undefined,
+                fps: ffmpeg ? ffmpegFps : undefined,
+                fallback_active: fallbackCaptureActive(runningFallback, accessLostFallbackDue(accessLostBudget)),
+                error: lastError,
+                err_kind: lastErrKind,
+                monitors: monitorsCache,
+              });
+            }
+          });
+        }
       } else {
         nextDelay = POLL_OFFLINE_MS;
       }
@@ -942,6 +1053,20 @@ export function startScreenPolling(): void {
     pollTimer = setTimeout(tick, nextDelay);
   };
   void tick();
+}
+
+/** 上报一次壳状态（POST /screen/ctl；探测期心跳补偿与主轮询共用同款门）。 */
+async function postState(state: ShellState): Promise<void> {
+  try {
+    await fetch(`http://${BACKEND}/screen/ctl${token() ? `?token=${encodeURIComponent(token())}` : ""}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(state),
+      signal: AbortSignal.timeout(3000),
+    });
+  } catch {
+    /* 心跳补偿失败不折腾：主轮询下一轮还会再报 */
+  }
 }
 
 export function stopScreenPolling(): void {
@@ -958,16 +1083,26 @@ async function reconcile(): Promise<void> {
   // 也视为显式重试：清零连败计数再给一次机会。原实现只在 want=false 清零，
   // 熔断态点开始被熔断门挡回，恢复指引走不通。
   if (wantCmd.want && newStartIntent(lastStartEpoch, wantCmd.start_epoch)) {
-    if (restartFailures > 0 || accessLostBudget.attempts > 0 || accessLostFallbackDue(accessLostBudget)) {
-      log(`[screen] 用户显式重新开始投屏（epoch ${lastStartEpoch}→${wantCmd.start_epoch}）——全量清零失败账（通用 ${restartFailures}，ACCESS_LOST 预算 ${accessLostBudget.attempts}${accessLostFallbackDue(accessLostBudget) ? "，退出 GDI 兼容模式回 DXGI 主路径" : ""}）重试`);
+    if (restartFailures > 0 || accessLostBudget.attempts > 0 || accessLostFallbackDue(accessLostBudget) || runningFallback) {
+      log(`[screen] 用户显式重新开始投屏（epoch ${lastStartEpoch}→${wantCmd.start_epoch}）——全量清零失败账（通用 ${restartFailures}，ACCESS_LOST 预算 ${accessLostBudget.attempts}${accessLostFallbackDue(accessLostBudget) || runningFallback ? "，退出 GDI 兼容模式回 DXGI 主路径" : ""}）重试`);
       restartFailures = 0;
       accessLostBudget = emptyAccessLostBudget(); // 显式重试 = 人的明确意图，兜底态一并退出
+      runningFallback = false;
       accessLostRetryAt = 0;
       lastError = "";
       lastErrKind = undefined;
     }
   }
   if (wantCmd.start_epoch !== undefined) lastStartEpoch = wantCmd.start_epoch;
+  // 参数变化判定基准（0.3.68 Bug A）：上一轮 vs 本轮的 want 电平。在入口
+  // 捕获并记忆本轮——兜底豁免分支（fallbackParamChangeExempt）据此判断
+  // 「电平未变」；与 want 电平比较而不是与兜底进程参数比较，是整条修法的
+  // 核心（兜底参数本来就是降级语义）。
+  const wantParamsUnchanged = lastWant !== null &&
+    lastWant.monitor === wantCmd.monitor &&
+    lastWant.quality === wantCmd.quality &&
+    normalizeFps(lastWant.fps ?? 0) === normalizeFps(wantCmd.fps ?? 0);
+  lastWant = { ...wantCmd };
   if (wantCmd.want) {
     const q = wantCmd.quality || "medium";
     const f = normalizeFps(wantCmd.fps);
@@ -1013,6 +1148,13 @@ async function reconcile(): Promise<void> {
         restartFailures = afterRestartAttempt(false, restartFailures);
       }
       updateCapturingHint(true);
+    } else if (fallbackParamChangeExempt(runningFallback, accessLostFallbackDue(accessLostBudget), wantParamsUnchanged)) {
+      // 0.3.68 Bug A 修：GDI 兜底存续期间豁免参数变化重启——兜底进程的
+      // monitor=-1（全桌面）/fps=30 是降级语义、与 want 电平天然不一致，
+      // 按字面比较会在兜底起来 ~1s 后把它当「参数变化」杀掉重启主链
+      // （ddagrab 预算已耗尽又记账 → 死循环，兜底从未供帧）。want 电平
+      // 未变 = 不是真实意图，兜底继续；电平变了/显式重试 = 真实意图，
+      // 走下方参数变化分支回主路径。
     } else if (wantCmd.monitor !== ffmpegMonitor || q !== ffmpegQuality || f !== ffmpegFps) {
       // 参数变化：重启（Stop 再 Start，下一轮询周期生效）
       stopFfmpeg();
@@ -1095,7 +1237,7 @@ export function screenStateSnapshot(): ShellState {
     height: 0,
     quality: wantCmd.quality || undefined,
     fps: ffmpeg ? ffmpegFps : undefined,
-    fallback_active: accessLostFallbackDue(accessLostBudget) || ffmpegEncoder.includes("+gdigrab"),
+    fallback_active: fallbackCaptureActive(runningFallback, accessLostFallbackDue(accessLostBudget)),
     error: lastError,
     err_kind: lastErrKind,
     monitors: monitorsCache,

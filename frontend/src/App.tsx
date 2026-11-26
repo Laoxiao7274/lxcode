@@ -38,6 +38,7 @@ import { TurnPanel } from "./components/panels/TurnPanel";
 import { SessionTreePanel } from "./components/panels/SessionTreePanel";
 import { markRunningRounds, truncationNote, type TreeRow } from "./components/panels/tree-model";
 import { ChildSessionPage } from "./components/panels/ChildSessionPage";
+import { OpNotice } from "./components/op-notice";
 import { AssistantWorkspace } from "./components/assistant/AssistantWorkspace";
 import { AssistantChildPage } from "./components/assistant/AssistantChildPage";
 import { SettingsProvider, useSettings } from "./shared/settings";
@@ -46,6 +47,7 @@ import { UpdateProvider } from "./shared/update";
 import { SearchAdminProvider } from "./shared/search-admin";
 import { JobsProvider } from "./shared/jobs-admin";
 import { useConfirmFlow } from "./app-hooks/use-confirm-flow";
+import { assistantSendOpts } from "./agent/ws/assistant";
 import { useWorkspaceNav } from "./app-hooks/use-workspace-nav";
 import { useTurnOutline } from "./app-hooks/use-turn-outline";
 import { useSessionTree } from "./app-hooks/use-session-tree";
@@ -98,6 +100,10 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
   // 不上车（会话级状态，见 sendToSession 的注释）。
   // atts = 队首条目携带的附件（图片批次 B——按引用透传）。
   const autoSendBridgeRef = useRef<(sessionId: string, text: string, atts?: SendAttachments) => void>(() => {});
+  /** 助手域队列自动发送的桥（useAgent 的 onAssistantAutoSend → assistant.send）：
+   *  ref 反转依赖（同 autoSendBridgeRef 的纪律——useAgent 在顶部、真正会发送的
+   *  组装在后面），渲染期同步赋值。 */
+  const assistantAutoSendBridgeRef = useRef<(sessionId: string, text: string, atts?: SendAttachments) => void>(() => {});
   /** 顶层应用模式（助手模式 P2）：项目 | 助手——助手不再是主域页签，是并列模式。
    *  切到助手模式时 Sidebar/TabBar/主时间线让位给 AssistantWorkspace；lastProjectView
    *  记忆由 app-mode.ts 承担（切回项目模式恢复离开时的视图）。
@@ -120,7 +126,15 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
   const { state, sessionStates, assistantStates, childParents, dispatchChild, sendQueues, send, resolve, resolveAssistant, operationErrors, clearError, reportError, enqueueSend, removeQueuedSend, moveQueuedToFront, retainSessions } = useAgent(source, {
     onAutoSend: (sessionId, text, atts) => autoSendBridgeRef.current(sessionId, text, atts),
     onSendFailed: (sessionId, atts) => onSendFailedBridgeRef.current(sessionId, atts),
+    // 助手域队列的自动发送出口（队列纯函数键域无关、助手分支共用 sendQueues）：
+    // 走 assistant.send——assistantSendOpts 是 AssistantPage.handleSend 同一条
+    // 参数收敛（SendOptions 的 effort/images/files 透传，agent 是主域概念不接）。
+    // ref 反转依赖（assistantSource 与队列 hook 的时序）——渲染期同步。
+    onAssistantAutoSend: (sessionId, text, atts) => assistantAutoSendBridgeRef.current(sessionId, text, atts),
   });
+  // source 桥给助手域队列的自动发送（useMemo 稳定引用——渲染期同步最新值）。
+  const sourceAssistantRef = useRef(source);
+  sourceAssistantRef.current = source;
   // 传输层连接态（WSAgent 的 connectionChanged 事件）：顶栏脉冲点的真实数据源。
   // 旁路订阅（useAgent 的主订阅不归约它——那是会话域状态，这是连接域状态）。
   const [wsConnected, setWsConnected] = useState(false);
@@ -168,11 +182,13 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
   useEffect(() => {
     if (prevFocusedRef.current === currentId) return;
     prevFocusedRef.current = currentId;
-    setSwitching(!state.historyReady && state.blocks.length === 0);
+    // 装载失败（historyLoadError）时不进 switching 层：错误态自己呈现（Thread 的
+    // 装载失败块），永久挂起的装载指示比可见的错误更糟（P0-1）。
+    setSwitching(!state.historyReady && state.blocks.length === 0 && !state.historyLoadError);
   }); // 每次渲染检查（state 变化本身不进依赖——ref 已挡住重复处理）
   useEffect(() => {
-    if (switching && state.historyReady) setSwitching(false);
-  }, [switching, state.historyReady]);
+    if (switching && (state.historyReady || state.historyLoadError)) setSwitching(false);
+  }, [switching, state.historyReady, state.historyLoadError]);
 
   const {
     view, workspaceState, setWorkspaceState, workspaceStateRef, settingsOpen, setSettingsOpen, filter, setFilter, gitProjectId, setGitProjectId,
@@ -201,6 +217,13 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
   useEffect(() => {
     retainSessions("assistant", activeAstChildKeep ? [activeAstChildKeep] : []);
   }, [activeAstChildKeep, retainSessions]);
+
+  // 装载失败的重试（P0-1）：重新 resumeSession 全量（连接层 loadedSessions 不记
+  // 失败的会话——失败那趟走的是全量路径，重试自然再全量）。成功清位由
+  // historyLoaded 的归约承担；失败再置位（同一份 reducer，重试失败仍可见）。
+  const handleRetryLoad = useCallback(() => {
+    void source.resumeSession(currentIdRef.current);
+  }, [source]);
 
   // ---- 顶层模式切换（助手模式 P2：useWorkspaceNav 之后定义——要读写工作区状态）----
   const handleModeChange = useCallback((next: AppMode) => {
@@ -337,6 +360,13 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
   );
   // 桥接（渲染期同步赋值——store 的订阅闭包经 ref 读到最新身份）
   autoSendBridgeRef.current = sendToSession;
+  // 助手域队列的自动发送：assistantSendOpts 收敛请求级参数（与 AssistantPage
+  // 的 handleSend 同一条路径——effort/images/files 透传，agent 不接）。
+  assistantAutoSendBridgeRef.current = (sessionId, text, atts) => {
+    const a = sourceAssistantRef.current.assistant;
+    if (!a) return;
+    a.send(sessionId, text, assistantSendOpts(atts));
+  };
 
   // ---- 确认门/提问裁决流（use-confirm-flow）----
   const { handleConfirm, handleAnswer, handleChildConfirm, handleChildAnswer } = useConfirmFlow({
@@ -552,23 +582,10 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
   // 壳环境（Electron）= 真实窗口；浏览器 = 保留模拟壳（窗口模拟一层的差异，
   // 内部布局完全一致——同组件，不再两份 JSX）
   const isShell = typeof navigator !== "undefined" && navigator.userAgent.includes("Electron");
-  // 操作提示条：请求级失败的一次性提示。**不复用 .error-block**——那条是
-  // 时间线内的行内文本（Block/SettingsPanel 也在用），给它加底色会连带改掉
-  // 那两处的排版。这里要的是一条独立的、可关闭的提示条（与 .job-notice 同款
-  // 形态：左缘竖线 + 圆角 + 全宽），只是走危险色。
+  // 操作提示条：请求级失败的一次性提示。渲染收敛进 OpNotice 组件（P0-2 助手域
+  // 错误可见——助手模式挂同一份组件，双模式共享层，两处不各写一份标记）。
   const errorNotice = state.operationError && (
-    <div className="op-notice" role="alert">
-      <span className="op-notice-icon" aria-hidden>
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
-          <path d="M12 9v4" />
-          <path d="M12 17h.01" />
-        </svg>
-      </span>
-      <span className="op-notice-text">{state.operationError}</span>
-      {/* 关闭走表单套件（.fd-btn-g），不裸写原生 button——裸写就是 OS 默认皮肤 */}
-      <Button className="op-notice-close" onClick={clearError}>关闭</Button>
-    </div>
+    <OpNotice message={state.operationError} onClose={clearError} />
   );
 
   // 压缩进行中状态条（/compact 斜杠命令与弹层按钮共用同一条链路——入口在哪触发
@@ -604,7 +621,7 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
             {errorNotice}
             {compactingNotice}
             <div className="thread-scroll" data-switching={switching ? "true" : undefined}>
-              <Thread state={state} source={source} onConfirm={handleConfirm} onAnswer={handleAnswer} onSuggestion={handleSend} projectName={filterProjectName} onEdit={handleEdit} onRewind={handleRewind} onOpenChild={openChildView} revealUid={jumpedUid} />
+              <Thread state={state} source={source} onConfirm={handleConfirm} onAnswer={handleAnswer} onSuggestion={handleSend} projectName={filterProjectName} onEdit={handleEdit} onRewind={handleRewind} onOpenChild={openChildView} revealUid={jumpedUid} onRetryLoad={handleRetryLoad} />
             </div>
             {/* key=sessionId：切会话重挂载——输入框/附件区从该会话的草稿记账还原
                 （initialDraft），B 的输入框是 B 自己的（没有就是空）。不重挂的话
@@ -741,6 +758,12 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
             state={assistantStates[astId]}
             onConfirm={childConfirmOf(astId)}
             onAnswer={childAnswerOf(astId)}
+            // 排队条（2026-12 遮挡修复）：助手会话的队列键 = 子会话 id，
+            // 队列数据/动作从 App 直取 store（AssistantChildPage/ChildSessionPage
+            // 都不直连 store——props 透传纪律）。编辑动作缺席 = 不渲染该按钮
+            //（SendQueueBar 的契约）。
+            astChildQueue={sendQueues[astId] ?? []}
+            onAstChildQueueDelete={(qid) => removeQueuedSend(astId, qid)}
           />
         </div>
       );
@@ -793,9 +816,15 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
           resolveAssistant={resolveAssistant}
           childParents={childParents}
           reportError={reportError}
+          operationError={state.operationError}
+          clearError={clearError}
           onOpenSettings={openSettings}
           mode={appMode}
           retainAssistant={retainAssistant}
+          sendQueues={sendQueues}
+          enqueueSend={enqueueSend}
+          removeQueuedSend={removeQueuedSend}
+          moveQueuedToFront={moveQueuedToFront}
         />
       </div>
       <div className="app-mode-branch" hidden={appMode !== "project"} style={{ display: "contents" }}>

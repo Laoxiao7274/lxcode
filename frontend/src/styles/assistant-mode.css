@@ -128,6 +128,20 @@
   scrollbar-width: none;
 }
 .asst-tabstrip::-webkit-scrollbar { display: none; }
+/* 溢出渐隐（2026-12 对齐主域）：与 base.css 的 .tab-strip[data-overflow] 同参数
+ * （16px mask），助手域类名独立故单独写——只读 data-overflow，方向运行时算。 */
+.asst-tabstrip[data-overflow="left"] {
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 16px);
+  mask-image: linear-gradient(to right, transparent 0, #000 16px);
+}
+.asst-tabstrip[data-overflow="right"] {
+  -webkit-mask-image: linear-gradient(to left, transparent 0, #000 16px);
+  mask-image: linear-gradient(to left, transparent 0, #000 16px);
+}
+.asst-tabstrip[data-overflow="both"] {
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 16px, #000 calc(100% - 16px), transparent 100%);
+  mask-image: linear-gradient(to right, transparent 0, #000 16px, #000 calc(100% - 16px), transparent 100%);
+}
 .asst-tab {
   display: inline-flex;
   align-items: center;
@@ -287,6 +301,25 @@
   flex-direction: column;
   min-height: 0;
 }
+/* astchild 子会话视图的排队条（2026-12 遮挡修复）：SendQueueBar 在 flex 流内
+ * 占位（页头 → 队列条 → 时间线 → Composer），条目本体 720px 居中（与 .thread /
+ * composer-inner 同轴心）——不再 absolute 浮在时间线上遮挡消息。
+ * 区块内距收敛（原 .send-queue 的 padding 10px 16px 0 是给白卡内部设计的，
+ * 流内一挂就左右顶到屏幕边）。 */
+.child-session-queue-row {
+  flex: none;
+  max-width: 720px;
+  width: calc(100% - 48px);
+  margin: 6px auto 0;
+}
+.child-session-queue-row .send-queue {
+  padding: 10px 12px 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border-soft);
+}
+
 /* 拓展页内嵌视图：CatalogPage（.cg-page，padding 24/30 是项目模式 TabBar 页
  * 的内边距）铺满返回头下方的剩余空间——滚动容器 flex:1 已就位，无需差量。 */
 .assistant-ws-main .cg-page {

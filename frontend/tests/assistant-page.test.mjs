@@ -91,8 +91,10 @@ test('① 助手附件接线（2026-12，批次 1 补齐文件入口）：图片
   assert.ok(/onPaste=\{onPaste\}/.test(src), 'textarea 挂 onPaste（剪贴板图片进暂存）');
   assert.ok(/onDrop=\{onDrop\}/.test(src), '容器挂 onDrop（文件/图片/文件夹拖入）');
   assert.ok(/FolderFileCards/.test(src), '文件暂存渲染主域同款 FolderFileCards');
-  // 精简版边界（不变量保留）：不带发送队列（助手域范围外）
-  assert.ok(!/send-queue|onQueue/.test(src), '不带发送队列');
+  // 发送缓冲区已接入（2026-12）：AssistantInput 渲染共享 SendQueueBar + 队列 props
+  //（钉住「两域同一份排队条」，见 assistant-send-queue.test.mjs）
+  assert.ok(/<SendQueueBar/.test(src), '渲染共享排队条 SendQueueBar');
+  assert.ok(/onQueue\?/.test(src), '接 onQueue 队列入口');
   const pageSrc = fs.readFileSync(new URL('../src/components/assistant/AssistantPage.tsx', import.meta.url), 'utf8');
   assert.ok(/opts\.images = atts\.images/.test(pageSrc), 'AssistantPage 把附件装进 assistant.send 参数');
   assert.ok(/opts\.files = atts\.files/.test(pageSrc), 'files 同样装进 assistant.send 参数（批次 1）');

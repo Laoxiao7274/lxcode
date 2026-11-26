@@ -319,6 +319,34 @@ test('boot opens a fresh session once (session.new before chat.history), never o
 // 2026-12 会话切换优化：session.resume 与 chat.history **并行发**（切换耗时 =
 // 一个往返而不是两个串行）——session.resume 的语义（占用/焦点广播/列表元数据）
 // 保留，只是不再等它完成才发 history。焦点仍在两路都落定之后（帧序纪律不变）。
+// P1 影子运行时收口（前端域分流）：busy 快照里的助手会话 id——主域 chat.history
+// 被后端域闸门拒绝（错误文案带 assistant.history）时按错误分流重拉 assistant.history。
+// 后端为主域建影子运行时的路径（旧实现）在前端不再发生。
+test('busy snapshot shunts assistant ids to assistant.history on gate error', async (t) => {
+  const { agent, ws, events } = setup(t);
+  const { isAssistantDomainError } = await import('../src/agent/ws/index.ts');
+  assert.equal(isAssistantDomainError(new Error('会话 x 属于助手域，请用 assistant.history 读取历史')), true);
+  assert.equal(isAssistantDomainError(new Error('读取会话历史失败: boom')), false);
+
+  ws.onopen();
+  const hello = ws.sent.find((r) => r.method === 'connection.hello');
+  ws.receive({ id: hello.id, result: { version: '2', busy_sessions: ['asst-1'] } });
+  await flush();
+  // onBusySnapshot：先按主域拉（快照只有 id，无法预判域）
+  const mainPull = ws.sent.find((r) => r.method === 'chat.history' && r.params?.session_id === 'asst-1');
+  assert.ok(mainPull, 'busy 快照应先发主域补拉');
+  ws.receive({ id: mainPull.id, result: null, error: { code: -1, message: '会话 asst-1 属于助手域，请用 assistant.history 读取历史' } });
+  await flush();
+  // 按错误分流：重拉走助手域
+  const shunt = ws.sent.find((r) => r.method === 'assistant.history');
+  assert.ok(shunt, '域闸门错误应分流到 assistant.history');
+  ws.receive({ id: shunt.id, result: { session_id: 'asst-1', messages: [], busy: true } });
+  await flush();
+  const loaded = events.filter((e) => e.type === 'historyLoaded' && e.space === 'assistant');
+  assert.equal(loaded.length, 1, '助手域装载到达（space=assistant——进 assistantStates）');
+  await driveInit(ws);
+});
+
 test('resume fires session.resume and chat.history in parallel; focus switches after both', async (t) => {
   const { agent, ws, events } = setup(t);
   const resuming = agent.resumeSession('s-target');
@@ -393,6 +421,11 @@ test('failed history load is not remembered; retry does full load', async (t) =>
   ws.receive({ id: historyReq.id, result: null, error: { code: -1, message: 'boom' } }); // chat.history 失败
   await first;
   assert.ok(events.some((e) => e.type === 'operationError' && /读取会话历史失败/.test(e.message)), '历史失败必须说话');
+  // P0-1：失败置位事件（switching 层让位给错误态 + 重试的依据）
+  assert.deepEqual(
+    events.find((e) => e.type === 'historyLoadError'),
+    { type: 'historyLoadError', sessionId: 's-bad', message: '读取会话历史失败: boom' },
+  );
   assert.equal(events.filter((e) => e.type === 'sessionFocused').length, 1, '历史失败仍切焦点（点了会话没反应比闪一下更糟）');
   const sentBefore = ws.sent.length;
   const retry = agent.resumeSession('s-bad');

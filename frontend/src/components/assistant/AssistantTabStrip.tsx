@@ -1,6 +1,6 @@
 // 助手模式的会话标签条（2026-12 方案 B：助手侧多标签，多会话并存、保活切换）。
 //
-// **轻量自绘**（不复用 TabBar——主域标签条带工作区页签/视图态/溢出动效一整套，
+// **轻量自绘**（不复用 TabBar——主域标签条带工作区页签/视图态一整套，
 // 助手域只要「会话标签 + 关闭」）：形态对齐主域 .tab 药丸语言，但**类名独立**
 //（.asst-tab*），样式只进 assistant-mode.css 且只用 --asst-* 容器级 token
 //（选中态 --asst-accent-soft 助手紫 wash）——不动 :root。
@@ -11,10 +11,12 @@
 // 视图），× = onClose（关标签语义在 AssistantWorkspace 收口：非当前只摘标签，
 // 当前标签回退最近打开的——绝不新建会话，session-tab 回退语义同主域）。
 //
-// 简化面（与主域 TabBar 的差异，均为有意）：不做溢出渐隐/滚轮横滚（useStripOverflow
-// 不提取——助手标签容量 8 且 252px 侧栏旁的主区宽度足够，先不做溢出动效）；
-// 不做活动标签滚进可视区。溢出兜底 = overflow-x: auto（scrollbar 隐藏）。
+// **溢出动效（2026-12 对齐主域，用户拍板补齐）**：useStripOverflow /
+// useActiveTabVisible 从 TabBar 抽到 shared/tab-strip.ts 共用一份——
+// 滚轮横截 + data-overflow 渐隐 + 活动标签 scrollIntoView。渐隐样式在
+// assistant-mode.css（读 .asst-tabstrip[data-overflow]，16px 与主域同参数）。
 import { memo } from "react";
+import { useActiveTabVisible, useStripOverflow } from "../../shared/tab-strip";
 
 export interface AssistantTabItem {
   id: string;
@@ -36,9 +38,20 @@ export const AssistantTabStrip = memo(function AssistantTabStrip({
   onSelect: (id: string) => void;
   onClose: (id: string) => void;
 }) {
+  const [stripRef, overflow] = useStripOverflow<HTMLDivElement>();
+  // 活动标签滚进可视区（主域 useActiveTabVisible 同一份实现）：tabs.length 进
+  // 依赖——标签是渲染后才挂 DOM 的，只盯 activeKey 首屏那次滚动会被跳过。
+  useActiveTabVisible(stripRef, activeId, tabs.length);
   if (tabs.length === 0) return null;
   return (
-    <div className="asst-tabstrip" role="tablist" aria-label="助手会话标签" data-tabs={String(tabs.length)}>
+    <div
+      className="asst-tabstrip"
+      role="tablist"
+      aria-label="助手会话标签"
+      data-tabs={String(tabs.length)}
+      ref={stripRef}
+      data-overflow={overflow}
+    >
       {tabs.map((tab) => {
         const on = tab.id === activeId;
         return (

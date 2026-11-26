@@ -100,6 +100,11 @@ export interface AgentEventController {
   /** 压缩信号的边沿基线（per-session）：compacting true→false 触发缓冲区补发。 */
   getPrevCompacting(): Record<string, boolean>;
   setPrevCompacting(next: Record<string, boolean>): void;
+  /** 助手域的边沿基线（per-session，与主域 prevBusy 同一套机制、同一个 map 键域
+   *  ——两域会话 id 空间隔离，同键不冲突）：助手会话的 busy true→false 触发
+   *  助手队列补发。可缺席：旧测试桩不实现时跳过边沿检测（行为同引入前）。 */
+  getPrevAssistantBusy?(): Record<string, boolean>;
+  setPrevAssistantBusy?(next: Record<string, boolean>): void;
   /** ---- 保留策略（S3：states 表的 LRU 淘汰）----
    *  active = 会话 id → 最后活跃毫秒（sessionFocused / 任何带 sessionId 的事件
    *  刷新，handleAgentEvent 维护）；keep = 豁免集合（当前活跃会话、打开的标签、
@@ -119,6 +124,10 @@ export interface AgentEventController {
   /** 缓冲区自动发送的出口（App 的 sendWithOptions 经 ref 桥接）。
    *  atts = 队首条目携带的附件（按引用透传——不复制 base64）。 */
   autoSend(sessionId: string, text: string, atts?: SendAttachments): void;
+  /** 助手域版本的自动发送出口（App 接线到 assistant.send——drainQueueHead 按
+   *  space 分流，助手队列绝不能走 onAutoSend 的主域 chat.send，串域必报错）。
+   *  可缺席：旧测试桩不实现时助手域 drain 静默跳过（与 keep 组同款的宽松约定）。 */
+  autoSendAssistant?(sessionId: string, text: string, atts?: SendAttachments): void;
   /** 发送失败时把附件装回输入框附件区的出口（App 的 onSendFailed 经 ref 桥接）：
    *  文本丢了附件不能丢——用户改完重发不该重新选一遍文件。 */
   sendFailed(sessionId: string, atts: SendAttachments): void;
@@ -131,7 +140,7 @@ export interface AgentEventController {
  *  发送被拒（后端 busy/断连/超时）时：队首已移除、剩余队列保留、busy 维持
  *  false（不再有 true→false 的轮次边界）→ 自动发送就此停止，剩余队列等
  *  用户手动处理（直接发送/编辑/删除都可用）。 */
-export function drainQueueHead(c: AgentEventController, sessionId: string): void {
+export function drainQueueHead(c: AgentEventController, sessionId: string, space: "project" | "assistant" = "project"): void {
   const queue = c.getSendQueues()[sessionId];
   if (!queue || queue.length === 0) return;
   const head = queue[0];
@@ -141,7 +150,11 @@ export function drainQueueHead(c: AgentEventController, sessionId: string): void
     head.images?.length || head.files?.length
       ? { images: head.images ?? [], files: head.files ?? [] }
       : undefined;
-  c.autoSend(sessionId, head.text, atts);
+  // 出口按域分流：onAutoSend 是主域 chat.send 的发送配置（App 的 sendWithOptions
+  // 补 effort/agent），助手会话走它会串域（chat.send 寻址助手会话报错）——助手域
+  // 走 autoSendAssistant（App 接线到 assistant.send）。
+  if (space === "assistant") c.autoSendAssistant?.(sessionId, head.text, atts);
+  else c.autoSend(sessionId, head.text, atts);
 }
 
 /** store 订阅回调的本体（每条服务端事件走一次；无 React、无 I/O——可单测）。 */
@@ -316,11 +329,12 @@ function evictStaleStates(c: AgentEventController, space: "project" | "assistant
   if (!c.getActive || !c.setActive) return;
   const states = space === "project" ? c.getSessionStates() : c.getAssistantStates();
   const keep = new Set(c.getKeep?.(space) ?? []);
+  // 非空发送队列的会话豁免淘汰（两域同一份队列 map——键域隔离，淘汰 = 队列跟着丢）。
+  for (const [id, queue] of Object.entries(c.getSendQueues())) {
+    if (queue && queue.length > 0) keep.add(id);
+  }
   if (space === "project") {
     keep.add(c.getCurrentId());
-    for (const [id, queue] of Object.entries(c.getSendQueues())) {
-      if (queue && queue.length > 0) keep.add(id);
-    }
   }
   const evicted = evictableSessionIds(states, c.getActive(space), { now: Date.now(), keep });
   if (evicted.length === 0) return;
@@ -342,6 +356,7 @@ function evictStaleStates(c: AgentEventController, space: "project" | "assistant
   } else {
     c.setAssistantStates(nextStates);
     c.setChildLinks(nextLinks);
+    c.setPrevAssistantBusy?.(pruneSessionKeys(c.getPrevAssistantBusy?.() ?? {}, evicted));
   }
   c.setActive(space, nextActive);
 }
@@ -385,6 +400,22 @@ function handleAssistantEvent(ev: AgentEvent, c: AgentEventController): void {
     return;
   }
   c.setAssistantStates(reduceSessionStates(c.getAssistantStates(), ev, c.getChildLinks().dispatchChild));
+  // ---- 助手域的发送缓冲区自动发送（busy true→false 边界）----
+  // sendQueues 直接复用主域那张 map（键域无关——两域会话 id 空间隔离）；边沿判定
+  // 与主域同一份 autoSendPick，出口经 drainQueueHead(…, "assistant") 分流到
+  // assistant.send。**compacting 边沿不单独补发**（shortcut，与主域的差别）：
+  // 助手域不为压缩记边沿基线（prevCompactingAssistant 不引入）——压缩结束后
+  // 助手会话必收 busy=false（轮收尾），由 busy 边沿兜住补发；压缩期间入队的
+  // 消息会晚一小拍发出，可接受。代价何时升级：真机出现「压缩后排队消息不发」
+  // 再给助手域加 compacting 基线。子会话归属纪律与主域同一条：带 dispatchId
+  //（run_task 子会话自己的忙闲）不触发父会话补发——误触发会被后端 busy 拒收。
+  if (ev.type === "busy" && !ev.dispatchId) {
+    const id = ev.sessionId;
+    const prev = c.getPrevAssistantBusy?.()[id];
+    c.setPrevAssistantBusy?.({ ...c.getPrevAssistantBusy?.(), [id]: ev.busy });
+    const head = autoSendPick(prev, ev.busy, c.getSendQueues()[id], undefined, c.getAssistantStates()[id]?.compacting);
+    if (head) drainQueueHead(c, id, "assistant");
+  }
   if ("sessionId" in ev) touch(c, "assistant", ev.sessionId);
   evict(c, "assistant");
 }
@@ -396,6 +427,9 @@ function handleAssistantEvent(ev: AgentEvent, c: AgentEventController): void {
 export interface AgentHooks {
   onAutoSend?: (sessionId: string, text: string, atts?: SendAttachments) => void;
   onSendFailed?: (sessionId: string, atts: SendAttachments) => void;
+  /** 助手域缓冲区自动发送的出口（App 接线到 assistant.send——drainQueueHead
+   *  按 space 分流到此；走主域 onAutoSend 的 chat.send 寻址助手会话会串域报错）。 */
+  onAssistantAutoSend?: (sessionId: string, text: string, atts?: SendAttachments) => void;
 }
 
 export function useAgent(source: AgentSource, hooks?: AgentHooks): {
@@ -449,6 +483,9 @@ export function useAgent(source: AgentSource, hooks?: AgentHooks): {
   const childLinksRef = useRef(childLinks);
   const sendQueuesRef = useRef(sendQueues);
   const prevBusyRef = useRef<Record<string, boolean>>({});
+  /** 助手域的 busy 边沿基线（per-session，与主域 prevBusy 同一机制、同一 map
+   *  形态——键域隔离靠两域会话 id 空间不相交，不另立表）。 */
+  const prevAssistantBusyRef = useRef<Record<string, boolean>>({});
   /** 压缩信号的边沿基线（per-session，与 prevBusy 同一套机制）：compacting
    *  true→false 触发缓冲区补发——压缩期间没有 busy 事件，只靠 busy 边沿的话
    *  压缩后排队的消息要等下一次轮结束。 */
@@ -481,6 +518,9 @@ export function useAgent(source: AgentSource, hooks?: AgentHooks): {
   /** 发送失败附件回滚出口（App 经 ref 桥接）。 */
   const sendFailedRef = useRef(hooks?.onSendFailed);
   sendFailedRef.current = hooks?.onSendFailed;
+  /** 助手域自动发送出口（App 接线到 assistant.send——与 onAutoSend 同款 ref 桥）。 */
+  const assistantAutoSendRef = useRef(hooks?.onAssistantAutoSend);
+  assistantAutoSendRef.current = hooks?.onAssistantAutoSend;
 
   // controller 只建一次：setters（useState 的）与 refs 都身份稳定。
   const controllerRef = useRef<AgentEventController | null>(null);
@@ -519,7 +559,10 @@ export function useAgent(source: AgentSource, hooks?: AgentHooks): {
       setSendQueues: (next) => { sendQueuesRef.current = next; setSendQueues(next); },
       setPrevBusy: (next) => { prevBusyRef.current = next; },
       setPrevCompacting: (next) => { prevCompactingRef.current = next; },
+      getPrevAssistantBusy: () => prevAssistantBusyRef.current,
+      setPrevAssistantBusy: (next) => { prevAssistantBusyRef.current = next; },
       autoSend: (sessionId, text, atts) => autoSendRef.current?.(sessionId, text, atts),
+      autoSendAssistant: (sessionId, text, atts) => assistantAutoSendRef.current?.(sessionId, text, atts),
       sendFailed: (sessionId, atts) => sendFailedRef.current?.(sessionId, atts),
       reset: () => {
         controllerRef.current?.setSessionStates({});
@@ -532,6 +575,7 @@ export function useAgent(source: AgentSource, hooks?: AgentHooks): {
         setOperationErrors([]);
         controllerRef.current?.setPrevBusy({});
         controllerRef.current?.setPrevCompacting({});
+        controllerRef.current?.setPrevAssistantBusy?.({});
         // 保留策略的运行态一并清：新连接的新会话空间（换后端 = 旧会话 id 作废）。
         activeRef.current = { project: {}, assistant: {} };
         keepRef.current = { project: new Set(), assistant: new Set() };

@@ -272,6 +272,67 @@ func TestBusySessionsIncludeAssistant(t *testing.T) {
 	}
 }
 
+// TestBusySnapshotAssistantRejectsMainDomainHistory（影子运行时收口，2026-12）：
+// 助手会话在跑时客户端重连——hello busy 快照只有 id 清单、客户端无法按域分流，
+// 旧实现会照着它对助手 id 发 chat.history，主域 s.session 为它**现建并注册**
+// 一份主域运行时（影子：收不到事件域映射、占用/确认门错位，且之后每次主域
+// 解析都命中这份陈旧缓存）。现在的契约：主域解析拒绝助手域顶层会话、
+// s.sessions 无影子；前端按错误分流走 assistant.history。
+func TestBusySnapshotAssistantRejectsMainDomainHistory(t *testing.T) {
+	gate := make(chan struct{})
+	var closeOnce sync.Once
+	srv, client, _ := newTestServer(t, busyGateStream(gate))
+	t.Cleanup(func() { closeOnce.Do(func() { close(gate) }) })
+
+	resp := client.call(protocol.MethodAssistantNew, map[string]any{})
+	if resp == nil || resp.Error != nil {
+		t.Fatalf("assistant.new: %v", resp.Error)
+	}
+	var created protocol.SessionResult
+	if err := unmarshalResult(resp, &created); err != nil {
+		t.Fatal(err)
+	}
+	if r := client.call(protocol.MethodAssistantSend, protocol.ChatSendParams{
+		SessionID: created.SessionID, Text: "跑起来"}); r == nil || r.Error != nil {
+		t.Fatalf("assistant.send: %v", r.Error)
+	}
+	if err := waitAssistantBusy(srv, created.SessionID); err != nil {
+		t.Fatal(err)
+	}
+
+	// 主域 chat.history 寻址助手会话（busy 快照补拉的真实路径）：拒绝 + 指路
+	if h := client.call(protocol.MethodChatHistory, protocol.ChatHistoryParams{
+		SessionID: created.SessionID}); h == nil || h.Error == nil {
+		t.Fatalf("chat.history 寻址助手会话应被拒绝（不建影子运行时）: %+v", h)
+	} else if !strings.Contains(h.Error.Message, "assistant.history") {
+		t.Fatalf("拒绝信息应指路 assistant.history: %q", h.Error.Message)
+	}
+
+	// 无影子：主域运行时缓存不得出现助手会话 id（旧实现的影子就注册在这里）
+	srv.sessionsMu.RLock()
+	_, shadowed := srv.sessions[created.SessionID]
+	srv.sessionsMu.RUnlock()
+	if shadowed {
+		t.Fatal("主域运行时缓存不应出现助手会话（影子运行时）")
+	}
+	// 主域 session.resume 同一面（另一个经 s.session 的主域入口）
+	if r := client.call(protocol.MethodSessionResume, protocol.SessionResumeParams{
+		ID: created.SessionID}); r == nil || r.Error == nil {
+		t.Fatalf("session.resume 寻址助手会话应被拒绝: %+v", r)
+	}
+
+	// 助手域入口照常可用（拒绝不得误伤域内寻址）
+	if h := client.call(protocol.MethodAssistantHistory, protocol.ChatHistoryParams{
+		SessionID: created.SessionID}); h == nil || h.Error != nil {
+		t.Fatalf("assistant.history 域内寻址应照常可用: %+v", h)
+	}
+
+	closeOnce.Do(func() { close(gate) })
+	if err := waitAssistantIdle(srv, created.SessionID); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // waitAssistantBusy 等助手会话进入运行中（gate 流卡住时即为 busy）。
 func waitAssistantBusy(srv *Server, id string) error {
 	deadline := time.Now().Add(10 * time.Second)
@@ -378,12 +439,15 @@ func TestAssistantWSApprovalAndModel(t *testing.T) {
 	}
 
 	// ── 串域面 ───────────────────────────────────────────────────────────
-	// 主域 chat.approval 寻址助手会话 id：主域 s.session 会为它现建**主域**
-	// 运行时（库行 space=assistant 不在主域解析面），改档打到一份新运行时上
-	// ——不报错但也不该碰助手域那份。断言助手域档位原样（域隔离的结果面）。
+	// 主域 chat.approval 寻址助手会话 id：**拒绝**（影子运行时收口，2026-12）。
+	// 旧实现会为主域现建一份运行时（收不到 assistant.* 事件、占用/确认门全部
+	// 错位）；现在的契约是主域解析面不认助手域顶层会话——报错指路 assistant
+	// 域入口，且助手域那份运行时的档位原样。
 	if resp := client.call(protocol.MethodChatApproval, protocol.ChatApprovalParams{
-		SessionID: id, Approval: protocol.ApprovalStrict}); resp == nil || resp.Error != nil {
-		t.Fatalf("chat.approval 串域寻址助手会话应成功（主域现建运行时）: %+v", resp)
+		SessionID: id, Approval: protocol.ApprovalStrict}); resp == nil || resp.Error == nil {
+		t.Fatalf("chat.approval 串域寻址助手会话应被拒绝（不建影子运行时）: %+v", resp)
+	} else if !strings.Contains(resp.Error.Message, "assistant.history") {
+		t.Fatalf("拒绝信息应指路 assistant.history: %q", resp.Error.Message)
 	}
 	if got := sess.LiveApproval(); got != protocol.ApprovalAuto {
 		t.Fatalf("主域改档不应碰助手域运行时的档位: %q", got)

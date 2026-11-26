@@ -21,6 +21,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentSource, ChatSendFile, ChatSendImage, SendAttachments, SessionMeta } from "../../shared/types";
 import type { UIState } from "../../shared/store";
+import { useSendQueue } from "../../app-hooks/use-send-queue";
 import { Button } from "../form";
 import { AssistantInput } from "./AssistantInput";
 import { Block } from "../thread/blocks/Block";
@@ -117,6 +118,10 @@ export function AssistantPage({
   onConfirm,
   onAnswer,
   onOpenChild,
+  sendQueues,
+  enqueueSend,
+  removeQueuedSend,
+  moveQueuedToFront,
 }: {
   source: AgentSource;
   /** 当前助手会话在助手域的 state（assistantStates[sessionId]——还没装载时 undefined）。 */
@@ -133,6 +138,13 @@ export function AssistantPage({
   onAnswer: (id: string, text: string) => void;
   /** 点派发卡打开子会话视图（AssistantWorkspace 的临时视图——助手模式内导航）。 */
   onOpenChild?: (sessionId: string) => void;
+  /** ---- 发送缓冲区（2026-12 助手域接入——与主域共用 send-queue 纯函数）----
+   *  四件套由 AssistantWorkspace 从 store 透传（sendQueues 键域无关，助手会话
+   *  id 直接作键）。可缺席：未传 = 不接队列（旧语义，忙时不发）。 */
+  sendQueues?: Record<string, import("../../shared/send-queue").SendQueueItem[]>;
+  enqueueSend?: (sessionId: string, text: string, atts?: { images?: ChatSendImage[]; files?: ChatSendFile[] }) => void;
+  removeQueuedSend?: (sessionId: string, id: string) => void;
+  moveQueuedToFront?: (sessionId: string, id: string) => void;
 }) {
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [error, setError] = useState("");
@@ -243,6 +255,35 @@ export function AssistantPage({
     sourceRef.current.assistant.send(sessionId, text, Object.keys(opts).length ? opts : undefined);
   }, [sessionId]);
 
+  // ---- 发送缓冲区（2026-12 助手域接入）----
+  // busy 来自助手域 state；压缩中（compacting）与 busy 同判——入队，压缩结束后
+  // 由 store 的助手域 busy 边沿补发（store 的 assistant 分支；与主域同一份
+  // autoSendPick，出口在 App 的 onAssistantAutoSend → assistant.send）。
+  // 「编辑」回填 = 取出 + 重挂 AssistantInput 装初始文本（AssistantInput 没有受控
+  // text 通道，key 里带 editNonce——取出一次重挂一次，输入框文本被替换是动作本意）。
+  const [editNonce, setEditNonce] = useState(0);
+  const [editInitial, setEditInitial] = useState("");
+  const {
+    queueNotice, handleQueueEdit, handleQueueDelete, handleQueueSend, currentQueue,
+  } = useSendQueue({
+    sendQueues: sendQueues ?? {},
+    currentId: sessionId,
+    removeQueuedSend: removeQueuedSend ?? (() => {}),
+    moveQueuedToFront: moveQueuedToFront ?? (() => {}),
+    injectDraft: (_sid, text) => { setEditInitial(text); setEditNonce((n) => n + 1); },
+    sendWithOptions: (text, atts) => handleSend(text, atts ?? { images: [], files: [] }),
+    busy: Boolean(state?.busy),
+    sending: Boolean(state?.sending),
+    compacting: Boolean(state?.compacting),
+  });
+  const queue = sendQueues ? currentQueue : [];
+  const handleEnqueue = useCallback(
+    (text: string, atts: SendAttachments) => {
+      if (enqueueSend) enqueueSend(sessionId, text, atts);
+    },
+    [enqueueSend, sessionId],
+  );
+
   const handleCancel = useCallback(() => {
     if (sessionId) sourceRef.current.assistant?.cancel(sessionId);
   }, [sessionId]);
@@ -315,6 +356,11 @@ export function AssistantPage({
         <span className={"s-dot" + (busy ? " live" : "")} aria-hidden />
       </div>
       <div className="assistant-body">
+        {/* 装载期指示（P0-2）：正在读历史时主区不再空白——照抄 ChildSessionPage
+            的 loading 分支形态（同一件事在两处不该只有一处可见）。 */}
+        {status === "loading" && total === 0 && (
+          <div className="assistant-note-body">正在读取…</div>
+        )}
         {status === "ready" && total === 0 && (
           <div className="assistant-note-body">把日常事务交给助手——查资料、读文件、跑只读命令；要改代码它会把任务派给项目的 Agent。</div>
         )}
@@ -353,6 +399,7 @@ export function AssistantPage({
         )}
       </div>
       <AssistantInput
+        key={`${sessionId}:${editNonce}`}
         busy={busy}
         disabled={sending}
         onSend={handleSend}
@@ -367,6 +414,13 @@ export function AssistantPage({
         compacting={compacting}
         visionBlocked={visionBlocked}
         todos={state?.todos ?? []}
+        queue={queue}
+        queueNotice={queueNotice}
+        onQueue={sendQueues ? handleEnqueue : undefined}
+        onQueueEdit={handleQueueEdit}
+        onQueueDelete={handleQueueDelete}
+        onQueueSend={handleQueueSend}
+        initialText={editInitial}
       />
     </div>
   );

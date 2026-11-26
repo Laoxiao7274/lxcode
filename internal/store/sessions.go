@@ -533,6 +533,24 @@ func (s *Store) SessionAgentID(id string) (string, error) {
 	return agentID, nil
 }
 
+// SessionSpaceOf 返回会话的域标记（main/assistant）。会话不存在时报错。
+//
+// 服务端用它做主域解析的**域闸门**：chat.* 寻址助手域顶层会话时拒绝，而不是
+// 现建一份收不到 assistant.* 事件的主域运行时（影子运行时实锤：桌面端重连后
+// 对 hello busy 快照里的助手 id 发 chat.history，旧实现会为主域创建影子运行时
+// ——事件域映射、占用统计、确认代理全部错位，2026-12 收口）。
+func (s *Store) SessionSpaceOf(id string) (string, error) {
+	var space string
+	err := s.db.QueryRow(`SELECT space FROM sessions WHERE id = ?`, id).Scan(&space)
+	if err == sql.ErrNoRows {
+		return "", fmt.Errorf("会话 %s 不存在", id)
+	}
+	if err != nil {
+		return "", fmt.Errorf("查询会话域失败: %w", err)
+	}
+	return space, nil
+}
+
 // SessionParentID 返回会话的派发方 id（” = 顶层会话）。会话不存在时报错。
 //
 // 服务端用它判定「按 id 现建运行时」的那条会话是不是子会话：子会话运行时不能

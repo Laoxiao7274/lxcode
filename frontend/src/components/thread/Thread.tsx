@@ -30,6 +30,7 @@ export function Thread({
   onRewind,
   onOpenChild,
   revealUid,
+  onRetryLoad,
 }: {
   state: UIState;
   /** 数据源：上翻触顶时要按 before_seq 补更早一页历史（首屏只拉尾部窗口）。 */
@@ -57,6 +58,9 @@ export function Thread({
    *  扩窗要改 Thread 自己的 windowSize 状态，所以这一跳归它管：先把窗口撑到包含
    *  目标，等它真的挂上 DOM 再滚动 + 高亮。 */
   revealUid?: number | null;
+  /** 装载失败的重试（P0-1）：重新 resumeSession 全量。缺席 = 不渲染重试钮
+   *  （演示源不置位 historyLoadError，实际不发生）。 */
+  onRetryLoad?: () => void;
 }) {
   // **渲染不拼数组**（2026-12 流式性能）：流式块单独在 state.streaming 里，
   // 渲染时把 visible（已定型窗口）与它**分两段**挂上去——`[...blocks, streaming]`
@@ -266,6 +270,20 @@ export function Thread({
   }, [total]);
 
   if (empty) {
+    // **装载失败态**（P0-1「点不进去永久卡死」的出口）：历史装载失败时错误 +
+    // 重试替代空态/装载指示——「我们做点什么？」是假信息（会话可能根本不是空的），
+    // 永久挂起的「载入中」没有出口。重试 = 重新 resumeSession 全量；成功装载
+    // （historyLoaded）清位后走正常渲染。子会话/助手域共用同一份 state 字段。
+    if (state.historyLoadError) {
+      return (
+        <div className="thread thread-load-error" role="alert">
+          <span>读取会话历史失败：{state.historyLoadError}</span>
+          {onRetryLoad && (
+            <button type="button" className="thread-load-retry fd-btn-g" onClick={onRetryLoad}>重试</button>
+          )}
+        </div>
+      );
+    }
     // **骨架态不画 EmptyState**（S3 淘汰骨架化，2026-12）：lightweight = 这个
     // 会话的 state 被 LRU 淘汰过、只剩元数据——它不是空会话，画「我们做点
     // 什么？」是假信息（用户会以为对话丢了）。画装载指示，配合 App 的

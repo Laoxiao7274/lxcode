@@ -30,8 +30,9 @@ import { PermPicker } from "../perm-picker";
 import { ModelPicker } from "../model-picker";
 import { ContextIndicator } from "../context-indicator";
 import { StatsPills } from "../stats-pills";
-import { AttachmentThumb, FolderFileCards } from "../composer";
+import { AttachmentThumb, FolderFileCards, SendQueueBar } from "../composer";
 import { TodoList } from "../../aicss/TodoList";
+import { routeSubmit } from "../../shared/send-queue";
 import type { TodoItem } from "../../shared/types";
 import {
   addPendingFiles,
@@ -51,6 +52,7 @@ import {
 import { collectFolderEntries, defaultFolderDeps, type EntryLike } from "../../shared/folder-drop";
 import { stageFile } from "../../shared/attachment-read";
 import type { ApprovalMode, ContextUsage, SessionStats, SendAttachments } from "../../shared/types";
+import type { SendQueueItem } from "../../shared/send-queue";
 
 export function AssistantInput({
   busy,
@@ -68,6 +70,13 @@ export function AssistantInput({
   compacting = false,
   visionBlocked = null,
   todos = [],
+  queue = [],
+  queueNotice = "",
+  onQueue,
+  onQueueEdit,
+  onQueueDelete,
+  onQueueSend,
+  initialText = "",
 }: {
   busy: boolean;
   /** 发送中态（乐观气泡已插、busy 还没到）：与主域 Composer 同语义——
@@ -100,8 +109,26 @@ export function AssistantInput({
   /** 任务清单（state.todos；空数组 = 无清单——照主域 Composer 的 .pi-plan 形态，
    *  白卡顶部区块不渲染，.pi 形态与无清单时一致）。 */
   todos?: TodoItem[];
+  /** 发送缓冲区（2026-12 助手域接入——与主域同一份 send-queue 纯函数，键域无关）：
+   *  当前助手会话的排队条目；空数组 = 不渲染排队条。 */
+  queue?: SendQueueItem[];
+  /** 一次性提示（「已置顶…」）。 */
+  queueNotice?: string;
+  /** busy/sending 时 submit 的去向：入队（→ store.enqueueSend）。缺席 = 旧语义
+   *  （忙时不发，未接缓冲区的调用方不变）。 */
+  onQueue?: (text: string, atts: SendAttachments) => void;
+  /** 队列条目「编辑」：把该条回填输入框并从队列移除（AssistantPage 经 key 重挂
+   *  装初始文本——AssistantInput 没有受控 text 通道）。 */
+  onQueueEdit?: (id: string) => void;
+  /** 队列条目「删除」：从队列移除。 */
+  onQueueDelete?: (id: string) => void;
+  /** 队列条目「直接发送」：空闲立即发，忙时置顶。 */
+  onQueueSend?: (id: string) => void;
+  /** 挂载时的初始文本（队列「编辑」回填——AssistantPage 经 key 重挂装进来；
+   *  只在 useState 初始化器消费一次，运行中变化不生效）。 */
+  initialText?: string;
 }) {
-  const [text, setText] = useState("");
+  const [text, setText] = useState(initialText);
   const [images, setImages] = useState<PendingImage[]>([]);
   const [files, setFiles] = useState<PendingFile[]>([]);
   const [notice, setNotice] = useState("");
@@ -120,10 +147,15 @@ export function AssistantInput({
   // 「+」按钮的弹出菜单（点外/Esc 关闭 + 退场动画——shared/popover 的通用接线）
   const addMenu = usePopover();
   const locked = disabled;
-  // 发送中不可直发（消息已交出去）——与 Composer 的 route 语义一致（简化版：
-  // 助手域没有队列，busy/sending 之外只有「有没有文本/附件」一个维度；
-  // hasAttachments：只附件没文本也允许发——后端以「[附件]」行充当正文）。
-  const canSend = !locked && !sending && !busy && (text.trim().length > 0 || hasPendingAtts(images, files));
+  // submit 的去向判定在 send-queue.ts 的 routeSubmit（纯函数，与主域 Composer
+  // 直测同一份）：空闲 → 正常发送路径；busy/sending/压缩中 → 入发送缓冲区
+  //（hasQueue = 调用方接了 onQueue；没接的调用方保持旧语义：忙时不发）。
+  // hasAttachments：只附件没文本也允许发——后端以「[附件]」行充当正文。
+  const route = (t: string) => routeSubmit({
+    text: t, busy, sending, locked, hasQueue: Boolean(onQueue),
+    hasAttachments: hasPendingAtts(images, files), compacting,
+  });
+  const canSend = route(text.trim()) !== "none";
 
   // 压缩中态（compacting）由上层持有（useCompaction——超时尾巴/重入闸在钩子里，
   // 这里只透传；与主域 Composer 的 onCompact/compacting 同一形状）。
@@ -148,8 +180,11 @@ export function AssistantInput({
 
   const submit = () => {
     const t = text.trim();
-    if ((!t && images.length === 0 && files.length === 0) || locked || sending) return;
-    onSend(t, attsFromPending(images, files));
+    const where = route(t);
+    if (where === "none") return;
+    const atts = attsFromPending(images, files);
+    if (where === "queue") onQueue?.(t, atts);
+    else onSend(t, atts);
     setText("");
     setImages([]);
     setFiles([]);
@@ -369,6 +404,15 @@ export function AssistantInput({
             <TodoList items={todos} />
           </div>
         )}
+        {/* 发送缓冲区：busy 期间提交的消息排队在这里（等空闲自动发出）——
+            与主域 Composer 渲染同一份 SendQueueBar（composer.css 全局类）。 */}
+        <SendQueueBar
+          queue={queue}
+          queueNotice={queueNotice}
+          onQueueEdit={onQueueEdit}
+          onQueueDelete={onQueueDelete}
+          onQueueSend={onQueueSend}
+        />
         {(images.length > 0 || files.length > 0 || notice) && (
           <div className="att-preview" role="region" aria-label="附件预览">
             {notice && <div className="att-notice" role="status">{notice}</div>}

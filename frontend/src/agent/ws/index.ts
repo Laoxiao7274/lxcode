@@ -41,6 +41,13 @@ export { wsURL } from "./connection";
  *  马上有别的来源动叶」的正常重拉吞掉。 */
 const REWIND_ECHO_WINDOW_MS = 5000;
 
+/** 助手域闸门错误的判定（后端 session_ops 的域闸门拒绝文案）：busy 快照补拉链
+ *  的域分流依据——快照只有 id 清单，前端无法预判助手域，只有后端拒绝时才知道。 */
+export function isAssistantDomainError(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : String(e);
+  return msg.includes("属于助手域") && msg.includes("assistant.history");
+}
+
 export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource, SearchAdminSource, JobAdminSource, TodoPromptSource, LogsSource {
   label = "真实后端";
   readonly modelAdmin: ModelAdminSource;
@@ -135,12 +142,17 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
     // busy_sessions 在握手应答里就有——先到先用：立即发 sessionsChanged 建
     // busy 投影并对 busy 会话补拉 history。两者拉同一次 chat.history 由
     // loadedSessions 判重收敛（先到者装载，后到者跳过），不会双倍装载。
+    // 域分流（影子运行时收口，2026-12）：快照只有 id 清单，前端无法预判域——
+    // 先按主域拉，后端对助手域顶层会话报「请用 assistant.history」（session_ops
+    // 的域闸门）时按错误分流重拉一次助手域装载。助手运行时（后端事实源）不建影子。
     this.conn.onBusySnapshot((busy) => {
       if (busy.length === 0) return;
       this.emit({ type: "sessionsChanged", running: busy });
       for (const id of busy) {
         if (this.loadedSessions.has(id)) continue;
-        this.loadHistory(id).catch(() => undefined);
+        this.loadHistory(id).catch((e) => {
+          if (isAssistantDomainError(e)) void this.assistant.history(id).catch(() => undefined);
+        });
       }
     });
     // 后端切换清账：握手成功那一刻清旧后端的会话缓存（连接层清焦点，缓存在这里）
@@ -586,8 +598,10 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
     // 保留 session.resume 的**语义**（占用/焦点广播/会话列表元数据回填都在它
     // 的应答路径上），只是不再等它完成才发 history：
     //  ① session.resume 失败 → 照旧 opError + 放弃本次切换（history 的结果不用
-    //     ——那个会话可能根本不存在，只切焦点会渲染一个空壳）；
-    //  ② chat.history 失败 → 照旧 opError（历史读不到也要说话）。
+    //     ——那个会话可能根本不存在，只切焦点会渲染一个空壳）；另发
+    //     historyLoadError 置位（switching 层让位给错误态，见下方 emit 处注释）。
+    //  ② chat.history 失败 → 照旧 opError（历史读不到也要说话）+ historyLoadError
+    //     置位；仍切焦点——错误与重试留在坏会话上可见（P0-1）。
     // 两条失败**互不吞**（allSettled 各自记账）；帧序纪律「历史先到、焦点后切」
     // 由 resumeAll 串行段保持：装载完成后才 focusSession。
     // 记账（loadedSessions）不放进 loadHistoryConn——它在 history 应答成功时
@@ -603,11 +617,18 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
     );
     const [r, h] = await Promise.all([resume, history]);
     if (r && "resumeError" in r) {
+      // 装载失败置位（P0-1「点不进去永久卡死」）：错误进该会话的 state（switching
+      // 层让位给错误态 + 重试），opError 照发（顶栏提示条 + 日志环形缓冲）。
+      // resume 失败 = 会话可能不存在，不切焦点（空壳比停留原地更糟，语义不变）。
       this.opError(`恢复会话失败: ${r.resumeError}`);
+      this.emit({ type: "historyLoadError", sessionId: id, message: `恢复会话失败: ${r.resumeError}` });
       return;
     }
     if (h && "historyError" in h) {
+      // history 失败：**仍切焦点**（保持在坏会话上可见错误与重试，比弹回旧会话
+      // 更符合直觉）——错误态已在会话 state 里，switching 层不会永久挂着。
       this.opError(`读取会话历史失败: ${h.historyError}`);
+      this.emit({ type: "historyLoadError", sessionId: id, message: `读取会话历史失败: ${h.historyError}` });
     } else {
       this.loadedSessions.add(id);
     }

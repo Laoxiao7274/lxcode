@@ -9,11 +9,9 @@
 // 每个会话标签是独立并发 Session；切焦点不取消后台轮次。关闭会话标签只隐藏标签，
 // 会话本体仍留在侧栏并在刷新时恢复。
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { RefObject } from "react";
 import { gsap } from "gsap";
 import { motionAllowed } from "../../shared/motion";
-import { overflowAttr, overflowEdges, shouldInterceptWheel } from "../../shared/scroll-metrics";
-import type { OverflowAttr } from "../../shared/scroll-metrics";
+import { useActiveTabVisible, useStripOverflow, restoreTabStrip, writeTabClosed, writeTabOrder } from "../../shared/tab-strip";
 import {
   appendSessionTab,
   pruneSessionTabs,
@@ -39,66 +37,8 @@ const WORKSPACE_LABELS: Record<WorkspacePage, string> = {
   remote: "远程访问",
 };
 
-/** 活动标签滚进可视区（两条 strip 共用一份实现）。
- *
- *  这是用户报的「标签页超出窗口被遮住」的**主因**修复：新开的会话标签
- *  （追加在最右）落在可视区外，而滚动条是隐藏的，用户看到的就是"被遮住一部分"。
- *
- *  inline: "nearest"（不是 center）：用户只是切标签时，center 会把整条 strip 拽来拽去，
- *  连本来看得见的标签也跟着跑。block: "nearest"：标签纵向本来就完整可见，
- *  不许把外层容器也拽一下（scrollIntoView 会连带滚动所有可滚祖先）。 */
-function useActiveTabVisible(ref: RefObject<HTMLElement | null>, activeKey: string, tabCount: number) {
-  useLayoutEffect(() => {
-    // 活动标签就是带 .on 的那个（两条 strip 的渲染件都用这个类，不再另起一套标记）
-    ref.current?.querySelector<HTMLElement>(".tab.on")?.scrollIntoView({ block: "nearest", inline: "nearest" });
-    // tabCount 也要进依赖：标签是**渲染后**才挂上 DOM 的（首屏铺开标签时 key 并没有变），
-    // 只盯 key 的话，首屏那一次滚进可视区会被整个跳过。
-  }, [ref, activeKey, tabCount]);
-}
-
-/** 标签条横向溢出的两个附属行为（两条 strip 共用一份实现）。
- *
- *  ① 渐隐提示：方向由运行时 scrollLeft 决定，CSS 读不到（纯 CSS 只能"永远两侧都渐隐"，
- *     那在没溢出时是假提示）——所以在这里算成 data-overflow，样式只负责按方向画。
- *     不用常显滚动条：36px 的栏里塞滚动条更难看，但"还有更多"必须有提示。
- *  ② 滚轮横向滚：overflow-x: auto 在多数浏览器里不吃纵向滚轮，把 deltaY 转到 scrollLeft。
- *     只在真的溢出、且该方向还有余量时拦截——否则会吞掉页面自身的滚动。 */
-function useStripOverflow<T extends HTMLElement>() {
-  const ref = useRef<T | null>(null);
-  const [attr, setAttr] = useState<OverflowAttr>("none");
-  const syncRef = useRef<() => void>(() => {});
-  // 每次渲染后重算：标签增删改的是 scrollWidth 而不是容器的盒子宽，
-  // ResizeObserver 只盯容器本身，看不见"标签多了"。
-  useLayoutEffect(() => { syncRef.current(); });
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const sync = () => {
-      const next = overflowAttr(overflowEdges(el));
-      setAttr((prev) => (prev === next ? prev : next)); // 同值不 setState：否则每次渲染都多跑一轮
-    };
-    syncRef.current = sync;
-    sync();
-    const onScroll = () => sync();
-    const onWheel = (event: WheelEvent) => {
-      if (!shouldInterceptWheel(el, event.deltaY)) return; // 不溢出/该方向到头 → 让事件冒泡
-      event.preventDefault();
-      el.scrollLeft += event.deltaY;
-    };
-    el.addEventListener("scroll", onScroll, { passive: true });
-    // 要 preventDefault，监听器就不能是 passive
-    el.addEventListener("wheel", onWheel, { passive: false });
-    const ro = new ResizeObserver(sync);
-    ro.observe(el);
-    return () => {
-      el.removeEventListener("scroll", onScroll);
-      el.removeEventListener("wheel", onWheel);
-      ro.disconnect();
-      syncRef.current = () => {};
-    };
-  }, []);
-  return [ref, attr] as const;
-}
+// useActiveTabVisible / useStripOverflow 抽在 shared/tab-strip.ts（2026-12
+// 助手标签条对齐主域时共用——同一份实现，两条 strip + 助手 strip 三处消费）。
 
 export function TabBar({
   source,
@@ -145,11 +85,26 @@ export function TabBar({
 
   // 首次拿到会话列表铺开标签：后端序是最近在前 → 反转成「新的在右」
   //（浏览器里后开的标签在右边）。只铺一次——之后顺序由用户操作决定。
+  // **持久化恢复**（2026-12 两域一致原则）：有 localStorage 记忆时优先恢复
+  // （order/closed 已与真实会话列表取交集——归档/删除的会话不复活）；无记忆
+  // 才走 seed 原路径。恢复后活跃会话若不在 order 里，下面的 appendSessionTab
+  // effect 会把它补进最右。
   useEffect(() => {
     if (seededRef.current || sessions.length === 0) return;
     seededRef.current = true;
-    setOrder(seedSessionTabs(sessions));
+    const restored = restoreTabStrip("main", sessions);
+    if (restored) {
+      setOrder(restored.order);
+      setClosed(new Set(restored.closed));
+    } else {
+      setOrder(seedSessionTabs(sessions));
+    }
   }, [sessions]);
+
+  // 标签条状态落 localStorage（两域一致原则）：order/closed 每次变化即写。
+  // 空数组 = 清除键（writeTabOrder/writeTabClosed 内处理）。
+  useEffect(() => { writeTabOrder("main", order); }, [order]);
+  useEffect(() => { writeTabClosed("main", [...closed]); }, [closed]);
 
   // 切到不在标签条里的会话（侧栏点进来 / 新建）→ 追加到右侧。
   // 已在列表里则不动（点标签不重排——浏览器语义）。

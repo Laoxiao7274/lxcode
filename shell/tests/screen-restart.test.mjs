@@ -23,6 +23,9 @@ import {
   isAccessLostExit,
   highFpsHintMessage,
   ACCESS_LOST_SHORT_BACKOFF_MS,
+  ACCESS_LOST_BACKOFF_MAX_MS,
+  accessLostBackoffMs,
+  fallbackParamChangeExempt,
   ACCESS_LOST_WINDOW_MS,
   ACCESS_LOST_MAX_ATTEMPTS,
   ACCESS_LOST_GRACE_MS,
@@ -254,7 +257,7 @@ test("源码钉子：兜底重启 / fallback_active 上报 / 显式重试退出�
   // 首启/非链上重启不授予 grace（防 spawn 即崩无限免计重试）
   const graceGrant = src.match(/if \(accessLostBudget\.windowStarted !== 0\) \{\s*\n\s*graceUntilTs = graceUntil/);
   assert.ok(graceGrant, "主链重启的 grace 只在 ACCESS_LOST 链上授予");
-  assert.ok(src.includes("fallback_active: accessLostFallbackDue"), "上报含预算兜底位");
+  assert.ok(src.includes("fallback_active: fallbackCaptureActive(runningFallback"), "上报含预算兜底位（兜底态统一口径：runningFallback ∪ fallbackPending）");
 });
 
 // ACCESS_LOST 预算升级兜底文案可读（诊断面板 + 手机端）。
@@ -319,4 +322,84 @@ test("源码钉子：显示器拓扑变化事件取证日志（main.ts）", () =
   const addedIdx = src.indexOf('screen.on("display-added"');
   const logIdx = src.indexOf("appendRendererLog", addedIdx);
   assert.ok(logIdx > addedIdx, "拓扑事件写 renderer.log（取证依赖打包形态可见性）");
+});
+
+// ---- 0.3.68 投屏重启风暴两连修 ----
+
+// Bug A 纯函数钉子：兜底豁免的判定面（fallbackParamChangeExempt）。
+test("兜底豁免判定：兜底存续 + want 电平未变 = 豁免；电平变化不豁免", () => {
+  // 兜底 ffmpeg 在跑（runningFallback）且电平未变：豁免——不是真实意图
+  assert.equal(fallbackParamChangeExempt(true, false, true), true, "gdigrab 在跑 + 电平未变 = 豁免");
+  // 预算已耗尽（fallbackPending，兜底进程死了还没重起）：同样豁免——
+  // 否则参数分支会趁兜底未落地把它洗回主链 ddagrab（又记账）
+  assert.equal(fallbackParamChangeExempt(false, true, true), true, "fallbackPending + 电平未变 = 豁免");
+  // 非兜底态：不豁免（正常参数变化照旧重启）
+  assert.equal(fallbackParamChangeExempt(false, false, true), false, "非兜底态不豁免");
+  // want 电平变了（换显示器/换档位/换帧率）：不豁免——真实意图，兜底让位
+  assert.equal(fallbackParamChangeExempt(true, false, false), false, "兜底在跑但电平变了 = 不豁免（真实意图）");
+  assert.equal(fallbackParamChangeExempt(false, true, false), false, "pending 但电平变了 = 不豁免");
+  assert.equal(fallbackParamChangeExempt(true, true, false), false, "兜底态 + 电平变化 = 让位（防兜底态永久钉死）");
+});
+
+// Bug A 源码钉子：reconcile 的参数变化分支必须先走兜底豁免（判定面用 want
+// 电平轮间比较，不与兜底进程的 monitor=-1/fps=30 降级参数比——那是旧病根）。
+test("源码钉子：reconcile 参数变化分支的兜底豁免（want 电平判定面）", () => {
+  const src = readFileSync(join(import.meta.dirname, "..", "src", "screen.ts"), "utf8");
+  const exemptIdx = src.indexOf("fallbackParamChangeExempt(runningFallback");
+  const paramIdx = src.indexOf("wantCmd.monitor !== ffmpegMonitor || q !== ffmpegQuality");
+  assert.ok(exemptIdx > 0, "reconcile 有兜底豁免分支");
+  assert.ok(paramIdx > exemptIdx, "豁免分支必须在参数变化分支之前（否则兜底先被杀）");
+  // 判定面 = want 电平轮间比较（lastWant），不是与 ffmpegMonitor/ffmpegFps 比
+  const snapIdx = src.indexOf("lastWant = { ...wantCmd }");
+  assert.ok(snapIdx > 0, "want 电平轮间快照存在（lastWant）");
+  assert.ok(src.includes("lastWant !== null"), "快照判空（首轮 lastWant=null 不豁免）");
+  // 显式重试清兜底标志（epoch 分支让位回主路径）
+  assert.ok(src.includes("runningFallback = false;\r\n      accessLostRetryAt = 0;") || src.includes("runningFallback = false;\n      accessLostRetryAt = 0;"), "显式重试清 runningFallback");
+  // stopFfmpeg 清兜底标志、startFallbackFfmpeg 置位
+  assert.ok(src.includes("runningFallback = false; // 兜底态随进程停止退出"), "stopFfmpeg 清 runningFallback");
+  assert.ok(src.includes("runningFallback = true; // 兜底态：reconcile 的参数变化分支据此豁免"), "startFallbackFfmpeg 置 runningFallback");
+});
+
+// Bug B-① 钉子：探测结果复用——成功缓存终身 + 失败 TTL 内不重探，且所有
+// spawn 路径走统一入口（ensureEncoderProbe，分层短路不重复真实例化）。
+test("源码钉子：编码器探测结果跨重启复用（ensureEncoderProbe 统一入口）", () => {
+  const src = readFileSync(join(import.meta.dirname, "..", "src", "screen.ts"), "utf8");
+  // startFfmpeg 不再直连 probeEncoders——走 ensureEncoderProbe（带预热/重探接线）
+  assert.ok(src.includes("await ensureEncoderProbe(true)"), "startFfmpeg 走 ensureEncoderProbe");
+  assert.ok(src.includes("if (encoderProbe) return encoderProbe;"), "成功缓存终身（真实例化只跑一次）");
+  assert.ok(src.includes("if (probeInFlight) return probeInFlight;"), "在途去重（并发调用共用一次探测）");
+  assert.ok(src.includes("scheduleWarmRetry()"), "探测失败后排一次空闲重探（自愈）");
+  // 日志如实化：不再恒报「（真实例化）」（0.3.68 取证被误导的根因）
+  assert.ok(src.includes("缓存命中"), "探测日志区分命中与真实例化");
+});
+
+// Bug B-② 钉子：退避序列化——500ms → 1s → 2s → 4s → 封顶 8s（窗口预算内
+// 拉开失败间隔，重启风暴的重建频率降一个量级）。
+test("ACCESS_LOST 退避序列：500ms 起步逐次翻倍封顶 8s", () => {
+  assert.equal(ACCESS_LOST_SHORT_BACKOFF_MS, 500);
+  assert.equal(ACCESS_LOST_BACKOFF_MAX_MS, 8_000, "退避封顶 8s（重启风暴不再 ~5s 周期烧会话）");
+  assert.equal(accessLostBackoffMs(1), 500);
+  assert.equal(accessLostBackoffMs(2), 1_000);
+  assert.equal(accessLostBackoffMs(3), 2_000);
+  assert.equal(accessLostBackoffMs(4), 4_000);
+  assert.equal(accessLostBackoffMs(5), 8_000, "封顶");
+  assert.equal(accessLostBackoffMs(9), 8_000, "超过序列继续封顶");
+  assert.equal(accessLostBackoffMs(0), 500, "边界（异常输入钳到基数）");
+  // 源码钉子：close 回调的 AL 分支用序列（高帧率下），低帧率维持 500ms 不变
+  const src = readFileSync(join(import.meta.dirname, "..", "src", "screen.ts"), "utf8");
+  assert.ok(src.includes("ffmpegFps > 60 ? accessLostBackoffMs(accessLostBudget.attempts) : ACCESS_LOST_SHORT_BACKOFF_MS"), "AL 退避：高帧率走序列、低帧率维持 500ms");
+});
+
+// Bug B-③ 钉子：控制面/数据面解耦——reconcile 不再跑在 tick 的 await 链上
+// （秒级探测曾饿过 shellStale 4s 保鲜窗，后端报壳离线拒绝手机 start），
+// reconcile 跑超 2s 补一次空 ShellState 心跳把 lastSeen 推进保鲜窗。
+test("源码钉子：轮询环与探测解耦 + 探测期心跳补偿", () => {
+  const src = readFileSync(join(import.meta.dirname, "..", "src", "screen.ts"), "utf8");
+  const tickIdx = src.indexOf("void reconcile().finally(");
+  assert.ok(tickIdx > 0, "reconcile 挪出 tick await 链（后台 void 跑）");
+  // 心跳补偿：reconcile 耗时 >2s（shellStale 4s 的一半）时补发一次上报
+  const compIdx = src.indexOf("if (dt > 2000)", tickIdx);
+  assert.ok(compIdx > tickIdx, "探测/重连链拖 >2s 触发心跳补偿");
+  assert.ok(src.includes("probeStallCount++"), "被饿探针计数（验证修复的长期观测）");
+  assert.ok(src.includes("async function postState"), "心跳补偿走独立上报函数");
 });

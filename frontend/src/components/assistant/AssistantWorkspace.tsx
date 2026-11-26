@@ -39,6 +39,7 @@ import {
   visibleSessionTabs,
 } from "../../shared/session-tabs";
 import { readLastAssistantSession, writeLastAssistantSession } from "../../shared/app-mode";
+import { restoreTabStrip, writeTabClosed, writeTabOrder } from "../../shared/tab-strip";
 import { useAssistantConfirm } from "../../app-hooks/use-assistant-confirm";
 import { takeAssistantChildPref } from "./assistant-child-pref";
 import { AssistantChildPage } from "./AssistantChildPage";
@@ -49,6 +50,7 @@ import { AssistantConfigTab } from "../catalog/AssistantConfigTab";
 import { setCatalogTabPref } from "../catalog/catalog-tab-pref";
 import { AssistantSessionList } from "./AssistantSessionList";
 import { Button } from "../form";
+import { OpNotice } from "../op-notice";
 import { childTabTitle } from "../../shared/workspace-tabs";
 import { timelineOf } from "../../shared/blocks";
 /** 助手模式的工作区视图：会话列表（恒在）+ 当前会话时间线 + 子会话临时视图。 */
@@ -60,9 +62,15 @@ export function AssistantWorkspace({
   resolveAssistant,
   childParents,
   reportError,
+  operationError,
+  clearError,
   onOpenSettings,
   mode,
   retainAssistant,
+  sendQueues,
+  enqueueSend,
+  removeQueuedSend,
+  moveQueuedToFront,
 }: {
   source: AgentSource;
   /** 助手域 states（store 双投——assistant.* 事件的归约目标）。 */
@@ -72,6 +80,10 @@ export function AssistantWorkspace({
   /** 子会话 id → 父会话 id（dispatch 块反查——临时视图标题与父判定）。 */
   childParents: Record<string, string>;
   reportError: (message: string) => void;
+  /** 操作错误条的双模式共享（P0-2）：状态与关闭口都由 App 持有（store 的
+   *  operationError / clearError 经 props 注入——两域同一条错误通道，不各写一份）。 */
+  operationError?: string | null;
+  clearError?: () => void;
   /** 侧栏底部设置行（主域 Sidebar 同款入口——SettingsPanel 由 App 持有）。 */
   onOpenSettings: () => void;
   /** 顶层模式（App 的 appMode 直传）：本组件保活常驻、不随模式卸载，侧键探针
@@ -82,6 +94,12 @@ export function AssistantWorkspace({
    *  时间线变空白，AssistantPage 的 boot 闸门不会重跑）。App 传入（useAgent 的
    *  retainSessions 部分应用——身份稳定）。 */
   retainAssistant?: (ids: string[]) => void;
+  /** ---- 发送缓冲区（2026-12 助手域接入——App 从 store 透传给 AssistantPage）----
+   *  可缺席：未传 = 助手域不接队列（AssistantPage 保持旧语义）。 */
+  sendQueues?: Record<string, import("../../shared/send-queue").SendQueueItem[]>;
+  enqueueSend?: (sessionId: string, text: string, atts?: { images?: import("../../shared/types").ChatSendImage[]; files?: import("../../shared/types").ChatSendFile[] }) => void;
+  removeQueuedSend?: (sessionId: string, id: string) => void;
+  moveQueuedToFront?: (sessionId: string, id: string) => void;
 }) {
   const assistant = source.assistant;
   /** 当前助手会话 id（"" 起始 = 中性态「未选择」；进入助手模式恢复上次会话
@@ -96,7 +114,9 @@ export function AssistantWorkspace({
   // ---- 会话标签条（方案 B）----
   // order = 标签打开顺序（新标签追加在右，容量满丢最老——session-tabs 纯函数）；
   // closed = 用户关掉的标签（纯 UI 态：会话本体留在侧栏，可从侧栏再开）。
-  // 首次拿到列表铺开标签（seedSessionTabs 一次）；未打开过的会话不挂载。
+  // **持久化**（2026-12 两域一致）：恢复走 restoreTabStrip（与真实会话列表取
+  // 交集——归档/删除的不复活）；无记忆才 seed。活跃会话以 lastAssistantSession
+  // 为准（sessionId-state 已恢复，append effect 会把它补进最右）。
   const [tabOrder, setTabOrder] = useState<string[]>([]);
   const [tabClosed, setTabClosed] = useState<Set<string>>(new Set());
   const tabSeededRef = useRef(false);
@@ -227,16 +247,28 @@ export function AssistantWorkspace({
   }, []);
 
   // ---- 标签条规则（方案 B：session-tabs 纯函数收口）----
-  // 首次拿到会话列表铺开标签：后端序最近在前 → 反转成「新的在右」（只铺一次——
-  // 之后顺序由用户操作决定）。活跃会话记忆（lastAssistantSession）恢复时它已经
-  // 在列表里，seed 即含它——启动恢复 = 单标签场景。
+  // 首次拿到会话列表铺开标签：有持久化记忆则恢复（restoreTabStrip 已与列表取
+  // 交集——归档/删除的会话不复活、被关掉的不重现）；无记忆走 seed 原路径
+  //（后端序最近在前 → 反转成「新的在右」）。只铺一次——之后顺序由用户操作决定。
+  // 活跃会话记忆（lastAssistantSession）恢复时它已经过 append effect 补进最右
+  //（restoreTabStrip 不保证含活跃会话——活跃标签以 lastAssistantSession 为准）。
   const sessionListRef = useRef(sessionList);
   sessionListRef.current = sessionList;
   useEffect(() => {
     if (tabSeededRef.current || sessionList.length === 0) return;
     tabSeededRef.current = true;
-    setTabOrder(seedSessionTabs(sessionList));
+    const restored = restoreTabStrip("asst", sessionList);
+    if (restored) {
+      setTabOrder(restored.order);
+      setTabClosed(new Set(restored.closed));
+    } else {
+      setTabOrder(seedSessionTabs(sessionList));
+    }
   }, [sessionList]);
+
+  // 标签条状态落 localStorage（两域一致）：order/closed 每次变化即写。
+  useEffect(() => { writeTabOrder("asst", tabOrder); }, [tabOrder]);
+  useEffect(() => { writeTabClosed("asst", [...tabClosed]); }, [tabClosed]);
 
   // 活跃会话不在标签条（侧栏点进来/新建/容量挤出）→ 追加到右侧 + 挂载实例。
   // 已在列表则不动（点标签不重排——浏览器语义）。活跃会话恒挂载（正在看）。
@@ -396,7 +428,17 @@ export function AssistantWorkspace({
   // 在助手模式里永远不会被侧键命中（壳层先查探针）。
   useEffect(() => {
     if (mode !== "assistant") return;
+    // 取证（2026-12 侧键仍失效排查）：探针注册/注销各打一行——复现时与壳层的
+    // [side-key] 行对照即可区分「探针没注册（壳层 probe=missing）」vs「注入
+    // 失败（壳层 injected-failed）」vs「探针在但分支没命中（看 navBack 分支行）」。
+    console.log("[asst-ws] navBack probe on");
     window.__lxNavBack = (): boolean => {
+      // 分支命中取证：只记状态位，不记会话内容（脱敏）。
+      const branch = childViewId !== null ? "child"
+        : secondaryView !== null ? "secondary"
+          : sessionId ? (prevAssistantSessionRef.current ? "prev-session" : "to-list")
+            : "idle";
+      console.log(`[asst-ws] navBack childView=${childViewId !== null} secondary=${secondaryView ?? "none"} session=${sessionId ? "1" : "0"} branch=${branch}`);
       if (childViewId !== null) { setChildViewId(null); return true; }
       if (secondaryView !== null) { setSecondaryView(null); return true; }
       if (sessionId) {
@@ -430,6 +472,7 @@ export function AssistantWorkspace({
       return true;
     };
     return () => {
+      console.log("[asst-ws] navBack probe off");
       delete window.__lxNavBack;
       delete window.__lxNavForward;
     };
@@ -570,6 +613,12 @@ export function AssistantWorkspace({
     );
   }
 
+  // 操作错误条（P0-2）：请求级失败的一次性提示——主域 chat-main 顶部同一条
+  // OpNotice 组件、同一份状态（App 持有）。缺席（未接线）不渲染。
+  const errorNotice = operationError ? (
+    <OpNotice message={operationError} onClose={clearError ?? (() => {})} />
+  ) : null;
+
   return (
     <div className="assistant-ws">
       {/* 左侧 = 主域 .sidebar 同款骨架（助手域无项目分组）：nav「新对话」→
@@ -709,6 +758,7 @@ export function AssistantWorkspace({
       </aside>
       {secondaryView === "assistant-config" ? (
         <main className="assistant-ws-main">
+          {errorNotice}
           {/* 助手配置独立页（2026-12 用户拍板）：不经 CatalogPage——返回头 +
               AssistantConfigTab（自包含组件：assistant.config.get/set 数据源、
               useAgents chips、configChanged 订阅都在组件内）。滚动容器与
@@ -736,6 +786,7 @@ export function AssistantWorkspace({
         </main>
       ) : secondaryView === "catalog" ? (
         <main className="assistant-ws-main">
+          {errorNotice}
           {/* 拓展页内嵌视图：返回头复用子会话视图同款类与交互，主区挂
               CatalogPage（纯组件、零项目域依赖——useAgents context 在
               助手模式天然可用）。 */}
@@ -753,6 +804,7 @@ export function AssistantWorkspace({
         </main>
       ) : childId !== null ? (
         <main className="assistant-ws-main">
+          {errorNotice}
           <div className="assistant-ws-child-head">
             <Button
               className="assistant-ws-back"
@@ -774,6 +826,7 @@ export function AssistantWorkspace({
         </main>
       ) : sessionId ? (
         <main className="assistant-ws-main">
+          {errorNotice}
           {/* 标签条（方案 B）：多会话并存，点标签 = handleSelect（append + 切活跃）。
               空列表（单会话也可不显——只在 ≥1 个时渲染条）不占高度。 */}
           <AssistantTabStrip
@@ -800,6 +853,10 @@ export function AssistantWorkspace({
                   sessionMeta={meta}
                   onSessionId={handleSessionId}
                   onOpenChild={(id) => { setChildViewId(id); setSecondaryView(null); }}
+                  sendQueues={sendQueues}
+                  enqueueSend={enqueueSend}
+                  removeQueuedSend={removeQueuedSend}
+                  moveQueuedToFront={moveQueuedToFront}
                   onConfirm={(confirmId, allow) => {
                     resolveAssistant(id, confirmId, allow ? "allow" : "deny");
                     assistant.confirm(id, confirmId, allow).catch((e) =>
@@ -831,6 +888,7 @@ export function AssistantWorkspace({
         /* 中性态：未选择会话——不自动 assistant.new（进入助手模式建空会话
            是旧语义，已废除）。给两条出路：点左侧会话行，或「新对话」。 */
         <main className="assistant-ws-main">
+          {errorNotice}
           <div className="assistant-ws-empty">
             <div className="assistant-ws-empty-title">助手</div>
             <div>选择左侧会话继续，或点「新对话」开始。</div>

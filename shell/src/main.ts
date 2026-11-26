@@ -265,13 +265,27 @@ if (!app.requestSingleInstanceLock()) {
     // undefined（no-op 路径）或 true 都会落进 `??` 的右支，双重导航——侧键把
     // 项目域历史栈耗尽后整个失灵（实测过的回归路径）。可选链在注入串里手写
     // `?` 不行——executeJavaScript 的目标页面是 JS，直接写即可。
+    // **取证（2026-12 侧键仍失效排查）**：每次按键打一行 [side-key]，探针
+    // 存在性显式可见（renderer.log 经 console-message 不接主进程——主进程
+    // 侧日志走 appendRendererLog 同一落盘管道）。复现时看三种结局：
+    //   · probe=registered → 注入串已发出；页面没反应 = 渲染层探针/分支问题；
+    //   · probe=missing → 页面没挂探针（助手模式未注册 / 项目域回落 history）；
+    //   · 连 [side-key] 行都没有 → WM_APPCOMMAND 没到 Electron（驱动/系统层）。
     win.on("app-command", (_e, cmd) => {
       if (cmd !== "browser-backward" && cmd !== "browser-forward") return;
       const probe = cmd === "browser-backward" ? "__lxNavBack" : "__lxNavForward";
       const historyFn = cmd === "browser-backward" ? "back" : "forward";
       void win?.webContents
         .executeJavaScript(`(typeof window.${probe} === "function" ? window.${probe}() : history.${historyFn}())`)
-        .catch(() => { /* 页面正在跳转/销毁时注入失败无害 */ });
+        .then((r) => {
+          void appendRendererLog(rendererLogLine(new Date(), "info",
+            `[side-key] cmd=${cmd} probe=${r === undefined ? "missing" : "registered"} result=${String(r)}`));
+        })
+        .catch((err: unknown) => {
+          // 注入失败（页面正在跳转/销毁）——H2「注入失败被吞」的直接证据行。
+          void appendRendererLog(rendererLogLine(new Date(), "warning",
+            `[side-key] cmd=${cmd} probe=injected-failed err=${err instanceof Error ? err.message : String(err)}`));
+        });
     });
 
     // 窗口控制 IPC（preload 的 __LX__ 桥 → Topbar 按钮）

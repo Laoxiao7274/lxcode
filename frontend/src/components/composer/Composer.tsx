@@ -25,6 +25,7 @@ import {
   type PendingImage,
 } from "../../shared/attachments";
 import { routeSubmit, type SendQueueItem } from "../../shared/send-queue";
+import { SendQueueBar } from "./SendQueueBar";
 import { stageFile } from "../../shared/attachment-read";
 import { collectFolderEntries, defaultFolderDeps, type EntryLike } from "../../shared/folder-drop";
 import { groupFolderFiles } from "../../shared/attachments";
@@ -537,46 +538,15 @@ export const Composer = memo(function Composer({
         <div className="pi">
           {/* 发送缓冲区：busy 期间提交的消息排队在这里（等空闲自动发出）。
               卡内顶部区块（照 .pi-plan 融合先例：去胶囊底、发丝线与输入区分隔）；
-              每条一行：序号 + 单行摘要 + 附件标记 + 直接发送/编辑/删除三个动作。 */}
-          {queue && queue.length > 0 && (
-            <div className="send-queue" role="list" aria-label="发送缓冲区">
-              {queueNotice && (
-                <div className="send-queue-notice" role="status">{queueNotice}</div>
-              )}
-              {queue.map((item, index) => (
-                <div className="send-queue-item" role="listitem" key={item.id}>
-                  <span className="send-queue-index" aria-hidden="true">{index + 1}</span>
-                  <span className="send-queue-text" title={item.text}>{clipOneLine(item.text, 80)}</span>
-                  {(item.images?.length || item.files?.length) ? (
-                    <span className="send-queue-atts" aria-label={`附件：图片 ${item.images?.length ?? 0} 张，文件 ${item.files?.length ?? 0} 个`}>
-                      {item.images?.map((im, i) => (
-                        <AttachmentThumb key={i} mime={im.mime} data={im.data} file={im.file} alt="排队消息的图片附件" small />
-                      ))}
-                      {item.files?.map((f, i) => (
-                        <span key={i} className="send-queue-file" title={f.name}>{clipOneLine(f.name, 18)}</span>
-                      ))}
-                    </span>
-                  ) : null}
-                  <button type="button" className="send-queue-act" title="直接发送" aria-label="直接发送该条" onClick={() => onQueueSend?.(item.id)}>
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                      <path d="M12 19V5" />
-                      <path d="m5 12 7-7 7 7" />
-                    </svg>
-                  </button>
-                  <button type="button" className="send-queue-act" title="编辑（放回输入框）" aria-label="编辑该条（放回输入框）" onClick={() => onQueueEdit?.(item.id)}>
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                      <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
-                    </svg>
-                  </button>
-                  <button type="button" className="send-queue-act" title="删除" aria-label="删除该条" onClick={() => onQueueDelete?.(item.id)}>
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true">
-                      <path d="M18 6 6 18M6 6l12 12" />
-                    </svg>
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
+              每条一行：序号 + 单行摘要 + 附件标记 + 直接发送/编辑/删除三个动作。
+              JSX 已抽成 SendQueueBar 共享组件（助手域 AssistantInput 渲染同一份）。 */}
+          <SendQueueBar
+            queue={queue}
+            queueNotice={queueNotice}
+            onQueueEdit={onQueueEdit}
+            onQueueDelete={onQueueDelete}
+            onQueueSend={onQueueSend}
+          />
           {/* 任务清单区：白卡顶部区块（清单 + 发丝分隔线 + 输入区 = 一张卡）。
               在 .pi 的 relative 内——斜杠面板锚点不受影响；todos 为空不渲染。 */}
           {todos.length > 0 && (
@@ -836,8 +806,9 @@ export function AttachmentThumb({ mime, data, file, alt, title, onRemove, small 
 }
 
 /** 队列条目/文件卡的单行摘要：折叠空白 + 按码点截断（与 workspace-tabs.ts 的
- *  clipOneLine 同一份算法、不同预算；不共享是刻意的不引依赖：组件层不进 shared）。 */
-function clipOneLine(text: string, max: number): string {
+ *  clipOneLine 同一份算法、不同预算；不共享是刻意的不引依赖：组件层不进 shared）。
+ *  导出 = SendQueueBar 共用（排队条抽出后同目录两处渲染同一份）。 */
+export function clipOneLine(text: string, max: number): string {
   const one = text.replace(/\s+/g, " ").trim();
   const chars = [...one];
   return chars.length <= max ? one : chars.slice(0, max).join("") + "…";

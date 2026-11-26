@@ -80,6 +80,13 @@ export function reduce(state: UIState, ev: AgentEvent): UIState {
       return reduceRewound(state, ev);
     case "historyLoaded":
       return reduceHistoryLoaded(state, ev);
+    case "historyLoadError":
+      // 历史装载失败（P0-1）：置进该会话的装载错误位——switching 层据此让位给
+      // 错误态 + 重试，不再永久挂起。子会话双投路径的语义是「谁失败的给谁置位」
+      //（ev.sessionId 路由），主/子/助手域共用同一份 reducer，无特例。
+      // 只写错误位，不动 historyReady：置位只发生在装载路径上（blocks 空时
+      // switching 层让位），已装载会话的事实不被失败事件推翻。
+      return { ...state, historyLoadError: ev.message };
     case "modelChanged":
       // 会话**选中的模型**变了（chat.modelChanged / 演示态的本地广播）：与
       // approvalChanged 同一条会话级路由——reduceSessionStates 按 sessionId 分发，
@@ -571,6 +578,8 @@ if (ev.history.busy && state.busy && state.historyReady) {
     // 权限档同款：快照没带 approval（老后端/演示源）不写——不猜（不把已显示
     // 的档位抹成 null）
     approval: ev.history.approval ?? state.approval,
+    // 成功装载清位（P0-1）：上一次失败的记录不再挡住正常渲染。
+    historyLoadError: "",
     historyReady: true,
   };
 }
@@ -616,6 +625,8 @@ return {
   // 权限档按快照对齐（后端 LiveApproval——会话级状态持久化的显示依据）；
   // 快照没带（老后端/演示源）保持原值不猜。
   approval: ev.history.approval ?? state.approval,
+  // 成功装载清位（P0-1）：重试成功后错误态让位给正常时间线。
+  historyLoadError: "",
 };
 }
 

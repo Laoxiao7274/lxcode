@@ -12,6 +12,7 @@ import (
 	"github.com/moyunteng/lxcode/internal/llm"
 	"github.com/moyunteng/lxcode/internal/project"
 	"github.com/moyunteng/lxcode/internal/protocol"
+	"github.com/moyunteng/lxcode/internal/sessiondata"
 	"github.com/moyunteng/lxcode/internal/store"
 )
 
@@ -36,6 +37,16 @@ func (s *Server) session(id string) (*agent.Session, error) {
 	if s.st != nil {
 		if parent, err := s.st.SessionParentID(id); err == nil && parent != "" {
 			return s.newRuntime(id)
+		}
+		// 域闸门（影子运行时收口，2026-12）：库行 space='assistant' 的**顶层**会话
+		// 不是主域解析面的成员——为它现建主域运行时会注册进 s.sessions 成为影子
+		//（收不到事件域映射走 chat.* 的广播、占用/确认门全部错位）。真实场景 =
+		// 客户端重连后对 hello busy 快照里的助手 id 发 chat.history（快照只有 id
+		// 清单，客户端无法按域分流）——收口在服务端：拒绝并指路 assistant.history，
+		// 前端按错误分流重拉。子会话（parent_id 非空）不拦：它们不注册缓存，
+		// chat.history 现建现用读的是最新库状态（无影子问题）。
+		if space, err := s.st.SessionSpaceOf(id); err == nil && space == sessiondata.SpaceAssistant {
+			return nil, fmt.Errorf("会话 %s 属于助手域，请用 assistant.history 读取历史", id)
 		}
 	}
 	s.sessionsMu.Lock()

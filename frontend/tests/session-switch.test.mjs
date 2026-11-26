@@ -22,12 +22,14 @@ const threadCss = readFileSync(join(here, '../src/styles/thread.css'), 'utf8');
 const composerCss = readFileSync(join(here, '../src/styles/composer.css'), 'utf8');
 
 test('① 切换装载期不渲染空时间线：App 有 switching 判定与 data-switching 接线', () => {
-  // 判定存在：焦点切换时按 historyReady + 空块判定装载中
-  assert.match(appSrc, /setSwitching\(!state\.historyReady && state\.blocks\.length === 0\)/,
-    'switching 判定必须同时要求「历史未装载」与「块为空」');
-  // 装载完成要收尾（不因竞态把指示条留挂在已就绪的会话上）
-  assert.match(appSrc, /if \(switching && state\.historyReady\) setSwitching\(false\)/,
-    'historyReady 到达必须清掉 switching');
+  // 判定存在：焦点切换时按 historyReady + 空块判定装载中；装载失败
+  //（historyLoadError）不进 switching 层——错误态自己呈现（P0-1，永久挂起的
+  // 装载指示比可见的错误更糟）。
+  assert.match(appSrc, /setSwitching\(!state\.historyReady && state\.blocks\.length === 0 && !state\.historyLoadError\)/,
+    'switching 判定必须同时要求「历史未装载」「块为空」且「未装载失败」');
+  // 装载完成或失败都要收尾（不因竞态把指示条留挂在已就绪/已报错的会话上）
+  assert.match(appSrc, /if \(switching && \(state\.historyReady \|\| state\.historyLoadError\)\) setSwitching\(false\)/,
+    'historyReady / historyLoadError 到达必须清掉 switching');
   // 接线存在：thread-scroll 上真的落了 data-switching
   assert.match(appSrc, /data-switching=\{switching/,
     'switching 必须接到 .thread-scroll 的 data 属性上');

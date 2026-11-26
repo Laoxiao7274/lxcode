@@ -162,3 +162,48 @@ test('S2：鼠标侧键 back 离开当前会话 → 离场实例摘除（回列�
   await settle();
   assert.deepEqual(mountedIdsIn(container), [], 'back 回中性态：离场实例摘除');
 });
+
+// ---- 标签持久化恢复（2026-12 两域一致）----
+// seed effect 走 restoreTabStrip("asst")：有记忆恢复（交集清洗——归档/删除的
+// 不复活、closed 指向已删会话的条目丢弃）、无记忆走 seed 原路径。活跃标签以
+// lastAssistantSession 为准（恢复后 append effect 把它补进最右）。
+
+test('持久化：有记忆时按持久化顺序恢复，归档/删除的会话不复活', async () => {
+  const { container } = await setup([meta('a1'), meta('a2'), meta('a3')]);
+  // 铺开：点开 a1、a2（顺序 a1, a2）
+  await click(rowOf(container, 'a1'));
+  await click(rowOf(container, 'a2'));
+  await settle();
+  const persisted = JSON.parse(localStorage.getItem('lx.app.asst.taborder'));
+  assert.ok(persisted.includes('a1') && persisted.includes('a2'), `标签条已落盘（order=${JSON.stringify(persisted)}）`);
+
+  // 模拟重启：清 DOM 重新挂载（新 root），localStorage 记忆保留；
+  // a2 已归档、dead 不在列表——恢复时两者都不应出现在标签条。
+  localStorage.setItem('lx.app.asst.taborder', JSON.stringify(['dead', 'a1', 'a2']));
+  localStorage.setItem('lx.app.asst.tabclosed', JSON.stringify(['gone']));
+  container.innerHTML = '';
+  // a1 记为活跃标签（lastAssistantSession——重启后活跃会话恢复单标签，
+  // append effect 会把它补进标签条；restoreTabStrip 本身不保证含活跃会话）。
+  localStorage.setItem('lx.app.lastAssistantSession', 'a1');
+  const source = stubSource([meta('a1'), meta('a2', { archived: true }), meta('a3')]);
+  const root2 = createRoot(container);
+  act(() => { root2.render(App(source)); });
+  await settle();
+  const tabs = [...container.querySelectorAll('.asst-tab')].map((el) => el.title);
+  assert.ok(!tabs.some((t) => t.includes('a2')), '归档会话不复活');
+  assert.ok(!tabs.some((t) => t.includes('dead')), '已删除会话不复活');
+  assert.ok(tabs.some((t) => t.includes('a1')), `持久化的存活标签恢复（tabs=${JSON.stringify(tabs)}）`);
+});
+
+test('持久化：无记忆时走 seed 原路径（后端序反转）', async () => {
+  localStorage.clear();
+  const { container } = await setup([meta('a1'), meta('a2'), meta('a3')]);
+  // 未点开任何会话（中性态不渲染标签条）→ order 数组已 seed（seed effect 无视
+  // 活跃会话先铺一遍），落盘键 = seed 反转序；点开会话后标签条出现（seed 本就
+  // 含全部会话，点击只是补进活跃）。断言落盘顺序 = 后端序反转（「新的在右」）。
+  assert.deepEqual(JSON.parse(localStorage.getItem('lx.app.asst.taborder')), ['a3', 'a2', 'a1'], 'seed 落盘（后端序反转）');
+  await click(rowOf(container, 'a1'));
+  const tabs = [...container.querySelectorAll('.asst-tab')].map((el) => el.title);
+  assert.ok(tabs.length === 3, `seed 铺开标签（tabs=${JSON.stringify(tabs)}）`);
+  assert.ok(tabs[2].includes('a1'), '点击的会话高亮在最右（seed 序即最终序）');
+});

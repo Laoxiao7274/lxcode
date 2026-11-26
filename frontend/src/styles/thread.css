@@ -386,6 +386,28 @@
 @media (prefers-reduced-motion: reduce) {
   .thread-skeleton-loading { animation: none; }
 }
+/* 装载失败态（Thread：historyLoadError——P0-1「点不进去永久卡死」的出口）：
+ * 错误文案 + 重试钮。与 .thread-skeleton-loading 同占位（40vh 上空），危险色
+ * 走 .op-notice 的红——同一件事（请求失败）不该有两套颜色语言。 */
+.thread-load-error {
+  padding-top: 40vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--danger);
+  word-break: break-word;
+  padding-left: 24px;
+  padding-right: 24px;
+}
+.thread-load-retry.fd-btn-g {
+  padding: 3px 14px;
+  font-size: 11px;
+  border-radius: 7px;
+  background: var(--surface);
+}
 /* 窗口化渲染的顶部哨兵（进入视口自动前插，也可点击） */
 .window-more {
   text-align: center;

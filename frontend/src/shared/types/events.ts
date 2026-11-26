@@ -167,6 +167,12 @@ export type AgentEvent =
    *  （deriveTailPaging），而重拉（rewind/setLeaf 副作用）必须**重建**（否则
    *  回放出来的「中断占位卡」永远修不回来）。 */
   | { type: "historyLoaded"; sessionId: string; history: HistorySnapshot; paging?: boolean }
+  /** 会话历史的**装载失败**（resumeSession 的 resume/history 两路任一失败——
+   *  P0-1「点不进去永久卡死」的修复）：置进该会话 state 的 historyLoadError，
+   *  switching 层让位给错误态 + 重试（重试 = 重新 resumeSession 全量）。成功
+   *  装载（historyLoaded）与骨架化都清位。这是**客户端本地事实**（请求失败），
+   *  不经 wire——由 WSAgent.resumeSession 直接 emit。 */
+  | { type: "historyLoadError"; sessionId: string; message: string }
   /** 后台任务起了/结束（时间线**不**再建任务卡——面板缓存与通告链路消费事件）。
    *  sessionId = 任务归属会话；无归属（空）的任务只进顶栏全局面板。 */
   | { type: "jobStarted"; sessionId: string; job: JobInfo }

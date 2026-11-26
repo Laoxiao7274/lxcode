@@ -21,14 +21,28 @@ export const MAX_CONSECUTIVE_ERRORS = 3;
  *  spawn 成功即清零会让计数 0↔1 震荡、熔断永不触发。 */
 export const FFMPEG_MIN_ALIVE_MS = 2000;
 
-/** ACCESS_LOST 失败后的短退避（毫秒）。实际重试节奏 = max(轮询间隔, 此值)
- *  ——重试仍经 reconcile 的轮询环单一 spawn 入口（绕过它会有并发 reconcile
- *  双 spawn 竞态），此值只作为下限门。
- *  500ms（2026-11-24 调优，实测下限不动）：重启 spawn 全链实测 ~0.2s（编码器
- *  探测结果模块级缓存，无逐次 ~1s 重探），500ms 退避让整轮重启落在 ~0.7s，
- *  给 DWM/DXGI 收敛留更从容的窗口（300ms 时重启竞争曾撞出 DuplicateOutput
- *  access denied 竞速失败）。 */
+/** ACCESS_LOST 失败后的退避基数（毫秒）：退避序列 = 500ms → 1s → 2s → 4s →
+ *  上限 8s（accessLostBackoffMs）。0.3.68 重启风暴修：固定 ~5s 周期高频重建
+ *  DDA 会话本身就易诱发瞬态失败（拓扑抖动下的连环 ACCESS_LOST 拖死壳心跳的
+ *  病根之一）——退避序列化把失败间隔逐次拉开，窗口预算内给 DWM/DXGI 更从容
+ *  的收敛时间。历史调优：300ms 时重启竞争曾撞出 DuplicateOutput access
+ *  denied 竞速失败 → 2026-11 提到 500ms（保留为序列基数）。
+ *  重试仍经 reconcile 的轮询环单一 spawn 入口（绕过它会有并发 reconcile
+ *  双 spawn 竞态），此值只作为下限门。 */
 export const ACCESS_LOST_SHORT_BACKOFF_MS = 500;
+
+/** ACCESS_LOST 退避序列上限（毫秒）：封顶——10s 滑动窗预算（≤3 次）内的
+ *  失败间隔从 0.5s 拉到 8s，最坏 ~13.5s 走完预算进兜底，重启风暴不再以
+ *  ~5s 周期烧 CPU/显卡会话。 */
+export const ACCESS_LOST_BACKOFF_MAX_MS = 8_000;
+
+/** 第 attempts 次（从 1 计）ACCESS_LOST 失败后的退避毫秒数：500 → 1s → 2s →
+ *  4s → 8s（封顶）。纯函数（node:test 直测）；screen.ts 的 close 回调消费
+ *  （accessLostRetryAt 门槛 + 上报文案的节奏说明）。 */
+export function accessLostBackoffMs(attempts: number): number {
+  const shift = Math.min(Math.max(attempts - 1, 0), 4);
+  return Math.min(ACCESS_LOST_SHORT_BACKOFF_MS * (1 << shift), ACCESS_LOST_BACKOFF_MAX_MS);
+}
 
 /** ACCESS_LOST 预算时间窗（毫秒）：RustDesk DxgiRecoveryState 的 10s 滑动窗
  *  同值——窗口内 ACCESS_LOST 失败次数超预算 → 转 gdigrab 兜底。 */
@@ -122,6 +136,34 @@ export function accessLostFallbackDue(b: AccessLostBudget): boolean {
  *  DXGI 恢复后 10s 无新失败，窗口过期即清（accessLostOnSuccess 同一条边界）。 */
 export function accessLostBudgetSurvivesParamChange(b: AccessLostBudget, now: number): boolean {
   return !(b.windowStarted !== 0 && now - b.windowStarted >= ACCESS_LOST_WINDOW_MS);
+}
+
+// ---- 兜底态豁免参数变化重启（0.3.68 Bug A）----
+//
+// 兜底 ffmpeg 的进程参数（monitor=-1 全桌面 / fps=30）是**降级语义**，与命令
+// 电平（want 的 monitor/fps）天然不一致——下一轮 1s 轮询 reconcile 的「参数
+// 变化重启」分支按字面比较就把刚起来的兜底杀掉重启主链（ddagrab），而主链
+// 预算已耗尽、kill 又记账 → 死循环，兜底从未供帧。修法：兜底存续期间（
+// runningFallback）跳过参数比较——want 电平未变就不是参数变化；want 或
+// start_epoch 变了才是真实意图（显式重试/换显示器），兜底让位。
+
+/** 本轮是否处于 GDI 兜底（gdigrab 在跑或预算已耗尽待重启）。screen.ts 的
+ *  reconcile 消费；**判定基于 shell 上报语义**（encoder 带 +gdigrab 标记或
+ *  fallbackPending），与 fallback_active 上报同一口径。 */
+export function fallbackCaptureActive(runningFallback: boolean, fallbackPending: boolean): boolean {
+  return runningFallback || fallbackPending;
+}
+
+/** 兜底存续期间的参数变化判定（纯函数，node:test 直测）：兜底在跑且 want
+ *  电平（monitor/quality/fps）与上一轮完全一致 → 不算参数变化（豁免）；
+ *  电平变了 = 用户换显示器/换档位/换帧率 → 真实意图，兜底让位回主路径。
+ *  epoch 由 reconcile 入口的显式重试分支单独处理（清兜底态），不进本判定。 */
+export function fallbackParamChangeExempt(
+  runningFallback: boolean,
+  fallbackPending: boolean,
+  wantUnchanged: boolean,
+): boolean {
+  return fallbackCaptureActive(runningFallback, fallbackPending) && wantUnchanged;
 }
 
 /** 用户显式重试是否全量清预算：是（epoch 变化 / want false→true 边沿）——

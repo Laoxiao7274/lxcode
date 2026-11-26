@@ -761,8 +761,14 @@ fun AssistantThreadScreen(state: AppState, sessionId: String) {
 /**
  * 助手输入卡片：白卡形态与主域 Composer 同源（同一套 ring/圆角/内距），裁掉两块
  * 助手域用不上的能力：
- *  * 斜杠面板 / 排队发送（桌面端 AssistantInput 同样没有——助手页是轻量输入）；
- *  * 发送缓冲区。
+ *  * 斜杠面板；
+ *  * 多条队列编辑（发送缓冲区已接入，2026-12——最小安卓版：单条 queuedText，
+ *    **key(asst.currentId)**：无 key 的 remember 是全局单值，切会话后撤销回填会把
+ *    A 排队的那条注进 B 的输入框（主域同款实锤 bug 的教训）；busy 时「排队发送」
+ *    按钮（发送钮保持停止语义，两个动作不共用控件，对齐主域 Composer.kt）；
+ *    busy true→false 边沿自动 real.assistantSend（LaunchedEffect）；排队条 + 撤销
+ *    （撤销 = 文本回填输入框，对齐桌面端 handleQueueEdit）。**附件不入队**——
+ *    队列是单条纯文本，排队时暂存区挂着附件会提示「附件不随排队消息发送」。
  * 附件（批次 1 补齐）：图片 + 文件两个入口与主域 Composer 同款；文件暂存
  * （real.pendingFiles）与预览（PendingFileCard）复用主域同一套，随 assistant.send
  * 上 wire（files 与 images 同款 base64 形态）。
@@ -775,6 +781,8 @@ private fun AssistantComposer(state: AppState) {
     val asst = real.asst
     val busy = asst.busy
     var text by remember { mutableStateOf("") }
+    // 发送缓冲区（单条）：key(asst.currentId) 见上注。
+    var queuedText by remember(asst.currentId) { mutableStateOf<String?>(null) }
     val context = LocalContext.current
     fun toast(msg: String) = android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
 
@@ -809,6 +817,16 @@ private fun AssistantComposer(state: AppState) {
     val effortId = if (effort in effortOptions) effort else effortOptions.lastOrNull() ?: ""
     val sendEffort = if (effortOptions.isNotEmpty()) effortId else ""
     val effortDim = if (effortOptions.isNotEmpty()) "· ${effortLabel(effortId)}" else null
+    // 自动发送（发送缓冲区）：busy true→false 边界发出排队的那条（对齐主域
+    // Composer.kt 的同款 LaunchedEffect——取消/错误/正常收尾都翻 busy=false，
+    // 排队的消息照发）。挂在 sendEffort 定义之后：闭包捕获当前 effort，发出时带上。
+    LaunchedEffect(busy) {
+        if (!busy && queuedText != null) {
+            val t = queuedText!!
+            queuedText = null
+            if (t.isNotBlank()) real.assistantSend(t, sendEffort)
+        }
+    }
     val approvalLabel = when (asst.approval) {
         "auto" -> "自动"
         "strict" -> "严格"
@@ -960,6 +978,36 @@ private fun AssistantComposer(state: AppState) {
                     StatsCapsule(asst.sessionStats)
                 }
                 androidx.compose.foundation.layout.Spacer(Modifier.width(4.dp))
+                // busy 态的「排队发送」入口（对齐主域 Composer.kt：发送钮在 busy 态
+                // 仍是「停止」——排队走这个独立按钮，两个动作不共用控件）。
+                // 附件不入队：暂存区挂着附件时拦下并说明（附件发送需等空闲直发）。
+                if (busy) {
+                    val canQueue = text.trim().isNotEmpty() && queuedText == null
+                    Text(
+                        text = "排队发送",
+                        style = TextStyle(
+                            fontFamily = Lx.type.Sans,
+                            fontSize = 11.5.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = if (canQueue) Lx.colors.Fg else Lx.colors.FgFaint,
+                        ),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable(
+                                enabled = canQueue,
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                            ) {
+                                if (real.pendingImages.isNotEmpty() || real.pendingFiles.isNotEmpty()) {
+                                    toast("附件不随排队消息发送——请等空闲后直接发送")
+                                    return@clickable
+                                }
+                                queuedText = text.trim()
+                                text = "" // 排队取出即清输入（与直发路径同款）
+                            }
+                            .padding(horizontal = 6.dp, vertical = 4.dp),
+                    )
+                }
                 SendButton(
                     busy = busy,
                     // 只附件没文本也允许发（与桌面端 AssistantInput 同语义——
@@ -974,6 +1022,47 @@ private fun AssistantComposer(state: AppState) {
                             real.assistantSend(text, sendEffort)
                             text = ""
                         }
+                    },
+                )
+            }
+        }
+
+        // ===== 排队条（发送缓冲区）：有排队消息才显示——「已排队，完成后自动
+        // 发送」+ 撤销（文本回填输入框）。单条队列，不做编辑（对齐主域）。
+        queuedText?.let { q ->
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 4.dp)
+                    .clip(ComposerCardShape)
+                    .background(Lx.colors.Surface)
+                    .border(1.dp, Lx.colors.BorderStrong, ComposerCardShape)
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    text = "已排队，完成后自动发送：$q",
+                    style = TextStyle(fontFamily = Lx.type.Sans, fontSize = 11.5.sp),
+                    color = Lx.colors.FgMuted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    text = "撤销",
+                    style = TextStyle(
+                        fontFamily = Lx.type.Sans,
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.Medium,
+                    ),
+                    color = Lx.colors.Fg,
+                    modifier = Modifier.clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                    ) {
+                        queuedText = null
+                        text = q // 撤销 = 取出回填输入框（对齐主域 handleQueueEdit）
                     },
                 )
             }

@@ -180,6 +180,10 @@ export interface UIState {
   stats: SessionStats | null;
   /** 该会话至少完成过一次 history 回放，后续忙碌快照才可保留本地实时块。 */
   historyReady: boolean;
+  /** 历史装载失败的错误文案（P0-1「点不进去永久卡死」的修复；空串 = 无）。
+   *  switching 层（!historyReady && blocks 空）在它存在时让位给错误态 + 重试，
+   *  不再永久挂起装载指示。成功装载（historyLoaded）与骨架化清位。 */
+  historyLoadError: string;
   /** 发送中态（乐观气泡已插、后端 busy 还没到）：submit 后立刻置 true，busy
    *  （生成交接）/ done / error / 发送失败 / 历史重建时收 false。它与 busy 的
    *  分工：sending = 「消息已交出去、还没确认开始生成」，busy = 「生成中」。 */
@@ -215,7 +219,7 @@ export interface UIState {
   lightweight?: boolean;
 }
 
-export const initial: UIState = { blocks: [], streaming: null, historyMore: false, historyFirstSeq: 0, busy: false, pending: null, todos: [], currentId: "", operationError: null, context: null, stats: null, historyReady: false, model: "", sending: false, approval: null, compacting: false, rebuiltGen: 0 };
+export const initial: UIState = { blocks: [], streaming: null, historyMore: false, historyFirstSeq: 0, busy: false, pending: null, todos: [], currentId: "", operationError: null, context: null, stats: null, historyReady: false, historyLoadError: "", model: "", sending: false, approval: null, compacting: false, rebuiltGen: 0 };
 
 /** 逻辑时间线 = 已定型块 + 正在流式的那一块（拼在末尾）。
  *
