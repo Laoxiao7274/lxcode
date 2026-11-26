@@ -1,13 +1,13 @@
 {
-  "version": "0.3.68",
-  "versionCode": 69,
-  "name": "lxcode-0.3.68-android.apk",
-  "size": 12076363,
-  "sha256": "915737ce16b2e222b139c5e923b7b08bfb3fbe18a9bac4579f17b4417b018969",
-  "url": "downloads/lxcode-0.3.68-android.apk",
+  "version": "0.3.69",
+  "versionCode": 70,
+  "name": "lxcode-0.3.69-android.apk",
+  "size": 12076372,
+  "sha256": "ade13f0c5923bf566407f1844885ad708fad2b287d75a8b8c3a35b4b4082c14e",
+  "url": "downloads/lxcode-0.3.69-android.apk",
   "notes": [
-    "助手会话支持重命名与归档，侧键返回修复",
-    "投屏全屏不再有遮挡盲区，切后台回来自动恢复",
-    "修复完成通知过于频繁的问题"
+    "会话打不开不再卡死：装载失败可直接重试",
+    "助手支持发送缓冲区，忙碌时消息排队自动发出",
+    "投屏稳定性修复：兼容模式与自动恢复的可靠性提升"
   ]
 }
