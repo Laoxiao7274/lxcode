@@ -128,7 +128,7 @@ func (m *Manager) Shutdown()
 `<sessions>/jobs/<job-id>.log`（job 结束后仍可读——DSH 的纯内存缓冲做不到这点，
 用户关掉 dev 之后想回头看它最后报了什么就没了）。
 
-## 3. 工具面（3 个新工具 + bash 加参数）
+## 3. 工具面（3 个新工具 + bash 加参数 + wait）
 
 ```jsonc
 // bash 新增参数
@@ -151,6 +151,24 @@ strict 只读模式下仍可用——否则只读模式连停掉自己起的任�
 
 **确认门在启动那一刻同步走完**（与前台 bash 完全一致：批准了才返回 job id）。
 跑起来之后不再弹确认——后台任务没有「当前轮」可挂，这是 `auto` 档的语义边界。
+
+**wait 工具（等待原语的第二个口，2026-12）**：
+
+```jsonc
+// 新增 wait：阻塞等任务结束/满足条件，**只回状态不回输出**
+{"job_id": "...", "timeout_sec": 30, "condition": "exit"}
+//   condition 与 job_output 的 wait_condition 同款（同一个 parseWaitCondition）：
+//   exit（默认）/ exit_ok / output / idle / {"pattern": "…"}，OR 组合谁先到返回谁
+//   超时/取消返回当前快照（任务还在跑就如实报 running）；终态快照立即返回零等待
+//   返回形如「任务 <id>（label）状态: completed（结束方: self，退出码 0）」+ hit 行，不带输出
+```
+
+与 `job_output(wait=true)` 的核心差异：**不带输出**。等待期间任务可能又写了输出，
+job_output 会把增量补上一起回，wait 只回一行状态——「只要知道它结束/成功了，
+下一步再决定要不要看输出」的场景用它省 token；要输出再调 job_output（任务结束后
+仍可读）。两者复用同一份 `waitJob` 原语（订阅 + 快照判定 + 五谓词），等待语义
+不会漂移。低危 Mutates=false；助手域默认白名单**不含**它（助手域不派 run_task，
+没有 wait 场景）。
 
 ## 4. 协议（加法变更，Version 仍为 2）
 

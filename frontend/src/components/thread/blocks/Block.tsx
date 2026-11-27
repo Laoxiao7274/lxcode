@@ -4,6 +4,7 @@
 // 配合稳定的 onConfirm（useAgent/App 的 useCallback）生效。
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ThreadBlock } from "../../../shared/store";
+import type { AgentSource } from "../../../shared/types";
 import { canRewind } from "../../../shared/blocks";
 import { turnStatParts } from "../../../shared/turn-stats";
 import { Button } from "../../form";
@@ -27,8 +28,12 @@ import { UserAttachmentSection } from "./AttachmentCard";
 const NO_SEQ_HINT = "这条消息来自旧版后端（没有 seq），无法定位要回到的位置";
 
 export const Block = memo(
-  function Block({ block, onConfirm, onAnswer, replayed, onEdit, onRewind, onOpenChild, readOnly, allowCopy, busy, "data-uid": dataUid }: {
+  function Block({ block, onConfirm, onAnswer, replayed, onEdit, onRewind, onOpenChild, readOnly, allowCopy, busy, source, sessionId, "data-uid": dataUid }: {
     block: ThreadBlock;
+    /** 数据源（产物卡的 file.reveal 动作载体；缺席 = demo）。 */
+    source?: AgentSource;
+    /** 产物卡所属会话 id（file.reveal 按它取工作目录做白名单）。 */
+    sessionId?: string;
     onConfirm: (id: string, allow: boolean) => void;
     /** ask_user 提问的回答（ask 变体的确认卡用）：文本答案 + 请求 id。
      *  二元确认走 onConfirm；缺省（只读视图没接）时提问卡收不起回答。 */
@@ -161,7 +166,7 @@ export const Block = memo(
       return <TaskBlock block={block} data-uid={dataUid} />;
 
     case "files":
-      return <FilesCard files={block.files} replayed={replayed} data-uid={dataUid} />;
+      return <FilesCard files={block.files} replayed={replayed} source={source} sessionId={sessionId} data-uid={dataUid} />;
 
     case "dispatch":
       return <DispatchCard block={block} onConfirm={onConfirm} onAnswer={onAnswer} onOpenChild={onOpenChild} replayed={replayed} data-uid={dataUid} />;

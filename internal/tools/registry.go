@@ -80,6 +80,9 @@ type Registry struct {
 	// projectCreate 是注入的项目创建实现（project_create 工具——server 装配时
 	// 接线；与 projectList 同一批注入点、同一把锁）。
 	projectCreate ProjectCreateFn
+	// schedule 是注入的定时任务实现（schedule 工具——server 装配时接线；
+	// nil = 未装配）。与 projectCreate 同一批注入点、同一把锁。
+	schedule ScheduleFn
 
 	// jobsMgr 是注入的后台任务管理器（server 装配时接线；nil = 未装配）。
 	// jobCursors 是 job_output 的读游标，键是「会话 id + 任务 id」——游标是
@@ -158,6 +161,9 @@ func New() *Registry {
 	r.register(jobOutputDef(r))
 	r.register(jobListDef(r))
 	r.register(jobKillDef(r))
+	// wait（低危只读）：阻塞等任务结束/满足条件，只回状态不回输出——与
+	// job_output 同族（复用同一份 waitJob 原语与谓词解析），紧挨三件套。
+	r.register(waitDef(r))
 	r.register(sessionSearchDef(r))
 	// project_list（助手项目全景，2026-12）：读取类同族（一条 SELECT，只读）。
 	// 排在 session_search 之后——都是「查状态数据」的读取面。
@@ -205,6 +211,9 @@ func New() *Registry {
 	// 合并进程入口（第二个 producer）：起一个后台合并任务，任务体是内置合并 Agent
 	// 的独立子会话。与 agent_dispatch 同为调度类，排在最后。
 	r.register(mergeRequestDef(r))
+	// schedule（B2 定时/提醒）：到点唤醒会话的通告链消费它——调度类，
+	// 排在 run_task/merge_request 同族位置。
+	r.register(scheduleDef(r))
 	// 工作区三件套（用户无感链路的收尾）：status 查询（低危只读）、sync 提交推送
 	// 与 rollback 回滚（中危走确认门）、publish 产物发布（走确认门）。
 	// 排在 merge_request 之后——同一族能力。

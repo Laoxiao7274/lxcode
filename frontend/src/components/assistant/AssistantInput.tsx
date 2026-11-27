@@ -33,6 +33,7 @@ import { StatsPills } from "../stats-pills";
 import { AttachmentThumb, FolderFileCards, SendQueueBar } from "../composer";
 import { TodoList } from "../../aicss/TodoList";
 import { routeSubmit } from "../../shared/send-queue";
+import { SlashPalette, type SlashCommand } from "../composer/SlashPalette";
 import type { TodoItem } from "../../shared/types";
 import {
   addPendingFiles,
@@ -77,6 +78,12 @@ export function AssistantInput({
   onQueueDelete,
   onQueueSend,
   initialText = "",
+  commands = [],
+  modelSignal = 0,
+  effortSignal = 0,
+  approvalSignal = 0,
+  helpNotice = "",
+  onHelpClose,
 }: {
   busy: boolean;
   /** 发送中态（乐观气泡已插、busy 还没到）：与主域 Composer 同语义——
@@ -124,6 +131,19 @@ export function AssistantInput({
   onQueueDelete?: (id: string) => void;
   /** 队列条目「直接发送」：空闲立即发，忙时置顶。 */
   onQueueSend?: (id: string) => void;
+  /** 斜杠命令集（A2 助手域面板）：非空时输入以 / 开头弹出命令面板
+   *  （/compact /model /effort /approval /help——AssistantPage 注入）。
+   *  缺席 = 无面板（旧调用方零改动）。 */
+  commands?: SlashCommand[];
+  /** 选择器打开信号（A2 斜杠命令 /model /effort /approval）：数值变化（>0）
+   *  即打开对应 picker（与主域 Composer 同一通路）。 */
+  modelSignal?: number;
+  effortSignal?: number;
+  approvalSignal?: number;
+  /** /help 清单（AssistantPage 持有，非空时在输入区上方显示一次性提示条）。 */
+  helpNotice?: string;
+  /** 清单条的关闭（AssistantPage 置空帮助文案）。 */
+  onHelpClose?: () => void;
   /** 挂载时的初始文本（队列「编辑」回填——AssistantPage 经 key 重挂装进来；
    *  只在 useState 初始化器消费一次，运行中变化不生效）。 */
   initialText?: string;
@@ -156,6 +176,15 @@ export function AssistantInput({
     hasAttachments: hasPendingAtts(images, files), compacting,
   });
   const canSend = route(text.trim()) !== "none";
+
+  // 斜杠面板（A2 助手域）：输入以 / 开头（单行）时开——与主域 Composer 同语义。
+  const slashOpen = !locked && commands.length > 0 && text.startsWith("/") && !text.includes("\n");
+  const slashQuery = slashOpen ? text.replace(/^\/+/, "") : "";
+  const pickSlash = (c: SlashCommand) => {
+    setText("");
+    c.run();
+    requestAnimationFrame(() => taRef.current?.focus());
+  };
 
   // 压缩中态（compacting）由上层持有（useCompaction——超时尾巴/重入闸在钩子里，
   // 这里只透传；与主域 Composer 的 onCompact/compacting 同一形状）。
@@ -193,6 +222,7 @@ export function AssistantInput({
 
   // Enter 发送 / Shift+Enter 换行（与 Composer 的 onKey 同语义；合成中不拦截）
   const onKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (slashOpen) return; // 面板接管键盘（palette 在 window capture 层处理）
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       submit();
@@ -388,6 +418,15 @@ export function AssistantInput({
       onDragLeave={onDragLeave}
       onDrop={onDrop}
     >
+      {/* /help 清单条（A2）：一次性提示，复用 op-notice 形态。 */}
+      {helpNotice && (
+        <div className="op-notice slash-help" role="status">
+          <span className="op-notice-text">
+            {helpNotice.split("\n").map((line, i) => (<span key={i} className="slash-help-line">{line}</span>))}
+          </span>
+          <button type="button" className="op-notice-close" onClick={() => onHelpClose?.()}>关闭</button>
+        </div>
+      )}
       {/* busy/sending 状态行：浮在输入卡上方（与主域 Composer 同一拍——
           busy 到达后文案无缝从「发送中…」切到「生成中」） */}
       {(busy || sending) && (
@@ -507,6 +546,14 @@ export function AssistantInput({
               />
             </span>
           )}
+          {slashOpen && (
+            <SlashPalette
+              query={slashQuery}
+              commands={commands}
+              onPick={pickSlash}
+              onClose={() => setText("")}
+            />
+          )}
           <textarea
             ref={taRef}
             className="piInput"
@@ -526,9 +573,10 @@ export function AssistantInput({
             <PermPicker
               approval={approval ?? undefined}
               onPick={onPickApproval ? (mode) => onPickApproval(mode) : undefined}
+              openSignal={approvalSignal}
             />
             <span className="pi-model-slot">
-              <ModelPicker model={model} onPickModel={onPickModel} chipTitle={busy ? "正在运行，切换将在下一轮生效" : undefined} />
+              <ModelPicker model={model} onPickModel={onPickModel} chipTitle={busy ? "正在运行，切换将在下一轮生效" : undefined} openSignal={modelSignal || effortSignal} initialPanel={effortSignal > modelSignal ? "effort" : "model"} />
             </span>
           </span>
           <ContextIndicator

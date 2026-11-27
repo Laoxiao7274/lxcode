@@ -202,7 +202,7 @@ rem      exited pid is a harmless no-op. Stash retries with RETRY_SEC gaps:
 rem      a relaunch during the grace window locks app.asar; single-shot
 rem      stash used to roll back silently with no user-visible error. ----
 "%PING%" -n %GRACE_SEC% 127.0.0.1 >nul
-if not "%PIDS%"=="" for %%P in (%PIDS%) do "%TASKKILL%" /F /PID %%P >nul 2>&1
+if not "%PIDS%"=="" for %%P in (%PIDS%) do "%TASKKILL%" /F /T /PID %%P >nul 2>&1
 set "STASH_TRY=0"
 :tryStash
 set /a STASH_TRY+=1

@@ -298,6 +298,13 @@ func (s *Server) sendAttachments(sessionID string, sess *agent.Session, p protoc
 	// todo-first 档位每次现读 behavior.json（文件只有几十字节）：设置里切换或
 	// 手改后**下一轮**立即生效——不需要等热加载巡检，也不需要重开会话。
 	opts = append(opts, agent.WithTodoPrompt(s.behaviorConfig().TodoPrompt))
+	// AI 自动命名（B1）：同 todo-first 的现读口径——behavior.json 的 autoTitle
+	// （缺省开，显式关才传 false）每轮读一次，设置切换对下一轮立即生效。
+	if !s.behaviorConfig().AutoTitleEnabled() {
+		opts = append(opts, agent.WithAutoTitle(false))
+	} else {
+		opts = append(opts, agent.WithAutoTitle(true))
+	}
 	if len(refs) > 0 {
 		opts = append(opts, agent.WithImages(refs))
 	}

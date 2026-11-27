@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -63,6 +64,165 @@ const TimeoutDetail = "timeout"
 // ShutdownDetail 是后端退出时统一写进 Detail 的说明。
 const ShutdownDetail = "后端重启"
 
+// jobsPidLineHeader 是任务日志首行的前缀（Start 时写占位、RecordPid 补数字）。
+// 孤儿清扫按 `pid=<n>` 行定位残留进程；`@<unix-ns>` 后缀（RecordPid 补写时的
+// 时刻）是 pid 复用校验的锚点——旧格式（无后缀）的存量日志回退为「存在就杀」。
+const jobsPidLineHeader = "pid="
+
+// pidTimeTolerance 是孤儿清扫 pid 复用校验的容差：真实残留进程的创建时刻与
+// RecordPid 写 pid 行的时刻相差不过调度延迟（毫秒级），5s 容差已远超时钟
+// 精度与文件系统时间戳抖动；被复用撞上的无关进程创建时刻必然晚于记录时刻
+//（差可以任意大），不会落进这个窗口。
+const pidTimeTolerance = 5 * time.Second
+
+// RecordPid 把进程 pid 与**写入时刻**写进落盘日志首行（B3：孤儿清扫的定位
+// 依据；@ 时刻是 pid 复用校验的锚点——我们的残留进程诞生于记录那一刻，
+// 被复用的无关进程诞生于记录之后）。
+//
+// 谁起进程谁登记（Manager 不碰 os/exec）：bash 后台路径在 cmd.Start 成功后
+// 调用。写失败只记日志——清扫退化为状态行判定，任务照常运行。
+// 挂在 Job 接口上：tools 只持 Job 句柄（Start 的返回值），拿不到 *job 具体类。
+func (j *job) RecordPid(pid int) {
+	if pid <= 0 {
+		return
+	}
+	j.mu.Lock()
+	id, f := j.id, j.file
+	j.mu.Unlock()
+	if f == nil {
+		return
+	}
+	line := fmt.Sprintf("%s%d @ %d\n", jobsPidLineHeader, pid, time.Now().UnixNano())
+	if _, err := f.WriteAt([]byte(line), 0); err != nil {
+		log.Printf("后台任务 %s 写 pid 行失败（孤儿清扫将按状态行判定）: %v", id, err)
+	}
+}
+
+// OrphanReport 是一份孤儿日志的判定结果（ReapOrphans 返回给调用方记日志/汇报）。
+type OrphanReport struct {
+	ID     string // 任务 id（日志文件名去 .log）
+	Pid    int    // 日志里记的 pid（0 = 没读到）
+	Killed bool   // 是否实际执行了树杀（进程存活时为真）
+}
+
+// ReapOrphans 启动时的孤儿清扫（B3）：扫 <dir>/jobs/*.log，凡**没有终态
+// 标记**（日志尾部没有 EndedBy 状态行——后端优雅退出会先 Shutdown 全部任务，
+// 只剩硬杀/断电留下的）的任务视为孤儿：读 pid 行，进程存活则树杀 + 标记
+// EndedBackend。
+//
+// 为什么不直接信 pid：pid 可能已被复用（上一个进程死了、别的进程占了这个
+// 号）——杀错进程是真实风险。两道防线：① 平台探活（死了的不杀）；② **创建
+// 时间落在 RecordPid 记录时刻 ± 容差窗口**（processStartedWithin）——我们的
+// 残留进程诞生于记录那一刻，被复用撞上的无关进程诞生于记录之后。锚点不用日
+// 志 mtime：任务日志持续有输出，mtime 是最后输出时刻，与进程创建时刻可以差
+// 任意远（本机实证：跑 2s 的任务差 2s——跑 30 分钟的任务就差 30 分钟，按
+// mtime 判会把这个真孤儿永远判成「复用」）。存量日志（无 @ 时刻）回退旧行为
+//（存在就杀，与加固前一致）；校验不匹配一律不杀只标记（误杀一个无关的关键
+// 进程比漏杀一个孤儿严重得多）。探活/校验失败（打不开进程、/proc 不可用）按
+// 「不匹配」处理——与 processAlive 同一保守口径。无 dir（纯内存）时 no-op。
+func (m *Manager) ReapOrphans() []OrphanReport {
+	if m.dir == "" {
+		return nil
+	}
+	dir := filepath.Join(m.dir, "jobs")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil // 目录不存在 = 从没跑过任务，无事可扫
+	}
+	var out []OrphanReport
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".log") {
+			continue
+		}
+		id := strings.TrimSuffix(e.Name(), ".log")
+		path := filepath.Join(dir, e.Name())
+		raw, err := os.ReadFile(path)
+		if err != nil || len(raw) == 0 {
+			continue
+		}
+		if logHasTerminalMark(raw) {
+			continue // 优雅退出的任务，不是孤儿
+		}
+		pid, recordedAt, hasTS := parsePidLine(raw)
+		rep := OrphanReport{ID: id, Pid: pid}
+		if pid > 0 && processAlive(pid) {
+			// pid 复用校验：进程创建时间必须落在「RecordPid 记录时刻 ± 容差」
+			// 窗口内——我们的残留进程诞生于记录那一刻；被复用撞上的无关进程
+			// 诞生于记录之后（差可以任意大）。没有时刻锚点的存量日志回退旧行
+			// 为（存在就杀，与加固前一致——不引入误杀增量，只是少了这道防线）；
+			// 校验不匹配一律不杀只标记（误杀无关进程比漏杀一个孤儿严重得多）。
+			if hasTS && !processStartedWithin(pid, recordedAt) {
+				log.Printf("孤儿清扫：任务 %s 的 pid=%d 存活但创建时间偏离记录时刻（疑似 pid 复用），不杀只标记", id, pid)
+			} else if err := killPidTree(pid); err != nil {
+				log.Printf("孤儿清扫：任务 %s 的残留进程 %d 树杀失败: %v", id, pid, err)
+			} else {
+				rep.Killed = true
+				log.Printf("孤儿清扫：杀掉上一轮残留的任务 %s（pid=%d）", id, pid)
+			}
+		}
+		// 终态标记补进日志（下次启动不再扫它）+ EndedBackend 落在报告里
+		//（没有内存任务对象，Settle 无处可挂——用日志尾行的约定承载）。
+		_ = appendTerminalMark(path, id)
+		out = append(out, rep)
+	}
+	return out
+}
+
+// logHasTerminalMark 判定日志是否带终态标记（Settle 的收尾行——见
+// appendTerminalMark 与 jobs 侧 producer 的写入口）。判定看尾部 512 字节。
+func logHasTerminalMark(raw []byte) bool {
+	tail := raw
+	if len(tail) > 512 {
+		tail = tail[len(tail)-512:]
+	}
+	return strings.Contains(string(tail), terminalMarkPrefix)
+}
+
+// terminalMarkPrefix 是 Settle 收尾行前缀（Settle 时若日志在盘上则补写）。
+const terminalMarkPrefix = "[job settled]"
+
+// appendTerminalMark 把终态标记追加进日志文件（孤儿清扫后调用：标记补齐，
+// 下次启动不再重复处理）。
+func appendTerminalMark(path, id string) error {
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = fmt.Fprintf(f, "%s %s\n", terminalMarkPrefix, id)
+	return err
+}
+
+// parsePidLine 从日志首行读 pid=<n>（B3 的定位依据），带 `@ <unix-ns>` 时刻
+// 后缀时一并解析（pid 复用校验的锚点）。读不到 pid 回 0；有 pid 无时刻回
+// (n, false)——清扫对它回退旧行为（存在就杀，与加固前一致）。
+func parsePidLine(raw []byte) (int, time.Time, bool) {
+	line := raw
+	if i := strings.IndexByte(string(raw), '\n'); i >= 0 {
+		line = raw[:i]
+	}
+	s := strings.TrimSpace(string(line))
+	if !strings.HasPrefix(s, jobsPidLineHeader) {
+		return 0, time.Time{}, false
+	}
+	s = strings.TrimPrefix(s, jobsPidLineHeader)
+	// @ 时刻后缀（pid=<n> @ <unix-ns>）
+	var ts time.Time
+	hasTS := false
+	if i := strings.IndexByte(s, '@'); i >= 0 {
+		if n, err := strconv.ParseInt(strings.TrimSpace(s[i+1:]), 10, 64); err == nil && n > 0 {
+			ts = time.Unix(0, n)
+			hasTS = true
+		}
+		s = strings.TrimSpace(s[:i])
+	}
+	pid, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, time.Time{}, false
+	}
+	return pid, ts, hasTS
+}
+
 // OwnerOf 返回任务的时间线归属：Spec 显式给了就用它，否则回落执行会话本身
 // （顶层会话起的任务，owner 就是它自己）。唯一判定点——事件路由、唤醒投递、
 // job.list 的按会话过滤都走它，免得三处各写一遍回落逻辑而漂移。
@@ -75,6 +235,16 @@ func OwnerOf(spec Spec) string {
 
 // DefaultOutputLimit 是内存尾缓冲的默认上限（64KB）。
 const DefaultOutputLimit = 64 * 1024
+
+// DefaultIdleJobTTL 是后台任务寿命护栏（B4）的默认阈值：running 任务**无输出**
+// 超过它 → 自动 Kill（EndedBy=backend）。防死循环轮询无限占资源——dev server
+// 会持续写日志（不触发）；一个「每 30 分钟 sleep 轮询一次、无输出」的任务 24h
+// 后被收走，资源不被无限占用。可经 config 覆盖（server 装配时 SetIdleTTL）。
+const DefaultIdleJobTTL = 24 * time.Hour
+
+// idleCheckInterval 是寿命护栏的检查周期（挂 Manager 内：Start 时起一个
+// goroutine，Shutdown 时退出）。每小时一次足够——阈值是小时级。
+const idleCheckInterval = time.Hour
 
 // Spec 是一次后台任务的启动参数。
 type Spec struct {
@@ -89,8 +259,13 @@ type Spec struct {
 	// Workspace 是任务起时所属的**项目 id**（producer 从执行会话的 ctx 取
 	// tools.Workspace，Start 时定稿、之后不变）。面板据此按项目分组；空 =
 	// 未分组会话或未注入（两者都按「没有归属项目」处理）。
-	Workspace      string
-	OutputLimit    int // 内存保留字节数（0 = 默认 64KB）
+	Workspace   string
+	OutputLimit int // 内存保留字节数（0 = 默认 64KB）
+	// DueAt 是 timer 任务的到点时刻（Kind="timer" 专用；其余 kind 零值）。
+	// 到点 producer settle，Note 作为提醒正文写进任务输出。
+	DueAt time.Time
+	// Note 是 timer 任务的提醒正文（到点写进输出、进通告措辞；其余 kind 空）。
+	Note string
 }
 
 // Snapshot 是一个任务的对外快照（工具与协议共用）。
@@ -109,6 +284,9 @@ type Snapshot struct {
 	Workspace  string
 	StartedAt  time.Time
 	FinishedAt time.Time // 零值 = 未结束
+	// DueAt 是 timer 任务的到点时刻（Kind="timer"；其余 kind 零值——前端
+	// 据此显示倒计时，非 timer 不显示）。快照携带 = job.spec 的只读投影。
+	DueAt time.Time
 	// LastOutputAt 是最近一次写输出的时刻（零值 = 从未写过）。job_output 的
 	// idle 谓词（wait_condition）按它判静默——从任务起点开始静默的「从未写过」
 	// 用 StartedAt 兜底，不在这里编一个假时间。
@@ -127,7 +305,13 @@ type Job interface {
 	// Settle 结束任务并记录原因。重复调用是 no-op。
 	Settle(status Status, by EndedBy, detail string)
 	Snapshot() Snapshot
+	// RecordPid 把进程 pid 写进落盘日志首行（B3 孤儿清扫的定位依据）。
+	// 谁起进程谁登记——Manager 不碰 os/exec，producer 在 Start 成功后调用。
+	RecordPid(pid int)
 }
+
+// PidRegistrar 已取消：RecordPid 的语义并入 Job 接口（B3 起所有 producer 都
+// 登记 pid——孤儿清扫是任务系统的普遍承诺，不是 bash 的私有知识）。
 
 // CancelRegistrar 是可选的扩展面：producer 用它登记取消函数（Kill 时调用）。
 //
@@ -235,6 +419,11 @@ func (j *job) Settle(status Status, by EndedBy, detail string) {
 	j.file = nil
 	j.mu.Unlock()
 	if f != nil {
+		// 终态标记（B3）：孤儿清扫按它区分「优雅退出已收尾」与「硬杀残留」。
+		// 写失败不致命（清扫会重复处理该日志——树杀对已死进程是无害 no-op）。
+		if _, err := fmt.Fprintf(f, "\n%s %s %s %s\n", terminalMarkPrefix, j.id, status, by); err != nil {
+			log.Printf("后台任务 %s 写终态标记失败: %v", j.id, err)
+		}
 		_ = f.Sync()
 		_ = f.Close()
 	}
@@ -273,6 +462,7 @@ func (j *job) snapshotLocked() Snapshot {
 		SessionID: j.spec.SessionID, OwnerSessionID: OwnerOf(j.spec),
 		Workspace: j.spec.Workspace,
 		StartedAt: j.startedAt, FinishedAt: j.finishedAt, LastOutputAt: j.lastOutputAt,
+		DueAt:      j.spec.DueAt,
 		OutputPath: j.logPath,
 	}
 }
@@ -287,12 +477,83 @@ type Manager struct {
 	nextID uint64
 	seq    uint64
 	closed bool
+
+	// idleTTL 是寿命护栏（B4）阈值：running 任务无输出超过它 → Kill
+	//（EndedBy=backend）。0 = 用 DefaultIdleJobTTL。
+	idleTTL time.Duration
+	// stopIdleWatch 关闭寿命护栏的检查循环（Shutdown 时关）。
+	stopIdleWatch chan struct{}
 }
 
 // NewManager 创建注册表。dir 是会话目录（日志落 <dir>/jobs/<job-id>.log）；
 // 空串 = 不落盘（纯内存模式，单测与未接存储的调用方用）。
 func NewManager(dir string) *Manager {
-	return &Manager{dir: dir, jobs: map[string]*job{}, subs: map[uint64]func(Event){}}
+	m := &Manager{dir: dir, jobs: map[string]*job{}, subs: map[uint64]func(Event){},
+		stopIdleWatch: make(chan struct{})}
+	// 寿命护栏（B4）：挂 Manager 内的检查循环（Shutdown 时退出）。
+	go m.watchIdleJobs()
+	return m
+}
+
+// SetIdleTTL 覆盖寿命护栏阈值（server 装配时从 config 传入；<=0 用默认）。
+func (m *Manager) SetIdleTTL(d time.Duration) {
+	m.mu.Lock()
+	m.idleTTL = d
+	m.mu.Unlock()
+}
+
+// watchIdleJobs 是寿命护栏的检查循环（B4）：周期扫描 running 任务，无输出
+// 超 idleTTL 的 Kill（EndedBy=backend）。LastOutputAt 是现成的时间锚（从未
+// 写过输出用 StartedAt——「起了就没吭声」从起点算）。
+func (m *Manager) watchIdleJobs() {
+	t := time.NewTicker(idleCheckInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-m.stopIdleWatch:
+			return
+		case <-t.C:
+			m.reapIdleJobs()
+		}
+	}
+}
+
+// reapIdleJobs 执行一次寿命护栏扫描（idleCheckInterval 周期与测试直呼共用）。
+func (m *Manager) reapIdleJobs() {
+	m.mu.Lock()
+	ttl := m.idleTTL
+	if ttl <= 0 {
+		ttl = DefaultIdleJobTTL
+	}
+	var expired []*job
+	for _, j := range m.jobs {
+		j.mu.Lock()
+		alive := j.status == StatusRunning
+		j.mu.Unlock()
+		if !alive {
+			continue
+		}
+		snap := j.snapshot()
+		anchor := lastOutputAnchor(snap)
+		if time.Since(anchor) >= ttl {
+			expired = append(expired, j)
+		}
+	}
+	m.mu.Unlock()
+	for _, j := range expired {
+		log.Printf("后台任务 %s 无输出超过 %s，寿命护栏自动停止（EndedBy=backend）", j.id, ttl)
+		m.Kill(j.id, EndedBackend)
+	}
+}
+
+// lastOutputAnchor 是寿命护栏的时间锚：最近输出时刻；从未写过用任务起点。
+// 与 tools 侧 lastOutputAtOf 同一份语义（jobs 层不能反向依赖 tools，这里
+// 复制三行而不是引包）。
+func lastOutputAnchor(snap Snapshot) time.Time {
+	if !snap.LastOutputAt.IsZero() {
+		return snap.LastOutputAt
+	}
+	return snap.StartedAt
 }
 
 // Dir 返回日志根目录（空 = 纯内存）。
@@ -328,6 +589,15 @@ func (m *Manager) Start(spec Spec) (Job, error) {
 		j.mu.Lock()
 		j.logPath, j.file = path, f
 		j.mu.Unlock()
+		// 进程残留治理 B3：pid 行由 producer 经 RecordPid 写（谁起进程谁登记
+		//——Manager 不碰 os/exec；这里不写占位行，落盘内容保持纯净，
+		// TestLogFileContent 等内容断言不背一条空 pid=）。
+	}
+
+	// timer producer（B2）：到点回调（写 Note + settle）。cancel 经句柄的
+	// CancelRegistrar 登记——Kill 时 Stop 掉 AfterFunc。
+	if spec.Kind == TimerKind {
+		j.SetCancel(startTimer(j))
 	}
 
 	m.emit(Event{Kind: EventStarted, Snapshot: j.snapshot()})
@@ -458,6 +728,12 @@ func (m *Manager) Shutdown() {
 		jobs = append(jobs, j)
 	}
 	m.mu.Unlock()
+	// 寿命护栏的检查循环先停（closed 之后 Kill 是 no-op，但循环不该再跑）
+	select {
+	case <-m.stopIdleWatch:
+	default:
+		close(m.stopIdleWatch)
+	}
 	for _, j := range jobs {
 		j.mu.Lock()
 		alive := !j.status.Terminal()

@@ -133,6 +133,9 @@ func (s *Server) emitEvent(sessionID string, ev agent.Event) {
 	case agent.SessionStartedEvent:
 		// 首条消息懒建时刷新列表；这不是服务端的全局焦点变更。
 		s.broadcastSessionChanged(e.ID, "started")
+	case agent.TitleRenamedEvent:
+		// AI 自动命名完成（B1）：标题已落库——广播 renamed 让侧栏刷新。
+		s.broadcastSessionChanged(e.ID, "renamed")
 	}
 }
 

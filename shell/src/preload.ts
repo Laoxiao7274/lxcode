@@ -88,6 +88,19 @@ contextBridge.exposeInMainWorld("__LX__", {
   notify: {
     done: (n: { title: string; body: string; sessionId?: string }) =>
       ipcRenderer.send("notify:done", n),
+    // 失败通知（chat.error 且非取消/非焦点）：与 done 同一条管道（主进程同一
+    // 个 handler 弹 Notification——kind 只影响文案，不影响路径）。
+    error: (n: { title: string; body: string; sessionId?: string }) =>
+      ipcRenderer.send("notify:error", n),
+  },
+  // 工作区文件交给系统编辑器/文件管理器（产物卡动作）：路径白名单在后端
+  // （file.reveal——净化后必须仍在会话工作目录内），这里只执行打开。
+  // invoke 有应答语义（打开失败要回报：文件被删/系统拒绝），与 notify 不同。
+  files: {
+    reveal: (abs: string): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke("files:reveal", abs),
+    open: (abs: string): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke("files:open", abs),
   },
   // 自更新：check/download(含校验+暂存)/apply(热替换+排程冷替换)/restart；
   // 下载进度经 update:progress 事件推送；运行期周期检查发现新版本经

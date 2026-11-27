@@ -401,6 +401,41 @@ func (s *Server) SetStream(stream agent.StreamFn) { s.stream = stream }
 // 空 = 未装配，助手会话保持旧行为——工具路径按后端进程目录解析）。
 func (s *Server) SetAssistantWorkDir(dir string) { s.assistantWorkDir = dir }
 
+// sessionCancelTimeout 是优雅退出时等单个会话收尾的上限（B2）：取消已发出，
+// 前台 bash 的树杀由 cmd.Cancel 在 runTurn 收尾时执行——超时的会话树杀交给
+// cmd.WaitDelay + Job Object 兜底，退出流程不能被单个会话卡死。
+const sessionCancelTimeout = 5 * time.Second
+
+// CancelActiveSessions 取消全部两域活跃会话并等它们真正收尾（进程残留治理 B2）。
+//
+// 为什么要在退出路径做：后台 jobsMgr.Shutdown 会杀后台任务，但**前台 bash**
+//（会话工具循环里跑着的命令）的生命周期跟着轮次 ctx——没人取消该轮的话，
+// 后端进程退出时那些 sh/cmd 子进程就成了孤儿（Windows 上 cmd /c ping 这类
+// 常驻命令实测残留）。逐个 CancelAndWait：命令被树杀（cmd.Cancel →
+// killProcessTree），本轮收尾后才继续退出。
+//
+// 两域并扫（s.sessions + assistantSessions——与 busySessions 同一份遍历纪律，
+// 助手会话里跑着的命令同样会残留）。单会话超时只记日志，退出流程继续。
+func (s *Server) CancelActiveSessions() {
+	s.sessionsMu.RLock()
+	runtimes := make([]*agent.Session, 0, len(s.sessions)+len(s.assistantSessions))
+	for _, sess := range s.sessions {
+		runtimes = append(runtimes, sess)
+	}
+	for _, sess := range s.assistantSessions {
+		runtimes = append(runtimes, sess)
+	}
+	s.sessionsMu.RUnlock()
+	for _, sess := range runtimes {
+		if !sess.Busy() {
+			continue
+		}
+		if err := sess.CancelAndWait(sessionCancelTimeout); err != nil {
+			log.Printf("退出时等待会话收尾超时（取消已发出，子进程由树杀兜底）: %v", err)
+		}
+	}
+}
+
 func (s *Server) CloseSessions() {
 	s.sessionsMu.RLock()
 	runtimes := make([]*agent.Session, 0, len(s.sessions))

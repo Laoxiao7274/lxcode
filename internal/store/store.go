@@ -55,6 +55,16 @@ CREATE TABLE IF NOT EXISTS messages (
   FOREIGN KEY (session_id) REFERENCES sessions(id)
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at DESC, archived);
+CREATE TABLE IF NOT EXISTS timers (
+  job_id          TEXT PRIMARY KEY,
+  session_id      TEXT NOT NULL,
+  owner_session_id TEXT NOT NULL DEFAULT '',
+  workspace       TEXT NOT NULL DEFAULT '',
+  label           TEXT NOT NULL DEFAULT '',
+  note            TEXT NOT NULL,
+  due_at          TEXT NOT NULL,
+  done            INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS projects (
   id         TEXT PRIMARY KEY,
   name       TEXT NOT NULL,

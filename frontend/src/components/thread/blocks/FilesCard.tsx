@@ -10,11 +10,13 @@
  *  展开状态是组件内 useState：每张卡独立，不做跨会话记忆；同一轮内
  *  多次渲染（回放）都回到同一默认态（> 阈值收起）。
  *  高度过渡走 motionAllowed 门控（reduced-motion 直接切换无动画）。 */
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { FileChange } from "../../../shared/types";
 import { gsap } from "gsap";
 import { playEnter } from "../../../shared/anim";
 import { motionAllowed, staggerIn } from "../../../shared/motion";
+import type { AgentSource } from "../../../shared/types";
+import { getFilesBridge } from "../../../agent/host";
 
 /** 超过这个数默认收起列表（只显示头部 + 文件名摘要 + 箭头）。 */
 export const FILES_COLLAPSE_THRESHOLD = 5;
@@ -25,7 +27,35 @@ export function filesDefaultExpanded(count: number): boolean {
   return count <= FILES_COLLAPSE_THRESHOLD;
 }
 
-export function FilesCard({ files, replayed, "data-uid": dataUid }: { files: FileChange[]; /** 回放帧（换会话）：不播入场/行交错动效。 */ replayed?: boolean; "data-uid"?: number }) {
+/** 文件行动作的白名单回执缓存（file.reveal 的结果——同一文件重复点不重复请求）。
+ *  组件级 Map；卸载即弃（路径改了缓存就错，会话级缓存不值得）。 */
+const revealCache = new Map<string, string>();
+
+/** 产物卡文件的「在编辑器打开 / 显示在文件夹」（A4，file.reveal）：
+ *  后端路径白名单（净化后在会话工作目录内）→ 绝对路径 → 壳执行打开。
+ *  无壳桥（浏览器/远程访问）或源不支持时按钮不渲染——判定放组件外共用。 */
+export function canRevealFiles(source: AgentSource | undefined): boolean {
+  return Boolean(source?.revealFile) && getFilesBridge() !== null;
+}
+
+/** 揭示流程（导出供测试直测）：file.reveal（缓存）→ 壳执行；无桥回 null。 */
+export async function revealFile(source: AgentSource, sessionId: string, path: string, mode: "open" | "reveal"): Promise<string | null> {
+  const bridge = getFilesBridge();
+  if (!bridge || !source.revealFile) return null;
+  const cacheKey = `${sessionId}:${path}`;
+  let abs = revealCache.get(cacheKey);
+  if (!abs) {
+    abs = await source.revealFile(sessionId, path);
+    revealCache.set(cacheKey, abs);
+  }
+  const r = mode === "open" ? await bridge.open(abs) : await bridge.reveal(abs);
+  if (!r.ok) throw new Error(r.error || "打开失败");
+  return abs;
+}
+
+export function FilesCard({ files, replayed, source, sessionId, "data-uid": dataUid }: { files: FileChange[]; /** 回放帧（换会话）：不播入场/行交错动效。 */ replayed?: boolean; /** 数据源（file.reveal 的载体）；缺席或无壳桥时行动作不渲染。 */ source?: AgentSource; /** 产物卡所属会话（file.reveal 按它取工作目录做白名单）。 */ sessionId?: string; "data-uid"?: number }) {
+  const [revealError, setRevealError] = useState("");
+  const revealTimerRef = useRef<number | null>(null);
   const [open, setOpen] = useState<string | null>(null);
   // > 阈值默认收起（回放/重渲染回到同一默认态）；≤ 阈值无折叠概念，恒展开。
   const [expanded, setExpanded] = useState(() => filesDefaultExpanded(files.length));
@@ -74,6 +104,17 @@ export function FilesCard({ files, replayed, "data-uid": dataUid }: { files: Fil
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // 产物卡是否有「打开」动作：源支持 file.reveal 且有壳桥（无桥 = 远程/浏览器，
+  // 本机文件不在，动作不可见）。canRevealFiles 在渲染期判定——桥在挂载期不会变。
+  const revealable = canRevealFiles(source) && Boolean(sessionId);
+  const handleReveal = useCallback((path: string, mode: "open" | "reveal") => {
+    if (!source || !sessionId) return;
+    revealFile(source, sessionId, path, mode).catch((e) => {
+      setRevealError(`打开失败: ${e instanceof Error ? e.message : String(e)}`);
+      if (revealTimerRef.current) window.clearTimeout(revealTimerRef.current);
+      revealTimerRef.current = window.setTimeout(() => setRevealError(""), 4000);
+    });
+  }, [source, sessionId]);
   const added = files.reduce((n, f) => n + f.added, 0);
   const deleted = files.reduce((n, f) => n + f.deleted, 0);
 
@@ -94,7 +135,7 @@ export function FilesCard({ files, replayed, "data-uid": dataUid }: { files: Fil
         <>
           <div className="files-list" ref={listRef}>
             {files.map((f) => (
-              <FilesRow key={f.path} file={f} open={open === f.path} onToggle={() => setOpen(open === f.path ? null : f.path)} />
+              <FilesRow key={f.path} file={f} open={open === f.path} onToggle={() => setOpen(open === f.path ? null : f.path)} onReveal={revealable ? handleReveal : undefined} />
             ))}
           </div>
           <button type="button" className="files-toggle" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>
@@ -106,16 +147,17 @@ export function FilesCard({ files, replayed, "data-uid": dataUid }: { files: Fil
         </>
       ) : (
         files.map((f) => (
-          <FilesRow key={f.path} file={f} open={open === f.path} onToggle={() => setOpen(open === f.path ? null : f.path)} />
+          <FilesRow key={f.path} file={f} open={open === f.path} onToggle={() => setOpen(open === f.path ? null : f.path)} onReveal={revealable ? handleReveal : undefined} />
         ))
       )}
+      {revealError && <div className="files-reveal-error" role="status">{revealError}</div>}
     </div>
   );
 }
 
 /** 单文件行 + 展开动画（gsap 高度补间：收起保持 height:0，展开收尾
  *  clearProps 让内容自然伸展）。 */
-function FilesRow({ file, open, onToggle }: { file: FileChange; open: boolean; onToggle: () => void }) {
+function FilesRow({ file, open, onToggle, onReveal }: { file: FileChange; open: boolean; onToggle: () => void; /** 非空 = 显示「在编辑器打开/显示在文件夹」动作（file.reveal 能力在场）。 */ onReveal?: (path: string, mode: "open" | "reveal") => void }) {
   const bodyRef = useRef<HTMLDivElement>(null);
   const firstRun = useRef(true);
 
@@ -153,6 +195,36 @@ function FilesRow({ file, open, onToggle }: { file: FileChange; open: boolean; o
           <span className="stat-badge stat-add">+{file.added}</span>
         </span>
       </button>
+      {onReveal && (
+        <span className="files-actions" role="group" aria-label={`打开 ${file.path}`}>
+          <button
+            type="button"
+            className="files-act"
+            title="在系统编辑器中打开"
+            aria-label={`在编辑器打开 ${file.path}`}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => { e.stopPropagation(); onReveal(file.path, "open"); }}
+          >
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+              <path d="M15 3h6v6" />
+              <path d="M10 14 21 3" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            className="files-act"
+            title="显示在文件夹"
+            aria-label={`在文件夹中显示 ${file.path}`}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => { e.stopPropagation(); onReveal(file.path, "reveal"); }}
+          >
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+            </svg>
+          </button>
+        </span>
+      )}
       <div className="files-diff-wrap" ref={bodyRef}>
         <div className="diff-body">
           {file.diff.split("\n").map((l, i) => (

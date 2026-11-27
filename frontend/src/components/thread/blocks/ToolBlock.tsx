@@ -23,6 +23,7 @@ const TOOL_TITLES: Record<string, string> = {
   write_file: "写文件",
   bash: "bash",
   todo: "任务清单",
+  wait: "等待任务",
 };
 
 // 工具参数的**块键控解析缓存**（2026-12 会话切换优化批 4）：arguments 字符串
@@ -97,13 +98,14 @@ export function ToolBlock({ block, replayed, "data-uid": dataUid }: { block: Ext
   const args = useMemo(() => toolArgs(block), [block]);
   const argsSummary = clip(shortArgs(block), 72);
 
-  // 等待原语的等待态（job_output 执行中且 wait=true）：显示「⏳ 等待 <条件>… 已等 Xs」。
+  // 等待原语的等待态（job_output wait=true / wait 工具执行中）：显示「⏳ 等待 <条件>… 已等 Xs」。
   // 条件描述是 wait_condition 的人话映射（纯函数 jobWaitConditionLabel——口径与
   // tests/jobs.test.mjs 共用）；label 从任务缓存（args.job_id 反查）补全，查不到
   // 就只显示条件——两处都查不到不该卡住等待态本身。计时只在等待期间跳（挂载起算）。
   const waitInfo = useMemo(() => {
-    if (block.name !== "job_output") return null;
+    if (block.name !== "job_output" && block.name !== "wait") return null;
     const w = jobWaitArgs(block.arguments);
+    // wait 工具本身就是等待（jobWaitArgs 对它恒回 wait=true——参数里没有 wait 位）
     if (!w.wait) return null;
     return { label: jobWaitConditionLabel(w.condition, w.idleMs), jobId: toolArgs(block).job_id ?? "" };
     // eslint-disable-next-line react-hooks/exhaustive-deps

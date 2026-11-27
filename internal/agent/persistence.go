@@ -126,4 +126,10 @@ type Persistence interface {
 	// （agent_dispatch 的 session 参数）的**归属校验**用它：只允许续跑本会话的
 	// 子会话，堵「跨会话的 id 污染别人的行」。
 	SessionParentID(sessionID string) (string, error)
+	// TitleOf 读会话标题（AI 自动命名的竞争守卫——改名前再读一次，用户已
+	// 手动改名就放弃）。第二个返回值 = 会话存在（不存在时标题无意义）。
+	TitleOf(sessionID string) (title string, ok bool, err error)
+	// Rename 改会话标题（AI 自动命名的落库口——与 session.rename 协议方法
+	// 同一个实现；广播由 agent 的事件驱动，不走这里）。
+	Rename(sessionID, title string) error
 }

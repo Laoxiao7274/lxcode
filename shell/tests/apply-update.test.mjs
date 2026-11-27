@@ -35,7 +35,7 @@ test('等待逻辑：固定宽限窗后无条件强杀 PID（零探测——探�
   assert.ok(!/\bfindstr\b/i.test(code), "不得用 findstr（PATH 依赖 + certutil 输出本地化）");
   assert.ok(!/(^|[\s|&(])find\s/i.test(code), "不得用 find（同上；现场卡死的那条命令）");
   assert.ok(!/powershell/i.test(code), "不得用 powershell 探测（同上 + 闪窗）");
-  assert.ok(bat.includes('"%TASKKILL%" /F /PID %%P'), "宽限窗后无条件强杀名单内 PID（taskkill 绝对路径）");
+  assert.ok(bat.includes('"%TASKKILL%" /F /T /PID %%P'), "宽限窗后无条件强杀名单内 PID（/T 连子树——后端死亡时它拉起的进程一起收）；taskkill 绝对路径");
   assert.ok(bat.includes("PIDS=4242,818"), "PID 列表来自计划（壳 + 后端）");
   assert.ok(bat.includes("PID_TIMEOUT=60"), "宽限窗默认 60s");
   assert.ok(bat.includes('"%PING%" -n %GRACE_SEC% 127.0.0.1 >nul'), "宽限窗用 ping 固定等待（零探测，绝对路径）");
@@ -46,7 +46,7 @@ test('等待逻辑：固定宽限窗后无条件强杀 PID（零探测——探�
   assert.ok(bat.includes('>>"%FAILED%" echo lxcode update failed: install files are locked'), "重试耗尽要写用户可见失败标记");
   assert.ok(bat.includes('set "FAILED=%PENDING%\\apply-update.failed"') && bat.includes('if exist "%FAILED%" del /f /q "%FAILED%"'), "失败标记文件每次 BEGIN 清空");
   // 强杀必须先于替换（行首标签定位子例程区）
-  const killIdx = bat.indexOf('"%TASKKILL%" /F /PID %%P');
+  const killIdx = bat.indexOf('"%TASKKILL%" /F /T /PID %%P');
   const stashLabel = bat.indexOf("\n:stashAll\n");
   assert.ok(killIdx >= 0 && killIdx < stashLabel, "强杀在替换之前");
   assert.ok(bat.includes("DEPLOYED=1"), "落位阶段要有 DEPLOYED 门（回滚时区分新增文件）");

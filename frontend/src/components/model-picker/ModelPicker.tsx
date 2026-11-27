@@ -23,7 +23,7 @@ import { usePopover } from "../../shared/popover";
 import { IconCheck, IconChevronDown, IconChevronRight } from "../icons";
 import { ModelListPanel, focusModelSearch, type ModelListApi } from "./ModelListPanel";
 
-export function ModelPicker({ model, onPickModel, chipTitle }: {
+export function ModelPicker({ model, onPickModel, chipTitle, openSignal = 0, initialPanel = "model" }: {
   /** 当前**会话**的模型 id（会话级状态；空/未传 = 回落全局 default 角色）。 */
   model?: string;
   /** 选模型：改当前会话（App → source.setSessionModel → chat.model）。未传 =
@@ -31,9 +31,15 @@ export function ModelPicker({ model, onPickModel, chipTitle }: {
   onPickModel?: (id: string) => void;
   /** 芯片 title 覆盖（子会话页 busy 态用：「正在运行，切换将在下一轮生效」）。 */
   chipTitle?: string;
+  /** 外部打开信号（A2 斜杠命令 /model /effort）：数值变化（>0）即打开面板。
+   *  0 = 无请求；每次递增触发一次打开（命令面板没有这个 picker 的 DOM 引用，
+   *  经 prop 信号驱动是最低侵入的通路）。 */
+  openSignal?: number;
+  /** 信号打开时落的初始面板（/effort → "effort"；缺省模型面板）。 */
+  initialPanel?: "model" | "effort";
 } = {}) {
   const { settings, set, providers } = useSettings();
-  const { open, toggle, requestClose, rootRef } = usePopover();
+  const { open, toggle, setOpen, requestClose, rootRef } = usePopover();
   // 打开先显示模型（先选模型，再调强度）
   const [panel, setPanel] = useState<"model" | "effort">("model");
   // 键盘转发句柄（ModelListPanel 的 ↑/↓/Enter 处理，在根上单点生效）
@@ -68,6 +74,17 @@ export function ModelPicker({ model, onPickModel, chipTitle }: {
     if (!open) setPanel("model");
     toggle();
   };
+
+  // 外部打开信号（A2 斜杠命令）：数值变化且非 0 时打开并落 initialPanel。
+  // 初次挂载不触发（信号 0 = 无请求；挂载期信号变化只来自真实命令）。
+  const prevSignal = useRef(openSignal);
+  useEffect(() => {
+    if (openSignal > 0 && openSignal !== prevSignal.current) {
+      setPanel(initialPanel);
+      setOpen(true);
+    }
+    prevSignal.current = openSignal;
+  }, [openSignal, initialPanel, setOpen]);
 
   // 打开（或从强度面板切回）即聚焦搜索框（键盘流：打开 → 直接打字过滤 → ↓/Enter）
   useEffect(() => {

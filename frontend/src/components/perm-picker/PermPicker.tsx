@@ -9,7 +9,7 @@
 // 两步确认）：auto = 高危工具不再问人，误触一下就把执行面全放开——先弹
 // ApprovalConfirmDialog 说清后果，确认才真的改档；降险方向直接切。
 // 分流规则在 shared/approval.ts（approvalPick），与设置面板共用一份。
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useSettings, APPROVALS } from "../../shared/settings";
 import { approvalPick } from "../../shared/approval";
 import { usePopover } from "../../shared/popover";
@@ -23,7 +23,7 @@ const ICONS: Record<string, string> = {
   strict: "M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z",
 };
 
-export function PermPicker({ approval, onPick }: {
+export function PermPicker({ approval, onPick, openSignal = 0 }: {
   /** 受控档位（助手域等独立会话空间传入——显示该会话自己的档位）。缺省 =
    *  回落全局 settings 路径（主域零变化：settings.approval 镜像 + applyApproval）。 */
   approval?: ApprovalMode;
@@ -31,12 +31,20 @@ export function PermPicker({ approval, onPick }: {
    *  assistant.approvalChanged 广播回写，不写 settings 镜像（那是主域当前
    *  会话的显示端）。 */
   onPick?: (mode: ApprovalMode) => void;
+  /** 外部打开信号（A2 斜杠命令 /approval）：数值变化（>0）即打开菜单。 */
+  openSignal?: number;
 } = {}) {
   const { settings, applyApproval } = useSettings();
-  const { open, toggle, requestClose, rootRef } = usePopover();
+  const { open, toggle, setOpen, requestClose, rootRef } = usePopover();
   // 「完全访问」确认弹窗（只在菜单开着时有意义；菜单收起即复位——下次打开
   // 必须重新确认，不能带着上次的半确认态）
   const [confirmOpen, setConfirmOpen] = useState(false);
+  // 外部打开信号（A2 斜杠命令 /approval）：数值变化且非 0 时打开。
+  const prevSignal = useRef(openSignal);
+  useEffect(() => {
+    if (openSignal > 0 && openSignal !== prevSignal.current) setOpen(true);
+    prevSignal.current = openSignal;
+  }, [openSignal, setOpen]);
   useEffect(() => {
     if (!open) setConfirmOpen(false);
   }, [open]);

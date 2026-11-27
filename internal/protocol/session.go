@@ -1,5 +1,7 @@
 package protocol
 
+import "github.com/moyunteng/lxcode/internal/sessiondata"
+
 // ---- 会话管理（持久化 + 切换）----
 
 // SessionResumeParams 是 session.resume 的参数。
@@ -30,6 +32,21 @@ type SessionArchiveParams struct {
 // worktree 目录，2026-12 用户拍板。）
 type SessionArchiveResult struct {
 	Archived bool `json:"archived"`
+}
+
+// FileRevealParams 是 file.reveal 的参数：把工作区里的一个文件交给客户端的
+// 编辑器/文件管理器打开（产物卡与附件卡的「在编辑器打开/显示在文件夹」动作）。
+type FileRevealParams struct {
+	SessionID string `json:"session_id"`
+	// Path 是会话工作目录内的相对路径（也接受绝对路径——但必须净化后仍
+	// 在工作目录之内；穿越一律拒绝）。
+	Path string `json:"path"`
+}
+
+// FileRevealResult 是 file.reveal 的结果：Abs 是校验通过后的绝对路径——
+// 打开动作本身由客户端的壳执行（后端不碰 GUI），渲染层拿它调壳桥。
+type FileRevealResult struct {
+	Abs string `json:"abs"`
 }
 
 // ProjectAddParams 是 project.add 的参数（path 为本地目录绝对路径）。
@@ -75,6 +92,28 @@ type ProjectInstructionsResult struct {
 	Content string `json:"content"`
 	Exists  bool   `json:"exists"`
 	Note    string `json:"note,omitempty"`
+}
+
+// SessionFulltextParams 是 session.fulltext 的参数：按**子串**搜历史消息正文
+// （UI 友好——用户输入不需要懂正则；正则语义保留给 agent 的 session_search 工具）。
+type SessionFulltextParams struct {
+	Query string `json:"query"`
+	// Max 最多返回条数；0 = 后端缺省 30，>100 截到 100（与 store.Search 同钳制）。
+	Max int `json:"max,omitempty"`
+}
+
+// SessionFulltextHit 是一条消息命中（复用 sessiondata.SearchHit 的 wire 形状——
+// 每条命中已带会话 id/标题/时间/角色/内容，UI 分组与片段高亮都够用）。
+type SessionFulltextHit = sessiondata.SearchHit
+
+// SessionFulltextResult 是 session.fulltext 的结果。
+type SessionFulltextResult struct {
+	Hits []SessionFulltextHit `json:"hits"`
+	// Total 是命中总数（可能大于 len(hits)——超出 max 的只数不回）。
+	Total int `json:"total"`
+	// TimedOut=true 表示扫描未完整（全库扫描有 2500ms 限时）——UI 提示
+	//「结果可能不全」，不把它伪装成全集。
+	TimedOut bool `json:"timed_out,omitempty"`
 }
 
 // SessionMeta 是 session.list 的条目（resume 选择器的数据源）。

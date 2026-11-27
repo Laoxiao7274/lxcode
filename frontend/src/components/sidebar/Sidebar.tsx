@@ -6,6 +6,7 @@ import { useUpdate } from "../../shared/update";
 import { busyCountsByWorkspace } from "../../shared/busy-summary";
 import { LOOSE, openProject as openProjectEntry } from "../../shared/project-entry";
 import { readSidebarSections, writeSidebarSections, type SidebarSectionsCollapsed } from "../../shared/sidebar-persist";
+import { createFulltextSearcher, type FulltextGroup } from "../../shared/fulltext-search";
 import type { AgentSource, ProjectMeta, SessionMeta } from "../../shared/types";
 import { AddProjectDialog } from "./AddProjectDialog";
 import { ProjectInstructionsDialog } from "./ProjectInstructionsDialog";
@@ -99,6 +100,37 @@ export const Sidebar = memo(function Sidebar({
   onOpenAssistantChild: (childId: string) => void;
 }) {
   const [query, setQuery] = useState("");
+  /** 全文检索（A1）：query 变化防抖 300ms → session.fulltext。groups=按会话
+   *  分组的消息命中；failed=true = 请求失败（能力缺席/断连——不显示「没有
+   *  命中」误导，显示检索不可用）。 */
+  const [fulltextGroups, setFulltextGroups] = useState<FulltextGroup[]>([]);
+  const [fulltextFailed, setFulltextFailed] = useState(false);
+  const searcherRef = useRef<ReturnType<typeof createFulltextSearcher> | null>(null);
+  useEffect(() => {
+    // 源变化重建 searcher（demo↔live 切换）。回调闭包用 setState（稳定身份），
+    // 不需要依赖回调。
+    const searcher = createFulltextSearcher(source.fulltext, (_q, groups, total, timedOut) => {
+      if (total < 0) {
+        // -1 = 检索失败：不显示「没有命中」，显示「检索不可用」。
+        setFulltextFailed(true);
+        setFulltextGroups([]);
+        return;
+      }
+      setFulltextFailed(false);
+      setFulltextGroups(groups);
+      // 截断/超时提示挂在结果区尾行（见渲染处）——这里只存状态。
+      setFulltextTruncated(total > groups.length ? total : 0);
+      setFulltextTimedOut(timedOut);
+    });
+    searcherRef.current = searcher;
+    return () => searcher.dispose();
+  }, [source.fulltext]);
+  const [fulltextTruncated, setFulltextTruncated] = useState(0);
+  const [fulltextTimedOut, setFulltextTimedOut] = useState(false);
+  const onSearchInput = useCallback((value: string) => {
+    setQuery(value);
+    searcherRef.current?.onQuery(value);
+  }, []);
   const [menuFor, setMenuFor] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
@@ -120,7 +152,7 @@ export const Sidebar = memo(function Sidebar({
     });
   }, []);
   const searchRef = useRef<HTMLInputElement>(null);
-  const { phase: updPhase } = useUpdate();
+  const { phase: updPhase, current: updVersion } = useUpdate();
   const hasUpdate = updPhase === "available" || updPhase === "downloading" || updPhase === "ready";
   const sideRef = useRef<HTMLElement>(null);
 
@@ -217,6 +249,12 @@ export const Sidebar = memo(function Sidebar({
       onOpenChat,
     });
   }, [byWorkspace, currentId, loose, onOpenChat, setFilter, source]);
+  /** 消息命中行点击（A1）：切项目 + 打开会话（与标题命中同一条 openSearchHit
+   *  收口——「可选定位到消息」暂不做：chat.history 是整会话装载，单条定位要
+   *  新的锚点机制，先让会话可达）。 */
+  const openFulltextHit = useCallback((workspace: string, sessionId: string) => {
+    openSearchHit(workspace, sessionId);
+  }, [openSearchHit]);
   // 项目 id → 元数据（会话 workspace 指向项目 id，显示时取名）
   const projectById = useMemo(() => new Map(projects.map((p) => [p.id, p])), [projects]);
   /** 会话 id → 会话（归档区「恢复」要按 id 找它的归属范围——每次 O(n) 扫描
@@ -278,10 +316,17 @@ export const Sidebar = memo(function Sidebar({
       () => {
         st.inFlight = false;
         st.pending = false;
-        if (alive.current) setAssistantTasks(EMPTY_SESSIONS);
+        // 失败**保留旧值不清空**（2026-12 重连恢复修复）：拉取失败 ≠ 任务不存在
+        // ——静默清空会让重连后的小节凭空消失（任务本体在助手模式里好好的）。
+        // 空列表才清（成功路径）。
+        if (alive.current && asstTasksRef.current.length > 0) {
+          console.error("[sidebar] assistant.tasks 拉取失败（保留旧列表）");
+        }
       },
     );
   }, [assistant]);
+  const asstTasksRef = useRef(assistantTasks);
+  asstTasksRef.current = assistantTasks;
   useEffect(() => {
     if (!assistant || filter === LOOSE || filter === "") {
       setAssistantTasks(EMPTY_SESSIONS);
@@ -296,7 +341,16 @@ export const Sidebar = memo(function Sidebar({
   useEffect(() => {
     if (!assistant) return;
     const alive = { current: true };
+    // 连接恢复 → 立即重拉一次（2026-12 重连恢复修复）：断线期间的 dispatch
+    // 事件全丢，重连后小节既没有事件触发、也没有旧的可靠事实——重连即拉，
+    // 对齐主域侧栏重连恢复链（connectionChanged 的 connected 翻 true）。
     return source.subscribe((ev) => {
+      if (ev.type === "connectionChanged") {
+        if (!ev.connected) return;
+        if (filter === LOOSE || filter === "") return;
+        asstFetch(filter, alive);
+        return;
+      }
       if (ev.type !== "dispatchStart" && ev.type !== "dispatchEnd") return;
       if ((ev as { space?: string }).space !== "assistant") return;
       if (filter === LOOSE || filter === "") return;
@@ -437,16 +491,16 @@ export const Sidebar = memo(function Sidebar({
             value={query}
             placeholder="搜索对话与项目"
             aria-label="搜索对话与项目"
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => onSearchInput(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Escape") {
-                setQuery("");
+                onSearchInput("");
                 e.currentTarget.blur();
               }
             }}
           />
           {query ? (
-            <button type="button" className="search-clear" aria-label="清除" onClick={() => setQuery("")}>
+            <button type="button" className="search-clear" aria-label="清除" onClick={() => onSearchInput("")}>
               <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true">
                 <path d="M18 6 6 18M6 6l12 12" />
               </svg>
@@ -728,8 +782,59 @@ export const Sidebar = memo(function Sidebar({
               </div>
             );
           })}
-          {projectHits.length === 0 && globalHits.length === 0 && (
-            <div className="sidebar-empty">没有匹配「{query.trim()}」的项目或对话</div>
+          {projectHits.length === 0 && globalHits.length === 0 && fulltextGroups.length === 0 && (
+            <div className="sidebar-empty">
+              {fulltextFailed
+                ? "消息检索不可用（演示模式或后端暂不支持）"
+                : `没有匹配「${query.trim()}」的项目、对话或消息`}
+            </div>
+          )}
+          {/* 消息命中（A1）：session.fulltext 按会话分组的命中——行 = 会话名 +
+              命中片段（高亮 query 子串）。点击 = 切项目 + 打开该会话（同标题
+              命中的 openSearchHit 收口；单条消息定位暂不做——chat.history 是
+              整会话装载，锚点机制另立项）。fulltext 能力缺席（demo/老后端）
+              时不渲染本组（failed 态只改空态文案）。 */}
+          {fulltextGroups.length > 0 && (
+            <div className="fulltext-section" role="list" aria-label="历史消息命中">
+              <div className="sidebar-label fulltext-label">消息命中</div>
+              {fulltextGroups.map((g) => (
+                <div key={g.sessionId} className="fulltext-group">
+                  <div
+                    className={"session-item search-hit fulltext-head" + (g.sessionId === currentId ? " active" : "")}
+                    role="listitem"
+                    tabIndex={0}
+                    title={g.sessionTitle}
+                    onClick={() => openFulltextHit((sessionById.get(g.sessionId)?.workspace) ?? LOOSE, g.sessionId)}
+                    onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openFulltextHit((sessionById.get(g.sessionId)?.workspace) ?? LOOSE, g.sessionId); } }}
+                  >
+                    <div className="session-line">
+                      <span className={"s-dot" + (busyBySession[g.sessionId] ? " live" : "")} aria-hidden />
+                      <span className="title">{g.sessionTitle}</span>
+                      {busyBySession[g.sessionId] && <span className="mset-spinner session-spinner" aria-hidden />}
+                      <span className="time">{g.updatedAt}</span>
+                    </div>
+                  </div>
+                  {g.hits.map((h, i) => (
+                    <div
+                      key={`${h.index}-${i}`}
+                      className="fulltext-hit"
+                      role="button"
+                      tabIndex={0}
+                      title={h.content}
+                      onClick={() => openFulltextHit((sessionById.get(g.sessionId)?.workspace) ?? LOOSE, g.sessionId)}
+                      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openFulltextHit((sessionById.get(g.sessionId)?.workspace) ?? LOOSE, g.sessionId); } }}
+                    >
+                      <FulltextHitText content={h.content} query={query.trim()} role={h.role} />
+                    </div>
+                  ))}
+                </div>
+              ))}
+              {(fulltextTruncated > 0 || fulltextTimedOut) && (
+                <div className="sidebar-empty">
+                  {fulltextTimedOut ? "扫描超时，结果可能不全——试试更具体的词" : `还有 ${fulltextTruncated} 条命中未显示——试试更具体的词`}
+                </div>
+              )}
+            </div>
           )}
         </>
       ) : (
@@ -769,9 +874,33 @@ export const Sidebar = memo(function Sidebar({
             设置
             {hasUpdate && <span className="settings-upd-dot" title="有新版本可用" aria-label="有新版本可用" />}
           </span>
-          <span className="ver">{hasUpdate ? "可更新" : "eabc22c"}</span>
+          <span className="ver">{hasUpdate ? "可更新" : updVersion}</span>
         </div>
       </div>
     </aside>
+  );
+});
+
+/** 消息命中片段（A1）：一行内容 + query 子串高亮（不区分大小写；query 为空
+ *  或不出现就原样显示）。role=user 的片段带「你」前缀——命中来自用户的话还是
+ *  助手的答复，扫一眼就知道。纯展示组件，memo 化与其他行组件同纪律。
+ *  导出：fulltext-search.test.mjs 的渲染钉子直接驱动它（防抖/query 态在
+ *  纯函数层覆盖，静态渲染进不去内部 state）。 */
+export const FulltextHitText = memo(function FulltextHitText({ content, query, role }: { content: string; query: string; role: string }) {
+  const q = query.toLowerCase();
+  const idx = q ? content.toLowerCase().indexOf(q) : -1;
+  return (
+    <>
+      {role === "user" && <span className="fulltext-role" aria-hidden>你</span>}
+      {idx < 0 ? (
+        <span className="fulltext-content">{content}</span>
+      ) : (
+        <span className="fulltext-content">
+          {content.slice(0, idx)}
+          <mark className="fulltext-mark">{content.slice(idx, idx + query.length)}</mark>
+          {content.slice(idx + query.length)}
+        </span>
+      )}
+    </>
   );
 });

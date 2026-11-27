@@ -51,6 +51,8 @@ type sendConfig struct {
 	model string
 	// todoPrompt 是 todo-first 提示词档位（空 = 不覆盖会话现值）。
 	todoPrompt string
+	autoTitle     bool // AI 自动命名开关（B1；server 显式传入，缺省关）
+	autoTitleSet  bool // autoTitle 是否被显式传入（Send 只在显式时覆盖会话现值）
 	notice     bool           // 这条 user 消息是**注入的提示条**（不是用户说的话——会话统计的轮数按它排除）
 	images     []llm.ImageRef // 这条 user 消息附带的图片引用（视觉请求；恒为文件引用）
 	// attachments 是这条 user 消息附带的附件**展示元数据**（前端渲染附件卡——
@@ -83,6 +85,11 @@ func WithModel(id string) SendOpt { return func(c *sendConfig) { c.model = id } 
 // WithTodoPrompt 指定本会话的 todo-first 提示词档位（config.TodoPrompt*；
 // 空 = 不覆盖）。会话级：Send 时存进会话，本轮与后续轮的提示词组装都用它。
 func WithTodoPrompt(mode string) SendOpt { return func(c *sendConfig) { c.todoPrompt = mode } }
+
+// WithAutoTitle 开/关本会话的 AI 自动命名（B1）。**显式传入才生效**——缺省关：
+// 旧调用方（单测/内部派发）零影响；server 的 chat.send/assistant.send 按
+// behavior.json 的 autoTitle 显式传入。会话级一次性开关（titled 置位见 autotitle.go）。
+func WithAutoTitle(on bool) SendOpt { return func(c *sendConfig) { c.autoTitle = on; c.autoTitleSet = true } }
 
 // WithImages 给这条 user 消息附带图片引用（视觉请求）：refs 恒为文件引用
 // （llm.ImageRef），base64 绝不经过这里。Send 时校验张数上限（≤4），超限

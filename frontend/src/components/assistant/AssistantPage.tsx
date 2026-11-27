@@ -34,6 +34,7 @@ import { useStickyFollow } from "../thread/useStickyFollow";
 import { useCompaction } from "../../app-hooks/use-compaction";
 import { useSettings } from "../../shared/settings";
 import { visionBlockNotice } from "../../shared/attachments";
+import { SLASH_HELP_TEXT_ASSISTANT } from "../../shared/slash-help";
 
 export type AssistantUIState = UIState;
 
@@ -162,7 +163,7 @@ export function AssistantPage({
   //（与主域同一份）；事件认账口用 compacted 等价事件（assistant.compacted 归一），
   // 按 sessionId 匹配照常命中。成功后的历史重拉：助手域 history（historyLoaded
   // 会重建本会话时间线、检查点卡落位）。
-  const { handleCompactClick, compacting } = useCompaction({
+  const { handleCompact, handleCompactClick, compacting } = useCompaction({
     source,
     currentId: sessionId,
     reportError: (m) => setError(m),
@@ -245,6 +246,36 @@ export function AssistantPage({
     setStatus("loading");
   }, [status, connected, error, nonce]);
 
+  // ---- busy 重拉闸（C 批修复：远程/切走再回来看不到进行中的进度）----
+  //
+  // 背景：本端曾装载过该会话（historyReady=true）时 boot 的秒回闸挡住了
+  // assistant.history——切走期间的实时事件虽由 store 双投归约，但**重连过的
+  // 远程客户端**（或本端 state 被淘汰后重建）拿不到「此刻在跑」的事实：本地
+  // busy=false 而后端 running=true，时间线停在最后落库的块，用户感知「进度
+  // 不见」。这里用列表的 running 位（assistant.list——后端扫运行时的事实源）
+  // 做对账：本地 idle、列表说在跑 → 强制重拉一次历史。重拉走 reduce 的冷恢复
+  // 重建分支：busySnapshot 置真 + reviveRunningDispatch 恢复运行中派发卡——
+  // 随后的实时 delta（连接活着就持续广播）续上流式块。
+  //
+  // 防抖：只在「事实翻转」时拉一次（busyMismatchRef 记上一次判定——拉过之后
+  // state.busy 会翻真，条件自动不再成立，无需额外节流；列表刷新只在
+  // session.changed/事件时发生，不会高频）。mismatch 判定随会话走——切会话
+  // 时按新 sessionId 清基线（2026-12 修复：不重置会把上一会话的判定残留到
+  // 下一会话，首轮翻转被误判为「没变」而错过重拉）。
+  const busyMismatchRef = useRef(false);
+  useEffect(() => {
+    busyMismatchRef.current = false;
+    const st = stateRef.current;
+    const running = Boolean(sessionMeta?.running);
+    const mismatch = Boolean(sessionId) && running && Boolean(st?.historyReady) && !st?.busy;
+    if (mismatch === busyMismatchRef.current) return;
+    busyMismatchRef.current = mismatch;
+    if (!mismatch) return;
+    const a = sourceRef.current.assistant;
+    if (!a) return;
+    a.history(sessionId).catch(() => undefined);
+  }, [sessionId, sessionMeta?.running]);
+
   const handleSend = useCallback((text: string, atts: SendAttachments) => {
     if (!sessionId || !sourceRef.current.assistant) return;
     // 助手域附件（2026-12 用户拍板）：images/files 都随 assistant.send 上 wire
@@ -299,6 +330,27 @@ export function AssistantPage({
   const handlePickModel = useCallback((id: string) => {
     if (sessionId) sourceRef.current.assistant?.setModel(sessionId, id);
   }, [sessionId]);
+
+  // 斜杠命令集（A2 助手域面板）：助手域命令集（无页面导航——域隔离）。
+  // /model /effort /approval 走 AssistantInput 的 piBar 控件打开（不直接 RPC——
+  // 会话级状态经 chat.model/chat.approval 的助手域等价方法，UI 是唯一入口）。
+  const [pickerSignals, setPickerSignals] = useState({ model: 0, effort: 0, approval: 0 });
+  const bumpSignal = useCallback((k: keyof typeof pickerSignals) => {
+    setPickerSignals((cur) => ({ ...cur, [k]: cur[k] + 1 }));
+  }, []);
+  const [helpText, setHelpText] = useState("");
+  useEffect(() => {
+    if (!helpText) return;
+    const t = setTimeout(() => setHelpText(""), 10000);
+    return () => clearTimeout(t);
+  }, [helpText]);
+  const assistantSlashCommands = useMemo(() => [
+    { name: "compact", desc: "压缩早期历史（腾出上下文）", run: () => { void handleCompact(); } },
+    { name: "model", desc: "选择本会话的模型（会话级）", run: () => bumpSignal("model") },
+    { name: "effort", desc: "调推理强度（请求级）", run: () => bumpSignal("effort") },
+    { name: "approval", desc: "改本会话权限档（会话级）", run: () => bumpSignal("approval") },
+    { name: "help", desc: "列出全部命令", run: () => setHelpText(SLASH_HELP_TEXT_ASSISTANT) },
+  ], [handleCompact, bumpSignal]);
 
   // 滚动跟随：与主时间线同一份状态机（useStickyFollow）——scrollRef 由它自己定位
   //（endRef 的祖先），这里的 ref 引用未使用（保持与 ChildSessionPage 同款解构）。
@@ -421,6 +473,12 @@ export function AssistantPage({
         onQueueDelete={handleQueueDelete}
         onQueueSend={handleQueueSend}
         initialText={editInitial}
+        commands={assistantSlashCommands}
+        modelSignal={pickerSignals.model}
+        effortSignal={pickerSignals.effort}
+        approvalSignal={pickerSignals.approval}
+        helpNotice={helpText}
+        onHelpClose={() => setHelpText("")}
       />
     </div>
   );

@@ -300,7 +300,9 @@ func TestLogFileContent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("任务结束后日志仍应可读: %v", err)
 	}
-	if string(raw) != want {
+	// 终态标记（进程残留治理 B3）：Settle 时在日志尾部补一行 [job settled]——
+	// 启动时的孤儿清扫按它区分「优雅退出已收尾」与「硬杀残留」。
+	if string(raw) != want+"\n[job settled] "+j.ID()+" completed self\n" {
 		t.Fatalf("落盘内容不符: %q", raw)
 	}
 }

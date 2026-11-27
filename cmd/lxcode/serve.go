@@ -99,8 +99,23 @@ func runServe(ctx context.Context, path, addr, sessionsDir string) error {
 	// 后台任务（jobs——docs/jobs.md）：日志落 <sessions>/jobs/，注册表是进程级
 	// 单例（工具面与协议面共用）。defer Shutdown = 后端退出即全杀，不留孤儿进程。
 	jobsMgr := jobs.NewManager(sessionsDir)
+	// 寿命护栏阈值（B4）：config/jobs.json 的 idle_ttl_hours（默认 24h）。
+	jobsMgr.SetIdleTTL(config.LoadJobs(resolveJobsConfigPath(path)).IdleTTL())
+	// 孤儿清扫（B3）：启动时扫上一轮残留——硬杀/断电留下的 running 任务日志
+	// 无终态标记，按日志里的 pid 行树杀残留进程（在 rebuildTimers 旁边、
+	// AttachSchedules 之后执行——进程级收尾，与定时重建同属装配期）。
+	for _, rep := range jobsMgr.ReapOrphans() {
+		if rep.Killed {
+			log.Printf("孤儿清扫：残留进程已终止 任务=%s pid=%d", rep.ID, rep.Pid)
+		} else {
+			log.Printf("孤儿清扫：任务 %s（pid=%d）进程已不在，仅补终态标记", rep.ID, rep.Pid)
+		}
+	}
 	srv.AttachJobs(jobsMgr)
 	defer jobsMgr.Shutdown()
+
+	// 定时/提醒任务（B2）：schedule 工具的落库与重启重建（timers 表）。
+	srv.AttachSchedules()
 
 	// 网页搜索渠道（config/search.json，与 models.json 同目录）。
 	// 加载失败不拒绝启动（与空注册表同一条理由：服务形态崩溃重启循环
@@ -156,7 +171,12 @@ func runServe(ctx context.Context, path, addr, sessionsDir string) error {
 	}()
 
 	go reloadLoop(ctx, reg, searchSvc, srv)
-	return srv.Run(ctx, addr)
+	err = srv.Run(ctx, addr)
+	// 进程残留治理 B2：优雅退出的第一收——取消全部两域活跃会话并等本轮
+	// 真正收尾（前台 bash 被树杀，不再残留）。必须在 jobsMgr.Shutdown 之前
+	//（后者只管后台任务；前台命令的生命周期跟轮次 ctx，要在这里收）。
+	srv.CancelActiveSessions()
+	return err
 }
 
 // resolveCatalogPath 决定模型目录缓存的路径：与 models.json 同目录（同
@@ -196,6 +216,12 @@ func resolveBehaviorPath(modelsPath string) string {
 // resolveBehaviorPath 的理由——同一份部署配置的一部分，不另开 flag）。
 func resolveAssistantConfigPath(modelsPath string) string {
 	return filepath.Join(filepath.Dir(modelsPath), "assistant.json")
+}
+
+// resolveJobsConfigPath 决定后台任务配置路径（寿命护栏阈值）：与 models.json
+// 同目录（同一份部署配置的一部分）。
+func resolveJobsConfigPath(modelsPath string) string {
+	return filepath.Join(filepath.Dir(modelsPath), "jobs.json")
 }
 
 // resolveSSHHostsPath 决定 SSH 主机配置路径：与 models.json 同目录（同一份
@@ -299,7 +325,7 @@ func resolveSessionsDir(flagVal, configPath string) string {
 	return filepath.Join(filepath.Dir(filepath.Dir(configPath)), "sessions")
 }
 
-// resolveAssistantDir 决定助手专属工作目录：<sessions>/../assistant 兄弟目录。
+// resolveAssistantDir 决定助手专属工作目录：<sessions>/../assistant 兄弟目录；
 // 环境变量 LXCODE_ASSISTANT_DIR 覆盖（对齐 LXCODE_SESSIONS 先例——测试与
 // 特殊部署用，正常形态零新 flag 零新配置）。
 func resolveAssistantDir(sessionsDir string) string {

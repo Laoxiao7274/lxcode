@@ -72,6 +72,21 @@ var seedTools = []sessiondata.ToolSpec{
 		Doc: "非阻塞：立刻回「已请求取消」，真正的结束由进程收尾时定稿。\n\n- 归属记为 agent：唤醒通告据此措辞，不会把自己停的任务当成「它挂了」\n- 自己停掉的任务**不要**自己重启，要等用户指示",
 	},
 	{
+		// wait：等任务结束/满足条件，只回状态不回输出——与 job 三件套同族，
+		// 必须在目录里（编辑器 chip 只读目录，web_search 栽过的那一跤）。
+		ID: "wait", Desc: "阻塞等后台任务结束/满足条件（只回状态，不回输出）", Risk: "low", Source: "builtin", Custom: false,
+		Params: []sessiondata.ToolParam{
+			{Name: "job_id", Type: "string", Required: true, Desc: "任务 id（run_in_background 返回或 job_list 里的）"},
+			{Name: "timeout_sec", Type: "int", Desc: "等待上限秒数（默认 30，上限 600）"},
+			{Name: "condition", Type: "string", Desc: "exit（默认）/ exit_ok / output / idle / {\"pattern\": \"…\"}——与 job_output 的 wait_condition 同款"},
+		},
+		Doc: "阻塞等待一个后台任务结束或满足条件，**只返回一行状态**——「等构建/测试跑完再继续」用它，" +
+			"比 job_output(wait=true) 省 token；要输出再调 job_output。\n\n" +
+			"- 超时返回当前状态（任务还在跑就如实报 running）\n" +
+			"- condition 与 job_output 的 wait_condition 同款（OR 组合谁先到返回谁）\n" +
+			"- 复用同一份等待原语：快照判终态立即返回，未终态才阻塞",
+	},
+	{
 		ID: "edit", Desc: "精确替换文件内容（old_string 唯一匹配）", Risk: "low", Source: "builtin", Custom: false,
 		Params: []sessiondata.ToolParam{{Name: "path", Type: "string", Required: true}, {Name: "old_string", Type: "string", Required: true}, {Name: "new_string", Type: "string", Required: true}},
 		Doc:    "精确替换——old_string 必须在文件中唯一匹配（0 或 >1 都报错）。\n\n原子写；这是编程任务的主编辑通道。",
@@ -263,6 +278,17 @@ var seedTools = []sessiondata.ToolSpec{
 		Doc: "起一个**后台合并进程**：任务体是内置的合并 Agent，在集成分支的专用工作树里把本会话分支的改动汇总进去（处理冲突、跑构建测试）。\n\n- 立刻返回任务 id；合并结束后经唤醒投递自动通告你（用 job_output 读输出）\n- 未分组会话没有可合并的分支（先归入项目）\n- 同一会话同时只允许一个在跑的合并进程",
 	},
 	{
+		// schedule（B2 定时/提醒）：与 agent_dispatch 同理必须在目录里——
+		// 编辑器渲染 chip 只读目录，目录里没有 = 用户在界面上勾不到它。
+		ID: "schedule", Desc: "设一个到点提醒（到点后经通告链投回会话）", Risk: "low", Source: "builtin", Custom: false,
+		Params: []sessiondata.ToolParam{
+			{Name: "duration_minutes", Type: "number", Desc: "相对延时（分钟，>0）；at 给了时忽略"},
+			{Name: "at", Type: "string", Desc: "绝对时刻（RFC3339，如 2026-12-31T15:04:00+08:00；可选）"},
+			{Name: "note", Type: "string", Desc: "提醒内容（到点通告的正文）"},
+		},
+		Doc: "设一个**定时提醒**：到点后 jobs 的通告链把提醒投回本会话（自动通告）。\n\n- 二选一给时间：duration_minutes（相对延时）或 at（绝对时刻 RFC3339）\n- note 是提醒正文，到点后原样投递\n- 会话存储未启用时不可用（纯内存模式报错）",
+	},
+	{
 		// 工作区三件套之一（查询面，低危只读）。必须在目录里：编辑器渲染 chip
 		// 只读目录，目录里没有 = 用户在界面上勾不到它（web_search 栽过的那一跤）。
 		ID: "workspace_status", Desc: "查询项目工作区状态（主检出改动、各会话分支、集成分支）", Risk: "low", Source: "builtin", Custom: false,
@@ -418,7 +444,8 @@ var seedAgents = []sessiondata.AgentDef{
 		Desc: "决策与分派中枢：理解意图、拆解任务、调用名单中的 Agent 并验收汇总。不直接执行任务。",
 		// 工作区四件套是主 Agent 的「用户无感」入口：查询 / 提交推送 / 回滚 /
 		// 产物发布——用户视角始终在操作一个项目，分支概念由这些工具兜住。
-		Tools:    []string{"agent_dispatch", "merge_request", "workspace_status", "workspace_sync", "workspace_rollback", "workspace_publish"},
+		// wait + job 三件套：主 Agent 起的长命令（全量构建/测试）要能等结束再验收。
+		Tools:    []string{"agent_dispatch", "merge_request", "workspace_status", "workspace_sync", "workspace_rollback", "workspace_publish", "job_output", "job_list", "job_kill", "wait"},
 		Prompt:   "",
 		Workflow: "plan-execute-verify", Skills: []string{},
 		Delegates: []string{"coder", "researcher", "tester", "lxagent", "repo-manager"}, Approval: "auto",
@@ -434,7 +461,7 @@ var seedAgents = []sessiondata.AgentDef{
 		// 方法论（复用梯子等）已迁到模板 lazy-senior-dev（Workflow 绑定，见
 		// seedModules）——Prompt 只留职责边界与自检底线，不重复方法论。
 		Prompt:   "你是代码 Agent。改动前先读相关代码，遵守仓库规范；每步改动可解释、可回退。你只负责实现与重构，**不跑测试**——验证（跑构建与测试、补用例、验收）是测试 Agent 的职责，把改动与改动说明如实交回即可；也不需要做大面积资料勘察（那是调研 Agent 的活，任务里没给的信息直接说明缺口）。唯一的自检底线：改完确认代码能编译、无明显语法错误（如 go build / tsc 级别的编译检查），不要让连编译都过不了的代码流到下游。绝不执行 git push（含 --force）：推送只由用户经 workspace_sync 发起；lxcode 本体仓库的发版只走 scripts/push-release.mjs。",
-		Tools:    []string{"read_file", "search", "read_image", "edit", "write_file", "bash", "todo", "share_file"},
+		Tools:    []string{"read_file", "search", "read_image", "edit", "write_file", "bash", "todo", "share_file", "job_output", "job_list", "job_kill", "wait"},
 		Workflow: "lazy-senior-dev", Skills: []string{"frontend-design", "gsap"},
 		Delegates: []string{}, Approval: "auto",
 	},
@@ -473,7 +500,7 @@ var seedAgents = []sessiondata.AgentDef{
 		ID: "tester", Name: "测试 Agent", Enabled: true, Color: "#0ea5e9", Model: "",
 		Desc:     "验证与测试：跑构建与测试（代码 Agent 交回的改动由你验收）、按验收标准补用例，如实回传失败与复现命令（不改实现；查资料交给调研 Agent），能把产物文件共享到对话、能读图片内容（视觉）。",
 		Prompt:   "你是测试 Agent，负责验证与测试（代码 Agent 只写代码、不跑测试，改动交回后由你跑构建与测试验收）。跑构建与测试，断言行为与契约而不是实现细节；失败如实回传（关键输出 + 复现命令）。绝不为了让测试变绿而删除、跳过或弱化断言——测试与实现冲突时先判断谁对：实现错了改实现，需求变了先改方案；改实现超出「补用例/修测试」的范围时，如实交回主 Agent 派给代码 Agent，不自己重写功能。只读调研（查资料、查历史、梳理跨文件脉络）也不是你的活，派给调研 Agent。绝不执行 git push（含 --force）：推送只由用户经 workspace_sync 发起。",
-		Tools:    []string{"read_file", "search", "read_image", "edit", "write_file", "bash", "todo", "share_file"},
+		Tools:    []string{"read_file", "search", "read_image", "edit", "write_file", "bash", "todo", "share_file", "job_output", "job_list", "job_kill", "wait"},
 		Workflow: "lazy-senior-dev", Skills: []string{},
 		Delegates: []string{}, Approval: "auto",
 	},
@@ -487,7 +514,7 @@ var seedAgents = []sessiondata.AgentDef{
 		ID: "merger", Name: "合并 Agent", Enabled: true, Color: "#db2777", Model: "",
 		Desc:     "把会话分支的改动汇总到集成分支：处理冲突（冲突抉择可向用户提问）、跑构建测试，如实报告结果。",
 		Prompt:   "你是合并 Agent。在集成分支的专用工作树里工作，把源会话分支的改动合并到目标分支。合并纪律：先看两边改了什么（git log / git diff）再合并；冲突必须逐个解决并说明取舍（为什么保留这一边，另一边的意图如何被满足）；绝不用 --force、-X theirs / -X ours 掩盖冲突；合并后跑构建与测试；失败就把集成分支恢复原状并如实报告，绝不谎报成功；不 push、不动主检出、不丢弃任何人的改动。遇到冲突抉择（两边都改了同一处、语义取舍说不清）时，调用 `ask_user` 向用户提问：说明冲突文件、两边的改动意图，给出你的建议与理由；用户回答后按回答执行。纯机械的冲突（不同文件、不同区域）自行解决，不要每处都问。",
-		Tools:    []string{"read_file", "search", "edit", "write_file", "bash", "ask_user"},
+		Tools:    []string{"read_file", "search", "edit", "write_file", "bash", "ask_user", "job_output", "job_list", "job_kill", "wait"},
 		Workflow: "merge-verify", Skills: []string{},
 		Delegates: []string{}, Approval: "auto",
 	},

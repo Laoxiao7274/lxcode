@@ -15,8 +15,11 @@ import (
 	"strings"
 	"time"
 
+	"context"
+
 	"github.com/moyunteng/lxcode/internal/jobs"
 	"github.com/moyunteng/lxcode/internal/protocol"
+	"github.com/moyunteng/lxcode/internal/store"
 )
 
 // maxConsecutiveWakes 是连续唤醒预算（契约 §5）：只约束「空闲 → 开一轮」，
@@ -66,6 +69,13 @@ func (s *Server) onJobEvent(ev jobs.Event) {
 		s.broadcast(protocol.EventJobStarted, s.jobInfo(ev.Snapshot))
 	case jobs.EventSettled:
 		s.broadcast(protocol.EventJobSettled, s.jobInfo(ev.Snapshot))
+		// timer 到点：落库侧标记 done（重建只取未 done 的行——不标记的话
+		// 重启后已触发的提醒会重复响）
+		if ev.Snapshot.Kind == jobs.TimerKind && s.st != nil {
+			if err := s.st.MarkTimerDone(ev.Snapshot.ID); err != nil {
+				log.Printf("定时任务 %s 标记完成失败（重启后可能重复触发）: %v", ev.Snapshot.ID, err)
+			}
+		}
 		s.deliverJobNotice(ev.Snapshot)
 	}
 }
@@ -170,6 +180,12 @@ func (s *Server) deliverJobNotice(snap jobs.Snapshot) {
 func jobNoticeText(snap jobs.Snapshot) (string, bool) {
 	prefix := protocol.JobNoticePrefix
 	label := snap.Label
+	// timer（B2 定时/提醒）：正文就是提醒本身（Note 已在任务输出里，但措辞
+	// 直接给正文——模型醒来读通告即行动，不必再 job_output 一趟）。label 是
+	// 截断的正文预览，完整正文附后。
+	if snap.Kind == jobs.TimerKind {
+		return fmt.Sprintf("%s定时提醒到点：", prefix) + label, true
+	}
 	switch {
 	case snap.EndedBy == jobs.EndedAgent:
 		// 它自己杀的，同一轮内已知——投递只是噪声
@@ -263,4 +279,79 @@ func jobLog(mgr *jobs.Manager, id string) (protocol.JobLogResult, error) {
 		return protocol.JobLogResult{}, err
 	}
 	return protocol.JobLogResult{Data: string(data)}, nil
+}
+
+// AttachSchedules 装配定时/提醒任务（B2）：schedule 工具的注入实现
+//（落库 timers 表 + 起 timer 任务）与重启重建。
+//
+// 两条链：
+//  - 落库+起任务（工具调用路径）：Start 成功才写行（起不来的任务不留库）；
+//  - 重启重建（启动路径）：PendingTimers 逐行重新 Start（同 job id——事件、
+//    job.list 的连续性）。重建的行不重写（SaveTimer 是 upsert，但重建就是
+//    读取者，无需回写）。到点 settle 后标记 done（onJobEvent 的 timer 分支）。
+//
+// 未接存储（st == nil，纯内存模式）：工具报「会话存储未启用」——timer 的
+// 约定本体在库里，没有库就没有跨重启语义，宁可不提供也不给半截功能。
+func (s *Server) AttachSchedules() {
+	if s.treg != nil {
+		s.treg.SetSchedule(func(ctx context.Context, spec jobs.Spec) (string, error) {
+			if err := jobs.ValidateTimer(spec); err != nil {
+				return "", err
+			}
+			if s.st == nil {
+				return "", fmt.Errorf("会话存储未启用，定时提醒不可用")
+			}
+			mgr := s.jobsManager()
+			if mgr == nil {
+				return "", fmt.Errorf("任务管理器未初始化")
+			}
+			j, err := mgr.Start(spec)
+			if err != nil {
+				return "", err
+			}
+			if err := s.st.SaveTimer(store.TimerRow{
+				JobID: j.ID(), SessionID: spec.SessionID, OwnerSessionID: jobs.OwnerOf(spec),
+				Workspace: spec.Workspace, Label: spec.Label, Note: spec.Note,
+				DueAt: spec.DueAt,
+			}); err != nil {
+				// 落盘失败降级：任务照跑（本次进程内仍会触发），但重启后不重建——
+				// 与 jobs 的「落盘失败不能让任务起不来」同一条纪律。
+				log.Printf("定时任务 %s 落库失败（本次进程内有效，重启后不重建）: %v", j.ID(), err)
+			}
+			return j.ID(), nil
+		})
+	}
+	s.rebuildTimers()
+}
+
+// rebuildTimers 重启重建：PendingTimers 逐行重新 Start（同 job id）。
+// 已过点的行立即触发（startTimer 的 delay<0 分支——不静默丢弃存量提醒）。
+func (s *Server) rebuildTimers() {
+	if s.st == nil {
+		return
+	}
+	rows, err := s.st.PendingTimers()
+	if err != nil {
+		log.Printf("定时任务重建失败（重启后已有的提醒不生效）: %v", err)
+		return
+	}
+	mgr := s.jobsManager()
+	if mgr == nil {
+		return
+	}
+	for _, r := range rows {
+		spec := jobs.Spec{
+			Kind: jobs.TimerKind, Label: r.Label, Note: r.Note,
+			SessionID: r.SessionID, OwnerSessionID: r.OwnerSessionID,
+			Workspace: r.Workspace, DueAt: r.DueAt,
+		}
+		if _, err := mgr.Start(spec); err != nil {
+			log.Printf("定时任务 %s 重建失败: %v", r.JobID, err)
+		} else {
+			log.Printf("定时任务 %s 已重建（到点 %s）", r.JobID, r.DueAt.Format("2006-01-02 15:04"))
+		}
+	}
+	if len(rows) > 0 {
+		log.Printf("定时任务重建完成：%d 条", len(rows))
+	}
 }

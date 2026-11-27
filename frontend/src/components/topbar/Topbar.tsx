@@ -19,6 +19,7 @@ export const Topbar = memo(function Topbar({
   merge,
   mode,
   onModeChange,
+  jobsSignal = 0,
 }: {
   taskTitle: string;
   source: AgentSource;
@@ -28,6 +29,8 @@ export const Topbar = memo(function Topbar({
   /** 顶层应用模式（助手模式 P2）：mode-switch 渲染在左区（模式是全局导航）。 */
   mode?: AppMode;
   onModeChange?: (mode: AppMode) => void;
+  /** 后台任务面板打开信号（A2 斜杠命令 /jobs）：数值变化（>0）即打开。 */
+  jobsSignal?: number;
 }) {
   const win = (window as unknown as { __LX__?: { minimize: () => void; toggleMaximize: () => void; close: () => void } }).__LX__;
   const ctrl = (fn?: () => void) => () => fn?.();
@@ -62,7 +65,7 @@ export const Topbar = memo(function Topbar({
       <div className="tb-right">
         {/* 后台任务的全局入口（跨会话：dev server 在别的会话里起的也看得到、停得掉；
             「合并请求」入口同面板——只对项目会话可用） */}
-        <JobsBadge merge={merge} source={source} />
+        <JobsBadge merge={merge} source={source} openSignal={jobsSignal} />
         <button type="button" className="win-btn" onClick={ctrl(win?.minimize)} aria-label="最小化" title="最小化">
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
             <path d="M5 12h14" />

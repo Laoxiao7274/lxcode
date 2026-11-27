@@ -18,6 +18,7 @@ import { ProviderBlock } from "./ProviderBlock";
 import { SearchSection } from "./SearchSection";
 import { LogsSection } from "./LogsSection";
 import { UpdateBlock } from "./UpdateBlock";
+import { notifyDoneEnabled, setNotifyDoneEnabled } from "../../app-hooks/use-done-notify";
 import { Section, SegRow, SelectRow, ToggleRow, ValueRow } from "./rows";
 import { CubeIcon, GearIcon, LogIcon, SearchIcon, SunIcon } from "./icons";
 
@@ -74,6 +75,13 @@ export function SettingsPanel({ open, onClose, source, operationErrors }: { open
   };
   // 默认档切「完全访问」的确认弹窗（与输入区 PermPicker 同一条规则、同一个
   // 弹窗组件——默认档放开的是**以后所有新会话**的执行面，更不能一下就关掉）
+  // 完成/失败系统通知开关（localStorage lx.notify.done——use-done-notify 的读写）。
+  // useState 初始化器读一次；开关切换即写（读写函数自身兜底隐私模式异常）。
+  const [notifyOn, setNotifyOnState] = useState(() => notifyDoneEnabled());
+  const setNotifyOn = (on: boolean) => {
+    setNotifyOnState(on);
+    setNotifyDoneEnabled(on);
+  };
   const [confirmAutoOpen, setConfirmAutoOpen] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
 
@@ -180,6 +188,12 @@ export function SettingsPanel({ open, onClose, source, operationErrors }: { open
                   hint="关闭时工具结果默认折叠为摘要行"
                   checked={settings.showFullOutput}
                   onChange={(v) => set({ showFullOutput: v })}
+                />
+                <ToggleRow
+                  label="完成与失败系统通知"
+                  hint="窗口失焦时弹系统通知：一轮完成 / 一轮失败（需桌面壳）"
+                  checked={notifyOn}
+                  onChange={setNotifyOn}
                 />
                 <ToggleRow
                   label="生成时阻止休眠"

@@ -1880,3 +1880,32 @@
   margin-bottom: 0;
   margin-top: 6px;
 }
+/* ===== 产物卡文件行的「打开」动作（A4，file.reveal）=====
+ * 行 hover 显形（与 SessionRow 菜单同款），窄图标钮对齐 stat-badge 的几何。 */
+.files-actions {
+  display: none;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  padding-right: 8px;
+}
+.files-row:hover .files-actions { display: inline-flex; }
+.files-act {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg-faint);
+  cursor: pointer;
+  transition: background 100ms, color 100ms;
+}
+.files-act:hover { background: var(--border-soft); color: var(--fg); }
+.files-reveal-error {
+  padding: 4px 13px 8px;
+  font-size: 11px;
+  color: var(--fg-faint);
+}

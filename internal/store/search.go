@@ -188,18 +188,9 @@ const defaultSearchDeadline = 2500 * time.Millisecond
 // 把整段历史灌进上下文。
 const maxSearchContext = 5
 
-// clipTitle 截标题：一行以内、40 个字符封顶（列表预览用）。
-func clipTitle(s string) string {
-	s = strings.TrimSpace(s)
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		s = s[:i]
-	}
-	r := []rune(s)
-	if len(r) > 40 {
-		return string(r[:40]) + "…"
-	}
-	return s
-}
+// clipTitle 是 sessiondata.ClipTitle 的包内别名（默认标题唯一实现在
+// sessiondata——agent 的 AI 自动命名判定要用同一份，B1）。
+func clipTitle(s string) string { return sessiondata.ClipTitle(s) }
 
 // clipOneLine 截断到 n 个字符（rune 安全），尾部加省略号。
 func clipOneLine(s string, n int) string {

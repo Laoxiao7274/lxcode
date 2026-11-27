@@ -193,7 +193,7 @@ func taskEmitter(out io.Writer, tap *childEvents) Emitter {
 			errCopy := e
 			tap.err = &errCopy
 			tap.mu.Unlock()
-		case TurnDoneEvent, BusyEvent, SessionStartedEvent,
+		case TurnDoneEvent, BusyEvent, SessionStartedEvent, TitleRenamedEvent,
 			DispatchStartEvent, DispatchEndEvent, ConfirmRequestEvent, CompactedEvent, FilesChangedEvent:
 			// 不上抛：后台任务不进主会话时间线（子会话的忙闲/切换/压缩/产物都不属于它）。
 			// TodoUpdatedEvent 已从这里移出：todo 契约改为带归属上抛（childEmitter）。
@@ -733,7 +733,7 @@ func childEmitter(parent Emitter, dispatchID string, tap *childEvents) Emitter {
 			// 那是它的会话级状态），上抛的只是「这个派发的进度」。
 			e.DispatchID = dispatchID
 			parent(e)
-		case SessionStartedEvent, DispatchStartEvent, DispatchEndEvent, ConfirmRequestEvent:
+		case SessionStartedEvent, TitleRenamedEvent, DispatchStartEvent, DispatchEndEvent, ConfirmRequestEvent:
 			// 不上抛：确认由父会话代理时发、start/end 由派发方自己发
 		}
 	}

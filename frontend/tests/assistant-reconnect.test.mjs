@@ -27,12 +27,15 @@ test('① isConnectionError：非连接类错误不命中（不自动重试）',
 
 // ---------- ② AssistantWorkspace：connectionChanged 重拉接线 ----------
 
-test('② AssistantWorkspace 订阅 connectionChanged：恢复且只有挂错误时才重拉', () => {
+test('② AssistantWorkspace 订阅 connectionChanged：恢复即无条件重拉一次（2026-12 运行状态修复）', () => {
   const src = fs.readFileSync(new URL('../src/components/assistant/AssistantWorkspace.tsx', import.meta.url), 'utf8');
   assert.ok(src.includes('ev.type !== "connectionChanged"'), '订阅 connectionChanged 事件');
   assert.match(src, /if \(!ev\.connected\) \{\s*\n\s*connectedRef\.current = false;/, '断线翻转 connectedRef（不发请求）');
   assert.match(src, /if \(connectedRef\.current\) return;/, '同一次连接去重（onopen 连发不重复拉）');
-  assert.match(src, /if \(!listErrorRef\.current\) return;/, '只在挂着 listError 时重拉（正常态不与 sessionChanged 撞车）');
+  // P1c：恢复即重拉（不要求 listError 非空）——重连期间错过的运行态翻转只有
+  // 重拉才对得上；listError 兜底重拉另由切入助手模式的第三条路径承担。
+  const connFx = src.slice(src.indexOf('connectedRef.current = true;'), src.indexOf('void refreshList().catch'));
+  assert.ok(!connFx.includes('listErrorRef.current'), 'connectionChanged 分支不再有 listError 闸（恢复即重拉）');
   assert.match(src, /void refreshList\(\)\.catch\(\(\) => undefined\);/, '恢复重拉失败静默（弹层已有错误，不重复弹）');
 });
 

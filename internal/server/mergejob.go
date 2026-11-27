@@ -162,7 +162,7 @@ func (s *Server) startMergeJobOpts(sessionID, targetBranch string, pushAfter, au
 		return "", fmt.Errorf("项目 %s 不存在", workspace)
 	}
 	// 标题先读好（label 要进 Spec）——读不到不挡合并，退回中性标签。
-	title, err := s.st.TitleOf(sessionID)
+	title, _, err := s.st.TitleOf(sessionID)
 	if err != nil {
 		title = ""
 	}

@@ -14,7 +14,7 @@
 import type {
   AgentAdminEntry, AgentAdminMcServer, AgentAdminModule, AgentAdminSource, AgentAdminTool, AgentEvent, AgentSource,
   ApprovalMode, ArchiveOutcome, AssistantSource, CatalogModelList, CatalogProviderList, ChatTreeResult, CompactOutcome, DiscoverResult,
-  FileRestoreResult, GitOverview, HistorySnapshot, JobAdminSource, JobInfo, JobLogResult, LogsSource, LogsTailResult, ModelAdminSource, ModelEntry,
+  FileRestoreResult, FulltextResult, FulltextSource, GitOverview, HistorySnapshot, JobAdminSource, JobInfo, JobLogResult, LogsSource, LogsTailResult, ModelAdminSource, ModelEntry,
   ProjectInstructions, ProjectMeta, RewindOutcome, SearchAdminSource, SearchChannel, SearchChannelsSnapshot,
   SearchTestResult, SendAttachments, SendOptions, SessionMeta, SetLeafOutcome, TodoItem, TodoPromptMode,
   TodoPromptSource,
@@ -59,6 +59,18 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
   readonly logsAdmin: LogsSource;
   /** 助手域（assistant.*，助手模式 P1）——AgentSource.assistant 的实现。 */
   readonly assistant: AssistantSource;
+  /** 历史消息全文检索（session.fulltext）——AgentSource.fulltext 的实现。 */
+  readonly fulltext: FulltextSource = {
+    searchMessages: (query, max) =>
+      this.conn.call("session.fulltext", { query, ...(max ? { max } : {}) }) as Promise<FulltextResult>,
+  };
+  /** file.reveal（产物卡「在编辑器打开/显示在文件夹」）：后端路径白名单，
+   *  回绝对路径——打开动作由调用方经壳桥执行。 */
+  async revealFile(sessionId: string, path: string): Promise<string> {
+    const r = await this.conn.call("file.reveal", { session_id: sessionId, path }) as { abs?: string };
+    if (!r?.abs) throw new Error("后端未返回绝对路径");
+    return r.abs;
+  }
   // 管理域转发（implements 六接口——成员在域对象上，这里逐个转发以满足接口
   // 与既有调用方 `agent.modelAdmin.*` / `agent.jobAdmin.*` 两种访问形态）。
   models(): ReturnType<ModelAdminSource["models"]> { return this.modelAdmin.models(); }
@@ -151,7 +163,18 @@ export class WSAgent implements AgentSource, ModelAdminSource, AgentAdminSource,
       for (const id of busy) {
         if (this.loadedSessions.has(id)) continue;
         this.loadHistory(id).catch((e) => {
-          if (isAssistantDomainError(e)) void this.assistant.history(id).catch(() => undefined);
+          // 助手域会话：按错误分流重拉 assistant.history（域闸门拒绝串判定）。
+          // 补拉失败**不静默**（2026-12 修复）：console.error 经壳的
+          // console-message 链路落盘 renderer.log（打包壳无 DevTools 的取证通道）。
+          // 不走 opError——重连补拉失败弹提示条太吵（侧栏亮标签不亮属于降级
+          // 而非故障，用户下一轮事件/轮末会话刷新自然对上）。
+          if (isAssistantDomainError(e)) {
+            void this.assistant.history(id).catch((e2) => {
+              console.error(`[busy-snapshot] 助手会话 ${id} 补拉历史失败:`, e2);
+            });
+            return;
+          }
+          console.error(`[busy-snapshot] 会话 ${id} 补拉历史失败:`, e);
         });
       }
     });

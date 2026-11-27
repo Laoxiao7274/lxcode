@@ -7,14 +7,21 @@
 // 弹层行为（开合 / 点外 / Esc / gsap 退场）走 usePopover，与 ContextIndicator
 // 同一套；面板挂 data-pop 是 usePopover 的约定。
 import { useJobs } from "../../shared/jobs-admin";
+import { useEffect, useRef } from "react";
 import { usePopover } from "../../shared/popover";
 import type { AgentSource } from "../../shared/types";
 import type { MergeEntry } from "./JobsPanel";
 import { JobsPanel } from "./JobsPanel";
 
-export function JobsBadge({ merge, source }: { merge?: MergeEntry; source: AgentSource }) {
+export function JobsBadge({ merge, source, openSignal = 0 }: { merge?: MergeEntry; source: AgentSource; /** 外部打开信号（A2 斜杠命令 /jobs）：数值变化（>0）即打开面板。 */ openSignal?: number }) {
   const { jobs, active } = useJobs();
-  const { open, toggle, rootRef } = usePopover();
+  const { open, toggle, setOpen, rootRef } = usePopover();
+  // 外部打开信号（A2 斜杠命令）：数值变化且非 0 时打开。
+  const prevSignal = useRef(openSignal);
+  useEffect(() => {
+    if (openSignal > 0 && openSignal !== prevSignal.current) setOpen(true);
+    prevSignal.current = openSignal;
+  }, [openSignal, setOpen]);
   const count = active > 0 ? active : jobs.length;
   const label = active > 0 ? `后台任务：${active} 个运行中` : `后台任务：${jobs.length} 个`;
 

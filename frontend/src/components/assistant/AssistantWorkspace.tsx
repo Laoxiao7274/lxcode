@@ -181,26 +181,51 @@ export function AssistantWorkspace({
     }
   }, [assistant]);
 
-  // 初始装载（挂载时拉一次列表）+ session.changed 订阅：助手会话的新建/首条
-  // 消息落库/归档/压缩都会广播 session.changed（后端 emit.go 的两域共用广播，
-  // 助手域换 assistant.* 前缀但全局事件原样）——列表是共享状态，别的端建的
-  // 助手会话也要立刻看见。订阅经 source.subscribe（AgentSource 能力口，现成）。
+  // 初始装载（挂载时拉一次列表）+ 事件驱动对账（2026-12 运行状态显示修复）：
+  // ① session.changed：助手会话的新建/首条消息落库/归档/压缩都会广播（后端
+  //    emit.go 的两域共用广播，助手域换 assistant.* 前缀但全局事件原样）——
+  //    列表是共享状态，别的端建的助手会话也要立刻看见；
+  // ② sessionsChanged（P1b）：hello 握手的 busy_sessions 快照（双域并入）到达
+  //    = 一次权威快照——重拉 assistant.list 让 running 位对齐（对齐主域
+  //    busyInit 快照兜底模式；防抖靠 list() 的在途请求天然合并不设闸）；
+  // ③ busy 翻转（P1a）：轮次边界 assistant.busy → chat.busy 同构事件带
+  //    space 标记——**就地更新**对应行的 running 位（事件驱动的对账信号，
+  //    不触发整列表重拉：跑起来立刻转圈、跑完立刻停，不粘滞不延迟）。
+  //    带 dispatchId 的子会话忙闲不碰列表（那不是助手会话自己的 busy；
+  //    子会话也不进 assistant.list——按 sessionId 匹配天然过滤，仍显式
+  //    判掉防归属误翻）。
   useEffect(() => {
     void refreshList();
     return source.subscribe((ev) => {
-      if (ev.type === "sessionChanged") void refreshList();
+      if (ev.type === "sessionChanged" || ev.type === "sessionsChanged") {
+        void refreshList();
+        return;
+      }
+      if (ev.type === "busy" && !ev.dispatchId && (ev as { space?: string }).space === "assistant") {
+        setSessionList((prev) => {
+          let touched = false;
+          const next = prev.map((s) => {
+            if (s.id !== ev.sessionId) return s;
+            touched = true;
+            return s.running === ev.busy ? s : { ...s, running: ev.busy };
+          });
+          return touched ? next : prev;
+        });
+      }
     });
   }, [source, refreshList]);
 
-  // 连接恢复后重拉列表（2026-12「每次点开都显示后端未连接」修复）：本组件保活
+  // 连接恢复后重拉列表（2026-12「每次点开都显示后端未连接」修复；2026-12
+  // 运行状态修复放宽为**无条件重拉一次**，对齐主域重连恢复链）：本组件保活
   // 常驻、启动即拉 assistant.list——启动时 WS 还没 open，connection.call 同步
   // reject「后端未连接」，listError 落地常驻；而连接层的握手初始化链不含
   // assistant.list，恢复后无人重拉。挂在 AgentSource 的 connectionChanged 事件上
   //（WSAgent 的 open/close 翻转；DemoAgent 订阅即发 true——恰好像挂载刷新一样
-  // 补一次拉取）：①只在 connected 翻 true 时发（断线路径不发请求）；②只在当前
-  // 有 listError 时发——正常情况下列表已有数据，恢复时多拉一次是纯浪费，且会与
-  // sessionChanged 的刷新撞车；③connectedRef 去重（同一次连接里 onopen 可能
-  // 连发）；④失败静默落回 listError——弹层已有的错误不需要再报一次。
+  // 补一次拉取）：①只在 connected 翻 true 时发（断线路径不发请求）；②恢复即拉
+  // ——不要求挂着 listError：重连期间错过的运行态翻转（busy 广播一次丢失）
+  // 只有重拉才对得上，列表已有数据时多拉一次是廉价的对账（与 session.changed
+  // 的刷新撞车也只是多一次幂等请求）；③connectedRef 去重（同一次连接里 onopen
+  // 可能连发）；④失败静默落回 listError——弹层已有的错误不需要再报一次。
   const connectedRef = useRef(false);
   const listErrorRef = useRef(listError);
   listErrorRef.current = listError;
@@ -213,7 +238,6 @@ export function AssistantWorkspace({
       }
       if (connectedRef.current) return;
       connectedRef.current = true;
-      if (!listErrorRef.current) return;
       void refreshList().catch(() => undefined);
     });
   }, [source, refreshList]);

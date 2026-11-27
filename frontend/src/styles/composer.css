@@ -1933,3 +1933,14 @@ html[data-theme="dark"] .att-remove:hover {
 .user-att-files .folder-card {
   flex: none;
 }
+/* /help 命令清单条（A2）：复用 op-notice 容器，行间用块级 span 分行展示 */
+.op-notice.slash-help .op-notice-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  white-space: normal;
+}
+.slash-help-line {
+  font-size: 11.5px;
+  line-height: 1.5;
+}

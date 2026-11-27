@@ -136,7 +136,7 @@ func newBashDef(r *Registry, readOnly bool) *Def {
 	description := "在本机执行 shell 命令（" + shellDisp + "），返回合并的 stdout/stderr 与退出码。" +
 		"终端操作专用（git/npm/构建/系统管理）；文件操作与检索用专用工具（read_file/ripgrep/edit）。" +
 		"多行脚本请用 stdin 传（别在 command 里堆引号）。" +
-		"等待纪律：等已有后台任务用 job_output(wait=true, wait_condition=…)（阻塞等待原语：exit/exit_ok/output/idle/{pattern}）；真的无任务句柄才用 run_in_background 起轮询循环（until cond; do sleep 30; done）——纯 sleep 命令会被拒绝执行。" +
+		"等待纪律：等已有后台任务用 wait(job_id, timeout_sec)（只回状态不回输出；要看进度/增量用 job_output(wait=true, wait_condition=…)——exit/exit_ok/output/idle/{pattern}）；真的无任务句柄才用 run_in_background 起轮询循环（until cond; do sleep 30; done）——纯 sleep 命令会被拒绝执行。" +
 		shellSyntaxHint(shellDisp)
 	schema := json.RawMessage(`{
 		"type": "object",
@@ -145,7 +145,7 @@ func newBashDef(r *Registry, readOnly bool) *Def {
 			"cwd": {"type": "string", "description": "工作目录（绝对或相对会话工作目录，可选）；默认会话工作目录（无则为进程当前目录）"},
 			"stdin": {"type": "string", "description": "喂给命令的标准输入（可选，上限 64KB）：可写多行脚本或 heredoc 体，避免引号转义"},
 			"timeout_sec": {"type": "integer", "description": "超时秒数，默认 60，上限 300"},
-			"run_in_background": {"type": "boolean", "description": "true 时立刻返回 job id（长命令：构建、测试、dev server）；等外部状态的正路是先用它把检查命令变后台任务、再用 job_output(wait_condition) 等进度——真的无任务句柄才起轮询循环（until cond; do sleep 30; done）"}
+			"run_in_background": {"type": "boolean", "description": "true 时立刻返回 job id（长命令：构建、测试、dev server）；等它结束用 wait(job_id)（只回状态）、看进度用 job_output(wait_condition)——真的无任务句柄才起轮询循环（until cond; do sleep 30; done）"}
 		},
 		"required": ["command"]
 	}`)
@@ -363,7 +363,20 @@ func runForegroundBash(ctx context.Context, shellName, shellFlag, command, cwd, 
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
 	}
-	out, err := cmd.CombinedOutput()
+	// Start + 分离的 Wait（不能用 CombinedOutput——它内部自己 Start，二次
+	// Start 报 already started）：先 Start 才有进程句柄可入 Job Object（B1）。
+	var buf syncBuffer
+	cmd.Stdout, cmd.Stderr = &buf, &buf
+	if serr := cmd.Start(); serr != nil {
+		// 启动失败仍走 execNote 的文本回填（可执行文件不存在 = 模型该知道
+		// 并换方法的事实，不是错误）——与改造前 CombinedOutput 的语义一致
+		return execNote(cctx, serr, timeout), nil
+	}
+	// 进程残留治理 B1：入 Job Object（OS 级兜底——后端硬杀时内核代杀整组）。
+	// 必须在 Start 之后立刻做（需要进程句柄；竞态窗口见 proctree_windows.go）。
+	assignJobObject(cmd)
+	err := cmd.Wait()
+	out := buf.Bytes()
 	// 输出编码归一（见 encoding.go）：Windows 控制台程序按代码页输出
 	// （中文系统 GBK），直接 string() 会得到一串非法 UTF-8 → 模型读到
 	// 乱码只能盲目重试。合法 UTF-8 原样返回，零回归面。
@@ -472,6 +485,11 @@ func startBackground(r *Registry, parent context.Context, shellName, shellFlag, 
 		j.Settle(jobs.StatusFailed, jobs.EndedSelf, "启动失败: "+err.Error())
 		return "", fmt.Errorf("后台任务启动失败: %w", err)
 	}
+	// 进程残留治理 B1：入 Job Object（OS 级兜底——后端硬杀时内核代杀整组）。
+	// 必须在 Start 之后立刻做（需要进程句柄；竞态窗口见 proctree_windows.go）。
+	assignJobObject(cmd)
+	// 进程残留治理 B3：pid 落日志首行（启动时孤儿清扫的定位依据）。
+	j.RecordPid(cmd.Process.Pid)
 	go func() {
 		// panic 防护（健壮性加固，2026-10）：这是后台任务的执行 goroutine，
 		// 里面的 panic 原样会打死整个进程（任务没等到 Settle，永远停在 running）。
@@ -552,10 +570,11 @@ func normalizeWaitErr(cmd *exec.Cmd, err error) error {
 func backgroundStartedText(id, command string) string {
 	return fmt.Sprintf("后台任务已启动: %s\n命令: %s\n"+
 		"它是异步的——现在不要等它，可以继续做别的事；结束后系统会通知你结果。\n"+
+		"  wait(job_id=%q)                    等它结束（只回状态不回输出；condition 可选 exit/exit_ok/output/idle/{\"pattern\"}）\n"+
 		"  job_output(job_id=%q)             读增量输出（无新输出回 (no new output)）\n"+
-		"  job_output(job_id=%q, wait=true, wait_condition=…)  阻塞等待原语（exit=等结束（默认）/ exit_ok=等退出码 0 / output=等新输出 / idle=等静默 N 秒 / {\"pattern\": \"…\"}=等输出命中正则；OR 组合谁先到返回谁；默认 30s，上限 600s）\n"+
+		"  job_output(job_id=%q, wait=true, wait_condition=…)  阻塞等待 + 连输出增量一起回（exit=等结束（默认）/ exit_ok=等退出码 0 / output=等新输出 / idle=等静默 N 秒 / {\"pattern\": \"…\"}=等输出命中正则；OR 组合谁先到返回谁；默认 30s，上限 600s）\n"+
 		"  job_list                         看全部任务；job_kill(job_id=%q) 停止它",
-		id, commandLabel(command), id, id, id)
+		id, commandLabel(command), id, id, id, id)
 }
 
 // commandLabel 生成任务的一行摘要（UI 卡片与唤醒通告都用它）。

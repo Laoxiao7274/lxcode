@@ -1008,15 +1008,21 @@ func TestSystemPromptListsAllTools(t *testing.T) {
 			t.Fatalf("提示词应列出工具 %s（清单与注册表不漂移）", name)
 		}
 	}
-	// 三十二个工具的清单行数（read_skill + web_search + web_fetch + agent_read
+	// 三十四个工具的清单行数（read_skill + web_search + web_fetch + agent_read
 	// + agent_write + mcp_manage + agent_dispatch + run_task + project_list +
-	// project_create + merge_request + ask_user + update_assistant_config +
-	// job_output/job_list/job_kill + 工作区四件套 + share_file + read_image +
+	// project_create + merge_request + schedule + ask_user +
+	// update_assistant_config +
+	// job_output/job_list/job_kill/wait + 工作区四件套 + share_file + read_image +
 	// bash_readonly——渐进披露、联网检索与抓正文、Agent 配置读写、MCP 管理、调度、
 	// 助手能力桥、项目全景查询、项目创建、合并进程入口、提问通道、助手自改配置、
-	// 后台任务、工作区查询/同步/回滚/产物发布、附件共享、视觉读图、只读执行面）
-	if got := strings.Count(prompt, "\n- "); got != 32 {
-		t.Fatalf("工具清单应 32 行, got %d", got)
+	// 后台任务、等待原语、工作区查询/同步/回滚/产物发布、附件共享、视觉读图、只读执行面）
+	if got := strings.Count(prompt, "\n- "); got != 34 {
+		t.Fatalf("工具清单应 34 行, got %d", got)
+	}
+	// wait 的摘要行（TestBuiltinToolsHaveCuratedLine 之外的手写钉子：清单行
+	// 在说明「只回状态不回输出」——这是它与 job_output(wait=true) 的分工）
+	if !strings.Contains(prompt, "wait：阻塞等一个后台任务结束/满足条件，只回状态不回输出") {
+		t.Fatal("提示词应带 wait 的手写摘要（只回状态不回输出的分工要写明）")
 	}
 }
 

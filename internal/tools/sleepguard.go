@@ -27,13 +27,14 @@ import (
 
 // sleepJobWaitHint 是硬拦时给模型的替代路径（可执行，不是空话）。
 const sleepJobWaitHint = "等待的正确姿势（一等原语，别再写 sleep）：\n" +
-	"等已有后台任务的进度/结束 → job_output(job_id=…, wait=true, wait_condition=…)（阻塞等待原语：exit 等结束 / exit_ok 等成功 / output 等新输出 / idle 等静默 / {\"pattern\": \"…\"} 等输出命中正则——OR 组合谁先到返回谁，上限 600s）；\n" +
+	"等已有后台任务的进度/结束 → wait(job_id=…)（只回状态不回输出，condition 可选：exit 等结束 / exit_ok 等成功 / output 等新输出 / idle 等静默 / {\"pattern\": \"…\"} 等输出命中正则，上限 600s）" +
+	"或 job_output(job_id=…, wait=true, wait_condition=…)（连输出增量一起回——要看进度用这个）；\n" +
 	"真的无任务句柄可等（外部状态）→ 才用 run_in_background=true 起轮询循环" +
 	"（如 `until curl -s http://… ; do sleep 30; done`），系统会在任务结束时通知你。" +
 	"纯 sleep 不检查任何状态、纯烧轮次，一律不执行。"
 
 // sleepComboHint 是组合命令（sleep + 别的真动作）放行时附在结果前的提示。
-const sleepComboHint = "[等待纪律] 命令里带 sleep：等已有后台任务用 job_output(wait=true, wait_condition=…)（等待原语：exit/exit_ok/output/idle/{pattern}，上限 600s）；" +
+const sleepComboHint = "[等待纪律] 命令里带 sleep：等已有后台任务用 wait(job_id=…)（只回状态）或 job_output(wait=true, wait_condition=…)（等待原语：exit/exit_ok/output/idle/{pattern}，上限 600s）；" +
 	"真的无任务句柄才用 run_in_background=true 起轮询循环（until cond; do sleep 30; done）——" +
 	"不要用 sleep 预估等待时长。"
 

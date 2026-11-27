@@ -2662,6 +2662,7 @@ class RealBackend {
             "web_search" to "联网搜索",
             "web_fetch" to "抓网页",
             "job_output" to "后台任务输出",
+            "wait" to "等待任务",
             "job_list" to "后台任务列表",
             "job_kill" to "停止后台任务",
             "read_skill" to "读技能",

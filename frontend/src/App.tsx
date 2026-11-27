@@ -48,6 +48,7 @@ import { SearchAdminProvider } from "./shared/search-admin";
 import { JobsProvider } from "./shared/jobs-admin";
 import { useConfirmFlow } from "./app-hooks/use-confirm-flow";
 import { assistantSendOpts } from "./agent/ws/assistant";
+import { SLASH_HELP_TEXT } from "./shared/slash-help";
 import { useWorkspaceNav } from "./app-hooks/use-workspace-nav";
 import { useTurnOutline } from "./app-hooks/use-turn-outline";
 import { useSessionTree } from "./app-hooks/use-session-tree";
@@ -601,15 +602,45 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
     </div>
   );
 
-  // 斜杠命令集（命令面板）：页面导航。后端化时同一面板接会话/工具域
-  // 命令（/resume /compact …）与选择器聚焦。
+  // 选择器打开信号（A2 斜杠命令 /model /effort /approval /jobs）：数值递增
+  // 触发对应 picker 打开（命令面板没有这些控件的 DOM 引用，经 prop 信号驱动
+  // 是最低侵入的通路——ModelPicker/PermPicker/JobsBadge 各自监听信号变化）。
+  const [pickerSignals, setPickerSignals] = useState({ model: 0, effort: 0, approval: 0, jobs: 0 });
+  const bumpSignal = useCallback((k: keyof typeof pickerSignals) => {
+    setPickerSignals((cur) => ({ ...cur, [k]: cur[k] + 1 }));
+  }, []);
+  // /help 的一次性清单条（复用 OpNotice 形态——与 operationError 同层）：
+  // 命令清单是纯展示，不需要独立弹层；点关闭即摘。
+  const [helpText, setHelpText] = useState("");
+  useEffect(() => {
+    if (!helpText) return;
+    const t = setTimeout(() => setHelpText(""), 12000);
+    return () => clearTimeout(t);
+  }, [helpText]);
+
+  // /help 清单条（A2）：复用 op-notice 形态走中性色——纯展示清单不是错误。
+  const helpNotice = helpText && view === "chat" && (
+    <div className="op-notice slash-help" role="status">
+      <span className="op-notice-text">
+        {helpText.split("\n").map((line, i) => (<span key={i} className="slash-help-line">{line}</span>))}
+      </span>
+      <Button className="op-notice-close" onClick={() => setHelpText("")}>关闭</Button>
+    </div>
+  );
+
+  // 斜杠命令集（命令面板）：页面导航 + 选择器聚焦（A2 补齐）。
   const slashCommands: SlashCommand[] = useMemo(() => [
     { name: "new", desc: "开始新对话", run: () => { void source.newSession(filter); backToChat(); } },
     { name: "compact", desc: "压缩早期历史（腾出上下文）", run: () => { void handleCompact(); } },
+    { name: "model", desc: "选择本会话的模型（会话级）", run: () => bumpSignal("model") },
+    { name: "effort", desc: "调推理强度（请求级）", run: () => bumpSignal("effort") },
+    { name: "approval", desc: "改本会话权限档（会话级）", run: () => bumpSignal("approval") },
+    { name: "jobs", desc: "打开后台任务面板", run: () => bumpSignal("jobs") },
     { name: "agents", desc: "打开 Agent 名单与组装", run: openAgents },
     { name: "catalog", desc: "打开拓展（工具/技能/模板/MCP）", run: openCatalog },
     { name: "settings", desc: "打开设置", run: () => setSettingsOpen(true) },
-  ], [source, filter, openAgents, openCatalog, handleCompact]);
+    { name: "help", desc: "列出全部命令", run: () => setHelpText(SLASH_HELP_TEXT) },
+  ], [source, filter, openAgents, openCatalog, handleCompact, bumpSignal]);
 
   const renderView = (activeView: WorkspaceView): ReactNode => {
     if (activeView === "chat") {
@@ -619,6 +650,7 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
         <div className="chat-split">
           <div className="chat-main">
             {errorNotice}
+            {helpNotice}
             {compactingNotice}
             <div className="thread-scroll" data-switching={switching ? "true" : undefined}>
               <Thread state={state} source={source} onConfirm={handleConfirm} onAnswer={handleAnswer} onSuggestion={handleSend} projectName={filterProjectName} onEdit={handleEdit} onRewind={handleRewind} onOpenChild={openChildView} revealUid={jumpedUid} onRetryLoad={handleRetryLoad} />
@@ -659,6 +691,9 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
               visionBlocked={visionBlocked}
               model={sessionModel}
               onPickModel={pickSessionModel}
+              modelSignal={pickerSignals.model}
+              effortSignal={pickerSignals.effort}
+              approvalSignal={pickerSignals.approval}
             />
           </div>
           <aside className="outline-aside" data-open={outlineOpen ? "true" : "false"} data-tree={sessionTree.tree !== null ? "true" : "false"}>
@@ -791,6 +826,7 @@ function AppBody({ source, sakuraBridge, tailscaleBridge, remoteControlBridge }:
         connected={wsConnected}
         mode={appMode}
         onModeChange={handleModeChange}
+        jobsSignal={pickerSignals.jobs}
       />
       {/* 模式分支保活（2026-12 卸载竞态防御）：两分支**都常驻渲染**，显隐用
           hidden（CSS display:none——workspace-view-panel 同款机制）。背景：

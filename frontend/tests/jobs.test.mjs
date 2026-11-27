@@ -426,6 +426,14 @@ test('jobWaitArgs 解析 wait/wait_condition/idle_ms（坏 JSON 回缺省不炸�
   assert.equal(jobWaitArgs('not json').wait, false);
 });
 
+test('jobWaitArgs 兼容 wait 工具的 condition 参数名（无 wait 字段 = 等待中）', () => {
+  assert.deepEqual(jobWaitArgs('{"job_id":"j1","condition":"exit_ok"}'),
+    { wait: true, condition: 'exit_ok', idleMs: undefined });
+  assert.deepEqual(jobWaitArgs('{"job_id":"j1","condition":{"pattern":"build done"}}').condition,
+    { pattern: 'build done' });
+  // wait 工具的参数必然是等待（工具名即语义），缺 wait 字段不算「不在等待」
+});
+
 test('jobWaitConditionLabel 五谓词的人话映射', () => {
   assert.equal(jobWaitConditionLabel(undefined), '任务完成');            // 缺省 = exit
   assert.equal(jobWaitConditionLabel('exit'), '任务完成');

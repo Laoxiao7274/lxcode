@@ -1,7 +1,7 @@
 // 演示数据源（M3 叙事）：主 Agent 只调度——思考选人 → agent_dispatch →
 // dispatch 卡（子 Agent 全套执行：思考/读码/改码/确认门/跑测试）→ 验收
 // 汇总。覆盖 UI 全部状态。事件形状与后端协议 1:1——接线换 WSAgent 即可。
-import type { AgentEvent, AgentSource, ApprovalMode, ArchiveOutcome, AssistantConfig, AssistantSource, ChatSendFile, ChatSendImage, ChatTreeResult, CompactOutcome, ConfirmRequest, ContextUsage, GitOverview, HistoryMessage, HistorySnapshot, JobAdminSource, JobInfo, JobLogResult, LogsSource, LogsTailResult, ProjectInstructions, ProjectMeta, RewindOutcome, SendOptions, SessionMeta, SessionStats, SetLeafOutcome, TodoItem, TreeNode } from "../../shared/types";
+import type { AgentEvent, AgentSource, ApprovalMode, ArchiveOutcome, AssistantConfig, AssistantSource, ChatSendFile, ChatSendImage, ChatTreeResult, CompactOutcome, ConfirmRequest, ContextUsage, FulltextSource, GitOverview, HistoryMessage, HistorySnapshot, JobAdminSource, JobInfo, JobLogResult, LogsSource, LogsTailResult, ProjectInstructions, ProjectMeta, RewindOutcome, SendOptions, SessionMeta, SessionStats, SetLeafOutcome, TodoItem, TreeNode } from "../../shared/types";
 import { JOB_NOTICE_PREFIX, sortJobs, upsertJob } from "../../shared/jobs";
 import { normalizeApproval } from "../../shared/approval";
 import { MAIN_REASONING, SUB_REASONING, SUB_RESULT, MAIN_ANSWER, TODO_INITIAL, TODO_LATER, DISPATCH_TODOS, DISPATCH_TODOS_RUNNING, DISPATCH_TODOS_FINAL, FILES_CHANGED, SESSIONS } from "./data";
@@ -96,6 +96,11 @@ export class DemoAgent implements AgentSource, JobAdminSource, LogsSource {
     setModel: (sessionId, modelId) => this.assistantSetModel(sessionId, modelId),
     getConfig: () => this.assistantGetConfig(),
     setConfig: (cfg) => this.assistantSetConfig(cfg),
+  };
+  /** 历史消息全文检索（session.fulltext）：演示模式没有后端历史可搜——
+   *  拒绝文案如实说明（侧栏据此隐藏「消息命中」区，fulltext 缺席口径）。 */
+  readonly fulltext: FulltextSource = {
+    searchMessages: () => Promise.reject(new Error("演示模式没有可检索的后端历史")),
   };
   private listeners = new Set<Listener>();
   private timers = new Map<string, ReturnType<typeof setTimeout>[]>();

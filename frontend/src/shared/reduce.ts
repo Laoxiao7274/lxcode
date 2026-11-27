@@ -584,8 +584,16 @@ if (ev.history.busy && state.busy && state.historyReady) {
   };
 }
 // 快照说会话在生成而本地不知道（新连上的客户端错过了那次 busy=true 广播）：
-// 以服务端事实为准置真。反向不写（busy=false 抹掉本地真值是既有行为——
-// rebuilt 展开已带 busy: ev.history.busy）。
+// 以服务端事实为准置真。**反向（快照说闲）不显式写 false，保留本地真值**
+//（2026-12 冷恢复 busy 位保护）：本地 busy=true 且快照说 false 时保留本地——
+// 子会话快照的 busy 键对忙闲不携带事实（现建运行时 AttachTo 出来的 Session
+// busy 恒 false，见 liveTail 注释），工具执行间隙（CHILD_BUSY_HINTS 攒出的
+// busy=true、无 live 流式块）重开/重拉视图会把「正在跑」抹成闲——忙点灰、
+// 「正在处理…」消失、停止钮消失，直到下一条 delta/toolCall 才回来。
+// 权衡：state.busy 卡 true 的会话（真死了但轮末 busy=false 事件丢失）重进后
+// 仍显示忙——可接受：busy=false 事件轮末总会再发（turn.go 无条件），宁可
+// 假忙，不要「正在跑却显示闲」。快照说忙（busySnapshot）或本地有实时尾巴
+//（live）时仍照旧置真。
 const busySnapshot = ev.history.busy;
 // 冷恢复/空闲会话：messages → blocks（工具调用与结果配对）。
 // 任务块不出现在时间线（2026-12 拍板，docs/jobs.md §6）——重建也不再保留
@@ -610,7 +618,7 @@ const { blocks: withLive, streaming: liveStream } = appendLiveTail(revived, live
 return {
   ...rebuilt,
   rebuiltGen,
-  busy: busySnapshot || ev.history.busy || live.length > 0,
+  busy: busySnapshot || ev.history.busy || live.length > 0 || state.busy,
   // 历史全量重建：pending 乐观块一起被重建抹掉——回放的历史里要么已有这条消息
   //（真块回来了），要么发送还没落库（留着会变僵尸 pending）。发送中态一并结束。
   sending: false,

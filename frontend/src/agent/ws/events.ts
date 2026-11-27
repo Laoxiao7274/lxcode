@@ -209,6 +209,8 @@ function mapChatEvent(method: string, params: unknown): AgentEvent | null {
       };
     case "chat.error":
       return { type: "error", sessionId, message: String(p.message ?? ""), aborted: Boolean(p.aborted),
+        // dispatchId：子会话轮失败的归属（通知判定滤子会话——错误在派发卡内呈现）。
+        dispatchId,
         // force：超窗强制压缩仍失败的告警（可选键，老后端缺席）。
         ...(p.force === true ? { force: true } : {}) };
     case "chat.busy":

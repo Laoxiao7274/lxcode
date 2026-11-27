@@ -167,13 +167,48 @@ export function getUpdateBridge(): UpdateBridge | null {  const s = (window as u
 
 export interface NotifyBridge {
   /** 弹一条系统通知（fire-and-forget：弹不出无需向渲染层回报——通知不参与
-   *  生成流程，时间线照常展示结果）。判定（主轮 done + 失焦 + 开关）在渲染层。 */
+   *  生成流程，时间线照常展示结果）。判定（done/error + 失焦 + 开关）在渲染层。 */
   done(n: { title: string; body: string; sessionId?: string }): void;
+  /** 失败通知（chat.error 且非取消、非当前焦点会话）——与 done 同一条 IPC 管道，
+   *  类型文案由壳侧区分（标题前缀「失败」）。 */
+  error(n: { title: string; body: string; sessionId?: string }): void;
 }
 
 /** 通知桥；null = 浏览器模式（无壳可弹，静默跳过——demo 模式自然走这里）。 */
+// ---- 工作区文件交给系统编辑器/文件管理器（产物卡动作，A4）----
+// 路径白名单在后端 file.reveal（净化后在会话工作目录内才回绝对路径）；
+// 壳只执行（shell.openPath / showItemInFolder）。null = 无壳桥（浏览器/远程
+// 访问——本机文件本来就不在这台机器上，动作不可见）。
+
+export interface FilesBridge {
+  /** 在系统文件管理器里显示该文件（选中态）。 */
+  reveal(abs: string): Promise<{ ok: boolean; error?: string }>;
+  /** 用系统默认应用打开该文件（编辑器/查看器）。 */
+  open(abs: string): Promise<{ ok: boolean; error?: string }>;
+}
+
+export function getFilesBridge(): FilesBridge | null {
+  const h = (typeof window === "undefined" ? undefined : window) as { __LX__?: { files?: { reveal?: (p: string) => Promise<unknown>; open?: (p: string) => Promise<unknown> } } } | undefined;
+  const s = h?.__LX__?.files;
+  if (!s?.reveal || !s.open) return null;
+  return {
+    reveal: async (abs) => {
+      const r = await s.reveal!(abs) as { ok?: unknown; error?: unknown };
+      return { ok: r.ok === true, error: typeof r.error === "string" ? r.error : undefined };
+    },
+    open: async (abs) => {
+      const r = await s.open!(abs) as { ok?: unknown; error?: unknown };
+      return { ok: r.ok === true, error: typeof r.error === "string" ? r.error : undefined };
+    },
+  };
+}
+
 export function getNotifyBridge(): NotifyBridge | null {
-  const s = (window as unknown as { __LX__?: { notify?: { done?: (n: unknown) => void } } }).__LX__?.notify;
+  const s = (window as unknown as { __LX__?: { notify?: { done?: (n: unknown) => void; error?: (n: unknown) => void } } }).__LX__?.notify;
   if (!s?.done) return null;
-  return { done: (n) => s.done!(n) };
+  return {
+    done: (n) => s.done!(n),
+    // 老壳没有 error 通道：回落 done（同一 IPC；壳侧文案由调用方 title 表达）。
+    error: s.error ? (n) => s.error!(n) : (n) => s.done!(n),
+  };
 }

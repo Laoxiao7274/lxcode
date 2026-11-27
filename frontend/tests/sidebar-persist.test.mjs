@@ -84,7 +84,9 @@ test('②d Sidebar：Ctrl/Cmd+K 全局监听 → 聚焦+全选；Escape 清查�
   assert.match(sidebarSrc, /document\.addEventListener\("keydown", onKey\)/, '全局 keydown（document 级）');
   assert.match(sidebarSrc, /\(e\.ctrlKey \|\| e\.metaKey\) && \(e\.key === "k" \|\| e\.key === "K"\)/);
   assert.match(sidebarSrc, /searchRef\.current\?\.select\(\)/, '聚焦后全选');
-  assert.match(sidebarSrc, /if \(e\.key === "Escape"\) \{\s*\n\s*setQuery\(""\);\s*\n\s*e\.currentTarget\.blur\(\);/);
+  // Escape 清查询走 onSearchInput("")（A1 全文检索并入同一收口——setQuery 之外
+  // 还要清 fulltext 命中组），字面 `setQuery("")` 的旧断言随之更新。
+  assert.match(sidebarSrc, /if \(e\.key === "Escape"\) \{\s*\n\s*onSearchInput\(""\);\s*\n\s*e\.currentTarget\.blur\(\);/);
 });
 
 test('②e search-kbd 角标保留（现在有真实功能了）', () => {

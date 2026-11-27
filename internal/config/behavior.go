@@ -60,8 +60,12 @@ type Behavior struct {
 	// Approval 是**新会话**的默认审批档（会话创建时用它初始化并落库；既有会话
 	// 的档位是它自己的落库值，改这里不影响它们）；空 = confirm（读侧补默认）。
 	Approval string `json:"approval"`
+	// AutoTitle 是 AI 自动命名会话的开关（B1）：首轮收尾后标题仍是默认截断值时
+	// 用当前模型生成 4-8 字短标题。**指针三态**：nil（键缺席）= 开（缺省行为，
+	// 老配置文件零迁移）；显式 false = 关。失败静默回落默认标题，见 agent 包
+	// autotitle.go。
+	AutoTitle *bool `json:"autoTitle,omitempty"`
 }
-
 // Normalized 返回补齐缺省后的配置（空/非法值回落默认而不是报错，与 LoadBehavior
 // 的容错语义一致：行为开关宁可回默认也不让会话发不出）。两个字段**各自独立**
 // 归一——只校验出一个非法值就把另一个合法值一起丢掉是错的（set 只改一个字段
@@ -75,6 +79,12 @@ func (b Behavior) Normalized() Behavior {
 		n.Approval = ApprovalConfirm
 	}
 	return n
+}
+
+// AutoTitleEnabled 返回 AI 自动命名是否开启（nil = 缺省开；读侧补默认与
+// Normalized 的容错语义一致）。
+func (b Behavior) AutoTitleEnabled() bool {
+	return b.AutoTitle == nil || *b.AutoTitle
 }
 
 // LoadBehavior 读行为配置。文件缺失/损坏/字段非法 = 各字段默认（strict / confirm）。

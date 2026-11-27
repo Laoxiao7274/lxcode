@@ -19,6 +19,7 @@ import (
 	"runtime/debug"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/moyunteng/lxcode/internal/config"
 	"github.com/moyunteng/lxcode/internal/llm"
@@ -105,6 +106,11 @@ type Session struct {
 	// 传入（会话级，子会话派发时从父会话继承）；空 = strict。与 approval 的
 	// 区别：它不需要「运行中即时生效」——下一轮读新值即可（提示词每轮现组装）。
 	todoPrompt string
+	// AI 自动命名（B1）：autoTitle 开关（server 按 behavior.json 显式传入——
+	// 缺省关，测试与旧调用方零影响）；titled = 已发起过命名（只命名一次，
+	// 含失败——重试的噪声配不上收益，见 autotitle.go 头注）。
+	autoTitle bool
+	titled    bool
 	// approvalSource 非 nil = 本会话是子会话：档位不自己说了算，而是
 	// 「父会话**此刻**的档位」与 approvalDefault 取严（子执行面不大于请求方）。
 	// 为什么是回调而不是派发那一刻算好的死值：父会话中途改档必须传得到
@@ -546,6 +552,14 @@ func (s *Session) TodoPromptMode() string {
 	return s.todoPrompt
 }
 
+// SetAutoTitle 开/关本会话的 AI 自动命名（测试注入用；生产路径经
+// WithAutoTitle(true)——chat.send 时 server 按 behavior.json 传入）。
+func (s *Session) SetAutoTitle(on bool) {
+	s.mu.Lock()
+	s.autoTitle = on
+	s.mu.Unlock()
+}
+
 // Send 发起一轮对话（异步）：校验模型 → 入历史 → 后台跑工具循环。
 // 忙时返回 ErrBusy；模型未绑定/停用返回对应哨兵（服务端按类别映射错误码）。
 func (s *Session) Send(text string, opts ...SendOpt) error {
@@ -616,6 +630,11 @@ func (s *Session) Send(text string, opts ...SendOpt) error {
 	if cfg.todoPrompt != "" {
 		s.todoPrompt = cfg.todoPrompt
 	}
+	// AI 自动命名开关（B1）：显式传入才覆盖会话现值（SetAutoTitle 的测试注入
+	// 不被每轮 Send 重置）。
+	if cfg.autoTitleSet {
+		s.autoTitle = cfg.autoTitle
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s.cancel = cancel
 	s.mu.Unlock()
@@ -655,6 +674,37 @@ func (s *Session) Cancel() {
 	s.mu.Unlock()
 	if cancel != nil {
 		cancel()
+	}
+}
+
+// CancelAndWait 取消当前生成并**等到本轮真正收尾**（进程残留治理 B2：
+// 后端优雅退出前用——只 Cancel 不等的话，后端进程退出时工具循环里的前台
+// bash 子进程还没被树杀，残留进程就成了孤儿）。非 busy = no-op。
+//
+// 锁纪律与 settleBusyForRewind 相同：等待期间绝不持有 s.mu（锁内只取引用，
+// close 在 runTurn 的 defer 里锁外做——持锁等待会与 defer 抢锁死锁）。
+// timeout 是等待上限：超时返回 error 但取消已发出（树杀由 cmd.Cancel 兜），
+// 调用方（server 退出路径）记日志继续走自己的收尾——不能因一个会话卡死整个退出。
+func (s *Session) CancelAndWait(timeout time.Duration) error {
+	s.mu.Lock()
+	if !s.busy {
+		s.mu.Unlock()
+		return nil
+	}
+	cancel := s.cancel
+	ended := s.turnEnded
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel() // 幂等：与用户点停止同一条路径
+	}
+	if ended == nil {
+		return fmt.Errorf("%w（正在收尾）", ErrBusy)
+	}
+	select {
+	case <-ended:
+		return nil
+	case <-time.After(timeout):
+		return fmt.Errorf("%w：本轮收尾超时（取消已发出，子进程由树杀兜底）", ErrBusy)
 	}
 }
 

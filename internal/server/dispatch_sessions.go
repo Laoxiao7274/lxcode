@@ -4,9 +4,11 @@ package server
 
 import (
 	"encoding/json"
+	"regexp"
 	"strings"
 
 	"github.com/moyunteng/lxcode/internal/protocol"
+	"github.com/moyunteng/lxcode/internal/sessiondata"
 )
 
 func (s *Server) dispatchSessions(c *wsClient, req *protocol.Request, params json.RawMessage) *protocol.Response {
@@ -75,6 +77,46 @@ func (s *Server) dispatchSessions(c *wsClient, req *protocol.Request, params jso
 		// 会话列表变了：广播让客户端刷新侧栏
 		s.broadcast(protocol.EventSessionChanged, protocol.SessionChangedParams{ID: p.ID, Reason: "renamed"})
 		return protocol.NewResult(req.ID, map[string]any{})
+
+	case protocol.MethodSessionFulltext:
+		if s.st == nil {
+			return protocol.NewError(req.ID, protocol.CodeInvalidParams, "会话存储未启用")
+		}
+		var p protocol.SessionFulltextParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return protocol.NewError(req.ID, protocol.CodeInvalidParams, "参数解析失败: "+err.Error())
+		}
+		if strings.TrimSpace(p.Query) == "" {
+			return protocol.NewError(req.ID, protocol.CodeInvalidParams, "参数解析失败: 需要 query")
+		}
+		// 子串匹配：Query 原样进正则前先转义。UI 用户输入的是字面文本
+		//（「(未命名)」这类括号字面量不该被当正则），正则语义保留给 agent 工具。
+		hits, total, timedOut, err := s.st.Search(sessiondata.SearchQuery{
+			Pattern: regexp.QuoteMeta(p.Query),
+			Max:     p.Max,
+		})
+		if err != nil {
+			return protocol.NewError(req.ID, protocol.CodeInternal, err.Error())
+		}
+		return protocol.NewResult(req.ID, protocol.SessionFulltextResult{
+			Hits: hits, Total: total, TimedOut: timedOut,
+		})
+
+	case protocol.MethodFileReveal:
+		var p protocol.FileRevealParams
+		if err := json.Unmarshal(params, &p); err != nil || p.SessionID == "" || strings.TrimSpace(p.Path) == "" {
+			return protocol.NewError(req.ID, protocol.CodeInvalidParams, "参数解析失败: 需要 session_id 与 path")
+		}
+		sess, err := s.session(p.SessionID)
+		if err != nil {
+			return protocol.NewError(req.ID, protocol.CodeInvalidParams, err.Error())
+		}
+		// 白名单：路径净化后必须仍在该会话工作目录之内（share_file 同判据）。
+		abs, err := resolveWorkspacePath(sess.WorkDir(), p.Path)
+		if err != nil {
+			return protocol.NewError(req.ID, protocol.CodeInvalidParams, "路径越出会话工作目录，拒绝打开: "+p.Path)
+		}
+		return protocol.NewResult(req.ID, protocol.FileRevealResult{Abs: abs})
 
 	case protocol.MethodSessionArchive:
 		var p protocol.SessionArchiveParams

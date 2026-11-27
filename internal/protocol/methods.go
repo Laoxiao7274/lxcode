@@ -73,6 +73,15 @@ const (
 	MethodSessionResume  = "session.resume"
 	MethodSessionRename  = "session.rename"
 	MethodSessionArchive = "session.archive"
+	// MethodSessionFulltext 历史消息全文检索（UI 用）：子串匹配（不是正则——
+	// 用户输入不需要懂正则；正则语义保留给 agent 的 session_search 工具），
+	// 转发 store.Search。排除助手域与归档会话（store.Search 的既有口径）。
+	MethodSessionFulltext = "session.fulltext"
+	// MethodFileReveal 工作区文件交给客户端的编辑器/文件管理器打开（产物卡
+	// 动作）。**白名单在后端**：路径净化后必须仍在该会话工作目录之内
+	//（share_file 的同一条判据——穿越一律拒绝）；后端只校验并回绝对路径，
+	// 打开动作由客户端壳执行（渲染层无壳桥 = 动作不可见）。
+	MethodFileReveal = "file.reveal"
 	// MethodSessionWorktreeRelease 已随直连模式移除（2026-10 架构修订废除
 	// per-session worktree，「释放工作区」失去主场景——用户 2026-12 拍板移除）。
 	// 不保留方法名：老客户端调用会得到标准的「未知方法」错误（CodeInvalidRequest），

@@ -286,3 +286,58 @@
   min-height: 26px;
 }
 /* 行级轻量状态：无（列表保持干净——完整状态在主区视图） */
+
+/* ===== 全文检索「消息命中」区（A1，session.fulltext）=====
+ * 视觉沿用既有件：分组头是 session-item 骨架（.fulltext-head 加重一级）、
+ * 片段行是它的缩进缩微版；高亮 mark 用侧栏运行蓝（命中处一眼可见，不引入新色）。 */
+.fulltext-section {
+  display: flex;
+  flex-direction: column;
+}
+.fulltext-label {
+  color: var(--fg-faint);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 6px 18px 2px;
+}
+.fulltext-head .title {
+  font-weight: 550;
+}
+.fulltext-hit {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 10px 2px 26px;
+  margin: 0 8px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--fg-faint);
+  cursor: pointer;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.fulltext-hit:hover {
+  background: var(--border-soft);
+  color: var(--fg);
+}
+.fulltext-hit .fulltext-content {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.fulltext-hit .fulltext-role {
+  flex: none;
+  font-size: 9.5px;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--border-soft);
+  color: var(--fg-faint);
+}
+.fulltext-mark {
+  background: color-mix(in srgb, #3b82f6 26%, transparent);
+  color: var(--fg);
+  border-radius: 3px;
+  padding: 0 1px;
+}

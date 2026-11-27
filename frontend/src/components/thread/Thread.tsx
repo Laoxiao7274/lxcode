@@ -317,12 +317,12 @@ export function Thread({
       {/* 回放帧（换会话的整块历史）的 replayed 只管用户气泡的入场弹动（见
        *  Block.tsx 的 layout effect）——那一帧是要尽快画出内容的一帧。 */}
       {visible.map((block) => (
-        <Block key={block.uid} block={block} onConfirm={onConfirm} onAnswer={onAnswer} replayed={replayed} onEdit={onEdit} onRewind={onRewind} onOpenChild={onOpenChild} busy={state.busy} data-uid={block.uid} />
+        <Block key={block.uid} block={block} onConfirm={onConfirm} onAnswer={onAnswer} replayed={replayed} onEdit={onEdit} onRewind={onRewind} onOpenChild={onOpenChild} busy={state.busy} source={source} sessionId={state.currentId} data-uid={block.uid} />
       ))}
       {/* 正在流式的那一块：单独挂（不拼数组——见上面的渲染说明）。
        *  它恒在末尾，所以它的挂载/卸载与「最后一段正文」的视觉顺序完全一致。 */}
       {streaming && (
-        <Block key={streaming.uid} block={streaming} onConfirm={onConfirm} onAnswer={onAnswer} replayed={replayed} onEdit={onEdit} onRewind={onRewind} onOpenChild={onOpenChild} busy={state.busy} data-uid={streaming.uid} />
+        <Block key={streaming.uid} block={streaming} onConfirm={onConfirm} onAnswer={onAnswer} replayed={replayed} onEdit={onEdit} onRewind={onRewind} onOpenChild={onOpenChild} busy={state.busy} source={source} sessionId={state.currentId} data-uid={streaming.uid} />
       )}
       {/* 进行中且还没有任何输出时显示思考 shimmer（无角色标签——DSH 形态） */}
       {state.busy && !streaming && (

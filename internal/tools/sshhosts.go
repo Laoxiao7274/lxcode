@@ -387,7 +387,18 @@ func runSSHCommand(ctx context.Context, h SSHHost, command string, timeoutS int,
 	if h.Password != "" {
 		cmd.Env = append(os.Environ(), "SSHPASS="+h.Password)
 	}
-	out, err := cmd.CombinedOutput()
+	// Start + 分离的 Wait（不能用 CombinedOutput——它内部自己 Start，二次
+	// Start 报 already started）：先 Start 才有进程句柄可入 Job Object（B1）。
+	var buf syncBuffer
+	cmd.Stdout, cmd.Stderr = &buf, &buf
+	if serr := cmd.Start(); serr != nil {
+		// 启动失败仍走 execNote 的文本回填——与改造前 CombinedOutput 的语义一致
+		return execNote(cctx, serr, timeout), nil
+	}
+	// 进程残留治理 B1：入 Job Object（OS 级兜底——后端硬杀时内核代杀整组）
+	assignJobObject(cmd)
+	err := cmd.Wait()
+	out := buf.Bytes()
 	result := normalizeConsoleOutput(out)
 	if len(result) > bashMaxOutput {
 		result = truncateUTF8(result, bashMaxOutput) + "\n…（输出超 32KB 已截断）"

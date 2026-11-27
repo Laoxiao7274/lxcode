@@ -1,6 +1,8 @@
 // Package sessiondata 定义会话与存储共享的业务数据，不依赖数据库或传输层。
 package sessiondata
 
+import "strings"
+
 // SessionMeta 是会话列表摘要。ParentID/AgentID 非空 = 子会话（派发给子 Agent 开的
 // 独立会话）：自己的消息历史与压缩检查点，挂在父会话下；不进侧栏列表，但可被
 // 续跑（附着同一个 id 继续）与按父查询。
@@ -365,4 +367,20 @@ type AgentContext struct {
 	// Delegates 是有效委派名单（主 Agent 的动态注入层：会话覆盖 ?? 默认
 	// ∩ 启用——取严逻辑在服务端解析，内核只拿结果）。
 	Delegates []AgentDef
+}
+
+// ClipTitle 把任意文本截成「会话标题形态」：取首行、40 个字符封顶（rune 安全），
+// 尾部加省略号。**会话默认标题的唯一实现**：store 落库首条 user 消息时用它写
+// 标题，agent 的 AI 自动命名用它判定「标题还是默认值」（两侧各写一份必然漂移，
+// 所以收口在这里——B1）。
+func ClipTitle(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	r := []rune(s)
+	if len(r) > 40 {
+		return string(r[:40]) + "…"
+	}
+	return s
 }

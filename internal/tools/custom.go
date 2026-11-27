@@ -411,7 +411,19 @@ func runArgv(ctx context.Context, argv []string) (string, error) {
 	if wd := WorkDir(ctx); wd != "" {
 		cmd.Dir = wd
 	}
-	out, err := cmd.CombinedOutput()
+	// Start + 分离的 Wait（不能用 CombinedOutput——它内部自己 Start，二次
+	// Start 报 already started）：先 Start 才有进程句柄可入 Job Object（B1）。
+	var buf syncBuffer
+	cmd.Stdout, cmd.Stderr = &buf, &buf
+	if err := cmd.Start(); err != nil {
+		// 启动失败与 bash 前台同一条语义：文本回填（execNote 处理「可执行
+		// 文件不存在」），不是错误——模型能据此换方法。
+		return normalizeConsoleOutput(nil) + execNote(cctx, err, customTimeout), nil
+	}
+	// 进程残留治理 B1：入 Job Object（OS 级兜底——后端硬杀时内核代杀整组）
+	assignJobObject(cmd)
+	err := cmd.Wait()
+	out := buf.Bytes()
 	// 与 bash 同一条编码归一（外部二进制的输出编码同样跟控制台代码页走）
 	result := normalizeConsoleOutput(out)
 	if len(result) > customMaxOutput {

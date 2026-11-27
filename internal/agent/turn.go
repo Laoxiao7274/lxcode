@@ -374,6 +374,9 @@ func (s *Session) runTurn(ctx context.Context, cfg sendConfig, ac *sessiondata.A
 			// 看到（不硬阻塞：跨轮长任务轮轮收尾都欠着清单是常态）。busy/错误收尾
 			// 不校验（那轮本来就没走完，校验只会产生噪声）。
 			s.auditTodosAtRoundEnd()
+			// AI 自动命名（B1）：轮自然收尾时标题还是默认截断值就发一次命名调用
+			//（异步——不阻塞 done 事件；失败静默回落默认标题）。见 autotitle.go。
+			s.maybeAutoTitle(workDir)
 			return
 		}
 		if !s.runTools(ctx, res.Message.ToolCalls, &fileChanges, ac, "", roundSeq, func(m llm.Message) { s.append(m) }, s.id) {

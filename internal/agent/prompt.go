@@ -158,7 +158,9 @@ var systemPromptRules = []string{
 	// 2026-12 用户拍板：等待原语对齐业界——job_output 加 wait_condition 谓词
 	//（exit/exit_ok/output/idle/{pattern}），「等已有任务进度」是一等原语，
 	// 轮询循环降级为「真的无任务句柄」时的最后手段。
-	"等待纪律：不要用 sleep 预估等待时长（系统会拒绝纯 sleep 命令）。等已有后台任务的进度/结束用 job_output(wait=true, wait_condition=…)（阻塞等待原语：exit=任务结束（默认）/ exit_ok=退出码 0 / output=有新输出即回 / idle=输出静默 idle_ms / {\"pattern\": \"…\"}=输出命中正则即回（带回命中行）——OR 组合谁先到返回谁，默认 30s 上限 600s）；真的无任务句柄可等（外部状态：端口/文件/接口就绪）才用 run_in_background 起轮询循环（until cond; do sleep 30; done），任务结束系统会通知你。",
+	// wait（只回状态）与 job_output(wait=true)（连输出一起回）分工：只要等结束
+	// 用 wait 省 token；要看进度/等某行日志用 job_output。
+	"等待纪律：不要用 sleep 预估等待时长（系统会拒绝纯 sleep 命令）。等已有后台任务用 wait(job_id, timeout_sec)——只回状态不回输出（condition 可选：exit 默认等结束 / exit_ok 等成功 / output 等新输出 / idle 等静默 / {\"pattern\": \"…\"} 等输出命中正则；默认 30s 上限 600s）；看输出进度/增量用 job_output(wait=true, wait_condition=…)（阻塞等待原语：exit/exit_ok/output/idle/{\"pattern\"}——OR 组合谁先到返回谁）；真的无任务句柄可等（外部状态：端口/文件/接口就绪）才用 run_in_background 起轮询循环（until cond; do sleep 30; done），任务结束系统会通知你。",
 	"回答用中文，简洁直接；完成操作后向用户报告结果。",
 }
 
@@ -211,6 +213,7 @@ var systemPromptTools = map[string]string{
 	"agent_read":                    "agent_read：查看 Agent 注册表（列表或单个完整定义，含提示词模板），低危自动执行",
 	"agent_write":                   "agent_write：按 id 修改 Agent 配置（描述/模板/白名单/技能绑定，落库即生效），高危——执行前用户会收到确认提示",
 	"job_output":                    "job_output：读后台任务的增量输出；wait=true + wait_condition 是阻塞等待原语（exit/exit_ok/output/idle/{pattern}——等进度/等结束都靠它，别起轮询循环），低危自动执行",
+	"wait":                          "wait：阻塞等一个后台任务结束/满足条件，只回状态不回输出（要输出再调 job_output），低危自动执行",
 	"job_list":                      "job_list：列后台任务（新的在前，可按会话过滤），低危自动执行",
 	"job_kill":                      "job_kill：停止一个后台任务（归属记为 agent），低危自动执行",
 	tools.DispatchToolName:          tools.DispatchToolName + "：把任务派给名单中的子 Agent（任务的完整执行在子上下文里，结果回传验收），低危自动执行",
@@ -218,6 +221,7 @@ var systemPromptTools = map[string]string{
 	tools.ProjectListToolName:       tools.ProjectListToolName + "：列出用户的全部项目（id/路径/会话数/最近活动/运行中），用户问「我有哪些项目」时先用它，run_task 的 project_id 从这里取，低危自动执行",
 	tools.ProjectCreateToolName:     tools.ProjectCreateToolName + "：在指定父目录下新建项目文件夹（mkdir + git init + 注册进项目列表），用户说「在 xxx 下建一个 yyy 项目」时用它，高危——执行前用户会收到确认提示（auto 档也弹）",
 	tools.MergeRequestToolName:      "merge_request：（遗留）合并流程已退役，调用只会得到说明——提交/推送用 workspace_sync，回滚用 workspace_rollback",
+	tools.ScheduleToolName:          tools.ScheduleToolName + "：设一个到点提醒（duration_minutes 相对延时或 at 绝对时刻，note 是提醒正文），到点后经通告链自动投回本会话，低危自动执行",
 	tools.WorkspaceStatusToolName:   "workspace_status：查询项目工作区状态（主检出的未提交改动、遗留会话分支），低危自动执行",
 	tools.WorkspaceSyncToolName:     "workspace_sync：提交主检出的改动到当前分支，可选拼直接推送远程，中危——执行前用户会收到确认提示",
 	tools.WorkspaceRollbackToolName: "workspace_rollback：回滚主检出当前分支到上一个提交/会话基线/指定提交（自动检查点已移除，只有提交过的位置可回滚），中危——执行前用户会收到确认提示",

@@ -230,14 +230,16 @@ export function groupJobsByWorkspace(
  *  枚举字符串 / {"pattern": "..."} / 数组（OR 组合）——宽容解析与后端一致）。 */
 export type JobWaitConditionValue = string | { pattern: string } | Array<string | { pattern: string }>;
 
-/** 从 job_output 的参数 JSON 里取等待呈现所需的信息（wait / wait_condition / idle_ms）。
- *  坏参数/缺席字段都回缺省——这个函数只服务显示，解析失败不该炸时间线。 */
+/** 从 job_output / wait 的参数 JSON 里取等待呈现所需的信息（wait / wait_condition / idle_ms）。
+ *  两个工具共用同一份等待原语（后端 wait 复用 parseWaitCondition），等待态呈现
+ *  也共用这一份解析。坏参数/缺席字段都回缺省——这个函数只服务显示，解析失败不该炸时间线。 */
 export function jobWaitArgs(
   argsJson: string,
 ): { wait: boolean; condition?: JobWaitConditionValue; idleMs?: number } {
   try {
-    const a = JSON.parse(argsJson) as { wait?: boolean; wait_condition?: JobWaitConditionValue; idle_ms?: number };
-    return { wait: Boolean(a.wait), condition: a.wait_condition, idleMs: a.idle_ms };
+    const a = JSON.parse(argsJson) as { wait?: boolean; condition?: JobWaitConditionValue; wait_condition?: JobWaitConditionValue; idle_ms?: number };
+    // wait 工具的参数名是 condition；job_output 是 wait_condition——兼容两份拼写
+    return { wait: Boolean(a.wait) || a.wait === undefined && "condition" in a, condition: a.condition ?? a.wait_condition, idleMs: a.idle_ms };
   } catch {
     return { wait: false };
   }

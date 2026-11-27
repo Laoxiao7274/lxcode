@@ -5,7 +5,7 @@ import { appendFile, readFile, rename, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { app, BrowserWindow, crashReporter, dialog, ipcMain, nativeTheme, net, Notification, protocol, screen } from "electron";
+import { app, BrowserWindow, crashReporter, dialog, ipcMain, nativeTheme, net, Notification, protocol, screen, shell } from "electron";
 import { ensureBackend, shutdownBackend } from "./sidecar";
 import { initSakura, sakuraHandlers, shutdownSakura } from "./sakura";
 import { initTailscale, tailscaleHandlers } from "./tailscale";
@@ -318,6 +318,47 @@ if (!app.requestSingleInstanceLock()) {
         notification.show();
       } catch {
         // 弹不出不影响生成流程本身（渲染层时间线照常展示结果）
+      }
+    });
+
+    // 工作区文件交给系统编辑器/文件管理器（产物卡动作，A4）：路径白名单已在
+    // 后端 file.reveal 判定（净化后在会话工作目录内才回绝对路径），这里只执行。
+    // shell.openPath/showItemInFolder 的失败回报（不存在/无关联应用）——
+    // 渲染层据此给一次性提示，不静默。
+    ipcMain.handle("files:reveal", (_e, abs: unknown) => {
+      if (typeof abs !== "string" || !abs) return { ok: false, error: "路径为空" };
+      try {
+        shell.showItemInFolder(abs);
+        return { ok: true };
+      } catch (e) {
+        return { ok: false, error: String(e) };
+      }
+    });
+    ipcMain.handle("files:open", async (_e, abs: unknown) => {
+      if (typeof abs !== "string" || !abs) return { ok: false, error: "路径为空" };
+      const err = await shell.openPath(abs);
+      return err ? { ok: false, error: err } : { ok: true };
+    });
+
+    // 失败通知（preload 的 __LX__.notify.error）：与 done 同一形态——渲染层已
+    // 判定（error 事件 + 非取消 + 失焦 + 开关），这里只管弹。与 done 的差别只有
+    // urgency/标题来源（渲染层把失败语义放进 title/body），同一个 handler 复用。
+    ipcMain.on("notify:error", (_e, n: unknown) => {
+      try {
+        if (!Notification.isSupported()) return;
+        const r = (n ?? {}) as { title?: unknown; body?: unknown };
+        if (typeof r.title !== "string" || !r.title) return;
+        const notification = new Notification({
+          title: r.title,
+          body: typeof r.body === "string" ? r.body : "",
+        });
+        notification.on("click", () => {
+          win?.show();
+          win?.focus();
+        });
+        notification.show();
+      } catch {
+        // 弹不出不影响生成流程本身
       }
     });
 

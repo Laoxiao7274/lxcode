@@ -28,7 +28,9 @@ func (s *Server) behaviorConfig() config.Behavior {
 	path := s.behaviorPath
 	s.behaviorMu.Unlock()
 	if path == "" {
-		return config.Behavior{}
+		// 未装配 = 行为开关全关（与 remote.json 未装配 Enabled=false 同一条
+		// 降级语义——测试/旧调用方零副作用；生产路径 AttachBehavior 恒装配）。
+		return config.Behavior{AutoTitle: ptr(false)}
 	}
 	return config.LoadBehavior(path)
 }
@@ -157,3 +159,6 @@ func (s *Server) handleBehavior(req *protocol.Request, params json.RawMessage) *
 	}
 	return nil
 }
+
+// ptr 是 *bool 的便捷构造（behavior 三态开关用）。
+func ptr(b bool) *bool { return &b }

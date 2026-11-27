@@ -73,6 +73,9 @@ export type AgentEvent =
        *  系统通知正文的来源。缺席 = 后端没给（老后端/工具轮），不编空串。 */
       content?: string }
   | { type: "error"; sessionId: string; message: string; aborted: boolean;
+      /** dispatchId 非空 = 子会话轮的失败（归属进派发卡）：完成/失败系统通知据它
+       *  过滤子会话（错误在派发卡内呈现，不单独弹通知）。 */
+      dispatchId?: string;
       /** force = 超窗强制压缩仍失败的告警（非一轮生成失败）：可选键（老后端缺席），
        *  客户端可据此把提示条做成更强的样式。 */
       force?: boolean }

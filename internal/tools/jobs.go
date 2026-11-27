@@ -109,7 +109,8 @@ func jobOutputDef(r *Registry) *Def {
 			"exit（默认，等任务结束）/ exit_ok（退出码 0）/ output（有新输出即回）/ idle（输出静默 N 秒）" +
 			"/ {pattern:\"…\"}（全量输出日志命中正则即回，结果带 hit 命中行）——多个条件 OR 组合，" +
 			"谁先到返回谁。「等任务跑到某行日志/端口就绪」这类等待用它，不要起轮询循环" +
-			"（默认 30s、上限 600s）。任务结束后仍可读（完整日志落盘在 OutputPath）。",
+			"（默认 30s、上限 600s）。**只要等结束不要输出 → 用 wait**（只回状态，省 token）；" +
+			"任务结束后仍可读（完整日志落盘在 OutputPath）。",
 		Parameters: schema,
 		Risk:       RiskLow,
 		Exec: func(ctx context.Context, args json.RawMessage) (string, error) {

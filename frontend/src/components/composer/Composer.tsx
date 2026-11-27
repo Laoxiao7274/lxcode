@@ -97,6 +97,9 @@ export const Composer = memo(function Composer({
   model = "",
   onPickModel,
   modelInteractive = false,
+  modelSignal = 0,
+  effortSignal = 0,
+  approvalSignal = 0,
 }: {
   busy: boolean;
   /** 发送中态（乐观气泡已插、后端 busy 还没到——新会话首条消息的 git 链窗口）：
@@ -168,6 +171,11 @@ export const Composer = memo(function Composer({
    *  prop 单独放行——子会话页传 true + onPickModel（带子会话 id 寻址）。
    *  未传 = 锁定（主会话不受影响：可交互模式下整组本来就没锁）。 */
   modelInteractive?: boolean;
+  /** 选择器打开信号（A2 斜杠命令 /model /effort /approval）：数值变化（>0）
+   *  即打开对应 picker。App 持信号数（命令 run 时递增），这里只透传。 */
+  modelSignal?: number;
+  effortSignal?: number;
+  approvalSignal?: number;
 }) {
   const [value, setValue] = useState(initialDraft?.text ?? "");
   const [images, setImages] = useState<PendingImage[]>(initialDraft?.images ?? []);
@@ -676,9 +684,9 @@ export const Composer = memo(function Composer({
                 是读数，留在组外保持可点开。 */}
             <span className={"pi-controls" + (readOnly ? " pi-locked" : "")}>
               <AgentPicker />
-              <PermPicker />
+              <PermPicker openSignal={approvalSignal} />
               <span className={"pi-model-slot" + (readOnly && modelInteractive ? " pi-unlocked" : "")}>
-                <ModelPicker model={model} onPickModel={onPickModel} chipTitle={modelInteractive && busy ? "正在运行，切换将在下一轮生效" : undefined} />
+                <ModelPicker model={model} onPickModel={onPickModel} chipTitle={modelInteractive && busy ? "正在运行，切换将在下一轮生效" : undefined} openSignal={modelSignal || effortSignal} initialPanel={effortSignal > modelSignal ? "effort" : "model"} />
               </span>
             </span>
             <ContextIndicator usage={context} stats={stats} onCompact={onCompact} busy={busy} compacting={compacting} />

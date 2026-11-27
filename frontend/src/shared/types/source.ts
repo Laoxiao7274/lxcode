@@ -9,6 +9,7 @@ import type { ModelAdminSource } from "./catalog";
 import type { AgentAdminSource } from "./agent-admin";
 import type { SearchAdminSource } from "./search";
 import type { JobAdminSource, LogsSource, LogsTailResult } from "./jobs";
+import type { FulltextSource } from "./fulltext";
 
 // AgentSource / AssistantSource —— 数据源抽象（demo 与 live 实现同一接口）。
 
@@ -165,6 +166,13 @@ export interface AgentSource {
   /** 助手域（assistant.* 方法域，助手模式 P1）；缺省时助手页签显示"当前源不支持"。
    *  DemoAgent 也实现（演示模式无后端也要能全量跑助手页签）。 */
   assistant?: AssistantSource;
+  /** 历史消息全文检索（session.fulltext——侧栏搜索的「消息命中」组）。
+   *  缺省（demo）时侧栏只做标题过滤，不显示消息命中区。 */
+  fulltext?: FulltextSource;
+  /** 工作区文件交给系统编辑器/文件管理器（产物卡动作，file.reveal）：
+   *  后端做路径白名单（净化后在会话工作目录内），返回绝对路径供壳打开。
+   *  缺席（demo）时产物卡不显示这两个动作。 */
+  revealFile?(sessionId: string, path: string): Promise<string>;
 }
 
 /** 助手域（assistant.* 方法域，助手模式 P1 前端接线）。
