@@ -1,13 +1,13 @@
 {
-  "version": "0.3.69",
-  "versionCode": 70,
-  "name": "lxcode-0.3.69-android.apk",
-  "size": 12076372,
-  "sha256": "ade13f0c5923bf566407f1844885ad708fad2b287d75a8b8c3a35b4b4082c14e",
-  "url": "downloads/lxcode-0.3.69-android.apk",
+  "version": "0.3.70",
+  "versionCode": 71,
+  "name": "lxcode-0.3.70-android.apk",
+  "size": 12076359,
+  "sha256": "c926f0f019855eacd36a3cbf7efa96168240404787417bbc77490d9f0df95a94",
+  "url": "downloads/lxcode-0.3.70-android.apk",
   "notes": [
-    "会话打不开不再卡死：装载失败可直接重试",
-    "助手支持发送缓冲区，忙碌时消息排队自动发出",
-    "投屏稳定性修复：兼容模式与自动恢复的可靠性提升"
+    "任务等待提速：等待后台任务不再反复轮询，响应更快更省电",
+    "稳定性加固：残留的后台命令会随退出自动回收",
+    "助手会话运行状态显示修正"
   ]
 }
